@@ -6,8 +6,6 @@ import "autom/OmegaGTE"
 project(name:"OmegaGTE",version:"0.7")
 
 
-subdir(path:"./common")
-
 var omega_gte_headers = fs_glob(path:"./include/omegaGTE/*.h") + ["./include/OmegaGTE.h"]
 
 

@@ -445,11 +445,23 @@ function(add_omega_graphics_tool _NAME)
     target_link_libraries(${_NAME} PRIVATE ${_ARG_LIBS})
 endfunction()
 
+function(add_omega_graphics_test _NAME)
+	cmake_parse_arguments("_ARG" "" "" "LIBS;SOURCES" ${ARGN})
+	set(_SOURCES ${_ARG_SOURCES})
+	add_executable(${_NAME} ${_SOURCES})
+	set_target_properties(${_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+	# NOT INSTALLED UNLIKE TOOLS
+    foreach(dep ${_ARG_LIBS})
+        add_dependencies(${_NAME} ${dep})
+    endforeach()
+    target_link_libraries(${_NAME} PRIVATE ${_ARG_LIBS})
+endfunction()
+
 
 
 function(add_omega_graphics_module _NAME)
 	
-	cmake_parse_arguments("_ARG" "STATIC;SHARED;FRAMEWORK" "HEADER_DIR;INFO_PLIST;VERSION" "DEPENDS;SOURCES;EMBEDDED_LIBS" ${ARGN})
+	cmake_parse_arguments("_ARG" "STATIC;SHARED;FRAMEWORK;CUSTOM" "HEADER_DIR;INFO_PLIST;VERSION" "DEPENDS;SOURCES;EMBEDDED_LIBS" ${ARGN})
 	
 	message("-- Adding Module:${_NAME}")
 
@@ -458,6 +470,12 @@ function(add_omega_graphics_module _NAME)
 		set_target_properties(${_NAME} PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 		install(TARGETS ${_NAME} ARCHIVE DESTINATION lib)
 
+		foreach(dep ${_ARG_DEPENDS})
+			add_dependencies(${_NAME} ${dep})
+		endforeach()
+	elseif(${_ARG_CUSTOM})
+	# Allows for custom installation locations as well suffixes and output directories during build
+		add_library(${_NAME} MODULE ${_ARG_SOURCES})
 		foreach(dep ${_ARG_DEPENDS})
 			add_dependencies(${_NAME} ${dep})
 		endforeach()

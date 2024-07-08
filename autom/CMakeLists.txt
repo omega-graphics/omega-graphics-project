@@ -12,10 +12,10 @@ file(GLOB SRCS "./src/*.cpp" "./src/*.h" "./src/bridge/*.cpp" "./src/gen/*.cpp" 
 
 if(NOT WIN32)
     # Required on Linux because some standard libs are not compiled with -fPIC.
-    add_library("autom-lib" SHARED ${SRCS})
+    add_omega_graphics_module("autom-lib" SHARED SOURCES ${SRCS})
     set_target_properties("autom-lib" PROPERTIES LIBRARY_OUTPUT_NAME "autom")
 else()
-    add_library("autom-lib" STATIC ${SRCS})
+    add_omega_graphics_module("autom-lib" STATIC SOURCES ${SRCS})
     set_target_properties("autom-lib" PROPERTIES ARCHIVE_OUTPUT_NAME "autom")
 	if(NOT WIN32)
 		set_target_properties("autom-lib" PROPERTIES PREFIX "lib")
@@ -27,18 +27,18 @@ if(NOT APPLE AND UNIX)
     target_link_libraries("autom-lib" PRIVATE dl)
 endif()
 
-add_executable("autom" "src/driver/main.cpp")
+add_omega_graphics_tool("autom" SOURCES "src/driver/main.cpp")
 set_target_properties("autom" PROPERTIES INSTALL_RPATH @loader_path/../lib)
 target_link_libraries("autom" PRIVATE "autom-lib")
 
 macro(add_autom_test _NAME)
     set(_SOURCES ${ARGN})
-    add_executable(${_NAME} ${_SOURCES})
+    add_omega_graphics_tool(${_NAME} SOURCES ${_SOURCES})
     target_link_libraries(${_NAME} PRIVATE "autom-lib")
     set_target_properties(${_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 endmacro()
 
-add_executable("autom-install" "src/tools/install-main.cpp")
+add_omega_graphics_tool("autom-install" SOURCES "src/tools/install-main.cpp")
 set_target_properties("autom-install" PROPERTIES INSTALL_RPATH @loader_path/../lib)
 target_link_libraries("autom-install" PRIVATE "autom-lib")
 
@@ -51,7 +51,7 @@ set(STDLIB_MODULES)
 
 macro(add_stdlib_module _NAME DIR)
     file(GLOB _SRCS "${DIR}/*.cpp" "${DIR}/*.c" "${DIR}/*.h")
-    add_library(${_NAME} MODULE ${_SRCS})
+    add_omega_graphics_module(${_NAME} CUSTOM SOURCES ${_SRCS} DEPENDS "autom-lib")
     list(APPEND STDLIB_MODULES ${_NAME})
     set_target_properties(${_NAME} PROPERTIES PREFIX "" SUFFIX ".aext" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/stdlib" LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/stdlib")
     target_link_libraries(${_NAME} PRIVATE "autom-lib")

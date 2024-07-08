@@ -1,0 +1,23 @@
+# Omega Graphics Build File
+
+subdir(path:"./common")
+
+subdir(path:"./gte")
+
+subdir(path:"./wtk")
+
+# subdir(path:"./aqua")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
