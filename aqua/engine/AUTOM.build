@@ -1,0 +1,13 @@
+#! /usr/bin/env python3
+
+def AQUAEngineModule(name:str,sources:"list[str]",deps:"list[str]"):
+    SharedLibrary(f"AQUA{name}",sources,deps,"lib")
+    set_property(f"AQUA{name}","include_dirs",["./include"])
+    set_property(f"AQUA{name}","defines",["__BUILD__"])
+
+
+AQUAEngineModule(name="Core",sources=glob("./src/Core/*.cpp"),deps=[])
+
+# AQUAEngineModule(name="Physics",sources=glob("./src/Physics/*.cpp"))
+
+# AQUAEngineModule(name="Frontend",sources=glob("./src/Frontend/*.cpp"))

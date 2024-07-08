@@ -1,0 +1,9 @@
+{
+    "subdirs":[
+        "autom",
+        "common",
+        "gte",
+        "wtk"
+    ]
+}
+

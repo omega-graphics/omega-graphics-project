@@ -1,0 +1,10 @@
+{
+    "commands":[
+        {
+            "type":"git_clone",
+            "url":"https://github.com/NVIDIAGameWorks/PhysX.git",
+            "dest":"./external_libs/PhysX",
+            "branch":"default"
+        }
+    ]
+}
