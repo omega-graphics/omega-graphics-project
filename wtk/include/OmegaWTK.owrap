@@ -1,0 +1,5 @@
+header "./OmegaWTK.h"
+
+namespace OmegaWTK {
+
+}

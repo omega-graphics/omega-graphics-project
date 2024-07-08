@@ -1,0 +1,54 @@
+__pycache__
+.DS_STORE
+.cache
+.clangd
+compile_commands.json
+*.sh
+*.bat
+!omegasl/omegaslc.bat
+out 
+dist
+build
+*.pyc
+doxygen
+gn-utils
+spirv-cross
+shaderc
+.idea
+sphinx*
+.build
+common
+*.gn
+
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app

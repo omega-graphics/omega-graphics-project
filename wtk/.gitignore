@@ -1,0 +1,69 @@
+__pycache__
+*.pyc
+compile_commands.json
+compile_flags.txt
+swift
+sphinxout
+gn-utils
+conf_out
+third_party
+build-*
+*out
+*.properties
+# Prerequisites
+*.d
+omega-common
+gte
+*.gn
+.cache
+gradle
+gradlew
+gradlew.bat
+.gradle
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Config Scripts
+
+*.sh
+*.bat
+!vc.bat
+!gn/vc.bat
+!external-libs/openssl/vc.bat
+
+# Output Folders
+
+out
+build
+.build
+.cache
+.DS_Store
+doxygen

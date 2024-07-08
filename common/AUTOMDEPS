@@ -1,0 +1,8 @@
+{
+    "commands":[
+        {
+            "type":"gnpkg",
+            "command":"utils --get"
+        }
+    ]
+}

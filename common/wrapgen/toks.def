@@ -1,0 +1,31 @@
+#define TOK_MAX_LEN 200
+
+typedef int TokTy;
+
+#define TOK_ID 0x01
+#define TOK_KW 0x02
+#define TOK_LBRACE 0x03
+#define TOK_RBRACE 0x04
+#define TOK_ASTERISK 0x05
+#define TOK_AMP 0x06
+#define TOK_STRLITERAL 0x07
+#define TOK_DBCOLON 0x08
+#define TOK_LPAREN 0x09
+#define TOK_RPAREN 0x0A
+#define TOK_COMMA 0x0B
+#define TOK_COLON 0x0C
+#define TOK_LINECOMMENT 0x0D
+#define TOK_BLOCKCOMMENT 0x0E
+#define TOK_EOF 0xFF
+
+
+#define TOK(content) content
+#define KW(name) TOK(name)
+
+#define KW_CLASS KW("class")
+#define KW_INTERFACE KW("interface")
+#define KW_FUNC KW("func")
+#define KW_NAMESPACE KW("namespace")
+#define KW_NEW KW("new")
+#define KW_CONST KW("const")
+#define KW_HEADER KW("header")

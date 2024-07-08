@@ -1,0 +1,52 @@
+{
+    "variables":{
+        "external_lib_path":"./deps"
+    },
+    "commands":[ 
+        {
+            "type":"git_clone",
+            "url":"https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git",
+            "branch":"default",
+            "dest":"$(external_lib_path)/vulkan-memory-allocator",
+            "platforms":[
+                "linux",
+                "android"
+            ]
+        },
+        {
+            "type":"git_clone",
+            "url":"https://github.com/g-truc/glm.git",
+            "branch":"default",
+            "dest":"$(external_lib_path)/glm",
+            "platforms":[
+                "linux",
+                "android"
+            ]
+        },
+        {
+            "type":"system",
+            "path":"mkdir temp && curl https://sdk.lunarg.com/sdk/download/latest/linux/vulkan-sdk.tar.gz --output ./temp/vulkan-sdk.tar.gz",
+            "platforms":[
+                "linux",
+                "android"
+            ]
+        },
+        {
+            "type":"tar",
+            "tarfile":"./temp/vulkan-sdk.tar.gz",
+            "dest":"$(external_lib_path)/vulkan_sdk",
+            "platforms":[
+                "linux",
+                "android"
+            ]
+        },
+        {
+            "type":"system",
+            "path":"rm -r ./temp",
+            "platforms":[
+                "linux",
+                "android"
+            ]
+        }
+    ]
+}

@@ -1,0 +1,30 @@
+#ifndef AUTOM_TARGETS_DEF
+#define AUTOM_TARGETS_DEF
+
+namespace autom {
+
+typedef int TargetType;
+
+}
+
+#define EXECUTABLE 0x01
+#define STATIC_LIBRARY 0x02
+#define SHARED_LIBRARY 0x03
+#define SOURCE_GROUP 0x04
+#define COMPILED_OUTPUT_TARGET (EXECUTABLE | STATIC_LIBRARY | SHARED_LIBRARY | SOURCE_GROUP)
+
+
+#define SCRIPT_TARGET 0x07
+#define GROUP_TARGET 0x08
+
+#define JAR_LIB 0x09
+#define JAR_EXE 0x0A
+#define JAVA_TARGET (JAR_LIB | JAR_EXE)
+
+
+#define FS_COPY 0x0B
+#define FS_SYMLINK 0x0C
+#define FS_MKDIR 0x0D
+#define FS_ACTION (FS_COPY | FS_SYMLINK | FS_MKDIR)
+
+#endif

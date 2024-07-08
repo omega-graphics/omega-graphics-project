@@ -1,0 +1,7 @@
+if(TARGET_DIRECTX)
+    add_subdirectory("directx")
+elseif(TARGET_METAL AND NOT IOS)
+    add_subdirectory("metal")
+elseif(TARGET_VULKAN)
+    add_subdirectory("vulkan")
+endif()

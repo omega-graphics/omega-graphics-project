@@ -1,0 +1,344 @@
+import "autom/OmegaWTK"
+
+var OMEGAWTK_VERSION = "0.6"
+
+project(name:"OmegaWTK",version:OMEGAWTK_VERSION)
+
+var third_party_dir = "$(root_out_dir)/third_party"
+var gen_third_party_dir = "$(gen_root_out_dir)/third_party"
+
+
+assert(expr:program_exists(cmd:"cmake"))
+
+var zlib_export
+
+if (is_win){
+    zlib_export = [f"{gen_third_party_dir}/zlib/bin/zlib.dll",f"{gen_third_party_dir}/zlib/lib/zlib.lib"]
+}
+elif (is_mac){
+    zlib_export = [f"{gen_third_party_dir}/zlib/lib/libz.dylib"]
+}
+    
+ThirdParty(
+    name="zlib",
+    deps=[],
+    exports=zlib_export,
+    source_dir="./external-libs/zlib/code",
+    binary_dir=f"{third_party_dir}/temp/zlib",
+    install_dir=f"{third_party_dir}/zlib",
+    config=f"cmake -S . -B {third_party_dir}/temp/zlib -G\"Ninja\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"{third_party_dir}/zlib\"",
+    build="cmake --build .",
+    install="cmake --build . --target install",
+    libs=[f"{gen_third_party_dir}/zlib/lib/zlib.lib"],
+    install_name="install_name_tool -id @rpath/libz.dylib ./lib/libz.dylib"
+)
+
+var libpng_export
+
+
+if (is_win){
+    libpng_export = [f"{gen_third_party_dir}/libpng/bin/libpng16.dll",f"{gen_third_party_dir}/libpng/lib/libpng16.lib"]
+}
+elif (is_mac){
+    libpng_export = [f"{gen_third_party_dir}/libpng/lib/libpng.dylib"]
+}
+
+ThirdParty(
+    name="libpng",
+    deps=["zlib"],
+    exports=libpng_export,
+    source_dir="./external-libs/libpng/code",
+    binary_dir=f"{third_party_dir}/temp/libpng",
+    install_dir=f"{third_party_dir}/libpng",
+    config=f"cmake -S . -B {third_party_dir}/temp/libpng -G\"Ninja\" -DCMAKE_BUILD_TYPE=Release -DPNG_ARM_NEON=off  -DCMAKE_PREFIX_PATH=\"{third_party_dir}/zlib\" -DCMAKE_INSTALL_PREFIX=\"{third_party_dir}/libpng\"",
+    build="cmake --build .",
+    install="cmake --build . --target install",
+    libs=[f"{gen_third_party_dir}/libpng/lib/libpng16.lib"],
+    install_name="install_name_tool -id @rpath/libpng.dylib ./lib/libpng.dylib"
+)
+if is_win:
+    libjpeg_turbo_export = [f"{gen_third_party_dir}/libjpeg-turbo/bin/turbojpeg.dll",f"{gen_third_party_dir}/libjpeg-turbo/lib/turbojpeg.lib"]
+elif is_mac:
+    libjpeg_turbo_export = [f"{gen_third_party_dir}/libjpeg-turbo/lib/libturbojpeg.dylib"]
+
+ThirdParty(
+    name="libjpeg-turbo",
+    deps=["zlib"],
+    exports=libjpeg_turbo_export,
+    source_dir="./external-libs/libjpeg-turbo/code",
+    binary_dir=f"{third_party_dir}/temp/libjpeg-turbo",
+    install_dir=f"{third_party_dir}/libjpeg-turbo",
+    config=f"cmake -S . -B {third_party_dir}/temp/libjpeg-turbo -G\"Ninja\" -DCMAKE_BUILD_TYPE=Release -DZLIB_DIR=\"{third_party_dir}/zlib\" -DCMAKE_INSTALL_PREFIX=\"{third_party_dir}/libjpeg-turbo\"",
+    build="cmake --build .",
+    install="cmake --build . --target install",
+    libs=[f"{gen_third_party_dir}/libjpeg-turbo/lib/turbojpeg.lib"],
+    install_name="install_name_tool -id @rpath/libturbojpeg.dylib ./lib/libturbojpeg.dylib"
+)
+if is_win:
+    libtiff_export = [f"{gen_third_party_dir}/libtiff/bin/tiff.dll",f"{gen_third_party_dir}/libtiff/lib/tiff.lib"]
+elif is_mac:
+    libtiff_export = [f"{gen_third_party_dir}/libtiff/lib/libtiff.dylib"]
+ThirdParty(
+    name="libtiff",
+    deps=["zlib","libjpeg-turbo"],
+    exports=libtiff_export,
+    source_dir="./external-libs/libtiff/code",
+    binary_dir=f"{third_party_dir}/temp/libtiff",
+    install_dir=f"{third_party_dir}/libtiff",
+    config=f"cmake -S . -B {third_party_dir}/temp/libtiff -G\"Ninja\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=\"{third_party_dir}/zlib\;{third_party_dir}/libjpeg-turbo\" -DCMAKE_INSTALL_PREFIX=\"{third_party_dir}/libtiff\"",
+    build="cmake --build .",
+    install="cmake --build . --target install",
+    libs=[f"{gen_third_party_dir}/libtiff/lib/tiff.lib"],
+    install_name="install_name_tool -id @rpath/libtiff.dylib ./lib/libtiff.dylib"
+)
+
+if is_win:
+    icu_lib_exports = [
+        f"{gen_third_party_dir}/icu/bin/icuuc69.dll",
+        f"{gen_third_party_dir}/icu/bin/icuin69.dll",
+        f"{gen_third_party_dir}/icu/bin/icudt69.dll"]
+
+    icu_implib_exports = [
+        f"{gen_third_party_dir}/icu/lib/icuuc.lib",
+        f"{gen_third_party_dir}/icu/lib/icuin.lib"]
+    
+elif is_mac:
+    icu_lib_exports = [f"{gen_third_party_dir}/icu/lib/libicuuc.dylib",
+                    f"{gen_third_party_dir}/icu/lib/libicui18n.dylib",
+                    f"{gen_third_party_dir}/icu/lib/libicudata.dylib"]
+
+    icu_implib_exports = []
+
+if is_win:
+    src_dir = "./external-libs/icu-69/code/icu4c/source/allinone"
+    build_dir = src_dir
+    build_com = "vc-init && msbuild allinone.sln -p:Configuration=Release"
+    config_ = "vc-init"
+    install_com = ""
+
+    Script("icu_build",[],[],third_party_script,[
+        "--tmp-dir",abspath(src_dir),
+        "--out-dir",abspath(f"{third_party_dir}/icu"),
+        "--build",build_com,"--install","cmd.exe /c echo > build.stamp"],[f"{gen_third_party_dir}/icu/build.stamp"])
+
+    Copy("icu_dll_copy",["./external-libs/icu-69/code/icu4c/bin64/icudt69.dll","./external-libs/icu-69/code/icu4c/bin64/icuuc69.dll","./external-libs/icu-69/code/icu4c/bin64/icuin69.dll"],["icu_build"],f"{gen_third_party_dir}/icu/bin")
+
+    Copy("icu_include_copy",["./external-libs/icu-69/code/icu4c/include"],["icu_build"],f"{gen_third_party_dir}/icu")
+
+    Copy("icu_lib_copy",["./external-libs/icu-69/code/icu4c/lib64/icudt.lib","./external-libs/icu-69/code/icu4c/lib64/icuin.lib","./external-libs/icu-69/code/icu4c/lib64/icuuc.lib"],["icu_build"],f"{gen_third_party_dir}/icu/lib")
+
+    Group("icu",["icu_build","icu_dll_copy","icu_include_copy","icu_lib_copy"])
+
+    Config("icu__conf",[],[f"{third_party_dir}/icu/include"],[])
+    set_property("icu__conf","libs",icu_implib_exports)
+    
+else:
+    src_dir = "./external-libs/icu-69/code/icu4c/source"
+    build_dir = src_dir
+    build_com = "make all"
+    config_ = f"./configure --prefix={third_party_dir}/icu"
+    install_com = "make install"
+
+    ThirdParty(
+        name="icu",
+        deps=[],
+        exports=icu_lib_exports + icu_implib_exports,
+        source_dir=src_dir,
+        binary_dir=build_dir,
+        install_dir=f"{third_party_dir}/icu",
+        config = config_,
+        build=build_com,
+        install=install_com,
+        libs=[],
+        install_name="install_name_tool -id @rpath/libicuuc.dylib ./lib/libicuuc.dylib; install_name_tool -change libicudata.69.dylib @rpath/libicudata.dylib ./lib/libicuuc.dylib; install_name_tool -change libicudata.69.dylib @rpath/libicudata.dylib -id @rpath/libicui18n.dylib ./lib/libicui18n.dylib;install_name_tool -change libicudata.69.dylib @rpath/libicudata.dylib -change libicuuc.69.dylib @rpath/libicuuc.dylib ./lib/libicui18n.dylib; install_name_tool -id @rpath/libicudata.dylib ./lib/libicudata.dylib"
+    )
+
+if is_win:
+    xml_exports = [f"{gen_third_party_dir}/libxml/bin/libxml2.dll",f"{gen_third_party_dir}/libxml/lib/libxml2.lib"]  
+else:
+    xml_exports = [f"{gen_third_party_dir}/libxml/lib/libxml2.a"]
+
+sudo = "sudo"
+shared = "-DBUILD_SHARED_LIBS=OFF"
+inc_dir = f"-I{third_party_dir}/icu/include"
+if is_win:
+    sudo = ""
+    shared = ""
+ThirdParty(
+    name="libxml",
+    deps=["icu"],
+    exports=xml_exports,
+    source_dir="./external-libs/libxml2/code",
+    binary_dir=f"{third_party_dir}/temp/libxml",
+    install_dir=f"{third_party_dir}/libxml",
+    config=f"cmake -S . -B {third_party_dir}/temp/libxml -G\"Ninja\" -DCMAKE_C_FLAGS=\"{inc_dir}\" -DCMAKE_PREFIX_PATH=\"{third_party_dir}/zlib;{third_party_dir}/icu\" -DLIBXML2_WITH_ICU=ON -DLIBXML2_WITH_ICONV=OFF -DLIBXML2_WITH_LZMA=OFF {shared} -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"{third_party_dir}/libxml\"",
+    build=f"{sudo} cmake --build .",
+    install=f"{sudo} cmake --build . --target install",
+    libs=[f"{gen_third_party_dir}/libxml/lib/libxml2.lib"],
+    install_name=""
+)
+
+set_property("libxml__conf","include_dirs",[f"{third_party_dir}/libxml/include/libxml2"])
+
+# assert_expr(program_exists("perl"))
+
+# ThirdParty(
+#     name="openssl",
+#     deps=[],
+#     exports=[f"{gen_third_party_dir}/openssl/lib/libcrypto.dylib",
+#              f"{gen_third_party_dir}/openssl/lib/libssl.dylib"],
+#     source_dir="./external-libs/openssl/code",
+#     binary_dir=f"./external-libs/openssl/code",
+#     install_dir=f"{third_party_dir}/openssl",
+#     config=f"perl ./Configure --prefix={third_party_dir}/openssl",
+#     build="make all",
+#     install="make install"
+# )
+
+
+omega_wtk_include_dir = abspath("./include")
+
+
+standard_defines = []
+if is_mac:
+    standard_defines += ["TARGET_MACOS"]
+elif is_win:
+    standard_defines += ["TARGET_WIN32"]
+
+priv_defines = []
+if is_win:
+    priv_defines += ["WINDOWS_PRIVATE"]
+
+
+
+Config("OmegaWTK_Config",[],[omega_wtk_include_dir],standard_defines)
+set_property("OmegaWTK_Config","configs",["icu__conf","libxml__conf"])
+
+func OmegaWTKModule(name,sources,deps) {
+    return SourceSet(name:f"OmegaWTK{name}",srcs:sources)
+}
+
+
+core_srcs = glob("./src/Core/*.cpp")
+
+
+OmegaWTKModule(name="Core",sources=core_srcs,deps=["icu","libxml","OmegaGTE"])
+set_property("OmegaWTKCore","configs",["OmegaWTK_Config"])
+append_property("OmegaWTKCore","include_dirs",["./tools/assetc"])
+append_property("OmegaWTKCore","defines",priv_defines)
+
+native_srcs = glob("./src/Native/*.cpp")
+
+if is_mac:
+    other_srcs = glob("./src/Native/macos/*.mm")
+elif is_win:
+    other_srcs = glob("./src/Native/win/*.cpp")
+
+OmegaWTKModule(name="Native",sources=native_srcs + other_srcs,deps=["OmegaWTKCore"])
+append_property("OmegaWTKNative","include_dirs",["./src/Native/private_include"])
+append_property("OmegaWTKNative","defines",priv_defines)
+
+media_srcs = glob("./src/Media/*.cpp")
+
+OmegaWTKModule(name="Media",sources=media_srcs,deps=["OmegaWTKCore","libpng","libtiff"])
+append_property("OmegaWTKMedia","configs",["zlib__conf","libpng__conf","libjpeg-turbo__conf","libtiff__conf"])
+append_property("OmegaWTKMedia","defines",priv_defines)
+
+composition_srcs = glob("./src/Composition/*.cpp") + glob("./src/Composition/backend/*.cpp")
+if is_mac:
+    composition_srcs += glob("./src/Composition/backend/mtl/*.mm")
+elif is_win:
+    composition_srcs += glob("./src/Composition/backend/dx/*.cpp")
+
+OmegaWTKModule(name="Composition",sources=composition_srcs,deps=["OmegaWTKCore","OmegaWTKNative","OmegaWTKMedia"])
+append_property("OmegaWTKComposition","include_dirs",["./src/Native/private_include"])
+append_property("OmegaWTKComposition","defines",priv_defines)
+ui_srcs = glob("./src/UI/*.cpp")
+
+OmegaWTKModule(name="UI",sources=ui_srcs,deps=["OmegaWTKCore","OmegaWTKComposition","OmegaWTKNative","OmegaWTKMedia"])
+append_property("OmegaWTKUI","defines",priv_defines)
+
+widgets_srcs = glob("./src/Widgets/*.cpp")
+OmegaWTKModule(name="Widgets",sources=widgets_srcs,deps=["OmegaWTKCore","OmegaWTKComposition","OmegaWTKNative","OmegaWTKMedia","OmegaWTKUI"])
+
+conf_out = f"./conf_out"
+
+
+configure("./src/Info.plist.in",f"{conf_out}/OmegaWTK_res/Info.plist")
+configure("./src/version.plist.in",f"{conf_out}/OmegaWTK_res/version.plist")
+
+
+
+if is_mac:
+    FrameworkBundle("OmegaWTK",
+    ["./src/OmegaWTK.cpp"],
+    ["OmegaWTKCore",
+    "OmegaWTKComposition",
+    "OmegaWTKNative",
+    "OmegaWTKMedia",
+    "OmegaWTKUI",
+    "OmegaWTKWidgets"],
+    "Frameworks",OMEGAWTK_VERSION)
+    set_property("OmegaWTK","configs",["OmegaWTK_Config"])
+    set_property("OmegaWTK","resources",[f"{conf_out}/OmegaWTK_res/Info.plist",f"{conf_out}/OmegaWTK_res/version.plist"])
+    set_property("OmegaWTK","frameworks",["Cocoa.framework","QuartzCore.framework"])
+    # set_property("OmegaWTK","embedded_frameworks",[])
+    set_property("OmegaWTK","embedded_libs",zlib_export + libpng_export + libjpeg_turbo_export + libtiff_export + icu_lib_exports)
+
+elif is_win:
+    SharedLibrary("OmegaWTK",["./src/OmegaWTK.cpp"], 
+    ["OmegaWTKCore",
+    "OmegaWTKComposition",
+    "OmegaWTKNative",
+    "OmegaWTKMedia",
+    "OmegaWTKUI",
+    "OmegaGTE",
+    "OmegaWTKWidgets",
+    "omega-common"],"lib")
+
+    set_property("OmegaWTK","configs",["OmegaWTK_Config"])
+
+if is_win:
+    EMBED = abspath("./target/windows/app.exe.manifest")
+
+def OmegaWTKTest(name:str,app_id:str,sources:"list[str]"):
+    if is_mac:
+        BUNDLE_ID = app_id
+        APPNAME = name
+        AppBundle(name,sources + ["./target/macos/main.mm"],["OmegaWTK"],"Apps")
+        configure("./target/macos/Info.plist.in",f"{conf_out}/{name}_res/Info.plist")
+        set_property(name,"info_plist",f"{conf_out}/{name}_res/Info.plist")
+        set_property(name,"resources",[abspath("./target/macos/MainMenu.nib")])
+        set_property(name,"frameworks",["Cocoa.framework"])
+        set_property(name,"ldflags",["-rpath","@loader_path/../Frameworks/OmegaWTK.framework/Libraries"])
+        set_property(name,"embedded_frameworks",["OmegaWTK.framework","OmegaGTE.framework"])
+    elif is_win:
+        APPNAME = name
+        configure("./target/windows/manifest.rc.in",f"{conf_out}/{name}_res/manifest.rc")
+        configure("./target/windows/resource_script.rc.in",f"{conf_out}/{name}_res/resource_script.rc")
+        configure("./target/windows/resource.h.in",f"{conf_out}/{name}_res/resource.h")
+        configure("./target/windows/mmain.cpp.in",f"{conf_out}/{name}_res/mmain.cpp")
+        Copy(f"{name}_res_copy",[
+            f"{conf_out}/{name}_res/mmain.cpp",
+            f"{conf_out}/{name}_res/resource.h",
+            f"{conf_out}/{name}_res/resource_script.rc",
+            f"{conf_out}/{name}_res/manifest.rc",
+            "./target/windows/app.ico",
+            "./target/windows/small.ico",
+            "./target/windows/targetver.h"],[],f"{gen_root_out_dir}/{name}_res")
+
+        Executable(name,[
+            f"{gen_root_out_dir}/{name}_res/mmain.cpp",
+            f"{gen_root_out_dir}/{name}_res/resource_script.rc",
+            f"{gen_root_out_dir}/{name}_res/manifest.rc"] + sources,[f"{name}_res_copy","OmegaWTK"],f"testapps/{name}")
+        append_property(name,"defines",["WINDOWS_PRIVATE","OMEGAWTK_APP"])
+        set_property(name,"ldflags",["/ENTRY:WinMainCRTStartup"])
+
+        Copy(f"{name}_deps_copy",[
+            f"{root_out_dir}/lib/OmegaGTE.dll",
+            f"{root_out_dir}/lib/OmegaWTK.dll",
+            zlib_export[0],libpng_export[0],libjpeg_turbo_export[0],libtiff_export[0],xml_exports[0]] + icu_lib_exports,[name],f"{gen_root_out_dir}/testapps/{name}")
+
+
+
+OmegaWTKTest(name="RootWidgetTest",app_id="org.omegagraphics.RootWidgetTest",sources=["./tests/RootWidget/Main.cpp"])

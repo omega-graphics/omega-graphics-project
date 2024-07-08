@@ -1,0 +1,13 @@
+header "./myHeader.h"
+
+
+class TestClass {
+
+  func testFunc() void
+
+  func otherFunc(param:int) void
+
+}
+
+
+

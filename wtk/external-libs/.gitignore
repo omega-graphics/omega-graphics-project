@@ -1,0 +1,11 @@
+libjpeg-turbo/code
+libpng/code
+libtiff/code 
+pcre2/code
+webrtc/*
+!webrtc/webrtc.gclient
+!webrtc/BUILD.gn
+zlib/code
+openssl/code
+icu-69/code 
+libxml2/code

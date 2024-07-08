@@ -1,0 +1,8 @@
+import "fs"
+
+var omegasl_py = fs_abspath(path:"./omegasl.py")
+
+func OmegaSL(name,source,output_dir){
+	var liboutput_name = output_dir + "/" + name + ".omegasllib"
+    Script(name:name,script:omegasl_py,args:["--output",liboutput_name,source],outputs:[liboutput_name])
+}

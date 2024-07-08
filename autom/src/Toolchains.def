@@ -1,0 +1,16 @@
+#ifndef AUTOM_TOOLCHAINS_DEF
+#define AUTOM_TOOLCHAINS_DEF
+
+
+#define TOOLCHAIN_NULL 0x00
+
+#define TOOLCHAIN_CFAMILY_ASM 0x01
+
+
+#define TOOLCHAIN_SWIFT 0x02
+
+
+
+
+
+#endif

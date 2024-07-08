@@ -1,0 +1,21 @@
+{
+    "entries":[
+        {
+            "files":[
+        
+            ]
+            "dest":[
+
+            ]
+        },
+        {
+            "name":""
+            "files":[
+                "./otherTestfile"
+            ]
+            "dest":[
+                "$(INSTALL_PREFIX)"
+            ]
+        }
+    ]
+}

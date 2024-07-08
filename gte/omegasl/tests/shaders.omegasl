@@ -1,0 +1,79 @@
+
+struct MyVertex {
+    float4 pos;
+    float4 color;
+};
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float4 color : Color;
+};
+
+buffer<MyVertex> v_buffer : 0;
+
+[in v_buffer]
+vertex VertexRaster myVertex(uint vertex_id : VertexID){
+
+    MyVertex vert = v_buffer[vertex_id];
+
+    VertexRaster data;
+    data.pos = vert.pos;
+    data.color = vert.color;
+    return data;
+}
+
+fragment float4 myFrag(VertexRaster raster){
+     return raster.color;
+}
+
+
+
+
+
+
+struct MyVertex2 {
+    float4 pos;
+    float2 coord;
+};
+
+struct VertexRaster2 internal {
+    float4 pos : Position;
+    float2 coord : TexCoord;
+};
+
+buffer<MyVertex2> v_buffer_2 : 1;
+
+[in v_buffer_2]
+vertex VertexRaster2 myVertex2(uint v_id : VertexID){
+
+    MyVertex2 v = v_buffer_2[v_id];
+
+    VertexRaster2 raster;
+    raster.pos = v.pos;
+    raster.coord = v.coord;
+    return raster;
+}
+
+texture2d myTexture : 2;
+
+static sampler2d mySampler(filter=linear);
+
+[in myTexture,in mySampler]
+fragment float4 myFrag2(VertexRaster2 raster){
+    return sample(mySampler,myTexture,raster.coord);
+}
+
+
+compute(x=10,y=10,z=10) 
+void comp(){
+    float2 f = make_float2(0,0);
+}
+
+
+
+
+
+
+
+
+

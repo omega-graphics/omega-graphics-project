@@ -1,0 +1,5 @@
+module OmegaWTKC [extern_c] {
+    header "OmegaWTK-C.h"
+    link "OmegaWTK.framework"
+    export *
+}

@@ -1,0 +1,91 @@
+#ifndef OMEGASL_TOKS_DEF
+#define OMEGASL_TOKS_DEF
+
+namespace omegasl {
+    typedef int TokType;
+}
+
+#define TOK_MAX_LEN 200
+
+#define TOK(content) content
+#define KW(content) TOK(content)
+#define KW_TY(content) TOK(content)
+#define OP(content) TOK(content)
+
+#define TOK_ID 0x01
+#define TOK_ASTERISK 0x02
+#define TOK_KW 0x03
+#define TOK_OP 0x04
+#define TOK_LBRACE 0x05
+#define TOK_RBRACE 0x06
+#define TOK_LPAREN 0x07
+#define TOK_RPAREN 0x08
+#define TOK_DOT 0x09
+#define TOK_LBRACKET 0x0A
+#define TOK_RBRACKET 0x0B
+#define TOK_AMPERSAND 0x0C
+#define TOK_COLON 0x0D
+#define TOK_SEMICOLON 0x0E
+#define TOK_KW_TYPE 0x0F
+
+#define TOK_NUM_LITERAL 0x10
+#define TOK_STR_LITERAL 0x11
+#define TOK_COMMA 0x12
+
+#define TOK_EOF 0xFF
+
+#define OP_EQUAL OP("=")
+#define OP_ISEQUAL OP("==")
+#define OP_PLUS OP("+")
+#define OP_PLUSPLUS OP("++")
+#define OP_PLUSEQUAL OP("+=")
+#define OP_MINUS OP("-")
+#define OP_MINUSMINUS OP("--")
+#define OP_MINUSEQUAL OP("-=")
+#define OP_GREATER OP(">")
+#define OP_GREATEREQUAL OP(">=")
+#define OP_LESS OP("<")
+#define OP_LESSEQUAL OP("<=")
+#define OP_NOT OP("!")
+#define OP_NOTEQUAL OP("!=")
+
+
+#define KW_VERTEX KW("vertex")
+#define KW_FRAGMENT KW("fragment")
+#define KW_COMPUTE KW("compute")
+#define KW_IF KW("if")
+#define KW_ELSE KW("else")
+#define KW_FOR KW("for")
+#define KW_WHILE KW("while")
+#define KW_STRUCT KW("struct")
+#define KW_INTERNAL KW("internal")
+#define KW_RETURN KW("return")
+#define KW_IN KW("in")
+#define KW_OUT KW("out")
+#define KW_INOUT KW("inout")
+#define KW_STATIC KW("static")
+
+
+#define KW_TY_VOID KW_TY("void")
+#define KW_TY_INT KW_TY("int")
+#define KW_TY_FLOAT KW_TY("float")
+#define KW_TY_FLOAT2 KW_TY("float2")
+#define KW_TY_FLOAT3 KW_TY("float3")
+#define KW_TY_FLOAT4 KW_TY("float4")
+#define KW_TY_DOUBLE KW_TY("double")
+#define KW_TY_DOUBLE2 KW_TY("double2")
+#define KW_TY_DOUBLE3 KW_TY("double3")
+#define KW_TY_DOUBLE4 KW_TY("double4")
+#define KW_TY_UINT KW_TY("uint")
+#define KW_TY_UINT2 KW_TY("uint2")
+#define KW_TY_UINT3 KW_TY("uint3")
+#define KW_TY_BUFFER KW_TY("buffer")
+#define KW_TY_TEXTURE1D KW_TY("texture1d")
+#define KW_TY_TEXTURE2D KW_TY("texture2d")
+#define KW_TY_TEXTURE3D KW_TY("texture3d")
+#define KW_TY_SAMPLER1D KW_TY("sampler1d")
+#define KW_TY_SAMPLER2D KW_TY("sampler2d")
+#define KW_TY_SAMPLER3D KW_TY("sampler3d")
+
+
+#endif // OMEGASL_TOKS_DEF

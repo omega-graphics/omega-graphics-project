@@ -1,0 +1,69 @@
+#ifndef OMEGASL_AST_DEF
+#define OMEGASL_AST_DEF
+
+typedef int ASTType;
+
+#define DECL 0x000F
+#define EXPR 0x000A
+
+#define FUNC_DECL (0x0010 | DECL)
+#define SHADER_DECL (0x0020 | DECL)
+#define RESOURCE_DECL (0x0030 | DECL)
+#define VAR_DECL (0x0040 | DECL)
+#define IF_DECL (0x0050 | DECL)
+#define ELSE_DECL (0x0060 | DECL)
+#define ELSEIF_DECL (0x0070 | DECL)
+#define STRUCT_DECL (0x0080 | DECL)
+#define RETURN_DECL (0x0090 | DECL)
+
+#define ID_EXPR (0x0010 | EXPR)
+#define LITERAL_EXPR (0x0020 | EXPR)
+#define ARRAY_EXPR (0x0030 | EXPR)
+#define CALL_EXPR (0x0040 | EXPR)
+#define MEMBER_EXPR (0x0050 | EXPR)
+#define BINARY_EXPR (0x0060 | EXPR)
+#define POINTER_EXPR (0x0070 | EXPR)
+#define UNARY_EXPR (0x0080 | EXPR)
+#define INDEX_EXPR (0x0090 | EXPR)
+
+
+/// Builtins Functions
+#define BUILTIN_MAKE_FLOAT2 "make_float2"
+#define BUILTIN_MAKE_FLOAT3 "make_float3"
+#define BUILTIN_MAKE_FLOAT4 "make_float4"
+
+#define BUILTIN_DOT "dot"
+#define BUILTIN_CROSS "cross"
+#define BUILTIN_SAMPLE "sample"
+#define BUILTIN_WRITE "write"
+
+//Internal Shader Attributes
+#define ATTRIBUTE_VERTEX_ID "VertexID"
+#define ATTRIBUTE_INSTANCE_ID "InstanceID"
+#define ATTRIBUTE_POSITION "Position"
+#define ATTRIBUTE_COLOR "Color"
+#define ATTRIBUTE_TEXCOORD "TexCoord"
+#define ATTRIBUTE_GLOBALTHREAD_ID "GlobalThreadID"
+#define ATTRIBUTE_THREADGROUP_ID "ThreadGroupID"
+#define ATTRIBUTE_LOCALTHREAD_ID "LocalThreadID"
+
+// Static Sampler Properties
+#define SAMPLER_PROP_FILTER "filter"
+#define SAMPLER_PROP_MIN_FILTER "min_filter"
+#define SAMPLER_PROP_MAG_FILTER "mag_filter"
+#define SAMPLER_PROP_MIP_FILTER "mip_filter"
+
+#define SAMPLER_FILTER_ANISOTROPIC "anisotropic"
+#define SAMPLER_FILTER_LINEAR "linear"
+#define SAMPLER_FILTER_POINT "point"
+
+#define SAMPLER_PROP_ADDRESS_MODE "address_mode"
+
+#define SAMPLER_ADDRESS_MODE_WRAP "wrap"
+#define SAMPLER_ADDRESS_MODE_CLAMPTOEDGE "clamp_to_edge"
+#define SAMPLER_ADDRESS_MODE_MIRROR "mirror"
+#define SAMPLER_ADDRESS_MODE_MIRRORWRAP "mirror_wrap"
+
+#define SAMPLER_PROP_MAX_ANISOTROPY "max_anisotropy"
+
+#endif

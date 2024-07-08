@@ -1,0 +1,36 @@
+import "fs"
+
+project(name:"OmegaCommon",version:"0.4")
+
+var main_srcs = [
+    "./src/json.cpp",
+    "./src/fs.cpp",
+    "./src/crt.c",
+    "./src/utils.cpp",
+    "./src/xml.cpp"
+]
+
+if (is_mac){
+    main_srcs += fs_glob("./src/*.mm")
+}
+elif (is_win) {
+    main_srcs += ["./src/fs-win.cpp"]
+}
+
+Config("omega-common_conf",[],["./include"],[])
+
+Static("omega-common",main_srcs,[],"lib")
+set_property("omega-common","configs",["omega-common_conf"])
+set_property("omega-common","frameworks",["Foundation.framework"])
+
+Executable("omega-ebin",["./embedbin/embedbin.cpp"],["omega-common"],"bin")
+# Executable("ebin-test",["./embedbin/tests/hello.cpp","./embedbin/tests/msg.c"],["omega-common"],"tests")
+
+
+wrap_gen_srcs = glob("./wrapgen/*.cpp") + glob("./wrapgen/*.h")
+Shared("owrapgen",wrap_gen_srcs,["omega-common"],"lib")
+
+Executable("omega-wrapgen",["./wrapgen/main/main.cpp"],["owrapgen"],"bin")
+Executable("owrap-lex-test",["./wrapgen/tests/lex-test.cpp"],["owrapgen"],"tests")
+Executable("owrap-parse-test",["./wrapgen/tests/parse-test.cpp"],["owrapgen"],"tests")
+

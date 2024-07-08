@@ -1,0 +1,62 @@
+
+import "fs"
+import "apple"
+import "autom/OmegaGTE"
+
+project(name:"OmegaGTE",version:"0.7")
+
+
+subdir(path:"./common")
+
+var omega_gte_headers = fs_glob(path:"./include/omegaGTE/*.h") + ["./include/OmegaGTE.h"]
+
+
+var omega_gte_main_srcs = [
+    "./src/GE.cpp",
+    "./src/GECommandQueue.cpp",
+    "./src/GEPipeline.cpp",
+    "./src/GERenderTarget.cpp",
+    "./src/GTEBase.cpp",
+    "./src/OmegaGTE.cpp",
+    "./src/TE.cpp"
+]
+
+var defines = []
+if (is_mac){
+    defines += ["TARGET_METAL"]
+    omega_gte_main_srcs += fs_glob(path:"./src/metal/*.mm") + fs_glob(path:"./src/metal/*.h") + ["./src/MetalTEContext.mm"]
+}
+
+elif (is_win){
+    defines += ["TARGET_DIRECTX"]
+    omega_gte_main_srcs += fs_glob(path:"./src/d3d12/*.cpp") + fs_glob(path:"./src/d3d12/*.h") + ["./src/D3D12TEContext.cpp"]
+}
+elif (is_linux){
+    defines += ["TARGET_VULKAN"]
+    omega_gte_main_srcs += fs_glob(path:"./src/vulkan/*.cpp") + fs_glob(path:"./src/vulkan/*.h") + ["./src/VulkanTEContext.cpp"]
+}
+
+var all_srcs = omega_gte_main_srcs + omega_gte_headers
+
+var vulkan_include_dirs = ["./external-libs/vulkan-memory-allocator/include",
+                       "./external-libs/vulkan_sdk/1.2.182.0/x86_64/include","./external-libs/glm"]
+var gte
+
+if (is_mac){
+    gte = AppleFramework(name:"OmegaGTE",sources:all_srcs)
+	gte.frameworks = ["Cocoa.framework","Metal.framework","QuartzCore.framework"]
+}
+elif(is_win){
+    gte = Shared(name:"OmegaGTE",sources:all_srcs)
+    gte.libs = ["user32.lib"]
+    gte.defines = ["__BUILD__"]
+}
+elif(is_linux){
+    gte = Shared(name:"OmegaGTE",sources:all_srcs)
+    gte.include_dirs = vulkan_include_dirs
+}
+
+gte.include_dirs += [fs_abspath(path:"./include")]
+
+
+

@@ -1,0 +1,30 @@
+struct Vertex {
+    float4 pos;
+    float2 coord;
+};
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 coord : TexCoord;
+};
+
+buffer<Vertex> v_buffer : 0;
+
+[in v_buffer]
+vertex VertexRaster vertexFunc(uint v_id : VertexID){
+    Vertex v = v_buffer[v_id];
+    VertexRaster raster;
+    raster.pos = v.pos;
+    raster.coord = v.coord;
+    return raster;
+}
+
+static sampler2d mySampler(filter=linear);
+
+texture2d tex : 1;
+
+[in mySampler,in tex]
+fragment float4 fragFunc(VertexRaster raster){
+    return sample(mySampler,tex,raster.coord);
+}
+

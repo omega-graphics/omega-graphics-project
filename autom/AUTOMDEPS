@@ -1,0 +1,16 @@
+{
+"variables":{
+        "third_party_dest":"./deps",
+        "gclient_repo":"https://chromium.googlesource.com/chromium/tools/depot_tools",
+        "gclient_dest":"./gclient"
+    },
+    "rootCommands":[
+        {
+            "type":"gnpkg",
+            "command":"utils --get"
+        }
+    ],
+    "commands":[
+        
+    ]
+}

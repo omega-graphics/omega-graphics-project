@@ -1,0 +1,12 @@
+# OmegaWTK Checklist :
+
+--------------------
+
+- [x]  App Windows
+- [x]  SVG Parse Support
+- [ ]  Video Views.
+- [ ]  Scroll Views (Native or Customizable ScrollBars)
+- [x]  Dialogs (Half done. Still buggy on Windows)
+- [x]  Window Canvas Surface (For composing on Window Layers)
+- [ ]  Video/Audio Capture
+- [x]  Animation/Transtions.

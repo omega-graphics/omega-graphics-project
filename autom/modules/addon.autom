@@ -1,0 +1,15 @@
+import "fs"
+
+var libautom = ["autom"]
+
+func AutomExtension(name,sources){
+    var ext = Shared(name:name,sources:sources)
+        
+        
+    ext.output_ext = "aext"
+    ext.output_dir = "modules"
+    ext.libs = libautom
+
+    return ext
+
+}

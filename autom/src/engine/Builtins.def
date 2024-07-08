@@ -1,0 +1,31 @@
+#ifndef AUTOM_ENGINE_BUILTINS_DEF
+#define  AUTOM_ENGINE_BUILTINS_DEF
+
+
+typedef int AutomBuiltinFunc;
+
+#define INVOKE_FAILED 0x02
+#define INVOKE_SUCCESS 0x00
+#define INVOKE_NOTBUILTIN 0x01
+
+#define BUILTIN_PRINT  "print"
+#define BUILTIN_PROJECT  "project"
+#define BUILTIN_SUBDIR "subdir"
+#define BUILTIN_INSTALL_TARGETS "install_targets"
+#define BUILTIN_INSTALL_FILES "install_files"
+
+/// Target Functions
+#define BUILTIN_EXECUTABLE "Executable"
+#define BUILTIN_ARCHIVE "Archive"
+#define BUILTIN_SHARED "Shared"
+#define BUILTIN_SOURCE_GROUP "SourceGroup"
+#define BUILTIN_GROUP_TARGET "GroupTarget"
+#define BUILTIN_SCRIPT "Script"
+#define BUILTIN_FS_COPY "Copy"
+#define BUILTIN_FS_SYMLINK "Symlink"
+#define BUILTIN_FS_MKDIR "Mkdir"
+
+#define BUILTIN_CONFIG_FILE "config_file"
+#define BUILTIN_FIND_PROGRAM "find_program"
+
+#endif

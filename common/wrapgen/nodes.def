@@ -1,0 +1,9 @@
+typedef int TreeNodeType;
+
+#define DECL 0xF0
+#define CLASS_DECL      (0x01 | DECL)
+#define INTERFACE_DECL  (0x02 | DECL)
+#define HEADER_DECL     (0x03 | DECL)
+#define NAMESPACE_DECL  (0x04 | DECL)
+#define FUNC_DECL       (0x05 | DECL)
+
