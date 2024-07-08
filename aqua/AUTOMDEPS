@@ -1,9 +1,14 @@
 {
+    "variables":{
+        "third_party_dest":"./deps",
+        "gclient_repo":"https://chromium.googlesource.com/chromium/tools/depot_tools",
+        "gclient_dest":"./gclient"
+    },
     "commands":[
         {
             "type":"git_clone",
             "url":"https://github.com/NVIDIAGameWorks/PhysX.git",
-            "dest":"./external_libs/PhysX",
+            "dest":"$(third_party_dest)/PhysX",
             "branch":"default"
         }
     ]

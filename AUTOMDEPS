@@ -1,9 +1,9 @@
 {
     "subdirs":[
-        "autom",
-        "common",
-        "gte",
-        "wtk"
+        "./autom",
+        "./common",
+        "./gte",
+        "./wtk"
     ]
 }
 

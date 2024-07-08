@@ -1,11 +1,13 @@
-cmake_minimum_required(VERSION 3.11)
+# cmake_minimum_required(VERSION 3.11)
 
 set(OMEGAWTK_VERSION "0.8")
 
+set(OMEGAWTK_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
-project(OmegaWTK VERSION ${OMEGAWTK_VERSION} LANGUAGES C CXX)
 
-if(APPLE)
+omega_graphics_project(OmegaWTK VERSION ${OMEGAWTK_VERSION} LANGUAGES C CXX)
+
+if(APPLE AND NOT TARGET_METAL)
 	enable_language(OBJCXX)
 endif()
 
@@ -36,7 +38,7 @@ endif()
 
 # Third Party Modules
 
-set(THIRD_PARTY_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external-libs)
+set(THIRD_PARTY_SRC_DIR ${OMEGAWTK_SOURCE_DIR}/deps)
 set(THIRD_PARTY_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/deps)
 set(THIRD_PARTY_INCLUDEDIRS)
 

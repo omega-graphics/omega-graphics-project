@@ -37,8 +37,10 @@ class Counter:
 
 def countAutomDepsFileCommandsRecurse(stream:io.TextIOWrapper) -> int:
     j:dict = json.load(stream)
-    assert(j.get("commands"))
-    current_len = len(j.get("commands"))
+    current_len = 0
+
+    if j.get("commands") is not None:
+        current_len = len(j.get("commands"))
 
     if j.get("postCommands") is not None:
         current_len += len(j.get('postCommands'))
@@ -241,8 +243,11 @@ def parseAutomDepsFile(stream:io.TextIOWrapper,root:bool = True,count = 0):
     if root:
         _counter = Counter(count)
 
-    assert(j.get("commands"))
-    commands: "list[dict]" = j.get("commands")
+    commands: "list[dict]" = []
+
+    if j.get("commands") is not None:
+        commands = j.get("commands")
+
     _local_vars = j.get("variables")
     if _local_vars is not None:
         variables.update(_local_vars)
@@ -278,13 +283,14 @@ def parseAutomDepsFile(stream:io.TextIOWrapper,root:bool = True,count = 0):
             t = os.path.abspath(s)
             os.chdir(t)
             print(f"Invoking sub-directory {os.path.relpath(t,start=absroot)}")
-            parseAutomDepsFile(io.open(s + "/AUTOMDEPS","r"),root=False)
+            parseAutomDepsFile(io.open(t + "/AUTOMDEPS","r"),root=False)
             os.chdir(parent_dir)
-            if len(postCommands) > priorPostCommandsLen:
-                p_cmd_list = postCommands.get()
-                for c in p_cmd_list:
-                    processCommand(c)
-                    _counter.increment()
+            if not postCommands.empty():
+                if len(postCommands) > priorPostCommandsLen:
+                    p_cmd_list = postCommands.get()
+                    for c in p_cmd_list:
+                        processCommand(c)
+                        _counter.increment()
         
     stream.close()
 

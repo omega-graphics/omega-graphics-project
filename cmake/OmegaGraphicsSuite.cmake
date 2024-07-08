@@ -520,7 +520,6 @@ function(omega_graphics_add_subdir _PROJECT_NAME _NAME)
 	
 	set(${_PROJECT_NAME}_INCLUDE TRUE)
 	add_subdirectory(${_NAME})
-	unset(${_PROJECT_NAME}_INCLUDE)
 	
 endfunction()
 

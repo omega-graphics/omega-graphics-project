@@ -1,12 +1,8 @@
-cmake_minimum_required(VERSION 3.9)
-
-include(OmegaGraphicsSuite)
+# cmake_minimum_required(VERSION 3.9)
 
 set(OMEGAGTE_VERSION "0.5")
 
-project(OmegaGTE VERSION ${OMEGAGTE_VERSION} LANGUAGES CXX)
-
-omega_graphics_add_subdir(OmegaCommon common)
+omega_graphics_project(OmegaGTE VERSION ${OMEGAGTE_VERSION} LANGUAGES CXX)
 
 
 include(./OmegaGTE.cmake)
@@ -30,6 +26,8 @@ elseif(APPLE)
 	set(PUBLIC_DEFS "TARGET_METAL")
 
 	file(GLOB RHI_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/metal/*.mm")
+	
+	# enable_language(OBJCXX)
 
 else()
 	set(TARGET_VULKAN TRUE)

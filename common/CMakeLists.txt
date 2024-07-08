@@ -1,15 +1,11 @@
-cmake_minimum_required(VERSION 3.9)
+# cmake_minimum_required(VERSION 3.9)
 
 set(OMEGACOMMON_VERSION "0.5")
-
-include(OmegaGraphicsSuite)
 
 omega_graphics_project(OmegaCommon VERSION ${OMEGACOMMON_VERSION} LANGUAGES C CXX)
 
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_LIST_DIR}/cmake)
-
-include(OmegaGraphicsSuite)
 
 set(COMMON_SRCS "src/crt.c" "src/format.cpp" "src/json.cpp" "src/fs.cpp" "src/utils.cpp")
 
@@ -32,7 +28,7 @@ file(GLOB WRAPGEN_SRCS "wrapgen/*.cpp")
 
 add_omega_graphics_tool("omega-wrapgen" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} "wrapgen/main/main.cpp")
 
-add_omega_graphics_tool("lex-test" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} "wrapgen/tests/lex-test.cpp")
+# add_omega_graphics_tool("lex-test" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} "wrapgen/tests/lex-test.cpp")
 
 add_omega_graphics_tool("parse-test" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} "wrapgen/tests/parse-test.cpp")
 

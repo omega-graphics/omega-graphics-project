@@ -10,6 +10,7 @@ third_party
 build-*
 *out
 *.properties
+deps
 # Prerequisites
 *.d
 omega-common

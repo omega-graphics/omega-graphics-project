@@ -1,6 +1,6 @@
-cmake_minimum_required(VERSION 3.10)
+# cmake_minimum_required(VERSION 3.10)
 
-project(AUTOM C CXX)
+omega_graphics_project(AUTOM C CXX)
 
 set(CMAKE_C_STANDARD_REQUIRED TRUE)
 set(CMAKE_C_STANDARD 11)
@@ -42,7 +42,7 @@ add_executable("autom-install" "src/tools/install-main.cpp")
 set_target_properties("autom-install" PROPERTIES INSTALL_RPATH @loader_path/../lib)
 target_link_libraries("autom-install" PRIVATE "autom-lib")
 
-add_autom_test("lex-test" "src/tests/lex-test.cpp")
+# add_autom_test("lex-test" "src/tests/lex-test.cpp")
 #add_autom_test("run-test" "src/tests/run-test.cpp")
 
 include_directories("deps/rapidjson/include" "src")
