@@ -8,7 +8,7 @@ A collection of 3D and 2D graphics modules and programs.
 
 #### `OmegaCommon` - A common utilities library
 
-#### `OmegaGTE` - A high performnace 2D and 3D graphics pipeline and triangulation engine
+#### `OmegaGTE` - A high performance 2D and 3D graphics pipeline and triangulation engine
 
 #### `OmegaWTK `- A cross-platform modern UI library for developing native desktop and mobile apps.
 
