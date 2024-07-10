@@ -60,6 +60,10 @@ Canvas::Canvas(CompositorClientProxy &proxy,Layer &layer): CompositorClient(prox
 
 };
 
+Layer & Canvas::getCorrespondingLayer(){
+    return layer;
+}
+
 // Layer * Canvas::getParentLayer(){
 //     return parentLayer;
 // };

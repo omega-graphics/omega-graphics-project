@@ -32,18 +32,18 @@ public:
 };
 
 
-/**
- @brief A phyiscal object with physical and programmable attributes located anywhere in a Scene.
-*/
-class AQUA_PUBLIC PhysObject : public Object {
-public:
-    struct PhysicalAttribute {
+// /**
+//  @brief A phyiscal object with physical and programmable attributes located anywhere in a Scene.
+// */
+// class AQUA_PUBLIC PhysObject : public Object {
+// public:
+//     struct PhysicalAttribute {
 
-    };
-    READWRITE_I_PROPERTY Transform transform;
-protected:
-    READWRITE_I_PROPERTY Vector<PhysicalAttribute> physicalAttrs; 
-};
+//     };
+//     READWRITE_I_PROPERTY Transform transform;
+// protected:
+//     READWRITE_I_PROPERTY Vector<PhysicalAttribute> physicalAttrs; 
+// };
 
 AQUA_NAMESPACE_END
 

@@ -39,7 +39,7 @@ struct OMEGAGTE_EXPORT TETessellationParams {
         void operator()(Data *ptr);
     };
 
-    std::unique_ptr<Data,DataDelete> params;
+    std::shared_ptr<Data> params;
 
     friend class OmegaTessellationEngineContext;
 public:

@@ -3,7 +3,7 @@
 
 namespace OmegaWTK {
 
-    void UIViewLayout::text(Composition::CanvasElementTag tag, OmegaCommon::UString content){
+    void UIViewLayout::text(UIElementTag tag, OmegaCommon::UString content){
         auto taggedElementIt = std::find_if(_content.begin(),_content.end(),[&](Element & ele){
             return ele.tag == tag;
         });
@@ -19,7 +19,7 @@ namespace OmegaWTK {
         
     }
 
-    void UIViewLayout::shape(Composition::CanvasElementTag tag,Shape & shape){
+    void UIViewLayout::shape(UIElementTag tag,Shape & shape){
         auto taggedElementIt = std::find_if(_content.begin(),_content.end(),[&](Element & ele){
             return ele.tag == tag;
         });
@@ -38,21 +38,55 @@ namespace OmegaWTK {
         return make<StyleSheet>();
     }
 
-    StyleSheetPtr StyleSheet::border(UIViewTag tag, bool use){
+    // StyleSheetPtr StyleSheet::border(UIViewTag tag, bool use){
+
+    // }
+
+    UIRenderer::UIRenderer(View *view):view(view){
+        
+    }
+
+    /**
+     * @note The UI Renderer builds it UI layering as a stack. 
+     (So the first element is the bottom layer, and the second element is the next layer up and so on.)
+     * 
+     * 
+     */
+
+    SharedHandle<Composition::Canvas> UIRenderer::buildLayerRenderTarget(UIElementTag tag){
+        auto entry = renderTargetStore.find(tag);
+        if(entry != renderTargetStore.end()){
+            
+        }
+        else {
+            // Find the element count so the relative layer in the layertree can be created.
+            auto relativeLayerIdx = renderTargetStore.size();
+            if(relativeLayerIdx > 0){
+
+            }
+            else {
+                renderTargetStore[tag] = view->makeCanvas(view->getLayerTreeLimb()->getRootLayer());
+            }
+        }
+
 
     }
 
-    UIView::UIView(const Core::Rect & rect,Composition::LayerTree *layerTree,ViewPtr parent,UIViewTag tag):CanvasView(rect,layerTree,parent),tag(tag){
+    void UIRenderer::handleElement(UIElementTag tag){
+        
+        auto t = buildLayerRenderTarget(tag);
+        
+        if(currentStyleSheet)
+
+        t->sendFrame();
+       
+    }
+
+    UIView::UIView(const Core::Rect & rect,Composition::LayerTree *layerTree,ViewPtr parent,UIViewTag tag):CanvasView(rect,layerTree,parent),tag(tag),UIRenderer(this){
 
     }
 
-    void UIView::useLayout(UIViewLayout user){
 
-    }
-
-    void UIView::useStyleSheet(StyleSheetPtr user){
-
-    }
 
     void UIView::update(){
         

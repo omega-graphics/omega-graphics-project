@@ -312,7 +312,7 @@ file(GLOB UI_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/UI/*.cpp")
 source_group(OmegaWTKUI ${UI_SRCS})
 
 #OmegaWTK Widgets Submodule
-file(GLOB WIDGETS_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/UI/*.cpp")
+file(GLOB WIDGETS_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Widgets/*.cpp")
 source_group(OmegaWTKWidgets ${WIDGETS_SRCS})
 
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Info.plist.in" ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)

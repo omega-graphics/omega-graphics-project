@@ -25,7 +25,7 @@ OMEGACOMMON_SHARED_CLASS(SVGView);
 class UIView;
 OMEGACOMMON_SHARED_CLASS(UIView);
 
-typedef Composition::CanvasElementTag UIViewTag;
+typedef OmegaCommon::String UIViewTag;
 
 class WidgetObserver;
 class WidgetTreeHost;
@@ -240,16 +240,7 @@ public:
     };
 };
 
-/**
- * @brief A single view widget responsible for managiing one view's capability.
- * 
- */
- template<class ViewT>
-class OMEGAWTK_EXPORT WrapperWidget {
-public:
-    static SharedHandle<WrapperWidget<ViewT>> Create(const Core::Rect & rect,WidgetPtr parent);
-    SharedHandle<ViewT> getUnderlyingView();
-};
+
 
 };
 

@@ -22,12 +22,14 @@ struct TETessellationParams::GraphicsPath2DParams {
 };
 
 struct TETessellationParams::GraphicsPath3DParams {
-    GVectorPath3D *const pathes;
+    GVectorPath3D * pathes;
     unsigned pathCount;
-    GraphicsPath3DParams(GVectorPath3D *const pathes,unsigned pathCount):pathes(pathes),pathCount(pathCount){};
+    GraphicsPath3DParams(GVectorPath3D * pathes,unsigned pathCount):pathes(pathes),pathCount(pathCount){};
 };
 
 union TETessellationParams::Data {
+
+    TessalationType type;
 
     GRect rect;
 
@@ -37,16 +39,23 @@ union TETessellationParams::Data {
 
     GEllipsoid ellipsoid;
 
+    GRectangularPrism prism;
+
+    GPyramid pyramid;
+
+    GCylinder cylinder;
+
     GraphicsPath2DParams path2D;
 
-    GraphicsPath2DParams path3D;
+    GraphicsPath3DParams path3D;
 
-    ~Data();
+    ~Data(){
+        if(type == TESSALATE_RECT){
+
+        }
+    };
 };
 
-void TETessellationParams::DataDelete::operator()(Data *ptr) {
-
-};
 
 TETessellationParams::Attachment TETessellationParams::Attachment::makeColor(const FVec<4> &color) {
     Attachment at{TypeColor};
@@ -83,9 +92,8 @@ void TETessellationParams::addAttachment(const Attachment &attachment) {
 
 std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::Rect(GRect &rect){
     TETessellationParams params;
-    params.type = TESSALATE_RECT;
     params.params.reset(new Data{});
-    params.params.get_deleter().t = params.type;
+    params.type = params.params->type = TESSALATE_RECT;
     params.params->rect = rect;
     return std::move(params);
 };
@@ -94,7 +102,7 @@ std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::RoundedR
     TETessellationParams params;
     params.type = TESSALATE_ROUNDEDRECT;
     params.params.reset(new Data{});
-    params.params.get_deleter().t = params.type;
+    // params.params.get_deleter().t = params.type;
     params.params->rounded_rect = roundedRect;
     return std::move(params);
 };
@@ -102,53 +110,58 @@ std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::RoundedR
 std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::RectangularPrism(GRectangularPrism &prism){
     TETessellationParams params;
     params.params.reset(new Data{});
-    params.params.get_deleter().t = params.type;
+    // params.params.get_deleter().t = params.type;
+    params.params->prism = prism;
     params.type = TESSELLATE_RECTANGULAR_PRISM;
     return std::move(params);
 };
 
 std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::Pyramid(GPyramid &pyramid){
     TETessellationParams params;
-    params.params = &pyramid;
+    params.params.reset(new Data{});
+    params.params->pyramid = pyramid;
     params.type = TESSALATE_PYRAMID;
-    return params;
+    return std::move(params);
 };
 
 std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::Ellipsoid(GEllipsoid &ellipsoid){
     TETessellationParams params;
-    params.params = &ellipsoid;
+    params.params.reset(new Data{});
+    params.params->ellipsoid = ellipsoid;
     params.type = TESSALATE_ELLIPSOID;
-    return params;
+    return std::move(params);
 };
 
 std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::Cylinder(GCylinder &cylinder){
     TETessellationParams params;
-    params.params = &cylinder;
+    params.params.reset(new Data{});
+    params.params->cylinder = cylinder;
     params.type = TESSALATE_CYLINDER;
-    return params;
+    return std::move(params);
 };
 
 std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::Cone(GCone &cone){
     TETessellationParams params;
-    params.params = &cone;
+    params.params.reset(new Data{});
+    params.params->cone = cone;
     params.type = TESSALATE_CONE;
-    return params;
+    return std::move(params);
 };
 
 std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::GraphicsPath2D(GVectorPath2D & path,float strokeWidth,bool contour,bool fill){
     TETessellationParams params;
-    auto * _params = new GraphicsPath2DParams(path,contour,fill,strokeWidth);
-    params.params = _params;
+    params.params.reset(new Data{});
+    params.params->path2D = {path,contour,fill,strokeWidth};
     params.type = TESSALATE_GRAPHICSPATH2D;
-    return params;
+    return std::move(params);
 };
 
 std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::GraphicsPath3D(unsigned int vectorPathCount, GVectorPath3D *const vectorPaths){
     TETessellationParams params;
-    GraphicsPath3DParams * _params = new GraphicsPath3DParams(vectorPaths,vectorPathCount);
-    params.params = _params;
+    ;
+    params.params->path3D = {vectorPaths,vectorPathCount};
     params.type = TESSALATE_GRAPHICSPATH3D;
-    return params;
+    return std::move(params);
 };
 
 unsigned int TETessellationResult::TEMesh::vertexCount() {
@@ -194,14 +207,14 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
         case TETessellationParams::TESSALATE_RECT : {
             std::cout << "Tessalate GRect" << std::endl;
             std::cout << "Viewport: x:" << viewport->x << " y:" << viewport->y << " w:" << viewport->width << " h:" << viewport->height << " " << std::endl;
-            GRect *object = (GRect *)params.params;
+            GRect &object = params.params->rect;
 
             TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
             TETessellationResult::TEMesh::Polygon tri {};
             float x0,x1,y0,y1;
             float u,v;
-            translateCoords(object->pos.x,object->pos.y,0.f,viewport,&x0,&y0,nullptr);
-            translateCoords(object->pos.x + object->w,object->pos.y + object->h,0.f,viewport,&x1,&y1,nullptr);
+            translateCoords(object.pos.x,object.pos.y,0.f,viewport,&x0,&y0,nullptr);
+            translateCoords(object.pos.x + object.w,object.pos.y + object.h,0.f,viewport,&x1,&y1,nullptr);
 
             std::cout << "X0:" << x0 << ", X1:" << x1 << ", Y0:" << y0 << ", Y1:" << y1 << std::endl;
 
@@ -267,9 +280,9 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
             break;
         }
         case TETessellationParams::TESSALATE_ROUNDEDRECT : {
-            auto object = (GRoundedRect *)params.params;
+            auto & object = params.params->rounded_rect;
 
-            GRect middle_rect {object->rad_x,object->rad_y,object->w - (2 * object->rad_x),object->h - (2 * object->rad_y)};
+            GRect middle_rect {object.rad_x,object.rad_y,object.w - (2 * object.rad_x),object.h - (2 * object.rad_y)};
 
             auto middle_rect_params = TETessellationParams::Rect(middle_rect);
 
@@ -308,41 +321,41 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
             };
 
             /// Bottom Left Arc
-            tessellateArc(GPoint2D {object->rad_x, object->rad_y}, object->rad_x, object->rad_y, float(3.f * PI) / 2.f, PI, -arcStep);
+            tessellateArc(GPoint2D {object.rad_x, object.rad_y}, object.rad_x, object.rad_y, float(3.f * PI) / 2.f, PI, -arcStep);
 
             /// Left Rect
-            middle_rect = GRect {GPoint2D{0.f,object->rad_y},object->rad_x,object->h - (2 * object->rad_y)};
+            middle_rect = GRect {GPoint2D{0.f,object.rad_y},object.rad_x,object.h - (2 * object.rad_y)};
             middle_rect_params = TETessellationParams::Rect(middle_rect);
 
             _tessalatePriv(middle_rect_params,frontFaceRotation,viewport,result);
             /// Top Left Arc
-            tessellateArc(GPoint2D {object->rad_x, object->h - object->rad_y}, object->rad_x, object->rad_y, PI, float(PI) / 2.f, -arcStep);
+            tessellateArc(GPoint2D {object.rad_x, object.h - object.rad_y}, object.rad_x, object.rad_y, PI, float(PI) / 2.f, -arcStep);
 
             /// Top Rect
-            middle_rect = GRect {GPoint2D{object->rad_x,object->h - object->rad_y},object->w - (object->rad_x * 2),object->rad_y};
+            middle_rect = GRect {GPoint2D{object.rad_x,object.h - object.rad_y},object.w - (object.rad_x * 2),object.rad_y};
             middle_rect_params = TETessellationParams::Rect(middle_rect);
 
             _tessalatePriv(middle_rect_params,frontFaceRotation,viewport,result);
             /// Top Right Arc
-            tessellateArc(GPoint2D {object->w - object->rad_x, object->h - (object->rad_y)}, object->rad_x, object->rad_y, float(PI) / 2.f, 0, -arcStep);
+            tessellateArc(GPoint2D {object.w - object.rad_x, object.h - (object.rad_y)}, object.rad_x, object.rad_y, float(PI) / 2.f, 0, -arcStep);
 
             /// Right Rect
-            middle_rect = GRect {GPoint2D{object->w - object->rad_x,object->rad_y},object->rad_x,object->h - (2 * object->rad_y)};
+            middle_rect = GRect {GPoint2D{object.w - object.rad_x,object.rad_y},object.rad_x,object.h - (2 * object.rad_y)};
             middle_rect_params = TETessellationParams::Rect(middle_rect);
 
             _tessalatePriv(middle_rect_params,frontFaceRotation,viewport,result);
 
             /// Bottom Right Arc
-            tessellateArc(GPoint2D {object->w - object->rad_x, object->rad_y}, object->rad_x, object->rad_y, 0, -float(PI) / 2.f, -arcStep);
+            tessellateArc(GPoint2D {object.w - object.rad_x, object.rad_y}, object.rad_x, object.rad_y, 0, -float(PI) / 2.f, -arcStep);
 
             /// Bottom Rect
-            middle_rect = GRect {GPoint2D{0.f,0.f},object->w - (object->rad_x * 2),object->rad_y};
+            middle_rect = GRect {GPoint2D{0.f,0.f},object.w - (object.rad_x * 2),object.rad_y};
             middle_rect_params = TETessellationParams::Rect(middle_rect);
 
             break;
         }
         case TETessellationParams::TESSELLATE_RECTANGULAR_PRISM : {
-            auto object = (GRectangularPrism *)params.params;
+            auto & object = params.params->prism;
 
 
             TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
@@ -357,10 +370,10 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
             }
 
             float x0,x1,y0,y1,z0,z1;
-            translateCoords(object->pos.x,object->pos.y,object->pos.z,viewport,&x0,&y0,&z0);
-            translateCoords(object->pos.x + object->w,
-                            object->pos.y + object->h,
-                            object->pos.z + object->d,
+            translateCoords(object.pos.x,object.pos.y,object.pos.z,viewport,&x0,&y0,&z0);
+            translateCoords(object.pos.x + object.w,
+                            object.pos.y + object.h,
+                            object.pos.z + object.d,
                              viewport,&x1,&y1,&z1);
 
             /// Bottom Side
@@ -440,19 +453,19 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
             break;
         }
         case TETessellationParams::TESSALATE_GRAPHICSPATH2D : {
-            auto object = (TETessellationParams::GraphicsPath2DParams *)params.params;
+            auto & object = params.params->path2D;
 
             TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
 
-            float deviceCoordStrokeWidthX = object->strokeWidth/(2 * viewport->width);
-            float deviceCoordStrokeWidthY = object->strokeWidth/(2 * viewport->height);
+            float deviceCoordStrokeWidthX = object.strokeWidth/(2 * viewport->width);
+            float deviceCoordStrokeWidthY = object.strokeWidth/(2 * viewport->height);
 
             TETessellationResult::TEMesh::Polygon polygon{};
             /// 1. Triangulate Stroke of Path.
 
             GVectorPath2D path_a{GPoint2D {0,0}},path_b{GPoint2D{0,0}};
 
-            for(auto path_it = object->path.begin();path_it != object->path.end();path_it.operator++()){
+            for(auto path_it = object.path.begin();path_it != object.path.end();path_it.operator++()){
                 auto segment = *path_it;
                 auto tan_m =  -(segment.pt_B->x - segment.pt_A->x)/(segment.pt_B->y - segment.pt_A->y);
                 auto tan_m_sq = tan_m * tan_m;
@@ -496,9 +509,9 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
 
             /// 2. If it is a contour, close the path.
 
-            if(object->treatAsContour){
-                auto & start_pt = object->path.firstPt();
-                auto & end_pt = object->path.lastPt();
+            if(object.treatAsContour){
+                auto & start_pt = object.path.firstPt();
+                auto & end_pt = object.path.lastPt();
 
                 auto tan_m = -(end_pt.x - start_pt.x)/(end_pt.y - start_pt.y);
                 auto tan_m_sq = tan_m * tan_m;
@@ -527,9 +540,9 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
 
                 /// 3. Fill the contour if needed.
 
-                if(object->fill){
+                if(object.fill){
                     GVectorPath2D *inner_path;
-                    if(object->strokeWidth > 0){
+                    if(object.strokeWidth > 0){
                         if(path_a.mag() > path_b.mag()){
                             inner_path = &path_b;
                         }
@@ -538,7 +551,7 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
                         }
                     }
                     else {
-                        inner_path = &object->path;
+                        inner_path = &object.path;
                     }
                     
                     if(inner_path->size() > 2) {

@@ -29,7 +29,7 @@ std::shared_ptr<OmegaSLCompiler::Source> OmegaSLCompiler::Source::fromString(Ome
 
 
 class OmegaSLCompilerImpl : public OmegaSLCompiler {
-    OmegaGTE::SharedHandle<OmegaGTE::GTEDevice> device;
+    SharedHandle<OmegaGTE::GTEDevice> device;
     std::shared_ptr<omegasl::CodeGen> gen;
     std::shared_ptr<omegasl::Parser> parser;
     omegasl::CodeGenOpts genOpts;
@@ -38,7 +38,7 @@ class OmegaSLCompilerImpl : public OmegaSLCompiler {
     omegasl::MetalCodeOpts metalCodeOpts;
 #endif
 public:
-    explicit OmegaSLCompilerImpl(OmegaGTE::SharedHandle<OmegaGTE::GTEDevice> & device):device(device), genOpts({false,true,}){
+    explicit OmegaSLCompilerImpl(SharedHandle<OmegaGTE::GTEDevice> & device):device(device), genOpts({false,true,}){
         omegasl::ast::builtins::Initialize();
 #if defined(TARGET_DIRECTX)
         omegasl::HLSLCodeOpts hlslCodeOpts {""};
@@ -73,7 +73,7 @@ public:
     }
 };
 
-std::shared_ptr<OmegaSLCompiler> OmegaSLCompiler::Create(OmegaGTE::SharedHandle<OmegaGTE::GTEDevice> & device) {
+std::shared_ptr<OmegaSLCompiler> OmegaSLCompiler::Create(SharedHandle<OmegaGTE::GTEDevice> & device) {
     return std::make_shared<OmegaSLCompilerImpl>(device);
 }
 

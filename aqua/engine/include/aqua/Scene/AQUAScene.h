@@ -1,7 +1,7 @@
 #include "AQUAObject.h"
 
-#ifndef AQUA_CORE_AQUASCENE_H
-#define AQUA_CORE_AQUASCENE_H
+#ifndef AQUA_SCENE_AQUASCENE_H
+#define AQUA_SCENE_AQUASCENE_H
 
 AQUA_NAMESPACE_BEGIN
 
@@ -15,4 +15,4 @@ public:
 
 AQUA_NAMESPACE_END
 
-#endif
+#endif //AQUA_SCENE_AQUASCENE_H
