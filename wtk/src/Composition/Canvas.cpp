@@ -76,7 +76,7 @@ void Canvas::drawImage(SharedHandle<Media::BitmapImage> &img,const Core::Rect & 
     current->currentVisuals.push_back(VisualCommand(img,rect));
 }
 
-void Canvas::drawGETexture(OmegaGTE::SharedHandle<OmegaGTE::GETexture> &img,const Core::Rect & rect,SharedHandle<OmegaGTE::GEFence> fence) {
+void Canvas::drawGETexture(SharedHandle<OmegaGTE::GETexture> &img,const Core::Rect & rect,SharedHandle<OmegaGTE::GEFence> fence) {
     current->currentVisuals.push_back(VisualCommand(img,fence,rect));
 }
 
