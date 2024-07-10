@@ -10,12 +10,12 @@ namespace OmegaWTK::Composition {
     void stopMTLCapture();
     #endif
 
-    static OmegaGTE::SharedHandle<OmegaGTE::GTEShaderLibrary> shaderLibrary;
-    static OmegaGTE::SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
-    static OmegaGTE::SharedHandle<OmegaGTE::GERenderPipelineState> renderPipelineState;
-    static OmegaGTE::SharedHandle<OmegaGTE::GERenderPipelineState> textureRenderPipelineState;
+    static SharedHandle<OmegaGTE::GTEShaderLibrary> shaderLibrary;
+    static SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
+    static SharedHandle<OmegaGTE::GERenderPipelineState> renderPipelineState;
+    static SharedHandle<OmegaGTE::GERenderPipelineState> textureRenderPipelineState;
 
-    static OmegaGTE::SharedHandle<OmegaGTE::GEComputePipelineState> linearGradientPipelineState;
+    static SharedHandle<OmegaGTE::GEComputePipelineState> linearGradientPipelineState;
 
     OmegaCommon::String librarySource = R"(
 
@@ -95,7 +95,7 @@ fragment float4 textureFragment(OmegaWTKTexturedRasterData raster){
 
 )";
 
-    static OmegaGTE::SharedHandle<OmegaGTE::GEBuffer> finalTextureDrawBuffer;
+    static SharedHandle<OmegaGTE::GEBuffer> finalTextureDrawBuffer;
 
     void loadGlobalRenderAssets(){
         bufferWriter = OmegaGTE::GEBufferWriter::Create();
@@ -219,7 +219,7 @@ fragment float4 textureFragment(OmegaWTKTexturedRasterData raster){
     }
 
 BackendRenderTargetContext::BackendRenderTargetContext(Core::Rect & rect,
-        OmegaGTE::SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTarget):
+        SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTarget):
         fence(gte.graphicsEngine->makeFence()),
         renderTarget(renderTarget),
         renderTargetSize(rect)
@@ -315,7 +315,7 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
 
     void
     BackendRenderTargetContext::createGradientTexture(bool linearOrRadial, Gradient &gradient, OmegaGTE::GRect &rect,
-                                                      OmegaGTE::SharedHandle<OmegaGTE::GETexture> &dest) {
+                                                      SharedHandle<OmegaGTE::GETexture> &dest) {
         auto cb = renderTarget->commandBuffer();
 
         size_t structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT});
@@ -361,6 +361,8 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
         renderTarget->submitCommandBuffer(cb);
     }
 
+    typedef decltype(VisualCommand::params) VisualCommandParams;
+
     void BackendRenderTargetContext::renderToTarget(VisualCommand::Type type, void *params) {
         OmegaGTE::TETessellationResult result;
 
@@ -375,80 +377,80 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
         size_t struct_size;
         bool useTextureRenderPipeline = false;
 
-        OmegaGTE::SharedHandle<OmegaGTE::GETexture> texturePaint;
+        SharedHandle<OmegaGTE::GETexture> texturePaint;
 
-        OmegaGTE::SharedHandle<OmegaGTE::GEFence> textureFence;
+        SharedHandle<OmegaGTE::GEFence> textureFence;
 
         switch (type) {
             case VisualCommand::Rect : {
-                auto _params = (VisualCommand::RectParams *)params;
-                OmegaGTE::GRect r{OmegaGTE::GPoint2D {0,0},_params->rect.w,_params->rect.h};
+                auto & _params = ((VisualCommandParams*)params)->rectParams;
+                OmegaGTE::GRect r{OmegaGTE::GPoint2D {0,0},_params.rect.w,_params.rect.h};
                 auto te_params = OmegaGTE::TETessellationParams::Rect(r);
 
-                useTextureRenderPipeline = !_params->brush->isColor;
+                useTextureRenderPipeline = !_params.brush->isColor;
 
                 if(!useTextureRenderPipeline){
-                    auto color = OmegaGTE::makeColor(_params->brush->color.r,
-                                                     _params->brush->color.g,
-                                                     _params->brush->color.b,
-                                                     _params->brush->color.a);
+                    auto color = OmegaGTE::makeColor(_params.brush->color.r,
+                                                     _params.brush->color.g,
+                                                     _params.brush->color.b,
+                                                     _params.brush->color.a);
                     te_params.addAttachment(OmegaGTE::TETessellationParams::Attachment::makeColor(color));
                 }
 
                 result = tessellationEngineContext->tessalateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
-                result.translate(-((viewPort.width/2) - _params->rect.pos.x),
-                                 -((viewPort.height/2) - _params->rect.pos.y),
+                result.translate(-((viewPort.width/2) - _params.rect.pos.x),
+                                 -((viewPort.height/2) - _params.rect.pos.y),
                                  0,
                                  viewPort);
 
                 break;
             }
             case VisualCommand::Bitmap : {
-                auto _params = (VisualCommand::BitmapParams *)params;
-                OmegaGTE::GRect r{OmegaGTE::GPoint2D {0,0},_params->rect.w,_params->rect.h};
+                auto & _params = ((VisualCommandParams*)params)->bitmapParams;
+                OmegaGTE::GRect r{OmegaGTE::GPoint2D {0,0},_params.rect.w,_params.rect.h};
                 auto te_params = OmegaGTE::TETessellationParams::Rect(r);
 
                 useTextureRenderPipeline = true;
-                if(_params->texture){
-                    texturePaint = _params->texture;
-                    textureFence = _params->textureFence;
+                if(_params.texture){
+                    texturePaint = _params.texture;
+                    textureFence = _params.textureFence;
                 }
                 else {
                     OmegaGTE::TextureDescriptor texDesc {OmegaGTE::GETexture::Texture2D};
                     texDesc.usage = OmegaGTE::GETexture::ToGPU;
-                    texDesc.width = _params->img->header.width;
-                    texDesc.height = _params->img->header.height;
+                    texDesc.width = _params.img->header.width;
+                    texDesc.height = _params.img->header.height;
                     std::cout << "TEX W:" << texDesc.width << "TEX H:" << texDesc.height << std::endl;
                     texturePaint = gte.graphicsEngine->makeTexture(texDesc);
-                    texturePaint->copyBytes((void *)_params->img->data,_params->img->header.stride);
+                    texturePaint->copyBytes((void *)_params.img->data,_params.img->header.stride);
                 }
 
                 te_params.addAttachment(OmegaGTE::TETessellationParams::Attachment::makeTexture2D(r.w,r.h));
 
                 result = tessellationEngineContext->tessalateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
-                result.translate(-((viewPort.width/2) - _params->rect.pos.x),
-                                 -((viewPort.height/2) - _params->rect.pos.y),
+                result.translate(-((viewPort.width/2) - _params.rect.pos.x),
+                                 -((viewPort.height/2) - _params.rect.pos.y),
                                  0,
                                  viewPort);
 
                 break;
             }
             case VisualCommand::RoundedRect : {
-                auto _params = (VisualCommand::RoundedRectParams *)params;
-                auto te_params = OmegaGTE::TETessellationParams::RoundedRect(_params->rect);
+                auto & _params = ((VisualCommandParams*)params)->roundedRectParams;
+                auto te_params = OmegaGTE::TETessellationParams::RoundedRect(_params.rect);
 
-                useTextureRenderPipeline = !_params->brush->isColor;
+                useTextureRenderPipeline = !_params.brush->isColor;
 
                 if(!useTextureRenderPipeline){
-                    auto color = OmegaGTE::makeColor(_params->brush->color.r,
-                                                     _params->brush->color.g,
-                                                     _params->brush->color.b,
-                                                     _params->brush->color.a);
+                    auto color = OmegaGTE::makeColor(_params.brush->color.r,
+                                                     _params.brush->color.g,
+                                                     _params.brush->color.b,
+                                                     _params.brush->color.a);
                     te_params.addAttachment(OmegaGTE::TETessellationParams::Attachment::makeColor(color));
                 }
                 result = tessellationEngineContext->tessalateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
-                result.translate(-((viewPort.width/2) - _params->rect.pos.x),
-                                 -((viewPort.height/2) - _params->rect.pos.y),
+                result.translate(-((viewPort.width/2) - _params.rect.pos.x),
+                                 -((viewPort.height/2) - _params.rect.pos.y),
                                  0,
                                  viewPort);
 

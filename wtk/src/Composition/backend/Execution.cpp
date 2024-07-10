@@ -66,7 +66,7 @@ void Compositor::executeCurrentCommand(){
         targetContext->clear(bkgrd.r,bkgrd.g,bkgrd.b,bkgrd.a);
 
         for(auto & c : commands){
-            targetContext->renderToTarget(c.type,c.params);
+            targetContext->renderToTarget(c.type,(void *)&c.params);
         }
 
         for(auto & effect : comm->frame->currentEffects){
@@ -94,10 +94,10 @@ void Compositor::executeCurrentCommand(){
             auto s = viewRenderTarget->second.surfaceTargets[params->layer];
             if(s == &(viewRenderTarget->second.visualTree->root->renderTarget)){
                 if(params->effect->type == LayerEffect::DropShadow){
-                    viewRenderTarget->second.visualTree->root->updateShadowEffect(*(LayerEffect::DropShadowParams *)params->effect->params);
+                    viewRenderTarget->second.visualTree->root->updateShadowEffect(params->effect->dropShadow);
                 }
                 else {
-                    viewRenderTarget->second.visualTree->root->updateTransformEffect(*(LayerEffect::TransformationParams *)params->effect->params);
+                    viewRenderTarget->second.visualTree->root->updateTransformEffect(params->effect->transform);
                 }
 
             }
@@ -105,10 +105,10 @@ void Compositor::executeCurrentCommand(){
                 for(auto & v : viewRenderTarget->second.visualTree->body){
                     if(s == &(v->renderTarget)){
                         if(params->effect->type == LayerEffect::DropShadow){
-                            v->updateShadowEffect(*(LayerEffect::DropShadowParams *)params->effect->params);
+                            v->updateShadowEffect(params->effect->dropShadow);
                         }
                         else {
-                            v->updateTransformEffect(*(LayerEffect::TransformationParams *)params->effect->params);
+                            v->updateTransformEffect(params->effect->transform);
                         }
                         break;
                     }
