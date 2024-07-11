@@ -36,9 +36,9 @@ void AppInst::terminate() {
     instance->ptr->terminate();
 };
 
-void AppInst::onThemeSet(Native::ThemeDesc &desc) {
+// void AppInst::onThemeSet(Native::ThemeDesc &desc) {
 
-}
+// }
 
 AppInst::~AppInst(){
     instance = nullptr;

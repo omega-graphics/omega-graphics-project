@@ -194,7 +194,8 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
      // void reload() {
         
      // };
-     OmegaGTE::SharedHandle<OmegaGTE::GETexture> toBitmap() override{
+     BitmapRes toBitmap() override{
+        BitmapRes res;
          CGFloat scaleFactor = [NSScreen mainScreen].backingScaleFactor;
          void *data = new unsigned char[rect.w * 4 * rect.h * scaleFactor * scaleFactor];
          
@@ -223,8 +224,8 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
 
 
          delete [](unsigned char *) data;
-      
-         return texture;
+        res.s = texture;
+         return res;
      };
      ~CTTextRect(){
          // CFRelease(frame);

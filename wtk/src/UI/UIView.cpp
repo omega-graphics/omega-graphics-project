@@ -75,8 +75,6 @@ namespace OmegaWTK {
     void UIRenderer::handleElement(UIElementTag tag){
         
         auto t = buildLayerRenderTarget(tag);
-        
-        if(currentStyleSheet)
 
         t->sendFrame();
        

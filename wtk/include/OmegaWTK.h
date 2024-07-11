@@ -1,4 +1,6 @@
-#include "omegaWTk/Media/ImgCodec.h"
+#include "omegaWTK/Core/Core.h"
+
+#include "omegaWTK/Media/ImgCodec.h"
 
 #include "omegaWTK/Composition/Layer.h"
 #include "omegaWTK/Composition/Canvas.h"
@@ -9,6 +11,10 @@
 #include "omegaWTK/UI/App.h"
 #include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/UI/Menu.h"
+#include "omegaWTK/UI/UIView.h"
+#include "omegaWTK/UI/SVGView.h"
+
+#include "omegaWTK/Widgets/BasicWidgets.h"
 
 
 #include "omegaWTK/Main.h"

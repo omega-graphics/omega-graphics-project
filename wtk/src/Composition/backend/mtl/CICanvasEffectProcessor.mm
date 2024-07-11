@@ -7,10 +7,10 @@ namespace OmegaWTK::Composition{
 
     class CICanvasEffectProcessor : public BackendCanvasEffectProcessor {
     public:
-        explicit CICanvasEffectProcessor(OmegaGTE::SharedHandle<OmegaGTE::GEFence> & fence):BackendCanvasEffectProcessor(fence){
+        explicit CICanvasEffectProcessor(SharedHandle<OmegaGTE::GEFence> & fence):BackendCanvasEffectProcessor(fence){
 
         }
-        void applyEffects(OmegaGTE::SharedHandle<OmegaGTE::GETexture> & dest,SharedHandle<OmegaGTE::GETextureRenderTarget> & textureTarget,OmegaCommon::Vector<std::pair<CanvasEffect::Type,void *>> & effects) override {
+        void applyEffects(SharedHandle<OmegaGTE::GETexture> & dest,SharedHandle<OmegaGTE::GETextureRenderTarget> & textureTarget,OmegaCommon::Vector<std::pair<CanvasEffect::Type,void *>> & effects) override {
             CIContext *context = [CIContext contextWithMTLCommandQueue:(__bridge id<MTLCommandQueue>)textureTarget->nativeCommandQueue()];
             auto src = textureTarget->underlyingTexture();
             auto cb = textureTarget->commandBuffer();
@@ -36,8 +36,8 @@ namespace OmegaWTK::Composition{
     };
 
     SharedHandle<BackendCanvasEffectProcessor>
-    BackendCanvasEffectProcessor::Create(OmegaGTE::SharedHandle<OmegaGTE::GEFence> &fence) {
-        return (SharedHandle<BackendCanvasEffectProcessor>)new CICanvasEffectProcessor(fence);
+    BackendCanvasEffectProcessor::Create(SharedHandle<OmegaGTE::GEFence> &fence) {
+        return SharedHandle<BackendCanvasEffectProcessor>(new CICanvasEffectProcessor(fence));
     }
 
 

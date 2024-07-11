@@ -47,7 +47,7 @@ public:
 @implementation CocoaThemeObserver
 -(void)onThemeChange:(NSAppearance *)appearance {
     OmegaWTK::Native::ThemeDesc desc;
-    OmegaWTK::AppInst::inst()->onThemeSet(desc);
+    // OmegaWTK::AppInst::inst()->onThemeSet(desc);
 };
 
 - (void)didChangeValueForKey:(NSString *)key {

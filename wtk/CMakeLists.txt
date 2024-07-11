@@ -7,29 +7,29 @@ set(OMEGAWTK_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 omega_graphics_project(OmegaWTK VERSION ${OMEGAWTK_VERSION} LANGUAGES C CXX)
 
-if(APPLE AND NOT TARGET_METAL)
-	enable_language(OBJCXX)
-endif()
+# if(APPLE AND NOT TARGET_METAL)
+# 	enable_language(OBJCXX)
+# endif()
 
 set(OMEGAWTK_MOBILE FALSE)
 
 if(WIN32)
 	set(TARGET_WIN32 TRUE)
-	add_compile_definitions(TARGET_WIN32)
+	add_compile_definitions(TARGET_WIN32 TARGET_DIRECTX)
 elseif(APPLE AND NOT IOS)
 	set(TARGET_MACOS TRUE)
-	add_compile_definitions(TARGET_MACOS)
+	add_compile_definitions(TARGET_MACOS TARGET_METAL)
 elseif(IOS)
 	set(TARGET_IOS TRUE)
-	add_compile_definitions(TARGET_IOS TARGET_MOBILE)
+	add_compile_definitions(TARGET_IOS TARGET_MOBILE TARGET_METAL)
 	set(OMEGAWTK_MOBILE TRUE)
 elseif(ANDROID)
 	set(TARGET_ANDROID TRUE)
-	add_compile_definitions(TARGET_ANDROID TARGET_MOBILE)
+	add_compile_definitions(TARGET_ANDROID TARGET_MOBILE TARGET_VULKAN)
 	set(OMEGAWTK_MOBILE TRUE)
 elseif(UNIX AND NOT APPLE)
 	set(TARGET_LINUX TRUE)
-	add_compile_definitions(TARGET_GTK)
+	add_compile_definitions(TARGET_GTK TARGET_VULKAN)
 endif()
 
 if(${OMEGAWTK_MOBILE})
@@ -220,69 +220,69 @@ add_custom_target(ThirdParty)
 add_dependencies(ThirdParty icu zlib libpng libjpeg-turbo libtiff libxml2)
 #Omega WTK Core SubModule
 
-file(GLOB CORE_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Core/*.cpp")
-set_source_files_properties(${CORE_SRCS} PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/tools/assetc")
+file(GLOB CORE_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Core/*.cpp")
+set_source_files_properties(${CORE_SRCS} PROPERTIES INCLUDE_DIRECTORIES "${OMEGAWTK_SOURCE_DIR}/tools/assetc")
 source_group(OmegaWTKCore ${CORE_SRCS})
 
 if(NOT ${OMEGAWTK_MOBILE})
 
 #OmegaWTK Native SubModule
 
-file(GLOB NATIVE_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Native/*.cpp")
+file(GLOB NATIVE_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Native/*.cpp")
 
 if(TARGET_WIN32)
-	file(GLOB WIN_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Native/win/*.cpp")
+	file(GLOB WIN_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Native/win/*.cpp")
 	set(NATIVE_SRCS ${NATIVE_SRCS} ${WIN_SRCS})
 	
 elseif(TARGET_MACOS)
-	file(GLOB MACOS_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Native/macos/*.mm")
+	file(GLOB MACOS_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Native/macos/*.mm")
 	set(NATIVE_SRCS ${NATIVE_SRCS} ${MACOS_SRCS})
 elseif(TARGET_LINUX)
-	file(GLOB GTK_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Native/gtk/*.cpp")
+	file(GLOB GTK_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Native/gtk/*.cpp")
 	set(NATIVE_SRCS ${NATIVE_SRCS} ${GTK_SRCS})
 endif()
 
 source_group(OmegaWTKNative ${NATIVE_SRCS})
-set(NATIVE_PRIVATE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/Native/private_include")
+set(NATIVE_PRIVATE_INCLUDE_DIR "${OMEGAWTK_SOURCE_DIR}/src/Native/private_include")
 
 #OmegaWTK Media SubModule
 
-file(GLOB MEDIA_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Media/*.cpp")
+file(GLOB MEDIA_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Media/*.cpp")
 source_group(OmegaWTKMedia ${MEDIA_SRCS})
 if(TARGET_WIN32)
-	file(GLOB WIN_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Media/wmf/*.cpp")
+	file(GLOB WIN_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Media/wmf/*.cpp")
 	set(MEDIA_SRCS ${MEDIA_SRCS} ${WIN_SRCS})
 
 elseif(TARGET_MACOS)
-	file(GLOB MACOS_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Media/avf/*.mm")
+	file(GLOB MACOS_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Media/avf/*.mm")
 	set(MEDIA_SRCS ${MEDIA_SRCS} ${MACOS_SRCS})
 else()
-	file(GLOB FFMPEG_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Media/ffmpeg/*.cpp")
+	file(GLOB FFMPEG_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Media/ffmpeg/*.cpp")
 	set(MEDIA_SRCS ${MEDIA_SRCS} ${FFMPEG_SRCS})
 endif()
 # Mobile Sources
 else()
 
-	file(GLOB NATIVE_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Mobile/Native/*.cpp")
+	file(GLOB NATIVE_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Mobile/Native/*.cpp")
 	if(TARGET_ANDROID)
-		file(GLOB ANDROID_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Mobile/Native/android/*.cpp")
+		file(GLOB ANDROID_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Mobile/Native/android/*.cpp")
 		set(NATIVE_SRCS ${NATIVE_SRCS} ${ANDROID_SRCS})
 	else()
-		file(GLOB IOS_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Mobile/Native/ios/*.mm")
+		file(GLOB IOS_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Mobile/Native/ios/*.mm")
 		set(NATIVE_SRCS ${NATIVE_SRCS} ${IOS_SRCS})
 	endif()
 	source_group(OmegaWTKNative ${NATIVE_SRCS})
-	set(NATIVE_PRIVATE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/Mobile/Native/private_include")
+	set(NATIVE_PRIVATE_INCLUDE_DIR "${OMEGAWTK_SOURCE_DIR}/src/Mobile/Native/private_include")
 
 	#OmegaWTK Media SubModule
 
-	file(GLOB MEDIA_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Media/*.cpp")
+	file(GLOB MEDIA_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Media/*.cpp")
 	source_group(OmegaWTKMedia ${MEDIA_SRCS})
 	if(TARGET_ANDROID)
-		file(GLOB ANDROID_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Mobile/Media/android/*.cpp")
+		file(GLOB ANDROID_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Mobile/Media/android/*.cpp")
 		set(MEDIA_SRCS ${MEDIA_SRCS} ${ANDROID_SRCS})
 	else()
-		file(GLOB IOS_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Mobile/Media/ios/*.mm")
+		file(GLOB IOS_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Mobile/Media/ios/*.mm")
 		set(MEDIA_SRCS ${MEDIA_SRCS} ${IOS_SRCS})
 	endif()
 endif()
@@ -291,16 +291,16 @@ set_source_files_properties(${NATIVE_SRCS} PROPERTIES INCLUDE_DIRECTORIES ${NATI
 
 #OmegaWTK Composition SubModule
 
-file(GLOB COMPOSITION_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Composition/*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/src/Composition/backend/*.cpp")
+file(GLOB COMPOSITION_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Composition/*.cpp" "${OMEGAWTK_SOURCE_DIR}/src/Composition/backend/*.cpp")
 
 if(TARGET_WIN32)
-	file(GLOB WIN_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Composition/backend/dx/*.cpp")
+	file(GLOB WIN_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Composition/backend/dx/*.cpp")
 	set(COMPOSITION_SRCS ${COMPOSITION_SRCS} ${WIN_SRCS})
 elseif(TARGET_MACOS)
-	file(GLOB MACOS_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Composition/backend/mtl/*.mm")
+	file(GLOB MACOS_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Composition/backend/mtl/*.mm")
 	set(COMPOSITION_SRCS ${COMPOSITION_SRCS} ${MACOS_SRCS})
 else()
-	file(GLOB GTK_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Composition/backend/gtk/*.cpp")
+	file(GLOB GTK_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Composition/backend/gtk/*.cpp")
 	set(COMPOSITION_SRCS ${COMPOSITION_SRCS} ${GTK_SRCS})
 endif()
 
@@ -308,14 +308,15 @@ source_group(OmegaWTKComposition ${COMPOSITION_SRCS})
 set_source_files_properties(${COMPOSITION_SRCS} PROPERTIES INCLUDE_DIRECTORIES ${NATIVE_PRIVATE_INCLUDE_DIR})
 
 #OmegaWTK UI SubModule
-file(GLOB UI_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/UI/*.cpp")
+file(GLOB UI_SRCS "${OMEGAWTK_SOURCE_DIR}/src/UI/*.cpp")
 source_group(OmegaWTKUI ${UI_SRCS})
 
 #OmegaWTK Widgets Submodule
-file(GLOB WIDGETS_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/Widgets/*.cpp")
+file(GLOB WIDGETS_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Widgets/*.cpp")
 source_group(OmegaWTKWidgets ${WIDGETS_SRCS})
+message("OmegaWTKWidgets: ${WIDGETS_SRCS}")
 
-configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Info.plist.in" ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
+configure_file("${OMEGAWTK_SOURCE_DIR}/src/Info.plist.in" ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
 
 add_omega_graphics_module("OmegaWTK" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION ${OMEGAWTK_VERSION} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include" 
 DEPENDS OmegaGTE icu zlib libpng libjpeg-turbo libtiff libxml2 

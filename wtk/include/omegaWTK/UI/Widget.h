@@ -35,7 +35,7 @@ OMEGACOMMON_SHARED_CLASS(WidgetObserver);
 
 
 /**
- @brief A moduler UI component. 
+ @brief A singular moduler UI component. (Consists usually of one view)
  Can be attached to a WidgetTreeHost or another Widget as a child.
  @paragraph
 

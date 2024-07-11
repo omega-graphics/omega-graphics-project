@@ -8,6 +8,9 @@
 #include "omegaWTK/Native/NativeItem.h"
 #include "omegaWTK/Native/NativeApp.h"
 
+#include "omegaWTK/Core/XML.h"
+#include "omegaWTK/Media/Video.h"
+
 #ifndef OMEGAWTK_UI_VIEW_H
 #define OMEGAWTK_UI_VIEW_H
 
@@ -293,6 +296,63 @@ namespace OmegaWTK {
     //     bool editMode();
     //     OmegaWTK::UniString & getString();
     // };
+
+    /**
+ @brief The visual display output of a VideoPlaybackSession or a capture preview output of a VideoCaptureSession.
+*/
+class OMEGAWTK_EXPORT VideoView :  public View, 
+                                   public Media::VideoFrameSink {
+
+    OmegaCommon::QueueHeap<SharedHandle<Media::VideoFrame>> framebuffer;
+
+    SharedHandle<Composition::Canvas> videoCanvas;
+
+    void queueFrame(SharedHandle<Media::VideoFrame> &frame);
+
+    bool framebuffered() const override {
+        return true;
+    };
+    void flush() override;
+    void pushFrame(SharedHandle<Media::VideoFrame> frame) override;
+    void presentCurrentFrame() override;
+public:
+    OMEGACOMMON_CLASS("OmegaWTK.VideoView")
+    friend class Widget;
+
+   VideoView(const Core::Rect & rect,Composition::LayerTree * layerTree,View *parent = nullptr);
+};
+/**
+ @brief 
+*/
+
+     typedef Core::XMLDocument SVGDocument;
+    class SVGRenderState;
+    /**
+     @brief Displays the visual output of a SVGSession.
+    */
+    class OMEGAWTK_EXPORT SVGView : public View {
+        SharedHandle<Composition::ViewAnimator> svgAnimator;
+    private:
+        explicit SVGView(const Core::Rect & rect,Composition::LayerTree *layerTree,ViewPtr parent);
+        friend class Widget;
+        friend class SVGSession;
+    public:
+        OMEGACOMMON_CLASS("OmegaWTK.UI.SVGView")
+    };
+
+    class OMEGAWTK_EXPORT SVGSession {
+        SharedHandle<SVGView> & view;
+        SharedHandle<SVGRenderState> currentRenderState;
+    private:
+        explicit SVGSession(SharedHandle<SVGView> & view);
+    public:
+        OMEGACOMMON_CLASS("OmegaWTK.UI.SVGSession")
+        static SharedHandle<SVGSession> Create(SharedHandle<SVGView> & view);
+        void setSVGSource(SVGDocument & document);
+        void start();
+        void pause();
+        void reset();
+    };
 
 };
 
