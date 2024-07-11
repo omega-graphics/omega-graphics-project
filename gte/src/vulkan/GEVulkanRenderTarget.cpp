@@ -70,7 +70,16 @@ SharedHandle<GERenderTarget::CommandBuffer> GEVulkanNativeRenderTarget::commandB
 }
 
 void GEVulkanNativeRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> &commandBuffer) {
-    commandQueue->submitCommandBuffer(commandBuffer->commandBuffer);
+    if(commandBuffer->commandBuffer)
+        commandQueue->submitCommandBuffer(commandBuffer->commandBuffer);
+}
+
+void GEVulkanNativeRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence){
+    commandQueue->submitCommandBuffer(commandBuffer->commandBuffer,fence);
+}
+
+void GEVulkanNativeRenderTarget::notifyCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence){
+    commandQueue->notifyCommandBuffer(commandBuffer->commandBuffer,fence);
 }
 
 void GEVulkanNativeRenderTarget::commitAndPresent() {
@@ -132,8 +141,20 @@ SharedHandle<GERenderTarget::CommandBuffer> GEVulkanTextureRenderTarget::command
         commandQueue->getAvailableBuffer()));
 }
 
+SharedHandle<GETexture> GEVulkanTextureRenderTarget::underlyingTexture(){
+    return texture;
+}
+
 void GEVulkanTextureRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> &commandBuffer){
     commandQueue->submitCommandBuffer(commandBuffer->commandBuffer);
+}
+
+void GEVulkanTextureRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence){
+    commandQueue->submitCommandBuffer(commandBuffer->commandBuffer,fence);
+}
+
+void GEVulkanTextureRenderTarget::notifyCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence){
+    commandQueue->notifyCommandBuffer(commandBuffer->commandBuffer,fence);
 }
 
 void GEVulkanTextureRenderTarget::commit(){

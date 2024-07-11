@@ -7,6 +7,7 @@ compile_commands.json
 *.bat
 !omegasl/omegaslc.bat
 out 
+deps
 dist
 build
 *.pyc

@@ -18,6 +18,8 @@
 
 #include "OmegaGTE.h"
 
+#include "omega-common/common.h"
+
 #include <glm/glm.hpp>
 
 #include "../BufferIO.h"
@@ -86,6 +88,9 @@ _NAMESPACE_BEGIN_
         GTEVulkanDevice(GTEDevice::Type type,const char *name,GTEDeviceFeatures & features,VkPhysicalDevice &device) : GTEDevice(type,name,features),device(device) {
 
         };
+        const void * native() override{
+            return (void *)device;
+        }
         ~GTEVulkanDevice() override = default;
     };
 
@@ -408,6 +413,10 @@ _NAMESPACE_BEGIN_
        
         DEBUG_STREAM("Successfully Created GEVulkanEngine");
     };
+
+    void * GEVulkanEngine::underlyingNativeDevice(){
+        return (void *)device;
+    }
 
     SharedHandle<OmegaGraphicsEngine> GEVulkanEngine::Create(SharedHandle<GTEDevice> & device){
         return SharedHandle<OmegaGraphicsEngine>(new GEVulkanEngine(std::dynamic_pointer_cast<GTEVulkanDevice>(device)));
@@ -910,7 +919,7 @@ _NAMESPACE_BEGIN_
             VkDebugUtilsObjectNameInfoEXT nameInfoExt {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
             nameInfoExt.pNext = nullptr;
             nameInfoExt.objectType = VK_OBJECT_TYPE_PIPELINE;
-            nameInfoExt.objectHandle = pipeline;
+            nameInfoExt.objectHandle = (uint64_t)pipeline;
             nameInfoExt.pObjectName = desc.name.data();
             vkSetDebugUtilsObjectNameEXT(device,&nameInfoExt);
         }
@@ -953,7 +962,7 @@ _NAMESPACE_BEGIN_
             VkDebugUtilsObjectNameInfoEXT nameInfoExt {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
             nameInfoExt.pNext = nullptr;
             nameInfoExt.objectType = VK_OBJECT_TYPE_PIPELINE;
-            nameInfoExt.objectHandle = pipeline;
+            nameInfoExt.objectHandle = (uint64_t)pipeline;
             nameInfoExt.pObjectName = desc.name.data();
             vkSetDebugUtilsObjectNameEXT(device,&nameInfoExt);
         }
@@ -1063,7 +1072,7 @@ _NAMESPACE_BEGIN_
             VkDebugUtilsObjectNameInfoEXT nameInfoExt {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
             nameInfoExt.pNext = nullptr;
             nameInfoExt.objectType = VK_OBJECT_TYPE_SAMPLER;
-            nameInfoExt.objectHandle = sampler;
+            nameInfoExt.objectHandle = (uint64_t)sampler;
             nameInfoExt.pObjectName = desc.name.data();
             vkSetDebugUtilsObjectNameEXT(device,&nameInfoExt);
         }
@@ -1088,17 +1097,20 @@ _NAMESPACE_BEGIN_
 
             vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, queueFamilyIndices[0], surfaceKhr, &waylandSupported);
         }
-        if(waylandSupported == VK_FALSE || !wantsWayland) {
-            /// If Wayland is not supported by the Physical Device, use X11 window instead
+            
 #endif
 
 #ifdef VK_USE_PLATFORM_XLIB_KHR
+        /// If Wayland is not supported by the Physical Device, use X11 window instead
+        if(waylandSupported == VK_FALSE || !wantsWayland) {
+
             VkXlibSurfaceCreateInfoKHR xlibSurfaceCreateInfoKhr{VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
             xlibSurfaceCreateInfoKhr.pNext = nullptr;
             xlibSurfaceCreateInfoKhr.flags = 0;
             xlibSurfaceCreateInfoKhr.window = desc.x_window;
             xlibSurfaceCreateInfoKhr.dpy = desc.x_display;
             vkCreateXlibSurfaceKHR(instance, &xlibSurfaceCreateInfoKhr, nullptr, &surfaceKhr);
+        }
 #endif
 
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
@@ -1184,8 +1196,8 @@ _NAMESPACE_BEGIN_
         VkFramebufferCreateInfo fbInfo {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
         fbInfo.renderPass = VK_NULL_HANDLE;
         fbInfo.pNext = nullptr;
-        fbInfo.width = desc.rect.w;
-        fbInfo.height = desc.rect.h;
+        fbInfo.width = desc.region.w;
+        fbInfo.height = desc.region.h;
         fbInfo.attachmentCount = 1;
         fbInfo.pAttachments = &vk_tex->img_view;
         fbInfo.layers = 1;

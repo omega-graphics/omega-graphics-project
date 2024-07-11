@@ -41,7 +41,13 @@ public:
 
     SharedHandle<CommandBuffer> commandBuffer() override;
     void submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer) override;
+    void notifyCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence) override;
+    void submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence) override;
+
     void commitAndPresent() override;
+    void *nativeCommandQueue() override {
+        return commandQueue->native();
+    };
 
     ~GEVulkanNativeRenderTarget();
 };
@@ -63,6 +69,12 @@ public:
 
     SharedHandle<CommandBuffer> commandBuffer() override;
     void submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer) override;
+    void notifyCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence) override;
+    void submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence) override;
+    SharedHandle<GETexture> underlyingTexture() override;
+     void *nativeCommandQueue() override {
+        return commandQueue->native();
+    };
     void commit() override;
 
     ~GEVulkanTextureRenderTarget();

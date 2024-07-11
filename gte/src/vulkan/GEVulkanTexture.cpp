@@ -24,7 +24,17 @@ alloc_info(alloc_info),alloc(alloc),memoryUsage(memoryUsage)
 
 };
 
-void GEVulkanTexture::copyBytes(void *bytes, size_t len){
+size_t GEVulkanTexture::getBytes(void *bytes, size_t bytesPerRow){
+    auto len = bytesPerRow * descriptor.height;
+    void *ptr;
+    vmaMapMemory(engine->memAllocator,alloc,&ptr);
+    memcpy(bytes,ptr,len);
+    vmaUnmapMemory(engine->memAllocator,alloc);
+    return len;
+}
+
+void GEVulkanTexture::copyBytes(void *bytes, size_t bytesPerRow){
+    auto len = bytesPerRow * descriptor.height;
     void *ptr;
     vmaMapMemory(engine->memAllocator,alloc,&ptr);
     memcpy(ptr,bytes,len);

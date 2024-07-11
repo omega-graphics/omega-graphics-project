@@ -1,4 +1,5 @@
 
+#include <cstdint>
 #ifdef VULKAN_TARGET_X11
 #define VK_USE_PLATFORM_XLIB_KHR 1
 #endif
@@ -62,6 +63,8 @@ _NAMESPACE_BEGIN_
 
         explicit GEVulkanEngine(SharedHandle<GTEVulkanDevice> device);
 
+        void * underlyingNativeDevice() override;
+
         SharedHandle<GECommandQueue> makeCommandQueue(unsigned int maxBufferCount) override;
 
         SharedHandle<GEBuffer> makeBuffer(const BufferDescriptor &desc) override;
@@ -101,7 +104,7 @@ _NAMESPACE_BEGIN_
             VkDebugUtilsObjectNameInfoEXT nameInfoExt {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
             nameInfoExt.pNext = nullptr;
             nameInfoExt.objectType = VK_OBJECT_TYPE_BUFFER;
-            nameInfoExt.objectHandle = buffer;
+            nameInfoExt.objectHandle = (uint64_t)buffer;
             nameInfoExt.pObjectName = name.data();
             vkSetDebugUtilsObjectNameEXT(engine->device,&nameInfoExt);
         }
@@ -152,7 +155,7 @@ _NAMESPACE_BEGIN_
             VkDebugUtilsObjectNameInfoEXT nameInfoExt {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
             nameInfoExt.pNext = nullptr;
             nameInfoExt.objectType = VK_OBJECT_TYPE_FENCE;
-            nameInfoExt.objectHandle = fence;
+            nameInfoExt.objectHandle = (uint64_t)fence;
             nameInfoExt.pObjectName = name.data();
             vkSetDebugUtilsObjectNameEXT(engine->device,&nameInfoExt);
         }

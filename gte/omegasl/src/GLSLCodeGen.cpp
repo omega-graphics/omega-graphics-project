@@ -31,7 +31,9 @@ namespace omegasl {
 
     class GLSLCodeGen : public CodeGen {
 
-        std::ofstream shaderOut;
+        std::ostream & shaderOut;
+        std::ofstream fileOut;
+        std::ostringstream stringOut;
         #ifdef TARGET_VULKAN
         shaderc_compiler_t compiler;
         #endif
@@ -47,10 +49,14 @@ namespace omegasl {
 
 
     public:
-        explicit GLSLCodeGen(CodeGenOpts &opts,GLSLCodeOpts &glslCodeOpts): CodeGen(opts),glslCodeOpts(glslCodeOpts){
+        explicit GLSLCodeGen(CodeGenOpts &opts,GLSLCodeOpts &glslCodeOpts): CodeGen(opts),glslCodeOpts(glslCodeOpts), shaderOut(fileOut){
             #ifdef TARGET_VULKAN
             compiler = shaderc_compiler_initialize();
             #endif
+        }
+        explicit GLSLCodeGen(CodeGenOpts &opts,GLSLCodeOpts & glslCodeOpts,std::ostringstream & stringOut):
+                CodeGen(opts), stringOut(std::move(stringOut)),shaderOut(this->stringOut),glslCodeOpts(glslCodeOpts){
+
         }
         inline void writeTypeExpr(ast::TypeExpr *typeExpr,std::ostream & out) {
             auto t = typeResolver->resolveTypeWithExpr(typeExpr);
@@ -187,12 +193,19 @@ namespace omegasl {
 
                     }
 
-                    std::cout << OmegaCommon::FS::Path(opts.tempDir).absPath() << std::endl;
+                    if(opts.runtimeCompile) {
+                        stringOut.str("");
+                    }
+                    else {
+                        OmegaCommon::FS::Path(opts.tempDir).absPath();
 
-                    auto p = OmegaCommon::FS::Path(opts.tempDir).append(_decl->name).concat(file_ext).str();
-                    std::cout << p << std::endl;
+                        auto p = OmegaCommon::FS::Path(opts.tempDir).append(_decl->name).concat(file_ext).str();
+                        // std::cout << p << std::endl;
 
-                    shaderOut.open(p);
+                        fileOut.open(p);
+                    }
+
+                    
                     shaderOut << GLSL_HEADER << std::endl;
 
                     omegasl_shader shader_entry {};
@@ -434,9 +447,17 @@ namespace omegasl {
                     }
                     indentLevel -= 1;
                     shaderOut << "}" << std::endl;
-                    shaderOut.close();
 
-                    shaderMap.insert(std::make_pair(OmegaCommon::FS::Path(opts.tempDir).append(_decl->name).concat(".spv").str(),shader_entry));
+                    OmegaCommon::String object_file;
+                    if(!opts.runtimeCompile) {
+                        object_file = OmegaCommon::FS::Path(opts.tempDir).append(_decl->name).concat(".spv").str();
+                        fileOut.close();
+                    }
+                    else {
+                         object_file = _decl->name;
+                    }
+
+                    shaderMap.insert(std::make_pair(object_file,shader_entry));
                     internalStructVarMap.clear();
                     break;
                 }
@@ -555,6 +576,7 @@ namespace omegasl {
 
         }
         void compileShaderOnRuntime(ast::ShaderDecl::Type type, const OmegaCommon::StrRef &name) override {
+            auto source = stringOut.str();
             #ifdef TARGET_VULKAN
                 shaderc_shader_kind shader_kind;
                 switch (type) {

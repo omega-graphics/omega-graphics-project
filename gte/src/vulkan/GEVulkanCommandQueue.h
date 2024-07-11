@@ -1,5 +1,6 @@
 #include "GEVulkan.h"
 #include "omegaGTE/GECommandQueue.h"
+#include <cstdint>
 
 #ifndef OMEGAGTE_VULKAN_GEVULKANCOMMANDQUEUE_H
 #define OMEGAGTE_VULKAN_GEVULKANCOMMANDQUEUE_H
@@ -31,8 +32,7 @@ _NAMESPACE_BEGIN_
         void insertResourceBarrierIfNeeded(GEVulkanTexture *texture,unsigned & resource_id,omegasl_shader & shader);
         void insertResourceBarrierIfNeeded(GEVulkanBuffer *buffer,unsigned & resource_id,omegasl_shader & shader);
     public:
-        // void waitForFence(SharedHandle<GEFence> &fence, unsigned int val) override;
-        // void signalFence(SharedHandle<GEFence> &fence, unsigned int val) override;
+        void setStencilRef(unsigned int ref) override;
 
         void startRenderPass(const GERenderPassDescriptor &desc) override;
 
@@ -104,7 +104,7 @@ _NAMESPACE_BEGIN_
             VkDebugUtilsObjectNameInfoEXT nameInfoExt {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
             nameInfoExt.pNext = nullptr;
             nameInfoExt.objectType = VK_OBJECT_TYPE_COMMAND_POOL;
-            nameInfoExt.objectHandle = commandPool;
+            nameInfoExt.objectHandle = (uint64_t)commandPool;
             nameInfoExt.pObjectName = name.data();
             vkSetDebugUtilsObjectNameEXT(engine->device,&nameInfoExt);
         };

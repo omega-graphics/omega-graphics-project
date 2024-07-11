@@ -43,7 +43,7 @@ else()
 		add_compile_definitions("VULKAN_TARGET_ANDROID")
 	endif()
 
-	if(NOT ANDROID)
+	if(NOT ANDROID AND NOT PKG_WAYLAND_FOUND)
 		add_compile_definitions("VULKAN_TARGET_X11")
 	endif()
 
@@ -81,12 +81,17 @@ endif ()
 target_link_libraries("OmegaGTE" PUBLIC "OmegaCommon")
 
 if(TARGET_VULKAN)
-	set(VULKAN_SDK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external-libs/vulkan_sdk/1.2.189.0)
+	set(THIRD_PARTY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps)
+	set(VULKAN_SDK_DIR ${THIRD_PARTY_DIR}/vulkan_sdk/1.3.283.0)
+
 	set(VULKAN_INCLUDE_DIRECTORY "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/include")
+	set(VMA_INCLUDE_DIRECTORY "${THIRD_PARTY_DIR}/vulkan-memory-allocator/include")
+	set(GLM_INCLUDE_DIRECTORY "${THIRD_PARTY_DIR}/glm")
+
 	target_link_directories("OmegaGTE" PRIVATE "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/lib")
 	target_link_libraries("omegaslc" PRIVATE "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/lib/libshaderc_shared.so.1")
 	target_include_directories("omegaslc" PRIVATE ${VULKAN_INCLUDE_DIRECTORY})
-	target_include_directories("OmegaGTE" PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/external-libs/vulkan-memory-allocator/include" "${CMAKE_CURRENT_SOURCE_DIR}/external-libs/glm" ${VULKAN_INCLUDE_DIRECTORY})
+	target_include_directories("OmegaGTE" PRIVATE  ${VULKAN_INCLUDE_DIRECTORY} ${VMA_INCLUDE_DIRECTORY} ${GLM_INCLUDE_DIRECTORY})
 	target_link_libraries("OmegaGTE" PRIVATE libvulkan.so.1 libshaderc_shared.so)
 endif()
 if(TARGET_METAL)

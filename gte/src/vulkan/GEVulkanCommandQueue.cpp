@@ -3,6 +3,7 @@
 #include "GEVulkanPipeline.h"
 #include "GEVulkan.h"
 #include "GEVulkanTexture.h"
+#include "vulkan/vulkan_core.h"
 
 #include <cstdint>
 
@@ -559,6 +560,11 @@ _NAMESPACE_BEGIN_
         }
         vkCmdDraw(commandBuffer,vertexCount,1,startIdx,0);
     };
+
+    void GEVulkanCommandBuffer::setStencilRef(unsigned ref){
+        VkStencilFaceFlags faceflags = VK_STENCIL_FACE_FRONT_AND_BACK;
+        vkCmdSetStencilReference(commandBuffer,faceflags,ref);
+    }
 
     void GEVulkanCommandBuffer::setScissorRects(std::vector<GEScissorRect> scissorRects){
         std::vector<VkRect2D> vk_rects;

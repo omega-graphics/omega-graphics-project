@@ -3,6 +3,7 @@
 #include <optional>
 #include <thread>
 #include <iostream>
+#include <cmath>
 
 _NAMESPACE_BEGIN_
 
@@ -90,78 +91,77 @@ void TETessellationParams::addAttachment(const Attachment &attachment) {
     attachments.push_back(attachment);
 }
 
-std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::Rect(GRect &rect){
+TETessellationParams TETessellationParams::Rect(GRect &rect){
     TETessellationParams params;
     params.params.reset(new Data{});
     params.type = params.params->type = TESSALATE_RECT;
     params.params->rect = rect;
-    return std::move(params);
+    return params;
 };
 
-std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::RoundedRect(GRoundedRect &roundedRect){
+TETessellationParams TETessellationParams::RoundedRect(GRoundedRect &roundedRect){
     TETessellationParams params;
-    params.type = TESSALATE_ROUNDEDRECT;
     params.params.reset(new Data{});
-    // params.params.get_deleter().t = params.type;
+    params.type = params.params->type = TESSALATE_ROUNDEDRECT;
     params.params->rounded_rect = roundedRect;
-    return std::move(params);
+    return params;
 };
 
-std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::RectangularPrism(GRectangularPrism &prism){
+TETessellationParams TETessellationParams::RectangularPrism(GRectangularPrism &prism){
     TETessellationParams params;
     params.params.reset(new Data{});
     // params.params.get_deleter().t = params.type;
     params.params->prism = prism;
-    params.type = TESSELLATE_RECTANGULAR_PRISM;
-    return std::move(params);
+    params.type = params.params->type = TESSELLATE_RECTANGULAR_PRISM;
+    return params;
 };
 
-std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::Pyramid(GPyramid &pyramid){
+TETessellationParams TETessellationParams::Pyramid(GPyramid &pyramid){
     TETessellationParams params;
     params.params.reset(new Data{});
     params.params->pyramid = pyramid;
-    params.type = TESSALATE_PYRAMID;
-    return std::move(params);
+    params.type = params.params->type =  TESSALATE_PYRAMID;
+    return params;
 };
 
-std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::Ellipsoid(GEllipsoid &ellipsoid){
+TETessellationParams TETessellationParams::Ellipsoid(GEllipsoid &ellipsoid){
     TETessellationParams params;
     params.params.reset(new Data{});
     params.params->ellipsoid = ellipsoid;
-    params.type = TESSALATE_ELLIPSOID;
-    return std::move(params);
+    params.type = params.params->type =  TESSALATE_ELLIPSOID;
+    return params;
 };
 
-std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::Cylinder(GCylinder &cylinder){
+TETessellationParams TETessellationParams::Cylinder(GCylinder &cylinder){
     TETessellationParams params;
     params.params.reset(new Data{});
     params.params->cylinder = cylinder;
-    params.type = TESSALATE_CYLINDER;
-    return std::move(params);
+    params.type = params.params->type =  TESSALATE_CYLINDER;
+    return params;
 };
 
-std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::Cone(GCone &cone){
+TETessellationParams TETessellationParams::Cone(GCone &cone){
     TETessellationParams params;
     params.params.reset(new Data{});
     params.params->cone = cone;
-    params.type = TESSALATE_CONE;
-    return std::move(params);
+    params.type = params.params->type =  TESSALATE_CONE;
+    return params;
 };
 
-std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::GraphicsPath2D(GVectorPath2D & path,float strokeWidth,bool contour,bool fill){
+TETessellationParams TETessellationParams::GraphicsPath2D(GVectorPath2D & path,float strokeWidth,bool contour,bool fill){
     TETessellationParams params;
     params.params.reset(new Data{});
     params.params->path2D = {path,contour,fill,strokeWidth};
     params.type = TESSALATE_GRAPHICSPATH2D;
-    return std::move(params);
+    return params;
 };
 
-std::add_rvalue_reference_t<TETessellationParams> TETessellationParams::GraphicsPath3D(unsigned int vectorPathCount, GVectorPath3D *const vectorPaths){
+TETessellationParams TETessellationParams::GraphicsPath3D(unsigned int vectorPathCount, GVectorPath3D *const vectorPaths){
     TETessellationParams params;
-    ;
+    params.params.reset(new Data{});
     params.params->path3D = {vectorPaths,vectorPathCount};
-    params.type = TESSALATE_GRAPHICSPATH3D;
-    return std::move(params);
+    params.type = params.params->type =  TESSALATE_GRAPHICSPATH3D;
+    return params;
 };
 
 unsigned int TETessellationResult::TEMesh::vertexCount() {
@@ -295,8 +295,8 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
                 while(_angle_it <= angle_end){
                     TETessellationResult::TEMesh::Polygon p {};
 
-                    auto x_f = std::cosf(_angle_it) * rad_x;
-                    auto y_f = std::sinf(_angle_it) * rad_y;
+                    auto x_f = cosf(_angle_it) * rad_x;
+                    auto y_f = sinf(_angle_it) * rad_y;
 
                     x_f += start.x;
                     y_f += start.y;
@@ -307,8 +307,8 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
 
                     _angle_it += _arcStep;
 
-                    x_f = std::cosf(_angle_it) * rad_x;
-                    y_f = std::sinf(_angle_it) * rad_y;
+                    x_f = cosf(_angle_it) * rad_x;
+                    y_f = sinf(_angle_it) * rad_y;
 
                     x_f += start.x;
                     y_f += start.y;
@@ -755,9 +755,9 @@ void TETessellationResult::TEMesh::rotate(float pitch, float yaw, float roll) {
     /// Yaw Rotation -- Y Axis.
     /// Roll Rotation -- Z Axis.
 
-    auto cos_pitch = std::cosf(pitch),sin_pitch = std::sinf(pitch);
-    auto cos_yaw = std::cosf(yaw),sin_yaw = std::sinf(yaw);
-    auto cos_roll = std::cosf(roll),sin_roll = std::sinf(roll);
+    auto cos_pitch = cosf(pitch),sin_pitch = sinf(pitch);
+    auto cos_yaw = cosf(yaw),sin_yaw =sinf(yaw);
+    auto cos_roll = cosf(roll),sin_roll = sinf(roll);
 
     auto rotatePoint = [&](GPoint3D & pt){
         /// Pitch Rotation

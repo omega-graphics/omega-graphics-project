@@ -1,8 +1,6 @@
 {
 "variables":{
-        "third_party_dest":"./deps",
-        "gclient_repo":"https://chromium.googlesource.com/chromium/tools/depot_tools",
-        "gclient_dest":"./gclient"
+        "third_party_dest":"./deps"
     },
     "rootCommands":[
         {
@@ -11,6 +9,11 @@
         }
     ],
     "commands":[
-        
+        {
+            "type":"git_clone",
+            "url":"https://github.com/Tencent/rapidjson.git",
+            "dest":"$(third_party_dest)/rapidjson",
+            "branch":"default"
+        }
     ]
 }
