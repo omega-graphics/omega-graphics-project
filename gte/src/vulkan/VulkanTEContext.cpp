@@ -30,7 +30,7 @@ public:
         }
     }
 
-    std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params, GEViewport *viewport = nullptr) override {
+    std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params,GTEPolygonFrontFaceRotation direction, GEViewport *viewport = nullptr) override {
         return {};
     }
 
