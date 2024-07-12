@@ -1,4 +1,4 @@
-#include "aqua/Core/AQUAScene.h"
+#include "aqua/Scene/AQUAScene.h"
 
 AQUA_NAMESPACE_BEGIN
 

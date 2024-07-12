@@ -202,7 +202,7 @@ void ViewDelegate::onRecieveEvent(Native::NativeEventPtr event){
     }
 };
 
-ScrollView::ScrollView(const Core::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, Composition::LayerTree *layerTree, View *parent):
+ScrollView::ScrollView(const Core::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, Composition::LayerTree *layerTree, ViewPtr parent):
         View(rect,Native::make_native_item(rect,Native::ScrollItem),layerTree,parent),
         delegate(nullptr),
         hasHorizontalScrollBar(hasHorizontalScrollBar), hasVerticalScrollBar(hasVerticalScrollBar){
@@ -237,137 +237,142 @@ void ScrollViewDelegate::onRecieveEvent(Native::NativeEventPtr event){
 
 };
 
-SharedHandle<ClickableViewHandler> ClickableViewHandler::Create() {
-    return (SharedHandle<ClickableViewHandler>)new ClickableViewHandler();
-}
+// SharedHandle<ClickableViewHandler> ClickableViewHandler::Create() {
+//     return (SharedHandle<ClickableViewHandler>)new ClickableViewHandler();
+// }
 
-void ClickableViewHandler::onClick(std::function<void()> handler) {
-    click_handler = std::move(handler);
-}
+// void ClickableViewHandler::onClick(std::function<void()> handler) {
+//     click_handler = std::move(handler);
+// }
 
-void ClickableViewHandler::onHoverBegin(std::function<void()> handler) {
-    hover_begin_handler = handler;
-}
+// void ClickableViewHandler::onHoverBegin(std::function<void()> handler) {
+//     hover_begin_handler = handler;
+// }
 
-void ClickableViewHandler::onHoverEnd(std::function<void()> handler) {
-    hover_end_handler = handler;
-}
+// void ClickableViewHandler::onHoverEnd(std::function<void()> handler) {
+//     hover_end_handler = handler;
+// }
 
-void ClickableViewHandler::onPress(std::function<void()> handler) {
-    press_handler = handler;
-}
+// void ClickableViewHandler::onPress(std::function<void()> handler) {
+//     press_handler = handler;
+// }
 
-void ClickableViewHandler::onRelease(std::function<void()> handler) {
-    release_handler = handler;
-}
+// void ClickableViewHandler::onRelease(std::function<void()> handler) {
+//     release_handler = handler;
+// }
 
-void ClickableViewHandler::onMouseEnter(Native::NativeEventPtr event) {
-    hover_begin_handler();
-}
+// void ClickableViewHandler::onMouseEnter(Native::NativeEventPtr event) {
+//     hover_begin_handler();
+// }
 
-void ClickableViewHandler::onMouseExit(Native::NativeEventPtr event) {
-    hover_end_handler();
-}
+// void ClickableViewHandler::onMouseExit(Native::NativeEventPtr event) {
+//     hover_end_handler();
+// }
 
-void ClickableViewHandler::onLeftMouseDown(Native::NativeEventPtr event) {
-    press_handler();
-    click_handler();
-}
+// void ClickableViewHandler::onLeftMouseDown(Native::NativeEventPtr event) {
+//     press_handler();
+//     click_handler();
+// }
 
-void ClickableViewHandler::onLeftMouseUp(Native::NativeEventPtr event) {
-    release_handler();
-}
+// void ClickableViewHandler::onLeftMouseUp(Native::NativeEventPtr event) {
+//     release_handler();
+// }
 
-SharedHandle<Composition::Brush> cursorBrush = Composition::ColorBrush({Composition::Color::Black8});
 
-TextView::TextView(const Core::Rect &rect,Composition::LayerTree * layerTree,View *parent, bool io) :
-View(rect,layerTree,parent),
-textRect(
-        Composition::TextRect::Create(
-        rect,
-        Composition::TextLayoutDescriptor {
-            Composition::TextLayoutDescriptor::LeftUpper,
-            Composition::TextLayoutDescriptor::WrapByWord
-        })),
-        rootLayerCanvas(makeCanvas(getLayerTreeLimb()->getRootLayer())),
-        str(),
-        editMode(io),cursorLayer(makeLayer({{0,0},100,100})),
-        cursorCanvas(makeCanvas(cursorLayer)){
+
+
+
+
+// SharedHandle<Composition::Brush> cursorBrush = Composition::ColorBrush({Composition::Color::Black8});
+
+// TextView::TextView(const Core::Rect &rect,Composition::LayerTree * layerTree,View *parent, bool io) :
+// View(rect,layerTree,parent),
+// textRect(
+//         Composition::TextRect::Create(
+//         rect,
+//         Composition::TextLayoutDescriptor {
+//             Composition::TextLayoutDescriptor::LeftUpper,
+//             Composition::TextLayoutDescriptor::WrapByWord
+//         })),
+//         rootLayerCanvas(makeCanvas(getLayerTreeLimb()->getRootLayer())),
+//         str(),
+//         editMode(io),cursorLayer(makeLayer({{0,0},100,100})),
+//         cursorCanvas(makeCanvas(cursorLayer)){
 
         
-}
+// }
 
-void TextView::moveTextCursorToMousePoint(Core::Position & pos){
+// void TextView::moveTextCursorToMousePoint(Core::Position & pos){
     
-}
+// }
 
-void TextView::enableCursor(){
-    if(font){
-        cursorLayer->setEnabled(true);
-        auto &r = cursorLayer->getLayerRect();
-        cursorCanvas->drawRect(r,cursorBrush);
-        cursorCanvas->sendFrame();
-    }
-}
+// void TextView::enableCursor(){
+//     if(font){
+//         cursorLayer->setEnabled(true);
+//         auto &r = cursorLayer->getLayerRect();
+//         cursorCanvas->drawRect(r,cursorBrush);
+//         cursorCanvas->sendFrame();
+//     }
+// }
 
-void TextView::disableCursor(){
-    if(font){
-        cursorLayer->setEnabled(false);
-    }
-}
+// void TextView::disableCursor(){
+//     if(font){
+//         cursorLayer->setEnabled(false);
+//     }
+// }
 
-void TextView::pushChar(Unicode32Char &ch) {
-    str.append(ch);
-}
+// void TextView::pushChar(Unicode32Char &ch) {
+//     str.append(ch);
+// }
 
-void TextView::popChar() {
-    str.truncate(str.length() - 1);
-}
+// void TextView::popChar() {
+//     str.truncate(str.length() - 1);
+// }
 
-void TextView::commitChanges() {
-    auto run = Composition::GlyphRun::fromUStringAndFont(str,font);
-    textRect->drawRun(run,Composition::Color::create8Bit(Composition::Color::Eight::Black8));
-    auto img = textRect->toBitmap();
-    rootLayerCanvas->drawGETexture(img.s,getRect(),img.textureFence);
-    rootLayerCanvas->sendFrame();
-}
+// void TextView::commitChanges() {
+//     auto run = Composition::GlyphRun::fromUStringAndFont(str,font);
+//     textRect->drawRun(run,Composition::Color::create8Bit(Composition::Color::Eight::Black8));
+//     auto img = textRect->toBitmap();
+//     rootLayerCanvas->drawGETexture(img.s,getRect(),img.textureFence);
+//     rootLayerCanvas->sendFrame();
+// }
 
-void TextView::updateFont(SharedHandle<Composition::Font> &font) {
-    this->font = font;
-}
+// void TextView::updateFont(SharedHandle<Composition::Font> &font) {
+//     this->font = font;
+// }
 
-void TextView::setContent(const UChar *str){
-    this->str.setTo(str,u_strlen(str));
-    commitChanges();
-}
+// void TextView::setContent(const UChar *str){
+//     this->str.setTo(str,u_strlen(str));
+//     commitChanges();
+// }
 
-TextViewDelegate::TextViewDelegate(TextView *view) : ViewDelegate(){
-    view->setDelegate(this);
-    clickHandler = std::make_unique<ClickableViewHandler>();
-    setForwardDelegate(clickHandler.get());
-     clickHandler->onClick([&](){
-         auto _v = (TextView *)this->view;
-        Core::Position pos {};
-        _v->startCompositionSession();
-        _v->moveTextCursorToMousePoint(pos);
-        _v->enableCursor();
-        _v->endCompositionSession();
-    });
-}
+// TextViewDelegate::TextViewDelegate(TextView *view) : ViewDelegate(){
+//     view->setDelegate(this);
+//     clickHandler = std::make_unique<ClickableViewHandler>();
+//     setForwardDelegate(clickHandler.get());
+//      clickHandler->onClick([&](){
+//          auto _v = (TextView *)this->view;
+//         Core::Position pos {};
+//         _v->startCompositionSession();
+//         _v->moveTextCursorToMousePoint(pos);
+//         _v->enableCursor();
+//         _v->endCompositionSession();
+//     });
+// }
 
 
-void TextViewDelegate::onKeyDown(Native::NativeEventPtr event){
-    auto _v = (TextView *)this->view;
-    UChar32 ch;
-    _v->startCompositionSession();
-    _v->pushChar(ch);
-    _v->commitChanges();
-    _v->endCompositionSession();
-}
+// void TextViewDelegate::onKeyDown(Native::NativeEventPtr event){
+//     auto _v = (TextView *)this->view;
+//     UChar32 ch;
+//     _v->startCompositionSession();
+//     _v->pushChar(ch);
+//     _v->commitChanges();
+//     _v->endCompositionSession();
+// }
 
-void TextViewDelegate::onKeyUp(Native::NativeEventPtr event){
+// void TextViewDelegate::onKeyUp(Native::NativeEventPtr event){
     
-}
+// }
 
 
 

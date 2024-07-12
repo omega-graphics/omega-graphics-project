@@ -13,6 +13,13 @@ namespace OmegaWTK {
         struct Color;
     }
 
+         /**
+     * @brief CanvasElementTag. 
+     Used for tagging visual elements on a 2D canvas
+     * 
+     */
+    typedef OmegaCommon::String UIElementTag;
+
     struct StyleSheet;
     OMEGACOMMON_SHARED_CLASS(StyleSheet);
 
@@ -121,7 +128,7 @@ namespace OmegaWTK {
          * @return StyleSheetPtr 
          */
         StyleSheetPtr elementBrush(
-            Composition::CanvasElementTag elementTag,
+            UIElementTag elementTag,
             SharedHandle<Composition::Brush> brush,
             bool transition = false,
             float duration = 0.f
@@ -146,9 +153,9 @@ namespace OmegaWTK {
          * @param duration 
          * @return StyleSheetPtr 
          */
-        StyleSheetPtr elementAnimation(Composition::CanvasElementTag elementTag,ElementAnimationKey key,SharedHandle<Composition::AnimationCurve> curve,float duration);
+        StyleSheetPtr elementAnimation(UIElementTag elementTag,ElementAnimationKey key,SharedHandle<Composition::AnimationCurve> curve,float duration);
 
-        StyleSheetPtr elementPathAnimation(Composition::CanvasElementTag elementTag,SharedHandle<Composition::AnimationCurve> curve,int nodeIndex,float duration);
+        StyleSheetPtr elementPathAnimation(UIElementTag elementTag,SharedHandle<Composition::AnimationCurve> curve,int nodeIndex,float duration);
 
         StyleSheet();
         ~StyleSheet() = default;
@@ -157,10 +164,10 @@ namespace OmegaWTK {
      * @brief Consumes a style. (Generally a widget)
      * 
      */
-    INTERFACE StyleSheetUser {
-        int framesPerSec = 60;
-        INTERFACE_METHOD void useStyleSheet(StyleSheetPtr style) DEFAULT;
-    };
+    // INTERFACE StyleSheetUser {
+    //     int framesPerSec = 60;
+    //     INTERFACE_METHOD void useStyleSheet(StyleSheetPtr style) DEFAULT;
+    // };
 
     class UIViewLayout;
     typedef SharedHandle<UIViewLayout> UIViewLayoutPtr;
@@ -172,7 +179,7 @@ namespace OmegaWTK {
     class UIViewLayout {
         struct Element {
             unsigned type = 0;
-            Composition::CanvasElementTag tag;
+            UIElementTag tag;
             Core::Optional<OmegaCommon::UString> str;
             Core::Optional<Shape> shape;
         };
@@ -184,18 +191,37 @@ namespace OmegaWTK {
      * @param tag 
      * @param content 
      */
-        void text(Composition::CanvasElementTag tag,OmegaCommon::UString content);
+        void text(UIElementTag tag,OmegaCommon::UString content);
     /**
      * @brief Adds a shape element. If the shape element already exists, it will replace it with the `content` parameter.
      * 
      * @param tag 
      * @param content 
      */
-        void shape(Composition::CanvasElementTag tag,Shape & shape);
+        void shape(UIElementTag tag,Shape & shape);
     };
 
-    INTERFACE LayoutUser {
-        INTERFACE_METHOD void useLayout(UIViewLayout user) DEFAULT;
+    // INTERFACE LayoutUser {
+    //     INTERFACE_METHOD void useLayout(UIViewLayout user) DEFAULT;
+    // };
+
+    class UIRenderer {
+         int framesPerSec = 60;
+         
+         UIView *view;
+
+         OmegaCommon::Map<UIElementTag,SharedHandle<Composition::Canvas>> renderTargetStore;
+
+          SharedHandle<Composition::Canvas> buildLayerRenderTarget(UIElementTag tag);
+        public:
+        UIRenderer(UIView *view);
+
+        void handleElement(UIElementTag tag);
+
+        void handleTransition(UIElementTag tag,ElementAnimationKey k,float duration);
+
+        void handleAnimation(UIElementTag tag,ElementAnimationKey k,float duration,SharedHandle<Composition::AnimationCurve> & curve);
+
     };
 
 
@@ -204,30 +230,17 @@ namespace OmegaWTK {
      Used for tagging the entire UIView.
      * 
      */
-    typedef Composition::CanvasElementTag UIViewTag;
+    typedef UIElementTag UIViewTag;
 
     /**
      * @brief A simple UI container.
      * 
      */
-    class OMEGAWTK_EXPORT UIView : public CanvasView, LayoutUser, StyleSheetUser {
+    class OMEGAWTK_EXPORT UIView : public CanvasView, UIRenderer {
         UIViewTag tag;
     public:
 
         explicit UIView(const Core::Rect & rect,Composition::LayerTree * layerTree,ViewPtr parent,UIViewTag tag);
-
-        /**
-         * @brief Method should be called before `enable()` If one layout is used, then you only have to call this ONCE.
-         * 
-         * @param user 
-         */
-        void useLayout(UIViewLayout user) override;
-        /**
-         * @brief Method should be called before `enable()`. If one style is used, then you only have to call this ONCE.
-         * 
-         * @param style
-         */
-        void useStyleSheet(StyleSheetPtr style) override;
         /**
          * @brief Updates the view (Invoke ONLY if there's a change made to the layout or the style)
          * 

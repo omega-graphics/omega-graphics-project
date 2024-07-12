@@ -58,7 +58,8 @@ endmacro()
 
 if(APPLE)
 	if(NOT CODE_SIGNATURE)
-		message(FATAL_ERROR "CODE_SIGNATURE Variable must be defined in order to sign Apple App and Framework Bundles.")
+		message(FATAL_ERROR "CODE_SIGNATURE Variable must be defined in order to sign Apple App and Framework Bundles. 
+		Set the variable with your Apple Developer Team ID or goto apple.com and register with the Apple Developer Program")
 	endif()
 	
 	macro(set_library_install_name LIB PATH)

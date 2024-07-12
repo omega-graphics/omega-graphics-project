@@ -1,4 +1,4 @@
-#include "omegaWTK/Widgets/BasicWidget.h"
+#include "omegaWTK/Widgets/BasicWidgets.h"
 
 namespace OmegaWTK::Widgets {
     

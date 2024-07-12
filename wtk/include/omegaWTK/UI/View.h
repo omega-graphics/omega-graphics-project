@@ -213,7 +213,7 @@ namespace OmegaWTK {
         bool hasDelegate();
         bool hasVerticalScrollBar,hasHorizontalScrollBar;
         friend class Widget;
-        explicit ScrollView(const Core::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, Composition::LayerTree *layerTree, View *parent = nullptr);
+        explicit ScrollView(const Core::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, Composition::LayerTree *layerTree, ViewPtr parent = nullptr);
     public:
         void toggleVerticalScrollBar();
         void toggleHorizontalScrollBar();
@@ -319,7 +319,7 @@ public:
     OMEGACOMMON_CLASS("OmegaWTK.VideoView")
     friend class Widget;
 
-   VideoView(const Core::Rect & rect,Composition::LayerTree * layerTree,View *parent = nullptr);
+   VideoView(const Core::Rect & rect,Composition::LayerTree * layerTree,ViewPtr parent = nullptr);
 };
 /**
  @brief 

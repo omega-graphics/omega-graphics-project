@@ -16,3 +16,8 @@ omega_graphics_add_subdir(OmegaCommon common)
 omega_graphics_add_subdir(OmegaGTE gte)
 
 omega_graphics_add_subdir(OmegaWTK wtk)
+
+if(NOT CROSS_COMPILE)
+# Add Game engine module
+    omega_graphics_add_subdir(AQUA aqua)
+endif()

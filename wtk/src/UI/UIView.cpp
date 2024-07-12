@@ -30,7 +30,7 @@ namespace OmegaWTK {
             taggedElementIt->shape = shape;
         }
         else {
-            _content.push_back({1,tag,{},shape});
+            _content.push_back(UIViewLayout::Element{1,tag,{},shape});
         }
     }
 
@@ -38,11 +38,15 @@ namespace OmegaWTK {
         return make<StyleSheet>();
     }
 
+    StyleSheet::StyleSheet(){
+        
+    }
+
     // StyleSheetPtr StyleSheet::border(UIViewTag tag, bool use){
 
     // }
 
-    UIRenderer::UIRenderer(View *view):view(view){
+    UIRenderer::UIRenderer(UIView *view):view(view){
         
     }
 

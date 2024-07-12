@@ -69,15 +69,19 @@ Layer & Canvas::getCorrespondingLayer(){
 // };
 
 void Canvas::drawRect(Core::Rect &rect, Core::SharedPtr<Brush> &brush){
-    current->currentVisuals.push_back(VisualCommand(rect,brush,Core::Optional<Border>{}));
+    current->currentVisuals.emplace_back(rect,brush,Core::Optional<Border>{});
 };
 
+void Canvas::drawRoundedRect(Core::RoundedRect &rect, Core::SharedPtr<Brush> &brush){
+    current->currentVisuals.emplace_back(rect,brush,Core::Optional<Border>{});
+}
+
 void Canvas::drawImage(SharedHandle<Media::BitmapImage> &img,const Core::Rect & rect) {
-    current->currentVisuals.push_back(VisualCommand(img,rect));
+    current->currentVisuals.emplace_back(img,rect);
 }
 
 void Canvas::drawGETexture(SharedHandle<OmegaGTE::GETexture> &img,const Core::Rect & rect,SharedHandle<OmegaGTE::GEFence> fence) {
-    current->currentVisuals.push_back(VisualCommand(img,fence,rect));
+    current->currentVisuals.emplace_back(img,fence,rect);
 }
 
 SharedHandle<CanvasFrame> Canvas::getCurrentFrame() {

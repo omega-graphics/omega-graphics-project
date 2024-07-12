@@ -16,6 +16,7 @@ class AppWindow;
 class AppWindowManager;
 
 class View;
+OMEGACOMMON_SHARED_CLASS(View);
 typedef View CanvasView;
 OMEGACOMMON_SHARED_CLASS(CanvasView);
 class VideoView;
@@ -62,7 +63,7 @@ protected:
      @param parent The Parent View (NOTE: This view MUST be within this widget's view heirarchy)
      @returns A standard View
      */
-    CanvasViewPtr makeCanvasView(const Core::Rect & rect,View *parent);
+    CanvasViewPtr makeCanvasView(const Core::Rect & rect,ViewPtr parent);
 
     //    /**
     //  Makes a Canvas View attached to this widget and returns it.
@@ -78,7 +79,7 @@ protected:
      @param parent The Parent View (NOTE: This view MUST be within this widget's view heirarchy)
      @returns A Video View
      */
-    SVGViewPtr makeSVGView(const Core::Rect & rect,View *parent);
+    SVGViewPtr makeSVGView(const Core::Rect & rect,ViewPtr parent);
 
     /**
      Makes a Video View attached to this widget and returns it.
@@ -86,7 +87,7 @@ protected:
      @param parent The Parent View (NOTE: This view MUST be within this widget's view heirarchy)
      @returns A Video View
      */
-    VideoViewPtr makeVideoView(const Core::Rect & rect,View *parent);
+    VideoViewPtr makeVideoView(const Core::Rect & rect,ViewPtr parent);
 
      /**
      Makes a UI View attached to this widget and returns it.
@@ -110,7 +111,11 @@ protected:
         Detach,
         Attach
     } WidgetEventType;
-    void notifyObservers(WidgetEventType eventType,void* params);
+    struct WidgetEventParams {
+        WidgetPtr widget;
+        Core::Rect rect;
+    };
+    void notifyObservers(WidgetEventType eventType,WidgetEventParams params);
     /**
     @brief Initial render of the Widget
     @note MUST be implemented by all Widgets*/
@@ -125,7 +130,7 @@ public:
      Get the Widget's root View's rect
     */
     Core::Rect & rect();
-    void setParentWidget(Widget *widget);
+    void setParentWidget(WidgetPtr widget);
     /**
      Add a WidgetObserver to be notified.
     */
@@ -148,9 +153,9 @@ public:
     */
     void hide();
 protected:
-    Widget(const Core::Rect & rect,Widget * parent);
+    Widget(const Core::Rect & rect,WidgetPtr parent);
 public:
-    ~Widget() override FALLTHROUGH;
+    ~Widget() override;
 };
 
 // #define WIDGET_TEMPLATE_BEGIN()
@@ -158,9 +163,9 @@ public:
 // #define WIDGET_TEMPLATE_END()
 
 
-#define WIDGET_NOTIFY_OBSERVERS_SHOW() notifyObservers(Widget::Show,nullptr)
-#define WIDGET_NOTIFY_OBSERVERS_HIDE() notifyObservers(Widget::Hide,nullptr)
-#define WIDGET_NOTIFY_OBSERVERS_RESIZE(rect) notifyObservers(Widget::Resize,&(rect))
+#define WIDGET_NOTIFY_OBSERVERS_SHOW() notifyObservers(Widget::Show,{})
+#define WIDGET_NOTIFY_OBSERVERS_HIDE() notifyObservers(Widget::Hide,{})
+#define WIDGET_NOTIFY_OBSERVERS_RESIZE(rect) notifyObservers(Widget::Resize,{nullptr,rect})
 
 
 /** 
@@ -176,9 +181,9 @@ public:
     WidgetObserver();
     /// Implement in subclasses!
     /// Called when the Widget has been attached to a WidgetTree.
-    INTERFACE_METHOD void onWidgetAttach(Widget *parent) DEFAULT;
+    INTERFACE_METHOD void onWidgetAttach(WidgetPtr parent) DEFAULT;
      /// Called when the Widget has been dettached from a WidgetTree.
-    INTERFACE_METHOD void onWidgetDetach(Widget *parent) DEFAULT;
+    INTERFACE_METHOD void onWidgetDetach(WidgetPtr parent) DEFAULT;
     /// Called when the Widget has changed size.
     INTERFACE_METHOD void onWidgetChangeSize(Core::Rect oldRect,Core::Rect & newRect) DEFAULT;
     /// Called when the Widget has just been Hidden.

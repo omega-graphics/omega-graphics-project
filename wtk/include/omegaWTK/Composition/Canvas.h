@@ -48,12 +48,6 @@ namespace OmegaWTK {
 
     class Canvas;
 
-     /**
-     * @brief CanvasElementTag. 
-     Used for tagging visual elements on a 2D canvas
-     * 
-     */
-    typedef OmegaCommon::String CanvasElementTag;
 
     
     /// An object drawn by a Compositor.
@@ -66,7 +60,7 @@ namespace OmegaWTK {
             Bitmap
         } Type;
         Type type;
-        union Data {
+        struct Data {
             struct {
                 Core::Rect rect;
                 Core::SharedPtr<Brush> brush;
@@ -162,6 +156,8 @@ namespace OmegaWTK {
 
     public:
         OMEGACOMMON_CLASS("OmegaWTK.Composition.Canvas")
+
+        Layer & getCorrespondingLayer();
         /**
          @brief Draw a Path.
          */

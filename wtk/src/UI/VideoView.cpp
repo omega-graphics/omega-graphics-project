@@ -7,7 +7,7 @@ namespace OmegaWTK {
 
 
 
-VideoView::VideoView(const Core::Rect & rect,Composition::LayerTree *layerTree,View *parent):View(rect,layerTree,parent),
+VideoView::VideoView(const Core::Rect & rect,Composition::LayerTree *layerTree,ViewPtr parent):View(rect,layerTree,parent),
                                                                                              framebuffer(2){
     videoCanvas = makeCanvas(getLayerTreeLimb()->getRootLayer());
 };

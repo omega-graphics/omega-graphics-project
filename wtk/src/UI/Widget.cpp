@@ -1,21 +1,20 @@
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/Composition/CompositorClient.h"
-#include "omegaWTK/UI/VideoView.h"
+#include "omegaWTK/UI/View.h"
 #include "omegaWTK/UI/WidgetTreeHost.h"
-#include "omegaWTK/UI/SVGView.h"
 
 
 
 namespace OmegaWTK {
 
 
-Widget::Widget(const Core::Rect & rect,Widget * parent):parent(parent){
+Widget::Widget(const Core::Rect & rect,WidgetPtr parent):parent(parent){
     layerTree = std::make_shared<Composition::LayerTree>();
     rootView = SharedHandle<CanvasView>(new CanvasView(rect,layerTree.get(),nullptr));
     // std::cout << "Constructing View for Widget" << std::endl;
     if(parent != nullptr) {
         parent->rootView->addSubView(this->rootView.get());
-        parent->children.push_back(this);
+        parent->children.push_back(SharedHandle<Widget>(this));
     }
 //    std::cout << "RenderTargetPtr:" << rootView->renderTarget.get() << std::endl;
 };
@@ -31,7 +30,7 @@ void Widget::onThemeSetRecurse(Native::ThemeDesc &desc){
     }
 }
 
-SharedHandle<View> Widget::makeCanvasView(const Core::Rect & rect,View *parent){
+SharedHandle<View> Widget::makeCanvasView(const Core::Rect & rect,ViewPtr parent){
     return SharedHandle<CanvasView>(new CanvasView(rect,layerTree.get(),parent));
 };
 
@@ -39,11 +38,11 @@ SharedHandle<View> Widget::makeCanvasView(const Core::Rect & rect,View *parent){
 //     return SharedHandle<TextView>(new TextView(rect,layerTree.get(),parent,false));
 // };
 
-SharedHandle<SVGView> Widget::makeSVGView(const Core::Rect & rect,View *parent){
+SharedHandle<SVGView> Widget::makeSVGView(const Core::Rect & rect,ViewPtr parent){
     return SharedHandle<SVGView>(new SVGView(rect,layerTree.get(),parent));
 }
 
-SharedHandle<VideoView> Widget::makeVideoView(const Core::Rect & rect,View * parent){
+SharedHandle<VideoView> Widget::makeVideoView(const Core::Rect & rect,ViewPtr parent){
     return SharedHandle<VideoView>(new VideoView(rect,layerTree.get(),parent));
 };
 
@@ -62,7 +61,7 @@ void Widget::hide(){
     WIDGET_NOTIFY_OBSERVERS_HIDE();
 };
 
-void Widget::addObserver(WidgetObserver * observer){
+void Widget::addObserver(WidgetObserverPtr observer){
     if(!observer->hasAssignment) {
         observers.push_back(observer);
         observer->hasAssignment = true;
@@ -77,7 +76,7 @@ void Widget::setTreeHostRecurse(WidgetTreeHost *host){
     };
 };
 
-void Widget::removeObserver(WidgetObserver *observerPtr){
+void Widget::removeObserver(WidgetObserverPtr observerPtr){
     auto it = observers.begin();
     while(it != observers.end()){
         if(*it == observerPtr){
@@ -89,7 +88,7 @@ void Widget::removeObserver(WidgetObserver *observerPtr){
     };
 };
 
-void Widget::notifyObservers(Widget::WidgetEventType event_ty,void* params){
+void Widget::notifyObservers(Widget::WidgetEventType event_ty,Widget::WidgetEventParams params){
     for(auto & observer : observers){
         switch (event_ty) {
             case Show : {
@@ -101,45 +100,49 @@ void Widget::notifyObservers(Widget::WidgetEventType event_ty,void* params){
                 break;
             };
             case Resize : {
-                observer->onWidgetChangeSize(*(Core::Rect *)params,rootView->rect);
+                observer->onWidgetChangeSize(params.rect,rootView->rect);
                 break;
             }
             case Attach : {
-                observer->onWidgetAttach((Widget *)params);
+                observer->onWidgetAttach(params.widget);
                 break;
             }
             case Detach : {
-                observer->onWidgetDetach((Widget *)params);
+                observer->onWidgetDetach(params.widget);
                 break;
             }
         }
     };
 };
 
-void Widget::removeChildWidget(Widget *ptr){
+void Widget::removeChildWidget(WidgetPtr ptr){
     for(auto it = children.begin();it != children.end();it++){
         if(ptr == *it){
             rootView->removeSubView(ptr->rootView.get());
             children.erase(it);
-            ptr->notifyObservers(Detach,this);
+            ptr->notifyObservers(Detach,{WidgetPtr(this)});
             ptr->layerTree->notifyObserversOfWidgetDetach();
             break;
         };
     };
 };
 
-void Widget::setParentWidget( Widget * widget){
+void Widget::setParentWidget(WidgetPtr widget){
     assert(widget != nullptr && "Cannot set Widget as child of a null Widget");
 
     if(parent != nullptr){
-        parent->removeChildWidget(this);
+        parent->removeChildWidget(std::shared_ptr<Widget>(this));
     }
     parent = widget;
-    parent->children.push_back(this);
+    parent->children.push_back(std::shared_ptr<Widget>(this));
     setTreeHostRecurse(widget->treeHost);
     parent->rootView->addSubView(rootView.get());
-    notifyObservers(Attach,(void *)widget);
+    notifyObservers(Attach,{widget});
 };
+
+Widget::~Widget(){
+    parent->removeChildWidget(std::shared_ptr<Widget>(this));
+}
 
 
 WidgetObserver::WidgetObserver():hasAssignment(false),widget(nullptr){

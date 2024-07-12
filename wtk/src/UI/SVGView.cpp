@@ -1,4 +1,4 @@
-#include "omegaWTK/UI/SVGView.h"
+#include "omegaWTK/UI/View.h"
 #include "omegaWTK/Composition/Animation.h"
 #include "omegaWTK/Composition/Path.h"
 

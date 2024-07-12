@@ -107,11 +107,13 @@ namespace OmegaWTK {
 
         typedef OmegaGTE::GRoundedRect RoundedRect;
 
-        struct OMEGAWTK_EXPORT Ellipse : OmegaGTE::GEllipsoid {
-            float & x;
-            float & y;
-            float & rad_x;
-            float & rad_y;
+        struct OMEGAWTK_EXPORT Ellipse : private OmegaGTE::GEllipsoid {
+            float x;
+            float y;
+            float rad_x;
+            float rad_y;
+
+            Ellipse():OmegaGTE::GEllipsoid(){}
 
             Ellipse(float x,float y,float rad_x,float rad_y):
             GEllipsoid({x,y,0,rad_x,rad_y,0}),
