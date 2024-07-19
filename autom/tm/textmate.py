@@ -1,4 +1,4 @@
-from pyyaml.lib3 import yaml
+from pyyaml.lib import yaml
 import plistlib
 import json
 import re as Regex

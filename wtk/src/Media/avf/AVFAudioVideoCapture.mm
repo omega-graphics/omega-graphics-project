@@ -127,7 +127,7 @@ namespace OmegaWTK::Media {
                             else {
                                 /// Render Video
                                 if(cl.useProcessor){
-
+                                    
                                 }
 
                                 auto frame = std::make_shared<VideoFrame>();
@@ -479,6 +479,11 @@ namespace OmegaWTK::Media {
         AVSampleBufferRequest *videoSampleRequest,*audioSampleRequest;
         AVSampleCursor *videoCursor,*audioCursor;
         PlaybackDispatchQueueRef dispatchQueue;
+        size_t playbackClientIndex;
+
+        std::thread *playbackLoop;
+        std::mutex m;
+        bool playing = false;
 
         explicit AVFVideoPlaybackSession(AudioVideoProcessorRef processor,PlaybackDispatchQueueRef dispatchQueue) : VideoPlaybackSession(processor),dispatchQueue(dispatchQueue){
 
@@ -487,7 +492,14 @@ namespace OmegaWTK::Media {
 
         }
         void setVideoFrameSink(VideoFrameSink &sink) override {
-
+            PlaybackDispatchQueue::Client c;
+            c.audioOrVideo = false;
+            c.useProcessor = true;
+            c.cursor = videoCursor;
+            c.videoSink = &sink;
+            c.generator = sampleBufferGen;
+            c.sampleBufferRequest = videoSampleRequest;
+            playbackClientIndex = dispatchQueue->addClient({true,true});
         }
         void setVideoSource(MediaInputStream &inputStream) override {
             AVAsset *asset = [AVAsset assetWithURL:[NSURL fileURLWithPath:@""]];
@@ -508,14 +520,13 @@ namespace OmegaWTK::Media {
             sampleBufferGen = [[AVSampleBufferGenerator alloc] initWithAsset:asset timebase:nil];
         }
         void start() override {
-            BOOL b = YES;
-            while(b){
-                CMSampleBufferRef sampleBuffer = [sampleBufferGen createSampleBufferForRequest:videoSampleRequest];
-                [videoCursor stepInDecodeOrderByCount:1];
-            }
+            /// THE VIDEO CYCLE
+            /// Send image buffer and audio sample buffer in cycle.
+            dispatchQueue->startPlaybackForClient(playbackClientIndex);
+            
         }
         void pause() override {
-
+            dispatchQueue->stopPlaybackForClient(playbackClientIndex);
         }
         void reset() override {
 

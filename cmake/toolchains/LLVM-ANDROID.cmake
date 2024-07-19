@@ -5,6 +5,8 @@ set(CMAKE_CXX_COMPILER clang++)
 
 set(CMAKE_SYSTEM_NAME Android)
 
+find_program(ANDROID_SDK_TOOLS "sdkmanager" REQUIRED)
+
 if(ANDROID_API_VERSION)
     set(CMAKE_SYSTEM_VERSION ${ANDROID_API_VERSION})
 else()

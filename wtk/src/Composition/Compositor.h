@@ -12,6 +12,25 @@
 #define OMEGAWTK_COMPOSTION_COMPOSITOR_H
 
 namespace OmegaWTK::Composition {
+    template<class FnTy>
+    class WorkerFarm {    
+        struct ThreadStatus {
+            bool busy;
+        };
+        std::map<std::thread,ThreadStatus> threadsInFlight;
+        void _makeThread(FnTy fn){
+            threadsInFlight.insert(std::make_pair([&]{
+                fn();
+            },{false}));
+        }
+    public:
+        WorkerFarm<FnTy>(int startThreads){
+
+        };
+        void assign(FnTy fn){
+
+        };
+    };
    
    class CompositorScheduler {
        Compositor *compositor;
