@@ -16,6 +16,7 @@
 
 #pragma comment(lib,"mfplat.lib")
 #pragma comment(lib,"mfuuid.lib")
+#pragma comment(lib,"shlwapi.lib")
 
 namespace OmegaWTK::Media {
 

@@ -56,7 +56,7 @@ add_third_party(
 	BINARY_DIR "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source/allinone"
 	INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/icu"
 	CONF "" 
-	BUILD msbuild allinone.sln -p:Configuration=Release
+	BUILD msbuild allinone.sln /p:Configuration=Release /p:SkipUWP=true
 	INSTALL ${CMAKE_COMMAND} -E copy_directory "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/include" "${THIRD_PARTY_OUTPUT_DIR}/icu/include"
 	&& ${CMAKE_COMMAND} -E copy "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/bin64/icuuc${ICU_VERSION}.dll" "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/bin64/icudt${ICU_VERSION}.dll" "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/bin64/icuin${ICU_VERSION}.dll" "${THIRD_PARTY_OUTPUT_DIR}/icu/bin"
 	&& ${CMAKE_COMMAND} -E copy "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/lib64/icuuc.lib" "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/lib64/icudt.lib" "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/lib64/icuin.lib" "${THIRD_PARTY_OUTPUT_DIR}/icu/lib")
@@ -382,5 +382,7 @@ if(TARGET_LINUX)
 endif()
 
 include(cmake/OmegaWTKApp.cmake)
+
+add_subdirectory(tools)
 
  add_subdirectory(tests)

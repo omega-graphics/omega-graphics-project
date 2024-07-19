@@ -10,7 +10,7 @@ import tarfile,zipfile,shutil
 import argparse,platform
 from queue import Queue
 
-import certifi
+# import certifi
 import requests
 
 

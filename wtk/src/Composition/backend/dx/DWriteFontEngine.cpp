@@ -1,5 +1,6 @@
 #include "omegaWTK/Composition/FontEngine.h"
-#include <atlstr.h>
+#include "NativePrivate/win/WinUtils.h"
+// #include <atlstr.h>
 #include <d2d1.h>
 #include <d2d1_1.h>
 #include <d2d1_1helper.h>
@@ -88,14 +89,6 @@ namespace OmegaWTK::Composition {
             *fontFileEnumerator = ptr;
             return S_OK;
         }
-    };
-
-    void cpp_str_to_cpp_wstr(OmegaCommon::String str,std::basic_string<wchar_t> & res){
-        res.resize(str.size());
-        int32_t len;
-        UErrorCode err;
-        u_strFromUTF8((UChar *)res.data(),res.size(),&len,str.c_str(),str.size(),&err);
-
     };
 
      FontEngine * FontEngine::instance = nullptr;
@@ -196,8 +189,8 @@ namespace OmegaWTK::Composition {
         DWRITE_TEXT_ALIGNMENT textAlignment;
         DWRITE_WORD_WRAPPING wrapping;
         DWRITE_FLOW_DIRECTION flowDirection;
-        OmegaGTE::SharedHandle<OmegaGTE::GETexture> target;
-        OmegaGTE::SharedHandle<OmegaGTE::GEFence> fence;
+        SharedHandle<OmegaGTE::GETexture> target;
+        SharedHandle<OmegaGTE::GEFence> fence;
         ID3D11Texture2D *resource;
         IDXGISurface *surface;
         ID2D1DeviceContext *context;
@@ -250,6 +243,30 @@ namespace OmegaWTK::Composition {
                     textAlignment = DWRITE_TEXT_ALIGNMENT_TRAILING;
                     paraAlignment = DWRITE_PARAGRAPH_ALIGNMENT_NEAR;
                     break;
+                }
+                case TextLayoutDescriptor::LeftCenter : {
+
+                }
+                case TextLayoutDescriptor::LeftLower : {
+
+                }
+                case TextLayoutDescriptor::RightCenter : {
+
+                }
+                case TextLayoutDescriptor::RightLower : {
+
+                }
+                case TextLayoutDescriptor::RightUpper : {
+
+                }
+                case TextLayoutDescriptor::MiddleCenter : {
+
+                }
+                case TextLayoutDescriptor::MiddleLower : {
+
+                }
+                case TextLayoutDescriptor::MiddleUpper : {
+
                 }
              }
 
@@ -323,7 +340,7 @@ namespace OmegaWTK::Composition {
          HRESULT hr;
          IDWriteTextFormat *textFormat;
          std::wstring w_str;
-         cpp_str_to_cpp_wstr(desc.family,w_str);
+         Native::cpp_str_to_cpp_wstr(desc.family,w_str);
 
          DWRITE_FONT_WEIGHT weight;
          DWRITE_FONT_STYLE style;
@@ -378,7 +395,7 @@ namespace OmegaWTK::Composition {
         HRESULT hr;
         IDWriteTextFormat *textFormat;
         std::wstring w_str;
-        cpp_str_to_cpp_wstr(desc.family,w_str);
+        Native::cpp_str_to_cpp_wstr(desc.family,w_str);
 
         DWRITE_FONT_WEIGHT weight;
         DWRITE_FONT_STYLE style;

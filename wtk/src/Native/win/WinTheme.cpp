@@ -3,6 +3,8 @@
 #include <windows.h>
 #include <Uxtheme.h>
 
+#pragma comment(lib, "uxtheme.lib")
+
 namespace OmegaWTK::Native {
     ThemeDesc queryCurrentTheme(){
         ThemeDesc d {};

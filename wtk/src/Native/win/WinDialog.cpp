@@ -2,22 +2,25 @@
 #include "NativePrivate/win/HWNDItem.h"
 #include "HWNDFactory.h"
 #include "WinAppWindow.h"
+#include <combaseapi.h>
 #include <iostream>
 
 #include <windows.h>
 #include <ShlObj_core.h>
 #include <CommCtrl.h>
 #include <ShObjIdl.h>
-#include <atlbase.h>
+// #include <atlbase.h>
 #include <windowsx.h>
-#include <atlstr.h>
+#include <winnt.h>
+#include <wtypesbase.h>
+// #include <atlstr.h>
 
 namespace OmegaWTK::Native::Win {
 
      class WinFSDialog : public NativeFSDialog {
         bool read_or_write;
-        ATL::CComPtr<IFileOpenDialog> dialog_ty_1;
-        ATL::CComPtr<IFileSaveDialog> dialog_ty_2;
+        IFileOpenDialog * dialog_ty_1;
+        IFileSaveDialog * dialog_ty_2;
         void close();
         void show();
         OmegaCommon::Promise<OmegaCommon::String> result;
@@ -39,10 +42,13 @@ namespace OmegaWTK::Native::Win {
 
 
     WinFSDialog::WinFSDialog(bool read_or_write,NWH nativeWindow):NativeFSDialog(nativeWindow),read_or_write(read_or_write){
+        HRESULT hr;
         if(read_or_write)
-            dialog_ty_1.CoCreateInstance(CLSID_FileOpenDialog);
+            hr = CoCreateInstance(CLSID_FileOpenDialog,NULL,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog_ty_1));
         else 
-            dialog_ty_2.CoCreateInstance(CLSID_FileSaveDialog);
+           hr = CoCreateInstance(CLSID_FileSaveDialog,NULL,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog_ty_2));
+
+        
     };
 
     void WinFSDialog::close(){
@@ -69,9 +75,9 @@ namespace OmegaWTK::Native::Win {
 
     WinFSDialog::~WinFSDialog(){
         if(dialog_ty_1 != nullptr)
-            dialog_ty_1.Release();
+            dialog_ty_1->Release();
         else 
-            dialog_ty_2.Release();
+            dialog_ty_2->Release();
     };
 
     LPWORD lpwAlign(LPWORD lpIn)
@@ -112,7 +118,7 @@ namespace OmegaWTK::Native::Win {
     #define ID_TEXT 4
 
     WinNoteDialog::WinNoteDialog(const Descriptor &desc,NWH nativeWindow):NativeNoteDialog(nativeWindow){
-        ATL::CStringW message_str(desc.title.c_str());
+        icu::UnicodeString message_str(desc.title.c_str());
         LPDLGTEMPLATE lpdt;
         LPDLGITEMTEMPLATE lpdtItem;
         LPWORD lpw;
@@ -180,7 +186,7 @@ namespace OmegaWTK::Native::Win {
         *lpw++ = 0xFFFF;
         *lpw++ = 0x0082;        // Static class
 
-        LPWSTR msg_ptr = message_str.GetBuffer();
+        LPWSTR msg_ptr = (LPWSTR)message_str.getBuffer();
 
         for (wstr = (LPWSTR)lpw;*wstr++ = (WCHAR)*msg_ptr++;);
         lpw = (LPWORD)wstr;

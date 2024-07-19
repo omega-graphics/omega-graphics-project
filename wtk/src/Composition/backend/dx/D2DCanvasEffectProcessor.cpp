@@ -12,12 +12,12 @@ namespace OmegaWTK::Composition {
         Core::UniqueComPtr<ID3D11On12Device> d3d11_device;
         ID3D12CommandQueue *commandQueue;
     public:
-        explicit D2DCanvasEffectProcessor(OmegaGTE::SharedHandle<OmegaGTE::GEFence> & fence): BackendCanvasEffectProcessor(fence),
+        explicit D2DCanvasEffectProcessor(SharedHandle<OmegaGTE::GEFence> & fence): BackendCanvasEffectProcessor(fence),
         d3d11_device(nullptr),
         commandQueue(nullptr){
 
         };
-        void applyEffects(OmegaGTE::SharedHandle<OmegaGTE::GETexture> &dest, SharedHandle<OmegaGTE::GETextureRenderTarget> &textureTarget, OmegaCommon::Vector<std::pair<CanvasEffect::Type, void *>> &effects) override {
+        void applyEffects(SharedHandle<OmegaGTE::GETexture> &dest, SharedHandle<OmegaGTE::GETextureRenderTarget> &textureTarget, OmegaCommon::Vector<std::pair<CanvasEffect::Type, void *>> &effects) override {
             if(d3d11_device.get() == nullptr){
                 const D3D_FEATURE_LEVEL levels[]= {D3D_FEATURE_LEVEL_11_0};
                 commandQueue = (ID3D12CommandQueue *)textureTarget->nativeCommandQueue();
@@ -86,7 +86,7 @@ namespace OmegaWTK::Composition {
     };
 
     SharedHandle<BackendCanvasEffectProcessor>
-    BackendCanvasEffectProcessor::Create(OmegaGTE::SharedHandle<OmegaGTE::GEFence> &fence) {
+    BackendCanvasEffectProcessor::Create(SharedHandle<OmegaGTE::GEFence> &fence) {
         return (SharedHandle<BackendCanvasEffectProcessor>)new D2DCanvasEffectProcessor(fence);
     }
 }

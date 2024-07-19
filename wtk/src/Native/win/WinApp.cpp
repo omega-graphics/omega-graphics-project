@@ -1,7 +1,8 @@
 #include "omegaWTK/Native/NativeApp.h"
+#include "NativePrivate/win/WinUtils.h"
 #include <Windows.h>
 #include <PathCch.h>
-#include <atlstr.h>
+// #include <atlstr.h>
 #include <string>
 #include <io.h>
 #include <fcntl.h>
@@ -20,10 +21,13 @@ namespace OmegaWTK::Native::Win {
             /**
              Set current directory to executable's dir.
             */
+           
             HRESULT hr;
             LPTSTR exec_string = GetCommandLineA();
-            ATL::CStringW str(exec_string);
-            std::wstring ws(str.GetBuffer());
+            OmegaCommon::String exec_string_cpp (exec_string);
+           std::wstring ws;
+           cpp_str_to_cpp_wstr(exec_string_cpp,ws);
+           
             hr = PathCchRemoveFileSpec(ws.data(),ws.size());
             if(FAILED(hr)){
 

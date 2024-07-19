@@ -16,6 +16,7 @@ cur(start_pt),speed(speed)
     auto alpha = std::atan(slope);
     delta_x = std::cos(alpha) * float(speed);
     delta_y = slope * delta_x;
+    
 
 }
 
