@@ -1,5 +1,11 @@
 import "fs"
 
+var is_mac = autom.target_platform == "macos"
+var is_win = autom.target_platform == "windows"
+var is_linux = autom.target_platform == "linux"
+var is_ios = autom.target_platform == "ios"
+var is_android = autom.target_platform == "android"
+
 project(name:"OmegaCommon",version:"0.4")
 
 var main_srcs = [
@@ -10,6 +16,8 @@ var main_srcs = [
     "./src/xml.cpp"
 ]
 
+
+
 if (is_mac){
     main_srcs += fs_glob("./src/*.mm")
 }
@@ -19,18 +27,18 @@ elif (is_win) {
 
 Config("omega-common_conf",[],["./include"],[])
 
-Static("omega-common",main_srcs,[],"lib")
-set_property("omega-common","configs",["omega-common_conf"])
+var omega_common_lib = Static(name:"omega-common",sources:main_srcs)
+omega_common_lib.configs = ["omega-common_conf"]
 set_property("omega-common","frameworks",["Foundation.framework"])
 
 Executable("omega-ebin",["./embedbin/embedbin.cpp"],["omega-common"],"bin")
 # Executable("ebin-test",["./embedbin/tests/hello.cpp","./embedbin/tests/msg.c"],["omega-common"],"tests")
 
 
-wrap_gen_srcs = glob("./wrapgen/*.cpp") + glob("./wrapgen/*.h")
-Shared("owrapgen",wrap_gen_srcs,["omega-common"],"lib")
+var wrap_gen_srcs = fs_glob("./wrapgen/*.cpp") + fs_glob("./wrapgen/*.h")
+Shared(name:"owrapgen",wrap_gen_srcs,sources:["omega-common"],"lib")
 
-Executable("omega-wrapgen",["./wrapgen/main/main.cpp"],["owrapgen"],"bin")
-Executable("owrap-lex-test",["./wrapgen/tests/lex-test.cpp"],["owrapgen"],"tests")
-Executable("owrap-parse-test",["./wrapgen/tests/parse-test.cpp"],["owrapgen"],"tests")
+Executable(name:"omega-wrapgen",sources:["./wrapgen/main/main.cpp"],["owrapgen"],"bin")
+Executable(name:"owrap-lex-test",sources:["./wrapgen/tests/lex-test.cpp"],["owrapgen"],"tests")
+Executable(name:"owrap-parse-test",sources:["./wrapgen/tests/parse-test.cpp"],["owrapgen"],"tests")
 
