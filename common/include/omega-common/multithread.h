@@ -4,6 +4,7 @@
 #define OMEGA_COMMON_MULTITHREAD_H
 
 #include "utils.h"
+#include <condition_variable>
 #ifdef _WIN32
 #include <Windows.h>
 #elif defined(__APPLE__)
@@ -16,6 +17,7 @@
 #include <mutex>
 #include <thread>
 #include <future>
+#include <queue>
 
 #include <cassert>
 
@@ -147,6 +149,33 @@ namespace OmegaCommon {
         static ChildProcess Open(const OmegaCommon::String & cmd,const OmegaCommon::Vector<const char *> & args);
         int wait();
         ~ChildProcess();
+    };
+    /**
+     * @brief Assignable thread farm designed for completing multithreaded tasks.
+     * 
+     */
+    class OMEGACOMMON_EXPORT WorkerFarm {
+        std::queue<Thread *> farm;
+        std::condition_variable condition;
+        std::mutex mutex;
+        std::unique_lock<std::mutex> lk;
+    public:
+        template<class FnT,typename ...Args>
+        void scheduleJob(FnT func,Args ...args){
+            farm.push(new Thread([&](){
+                func(args...);
+                condition.wait(lk);
+                /// Lock mutex while thread is deleting itself.
+                {
+                    lk.lock();
+                    
+                    lk.unlock();
+                }
+            }));
+        };
+        ~WorkerFarm(){
+
+        }
     };
 
 };

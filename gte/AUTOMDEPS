@@ -15,6 +15,33 @@
         },
         {
             "type":"git_clone",
+            "url":"https://github.com/microsoft/DirectXMath.git",
+            "branch":"default",
+            "dest":"$(external_lib_path)/DirectXMath",
+            "platforms":[
+                "windows"
+            ]
+        },
+        {
+            "type":"git_clone",
+            "url":"https://github.com/microsoft/DirectXTex.git",
+            "branch":"default",
+            "dest":"$(external_lib_path)/DirectXTex",
+            "platforms":[
+                "windows"
+            ]
+        },
+        {
+            "type":"git_clone",
+            "url":"https://github.com/microsoft/DirectXMesh.git",
+            "branch":"default",
+            "dest":"$(external_lib_path)/DirectXMesh",
+            "platforms":[
+                "windows"
+            ]
+        },
+        {
+            "type":"git_clone",
             "url":"https://github.com/g-truc/glm.git",
             "branch":"default",
             "dest":"$(external_lib_path)/glm",

@@ -4,6 +4,14 @@
         "./common",
         "./gte",
         "./wtk"
+    ],
+    "rootCommands":[
+        {
+            "type":"git_clone",
+            "url":"https://github.com/yaml/pyyaml.git",
+            "branch":"default",
+            "dest":"./utils/pyyaml"
+        }
     ]
 }
 

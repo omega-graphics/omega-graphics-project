@@ -29,6 +29,18 @@ namespace OmegaWrapGen {
         bool submoduleForCXXNamespace;
     };
 
+    struct GoGenSettings {
+        
+    };
+
+    struct JavaGenSettings {
+
+    };
+
+    struct SwiftGenSettings {
+        
+    };
+
 
     class Gen : public TreeConsumer {
         friend class Parser;

@@ -118,6 +118,31 @@ namespace OmegaWrapGen {
             }
             out << ")";
         }
+
+        void consumeCXXDataStructMethod(OmegaWrapGen::FuncDeclNode * method,std::string & struct_name){
+            auto func_name = createCNameForDecl(method);
+            method->params.insert(std::make_pair(SELF_REFERENCE_VAR,Type::Create(struct_name,false,true)));
+            writeCFunctionDecl(func_name,method->params,method->returnType,outHeader);
+            outHeader << ";" << std::endl << std::endl;
+            outSrc << "extern \"C\" ";
+            writeCFunctionDecl(func_name,method->params,method->returnType,outSrc);
+            outSrc << "{" << std::endl;
+            /// Write C Name and then CXX Func Name!
+            outSrc << "return " SELF_REFERENCE_VAR "->obj." << method->name << "(";
+            unsigned c = 0;
+            for(auto & param_type_pair : method->params){
+                if(param_type_pair.first != SELF_REFERENCE_VAR){
+                    if(c != 0){
+                        outSrc << ",";
+                    };
+                    outSrc << param_type_pair.first;
+                    c++;
+                }
+            }
+            outSrc << ");" << std::endl;
+            outSrc << "}" << std::endl << std::endl;
+        }
+
         /** @brief Generates C Code for DeclNode consumed.
          * */
         void consumeDecl(DeclNode *node) override {
@@ -128,34 +153,20 @@ namespace OmegaWrapGen {
                     outSrc << OmegaCommon::fmtString(HEADER_INSERT_TEMPLATE,relative_path.string()) << std::endl;
                     break;
                 }
+                case NAMESPACE_DECL : {
+                    break;
+                }
                 case CLASS_DECL : {
                     auto * class_decl = (ClassDeclNode *)node;
                     auto struct_name = createCNameForDecl(class_decl);
                     outHeader << OmegaCommon::fmtString(DEFINE_C_CLASS_TEMPLATE,struct_name,struct_name.substr(2,struct_name.size() - 2)) << std::endl << std::endl;
                     outSrc << "struct " << struct_name << "{" << generateCXXName(class_decl->name,class_decl->scope) << " obj;};" << std::endl << std::endl;
                     for(auto & method : class_decl->instMethods){
-                        auto func_name = createCNameForDecl(method);
-                        method->params.insert(std::make_pair(SELF_REFERENCE_VAR,Type::Create(struct_name,false,true)));
-                        writeCFunctionDecl(func_name,method->params,method->returnType,outHeader);
-                        outHeader << ";" << std::endl << std::endl;
-                        outSrc << "extern \"C\" ";
-                        writeCFunctionDecl(func_name,method->params,method->returnType,outSrc);
-                        outSrc << "{" << std::endl;
-                        /// Write C Name and then CXX Func Name!
-                        outSrc << "return " SELF_REFERENCE_VAR "->obj." << method->name << "(";
-                        unsigned c = 0;
-                        for(auto & param_type_pair : method->params){
-                            if(param_type_pair.first != SELF_REFERENCE_VAR){
-                                if(c != 0){
-                                    outSrc << ",";
-                                };
-                                outSrc << param_type_pair.first;
-                                c++;
-                            }
-                        }
-                        outSrc << ");" << std::endl;
-                        outSrc << "}" << std::endl << std::endl;
+                        consumeCXXDataStructMethod(method,struct_name);
                     }
+                    break;
+                }
+                case INTERFACE_DECL : {
                     break;
                 }
             }

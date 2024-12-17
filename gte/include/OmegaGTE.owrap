@@ -1,0 +1,23 @@
+header "OmegaGTE.h"
+
+namespace OmegaGTE {
+    class GEResource {
+
+    }
+
+    class GEBuffer : GEResource {
+        
+    }
+
+    class GETexture : GEResource {
+
+    }
+
+    interface OmegaTessellationEngine {
+
+    }
+
+    interface OmegaGraphicsEngine {
+
+    }
+}
