@@ -38,6 +38,18 @@ elseif(UNIX AND NOT APPLE)
 	message("OmegaWTK: TARGET_LINUX = TRUE")
 	set(TARGET_LINUX TRUE)
 	add_compile_definitions(TARGET_GTK TARGET_VULKAN)
+
+	find_package(PkgConfig)
+
+	pkg_check_modules(PKG_WAYLAND wayland-client wayland-server wayland-egl wayland-cursor)
+
+	# Check for Wayland support, else use X11.
+	if(PKG_WAYLAND_FOUND)
+		add_compile_definitions("WTK_NATIVE_WAYLAND")
+	else()
+		add_compile_definitions("WTK_NATIVE_X11")
+	endif()
+
 endif()
 
 if(${OMEGAWTK_MOBILE})

@@ -1,4 +1,5 @@
 #include "NativePrivate/gtk/GTKItem.h"
+#include "gdk/gdkwayland.h"
 
 namespace OmegaWTK::Native::GTK {
 
@@ -28,7 +29,7 @@ namespace OmegaWTK::Native::GTK {
 
     }
 
-    void GTKItem::resize(Core::Rect &newRect) {
+    void GTKItem::resize(const Core::Rect &newRect) {
         gdk_window_move_resize(window,(gint)newRect.pos.x,(gint)newRect.pos.y,(gint)newRect.w,(gint)newRect.h);
     }
 
@@ -41,7 +42,11 @@ namespace OmegaWTK::Native::GTK {
     }
 
     void *GTKItem::getBinding() {
+        #ifdef WTK_NATIVE_WAYLAND
+        return reinterpret_cast<void *>(getSurface());
+        #else
         return reinterpret_cast<void *>(getX11Window());
+        #endif
     }
 
     void GTKItem::addChildNativeItem(NativeItemPtr nativeItem) {
@@ -66,6 +71,18 @@ namespace OmegaWTK::Native::GTK {
 
     }
 
+    #if WTK_NATIVE_WAYLAND
+
+    wl_surface * GTKItem::getSurface() {
+        return gdk_wayland_window_get_wl_surface(window);
+    };
+
+    // wl_shell * GTKItem::getWaylandShell() {
+        
+    // };
+
+    #elif WTK_NATIVE_X11
+
     Display *GTKItem::getDisplay() {
         return gdk_x11_display_get_xdisplay(gdk_window_get_display(window));
     }
@@ -73,11 +90,13 @@ namespace OmegaWTK::Native::GTK {
     Window GTKItem::getX11Window() {
         return gdk_x11_window_get_xid(window);
     }
+
+    #endif
 }
 
 namespace OmegaWTK::Native {
     NativeItemPtr make_native_item(Core::Rect rect,Native::ItemType type,NativeItemPtr parent){
-        return (NativeItemPtr)new GTK::GTKItem(rect,type,parent);
+        return NativeItemPtr(new GTK::GTKItem(rect,type,parent));
     }
 }
 

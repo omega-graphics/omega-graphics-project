@@ -7,7 +7,7 @@ namespace OmegaWTK::Native::GTK {
     class GTKApp : public NativeApp {
         GtkApplication *native;
     public:
-        void terminate(){
+        void terminate() override{
             g_object_unref(native);
         };
         explicit GTKApp(void *data){

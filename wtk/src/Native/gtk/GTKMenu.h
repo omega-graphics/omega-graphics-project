@@ -5,9 +5,9 @@
 
 namespace OmegaWTK::Native::GTK {
 
-NMI make_gtk_menu_item(const Core::String & str,NM parent,bool hasSubMenu,NM subMenu);
+NMI make_gtk_menu_item(const OmegaCommon::String & str,NM parent,bool hasSubMenu,NM subMenu);
 NMI make_gtk_menu_seperator();
-NM make_gtk_menu(const Core::String & name);
+NM make_gtk_menu(const OmegaCommon::String & name);
 };
 
 #endif
