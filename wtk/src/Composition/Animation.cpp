@@ -95,6 +95,8 @@ AnimationCurve::Traversal::Traversal(AnimationCurve &curve,
             OmegaGTE::GPoint2D {space_w,curve.end_h * space_h}
             )
         };
+        initState = malloc(sizeof(AnimationCurveLinearTraversal));
+        memcpy(initState,data,sizeof(AnimationCurveLinearTraversal));
     }
     else if(curve.type == Type::QuadraticBezier){
         data = new AnimationCurveQuadraticTraversal{
@@ -113,6 +115,8 @@ AnimationCurve::Traversal::Traversal(AnimationCurve &curve,
                 OmegaGTE::GPoint2D{curve.a.x * space_w,curve.a.y * space_h}
             )
         };
+        initState = malloc(sizeof(AnimationCurveQuadraticTraversal));
+        memcpy(initState,data,sizeof(AnimationCurveQuadraticTraversal));
     }
     else {
         data = new AnimationCurveCubicTraversal{
@@ -144,6 +148,8 @@ AnimationCurve::Traversal::Traversal(AnimationCurve &curve,
                         OmegaGTE::GPoint2D{curve.a.x * space_w,curve.a.y * space_h}
                     ),
         };
+        initState = malloc(sizeof(AnimationCurveCubicTraversal));
+        memcpy(initState,data,sizeof(AnimationCurveCubicTraversal));
     }
 }
 
@@ -206,7 +212,27 @@ bool AnimationCurve::Traversal::end() {
 }
 
 void AnimationCurve::Traversal::reset() {
-   
+    if(curve.type == Type::Linear){
+       auto d = (AnimationCurveLinearTraversal *)data;
+       delete d;
+       data = malloc(sizeof(AnimationCurveLinearTraversal));
+       auto initData = (AnimationCurveLinearTraversal *)initState;
+       memcpy(data,initData,sizeof(AnimationCurveLinearTraversal));
+    }
+    else if(curve.type == Type::QuadraticBezier){
+        auto d = (AnimationCurveQuadraticTraversal *)data;
+        delete d;
+        data = malloc(sizeof(AnimationCurveQuadraticTraversal));
+        auto initData = (AnimationCurveQuadraticTraversal *)initState;
+        memcpy(data,initData,sizeof(AnimationCurveQuadraticTraversal));
+    }
+    else {
+        auto d = (AnimationCurveCubicTraversal *)data;
+        delete d;
+        data = malloc(sizeof(AnimationCurveCubicTraversal));
+        auto initData = (AnimationCurveCubicTraversal *)initState;
+        memcpy(data,initData,sizeof(AnimationCurveCubicTraversal));
+    }
 }
 
 AnimationCurve::Traversal::~Traversal(){

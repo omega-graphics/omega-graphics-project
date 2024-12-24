@@ -1,8 +1,8 @@
 {
+    "variables":{
+         "third_party_dest":"./deps"
+    },
     "commands":[
-        {
-            "type":"gnpkg",
-            "command":"utils --get"
-        }
+    
     ]
 }

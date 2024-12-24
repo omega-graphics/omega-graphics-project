@@ -76,7 +76,7 @@ namespace OmegaWTK::Composition {
         /// @brief Traversal of an AnimationCurve in a scaled integral 2D coordinate space.
         class Traversal {
             AnimationCurve & curve;
-            void *data;
+            void *data, *initState;
 
         public:
             OmegaGTE::GPoint2D get();

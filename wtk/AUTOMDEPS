@@ -1,11 +1,11 @@
 {
     "variables":{
-        "third_party_dest":"./deps"
+       "third_party_dest":"./deps"
     },
     "rootCommands":[
     ],
     "commands":[
-        {
+         {
             "type":"git_clone",
             "url":"https://github.com/glennrp/libpng.git",
             "dest":"$(third_party_dest)/libpng/code",
@@ -24,39 +24,39 @@
             "branch":"default"
         },
         {
-           "type":"git_clone",
-           "url":"https://github.com/madler/zlib.git",
-           "dest":"$(third_party_dest)/zlib/code",
-           "branch":"default"
-        },
-        {
             "type":"git_clone",
-            "url":"https://github.com/unicode-org/icu.git",
-            "dest":"$(third_party_dest)/icu-69/code",
-            "branch":"maint/maint-69"
-        },
-        {
-           "type":"git_clone",
-           "url":"https://github.com/openssl/openssl.git",
-           "dest":"$(third_party_dest)/openssl/code",
-           "branch":"default"
-        },
-        {
-            "type":"git_clone",
-            "url":"https://gitlab.gnome.org/GNOME/libxml2.git",
-            "dest":"$(third_party_dest)/libxml2/code",
+            "url":"https://github.com/madler/zlib.git",
+            "dest":"$(third_party_dest)/zlib/code",
             "branch":"default"
-        },
-        {
-            "type":"download",
-            "url":"https://github.com/PhilipHazel/pcre2/releases/download/pcre2-10.38/pcre2-10.38.zip",
-            "dest":"./temp/pcre2.zip"
-        },
-        {
-            "type":"unzip",
-            "zipfile":"./temp/pcre2.zip",
-            "dest":"$(third_party_dest)/pcre2/code"
-        }
+         },
+         {
+             "type":"git_clone",
+             "url":"https://github.com/unicode-org/icu.git",
+             "dest":"$(third_party_dest)/icu-69/code",
+             "branch":"maint/maint-69"
+         },
+         {
+            "type":"git_clone",
+            "url":"https://github.com/openssl/openssl.git",
+            "dest":"$(third_party_dest)/openssl/code",
+            "branch":"default"
+         },
+         {
+             "type":"git_clone",
+             "url":"https://gitlab.gnome.org/GNOME/libxml2.git",
+             "dest":"$(third_party_dest)/libxml2/code",
+             "branch":"default"
+         },
+         {
+             "type":"download",
+             "url":"https://github.com/PhilipHazel/pcre2/releases/download/pcre2-10.38/pcre2-10.38.zip",
+             "dest":"./temp/pcre2.zip"
+         },
+         {
+             "type":"unzip",
+             "zipfile":"./temp/pcre2.zip",
+             "dest":"$(third_party_dest)/pcre2/code"
+         }
     ]
 }
 
