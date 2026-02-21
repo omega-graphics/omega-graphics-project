@@ -53,7 +53,9 @@ namespace autom {
         void consumeTarget(std::shared_ptr<Target> & target) override {
             switch (target->type) {
 
-                case FS_ACTION :
+                case FS_COPY :
+                case FS_MKDIR :
+                case FS_SYMLINK :
                 case SCRIPT_TARGET : {
                     break;
                 }

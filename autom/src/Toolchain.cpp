@@ -91,6 +91,9 @@ namespace autom {
         }
         else if(_type == ar){
             str << toolchain.AR.command;
+            if(toolchain.link_output == "-o"){
+                str << " -rcs";
+            }
         }
         else if(_type == exe){
             str << toolchain.EXE_LD.command << " " << toolchain.executable;
@@ -123,7 +126,15 @@ namespace autom {
     }
 
     void Toolchain::Formatter::writeOutput(const StrRef &output) {
-        if(_type == exe || _type == so || _type == ar){
+        if(_type == ar){
+            if(toolchain.link_output == "-o"){
+                str << " " << output.data();
+            }
+            else {
+                str << toolchain.link_output << output.data();
+            }
+        }
+        else if(_type == exe || _type == so){
             str << toolchain.link_output << output.data();
         }
         else {

@@ -90,7 +90,7 @@ namespace autom {
             
             for(auto & t : proj){
 
-                if(t->type & COMPILED_OUTPUT_TARGET){
+                if(IS_COMPILED_TARGET_TYPE(t->type)){
 
                     auto compiledTarget = std::dynamic_pointer_cast<CompiledTarget>(t);
                     /// 1. Put Sources into map
@@ -121,7 +121,7 @@ namespace autom {
                         src_obj_map.second = std::filesystem::path("obj").append(compiledTarget->name->value().data()).append(src_name.c_str()).string();
                     }
                 }
-                else if(t->type & JAVA_TARGET){
+                else if(IS_JAVA_TARGET_TYPE(t->type)){
                     /// 1. Resolve Src Dir
                     auto _t = std::dynamic_pointer_cast<JavaTarget>(t);
                     auto java_target_output_dir = std::filesystem::path(opts.outputDir.data()).append(_t->name->value().data());

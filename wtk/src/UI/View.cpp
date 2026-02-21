@@ -64,6 +64,7 @@ namespace OmegaWTK {
     };
 
     void View::resize(Core::Rect newRect){
+        rect = newRect;
         renderTarget->getNativePtr()->resize(newRect);
     };
 
@@ -204,11 +205,15 @@ void ViewDelegate::onRecieveEvent(Native::NativeEventPtr event){
 
 ScrollView::ScrollView(const Core::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, Composition::LayerTree *layerTree, ViewPtr parent):
         View(rect,Native::make_native_item(rect,Native::ScrollItem),layerTree,parent),
+        child(child),
+        childViewRect(child ? &child->getRect() : nullptr),
         delegate(nullptr),
         hasHorizontalScrollBar(hasHorizontalScrollBar), hasVerticalScrollBar(hasVerticalScrollBar){
     renderTarget->getNativePtr()->event_emitter = this;
     Native::NativeItemPtr ptr = renderTarget->getNativePtr();
-    ptr->setClippedView(child->renderTarget->getNativePtr());
+    if(child != nullptr){
+        ptr->setClippedView(child->renderTarget->getNativePtr());
+    }
     if(hasHorizontalScrollBar)
         ptr->toggleHorizontalScrollBar(hasHorizontalScrollBar);
     if(hasVerticalScrollBar)
@@ -220,21 +225,46 @@ bool ScrollView::hasDelegate(){
 };
 
 void ScrollView::toggleVerticalScrollBar(){
+    hasVerticalScrollBar = !hasVerticalScrollBar;
     renderTarget->getNativePtr()->toggleVerticalScrollBar(hasVerticalScrollBar);
 }
 
 void ScrollView::toggleHorizontalScrollBar(){
+    hasHorizontalScrollBar = !hasHorizontalScrollBar;
     renderTarget->getNativePtr()->toggleHorizontalScrollBar(hasHorizontalScrollBar);
 }
 
 void ScrollView::setDelegate(ScrollViewDelegate *_delegate){
+    if(_delegate == nullptr){
+        delegate = nullptr;
+        setReciever(nullptr);
+        return;
+    }
     delegate = _delegate;
     delegate->scrollView = this;
     setReciever(delegate);
 };
 
 void ScrollViewDelegate::onRecieveEvent(Native::NativeEventPtr event){
-
+    if(event == nullptr){
+        return;
+    }
+    switch(event->type){
+        case Native::NativeEvent::ScrollLeft:
+            onScrollLeft();
+            break;
+        case Native::NativeEvent::ScrollRight:
+            onScrollRight();
+            break;
+        case Native::NativeEvent::ScrollUp:
+            onScrollUp();
+            break;
+        case Native::NativeEvent::ScrollDown:
+            onScrollDown();
+            break;
+        default:
+            break;
+    }
 };
 
 // SharedHandle<ClickableViewHandler> ClickableViewHandler::Create() {

@@ -3,6 +3,8 @@
 #import "NativePrivate/macos/CocoaUtils.h"
 
 #import <QuartzCore/QuartzCore.h>
+#include <cfloat>
+#include <cmath>
 
 @interface OmegaWTKCocoaView ()
 @property (nonatomic) OmegaWTK::Native::Cocoa::CocoaItem *delegate;
@@ -118,21 +120,26 @@
 @end
 
 @interface OmegaWTKCocoaScrollViewDelegate ()
--(instancetype)init;
--(void)onScrollLeft;
--(void)onScrollRight;
--(void)onScrollUp;
--(void)onScrollDown;
+@property (nonatomic,assign) OmegaWTK::Native::Cocoa::CocoaItem *delegate;
+@property (nonatomic) NSPoint lastOrigin;
 @end
 
 namespace OmegaWTK::Native::Cocoa {
 
-CocoaItem::CocoaItem(const Core::Rect & rect,CocoaItem::Type _type,SharedHandle<CocoaItem> parent):rect(rect),type(_type),isReady(false){
+CocoaItem::CocoaItem(const Core::Rect & rect,
+                     CocoaItem::Type _type,
+                     SharedHandle<CocoaItem> parent):
+rect(rect),
+_ptr(nil),
+cont(nil),
+scrollView(nil),
+scrollViewDelegate(nil),
+type(_type),
+isReady(false){
     if(type == View){
         cont = [[OmegaWTKCocoaViewController alloc] initWithFrame:core_rect_to_cg_rect(rect) delegate:this];
         [cont setClass:[OmegaWTKCocoaView class]];
         _ptr = (OmegaWTKCocoaView *)cont.view;
-        scrollView = nil;
         if(parent != nullptr){
             parent->addChildNativeItem((NativeItemPtr)this);
         };
@@ -141,13 +148,11 @@ CocoaItem::CocoaItem(const Core::Rect & rect,CocoaItem::Type _type,SharedHandle<
         _ptr = nil;
         cont = [[OmegaWTKCocoaViewController alloc] initWithFrame:core_rect_to_cg_rect(rect) delegate:this];
         [cont setClass:[NSScrollView class]];
-        scrollViewDelegate = [[OmegaWTKCocoaScrollViewDelegate alloc] init];
+        scrollViewDelegate = [[OmegaWTKCocoaScrollViewDelegate alloc] initWithDelegate:this];
         scrollView = (NSScrollView *)cont.view;
         scrollView.autohidesScrollers = YES;
         scrollView.borderType = NSNoBorder;
-
-        [scrollView addObserver:scrollViewDelegate forKeyPath:@"horizontalLineScroll" options:NSKeyValueObservingOptionNew context:nil];
-        [scrollView addObserver:scrollViewDelegate forKeyPath:@"verticalLineScroll" options:NSKeyValueObservingOptionNew context:nil];
+        [scrollViewDelegate bindToScrollView:scrollView];
         if(parent != nullptr){
             parent->addChildNativeItem((NativeItemPtr)this);
         };
@@ -163,13 +168,25 @@ void * CocoaItem::getBinding(){
 };
 
 void CocoaItem::enable(){
-    if([_ptr isHidden] == YES)
-        [_ptr setHidden:NO];
+    if(_ptr != nil){
+        if([_ptr isHidden] == YES){
+            [_ptr setHidden:NO];
+        }
+    }
+    else if(scrollView != nil){
+        [scrollView setHidden:NO];
+    }
 };
 
 void CocoaItem::disable(){
-    if([_ptr isHidden] == NO)
-        [_ptr setHidden:YES];
+    if(_ptr != nil){
+        if([_ptr isHidden] == NO){
+            [_ptr setHidden:YES];
+        }
+    }
+    else if(scrollView != nil){
+        [scrollView setHidden:YES];
+    }
 };
 
 void CocoaItem::resize(const Core::Rect &newRect){
@@ -240,7 +257,9 @@ void CocoaItem::removeChildNativeItem(NativeItemPtr native_item){
 
 void CocoaItem::setClippedView(NativeItemPtr nativeItem){
     auto cocoaItem = std::dynamic_pointer_cast<CocoaItem>(nativeItem);
-    scrollView.documentView = cocoaItem->_ptr;
+    if(scrollView != nil && cocoaItem != nullptr){
+        scrollView.documentView = cocoaItem->getView();
+    }
 };
 
 void CocoaItem::toggleHorizontalScrollBar(bool &state){
@@ -258,7 +277,13 @@ void CocoaItem::toggleVerticalScrollBar(bool &state){
 };
 
 CocoaItem::~CocoaItem(){
-    
+    if(scrollViewDelegate != nil){
+        if(scrollView != nil){
+            [scrollViewDelegate unbindFromScrollView:scrollView];
+        }
+        [scrollViewDelegate release];
+        scrollViewDelegate = nil;
+    }
 };
 
 void CocoaItem::setNeedsDisplay(){
@@ -270,8 +295,66 @@ void CocoaItem::setNeedsDisplay(){
 };
 
 @implementation OmegaWTKCocoaScrollViewDelegate
-- (void)didChangeValueForKey:(NSString *)key {
+- (instancetype)initWithDelegate:(OmegaWTK::Native::Cocoa::CocoaItem *)delegate {
+    self = [super init];
+    if(self){
+        _delegate = delegate;
+        _lastOrigin = NSMakePoint(0.f,0.f);
+    }
+    return self;
+}
 
+- (void)bindToScrollView:(NSScrollView *)scrollView {
+    if(scrollView == nil){
+        return;
+    }
+    NSClipView *clipView = scrollView.contentView;
+    if(clipView == nil){
+        return;
+    }
+    [clipView setPostsBoundsChangedNotifications:YES];
+    _lastOrigin = clipView.bounds.origin;
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onBoundsDidChange:)
+                                                 name:NSViewBoundsDidChangeNotification
+                                               object:clipView];
+}
+
+- (void)unbindFromScrollView:(NSScrollView *)scrollView {
+    NSClipView *clipView = scrollView.contentView;
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:NSViewBoundsDidChangeNotification
+                                                  object:clipView];
+}
+
+- (void)onBoundsDidChange:(NSNotification *)notification {
+    if(_delegate == nullptr || !_delegate->hasEventEmitter()){
+        return;
+    }
+    NSClipView *clipView = (NSClipView *)notification.object;
+    if(clipView == nil){
+        return;
+    }
+    NSPoint origin = clipView.bounds.origin;
+    float dx = static_cast<float>(origin.x - _lastOrigin.x);
+    float dy = static_cast<float>(origin.y - _lastOrigin.y);
+    constexpr float epsilon = FLT_EPSILON;
+    if(std::fabs(dx) > epsilon){
+        auto type = dx > 0.f ? OmegaWTK::Native::NativeEvent::ScrollRight : OmegaWTK::Native::NativeEvent::ScrollLeft;
+        _delegate->sendEventToEmitter(OmegaWTK::Native::NativeEventPtr(
+                new OmegaWTK::Native::NativeEvent(type,new OmegaWTK::Native::ScrollParams{dx,0.f})));
+    }
+    if(std::fabs(dy) > epsilon){
+        auto type = dy > 0.f ? OmegaWTK::Native::NativeEvent::ScrollDown : OmegaWTK::Native::NativeEvent::ScrollUp;
+        _delegate->sendEventToEmitter(OmegaWTK::Native::NativeEventPtr(
+                new OmegaWTK::Native::NativeEvent(type,new OmegaWTK::Native::ScrollParams{0.f,dy})));
+    }
+    _lastOrigin = origin;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [super dealloc];
 }
 @end
 

@@ -122,9 +122,9 @@ void InstallFileSerializer::writeRule(InstallRulePtr rule){
         writer->writer.Key("targets",7);
         writer->writer.StartArray();
         for(auto & t : target_rule->targets){
-            assert(t->type != FS_ACTION || t->type != SCRIPT_TARGET || t->type == GROUP_TARGET && "Only compiled targets can be given install time rules");
+            assert(IS_COMPILED_TARGET_TYPE(t->type) && "Only compiled targets can be given install time rules");
             std::filesystem::path full_target_path;
-            if(t->type & COMPILED_OUTPUT_TARGET){
+            if(IS_COMPILED_TARGET_TYPE(t->type)){
                 auto _t = std::dynamic_pointer_cast<CompiledTarget>(t);
                 full_target_path = std::filesystem::path(_t->output_dir->value().data()).append(_t->name->value().data());
                 if(!_t->output_ext->empty()){

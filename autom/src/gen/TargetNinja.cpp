@@ -124,7 +124,7 @@ namespace autom {
                 /// Write Order Only Dependencies
                 deps_out << " || ";
                 for(auto d : t->resolvedDeps){
-                    if(d->type & COMPILED_OUTPUT_TARGET){
+                    if(IS_COMPILED_TARGET_TYPE(d->type)){
                         auto t = std::dynamic_pointer_cast<CompiledTarget>(d);
                         /// For every other Compiled Target
                         if(d->type != SOURCE_GROUP){
@@ -155,7 +155,7 @@ namespace autom {
         };
         void consumeTarget(std::shared_ptr<Target> & target) override{
 
-             if(target->type & COMPILED_OUTPUT_TARGET) {
+             if(IS_COMPILED_TARGET_TYPE(target->type)) {
                     auto t = std::dynamic_pointer_cast<CompiledTarget>(target);
                     // 1. Generate Source Build Recipes
                     mainNinja << "#" << t->name->value() << " Sources" << std::endl;
@@ -200,12 +200,12 @@ namespace autom {
                         }
                     }
 
-                    if(t->type & (EXECUTABLE | SHARED_LIBRARY)){
+                    if(t->type == EXECUTABLE || t->type == SHARED_LIBRARY){
                         writeBuildRuleParam("LDFLAGS",t->ldflags->toStringVector(),Flags);
                     }
 
-                    if(t->type != SOURCE_GROUP){
-                        /// Any Compiled Target Except for Source Group
+                    if(t->type == EXECUTABLE || t->type == SHARED_LIBRARY){
+                        /// Only linked targets should emit linker input and search paths.
                         auto libs = t->libs->toStringVector();
                         
 #ifdef __APPLE__
@@ -224,7 +224,7 @@ namespace autom {
                          auto lib_dirs = t->lib_dirs->toStringVector();
                         
                         for(auto d : t->resolvedDeps){
-                            if(d->type & (SHARED_LIBRARY | STATIC_LIBRARY)){
+                            if(d->type == SHARED_LIBRARY || d->type == STATIC_LIBRARY){
                                 auto _ct = std::dynamic_pointer_cast<CompiledTarget>(d);
                                 std::ostringstream dep_name;
                                 
@@ -296,7 +296,7 @@ namespace autom {
                  }
                  mainNinja << std::endl;
              }
-             else if(target->type & FS_ACTION) {
+             else if(IS_FS_ACTION_TYPE(target->type)) {
                  auto t = std::dynamic_pointer_cast<FSTarget>(target);
                  mainNinja << "build ";
                  auto _sources = t->sources->toStringVector();
@@ -348,6 +348,7 @@ namespace autom {
                  for(auto &t : t_outputs){
                      mainNinja << t << " ";
                  }
+                 mainNinja << std::endl;
              }
         };
         bool supportsCustomToolchainRules() override {

@@ -24,6 +24,10 @@ public:
         KeyDown,
         KeyUp,
         ViewResize,
+        ScrollLeft,
+        ScrollRight,
+        ScrollUp,
+        ScrollDown,
         /** Window Events*/
         WindowWillClose,
         WindowWillResize,
@@ -34,6 +38,7 @@ public:
     NativeEventParams params;
 public:
     NativeEvent(EventType _type,NativeEventParams params):type(_type),params(params){};
+    ~NativeEvent();
 };
 
 typedef SharedHandle<NativeEvent> NativeEventPtr;
@@ -50,6 +55,11 @@ typedef struct {
 typedef struct {
     Core::Rect rect;
 } ViewResize;
+
+typedef struct {
+    float deltaX;
+    float deltaY;
+} ScrollParams;
 
 typedef struct {
     

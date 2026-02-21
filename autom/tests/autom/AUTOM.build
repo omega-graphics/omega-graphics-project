@@ -1,0 +1,5 @@
+project(name:"TestProject",version:"0.0.0")
+
+var test_lib = Archive(name:"TestLib",sources:["./TestLib.cpp"])
+var test_exec = Executable(name:"test",sources:["./test.cpp"])
+test_exec.deps = ["TestLib"]

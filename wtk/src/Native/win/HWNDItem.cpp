@@ -178,6 +178,24 @@ namespace OmegaWTK::Native::Win {
             emitIfPossible(std::shared_ptr<NativeEvent>(new NativeEvent{NativeEvent::ViewResize,new ViewResize{rect}}));
             break;
         }
+        case WM_MOUSEWHEEL : {
+            if(isScrollView){
+                const float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / static_cast<float>(WHEEL_DELTA);
+                auto eventType = delta >= 0.f ? NativeEvent::ScrollUp : NativeEvent::ScrollDown;
+                emitIfPossible(scroll_event_to_native_event(eventType,0.f,delta));
+            }
+            rc = FALSE;
+            break;
+        }
+        case WM_MOUSEHWHEEL : {
+            if(isScrollView){
+                const float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / static_cast<float>(WHEEL_DELTA);
+                auto eventType = delta >= 0.f ? NativeEvent::ScrollRight : NativeEvent::ScrollLeft;
+                emitIfPossible(scroll_event_to_native_event(eventType,delta,0.f));
+            }
+            rc = FALSE;
+            break;
+        }
         case WM_PAINT : {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd,&ps);

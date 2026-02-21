@@ -7,6 +7,7 @@
 namespace OmegaWTK::Native {
 
 NativeEventPtr button_event_to_native_event(NativeEvent::EventType event_type,LPPOINT pt);
+NativeEventPtr scroll_event_to_native_event(NativeEvent::EventType event_type,float deltaX,float deltaY);
 
 };
 

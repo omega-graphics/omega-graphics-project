@@ -24,6 +24,9 @@ class CocoaItem;
 @end
 
 @interface OmegaWTKCocoaScrollViewDelegate : NSObject
+-(instancetype)initWithDelegate:(OmegaWTK::Native::Cocoa::CocoaItem *)delegate;
+-(void)bindToScrollView:(NSScrollView *)scrollView;
+-(void)unbindFromScrollView:(NSScrollView *)scrollView;
 @end
 
 @class CALayer;

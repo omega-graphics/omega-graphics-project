@@ -22,13 +22,19 @@ namespace OmegaWTK {
     void WidgetTreeHost::initWidgetRecurse(Widget *parent){
         parent->init();
         for(auto & child : parent->children){
-            initWidgetRecurse(child.get());
+            initWidgetRecurse(child);
         }
     }
 
     void WidgetTreeHost::initWidgetTree(){
         root->setTreeHostRecurse(this);
         initWidgetRecurse(root.get());
+    }
+
+    void WidgetTreeHost::notifyWindowResize(const Core::Rect &rect){
+        if(root != nullptr){
+            root->handleHostResize(rect);
+        }
     }
 
     void WidgetTreeHost::attachToWindow(AppWindow * window){

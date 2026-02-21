@@ -176,7 +176,7 @@ namespace autom {
 
             std::vector<std::shared_ptr<ASTFuncDecl>> funcs;
 
-            Object * tryInvokeBuiltinFunc(autom::StrRef subject,std::unordered_map<std::string,ASTExpr *> & args,int * code);
+            Object * tryInvokeBuiltinFunc(autom::StrRef subject,std::unordered_map<std::string,ASTExpr *> & args,int * code,ASTScope *scope);
 
         public:
             GenContext * currentGenContext;

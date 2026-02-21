@@ -66,8 +66,7 @@ namespace autom {
     Gen *TargetVisualStudio(OutputTargetOpts & outputOpts,GenVisualStudioOpts & opts);
     
     struct GenXcodeOpts {
-//        autom::StrRef projectName;
-//        autom::StrRef outputDir;
+        bool newBuildSystem;
     };
 
     Gen *TargetXcode(OutputTargetOpts & outputOpts,GenXcodeOpts & opts);

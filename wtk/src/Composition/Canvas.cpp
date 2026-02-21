@@ -33,27 +33,11 @@ bitmapParams({nullptr,texture,textureFence,rect}){
 
 
 void VisualCommand::Data::_destroy(Type t){
-    if(t == Rect){
-        rectParams.border.~optional();
-        rectParams.brush.~shared_ptr();
-    }
-    else if(t == RoundedRect){
-        roundedRectParams.border.~optional();
-        roundedRectParams.brush.~shared_ptr();
-    }
-    else if(t == Ellipse){
-        ellipseParams.border.~optional();
-        ellipseParams.brush.~shared_ptr();
-    }
-    else if(t == Bitmap){
-        bitmapParams.texture.~shared_ptr();
-        bitmapParams.textureFence.~shared_ptr();
-        bitmapParams.img.~shared_ptr();
-    }
+    (void)t;
 }
 
 VisualCommand::~VisualCommand(){
-    params._destroy(type);
+    // Data is a regular struct (not a tagged union), so RAII handles destruction.
 }
 
 Canvas::Canvas(CompositorClientProxy &proxy,Layer &layer): CompositorClient(proxy),rect(layer.getLayerRect()),layer(layer),current(new CanvasFrame {&layer,rect}){

@@ -18,6 +18,7 @@
 #include <thread>
 #include <future>
 #include <queue>
+#include <utility>
 
 #include <cassert>
 
@@ -27,22 +28,22 @@ namespace OmegaCommon {
 
     template<class T>
     class Async {
-        bool * hasValue;
-        Mutex * mutex;
-        T * _val;
+        std::shared_ptr<bool> hasValue;
+        std::shared_ptr<Mutex> mutex;
+        std::shared_ptr<T> _val;
 
         template<class Ty>
         friend class Promise;
 
     public:
-        explicit Async(bool * hasValue, Mutex * mutex, T * _val):
+        explicit Async(std::shared_ptr<bool> hasValue, std::shared_ptr<Mutex> mutex, std::shared_ptr<T> _val):
         hasValue(hasValue),
         mutex(mutex),
         _val(_val){
 
         }
         bool ready(){
-            std::lock_guard<Mutex> lk(*mutex);
+            std::lock_guard<Mutex> lk(*mutex.get());
             return *hasValue;
         }
         T & get(){
@@ -59,7 +60,7 @@ namespace OmegaCommon {
         std::shared_ptr<bool> hasValue;
         std::shared_ptr<T> val;
     public:
-        Promise():mutex(new Mutex()),hasValue(std::make_shared<bool>(false)),val((T *)new T()){
+        Promise():mutex(std::make_shared<Mutex>()),hasValue(std::make_shared<bool>(false)),val(std::make_shared<T>()){
 
         };
         Promise(const Promise &) = delete;
@@ -70,19 +71,19 @@ namespace OmegaCommon {
             
         }
         Async<T> async(){
-            return Async<T>{hasValue.get(),mutex.get(),val.get()};
+            return Async<T>{hasValue,mutex,val};
         };
         void set(const T & v){
-           std::lock_guard<Mutex> lk(*mutex);
-           if(!hasValue){
-                new(val.get()) T(v);
+           std::lock_guard<Mutex> lk(*mutex.get());
+           if(!(*hasValue)){
+                *val = v;
                 *hasValue = true;
            }
         }
         void set(T && v){
-           std::lock_guard<Mutex> lk(*mutex);
-           if(!hasValue){
-                new(val.get()) T(v);
+           std::lock_guard<Mutex> lk(*mutex.get());
+           if(!(*hasValue)){
+                *val = std::move(v);
                 *hasValue = true;
            }
         }
@@ -181,5 +182,3 @@ namespace OmegaCommon {
 };
 
 #endif
-
-

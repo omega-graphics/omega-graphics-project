@@ -63,6 +63,8 @@ namespace OmegaWTK {
         */
         void attachToWindow(AppWindow * window);
 
+        void notifyWindowResize(const Core::Rect & rect);
+
         ~WidgetTreeHost();
     };
 };

@@ -412,8 +412,8 @@ namespace autom::eval {
 
     Object *bf_config_file(MapRef<std::string,Object *> args,EvalContext & ctxt){
 
-        auto *inFile = castToString(args["input"]);
-        auto *outFile = castToString(args["output"]);
+        auto *inFile = castToString(args["in"]);
+        auto *outFile = castToString(args["out"]);
 
         if(!std::filesystem::exists(inFile->value().data())){
             ctxt.logError("Input file in config_file function does not exist");
@@ -440,12 +440,15 @@ namespace autom::eval {
             return nullptr;
         };
         auto path = std::filesystem::path(dir->value().data()).append("AUTOM.build");
+        auto prior_eval_dir = ctxt.eval->currentEvalDir;
+        ctxt.eval->currentEvalDir = path.parent_path();
         ctxt.eval->importFile(path.string());
+        ctxt.eval->currentEvalDir = prior_eval_dir;
         return nullptr;
     }
 
 
-    Object * Eval::tryInvokeBuiltinFunc(autom::StrRef subject,std::unordered_map<std::string,ASTExpr *> & args,int * code){
+    Object * Eval::tryInvokeBuiltinFunc(autom::StrRef subject,std::unordered_map<std::string,ASTExpr *> & args,int * code,ASTScope *scope){
 
         *code = INVOKE_SUCCESS;
 
@@ -476,7 +479,7 @@ namespace autom::eval {
             #undef TYPECHECK_STRICT
         };
 
-        EvalContext ctxt {this,engine,0};
+        EvalContext ctxt {this,engine,scope};
 
         #define BUILTIN_FUNC(name,func,...)if(subject == name){\
             if(checkArgs({__VA_ARGS__})){\
@@ -522,4 +525,3 @@ namespace autom::eval {
         return nullptr;
     };
 }
-

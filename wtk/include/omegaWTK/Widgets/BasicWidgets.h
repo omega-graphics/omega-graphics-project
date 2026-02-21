@@ -35,26 +35,26 @@ namespace OmegaWTK {
  * @brief A widget designed for holding other widgets (No rendering or native event handling can change Widget positioning)
  * 
  */
-// class OMEGAWTK_EXPORT Container: public Widget {
-// public:
-//     WIDGET_CONSTRUCTOR()
+class OMEGAWTK_EXPORT Container: public Widget {
+public:
+    WIDGET_CONSTRUCTOR()
 
-// };
+};
 
 // /**
 //  * @brief Similar to `Container` except all widgets can be moved (drag-dropped, animated) with native events or object methods.
 //  * 
 //  */
 
-// class OMEGAWTK_EXPORT AnimatedContainer : public Widget {
-// public:
-//     WIDGET_CONSTRUCTOR()
-// };
+class OMEGAWTK_EXPORT AnimatedContainer : public Widget {
+public:
+    WIDGET_CONSTRUCTOR()
+};
 
 
-// class OMEGAWTK_EXPORT ScrollableContainer : public Widget {
-//     WIDGET_CONSTRUCTOR()
-// };
+class OMEGAWTK_EXPORT ScrollableContainer : public Widget {
+    WIDGET_CONSTRUCTOR()
+};
 
 
 }

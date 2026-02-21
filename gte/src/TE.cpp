@@ -4,6 +4,7 @@
 #include <thread>
 #include <iostream>
 #include <cmath>
+#include <exception>
 
 _NAMESPACE_BEGIN_
 
@@ -690,10 +691,29 @@ SharedHandle<OmegaTessellationEngineContext> OmegaTessellationEngine::createTECo
 std::future<TETessellationResult> OmegaTessellationEngineContext::tessalateAsync(const TETessellationParams &params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport){
     std::promise<TETessellationResult> prom;
     auto fut = prom.get_future();
-    activeThreads.emplace_back(new std::thread([&](std::promise<TETessellationResult> promise, size_t idx){
-        promise.set_value_at_thread_exit(tessalateSync(params,frontFaceRotation,viewport));
-        activeThreads.erase(activeThreads.begin() + idx);
-    },std::move(prom),activeThreads.size()));
+    TETessellationParams paramsCopy = params;
+    std::optional<GEViewport> viewportCopy = std::nullopt;
+    if(viewport != nullptr){
+        viewportCopy = *viewport;
+    }
+    std::thread worker([this, promise = std::move(prom), paramsCopy, frontFaceRotation, viewportCopy]() mutable {
+        try{
+            GEViewport _viewport = {};
+            GEViewport *viewportPtr = nullptr;
+            if(viewportCopy.has_value()){
+                _viewport = viewportCopy.value();
+                viewportPtr = &_viewport;
+            }
+            promise.set_value_at_thread_exit(tessalateSync(paramsCopy,frontFaceRotation,viewportPtr));
+        }
+        catch(...){
+            promise.set_exception(std::current_exception());
+        }
+    });
+    {
+        std::lock_guard<std::mutex> lock(activeThreadsMutex);
+        activeThreads.emplace_back(std::move(worker));
+    }
     return fut;
 };
 
@@ -704,11 +724,16 @@ TETessellationResult OmegaTessellationEngineContext::tessalateSync(const TETesse
 };
 
 OmegaTessellationEngineContext::~OmegaTessellationEngineContext(){
-    for(auto t : activeThreads){
-        if(t->joinable()){
-            t->join();
+    std::vector<std::thread> threads;
+    {
+        std::lock_guard<std::mutex> lock(activeThreadsMutex);
+        threads.swap(activeThreads);
+    }
+    for(auto &t : threads){
+        if(t.joinable()){
+            t.join();
         }
-    };
+    }
 };
 
 void TETessellationResult::translate(float x,float y,float z,const GEViewport & viewport){

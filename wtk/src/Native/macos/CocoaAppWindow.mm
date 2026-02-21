@@ -95,7 +95,10 @@ void CocoaAppWindow::initialDisplay(){
     // //     [NSApp setMainMenu:windowMenu];
     // // };
     NSLog(@"Display Window");
-    NSApp.mainMenu = windowController.window.menu;
+    NSMenu *windowMenu = windowController.window.menu;
+    if(windowMenu != nil){
+        NSApp.mainMenu = windowMenu;
+    }
     [windowController showWindow:windowDelegate];
     [windowController.window makeKeyAndOrderFront:nil];
     NSLog(@"IS Visible :%d",[windowController.window isVisible]);
@@ -131,14 +134,20 @@ NativeItemPtr CocoaAppWindow::getRootView() {
 };
 -(void)windowDidResize:(NSNotification *)notification 
 {
-     CGFloat scaleFactor = [NSScreen mainScreen].backingScaleFactor;
-     NSLog(@"Window FRAME: {x:%f,y:%f,w:%f,h:%f}",self.window.contentView.frame.origin.x,self.window.contentView.frame.origin.y,self.window.contentView.frame.size.width,self.window.contentView.frame.size.height);
+     NSWindow *window = (NSWindow *)notification.object;
+     if(window == nil){
+         window = self.window;
+     }
+     if(window == nil || window.contentView == nil){
+         return;
+     }
+     NSLog(@"Window FRAME: {x:%f,y:%f,w:%f,h:%f}",window.contentView.frame.origin.x,window.contentView.frame.origin.y,window.contentView.frame.size.width,window.contentView.frame.size.height);
      auto *params = new OmegaWTK::Native::WindowWillResize(
              OmegaWTK::Core::Rect
-                     {(float)self.window.contentView.frame.origin.x,
-                      (float)self.window.contentView.frame.origin.y,
-                      (float)self.window.contentView.frame.size.width,
-                      (float)self.window.contentView.frame.size.height}
+                     {(float)window.contentView.frame.origin.x,
+                      (float)window.contentView.frame.origin.y,
+                      (float)window.contentView.frame.size.width,
+                      (float)window.contentView.frame.size.height}
      );
     OmegaWTK::Native::NativeEventPtr event(new OmegaWTK::Native::NativeEvent(OmegaWTK::Native::NativeEvent::WindowWillResize,params));
      [self emitIfPossible:event];

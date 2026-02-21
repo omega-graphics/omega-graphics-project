@@ -15,6 +15,7 @@
 #include "omegaWTK/UI/SVGView.h"
 
 #include "omegaWTK/Widgets/BasicWidgets.h"
+#include "omegaWTK/Widgets/Containers.h"
 
 
 #include "omegaWTK/Main.h"

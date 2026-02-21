@@ -82,7 +82,7 @@ class MetalTextureRenderTargetTEContext : public OmegaTessellationEngineContext 
         
     // };
     std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params, GEViewport * viewport){
-        {};
+        return {};
     };
     void translateCoords(float x, float y,float z,GEViewport * viewport, float *x_result, float *y_result,float *z_result) override{
         if(viewport != nullptr){

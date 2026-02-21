@@ -100,7 +100,7 @@ namespace autom {
                     if(node->lhs->type == EXPR_ID){
                         std::string & v = node->lhs->id;
                         int code;
-                        auto * returnT = tryInvokeBuiltinFunc(v,node->func_args,&code);
+                        auto * returnT = tryInvokeBuiltinFunc(v,node->func_args,&code,node->scope);
                       
                         if(code == INVOKE_NOTBUILTIN){
                             
@@ -278,7 +278,7 @@ namespace autom {
                             return tw->value()->deps;
                         }
 
-                        if(tw->value()->type & COMPILED_OUTPUT_TARGET){
+                        if(IS_COMPILED_TARGET_TYPE(tw->value()->type)){
                             auto _target =  (CompiledTarget *)tw->value();
                           
                             if(propName == "cflags"){
@@ -319,7 +319,7 @@ namespace autom {
                                 return _target->desc;
                             }
                         }
-                        else if(tw->value()->type & JAVA_TARGET){
+                        else if(IS_JAVA_TARGET_TYPE(tw->value()->type)){
                             auto _target = (JavaTarget *)tw->value();
                             if(propName == "maven_repos"){
                                 return _target->maven_repos;
@@ -616,6 +616,9 @@ namespace autom {
                                     }
                                     
                                     if(inFunctionCtxt && ret){
+                                        if(returning != nullptr){
+                                            *returning = true;
+                                        }
                                         return obj;
                                     }
                                     
@@ -641,6 +644,9 @@ namespace autom {
                                 }
                                 
                                 if(inFunctionCtxt && ret){
+                                    if(returning != nullptr){
+                                        *returning = true;
+                                    }
                                     return obj;
                                 }
                             }
@@ -685,6 +691,9 @@ namespace autom {
                             varStoreEntry.deallocAll();
                             
                             if(inFunctionCtxt && ret){
+                                if(returning != nullptr){
+                                    *returning = true;
+                                }
                                 return obj;
                             }
                             --length;

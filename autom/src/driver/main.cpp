@@ -82,9 +82,16 @@ int main(int argc,char * argv[]){
     
     std::vector<std::pair<std::string,autom::eval::Object *>> defines;
 
-    bool ninja = true;
-    bool sln = false;
-    bool xcode = false;
+    enum class GenMode {
+        Ninja,
+        Sln,
+        Xcode
+    };
+
+    GenMode mode = GenMode::Ninja;
+    autom::GenNinjaOpts ninjaOpts {false};
+    autom::GenVisualStudioOpts slnOpts {};
+    autom::GenXcodeOpts xcodeOpts {false};
 
 
     for(unsigned i = 1;i < argc;i++){
@@ -139,13 +146,19 @@ int main(int argc,char * argv[]){
         }
 
         else if(flag == "--ninja"){
-            ninja = true;
+            mode = GenMode::Ninja;
+        }
+        else if(flag == "--split-all"){
+            ninjaOpts.splitTargetsByNinja = true;
         }
         else if(flag == "--sln"){
-            sln = true;
+            mode = GenMode::Sln;
         }
         else if(flag == "--xcode"){
-            xcode = true;
+            mode = GenMode::Xcode;
+        }
+        else if(flag == "--new-build"){
+            xcodeOpts.newBuildSystem = true;
         }
     };
 
@@ -158,9 +171,14 @@ int main(int argc,char * argv[]){
     if(!std::filesystem::exists(outputDir.data()))
         std::filesystem::create_directories(outputDir.data());
 
-    if(ninja){
-        autom::GenNinjaOpts ninjaOpts {false};
+    if(mode == GenMode::Ninja){
         gen = autom::TargetNinja(outputTargetOpts,ninjaOpts);
+    }
+    else if(mode == GenMode::Sln){
+        gen = autom::TargetVisualStudio(outputTargetOpts,slnOpts);
+    }
+    else {
+        gen = autom::TargetXcode(outputTargetOpts,xcodeOpts);
     }
     
     auto file = (!toolchainFile.empty())? toolchainFile : std::filesystem::path(exec_path).append("bin").append("default_toolchains.json").string();

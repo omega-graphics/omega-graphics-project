@@ -3,8 +3,9 @@
 #import <AppKit/AppKit.h>
 
 namespace OmegaWTK::Native {
-    ThemeDesc queryDefaultTheme(){
+    ThemeDesc queryCurrentTheme(){
         ThemeDesc desc {};
-        NSAppearance *defAppearance = NSApp.appearance;
+        (void)NSApp.appearance;
+        return desc;
     }
 }

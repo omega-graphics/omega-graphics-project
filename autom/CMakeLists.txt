@@ -77,3 +77,14 @@ install(FILES ${PYTHON_TOOLS} ${DEFAULT_TOOLCHAIN_FILE} DESTINATION "bin"  PERMI
 install(TARGETS autom autom-install DESTINATION "bin")
 install(TARGETS "autom-lib" ARCHIVE DESTINATION "lib")
 install(TARGETS ${STDLIB_MODULES} RUNTIME DESTINATION "modules" LIBRARY DESTINATION "modules")
+
+add_custom_target(autom-tests
+    COMMAND ${PYEXEC} ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_tests.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --autom ${CMAKE_BINARY_DIR}/bin/autom
+        --toolchains ${CMAKE_CURRENT_SOURCE_DIR}/tools/default_toolchains.json
+        --interface-dir ${CMAKE_CURRENT_SOURCE_DIR}/modules
+        --extension-dir ${CMAKE_BINARY_DIR}/stdlib
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    DEPENDS autom fs bridge
+    COMMENT "Running AUTOM integration tests")

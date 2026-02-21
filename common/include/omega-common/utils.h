@@ -18,6 +18,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cassert>
+#include <utility>
 
 
 
@@ -537,6 +538,18 @@ namespace OmegaCommon {
         std::allocator<Ty> _alloc;
     protected:
         Ty *_data;
+        template<class U>
+        void _push_el(U && el){
+            if(len >= max_len){
+                size_type newMax = (max_len == 0) ? 1 : (max_len * 2);
+                if(newMax <= len){
+                    newMax = len + 1;
+                }
+                resize(newMax);
+            }
+            std::allocator_traits<std::allocator<Ty>>::construct(_alloc,_data + len,std::forward<U>(el));
+            ++len;
+        };
     public:
         using size_type = unsigned;
     private:
@@ -557,27 +570,19 @@ namespace OmegaCommon {
         reference last(){ return _data[len-1];};
         template<class Pred>
         void filter(Pred pred){
-            auto _end = std::remove_if(_data,_data + len,pred);
-            auto it_end = _data + len;
-            unsigned count = 0;
-            while(_end != it_end){
-                _end->~Ty();
-                ++_end;
-                count += 1;
+            size_type writeIdx = 0;
+            for(size_type readIdx = 0; readIdx < len; ++readIdx){
+                if(!pred(_data[readIdx])){
+                    if(writeIdx != readIdx){
+                        _data[writeIdx] = std::move(_data[readIdx]);
+                    }
+                    ++writeIdx;
+                }
             }
-            auto newSize = len - count;
-            auto temp = _alloc.allocate(newSize);
-            memcpy(temp,_data,newSize);
-            _alloc.deallocate(_data,len);
-            _data = _alloc.allocate(newSize);
-            memcpy(_data,temp,newSize);
-            _alloc.deallocate(_data,newSize);
-            len = newSize;
-        }
-    protected:
-        void _push_el(const Ty & el){
-            new (_data + len) Ty(el);
-            ++len;
+            for(size_type i = writeIdx; i < len; ++i){
+                std::allocator_traits<std::allocator<Ty>>::destroy(_alloc,_data + i);
+            }
+            len = writeIdx;
         };
     public:
         virtual void push(const Ty & el){
@@ -588,21 +593,49 @@ namespace OmegaCommon {
         };
         void pop(){
             assert(!empty() && "Cannot call pop() on empty QueueHeap!");
-            _data[0].~Ty();
+            if(len == 1){
+                std::allocator_traits<std::allocator<Ty>>::destroy(_alloc,_data);
+                len = 0;
+                return;
+            }
+            for(size_type i = 1; i < len; ++i){
+                _data[i-1] = std::move(_data[i]);
+            }
+            std::allocator_traits<std::allocator<Ty>>::destroy(_alloc,_data + (len - 1));
             --len;
-            memcpy(_data,_data + 1,sizeof(Ty) * len);
         };
         void resize(size_type new_max_size){
             assert(max_len < new_max_size && "");
+            Ty *new_data = _alloc.allocate(new_max_size);
+            size_type moved = 0;
+            try {
+                for(; moved < len; ++moved){
+                    std::allocator_traits<std::allocator<Ty>>::construct(
+                        _alloc,new_data + moved,std::move_if_noexcept(_data[moved]));
+                }
+            }
+            catch(...){
+                for(size_type i = 0; i < moved; ++i){
+                    std::allocator_traits<std::allocator<Ty>>::destroy(_alloc,new_data + i);
+                }
+                _alloc.deallocate(new_data,new_max_size);
+                throw;
+            }
+            for(size_type i = 0; i < len; ++i){
+                std::allocator_traits<std::allocator<Ty>>::destroy(_alloc,_data + i);
+            }
             _alloc.deallocate(_data,max_len);
-            _data = _alloc.allocate(new_max_size);
+            _data = new_data;
             max_len = new_max_size;
         };
 
-        explicit QueueHeap(size_type max_size):_data((Ty *)_alloc.allocate(max_size)),max_len(max_size),len(0){
+        explicit QueueHeap(size_type max_size):_data((Ty *)_alloc.allocate(max_size == 0 ? 1 : max_size)),max_len(max_size == 0 ? 1 : max_size),len(0){
 
         };
         virtual ~QueueHeap(){
+            for(size_type i = 0; i < len; ++i){
+                std::allocator_traits<std::allocator<Ty>>::destroy(_alloc,_data + i);
+            }
             _alloc.deallocate(_data,max_len);
         };
     };

@@ -1,20 +1,71 @@
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/UI/View.h"
+#include "omegaWTK/UI/UIView.h"
 #include "omegaWTK/UI/WidgetTreeHost.h"
 
+#include <algorithm>
 
 
 namespace OmegaWTK {
 
+PaintContext::PaintContext(Widget *widget,SharedHandle<Composition::Canvas> mainCanvas,PaintReason reason):
+widget(widget),
+mainCanvas(mainCanvas),
+paintReason(reason){
 
-Widget::Widget(const Core::Rect & rect,WidgetPtr parent):parent(parent){
+}
+
+const Core::Rect & PaintContext::bounds() const{
+    return widget->rect();
+}
+
+PaintReason PaintContext::reason() const{
+    return paintReason;
+}
+
+Composition::Canvas & PaintContext::rootCanvas(){
+    return *mainCanvas.get();
+}
+
+SharedHandle<Composition::Canvas> PaintContext::makeCanvas(SharedHandle<Composition::Layer> &targetLayer){
+    return widget->rootView->makeCanvas(targetLayer);
+}
+
+void PaintContext::clear(const Composition::Color &color){
+    auto & background = rootCanvas().getCurrentFrame()->background;
+    background.r = color.r;
+    background.g = color.g;
+    background.b = color.b;
+    background.a = color.a;
+}
+
+void PaintContext::drawRect(const Core::Rect &rect,const SharedHandle<Composition::Brush> &brush){
+    auto _rect = rect;
+    auto _brush = brush;
+    rootCanvas().drawRect(_rect,_brush);
+}
+
+void PaintContext::drawRoundedRect(const Core::RoundedRect &rect,const SharedHandle<Composition::Brush> &brush){
+    auto _rect = rect;
+    auto _brush = brush;
+    rootCanvas().drawRoundedRect(_rect,_brush);
+}
+
+void PaintContext::drawImage(const SharedHandle<Media::BitmapImage> &img,const Core::Rect &rect){
+    auto _rect = rect;
+    auto _img = img;
+    rootCanvas().drawImage(_img,_rect);
+}
+
+
+Widget::Widget(const Core::Rect & rect,WidgetPtr parent):parent(parent.get()){
     layerTree = std::make_shared<Composition::LayerTree>();
     rootView = SharedHandle<CanvasView>(new CanvasView(rect,layerTree.get(),nullptr));
     // std::cout << "Constructing View for Widget" << std::endl;
     if(parent != nullptr) {
         parent->rootView->addSubView(this->rootView.get());
-        parent->children.push_back(SharedHandle<Widget>(this));
+        parent->children.push_back(this);
     }
 //    std::cout << "RenderTargetPtr:" << rootView->renderTarget.get() << std::endl;
 };
@@ -23,16 +74,136 @@ Widget::Widget(const Core::Rect & rect,WidgetPtr parent):parent(parent){
 //    
 //};
 
+SharedHandle<Composition::Canvas> Widget::getRootPaintCanvas(){
+    if(rootPaintCanvas == nullptr){
+        auto rootLayer = rootView->getLayerTreeLimb()->getRootLayer();
+        rootPaintCanvas = rootView->makeCanvas(rootLayer);
+    }
+    return rootPaintCanvas;
+}
+
+void Widget::executePaint(PaintReason reason,bool immediate){
+    if(mode != PaintMode::Automatic){
+        return;
+    }
+    if(paintInProgress){
+        if(options.coalesceInvalidates){
+            hasPendingInvalidate = true;
+            pendingPaintReason = reason;
+            return;
+        }
+        if(!immediate){
+            return;
+        }
+    }
+    paintInProgress = true;
+    PaintReason activeReason = reason;
+    while(true){
+        auto canvas = getRootPaintCanvas();
+        PaintContext context(this,canvas,activeReason);
+        rootView->startCompositionSession();
+        onPaint(context,activeReason);
+        int submissions = 1;
+        if(activeReason == PaintReason::Initial &&
+           !initialDrawComplete &&
+           options.autoWarmupOnInitialPaint){
+            submissions = std::max<int>(1,options.warmupFrameCount);
+        }
+        for(int i = 0; i < submissions; i++){
+            canvas->sendFrame();
+        }
+        rootView->endCompositionSession();
+        if(activeReason == PaintReason::Initial){
+            initialDrawComplete = true;
+        }
+        if(!(options.coalesceInvalidates && hasPendingInvalidate)){
+            break;
+        }
+        activeReason = pendingPaintReason;
+        hasPendingInvalidate = false;
+    }
+    paintInProgress = false;
+}
+
+void Widget::init(){
+    onMount();
+    rootView->enable();
+    if(mode == PaintMode::Automatic){
+        executePaint(PaintReason::Initial,true);
+    }
+}
+
+void Widget::setPaintMode(PaintMode mode){
+    this->mode = mode;
+}
+
+PaintMode Widget::paintMode() const{
+    return mode;
+}
+
+void Widget::setPaintOptions(const PaintOptions &options){
+    this->options = options;
+}
+
+const PaintOptions & Widget::paintOptions() const{
+    return options;
+}
+
+void Widget::invalidate(PaintReason reason){
+    executePaint(reason,false);
+}
+
+void Widget::invalidateNow(PaintReason reason){
+    executePaint(reason,true);
+}
+
+void Widget::handleHostResize(const Core::Rect &rect){
+    auto oldRect = this->rect();
+    auto & rootRect = rootView->getRect();
+#if defined(TARGET_MACOS)
+    // Cocoa already resizes the root NSView during live window resize.
+    // Avoid forcing native frame updates here to prevent window-transaction churn.
+    rootRect = rect;
+#else
+    rootView->resize(rect);
+#endif
+    auto newRect = rootRect;
+    this->resize(newRect);
+    WIDGET_NOTIFY_OBSERVERS_RESIZE(oldRect);
+    if(mode == PaintMode::Automatic && options.invalidateOnResize){
+        invalidate(PaintReason::Resize);
+    }
+}
+
 void Widget::onThemeSetRecurse(Native::ThemeDesc &desc){
     onThemeSet(desc);
+    if(mode == PaintMode::Automatic){
+        invalidate(PaintReason::ThemeChanged);
+    }
     for(auto & child : children){
-        child->onThemeSetRecurse(desc);
+        if(child != nullptr){
+            child->onThemeSetRecurse(desc);
+        }
     }
 }
 
 SharedHandle<View> Widget::makeCanvasView(const Core::Rect & rect,ViewPtr parent){
     return SharedHandle<CanvasView>(new CanvasView(rect,layerTree.get(),parent));
 };
+
+SharedHandle<ScrollView> Widget::makeScrollView(const Core::Rect & rect,
+                                                ViewPtr child,
+                                                bool hasVerticalScrollBar,
+                                                bool hasHorizontalScrollBar,
+                                                ViewPtr parent){
+    assert(child != nullptr && "Cannot create ScrollView with null child View");
+    return SharedHandle<ScrollView>(new ScrollView(rect,
+                                                   child,
+                                                   hasVerticalScrollBar,
+                                                   hasHorizontalScrollBar,
+                                                   layerTree.get(),
+                                                   parent));
+}
 
 // SharedHandle<TextView> Widget::makeTextView(const Core::Rect & rect,View *parent){
 //     return SharedHandle<TextView>(new TextView(rect,layerTree.get(),parent,false));
@@ -46,9 +217,25 @@ SharedHandle<VideoView> Widget::makeVideoView(const Core::Rect & rect,ViewPtr pa
     return SharedHandle<VideoView>(new VideoView(rect,layerTree.get(),parent));
 };
 
+SharedHandle<UIView> Widget::makeUIView(const Core::Rect & rect,ViewPtr parent,UIViewTag tag){
+    return SharedHandle<UIView>(new UIView(rect,layerTree.get(),parent,tag));
+}
+
 Core::Rect & Widget::rect(){
     return rootView->getRect();
 };
+
+void Widget::setRect(const Core::Rect &newRect){
+    auto oldRect = rect();
+    rootView->resize(newRect);
+    auto & rootRect = rootView->getRect();
+    auto updatedRect = rootRect;
+    this->resize(updatedRect);
+    WIDGET_NOTIFY_OBSERVERS_RESIZE(oldRect);
+    if(mode == PaintMode::Automatic && options.invalidateOnResize){
+        invalidate(PaintReason::Resize);
+    }
+}
 
 void Widget::show(){
 
@@ -70,9 +257,16 @@ void Widget::addObserver(WidgetObserverPtr observer){
 
 void Widget::setTreeHostRecurse(WidgetTreeHost *host){
     treeHost = host;
-    rootView->setFrontendRecurse(host->compPtr());
+    if(host != nullptr){
+        rootView->setFrontendRecurse(host->compPtr());
+    }
+    else {
+        rootView->setFrontendRecurse(nullptr);
+    }
     for(auto c : children){
-        c->setTreeHostRecurse(host);
+        if(c != nullptr){
+            c->setTreeHostRecurse(host);
+        }
     };
 };
 
@@ -115,33 +309,64 @@ void Widget::notifyObservers(Widget::WidgetEventType event_ty,Widget::WidgetEven
     };
 };
 
-void Widget::removeChildWidget(WidgetPtr ptr){
+void Widget::removeChildWidget(Widget *ptr){
+    if(ptr == nullptr){
+        return;
+    }
     for(auto it = children.begin();it != children.end();it++){
         if(ptr == *it){
             rootView->removeSubView(ptr->rootView.get());
             children.erase(it);
-            ptr->notifyObservers(Detach,{WidgetPtr(this)});
+            ptr->parent = nullptr;
+            ptr->setTreeHostRecurse(nullptr);
+            ptr->notifyObservers(Detach,{});
             ptr->layerTree->notifyObserversOfWidgetDetach();
             break;
         };
     };
 };
 
-void Widget::setParentWidget(WidgetPtr widget){
+void Widget::setParentWidgetImpl(Widget *widget,WidgetPtr widgetHandle){
     assert(widget != nullptr && "Cannot set Widget as child of a null Widget");
-
+    if(parent == widget){
+        return;
+    }
     if(parent != nullptr){
-        parent->removeChildWidget(std::shared_ptr<Widget>(this));
+        parent->removeChildWidget(this);
     }
     parent = widget;
-    parent->children.push_back(std::shared_ptr<Widget>(this));
+    parent->children.push_back(this);
     setTreeHostRecurse(widget->treeHost);
     parent->rootView->addSubView(rootView.get());
-    notifyObservers(Attach,{widget});
+    notifyObservers(Attach,{widgetHandle});
+}
+
+void Widget::setParentWidget(WidgetPtr widget){
+    assert(widget != nullptr && "Cannot set Widget as child of a null Widget");
+    setParentWidgetImpl(widget.get(),widget);
 };
 
+void Widget::setParentWidget(Widget *widget){
+    setParentWidgetImpl(widget,{});
+};
+
+void Widget::detachFromParent(){
+    if(parent != nullptr){
+        parent->removeChildWidget(this);
+    }
+}
+
 Widget::~Widget(){
-    parent->removeChildWidget(std::shared_ptr<Widget>(this));
+    for(auto child : children){
+        if(child != nullptr){
+            child->parent = nullptr;
+        }
+    }
+    children.clear();
+    if(parent != nullptr){
+        parent->removeChildWidget(this);
+        parent = nullptr;
+    }
 }
 
 

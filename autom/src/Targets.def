@@ -27,4 +27,8 @@ typedef int TargetType;
 #define FS_MKDIR 0x0D
 #define FS_ACTION (FS_COPY | FS_SYMLINK | FS_MKDIR)
 
+#define IS_COMPILED_TARGET_TYPE(type) ((type) == EXECUTABLE || (type) == STATIC_LIBRARY || (type) == SHARED_LIBRARY || (type) == SOURCE_GROUP)
+#define IS_JAVA_TARGET_TYPE(type) ((type) == JAR_LIB || (type) == JAR_EXE)
+#define IS_FS_ACTION_TYPE(type) ((type) == FS_COPY || (type) == FS_SYMLINK || (type) == FS_MKDIR)
+
 #endif

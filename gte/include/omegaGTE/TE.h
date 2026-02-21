@@ -1,6 +1,7 @@
 #include "GTEBase.h"
 #include <thread>
 #include <future>
+#include <mutex>
 #include <optional> 
 #include <type_traits>
 #include "GE.h"
@@ -183,7 +184,8 @@ class OMEGAGTE_EXPORT OmegaTessellationEngineContext {
     friend class OmegaTessellationEngine;
 protected:
     GEViewport defaultViewport;
-    std::vector<std::thread *> activeThreads;
+    std::vector<std::thread> activeThreads;
+    std::mutex activeThreadsMutex;
 
     float arcStep = 0.01;
 

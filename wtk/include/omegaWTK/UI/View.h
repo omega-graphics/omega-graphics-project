@@ -215,6 +215,7 @@ namespace OmegaWTK {
         friend class Widget;
         explicit ScrollView(const Core::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, Composition::LayerTree *layerTree, ViewPtr parent = nullptr);
     public:
+        OMEGACOMMON_CLASS("OmegaWTK.ScrollView")
         void toggleVerticalScrollBar();
         void toggleHorizontalScrollBar();
         void setDelegate(ScrollViewDelegate *_delegate);

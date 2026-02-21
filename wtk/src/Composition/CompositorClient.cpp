@@ -147,6 +147,7 @@ namespace OmegaWTK::Composition {
     void CompositorClient::pushLayerResizeCommand(Layer *target, unsigned int delta_x, unsigned int delta_y,
                                                   unsigned int delta_w, unsigned int delta_h, Timestamp &start,
                                                   Timestamp &deadline) {
+        busy();
         currentJobStatuses.push_back({
             currentCommandID,
             parentProxy.queueLayerResizeCommand(currentCommandID,*this,target,delta_x,delta_y,delta_w,delta_h,start,deadline)
@@ -155,6 +156,7 @@ namespace OmegaWTK::Composition {
     }
 
     void CompositorClient::pushTimedFrame(SharedHandle<CanvasFrame> &frame, Timestamp &start, Timestamp &deadline) {
+        busy();
         currentJobStatuses.push_back(
             {currentCommandID,
             parentProxy.queueTimedFrame(currentCommandID,*this,frame,start,deadline)
@@ -163,6 +165,7 @@ namespace OmegaWTK::Composition {
     }
 
     void CompositorClient::pushViewResizeCommand(Native::NativeItemPtr nativeView,unsigned delta_x,unsigned delta_y,unsigned delta_w,unsigned delta_h,Timestamp &start,Timestamp & deadline){
+        busy();
         currentJobStatuses.push_back(
             {currentCommandID,
             parentProxy.queueViewResizeCommand(currentCommandID,*this,nativeView,delta_x,delta_y,delta_w,delta_h,start,deadline)
@@ -171,6 +174,7 @@ namespace OmegaWTK::Composition {
     }
 
     void CompositorClient::pushFrame(SharedHandle<CanvasFrame> &frame, Timestamp &start) {
+        busy();
         currentJobStatuses.push_back({currentCommandID,
                                     parentProxy.queueFrame(currentCommandID,*this,frame,start)
                                                     });

@@ -112,10 +112,16 @@ void AppWindowDelegate::onRecieveEvent(Native::NativeEventPtr event){
         }
         case Native::NativeEvent::WindowWillResize : {
             Native::WindowWillResize *params = (Native::WindowWillResize *)event->params;
+            if(params == nullptr){
+                break;
+            }
             // MessageBoxA(HWND_DESKTOP,"Window Will Resize","NOTE",MB_OK);
             windowWillResize(params->rect);
             // MessageBoxA(HWND_DESKTOP,"Window Has Resized","NOTE",MB_OK);
             window->rect = params->rect;
+            for(auto & host : window->widgetTreeHosts){
+                host->notifyWindowResize(params->rect);
+            }
             break;
         }
         default:

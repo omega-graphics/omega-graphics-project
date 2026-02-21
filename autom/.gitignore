@@ -20,6 +20,7 @@ cmake-build*
 tm/pyyaml
 *.tmbundle
 *.tmLanguage
+*.ninja_log
 
 # Compiled Object files
 *.slo
@@ -58,3 +59,6 @@ tm/pyyaml
 
 # Ignore Gradle project-specific cache directory
 .gradle
+
+AUTOMINSTALL
+bin

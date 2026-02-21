@@ -2,6 +2,7 @@
 #include "omegaWTK/Core/Core.h"
 #include "omegaWTK/Native/NativeTheme.h"
 #include "omegaWTK/Composition/Canvas.h"
+#include <cstdint>
 
 #ifndef OMEGAWTK_UI_WIDGET_H
 #define OMEGAWTK_UI_WIDGET_H
@@ -19,6 +20,8 @@ class View;
 OMEGACOMMON_SHARED_CLASS(View);
 typedef View CanvasView;
 OMEGACOMMON_SHARED_CLASS(CanvasView);
+class ScrollView;
+OMEGACOMMON_SHARED_CLASS(ScrollView);
 class VideoView;
 OMEGACOMMON_SHARED_CLASS(VideoView);
 class SVGView;
@@ -34,6 +37,42 @@ class Widget;
 OMEGACOMMON_SHARED_CLASS(Widget);
 OMEGACOMMON_SHARED_CLASS(WidgetObserver);
 
+enum class PaintMode : uint8_t {
+    Automatic,
+    Manual
+};
+
+enum class PaintReason : uint8_t {
+    Initial,
+    StateChanged,
+    Resize,
+    ThemeChanged
+};
+
+struct PaintOptions {
+    bool autoWarmupOnInitialPaint = true;
+    uint8_t warmupFrameCount = 2;
+    bool coalesceInvalidates = true;
+    bool invalidateOnResize = true;
+};
+
+class OMEGAWTK_EXPORT PaintContext {
+    Widget *widget = nullptr;
+    SharedHandle<Composition::Canvas> mainCanvas;
+    PaintReason paintReason = PaintReason::StateChanged;
+    PaintContext(Widget *widget,SharedHandle<Composition::Canvas> mainCanvas,PaintReason reason);
+    friend class Widget;
+public:
+    const Core::Rect & bounds() const;
+    PaintReason reason() const;
+    Composition::Canvas & rootCanvas();
+    SharedHandle<Composition::Canvas> makeCanvas(SharedHandle<Composition::Layer> & targetLayer);
+    void clear(const Composition::Color & color);
+    void drawRect(const Core::Rect & rect,const SharedHandle<Composition::Brush> & brush);
+    void drawRoundedRect(const Core::RoundedRect & rect,const SharedHandle<Composition::Brush> & brush);
+    void drawImage(const SharedHandle<Media::BitmapImage> & img,const Core::Rect & rect);
+};
+
 
 /**
  @brief A singular moduler UI component. (Consists usually of one view)
@@ -44,14 +83,24 @@ OMEGACOMMON_SHARED_CLASS(WidgetObserver);
 */
 class OMEGAWTK_EXPORT  Widget : public Native::NativeThemeObserver {
     bool initialDrawComplete = false;
+    bool paintInProgress = false;
+    bool hasPendingInvalidate = false;
+    PaintReason pendingPaintReason = PaintReason::StateChanged;
+    PaintMode mode = PaintMode::Automatic;
+    PaintOptions options {};
+
+    SharedHandle<Composition::Canvas> rootPaintCanvas;
 
     void onThemeSetRecurse(Native::ThemeDesc &desc);
+    SharedHandle<Composition::Canvas> getRootPaintCanvas();
+    void executePaint(PaintReason reason,bool immediate);
+    void handleHostResize(const Core::Rect & rect);
 
     using Native::NativeThemeObserver::onThemeSet;
 protected:
 
     SharedHandle<CanvasView> rootView;
-    WidgetPtr parent;
+    Widget *parent = nullptr;
     SharedHandle<Composition::LayerTree> layerTree;
     /**
      The WidgetTreeHost that hosts this widget.
@@ -64,6 +113,21 @@ protected:
      @returns A standard View
      */
     CanvasViewPtr makeCanvasView(const Core::Rect & rect,ViewPtr parent);
+
+    /**
+     Makes a Scroll View attached to this widget and returns it.
+     @param rect The Rectangle to use
+     @param child The child view to clip and scroll
+     @param hasVerticalScrollBar Enable vertical scrollbar
+     @param hasHorizontalScrollBar Enable horizontal scrollbar
+     @param parent The parent view in this widget view hierarchy
+     @returns A Scroll View
+     */
+    ScrollViewPtr makeScrollView(const Core::Rect & rect,
+                                 ViewPtr child,
+                                 bool hasVerticalScrollBar,
+                                 bool hasHorizontalScrollBar,
+                                 ViewPtr parent);
 
     //    /**
     //  Makes a Canvas View attached to this widget and returns it.
@@ -95,12 +159,12 @@ protected:
      @param parent The Parent View (NOTE: This view MUST be within this widget's view heirarchy)
      @returns A Video View
      */
-    UIViewPtr makeUIView(const Core::Rect & rect,View *parent,UIViewTag tag = "");
+    UIViewPtr makeUIView(const Core::Rect & rect,ViewPtr parent,UIViewTag tag = "");
     
 private:
-    OmegaCommon::Vector<WidgetPtr> children;
+    OmegaCommon::Vector<Widget *> children;
     void setTreeHostRecurse(WidgetTreeHost *host);
-    void removeChildWidget(WidgetPtr ptr);
+    void removeChildWidget(Widget *ptr);
     /// Observers
     OmegaCommon::Vector<WidgetObserverPtr> observers;
 protected:
@@ -116,21 +180,33 @@ protected:
         Core::Rect rect;
     };
     void notifyObservers(WidgetEventType eventType,WidgetEventParams params);
+
+    virtual void onMount(){};
+    virtual void onPaint(PaintContext & context,PaintReason reason){};
+
     /**
     @brief Initial render of the Widget
-    @note MUST be implemented by all Widgets*/
-    INTERFACE_METHOD void init() ABSTRACT;
+    @note Manual-mode widgets can still override this to use low-level composition APIs.*/
+    virtual void init();
 private:
+    void setParentWidgetImpl(Widget *widget,WidgetPtr widgetHandle);
     friend class AppWindow;
     friend class AppWindowManager;
     friend class WidgetTreeHost;
+    friend class PaintContext;
 public:
     OMEGACOMMON_CLASS("OmegaWTK.Widget")
     /**
      Get the Widget's root View's rect
     */
     Core::Rect & rect();
+    void setRect(const Core::Rect & newRect);
+    virtual bool isLayoutResizable() const {
+        return true;
+    }
     void setParentWidget(WidgetPtr widget);
+    void setParentWidget(Widget *widget);
+    void detachFromParent();
     /**
      Add a WidgetObserver to be notified.
     */
@@ -140,8 +216,14 @@ public:
      @note RARELY USED
     */
     void removeObserver(WidgetObserverPtr observerPtr);
+    void setPaintMode(PaintMode mode);
+    PaintMode paintMode() const;
+    void setPaintOptions(const PaintOptions & options);
+    const PaintOptions & paintOptions() const;
+    void invalidate(PaintReason reason = PaintReason::StateChanged);
+    void invalidateNow(PaintReason reason = PaintReason::StateChanged);
     // bool & isResizable();
-    void resize(Core::Rect & newRect){
+    virtual void resize(Core::Rect & newRect){
         // std::cout << "THIS WIDGET IS NOT RESIZABLE" << std::endl;
     };
     /**
