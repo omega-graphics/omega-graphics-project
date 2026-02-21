@@ -12,8 +12,8 @@
 
 _NAMESPACE_BEGIN_
 
-    GEMetalCommandBuffer::GEMetalCommandBuffer(GEMetalCommandQueue *parentQueue):parentQueue(parentQueue),
-    buffer({NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQueue->commandQueue.handle()) commandBuffer]}){
+GEMetalCommandBuffer::GEMetalCommandBuffer(GEMetalCommandQueue *parentQueue):parentQueue(parentQueue),
+buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQueue->commandQueue.handle()) commandBuffer] retain]}){
        
     };
 
@@ -24,7 +24,7 @@ _NAMESPACE_BEGIN_
                 return l.gpu_relative_loc;
             }
         }
-        return -1;
+        return _id;
     };
 
     bool GEMetalCommandBuffer::shaderHasWriteAccessForResource(unsigned int &_id, omegasl_shader &shader) {
@@ -542,14 +542,18 @@ _NAMESPACE_BEGIN_
 //                encodeSignalEvent:NSOBJECT_OBJC_BRIDGE(id<MTLEvent>,event->metalEvent.handle()) value:val];
 //    }
 
-    void GEMetalCommandBuffer::reset(){
-        buffer = NSObjectHandle{NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQueue->commandQueue.handle()) commandBuffer]};
+void GEMetalCommandBuffer::reset(){
+        if(buffer.handle() != nullptr){
+            [NSOBJECT_OBJC_BRIDGE(id,buffer.handle()) release];
+        }
+        id<MTLCommandBuffer> newBuffer = [NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQueue->commandQueue.handle()) commandBuffer];
+        buffer = NSObjectHandle{NSOBJECT_CPP_BRIDGE [newBuffer retain]};
     };
 
-    GEMetalCommandBuffer::~GEMetalCommandBuffer(){
+GEMetalCommandBuffer::~GEMetalCommandBuffer(){
         // NSLog(@"Metal Command Buffer Destroy");
         buffer.assertExists();
-        // [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) autorelease];
+        [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) release];
     }
 
     GEMetalCommandQueue::GEMetalCommandQueue(NSSmartPtr & queue,unsigned size):
@@ -562,10 +566,11 @@ _NAMESPACE_BEGIN_
                                                   SharedHandle<GEFence> &waitFence) {
         auto _commandBuffer = (GEMetalCommandBuffer *)commandBuffer.get();
         auto _fence = (GEMetalFence *)waitFence.get();
-        [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,_commandBuffer->buffer.handle())
-                encodeWaitForEvent:NSOBJECT_OBJC_BRIDGE(id<MTLEvent>,_fence->metalEvent.handle()) value:1];
-        [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,_commandBuffer->buffer.handle())
-                encodeSignalEvent:NSOBJECT_OBJC_BRIDGE(id<MTLEvent>,_fence->metalEvent.handle()) value:0];
+        auto waitValue = _fence->currentEventValue();
+        if(waitValue > 0){
+            [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,_commandBuffer->buffer.handle())
+                    encodeWaitForEvent:NSOBJECT_OBJC_BRIDGE(id<MTLEvent>,_fence->metalEvent.handle()) value:waitValue];
+        }
     }
 
     void GEMetalCommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer){
@@ -579,8 +584,9 @@ _NAMESPACE_BEGIN_
         submitCommandBuffer(commandBuffer);
         auto _commandBuffer = (GEMetalCommandBuffer *)commandBuffer.get();
         auto _fence = (GEMetalFence *)signalFence.get();
+        auto signalValue = _fence->reserveNextEventValue();
         [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,_commandBuffer->buffer.handle())
-                encodeSignalEvent:NSOBJECT_OBJC_BRIDGE(id<MTLEvent>,_fence->metalEvent.handle()) value:1];
+                encodeSignalEvent:NSOBJECT_OBJC_BRIDGE(id<MTLEvent>,_fence->metalEvent.handle()) value:signalValue];
     }
 
     void GEMetalCommandQueue::commitToGPU(){

@@ -63,6 +63,22 @@ void Compositor::executeCurrentCommand(){
 
         auto & bkgrd = comm->frame->background;
 
+        const bool isNoOpFrame =
+                commands.empty() &&
+                comm->frame->currentEffects.empty() &&
+                bkgrd.r == 0.f &&
+                bkgrd.g == 0.f &&
+                bkgrd.b == 0.f &&
+                bkgrd.a == 0.f;
+
+        // Some clients can enqueue empty transparent frames during startup/layout.
+        // Skipping them prevents wiping the last presented frame.
+        if(isNoOpFrame){
+            OMEGAWTK_DEBUG("Skipping no-op transparent frame.")
+            currentCommand->status.set(CommandStatus::Ok);
+            return;
+        }
+
         targetContext->clear(bkgrd.r,bkgrd.g,bkgrd.b,bkgrd.a);
 
         for(auto & c : commands){
@@ -126,6 +142,7 @@ void Compositor::executeCurrentCommand(){
     else if(currentCommand->type == CompositorCommand::Cancel){
         auto params = (CompositorCancelCommand *)currentCommand.get();
         /// Filter commands that have the id in order to cancel execution of them.
+        std::lock_guard<std::mutex> lk(mutex);
         commandQueue.filter([&](SharedHandle<CompositorCommand> & command){
             return command->id >= params->startID && command->id <= params->endID;
         });

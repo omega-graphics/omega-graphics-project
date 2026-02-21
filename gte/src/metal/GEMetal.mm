@@ -23,6 +23,19 @@
 
 _NAMESPACE_BEGIN_
 
+static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
+    if(str.data() == nullptr || str.size() == 0){
+        return @"";
+    }
+    NSString *value = [[NSString alloc] initWithBytes:str.data()
+                                               length:str.size()
+                                             encoding:NSUTF8StringEncoding];
+    if(value == nil){
+        value = [[NSString alloc] initWithUTF8String:""];
+    }
+    return [value autorelease];
+}
+
     struct GTEMetalDevice : public GTEDevice {
         __strong id<MTLDevice> device;
         GTEMetalDevice(Type type,const char *name,GTEDeviceFeatures & features,id<MTLDevice> _device): GTEDevice(type,name,features),device(_device){}
@@ -85,7 +98,7 @@ _NAMESPACE_BEGIN_
     };
 
     void GEMetalBuffer::setName(OmegaCommon::StrRef name) {
-        NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer.handle()).label = [[NSString alloc] initWithUTF8String:name.data()];
+        NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer.handle()).label = ns_string_from_str_ref(name);
     }
 
     GEMetalBuffer::~GEMetalBuffer(){
@@ -340,7 +353,7 @@ _NAMESPACE_BEGIN_
                     }
                 }
                 if(s > biggestSize){
-                    s = biggestSize;
+                    biggestSize = s;
                 }
                 sizes.push_back(s);
             }
@@ -434,12 +447,12 @@ _NAMESPACE_BEGIN_
 
 
 
-    GEMetalFence::GEMetalFence(NSSmartPtr & event):metalEvent(event){
+    GEMetalFence::GEMetalFence(NSSmartPtr & event):metalEvent(event),eventValue(0){
 
     };
 
     void GEMetalFence::setName(OmegaCommon::StrRef name) {
-        [NSOBJECT_OBJC_BRIDGE(id<MTLEvent>,metalEvent.handle()) setLabel:[NSString stringWithUTF8String:name.data()]];
+        [NSOBJECT_OBJC_BRIDGE(id<MTLEvent>,metalEvent.handle()) setLabel:ns_string_from_str_ref(name)];
     }
 
     GEMetalSamplerState::GEMetalSamplerState(NSSmartPtr &samplerState): samplerState(samplerState) {
@@ -504,6 +517,10 @@ _NAMESPACE_BEGIN_
             NSLog(@"Loading Function %@",str);
             if(runtime){
                 /// Field `data` is an id<MTLLibrary>
+                if(shaderDesc->data == nullptr){
+                    NSLog(@"Failed to load runtime shader function %@: no compiled library payload.",str);
+                    return nullptr;
+                }
                 library = NSObjectHandle {shaderDesc->data};
             }
             else {
@@ -513,8 +530,15 @@ _NAMESPACE_BEGIN_
                 dispatch_release(data);
 
             }
+            if(library.handle() == nullptr){
+                NSLog(@"Failed to create Metal library for function %@",str);
+                return nullptr;
+            }
             NSSmartPtr func = NSObjectHandle {NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLLibrary>,library.handle()) newFunctionWithName:str] };
-            func.assertExists();
+            if(func.handle() == nullptr){
+                NSLog(@"Failed to load Metal function %@",str);
+                return nullptr;
+            }
 
 
             auto _shader = new GEMetalShader(library,func);
@@ -536,12 +560,17 @@ _NAMESPACE_BEGIN_
             MTLCaptureDescriptor *captureDesc = [[MTLCaptureDescriptor alloc] init];
             captureDesc.captureObject = device;
             captureDesc.destination = MTLCaptureDestinationGPUTraceDocument;
-            captureDesc.outputURL = [NSURL fileURLWithPath:@"./Trace.gputrace"];
+            NSString *tracePath = @"/tmp/OmegaWTK-Trace.gputrace";
+            [[NSFileManager defaultManager] removeItemAtPath:tracePath error:nil];
+            captureDesc.outputURL = [NSURL fileURLWithPath:tracePath];
             NSError *error;
             BOOL res = [manager startCaptureWithDescriptor:captureDesc error:&error];
 
             if(!res){
                 NSLog(@"Failed to Start GPU Capture. %@",error);
+            }
+            else {
+                NSLog(@"Started GPU Capture. Output: %@",tracePath);
             }
 
             metalDevice = NSObjectHandle {NSOBJECT_CPP_BRIDGE device};
@@ -600,7 +629,7 @@ _NAMESPACE_BEGIN_
 
             MTLComputePipelineDescriptor *pipelineDescriptor = [[MTLComputePipelineDescriptor alloc] init];
             if(desc.name.size() > 0) {
-                pipelineDescriptor.label = [[NSString alloc] initWithUTF8String:desc.name.data()];
+                pipelineDescriptor.label = ns_string_from_str_ref(desc.name);
             }
             pipelineDescriptor.maxTotalThreadsPerThreadgroup = (threadgroup_desc.x * threadgroup_desc.y * threadgroup_desc.z);
 
@@ -641,7 +670,7 @@ _NAMESPACE_BEGIN_
             metalDevice.assertExists();
             MTLRenderPipelineDescriptor *pipelineDesc = [[MTLRenderPipelineDescriptor alloc] init];
             if(desc.name.size() > 0) {
-                pipelineDesc.label = [[NSString alloc] initWithUTF8String:desc.name.data()];
+                pipelineDesc.label = ns_string_from_str_ref(desc.name);
             }
 
             bool hasDepthStencilState = desc.depthAndStencilDesc.enableDepth || desc.depthAndStencilDesc.enableStencil;
@@ -814,9 +843,13 @@ _NAMESPACE_BEGIN_
             mtlDesc.storageMode = MTLStorageModePrivate;
 
             MTLPixelFormat pixelFormat;
+            const bool renderTargetUsage =
+                    desc.usage == GETexture::RenderTarget ||
+                    desc.usage == GETexture::RenderTargetAndDepthStencil ||
+                    desc.usage == GETexture::MSResolveSrc;
             switch (desc.pixelFormat) {
                 case TexturePixelFormat::RGBA8Unorm : {
-                    pixelFormat = MTLPixelFormatRGBA8Unorm;
+                    pixelFormat = renderTargetUsage ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm;
                     break;
                 }
                 case TexturePixelFormat::RGBA16Unorm : {
@@ -824,7 +857,7 @@ _NAMESPACE_BEGIN_
                     break;
                 }
                 case TexturePixelFormat::RGBA8Unorm_SRGB : {
-                    pixelFormat = MTLPixelFormatRGBA8Unorm_sRGB;
+                    pixelFormat = renderTargetUsage ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm_sRGB;
                     break;
                 }
             }
@@ -840,7 +873,7 @@ _NAMESPACE_BEGIN_
         SharedHandle<GESamplerState> makeSamplerState(const SamplerDescriptor &desc) override {
             MTLSamplerDescriptor *mtlSamplerDescriptor = [[MTLSamplerDescriptor alloc] init];
             if(desc.name.size() > 0) {
-                mtlSamplerDescriptor.label = [[NSString alloc] initWithUTF8String:desc.name.data()];
+                mtlSamplerDescriptor.label = ns_string_from_str_ref(desc.name);
             }
 
             switch (desc.filter) {

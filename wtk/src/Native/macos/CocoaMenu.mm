@@ -19,11 +19,12 @@ namespace OmegaWTK::Native::Cocoa {
 class CocoaMenu;
 
 class CocoaMenuItem : public NativeMenuItem {
-    CocoaMenuItemDelegate *delegate;
+    CocoaMenuItemDelegate *delegate = nil;
     SharedHandle<CocoaMenu> sub_menu;
     SharedHandle<CocoaMenu> parent_menu;
     // bool hasSubMenu;
     unsigned idx = 0;
+    bool ownsItem = false;
     friend class CocoaMenu;
 public:
     bool isSeperator;
@@ -43,7 +44,12 @@ public:
     explicit CocoaMenuItem():sub_menu(nullptr),isSeperator(true),item([NSMenuItem separatorItem]){
         [item setEnabled:NO];
     };
-    ~CocoaMenuItem() override = default;
+    ~CocoaMenuItem() override{
+        [delegate release];
+        if(ownsItem){
+            [item release];
+        }
+    };
 };
 
 class CocoaMenu : public NativeMenu {
@@ -81,7 +87,7 @@ public:
         [menu setAutoenablesItems:NO];
     };
     ~CocoaMenu() override{
-        [menu dealloc];
+        [menu release];
     };
 };
 
@@ -93,6 +99,7 @@ CocoaMenuItem::CocoaMenuItem(const OmegaCommon::String & str,
         sub_menu(subMenu),parent_menu(parent),
         isSeperator(false),
         item([[NSMenuItem alloc] initWithTitle:common_string_to_ns_string(str) action:nil keyEquivalent:@""]){
+    ownsItem = true;
     [delegate hasMenu];
     if(hasSubMenu){
         [item setSubmenu:sub_menu->menu];

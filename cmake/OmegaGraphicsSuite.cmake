@@ -57,6 +57,9 @@ endmacro()
 
 
 if(APPLE)
+	if(NOT XCODE)
+		set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
+	endif()
 	if(NOT CODE_SIGNATURE)
 		message(FATAL_ERROR "CODE_SIGNATURE Variable must be defined in order to sign Apple App and Framework Bundles. 
 		Set the variable with your Apple Developer Team ID or goto apple.com and register with the Apple Developer Program")
@@ -74,12 +77,16 @@ if(APPLE)
 	
 	macro(reset_library_dependent_name LIB OLD_PATH PATH)
 		get_filename_component(LIBNAME ${LIB} NAME)
+		set(OLD_PATH_NAME "${OLD_PATH}")
+		string(REPLACE "/" "_" OLD_PATH_NAME "${OLD_PATH_NAME}")
+		string(REPLACE ":" "_" OLD_PATH_NAME "${OLD_PATH_NAME}")
+		string(REPLACE "@" "_" OLD_PATH_NAME "${OLD_PATH_NAME}")
 		add_custom_command(
-			OUTPUT "${LIB}_${OLD_PATH}_reset_dependent_name"
-			COMMAND install_name_tool -change ${OLD_PATH} ${PATH} ${LIB} && touch ${LIB}_${OLD_PATH}_reset_dependent_name
+			OUTPUT "${LIB}_${OLD_PATH_NAME}_reset_dependent_name"
+			COMMAND install_name_tool -change ${OLD_PATH} ${PATH} ${LIB} && touch ${LIB}_${OLD_PATH_NAME}_reset_dependent_name
 			DEPENDS ${NAME}
 			COMMENT "Resetting Install Name From ${OLD_PATH} to ${PATH} in Dependent Library ${LIB}")
-		add_custom_target("${LIBNAME}_${OLD_PATH}_reset_dependent_name" DEPENDS "${LIB}_${OLD_PATH}_reset_dependent_name")
+		add_custom_target("${LIBNAME}_${OLD_PATH_NAME}_reset_dependent_name" DEPENDS "${LIB}_${OLD_PATH_NAME}_reset_dependent_name")
 	endmacro()
 	
 	set(APP_BUNDLE_OUTPUT_DIR "${CMAKE_BINARY_DIR}/Apps")
@@ -214,7 +221,8 @@ function(add_framework_bundle)
             add_dependencies(${_NAME} ${f})
             add_custom_command(
                 OUTPUT "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Frameworks/${f}.framework"
-                COMMAND cp -R  "${FRAMEWORK_OUTPUT_DIR}/${f}.framework"  "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Frameworks/${f}.framework"  
+                COMMAND ${CMAKE_COMMAND} -E rm -rf "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Frameworks/${f}.framework"
+                COMMAND cp -R  "${FRAMEWORK_OUTPUT_DIR}/${f}.framework"  "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Frameworks/${f}.framework"
                 DEPENDS ${f}
 				COMMENT "Embedding Framework ${f} in Framework Bundle ${_NAME}")
         endforeach()
@@ -226,9 +234,13 @@ function(add_framework_bundle)
 		if(_ARG_EMBEDDED_LIBS)
 			set(EMBED_LIBS TRUE)
 			file(MAKE_DIRECTORY ${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Libraries)
+			set(NEED_ZLIB_COMPAT_SYMLINK FALSE)
 			
 			foreach(l ${_ARG_EMBEDDED_LIBS})
 				get_filename_component(LIBNAME ${l} NAME)
+				if("${LIBNAME}" STREQUAL "libz.dylib")
+					set(NEED_ZLIB_COMPAT_SYMLINK TRUE)
+				endif()
 				set(__outputted_libraries ${__outputted_libraries} "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Libraries/${LIBNAME}")
 				add_custom_command(
 						OUTPUT "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Libraries/${LIBNAME}"
@@ -236,6 +248,15 @@ function(add_framework_bundle)
 						DEPENDS ${l}
 						COMMENT "Embedding Library ${LIBNAME} in Framework Bundle ${_NAME}")
 			endforeach()
+			if(NEED_ZLIB_COMPAT_SYMLINK)
+				set(ZLIB_COMPAT_LINK "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Libraries/libz.1.dylib")
+				set(__outputted_libraries ${__outputted_libraries} "${ZLIB_COMPAT_LINK}")
+				add_custom_command(
+						OUTPUT "${ZLIB_COMPAT_LINK}"
+						COMMAND ${CMAKE_COMMAND} -E create_symlink "libz.dylib" "${ZLIB_COMPAT_LINK}"
+						DEPENDS "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Libraries/libz.dylib"
+						COMMENT "Creating zlib compatibility symlink in Framework Bundle ${_NAME}")
+			endif()
 			add_custom_target("${_NAME}__lib_embed" DEPENDS ${__outputted_libraries})
 			add_dependencies(${UNSIGNED_TARGET} "${_NAME}__lib_embed")
 		endif()
@@ -317,6 +338,7 @@ function(add_app_bundle)
 			add_dependencies(${_NAME} ${f})
 			add_custom_command(
 					OUTPUT "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents/Frameworks/${f}.framework"
+					COMMAND ${CMAKE_COMMAND} -E rm -rf "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents/Frameworks/${f}.framework"
 					COMMAND cp -R "${FRAMEWORK_OUTPUT_DIR}/${f}.framework"  "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents/Frameworks/${f}.framework"
 					DEPENDS ${f}
 					COMMENT "Embedding Framework ${f} in App Bundle ${_NAME}")
@@ -541,8 +563,4 @@ function(omega_graphics_add_subdir _PROJECT_NAME _NAME)
 	add_subdirectory(${_NAME})
 	
 endfunction()
-
-
-
-
 

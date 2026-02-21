@@ -83,18 +83,23 @@ else return {t,s};
                     return nextTok();
                 }
                 case '/' : {
-                    c = NEXT_CHAR();
+                    c = AHEAD_CHAR();
                     if(c == '/'){
-                        while((c = NEXT_CHAR()) != '\n'){
+                        SEEK_TO_NEXT_CHAR();
+                        while((c = NEXT_CHAR()) != '\n' && c != EOF){
                             PUSH_CHAR(c);
                         }
                         /// Consume Line Comments
                         return nextTok();
                     }
                     else if(c == '*'){
+                        SEEK_TO_NEXT_CHAR();
                         /// Consume Block Comments
                         while(true){
                             c = NEXT_CHAR();
+                            if(c == EOF){
+                                break;
+                            }
                             if(c == '*'){
                                 c = AHEAD_CHAR();
                                 if(c == '/'){
@@ -108,9 +113,12 @@ else return {t,s};
                         }
                         return nextTok();
                     }
-                    else {
-                        // Error! Expected / or *.
+                    PUSH_CHAR('/');
+                    if(c == '='){
+                        c = NEXT_CHAR();
+                        PUSH_CHAR(c);
                     }
+                    PUSH_TOK(TOK_OP);
                 }
                 case '"' : {
                     while((c = NEXT_CHAR()) != '"'){
@@ -231,31 +239,26 @@ else return {t,s};
                     /// If Tok starts with digit
                     if(std::isdigit(c)){
                         PUSH_CHAR(c);
+                        bool hasDecimalPoint = false;
+                        while(true){
+                            c = AHEAD_CHAR();
+                            if(std::isdigit(c)){
+                                c = NEXT_CHAR();
+                                PUSH_CHAR(c);
+                                continue;
+                            }
+                            if(!hasDecimalPoint && c == '.'){
+                                hasDecimalPoint = true;
+                                c = NEXT_CHAR();
+                                PUSH_CHAR(c);
+                                continue;
+                            }
+                            break;
+                        }
                         c = AHEAD_CHAR();
-                        /// [100].52f
-                        while(std::isdigit(c)){
+                        if(c == 'f' || c == 'F'){
                             c = NEXT_CHAR();
                             PUSH_CHAR(c);
-                            c = AHEAD_CHAR();
-                        }
-
-                        /// 100[.]52f
-                        if(c == '.'){
-                            PUSH_CHAR(c);
-                            SEEK_TO_NEXT_CHAR();
-                        }
-
-                        /// 100.[52]f
-                        while(std::isdigit(c)){
-                            c = NEXT_CHAR();
-                            PUSH_CHAR(c);
-                            c = AHEAD_CHAR();
-                        }
-
-                        /// 100.52[f]
-                        if(c == 'f'){
-                            PUSH_CHAR(c);
-                            SEEK_TO_NEXT_CHAR();
                         }
                         PUSH_TOK(TOK_NUM_LITERAL);
                     }

@@ -17,13 +17,7 @@ class CocoaApp : public NativeApp {
 public:
     CocoaApp(){
         app = (__bridge void *)[NSApplication sharedApplication];
-
-        [[NSNotificationCenter defaultCenter]
-		    postNotificationName:NSApplicationWillFinishLaunchingNotification
-		    object:NSApp];
-	    [[NSNotificationCenter defaultCenter]
-		    postNotificationName:NSApplicationDidFinishLaunchingNotification
-		    object:NSApp];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
         observer = [[CocoaThemeObserver alloc] init];
         [NSApp addObserver:observer forKeyPath:@"effectiveAppearance" options:NSKeyValueObservingOptionNew context:nil];
     };
@@ -31,6 +25,8 @@ public:
         [NSApp performSelector:@selector(terminate:) withObject:nil afterDelay:0];
     };
     int runEventLoop() override {
+        [NSApp finishLaunching];
+        [NSApp activateIgnoringOtherApps:YES];
         [NSApp run];
         return 0;
     };
@@ -50,9 +46,15 @@ public:
     // OmegaWTK::AppInst::inst()->onThemeSet(desc);
 };
 
-- (void)didChangeValueForKey:(NSString *)key {
-    if([key isEqualToString:@"effectiveAppearance"]) {
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey,id> *)change
+                       context:(void *)context {
+    if([keyPath isEqualToString:@"effectiveAppearance"]) {
         [self onThemeChange:NSApp.effectiveAppearance];
+    }
+    else {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
     }
 }
 @end

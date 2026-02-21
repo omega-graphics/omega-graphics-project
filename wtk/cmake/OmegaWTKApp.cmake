@@ -9,7 +9,13 @@ function(OmegaWTKApp)
         set(APPNAME ${_ARG_NAME})
         set(BUNDLE_ICON ${_ARG_BUNDLE_ICON})
         configure_file(${OMEGAWTK_SOURCE_DIR}/target/macos/Info.plist.in ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
-        add_app_bundle(NAME ${_ARG_NAME} PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" RESOURCES ${_ARG_BUNDLE_ICON} DEPS OmegaWTK.framework OmegaGTE.framework ${_ARG_DEPS} EMBEDDED_FRAMEWORKS OmegaWTK OmegaGTE SOURCES ${_ARG_SOURCES})
+        add_app_bundle(
+            NAME ${_ARG_NAME}
+            PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
+            RESOURCES ${OMEGAWTK_SOURCE_DIR}/target/macos/MainMenu.nib ${_ARG_BUNDLE_ICON}
+            DEPS OmegaWTK.framework OmegaGTE.framework ${_ARG_DEPS}
+            EMBEDDED_FRAMEWORKS OmegaWTK OmegaGTE
+            SOURCES ${_ARG_SOURCES})
         add_dependencies(${_ARG_NAME} OmegaWTK.framework)
         target_link_frameworks(${_ARG_NAME} OmegaGTE OmegaWTK)
         target_link_options(${_ARG_NAME} PRIVATE -rpath @loader_path/../Frameworks/OmegaWTK.framework/Libraries)
@@ -49,5 +55,4 @@ function(OmegaWTKApp)
                             COMMAND)
     endif() 
 endfunction()
-
 

@@ -4,6 +4,7 @@
 #import "CALayerTree.h"
 
 #import <QuartzCore/QuartzCore.h>
+#import <Foundation/Foundation.h>
 
 #include "NativePrivate/macos/CocoaUtils.h"
 #include "NativePrivate/macos/CocoaItem.h"
@@ -14,6 +15,15 @@
 
 
 namespace OmegaWTK::Composition {
+
+    static inline void runOnMainThreadSync(dispatch_block_t block){
+        if([NSThread isMainThread]){
+            block();
+        }
+        else {
+            dispatch_sync(dispatch_get_main_queue(), block);
+        }
+    }
 
     void stopMTLCapture(){
         [[MTLCaptureManager sharedCaptureManager] stopCapture];
@@ -50,25 +60,25 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
                                                              Core::Position & pos){
 
      CAMetalLayer *layer = [CAMetalLayer layer];
-     layer.opaque = NO;
+     layer.opaque = YES;
      layer.autoresizingMask = kCALayerNotSizable;
      layer.layoutManager = nil;
      layer.contentsScale = [NSScreen mainScreen].backingScaleFactor;
-     layer.frame = CGRectMake(0,0,rect.w,rect.h);
-    //  layer.bounds = CGRectMake(0,0,rect.w,rect.h);
+     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+     layer.framebufferOnly = NO;
+     layer.presentsWithTransaction = NO;
      layer.anchorPoint = CGPointMake(0.f,0.f);
-    //  layer.position = CGPointMake(pos.x,pos.y);
+     layer.frame = CGRectMake(pos.x,pos.y,rect.w,rect.h);
+     layer.drawableSize = CGSizeMake(rect.w * layer.contentsScale,rect.h * layer.contentsScale);
+    //  layer.bounds = CGRectMake(0,0,rect.w,rect.h);
 
 
 
      OmegaGTE::NativeRenderTargetDescriptor nativeRenderTargetDescriptor {false,layer};
 
      auto target = gte.graphicsEngine->makeNativeRenderTarget(nativeRenderTargetDescriptor);
-    CGFloat scaleFactor = [NSScreen mainScreen].backingScaleFactor;
-
-     Core::Rect r {{rect.pos},float(rect.w * scaleFactor),float(rect.h * scaleFactor)};
-
-       NSLog(@"Layer: W:%f H:%f",r.w,r.h);
+     Core::Rect r {rect};
+     NSLog(@"Layer: W:%f H:%f",r.w,r.h);
      BackendRenderTargetContext compTarget (r,target);
 
      return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::Visual(pos,compTarget,layer,nil,false));
@@ -76,17 +86,20 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
 
  void MTLCALayerTree::setRootVisual(Core::SharedPtr<Parent::Visual> & visual){
      root = visual;
-     CALayer *parentLayer = view->getLayer();
      auto v = std::dynamic_pointer_cast<Visual>(visual);
-     [parentLayer addSublayer:v->metalLayer];
+     runOnMainThreadSync(^{
+         view->setRootLayer(v->metalLayer);
+     });
  };
 
  void MTLCALayerTree::addVisual(Core::SharedPtr<Parent::Visual> & visual){
      body.push_back(visual);
      auto r = std::dynamic_pointer_cast<Visual>(root);
      auto v = std::dynamic_pointer_cast<Visual>(visual);
-     [r->metalLayer addSublayer:v->metalLayer];
-     v->metalLayer.position = CGPointMake(v->pos.x,v->pos.y);
+     runOnMainThreadSync(^{
+         [r->metalLayer addSublayer:v->metalLayer];
+         v->metalLayer.position = CGPointMake(v->pos.x,v->pos.y);
+     });
  };
 
 // void BackendCompRenderTarget::renderVisualTree(){

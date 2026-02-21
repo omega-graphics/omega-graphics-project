@@ -16,12 +16,12 @@
         self.wantsLayer = YES;
         self.layer = [CALayer layer];
         self.layer.masksToBounds = YES;
-        self.layer.bounds = rect;
+        self.layer.bounds = NSMakeRect(0.f,0.f,rect.size.width,rect.size.height);
         self.autoresizesSubviews = NO;
          self.layer.autoresizingMask = kCALayerHeightSizable | kCALayerWidthSizable;
         NSLog(@"Old Origin: { x:%f, y:%f}",self.layer.anchorPoint.x,self.layer.anchorPoint.y);
         self.layer.anchorPoint = CGPointMake(0.0,0.0);
-        self.layer.position = rect.origin;
+        self.layer.position = CGPointMake(0.f,0.f);
         self.layer.contentsScale = 1.0f;
         // self.layer.contentsGravity = kCAGravityCenter;
         self.layer.magnificationFilter = kCAFilterLinear;
@@ -180,9 +180,37 @@ void CocoaItem::resize(const Core::Rect &newRect){
         [_ptr setBoundsOrigin:NSMakePoint(0,0)];
         [_ptr setBoundsSize:r.size];
         CALayer *layer = _ptr.layer;
-        layer.frame = r;
-        layer.position = _ptr.frame.origin;
-        layer.bounds = _ptr.bounds;
+        NSRect hostBounds = _ptr.bounds;
+        hostBounds.origin = NSMakePoint(0.f,0.f);
+        layer.frame = hostBounds;
+        layer.position = CGPointMake(0.f,0.f);
+        layer.bounds = hostBounds;
+        CGFloat scale = [NSScreen mainScreen].backingScaleFactor;
+        if(scale <= 0.f){
+            scale = 1.f;
+        }
+        layer.contentsScale = scale;
+        if([layer isKindOfClass:[CAMetalLayer class]]){
+            CAMetalLayer *metalLayer = (CAMetalLayer *)layer;
+            metalLayer.contentsScale = scale;
+            metalLayer.drawableSize = CGSizeMake(
+                MAX(hostBounds.size.width * scale,1.f),
+                MAX(hostBounds.size.height * scale,1.f));
+        }
+        NSArray<CALayer *> *subLayers = layer.sublayers;
+        for(CALayer *subLayer in subLayers){
+            subLayer.frame = hostBounds;
+            subLayer.position = CGPointMake(0.f,0.f);
+            subLayer.bounds = hostBounds;
+            subLayer.contentsScale = scale;
+            if([subLayer isKindOfClass:[CAMetalLayer class]]){
+                CAMetalLayer *metalLayer = (CAMetalLayer *)subLayer;
+                metalLayer.contentsScale = scale;
+                metalLayer.drawableSize = CGSizeMake(
+                    MAX(hostBounds.size.width * scale,1.f),
+                    MAX(hostBounds.size.height * scale,1.f));
+            }
+        }
     }
     else {
         [scrollView setFrame:r];

@@ -36,7 +36,14 @@ _NAMESPACE_BEGIN_
         NSSmartPtr buffer;
 
         void setName(OmegaCommon::StrRef name) override{
-            NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()).label = [[NSString alloc] initWithUTF8String:name.data()];
+            NSString *label = [[NSString alloc] initWithBytes:name.data()
+                                                       length:name.size()
+                                                     encoding:NSUTF8StringEncoding];
+            if(label == nil){
+                label = [[NSString alloc] initWithUTF8String:""];
+            }
+            NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()).label = label;
+            [label release];
         }
 
         void *native() override {
@@ -102,7 +109,14 @@ _NAMESPACE_BEGIN_
         void commitToGPUAndPresent(NSSmartPtr & drawable);
     public:
         void setName(OmegaCommon::StrRef name) override{
-            NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,commandQueue.handle()).label = [[NSString alloc] initWithUTF8String:name.data()];
+            NSString *label = [[NSString alloc] initWithBytes:name.data()
+                                                       length:name.size()
+                                                     encoding:NSUTF8StringEncoding];
+            if(label == nil){
+                label = [[NSString alloc] initWithUTF8String:""];
+            }
+            NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,commandQueue.handle()).label = label;
+            [label release];
         }
         void *native() override {
             return const_cast<void *>(commandQueue.handle());

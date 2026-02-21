@@ -197,8 +197,8 @@ namespace OmegaWTK::Composition {
             }
         }
 
-        for(auto & j : jobsToDelete){
-            currentJobStatuses.erase(currentJobStatuses.begin() + j);
+        for(auto it = jobsToDelete.rbegin(); it != jobsToDelete.rend(); ++it){
+            currentJobStatuses.erase(currentJobStatuses.begin() + *it);
         }
 
         return !currentJobStatuses.empty();

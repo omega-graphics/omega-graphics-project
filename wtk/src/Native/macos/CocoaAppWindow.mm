@@ -51,7 +51,14 @@ void CocoaAppWindow::setMenu(NM menu) {
 void CocoaAppWindow::setTitle(OmegaCommon::StrRef title){
     windowController.window.styleMask |= NSWindowStyleMaskTitled;
     [windowController.window setTitleVisibility:NSWindowTitleVisible];
-    [windowController.window setTitle:[NSString stringWithUTF8String:title.data()]];
+    NSString *windowTitle = [[NSString alloc] initWithBytes:title.data()
+                                                     length:title.size()
+                                                   encoding:NSUTF8StringEncoding];
+    if(windowTitle == nil){
+        windowTitle = [[NSString alloc] initWithUTF8String:""];
+    }
+    [windowController.window setTitle:windowTitle];
+    [windowTitle release];
 }
 
 void CocoaAppWindow::setEnableWindowHeader(bool &enable) {
@@ -61,8 +68,19 @@ void CocoaAppWindow::setEnableWindowHeader(bool &enable) {
 void CocoaAppWindow::addNativeItem(NativeItemPtr item){
         // auto *cocoaitem = (CocoaItem *)item;
         NSViewController *viewC = (NSViewController *)item->getBinding();
+        NSView *contentView = windowController.window.contentView;
+        viewC.view.frame = contentView.bounds;
+        viewC.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        viewC.view.hidden = NO;
         [windowController.window.contentViewController addChildViewController:viewC];
-        [windowController.window.contentView addSubview:viewC.view];
+        [contentView addSubview:viewC.view];
+        NSLog(@"Added Native Item View: frame={%.1f,%.1f,%.1f,%.1f} bounds={%.1f,%.1f,%.1f,%.1f} hidden=%d subviews=%lu",
+              viewC.view.frame.origin.x,viewC.view.frame.origin.y,
+              viewC.view.frame.size.width,viewC.view.frame.size.height,
+              viewC.view.bounds.origin.x,viewC.view.bounds.origin.y,
+              viewC.view.bounds.size.width,viewC.view.bounds.size.height,
+              viewC.view.isHidden,
+              (unsigned long)contentView.subviews.count);
 };
 
 void CocoaAppWindow::initialDisplay(){

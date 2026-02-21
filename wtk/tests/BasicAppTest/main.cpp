@@ -1,73 +1,72 @@
-
 #include <OmegaWTK.h>
-#include <chrono>
-#include <thread>
 
-static SharedHandle<OmegaWTK::Composition::Brush> colorBrush;
-static SharedHandle<OmegaWTK::Composition::Font> font;
+class MyWidget final : public OmegaWTK::Widget {
+    SharedHandle<OmegaWTK::Composition::Canvas> canvas;
 
-class MyWidget : public OmegaWTK::Widget {
+    void renderCenteredRedRect() {
+        if(!canvas){
+            return;
+        }
+
+        constexpr float kRectSize = 48.0f;
+        auto & bounds = rect();
+        OmegaWTK::Core::Rect redRect{
+            OmegaWTK::Core::Position{
+                (bounds.w - kRectSize) * 0.5f,
+                (bounds.h - kRectSize) * 0.5f},
+            kRectSize,
+            kRectSize};
+
+        auto redBrush = OmegaWTK::Composition::ColorBrush(
+            OmegaWTK::Composition::Color::create8Bit(
+                OmegaWTK::Composition::Color::Red8));
+
+        rootView->startCompositionSession();
+        canvas->drawRect(redRect, redBrush);
+        canvas->sendFrame();
+        rootView->endCompositionSession();
+    }
+
 protected:
-    SharedHandle<OmegaWTK::TextView> textView;
-    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override{
+    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {}
 
-    }
     void init() override {
-        textView->startCompositionSession();
-        textView->updateFont(font);
-        textView->setContent(u"Hello World");
-        textView->endCompositionSession();
-        textView->enable();
+        auto rootLayer = rootView->getLayerTreeLimb()->getRootLayer();
+        canvas = rootView->makeCanvas(rootLayer);
+        rootView->enable();
+        renderCenteredRedRect();
     }
+
 public:
-    explicit MyWidget(const OmegaWTK::Core::Rect & rect,OmegaWTK::Widget *parent) : OmegaWTK::Widget(rect,parent){
-        auto layer = rootView->getLayerTreeLimb()->getRootLayer();
-        textView = makeTextView(OmegaWTK::Core::Rect{{0,0},200,200},rootView.get());
+    explicit MyWidget(const OmegaWTK::Core::Rect & rect, OmegaWTK::WidgetPtr parent)
+        : OmegaWTK::Widget(rect, parent) {}
+
+    void redraw() {
+        renderCenteredRedRect();
     }
 };
 
-class MyWindowDelegate : public OmegaWTK::AppWindowDelegate {
-
+class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
 public:
-    MyWindowDelegate(){
-
-    }
     void windowWillClose(OmegaWTK::Native::NativeEventPtr event) override {
-        std::cout << "Closing" << std::endl;
-        OmegaWTK::AppInst::inst()->terminate();
+        OmegaWTK::AppInst::terminate();
     }
 };
 
-int omegaWTKMain(OmegaWTK::AppInst *app){
-    OmegaWTK::Composition::FontDescriptor font_desc("Arial",15);
-    font = OmegaWTK::Composition::FontEngine::inst()->CreateFont(font_desc);
+int omegaWTKMain(OmegaWTK::AppInst *app) {
+    auto window = make<OmegaWTK::AppWindow>(
+        OmegaWTK::Core::Rect{{0, 0}, 500, 500},
+        new MyWindowDelegate());
 
-    colorBrush = OmegaWTK::Composition::ColorBrush(OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Green8));
-    
- 
-    // img = OmegaWTK::Media::loadImageFromFile("./test.png").getValue();
-    // std::this_thread::sleep_for(std::chrono::seconds(35));
-    
-    OmegaCommon::LogV("Hello World @{0}",colorBrush);
-
-    auto window = make<OmegaWTK::AppWindow>(OmegaWTK::Core::Rect {{0,0},500,500},new MyWindowDelegate());
-
-    auto menu = make<OmegaWTK::Menu>(OmegaWTK::Menu("MyMenu",{
-        OmegaWTK::CategoricalMenu("BasicAppTest",{
-            OmegaWTK::ButtonMenuItem("Hello World!")
-        })
-    }));
-
-    auto widget = make<MyWidget>(OmegaWTK::Core::Rect {{0,0},400,400},nullptr);
-
+    auto widget = make<MyWidget>(
+        OmegaWTK::Core::Rect{{0, 0}, 500, 500},
+        OmegaWTK::WidgetPtr{});
     window->add(widget);
-    window->setMenu(menu);
-
 
     auto & windowManager = app->windowManager;
-
     windowManager->setRootWindow(window);
     windowManager->displayRootWindow();
+    widget->redraw();
 
     return OmegaWTK::AppInst::start();
-};
+}

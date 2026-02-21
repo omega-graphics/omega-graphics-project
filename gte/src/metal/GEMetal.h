@@ -1,5 +1,6 @@
 #include "omegaGTE/GE.h"
 #include <iostream>
+#include <atomic>
 
 #ifndef OMEGAGTE_METAL_GEMETAL_H
 #define OMEGAGTE_METAL_GEMETAL_H
@@ -48,6 +49,15 @@ public:
 class GEMetalFence : public GEFence {
 public:
     NSSmartPtr metalEvent;
+private:
+    std::atomic_uint64_t eventValue;
+public:
+    inline uint64_t currentEventValue() const {
+        return eventValue.load(std::memory_order_acquire);
+    }
+    inline uint64_t reserveNextEventValue() {
+        return eventValue.fetch_add(1, std::memory_order_acq_rel) + 1;
+    }
     void setName(OmegaCommon::StrRef name) override;
     void *native() override{
         return const_cast<void*>(metalEvent.handle());
@@ -83,4 +93,3 @@ _NAMESPACE_END_
 
 
 #endif
-

@@ -107,11 +107,32 @@ using namespace metal;
                     shaderOut << _expr->id;
                     break;
                 }
+                case LITERAL_EXPR : {
+                    auto _expr = (ast::LiteralExpr *)expr;
+                    if(_expr->isFloat()){
+                        shaderOut << _expr->f_num.value();
+                    }
+                    else if(_expr->isDouble()){
+                        shaderOut << _expr->d_num.value();
+                    }
+                    else if(_expr->isInt()){
+                        shaderOut << _expr->i_num.value();
+                    }
+                    else if(_expr->isUint()){
+                        shaderOut << _expr->ui_num.value();
+                    }
+                    else if(_expr->isString()){
+                        shaderOut << _expr->str.value();
+                    }
+                    break;
+                }
                 case BINARY_EXPR : {
                     auto _expr = (ast::BinaryExpr *)expr;
+                    shaderOut << "(";
                     generateExpr(_expr->lhs);
                     shaderOut << " " << _expr->op << " ";
                     generateExpr(_expr->rhs);
+                    shaderOut << ")";
                     break;
                 }
                 case MEMBER_EXPR : {
@@ -554,8 +575,25 @@ using namespace metal;
             #ifdef TARGET_METAL
             auto source = stringOut.str();
                 if(metalCodeOpts.mtl_device != nullptr){
-                    auto & _m = shaderMap[name.data()];
+                    OmegaCommon::String shaderName{name.begin(),name.end()};
+                    {
+                        std::ofstream dump("/tmp/OmegaSL-" + shaderName + ".metal", std::ios::out | std::ios::trunc);
+                        if(dump.is_open()){
+                            dump << source;
+                            dump.close();
+                        }
+                    }
+                    auto shaderIt = shaderMap.find(shaderName);
+                    if(shaderIt == shaderMap.end()){
+                        std::cout << "Runtime compile: shader entry not found for `" << shaderName << "`" << std::endl;
+                        return;
+                    }
+                    auto & _m = shaderIt->second;
+                    _m.data = nullptr;
                     compileMTLShader(metalCodeOpts.mtl_device,source.size(),source.data(), &_m.data);
+                    if(_m.data == nullptr){
+                        std::cout << "Runtime compile produced no Metal library for `" << shaderName << "`" << std::endl;
+                    }
                 }
             #endif
         }

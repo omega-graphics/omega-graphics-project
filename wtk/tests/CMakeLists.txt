@@ -10,3 +10,9 @@ OmegaWTKApp(
     "org.omegagraphics.BasicAppTest"
     SOURCES 
     BasicAppTest/main.cpp)
+
+if(TARGET_MACOS)
+    add_custom_target(2DAppTest DEPENDS BasicAppTest.app)
+else()
+    add_custom_target(2DAppTest DEPENDS BasicAppTest)
+endif()

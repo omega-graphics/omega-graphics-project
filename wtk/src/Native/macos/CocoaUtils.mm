@@ -7,7 +7,13 @@ void ns_string_to_common_string(NSString *str,OmegaCommon::String & res){
 };
 
 NSString * common_string_to_ns_string(const OmegaCommon::String & str){
-    return [[NSString alloc] initWithData:[[NSData alloc] initWithBytes:str.data() length:str.size()] encoding:NSUTF8StringEncoding];
+    NSString *nsString = [[NSString alloc] initWithBytes:str.data()
+                                                  length:str.size()
+                                                encoding:NSUTF8StringEncoding];
+    if(nsString == nil){
+        nsString = [[NSString alloc] initWithUTF8String:""];
+    }
+    return [nsString autorelease];
 };
 
 NSRect core_rect_to_cg_rect(const Core::Rect & rect){

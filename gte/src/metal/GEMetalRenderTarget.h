@@ -18,6 +18,7 @@ class GEMetalNativeRenderTarget : public GENativeRenderTarget {
     NSSmartPtr currentDrawable;
 public:
     GEMetalNativeRenderTarget(SharedHandle<GECommandQueue> commandQueue,CAMetalLayer *metalLayer);
+    ~GEMetalNativeRenderTarget();
     CGSize drawableSize;
     SharedHandle<CommandBuffer> commandBuffer() override;
     NSSmartPtr & getDrawable();

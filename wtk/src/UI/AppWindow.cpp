@@ -94,10 +94,10 @@ AppWindowPtr AppWindowManager::getRootWindow(){
 };
 
 void AppWindowManager::displayRootWindow(){
+    rootWindow->layer->native_window_ptr->initialDisplay();
     for(auto & host : rootWindow->widgetTreeHosts){
         host->initWidgetTree();
     }
-    rootWindow->layer->native_window_ptr->initialDisplay();
 };
 
 void AppWindowManager::closeAllWindows(){

@@ -24,7 +24,7 @@ namespace OmegaWTK::Media {
                 return false;
             };
             
-            return png_check_sig(sig,SIG_SIZE);
+            return png_sig_cmp(sig,0,SIG_SIZE) == 0;
         };
         
         ImgHeader read_header(png_structp png_ptr,png_infop info_ptr){

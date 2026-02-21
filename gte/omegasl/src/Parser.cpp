@@ -392,6 +392,7 @@ namespace omegasl {
                     std::cout << "Failed to match type in binary expr." << std::endl;
                     return nullptr;
                 }
+                return lhs_res;
             }
             else if(expr->type == INDEX_EXPR){
                 auto _expr = (ast::IndexExpr *)expr;
@@ -1845,7 +1846,7 @@ namespace omegasl {
             case TOK_OP : {
                 hasPrefixOp = true;
                 OmegaCommon::StrRef op_type = first_tok.str;
-                if(op_type != OP_NOT || op_type != OP_PLUSPLUS || op_type != OP_MINUSMINUS){
+                if(op_type != OP_NOT && op_type != OP_PLUSPLUS && op_type != OP_MINUSMINUS){
                     std::cout << "Invalid operator" << op_type << "in this context." << std::endl;
                     return false;
                 }
@@ -1880,7 +1881,7 @@ namespace omegasl {
 
             std::cout << "AHEAD TOK:" << first_tok.str << std::endl;
 
-            if(first_tok.type == TOK_OP){
+            if(first_tok.type == TOK_OP || first_tok.type == TOK_ASTERISK){
                 ++tokIdx;
                 if(first_tok.str == OP_MINUSMINUS || first_tok.str == OP_PLUSPLUS){
                     auto unaryExpr = new ast::UnaryOpExpr();

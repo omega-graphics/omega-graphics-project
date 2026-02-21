@@ -14,6 +14,7 @@ namespace OmegaWTK::Composition {
     static SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
     static SharedHandle<OmegaGTE::GERenderPipelineState> renderPipelineState;
     static SharedHandle<OmegaGTE::GERenderPipelineState> textureRenderPipelineState;
+    static SharedHandle<OmegaGTE::GERenderPipelineState> finalCopyRenderPipelineState;
 
     static SharedHandle<OmegaGTE::GEComputePipelineState> linearGradientPipelineState;
 
@@ -93,6 +94,27 @@ fragment float4 textureFragment(OmegaWTKTexturedRasterData raster){
     return sample(mainSampler,tex,raster.texCoord);
 }
 
+struct OmegaWTKCopyRasterData internal {
+    float4 pos : Position;
+    float2 texCoord : TexCoord;
+};
+
+[in v_buffer_1]
+vertex OmegaWTKCopyRasterData copyVertex(uint v_id : VertexID){
+    OmegaWTKTexturedVertex v = v_buffer_1[v_id];
+    OmegaWTKCopyRasterData rasterData;
+    rasterData.pos = v.pos;
+    rasterData.texCoord = v.texCoord;
+    return rasterData;
+}
+
+[in tex,in mainSampler]
+fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
+    float4 c = sample(mainSampler,tex,raster.texCoord);
+    c.w = 1.f;
+    return c;
+}
+
 )";
 
     static SharedHandle<OmegaGTE::GEBuffer> finalTextureDrawBuffer;
@@ -102,6 +124,14 @@ fragment float4 textureFragment(OmegaWTKTexturedRasterData raster){
         auto & compiler = gte.omegaSlCompiler;
         auto library = compiler->compile({OmegaSLCompiler::Source::fromString(librarySource)});
         shaderLibrary = gte.graphicsEngine->loadShaderLibraryRuntime(library);
+        auto getShader = [&](const char *name) -> SharedHandle<OmegaGTE::GTEShader> {
+            auto it = shaderLibrary->shaders.find(name);
+            if(it == shaderLibrary->shaders.end() || it->second == nullptr){
+                std::cout << "Missing shader function " << name << std::endl;
+                return nullptr;
+            }
+            return it->second;
+        };
 
         OMEGAWTK_DEBUG("Phase 1");
 
@@ -110,16 +140,37 @@ fragment float4 textureFragment(OmegaWTKTexturedRasterData raster){
         renderPipelineDescriptor.depthAndStencilDesc = {false,false};
         renderPipelineDescriptor.triangleFillMode = OmegaGTE::TriangleFillMode::Solid;
         renderPipelineDescriptor.rasterSampleCount = 1;
-        renderPipelineDescriptor.vertexFunc = shaderLibrary->shaders["mainVertex"];
-        renderPipelineDescriptor.fragmentFunc = shaderLibrary->shaders["mainFragment"];
+        renderPipelineDescriptor.vertexFunc = getShader("mainVertex");
+        renderPipelineDescriptor.fragmentFunc = getShader("mainFragment");
+
+        if(renderPipelineDescriptor.vertexFunc == nullptr || renderPipelineDescriptor.fragmentFunc == nullptr){
+            std::cout << "Failed to initialize mandatory color pipeline shaders." << std::endl;
+            return;
+        }
 
         renderPipelineState = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
 
         OMEGAWTK_DEBUG("Phase 2");
 
-        renderPipelineDescriptor.vertexFunc = shaderLibrary->shaders["textureVertex"];
-        renderPipelineDescriptor.fragmentFunc = shaderLibrary->shaders["textureFragment"];
-        textureRenderPipelineState = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
+        renderPipelineDescriptor.vertexFunc = getShader("textureVertex");
+        renderPipelineDescriptor.fragmentFunc = getShader("textureFragment");
+        if(renderPipelineDescriptor.vertexFunc != nullptr && renderPipelineDescriptor.fragmentFunc != nullptr){
+            textureRenderPipelineState = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
+        }
+        else {
+            textureRenderPipelineState.reset();
+            std::cout << "Texture render pipeline is unavailable." << std::endl;
+        }
+
+        renderPipelineDescriptor.vertexFunc = getShader("copyVertex");
+        renderPipelineDescriptor.fragmentFunc = getShader("copyFragment");
+        if(renderPipelineDescriptor.vertexFunc != nullptr && renderPipelineDescriptor.fragmentFunc != nullptr){
+            finalCopyRenderPipelineState = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
+        }
+        else {
+            finalCopyRenderPipelineState.reset();
+            std::cout << "Final copy pipeline is unavailable." << std::endl;
+        }
 
         OMEGAWTK_DEBUG("Phase 3");
 
@@ -137,7 +188,6 @@ fragment float4 textureFragment(OmegaWTKTexturedRasterData raster){
 
         texCoord[0][0] = 0.f;
         texCoord[1][0] = 0.f;
-
         finalTextureDrawBuffer = gte.graphicsEngine->makeBuffer({OmegaGTE::BufferDescriptor::Upload,struct_size * 6,struct_size});
         bufferWriter->setOutputBuffer(finalTextureDrawBuffer);
 
@@ -205,6 +255,7 @@ fragment float4 textureFragment(OmegaWTKTexturedRasterData raster){
         shaderLibrary.reset();
         renderPipelineState.reset();
         textureRenderPipelineState.reset();
+        finalCopyRenderPipelineState.reset();
         linearGradientPipelineState.reset();
         bufferWriter.reset();
         finalTextureDrawBuffer.reset();
@@ -284,20 +335,19 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
         OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
         renderPassDesc.depthStencilAttachment.disabled = true;
 
-        OmegaGTE::GEViewport viewport {};
-        viewport.x = 0;
-        viewport.y = 0;
-        viewport.farDepth = 1.f;
-        viewport.nearDepth = 0.f;
-        viewport.width = renderTargetSize.w;
-        viewport.height = renderTargetSize.h;
-        OmegaGTE::GEScissorRect scissorRect {0,0,renderTargetSize.w,renderTargetSize.h};
-
-        renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment{{0.f,0.f,0.f,0.f},OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction::LoadPreserve};
+        renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment{
+                {0.f,0.f,0.f,1.f},
+                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction::Clear};
         cb->startRenderPass(renderPassDesc);
-        cb->setViewports({viewport});
-        cb->setScissorRects({scissorRect});
-        cb->setRenderPipelineState(textureRenderPipelineState);
+        auto finalPipeline = finalCopyRenderPipelineState ? finalCopyRenderPipelineState : textureRenderPipelineState;
+        if(finalPipeline == nullptr){
+            std::cout << "No final compositing pipeline available." << std::endl;
+            cb->endRenderPass();
+            renderTarget->submitCommandBuffer(cb);
+            renderTarget->commitAndPresent();
+            return;
+        }
+        cb->setRenderPipelineState(finalPipeline);
         cb->bindResourceAtVertexShader(finalTextureDrawBuffer,1);
         auto t = preEffectTarget->underlyingTexture();
         cb->bindResourceAtFragmentShader(t,2);
@@ -459,6 +509,10 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
         }
 
         if(useTextureRenderPipeline){
+            if(textureRenderPipelineState == nullptr){
+                std::cout << "Texture render pipeline unavailable. Skipping textured draw command." << std::endl;
+                return;
+            }
             struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT2});
         }
         else {
@@ -487,7 +541,9 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
         viewport.height = renderTargetSize.h;
         OmegaGTE::GEScissorRect scissorRect {0,0,renderTargetSize.w,renderTargetSize.h};
 
-        renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Load);
+        renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),
+                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve);
 
         unsigned startVertexIndex = 0;
 

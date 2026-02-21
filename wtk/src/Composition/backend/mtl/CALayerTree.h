@@ -49,6 +49,8 @@ namespace OmegaWTK::Composition {
              };
              void resize(Core::Rect & newRect) override {
                  [metalLayer setFrame:CGRectMake(newRect.pos.x,newRect.pos.y,newRect.w,newRect.h)];
+                 CGFloat scale = metalLayer.contentsScale;
+                 metalLayer.drawableSize = CGSizeMake(newRect.w * scale,newRect.h * scale);
              }
              void updateShadowEffect(LayerEffect::DropShadowParams & params) override {
                  CALayer *targetLayer;

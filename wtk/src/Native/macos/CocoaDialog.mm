@@ -29,7 +29,7 @@ namespace OmegaWTK::Native::Cocoa {
 //                    if(response == NSModalResponseOK){
 //                        // url = [[openPanel URLs] firstObject];
 //                    };
-                    NSURL * url = [savePanel URL];
+                    NSURL * url = [openPanel URL];
                     strVal.set([url fileSystemRepresentation]);
                 }];
 

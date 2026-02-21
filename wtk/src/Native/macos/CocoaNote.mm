@@ -6,21 +6,20 @@
 namespace OmegaWTK::Native::Cocoa {
 
     class CocoaNoteCenter : public NativeNoteCenter {
-        __strong UNUserNotificationCenter *notificationCenter;
+        UNUserNotificationCenter *notificationCenter;
     public:
         CocoaNoteCenter():notificationCenter([UNUserNotificationCenter currentNotificationCenter]){
 
         }
         void sendNativeNote(NativeNote &note) override {
-            UNMutableNotificationContent *noteContent = [UNMutableNotificationContent init];
+            UNMutableNotificationContent *noteContent = [[UNMutableNotificationContent alloc] init];
             noteContent.title = common_string_to_ns_string(note.title);
             noteContent.body = common_string_to_ns_string(note.body);
             UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:@"" content:noteContent trigger:nil];
             [notificationCenter addNotificationRequest:request withCompletionHandler:nil];
+            [noteContent release];
         };
-        ~CocoaNoteCenter(){
-            [notificationCenter release];
-        }
+        ~CocoaNoteCenter() = default;
     };
 
     class CocoaNote {

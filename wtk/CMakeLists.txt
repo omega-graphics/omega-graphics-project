@@ -95,7 +95,7 @@ if(TARGET_IOS)
 		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-69" 
 		BINARY_DIR "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac"
 		INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac"
-		CONF cd "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac" &&  ${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source/configure -prefix ${THIRD_PARTY_OUTPUT_DIR}/icu
+		CONF cd "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac" &&  ${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu
 		BUILD make all
 		INSTALL echo "ICU Cross Tools Complete")
 		
@@ -109,7 +109,7 @@ if(TARGET_IOS)
 		CONF 
 		export CFLAGS=--sysroot=${CMAKE_OSX_SYSROOT} && 
 		export CXXFLAGS=--sysroot=${CMAKE_OSX_SYSROOT} &&
-		${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source/configure -prefix ${THIRD_PARTY_OUTPUT_DIR}/icu --with-cross-build=${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac
+		${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu --with-cross-build=${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac
 		BUILD make all
 		INSTALL make install
 		DEPS icu_tools)
@@ -120,7 +120,7 @@ else()
 		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source" 
 		BINARY_DIR "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source"
 		INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/icu"
-		CONF  ${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source/configure -prefix ${THIRD_PARTY_OUTPUT_DIR}/icu
+		CONF  ${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu
 		BUILD make all
 		INSTALL make install)
 endif()
@@ -191,6 +191,7 @@ add_third_party(
 	elseif(TARGET_MACOS)
 		set(LIBPNG_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libpng/lib/libpng.dylib")
 		set_library_install_name(${LIBPNG_EXPORT} "@rpath/libpng.dylib")
+		reset_library_dependent_name(${LIBPNG_EXPORT} "@rpath/libz.1.dylib" "@rpath/libz.dylib")
 	endif()
 	
 	set(THIRD_PARTY_INCLUDEDIRS ${THIRD_PARTY_INCLUDEDIRS} "${THIRD_PARTY_OUTPUT_DIR}/libpng/include")
@@ -219,7 +220,16 @@ add_third_party(
 	SOURCE_DIR ${THIRD_PARTY_SRC_DIR}/libtiff/code
 	BINARY_DIR ${THIRD_PARTY_OUTPUT_DIR}/temp/libtiff
 	INSTALL_DIR ${THIRD_PARTY_OUTPUT_DIR}/libtiff
-	CMAKE_BUILD_ARGS -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME} -DCMAKE_PREFIX_PATH=${THIRD_PARTY_OUTPUT_DIR}/zlib;${THIRD_PARTY_OUTPUT_DIR}/libjpeg-turbo
+	CMAKE_BUILD_ARGS
+	-DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
+	-DCMAKE_PREFIX_PATH=${THIRD_PARTY_OUTPUT_DIR}/zlib;${THIRD_PARTY_OUTPUT_DIR}/libjpeg-turbo
+	-Djpeg=OFF
+	-Dold-jpeg=OFF
+	-Dwebp=OFF
+	-Dtiff-tools=OFF
+	-Dtiff-tests=OFF
+	-Dtiff-contrib=OFF
+	-Dtiff-docs=OFF
 	DEPS zlib libjpeg-turbo)
 
 	if(TARGET_WIN32)
@@ -229,6 +239,7 @@ add_third_party(
 	elseif(TARGET_MACOS)
 		set(LIBTIFF_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libtiff/lib/libtiff.dylib")
 		set_library_install_name(${LIBTIFF_EXPORT} "@rpath/libtiff.dylib")
+		reset_library_dependent_name(${LIBTIFF_EXPORT} "@rpath/libz.1.dylib" "@rpath/libz.dylib")
 	endif()
 	
 	set(THIRD_PARTY_INCLUDEDIRS ${THIRD_PARTY_INCLUDEDIRS} "${THIRD_PARTY_OUTPUT_DIR}/libtiff/include")
@@ -340,8 +351,9 @@ configure_file("${OMEGAWTK_SOURCE_DIR}/src/Info.plist.in" ${CMAKE_CURRENT_BINARY
 
 add_omega_graphics_module("OmegaWTK" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION ${OMEGAWTK_VERSION} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include" 
 DEPENDS OmegaGTE icu zlib libpng libjpeg-turbo libtiff libxml2 
-EMBEDDED_LIBS ${ICU_EXPORT} ${LIBXML2_EXPORT} ${ZLIB_EXPORT} ${LIBPNG_EXPORT} ${LIBTURBOJPEG_EXPORT} ${LIBTIFF_EXPORT} 
+EMBEDDED_LIBS ${ICU_EXPORT} ${LIBXML2_EXPORT} ${ZLIB_EXPORT} ${LIBPNG_EXPORT} ${LIBJPEGTURBO_EXPORT} ${LIBTIFF_EXPORT} 
 SOURCES ${CORE_SRCS} ${NATIVE_SRCS} ${MEDIA_SRCS} ${COMPOSITION_SRCS} ${UI_SRCS} ${WIDGETS_SRCS})
+add_dependencies("OmegaWTK" ThirdParty)
 if(TARGET_ANDROID)
 	add_library( app-glue
 			STATIC
@@ -352,7 +364,7 @@ if(TARGET_ANDROID)
 	target_include_directories("OmegaWTK" PRIVATE ${ANDROID_NDK}/sources/android/native_app_glue)
 endif()
 if(TARGET_MACOS)
-	set(THIRD_PARTY_EXPORTS ${ICU_EXPORT} ${LIBXML2_EXPORT} ${ZLIB_EXPORT} ${LIBPNG_EXPORT} ${LIBTURBOJPEG_EXPORT} ${LIBTIFF_EXPORT})
+	set(THIRD_PARTY_EXPORTS ${ICU_EXPORT} ${LIBXML2_EXPORT} ${ZLIB_EXPORT} ${LIBPNG_EXPORT} ${LIBJPEGTURBO_EXPORT} ${LIBTIFF_EXPORT})
 		add_custom_target("OmegaWTK_ThirdPartyInstallNames")
 		foreach (lib ${THIRD_PARTY_EXPORTS})
 			get_filename_component(LIBNAME ${lib} NAME)
@@ -361,6 +373,8 @@ if(TARGET_MACOS)
 		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicuuc.dylib_libicudata.69.dylib_reset_dependent_name)
 		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicui18n.dylib_libicudata.69.dylib_reset_dependent_name)
 		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicui18n.dylib_libicuuc.69.dylib_reset_dependent_name)
+		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libpng.dylib__rpath_libz.1.dylib_reset_dependent_name)
+		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libtiff.dylib__rpath_libz.1.dylib_reset_dependent_name)
 
 
 	add_dependencies("OmegaWTK" OmegaGTE.framework)

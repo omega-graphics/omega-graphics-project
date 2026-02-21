@@ -468,10 +468,31 @@ namespace omegasl {
             switch (expr->type) {
                 case BINARY_EXPR : {
                     auto _expr = (ast::BinaryExpr *)expr;
+                    shaderOut << "(";
                     generateExpr(_expr->lhs);
                     if(!finishEarly) {
                         shaderOut << " " << _expr->op << " ";
                         generateExpr(_expr->rhs);
+                    }
+                    shaderOut << ")";
+                    break;
+                }
+                case LITERAL_EXPR : {
+                    auto _expr = (ast::LiteralExpr *)expr;
+                    if(_expr->isFloat()){
+                        shaderOut << _expr->f_num.value();
+                    }
+                    else if(_expr->isDouble()){
+                        shaderOut << _expr->d_num.value();
+                    }
+                    else if(_expr->isInt()){
+                        shaderOut << _expr->i_num.value();
+                    }
+                    else if(_expr->isUint()){
+                        shaderOut << _expr->ui_num.value();
+                    }
+                    else if(_expr->isString()){
+                        shaderOut << _expr->str.value();
                     }
                     break;
                 }

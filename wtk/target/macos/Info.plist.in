@@ -9,7 +9,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>MacOS/@APPNAME@</string>
+	<string>@APPNAME@</string>
 	<key>CFBundleName</key>
 	<string>@APPNAME@</string>
 	<!-- <key>CFBundleIconFile</key>
