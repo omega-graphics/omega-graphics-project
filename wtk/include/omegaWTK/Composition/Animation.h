@@ -6,6 +6,12 @@
 
 #include "Layer.h"
 
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <limits>
+#include <type_traits>
+
 
 #ifndef OMEGAWTK_COMPOSITION_ANIMATION_H
 #define  OMEGAWTK_COMPOSITION_ANIMATION_H
@@ -91,9 +97,17 @@ namespace OmegaWTK::Composition {
         /// @param end The End Point.
         Traversal traverse(float space_w,float space_h);
 
+        /// @brief Samples the curve at normalized time [0,1].
+        /// @returns A normalized interpolant [0,1].
+        float sample(float t) const;
+
         /// @brief Create a Linear AnimationCurve.
         /// @returns AnimationCurve
         static SharedHandle<AnimationCurve> Linear(float start_h,float end_h);
+        static SharedHandle<AnimationCurve> Linear();
+        static SharedHandle<AnimationCurve> EaseIn();
+        static SharedHandle<AnimationCurve> EaseOut();
+        static SharedHandle<AnimationCurve> EaseInOut();
 
         /// @brief Create a Quadratic Bezier AnimationCurve.
         /// @param a The 'A' control point used in the curve.
@@ -105,6 +119,10 @@ namespace OmegaWTK::Composition {
         /// @param b The 'B' control point used in the curve.
         /// @returns AnimationCurve
         static SharedHandle<AnimationCurve> Cubic(OmegaGTE::GPoint2D a,OmegaGTE::GPoint2D b);
+        static SharedHandle<AnimationCurve> CubicBezier(OmegaGTE::GPoint2D a,
+                                                        OmegaGTE::GPoint2D b,
+                                                        float start_h = 0.f,
+                                                        float end_h = 1.f);
 
     };
 
@@ -132,13 +150,224 @@ namespace OmegaWTK::Composition {
         static SharedHandle<AnimationTimeline> Create(const OmegaCommon::Vector<Keyframe> & keyframes);
     };
 
+    using AnimationId = std::uint64_t;
+
+    enum class AnimationState : std::uint8_t {
+        Pending,
+        Running,
+        Paused,
+        Completed,
+        Cancelled,
+        Failed
+    };
+
+    enum class FillMode : std::uint8_t {
+        None,
+        Forwards,
+        Backwards,
+        Both
+    };
+
+    enum class Direction : std::uint8_t {
+        Normal,
+        Reverse,
+        Alternate,
+        AlternateReverse
+    };
+
+    struct TimingOptions {
+        std::uint32_t durationMs = 300;
+        std::uint32_t delayMs = 0;
+        float playbackRate = 1.0f;
+        float iterations = 1.0f;
+        std::uint16_t frameRateHint = 60;
+        FillMode fillMode = FillMode::Forwards;
+        Direction direction = Direction::Normal;
+    };
+
+    class OMEGAWTK_EXPORT AnimationHandle {
+        struct StateBlock;
+        SharedHandle<StateBlock> stateBlock;
+        explicit AnimationHandle(const SharedHandle<StateBlock> & stateBlock);
+        friend class LayerAnimator;
+        friend class ViewAnimator;
+    public:
+        AnimationHandle();
+        static AnimationHandle Create(AnimationId id,AnimationState initialState = AnimationState::Pending);
+        AnimationId id() const;
+        AnimationState state() const;
+        float progress() const;
+        float playbackRate() const;
+        bool valid() const;
+        void pause();
+        void resume();
+        void cancel();
+        void seek(float normalized);
+        void setPlaybackRate(float rate);
+    };
+
+    template<typename T>
+    struct KeyframeValue {
+        float offset = 0.f;
+        T value {};
+        SharedHandle<AnimationCurve> easingToNext = nullptr;
+    };
+
+    namespace detail {
+        inline float clamp01(float v){
+            return std::max(0.f,std::min(1.f,v));
+        }
+
+        inline float lerp(float a,float b,float t){
+            return a + ((b - a) * t);
+        }
+
+        template<typename T>
+        struct KeyframeLerp {
+            static T apply(const T & lhs,const T & rhs,float t){
+                static_assert(std::is_arithmetic_v<T>, "Keyframe interpolation is not specialized for this type.");
+                return static_cast<T>(lerp(static_cast<float>(lhs),static_cast<float>(rhs),t));
+            }
+        };
+
+        template<>
+        struct KeyframeLerp<float> {
+            static float apply(const float & lhs,const float & rhs,float t){
+                return lerp(lhs,rhs,t);
+            }
+        };
+
+        template<>
+        struct KeyframeLerp<Core::Rect> {
+            static Core::Rect apply(const Core::Rect & lhs,const Core::Rect & rhs,float t){
+                return Core::Rect{
+                        Core::Position{
+                                lerp(lhs.pos.x,rhs.pos.x,t),
+                                lerp(lhs.pos.y,rhs.pos.y,t)},
+                        lerp(lhs.w,rhs.w,t),
+                        lerp(lhs.h,rhs.h,t)};
+            }
+        };
+
+        template<>
+        struct KeyframeLerp<LayerEffect::TransformationParams> {
+            static LayerEffect::TransformationParams apply(const LayerEffect::TransformationParams & lhs,
+                                                           const LayerEffect::TransformationParams & rhs,
+                                                           float t){
+                LayerEffect::TransformationParams out {};
+                out.translate.x = lerp(lhs.translate.x,rhs.translate.x,t);
+                out.translate.y = lerp(lhs.translate.y,rhs.translate.y,t);
+                out.translate.z = lerp(lhs.translate.z,rhs.translate.z,t);
+
+                out.rotate.pitch = lerp(lhs.rotate.pitch,rhs.rotate.pitch,t);
+                out.rotate.yaw = lerp(lhs.rotate.yaw,rhs.rotate.yaw,t);
+                out.rotate.roll = lerp(lhs.rotate.roll,rhs.rotate.roll,t);
+
+                out.scale.x = lerp(lhs.scale.x,rhs.scale.x,t);
+                out.scale.y = lerp(lhs.scale.y,rhs.scale.y,t);
+                out.scale.z = lerp(lhs.scale.z,rhs.scale.z,t);
+                return out;
+            }
+        };
+
+        template<>
+        struct KeyframeLerp<LayerEffect::DropShadowParams> {
+            static LayerEffect::DropShadowParams apply(const LayerEffect::DropShadowParams & lhs,
+                                                       const LayerEffect::DropShadowParams & rhs,
+                                                       float t){
+                LayerEffect::DropShadowParams out {};
+                out.x_offset = lerp(lhs.x_offset,rhs.x_offset,t);
+                out.y_offset = lerp(lhs.y_offset,rhs.y_offset,t);
+                out.radius = lerp(lhs.radius,rhs.radius,t);
+                out.blurAmount = lerp(lhs.blurAmount,rhs.blurAmount,t);
+                out.opacity = lerp(lhs.opacity,rhs.opacity,t);
+                out.color.r = lerp(lhs.color.r,rhs.color.r,t);
+                out.color.g = lerp(lhs.color.g,rhs.color.g,t);
+                out.color.b = lerp(lhs.color.b,rhs.color.b,t);
+                out.color.a = lerp(lhs.color.a,rhs.color.a,t);
+                return out;
+            }
+        };
+    }
+
+    template<typename T>
+    class KeyframeTrack {
+        OmegaCommon::Vector<KeyframeValue<T>> keys;
+    public:
+        static KeyframeTrack<T> From(const OmegaCommon::Vector<KeyframeValue<T>> & source){
+            KeyframeTrack<T> track {};
+            track.keys = source;
+            if(track.keys.empty()){
+                return track;
+            }
+            std::sort(track.keys.begin(),track.keys.end(),[](const KeyframeValue<T> & lhs,const KeyframeValue<T> & rhs){
+                return lhs.offset < rhs.offset;
+            });
+            for(auto & key : track.keys){
+                key.offset = detail::clamp01(key.offset);
+            }
+            return track;
+        }
+
+        bool empty() const{
+            return keys.empty();
+        }
+
+        const OmegaCommon::Vector<KeyframeValue<T>> & keyframes() const{
+            return keys;
+        }
+
+        T sample(float t) const{
+            if(keys.empty()){
+                return T{};
+            }
+            if(keys.size() == 1){
+                return keys.front().value;
+            }
+            const float normalized = detail::clamp01(t);
+            if(normalized <= keys.front().offset){
+                return keys.front().value;
+            }
+            if(normalized >= keys.back().offset){
+                return keys.back().value;
+            }
+
+            for(std::size_t i = 1; i < keys.size(); i++){
+                const auto & prev = keys[i - 1];
+                const auto & next = keys[i];
+                if(normalized > next.offset){
+                    continue;
+                }
+                const float span = std::max(next.offset - prev.offset,std::numeric_limits<float>::epsilon());
+                const float local = detail::clamp01((normalized - prev.offset) / span);
+                const float eased = prev.easingToNext ? prev.easingToNext->sample(local) : local;
+                return detail::KeyframeLerp<T>::apply(prev.value,next.value,detail::clamp01(eased));
+            }
+            return keys.back().value;
+        }
+    };
+
+    struct LayerClip {
+        Core::Optional<KeyframeTrack<Core::Rect>> rect;
+        Core::Optional<KeyframeTrack<LayerEffect::TransformationParams>> transform;
+        Core::Optional<KeyframeTrack<LayerEffect::DropShadowParams>> shadow;
+        Core::Optional<KeyframeTrack<float>> opacity;
+    };
+
+    struct ViewClip {
+        Core::Optional<KeyframeTrack<Core::Rect>> rect;
+        Core::Optional<KeyframeTrack<float>> opacity;
+    };
+
     class ViewAnimator;
 
     class OMEGAWTK_EXPORT LayerAnimator : public CompositorClient {
         Layer & targetLayer;
         ViewAnimator &parentAnimator;
+        friend class ViewAnimator;
         explicit LayerAnimator(Layer & layer,ViewAnimator &parentAnimator);
     public:
+        AnimationHandle animate(const LayerClip & clip,const TimingOptions & timing = {});
         void setFrameRate(unsigned _framePerSec);
         void animate(const SharedHandle<AnimationTimeline> & timeline,unsigned duration);
         void pause();
@@ -176,6 +405,7 @@ namespace OmegaWTK::Composition {
 
     public:
         explicit ViewAnimator(CompositorClientProxy & _client);
+        AnimationHandle animate(const ViewClip & clip,const TimingOptions & timing = {});
         void setFrameRate(unsigned _framePerSec);
         void pause();
         void resume();

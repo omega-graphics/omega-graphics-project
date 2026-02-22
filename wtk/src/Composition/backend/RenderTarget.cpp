@@ -5,6 +5,7 @@
 
 #include "omegaWTK/Media/ImgCodec.h"
 #include <algorithm>
+#include <cmath>
 
 namespace OmegaWTK::Composition {
     #ifdef TARGET_MACOS
@@ -271,55 +272,55 @@ fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
     }
 
 BackendRenderTargetContext::BackendRenderTargetContext(Core::Rect & rect,
-        SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTarget):
+        SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTarget,
+        float renderScale):
         fence(gte.graphicsEngine->makeFence()),
         renderTarget(renderTarget),
-        renderTargetSize(rect)
+        renderTargetSize(rect),
+        renderScale(std::max(1.0f,renderScale))
         {
-    // if(!bufferWriter){
-    //     bufferWriter = OmegaGTE::GEBufferWriter::Create();
-    // }
+    rebuildBackingTarget();
+    imageProcessor = BackendCanvasEffectProcessor::Create(fence);
+}
+
+void BackendRenderTargetContext::rebuildBackingTarget(){
+    const auto logicalW = std::max(1.0f,renderTargetSize.w);
+    const auto logicalH = std::max(1.0f,renderTargetSize.h);
+    backingWidth = std::max(1u,static_cast<unsigned>(std::lround(logicalW * renderScale)));
+    backingHeight = std::max(1u,static_cast<unsigned>(std::lround(logicalH * renderScale)));
+
     OmegaGTE::TextureDescriptor textureDescriptor {};
     textureDescriptor.usage = OmegaGTE::GETexture::RenderTarget;
     textureDescriptor.storage_opts = OmegaGTE::Shared;
-    textureDescriptor.width = (unsigned)renderTargetSize.w;
-    textureDescriptor.height = (unsigned)renderTargetSize.h;
+    textureDescriptor.width = backingWidth;
+    textureDescriptor.height = backingHeight;
     textureDescriptor.type = OmegaGTE::GETexture::Texture2D;
     textureDescriptor.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm;
 
     targetTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
-
+    effectTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
     preEffectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,targetTexture});
-
+    effectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,effectTexture});
     tessellationEngineContext = gte.tessalationEngine->createTEContextFromTextureRenderTarget(preEffectTarget);
-
-    imageProcessor = BackendCanvasEffectProcessor::Create(fence);
 }
 
     void BackendRenderTargetContext::setRenderTargetSize(Core::Rect &rect) {
-        const unsigned oldW = std::max(1u,(unsigned)renderTargetSize.w);
-        const unsigned oldH = std::max(1u,(unsigned)renderTargetSize.h);
-        const unsigned newW = std::max(1u,(unsigned)rect.w);
-        const unsigned newH = std::max(1u,(unsigned)rect.h);
+        const unsigned oldW = backingWidth;
+        const unsigned oldH = backingHeight;
+
+        renderTargetSize = rect;
+
+        const auto newLogicalW = std::max(1.0f,renderTargetSize.w);
+        const auto newLogicalH = std::max(1.0f,renderTargetSize.h);
+        const unsigned newW = std::max(1u,static_cast<unsigned>(std::lround(newLogicalW * renderScale)));
+        const unsigned newH = std::max(1u,static_cast<unsigned>(std::lround(newLogicalH * renderScale)));
 
         if(oldW == newW && oldH == newH){
             renderTargetSize = rect;
             return;
         }
 
-        renderTargetSize = rect;
-
-        OmegaGTE::TextureDescriptor textureDescriptor {};
-        textureDescriptor.usage = OmegaGTE::GETexture::RenderTarget;
-        textureDescriptor.storage_opts = OmegaGTE::Shared;
-        textureDescriptor.width = newW;
-        textureDescriptor.height = newH;
-        textureDescriptor.type = OmegaGTE::GETexture::Texture2D;
-        textureDescriptor.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm;
-
-        targetTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
-        preEffectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,targetTexture});
-        tessellationEngineContext = gte.tessalationEngine->createTEContextFromTextureRenderTarget(preEffectTarget);
+        rebuildBackingTarget();
     }
 
 void BackendRenderTargetContext::clear(float r, float g, float b, float a) {
@@ -335,24 +336,33 @@ void BackendRenderTargetContext::clear(float r, float g, float b, float a) {
     preEffectTarget->submitCommandBuffer(cb);
 }
 
-void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, void *params) {
-    effectQueue.push_back(std::make_pair(type,params));
+void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect) {
+    effectQueue.push_back(effect);
 }
 
 
     void BackendRenderTargetContext::commit(){
         auto _l_cb = preEffectTarget->commandBuffer();
-        preEffectTarget->submitCommandBuffer(_l_cb,fence);
+        const bool canApplyEffects = !effectQueue.empty() &&
+                                     imageProcessor != nullptr &&
+                                     effectTexture != nullptr &&
+                                     effectTarget != nullptr;
+        if(canApplyEffects){
+            preEffectTarget->submitCommandBuffer(_l_cb);
+        }
+        else {
+            preEffectTarget->submitCommandBuffer(_l_cb,fence);
+        }
         preEffectTarget->commit();
 
-        // @brief FIX Metal Render Target First then Try This Block
-        auto cb = renderTarget->commandBuffer();
-        // OmegaGTE::SharedHandle<OmegaGTE::GETexture> & dest = targetTexture;
+        SharedHandle<OmegaGTE::GETexture> finalTexture = preEffectTarget->underlyingTexture();
+        if(canApplyEffects){
+            imageProcessor->applyEffects(effectTexture,preEffectTarget,effectQueue);
+            finalTexture = effectTexture;
+        }
+        effectQueue.clear();
 
-        // if(!effectQueue.empty()) {
-        //     imageProcessor->applyEffects(dest, preEffectTarget, effectQueue);
-        //     effectQueue.clear();
-        // }
+        auto cb = renderTarget->commandBuffer();
 
         renderTarget->notifyCommandBuffer(cb, fence);
         OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
@@ -372,8 +382,7 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
         }
         cb->setRenderPipelineState(finalPipeline);
         cb->bindResourceAtVertexShader(finalTextureDrawBuffer,1);
-        auto t = preEffectTarget->underlyingTexture();
-        cb->bindResourceAtFragmentShader(t,2);
+        cb->bindResourceAtFragmentShader(finalTexture,2);
         cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle,6,0);
         cb->endRenderPass();
         renderTarget->submitCommandBuffer(cb);
@@ -445,7 +454,12 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
         viewPort.width = renderTargetSize.w;
         viewPort.height = renderTargetSize.h;
 
-        std::cout << "W:" << renderTargetSize.w << " H:" << renderTargetSize.h << std::endl;
+        std::cout << "W:" << renderTargetSize.w
+                  << " H:" << renderTargetSize.h
+                  << " BW:" << backingWidth
+                  << " BH:" << backingHeight
+                  << " S:" << renderScale
+                  << std::endl;
 
         size_t struct_size;
         bool useTextureRenderPipeline = false;
@@ -531,15 +545,13 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
             }
             case VisualCommand::Ellipse : {
                 auto & _params = ((VisualCommandParams*)params)->ellipseParams;
-                OmegaGTE::GEllipsoid ellipsoid {
-                        _params.ellipse.rad_x,
-                        _params.ellipse.rad_y,
-                        0.f,
-                        _params.ellipse.rad_x,
-                        _params.ellipse.rad_y,
-                        0.f
-                };
-                auto te_params = OmegaGTE::TETessellationParams::Ellipsoid(ellipsoid);
+                const float cx = _params.ellipse.x;
+                const float cy = _params.ellipse.y;
+                const float rx = std::max(0.0f,_params.ellipse.rad_x);
+                const float ry = std::max(0.0f,_params.ellipse.rad_y);
+                if(rx <= 0.0f || ry <= 0.0f){
+                    return;
+                }
 
                 auto color = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
                 if(_params.brush != nullptr && _params.brush->isColor){
@@ -548,19 +560,45 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
                                                 _params.brush->color.b,
                                                 _params.brush->color.a);
                 }
-                te_params.addAttachment(OmegaGTE::TETessellationParams::Attachment::makeColor(color));
 
-                result = tessellationEngineContext->tessalateSync(te_params,
-                                                                  OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,
-                                                                  &viewPort);
-                // Ellipsoid tessellation is generated in local [0..2r] space, so we
-                // place by top-left derived from center coordinates.
-                const float x = _params.ellipse.x - _params.ellipse.rad_x;
-                const float y = _params.ellipse.y - _params.ellipse.rad_y;
-                result.translate(-((viewPort.width/2) - x),
-                                 -((viewPort.height/2) - y),
-                                 0,
-                                 viewPort);
+                auto toNdcPoint = [&](float px,float py){
+                    return OmegaGTE::GPoint3D{
+                            ((2.0f * px) / viewPort.width) - 1.0f,
+                            ((2.0f * py) / viewPort.height) - 1.0f,
+                            0.0f};
+                };
+
+                OmegaGTE::TETessellationResult::TEMesh mesh {OmegaGTE::TETessellationResult::TEMesh::TopologyTriangle};
+                const auto center = toNdcPoint(cx,cy);
+
+                const float twoPi = static_cast<float>(2.0 * OmegaGTE::PI);
+                const unsigned segmentCount = std::max(
+                        96u,
+                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * renderScale)));
+                auto prev = toNdcPoint(cx + rx,cy);
+
+                for(unsigned i = 1; i <= segmentCount; i++){
+                    const float angle = (twoPi * static_cast<float>(i)) / static_cast<float>(segmentCount);
+                    const float px = cx + (std::cos(angle) * rx);
+                    const float py = cy + (std::sin(angle) * ry);
+                    auto next = toNdcPoint(px,py);
+
+                    OmegaGTE::TETessellationResult::TEMesh::Polygon tri {};
+                    tri.a.pt = center;
+                    tri.b.pt = prev;
+                    tri.c.pt = next;
+                    tri.a.attachment = tri.b.attachment = tri.c.attachment =
+                            std::make_optional<OmegaGTE::TETessellationResult::AttachmentData>(
+                                    OmegaGTE::TETessellationResult::AttachmentData{
+                                            color,
+                                            OmegaGTE::FVec<2>::Create(),
+                                            OmegaGTE::FVec<3>::Create()});
+
+                    mesh.vertexPolygons.push_back(tri);
+                    prev = next;
+                }
+
+                result.meshes.push_back(mesh);
 
                 break;
             }
@@ -624,9 +662,13 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
         viewport.y = 0;
         viewport.farDepth = 1.f;
         viewport.nearDepth = 0.f;
-        viewport.width = renderTargetSize.w;
-        viewport.height = renderTargetSize.h;
-        OmegaGTE::GEScissorRect scissorRect {0,0,renderTargetSize.w,renderTargetSize.h};
+        viewport.width = static_cast<float>(backingWidth);
+        viewport.height = static_cast<float>(backingHeight);
+        OmegaGTE::GEScissorRect scissorRect {
+                0,
+                0,
+                static_cast<float>(backingWidth),
+                static_cast<float>(backingHeight)};
 
         renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
                 OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),

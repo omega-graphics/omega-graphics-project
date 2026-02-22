@@ -102,7 +102,7 @@ void Compositor::executeCurrentCommand(){
         }
 
         for(auto & effect : comm->frame->currentEffects){
-            targetContext->applyEffectToTarget(effect.type,effect.params);
+            targetContext->applyEffectToTarget(effect);
         }
 
         targetContext->commit();

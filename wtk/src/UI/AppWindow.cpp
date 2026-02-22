@@ -10,6 +10,12 @@
 
 namespace OmegaWTK {
 
+#if defined(TARGET_MACOS)
+namespace {
+constexpr auto kLiveResizeDispatchInterval = std::chrono::milliseconds(16);
+}
+#endif
+
     AppWindow::AppWindow(Core::Rect rect,AppWindowDelegate *delegate):
     layer(std::make_unique<Composition::WindowLayer>(rect,Native::make_native_window(rect,this))),
     rootViewRenderTarget(new Composition::ViewRenderTarget(layer->native_window_ptr->getRootView())),
@@ -104,6 +110,13 @@ void AppWindowManager::closeAllWindows(){
     rootWindow->close();
 };
 
+void AppWindowDelegate::dispatchResizeToHosts(const Core::Rect & rect){
+    window->rect = rect;
+    for(auto & host : window->widgetTreeHosts){
+        host->notifyWindowResize(rect);
+    }
+}
+
 void AppWindowDelegate::onRecieveEvent(Native::NativeEventPtr event){
     switch (event->type) {
         case Native::NativeEvent::WindowWillClose: {
@@ -117,11 +130,32 @@ void AppWindowDelegate::onRecieveEvent(Native::NativeEventPtr event){
             }
             // MessageBoxA(HWND_DESKTOP,"Window Will Resize","NOTE",MB_OK);
             windowWillResize(params->rect);
-            // MessageBoxA(HWND_DESKTOP,"Window Has Resized","NOTE",MB_OK);
-            window->rect = params->rect;
-            for(auto & host : window->widgetTreeHosts){
-                host->notifyWindowResize(params->rect);
+#if defined(TARGET_MACOS)
+            pendingLiveResizeRect = params->rect;
+            hasPendingLiveResize = true;
+            auto now = std::chrono::steady_clock::now();
+            if(lastLiveResizeDispatch.time_since_epoch().count() == 0 ||
+               (now - lastLiveResizeDispatch) >= kLiveResizeDispatchInterval){
+                dispatchResizeToHosts(pendingLiveResizeRect);
+                hasPendingLiveResize = false;
+                lastLiveResizeDispatch = now;
             }
+#else
+            dispatchResizeToHosts(params->rect);
+#endif
+            break;
+        }
+        case Native::NativeEvent::WindowHasFinishedResize: {
+#if defined(TARGET_MACOS)
+            if(hasPendingLiveResize){
+                dispatchResizeToHosts(pendingLiveResizeRect);
+                hasPendingLiveResize = false;
+            }
+            else if(window != nullptr){
+                dispatchResizeToHosts(window->rect);
+            }
+            lastLiveResizeDispatch = {};
+#endif
             break;
         }
         default:

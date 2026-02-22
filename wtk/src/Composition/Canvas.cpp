@@ -136,6 +136,38 @@ void Canvas::drawGETexture(SharedHandle<OmegaGTE::GETexture> &img,const Core::Re
     current->currentVisuals.emplace_back(img,fence,rect);
 }
 
+void Canvas::applyEffect(SharedHandle<CanvasEffect> &effect){
+    if(effect == nullptr){
+        return;
+    }
+
+    CanvasEffect copied = *effect;
+    if(copied.params != nullptr){
+        switch(copied.type){
+            case CanvasEffect::DirectionalBlur: {
+                auto *params = (CanvasEffect::DirectionalBlurParams *)copied.params;
+                copied.directionalBlur = *params;
+                break;
+            }
+            case CanvasEffect::GaussianBlur:
+            default: {
+                auto *params = (CanvasEffect::GaussianBlurParams *)copied.params;
+                copied.gaussianBlur = *params;
+                break;
+            }
+        }
+    }
+
+    if(copied.gaussianBlur.radius < 0.f){
+        copied.gaussianBlur.radius = 0.f;
+    }
+    if(copied.directionalBlur.radius < 0.f){
+        copied.directionalBlur.radius = 0.f;
+    }
+    copied.params = nullptr;
+    current->currentEffects.push_back(copied);
+}
+
 SharedHandle<CanvasFrame> Canvas::getCurrentFrame() {
     return current;
 }

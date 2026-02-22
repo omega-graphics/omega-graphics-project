@@ -141,16 +141,27 @@ NativeItemPtr CocoaAppWindow::getRootView() {
      if(window == nil || window.contentView == nil){
          return;
      }
-     NSLog(@"Window FRAME: {x:%f,y:%f,w:%f,h:%f}",window.contentView.frame.origin.x,window.contentView.frame.origin.y,window.contentView.frame.size.width,window.contentView.frame.size.height);
+     NSRect bounds = window.contentView.bounds;
+     NSLog(@"Window BOUNDS: {x:%f,y:%f,w:%f,h:%f}",bounds.origin.x,bounds.origin.y,bounds.size.width,bounds.size.height);
      auto *params = new OmegaWTK::Native::WindowWillResize(
              OmegaWTK::Core::Rect
-                     {(float)window.contentView.frame.origin.x,
-                      (float)window.contentView.frame.origin.y,
-                      (float)window.contentView.frame.size.width,
-                      (float)window.contentView.frame.size.height}
+                     {0.f,
+                      0.f,
+                      (float)bounds.size.width,
+                      (float)bounds.size.height}
      );
     OmegaWTK::Native::NativeEventPtr event(new OmegaWTK::Native::NativeEvent(OmegaWTK::Native::NativeEvent::WindowWillResize,params));
      [self emitIfPossible:event];
+};
+
+-(void)windowDidEndLiveResize:(NSNotification *)notification
+{
+    (void)notification;
+    OmegaWTK::Native::NativeEventPtr event(
+            new OmegaWTK::Native::NativeEvent(
+                    OmegaWTK::Native::NativeEvent::WindowHasFinishedResize,
+                    nullptr));
+    [self emitIfPossible:event];
 };
 
 @end

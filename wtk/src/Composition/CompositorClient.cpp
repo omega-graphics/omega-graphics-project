@@ -163,6 +163,18 @@ namespace OmegaWTK::Composition {
         ++currentCommandID;
     }
 
+    void CompositorClient::pushLayerEffectCommand(Layer *target,
+                                                  SharedHandle<LayerEffect> &effect,
+                                                  Timestamp &start,
+                                                  Timestamp &deadline) {
+        busy();
+        currentJobStatuses.push_back({
+            currentCommandID,
+            parentProxy.queueLayerEffectCommand(currentCommandID,*this,target,effect,start,deadline)
+        });
+        ++currentCommandID;
+    }
+
     void CompositorClient::pushTimedFrame(SharedHandle<CanvasFrame> &frame, Timestamp &start, Timestamp &deadline) {
         busy();
         currentJobStatuses.push_back(

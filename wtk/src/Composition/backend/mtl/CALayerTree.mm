@@ -79,7 +79,11 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
      auto target = gte.graphicsEngine->makeNativeRenderTarget(nativeRenderTargetDescriptor);
      Core::Rect r {rect};
      NSLog(@"Layer: W:%f H:%f",r.w,r.h);
-     BackendRenderTargetContext compTarget (r,target);
+     CGFloat scale = layer.contentsScale;
+     if(scale <= 0.f){
+         scale = 1.f;
+     }
+     BackendRenderTargetContext compTarget (r,target,(float)scale);
 
      return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::Visual(pos,compTarget,layer,nil,false));
  };

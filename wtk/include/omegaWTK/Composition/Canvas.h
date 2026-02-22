@@ -33,15 +33,18 @@ namespace OmegaWTK {
                 DirectionalBlur,
                 GaussianBlur
             } Type;
-            Type type;
-            void *params;
             typedef struct {
-            float radius;
+                float radius = 0.f;
             } GaussianBlurParams;
             typedef struct {
-                float radius;
-                float angle;
+                float radius = 0.f;
+                float angle = 0.f;
             } DirectionalBlurParams;
+            Type type = GaussianBlur;
+            /// Legacy optional payload pointer. Prefer gaussianBlur/directionalBlur owned fields.
+            void *params = nullptr;
+            GaussianBlurParams gaussianBlur {};
+            DirectionalBlurParams directionalBlur {};
         };
 ///   
 

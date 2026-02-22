@@ -13,25 +13,33 @@ namespace OmegaWTK::Composition {
 
         };
         SharedHandle<OmegaGTE::GEFence> fence;
-      INTERFACE_METHOD void applyEffects(SharedHandle<OmegaGTE::GETexture> & dest,SharedHandle<OmegaGTE::GETextureRenderTarget> & textureTarget,OmegaCommon::Vector<std::pair<CanvasEffect::Type,void *>> & effects) ABSTRACT;
+      INTERFACE_METHOD void applyEffects(SharedHandle<OmegaGTE::GETexture> & dest,
+                                         SharedHandle<OmegaGTE::GETextureRenderTarget> & textureTarget,
+                                         OmegaCommon::Vector<CanvasEffect> & effects) ABSTRACT;
       static SharedHandle<BackendCanvasEffectProcessor> Create(SharedHandle<OmegaGTE::GEFence> & fence);
       virtual ~BackendCanvasEffectProcessor() = default;
     };
 
     class BackendRenderTargetContext {
         SharedHandle<OmegaGTE::GETexture> targetTexture;
+        SharedHandle<OmegaGTE::GETexture> effectTexture;
         SharedHandle<OmegaGTE::GEFence> fence;
         SharedHandle<OmegaGTE::GETextureRenderTarget> preEffectTarget;
+        SharedHandle<OmegaGTE::GETextureRenderTarget> effectTarget;
         SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget;
         SharedHandle<OmegaGTE::OmegaTessellationEngineContext> tessellationEngineContext;
         SharedHandle<BackendCanvasEffectProcessor> imageProcessor;
         Core::Rect renderTargetSize;
-        OmegaCommon::Vector<std::pair<CanvasEffect::Type,void *>> effectQueue;
+        float renderScale = 1.0f;
+        unsigned backingWidth = 1;
+        unsigned backingHeight = 1;
+        OmegaCommon::Vector<CanvasEffect> effectQueue;
+        void rebuildBackingTarget();
         void createGradientTexture(bool linearOrRadial,Gradient & gradient,OmegaGTE::GRect & rect,SharedHandle<OmegaGTE::GETexture> & dest);
     public:
         void clear(float r,float g,float b,float a);
         void renderToTarget(VisualCommand::Type type,void *params);
-        void applyEffectToTarget(CanvasEffect::Type type, void *params);
+        void applyEffectToTarget(const CanvasEffect & effect);
         void setRenderTargetSize(Core::Rect &rect);
         /**
          Commit all queued render jobs to GPU.
@@ -42,7 +50,9 @@ namespace OmegaWTK::Composition {
             Create a BackendRenderTarget Context
             @param renderTarget
         */
-        explicit BackendRenderTargetContext(Core::Rect & rect,SharedHandle<OmegaGTE::GENativeRenderTarget> & renderTarget);
+        explicit BackendRenderTargetContext(Core::Rect & rect,
+                                            SharedHandle<OmegaGTE::GENativeRenderTarget> & renderTarget,
+                                            float renderScale = 1.0f);
     };
 
     class BackendVisualTree;

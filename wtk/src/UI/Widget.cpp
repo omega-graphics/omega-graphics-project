@@ -255,7 +255,9 @@ void Widget::setRect(const Core::Rect &newRect){
     auto updatedRect = rootRect;
     this->resize(updatedRect);
     WIDGET_NOTIFY_OBSERVERS_RESIZE(oldRect);
-    if(mode == PaintMode::Automatic && options.invalidateOnResize && treeHost != nullptr){
+    if(mode == PaintMode::Automatic &&
+       options.invalidateOnResize &&
+       treeHost != nullptr){
         invalidate(PaintReason::Resize);
     }
 }

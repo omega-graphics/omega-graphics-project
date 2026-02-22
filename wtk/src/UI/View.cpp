@@ -67,6 +67,7 @@ void View::resize(Core::Rect newRect){
     rect = newRect;
     renderTarget->getNativePtr()->resize(newRect);
     if(layerTreeLimb != nullptr){
+        // Preserve positioned layer rect so child visuals keep stack/layout offsets.
         layerTreeLimb->getRootLayer()->resize(newRect);
     }
 };

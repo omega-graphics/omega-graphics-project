@@ -11,6 +11,14 @@
 
 namespace OmegaWTK::Composition {
 
+static CGFloat currentScreenScale(){
+    CGFloat scale = [NSScreen mainScreen].backingScaleFactor;
+    if(scale <= 0.f){
+        scale = 1.f;
+    }
+    return scale;
+}
+
 static NSTextAlignment toNSTextAlignment(TextLayoutDescriptor::Alignment alignment){
     switch(alignment){
         case TextLayoutDescriptor::LeftUpper:
@@ -152,7 +160,7 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
 
           strData = attributed;
 
-          CGFloat scaleFactor = [NSScreen mainScreen].backingScaleFactor;
+          CGFloat scaleFactor = currentScreenScale();
           CGPathRef textPath = CGPathCreateWithRect(CGRectMake(0.f,0.f,rect.w * scaleFactor,rect.h * scaleFactor),NULL);
           framesetterRef = CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)strData);
           frame = CTFramesetterCreateFrame(framesetterRef,CFRangeMake(0,strData.length),textPath,NULL);
@@ -182,7 +190,7 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
      // };
      BitmapRes toBitmap() override{
         BitmapRes res;
-         CGFloat scaleFactor = [NSScreen mainScreen].backingScaleFactor;
+         CGFloat scaleFactor = currentScreenScale();
          const size_t pixelWidth = size_t(rect.w * scaleFactor);
          const size_t pixelHeight = size_t(rect.h * scaleFactor);
          const size_t bytesPerRow = pixelWidth * 4;
@@ -197,6 +205,15 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
              delete [](unsigned char *) data;
              return res;
          }
+         CGContextSetAllowsAntialiasing(context,true);
+         CGContextSetShouldAntialias(context,true);
+         CGContextSetInterpolationQuality(context,kCGInterpolationHigh);
+         CGContextSetShouldSmoothFonts(context,true);
+         CGContextSetAllowsFontSmoothing(context,true);
+         CGContextSetShouldSubpixelPositionFonts(context,true);
+         CGContextSetAllowsFontSubpixelPositioning(context,true);
+         CGContextSetShouldSubpixelQuantizeFonts(context,true);
+         CGContextSetAllowsFontSubpixelQuantization(context,true);
          CGContextSetTextMatrix(context,CGAffineTransformIdentity);
          if(frame != nullptr){
              CTFrameDraw(frame,context);
@@ -260,7 +277,7 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
              break;
      }
     
-     auto scaleFactor = [NSScreen mainScreen].backingScaleFactor;
+     auto scaleFactor = currentScreenScale();
     
      CTFontRef _font_final = CTFontCreateCopyWithSymbolicTraits(ref,CGFloat(desc.size) * scaleFactor,NULL,kCTFontTraitBold | kCTFontTraitItalic, fontTraits);
      CFRelease(ref);
@@ -302,7 +319,7 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
          };
      };
 
-     auto scaleFactor = [NSScreen mainScreen].backingScaleFactor;
+     auto scaleFactor = currentScreenScale();
 
      CTFontRef f = CTFontCreateWithFontDescriptor(idealFont,CGFloat(desc.size) * scaleFactor,NULL);
      return std::make_shared<CoreTextFont>(desc,f);

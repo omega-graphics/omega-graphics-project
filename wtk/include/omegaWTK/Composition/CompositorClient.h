@@ -266,6 +266,7 @@ namespace OmegaWTK::Composition {
         void pushTimedFrame(SharedHandle<CanvasFrame> & frame,Timestamp & start,Timestamp & deadline);
         void pushFrame(SharedHandle<CanvasFrame> & frame,Timestamp & start);
         void pushLayerResizeCommand(Layer *target,unsigned delta_x,unsigned delta_y,unsigned delta_w,unsigned delta_h,Timestamp &start,Timestamp & deadline);
+        void pushLayerEffectCommand(Layer *target,SharedHandle<LayerEffect> & effect,Timestamp &start,Timestamp & deadline);
         void pushViewResizeCommand(Native::NativeItemPtr nativeView,unsigned delta_x,unsigned delta_y,unsigned delta_w,unsigned delta_h,Timestamp &start,Timestamp & deadline);
         void cancelCurrentJobs();
     public:

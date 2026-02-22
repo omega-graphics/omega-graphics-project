@@ -134,6 +134,44 @@ Compositor::~Compositor(){
 void Compositor::scheduleCommand(SharedHandle<CompositorCommand> & command){
     {
         std::lock_guard<std::mutex> lk(mutex);
+        if(command != nullptr && command->type == CompositorCommand::Render){
+            auto incomingRender = std::dynamic_pointer_cast<CompositionRenderCommand>(command);
+            if(incomingRender != nullptr && incomingRender->frame != nullptr){
+                auto isNoOpTransparentFrame = [](const SharedHandle<CanvasFrame> &frame){
+                    if(frame == nullptr){
+                        return true;
+                    }
+                    auto &bkgrd = frame->background;
+                    return frame->currentVisuals.empty() &&
+                           frame->currentEffects.empty() &&
+                           bkgrd.r == 0.f &&
+                           bkgrd.g == 0.f &&
+                           bkgrd.b == 0.f &&
+                           bkgrd.a == 0.f;
+                };
+
+                // Never evict pending content when the incoming frame is just an
+                // empty transparent warmup/no-op frame.
+                if(!isNoOpTransparentFrame(incomingRender->frame)){
+                    commandQueue.filter([&](SharedHandle<CompositorCommand> &queuedCommand){
+                        if(queuedCommand == nullptr || queuedCommand->type != CompositorCommand::Render){
+                            return false;
+                        }
+                        auto pendingRender = std::dynamic_pointer_cast<CompositionRenderCommand>(queuedCommand);
+                        if(pendingRender == nullptr || pendingRender->frame == nullptr){
+                            return false;
+                        }
+                        const bool sameRenderTarget = pendingRender->renderTarget == incomingRender->renderTarget;
+                        const bool sameLayer = pendingRender->frame->targetLayer == incomingRender->frame->targetLayer;
+                        if(sameRenderTarget && sameLayer){
+                            pendingRender->status.set(CommandStatus::Delayed);
+                            return true;
+                        }
+                        return false;
+                    });
+                }
+            }
+        }
         commandQueue.push(std::move(command));
     }
     queueCondition.notify_one();

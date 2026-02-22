@@ -3,6 +3,7 @@
 #include <d3d11on12.h>
 #include <d2d1_1.h>
 #include <d2d1effects_1.h>
+#include <algorithm>
 
 #pragma comment(lib,"d2d1.lib")
 
@@ -17,7 +18,12 @@ namespace OmegaWTK::Composition {
         commandQueue(nullptr){
 
         };
-        void applyEffects(SharedHandle<OmegaGTE::GETexture> &dest, SharedHandle<OmegaGTE::GETextureRenderTarget> &textureTarget, OmegaCommon::Vector<std::pair<CanvasEffect::Type, void *>> &effects) override {
+        void applyEffects(SharedHandle<OmegaGTE::GETexture> &dest,
+                          SharedHandle<OmegaGTE::GETextureRenderTarget> &textureTarget,
+                          OmegaCommon::Vector<CanvasEffect> &effects) override {
+            if(effects.empty()){
+                return;
+            }
             if(d3d11_device.get() == nullptr){
                 const D3D_FEATURE_LEVEL levels[]= {D3D_FEATURE_LEVEL_11_0};
                 commandQueue = (ID3D12CommandQueue *)textureTarget->nativeCommandQueue();
@@ -48,21 +54,21 @@ namespace OmegaWTK::Composition {
                     input = effectPairs.back().second;
                 }
                 ID2D1Effect *effect;
-                switch (eff.first) {
+                switch (eff.type) {
                     case CanvasEffect::DirectionalBlur : {
-                        auto _params = (CanvasEffect::DirectionalBlurParams *)eff.second;
+                        auto _params = eff.directionalBlur;
                         deviceContext->CreateEffect(CLSID_D2D1DirectionalBlur,&effect);
                         effect->SetInput(0,input);
-                        effect->SetValue(D2D1_DIRECTIONALBLUR_PROP_ANGLE,_params->angle);
-                        effect->SetValue(D2D1_DIRECTIONALBLUR_PROP_STANDARD_DEVIATION,_params->radius);
+                        effect->SetValue(D2D1_DIRECTIONALBLUR_PROP_ANGLE,_params.angle);
+                        effect->SetValue(D2D1_DIRECTIONALBLUR_PROP_STANDARD_DEVIATION,std::max(0.f,_params.radius));
                         effect->GetOutput(&output);
                         break;
                     }
                     case CanvasEffect::GaussianBlur : {
-                        auto _params = (CanvasEffect::GaussianBlurParams *)eff.second;
+                        auto _params = eff.gaussianBlur;
                         deviceContext->CreateEffect(CLSID_D2D1GaussianBlur,&effect);
                         effect->SetInput(0,input);
-                        effect->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,_params->radius);
+                        effect->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,std::max(0.f,_params.radius));
                         effect->GetOutput(&output);
                         break;
                     }

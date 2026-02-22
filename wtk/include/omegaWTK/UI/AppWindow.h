@@ -145,7 +145,13 @@ class OMEGAWTK_EXPORT  AppWindowManager : public Native::NativeThemeObserver {
 INTERFACE OMEGAWTK_EXPORT  AppWindowDelegate : public Native::NativeEventProcessor {
     private:
         void onRecieveEvent(Native::NativeEventPtr event);
+        void dispatchResizeToHosts(const Core::Rect & rect);
         friend class AppWindow;
+#if defined(TARGET_MACOS)
+        std::chrono::steady_clock::time_point lastLiveResizeDispatch {};
+        bool hasPendingLiveResize = false;
+        Core::Rect pendingLiveResizeRect {};
+#endif
     protected:
        AppWindow * window;
          INTERFACE_METHOD void windowWillClose(Native::NativeEventPtr event);

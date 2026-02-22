@@ -17,6 +17,14 @@ static inline float clampSize(float value,const Core::Optional<float> & minValue
     return value;
 }
 
+static inline bool rectChanged(const Core::Rect &a,const Core::Rect &b){
+    constexpr float kEpsilon = 0.001f;
+    return std::fabs(a.pos.x - b.pos.x) > kEpsilon ||
+           std::fabs(a.pos.y - b.pos.y) > kEpsilon ||
+           std::fabs(a.w - b.w) > kEpsilon ||
+           std::fabs(a.h - b.h) > kEpsilon;
+}
+
 struct LayoutItem {
     Widget *widget = nullptr;
     StackSlot slot {};
@@ -365,7 +373,9 @@ void StackWidget::layoutChildren(){
             targetRect.h = mainSize;
         }
 
-        item.widget->setRect(targetRect);
+        if(rectChanged(childRect,targetRect)){
+            item.widget->setRect(targetRect);
+        }
 
         cursor += mainSize + item.marginMainAfter + layoutSpacing;
     }
