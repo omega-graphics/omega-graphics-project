@@ -396,6 +396,59 @@ app.deps = ["DoesNotExist"]
         self.assertIn("unresolved dependencies", proc.stdout)
         self.assertFalse((self.case_dir / "build.ninja").exists())
 
+    def test_clean_only_removes_generated_build_files_without_autom_build(self) -> None:
+        out_dir = self.case_dir / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        for filename in ["build.ninja", "toolchain.ninja", "AUTOMINSTALL", "Legacy.sln", "Legacy.vcxproj"]:
+            (out_dir / filename).write_text("stale\n", encoding="utf-8")
+
+        xcode_dir = out_dir / "LegacyProj.xcodeproj"
+        xcode_dir.mkdir(parents=True, exist_ok=True)
+        (xcode_dir / "project.pbxproj").write_text("stale\n", encoding="utf-8")
+
+        keep_file = out_dir / "keep.txt"
+        keep_file.write_text("keep\n", encoding="utf-8")
+
+        proc = self._run_autom(output_dir="out", extra_args=["--clean-only"])
+        self.assertIn("Cleaned", proc.stdout)
+
+        self.assertFalse((out_dir / "build.ninja").exists())
+        self.assertFalse((out_dir / "toolchain.ninja").exists())
+        self.assertFalse((out_dir / "AUTOMINSTALL").exists())
+        self.assertFalse((out_dir / "Legacy.sln").exists())
+        self.assertFalse((out_dir / "Legacy.vcxproj").exists())
+        self.assertFalse(xcode_dir.exists())
+        self.assertTrue(keep_file.exists())
+
+    def test_clean_before_generation_removes_stale_files(self) -> None:
+        self._write(
+            "AUTOM.build",
+            """project(name:"CleanProj",version:"1.0")
+var app = Executable(name:"CleanApp",sources:["./src/main.cpp"])
+""",
+        )
+        self._write("src/main.cpp", "int main(){ return 0; }\n")
+
+        for filename in ["build.ninja", "toolchain.ninja", "AUTOMINSTALL", "Old.sln", "Old.vcxproj"]:
+            (self.case_dir / filename).write_text("stale\n", encoding="utf-8")
+
+        stale_xcode_dir = self.case_dir / "CleanProj.xcodeproj"
+        stale_xcode_dir.mkdir(parents=True, exist_ok=True)
+        stale_marker = stale_xcode_dir / "stale.marker"
+        stale_marker.write_text("stale\n", encoding="utf-8")
+
+        proc = self._run_autom(output_dir=".", extra_args=["--clean", "--xcode", "--new-build"])
+        self.assertIn("Cleaned", proc.stdout)
+
+        self.assertFalse((self.case_dir / "build.ninja").exists())
+        self.assertFalse((self.case_dir / "toolchain.ninja").exists())
+        self.assertFalse((self.case_dir / "AUTOMINSTALL").exists())
+        self.assertFalse((self.case_dir / "Old.sln").exists())
+        self.assertFalse((self.case_dir / "Old.vcxproj").exists())
+        self.assertFalse(stale_marker.exists())
+        self.assertTrue((self.case_dir / "CleanProj.xcodeproj" / "project.pbxproj").exists())
+
     def test_target_with_no_sources_reports_error(self) -> None:
         self._write(
             "AUTOM.build",

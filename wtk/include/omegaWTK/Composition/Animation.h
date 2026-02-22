@@ -21,6 +21,9 @@ namespace OmegaWTK {
 }
 namespace OmegaWTK::Composition {
     struct CanvasFrame;
+    namespace detail {
+        class AnimationRuntimeRegistry;
+    }
 
     /// @brief Traverse any 2D scalar.
     class OMEGAWTK_EXPORT ScalarTraverse {
@@ -175,6 +178,12 @@ namespace OmegaWTK::Composition {
         AlternateReverse
     };
 
+    enum class ClockMode : std::uint8_t {
+        WallClock,
+        PresentedClock,
+        Hybrid
+    };
+
     struct TimingOptions {
         std::uint32_t durationMs = 300;
         std::uint32_t delayMs = 0;
@@ -183,6 +192,9 @@ namespace OmegaWTK::Composition {
         std::uint16_t frameRateHint = 60;
         FillMode fillMode = FillMode::Forwards;
         Direction direction = Direction::Normal;
+        ClockMode clockMode = ClockMode::Hybrid;
+        std::uint8_t maxCatchupSteps = 1;
+        bool preferResizeSafeBudget = true;
     };
 
     class OMEGAWTK_EXPORT AnimationHandle {
@@ -191,6 +203,13 @@ namespace OmegaWTK::Composition {
         explicit AnimationHandle(const SharedHandle<StateBlock> & stateBlock);
         friend class LayerAnimator;
         friend class ViewAnimator;
+        friend class detail::AnimationRuntimeRegistry;
+        void setStateInternal(AnimationState state);
+        void setProgressInternal(float normalized);
+        void setSubmittedPacketIdInternal(std::uint64_t packetId);
+        void setPresentedPacketIdInternal(std::uint64_t packetId);
+        void incrementDroppedPacketCountInternal();
+        void setFailureReasonInternal(const OmegaCommon::String & reason);
     public:
         AnimationHandle();
         static AnimationHandle Create(AnimationId id,AnimationState initialState = AnimationState::Pending);
@@ -198,6 +217,10 @@ namespace OmegaWTK::Composition {
         AnimationState state() const;
         float progress() const;
         float playbackRate() const;
+        std::uint64_t lastSubmittedPacketId() const;
+        std::uint64_t lastPresentedPacketId() const;
+        std::uint32_t droppedPacketCount() const;
+        Core::Optional<OmegaCommon::String> failureReason() const;
         bool valid() const;
         void pause();
         void resume();
@@ -365,9 +388,14 @@ namespace OmegaWTK::Composition {
         Layer & targetLayer;
         ViewAnimator &parentAnimator;
         friend class ViewAnimator;
+        friend class detail::AnimationRuntimeRegistry;
+        void queueLayerResizeDelta(int delta_x,int delta_y,int delta_w,int delta_h);
         explicit LayerAnimator(Layer & layer,ViewAnimator &parentAnimator);
     public:
         AnimationHandle animate(const LayerClip & clip,const TimingOptions & timing = {});
+        AnimationHandle animateOnLane(const LayerClip & clip,
+                                      const TimingOptions & timing,
+                                      std::uint64_t syncLaneId);
         void setFrameRate(unsigned _framePerSec);
         void animate(const SharedHandle<AnimationTimeline> & timeline,unsigned duration);
         void pause();
@@ -388,7 +416,7 @@ namespace OmegaWTK::Composition {
                         SharedHandle<CanvasFrame> & to,
                         unsigned duration,
                         const SharedHandle<AnimationCurve> & curve = AnimationCurve::Linear(0.f,1.f));
-        ~LayerAnimator() = default;
+        ~LayerAnimator();
     };
 
     class OMEGAWTK_EXPORT ViewAnimator : public CompositorClient {
@@ -399,6 +427,8 @@ namespace OmegaWTK::Composition {
         Native::NativeItemPtr nativeView;
         friend class ::OmegaWTK::View;
         friend class LayerAnimator;
+        friend class detail::AnimationRuntimeRegistry;
+        void queueViewResizeDelta(int delta_x,int delta_y,int delta_w,int delta_h);
         unsigned framePerSec;
 
         unsigned calculateTotalFrames(unsigned & duration);
@@ -406,13 +436,16 @@ namespace OmegaWTK::Composition {
     public:
         explicit ViewAnimator(CompositorClientProxy & _client);
         AnimationHandle animate(const ViewClip & clip,const TimingOptions & timing = {});
+        AnimationHandle animateOnLane(const ViewClip & clip,
+                                      const TimingOptions & timing,
+                                      std::uint64_t syncLaneId);
         void setFrameRate(unsigned _framePerSec);
         void pause();
         void resume();
         SharedHandle<LayerAnimator> layerAnimator(Layer &layer);
         void resizeTransition(unsigned delta_x,unsigned delta_y,unsigned delta_w,unsigned delta_h,unsigned duration,
                     const SharedHandle<AnimationCurve> & curve);
-        ~ViewAnimator() = default;
+        ~ViewAnimator();
     };
 };
 

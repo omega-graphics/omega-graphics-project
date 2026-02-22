@@ -84,14 +84,17 @@ public:
                 metalLayer.bounds = hostBounds;
                 metalLayer.frame = hostBounds;
                 metalLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
-                metalLayer.masksToBounds = YES;
+                metalLayer.masksToBounds = NO;
                 metalLayer.contentsScale = scale;
                 metalLayer.drawableSize = CGSizeMake(
                     MAX(hostBounds.size.width * scale,1.f),
                     MAX(hostBounds.size.height * scale,1.f));
-                metalLayer.opaque = YES;
+                metalLayer.opaque = NO;
                 metalLayer.framebufferOnly = NO;
                 metalLayer.presentsWithTransaction = NO;
+                CGColorRef clearColor = CGColorCreateGenericRGB(0.f,0.f,0.f,0.f);
+                metalLayer.backgroundColor = clearColor;
+                CGColorRelease(clearColor);
                 _ptr.layer = metalLayer;
                 _ptr.layerContentsRedrawPolicy = NSViewLayerContentsRedrawDuringViewResize;
                 NSLog(@"Root CAMetalLayer attached: frame={%.1f,%.1f,%.1f,%.1f} drawable={%.1f,%.1f} hostSublayers=%lu",
@@ -115,9 +118,9 @@ public:
             hostLayer.bounds = hostBounds;
             hostLayer.frame = hostBounds;
             hostLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
-            hostLayer.masksToBounds = YES;
-            hostLayer.opaque = YES;
-            CGColorRef hostColor = CGColorCreateGenericRGB(0.f,0.f,0.f,1.f);
+            hostLayer.masksToBounds = NO;
+            hostLayer.opaque = NO;
+            CGColorRef hostColor = CGColorCreateGenericRGB(0.f,0.f,0.f,0.f);
             hostLayer.backgroundColor = hostColor;
             CGColorRelease(hostColor);
             hostLayer.contentsScale = scale;
@@ -127,7 +130,7 @@ public:
             layer.bounds = hostBounds;
             layer.frame = hostBounds;
             layer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
-            layer.masksToBounds = YES;
+            layer.masksToBounds = NO;
             layer.contentsScale = scale;
             layer.hidden = NO;
 

@@ -31,12 +31,15 @@ struct OMEGAWTK_EXPORT Shape {
     Core::RoundedRect roundedRect {};
     OmegaGTE::GEllipsoid ellipse {};
     Core::Optional<OmegaGTE::GVectorPath2D> path {};
+    unsigned pathStrokeWidth = 1;
+    bool closePath = false;
 
     static Shape Scalar(int width,int height);
     static Shape Rect(const Core::Rect & rect);
     static Shape RoundedRect(const Core::RoundedRect & rect);
     static Shape Ellipse(const OmegaGTE::GEllipsoid & ellipse);
-    static Shape Path(const OmegaGTE::GVectorPath2D & path);
+    static Shape Ellipse(const Core::Ellipse & ellipse);
+    static Shape Path(const OmegaGTE::GVectorPath2D & path,unsigned strokeWidth = 1,bool closePath = false);
 };
 
 enum ElementAnimationKey : int {

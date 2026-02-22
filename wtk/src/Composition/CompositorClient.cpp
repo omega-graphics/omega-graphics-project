@@ -1,24 +1,65 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "Compositor.h"
 
+#include <atomic>
+
 namespace OmegaWTK::Composition {
     
     // CompositorClient::CompositorClient(){
 
     // };
 
-    CompositorClientProxy::CompositorClientProxy(SharedHandle<CompositionRenderTarget> renderTarget):renderTarget(renderTarget) {
+    namespace {
+        std::atomic<uint64_t> g_syncLaneSeed {1};
+    }
+
+    CompositorClientProxy::CompositorClientProxy(SharedHandle<CompositionRenderTarget> renderTarget):
+    renderTarget(renderTarget),
+    syncLaneId(g_syncLaneSeed.fetch_add(1)) {
 
     }
 
+    void CompositorClientProxy::setSyncLaneId(uint64_t syncLaneId){
+        std::lock_guard<std::mutex> lk(commandMutex);
+        this->syncLaneId = syncLaneId;
+    }
+
+    uint64_t CompositorClientProxy::getSyncLaneId() const {
+        std::lock_guard<std::mutex> lk(commandMutex);
+        return syncLaneId;
+    }
+
+    uint64_t CompositorClientProxy::peekNextPacketId() const {
+        std::lock_guard<std::mutex> lk(commandMutex);
+        return nextPacketId;
+    }
+
+    Compositor *CompositorClientProxy::getFrontendPtr() const {
+        std::lock_guard<std::mutex> lk(commandMutex);
+        return frontend;
+    }
+
+    bool CompositorClientProxy::isRecording() const {
+        std::lock_guard<std::mutex> lk(commandMutex);
+        return recording;
+    }
+
     void CompositorClientProxy::beginRecord() {
-        assert(!recording && "Client proxy must not be recording before starting a new recording session");
+        std::lock_guard<std::mutex> lk(commandMutex);
+        if(recording){
+            return;
+        }
         recording = true;
     }
 
     void CompositorClientProxy::endRecord() {
-        assert(recording && "Client Proxy must be recording commands before ending");
-        recording = false;
+        {
+            std::lock_guard<std::mutex> lk(commandMutex);
+            if(!recording){
+                return;
+            }
+            recording = false;
+        }
         submit();
     }
 
@@ -29,6 +70,7 @@ namespace OmegaWTK::Composition {
                                                                             Timestamp &deadline){
        OmegaCommon::Promise<CommandStatus> status;
        auto async = status.async();
+       std::lock_guard<std::mutex> lk(commandMutex);
         commandQueue.emplace(new
                         CompositionRenderCommand(id,client,CompositorCommand::Type::Render,
                                  CompositorCommand::Priority::High,
@@ -42,6 +84,7 @@ namespace OmegaWTK::Composition {
                                            Timestamp &start){
         OmegaCommon::Promise<CommandStatus> status;
         auto async = status.async();
+        std::lock_guard<std::mutex> lk(commandMutex);
         commandQueue.emplace(
             new
             CompositionRenderCommand{
@@ -54,14 +97,15 @@ namespace OmegaWTK::Composition {
     OmegaCommon::Async<CommandStatus> CompositorClientProxy::queueViewResizeCommand(unsigned & id,
                                                        CompositorClient & client,
                                                        Native::NativeItemPtr nativeView,
-                                                       unsigned int delta_x,
-                                                       unsigned int delta_y,
-                                                       unsigned int delta_w,
-                                                       unsigned int delta_h,
+                                                       int delta_x,
+                                                       int delta_y,
+                                                       int delta_w,
+                                                       int delta_h,
                                                        Timestamp &start,
                                                        Timestamp &deadline) {
         OmegaCommon::Promise<CommandStatus> status;
         auto async = status.async();
+        std::lock_guard<std::mutex> lk(commandMutex);
         commandQueue.emplace(new CompositorViewCommand{
             id,
             client,
@@ -76,14 +120,15 @@ namespace OmegaWTK::Composition {
     OmegaCommon::Async<CommandStatus> CompositorClientProxy::queueLayerResizeCommand(unsigned & id,
                                                                                      CompositorClient & client,
                                                                                      Layer *target,
-                                                                                     unsigned int delta_x,
-                                                                                     unsigned int delta_y,
-                                                                                     unsigned int delta_w,
-                                                                                     unsigned int delta_h,
+                                                                                     int delta_x,
+                                                                                     int delta_y,
+                                                                                     int delta_w,
+                                                                                     int delta_h,
                                                                                      Timestamp &start,
                                                                                      Timestamp &deadline) {
         OmegaCommon::Promise<CommandStatus> status;
         auto async = status.async();
+        std::lock_guard<std::mutex> lk(commandMutex);
 
         commandQueue.emplace(new CompositorLayerCommand {
             id,
@@ -100,6 +145,7 @@ namespace OmegaWTK::Composition {
                                                    Timestamp &deadline) {
         OmegaCommon::Promise<CommandStatus> status;
         auto async = status.async();
+        std::lock_guard<std::mutex> lk(commandMutex);
 
         commandQueue.emplace(new CompositorLayerCommand {
                 id,
@@ -117,6 +163,7 @@ namespace OmegaWTK::Composition {
         Timestamp ts = std::chrono::high_resolution_clock::now();
         OmegaCommon::Promise<CommandStatus> status;
         auto async = status.async();
+        std::lock_guard<std::mutex> lk(commandMutex);
         commandQueue.emplace(new CompositorCancelCommand {
             id,
             client,
@@ -127,23 +174,68 @@ namespace OmegaWTK::Composition {
     }
 
     void CompositorClientProxy::setFrontendPtr(Compositor *frontend){
+        std::lock_guard<std::mutex> lk(commandMutex);
         this->frontend = frontend;
     };
 
     void CompositorClientProxy::submit(){
-       if(frontend == nullptr){
+       Compositor *targetFrontend = nullptr;
+       uint64_t laneId = 0;
+       uint64_t packetId = 0;
+       OmegaCommon::Vector<SharedHandle<CompositorCommand>> packetCommands {};
+       {
+           std::lock_guard<std::mutex> lk(commandMutex);
+           targetFrontend = frontend;
+           if(targetFrontend == nullptr){
+               while(!commandQueue.empty()){
+                   auto comm = commandQueue.front();
+                   commandQueue.pop();
+                   comm->status.set(CommandStatus::Failed);
+               }
+               return;
+           }
+           laneId = syncLaneId;
            while(!commandQueue.empty()){
                auto comm = commandQueue.front();
                commandQueue.pop();
-               comm->status.set(CommandStatus::Failed);
+               if(comm != nullptr){
+                   packetCommands.push_back(comm);
+               }
            }
+           if(packetCommands.empty()){
+               return;
+           }
+           packetId = nextPacketId++;
+           for(auto & packetCommand : packetCommands){
+               if(packetCommand != nullptr){
+                   packetCommand->syncLaneId = laneId;
+                   packetCommand->syncPacketId = packetId;
+               }
+           }
+       }
+
+       if(packetCommands.size() == 1){
+           auto command = packetCommands.front();
+           targetFrontend->scheduleCommand(command);
            return;
        }
-       while(!commandQueue.empty()){
-           auto comm = commandQueue.front();
-           commandQueue.pop();
-           frontend->scheduleCommand(comm);
+
+       auto firstCommand = packetCommands.front();
+       if(firstCommand == nullptr){
+           return;
        }
+       OmegaCommon::Promise<CommandStatus> packetStatus;
+       auto packet = SharedHandle<CompositorCommand>(new CompositorPacketCommand{
+               firstCommand->id,
+               firstCommand->client,
+               firstCommand->priority,
+               firstCommand->thresholdParams,
+               std::move(packetStatus),
+               std::move(packetCommands)
+       });
+       packet->syncLaneId = laneId;
+       packet->syncPacketId = packetId;
+       targetFrontend->scheduleCommand(packet);
     };
 
     CompositorClient::CompositorClient(CompositorClientProxy &proxy):
@@ -152,8 +244,8 @@ namespace OmegaWTK::Composition {
 
     }
 
-    void CompositorClient::pushLayerResizeCommand(Layer *target, unsigned int delta_x, unsigned int delta_y,
-                                                  unsigned int delta_w, unsigned int delta_h, Timestamp &start,
+    void CompositorClient::pushLayerResizeCommand(Layer *target, int delta_x, int delta_y,
+                                                  int delta_w, int delta_h, Timestamp &start,
                                                   Timestamp &deadline) {
         busy();
         currentJobStatuses.push_back({
@@ -184,7 +276,7 @@ namespace OmegaWTK::Composition {
         ++currentCommandID;
     }
 
-    void CompositorClient::pushViewResizeCommand(Native::NativeItemPtr nativeView,unsigned delta_x,unsigned delta_y,unsigned delta_w,unsigned delta_h,Timestamp &start,Timestamp & deadline){
+    void CompositorClient::pushViewResizeCommand(Native::NativeItemPtr nativeView,int delta_x,int delta_y,int delta_w,int delta_h,Timestamp &start,Timestamp & deadline){
         busy();
         currentJobStatuses.push_back(
             {currentCommandID,

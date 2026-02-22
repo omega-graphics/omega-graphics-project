@@ -284,9 +284,11 @@ void Widget::setTreeHostRecurse(WidgetTreeHost *host){
     treeHost = host;
     if(host != nullptr){
         rootView->setFrontendRecurse(host->compPtr());
+        rootView->setSyncLaneRecurse(host->laneId());
     }
     else {
         rootView->setFrontendRecurse(nullptr);
+        rootView->setSyncLaneRecurse(0);
     }
     for(auto c : children){
         if(c != nullptr){

@@ -18,6 +18,7 @@ namespace OmegaWTK {
     }
     namespace Composition {
         struct Brush;
+        struct LayerEffect;
 
         struct OMEGAWTK_EXPORT  Border {
             Core::SharedPtr<Brush> brush;
@@ -254,6 +255,12 @@ namespace OmegaWTK {
            @param effect The CanvasEffect to apply.
           */
         void applyEffect(SharedHandle<CanvasEffect> & effect);
+
+        /**
+           @brief Apply a layer-level effect (e.g. DropShadow/Transformation) to this canvas' layer.
+           @param effect The LayerEffect to apply.
+          */
+        void applyLayerEffect(const SharedHandle<LayerEffect> & effect);
 
         /// @brief Sends current frame to CompositorClientProxy to be drawn.
         void sendFrame();

@@ -1,5 +1,6 @@
 #include "omegaWTK/Core/Core.h"
 #include <type_traits>
+#include <cstdint>
 
 #ifndef OMEGAWTK_UI_WIDGETTREEHOST_H
 #define OMEGAWTK_UI_WIDGETTREEHOST_H
@@ -28,6 +29,7 @@ namespace OmegaWTK {
          AppWindow will be used for managing composition of the WindowLayer.
          */
         Composition::Compositor * compositor;
+        uint64_t syncLaneId;
         /// The Root Widget
         WidgetPtr root;
 
@@ -42,6 +44,7 @@ namespace OmegaWTK {
         void initWidgetRecurse(Widget *parent);
         void initWidgetTree();
         Composition::Compositor *compPtr(){return compositor;};
+        uint64_t laneId() const { return syncLaneId; }
     public:
         OMEGACOMMON_CLASS("OmegaWTK.UI.WidgetTreeHost")
 

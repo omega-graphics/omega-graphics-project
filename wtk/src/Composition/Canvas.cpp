@@ -168,6 +168,16 @@ void Canvas::applyEffect(SharedHandle<CanvasEffect> &effect){
     current->currentEffects.push_back(copied);
 }
 
+void Canvas::applyLayerEffect(const SharedHandle<LayerEffect> &effect){
+    if(effect == nullptr){
+        return;
+    }
+    auto queuedEffect = effect;
+    Timestamp start = std::chrono::high_resolution_clock::now();
+    Timestamp deadline = start;
+    pushLayerEffectCommand(&layer,queuedEffect,start,deadline);
+}
+
 SharedHandle<CanvasFrame> Canvas::getCurrentFrame() {
     return current;
 }

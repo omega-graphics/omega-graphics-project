@@ -120,6 +120,15 @@ void View::setFrontendRecurse(Composition::Compositor *frontend){
         subView->setFrontendRecurse(frontend);
     };
 };
+
+void View::setSyncLaneRecurse(uint64_t syncLaneId){
+    proxy.setSyncLaneId(syncLaneId);
+    for(auto & subView : subviews){
+        if(subView != nullptr){
+            subView->setSyncLaneRecurse(syncLaneId);
+        }
+    }
+}
     
 // Composition::Compositor * View::getWidgetCompositor(){
 //     return widgetLayerTree->widgetCompositor;

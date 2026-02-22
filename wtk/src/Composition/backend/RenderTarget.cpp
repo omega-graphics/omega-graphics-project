@@ -6,6 +6,7 @@
 #include "omegaWTK/Media/ImgCodec.h"
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace OmegaWTK::Composition {
     #ifdef TARGET_MACOS
@@ -112,9 +113,7 @@ vertex OmegaWTKCopyRasterData copyVertex(uint v_id : VertexID){
 
 [in tex,in mainSampler]
 fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
-    float4 c = sample(mainSampler,tex,raster.texCoord);
-    c.w = 1.f;
-    return c;
+    return sample(mainSampler,tex,raster.texCoord);
 }
 
 )";
@@ -342,6 +341,13 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
 
     void BackendRenderTargetContext::commit(){
+        commit(0,0,std::chrono::steady_clock::now(),{});
+    }
+
+    void BackendRenderTargetContext::commit(std::uint64_t syncLaneId,
+                                            std::uint64_t syncPacketId,
+                                            std::chrono::steady_clock::time_point submitTimeCpu,
+                                            BackendSubmissionCompletionHandler completionHandler){
         auto _l_cb = preEffectTarget->commandBuffer();
         const bool canApplyEffects = !effectQueue.empty() &&
                                      imageProcessor != nullptr &&
@@ -369,8 +375,29 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         renderPassDesc.depthStencilAttachment.disabled = true;
 
         renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment{
-                {0.f,0.f,0.f,1.f},
+                {0.f,0.f,0.f,0.f},
                 OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction::Clear};
+
+        if(completionHandler){
+            cb->setCompletionHandler(
+                    [completionHandler = std::move(completionHandler),
+                            syncLaneId,
+                            syncPacketId,
+                            submitTimeCpu](const OmegaGTE::GECommandBufferCompletionInfo & info){
+                        BackendSubmissionTelemetry telemetry {};
+                        telemetry.syncLaneId = syncLaneId;
+                        telemetry.syncPacketId = syncPacketId;
+                        telemetry.submitTimeCpu = submitTimeCpu;
+                        telemetry.completeTimeCpu = std::chrono::steady_clock::now();
+                        telemetry.presentTimeCpu = telemetry.completeTimeCpu;
+                        telemetry.gpuStartTimeSec = info.gpuStartTimeSec;
+                        telemetry.gpuEndTimeSec = info.gpuEndTimeSec;
+                        telemetry.status = info.status == OmegaGTE::GECommandBufferCompletionInfo::Status::Completed
+                                           ? BackendSubmissionStatus::Completed
+                                           : BackendSubmissionStatus::Error;
+                        completionHandler(telemetry);
+                    });
+        }
         cb->startRenderPass(renderPassDesc);
         auto finalPipeline = finalCopyRenderPipelineState ? finalCopyRenderPipelineState : textureRenderPipelineState;
         if(finalPipeline == nullptr){
@@ -463,6 +490,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
         size_t struct_size;
         bool useTextureRenderPipeline = false;
+        float textureCoordDenomW = 1.f;
+        float textureCoordDenomH = 1.f;
 
         SharedHandle<OmegaGTE::GETexture> texturePaint;
 
@@ -475,6 +504,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 auto te_params = OmegaGTE::TETessellationParams::Rect(r);
 
                 useTextureRenderPipeline = !_params.brush->isColor;
+                textureCoordDenomW = std::max(1.f,_params.rect.w);
+                textureCoordDenomH = std::max(1.f,_params.rect.h);
 
                 if(!useTextureRenderPipeline){
                     auto color = OmegaGTE::makeColor(_params.brush->color.r,
@@ -498,6 +529,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 auto te_params = OmegaGTE::TETessellationParams::Rect(r);
 
                 useTextureRenderPipeline = true;
+                textureCoordDenomW = std::max(1.f,_params.rect.w);
+                textureCoordDenomH = std::max(1.f,_params.rect.h);
                 if(_params.texture){
                     texturePaint = _params.texture;
                     textureFence = _params.textureFence;
@@ -527,6 +560,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 auto te_params = OmegaGTE::TETessellationParams::RoundedRect(_params.rect);
 
                 useTextureRenderPipeline = !_params.brush->isColor;
+                textureCoordDenomW = std::max(1.f,_params.rect.w);
+                textureCoordDenomH = std::max(1.f,_params.rect.h);
 
                 if(!useTextureRenderPipeline){
                     auto color = OmegaGTE::makeColor(_params.brush->color.r,
@@ -690,6 +725,19 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         };
 
          auto writeTexVertexToBuffer = [&](OmegaGTE::GPoint3D & pt,OmegaGTE::FVec<2> coord){
+            auto normalizedCoord = OmegaGTE::FVec<2>::Create();
+            float u = coord[0][0];
+            float v = coord[1][0];
+            if((u < 0.f || u > 1.f || v < 0.f || v > 1.f) &&
+               textureCoordDenomW > 0.f &&
+               textureCoordDenomH > 0.f){
+                u /= textureCoordDenomW;
+                v /= textureCoordDenomH;
+            }
+            u = std::clamp(u,0.f,1.f);
+            v = std::clamp(v,0.f,1.f);
+            normalizedCoord[0][0] = u;
+            normalizedCoord[1][0] = v;
             auto pos = OmegaGTE::FVec<4>::Create();
             pos[0][0] = pt.x;
             pos[1][0] = pt.y;
@@ -697,7 +745,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             pos[3][0] = 1.f;
             bufferWriter->structBegin();
             bufferWriter->writeFloat4(pos);
-            bufferWriter->writeFloat2(coord);
+            bufferWriter->writeFloat2(normalizedCoord);
             bufferWriter->structEnd();
             bufferWriter->sendToBuffer();
         };

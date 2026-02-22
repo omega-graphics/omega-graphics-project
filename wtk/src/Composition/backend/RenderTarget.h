@@ -1,11 +1,35 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Canvas.h"
+#include <chrono>
+#include <cstdint>
+#include <functional>
 
 #ifndef OMEGAWTK_COMPOSITION_BACKEND_RENDERTARGETSTORE_H
 #define OMEGAWTK_COMPOSITION_BACKEND_RENDERTARGETSTORE_H
 
 
 namespace OmegaWTK::Composition {
+
+    enum class BackendSubmissionStatus : std::uint8_t {
+        Completed,
+        Error,
+        Timeout,
+        Dropped
+    };
+
+    struct BackendSubmissionTelemetry {
+        std::uint64_t syncLaneId = 0;
+        std::uint64_t syncPacketId = 0;
+        std::chrono::steady_clock::time_point submitTimeCpu {};
+        std::chrono::steady_clock::time_point completeTimeCpu {};
+        std::chrono::steady_clock::time_point presentTimeCpu {};
+        double gpuStartTimeSec = 0.0;
+        double gpuEndTimeSec = 0.0;
+        BackendSubmissionStatus status = BackendSubmissionStatus::Completed;
+    };
+
+    using BackendSubmissionCompletionHandler =
+            std::function<void(const BackendSubmissionTelemetry &)>;
 
     INTERFACE BackendCanvasEffectProcessor {
     public:
@@ -45,6 +69,10 @@ namespace OmegaWTK::Composition {
          Commit all queued render jobs to GPU.
         */
         void commit();
+        void commit(std::uint64_t syncLaneId,
+                    std::uint64_t syncPacketId,
+                    std::chrono::steady_clock::time_point submitTimeCpu,
+                    BackendSubmissionCompletionHandler completionHandler);
     
         /**
             Create a BackendRenderTarget Context

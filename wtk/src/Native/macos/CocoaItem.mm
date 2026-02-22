@@ -17,7 +17,10 @@
     if(self = [super initWithFrame:rect]){
         self.wantsLayer = YES;
         self.layer = [CALayer layer];
-        self.layer.masksToBounds = YES;
+        self.layer.masksToBounds = NO;
+        CGColorRef clearColor = CGColorCreateGenericRGB(0.f,0.f,0.f,0.f);
+        self.layer.backgroundColor = clearColor;
+        CGColorRelease(clearColor);
         self.layer.bounds = NSMakeRect(0.f,0.f,rect.size.width,rect.size.height);
         self.autoresizesSubviews = NO;
          self.layer.autoresizingMask = kCALayerHeightSizable | kCALayerWidthSizable;

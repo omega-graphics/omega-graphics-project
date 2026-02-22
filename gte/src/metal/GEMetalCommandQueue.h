@@ -32,6 +32,7 @@ _NAMESPACE_BEGIN_
         bool shaderHasWriteAccessForResource(unsigned & _id,omegasl_shader & shader);
         void _present_drawable(NSSmartPtr & drawable);
         void _commit();
+        GECommandBufferCompletionHandler completionHandler;
     public:
         NSSmartPtr buffer;
 
@@ -89,6 +90,7 @@ _NAMESPACE_BEGIN_
         #endif
         void dispatchThreads(unsigned int x, unsigned int y, unsigned int z) override;
         void finishComputePass() override;
+        void setCompletionHandler(GECommandBufferCompletionHandler handler) override;
 
         GEMetalCommandBuffer(GEMetalCommandQueue *parentQueue);
         ~GEMetalCommandBuffer();

@@ -1,5 +1,6 @@
 #include "GTEBase.h"
 #include "GEPipeline.h"
+#include <functional>
                                                    
 
 // #ifdef TARGET_DIRECTX
@@ -12,6 +13,9 @@
 
 _NAMESPACE_BEGIN_
     class GECommandBuffer;
+    struct GECommandBufferCompletionInfo;
+    using GECommandBufferCompletionHandler =
+            std::function<void(const GECommandBufferCompletionInfo &)>;
     class GEBuffer;
     class GETexture;
     struct GEViewport;
@@ -164,6 +168,9 @@ _NAMESPACE_BEGIN_
 
             /// @see GECommandBuffer
             void reset();
+
+            /// @brief Register completion callback for the underlying command buffer.
+            void setCompletionHandler(GECommandBufferCompletionHandler handler);
         };
         virtual SharedHandle<CommandBuffer> commandBuffer() = 0;
         virtual void notifyCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence)  = 0;

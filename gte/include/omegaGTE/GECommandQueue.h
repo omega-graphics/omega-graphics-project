@@ -3,6 +3,7 @@
 #include "GERenderTarget.h"
 #include "GETexture.h"
 #include <vector>
+#include <cstdint>
 
 #ifndef OMEGAGTE_GECOMMANDQUEUE_H
 #define OMEGAGTE_GECOMMANDQUEUE_H
@@ -10,6 +11,16 @@
 _NAMESPACE_BEGIN_
     class GEBuffer;
     class GEFence;
+
+    struct OMEGAGTE_EXPORT GECommandBufferCompletionInfo {
+        enum class Status : std::uint8_t {
+            Completed,
+            Error
+        } status = Status::Completed;
+        // Backend-specific GPU timeline values in seconds when available.
+        double gpuStartTimeSec = 0.0;
+        double gpuEndTimeSec = 0.0;
+    };
 
     struct GEScissorRect;
     struct GEViewport;
@@ -163,6 +174,12 @@ _NAMESPACE_BEGIN_
         /// @brief Reset and deallocate commands in this command buffer.
         /// @note This method MUST be called after it is committed before uploading more commands.
         virtual void reset() = 0;
+
+        /// @brief Register a completion callback for this command buffer.
+        /// @note Default implementation is a no-op; backends can override to provide GPU completion telemetry.
+        virtual void setCompletionHandler(GECommandBufferCompletionHandler handler){
+            (void)handler;
+        }
 
         virtual ~GECommandBuffer() = default;
     };

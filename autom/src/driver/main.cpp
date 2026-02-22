@@ -7,6 +7,52 @@
 #include <fstream>
 #include <chrono>
 
+namespace {
+
+struct CleanupSummary {
+    unsigned removedFiles = 0;
+    unsigned removedDirectories = 0;
+};
+
+CleanupSummary cleanupBuildFiles(const std::filesystem::path & outputDir) {
+    CleanupSummary summary {};
+
+    if(!std::filesystem::exists(outputDir) || !std::filesystem::is_directory(outputDir)){
+        return summary;
+    }
+
+    for(const auto & entry : std::filesystem::directory_iterator(outputDir)){
+        auto path = entry.path();
+        auto filename = path.filename().string();
+        auto extension = path.extension().string();
+        std::error_code ec;
+
+        if(entry.is_regular_file(ec)){
+            if(filename == "build.ninja" ||
+               filename == "toolchain.ninja" ||
+               filename == "AUTOMINSTALL" ||
+               extension == ".sln" ||
+               extension == ".vcxproj"){
+                if(std::filesystem::remove(path,ec) && !ec){
+                    summary.removedFiles += 1;
+                }
+            }
+        }
+        else if(entry.is_directory(ec)){
+            if(extension == ".xcodeproj"){
+                auto count = std::filesystem::remove_all(path,ec);
+                if(!ec && count > 0){
+                    summary.removedDirectories += 1;
+                }
+            }
+        }
+    }
+
+    return summary;
+}
+
+}
+
 
 inline void printHelp(){
     std::cout << 
@@ -34,6 +80,8 @@ Options:
 --arch                    --> Sets the target cpu architecture (Uses host as default)
                               Choices:[x86|x86_64|arm|aarch64]
 --define, -D              --> Defines a variable with an intial value.
+--clean                   --> Remove generated build files in output-dir before generation.
+--clean-only              --> Remove generated build files in output-dir, then exit.
 
     Modes:
 
@@ -92,6 +140,8 @@ int main(int argc,char * argv[]){
     autom::GenNinjaOpts ninjaOpts {false};
     autom::GenVisualStudioOpts slnOpts {};
     autom::GenXcodeOpts xcodeOpts {false};
+    bool cleanBuildFiles = false;
+    bool cleanOnly = false;
 
 
     for(unsigned i = 1;i < argc;i++){
@@ -160,16 +210,31 @@ int main(int argc,char * argv[]){
         else if(flag == "--new-build"){
             xcodeOpts.newBuildSystem = true;
         }
+        else if(flag == "--clean"){
+            cleanBuildFiles = true;
+        }
+        else if(flag == "--clean-only"){
+            cleanBuildFiles = true;
+            cleanOnly = true;
+        }
     };
 
-    autom::Gen *gen;
-
-    auto currentDir = std::filesystem::current_path().string();
+    auto outputDirPath = std::filesystem::path(outputDir.data());
+    if(cleanBuildFiles){
+        auto summary = cleanupBuildFiles(outputDirPath);
+        std::cout << "Cleaned " << summary.removedFiles << " build file(s) and "
+                  << summary.removedDirectories << " project directories." << std::endl;
+        if(cleanOnly){
+            return 0;
+        }
+    }
 
     autom::OutputTargetOpts outputTargetOpts {targetOS,targetArch,targetPlatform};
 
     if(!std::filesystem::exists(outputDir.data()))
         std::filesystem::create_directories(outputDir.data());
+
+    autom::Gen *gen;
 
     if(mode == GenMode::Ninja){
         gen = autom::TargetNinja(outputTargetOpts,ninjaOpts);

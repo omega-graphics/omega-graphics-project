@@ -3,6 +3,8 @@
 #include "Layer.h"
 
 #include <queue>
+#include <cstdint>
+#include <mutex>
 
 #ifndef OMEGAWTK_COMPOSITION_COMPOSITORCLIENT_H
 #define OMEGAWTK_COMPOSITION_COMPOSITORCLIENT_H
@@ -35,6 +37,8 @@ namespace OmegaWTK::Composition {
     struct CompositorCommand {
         unsigned id;
         CompositorClient & client;
+        uint64_t syncLaneId = 0;
+        uint64_t syncPacketId = 0;
         typedef enum : int {
             /// A frame draw commmand
             Render,
@@ -44,6 +48,8 @@ namespace OmegaWTK::Composition {
             Layer,
             /// Cancel execution of commands from client.
             Cancel,
+            /// Atomic group of commands from one sync lane.
+            Packet
         } Type;
         Type type;
         typedef enum {
@@ -82,7 +88,7 @@ namespace OmegaWTK::Composition {
            Resize,
            Effect
         } subtype;
-        unsigned delta_x = 0,delta_y = 0,delta_w = 0,delta_h = 0;
+        int delta_x = 0,delta_y = 0,delta_w = 0,delta_h = 0;
         SharedHandle<LayerEffect> effect;
         explicit CompositorLayerCommand(unsigned id,
                                         CompositorClient &client,
@@ -107,10 +113,10 @@ namespace OmegaWTK::Composition {
                                     OmegaCommon::Promise<CommandStatus> status,
                                     class Layer *layer,
                                     SharedHandle<CompositionRenderTarget> parentTarget,
-                                    unsigned delta_x,
-                                    unsigned delta_y,
-                                    unsigned delta_w,
-                                    unsigned delta_h): CompositorCommand(id,client,type,priority,thresholdParams,std::move(status)),
+                                    int delta_x,
+                                    int delta_y,
+                                    int delta_w,
+                                    int delta_h): CompositorCommand(id,client,type,priority,thresholdParams,std::move(status)),
                                     subtype(Resize),
                                     layer(layer),
                                     parentTarget(parentTarget),
@@ -147,7 +153,7 @@ namespace OmegaWTK::Composition {
        } CommandType;
        CommandType subType;
        Native::NativeItemPtr viewPtr;
-       unsigned delta_x = 0,delta_y = 0,delta_w = 0,delta_h = 0;
+       int delta_x = 0,delta_y = 0,delta_w = 0,delta_h = 0;
        CompositorViewCommand(unsigned id,
                         CompositorClient &client,
                         Type type,
@@ -156,10 +162,10 @@ namespace OmegaWTK::Composition {
                         OmegaCommon::Promise<CommandStatus> status,
                         CommandType subType,
                         Native::NativeItemPtr viewPtr,
-                        unsigned delta_x,
-                        unsigned delta_y,
-                        unsigned delta_w,
-                        unsigned delta_h):CompositorCommand(id,client,type,priority,thresholdParams,std::move(status)),
+                        int delta_x,
+                        int delta_y,
+                        int delta_w,
+                        int delta_h):CompositorCommand(id,client,type,priority,thresholdParams,std::move(status)),
                         subType(subType),
                         viewPtr(viewPtr),
                         delta_x(delta_x),
@@ -187,6 +193,21 @@ namespace OmegaWTK::Composition {
        ~CompositorCancelCommand() override = default;
    };
 
+    struct CompositorPacketCommand : public CompositorCommand {
+        OmegaCommon::Vector<SharedHandle<CompositorCommand>> commands;
+        explicit CompositorPacketCommand(unsigned id,
+                                         CompositorClient &client,
+                                         Priority priority,
+                                         decltype(CompositorCommand::thresholdParams) thresholdParams,
+                                         OmegaCommon::Promise<CommandStatus> status,
+                                         OmegaCommon::Vector<SharedHandle<CompositorCommand>> && commands):
+                                         CompositorCommand(id,client,CompositorCommand::Type::Packet,priority,thresholdParams,std::move(status)),
+                                         commands(std::move(commands)){
+
+        };
+        ~CompositorPacketCommand() override = default;
+    };
+
 
 
     /** @brief Compositor Client Proxy class for interaction with a Compositor
@@ -203,6 +224,9 @@ namespace OmegaWTK::Composition {
         SharedHandle<CompositionRenderTarget> renderTarget;
 
         std::queue<SharedHandle<CompositorCommand>> commandQueue;
+        uint64_t syncLaneId = 0;
+        uint64_t nextPacketId = 1;
+        mutable std::mutex commandMutex;
 
         OmegaCommon::Async<CommandStatus> queueTimedFrame(unsigned & id,CompositorClient &client,
                                                           SharedHandle<CanvasFrame> & frame,
@@ -215,10 +239,10 @@ namespace OmegaWTK::Composition {
 
         OmegaCommon::Async<CommandStatus> queueLayerResizeCommand(unsigned & id,CompositorClient &client,
                                                                   Layer *target,
-                                                                  unsigned delta_x,
-                                                                  unsigned delta_y,
-                                                                  unsigned delta_w,
-                                                                  unsigned delta_h,
+                                                                  int delta_x,
+                                                                  int delta_y,
+                                                                  int delta_w,
+                                                                  int delta_h,
                                                                   Timestamp &start,
                                                                   Timestamp & deadline);
 
@@ -230,10 +254,10 @@ namespace OmegaWTK::Composition {
 
         OmegaCommon::Async<CommandStatus> queueViewResizeCommand(unsigned & id,CompositorClient &client,
                                                                  Native::NativeItemPtr nativeView,
-                                                                 unsigned delta_x,
-                                                                 unsigned delta_y,
-                                                                 unsigned delta_w,
-                                                                 unsigned delta_h,
+                                                                 int delta_x,
+                                                                 int delta_y,
+                                                                 int delta_w,
+                                                                 int delta_h,
                                                                  Timestamp &start,
                                                                  Timestamp & deadline);
 
@@ -243,6 +267,11 @@ namespace OmegaWTK::Composition {
         void submit();
     public:
         explicit CompositorClientProxy(SharedHandle<CompositionRenderTarget> renderTarget);
+        void setSyncLaneId(uint64_t syncLaneId);
+        uint64_t getSyncLaneId() const;
+        uint64_t peekNextPacketId() const;
+        Compositor *getFrontendPtr() const;
+        bool isRecording() const;
         void setFrontendPtr(Compositor *frontend);
         void beginRecord();
         void endRecord();
@@ -265,9 +294,9 @@ namespace OmegaWTK::Composition {
     protected:
         void pushTimedFrame(SharedHandle<CanvasFrame> & frame,Timestamp & start,Timestamp & deadline);
         void pushFrame(SharedHandle<CanvasFrame> & frame,Timestamp & start);
-        void pushLayerResizeCommand(Layer *target,unsigned delta_x,unsigned delta_y,unsigned delta_w,unsigned delta_h,Timestamp &start,Timestamp & deadline);
+        void pushLayerResizeCommand(Layer *target,int delta_x,int delta_y,int delta_w,int delta_h,Timestamp &start,Timestamp & deadline);
         void pushLayerEffectCommand(Layer *target,SharedHandle<LayerEffect> & effect,Timestamp &start,Timestamp & deadline);
-        void pushViewResizeCommand(Native::NativeItemPtr nativeView,unsigned delta_x,unsigned delta_y,unsigned delta_w,unsigned delta_h,Timestamp &start,Timestamp & deadline);
+        void pushViewResizeCommand(Native::NativeItemPtr nativeView,int delta_x,int delta_y,int delta_w,int delta_h,Timestamp &start,Timestamp & deadline);
         void cancelCurrentJobs();
     public:
         bool busy();

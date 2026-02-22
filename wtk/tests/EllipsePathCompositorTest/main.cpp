@@ -1,15 +1,33 @@
 #include <OmegaWTK.h>
 #include <algorithm>
+#include <iostream>
+#include <memory>
 
 class RoundedFrameWidget final : public OmegaWTK::Widget {
+    OmegaWTK::UIViewPtr uiView {};
+    bool loggedLayout = false;
+
+    void ensureUIView(const OmegaWTK::Core::Rect & bounds){
+        if(uiView == nullptr){
+            uiView = makeUIView(bounds,rootView,"rounded_frame_view");
+        }
+        else {
+            uiView->resize(bounds);
+        }
+    }
 protected:
     void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
         (void)desc;
     }
 
+    void onMount() override {
+        ensureUIView(rect());
+    }
+
     void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
         (void)reason;
         auto & bounds = context.bounds();
+        ensureUIView(bounds);
 
         const float outerSize = std::min(bounds.w,bounds.h) * 0.70f;
         const float thickness = 8.0f;
@@ -29,20 +47,29 @@ protected:
             OmegaWTK::Core::Position{
                 outer.pos.x + thickness,
                 outer.pos.y + thickness},
-            innerSize,
-            innerSize,
-            innerRadius,
-            innerRadius};
+                innerSize,
+                innerSize,
+                innerRadius,
+                innerRadius};
 
-        auto frameBrush = OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(
-                OmegaWTK::Composition::Color::Red8));
-        auto cutoutBrush = OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(
-                OmegaWTK::Composition::Color::Black8));
+        OmegaWTK::UIViewLayout layout {};
+        layout.shape("rounded_outer",OmegaWTK::Shape::RoundedRect(outer));
+        layout.shape("rounded_inner",OmegaWTK::Shape::RoundedRect(inner));
+        uiView->setLayout(layout);
 
-        context.drawRoundedRect(outer,frameBrush);
-        context.drawRoundedRect(inner,cutoutBrush);
+        auto style = OmegaWTK::StyleSheet::Create();
+        style = style->backgroundColor("rounded_frame_view",OmegaWTK::Composition::Color::Transparent);
+        style = style->elementBrush("rounded_outer",OmegaWTK::Composition::ColorBrush(
+            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)));
+        style = style->elementBrush("rounded_inner",OmegaWTK::Composition::ColorBrush(
+            OmegaWTK::Composition::Color::Transparent));
+        uiView->setStyleSheet(style);
+        uiView->update();
+
+        if(!loggedLayout){
+            std::cout << "[EllipsePathCompositorTest] RoundedFrameWidget rendered via UIView." << std::endl;
+            loggedLayout = true;
+        }
     }
 
     bool isLayoutResizable() const override {
@@ -55,25 +82,51 @@ public:
 };
 
 class EllipseOnlyWidget final : public OmegaWTK::Widget {
+    OmegaWTK::UIViewPtr uiView {};
+    bool loggedLayout = false;
+
+    void ensureUIView(const OmegaWTK::Core::Rect & bounds){
+        if(uiView == nullptr){
+            uiView = makeUIView(bounds,rootView,"ellipse_view");
+        }
+        else {
+            uiView->resize(bounds);
+        }
+    }
 protected:
     void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
         (void)desc;
     }
 
+    void onMount() override {
+        ensureUIView(rect());
+    }
+
     void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
         (void)reason;
         auto & bounds = context.bounds();
+        ensureUIView(bounds);
         OmegaWTK::Core::Ellipse ellipse{
             bounds.w * 0.5f,
             bounds.h * 0.5f,
             bounds.w * 0.30f,
             bounds.h * 0.22f};
 
-        auto greenBrush = OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(
-                OmegaWTK::Composition::Color::Green8));
+        OmegaWTK::UIViewLayout layout {};
+        layout.shape("ellipse_shape",OmegaWTK::Shape::Ellipse(ellipse));
+        uiView->setLayout(layout);
 
-        context.rootCanvas().drawEllipse(ellipse,greenBrush);
+        auto style = OmegaWTK::StyleSheet::Create();
+        style = style->backgroundColor("ellipse_view",OmegaWTK::Composition::Color::Transparent);
+        style = style->elementBrush("ellipse_shape",OmegaWTK::Composition::ColorBrush(
+            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Green8)));
+        uiView->setStyleSheet(style);
+        uiView->update();
+
+        if(!loggedLayout){
+            std::cout << "[EllipsePathCompositorTest] EllipseOnlyWidget rendered via UIView." << std::endl;
+            loggedLayout = true;
+        }
     }
 
     bool isLayoutResizable() const override {
@@ -86,14 +139,30 @@ public:
 };
 
 class PathOnlyWidget final : public OmegaWTK::Widget {
+    OmegaWTK::UIViewPtr uiView {};
+    bool loggedLayout = false;
+
+    void ensureUIView(const OmegaWTK::Core::Rect & bounds){
+        if(uiView == nullptr){
+            uiView = makeUIView(bounds,rootView,"path_view");
+        }
+        else {
+            uiView->resize(bounds);
+        }
+    }
 protected:
     void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
         (void)desc;
     }
 
+    void onMount() override {
+        ensureUIView(rect());
+    }
+
     void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
         (void)reason;
         auto & bounds = context.bounds();
+        ensureUIView(bounds);
 
         const float x0 = bounds.w * 0.12f;
         const float x1 = bounds.w * 0.38f;
@@ -102,16 +171,26 @@ protected:
         const float yHigh = bounds.h * 0.36f;
         const float yLow = bounds.h * 0.64f;
 
-        OmegaWTK::Composition::Path path({x0,yLow},6);
-        path.addLine({x1,yHigh});
-        path.addLine({x2,yLow});
-        path.addLine({x3,yHigh});
+        OmegaGTE::GVectorPath2D vectorPath({x0,yLow});
+        vectorPath.append({x1,yHigh});
+        vectorPath.append({x2,yLow});
+        vectorPath.append({x3,yHigh});
 
-        auto yellowBrush = OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(
-                OmegaWTK::Composition::Color::Yellow8));
-        path.setPathBrush(yellowBrush);
-        context.rootCanvas().drawPath(path);
+        OmegaWTK::UIViewLayout layout {};
+        layout.shape("path_shape",OmegaWTK::Shape::Path(vectorPath,6));
+        uiView->setLayout(layout);
+
+        auto style = OmegaWTK::StyleSheet::Create();
+        style = style->backgroundColor("path_view",OmegaWTK::Composition::Color::Transparent);
+        style = style->elementBrush("path_shape",OmegaWTK::Composition::ColorBrush(
+            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Yellow8)));
+        uiView->setStyleSheet(style);
+        uiView->update();
+
+        if(!loggedLayout){
+            std::cout << "[EllipsePathCompositorTest] PathOnlyWidget rendered via UIView." << std::endl;
+            loggedLayout = true;
+        }
     }
 
     bool isLayoutResizable() const override {
@@ -131,7 +210,7 @@ protected:
 
     void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
         context.clear(OmegaWTK::Composition::Color::create8Bit(
-            OmegaWTK::Composition::Color::Black8));
+            OmegaWTK::Composition::Color::White8));
         OmegaWTK::HStack::onPaint(context,reason);
     }
 

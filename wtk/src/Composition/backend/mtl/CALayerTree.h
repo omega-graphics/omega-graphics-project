@@ -42,8 +42,12 @@ namespace OmegaWTK::Composition {
                     CATransformLayer *transformLayer,
                     bool attachTransformLayer):
                      Parent::Visual(pos,renderTarget),
-                     metalLayer(metalLayer),
-                     transformLayer(transformLayer),
+                     metalLayer(metalLayer != nil ?
+                                (CAMetalLayer *)CFRetain((__bridge CFTypeRef)metalLayer) :
+                                nil),
+                     transformLayer(transformLayer != nil ?
+                                    (CATransformLayer *)CFRetain((__bridge CFTypeRef)transformLayer) :
+                                    nil),
                      attachTransformLayer(attachTransformLayer){
 
              };
@@ -56,6 +60,7 @@ namespace OmegaWTK::Composition {
                  CALayer *targetLayer = attachTransformLayer && transformLayer != nil ?
                                         (CALayer *)transformLayer :
                                         (CALayer *)metalLayer;
+                 targetLayer.masksToBounds = NO;
                  targetLayer.shadowOpacity = params.opacity;
                  targetLayer.shadowRadius = params.radius;
                  targetLayer.shadowOffset = CGSizeMake(params.x_offset,params.y_offset);
@@ -68,7 +73,12 @@ namespace OmegaWTK::Composition {
                  if(!attachTransformLayer){
                      CALayer *superLayer = metalLayer.superlayer;
                      CGPoint pos = metalLayer.position;
-                     tLayer = transformLayer = [CATransformLayer layer];
+                     auto newTransformLayer = [CATransformLayer layer];
+                     if(transformLayer != nil){
+                         CFRelease((__bridge CFTypeRef)transformLayer);
+                     }
+                     transformLayer = (CATransformLayer *)CFRetain((__bridge CFTypeRef)newTransformLayer);
+                     tLayer = newTransformLayer;
                      tLayer.anchorPoint = CGPointMake(0,0);
                      tLayer.position = pos;
                      tLayer.frame = metalLayer.frame;
@@ -85,7 +95,16 @@ namespace OmegaWTK::Composition {
                  tLayer.transform = third;
              }
 
-             ~Visual() override = default;
+             ~Visual() override {
+                 if(transformLayer != nil){
+                     CFRelease((__bridge CFTypeRef)transformLayer);
+                     transformLayer = nil;
+                 }
+                 if(metalLayer != nil){
+                     CFRelease((__bridge CFTypeRef)metalLayer);
+                     metalLayer = nil;
+                 }
+             };
          };
      public:
          explicit MTLCALayerTree(SharedHandle<ViewRenderTarget> & renderTarget);

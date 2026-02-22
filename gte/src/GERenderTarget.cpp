@@ -102,6 +102,10 @@ void GERenderTarget::CommandBuffer::reset(){
     commandBuffer->reset();
 };
 
+void GERenderTarget::CommandBuffer::setCompletionHandler(GECommandBufferCompletionHandler handler){
+    commandBuffer->setCompletionHandler(std::move(handler));
+}
+
 
 
 

@@ -1,108 +1,189 @@
-# UIView Remaining Slices (After Slice A)
+# UIView Remaining Slices (Sync-Engine Aligned Re-evaluation)
 
-This document tracks the remaining implementation work for `UIView` after Slice A landed.
+This document tracks remaining `UIView` work after compositor sync-engine and animation runtime updates.
 
-## Status
+## Current State (What Is Already Landed)
 
-- Slice A: complete
-  - `UIView` state model (`layout`, `style`, `update`) is in place.
-  - `Widget::makeUIView(...)` is implemented.
-  - Rendering supports `Rect` and `RoundedRect`.
-- Remaining: Slice B and Slice C.
+1. Core `UIView` model is in place:
+- `layout`, `setLayout`, `setStyleSheet`, `update`.
+- `Widget::makeUIView(...)` integration is in use across tests.
 
-## Slice B: Layered Renderer and Resize Semantics
+2. Shape rendering support is broader than the original plan:
+- `Rect`
+- `RoundedRect`
+- `Ellipse` (`Core::Ellipse` and `GEllipsoid` input support)
+- `Path` (stroke + optional close)
+
+3. Per-element layer allocation exists:
+- one layer/canvas bundle per `UIElementTag`
+- inactive tags are disabled rather than hard-deleted
+
+4. Sync-engine and animation foundation exists in compositor:
+- lane packet telemetry and pacing
+- `TimingOptions` clock modes
+- clip animation runtime (`animate(...)`, `animateOnLane(...)`)
+
+5. Test migration is underway and active:
+- `BasicAppTest`, `TextCompositorTest`, `EllipsePathCompositorTest` are using `UIView` content paths.
+
+## Remaining Gaps
+
+1. `UIView` dirty tracking is not yet efficient:
+- `layoutDirty`/`styleDirty` are set but `update()` still repaints/submits broadly.
+
+2. Style transition fields are mostly declarative today:
+- `transition`, `duration`, `elementBrushAnimation`, `elementAnimation`, `elementPathAnimation` are not fully executed by a concrete `UIView` animation driver.
+
+3. `UIViewLayout::Element::Text` is declared but not rendered by `UIView::update()`.
+
+4. Layer ordering and first-frame effect consistency still need hard guarantees under resize/load.
+
+## Slice B: Render Determinism + Dirty Submission
 
 ### Goals
 
-- Make element layering deterministic and stable across updates.
-- Ensure resize behavior is correct and does not leave stale element geometry.
-- Reduce unnecessary frame submission by using dirty-region/dirty-element logic.
+1. Make `UIView` frame output deterministic on frame 1 and during active resize.
+2. Reduce redundant submissions by only touching dirty root/element targets.
+3. Preserve stable z-order for element tags across add/remove/reorder.
 
 ### Scope
 
-1. Stable per-element layer ownership
-- Keep one `Layer + Canvas` per element tag.
-- Preserve z-order based on layout order.
-- Disable or reclaim layers when elements are removed.
+1. Dirty pipeline
+- Introduce per-element dirty state keyed by tag (`layoutDirty`, `styleDirty`, `contentDirty`).
+- Repaint only dirty targets plus root when needed.
+- Skip `sendFrame()` for unchanged element canvases.
 
-2. Resize-aware rendering
-- On `UIView`/host resize, mark all elements dirty.
-- Recompute shape geometry against the updated bounds.
-- Repaint only dirty elements and root background/border.
+2. Deterministic ordering
+- Re-assert layout-order z-index every update pass (not only on creation).
+- Keep disabled-layer behavior for removed tags, plus optional reclaim policy.
 
-3. Dirty tracking improvements
-- Track separate dirty flags for:
-  - layout structure changes
-  - style changes
-  - per-element content/style changes
-- Avoid submitting frames for unchanged elements.
-
-4. Rendering capability hardening
-- Keep `Rect`/`RoundedRect` as first-class supported primitives.
-- Define explicit behavior for unsupported element types (`Text`, `Path`, `Ellipse`) in this slice:
-  - no crash
-  - clear no-op/logging path
+3. First-frame readiness
+- Ensure root + active element layers are materialized and effect-ready before first visible commit.
+- Avoid "first-frame missing effects" by forcing one coherent initial packet per view.
 
 ### Acceptance Criteria
 
-- Resizing repeatedly does not leave ghost visuals.
-- Add/remove/reorder element tags updates layers consistently.
-- No duplicate layers are created for the same tag.
-- No crashes when unsupported element types appear in layout.
+1. First visible frame contains expected element set and effects.
+2. Repeated resize does not cause element pop-in or delayed layer activation.
+3. No extra packet churn for unchanged elements in steady state.
 
-## Slice C: Animation + API Polish
+## Slice C: UIView Animation Driver (On Sync Runtime)
 
 ### Goals
 
-- Add first production-level animation support for `UIView`.
-- Improve authoring ergonomics of style/layout APIs.
-- Finalize developer documentation for future widget work.
+1. Execute `UIView` style/layout transitions through the new lane-aware animation runtime.
+2. Keep animation writes packet-coherent with WidgetTree sync-lane pacing.
 
 ### Scope
 
-1. Transition and animation support
-- Implement `elementBrushAnimation(...)` for color channel keys:
+1. Transition interpretation
+- Map style entries with `transition=true`/`duration` into animation clips.
+- Support brush channel interpolation:
   - `ColorRed`, `ColorGreen`, `ColorBlue`, `ColorAlpha`
-- Implement size transitions for `Width`/`Height` where shape type supports it.
-- Keep path-node animation deferred unless path render backend is completed.
+- Support geometry keys:
+  - `Width`, `Height`
+  - path node keys (`PathNodeX`, `PathNodeY`) where path tags exist
 
-2. Style selector behavior
-- Formalize selector precedence:
-  - exact tag > wildcard
-  - last matching rule wins
-- Document matching semantics for view tag + element tag combinations.
+2. Lane binding
+- Bind each `UIView` animation to host sync lane.
+- Use `animateOnLane(...)` for deterministic pacing when explicit lane is required.
 
-3. API cleanup
-- Evaluate `StyleSheet` mutability model and finalize one behavior:
-  - immutable builder (`copy`/chain) or mutable builder (in-place).
-- Add convenience helpers for common style operations:
-  - fill-only shape
-  - bordered shape
-  - state variants (hover/pressed-ready hooks for future input integration)
-
-4. Documentation and examples
-- Add an example widget demonstrating:
-  - multi-element `UIView` layout
-  - style application
-  - manual `update()` flow
-- Add a short troubleshooting section for unsupported shape/animation keys.
+3. Runtime state
+- Add per-element animation state cache so concurrent updates merge cleanly.
+- Cancel/replace previous animations on same target/property (last-writer semantics).
 
 ### Acceptance Criteria
 
-- Brush color animations interpolate correctly and complete at target values.
-- Width/height transitions update geometry without layer churn.
-- Style precedence is deterministic and documented.
-- Example compiles and visually updates as expected.
+1. Style transitions are visibly smooth and packet-coherent under resize load.
+2. No stale intermediate frames replay when lane drops packets.
+3. Animated properties land exactly on target values at completion.
 
-## Non-Goals (for B/C)
+## Slice D: UIView Text Element Support
 
-- Full text rendering pipeline in `UIView`.
-- Full path tessellation integration in `UIView`.
-- New compositor primitive types beyond what current backend already renders.
+### Goals
+
+1. Make `UIViewLayout::text(...)` functional in `UIView::update()`.
+2. Support mixed text+shape content per view with deterministic layering.
+
+### Scope
+
+1. Text rendering path
+- Render `Element::Text` through canvas `drawText(...)`.
+- Add minimal text style descriptors (font/color/alignment/wrap) for `UIView`.
+
+2. Ordering
+- Respect layout order between text and shapes using same per-tag layer model.
+
+### Acceptance Criteria
+
+1. `UIView` can render both text and shapes in one layout.
+2. Text remains stable and synchronized during resize/animation.
+
+## Slice E: Effects and Quality Controls in UIView Styles
+
+### Goals
+
+1. Expose compositor effects (drop shadow/blur) as first-class `UIView` style hooks.
+2. Keep effects stable across first frame and active resize pressure.
+
+### Scope
+
+1. Style API extensions
+- Add per-view/per-element effect entries:
+  - drop shadow
+  - gaussian blur / directional blur
+- Route to existing compositor layer/frame effect application paths.
+
+2. Sync-engine compatibility
+- Respect lane budget behavior during resize.
+- If adaptive quality policies are enabled at compositor level, ensure `UIView` effects degrade/restore coherently.
+
+### Acceptance Criteria
+
+1. Effects apply consistently on first frame and during resize.
+2. No black/opaque fallback artifacts from effect-enabled layers.
+
+## Slice F: API/Docs Stabilization + Regression Suite
+
+### Goals
+
+1. Freeze `UIView` authoring semantics before `SVGView`/`VideoView` adoption.
+2. Add targeted regression coverage for the bugs seen during compositor iteration.
+
+### Scope
+
+1. API semantics
+- Document selector matching behavior and precedence.
+- Keep builder model explicit (`copy()` chain semantics) and document expected usage.
+- Add helper shortcuts for common shape/style patterns.
+
+2. Regression tests
+- Add/extend tests for:
+  - first-frame effect presence
+  - resize jitter/position drift
+  - mixed shape+text `UIView`
+  - animated `UIView` style transitions
+
+3. Docs/examples
+- Add a compact "UIView cookbook" with:
+  - static layout
+  - animated style updates
+  - effect-enabled elements
+
+### Acceptance Criteria
+
+1. API behavior is documented and deterministic.
+2. Known regressions are covered by repeatable tests.
+
+## Non-Goals (Current Remaining Slices)
+
+1. CSS-complete selector grammar.
+2. Rich text shaping/layout engine beyond existing compositor text primitives.
+3. Backend-specific `UIView` forks; keep backend-neutral through compositor contracts.
 
 ## Suggested Rollout
 
-1. Implement Slice B first and stabilize resize/update behavior.
-2. Add Slice C color/size animation support.
-3. Ship docs + example together with Slice C to keep usage aligned with final API behavior.
-
+1. Slice B first (determinism + dirty submission + first-frame guarantees).
+2. Slice C next (animation driver on sync runtime).
+3. Slice D and E in parallel where feasible (text + effects).
+4. Slice F last (final API/docs + regression suite hardening).

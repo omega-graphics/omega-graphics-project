@@ -1,7 +1,27 @@
 #include <OmegaWTK.h>
+#include <iostream>
+#include <memory>
 
 class TextCompositorWidget final : public OmegaWTK::Widget {
     OmegaWTK::Core::SharedPtr<OmegaWTK::Composition::Font> font;
+    OmegaWTK::UIViewPtr accentView {};
+    bool loggedUIViewValidation = false;
+
+    void ensureAccentView(const OmegaWTK::Core::Rect & bounds){
+        constexpr float kLayerSize = 120.0f;
+        OmegaWTK::Core::Rect targetRect{
+            OmegaWTK::Core::Position{
+                (bounds.w - kLayerSize) * 0.5f,
+                (bounds.h - kLayerSize) * 0.5f},
+            kLayerSize,
+            kLayerSize};
+        if(accentView == nullptr){
+            accentView = makeUIView(targetRect,rootView,"text_accent_view");
+        }
+        else {
+            accentView->resize(targetRect);
+        }
+    }
 
     void ensureFontLoaded(){
         if(font != nullptr){
@@ -23,26 +43,46 @@ protected:
         (void)desc;
     }
 
+    void onMount() override {
+        ensureAccentView(rect());
+    }
+
     void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
         (void)reason;
         ensureFontLoaded();
 
         context.clear(OmegaWTK::Composition::Color::create8Bit(
-            OmegaWTK::Composition::Color::Black8));
+            OmegaWTK::Composition::Color::White8));
 
         auto & bounds = context.bounds();
+        ensureAccentView(bounds);
 
-        constexpr float kRectSize = 48.0f;
-        OmegaWTK::Core::Rect redRect{
-            OmegaWTK::Core::Position{
-                (bounds.w - kRectSize) * 0.5f,
-                (bounds.h - kRectSize) * 0.5f},
-            kRectSize,
-            kRectSize};
-        auto redBrush = OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(
-                OmegaWTK::Composition::Color::Red8));
-        context.drawRect(redRect,redBrush);
+        if(accentView != nullptr){
+            constexpr float kRectSize = 56.0f;
+            constexpr float kLayerSize = 120.0f;
+            OmegaWTK::Core::Rect redRect{
+                OmegaWTK::Core::Position{
+                    (kLayerSize - kRectSize) * 0.5f,
+                    (kLayerSize - kRectSize) * 0.5f},
+                kRectSize,
+                kRectSize};
+
+            OmegaWTK::UIViewLayout layout {};
+            layout.shape("accent_rect",OmegaWTK::Shape::Rect(redRect));
+            accentView->setLayout(layout);
+
+            auto style = OmegaWTK::StyleSheet::Create();
+            style = style->backgroundColor("text_accent_view",OmegaWTK::Composition::Color::Transparent);
+            style = style->elementBrush("accent_rect",OmegaWTK::Composition::ColorBrush(
+                OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)));
+            accentView->setStyleSheet(style);
+            accentView->update();
+
+            if(!loggedUIViewValidation){
+                std::cout << "[TextCompositorTest] Accent layer rendered through UIView." << std::endl;
+                loggedUIViewValidation = true;
+            }
+        }
 
         if(font == nullptr){
             return;
@@ -57,7 +97,7 @@ protected:
             font,
             titleRect,
             OmegaWTK::Composition::Color::create8Bit(
-                OmegaWTK::Composition::Color::White8));
+                OmegaWTK::Composition::Color::Black8));
 
         OmegaWTK::Core::Rect bodyRect{
             OmegaWTK::Core::Position{
@@ -74,7 +114,7 @@ protected:
             font,
             bodyRect,
             OmegaWTK::Composition::Color::create8Bit(
-                OmegaWTK::Composition::Color::Yellow8),
+                OmegaWTK::Composition::Color::Black8),
             centeredWrap);
     }
 

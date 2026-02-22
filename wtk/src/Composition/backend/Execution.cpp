@@ -4,6 +4,61 @@
 
 namespace OmegaWTK::Composition {
 
+namespace {
+    static BackendRenderTargetContext * ensureLayerSurfaceTarget(BackendCompRenderTarget & target,Layer * layer){
+        if(layer == nullptr || target.visualTree == nullptr){
+            return nullptr;
+        }
+
+        auto existing = target.surfaceTargets.find(layer);
+        if(existing != target.surfaceTargets.end() && existing->second != nullptr){
+            return existing->second;
+        }
+
+        if(layer->isChildLayer()){
+            if(!target.visualTree->hasRootVisual()){
+                auto treeRoot = layer->getParentLimb()->getRootLayer();
+                auto rootRect = treeRoot->getLayerRect();
+                auto rootVisual = target.visualTree->makeVisual(rootRect,rootRect.pos);
+                target.visualTree->setRootVisual(rootVisual);
+                auto insertedRoot = target.surfaceTargets.insert(std::make_pair(treeRoot.get(),&rootVisual->renderTarget));
+                if(!insertedRoot.second){
+                    insertedRoot.first->second = &rootVisual->renderTarget;
+                }
+            }
+            auto layerRect = layer->getLayerRect();
+            auto visual = target.visualTree->makeVisual(layerRect,layerRect.pos);
+            target.visualTree->addVisual(visual);
+            auto inserted = target.surfaceTargets.insert(std::make_pair(layer,&visual->renderTarget));
+            if(!inserted.second){
+                inserted.first->second = &visual->renderTarget;
+            }
+            return inserted.first->second;
+        }
+
+        if(target.visualTree->root != nullptr){
+            auto *rootTarget = &(target.visualTree->root->renderTarget);
+            auto inserted = target.surfaceTargets.insert(std::make_pair(layer,rootTarget));
+            if(!inserted.second){
+                inserted.first->second = rootTarget;
+            }
+            auto layerRect = layer->getLayerRect();
+            rootTarget->setRenderTargetSize(layerRect);
+            target.visualTree->root->resize(layerRect);
+            return inserted.first->second;
+        }
+
+        auto layerRect = layer->getLayerRect();
+        auto visual = target.visualTree->makeVisual(layerRect,layerRect.pos);
+        target.visualTree->setRootVisual(visual);
+        auto inserted = target.surfaceTargets.insert(std::make_pair(layer,&visual->renderTarget));
+        if(!inserted.second){
+            inserted.first->second = &visual->renderTarget;
+        }
+        return inserted.first->second;
+    }
+}
+
 
 void Compositor::executeCurrentCommand(){
 
@@ -33,38 +88,66 @@ void Compositor::executeCurrentCommand(){
         /// 2. Locate / Create Layer Render Target in Visual Tree.
         BackendRenderTargetContext *targetContext;
 
-        auto layer_found = target->surfaceTargets.find(comm->frame->targetLayer);
+        auto layer = comm->frame->targetLayer;
+        auto layer_found = target->surfaceTargets.find(layer);
         if(layer_found == target->surfaceTargets.end()){
-            auto layer = comm->frame->targetLayer;
-            auto v = target->visualTree->makeVisual(layer->getLayerRect(),layer->getLayerRect().pos);
             if(layer->isChildLayer()){
                 if(!target->visualTree->hasRootVisual()){
                     auto treeRoot = layer->getParentLimb()->getRootLayer();
                     auto root_v = target->visualTree->makeVisual(treeRoot->getLayerRect(),treeRoot->getLayerRect().pos);
                     target->visualTree->setRootVisual(root_v);
+                    auto rootLayer = treeRoot.get();
+                    auto root_surface = target->surfaceTargets.find(rootLayer);
+                    if(root_surface == target->surfaceTargets.end()){
+                        target->surfaceTargets.insert(std::make_pair(rootLayer,&root_v->renderTarget));
+                    }
+                    else {
+                        root_surface->second = &root_v->renderTarget;
+                    }
                 }
-
+                auto v = target->visualTree->makeVisual(layer->getLayerRect(),layer->getLayerRect().pos);
                 target->visualTree->addVisual(v);
-
+                auto inserted = target->surfaceTargets.insert(std::make_pair(layer,&v->renderTarget));
+                if(!inserted.second){
+                    inserted.first->second = &v->renderTarget;
+                }
+                targetContext = inserted.first->second;
             }
             else {
-                target->visualTree->setRootVisual(v);
+                if(target->visualTree->root != nullptr){
+                    targetContext = &(target->visualTree->root->renderTarget);
+                    auto inserted = target->surfaceTargets.insert(std::make_pair(layer,targetContext));
+                    if(!inserted.second){
+                        inserted.first->second = targetContext;
+                    }
+                    auto layerRect = layer->getLayerRect();
+                    targetContext->setRenderTargetSize(layerRect);
+                    target->visualTree->root->resize(layerRect);
+                }
+                else {
+                    auto v = target->visualTree->makeVisual(layer->getLayerRect(),layer->getLayerRect().pos);
+                    target->visualTree->setRootVisual(v);
+                    auto inserted = target->surfaceTargets.insert(std::make_pair(layer,&v->renderTarget));
+                    if(!inserted.second){
+                        inserted.first->second = &v->renderTarget;
+                    }
+                    targetContext = inserted.first->second;
+                }
             }
-            targetContext = target->surfaceTargets.insert(std::make_pair(layer,&v->renderTarget)).first->second;
         }
         else {
             targetContext = layer_found->second;
             auto layerRect = comm->frame->targetLayer->getLayerRect();
             targetContext->setRenderTargetSize(layerRect);
 
-            auto surface = target->surfaceTargets[comm->frame->targetLayer];
+            auto surface = layer_found->second;
             if(target->visualTree->root != nullptr &&
                surface == &(target->visualTree->root->renderTarget)){
                 target->visualTree->root->resize(layerRect);
             }
             else {
                 for(auto & visual : target->visualTree->body){
-                    if(surface == &(visual->renderTarget)){
+                    if(visual != nullptr && surface == &(visual->renderTarget)){
                         visual->resize(layerRect);
                         break;
                     }
@@ -91,6 +174,9 @@ void Compositor::executeCurrentCommand(){
         // Skipping them prevents wiping the last presented frame.
         if(isNoOpFrame){
             OMEGAWTK_DEBUG("Skipping no-op transparent frame.")
+            markPacketDropped(currentCommand->syncLaneId,
+                              currentCommand->syncPacketId,
+                              PacketDropReason::NoOpTransparent);
             currentCommand->status.set(CommandStatus::Ok);
             return;
         }
@@ -105,11 +191,24 @@ void Compositor::executeCurrentCommand(){
             targetContext->applyEffectToTarget(effect);
         }
 
-        targetContext->commit();
+        const auto submitTimeCpu = std::chrono::steady_clock::now();
+        markPacketSubmitted(currentCommand->syncLaneId,currentCommand->syncPacketId,submitTimeCpu);
+        auto weakTelemetryState = telemetryState();
+        targetContext->commit(currentCommand->syncLaneId,
+                              currentCommand->syncPacketId,
+                              submitTimeCpu,
+                              [weakTelemetryState](const BackendSubmissionTelemetry & telemetry){
+                                  Compositor::onBackendSubmissionCompleted(weakTelemetryState,telemetry);
+                              });
         OMEGAWTK_DEBUG("Committed Data!")
     }
     else if(currentCommand->type == CompositorCommand::Layer){
         auto params = (CompositorLayerCommand *)currentCommand.get();
+        if(params->layer == nullptr){
+            markPacketFailed(currentCommand->syncLaneId,currentCommand->syncPacketId);
+            currentCommand->status.set(CommandStatus::Failed);
+            return;
+        }
         /// Resize Command
         if(params->subtype == CompositorLayerCommand::Resize){
             auto layerRect = params->layer->getLayerRect();
@@ -120,31 +219,80 @@ void Compositor::executeCurrentCommand(){
             params->layer->resize(layerRect);
         }
         else {
-
+            BackendCompRenderTarget *viewTarget = nullptr;
             auto viewRenderTarget = renderTargetStore.store.find(params->parentTarget);
-
-            auto s = viewRenderTarget->second.surfaceTargets[params->layer];
-            if(s == &(viewRenderTarget->second.visualTree->root->renderTarget)){
-                if(params->effect->type == LayerEffect::DropShadow){
-                    viewRenderTarget->second.visualTree->root->updateShadowEffect(params->effect->dropShadow);
+            if(viewRenderTarget == renderTargetStore.store.end()){
+                auto parentRenderTarget = std::dynamic_pointer_cast<ViewRenderTarget>(params->parentTarget);
+                if(parentRenderTarget == nullptr){
+                    markPacketFailed(currentCommand->syncLaneId,currentCommand->syncPacketId);
+                    currentCommand->status.set(CommandStatus::Failed);
+                    return;
                 }
-                else {
-                    viewRenderTarget->second.visualTree->root->updateTransformEffect(params->effect->transform);
-                }
-
+                auto visualTree = BackendVisualTree::Create(parentRenderTarget);
+                BackendCompRenderTarget compRenderTarget {visualTree};
+                viewTarget = &renderTargetStore.store.insert(std::make_pair(params->parentTarget,compRenderTarget)).first->second;
             }
             else {
-                for(auto & v : viewRenderTarget->second.visualTree->body){
-                    if(s == &(v->renderTarget)){
+                viewTarget = &viewRenderTarget->second;
+            }
+            if(viewTarget == nullptr || viewTarget->visualTree == nullptr){
+                markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
+                currentCommand->status.set(CommandStatus::Delayed);
+                return;
+            }
+            if(params->effect == nullptr){
+                markPacketFailed(currentCommand->syncLaneId,currentCommand->syncPacketId);
+                currentCommand->status.set(CommandStatus::Failed);
+                return;
+            }
+
+            auto surfaceIt = viewTarget->surfaceTargets.find(params->layer);
+            if(surfaceIt == viewTarget->surfaceTargets.end() || surfaceIt->second == nullptr){
+                auto * ensuredSurface = ensureLayerSurfaceTarget(*viewTarget,params->layer);
+                if(ensuredSurface == nullptr){
+                    markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
+                    currentCommand->status.set(CommandStatus::Delayed);
+                    return;
+                }
+                surfaceIt = viewTarget->surfaceTargets.find(params->layer);
+                if(surfaceIt == viewTarget->surfaceTargets.end() || surfaceIt->second == nullptr){
+                    markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
+                    currentCommand->status.set(CommandStatus::Delayed);
+                    return;
+                }
+            }
+
+            auto *s = surfaceIt->second;
+            auto & visualTree = viewTarget->visualTree;
+            bool applied = false;
+            if(visualTree->root != nullptr &&
+               s == &(visualTree->root->renderTarget)){
+                if(params->effect->type == LayerEffect::DropShadow){
+                    visualTree->root->updateShadowEffect(params->effect->dropShadow);
+                }
+                else {
+                    visualTree->root->updateTransformEffect(params->effect->transform);
+                }
+                applied = true;
+            }
+            else {
+                for(auto & v : visualTree->body){
+                    if(v != nullptr && s == &(v->renderTarget)){
                         if(params->effect->type == LayerEffect::DropShadow){
                             v->updateShadowEffect(params->effect->dropShadow);
                         }
                         else {
                             v->updateTransformEffect(params->effect->transform);
                         }
+                        applied = true;
                         break;
                     }
                 }
+            }
+            if(!applied){
+                markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
+                currentCommand->status.set(CommandStatus::Delayed);
+                return;
             }
         }
     }

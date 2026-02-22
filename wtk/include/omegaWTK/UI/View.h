@@ -10,6 +10,7 @@
 
 #include "omegaWTK/Core/XML.h"
 #include "omegaWTK/Media/Video.h"
+#include <cstdint>
 
 #ifndef OMEGAWTK_UI_VIEW_H
 #define OMEGAWTK_UI_VIEW_H
@@ -48,6 +49,7 @@ namespace OmegaWTK {
     private:
         Composition::CompositorClientProxy proxy;
         void setFrontendRecurse(Composition::Compositor *frontend);
+        void setSyncLaneRecurse(uint64_t syncLaneId);
         Composition::LayerTree *widgetLayerTree;
         ViewPtr parent_ptr;
         Core::Rect rect;
@@ -59,6 +61,7 @@ namespace OmegaWTK {
         SharedHandle<Composition::LayerTree::Limb> layerTreeLimb;
         friend class Composition::ViewAnimator;
         friend class ScrollView;
+        friend class Widget;
     protected:
 //        /**
 //            Constructs a View using a Rect param; (With NO Layers!!)

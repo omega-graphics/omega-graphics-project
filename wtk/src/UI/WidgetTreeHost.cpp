@@ -3,16 +3,28 @@
 
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/UI/AppWindow.h"
+#include <atomic>
 
 namespace OmegaWTK {
+    namespace {
+        std::atomic<uint64_t> g_widgetTreeSyncLaneSeed {1};
+
+        Composition::Compositor *globalCompositor(){
+            static Composition::Compositor compositor;
+            return &compositor;
+        }
+    }
+
     WidgetTreeHost::WidgetTreeHost():
-    compositor(new Composition::Compositor()),attachedToWindow(false)
+    compositor(globalCompositor()),
+    syncLaneId(g_widgetTreeSyncLaneSeed.fetch_add(1)),
+    attachedToWindow(false)
     {
 
     };
 
     WidgetTreeHost::~WidgetTreeHost(){
-        delete compositor;
+        compositor = nullptr;
     };
 
     SharedHandle<WidgetTreeHost> WidgetTreeHost::Create(){
@@ -41,8 +53,7 @@ namespace OmegaWTK {
         if(!attachedToWindow) {
             attachedToWindow = true;
             window->_add_widget(root.get());
-            if(window->widgetTreeHosts.size() == 1)
-                window->proxy.setFrontendPtr(compositor);
+            window->proxy.setFrontendPtr(compositor);
         }
     };
 

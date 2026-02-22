@@ -1,9 +1,33 @@
 #include <OmegaWTK.h>
 
 class MyWidget final : public OmegaWTK::Widget {
-    void renderCenteredRedRect(OmegaWTK::PaintContext & context) {
+    OmegaWTK::UIViewPtr uiView {};
+
+    void ensureUIView(const OmegaWTK::Core::Rect & bounds){
+        if(uiView == nullptr){
+            uiView = makeUIView(bounds,rootView,"basic_view");
+        }
+        else {
+            uiView->resize(bounds);
+        }
+    }
+
+protected:
+    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {}
+
+    void onMount() override {
+        ensureUIView(rect());
+    }
+
+    void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
+        (void)reason;
+        auto bounds = context.bounds();
+        ensureUIView(bounds);
+
+        context.clear(OmegaWTK::Composition::Color::create8Bit(
+            OmegaWTK::Composition::Color::Black8));
+
         constexpr float kRectSize = 48.0f;
-        auto & bounds = context.bounds();
         OmegaWTK::Core::Rect redRect{
             OmegaWTK::Core::Position{
                 (bounds.w - kRectSize) * 0.5f,
@@ -11,19 +35,16 @@ class MyWidget final : public OmegaWTK::Widget {
             kRectSize,
             kRectSize};
 
-        auto redBrush = OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(
-                OmegaWTK::Composition::Color::Red8));
+        OmegaWTK::UIViewLayout layout {};
+        layout.shape("center_rect",OmegaWTK::Shape::Rect(redRect));
+        uiView->setLayout(layout);
 
-        context.drawRect(redRect,redBrush);
-    }
-
-protected:
-    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {}
-
-    void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
-        (void)reason;
-        renderCenteredRedRect(context);
+        auto style = OmegaWTK::StyleSheet::Create();
+        style = style->backgroundColor("basic_view",OmegaWTK::Composition::Color::Transparent);
+        style = style->elementBrush("center_rect",OmegaWTK::Composition::ColorBrush(
+            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)));
+        uiView->setStyleSheet(style);
+        uiView->update();
     }
 
 public:

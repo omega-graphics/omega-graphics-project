@@ -60,13 +60,17 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
                                                              Core::Position & pos){
 
      CAMetalLayer *layer = [CAMetalLayer layer];
-     layer.opaque = YES;
+     layer.opaque = NO;
      layer.autoresizingMask = kCALayerNotSizable;
      layer.layoutManager = nil;
      layer.contentsScale = [NSScreen mainScreen].backingScaleFactor;
      layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
      layer.framebufferOnly = NO;
      layer.presentsWithTransaction = NO;
+     layer.masksToBounds = NO;
+     CGColorRef clearColor = CGColorCreateGenericRGB(0.f,0.f,0.f,0.f);
+     layer.backgroundColor = clearColor;
+     CGColorRelease(clearColor);
      layer.anchorPoint = CGPointMake(0.f,0.f);
      layer.frame = CGRectMake(pos.x,pos.y,rect.w,rect.h);
      layer.drawableSize = CGSizeMake(rect.w * layer.contentsScale,rect.h * layer.contentsScale);

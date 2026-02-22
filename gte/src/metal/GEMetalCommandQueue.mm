@@ -5,6 +5,7 @@
 #import "GEMetal.h"
 
 #include <cstdlib>
+#include <utility>
 
 #import <QuartzCore/QuartzCore.h>
 
@@ -518,12 +519,26 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     
     void GEMetalCommandBuffer::_commit(){
          buffer.assertExists();
+         auto completion = completionHandler;
+         completionHandler = nullptr;
          [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer){
             if(commandBuffer.status == MTLCommandBufferStatusError){
                 NSLog(@"Command Buffer Failed to Execute. Error: %@",commandBuffer.error);
             }
             else if(commandBuffer.status == MTLCommandBufferStatusCompleted){
                 NSLog(@"Successfully completed Command Buffer! (Logs: %@) (Warning: %@) Duration:%f",commandBuffer.logs,commandBuffer.error,1000.f * (commandBuffer.GPUEndTime - commandBuffer.GPUStartTime));
+            }
+            if(completion){
+                GECommandBufferCompletionInfo info {};
+                if(commandBuffer.status == MTLCommandBufferStatusError){
+                    info.status = GECommandBufferCompletionInfo::Status::Error;
+                }
+                else {
+                    info.status = GECommandBufferCompletionInfo::Status::Completed;
+                }
+                info.gpuStartTimeSec = commandBuffer.GPUStartTime;
+                info.gpuEndTimeSec = commandBuffer.GPUEndTime;
+                completion(info);
             }
          }];
         [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) commit];
@@ -542,13 +557,17 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 //                encodeSignalEvent:NSOBJECT_OBJC_BRIDGE(id<MTLEvent>,event->metalEvent.handle()) value:val];
 //    }
 
-void GEMetalCommandBuffer::reset(){
+    void GEMetalCommandBuffer::reset(){
         if(buffer.handle() != nullptr){
             [NSOBJECT_OBJC_BRIDGE(id,buffer.handle()) release];
         }
         id<MTLCommandBuffer> newBuffer = [NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQueue->commandQueue.handle()) commandBuffer];
         buffer = NSObjectHandle{NSOBJECT_CPP_BRIDGE [newBuffer retain]};
     };
+
+    void GEMetalCommandBuffer::setCompletionHandler(GECommandBufferCompletionHandler handler){
+        completionHandler = std::move(handler);
+    }
 
 GEMetalCommandBuffer::~GEMetalCommandBuffer(){
         // NSLog(@"Metal Command Buffer Destroy");

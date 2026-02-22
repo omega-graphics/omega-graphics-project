@@ -116,10 +116,23 @@ Shape Shape::Ellipse(const OmegaGTE::GEllipsoid &ellipse){
     return shape;
 }
 
-Shape Shape::Path(const OmegaGTE::GVectorPath2D &path){
+Shape Shape::Ellipse(const Core::Ellipse &ellipse){
+    return Shape::Ellipse(OmegaGTE::GEllipsoid{
+            ellipse.x,
+            ellipse.y,
+            0.f,
+            ellipse.rad_x,
+            ellipse.rad_y,
+            0.f
+    });
+}
+
+Shape Shape::Path(const OmegaGTE::GVectorPath2D &path,unsigned strokeWidth,bool closePath){
     Shape shape {};
     shape.type = Shape::Type::Path;
     shape.path = path;
+    shape.pathStrokeWidth = std::max(1u,strokeWidth);
+    shape.closePath = closePath;
     return shape;
 }
 
@@ -424,8 +437,29 @@ void UIView::update(){
                     target.canvas->drawRoundedRect(rect,brush);
                     break;
                 }
-                case Shape::Type::Ellipse:
-                case Shape::Type::Path:
+                case Shape::Type::Ellipse: {
+                    const auto & srcEllipse = element.shape->ellipse;
+                    Core::Ellipse ellipse {
+                            srcEllipse.x,
+                            srcEllipse.y,
+                            srcEllipse.rad_x,
+                            srcEllipse.rad_y
+                    };
+                    target.canvas->drawEllipse(ellipse,brush);
+                    break;
+                }
+                case Shape::Type::Path: {
+                    if(element.shape->path){
+                        auto vectorPath = *element.shape->path;
+                        auto path = Composition::Path(vectorPath,element.shape->pathStrokeWidth);
+                        if(element.shape->closePath){
+                            path.close();
+                        }
+                        path.setPathBrush(brush);
+                        target.canvas->drawPath(path);
+                    }
+                    break;
+                }
                 default:
                     break;
             }
