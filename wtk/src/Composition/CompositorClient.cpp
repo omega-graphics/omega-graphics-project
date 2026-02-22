@@ -131,6 +131,14 @@ namespace OmegaWTK::Composition {
     };
 
     void CompositorClientProxy::submit(){
+       if(frontend == nullptr){
+           while(!commandQueue.empty()){
+               auto comm = commandQueue.front();
+               commandQueue.pop();
+               comm->status.set(CommandStatus::Failed);
+           }
+           return;
+       }
        while(!commandQueue.empty()){
            auto comm = commandQueue.front();
            commandQueue.pop();

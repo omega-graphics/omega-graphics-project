@@ -100,7 +100,9 @@
     else {
         self.view = [[_class alloc] initWithFrame:_rect];
     }
-    self.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    // Child widget views are layout-driven by OmegaWTK.
+    // Root window view sizing is configured when attached to the window.
+    self.view.autoresizingMask = NSViewNotSizable;
 };
 
 - (void)viewDidLoad{

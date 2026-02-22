@@ -58,6 +58,25 @@ void PaintContext::drawImage(const SharedHandle<Media::BitmapImage> &img,const C
     rootCanvas().drawImage(_img,_rect);
 }
 
+void PaintContext::drawText(const UniString &text,
+                            const SharedHandle<Composition::Font> &font,
+                            const Core::Rect &rect,
+                            const Composition::Color &color,
+                            const Composition::TextLayoutDescriptor &layoutDesc){
+    auto _rect = rect;
+    auto _font = font;
+    rootCanvas().drawText(text,_font,_rect,color,layoutDesc);
+}
+
+void PaintContext::drawText(const UniString &text,
+                            const SharedHandle<Composition::Font> &font,
+                            const Core::Rect &rect,
+                            const Composition::Color &color){
+    auto _rect = rect;
+    auto _font = font;
+    rootCanvas().drawText(text,_font,_rect,color);
+}
+
 
 Widget::Widget(const Core::Rect & rect,WidgetPtr parent):parent(parent.get()){
     layerTree = std::make_shared<Composition::LayerTree>();
@@ -164,13 +183,17 @@ void Widget::handleHostResize(const Core::Rect &rect){
     // Cocoa already resizes the root NSView during live window resize.
     // Avoid forcing native frame updates here to prevent window-transaction churn.
     rootRect = rect;
+    if(rootView->getLayerTreeLimb() != nullptr){
+        auto layerRect = rect;
+        rootView->getLayerTreeLimb()->getRootLayer()->resize(layerRect);
+    }
 #else
     rootView->resize(rect);
 #endif
     auto newRect = rootRect;
     this->resize(newRect);
     WIDGET_NOTIFY_OBSERVERS_RESIZE(oldRect);
-    if(mode == PaintMode::Automatic && options.invalidateOnResize){
+    if(mode == PaintMode::Automatic && options.invalidateOnResize && treeHost != nullptr){
         invalidate(PaintReason::Resize);
     }
 }
@@ -232,7 +255,7 @@ void Widget::setRect(const Core::Rect &newRect){
     auto updatedRect = rootRect;
     this->resize(updatedRect);
     WIDGET_NOTIFY_OBSERVERS_RESIZE(oldRect);
-    if(mode == PaintMode::Automatic && options.invalidateOnResize){
+    if(mode == PaintMode::Automatic && options.invalidateOnResize && treeHost != nullptr){
         invalidate(PaintReason::Resize);
     }
 }

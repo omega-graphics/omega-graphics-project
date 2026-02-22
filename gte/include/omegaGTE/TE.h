@@ -17,7 +17,6 @@ _NAMESPACE_BEGIN_
 */
 struct OMEGAGTE_EXPORT TETessellationParams {
     private:
-    struct GraphicsPath2DParams;
     struct GraphicsPath3DParams;
     typedef enum : unsigned char {
         TESSALATE_RECT,
@@ -41,6 +40,10 @@ struct OMEGAGTE_EXPORT TETessellationParams {
     };
 
     std::shared_ptr<Data> params;
+    std::shared_ptr<GVectorPath2D> graphicsPath2D;
+    bool graphicsPath2DContour = false;
+    bool graphicsPath2DFill = false;
+    float graphicsPath2DStrokeWidth = 1.f;
 
     friend class OmegaTessellationEngineContext;
 public:

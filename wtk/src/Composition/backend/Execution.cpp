@@ -54,6 +54,22 @@ void Compositor::executeCurrentCommand(){
         }
         else {
             targetContext = layer_found->second;
+            auto layerRect = comm->frame->targetLayer->getLayerRect();
+            targetContext->setRenderTargetSize(layerRect);
+
+            auto surface = target->surfaceTargets[comm->frame->targetLayer];
+            if(target->visualTree->root != nullptr &&
+               surface == &(target->visualTree->root->renderTarget)){
+                target->visualTree->root->resize(layerRect);
+            }
+            else {
+                for(auto & visual : target->visualTree->body){
+                    if(surface == &(visual->renderTarget)){
+                        visual->resize(layerRect);
+                        break;
+                    }
+                }
+            }
         }
 
 

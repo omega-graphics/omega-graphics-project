@@ -8,6 +8,7 @@ namespace OmegaWTK::Composition {
 struct Brush;
 
 class OMEGAWTK_EXPORT  Path {
+    friend class Canvas;
     struct Segment {
         /// Main Vector Paths of Segment
         OmegaGTE::GVectorPath2D path;

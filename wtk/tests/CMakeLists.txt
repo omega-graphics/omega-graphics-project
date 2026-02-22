@@ -11,8 +11,24 @@ OmegaWTKApp(
     SOURCES 
     BasicAppTest/main.cpp)
 
+OmegaWTKApp(
+    NAME
+    EllipsePathCompositorTest
+    BUNDLE_ID
+    "org.omegagraphics.EllipsePathCompositorTest"
+    SOURCES
+    EllipsePathCompositorTest/main.cpp)
+
+OmegaWTKApp(
+    NAME
+    TextCompositorTest
+    BUNDLE_ID
+    "org.omegagraphics.TextCompositorTest"
+    SOURCES
+    TextCompositorTest/main.cpp)
+
 if(TARGET_MACOS)
-    add_custom_target(2DAppTest DEPENDS BasicAppTest.app)
+    add_custom_target(2DAppTest DEPENDS EllipsePathCompositorTest.app)
 else()
-    add_custom_target(2DAppTest DEPENDS BasicAppTest)
+    add_custom_target(2DAppTest DEPENDS EllipsePathCompositorTest)
 endif()

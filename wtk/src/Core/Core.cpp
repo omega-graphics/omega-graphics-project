@@ -182,7 +182,7 @@ Core::Rect Rect(float x,float y,float w,float h){
 };
 
 Core::RoundedRect RoundedRect(float x,float y,float w,float h,float radius_x,float radius_y) {
-    return {{x,y},radius_x,radius_y};
+    return {{x,y},w,h,radius_x,radius_y};
 }
 
 

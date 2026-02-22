@@ -5,10 +5,42 @@
 
 #import <CoreText/CoreText.h>
 #include <memory>
+#include <cstring>
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
 
 namespace OmegaWTK::Composition {
+
+static NSTextAlignment toNSTextAlignment(TextLayoutDescriptor::Alignment alignment){
+    switch(alignment){
+        case TextLayoutDescriptor::LeftUpper:
+        case TextLayoutDescriptor::LeftCenter:
+        case TextLayoutDescriptor::LeftLower:
+            return NSTextAlignmentLeft;
+        case TextLayoutDescriptor::MiddleUpper:
+        case TextLayoutDescriptor::MiddleCenter:
+        case TextLayoutDescriptor::MiddleLower:
+            return NSTextAlignmentCenter;
+        case TextLayoutDescriptor::RightUpper:
+        case TextLayoutDescriptor::RightCenter:
+        case TextLayoutDescriptor::RightLower:
+            return NSTextAlignmentRight;
+        default:
+            return NSTextAlignmentLeft;
+    }
+}
+
+static NSLineBreakMode toNSLineBreakMode(TextLayoutDescriptor::Wrapping wrapping){
+    switch(wrapping){
+        case TextLayoutDescriptor::WrapByWord:
+            return NSLineBreakByWordWrapping;
+        case TextLayoutDescriptor::WrapByCharacter:
+            return NSLineBreakByCharWrapping;
+        case TextLayoutDescriptor::None:
+        default:
+            return NSLineBreakByClipping;
+    }
+}
 
 
  FontEngine * FontEngine::instance;
@@ -57,8 +89,16 @@ public:
 Core::SharedPtr<GlyphRun>
 GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Font> &font) {
     auto run = new CTGlyphRun();
-    run->str = [[NSAttributedString alloc] initWithString:[NSString stringWithCharacters:(const unichar *)str.getBuffer() length:str.length()]];
     run->font = std::dynamic_pointer_cast<CoreTextFont>(font);
+    auto text = [NSString stringWithCharacters:(const unichar *)str.getBuffer() length:str.length()];
+    auto nativeFont = (run->font != nullptr) ? (CTFontRef)run->font->getNativeFont() : nullptr;
+    if(nativeFont != nullptr){
+        run->str = [[NSAttributedString alloc] initWithString:text
+                                                    attributes:@{NSFontAttributeName:(__bridge id)nativeFont}];
+    }
+    else {
+        run->str = [[NSAttributedString alloc] initWithString:text];
+    }
     return (Core::SharedPtr<GlyphRun>)run;
 }
 
@@ -66,111 +106,57 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
      CTFramesetterRef framesetterRef;
      CTFrameRef frame;
      NSAttributedString *strData;
+     TextLayoutDescriptor layoutDesc;
      void _updateStrInternal(){
         
      };
  public:
-     CTTextRect(Core::Rect & rect,const TextLayoutDescriptor &layoutDesc):TextRect(rect){
+     CTTextRect(Core::Rect & rect,const TextLayoutDescriptor &layoutDesc):
+     TextRect(rect),
+     framesetterRef(nullptr),
+     frame(nullptr),
+     strData(nil),
+     layoutDesc(layoutDesc){
          NSLog(@"CTTextRect Create With W: %f H: %f",rect.w,rect.h);
-         NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle alloc] init];
-        
-         /// Initalize Text with Settings!
-         // [paragraphStyle setParagraphStyle:[NSParagraphStyle defaultParagraphStyle]];
-         // NSTextAlignment hAlignment;
-         // NSTextBlockVerticalAlignment vAlignment;
-         // switch (font->desc.textAlignment) {
-         //     case FontDescriptor::LeftUpper: {
-         //         hAlignment = NSTextAlignmentLeft;
-         //         vAlignment = NSTextBlockTopAlignment;
-         //         break;
-         //     }
-         //     case FontDescriptor::LeftCenter : {
-         //         hAlignment = NSTextAlignmentLeft;
-         //         vAlignment = NSTextBlockMiddleAlignment;
-         //         break;
-         //     };
-         //     case FontDescriptor::LeftLower : {
-         //         hAlignment = NSTextAlignmentLeft;
-         //         vAlignment = NSTextBlockBottomAlignment;
-         //         break;
-         //     };
-         //     case FontDescriptor::MiddleUpper: {
-         //         hAlignment = NSTextAlignmentCenter;
-         //         vAlignment = NSTextBlockTopAlignment;
-         //         break;
-         //     }
-         //     case FontDescriptor::MiddleCenter : {
-         //         hAlignment = NSTextAlignmentCenter;
-         //         vAlignment = NSTextBlockMiddleAlignment;
-         //         break;
-         //     };
-         //     case FontDescriptor::MiddleLower : {
-         //         hAlignment = NSTextAlignmentCenter;
-         //         vAlignment = NSTextBlockBottomAlignment;
-         //         break;
-         //     };
-         //     case FontDescriptor::RightUpper: {
-         //         hAlignment = NSTextAlignmentRight;
-         //         vAlignment = NSTextBlockTopAlignment;
-         //         break;
-         //     }
-         //     case FontDescriptor::RightCenter : {
-         //         hAlignment = NSTextAlignmentRight;
-         //         vAlignment = NSTextBlockMiddleAlignment;
-         //         break;
-         //     };
-         //     case FontDescriptor::RightLower : {
-         //         hAlignment = NSTextAlignmentRight;
-         //         vAlignment = NSTextBlockBottomAlignment;
-         //         break;
-         //     };
-         //     default:
-         //         break;
-         // }
-         // NSLineBreakMode lineBreakOpts;
-         // switch (font->desc.wrapping) {
-         //     case FontDescriptor::WrapByWord : {
-         //         lineBreakOpts = NSLineBreakByWordWrapping;
-         //         break;
-         //     }
-         //     case FontDescriptor::WrapByCharacter : {
-         //         lineBreakOpts = NSLineBreakByCharWrapping;
-         //         break;
-         //     };
-         //     case FontDescriptor::None : {
-         //         lineBreakOpts = NSLineBreakByClipping;
-         //         break;
-         //     };
-         //     default:
-         //         break;
-         // }
-        
-         // [paragraphStyle setAlignment:hAlignment];
-         // [paragraphStyle setLineBreakMode:lineBreakOpts];
-         // for(NSTextBlock *textBlock in paragraphStyle.textBlocks){
-         //     [textBlock setVerticalAlignment:vAlignment];
-         // };
-        
-         // float scaleFactor = [NSScreen mainScreen].backingScaleFactor;
-         // auto ftextRect = OmegaWTK::Core::Rect {{float(rect.pos.x) * scaleFactor,float(rect.pos.y) * scaleFactor},float(rect.w) * scaleFactor,float(rect.h) * scaleFactor};
-         // CoreTextFont *fontRef = (CoreTextFont *)font.get();
-
-        
-         // strData = [[NSAttributedString alloc] initWithString:[[NSString alloc] initWithCharacters:(const unichar *)text_val.getBuffer() length:text_val.length()] attributes:@{NSParagraphStyleAttributeName:paragraphStyle,NSFontAttributeName:(__bridge id)fontRef->native}];
-         // // Draw Text to CGBitmap!
-         // framesetterRef = CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)strData);
-         // frame = CTFramesetterCreateFrame(framesetterRef,CFRangeMake(0,0),CGPathCreateWithRect(CGRectMake(ftextRect.pos.x,ftextRect.pos.y, ftextRect.w, ftextRect.h),NULL),NULL);
-         // CFRetain(frame);
      };
      void drawRun(Core::SharedPtr<GlyphRun> &glyphRun, const Composition::Color &color) override {
           auto gr = std::dynamic_pointer_cast<CTGlyphRun>(glyphRun);
-          strData = gr->str;
-          // Draw Text to CGBitmap!
-           CGFloat scaleFactor = [NSScreen mainScreen].backingScaleFactor;
+          if(gr == nullptr || gr->str == nil){
+              return;
+          }
+          if(frame != nullptr){
+              CFRelease(frame);
+              frame = nullptr;
+          }
+          if(framesetterRef != nullptr){
+              CFRelease(framesetterRef);
+              framesetterRef = nullptr;
+          }
 
+          auto attributed = [[NSMutableAttributedString alloc] initWithAttributedString:gr->str];
+          auto range = NSMakeRange(0,attributed.length);
+          auto textColor = [NSColor colorWithSRGBRed:color.r green:color.g blue:color.b alpha:color.a];
+          auto paragraphStyle = [[NSMutableParagraphStyle alloc] init];
+          [paragraphStyle setAlignment:toNSTextAlignment(layoutDesc.alignment)];
+          [paragraphStyle setLineBreakMode:toNSLineBreakMode(layoutDesc.wrapping)];
+
+          if(range.length > 0){
+              [attributed addAttribute:NSForegroundColorAttributeName value:textColor range:range];
+              [attributed addAttribute:NSParagraphStyleAttributeName value:paragraphStyle range:range];
+          }
+
+          auto nativeFont = (gr->font != nullptr) ? (CTFontRef)gr->font->getNativeFont() : nullptr;
+          if(range.length > 0 && nativeFont != nullptr){
+              [attributed addAttribute:NSFontAttributeName value:(__bridge id)nativeFont range:range];
+          }
+
+          strData = attributed;
+
+          CGFloat scaleFactor = [NSScreen mainScreen].backingScaleFactor;
+          CGPathRef textPath = CGPathCreateWithRect(CGRectMake(0.f,0.f,rect.w * scaleFactor,rect.h * scaleFactor),NULL);
           framesetterRef = CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)strData);
-          frame = CTFramesetterCreateFrame(framesetterRef,CFRangeMake(0,strData.length),CGPathCreateWithRect(CGRectMake(rect.pos.x,rect.pos.y,rect.w * scaleFactor,rect.h * scaleFactor),NULL),NULL);
-          CFRetain(frame);
+          frame = CTFramesetterCreateFrame(framesetterRef,CFRangeMake(0,strData.length),textPath,NULL);
+          CGPathRelease(textPath);
      }
      void * getNative() override{
          return (void *)frame;
@@ -197,28 +183,38 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
      BitmapRes toBitmap() override{
         BitmapRes res;
          CGFloat scaleFactor = [NSScreen mainScreen].backingScaleFactor;
-         void *data = new unsigned char[rect.w * 4 * rect.h * scaleFactor * scaleFactor];
+         const size_t pixelWidth = size_t(rect.w * scaleFactor);
+         const size_t pixelHeight = size_t(rect.h * scaleFactor);
+         const size_t bytesPerRow = pixelWidth * 4;
+         const size_t byteCount = bytesPerRow * pixelHeight;
+         auto *data = new unsigned char[byteCount];
+         std::memset(data,0,byteCount);
          
-         CGContextRef context = CGBitmapContextCreateWithData(data,rect.w * scaleFactor,rect.h * scaleFactor,8,rect.w * 4 * scaleFactor,CGColorSpaceCreateDeviceRGB(),kCGImageAlphaPremultipliedLast,NULL,NULL);
+         CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+         CGContextRef context = CGBitmapContextCreateWithData(data,pixelWidth,pixelHeight,8,bytesPerRow,colorSpace,kCGImageAlphaPremultipliedLast,NULL,NULL);
+         CGColorSpaceRelease(colorSpace);
+         if(context == nullptr){
+             delete [](unsigned char *) data;
+             return res;
+         }
          CGContextSetTextMatrix(context,CGAffineTransformIdentity);
-         CGContextScaleCTM(context,1,-1);
-         CGContextTranslateCTM(context,0,-(rect.h * scaleFactor));
-         CGContextSetStrokeColorWithColor(context,[NSColor greenColor].CGColor);
-         CTFrameDraw(frame,context);
+         if(frame != nullptr){
+             CTFrameDraw(frame,context);
+         }
          CGContextFlush(context);
          
 
          OmegaGTE::TextureDescriptor desc {};
          desc.usage = OmegaGTE::GETexture::ToGPU;
+         desc.storage_opts = OmegaGTE::Shared;
          desc.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm;
          desc.type = OmegaGTE::GETexture::Texture2D;
-         desc.width = (unsigned)(rect.w * scaleFactor);
-         desc.height = (unsigned)(rect.h * scaleFactor);
-         desc.storage_opts = OmegaGTE::Shared;
+         desc.width = (unsigned)pixelWidth;
+         desc.height = (unsigned)pixelHeight;
          
          auto texture = gte.graphicsEngine->makeTexture(desc);
          NSLog(@"CGBitmapContextData: %p",data);
-         texture->copyBytes(data,rect.w * 4 * scaleFactor);
+         texture->copyBytes(data,bytesPerRow);
 
         CGContextRelease(context);
 
@@ -228,9 +224,14 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
          return res;
      };
      ~CTTextRect(){
-         // CFRelease(frame);
-         // CFRelease(framesetterRef);
-         // [strData release];
+         if(frame != nullptr){
+             CFRelease(frame);
+             frame = nullptr;
+         }
+         if(framesetterRef != nullptr){
+             CFRelease(framesetterRef);
+             framesetterRef = nullptr;
+         }
      };
  };
 

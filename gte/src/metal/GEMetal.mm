@@ -774,7 +774,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             else {
                 TextureDescriptor textureDescriptor {
                     GETexture::Texture2D,
-                    Shared,
+                    GPUOnly,
                     GETexture::RenderTarget,
                     TexturePixelFormat::RGBA8Unorm,
                     desc.region.w,
@@ -840,7 +840,14 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             mtlDesc.sampleCount = desc.sampleCount;
             mtlDesc.depth = desc.depth;
             mtlDesc.arrayLength = 1;
-            mtlDesc.storageMode = MTLStorageModePrivate;
+            switch(desc.storage_opts){
+                case StorageOpts::Shared:
+                    mtlDesc.storageMode = MTLStorageModeShared;
+                    break;
+                case StorageOpts::GPUOnly:
+                    mtlDesc.storageMode = MTLStorageModePrivate;
+                    break;
+            }
 
             MTLPixelFormat pixelFormat;
             const bool renderTargetUsage =

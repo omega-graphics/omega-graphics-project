@@ -22,13 +22,13 @@ namespace OmegaCommon {
 
     template<class T,class Pr = FormatProvider<T>>
              struct ObjectFormatProvider : public ObjectFormatProviderBase {
-        T & object;
+        T object;
         void insertFormattedObject(std::ostream &os) override {
             Pr::format(os,object);
         };
 
         template<std::enable_if_t<_has_format_provider<T>::value,int> = 0>
-                explicit ObjectFormatProvider(T & object):object(object){
+                explicit ObjectFormatProvider(T object):object(std::move(object)){
 
         };
         ~ObjectFormatProvider() = default;
@@ -87,8 +87,9 @@ namespace OmegaCommon {
     OMEGACOMMON_EXPORT void freeFormatter(Formatter *formatter);
 
     template<typename T>
-     ObjectFormatProvider<T> * buildFormatProvider(T object){
-        return new ObjectFormatProvider<T>(object);
+     ObjectFormatProvider<std::decay_t<T>> * buildFormatProvider(T && object){
+        using Ty = std::decay_t<T>;
+        return new ObjectFormatProvider<Ty>(std::forward<T>(object));
     };
 
     template<class ..._Args>

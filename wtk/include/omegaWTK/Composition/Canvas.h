@@ -56,6 +56,7 @@ namespace OmegaWTK {
             Rect,
             RoundedRect,
             Ellipse,
+            VectorPath,
             Text,
             Bitmap
         } Type;
@@ -79,6 +80,13 @@ namespace OmegaWTK {
                 Core::Optional<Border> border;
             } ellipseParams;
             struct {
+                Core::SharedPtr<OmegaGTE::GVectorPath2D> path;
+                Core::SharedPtr<Brush> brush;
+                float strokeWidth;
+                bool contour;
+                bool fill;
+            } pathParams;
+            struct {
                 Core::SharedPtr<Media::BitmapImage> img;
                 Core::SharedPtr<OmegaGTE::GETexture> texture;
                 Core::SharedPtr<OmegaGTE::GEFence> textureFence;
@@ -91,6 +99,12 @@ namespace OmegaWTK {
             Data(const Core::RoundedRect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border);
 
             Data(const Core::Ellipse & ellipse,Core::SharedPtr<Brush> brush,Core::Optional<Border> border);
+
+            Data(const Core::SharedPtr<OmegaGTE::GVectorPath2D> & path,
+                 Core::SharedPtr<Brush> brush,
+                 float strokeWidth,
+                 bool contour,
+                 bool fill);
 
             Data(Core::SharedPtr<Media::BitmapImage> img,const Core::Rect &rect);
 
@@ -113,6 +127,13 @@ namespace OmegaWTK {
 
         template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::Ellipse,Core::SharedPtr<Brush>,Core::Optional<Border>)>
         VisualCommand(_Args && ...args):type(Ellipse),params(args...){};
+        VisualCommand(const Core::SharedPtr<OmegaGTE::GVectorPath2D> & path,
+                      Core::SharedPtr<Brush> brush,
+                      float strokeWidth,
+                      bool contour,
+                      bool fill):
+        type(VectorPath),
+        params(path,brush,strokeWidth,contour,fill){};
 
         template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::SharedPtr<Media::BitmapImage>,Core::Rect)>
         VisualCommand(_Args && ...args):type(Bitmap),params(args...){};
@@ -183,6 +204,32 @@ namespace OmegaWTK {
          @param brush The Brush to fill the Rect with.
          */
         void drawEllipse(Core::Ellipse & ellipse,Core::SharedPtr<Brush> & brush);
+
+        /**
+         @brief Draw text into a rectangle.
+         @param text The UTF text content.
+         @param font The font resource to use.
+         @param rect The text bounds in canvas space.
+         @param color The text color.
+         @param layoutDesc Text alignment/wrapping settings.
+         */
+        void drawText(const UniString & text,
+                      Core::SharedPtr<Font> font,
+                      const Core::Rect & rect,
+                      const Color & color,
+                      const TextLayoutDescriptor & layoutDesc);
+
+        /**
+         @brief Draw text into a rectangle using default top-left/no-wrap layout.
+         @param text The UTF text content.
+         @param font The font resource to use.
+         @param rect The text bounds in canvas space.
+         @param color The text color.
+         */
+        void drawText(const UniString & text,
+                      Core::SharedPtr<Font> font,
+                      const Core::Rect & rect,
+                      const Color & color);
 
         /**
             @brief Draw an Image to the corresponding rect.

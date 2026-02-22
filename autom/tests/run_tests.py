@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
+from dataclasses import dataclass
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -48,6 +50,24 @@ def _unique_existing_paths(paths: list[Path]) -> list[Path]:
     return unique
 
 
+@dataclass(frozen=True)
+class ToolchainMatrixCase:
+    name: str
+    target_platform: str
+    target_os: str
+    toolchain_entry: dict[str, object]
+    required_tools: tuple[str, ...]
+    expected_cc_prefix: str
+    expected_cxx_prefix: str
+    expected_ar_prefix: str
+    expected_so_prefix: str
+    expected_exe_prefix: str
+    expected_archive_ext: str
+    expected_shared_ext: str
+    expected_exe_name: str
+    expected_compile_output_flag: str
+
+
 class AutomIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -58,8 +78,6 @@ class AutomIntegrationTests(unittest.TestCase):
             raise RuntimeError(f"AUTOM binary not found: {cls.cfg.autom_bin}")
         if not cls.cfg.toolchains.exists():
             raise RuntimeError(f"Toolchain file not found: {cls.cfg.toolchains}")
-        if shutil.which("ninja") is None:
-            raise RuntimeError("ninja is required to run AUTOM integration tests.")
 
     def setUp(self) -> None:
         self._tempdir = tempfile.TemporaryDirectory(prefix="autom-it-")
@@ -68,10 +86,16 @@ class AutomIntegrationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tempdir.cleanup()
 
-    def _write(self, rel_path: str, content: str) -> None:
-        target = self.case_dir / rel_path
+    def _write(self, rel_path: str, content: str, *, cwd: Path | None = None) -> None:
+        target = (cwd or self.case_dir) / rel_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+
+    def _write_json(self, rel_path: str, payload: object, *, cwd: Path | None = None) -> Path:
+        target = (cwd or self.case_dir) / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return target
 
     def _exe_name(self, name: str) -> str:
         if platform.system().lower().startswith("win"):
@@ -83,8 +107,11 @@ class AutomIntegrationTests(unittest.TestCase):
         output_dir: str = ".",
         extra_args: list[str] | None = None,
         extra_search_paths: list[Path] | None = None,
+        toolchains: Path | None = None,
+        env_overrides: dict[str, str] | None = None,
+        cwd: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        cmd = [str(self.cfg.autom_bin), "--toolchains", str(self.cfg.toolchains)]
+        cmd = [str(self.cfg.autom_bin), "--toolchains", str(toolchains or self.cfg.toolchains)]
         for search_path in self.cfg.search_paths:
             cmd.extend(["-I", str(search_path)])
         if extra_search_paths:
@@ -93,12 +120,16 @@ class AutomIntegrationTests(unittest.TestCase):
         if extra_args:
             cmd.extend(extra_args)
         cmd.append(output_dir)
+        env = os.environ.copy()
+        if env_overrides:
+            env.update(env_overrides)
         proc = subprocess.run(
             cmd,
-            cwd=self.case_dir,
+            cwd=cwd or self.case_dir,
             text=True,
             capture_output=True,
             check=False,
+            env=env,
         )
         if self.cfg.verbose:
             print("\n[AUTOM CMD]", " ".join(cmd))
@@ -117,6 +148,8 @@ class AutomIntegrationTests(unittest.TestCase):
         target: str | None = None,
         cwd: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        if shutil.which("ninja") is None:
+            self.skipTest("ninja is required for build/runtime integration coverage")
         build_dir = cwd or self.case_dir
         cmd = ["ninja", "-f", "build.ninja"]
         if target:
@@ -159,6 +192,15 @@ class AutomIntegrationTests(unittest.TestCase):
             msg=f"Built binary returned non-zero status: {binary}\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}",
         )
         return proc
+
+    def _create_tool_shims(self, names: list[str], *, cwd: Path | None = None) -> Path:
+        shim_dir = (cwd or self.case_dir) / "tool-shims"
+        shim_dir.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            script = shim_dir / name
+            script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            script.chmod(0o755)
+        return shim_dir
 
     def _require_fs_extension(self) -> None:
         self.assertTrue(
@@ -354,6 +396,45 @@ app.deps = ["DoesNotExist"]
         self.assertIn("unresolved dependencies", proc.stdout)
         self.assertFalse((self.case_dir / "build.ninja").exists())
 
+    def test_target_with_no_sources_reports_error(self) -> None:
+        self._write(
+            "AUTOM.build",
+            """project(name:"NoSourceProj",version:"1.0")
+var app = Executable(name:"NoSourceApp",sources:[])
+""",
+        )
+
+        proc = self._run_autom(output_dir=".")
+        self.assertIn("has no sources", proc.stdout)
+        self.assertFalse((self.case_dir / "build.ninja").exists())
+
+    def test_script_target_requires_outputs(self) -> None:
+        self._write(
+            "AUTOM.build",
+            """project(name:"ScriptProj",version:"1.0")
+var gen = Script(name:"Gen",cmd:"./scripts/gen.py",args:["./out.txt"],outputs:[])
+""",
+        )
+        self._write("scripts/gen.py", "print('hello')\n")
+
+        proc = self._run_autom(output_dir=".")
+        self.assertIn("Script targets must have at least 1 output file", proc.stdout)
+        self.assertFalse((self.case_dir / "build.ninja").exists())
+
+    def test_import_missing_interface_reports_error(self) -> None:
+        self._write(
+            "AUTOM.build",
+            """import "./missing/module"
+project(name:"ImportMissingProj",version:"1.0")
+var app = Executable(name:"ImportMissingApp",sources:["./src/main.cpp"])
+""",
+        )
+        self._write("src/main.cpp", "int main(){ return 0; }\n")
+
+        proc = self._run_autom(output_dir=".")
+        self.assertIn("Cannot import file", proc.stdout)
+        self.assertFalse((self.case_dir / "build.ninja").exists())
+
     def test_xcode_generation_includes_native_group_and_script_targets(self) -> None:
         self._write(
             "AUTOM.build",
@@ -398,6 +479,335 @@ var group = GroupTarget(name:"AllTargets",deps:["XApp","RunGen"])
                 0,
                 msg=f"xcodebuild -list failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}",
             )
+
+    def test_sln_generation_smoke(self) -> None:
+        self._write(
+            "AUTOM.build",
+            """project(name:"SlnProj",version:"1.0")
+var lib = Archive(name:"SlnLib",sources:["./src/lib.cpp"])
+var app = Executable(name:"SlnApp",sources:["./src/main.cpp"])
+app.deps = ["SlnLib"]
+""",
+        )
+        self._write("src/lib.cpp", "int sln_val(){ return 1; }\n")
+        self._write("src/main.cpp", "int sln_val(); int main(){ return sln_val() == 1 ? 0 : 1; }\n")
+
+        self._run_autom(output_dir=".", extra_args=["--sln"])
+        self.assertTrue((self.case_dir / "SlnProj.sln").exists())
+        self.assertTrue((self.case_dir / "SlnLib.vcxproj").exists())
+        self.assertTrue((self.case_dir / "SlnApp.vcxproj").exists())
+
+    def test_custom_target_flags_and_output_overrides(self) -> None:
+        self._write(
+            "AUTOM.build",
+            """project(name:"FlagsProj",version:"1.0")
+var app = Executable(name:"FlagsApp",sources:["./src/main.cpp"])
+app.cflags = ["-Wall","-Wextra"]
+app.include_dirs = ["./include","./vendor/include"]
+app.libs = ["pthread","m"]
+app.lib_dirs = ["./lib","./vendor/lib"]
+app.output_dir = "out/bin"
+app.output_ext = "customexe"
+""",
+        )
+        self._write("src/main.cpp", "int main(){ return 0; }\n")
+
+        toolchains_path = self._write_json(
+            "toolchains.json",
+            [
+                {
+                    "name": "GCC",
+                    "type": "cfamily",
+                    "platforms": ["macos"],
+                    "progs": {
+                        "cc": "gcc-shim",
+                        "cxx": "g++-shim",
+                        "objc": "objc-shim",
+                        "objcxx": "objcxx-shim",
+                        "ld_so": "ld-shim",
+                        "ld_exe": "ld-shim",
+                        "ar": "ar-shim",
+                    },
+                    "flags": {
+                        "define": "-D",
+                        "include_dir": "-I",
+                        "lib": "-l",
+                        "lib_dir": "-L",
+                        "framework": "-framework",
+                        "framework_dir": "-F",
+                        "compile_output": "-o",
+                        "link_output": "-o",
+                        "compile": "-c",
+                        "shared": "",
+                        "executable": "",
+                        "strip_lib_prefix": False,
+                    },
+                }
+            ],
+        )
+        shim_dir = self._create_tool_shims(
+            ["gcc-shim", "g++-shim", "objc-shim", "objcxx-shim", "ld-shim", "ar-shim"]
+        )
+        sep = ";" if platform.system().lower().startswith("win") else ":"
+        env_path = f"{shim_dir}{sep}{os.environ.get('PATH', '')}"
+
+        self._run_autom(
+            output_dir=".",
+            toolchains=toolchains_path,
+            env_overrides={"PATH": env_path},
+            extra_args=["--platform", "macos", "--os", "linux", "--ninja"],
+        )
+        ninja = (self.case_dir / "build.ninja").read_text(encoding="utf-8")
+        self.assertIn("build out/bin/FlagsApp.customexe: exe", ninja)
+        self.assertIn("CFLAGS=-Wall -Wextra", ninja)
+        self.assertIn("INCLUDE_DIRS=-I./include -I./vendor/include", ninja)
+        self.assertIn("LIBS=-lpthread -lm", ninja)
+        self.assertIn("LIB_DIRS=-L./lib -L./vendor/lib", ninja)
+
+    def test_toolchain_matrix_generation_signatures(self) -> None:
+        cases = [
+            ToolchainMatrixCase(
+                name="gnu-linux",
+                target_platform="macos",
+                target_os="linux",
+                toolchain_entry={
+                    "name": "GCC",
+                    "type": "cfamily",
+                    "platforms": ["macos"],
+                    "progs": {
+                        "cc": "gcc-shim",
+                        "cxx": "g++-shim",
+                        "objc": "objc-shim",
+                        "objcxx": "objcxx-shim",
+                        "ld_so": "ld-shim",
+                        "ld_exe": "ld-shim",
+                        "ar": "ar-shim",
+                    },
+                    "flags": {
+                        "define": "-D",
+                        "include_dir": "-I",
+                        "lib": "-l",
+                        "lib_dir": "-L",
+                        "framework": "-framework",
+                        "framework_dir": "-F",
+                        "compile_output": "-o",
+                        "link_output": "-o",
+                        "compile": "-c",
+                        "shared": "",
+                        "executable": "",
+                        "strip_lib_prefix": False,
+                    },
+                },
+                required_tools=("gcc-shim", "g++-shim", "objc-shim", "objcxx-shim", "ld-shim", "ar-shim"),
+                expected_cc_prefix="command = gcc-shim",
+                expected_cxx_prefix="command = g++-shim",
+                expected_ar_prefix="command = ar-shim",
+                expected_so_prefix="command = ld-shim",
+                expected_exe_prefix="command = ld-shim",
+                expected_archive_ext="a",
+                expected_shared_ext="so",
+                expected_exe_name="CoreApp",
+                expected_compile_output_flag="-o$out",
+            ),
+            ToolchainMatrixCase(
+                name="llvm-linux",
+                target_platform="macos",
+                target_os="linux",
+                toolchain_entry={
+                    "name": "LLVM",
+                    "type": "cfamily",
+                    "platforms": ["macos"],
+                    "progs": {
+                        "cc": "clang-shim",
+                        "cxx": "clang++-shim",
+                        "objc": "objc-shim",
+                        "objcxx": "objcxx-shim",
+                        "ld_so": "ld.lld-shim",
+                        "ld_exe": "ld.lld-shim",
+                        "ar": "llvm-ar-shim",
+                    },
+                    "flags": {
+                        "define": "-D",
+                        "include_dir": "-I",
+                        "lib": "-l",
+                        "lib_dir": "-L",
+                        "framework": "-framework",
+                        "framework_dir": "-F",
+                        "compile_output": "-o",
+                        "link_output": "-o",
+                        "compile": "-c",
+                        "shared": "",
+                        "executable": "",
+                        "strip_lib_prefix": False,
+                    },
+                },
+                required_tools=(
+                    "clang-shim",
+                    "clang++-shim",
+                    "objc-shim",
+                    "objcxx-shim",
+                    "ld.lld-shim",
+                    "llvm-ar-shim",
+                ),
+                expected_cc_prefix="command = clang-shim",
+                expected_cxx_prefix="command = clang++-shim",
+                expected_ar_prefix="command = llvm-ar-shim",
+                expected_so_prefix="command = ld.lld-shim",
+                expected_exe_prefix="command = ld.lld-shim",
+                expected_archive_ext="a",
+                expected_shared_ext="so",
+                expected_exe_name="CoreApp",
+                expected_compile_output_flag="-o$out",
+            ),
+            ToolchainMatrixCase(
+                name="llvm-windows",
+                target_platform="windows",
+                target_os="windows",
+                toolchain_entry={
+                    "name": "LLVM",
+                    "type": "cfamily",
+                    "platforms": ["windows"],
+                    "progs": {
+                        "cc": "clang-cl-shim",
+                        "cxx": "clang-cl-shim",
+                        "objc": "objc-shim",
+                        "objcxx": "objcxx-shim",
+                        "ld_so": "lld-link-shim",
+                        "ld_exe": "lld-link-shim",
+                        "ar": "llvm-lib-shim",
+                    },
+                    "flags": {
+                        "define": "/D",
+                        "include_dir": "/I",
+                        "lib": "",
+                        "lib_dir": "/LIBPATH:",
+                        "framework": "-framework",
+                        "framework_dir": "-F",
+                        "compile_output": "/Fo",
+                        "link_output": "/out:",
+                        "compile": "/c",
+                        "shared": "/dll",
+                        "executable": "",
+                        "strip_lib_prefix": False,
+                    },
+                },
+                required_tools=("clang-cl-shim", "objc-shim", "objcxx-shim", "lld-link-shim", "llvm-lib-shim"),
+                expected_cc_prefix="command = clang-cl-shim",
+                expected_cxx_prefix="command = clang-cl-shim",
+                expected_ar_prefix="command = llvm-lib-shim",
+                expected_so_prefix="command = lld-link-shim /dll",
+                expected_exe_prefix="command = lld-link-shim",
+                expected_archive_ext="lib",
+                expected_shared_ext="dll",
+                expected_exe_name="CoreApp.exe",
+                expected_compile_output_flag="/Fo$out",
+            ),
+            ToolchainMatrixCase(
+                name="msvc-windows",
+                target_platform="windows",
+                target_os="windows",
+                toolchain_entry={
+                    "name": "MSVC",
+                    "type": "cfamily",
+                    "platforms": ["windows"],
+                    "progs": {
+                        "cc": "cl-shim",
+                        "cxx": "cl-shim",
+                        "objc": "objc-shim",
+                        "objcxx": "objcxx-shim",
+                        "ld_so": "link-shim",
+                        "ld_exe": "link-shim",
+                        "ar": "lib-shim",
+                    },
+                    "flags": {
+                        "define": "/D",
+                        "include_dir": "/I",
+                        "lib": "",
+                        "lib_dir": "/LIBPATH:",
+                        "framework": "-framework",
+                        "framework_dir": "-F",
+                        "compile_output": "/Fo",
+                        "link_output": "/out:",
+                        "compile": "/c",
+                        "shared": "/LD /link",
+                        "executable": "/link",
+                        "strip_lib_prefix": False,
+                    },
+                },
+                required_tools=("cl-shim", "objc-shim", "objcxx-shim", "link-shim", "lib-shim"),
+                expected_cc_prefix="command = cl-shim",
+                expected_cxx_prefix="command = cl-shim",
+                expected_ar_prefix="command = lib-shim",
+                expected_so_prefix="command = link-shim /LD /link",
+                expected_exe_prefix="command = link-shim /link",
+                expected_archive_ext="lib",
+                expected_shared_ext="dll",
+                expected_exe_name="CoreApp.exe",
+                expected_compile_output_flag="/Fo$out",
+            ),
+        ]
+
+        for case in cases:
+            with self.subTest(case=case.name):
+                case_dir = self.case_dir / case.name
+                case_dir.mkdir(parents=True, exist_ok=True)
+
+                self._write(
+                    "AUTOM.build",
+                    """project(name:"MatrixProj",version:"1.0")
+var lib = Archive(name:"CoreLib",sources:["./src/lib.cpp"])
+var shared = Shared(name:"CoreShared",sources:["./src/shared.cpp"])
+var app = Executable(name:"CoreApp",sources:["./src/main.cpp"])
+app.deps = ["CoreLib","CoreShared"]
+""",
+                    cwd=case_dir,
+                )
+                self._write("src/lib.cpp", "int libv(){ return 1; }\n", cwd=case_dir)
+                self._write("src/shared.cpp", "int sharedv(){ return 2; }\n", cwd=case_dir)
+                self._write(
+                    "src/main.cpp",
+                    "int libv(); int sharedv(); int main(){ return (libv()+sharedv()==3)?0:1; }\n",
+                    cwd=case_dir,
+                )
+
+                toolchains_path = self._write_json("toolchains.json", [case.toolchain_entry], cwd=case_dir)
+                shim_dir = self._create_tool_shims(list(case.required_tools), cwd=case_dir)
+                sep = ";" if platform.system().lower().startswith("win") else ":"
+                env_path = f"{shim_dir}{sep}{os.environ.get('PATH', '')}"
+
+                self._run_autom(
+                    output_dir=".",
+                    toolchains=toolchains_path,
+                    env_overrides={"PATH": env_path},
+                    cwd=case_dir,
+                    extra_args=[
+                        "--platform",
+                        case.target_platform,
+                        "--os",
+                        case.target_os,
+                        "--ninja",
+                    ],
+                )
+
+                ninja = (case_dir / "build.ninja").read_text(encoding="utf-8")
+                toolchain_ninja = (case_dir / "toolchain.ninja").read_text(encoding="utf-8")
+
+                self.assertIn(f"build CoreLib.{case.expected_archive_ext}: ar", ninja)
+                self.assertIn(f"build CoreShared.{case.expected_shared_ext}: so", ninja)
+                self.assertIn(f"build {case.expected_exe_name}: exe", ninja)
+
+                self.assertIn("rule cc", toolchain_ninja)
+                self.assertIn("rule cxx", toolchain_ninja)
+                self.assertIn("rule so", toolchain_ninja)
+                self.assertIn("rule exe", toolchain_ninja)
+                self.assertIn("rule ar", toolchain_ninja)
+
+                self.assertIn(case.expected_cc_prefix, toolchain_ninja)
+                self.assertIn(case.expected_cxx_prefix, toolchain_ninja)
+                self.assertIn(case.expected_ar_prefix, toolchain_ninja)
+                self.assertIn(case.expected_so_prefix, toolchain_ninja)
+                self.assertIn(case.expected_exe_prefix, toolchain_ninja)
+                self.assertIn(case.expected_compile_output_flag, toolchain_ninja)
 
 
 def _detect_default_autom_bin(repo_root: Path) -> Path:

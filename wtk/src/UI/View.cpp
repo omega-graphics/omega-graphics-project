@@ -63,10 +63,13 @@ namespace OmegaWTK {
         };
     };
 
-    void View::resize(Core::Rect newRect){
-        rect = newRect;
-        renderTarget->getNativePtr()->resize(newRect);
-    };
+void View::resize(Core::Rect newRect){
+    rect = newRect;
+    renderTarget->getNativePtr()->resize(newRect);
+    if(layerTreeLimb != nullptr){
+        layerTreeLimb->getRootLayer()->resize(newRect);
+    }
+};
 
 View::View(const Core::Rect & rect,Native::NativeItemPtr nativeItem,Composition::LayerTree *layerTree,ViewPtr parent):
 rect(rect),

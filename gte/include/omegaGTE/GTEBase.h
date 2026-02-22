@@ -393,18 +393,36 @@ _NAMESPACE_BEGIN_
             Node *pt_A;
             Node *pt_B;
             unsigned pos;
+            bool atEnd() const {
+                return pt_A == nullptr || pt_B == nullptr;
+            }
         public:
-            explicit Path_Iterator(Node *_data):pt_A(_data),pt_B(pt_A->next),pos(0){
-                
+            explicit Path_Iterator(Node *_data):pt_A(_data),pt_B(nullptr),pos(0){
+                if(pt_A != nullptr){
+                    pt_B = pt_A->next;
+                }
             };
             Path_Iterator & operator++(){
+                if(pt_A == nullptr){
+                    ++pos;
+                    return *this;
+                }
+
+                if(pt_B == nullptr){
+                    pt_A = nullptr;
+                    ++pos;
+                    return *this;
+                }
+
                 pt_A = pt_A->next;
-                pt_B = pt_B->next;
+                pt_B = (pt_A != nullptr) ? pt_A->next : nullptr;
                 ++pos;
                 return *this;
             };
             bool operator==(const Path_Iterator & r){
-//                    std::cout << "Self Pos:" << pos << ", Other Pos:" << r.pos << std::endl;
+                if(atEnd() && r.atEnd()){
+                    return true;
+                }
                 return pos == r.pos;
             };
             bool operator!=(const Path_Iterator & r){
@@ -418,6 +436,9 @@ _NAMESPACE_BEGIN_
                 return *this;
             };
             Segment operator*(){
+                if(pt_A == nullptr || pt_B == nullptr){
+                    return {nullptr,nullptr};
+                }
                 return {(pt_A->pt),(pt_B->pt)};
             };
 
@@ -448,27 +469,19 @@ _NAMESPACE_BEGIN_
             ++len;
         };
         void assign(const GVectorPath_Base & other){
-            Node * pt_a = other.first;
-            first = new Node(new Pt_Ty(*(pt_a->pt)));
-            Node *next = first->next;
-            if(other.first->next == nullptr){
-                this->len = other.len;
-                this->numPoints = other.numPoints;
-                return;
+            assert(other.first != nullptr && "Cannot copy from an empty vector path");
+            first = new Node(new Pt_Ty(*(other.first->pt)));
+
+            Node *dst = first;
+            Node *src = other.first->next;
+            while(src != nullptr){
+                dst->next = new Node(new Pt_Ty(*(src->pt)));
+                dst = dst->next;
+                src = src->next;
             }
-            Node *pt_b = other.first->next;
-            next = new Node(new Pt_Ty(*(pt_b->pt)));
-            unsigned idx = other.len-1;
-            while(idx > 0){
-                next = next->next;
-                if(pt_b) {
-                    pt_b = pt_b->next;
-                    if(pt_b)
-                        next = new Node(new Pt_Ty(*(pt_b->pt)));
-                }
-                --idx;
-            };
+
             len = other.len;
+            numPoints = other.numPoints;
         }
         public:
         Pt_Ty & firstPt(){
@@ -540,6 +553,8 @@ _NAMESPACE_BEGIN_
             if(this == &other){
                 return *this;
             }
+            delete first;
+            first = nullptr;
             assign(other);
             return *this;
         }
@@ -547,6 +562,8 @@ _NAMESPACE_BEGIN_
             if(this == &other){
                 return *this;
             }
+            delete first;
+            first = nullptr;
             assign(other);
             return *this;
         }

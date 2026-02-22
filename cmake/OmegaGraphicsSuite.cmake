@@ -275,7 +275,7 @@ function(add_framework_bundle)
 endfunction()
 
 function(add_app_bundle)
-    cmake_parse_arguments("_ARG" "" "NAME;PLIST" "SOURCES;RESOURCES;DEPS;LIBS;EMBEDDED_FRAMEWORKS" ${ARGN})
+    cmake_parse_arguments("_ARG" "" "NAME;PLIST" "SOURCES;RESOURCES;DEPS;LIBS;EMBEDDED_FRAMEWORKS;EMBEDDED_LIBS" ${ARGN})
 		
 	message("KEYWORDS_MISSING_VALUES:${_ARG_KEYWORDS_MISSING_VALUES}")
 	
@@ -315,8 +315,8 @@ function(add_app_bundle)
 		)
 	endforeach()
 
-	add_custom_target("${_NAME}__res" DEPENDS ${ALL_RES_FINAL})
-	add_dependencies(${UNSIGNED_TARGET} "${_NAME}__res")
+		add_custom_target("${_NAME}__res" DEPENDS ${ALL_RES_FINAL})
+		add_dependencies(${UNSIGNED_TARGET} "${_NAME}__res")
 
 	# if(${_ARG_EMBEDDED_HEADERS})
 	#     set_target_properties()
@@ -343,8 +343,8 @@ function(add_app_bundle)
 					DEPENDS ${f}
 					COMMENT "Embedding Framework ${f} in App Bundle ${_NAME}")
 		endforeach()
-		add_custom_target("${_NAME}__framework_embed" DEPENDS ${__outputted_frameworks})
-		add_dependencies(${UNSIGNED_TARGET} "${_NAME}__framework_embed")
+			add_custom_target("${_NAME}__framework_embed" DEPENDS ${__outputted_frameworks})
+			add_dependencies(${UNSIGNED_TARGET} "${_NAME}__framework_embed")
 		
 		set(EMBED_LIBS FALSE)
 		
@@ -365,9 +365,16 @@ function(add_app_bundle)
 			add_dependencies(${UNSIGNED_TARGET} "${_NAME}__lib_embed")
 		endif()
 
-		code_sign_bundle(${_NAME} TRUE "VERSION" "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents" ${EMBED_LIBS})
-		add_dependencies(${_NAME}.app "${_NAME}__codesign")
-	endif()
+			code_sign_bundle(${_NAME} TRUE "VERSION" "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents" ${EMBED_LIBS})
+			add_dependencies(${_NAME}.app "${_NAME}__codesign")
+
+			# Ensure a plain `${_NAME}` build also stages runtime bundle artifacts.
+			add_dependencies(${_NAME} "${_NAME}__res")
+			add_dependencies(${_NAME} "${_NAME}__framework_embed")
+			if(TARGET "${_NAME}__lib_embed")
+				add_dependencies(${_NAME} "${_NAME}__lib_embed")
+			endif()
+		endif()
 
 
 	foreach(_dep ${_ARG_DEPS})
@@ -563,4 +570,3 @@ function(omega_graphics_add_subdir _PROJECT_NAME _NAME)
 	add_subdirectory(${_NAME})
 	
 endfunction()
-

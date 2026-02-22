@@ -4,6 +4,7 @@
 #include "omegaWTK/Composition/Canvas.h"
 
 #include "omegaWTK/Media/ImgCodec.h"
+#include <algorithm>
 
 namespace OmegaWTK::Composition {
     #ifdef TARGET_MACOS
@@ -296,7 +297,29 @@ BackendRenderTargetContext::BackendRenderTargetContext(Core::Rect & rect,
 }
 
     void BackendRenderTargetContext::setRenderTargetSize(Core::Rect &rect) {
+        const unsigned oldW = std::max(1u,(unsigned)renderTargetSize.w);
+        const unsigned oldH = std::max(1u,(unsigned)renderTargetSize.h);
+        const unsigned newW = std::max(1u,(unsigned)rect.w);
+        const unsigned newH = std::max(1u,(unsigned)rect.h);
+
+        if(oldW == newW && oldH == newH){
+            renderTargetSize = rect;
+            return;
+        }
+
         renderTargetSize = rect;
+
+        OmegaGTE::TextureDescriptor textureDescriptor {};
+        textureDescriptor.usage = OmegaGTE::GETexture::RenderTarget;
+        textureDescriptor.storage_opts = OmegaGTE::Shared;
+        textureDescriptor.width = newW;
+        textureDescriptor.height = newH;
+        textureDescriptor.type = OmegaGTE::GETexture::Texture2D;
+        textureDescriptor.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm;
+
+        targetTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
+        preEffectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,targetTexture});
+        tessellationEngineContext = gte.tessalationEngine->createTEContextFromTextureRenderTarget(preEffectTarget);
     }
 
 void BackendRenderTargetContext::clear(float r, float g, float b, float a) {
@@ -506,6 +529,70 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
 
                 break;
             }
+            case VisualCommand::Ellipse : {
+                auto & _params = ((VisualCommandParams*)params)->ellipseParams;
+                OmegaGTE::GEllipsoid ellipsoid {
+                        _params.ellipse.rad_x,
+                        _params.ellipse.rad_y,
+                        0.f,
+                        _params.ellipse.rad_x,
+                        _params.ellipse.rad_y,
+                        0.f
+                };
+                auto te_params = OmegaGTE::TETessellationParams::Ellipsoid(ellipsoid);
+
+                auto color = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
+                if(_params.brush != nullptr && _params.brush->isColor){
+                    color = OmegaGTE::makeColor(_params.brush->color.r,
+                                                _params.brush->color.g,
+                                                _params.brush->color.b,
+                                                _params.brush->color.a);
+                }
+                te_params.addAttachment(OmegaGTE::TETessellationParams::Attachment::makeColor(color));
+
+                result = tessellationEngineContext->tessalateSync(te_params,
+                                                                  OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,
+                                                                  &viewPort);
+                // Ellipsoid tessellation is generated in local [0..2r] space, so we
+                // place by top-left derived from center coordinates.
+                const float x = _params.ellipse.x - _params.ellipse.rad_x;
+                const float y = _params.ellipse.y - _params.ellipse.rad_y;
+                result.translate(-((viewPort.width/2) - x),
+                                 -((viewPort.height/2) - y),
+                                 0,
+                                 viewPort);
+
+                break;
+            }
+            case VisualCommand::VectorPath : {
+                auto & _params = ((VisualCommandParams*)params)->pathParams;
+                if(_params.path == nullptr || _params.path->size() < 2){
+                    return;
+                }
+                auto te_params = OmegaGTE::TETessellationParams::GraphicsPath2D(*_params.path,
+                                                                                 _params.strokeWidth,
+                                                                                 _params.contour,
+                                                                                 _params.fill);
+                auto color = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
+                if(_params.brush != nullptr && _params.brush->isColor){
+                    color = OmegaGTE::makeColor(_params.brush->color.r,
+                                                _params.brush->color.g,
+                                                _params.brush->color.b,
+                                                _params.brush->color.a);
+                }
+                te_params.addAttachment(OmegaGTE::TETessellationParams::Attachment::makeColor(color));
+                result = tessellationEngineContext->tessalateSync(te_params,
+                                                                  OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,
+                                                                  &viewPort);
+                break;
+            }
+            case VisualCommand::Text:
+            default:
+                return;
+        }
+
+        if(result.totalVertexCount() == 0){
+            return;
         }
 
         if(useTextureRenderPipeline){
@@ -547,7 +634,7 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
 
         unsigned startVertexIndex = 0;
 
-        auto writeColorVertexToBuffer = [&](OmegaGTE::GPoint3D & pt,OmegaGTE::FVec<4> & color){
+        auto writeColorVertexToBuffer = [&](OmegaGTE::GPoint3D & pt,OmegaGTE::FVec<4> color){
             auto pos = OmegaGTE::FVec<4>::Create();
             pos[0][0] = pt.x;
             pos[1][0] = pt.y;
@@ -560,7 +647,7 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
             bufferWriter->sendToBuffer();
         };
 
-         auto writeTexVertexToBuffer = [&](OmegaGTE::GPoint3D & pt,OmegaGTE::FVec<2> & coord){
+         auto writeTexVertexToBuffer = [&](OmegaGTE::GPoint3D & pt,OmegaGTE::FVec<2> coord){
             auto pos = OmegaGTE::FVec<4>::Create();
             pos[0][0] = pt.x;
             pos[1][0] = pt.y;
@@ -574,17 +661,28 @@ void BackendRenderTargetContext::applyEffectToTarget(CanvasEffect::Type type, vo
         };
 
 
+        const auto fallbackColor = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
+        auto fallbackTexCoord = OmegaGTE::FVec<2>::Create();
+        fallbackTexCoord[0][0] = 0.f;
+        fallbackTexCoord[1][0] = 0.f;
+
         for(auto & m : result.meshes) {
             for(auto & v : m.vertexPolygons){
                 if(useTextureRenderPipeline){
-                    writeTexVertexToBuffer(v.a.pt,v.a.attachment->texture2Dcoord);
-                    writeTexVertexToBuffer(v.b.pt,v.b.attachment->texture2Dcoord);
-                    writeTexVertexToBuffer(v.c.pt,v.c.attachment->texture2Dcoord);
+                    auto & aCoord = v.a.attachment ? v.a.attachment->texture2Dcoord : fallbackTexCoord;
+                    auto & bCoord = v.b.attachment ? v.b.attachment->texture2Dcoord : fallbackTexCoord;
+                    auto & cCoord = v.c.attachment ? v.c.attachment->texture2Dcoord : fallbackTexCoord;
+                    writeTexVertexToBuffer(v.a.pt,aCoord);
+                    writeTexVertexToBuffer(v.b.pt,bCoord);
+                    writeTexVertexToBuffer(v.c.pt,cCoord);
                 }
                 else {
-                    writeColorVertexToBuffer(v.a.pt,v.a.attachment->color);
-                    writeColorVertexToBuffer(v.b.pt,v.b.attachment->color);
-                    writeColorVertexToBuffer(v.c.pt,v.c.attachment->color);
+                    auto & aColor = v.a.attachment ? v.a.attachment->color : fallbackColor;
+                    auto & bColor = v.b.attachment ? v.b.attachment->color : fallbackColor;
+                    auto & cColor = v.c.attachment ? v.c.attachment->color : fallbackColor;
+                    writeColorVertexToBuffer(v.a.pt,aColor);
+                    writeColorVertexToBuffer(v.b.pt,bColor);
+                    writeColorVertexToBuffer(v.c.pt,cColor);
                 }
             }
         }

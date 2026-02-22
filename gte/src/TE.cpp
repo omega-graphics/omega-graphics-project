@@ -9,24 +9,9 @@
 _NAMESPACE_BEGIN_
 
 
-struct TETessellationParams::GraphicsPath2DParams {
-    GVectorPath2D path;
-    bool treatAsContour;
-    bool fill;
-    float strokeWidth;
-    GraphicsPath2DParams(GVectorPath2D & path,bool treatAsContour,bool fill,float strokeWidth):
-    path(path),
-    treatAsContour(treatAsContour),
-    fill(fill),
-    strokeWidth(strokeWidth){
-
-    };
-};
-
 struct TETessellationParams::GraphicsPath3DParams {
     GVectorPath3D * pathes;
     unsigned pathCount;
-    GraphicsPath3DParams(GVectorPath3D * pathes,unsigned pathCount):pathes(pathes),pathCount(pathCount){};
 };
 
 union TETessellationParams::Data {
@@ -46,8 +31,6 @@ union TETessellationParams::Data {
     GPyramid pyramid;
 
     GCylinder cylinder;
-
-    GraphicsPath2DParams path2D;
 
     GraphicsPath3DParams path3D;
 
@@ -152,8 +135,11 @@ TETessellationParams TETessellationParams::Cone(GCone &cone){
 TETessellationParams TETessellationParams::GraphicsPath2D(GVectorPath2D & path,float strokeWidth,bool contour,bool fill){
     TETessellationParams params;
     params.params.reset(new Data{});
-    params.params->path2D = {path,contour,fill,strokeWidth};
-    params.type = TESSALATE_GRAPHICSPATH2D;
+    params.graphicsPath2D = std::make_shared<GVectorPath2D>(path);
+    params.graphicsPath2DContour = contour;
+    params.graphicsPath2DFill = fill;
+    params.graphicsPath2DStrokeWidth = strokeWidth;
+    params.type = params.params->type = TESSALATE_GRAPHICSPATH2D;
     return params;
 };
 
@@ -282,77 +268,178 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
         }
         case TETessellationParams::TESSALATE_ROUNDEDRECT : {
             auto & object = params.params->rounded_rect;
+            const float rad_x = std::fmax(0.0f,std::fmin(object.rad_x,object.w * 0.5f));
+            const float rad_y = std::fmax(0.0f,std::fmin(object.rad_y,object.h * 0.5f));
+            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            if(!params.attachments.empty()){
+                auto & attachment = params.attachments.front();
+                if(attachment.type == TETessellationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
+                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                }
+            }
 
-            GRect middle_rect {object.rad_x,object.rad_y,object.w - (2 * object.rad_x),object.h - (2 * object.rad_y)};
+            GRect middle_rect {rad_x,rad_y,object.w - (2 * rad_x),object.h - (2 * rad_y)};
 
             auto middle_rect_params = TETessellationParams::Rect(middle_rect);
+            if(colorAttachment){
+                middle_rect_params.addAttachment(
+                        TETessellationParams::Attachment::makeColor(colorAttachment->color));
+            }
 
             _tessalatePriv(middle_rect_params,frontFaceRotation,viewport,result);
 
             auto tessellateArc = [&](GPoint2D start, float rad_x, float rad_y, float angle_start, float angle_end, float _arcStep){
+                if(std::fabs(_arcStep) < 0.0001f){
+                    return;
+                }
                 TETessellationResult::TEMesh m {TETessellationResult::TEMesh::TopologyTriangleStrip};
-                GPoint3D pt_a {start.x,start.y,0.f};
-                auto _angle_it = angle_start;
-                while(_angle_it <= angle_end){
+                float centerX,centerY;
+                translateCoords(start.x,start.y,0.f,viewport,&centerX,&centerY,nullptr);
+                GPoint3D pt_a {centerX,centerY,0.f};
+                float angle = angle_start;
+                while((_arcStep > 0.f) ? (angle < angle_end) : (angle > angle_end)){
                     TETessellationResult::TEMesh::Polygon p {};
 
-                    auto x_f = cosf(_angle_it) * rad_x;
-                    auto y_f = sinf(_angle_it) * rad_y;
+                    float nextAngle = angle + _arcStep;
+                    if(_arcStep > 0.f && nextAngle > angle_end){
+                        nextAngle = angle_end;
+                    }
+                    else if(_arcStep < 0.f && nextAngle < angle_end){
+                        nextAngle = angle_end;
+                    }
+
+                    auto x_f = cosf(angle) * rad_x;
+                    auto y_f = sinf(angle) * rad_y;
 
                     x_f += start.x;
                     y_f += start.y;
 
                     p.a.pt = pt_a;
-                    p.b.pt = GPoint3D {x_f,y_f,0.f};
+                    float x_t,y_t;
+                    translateCoords(x_f,y_f,0.f,viewport,&x_t,&y_t,nullptr);
+                    p.b.pt = GPoint3D {x_t,y_t,0.f};
 
 
-                    _angle_it += _arcStep;
-
-                    x_f = cosf(_angle_it) * rad_x;
-                    y_f = sinf(_angle_it) * rad_y;
+                    x_f = cosf(nextAngle) * rad_x;
+                    y_f = sinf(nextAngle) * rad_y;
 
                     x_f += start.x;
                     y_f += start.y;
 
-                    p.c.pt = GPoint3D {x_f,y_f,0.f};
+                    translateCoords(x_f,y_f,0.f,viewport,&x_t,&y_t,nullptr);
+                    p.c.pt = GPoint3D {x_t,y_t,0.f};
+                    if(colorAttachment){
+                        p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
+                    }
 
                     m.vertexPolygons.push_back(p);
+                    angle = nextAngle;
                 }
                 result.meshes.push_back(m);
             };
 
             /// Bottom Left Arc
-            tessellateArc(GPoint2D {object.rad_x, object.rad_y}, object.rad_x, object.rad_y, float(3.f * PI) / 2.f, PI, -arcStep);
+            tessellateArc(GPoint2D {rad_x, rad_y}, rad_x, rad_y, float(3.f * PI) / 2.f, PI, -arcStep);
 
             /// Left Rect
-            middle_rect = GRect {GPoint2D{0.f,object.rad_y},object.rad_x,object.h - (2 * object.rad_y)};
+            middle_rect = GRect {GPoint2D{0.f,rad_y},rad_x,object.h - (2 * rad_y)};
             middle_rect_params = TETessellationParams::Rect(middle_rect);
+            if(colorAttachment){
+                middle_rect_params.addAttachment(
+                        TETessellationParams::Attachment::makeColor(colorAttachment->color));
+            }
 
             _tessalatePriv(middle_rect_params,frontFaceRotation,viewport,result);
             /// Top Left Arc
-            tessellateArc(GPoint2D {object.rad_x, object.h - object.rad_y}, object.rad_x, object.rad_y, PI, float(PI) / 2.f, -arcStep);
+            tessellateArc(GPoint2D {rad_x, object.h - rad_y}, rad_x, rad_y, PI, float(PI) / 2.f, -arcStep);
 
             /// Top Rect
-            middle_rect = GRect {GPoint2D{object.rad_x,object.h - object.rad_y},object.w - (object.rad_x * 2),object.rad_y};
+            middle_rect = GRect {GPoint2D{rad_x,object.h - rad_y},object.w - (rad_x * 2),rad_y};
             middle_rect_params = TETessellationParams::Rect(middle_rect);
+            if(colorAttachment){
+                middle_rect_params.addAttachment(
+                        TETessellationParams::Attachment::makeColor(colorAttachment->color));
+            }
 
             _tessalatePriv(middle_rect_params,frontFaceRotation,viewport,result);
             /// Top Right Arc
-            tessellateArc(GPoint2D {object.w - object.rad_x, object.h - (object.rad_y)}, object.rad_x, object.rad_y, float(PI) / 2.f, 0, -arcStep);
+            tessellateArc(GPoint2D {object.w - rad_x, object.h - rad_y}, rad_x, rad_y, float(PI) / 2.f, 0, -arcStep);
 
             /// Right Rect
-            middle_rect = GRect {GPoint2D{object.w - object.rad_x,object.rad_y},object.rad_x,object.h - (2 * object.rad_y)};
+            middle_rect = GRect {GPoint2D{object.w - rad_x,rad_y},rad_x,object.h - (2 * rad_y)};
             middle_rect_params = TETessellationParams::Rect(middle_rect);
+            if(colorAttachment){
+                middle_rect_params.addAttachment(
+                        TETessellationParams::Attachment::makeColor(colorAttachment->color));
+            }
 
             _tessalatePriv(middle_rect_params,frontFaceRotation,viewport,result);
 
             /// Bottom Right Arc
-            tessellateArc(GPoint2D {object.w - object.rad_x, object.rad_y}, object.rad_x, object.rad_y, 0, -float(PI) / 2.f, -arcStep);
+            tessellateArc(GPoint2D {object.w - rad_x, rad_y}, rad_x, rad_y, 0, -float(PI) / 2.f, -arcStep);
 
             /// Bottom Rect
-            middle_rect = GRect {GPoint2D{0.f,0.f},object.w - (object.rad_x * 2),object.rad_y};
+            middle_rect = GRect {GPoint2D{rad_x,0.f},object.w - (rad_x * 2),rad_y};
             middle_rect_params = TETessellationParams::Rect(middle_rect);
+            if(colorAttachment){
+                middle_rect_params.addAttachment(
+                        TETessellationParams::Attachment::makeColor(colorAttachment->color));
+            }
+            _tessalatePriv(middle_rect_params,frontFaceRotation,viewport,result);
 
+            break;
+        }
+        case TETessellationParams::TESSALATE_ELLIPSOID : {
+            auto & object = params.params->ellipsoid;
+
+            TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
+            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            if(!params.attachments.empty()){
+                auto & attachment = params.attachments.front();
+                if(attachment.type == TETessellationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
+                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                }
+            }
+
+            float centerX,centerY,centerZ;
+            translateCoords(object.x,object.y,object.z,viewport,&centerX,&centerY,&centerZ);
+
+            auto makePoint = [&](float angle){
+                float x = object.x + std::cosf(angle) * object.rad_x;
+                float y = object.y + std::sinf(angle) * object.rad_y;
+                float tx,ty,tz;
+                translateCoords(x,y,object.z,viewport,&tx,&ty,&tz);
+                return GPoint3D{tx,ty,tz};
+            };
+
+            auto center = GPoint3D{centerX,centerY,centerZ};
+            const float step = arcStep > 0.f ? arcStep : 0.01f;
+            float angle = 0.f;
+            auto prev = makePoint(0.f);
+
+            while(angle < (2.f * PI)){
+                float nextAngle = angle + step;
+                if(nextAngle > (2.f * PI)){
+                    nextAngle = 2.f * PI;
+                }
+                auto next = makePoint(nextAngle);
+
+                TETessellationResult::TEMesh::Polygon tri {};
+                tri.a.pt = center;
+                tri.b.pt = prev;
+                tri.c.pt = next;
+                if(colorAttachment){
+                    tri.a.attachment = tri.b.attachment = tri.c.attachment = colorAttachment;
+                }
+                mesh.vertexPolygons.push_back(tri);
+
+                prev = next;
+                angle = nextAngle;
+            }
+
+            result.meshes.push_back(mesh);
             break;
         }
         case TETessellationParams::TESSELLATE_RECTANGULAR_PRISM : {
@@ -454,220 +541,82 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
             break;
         }
         case TETessellationParams::TESSALATE_GRAPHICSPATH2D : {
-            auto & object = params.params->path2D;
+            if(params.graphicsPath2D == nullptr){
+                break;
+            }
+            auto & path = *params.graphicsPath2D;
 
             TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
+            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            if(!params.attachments.empty()){
+                auto & attachment = params.attachments.front();
+                if(attachment.type == TETessellationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
+                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                }
+            }
 
-            float deviceCoordStrokeWidthX = object.strokeWidth/(2 * viewport->width);
-            float deviceCoordStrokeWidthY = object.strokeWidth/(2 * viewport->height);
+            const float strokeWidth = params.graphicsPath2DStrokeWidth > 0.f ? params.graphicsPath2DStrokeWidth : 1.f;
+            auto toDevicePoint = [&](const GPoint2D &point){
+                float x,y;
+                // Path points are provided in canvas pixel-space (top-left origin),
+                // so shift by half viewport like other 2D primitives before NDC conversion.
+                const float px = point.x - (viewport->width * 0.5f);
+                const float py = (viewport->height * 0.5f) - point.y;
+                translateCoords(px,py,0.f,viewport,&x,&y,nullptr);
+                return GPoint3D{x,y,0.f};
+            };
 
-            TETessellationResult::TEMesh::Polygon polygon{};
-            /// 1. Triangulate Stroke of Path.
+            auto appendStrokeSegment = [&](const GPoint2D & start,const GPoint2D & end){
+                const float dx = end.x - start.x;
+                const float dy = end.y - start.y;
+                const float len = std::sqrt((dx * dx) + (dy * dy));
+                if(len <= 0.000001f){
+                    return;
+                }
 
-            GVectorPath2D path_a{GPoint2D {0,0}},path_b{GPoint2D{0,0}};
+                const float halfStroke = strokeWidth * 0.5f;
+                const float nx = -dy / len;
+                const float ny = dx / len;
 
-            for(auto path_it = object.path.begin();path_it != object.path.end();path_it.operator++()){
+                const GPoint2D a{start.x + nx * halfStroke,start.y + ny * halfStroke};
+                const GPoint2D b{start.x - nx * halfStroke,start.y - ny * halfStroke};
+                const GPoint2D c{end.x + nx * halfStroke,end.y + ny * halfStroke};
+                const GPoint2D d{end.x - nx * halfStroke,end.y - ny * halfStroke};
+
+                TETessellationResult::TEMesh::Polygon p {};
+                p.a.pt = toDevicePoint(a);
+                p.b.pt = toDevicePoint(b);
+                p.c.pt = toDevicePoint(c);
+                if(colorAttachment){
+                    p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
+                }
+                mesh.vertexPolygons.push_back(p);
+
+                p.a.pt = toDevicePoint(c);
+                p.b.pt = toDevicePoint(b);
+                p.c.pt = toDevicePoint(d);
+                if(colorAttachment){
+                    p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
+                }
+                mesh.vertexPolygons.push_back(p);
+            };
+
+            for(auto path_it = path.begin();path_it != path.end();path_it.operator++()){
                 auto segment = *path_it;
-                auto tan_m =  -(segment.pt_B->x - segment.pt_A->x)/(segment.pt_B->y - segment.pt_A->y);
-                auto tan_m_sq = tan_m * tan_m;
-                auto cos_m_sq = 1.f/(1 + (tan_m_sq));
-                auto cos_m = std::sqrt(cos_m_sq);
-                float stroke_x = deviceCoordStrokeWidthX * std::sqrt(cos_m_sq);
-                float stroke_y = deviceCoordStrokeWidthY * (cos_m * tan_m);
-
-                auto pt_a = GPoint3D {segment.pt_A->x + stroke_x,segment.pt_A->y + stroke_y,0.f};
-                auto pt_b = GPoint3D {segment.pt_A->x - stroke_x,segment.pt_A->y - stroke_y,0.f};
-
-                if(path_a.size() == 0){
-                    auto & pt = path_a.firstPt();
-                    pt.x = pt_a.x;
-                    pt.y = pt_a.y;
-
-                    pt = path_b.firstPt();
-                    pt.x = pt_b.x;
-                    pt.y = pt_b.y;
-
+                if(segment.pt_A == nullptr || segment.pt_B == nullptr){
+                    break;
                 }
-
-                auto pt_c = GPoint3D {segment.pt_B->x + stroke_x,segment.pt_B->y + stroke_y,0.f};
-                auto pt_d = GPoint3D {segment.pt_B->x - stroke_x,segment.pt_B->y - stroke_y,0.f};
-
-                path_a.append(GPoint2D {pt_c.x,pt_c.y});
-                path_b.append(GPoint2D {pt_d.x,pt_d.y});
-
-                polygon.a.pt = pt_a;
-                polygon.b.pt = pt_b;
-                polygon.c.pt = pt_c;
-
-                mesh.vertexPolygons.push_back(polygon);
-
-                polygon.a.pt = pt_c;
-                polygon.b.pt = pt_b;
-                polygon.c.pt = pt_d;
-
-                mesh.vertexPolygons.push_back(polygon);
+                appendStrokeSegment(*segment.pt_A,*segment.pt_B);
             }
 
-            /// 2. If it is a contour, close the path.
-
-            if(object.treatAsContour){
-                auto & start_pt = object.path.firstPt();
-                auto & end_pt = object.path.lastPt();
-
-                auto tan_m = -(end_pt.x - start_pt.x)/(end_pt.y - start_pt.y);
-                auto tan_m_sq = tan_m * tan_m;
-                auto cos_m_sq = 1.f/(1 + (tan_m_sq));
-                auto cos_m = std::sqrt(cos_m_sq);
-                float stroke_x = deviceCoordStrokeWidthX * std::sqrt(cos_m_sq);
-                float stroke_y = deviceCoordStrokeWidthY * (cos_m * tan_m);
-
-                auto pt_a = GPoint3D {start_pt.x + stroke_x,start_pt.y + stroke_y,0.f};
-                auto pt_b = GPoint3D {start_pt.x- stroke_x,start_pt.y - stroke_y,0.f};
-
-                auto pt_c = GPoint3D {end_pt.x + stroke_x,end_pt.y + stroke_y,0.f};
-                auto pt_d = GPoint3D {end_pt.x - stroke_x,end_pt.y - stroke_y,0.f};
-
-                polygon.a.pt = pt_a;
-                polygon.b.pt = pt_b;
-                polygon.c.pt = pt_c;
-
-                mesh.vertexPolygons.push_back(polygon);
-
-                polygon.a.pt = pt_c;
-                polygon.b.pt = pt_b;
-                polygon.c.pt = pt_d;
-
-                mesh.vertexPolygons.push_back(polygon);
-
-                /// 3. Fill the contour if needed.
-
-                if(object.fill){
-                    GVectorPath2D *inner_path;
-                    if(object.strokeWidth > 0){
-                        if(path_a.mag() > path_b.mag()){
-                            inner_path = &path_b;
-                        }
-                        else {
-                            inner_path = &path_a;
-                        }
-                    }
-                    else {
-                        inner_path = &object.path;
-                    }
-                    
-                    if(inner_path->size() > 2) {
-
-                        GVectorPath2D trace_path{*inner_path};
-                        GVectorPath2D trace_path__t{inner_path->firstPt()};
-                        OmegaCommon::Vector<std::pair<GPoint2D,float>> trace_path_record;
-                        TETessellationResult::TEMesh fill_mesh;
-                        fill_mesh.topology = TETessellationResult::TEMesh::TopologyTriangle;
-
-                        while (trace_path.size() > 3) {
-                            float cross_result = 0;
-
-                            /// 1. Calculate Fill Direction of Polygon 
-                            for (auto path_it = trace_path.begin(); path_it != trace_path.end(); path_it.operator++()) {
-                                GPoint2D a, b, c;
-
-                                auto seg = *path_it;
-                                a = *seg.pt_A;
-                                b = *seg.pt_B;
-                                path_it.operator++();
-                                if (path_it == trace_path.end()) {
-                                    c = trace_path.firstPt();
-                                } else {
-                                    c = *(*path_it).pt_B;
-                                }
-                                FVector3D vec_a{b.x - a.x, b.y - a.y, 0.f}, vec_b{c.x - b.x, c.y - b.y, 0.f};
-                                auto res = vec_a.cross(vec_b).getK();
-                                trace_path_record.push_back(std::make_pair(b,res));
-                                cross_result += res;
-                            }
-
-                            #define NEXT_ON_PATH(p) ++(p); if(p == trace_path_record.end()){ p = trace_path_record.begin();};
-
-                            /// 2. Fill Polygon recursively,
-                            bool plus_dominant = cross_result > 0,minus_dominant = cross_result < 0;
-
-                            for(auto pt_it = trace_path_record.begin(); pt_it != trace_path_record.end();){
-                                auto first_pt = pt_it->first;
-                                TETessellationResult::TEMesh::Polygon polygon;
-                                // polygon.a.attachment = polygon.b.attachment = polygon.c.attachment = std::make_optional(TETessellationResult::AttachmentData{}); 
-
-                                NEXT_ON_PATH(pt_it);
-
-                                if(plus_dominant){
-                                    if(pt_it->second > 0){
-                                        polygon.a.pt = GPoint3D{first_pt.x,first_pt.y,0.f};
-                                        polygon.b.pt = GPoint3D{pt_it->first.x,pt_it->first.y,0.f};
-
-                                        NEXT_ON_PATH(pt_it);
-
-                                        polygon.c.pt = GPoint3D{pt_it->first.x,pt_it->first.y,0.f};
-                                        fill_mesh.vertexPolygons.push_back(polygon);
-
-                                        trace_path__t.append(first_pt);
-                                        trace_path__t.append(pt_it->first);
-                                    }
-                                    else {
-                                         trace_path__t.append(first_pt);
-                                    }
-                                }
-                                else if(minus_dominant){
-                                    if(pt_it->second < 0){
-                                        polygon.a.pt = GPoint3D{first_pt.x,first_pt.y,0.f};
-                                        polygon.b.pt = GPoint3D{pt_it->first.x,pt_it->first.y,0.f};
-
-                                        NEXT_ON_PATH(pt_it);
-
-                                        polygon.c.pt = GPoint3D{pt_it->first.x,pt_it->first.y,0.f};
-                                        fill_mesh.vertexPolygons.push_back(polygon);
-
-                                        trace_path__t.append(first_pt);
-                                        trace_path__t.append(pt_it->first);
-                                    }
-                                    else {
-                                         trace_path__t.append(first_pt);
-                                    }
-                                }
-                                else {
-                                    trace_path__t.append(first_pt);
-                                    trace_path__t.append(pt_it->first);
-                                     NEXT_ON_PATH(pt_it);
-                                     trace_path__t.append(pt_it->first);
-                                }
-
-                            
-                            }
-
-                            trace_path = trace_path__t;
-                            trace_path__t.reset(trace_path__t.lastPt());
-                        }
-                        TETessellationResult::TEMesh::Polygon polygon;
-                        auto it = trace_path.begin();
-                        auto seg0 = *it;
-                        ++it;
-                        auto seg1 = *it;
-
-                        polygon.a.pt = GPoint3D{seg0.pt_A->x,seg0.pt_A->y,0.f};
-                        polygon.b.pt = GPoint3D{seg0.pt_B->x,seg0.pt_B->y,0.f};
-                        polygon.c.pt = GPoint3D{seg0.pt_B->x,seg0.pt_B->y,0.f};
-                        
-                        fill_mesh.vertexPolygons.push_back(polygon);
-                        result.meshes.push_back(fill_mesh);
-                    }
-                    
-                }
-
+            if(params.graphicsPath2DContour && path.size() >= 2){
+                appendStrokeSegment(path.lastPt(),path.firstPt());
             }
 
-
-
-            /// Finish
-            result.meshes.push_back(mesh);
-            
-
+            if(!mesh.vertexPolygons.empty()){
+                result.meshes.push_back(mesh);
+            }
             break;
         }
         default: {

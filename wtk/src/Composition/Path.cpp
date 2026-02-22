@@ -20,43 +20,39 @@ namespace OmegaWTK::Composition {
 
     void Path::addLine(OmegaGTE::GPoint2D dest_pt) {
         auto & current = segments.back();
+        auto start = current.path.lastPt();
+        const float dx = dest_pt.x - start.x;
+        const float dy = dest_pt.y - start.y;
+        const float len = std::sqrt((dx * dx) + (dy * dy));
+        if(len <= 0.000001f){
+            return;
+        }
 
-        float delta_x;
-        float delta_y;
+        const float halfStroke = float(currentStroke) * 0.5f;
+        const float nx = -dy / len;
+        const float ny = dx / len;
+        const float delta_x = nx * halfStroke;
+        const float delta_y = ny * halfStroke;
 
+        auto & leftStart = current.final_path_a.lastPt();
+        leftStart.x += delta_x;
+        leftStart.y += delta_y;
 
-        auto & first = current.path.lastPt();
-        /// m = tan(a)
-        auto m = -(dest_pt.x - first.x)/(dest_pt.y - first.y);
-        auto m_length = (float)currentStroke/2;
-        auto cos_p = 1.f/std::sqrt(1 + (m * m));
-        delta_x = cos_p * m_length;
-        delta_y = std::sqrt((m * m) - (delta_x * delta_x));
-
-        first = current.final_path_a.lastPt();
-        first.x += delta_x;
-        first.y += delta_y;
-
-        first = current.final_path_b.lastPt();
-
-        first.x -= delta_x;
-        first.y -= delta_y;
-
+        auto & rightStart = current.final_path_b.lastPt();
+        rightStart.x -= delta_x;
+        rightStart.y -= delta_y;
 
         current.path.append(dest_pt);
 
-        OmegaGTE::GPoint2D pt = dest_pt;
-        pt.x += delta_x;
-        pt.y += delta_y;
+        OmegaGTE::GPoint2D leftEnd = dest_pt;
+        leftEnd.x += delta_x;
+        leftEnd.y += delta_y;
+        current.final_path_a.append(leftEnd);
 
-        current.final_path_a.append(pt);
-
-        pt = dest_pt;
-
-        pt.x -= delta_x;
-        pt.y -= delta_y;
-
-        current.final_path_b.append(pt);
+        OmegaGTE::GPoint2D rightEnd = dest_pt;
+        rightEnd.x -= delta_x;
+        rightEnd.y -= delta_y;
+        current.final_path_b.append(rightEnd);
 
     }
 

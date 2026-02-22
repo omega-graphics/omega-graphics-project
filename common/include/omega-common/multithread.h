@@ -17,8 +17,9 @@
 #include <mutex>
 #include <thread>
 #include <future>
-#include <queue>
+#include <vector>
 #include <utility>
+#include <memory>
 
 #include <cassert>
 
@@ -30,15 +31,20 @@ namespace OmegaCommon {
     class Async {
         std::shared_ptr<bool> hasValue;
         std::shared_ptr<Mutex> mutex;
+        std::shared_ptr<std::condition_variable> condition;
         std::shared_ptr<T> _val;
 
         template<class Ty>
         friend class Promise;
 
     public:
-        explicit Async(std::shared_ptr<bool> hasValue, std::shared_ptr<Mutex> mutex, std::shared_ptr<T> _val):
+        explicit Async(std::shared_ptr<bool> hasValue,
+                       std::shared_ptr<Mutex> mutex,
+                       std::shared_ptr<std::condition_variable> condition,
+                       std::shared_ptr<T> _val):
         hasValue(hasValue),
         mutex(mutex),
+        condition(condition),
         _val(_val){
 
         }
@@ -47,7 +53,10 @@ namespace OmegaCommon {
             return *hasValue;
         }
         T & get(){
-            while(!ready());
+            std::unique_lock<Mutex> lk(*mutex.get());
+            condition->wait(lk,[this](){
+                return *hasValue;
+            });
             return *_val;
         }
         ~Async() = default;
@@ -58,34 +67,53 @@ namespace OmegaCommon {
 
         std::shared_ptr<Mutex>  mutex;
         std::shared_ptr<bool> hasValue;
+        std::shared_ptr<std::condition_variable> condition;
         std::shared_ptr<T> val;
     public:
-        Promise():mutex(std::make_shared<Mutex>()),hasValue(std::make_shared<bool>(false)),val(std::make_shared<T>()){
+        Promise():mutex(std::make_shared<Mutex>()),
+                  hasValue(std::make_shared<bool>(false)),
+                  condition(std::make_shared<std::condition_variable>()),
+                  val(std::make_shared<T>()){
 
         };
         Promise(const Promise &) = delete;
         Promise(Promise && prom):
                 mutex(prom.mutex),
                 hasValue(prom.hasValue),
+                condition(prom.condition),
                 val(prom.val){
             
         }
         Async<T> async(){
-            return Async<T>{hasValue,mutex,val};
+            return Async<T>{hasValue,mutex,condition,val};
         };
         void set(const T & v){
-           std::lock_guard<Mutex> lk(*mutex.get());
-           if(!(*hasValue)){
+           bool wake = false;
+           {
+               std::lock_guard<Mutex> lk(*mutex.get());
+               if(!(*hasValue)){
                 *val = v;
                 *hasValue = true;
+                wake = true;
+               }
+           }
+           if(wake){
+               condition->notify_all();
            }
         }
         void set(T && v){
-           std::lock_guard<Mutex> lk(*mutex.get());
-           if(!(*hasValue)){
-                *val = std::move(v);
-                *hasValue = true;
-           }
+            bool wake = false;
+            {
+                std::lock_guard<Mutex> lk(*mutex.get());
+                if(!(*hasValue)){
+                    *val = std::move(v);
+                    *hasValue = true;
+                    wake = true;
+                }
+            }
+            if(wake){
+                condition->notify_all();
+            }
         }
         ~Promise() = default;
     };
@@ -156,26 +184,32 @@ namespace OmegaCommon {
      * 
      */
     class OMEGACOMMON_EXPORT WorkerFarm {
-        std::queue<Thread *> farm;
-        std::condition_variable condition;
+        std::vector<Thread> farm;
         std::mutex mutex;
-        std::unique_lock<std::mutex> lk;
     public:
-        template<class FnT,typename ...Args>
-        void scheduleJob(FnT func,Args ...args){
-            farm.push(new Thread([&](){
-                func(args...);
-                condition.wait(lk);
-                /// Lock mutex while thread is deleting itself.
-                {
-                    lk.lock();
-                    
-                    lk.unlock();
-                }
-            }));
-        };
-        ~WorkerFarm(){
+        WorkerFarm() = default;
+        WorkerFarm(const WorkerFarm &) = delete;
+        WorkerFarm & operator=(const WorkerFarm &) = delete;
+        WorkerFarm(WorkerFarm &&) = delete;
+        WorkerFarm & operator=(WorkerFarm &&) = delete;
 
+        template<class FnT,typename ...Args>
+        void scheduleJob(FnT && func,Args && ...args){
+            std::lock_guard<std::mutex> guard(mutex);
+            farm.emplace_back(std::forward<FnT>(func),std::forward<Args>(args)...);
+        }
+
+        ~WorkerFarm(){
+            std::vector<Thread> pending;
+            {
+                std::lock_guard<std::mutex> guard(mutex);
+                pending.swap(farm);
+            }
+            for(auto &thread : pending){
+                if(thread.joinable()){
+                    thread.join();
+                }
+            }
         }
     };
 
