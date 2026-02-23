@@ -24,6 +24,9 @@ namespace OmegaWTK {
     };
 
     WidgetTreeHost::~WidgetTreeHost(){
+        if(compositor != nullptr && root != nullptr){
+            unobserveWidgetLayerTreesRecurse(root.get());
+        }
         compositor = nullptr;
     };
 
@@ -38,9 +41,46 @@ namespace OmegaWTK {
         }
     }
 
+    void WidgetTreeHost::observeWidgetLayerTreesRecurse(Widget *parent){
+        if(parent == nullptr || compositor == nullptr){
+            return;
+        }
+        if(parent->layerTree != nullptr){
+            compositor->observeLayerTree(parent->layerTree.get(),syncLaneId);
+        }
+        for(auto & child : parent->children){
+            observeWidgetLayerTreesRecurse(child);
+        }
+    }
+
+    void WidgetTreeHost::unobserveWidgetLayerTreesRecurse(Widget *parent){
+        if(parent == nullptr || compositor == nullptr){
+            return;
+        }
+        if(parent->layerTree != nullptr){
+            compositor->unobserveLayerTree(parent->layerTree.get());
+        }
+        for(auto & child : parent->children){
+            unobserveWidgetLayerTreesRecurse(child);
+        }
+    }
+
     void WidgetTreeHost::initWidgetTree(){
+        observeWidgetLayerTreesRecurse(root.get());
         root->setTreeHostRecurse(this);
         initWidgetRecurse(root.get());
+        auto repaintRecurse = [&](auto &&self,Widget *widget) -> void {
+            if(widget == nullptr){
+                return;
+            }
+            if(widget->paintMode() == PaintMode::Automatic){
+                widget->invalidateNow(PaintReason::Initial);
+            }
+            for(auto & child : widget->children){
+                self(self,child);
+            }
+        };
+        repaintRecurse(repaintRecurse,root.get());
     }
 
     void WidgetTreeHost::notifyWindowResize(const Core::Rect &rect){
@@ -58,6 +98,15 @@ namespace OmegaWTK {
     };
 
     void WidgetTreeHost::setRoot(WidgetPtr widget){
+        if(root == widget){
+            return;
+        }
+        if(root != nullptr && compositor != nullptr){
+            unobserveWidgetLayerTreesRecurse(root.get());
+        }
         root = widget;
+        if(root != nullptr && compositor != nullptr){
+            observeWidgetLayerTreesRecurse(root.get());
+        }
     };
 };

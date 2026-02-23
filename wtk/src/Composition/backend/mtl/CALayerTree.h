@@ -1,5 +1,7 @@
 #include "../VisualTree.h"
 #include "../RenderTarget.h"
+#include <algorithm>
+#include <cmath>
 
 #ifndef OMEGAWTK_COMPOSITION_MTL_MTLBDCALAYERTREE_H
 #define OMEGAWTK_COMPOSITION_MTL_MTLBDCALAYERTREE_H
@@ -52,9 +54,36 @@ namespace OmegaWTK::Composition {
 
              };
              void resize(Core::Rect & newRect) override {
-                 [metalLayer setFrame:CGRectMake(newRect.pos.x,newRect.pos.y,newRect.w,newRect.h)];
+                 if(metalLayer == nil){
+                     return;
+                 }
+
                  CGFloat scale = metalLayer.contentsScale;
-                 metalLayer.drawableSize = CGSizeMake(newRect.w * scale,newRect.h * scale);
+                 if(scale <= 0.f || !std::isfinite(static_cast<double>(scale))){
+                     scale = 2.f;
+                 }
+                 scale = std::max(scale,static_cast<CGFloat>(2.f));
+                 const CGFloat maxDrawableDimension = 16384.f;
+                 const CGFloat maxPointDimension = maxDrawableDimension / scale;
+                 const CGFloat x = std::isfinite(newRect.pos.x) ? static_cast<CGFloat>(newRect.pos.x) : 0.f;
+                 const CGFloat y = std::isfinite(newRect.pos.y) ? static_cast<CGFloat>(newRect.pos.y) : 0.f;
+                 const CGFloat w = std::clamp(
+                         std::isfinite(newRect.w) ? static_cast<CGFloat>(newRect.w) : 1.f,
+                         static_cast<CGFloat>(1.f),
+                         maxPointDimension);
+                 const CGFloat h = std::clamp(
+                         std::isfinite(newRect.h) ? static_cast<CGFloat>(newRect.h) : 1.f,
+                         static_cast<CGFloat>(1.f),
+                         maxPointDimension);
+
+                 CGRect frame = CGRectMake(x,y,w,h);
+                 [metalLayer setFrame:frame];
+                 metalLayer.bounds = CGRectMake(0.f,0.f,w,h);
+                 metalLayer.position = CGPointMake(x,y);
+                 metalLayer.contentsScale = scale;
+                 metalLayer.drawableSize = CGSizeMake(
+                         std::clamp(w * scale,static_cast<CGFloat>(1.f),maxDrawableDimension),
+                         std::clamp(h * scale,static_cast<CGFloat>(1.f),maxDrawableDimension));
              }
              void updateShadowEffect(LayerEffect::DropShadowParams & params) override {
                  CALayer *targetLayer = attachTransformLayer && transformLayer != nil ?

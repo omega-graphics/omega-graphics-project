@@ -42,6 +42,8 @@ namespace OmegaWTK {
         friend class Widget;
 
         void initWidgetRecurse(Widget *parent);
+        void observeWidgetLayerTreesRecurse(Widget *parent);
+        void unobserveWidgetLayerTreesRecurse(Widget *parent);
         void initWidgetTree();
         Composition::Compositor *compPtr(){return compositor;};
         uint64_t laneId() const { return syncLaneId; }

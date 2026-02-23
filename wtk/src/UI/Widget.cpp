@@ -1,5 +1,6 @@
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/Composition/CompositorClient.h"
+#include "../Composition/Compositor.h"
 #include "omegaWTK/UI/View.h"
 #include "omegaWTK/UI/UIView.h"
 #include "omegaWTK/UI/WidgetTreeHost.h"
@@ -12,12 +13,19 @@ namespace OmegaWTK {
 PaintContext::PaintContext(Widget *widget,SharedHandle<Composition::Canvas> mainCanvas,PaintReason reason):
 widget(widget),
 mainCanvas(mainCanvas),
-paintReason(reason){
+paintReason(reason),
+paintBounds(widget != nullptr ?
+            Core::Rect{
+                    Core::Position{0.f,0.f},
+                    widget->rect().w,
+                    widget->rect().h
+            } :
+            Core::Rect{{0.f,0.f},0.f,0.f}){
 
 }
 
 const Core::Rect & PaintContext::bounds() const{
-    return widget->rect();
+    return paintBounds;
 }
 
 PaintReason PaintContext::reason() const{
@@ -116,6 +124,25 @@ void Widget::executePaint(PaintReason reason,bool immediate){
         }
     }
     paintInProgress = true;
+    if(treeHost != nullptr){
+        auto desiredFrontend = treeHost->compPtr();
+        auto desiredLane = treeHost->laneId();
+        if(rootView->proxy.getFrontendPtr() != desiredFrontend ||
+           rootView->proxy.getSyncLaneId() != desiredLane){
+            rootView->setFrontendRecurse(desiredFrontend);
+            rootView->setSyncLaneRecurse(desiredLane);
+        }
+    }
+    else if(parent != nullptr && parent->rootView != nullptr){
+        auto inheritedFrontend = parent->rootView->proxy.getFrontendPtr();
+        auto inheritedLane = parent->rootView->proxy.getSyncLaneId();
+        if(inheritedFrontend != nullptr &&
+           (rootView->proxy.getFrontendPtr() != inheritedFrontend ||
+            rootView->proxy.getSyncLaneId() != inheritedLane)){
+            rootView->setFrontendRecurse(inheritedFrontend);
+            rootView->setSyncLaneRecurse(inheritedLane);
+        }
+    }
     PaintReason activeReason = reason;
     while(true){
         auto canvas = getRootPaintCanvas();
@@ -145,7 +172,11 @@ void Widget::executePaint(PaintReason reason,bool immediate){
 }
 
 void Widget::init(){
+    if(hasMounted){
+        return;
+    }
     onMount();
+    hasMounted = true;
     rootView->enable();
     if(mode == PaintMode::Automatic){
         executePaint(PaintReason::Initial,true);
@@ -178,22 +209,15 @@ void Widget::invalidateNow(PaintReason reason){
 
 void Widget::handleHostResize(const Core::Rect &rect){
     auto oldRect = this->rect();
-    auto & rootRect = rootView->getRect();
-#if defined(TARGET_MACOS)
-    // Cocoa already resizes the root NSView during live window resize.
-    // Avoid forcing native frame updates here to prevent window-transaction churn.
-    rootRect = rect;
-    if(rootView->getLayerTreeLimb() != nullptr){
-        auto layerRect = rect;
-        rootView->getLayerTreeLimb()->getRootLayer()->resize(layerRect);
-    }
-#else
     rootView->resize(rect);
-#endif
+    auto & rootRect = rootView->getRect();
     auto newRect = rootRect;
     this->resize(newRect);
     WIDGET_NOTIFY_OBSERVERS_RESIZE(oldRect);
-    if(mode == PaintMode::Automatic && options.invalidateOnResize && treeHost != nullptr){
+    if(mode == PaintMode::Automatic &&
+       options.invalidateOnResize &&
+       treeHost != nullptr &&
+       hasMounted){
         invalidate(PaintReason::Resize);
     }
 }
@@ -248,6 +272,22 @@ Core::Rect & Widget::rect(){
     return rootView->getRect();
 };
 
+bool Widget::requestRect(const Core::Rect &requested,GeometryChangeReason reason){
+    auto oldRect = rect();
+    if(parent == nullptr){
+        setRect(requested);
+        return true;
+    }
+
+    GeometryProposal proposal {};
+    proposal.requested = requested;
+    proposal.reason = reason;
+    auto clamped = parent->clampChildRect(*this,proposal);
+    setRect(clamped);
+    parent->onChildRectCommitted(*this,oldRect,rect(),reason);
+    return true;
+}
+
 void Widget::setRect(const Core::Rect &newRect){
     auto oldRect = rect();
     rootView->resize(newRect);
@@ -257,9 +297,14 @@ void Widget::setRect(const Core::Rect &newRect){
     WIDGET_NOTIFY_OBSERVERS_RESIZE(oldRect);
     if(mode == PaintMode::Automatic &&
        options.invalidateOnResize &&
-       treeHost != nullptr){
+       treeHost != nullptr &&
+       hasMounted){
         invalidate(PaintReason::Resize);
     }
+}
+
+bool Widget::acceptsChildWidget(const Widget *child) const{
+    return child != nullptr && child != this;
 }
 
 void Widget::show(){
@@ -281,8 +326,20 @@ void Widget::addObserver(WidgetObserverPtr observer){
 };
 
 void Widget::setTreeHostRecurse(WidgetTreeHost *host){
+    auto *previousHost = treeHost;
+    if(previousHost != nullptr && previousHost != host && layerTree != nullptr){
+        auto *previousComp = previousHost->compPtr();
+        if(previousComp != nullptr){
+            previousComp->unobserveLayerTree(layerTree.get());
+        }
+    }
+
     treeHost = host;
     if(host != nullptr){
+        auto *comp = host->compPtr();
+        if(comp != nullptr && layerTree != nullptr){
+            comp->observeLayerTree(layerTree.get(),host->laneId());
+        }
         rootView->setFrontendRecurse(host->compPtr());
         rootView->setSyncLaneRecurse(host->laneId());
     }
@@ -336,6 +393,29 @@ void Widget::notifyObservers(Widget::WidgetEventType event_ty,Widget::WidgetEven
     };
 };
 
+void Widget::onChildAttached(Widget *child){
+    (void)child;
+}
+
+void Widget::onChildDetached(Widget *child){
+    (void)child;
+}
+
+Core::Rect Widget::clampChildRect(const Widget &child,const GeometryProposal &proposal) const{
+    (void)child;
+    return proposal.requested;
+}
+
+void Widget::onChildRectCommitted(const Widget & child,
+                                  const Core::Rect & oldRect,
+                                  const Core::Rect & newRect,
+                                  GeometryChangeReason reason){
+    (void)child;
+    (void)oldRect;
+    (void)newRect;
+    (void)reason;
+}
+
 void Widget::removeChildWidget(Widget *ptr){
     if(ptr == nullptr){
         return;
@@ -343,6 +423,7 @@ void Widget::removeChildWidget(Widget *ptr){
     for(auto it = children.begin();it != children.end();it++){
         if(ptr == *it){
             rootView->removeSubView(ptr->rootView.get());
+            onChildDetached(ptr);
             children.erase(it);
             ptr->parent = nullptr;
             ptr->setTreeHostRecurse(nullptr);
@@ -358,11 +439,15 @@ void Widget::setParentWidgetImpl(Widget *widget,WidgetPtr widgetHandle){
     if(parent == widget){
         return;
     }
+    if(!widget->acceptsChildWidget(this)){
+        return;
+    }
     if(parent != nullptr){
         parent->removeChildWidget(this);
     }
     parent = widget;
     parent->children.push_back(this);
+    parent->onChildAttached(this);
     setTreeHostRecurse(widget->treeHost);
     parent->rootView->addSubView(rootView.get());
     notifyObservers(Attach,{widgetHandle});

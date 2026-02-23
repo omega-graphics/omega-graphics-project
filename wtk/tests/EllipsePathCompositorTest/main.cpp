@@ -3,16 +3,27 @@
 #include <iostream>
 #include <memory>
 
+namespace {
+OmegaWTK::Core::Rect localViewBounds(const OmegaWTK::Core::Rect & bounds){
+    return OmegaWTK::Core::Rect{
+        OmegaWTK::Core::Position{0.f,0.f},
+        bounds.w,
+        bounds.h
+    };
+}
+}
+
 class RoundedFrameWidget final : public OmegaWTK::Widget {
     OmegaWTK::UIViewPtr uiView {};
     bool loggedLayout = false;
 
     void ensureUIView(const OmegaWTK::Core::Rect & bounds){
+        auto localBounds = localViewBounds(bounds);
         if(uiView == nullptr){
-            uiView = makeUIView(bounds,rootView,"rounded_frame_view");
+            uiView = makeUIView(localBounds,rootView,"rounded_frame_view");
         }
         else {
-            uiView->resize(bounds);
+            uiView->resize(localBounds);
         }
     }
 protected:
@@ -86,11 +97,12 @@ class EllipseOnlyWidget final : public OmegaWTK::Widget {
     bool loggedLayout = false;
 
     void ensureUIView(const OmegaWTK::Core::Rect & bounds){
+        auto localBounds = localViewBounds(bounds);
         if(uiView == nullptr){
-            uiView = makeUIView(bounds,rootView,"ellipse_view");
+            uiView = makeUIView(localBounds,rootView,"ellipse_view");
         }
         else {
-            uiView->resize(bounds);
+            uiView->resize(localBounds);
         }
     }
 protected:
@@ -143,11 +155,12 @@ class PathOnlyWidget final : public OmegaWTK::Widget {
     bool loggedLayout = false;
 
     void ensureUIView(const OmegaWTK::Core::Rect & bounds){
+        auto localBounds = localViewBounds(bounds);
         if(uiView == nullptr){
-            uiView = makeUIView(bounds,rootView,"path_view");
+            uiView = makeUIView(localBounds,rootView,"path_view");
         }
         else {
-            uiView->resize(bounds);
+            uiView->resize(localBounds);
         }
     }
 protected:

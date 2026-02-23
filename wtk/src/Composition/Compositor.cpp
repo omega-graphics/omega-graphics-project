@@ -2,6 +2,7 @@
 #include "omegaWTK/Composition/Layer.h"
 #include "omegaWTK/Composition/Canvas.h"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -17,6 +18,8 @@
 namespace OmegaWTK::Composition {
 
 namespace {
+    static constexpr std::size_t kQueueTypeCount = 5;
+
     static inline bool syncTraceEnabled(){
         static const bool enabled = []{
             const char *raw = std::getenv("OMEGAWTK_SYNC_TRACE");
@@ -29,6 +32,65 @@ namespace {
         if(syncTraceEnabled()){
             std::cout << "[OmegaWTKSync] " << message << std::endl;
         }
+    }
+
+    static inline bool queueTraceEnabled(){
+        static const bool enabled = []{
+            const char *raw = std::getenv("OMEGAWTK_QUEUE_TRACE");
+            return raw != nullptr && raw[0] != '\0' && raw[0] != '0';
+        }();
+        return enabled;
+    }
+
+    static inline void emitQueueTrace(const std::string & message){
+        if(queueTraceEnabled()){
+            std::cout << "[OmegaWTKQueue] " << message << std::endl;
+        }
+    }
+
+    static inline std::size_t queueCommandTypeIndex(CompositorCommand::Type type){
+        switch(type){
+            case CompositorCommand::Render:
+                return 0;
+            case CompositorCommand::View:
+                return 1;
+            case CompositorCommand::Layer:
+                return 2;
+            case CompositorCommand::Cancel:
+                return 3;
+            case CompositorCommand::Packet:
+                return 4;
+            default:
+                return 0;
+        }
+    }
+
+    static inline const char *queueCommandTypeName(std::size_t idx){
+        switch(idx){
+            case 0:
+                return "render";
+            case 1:
+                return "view";
+            case 2:
+                return "layer";
+            case 3:
+                return "cancel";
+            case 4:
+                return "packet";
+            default:
+                return "unknown";
+        }
+    }
+
+    static inline std::string queueCountSummary(const std::array<std::uint64_t,kQueueTypeCount> &counts){
+        std::ostringstream ss;
+        for(std::size_t idx = 0; idx < counts.size(); ++idx){
+            if(idx != 0){
+                ss << ",";
+            }
+            ss << queueCommandTypeName(idx) << "=" << counts[idx];
+        }
+        return ss.str();
     }
 
     static inline bool isRenderLikeCommand(const SharedHandle<CompositorCommand> & command){
@@ -131,31 +193,327 @@ namespace {
     static inline double durationToMs(const std::chrono::steady_clock::duration & duration){
         return std::chrono::duration<double,std::milli>(duration).count();
     }
+
+    static void collectLayersForTreeLimb(LayerTree *tree,
+                                         LayerTree::Limb *limb,
+                                         OmegaCommon::Vector<Layer *> &layers){
+        if(tree == nullptr || limb == nullptr){
+            return;
+        }
+        auto &rootLayer = limb->getRootLayer();
+        if(rootLayer != nullptr){
+            layers.push_back(rootLayer.get());
+        }
+        for(auto it = limb->begin(); it != limb->end(); ++it){
+            if(*it != nullptr){
+                layers.push_back((*it).get());
+            }
+        }
+        const auto childCount = tree->getParentLimbChildCount(limb);
+        for(unsigned idx = 0; idx < childCount; ++idx){
+            collectLayersForTreeLimb(tree,tree->getLimbAtIndexFromParent(idx,limb),layers);
+        }
+    }
+
 }
 
-//void Compositor::hasDetached(LayerTree *tree){
-//    for(auto it = targetLayerTrees.begin();it != targetLayerTrees.end();it++){
-//        if(tree == *it){
-//            targetLayerTrees.erase(it);
-//            renderTargetStore.cleanTreeTargets(tree);
-//            tree->removeObserver(this);
-//            break;
-//        }
-//    }
-//};
+void Compositor::enqueueLayerTreeDeltaLocked(LayerTree *tree,
+                                             LayerTreeDeltaType type,
+                                             Layer *layer,
+                                             const Core::Rect *rect){
+    if(tree == nullptr){
+        return;
+    }
+    auto & state = layerTreeSyncState[tree];
+    const auto epoch = ++state.lastIssuedEpoch;
+    if(state.lastObservedEpoch < epoch){
+        state.lastObservedEpoch = epoch;
+    }
+    LayerTreeDelta delta {};
+    delta.type = type;
+    delta.tree = tree;
+    delta.layer = layer;
+    delta.epoch = epoch;
+    delta.timestamp = std::chrono::steady_clock::now();
+    if(rect != nullptr){
+        delta.rect = *rect;
+    }
+    else if(layer != nullptr){
+        delta.rect = layer->getLayerRect();
+    }
+    else {
+        delta.rect = Core::Rect {Core::Position {0.f,0.f},0.f,0.f};
+    }
+    state.pendingDeltas.push_back(delta);
+
+    const char *deltaName = "unknown";
+    switch(type){
+        case LayerTreeDeltaType::TreeAttached:
+            deltaName = "tree-attached";
+            break;
+        case LayerTreeDeltaType::TreeDetached:
+            deltaName = "tree-detached";
+            break;
+        case LayerTreeDeltaType::LayerResized:
+            deltaName = "layer-resized";
+            break;
+        case LayerTreeDeltaType::LayerEnabled:
+            deltaName = "layer-enabled";
+            break;
+        case LayerTreeDeltaType::LayerDisabled:
+            deltaName = "layer-disabled";
+            break;
+        default:
+            break;
+    }
+
+    emitSyncTrace(
+            std::string("layer-tree ")
+            + deltaName
+            + " epoch=" + std::to_string(epoch)
+            + " tree=" + std::to_string(reinterpret_cast<std::uintptr_t>(tree))
+            + " layer=" + std::to_string(reinterpret_cast<std::uintptr_t>(layer)));
+}
+
+void Compositor::coalesceLayerTreeDeltasLocked(OmegaCommon::Vector<LayerTreeDelta> & deltas) const {
+    if(deltas.empty()){
+        return;
+    }
+
+    OmegaCommon::Vector<LayerTreeDelta> attaches {};
+    OmegaCommon::Vector<LayerTreeDelta> mutations {};
+    OmegaCommon::Vector<LayerTreeDelta> detaches {};
+
+    auto upsertTreeDelta = [](OmegaCommon::Vector<LayerTreeDelta> & bucket,const LayerTreeDelta & delta){
+        for(auto & existing : bucket){
+            if(existing.tree == delta.tree){
+                existing = delta;
+                return;
+            }
+        }
+        bucket.push_back(delta);
+    };
+
+    auto upsertLayerMutation = [](OmegaCommon::Vector<LayerTreeDelta> & bucket,const LayerTreeDelta & delta){
+        for(auto & existing : bucket){
+            if(existing.layer == delta.layer && existing.type == delta.type){
+                existing = delta;
+                return;
+            }
+        }
+        bucket.push_back(delta);
+    };
+
+    for(auto & delta : deltas){
+        switch(delta.type){
+            case LayerTreeDeltaType::TreeAttached:
+                upsertTreeDelta(attaches,delta);
+                break;
+            case LayerTreeDeltaType::TreeDetached:
+                upsertTreeDelta(detaches,delta);
+                break;
+            case LayerTreeDeltaType::LayerResized:
+            case LayerTreeDeltaType::LayerEnabled:
+            case LayerTreeDeltaType::LayerDisabled:
+                upsertLayerMutation(mutations,delta);
+                break;
+            default:
+                break;
+        }
+    }
+
+    OmegaCommon::Vector<LayerTreeDelta> coalesced {};
+    for(auto & delta : attaches){
+        coalesced.push_back(delta);
+    }
+    for(auto & delta : mutations){
+        coalesced.push_back(delta);
+    }
+    for(auto & delta : detaches){
+        coalesced.push_back(delta);
+    }
+    deltas = std::move(coalesced);
+}
+
+void Compositor::bindPendingLayerTreeDeltasToPacketLocked(std::uint64_t syncLaneId,std::uint64_t syncPacketId){
+    if(syncLaneId == 0 || syncPacketId == 0){
+        return;
+    }
+    auto & laneMetadata = layerTreePacketMetadata[syncLaneId];
+    auto existing = laneMetadata.find(syncPacketId);
+    if(existing != laneMetadata.end()){
+        return;
+    }
+
+    LayerTreePacketMetadata metadata {};
+    metadata.syncLaneId = syncLaneId;
+    metadata.syncPacketId = syncPacketId;
+
+    for(auto & treeStateEntry : layerTreeSyncState){
+        auto *tree = treeStateEntry.first;
+        auto & state = treeStateEntry.second;
+        if(tree == nullptr || state.pendingDeltas.empty()){
+            continue;
+        }
+        auto laneBindingIt = layerTreeLaneBinding.find(tree);
+        if(laneBindingIt != layerTreeLaneBinding.end() &&
+           laneBindingIt->second != 0 &&
+           laneBindingIt->second != syncLaneId){
+            continue;
+        }
+        for(auto & delta : state.pendingDeltas){
+            metadata.deltas.push_back(delta);
+        }
+        state.pendingDeltas.clear();
+    }
+
+    if(metadata.deltas.empty()){
+        return;
+    }
+
+    coalesceLayerTreeDeltasLocked(metadata.deltas);
+    for(auto & delta : metadata.deltas){
+        if(delta.tree == nullptr){
+            continue;
+        }
+        auto & requiredEpoch = metadata.requiredEpochByTree[delta.tree];
+        requiredEpoch = std::max(requiredEpoch,delta.epoch);
+    }
+
+    laneMetadata[syncPacketId] = std::move(metadata);
+    emitSyncTrace(
+            "packetize lane=" + std::to_string(syncLaneId) +
+            " packet=" + std::to_string(syncPacketId) +
+            " deltas=" + std::to_string(laneMetadata[syncPacketId].deltas.size()));
+}
+
+void Compositor::releaseLayerTreePacketMetadata(std::uint64_t syncLaneId,std::uint64_t syncPacketId){
+    if(syncLaneId == 0 || syncPacketId == 0){
+        return;
+    }
+    std::lock_guard<std::mutex> lk(mutex);
+    auto laneIt = layerTreePacketMetadata.find(syncLaneId);
+    if(laneIt == layerTreePacketMetadata.end()){
+        return;
+    }
+    laneIt->second.erase(syncPacketId);
+    if(laneIt->second.empty()){
+        layerTreePacketMetadata.erase(syncLaneId);
+    }
+}
+
+void Compositor::observeLayerTree(LayerTree *tree,std::uint64_t syncLaneId){
+    if(tree == nullptr){
+        return;
+    }
+    bool alreadyObserved = false;
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        for(auto *targetTree : targetLayerTrees){
+            if(targetTree == tree){
+                alreadyObserved = true;
+                break;
+            }
+        }
+        if(!alreadyObserved){
+            targetLayerTrees.push_back(tree);
+            enqueueLayerTreeDeltaLocked(tree,LayerTreeDeltaType::TreeAttached,nullptr,nullptr);
+        }
+        auto & laneBinding = layerTreeLaneBinding[tree];
+        if(syncLaneId != 0){
+            laneBinding = syncLaneId;
+        }
+    }
+    if(!alreadyObserved){
+        tree->addObserver(this);
+    }
+}
+
+void Compositor::unobserveLayerTree(LayerTree *tree){
+    if(tree == nullptr){
+        return;
+    }
+    bool removed = false;
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        for(auto it = targetLayerTrees.begin(); it != targetLayerTrees.end(); ++it){
+            if(*it == tree){
+                targetLayerTrees.erase(it);
+                removed = true;
+                break;
+            }
+        }
+        if(removed){
+            enqueueLayerTreeDeltaLocked(tree,LayerTreeDeltaType::TreeDetached,nullptr,nullptr);
+            layerTreeLaneBinding.erase(tree);
+            backendLayerMirror.erase(tree);
+        }
+    }
+    if(removed){
+        tree->removeObserver(this);
+    }
+}
+
+void Compositor::hasDetached(LayerTree *tree){
+    unobserveLayerTree(tree);
+}
+
+void Compositor::layerHasResized(Layer *layer){
+    if(layer == nullptr){
+        return;
+    }
+    auto *limb = layer->getParentLimb();
+    if(limb == nullptr){
+        return;
+    }
+    auto *tree = limb->getParentTree();
+    std::lock_guard<std::mutex> lk(mutex);
+    enqueueLayerTreeDeltaLocked(tree,LayerTreeDeltaType::LayerResized,layer,&layer->getLayerRect());
+}
+
+void Compositor::layerHasDisabled(Layer *layer){
+    if(layer == nullptr){
+        return;
+    }
+    auto *limb = layer->getParentLimb();
+    if(limb == nullptr){
+        return;
+    }
+    auto *tree = limb->getParentTree();
+    std::lock_guard<std::mutex> lk(mutex);
+    enqueueLayerTreeDeltaLocked(tree,LayerTreeDeltaType::LayerDisabled,layer,&layer->getLayerRect());
+}
+
+void Compositor::layerHasEnabled(Layer *layer){
+    if(layer == nullptr){
+        return;
+    }
+    auto *limb = layer->getParentLimb();
+    if(limb == nullptr){
+        return;
+    }
+    auto *tree = limb->getParentTree();
+    std::lock_guard<std::mutex> lk(mutex);
+    enqueueLayerTreeDeltaLocked(tree,LayerTreeDeltaType::LayerEnabled,layer,&layer->getLayerRect());
+}
 
 void CompositorScheduler::processCommand(SharedHandle<CompositorCommand> & command,bool laneAdmissionBypassed){
+    if(command == nullptr){
+        return;
+    }
     if(hasSyncPacketMetadata(command) && !laneAdmissionBypassed){
         if(!compositor->waitForLaneAdmission(command->syncLaneId,command->syncPacketId)){
             compositor->markPacketFailed(command->syncLaneId,command->syncPacketId);
+            compositor->releaseLayerTreePacketMetadata(command->syncLaneId,command->syncPacketId);
             command->status.set(CommandStatus::Failed);
             return;
         }
     }
-    if(command != nullptr && command->type == CompositorCommand::Packet){
+    if(command->type == CompositorCommand::Packet){
         auto packet = std::dynamic_pointer_cast<CompositorPacketCommand>(command);
         if(packet == nullptr){
             compositor->markPacketFailed(command->syncLaneId,command->syncPacketId);
+            compositor->releaseLayerTreePacketMetadata(command->syncLaneId,command->syncPacketId);
             command->status.set(CommandStatus::Failed);
             return;
         }
@@ -177,6 +535,7 @@ void CompositorScheduler::processCommand(SharedHandle<CompositorCommand> & comma
         if(!hasRenderChild){
             compositor->completePacketWithoutGpu(command->syncLaneId,command->syncPacketId);
         }
+        compositor->releaseLayerTreePacketMetadata(command->syncLaneId,command->syncPacketId);
         command->status.set(CommandStatus::Ok);
         return;
     }
@@ -206,6 +565,9 @@ void CompositorScheduler::processCommand(SharedHandle<CompositorCommand> & comma
             });
             if(shutdown){
                 compositor->markPacketFailed(command->syncLaneId,command->syncPacketId);
+                if(!laneAdmissionBypassed){
+                    compositor->releaseLayerTreePacketMetadata(command->syncLaneId,command->syncPacketId);
+                }
                 command->status.set(CommandStatus::Failed);
                 return;
             }
@@ -222,6 +584,9 @@ void CompositorScheduler::processCommand(SharedHandle<CompositorCommand> & comma
     else {
         /// Command will be executed right away.
         executeCurrentCommand();
+    }
+    if(!laneAdmissionBypassed){
+        compositor->releaseLayerTreePacketMetadata(command->syncLaneId,command->syncPacketId);
     }
 };
 
@@ -241,13 +606,16 @@ CompositorScheduler::CompositorScheduler(Compositor * compositor):compositor(com
                     while(!compositor->commandQueue.empty()){
                         auto pending = compositor->commandQueue.first();
                         compositor->commandQueue.pop();
+                        compositor->noteQueueDropLocked(pending);
                         compositor->markPacketFailed(pending->syncLaneId,pending->syncPacketId);
                         pending->status.set(CommandStatus::Failed);
                     }
+                    compositor->maybeEmitQueueSnapshotLocked("shutdown");
                     break;
                 }
                 command = compositor->commandQueue.first();
                 compositor->commandQueue.pop();
+                compositor->noteQueuePopLocked(command);
                 compositor->currentCommand = command;
             }
             processCommand(command);
@@ -292,6 +660,17 @@ scheduler(this){
 };
 
 Compositor::~Compositor(){
+     OmegaCommon::Vector<LayerTree *> observedTrees {};
+     {
+         std::lock_guard<std::mutex> lk(mutex);
+         observedTrees = targetLayerTrees;
+         targetLayerTrees.clear();
+     }
+     for(auto *tree : observedTrees){
+         if(tree != nullptr){
+             tree->removeObserver(this);
+         }
+     }
      scheduler.shutdownAndJoin();
      std::cout << "~Compositor()" << std::endl;
 };
@@ -310,6 +689,7 @@ void Compositor::scheduleCommand(SharedHandle<CompositorCommand> & command){
         }
 
         if(hasSyncPacketMetadata(command)){
+            bindPendingLayerTreeDeltasToPacketLocked(command->syncLaneId,command->syncPacketId);
             markPacketQueued(command->syncLaneId,command->syncPacketId,command);
             if(commandHasNonNoOpRender(command)){
                 // Base target-aware coalescing.
@@ -320,7 +700,9 @@ void Compositor::scheduleCommand(SharedHandle<CompositorCommand> & command){
                 }
             }
         }
+        auto queuedCommand = command;
         commandQueue.push(std::move(command));
+        noteQueuePushLocked(queuedCommand);
     }
     if(traceLaneId != 0 && tracePacketId != 0){
         emitSyncTrace(
@@ -398,7 +780,9 @@ bool Compositor::isLaneStartupCriticalPacket(std::uint64_t syncLaneId,std::uint6
         return false;
     }
     const auto & entry = entryIt->second;
-    return entry.hasStateMutation || entry.hasEffectMutation;
+    return entry.hasStateMutation ||
+           entry.hasEffectMutation ||
+           entry.hasNonNoOpRender;
 }
 
 bool Compositor::isLaneSaturated(std::uint64_t syncLaneId) const {
@@ -552,6 +936,78 @@ bool Compositor::commandHasNonNoOpRender(const SharedHandle<CompositorCommand> &
     return false;
 }
 
+void Compositor::noteQueuePushLocked(const SharedHandle<CompositorCommand> & command){
+    if(command == nullptr){
+        return;
+    }
+    const auto idx = queueCommandTypeIndex(command->type);
+    queueTelemetryState.queuedByType[idx] += 1;
+    queueTelemetryState.enqueuedByType[idx] += 1;
+    queueTelemetryState.eventsSinceEmit += 1;
+    maybeEmitQueueSnapshotLocked("push",command->syncLaneId,command->syncPacketId);
+}
+
+void Compositor::noteQueuePopLocked(const SharedHandle<CompositorCommand> & command){
+    if(command == nullptr){
+        return;
+    }
+    const auto idx = queueCommandTypeIndex(command->type);
+    if(queueTelemetryState.queuedByType[idx] > 0){
+        queueTelemetryState.queuedByType[idx] -= 1;
+    }
+    queueTelemetryState.dequeuedByType[idx] += 1;
+    queueTelemetryState.eventsSinceEmit += 1;
+    maybeEmitQueueSnapshotLocked("pop",command->syncLaneId,command->syncPacketId);
+}
+
+void Compositor::noteQueueDropLocked(const SharedHandle<CompositorCommand> & command){
+    if(command == nullptr){
+        return;
+    }
+    const auto idx = queueCommandTypeIndex(command->type);
+    if(queueTelemetryState.queuedByType[idx] > 0){
+        queueTelemetryState.queuedByType[idx] -= 1;
+    }
+    queueTelemetryState.droppedByType[idx] += 1;
+    queueTelemetryState.eventsSinceEmit += 1;
+    maybeEmitQueueSnapshotLocked("drop",command->syncLaneId,command->syncPacketId);
+}
+
+void Compositor::maybeEmitQueueSnapshotLocked(const char *reason,
+                                              std::uint64_t syncLaneId,
+                                              std::uint64_t syncPacketId){
+    if(!queueTraceEnabled()){
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const bool forceEmit = reason != nullptr &&
+                           (std::string(reason) == "drop" ||
+                            std::string(reason) == "shutdown");
+    const bool intervalElapsed =
+            queueTelemetryState.lastEmit == std::chrono::steady_clock::time_point{} ||
+            (now - queueTelemetryState.lastEmit) >= std::chrono::milliseconds(200);
+    if(!forceEmit && !intervalElapsed && queueTelemetryState.eventsSinceEmit < 64){
+        return;
+    }
+
+    std::ostringstream ss;
+    ss << "queue reason=" << (reason == nullptr ? "unknown" : reason)
+       << " depth=" << commandQueue.length();
+    if(syncLaneId != 0){
+        ss << " lane=" << syncLaneId;
+    }
+    if(syncPacketId != 0){
+        ss << " packet=" << syncPacketId;
+    }
+    ss << " queued{" << queueCountSummary(queueTelemetryState.queuedByType) << "}"
+       << " enq{" << queueCountSummary(queueTelemetryState.enqueuedByType) << "}"
+       << " deq{" << queueCountSummary(queueTelemetryState.dequeuedByType) << "}"
+       << " drop{" << queueCountSummary(queueTelemetryState.droppedByType) << "}";
+    emitQueueTrace(ss.str());
+    queueTelemetryState.lastEmit = now;
+    queueTelemetryState.eventsSinceEmit = 0;
+}
+
 void Compositor::dropQueuedStaleForLaneLocked(std::uint64_t syncLaneId,
                                               const SharedHandle<CompositorCommand> & incoming){
     if(syncLaneId == 0 || incoming == nullptr){
@@ -562,6 +1018,7 @@ void Compositor::dropQueuedStaleForLaneLocked(std::uint64_t syncLaneId,
     if(incomingTargets.empty()){
         return;
     }
+    const bool incomingHasResizeMutation = commandContainsResizeActivity(incoming);
     commandQueue.filter([&](SharedHandle<CompositorCommand> & queuedCommand){
         if(!isRenderLikeCommand(queuedCommand)){
             return false;
@@ -573,9 +1030,16 @@ void Compositor::dropQueuedStaleForLaneLocked(std::uint64_t syncLaneId,
            isLaneStartupCriticalPacket(syncLaneId,incoming->syncPacketId)){
             return false;
         }
-        // Never coalesce away packets that carry state mutations.
+        // By default, never coalesce away packets that carry state mutations.
+        // During live resize, allow coalescing packets that are resize-only
+        // (no effect/cancel/non-resize state) so newest geometry wins.
         if(commandContainsStateMutation(queuedCommand)){
-            return false;
+            const bool queuedResizeOnly =
+                    commandContainsResizeActivity(queuedCommand) &&
+                    !commandContainsEffectMutation(queuedCommand);
+            if(!(incomingHasResizeMutation && queuedResizeOnly)){
+                return false;
+            }
         }
         OmegaCommon::Vector<RenderTargetEpoch> pendingTargets {};
         collectRenderTargetsForCommand(queuedCommand,pendingTargets);
@@ -595,6 +1059,7 @@ void Compositor::dropQueuedStaleForLaneLocked(std::uint64_t syncLaneId,
                               queuedCommand->syncPacketId,
                               PacketDropReason::StaleCoalesced);
             queuedCommand->status.set(CommandStatus::Delayed);
+            noteQueueDropLocked(queuedCommand);
             return true;
         }
         if(queuedCommand->type == CompositorCommand::Render){
@@ -602,6 +1067,7 @@ void Compositor::dropQueuedStaleForLaneLocked(std::uint64_t syncLaneId,
                               queuedCommand->syncPacketId,
                               PacketDropReason::StaleCoalesced);
             queuedCommand->status.set(CommandStatus::Delayed);
+            noteQueueDropLocked(queuedCommand);
             return true;
         }
         return false;
@@ -766,6 +1232,12 @@ bool Compositor::shouldDropNoOpTransparentFrame(std::uint64_t syncLaneId,std::ui
         return true;
     }
     const auto & entry = entryIt->second;
+    // If packet has a real render, no-op children can be dropped safely.
+    // Keep no-op renders only for state/effect-only packets that still need
+    // lifecycle completion for synchronization.
+    if(entry.hasNonNoOpRender){
+        return true;
+    }
     return !(entry.hasStateMutation || entry.hasEffectMutation);
 }
 
@@ -1014,6 +1486,28 @@ Compositor::LaneTelemetrySnapshot Compositor::getLaneTelemetrySnapshot(std::uint
         }
     }
 
+    return snapshot;
+}
+
+Compositor::LayerTreeSyncSnapshot Compositor::getLayerTreeSyncSnapshot(LayerTree *tree) {
+    LayerTreeSyncSnapshot snapshot {};
+    if(tree == nullptr){
+        return snapshot;
+    }
+    std::lock_guard<std::mutex> lk(mutex);
+    for(auto *targetTree : targetLayerTrees){
+        if(targetTree == tree){
+            snapshot.observed = true;
+            break;
+        }
+    }
+    auto it = layerTreeSyncState.find(tree);
+    if(it == layerTreeSyncState.end()){
+        return snapshot;
+    }
+    snapshot.lastIssuedEpoch = it->second.lastIssuedEpoch;
+    snapshot.lastObservedEpoch = it->second.lastObservedEpoch;
+    snapshot.pendingDeltaCount = it->second.pendingDeltas.size();
     return snapshot;
 }
 

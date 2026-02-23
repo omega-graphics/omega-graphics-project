@@ -148,9 +148,10 @@ INTERFACE OMEGAWTK_EXPORT  AppWindowDelegate : public Native::NativeEventProcess
         void dispatchResizeToHosts(const Core::Rect & rect);
         friend class AppWindow;
 #if defined(TARGET_MACOS)
-        std::chrono::steady_clock::time_point lastLiveResizeDispatch {};
         bool hasPendingLiveResize = false;
         Core::Rect pendingLiveResizeRect {};
+        bool hasLastDispatchedLiveResizeRect = false;
+        Core::Rect lastDispatchedLiveResizeRect {};
 #endif
     protected:
        AppWindow * window;

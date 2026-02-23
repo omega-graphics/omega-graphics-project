@@ -1,189 +1,194 @@
-# UIView Remaining Slices (Sync-Engine Aligned Re-evaluation)
+# UIView Remaining Slices (B-E, Re-aligned to Current Architecture)
 
-This document tracks remaining `UIView` work after compositor sync-engine and animation runtime updates.
+This document updates `UIView` remaining work to match:
 
-## Current State (What Is Already Landed)
+1. Widget geometry delegation (`requestRect`, parent clamp hooks).
+2. Existing `Container` implementation in `BasicWidgets`.
+3. Packetized WidgetTree sync engine and lane telemetry pacing.
 
-1. Core `UIView` model is in place:
-- `layout`, `setLayout`, `setStyleSheet`, `update`.
-- `Widget::makeUIView(...)` integration is in use across tests.
+## Baseline (Already Landed)
 
-2. Shape rendering support is broader than the original plan:
-- `Rect`
-- `RoundedRect`
-- `Ellipse` (`Core::Ellipse` and `GEllipsoid` input support)
-- `Path` (stroke + optional close)
+1. `UIView` authoring API is live:
+   - `setLayout`, `setStyleSheet`, `update`.
+2. Shape rendering in `UIView::update()` supports:
+   - `Rect`, `RoundedRect`, `Ellipse`, `Path`.
+3. Per-element render bundles are present (`UIElementTag -> layer+canvas`).
+4. Sync engine supports lane packeting, admission, and telemetry.
+5. Animation runtime supports lane-aware clock modes.
+6. Geometry delegation scaffolding is now present in `Widget`:
+   - `GeometryProposal`, `GeometryChangeReason`,
+   - `Widget::requestRect(...)`,
+   - parent `clampChildRect(...)` and child attach acceptance hooks.
 
-3. Per-element layer allocation exists:
-- one layer/canvas bundle per `UIElementTag`
-- inactive tags are disabled rather than hard-deleted
+## Re-scoped Remaining Work
 
-4. Sync-engine and animation foundation exists in compositor:
-- lane packet telemetry and pacing
-- `TimingOptions` clock modes
-- clip animation runtime (`animate(...)`, `animateOnLane(...)`)
+Main gaps now:
 
-5. Test migration is underway and active:
-- `BasicAppTest`, `TextCompositorTest`, `EllipsePathCompositorTest` are using `UIView` content paths.
+1. `UIView` still repaints/submits too broadly (`layoutDirty/styleDirty` are coarse).
+2. Transition fields in `StyleSheet::Entry` are not executed by a concrete `UIView` animation driver.
+3. `UIViewLayout::Element::Text` is modeled but not rendered.
+4. Effect behavior is not fully unified with first-frame and resize-pressure constraints.
 
-## Remaining Gaps
+## Slice B: Deterministic UIView Submission and Dirty Graph
 
-1. `UIView` dirty tracking is not yet efficient:
-- `layoutDirty`/`styleDirty` are set but `update()` still repaints/submits broadly.
+### Outcome
+`UIView::update()` becomes deterministic, minimal, and lane-packet coherent.
 
-2. Style transition fields are mostly declarative today:
-- `transition`, `duration`, `elementBrushAnimation`, `elementAnimation`, `elementPathAnimation` are not fully executed by a concrete `UIView` animation driver.
+### Implementation Plan
 
-3. `UIViewLayout::Element::Text` is declared but not rendered by `UIView::update()`.
+1. Introduce a per-tag dirty graph in `UIView`:
+   - `ElementDirtyState { layoutDirty, styleDirty, contentDirty, orderDirty, visibilityDirty }`.
+   - Track root dirtiness separately from element dirtiness.
+2. Replace broad update pass with phased pass:
+   - `prepareRootFrame()`
+   - `prepareElementFrames()`
+   - `submitDirtyFrames()`
+3. Add stable order commit:
+   - Reassert z-order every `orderDirty` pass using layout sequence.
+   - Keep disabled-layer policy for missing tags.
+4. Add first-frame stabilization gate:
+   - First `update()` after mount/style/layout change forces a coherent packet with root+all active tags.
+   - Prevent no-op transparent skip from dropping initial visible content.
+5. Bind `UIView` update submission to one composition session per update:
+   - Start session once, submit only dirty frames, end session once.
+   - Keep packet boundaries aligned with sync-lane commit semantics.
 
-4. Layer ordering and first-frame effect consistency still need hard guarantees under resize/load.
+### File Targets
 
-## Slice B: Render Determinism + Dirty Submission
+1. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/UI/UIView.h`
+2. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/src/UI/UIView.cpp`
 
-### Goals
+### Acceptance
 
-1. Make `UIView` frame output deterministic on frame 1 and during active resize.
-2. Reduce redundant submissions by only touching dirty root/element targets.
-3. Preserve stable z-order for element tags across add/remove/reorder.
+1. First visible frame contains complete expected content (no delayed element reveal).
+2. Active resize does not cause element pop-in caused by deferred first dirty submit.
+3. Steady-state updates avoid resubmitting unchanged element canvases.
 
-### Scope
+## Slice C: UIView Transition/Animation Driver on Lane Runtime
 
-1. Dirty pipeline
-- Introduce per-element dirty state keyed by tag (`layoutDirty`, `styleDirty`, `contentDirty`).
-- Repaint only dirty targets plus root when needed.
-- Skip `sendFrame()` for unchanged element canvases.
+### Outcome
+`transition` and animation style entries execute through the existing sync-aware animation runtime.
 
-2. Deterministic ordering
-- Re-assert layout-order z-index every update pass (not only on creation).
-- Keep disabled-layer behavior for removed tags, plus optional reclaim policy.
+### Implementation Plan
 
-3. First-frame readiness
-- Ensure root + active element layers are materialized and effect-ready before first visible commit.
-- Avoid "first-frame missing effects" by forcing one coherent initial packet per view.
+1. Add `UIViewAnimationDriver` state to `UIView`:
+   - per-tag, per-property active animation map.
+   - last-writer-wins cancellation policy per key.
+2. Translate style entries into animation jobs:
+   - `ElementBrushAnimation`, `ElementAnimation`, `ElementPathAnimation`.
+   - `transition=true` with duration maps to implicit animation job.
+3. Supported animated keys in this slice:
+   - color channels (`R`, `G`, `B`, `A`),
+   - geometry (`Width`, `Height`),
+   - path node coordinates (`PathNodeX`, `PathNodeY`).
+4. Bind animation jobs to host lane:
+   - use lane-aware scheduling (`animateOnLane(...)` path where available).
+   - sample/apply values inside `UIView` dirty graph so animation writes stay packet-coherent.
+5. Finish behavior:
+   - snap exact final values at completion,
+   - mark only affected tags dirty.
 
-### Acceptance Criteria
+### File Targets
 
-1. First visible frame contains expected element set and effects.
-2. Repeated resize does not cause element pop-in or delayed layer activation.
-3. No extra packet churn for unchanged elements in steady state.
+1. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/UI/UIView.h`
+2. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/src/UI/UIView.cpp`
+3. Optional helper hooks in `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/Composition/Animation.h` only if adapter gaps exist.
 
-## Slice C: UIView Animation Driver (On Sync Runtime)
+### Acceptance
 
-### Goals
+1. Style transitions visibly animate instead of hard switching.
+2. Animations remain monotonic under lane drops/backpressure.
+3. Final values are deterministic and match target style.
 
-1. Execute `UIView` style/layout transitions through the new lane-aware animation runtime.
-2. Keep animation writes packet-coherent with WidgetTree sync-lane pacing.
+## Slice D: UIView Text Elements + Text Style Surface
 
-### Scope
+### Outcome
+`UIViewLayout::text(...)` becomes fully functional in mixed shape/text scenes.
 
-1. Transition interpretation
-- Map style entries with `transition=true`/`duration` into animation clips.
-- Support brush channel interpolation:
-  - `ColorRed`, `ColorGreen`, `ColorBlue`, `ColorAlpha`
-- Support geometry keys:
-  - `Width`, `Height`
-  - path node keys (`PathNodeX`, `PathNodeY`) where path tags exist
+### Implementation Plan
 
-2. Lane binding
-- Bind each `UIView` animation to host sync lane.
-- Use `animateOnLane(...)` for deterministic pacing when explicit lane is required.
+1. Extend `UIViewLayout::Element` text payload:
+   - retain existing string data,
+   - attach optional text style descriptor key.
+2. Add text style entries to `StyleSheet`:
+   - font handle/reference,
+   - color,
+   - alignment,
+   - wrapping mode,
+   - line limit.
+3. Render text elements in `UIView::update()`:
+   - use `Canvas::drawText(...)`,
+   - include text elements in per-tag dirty tracking and z-order.
+4. Mixed content determinism:
+   - text and shape tags share same ordering pipeline.
+   - text style changes only dirty affected tags.
 
-3. Runtime state
-- Add per-element animation state cache so concurrent updates merge cleanly.
-- Cancel/replace previous animations on same target/property (last-writer semantics).
+### File Targets
 
-### Acceptance Criteria
+1. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/UI/UIView.h`
+2. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/src/UI/UIView.cpp`
+3. Optional font helper touchpoints in `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/Composition/FontEngine.h`.
 
-1. Style transitions are visibly smooth and packet-coherent under resize load.
-2. No stale intermediate frames replay when lane drops packets.
-3. Animated properties land exactly on target values at completion.
+### Acceptance
 
-## Slice D: UIView Text Element Support
+1. `UIView` renders text-only, shape-only, and mixed layouts reliably.
+2. Text remains stable through resize and transition updates.
+3. No upside-down or delayed-text regressions in test apps.
 
-### Goals
+## Slice E: Effects in UIView Styles (First-frame + Resize-safe)
 
-1. Make `UIViewLayout::text(...)` functional in `UIView::update()`.
-2. Support mixed text+shape content per view with deterministic layering.
+### Outcome
+Drop shadow/blur become first-class style features that remain stable under first-frame and resize pressure.
 
-### Scope
+### Implementation Plan
 
-1. Text rendering path
-- Render `Element::Text` through canvas `drawText(...)`.
-- Add minimal text style descriptors (font/color/alignment/wrap) for `UIView`.
+1. Add effect style entries to `StyleSheet::Entry::Kind`:
+   - view-level and element-level drop shadow,
+   - gaussian blur,
+   - directional blur.
+2. Resolve effect style during update phases:
+   - root effects applied to root layer,
+   - element effects applied to per-tag layer.
+3. Integrate with dirty graph:
+   - effect parameter change marks only corresponding target dirty.
+4. Sync-engine alignment:
+   - ensure first-frame stabilization gate includes effect state.
+   - when lane pressure is high, follow global adaptive-quality policies rather than ad-hoc `UIView` branching.
+5. Preserve transparent composition behavior:
+   - avoid forced opaque fills when effects are enabled.
 
-2. Ordering
-- Respect layout order between text and shapes using same per-tag layer model.
+### File Targets
 
-### Acceptance Criteria
+1. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/UI/UIView.h`
+2. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/src/UI/UIView.cpp`
+3. Existing layer effect plumbing in `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/src/Composition/backend/RenderTarget.cpp` only if additional effect params are needed.
 
-1. `UIView` can render both text and shapes in one layout.
-2. Text remains stable and synchronized during resize/animation.
+### Acceptance
 
-## Slice E: Effects and Quality Controls in UIView Styles
+1. Effect-enabled `UIView` content renders correctly on frame 1.
+2. Effects do not disappear during active resize.
+3. No black/opaque artifact regression in Text and Ellipse test scenes.
 
-### Goals
+## Execution Order (Updated)
 
-1. Expose compositor effects (drop shadow/blur) as first-class `UIView` style hooks.
-2. Keep effects stable across first frame and active resize pressure.
+1. Slice B first: fixes determinism and packet hygiene.
+2. Slice C second: enables transitions on stable submission path.
+3. Slice D third: restores missing text element capability.
+4. Slice E fourth: effect style unification on top of deterministic path.
 
-### Scope
+## Validation Matrix
 
-1. Style API extensions
-- Add per-view/per-element effect entries:
-  - drop shadow
-  - gaussian blur / directional blur
-- Route to existing compositor layer/frame effect application paths.
+Required checks after each slice:
 
-2. Sync-engine compatibility
-- Respect lane budget behavior during resize.
-- If adaptive quality policies are enabled at compositor level, ensure `UIView` effects degrade/restore coherently.
-
-### Acceptance Criteria
-
-1. Effects apply consistently on first frame and during resize.
-2. No black/opaque fallback artifacts from effect-enabled layers.
-
-## Slice F: API/Docs Stabilization + Regression Suite
-
-### Goals
-
-1. Freeze `UIView` authoring semantics before `SVGView`/`VideoView` adoption.
-2. Add targeted regression coverage for the bugs seen during compositor iteration.
-
-### Scope
-
-1. API semantics
-- Document selector matching behavior and precedence.
-- Keep builder model explicit (`copy()` chain semantics) and document expected usage.
-- Add helper shortcuts for common shape/style patterns.
-
-2. Regression tests
-- Add/extend tests for:
-  - first-frame effect presence
-  - resize jitter/position drift
-  - mixed shape+text `UIView`
-  - animated `UIView` style transitions
-
-3. Docs/examples
-- Add a compact "UIView cookbook" with:
-  - static layout
-  - animated style updates
-  - effect-enabled elements
-
-### Acceptance Criteria
-
-1. API behavior is documented and deterministic.
-2. Known regressions are covered by repeatable tests.
-
-## Non-Goals (Current Remaining Slices)
-
-1. CSS-complete selector grammar.
-2. Rich text shaping/layout engine beyond existing compositor text primitives.
-3. Backend-specific `UIView` forks; keep backend-neutral through compositor contracts.
-
-## Suggested Rollout
-
-1. Slice B first (determinism + dirty submission + first-frame guarantees).
-2. Slice C next (animation driver on sync runtime).
-3. Slice D and E in parallel where feasible (text + effects).
-4. Slice F last (final API/docs + regression suite hardening).
+1. `EllipsePathCompositorTest`:
+   - all three shapes visible on frame 1,
+   - no delayed element reveal on first resize.
+2. `TextCompositorTest`:
+   - accent layer visible,
+   - text remains readable and stable.
+3. Resize stress:
+   - active window resize for 5-10 seconds,
+   - no frame dropouts where only subset of tags draw.
+4. Sync diagnostics:
+   - verify single coherent packet per `UIView` update where expected,
+   - confirm no stale packet replay after lane drops.

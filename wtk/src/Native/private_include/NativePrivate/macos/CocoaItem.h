@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 #include "omegaWTK/Native/NativeItem.h"
+#include <cmath>
 
 #ifndef OMEGAWTK_NATIVE_MACOS_COCOA_ITEM_H
 #define OMEGAWTK_NATIVE_MACOS_COCOA_ITEM_H
@@ -73,9 +74,14 @@ public:
             hostBounds.origin = NSMakePoint(0.f,0.f);
 
             CGFloat scale = [NSScreen mainScreen].backingScaleFactor;
-            if(scale <= 0.f){
-                scale = 1.f;
+            if(scale <= 0.f || !std::isfinite(static_cast<double>(scale))){
+                scale = 2.f;
             }
+            scale = MAX(scale,2.f);
+            const CGFloat maxDrawableDimension = 16384.f;
+            const CGFloat maxPointDimension = maxDrawableDimension / scale;
+            hostBounds.size.width = MIN(MAX(hostBounds.size.width,1.f),maxPointDimension);
+            hostBounds.size.height = MIN(MAX(hostBounds.size.height,1.f),maxPointDimension);
 
             if([layer isKindOfClass:[CAMetalLayer class]]){
                 CAMetalLayer *metalLayer = (CAMetalLayer *)layer;
@@ -87,8 +93,8 @@ public:
                 metalLayer.masksToBounds = NO;
                 metalLayer.contentsScale = scale;
                 metalLayer.drawableSize = CGSizeMake(
-                    MAX(hostBounds.size.width * scale,1.f),
-                    MAX(hostBounds.size.height * scale,1.f));
+                    MIN(MAX(hostBounds.size.width * scale,1.f),maxDrawableDimension),
+                    MIN(MAX(hostBounds.size.height * scale,1.f),maxDrawableDimension));
                 metalLayer.opaque = NO;
                 metalLayer.framebufferOnly = NO;
                 metalLayer.presentsWithTransaction = NO;

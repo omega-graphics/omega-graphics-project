@@ -3,6 +3,7 @@
 #import "NativePrivate/macos/CocoaUtils.h"
 
 #import <QuartzCore/QuartzCore.h>
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 
@@ -27,7 +28,11 @@
         NSLog(@"Old Origin: { x:%f, y:%f}",self.layer.anchorPoint.x,self.layer.anchorPoint.y);
         self.layer.anchorPoint = CGPointMake(0.0,0.0);
         self.layer.position = CGPointMake(0.f,0.f);
-        self.layer.contentsScale = 1.0f;
+        CGFloat startupScale = [NSScreen mainScreen].backingScaleFactor;
+        if(startupScale <= 0.f || !std::isfinite(static_cast<double>(startupScale))){
+            startupScale = 2.f;
+        }
+        self.layer.contentsScale = std::max(startupScale,static_cast<CGFloat>(2.f));
         // self.layer.contentsGravity = kCAGravityCenter;
         self.layer.magnificationFilter = kCAFilterLinear;
 //        self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawDuringViewResize;
@@ -131,6 +136,57 @@
 
 namespace OmegaWTK::Native::Cocoa {
 
+namespace {
+
+constexpr CGFloat kMaxDrawableDimension = 16384.f;
+
+static inline CGFloat safeScale(){
+    CGFloat scale = [NSScreen mainScreen].backingScaleFactor;
+    if(scale <= 0.f || !std::isfinite(static_cast<double>(scale))){
+        scale = 2.f;
+    }
+    return std::max(scale,static_cast<CGFloat>(2.f));
+}
+
+static inline Core::Rect sanitizeNativeRect(const Core::Rect & candidate,const Core::Rect & fallback){
+    Core::Rect saneFallback = fallback;
+    if(!std::isfinite(saneFallback.pos.x)){
+        saneFallback.pos.x = 0.f;
+    }
+    if(!std::isfinite(saneFallback.pos.y)){
+        saneFallback.pos.y = 0.f;
+    }
+
+    const float maxPointDimension = static_cast<float>(kMaxDrawableDimension / safeScale());
+    if(!std::isfinite(saneFallback.w) || saneFallback.w <= 0.f){
+        saneFallback.w = 1.f;
+    }
+    if(!std::isfinite(saneFallback.h) || saneFallback.h <= 0.f){
+        saneFallback.h = 1.f;
+    }
+    saneFallback.w = std::clamp(saneFallback.w,1.f,maxPointDimension);
+    saneFallback.h = std::clamp(saneFallback.h,1.f,maxPointDimension);
+
+    Core::Rect sanitized = candidate;
+    if(!std::isfinite(sanitized.pos.x)){
+        sanitized.pos.x = saneFallback.pos.x;
+    }
+    if(!std::isfinite(sanitized.pos.y)){
+        sanitized.pos.y = saneFallback.pos.y;
+    }
+    if(!std::isfinite(sanitized.w) || sanitized.w <= 0.f){
+        sanitized.w = saneFallback.w;
+    }
+    if(!std::isfinite(sanitized.h) || sanitized.h <= 0.f){
+        sanitized.h = saneFallback.h;
+    }
+    sanitized.w = std::clamp(sanitized.w,1.f,maxPointDimension);
+    sanitized.h = std::clamp(sanitized.h,1.f,maxPointDimension);
+    return sanitized;
+}
+
+}
+
 CocoaItem::CocoaItem(const Core::Rect & rect,
                      CocoaItem::Type _type,
                      SharedHandle<CocoaItem> parent):
@@ -141,8 +197,9 @@ scrollView(nil),
 scrollViewDelegate(nil),
 type(_type),
 isReady(false){
+    this->rect = sanitizeNativeRect(this->rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
     if(type == View){
-        cont = [[OmegaWTKCocoaViewController alloc] initWithFrame:core_rect_to_cg_rect(rect) delegate:this];
+        cont = [[OmegaWTKCocoaViewController alloc] initWithFrame:core_rect_to_cg_rect(this->rect) delegate:this];
         [cont setClass:[OmegaWTKCocoaView class]];
         _ptr = (OmegaWTKCocoaView *)cont.view;
         if(parent != nullptr){
@@ -151,7 +208,7 @@ isReady(false){
     };
     if(type == ScrollView){
         _ptr = nil;
-        cont = [[OmegaWTKCocoaViewController alloc] initWithFrame:core_rect_to_cg_rect(rect) delegate:this];
+        cont = [[OmegaWTKCocoaViewController alloc] initWithFrame:core_rect_to_cg_rect(this->rect) delegate:this];
         [cont setClass:[NSScrollView class]];
         scrollViewDelegate = [[OmegaWTKCocoaScrollViewDelegate alloc] initWithDelegate:this];
         scrollView = (NSScrollView *)cont.view;
@@ -195,8 +252,8 @@ void CocoaItem::disable(){
 };
 
 void CocoaItem::resize(const Core::Rect &newRect){
-    rect = newRect;
-    CGRect r = core_rect_to_cg_rect(newRect);
+    rect = sanitizeNativeRect(newRect,rect);
+    CGRect r = core_rect_to_cg_rect(rect);
     if(_ptr != nil){
         [_ptr setFrame:r];
         [_ptr setBoundsOrigin:NSMakePoint(0,0)];
@@ -207,17 +264,17 @@ void CocoaItem::resize(const Core::Rect &newRect){
         layer.frame = hostBounds;
         layer.position = CGPointMake(0.f,0.f);
         layer.bounds = hostBounds;
-        CGFloat scale = [NSScreen mainScreen].backingScaleFactor;
-        if(scale <= 0.f){
-            scale = 1.f;
-        }
+        CGFloat scale = safeScale();
+        const CGFloat maxPointDimension = kMaxDrawableDimension / scale;
+        hostBounds.size.width = MIN(MAX(hostBounds.size.width,1.f),maxPointDimension);
+        hostBounds.size.height = MIN(MAX(hostBounds.size.height,1.f),maxPointDimension);
         layer.contentsScale = scale;
         if([layer isKindOfClass:[CAMetalLayer class]]){
             CAMetalLayer *metalLayer = (CAMetalLayer *)layer;
             metalLayer.contentsScale = scale;
             metalLayer.drawableSize = CGSizeMake(
-                MAX(hostBounds.size.width * scale,1.f),
-                MAX(hostBounds.size.height * scale,1.f));
+                MIN(MAX(hostBounds.size.width * scale,1.f),kMaxDrawableDimension),
+                MIN(MAX(hostBounds.size.height * scale,1.f),kMaxDrawableDimension));
         }
         NSArray<CALayer *> *subLayers = layer.sublayers;
         for(CALayer *subLayer in subLayers){
@@ -229,8 +286,8 @@ void CocoaItem::resize(const Core::Rect &newRect){
                 CAMetalLayer *metalLayer = (CAMetalLayer *)subLayer;
                 metalLayer.contentsScale = scale;
                 metalLayer.drawableSize = CGSizeMake(
-                    MAX(hostBounds.size.width * scale,1.f),
-                    MAX(hostBounds.size.height * scale,1.f));
+                    MIN(MAX(hostBounds.size.width * scale,1.f),kMaxDrawableDimension),
+                    MIN(MAX(hostBounds.size.height * scale,1.f),kMaxDrawableDimension));
             }
         }
     }

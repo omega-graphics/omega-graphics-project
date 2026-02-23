@@ -61,6 +61,9 @@ public:
     struct ChildEntry {
         WidgetPtr widget;
         StackSlot slot;
+        float preferredMainSize = 0.f;
+        float preferredCrossSize = 0.f;
+        bool hasPreferredSize = false;
     };
 private:
     StackAxis axis;
@@ -68,6 +71,8 @@ private:
     OmegaCommon::Vector<ChildEntry> stackChildren;
     bool needsLayout = true;
     bool inLayout = false;
+    bool hasLastStableFrame = false;
+    Core::Rect lastStableFrame {Core::Position{0.f,0.f},1.f,1.f};
 
     void layoutChildren();
 protected:

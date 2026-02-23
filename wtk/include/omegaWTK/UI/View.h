@@ -42,7 +42,7 @@ namespace OmegaWTK {
         @relates Widget
      */ 
     class OMEGAWTK_EXPORT View : public Native::NativeEventEmitter {
-        OmegaCommon::Vector<ViewPtr> subviews;
+        OmegaCommon::Vector<View *> subviews;
     protected:
         SharedHandle<Composition::ViewRenderTarget> renderTarget;
         friend class Widget;
@@ -52,7 +52,7 @@ namespace OmegaWTK {
         void setSyncLaneRecurse(uint64_t syncLaneId);
         Composition::LayerTree *widgetLayerTree;
         ViewPtr parent_ptr;
-        Core::Rect rect;
+        Core::Rect rect {Core::Position{0.f,0.f},1.f,1.f};
         ViewDelegate *delegate = nullptr;
         virtual bool hasDelegate();
         void addSubView(View *view);

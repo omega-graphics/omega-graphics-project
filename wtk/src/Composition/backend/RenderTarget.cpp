@@ -13,6 +13,74 @@ namespace OmegaWTK::Composition {
     void stopMTLCapture();
     #endif
 
+    namespace {
+        constexpr float kMaxTextureDimension = 16384.f;
+#if defined(TARGET_MACOS)
+        constexpr float kRenderScaleFloor = 2.f;
+#else
+        constexpr float kRenderScaleFloor = 1.f;
+#endif
+
+        static inline float sanitizeRenderScale(float scale){
+            if(!std::isfinite(scale) || scale <= 0.f){
+                return kRenderScaleFloor;
+            }
+            return std::clamp(scale,kRenderScaleFloor,kMaxTextureDimension);
+        }
+
+        static inline float sanitizeCoordinate(float value,float fallback){
+            if(!std::isfinite(value)){
+                return fallback;
+            }
+            return value;
+        }
+
+        static inline Core::Rect sanitizeRenderRect(const Core::Rect & candidate,
+                                                    const Core::Rect & fallback,
+                                                    float renderScale){
+            Core::Rect sanitizedFallback = fallback;
+            sanitizedFallback.pos.x = sanitizeCoordinate(sanitizedFallback.pos.x,0.f);
+            sanitizedFallback.pos.y = sanitizeCoordinate(sanitizedFallback.pos.y,0.f);
+            if(!std::isfinite(sanitizedFallback.w) || sanitizedFallback.w <= 0.f){
+                sanitizedFallback.w = 1.f;
+            }
+            if(!std::isfinite(sanitizedFallback.h) || sanitizedFallback.h <= 0.f){
+                sanitizedFallback.h = 1.f;
+            }
+
+            const float scale = sanitizeRenderScale(renderScale);
+            const float maxLogicalDimension = std::max(1.f,kMaxTextureDimension / scale);
+            sanitizedFallback.w = std::clamp(sanitizedFallback.w,1.f,maxLogicalDimension);
+            sanitizedFallback.h = std::clamp(sanitizedFallback.h,1.f,maxLogicalDimension);
+
+            Core::Rect sanitized = candidate;
+            sanitized.pos.x = sanitizeCoordinate(sanitized.pos.x,sanitizedFallback.pos.x);
+            sanitized.pos.y = sanitizeCoordinate(sanitized.pos.y,sanitizedFallback.pos.y);
+
+            if(!std::isfinite(sanitized.w) || sanitized.w <= 0.f){
+                sanitized.w = sanitizedFallback.w;
+            }
+            if(!std::isfinite(sanitized.h) || sanitized.h <= 0.f){
+                sanitized.h = sanitizedFallback.h;
+            }
+
+            sanitized.w = std::clamp(sanitized.w,1.f,maxLogicalDimension);
+            sanitized.h = std::clamp(sanitized.h,1.f,maxLogicalDimension);
+            return sanitized;
+        }
+
+        static inline unsigned toBackingDimension(float logicalDimension,float renderScale){
+            const float saneScale = sanitizeRenderScale(renderScale);
+            float saneLogical = logicalDimension;
+            if(!std::isfinite(saneLogical) || saneLogical <= 0.f){
+                saneLogical = 1.f;
+            }
+            const auto scaled = static_cast<long>(std::lround(saneLogical * saneScale));
+            const auto clamped = std::clamp<long>(scaled,1L,static_cast<long>(kMaxTextureDimension));
+            return static_cast<unsigned>(clamped);
+        }
+    }
+
     static SharedHandle<OmegaGTE::GTEShaderLibrary> shaderLibrary;
     static SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
     static SharedHandle<OmegaGTE::GERenderPipelineState> renderPipelineState;
@@ -272,21 +340,26 @@ fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
 
 BackendRenderTargetContext::BackendRenderTargetContext(Core::Rect & rect,
         SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTarget,
-        float renderScale):
+        float renderScaleValue):
         fence(gte.graphicsEngine->makeFence()),
         renderTarget(renderTarget),
         renderTargetSize(rect),
-        renderScale(std::max(1.0f,renderScale))
+        renderScale(1.f)
         {
+    renderScale = sanitizeRenderScale(renderScaleValue);
+    renderTargetSize = sanitizeRenderRect(rect,
+                                          Core::Rect{Core::Position{0.f,0.f},1.f,1.f},
+                                          renderScale);
     rebuildBackingTarget();
     imageProcessor = BackendCanvasEffectProcessor::Create(fence);
 }
 
 void BackendRenderTargetContext::rebuildBackingTarget(){
-    const auto logicalW = std::max(1.0f,renderTargetSize.w);
-    const auto logicalH = std::max(1.0f,renderTargetSize.h);
-    backingWidth = std::max(1u,static_cast<unsigned>(std::lround(logicalW * renderScale)));
-    backingHeight = std::max(1u,static_cast<unsigned>(std::lround(logicalH * renderScale)));
+    renderTargetSize = sanitizeRenderRect(renderTargetSize,
+                                          Core::Rect{Core::Position{0.f,0.f},1.f,1.f},
+                                          renderScale);
+    backingWidth = toBackingDimension(renderTargetSize.w,renderScale);
+    backingHeight = toBackingDimension(renderTargetSize.h,renderScale);
 
     OmegaGTE::TextureDescriptor textureDescriptor {};
     textureDescriptor.usage = OmegaGTE::GETexture::RenderTarget;
@@ -307,18 +380,16 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
         const unsigned oldW = backingWidth;
         const unsigned oldH = backingHeight;
 
-        renderTargetSize = rect;
-
-        const auto newLogicalW = std::max(1.0f,renderTargetSize.w);
-        const auto newLogicalH = std::max(1.0f,renderTargetSize.h);
-        const unsigned newW = std::max(1u,static_cast<unsigned>(std::lround(newLogicalW * renderScale)));
-        const unsigned newH = std::max(1u,static_cast<unsigned>(std::lround(newLogicalH * renderScale)));
+        const auto saneRect = sanitizeRenderRect(rect,renderTargetSize,renderScale);
+        const unsigned newW = toBackingDimension(saneRect.w,renderScale);
+        const unsigned newH = toBackingDimension(saneRect.h,renderScale);
 
         if(oldW == newW && oldH == newH){
-            renderTargetSize = rect;
+            renderTargetSize = saneRect;
             return;
         }
 
+        renderTargetSize = saneRect;
         rebuildBackingTarget();
     }
 
@@ -557,7 +628,15 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             }
             case VisualCommand::RoundedRect : {
                 auto & _params = ((VisualCommandParams*)params)->roundedRectParams;
-                auto te_params = OmegaGTE::TETessellationParams::RoundedRect(_params.rect);
+                // Tessellate in local space, then apply one translation by rect origin.
+                OmegaGTE::GRoundedRect localRect{
+                        OmegaGTE::GPoint2D{0.f,0.f},
+                        _params.rect.w,
+                        _params.rect.h,
+                        _params.rect.rad_x,
+                        _params.rect.rad_y
+                };
+                auto te_params = OmegaGTE::TETessellationParams::RoundedRect(localRect);
 
                 useTextureRenderPipeline = !_params.brush->isColor;
                 textureCoordDenomW = std::max(1.f,_params.rect.w);

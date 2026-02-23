@@ -7,6 +7,12 @@ namespace OmegaWTK {
 
 namespace {
 
+#if defined(TARGET_MACOS)
+constexpr float kMaxStackDimension = 8192.f;
+#else
+constexpr float kMaxStackDimension = 16384.f;
+#endif
+
 static inline float clampSize(float value,const Core::Optional<float> & minValue,const Core::Optional<float> & maxValue){
     if(minValue){
         value = std::max(value,*minValue);
@@ -23,6 +29,81 @@ static inline bool rectChanged(const Core::Rect &a,const Core::Rect &b){
            std::fabs(a.pos.y - b.pos.y) > kEpsilon ||
            std::fabs(a.w - b.w) > kEpsilon ||
            std::fabs(a.h - b.h) > kEpsilon;
+}
+
+static inline bool finiteRect(const Core::Rect & rect){
+    return std::isfinite(rect.pos.x) &&
+           std::isfinite(rect.pos.y) &&
+           std::isfinite(rect.w) &&
+           std::isfinite(rect.h);
+}
+
+static inline bool suspiciousFrame(const Core::Rect & rect){
+    if(!finiteRect(rect)){
+        return true;
+    }
+    if(rect.w <= 0.f || rect.h <= 0.f){
+        return true;
+    }
+    const float maxDim = std::max(rect.w,rect.h);
+    const float minDim = std::min(rect.w,rect.h);
+    if(maxDim >= (kMaxStackDimension * 0.5f) && minDim <= 2.f){
+        return true;
+    }
+    if(maxDim >= 1024.f && minDim > 0.f){
+        const float aspect = maxDim / minDim;
+        if(aspect > 256.f){
+            return true;
+        }
+    }
+    return false;
+}
+
+static inline bool suspiciousSizePair(float mainSize,float crossSize){
+    if(!std::isfinite(mainSize) || !std::isfinite(crossSize)){
+        return true;
+    }
+    if(mainSize <= 0.f || crossSize <= 0.f){
+        return true;
+    }
+    const float maxDim = std::max(mainSize,crossSize);
+    const float minDim = std::min(mainSize,crossSize);
+    if(maxDim >= (kMaxStackDimension * 0.5f) && minDim <= 2.f){
+        return true;
+    }
+    if(maxDim >= 1024.f && minDim > 0.f){
+        const float aspect = maxDim / minDim;
+        if(aspect > 256.f){
+            return true;
+        }
+    }
+    return false;
+}
+
+static inline bool tinyPlaceholderSize(float mainSize,float crossSize){
+    return std::isfinite(mainSize) &&
+           std::isfinite(crossSize) &&
+           mainSize <= 1.5f &&
+           crossSize <= 1.5f;
+}
+
+static inline Core::Rect sanitizeStackFrame(const Core::Rect & candidate){
+    Core::Rect frame = candidate;
+    if(!std::isfinite(frame.pos.x)){
+        frame.pos.x = 0.f;
+    }
+    if(!std::isfinite(frame.pos.y)){
+        frame.pos.y = 0.f;
+    }
+    if(!std::isfinite(frame.w)){
+        frame.w = 1.f;
+    }
+    if(!std::isfinite(frame.h)){
+        frame.h = 1.f;
+    }
+    frame.w = std::clamp(frame.w,1.f,kMaxStackDimension);
+    frame.h = std::clamp(frame.h,1.f,kMaxStackDimension);
+    return frame;
 }
 
 struct LayoutItem {
@@ -104,7 +185,13 @@ WidgetPtr StackWidget::addChild(const WidgetPtr & child,const StackSlot & slot){
     }
 
     child->setParentWidget(this);
-    stackChildren.push_back({child,slot});
+    auto childRect = child->rect();
+    const float preferredMain = axis == StackAxis::Horizontal ? childRect.w : childRect.h;
+    const float preferredCross = axis == StackAxis::Horizontal ? childRect.h : childRect.w;
+    const bool hasPreferred =
+            !suspiciousSizePair(preferredMain,preferredCross) &&
+            !tinyPlaceholderSize(preferredMain,preferredCross);
+    stackChildren.push_back({child,slot,preferredMain,preferredCross,hasPreferred});
     relayout();
     return child;
 }
@@ -187,7 +274,21 @@ void StackWidget::layoutChildren(){
         return;
     }
 
-    auto frame = rect();
+    auto frameCandidate = sanitizeStackFrame(rect());
+    if(suspiciousFrame(frameCandidate)){
+        if(!hasLastStableFrame){
+            needsLayout = true;
+            inLayout = false;
+            return;
+        }
+        frameCandidate = lastStableFrame;
+    }
+    else {
+        hasLastStableFrame = true;
+        lastStableFrame = frameCandidate;
+    }
+
+    auto frame = frameCandidate;
     const float contentMain = std::max(
         0.f,
         (axis == StackAxis::Horizontal ? frame.w : frame.h) -
@@ -214,12 +315,41 @@ void StackWidget::layoutChildren(){
         }
 
         auto childRect = child->rect();
+        float currentMain = axis == StackAxis::Horizontal ? childRect.w : childRect.h;
+        float currentCross = axis == StackAxis::Horizontal ? childRect.h : childRect.w;
+
+        const bool currentSuspicious = suspiciousSizePair(currentMain,currentCross);
+        const bool currentPlaceholder = tinyPlaceholderSize(currentMain,currentCross);
+        const bool hasPreferred =
+                entry.hasPreferredSize &&
+                !suspiciousSizePair(entry.preferredMainSize,entry.preferredCrossSize) &&
+                !tinyPlaceholderSize(entry.preferredMainSize,entry.preferredCrossSize);
+
+        if(!currentSuspicious && !currentPlaceholder){
+            entry.preferredMainSize = currentMain;
+            entry.preferredCrossSize = currentCross;
+            entry.hasPreferredSize = true;
+        }
+        else if(hasPreferred){
+            currentMain = entry.preferredMainSize;
+            currentCross = entry.preferredCrossSize;
+        }
+
+        currentMain = std::clamp(
+                std::isfinite(currentMain) ? currentMain : 1.f,
+                1.f,
+                kMaxStackDimension);
+        currentCross = std::clamp(
+                std::isfinite(currentCross) ? currentCross : 1.f,
+                1.f,
+                kMaxStackDimension);
+
         LayoutItem item {};
         item.widget = child;
         item.slot = entry.slot;
         item.resizable = child->isLayoutResizable();
-        item.currentMain = axis == StackAxis::Horizontal ? childRect.w : childRect.h;
-        item.currentCross = axis == StackAxis::Horizontal ? childRect.h : childRect.w;
+        item.currentMain = currentMain;
+        item.currentCross = currentCross;
 
         item.marginMainBefore = axis == StackAxis::Horizontal ? entry.slot.margin.left : entry.slot.margin.top;
         item.marginMainAfter = axis == StackAxis::Horizontal ? entry.slot.margin.right : entry.slot.margin.bottom;
@@ -230,10 +360,22 @@ void StackWidget::layoutChildren(){
         item.resolvedCross = item.currentCross;
 
         if(item.resizable){
+            const bool lockMainToPreferred =
+                    entry.slot.flexGrow <= 0.f &&
+                    entry.slot.flexShrink <= 0.f &&
+                    entry.hasPreferredSize;
+
             if(entry.slot.basis){
                 item.resolvedMain = *entry.slot.basis;
             }
+            else if(lockMainToPreferred){
+                item.resolvedMain = entry.preferredMainSize;
+            }
             item.resolvedMain = clampSize(item.resolvedMain,entry.slot.minMain,entry.slot.maxMain);
+
+            if((!std::isfinite(item.resolvedCross) || item.resolvedCross <= 1.f) && entry.hasPreferredSize){
+                item.resolvedCross = entry.preferredCrossSize;
+            }
             item.resolvedCross = clampSize(item.resolvedCross,entry.slot.minCross,entry.slot.maxCross);
         }
 

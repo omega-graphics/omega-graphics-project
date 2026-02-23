@@ -219,13 +219,15 @@ namespace OmegaWTK::Composition {
 
         Compositor *frontend = nullptr;
 
-        bool recording = false;
+        unsigned recordDepth = 0;
 
         SharedHandle<CompositionRenderTarget> renderTarget;
 
         std::queue<SharedHandle<CompositorCommand>> commandQueue;
         uint64_t syncLaneId = 0;
-        uint64_t nextPacketId = 1;
+        // Reserved packet id used by preview paths (animations) so
+        // the id returned by peekNextPacketId() matches the next submit().
+        mutable uint64_t reservedPacketId = 0;
         mutable std::mutex commandMutex;
 
         OmegaCommon::Async<CommandStatus> queueTimedFrame(unsigned & id,CompositorClient &client,

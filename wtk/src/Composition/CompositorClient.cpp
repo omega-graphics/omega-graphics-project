@@ -11,6 +11,11 @@ namespace OmegaWTK::Composition {
 
     namespace {
         std::atomic<uint64_t> g_syncLaneSeed {1};
+        std::atomic<uint64_t> g_syncPacketSeed {1};
+
+        inline uint64_t allocateGlobalPacketId(){
+            return g_syncPacketSeed.fetch_add(1,std::memory_order_relaxed);
+        }
     }
 
     CompositorClientProxy::CompositorClientProxy(SharedHandle<CompositionRenderTarget> renderTarget):
@@ -31,7 +36,10 @@ namespace OmegaWTK::Composition {
 
     uint64_t CompositorClientProxy::peekNextPacketId() const {
         std::lock_guard<std::mutex> lk(commandMutex);
-        return nextPacketId;
+        if(reservedPacketId == 0){
+            reservedPacketId = allocateGlobalPacketId();
+        }
+        return reservedPacketId;
     }
 
     Compositor *CompositorClientProxy::getFrontendPtr() const {
@@ -41,26 +49,27 @@ namespace OmegaWTK::Composition {
 
     bool CompositorClientProxy::isRecording() const {
         std::lock_guard<std::mutex> lk(commandMutex);
-        return recording;
+        return recordDepth > 0;
     }
 
     void CompositorClientProxy::beginRecord() {
         std::lock_guard<std::mutex> lk(commandMutex);
-        if(recording){
-            return;
-        }
-        recording = true;
+        recordDepth += 1;
     }
 
     void CompositorClientProxy::endRecord() {
+        bool shouldSubmit = false;
         {
             std::lock_guard<std::mutex> lk(commandMutex);
-            if(!recording){
+            if(recordDepth == 0){
                 return;
             }
-            recording = false;
+            recordDepth -= 1;
+            shouldSubmit = (recordDepth == 0);
         }
-        submit();
+        if(shouldSubmit){
+            submit();
+        }
     }
 
    OmegaCommon::Async<CommandStatus> CompositorClientProxy::queueTimedFrame(unsigned & id,
@@ -174,8 +183,17 @@ namespace OmegaWTK::Composition {
     }
 
     void CompositorClientProxy::setFrontendPtr(Compositor *frontend){
-        std::lock_guard<std::mutex> lk(commandMutex);
-        this->frontend = frontend;
+        bool shouldFlush = false;
+        {
+            std::lock_guard<std::mutex> lk(commandMutex);
+            this->frontend = frontend;
+            shouldFlush = (this->frontend != nullptr &&
+                           recordDepth == 0 &&
+                           !commandQueue.empty());
+        }
+        if(shouldFlush){
+            submit();
+        }
     };
 
     void CompositorClientProxy::submit(){
@@ -187,11 +205,8 @@ namespace OmegaWTK::Composition {
            std::lock_guard<std::mutex> lk(commandMutex);
            targetFrontend = frontend;
            if(targetFrontend == nullptr){
-               while(!commandQueue.empty()){
-                   auto comm = commandQueue.front();
-                   commandQueue.pop();
-                   comm->status.set(CommandStatus::Failed);
-               }
+               // Frontend can be wired after view construction; keep commands queued
+               // so initial frames are not permanently dropped.
                return;
            }
            laneId = syncLaneId;
@@ -205,7 +220,13 @@ namespace OmegaWTK::Composition {
            if(packetCommands.empty()){
                return;
            }
-           packetId = nextPacketId++;
+           if(reservedPacketId != 0){
+               packetId = reservedPacketId;
+               reservedPacketId = 0;
+           }
+           else {
+               packetId = allocateGlobalPacketId();
+           }
            for(auto & packetCommand : packetCommands){
                if(packetCommand != nullptr){
                    packetCommand->syncLaneId = laneId;

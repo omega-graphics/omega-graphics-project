@@ -8,11 +8,19 @@
 #include "omegaWTK/UI/Menu.h"
 #include "omegaWTK/UI/View.h"
 
+#include <cmath>
+
 namespace OmegaWTK {
 
 #if defined(TARGET_MACOS)
 namespace {
-constexpr auto kLiveResizeDispatchInterval = std::chrono::milliseconds(16);
+static inline bool resizeRectChanged(const Core::Rect &lhs,const Core::Rect &rhs){
+    constexpr float kEpsilon = 0.25f;
+    return std::fabs(lhs.pos.x - rhs.pos.x) > kEpsilon ||
+           std::fabs(lhs.pos.y - rhs.pos.y) > kEpsilon ||
+           std::fabs(lhs.w - rhs.w) > kEpsilon ||
+           std::fabs(lhs.h - rhs.h) > kEpsilon;
+}
 }
 #endif
 
@@ -133,12 +141,12 @@ void AppWindowDelegate::onRecieveEvent(Native::NativeEventPtr event){
 #if defined(TARGET_MACOS)
             pendingLiveResizeRect = params->rect;
             hasPendingLiveResize = true;
-            auto now = std::chrono::steady_clock::now();
-            if(lastLiveResizeDispatch.time_since_epoch().count() == 0 ||
-               (now - lastLiveResizeDispatch) >= kLiveResizeDispatchInterval){
+            if(!hasLastDispatchedLiveResizeRect ||
+               resizeRectChanged(pendingLiveResizeRect,lastDispatchedLiveResizeRect)){
                 dispatchResizeToHosts(pendingLiveResizeRect);
+                lastDispatchedLiveResizeRect = pendingLiveResizeRect;
+                hasLastDispatchedLiveResizeRect = true;
                 hasPendingLiveResize = false;
-                lastLiveResizeDispatch = now;
             }
 #else
             dispatchResizeToHosts(params->rect);
@@ -149,12 +157,16 @@ void AppWindowDelegate::onRecieveEvent(Native::NativeEventPtr event){
 #if defined(TARGET_MACOS)
             if(hasPendingLiveResize){
                 dispatchResizeToHosts(pendingLiveResizeRect);
+                lastDispatchedLiveResizeRect = pendingLiveResizeRect;
+                hasLastDispatchedLiveResizeRect = true;
                 hasPendingLiveResize = false;
             }
-            else if(window != nullptr){
+            else if(window != nullptr &&
+                    (!hasLastDispatchedLiveResizeRect ||
+                     resizeRectChanged(window->rect,lastDispatchedLiveResizeRect))){
                 dispatchResizeToHosts(window->rect);
             }
-            lastLiveResizeDispatch = {};
+            hasLastDispatchedLiveResizeRect = false;
 #endif
             break;
         }

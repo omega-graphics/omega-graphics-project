@@ -1,20 +1,104 @@
 #include "omegaWTK/UI/View.h"
 
+#include <algorithm>
+#include <cmath>
 #include <utility>
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Canvas.h"
 
 namespace OmegaWTK {
 
+    namespace {
+#if defined(TARGET_MACOS)
+        constexpr float kMaxViewDimension = 8192.f;
+#else
+        constexpr float kMaxViewDimension = 16384.f;
+#endif
+
+        static inline bool finiteFloat(float value){
+            return std::isfinite(value);
+        }
+
+        static inline bool suspiciousDimensionPair(float w,float h){
+            if(!finiteFloat(w) || !finiteFloat(h) || w <= 0.f || h <= 0.f){
+                return true;
+            }
+            const float maxDim = std::max(w,h);
+            const float minDim = std::min(w,h);
+            if(maxDim >= (kMaxViewDimension * 0.5f) && minDim <= 2.f){
+                return true;
+            }
+            if(maxDim >= 1024.f && minDim > 0.f){
+                const float aspect = maxDim / minDim;
+                if(aspect > 256.f){
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        static inline Core::Rect sanitizeRect(const Core::Rect & candidate,const Core::Rect & fallback){
+            Core::Rect saneFallback = fallback;
+            if(!finiteFloat(saneFallback.pos.x)){
+                saneFallback.pos.x = 0.f;
+            }
+            if(!finiteFloat(saneFallback.pos.y)){
+                saneFallback.pos.y = 0.f;
+            }
+            if(!finiteFloat(saneFallback.w) || saneFallback.w <= 0.f){
+                saneFallback.w = 1.f;
+            }
+            if(!finiteFloat(saneFallback.h) || saneFallback.h <= 0.f){
+                saneFallback.h = 1.f;
+            }
+            saneFallback.w = std::clamp(saneFallback.w,1.f,kMaxViewDimension);
+            saneFallback.h = std::clamp(saneFallback.h,1.f,kMaxViewDimension);
+            if(suspiciousDimensionPair(saneFallback.w,saneFallback.h)){
+                saneFallback.w = 1.f;
+                saneFallback.h = 1.f;
+            }
+
+            Core::Rect sanitized = candidate;
+            if(!finiteFloat(sanitized.pos.x)){
+                sanitized.pos.x = saneFallback.pos.x;
+            }
+            if(!finiteFloat(sanitized.pos.y)){
+                sanitized.pos.y = saneFallback.pos.y;
+            }
+            if(!finiteFloat(sanitized.w) || sanitized.w <= 0.f){
+                sanitized.w = saneFallback.w;
+            }
+            if(!finiteFloat(sanitized.h) || sanitized.h <= 0.f){
+                sanitized.h = saneFallback.h;
+            }
+            sanitized.w = std::clamp(sanitized.w,1.f,kMaxViewDimension);
+            sanitized.h = std::clamp(sanitized.h,1.f,kMaxViewDimension);
+            if(suspiciousDimensionPair(sanitized.w,sanitized.h)){
+                sanitized.w = saneFallback.w;
+                sanitized.h = saneFallback.h;
+            }
+            return sanitized;
+        }
+
+        static inline bool sameRect(const Core::Rect & a,const Core::Rect & b){
+            constexpr float kEpsilon = 0.001f;
+            return std::fabs(a.pos.x - b.pos.x) <= kEpsilon &&
+                   std::fabs(a.pos.y - b.pos.y) <= kEpsilon &&
+                   std::fabs(a.w - b.w) <= kEpsilon &&
+                   std::fabs(a.h - b.h) <= kEpsilon;
+        }
+    }
 
     View::View(const Core::Rect & rect,Composition::LayerTree *layerTree,ViewPtr parent):
-        renderTarget(std::make_shared<Composition::ViewRenderTarget>(Native::make_native_item(rect))),
+        renderTarget(std::make_shared<Composition::ViewRenderTarget>(
+                Native::make_native_item(
+                        sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f})))),
         proxy(std::static_pointer_cast<Composition::CompositionRenderTarget>(renderTarget)),
         widgetLayerTree(layerTree),
         parent_ptr(parent),
-        rect(rect){
+        rect(sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f})){
 
-        layerTreeLimb = widgetLayerTree->createLimb(rect);
+        layerTreeLimb = widgetLayerTree->createLimb(this->rect);
         renderTarget->getNativePtr()->setLayerTreeLimb(layerTreeLimb.get());
         renderTarget->getNativePtr()->event_emitter = this;
         
@@ -45,39 +129,57 @@ namespace OmegaWTK {
         delegate->view = this;
         setReciever(delegate);
     };
-    void View::addSubView(View * view){
-        subviews.emplace_back(view);
-        renderTarget->getNativePtr()->addChildNativeItem(view->renderTarget->getNativePtr());
+void View::addSubView(View * view){
+    if(view == nullptr){
+        return;
+    }
+    for(auto *existing : subviews){
+        if(existing == view){
+            return;
+        }
+    }
+    subviews.emplace_back(view);
+    renderTarget->getNativePtr()->addChildNativeItem(view->renderTarget->getNativePtr());
+    // Newly created subviews must inherit compositor wiring immediately.
+    view->setFrontendRecurse(proxy.getFrontendPtr());
+    view->setSyncLaneRecurse(proxy.getSyncLaneId());
     };
-    void View::removeSubView(View *view){
-        auto it  = subviews.begin();
-        while(it != subviews.end()){
-            auto v = *it;
-            if(v.get() == view){
-                subviews.erase(it);
-                renderTarget->getNativePtr()->removeChildNativeItem(view->renderTarget->getNativePtr());
-                view->parent_ptr = nullptr;
-                return;
-                break;
-            };
+void View::removeSubView(View *view){
+    auto it  = subviews.begin();
+    while(it != subviews.end()){
+        auto *v = *it;
+        if(v == view){
+            subviews.erase(it);
+            renderTarget->getNativePtr()->removeChildNativeItem(view->renderTarget->getNativePtr());
+            view->parent_ptr = nullptr;
+            return;
+        }
+        ++it;
         };
     };
 
 void View::resize(Core::Rect newRect){
-    rect = newRect;
-    renderTarget->getNativePtr()->resize(newRect);
+    auto sanitized = sanitizeRect(newRect,rect);
+    if(sameRect(rect,sanitized)){
+        return;
+    }
+    rect = sanitized;
+    renderTarget->getNativePtr()->resize(rect);
     if(layerTreeLimb != nullptr){
         // Preserve positioned layer rect so child visuals keep stack/layout offsets.
-        layerTreeLimb->getRootLayer()->resize(newRect);
+        layerTreeLimb->getRootLayer()->resize(rect);
     }
 };
 
 View::View(const Core::Rect & rect,Native::NativeItemPtr nativeItem,Composition::LayerTree *layerTree,ViewPtr parent):
-rect(rect),
+rect(sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f})),
 widgetLayerTree(layerTree),
 renderTarget(std::make_shared<Composition::ViewRenderTarget>(nativeItem)),
 proxy(std::static_pointer_cast<Composition::CompositionRenderTarget>(renderTarget)),
 parent_ptr(parent){
+    if(renderTarget != nullptr && renderTarget->getNativePtr() != nullptr){
+        renderTarget->getNativePtr()->resize(this->rect);
+    }
     if(parent_ptr) {
         parent->addSubView(this);
     };
@@ -95,6 +197,16 @@ SharedHandle<Composition::Canvas> View::makeCanvas(SharedHandle<Composition::Lay
 }
 
 void View::startCompositionSession(){
+    if(proxy.getFrontendPtr() == nullptr && parent_ptr != nullptr){
+        auto parentFrontend = parent_ptr->proxy.getFrontendPtr();
+        if(parentFrontend != nullptr){
+            proxy.setFrontendPtr(parentFrontend);
+            auto parentLane = parent_ptr->proxy.getSyncLaneId();
+            if(parentLane != 0){
+                proxy.setSyncLaneId(parentLane);
+            }
+        }
+    }
     proxy.beginRecord();
 }
 
@@ -116,14 +228,16 @@ View::~View(){
 
 void View::setFrontendRecurse(Composition::Compositor *frontend){
     proxy.setFrontendPtr(frontend);
-    for(auto & subView : subviews){
-        subView->setFrontendRecurse(frontend);
+    for(auto *subView : subviews){
+        if(subView != nullptr){
+            subView->setFrontendRecurse(frontend);
+        }
     };
 };
 
 void View::setSyncLaneRecurse(uint64_t syncLaneId){
     proxy.setSyncLaneId(syncLaneId);
-    for(auto & subView : subviews){
+    for(auto *subView : subviews){
         if(subView != nullptr){
             subView->setSyncLaneRecurse(syncLaneId);
         }
@@ -207,7 +321,10 @@ void ViewDelegate::onRecieveEvent(Native::NativeEventPtr event){
         }
         case Native::NativeEvent::ViewResize : {
             auto params = (Native::ViewResize *)event->params;
-            view->getRect() = params->rect;
+            if(params != nullptr){
+                auto sanitized = sanitizeRect(params->rect,view->getRect());
+                view->getRect() = sanitized;
+            }
             break;
         }
         

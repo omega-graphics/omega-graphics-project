@@ -5,6 +5,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <string>
 #include <thread>
@@ -92,7 +93,7 @@ namespace OmegaWTK::Composition {
     /**
      OmegaWTK's Composition Engine Frontend Interface
      */
-    class Compositor {
+    class Compositor : public LayerTreeObserver {
 
         OmegaCommon::Vector<LayerTree *> targetLayerTrees;
 
@@ -181,6 +182,66 @@ namespace OmegaWTK::Composition {
 
         std::shared_ptr<PacketTelemetryState> packetTelemetryState;
 
+        struct QueueTelemetryState {
+            std::array<std::uint64_t,5> queuedByType {};
+            std::array<std::uint64_t,5> enqueuedByType {};
+            std::array<std::uint64_t,5> dequeuedByType {};
+            std::array<std::uint64_t,5> droppedByType {};
+            std::chrono::steady_clock::time_point lastEmit {};
+            std::uint64_t eventsSinceEmit = 0;
+        };
+
+        QueueTelemetryState queueTelemetryState {};
+
+        enum class LayerTreeDeltaType : std::uint8_t {
+            TreeAttached,
+            TreeDetached,
+            LayerResized,
+            LayerEnabled,
+            LayerDisabled
+        };
+
+        struct LayerTreeDelta {
+            LayerTreeDeltaType type = LayerTreeDeltaType::LayerResized;
+            LayerTree *tree = nullptr;
+            Layer *layer = nullptr;
+            Core::Rect rect {};
+            std::uint64_t epoch = 0;
+            std::chrono::steady_clock::time_point timestamp {};
+        };
+
+        struct LayerTreeSyncState {
+            std::uint64_t lastIssuedEpoch = 0;
+            std::uint64_t lastObservedEpoch = 0;
+            OmegaCommon::Vector<LayerTreeDelta> pendingDeltas {};
+        };
+
+        OmegaCommon::Map<LayerTree *,LayerTreeSyncState> layerTreeSyncState;
+        OmegaCommon::Map<LayerTree *,std::uint64_t> layerTreeLaneBinding;
+
+        struct LayerTreePacketMetadata {
+            std::uint64_t syncLaneId = 0;
+            std::uint64_t syncPacketId = 0;
+            OmegaCommon::Vector<LayerTreeDelta> deltas {};
+            OmegaCommon::Map<LayerTree *,std::uint64_t> requiredEpochByTree {};
+            bool mirrorApplied = false;
+        };
+
+        struct BackendLayerMirrorLayerState {
+            Core::Rect rect {};
+            bool enabled = true;
+            std::uint64_t lastAppliedEpoch = 0;
+        };
+
+        struct BackendLayerMirrorTreeState {
+            bool attached = false;
+            std::uint64_t lastAppliedEpoch = 0;
+            OmegaCommon::Map<Layer *,BackendLayerMirrorLayerState> layers {};
+        };
+
+        OmegaCommon::Map<std::uint64_t,OmegaCommon::Map<std::uint64_t,LayerTreePacketMetadata>> layerTreePacketMetadata;
+        OmegaCommon::Map<LayerTree *,BackendLayerMirrorTreeState> backendLayerMirror;
+
         static constexpr unsigned kMaxFramesInFlightNormal = 2;
         static constexpr unsigned kMaxFramesInFlightResize = 1;
         static constexpr std::chrono::milliseconds kResizeModeHoldWindow {200};
@@ -211,6 +272,12 @@ namespace OmegaWTK::Composition {
         bool commandContainsEffectMutation(const SharedHandle<CompositorCommand> & command) const;
         bool commandContainsRenderCommand(const SharedHandle<CompositorCommand> & command) const;
         bool commandHasNonNoOpRender(const SharedHandle<CompositorCommand> & command) const;
+        void noteQueuePushLocked(const SharedHandle<CompositorCommand> & command);
+        void noteQueuePopLocked(const SharedHandle<CompositorCommand> & command);
+        void noteQueueDropLocked(const SharedHandle<CompositorCommand> & command);
+        void maybeEmitQueueSnapshotLocked(const char *reason,
+                                          std::uint64_t syncLaneId = 0,
+                                          std::uint64_t syncPacketId = 0);
         void dropQueuedStaleForLaneLocked(std::uint64_t syncLaneId,
                                           const SharedHandle<CompositorCommand> & incoming);
         void markLaneResizeActivity(std::uint64_t syncLaneId);
@@ -232,6 +299,16 @@ namespace OmegaWTK::Composition {
         static void onBackendSubmissionCompleted(std::weak_ptr<PacketTelemetryState> weakState,
                                                  const BackendSubmissionTelemetry & telemetry);
         std::weak_ptr<PacketTelemetryState> telemetryState() const;
+        void coalesceLayerTreeDeltasLocked(OmegaCommon::Vector<LayerTreeDelta> & deltas) const;
+        void bindPendingLayerTreeDeltasToPacketLocked(std::uint64_t syncLaneId,std::uint64_t syncPacketId);
+        void applyLayerTreePacketDeltasToBackendMirror(std::uint64_t syncLaneId,
+                                                       std::uint64_t syncPacketId,
+                                                       BackendCompRenderTarget *target);
+        void releaseLayerTreePacketMetadata(std::uint64_t syncLaneId,std::uint64_t syncPacketId);
+        void enqueueLayerTreeDeltaLocked(LayerTree *tree,
+                                         LayerTreeDeltaType type,
+                                         Layer *layer,
+                                         const Core::Rect *rect = nullptr);
 
         CompositorScheduler scheduler;
 
@@ -242,6 +319,13 @@ namespace OmegaWTK::Composition {
         void executeCurrentCommand();
 
     public:
+        struct LayerTreeSyncSnapshot {
+            bool observed = false;
+            std::uint64_t lastIssuedEpoch = 0;
+            std::uint64_t lastObservedEpoch = 0;
+            std::size_t pendingDeltaCount = 0;
+        };
+
         struct LaneTelemetrySnapshot {
             std::uint64_t syncLaneId = 0;
             std::uint64_t firstPresentedPacketId = 0;
@@ -287,9 +371,18 @@ namespace OmegaWTK::Composition {
 
         LaneTelemetrySnapshot getLaneTelemetrySnapshot(std::uint64_t syncLaneId) const;
         LaneDiagnosticsSnapshot getLaneDiagnosticsSnapshot(std::uint64_t syncLaneId) const;
+        LayerTreeSyncSnapshot getLayerTreeSyncSnapshot(LayerTree *tree);
         OmegaCommon::String dumpLaneDiagnostics(std::uint64_t syncLaneId) const;
 
+        void observeLayerTree(LayerTree *tree,std::uint64_t syncLaneId = 0);
+        void unobserveLayerTree(LayerTree *tree);
+
         void scheduleCommand(SharedHandle<CompositorCommand> & command);
+
+        void hasDetached(LayerTree *tree) override;
+        void layerHasResized(Layer *layer) override;
+        void layerHasDisabled(Layer *layer) override;
+        void layerHasEnabled(Layer *layer) override;
         
         
         Compositor();

@@ -1,10 +1,55 @@
 #include "../Compositor.h"
 #include "VisualTree.h"
+#include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace OmegaWTK::Composition {
 
 namespace {
+    constexpr float kMaxTextureDimension = 16384.f;
+#if defined(TARGET_MACOS)
+    constexpr float kLogicalScaleFloor = 2.f;
+#else
+    constexpr float kLogicalScaleFloor = 1.f;
+#endif
+    constexpr float kMaxLogicalLayerDimension = kMaxTextureDimension / kLogicalScaleFloor;
+
+    static inline Core::Rect sanitizeCommandRect(const Core::Rect & candidate,const Core::Rect & fallback){
+        Core::Rect saneFallback = fallback;
+        if(!std::isfinite(saneFallback.pos.x)){
+            saneFallback.pos.x = 0.f;
+        }
+        if(!std::isfinite(saneFallback.pos.y)){
+            saneFallback.pos.y = 0.f;
+        }
+        if(!std::isfinite(saneFallback.w) || saneFallback.w <= 0.f){
+            saneFallback.w = 1.f;
+        }
+        if(!std::isfinite(saneFallback.h) || saneFallback.h <= 0.f){
+            saneFallback.h = 1.f;
+        }
+        saneFallback.w = std::clamp(saneFallback.w,1.f,kMaxLogicalLayerDimension);
+        saneFallback.h = std::clamp(saneFallback.h,1.f,kMaxLogicalLayerDimension);
+
+        Core::Rect sane = candidate;
+        if(!std::isfinite(sane.pos.x)){
+            sane.pos.x = saneFallback.pos.x;
+        }
+        if(!std::isfinite(sane.pos.y)){
+            sane.pos.y = saneFallback.pos.y;
+        }
+        if(!std::isfinite(sane.w) || sane.w <= 0.f){
+            sane.w = saneFallback.w;
+        }
+        if(!std::isfinite(sane.h) || sane.h <= 0.f){
+            sane.h = saneFallback.h;
+        }
+        sane.w = std::clamp(sane.w,1.f,kMaxLogicalLayerDimension);
+        sane.h = std::clamp(sane.h,1.f,kMaxLogicalLayerDimension);
+        return sane;
+    }
+
     static BackendRenderTargetContext * ensureLayerSurfaceTarget(BackendCompRenderTarget & target,Layer * layer){
         if(layer == nullptr || target.visualTree == nullptr){
             return nullptr;
@@ -18,7 +63,9 @@ namespace {
         if(layer->isChildLayer()){
             if(!target.visualTree->hasRootVisual()){
                 auto treeRoot = layer->getParentLimb()->getRootLayer();
-                auto rootRect = treeRoot->getLayerRect();
+                auto rootRect = sanitizeCommandRect(
+                        treeRoot->getLayerRect(),
+                        Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
                 auto rootVisual = target.visualTree->makeVisual(rootRect,rootRect.pos);
                 target.visualTree->setRootVisual(rootVisual);
                 auto insertedRoot = target.surfaceTargets.insert(std::make_pair(treeRoot.get(),&rootVisual->renderTarget));
@@ -26,7 +73,9 @@ namespace {
                     insertedRoot.first->second = &rootVisual->renderTarget;
                 }
             }
-            auto layerRect = layer->getLayerRect();
+            auto layerRect = sanitizeCommandRect(
+                    layer->getLayerRect(),
+                    Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
             auto visual = target.visualTree->makeVisual(layerRect,layerRect.pos);
             target.visualTree->addVisual(visual);
             auto inserted = target.surfaceTargets.insert(std::make_pair(layer,&visual->renderTarget));
@@ -42,13 +91,17 @@ namespace {
             if(!inserted.second){
                 inserted.first->second = rootTarget;
             }
-            auto layerRect = layer->getLayerRect();
+            auto layerRect = sanitizeCommandRect(
+                    layer->getLayerRect(),
+                    Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
             rootTarget->setRenderTargetSize(layerRect);
             target.visualTree->root->resize(layerRect);
             return inserted.first->second;
         }
 
-        auto layerRect = layer->getLayerRect();
+        auto layerRect = sanitizeCommandRect(
+                layer->getLayerRect(),
+                Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
         auto visual = target.visualTree->makeVisual(layerRect,layerRect.pos);
         target.visualTree->setRootVisual(visual);
         auto inserted = target.surfaceTargets.insert(std::make_pair(layer,&visual->renderTarget));
@@ -56,6 +109,165 @@ namespace {
             inserted.first->second = &visual->renderTarget;
         }
         return inserted.first->second;
+    }
+
+    static void collectLayersForTreeLimb(LayerTree *tree,
+                                         LayerTree::Limb *limb,
+                                         OmegaCommon::Vector<Layer *> &layers){
+        if(tree == nullptr || limb == nullptr){
+            return;
+        }
+        auto &rootLayer = limb->getRootLayer();
+        if(rootLayer != nullptr){
+            layers.push_back(rootLayer.get());
+        }
+        for(auto it = limb->begin(); it != limb->end(); ++it){
+            if(*it != nullptr){
+                layers.push_back((*it).get());
+            }
+        }
+        const auto childCount = tree->getParentLimbChildCount(limb);
+        for(unsigned idx = 0; idx < childCount; ++idx){
+            collectLayersForTreeLimb(tree,tree->getLimbAtIndexFromParent(idx,limb),layers);
+        }
+    }
+
+    static void resizeVisualForSurface(BackendCompRenderTarget & target,
+                                       BackendRenderTargetContext *surface,
+                                       const Core::Rect & rect){
+        if(surface == nullptr || target.visualTree == nullptr){
+            return;
+        }
+        if(target.visualTree->root != nullptr &&
+           surface == &(target.visualTree->root->renderTarget)){
+            auto mutableRect = rect;
+            target.visualTree->root->resize(mutableRect);
+            return;
+        }
+        for(auto & visual : target.visualTree->body){
+            if(visual != nullptr && surface == &(visual->renderTarget)){
+                auto mutableRect = rect;
+                visual->resize(mutableRect);
+                break;
+            }
+        }
+    }
+}
+
+void Compositor::applyLayerTreePacketDeltasToBackendMirror(std::uint64_t syncLaneId,
+                                                            std::uint64_t syncPacketId,
+                                                            BackendCompRenderTarget *target){
+    if(syncLaneId == 0 || syncPacketId == 0){
+        return;
+    }
+
+    LayerTreePacketMetadata metadata {};
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        auto laneIt = layerTreePacketMetadata.find(syncLaneId);
+        if(laneIt == layerTreePacketMetadata.end()){
+            return;
+        }
+        auto packetIt = laneIt->second.find(syncPacketId);
+        if(packetIt == laneIt->second.end()){
+            return;
+        }
+        auto & packetMetadata = packetIt->second;
+        if(!packetMetadata.mirrorApplied){
+            for(auto & delta : packetMetadata.deltas){
+                if(delta.tree == nullptr){
+                    continue;
+                }
+                auto & treeState = backendLayerMirror[delta.tree];
+                treeState.lastAppliedEpoch = std::max(treeState.lastAppliedEpoch,delta.epoch);
+                switch(delta.type){
+                    case LayerTreeDeltaType::TreeAttached: {
+                        treeState.attached = true;
+                        OmegaCommon::Vector<Layer *> treeLayers {};
+                        collectLayersForTreeLimb(delta.tree,delta.tree->getTreeRoot(),treeLayers);
+                        for(auto *treeLayer : treeLayers){
+                            if(treeLayer == nullptr){
+                                continue;
+                            }
+                            auto & layerState = treeState.layers[treeLayer];
+                            layerState.rect = sanitizeCommandRect(
+                                    treeLayer->getLayerRect(),
+                                    Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+                            layerState.enabled = true;
+                            layerState.lastAppliedEpoch = std::max(layerState.lastAppliedEpoch,delta.epoch);
+                        }
+                        break;
+                    }
+                    case LayerTreeDeltaType::TreeDetached:
+                        treeState.attached = false;
+                        treeState.layers.clear();
+                        break;
+                    case LayerTreeDeltaType::LayerResized:
+                    case LayerTreeDeltaType::LayerEnabled:
+                    case LayerTreeDeltaType::LayerDisabled: {
+                        if(delta.layer == nullptr){
+                            break;
+                        }
+                        treeState.attached = true;
+                        auto & layerState = treeState.layers[delta.layer];
+                        layerState.rect = sanitizeCommandRect(
+                                delta.rect,
+                                sanitizeCommandRect(
+                                        delta.layer->getLayerRect(),
+                                        Core::Rect{Core::Position{0.f,0.f},1.f,1.f}));
+                        if(delta.type == LayerTreeDeltaType::LayerEnabled){
+                            layerState.enabled = true;
+                        }
+                        else if(delta.type == LayerTreeDeltaType::LayerDisabled){
+                            layerState.enabled = false;
+                        }
+                        layerState.lastAppliedEpoch = std::max(layerState.lastAppliedEpoch,delta.epoch);
+                        break;
+                    }
+                    default:
+                        break;
+                }
+            }
+            packetMetadata.mirrorApplied = true;
+        }
+        metadata = packetMetadata;
+    }
+
+    if(target == nullptr || target->visualTree == nullptr){
+        return;
+    }
+
+    std::lock_guard<std::mutex> lk(mutex);
+    for(auto & requiredEpoch : metadata.requiredEpochByTree){
+        auto *tree = requiredEpoch.first;
+        if(tree == nullptr){
+            continue;
+        }
+        auto mirrorIt = backendLayerMirror.find(tree);
+        if(mirrorIt == backendLayerMirror.end()){
+            continue;
+        }
+        auto & treeState = mirrorIt->second;
+        if(!treeState.attached){
+            continue;
+        }
+        for(auto & layerStateEntry : treeState.layers){
+            auto *layer = layerStateEntry.first;
+            auto & layerState = layerStateEntry.second;
+            if(layer == nullptr || !layerState.enabled){
+                continue;
+            }
+            auto *surface = ensureLayerSurfaceTarget(*target,layer);
+            if(surface == nullptr){
+                continue;
+            }
+            auto rect = sanitizeCommandRect(
+                    layerState.rect,
+                    sanitizeCommandRect(layer->getLayerRect(),
+                                        Core::Rect{Core::Position{0.f,0.f},1.f,1.f}));
+            surface->setRenderTargetSize(rect);
+            resizeVisualForSurface(*target,surface,rect);
+        }
     }
 }
 
@@ -85,75 +297,36 @@ void Compositor::executeCurrentCommand(){
             target = &renderTargetStore.store[comm->renderTarget];
         };
 
+        applyLayerTreePacketDeltasToBackendMirror(currentCommand->syncLaneId,
+                                                  currentCommand->syncPacketId,
+                                                  target);
+
         /// 2. Locate / Create Layer Render Target in Visual Tree.
-        BackendRenderTargetContext *targetContext;
+        BackendRenderTargetContext *targetContext = nullptr;
 
         auto layer = comm->frame->targetLayer;
         auto layer_found = target->surfaceTargets.find(layer);
-        if(layer_found == target->surfaceTargets.end()){
-            if(layer->isChildLayer()){
-                if(!target->visualTree->hasRootVisual()){
-                    auto treeRoot = layer->getParentLimb()->getRootLayer();
-                    auto root_v = target->visualTree->makeVisual(treeRoot->getLayerRect(),treeRoot->getLayerRect().pos);
-                    target->visualTree->setRootVisual(root_v);
-                    auto rootLayer = treeRoot.get();
-                    auto root_surface = target->surfaceTargets.find(rootLayer);
-                    if(root_surface == target->surfaceTargets.end()){
-                        target->surfaceTargets.insert(std::make_pair(rootLayer,&root_v->renderTarget));
-                    }
-                    else {
-                        root_surface->second = &root_v->renderTarget;
-                    }
-                }
-                auto v = target->visualTree->makeVisual(layer->getLayerRect(),layer->getLayerRect().pos);
-                target->visualTree->addVisual(v);
-                auto inserted = target->surfaceTargets.insert(std::make_pair(layer,&v->renderTarget));
-                if(!inserted.second){
-                    inserted.first->second = &v->renderTarget;
-                }
-                targetContext = inserted.first->second;
+        if(layer_found == target->surfaceTargets.end() || layer_found->second == nullptr){
+            auto * ensuredSurface = ensureLayerSurfaceTarget(*target,layer);
+            if(ensuredSurface == nullptr){
+                markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
+                currentCommand->status.set(CommandStatus::Delayed);
+                return;
             }
-            else {
-                if(target->visualTree->root != nullptr){
-                    targetContext = &(target->visualTree->root->renderTarget);
-                    auto inserted = target->surfaceTargets.insert(std::make_pair(layer,targetContext));
-                    if(!inserted.second){
-                        inserted.first->second = targetContext;
-                    }
-                    auto layerRect = layer->getLayerRect();
-                    targetContext->setRenderTargetSize(layerRect);
-                    target->visualTree->root->resize(layerRect);
-                }
-                else {
-                    auto v = target->visualTree->makeVisual(layer->getLayerRect(),layer->getLayerRect().pos);
-                    target->visualTree->setRootVisual(v);
-                    auto inserted = target->surfaceTargets.insert(std::make_pair(layer,&v->renderTarget));
-                    if(!inserted.second){
-                        inserted.first->second = &v->renderTarget;
-                    }
-                    targetContext = inserted.first->second;
-                }
-            }
+            layer_found = target->surfaceTargets.find(layer);
         }
-        else {
-            targetContext = layer_found->second;
-            auto layerRect = comm->frame->targetLayer->getLayerRect();
-            targetContext->setRenderTargetSize(layerRect);
+        if(layer_found == target->surfaceTargets.end() || layer_found->second == nullptr){
+            markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
+            currentCommand->status.set(CommandStatus::Delayed);
+            return;
+        }
 
-            auto surface = layer_found->second;
-            if(target->visualTree->root != nullptr &&
-               surface == &(target->visualTree->root->renderTarget)){
-                target->visualTree->root->resize(layerRect);
-            }
-            else {
-                for(auto & visual : target->visualTree->body){
-                    if(visual != nullptr && surface == &(visual->renderTarget)){
-                        visual->resize(layerRect);
-                        break;
-                    }
-                }
-            }
-        }
+        targetContext = layer_found->second;
+        auto layerRect = sanitizeCommandRect(
+                comm->frame->targetLayer->getLayerRect(),
+                Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+        targetContext->setRenderTargetSize(layerRect);
+        resizeVisualForSurface(*target,targetContext,layerRect);
 
 
         OmegaCommon::ArrayRef<VisualCommand> commands{comm->frame->currentVisuals};
@@ -171,12 +344,20 @@ void Compositor::executeCurrentCommand(){
                 bkgrd.a == 0.f;
 
         // Some clients can enqueue empty transparent frames during startup/layout.
-        // Skipping them prevents wiping the last presented frame.
+        // Drop only when telemetry says there is no state/effect-only packet to preserve.
         if(isNoOpFrame){
-            OMEGAWTK_DEBUG("Skipping no-op transparent frame.")
-            markPacketDropped(currentCommand->syncLaneId,
-                              currentCommand->syncPacketId,
-                              PacketDropReason::NoOpTransparent);
+            if(shouldDropNoOpTransparentFrame(currentCommand->syncLaneId,
+                                              currentCommand->syncPacketId)){
+                OMEGAWTK_DEBUG("Skipping no-op transparent frame.")
+                markPacketDropped(currentCommand->syncLaneId,
+                                  currentCommand->syncPacketId,
+                                  PacketDropReason::NoOpTransparent);
+            }
+            else {
+                OMEGAWTK_DEBUG("Completing no-op transparent frame for state/effect sync.")
+                completePacketWithoutGpu(currentCommand->syncLaneId,
+                                         currentCommand->syncPacketId);
+            }
             currentCommand->status.set(CommandStatus::Ok);
             return;
         }
@@ -211,11 +392,15 @@ void Compositor::executeCurrentCommand(){
         }
         /// Resize Command
         if(params->subtype == CompositorLayerCommand::Resize){
-            auto layerRect = params->layer->getLayerRect();
+            auto priorRect = sanitizeCommandRect(
+                    params->layer->getLayerRect(),
+                    Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+            auto layerRect = priorRect;
             layerRect.pos.x += (float)params->delta_x;
             layerRect.pos.y += (float)params->delta_y;
             layerRect.w += (float)params->delta_w;;
             layerRect.h += (float)params->delta_h;
+            layerRect = sanitizeCommandRect(layerRect,priorRect);
             params->layer->resize(layerRect);
         }
         else {
@@ -299,8 +484,16 @@ void Compositor::executeCurrentCommand(){
     else if(currentCommand->type == CompositorCommand::View){
         auto params = (CompositorViewCommand *)currentCommand.get();
         if(params->subType == CompositorViewCommand::Resize){
-            auto rect = params->viewPtr->getRect();
-            params->viewPtr->resize(Core::Rect {Core::Position {rect.pos.x + params->delta_x,rect.pos.y + params->delta_y},rect.w + params->delta_w,rect.h + params->delta_h});
+            auto currentRect = sanitizeCommandRect(
+                    params->viewPtr->getRect(),
+                    Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+            auto nextRect = currentRect;
+            nextRect.pos.x += static_cast<float>(params->delta_x);
+            nextRect.pos.y += static_cast<float>(params->delta_y);
+            nextRect.w += static_cast<float>(params->delta_w);
+            nextRect.h += static_cast<float>(params->delta_h);
+            nextRect = sanitizeCommandRect(nextRect,currentRect);
+            params->viewPtr->resize(nextRect);
         }
     }
     else if(currentCommand->type == CompositorCommand::Cancel){

@@ -9,6 +9,8 @@
 #include "NativePrivate/macos/CocoaUtils.h"
 #include "NativePrivate/macos/CocoaItem.h"
 #import <Metal/Metal.h>
+#include <algorithm>
+#include <cmath>
 
 
 
@@ -27,6 +29,39 @@ namespace OmegaWTK::Composition {
 
     void stopMTLCapture(){
         [[MTLCaptureManager sharedCaptureManager] stopCapture];
+    }
+
+    namespace {
+        constexpr CGFloat kMaxDrawableDimension = 16384.f;
+
+        static inline CGFloat safeScale(){
+            CGFloat scale = [NSScreen mainScreen].backingScaleFactor;
+            if(scale <= 0.f || !std::isfinite(static_cast<double>(scale))){
+                scale = 2.f;
+            }
+            return std::max(scale,static_cast<CGFloat>(2.f));
+        }
+
+        static inline Core::Rect sanitizeVisualRect(const Core::Rect & candidate){
+            const CGFloat scale = safeScale();
+            const float maxPointDimension = static_cast<float>(kMaxDrawableDimension / scale);
+            Core::Rect sanitized = candidate;
+            if(!std::isfinite(sanitized.pos.x)){
+                sanitized.pos.x = 0.f;
+            }
+            if(!std::isfinite(sanitized.pos.y)){
+                sanitized.pos.y = 0.f;
+            }
+            if(!std::isfinite(sanitized.w) || sanitized.w <= 0.f){
+                sanitized.w = 1.f;
+            }
+            if(!std::isfinite(sanitized.h) || sanitized.h <= 0.f){
+                sanitized.h = 1.f;
+            }
+            sanitized.w = std::clamp(sanitized.w,1.f,maxPointDimension);
+            sanitized.h = std::clamp(sanitized.h,1.f,maxPointDimension);
+            return sanitized;
+        }
     }
 
 
@@ -58,12 +93,14 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
  Core::SharedPtr<BackendVisualTree::Visual> MTLCALayerTree::makeVisual(
                                                              Core::Rect &rect,
                                                              Core::Position & pos){
+     auto saneRect = sanitizeVisualRect(rect);
+     auto sanePos = saneRect.pos;
 
      CAMetalLayer *layer = [CAMetalLayer layer];
      layer.opaque = NO;
      layer.autoresizingMask = kCALayerNotSizable;
      layer.layoutManager = nil;
-     layer.contentsScale = [NSScreen mainScreen].backingScaleFactor;
+     layer.contentsScale = safeScale();
      layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
      layer.framebufferOnly = NO;
      layer.presentsWithTransaction = NO;
@@ -72,8 +109,12 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
      layer.backgroundColor = clearColor;
      CGColorRelease(clearColor);
      layer.anchorPoint = CGPointMake(0.f,0.f);
-     layer.frame = CGRectMake(pos.x,pos.y,rect.w,rect.h);
-     layer.drawableSize = CGSizeMake(rect.w * layer.contentsScale,rect.h * layer.contentsScale);
+     layer.frame = CGRectMake(sanePos.x,sanePos.y,saneRect.w,saneRect.h);
+     layer.bounds = CGRectMake(0.f,0.f,saneRect.w,saneRect.h);
+     layer.position = CGPointMake(sanePos.x,sanePos.y);
+     layer.drawableSize = CGSizeMake(
+             std::clamp(saneRect.w * layer.contentsScale,static_cast<CGFloat>(1.f),kMaxDrawableDimension),
+             std::clamp(saneRect.h * layer.contentsScale,static_cast<CGFloat>(1.f),kMaxDrawableDimension));
     //  layer.bounds = CGRectMake(0,0,rect.w,rect.h);
 
 
@@ -81,15 +122,16 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
      OmegaGTE::NativeRenderTargetDescriptor nativeRenderTargetDescriptor {false,layer};
 
      auto target = gte.graphicsEngine->makeNativeRenderTarget(nativeRenderTargetDescriptor);
-     Core::Rect r {rect};
+     Core::Rect r {saneRect};
      NSLog(@"Layer: W:%f H:%f",r.w,r.h);
      CGFloat scale = layer.contentsScale;
-     if(scale <= 0.f){
-         scale = 1.f;
+     if(scale <= 0.f || !std::isfinite(static_cast<double>(scale))){
+         scale = 2.f;
      }
+     scale = std::max(scale,static_cast<CGFloat>(2.f));
      BackendRenderTargetContext compTarget (r,target,(float)scale);
 
-     return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::Visual(pos,compTarget,layer,nil,false));
+     return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::Visual(sanePos,compTarget,layer,nil,false));
  };
 
  void MTLCALayerTree::setRootVisual(Core::SharedPtr<Parent::Visual> & visual){

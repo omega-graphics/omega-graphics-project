@@ -49,6 +49,18 @@ enum class PaintReason : uint8_t {
     ThemeChanged
 };
 
+enum class GeometryChangeReason : uint8_t {
+    ParentLayout,
+    ChildRequest,
+    UserInput,
+    Animation
+};
+
+struct GeometryProposal {
+    Core::Rect requested {};
+    GeometryChangeReason reason = GeometryChangeReason::ChildRequest;
+};
+
 struct PaintOptions {
     bool autoWarmupOnInitialPaint = true;
     uint8_t warmupFrameCount = 2;
@@ -56,10 +68,30 @@ struct PaintOptions {
     bool invalidateOnResize = true;
 };
 
+class OMEGAWTK_EXPORT WidgetGeometryDelegate {
+public:
+    virtual ~WidgetGeometryDelegate() = default;
+    virtual Core::Rect clampChildRect(Widget & parent,
+                                      Widget & child,
+                                      const GeometryProposal & proposal) = 0;
+    virtual void onChildRectCommitted(Widget & parent,
+                                      Widget & child,
+                                      const Core::Rect & oldRect,
+                                      const Core::Rect & newRect,
+                                      GeometryChangeReason reason){
+        (void)parent;
+        (void)child;
+        (void)oldRect;
+        (void)newRect;
+        (void)reason;
+    }
+};
+
 class OMEGAWTK_EXPORT PaintContext {
     Widget *widget = nullptr;
     SharedHandle<Composition::Canvas> mainCanvas;
     PaintReason paintReason = PaintReason::StateChanged;
+    Core::Rect paintBounds {};
     PaintContext(Widget *widget,SharedHandle<Composition::Canvas> mainCanvas,PaintReason reason);
     friend class Widget;
 public:
@@ -92,6 +124,7 @@ public:
 */
 class OMEGAWTK_EXPORT  Widget : public Native::NativeThemeObserver {
     bool initialDrawComplete = false;
+    bool hasMounted = false;
     bool paintInProgress = false;
     bool hasPendingInvalidate = false;
     PaintReason pendingPaintReason = PaintReason::StateChanged;
@@ -189,9 +222,16 @@ protected:
         Core::Rect rect;
     };
     void notifyObservers(WidgetEventType eventType,WidgetEventParams params);
+    virtual void onChildAttached(Widget *child);
+    virtual void onChildDetached(Widget *child);
 
     virtual void onMount(){};
     virtual void onPaint(PaintContext & context,PaintReason reason){};
+    virtual Core::Rect clampChildRect(const Widget & child,const GeometryProposal & proposal) const;
+    virtual void onChildRectCommitted(const Widget & child,
+                                      const Core::Rect & oldRect,
+                                      const Core::Rect & newRect,
+                                      GeometryChangeReason reason);
 
     /**
     @brief Initial render of the Widget
@@ -210,6 +250,9 @@ public:
     */
     Core::Rect & rect();
     void setRect(const Core::Rect & newRect);
+    bool requestRect(const Core::Rect & requested,
+                     GeometryChangeReason reason = GeometryChangeReason::ChildRequest);
+    virtual bool acceptsChildWidget(const Widget *child) const;
     virtual bool isLayoutResizable() const {
         return true;
     }

@@ -2,6 +2,7 @@
 #include "omegaWTK/Composition/Canvas.h"
 #include "omegaWTK/Composition/Animation.h"
 #include "View.h"
+#include <chrono>
 
 #ifndef OMEGAWTK_UI_UIVIEW_H
 #define OMEGAWTK_UI_UIVIEW_H
@@ -63,7 +64,12 @@ struct OMEGAWTK_EXPORT StyleSheet {
             ElementBrush,
             ElementBrushAnimation,
             ElementAnimation,
-            ElementPathAnimation
+            ElementPathAnimation,
+            TextFont,
+            TextColor,
+            TextAlignment,
+            TextWrapping,
+            TextLineLimit
         };
 
         Kind kind = Kind::BackgroundColor;
@@ -73,8 +79,12 @@ struct OMEGAWTK_EXPORT StyleSheet {
         Core::Optional<bool> boolValue {};
         Core::Optional<float> floatValue {};
         SharedHandle<Composition::Brush> brush = nullptr;
+        SharedHandle<Composition::Font> font = nullptr;
         ElementAnimationKey animationKey = ElementAnimationKeyColorAlpha;
         SharedHandle<Composition::AnimationCurve> curve = nullptr;
+        Core::Optional<Composition::TextLayoutDescriptor::Alignment> textAlignment {};
+        Core::Optional<Composition::TextLayoutDescriptor::Wrapping> textWrapping {};
+        Core::Optional<unsigned> uintValue {};
         int nodeIndex = -1;
         bool transition = false;
         float duration = 0.f;
@@ -122,6 +132,22 @@ struct OMEGAWTK_EXPORT StyleSheet {
                                        int nodeIndex,
                                        float duration);
 
+    StyleSheetPtr textFont(UIElementTag elementTag,
+                           SharedHandle<Composition::Font> font);
+
+    StyleSheetPtr textColor(UIElementTag elementTag,
+                            const Composition::Color & color,
+                            bool transition = false,
+                            float duration = 0.f);
+
+    StyleSheetPtr textAlignment(UIElementTag elementTag,
+                                Composition::TextLayoutDescriptor::Alignment alignment);
+
+    StyleSheetPtr textWrapping(UIElementTag elementTag,
+                               Composition::TextLayoutDescriptor::Wrapping wrapping);
+
+    StyleSheetPtr textLineLimit(UIElementTag elementTag,unsigned lineLimit);
+
     StyleSheet();
     ~StyleSheet() = default;
 };
@@ -141,12 +167,16 @@ public:
         UIElementTag tag;
         Core::Optional<OmegaCommon::UString> str;
         Core::Optional<Shape> shape;
+        Core::Optional<Core::Rect> textRect;
+        Core::Optional<UIElementTag> textStyleTag;
     };
 
 private:
     OmegaCommon::Vector<Element> _content;
 public:
     void text(UIElementTag tag,OmegaCommon::UString content);
+    void text(UIElementTag tag,OmegaCommon::UString content,const Core::Rect & rect);
+    void text(UIElementTag tag,OmegaCommon::UString content,const Core::Rect & rect,UIElementTag styleTag);
     void shape(UIElementTag tag,const Shape & shape);
     bool remove(UIElementTag tag);
     void clear();
@@ -175,12 +205,77 @@ public:
 };
 
 class OMEGAWTK_EXPORT UIView : public CanvasView, UIRenderer {
+    struct ElementDirtyState {
+        bool layoutDirty = true;
+        bool styleDirty = true;
+        bool contentDirty = true;
+        bool orderDirty = true;
+        bool visibilityDirty = true;
+    };
+
+    struct PropertyAnimationState {
+        bool active = false;
+        float from = 0.f;
+        float to = 0.f;
+        float value = 0.f;
+        float durationSec = 0.f;
+        std::chrono::steady_clock::time_point startTime {};
+        SharedHandle<Composition::AnimationCurve> curve = nullptr;
+    };
+
+    struct PathNodeAnimationState {
+        int nodeIndex = -1;
+        PropertyAnimationState x;
+        PropertyAnimationState y;
+    };
+
     UIViewTag tag;
     UIViewLayout currentLayout;
     StyleSheetPtr currentStyle;
     bool layoutDirty = true;
     bool styleDirty = true;
+    bool rootLayoutDirty = true;
+    bool rootStyleDirty = true;
+    bool rootContentDirty = true;
+    bool rootOrderDirty = true;
+    bool firstFrameCoherentSubmit = true;
     SharedHandle<Composition::Canvas> rootCanvas;
+    OmegaCommon::Map<UIElementTag,ElementDirtyState> elementDirtyState;
+    OmegaCommon::Vector<UIElementTag> activeTagOrder;
+    OmegaCommon::Map<UIElementTag,OmegaCommon::Map<int,PropertyAnimationState>> elementAnimations;
+    OmegaCommon::Map<UIElementTag,OmegaCommon::Vector<PathNodeAnimationState>> pathNodeAnimations;
+    OmegaCommon::Map<UIElementTag,Composition::Color> lastResolvedElementColor;
+    OmegaCommon::Map<UIElementTag,Shape> previousShapeByTag;
+    SharedHandle<Composition::Font> fallbackTextFont = nullptr;
+
+    void markRootDirty();
+    void markAllElementsDirty();
+    void markElementDirty(const UIElementTag & tag,
+                          bool layout,
+                          bool style,
+                          bool content,
+                          bool order,
+                          bool visibility);
+    bool isElementDirty(const UIElementTag & tag) const;
+    void clearElementDirty(const UIElementTag & tag);
+    void startOrUpdateAnimation(const UIElementTag & tag,
+                                ElementAnimationKey key,
+                                float from,
+                                float to,
+                                float durationSec,
+                                SharedHandle<Composition::AnimationCurve> curve);
+    bool advanceAnimations();
+    Core::Optional<float> animatedValue(const UIElementTag & tag,ElementAnimationKey key) const;
+    Composition::Color applyAnimatedColor(const UIElementTag & tag,const Composition::Color & baseColor) const;
+    Shape applyAnimatedShape(const UIElementTag & tag,const Shape & inputShape) const;
+    void prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::Element> & elements,
+                                  bool layoutChanged,
+                                  bool styleChanged);
+    SharedHandle<Composition::Font> resolveFallbackTextFont();
+    void syncElementDirtyState(const OmegaCommon::Vector<UIViewLayout::Element> & elements,
+                               bool layoutChanged,
+                               bool styleChanged,
+                               bool orderChanged);
 public:
     explicit UIView(const Core::Rect & rect,Composition::LayerTree *layerTree,ViewPtr parent,UIViewTag tag);
     UIViewLayout & layout();
