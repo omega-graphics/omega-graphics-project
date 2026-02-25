@@ -255,12 +255,23 @@ void CocoaItem::resize(const Core::Rect &newRect){
     rect = sanitizeNativeRect(newRect,rect);
     CGRect r = core_rect_to_cg_rect(rect);
     if(_ptr != nil){
+        NSDictionary *noActions = @{
+            @"bounds":[NSNull null],
+            @"position":[NSNull null],
+            @"frame":[NSNull null],
+            @"sublayers":[NSNull null],
+            @"contents":[NSNull null],
+            @"transform":[NSNull null]
+        };
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
         [_ptr setFrame:r];
         [_ptr setBoundsOrigin:NSMakePoint(0,0)];
         [_ptr setBoundsSize:r.size];
         CALayer *layer = _ptr.layer;
         NSRect hostBounds = _ptr.bounds;
         hostBounds.origin = NSMakePoint(0.f,0.f);
+        layer.actions = noActions;
         layer.frame = hostBounds;
         layer.position = CGPointMake(0.f,0.f);
         layer.bounds = hostBounds;
@@ -278,6 +289,7 @@ void CocoaItem::resize(const Core::Rect &newRect){
         }
         NSArray<CALayer *> *subLayers = layer.sublayers;
         for(CALayer *subLayer in subLayers){
+            subLayer.actions = noActions;
             subLayer.frame = hostBounds;
             subLayer.position = CGPointMake(0.f,0.f);
             subLayer.bounds = hostBounds;
@@ -290,9 +302,13 @@ void CocoaItem::resize(const Core::Rect &newRect){
                     MIN(MAX(hostBounds.size.height * scale,1.f),kMaxDrawableDimension));
             }
         }
+        [CATransaction commit];
     }
     else {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
         [scrollView setFrame:r];
+        [CATransaction commit];
     }
      
 };

@@ -7,14 +7,18 @@ class TextCompositorWidget final : public OmegaWTK::Widget {
     OmegaWTK::UIViewPtr accentView {};
     bool loggedUIViewValidation = false;
 
-    void ensureAccentView(const OmegaWTK::Core::Rect & bounds){
+    static OmegaWTK::Core::Rect accentRectForBounds(const OmegaWTK::Core::Rect & bounds){
         constexpr float kLayerSize = 120.0f;
-        OmegaWTK::Core::Rect targetRect{
+        return OmegaWTK::Core::Rect{
             OmegaWTK::Core::Position{
                 (bounds.w - kLayerSize) * 0.5f,
                 (bounds.h - kLayerSize) * 0.5f},
             kLayerSize,
             kLayerSize};
+    }
+
+    void ensureAccentView(const OmegaWTK::Core::Rect & bounds){
+        auto targetRect = accentRectForBounds(bounds);
         if(accentView == nullptr){
             accentView = makeUIView(targetRect,rootView,"text_accent_view");
         }
@@ -45,6 +49,10 @@ protected:
 
     void onMount() override {
         ensureAccentView(rect());
+    }
+
+    void resize(OmegaWTK::Core::Rect & newRect) override {
+        ensureAccentView(newRect);
     }
 
     void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {

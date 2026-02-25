@@ -51,7 +51,7 @@ namespace OmegaWTK {
         void setFrontendRecurse(Composition::Compositor *frontend);
         void setSyncLaneRecurse(uint64_t syncLaneId);
         Composition::LayerTree *widgetLayerTree;
-        ViewPtr parent_ptr;
+        View *parent_ptr = nullptr;
         Core::Rect rect {Core::Position{0.f,0.f},1.f,1.f};
         ViewDelegate *delegate = nullptr;
         virtual bool hasDelegate();

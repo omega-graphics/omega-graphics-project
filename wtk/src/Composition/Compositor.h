@@ -125,7 +125,8 @@ namespace OmegaWTK::Composition {
         enum class PacketDropReason : std::uint8_t {
             Generic,
             StaleCoalesced,
-            NoOpTransparent
+            NoOpTransparent,
+            EpochSuperseded
         };
 
         struct PacketLifecycleRecord {
@@ -143,6 +144,7 @@ namespace OmegaWTK::Composition {
             bool hasStateMutation = false;
             bool hasEffectMutation = false;
             bool hasResizeMutation = false;
+            std::uint64_t requiredTreeEpoch = 0;
         };
 
         struct LaneRuntimeState {
@@ -168,6 +170,9 @@ namespace OmegaWTK::Composition {
             std::uint64_t startupAdmissionHoldCount = 0;
             std::uint64_t admissionWaitCount = 0;
             std::chrono::microseconds totalAdmissionWait {0};
+            std::uint64_t epochWaitCount = 0;
+            std::chrono::microseconds totalEpochWait {0};
+            std::uint64_t epochDropCount = 0;
             unsigned maxInFlightObserved = 0;
         };
 
@@ -267,6 +272,21 @@ namespace OmegaWTK::Composition {
                                   std::chrono::steady_clock::time_point now) const;
         bool isLaneStartupCriticalPacket(std::uint64_t syncLaneId,std::uint64_t syncPacketId) const;
         bool waitForLaneAdmission(std::uint64_t syncLaneId,std::uint64_t syncPacketId);
+        bool waitForRequiredTreeEpoch(std::uint64_t syncLaneId,
+                                      std::uint64_t syncPacketId,
+                                      std::uint64_t requiredTreeEpoch);
+        bool arePacketEpochRequirementsSatisfiedLocked(std::uint64_t syncLaneId,
+                                                       std::uint64_t syncPacketId,
+                                                       std::uint64_t * maxObservedRequiredEpoch = nullptr,
+                                                       std::uint64_t * maxMissingEpoch = nullptr) const;
+        bool isPacketEpochSupersededLocked(std::uint64_t syncLaneId,
+                                           std::uint64_t olderPacketId,
+                                           std::uint64_t newerPacketId) const;
+        bool packetMetadataContainsResizeDeltaLocked(std::uint64_t syncLaneId,
+                                                     std::uint64_t syncPacketId) const;
+        static std::uint64_t maxRequiredTreeEpoch(const LayerTreePacketMetadata & metadata);
+        void stampCommandRequiredEpochLocked(SharedHandle<CompositorCommand> & command,
+                                             std::uint64_t requiredEpoch) const;
         bool commandContainsResizeActivity(const SharedHandle<CompositorCommand> & command) const;
         bool commandContainsStateMutation(const SharedHandle<CompositorCommand> & command) const;
         bool commandContainsEffectMutation(const SharedHandle<CompositorCommand> & command) const;
@@ -359,6 +379,9 @@ namespace OmegaWTK::Composition {
             std::uint64_t startupAdmissionHoldCount = 0;
             std::uint64_t admissionWaitCount = 0;
             double admissionWaitTotalMs = 0.0;
+            std::uint64_t epochWaitCount = 0;
+            double epochWaitTotalMs = 0.0;
+            std::uint64_t epochDropCount = 0;
             unsigned inFlight = 0;
             unsigned maxInFlightObserved = 0;
             bool resizeBudgetActive = false;

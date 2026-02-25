@@ -74,3 +74,26 @@ Keep frontend `Composition::LayerTree` and backend visual tree synchronized per 
    - `Compositor::applyLayerTreePacketDeltasToBackendMirror(...)`
 7. Packet metadata is released after packet/standalone command processing to avoid unbounded growth:
    - `Compositor::releaseLayerTreePacketMetadata(...)`
+
+## Slice D-F Implementation Notes (Current)
+1. `CompositorCommand` now carries `requiredTreeEpoch`.
+2. On schedule, packet metadata required epochs are stamped onto packet/render commands:
+   - `Compositor::stampCommandRequiredEpochLocked(...)`
+3. Scheduler admission now gates render-like commands on backend mirror epoch readiness:
+   - `Compositor::waitForRequiredTreeEpoch(...)`
+4. Backend mirror apply can be invoked in a mirror-only pass (no render target) to satisfy epoch gate:
+   - `Compositor::applyLayerTreePacketDeltasToBackendMirror(..., target=nullptr)`
+5. Stale packet dropping now includes epoch-dominance detection per lane:
+   - `Compositor::isPacketEpochSupersededLocked(...)`
+   - drop reason: `EpochSuperseded`
+6. Resize/effect coalescing policy now uses both lane pressure and packet epoch metadata:
+   - geometry packets are coalesced more aggressively during resize bursts
+   - effect-heavy packets can be coalesced when lane is under pressure
+7. Trace hooks were added for slice diagnostics:
+   - `deltaQueued`
+   - `deltaApplied`
+   - `renderWaitEpoch`
+   - `epochDropped`
+8. Monotonic epoch assertions are now enforced when applying backend mirror deltas.
+9. Lane diagnostics include epoch-wait/epoch-drop telemetry:
+   - `epochWaitCount`, `epochWaitTotalMs`, `epochDropCount`

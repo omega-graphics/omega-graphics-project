@@ -6,6 +6,9 @@
 @interface OmegaWTKNativeCocoaAppWindowDelegate : NSObject <NSWindowDelegate>
 @property(nonatomic,strong) NSWindow *window;
 @property(nonatomic) OmegaWTK::Native::Cocoa::CocoaAppWindow * cppBinding;
+@property(nonatomic) NSRect pendingResizeBounds;
+@property(nonatomic) BOOL hasPendingResizeBounds;
+@property(nonatomic) BOOL resizeDispatchQueued;
 @end
 
 @interface OmegaWTKNativeCocoaAppWindowController : NSWindowController
@@ -69,11 +72,14 @@ void CocoaAppWindow::addNativeItem(NativeItemPtr item){
         // auto *cocoaitem = (CocoaItem *)item;
         NSViewController *viewC = (NSViewController *)item->getBinding();
         NSView *contentView = windowController.window.contentView;
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
         viewC.view.frame = contentView.bounds;
         viewC.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         viewC.view.hidden = NO;
         [windowController.window.contentViewController addChildViewController:viewC];
         [contentView addSubview:viewC.view];
+        [CATransaction commit];
         NSLog(@"Added Native Item View: frame={%.1f,%.1f,%.1f,%.1f} bounds={%.1f,%.1f,%.1f,%.1f} hidden=%d subviews=%lu",
               viewC.view.frame.origin.x,viewC.view.frame.origin.y,
               viewC.view.frame.size.width,viewC.view.frame.size.height,
@@ -127,36 +133,97 @@ NativeItemPtr CocoaAppWindow::getRootView() {
         self.cppBinding->getEmitter()->emit(event);
     };
 };
+
+-(void)emitResizeBoundsIfPossible:(NSRect)bounds{
+    if(bounds.size.width <= 0.f || bounds.size.height <= 0.f){
+        return;
+    }
+    auto *params = new OmegaWTK::Native::WindowWillResize(
+            OmegaWTK::Core::Rect
+                    {0.f,
+                     0.f,
+                     (float)bounds.size.width,
+                     (float)bounds.size.height}
+    );
+    OmegaWTK::Native::NativeEventPtr event(
+            new OmegaWTK::Native::NativeEvent(
+                    OmegaWTK::Native::NativeEvent::WindowWillResize,
+                    params));
+    [self emitIfPossible:event];
+}
+
+-(void)queueResizeBounds:(NSRect)bounds{
+    self.pendingResizeBounds = bounds;
+    self.hasPendingResizeBounds = YES;
+    if(self.resizeDispatchQueued){
+        return;
+    }
+    self.resizeDispatchQueued = YES;
+    OmegaWTKNativeCocoaAppWindowDelegate *delegate = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        delegate.resizeDispatchQueued = NO;
+        if(!delegate.hasPendingResizeBounds){
+            return;
+        }
+        NSRect pending = delegate.pendingResizeBounds;
+        delegate.hasPendingResizeBounds = NO;
+        [delegate emitResizeBoundsIfPossible:pending];
+    });
+}
+
+-(NSRect)contentBoundsForWindow:(NSWindow *)window{
+    if(window == nil){
+        return NSZeroRect;
+    }
+    if(window.contentView == nil){
+        return NSZeroRect;
+    }
+    return window.contentView.bounds;
+}
+
 -(void)windowWillClose:(NSNotification *)notification {
     OmegaWTK::Native::NativeEventPtr event(new OmegaWTK::Native::NativeEvent(OmegaWTK::Native::NativeEvent::WindowWillClose,nullptr));
     [self emitIfPossible:event];
     
 };
--(void)windowDidResize:(NSNotification *)notification 
-{
-     NSWindow *window = (NSWindow *)notification.object;
-     if(window == nil){
-         window = self.window;
-     }
-     if(window == nil || window.contentView == nil){
-         return;
-     }
-     NSRect bounds = window.contentView.bounds;
-     NSLog(@"Window BOUNDS: {x:%f,y:%f,w:%f,h:%f}",bounds.origin.x,bounds.origin.y,bounds.size.width,bounds.size.height);
-     auto *params = new OmegaWTK::Native::WindowWillResize(
-             OmegaWTK::Core::Rect
-                     {0.f,
-                      0.f,
-                      (float)bounds.size.width,
-                      (float)bounds.size.height}
-     );
-    OmegaWTK::Native::NativeEventPtr event(new OmegaWTK::Native::NativeEvent(OmegaWTK::Native::NativeEvent::WindowWillResize,params));
-     [self emitIfPossible:event];
+
+-(NSSize)windowWillResize:(NSWindow *)sender toSize:(NSSize)frameSize {
+    if(sender == nil){
+        return frameSize;
+    }
+    NSRect projectedFrame = sender.frame;
+    projectedFrame.size = frameSize;
+    NSRect projectedContent = [sender contentRectForFrameRect:projectedFrame];
+    [self queueResizeBounds:projectedContent];
+    return frameSize;
+}
+
+-(void)windowDidResize:(NSNotification *)notification {
+    NSWindow *window = (NSWindow *)notification.object;
+    if(window == nil){
+        window = self.window;
+    }
+    NSRect bounds = [self contentBoundsForWindow:window];
+    if(NSEqualRects(bounds,NSZeroRect)){
+        return;
+    }
+    NSLog(@"Window BOUNDS: {x:%f,y:%f,w:%f,h:%f}",bounds.origin.x,bounds.origin.y,bounds.size.width,bounds.size.height);
+    [self queueResizeBounds:bounds];
 };
 
 -(void)windowDidEndLiveResize:(NSNotification *)notification
 {
-    (void)notification;
+    NSWindow *window = (NSWindow *)notification.object;
+    if(window == nil){
+        window = self.window;
+    }
+    NSRect bounds = [self contentBoundsForWindow:window];
+    if(!NSEqualRects(bounds,NSZeroRect)){
+        self.pendingResizeBounds = bounds;
+        self.hasPendingResizeBounds = NO;
+        self.resizeDispatchQueued = NO;
+        [self emitResizeBoundsIfPossible:bounds];
+    }
     OmegaWTK::Native::NativeEventPtr event(
             new OmegaWTK::Native::NativeEvent(
                     OmegaWTK::Native::NativeEvent::WindowHasFinishedResize,

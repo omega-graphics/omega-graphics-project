@@ -39,6 +39,7 @@ namespace OmegaWTK::Composition {
         CompositorClient & client;
         uint64_t syncLaneId = 0;
         uint64_t syncPacketId = 0;
+        uint64_t requiredTreeEpoch = 0;
         typedef enum : int {
             /// A frame draw commmand
             Render,

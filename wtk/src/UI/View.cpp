@@ -95,7 +95,7 @@ namespace OmegaWTK {
                         sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f})))),
         proxy(std::static_pointer_cast<Composition::CompositionRenderTarget>(renderTarget)),
         widgetLayerTree(layerTree),
-        parent_ptr(parent),
+        parent_ptr(parent.get()),
         rect(sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f})){
 
         layerTreeLimb = widgetLayerTree->createLimb(this->rect);
@@ -139,6 +139,7 @@ void View::addSubView(View * view){
         }
     }
     subviews.emplace_back(view);
+    view->parent_ptr = this;
     renderTarget->getNativePtr()->addChildNativeItem(view->renderTarget->getNativePtr());
     // Newly created subviews must inherit compositor wiring immediately.
     view->setFrontendRecurse(proxy.getFrontendPtr());
@@ -176,7 +177,7 @@ rect(sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f})),
 widgetLayerTree(layerTree),
 renderTarget(std::make_shared<Composition::ViewRenderTarget>(nativeItem)),
 proxy(std::static_pointer_cast<Composition::CompositionRenderTarget>(renderTarget)),
-parent_ptr(parent){
+parent_ptr(parent.get()){
     if(renderTarget != nullptr && renderTarget->getNativePtr() != nullptr){
         renderTarget->getNativePtr()->resize(this->rect);
     }

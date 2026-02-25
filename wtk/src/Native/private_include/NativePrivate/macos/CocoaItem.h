@@ -66,6 +66,16 @@ public:
     NSView *getView(){ return _ptr != nil ? (NSView *)_ptr : (NSView *)scrollView; };
     void setRootLayer(CALayer *layer){
         if(_ptr != nil && layer != nil){
+            NSDictionary *noActions = @{
+                @"bounds":[NSNull null],
+                @"position":[NSNull null],
+                @"frame":[NSNull null],
+                @"sublayers":[NSNull null],
+                @"contents":[NSNull null],
+                @"transform":[NSNull null]
+            };
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
             _ptr.wantsLayer = YES;
             NSRect hostBounds = _ptr.bounds;
             if(hostBounds.size.width <= 0.f || hostBounds.size.height <= 0.f){
@@ -85,6 +95,7 @@ public:
 
             if([layer isKindOfClass:[CAMetalLayer class]]){
                 CAMetalLayer *metalLayer = (CAMetalLayer *)layer;
+                metalLayer.actions = noActions;
                 metalLayer.anchorPoint = CGPointMake(0.f,0.f);
                 metalLayer.position = CGPointMake(0.f,0.f);
                 metalLayer.bounds = hostBounds;
@@ -111,6 +122,7 @@ public:
                 [metalLayer setNeedsDisplay];
                 [_ptr setNeedsDisplay:YES];
                 [_ptr layoutSubtreeIfNeeded];
+                [CATransaction commit];
                 return;
             }
 
@@ -119,6 +131,7 @@ public:
             }
 
             CALayer *hostLayer = _ptr.layer;
+            hostLayer.actions = noActions;
             hostLayer.anchorPoint = CGPointMake(0.f,0.f);
             hostLayer.position = CGPointMake(0.f,0.f);
             hostLayer.bounds = hostBounds;
@@ -131,6 +144,7 @@ public:
             CGColorRelease(hostColor);
             hostLayer.contentsScale = scale;
 
+            layer.actions = noActions;
             layer.anchorPoint = CGPointMake(0.f,0.f);
             layer.position = CGPointMake(0.f,0.f);
             layer.bounds = hostBounds;
@@ -148,6 +162,7 @@ public:
             [hostLayer setNeedsDisplay];
             [_ptr setNeedsDisplay:YES];
             [_ptr layoutSubtreeIfNeeded];
+            [CATransaction commit];
         }
     }
     void setNeedsDisplay();

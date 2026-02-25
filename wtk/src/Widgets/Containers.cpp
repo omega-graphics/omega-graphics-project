@@ -468,6 +468,8 @@ void StackWidget::layoutChildren(){
     }
 
     float cursor = mainStart + startOffset;
+    OmegaCommon::Vector<Widget *> resizedWidgets {};
+    resizedWidgets.reserve(items.size());
 
     for(auto & item : items){
         auto childRect = item.widget->rect();
@@ -516,10 +518,31 @@ void StackWidget::layoutChildren(){
         }
 
         if(rectChanged(childRect,targetRect)){
+            auto prevOptions = item.widget->paintOptions();
+            const bool suppressResizeInvalidate = prevOptions.invalidateOnResize;
+            if(suppressResizeInvalidate){
+                auto suppressed = prevOptions;
+                suppressed.invalidateOnResize = false;
+                item.widget->setPaintOptions(suppressed);
+            }
+
             item.widget->setRect(targetRect);
+
+            if(suppressResizeInvalidate){
+                item.widget->setPaintOptions(prevOptions);
+                if(std::find(resizedWidgets.begin(),resizedWidgets.end(),item.widget) == resizedWidgets.end()){
+                    resizedWidgets.push_back(item.widget);
+                }
+            }
         }
 
         cursor += mainSize + item.marginMainAfter + layoutSpacing;
+    }
+
+    for(auto * resized : resizedWidgets){
+        if(resized != nullptr){
+            resized->invalidate(PaintReason::Resize);
+        }
     }
 
     needsLayout = false;

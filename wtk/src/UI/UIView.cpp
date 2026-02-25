@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 
 namespace OmegaWTK {
 
@@ -280,66 +281,65 @@ static Core::Rect localBoundsFromView(UIView *view){
         return kFallbackRect;
     }
 
-    const auto &viewRect = view->getRect();
-    float width = viewRect.w;
-    float height = viewRect.h;
+    struct StableBoundsState {
+        bool hasStable = false;
+        Core::Rect bounds {Core::Position{0.f,0.f},1.f,1.f};
+    };
+    static std::unordered_map<UIView *,StableBoundsState> stableBoundsByView {};
+
+    const auto & viewRect = view->getRect();
+    float viewWidth = viewRect.w;
+    float viewHeight = viewRect.h;
     float limbWidth = 0.f;
     float limbHeight = 0.f;
 
     auto limb = view->getLayerTreeLimb();
     if(limb != nullptr && limb->getRootLayer() != nullptr){
-        const auto &limbRect = limb->getRootLayer()->getLayerRect();
+        const auto & limbRect = limb->getRootLayer()->getLayerRect();
         limbWidth = limbRect.w;
         limbHeight = limbRect.h;
     }
 
-    if(!std::isfinite(width) || width < 1.f){
-        width = 0.f;
-    }
-    if(!std::isfinite(height) || height < 1.f){
-        height = 0.f;
-    }
-    if(!std::isfinite(limbWidth) || limbWidth < 1.f){
-        limbWidth = 0.f;
-    }
-    if(!std::isfinite(limbHeight) || limbHeight < 1.f){
-        limbHeight = 0.f;
-    }
-
-    width = clampDrawableDimension(width);
-    height = clampDrawableDimension(height);
-    limbWidth = clampDrawableDimension(limbWidth);
-    limbHeight = clampDrawableDimension(limbHeight);
-
-    const bool viewValid = isValidDimension(width) &&
-                           isValidDimension(height) &&
-                           !isSuspiciousDimensionPair(width,height);
+    const bool viewValid = isValidDimension(viewWidth) &&
+                           isValidDimension(viewHeight) &&
+                           !isSuspiciousDimensionPair(viewWidth,viewHeight);
     const bool limbValid = isValidDimension(limbWidth) &&
                            isValidDimension(limbHeight) &&
                            !isSuspiciousDimensionPair(limbWidth,limbHeight);
 
-    if(!viewValid && limbValid){
+    float width = 0.f;
+    float height = 0.f;
+    bool candidateValid = false;
+    if(viewValid){
+        width = viewWidth;
+        height = viewHeight;
+        candidateValid = true;
+    }
+    else if(limbValid){
         width = limbWidth;
         height = limbHeight;
+        candidateValid = true;
     }
 
-    if(isSuspiciousDimensionPair(width,height)){
-        width = kFallbackRect.w;
-        height = kFallbackRect.h;
+    auto & stable = stableBoundsByView[view];
+    if(!candidateValid){
+        if(stable.hasStable){
+            return stable.bounds;
+        }
+        return kFallbackRect;
     }
 
-    if(!isValidDimension(width)){
-        width = kFallbackRect.w;
-    }
-    if(!isValidDimension(height)){
-        height = kFallbackRect.h;
-    }
+    width = clampDrawableDimension(width);
+    height = clampDrawableDimension(height);
 
-    return Core::Rect{
+    Core::Rect resolved {
             Core::Position{0.f,0.f},
             width,
             height
     };
+    stable.hasStable = true;
+    stable.bounds = resolved;
+    return resolved;
 }
 
 }

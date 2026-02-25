@@ -1,7 +1,11 @@
 #include "../Compositor.h"
 #include "VisualTree.h"
 #include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <string>
 #include <utility>
 
 namespace OmegaWTK::Composition {
@@ -14,6 +18,20 @@ namespace {
     constexpr float kLogicalScaleFloor = 1.f;
 #endif
     constexpr float kMaxLogicalLayerDimension = kMaxTextureDimension / kLogicalScaleFloor;
+
+    static inline bool syncTraceEnabled(){
+        static const bool enabled = []{
+            const char *raw = std::getenv("OMEGAWTK_SYNC_TRACE");
+            return raw != nullptr && raw[0] != '\0' && raw[0] != '0';
+        }();
+        return enabled;
+    }
+
+    static inline void emitSyncTrace(const std::string & message){
+        if(syncTraceEnabled()){
+            std::cout << "[OmegaWTKSync] " << message << std::endl;
+        }
+    }
 
     static inline Core::Rect sanitizeCommandRect(const Core::Rect & candidate,const Core::Rect & fallback){
         Core::Rect saneFallback = fallback;
@@ -162,6 +180,7 @@ void Compositor::applyLayerTreePacketDeltasToBackendMirror(std::uint64_t syncLan
     }
 
     LayerTreePacketMetadata metadata {};
+    bool mirrorAppliedThisPacket = false;
     {
         std::lock_guard<std::mutex> lk(mutex);
         auto laneIt = layerTreePacketMetadata.find(syncLaneId);
@@ -178,7 +197,37 @@ void Compositor::applyLayerTreePacketDeltasToBackendMirror(std::uint64_t syncLan
                 if(delta.tree == nullptr){
                     continue;
                 }
+                const char * deltaName = "unknown";
+                switch(delta.type){
+                    case LayerTreeDeltaType::TreeAttached:
+                        deltaName = "tree-attached";
+                        break;
+                    case LayerTreeDeltaType::TreeDetached:
+                        deltaName = "tree-detached";
+                        break;
+                    case LayerTreeDeltaType::LayerResized:
+                        deltaName = "layer-resized";
+                        break;
+                    case LayerTreeDeltaType::LayerEnabled:
+                        deltaName = "layer-enabled";
+                        break;
+                    case LayerTreeDeltaType::LayerDisabled:
+                        deltaName = "layer-disabled";
+                        break;
+                    default:
+                        break;
+                }
                 auto & treeState = backendLayerMirror[delta.tree];
+                assert(delta.epoch >= treeState.lastAppliedEpoch);
+                if(delta.epoch < treeState.lastAppliedEpoch){
+                    emitSyncTrace(
+                            "deltaApplied nonMonotonicTreeEpoch lane=" + std::to_string(syncLaneId) +
+                            " packet=" + std::to_string(syncPacketId) +
+                            " tree=" + std::to_string(reinterpret_cast<std::uintptr_t>(delta.tree)) +
+                            " expectedAtLeast=" + std::to_string(treeState.lastAppliedEpoch) +
+                            " got=" + std::to_string(delta.epoch));
+                    continue;
+                }
                 treeState.lastAppliedEpoch = std::max(treeState.lastAppliedEpoch,delta.epoch);
                 switch(delta.type){
                     case LayerTreeDeltaType::TreeAttached: {
@@ -194,6 +243,7 @@ void Compositor::applyLayerTreePacketDeltasToBackendMirror(std::uint64_t syncLan
                                     treeLayer->getLayerRect(),
                                     Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
                             layerState.enabled = true;
+                            assert(delta.epoch >= layerState.lastAppliedEpoch);
                             layerState.lastAppliedEpoch = std::max(layerState.lastAppliedEpoch,delta.epoch);
                         }
                         break;
@@ -221,16 +271,28 @@ void Compositor::applyLayerTreePacketDeltasToBackendMirror(std::uint64_t syncLan
                         else if(delta.type == LayerTreeDeltaType::LayerDisabled){
                             layerState.enabled = false;
                         }
+                        assert(delta.epoch >= layerState.lastAppliedEpoch);
                         layerState.lastAppliedEpoch = std::max(layerState.lastAppliedEpoch,delta.epoch);
                         break;
                     }
                     default:
                         break;
                 }
+                emitSyncTrace(
+                        std::string("deltaApplied type=") + deltaName +
+                        " lane=" + std::to_string(syncLaneId) +
+                        " packet=" + std::to_string(syncPacketId) +
+                        " epoch=" + std::to_string(delta.epoch) +
+                        " tree=" + std::to_string(reinterpret_cast<std::uintptr_t>(delta.tree)) +
+                        " layer=" + std::to_string(reinterpret_cast<std::uintptr_t>(delta.layer)));
             }
             packetMetadata.mirrorApplied = true;
+            mirrorAppliedThisPacket = true;
         }
         metadata = packetMetadata;
+    }
+    if(mirrorAppliedThisPacket){
+        queueCondition.notify_all();
     }
 
     if(target == nullptr || target->visualTree == nullptr){
