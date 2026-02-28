@@ -78,6 +78,7 @@ struct ID2D1Device;
      } Wrapping;
      Alignment alignment;
      Wrapping wrapping;
+     unsigned lineLimit = 0;
  };
 
  class OMEGAWTK_EXPORT  TextRect {

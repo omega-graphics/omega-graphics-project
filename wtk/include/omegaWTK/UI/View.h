@@ -93,6 +93,8 @@ namespace OmegaWTK {
         OmegaCommon::Vector<View *> subviews;
     protected:
         SharedHandle<Composition::ViewRenderTarget> renderTarget;
+        Composition::CompositorClientProxy & compositorProxy(){ return proxy; }
+        const Composition::CompositorClientProxy & compositorProxy() const { return proxy; }
         friend class Widget;
     private:
         Composition::CompositorClientProxy proxy;
@@ -163,6 +165,9 @@ namespace OmegaWTK {
         /// @brief Returns the resize coordinator associated with this view.
         ViewResizeCoordinator & getResizeCoordinator(){ return resizeCoordinator; }
         const ViewResizeCoordinator & getResizeCoordinator() const { return resizeCoordinator; }
+        /// @brief Propagates resize governor metadata through this view subtree.
+        void setResizeGovernorMetadataRecurse(const Composition::ResizeGovernorMetadata & metadata,
+                                              std::uint64_t coordinatorGeneration);
 
         /// @brief Sets the object to recieve View related events.
         virtual void setDelegate(ViewDelegate *_delegate);

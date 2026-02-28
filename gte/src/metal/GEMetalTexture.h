@@ -2,6 +2,7 @@
 
 #include "omegaGTE/GTEBase.h"
 #include "omegaGTE/GETexture.h"
+#include <cstdint>
 
 #import <Metal/Metal.h>
 
@@ -15,6 +16,7 @@ class GEMetalTexture : public GETexture {
     NSSmartPtr resourceBarrier;
 
     bool needsBarrier = false;
+    std::uint64_t traceResourceId = 0;
 
     friend class GEMetalCommandBuffer;
     friend class GEMetalTextureRenderTarget;
@@ -27,6 +29,7 @@ public:
     }
     void copyBytes(void *bytes,size_t bytesPerRow) override;
     size_t getBytes(void *bytes, size_t bytesPerRow) override;
+    ~GEMetalTexture() override;
     explicit GEMetalTexture(const GETexture::GETextureType &type,
                    const GETexture::GETextureUsage & usage,
                    const TexturePixelFormat & pixelFormat,

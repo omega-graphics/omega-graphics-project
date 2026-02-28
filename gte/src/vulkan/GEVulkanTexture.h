@@ -11,6 +11,7 @@ _NAMESPACE_BEGIN_
 
 class GEVulkanTexture : public GETexture {
     GEVulkanEngine *engine;
+    std::uint64_t traceResourceId = 0;
 public:
     VkImage img;
     VkImageView img_view;

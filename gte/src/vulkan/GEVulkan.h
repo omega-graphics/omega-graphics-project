@@ -18,6 +18,7 @@
 #include <vk_mem_alloc.h>
 
 #include "omegaGTE/GE.h"
+#include "../common/GEResourceTracker.h"
 
 #ifndef OMEGAGTE_VULKAN_GEVULKAN_H
 #define OMEGAGTE_VULKAN_GEVULKAN_H
@@ -93,6 +94,7 @@ _NAMESPACE_BEGIN_
     class GEVulkanBuffer : public GEBuffer {
     public:
         GEVulkanEngine *engine;
+        std::uint64_t traceResourceId = 0;
 
         VkBuffer buffer;
         VkBufferView bufferView;
@@ -135,9 +137,23 @@ _NAMESPACE_BEGIN_
             VmaAllocation alloc, 
             VmaAllocationInfo alloc_info):GEBuffer(usage),engine(engine),buffer(buffer),
             bufferView(view),alloc(alloc),alloc_info(alloc_info){
-
+            traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+            ResourceTracking::Tracker::instance().emit(
+                    ResourceTracking::EventType::Create,
+                    ResourceTracking::Backend::Vulkan,
+                    "Buffer",
+                    traceResourceId,
+                    reinterpret_cast<const void *>(buffer),
+                    static_cast<float>(alloc_info.size));
         };
         ~GEVulkanBuffer() override{
+            ResourceTracking::Tracker::instance().emit(
+                    ResourceTracking::EventType::Destroy,
+                    ResourceTracking::Backend::Vulkan,
+                    "Buffer",
+                    traceResourceId,
+                    reinterpret_cast<const void *>(buffer),
+                    static_cast<float>(alloc_info.size));
             vmaDestroyBuffer(engine->memAllocator,buffer,alloc);
             vkDestroyBufferView(engine->device,bufferView,nullptr);
         };

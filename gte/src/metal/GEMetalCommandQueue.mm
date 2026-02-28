@@ -3,6 +3,7 @@
 #import "GEMetalRenderTarget.h"
 #import "GEMetalPipeline.h"
 #import "GEMetal.h"
+#include "../common/GEResourceTracker.h"
 
 #include <cstdlib>
 #include <utility>
@@ -15,7 +16,13 @@ _NAMESPACE_BEGIN_
 
 GEMetalCommandBuffer::GEMetalCommandBuffer(GEMetalCommandQueue *parentQueue):parentQueue(parentQueue),
 buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQueue->commandQueue.handle()) commandBuffer] retain]}){
-       
+    traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Create,
+            ResourceTracking::Backend::Metal,
+            "CommandBuffer",
+            traceResourceId,
+            buffer.handle());
     };
 
     unsigned GEMetalCommandBuffer::getResourceLocalIndexFromGlobalIndex(unsigned _id,omegasl_shader & shader){
@@ -514,6 +521,15 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
          drawable.assertExists();
         [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) presentDrawable:
         NSOBJECT_OBJC_BRIDGE(id<CAMetalDrawable>,drawable.handle())];
+        ResourceTracking::Event presentEvent {};
+        presentEvent.backend = ResourceTracking::Backend::Metal;
+        presentEvent.eventType = ResourceTracking::EventType::Present;
+        presentEvent.resourceType = "CommandBuffer";
+        presentEvent.resourceId = traceResourceId;
+        presentEvent.queueId = parentQueue != nullptr ? parentQueue->traceResourceId : 0;
+        presentEvent.commandBufferId = traceResourceId;
+        presentEvent.nativeHandle = reinterpret_cast<std::uint64_t>(buffer.handle());
+        ResourceTracking::Tracker::instance().emit(presentEvent);
         NSLog(@"Present Drawable");
     };
     
@@ -539,6 +555,17 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
                 info.gpuStartTimeSec = commandBuffer.GPUStartTime;
                 info.gpuEndTimeSec = commandBuffer.GPUEndTime;
                 completion(info);
+            }
+            if(commandBuffer.status == MTLCommandBufferStatusCompleted){
+                ResourceTracking::Event completeEvent {};
+                completeEvent.backend = ResourceTracking::Backend::Metal;
+                completeEvent.eventType = ResourceTracking::EventType::Complete;
+                completeEvent.resourceType = "CommandBuffer";
+                completeEvent.resourceId = traceResourceId;
+                completeEvent.queueId = parentQueue != nullptr ? parentQueue->traceResourceId : 0;
+                completeEvent.commandBufferId = traceResourceId;
+                completeEvent.nativeHandle = reinterpret_cast<std::uint64_t>(commandBuffer);
+                ResourceTracking::Tracker::instance().emit(completeEvent);
             }
          }];
         [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) commit];
@@ -572,12 +599,25 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 GEMetalCommandBuffer::~GEMetalCommandBuffer(){
         // NSLog(@"Metal Command Buffer Destroy");
         buffer.assertExists();
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Destroy,
+                ResourceTracking::Backend::Metal,
+                "CommandBuffer",
+                traceResourceId,
+                buffer.handle());
         [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) release];
     }
 
     GEMetalCommandQueue::GEMetalCommandQueue(NSSmartPtr & queue,unsigned size):
     GECommandQueue(size),
     commandQueue(queue),commandBuffers(),semaphore(dispatch_semaphore_create(0)){
+        traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Create,
+                ResourceTracking::Backend::Metal,
+                "CommandQueue",
+                traceResourceId,
+                commandQueue.handle());
     };
 
     void GEMetalCommandQueue::notifyCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer,
@@ -594,6 +634,15 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
     void GEMetalCommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer){
         auto _commandBuffer = (GEMetalCommandBuffer *)commandBuffer.get();
         [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,_commandBuffer->buffer.handle()) enqueue];
+        ResourceTracking::Event submitEvent {};
+        submitEvent.backend = ResourceTracking::Backend::Metal;
+        submitEvent.eventType = ResourceTracking::EventType::Submit;
+        submitEvent.resourceType = "CommandBuffer";
+        submitEvent.resourceId = _commandBuffer->traceResourceId;
+        submitEvent.queueId = traceResourceId;
+        submitEvent.commandBufferId = _commandBuffer->traceResourceId;
+        submitEvent.nativeHandle = reinterpret_cast<std::uint64_t>(_commandBuffer->buffer.handle());
+        ResourceTracking::Tracker::instance().emit(submitEvent);
         commandBuffers.push_back(commandBuffer);
     };
 
@@ -633,6 +682,12 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
 
     GEMetalCommandQueue::~GEMetalCommandQueue(){
         commandQueue.assertExists();
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Destroy,
+                ResourceTracking::Backend::Metal,
+                "CommandQueue",
+                traceResourceId,
+                commandQueue.handle());
         NSLog(@"Metal Command Queue Destroy");
         dispatch_release(semaphore);
     //    [NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,commandQueue.handle()) autorelease];

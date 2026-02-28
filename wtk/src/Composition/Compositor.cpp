@@ -49,6 +49,46 @@ namespace {
         }
     }
 
+    static inline bool governorTuningTraceEnabled(){
+        static const bool enabled = []{
+            const char *raw = std::getenv("OMEGAWTK_RESIZE_GOVERNOR_TUNING_TRACE");
+            return raw != nullptr && raw[0] != '\0' && raw[0] != '0';
+        }();
+        return enabled;
+    }
+
+    static inline void emitGovernorTuningTrace(const std::string & message){
+        if(governorTuningTraceEnabled()){
+            std::cout << "[OmegaWTKGovernor] " << message << std::endl;
+        }
+    }
+
+    static inline double readEnvDoubleClamp(const char *name,double fallback,double minValue,double maxValue){
+        const char *raw = std::getenv(name);
+        if(raw == nullptr || raw[0] == '\0'){
+            return fallback;
+        }
+        char *endPtr = nullptr;
+        const auto parsed = std::strtod(raw,&endPtr);
+        if(endPtr == raw || !std::isfinite(parsed)){
+            return fallback;
+        }
+        return std::clamp(parsed,minValue,maxValue);
+    }
+
+    static inline float readEnvFloatClamp(const char *name,float fallback,float minValue,float maxValue){
+        const char *raw = std::getenv(name);
+        if(raw == nullptr || raw[0] == '\0'){
+            return fallback;
+        }
+        char *endPtr = nullptr;
+        const auto parsed = std::strtof(raw,&endPtr);
+        if(endPtr == raw || !std::isfinite(parsed)){
+            return fallback;
+        }
+        return std::clamp(parsed,minValue,maxValue);
+    }
+
     static inline std::size_t queueCommandTypeIndex(CompositorCommand::Type type){
         switch(type){
             case CompositorCommand::Render:
@@ -92,6 +132,47 @@ namespace {
             ss << queueCommandTypeName(idx) << "=" << counts[idx];
         }
         return ss.str();
+    }
+
+    static inline const char *resizeGovernorPhaseName(ResizeGovernorPhase phase){
+        switch(phase){
+            case ResizeGovernorPhase::Idle:
+                return "Idle";
+            case ResizeGovernorPhase::Active:
+                return "Active";
+            case ResizeGovernorPhase::Settling:
+                return "Settling";
+            case ResizeGovernorPhase::Completed:
+                return "Completed";
+            default:
+                return "Unknown";
+        }
+    }
+
+    static inline const char *laneEffectQualityName(LaneEffectQuality quality){
+        switch(quality){
+            case LaneEffectQuality::Full:
+                return "Full";
+            case LaneEffectQuality::Reduced:
+                return "Reduced";
+            case LaneEffectQuality::Minimal:
+                return "Minimal";
+            default:
+                return "Unknown";
+        }
+    }
+
+    static inline float finiteAbs(float value){
+        if(!std::isfinite(value)){
+            return 0.f;
+        }
+        return std::fabs(value);
+    }
+
+    static inline bool resizeGovernorIndicatesActive(const ResizeGovernorMetadata & metadata){
+        return metadata.active ||
+               metadata.phase == ResizeGovernorPhase::Active ||
+               metadata.phase == ResizeGovernorPhase::Settling;
     }
 
     static inline bool isRenderLikeCommand(const SharedHandle<CompositorCommand> & command){
@@ -216,6 +297,98 @@ namespace {
         }
     }
 
+}
+
+Compositor::GovernorTuningConfig Compositor::loadGovernorTuningConfig(){
+    GovernorTuningConfig cfg {};
+    cfg.pressureEnterLatencyMsResize = readEnvDoubleClamp(
+            "OMEGAWTK_RESIZE_GOV_PRESSURE_ENTER_MS_RESIZE",
+            cfg.pressureEnterLatencyMsResize,
+            1.0,
+            120.0);
+    cfg.pressureExitLatencyMsResize = readEnvDoubleClamp(
+            "OMEGAWTK_RESIZE_GOV_PRESSURE_EXIT_MS_RESIZE",
+            cfg.pressureExitLatencyMsResize,
+            1.0,
+            120.0);
+    cfg.pressureEnterLatencyMsNormal = readEnvDoubleClamp(
+            "OMEGAWTK_RESIZE_GOV_PRESSURE_ENTER_MS_NORMAL",
+            cfg.pressureEnterLatencyMsNormal,
+            1.0,
+            200.0);
+    cfg.pressureExitLatencyMsNormal = readEnvDoubleClamp(
+            "OMEGAWTK_RESIZE_GOV_PRESSURE_EXIT_MS_NORMAL",
+            cfg.pressureExitLatencyMsNormal,
+            1.0,
+            200.0);
+    cfg.latencyEwmaAlpha = readEnvDoubleClamp(
+            "OMEGAWTK_RESIZE_GOV_EWMA_ALPHA_LATENCY",
+            cfg.latencyEwmaAlpha,
+            0.01,
+            1.0);
+    cfg.gpuEwmaAlpha = readEnvDoubleClamp(
+            "OMEGAWTK_RESIZE_GOV_EWMA_ALPHA_GPU",
+            cfg.gpuEwmaAlpha,
+            0.01,
+            1.0);
+    cfg.velocityBudgetRelaxPxPerSec = readEnvFloatClamp(
+            "OMEGAWTK_RESIZE_GOV_VELOCITY_RELAX",
+            cfg.velocityBudgetRelaxPxPerSec,
+            1.f,
+            10000.f);
+    cfg.velocityBudgetTightenPxPerSec = readEnvFloatClamp(
+            "OMEGAWTK_RESIZE_GOV_VELOCITY_TIGHTEN",
+            cfg.velocityBudgetTightenPxPerSec,
+            1.f,
+            20000.f);
+    cfg.velocityPacingMaxPxPerSec = readEnvFloatClamp(
+            "OMEGAWTK_RESIZE_GOV_VELOCITY_PACING_MAX",
+            cfg.velocityPacingMaxPxPerSec,
+            1.f,
+            30000.f);
+    cfg.admissionSpacingFromLatencyFactor = readEnvDoubleClamp(
+            "OMEGAWTK_RESIZE_GOV_ADMIT_LATENCY_FACTOR",
+            cfg.admissionSpacingFromLatencyFactor,
+            0.0,
+            2.0);
+    cfg.admissionSpacingFromGpuFactor = readEnvDoubleClamp(
+            "OMEGAWTK_RESIZE_GOV_ADMIT_GPU_FACTOR",
+            cfg.admissionSpacingFromGpuFactor,
+            0.0,
+            2.0);
+    cfg.admissionSpacingResizeMinMs = readEnvDoubleClamp(
+            "OMEGAWTK_RESIZE_GOV_ADMIT_RESIZE_MIN_MS",
+            cfg.admissionSpacingResizeMinMs,
+            0.0,
+            16.0);
+    cfg.admissionSpacingResizeMaxMs = readEnvDoubleClamp(
+            "OMEGAWTK_RESIZE_GOV_ADMIT_RESIZE_MAX_MS",
+            std::max(cfg.admissionSpacingResizeMinMs,cfg.admissionSpacingResizeMaxMs),
+            cfg.admissionSpacingResizeMinMs,
+            32.0);
+    cfg.admissionSpacingPressureMs = readEnvDoubleClamp(
+            "OMEGAWTK_RESIZE_GOV_ADMIT_PRESSURE_MS",
+            cfg.admissionSpacingPressureMs,
+            0.0,
+            32.0);
+
+    emitGovernorTuningTrace(
+            "tuning load "
+            "enterResizeMs=" + std::to_string(cfg.pressureEnterLatencyMsResize) +
+            " exitResizeMs=" + std::to_string(cfg.pressureExitLatencyMsResize) +
+            " enterNormalMs=" + std::to_string(cfg.pressureEnterLatencyMsNormal) +
+            " exitNormalMs=" + std::to_string(cfg.pressureExitLatencyMsNormal) +
+            " latencyAlpha=" + std::to_string(cfg.latencyEwmaAlpha) +
+            " gpuAlpha=" + std::to_string(cfg.gpuEwmaAlpha) +
+            " velRelax=" + std::to_string(cfg.velocityBudgetRelaxPxPerSec) +
+            " velTight=" + std::to_string(cfg.velocityBudgetTightenPxPerSec) +
+            " velPaceMax=" + std::to_string(cfg.velocityPacingMaxPxPerSec) +
+            " admitLatencyFactor=" + std::to_string(cfg.admissionSpacingFromLatencyFactor) +
+            " admitGpuFactor=" + std::to_string(cfg.admissionSpacingFromGpuFactor) +
+            " resizeSpacingMinMs=" + std::to_string(cfg.admissionSpacingResizeMinMs) +
+            " resizeSpacingMaxMs=" + std::to_string(cfg.admissionSpacingResizeMaxMs) +
+            " pressureSpacingMs=" + std::to_string(cfg.admissionSpacingPressureMs));
+    return cfg;
 }
 
 void Compositor::enqueueLayerTreeDeltaLocked(LayerTree *tree,
@@ -870,6 +1043,8 @@ queueCondition(),
 commandQueue(200),
 packetTelemetryState(std::make_shared<PacketTelemetryState>()),
 scheduler(this){
+    governorTuning = loadGovernorTuningConfig();
+    packetTelemetryState->tuning = governorTuning;
     packetTelemetryState->wakeCondition = &queueCondition;
 };
 
@@ -899,8 +1074,8 @@ void Compositor::scheduleCommand(SharedHandle<CompositorCommand> & command){
     const auto traceRequiredEpoch = command->requiredTreeEpoch;
     {
         std::lock_guard<std::mutex> lk(mutex);
-        if(command->syncLaneId != 0 && commandContainsResizeActivity(command)){
-            markLaneResizeActivity(command->syncLaneId);
+        if(command->syncLaneId != 0){
+            markLaneResizeActivity(command->syncLaneId,&command->resizeGovernor);
         }
 
         if(hasSyncPacketMetadata(command)){
@@ -985,13 +1160,139 @@ bool Compositor::targetsOverlap(const OmegaCommon::Vector<RenderTargetEpoch> & l
 
 unsigned Compositor::laneBudgetForNow(const LaneRuntimeState & laneState,
                                       std::chrono::steady_clock::time_point now) const {
-    unsigned budget = now < laneState.resizeModeUntil
+    const auto & tuning = governorTuning;
+    const bool resizeBudgetActive = now < laneState.resizeModeUntil ||
+                                    resizeGovernorIndicatesActive(laneState.latestResizeGovernor);
+    unsigned budget = resizeBudgetActive
                       ? kMaxFramesInFlightResize
                       : kMaxFramesInFlightNormal;
+    const float velocity = finiteAbs(laneState.latestResizeGovernor.velocityPxPerSec);
+    if(resizeBudgetActive && !laneState.underPressure){
+        // Relax to the normal budget at low resize velocity so static-heavy
+        // trees can keep up without corner-collapse.
+        if(velocity <= tuning.velocityBudgetRelaxPxPerSec &&
+           (!laneState.hasSubmitToPresentSample ||
+            laneState.submitToPresentEwmaMs <= tuning.pressureExitLatencyMsResize)){
+            budget = std::max(budget,kMaxFramesInFlightNormal);
+        }
+        // Tighten under aggressive velocity spikes.
+        if(velocity >= tuning.velocityBudgetTightenPxPerSec){
+            budget = 1;
+        }
+    }
+    if(laneState.underPressure){
+        budget = 1;
+    }
+    if(laneState.hasSubmitToPresentSample){
+        const double pressureGate = resizeBudgetActive
+                                    ? tuning.pressureEnterLatencyMsResize
+                                    : tuning.pressureEnterLatencyMsNormal;
+        if(laneState.submitToPresentEwmaMs >= (pressureGate * 1.25)){
+            budget = 1;
+        }
+    }
     if(!laneState.startupStabilized){
         budget = std::min(budget,1u);
     }
     return std::max(1u,budget);
+}
+
+std::chrono::microseconds Compositor::laneMinSubmitSpacingForNow(const LaneRuntimeState & laneState,
+                                                                 std::chrono::steady_clock::time_point now) const {
+    const auto & tuning = governorTuning;
+    double spacingMs = 0.0;
+    if(laneState.hasSubmitToPresentSample){
+        spacingMs = std::max(spacingMs,laneState.submitToPresentEwmaMs * tuning.admissionSpacingFromLatencyFactor);
+    }
+    if(laneState.hasGpuDurationSample){
+        spacingMs = std::max(spacingMs,laneState.gpuDurationEwmaMs * tuning.admissionSpacingFromGpuFactor);
+    }
+
+    const bool resizeBudgetActive = now < laneState.resizeModeUntil ||
+                                    resizeGovernorIndicatesActive(laneState.latestResizeGovernor);
+    if(resizeBudgetActive){
+        const float velocity = finiteAbs(laneState.latestResizeGovernor.velocityPxPerSec);
+        const double velocityNorm = std::min(1.0,std::max(0.0,static_cast<double>(velocity) / tuning.velocityPacingMaxPxPerSec));
+        const double resizeSpacing = tuning.admissionSpacingResizeMinMs +
+                                     ((tuning.admissionSpacingResizeMaxMs - tuning.admissionSpacingResizeMinMs) * velocityNorm);
+        spacingMs = std::max(spacingMs,resizeSpacing);
+    }
+    if(laneState.underPressure){
+        spacingMs = std::max(spacingMs,tuning.admissionSpacingPressureMs);
+    }
+    spacingMs = std::min(16.0,std::max(0.0,spacingMs));
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::duration<double,std::milli>(spacingMs));
+}
+
+LaneEffectQuality Compositor::desiredLaneQualityForNow(const LaneRuntimeState & laneState,
+                                                       std::chrono::steady_clock::time_point now,
+                                                       const GovernorTuningConfig & tuning) {
+    unsigned stress = 0;
+    const bool resizeBudgetActive = now < laneState.resizeModeUntil ||
+                                    resizeGovernorIndicatesActive(laneState.latestResizeGovernor);
+    if(resizeBudgetActive){
+        stress += 1;
+    }
+    if(laneState.underPressure){
+        stress += 1;
+    }
+    const float velocity = finiteAbs(laneState.latestResizeGovernor.velocityPxPerSec);
+    if(velocity >= tuning.velocityBudgetTightenPxPerSec){
+        stress += 2;
+    }
+    else if(velocity >= (tuning.velocityBudgetRelaxPxPerSec * 2.f)){
+        stress += 1;
+    }
+    if(laneState.hasSubmitToPresentSample){
+        const double pressureGate = resizeBudgetActive
+                                    ? tuning.pressureEnterLatencyMsResize
+                                    : tuning.pressureEnterLatencyMsNormal;
+        if(laneState.submitToPresentEwmaMs >= (pressureGate * 1.35)){
+            stress += 1;
+        }
+    }
+    if(stress >= 3){
+        return LaneEffectQuality::Minimal;
+    }
+    if(stress >= 1){
+        return LaneEffectQuality::Reduced;
+    }
+    return LaneEffectQuality::Full;
+}
+
+void Compositor::updateLaneQualityForPresentedPacket(LaneRuntimeState & laneState,
+                                                     std::chrono::steady_clock::time_point now,
+                                                     const GovernorTuningConfig & tuning){
+    const auto desired = desiredLaneQualityForNow(laneState,now,tuning);
+    if(static_cast<unsigned>(desired) > static_cast<unsigned>(laneState.qualityLevel)){
+        laneState.qualityLevel = desired;
+        laneState.qualityRecoveryStreak = 0;
+        return;
+    }
+    if(desired == laneState.qualityLevel){
+        if(desired == LaneEffectQuality::Full){
+            laneState.qualityRecoveryStreak = 0;
+        }
+        else {
+            laneState.qualityRecoveryStreak = std::min<std::uint32_t>(
+                    laneState.qualityRecoveryStreak + 1,
+                    kQualityRecoveryPresents);
+        }
+        return;
+    }
+
+    laneState.qualityRecoveryStreak += 1;
+    if(laneState.qualityRecoveryStreak < kQualityRecoveryPresents){
+        return;
+    }
+    laneState.qualityRecoveryStreak = 0;
+    if(laneState.qualityLevel == LaneEffectQuality::Minimal){
+        laneState.qualityLevel = LaneEffectQuality::Reduced;
+    }
+    else {
+        laneState.qualityLevel = LaneEffectQuality::Full;
+    }
 }
 
 bool Compositor::isLaneStartupCriticalPacket(std::uint64_t syncLaneId,std::uint64_t syncPacketId) const {
@@ -1038,6 +1339,7 @@ bool Compositor::waitForLaneAdmission(std::uint64_t syncLaneId,std::uint64_t syn
     bool waited = false;
     bool saturationRecorded = false;
     bool startupHoldRecorded = false;
+    bool pacingRecorded = false;
 
     while(true){
         {
@@ -1061,32 +1363,62 @@ bool Compositor::waitForLaneAdmission(std::uint64_t syncLaneId,std::uint64_t syn
             const auto now = std::chrono::steady_clock::now();
             const unsigned budget = laneBudgetForNow(laneState,now);
             if(laneState.inFlight < budget){
-                if(waited){
-                    laneState.admissionWaitCount += 1;
-                    laneState.totalAdmissionWait += std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now() - waitStart);
-                    emitSyncTrace(
-                            "admit lane=" + std::to_string(syncLaneId) +
-                            " packet=" + std::to_string(syncPacketId) +
-                            " waitedUs=" + std::to_string(
-                                    std::chrono::duration_cast<std::chrono::microseconds>(
-                                            std::chrono::steady_clock::now() - waitStart).count()));
+                const bool startupCritical =
+                        !laneState.startupStabilized &&
+                        (entry.hasStateMutation || entry.hasEffectMutation || entry.hasNonNoOpRender);
+                const auto minSpacing = startupCritical
+                                        ? std::chrono::microseconds{0}
+                                        : laneMinSubmitSpacingForNow(laneState,now);
+                const bool paceReady = minSpacing.count() == 0 ||
+                                       laneState.lastAdmissionGrantTime == std::chrono::steady_clock::time_point{} ||
+                                       (now - laneState.lastAdmissionGrantTime) >= minSpacing;
+                if(!paceReady){
+                    waited = true;
+                    if(!pacingRecorded){
+                        laneState.pacingWaitCount += 1;
+                        pacingRecorded = true;
+                        emitSyncTrace(
+                                "pace-wait lane=" + std::to_string(syncLaneId) +
+                                " packet=" + std::to_string(syncPacketId) +
+                                " spacingUs=" + std::to_string(minSpacing.count()));
+                    }
                 }
-                return true;
+                else {
+                    laneState.lastAdmissionGrantTime = now;
+                    if(waited){
+                        laneState.admissionWaitCount += 1;
+                        const auto waitedFor = std::chrono::steady_clock::now() - waitStart;
+                        laneState.totalAdmissionWait += std::chrono::duration_cast<std::chrono::microseconds>(
+                                waitedFor);
+                        if(pacingRecorded){
+                            laneState.totalPacingWait += std::chrono::duration_cast<std::chrono::microseconds>(
+                                    waitedFor);
+                        }
+                        emitSyncTrace(
+                                "admit lane=" + std::to_string(syncLaneId) +
+                                " packet=" + std::to_string(syncPacketId) +
+                                " waitedUs=" + std::to_string(
+                                        std::chrono::duration_cast<std::chrono::microseconds>(
+                                                waitedFor).count()));
+                    }
+                    return true;
+                }
             }
-            waited = true;
-            if(!saturationRecorded){
-                laneState.saturationCount += 1;
-                saturationRecorded = true;
-                emitSyncTrace(
-                        "wait lane=" + std::to_string(syncLaneId) +
-                        " packet=" + std::to_string(syncPacketId) +
-                        " inFlight=" + std::to_string(laneState.inFlight) +
-                        " budget=" + std::to_string(budget));
-            }
-            if(!laneState.startupStabilized && !startupHoldRecorded){
-                laneState.startupAdmissionHoldCount += 1;
-                startupHoldRecorded = true;
+            else {
+                waited = true;
+                if(!saturationRecorded){
+                    laneState.saturationCount += 1;
+                    saturationRecorded = true;
+                    emitSyncTrace(
+                            "wait lane=" + std::to_string(syncLaneId) +
+                            " packet=" + std::to_string(syncPacketId) +
+                            " inFlight=" + std::to_string(laneState.inFlight) +
+                            " budget=" + std::to_string(budget));
+                }
+                if(!laneState.startupStabilized && !startupHoldRecorded){
+                    laneState.startupAdmissionHoldCount += 1;
+                    startupHoldRecorded = true;
+                }
             }
         }
         std::unique_lock<std::mutex> lk(mutex);
@@ -1097,9 +1429,14 @@ bool Compositor::waitForLaneAdmission(std::uint64_t syncLaneId,std::uint64_t syn
             if(waited){
                 std::lock_guard<std::mutex> telemetryLock(packetTelemetryState->mutex);
                 auto & laneState = packetTelemetryState->laneRuntime[syncLaneId];
+                const auto waitedFor = std::chrono::steady_clock::now() - waitStart;
                 laneState.admissionWaitCount += 1;
                 laneState.totalAdmissionWait += std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now() - waitStart);
+                        waitedFor);
+                if(pacingRecorded){
+                    laneState.totalPacingWait += std::chrono::duration_cast<std::chrono::microseconds>(
+                            waitedFor);
+                }
             }
             return false;
         }
@@ -1342,13 +1679,22 @@ void Compositor::dropQueuedStaleForLaneLocked(std::uint64_t syncLaneId,
     });
 }
 
-void Compositor::markLaneResizeActivity(std::uint64_t syncLaneId){
+void Compositor::markLaneResizeActivity(std::uint64_t syncLaneId,
+                                        const ResizeGovernorMetadata * governorMetadata){
     if(syncLaneId == 0 || packetTelemetryState == nullptr){
         return;
     }
     std::lock_guard<std::mutex> lk(packetTelemetryState->mutex);
     auto & laneState = packetTelemetryState->laneRuntime[syncLaneId];
-    laneState.resizeModeUntil = std::chrono::steady_clock::now() + kResizeModeHoldWindow;
+    const auto now = std::chrono::steady_clock::now();
+    bool activateResizeBudget = true;
+    if(governorMetadata != nullptr){
+        laneState.latestResizeGovernor = *governorMetadata;
+        activateResizeBudget = resizeGovernorIndicatesActive(*governorMetadata);
+    }
+    if(activateResizeBudget){
+        laneState.resizeModeUntil = now + kResizeModeHoldWindow;
+    }
 }
 
 std::weak_ptr<Compositor::PacketTelemetryState> Compositor::telemetryState() const {
@@ -1384,6 +1730,17 @@ void Compositor::markPacketQueued(std::uint64_t syncLaneId,
     entry.hasResizeMutation = hasResizeMutation;
     entry.requiredTreeEpoch = command == nullptr ? 0 : command->requiredTreeEpoch;
     entry.layerTreeMirrorApplied = entry.requiredTreeEpoch == 0;
+    if(command != nullptr){
+        entry.resizeGovernor = command->resizeGovernor;
+        entry.resizeCoordinatorGeneration = command->resizeCoordinatorGeneration;
+        laneState.latestResizeGovernor = command->resizeGovernor;
+        laneState.latestResizeCoordinatorGeneration =
+                std::max(laneState.latestResizeCoordinatorGeneration,
+                         command->resizeCoordinatorGeneration);
+        if(resizeGovernorIndicatesActive(command->resizeGovernor)){
+            laneState.resizeModeUntil = std::chrono::steady_clock::now() + kResizeModeHoldWindow;
+        }
+    }
 }
 
 void Compositor::markPacketSubmitted(std::uint64_t syncLaneId,
@@ -1577,17 +1934,25 @@ LayerEffect::DropShadowParams Compositor::adaptDropShadowForLane(std::uint64_t s
         return clamped;
     }
     const auto now = std::chrono::steady_clock::now();
-    const bool resizeBudget = now < runtimeIt->second.resizeModeUntil;
-    const bool pressure = runtimeIt->second.underPressure;
-    if(!resizeBudget && !pressure){
+    const auto desiredQuality = desiredLaneQualityForNow(runtimeIt->second,now,governorTuning);
+    auto quality = runtimeIt->second.qualityLevel;
+    if(static_cast<unsigned>(desiredQuality) > static_cast<unsigned>(quality)){
+        quality = desiredQuality;
+    }
+    if(quality == LaneEffectQuality::Full){
         return clamped;
     }
-    clamped.radius = std::max(0.f,std::min(
-            clamped.radius,
-            resizeBudget ? kAdaptiveShadowRadiusResize : kAdaptiveShadowRadiusPressure));
-    clamped.blurAmount = std::max(0.f,std::min(
-            clamped.blurAmount,
-            resizeBudget ? kAdaptiveShadowBlurResize : kAdaptiveShadowBlurPressure));
+    const float scale = quality == LaneEffectQuality::Reduced
+                        ? kReducedEffectScale
+                        : kMinimalEffectScale;
+    const float opacityScale = quality == LaneEffectQuality::Reduced
+                               ? kReducedShadowOpacityScale
+                               : kMinimalShadowOpacityScale;
+    clamped.radius = std::max(0.f,clamped.radius * scale);
+    clamped.blurAmount = std::max(0.f,clamped.blurAmount * scale);
+    clamped.x_offset *= scale;
+    clamped.y_offset *= scale;
+    clamped.opacity *= opacityScale;
     clamped.opacity = std::max(0.f,std::min(clamped.opacity,1.f));
     return clamped;
 }
@@ -1604,17 +1969,22 @@ CanvasEffect Compositor::adaptCanvasEffectForLane(std::uint64_t syncLaneId,
         return clamped;
     }
     const auto now = std::chrono::steady_clock::now();
-    const bool resizeBudget = now < runtimeIt->second.resizeModeUntil;
-    const bool pressure = runtimeIt->second.underPressure;
-    if(!resizeBudget && !pressure){
+    const auto desiredQuality = desiredLaneQualityForNow(runtimeIt->second,now,governorTuning);
+    auto quality = runtimeIt->second.qualityLevel;
+    if(static_cast<unsigned>(desiredQuality) > static_cast<unsigned>(quality)){
+        quality = desiredQuality;
+    }
+    if(quality == LaneEffectQuality::Full){
         return clamped;
     }
-    const float cap = resizeBudget ? kAdaptiveCanvasBlurResize : kAdaptiveCanvasBlurPressure;
+    const float scale = quality == LaneEffectQuality::Reduced
+                        ? kReducedEffectScale
+                        : kMinimalEffectScale;
     if(clamped.type == CanvasEffect::DirectionalBlur){
-        clamped.directionalBlur.radius = std::max(0.f,std::min(clamped.directionalBlur.radius,cap));
+        clamped.directionalBlur.radius = std::max(0.f,clamped.directionalBlur.radius * scale);
     }
     else if(clamped.type == CanvasEffect::GaussianBlur){
-        clamped.gaussianBlur.radius = std::max(0.f,std::min(clamped.gaussianBlur.radius,cap));
+        clamped.gaussianBlur.radius = std::max(0.f,clamped.gaussianBlur.radius * scale);
     }
     return clamped;
 }
@@ -1675,8 +2045,8 @@ void Compositor::onBackendSubmissionCompleted(std::weak_ptr<PacketTelemetryState
                 }
                 else {
                     laneState.submitToPresentEwmaMs =
-                            ((1.0 - kLatencyEwmaAlpha) * laneState.submitToPresentEwmaMs) +
-                            (kLatencyEwmaAlpha * submitToPresentMs);
+                            ((1.0 - state->tuning.latencyEwmaAlpha) * laneState.submitToPresentEwmaMs) +
+                            (state->tuning.latencyEwmaAlpha * submitToPresentMs);
                 }
             }
 
@@ -1688,15 +2058,20 @@ void Compositor::onBackendSubmissionCompleted(std::weak_ptr<PacketTelemetryState
                 }
                 else {
                     laneState.gpuDurationEwmaMs =
-                            ((1.0 - kGpuEwmaAlpha) * laneState.gpuDurationEwmaMs) +
-                            (kGpuEwmaAlpha * gpuDurationMs);
+                            ((1.0 - state->tuning.gpuEwmaAlpha) * laneState.gpuDurationEwmaMs) +
+                            (state->tuning.gpuEwmaAlpha * gpuDurationMs);
                 }
             }
 
             const auto now = std::chrono::steady_clock::now();
-            const bool resizeBudget = now < laneState.resizeModeUntil;
-            const double enterThreshold = resizeBudget ? kPressureEnterLatencyMsResize : kPressureEnterLatencyMsNormal;
-            const double exitThreshold = resizeBudget ? kPressureExitLatencyMsResize : kPressureExitLatencyMsNormal;
+            const bool resizeBudget = now < laneState.resizeModeUntil ||
+                                      resizeGovernorIndicatesActive(laneState.latestResizeGovernor);
+            const double enterThreshold = resizeBudget
+                                          ? state->tuning.pressureEnterLatencyMsResize
+                                          : state->tuning.pressureEnterLatencyMsNormal;
+            const double exitThreshold = resizeBudget
+                                         ? state->tuning.pressureExitLatencyMsResize
+                                         : state->tuning.pressureExitLatencyMsNormal;
             if(laneState.hasSubmitToPresentSample){
                 if(!laneState.underPressure && laneState.submitToPresentEwmaMs >= enterThreshold){
                     laneState.underPressure = true;
@@ -1705,12 +2080,14 @@ void Compositor::onBackendSubmissionCompleted(std::weak_ptr<PacketTelemetryState
                     laneState.underPressure = false;
                 }
             }
+            Compositor::updateLaneQualityForPresentedPacket(laneState,now,state->tuning);
 
             emitSyncTrace(
                     "present lane=" + std::to_string(telemetry.syncLaneId) +
                     " packet=" + std::to_string(telemetry.syncPacketId) +
                     " inFlight=" + std::to_string(laneState.inFlight) +
-                    " ewmaMs=" + std::to_string(laneState.submitToPresentEwmaMs));
+                    " ewmaMs=" + std::to_string(laneState.submitToPresentEwmaMs) +
+                    " quality=" + laneEffectQualityName(laneState.qualityLevel));
             if(state->wakeCondition != nullptr){
                 state->wakeCondition->notify_all();
             }
@@ -1729,6 +2106,8 @@ void Compositor::onBackendSubmissionCompleted(std::weak_ptr<PacketTelemetryState
         entry.phase = PacketLifecyclePhase::Failed;
         entry.presentTimeCpu = telemetry.completeTimeCpu;
         laneState.underPressure = true;
+        laneState.qualityLevel = LaneEffectQuality::Minimal;
+        laneState.qualityRecoveryStreak = 0;
         emitSyncTrace(
                 "backend-fail lane=" + std::to_string(telemetry.syncLaneId) +
                 " packet=" + std::to_string(telemetry.syncPacketId));
@@ -1751,7 +2130,9 @@ Compositor::LaneTelemetrySnapshot Compositor::getLaneTelemetrySnapshot(std::uint
     auto runtimeIt = packetTelemetryState->laneRuntime.find(syncLaneId);
     if(runtimeIt != packetTelemetryState->laneRuntime.end()){
         snapshot.inFlight = runtimeIt->second.inFlight;
-        snapshot.resizeBudgetActive = now < runtimeIt->second.resizeModeUntil;
+        snapshot.resizeBudgetActive =
+                now < runtimeIt->second.resizeModeUntil ||
+                resizeGovernorIndicatesActive(runtimeIt->second.latestResizeGovernor);
         snapshot.startupStabilized = runtimeIt->second.startupStabilized;
         snapshot.firstPresentedPacketId = runtimeIt->second.firstPresentedPacketId;
         snapshot.underPressure = runtimeIt->second.underPressure;
@@ -1759,6 +2140,9 @@ Compositor::LaneTelemetrySnapshot Compositor::getLaneTelemetrySnapshot(std::uint
         snapshot.gpuDurationEwmaMs = runtimeIt->second.gpuDurationEwmaMs;
         snapshot.droppedPacketCount = runtimeIt->second.packetsDropped;
         snapshot.failedPacketCount = runtimeIt->second.packetsFailed;
+        snapshot.qualityLevel = runtimeIt->second.qualityLevel;
+        snapshot.latestResizeGovernor = runtimeIt->second.latestResizeGovernor;
+        snapshot.latestResizeCoordinatorGeneration = runtimeIt->second.latestResizeCoordinatorGeneration;
     }
 
     auto laneIt = packetTelemetryState->lanes.find(syncLaneId);
@@ -1836,16 +2220,23 @@ Compositor::LaneDiagnosticsSnapshot Compositor::getLaneDiagnosticsSnapshot(std::
         snapshot.startupAdmissionHoldCount = laneState.startupAdmissionHoldCount;
         snapshot.admissionWaitCount = laneState.admissionWaitCount;
         snapshot.admissionWaitTotalMs = std::chrono::duration<double,std::milli>(laneState.totalAdmissionWait).count();
+        snapshot.pacingWaitCount = laneState.pacingWaitCount;
+        snapshot.pacingWaitTotalMs = std::chrono::duration<double,std::milli>(laneState.totalPacingWait).count();
         snapshot.epochWaitCount = laneState.epochWaitCount;
         snapshot.epochWaitTotalMs = std::chrono::duration<double,std::milli>(laneState.totalEpochWait).count();
         snapshot.epochDropCount = laneState.epochDropCount;
         snapshot.inFlight = laneState.inFlight;
         snapshot.maxInFlightObserved = laneState.maxInFlightObserved;
-        snapshot.resizeBudgetActive = now < laneState.resizeModeUntil;
+        snapshot.resizeBudgetActive =
+                now < laneState.resizeModeUntil ||
+                resizeGovernorIndicatesActive(laneState.latestResizeGovernor);
         snapshot.startupStabilized = laneState.startupStabilized;
         snapshot.underPressure = laneState.underPressure;
         snapshot.submitToPresentEwmaMs = laneState.submitToPresentEwmaMs;
         snapshot.gpuDurationEwmaMs = laneState.gpuDurationEwmaMs;
+        snapshot.qualityLevel = laneState.qualityLevel;
+        snapshot.latestResizeGovernor = laneState.latestResizeGovernor;
+        snapshot.latestResizeCoordinatorGeneration = laneState.latestResizeCoordinatorGeneration;
     }
 
     auto laneIt = packetTelemetryState->lanes.find(syncLaneId);
@@ -1865,6 +2256,14 @@ Compositor::LaneDiagnosticsSnapshot Compositor::getLaneDiagnosticsSnapshot(std::
         if(record.presentTimeCpu != std::chrono::steady_clock::time_point{} &&
            record.presentTimeCpu > snapshot.lastPresentedTimeCpu){
             snapshot.lastPresentedTimeCpu = record.presentTimeCpu;
+        }
+        if(snapshot.latestResizeCoordinatorGeneration != 0 &&
+           record.resizeCoordinatorGeneration != 0 &&
+           record.resizeCoordinatorGeneration < snapshot.latestResizeCoordinatorGeneration &&
+           (record.phase == PacketLifecyclePhase::Queued ||
+            record.phase == PacketLifecyclePhase::Submitted ||
+            record.phase == PacketLifecyclePhase::GPUCompleted)){
+            snapshot.staleCoordinatorGenerationPacketCount += 1;
         }
     }
     return snapshot;
@@ -1894,9 +2293,20 @@ OmegaCommon::String Compositor::dumpLaneDiagnostics(std::uint64_t syncLaneId) co
        << ", startupHolds=" << snapshot.startupAdmissionHoldCount
        << ", waitCount=" << snapshot.admissionWaitCount
        << ", waitMs=" << snapshot.admissionWaitTotalMs
+       << ", paceWaitCount=" << snapshot.pacingWaitCount
+       << ", paceWaitMs=" << snapshot.pacingWaitTotalMs
        << ", epochWaitCount=" << snapshot.epochWaitCount
        << ", epochWaitMs=" << snapshot.epochWaitTotalMs
        << ", epochDrops=" << snapshot.epochDropCount
+       << ", staleCoordGenPackets=" << snapshot.staleCoordinatorGenerationPacketCount
+       << ", quality=" << laneEffectQualityName(snapshot.qualityLevel)
+       << ", resizeSessionId=" << snapshot.latestResizeGovernor.sessionId
+       << ", resizePhase=" << resizeGovernorPhaseName(snapshot.latestResizeGovernor.phase)
+       << ", resizeActive=" << (snapshot.latestResizeGovernor.active ? "yes" : "no")
+       << ", animatedTree=" << (snapshot.latestResizeGovernor.animatedTree ? "yes" : "no")
+       << ", resizeVelocity=" << snapshot.latestResizeGovernor.velocityPxPerSec
+       << ", resizeAcceleration=" << snapshot.latestResizeGovernor.accelerationPxPerSec2
+       << ", coordGen=" << snapshot.latestResizeCoordinatorGeneration
        << ", ewmaSubmitPresentMs=" << snapshot.submitToPresentEwmaMs
        << ", ewmaGpuMs=" << snapshot.gpuDurationEwmaMs
        << "}";

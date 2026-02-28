@@ -1,4 +1,5 @@
 #import "GEMetalTexture.h"
+#include "../common/GEResourceTracker.h"
 
 _NAMESPACE_BEGIN_
 
@@ -7,7 +8,29 @@ GEMetalTexture::GEMetalTexture(const GETexture::GETextureType &type,
                                const TexturePixelFormat & pixelFormat,NSSmartPtr texture): GETexture(type,usage,pixelFormat),texture(texture){
     id<MTLDevice> device = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,texture.handle()).device;
     resourceBarrier = NSObjectHandle {NSOBJECT_CPP_BRIDGE [device newFence]};
+    auto mtlTexture = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,texture.handle());
+    traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Create,
+            ResourceTracking::Backend::Metal,
+            "Texture",
+            traceResourceId,
+            texture.handle(),
+            static_cast<float>(mtlTexture.width),
+            static_cast<float>(mtlTexture.height));
 };
+
+GEMetalTexture::~GEMetalTexture(){
+    auto mtlTexture = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,texture.handle());
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Destroy,
+            ResourceTracking::Backend::Metal,
+            "Texture",
+            traceResourceId,
+            texture.handle(),
+            static_cast<float>(mtlTexture.width),
+            static_cast<float>(mtlTexture.height));
+}
 
 void GEMetalTexture::copyBytes(void *bytes, size_t bytesPerRow){
     auto width = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,texture.handle()).width;

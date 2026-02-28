@@ -16,7 +16,7 @@ Building OmegaWTK
 
 .. code-block:: shell
 
-    autom --mode gn --out out 
+    autom --mode ninja --out out 
 
 3. Build 
 

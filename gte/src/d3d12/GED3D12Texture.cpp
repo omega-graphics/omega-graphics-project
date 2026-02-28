@@ -1,5 +1,6 @@
 #include "GED3D12Texture.h"
 #include <cstring>
+#include "../common/GEResourceTracker.h"
 
 
 _NAMESPACE_BEGIN_
@@ -28,6 +29,15 @@ GED3D12Texture::GED3D12Texture(const GETextureType & type,
     else {
         onGpu = false;
     }
+    traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Create,
+            ResourceTracking::Backend::D3D12,
+            "Texture",
+            traceResourceId,
+            resource.Get(),
+            static_cast<float>(resource->GetDesc().Width),
+            static_cast<float>(resource->GetDesc().Height));
 
 }
 
@@ -175,5 +185,16 @@ size_t GED3D12Texture::getBytes(void *bytes, size_t bytesPerRow) {
         }
         return false;
     }
+
+GED3D12Texture::~GED3D12Texture(){
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Destroy,
+            ResourceTracking::Backend::D3D12,
+            "Texture",
+            traceResourceId,
+            resource.Get(),
+            static_cast<float>(resource->GetDesc().Width),
+            static_cast<float>(resource->GetDesc().Height));
+}
 
 _NAMESPACE_END_

@@ -36,6 +36,7 @@ public:
     NSSmartPtr resourceBarrier;
 
     bool needsBarrier = false;
+    std::uint64_t traceResourceId = 0;
 
     size_t size() override;
     void setName(OmegaCommon::StrRef name) override;

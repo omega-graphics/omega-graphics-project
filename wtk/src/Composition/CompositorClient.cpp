@@ -42,6 +42,13 @@ namespace OmegaWTK::Composition {
         return reservedPacketId;
     }
 
+    void CompositorClientProxy::setResizeGovernorMetadata(const ResizeGovernorMetadata & metadata,
+                                                          std::uint64_t coordinatorGeneration){
+        std::lock_guard<std::mutex> lk(commandMutex);
+        resizeGovernorMetadata = metadata;
+        resizeCoordinatorGeneration = coordinatorGeneration;
+    }
+
     Compositor *CompositorClientProxy::getFrontendPtr() const {
         std::lock_guard<std::mutex> lk(commandMutex);
         return frontend;
@@ -231,6 +238,8 @@ namespace OmegaWTK::Composition {
                if(packetCommand != nullptr){
                    packetCommand->syncLaneId = laneId;
                    packetCommand->syncPacketId = packetId;
+                   packetCommand->resizeGovernor = resizeGovernorMetadata;
+                   packetCommand->resizeCoordinatorGeneration = resizeCoordinatorGeneration;
                }
            }
        }
@@ -256,6 +265,8 @@ namespace OmegaWTK::Composition {
        });
        packet->syncLaneId = laneId;
        packet->syncPacketId = packetId;
+       packet->resizeGovernor = firstCommand->resizeGovernor;
+       packet->resizeCoordinatorGeneration = firstCommand->resizeCoordinatorGeneration;
        targetFrontend->scheduleCommand(packet);
     };
 

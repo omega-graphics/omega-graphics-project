@@ -18,6 +18,11 @@
 
 namespace OmegaWTK::Composition {
     struct CanvasEffect;
+    enum class LaneEffectQuality : std::uint8_t {
+        Full = 0,
+        Reduced = 1,
+        Minimal = 2
+    };
     // template<class FnTy>
     // class WorkerFarm {    
     //     struct ThreadStatus {
@@ -146,11 +151,14 @@ namespace OmegaWTK::Composition {
             bool hasResizeMutation = false;
             bool layerTreeMirrorApplied = false;
             std::uint64_t requiredTreeEpoch = 0;
+            ResizeGovernorMetadata resizeGovernor {};
+            std::uint64_t resizeCoordinatorGeneration = 0;
         };
 
         struct LaneRuntimeState {
             unsigned inFlight = 0;
             std::chrono::steady_clock::time_point resizeModeUntil {};
+            std::chrono::steady_clock::time_point lastAdmissionGrantTime {};
             bool startupStabilized = false;
             std::uint64_t firstPresentedPacketId = 0;
             bool hasPresentedRenderableContent = false;
@@ -159,6 +167,10 @@ namespace OmegaWTK::Composition {
             double submitToPresentEwmaMs = 0.0;
             double gpuDurationEwmaMs = 0.0;
             bool underPressure = false;
+            LaneEffectQuality qualityLevel = LaneEffectQuality::Full;
+            std::uint32_t qualityRecoveryStreak = 0;
+            ResizeGovernorMetadata latestResizeGovernor {};
+            std::uint64_t latestResizeCoordinatorGeneration = 0;
 
             std::uint64_t packetsQueued = 0;
             std::uint64_t packetsSubmitted = 0;
@@ -172,10 +184,29 @@ namespace OmegaWTK::Composition {
             std::uint64_t startupAdmissionHoldCount = 0;
             std::uint64_t admissionWaitCount = 0;
             std::chrono::microseconds totalAdmissionWait {0};
+            std::uint64_t pacingWaitCount = 0;
+            std::chrono::microseconds totalPacingWait {0};
             std::uint64_t epochWaitCount = 0;
             std::chrono::microseconds totalEpochWait {0};
             std::uint64_t epochDropCount = 0;
             unsigned maxInFlightObserved = 0;
+        };
+
+        struct GovernorTuningConfig {
+            double pressureEnterLatencyMsResize = 18.0;
+            double pressureExitLatencyMsResize = 12.0;
+            double pressureEnterLatencyMsNormal = 28.0;
+            double pressureExitLatencyMsNormal = 20.0;
+            double latencyEwmaAlpha = 0.2;
+            double gpuEwmaAlpha = 0.2;
+            float velocityBudgetRelaxPxPerSec = 180.f;
+            float velocityBudgetTightenPxPerSec = 1100.f;
+            float velocityPacingMaxPxPerSec = 1800.f;
+            double admissionSpacingFromLatencyFactor = 0.35;
+            double admissionSpacingFromGpuFactor = 0.55;
+            double admissionSpacingResizeMinMs = 1.0;
+            double admissionSpacingResizeMaxMs = 9.0;
+            double admissionSpacingPressureMs = 6.0;
         };
 
         struct PacketTelemetryState {
@@ -183,11 +214,13 @@ namespace OmegaWTK::Composition {
             std::condition_variable *wakeCondition = nullptr;
             OmegaCommon::Map<std::uint64_t,LaneRuntimeState> laneRuntime;
             OmegaCommon::Map<std::uint64_t,OmegaCommon::Map<std::uint64_t,PacketLifecycleRecord>> lanes;
+            GovernorTuningConfig tuning {};
         };
 
         using RenderTargetEpoch = std::pair<const CompositionRenderTarget *,const Layer *>;
 
         std::shared_ptr<PacketTelemetryState> packetTelemetryState;
+        GovernorTuningConfig governorTuning {};
 
         struct QueueTelemetryState {
             std::array<std::uint64_t,5> queuedByType {};
@@ -258,12 +291,12 @@ namespace OmegaWTK::Composition {
         static constexpr float kAdaptiveShadowBlurPressure = 16.0f;
         static constexpr float kAdaptiveCanvasBlurResize = 8.0f;
         static constexpr float kAdaptiveCanvasBlurPressure = 12.0f;
-        static constexpr double kPressureEnterLatencyMsResize = 18.0;
-        static constexpr double kPressureExitLatencyMsResize = 12.0;
-        static constexpr double kPressureEnterLatencyMsNormal = 28.0;
-        static constexpr double kPressureExitLatencyMsNormal = 20.0;
-        static constexpr double kLatencyEwmaAlpha = 0.2;
-        static constexpr double kGpuEwmaAlpha = 0.2;
+        static constexpr std::uint32_t kQualityRecoveryPresents = 6;
+        static constexpr float kReducedEffectScale = 0.72f;
+        static constexpr float kMinimalEffectScale = 0.5f;
+        static constexpr float kReducedShadowOpacityScale = 0.9f;
+        static constexpr float kMinimalShadowOpacityScale = 0.75f;
+        static GovernorTuningConfig loadGovernorTuningConfig();
 
         static void collectRenderTargetsForCommand(const SharedHandle<CompositorCommand> & command,
                                                    OmegaCommon::Vector<RenderTargetEpoch> & targets);
@@ -272,6 +305,14 @@ namespace OmegaWTK::Composition {
         bool isLaneSaturated(std::uint64_t syncLaneId) const;
         unsigned laneBudgetForNow(const LaneRuntimeState & laneState,
                                   std::chrono::steady_clock::time_point now) const;
+        std::chrono::microseconds laneMinSubmitSpacingForNow(const LaneRuntimeState & laneState,
+                                                             std::chrono::steady_clock::time_point now) const;
+        static LaneEffectQuality desiredLaneQualityForNow(const LaneRuntimeState & laneState,
+                                                          std::chrono::steady_clock::time_point now,
+                                                          const GovernorTuningConfig & tuning);
+        static void updateLaneQualityForPresentedPacket(LaneRuntimeState & laneState,
+                                                        std::chrono::steady_clock::time_point now,
+                                                        const GovernorTuningConfig & tuning);
         bool isLaneStartupCriticalPacket(std::uint64_t syncLaneId,std::uint64_t syncPacketId) const;
         bool waitForLaneAdmission(std::uint64_t syncLaneId,std::uint64_t syncPacketId);
         bool waitForRequiredTreeEpoch(std::uint64_t syncLaneId,
@@ -302,7 +343,8 @@ namespace OmegaWTK::Composition {
                                           std::uint64_t syncPacketId = 0);
         void dropQueuedStaleForLaneLocked(std::uint64_t syncLaneId,
                                           const SharedHandle<CompositorCommand> & incoming);
-        void markLaneResizeActivity(std::uint64_t syncLaneId);
+        void markLaneResizeActivity(std::uint64_t syncLaneId,
+                                    const ResizeGovernorMetadata * governorMetadata = nullptr);
         void markPacketQueued(std::uint64_t syncLaneId,
                               std::uint64_t syncPacketId,
                               const SharedHandle<CompositorCommand> & command);
@@ -363,6 +405,9 @@ namespace OmegaWTK::Composition {
             double submitToPresentEwmaMs = 0.0;
             double gpuDurationEwmaMs = 0.0;
             std::chrono::steady_clock::time_point lastPresentedTimeCpu {};
+            LaneEffectQuality qualityLevel = LaneEffectQuality::Full;
+            ResizeGovernorMetadata latestResizeGovernor {};
+            std::uint64_t latestResizeCoordinatorGeneration = 0;
         };
 
         struct LaneDiagnosticsSnapshot {
@@ -382,6 +427,8 @@ namespace OmegaWTK::Composition {
             std::uint64_t startupAdmissionHoldCount = 0;
             std::uint64_t admissionWaitCount = 0;
             double admissionWaitTotalMs = 0.0;
+            std::uint64_t pacingWaitCount = 0;
+            double pacingWaitTotalMs = 0.0;
             std::uint64_t epochWaitCount = 0;
             double epochWaitTotalMs = 0.0;
             std::uint64_t epochDropCount = 0;
@@ -393,6 +440,10 @@ namespace OmegaWTK::Composition {
             double submitToPresentEwmaMs = 0.0;
             double gpuDurationEwmaMs = 0.0;
             std::chrono::steady_clock::time_point lastPresentedTimeCpu {};
+            LaneEffectQuality qualityLevel = LaneEffectQuality::Full;
+            ResizeGovernorMetadata latestResizeGovernor {};
+            std::uint64_t latestResizeCoordinatorGeneration = 0;
+            std::uint64_t staleCoordinatorGenerationPacketCount = 0;
         };
 
         LaneTelemetrySnapshot getLaneTelemetrySnapshot(std::uint64_t syncLaneId) const;

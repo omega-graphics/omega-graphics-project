@@ -1,4 +1,5 @@
 #include "GED3D12RenderTarget.h"
+#include "../common/GEResourceTracker.h"
 
 _NAMESPACE_BEGIN_
     GED3D12NativeRenderTarget::GED3D12NativeRenderTarget(
@@ -16,8 +17,23 @@ _NAMESPACE_BEGIN_
                                                  dsvDescHeap(dsvDescHeap),
                                                   frameIndex(frameIndex),
                                                  renderTargets(renderTargets,renderTargets + renderTargetViewCount){
-        
+        traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Create,
+                ResourceTracking::Backend::D3D12,
+                "NativeRenderTarget",
+                traceResourceId,
+                swapChain.Get());
     };
+
+    GED3D12NativeRenderTarget::~GED3D12NativeRenderTarget(){
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Destroy,
+                ResourceTracking::Backend::D3D12,
+                "NativeRenderTarget",
+                traceResourceId,
+                swapChain.Get());
+    }
 
     void *GED3D12NativeRenderTarget::getSwapChain(){
         return (void *)swapChain.Get();
@@ -50,6 +66,7 @@ _NAMESPACE_BEGIN_
     void GED3D12NativeRenderTarget::commitAndPresent(){
         HRESULT hr;
         auto queue = (GED3D12CommandQueue *)commandQueue.get();
+        const auto presentedCommandBufferId = queue != nullptr ? queue->lastSubmittedCommandBufferTraceId() : 0;
 
         auto commandList = queue->getLastCommandList();
 
@@ -71,13 +88,42 @@ _NAMESPACE_BEGIN_
         }
         else
             frameIndex = swapChain->GetCurrentBackBufferIndex();
+
+        ResourceTracking::Event presentEvent {};
+        presentEvent.backend = ResourceTracking::Backend::D3D12;
+        presentEvent.eventType = ResourceTracking::EventType::Present;
+        presentEvent.resourceType = "NativeRenderTarget";
+        presentEvent.resourceId = traceResourceId;
+        presentEvent.queueId = queue != nullptr ? queue->traceId() : 0;
+        presentEvent.commandBufferId = presentedCommandBufferId;
+        presentEvent.nativeHandle = reinterpret_cast<std::uint64_t>(swapChain.Get());
+        ResourceTracking::Tracker::instance().emit(presentEvent);
+        if(queue != nullptr){
+            queue->clearSubmittedTraceCommandBufferIds();
+        }
     };
 
     GED3D12TextureRenderTarget::GED3D12TextureRenderTarget(SharedHandle<GED3D12Texture> texture,
                                                            SharedHandle<GECommandQueue> & commandQueue)
                                                            : engine(nullptr),
                                                            commandQueue(std::dynamic_pointer_cast<GED3D12CommandQueue>(commandQueue)),texture(texture) {
+        traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Create,
+                ResourceTracking::Backend::D3D12,
+                "TextureRenderTarget",
+                traceResourceId,
+                texture != nullptr ? texture->resource.Get() : nullptr);
 
+    }
+
+    GED3D12TextureRenderTarget::~GED3D12TextureRenderTarget(){
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Destroy,
+                ResourceTracking::Backend::D3D12,
+                "TextureRenderTarget",
+                traceResourceId,
+                texture != nullptr ? texture->resource.Get() : nullptr);
     }
 
     SharedHandle<GERenderTarget::CommandBuffer> GED3D12TextureRenderTarget::commandBuffer(){
@@ -101,6 +147,7 @@ _NAMESPACE_BEGIN_
     void GED3D12TextureRenderTarget::commit(){
         // HRESULT hr;
         commandQueue->commitToGPU();
+        commandQueue->clearSubmittedTraceCommandBufferIds();
         /// TODO: Fence.
     };
 

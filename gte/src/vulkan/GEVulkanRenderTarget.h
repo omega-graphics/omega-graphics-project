@@ -11,6 +11,7 @@ _NAMESPACE_BEGIN_
 
 class GEVulkanNativeRenderTarget : public GENativeRenderTarget {
     GEVulkanEngine *parentEngine;
+    std::uint64_t traceResourceId = 0;
 public:
 
     SharedHandle<GEVulkanCommandQueue> commandQueue;
@@ -54,6 +55,7 @@ public:
 
 class GEVulkanTextureRenderTarget : public GETextureRenderTarget {
     GEVulkanEngine *parentEngine;
+    std::uint64_t traceResourceId = 0;
 public:
 
     SharedHandle<GEVulkanCommandQueue> commandQueue;

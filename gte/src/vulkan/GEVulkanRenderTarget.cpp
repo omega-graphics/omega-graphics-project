@@ -1,5 +1,6 @@
 #include "GEVulkanRenderTarget.h"
 #include "vulkan/vulkan_core.h"
+#include "../common/GEResourceTracker.h"
 
 _NAMESPACE_BEGIN_
 
@@ -60,6 +61,15 @@ GEVulkanNativeRenderTarget::GEVulkanNativeRenderTarget(GEVulkanEngine *parentEng
     vkCreateFence(parentEngine->device,&fenceCreateInfo,nullptr,&frameIsReadyFence);
 
     currentFrameIndex = 0;
+    traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Create,
+            ResourceTracking::Backend::Vulkan,
+            "NativeRenderTarget",
+            traceResourceId,
+            reinterpret_cast<const void *>(swapchainKHR),
+            static_cast<float>(extent.width),
+            static_cast<float>(extent.height));
 
 }
 
@@ -87,6 +97,7 @@ void GEVulkanNativeRenderTarget::commitAndPresent() {
 
     uint64_t val;
     vkGetSemaphoreCounterValue(parentEngine->device,semaphore,&val);
+    const auto presentedCommandBufferId = commandQueue != nullptr ? commandQueue->lastSubmittedCommandBufferTraceId() : 0;
 
     VkPresentInfoKHR presentInfoKhr {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     presentInfoKhr.pNext = nullptr;
@@ -98,6 +109,18 @@ void GEVulkanNativeRenderTarget::commitAndPresent() {
    
 
     commandQueue->commitToGPUPresent(&presentInfoKhr);
+    ResourceTracking::Event presentEvent {};
+    presentEvent.backend = ResourceTracking::Backend::Vulkan;
+    presentEvent.eventType = ResourceTracking::EventType::Present;
+    presentEvent.resourceType = "NativeRenderTarget";
+    presentEvent.resourceId = traceResourceId;
+    presentEvent.queueId = commandQueue != nullptr ? commandQueue->traceId() : 0;
+    presentEvent.commandBufferId = presentedCommandBufferId;
+    presentEvent.nativeHandle = reinterpret_cast<std::uint64_t>(swapchainKHR);
+    ResourceTracking::Tracker::instance().emit(presentEvent);
+    if(commandQueue != nullptr){
+        commandQueue->clearSubmittedTraceCommandBufferIds();
+    }
 
     /// Wait for value to increment!!
     // val += 1;
@@ -117,6 +140,14 @@ void GEVulkanNativeRenderTarget::commitAndPresent() {
 }
 
 GEVulkanNativeRenderTarget::~GEVulkanNativeRenderTarget() {
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Destroy,
+            ResourceTracking::Backend::Vulkan,
+            "NativeRenderTarget",
+            traceResourceId,
+            reinterpret_cast<const void *>(swapchainKHR),
+            static_cast<float>(extent.width),
+            static_cast<float>(extent.height));
 
     vkDestroyFramebuffer(parentEngine->device,framebuffer, nullptr);
     for(auto view : frameViews){
@@ -132,7 +163,16 @@ GEVulkanTextureRenderTarget::GEVulkanTextureRenderTarget(GEVulkanEngine * engine
                                 VkFramebuffer & framebuffer):parentEngine(engine),
                                                              texture(texture),
                                                              frameBuffer(framebuffer){
-    
+    commandQueue = std::dynamic_pointer_cast<GEVulkanCommandQueue>(parentEngine->makeCommandQueue(100));
+    traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Create,
+            ResourceTracking::Backend::Vulkan,
+            "TextureRenderTarget",
+            traceResourceId,
+            texture != nullptr ? reinterpret_cast<const void *>(texture->img) : nullptr,
+            texture != nullptr ? static_cast<float>(texture->descriptor.width) : -1.f,
+            texture != nullptr ? static_cast<float>(texture->descriptor.height) : -1.f);
 }
 
 SharedHandle<GERenderTarget::CommandBuffer> GEVulkanTextureRenderTarget::commandBuffer(){
@@ -159,9 +199,18 @@ void GEVulkanTextureRenderTarget::notifyCommandBuffer(SharedHandle<CommandBuffer
 
 void GEVulkanTextureRenderTarget::commit(){
     commandQueue->commitToGPU();
+    commandQueue->clearSubmittedTraceCommandBufferIds();
 }
 
 GEVulkanTextureRenderTarget::~GEVulkanTextureRenderTarget(){
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Destroy,
+            ResourceTracking::Backend::Vulkan,
+            "TextureRenderTarget",
+            traceResourceId,
+            texture != nullptr ? reinterpret_cast<const void *>(texture->img) : nullptr,
+            texture != nullptr ? static_cast<float>(texture->descriptor.width) : -1.f,
+            texture != nullptr ? static_cast<float>(texture->descriptor.height) : -1.f);
     vkDestroyFramebuffer(parentEngine->device,frameBuffer,nullptr);
 }
 

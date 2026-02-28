@@ -16,6 +16,7 @@ _NAMESPACE_BEGIN_
     class GEVulkanCommandBuffer : public GECommandBuffer {
         GEVulkanCommandQueue *parentQueue;
         VkCommandBuffer & commandBuffer;
+        std::uint64_t traceResourceId = 0;
 
         GEVulkanRenderPipelineState *renderPipelineState = nullptr;
         GEVulkanComputePipelineState *computePipelineState = nullptr;
@@ -76,18 +77,20 @@ _NAMESPACE_BEGIN_
         }
 
         GEVulkanCommandBuffer(VkCommandBuffer & commandBuffer,GEVulkanCommandQueue *parentQueue);
-        ~GEVulkanCommandBuffer() override = default;
+        ~GEVulkanCommandBuffer() override;
     };
 
     class GEVulkanCommandQueue : public GECommandQueue {
         GEVulkanEngine *engine;
         VkCommandPool commandPool;
+        std::uint64_t traceResourceId = 0;
 
         VkFence submitFence;
 
         OmegaCommon::Vector<VkCommandBuffer> commandBuffers;
 
         OmegaCommon::Vector<VkCommandBuffer> commandQueue;
+        OmegaCommon::Vector<std::uint64_t> submittedTraceCommandBufferIds;
         unsigned currentBufferIndex;
         friend class GEVulkanCommandBuffer;
     public:
@@ -111,6 +114,18 @@ _NAMESPACE_BEGIN_
 
         void *native() override {
             return (void *)commandPool;
+        }
+        std::uint64_t traceId() const {
+            return traceResourceId;
+        }
+        std::uint64_t lastSubmittedCommandBufferTraceId() const {
+            if(submittedTraceCommandBufferIds.empty()){
+                return 0;
+            }
+            return submittedTraceCommandBufferIds.back();
+        }
+        void clearSubmittedTraceCommandBufferIds() {
+            submittedTraceCommandBufferIds.clear();
         }
         GEVulkanCommandQueue(GEVulkanEngine *engine,unsigned size);
         ~GEVulkanCommandQueue() override;

@@ -163,7 +163,28 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
           CGFloat scaleFactor = currentScreenScale();
           CGPathRef textPath = CGPathCreateWithRect(CGRectMake(0.f,0.f,rect.w * scaleFactor,rect.h * scaleFactor),NULL);
           framesetterRef = CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)strData);
-          frame = CTFramesetterCreateFrame(framesetterRef,CFRangeMake(0,strData.length),textPath,NULL);
+          CFRange frameRange = CFRangeMake(0,strData.length);
+          if(layoutDesc.lineLimit > 0){
+              CTFrameRef preliminaryFrame = CTFramesetterCreateFrame(framesetterRef,frameRange,textPath,NULL);
+              if(preliminaryFrame != nullptr){
+                  CFArrayRef lines = CTFrameGetLines(preliminaryFrame);
+                  CFIndex lineCount = lines != nullptr ? CFArrayGetCount(lines) : 0;
+                  if(lineCount > static_cast<CFIndex>(layoutDesc.lineLimit)){
+                      CTLineRef lastAllowedLine = (CTLineRef)CFArrayGetValueAtIndex(
+                              lines,
+                              static_cast<CFIndex>(layoutDesc.lineLimit) - 1);
+                      if(lastAllowedLine != nullptr){
+                          CFRange visibleRange = CTLineGetStringRange(lastAllowedLine);
+                          CFIndex endIndex = visibleRange.location + visibleRange.length;
+                          if(endIndex > 0 && endIndex < frameRange.length){
+                              frameRange.length = endIndex;
+                          }
+                      }
+                  }
+                  CFRelease(preliminaryFrame);
+              }
+          }
+          frame = CTFramesetterCreateFrame(framesetterRef,frameRange,textPath,NULL);
           CGPathRelease(textPath);
      }
      void * getNative() override{

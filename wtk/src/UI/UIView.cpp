@@ -25,6 +25,23 @@ struct ResolvedTextStyle {
     unsigned lineLimit = 0;
 };
 
+struct ResolvedEffectTransition {
+    bool transition = false;
+    float duration = 0.f;
+    SharedHandle<Composition::AnimationCurve> curve = nullptr;
+};
+
+struct ResolvedEffectStyle {
+    Core::Optional<Composition::LayerEffect::DropShadowParams> dropShadow {};
+    ResolvedEffectTransition dropShadowTransition {};
+    Core::Optional<Composition::CanvasEffect::GaussianBlurParams> gaussianBlur {};
+    ResolvedEffectTransition gaussianBlurTransition {};
+    Core::Optional<Composition::CanvasEffect::DirectionalBlurParams> directionalBlur {};
+    ResolvedEffectTransition directionalBlurTransition {};
+};
+
+constexpr const char *kUIViewRootEffectTag = "__UIViewRootEffectTarget__";
+
 static bool matchesTag(const OmegaCommon::String & selector,const OmegaCommon::String & tag){
     return selector.empty() || selector == tag;
 }
@@ -39,6 +56,10 @@ static inline bool colorsClose(const Composition::Color & lhs,const Composition:
 
 static inline float clamp01(float value){
     return std::clamp(value,0.f,1.f);
+}
+
+static inline bool nearlyEqual(float lhs,float rhs,float epsilon = 0.0005f){
+    return std::fabs(lhs - rhs) <= epsilon;
 }
 
 static Core::Optional<Composition::Color> colorFromBrush(const SharedHandle<Composition::Brush> & brush){
@@ -121,37 +142,93 @@ static ResolvedTextStyle resolveTextStyle(const StyleSheetPtr & style,
         return resolved;
     }
 
-    for(const auto & entry : style->entries){
-        if(!entry.viewTag.empty() && !matchesTag(entry.viewTag,viewTag)){
+    auto entrySpecificity = [&](const StyleSheet::Entry & entry) -> int {
+        int specificity = 0;
+        if(!entry.viewTag.empty()){
+            if(!matchesTag(entry.viewTag,viewTag)){
+                return -1;
+            }
+            specificity += 1;
+        }
+        if(!entry.elementTag.empty()){
+            if(!matchesTag(entry.elementTag,elementTag)){
+                return -1;
+            }
+            specificity += 2;
+        }
+        return specificity;
+    };
+
+    auto takeCandidate = [](int candidateSpecificity,
+                            std::size_t candidateOrder,
+                            int & currentSpecificity,
+                            std::size_t & currentOrder) -> bool {
+        if(candidateSpecificity < 0){
+            return false;
+        }
+        if(candidateSpecificity > currentSpecificity){
+            return true;
+        }
+        return candidateSpecificity == currentSpecificity && candidateOrder >= currentOrder;
+    };
+
+    int fontSpecificity = -1;
+    int colorSpecificity = -1;
+    int alignmentSpecificity = -1;
+    int wrappingSpecificity = -1;
+    int lineLimitSpecificity = -1;
+    std::size_t fontOrder = 0;
+    std::size_t colorOrder = 0;
+    std::size_t alignmentOrder = 0;
+    std::size_t wrappingOrder = 0;
+    std::size_t lineLimitOrder = 0;
+
+    for(std::size_t idx = 0; idx < style->entries.size(); ++idx){
+        const auto & entry = style->entries[idx];
+        const int specificity = entrySpecificity(entry);
+        if(specificity < 0){
             continue;
         }
-        if(!entry.elementTag.empty() && !matchesTag(entry.elementTag,elementTag)){
-            continue;
-        }
+
         switch(entry.kind){
             case StyleSheet::Entry::Kind::TextFont:
-                if(entry.font != nullptr){
+                if(entry.font != nullptr &&
+                   takeCandidate(specificity,idx,fontSpecificity,fontOrder)){
                     resolved.font = entry.font;
+                    fontSpecificity = specificity;
+                    fontOrder = idx;
                 }
                 break;
             case StyleSheet::Entry::Kind::TextColor:
-                if(entry.color){
+                if(entry.color &&
+                   takeCandidate(specificity,idx,colorSpecificity,colorOrder)){
                     resolved.color = *entry.color;
+                    colorSpecificity = specificity;
+                    colorOrder = idx;
                 }
                 break;
             case StyleSheet::Entry::Kind::TextAlignment:
-                if(entry.textAlignment){
+                if(entry.textAlignment &&
+                   takeCandidate(specificity,idx,alignmentSpecificity,alignmentOrder)){
                     resolved.layout.alignment = *entry.textAlignment;
+                    alignmentSpecificity = specificity;
+                    alignmentOrder = idx;
                 }
                 break;
             case StyleSheet::Entry::Kind::TextWrapping:
-                if(entry.textWrapping){
+                if(entry.textWrapping &&
+                   takeCandidate(specificity,idx,wrappingSpecificity,wrappingOrder)){
                     resolved.layout.wrapping = *entry.textWrapping;
+                    wrappingSpecificity = specificity;
+                    wrappingOrder = idx;
                 }
                 break;
             case StyleSheet::Entry::Kind::TextLineLimit:
-                if(entry.uintValue){
+                if(entry.uintValue &&
+                   takeCandidate(specificity,idx,lineLimitSpecificity,lineLimitOrder)){
                     resolved.lineLimit = *entry.uintValue;
+                    lineLimitSpecificity = specificity;
+                    lineLimitOrder = idx;
                 }
                 break;
             default:
@@ -162,8 +239,256 @@ static ResolvedTextStyle resolveTextStyle(const StyleSheetPtr & style,
     return resolved;
 }
 
+static inline Composition::LayerEffect::DropShadowParams makeDefaultShadowParams(){
+    Composition::LayerEffect::DropShadowParams params {};
+    params.x_offset = 0.f;
+    params.y_offset = 0.f;
+    params.radius = 0.f;
+    params.blurAmount = 0.f;
+    params.opacity = 0.f;
+    params.color = Composition::Color::Transparent;
+    return params;
+}
+
+static inline Composition::LayerEffect::DropShadowParams makeClearShadowParams(
+        const Composition::LayerEffect::DropShadowParams & source){
+    auto params = source;
+    params.x_offset = 0.f;
+    params.y_offset = 0.f;
+    params.radius = 0.f;
+    params.blurAmount = 0.f;
+    params.opacity = 0.f;
+    params.color.a = 0.f;
+    return params;
+}
+
+static inline bool dropShadowClose(const Composition::LayerEffect::DropShadowParams & lhs,
+                                   const Composition::LayerEffect::DropShadowParams & rhs){
+    return nearlyEqual(lhs.x_offset,rhs.x_offset) &&
+           nearlyEqual(lhs.y_offset,rhs.y_offset) &&
+           nearlyEqual(lhs.radius,rhs.radius) &&
+           nearlyEqual(lhs.blurAmount,rhs.blurAmount) &&
+           nearlyEqual(lhs.opacity,rhs.opacity) &&
+           colorsClose(lhs.color,rhs.color);
+}
+
+static inline bool gaussianBlurClose(const Composition::CanvasEffect::GaussianBlurParams & lhs,
+                                     const Composition::CanvasEffect::GaussianBlurParams & rhs){
+    return nearlyEqual(lhs.radius,rhs.radius);
+}
+
+static inline bool directionalBlurClose(const Composition::CanvasEffect::DirectionalBlurParams & lhs,
+                                        const Composition::CanvasEffect::DirectionalBlurParams & rhs){
+    return nearlyEqual(lhs.radius,rhs.radius) &&
+           nearlyEqual(lhs.angle,rhs.angle);
+}
+
+static ResolvedEffectStyle resolveRootEffectStyle(const StyleSheetPtr & style,
+                                                  const UIViewTag & viewTag){
+    ResolvedEffectStyle resolved {};
+    if(style == nullptr){
+        return resolved;
+    }
+
+    for(const auto & entry : style->entries){
+        if(!entry.viewTag.empty() && !matchesTag(entry.viewTag,viewTag)){
+            continue;
+        }
+        if(!entry.elementTag.empty()){
+            continue;
+        }
+
+        switch(entry.kind){
+            case StyleSheet::Entry::Kind::DropShadowEffect:
+                if(entry.dropShadowValue){
+                    resolved.dropShadow = *entry.dropShadowValue;
+                    resolved.dropShadowTransition.transition = entry.transition;
+                    resolved.dropShadowTransition.duration = entry.duration;
+                    resolved.dropShadowTransition.curve = entry.curve;
+                }
+                break;
+            case StyleSheet::Entry::Kind::GaussianBlurEffect:
+                if(entry.gaussianBlurValue){
+                    resolved.gaussianBlur = *entry.gaussianBlurValue;
+                    resolved.gaussianBlurTransition.transition = entry.transition;
+                    resolved.gaussianBlurTransition.duration = entry.duration;
+                    resolved.gaussianBlurTransition.curve = entry.curve;
+                }
+                break;
+            case StyleSheet::Entry::Kind::DirectionalBlurEffect:
+                if(entry.directionalBlurValue){
+                    resolved.directionalBlur = *entry.directionalBlurValue;
+                    resolved.directionalBlurTransition.transition = entry.transition;
+                    resolved.directionalBlurTransition.duration = entry.duration;
+                    resolved.directionalBlurTransition.curve = entry.curve;
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    return resolved;
+}
+
+static ResolvedEffectStyle resolveElementEffectStyle(const StyleSheetPtr & style,
+                                                     const UIViewTag & viewTag,
+                                                     const UIElementTag & elementTag){
+    ResolvedEffectStyle resolved {};
+    if(style == nullptr){
+        return resolved;
+    }
+
+    for(const auto & entry : style->entries){
+        if(!entry.viewTag.empty() && !matchesTag(entry.viewTag,viewTag)){
+            continue;
+        }
+        if(entry.elementTag.empty() || !matchesTag(entry.elementTag,elementTag)){
+            continue;
+        }
+
+        switch(entry.kind){
+            case StyleSheet::Entry::Kind::DropShadowEffect:
+                if(entry.dropShadowValue){
+                    resolved.dropShadow = *entry.dropShadowValue;
+                    resolved.dropShadowTransition.transition = entry.transition;
+                    resolved.dropShadowTransition.duration = entry.duration;
+                    resolved.dropShadowTransition.curve = entry.curve;
+                }
+                break;
+            case StyleSheet::Entry::Kind::GaussianBlurEffect:
+                if(entry.gaussianBlurValue){
+                    resolved.gaussianBlur = *entry.gaussianBlurValue;
+                    resolved.gaussianBlurTransition.transition = entry.transition;
+                    resolved.gaussianBlurTransition.duration = entry.duration;
+                    resolved.gaussianBlurTransition.curve = entry.curve;
+                }
+                break;
+            case StyleSheet::Entry::Kind::DirectionalBlurEffect:
+                if(entry.directionalBlurValue){
+                    resolved.directionalBlur = *entry.directionalBlurValue;
+                    resolved.directionalBlurTransition.transition = entry.transition;
+                    resolved.directionalBlurTransition.duration = entry.duration;
+                    resolved.directionalBlurTransition.curve = entry.curve;
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    return resolved;
+}
+
 static bool containsTag(const OmegaCommon::Vector<UIElementTag> & tags,const UIElementTag & tag){
     return std::find(tags.begin(),tags.end(),tag) != tags.end();
+}
+
+struct StyleScope {
+    bool touchesRoot = false;
+    bool touchesAllElements = false;
+    OmegaCommon::Vector<UIElementTag> elementTags {};
+};
+
+static inline void addUniqueTag(OmegaCommon::Vector<UIElementTag> & tags,const UIElementTag & tag){
+    if(tag.empty()){
+        return;
+    }
+    if(!containsTag(tags,tag)){
+        tags.push_back(tag);
+    }
+}
+
+static StyleScope collectStyleScope(const StyleSheetPtr & style,const UIViewTag & viewTag){
+    StyleScope scope {};
+    if(style == nullptr){
+        return scope;
+    }
+
+    for(const auto & entry : style->entries){
+        if(!entry.viewTag.empty() && !matchesTag(entry.viewTag,viewTag)){
+            continue;
+        }
+
+        switch(entry.kind){
+            case StyleSheet::Entry::Kind::BackgroundColor:
+            case StyleSheet::Entry::Kind::BorderEnabled:
+            case StyleSheet::Entry::Kind::BorderColor:
+            case StyleSheet::Entry::Kind::BorderWidth:
+                scope.touchesRoot = true;
+                break;
+            case StyleSheet::Entry::Kind::DropShadowEffect:
+            case StyleSheet::Entry::Kind::GaussianBlurEffect:
+            case StyleSheet::Entry::Kind::DirectionalBlurEffect:
+                if(entry.elementTag.empty()){
+                    scope.touchesRoot = true;
+                }
+                else {
+                    addUniqueTag(scope.elementTags,entry.elementTag);
+                }
+                break;
+            case StyleSheet::Entry::Kind::ElementBrush:
+            case StyleSheet::Entry::Kind::ElementBrushAnimation:
+            case StyleSheet::Entry::Kind::ElementAnimation:
+            case StyleSheet::Entry::Kind::ElementPathAnimation:
+            case StyleSheet::Entry::Kind::TextFont:
+            case StyleSheet::Entry::Kind::TextColor:
+            case StyleSheet::Entry::Kind::TextAlignment:
+            case StyleSheet::Entry::Kind::TextWrapping:
+            case StyleSheet::Entry::Kind::TextLineLimit:
+                if(entry.elementTag.empty()){
+                    scope.touchesAllElements = true;
+                }
+                else {
+                    addUniqueTag(scope.elementTags,entry.elementTag);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    return scope;
+}
+
+static inline UIView::EffectState toEffectState(const ResolvedEffectStyle & style){
+    UIView::EffectState state {};
+    if(style.dropShadow){
+        state.dropShadow = *style.dropShadow;
+    }
+    if(style.gaussianBlur){
+        state.gaussianBlur = *style.gaussianBlur;
+    }
+    if(style.directionalBlur){
+        state.directionalBlur = *style.directionalBlur;
+    }
+    return state;
+}
+
+static inline bool effectStateClose(const UIView::EffectState & lhs,const UIView::EffectState & rhs){
+    if(lhs.dropShadow.has_value() != rhs.dropShadow.has_value()){
+        return false;
+    }
+    if(lhs.dropShadow && rhs.dropShadow && !dropShadowClose(*lhs.dropShadow,*rhs.dropShadow)){
+        return false;
+    }
+    if(lhs.gaussianBlur.has_value() != rhs.gaussianBlur.has_value()){
+        return false;
+    }
+    if(lhs.gaussianBlur && rhs.gaussianBlur && !gaussianBlurClose(*lhs.gaussianBlur,*rhs.gaussianBlur)){
+        return false;
+    }
+    if(lhs.directionalBlur.has_value() != rhs.directionalBlur.has_value()){
+        return false;
+    }
+    if(lhs.directionalBlur && rhs.directionalBlur &&
+       !directionalBlurClose(*lhs.directionalBlur,*rhs.directionalBlur)){
+        return false;
+    }
+    return true;
+}
+
+static inline bool hasAnyEffect(const UIView::EffectState & state){
+    return state.dropShadow.has_value() ||
+           state.gaussianBlur.has_value() ||
+           state.directionalBlur.has_value();
 }
 
 static OmegaCommon::Vector<OmegaGTE::GPoint2D> pathToPoints(const OmegaGTE::GVectorPath2D & path){
@@ -562,6 +887,102 @@ StyleSheetPtr StyleSheet::borderWidth(UIViewTag tag,
     return copy();
 }
 
+StyleSheetPtr StyleSheet::dropShadow(UIViewTag tag,
+                                     const Composition::LayerEffect::DropShadowParams & params,
+                                     bool transition,
+                                     float duration){
+    Entry entry {};
+    entry.kind = Entry::Kind::DropShadowEffect;
+    entry.viewTag = tag;
+    entry.dropShadowValue = params;
+    entry.transition = transition;
+    entry.duration = duration;
+    entries.push_back(entry);
+    return copy();
+}
+
+StyleSheetPtr StyleSheet::gaussianBlur(UIViewTag tag,
+                                       float radius,
+                                       bool transition,
+                                       float duration){
+    Entry entry {};
+    entry.kind = Entry::Kind::GaussianBlurEffect;
+    entry.viewTag = tag;
+    entry.gaussianBlurValue = Composition::CanvasEffect::GaussianBlurParams{
+            std::max(0.f,radius)
+    };
+    entry.transition = transition;
+    entry.duration = duration;
+    entries.push_back(entry);
+    return copy();
+}
+
+StyleSheetPtr StyleSheet::directionalBlur(UIViewTag tag,
+                                          float radius,
+                                          float angle,
+                                          bool transition,
+                                          float duration){
+    Entry entry {};
+    entry.kind = Entry::Kind::DirectionalBlurEffect;
+    entry.viewTag = tag;
+    entry.directionalBlurValue = Composition::CanvasEffect::DirectionalBlurParams{
+            std::max(0.f,radius),
+            angle
+    };
+    entry.transition = transition;
+    entry.duration = duration;
+    entries.push_back(entry);
+    return copy();
+}
+
+StyleSheetPtr StyleSheet::elementDropShadow(UIElementTag elementTag,
+                                            const Composition::LayerEffect::DropShadowParams & params,
+                                            bool transition,
+                                            float duration){
+    Entry entry {};
+    entry.kind = Entry::Kind::DropShadowEffect;
+    entry.elementTag = elementTag;
+    entry.dropShadowValue = params;
+    entry.transition = transition;
+    entry.duration = duration;
+    entries.push_back(entry);
+    return copy();
+}
+
+StyleSheetPtr StyleSheet::elementGaussianBlur(UIElementTag elementTag,
+                                              float radius,
+                                              bool transition,
+                                              float duration){
+    Entry entry {};
+    entry.kind = Entry::Kind::GaussianBlurEffect;
+    entry.elementTag = elementTag;
+    entry.gaussianBlurValue = Composition::CanvasEffect::GaussianBlurParams{
+            std::max(0.f,radius)
+    };
+    entry.transition = transition;
+    entry.duration = duration;
+    entries.push_back(entry);
+    return copy();
+}
+
+StyleSheetPtr StyleSheet::elementDirectionalBlur(UIElementTag elementTag,
+                                                 float radius,
+                                                 float angle,
+                                                 bool transition,
+                                                 float duration){
+    Entry entry {};
+    entry.kind = Entry::Kind::DirectionalBlurEffect;
+    entry.elementTag = elementTag;
+    entry.directionalBlurValue = Composition::CanvasEffect::DirectionalBlurParams{
+            std::max(0.f,radius),
+            angle
+    };
+    entry.transition = transition;
+    entry.duration = duration;
+    entries.push_back(entry);
+    return copy();
+}
+
 StyleSheetPtr StyleSheet::elementBrush(UIElementTag elementTag,
                                        SharedHandle<Composition::Brush> brush,
                                        bool transition,
@@ -747,15 +1168,53 @@ void UIView::setLayout(const UIViewLayout &layout){
 }
 
 void UIView::setStyleSheet(const StyleSheetPtr &style){
+    const auto previousScope = collectStyleScope(currentStyle,tag);
+    const auto nextScope = collectStyleScope(style,tag);
+
     currentStyle = style;
     styleDirty = true;
-    rootStyleDirty = true;
-    markAllElementsDirty();
-    firstFrameCoherentSubmit = true;
+    styleDirtyGlobal = previousScope.touchesAllElements || nextScope.touchesAllElements;
+    styleChangeRequiresCoherentFrame = styleDirtyGlobal;
+
+    if(previousScope.touchesRoot || nextScope.touchesRoot){
+        rootStyleDirty = true;
+        rootContentDirty = true;
+    }
+
+    if(styleDirtyGlobal){
+        markAllElementsDirty();
+        firstFrameCoherentSubmit = true;
+        return;
+    }
+
+    OmegaCommon::Vector<UIElementTag> affectedTags = previousScope.elementTags;
+    for(const auto & nextTag : nextScope.elementTags){
+        addUniqueTag(affectedTags,nextTag);
+    }
+    // Text style selectors may target a shared style tag instead of the concrete element tag.
+    OmegaCommon::Vector<UIElementTag> expandedTags = affectedTags;
+    for(const auto & element : currentLayout.elements()){
+        if(element.type != UIViewLayout::Element::Type::Text){
+            continue;
+        }
+        if(!element.textStyleTag){
+            continue;
+        }
+        if(containsTag(affectedTags,*element.textStyleTag)){
+            addUniqueTag(expandedTags,element.tag);
+        }
+    }
+    for(const auto & affectedTag : expandedTags){
+        markElementDirty(affectedTag,false,true,true,false,false);
+    }
 }
 
 StyleSheetPtr UIView::getStyleSheet() const{
     return currentStyle;
+}
+
+const UIView::UpdateDiagnostics & UIView::getLastUpdateDiagnostics() const{
+    return lastUpdateDiagnostics;
 }
 
 void UIView::markRootDirty(){
@@ -814,6 +1273,90 @@ void UIView::clearElementDirty(const UIElementTag &tag){
     it->second.visibilityDirty = false;
 }
 
+SharedHandle<Composition::ViewAnimator> UIView::ensureAnimationViewAnimator(){
+    if(animationViewAnimator != nullptr){
+        return animationViewAnimator;
+    }
+    animationViewAnimator = SharedHandle<Composition::ViewAnimator>(
+            new Composition::ViewAnimator(compositorProxy()));
+    return animationViewAnimator;
+}
+
+SharedHandle<Composition::LayerAnimator> UIView::ensureAnimationLayerAnimator(const UIElementTag & tag){
+    auto existing = animationLayerAnimators.find(tag);
+    if(existing != animationLayerAnimators.end() && existing->second != nullptr){
+        return existing->second;
+    }
+
+    auto viewAnimator = ensureAnimationViewAnimator();
+    if(viewAnimator == nullptr){
+        return nullptr;
+    }
+
+    SharedHandle<Composition::Layer> layer = nullptr;
+    if(tag == kUIViewRootEffectTag){
+        if(getLayerTreeLimb() != nullptr){
+            layer = getLayerTreeLimb()->getRootLayer();
+        }
+    }
+    else {
+        auto & target = buildLayerRenderTarget(tag);
+        layer = target.layer;
+    }
+    if(layer == nullptr){
+        return nullptr;
+    }
+
+    auto layerAnimator = viewAnimator->layerAnimator(*layer);
+    animationLayerAnimators[tag] = layerAnimator;
+    return layerAnimator;
+}
+
+Composition::AnimationHandle UIView::beginCompositionClock(const UIElementTag & tag,
+                                                           float durationSec,
+                                                           SharedHandle<Composition::AnimationCurve> curve){
+    if(durationSec <= 0.f){
+        return {};
+    }
+
+    auto layerAnimator = ensureAnimationLayerAnimator(tag);
+    if(layerAnimator == nullptr){
+        return {};
+    }
+
+    Composition::LayerEffect::TransformationParams identity {};
+    identity.translate = {0.f,0.f,0.f};
+    identity.rotate = {0.f,0.f,0.f};
+    identity.scale = {1.f,1.f,1.f};
+
+    Composition::KeyframeValue<Composition::LayerEffect::TransformationParams> startKey {};
+    startKey.offset = 0.f;
+    startKey.value = identity;
+    startKey.easingToNext = curve != nullptr ? curve : Composition::AnimationCurve::Linear();
+    Composition::KeyframeValue<Composition::LayerEffect::TransformationParams> endKey {};
+    endKey.offset = 1.f;
+    endKey.value = identity;
+
+    Composition::LayerClip clip {};
+    clip.transform = Composition::KeyframeTrack<Composition::LayerEffect::TransformationParams>::From({
+            startKey,
+            endKey
+    });
+
+    Composition::TimingOptions timing {};
+    timing.durationMs = static_cast<std::uint32_t>(std::max(1.f,durationSec * 1000.f));
+    timing.frameRateHint = static_cast<std::uint16_t>(std::max(1,framesPerSec));
+    timing.clockMode = Composition::ClockMode::Hybrid;
+    timing.preferResizeSafeBudget = true;
+    timing.maxCatchupSteps = 1;
+
+    const auto laneId = compositorProxy().getSyncLaneId();
+    if(laneId != 0){
+        return layerAnimator->animateOnLane(clip,timing,laneId);
+    }
+    return layerAnimator->animate(clip,timing);
+}
+
 void UIView::syncElementDirtyState(const OmegaCommon::Vector<UIViewLayout::Element> &elements,
                                    bool layoutChanged,
                                    bool styleChanged,
@@ -847,7 +1390,7 @@ void UIView::syncElementDirtyState(const OmegaCommon::Vector<UIViewLayout::Eleme
 }
 
 void UIView::startOrUpdateAnimation(const UIElementTag &tag,
-                                    ElementAnimationKey key,
+                                    int key,
                                     float from,
                                     float to,
                                     float durationSec,
@@ -859,7 +1402,11 @@ void UIView::startOrUpdateAnimation(const UIElementTag &tag,
     auto tagIt = elementAnimations.find(tag);
     if(durationSec <= 0.f || std::fabs(to - from) <= 0.0001f){
         if(tagIt != elementAnimations.end()){
-            tagIt->second.erase(static_cast<int>(key));
+            auto existing = tagIt->second.find(key);
+            if(existing != tagIt->second.end() && existing->second.compositionHandle.valid()){
+                existing->second.compositionHandle.cancel();
+            }
+            tagIt->second.erase(key);
             if(tagIt->second.empty()){
                 elementAnimations.erase(tagIt);
             }
@@ -868,7 +1415,7 @@ void UIView::startOrUpdateAnimation(const UIElementTag &tag,
     }
 
     auto & propertyMap = elementAnimations[tag];
-    auto & state = propertyMap[static_cast<int>(key)];
+    auto & state = propertyMap[key];
     if(state.active && std::fabs(state.to - to) <= 0.0001f){
         return;
     }
@@ -882,13 +1429,51 @@ void UIView::startOrUpdateAnimation(const UIElementTag &tag,
     state.durationSec = std::max(0.001f,durationSec);
     state.startTime = now;
     state.curve = curve != nullptr ? curve : Composition::AnimationCurve::Linear();
-    markElementDirty(tag,false,false,true,false,false);
+    if(state.compositionHandle.valid()){
+        state.compositionHandle.cancel();
+    }
+    state.compositionHandle = beginCompositionClock(tag,state.durationSec,state.curve);
+    state.compositionClock = state.compositionHandle.valid();
+    if(tag == kUIViewRootEffectTag){
+        rootStyleDirty = true;
+        rootContentDirty = true;
+    }
+    else {
+        markElementDirty(tag,false,false,true,false,false);
+    }
 }
 
 bool UIView::advanceAnimations(){
     auto now = std::chrono::steady_clock::now();
     bool changed = false;
     OmegaCommon::Vector<UIElementTag> removePropertyTags {};
+
+    auto resolveProgress = [&](PropertyAnimationState & state) -> float {
+        float elapsedSec = std::chrono::duration<float>(now - state.startTime).count();
+        if(!std::isfinite(elapsedSec) || elapsedSec < 0.f){
+            elapsedSec = 0.f;
+        }
+        float wallClockT = state.durationSec <= 0.f ? 1.f : clamp01(elapsedSec / state.durationSec);
+
+        if(!state.compositionClock || !state.compositionHandle.valid()){
+            return wallClockT;
+        }
+
+        auto handleState = state.compositionHandle.state();
+        if(handleState == Composition::AnimationState::Cancelled ||
+           handleState == Composition::AnimationState::Failed){
+            state.compositionClock = false;
+            return wallClockT;
+        }
+
+        float compositionT = clamp01(state.compositionHandle.progress());
+        if(handleState == Composition::AnimationState::Completed){
+            compositionT = 1.f;
+        }
+
+        // Keep motion monotonic even when compositor telemetry is briefly conservative.
+        return clamp01(std::max(wallClockT,compositionT));
+    };
 
     for(auto & tagEntry : elementAnimations){
         OmegaCommon::Vector<int> removeKeys {};
@@ -899,12 +1484,7 @@ bool UIView::advanceAnimations(){
                 continue;
             }
 
-            float elapsedSec = std::chrono::duration<float>(now - state.startTime).count();
-            if(!std::isfinite(elapsedSec) || elapsedSec < 0.f){
-                elapsedSec = 0.f;
-            }
-
-            float t = state.durationSec <= 0.f ? 1.f : clamp01(elapsedSec / state.durationSec);
+            float t = resolveProgress(state);
             float sampled = state.curve != nullptr ? clamp01(state.curve->sample(t)) : t;
             float nextValue = state.from + ((state.to - state.from) * sampled);
             if(!std::isfinite(nextValue)){
@@ -913,14 +1493,27 @@ bool UIView::advanceAnimations(){
 
             if(std::fabs(nextValue - state.value) > 0.0001f){
                 state.value = nextValue;
-                markElementDirty(tagEntry.first,false,false,true,false,false);
+                if(tagEntry.first == kUIViewRootEffectTag){
+                    rootStyleDirty = true;
+                    rootContentDirty = true;
+                }
+                else {
+                    markElementDirty(tagEntry.first,false,false,true,false,false);
+                }
                 changed = true;
             }
 
             if(t >= 1.f){
                 state.value = state.to;
                 state.active = false;
-                markElementDirty(tagEntry.first,false,false,true,false,false);
+                state.compositionClock = false;
+                if(tagEntry.first == kUIViewRootEffectTag){
+                    rootStyleDirty = true;
+                    rootContentDirty = true;
+                }
+                else {
+                    markElementDirty(tagEntry.first,false,false,true,false,false);
+                }
                 changed = true;
                 removeKeys.push_back(propertyEntry.first);
             }
@@ -951,12 +1544,7 @@ bool UIView::advanceAnimations(){
                     return false;
                 }
 
-                float elapsedSec = std::chrono::duration<float>(now - propertyState.startTime).count();
-                if(!std::isfinite(elapsedSec) || elapsedSec < 0.f){
-                    elapsedSec = 0.f;
-                }
-
-                float t = propertyState.durationSec <= 0.f ? 1.f : clamp01(elapsedSec / propertyState.durationSec);
+                float t = resolveProgress(propertyState);
                 float sampled = propertyState.curve != nullptr ? clamp01(propertyState.curve->sample(t)) : t;
                 float nextValue = propertyState.from + ((propertyState.to - propertyState.from) * sampled);
                 if(!std::isfinite(nextValue)){
@@ -970,6 +1558,7 @@ bool UIView::advanceAnimations(){
                 if(t >= 1.f){
                     propertyState.value = propertyState.to;
                     propertyState.active = false;
+                    propertyState.compositionClock = false;
                     propertyChanged = true;
                 }
                 return propertyChanged;
@@ -1003,12 +1592,12 @@ bool UIView::advanceAnimations(){
     return changed;
 }
 
-Core::Optional<float> UIView::animatedValue(const UIElementTag &tag,ElementAnimationKey key) const{
+Core::Optional<float> UIView::animatedValue(const UIElementTag &tag,int key) const{
     auto tagIt = elementAnimations.find(tag);
     if(tagIt == elementAnimations.end()){
         return {};
     }
-    auto propertyIt = tagIt->second.find(static_cast<int>(key));
+    auto propertyIt = tagIt->second.find(key);
     if(propertyIt == tagIt->second.end()){
         return {};
     }
@@ -1070,6 +1659,7 @@ void UIView::prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::El
                                       bool styleChanged){
     OmegaCommon::Map<UIElementTag,Shape> currentShapes {};
     OmegaCommon::Map<UIElementTag,Composition::Color> targetColors {};
+    OmegaCommon::Map<UIElementTag,UIElementTag> textStyleSelectorByElement {};
 
     for(const auto & element : elements){
         if(element.type == UIViewLayout::Element::Type::Shape && element.shape){
@@ -1082,6 +1672,7 @@ void UIView::prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::El
         }
         else if(element.type == UIViewLayout::Element::Type::Text && element.str){
             UIElementTag styleTag = element.textStyleTag.value_or(element.tag);
+            textStyleSelectorByElement[element.tag] = styleTag;
             auto textStyle = resolveTextStyle(currentStyle,tag,styleTag);
             targetColors[element.tag] = textStyle.color;
         }
@@ -1196,11 +1787,19 @@ void UIView::prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::El
                 auto startPathAnimationProperty =
                         [&](PropertyAnimationState & propertyState,float from,float to){
                     if(!std::isfinite(from) || !std::isfinite(to)){
+                        if(propertyState.compositionHandle.valid()){
+                            propertyState.compositionHandle.cancel();
+                        }
+                        propertyState.compositionClock = false;
                         propertyState.active = false;
                         propertyState.value = to;
                         return;
                     }
                     if(durationSec <= 0.f || std::fabs(to - from) <= 0.0001f){
+                        if(propertyState.compositionHandle.valid()){
+                            propertyState.compositionHandle.cancel();
+                        }
+                        propertyState.compositionClock = false;
                         propertyState.active = false;
                         propertyState.value = to;
                         return;
@@ -1216,6 +1815,14 @@ void UIView::prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::El
                     propertyState.durationSec = std::max(0.001f,durationSec);
                     propertyState.startTime = now;
                     propertyState.curve = curve != nullptr ? curve : defaultCurve;
+                    if(propertyState.compositionHandle.valid()){
+                        propertyState.compositionHandle.cancel();
+                    }
+                    propertyState.compositionHandle = beginCompositionClock(
+                            elementTag,
+                            propertyState.durationSec,
+                            propertyState.curve);
+                    propertyState.compositionClock = propertyState.compositionHandle.valid();
                     markElementDirty(elementTag,false,false,true,false,false);
                 };
 
@@ -1227,8 +1834,7 @@ void UIView::prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::El
                                            currentPoints[idx].y);
             };
 
-            if(entry.kind == StyleSheet::Entry::Kind::ElementBrush ||
-               entry.kind == StyleSheet::Entry::Kind::TextColor){
+            if(entry.kind == StyleSheet::Entry::Kind::ElementBrush){
                 if(!entry.transition || entry.duration <= 0.f){
                     continue;
                 }
@@ -1268,6 +1874,58 @@ void UIView::prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::El
                             ElementAnimationKeyColorAlpha,
                             previousColorIt->second.a,
                             colorEntry.second.a,
+                            entry.duration,
+                            entry.curve != nullptr ? entry.curve : defaultCurve);
+                }
+                continue;
+            }
+
+            if(entry.kind == StyleSheet::Entry::Kind::TextColor){
+                if(!entry.transition || entry.duration <= 0.f){
+                    continue;
+                }
+                for(const auto & styleSelectorEntry : textStyleSelectorByElement){
+                    const auto & elementTag = styleSelectorEntry.first;
+                    const auto & styleSelectorTag = styleSelectorEntry.second;
+                    if(!entry.elementTag.empty() &&
+                       !matchesTag(entry.elementTag,styleSelectorTag) &&
+                       !matchesTag(entry.elementTag,elementTag)){
+                        continue;
+                    }
+                    auto targetColorIt = targetColors.find(elementTag);
+                    auto previousColorIt = lastResolvedElementColor.find(elementTag);
+                    if(targetColorIt == targetColors.end() ||
+                       previousColorIt == lastResolvedElementColor.end() ||
+                       colorsClose(previousColorIt->second,targetColorIt->second)){
+                        continue;
+                    }
+
+                    startOrUpdateAnimation(
+                            elementTag,
+                            ElementAnimationKeyColorRed,
+                            previousColorIt->second.r,
+                            targetColorIt->second.r,
+                            entry.duration,
+                            entry.curve != nullptr ? entry.curve : defaultCurve);
+                    startOrUpdateAnimation(
+                            elementTag,
+                            ElementAnimationKeyColorGreen,
+                            previousColorIt->second.g,
+                            targetColorIt->second.g,
+                            entry.duration,
+                            entry.curve != nullptr ? entry.curve : defaultCurve);
+                    startOrUpdateAnimation(
+                            elementTag,
+                            ElementAnimationKeyColorBlue,
+                            previousColorIt->second.b,
+                            targetColorIt->second.b,
+                            entry.duration,
+                            entry.curve != nullptr ? entry.curve : defaultCurve);
+                    startOrUpdateAnimation(
+                            elementTag,
+                            ElementAnimationKeyColorAlpha,
+                            previousColorIt->second.a,
+                            targetColorIt->second.a,
                             entry.duration,
                             entry.curve != nullptr ? entry.curve : defaultCurve);
                 }
@@ -1389,6 +2047,152 @@ void UIView::prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::El
     }
 }
 
+void UIView::prepareEffectAnimations(const OmegaCommon::Vector<UIViewLayout::Element> &elements,
+                                     bool layoutChanged,
+                                     bool styleChanged){
+    OmegaCommon::Map<UIElementTag,ResolvedEffectStyle> resolvedByTag {};
+    resolvedByTag[kUIViewRootEffectTag] = resolveRootEffectStyle(currentStyle,tag);
+    for(const auto & element : elements){
+        resolvedByTag[element.tag] = resolveElementEffectStyle(currentStyle,tag,element.tag);
+    }
+
+    if(layoutChanged || styleChanged){
+        const auto defaultCurve = Composition::AnimationCurve::Linear();
+        for(const auto & effectEntry : resolvedByTag){
+            const auto & targetTag = effectEntry.first;
+            const auto & resolved = effectEntry.second;
+            auto prevIt = lastResolvedEffects.find(targetTag);
+            EffectState previous {};
+            if(prevIt != lastResolvedEffects.end()){
+                previous = prevIt->second;
+            }
+            auto next = toEffectState(resolved);
+
+            auto markTargetDirty = [&](){
+                if(targetTag == kUIViewRootEffectTag){
+                    rootStyleDirty = true;
+                    rootContentDirty = true;
+                }
+                else {
+                    markElementDirty(targetTag,false,true,true,false,false);
+                }
+            };
+
+            if(!effectStateClose(previous,next)){
+                markTargetDirty();
+            }
+
+            auto startTransition = [&](int animationKey,
+                                       float from,
+                                       float to,
+                                       const ResolvedEffectTransition & transitionSpec){
+                startOrUpdateAnimation(
+                        targetTag,
+                        animationKey,
+                        from,
+                        to,
+                        transitionSpec.transition ? transitionSpec.duration : 0.f,
+                        transitionSpec.curve != nullptr ? transitionSpec.curve : defaultCurve);
+            };
+
+            auto fromShadow = previous.dropShadow.value_or(makeDefaultShadowParams());
+            auto toShadow = resolved.dropShadow.value_or(makeClearShadowParams(fromShadow));
+            const bool useShadowTransition = resolved.dropShadowTransition.transition &&
+                                             resolved.dropShadowTransition.duration > 0.f;
+            startTransition(EffectAnimationKeyShadowOffsetX,
+                            fromShadow.x_offset,
+                            toShadow.x_offset,
+                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
+            startTransition(EffectAnimationKeyShadowOffsetY,
+                            fromShadow.y_offset,
+                            toShadow.y_offset,
+                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
+            startTransition(EffectAnimationKeyShadowRadius,
+                            fromShadow.radius,
+                            toShadow.radius,
+                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
+            startTransition(EffectAnimationKeyShadowBlur,
+                            fromShadow.blurAmount,
+                            toShadow.blurAmount,
+                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
+            startTransition(EffectAnimationKeyShadowOpacity,
+                            fromShadow.opacity,
+                            toShadow.opacity,
+                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
+            startTransition(EffectAnimationKeyShadowColorR,
+                            fromShadow.color.r,
+                            toShadow.color.r,
+                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
+            startTransition(EffectAnimationKeyShadowColorG,
+                            fromShadow.color.g,
+                            toShadow.color.g,
+                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
+            startTransition(EffectAnimationKeyShadowColorB,
+                            fromShadow.color.b,
+                            toShadow.color.b,
+                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
+            startTransition(EffectAnimationKeyShadowColorA,
+                            fromShadow.color.a,
+                            toShadow.color.a,
+                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
+
+            const float fromGaussian = previous.gaussianBlur ? previous.gaussianBlur->radius : 0.f;
+            const float toGaussian = resolved.gaussianBlur ? resolved.gaussianBlur->radius : 0.f;
+            const bool useGaussianTransition = resolved.gaussianBlurTransition.transition &&
+                                               resolved.gaussianBlurTransition.duration > 0.f;
+            startTransition(EffectAnimationKeyGaussianRadius,
+                            fromGaussian,
+                            toGaussian,
+                            useGaussianTransition ? resolved.gaussianBlurTransition : ResolvedEffectTransition{});
+
+            const auto fromDirectional = previous.directionalBlur.value_or(
+                    Composition::CanvasEffect::DirectionalBlurParams{0.f,0.f});
+            const auto toDirectional = resolved.directionalBlur.value_or(
+                    Composition::CanvasEffect::DirectionalBlurParams{0.f,fromDirectional.angle});
+            const bool useDirectionalTransition = resolved.directionalBlurTransition.transition &&
+                                                  resolved.directionalBlurTransition.duration > 0.f;
+            startTransition(EffectAnimationKeyDirectionalRadius,
+                            fromDirectional.radius,
+                            toDirectional.radius,
+                            useDirectionalTransition ? resolved.directionalBlurTransition
+                                                     : ResolvedEffectTransition{});
+            startTransition(EffectAnimationKeyDirectionalAngle,
+                            fromDirectional.angle,
+                            toDirectional.angle,
+                            useDirectionalTransition ? resolved.directionalBlurTransition
+                                                     : ResolvedEffectTransition{});
+
+            if(hasAnyEffect(next)){
+                lastResolvedEffects[targetTag] = next;
+            }
+            else {
+                lastResolvedEffects.erase(targetTag);
+            }
+        }
+    }
+    else {
+        for(const auto & effectEntry : resolvedByTag){
+            auto next = toEffectState(effectEntry.second);
+            if(hasAnyEffect(next)){
+                lastResolvedEffects[effectEntry.first] = next;
+            }
+            else {
+                lastResolvedEffects.erase(effectEntry.first);
+            }
+        }
+    }
+
+    OmegaCommon::Vector<UIElementTag> staleTags {};
+    for(const auto & last : lastResolvedEffects){
+        if(resolvedByTag.find(last.first) == resolvedByTag.end()){
+            staleTags.push_back(last.first);
+        }
+    }
+    for(const auto & staleTag : staleTags){
+        lastResolvedEffects.erase(staleTag);
+    }
+}
+
 SharedHandle<Composition::Font> UIView::resolveFallbackTextFont(){
     if(fallbackTextFont != nullptr){
         return fallbackTextFont;
@@ -1434,17 +2238,22 @@ void UIView::update(){
 
     const bool layoutChanged = layoutDirty;
     const bool styleChanged = styleDirty;
-    const bool forceCoherentFrame = firstFrameCoherentSubmit || layoutChanged || styleChanged;
+    const bool styleChangedGlobal = styleDirtyGlobal;
+    const bool forceCoherentFrame = firstFrameCoherentSubmit ||
+                                    layoutChanged ||
+                                    styleChangeRequiresCoherentFrame;
 
     if(layoutChanged){
         rootLayoutDirty = true;
         rootContentDirty = true;
     }
-    if(styleChanged){
+    if(styleChanged && styleChangedGlobal){
         rootStyleDirty = true;
     }
 
-    syncElementDirtyState(currentLayout.elements(),layoutChanged,styleChanged,orderChanged);
+    syncElementDirtyState(currentLayout.elements(),layoutChanged,styleChangedGlobal,orderChanged);
+
+    const auto previousEffectsSnapshot = lastResolvedEffects;
 
     bool styleUsesAnimation = false;
     if(currentStyle != nullptr){
@@ -1461,7 +2270,11 @@ void UIView::update(){
             }
         }
     }
-    if(styleUsesAnimation){
+    prepareEffectAnimations(currentLayout.elements(),layoutChanged,styleChanged);
+
+    const bool hasActiveRuntimeAnimations = !elementAnimations.empty() ||
+                                            !pathNodeAnimations.empty();
+    if(styleUsesAnimation || hasActiveRuntimeAnimations){
         prepareElementAnimations(currentLayout.elements(),layoutChanged,styleChanged);
         (void)advanceAnimations();
     }
@@ -1479,6 +2292,9 @@ void UIView::update(){
             dirtyActiveTags.push_back(tagToCheck);
         }
     }
+    lastUpdateDiagnostics.activeTagCount = activeTagOrder.size();
+    lastUpdateDiagnostics.dirtyTagCount = dirtyActiveTags.size();
+    lastUpdateDiagnostics.submittedTagCount = 0;
 
     bool hasInactiveVisibilityChanges = false;
     for(const auto & entry : elementDirtyState){
@@ -1497,11 +2313,120 @@ void UIView::update(){
     if(!hasDirtyWork){
         layoutDirty = false;
         styleDirty = false;
+        styleDirtyGlobal = false;
+        styleChangeRequiresCoherentFrame = false;
         firstFrameCoherentSubmit = false;
+        ++lastUpdateDiagnostics.revision;
         return;
     }
 
     startCompositionSession();
+
+    auto effectStateForTag = [&](const UIElementTag & targetTag) -> EffectState {
+        if(targetTag == kUIViewRootEffectTag){
+            return toEffectState(resolveRootEffectStyle(currentStyle,tag));
+        }
+        return toEffectState(resolveElementEffectStyle(currentStyle,tag,targetTag));
+    };
+
+    auto previousEffectStateForTag = [&](const UIElementTag & targetTag) -> EffectState {
+        auto prevIt = previousEffectsSnapshot.find(targetTag);
+        if(prevIt != previousEffectsSnapshot.end()){
+            return prevIt->second;
+        }
+        return {};
+    };
+
+    auto applyEffects = [&](const UIElementTag & targetTag,
+                            const EffectState & resolved,
+                            const EffectState & previous,
+                            const SharedHandle<Composition::Canvas> & targetCanvas){
+        if(targetCanvas == nullptr){
+            return;
+        }
+
+        const bool hasShadowAnimation = animatedValue(targetTag,EffectAnimationKeyShadowOffsetX).has_value() ||
+                                        animatedValue(targetTag,EffectAnimationKeyShadowOffsetY).has_value() ||
+                                        animatedValue(targetTag,EffectAnimationKeyShadowRadius).has_value() ||
+                                        animatedValue(targetTag,EffectAnimationKeyShadowBlur).has_value() ||
+                                        animatedValue(targetTag,EffectAnimationKeyShadowOpacity).has_value() ||
+                                        animatedValue(targetTag,EffectAnimationKeyShadowColorR).has_value() ||
+                                        animatedValue(targetTag,EffectAnimationKeyShadowColorG).has_value() ||
+                                        animatedValue(targetTag,EffectAnimationKeyShadowColorB).has_value() ||
+                                        animatedValue(targetTag,EffectAnimationKeyShadowColorA).has_value();
+
+        auto shadowParams = resolved.dropShadow.value_or(
+                previous.dropShadow.value_or(makeDefaultShadowParams()));
+        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowOffsetX); v){
+            shadowParams.x_offset = *v;
+        }
+        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowOffsetY); v){
+            shadowParams.y_offset = *v;
+        }
+        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowRadius); v){
+            shadowParams.radius = std::max(0.f,*v);
+        }
+        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowBlur); v){
+            shadowParams.blurAmount = std::max(0.f,*v);
+        }
+        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowOpacity); v){
+            shadowParams.opacity = clamp01(*v);
+        }
+        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowColorR); v){
+            shadowParams.color.r = clamp01(*v);
+        }
+        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowColorG); v){
+            shadowParams.color.g = clamp01(*v);
+        }
+        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowColorB); v){
+            shadowParams.color.b = clamp01(*v);
+        }
+        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowColorA); v){
+            shadowParams.color.a = clamp01(*v);
+        }
+
+        if(resolved.dropShadow || previous.dropShadow || hasShadowAnimation){
+            auto layerEffect = std::make_shared<Composition::LayerEffect>(
+                    Composition::LayerEffect{Composition::LayerEffect::DropShadow});
+            layerEffect->dropShadow = shadowParams;
+            targetCanvas->applyLayerEffect(layerEffect);
+        }
+
+        float gaussianRadius = resolved.gaussianBlur ? resolved.gaussianBlur->radius : 0.f;
+        if(auto v = animatedValue(targetTag,EffectAnimationKeyGaussianRadius); v){
+            gaussianRadius = std::max(0.f,*v);
+        }
+        if(gaussianRadius > 0.f){
+            auto blurEffect = std::make_shared<Composition::CanvasEffect>();
+            blurEffect->type = Composition::CanvasEffect::GaussianBlur;
+            blurEffect->gaussianBlur.radius = gaussianRadius;
+            targetCanvas->applyEffect(blurEffect);
+        }
+
+        Composition::CanvasEffect::DirectionalBlurParams directionalParams {};
+        bool hasDirectional = false;
+        if(resolved.directionalBlur){
+            directionalParams = *resolved.directionalBlur;
+            hasDirectional = true;
+        }
+        else if(previous.directionalBlur){
+            directionalParams = *previous.directionalBlur;
+        }
+        if(auto v = animatedValue(targetTag,EffectAnimationKeyDirectionalRadius); v){
+            directionalParams.radius = std::max(0.f,*v);
+            hasDirectional = true;
+        }
+        if(auto v = animatedValue(targetTag,EffectAnimationKeyDirectionalAngle); v){
+            directionalParams.angle = *v;
+            hasDirectional = true;
+        }
+        if(hasDirectional && directionalParams.radius > 0.f){
+            auto directionalEffect = std::make_shared<Composition::CanvasEffect>();
+            directionalEffect->type = Composition::CanvasEffect::DirectionalBlur;
+            directionalEffect->directionalBlur = directionalParams;
+            targetCanvas->applyEffect(directionalEffect);
+        }
+    };
 
     if(submitRoot){
         auto viewStyle = resolveViewStyle(currentStyle,tag);
@@ -1528,6 +2453,10 @@ void UIView::update(){
                 rootCanvas->drawRect(inner,fillBrush);
             }
         }
+        applyEffects(kUIViewRootEffectTag,
+                     effectStateForTag(kUIViewRootEffectTag),
+                     previousEffectStateForTag(kUIViewRootEffectTag),
+                     rootCanvas);
         rootCanvas->sendFrame();
     }
 
@@ -1646,7 +2575,9 @@ void UIView::update(){
                 auto unicodeText = UniString::fromUTF32(
                         reinterpret_cast<const UChar32 *>(layoutIt->str->data()),
                         static_cast<int32_t>(layoutIt->str->size()));
-                target.canvas->drawText(unicodeText,font,textRect,textColor,textStyle.layout);
+                auto textLayout = textStyle.layout;
+                textLayout.lineLimit = textStyle.lineLimit;
+                target.canvas->drawText(unicodeText,font,textRect,textColor,textLayout);
                 emittedVisual = true;
             }
         }
@@ -1657,7 +2588,13 @@ void UIView::update(){
             target.canvas->drawRect(clearRect,clearBrush);
         }
 
+        applyEffects(dirtyTag,
+                     effectStateForTag(dirtyTag),
+                     previousEffectStateForTag(dirtyTag),
+                     target.canvas);
+
         target.canvas->sendFrame();
+        ++lastUpdateDiagnostics.submittedTagCount;
         clearElementDirty(dirtyTag);
     }
 
@@ -1682,6 +2619,7 @@ void UIView::update(){
                 auto clearRect = localBoundsFromView(this);
                 target.canvas->drawRect(clearRect,clearBrush);
                 target.canvas->sendFrame();
+                ++lastUpdateDiagnostics.submittedTagCount;
             }
             if(target.layer != nullptr){
                 target.layer->setEnabled(false);
@@ -1699,7 +2637,10 @@ void UIView::update(){
     endCompositionSession();
     layoutDirty = false;
     styleDirty = false;
+    styleDirtyGlobal = false;
+    styleChangeRequiresCoherentFrame = false;
     firstFrameCoherentSubmit = false;
+    ++lastUpdateDiagnostics.revision;
 }
 
 }

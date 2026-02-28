@@ -2,6 +2,7 @@
 #include "GEMetal.h"
 #import "GEMetalCommandQueue.h"
 #include "GEMetalTexture.h"
+#include "../common/GEResourceTracker.h"
 
 _NAMESPACE_BEGIN_
 
@@ -16,9 +17,28 @@ static inline void runOnMainThreadSync(dispatch_block_t block){
 
 GEMetalNativeRenderTarget::GEMetalNativeRenderTarget(SharedHandle<GECommandQueue> commandQueue,CAMetalLayer *metalLayer):metalLayer(metalLayer),
 commandQueue(commandQueue),drawableSize([metalLayer drawableSize]),currentDrawable({nullptr}){
+    traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Create,
+            ResourceTracking::Backend::Metal,
+            "NativeRenderTarget",
+            traceResourceId,
+            metalLayer,
+            drawableSize.width,
+            drawableSize.height,
+            static_cast<float>(metalLayer.contentsScale));
 };
 
 GEMetalNativeRenderTarget::~GEMetalNativeRenderTarget(){
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Destroy,
+            ResourceTracking::Backend::Metal,
+            "NativeRenderTarget",
+            traceResourceId,
+            metalLayer,
+            drawableSize.width,
+            drawableSize.height,
+            static_cast<float>(metalLayer.contentsScale));
     if(currentDrawable.handle() != nullptr){
         [NSOBJECT_OBJC_BRIDGE(id,currentDrawable.handle()) release];
     }
@@ -96,8 +116,25 @@ void GEMetalNativeRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> 
 
 
 GEMetalTextureRenderTarget::GEMetalTextureRenderTarget(SharedHandle<GETexture> & texture,SharedHandle<GECommandQueue> & commandQueue):commandQueue(commandQueue),texturePtr(std::dynamic_pointer_cast<GEMetalTexture>(texture)){
-    
+    traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+    auto nativeTexture = texturePtr != nullptr ? texturePtr->native() : nullptr;
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Create,
+            ResourceTracking::Backend::Metal,
+            "TextureRenderTarget",
+            traceResourceId,
+            nativeTexture);
 };
+
+GEMetalTextureRenderTarget::~GEMetalTextureRenderTarget(){
+    auto nativeTexture = texturePtr != nullptr ? texturePtr->native() : nullptr;
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Destroy,
+            ResourceTracking::Backend::Metal,
+            "TextureRenderTarget",
+            traceResourceId,
+            nativeTexture);
+}
 
 
 SharedHandle<GERenderTarget::CommandBuffer> GEMetalTextureRenderTarget::commandBuffer(){

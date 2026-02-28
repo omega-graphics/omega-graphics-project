@@ -21,6 +21,22 @@ namespace OmegaWTK::Composition {
 
     typedef std::chrono::time_point<std::chrono::high_resolution_clock> Timestamp;
 
+    enum class ResizeGovernorPhase : std::uint8_t {
+        Idle,
+        Active,
+        Settling,
+        Completed
+    };
+
+    struct ResizeGovernorMetadata {
+        std::uint64_t sessionId = 0;
+        bool active = false;
+        bool animatedTree = false;
+        float velocityPxPerSec = 0.f;
+        float accelerationPxPerSec2 = 0.f;
+        ResizeGovernorPhase phase = ResizeGovernorPhase::Idle;
+    };
+
     class OMEGAWTK_EXPORT CompositionRenderTarget {
     public:
         virtual ~CompositionRenderTarget() = default;
@@ -40,6 +56,8 @@ namespace OmegaWTK::Composition {
         uint64_t syncLaneId = 0;
         uint64_t syncPacketId = 0;
         uint64_t requiredTreeEpoch = 0;
+        ResizeGovernorMetadata resizeGovernor {};
+        std::uint64_t resizeCoordinatorGeneration = 0;
         typedef enum : int {
             /// A frame draw commmand
             Render,
@@ -226,6 +244,8 @@ namespace OmegaWTK::Composition {
 
         std::queue<SharedHandle<CompositorCommand>> commandQueue;
         uint64_t syncLaneId = 0;
+        ResizeGovernorMetadata resizeGovernorMetadata {};
+        std::uint64_t resizeCoordinatorGeneration = 0;
         // Reserved packet id used by preview paths (animations) so
         // the id returned by peekNextPacketId() matches the next submit().
         mutable uint64_t reservedPacketId = 0;
@@ -273,6 +293,8 @@ namespace OmegaWTK::Composition {
         void setSyncLaneId(uint64_t syncLaneId);
         uint64_t getSyncLaneId() const;
         uint64_t peekNextPacketId() const;
+        void setResizeGovernorMetadata(const ResizeGovernorMetadata & metadata,
+                                       std::uint64_t coordinatorGeneration);
         Compositor *getFrontendPtr() const;
         bool isRecording() const;
         void setFrontendPtr(Compositor *frontend);

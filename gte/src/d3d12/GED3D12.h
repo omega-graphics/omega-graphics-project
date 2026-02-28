@@ -9,8 +9,10 @@
 #include <d3dcompiler.h>
 #include <iostream>
 #include <atlstr.h>
+#include <cstdint>
 
 #include <wrl.h>
+#include "../common/GEResourceTracker.h"
 
 #pragma comment(lib,"d3d12.lib")
 #pragma comment(lib,"dxgi.lib")
@@ -29,6 +31,7 @@ _NAMESPACE_BEGIN_
 
         ComPtr<ID3D12Resource> buffer;
         ComPtr<ID3D12DescriptorHeap> bufferDescHeap;
+        std::uint64_t traceResourceId = 0;
 
         D3D12_RESOURCE_STATES currentState;
 
@@ -48,8 +51,24 @@ _NAMESPACE_BEGIN_
         GEBuffer(usage),buffer(buffer),
         bufferDescHeap(bufferDescHeap),
         currentState(currentState){
-            
+            traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+            ResourceTracking::Tracker::instance().emit(
+                    ResourceTracking::EventType::Create,
+                    ResourceTracking::Backend::D3D12,
+                    "Buffer",
+                    traceResourceId,
+                    this->buffer.Get(),
+                    static_cast<float>(this->buffer != nullptr ? this->buffer->GetDesc().Width : 0));
         };
+        ~GED3D12Buffer() override {
+            ResourceTracking::Tracker::instance().emit(
+                    ResourceTracking::EventType::Destroy,
+                    ResourceTracking::Backend::D3D12,
+                    "Buffer",
+                    traceResourceId,
+                    this->buffer.Get(),
+                    static_cast<float>(this->buffer != nullptr ? this->buffer->GetDesc().Width : 0));
+        }
     };
 
     class GED3D12Fence : public GEFence {
@@ -133,7 +152,5 @@ _NAMESPACE_BEGIN_
     };
 _NAMESPACE_END_
 #endif
-
-
 
 

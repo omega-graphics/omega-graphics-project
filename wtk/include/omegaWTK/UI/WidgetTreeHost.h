@@ -10,6 +10,7 @@ namespace OmegaWTK {
 
     namespace Composition {
         class Compositor;
+        struct ResizeGovernorMetadata;
     }
 
 
@@ -47,6 +48,7 @@ namespace OmegaWTK {
         float lastWidth = 0.f;
         float lastHeight = 0.f;
         float lastVelocity = 0.f;
+        double lastSignificantChangeMs = 0.0;
         std::chrono::steady_clock::time_point lastTick {};
         static std::uint64_t nextSessionId();
     public:
@@ -73,18 +75,23 @@ namespace OmegaWTK {
         WidgetPtr root;
         ResizeDynamicsTracker resizeTracker;
         ResizeSessionState lastResizeSessionState {};
-        struct StaticSuspendRuntimeVerification {
+        std::uint64_t resizeCoordinatorGeneration = 0;
+        struct ResizeValidationSession {
             bool active = false;
             std::uint64_t sessionId = 0;
-            std::uint64_t resizeUpdateCount = 0;
-            std::uint64_t deferredPaintCount = 0;
-            std::uint64_t deferredResizePaintCount = 0;
-            std::uint64_t deferredImmediatePaintCount = 0;
-            std::uint64_t authoritativeFlushCount = 0;
-            PaintReason lastDeferredReason {};
-        } staticSuspendVerification {};
-        bool staticResizeSuspendActive = false;
-        bool pendingAuthoritativeResizeFrame = false;
+            std::uint32_t sampleCount = 0;
+            double beginTimestampMs = 0.0;
+            double endTimestampMs = 0.0;
+            float peakVelocityPxPerSec = 0.f;
+            float peakAccelerationPxPerSec2 = 0.f;
+            std::uint64_t baseSubmittedPackets = 0;
+            std::uint64_t basePresentedPackets = 0;
+            std::uint64_t baseDroppedPackets = 0;
+            std::uint64_t baseFailedPackets = 0;
+            std::uint64_t baseEpochDrops = 0;
+            std::uint64_t baseStaleCoordinatorPackets = 0;
+        };
+        ResizeValidationSession resizeValidationSession {};
 
         bool attachedToWindow;
 
@@ -99,11 +106,9 @@ namespace OmegaWTK {
         void unobserveWidgetLayerTreesRecurse(Widget *parent);
         void invalidateWidgetRecurse(Widget *parent,PaintReason reason,bool immediate);
         void beginResizeCoordinatorSessionRecurse(Widget *parent,std::uint64_t sessionId);
+        void applyResizeGovernorMetadata(const Composition::ResizeGovernorMetadata & metadata);
         bool detectAnimatedTreeRecurse(Widget *parent) const;
-        void notePaintDeferredDuringResize(PaintReason reason,bool immediate);
-        void emitStaticSuspendVerificationSummary(bool flushIssued);
         void initWidgetTree();
-        void flushAuthoritativeResizeFrame();
         Composition::Compositor *compPtr(){return compositor;};
         uint64_t laneId() const { return syncLaneId; }
     public:
@@ -130,7 +135,6 @@ namespace OmegaWTK {
         void notifyWindowResizeBegin(const Core::Rect & rect);
         void notifyWindowResize(const Core::Rect & rect);
         void notifyWindowResizeEnd(const Core::Rect & rect);
-        bool shouldSuspendPaintDuringResize() const;
 
         ~WidgetTreeHost();
     };

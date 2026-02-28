@@ -4,6 +4,7 @@
 #include "GEVulkan.h"
 #include "GEVulkanTexture.h"
 #include "vulkan/vulkan_core.h"
+#include "../common/GEResourceTracker.h"
 
 #include <cstdint>
 
@@ -240,7 +241,23 @@ _NAMESPACE_BEGIN_
         beginInfo.pInheritanceInfo = nullptr;
         beginInfo.flags = 0;
         vkBeginCommandBuffer(commandBuffer,&beginInfo);
+        traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Create,
+                ResourceTracking::Backend::Vulkan,
+                "CommandBuffer",
+                traceResourceId,
+                reinterpret_cast<const void *>(commandBuffer));
     };
+
+    GEVulkanCommandBuffer::~GEVulkanCommandBuffer() {
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Destroy,
+                ResourceTracking::Backend::Vulkan,
+                "CommandBuffer",
+                traceResourceId,
+                reinterpret_cast<const void *>(commandBuffer));
+    }
 
     void GEVulkanCommandBuffer::startRenderPass(const GERenderPassDescriptor &desc){
         VkRenderPassBeginInfo beginInfo {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -858,12 +875,32 @@ _NAMESPACE_BEGIN_
 
     void GEVulkanCommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer){
         auto buffer = (GEVulkanCommandBuffer *)commandBuffer.get();
+        submittedTraceCommandBufferIds.push_back(buffer->traceResourceId);
+        ResourceTracking::Event submitEvent {};
+        submitEvent.backend = ResourceTracking::Backend::Vulkan;
+        submitEvent.eventType = ResourceTracking::EventType::Submit;
+        submitEvent.resourceType = "CommandBuffer";
+        submitEvent.resourceId = buffer->traceResourceId;
+        submitEvent.queueId = traceResourceId;
+        submitEvent.commandBufferId = buffer->traceResourceId;
+        submitEvent.nativeHandle = reinterpret_cast<std::uint64_t>(buffer->commandBuffer);
+        ResourceTracking::Tracker::instance().emit(submitEvent);
         commandQueue.push_back(buffer->commandBuffer);
     };
 
     void GEVulkanCommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer,SharedHandle<GEFence> & signalFence){
         auto buffer = (GEVulkanCommandBuffer *)commandBuffer.get();
         auto fence = (GEVulkanFence *)signalFence.get();
+        submittedTraceCommandBufferIds.push_back(buffer->traceResourceId);
+        ResourceTracking::Event submitEvent {};
+        submitEvent.backend = ResourceTracking::Backend::Vulkan;
+        submitEvent.eventType = ResourceTracking::EventType::Submit;
+        submitEvent.resourceType = "CommandBuffer";
+        submitEvent.resourceId = buffer->traceResourceId;
+        submitEvent.queueId = traceResourceId;
+        submitEvent.commandBufferId = buffer->traceResourceId;
+        submitEvent.nativeHandle = reinterpret_cast<std::uint64_t>(buffer->commandBuffer);
+        ResourceTracking::Tracker::instance().emit(submitEvent);
         vkCmdSetEvent(buffer->commandBuffer,fence->event,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
     }
 
@@ -995,6 +1032,17 @@ _NAMESPACE_BEGIN_
 
        commandQueue.clear();
        vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
+       for(const auto traceId : submittedTraceCommandBufferIds){
+           ResourceTracking::Event completeEvent {};
+           completeEvent.backend = ResourceTracking::Backend::Vulkan;
+           completeEvent.eventType = ResourceTracking::EventType::Complete;
+           completeEvent.resourceType = "CommandBuffer";
+           completeEvent.resourceId = traceId;
+           completeEvent.queueId = traceResourceId;
+           completeEvent.commandBufferId = traceId;
+           completeEvent.nativeHandle = reinterpret_cast<std::uint64_t>(vkQueue);
+           ResourceTracking::Tracker::instance().emit(completeEvent);
+       }
 
    }
 
@@ -1055,11 +1103,24 @@ _NAMESPACE_BEGIN_
 
        commandQueue.clear();
        vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
+       for(const auto traceId : submittedTraceCommandBufferIds){
+           ResourceTracking::Event completeEvent {};
+           completeEvent.backend = ResourceTracking::Backend::Vulkan;
+           completeEvent.eventType = ResourceTracking::EventType::Complete;
+           completeEvent.resourceType = "CommandBuffer";
+           completeEvent.resourceId = traceId;
+           completeEvent.queueId = traceResourceId;
+           completeEvent.commandBufferId = traceId;
+           completeEvent.nativeHandle = reinterpret_cast<std::uint64_t>(vkQueue);
+           ResourceTracking::Tracker::instance().emit(completeEvent);
+       }
+       submittedTraceCommandBufferIds.clear();
        
 
    }
 
    GEVulkanCommandQueue::GEVulkanCommandQueue(GEVulkanEngine *engine,unsigned size):GECommandQueue(size){
+       this->engine = engine;
        VkResult res;
        VkCommandPoolCreateInfo poolCreateInfo {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
 
@@ -1095,10 +1156,23 @@ _NAMESPACE_BEGIN_
        };
 
        currentBufferIndex = 0;
+       traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+       ResourceTracking::Tracker::instance().emit(
+               ResourceTracking::EventType::Create,
+               ResourceTracking::Backend::Vulkan,
+               "CommandQueue",
+               traceResourceId,
+               reinterpret_cast<const void *>(commandPool));
 
    };
 
    GEVulkanCommandQueue::~GEVulkanCommandQueue() {
+       ResourceTracking::Tracker::instance().emit(
+               ResourceTracking::EventType::Destroy,
+               ResourceTracking::Backend::Vulkan,
+               "CommandQueue",
+               traceResourceId,
+               reinterpret_cast<const void *>(commandPool));
        vkFreeCommandBuffers(engine->device,commandPool,commandBuffers.size(),commandBuffers.data());
        commandBuffers.resize(0);
        vkDestroyCommandPool(engine->device,commandPool,nullptr);

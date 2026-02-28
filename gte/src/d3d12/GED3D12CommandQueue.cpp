@@ -2,6 +2,7 @@
 #include "GED3D12RenderTarget.h"
 #include "GED3D12Pipeline.h"
 #include "GED3D12Texture.h"
+#include "../common/GEResourceTracker.h"
 #include <d3d12.h>
 #include <memory>
 _NAMESPACE_BEGIN_
@@ -34,11 +35,24 @@ _NAMESPACE_BEGIN_
             MessageBoxA(GetForegroundWindow(),"Failed to Create Command Queue.","NOTE",MB_OK);
             exit(1);
         };
+        traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Create,
+                ResourceTracking::Backend::D3D12,
+                "CommandQueue",
+                traceResourceId,
+                commandQueue.Get());
 
     };
 
     GED3D12CommandBuffer::GED3D12CommandBuffer(ID3D12GraphicsCommandList6 *commandList,ID3D12CommandAllocator *commandAllocator,GED3D12CommandQueue *parentQueue):commandList(commandList),commandAllocator(commandAllocator),parentQueue(parentQueue),inComputePass(false),inBlitPass(false){
-        
+        traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Create,
+                ResourceTracking::Backend::D3D12,
+                "CommandBuffer",
+                traceResourceId,
+                commandList.Get());
     };
 
     unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int id, omegasl_shader &shader){
@@ -820,7 +834,14 @@ _NAMESPACE_BEGIN_
 ////        parentQueue->commandQueue->Signal(_fence->fence.Get(),val);
 //    }
 
-    GED3D12CommandBuffer::~GED3D12CommandBuffer() = default;
+    GED3D12CommandBuffer::~GED3D12CommandBuffer() {
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Destroy,
+                ResourceTracking::Backend::D3D12,
+                "CommandBuffer",
+                traceResourceId,
+                commandList.Get());
+    }
 
     void GED3D12CommandQueue::notifyCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer,
                                                   SharedHandle<GEFence> &waitFence) {
@@ -835,7 +856,16 @@ _NAMESPACE_BEGIN_
         HRESULT hr;
         auto d3d12_buffer = (GED3D12CommandBuffer *)commandBuffer.get();
         d3d12_buffer->closed = true;
-        
+        submittedTraceCommandBufferIds.push_back(d3d12_buffer->traceResourceId);
+        ResourceTracking::Event submitEvent {};
+        submitEvent.backend = ResourceTracking::Backend::D3D12;
+        submitEvent.eventType = ResourceTracking::EventType::Submit;
+        submitEvent.resourceType = "CommandBuffer";
+        submitEvent.resourceId = d3d12_buffer->traceResourceId;
+        submitEvent.queueId = traceResourceId;
+        submitEvent.commandBufferId = d3d12_buffer->traceResourceId;
+        submitEvent.nativeHandle = reinterpret_cast<std::uint64_t>(d3d12_buffer->commandList.Get());
+        ResourceTracking::Tracker::instance().emit(submitEvent);
         commandLists.push_back(d3d12_buffer->commandList.Get());
     };
 
@@ -845,6 +875,16 @@ _NAMESPACE_BEGIN_
         auto d3d12_buffer = (GED3D12CommandBuffer *)commandBuffer.get();
         auto fence = (GED3D12Fence *)signalFence.get();
         d3d12_buffer->closed = true;
+        submittedTraceCommandBufferIds.push_back(d3d12_buffer->traceResourceId);
+        ResourceTracking::Event submitEvent {};
+        submitEvent.backend = ResourceTracking::Backend::D3D12;
+        submitEvent.eventType = ResourceTracking::EventType::Submit;
+        submitEvent.resourceType = "CommandBuffer";
+        submitEvent.resourceId = d3d12_buffer->traceResourceId;
+        submitEvent.queueId = traceResourceId;
+        submitEvent.commandBufferId = d3d12_buffer->traceResourceId;
+        submitEvent.nativeHandle = reinterpret_cast<std::uint64_t>(d3d12_buffer->commandList.Get());
+        ResourceTracking::Tracker::instance().emit(submitEvent);
         d3d12_buffer->commandList->Close();
         commandQueue->ExecuteCommandLists(1,(ID3D12CommandList *const *)d3d12_buffer->commandList.GetAddressOf());
         commandQueue->Signal(fence->fence.Get(),1);
@@ -872,6 +912,18 @@ _NAMESPACE_BEGIN_
         commandQueue->Signal(fence.Get(),1);
         WaitForSingleObject(cpuEvent,INFINITE);
         commandQueue->Signal(fence.Get(),0);
+        for(const auto traceId : submittedTraceCommandBufferIds){
+            ResourceTracking::Event completeEvent {};
+            completeEvent.backend = ResourceTracking::Backend::D3D12;
+            completeEvent.eventType = ResourceTracking::EventType::Complete;
+            completeEvent.resourceType = "CommandBuffer";
+            completeEvent.resourceId = traceId;
+            completeEvent.queueId = traceResourceId;
+            completeEvent.commandBufferId = traceId;
+            completeEvent.nativeHandle = reinterpret_cast<std::uint64_t>(commandQueue.Get());
+            ResourceTracking::Tracker::instance().emit(completeEvent);
+        }
+        submittedTraceCommandBufferIds.clear();
     }
 
     SharedHandle<GECommandBuffer> GED3D12CommandQueue::getAvailableBuffer(){
@@ -901,6 +953,12 @@ _NAMESPACE_BEGIN_
     }
 
     GED3D12CommandQueue::~GED3D12CommandQueue(){
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Destroy,
+                ResourceTracking::Backend::D3D12,
+                "CommandQueue",
+                traceResourceId,
+                commandQueue.Get());
         CloseHandle(cpuEvent);
     }
 

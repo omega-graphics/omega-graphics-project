@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "OmegaGTE.h"
+#include "../common/GEResourceTracker.h"
 
 #include "../BufferIO.h"
 
@@ -90,6 +91,14 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
         id<MTLDevice> device = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,buffer.handle()).device;
         resourceBarrier = NSObjectHandle {NSOBJECT_CPP_BRIDGE [device newFence]};
+        traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Create,
+                ResourceTracking::Backend::Metal,
+                "Buffer",
+                traceResourceId,
+                metalBuffer.handle(),
+                static_cast<float>(NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer.handle()).length));
     };
     
     size_t GEMetalBuffer::size(){
@@ -102,7 +111,13 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
     }
 
     GEMetalBuffer::~GEMetalBuffer(){
-
+        ResourceTracking::Tracker::instance().emit(
+                ResourceTracking::EventType::Destroy,
+                ResourceTracking::Backend::Metal,
+                "Buffer",
+                traceResourceId,
+                metalBuffer.handle(),
+                static_cast<float>(NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer.handle()).length));
     };
 
     #ifdef OMEGAGTE_RAYTRACING_SUPPORTED

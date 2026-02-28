@@ -4,6 +4,7 @@
 #import <QuartzCore/QuartzCore.h>
 #include "GEMetalTexture.h"
 #include "GEMetalCommandQueue.h"
+#include <cstdint>
 
 
 #ifndef OMEGAGTE_METAL_GEMETALRENDERTARGET_H
@@ -16,6 +17,7 @@ class GEMetalNativeRenderTarget : public GENativeRenderTarget {
     SharedHandle<GECommandQueue> commandQueue;
     CAMetalLayer *metalLayer;
     NSSmartPtr currentDrawable;
+    std::uint64_t traceResourceId = 0;
 public:
     GEMetalNativeRenderTarget(SharedHandle<GECommandQueue> commandQueue,CAMetalLayer *metalLayer);
     ~GEMetalNativeRenderTarget();
@@ -34,8 +36,10 @@ public:
 
 class GEMetalTextureRenderTarget : public GETextureRenderTarget {
     SharedHandle<GECommandQueue> commandQueue;
+    std::uint64_t traceResourceId = 0;
 public:
     GEMetalTextureRenderTarget(SharedHandle<GETexture> & texture,SharedHandle<GECommandQueue> & commandQueue);
+    ~GEMetalTextureRenderTarget();
     SharedHandle<GEMetalTexture> texturePtr;
     SharedHandle<CommandBuffer> commandBuffer() override;
     void *nativeCommandQueue() override {

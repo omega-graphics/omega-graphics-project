@@ -1,5 +1,6 @@
 #include "GED3D12.h"
 #include "omegaGTE/GETexture.h"
+#include <cstdint>
 
 #ifndef OMEGAGTE_D3D12_GED3D12TEXTURE_H
 #define OMEGAGTE_D3D12_GED3D12TEXTURE_H
@@ -8,6 +9,7 @@ _NAMESPACE_BEGIN_
 
 class GED3D12Texture : public GETexture {
 public:
+    std::uint64_t traceResourceId = 0;
     void copyBytes(void *bytes, size_t len) override;
     size_t getBytes(void *bytes, size_t bytesPerRow) override;
 
@@ -49,6 +51,7 @@ public:
             ID3D12DescriptorHeap *rtvDescHeap,
             ID3D12DescriptorHeap *dsvDescHeap,
             D3D12_RESOURCE_STATES & currentState);
+    ~GED3D12Texture() override;
 };
 
 _NAMESPACE_END_

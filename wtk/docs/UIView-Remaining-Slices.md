@@ -1,194 +1,185 @@
-# UIView Remaining Slices (B-E, Re-aligned to Current Architecture)
+# UIView Remaining Slices (B-E, Re-evaluated Against Current Implementation)
 
-This document updates `UIView` remaining work to match:
+## Policy Update (Authoritative)
 
-1. Widget geometry delegation (`requestRect`, parent clamp hooks).
-2. Existing `Container` implementation in `BasicWidgets`.
-3. Packetized WidgetTree sync engine and lane telemetry pacing.
+1. Composition animation classes are **view-only**.
+2. `Widget`/`Container` must not own or drive `Composition::AnimationHandle`, `ViewAnimator`, or `LayerAnimator`.
+3. `UIView`/`View` are the only UI-layer owners of animation playback logic and handle lifecycle.
+4. Geometry policy remains in container/widget layout code; animation policy remains in view code.
 
-## Baseline (Already Landed)
+This document is re-evaluated against current `UIView` code in:
 
-1. `UIView` authoring API is live:
-   - `setLayout`, `setStyleSheet`, `update`.
-2. Shape rendering in `UIView::update()` supports:
+1. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/UI/UIView.h`
+2. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/src/UI/UIView.cpp`
+
+and aligned with:
+
+1. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/docs/Container-Geometry-Delegation-Plan.md`
+
+## Current Feature Snapshot
+
+## Landed
+
+1. Core API:
+   - `setLayout(...)`
+   - `setStyleSheet(...)`
+   - `update()`
+2. Layout model:
+   - shape and text elements in `UIViewLayout`.
+   - `textStyleTag` override for text entries.
+3. Rendering coverage:
    - `Rect`, `RoundedRect`, `Ellipse`, `Path`.
-3. Per-element render bundles are present (`UIElementTag -> layer+canvas`).
-4. Sync engine supports lane packeting, admission, and telemetry.
-5. Animation runtime supports lane-aware clock modes.
-6. Geometry delegation scaffolding is now present in `Widget`:
-   - `GeometryProposal`, `GeometryChangeReason`,
-   - `Widget::requestRect(...)`,
-   - parent `clampChildRect(...)` and child attach acceptance hooks.
+   - text draw path (`Canvas::drawText`) with font fallback.
+4. Style surface currently implemented:
+   - root: background color, border enabled/color/width.
+   - element: brush.
+   - text: font, color, alignment, wrapping, line-limit field.
+5. Dirty graph + submission behavior:
+   - root dirty flags + per-element dirty state.
+   - active tag order and visibility disable for removed tags.
+   - single `startCompositionSession()` / `endCompositionSession()` per update pass.
+   - first-frame coherent submit guard (`firstFrameCoherentSubmit`).
+6. Animation runtime currently implemented:
+   - transition and key-based animation via internal property state + `AnimationCurve`.
+   - animated color channels, width/height, and path nodes.
+   - per-frame sampling through `advanceAnimations()`.
+7. Geometry safety for element draw bounds:
+   - shape/text rect clamping through `ViewResizeCoordinator::clampRectToParent(...)`.
 
-## Re-scoped Remaining Work
+## Not Landed (or only partial)
 
-Main gaps now:
+1. `UIView` does not yet use `Composition::ViewAnimator` / `Composition::LayerAnimator` for playback.
+2. Lane-specific animation submission (`animateOnLane`) is not wired from `UIView`.
+3. Root background/border transitions are not animated through the current runtime.
+4. Effect styles (drop shadow / blur) are not part of current `StyleSheet::Entry::Kind`.
+5. `TextLineLimit` is carried in style state but not consumed in draw path.
 
-1. `UIView` still repaints/submits too broadly (`layoutDirty/styleDirty` are coarse).
-2. Transition fields in `StyleSheet::Entry` are not executed by a concrete `UIView` animation driver.
-3. `UIViewLayout::Element::Text` is modeled but not rendered.
-4. Effect behavior is not fully unified with first-frame and resize-pressure constraints.
+## Ownership Contract (Still Required)
 
-## Slice B: Deterministic UIView Submission and Dirty Graph
+1. Container/UI path owns geometry policy and clamping.
+2. Compositor remains execution/presentation only.
+3. `UIView` animation uses Composition animators so lane/packet semantics are shared with other view types.
+4. Widget-layer code must remain animation-handle free.
+
+## Slice B: Dirty Graph Close-Out (Mostly Landed)
 
 ### Outcome
-`UIView::update()` becomes deterministic, minimal, and lane-packet coherent.
+Keep current deterministic `update()` behavior and close remaining over-submit paths.
 
-### Implementation Plan
+### Remaining Work
 
-1. Introduce a per-tag dirty graph in `UIView`:
-   - `ElementDirtyState { layoutDirty, styleDirty, contentDirty, orderDirty, visibilityDirty }`.
-   - Track root dirtiness separately from element dirtiness.
-2. Replace broad update pass with phased pass:
-   - `prepareRootFrame()`
-   - `prepareElementFrames()`
-   - `submitDirtyFrames()`
-3. Add stable order commit:
-   - Reassert z-order every `orderDirty` pass using layout sequence.
-   - Keep disabled-layer policy for missing tags.
-4. Add first-frame stabilization gate:
-   - First `update()` after mount/style/layout change forces a coherent packet with root+all active tags.
-   - Prevent no-op transparent skip from dropping initial visible content.
-5. Bind `UIView` update submission to one composition session per update:
-   - Start session once, submit only dirty frames, end session once.
-   - Keep packet boundaries aligned with sync-lane commit semantics.
-
-### File Targets
-
-1. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/UI/UIView.h`
-2. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/src/UI/UIView.cpp`
+1. Keep current phased flow but tighten dirty invalidation:
+   - avoid `markAllElementsDirty()` on style updates when selectors target a subset.
+2. Keep first-frame coherent submit, but ensure it does not mask selector-scoped updates in follow-up frames.
+3. Add small diagnostics counters in `UIView`:
+   - total active tags,
+   - dirty tag count,
+   - submitted tag count.
 
 ### Acceptance
 
-1. First visible frame contains complete expected content (no delayed element reveal).
-2. Active resize does not cause element pop-in caused by deferred first dirty submit.
-3. Steady-state updates avoid resubmitting unchanged element canvases.
+1. No delayed first-visible content.
+2. No full-view resubmit on selector-scoped style changes.
+3. Per-update submit count tracks real dirtiness.
 
-## Slice C: UIView Transition/Animation Driver on Lane Runtime
+## Slice C: Composition Animator Bridge (Major Remaining Work)
 
 ### Outcome
-`transition` and animation style entries execute through the existing sync-aware animation runtime.
+Migrate `UIView` animation playback from local sampler to Composition animation classes.
 
-### Implementation Plan
+### Remaining Work
 
-1. Add `UIViewAnimationDriver` state to `UIView`:
-   - per-tag, per-property active animation map.
-   - last-writer-wins cancellation policy per key.
-2. Translate style entries into animation jobs:
-   - `ElementBrushAnimation`, `ElementAnimation`, `ElementPathAnimation`.
-   - `transition=true` with duration maps to implicit animation job.
-3. Supported animated keys in this slice:
-   - color channels (`R`, `G`, `B`, `A`),
-   - geometry (`Width`, `Height`),
-   - path node coordinates (`PathNodeX`, `PathNodeY`).
-4. Bind animation jobs to host lane:
-   - use lane-aware scheduling (`animateOnLane(...)` path where available).
-   - sample/apply values inside `UIView` dirty graph so animation writes stay packet-coherent.
-5. Finish behavior:
-   - snap exact final values at completion,
-   - mark only affected tags dirty.
-
-### File Targets
-
-1. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/UI/UIView.h`
-2. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/src/UI/UIView.cpp`
-3. Optional helper hooks in `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/Composition/Animation.h` only if adapter gaps exist.
+1. Add `UIViewAnimationBridge` internal helper:
+   - property key -> active Composition handle map.
+   - last-writer-wins per property key.
+2. Map property domains:
+   - view visual keys -> `Composition::ViewAnimator`.
+   - layer/effect keys -> `Composition::LayerAnimator`.
+3. Preserve current animated key coverage:
+   - color channels,
+   - width/height,
+   - path node x/y.
+4. Lane path:
+   - when host lane exists, use lane-aware submission (`animateOnLane`).
+5. Remove duplicate local playback logic from `UIView`:
+   - retire `PropertyAnimationState` / `PathNodeAnimationState` once bridge is stable.
+6. Keep widget/container path uninvolved:
+   - no bridge hooks into `Widget` animation APIs.
 
 ### Acceptance
 
-1. Style transitions visibly animate instead of hard switching.
-2. Animations remain monotonic under lane drops/backpressure.
-3. Final values are deterministic and match target style.
+1. `transition=true` and explicit animation entries are played by Composition animators.
+2. Animation progression is lane/packet coherent with sync engine.
+3. Existing visual behavior remains equivalent to current runtime.
+4. No widget-level animation ownership is introduced.
 
-## Slice D: UIView Text Elements + Text Style Surface
+## Slice D: Text Surface Completion (Partially Landed)
 
 ### Outcome
-`UIViewLayout::text(...)` becomes fully functional in mixed shape/text scenes.
+Finish missing text style semantics and keep mixed content deterministic.
 
-### Implementation Plan
+### Remaining Work
 
-1. Extend `UIViewLayout::Element` text payload:
-   - retain existing string data,
-   - attach optional text style descriptor key.
-2. Add text style entries to `StyleSheet`:
-   - font handle/reference,
-   - color,
-   - alignment,
-   - wrapping mode,
-   - line limit.
-3. Render text elements in `UIView::update()`:
-   - use `Canvas::drawText(...)`,
-   - include text elements in per-tag dirty tracking and z-order.
-4. Mixed content determinism:
-   - text and shape tags share same ordering pipeline.
-   - text style changes only dirty affected tags.
-
-### File Targets
-
-1. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/UI/UIView.h`
-2. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/src/UI/UIView.cpp`
-3. Optional font helper touchpoints in `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/Composition/FontEngine.h`.
+1. Keep current text rendering and style resolution.
+2. Implement `TextLineLimit` behavior in actual text drawing path.
+3. Confirm text style selector precedence (`viewTag` + `elementTag`) remains deterministic for mixed scenes.
+4. Once Slice C lands, route text color transitions through the Composition bridge.
 
 ### Acceptance
 
-1. `UIView` renders text-only, shape-only, and mixed layouts reliably.
-2. Text remains stable through resize and transition updates.
-3. No upside-down or delayed-text regressions in test apps.
+1. Text respects line-limit setting.
+2. Mixed text+shape scenes remain deterministic through live resize.
+3. No text pop-in or orientation regressions.
 
-## Slice E: Effects in UIView Styles (First-frame + Resize-safe)
+## Slice E: UIView Effects + Effect Animation (Not Landed)
 
 ### Outcome
-Drop shadow/blur become first-class style features that remain stable under first-frame and resize pressure.
+Add effect styles and effect animation support without regressing first-frame visibility/resizing.
 
-### Implementation Plan
+### Remaining Work
 
-1. Add effect style entries to `StyleSheet::Entry::Kind`:
-   - view-level and element-level drop shadow,
+1. Extend `StyleSheet::Entry::Kind` for effect entries:
+   - drop shadow,
    - gaussian blur,
    - directional blur.
-2. Resolve effect style during update phases:
-   - root effects applied to root layer,
-   - element effects applied to per-tag layer.
-3. Integrate with dirty graph:
-   - effect parameter change marks only corresponding target dirty.
-4. Sync-engine alignment:
-   - ensure first-frame stabilization gate includes effect state.
-   - when lane pressure is high, follow global adaptive-quality policies rather than ad-hoc `UIView` branching.
-5. Preserve transparent composition behavior:
-   - avoid forced opaque fills when effects are enabled.
-
-### File Targets
-
-1. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/UI/UIView.h`
-2. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/src/UI/UIView.cpp`
-3. Existing layer effect plumbing in `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/src/Composition/backend/RenderTarget.cpp` only if additional effect params are needed.
+2. Style resolution + application:
+   - root-level and per-element effect targeting policy.
+3. Effect animation:
+   - route effect transitions through `Composition::LayerAnimator`.
+4. Submission safety:
+   - effect-only mutations dirty only affected tags/layers.
+   - preserve transparent backgrounds in element canvases.
 
 ### Acceptance
 
-1. Effect-enabled `UIView` content renders correctly on frame 1.
-2. Effects do not disappear during active resize.
-3. No black/opaque artifact regression in Text and Ellipse test scenes.
+1. Effects visible on frame 1.
+2. No effect pop-out during active resize.
+3. No opaque quad artifacts.
 
-## Execution Order (Updated)
+## File Targets
 
-1. Slice B first: fixes determinism and packet hygiene.
-2. Slice C second: enables transitions on stable submission path.
-3. Slice D third: restores missing text element capability.
-4. Slice E fourth: effect style unification on top of deterministic path.
+1. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/UI/UIView.h`
+2. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/src/UI/UIView.cpp`
+3. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/include/omegaWTK/UI/View.h` (lane/bridge plumbing as needed)
+4. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/src/UI/View.cpp` (lane/bridge plumbing as needed)
+
+## Recommended Execution Order
+
+1. Slice B close-out
+2. Slice C bridge migration
+3. Slice D text completion
+4. Slice E effects
 
 ## Validation Matrix
 
-Required checks after each slice:
-
-1. `EllipsePathCompositorTest`:
-   - all three shapes visible on frame 1,
-   - no delayed element reveal on first resize.
-2. `TextCompositorTest`:
-   - accent layer visible,
-   - text remains readable and stable.
-3. Resize stress:
-   - active window resize for 5-10 seconds,
-   - no frame dropouts where only subset of tags draw.
-4. Sync diagnostics:
-   - verify single coherent packet per `UIView` update where expected,
-   - confirm no stale packet replay after lane drops.
+1. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/tests/EllipsePathCompositorTest/main.cpp`
+   - frame-1 visibility for all three UIView-backed widgets.
+   - no intermittent left-corner collapse during live resize.
+2. `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/tests/TextCompositorTest/main.cpp`
+   - accent UIView and text both visible on frame 1.
+   - resize keeps accent centered and text stable.
+3. Animation checks
+   - transition entries execute through Composition animation classes after Slice C.
+   - lane/packet diagnostics remain monotonic under resize pressure.
+4. Stress checks
+   - 5-10 second live resize with no stale subset draw frames.

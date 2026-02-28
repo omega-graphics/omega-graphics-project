@@ -1,5 +1,6 @@
 #include "omegaGTE/GECommandQueue.h"
 #include "GED3D12.h"
+#include <cstdint>
 
 #ifndef OMEGAGTE_GED3D12COMMANDQUEUE_H
 #define OMEGAGTE_GED3D12COMMANDQUEUE_H
@@ -18,6 +19,7 @@ _NAMESPACE_BEGIN_
         bool inRenderPass;
         bool firstRenderPass = true;
         bool closed = false;
+        std::uint64_t traceResourceId = 0;
 
         friend class GED3D12CommandQueue;
 
@@ -101,6 +103,8 @@ _NAMESPACE_BEGIN_
         ComPtr<ID3D12Fence> fence;
 
         HANDLE cpuEvent;
+        std::uint64_t traceResourceId = 0;
+        std::vector<std::uint64_t> submittedTraceCommandBufferIds;
 
         bool multiQueueSync = false;
 
@@ -115,6 +119,18 @@ _NAMESPACE_BEGIN_
 
         void *native() override {
             return (void *)commandQueue.Get();
+        }
+        std::uint64_t traceId() const {
+            return traceResourceId;
+        }
+        std::uint64_t lastSubmittedCommandBufferTraceId() const {
+            if(submittedTraceCommandBufferIds.empty()){
+                return 0;
+            }
+            return submittedTraceCommandBufferIds.back();
+        }
+        void clearSubmittedTraceCommandBufferIds() {
+            submittedTraceCommandBufferIds.clear();
         }
         ID3D12GraphicsCommandList6 * getLastCommandList();
         void commitToGPU() override;

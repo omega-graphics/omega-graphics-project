@@ -3,6 +3,8 @@
 #include "omegaWTK/Composition/Animation.h"
 #include "View.h"
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 
 #ifndef OMEGAWTK_UI_UIVIEW_H
 #define OMEGAWTK_UI_UIVIEW_H
@@ -61,6 +63,9 @@ struct OMEGAWTK_EXPORT StyleSheet {
             BorderEnabled,
             BorderColor,
             BorderWidth,
+            DropShadowEffect,
+            GaussianBlurEffect,
+            DirectionalBlurEffect,
             ElementBrush,
             ElementBrushAnimation,
             ElementAnimation,
@@ -85,6 +90,9 @@ struct OMEGAWTK_EXPORT StyleSheet {
         Core::Optional<Composition::TextLayoutDescriptor::Alignment> textAlignment {};
         Core::Optional<Composition::TextLayoutDescriptor::Wrapping> textWrapping {};
         Core::Optional<unsigned> uintValue {};
+        Core::Optional<Composition::LayerEffect::DropShadowParams> dropShadowValue {};
+        Core::Optional<Composition::CanvasEffect::GaussianBlurParams> gaussianBlurValue {};
+        Core::Optional<Composition::CanvasEffect::DirectionalBlurParams> directionalBlurValue {};
         int nodeIndex = -1;
         bool transition = false;
         float duration = 0.f;
@@ -111,6 +119,38 @@ struct OMEGAWTK_EXPORT StyleSheet {
                               float width,
                               bool transition = false,
                               float duration = 0.f);
+
+    StyleSheetPtr dropShadow(UIViewTag tag,
+                             const Composition::LayerEffect::DropShadowParams & params,
+                             bool transition = false,
+                             float duration = 0.f);
+
+    StyleSheetPtr gaussianBlur(UIViewTag tag,
+                               float radius,
+                               bool transition = false,
+                               float duration = 0.f);
+
+    StyleSheetPtr directionalBlur(UIViewTag tag,
+                                  float radius,
+                                  float angle,
+                                  bool transition = false,
+                                  float duration = 0.f);
+
+    StyleSheetPtr elementDropShadow(UIElementTag elementTag,
+                                    const Composition::LayerEffect::DropShadowParams & params,
+                                    bool transition = false,
+                                    float duration = 0.f);
+
+    StyleSheetPtr elementGaussianBlur(UIElementTag elementTag,
+                                      float radius,
+                                      bool transition = false,
+                                      float duration = 0.f);
+
+    StyleSheetPtr elementDirectionalBlur(UIElementTag elementTag,
+                                         float radius,
+                                         float angle,
+                                         bool transition = false,
+                                         float duration = 0.f);
 
     StyleSheetPtr elementBrush(UIElementTag elementTag,
                                SharedHandle<Composition::Brush> brush,
@@ -205,6 +245,21 @@ public:
 };
 
 class OMEGAWTK_EXPORT UIView : public CanvasView, UIRenderer {
+public:
+    struct UpdateDiagnostics {
+        std::size_t activeTagCount = 0;
+        std::size_t dirtyTagCount = 0;
+        std::size_t submittedTagCount = 0;
+        std::uint64_t revision = 0;
+    };
+
+    struct EffectState {
+        Core::Optional<Composition::LayerEffect::DropShadowParams> dropShadow {};
+        Core::Optional<Composition::CanvasEffect::GaussianBlurParams> gaussianBlur {};
+        Core::Optional<Composition::CanvasEffect::DirectionalBlurParams> directionalBlur {};
+    };
+
+private:
     struct ElementDirtyState {
         bool layoutDirty = true;
         bool styleDirty = true;
@@ -221,12 +276,29 @@ class OMEGAWTK_EXPORT UIView : public CanvasView, UIRenderer {
         float durationSec = 0.f;
         std::chrono::steady_clock::time_point startTime {};
         SharedHandle<Composition::AnimationCurve> curve = nullptr;
+        Composition::AnimationHandle compositionHandle {};
+        bool compositionClock = false;
     };
 
     struct PathNodeAnimationState {
         int nodeIndex = -1;
         PropertyAnimationState x;
         PropertyAnimationState y;
+    };
+
+    enum : int {
+        EffectAnimationKeyShadowOffsetX = 1000,
+        EffectAnimationKeyShadowOffsetY,
+        EffectAnimationKeyShadowRadius,
+        EffectAnimationKeyShadowBlur,
+        EffectAnimationKeyShadowOpacity,
+        EffectAnimationKeyShadowColorR,
+        EffectAnimationKeyShadowColorG,
+        EffectAnimationKeyShadowColorB,
+        EffectAnimationKeyShadowColorA,
+        EffectAnimationKeyGaussianRadius,
+        EffectAnimationKeyDirectionalRadius,
+        EffectAnimationKeyDirectionalAngle
     };
 
     UIViewTag tag;
@@ -239,14 +311,20 @@ class OMEGAWTK_EXPORT UIView : public CanvasView, UIRenderer {
     bool rootContentDirty = true;
     bool rootOrderDirty = true;
     bool firstFrameCoherentSubmit = true;
+    bool styleDirtyGlobal = false;
+    bool styleChangeRequiresCoherentFrame = false;
     SharedHandle<Composition::Canvas> rootCanvas;
+    SharedHandle<Composition::ViewAnimator> animationViewAnimator = nullptr;
+    OmegaCommon::Map<UIElementTag,SharedHandle<Composition::LayerAnimator>> animationLayerAnimators;
     OmegaCommon::Map<UIElementTag,ElementDirtyState> elementDirtyState;
     OmegaCommon::Vector<UIElementTag> activeTagOrder;
     OmegaCommon::Map<UIElementTag,OmegaCommon::Map<int,PropertyAnimationState>> elementAnimations;
     OmegaCommon::Map<UIElementTag,OmegaCommon::Vector<PathNodeAnimationState>> pathNodeAnimations;
     OmegaCommon::Map<UIElementTag,Composition::Color> lastResolvedElementColor;
+    OmegaCommon::Map<UIElementTag,EffectState> lastResolvedEffects;
     OmegaCommon::Map<UIElementTag,Shape> previousShapeByTag;
     SharedHandle<Composition::Font> fallbackTextFont = nullptr;
+    UpdateDiagnostics lastUpdateDiagnostics {};
 
     void markRootDirty();
     void markAllElementsDirty();
@@ -258,19 +336,27 @@ class OMEGAWTK_EXPORT UIView : public CanvasView, UIRenderer {
                           bool visibility);
     bool isElementDirty(const UIElementTag & tag) const;
     void clearElementDirty(const UIElementTag & tag);
+    SharedHandle<Composition::ViewAnimator> ensureAnimationViewAnimator();
+    SharedHandle<Composition::LayerAnimator> ensureAnimationLayerAnimator(const UIElementTag & tag);
+    Composition::AnimationHandle beginCompositionClock(const UIElementTag & tag,
+                                                       float durationSec,
+                                                       SharedHandle<Composition::AnimationCurve> curve);
     void startOrUpdateAnimation(const UIElementTag & tag,
-                                ElementAnimationKey key,
+                                int key,
                                 float from,
                                 float to,
                                 float durationSec,
                                 SharedHandle<Composition::AnimationCurve> curve);
     bool advanceAnimations();
-    Core::Optional<float> animatedValue(const UIElementTag & tag,ElementAnimationKey key) const;
+    Core::Optional<float> animatedValue(const UIElementTag & tag,int key) const;
     Composition::Color applyAnimatedColor(const UIElementTag & tag,const Composition::Color & baseColor) const;
     Shape applyAnimatedShape(const UIElementTag & tag,const Shape & inputShape) const;
     void prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::Element> & elements,
                                   bool layoutChanged,
                                   bool styleChanged);
+    void prepareEffectAnimations(const OmegaCommon::Vector<UIViewLayout::Element> & elements,
+                                 bool layoutChanged,
+                                 bool styleChanged);
     SharedHandle<Composition::Font> resolveFallbackTextFont();
     void syncElementDirtyState(const OmegaCommon::Vector<UIViewLayout::Element> & elements,
                                bool layoutChanged,
@@ -282,6 +368,7 @@ public:
     void setLayout(const UIViewLayout & layout);
     void setStyleSheet(const StyleSheetPtr & style);
     StyleSheetPtr getStyleSheet() const;
+    const UpdateDiagnostics & getLastUpdateDiagnostics() const;
     void update();
 };
 

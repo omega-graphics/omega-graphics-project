@@ -1,4 +1,5 @@
 #include "GEVulkanTexture.h"
+#include "../common/GEResourceTracker.h"
 
 _NAMESPACE_BEGIN_
 
@@ -21,7 +22,15 @@ layout(layout),
 descriptor(descriptor),
 alloc_info(alloc_info),alloc(alloc),memoryUsage(memoryUsage)
 {
-
+    traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Create,
+            ResourceTracking::Backend::Vulkan,
+            "Texture",
+            traceResourceId,
+            reinterpret_cast<const void *>(img),
+            static_cast<float>(descriptor.width),
+            static_cast<float>(descriptor.height));
 };
 
 size_t GEVulkanTexture::getBytes(void *bytes, size_t bytesPerRow){
@@ -42,6 +51,14 @@ void GEVulkanTexture::copyBytes(void *bytes, size_t bytesPerRow){
 }
 
 GEVulkanTexture::~GEVulkanTexture(){
+    ResourceTracking::Tracker::instance().emit(
+            ResourceTracking::EventType::Destroy,
+            ResourceTracking::Backend::Vulkan,
+            "Texture",
+            traceResourceId,
+            reinterpret_cast<const void *>(img),
+            static_cast<float>(descriptor.width),
+            static_cast<float>(descriptor.height));
     vmaDestroyImage(engine->memAllocator,img,alloc);
     vkDestroyImageView(engine->device,img_view,nullptr);
 }

@@ -12,6 +12,7 @@
 #include <dwrite.h>
 #include <dxgi.h>
 #include <dxgiformat.h>
+#include <vector>
 
 #pragma comment(lib,"dxguid.lib")
 
@@ -189,6 +190,7 @@ namespace OmegaWTK::Composition {
         DWRITE_TEXT_ALIGNMENT textAlignment;
         DWRITE_WORD_WRAPPING wrapping;
         DWRITE_FLOW_DIRECTION flowDirection;
+        unsigned lineLimit;
         SharedHandle<OmegaGTE::GETexture> target;
         SharedHandle<OmegaGTE::GEFence> fence;
         ID3D11Texture2D *resource;
@@ -208,6 +210,23 @@ namespace OmegaWTK::Composition {
              run->textLayout->SetFlowDirection(flowDirection);
              run->textLayout->SetTextAlignment(textAlignment);
              run->textLayout->SetWordWrapping(wrapping);
+             if(lineLimit > 0){
+                 UINT32 lineCount = 0;
+                 HRESULT metricsStatus = run->textLayout->GetLineMetrics(nullptr,0,&lineCount);
+                 if((metricsStatus == S_OK || metricsStatus == E_NOT_SUFFICIENT_BUFFER) && lineCount > 0){
+                     std::vector<DWRITE_LINE_METRICS> metrics(lineCount);
+                     if(SUCCEEDED(run->textLayout->GetLineMetrics(metrics.data(),lineCount,&lineCount))){
+                         const UINT32 cappedLineCount = (std::min)(lineLimit,lineCount);
+                         FLOAT maxHeight = 0.f;
+                         for(UINT32 idx = 0; idx < cappedLineCount; ++idx){
+                             maxHeight += metrics[idx].height;
+                         }
+                         if(maxHeight > 0.f){
+                             run->textLayout->SetMaxHeight(maxHeight);
+                         }
+                     }
+                 }
+             }
 
                FontEngine::inst()->d3d11_device->AcquireWrappedResources((ID3D11Resource *const *)&resource,1);
 
@@ -235,7 +254,11 @@ namespace OmegaWTK::Composition {
          void * getNative() override{
             return nullptr;
          };
-         explicit DWriteTextRect(Core::Rect & rect,const TextLayoutDescriptor & layoutDesc): TextRect(rect),target(nullptr),context(nullptr){
+         explicit DWriteTextRect(Core::Rect & rect,const TextLayoutDescriptor & layoutDesc):
+         TextRect(rect),
+         lineLimit(layoutDesc.lineLimit),
+         target(nullptr),
+         context(nullptr){
              HRESULT hr;
 
              switch (layoutDesc.alignment) {

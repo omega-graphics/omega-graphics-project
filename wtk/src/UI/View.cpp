@@ -412,6 +412,16 @@ void View::setSyncLaneRecurse(uint64_t syncLaneId){
         }
     }
 }
+
+void View::setResizeGovernorMetadataRecurse(const Composition::ResizeGovernorMetadata & metadata,
+                                            std::uint64_t coordinatorGeneration){
+    proxy.setResizeGovernorMetadata(metadata,coordinatorGeneration);
+    for(auto *subView : subviews){
+        if(subView != nullptr){
+            subView->setResizeGovernorMetadataRecurse(metadata,coordinatorGeneration);
+        }
+    }
+}
     
 // Composition::Compositor * View::getWidgetCompositor(){
 //     return widgetLayerTree->widgetCompositor;

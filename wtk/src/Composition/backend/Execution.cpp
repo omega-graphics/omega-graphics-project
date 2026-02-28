@@ -448,7 +448,8 @@ void Compositor::executeCurrentCommand(){
         }
 
         for(auto & effect : comm->frame->currentEffects){
-            targetContext->applyEffectToTarget(effect);
+            auto adaptedEffect = adaptCanvasEffectForLane(currentCommand->syncLaneId,effect);
+            targetContext->applyEffectToTarget(adaptedEffect);
         }
 
         const auto submitTimeCpu = std::chrono::steady_clock::now();
@@ -532,7 +533,9 @@ void Compositor::executeCurrentCommand(){
             if(visualTree->root != nullptr &&
                s == &(visualTree->root->renderTarget)){
                 if(params->effect->type == LayerEffect::DropShadow){
-                    visualTree->root->updateShadowEffect(params->effect->dropShadow);
+                    auto adaptedShadow = adaptDropShadowForLane(currentCommand->syncLaneId,
+                                                                 params->effect->dropShadow);
+                    visualTree->root->updateShadowEffect(adaptedShadow);
                 }
                 else {
                     visualTree->root->updateTransformEffect(params->effect->transform);
@@ -543,7 +546,9 @@ void Compositor::executeCurrentCommand(){
                 for(auto & v : visualTree->body){
                     if(v != nullptr && s == &(v->renderTarget)){
                         if(params->effect->type == LayerEffect::DropShadow){
-                            v->updateShadowEffect(params->effect->dropShadow);
+                            auto adaptedShadow = adaptDropShadowForLane(currentCommand->syncLaneId,
+                                                                         params->effect->dropShadow);
+                            v->updateShadowEffect(adaptedShadow);
                         }
                         else {
                             v->updateTransformEffect(params->effect->transform);

@@ -5,8 +5,8 @@ Eliminate resize jitter/corner-collapse by adding explicit resize dynamics track
 
 This plan incorporates the proposal in `/Users/alextopper/Documents/GitHub/omega-graphics-project/wtk/docs/MY_PROPOSALS.md` and extends it with a reusable parent-child resize layout system:
 1. Track resize behavior (velocity, acceleration/deceleration, and dead period).
-2. Suspend static rendering during active resize and resume on completion.
-3. For animated content, pace submission against measured GPU/compositor capacity.
+2. Pace submission during active resize against measured GPU/compositor capacity for any widget tree.
+3. Preserve epoch monotonicity and stale-packet rejection while pacing.
 4. Ensure child widgets that are marked resizable resize with parents while staying inside parent bounds and child clamps.
 5. Implement this child-resize behavior once in a `View`-associated coordinator so all view types can use it.
 
@@ -19,7 +19,7 @@ This plan incorporates the proposal in `/Users/alextopper/Documents/GitHub/omega
 ## Design Principles
 1. Resize state detection must be owned by native/UI layers, not inferred only from compositor packets.
 2. Compositor should consume explicit resize state and lane pressure telemetry to make pacing decisions.
-3. Static and animated trees need different policies.
+3. All trees must route through one governor path; animated trees may still consume quality ladders under pressure.
 4. Keep last good frame visible while coalescing new state.
 5. Child resize resolution belongs in UI layout (before compositor), not in render backend.
 6. Parent-child constraints must be deterministic, clamp-safe, and shared across all `View` derivatives.
@@ -77,17 +77,8 @@ Introduce a `View`-associated class that performs parent-child resize resolution
 
 This class is UI-layer only and runs before compositor command submission.
 
-### 4) Static Render Policy
-For non-animated widget trees during `Active`/`Settling`:
-1. Resolve layout with `ViewResizeCoordinator`.
-2. Suspend immediate packet submission.
-3. Keep last presented frame visible.
-4. On `Completed`, submit one authoritative full-layout frame from the latest resolved geometry.
-
-Optional safety valve: low-frequency fallback frame (e.g. 8-12 FPS) behind a debug flag.
-
-### 5) Animated Render Policy (Compositor Governor)
-For animated trees during resize:
+### 4) Unified Render Policy (Compositor Governor)
+For all widget trees during resize:
 1. Resolve parent-child geometry first through `ViewResizeCoordinator`.
 2. Compute lane capacity from telemetry:
    - presented cadence
@@ -100,7 +91,7 @@ For animated trees during resize:
    - drop superseded intermediate epochs
    - reduce effect quality first before dropping animation-critical packets
 
-### 6) Capacity/Budget Model
+### 5) Capacity/Budget Model
 Per lane, derive a dynamic budget:
 - `targetInFlight` (already present in sync engine)
 - `maxPacketRateHz` from observed present cadence
@@ -227,15 +218,6 @@ Acceptance:
 2. Child min/max clamps are respected in all resize phases.
 3. Non-resizable children keep fixed size and valid clamped position.
 
-### Slice C: Static Suspend Pipeline + Coordinator Commit
-1. Add `StaticSuspend` policy for non-animated trees.
-2. During active resize, run coordinator continuously but queue/coalesce invalidations.
-3. Submit one authoritative frame at completion using latest coordinator result.
-
-Acceptance:
-1. Static trees do not jitter during drag.
-2. Final post-resize frame lands correctly within one cycle.
-
 ### Slice D: Animated Governor Metadata Plumbing
 1. Attach `ResizeGovernorMetadata` to packet submissions.
 2. Extend lane telemetry snapshot with governor inputs.
@@ -293,7 +275,6 @@ Acceptance:
 ## Recommended Execution Order
 1. Slice A
 2. Slice B
-3. Slice C
-4. Slice D
-5. Slice E
-6. Slice F
+3. Slice D
+4. Slice E
+5. Slice F

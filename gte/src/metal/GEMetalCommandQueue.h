@@ -3,6 +3,7 @@
 
 #include "GEMetal.h"
 #include "omegaGTE/GECommandQueue.h"
+#include <cstdint>
 
 #ifndef OMEGAGTE_METAL_GEMETALCOMMANDQUEUE_H
 #define OMEGAGTE_METAL_GEMETALCOMMANDQUEUE_H
@@ -33,6 +34,7 @@ _NAMESPACE_BEGIN_
         void _present_drawable(NSSmartPtr & drawable);
         void _commit();
         GECommandBufferCompletionHandler completionHandler;
+        std::uint64_t traceResourceId = 0;
     public:
         NSSmartPtr buffer;
 
@@ -103,6 +105,7 @@ _NAMESPACE_BEGIN_
         std::vector<SharedHandle<GECommandBuffer>> commandBuffers;
 
         dispatch_semaphore_t semaphore;
+        std::uint64_t traceResourceId = 0;
 
         
         friend class GEMetalCommandBuffer;
