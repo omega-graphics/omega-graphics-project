@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <memory>
 
 namespace OmegaWTK {
@@ -90,6 +91,18 @@ static inline float clampAxisPosition(float pos,float minPos,float maxPos){
         maxPos = minPos;
     }
     return std::clamp(pos,minPos,maxPos);
+}
+
+static inline const char * geometryReasonLabel(GeometryChangeReason reason){
+    switch(reason){
+        case GeometryChangeReason::ParentLayout:
+            return "ParentLayout";
+        case GeometryChangeReason::ChildRequest:
+            return "ChildRequest";
+        case GeometryChangeReason::UserInput:
+            return "UserInput";
+    }
+    return "Unknown";
 }
 
 }
@@ -217,6 +230,29 @@ Core::Rect Container::clampChildRect(const Widget & child,const GeometryProposal
         }
     }
 
+    if(Widget::geometryTraceLoggingEnabled()){
+        auto syncCtx = geometryTraceContext();
+        std::fprintf(stderr,
+                     "[OmegaWTKGeometry] phase=container-clamp lane=%llu packet=%llu container=%p child=%p reason=%s requested={x:%.3f y:%.3f w:%.3f h:%.3f} clamped={x:%.3f y:%.3f w:%.3f h:%.3f} content={x:%.3f y:%.3f w:%.3f h:%.3f}\n",
+                     static_cast<unsigned long long>(syncCtx.syncLaneId),
+                     static_cast<unsigned long long>(syncCtx.predictedPacketId),
+                     static_cast<const void *>(this),
+                     static_cast<const void *>(&child),
+                     geometryReasonLabel(proposal.reason),
+                     proposal.requested.pos.x,
+                     proposal.requested.pos.y,
+                     proposal.requested.w,
+                     proposal.requested.h,
+                     clamped.pos.x,
+                     clamped.pos.y,
+                     clamped.w,
+                     clamped.h,
+                     contentBounds.pos.x,
+                     contentBounds.pos.y,
+                     contentBounds.w,
+                     contentBounds.h);
+    }
+
     return clamped;
 }
 
@@ -224,9 +260,18 @@ void Container::onChildRectCommitted(const Widget & child,
                                      const Core::Rect & oldRect,
                                      const Core::Rect & newRect,
                                      GeometryChangeReason reason){
-    (void)child;
-    (void)oldRect;
-    (void)newRect;
+    if(Widget::geometryTraceLoggingEnabled()){
+        auto syncCtx = geometryTraceContext();
+        std::fprintf(stderr,
+                     "[OmegaWTKGeometry] phase=container-commit lane=%llu packet=%llu container=%p child=%p reason=%s old={x:%.3f y:%.3f w:%.3f h:%.3f} new={x:%.3f y:%.3f w:%.3f h:%.3f}\n",
+                     static_cast<unsigned long long>(syncCtx.syncLaneId),
+                     static_cast<unsigned long long>(syncCtx.predictedPacketId),
+                     static_cast<const void *>(this),
+                     static_cast<const void *>(&child),
+                     geometryReasonLabel(reason),
+                     oldRect.pos.x,oldRect.pos.y,oldRect.w,oldRect.h,
+                     newRect.pos.x,newRect.pos.y,newRect.w,newRect.h);
+    }
     if(reason == GeometryChangeReason::ParentLayout || inLayout){
         return;
     }

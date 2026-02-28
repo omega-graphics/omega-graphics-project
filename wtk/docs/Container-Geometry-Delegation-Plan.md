@@ -124,7 +124,7 @@ This keeps geometry policy in containers and animation playback in views.
 1. Promote explicit policy struct for bounds/overflow behavior.
 2. Stabilize clamp decisions under resize pressure.
 
-### Slice E (Revised): Widget Animation Boundary Hardening
+### Slice E (Completed): Widget Animation Boundary Hardening
 1. Remove/forbid widget-level Composition animation APIs.
 2. Keep widget geometry path clamp-driven and synchronous.
 3. Add guardrails/documentation so animation classes are used only by `View`/`UIView`.
@@ -134,7 +134,7 @@ Acceptance:
 2. Container clamping remains the only geometry authority.
 3. No compositor layout authority is introduced.
 
-### Slice F (Updated): Lane-Coherent Visual/Effect Animation Binding
+### Slice F (Completed): Lane-Coherent Visual/Effect Animation Binding
 1. Ensure `View`/`UIView` animation epochs map to lane-coherent packet submission.
 2. Bind animation diagnostics to sync telemetry for jitter triage.
 3. Enforce stale-step skipping during saturation/resize mode.
@@ -144,12 +144,17 @@ Acceptance:
 2. Dropped packets do not replay stale geometry/effect states.
 3. Frame-to-frame animation progression remains monotonic.
 
-### Slice G: Regression and Diagnostics
+### Slice G (Completed): Regression and Diagnostics
 1. Add tests for:
    - container clamp + animated child rect,
    - stack + animation + live resize,
    - mixed `UIView` shape/text plus layer effects.
 2. Add proposal/clamp/commit trace hooks with lane + packet ids.
+
+Acceptance:
+1. Geometry path logs `proposal/clamp/commit` phases when `OMEGAWTK_GEOMETRY_TRACE` is enabled.
+2. Test apps cover all three regression scenes (`ContainerClampAnimationTest`, `EllipsePathCompositorTest`, `TextCompositorTest`).
+3. Trace output includes sync lane and predicted packet id so packet skew is diagnosable.
 
 ## Risks
 1. Divergence between clamp-driven geometry commits and view-level visual effect timing.

@@ -52,8 +52,7 @@ enum class PaintReason : uint8_t {
 enum class GeometryChangeReason : uint8_t {
     ParentLayout,
     ChildRequest,
-    UserInput,
-    Animation
+    UserInput
 };
 
 struct GeometryProposal {
@@ -123,6 +122,12 @@ public:
  @see AppWindow
 */
 class OMEGAWTK_EXPORT  Widget : public Native::NativeThemeObserver {
+public:
+    struct GeometryTraceContext {
+        std::uint64_t syncLaneId = 0;
+        std::uint64_t predictedPacketId = 0;
+    };
+private:
     bool initialDrawComplete = false;
     bool hasMounted = false;
     bool paintInProgress = false;
@@ -232,6 +237,8 @@ protected:
                                       const Core::Rect & oldRect,
                                       const Core::Rect & newRect,
                                       GeometryChangeReason reason);
+    static bool geometryTraceLoggingEnabled();
+    GeometryTraceContext geometryTraceContext() const;
 
     /**
     @brief Initial render of the Widget
@@ -245,6 +252,12 @@ private:
     friend class PaintContext;
 public:
     OMEGACOMMON_CLASS("OmegaWTK.Widget")
+    /**
+     Geometry ownership boundary:
+     1. Widgets/Containers own synchronous geometry policy only.
+     2. Composition animation classes are view-owned (`View`/`UIView`) and are
+        intentionally not exposed through `Widget`.
+    */
     /**
      Get the Widget's root View's rect
     */

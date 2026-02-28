@@ -27,6 +27,14 @@ OmegaWTKApp(
     SOURCES
     TextCompositorTest/main.cpp)
 
+OmegaWTKApp(
+    NAME
+    ContainerClampAnimationTest
+    BUNDLE_ID
+    "org.omegagraphics.ContainerClampAnimationTest"
+    SOURCES
+    ContainerClampAnimationTest/main.cpp)
+
 if(TARGET_MACOS)
     add_custom_target(2DAppTest DEPENDS EllipsePathCompositorTest.app)
 else()

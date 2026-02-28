@@ -37,6 +37,23 @@ namespace OmegaWTK::Composition {
         ResizeGovernorPhase phase = ResizeGovernorPhase::Idle;
     };
 
+    struct SyncLaneDiagnostics {
+        std::uint64_t syncLaneId = 0;
+        std::uint64_t queuedPacketCount = 0;
+        std::uint64_t submittedPacketCount = 0;
+        std::uint64_t presentedPacketCount = 0;
+        std::uint64_t droppedPacketCount = 0;
+        std::uint64_t failedPacketCount = 0;
+        std::uint64_t lastSubmittedPacketId = 0;
+        std::uint64_t lastPresentedPacketId = 0;
+        unsigned inFlight = 0;
+        bool resizeBudgetActive = false;
+        bool underPressure = false;
+        bool startupStabilized = false;
+        ResizeGovernorMetadata latestResizeGovernor {};
+        std::uint64_t latestResizeCoordinatorGeneration = 0;
+    };
+
     class OMEGAWTK_EXPORT CompositionRenderTarget {
     public:
         virtual ~CompositionRenderTarget() = default;
@@ -292,6 +309,7 @@ namespace OmegaWTK::Composition {
         explicit CompositorClientProxy(SharedHandle<CompositionRenderTarget> renderTarget);
         void setSyncLaneId(uint64_t syncLaneId);
         uint64_t getSyncLaneId() const;
+        SyncLaneDiagnostics getSyncLaneDiagnostics() const;
         uint64_t peekNextPacketId() const;
         void setResizeGovernorMetadata(const ResizeGovernorMetadata & metadata,
                                        std::uint64_t coordinatorGeneration);

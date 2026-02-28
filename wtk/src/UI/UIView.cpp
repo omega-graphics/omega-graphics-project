@@ -1217,6 +1217,10 @@ const UIView::UpdateDiagnostics & UIView::getLastUpdateDiagnostics() const{
     return lastUpdateDiagnostics;
 }
 
+const UIView::AnimationDiagnostics & UIView::getLastAnimationDiagnostics() const{
+    return lastAnimationDiagnostics;
+}
+
 void UIView::markRootDirty(){
     rootLayoutDirty = true;
     rootStyleDirty = true;
@@ -1426,6 +1430,7 @@ void UIView::startOrUpdateAnimation(const UIElementTag &tag,
     state.from = startValue;
     state.to = to;
     state.value = startValue;
+    state.lastProgress = 0.f;
     state.durationSec = std::max(0.001f,durationSec);
     state.startTime = now;
     state.curve = curve != nullptr ? curve : Composition::AnimationCurve::Linear();
@@ -1448,6 +1453,31 @@ bool UIView::advanceAnimations(){
     bool changed = false;
     OmegaCommon::Vector<UIElementTag> removePropertyTags {};
 
+    const auto laneDiagnostics = compositorProxy().getSyncLaneDiagnostics();
+    const bool hasLaneDiagnostics = laneDiagnostics.syncLaneId != 0;
+    bool staleSkipMode = false;
+    if(hasLaneDiagnostics){
+        const bool droppedCountIncreased = hasObservedLaneDiagnostics &&
+                                           laneDiagnostics.droppedPacketCount > lastObservedDroppedPacketCount;
+        staleSkipMode = laneDiagnostics.resizeBudgetActive ||
+                        laneDiagnostics.underPressure ||
+                        laneDiagnostics.inFlight > 0 ||
+                        droppedCountIncreased;
+        lastObservedDroppedPacketCount = laneDiagnostics.droppedPacketCount;
+        hasObservedLaneDiagnostics = true;
+    }
+    else {
+        hasObservedLaneDiagnostics = false;
+        lastObservedDroppedPacketCount = 0;
+    }
+
+    std::uint64_t staleStepsSkippedThisTick = 0;
+    std::uint64_t monotonicProgressClampsThisTick = 0;
+    std::uint64_t activeTrackCount = 0;
+    std::uint64_t completedTrackCountThisTick = 0;
+    std::uint64_t cancelledTrackCountThisTick = 0;
+    std::uint64_t failedTrackCountThisTick = 0;
+
     auto resolveProgress = [&](PropertyAnimationState & state) -> float {
         float elapsedSec = std::chrono::duration<float>(now - state.startTime).count();
         if(!std::isfinite(elapsedSec) || elapsedSec < 0.f){
@@ -1456,14 +1486,33 @@ bool UIView::advanceAnimations(){
         float wallClockT = state.durationSec <= 0.f ? 1.f : clamp01(elapsedSec / state.durationSec);
 
         if(!state.compositionClock || !state.compositionHandle.valid()){
-            return wallClockT;
+            float monotonicT = clamp01(wallClockT);
+            if(monotonicT + 0.0001f < state.lastProgress){
+                monotonicT = state.lastProgress;
+                monotonicProgressClampsThisTick += 1;
+            }
+            state.lastProgress = monotonicT;
+            return monotonicT;
         }
 
         auto handleState = state.compositionHandle.state();
         if(handleState == Composition::AnimationState::Cancelled ||
            handleState == Composition::AnimationState::Failed){
             state.compositionClock = false;
-            return wallClockT;
+            if(handleState == Composition::AnimationState::Cancelled){
+                cancelledTrackCountThisTick += 1;
+            }
+            else {
+                failedTrackCountThisTick += 1;
+            }
+            state.compositionHandle = {};
+            float monotonicT = clamp01(wallClockT);
+            if(monotonicT + 0.0001f < state.lastProgress){
+                monotonicT = state.lastProgress;
+                monotonicProgressClampsThisTick += 1;
+            }
+            state.lastProgress = monotonicT;
+            return monotonicT;
         }
 
         float compositionT = clamp01(state.compositionHandle.progress());
@@ -1471,8 +1520,26 @@ bool UIView::advanceAnimations(){
             compositionT = 1.f;
         }
 
-        // Keep motion monotonic even when compositor telemetry is briefly conservative.
-        return clamp01(std::max(wallClockT,compositionT));
+        float resolvedT = wallClockT;
+        if(staleSkipMode &&
+           handleState != Composition::AnimationState::Completed){
+            if(wallClockT > compositionT + 0.0001f){
+                staleStepsSkippedThisTick += 1;
+            }
+            resolvedT = compositionT;
+        }
+        else {
+            // Keep motion monotonic even when compositor telemetry is briefly conservative.
+            resolvedT = std::max(wallClockT,compositionT);
+        }
+
+        resolvedT = clamp01(resolvedT);
+        if(resolvedT + 0.0001f < state.lastProgress){
+            resolvedT = state.lastProgress;
+            monotonicProgressClampsThisTick += 1;
+        }
+        state.lastProgress = resolvedT;
+        return resolvedT;
     };
 
     for(auto & tagEntry : elementAnimations){
@@ -1483,6 +1550,7 @@ bool UIView::advanceAnimations(){
                 removeKeys.push_back(propertyEntry.first);
                 continue;
             }
+            activeTrackCount += 1;
 
             float t = resolveProgress(state);
             float sampled = state.curve != nullptr ? clamp01(state.curve->sample(t)) : t;
@@ -1507,6 +1575,9 @@ bool UIView::advanceAnimations(){
                 state.value = state.to;
                 state.active = false;
                 state.compositionClock = false;
+                state.lastProgress = 1.f;
+                state.compositionHandle = {};
+                completedTrackCountThisTick += 1;
                 if(tagEntry.first == kUIViewRootEffectTag){
                     rootStyleDirty = true;
                     rootContentDirty = true;
@@ -1543,6 +1614,7 @@ bool UIView::advanceAnimations(){
                 if(!propertyState.active){
                     return false;
                 }
+                activeTrackCount += 1;
 
                 float t = resolveProgress(propertyState);
                 float sampled = propertyState.curve != nullptr ? clamp01(propertyState.curve->sample(t)) : t;
@@ -1559,6 +1631,9 @@ bool UIView::advanceAnimations(){
                     propertyState.value = propertyState.to;
                     propertyState.active = false;
                     propertyState.compositionClock = false;
+                    propertyState.lastProgress = 1.f;
+                    propertyState.compositionHandle = {};
+                    completedTrackCountThisTick += 1;
                     propertyChanged = true;
                 }
                 return propertyChanged;
@@ -1588,6 +1663,26 @@ bool UIView::advanceAnimations(){
     for(const auto & tagToRemove : removePathTags){
         pathNodeAnimations.erase(tagToRemove);
     }
+
+    lastAnimationDiagnostics.syncLaneId = laneDiagnostics.syncLaneId;
+    lastAnimationDiagnostics.tickCount += 1;
+    lastAnimationDiagnostics.staleStepsSkipped += staleStepsSkippedThisTick;
+    lastAnimationDiagnostics.monotonicProgressClamps += monotonicProgressClampsThisTick;
+    lastAnimationDiagnostics.activeTrackCount = activeTrackCount;
+    lastAnimationDiagnostics.completedTrackCount += completedTrackCountThisTick;
+    lastAnimationDiagnostics.cancelledTrackCount += cancelledTrackCountThisTick;
+    lastAnimationDiagnostics.failedTrackCount += failedTrackCountThisTick;
+    lastAnimationDiagnostics.queuedPacketCount = laneDiagnostics.queuedPacketCount;
+    lastAnimationDiagnostics.submittedPacketCount = laneDiagnostics.submittedPacketCount;
+    lastAnimationDiagnostics.presentedPacketCount = laneDiagnostics.presentedPacketCount;
+    lastAnimationDiagnostics.droppedPacketCount = laneDiagnostics.droppedPacketCount;
+    lastAnimationDiagnostics.failedPacketCount = laneDiagnostics.failedPacketCount;
+    lastAnimationDiagnostics.lastSubmittedPacketId = laneDiagnostics.lastSubmittedPacketId;
+    lastAnimationDiagnostics.lastPresentedPacketId = laneDiagnostics.lastPresentedPacketId;
+    lastAnimationDiagnostics.inFlight = laneDiagnostics.inFlight;
+    lastAnimationDiagnostics.staleSkipMode = staleSkipMode;
+    lastAnimationDiagnostics.laneUnderPressure = laneDiagnostics.underPressure;
+    lastAnimationDiagnostics.resizeBudgetActive = laneDiagnostics.resizeBudgetActive;
 
     return changed;
 }
@@ -1793,6 +1888,7 @@ void UIView::prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::El
                         propertyState.compositionClock = false;
                         propertyState.active = false;
                         propertyState.value = to;
+                        propertyState.lastProgress = 1.f;
                         return;
                     }
                     if(durationSec <= 0.f || std::fabs(to - from) <= 0.0001f){
@@ -1802,6 +1898,7 @@ void UIView::prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::El
                         propertyState.compositionClock = false;
                         propertyState.active = false;
                         propertyState.value = to;
+                        propertyState.lastProgress = 1.f;
                         return;
                     }
                     if(propertyState.active && std::fabs(propertyState.to - to) <= 0.0001f){
@@ -1812,6 +1909,7 @@ void UIView::prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::El
                     propertyState.from = startValue;
                     propertyState.to = to;
                     propertyState.value = propertyState.from;
+                    propertyState.lastProgress = 0.f;
                     propertyState.durationSec = std::max(0.001f,durationSec);
                     propertyState.startTime = now;
                     propertyState.curve = curve != nullptr ? curve : defaultCurve;

@@ -6,9 +6,86 @@
 #include "omegaWTK/UI/WidgetTreeHost.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 
 namespace OmegaWTK {
+
+namespace {
+
+static inline const char * geometryReasonLabel(GeometryChangeReason reason){
+    switch(reason){
+        case GeometryChangeReason::ParentLayout:
+            return "ParentLayout";
+        case GeometryChangeReason::ChildRequest:
+            return "ChildRequest";
+        case GeometryChangeReason::UserInput:
+            return "UserInput";
+    }
+    return "Unknown";
+}
+
+static inline bool geometryTraceEnvEnabled(){
+    static int cached = -1;
+    if(cached >= 0){
+        return cached == 1;
+    }
+    const auto * envValue = std::getenv("OMEGAWTK_GEOMETRY_TRACE");
+    if(envValue == nullptr){
+        cached = 0;
+        return false;
+    }
+    const auto equalsIgnoreCase = [](const char *lhs,const char *rhs) -> bool {
+        if(lhs == nullptr || rhs == nullptr){
+            return false;
+        }
+        while(*lhs != '\0' && *rhs != '\0'){
+            if(std::tolower(static_cast<unsigned char>(*lhs)) !=
+               std::tolower(static_cast<unsigned char>(*rhs))){
+                return false;
+            }
+            ++lhs;
+            ++rhs;
+        }
+        return *lhs == '\0' && *rhs == '\0';
+    };
+    if(std::strcmp(envValue,"0") == 0 ||
+       equalsIgnoreCase(envValue,"false") ||
+       equalsIgnoreCase(envValue,"off") ||
+       equalsIgnoreCase(envValue,"no")){
+        cached = 0;
+        return false;
+    }
+    cached = 1;
+    return true;
+}
+
+static inline void geometryTraceLog(const char * phase,
+                                    const Widget * widget,
+                                    const Widget * parent,
+                                    GeometryChangeReason reason,
+                                    const Core::Rect & lhs,
+                                    const Core::Rect & rhs,
+                                    const Widget::GeometryTraceContext & syncCtx){
+    if(!geometryTraceEnvEnabled()){
+        return;
+    }
+    std::fprintf(stderr,
+                 "[OmegaWTKGeometry] phase=%s lane=%llu packet=%llu widget=%p parent=%p reason=%s lhs={x:%.3f y:%.3f w:%.3f h:%.3f} rhs={x:%.3f y:%.3f w:%.3f h:%.3f}\n",
+                 phase,
+                 static_cast<unsigned long long>(syncCtx.syncLaneId),
+                 static_cast<unsigned long long>(syncCtx.predictedPacketId),
+                 static_cast<const void *>(widget),
+                 static_cast<const void *>(parent),
+                 geometryReasonLabel(reason),
+                 lhs.pos.x,lhs.pos.y,lhs.w,lhs.h,
+                 rhs.pos.x,rhs.pos.y,rhs.w,rhs.h);
+}
+
+}
 
 PaintContext::PaintContext(Widget *widget,SharedHandle<Composition::Canvas> mainCanvas,PaintReason reason):
 widget(widget),
@@ -274,8 +351,11 @@ Core::Rect & Widget::rect(){
 
 bool Widget::requestRect(const Core::Rect &requested,GeometryChangeReason reason){
     auto oldRect = rect();
+    auto syncCtx = geometryTraceContext();
+    geometryTraceLog("proposal",this,parent,reason,oldRect,requested,syncCtx);
     if(parent == nullptr){
         setRect(requested);
+        geometryTraceLog("commit",this,parent,reason,oldRect,rect(),syncCtx);
         return true;
     }
 
@@ -283,8 +363,10 @@ bool Widget::requestRect(const Core::Rect &requested,GeometryChangeReason reason
     proposal.requested = requested;
     proposal.reason = reason;
     auto clamped = parent->clampChildRect(*this,proposal);
+    geometryTraceLog("clamp",this,parent,reason,requested,clamped,syncCtx);
     setRect(clamped);
     parent->onChildRectCommitted(*this,oldRect,rect(),reason);
+    geometryTraceLog("commit",this,parent,reason,oldRect,rect(),syncCtx);
     return true;
 }
 
@@ -414,6 +496,30 @@ void Widget::onChildRectCommitted(const Widget & child,
     (void)oldRect;
     (void)newRect;
     (void)reason;
+}
+
+bool Widget::geometryTraceLoggingEnabled(){
+    return geometryTraceEnvEnabled();
+}
+
+Widget::GeometryTraceContext Widget::geometryTraceContext() const{
+    GeometryTraceContext ctx {};
+    if(rootView == nullptr){
+        return ctx;
+    }
+
+    ctx.syncLaneId = rootView->proxy.getSyncLaneId();
+    auto diag = rootView->proxy.getSyncLaneDiagnostics();
+    if(diag.lastSubmittedPacketId > 0){
+        ctx.predictedPacketId = diag.lastSubmittedPacketId + 1;
+    }
+    else if(diag.lastPresentedPacketId > 0){
+        ctx.predictedPacketId = diag.lastPresentedPacketId + 1;
+    }
+    else {
+        ctx.predictedPacketId = 1;
+    }
+    return ctx;
 }
 
 void Widget::removeChildWidget(Widget *ptr){

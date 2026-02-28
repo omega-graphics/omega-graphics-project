@@ -253,6 +253,28 @@ public:
         std::uint64_t revision = 0;
     };
 
+    struct AnimationDiagnostics {
+        std::uint64_t syncLaneId = 0;
+        std::uint64_t tickCount = 0;
+        std::uint64_t staleStepsSkipped = 0;
+        std::uint64_t monotonicProgressClamps = 0;
+        std::uint64_t activeTrackCount = 0;
+        std::uint64_t completedTrackCount = 0;
+        std::uint64_t cancelledTrackCount = 0;
+        std::uint64_t failedTrackCount = 0;
+        std::uint64_t queuedPacketCount = 0;
+        std::uint64_t submittedPacketCount = 0;
+        std::uint64_t presentedPacketCount = 0;
+        std::uint64_t droppedPacketCount = 0;
+        std::uint64_t failedPacketCount = 0;
+        std::uint64_t lastSubmittedPacketId = 0;
+        std::uint64_t lastPresentedPacketId = 0;
+        unsigned inFlight = 0;
+        bool staleSkipMode = false;
+        bool laneUnderPressure = false;
+        bool resizeBudgetActive = false;
+    };
+
     struct EffectState {
         Core::Optional<Composition::LayerEffect::DropShadowParams> dropShadow {};
         Core::Optional<Composition::CanvasEffect::GaussianBlurParams> gaussianBlur {};
@@ -273,6 +295,7 @@ private:
         float from = 0.f;
         float to = 0.f;
         float value = 0.f;
+        float lastProgress = 0.f;
         float durationSec = 0.f;
         std::chrono::steady_clock::time_point startTime {};
         SharedHandle<Composition::AnimationCurve> curve = nullptr;
@@ -325,6 +348,9 @@ private:
     OmegaCommon::Map<UIElementTag,Shape> previousShapeByTag;
     SharedHandle<Composition::Font> fallbackTextFont = nullptr;
     UpdateDiagnostics lastUpdateDiagnostics {};
+    AnimationDiagnostics lastAnimationDiagnostics {};
+    std::uint64_t lastObservedDroppedPacketCount = 0;
+    bool hasObservedLaneDiagnostics = false;
 
     void markRootDirty();
     void markAllElementsDirty();
@@ -369,6 +395,7 @@ public:
     void setStyleSheet(const StyleSheetPtr & style);
     StyleSheetPtr getStyleSheet() const;
     const UpdateDiagnostics & getLastUpdateDiagnostics() const;
+    const AnimationDiagnostics & getLastAnimationDiagnostics() const;
     void update();
 };
 

@@ -34,6 +34,39 @@ namespace OmegaWTK::Composition {
         return syncLaneId;
     }
 
+    SyncLaneDiagnostics CompositorClientProxy::getSyncLaneDiagnostics() const {
+        Compositor *targetFrontend = nullptr;
+        uint64_t laneId = 0;
+        {
+            std::lock_guard<std::mutex> lk(commandMutex);
+            targetFrontend = frontend;
+            laneId = syncLaneId;
+        }
+
+        SyncLaneDiagnostics diagnostics {};
+        diagnostics.syncLaneId = laneId;
+        if(targetFrontend == nullptr || laneId == 0){
+            return diagnostics;
+        }
+
+        const auto snapshot = targetFrontend->getLaneDiagnosticsSnapshot(laneId);
+        diagnostics.syncLaneId = snapshot.syncLaneId;
+        diagnostics.queuedPacketCount = snapshot.queuedPacketCount;
+        diagnostics.submittedPacketCount = snapshot.submittedPacketCount;
+        diagnostics.presentedPacketCount = snapshot.presentedPacketCount;
+        diagnostics.droppedPacketCount = snapshot.droppedPacketCount;
+        diagnostics.failedPacketCount = snapshot.failedPacketCount;
+        diagnostics.lastSubmittedPacketId = snapshot.lastSubmittedPacketId;
+        diagnostics.lastPresentedPacketId = snapshot.lastPresentedPacketId;
+        diagnostics.inFlight = snapshot.inFlight;
+        diagnostics.resizeBudgetActive = snapshot.resizeBudgetActive;
+        diagnostics.underPressure = snapshot.underPressure;
+        diagnostics.startupStabilized = snapshot.startupStabilized;
+        diagnostics.latestResizeGovernor = snapshot.latestResizeGovernor;
+        diagnostics.latestResizeCoordinatorGeneration = snapshot.latestResizeCoordinatorGeneration;
+        return diagnostics;
+    }
+
     uint64_t CompositorClientProxy::peekNextPacketId() const {
         std::lock_guard<std::mutex> lk(commandMutex);
         if(reservedPacketId == 0){

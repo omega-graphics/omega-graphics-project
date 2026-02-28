@@ -11,6 +11,17 @@ OmegaWTK::Core::Rect localViewBounds(const OmegaWTK::Core::Rect & bounds){
         bounds.h
     };
 }
+
+OmegaWTK::Composition::LayerEffect::DropShadowParams makeShadow(float x,float y,float radius,float blur,float opacity){
+    OmegaWTK::Composition::LayerEffect::DropShadowParams params {};
+    params.x_offset = x;
+    params.y_offset = y;
+    params.radius = radius;
+    params.blurAmount = blur;
+    params.opacity = opacity;
+    params.color = OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Black8);
+    return params;
+}
 }
 
 class RoundedFrameWidget final : public OmegaWTK::Widget {
@@ -71,9 +82,14 @@ protected:
         auto style = OmegaWTK::StyleSheet::Create();
         style = style->backgroundColor("rounded_frame_view",OmegaWTK::Composition::Color::Transparent);
         style = style->elementBrush("rounded_outer",OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)));
+            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)),
+            true,
+            0.28f);
         style = style->elementBrush("rounded_inner",OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::Transparent));
+            OmegaWTK::Composition::Color::Transparent),
+            true,
+            0.28f);
+        style = style->elementDropShadow("rounded_outer",makeShadow(0.f,4.f,2.f,8.f,0.55f),true,0.28f);
         uiView->setStyleSheet(style);
         uiView->update();
 
@@ -131,7 +147,10 @@ protected:
         auto style = OmegaWTK::StyleSheet::Create();
         style = style->backgroundColor("ellipse_view",OmegaWTK::Composition::Color::Transparent);
         style = style->elementBrush("ellipse_shape",OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Green8)));
+            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Green8)),
+            true,
+            0.30f);
+        style = style->elementDropShadow("ellipse_shape",makeShadow(0.f,5.f,2.f,9.f,0.55f),true,0.30f);
         uiView->setStyleSheet(style);
         uiView->update();
 
@@ -196,7 +215,10 @@ protected:
         auto style = OmegaWTK::StyleSheet::Create();
         style = style->backgroundColor("path_view",OmegaWTK::Composition::Color::Transparent);
         style = style->elementBrush("path_shape",OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Yellow8)));
+            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Yellow8)),
+            true,
+            0.30f);
+        style = style->elementDropShadow("path_shape",makeShadow(0.f,5.f,2.f,8.f,0.50f),true,0.30f);
         uiView->setStyleSheet(style);
         uiView->update();
 
