@@ -45,6 +45,7 @@ namespace OmegaWTK::Composition {
     };
 
     class BackendRenderTargetContext {
+        std::uint64_t traceResourceId = 0;
         SharedHandle<OmegaGTE::GETexture> targetTexture;
         SharedHandle<OmegaGTE::GETexture> effectTexture;
         SharedHandle<OmegaGTE::GEFence> fence;
@@ -81,6 +82,7 @@ namespace OmegaWTK::Composition {
         explicit BackendRenderTargetContext(Core::Rect & rect,
                                             SharedHandle<OmegaGTE::GENativeRenderTarget> & renderTarget,
                                             float renderScale = 1.0f);
+        ~BackendRenderTargetContext();
     };
 
     class BackendVisualTree;

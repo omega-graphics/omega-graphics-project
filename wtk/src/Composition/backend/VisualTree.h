@@ -1,5 +1,6 @@
 #include "../Compositor.h"
 #include "RenderTarget.h"
+#include "ResourceTrace.h"
 
 #ifndef OMEGAWTK_COMPOSITION_BACKEND_VISUALTREE_H
 #define OMEGAWTK_COMPOSITION_BACKEND_VISUALTREE_H
@@ -12,17 +13,29 @@ namespace OmegaWTK::Composition {
     protected:
         
         struct Visual {
+            std::uint64_t traceResourceId = 0;
             Core::Position pos;
             BackendRenderTargetContext renderTarget;
             explicit Visual(Core::Position & pos,BackendRenderTargetContext & renderTarget):
             pos(pos),
             renderTarget(renderTarget){
-
+                traceResourceId = ResourceTrace::nextResourceId();
+                ResourceTrace::emit("Create",
+                                    "BackendVisual",
+                                    traceResourceId,
+                                    "BackendVisualTree::Visual",
+                                    this);
             }
             virtual void resize(Core::Rect & newRect) = 0;
             virtual void updateShadowEffect(LayerEffect::DropShadowParams & params) = 0;
             virtual void updateTransformEffect(LayerEffect::TransformationParams & params) = 0;
-            virtual ~Visual() = default;
+            virtual ~Visual(){
+                ResourceTrace::emit("Destroy",
+                                    "BackendVisual",
+                                    traceResourceId,
+                                    "BackendVisualTree::Visual",
+                                    this);
+            }
         };
     public:
         Core::SharedPtr<Visual> root = nullptr;

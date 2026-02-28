@@ -1,5 +1,6 @@
 #include "omegaWTK/Core/Core.h"
 #include <functional>
+#include <cstdint>
 
 #ifndef OMEGAWTK_NATIVE_NATIVEEVENT_H
 #define OMEGAWTK_NATIVE_NATIVEEVENT_H
@@ -30,6 +31,7 @@ public:
         ScrollDown,
         /** Window Events*/
         WindowWillClose,
+        WindowWillStartResize,
         WindowWillResize,
         WindowHasResized,
         WindowHasFinishedResize
@@ -45,7 +47,8 @@ typedef SharedHandle<NativeEvent> NativeEventPtr;
 
 struct WindowWillResize {
     Core::Rect rect;
-    WindowWillResize(Core::Rect rect);
+    std::uint64_t generation;
+    WindowWillResize(Core::Rect rect,std::uint64_t generation = 0);
 };
 
 typedef struct {

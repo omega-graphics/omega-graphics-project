@@ -125,10 +125,48 @@ void AppWindowDelegate::dispatchResizeToHosts(const Core::Rect & rect){
     }
 }
 
+void AppWindowDelegate::dispatchResizeBeginToHosts(const Core::Rect & rect){
+    window->rect = rect;
+    for(auto & host : window->widgetTreeHosts){
+        host->notifyWindowResizeBegin(rect);
+    }
+}
+
+void AppWindowDelegate::dispatchResizeEndToHosts(const Core::Rect & rect){
+    window->rect = rect;
+    for(auto & host : window->widgetTreeHosts){
+        host->notifyWindowResizeEnd(rect);
+    }
+}
+
 void AppWindowDelegate::onRecieveEvent(Native::NativeEventPtr event){
     switch (event->type) {
         case Native::NativeEvent::WindowWillClose: {
             windowWillClose(event);
+            break;
+        }
+        case Native::NativeEvent::WindowWillStartResize: {
+            auto *params = reinterpret_cast<Native::WindowWillResize *>(event->params);
+            if(params != nullptr){
+#if defined(TARGET_MACOS)
+                if(params->generation != 0 &&
+                   params->generation <= lastResizeBeginGeneration){
+                    break;
+                }
+                if(params->generation != 0){
+                    lastResizeBeginGeneration = params->generation;
+                }
+#endif
+                windowWillResize(params->rect);
+#if defined(TARGET_MACOS)
+                pendingLiveResizeRect = params->rect;
+                hasPendingLiveResize = true;
+#endif
+                if(!liveResizeActive){
+                    dispatchResizeBeginToHosts(params->rect);
+                    liveResizeActive = true;
+                }
+            }
             break;
         }
         case Native::NativeEvent::WindowWillResize : {
@@ -136,9 +174,22 @@ void AppWindowDelegate::onRecieveEvent(Native::NativeEventPtr event){
             if(params == nullptr){
                 break;
             }
+#if defined(TARGET_MACOS)
+            if(params->generation != 0 &&
+               params->generation <= lastDispatchedResizeGeneration){
+                break;
+            }
+#endif
             // MessageBoxA(HWND_DESKTOP,"Window Will Resize","NOTE",MB_OK);
             windowWillResize(params->rect);
+            if(!liveResizeActive){
+                dispatchResizeBeginToHosts(params->rect);
+                liveResizeActive = true;
+            }
 #if defined(TARGET_MACOS)
+            if(params->generation != 0){
+                lastDispatchedResizeGeneration = params->generation;
+            }
             pendingLiveResizeRect = params->rect;
             hasPendingLiveResize = true;
             if(!hasLastDispatchedLiveResizeRect ||
@@ -160,14 +211,24 @@ void AppWindowDelegate::onRecieveEvent(Native::NativeEventPtr event){
                 lastDispatchedLiveResizeRect = pendingLiveResizeRect;
                 hasLastDispatchedLiveResizeRect = true;
                 hasPendingLiveResize = false;
+                dispatchResizeEndToHosts(pendingLiveResizeRect);
             }
             else if(window != nullptr &&
                     (!hasLastDispatchedLiveResizeRect ||
                      resizeRectChanged(window->rect,lastDispatchedLiveResizeRect))){
                 dispatchResizeToHosts(window->rect);
+                dispatchResizeEndToHosts(window->rect);
+            } else if(window != nullptr){
+                dispatchResizeEndToHosts(window->rect);
             }
             hasLastDispatchedLiveResizeRect = false;
+            lastResizeBeginGeneration = 0;
+#else
+            if(window != nullptr){
+                dispatchResizeEndToHosts(window->rect);
+            }
 #endif
+            liveResizeActive = false;
             break;
         }
         default:

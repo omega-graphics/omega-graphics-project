@@ -2,7 +2,7 @@
 
 namespace OmegaWTK::Native {
 
-WindowWillResize::WindowWillResize(Core::Rect rect):rect(rect){};
+WindowWillResize::WindowWillResize(Core::Rect rect,std::uint64_t generation):rect(rect),generation(generation){};
 
 NativeEvent::~NativeEvent(){
     if(params == nullptr){
@@ -42,6 +42,7 @@ NativeEvent::~NativeEvent(){
         case ScrollDown:
             delete reinterpret_cast<OmegaWTK::Native::ScrollParams *>(params);
             break;
+        case WindowWillStartResize:
         case WindowWillResize:
             delete reinterpret_cast<OmegaWTK::Native::WindowWillResize *>(params);
             break;

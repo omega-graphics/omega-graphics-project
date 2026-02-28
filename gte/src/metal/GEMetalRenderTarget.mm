@@ -16,7 +16,6 @@ static inline void runOnMainThreadSync(dispatch_block_t block){
 
 GEMetalNativeRenderTarget::GEMetalNativeRenderTarget(SharedHandle<GECommandQueue> commandQueue,CAMetalLayer *metalLayer):metalLayer(metalLayer),
 commandQueue(commandQueue),drawableSize([metalLayer drawableSize]),currentDrawable({nullptr}){
-    
 };
 
 GEMetalNativeRenderTarget::~GEMetalNativeRenderTarget(){

@@ -2,6 +2,7 @@
 
 #include "RenderTarget.h"
 #include "omegaWTK/Composition/Canvas.h"
+#include "ResourceTrace.h"
 
 #include "omegaWTK/Media/ImgCodec.h"
 #include <algorithm>
@@ -350,6 +351,15 @@ BackendRenderTargetContext::BackendRenderTargetContext(Core::Rect & rect,
     renderTargetSize = sanitizeRenderRect(rect,
                                           Core::Rect{Core::Position{0.f,0.f},1.f,1.f},
                                           renderScale);
+    traceResourceId = ResourceTrace::nextResourceId();
+    ResourceTrace::emit("Create",
+                        "TextureTarget",
+                        traceResourceId,
+                        "BackendRenderTargetContext",
+                        this,
+                        renderTargetSize.w,
+                        renderTargetSize.h,
+                        renderScale);
     rebuildBackingTarget();
     imageProcessor = BackendCanvasEffectProcessor::Create(fence);
 }
@@ -360,6 +370,14 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
                                           renderScale);
     backingWidth = toBackingDimension(renderTargetSize.w,renderScale);
     backingHeight = toBackingDimension(renderTargetSize.h,renderScale);
+    ResourceTrace::emit("ResizeRebuild",
+                        "TextureTarget",
+                        traceResourceId,
+                        "BackendRenderTargetContext",
+                        this,
+                        static_cast<float>(backingWidth),
+                        static_cast<float>(backingHeight),
+                        renderScale);
 
     OmegaGTE::TextureDescriptor textureDescriptor {};
     textureDescriptor.usage = OmegaGTE::GETexture::RenderTarget;
@@ -374,6 +392,17 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
     preEffectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,targetTexture});
     effectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,effectTexture});
     tessellationEngineContext = gte.tessalationEngine->createTEContextFromTextureRenderTarget(preEffectTarget);
+}
+
+BackendRenderTargetContext::~BackendRenderTargetContext(){
+    ResourceTrace::emit("Destroy",
+                        "TextureTarget",
+                        traceResourceId,
+                        "BackendRenderTargetContext",
+                        this,
+                        renderTargetSize.w,
+                        renderTargetSize.h,
+                        renderScale);
 }
 
     void BackendRenderTargetContext::setRenderTargetSize(Core::Rect &rect) {

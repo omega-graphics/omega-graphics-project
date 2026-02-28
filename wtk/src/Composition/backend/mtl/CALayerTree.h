@@ -10,6 +10,7 @@
 
 #include "NativePrivate/macos/CocoaItem.h"
 #import <QuartzCore/QuartzCore.h>
+#import <dispatch/dispatch.h>
 
 
 // #else 
@@ -76,14 +77,38 @@ namespace OmegaWTK::Composition {
                          static_cast<CGFloat>(1.f),
                          maxPointDimension);
 
-                 CGRect frame = CGRectMake(x,y,w,h);
-                 [metalLayer setFrame:frame];
-                 metalLayer.bounds = CGRectMake(0.f,0.f,w,h);
-                 metalLayer.position = CGPointMake(x,y);
-                 metalLayer.contentsScale = scale;
-                 metalLayer.drawableSize = CGSizeMake(
-                         std::clamp(w * scale,static_cast<CGFloat>(1.f),maxDrawableDimension),
-                         std::clamp(h * scale,static_cast<CGFloat>(1.f),maxDrawableDimension));
+                 auto applyGeometry = ^{
+                     NSDictionary *noActions = @{
+                         @"bounds":[NSNull null],
+                         @"position":[NSNull null],
+                         @"frame":[NSNull null],
+                         @"contents":[NSNull null],
+                         @"transform":[NSNull null]
+                     };
+                     [CATransaction begin];
+                     [CATransaction setDisableActions:YES];
+                     CGRect frame = CGRectMake(x,y,w,h);
+                     metalLayer.actions = noActions;
+                     [metalLayer setFrame:frame];
+                     metalLayer.bounds = CGRectMake(0.f,0.f,w,h);
+                     metalLayer.position = CGPointMake(x,y);
+                     metalLayer.contentsScale = scale;
+                     metalLayer.drawableSize = CGSizeMake(
+                             std::clamp(w * scale,static_cast<CGFloat>(1.f),maxDrawableDimension),
+                             std::clamp(h * scale,static_cast<CGFloat>(1.f),maxDrawableDimension));
+                     if(attachTransformLayer && transformLayer != nil){
+                         transformLayer.actions = noActions;
+                         transformLayer.frame = frame;
+                         transformLayer.position = CGPointMake(x,y);
+                     }
+                     [CATransaction commit];
+                 };
+                 if([NSThread isMainThread]){
+                     applyGeometry();
+                 }
+                 else {
+                     dispatch_sync(dispatch_get_main_queue(),applyGeometry);
+                 }
              }
              void updateShadowEffect(LayerEffect::DropShadowParams & params) override {
                  CALayer *targetLayer = attachTransformLayer && transformLayer != nil ?

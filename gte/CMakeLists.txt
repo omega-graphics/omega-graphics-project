@@ -8,6 +8,7 @@ omega_graphics_project(OmegaGTE VERSION ${OMEGAGTE_VERSION} LANGUAGES CXX)
 include(./OmegaGTE.cmake)
 
 file(GLOB MAIN_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+file(GLOB COMMON_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/common/*.cpp")
 
 set(PUBLIC_DEFS)
 
@@ -53,7 +54,7 @@ else()
 	file(GLOB RHI_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/*.cpp")
 endif()
 
-set(MAIN_SRCS ${MAIN_SRCS} ${RHI_SRCS})
+set(MAIN_SRCS ${MAIN_SRCS} ${COMMON_SRCS} ${RHI_SRCS})
 
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Info.plist.in" "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" @ONLY)
 
@@ -100,4 +101,3 @@ if(TARGET_METAL)
 endif()
 
  add_subdirectory(tests)
-

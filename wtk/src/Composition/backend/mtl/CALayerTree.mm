@@ -137,6 +137,13 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
  void MTLCALayerTree::setRootVisual(Core::SharedPtr<Parent::Visual> & visual){
      root = visual;
      auto v = std::dynamic_pointer_cast<Visual>(visual);
+     if(v != nullptr){
+         ResourceTrace::emit("Bind",
+                             "BackendVisual",
+                             v->traceResourceId,
+                             "MTLCALayerTree::Root",
+                             this);
+     }
      runOnMainThreadSync(^{
          view->setRootLayer(v->metalLayer);
      });
@@ -146,6 +153,13 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
      body.push_back(visual);
      auto r = std::dynamic_pointer_cast<Visual>(root);
      auto v = std::dynamic_pointer_cast<Visual>(visual);
+     if(v != nullptr){
+         ResourceTrace::emit("Bind",
+                             "BackendVisual",
+                             v->traceResourceId,
+                             "MTLCALayerTree::Body",
+                             this);
+     }
      runOnMainThreadSync(^{
          [r->metalLayer addSublayer:v->metalLayer];
          v->metalLayer.position = CGPointMake(v->pos.x,v->pos.y);

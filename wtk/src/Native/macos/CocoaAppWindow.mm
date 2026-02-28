@@ -1,6 +1,7 @@
 #import "CocoaAppWindow.h"
 #include "NativePrivate/macos/CocoaUtils.h"
 #include "NativePrivate/macos/CocoaItem.h"
+#include <cstdlib>
 
 
 @interface OmegaWTKNativeCocoaAppWindowDelegate : NSObject <NSWindowDelegate>
@@ -9,6 +10,14 @@
 @property(nonatomic) NSRect pendingResizeBounds;
 @property(nonatomic) BOOL hasPendingResizeBounds;
 @property(nonatomic) BOOL resizeDispatchQueued;
+@property(nonatomic,assign) NSView *observedHostContentView;
+@property(nonatomic) std::uint64_t nextResizeGeneration;
+@property(nonatomic) std::uint64_t pendingResizeGeneration;
+@property(nonatomic) std::uint64_t latestEmittedResizeGeneration;
+- (void)attachHostContentViewObservers:(NSView *)hostView;
+- (void)detachHostContentViewObservers;
+- (void)hostContentViewGeometryDidChange:(NSNotification *)notification;
+- (void)hostContentViewDidUpdateBounds:(NSRect)bounds;
 @end
 
 @interface OmegaWTKNativeCocoaAppWindowController : NSWindowController
@@ -17,17 +26,30 @@
 
 namespace OmegaWTK::Native::Cocoa {
 
+namespace {
+static inline bool traceResizeFlowEnabled(){
+    static int enabled = -1;
+    if(enabled == -1){
+        const char *value = std::getenv("OMEGAWTK_TRACE_RESIZE_FLOW");
+        enabled = (value != nullptr && value[0] != '\0' && value[0] != '0') ? 1 : 0;
+    }
+    return enabled == 1;
+}
+}
+
 
 CocoaAppWindow::CocoaAppWindow(Core::Rect & rect,NativeEventEmitter *emitter):NativeWindow(rect){
     eventEmitter = emitter;
 
     windowDelegate = [[OmegaWTKNativeCocoaAppWindowDelegate alloc] init];
     windowController = [[OmegaWTKNativeCocoaAppWindowController alloc] initWithRect:core_rect_to_cg_rect(rect) delegate:windowDelegate];
+    windowDelegate.window = windowController.window;
     windowDelegate.cppBinding = this;
 
     rootView = std::dynamic_pointer_cast<CocoaItem>(Native::make_native_item(rect));
 
     [windowController.window setContentViewController:((NSViewController *)rootView->getBinding())];
+    [windowDelegate attachHostContentViewObservers:windowController.window.contentView];
 };
 
 NativeEventEmitter * CocoaAppWindow::getEmitter() {
@@ -74,8 +96,10 @@ void CocoaAppWindow::addNativeItem(NativeItemPtr item){
         NSView *contentView = windowController.window.contentView;
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
+        [contentView setAutoresizesSubviews:NO];
         viewC.view.frame = contentView.bounds;
-        viewC.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        viewC.view.translatesAutoresizingMaskIntoConstraints = NO;
+        viewC.view.autoresizingMask = NSViewNotSizable;
         viewC.view.hidden = NO;
         [windowController.window.contentViewController addChildViewController:viewC];
         [contentView addSubview:viewC.view];
@@ -134,7 +158,7 @@ NativeItemPtr CocoaAppWindow::getRootView() {
     };
 };
 
--(void)emitResizeBoundsIfPossible:(NSRect)bounds{
+-(void)emitResizeBoundsIfPossible:(NSRect)bounds generation:(std::uint64_t)generation{
     if(bounds.size.width <= 0.f || bounds.size.height <= 0.f){
         return;
     }
@@ -143,7 +167,8 @@ NativeItemPtr CocoaAppWindow::getRootView() {
                     {0.f,
                      0.f,
                      (float)bounds.size.width,
-                     (float)bounds.size.height}
+                     (float)bounds.size.height},
+            generation
     );
     OmegaWTK::Native::NativeEventPtr event(
             new OmegaWTK::Native::NativeEvent(
@@ -152,8 +177,36 @@ NativeItemPtr CocoaAppWindow::getRootView() {
     [self emitIfPossible:event];
 }
 
+-(void)emitResizeBeginBoundsIfPossible:(NSRect)bounds generation:(std::uint64_t)generation{
+    if(bounds.size.width <= 0.f || bounds.size.height <= 0.f){
+        return;
+    }
+    auto *params = new OmegaWTK::Native::WindowWillResize(
+            OmegaWTK::Core::Rect
+                    {0.f,
+                     0.f,
+                     (float)bounds.size.width,
+                     (float)bounds.size.height},
+            generation
+    );
+    OmegaWTK::Native::NativeEventPtr event(
+            new OmegaWTK::Native::NativeEvent(
+                    OmegaWTK::Native::NativeEvent::WindowWillStartResize,
+                    params));
+    [self emitIfPossible:event];
+}
+
 -(void)queueResizeBounds:(NSRect)bounds{
+    const std::uint64_t generation = ++self.nextResizeGeneration;
+    if(OmegaWTK::Native::Cocoa::traceResizeFlowEnabled()){
+        NSLog(@"[OmegaWTKResize] queue gen=%llu bounds={%.2f,%.2f %.2fx%.2f} queued=%d pending=%d latestEmitted=%llu",
+              static_cast<unsigned long long>(generation),
+              bounds.origin.x,bounds.origin.y,bounds.size.width,bounds.size.height,
+              self.resizeDispatchQueued,self.hasPendingResizeBounds,
+              static_cast<unsigned long long>(self.latestEmittedResizeGeneration));
+    }
     self.pendingResizeBounds = bounds;
+    self.pendingResizeGeneration = generation;
     self.hasPendingResizeBounds = YES;
     if(self.resizeDispatchQueued){
         return;
@@ -166,9 +219,79 @@ NativeItemPtr CocoaAppWindow::getRootView() {
             return;
         }
         NSRect pending = delegate.pendingResizeBounds;
+        const std::uint64_t pendingGeneration = delegate.pendingResizeGeneration;
         delegate.hasPendingResizeBounds = NO;
-        [delegate emitResizeBoundsIfPossible:pending];
+        delegate.pendingResizeGeneration = 0;
+        if(pendingGeneration <= delegate.latestEmittedResizeGeneration){
+            if(OmegaWTK::Native::Cocoa::traceResizeFlowEnabled()){
+                NSLog(@"[OmegaWTKResize] drop stale queued gen=%llu latestEmitted=%llu",
+                      static_cast<unsigned long long>(pendingGeneration),
+                      static_cast<unsigned long long>(delegate.latestEmittedResizeGeneration));
+            }
+            return;
+        }
+        delegate.latestEmittedResizeGeneration = pendingGeneration;
+        if(OmegaWTK::Native::Cocoa::traceResizeFlowEnabled()){
+            NSLog(@"[OmegaWTKResize] emit queued gen=%llu bounds={%.2f,%.2f %.2fx%.2f}",
+                  static_cast<unsigned long long>(pendingGeneration),
+                  pending.origin.x,pending.origin.y,pending.size.width,pending.size.height);
+        }
+        [delegate emitResizeBoundsIfPossible:pending generation:pendingGeneration];
     });
+}
+
+-(void)attachHostContentViewObservers:(NSView *)hostView{
+    if(hostView == nil){
+        return;
+    }
+    if(self.observedHostContentView == hostView){
+        [hostView setPostsFrameChangedNotifications:YES];
+        [hostView setPostsBoundsChangedNotifications:YES];
+        return;
+    }
+    [self detachHostContentViewObservers];
+    self.observedHostContentView = hostView;
+    [hostView setAutoresizesSubviews:NO];
+    [hostView setPostsFrameChangedNotifications:YES];
+    [hostView setPostsBoundsChangedNotifications:YES];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(hostContentViewGeometryDidChange:)
+                                                 name:NSViewFrameDidChangeNotification
+                                               object:hostView];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(hostContentViewGeometryDidChange:)
+                                                 name:NSViewBoundsDidChangeNotification
+                                               object:hostView];
+}
+
+-(void)detachHostContentViewObservers{
+    if(self.observedHostContentView == nil){
+        return;
+    }
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:NSViewFrameDidChangeNotification
+                                                  object:self.observedHostContentView];
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:NSViewBoundsDidChangeNotification
+                                                  object:self.observedHostContentView];
+    self.observedHostContentView = nil;
+}
+
+-(void)hostContentViewGeometryDidChange:(NSNotification *)notification{
+    NSView *view = (NSView *)notification.object;
+    if(view == nil){
+        return;
+    }
+    if(OmegaWTK::Native::Cocoa::traceResizeFlowEnabled()){
+        NSLog(@"[OmegaWTKResize] host-content geometry change frame={%.2f,%.2f %.2fx%.2f} bounds={%.2f,%.2f %.2fx%.2f}",
+              view.frame.origin.x,view.frame.origin.y,view.frame.size.width,view.frame.size.height,
+              view.bounds.origin.x,view.bounds.origin.y,view.bounds.size.width,view.bounds.size.height);
+    }
+    [self hostContentViewDidUpdateBounds:view.bounds];
+}
+
+-(void)hostContentViewDidUpdateBounds:(NSRect)bounds{
+    [self queueResizeBounds:bounds];
 }
 
 -(NSRect)contentBoundsForWindow:(NSWindow *)window{
@@ -182,6 +305,7 @@ NativeItemPtr CocoaAppWindow::getRootView() {
 }
 
 -(void)windowWillClose:(NSNotification *)notification {
+    [self detachHostContentViewObservers];
     OmegaWTK::Native::NativeEventPtr event(new OmegaWTK::Native::NativeEvent(OmegaWTK::Native::NativeEvent::WindowWillClose,nullptr));
     [self emitIfPossible:event];
     
@@ -191,6 +315,13 @@ NativeItemPtr CocoaAppWindow::getRootView() {
     if(sender == nil){
         return frameSize;
     }
+    if(self.observedHostContentView != nil){
+        if(OmegaWTK::Native::Cocoa::traceResizeFlowEnabled()){
+            NSLog(@"[OmegaWTKResize] windowWillResize skipped (host-view authoritative) size=%.2fx%.2f",
+                  frameSize.width,frameSize.height);
+        }
+        return frameSize;
+    }
     NSRect projectedFrame = sender.frame;
     projectedFrame.size = frameSize;
     NSRect projectedContent = [sender contentRectForFrameRect:projectedFrame];
@@ -198,10 +329,31 @@ NativeItemPtr CocoaAppWindow::getRootView() {
     return frameSize;
 }
 
+-(void)windowWillStartLiveResize:(NSNotification *)notification {
+    NSWindow *window = (NSWindow *)notification.object;
+    if(window == nil){
+        window = self.window;
+    }
+    NSRect bounds = [self contentBoundsForWindow:window];
+    if(NSEqualRects(bounds,NSZeroRect)){
+        return;
+    }
+    const std::uint64_t generation = ++self.nextResizeGeneration;
+    [self emitResizeBeginBoundsIfPossible:bounds generation:generation];
+}
+
 -(void)windowDidResize:(NSNotification *)notification {
     NSWindow *window = (NSWindow *)notification.object;
     if(window == nil){
         window = self.window;
+    }
+    if(self.observedHostContentView != nil){
+        if(OmegaWTK::Native::Cocoa::traceResizeFlowEnabled()){
+            NSRect current = [self contentBoundsForWindow:window];
+            NSLog(@"[OmegaWTKResize] windowDidResize skipped (host-view authoritative) bounds={%.2f,%.2f %.2fx%.2f}",
+                  current.origin.x,current.origin.y,current.size.width,current.size.height);
+        }
+        return;
     }
     NSRect bounds = [self contentBoundsForWindow:window];
     if(NSEqualRects(bounds,NSZeroRect)){
@@ -219,10 +371,19 @@ NativeItemPtr CocoaAppWindow::getRootView() {
     }
     NSRect bounds = [self contentBoundsForWindow:window];
     if(!NSEqualRects(bounds,NSZeroRect)){
+        const std::uint64_t generation = ++self.nextResizeGeneration;
         self.pendingResizeBounds = bounds;
+        self.pendingResizeGeneration = generation;
         self.hasPendingResizeBounds = NO;
         self.resizeDispatchQueued = NO;
-        [self emitResizeBoundsIfPossible:bounds];
+        if(generation > self.latestEmittedResizeGeneration){
+            self.latestEmittedResizeGeneration = generation;
+            [self emitResizeBoundsIfPossible:bounds generation:generation];
+        } else if(OmegaWTK::Native::Cocoa::traceResizeFlowEnabled()){
+            NSLog(@"[OmegaWTKResize] drop stale end-resize gen=%llu latestEmitted=%llu",
+                  static_cast<unsigned long long>(generation),
+                  static_cast<unsigned long long>(self.latestEmittedResizeGeneration));
+        }
     }
     OmegaWTK::Native::NativeEventPtr event(
             new OmegaWTK::Native::NativeEvent(

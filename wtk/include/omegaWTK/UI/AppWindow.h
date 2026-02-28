@@ -1,4 +1,5 @@
 #include "omegaWTK/Core/Core.h"
+#include <cstdint>
 
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Native/NativeDialog.h"
@@ -145,13 +146,18 @@ class OMEGAWTK_EXPORT  AppWindowManager : public Native::NativeThemeObserver {
 INTERFACE OMEGAWTK_EXPORT  AppWindowDelegate : public Native::NativeEventProcessor {
     private:
         void onRecieveEvent(Native::NativeEventPtr event);
+        void dispatchResizeBeginToHosts(const Core::Rect & rect);
         void dispatchResizeToHosts(const Core::Rect & rect);
+        void dispatchResizeEndToHosts(const Core::Rect & rect);
         friend class AppWindow;
+        bool liveResizeActive = false;
 #if defined(TARGET_MACOS)
         bool hasPendingLiveResize = false;
         Core::Rect pendingLiveResizeRect {};
         bool hasLastDispatchedLiveResizeRect = false;
         Core::Rect lastDispatchedLiveResizeRect {};
+        std::uint64_t lastDispatchedResizeGeneration = 0;
+        std::uint64_t lastResizeBeginGeneration = 0;
 #endif
     protected:
        AppWindow * window;

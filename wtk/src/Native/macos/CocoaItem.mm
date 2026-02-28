@@ -24,7 +24,7 @@
         CGColorRelease(clearColor);
         self.layer.bounds = NSMakeRect(0.f,0.f,rect.size.width,rect.size.height);
         self.autoresizesSubviews = NO;
-         self.layer.autoresizingMask = kCALayerHeightSizable | kCALayerWidthSizable;
+        self.layer.autoresizingMask = kCALayerNotSizable;
         NSLog(@"Old Origin: { x:%f, y:%f}",self.layer.anchorPoint.x,self.layer.anchorPoint.y);
         self.layer.anchorPoint = CGPointMake(0.0,0.0);
         self.layer.position = CGPointMake(0.f,0.f);
@@ -271,37 +271,26 @@ void CocoaItem::resize(const Core::Rect &newRect){
         CALayer *layer = _ptr.layer;
         NSRect hostBounds = _ptr.bounds;
         hostBounds.origin = NSMakePoint(0.f,0.f);
-        layer.actions = noActions;
-        layer.frame = hostBounds;
-        layer.position = CGPointMake(0.f,0.f);
-        layer.bounds = hostBounds;
         CGFloat scale = safeScale();
         const CGFloat maxPointDimension = kMaxDrawableDimension / scale;
         hostBounds.size.width = MIN(MAX(hostBounds.size.width,1.f),maxPointDimension);
         hostBounds.size.height = MIN(MAX(hostBounds.size.height,1.f),maxPointDimension);
-        layer.contentsScale = scale;
-        if([layer isKindOfClass:[CAMetalLayer class]]){
-            CAMetalLayer *metalLayer = (CAMetalLayer *)layer;
-            metalLayer.contentsScale = scale;
-            metalLayer.drawableSize = CGSizeMake(
-                MIN(MAX(hostBounds.size.width * scale,1.f),kMaxDrawableDimension),
-                MIN(MAX(hostBounds.size.height * scale,1.f),kMaxDrawableDimension));
-        }
-        NSArray<CALayer *> *subLayers = layer.sublayers;
-        for(CALayer *subLayer in subLayers){
-            subLayer.actions = noActions;
-            subLayer.frame = hostBounds;
-            subLayer.position = CGPointMake(0.f,0.f);
-            subLayer.bounds = hostBounds;
-            subLayer.contentsScale = scale;
-            if([subLayer isKindOfClass:[CAMetalLayer class]]){
-                CAMetalLayer *metalLayer = (CAMetalLayer *)subLayer;
+        if(layer != nil){
+            layer.actions = noActions;
+            layer.frame = hostBounds;
+            layer.position = CGPointMake(0.f,0.f);
+            layer.bounds = hostBounds;
+            layer.contentsScale = scale;
+            if([layer isKindOfClass:[CAMetalLayer class]]){
+                CAMetalLayer *metalLayer = (CAMetalLayer *)layer;
                 metalLayer.contentsScale = scale;
                 metalLayer.drawableSize = CGSizeMake(
                     MIN(MAX(hostBounds.size.width * scale,1.f),kMaxDrawableDimension),
                     MIN(MAX(hostBounds.size.height * scale,1.f),kMaxDrawableDimension));
             }
         }
+        // Child layer geometry is owned by the compositor backend.
+        // Do not re-anchor/reframe sublayers here during live resize.
         [CATransaction commit];
     }
     else {
@@ -316,9 +305,13 @@ void CocoaItem::resize(const Core::Rect &newRect){
 void CocoaItem::addChildNativeItem(NativeItemPtr native_item){
     auto cocoaview = std::dynamic_pointer_cast<CocoaItem>(native_item);
     if(cocoaview->_ptr != nil){
+        cocoaview->_ptr.translatesAutoresizingMaskIntoConstraints = NO;
+        cocoaview->_ptr.autoresizingMask = NSViewNotSizable;
         [_ptr addSubview:cocoaview->_ptr];
     }
     else if(cocoaview->scrollView != nil){
+        cocoaview->scrollView.translatesAutoresizingMaskIntoConstraints = NO;
+        cocoaview->scrollView.autoresizingMask = NSViewNotSizable;
         [_ptr addSubview:cocoaview->scrollView];
     }
 };

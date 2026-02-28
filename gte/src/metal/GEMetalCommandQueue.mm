@@ -578,7 +578,6 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
     GEMetalCommandQueue::GEMetalCommandQueue(NSSmartPtr & queue,unsigned size):
     GECommandQueue(size),
     commandQueue(queue),commandBuffers(),semaphore(dispatch_semaphore_create(0)){
-        
     };
 
     void GEMetalCommandQueue::notifyCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer,

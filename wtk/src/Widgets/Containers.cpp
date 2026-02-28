@@ -1,7 +1,9 @@
 #include "omegaWTK/Widgets/Containers.h"
+#include "omegaWTK/UI/View.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace OmegaWTK {
 
@@ -301,6 +303,14 @@ void StackWidget::layoutChildren(){
         (axis == StackAxis::Horizontal
             ? (options.padding.top + options.padding.bottom)
             : (options.padding.left + options.padding.right)));
+    Core::Rect contentBoundsRect {
+            Core::Position{
+                    frame.pos.x + options.padding.left,
+                    frame.pos.y + options.padding.top
+            },
+            std::max(0.f,frame.w - options.padding.left - options.padding.right),
+            std::max(0.f,frame.h - options.padding.top - options.padding.bottom)
+    };
 
     const float mainStart = (axis == StackAxis::Horizontal) ? options.padding.left : options.padding.top;
     const float crossStart = (axis == StackAxis::Horizontal) ? options.padding.top : options.padding.left;
@@ -516,6 +526,23 @@ void StackWidget::layoutChildren(){
             targetRect.w = item.resizable ? crossSize : childRect.w;
             targetRect.h = mainSize;
         }
+
+        ChildResizeSpec resizeSpec {};
+        resizeSpec.resizable = item.resizable;
+        resizeSpec.policy = item.resizable ? ChildResizePolicy::FitContent : ChildResizePolicy::Fixed;
+        if(axis == StackAxis::Horizontal){
+            resizeSpec.clamp.minWidth = std::max(1.f,item.slot.minMain.value_or(1.f));
+            resizeSpec.clamp.minHeight = std::max(1.f,item.slot.minCross.value_or(1.f));
+            resizeSpec.clamp.maxWidth = item.slot.maxMain.value_or(std::numeric_limits<float>::infinity());
+            resizeSpec.clamp.maxHeight = item.slot.maxCross.value_or(std::numeric_limits<float>::infinity());
+        }
+        else {
+            resizeSpec.clamp.minWidth = std::max(1.f,item.slot.minCross.value_or(1.f));
+            resizeSpec.clamp.minHeight = std::max(1.f,item.slot.minMain.value_or(1.f));
+            resizeSpec.clamp.maxWidth = item.slot.maxCross.value_or(std::numeric_limits<float>::infinity());
+            resizeSpec.clamp.maxHeight = item.slot.maxMain.value_or(std::numeric_limits<float>::infinity());
+        }
+        targetRect = ViewResizeCoordinator::clampRectToParent(targetRect,contentBoundsRect,resizeSpec);
 
         if(rectChanged(childRect,targetRect)){
             auto prevOptions = item.widget->paintOptions();

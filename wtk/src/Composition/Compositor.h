@@ -144,6 +144,7 @@ namespace OmegaWTK::Composition {
             bool hasStateMutation = false;
             bool hasEffectMutation = false;
             bool hasResizeMutation = false;
+            bool layerTreeMirrorApplied = false;
             std::uint64_t requiredTreeEpoch = 0;
         };
 
@@ -152,6 +153,7 @@ namespace OmegaWTK::Composition {
             std::chrono::steady_clock::time_point resizeModeUntil {};
             bool startupStabilized = false;
             std::uint64_t firstPresentedPacketId = 0;
+            bool hasPresentedRenderableContent = false;
             bool hasSubmitToPresentSample = false;
             bool hasGpuDurationSample = false;
             double submitToPresentEwmaMs = 0.0;
@@ -305,6 +307,7 @@ namespace OmegaWTK::Composition {
                               std::uint64_t syncPacketId,
                               const SharedHandle<CompositorCommand> & command);
         void markPacketSubmitted(std::uint64_t syncLaneId,std::uint64_t syncPacketId,std::chrono::steady_clock::time_point submitTimeCpu);
+        void markPacketMirrorApplied(std::uint64_t syncLaneId,std::uint64_t syncPacketId);
         void markPacketDropped(std::uint64_t syncLaneId,
                                std::uint64_t syncPacketId,
                                PacketDropReason reason = PacketDropReason::Generic);

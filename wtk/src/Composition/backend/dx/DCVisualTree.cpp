@@ -119,6 +119,13 @@ namespace OmegaWTK::Composition {
     void DCVisualTree::setRootVisual(Core::SharedPtr<Parent::Visual> & visual){
         root = visual;
         auto v = std::dynamic_pointer_cast<Visual>(visual);
+        if(v != nullptr){
+            ResourceTrace::emit("Bind",
+                                "BackendVisual",
+                                v->traceResourceId,
+                                "DCVisualTree::Root",
+                                this);
+        }
         hwndTarget->SetRoot(v->visual);
         comp_device_desktop->Commit();
         comp_device_desktop->WaitForCommitCompletion();
@@ -128,6 +135,13 @@ namespace OmegaWTK::Composition {
     void DCVisualTree::addVisual(Core::SharedPtr<Parent::Visual> & visual){
         body.push_back(visual);
         auto r = std::dynamic_pointer_cast<Visual>(root),v =  std::dynamic_pointer_cast<Visual>(visual);
+        if(v != nullptr){
+            ResourceTrace::emit("Bind",
+                                "BackendVisual",
+                                v->traceResourceId,
+                                "DCVisualTree::Body",
+                                this);
+        }
         r->visual->AddVisual(v->visual,TRUE,nullptr);
         if(v->shadowVisual != nullptr){
             r->visual->AddVisual(v->shadowVisual,FALSE,v->visual);

@@ -113,6 +113,15 @@ void Widget::executePaint(PaintReason reason,bool immediate){
     if(mode != PaintMode::Automatic){
         return;
     }
+    if(treeHost != nullptr &&
+       treeHost->shouldSuspendPaintDuringResize() &&
+       hasMounted){
+        treeHost->notePaintDeferredDuringResize(reason,immediate);
+        hasPendingInvalidate = true;
+        pendingPaintReason = reason;
+        (void)immediate;
+        return;
+    }
     if(paintInProgress){
         if(options.coalesceInvalidates){
             hasPendingInvalidate = true;

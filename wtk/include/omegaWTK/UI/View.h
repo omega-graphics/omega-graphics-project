@@ -11,6 +11,7 @@
 #include "omegaWTK/Core/XML.h"
 #include "omegaWTK/Media/Video.h"
 #include <cstdint>
+#include <limits>
 
 #ifndef OMEGAWTK_UI_VIEW_H
 #define OMEGAWTK_UI_VIEW_H
@@ -34,6 +35,53 @@ namespace OmegaWTK {
     class ScrollView;
     class View;
     OMEGACOMMON_SHARED_CLASS(View);
+
+    struct OMEGAWTK_EXPORT ResizeClamp {
+        float minWidth = 1.f;
+        float minHeight = 1.f;
+        float maxWidth = std::numeric_limits<float>::infinity();
+        float maxHeight = std::numeric_limits<float>::infinity();
+    };
+
+    enum class OMEGAWTK_EXPORT ChildResizePolicy : std::uint8_t {
+        Fixed,
+        Fill,
+        FitContent,
+        Proportional
+    };
+
+    struct OMEGAWTK_EXPORT ChildResizeSpec {
+        bool resizable = true;
+        ChildResizePolicy policy = ChildResizePolicy::FitContent;
+        ResizeClamp clamp {};
+        float growWeightX = 1.f;
+        float growWeightY = 1.f;
+    };
+
+    class OMEGAWTK_EXPORT ViewResizeCoordinator {
+        struct ChildState {
+            ChildResizeSpec spec {};
+            Core::Rect baselineParentRect {Core::Position{0.f,0.f},1.f,1.f};
+            Core::Rect baselineChildRect {Core::Position{0.f,0.f},1.f,1.f};
+            bool hasBaseline = false;
+        };
+        View * parentView = nullptr;
+        std::uint64_t activeSessionId = 0;
+        OmegaCommon::Map<View *,ChildState> childState;
+    public:
+        void attachView(View * parent);
+        void registerChild(View * child,const ChildResizeSpec & spec);
+        void updateChildSpec(View * child,const ChildResizeSpec & spec);
+        void unregisterChild(View * child);
+        void beginResizeSession(std::uint64_t sessionId);
+        Core::Rect resolveChildRect(View * child,
+                                    const Core::Rect & requested,
+                                    const Core::Rect & parentContentRect);
+        void resolve(const Core::Rect & parentContentRect);
+        static Core::Rect clampRectToParent(const Core::Rect & requested,
+                                            const Core::Rect & parentContentRect,
+                                            const ChildResizeSpec & spec);
+    };
     
 
     /**
@@ -50,6 +98,7 @@ namespace OmegaWTK {
         Composition::CompositorClientProxy proxy;
         void setFrontendRecurse(Composition::Compositor *frontend);
         void setSyncLaneRecurse(uint64_t syncLaneId);
+        ViewResizeCoordinator resizeCoordinator;
         Composition::LayerTree *widgetLayerTree;
         View *parent_ptr = nullptr;
         Core::Rect rect {Core::Position{0.f,0.f},1.f,1.f};
@@ -111,6 +160,9 @@ namespace OmegaWTK {
         SharedHandle<Composition::LayerTree::Limb> & getLayerTreeLimb(){ return layerTreeLimb;};
         /// @brief Checks to see if this View is the root View of a Widget.
         bool isRootView(){return parent_ptr == nullptr;};
+        /// @brief Returns the resize coordinator associated with this view.
+        ViewResizeCoordinator & getResizeCoordinator(){ return resizeCoordinator; }
+        const ViewResizeCoordinator & getResizeCoordinator() const { return resizeCoordinator; }
 
         /// @brief Sets the object to recieve View related events.
         virtual void setDelegate(ViewDelegate *_delegate);

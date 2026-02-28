@@ -1557,6 +1557,10 @@ void UIView::update(){
         elementBg.a = 0.f;
 
         bool emittedVisual = false;
+        const auto localBounds = localBoundsFromView(this);
+        ChildResizeSpec layoutClamp {};
+        layoutClamp.resizable = true;
+        layoutClamp.policy = ChildResizePolicy::FitContent;
         if(layoutIt->type == UIViewLayout::Element::Type::Shape && layoutIt->shape){
             auto shapeToDraw = styleUsesAnimation ?
                                applyAnimatedShape(dirtyTag,*layoutIt->shape) :
@@ -1571,23 +1575,44 @@ void UIView::update(){
             switch(shapeToDraw.type){
                 case Shape::Type::Rect: {
                     auto rect = shapeToDraw.rect;
+                    rect = ViewResizeCoordinator::clampRectToParent(rect,localBounds,layoutClamp);
                     target.canvas->drawRect(rect,brush);
                     emittedVisual = true;
                     break;
                 }
                 case Shape::Type::RoundedRect: {
                     auto rect = shapeToDraw.roundedRect;
+                    Core::Rect clampedRect {
+                        rect.pos,
+                        rect.w,
+                        rect.h
+                    };
+                    clampedRect = ViewResizeCoordinator::clampRectToParent(clampedRect,localBounds,layoutClamp);
+                    rect.pos = clampedRect.pos;
+                    rect.w = clampedRect.w;
+                    rect.h = clampedRect.h;
+                    rect.rad_x = std::min(rect.rad_x,rect.w * 0.5f);
+                    rect.rad_y = std::min(rect.rad_y,rect.h * 0.5f);
                     target.canvas->drawRoundedRect(rect,brush);
                     emittedVisual = true;
                     break;
                 }
                 case Shape::Type::Ellipse: {
                     const auto & srcEllipse = shapeToDraw.ellipse;
+                    Core::Rect ellipseRect {
+                        Core::Position{
+                            srcEllipse.x - srcEllipse.rad_x,
+                            srcEllipse.y - srcEllipse.rad_y
+                        },
+                        std::max(1.f,srcEllipse.rad_x * 2.f),
+                        std::max(1.f,srcEllipse.rad_y * 2.f)
+                    };
+                    ellipseRect = ViewResizeCoordinator::clampRectToParent(ellipseRect,localBounds,layoutClamp);
                     Core::Ellipse ellipse {
-                            srcEllipse.x,
-                            srcEllipse.y,
-                            srcEllipse.rad_x,
-                            srcEllipse.rad_y
+                            ellipseRect.pos.x + (ellipseRect.w * 0.5f),
+                            ellipseRect.pos.y + (ellipseRect.h * 0.5f),
+                            ellipseRect.w * 0.5f,
+                            ellipseRect.h * 0.5f
                     };
                     target.canvas->drawEllipse(ellipse,brush);
                     emittedVisual = true;
@@ -1615,7 +1640,8 @@ void UIView::update(){
             auto textStyle = resolveTextStyle(currentStyle,tag,textStyleTag);
             auto font = textStyle.font != nullptr ? textStyle.font : resolveFallbackTextFont();
             if(font != nullptr){
-                auto textRect = layoutIt->textRect.value_or(localBoundsFromView(this));
+                auto textRect = layoutIt->textRect.value_or(localBounds);
+                textRect = ViewResizeCoordinator::clampRectToParent(textRect,localBounds,layoutClamp);
                 auto textColor = styleUsesAnimation ? applyAnimatedColor(dirtyTag,textStyle.color) : textStyle.color;
                 auto unicodeText = UniString::fromUTF32(
                         reinterpret_cast<const UChar32 *>(layoutIt->str->data()),
@@ -1627,7 +1653,7 @@ void UIView::update(){
 
         if(!emittedVisual){
             auto clearBrush = Composition::ColorBrush(Composition::Color::Transparent);
-            auto clearRect = localBoundsFromView(this);
+            auto clearRect = localBounds;
             target.canvas->drawRect(clearRect,clearBrush);
         }
 

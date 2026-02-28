@@ -68,6 +68,13 @@ namespace {
         return sane;
     }
 
+    static inline Core::Rect normalizeRootVisualRect(const Core::Rect & rect){
+        Core::Rect normalized = rect;
+        normalized.pos.x = 0.f;
+        normalized.pos.y = 0.f;
+        return normalized;
+    }
+
     static BackendRenderTargetContext * ensureLayerSurfaceTarget(BackendCompRenderTarget & target,Layer * layer){
         if(layer == nullptr || target.visualTree == nullptr){
             return nullptr;
@@ -84,6 +91,7 @@ namespace {
                 auto rootRect = sanitizeCommandRect(
                         treeRoot->getLayerRect(),
                         Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+                rootRect = normalizeRootVisualRect(rootRect);
                 auto rootVisual = target.visualTree->makeVisual(rootRect,rootRect.pos);
                 target.visualTree->setRootVisual(rootVisual);
                 auto insertedRoot = target.surfaceTargets.insert(std::make_pair(treeRoot.get(),&rootVisual->renderTarget));
@@ -112,6 +120,7 @@ namespace {
             auto layerRect = sanitizeCommandRect(
                     layer->getLayerRect(),
                     Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+            layerRect = normalizeRootVisualRect(layerRect);
             rootTarget->setRenderTargetSize(layerRect);
             target.visualTree->root->resize(layerRect);
             return inserted.first->second;
@@ -120,6 +129,7 @@ namespace {
         auto layerRect = sanitizeCommandRect(
                 layer->getLayerRect(),
                 Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+        layerRect = normalizeRootVisualRect(layerRect);
         auto visual = target.visualTree->makeVisual(layerRect,layerRect.pos);
         target.visualTree->setRootVisual(visual);
         auto inserted = target.surfaceTargets.insert(std::make_pair(layer,&visual->renderTarget));
@@ -159,6 +169,7 @@ namespace {
         if(target.visualTree->root != nullptr &&
            surface == &(target.visualTree->root->renderTarget)){
             auto mutableRect = rect;
+            mutableRect = normalizeRootVisualRect(mutableRect);
             target.visualTree->root->resize(mutableRect);
             return;
         }
@@ -292,6 +303,7 @@ void Compositor::applyLayerTreePacketDeltasToBackendMirror(std::uint64_t syncLan
         metadata = packetMetadata;
     }
     if(mirrorAppliedThisPacket){
+        markPacketMirrorApplied(syncLaneId,syncPacketId);
         queueCondition.notify_all();
     }
 
@@ -387,6 +399,11 @@ void Compositor::executeCurrentCommand(){
         auto layerRect = sanitizeCommandRect(
                 comm->frame->targetLayer->getLayerRect(),
                 Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+        if(target->visualTree != nullptr &&
+           target->visualTree->root != nullptr &&
+           targetContext == &(target->visualTree->root->renderTarget)){
+            layerRect = normalizeRootVisualRect(layerRect);
+        }
         targetContext->setRenderTargetSize(layerRect);
         resizeVisualForSurface(*target,targetContext,layerRect);
 

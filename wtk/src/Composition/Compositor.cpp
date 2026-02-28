@@ -1383,6 +1383,7 @@ void Compositor::markPacketQueued(std::uint64_t syncLaneId,
     entry.hasEffectMutation = hasEffectMutation;
     entry.hasResizeMutation = hasResizeMutation;
     entry.requiredTreeEpoch = command == nullptr ? 0 : command->requiredTreeEpoch;
+    entry.layerTreeMirrorApplied = entry.requiredTreeEpoch == 0;
 }
 
 void Compositor::markPacketSubmitted(std::uint64_t syncLaneId,
@@ -1412,6 +1413,15 @@ void Compositor::markPacketSubmitted(std::uint64_t syncLaneId,
             "submit lane=" + std::to_string(syncLaneId) +
             " packet=" + std::to_string(syncPacketId) +
             " inFlight=" + std::to_string(laneState.inFlight));
+}
+
+void Compositor::markPacketMirrorApplied(std::uint64_t syncLaneId,std::uint64_t syncPacketId){
+    if(syncLaneId == 0 || syncPacketId == 0 || packetTelemetryState == nullptr){
+        return;
+    }
+    std::lock_guard<std::mutex> lk(packetTelemetryState->mutex);
+    auto & entry = packetTelemetryState->lanes[syncLaneId][syncPacketId];
+    entry.layerTreeMirrorApplied = true;
 }
 
 void Compositor::markPacketDropped(std::uint64_t syncLaneId,
@@ -1492,25 +1502,39 @@ void Compositor::markPacketFailed(std::uint64_t syncLaneId,std::uint64_t syncPac
 
 bool Compositor::shouldDropNoOpTransparentFrame(std::uint64_t syncLaneId,std::uint64_t syncPacketId) const {
     if(syncLaneId == 0 || syncPacketId == 0 || packetTelemetryState == nullptr){
-        return true;
+        return false;
     }
     std::lock_guard<std::mutex> lk(packetTelemetryState->mutex);
+    auto runtimeIt = packetTelemetryState->laneRuntime.find(syncLaneId);
+    if(runtimeIt == packetTelemetryState->laneRuntime.end()){
+        return false;
+    }
+    const auto & laneState = runtimeIt->second;
     auto laneIt = packetTelemetryState->lanes.find(syncLaneId);
     if(laneIt == packetTelemetryState->lanes.end()){
-        return true;
+        return false;
     }
     auto entryIt = laneIt->second.find(syncPacketId);
     if(entryIt == laneIt->second.end()){
-        return true;
+        return false;
     }
     const auto & entry = entryIt->second;
+    // Do not skip no-op frames until mirror state has been materialized.
+    if(!entry.layerTreeMirrorApplied){
+        return false;
+    }
+    // Keep startup deterministic: wait until at least one non-no-op packet
+    // has actually presented for this lane before dropping transparent no-op packets.
+    if(!laneState.startupStabilized || !laneState.hasPresentedRenderableContent){
+        return false;
+    }
     // If packet has a real render, no-op children can be dropped safely.
     // Keep no-op renders only for state/effect-only packets that still need
     // lifecycle completion for synchronization.
     if(entry.hasNonNoOpRender){
         return true;
     }
-    return !(entry.hasStateMutation || entry.hasEffectMutation);
+    return !(entry.hasStateMutation || entry.hasEffectMutation || entry.hasResizeMutation);
 }
 
 void Compositor::completePacketWithoutGpu(std::uint64_t syncLaneId,std::uint64_t syncPacketId){
@@ -1637,6 +1661,9 @@ void Compositor::onBackendSubmissionCompleted(std::weak_ptr<PacketTelemetryState
             if(!laneState.startupStabilized){
                 laneState.startupStabilized = true;
                 laneState.firstPresentedPacketId = telemetry.syncPacketId;
+            }
+            if(entry.hasNonNoOpRender){
+                laneState.hasPresentedRenderableContent = true;
             }
 
             if(entry.submitTimeCpu != std::chrono::steady_clock::time_point{} &&
