@@ -1,0 +1,16 @@
+header "./myHeader.h"
+
+struct Pixel {
+  r:int,
+  g:int,
+  b:int
+  alpha:float
+}
+
+namespace Geometry {
+  struct Bounds {
+    width:double
+    height:double,
+    area:long
+  }
+}

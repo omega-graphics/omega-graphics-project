@@ -27,7 +27,14 @@ namespace OmegaWrapGen {
         (v == KW_CONST) || 
         (v == KW_INTERFACE) || 
         (v == KW_NAMESPACE) || 
-        (v == KW_HEADER);
+        (v == KW_HEADER) ||
+        (v == KW_VOID) ||
+        (v == KW_INT) ||
+        (v == KW_FLOAT) ||
+        (v == KW_LONG) ||
+        (v == KW_DOUBLE) ||
+        (v == KW_STRUCT) ||
+        (v == KW_STRING);
     };
 
     void Lexer::setInputStream(std::istream *is){
@@ -110,6 +117,16 @@ namespace OmegaWrapGen {
                 case ':' : {
                     PUSH_CHAR(c)
                     PUSH_TOK(TOK_COLON)
+                    break;
+                }
+                case '[' : {
+                    PUSH_CHAR(c)
+                    PUSH_TOK(TOK_LBRACKET)
+                    break;
+                }
+                case ']' : {
+                    PUSH_CHAR(c)
+                    PUSH_TOK(TOK_RBRACKET)
                     break;
                 }
                 case '*' : {

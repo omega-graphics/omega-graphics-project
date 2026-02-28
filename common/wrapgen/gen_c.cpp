@@ -2,6 +2,8 @@
 
 #include <iostream>
 #include <filesystem>
+#include <unordered_map>
+#include <cctype>
 
 namespace OmegaWrapGen {
 #define SELF_REFERENCE_VAR "__self"
@@ -13,9 +15,6 @@ namespace OmegaWrapGen {
     static CString intType = "int";
     static CString floatType = "float";
 
-
-
-
     class CGen final : public Gen {
         GenContext *ctxt;
 
@@ -23,6 +22,7 @@ namespace OmegaWrapGen {
         std::ofstream outHeader;
 
         std::string headerGuard;
+        std::unordered_map<std::string,std::string> arrayViewAliases;
 
         CGenSettings & settings;
     public:
@@ -63,7 +63,7 @@ namespace OmegaWrapGen {
             if(scope != GLOBAL_SCOPE) {
                 parentScopes.emplace_back(scope->name);
                 while((parent = scope->parentScope) != GLOBAL_SCOPE){
-                    if(parent->type == TreeScope::Namespace || parent->type == TreeScope::Class){
+                    if(parent->type == TreeScope::Namespace || parent->type == TreeScope::Class || parent->type == TreeScope::Interface){
                         parentScopes.emplace_back(parent->name);
                     }
                     scope = parent;
@@ -85,25 +85,121 @@ namespace OmegaWrapGen {
             return createCNameForDeclWithNameAndScope(node->name,node->scope);
         };
 
+        std::string createCNameForDecl(InterfaceDeclNode *node){
+            return createCNameForDeclWithNameAndScope(node->name,node->scope);
+        };
+
+        std::string createCNameForDecl(StructDeclNode *node){
+            return createCNameForDeclWithNameAndScope(node->name,node->scope);
+        };
+
+        std::string createClassMemberPrefix(ClassDeclNode *class_decl){
+            std::ostringstream out;
+            std::vector<OmegaCommon::StrRef> parentScopes;
+            TreeScope *scope = class_decl->scope;
+            TreeScope *parent;
+            if(scope != GLOBAL_SCOPE){
+                parentScopes.emplace_back(scope->name);
+                while((parent = scope->parentScope) != GLOBAL_SCOPE){
+                    if(parent->type == TreeScope::Namespace || parent->type == TreeScope::Class || parent->type == TreeScope::Interface){
+                        parentScopes.emplace_back(parent->name);
+                    }
+                    scope = parent;
+                }
+                for(auto r_it = parentScopes.rbegin();r_it != parentScopes.rend();r_it++){
+                    out << r_it->data();
+                }
+            }
+            out << class_decl->name.data();
+            return out.str();
+        }
+
+        std::string createCNameForClassFieldAccessor(ClassDeclNode *class_decl,OmegaCommon::StrRef field_name,bool is_setter){
+            std::ostringstream out;
+            out << createClassMemberPrefix(class_decl) << "__" << (is_setter ? "set_" : "get_") << field_name.data();
+            return out.str();
+        }
+
+        std::string normalizedTypeForAlias(const std::string & c_type){
+            std::ostringstream out;
+            for(auto ch : c_type){
+                if(std::isalnum(static_cast<unsigned char>(ch))){
+                    out << ch;
+                }
+                else if(ch == '*'){
+                    out << "Ptr";
+                }
+            }
+            auto normalized = out.str();
+            if(normalized.empty()){
+                normalized = "Any";
+            }
+            return normalized;
+        }
+
+        std::string ensureArrayViewAlias(Type *array_type){
+            auto elem_c_type = treeTypeToString(array_type->getElementType());
+            auto it = arrayViewAliases.find(elem_c_type);
+            if(it != arrayViewAliases.end()){
+                return it->second;
+            }
+
+            auto alias = std::string("OmegaArray_").append(normalizedTypeForAlias(elem_c_type));
+            unsigned suffix = 2;
+            for(;;){
+                bool collision = false;
+                for(const auto & pair : arrayViewAliases){
+                    if(pair.second == alias && pair.first != elem_c_type){
+                        collision = true;
+                        break;
+                    }
+                }
+                if(!collision){
+                    break;
+                }
+                alias = std::string("OmegaArray_").append(normalizedTypeForAlias(elem_c_type)).append("_").append(std::to_string(suffix++));
+            }
+
+            arrayViewAliases.emplace(elem_c_type,alias);
+            outHeader << "typedef struct " << alias << "{" << elem_c_type << " *data; long len;} " << alias << ";" << std::endl;
+            return alias;
+        }
+
         inline std::string treeTypeToString(Type *type){
-            if(type == stdtypes::VOID){
+            if(type->isArray){
+                return ensureArrayViewAlias(type);
+            }
+
+            auto ty_name = std::string(type->getName().data());
+
+            if(ty_name == stdtypes::VOID->getName().data()){
                 return voidType;
             }
-            else if(type == stdtypes::INT){
+            else if(ty_name == stdtypes::INT->getName().data()){
                 return intType;
+            }
+            else if(ty_name == stdtypes::FLOAT->getName().data()){
+                return floatType;
+            }
+            else if(ty_name == stdtypes::STRING->getName().data()){
+                return "const char *";
             }
             else {
                 std::ostringstream out;
                 if(type->isConst){
                     out << "const ";
                 }
-                out << type->getName().data();
+                out << ty_name;
                 if(type->isPointer || type->isReference){
                     out << "*";
                 }
                 return out.str();
             }
         };
+
+        bool isVoidType(Type *type){
+            return type->getName() == "void" && !type->isPointer && !type->isReference;
+        }
 
         void writeCFunctionDecl(OmegaCommon::StrRef name, OmegaCommon::MapVec<OmegaCommon::String,Type *> & params, Type *returnType, std::ostream & out){
             out << treeTypeToString(returnType) << " " << name << "(";
@@ -119,6 +215,32 @@ namespace OmegaWrapGen {
             out << ")";
         }
 
+        void writeCFunctionDeclWithInterfaceHandle(OmegaCommon::StrRef name,
+                                                   OmegaCommon::StrRef iface_type,
+                                                   OmegaCommon::MapVec<OmegaCommon::String,Type *> & params,
+                                                   Type *returnType,
+                                                   std::ostream & out){
+            out << treeTypeToString(returnType) << " " << name << "(" << iface_type.data() << " iface";
+            for(auto & param_type_pair : params){
+                out << "," << treeTypeToString(param_type_pair.second) << " " << param_type_pair.first;
+            }
+            out << ")";
+        }
+
+        void writeFunctionCallArgs(OmegaCommon::MapVec<OmegaCommon::String,Type *> & params,std::ostream &out,const char *skipParam = nullptr){
+            unsigned c = 0;
+            for(auto & param_type_pair : params){
+                if(skipParam && param_type_pair.first == skipParam){
+                    continue;
+                }
+                if(c != 0){
+                    out << ",";
+                }
+                out << param_type_pair.first;
+                c++;
+            }
+        }
+
         void consumeCXXDataStructMethod(OmegaWrapGen::FuncDeclNode * method,std::string & struct_name){
             auto func_name = createCNameForDecl(method);
             method->params.insert(std::make_pair(SELF_REFERENCE_VAR,Type::Create(struct_name,false,true)));
@@ -129,18 +251,116 @@ namespace OmegaWrapGen {
             outSrc << "{" << std::endl;
             /// Write C Name and then CXX Func Name!
             outSrc << "return " SELF_REFERENCE_VAR "->obj." << method->name << "(";
-            unsigned c = 0;
-            for(auto & param_type_pair : method->params){
-                if(param_type_pair.first != SELF_REFERENCE_VAR){
-                    if(c != 0){
-                        outSrc << ",";
-                    };
-                    outSrc << param_type_pair.first;
-                    c++;
-                }
-            }
+            writeFunctionCallArgs(method->params,outSrc,SELF_REFERENCE_VAR);
             outSrc << ");" << std::endl;
             outSrc << "}" << std::endl << std::endl;
+        }
+
+        void consumeCXXDataStructField(ClassDeclNode *class_decl,const ClassField &field,std::string & struct_name){
+            auto field_name = std::string(field.name.data());
+            auto getter_name = createCNameForClassFieldAccessor(class_decl,field.name,false);
+            auto field_ty = treeTypeToString(field.type);
+
+            outHeader << field_ty << " " << getter_name << "(" << struct_name << "* " SELF_REFERENCE_VAR << ");" << std::endl << std::endl;
+
+            outSrc << "extern \"C\" " << field_ty << " " << getter_name << "(" << struct_name << "* " SELF_REFERENCE_VAR << "){" << std::endl;
+            outSrc << "return " SELF_REFERENCE_VAR "->obj." << field_name << ";" << std::endl;
+            outSrc << "}" << std::endl << std::endl;
+
+            if(field.type->isConst){
+                return;
+            }
+
+            auto setter_name = createCNameForClassFieldAccessor(class_decl,field.name,true);
+            outHeader << "void " << setter_name << "(" << struct_name << "* " SELF_REFERENCE_VAR << "," << field_ty << " value);" << std::endl << std::endl;
+
+            outSrc << "extern \"C\" void " << setter_name << "(" << struct_name << "* " SELF_REFERENCE_VAR << "," << field_ty << " value){" << std::endl;
+            outSrc << SELF_REFERENCE_VAR "->obj." << field_name << " = value;" << std::endl;
+            outSrc << "}" << std::endl << std::endl;
+        }
+
+        void consumeCXXFreeFunction(OmegaWrapGen::FuncDeclNode *func_decl){
+            auto func_name = createCNameForDecl(func_decl);
+            writeCFunctionDecl(func_name,func_decl->params,func_decl->returnType,outHeader);
+            outHeader << ";" << std::endl << std::endl;
+
+            outSrc << "extern \"C\" ";
+            writeCFunctionDecl(func_name,func_decl->params,func_decl->returnType,outSrc);
+            outSrc << "{" << std::endl;
+            outSrc << "return " << generateCXXName(func_decl->name,func_decl->scope) << "(";
+            writeFunctionCallArgs(func_decl->params,outSrc);
+            outSrc << ");" << std::endl;
+            outSrc << "}" << std::endl << std::endl;
+        }
+
+        void consumeNamespaceDecl(NamespaceDeclNode *namespace_decl){
+            for(auto decl : namespace_decl->body){
+                consumeDecl(decl);
+            }
+        }
+
+        void consumeStructDecl(StructDeclNode *struct_decl){
+            // Ensure any array aliases used by fields are emitted before the struct body.
+            for(auto &field : struct_decl->fields){
+                (void)treeTypeToString(field.type);
+            }
+
+            auto struct_name = createCNameForDecl(struct_decl);
+            auto public_struct_name = (struct_name.rfind("__",0) == 0) ? struct_name.substr(2,struct_name.size() - 2) : struct_name;
+            outHeader << "typedef struct " << struct_name << " " << public_struct_name << ";" << std::endl;
+            outHeader << "struct " << struct_name << "{" << std::endl;
+            for(auto &field : struct_decl->fields){
+                outHeader << "    " << treeTypeToString(field.type) << " " << field.name << ";" << std::endl;
+            }
+            outHeader << "};" << std::endl << std::endl;
+        }
+
+        void consumeInterfaceDecl(InterfaceDeclNode *interface_decl){
+            // Ensure any array aliases used by methods are emitted before interface/vtable structs.
+            for(auto method : interface_decl->instMethods){
+                (void)treeTypeToString(method->returnType);
+                for(auto &param_type_pair : method->params){
+                    (void)treeTypeToString(param_type_pair.second);
+                }
+            }
+
+            auto iface_struct_name = createCNameForDecl(interface_decl);
+            auto public_iface_name = (iface_struct_name.rfind("__",0) == 0) ? iface_struct_name.substr(2,iface_struct_name.size() - 2) : iface_struct_name;
+            auto vtable_struct_name = iface_struct_name + "VTable";
+
+            outHeader << "typedef struct " << iface_struct_name << " " << public_iface_name << ";" << std::endl;
+            outHeader << "typedef struct " << vtable_struct_name << " " << vtable_struct_name << ";" << std::endl;
+            outHeader << "struct " << iface_struct_name << "{void *self; const " << vtable_struct_name << " *vtable;};" << std::endl;
+            outHeader << "struct " << vtable_struct_name << "{" << std::endl;
+            for(auto method : interface_decl->instMethods){
+                outHeader << "    " << treeTypeToString(method->returnType) << " (*" << method->name << ")(void *self";
+                for(auto &param_type_pair : method->params){
+                    outHeader << "," << treeTypeToString(param_type_pair.second) << " " << param_type_pair.first;
+                }
+                outHeader << ");" << std::endl;
+            }
+            outHeader << "};" << std::endl << std::endl;
+
+            for(auto method : interface_decl->instMethods){
+                auto wrapper_name = createCNameForDecl(method);
+                writeCFunctionDeclWithInterfaceHandle(wrapper_name,public_iface_name,method->params,method->returnType,outHeader);
+                outHeader << ";" << std::endl << std::endl;
+
+                outSrc << "extern \"C\" ";
+                writeCFunctionDeclWithInterfaceHandle(wrapper_name,public_iface_name,method->params,method->returnType,outSrc);
+                outSrc << "{" << std::endl;
+                if(isVoidType(method->returnType)){
+                    outSrc << "iface.vtable->" << method->name << "(iface.self";
+                }
+                else {
+                    outSrc << "return iface.vtable->" << method->name << "(iface.self";
+                }
+                for(auto &param_type_pair : method->params){
+                    outSrc << "," << param_type_pair.first;
+                }
+                outSrc << ");" << std::endl;
+                outSrc << "}" << std::endl << std::endl;
+            }
         }
 
         /** @brief Generates C Code for DeclNode consumed.
@@ -154,19 +374,37 @@ namespace OmegaWrapGen {
                     break;
                 }
                 case NAMESPACE_DECL : {
+                    auto *namespace_decl = (NamespaceDeclNode *)node;
+                    consumeNamespaceDecl(namespace_decl);
                     break;
                 }
                 case CLASS_DECL : {
                     auto * class_decl = (ClassDeclNode *)node;
                     auto struct_name = createCNameForDecl(class_decl);
-                    outHeader << OmegaCommon::fmtString(DEFINE_C_CLASS_TEMPLATE,struct_name,struct_name.substr(2,struct_name.size() - 2)) << std::endl << std::endl;
+                    auto public_struct_name = (struct_name.rfind("__",0) == 0) ? struct_name.substr(2,struct_name.size() - 2) : struct_name;
+                    outHeader << OmegaCommon::fmtString(DEFINE_C_CLASS_TEMPLATE,struct_name,public_struct_name) << std::endl << std::endl;
                     outSrc << "struct " << struct_name << "{" << generateCXXName(class_decl->name,class_decl->scope) << " obj;};" << std::endl << std::endl;
+                    for(auto & field : class_decl->fields){
+                        consumeCXXDataStructField(class_decl,field,struct_name);
+                    }
                     for(auto & method : class_decl->instMethods){
                         consumeCXXDataStructMethod(method,struct_name);
                     }
                     break;
                 }
+                case FUNC_DECL : {
+                    auto *func_decl = (FuncDeclNode *)node;
+                    consumeCXXFreeFunction(func_decl);
+                    break;
+                }
                 case INTERFACE_DECL : {
+                    auto *interface_decl = (InterfaceDeclNode *)node;
+                    consumeInterfaceDecl(interface_decl);
+                    break;
+                }
+                case STRUCT_DECL : {
+                    auto *struct_decl = (StructDeclNode *)node;
+                    consumeStructDecl(struct_decl);
                     break;
                 }
             }

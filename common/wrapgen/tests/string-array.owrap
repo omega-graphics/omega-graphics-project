@@ -1,0 +1,14 @@
+header "./myHeader.h"
+
+struct TextBatch {
+  title:string,
+  lines:string[],
+  scores:int[]
+}
+
+class TextService {
+  func setLines(lines:string[]) void
+  func setScores(scores:int[]) void
+  func getLines() string[]
+  func getScores() int[]
+}

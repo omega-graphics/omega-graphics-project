@@ -1,0 +1,7 @@
+header "./myHeader.h"
+
+class Config {
+  name:string
+  version:int
+  id:const int
+}

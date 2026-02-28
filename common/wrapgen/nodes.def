@@ -6,4 +6,4 @@ typedef int TreeNodeType;
 #define HEADER_DECL     (0x03 | DECL)
 #define NAMESPACE_DECL  (0x04 | DECL)
 #define FUNC_DECL       (0x05 | DECL)
-
+#define STRUCT_DECL     (0x06 | DECL)

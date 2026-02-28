@@ -1,229 +1,292 @@
-# AQUA Engine Transformation Plan
+# AQUA Engine Transformation Plan (Constraint-Reevaluated)
 
 ## Goal
-Transform `AQUA` from scaffold into a production-capable 3D game engine with:
-- modern real-time rendering
-- scalable gameplay/runtime systems
-- robust asset/content pipeline
-- full editor workflows
-- profiling, testing, and shipping toolchain
+Transform `AQUA` from scaffold into a production-capable 3D game engine that combines:
+- Unity-like simplicity for day-to-day gameplay authoring
+- Unreal-grade depth for rendering, simulation, tooling, and scale
 
-## Mandatory Constraints (from `aqua/AGENTS.md`)
-- Design direction is inspired by Unreal Engine architecture.
-- Engine code must be modular.
-- Engine code files use PascalCase and `AQUA<Name>` naming.
+## Updated Constraints (from `aqua/AGENTS.md`)
+- Architecture is inspired by both Unreal Engine and Unity.
+- Do not recycle old concepts or naming; use modern, water-themed naming aligned to AQUA identity.
+- Code styling must follow LLVM conventions.
+- All code must be modular.
+- File names must be PascalCase with the `AQUA<Name>` prefix.
 
-## Current Scaffold Snapshot
-- Existing modules are minimal: `AQUABase`, `AQUAObject`, `AQUAScene`, `AQUAFrontend`.
-- `AQUAScene.cpp` references `PhysObject`, but `PhysObject` is commented out in headers.
-- `AQUAMesh.h` is empty and `AQUACore.h` is only include wiring.
-- Renderer is declared (`SceneRenderer`) but not implemented.
-- Editor entrypoint exists (`EditorMain.cpp`) but no tooling/runtime integration.
+## Constraint Translation Into Hard Engineering Rules
 
-This means Phase 0 must harden contracts before adding systems.
+## Rule 1: Dual-Lane Developer Experience
+- Every subsystem must expose:
+- a simple authoring lane (minimal APIs, clear defaults, low ceremony)
+- an advanced lane (explicit control for performance and scale)
+- "Simple by default, deep when needed" is a release gate.
 
-## Target Engine Architecture
-Planned engine modules (each as isolated `AQUA<Name>` module/package):
-- `AQUACore`: memory, containers, reflection hooks, IDs, logging, config, runtime lifecycle.
-- `AQUAPlatform`: window/input/time/filesystem abstraction.
-- `AQUAJobs`: task graph, worker pools, frame scheduling.
-- `AQUAScene`: world partition, entities/components, transform hierarchy, streaming.
-- `AQUARender`: render graph, material/shader system, visibility/culling, lighting.
-- `AQUAPhysics`: broadphase/narrowphase, rigid bodies, controllers, queries.
-- `AQUAAnimation`: skeletons, blend trees, state machines, IK, retargeting.
-- `AQUAAudio`: spatial audio, bus/mixer graph, streaming.
-- `AQUAAssets`: importers, cooking, derived data cache, bundle packaging.
-- `AQUAScript`: gameplay scripting and hot reload boundaries.
-- `AQUANet`: replication, prediction, rollback support tiers.
-- `AQUAEditor`: scene editor, inspectors, content browser, play-in-editor.
-- `AQUATools`: command-line build/cook/package/profile tools.
-- `AQUATest`: unit/integration/perf/golden tests.
+## Rule 2: Water-Themed Naming System
+- New runtime vocabulary:
+- `Tide` for world/scene containers
+- `Drop` for entities/objects
+- `Trait` for components/data aspects
+- `Current` for systems/execution flows
+- `Reef` for rendering layers/pipelines
+- `Flow` for physics/motion simulation
+- `Ripple` for networking/replication
+- `Reservoir` for assets/content storage
+- `Harbor` for platform/toolchain integration
+- New files and classes must follow `AQUA<WaterTerm><Role>` naming.
+- Legacy names (`Scene`, `Object`, etc.) may exist only as temporary compatibility wrappers with deprecation tags and migration deadlines.
+
+## Rule 3: LLVM Style As a CI Gate
+- Add `.clang-format` based on LLVM style.
+- Add `clang-tidy` checks for correctness and modernization.
+- Style/lint failures block merges.
+
+## Rule 4: Strong Modularity
+- Each subsystem has a standalone module target with explicit public/private boundaries.
+- No circular dependencies.
+- Runtime/editor/tooling boundaries are enforced in build definitions.
+
+## Current Scaffold Re-Evaluation
+- Existing code is skeletal: `AQUABase`, `AQUAObject`, `AQUAScene`, `AQUAFrontend`.
+- `AQUAScene.cpp` references `PhysObject`, but `PhysObject` is commented out in headers (broken contract).
+- `AQUAMesh.h` is empty and render/frontend layers are stubs.
+- `AQUAFrontend.h` defines `class Frontend`, which violates the naming rule (class should be prefixed).
+- No LLVM style config/gates are currently visible.
+- Current naming does not yet reflect the new water-themed taxonomy.
+
+Phase 0 must stabilize contracts, naming, and style governance before feature expansion.
+
+## Target Module Architecture (Water-Themed + Modular)
+- `AQUASourceCore`: IDs, handles, memory utilities, logging, reflection hooks, lifecycle.
+- `AQUAHarborPlatform`: windowing, input, timing, filesystem, platform abstraction.
+- `AQUACurrentJobs`: worker pools, fiber/task graph, frame orchestration.
+- `AQUATideWorld`: world partition, `Drop`/`Trait` storage, hierarchy, streaming.
+- `AQUAReefRender`: render graph, materials, shader management, culling, lighting.
+- `AQUAFlowPhysics`: collision, rigid bodies, queries, fixed-step simulation.
+- `AQUASurgeAnimation`: skeletons, blend graphs, IK, retargeting.
+- `AQUAEchoAudio`: spatial audio, mixer graph, stream scheduling.
+- `AQUAReservoirAssets`: import/cook/cache/package pipeline.
+- `AQUATideScript`: gameplay scripting API with hot-reload boundaries.
+- `AQUARippleNet`: replication, prediction, reconciliation, transport adapters.
+- `AQUAStudioEditor`: editor shell, inspectors, viewport, authoring workflows.
+- `AQUAHarborTools`: command-line build/cook/package/profile tools.
+- `AQUATestBench`: unit/integration/perf/golden tests.
 
 ## Phased Execution Plan
 
-## Phase 0: Foundation and Contract Repair (Weeks 1-3)
+## Phase 0: Contract and Governance Reset (Weeks 1-4)
 Deliverables:
-- compile-clean AQUA core with strict API contracts
-- corrected `Scene/Object` type model
-- module boundaries and CMake targets for each subsystem shell
-- coding standards and naming lints for `AQUA<Name>`
+- compile-clean foundation with resolved type/API mismatches
+- naming taxonomy and migration policy document
+- LLVM style/lint CI gates enabled
+- module shells for all target subsystems
 
 Work:
-- fix object model mismatch (`Object` vs `PhysObject`) and define authoritative entity model.
-- establish `AQUAResult`, `AQUAHandle`, `AQUAId`, `AQUALog` primitives.
-- split headers by module and enforce public/private include layout.
-- add CI gates: format, static analysis, unit tests, compile on supported platforms.
+- repair `Scene/Object/PhysObject` contract by introducing `Tide/Drop/Trait` canonical model.
+- rename noncompliant symbols (example: `Frontend` -> `AQUAHarborFrontend` or equivalent).
+- add deprecation wrappers for legacy names with explicit removal milestones.
+- set up `.clang-format` and `clang-tidy` in CI.
+- define per-module ownership and dependency matrix.
 
 Exit Criteria:
-- engine builds on target platforms with zero scaffold inconsistencies.
-- CI runs on every change.
+- no contract mismatches in core scaffold.
+- style and lint checks enforce LLVM rules on every PR.
+- naming compliance script reports zero violations for new code.
 
-## Phase 1: Runtime Core (Weeks 4-8)
+## Phase 1: Runtime Core and Authoring Simplicity (Weeks 5-9)
 Deliverables:
-- ECS-style runtime with scene graph bridge
-- deterministic frame loop and subsystem tick order
-- serialization for scene/prefab assets
+- `Drop/Trait/Current/Tide` runtime model
+- deterministic frame loop with explicit system ordering
+- simple gameplay API facade over advanced internals
 
 Work:
-- implement `AQUAEntity`, `AQUAComponent`, `AQUAWorld`, `AQUASystem`.
-- add transform hierarchy, prefab instancing, and scene streaming primitives.
-- implement versioned scene format and binary runtime format.
+- implement `AQUADrop`, `AQUATrait`, `AQUACurrent`, `AQUATide`.
+- provide simple authoring calls:
+- create/drop lookup
+- trait attach/remove
+- event subscription
+- provide advanced APIs for memory layout, scheduling, and explicit update phases.
+- versioned serialization for tides/prefabs.
 
 Exit Criteria:
-- can load, simulate, and save a non-trivial scene deterministically.
+- teams can build a small gameplay prototype with simple APIs.
+- advanced path supports deterministic replay.
 
-## Phase 2: Rendering Vertical Slice (Weeks 9-15)
+## Phase 2: Rendering Vertical Slice (Weeks 10-16)
 Deliverables:
-- real render pipeline on top of OmegaGTE
-- PBR materials and shader permutation management
-- shadowing, post-process stack, and debug overlays
+- `AQUAReefRender` production path on OmegaGTE
+- PBR materials, shader permutations, and visibility pipeline
+- debug visualization and frame diagnostics
 
 Work:
-- implement `AQUARenderGraph` with explicit pass dependencies.
-- add GPU resource lifetime manager, descriptor/pipeline caches.
-- support mesh/texture/material import path and runtime binding.
-- implement visibility culling (frustum + occlusion tier).
+- implement `AQUAReefGraph` pass scheduling and resource lifetimes.
+- add pipeline/material cache and descriptor management.
+- support mesh/texture/material ingestion from `AQUAReservoirAssets`.
+- build frustum + occlusion culling.
 
 Exit Criteria:
-- playable sample level at target FPS budget with stable frame pacing.
+- sample 3D level reaches target frame budget with stable pacing.
 
-## Phase 3: Physics and Gameplay Simulation (Weeks 16-20)
+## Phase 3: Physics and Gameplay Simulation (Weeks 17-21)
 Deliverables:
-- rigid body dynamics and collision pipeline
-- character controller and scene queries
-- gameplay event bridge between runtime, physics, and scripting
+- `AQUAFlowPhysics` scene integration
+- rigid bodies, controllers, and query API
+- event bridge between flow simulation and gameplay currents
 
 Work:
-- define `AQUACollider`, `AQUARigidBody`, `AQUAPhysicsScene`.
-- integrate fixed-step simulation with interpolation/extrapolation.
-- expose raycast/sweep/overlap query APIs.
+- implement colliders, rigid bodies, and fixed-step integration.
+- add interpolation/extrapolation for render smoothness.
+- expose raycast/sweep/overlap at simple and advanced API layers.
 
 Exit Criteria:
-- stable physical gameplay sample with reproducible simulation behavior.
+- stable, reproducible physics gameplay sample.
 
-## Phase 4: Animation, Audio, and VFX (Weeks 21-26)
+## Phase 4: Animation, Audio, and VFX (Weeks 22-27)
 Deliverables:
-- skeletal animation pipeline
-- spatial audio runtime
-- particle/VFX framework integrated with render graph
+- `AQUASurgeAnimation` with blend state graphs
+- `AQUAEchoAudio` spatial pipeline
+- GPU particle and effect framework wired into `AQUAReefRender`
 
 Work:
-- implement blend trees, animation states, root motion, and event notifies.
-- add audio mixer graph and 3D attenuation/occlusion hooks.
-- add GPU particle pipeline with authoring metadata.
+- implement animation state graph, notifies, root motion, and IK hooks.
+- add audio bus graph, attenuation, and occlusion integration.
+- add particle simulation/render passes and authoring metadata.
 
 Exit Criteria:
-- character + environment demo with synchronized animation/audio/VFX.
+- cohesive character/environment demo with synchronized animation/audio/VFX.
 
-## Phase 5: Asset Pipeline and Cooking (Weeks 27-31)
+## Phase 5: Asset Reservoir and Content Cooking (Weeks 28-32)
 Deliverables:
-- deterministic asset import/cook pipeline
-- platform-specific package generation
-- incremental build cache and content validation
+- deterministic import/cook pipeline
+- incremental derived-data cache
+- platform packaging bundles
 
 Work:
-- define source asset schemas and cooked artifact schema.
-- implement offline tools for texture/mesh/material/animation processing.
-- add derived data cache keys and invalidation rules.
+- define source schemas and cooked schemas.
+- implement importers and validators for core asset classes.
+- add cache keying, invalidation, and content dependency graph.
 
 Exit Criteria:
-- cold + incremental asset builds are reliable and measurable.
+- reliable cold and incremental content build performance.
 
-## Phase 6: Editor (AQUAEditor) (Weeks 32-38)
+## Phase 6: Studio Editor (Weeks 33-39)
 Deliverables:
-- scene viewport, hierarchy, inspector, content browser
-- gizmos, prefab workflows, and play-in-editor loop
-- undo/redo transaction system
+- viewport, hierarchy, inspector, content browser
+- play-in-editor and prefab editing
+- transaction-based undo/redo
 
 Work:
-- integrate OmegaWTK UI shell with runtime/editor bridge.
-- implement editor data model separate from runtime state.
-- add hot-reload-safe boundaries for assets and scripts.
+- integrate OmegaWTK-based UI shell with runtime/editor boundary layer.
+- separate authoring state from runtime state.
+- enable safe hot reload for scripts/assets.
 
 Exit Criteria:
-- designers can author scenes and iterate without command-line usage.
+- scene authoring loop works without command-line dependency.
 
-## Phase 7: Networking and Multiplayer (Weeks 39-45)
+## Phase 7: Ripple Networking (Weeks 40-46)
 Deliverables:
-- authority model and replication graph
-- client prediction/reconciliation for movement and gameplay primitives
-- bandwidth and replication profiling tools
+- authority and replication architecture
+- movement and gameplay prediction/reconciliation
+- network diagnostics and profiling
 
 Work:
-- define replicated component model and delta serialization.
-- implement snapshot/interpolation pipeline and late-join sync.
-- expose networking tests and simulation fuzzing.
+- implement replicated trait model and delta serialization.
+- add snapshot/interpolation and reconnect/late-join handling.
+- build packet loss and latency simulation tests.
 
 Exit Criteria:
-- stable multiplayer sample under packet loss/latency test profiles.
+- multiplayer sample remains stable under degraded network profiles.
 
-## Phase 8: Performance, Stability, and Shipping (Weeks 46-52)
+## Phase 8: Production Hardening and Release (Weeks 47-52)
 Deliverables:
-- profiler suite (CPU/GPU/memory/content streaming)
-- crash handling, telemetry, regression dashboards
-- packaging/deployment flow for target platforms
+- CPU/GPU/memory/streaming profiler suite
+- crash capture and regression dashboards
+- shipping toolchain for target platforms
 
 Work:
-- add frame capture tools and long-session soak tests.
-- add memory fragmentation tracking and leak detection.
-- create release criteria checklist and LTS branch strategy.
+- add soak tests and long-session stability runs.
+- add memory diagnostics and leak/fragmentation tracking.
+- finalize release checklist and LTS branching policy.
 
 Exit Criteria:
-- engine meets performance budgets and release quality gates.
+- engine passes quality, performance, and release gates for `1.0`.
 
-## Cross-Cutting Practices (Every Phase)
-- Maintain strict module boundaries and no circular dependencies.
-- Keep all new engine code in `AQUA<Name>` PascalCase files.
-- Require tests for all core runtime/render/physics contracts.
-- Track budgets continuously: frame time, memory, load time, package size.
-- Maintain a living architecture decision log.
+## Cross-Cutting Compliance Gates (All Phases)
+- Naming gate:
+- reject new symbols/files that do not use `AQUA<Name>` PascalCase
+- reject non-water-themed runtime terms in new core APIs
+- Style gate:
+- enforce LLVM formatting and linting in CI
+- Modularity gate:
+- fail builds on circular dependencies or forbidden cross-module includes
+- API ergonomics gate:
+- every subsystem must demonstrate both simple and advanced usage paths
+- Test gate:
+- unit + integration + perf coverage required for core runtime systems
 
-## Immediate Backlog (First 10 Implementation Tasks)
-1. Repair `Scene::addObject` contract mismatch and reintroduce concrete physical entity model.
-2. Fill `AQUAMesh` API and runtime mesh data layout.
-3. Define `AQUAEntity` and component storage archetypes.
-4. Introduce `AQUAJobs` worker pool and frame task graph.
-5. Implement minimal `AQUARenderGraph` with depth prepass + base pass.
-6. Add material system (`AQUAMaterial`, `AQUAShader`, `AQUAPipelineState`).
-7. Add scene serialization (`.aquascene`) and prefab format (`.aquaprefab`).
-8. Add physics scene step API and query layer.
-9. Build editor viewport + hierarchy panel integration.
-10. Add CI matrix and benchmark harness.
+## Immediate Backlog (First 12 Tasks)
+1. Replace `Scene/Object` contract with `AQUATide` + `AQUADrop` base contracts.
+2. Restore physical model using `AQUAFlowBody`/`AQUAFlowCollider` abstractions.
+3. Rename `Frontend` class to compliant prefixed/water-themed name.
+4. Create naming glossary and deprecated alias map.
+5. Add `.clang-format` (LLVM) and CI enforcement.
+6. Add `clang-tidy` baseline and module include-boundary checks.
+7. Implement `AQUAReefMesh` data model and upload path.
+8. Implement `AQUACurrentFrameGraph` for system scheduling.
+9. Implement minimal `AQUAReefGraph` (depth + base pass).
+10. Define tide/prefab serialization formats with versioning.
+11. Add basic editor viewport + hierarchy on the new tide/drop model.
+12. Add compile/test matrix and performance benchmark harness.
 
-## Acceptance Metrics for “Fully Capable”
-- Visual: PBR, dynamic shadows, post-processing, animation, VFX.
-- Runtime: large scene streaming, deterministic simulation, stable hot reload.
-- Tooling: full editor authoring loop with undo/redo and profiling.
-- Production: automated tests, reproducible builds, platform packaging.
-- Multiplayer: replication and prediction for representative gameplay loops.
+## Acceptance Metrics for "Fully Capable"
+- Simplicity:
+- a new gameplay prototype can be assembled using simple lane APIs in under one day
+- Depth:
+- advanced lane supports streaming worlds, high-fidelity rendering, and deterministic simulation
+- Naming/identity:
+- all new core APIs and files follow AQUA prefix + water-themed taxonomy
+- Code quality:
+- LLVM style and lint gates are consistently green
+- Tooling:
+- editor + asset pipeline + profiler are production-usable
+- Networking:
+- replication and prediction stable under adverse network conditions
 
-## Suggested Repository Structure (Target)
+## Target Repository Structure
 ```text
 aqua/
   engine/
     include/aqua/
-      Core/        (AQUACore, AQUAEntity, AQUAComponent, ...)
-      Platform/    (AQUAPlatform...)
-      Jobs/        (AQUAJobs...)
-      Scene/       (AQUAScene, AQUAWorld...)
-      Render/      (AQUARender...)
-      Physics/     (AQUAPhysics...)
-      Animation/   (AQUAAnimation...)
-      Audio/       (AQUAAudio...)
-      Assets/      (AQUAAssets...)
-      Script/      (AQUAScript...)
-      Net/         (AQUANet...)
+      SourceCore/      (AQUASourceCore...)
+      HarborPlatform/  (AQUAHarborPlatform...)
+      CurrentJobs/     (AQUACurrentJobs...)
+      TideWorld/       (AQUATideWorld, AQUADrop, AQUATrait...)
+      ReefRender/      (AQUAReefRender...)
+      FlowPhysics/     (AQUAFlowPhysics...)
+      SurgeAnimation/  (AQUASurgeAnimation...)
+      EchoAudio/       (AQUAEchoAudio...)
+      ReservoirAssets/ (AQUAReservoirAssets...)
+      TideScript/      (AQUATideScript...)
+      RippleNet/       (AQUARippleNet...)
     src/
-      Core/ Platform/ Jobs/ Scene/ Render/ Physics/ Animation/ Audio/ Assets/ Script/ Net/
+      SourceCore/ HarborPlatform/ CurrentJobs/ TideWorld/ ReefRender/
+      FlowPhysics/ SurgeAnimation/ EchoAudio/ ReservoirAssets/ TideScript/ RippleNet/
   editor/
-    src/           (AQUAEditor...)
+    src/               (AQUAStudioEditor...)
   tools/
-    src/           (AQUATools...)
+    src/               (AQUAHarborTools...)
   tests/
     unit/ integration/ perf/
 ```
 
 ## Governance
-- Use milestone-driven releases: `0.1 Core`, `0.2 Render`, `0.3 Gameplay`, `0.4 Editor`, `0.5 Network`, `1.0 Production`.
-- Freeze APIs at each milestone and allow only additive changes during stabilization windows.
-- Run monthly architecture reviews focused on performance deltas and dependency hygiene.
+- Milestones:
+- `0.1 Contract Reset`
+- `0.2 Runtime + Render Slice`
+- `0.3 Simulation Stack`
+- `0.4 Studio Editor`
+- `0.5 Multiplayer`
+- `1.0 Production`
+- Freeze APIs at each milestone and permit only additive/stabilizing changes inside freeze windows.
+- Run monthly architecture review focused on:
+- simplicity-vs-depth API quality
+- naming compliance
+- dependency hygiene and performance deltas

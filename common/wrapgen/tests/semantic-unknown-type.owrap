@@ -1,0 +1,6 @@
+header "./myHeader.h"
+
+class UnknownTypeCase {
+  value:Vec3
+  func apply(v:Vec3) void
+}

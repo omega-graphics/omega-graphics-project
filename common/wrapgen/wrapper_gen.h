@@ -41,6 +41,10 @@ namespace OmegaWrapGen {
         
     };
 
+    struct RustGenSettings {
+
+    };
+
 
     class Gen : public TreeConsumer {
         friend class Parser;
@@ -48,16 +52,16 @@ namespace OmegaWrapGen {
         inline std::string generateCXXName(OmegaCommon::StrRef declName, TreeScope *scope){
             std::ostringstream out;
             std::deque<OmegaCommon::StrRef> scopes;
-            TreeScope *parent;
-            if(scope != GLOBAL_SCOPE){
-                while((parent = scope->parentScope) != GLOBAL_SCOPE){
-                    scopes.push_front(parent->name);
-                    scope = parent;
+            TreeScope *cursor = scope;
+            while(cursor && cursor != GLOBAL_SCOPE){
+                if(cursor->type == TreeScope::Namespace || cursor->type == TreeScope::Class){
+                    scopes.push_front(cursor->name);
                 }
+                cursor = cursor->parentScope;
+            }
 
-                for(auto & s : scopes){
-                    out << s << "::";
-                }
+            for(auto & s : scopes){
+                out << s << "::";
             }
             out << declName;
             return out.str();
@@ -66,9 +70,14 @@ namespace OmegaWrapGen {
         virtual void setContext(GenContext & ctxt) = 0;
         virtual GenContext & getContext() = 0;
         virtual void finish() = 0;
+        virtual ~Gen() = default;
 
         static Gen *CreateCGen(CGenSettings & settings);
         static Gen *CreatePythonGen(PythonGenSettings & settings);
+        static Gen *CreateGoGen(GoGenSettings & settings);
+        static Gen *CreateJavaGen(JavaGenSettings & settings);
+        static Gen *CreateSwiftGen(SwiftGenSettings & settings);
+        static Gen *CreateRustGen(RustGenSettings & settings);
     };
 
 

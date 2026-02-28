@@ -1,0 +1,11 @@
+header "./myHeader.h"
+
+class NumericTypes {
+
+  func makeFloat(v:float) float
+
+  func makeLong(v:long) long
+
+  func makeDouble(v:double) double
+
+}

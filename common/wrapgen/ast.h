@@ -30,6 +30,7 @@ namespace OmegaWrapGen {
 
     class Type {
         OmegaCommon::String name;
+        Type *elementType = nullptr;
     public:
         bool isConst;
 
@@ -37,8 +38,12 @@ namespace OmegaWrapGen {
 
         bool isReference;
 
+        bool isArray;
+
         static Type * Create(OmegaCommon::StrRef name, bool isConst = false, bool isPointer = false, bool isReference = false);
+        static Type * CreateArray(Type *elementType);
         OmegaCommon::StrRef getName();
+        Type *getElementType();
     };
 
     #define _STANDARD_TYPE(name) extern Type *name
@@ -75,8 +80,14 @@ namespace OmegaWrapGen {
         Type *returnType;
     };
 
+    struct ClassField {
+        OmegaCommon::String name;
+        Type *type;
+    };
+
     struct ClassDeclNode : public DeclNode {
         OmegaCommon::String name;
+        OmegaCommon::Vector<ClassField> fields;
         OmegaCommon::Vector<FuncDeclNode *> instMethods;
         OmegaCommon::Vector<FuncDeclNode *> staticMethods;
     };
@@ -84,6 +95,16 @@ namespace OmegaWrapGen {
     struct InterfaceDeclNode : public DeclNode {
         OmegaCommon::String name;
         OmegaCommon::Vector<FuncDeclNode *> instMethods;
+    };
+
+    struct StructField {
+        OmegaCommon::String name;
+        Type *type;
+    };
+
+    struct StructDeclNode : public DeclNode {
+        OmegaCommon::String name;
+        OmegaCommon::Vector<StructField> fields;
     };
 
     class TreeConsumer {

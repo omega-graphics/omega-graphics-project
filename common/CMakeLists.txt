@@ -32,8 +32,15 @@ add_omega_graphics_tool("omega-wrapgen" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRC
 
 add_omega_graphics_tool("parse-test" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} "wrapgen/tests/parse-test.cpp")
 
+add_custom_target(wrapgen-tests
+    COMMAND ${PYEXEC} ${CMAKE_CURRENT_SOURCE_DIR}/wrapgen/tests/run_tests.py
+        --omega-wrapgen ${CMAKE_BINARY_DIR}/bin/omega-wrapgen
+        --suite-dir ${CMAKE_CURRENT_SOURCE_DIR}/wrapgen/tests
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    DEPENDS omega-wrapgen
+    COMMENT "Running omega-wrapgen integration tests")
+
 file(GLOB EBIN_SRCS "embedbin/*.cpp")
 
 add_omega_graphics_tool("omega-ebin" LIBS "OmegaCommon" SOURCES ${EBIN_SRCS})
-
 

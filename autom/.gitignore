@@ -62,3 +62,4 @@ tm/pyyaml
 
 AUTOMINSTALL
 bin
+obj

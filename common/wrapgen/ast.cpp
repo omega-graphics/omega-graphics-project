@@ -29,11 +29,28 @@ namespace OmegaWrapGen {
         t->isConst = isConst;
         t->isPointer = isPointer;
         t->isReference = isReference;
+        t->isArray = false;
+        t->elementType = nullptr;
+        return t;
+    };
+
+    Type *Type::CreateArray(Type *elementType){
+        auto t = new Type();
+        t->name = elementType->getName().data();
+        t->isConst = false;
+        t->isPointer = false;
+        t->isReference = false;
+        t->isArray = true;
+        t->elementType = elementType;
         return t;
     };
 
     OmegaCommon::StrRef Type::getName(){
         return name;
+    };
+
+    Type *Type::getElementType(){
+        return elementType;
     };
 
     TreeDumper::TreeDumper(std::ostream & out):out(out){
@@ -48,8 +65,21 @@ namespace OmegaWrapGen {
     };  
 
     inline OmegaCommon::String ASTTypeToString(Type *type){
+        if(type->isArray){
+            return ASTTypeToString(type->getElementType()) + "[]";
+        }
+
         std::ostringstream out;
+        if(type->isConst){
+            out << "const ";
+        }
         out << type->getName().data() << std::flush;
+        if(type->isPointer){
+            out << "*";
+        }
+        if(type->isReference){
+            out << "&";
+        }
         return out.str();
     };
 
@@ -94,6 +124,17 @@ namespace OmegaWrapGen {
                 out << pad << 
                 "ClassDecl : {\n" << pad <<
                 "   name:" << decl_node->name << "\n" << pad <<
+                "   fields:{\n" << std::flush;
+                auto field_pad = padString(level + 1);
+                for(unsigned i = 0; i < decl_node->fields.size(); i++){
+                    auto &field = decl_node->fields[i];
+                    if(i != 0){
+                        out << ",\n";
+                    }
+                    out << field_pad << "\"" << field.name << "\":" << ASTTypeToString(field.type) << std::flush;
+                }
+                out <<
+                "\n" << pad << "   }\n" << pad <<
                 /// Write Instance Methods
                 "   instMethods:[\n" << std::flush;
                 for(auto n : decl_node->instMethods){
@@ -135,6 +176,25 @@ namespace OmegaWrapGen {
             case HEADER_DECL : {
                 auto * decl_node = (HeaderDeclNode *)node;
                 out << pad << "HeaderDecl : {" << std::endl << pad << "   header:\"" << decl_node->name << "\"" << std::endl << pad << "}" << std::endl;
+                break;
+            }
+            case STRUCT_DECL : {
+                auto *decl_node = (StructDeclNode *)node;
+                out << pad <<
+                "StructDecl : {\n" << pad <<
+                "   name:" << decl_node->name << "\n" << pad <<
+                "   fields:{\n" << std::flush;
+                auto field_pad = padString(level + 1);
+                for(unsigned i = 0; i < decl_node->fields.size(); i++){
+                    auto &field = decl_node->fields[i];
+                    if(i != 0){
+                        out << ",\n";
+                    }
+                    out << field_pad << "\"" << field.name << "\":" << ASTTypeToString(field.type) << std::flush;
+                }
+                out <<
+                "\n" << pad << "   }\n" << pad <<
+                "}" << std::endl;
                 break;
             }
         }

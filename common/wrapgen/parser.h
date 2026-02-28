@@ -15,12 +15,14 @@ namespace OmegaWrapGen {
         std::unique_ptr<DiagnosticBuffer> errStream;
         std::unique_ptr<Lexer> lexer;
         TreeConsumer * consumer;
+        bool hadErrors = false;
         DeclNode *nextDecl();
     public:
         Parser(TreeConsumer * consumer);
          void setInputStream(std::istream * is);
          void beginParse();
          void finish();
+         bool hasErrors();
     };
 
 

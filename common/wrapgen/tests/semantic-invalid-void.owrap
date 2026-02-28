@@ -1,0 +1,10 @@
+header "./myHeader.h"
+
+struct InvalidVoidStruct {
+  payload:void
+}
+
+class InvalidVoidMethods {
+  func setArg(v:void) void
+  func getArray() void[]
+}

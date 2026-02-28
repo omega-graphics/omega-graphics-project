@@ -1,0 +1,9 @@
+header "./myHeader.h"
+
+interface Drawable {
+
+  func draw(x:int,y:int) void
+
+  func area() double
+
+}

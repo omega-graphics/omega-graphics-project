@@ -1,0 +1,11 @@
+header "./myHeader.h"
+
+namespace Math {
+
+  func add(v:int) int
+
+  class Vec {
+    func length() int
+  }
+
+}
