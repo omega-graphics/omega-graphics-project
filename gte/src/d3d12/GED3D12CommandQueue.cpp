@@ -52,7 +52,7 @@ _NAMESPACE_BEGIN_
                 ResourceTracking::Backend::D3D12,
                 "CommandBuffer",
                 traceResourceId,
-                commandList.Get());
+                this->commandList.Get());
     };
 
     unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int id, omegasl_shader &shader){
@@ -340,13 +340,15 @@ _NAMESPACE_BEGIN_
                     ds_cpu_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(resolveTexture->dsvDescHeap->GetCPUDescriptorHandleForHeapStart());
                 }
 
-                auto currentState = resolveTexture->currentState;
-
-                auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-                        textureRenderTarget->texture->resource.Get(),currentState,
-                        D3D12_RESOURCE_STATE_RESOLVE_DEST);
-                commandList->ResourceBarrier(1, &barrier);
-                resolveTexture->currentState = D3D12_RESOURCE_STATE_RESOLVE_DEST;
+                auto *targetTexture = textureRenderTarget->texture.get();
+                if(targetTexture != nullptr){
+                    auto currentState = targetTexture->currentState;
+                    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                            targetTexture->resource.Get(),currentState,
+                            D3D12_RESOURCE_STATE_RESOLVE_DEST);
+                    commandList->ResourceBarrier(1,&barrier);
+                    targetTexture->currentState = D3D12_RESOURCE_STATE_RESOLVE_DEST;
+                }
 
                 auto desc = textureRenderTarget->texture->resource->GetDesc();
                 auto dxgi_format = desc.Format;
@@ -366,6 +368,21 @@ _NAMESPACE_BEGIN_
                 resolveParams.ResolveMode = D3D12_RESOLVE_MODE_MAX;
             }
             else {
+                auto *targetTexture = textureRenderTarget->texture.get();
+                if(targetTexture != nullptr){
+                    if(targetTexture->currentState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS){
+                        auto barrier = CD3DX12_RESOURCE_BARRIER::UAV(targetTexture->resource.Get());
+                        commandList->ResourceBarrier(1,&barrier);
+                    }
+                    if(!(targetTexture->currentState & D3D12_RESOURCE_STATE_RENDER_TARGET)){
+                        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                                targetTexture->resource.Get(),
+                                targetTexture->currentState,
+                                D3D12_RESOURCE_STATE_RENDER_TARGET);
+                        commandList->ResourceBarrier(1,&barrier);
+                        targetTexture->currentState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                    }
+                }
                 cpu_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(
                         textureRenderTarget->texture->rtvDescHeap->GetCPUDescriptorHandleForHeapStart());
                 if(!desc.depthStencilAttachment.disabled){
@@ -508,11 +525,13 @@ _NAMESPACE_BEGIN_
 
         commandList->SetDescriptorHeaps(1,d3d12_buffer->bufferDescHeap.GetAddressOf());
 
+        const auto rootParam = getRootParameterIndexOfResource(index,currentRenderPipeline->vertexShader->internal);
+
         if(d3d12_buffer->currentState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE){
-            commandList->SetGraphicsRootShaderResourceView(getRootParameterIndexOfResource(index,currentRenderPipeline->vertexShader->internal),d3d12_buffer->buffer->GetGPUVirtualAddress());
+            commandList->SetGraphicsRootShaderResourceView(rootParam,d3d12_buffer->buffer->GetGPUVirtualAddress());
         }
         else {
-            commandList->SetGraphicsRootUnorderedAccessView(getRootParameterIndexOfResource(index,currentRenderPipeline->vertexShader->internal),d3d12_buffer->buffer->GetGPUVirtualAddress());
+            commandList->SetGraphicsRootUnorderedAccessView(rootParam,d3d12_buffer->buffer->GetGPUVirtualAddress());
         }
 
     };

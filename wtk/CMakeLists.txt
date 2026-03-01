@@ -1,6 +1,7 @@
 # cmake_minimum_required(VERSION 3.11)
 
 set(OMEGAWTK_VERSION "0.8")
+option(OMEGAWTK_SKIP_THIRD_PARTY_BUILD "Use prebuilt third-party artifacts and skip building ExternalProject dependencies." OFF)
 
 set(OMEGAWTK_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -19,7 +20,7 @@ endif()
 if(WIN32)
 	message("OmegaWTK: TARGET_WIN32 = TRUE")
 	set(TARGET_WIN32 TRUE)
-	add_compile_definitions(TARGET_WIN32 TARGET_DIRECTX)
+	add_compile_definitions(TARGET_WIN32 TARGET_DIRECTX NOMINMAX WIN32_LEAN_AND_MEAN)
 elseif(APPLE AND NOT IOS)
 	message("OmegaWTK: TARGET_MACOS = TRUE")
 	set(TARGET_MACOS TRUE)
@@ -349,11 +350,18 @@ message("OmegaWTKWidgets: ${WIDGETS_SRCS}")
 
 configure_file("${OMEGAWTK_SOURCE_DIR}/src/Info.plist.in" ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
 
+set(OMEGAWTK_MODULE_DEPS OmegaGTE icu zlib libpng libjpeg-turbo libtiff libxml2)
+if(OMEGAWTK_SKIP_THIRD_PARTY_BUILD)
+	set(OMEGAWTK_MODULE_DEPS OmegaGTE)
+endif()
+
 add_omega_graphics_module("OmegaWTK" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION ${OMEGAWTK_VERSION} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include" 
-DEPENDS OmegaGTE icu zlib libpng libjpeg-turbo libtiff libxml2 
+DEPENDS ${OMEGAWTK_MODULE_DEPS}
 EMBEDDED_LIBS ${ICU_EXPORT} ${LIBXML2_EXPORT} ${ZLIB_EXPORT} ${LIBPNG_EXPORT} ${LIBJPEGTURBO_EXPORT} ${LIBTIFF_EXPORT} 
 SOURCES ${CORE_SRCS} ${NATIVE_SRCS} ${MEDIA_SRCS} ${COMPOSITION_SRCS} ${UI_SRCS} ${WIDGETS_SRCS})
-add_dependencies("OmegaWTK" ThirdParty)
+if(NOT OMEGAWTK_SKIP_THIRD_PARTY_BUILD)
+	add_dependencies("OmegaWTK" ThirdParty)
+endif()
 if(TARGET_ANDROID)
 	add_library( app-glue
 			STATIC
@@ -380,7 +388,7 @@ if(TARGET_MACOS)
 	add_dependencies("OmegaWTK" OmegaGTE.framework)
 	add_dependencies("OmegaWTK" "OmegaWTK_ThirdPartyInstallNames")
 elseif(TARGET_WIN32)
-	set(THIRD_PARTY_DLLS ${ICU_DLLS} ${LIBXML2_DLL} ${ZLIB_DLL} ${LIBPNG_DLL} ${LIBTURBOJPEG_DLL} ${LIBTIFF_DLL})
+	set(THIRD_PARTY_DLLS ${ICU_DLLS} ${LIBXML2_DLL} ${ZLIB_DLL} ${LIBPNG_DLL} ${LIBJPEGTURBO_DLL} ${LIBTIFF_DLL})
 endif()
 target_include_directories("OmegaWTK" PUBLIC ${THIRD_PARTY_INCLUDEDIRS} $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES> )
 if(TARGET_MACOS)

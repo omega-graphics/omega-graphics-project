@@ -58,7 +58,7 @@ bool Color::compare(const Color &other){
     return (r == other.r) && (g == other.g) &&(b == other.b) && (a == other.a);
 };
 
-const Color Color::Transparent = Color::create8Bit(Color::Eight::Black8,0x00);
+OMEGAWTK_EXPORT const Color Color::Transparent = Color::create8Bit(Color::Eight::Black8,0x00);
 
 Gradient::GradientStop Gradient::Stop(float pos, Color color){
     return {pos,color};

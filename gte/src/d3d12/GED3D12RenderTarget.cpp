@@ -23,7 +23,7 @@ _NAMESPACE_BEGIN_
                 ResourceTracking::Backend::D3D12,
                 "NativeRenderTarget",
                 traceResourceId,
-                swapChain.Get());
+                this->swapChain.Get());
     };
 
     GED3D12NativeRenderTarget::~GED3D12NativeRenderTarget(){

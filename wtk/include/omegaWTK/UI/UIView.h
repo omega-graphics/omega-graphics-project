@@ -195,7 +195,7 @@ struct OMEGAWTK_EXPORT StyleSheet {
 class UIViewLayout;
 typedef SharedHandle<UIViewLayout> UIViewLayoutPtr;
 
-class UIViewLayout {
+class OMEGAWTK_EXPORT UIViewLayout {
 public:
     struct Element {
         enum class Type : uint8_t {

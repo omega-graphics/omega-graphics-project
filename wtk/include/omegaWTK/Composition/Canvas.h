@@ -65,7 +65,7 @@ namespace OmegaWTK {
             Bitmap
         } Type;
         Type type;
-        struct Data {
+        struct OMEGAWTK_EXPORT Data {
             struct {
                 Core::Rect rect;
                 Core::SharedPtr<Brush> brush;
