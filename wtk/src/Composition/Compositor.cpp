@@ -1026,8 +1026,13 @@ void CompositorScheduler::shutdownAndJoin(){
         shutdown = true;
     }
     compositor->queueCondition.notify_all();
-    if(t.joinable() && t.get_id() != std::this_thread::get_id()){
-        t.join();
+    if(t.joinable()){
+        if(t.get_id() == std::this_thread::get_id()){
+            t.detach();
+        }
+        else {
+            t.join();
+        }
     }
 }
 

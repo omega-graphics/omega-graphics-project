@@ -6,6 +6,11 @@
 
 namespace OmegaWTK::Native {
 
+struct NativeAppLaunchArgs {
+    int argc = 0;
+    char **argv = nullptr;
+};
+
 class OMEGAWTK_EXPORT NativeApp {
 public:
     virtual int runEventLoop() = 0;

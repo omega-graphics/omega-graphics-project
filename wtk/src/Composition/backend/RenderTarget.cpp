@@ -219,6 +219,10 @@ fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
         }
 
         renderPipelineState = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
+        if(renderPipelineState == nullptr){
+            std::cout << "Failed to create mandatory color render pipeline state." << std::endl;
+            return;
+        }
 
         OMEGAWTK_DEBUG("Phase 2");
 
@@ -226,6 +230,9 @@ fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
         renderPipelineDescriptor.fragmentFunc = getShader("textureFragment");
         if(renderPipelineDescriptor.vertexFunc != nullptr && renderPipelineDescriptor.fragmentFunc != nullptr){
             textureRenderPipelineState = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
+            if(textureRenderPipelineState == nullptr){
+                std::cout << "Texture render pipeline creation failed." << std::endl;
+            }
         }
         else {
             textureRenderPipelineState.reset();
@@ -236,6 +243,9 @@ fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
         renderPipelineDescriptor.fragmentFunc = getShader("copyFragment");
         if(renderPipelineDescriptor.vertexFunc != nullptr && renderPipelineDescriptor.fragmentFunc != nullptr){
             finalCopyRenderPipelineState = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
+            if(finalCopyRenderPipelineState == nullptr){
+                std::cout << "Final copy pipeline creation failed." << std::endl;
+            }
         }
         else {
             finalCopyRenderPipelineState.reset();
@@ -389,9 +399,24 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
 
     targetTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
     effectTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
+    if(targetTexture == nullptr || effectTexture == nullptr){
+        std::cout << "Failed to allocate Vulkan backing textures." << std::endl;
+        preEffectTarget.reset();
+        effectTarget.reset();
+        tessellationEngineContext.reset();
+        return;
+    }
     preEffectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,targetTexture});
     effectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,effectTexture});
+    if(preEffectTarget == nullptr || effectTarget == nullptr){
+        std::cout << "Failed to allocate Vulkan texture render targets." << std::endl;
+        tessellationEngineContext.reset();
+        return;
+    }
     tessellationEngineContext = gte.tessalationEngine->createTEContextFromTextureRenderTarget(preEffectTarget);
+    if(tessellationEngineContext == nullptr){
+        std::cout << "Failed to create tessellation context for backing render target." << std::endl;
+    }
 }
 
 BackendRenderTargetContext::~BackendRenderTargetContext(){
@@ -423,6 +448,9 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
     }
 
 void BackendRenderTargetContext::clear(float r, float g, float b, float a) {
+    if(preEffectTarget == nullptr){
+        return;
+    }
     auto cb = preEffectTarget->commandBuffer();
 
     OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
@@ -448,6 +476,19 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                             std::uint64_t syncPacketId,
                                             std::chrono::steady_clock::time_point submitTimeCpu,
                                             BackendSubmissionCompletionHandler completionHandler){
+        if(renderTarget == nullptr || preEffectTarget == nullptr){
+            if(completionHandler){
+                BackendSubmissionTelemetry telemetry {};
+                telemetry.syncLaneId = syncLaneId;
+                telemetry.syncPacketId = syncPacketId;
+                telemetry.submitTimeCpu = submitTimeCpu;
+                telemetry.completeTimeCpu = std::chrono::steady_clock::now();
+                telemetry.presentTimeCpu = telemetry.completeTimeCpu;
+                telemetry.status = BackendSubmissionStatus::Dropped;
+                completionHandler(telemetry);
+            }
+            return;
+        }
         auto _l_cb = preEffectTarget->commandBuffer();
         const bool canApplyEffects = !effectQueue.empty() &&
                                      imageProcessor != nullptr &&
@@ -492,7 +533,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                         telemetry.presentTimeCpu = telemetry.completeTimeCpu;
                         telemetry.gpuStartTimeSec = info.gpuStartTimeSec;
                         telemetry.gpuEndTimeSec = info.gpuEndTimeSec;
-                        telemetry.status = info.status == OmegaGTE::GECommandBufferCompletionInfo::Status::Completed
+                        telemetry.status = info.status == OmegaGTE::GECommandBufferCompletionInfo::CompletionStatus::Completed
                                            ? BackendSubmissionStatus::Completed
                                            : BackendSubmissionStatus::Error;
                         completionHandler(telemetry);
@@ -539,6 +580,9 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
     void
     BackendRenderTargetContext::createGradientTexture(bool linearOrRadial, Gradient &gradient, OmegaGTE::GRect &rect,
                                                       SharedHandle<OmegaGTE::GETexture> &dest) {
+        if(renderTarget == nullptr || dest == nullptr || bufferWriter == nullptr || linearGradientPipelineState == nullptr){
+            return;
+        }
         auto cb = renderTarget->commandBuffer();
 
         size_t structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT});
@@ -587,6 +631,9 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
     typedef decltype(VisualCommand::params) VisualCommandParams;
 
     void BackendRenderTargetContext::renderToTarget(VisualCommand::Type type, void *params) {
+        if(bufferWriter == nullptr || preEffectTarget == nullptr || tessellationEngineContext == nullptr){
+            return;
+        }
         OmegaGTE::TETessellationResult result;
 
         OmegaGTE::GEViewport viewPort {};
@@ -796,6 +843,10 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT2});
         }
         else {
+            if(renderPipelineState == nullptr){
+                std::cout << "Color render pipeline unavailable. Skipping draw command." << std::endl;
+                return;
+            }
             struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT4});
         }
 

@@ -13,10 +13,10 @@ _NAMESPACE_BEGIN_
     class GEFence;
 
     struct OMEGAGTE_EXPORT GECommandBufferCompletionInfo {
-        enum class Status : std::uint8_t {
+        enum class CompletionStatus : std::uint8_t {
             Completed,
             Error
-        } status = Status::Completed;
+        } status = CompletionStatus::Completed;
         // Backend-specific GPU timeline values in seconds when available.
         double gpuStartTimeSec = 0.0;
         double gpuEndTimeSec = 0.0;

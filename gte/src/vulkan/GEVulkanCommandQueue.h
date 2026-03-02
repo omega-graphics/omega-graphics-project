@@ -20,6 +20,10 @@ _NAMESPACE_BEGIN_
 
         GEVulkanRenderPipelineState *renderPipelineState = nullptr;
         GEVulkanComputePipelineState *computePipelineState = nullptr;
+        VkRenderPass activeRenderPass = VK_NULL_HANDLE;
+        VkFramebuffer activeFramebuffer = VK_NULL_HANDLE;
+        OmegaCommon::Vector<VkRenderPass> ownedRenderPasses;
+        OmegaCommon::Vector<VkFramebuffer> ownedFramebuffers;
 
         friend class GEVulkanCommandQueue;
 

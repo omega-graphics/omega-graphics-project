@@ -18,6 +18,7 @@ class GEVulkanRenderPipelineState : public __GERenderPipelineState {
 public:
 
     VkPipeline pipeline;
+    VkRenderPass compatibilityRenderPass;
     VkPipelineLayout layout;
 
     VkDescriptorPool descriptorPool;
@@ -30,6 +31,7 @@ public:
                                 SharedHandle<GTEShader> & fragmentShader,
                                 GEVulkanEngine *parentEngine,
                                 VkPipeline & pipeline,
+                                VkRenderPass & compatibilityRenderPass,
                                 VkPipelineLayout & layout,
                                 VkDescriptorPool & descriptorPool,
                                 OmegaCommon::Vector<VkDescriptorSet> & descs,

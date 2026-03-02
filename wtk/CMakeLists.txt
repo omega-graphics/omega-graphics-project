@@ -43,12 +43,32 @@ elseif(UNIX AND NOT APPLE)
 	find_package(PkgConfig)
 
 	pkg_check_modules(PKG_WAYLAND wayland-client wayland-server wayland-egl wayland-cursor)
+	set(OMEGA_LINUX_VK_BACKEND "AUTO" CACHE STRING "Linux Vulkan native backend selection (AUTO, WAYLAND, X11)")
+	set_property(CACHE OMEGA_LINUX_VK_BACKEND PROPERTY STRINGS AUTO WAYLAND X11)
+	string(TOUPPER "${OMEGA_LINUX_VK_BACKEND}" OMEGA_LINUX_VK_BACKEND_UPPER)
+	set(OMEGA_LINUX_USE_WAYLAND FALSE)
 
-	# Check for Wayland support, else use X11.
-	if(PKG_WAYLAND_FOUND)
-		add_compile_definitions("WTK_NATIVE_WAYLAND")
+	if(OMEGA_LINUX_VK_BACKEND_UPPER STREQUAL "WAYLAND")
+		if(NOT PKG_WAYLAND_FOUND)
+			message(FATAL_ERROR "OMEGA_LINUX_VK_BACKEND=WAYLAND requested, but Wayland development packages were not found.")
+		endif()
+		set(OMEGA_LINUX_USE_WAYLAND TRUE)
+	elseif(OMEGA_LINUX_VK_BACKEND_UPPER STREQUAL "X11")
+		set(OMEGA_LINUX_USE_WAYLAND FALSE)
+	elseif(OMEGA_LINUX_VK_BACKEND_UPPER STREQUAL "AUTO")
+		if(PKG_WAYLAND_FOUND AND DEFINED ENV{XDG_SESSION_TYPE} AND "$ENV{XDG_SESSION_TYPE}" STREQUAL "wayland")
+			set(OMEGA_LINUX_USE_WAYLAND TRUE)
+		endif()
 	else()
-		add_compile_definitions("WTK_NATIVE_X11")
+		message(FATAL_ERROR "Unsupported OMEGA_LINUX_VK_BACKEND value: ${OMEGA_LINUX_VK_BACKEND}. Use AUTO, WAYLAND, or X11.")
+	endif()
+
+	if(OMEGA_LINUX_USE_WAYLAND)
+		message("OmegaWTK: Linux native backend = Wayland")
+		add_compile_definitions("WTK_NATIVE_WAYLAND" "VULKAN_TARGET_WAYLAND")
+	else()
+		message("OmegaWTK: Linux native backend = X11")
+		add_compile_definitions("WTK_NATIVE_X11" "VULKAN_TARGET_X11")
 	endif()
 
 endif()
@@ -136,6 +156,11 @@ endif()
 		reset_library_dependent_name("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicuuc.dylib" "libicudata.69.dylib" "@rpath/libicudata.dylib")
 		reset_library_dependent_name("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib" "libicudata.69.dylib" "@rpath/libicudata.dylib")
 		reset_library_dependent_name("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib" "libicuuc.69.dylib" "@rpath/libicuuc.dylib")
+	elseif(TARGET_LINUX)
+		set(ICU_EXPORT
+			"${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicuuc.so"
+			"${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicudata.so"
+			"${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.so")
 	else()
 	endif()
 	
@@ -159,6 +184,8 @@ add_third_party(
 	elseif(TARGET_MACOS)
 		set(LIBXML2_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libxml2/lib/libxml2.dylib")
 		set_library_install_name(${LIBXML2_EXPORT} "@rpath/libxml2.dylib")
+	elseif(TARGET_LINUX)
+		set(LIBXML2_EXPORT "xml2")
 	endif()
 
 add_third_party(
@@ -175,6 +202,8 @@ add_third_party(
 	elseif(TARGET_MACOS)
 		set(ZLIB_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/zlib/lib/libz.dylib")
 		set_library_install_name(${ZLIB_EXPORT} "@rpath/libz.dylib")
+	elseif(TARGET_LINUX)
+		set(ZLIB_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/zlib/lib/libz.so")
 	endif()
 	
 add_third_party(
@@ -193,6 +222,8 @@ add_third_party(
 		set(LIBPNG_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libpng/lib/libpng.dylib")
 		set_library_install_name(${LIBPNG_EXPORT} "@rpath/libpng.dylib")
 		reset_library_dependent_name(${LIBPNG_EXPORT} "@rpath/libz.1.dylib" "@rpath/libz.dylib")
+	elseif(TARGET_LINUX)
+		set(LIBPNG_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libpng/lib/libpng.so")
 	endif()
 	
 	set(THIRD_PARTY_INCLUDEDIRS ${THIRD_PARTY_INCLUDEDIRS} "${THIRD_PARTY_OUTPUT_DIR}/libpng/include")
@@ -212,6 +243,8 @@ add_third_party(
 	elseif(TARGET_MACOS)
 		set(LIBJPEGTURBO_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libjpeg-turbo/lib/libturbojpeg.dylib")
 		set_library_install_name(${LIBJPEGTURBO_EXPORT} "@rpath/libturbojpeg.dylib")
+	elseif(TARGET_LINUX)
+		set(LIBJPEGTURBO_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libjpeg-turbo/lib/libturbojpeg.so")
 	endif()
 	
 	set(THIRD_PARTY_INCLUDEDIRS ${THIRD_PARTY_INCLUDEDIRS} "${THIRD_PARTY_OUTPUT_DIR}/libjpeg-turbo/include")
@@ -241,6 +274,8 @@ add_third_party(
 		set(LIBTIFF_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libtiff/lib/libtiff.dylib")
 		set_library_install_name(${LIBTIFF_EXPORT} "@rpath/libtiff.dylib")
 		reset_library_dependent_name(${LIBTIFF_EXPORT} "@rpath/libz.1.dylib" "@rpath/libz.dylib")
+	elseif(TARGET_LINUX)
+		set(LIBTIFF_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libtiff/lib/libtiff.so")
 	endif()
 	
 	set(THIRD_PARTY_INCLUDEDIRS ${THIRD_PARTY_INCLUDEDIRS} "${THIRD_PARTY_OUTPUT_DIR}/libtiff/include")
@@ -331,9 +366,9 @@ if(TARGET_WIN32)
 elseif(TARGET_MACOS)
 	file(GLOB MACOS_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Composition/backend/mtl/*.mm")
 	set(COMPOSITION_SRCS ${COMPOSITION_SRCS} ${MACOS_SRCS})
-else()
-	file(GLOB GTK_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Composition/backend/gtk/*.cpp")
-	set(COMPOSITION_SRCS ${COMPOSITION_SRCS} ${GTK_SRCS})
+elseif(TARGET_LINUX)
+	file(GLOB VK_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Composition/backend/vk/*.cpp")
+	set(COMPOSITION_SRCS ${COMPOSITION_SRCS} ${VK_SRCS})
 endif()
 
 source_group(OmegaWTKComposition ${COMPOSITION_SRCS})

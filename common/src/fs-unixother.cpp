@@ -6,10 +6,29 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <cstring>
 
 
 
 namespace OmegaCommon::FS {
+
+	bool Path::isDirectory(){
+		struct stat st = {0};
+		auto p = absPath();
+		if(stat(p.c_str(),&st) == -1){
+			return false;
+		}
+		return S_ISDIR(st.st_mode);
+	}
+
+	bool Path::isFile(){
+		struct stat st = {0};
+		auto p = absPath();
+		if(stat(p.c_str(),&st) == -1){
+			return false;
+		}
+		return S_ISREG(st.st_mode);
+	}
 
 	String Path::absPath(){
 		auto n_dir = _dir;
@@ -93,5 +112,50 @@ namespace OmegaCommon::FS {
 	StatusCode createSymLink(Path file, Path symlinkDest){
 		symlink(file.absPath().c_str(),symlinkDest.absPath().c_str());
 		return Ok;
+	}
+
+	DirectoryIterator::DirectoryIterator(Path path):
+	path(path),
+	result_path(path),
+	_end(false),
+	data(nullptr),
+	loc(-1){
+		auto dir = opendir(path.absPath().c_str());
+		data = dir;
+		if(dir == nullptr){
+			_end = true;
+			return;
+		}
+		++(*this);
+	}
+
+	Path DirectoryIterator::operator*(){
+		return result_path;
+	}
+
+	DirectoryIterator & DirectoryIterator::operator++(){
+		auto *dir = static_cast<DIR *>(data);
+		if(dir == nullptr){
+			_end = true;
+			return *this;
+		}
+		dirent *ent = nullptr;
+		while((ent = readdir(dir)) != nullptr){
+			if(std::strcmp(ent->d_name,".") == 0 || std::strcmp(ent->d_name,"..") == 0){
+				continue;
+			}
+			result_path = path + ent->d_name;
+			++loc;
+			return *this;
+		}
+		_end = true;
+		return *this;
+	}
+
+	DirectoryIterator::~DirectoryIterator(){
+		auto *dir = static_cast<DIR *>(data);
+		if(dir != nullptr){
+			closedir(dir);
+		}
 	}
 }

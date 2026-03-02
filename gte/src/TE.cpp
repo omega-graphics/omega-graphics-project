@@ -407,8 +407,8 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
             translateCoords(object.x,object.y,object.z,viewport,&centerX,&centerY,&centerZ);
 
             auto makePoint = [&](float angle){
-                float x = object.x + std::cosf(angle) * object.rad_x;
-                float y = object.y + std::sinf(angle) * object.rad_y;
+                float x = object.x + std::cos(angle) * object.rad_x;
+                float y = object.y + std::sin(angle) * object.rad_y;
                 float tx,ty,tz;
                 translateCoords(x,y,object.z,viewport,&tx,&ty,&tz);
                 return GPoint3D{tx,ty,tz};

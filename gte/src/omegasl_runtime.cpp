@@ -3,6 +3,7 @@
 #include "../omegasl/src/Parser.h"
 
 #include "OmegaGTE.h"
+#include <stdexcept>
 
 #ifdef RUNTIME_SHADER_COMP_SUPPORT
 
@@ -37,6 +38,9 @@ class OmegaSLCompilerImpl : public OmegaSLCompiler {
 #if defined(TARGET_METAL)
     omegasl::MetalCodeOpts metalCodeOpts;
 #endif
+#if defined(TARGET_VULKAN)
+    omegasl::GLSLCodeOpts glslCodeOpts;
+#endif
 public:
     explicit OmegaSLCompilerImpl(SharedHandle<OmegaGTE::GTEDevice> & device):device(device), genOpts({false,true,}){
         omegasl::ast::builtins::Initialize();
@@ -46,7 +50,13 @@ public:
 #elif defined(TARGET_METAL)
         metalCodeOpts = omegasl::MetalCodeOpts {"",const_cast<void *>(device->native())};
         gen = omegasl::MetalCodeGenMakeRuntime(genOpts,metalCodeOpts,sourceBuf);
+#elif defined(TARGET_VULKAN)
+        glslCodeOpts.glslc_cmd = "glslc";
+        gen = omegasl::GLSLCodeGenMakeRuntime(genOpts,glslCodeOpts,sourceBuf);
 #endif
+        if(gen == nullptr){
+            throw std::runtime_error("OmegaSL runtime compiler backend is unavailable for this target.");
+        }
         parser = std::make_shared<omegasl::Parser>(gen);
 
     }

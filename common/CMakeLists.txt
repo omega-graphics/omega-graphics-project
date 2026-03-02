@@ -21,7 +21,7 @@ elseif(APPLE)
 	target_link_system_frameworks("OmegaCommon" "Foundation")
 	target_link_libraries("OmegaCommon" PRIVATE curl)
 elseif(UNIX)
-	target_sources("OmegaCommon" PRIVATE "src/fs-unixother.cpp" "src/multithread-unix.cpp")
+	target_sources("OmegaCommon" PRIVATE "src/fs-unixother.cpp" "src/net-unix.cpp" "src/multithread-unix.cpp")
 endif()
 
 file(GLOB WRAPGEN_SRCS "wrapgen/*.cpp")
@@ -43,4 +43,3 @@ add_custom_target(wrapgen-tests
 file(GLOB EBIN_SRCS "embedbin/*.cpp")
 
 add_omega_graphics_tool("omega-ebin" LIBS "OmegaCommon" SOURCES ${EBIN_SRCS})
-

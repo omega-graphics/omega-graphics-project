@@ -10,13 +10,32 @@ GEVulkanNativeRenderTarget::GEVulkanNativeRenderTarget(GEVulkanEngine *parentEng
                                                        VkFormat & surfaceFormat,
                                                        unsigned & mipLevel,
                                                        VkExtent2D & surfaceExtent):
-                                                       format(surfaceFormat), extent(surfaceExtent) {
+                                                       parentEngine(parentEngine),
+                                                       surface(surface),
+                                                       framebuffer(VK_NULL_HANDLE),
+                                                       swapchainKHR(swapchainKHR),
+                                                       currentFrameIndex(0),
+                                                       format(surfaceFormat),
+                                                       extent(surfaceExtent),
+                                                       semaphore(VK_NULL_HANDLE),
+                                                       frameIsReadyFence(VK_NULL_HANDLE) {
+    if(this->parentEngine == nullptr || this->swapchainKHR == VK_NULL_HANDLE){
+        return;
+    }
+
     uint32_t count = 0;
-    vkGetSwapchainImagesKHR(parentEngine->device,swapchainKHR,&count,nullptr);
+    auto swapchainImagesRes = vkGetSwapchainImagesKHR(this->parentEngine->device,this->swapchainKHR,&count,nullptr);
+    if(swapchainImagesRes != VK_SUCCESS || count == 0){
+        return;
+    }
 
     frames.resize(count);
 
-    vkGetSwapchainImagesKHR(parentEngine->device,swapchainKHR,&count,frames.data());
+    swapchainImagesRes = vkGetSwapchainImagesKHR(this->parentEngine->device,this->swapchainKHR,&count,frames.data());
+    if(swapchainImagesRes != VK_SUCCESS){
+        frames.clear();
+        return;
+    }
 
     VkImageViewCreateInfo imgView{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     VkImageView view;
@@ -30,44 +49,40 @@ GEVulkanNativeRenderTarget::GEVulkanNativeRenderTarget(GEVulkanEngine *parentEng
         imgView.subresourceRange.layerCount = 1;
         imgView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         imgView.subresourceRange.baseMipLevel = 0;
-        imgView.subresourceRange.levelCount = mipLevel;
-        vkCreateImageView(parentEngine->device,&imgView,nullptr,&view);
+        imgView.subresourceRange.levelCount = mipLevel > 0 ? mipLevel : 1;
+        auto viewRes = vkCreateImageView(this->parentEngine->device,&imgView,nullptr,&view);
+        if(viewRes != VK_SUCCESS){
+            continue;
+        }
         frameViews.push_back(view);
     }
 
-    VkFramebufferCreateInfo framebufferCreateInfo {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-    framebufferCreateInfo.pNext = nullptr;
-    framebufferCreateInfo.renderPass = VK_NULL_HANDLE;
-    framebufferCreateInfo.width = surfaceExtent.width;
-    framebufferCreateInfo.height = surfaceExtent.height;
-    framebufferCreateInfo.attachmentCount = frameViews.size();
-    framebufferCreateInfo.pAttachments = frameViews.data();
-    framebufferCreateInfo.layers = 1;
-    framebufferCreateInfo.flags = 0;
-
-    vkCreateFramebuffer(parentEngine->device,&framebufferCreateInfo,nullptr,&framebuffer);
-
-    commandQueue = std::dynamic_pointer_cast<GEVulkanCommandQueue>(parentEngine->makeCommandQueue(100));
+    commandQueue = std::dynamic_pointer_cast<GEVulkanCommandQueue>(this->parentEngine->makeCommandQueue(100));
 
     VkSemaphoreCreateInfo semaphoreCreateInfo {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     semaphoreCreateInfo.pNext = nullptr;
     semaphoreCreateInfo.flags = 0;
-    vkCreateSemaphore(parentEngine->device,&semaphoreCreateInfo,nullptr,&semaphore);
+    auto semaphoreRes = vkCreateSemaphore(this->parentEngine->device,&semaphoreCreateInfo,nullptr,&semaphore);
+    if(semaphoreRes != VK_SUCCESS){
+        semaphore = VK_NULL_HANDLE;
+    }
 
     VkFenceCreateInfo fenceCreateInfo {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     fenceCreateInfo.pNext = nullptr;
     fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    vkCreateFence(parentEngine->device,&fenceCreateInfo,nullptr,&frameIsReadyFence);
+    auto fenceRes = vkCreateFence(this->parentEngine->device,&fenceCreateInfo,nullptr,&frameIsReadyFence);
+    if(fenceRes != VK_SUCCESS){
+        frameIsReadyFence = VK_NULL_HANDLE;
+    }
 
-    currentFrameIndex = 0;
     traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
     ResourceTracking::Tracker::instance().emit(
             ResourceTracking::EventType::Create,
             ResourceTracking::Backend::Vulkan,
             "NativeRenderTarget",
             traceResourceId,
-            reinterpret_cast<const void *>(swapchainKHR),
+            reinterpret_cast<const void *>(this->swapchainKHR),
             static_cast<float>(extent.width),
             static_cast<float>(extent.height));
 
@@ -93,11 +108,11 @@ void GEVulkanNativeRenderTarget::notifyCommandBuffer(SharedHandle<CommandBuffer>
 }
 
 void GEVulkanNativeRenderTarget::commitAndPresent() {
+    if(parentEngine == nullptr || parentEngine->device == VK_NULL_HANDLE || commandQueue == nullptr || swapchainKHR == VK_NULL_HANDLE){
+        return;
+    }
 
-
-    uint64_t val;
-    vkGetSemaphoreCounterValue(parentEngine->device,semaphore,&val);
-    const auto presentedCommandBufferId = commandQueue != nullptr ? commandQueue->lastSubmittedCommandBufferTraceId() : 0;
+    const auto presentedCommandBufferId = commandQueue->lastSubmittedCommandBufferTraceId();
 
     VkPresentInfoKHR presentInfoKhr {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     presentInfoKhr.pNext = nullptr;
@@ -114,29 +129,11 @@ void GEVulkanNativeRenderTarget::commitAndPresent() {
     presentEvent.eventType = ResourceTracking::EventType::Present;
     presentEvent.resourceType = "NativeRenderTarget";
     presentEvent.resourceId = traceResourceId;
-    presentEvent.queueId = commandQueue != nullptr ? commandQueue->traceId() : 0;
+    presentEvent.queueId = commandQueue->traceId();
     presentEvent.commandBufferId = presentedCommandBufferId;
     presentEvent.nativeHandle = reinterpret_cast<std::uint64_t>(swapchainKHR);
     ResourceTracking::Tracker::instance().emit(presentEvent);
-    if(commandQueue != nullptr){
-        commandQueue->clearSubmittedTraceCommandBufferIds();
-    }
-
-    /// Wait for value to increment!!
-    // val += 1;
-
-    // VkSemaphoreWaitInfo waitInfo {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-    // waitInfo.pSemaphores = &semaphore;
-    // waitInfo.semaphoreCount = 1;
-    // waitInfo.pNext = nullptr;
-    // waitInfo.pValues = &val;
-    // waitInfo.flags = VK_SEMAPHORE_WAIT_ANY_BIT;
-
-    // Wait forever until frame is finished
-
-    // vkWaitSemaphores(parentEngine->device,&waitInfo,UINT64_MAX);
-
-    vkAcquireNextImageKHR(parentEngine->device,swapchainKHR,UINT64_MAX,VK_NULL_HANDLE,frameIsReadyFence,&currentFrameIndex);
+    commandQueue->clearSubmittedTraceCommandBufferIds();
 }
 
 GEVulkanNativeRenderTarget::~GEVulkanNativeRenderTarget() {
@@ -149,12 +146,28 @@ GEVulkanNativeRenderTarget::~GEVulkanNativeRenderTarget() {
             static_cast<float>(extent.width),
             static_cast<float>(extent.height));
 
-    vkDestroyFramebuffer(parentEngine->device,framebuffer, nullptr);
+    if(parentEngine == nullptr || parentEngine->device == VK_NULL_HANDLE){
+        return;
+    }
+
+    if(framebuffer != VK_NULL_HANDLE){
+        vkDestroyFramebuffer(parentEngine->device,framebuffer, nullptr);
+    }
     for(auto view : frameViews){
         vkDestroyImageView(parentEngine->device,view,nullptr);
     }
-    vkDestroySwapchainKHR(parentEngine->device,swapchainKHR,nullptr);
-    vkDestroySurfaceKHR(GEVulkanEngine::instance,surface,nullptr);
+    if(frameIsReadyFence != VK_NULL_HANDLE){
+        vkDestroyFence(parentEngine->device,frameIsReadyFence,nullptr);
+    }
+    if(semaphore != VK_NULL_HANDLE){
+        vkDestroySemaphore(parentEngine->device,semaphore,nullptr);
+    }
+    if(swapchainKHR != VK_NULL_HANDLE){
+        vkDestroySwapchainKHR(parentEngine->device,swapchainKHR,nullptr);
+    }
+    if(surface != VK_NULL_HANDLE){
+        vkDestroySurfaceKHR(GEVulkanEngine::instance,surface,nullptr);
+    }
 
 }
 
@@ -211,7 +224,9 @@ GEVulkanTextureRenderTarget::~GEVulkanTextureRenderTarget(){
             texture != nullptr ? reinterpret_cast<const void *>(texture->img) : nullptr,
             texture != nullptr ? static_cast<float>(texture->descriptor.width) : -1.f,
             texture != nullptr ? static_cast<float>(texture->descriptor.height) : -1.f);
-    vkDestroyFramebuffer(parentEngine->device,frameBuffer,nullptr);
+    if(frameBuffer != VK_NULL_HANDLE){
+        vkDestroyFramebuffer(parentEngine->device,frameBuffer,nullptr);
+    }
 }
 
 _NAMESPACE_END_

@@ -1,8 +1,9 @@
-#include <gtk/gtk.h>
-
 #include <OmegaWTK.h>
 
 int main(int argc,char *argv[]){
-
-    return 0;
-}
+    OmegaWTK::Native::NativeAppLaunchArgs launchArgs {argc,argv};
+    auto * app = new OmegaWTK::AppInst(&launchArgs);
+    auto rc = omegaWTKMain(app);
+    delete app;
+    return rc;
+};

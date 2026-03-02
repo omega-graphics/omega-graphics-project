@@ -10,11 +10,13 @@ GTEVulkanShader::~GTEVulkanShader(){
 
 GEVulkanRenderPipelineState::GEVulkanRenderPipelineState(SharedHandle<GTEShader> &vertexShader,
                                                          SharedHandle<GTEShader> &fragmentShader,GEVulkanEngine *parentEngine, VkPipeline &pipeline,
+                                                         VkRenderPass & compatibilityRenderPass,
                                                          VkPipelineLayout &layout, VkDescriptorPool &descriptorPool,
                                                          OmegaCommon::Vector<VkDescriptorSet> & descs,
                                                          OmegaCommon::Vector<VkDescriptorSetLayout> & descLayouts) : __GERenderPipelineState(vertexShader,fragmentShader),
                                                          parentEngine(parentEngine),
                                                          pipeline(pipeline),
+                                                         compatibilityRenderPass(compatibilityRenderPass),
                                                          layout(layout),
                                                          descriptorPool(descriptorPool),
                                                          descLayouts(descLayouts),
@@ -23,14 +25,25 @@ GEVulkanRenderPipelineState::GEVulkanRenderPipelineState(SharedHandle<GTEShader>
 }
 
 GEVulkanRenderPipelineState::~GEVulkanRenderPipelineState() {
-    vkDestroyPipeline(parentEngine->device,pipeline,nullptr);
-    vkDestroyPipelineLayout(parentEngine->device,layout,nullptr);
-    vkFreeDescriptorSets(parentEngine->device,descriptorPool,descs.size(),descs.data());
+    if(pipeline != VK_NULL_HANDLE){
+        vkDestroyPipeline(parentEngine->device,pipeline,nullptr);
+    }
+    if(compatibilityRenderPass != VK_NULL_HANDLE){
+        vkDestroyRenderPass(parentEngine->device,compatibilityRenderPass,nullptr);
+    }
+    if(layout != VK_NULL_HANDLE){
+        vkDestroyPipelineLayout(parentEngine->device,layout,nullptr);
+    }
+    if(descriptorPool != VK_NULL_HANDLE && !descs.empty()){
+        vkFreeDescriptorSets(parentEngine->device,descriptorPool,descs.size(),descs.data());
+    }
     for(auto & d : descLayouts) {
         vkDestroyDescriptorSetLayout(parentEngine->device,d,nullptr);
     }
     descs.clear();
-    vkDestroyDescriptorPool(parentEngine->device,descriptorPool,nullptr);
+    if(descriptorPool != VK_NULL_HANDLE){
+        vkDestroyDescriptorPool(parentEngine->device,descriptorPool,nullptr);
+    }
 }
 
 GEVulkanComputePipelineState::GEVulkanComputePipelineState(SharedHandle<GTEShader> &computeShader,
@@ -48,13 +61,21 @@ GEVulkanComputePipelineState::GEVulkanComputePipelineState(SharedHandle<GTEShade
 }
 
 GEVulkanComputePipelineState::~GEVulkanComputePipelineState() {
-    vkDestroyPipeline(parentEngine->device,pipeline,nullptr);
-    vkDestroyPipelineLayout(parentEngine->device,layout,nullptr);
-    vkFreeDescriptorSets(parentEngine->device,descriptorPool,1,&descSet);
+    if(pipeline != VK_NULL_HANDLE){
+        vkDestroyPipeline(parentEngine->device,pipeline,nullptr);
+    }
+    if(layout != VK_NULL_HANDLE){
+        vkDestroyPipelineLayout(parentEngine->device,layout,nullptr);
+    }
+    if(descriptorPool != VK_NULL_HANDLE && descSet != VK_NULL_HANDLE){
+        vkFreeDescriptorSets(parentEngine->device,descriptorPool,1,&descSet);
+    }
     for(auto & d : descLayouts) {
         vkDestroyDescriptorSetLayout(parentEngine->device,d,nullptr);
     }
-    vkDestroyDescriptorPool(parentEngine->device,descriptorPool,nullptr);
+    if(descriptorPool != VK_NULL_HANDLE){
+        vkDestroyDescriptorPool(parentEngine->device,descriptorPool,nullptr);
+    }
 }
 
 _NAMESPACE_END_

@@ -165,7 +165,7 @@ _NAMESPACE_BEGIN_
 
         VkFence fence;
 
-        VkEvent event;
+        VkEvent event = VK_NULL_HANDLE;
 
         void setName(OmegaCommon::StrRef name) override {
             VkDebugUtilsObjectNameInfoEXT nameInfoExt {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
@@ -180,11 +180,16 @@ _NAMESPACE_BEGIN_
             return (void *)fence;
         }
 
-        GEVulkanFence(GEVulkanEngine *engine,VkFence fence):engine(engine),fence(fence){
+        GEVulkanFence(GEVulkanEngine *engine,VkFence fence,VkEvent event = VK_NULL_HANDLE):engine(engine),fence(fence),event(event){
 
         }
         ~GEVulkanFence() {
-            vkDestroyFence(engine->device,fence,nullptr);
+            if(event != VK_NULL_HANDLE){
+                vkDestroyEvent(engine->device,event,nullptr);
+            }
+            if(fence != VK_NULL_HANDLE){
+                vkDestroyFence(engine->device,fence,nullptr);
+            }
         }
     };
 

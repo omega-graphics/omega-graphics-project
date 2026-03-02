@@ -7,8 +7,23 @@
 #include "../common/GEResourceTracker.h"
 
 #include <cstdint>
+#include <iostream>
 
 _NAMESPACE_BEGIN_
+    namespace {
+        inline VkImageSubresourceRange fullColorSubresourceRange(const GEVulkanTexture *texture){
+            VkImageSubresourceRange range {};
+            range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            range.baseMipLevel = 0;
+            range.levelCount = texture != nullptr && texture->descriptor.mipLevels > 0
+                               ? texture->descriptor.mipLevels
+                               : 1;
+            range.baseArrayLayer = 0;
+            range.layerCount = 1;
+            return range;
+        }
+    }
+
     void GEVulkanCommandBuffer::setName(OmegaCommon::StrRef name) {
                 VkDebugUtilsObjectNameInfoEXT nameInfoExt {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
                 nameInfoExt.pNext = nullptr;
@@ -41,6 +56,14 @@ _NAMESPACE_BEGIN_
 
     void GEVulkanCommandBuffer::insertResourceBarrierIfNeeded(GEVulkanBuffer *buffer, unsigned int &resource_id,
                                                               omegasl_shader &shader) {
+        // Temporary diagnostic fallback:
+        // current explicit buffer barrier path can trigger VK_ERROR_DEVICE_LOST on some drivers.
+        // Skip barriers for now to keep BasicAppTest stable while Vulkan sync is reworked.
+        (void)buffer;
+        (void)resource_id;
+        (void)shader;
+        return;
+
         auto ioMode = getResourceIOModeForResourceID(resource_id,shader);
 
         if(parentQueue->engine->hasSynchronization2Ext) {
@@ -71,8 +94,8 @@ _NAMESPACE_BEGIN_
                 VkBufferMemoryBarrier2KHR bufferMemoryBarrier2Khr{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2_KHR};
                 bufferMemoryBarrier2Khr.srcQueueFamilyIndex = bufferMemoryBarrier2Khr.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 bufferMemoryBarrier2Khr.buffer = buffer->buffer;
-                bufferMemoryBarrier2Khr.offset = buffer->alloc_info.offset;
-                bufferMemoryBarrier2Khr.size = buffer->alloc_info.size;
+                bufferMemoryBarrier2Khr.offset = 0;
+                bufferMemoryBarrier2Khr.size = VK_WHOLE_SIZE;
                 bufferMemoryBarrier2Khr.srcAccessMask = buffer->priorAccess2;
                 bufferMemoryBarrier2Khr.dstAccessMask = shaderAccess;
                 bufferMemoryBarrier2Khr.srcStageMask = buffer->priorPipelineAccess2;
@@ -116,13 +139,22 @@ _NAMESPACE_BEGIN_
                 VkBufferMemoryBarrier bufferMemoryBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
                 bufferMemoryBarrier.srcQueueFamilyIndex = bufferMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 bufferMemoryBarrier.buffer = buffer->buffer;
-                bufferMemoryBarrier.offset = buffer->alloc_info.offset;
-                bufferMemoryBarrier.size = buffer->alloc_info.size;
+                bufferMemoryBarrier.offset = 0;
+                bufferMemoryBarrier.size = VK_WHOLE_SIZE;
                 bufferMemoryBarrier.srcAccessMask = buffer->priorAccess;
                 bufferMemoryBarrier.dstAccessMask = shaderAccess;
                 bufferMemoryBarrier.pNext = nullptr;
 
-                vkCmdPipelineBarrier(commandBuffer,buffer->priorPipelineAccess,shaderAccess,VK_DEPENDENCY_DEVICE_GROUP_BIT,0,0,1,&bufferMemoryBarrier,0,nullptr);
+                vkCmdPipelineBarrier(commandBuffer,
+                                     buffer->priorPipelineAccess,
+                                     pipelineStage,
+                                     0,
+                                     0,
+                                     nullptr,
+                                     1,
+                                     &bufferMemoryBarrier,
+                                     0,
+                                     nullptr);
             }
 
             buffer->priorPipelineAccess = pipelineStage;
@@ -154,13 +186,13 @@ _NAMESPACE_BEGIN_
 
             if (ioMode == OMEGASL_SHADER_DESC_IO_IN) {
                 shaderAccess = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT_KHR;
-                layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             } else if (ioMode == OMEGASL_SHADER_DESC_IO_INOUT) {
                 shaderAccess = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT_KHR | VK_ACCESS_2_SHADER_STORAGE_READ_BIT_KHR;
                 layout = VK_IMAGE_LAYOUT_GENERAL;
             } else {
                 shaderAccess = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT_KHR;
-                layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                layout = VK_IMAGE_LAYOUT_GENERAL;
             }
             /// If not first time access, pipeline barrier must be inserted before binding.
             if (texture->priorShaderAccess2 != 0 && hasPipelineAccess) {
@@ -173,8 +205,11 @@ _NAMESPACE_BEGIN_
                 imageMemoryBarrier2Khr.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 imageMemoryBarrier2Khr.oldLayout = texture->layout;
                 imageMemoryBarrier2Khr.newLayout = layout;
-                imageMemoryBarrier2Khr.srcStageMask = texture->priorPipelineAccess2;
+                imageMemoryBarrier2Khr.srcStageMask = texture->priorPipelineAccess2 != 0
+                                                      ? texture->priorPipelineAccess2
+                                                      : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
                 imageMemoryBarrier2Khr.dstStageMask = pipelineStage;
+                imageMemoryBarrier2Khr.subresourceRange = fullColorSubresourceRange(texture);
 
 
                 VkDependencyInfoKHR dependencyInfoKhr{VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR};
@@ -206,13 +241,13 @@ _NAMESPACE_BEGIN_
 
             if (ioMode == OMEGASL_SHADER_DESC_IO_IN) {
                 shaderAccess = VK_ACCESS_SHADER_READ_BIT;
-                layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             } else if (ioMode == OMEGASL_SHADER_DESC_IO_INOUT) {
                 shaderAccess = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
                 layout = VK_IMAGE_LAYOUT_GENERAL;
             } else {
                 shaderAccess = VK_ACCESS_SHADER_WRITE_BIT;
-                layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                layout = VK_IMAGE_LAYOUT_GENERAL;
             }
             /// If not first time access, pipeline barrier must be inserted before binding.
             if (texture->priorShaderAccess != 0 && hasPipelineAccess) {
@@ -225,8 +260,20 @@ _NAMESPACE_BEGIN_
                 imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 imageMemoryBarrier.oldLayout = texture->layout;
                 imageMemoryBarrier.newLayout = layout;
+                imageMemoryBarrier.subresourceRange = fullColorSubresourceRange(texture);
 
-                vkCmdPipelineBarrier(commandBuffer,texture->priorPipelineAccess,shaderAccess,VK_DEPENDENCY_DEVICE_GROUP_BIT,0,nullptr,0,nullptr,1,&imageMemoryBarrier);
+                vkCmdPipelineBarrier(commandBuffer,
+                                     texture->priorPipelineAccess != 0
+                                     ? texture->priorPipelineAccess
+                                     : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                     pipelineStage,
+                                     0,
+                                     0,
+                                     nullptr,
+                                     0,
+                                     nullptr,
+                                     1,
+                                     &imageMemoryBarrier);
             }
 
             texture->layout = layout;
@@ -240,7 +287,10 @@ _NAMESPACE_BEGIN_
         // vk::CommandBufferInheritanceInfo inheritanceInfo;
         beginInfo.pInheritanceInfo = nullptr;
         beginInfo.flags = 0;
-        vkBeginCommandBuffer(commandBuffer,&beginInfo);
+        auto beginRes = vkBeginCommandBuffer(commandBuffer,&beginInfo);
+        if(beginRes != VK_SUCCESS){
+            std::cerr << "Vulkan command buffer begin failed (" << beginRes << ")" << std::endl;
+        }
         traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
         ResourceTracking::Tracker::instance().emit(
                 ResourceTracking::EventType::Create,
@@ -251,6 +301,22 @@ _NAMESPACE_BEGIN_
     };
 
     GEVulkanCommandBuffer::~GEVulkanCommandBuffer() {
+        if(parentQueue != nullptr && parentQueue->engine != nullptr){
+            for(auto framebuffer : ownedFramebuffers){
+                if(framebuffer != VK_NULL_HANDLE){
+                    vkDestroyFramebuffer(parentQueue->engine->device,framebuffer,nullptr);
+                }
+            }
+            for(auto renderPass : ownedRenderPasses){
+                if(renderPass != VK_NULL_HANDLE){
+                    vkDestroyRenderPass(parentQueue->engine->device,renderPass,nullptr);
+                }
+            }
+            ownedFramebuffers.clear();
+            ownedRenderPasses.clear();
+            activeFramebuffer = VK_NULL_HANDLE;
+            activeRenderPass = VK_NULL_HANDLE;
+        }
         ResourceTracking::Tracker::instance().emit(
                 ResourceTracking::EventType::Destroy,
                 ResourceTracking::Backend::Vulkan,
@@ -260,137 +326,193 @@ _NAMESPACE_BEGIN_
     }
 
     void GEVulkanCommandBuffer::startRenderPass(const GERenderPassDescriptor &desc){
+        if(desc.colorAttachment == nullptr){
+            return;
+        }
+
+        activeFramebuffer = VK_NULL_HANDLE;
+        activeRenderPass = VK_NULL_HANDLE;
+
+        VkAttachmentDescription attachmentDescription {};
+        attachmentDescription.samples = VK_SAMPLE_COUNT_1_BIT;
+
+        switch (desc.colorAttachment->loadAction) {
+            case GERenderTarget::RenderPassDesc::ColorAttachment::Clear: {
+                attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                break;
+            }
+            case GERenderTarget::RenderPassDesc::ColorAttachment::Load: {
+                attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                break;
+            }
+            case GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve: {
+                attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                break;
+            }
+            case GERenderTarget::RenderPassDesc::ColorAttachment::Discard: {
+                attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                break;
+            }
+        }
+
+        VkAttachmentReference color_ref {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription subpass {};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &color_ref;
+
+        VkSubpassDependency dependency {};
+        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependency.dstSubpass = 0;
+        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.srcAccessMask = 0;
+        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        VkRenderPassCreateInfo renderPassCreateInfo {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        renderPassCreateInfo.pNext = nullptr;
+        renderPassCreateInfo.attachmentCount = 1;
+        renderPassCreateInfo.pAttachments = &attachmentDescription;
+        renderPassCreateInfo.subpassCount = 1;
+        renderPassCreateInfo.pSubpasses = &subpass;
+        renderPassCreateInfo.dependencyCount = 1;
+        renderPassCreateInfo.pDependencies = &dependency;
+
+        VkFramebufferCreateInfo framebufferInfo {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+        framebufferInfo.pNext = nullptr;
+        framebufferInfo.flags = 0;
+        framebufferInfo.layers = 1;
+        framebufferInfo.attachmentCount = 1;
+
         VkRenderPassBeginInfo beginInfo {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        beginInfo.renderArea.offset.x = 0;
+        beginInfo.renderArea.offset.y = 0;
 
-        VkRenderPass renderPass;
-
-        VkRenderPassCreateInfo renderPassCreateInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-
+        VkImageView attachmentView = VK_NULL_HANDLE;
         if(desc.nRenderTarget != nullptr) {
-            auto nativeTarget = (GEVulkanNativeRenderTarget *) desc.nRenderTarget;
+            auto *nativeTarget = reinterpret_cast<GEVulkanNativeRenderTarget *>(desc.nRenderTarget);
+            if(nativeTarget == nullptr || nativeTarget->frameViews.empty()){
+                return;
+            }
 
-            vkWaitForFences(parentQueue->engine->device,1,&nativeTarget->frameIsReadyFence,VK_TRUE,UINT64_MAX);
-            vkResetFences(parentQueue->engine->device,1,&nativeTarget->frameIsReadyFence);
+            if(nativeTarget->frameIsReadyFence == VK_NULL_HANDLE){
+                return;
+            }
 
-            VkAttachmentDescription attachmentDescription{};
+            auto resetRes = vkResetFences(parentQueue->engine->device,1,&nativeTarget->frameIsReadyFence);
+            if(resetRes != VK_SUCCESS){
+                std::cerr << "Vulkan reset acquire fence failed (" << resetRes << ")" << std::endl;
+                return;
+            }
+            auto acquireRes = vkAcquireNextImageKHR(parentQueue->engine->device,
+                                                    nativeTarget->swapchainKHR,
+                                                    UINT64_MAX,
+                                                    VK_NULL_HANDLE,
+                                                    nativeTarget->frameIsReadyFence,
+                                                    &nativeTarget->currentFrameIndex);
+            if(acquireRes == VK_ERROR_OUT_OF_DATE_KHR){
+                return;
+            }
+            if(acquireRes != VK_SUCCESS && acquireRes != VK_SUBOPTIMAL_KHR){
+                std::cerr << "Vulkan acquire image failed (" << acquireRes << ")" << std::endl;
+                return;
+            }
+
+            auto waitRes = vkWaitForFences(parentQueue->engine->device,1,&nativeTarget->frameIsReadyFence,VK_TRUE,UINT64_MAX);
+            if(waitRes != VK_SUCCESS){
+                std::cerr << "Vulkan wait acquire fence failed (" << waitRes << ")" << std::endl;
+                return;
+            }
+
+            if(nativeTarget->currentFrameIndex >= nativeTarget->frameViews.size()){
+                nativeTarget->currentFrameIndex = 0;
+            }
+
             attachmentDescription.format = nativeTarget->format;
             attachmentDescription.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             attachmentDescription.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-            attachmentDescription.samples = VK_SAMPLE_COUNT_1_BIT;
+            if(attachmentDescription.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD &&
+               attachmentDescription.initialLayout == VK_IMAGE_LAYOUT_UNDEFINED){
+                attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            }
+            attachmentView = nativeTarget->frameViews[nativeTarget->currentFrameIndex];
 
-
-            switch (desc.colorAttachment->loadAction) {
-                case GERenderTarget::RenderPassDesc::ColorAttachment::Clear : {
-                    attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                    attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                    break;
-                }
-                case GERenderTarget::RenderPassDesc::ColorAttachment::Load : {
-                    attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-                    attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-                }
-                case GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve : {
-                    attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-                    attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                }
-                case GERenderTarget::RenderPassDesc::ColorAttachment::Discard : {
-                    attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-                    attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-                }
+            auto rpRes = vkCreateRenderPass(parentQueue->engine->device,&renderPassCreateInfo,nullptr,&activeRenderPass);
+            if(rpRes != VK_SUCCESS || activeRenderPass == VK_NULL_HANDLE){
+                activeRenderPass = VK_NULL_HANDLE;
+                return;
             }
 
-            VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+            framebufferInfo.renderPass = activeRenderPass;
+            framebufferInfo.pAttachments = &attachmentView;
+            framebufferInfo.width = nativeTarget->extent.width > 0 ? nativeTarget->extent.width : 1;
+            framebufferInfo.height = nativeTarget->extent.height > 0 ? nativeTarget->extent.height : 1;
+            auto fbRes = vkCreateFramebuffer(parentQueue->engine->device,&framebufferInfo,nullptr,&activeFramebuffer);
+            if(fbRes != VK_SUCCESS || activeFramebuffer == VK_NULL_HANDLE){
+                vkDestroyRenderPass(parentQueue->engine->device,activeRenderPass,nullptr);
+                activeRenderPass = VK_NULL_HANDLE;
+                activeFramebuffer = VK_NULL_HANDLE;
+                return;
+            }
+            ownedRenderPasses.push_back(activeRenderPass);
+            ownedFramebuffers.push_back(activeFramebuffer);
 
-            VkSubpassDescription subpass = {0};
-            subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
-            subpass.colorAttachmentCount = 1;
-            subpass.pColorAttachments    = &color_ref;
-
-            VkSubpassDependency dependency = {0};
-            dependency.srcSubpass          = VK_SUBPASS_EXTERNAL;
-            dependency.dstSubpass          = 0;
-            dependency.srcStageMask        = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            dependency.dstStageMask        = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-
-
-            dependency.srcAccessMask = 0;
-            dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-            renderPassCreateInfo.attachmentCount = 1;
-            renderPassCreateInfo.pAttachments = &attachmentDescription;
-            renderPassCreateInfo.dependencyCount = 1;
-            renderPassCreateInfo.pDependencies = &dependency;
-            renderPassCreateInfo.subpassCount = 1;
-            renderPassCreateInfo.pSubpasses = &subpass;
-
-            vkCreateRenderPass(parentQueue->engine->device,&renderPassCreateInfo,nullptr,&renderPass);
-
-            beginInfo.framebuffer = nativeTarget->framebuffer;
             beginInfo.renderArea.extent = nativeTarget->extent;
         }
         else {
-            auto textureTarget = (GEVulkanTextureRenderTarget *)desc.tRenderTarget;
-            vkCreateRenderPass(parentQueue->engine->device,&renderPassCreateInfo,nullptr,&renderPass);
+            auto *textureTarget = reinterpret_cast<GEVulkanTextureRenderTarget *>(desc.tRenderTarget);
+            if(textureTarget == nullptr || textureTarget->texture == nullptr){
+                return;
+            }
 
-            VkAttachmentDescription attachmentDescription{};
             attachmentDescription.format = textureTarget->texture->format;
             attachmentDescription.initialLayout = textureTarget->texture->layout;
             attachmentDescription.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
-            attachmentDescription.samples = VkSampleCountFlagBits(textureTarget->texture->descriptor.sampleCount);
-
-            textureTarget->texture->layout = VK_IMAGE_LAYOUT_GENERAL;
-
-
-            switch (desc.colorAttachment->loadAction) {
-                case GERenderTarget::RenderPassDesc::ColorAttachment::Clear : {
-                    attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                    attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                }
-                case GERenderTarget::RenderPassDesc::ColorAttachment::Load : {
-                    attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-                    attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-                }
-                case GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve : {
-                    attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-                    attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                }
-                case GERenderTarget::RenderPassDesc::ColorAttachment::Discard : {
-                    attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-                    attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-                }
+            if(attachmentDescription.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD &&
+               attachmentDescription.initialLayout == VK_IMAGE_LAYOUT_UNDEFINED){
+                attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            }
+            switch (textureTarget->texture->descriptor.sampleCount) {
+                case 1: attachmentDescription.samples = VK_SAMPLE_COUNT_1_BIT; break;
+                case 2: attachmentDescription.samples = VK_SAMPLE_COUNT_2_BIT; break;
+                case 4: attachmentDescription.samples = VK_SAMPLE_COUNT_4_BIT; break;
+                case 8: attachmentDescription.samples = VK_SAMPLE_COUNT_8_BIT; break;
+                case 16: attachmentDescription.samples = VK_SAMPLE_COUNT_16_BIT; break;
+                case 32: attachmentDescription.samples = VK_SAMPLE_COUNT_32_BIT; break;
+                case 64: attachmentDescription.samples = VK_SAMPLE_COUNT_64_BIT; break;
+                default: attachmentDescription.samples = VK_SAMPLE_COUNT_1_BIT; break;
             }
 
-            VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+            attachmentView = textureTarget->texture->img_view;
+            auto rpRes = vkCreateRenderPass(parentQueue->engine->device,&renderPassCreateInfo,nullptr,&activeRenderPass);
+            if(rpRes != VK_SUCCESS || activeRenderPass == VK_NULL_HANDLE){
+                activeRenderPass = VK_NULL_HANDLE;
+                return;
+            }
 
-            VkSubpassDescription subpass = {0};
-            subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
-            subpass.colorAttachmentCount = 1;
-            subpass.pColorAttachments    = &color_ref;
+            framebufferInfo.renderPass = activeRenderPass;
+            framebufferInfo.pAttachments = &attachmentView;
+            framebufferInfo.width = textureTarget->texture->descriptor.width > 0 ? textureTarget->texture->descriptor.width : 1;
+            framebufferInfo.height = textureTarget->texture->descriptor.height > 0 ? textureTarget->texture->descriptor.height : 1;
+            auto fbRes = vkCreateFramebuffer(parentQueue->engine->device,&framebufferInfo,nullptr,&activeFramebuffer);
+            if(fbRes != VK_SUCCESS || activeFramebuffer == VK_NULL_HANDLE){
+                vkDestroyRenderPass(parentQueue->engine->device,activeRenderPass,nullptr);
+                activeRenderPass = VK_NULL_HANDLE;
+                activeFramebuffer = VK_NULL_HANDLE;
+                return;
+            }
+            ownedRenderPasses.push_back(activeRenderPass);
+            ownedFramebuffers.push_back(activeFramebuffer);
 
-            VkSubpassDependency dependency = {0};
-            dependency.srcSubpass          = VK_SUBPASS_EXTERNAL;
-            dependency.dstSubpass          = 0;
-            dependency.srcStageMask        = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            dependency.dstStageMask        = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-
-
-            dependency.srcAccessMask = 0;
-            dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-            renderPassCreateInfo.attachmentCount = 1;
-            renderPassCreateInfo.pAttachments = &attachmentDescription;
-            renderPassCreateInfo.dependencyCount = 1;
-            renderPassCreateInfo.pDependencies = &dependency;
-            renderPassCreateInfo.subpassCount = 1;
-            renderPassCreateInfo.pSubpasses = &subpass;
-
-            beginInfo.framebuffer = textureTarget->frameBuffer;
-            beginInfo.renderArea.extent = {textureTarget->texture->descriptor.width,textureTarget->texture->descriptor.height};
+            textureTarget->texture->layout = VK_IMAGE_LAYOUT_GENERAL;
+            beginInfo.renderArea.extent = {framebufferInfo.width,framebufferInfo.height};
         }
 
-
-
-        VkClearValue val;
+        VkClearValue val {};
         val.color.float32[0] = desc.colorAttachment->clearColor.r;
         val.color.float32[1] = desc.colorAttachment->clearColor.g;
         val.color.float32[2] = desc.colorAttachment->clearColor.b;
@@ -398,9 +520,8 @@ _NAMESPACE_BEGIN_
 
         beginInfo.clearValueCount = 1;
         beginInfo.pClearValues = &val;
-        beginInfo.renderPass = renderPass;
-        beginInfo.renderArea.offset.x = 0;
-        beginInfo.renderArea.offset.y = 0;
+        beginInfo.renderPass = activeRenderPass;
+        beginInfo.framebuffer = activeFramebuffer;
 
         vkCmdBeginRenderPass(commandBuffer,&beginInfo,VK_SUBPASS_CONTENTS_INLINE);
     };
@@ -425,15 +546,20 @@ _NAMESPACE_BEGIN_
 
         insertResourceBarrierIfNeeded(vk_buffer,id,renderPipelineState->vertexShader->internal);
 
+        VkDescriptorBufferInfo bufferInfo {};
+        bufferInfo.buffer = vk_buffer->buffer;
+        bufferInfo.offset = 0;
+        bufferInfo.range = VK_WHOLE_SIZE;
+
         VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writeInfo.dstBinding = getBindingForResourceID(id,renderPipelineState->vertexShader->internal);
         writeInfo.descriptorCount = 1;
         writeInfo.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writeInfo.pNext = nullptr;
         writeInfo.dstArrayElement = 0;
-        writeInfo.pBufferInfo = nullptr;
+        writeInfo.pBufferInfo = &bufferInfo;
         writeInfo.pImageInfo = nullptr;
-        writeInfo.pTexelBufferView = &vk_buffer->bufferView;
+        writeInfo.pTexelBufferView = nullptr;
 
         if(parentQueue->engine->hasPushDescriptorExt){
             parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,renderPipelineState->layout,
@@ -495,15 +621,20 @@ _NAMESPACE_BEGIN_
 
         insertResourceBarrierIfNeeded(vk_buffer,id,renderPipelineState->fragmentShader->internal);
 
+        VkDescriptorBufferInfo bufferInfo {};
+        bufferInfo.buffer = vk_buffer->buffer;
+        bufferInfo.offset = 0;
+        bufferInfo.range = VK_WHOLE_SIZE;
+
         VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writeInfo.dstBinding = getBindingForResourceID(id,renderPipelineState->fragmentShader->internal);
         writeInfo.descriptorCount = 1;
         writeInfo.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writeInfo.pNext = nullptr;
         writeInfo.dstArrayElement = 0;
-        writeInfo.pBufferInfo = nullptr;
+        writeInfo.pBufferInfo = &bufferInfo;
         writeInfo.pImageInfo = nullptr;
-        writeInfo.pTexelBufferView = &vk_buffer->bufferView;
+        writeInfo.pTexelBufferView = nullptr;
 
         if(parentQueue->engine->hasPushDescriptorExt){
             parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,renderPipelineState->layout,
@@ -615,11 +746,16 @@ _NAMESPACE_BEGIN_
 
     void GEVulkanCommandBuffer::setVertexBuffer(SharedHandle<GEBuffer> &buffer) {
         auto vkBuffer = ((GEVulkanBuffer *)buffer.get());
-        vkCmdBindVertexBuffers(commandBuffer,0,4,&vkBuffer->buffer,nullptr);
+        VkDeviceSize offsets[] = {0};
+        vkCmdBindVertexBuffers(commandBuffer,0,1,&vkBuffer->buffer,offsets);
     }
 
     void GEVulkanCommandBuffer::finishRenderPass(){
-        vkCmdEndRenderPass(commandBuffer);
+        if(activeRenderPass != VK_NULL_HANDLE){
+            vkCmdEndRenderPass(commandBuffer);
+        }
+        activeFramebuffer = VK_NULL_HANDLE;
+        activeRenderPass = VK_NULL_HANDLE;
         renderPipelineState = nullptr;
     };
 
@@ -647,22 +783,27 @@ _NAMESPACE_BEGIN_
 
         insertResourceBarrierIfNeeded(vk_buffer,id,computePipelineState->computeShader->internal);
 
+        VkDescriptorBufferInfo bufferInfo {};
+        bufferInfo.buffer = vk_buffer->buffer;
+        bufferInfo.offset = 0;
+        bufferInfo.range = VK_WHOLE_SIZE;
+
         VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writeInfo.dstBinding = getBindingForResourceID(id,computePipelineState->computeShader->internal);
         writeInfo.descriptorCount = 1;
         writeInfo.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writeInfo.pNext = nullptr;
         writeInfo.dstArrayElement = 0;
-        writeInfo.pBufferInfo = nullptr;
+        writeInfo.pBufferInfo = &bufferInfo;
         writeInfo.pImageInfo = nullptr;
-        writeInfo.pTexelBufferView = &vk_buffer->bufferView;
+        writeInfo.pTexelBufferView = nullptr;
 
         if(parentQueue->engine->hasPushDescriptorExt){
-            parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,renderPipelineState->layout,
+            parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,computePipelineState->layout,
                                                            0,1,&writeInfo);
         }
         else {
-            writeInfo.dstSet = renderPipelineState->descs.back();
+            writeInfo.dstSet = computePipelineState->descSet;
             vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
         }
     }
@@ -698,11 +839,11 @@ _NAMESPACE_BEGIN_
         writeInfo.pImageInfo = &imgInfo;
 
         if(parentQueue->engine->hasPushDescriptorExt){
-            parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,renderPipelineState->layout,
+            parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,computePipelineState->layout,
                                                            0,1,&writeInfo);
         }
         else {
-            writeInfo.dstSet = renderPipelineState->descs.back();
+            writeInfo.dstSet = computePipelineState->descSet;
             vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
         }
     }
@@ -721,55 +862,64 @@ _NAMESPACE_BEGIN_
     }
 
     inline void addResourceBarrierForTextureCopy(GEVulkanEngine *engine,VkCommandBuffer commandBuffer,GEVulkanTexture *src_img,GEVulkanTexture *dest_img){
-
+        if(src_img == nullptr || dest_img == nullptr){
+            return;
+        }
 
         if(engine->hasSynchronization2Ext){
             std::vector<VkImageMemoryBarrier2KHR> memBarriers2;
             VkDependencyInfoKHR dep_info {VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR};
             dep_info.pNext = nullptr;
 
-            if(!(src_img->priorShaderAccess & VK_ACCESS_2_TRANSFER_READ_BIT_KHR)){
+            if(!(src_img->priorShaderAccess2 & VK_ACCESS_2_TRANSFER_READ_BIT_KHR)){
                 VkImageMemoryBarrier2KHR img_mem_barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2_KHR};
-                img_mem_barrier.srcAccessMask = src_img->priorShaderAccess;
+                img_mem_barrier.srcAccessMask = src_img->priorShaderAccess2;
                 img_mem_barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT_KHR;
                 img_mem_barrier.srcQueueFamilyIndex = img_mem_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                img_mem_barrier.srcStageMask = src_img->priorPipelineAccess;
-                img_mem_barrier.dstStageMask = VK_SHADER_STAGE_ALL;
+                img_mem_barrier.srcStageMask = src_img->priorPipelineAccess2 != 0
+                                               ? src_img->priorPipelineAccess2
+                                               : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+                img_mem_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT_KHR;
                 img_mem_barrier.image = src_img->img;
                 img_mem_barrier.oldLayout = src_img->layout;
                 img_mem_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                img_mem_barrier.subresourceRange = fullColorSubresourceRange(src_img);
 
-                src_img->priorShaderAccess = VK_ACCESS_2_TRANSFER_READ_BIT_KHR;
-                src_img->priorPipelineAccess = VK_SHADER_STAGE_ALL;
+                src_img->priorShaderAccess2 = VK_ACCESS_2_TRANSFER_READ_BIT_KHR;
+                src_img->priorPipelineAccess2 = VK_PIPELINE_STAGE_2_COPY_BIT_KHR;
                 src_img->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
                 memBarriers2.push_back(img_mem_barrier);
             }
 
-            if(!(dest_img->priorShaderAccess & VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR)){
+            if(!(dest_img->priorShaderAccess2 & VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR)){
                 VkImageMemoryBarrier2KHR img_mem_barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2_KHR};
-                img_mem_barrier.srcAccessMask = dest_img->priorShaderAccess;
+                img_mem_barrier.srcAccessMask = dest_img->priorShaderAccess2;
                 img_mem_barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR;
                 img_mem_barrier.srcQueueFamilyIndex = img_mem_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                img_mem_barrier.srcStageMask = dest_img->priorPipelineAccess;
-                img_mem_barrier.dstStageMask = VK_SHADER_STAGE_ALL;
+                img_mem_barrier.srcStageMask = dest_img->priorPipelineAccess2 != 0
+                                               ? dest_img->priorPipelineAccess2
+                                               : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+                img_mem_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT_KHR;
                 img_mem_barrier.image = dest_img->img;
                 img_mem_barrier.oldLayout = dest_img->layout;
                 img_mem_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                img_mem_barrier.subresourceRange = fullColorSubresourceRange(dest_img);
 
-                dest_img->priorShaderAccess = VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR;
-                dest_img->priorPipelineAccess = VK_SHADER_STAGE_ALL;
+                dest_img->priorShaderAccess2 = VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR;
+                dest_img->priorPipelineAccess2 = VK_PIPELINE_STAGE_2_COPY_BIT_KHR;
                 dest_img->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
                 memBarriers2.push_back(img_mem_barrier);
             }
 
-            dep_info.imageMemoryBarrierCount = memBarriers2.size();
-            dep_info.pImageMemoryBarriers = memBarriers2.data();
-            engine->vkCmdPipelineBarrier2Khr(commandBuffer,&dep_info);
+            if(!memBarriers2.empty()){
+                dep_info.imageMemoryBarrierCount = static_cast<std::uint32_t>(memBarriers2.size());
+                dep_info.pImageMemoryBarriers = memBarriers2.data();
+                engine->vkCmdPipelineBarrier2Khr(commandBuffer,&dep_info);
+            }
         }
         else {
-
             std::vector<VkImageMemoryBarrier> memBarriers;
 
             if(!(src_img->priorShaderAccess & VK_ACCESS_TRANSFER_READ_BIT)){
@@ -780,9 +930,10 @@ _NAMESPACE_BEGIN_
                 img_mem_barrier.image = src_img->img;
                 img_mem_barrier.oldLayout = src_img->layout;
                 img_mem_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                img_mem_barrier.subresourceRange = fullColorSubresourceRange(src_img);
 
                 src_img->priorShaderAccess = VK_ACCESS_TRANSFER_READ_BIT;
-                src_img->priorPipelineAccess = VK_SHADER_STAGE_ALL;
+                src_img->priorPipelineAccess = VK_PIPELINE_STAGE_TRANSFER_BIT;
                 src_img->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
                 memBarriers.push_back(img_mem_barrier);
@@ -796,17 +947,30 @@ _NAMESPACE_BEGIN_
                 img_mem_barrier.image = dest_img->img;
                 img_mem_barrier.oldLayout = dest_img->layout;
                 img_mem_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                img_mem_barrier.subresourceRange = fullColorSubresourceRange(dest_img);
 
                 dest_img->priorShaderAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
-                dest_img->priorPipelineAccess = VK_SHADER_STAGE_ALL;
+                dest_img->priorPipelineAccess = VK_PIPELINE_STAGE_TRANSFER_BIT;
                 dest_img->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
                 memBarriers.push_back(img_mem_barrier);
             }
 
-            vkCmdPipelineBarrier(commandBuffer,VK_SHADER_STAGE_ALL,VK_SHADER_STAGE_ALL,VK_DEPENDENCY_DEVICE_GROUP_BIT,0,nullptr,0,nullptr,memBarriers.size(),memBarriers.data());
+            if(!memBarriers.empty()){
+                VkPipelineStageFlags srcStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+                VkPipelineStageFlags dstStages = VK_PIPELINE_STAGE_TRANSFER_BIT;
+                vkCmdPipelineBarrier(commandBuffer,
+                                     srcStages,
+                                     dstStages,
+                                     0,
+                                     0,
+                                     nullptr,
+                                     0,
+                                     nullptr,
+                                     static_cast<std::uint32_t>(memBarriers.size()),
+                                     memBarriers.data());
+            }
         }
-
     }
 
     void GEVulkanCommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, SharedHandle<GETexture> &dest) {
@@ -819,10 +983,10 @@ _NAMESPACE_BEGIN_
         imgCopy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         imgCopy.srcSubresource.baseArrayLayer = 0;
         imgCopy.srcSubresource.layerCount = 1;
-        imgCopy.srcSubresource.mipLevel = src_img->descriptor.mipLevels;
+        imgCopy.srcSubresource.mipLevel = 0;
         imgCopy.srcOffset = {0,0,0};
         imgCopy.dstOffset = {0,0,0};
-        imgCopy.dstSubresource.mipLevel = dest_img->descriptor.mipLevels;
+        imgCopy.dstSubresource.mipLevel = 0;
         imgCopy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         imgCopy.dstSubresource.layerCount = 1;
         imgCopy.dstSubresource.baseArrayLayer = 0;
@@ -840,10 +1004,10 @@ _NAMESPACE_BEGIN_
         imgCopy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         imgCopy.srcSubresource.baseArrayLayer = 0;
         imgCopy.srcSubresource.layerCount = 1;
-        imgCopy.srcSubresource.mipLevel = src_img->descriptor.mipLevels;
+        imgCopy.srcSubresource.mipLevel = 0;
         imgCopy.srcOffset = {int32_t(region.x),int32_t(region.y),int32_t(region.z)};
         imgCopy.dstOffset = {int32_t(destCoord.x),int32_t(destCoord.y),int32_t(destCoord.z)};
-        imgCopy.dstSubresource.mipLevel = dest_img->descriptor.mipLevels;
+        imgCopy.dstSubresource.mipLevel = 0;
         imgCopy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         imgCopy.dstSubresource.layerCount = 1;
         imgCopy.dstSubresource.baseArrayLayer = 0;
@@ -862,6 +1026,9 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandQueue::notifyCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &waitFence){
         auto buffer = (GEVulkanCommandBuffer *)commandBuffer.get();
         auto fence = (GEVulkanFence *)waitFence.get();
+        if(buffer == nullptr || fence == nullptr || fence->event == VK_NULL_HANDLE){
+            return;
+        }
         vkCmdWaitEvents(buffer->commandBuffer,
             1,
             &fence->event,
@@ -901,12 +1068,26 @@ _NAMESPACE_BEGIN_
         submitEvent.commandBufferId = buffer->traceResourceId;
         submitEvent.nativeHandle = reinterpret_cast<std::uint64_t>(buffer->commandBuffer);
         ResourceTracking::Tracker::instance().emit(submitEvent);
-        vkCmdSetEvent(buffer->commandBuffer,fence->event,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        if(fence != nullptr && fence->event != VK_NULL_HANDLE){
+            vkCmdSetEvent(buffer->commandBuffer,fence->event,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        }
+        commandQueue.push_back(buffer->commandBuffer);
     }
 
    SharedHandle<GECommandBuffer> GEVulkanCommandQueue::getAvailableBuffer(){
-       auto res = std::make_shared<GEVulkanCommandBuffer>(commandBuffers[currentBufferIndex],this);
-       ++currentBufferIndex;
+       if(commandBuffers.empty()){
+           return nullptr;
+       }
+       if(currentBufferIndex >= commandBuffers.size()){
+           currentBufferIndex = 0;
+       }
+       auto &commandBuffer = commandBuffers[currentBufferIndex];
+       auto resetRes = vkResetCommandBuffer(commandBuffer,0);
+       if(resetRes != VK_SUCCESS){
+           std::cerr << "Vulkan reset command buffer failed (" << resetRes << ")" << std::endl;
+       }
+       auto res = std::make_shared<GEVulkanCommandBuffer>(commandBuffer,this);
+       currentBufferIndex = (currentBufferIndex + 1) % commandBuffers.size();
        return res;
    };
 
@@ -915,194 +1096,187 @@ _NAMESPACE_BEGIN_
     }
 
    void GEVulkanCommandQueue::commitToGPU(){
+        if(commandQueue.empty()){
+            submittedTraceCommandBufferIds.clear();
+            return;
+        }
         for(auto cb : commandQueue){
-            vkEndCommandBuffer(cb);
+            auto endRes = vkEndCommandBuffer(cb);
+            if(endRes != VK_SUCCESS){
+                std::cerr << "Vulkan end command buffer failed (" << endRes << ")" << std::endl;
+                commandQueue.clear();
+                submittedTraceCommandBufferIds.clear();
+                return;
+            }
+        }
+        if(engine == nullptr || engine->deviceQueuefamilies.empty() || engine->deviceQueuefamilies.front().empty()){
+            commandQueue.clear();
+            submittedTraceCommandBufferIds.clear();
+            return;
         }
 
-        auto queueFamily = engine->deviceQueuefamilies.front();
-        uint64_t lowestSemCounter = UINT64_MAX;
-        bool waitForCompletion = false;
-        /// Finds an available queue, else will submit queue at the bottom of family.
-        auto availableQueue = std::find_if(queueFamily.begin(),queueFamily.end(),[&](std::pair<VkSemaphore,VkQueue> & p){
-            uint64_t v;
-            vkGetSemaphoreCounterValue(engine->device,p.first,&v);
-            if(v == 0){
-                lowestSemCounter = v;
-                waitForCompletion = false;
-                return true;
-            }
-            else if(v < lowestSemCounter){
-                lowestSemCounter = v;
-            }
-            return false;
-        });
-
-
-        if(lowestSemCounter > 0){
-            waitForCompletion = true;
-            availableQueue = std::find_if(queueFamily.begin(),queueFamily.end(),[&](std::pair<VkSemaphore,VkQueue> & p){
-                uint64_t v;
-                vkGetSemaphoreCounterValue(engine->device,p.first,&v);
-                return lowestSemCounter == v;
-            });
+        auto &queueEntry = engine->deviceQueuefamilies.front().front();
+        auto vkQueue = queueEntry.second;
+        if(vkQueue == VK_NULL_HANDLE){
+            commandQueue.clear();
+            submittedTraceCommandBufferIds.clear();
+            return;
         }
-
-        auto & vkQueue = availableQueue->second;
 
        VkSubmitInfo submission {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-       submission.signalSemaphoreCount = 1;
-       submission.pSignalSemaphores = &availableQueue->first;
-       if(waitForCompletion){
-          submission.waitSemaphoreCount = 1;
-          submission.pWaitSemaphores = &availableQueue->first;
-       }
-       else {
-          submission.waitSemaphoreCount = 0;
-       }
+       submission.signalSemaphoreCount = 0;
+       submission.pSignalSemaphores = nullptr;
+       submission.waitSemaphoreCount = 0;
+       submission.pWaitSemaphores = nullptr;
        submission.commandBufferCount = commandQueue.size();
        submission.pCommandBuffers = commandQueue.data();
        submission.pNext = nullptr;
 
        auto res = vkQueueSubmit(vkQueue, 1, &submission,VK_NULL_HANDLE);
        if(!VK_RESULT_SUCCEEDED(res)){
-           printf("Failed to Submit Command Buffers to GPU");
-           exit(1);
+           std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
+           commandQueue.clear();
+           submittedTraceCommandBufferIds.clear();
+           return;
        };
 
        commandQueue.clear();
 
-    
    };
 
    void GEVulkanCommandQueue::commitToGPUPresent(VkPresentInfoKHR *info){
-         for(auto cb : commandQueue){
-            vkEndCommandBuffer(cb);
+        if(info == nullptr){
+            submittedTraceCommandBufferIds.clear();
+            return;
+        }
+        if(commandQueue.empty()){
+            submittedTraceCommandBufferIds.clear();
+            return;
+        }
+        for(auto cb : commandQueue){
+            auto endRes = vkEndCommandBuffer(cb);
+            if(endRes != VK_SUCCESS){
+                std::cerr << "Vulkan end command buffer failed (" << endRes << ")" << std::endl;
+                commandQueue.clear();
+                submittedTraceCommandBufferIds.clear();
+                return;
+            }
+        }
+        if(engine == nullptr || engine->deviceQueuefamilies.empty() || engine->deviceQueuefamilies.front().empty()){
+            commandQueue.clear();
+            submittedTraceCommandBufferIds.clear();
+            return;
         }
 
-        auto queueFamily = engine->deviceQueuefamilies.front();
-        uint64_t lowestSemCounter = UINT64_MAX;
-        bool waitForCompletion = false;
-        /// Finds an available queue, else will submit queue at the bottom of family.
-        auto availableQueue = std::find_if(queueFamily.begin(),queueFamily.end(),[&](std::pair<VkSemaphore,VkQueue> & p){
-            uint64_t v;
-            vkGetSemaphoreCounterValue(engine->device,p.first,&v);
-            if(v == 0){
-                lowestSemCounter = v;
-                waitForCompletion = false;
-                return true;
-            }
-            else if(v < lowestSemCounter){
-                lowestSemCounter = v;
-            }
-            return false;
-        });
-
-
-        if(lowestSemCounter > 0){
-            waitForCompletion = true;
-            availableQueue = std::find_if(queueFamily.begin(),queueFamily.end(),[&](std::pair<VkSemaphore,VkQueue> & p){
-                uint64_t v;
-                vkGetSemaphoreCounterValue(engine->device,p.first,&v);
-                return lowestSemCounter == v;
-            });
+        auto &queueEntry = engine->deviceQueuefamilies.front().front();
+        auto vkQueue = queueEntry.second;
+        if(vkQueue == VK_NULL_HANDLE){
+            commandQueue.clear();
+            submittedTraceCommandBufferIds.clear();
+            return;
         }
 
-        auto & vkQueue = availableQueue->second;
+        vkResetFences(engine->device,1,&submitFence);
 
-       VkSubmitInfo submission {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-       submission.signalSemaphoreCount = 1;
-       submission.pSignalSemaphores = &availableQueue->first;
-       if(waitForCompletion){
-          submission.waitSemaphoreCount = 1;
-          submission.pWaitSemaphores = &availableQueue->first;
-       }
-       else {
-          submission.waitSemaphoreCount = 0;
-       }
-       submission.commandBufferCount = commandQueue.size();
-       submission.pCommandBuffers = commandQueue.data();
-       submission.pNext = nullptr;
+        VkSubmitInfo submission {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submission.signalSemaphoreCount = 0;
+        submission.pSignalSemaphores = nullptr;
+        submission.waitSemaphoreCount = 0;
+        submission.pWaitSemaphores = nullptr;
+        submission.commandBufferCount = commandQueue.size();
+        submission.pCommandBuffers = commandQueue.data();
+        submission.pNext = nullptr;
 
-       auto res = vkQueueSubmit(vkQueue, 1, &submission,submitFence);
-       vkQueuePresentKHR(vkQueue,info);
-       if(!VK_RESULT_SUCCEEDED(res)){
-           printf("Failed to Submit Command Buffers to GPU");
-           exit(1);
-       };
+        auto res = vkQueueSubmit(vkQueue, 1, &submission,submitFence);
+        if(!VK_RESULT_SUCCEEDED(res)){
+            std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
+            commandQueue.clear();
+            submittedTraceCommandBufferIds.clear();
+            return;
+        }
+        auto waitRes = vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
+        if(waitRes != VK_SUCCESS){
+            std::cerr << "Failed waiting for submitted command buffers (" << waitRes << ")" << std::endl;
+            commandQueue.clear();
+            submittedTraceCommandBufferIds.clear();
+            return;
+        }
 
-       commandQueue.clear();
-       vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
-       for(const auto traceId : submittedTraceCommandBufferIds){
-           ResourceTracking::Event completeEvent {};
-           completeEvent.backend = ResourceTracking::Backend::Vulkan;
-           completeEvent.eventType = ResourceTracking::EventType::Complete;
-           completeEvent.resourceType = "CommandBuffer";
-           completeEvent.resourceId = traceId;
-           completeEvent.queueId = traceResourceId;
-           completeEvent.commandBufferId = traceId;
-           completeEvent.nativeHandle = reinterpret_cast<std::uint64_t>(vkQueue);
-           ResourceTracking::Tracker::instance().emit(completeEvent);
-       }
+        auto presentRes = vkQueuePresentKHR(vkQueue,info);
+        if(presentRes != VK_SUCCESS &&
+           presentRes != VK_SUBOPTIMAL_KHR &&
+           presentRes != VK_ERROR_OUT_OF_DATE_KHR){
+            std::cerr << "Failed to present swapchain image (" << presentRes << ")" << std::endl;
+        }
+        commandQueue.clear();
+        for(const auto traceId : submittedTraceCommandBufferIds){
+            ResourceTracking::Event completeEvent {};
+            completeEvent.backend = ResourceTracking::Backend::Vulkan;
+            completeEvent.eventType = ResourceTracking::EventType::Complete;
+            completeEvent.resourceType = "CommandBuffer";
+            completeEvent.resourceId = traceId;
+            completeEvent.queueId = traceResourceId;
+            completeEvent.commandBufferId = traceId;
+            completeEvent.nativeHandle = reinterpret_cast<std::uint64_t>(vkQueue);
+            ResourceTracking::Tracker::instance().emit(completeEvent);
+        }
 
    }
 
    void GEVulkanCommandQueue::commitToGPUAndWait(){
+        if(commandQueue.empty()){
+            submittedTraceCommandBufferIds.clear();
+            return;
+        }
         for(auto cb : commandQueue){
-            vkEndCommandBuffer(cb);
+            auto endRes = vkEndCommandBuffer(cb);
+            if(endRes != VK_SUCCESS){
+                std::cerr << "Vulkan end command buffer failed (" << endRes << ")" << std::endl;
+                commandQueue.clear();
+                submittedTraceCommandBufferIds.clear();
+                return;
+            }
+        }
+        if(engine == nullptr || engine->deviceQueuefamilies.empty() || engine->deviceQueuefamilies.front().empty()){
+            commandQueue.clear();
+            submittedTraceCommandBufferIds.clear();
+            return;
         }
 
-        auto queueFamily = engine->deviceQueuefamilies.front();
-        uint64_t lowestSemCounter = UINT64_MAX;
-        bool waitForCompletion = false;
-        /// Finds an available queue, else will submit queue at the bottom of family.
-        auto availableQueue = std::find_if(queueFamily.begin(),queueFamily.end(),[&](std::pair<VkSemaphore,VkQueue> & p){
-            uint64_t v;
-            vkGetSemaphoreCounterValue(engine->device,p.first,&v);
-            if(v == 0){
-                lowestSemCounter = v;
-                waitForCompletion = false;
-                return true;
-            }
-            else if(v < lowestSemCounter){
-                lowestSemCounter = v;
-            }
-            return false;
-        });
-
-
-        if(lowestSemCounter > 0){
-            waitForCompletion = true;
-            availableQueue = std::find_if(queueFamily.begin(),queueFamily.end(),[&](std::pair<VkSemaphore,VkQueue> & p){
-                uint64_t v;
-                vkGetSemaphoreCounterValue(engine->device,p.first,&v);
-                return lowestSemCounter == v;
-            });
+        auto &queueEntry = engine->deviceQueuefamilies.front().front();
+        auto vkQueue = queueEntry.second;
+        if(vkQueue == VK_NULL_HANDLE){
+            commandQueue.clear();
+            submittedTraceCommandBufferIds.clear();
+            return;
         }
 
-        auto & vkQueue = availableQueue->second;
+        vkResetFences(engine->device,1,&submitFence);
 
        VkSubmitInfo submission {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-       submission.signalSemaphoreCount = 1;
-       submission.pSignalSemaphores = &availableQueue->first;
-       if(waitForCompletion){
-          submission.waitSemaphoreCount = 1;
-          submission.pWaitSemaphores = &availableQueue->first;
-       }
-       else {
-          submission.waitSemaphoreCount = 0;
-       }
+       submission.signalSemaphoreCount = 0;
+       submission.pSignalSemaphores = nullptr;
+       submission.waitSemaphoreCount = 0;
+       submission.pWaitSemaphores = nullptr;
        submission.commandBufferCount = commandQueue.size();
        submission.pCommandBuffers = commandQueue.data();
        submission.pNext = nullptr;
 
        auto res = vkQueueSubmit(vkQueue, 1, &submission,submitFence);
        if(!VK_RESULT_SUCCEEDED(res)){
-           printf("Failed to Submit Command Buffers to GPU");
-           exit(1);
+           std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
+           commandQueue.clear();
+           submittedTraceCommandBufferIds.clear();
+           return;
        };
 
        commandQueue.clear();
-       vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
+       auto waitRes = vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
+       if(waitRes != VK_SUCCESS){
+           std::cerr << "Failed waiting for submitted command buffers (" << waitRes << ")" << std::endl;
+           submittedTraceCommandBufferIds.clear();
+           return;
+       }
        for(const auto traceId : submittedTraceCommandBufferIds){
            ResourceTracking::Event completeEvent {};
            completeEvent.backend = ResourceTracking::Backend::Vulkan;
@@ -1115,7 +1289,7 @@ _NAMESPACE_BEGIN_
            ResourceTracking::Tracker::instance().emit(completeEvent);
        }
        submittedTraceCommandBufferIds.clear();
-       
+
 
    }
 

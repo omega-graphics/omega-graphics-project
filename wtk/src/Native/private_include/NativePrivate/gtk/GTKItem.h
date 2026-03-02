@@ -1,6 +1,7 @@
 #include "omegaWTK/Native/NativeItem.h"
 
 #include <gtk/gtk.h>
+#include <memory>
 
 #if WTK_NATIVE_WAYLAND
 
@@ -18,12 +19,22 @@
 namespace OmegaWTK::Native::GTK {
     class GTKItem : public NativeItem {
 
-        GdkWindow *window;
-        GdkWindowClass * wnd_class;
-
-        OmegaCommon::Vector<SharedHandle<GTKItem>> childWindows;
+        GtkWidget *widget = nullptr;
+        GtkWidget *contentWidget = nullptr;
         Core::Rect rect;
-        public:
+        bool isVisible = true;
+        bool isScrollItem = false;
+        bool horizontalScrollEnabled = false;
+        bool verticalScrollEnabled = false;
+        OmegaCommon::Vector<SharedHandle<GTKItem>> childItems;
+        SharedHandle<GTKItem> clippedView = nullptr;
+
+        GdkWindow *resolveGdkWindow();
+        void moveInParent();
+        void updateWidgetSize();
+        void applyScrollPolicy();
+    public:
+        GtkWidget *getWidget();
         void enable() override;
         void disable() override;
         void resize(const Core::Rect &newRect) override;
@@ -36,13 +47,15 @@ namespace OmegaWTK::Native::GTK {
         Core::Rect & getRect() override {
             return rect;
         };
-        GTKItem(Core::Rect rect,Native::ItemType type,NativeItemPtr parent);
+        GTKItem(Core::Rect rect,Native::ItemType type);
         #if WTK_NATIVE_WAYLAND
         wl_surface * getSurface();
+        wl_display * getDisplay();
         #elif WTK_NATIVE_X11
         Display * getDisplay();
         Window getX11Window();
         #endif
+        ~GTKItem();
     };
 };
 

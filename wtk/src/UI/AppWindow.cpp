@@ -115,7 +115,10 @@ void AppWindowManager::displayRootWindow(){
 };
 
 void AppWindowManager::closeAllWindows(){
-    rootWindow->close();
+    if(rootWindow != nullptr){
+        rootWindow->close();
+        rootWindow.reset();
+    }
 };
 
 void AppWindowDelegate::dispatchResizeToHosts(const Core::Rect & rect){

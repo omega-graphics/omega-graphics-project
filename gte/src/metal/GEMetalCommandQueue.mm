@@ -547,10 +547,10 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             if(completion){
                 GECommandBufferCompletionInfo info {};
                 if(commandBuffer.status == MTLCommandBufferStatusError){
-                    info.status = GECommandBufferCompletionInfo::Status::Error;
+                    info.status = GECommandBufferCompletionInfo::CompletionStatus::Error;
                 }
                 else {
-                    info.status = GECommandBufferCompletionInfo::Status::Completed;
+                    info.status = GECommandBufferCompletionInfo::CompletionStatus::Completed;
                 }
                 info.gpuStartTimeSec = commandBuffer.GPUStartTime;
                 info.gpuEndTimeSec = commandBuffer.GPUEndTime;

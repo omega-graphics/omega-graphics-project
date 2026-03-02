@@ -42,6 +42,10 @@ void AppInst::terminate() {
 
 AppInst::~AppInst(){
     instance = nullptr;
+    if(windowManager != nullptr){
+        windowManager->closeAllWindows();
+        windowManager.reset();
+    }
     Composition::FontEngine::Destroy();
     Composition::CleanupEngine();
     OmegaGTE::Close(gte);

@@ -10,6 +10,10 @@ namespace OmegaWTK::Media {
 #define DEFAULT_SCREEN_GAMMA 2.2
 #endif
 
+#ifndef DEFAULT_SCREEN_GAMMA
+#define DEFAULT_SCREEN_GAMMA 2.2
+#endif
+
     class ImgCodec {
     protected:
         Core::IStream & in;

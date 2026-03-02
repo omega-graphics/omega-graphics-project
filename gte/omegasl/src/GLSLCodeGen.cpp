@@ -2,6 +2,9 @@
 #include "CodeGen.h"
 #include <sstream>
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
 
 #ifdef TARGET_VULKAN
 #include <shaderc/shaderc.h>
@@ -56,7 +59,9 @@ namespace omegasl {
         }
         explicit GLSLCodeGen(CodeGenOpts &opts,GLSLCodeOpts & glslCodeOpts,std::ostringstream & stringOut):
                 CodeGen(opts), stringOut(std::move(stringOut)),shaderOut(this->stringOut),glslCodeOpts(glslCodeOpts){
-
+#ifdef TARGET_VULKAN
+            compiler = shaderc_compiler_initialize();
+#endif
         }
         inline void writeTypeExpr(ast::TypeExpr *typeExpr,std::ostream & out) {
             auto t = typeResolver->resolveTypeWithExpr(typeExpr);
@@ -599,6 +604,17 @@ namespace omegasl {
         void compileShaderOnRuntime(ast::ShaderDecl::Type type, const OmegaCommon::StrRef &name) override {
             auto source = stringOut.str();
             #ifdef TARGET_VULKAN
+                auto dumpSourceOnError = [&](){
+                    std::string shaderName{name.data(),name.size()};
+                    std::string dumpPath = "/tmp/OmegaSL-" + shaderName + ".glsl";
+                    std::ofstream dump(dumpPath,std::ios::out | std::ios::trunc);
+                    if(dump.is_open()){
+                        dump << source;
+                        dump.close();
+                        std::cout << "OMEGASL GLSL dump: `" << dumpPath << "`" << std::endl;
+                    }
+                };
+
                 shaderc_shader_kind shader_kind;
                 switch (type) {
                     case ast::ShaderDecl::Vertex : {
@@ -615,11 +631,50 @@ namespace omegasl {
                     }
                 }
                 auto options = shaderc_compile_options_initialize();
-                
-                auto result = shaderc_compile_into_spv(compiler,source.data(), source.size(),shader_kind,name.data(),"main",options);
                 auto & shader_entry = shaderMap[name.data()];
-                shader_entry.data = (void *)(shaderc_result_get_bytes(result));
-                shader_entry.dataSize = shaderc_result_get_length(result);
+
+                // Reset bytecode output before compile so failures cannot reuse stale data.
+                shader_entry.data = nullptr;
+                shader_entry.dataSize = 0;
+
+                auto result = shaderc_compile_into_spv(compiler,
+                                                       source.data(),
+                                                       source.size(),
+                                                       shader_kind,
+                                                       name.data(),
+                                                       "main",
+                                                       options);
+
+                if(result == nullptr){
+                    std::cout << "OMEGASL COMPILE ERROR: shaderc returned null result for `" << name.data() << "`." << std::endl;
+                    dumpSourceOnError();
+                    shaderc_compile_options_release(options);
+                    return;
+                }
+
+                auto status = shaderc_result_get_compilation_status(result);
+                if(status != shaderc_compilation_status_success){
+                    std::cout << "OMEGASL COMPILE ERROR (" << status << ") in `" << name.data() << "`: "
+                              << shaderc_result_get_error_message(result) << std::endl;
+                    dumpSourceOnError();
+                    shaderc_result_release(result);
+                    shaderc_compile_options_release(options);
+                    return;
+                }
+
+                auto byteLen = shaderc_result_get_length(result);
+                if(byteLen == 0){
+                    std::cout << "OMEGASL COMPILE ERROR: shader `" << name.data() << "` produced empty SPIR-V output." << std::endl;
+                    dumpSourceOnError();
+                    shaderc_result_release(result);
+                    shaderc_compile_options_release(options);
+                    return;
+                }
+
+                auto *spirvBytes = new std::uint8_t[byteLen];
+                std::memcpy(spirvBytes,shaderc_result_get_bytes(result),byteLen);
+                shader_entry.data = spirvBytes;
+                shader_entry.dataSize = byteLen;
 
                 shaderc_compile_options_release(options);
 
@@ -636,5 +691,9 @@ namespace omegasl {
 
     std::shared_ptr<CodeGen> GLSLCodeGenMake(CodeGenOpts & opts,GLSLCodeOpts &glslCodeOpts){
         return std::make_shared<GLSLCodeGen>(opts,glslCodeOpts);
+    }
+
+    std::shared_ptr<CodeGen> GLSLCodeGenMakeRuntime(CodeGenOpts &opts,GLSLCodeOpts &glslCodeOpts,std::ostringstream &out){
+        return std::make_shared<GLSLCodeGen>(opts,glslCodeOpts,out);
     }
 }
