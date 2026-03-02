@@ -233,7 +233,11 @@ namespace OmegaWTK::Native::Win {
         SetParent(child,hwnd);
         auto scaleFactor = FLOAT(GetDpiForWindow(child))/96.f;
         hwndItem->parent = this;
-        SetWindowPos(child,NULL,hwndItem->wndrect.pos.x * scaleFactor,(wndrect.h - hwndItem->wndrect.pos.y) * scaleFactor,hwndItem->wndrect.w *scaleFactor,hwndItem->wndrect.h *scaleFactor,SWP_NOZORDER);
+        const auto childX = static_cast<int>(hwndItem->wndrect.pos.x * scaleFactor);
+        const auto childY = static_cast<int>((wndrect.h - hwndItem->wndrect.pos.y - hwndItem->wndrect.h) * scaleFactor);
+        const auto childW = static_cast<int>(hwndItem->wndrect.w * scaleFactor);
+        const auto childH = static_cast<int>(hwndItem->wndrect.h * scaleFactor);
+        SetWindowPos(child,HWND_TOP,childX,childY,childW,childH,SWP_NOACTIVATE | SWP_SHOWWINDOW);
     };
     void HWNDItem::removeChildNativeItem(NativeItemPtr nativeItem){
          auto hwndItem = std::dynamic_pointer_cast<HWNDItem>(nativeItem);

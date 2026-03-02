@@ -541,9 +541,10 @@ OmegaCommon::Vector<SharedHandle<GTEDevice>> enumerateDevices(){
 
         D3D12_INPUT_LAYOUT_DESC inputLayoutDesc {};
         if(vertexFunc.vertexShaderInputDesc.useVertexID){
-            auto el = new D3D12_INPUT_ELEMENT_DESC {"SV_VertexID",0,DXGI_FORMAT_R32_UINT,0,D3D12_APPEND_ALIGNED_ELEMENT,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0};
-            inputLayoutDesc.NumElements = 1;
-            inputLayoutDesc.pInputElementDescs = el;
+            // Vertex-ID driven shaders consume system values and structured buffers,
+            // so no IA vertex layout is required.
+            inputLayoutDesc.NumElements = 0;
+            inputLayoutDesc.pInputElementDescs = nullptr;
         }
         else {
             ArrayRef<omegasl_vertex_shader_param_desc> inputDesc{vertexFunc.vertexShaderInputDesc.pParams,
@@ -602,6 +603,15 @@ OmegaCommon::Vector<SharedHandle<GTEDevice>> enumerateDevices(){
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC d {};
         d.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        d.BlendState.RenderTarget[0].BlendEnable = TRUE;
+        d.BlendState.RenderTarget[0].LogicOpEnable = FALSE;
+        d.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        d.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        d.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        d.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        d.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        d.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        d.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
         d.NodeMask = d3d12_device->GetNodeCount();
         d.InputLayout = inputLayoutDesc;
         

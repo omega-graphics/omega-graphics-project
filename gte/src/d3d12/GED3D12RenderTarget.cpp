@@ -1,5 +1,7 @@
 #include "GED3D12RenderTarget.h"
 #include "../common/GEResourceTracker.h"
+#include <iostream>
+#include <vector>
 
 _NAMESPACE_BEGIN_
     GED3D12NativeRenderTarget::GED3D12NativeRenderTarget(
@@ -83,8 +85,46 @@ _NAMESPACE_BEGIN_
         params.pScrollRect = NULL;
         hr = swapChain->Present1(1,0,&params);
         if(FAILED(hr) || hr == DXGI_STATUS_OCCLUDED){
-            // MessageBOx
-            DEBUG_STREAM("Failed to Present SwapChain");
+            std::cout << "[GED3D12Engine_Internal] - Failed to Present SwapChain hr=0x"
+                      << std::hex << static_cast<unsigned long>(hr) << std::dec;
+
+            if(hr == DXGI_STATUS_OCCLUDED){
+                std::cout << " (DXGI_STATUS_OCCLUDED)";
+            }
+            else {
+                ComPtr<ID3D12Device> device;
+                HRESULT devHr = commandList->GetDevice(IID_PPV_ARGS(&device));
+                if(SUCCEEDED(devHr) && device != nullptr){
+                    const HRESULT removedReason = device->GetDeviceRemovedReason();
+                    if(removedReason != S_OK){
+                        std::cout << " deviceRemoved=0x"
+                                  << std::hex << static_cast<unsigned long>(removedReason) << std::dec;
+                    }
+
+                    ComPtr<ID3D12InfoQueue> infoQueue;
+                    if(SUCCEEDED(device.As(&infoQueue)) && infoQueue != nullptr){
+                        const UINT64 msgCount = infoQueue->GetNumStoredMessagesAllowedByRetrievalFilter();
+                        if(msgCount > 0){
+                            const UINT64 maxDump = 8;
+                            const UINT64 first = msgCount > maxDump ? (msgCount - maxDump) : 0;
+                            std::cout << " d3d12Messages=" << msgCount;
+                            for(UINT64 i = first; i < msgCount; i++){
+                                SIZE_T msgLength = 0;
+                                if(FAILED(infoQueue->GetMessage(i,nullptr,&msgLength)) || msgLength == 0){
+                                    continue;
+                                }
+                                std::vector<char> storage(msgLength);
+                                auto *msg = reinterpret_cast<D3D12_MESSAGE *>(storage.data());
+                                if(SUCCEEDED(infoQueue->GetMessage(i,msg,&msgLength)) && msg != nullptr && msg->pDescription){
+                                    std::cout << "\n  [D3D12Message] " << msg->pDescription;
+                                }
+                            }
+                            infoQueue->ClearStoredMessages();
+                        }
+                    }
+                }
+            }
+            std::cout << std::endl;
         }
         else
             frameIndex = swapChain->GetCurrentBackBufferIndex();

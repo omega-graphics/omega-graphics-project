@@ -1,5 +1,6 @@
 #include "DCVisualTree.h"
-#include <iostream>
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include "NativePrivate/win/HWNDItem.h"
 
@@ -10,6 +11,20 @@ namespace OmegaWTK::Composition {
     IDCompositionDevice3 *comp_device = nullptr;
     IDCompositionDesktopDevice *comp_device_desktop = nullptr;
     // IDCompositionDevice3 *comp_device_2 = nullptr;
+
+    namespace {
+        static unsigned toBackingDimension(float logical,float renderScale){
+            if(!std::isfinite(logical) || logical <= 0.f){
+                logical = 1.f;
+            }
+            if(!std::isfinite(renderScale) || renderScale <= 0.f){
+                renderScale = 1.f;
+            }
+            return static_cast<unsigned>(std::max<long>(
+                    1L,
+                    static_cast<long>(std::lround(logical * renderScale))));
+        }
+    }
 
     SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRenderTarget> & view){
         return SharedHandle<BackendVisualTree>(new DCVisualTree(view));
@@ -28,21 +43,34 @@ namespace OmegaWTK::Composition {
         }
 
         auto hwndItem = std::dynamic_pointer_cast<Native::Win::HWNDItem>(view->getNativePtr());
-        HRESULT res = comp_device_desktop->CreateTargetForHwnd(hwndItem->hwnd,TRUE,&hwndTarget.comPtr);
+        if(hwndItem != nullptr && hwndItem->hwnd != nullptr){
+            const auto dpi = GetDpiForWindow(hwndItem->hwnd);
+            if(dpi > 0){
+                renderScale = static_cast<float>(dpi) / 96.f;
+            }
+        }
+        HRESULT res = comp_device_desktop->CreateTargetForHwnd(hwndItem->hwnd,FALSE,&hwndTarget.comPtr);
         if(FAILED(res)){
             OMEGAWTK_DEBUG("Failed to Create Render Target for HWND");
         }
     };
 
-     DCVisualTree::Visual::Visual(Core::Position &pos,BackendRenderTargetContext & context, IDCompositionVisual2 * visual, IDXGISwapChain3 *swapChain):
+     DCVisualTree::Visual::Visual(Core::Position &pos,
+                                  BackendRenderTargetContext & context,
+                                  IDCompositionVisual2 * visual,
+                                  IDXGISwapChain3 *swapChain,
+                                  float renderScale):
      Parent::Visual(pos,context),
      swapChain(swapChain),
-     visual(visual){
+     visual(visual),
+     renderScale(renderScale){
         
      };
 
     void DCVisualTree::Visual::resize(Core::Rect &newRect){
-        swapChain->ResizeBuffers(2,(UINT)newRect.w,(UINT)newRect.h,DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
+        const auto backingWidth = toBackingDimension(newRect.w,renderScale);
+        const auto backingHeight = toBackingDimension(newRect.h,renderScale);
+        swapChain->ResizeBuffers(2,backingWidth,backingHeight,DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
     }
 
     void DCVisualTree::Visual::updateShadowEffect(LayerEffect::DropShadowParams &params) {
@@ -91,13 +119,13 @@ namespace OmegaWTK::Composition {
         OmegaGTE::NativeRenderTargetDescriptor desc {};
         desc.isHwnd = false;
         desc.hwnd = nullptr;
-        desc.height = (unsigned)rect.h;
-        desc.width = (unsigned)rect.w;
+        desc.height = toBackingDimension(rect.h,renderScale);
+        desc.width = toBackingDimension(rect.w,renderScale);
 
         auto target = gte.graphicsEngine->makeNativeRenderTarget(desc);
         auto swapChain = (IDXGISwapChain3 *)target->getSwapChain();
 
-        BackendRenderTargetContext context {rect,target};
+        BackendRenderTargetContext context {rect,target,renderScale};
         
         HRESULT hr;
         IDCompositionVisual2 *v;
@@ -113,7 +141,7 @@ namespace OmegaWTK::Composition {
             MessageBoxA(HWND_DESKTOP,(std::string("Failed to set Content of Visual. ERROR:") + ss.str()).c_str(),NULL,MB_OK);
         };
         // rc.visual = nullptr;
-        return (SharedHandle<Parent::Visual>)new DCVisualTree::Visual {pos,context,v,swapChain};
+        return (SharedHandle<Parent::Visual>)new DCVisualTree::Visual {pos,context,v,swapChain,renderScale};
     };
 
     void DCVisualTree::setRootVisual(Core::SharedPtr<Parent::Visual> & visual){
@@ -125,6 +153,7 @@ namespace OmegaWTK::Composition {
                                 v->traceResourceId,
                                 "DCVisualTree::Root",
                                 this);
+            v->visual->SetOpacityMode(DCOMPOSITION_OPACITY_MODE_LAYER);
         }
         hwndTarget->SetRoot(v->visual);
         comp_device_desktop->Commit();

@@ -15,6 +15,7 @@ namespace OmegaWTK::Composition {
 */
 class DCVisualTree : public BackendVisualTree {
     Core::UniqueComPtr<IDCompositionTarget> hwndTarget;
+    float renderScale = 1.f;
     typedef BackendVisualTree Parent;
     public:
     struct Visual : public Parent::Visual {
@@ -23,7 +24,12 @@ class DCVisualTree : public BackendVisualTree {
         IDCompositionVisual2 * shadowVisual = nullptr;
         IDCompositionMatrixTransform3D *transformEffect = nullptr;
         IDCompositionShadowEffect *shadowEffect = nullptr;
-        explicit Visual(Core::Position & pos,BackendRenderTargetContext &context, IDCompositionVisual2 * visual, IDXGISwapChain3 *swapChain);
+        float renderScale = 1.f;
+        explicit Visual(Core::Position & pos,
+                        BackendRenderTargetContext &context,
+                        IDCompositionVisual2 * visual,
+                        IDXGISwapChain3 *swapChain,
+                        float renderScale);
         void updateShadowEffect(LayerEffect::DropShadowParams &params) override;
         void updateTransformEffect(LayerEffect::TransformationParams &params) override;
         void resize(Core::Rect &newRect) override;

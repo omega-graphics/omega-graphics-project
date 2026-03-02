@@ -74,6 +74,8 @@ _NAMESPACE_BEGIN_
     class GED3D12Fence : public GEFence {
     public:
         ComPtr<ID3D12Fence> fence;
+        std::uint64_t lastSignaledValue = 0;
+        std::uint64_t nextSignalValue = 1;
         void setName(OmegaCommon::StrRef name) override{
             ATL::CStringW str(name.data(),name.size());
             fence->SetName(str);

@@ -118,12 +118,7 @@ _NAMESPACE_BEGIN_
                 D3D12_RESOURCE_STATES state;
                 if(l.type == OMEGASL_SHADER_TEXTURE1D_DESC || l.type == OMEGASL_SHADER_TEXTURE2D_DESC || l.type == OMEGASL_SHADER_TEXTURE3D_DESC){
                     if(l.io_mode == OMEGASL_SHADER_DESC_IO_IN){
-                        if(shader.type == OMEGASL_SHADER_FRAGMENT){
-                            state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-                        }
-                        else {
-                            state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                        }
+                        state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
                     }
                     else {
                         state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -272,6 +267,11 @@ _NAMESPACE_BEGIN_
         CD3DX12_CPU_DESCRIPTOR_HANDLE cpu_handle;
         CD3DX12_CPU_DESCRIPTOR_HANDLE ds_cpu_handle;
 
+        const auto rtvDescSize = parentQueue->engine->d3d12_device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        const auto dsvDescSize = parentQueue->engine->d3d12_device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+
         if(desc.nRenderTarget) {
             auto *nativeRenderTarget = (GED3D12NativeRenderTarget *)desc.nRenderTarget;
             if(desc.multisampleResolve){
@@ -315,9 +315,14 @@ _NAMESPACE_BEGIN_
             }
             else {
                 cpu_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(
-                        nativeRenderTarget->rtvDescHeap->GetCPUDescriptorHandleForHeapStart());
+                        nativeRenderTarget->rtvDescHeap->GetCPUDescriptorHandleForHeapStart(),
+                        nativeRenderTarget->frameIndex,
+                        rtvDescSize);
                 if(!desc.depthStencilAttachment.disabled){
-                    ds_cpu_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(nativeRenderTarget->dsvDescHeap->GetCPUDescriptorHandleForHeapStart());
+                    ds_cpu_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(
+                            nativeRenderTarget->dsvDescHeap->GetCPUDescriptorHandleForHeapStart(),
+                            nativeRenderTarget->frameIndex,
+                            dsvDescSize);
                 }
                 if(firstRenderPass) {
                     auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -866,8 +871,9 @@ _NAMESPACE_BEGIN_
                                                   SharedHandle<GEFence> &waitFence) {
         multiQueueSync = true;
         auto fence = (GED3D12Fence *)waitFence.get();
-        commandQueue->Wait(fence->fence.Get(),1);
-        commandQueue->Signal(fence->fence.Get(),0);
+        if(fence->lastSignaledValue > 0){
+            commandQueue->Wait(fence->fence.Get(),fence->lastSignaledValue);
+        }
          multiQueueSync = false;
     };
 
@@ -885,6 +891,7 @@ _NAMESPACE_BEGIN_
         submitEvent.commandBufferId = d3d12_buffer->traceResourceId;
         submitEvent.nativeHandle = reinterpret_cast<std::uint64_t>(d3d12_buffer->commandList.Get());
         ResourceTracking::Tracker::instance().emit(submitEvent);
+        retainedCommandBuffers.push_back(commandBuffer);
         commandLists.push_back(d3d12_buffer->commandList.Get());
     };
 
@@ -904,9 +911,26 @@ _NAMESPACE_BEGIN_
         submitEvent.commandBufferId = d3d12_buffer->traceResourceId;
         submitEvent.nativeHandle = reinterpret_cast<std::uint64_t>(d3d12_buffer->commandList.Get());
         ResourceTracking::Tracker::instance().emit(submitEvent);
+
+        // Preserve submission order: queued command lists must execute before the
+        // fence signal command list so cross-queue waits observe rendered data.
+        if(!commandLists.empty()){
+            for(auto &cl : commandLists){
+                if(cl != nullptr){
+                    cl->Close();
+                }
+            }
+            commandQueue->ExecuteCommandLists(commandLists.size(),
+                                              (ID3D12CommandList *const *)commandLists.data());
+            commandLists.clear();
+            retainedCommandBuffers.clear();
+        }
+
         d3d12_buffer->commandList->Close();
         commandQueue->ExecuteCommandLists(1,(ID3D12CommandList *const *)d3d12_buffer->commandList.GetAddressOf());
-        commandQueue->Signal(fence->fence.Get(),1);
+        const auto signalValue = fence->nextSignalValue++;
+        fence->lastSignaledValue = signalValue;
+        commandQueue->Signal(fence->fence.Get(),signalValue);
         multiQueueSync = false;
     }
 
@@ -919,10 +943,17 @@ _NAMESPACE_BEGIN_
 
     void GED3D12CommandQueue::commitToGPU(){
         if(!multiQueueSync) {
-            for (auto &cl: commandLists) {
-                cl->Close();
+            for(auto &cl : commandLists){
+                if(cl != nullptr){
+                    cl->Close();
+                }
             }
-            commandQueue->ExecuteCommandLists(commandLists.size(), (ID3D12CommandList *const *) commandLists.data());
+            if(!commandLists.empty()){
+                commandQueue->ExecuteCommandLists(commandLists.size(),
+                                                  (ID3D12CommandList *const *)commandLists.data());
+            }
+            commandLists.clear();
+            retainedCommandBuffers.clear();
         }
     };
 

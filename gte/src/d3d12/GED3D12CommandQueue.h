@@ -98,6 +98,7 @@ _NAMESPACE_BEGIN_
         GED3D12Engine *engine;
 
         std::vector<ID3D12GraphicsCommandList6 *> commandLists;
+        std::vector<SharedHandle<GECommandBuffer>> retainedCommandBuffers;
         ComPtr<ID3D12CommandQueue> commandQueue;
 
         ComPtr<ID3D12Fence> fence;

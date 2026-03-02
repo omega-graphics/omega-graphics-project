@@ -508,6 +508,20 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             return;
         }
         cb->setRenderPipelineState(finalPipeline);
+        OmegaGTE::GEViewport finalViewport {};
+        finalViewport.x = 0.f;
+        finalViewport.y = 0.f;
+        finalViewport.nearDepth = 0.f;
+        finalViewport.farDepth = 1.f;
+        finalViewport.width = static_cast<float>(backingWidth);
+        finalViewport.height = static_cast<float>(backingHeight);
+        OmegaGTE::GEScissorRect finalScissorRect {
+                0.f,
+                0.f,
+                static_cast<float>(backingWidth),
+                static_cast<float>(backingHeight)};
+        cb->setViewports({finalViewport});
+        cb->setScissorRects({finalScissorRect});
         cb->bindResourceAtVertexShader(finalTextureDrawBuffer,1);
         cb->bindResourceAtFragmentShader(finalTexture,2);
         cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle,6,0);
@@ -606,7 +620,6 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 useTextureRenderPipeline = !_params.brush->isColor;
                 textureCoordDenomW = std::max(1.f,_params.rect.w);
                 textureCoordDenomH = std::max(1.f,_params.rect.h);
-
                 if(!useTextureRenderPipeline){
                     auto color = OmegaGTE::makeColor(_params.brush->color.r,
                                                      _params.brush->color.g,
@@ -775,7 +788,6 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         if(result.totalVertexCount() == 0){
             return;
         }
-
         if(useTextureRenderPipeline){
             if(textureRenderPipelineState == nullptr){
                 std::cout << "Texture render pipeline unavailable. Skipping textured draw command." << std::endl;
