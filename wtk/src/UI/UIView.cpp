@@ -434,6 +434,12 @@ static StyleScope collectStyleScope(const StyleSheetPtr & style,const UIViewTag 
             case StyleSheet::Entry::Kind::TextAlignment:
             case StyleSheet::Entry::Kind::TextWrapping:
             case StyleSheet::Entry::Kind::TextLineLimit:
+            case StyleSheet::Entry::Kind::LayoutWidth:
+            case StyleSheet::Entry::Kind::LayoutHeight:
+            case StyleSheet::Entry::Kind::LayoutMargin:
+            case StyleSheet::Entry::Kind::LayoutPadding:
+            case StyleSheet::Entry::Kind::LayoutClamp:
+            case StyleSheet::Entry::Kind::LayoutTransition:
                 if(entry.elementTag.empty()){
                     scope.touchesAllElements = true;
                 }
@@ -1092,6 +1098,120 @@ StyleSheetPtr StyleSheet::textLineLimit(UIElementTag elementTag,unsigned lineLim
     return copy();
 }
 
+StyleSheetPtr StyleSheet::layoutWidth(UIElementTag elementTag,LayoutLength width){
+    Entry entry {};
+    entry.kind = Entry::Kind::LayoutWidth;
+    entry.elementTag = elementTag;
+    entry.layoutLengthValue = width;
+    entries.push_back(entry);
+    return copy();
+}
+
+StyleSheetPtr StyleSheet::layoutHeight(UIElementTag elementTag,LayoutLength height){
+    Entry entry {};
+    entry.kind = Entry::Kind::LayoutHeight;
+    entry.elementTag = elementTag;
+    entry.layoutLengthValue = height;
+    entries.push_back(entry);
+    return copy();
+}
+
+StyleSheetPtr StyleSheet::layoutSize(UIElementTag elementTag,LayoutLength width,LayoutLength height){
+    {
+        Entry entry {};
+        entry.kind = Entry::Kind::LayoutWidth;
+        entry.elementTag = elementTag;
+        entry.layoutLengthValue = width;
+        entries.push_back(entry);
+    }
+    {
+        Entry entry {};
+        entry.kind = Entry::Kind::LayoutHeight;
+        entry.elementTag = elementTag;
+        entry.layoutLengthValue = height;
+        entries.push_back(entry);
+    }
+    return copy();
+}
+
+StyleSheetPtr StyleSheet::layoutMargin(UIElementTag elementTag,LayoutEdges margin){
+    Entry entry {};
+    entry.kind = Entry::Kind::LayoutMargin;
+    entry.elementTag = elementTag;
+    entry.layoutEdgesValue = margin;
+    entries.push_back(entry);
+    return copy();
+}
+
+StyleSheetPtr StyleSheet::layoutPadding(UIElementTag elementTag,LayoutEdges padding){
+    Entry entry {};
+    entry.kind = Entry::Kind::LayoutPadding;
+    entry.elementTag = elementTag;
+    entry.layoutEdgesValue = padding;
+    entries.push_back(entry);
+    return copy();
+}
+
+StyleSheetPtr StyleSheet::layoutClamp(UIElementTag elementTag,LayoutClamp clamp){
+    Entry entry {};
+    entry.kind = Entry::Kind::LayoutClamp;
+    entry.elementTag = elementTag;
+    entry.layoutClampValue = clamp;
+    entries.push_back(entry);
+    return copy();
+}
+
+StyleSheetPtr StyleSheet::layoutTransition(UIElementTag elementTag,LayoutTransitionSpec spec){
+    Entry entry {};
+    entry.kind = Entry::Kind::LayoutTransition;
+    entry.elementTag = elementTag;
+    entry.layoutTransitionValue = spec;
+    entries.push_back(entry);
+    return copy();
+}
+
+// ---------------------------------------------------------------------------
+// UIViewLayoutV2
+// ---------------------------------------------------------------------------
+
+UIViewLayoutV2 & UIViewLayoutV2::element(const UIElementLayoutSpec & spec){
+    auto it = std::find_if(elements_.begin(),elements_.end(),[&](const UIElementLayoutSpec & e){
+        return e.tag == spec.tag;
+    });
+    if(it != elements_.end()){
+        *it = spec;
+    }
+    else {
+        elements_.push_back(spec);
+    }
+    return *this;
+}
+
+bool UIViewLayoutV2::remove(UIElementTag tag){
+    auto it = std::find_if(elements_.begin(),elements_.end(),[&](const UIElementLayoutSpec & e){
+        return e.tag == tag;
+    });
+    if(it == elements_.end()){
+        return false;
+    }
+    elements_.erase(it);
+    return true;
+}
+
+void UIViewLayoutV2::clear(){
+    elements_.clear();
+}
+
+const OmegaCommon::Vector<UIElementLayoutSpec> & UIViewLayoutV2::elements() const{
+    return elements_;
+}
+
+bool UIViewLayoutV2::hasElement(UIElementTag tag) const{
+    return std::find_if(elements_.begin(),elements_.end(),[&](const UIElementLayoutSpec & e){
+        return e.tag == tag;
+    }) != elements_.end();
+}
+
 UIRenderer::UIRenderer(UIView *view):
 view(view){
 
@@ -1219,6 +1339,71 @@ const UIView::UpdateDiagnostics & UIView::getLastUpdateDiagnostics() const{
 
 const UIView::AnimationDiagnostics & UIView::getLastAnimationDiagnostics() const{
     return lastAnimationDiagnostics;
+}
+
+UIViewLayoutV2 & UIView::layoutV2(){
+    layoutDirty = true;
+    markRootDirty();
+    firstFrameCoherentSubmit = true;
+    return currentLayoutV2_;
+}
+
+void UIView::setLayoutV2(const UIViewLayoutV2 & layout){
+    currentLayoutV2_ = layout;
+    layoutDirty = true;
+    markRootDirty();
+    markAllElementsDirty();
+    firstFrameCoherentSubmit = true;
+}
+
+bool UIView::useLayoutV2() const{
+    return useLayoutV2_;
+}
+
+void UIView::setUseLayoutV2(bool use){
+    if(useLayoutV2_ != use){
+        useLayoutV2_ = use;
+        layoutDirty = true;
+        markRootDirty();
+        markAllElementsDirty();
+        firstFrameCoherentSubmit = true;
+    }
+}
+
+void UIView::setDiagnosticSink(LayoutDiagnosticSink * sink){
+    diagnosticSink_ = sink;
+}
+
+void UIView::applyLayoutDelta(const UIElementTag & elementTag,
+                              const LayoutDelta & delta,
+                              const LayoutTransitionSpec & spec){
+    if(!spec.enabled || spec.durationSec <= 0.f || delta.changedProperties.empty()){
+        return;
+    }
+    auto layerAnimator = ensureAnimationLayerAnimator(elementTag);
+    if(layerAnimator == nullptr){
+        return;
+    }
+
+    int dx = static_cast<int>(delta.toRectPx.pos.x - delta.fromRectPx.pos.x);
+    int dy = static_cast<int>(delta.toRectPx.pos.y - delta.fromRectPx.pos.y);
+    int dw = static_cast<int>(delta.toRectPx.w - delta.fromRectPx.w);
+    int dh = static_cast<int>(delta.toRectPx.h - delta.fromRectPx.h);
+
+    if(dx == 0 && dy == 0 && dw == 0 && dh == 0){
+        return;
+    }
+
+    unsigned durationMs = static_cast<unsigned>(spec.durationSec * 1000.f);
+    if(durationMs == 0){
+        return;
+    }
+
+    auto curve = spec.curve;
+    if(curve == nullptr){
+        curve = Composition::AnimationCurve::Linear();
+    }
+    layerAnimator->resizeTransition(dx,dy,dw,dh,durationMs,curve);
 }
 
 void UIView::markRootDirty(){
@@ -2316,6 +2501,253 @@ void UIView::update(){
         markRootDirty();
         firstFrameCoherentSubmit = true;
     }
+
+    // -----------------------------------------------------------------------
+    // Layout V2 resolve path (C2)
+    // -----------------------------------------------------------------------
+    if(useLayoutV2_){
+        const auto & v2Elements = currentLayoutV2_.elements();
+        if(v2Elements.empty()){
+            layoutDirty = false;
+            styleDirty = false;
+            styleDirtyGlobal = false;
+            styleChangeRequiresCoherentFrame = false;
+            firstFrameCoherentSubmit = false;
+            ++lastUpdateDiagnostics.revision;
+            return;
+        }
+
+        const auto localBounds = localBoundsFromView(this);
+        const float dpiScale = 1.f;
+        LayoutContext ctx {};
+        ctx.availableRectPx = localBounds;
+        ctx.dpiScale = dpiScale;
+        const auto availDp = ctx.availableRectDp();
+
+        OmegaCommon::Vector<StyleRule> layoutRules {};
+        if(currentStyle != nullptr){
+            layoutRules = convertEntriesToRules(*currentStyle,tag);
+        }
+
+        struct V2Resolved {
+            UIElementTag tag;
+            const UIElementLayoutSpec * spec;
+            Core::Rect resolvedRectDp {};
+            Core::Rect resolvedRectPx {};
+            int zIndex = 0;
+            std::size_t insertionOrder = 0;
+        };
+        OmegaCommon::Vector<V2Resolved> resolved {};
+        resolved.reserve(v2Elements.size());
+
+        for(std::size_t i = 0; i < v2Elements.size(); ++i){
+            const auto & spec = v2Elements[i];
+            LayoutStyle effectiveStyle = spec.style;
+            mergeLayoutRulesIntoStyle(effectiveStyle,layoutRules,spec.tag);
+
+            Core::Rect rectDp = resolveClampedRect(effectiveStyle,availDp,dpiScale);
+            Core::Rect rectPx {
+                Core::Position{rectDp.pos.x * dpiScale,rectDp.pos.y * dpiScale},
+                rectDp.w * dpiScale,
+                rectDp.h * dpiScale
+            };
+
+            if(diagnosticSink_ != nullptr){
+                diagnosticSink_->record(LayoutDiagnosticEntry{
+                    spec.tag,rectDp,rectPx,LayoutDiagnosticEntry::Pass::Arrange});
+            }
+
+            V2Resolved entry {};
+            entry.tag = spec.tag;
+            entry.spec = &spec;
+            entry.resolvedRectDp = rectDp;
+            entry.resolvedRectPx = rectPx;
+            entry.zIndex = spec.zIndex;
+            entry.insertionOrder = i;
+            resolved.push_back(entry);
+        }
+
+        std::stable_sort(resolved.begin(),resolved.end(),
+            [](const V2Resolved & a,const V2Resolved & b){
+                if(a.zIndex != b.zIndex){
+                    return a.zIndex < b.zIndex;
+                }
+                return a.insertionOrder < b.insertionOrder;
+            });
+
+        OmegaCommon::Vector<UIElementTag> nextOrder {};
+        nextOrder.reserve(resolved.size());
+        for(const auto & r : resolved){
+            nextOrder.push_back(r.tag);
+        }
+
+        OmegaCommon::Vector<UIElementTag> previousOrder = activeTagOrder;
+        const bool orderChanged = previousOrder.size() != nextOrder.size() ||
+                                  !std::equal(previousOrder.begin(),previousOrder.end(),
+                                              nextOrder.begin(),nextOrder.end());
+        activeTagOrder = nextOrder;
+
+        startCompositionSession();
+
+        auto viewStyle = resolveViewStyle(currentStyle,tag);
+        auto & rootBackground = rootCanvas->getCurrentFrame()->background;
+        auto backgroundColor = viewStyle.backgroundColor.value_or(Composition::Color::Transparent);
+        rootBackground.r = backgroundColor.r;
+        rootBackground.g = backgroundColor.g;
+        rootBackground.b = backgroundColor.b;
+        rootBackground.a = backgroundColor.a;
+        rootCanvas->sendFrame();
+
+        for(const auto & entry : resolved){
+            const auto & spec = *entry.spec;
+            auto & target = buildLayerRenderTarget(entry.tag);
+            if(target.layer != nullptr){
+                auto layerRect = entry.resolvedRectPx;
+                auto currentLayerRect = target.layer->getLayerRect();
+                if(currentLayerRect.pos.x != layerRect.pos.x ||
+                   currentLayerRect.pos.y != layerRect.pos.y ||
+                   currentLayerRect.w != layerRect.w ||
+                   currentLayerRect.h != layerRect.h){
+                    target.layer->resize(layerRect);
+                }
+                target.layer->setEnabled(true);
+            }
+            if(target.canvas == nullptr){
+                continue;
+            }
+
+            auto previousRectIt = lastResolvedV2Rects_.find(entry.tag);
+            Core::Rect previousRectPx = (previousRectIt != lastResolvedV2Rects_.end())
+                                            ? previousRectIt->second
+                                            : entry.resolvedRectPx;
+            LayoutDelta delta = computeLayoutDelta(previousRectPx,entry.resolvedRectPx);
+            lastResolvedV2Rects_[entry.tag] = entry.resolvedRectPx;
+
+            if(!delta.changedProperties.empty()){
+                auto transSpec = resolveLayoutTransition(layoutRules,entry.tag);
+                if(transSpec && transSpec->enabled){
+                    applyLayoutDelta(entry.tag,delta,*transSpec);
+                }
+            }
+
+            if(diagnosticSink_ != nullptr){
+                diagnosticSink_->record(LayoutDiagnosticEntry{
+                    entry.tag,entry.resolvedRectDp,entry.resolvedRectPx,
+                    LayoutDiagnosticEntry::Pass::Commit});
+            }
+
+            auto & elementBg = target.canvas->getCurrentFrame()->background;
+            elementBg.r = 0.f;
+            elementBg.g = 0.f;
+            elementBg.b = 0.f;
+            elementBg.a = 0.f;
+
+            bool emittedVisual = false;
+            ChildResizeSpec layoutClamp {};
+            layoutClamp.resizable = true;
+            layoutClamp.policy = ChildResizePolicy::FitContent;
+
+            if(spec.shape){
+                auto shapeToDraw = *spec.shape;
+                auto brush = resolveElementBrush(currentStyle,tag,entry.tag);
+                switch(shapeToDraw.type){
+                    case Shape::Type::Rect: {
+                        auto rect = shapeToDraw.rect;
+                        rect = ViewResizeCoordinator::clampRectToParent(rect,localBounds,layoutClamp);
+                        target.canvas->drawRect(rect,brush);
+                        emittedVisual = true;
+                        break;
+                    }
+                    case Shape::Type::RoundedRect: {
+                        auto rect = shapeToDraw.roundedRect;
+                        Core::Rect clampedRect {rect.pos,rect.w,rect.h};
+                        clampedRect = ViewResizeCoordinator::clampRectToParent(clampedRect,localBounds,layoutClamp);
+                        rect.pos = clampedRect.pos;
+                        rect.w = clampedRect.w;
+                        rect.h = clampedRect.h;
+                        rect.rad_x = std::min(rect.rad_x,rect.w * 0.5f);
+                        rect.rad_y = std::min(rect.rad_y,rect.h * 0.5f);
+                        target.canvas->drawRoundedRect(rect,brush);
+                        emittedVisual = true;
+                        break;
+                    }
+                    case Shape::Type::Ellipse: {
+                        const auto & srcEllipse = shapeToDraw.ellipse;
+                        Core::Rect ellipseRect {
+                            Core::Position{
+                                srcEllipse.x - srcEllipse.rad_x,
+                                srcEllipse.y - srcEllipse.rad_y
+                            },
+                            std::max(1.f,srcEllipse.rad_x * 2.f),
+                            std::max(1.f,srcEllipse.rad_y * 2.f)
+                        };
+                        ellipseRect = ViewResizeCoordinator::clampRectToParent(ellipseRect,localBounds,layoutClamp);
+                        Core::Ellipse ellipse {
+                            ellipseRect.pos.x + (ellipseRect.w * 0.5f),
+                            ellipseRect.pos.y + (ellipseRect.h * 0.5f),
+                            ellipseRect.w * 0.5f,
+                            ellipseRect.h * 0.5f
+                        };
+                        target.canvas->drawEllipse(ellipse,brush);
+                        emittedVisual = true;
+                        break;
+                    }
+                    case Shape::Type::Path: {
+                        if(shapeToDraw.path){
+                            auto vectorPath = *shapeToDraw.path;
+                            auto path = Composition::Path(vectorPath,shapeToDraw.pathStrokeWidth);
+                            if(shapeToDraw.closePath){
+                                path.close();
+                            }
+                            path.setPathBrush(brush);
+                            target.canvas->drawPath(path);
+                            emittedVisual = true;
+                        }
+                        break;
+                    }
+                    default:
+                        break;
+                }
+            }
+            else if(spec.text){
+                UIElementTag textStyleTag = spec.textStyleTag.value_or(entry.tag);
+                auto textStyle = resolveTextStyle(currentStyle,tag,textStyleTag);
+                auto font = textStyle.font != nullptr ? textStyle.font : resolveFallbackTextFont();
+                if(font != nullptr){
+                    auto textRect = localBounds;
+                    textRect = ViewResizeCoordinator::clampRectToParent(textRect,localBounds,layoutClamp);
+                    auto unicodeText = UniString::fromUTF32(
+                        reinterpret_cast<const UChar32 *>(spec.text->data()),
+                        static_cast<int32_t>(spec.text->size()));
+                    auto textLayout = textStyle.layout;
+                    textLayout.lineLimit = textStyle.lineLimit;
+                    target.canvas->drawText(unicodeText,font,textRect,textStyle.color,textLayout);
+                    emittedVisual = true;
+                }
+            }
+
+            if(!emittedVisual){
+                auto clearBrush = Composition::ColorBrush(Composition::Color::Transparent);
+                auto clearRect = localBounds;
+                target.canvas->drawRect(clearRect,clearBrush);
+            }
+
+            target.canvas->sendFrame();
+        }
+
+        endCompositionSession();
+        layoutDirty = false;
+        styleDirty = false;
+        styleDirtyGlobal = false;
+        styleChangeRequiresCoherentFrame = false;
+        firstFrameCoherentSubmit = false;
+        ++lastUpdateDiagnostics.revision;
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Legacy UIViewLayout path (unchanged)
+    // -----------------------------------------------------------------------
 
     OmegaCommon::Vector<UIElementTag> previousOrder = activeTagOrder;
     OmegaCommon::Vector<UIElementTag> nextOrder {};

@@ -35,6 +35,22 @@ OmegaWTKApp(
     SOURCES
     ContainerClampAnimationTest/main.cpp)
 
+OmegaWTKApp(
+    NAME
+    LayoutUnitTest
+    BUNDLE_ID
+    "org.omegagraphics.LayoutUnitTest"
+    SOURCES
+    LayoutUnitTest/main.cpp)
+
+OmegaWTKApp(
+    NAME
+    LayoutResizeStressTest
+    BUNDLE_ID
+    "org.omegagraphics.LayoutResizeStressTest"
+    SOURCES
+    LayoutResizeStressTest/main.cpp)
+
 if(TARGET_MACOS)
     add_custom_target(2DAppTest DEPENDS EllipsePathCompositorTest.app)
 else()

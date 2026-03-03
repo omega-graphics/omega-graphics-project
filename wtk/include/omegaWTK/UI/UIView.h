@@ -2,6 +2,7 @@
 #include "omegaWTK/Composition/Canvas.h"
 #include "omegaWTK/Composition/Animation.h"
 #include "View.h"
+#include "Layout.h"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -74,7 +75,13 @@ struct OMEGAWTK_EXPORT StyleSheet {
             TextColor,
             TextAlignment,
             TextWrapping,
-            TextLineLimit
+            TextLineLimit,
+            LayoutWidth,
+            LayoutHeight,
+            LayoutMargin,
+            LayoutPadding,
+            LayoutClamp,
+            LayoutTransition
         };
 
         Kind kind = Kind::BackgroundColor;
@@ -93,6 +100,10 @@ struct OMEGAWTK_EXPORT StyleSheet {
         Core::Optional<Composition::LayerEffect::DropShadowParams> dropShadowValue {};
         Core::Optional<Composition::CanvasEffect::GaussianBlurParams> gaussianBlurValue {};
         Core::Optional<Composition::CanvasEffect::DirectionalBlurParams> directionalBlurValue {};
+        Core::Optional<LayoutLength> layoutLengthValue {};
+        Core::Optional<LayoutEdges> layoutEdgesValue {};
+        Core::Optional<LayoutClamp> layoutClampValue {};
+        Core::Optional<LayoutTransitionSpec> layoutTransitionValue {};
         int nodeIndex = -1;
         bool transition = false;
         float duration = 0.f;
@@ -188,6 +199,14 @@ struct OMEGAWTK_EXPORT StyleSheet {
 
     StyleSheetPtr textLineLimit(UIElementTag elementTag,unsigned lineLimit);
 
+    StyleSheetPtr layoutWidth(UIElementTag elementTag,LayoutLength width);
+    StyleSheetPtr layoutHeight(UIElementTag elementTag,LayoutLength height);
+    StyleSheetPtr layoutSize(UIElementTag elementTag,LayoutLength width,LayoutLength height);
+    StyleSheetPtr layoutMargin(UIElementTag elementTag,LayoutEdges margin);
+    StyleSheetPtr layoutPadding(UIElementTag elementTag,LayoutEdges padding);
+    StyleSheetPtr layoutClamp(UIElementTag elementTag,LayoutClamp clamp);
+    StyleSheetPtr layoutTransition(UIElementTag elementTag,LayoutTransitionSpec spec);
+
     StyleSheet();
     ~StyleSheet() = default;
 };
@@ -221,6 +240,25 @@ public:
     bool remove(UIElementTag tag);
     void clear();
     const OmegaCommon::Vector<Element> & elements() const;
+};
+
+struct OMEGAWTK_EXPORT UIElementLayoutSpec {
+    UIElementTag tag {};
+    LayoutStyle style {};
+    Core::Optional<Shape> shape {};
+    Core::Optional<OmegaCommon::UString> text {};
+    Core::Optional<UIElementTag> textStyleTag {};
+    int zIndex = 0;
+};
+
+class OMEGAWTK_EXPORT UIViewLayoutV2 {
+    OmegaCommon::Vector<UIElementLayoutSpec> elements_;
+public:
+    UIViewLayoutV2 & element(const UIElementLayoutSpec & spec);
+    bool remove(UIElementTag tag);
+    void clear();
+    const OmegaCommon::Vector<UIElementLayoutSpec> & elements() const;
+    bool hasElement(UIElementTag tag) const;
 };
 
 class UIRenderer {
@@ -347,6 +385,10 @@ private:
     OmegaCommon::Map<UIElementTag,EffectState> lastResolvedEffects;
     OmegaCommon::Map<UIElementTag,Shape> previousShapeByTag;
     SharedHandle<Composition::Font> fallbackTextFont = nullptr;
+    UIViewLayoutV2 currentLayoutV2_;
+    bool useLayoutV2_ = false;
+    OmegaCommon::Map<UIElementTag,Core::Rect> lastResolvedV2Rects_;
+    LayoutDiagnosticSink * diagnosticSink_ = nullptr;
     UpdateDiagnostics lastUpdateDiagnostics {};
     AnimationDiagnostics lastAnimationDiagnostics {};
     std::uint64_t lastObservedDroppedPacketCount = 0;
@@ -396,6 +438,18 @@ public:
     StyleSheetPtr getStyleSheet() const;
     const UpdateDiagnostics & getLastUpdateDiagnostics() const;
     const AnimationDiagnostics & getLastAnimationDiagnostics() const;
+
+    UIViewLayoutV2 & layoutV2();
+    void setLayoutV2(const UIViewLayoutV2 & layout);
+    bool useLayoutV2() const;
+    void setUseLayoutV2(bool use);
+
+    void setDiagnosticSink(LayoutDiagnosticSink * sink);
+
+    void applyLayoutDelta(const UIElementTag & elementTag,
+                          const LayoutDelta & delta,
+                          const LayoutTransitionSpec & spec);
+
     void update();
 };
 

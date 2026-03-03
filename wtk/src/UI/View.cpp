@@ -1,4 +1,5 @@
 #include "omegaWTK/UI/View.h"
+#include "omegaWTK/UI/Layout.h"
 
 #include <algorithm>
 #include <cmath>
@@ -389,6 +390,34 @@ void View::enable() {
 
 void View::disable() {
     renderTarget->getNativePtr()->disable();
+}
+
+void View::applyLayoutDelta(const LayoutDelta & delta,
+                            const LayoutTransitionSpec & spec){
+    if(!spec.enabled || spec.durationSec <= 0.f || delta.changedProperties.empty()){
+        resize(delta.toRectPx);
+        return;
+    }
+
+    auto viewAnimator = SharedHandle<Composition::ViewAnimator>(
+        new Composition::ViewAnimator(compositorProxy()));
+
+    int dx = static_cast<int>(delta.toRectPx.pos.x - delta.fromRectPx.pos.x);
+    int dy = static_cast<int>(delta.toRectPx.pos.y - delta.fromRectPx.pos.y);
+    int dw = static_cast<int>(delta.toRectPx.w - delta.fromRectPx.w);
+    int dh = static_cast<int>(delta.toRectPx.h - delta.fromRectPx.h);
+
+    if(dx == 0 && dy == 0 && dw == 0 && dh == 0){
+        resize(delta.toRectPx);
+        return;
+    }
+
+    unsigned durationMs = static_cast<unsigned>(spec.durationSec * 1000.f);
+    auto curve = spec.curve;
+    if(curve == nullptr){
+        curve = Composition::AnimationCurve::Linear();
+    }
+    viewAnimator->resizeTransition(dx,dy,dw,dh,durationMs,curve);
 }
 
 View::~View(){

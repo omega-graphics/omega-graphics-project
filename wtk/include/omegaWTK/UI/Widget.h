@@ -2,6 +2,7 @@
 #include "omegaWTK/Core/Core.h"
 #include "omegaWTK/Native/NativeTheme.h"
 #include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/UI/Layout.h"
 #include <cstdint>
 
 #ifndef OMEGAWTK_UI_WIDGET_H
@@ -136,6 +137,10 @@ private:
     PaintMode mode = PaintMode::Automatic;
     PaintOptions options {};
 
+    LayoutStyle layoutStyle_ {};
+    LayoutBehaviorPtr layoutBehavior_ = nullptr;
+    bool hasExplicitLayoutStyle_ = false;
+
     SharedHandle<Composition::Canvas> rootPaintCanvas;
 
     void onThemeSetRecurse(Native::ThemeDesc &desc);
@@ -237,6 +242,8 @@ protected:
                                       const Core::Rect & oldRect,
                                       const Core::Rect & newRect,
                                       GeometryChangeReason reason);
+    virtual MeasureResult measureSelf(const LayoutContext & ctx);
+    virtual void onLayoutResolved(const Core::Rect & finalRectPx);
     static bool geometryTraceLoggingEnabled();
     GeometryTraceContext geometryTraceContext() const;
 
@@ -250,6 +257,7 @@ private:
     friend class AppWindowManager;
     friend class WidgetTreeHost;
     friend class PaintContext;
+    friend void runWidgetLayout(Widget & root, const LayoutContext & ctx);
 public:
     OMEGACOMMON_CLASS("OmegaWTK.Widget")
     /**
@@ -265,6 +273,14 @@ public:
     void setRect(const Core::Rect & newRect);
     bool requestRect(const Core::Rect & requested,
                      GeometryChangeReason reason = GeometryChangeReason::ChildRequest);
+
+    void setLayoutStyle(const LayoutStyle & style);
+    const LayoutStyle & layoutStyle() const;
+    void setLayoutBehavior(LayoutBehaviorPtr behavior);
+    LayoutBehaviorPtr layoutBehavior() const;
+    void requestLayout();
+    bool hasExplicitLayoutStyle() const;
+    View & rootViewRef();
     virtual bool acceptsChildWidget(const Widget *child) const;
     virtual bool isLayoutResizable() const {
         return true;

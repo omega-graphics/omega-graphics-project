@@ -13,6 +13,7 @@ add_omega_wtk_lib(
     "AppWindow.cpp"
     "Text.cpp"
     "UIView.cpp"
+    "Layout.cpp"
     "Notification.cpp"
     HEADERS 
     "Widget.h"

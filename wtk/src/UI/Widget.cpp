@@ -1,4 +1,5 @@
 #include "omegaWTK/UI/Widget.h"
+#include "omegaWTK/UI/Layout.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "../Composition/Compositor.h"
 #include "omegaWTK/UI/View.h"
@@ -290,6 +291,12 @@ void Widget::handleHostResize(const Core::Rect &rect){
     auto & rootRect = rootView->getRect();
     auto newRect = rootRect;
     this->resize(newRect);
+
+    LayoutContext layoutCtx {};
+    layoutCtx.availableRectPx = rootRect;
+    layoutCtx.dpiScale = 1.f;
+    runWidgetLayout(*this, layoutCtx);
+
     WIDGET_NOTIFY_OBSERVERS_RESIZE(oldRect);
     if(mode == PaintMode::Automatic &&
        options.invalidateOnResize &&
@@ -496,6 +503,46 @@ void Widget::onChildRectCommitted(const Widget & child,
     (void)oldRect;
     (void)newRect;
     (void)reason;
+}
+
+void Widget::setLayoutStyle(const LayoutStyle & style){
+    layoutStyle_ = style;
+    hasExplicitLayoutStyle_ = true;
+}
+
+const LayoutStyle & Widget::layoutStyle() const {
+    return layoutStyle_;
+}
+
+void Widget::setLayoutBehavior(LayoutBehaviorPtr behavior){
+    layoutBehavior_ = std::move(behavior);
+}
+
+LayoutBehaviorPtr Widget::layoutBehavior() const {
+    return layoutBehavior_;
+}
+
+void Widget::requestLayout(){
+    if(parent != nullptr){
+        parent->requestLayout();
+    }
+}
+
+bool Widget::hasExplicitLayoutStyle() const {
+    return hasExplicitLayoutStyle_;
+}
+
+View & Widget::rootViewRef(){
+    return *rootView;
+}
+
+MeasureResult Widget::measureSelf(const LayoutContext & /*ctx*/){
+    auto & r = rect();
+    return {r.w, r.h};
+}
+
+void Widget::onLayoutResolved(const Core::Rect & finalRectPx){
+    setRect(finalRectPx);
 }
 
 bool Widget::geometryTraceLoggingEnabled(){

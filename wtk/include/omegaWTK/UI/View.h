@@ -192,6 +192,10 @@ namespace OmegaWTK {
 
         /// @brief Make the View invisible.
         void disable();
+
+        void applyLayoutDelta(const struct LayoutDelta & delta,
+                              const struct LayoutTransitionSpec & spec);
+
         ~View();
     };
 
