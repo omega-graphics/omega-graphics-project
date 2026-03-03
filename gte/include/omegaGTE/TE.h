@@ -175,6 +175,8 @@ struct OMEGAGTE_EXPORT TETessellationResult {
         unsigned vertexCount();
     };
     std::vector<TEMesh> meshes;
+    SharedHandle<GEBuffer> gpuVertexBuffer;
+    unsigned gpuVertexCount = 0;
     unsigned totalVertexCount();
     void translate(float x,float y,float z,const GEViewport & viewport);
     void rotate(float pitch,float yaw,float roll);
@@ -195,7 +197,21 @@ protected:
     void translateCoordsDefaultImpl(float x, float y,float z,GEViewport * viewport, float *x_result, float *y_result,float *z_result);
     virtual void translateCoords(float x, float y,float z,GEViewport * viewport, float *x_result, float *y_result,float *z_result) = 0;
     inline void _tessalatePriv(const TETessellationParams & params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport,TETessellationResult & result);
+
 public:
+    struct GPUTessExtractedParams {
+        enum Type { Rect, RoundedRect, Ellipsoid, RectPrism, Path2D, Other } type = Other;
+        float rx, ry, rw, rh;
+        float ex, ey, erad_x, erad_y;
+        float px, py, pz, pw, ph, pd;
+        float cr, cg, cb, ca;
+        bool hasColor = false;
+        float strokeWidth = 1.f;
+        bool contour = false;
+        struct Segment { float sx, sy, ex, ey; };
+        std::vector<Segment> pathSegments;
+    };
+    void extractGPUTessParams(const TETessellationParams &params, GPUTessExtractedParams &out);
     OMEGACOMMON_CLASS("OmegaGTE.OmegaTessellationEngineContext")
     // Default Value: 0.01 radians.
     void setArcStep(float newArcStep){

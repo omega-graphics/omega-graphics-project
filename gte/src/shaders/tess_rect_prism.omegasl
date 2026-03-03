@@ -1,0 +1,82 @@
+
+struct TessParams {
+    float4 rect;
+    float4 viewport;
+    float4 color;
+    float4 extra;
+};
+
+struct TessVertex {
+    float4 pos;
+    float4 color;
+};
+
+buffer<TessParams> params : 0;
+buffer<TessVertex> vertices : 1;
+
+[in params, out vertices]
+compute(x=1,y=1,z=1)
+void tess_rect_prism_kernel(uint3 tid : GlobalThreadID){
+    float x0 = params[0].rect[0];
+    float y0 = params[0].rect[1];
+    float z0 = params[0].rect[2];
+    float w  = params[0].rect[3];
+    float h  = params[0].viewport[0];
+    float d  = params[0].viewport[1];
+    float vw = params[0].viewport[2];
+    float vh = params[0].viewport[3];
+    float4 col = params[0].color;
+
+    float nx0 = (2.0 * x0) / vw;
+    float ny0 = (2.0 * y0) / vh;
+    float nx1 = (2.0 * (x0 + w)) / vw;
+    float ny1 = (2.0 * (y0 + h)) / vh;
+    float nz0 = z0;
+    float nz1 = z0 + d;
+
+    TessVertex v;
+    v.color = col;
+    uint idx = 0;
+
+    v.pos = make_float4(nx0, ny0, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx0, ny1, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny0, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny1, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx0, ny1, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny0, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+
+    v.pos = make_float4(nx0, ny0, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny0, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx0, ny1, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny1, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny0, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx0, ny1, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+
+    v.pos = make_float4(nx0, ny0, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx0, ny0, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx0, ny1, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx0, ny1, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx0, ny0, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx0, ny1, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+
+    v.pos = make_float4(nx1, ny0, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny1, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny0, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny1, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny1, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny0, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+
+    v.pos = make_float4(nx0, ny0, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny0, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx0, ny0, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny0, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny0, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx0, ny0, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+
+    v.pos = make_float4(nx0, ny1, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx0, ny1, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny1, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny1, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx0, ny1, nz1, 1.0); vertices[idx] = v; idx = idx + 1;
+    v.pos = make_float4(nx1, ny1, nz0, 1.0); vertices[idx] = v; idx = idx + 1;
+}

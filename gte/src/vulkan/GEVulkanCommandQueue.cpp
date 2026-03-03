@@ -848,9 +848,16 @@ _NAMESPACE_BEGIN_
         }
     }
 
-    void GEVulkanCommandBuffer::dispatchThreads(unsigned int x, unsigned int y, unsigned int z) {
+    void GEVulkanCommandBuffer::dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) {
         vkCmdDispatch(commandBuffer,x,y,z);
-        
+    }
+
+    void GEVulkanCommandBuffer::dispatchThreads(unsigned int x, unsigned int y, unsigned int z) {
+        auto & tg = computePipelineState->computeShader->internal.threadgroupDesc;
+        unsigned gx = (x + tg.x - 1) / tg.x;
+        unsigned gy = (y + tg.y - 1) / tg.y;
+        unsigned gz = (z + tg.z - 1) / tg.z;
+        vkCmdDispatch(commandBuffer,gx,gy,gz);
     }
 
     void GEVulkanCommandBuffer::finishComputePass() {

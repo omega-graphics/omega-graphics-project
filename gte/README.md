@@ -3,6 +3,26 @@ A cross platform low level api for rendering 3D graphics, performing computation
 
 This repo also features a cross platform shading language OmegaSL.
 
+### Building and running 2DTest (macOS Metal)
+
+From the **repository root** (not the `gte` folder):
+
+```bash
+mkdir -p build && cd build
+cmake .. -G Ninja
+ninja OmegaGTE omegaslc 2DTest
+```
+
+Then run the app (requires a display/GPU; will show a window with a red rectangle):
+
+```bash
+open gte/tests/metal/2DTest.app
+# or run the binary directly:
+# gte/tests/metal/2DTest.app/Contents/MacOS/2DTest
+```
+
+To build only GTE and 2DTest without the rest of the suite (e.g. if WTK dependencies are missing), use the `ninja` targets above; the full `ninja` may fail on missing optional deps.
+
 See [OmegaSL](./omegasl)
 
 

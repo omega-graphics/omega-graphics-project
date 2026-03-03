@@ -189,6 +189,8 @@ void OmegaTessellationEngineContext::translateCoordsDefaultImpl(float x, float y
 
 inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationParams &params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport,TETessellationResult & result){
     assert(params.attachments.size() <= 1 && "Only 1 attachment is allowed for each tessellation params");
+    GEViewport fallbackViewport{0.f, 0.f, 1.f, 1.f, 0.f, 1.f};
+    if (!viewport) viewport = &fallbackViewport;
 
     switch(params.type){
         case TETessellationParams::TESSALATE_RECT : {
@@ -625,6 +627,74 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
     }
 
 };
+
+void OmegaTessellationEngineContext::extractGPUTessParams(const TETessellationParams &params, GPUTessExtractedParams &out) {
+    out = {};
+    if (!params.attachments.empty()) {
+        auto &att = params.attachments.front();
+        if (att.type == TETessellationParams::Attachment::TypeColor) {
+            out.hasColor = true;
+            FVec<4> c = att.colorData.color;
+            out.cr = c[0][0];
+            out.cg = c[1][0];
+            out.cb = c[2][0];
+            out.ca = c[3][0];
+        }
+    }
+    switch (params.type) {
+        case TETessellationParams::TESSALATE_RECT: {
+            out.type = GPUTessExtractedParams::Rect;
+            out.rx = params.params->rect.pos.x;
+            out.ry = params.params->rect.pos.y;
+            out.rw = params.params->rect.w;
+            out.rh = params.params->rect.h;
+            break;
+        }
+        case TETessellationParams::TESSALATE_ROUNDEDRECT:
+            out.type = GPUTessExtractedParams::RoundedRect;
+            break;
+        case TETessellationParams::TESSALATE_ELLIPSOID: {
+            out.type = GPUTessExtractedParams::Ellipsoid;
+            out.ex = params.params->ellipsoid.x;
+            out.ey = params.params->ellipsoid.y;
+            out.erad_x = params.params->ellipsoid.rad_x;
+            out.erad_y = params.params->ellipsoid.rad_y;
+            break;
+        }
+        case TETessellationParams::TESSELLATE_RECTANGULAR_PRISM: {
+            out.type = GPUTessExtractedParams::RectPrism;
+            out.px = params.params->prism.pos.x;
+            out.py = params.params->prism.pos.y;
+            out.pz = params.params->prism.pos.z;
+            out.pw = params.params->prism.w;
+            out.ph = params.params->prism.h;
+            out.pd = params.params->prism.d;
+            break;
+        }
+        case TETessellationParams::TESSALATE_GRAPHICSPATH2D: {
+            out.type = GPUTessExtractedParams::Path2D;
+            out.strokeWidth = params.graphicsPath2DStrokeWidth;
+            out.contour = params.graphicsPath2DContour;
+            if (params.graphicsPath2D) {
+                auto &path = *params.graphicsPath2D;
+                for (auto it = path.begin(); it != path.end(); it.operator++()) {
+                    auto seg = *it;
+                    if (!seg.pt_A || !seg.pt_B) break;
+                    out.pathSegments.push_back({seg.pt_A->x, seg.pt_A->y, seg.pt_B->x, seg.pt_B->y});
+                }
+                if (out.contour && path.size() >= 2) {
+                    auto last = path.lastPt();
+                    auto first = path.firstPt();
+                    out.pathSegments.push_back({last.x, last.y, first.x, first.y});
+                }
+            }
+            break;
+        }
+        default:
+            out.type = GPUTessExtractedParams::Other;
+            break;
+    }
+}
 
 SharedHandle<OmegaTessellationEngineContext> CreateNativeRenderTargetTEContext(SharedHandle<GENativeRenderTarget> & renderTarget);
 SharedHandle<OmegaTessellationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> & renderTarget);

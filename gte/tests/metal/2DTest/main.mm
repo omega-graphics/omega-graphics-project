@@ -38,11 +38,11 @@ fragment float4 fragFunc(VertexRaster raster){
 )";
 
 static OmegaGTE::GTE gte;
-static OmegaGTE::SharedHandle<OmegaGTE::GTEShaderLibrary> funcLib;
-static OmegaGTE::SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
-static OmegaGTE::SharedHandle<OmegaGTE::GERenderPipelineState> renderPipeline;
-static OmegaGTE::SharedHandle<OmegaGTE::GENativeRenderTarget> nativeRenderTarget = nullptr;
-static OmegaGTE::SharedHandle<OmegaGTE::OmegaTessellationEngineContext> tessContext;
+static SharedHandle<OmegaGTE::GTEShaderLibrary> funcLib;
+static SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
+static SharedHandle<OmegaGTE::GERenderPipelineState> renderPipeline;
+static SharedHandle<OmegaGTE::GENativeRenderTarget> nativeRenderTarget = nullptr;
+static SharedHandle<OmegaGTE::OmegaTessellationEngineContext> tessContext;
 //static OmegaGTE::SharedHandle<OmegaGTE::GETexture> texture;
 
 
@@ -68,9 +68,6 @@ static void writeVertex(OmegaGTE::GPoint3D & pt,OmegaGTE::FVec<4> &coord){
 }
 
 static void render(id<MTLDevice> dev){
-
-
-
     OmegaGTE::GRect rect {};
     rect.h = 100;
     rect.w = 100;
@@ -224,11 +221,9 @@ static void render(id<MTLDevice> dev){
 
 
 int main(int argc,const char * argv[]){
-    
     auto dir = OmegaCommon::FS::Path(argv[0]).dir();
-    
     chdir(dir.c_str());
-    
+
     gte = OmegaGTE::InitWithDefaultDevice();
 
     auto compiledLib = gte.omegaSlCompiler->compile({OmegaSLCompiler::Source::fromString(shaders)});
@@ -244,6 +239,11 @@ int main(int argc,const char * argv[]){
    pipelineDesc.fragmentFunc = funcLib->shaders[FRAGMENT_FUNC];
    renderPipeline = gte.graphicsEngine->makeRenderPipelineState(pipelineDesc);
 
-
-    return NSApplicationMain(argc,argv);
+    // Set delegate and run loop in code so the app works even if the main nib does not load or set the delegate
+    NSApplication* app = [NSApplication sharedApplication];
+    [app setDelegate:[[AppDelegate alloc] init]];
+    [app setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [app activateIgnoringOtherApps:YES];
+    [app run];
+    return 0;
 };

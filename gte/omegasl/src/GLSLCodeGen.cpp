@@ -14,6 +14,9 @@
 
 #define GLSL_VERTEX_ID "gl_VertexIndex"
 #define GLSL_POSITION "gl_Position"
+#define GLSL_GLOBAL_THREAD_ID "gl_GlobalInvocationID"
+#define GLSL_LOCAL_THREAD_ID "gl_LocalInvocationID"
+#define GLSL_THREADGROUP_ID "gl_WorkGroupID"
 #define GLSL_IMAGE1D "image1D"
 #define GLSL_IMAGE2D "image2D"
 #define GLSL_IMAGE3D "image3D"
@@ -390,7 +393,35 @@ namespace omegasl {
                     shader_entry.nLayout = currentIndex;
 
                     /// @brief Write Each Standard Shader Argument
-                    if(_decl->shaderType != ast::ShaderDecl::Fragment) {
+                    if(_decl->shaderType == ast::ShaderDecl::Compute) {
+                        shaderOut << "layout(local_size_x = " << _decl->threadgroupDesc.x
+                                  << ", local_size_y = " << _decl->threadgroupDesc.y
+                                  << ", local_size_z = " << _decl->threadgroupDesc.z << ") in;" << std::endl;
+                        for (unsigned arg_idx = 0; arg_idx < _decl->params.size(); arg_idx++) {
+                            auto &arg = _decl->params[arg_idx];
+                            if (arg.attributeName.has_value()) {
+                                const char *builtin = nullptr;
+                                if (arg.attributeName.value() == ATTRIBUTE_GLOBALTHREAD_ID) {
+                                    builtin = GLSL_GLOBAL_THREAD_ID;
+                                    shader_entry.computeShaderParamsDesc.useGlobalThreadID = true;
+                                } else if (arg.attributeName.value() == ATTRIBUTE_LOCALTHREAD_ID) {
+                                    builtin = GLSL_LOCAL_THREAD_ID;
+                                    shader_entry.computeShaderParamsDesc.useLocalThreadID = true;
+                                } else if (arg.attributeName.value() == ATTRIBUTE_THREADGROUP_ID) {
+                                    builtin = GLSL_THREADGROUP_ID;
+                                    shader_entry.computeShaderParamsDesc.useThreadGroupID = true;
+                                }
+                                if (builtin) {
+                                    for (unsigned i = 0; i < indentLevel; i++) {
+                                        extra_stmts << "  ";
+                                    }
+                                    writeTypeExpr(arg.typeExpr, extra_stmts);
+                                    extra_stmts << " " << arg.name << " = " << builtin << ";" << std::endl;
+                                }
+                            }
+                        }
+                    }
+                    else if(_decl->shaderType != ast::ShaderDecl::Fragment) {
                         for (unsigned arg_idx = 0; arg_idx < _decl->params.size(); arg_idx++) {
                             auto &arg = _decl->params[arg_idx];
                             if (arg.attributeName.has_value()) {

@@ -94,6 +94,10 @@ void GERenderTarget::CommandBuffer::bindResourceAtComputeShader(SharedHandle<GET
     commandBuffer->bindResourceAtComputeShader(texture,id);
 }
 
+void GERenderTarget::CommandBuffer::dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) {
+    commandBuffer->dispatchThreadgroups(x,y,z);
+}
+
 void GERenderTarget::CommandBuffer::dispatchThreads(unsigned int x, unsigned int y, unsigned int z) {
     commandBuffer->dispatchThreads(x,y,z);
 }

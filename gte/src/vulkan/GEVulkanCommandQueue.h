@@ -65,6 +65,7 @@ _NAMESPACE_BEGIN_
         void setComputePipelineState(SharedHandle<GEComputePipelineState> &pipelineState) override;
         void bindResourceAtComputeShader(SharedHandle<GEBuffer> &buffer, unsigned int id) override;
         void bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id) override;
+        void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreads(unsigned int x, unsigned int y, unsigned int z) override;
         void finishComputePass() override;
 

@@ -1,0 +1,54 @@
+
+struct TessParams {
+    float4 rect;
+    float4 viewport;
+    float4 color;
+    float4 extra;
+};
+
+struct TessVertex {
+    float4 pos;
+    float4 color;
+};
+
+buffer<TessParams> params : 0;
+buffer<TessVertex> vertices : 1;
+
+[in params, out vertices]
+compute(x=64,y=1,z=1)
+void tess_ellipsoid_kernel(uint3 tid : GlobalThreadID){
+    float cx = params[0].rect[0];
+    float cy = params[0].rect[1];
+    float rad_x = params[0].extra[0];
+    float rad_y = params[0].extra[1];
+    float arcStep = params[0].extra[2];
+    float totalSegments = params[0].extra[3];
+    float vw = params[0].viewport[2];
+    float vh = params[0].viewport[3];
+    float4 col = params[0].color;
+
+    uint segIdx = tid[0];
+    float pi2 = 6.28318530718;
+
+    float angle0 = (pi2 * segIdx) / totalSegments;
+    float angle1 = (pi2 * (segIdx + 1)) / totalSegments;
+
+    float ncx = (2.0 * cx) / vw;
+    float ncy = (2.0 * cy) / vh;
+
+    float px0 = (2.0 * (cx + rad_x * cos(angle0))) / vw;
+    float py0 = (2.0 * (cy + rad_y * sin(angle0))) / vh;
+    float px1 = (2.0 * (cx + rad_x * cos(angle1))) / vw;
+    float py1 = (2.0 * (cy + rad_y * sin(angle1))) / vh;
+
+    uint base = segIdx * 3;
+    TessVertex v;
+    v.color = col;
+
+    v.pos = make_float4(ncx, ncy, 0.0, 1.0);
+    vertices[base] = v;
+    v.pos = make_float4(px0, py0, 0.0, 1.0);
+    vertices[base + 1] = v;
+    v.pos = make_float4(px1, py1, 0.0, 1.0);
+    vertices[base + 2] = v;
+}

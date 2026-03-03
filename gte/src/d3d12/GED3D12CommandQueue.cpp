@@ -832,9 +832,18 @@ _NAMESPACE_BEGIN_
 
     #endif
 
-    void GED3D12CommandBuffer::dispatchThreads(unsigned int x, unsigned int y, unsigned int z) {
+    void GED3D12CommandBuffer::dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) {
         assert(inComputePass && "");
         commandList->Dispatch(x,y,z);
+    }
+
+    void GED3D12CommandBuffer::dispatchThreads(unsigned int x, unsigned int y, unsigned int z) {
+        assert(inComputePass && "");
+        auto & tg = currentComputePipeline->computeShader->internal.threadgroupDesc;
+        unsigned gx = (x + tg.x - 1) / tg.x;
+        unsigned gy = (y + tg.y - 1) / tg.y;
+        unsigned gz = (z + tg.z - 1) / tg.z;
+        commandList->Dispatch(gx,gy,gz);
     }
 
    

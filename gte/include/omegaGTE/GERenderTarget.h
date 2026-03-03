@@ -161,6 +161,9 @@ _NAMESPACE_BEGIN_
             void bindResourceAtComputeShader(SharedHandle<GETexture> & texture,unsigned id);
 
             /// @see GECommandBuffer
+            void dispatchThreadgroups(unsigned x, unsigned y, unsigned z);
+
+            /// @see GECommandBuffer
             void dispatchThreads(unsigned x, unsigned y, unsigned z);
 
             /// @see GECommandBuffer

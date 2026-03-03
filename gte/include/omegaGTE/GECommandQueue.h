@@ -151,10 +151,17 @@ _NAMESPACE_BEGIN_
 
         #endif
 
-        /// @brief Executes a Compute Pipeline (Encodes a dispatch command in the Compute Pass).
-        /// @param x The Number of ThreadGroups dispatched in the `x` direction.
-        /// @param y The Number of ThreadGroups dispatched in the `y` direction.
-        /// @param z The Number of ThreadGroups dispatched in the `z` direction.
+        /// @brief Dispatches threadgroups in a Compute Pass.
+        /// @param x The number of threadgroups in the `x` direction.
+        /// @param y The number of threadgroups in the `y` direction.
+        /// @param z The number of threadgroups in the `z` direction.
+        virtual void dispatchThreadgroups(unsigned x,unsigned y,unsigned z) = 0;
+
+        /// @brief Dispatches threads by total thread count in a Compute Pass.
+        /// The backend divides by the pipeline's threadgroup size to derive threadgroup counts.
+        /// @param x Total threads in the `x` direction.
+        /// @param y Total threads in the `y` direction.
+        /// @param z Total threads in the `z` direction.
         virtual void dispatchThreads(unsigned x,unsigned y,unsigned z) = 0;
 
         #ifdef OMEGAGTE_RAYTRACING_SUPPORTED

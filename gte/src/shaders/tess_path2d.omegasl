@@ -1,0 +1,68 @@
+
+struct PathSegment {
+    float4 startEnd;
+    float4 strokeWidthAndViewport;
+    float4 color;
+    float4 reserved;
+};
+
+struct TessVertex {
+    float4 pos;
+    float4 color;
+};
+
+buffer<PathSegment> segments : 0;
+buffer<TessVertex> vertices : 1;
+
+[in segments, out vertices]
+compute(x=64,y=1,z=1)
+void tess_path2d_kernel(uint3 tid : GlobalThreadID){
+    uint segIdx = tid[0];
+
+    float sx = segments[segIdx].startEnd[0];
+    float sy = segments[segIdx].startEnd[1];
+    float ex = segments[segIdx].startEnd[2];
+    float ey = segments[segIdx].startEnd[3];
+    float strokeWidth = segments[segIdx].strokeWidthAndViewport[0];
+    float vw = segments[segIdx].strokeWidthAndViewport[2];
+    float vh = segments[segIdx].strokeWidthAndViewport[3];
+    float4 col = segments[segIdx].color;
+
+    float dx = ex - sx;
+    float dy = ey - sy;
+    float len = sqrt(dx * dx + dy * dy);
+    float hw = strokeWidth * 0.5;
+
+    float nx = 0.0;
+    float ny = 0.0;
+    if(len > 0.0001){
+        nx = (0.0 - dy) / len * hw;
+        ny = dx / len * hw;
+    }
+
+    float p0x = (2.0 * (sx + nx)) / vw;
+    float p0y = (2.0 * (sy + ny)) / vh;
+    float p1x = (2.0 * (sx - nx)) / vw;
+    float p1y = (2.0 * (sy - ny)) / vh;
+    float p2x = (2.0 * (ex + nx)) / vw;
+    float p2y = (2.0 * (ey + ny)) / vh;
+    float p3x = (2.0 * (ex - nx)) / vw;
+    float p3y = (2.0 * (ey - ny)) / vh;
+
+    uint base = segIdx * 6;
+    TessVertex v;
+    v.color = col;
+
+    v.pos = make_float4(p0x, p0y, 0.0, 1.0);
+    vertices[base] = v;
+    v.pos = make_float4(p1x, p1y, 0.0, 1.0);
+    vertices[base + 1] = v;
+    v.pos = make_float4(p2x, p2y, 0.0, 1.0);
+    vertices[base + 2] = v;
+    v.pos = make_float4(p2x, p2y, 0.0, 1.0);
+    vertices[base + 3] = v;
+    v.pos = make_float4(p1x, p1y, 0.0, 1.0);
+    vertices[base + 4] = v;
+    v.pos = make_float4(p3x, p3y, 0.0, 1.0);
+    vertices[base + 5] = v;
+}

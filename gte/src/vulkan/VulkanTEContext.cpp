@@ -44,17 +44,17 @@ public:
         }
     }
 
-    std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params,GTEPolygonFrontFaceRotation direction, GEViewport *viewport = nullptr) override {
-        (void)params;
-        (void)direction;
-        (void)viewport;
-        return {};
+    std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params,
+            GTEPolygonFrontFaceRotation direction, GEViewport *viewport) override {
+        GPUTessExtractedParams ep;
+        extractGPUTessParams(params, ep);
+        auto result = tessalateSync(params, direction, viewport);
+        std::promise<TETessellationResult> p;
+        p.set_value(std::move(result));
+        return p.get_future();
     }
 
-    explicit VulkanNativeRenderTargetTEContext(SharedHandle<GEVulkanNativeRenderTarget> renderTarget):renderTarget(renderTarget){
-
-    };
-
+    explicit VulkanNativeRenderTargetTEContext(SharedHandle<GEVulkanNativeRenderTarget> renderTarget):renderTarget(renderTarget){};
 };
 
 class VulkanTextureRenderTargetTEContext : public OmegaTessellationEngineContext {
@@ -77,16 +77,18 @@ public:
         }
     }
 
-    std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params,GTEPolygonFrontFaceRotation direction, GEViewport *viewport = nullptr) override {
-        (void)params;
-        (void)direction;
-        (void)viewport;
-        return {};
+    std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params,
+            GTEPolygonFrontFaceRotation direction, GEViewport *viewport) override {
+        GPUTessExtractedParams ep;
+        extractGPUTessParams(params, ep);
+        auto result = tessalateSync(params, direction, viewport);
+        std::promise<TETessellationResult> p;
+        p.set_value(std::move(result));
+        return p.get_future();
     }
 
     explicit VulkanTextureRenderTargetTEContext(SharedHandle<GEVulkanTextureRenderTarget> renderTarget):
-    renderTarget(renderTarget){
-    };
+    renderTarget(renderTarget){};
 };
 
 

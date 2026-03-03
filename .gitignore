@@ -19,6 +19,7 @@ gradle
 gradlew
 gradlew.bat
 .gradle
+.cursor
 utils/pyyaml
 *.vpp.bak*
 *.vpp.vbak

@@ -90,6 +90,7 @@ _NAMESPACE_BEGIN_
         #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
         void bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct, unsigned int id) override;
         #endif
+        void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreads(unsigned int x, unsigned int y, unsigned int z) override;
         void finishComputePass() override;
         void setCompletionHandler(GECommandBufferCompletionHandler handler) override;

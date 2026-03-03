@@ -85,6 +85,7 @@ _NAMESPACE_BEGIN_
         void bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct, unsigned int id) override;
         void dispatchRays(unsigned int x, unsigned int y, unsigned int z) override;
         #endif
+        void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreads(unsigned int x, unsigned int y, unsigned int z) override;
         void finishComputePass() override;
 

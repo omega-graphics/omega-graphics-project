@@ -504,10 +504,16 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 
     #endif
 
-    void GEMetalCommandBuffer::dispatchThreads(unsigned int x, unsigned int y, unsigned int z) {
+    void GEMetalCommandBuffer::dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) {
         assert(cp != nil && "");
         auto & threadgroup_desc = computePipelineState->computeShader->internal.threadgroupDesc;
         [cp dispatchThreadgroups:MTLSizeMake(x,y,z) threadsPerThreadgroup:MTLSizeMake(threadgroup_desc.x,threadgroup_desc.y,threadgroup_desc.z)];
+    }
+
+    void GEMetalCommandBuffer::dispatchThreads(unsigned int x, unsigned int y, unsigned int z) {
+        assert(cp != nil && "");
+        auto & threadgroup_desc = computePipelineState->computeShader->internal.threadgroupDesc;
+        [cp dispatchThreads:MTLSizeMake(x,y,z) threadsPerThreadgroup:MTLSizeMake(threadgroup_desc.x,threadgroup_desc.y,threadgroup_desc.z)];
     }
 
     void GEMetalCommandBuffer::finishComputePass(){
