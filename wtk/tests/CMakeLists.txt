@@ -51,6 +51,22 @@ OmegaWTKApp(
     SOURCES
     LayoutResizeStressTest/main.cpp)
 
+OmegaWTKApp(
+    NAME
+    SVGViewRenderTest
+    BUNDLE_ID
+    "org.omegagraphics.SVGViewRenderTest"
+    SOURCES
+    SVGViewRenderTest/main.cpp)
+
+OmegaWTKApp(
+    NAME
+    VideoViewPlaybackTest
+    BUNDLE_ID
+    "org.omegagraphics.VideoViewPlaybackTest"
+    SOURCES
+    VideoViewPlaybackTest/main.cpp)
+
 if(TARGET_MACOS)
     add_custom_target(2DAppTest DEPENDS EllipsePathCompositorTest.app)
 else()

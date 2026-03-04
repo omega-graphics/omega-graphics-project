@@ -97,7 +97,7 @@ _NAMESPACE_BEGIN_
         VectorHeap(const VectorHeap & other){
             maxSize = other.maxSize;
             len = other.len;
-            // _data = ::new;
+            _data = ::new T[maxSize];
             memcpy(_data,other.cbegin(),other.len * sizeof(T));
         };
 

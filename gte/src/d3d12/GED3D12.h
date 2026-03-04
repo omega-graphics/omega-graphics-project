@@ -98,18 +98,18 @@ _NAMESPACE_BEGIN_
     class GED3D12Engine;
     struct GTED3D12Device;
 
-//    class GED3D12Heap : public GEHeap {
-//        GED3D12Engine *engine;
-//        ComPtr<ID3D12Heap> heap;
-//        size_t currentOffset;
-//    public:
-//        GED3D12Heap(GED3D12Engine *engine,ID3D12Heap * heap):engine(engine),heap(heap),currentOffset(0){};
-//        size_t currentSize() override{
-//            return heap->GetDesc().SizeInBytes;
-//        };
-//        SharedHandle<GEBuffer> makeBuffer(const BufferDescriptor &desc) override;
-//        SharedHandle<GETexture> makeTexture3D(const TextureDescriptor &desc) override;
-//    };
+    class GED3D12Heap : public GEHeap {
+        GED3D12Engine *engine;
+        ComPtr<ID3D12Heap> heap;
+        size_t currentOffset;
+    public:
+        GED3D12Heap(GED3D12Engine *engine,ID3D12Heap * heap):engine(engine),heap(heap),currentOffset(0){};
+        size_t currentSize() override{
+            return heap->GetDesc().SizeInBytes;
+        };
+        SharedHandle<GEBuffer> makeBuffer(const BufferDescriptor &desc) override;
+        SharedHandle<GETexture> makeTexture(const TextureDescriptor &desc) override;
+    };
     #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
     struct GED3D12AccelerationStruct : public GEAccelerationStruct {
         SharedHandle<GED3D12Buffer> structBuffer;

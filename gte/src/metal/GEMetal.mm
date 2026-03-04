@@ -672,7 +672,77 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         };
         SharedHandle<GEHeap> makeHeap(const HeapDescriptor &desc) override{
             MTLHeapDescriptor *heapDesc = [[MTLHeapDescriptor alloc] init];
-            return nullptr;
+            heapDesc.size = desc.len;
+            heapDesc.storageMode = MTLStorageModeShared;
+            heapDesc.cpuCacheMode = MTLCPUCacheModeDefaultCache;
+
+            id<MTLHeap> mtlHeap = [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newHeapWithDescriptor:heapDesc];
+            if(mtlHeap == nil){
+                DEBUG_STREAM("Failed to create MTLHeap");
+                return nullptr;
+            }
+
+            class GEMetalHeap : public GEHeap {
+                NSSmartPtr metalDevice;
+                NSSmartPtr metalHeap;
+            public:
+                GEMetalHeap(NSSmartPtr device, NSSmartPtr heap)
+                    : metalDevice(device), metalHeap(heap) {}
+
+                size_t currentSize() override {
+                    return [NSOBJECT_OBJC_BRIDGE(id<MTLHeap>,metalHeap.handle()) currentAllocatedSize];
+                }
+
+                SharedHandle<GEBuffer> makeBuffer(const BufferDescriptor & desc) override {
+                    id<MTLBuffer> buf = [NSOBJECT_OBJC_BRIDGE(id<MTLHeap>,metalHeap.handle())
+                        newBufferWithLength:desc.len
+                        options:MTLResourceStorageModeShared];
+                    if(buf == nil) return nullptr;
+
+                    MTLBufferLayoutDescriptor *layoutDesc = [[MTLBufferLayoutDescriptor alloc] init];
+                    layoutDesc.stride = desc.objectStride;
+
+                    NSSmartPtr bufPtr(NSObjectHandle{NSOBJECT_CPP_BRIDGE buf});
+                    NSSmartPtr layoutPtr(NSObjectHandle{NSOBJECT_CPP_BRIDGE layoutDesc});
+                    return SharedHandle<GEBuffer>(new GEMetalBuffer(desc.usage, bufPtr, layoutPtr));
+                }
+
+                SharedHandle<GETexture> makeTexture(const TextureDescriptor & desc) override {
+                    MTLTextureDescriptor *mtlDesc = [[MTLTextureDescriptor alloc] init];
+                    MTLTextureType textureType;
+                    MTLTextureUsage usage;
+                    switch(desc.usage){
+                        case GETexture::ToGPU: usage = MTLTextureUsageShaderRead; break;
+                        case GETexture::FromGPU: usage = MTLTextureUsageShaderWrite; break;
+                        case GETexture::GPUAccessOnly: usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite; break;
+                        default: usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite; break;
+                    }
+                    switch(desc.type){
+                        case GETexture::Texture1D: textureType = MTLTextureType1D; break;
+                        case GETexture::Texture2D:
+                            textureType = desc.sampleCount > 1 ? MTLTextureType2DMultisample : MTLTextureType2D; break;
+                        case GETexture::Texture3D: textureType = MTLTextureType3D; break;
+                    }
+                    mtlDesc.usage = usage;
+                    mtlDesc.textureType = textureType;
+                    mtlDesc.width = desc.width;
+                    mtlDesc.height = desc.height;
+                    mtlDesc.depth = desc.depth;
+                    mtlDesc.sampleCount = desc.sampleCount;
+                    mtlDesc.storageMode = MTLStorageModeShared;
+                    mtlDesc.pixelFormat = MTLPixelFormatRGBA8Unorm;
+                    mtlDesc.mipmapLevelCount = desc.mipLevels;
+
+                    id<MTLTexture> tex = [NSOBJECT_OBJC_BRIDGE(id<MTLHeap>,metalHeap.handle()) newTextureWithDescriptor:mtlDesc];
+                    if(tex == nil) return nullptr;
+
+                    NSSmartPtr texPtr(NSObjectHandle{NSOBJECT_CPP_BRIDGE tex});
+                    return SharedHandle<GETexture>(new GEMetalTexture(desc.type, desc.usage, desc.pixelFormat, texPtr));
+                }
+            };
+
+            NSSmartPtr heapPtr(NSObjectHandle{NSOBJECT_CPP_BRIDGE mtlHeap});
+            return SharedHandle<GEHeap>(new GEMetalHeap(metalDevice, heapPtr));
         };
         SharedHandle<GENativeRenderTarget> makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc) override{
             metalDevice.assertExists();

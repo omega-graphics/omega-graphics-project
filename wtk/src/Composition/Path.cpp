@@ -1,6 +1,11 @@
 #include "omegaWTK/Composition/Path.h"
+#include <cmath>
 
 namespace OmegaWTK::Composition {
+
+namespace {
+constexpr float kPi = 3.14159265358979f;
+}
 
     Path::Segment::Segment(OmegaGTE::GPoint2D startPoint):path(startPoint), final_path_a(startPoint), final_path_b(startPoint){
 
@@ -149,113 +154,65 @@ namespace OmegaWTK::Composition {
         }
     }
 
+    Core::SharedPtr<Path> RectFrame(Core::Rect rect, unsigned width) {
+        auto path = std::make_shared<Path>(
+            OmegaGTE::GPoint2D{rect.pos.x, rect.pos.y},
+            width);
+        path->addLine(OmegaGTE::GPoint2D{rect.pos.x + rect.w, rect.pos.y});
+        path->addLine(OmegaGTE::GPoint2D{rect.pos.x + rect.w, rect.pos.y + rect.h});
+        path->addLine(OmegaGTE::GPoint2D{rect.pos.x, rect.pos.y + rect.h});
+        path->close();
+        return path;
+    }
 
+    Core::SharedPtr<Path> RoundedRectFrame(Core::RoundedRect rect, unsigned width) {
+        float rad_x = rect.rad_x;
+        float rad_y = rect.rad_y;
+        if (rad_x > rect.w * 0.5f) rad_x = rect.w * 0.5f;
+        if (rad_y > rect.h * 0.5f) rad_y = rect.h * 0.5f;
+        if (rad_x < 0.f) rad_x = 0.f;
+        if (rad_y < 0.f) rad_y = 0.f;
 
-Core::SharedPtr<Path> RoundedRectFrame(Core::RoundedRect rect,unsigned width){
-    // float delta_w = width/2.f;
-        
-    // GVectorPath2D path_a({rect.pos.x + delta_w,rect.pos.y + rect.rad_y});
-    // GVectorPath2D path_b({rect.pos.x - delta_w,rect.pos.y + rect.rad_y});
-    // /// Left Side of Rect
-    // float y_2 = rect.pos.y + rect.h - rect.rad_y;
-    // path_a.append({rect.pos.x + delta_w,y_2});
-    // path_b.append({rect.pos.x - delta_w,y_2});
-    
-    // /// Upper Left Corner
-    // float step = 0.05;
-    // float idx = PI;
-    // idx -= step;
-    
-    // float arc_center_x_1 = rect.pos.x + rect.rad_x;
-    // float arc_center_y_1 = rect.pos.y + rect.h - rect.rad_y;
-    
-    // while(idx >= (PI / 2.f)){
-    //     float _cos = std::cosf(idx);
-    //     float _sin = std::sinf(idx);
-    //     path_a.append({(_cos * (rect.rad_x -delta_w)) + arc_center_x_1,(_sin * (rect.rad_y - delta_w)) + arc_center_y_1});
-    //     path_b.append({(_cos * (rect.rad_x + delta_w)) + arc_center_x_1,(_sin * (rect.rad_y + delta_w)) + arc_center_y_1});
-        
-    //     idx -= step;
-    // };
-    // /// Top Side of Rect
-    // auto x_2 = rect.pos.x + rect.rad_x;
-    // path_a.append({x_2,rect.pos.y + rect.h - delta_w});
-    // path_b.append({x_2,rect.pos.y + rect.h + delta_w});
-    // /// Upper Right Corner
-    // idx = PI / 2.f;
-    // idx -= step;
-    // float arc_center_x_2 = rect.pos.x + rect.w - rect.rad_x;
-    // float arc_center_y_2 = rect.pos.y + rect.h - rect.rad_y;
-    // while(idx >= 0.f){
-    //     float _cos = std::cosf(idx);
-    //     float _sin = std::sinf(idx);
-    //     path_a.append({(_cos * (rect.rad_x -delta_w)) + arc_center_x_2,(_sin * (rect.rad_y - delta_w)) + arc_center_y_2});
-    //     path_b.append({(_cos * (rect.rad_x + delta_w)) + arc_center_x_2,(_sin * (rect.rad_y + delta_w)) + arc_center_y_2});
-        
-    //     idx -= step;
-    // };
-    // /// Right Side of Rect
-    // auto x_3 = rect.pos.x + rect.w;
-    // auto y_3 = rect.pos.y + rect.h - rect.rad_y;
-    // path_a.append({x_3 - delta_w,y_3});
-    // path_b.append({x_3 + delta_w,y_3});
-    // /// Lower Right Corner
-    // idx = 2 * PI;
-    // idx -= step;
-    // float arc_center_x_3 = rect.pos.x + rect.w - rect.rad_x;
-    // float arc_center_y_3 = rect.pos.y + rect.rad_y;
-    // while(idx >= ((3 * PI) / 2.f)){
-    //     float _cos = std::cosf(idx);
-    //     float _sin = std::sinf(idx);
-    //     path_a.append({(_cos * (rect.rad_x -delta_w)) + arc_center_x_3,(_sin * (rect.rad_y - delta_w)) + arc_center_y_3});
-    //     path_b.append({(_cos * (rect.rad_x + delta_w)) + arc_center_x_3,(_sin * (rect.rad_y + delta_w)) + arc_center_y_3});
-        
-    //     idx -= step;
-    // };
-    
-    // auto x_4 = rect.pos.x + rect.w - rect.rad_x;
-    // /// Bottom Side
-    // path_a.append({x_4,rect.pos.y - delta_w});
-    // path_b.append({x_4,rect.pos.y + delta_w});
-    // /// Lower Left Corner
-    // idx = ((3 * PI) / 2.f);
-    // idx -= step;
-    // float arc_center_x_4 = rect.pos.x + rect.rad_x;
-    // float arc_center_y_4 = rect.pos.y + rect.rad_y;
-    // while(idx >= PI){
-    //     float _cos = std::cosf(idx);
-    //     float _sin = std::sinf(idx);
-    //     path_a.append({(_cos * (rect.rad_x -delta_w)) + arc_center_x_4,(_sin * (rect.rad_y - delta_w)) + arc_center_y_4});
-    //     path_b.append({(_cos * (rect.rad_x + delta_w)) + arc_center_x_4,(_sin * (rect.rad_y + delta_w)) + arc_center_y_4});
-        
-    //     idx -= step;
-    // };
-    // std::cout << path_a.toStr();
-    // std::cout << path_b.toStr();
-    // return std::make_shared<GeometricGraphicsPath>(path_a,path_b);
-    return nullptr;
-};
+        auto path = std::make_shared<Path>(
+            OmegaGTE::GPoint2D{rect.pos.x + rect.w - rad_x, rect.pos.y},
+            width);
 
-    Core::SharedPtr<Path> EllipseFrame(Core::Ellipse ellipse,unsigned width){
-        // float delta_w = width/2.f;
-        
-        // GVectorPath2D path_a ({ellipse.x + ellipse.rad_x + delta_w,ellipse.y});
-        // GVectorPath2D path_b ({ellipse.x + ellipse.rad_x - delta_w,ellipse.y});
-        // float step = 0.05;
-        // float idx = 0;
-        // idx += step;
-        // while(idx <= 2 * PI){
-        //     float _cos = std::cosf(idx);
-        //     float _sin = std::sinf(idx);
-            
-        //     path_a.append({((ellipse.rad_x + delta_w)*_cos) + ellipse.x,((ellipse.rad_y +delta_w)*_sin)+ ellipse.y});
-        //     path_b.append({((ellipse.rad_x - delta_w)*_cos) + ellipse.x,((ellipse.rad_y -delta_w)*_sin)+ ellipse.y});
-            
-        //     idx += step;
-        // };
-        // std::cout << path_a.toStr();
-        // std::cout << path_b.toStr();
-        // return std::make_shared<GeometricGraphicsPath>(path_a,path_b);
-        return nullptr;
-    };
+        path->addLine(OmegaGTE::GPoint2D{rect.pos.x + rad_x, rect.pos.y});
+
+        OmegaGTE::GRect tlBounds{{rect.pos.x, rect.pos.y}, rad_x * 2.f, rad_y * 2.f};
+        path->addArc(tlBounds, kPi * 0.5f, kPi);
+
+        path->addLine(OmegaGTE::GPoint2D{rect.pos.x, rect.pos.y + rect.h - rad_y});
+
+        OmegaGTE::GRect blBounds{{rect.pos.x, rect.pos.y + rect.h - rad_y * 2.f}, rad_x * 2.f, rad_y * 2.f};
+        path->addArc(blBounds, kPi, kPi * 1.5f);
+
+        path->addLine(OmegaGTE::GPoint2D{rect.pos.x + rect.w - rad_x, rect.pos.y + rect.h});
+
+        OmegaGTE::GRect brBounds{{rect.pos.x + rect.w - rad_x * 2.f, rect.pos.y + rect.h - rad_y * 2.f}, rad_x * 2.f, rad_y * 2.f};
+        path->addArc(brBounds, kPi * 1.5f, kPi * 2.f);
+
+        path->addLine(OmegaGTE::GPoint2D{rect.pos.x + rect.w, rect.pos.y + rad_y});
+
+        OmegaGTE::GRect trBounds{{rect.pos.x + rect.w - rad_x * 2.f, rect.pos.y}, rad_x * 2.f, rad_y * 2.f};
+        path->addArc(trBounds, 0.f, kPi * 0.5f);
+
+        path->close();
+        return path;
+    }
+
+    Core::SharedPtr<Path> EllipseFrame(Core::Ellipse ellipse, unsigned width) {
+        OmegaGTE::GRect bounds{
+            {ellipse.x - ellipse.rad_x, ellipse.y - ellipse.rad_y},
+            ellipse.rad_x * 2.f,
+            ellipse.rad_y * 2.f
+        };
+        auto path = std::make_shared<Path>(
+            OmegaGTE::GPoint2D{ellipse.x + ellipse.rad_x, ellipse.y},
+            width);
+        path->addArc(bounds, 0.f, kPi * 2.f);
+        path->close();
+        return path;
+    }
+
 };

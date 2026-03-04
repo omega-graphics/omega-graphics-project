@@ -10,6 +10,7 @@
 
 #include "omegaWTK/Core/XML.h"
 #include "omegaWTK/Media/Video.h"
+#include "omegaWTK/Media/MediaPlaybackSession.h"
 #include <cstdint>
 #include <limits>
 
@@ -362,62 +363,136 @@ namespace OmegaWTK {
     //     OmegaWTK::UniString & getString();
     // };
 
-    /**
- @brief The visual display output of a VideoPlaybackSession or a capture preview output of a VideoCaptureSession.
-*/
-class OMEGAWTK_EXPORT VideoView :  public View, 
-                                   public Media::VideoFrameSink {
+    enum class VideoScaleMode : int { AspectFit, AspectFill, Stretch };
+    enum class VideoSourceMode : int { None, Playback, CapturePreview, CaptureRecord };
 
-    OmegaCommon::QueueHeap<SharedHandle<Media::VideoFrame>> framebuffer;
-
-    SharedHandle<Composition::Canvas> videoCanvas;
-
-    void queueFrame(SharedHandle<Media::VideoFrame> &frame);
-
-    bool framebuffered() const override {
-        return true;
+    struct VideoViewPlaybackOptions {
+        bool useHardwareAccel = true;
+        bool autoplay = false;
+        bool loop = false;
     };
-    void flush() override;
-    void pushFrame(SharedHandle<Media::VideoFrame> frame) override;
-    void presentCurrentFrame() override;
+
+    struct VideoViewCaptureOptions {
+        bool previewAudio = false;
+        bool recordAudio = true;
+    };
+
+    class OMEGAWTK_EXPORT VideoViewDelegate {
+    public:
+        virtual void onVideoReady() {}
+        virtual void onVideoEndOfStream() {}
+        virtual void onVideoError(const OmegaCommon::String & message) {}
+        virtual ~VideoViewDelegate() = default;
+    };
+
+    /**
+     @brief The visual display output of a VideoPlaybackSession or a capture preview output of a VideoCaptureSession.
+    */
+    class OMEGAWTK_EXPORT VideoView : public View,
+                                      public Media::VideoFrameSink {
+
+        OmegaCommon::QueueHeap<SharedHandle<Media::VideoFrame>> framebuffer;
+
+        SharedHandle<Composition::Canvas> videoCanvas;
+
+        VideoViewDelegate *delegate_ = nullptr;
+        VideoScaleMode scaleMode_ = VideoScaleMode::AspectFit;
+        VideoSourceMode sourceMode_ = VideoSourceMode::None;
+        SharedHandle<Media::VideoPlaybackSession> playbackSession_;
+        UniqueHandle<Media::VideoCaptureSession> captureSession_;
+        SharedHandle<Media::PlaybackDispatchQueue> dispatchQueue_;
+        bool loop_ = false;
+
+        void queueFrame(SharedHandle<Media::VideoFrame> &frame);
+
+        bool framebuffered() const override {
+            return true;
+        };
+        void flush() override;
+        void pushFrame(SharedHandle<Media::VideoFrame> frame) override;
+        void presentCurrentFrame() override;
+    public:
+        OMEGACOMMON_CLASS("OmegaWTK.VideoView")
+        friend class Widget;
+
+        VideoView(const Core::Rect & rect, Composition::LayerTree * layerTree, ViewPtr parent = nullptr);
+
+        void setDelegate(VideoViewDelegate *delegate);
+        void setScaleMode(VideoScaleMode mode);
+        VideoScaleMode scaleMode() const;
+        VideoSourceMode sourceMode() const;
+
+        bool bindPlaybackSource(Media::MediaInputStream & input,
+                                const VideoViewPlaybackOptions & opts = {});
+        bool bindCapturePreview(SharedHandle<Media::VideoDevice> & videoDevice,
+                                SharedHandle<Media::AudioCaptureDevice> audioDevice = nullptr,
+                                const VideoViewCaptureOptions & opts = {});
+        bool bindCaptureRecord(SharedHandle<Media::VideoDevice> & videoDevice,
+                               Media::MediaOutputStream & output,
+                               SharedHandle<Media::AudioCaptureDevice> audioDevice = nullptr,
+                               const VideoViewCaptureOptions & opts = {});
+
+        void play();
+        void pause();
+        void stop();
+
+        void startPreview();
+        void stopPreview();
+
+        void startRecording();
+        void stopRecording();
+
+        void clear();
+    };
+typedef Core::XMLDocument SVGDocument;
+
+enum class SVGScaleMode : int { None, Meet, Slice };
+
+struct SVGViewRenderOptions {
+    SVGScaleMode scaleMode = SVGScaleMode::Meet;
+    bool antialias = true;
+    bool enableAnimation = true;
+};
+
+class OMEGAWTK_EXPORT SVGViewDelegate {
 public:
-    OMEGACOMMON_CLASS("OmegaWTK.VideoView")
+    virtual void onSVGLoaded() {}
+    virtual void onSVGParseError(const OmegaCommon::String & message) {}
+    virtual ~SVGViewDelegate() = default;
+};
+
+struct SVGDrawOpList;
+
+/**
+ @brief Parses and renders SVG documents to a Canvas.
+*/
+class OMEGAWTK_EXPORT SVGView : public View {
+    SharedHandle<Composition::Canvas> svgCanvas;
+    SVGViewDelegate *delegate_ = nullptr;
+    SVGViewRenderOptions options_ {};
+    Core::Optional<Core::XMLDocument> sourceDoc_;
+    Core::UniquePtr<SVGDrawOpList> drawOps_;
+    bool needsRebuild_ = true;
+
+    void rebuildDisplayList();
     friend class Widget;
 
-   VideoView(const Core::Rect & rect,Composition::LayerTree * layerTree,ViewPtr parent = nullptr);
+    explicit SVGView(const Core::Rect & rect,Composition::LayerTree *layerTree,ViewPtr parent);
+public:
+    OMEGACOMMON_CLASS("OmegaWTK.UI.SVGView")
+
+    void setDelegate(SVGViewDelegate *delegate);
+    void setRenderOptions(const SVGViewRenderOptions & options);
+    const SVGViewRenderOptions & renderOptions() const;
+
+    bool setSourceDocument(Core::XMLDocument doc);
+    bool setSourceString(const OmegaCommon::String & svgString);
+    bool setSourceStream(std::istream & stream);
+
+    void renderNow();
+
+    void resize(Core::Rect newRect) override;
 };
-/**
- @brief 
-*/
-
-     typedef Core::XMLDocument SVGDocument;
-    class SVGRenderState;
-    /**
-     @brief Displays the visual output of a SVGSession.
-    */
-    class OMEGAWTK_EXPORT SVGView : public View {
-        SharedHandle<Composition::ViewAnimator> svgAnimator;
-    private:
-        explicit SVGView(const Core::Rect & rect,Composition::LayerTree *layerTree,ViewPtr parent);
-        friend class Widget;
-        friend class SVGSession;
-    public:
-        OMEGACOMMON_CLASS("OmegaWTK.UI.SVGView")
-    };
-
-    class OMEGAWTK_EXPORT SVGSession {
-        SharedHandle<SVGView> & view;
-        SharedHandle<SVGRenderState> currentRenderState;
-    private:
-        explicit SVGSession(SharedHandle<SVGView> & view);
-    public:
-        OMEGACOMMON_CLASS("OmegaWTK.UI.SVGSession")
-        static SharedHandle<SVGSession> Create(SharedHandle<SVGView> & view);
-        void setSVGSource(SVGDocument & document);
-        void start();
-        void pause();
-        void reset();
-    };
 
 };
 

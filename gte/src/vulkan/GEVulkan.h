@@ -193,6 +193,22 @@ _NAMESPACE_BEGIN_
         }
     };
 
+    class GEVulkanHeap : public GEHeap {
+        GEVulkanEngine *engine;
+        VmaPool pool;
+        size_t heapSize;
+    public:
+        GEVulkanHeap(GEVulkanEngine *engine, VmaPool pool, size_t heapSize)
+            : engine(engine), pool(pool), heapSize(heapSize) {}
+
+        size_t currentSize() override { return heapSize; }
+
+        SharedHandle<GEBuffer> makeBuffer(const BufferDescriptor &desc) override;
+        SharedHandle<GETexture> makeTexture(const TextureDescriptor &desc) override;
+
+        ~GEVulkanHeap();
+    };
+
     class GEVulkanSamplerState : public GESamplerState {
     public:
         GEVulkanEngine *engine;

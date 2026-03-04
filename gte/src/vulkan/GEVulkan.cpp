@@ -594,8 +594,141 @@ _NAMESPACE_BEGIN_
 
         return SharedHandle<GEBuffer>(new GEVulkanBuffer(desc.usage,this,buffer,bufferView,allocation,allocationInfo));
     };
+    GEVulkanHeap::~GEVulkanHeap(){
+        if(pool != VK_NULL_HANDLE){
+            vmaDestroyPool(engine->memAllocator, pool);
+        }
+    }
+
+    SharedHandle<GEBuffer> GEVulkanHeap::makeBuffer(const BufferDescriptor &desc){
+        VkBufferCreateInfo bufferInfo {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bufferInfo.size = desc.len > 0 ? desc.len : 1;
+        bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                           VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                           VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
+                           VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo allocInfo {};
+        allocInfo.pool = pool;
+        switch(desc.usage){
+            case BufferDescriptor::Upload: allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU; break;
+            case BufferDescriptor::Readback: allocInfo.usage = VMA_MEMORY_USAGE_GPU_TO_CPU; break;
+            case BufferDescriptor::GPUOnly: allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY; break;
+        }
+
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VmaAllocation alloc = nullptr;
+        VmaAllocationInfo allocationInfo {};
+        auto res = vmaCreateBuffer(engine->memAllocator, &bufferInfo, &allocInfo, &buffer, &alloc, &allocationInfo);
+        if(!VK_RESULT_SUCCEEDED(res) || buffer == VK_NULL_HANDLE){
+            return nullptr;
+        }
+
+        VkBufferView bufferView = VK_NULL_HANDLE;
+        return SharedHandle<GEBuffer>(new GEVulkanBuffer(desc.usage, engine, buffer, bufferView, alloc, allocationInfo));
+    }
+
+    SharedHandle<GETexture> GEVulkanHeap::makeTexture(const TextureDescriptor &desc){
+        VkImageCreateInfo imageInfo {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        imageInfo.flags = 0;
+
+        VkFormat imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
+        switch(desc.pixelFormat){
+            case TexturePixelFormat::RGBA8Unorm: imageFormat = VK_FORMAT_R8G8B8A8_UNORM; break;
+            case TexturePixelFormat::RGBA16Unorm: imageFormat = VK_FORMAT_R16G16B16A16_UNORM; break;
+            case TexturePixelFormat::RGBA8Unorm_SRGB: imageFormat = VK_FORMAT_R8G8B8A8_SRGB; break;
+        }
+        imageInfo.format = imageFormat;
+
+        VkImageType type = VK_IMAGE_TYPE_2D;
+        VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
+        switch(desc.type){
+            case GETexture::Texture1D: type = VK_IMAGE_TYPE_1D; viewType = VK_IMAGE_VIEW_TYPE_1D; break;
+            case GETexture::Texture2D: type = VK_IMAGE_TYPE_2D; viewType = VK_IMAGE_VIEW_TYPE_2D; break;
+            case GETexture::Texture3D: type = VK_IMAGE_TYPE_3D; viewType = VK_IMAGE_VIEW_TYPE_3D; break;
+        }
+        imageInfo.imageType = type;
+        imageInfo.extent = {desc.width, desc.height, desc.depth};
+        imageInfo.mipLevels = desc.mipLevels;
+        imageInfo.arrayLayers = 1;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        if(desc.usage == GETexture::FromGPU || desc.usage == GETexture::GPUAccessOnly){
+            imageInfo.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        }
+        if(desc.usage == GETexture::RenderTarget || desc.usage == GETexture::RenderTargetAndDepthStencil){
+            imageInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        }
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo allocInfo {};
+        allocInfo.pool = pool;
+        allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+        VkImage img = VK_NULL_HANDLE;
+        VmaAllocation alloc = nullptr;
+        VmaAllocationInfo allocationInfo {};
+        auto res = vmaCreateImage(engine->memAllocator, &imageInfo, &allocInfo, &img, &alloc, &allocationInfo);
+        if(!VK_RESULT_SUCCEEDED(res) || img == VK_NULL_HANDLE){
+            return nullptr;
+        }
+
+        VkImageViewCreateInfo viewInfo {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        viewInfo.image = img;
+        viewInfo.viewType = viewType;
+        viewInfo.format = imageFormat;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = desc.mipLevels;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+
+        VkImageView imgView = VK_NULL_HANDLE;
+        vkCreateImageView(engine->device, &viewInfo, nullptr, &imgView);
+
+        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaMemoryUsage memUsage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+        return SharedHandle<GETexture>(new GEVulkanTexture(
+            desc.type, desc.usage, desc.pixelFormat,
+            engine, img, imgView, layout, allocationInfo, alloc, desc, memUsage));
+    }
+
     SharedHandle<GEHeap> GEVulkanEngine::makeHeap(const HeapDescriptor &desc){
-        return nullptr;
+        if(device == VK_NULL_HANDLE || memAllocator == nullptr){
+            std::cerr << "Vulkan makeHeap failed: invalid device or allocator." << std::endl;
+            return nullptr;
+        }
+
+        VmaPoolCreateInfo poolInfo {};
+        poolInfo.blockSize = desc.len;
+        poolInfo.maxBlockCount = 1;
+
+        VkBufferCreateInfo sampleBufInfo {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        sampleBufInfo.size = 64;
+        sampleBufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+
+        VmaAllocationCreateInfo sampleAllocInfo {};
+        sampleAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+        uint32_t memTypeIdx = 0;
+        vmaFindMemoryTypeIndexForBufferInfo(memAllocator, &sampleBufInfo, &sampleAllocInfo, &memTypeIdx);
+        poolInfo.memoryTypeIndex = memTypeIdx;
+
+        VmaPool pool = VK_NULL_HANDLE;
+        auto res = vmaCreatePool(memAllocator, &poolInfo, &pool);
+        if(!VK_RESULT_SUCCEEDED(res)){
+            std::cerr << "Vulkan makeHeap failed: vmaCreatePool returned " << res << std::endl;
+            return nullptr;
+        }
+
+        return SharedHandle<GEHeap>(new GEVulkanHeap(this, pool, desc.len));
     };
 
     SharedHandle<GETexture>GEVulkanEngine::makeTexture(const TextureDescriptor &desc){

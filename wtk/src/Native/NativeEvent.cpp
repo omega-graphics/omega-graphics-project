@@ -1,19 +1,25 @@
 #include "omegaWTK/Native/NativeEvent.h"
+#include <algorithm>
 
 namespace OmegaWTK::Native {
 
-WindowWillResize::WindowWillResize(Core::Rect rect,std::uint64_t generation):rect(rect),generation(generation){};
+WindowWillResize::WindowWillResize(Core::Rect r, std::uint64_t gen) : rect(r), generation(gen) {}
 
-NativeEvent::~NativeEvent(){
-    if(params == nullptr){
+NativeEvent::NativeEvent(EventType _type, NativeEventParams p) : type(_type), params(p) {}
+
+NativeEvent::~NativeEvent() {
+    if (params == nullptr) {
         return;
     }
-    switch(type){
+    switch (type) {
         case CursorEnter:
             delete reinterpret_cast<CursorEnterParams *>(params);
             break;
         case CursorExit:
             delete reinterpret_cast<CursorExitParams *>(params);
+            break;
+        case CursorMove:
+            delete reinterpret_cast<CursorMoveParams *>(params);
             break;
         case LMouseDown:
             delete reinterpret_cast<LMouseDownParams *>(params);
@@ -27,6 +33,11 @@ NativeEvent::~NativeEvent(){
         case RMouseUp:
             delete reinterpret_cast<RMouseUpParams *>(params);
             break;
+        case DragBegin:
+        case DragMove:
+        case DragEnd:
+            delete reinterpret_cast<MouseEventParams *>(params);
+            break;
         case KeyDown:
             delete reinterpret_cast<KeyDownParams *>(params);
             break;
@@ -34,19 +45,26 @@ NativeEvent::~NativeEvent(){
             delete reinterpret_cast<KeyUpParams *>(params);
             break;
         case ViewResize:
-            delete reinterpret_cast<OmegaWTK::Native::ViewResize *>(params);
+            delete reinterpret_cast<ViewResize *>(params);
             break;
         case ScrollLeft:
         case ScrollRight:
         case ScrollUp:
         case ScrollDown:
-            delete reinterpret_cast<OmegaWTK::Native::ScrollParams *>(params);
+            delete reinterpret_cast<ScrollParams *>(params);
             break;
         case WindowWillStartResize:
         case WindowWillResize:
-            delete reinterpret_cast<OmegaWTK::Native::WindowWillResize *>(params);
+            delete reinterpret_cast<WindowWillResize *>(params);
             break;
         case HasLoaded:
+        case FocusGained:
+        case FocusLost:
+        case GesturePinch:
+        case GesturePan:
+        case GestureRotate:
+        case AppActivate:
+        case AppDeactivate:
         case WindowWillClose:
         case WindowHasResized:
         case WindowHasFinishedResize:
@@ -55,36 +73,49 @@ NativeEvent::~NativeEvent(){
             break;
     }
     params = nullptr;
-};
+}
 
-NativeEventEmitter::NativeEventEmitter():message_reciever(nullptr){
+NativeEventEmitter::NativeEventEmitter() = default;
 
-};
+NativeEventEmitter::~NativeEventEmitter() = default;
 
-NativeEventEmitter::~NativeEventEmitter(){};
+void NativeEventEmitter::addReceiver(NativeEventProcessor *receiver) {
+    if (receiver == nullptr) return;
+    for (auto *r : receivers) {
+        if (r == receiver) return;
+    }
+    receivers.push_back(receiver);
+}
 
-bool NativeEventEmitter::hasReciever(){
-    return message_reciever != nullptr;
-};
+void NativeEventEmitter::removeReceiver(NativeEventProcessor *receiver) {
+    if (receiver == nullptr) return;
+    auto it = std::find(receivers.begin(), receivers.end(), receiver);
+    if (it != receivers.end()) {
+        receivers.erase(it);
+    }
+}
 
-void NativeEventEmitter::setReciever(NativeEventProcessor *_responder){
-    message_reciever = _responder;
-};
+void NativeEventEmitter::setReciever(NativeEventProcessor *responder) {
+    receivers.clear();
+    if (responder != nullptr) {
+        receivers.push_back(responder);
+    }
+}
 
-void NativeEventEmitter::emit(NativeEventPtr event){
-    if(hasReciever())
-        message_reciever->onRecieveEvent(event);
-};
+bool NativeEventEmitter::hasReciever() const {
+    return !receivers.empty();
+}
 
-NativeEventProcessor::NativeEventProcessor(){};
+void NativeEventEmitter::emit(NativeEventPtr event) {
+    for (auto *r : receivers) {
+        if (r != nullptr) {
+            r->onRecieveEvent(event);
+        }
+    }
+}
 
+NativeEventProcessor::NativeEventProcessor() = default;
 
-//void NativeEventProcessor::onRecieveEvent(NativeEventPtr event){
-//
-//};
+NativeEventProcessor::~NativeEventProcessor() = default;
 
-NativeEventProcessor::~NativeEventProcessor(){
-    
-};
-
-};
+}

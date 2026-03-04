@@ -10,7 +10,8 @@
 
 namespace OmegaWTK::Native {
 namespace Cocoa {
-NativeEventPtr ns_event_to_omega_wtk_native_event(NSEvent *event);
+/// Converts NSEvent to NativeEvent. If inView is non-nil, position is in view coordinates; otherwise local position is zero.
+NativeEventPtr ns_event_to_omega_wtk_native_event(NSEvent *event, NSView *inView = nil);
 };
 }
 

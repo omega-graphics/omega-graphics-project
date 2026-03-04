@@ -46,7 +46,7 @@
 };
 -(void)emitEventIfPossible:(NSEvent *)event{
     if(self.delegate->hasEventEmitter()){
-        self.delegate->sendEventToEmitter(OmegaWTK::Native::Cocoa::ns_event_to_omega_wtk_native_event(event));
+        self.delegate->sendEventToEmitter(OmegaWTK::Native::Cocoa::ns_event_to_omega_wtk_native_event(event, self));
     };
 };
 

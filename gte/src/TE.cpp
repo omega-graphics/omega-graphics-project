@@ -621,6 +621,254 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
             }
             break;
         }
+        case TETessellationParams::TESSALATE_PYRAMID : {
+            auto & object = params.params->pyramid;
+
+            TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
+            TETessellationResult::TEMesh::Polygon tri {};
+
+            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            if(!params.attachments.empty()){
+                auto & attachment = params.attachments.front();
+                if(attachment.type == TETessellationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
+                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                    tri.a.attachment = tri.b.attachment = tri.c.attachment = colorAttachment;
+                }
+            }
+
+            float ax,ay,az;
+            translateCoords(object.x, object.y + object.h, object.z, viewport, &ax, &ay, &az);
+            GPoint3D apex {ax, ay, az};
+
+            float bx0,by0,bz0, bx1,by1,bz1;
+            translateCoords(object.x - object.w * 0.5f, object.y, object.z - object.d * 0.5f, viewport, &bx0, &by0, &bz0);
+            translateCoords(object.x + object.w * 0.5f, object.y, object.z + object.d * 0.5f, viewport, &bx1, &by1, &bz1);
+
+            GPoint3D b00 {bx0, by0, bz0};
+            GPoint3D b10 {bx1, by0, bz0};
+            GPoint3D b11 {bx1, by0, bz1};
+            GPoint3D b01 {bx0, by0, bz1};
+
+            // Front face
+            tri.a.pt = apex; tri.b.pt = b00; tri.c.pt = b10;
+            mesh.vertexPolygons.push_back(tri);
+            // Right face
+            tri.a.pt = apex; tri.b.pt = b10; tri.c.pt = b11;
+            mesh.vertexPolygons.push_back(tri);
+            // Back face
+            tri.a.pt = apex; tri.b.pt = b11; tri.c.pt = b01;
+            mesh.vertexPolygons.push_back(tri);
+            // Left face
+            tri.a.pt = apex; tri.b.pt = b01; tri.c.pt = b00;
+            mesh.vertexPolygons.push_back(tri);
+            // Base (two triangles)
+            tri.a.pt = b00; tri.b.pt = b10; tri.c.pt = b11;
+            mesh.vertexPolygons.push_back(tri);
+            tri.a.pt = b00; tri.b.pt = b11; tri.c.pt = b01;
+            mesh.vertexPolygons.push_back(tri);
+
+            result.meshes.push_back(mesh);
+            break;
+        }
+        case TETessellationParams::TESSALATE_CYLINDER : {
+            auto & object = params.params->cylinder;
+
+            TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
+            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            if(!params.attachments.empty()){
+                auto & attachment = params.attachments.front();
+                if(attachment.type == TETessellationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
+                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                }
+            }
+
+            float cx_bottom,cy_bottom,cz_bottom, cx_top,cy_top,cz_top;
+            translateCoords(object.pos.x, object.pos.y, object.pos.z, viewport, &cx_bottom, &cy_bottom, &cz_bottom);
+            translateCoords(object.pos.x, object.pos.y + object.h, object.pos.z, viewport, &cx_top, &cy_top, &cz_top);
+
+            GPoint3D bottomCenter {cx_bottom, cy_bottom, cz_bottom};
+            GPoint3D topCenter {cx_top, cy_top, cz_top};
+
+            const float step = arcStep > 0.f ? arcStep : 0.01f;
+            float angle = 0.f;
+
+            auto makeRimPoint = [&](float a, float baseY) -> GPoint3D {
+                float px = object.pos.x + std::cos(a) * object.r;
+                float pz = object.pos.z + std::sin(a) * object.r;
+                float tx, ty, tz;
+                translateCoords(px, baseY, pz, viewport, &tx, &ty, &tz);
+                return GPoint3D{tx, ty, tz};
+            };
+
+            while(angle < 2.f * float(PI)){
+                float nextAngle = angle + step;
+                if(nextAngle > 2.f * float(PI)) nextAngle = 2.f * float(PI);
+
+                GPoint3D bCur = makeRimPoint(angle, object.pos.y);
+                GPoint3D bNext = makeRimPoint(nextAngle, object.pos.y);
+                GPoint3D tCur = makeRimPoint(angle, object.pos.y + object.h);
+                GPoint3D tNext = makeRimPoint(nextAngle, object.pos.y + object.h);
+
+                TETessellationResult::TEMesh::Polygon p {};
+                if(colorAttachment){
+                    p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
+                }
+
+                // Bottom cap triangle
+                p.a.pt = bottomCenter; p.b.pt = bCur; p.c.pt = bNext;
+                mesh.vertexPolygons.push_back(p);
+                // Top cap triangle
+                p.a.pt = topCenter; p.b.pt = tNext; p.c.pt = tCur;
+                mesh.vertexPolygons.push_back(p);
+                // Barrel quad (two triangles)
+                p.a.pt = bCur; p.b.pt = tCur; p.c.pt = tNext;
+                mesh.vertexPolygons.push_back(p);
+                p.a.pt = bCur; p.b.pt = tNext; p.c.pt = bNext;
+                mesh.vertexPolygons.push_back(p);
+
+                angle = nextAngle;
+            }
+
+            result.meshes.push_back(mesh);
+            break;
+        }
+        case TETessellationParams::TESSALATE_CONE : {
+            auto & object = params.params->cone;
+
+            TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
+            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            if(!params.attachments.empty()){
+                auto & attachment = params.attachments.front();
+                if(attachment.type == TETessellationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
+                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                }
+            }
+
+            float apex_tx,apex_ty,apex_tz;
+            translateCoords(object.x, object.y + object.h, object.z, viewport, &apex_tx, &apex_ty, &apex_tz);
+            GPoint3D apex {apex_tx, apex_ty, apex_tz};
+
+            float base_cx,base_cy,base_cz;
+            translateCoords(object.x, object.y, object.z, viewport, &base_cx, &base_cy, &base_cz);
+            GPoint3D baseCenter {base_cx, base_cy, base_cz};
+
+            const float step = arcStep > 0.f ? arcStep : 0.01f;
+            float angle = 0.f;
+
+            auto makeBasePoint = [&](float a) -> GPoint3D {
+                float px = object.x + std::cos(a) * object.r;
+                float pz = object.z + std::sin(a) * object.r;
+                float tx,ty,tz;
+                translateCoords(px, object.y, pz, viewport, &tx, &ty, &tz);
+                return GPoint3D{tx,ty,tz};
+            };
+
+            while(angle < 2.f * float(PI)){
+                float nextAngle = angle + step;
+                if(nextAngle > 2.f * float(PI)) nextAngle = 2.f * float(PI);
+
+                GPoint3D cur = makeBasePoint(angle);
+                GPoint3D next = makeBasePoint(nextAngle);
+
+                TETessellationResult::TEMesh::Polygon p {};
+                if(colorAttachment){
+                    p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
+                }
+
+                // Side triangle
+                p.a.pt = apex; p.b.pt = cur; p.c.pt = next;
+                mesh.vertexPolygons.push_back(p);
+                // Base triangle
+                p.a.pt = baseCenter; p.b.pt = next; p.c.pt = cur;
+                mesh.vertexPolygons.push_back(p);
+
+                angle = nextAngle;
+            }
+
+            result.meshes.push_back(mesh);
+            break;
+        }
+        case TETessellationParams::TESSALATE_GRAPHICSPATH3D : {
+            auto & path3DParams = params.params->path3D;
+            if(path3DParams.pathes == nullptr || path3DParams.pathCount == 0){
+                break;
+            }
+
+            TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
+            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            if(!params.attachments.empty()){
+                auto & attachment = params.attachments.front();
+                if(attachment.type == TETessellationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
+                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                }
+            }
+
+            const float strokeWidth = 1.f;
+            const float halfStroke = strokeWidth * 0.5f;
+
+            auto toDevice3D = [&](const GPoint3D & point) -> GPoint3D {
+                float tx,ty,tz;
+                translateCoords(point.x, point.y, point.z, viewport, &tx, &ty, &tz);
+                return GPoint3D{tx,ty,tz};
+            };
+
+            for(unsigned pi = 0; pi < path3DParams.pathCount; ++pi){
+                auto & path = path3DParams.pathes[pi];
+
+                for(auto it = path.begin(); it != path.end(); it.operator++()){
+                    auto seg = *it;
+                    if(seg.pt_A == nullptr || seg.pt_B == nullptr) break;
+
+                    const GPoint3D & A = *seg.pt_A;
+                    const GPoint3D & B = *seg.pt_B;
+
+                    float dx = B.x - A.x;
+                    float dy = B.y - A.y;
+                    float dz = B.z - A.z;
+                    float len = std::sqrt(dx*dx + dy*dy + dz*dz);
+                    if(len <= 0.000001f) continue;
+
+                    dx /= len; dy /= len; dz /= len;
+
+                    // Build a perpendicular vector via cross product with a non-parallel axis
+                    float ux, uy, uz;
+                    if(std::fabs(dx) < 0.9f){
+                        ux = 0.f; uy = -dz; uz = dy;
+                    } else {
+                        ux = dz; uy = 0.f; uz = -dx;
+                    }
+                    float ulen = std::sqrt(ux*ux + uy*uy + uz*uz);
+                    if(ulen > 0.000001f){ ux /= ulen; uy /= ulen; uz /= ulen; }
+
+                    float nx = ux * halfStroke;
+                    float ny = uy * halfStroke;
+                    float nz = uz * halfStroke;
+
+                    GPoint3D a0 = toDevice3D({A.x + nx, A.y + ny, A.z + nz});
+                    GPoint3D a1 = toDevice3D({A.x - nx, A.y - ny, A.z - nz});
+                    GPoint3D b0 = toDevice3D({B.x + nx, B.y + ny, B.z + nz});
+                    GPoint3D b1 = toDevice3D({B.x - nx, B.y - ny, B.z - nz});
+
+                    TETessellationResult::TEMesh::Polygon p {};
+                    if(colorAttachment){
+                        p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
+                    }
+                    p.a.pt = a0; p.b.pt = a1; p.c.pt = b0;
+                    mesh.vertexPolygons.push_back(p);
+                    p.a.pt = b0; p.b.pt = a1; p.c.pt = b1;
+                    mesh.vertexPolygons.push_back(p);
+                }
+            }
+
+            if(!mesh.vertexPolygons.empty()){
+                result.meshes.push_back(mesh);
+            }
+            break;
+        }
         default: {
             break;
         }
@@ -804,18 +1052,17 @@ void TETessellationResult::TEMesh::rotate(float pitch, float yaw, float roll) {
     auto cos_roll = cosf(roll),sin_roll = sinf(roll);
 
     auto rotatePoint = [&](GPoint3D & pt){
-        /// Pitch Rotation
-        pt.x *= 1;
-        pt.z = (0 + (cos_pitch * pt.z) - (sin_pitch * pt.y));
-        pt.y = (0 + (sin_pitch * pt.z) + (cos_pitch * pt.y));
-        /// Yaw Rotation
-        pt.y *= 1;
-        pt.x = (0 + (cos_yaw * pt.x) - (sin_yaw * pt.z));
-        pt.z = (0 + (sin_yaw * pt.x) + (cos_yaw * pt.z));
-        /// Roll Rotation
-        pt.z *= 1;
-        pt.x = (0 + (cos_roll * pt.x) - (sin_roll * pt.y));
-        pt.y = (0 + (sin_roll * pt.x) + (cos_roll * pt.y));
+        float x = pt.x, y = pt.y, z = pt.z;
+        /// Pitch Rotation (X axis)
+        float y1 = (cos_pitch * y) - (sin_pitch * z);
+        float z1 = (sin_pitch * y) + (cos_pitch * z);
+        /// Yaw Rotation (Y axis)
+        float x2 = (cos_yaw * x) + (sin_yaw * z1);
+        float z2 = -(sin_yaw * x) + (cos_yaw * z1);
+        /// Roll Rotation (Z axis)
+        pt.x = (cos_roll * x2) - (sin_roll * y1);
+        pt.y = (sin_roll * x2) + (cos_roll * y1);
+        pt.z = z2;
     };
 
     for(auto & polygon : vertexPolygons){

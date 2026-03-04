@@ -342,7 +342,7 @@ _NAMESPACE_BEGIN_
         /**
           @brief Creates a GETextureRenderTarget from a TextureRenderTargetDescriptor.
           @param[in] desc The Texture Render Target Descriptor
-          @returns SharedHandle<GENativeRenderTarget>
+          @returns SharedHandle<GETextureRenderTarget>
          */
         virtual SharedHandle<GETextureRenderTarget> makeTextureRenderTarget(const TextureRenderTargetDescriptor & desc) = 0;
 

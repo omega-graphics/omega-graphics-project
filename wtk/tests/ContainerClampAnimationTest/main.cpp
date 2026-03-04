@@ -22,12 +22,15 @@ OmegaWTK::Composition::LayerEffect::DropShadowParams makeShadow(float x,float y,
     return params;
 }
 
+constexpr float kAnimationDurationSec = 0.6f;
+
 }
 
 class ClampAnimatedChildWidget final : public OmegaWTK::Widget {
     OmegaWTK::UIViewPtr uiView {};
     bool firstClampRequestIssued = false;
     bool secondClampRequestIssued = false;
+    bool animationTriggered = false;
 
     void ensureUIView(const OmegaWTK::Core::Rect & bounds){
         auto local = localBounds(bounds);
@@ -37,6 +40,28 @@ class ClampAnimatedChildWidget final : public OmegaWTK::Widget {
         else {
             uiView->resize(local);
         }
+    }
+
+    void applyInitialStyle() {
+        auto style = OmegaWTK::StyleSheet::Create();
+        style = style->backgroundColor("clamp_anim_child_view",OmegaWTK::Composition::Color::Transparent);
+        style = style->elementBrush("animated_rect",OmegaWTK::Composition::ColorBrush(
+                OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)),
+                true,
+                kAnimationDurationSec);
+        style = style->elementDropShadow("animated_rect",makeShadow(0.f,6.f,3.f,10.f,0.60f),true,kAnimationDurationSec);
+        uiView->setStyleSheet(style);
+    }
+
+    void applyAnimatedTargetStyle() {
+        auto style = OmegaWTK::StyleSheet::Create();
+        style = style->backgroundColor("clamp_anim_child_view",OmegaWTK::Composition::Color::Transparent);
+        style = style->elementBrush("animated_rect",OmegaWTK::Composition::ColorBrush(
+                OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Blue8)),
+                true,
+                kAnimationDurationSec);
+        style = style->elementDropShadow("animated_rect",makeShadow(0.f,2.f,2.f,6.f,0.40f),true,kAnimationDurationSec);
+        uiView->setStyleSheet(style);
     }
 
 protected:
@@ -64,17 +89,10 @@ protected:
             }));
         uiView->setLayout(layout);
 
-        auto style = OmegaWTK::StyleSheet::Create();
-        style = style->backgroundColor("clamp_anim_child_view",OmegaWTK::Composition::Color::Transparent);
-        style = style->elementBrush("animated_rect",OmegaWTK::Composition::ColorBrush(
-                OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)),
-                true,
-                0.35f);
-        style = style->elementDropShadow("animated_rect",makeShadow(0.f,6.f,3.f,10.f,0.60f),true,0.35f);
-        uiView->setStyleSheet(style);
-        uiView->update();
-
         if(!firstClampRequestIssued){
+            applyInitialStyle();
+            uiView->update();
+
             auto req = rect();
             req.pos.x -= 220.f;
             req.pos.y -= 140.f;
@@ -87,6 +105,9 @@ protected:
         }
 
         if(!secondClampRequestIssued){
+            applyInitialStyle();
+            uiView->update();
+
             auto req = rect();
             req.pos.x += 420.f;
             req.pos.y += 340.f;
@@ -94,6 +115,19 @@ protected:
             req.h += 40.f;
             requestRect(req,OmegaWTK::GeometryChangeReason::ChildRequest);
             secondClampRequestIssued = true;
+            invalidate(OmegaWTK::PaintReason::StateChanged);
+            return;
+        }
+
+        if(!animationTriggered){
+            applyAnimatedTargetStyle();
+            uiView->update();
+            animationTriggered = true;
+            invalidate(OmegaWTK::PaintReason::StateChanged);
+        }
+        else {
+            applyAnimatedTargetStyle();
+            uiView->update();
         }
     }
 

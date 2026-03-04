@@ -132,7 +132,7 @@ namespace OmegaWTK::Native::Win {
             isTracking = false;
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
-            emitIfPossible(button_event_to_native_event(NativeEvent::CursorEnter,&pt));
+            emitIfPossible(button_event_to_native_event(NativeEvent::CursorEnter,&pt,hwnd));
             hovered = true;
             break;
         };
@@ -140,32 +140,32 @@ namespace OmegaWTK::Native::Win {
             isTracking = false;
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
-            emitIfPossible(button_event_to_native_event(NativeEvent::CursorExit,&pt));
+            emitIfPossible(button_event_to_native_event(NativeEvent::CursorExit,&pt,hwnd));
             hovered = false;
             break;
         };
         case WM_LBUTTONDOWN : {
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
-            emitIfPossible(button_event_to_native_event(NativeEvent::LMouseDown,&pt));
+            emitIfPossible(button_event_to_native_event(NativeEvent::LMouseDown,&pt,hwnd));
             break;
         };
         case WM_LBUTTONUP : {
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
-            emitIfPossible(button_event_to_native_event(NativeEvent::LMouseUp,&pt));
+            emitIfPossible(button_event_to_native_event(NativeEvent::LMouseUp,&pt,hwnd));
             break;
         };
         case WM_RBUTTONDOWN : {
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
-            emitIfPossible(button_event_to_native_event(NativeEvent::RMouseDown,&pt));
+            emitIfPossible(button_event_to_native_event(NativeEvent::RMouseDown,&pt,hwnd));
             break;
         };
         case WM_RBUTTONUP : {
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
-            emitIfPossible(button_event_to_native_event(NativeEvent::RMouseUp,&pt));
+            emitIfPossible(button_event_to_native_event(NativeEvent::RMouseUp,&pt,hwnd));
             break;
         };
         case WM_SIZE : {

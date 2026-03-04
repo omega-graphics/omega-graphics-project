@@ -51,6 +51,7 @@ public:
     explicit Path(OmegaGTE::GVectorPath2D & path,unsigned stroke = 1);
     ~Path() = default;
 };
+Core::SharedPtr<Path> RectFrame(Core::Rect rect,unsigned width);
 Core::SharedPtr<Path> RoundedRectFrame(Core::RoundedRect rect,unsigned width);
 Core::SharedPtr<Path> EllipseFrame(Core::Ellipse ellipse,unsigned width);
 
