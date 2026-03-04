@@ -5,6 +5,7 @@
 #include <omega-common/common.h>
 
 #include "omegasl.h"
+#include "Error.h"
 
 #ifndef OMEGASL_AST_H
 #define OMEGASL_AST_H
@@ -45,20 +46,29 @@ namespace omegasl {
 #define DECLARE_BUILTIN_TYPE(name) extern Type *name
 
             DECLARE_BUILTIN_TYPE(void_type);
+            DECLARE_BUILTIN_TYPE(bool_type);
             DECLARE_BUILTIN_TYPE(int_type);
+            DECLARE_BUILTIN_TYPE(int2_type);
+            DECLARE_BUILTIN_TYPE(int3_type);
+            DECLARE_BUILTIN_TYPE(int4_type);
             DECLARE_BUILTIN_TYPE(uint_type);
             DECLARE_BUILTIN_TYPE(uint2_type);
             DECLARE_BUILTIN_TYPE(uint3_type);
+            DECLARE_BUILTIN_TYPE(uint4_type);
             DECLARE_BUILTIN_TYPE(float_type);
             DECLARE_BUILTIN_TYPE(float2_type);
             DECLARE_BUILTIN_TYPE(float3_type);
             DECLARE_BUILTIN_TYPE(float4_type);
+            DECLARE_BUILTIN_TYPE(float2x2_type);
+            DECLARE_BUILTIN_TYPE(float3x3_type);
+            DECLARE_BUILTIN_TYPE(float4x4_type);
 
             DECLARE_BUILTIN_TYPE(buffer_type);
             DECLARE_BUILTIN_TYPE(texture1d_type);
             DECLARE_BUILTIN_TYPE(texture2d_type);
             DECLARE_BUILTIN_TYPE(texture3d_type);
 
+            DECLARE_BUILTIN_TYPE(sampler1d_type);
             DECLARE_BUILTIN_TYPE(sampler2d_type);
             DECLARE_BUILTIN_TYPE(sampler3d_type);
 
@@ -68,6 +78,15 @@ namespace omegasl {
             DECLARE_BUILTIN_FUNC(make_float2);
             DECLARE_BUILTIN_FUNC(make_float3);
             DECLARE_BUILTIN_FUNC(make_float4);
+            DECLARE_BUILTIN_FUNC(make_int2);
+            DECLARE_BUILTIN_FUNC(make_int3);
+            DECLARE_BUILTIN_FUNC(make_int4);
+            DECLARE_BUILTIN_FUNC(make_uint2);
+            DECLARE_BUILTIN_FUNC(make_uint3);
+            DECLARE_BUILTIN_FUNC(make_uint4);
+            DECLARE_BUILTIN_FUNC(make_float2x2);
+            DECLARE_BUILTIN_FUNC(make_float3x3);
+            DECLARE_BUILTIN_FUNC(make_float4x4);
 
             DECLARE_BUILTIN_FUNC(dot);
 
@@ -84,6 +103,7 @@ namespace omegasl {
             bool pointer;
             bool hasTypeArgs;
             OmegaCommon::Vector<TypeExpr *> args;
+            std::optional<unsigned> arraySize;
 
             static TypeExpr *Create(OmegaCommon::StrRef name, bool pointer = false,bool hasTypeArgs = false,OmegaCommon::Vector<TypeExpr *> * args = nullptr);
             static TypeExpr *Create(Type * type, bool pointer = false);
@@ -113,6 +133,7 @@ namespace omegasl {
         struct Stmt {
             ASTType type;
             Scope *scope;
+            std::optional<ErrorLoc> loc;
         };
 
         struct Expr;
@@ -161,6 +182,34 @@ namespace omegasl {
             OmegaCommon::Vector<ast::Stmt *> body;
         };
 
+        /// @brief else-if branch: condition and block
+        struct ElseIfBranch {
+            Expr *condition;
+            std::unique_ptr<Block> block;
+        };
+
+        /// @brief if / else if / else statement
+        struct IfStmt : public Stmt {
+            Expr *condition;
+            std::unique_ptr<Block> thenBlock;
+            OmegaCommon::Vector<ElseIfBranch> elseIfs;
+            std::unique_ptr<Block> elseBlock;  /// optional
+        };
+
+        /// @brief for loop: init; condition; increment { body }
+        struct ForStmt : public Stmt {
+            Stmt *init;       /// VAR_DECL or expression statement
+            Expr *condition;
+            Expr *increment;
+            std::unique_ptr<Block> body;
+        };
+
+        /// @brief while loop
+        struct WhileStmt : public Stmt {
+            Expr *condition;
+            std::unique_ptr<Block> body;
+        };
+
         /// @brief Declares a Struct.
         /// @paragraph Can be either public or for shader internal use only
         /// by marking it with the `internal` keyword)
@@ -183,7 +232,9 @@ namespace omegasl {
             typedef enum : int {
                 Vertex,
                 Fragment,
-                Compute
+                Compute,
+                Hull,
+                Domain
             } Type;
             Type shaderType;
             struct ResourceMapDesc {
@@ -263,6 +314,11 @@ namespace omegasl {
         struct IndexExpr : public Expr {
             Expr *lhs;
             Expr *idx_expr;
+        };
+
+        struct CastExpr : public Expr {
+            TypeExpr *targetType;
+            Expr *expr;
         };
 
     }

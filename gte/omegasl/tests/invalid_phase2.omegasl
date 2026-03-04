@@ -1,0 +1,4 @@
+compute(x=1,y=1,z=1)
+void bad(){
+    make_float2(undefined_identifier, 0);
+}

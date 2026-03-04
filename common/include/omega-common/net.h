@@ -14,9 +14,16 @@ namespace OmegaCommon {
         StrRef header;
     };
 
+    /**
+     * HTTP response body and metadata.
+     * Ownership: data is allocated with malloc() and must be freed by the caller (e.g. free(resp.data)).
+     * If the request failed or no body was returned, data may be nullptr and size 0; still call free(data) if non-null.
+     */
     struct HttpResponse {
-        size_t size;
-        void *data;
+        /** HTTP status code (e.g. 200, 404). 0 or negative indicates failure or unknown. */
+        int statusCode = 0;
+        size_t size = 0;
+        void *data = nullptr;
     };
 
     class OMEGACOMMON_EXPORT HttpClientContext {

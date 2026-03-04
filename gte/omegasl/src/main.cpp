@@ -2,8 +2,12 @@
 
 #include "Parser.h"
 #include "CodeGen.h"
+#include "Error.h"
+#include "Preprocessor.h"
 
 #include <iostream>
+#include <sstream>
+#include <fstream>
 
 inline void help(){
     std::cout <<
@@ -157,7 +161,27 @@ int main(int argc,char *argv[]){
 
     auto input_file_path = OmegaCommon::FS::Path(inputFile);
 
-    std::ifstream in(inputFile.data(),std::ios::in);
+    std::ifstream fileIn(inputFile.data(), std::ios::in);
+    if(!fileIn){
+        std::cerr << "error: cannot open input file " << inputFile << std::endl;
+        return 1;
+    }
+    std::stringstream buffer;
+    buffer << fileIn.rdbuf();
+    fileIn.close();
+    std::string sourceContent = buffer.str();
+
+    omegasl::Preprocessor preprocessor;
+    std::string processedSource = preprocessor.process(sourceContent, input_file_path.dir());
+
+    omegasl::SourceFile sourceFile;
+    sourceFile.setContent(processedSource);
+    sourceFile.buildLinePosMap();
+
+    omegasl::DiagnosticEngine diagnostics;
+    diagnostics.setSourceFile(&sourceFile);
+
+    std::istringstream in(processedSource);
 
     if(tokenize){
         auto lexer = OmegaCommon::makeARCAny<omegasl::Lexer>();
@@ -167,7 +191,6 @@ int main(int argc,char *argv[]){
             std::cout << "Tok {type:" << std::hex << t.type << std::dec << ", str:`" << t.str << "`}" << std::endl;
         }
         lexer->finishTokenizeFromStream();
-        in.close();
         return 0;
     }
 
@@ -207,7 +230,16 @@ int main(int argc,char *argv[]){
 
 
     omegasl::Parser parser(codeGen);
-    parser.parseContext({in});
+    omegasl::ParseContext parseCtx{ in };
+    parseCtx.sourceFile = &sourceFile;
+    parseCtx.diagnostics = &diagnostics;
+    parser.parseContext(parseCtx);
+
+    if(diagnostics.hasErrors()){
+        diagnostics.report(std::cerr);
+        omegasl::ast::builtins::Cleanup();
+        return 1;
+    }
 
     codeGen->linkShaderObjects();
 

@@ -7,7 +7,11 @@ namespace OmegaCommon {
         std::future<HttpResponse> makeRequest(HttpRequestDescriptor descriptor) override {
             (void)descriptor;
             std::promise<HttpResponse> promise;
-            promise.set_value(HttpResponse{0,nullptr});
+            HttpResponse res;
+            res.statusCode = 0;
+            res.size = 0;
+            res.data = nullptr;
+            promise.set_value(res);
             return promise.get_future();
         }
     };

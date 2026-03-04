@@ -9,12 +9,23 @@ namespace OmegaCommon {
 
         CURL *curl;
     public:
+        struct ResponseUserdata {
+            std::promise<HttpResponse> *prom;
+            CURL *curl;
+        };
         static size_t responseCallback(char *ptr, size_t size, size_t nmemb, void *userdata){
             size_t dataSize = size * nmemb;
-            auto prom = (std::promise<HttpResponse> *)userdata;
-            HttpResponse resp {dataSize,std::malloc(dataSize)};
-            memmove(resp.data,ptr,dataSize);
-            prom->set_value(resp);
+            auto *ud = (ResponseUserdata *)userdata;
+            HttpResponse resp;
+            resp.size = dataSize;
+            resp.data = std::malloc(dataSize);
+            if (resp.data && dataSize)
+                memmove(resp.data, ptr, dataSize);
+            long code = 0;
+            if (ud->curl)
+                curl_easy_getinfo(ud->curl, CURLINFO_RESPONSE_CODE, &code);
+            resp.statusCode = (int)code;
+            ud->prom->set_value(resp);
             return dataSize;
         };
         CURLHttpClientContext(){
@@ -23,17 +34,14 @@ namespace OmegaCommon {
         std::future<HttpResponse> makeRequest(HttpRequestDescriptor descriptor) override {
        
             curl_easy_setopt(curl,CURLOPT_URL,descriptor.url.data());
-            // curl_easy_setopt(curl,CURLOPT_CURLU,url);
             curl_easy_setopt(curl,CURLOPT_HEADERDATA,descriptor.header.data());
 
             auto promise_ptr = new std::promise<HttpResponse>();
-
-            curl_easy_setopt(curl,CURLOPT_WRITEDATA,(void *)promise_ptr);
-
+            ResponseUserdata ud{promise_ptr, curl};
+            curl_easy_setopt(curl,CURLOPT_WRITEDATA,(void *)&ud);
             curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,responseCallback);
 
-            auto code = curl_easy_perform(curl);
-
+            curl_easy_perform(curl);
             curl_easy_reset(curl);
 
             return promise_ptr->get_future();

@@ -10,9 +10,10 @@
 #define TEXTURE1D "Texture1D"
 #define RW_TEXTURE1D "RWTexture1D"
 #define TEXTURE2D "Texture2D"
-#define RW_TEXTURE2D "RWTexture1D"
+#define RW_TEXTURE2D "RWTexture2D"
 #define BUFFER "StructuredBuffer"
 #define RW_BUFFER "RWStructuredBuffer"
+#define SAMPLER1D "SamplerState"
 #define SAMPLER2D "SamplerState"
 #define SAMPLER3D "SamplerState"
 
@@ -25,6 +26,21 @@ namespace omegasl {
         HLSLCodeOpts & hlslCodeOpts;
 
         OmegaCommon::Map<OmegaCommon::String,OmegaCommon::String> generatedStructs;
+
+        OmegaCommon::Vector<ast::FuncDecl *> userFuncDecls;
+
+        void emitUserFunction(ast::FuncDecl *f){
+            writeTypeExpr(f->returnType, shaderOut);
+            shaderOut << " " << f->name << "(";
+            for(size_t i = 0; i < f->params.size(); i++){
+                if(i > 0) shaderOut << ", ";
+                writeTypeExpr(f->params[i].typeExpr, shaderOut);
+                shaderOut << " " << f->params[i].name;
+            }
+            shaderOut << ")" << std::endl;
+            generateBlock(*f->block);
+            shaderOut << std::endl;
+        }
 
     public:
         explicit HLSLCodeGen(CodeGenOpts &opts,HLSLCodeOpts & hlslCodeOpts): CodeGen(opts),shaderOut(fileOut),hlslCodeOpts(hlslCodeOpts){
@@ -80,6 +96,25 @@ namespace omegasl {
                     shaderOut << "]";
                     break;
                 }
+                case UNARY_EXPR : {
+                    auto _expr = (ast::UnaryOpExpr *)expr;
+                    if(_expr->isPrefix){
+                        shaderOut << _expr->op;
+                        generateExpr(_expr->expr);
+                    }
+                    else {
+                        generateExpr(_expr->expr);
+                        shaderOut << _expr->op;
+                    }
+                    break;
+                }
+                case POINTER_EXPR : {
+                    auto _expr = (ast::PointerExpr *)expr;
+                    if(_expr->ptType == ast::PointerExpr::AddressOf) shaderOut << "&";
+                    else shaderOut << "*";
+                    generateExpr(_expr->expr);
+                    break;
+                }
                 case CALL_EXPR : {
                     auto _expr = (ast::CallExpr *)expr;
                     OmegaCommon::StrRef _id_expr = ((ast::IdExpr *)_expr->callee)->id;
@@ -112,6 +147,22 @@ namespace omegasl {
                         generateExpr(_expr->args[1]);
                         shaderOut << "]";
                     }
+                    else if(_id_expr == BUILTIN_READ){
+                        generatedExprBody = true;
+                        generateExpr(_expr->args[0]);
+                        shaderOut << ".Load(";
+                        generateExpr(_expr->args[1]);
+                        shaderOut << ")";
+                    }
+                    else if(_id_expr == BUILTIN_MAKE_INT2){ shaderOut << "int2"; }
+                    else if(_id_expr == BUILTIN_MAKE_INT3){ shaderOut << "int3"; }
+                    else if(_id_expr == BUILTIN_MAKE_INT4){ shaderOut << "int4"; }
+                    else if(_id_expr == BUILTIN_MAKE_UINT2){ shaderOut << "uint2"; }
+                    else if(_id_expr == BUILTIN_MAKE_UINT3){ shaderOut << "uint3"; }
+                    else if(_id_expr == BUILTIN_MAKE_UINT4){ shaderOut << "uint4"; }
+                    else if(_id_expr == BUILTIN_MAKE_FLOAT2X2){ shaderOut << "float2x2"; }
+                    else if(_id_expr == BUILTIN_MAKE_FLOAT3X3){ shaderOut << "float3x3"; }
+                    else if(_id_expr == BUILTIN_MAKE_FLOAT4X4){ shaderOut << "float4x4"; }
                     else {
                         shaderOut << _id_expr;
                     }
@@ -128,6 +179,14 @@ namespace omegasl {
                     }
                     break;
                 }
+                case CAST_EXPR : {
+                    auto _expr = (ast::CastExpr *)expr;
+                    writeTypeExpr(_expr->targetType, shaderOut);
+                    shaderOut << "(";
+                    generateExpr(_expr->expr);
+                    shaderOut << ")";
+                    break;
+                }
             }
         }
     private:
@@ -140,13 +199,16 @@ namespace omegasl {
                 for(unsigned i = 0;i < level_count;i++){
                     shaderOut << "  ";
                 }
-                if(s->type == VAR_DECL || s->type == RETURN_DECL){
+                if(s->type == VAR_DECL || s->type == RETURN_DECL || s->type == IF_STMT || s->type == FOR_STMT || s->type == WHILE_STMT){
                     generateDecl((ast::Decl *)s);
+                    if(s->type != IF_STMT && s->type != FOR_STMT && s->type != WHILE_STMT)
+                        shaderOut << ";";
                 }
                 else {
                     generateExpr((ast::Expr *)s);
+                    shaderOut << ";";
                 }
-                shaderOut << ";" << std::endl;
+                shaderOut << std::endl;
             }
             level_count -= 1;
             shaderOut << "}" << std::endl;
@@ -176,7 +238,10 @@ namespace omegasl {
         }
         inline void writeTypeExpr(ast::TypeExpr *typeExpr,std::ostream & out){
             auto _ty = typeResolver->resolveTypeWithExpr(typeExpr);
-            if(_ty == ast::builtins::float_type){
+            if(_ty == ast::builtins::bool_type){
+                out << "bool";
+            }
+            else if(_ty == ast::builtins::float_type){
                 out << "float";
             }
             else if(_ty == ast::builtins::float2_type){
@@ -188,8 +253,26 @@ namespace omegasl {
             else if(_ty == ast::builtins::float4_type){
                 out << "float4";
             }
+            else if(_ty == ast::builtins::float2x2_type){
+                out << "float2x2";
+            }
+            else if(_ty == ast::builtins::float3x3_type){
+                out << "float3x3";
+            }
+            else if(_ty == ast::builtins::float4x4_type){
+                out << "float4x4";
+            }
             else if(_ty == ast::builtins::int_type){
                 out << "int";
+            }
+            else if(_ty == ast::builtins::int2_type){
+                out << "int2";
+            }
+            else if(_ty == ast::builtins::int3_type){
+                out << "int3";
+            }
+            else if(_ty == ast::builtins::int4_type){
+                out << "int4";
             }
             else if(_ty == ast::builtins::uint_type){
                 out << "uint";
@@ -199,6 +282,9 @@ namespace omegasl {
             }
             else if(_ty == ast::builtins::uint3_type){
                 out << "uint3";
+            }
+            else if(_ty == ast::builtins::uint4_type){
+                out << "uint4";
             }
             else {
                 out << _ty->name;
@@ -217,6 +303,9 @@ namespace omegasl {
                     auto _decl = (ast::VarDecl *)decl;
                     writeTypeExpr(_decl->typeExpr,shaderOut);
                     shaderOut << " " << _decl->spec.name;
+                    if(_decl->typeExpr->arraySize.has_value()){
+                        shaderOut << "[" << _decl->typeExpr->arraySize.value() << "]";
+                    }
                     if(_decl->spec.initializer.has_value()){
                         shaderOut << " = ";
                         generateExpr(_decl->spec.initializer.value());
@@ -227,6 +316,44 @@ namespace omegasl {
                     auto _decl = (ast::ReturnDecl *)decl;
                     shaderOut << "return ";
                     generateExpr(_decl->expr);
+                    break;
+                }
+                case IF_STMT : {
+                    auto _stmt = (ast::IfStmt *)decl;
+                    shaderOut << "if(";
+                    generateExpr(_stmt->condition);
+                    shaderOut << ")";
+                    generateBlock(*_stmt->thenBlock);
+                    for(auto & branch : _stmt->elseIfs){
+                        shaderOut << " else if(";
+                        generateExpr(branch.condition);
+                        shaderOut << ")";
+                        generateBlock(*branch.block);
+                    }
+                    if(_stmt->elseBlock){
+                        shaderOut << " else ";
+                        generateBlock(*_stmt->elseBlock);
+                    }
+                    break;
+                }
+                case FOR_STMT : {
+                    auto _stmt = (ast::ForStmt *)decl;
+                    shaderOut << "for(";
+                    if(_stmt->init){ generateDecl((ast::Decl *)_stmt->init); }
+                    shaderOut << ";";
+                    if(_stmt->condition){ generateExpr(_stmt->condition); }
+                    shaderOut << ";";
+                    if(_stmt->increment){ generateExpr(_stmt->increment); }
+                    shaderOut << ")";
+                    generateBlock(*_stmt->body);
+                    break;
+                }
+                case WHILE_STMT : {
+                    auto _stmt = (ast::WhileStmt *)decl;
+                    shaderOut << "while(";
+                    generateExpr(_stmt->condition);
+                    shaderOut << ")";
+                    generateBlock(*_stmt->body);
                     break;
                 }
                 case STRUCT_DECL : {
@@ -253,6 +380,10 @@ namespace omegasl {
                     resourceStore.add((ast::ResourceDecl *)decl);
                     break;
                 }
+                case FUNC_DECL : {
+                    userFuncDecls.push_back((ast::FuncDecl *)decl);
+                    break;
+                }
                 case SHADER_DECL : {
                     auto _decl = (ast::ShaderDecl *)decl;
                     if(opts.runtimeCompile) {
@@ -260,6 +391,10 @@ namespace omegasl {
                     }
                     else {
                         fileOut.open(OmegaCommon::FS::Path(opts.tempDir).append(_decl->name).concat(".hlsl").str());
+                    }
+
+                    for(auto *uf : userFuncDecls){
+                        emitUserFunction(uf);
                     }
 
                     omegasl_shader shaderDesc {};
@@ -274,7 +409,9 @@ namespace omegasl {
                     shaderDesc.type =
                             _decl->shaderType == ast::ShaderDecl::Vertex? OMEGASL_SHADER_VERTEX :
                             _decl->shaderType == ast::ShaderDecl::Fragment? OMEGASL_SHADER_FRAGMENT :
-                            OMEGASL_SHADER_COMPUTE;
+                            _decl->shaderType == ast::ShaderDecl::Compute? OMEGASL_SHADER_COMPUTE :
+                            _decl->shaderType == ast::ShaderDecl::Hull? OMEGASL_SHADER_HULL :
+                            OMEGASL_SHADER_DOMAIN;
 
 //                    std::cout << "Shader Name:" << _decl->name << std::endl;
 
@@ -334,6 +471,16 @@ namespace omegasl {
                             else {
                                 shaderOut << RW_TEXTURE2D;
                             }
+                        }
+                        else if(_t == ast::builtins::sampler1d_type){
+                            isSResource = true;
+                            if(res_desc->isStatic) {
+                                layoutDesc.type = OMEGASL_SHADER_STATIC_SAMPLER1D_DESC;
+                            }
+                            else {
+                                layoutDesc.type = OMEGASL_SHADER_SAMPLER1D_DESC;
+                            }
+                            shaderOut << SAMPLER1D;
                         }
                         else if(_t == ast::builtins::sampler2d_type){
                             isSResource = true;
@@ -415,6 +562,9 @@ namespace omegasl {
                             if(shaderDesc.type == OMEGASL_SHADER_FRAGMENT){
                                 shaderOut << "space1";
                             }
+                            else if(shaderDesc.type == OMEGASL_SHADER_HULL || shaderDesc.type == OMEGASL_SHADER_DOMAIN){
+                                shaderOut << "space0";
+                            }
                             else {
                                 shaderOut << "space0";
                             }
@@ -435,6 +585,15 @@ namespace omegasl {
                         << _decl->threadgroupDesc.x << ","
                         << _decl->threadgroupDesc.y << ","
                         << _decl->threadgroupDesc.z << ")]" << std::endl;
+                    }
+                    else if(_decl->shaderType == ast::ShaderDecl::Hull){
+                        shaderOut << "[domain(\"tri\")]" << std::endl;
+                        shaderOut << "[partitioning(\"integer\")]" << std::endl;
+                        shaderOut << "[outputtopology(\"triangle_cw\")]" << std::endl;
+                        shaderOut << "[outputcontrolpoints(3)]" << std::endl;
+                    }
+                    else if(_decl->shaderType == ast::ShaderDecl::Domain){
+                        shaderOut << "[domain(\"tri\")]" << std::endl;
                     }
 
                     writeTypeExpr(_decl->returnType,shaderOut);

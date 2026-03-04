@@ -19,6 +19,8 @@ namespace omegasl {
         VertexShaderArgument,
         FragmentShaderArgument,
         ComputeShaderArgument,
+        HullShaderArgument,
+        DomainShaderArgument,
         StructField
     };
 
@@ -26,11 +28,14 @@ namespace omegasl {
         if(context == AttributeContext::StructField){
             return (subject == ATTRIBUTE_COLOR) || (subject == ATTRIBUTE_POSITION) || (subject == ATTRIBUTE_TEXCOORD);
         }
-        else if(context == AttributeContext::VertexShaderArgument){
+        else if(context == AttributeContext::VertexShaderArgument || context == AttributeContext::HullShaderArgument || context == AttributeContext::DomainShaderArgument){
             return (subject == ATTRIBUTE_VERTEX_ID);
         }
         else if(context == AttributeContext::ComputeShaderArgument){
             return (subject == ATTRIBUTE_GLOBALTHREAD_ID) || (subject == ATTRIBUTE_THREADGROUP_ID) || (subject == ATTRIBUTE_LOCALTHREAD_ID);
+        }
+        else if(context == AttributeContext::FragmentShaderArgument){
+            return false;
         }
         else {
             return false;
@@ -41,6 +46,7 @@ namespace omegasl {
         OmegaCommon::Vector<ast::Type *> typeMap;
 
         OmegaCommon::Vector<ast::FuncType *> functionMap;
+        std::vector<std::unique_ptr<ast::FuncType>> userFuncTypes;
 
         OmegaCommon::SetVector<ast::ResourceDecl *> resourceSet;
 
@@ -61,22 +67,38 @@ namespace omegasl {
 
         std::shared_ptr<SemContext> currentContext;
 
+        DiagnosticEngine * diagnostics = nullptr;
+
     public:
+        void setDiagnostics(DiagnosticEngine * d) { diagnostics = d; }
+
         explicit Sem():
         builtinsTypeMap({
-            
+
             ast::builtins::void_type,
+            ast::builtins::bool_type,
             ast::builtins::int_type,
+            ast::builtins::int2_type,
+            ast::builtins::int3_type,
+            ast::builtins::int4_type,
             ast::builtins::uint_type,
+            ast::builtins::uint2_type,
+            ast::builtins::uint3_type,
+            ast::builtins::uint4_type,
 
             ast::builtins::float_type,
             ast::builtins::float2_type,
             ast::builtins::float3_type,
             ast::builtins::float4_type,
+            ast::builtins::float2x2_type,
+            ast::builtins::float3x3_type,
+            ast::builtins::float4x4_type,
 
             ast::builtins::buffer_type,
             ast::builtins::texture1d_type,
             ast::builtins::texture2d_type,
+            ast::builtins::texture3d_type,
+            ast::builtins::sampler1d_type,
             ast::builtins::sampler2d_type,
             ast::builtins::sampler3d_type
             }),
@@ -85,10 +107,20 @@ namespace omegasl {
                 ast::builtins::make_float2,
                 ast::builtins::make_float3,
                 ast::builtins::make_float4,
+                ast::builtins::make_int2,
+                ast::builtins::make_int3,
+                ast::builtins::make_int4,
+                ast::builtins::make_uint2,
+                ast::builtins::make_uint3,
+                ast::builtins::make_uint4,
+                ast::builtins::make_float2x2,
+                ast::builtins::make_float3x3,
+                ast::builtins::make_float4x4,
                 ast::builtins::dot,
                 ast::builtins::cross,
                 ast::builtins::sample,
-                ast::builtins::write
+                ast::builtins::write,
+                ast::builtins::read
             }),currentContext(nullptr){
 
         };
@@ -178,7 +210,7 @@ namespace omegasl {
 
             auto contextual_func_it = currentContext->functionMap.begin();
             while(contextual_func_it != currentContext->functionMap.end()){
-                auto f = *builitin_func_it;
+                auto f = *contextual_func_it;
                 if(f->name == name){
                     break;
                 }
@@ -217,6 +249,31 @@ namespace omegasl {
                     auto _decl = (ast::ReturnDecl *)decl;
                     return performSemForExpr(_decl->expr,funcContext);
                 }
+                case IF_STMT : {
+                    auto _stmt = (ast::IfStmt *)decl;
+                    if(_stmt->condition && !performSemForExpr(_stmt->condition,funcContext)) return nullptr;
+                    if(_stmt->thenBlock) for(auto s : _stmt->thenBlock->body) if(!performSemForStmt(s,funcContext)) return nullptr;
+                    for(auto & branch : _stmt->elseIfs){
+                        if(branch.condition && !performSemForExpr(branch.condition,funcContext)) return nullptr;
+                        if(branch.block) for(auto s : branch.block->body) if(!performSemForStmt(s,funcContext)) return nullptr;
+                    }
+                    if(_stmt->elseBlock) for(auto s : _stmt->elseBlock->body) if(!performSemForStmt(s,funcContext)) return nullptr;
+                    break;
+                }
+                case FOR_STMT : {
+                    auto _stmt = (ast::ForStmt *)decl;
+                    if(_stmt->init && !performSemForStmt(_stmt->init,funcContext)) return nullptr;
+                    if(_stmt->condition && !performSemForExpr(_stmt->condition,funcContext)) return nullptr;
+                    if(_stmt->increment && !performSemForExpr(_stmt->increment,funcContext)) return nullptr;
+                    if(_stmt->body) for(auto s : _stmt->body->body) if(!performSemForStmt(s,funcContext)) return nullptr;
+                    break;
+                }
+                case WHILE_STMT : {
+                    auto _stmt = (ast::WhileStmt *)decl;
+                    if(_stmt->condition && !performSemForExpr(_stmt->condition,funcContext)) return nullptr;
+                    if(_stmt->body) for(auto s : _stmt->body->body) if(!performSemForStmt(s,funcContext)) return nullptr;
+                    break;
+                }
             }
             return ret;
         }
@@ -228,7 +285,12 @@ namespace omegasl {
 
                 auto _id_found = currentContext->variableMap.find(_expr->id);
                 if(_id_found == currentContext->variableMap.end()){
-                    std::cout << "Unknown Identifier: " << _expr->id << std::endl;
+                    if(diagnostics){
+                        auto err = std::make_unique<UndeclaredIdentifier>(_expr->id);
+                        err->loc = _expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(err));
+                    } else
+                        std::cout << "Unknown Identifier: " << _expr->id << std::endl;
                     return nullptr;
                 }
                 else {
@@ -407,12 +469,14 @@ namespace omegasl {
 
                 auto _t = resolveTypeWithExpr(lhs_res);
                 if(_t != ast::builtins::buffer_type){
-                    std::cout << "Indexing is only supported on buffer types" << std::endl;
+                    if(diagnostics){ auto e = std::make_unique<TypeError>("Indexing is only supported on buffer types"); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                    else std::cout << "Indexing is only supported on buffer types" << std::endl;
                 }
 
                 _t = resolveTypeWithExpr(idx_expr_res);
                 if(_t != ast::builtins::uint_type){
-                    std::cout << "Index of buffer can only be a uint type." << std::endl;
+                    if(diagnostics){ auto e = std::make_unique<TypeError>("Index of buffer can only be a uint type."); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                    else std::cout << "Index of buffer can only be a uint type." << std::endl;
                 }
 
                 return lhs_res->args[0];
@@ -428,16 +492,23 @@ namespace omegasl {
                 auto func_found = resolveFuncTypeWithName(_id_expr->id);
 
                 if(func_found == nullptr){
-                    std::cout << "Function " << _id_expr->id << " does not exist!" << std::endl;
+                    if(diagnostics){ auto e = std::make_unique<UndeclaredIdentifier>(_id_expr->id); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                    else std::cout << "Function " << _id_expr->id << " does not exist!" << std::endl;
                     return nullptr;
                 }
+
+                auto reportTypeErr = [&](const std::string& msg) {
+                    if(diagnostics){ auto e = std::make_unique<TypeError>(msg); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                    else std::cout << msg << std::endl;
+                };
 
                 /// Check if is builtin.
 
                 if(func_found == ast::builtins::make_float2){
 
                     if(_expr->args.size() != 2){
-                        std::cout << BUILTIN_MAKE_FLOAT2 << "() expects 2 arguments with type `float`" << std::endl;
+                        if(diagnostics){ auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_MAKE_FLOAT2; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                        else std::cout << BUILTIN_MAKE_FLOAT2 << "() expects 2 arguments with type `float`" << std::endl;
                         return nullptr;
                     }
 
@@ -449,123 +520,99 @@ namespace omegasl {
                     }
 
                     auto _t = resolveTypeWithExpr(first_t_e);
-                    if(_t != ast::builtins::float_type){
-                        std::cout << "1st param of function " << BUILTIN_MAKE_FLOAT2 << "must be a type `float`" << std::endl;
-                        return nullptr;
-                    }
-
+                    if(_t != ast::builtins::float_type){ reportTypeErr("1st param of function " + std::string(BUILTIN_MAKE_FLOAT2) + " must be a type `float`"); return nullptr; }
                     _t = resolveTypeWithExpr(second_t_e);
-                    if(_t != ast::builtins::float_type){
-                        std::cout << "2nd param of function " << BUILTIN_MAKE_FLOAT2 << "must be a type `float`" << std::endl;
-                        return nullptr;
-                    }
+                    if(_t != ast::builtins::float_type){ reportTypeErr("2nd param of function " + std::string(BUILTIN_MAKE_FLOAT2) + " must be a type `float`"); return nullptr; }
 
                 }
                 else if(func_found == ast::builtins::make_float3){
                     if(!(_expr->args.size() == 2 || _expr->args.size() == 3)){
-                        std::cout << BUILTIN_MAKE_FLOAT3 << "() expects 2 or 3 arguments with type `float` or `float2`" << std::endl;
+                        if(diagnostics){ auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_MAKE_FLOAT3; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                        else std::cout << BUILTIN_MAKE_FLOAT3 << "() expects 2 or 3 arguments with type `float` or `float2`" << std::endl;
                         return nullptr;
                     }
 
                     auto first_t_e = performSemForExpr(_expr->args[0],funcContext);
                     auto second_t_e = performSemForExpr(_expr->args[1],funcContext);
-                    auto third_t_e = performSemForExpr(_expr->args[2],funcContext);
+                    ast::TypeExpr *third_t_e = nullptr;
+                    if(_expr->args.size() >= 3) third_t_e = performSemForExpr(_expr->args[2],funcContext);
 
-                    if(first_t_e == nullptr || second_t_e == nullptr || third_t_e == nullptr){
+                    if(first_t_e == nullptr || second_t_e == nullptr || (_expr->args.size() >= 3 && third_t_e == nullptr)){
                         return nullptr;
                     }
 
                     if(_expr->args.size() == 3){
-
                         auto _t = resolveTypeWithExpr(first_t_e);
-                        if(_t != ast::builtins::float_type){
-                            std::cout << "1st param of function " << BUILTIN_MAKE_FLOAT3 << "must be a type `float`" << std::endl;
-                            return nullptr;
-                        }
-
+                        if(_t != ast::builtins::float_type){ reportTypeErr("1st param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a type `float`"); return nullptr; }
                         _t = resolveTypeWithExpr(second_t_e);
-                        if(_t != ast::builtins::float_type){
-                            std::cout << "2nd param of function " << BUILTIN_MAKE_FLOAT3 << "must be a type `float`" << std::endl;
-                            return nullptr;
-                        }
-
+                        if(_t != ast::builtins::float_type){ reportTypeErr("2nd param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a type `float`"); return nullptr; }
                         _t = resolveTypeWithExpr(third_t_e);
-                        if(_t != ast::builtins::float_type){
-                            std::cout << "3rd param of function " << BUILTIN_MAKE_FLOAT3 << "must be a type `float`" << std::endl;
-                            return nullptr;
-                        }
-
+                        if(_t != ast::builtins::float_type){ reportTypeErr("3rd param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a type `float`"); return nullptr; }
                     }
                     else {
-
                         auto _t = resolveTypeWithExpr(first_t_e);
-                        if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type)){
-                            std::cout << "1st param of function " << BUILTIN_MAKE_FLOAT3 << "must be a type `float` or type `float2`" << std::endl;
-                            return nullptr;
-                        }
+                        if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type)){ reportTypeErr("1st param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a type `float` or type `float2`"); return nullptr; }
                         auto _first_t = _t;
-
                         _t = resolveTypeWithExpr(second_t_e);
-                        if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type)){
-                            std::cout << "2nd param of function " << BUILTIN_MAKE_FLOAT3 << "must be a type `float` or type `float2`" << std::endl;
-                            return nullptr;
-                        }
-
-                        if(_first_t == _t){
-                            std::cout << "Invalid args." << std::endl;
-                            return nullptr;
-                        }
-
+                        if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type)){ reportTypeErr("2nd param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a type `float` or type `float2`"); return nullptr; }
+                        if(_first_t == _t){ reportTypeErr("Invalid args for " + std::string(BUILTIN_MAKE_FLOAT3)); return nullptr; }
                     }
 
                 }
                 else if(func_found == ast::builtins::make_float4){
-                    if(!(_expr->args.size() == 2 || _expr->args.size() == 3) || _expr->args.size() == 4){
-                        std::cout << BUILTIN_MAKE_FLOAT4 << "() expects 2, 3, or 4 arguments with type `float`, `float2`, or `float3`" << std::endl;
+                    if(_expr->args.size() < 2 || _expr->args.size() > 4){
+                        if(diagnostics){ auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_MAKE_FLOAT4; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                        else std::cout << BUILTIN_MAKE_FLOAT4 << "() expects 2, 3, or 4 arguments" << std::endl;
                         return nullptr;
                     }
 
                     auto first_t_e = performSemForExpr(_expr->args[0],funcContext);
                     auto second_t_e = performSemForExpr(_expr->args[1],funcContext);
-                    auto third_t_e = performSemForExpr(_expr->args[2],funcContext);
-                    auto fourth_t_e = performSemForExpr(_expr->args[3],funcContext);
+                    ast::TypeExpr *third_t_e = nullptr, *fourth_t_e = nullptr;
+                    if(_expr->args.size() >= 3) third_t_e = performSemForExpr(_expr->args[2],funcContext);
+                    if(_expr->args.size() == 4) fourth_t_e = performSemForExpr(_expr->args[3],funcContext);
 
-                    if(first_t_e == nullptr || second_t_e == nullptr || third_t_e == nullptr || fourth_t_e == nullptr){
+                    if(first_t_e == nullptr || second_t_e == nullptr || (_expr->args.size() >= 3 && third_t_e == nullptr) || (_expr->args.size() == 4 && fourth_t_e == nullptr)){
                         return nullptr;
                     }
 
+                    auto reportTy = [&](const std::string& msg) {
+                        if(diagnostics){ auto e = std::make_unique<TypeError>(msg); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                        else std::cout << msg << std::endl;
+                    };
+
                     if(_expr->args.size() == 4){
                         auto _t = resolveTypeWithExpr(first_t_e);
-                        if(_t != ast::builtins::float_type){
-                            std::cout << "1st param of function " << BUILTIN_MAKE_FLOAT4 << "must be a type `float`" << std::endl;
-                            return nullptr;
-                        }
-
+                        if(_t != ast::builtins::float_type){ reportTy("1st param of function " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a type `float`"); return nullptr; }
                         _t = resolveTypeWithExpr(second_t_e);
-                        if(_t != ast::builtins::float_type){
-                            std::cout << "2nd param of function " << BUILTIN_MAKE_FLOAT4 << "must be a type `float`" << std::endl;
-                            return nullptr;
-                        }
-
+                        if(_t != ast::builtins::float_type){ reportTy("2nd param of function " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a type `float`"); return nullptr; }
                         _t = resolveTypeWithExpr(third_t_e);
-                        if(_t != ast::builtins::float_type){
-                            std::cout << "3rd param of function " << BUILTIN_MAKE_FLOAT4 << "must be a type `float`" << std::endl;
-                            return nullptr;
-                        }
-
+                        if(_t != ast::builtins::float_type){ reportTy("3rd param of function " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a type `float`"); return nullptr; }
                         _t = resolveTypeWithExpr(fourth_t_e);
-                        if(_t != ast::builtins::float_type){
-                            std::cout << "4th param of function " << BUILTIN_MAKE_FLOAT4 << "must be a type `float`" << std::endl;
-                            return nullptr;
-                        }
+                        if(_t != ast::builtins::float_type){ reportTy("4th param of function " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a type `float`"); return nullptr; }
                     }
-                    /// TODO: Finish make_float4() arg checks!!
+                    else if(_expr->args.size() == 3){
+                        auto _t = resolveTypeWithExpr(first_t_e);
+                        if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type)){ reportTy("1st param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be float or float2"); return nullptr; }
+                        auto _t1 = _t;
+                        _t = resolveTypeWithExpr(second_t_e);
+                        if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type)){ reportTy("2nd param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be float or float2"); return nullptr; }
+                        _t = resolveTypeWithExpr(third_t_e);
+                        if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type)){ reportTy("3rd param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be float or float2"); return nullptr; }
+                    }
+                    else {
+                        auto _t = resolveTypeWithExpr(first_t_e);
+                        if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type || _t == ast::builtins::float3_type)){ reportTy("1st param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be float, float2, or float3"); return nullptr; }
+                        _t = resolveTypeWithExpr(second_t_e);
+                        if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type || _t == ast::builtins::float3_type)){ reportTy("2nd param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be float, float2, or float3"); return nullptr; }
+                    }
                 }
                 /// @brief sample(sampler sampler,texture texture,texcoord coord) function
                 else if(func_found == ast::builtins::sample){
 
                     if(_expr->args.size() != 3){
-                        std::cout << BUILTIN_SAMPLE << " expects 3 arguments." << std::endl;
+                        if(diagnostics){ auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_SAMPLE; e->expected = 3; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                        else std::cout << BUILTIN_SAMPLE << " expects 3 arguments." << std::endl;
                         return nullptr;
                     }
 
@@ -583,7 +630,7 @@ namespace omegasl {
                     }
 
                     if(!(_t == ast::builtins::sampler2d_type || _t == ast::builtins::sampler3d_type)){
-                        std::cout << "1st param of function " << BUILTIN_SAMPLE << " must be a sampler." << std::endl;
+                        reportTypeErr("1st param of function " + std::string(BUILTIN_SAMPLE) + " must be a sampler.");
                         return nullptr;
                     }
 
@@ -596,7 +643,7 @@ namespace omegasl {
                     if(_first_t == ast::builtins::sampler2d_type){
 
                         if(_t != ast::builtins::texture2d_type){
-                            std::cout << "2nd param of function " << BUILTIN_SAMPLE << "must be a texture2d" << std::endl;
+                            reportTypeErr("2nd param of function " + std::string(BUILTIN_SAMPLE) + " must be a texture2d");
                             return nullptr;
                         }
 
@@ -606,7 +653,7 @@ namespace omegasl {
                         }
 
                         if(_t != ast::builtins::float2_type){
-                            std::cout << "3rd param of function " << BUILTIN_SAMPLE << "must be a float2" << std::endl;
+                            reportTypeErr("3rd param of function " + std::string(BUILTIN_SAMPLE) + " must be a float2");
                             return nullptr;
                         }
 
@@ -614,7 +661,7 @@ namespace omegasl {
                     ///sampler3d
                     else if(_first_t == ast::builtins::sampler3d_type) {
                         if(_t != ast::builtins::texture3d_type){
-                            std::cout << "2nd param of function " << BUILTIN_SAMPLE << "must be a texture3d" << std::endl;
+                            reportTypeErr("2nd param of function " + std::string(BUILTIN_SAMPLE) + " must be a texture3d");
                             return nullptr;
                         }
 
@@ -624,7 +671,7 @@ namespace omegasl {
                         }
 
                         if(_t != ast::builtins::float3_type){
-                            std::cout << "3rd param of function " << BUILTIN_SAMPLE << "must be a float3" << std::endl;
+                            reportTypeErr("3rd param of function " + std::string(BUILTIN_SAMPLE) + " must be a float3");
                             return nullptr;
                         }
                     }
@@ -633,7 +680,8 @@ namespace omegasl {
                 else if(func_found == ast::builtins::write){
 
                     if(_expr->args.size() != 3){
-                        std::cout << BUILTIN_WRITE << " expects 3 arguments." << std::endl;
+                        if(diagnostics){ auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_WRITE; e->expected = 3; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                        else std::cout << BUILTIN_WRITE << " expects 3 arguments." << std::endl;
                         return nullptr;
                     }
 
@@ -658,7 +706,7 @@ namespace omegasl {
                         }
 
                         if(_t != ast::builtins::float_type){
-                            std::cout << "2nd param of function " << BUILTIN_WRITE << "must be a float" << std::endl;
+                            reportTypeErr("2nd param of function " + std::string(BUILTIN_WRITE) + " must be a float");
                             return nullptr;
                         }
 
@@ -670,7 +718,7 @@ namespace omegasl {
                         }
 
                         if(_t != ast::builtins::float2_type){
-                            std::cout << "2nd param of function " << BUILTIN_WRITE << "must be a float2" << std::endl;
+                            reportTypeErr("2nd param of function " + std::string(BUILTIN_WRITE) + " must be a float2");
                             return nullptr;
                         }
                     }
@@ -681,12 +729,12 @@ namespace omegasl {
                         }
 
                         if(_t != ast::builtins::float3_type){
-                            std::cout << "2nd param of function " << BUILTIN_WRITE << "must be a float3" << std::endl;
+                            reportTypeErr("2nd param of function " + std::string(BUILTIN_WRITE) + " must be a float3");
                             return nullptr;
                         }
                     }
                     else {
-                        std::cout << BUILTIN_WRITE << " expects a texture-type for the first argument." << std::endl;
+                        reportTypeErr(std::string(BUILTIN_WRITE) + " expects a texture-type for the first argument.");
                         return nullptr;
                     }
 
@@ -696,22 +744,48 @@ namespace omegasl {
                     }
 
                     if(_t != ast::builtins::float4_type){
-                        std::cout << "3rd param of function " << BUILTIN_WRITE << "must be a float4" << std::endl;
+                        reportTypeErr("3rd param of function " + std::string(BUILTIN_WRITE) + " must be a float4");
                         return nullptr;
                     }
 
                 }
                 else {
-                    /// TODO: Typecheck function.
-                    /// Check Params of Function
-                    for(unsigned i = 0;i < _expr->args.size();i++){
-                        auto _ty_expr = performSemForExpr(_expr,funcContext);
-
+                    /// General function call type-check: validate argument count and types where possible.
+                    if(func_found == ast::builtins::dot || func_found == ast::builtins::cross){
+                        if(_expr->args.size() != 2){
+                            if(diagnostics){ auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = func_found->name; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                            else std::cout << func_found->name << " expects 2 arguments." << std::endl;
+                            return nullptr;
+                        }
+                        auto a0 = performSemForExpr(_expr->args[0],funcContext);
+                        auto a1 = performSemForExpr(_expr->args[1],funcContext);
+                        if(!a0 || !a1) return nullptr;
+                        auto t0 = resolveTypeWithExpr(a0), t1 = resolveTypeWithExpr(a1);
+                        if(func_found == ast::builtins::cross &&
+                           (!(t0 == ast::builtins::float3_type) || !(t1 == ast::builtins::float3_type))){
+                            if(diagnostics){ auto e = std::make_unique<TypeError>("cross() requires float3 arguments"); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                            else std::cout << "cross() expects two float3 arguments" << std::endl;
+                            return nullptr;
+                        }
+                    }
+                    else {
+                        for(unsigned i = 0; i < _expr->args.size(); i++){
+                            if(performSemForExpr(_expr->args[i],funcContext) == nullptr)
+                                return nullptr;
+                        }
                     }
                 }
 
                 return func_found->returnType;
 
+            }
+            else if(expr->type == CAST_EXPR){
+                auto _expr = (ast::CastExpr *)expr;
+                auto inner = performSemForExpr(_expr->expr, funcContext);
+                if(inner == nullptr) return nullptr;
+                auto targetTy = resolveTypeWithExpr(_expr->targetType);
+                if(targetTy == nullptr) return nullptr;
+                return _expr->targetType;
             }
 
             return ret;
@@ -720,11 +794,12 @@ namespace omegasl {
         ast::TypeExpr * performSemForStmt(ast::Stmt *stmt,ast::FuncDecl *funcContext){
             ast::TypeExpr *returnType = nullptr;
 
-            if(stmt->type & DECL){
-                returnType = performSemForDecl((ast::Decl *)stmt,funcContext);
-            }
-            else {
+            /* EXPR nodes have (type & DECL) == EXPR; declaration nodes have (type & DECL) == DECL */
+            if((stmt->type & DECL) == EXPR){
                 returnType = performSemForExpr((ast::Expr *)stmt,funcContext);
+            }
+            else if(stmt->type & DECL){
+                returnType = performSemForDecl((ast::Decl *)stmt,funcContext);
             }
 
             return returnType;
@@ -790,12 +865,15 @@ namespace omegasl {
                     delete test_expr;
 
                     bool & isInternal = _decl->internal;
-                    /// 2. Check struct fields.
-                    /// TODO: Add struct field uniqueness check
-
+                    /// 2. Check struct fields (uniqueness and types).
                     OmegaCommon::MapVec<OmegaCommon::String,ast::TypeExpr *> field_types;
 
                     for(auto & f : _decl->fields){
+                        if(field_types.find(f.name) != field_types.end()){
+                            if(diagnostics){ auto e = std::make_unique<DuplicateDeclaration>(f.name); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                            else std::cout << "In struct " << _decl->name << ": duplicate field name `" << f.name << "`" << std::endl;
+                            return false;
+                        }
 
                         auto field_ty = resolveTypeWithExpr(f.typeExpr);
                         if(field_ty == nullptr){
@@ -804,12 +882,14 @@ namespace omegasl {
 
                         if(f.attributeName.has_value()){
                             if(!isInternal){
-                                std::cout << "In struct " << _decl->name << std::endl << "Cannot use attributes on fields in public structs" << std::endl;
+                                if(diagnostics){ auto e = std::make_unique<InvalidAttribute>("Cannot use attributes on fields in public structs"); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                                else std::cout << "In struct " << _decl->name << std::endl << "Cannot use attributes on fields in public structs" << std::endl;
                                 return false;
                             }
 
                             if(!isValidAttributeInContext(f.attributeName.value(),AttributeContext::StructField)){
-                                std::cout << "In struct " << _decl->name << std::endl << "Invalid attribute name `" << f.attributeName.value() << "` " << std::endl;
+                                if(diagnostics){ auto e = std::make_unique<InvalidAttribute>(std::string("Invalid attribute name `") + f.attributeName.value() + "`"); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                                else std::cout << "In struct " << _decl->name << std::endl << "Invalid attribute name `" << f.attributeName.value() << "` " << std::endl;
                                 return false;
                             }
                         }
@@ -865,6 +945,49 @@ namespace omegasl {
 
                     break;
                 }
+                case FUNC_DECL : {
+                    auto *_decl = (ast::FuncDecl *)decl;
+                    /// 1. Param name uniqueness
+                    OmegaCommon::MapVec<OmegaCommon::String, int> paramNames;
+                    for(auto & p : _decl->params){
+                        if(paramNames.find(p.name) != paramNames.end()){
+                            if(diagnostics){ auto e = std::make_unique<DuplicateDeclaration>(p.name); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                            else std::cout << "Function " << _decl->name << ": duplicate parameter name `" << p.name << "`" << std::endl;
+                            return false;
+                        }
+                        paramNames.insert(std::make_pair(p.name, 0));
+                    }
+                    /// 2. Validate return type and param types
+                    auto returnTy = resolveTypeWithExpr(_decl->returnType);
+                    if(returnTy == nullptr){
+                        return false;
+                    }
+                    for(auto & p : _decl->params){
+                        auto p_ty = resolveTypeWithExpr(p.typeExpr);
+                        if(p_ty == nullptr){
+                            return false;
+                        }
+                        currentContext->variableMap.insert(std::make_pair(p.name, p.typeExpr));
+                    }
+                    /// 2. Validate body
+                    auto eval_result = performSemForBlock(*_decl->block, _decl);
+                    if(eval_result == nullptr){
+                        return false;
+                    }
+                    /// 3. Build FuncType and register for call resolution
+                    auto *ft = new ast::FuncType();
+                    ft->name = _decl->name;
+                    ft->declaredScope = ast::builtins::global_scope;
+                    ft->builtin = false;
+                    ft->returnType = _decl->returnType;
+                    for(auto & p : _decl->params){
+                        ft->fields.insert(std::make_pair(p.name, p.typeExpr));
+                    }
+                    currentContext->userFuncTypes.push_back(std::unique_ptr<ast::FuncType>(ft));
+                    currentContext->functionMap.push_back(ft);
+                    currentContext->variableMap.clear();
+                    break;
+                }
                 case SHADER_DECL : {
                     auto *_decl = (ast::ShaderDecl *)decl;
                     /// 1. Check if shader has been declared.
@@ -888,8 +1011,16 @@ namespace omegasl {
 
                     auto & shaderType = _decl->shaderType;
 
-                    /// 2. Check shader params and pipeline layout.
-                    /// TODO: Add param uniqueness check
+                    /// 2. Check shader params and pipeline layout (param name uniqueness).
+                    OmegaCommon::MapVec<OmegaCommon::String, int> paramNames;
+                    for(auto & p : _decl->params){
+                        if(paramNames.find(p.name) != paramNames.end()){
+                            if(diagnostics){ auto e = std::make_unique<DuplicateDeclaration>(p.name); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
+                            else std::cout << "Shader " << _decl->name << ": duplicate parameter name `" << p.name << "`" << std::endl;
+                            return false;
+                        }
+                        paramNames.insert(std::make_pair(p.name, 0));
+                    }
 
                     for(auto & r : _decl->resourceMap){
                         for(auto res : currentContext->resourceSet){
@@ -920,7 +1051,11 @@ namespace omegasl {
                         }
 
                         if(p.attributeName.has_value()){
-                            AttributeContext context = shaderType == ast::ShaderDecl::Vertex? AttributeContext::VertexShaderArgument : shaderType == ast::ShaderDecl::Fragment? AttributeContext::FragmentShaderArgument : AttributeContext::ComputeShaderArgument;
+                            AttributeContext context = shaderType == ast::ShaderDecl::Vertex? AttributeContext::VertexShaderArgument
+                                : shaderType == ast::ShaderDecl::Fragment? AttributeContext::FragmentShaderArgument
+                                : shaderType == ast::ShaderDecl::Compute? AttributeContext::ComputeShaderArgument
+                                : shaderType == ast::ShaderDecl::Hull? AttributeContext::HullShaderArgument
+                                : AttributeContext::DomainShaderArgument;
                             if(!isValidAttributeInContext(p.attributeName.value(),context)){
                                 std::cout << "Attribute `" << p.attributeName.value() << "` is not valid in parameter context." << std::endl;
                                 return false;
@@ -1183,6 +1318,14 @@ namespace omegasl {
                 auto _s = (ast::ShaderDecl *)node;
                 _s->shaderType = ast::ShaderDecl::Fragment;
             }
+            else if(t.str == KW_HULL){
+                auto _s = (ast::ShaderDecl *)node;
+                _s->shaderType = ast::ShaderDecl::Hull;
+            }
+            else if(t.str == KW_DOMAIN){
+                auto _s = (ast::ShaderDecl *)node;
+                _s->shaderType = ast::ShaderDecl::Domain;
+            }
             else if(t.str == KW_COMPUTE){
                 auto _s = (ast::ShaderDecl *)node;
                 _s->shaderType = ast::ShaderDecl::Compute;
@@ -1300,9 +1443,9 @@ namespace omegasl {
                 staticResourceDecl = true;
             }
             else {
-                /// TODO: Error! Unexpected Keyword!
+                if(diagnostics){ auto e = std::make_unique<UnexpectedToken>(std::string("Unexpected keyword: ") + t.str); e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd }; diagnostics->addError(std::move(e)); }
+                else std::cout << "Unexpected Keyword" << std::endl;
                 delete node;
-                std::cout << "Unexpected Keyword" << std::endl;
                 return nullptr;
             }
             t = lexer->nextTok();
@@ -1557,11 +1700,420 @@ namespace omegasl {
         return tokenBuffer[tokIdx + 1];
     }
 
+    void Parser::collectTokensUntilEndOfStatement(Tok first_tok) {
+        tokenBuffer.clear();
+        tokenBuffer.push_back(first_tok);
+        if(first_tok.str == KW_IF){
+            Tok t = lexer->nextTok();
+            if(t.type != TOK_LPAREN){ tokenBuffer.push_back(t); return; }
+            tokenBuffer.push_back(t);
+            int depth = 1;
+            while(depth > 0){
+                t = lexer->nextTok();
+                tokenBuffer.push_back(t);
+                if(t.type == TOK_LPAREN) depth++;
+                else if(t.type == TOK_RPAREN) depth--;
+            }
+            t = lexer->nextTok();
+            if(t.type != TOK_LBRACE){ tokenBuffer.push_back(t); return; }
+            tokenBuffer.push_back(t);
+            depth = 1;
+            while(depth > 0){
+                t = lexer->nextTok();
+                tokenBuffer.push_back(t);
+                if(t.type == TOK_LBRACE) depth++;
+                else if(t.type == TOK_RBRACE) depth--;
+            }
+            t = lexer->nextTok();
+            while(t.type == TOK_KW && t.str == KW_ELSE){
+                tokenBuffer.push_back(t);
+                t = lexer->nextTok();
+                if(t.type == TOK_KW && t.str == KW_IF){
+                    tokenBuffer.push_back(t);
+                    t = lexer->nextTok();
+                    if(t.type != TOK_LPAREN){ tokenBuffer.push_back(t); return; }
+                    tokenBuffer.push_back(t);
+                    depth = 1;
+                    while(depth > 0){
+                        t = lexer->nextTok();
+                        tokenBuffer.push_back(t);
+                        if(t.type == TOK_LPAREN) depth++;
+                        else if(t.type == TOK_RPAREN) depth--;
+                    }
+                    t = lexer->nextTok();
+                    if(t.type != TOK_LBRACE){ tokenBuffer.push_back(t); return; }
+                    tokenBuffer.push_back(t);
+                    depth = 1;
+                    while(depth > 0){
+                        t = lexer->nextTok();
+                        tokenBuffer.push_back(t);
+                        if(t.type == TOK_LBRACE) depth++;
+                        else if(t.type == TOK_RBRACE) depth--;
+                    }
+                    t = lexer->nextTok();
+                }
+                else if(t.type == TOK_LBRACE){
+                    tokenBuffer.push_back(t);
+                    depth = 1;
+                    while(depth > 0){
+                        t = lexer->nextTok();
+                        tokenBuffer.push_back(t);
+                        if(t.type == TOK_LBRACE) depth++;
+                        else if(t.type == TOK_RBRACE) depth--;
+                    }
+                    t = lexer->nextTok();
+                }
+                else { tokenBuffer.push_back(t); return; }
+            }
+        }
+        else if(first_tok.str == KW_FOR){
+            Tok t = lexer->nextTok();
+            if(t.type != TOK_LPAREN){ tokenBuffer.push_back(t); return; }
+            tokenBuffer.push_back(t);
+            int depth = 1;
+            while(depth > 0){
+                t = lexer->nextTok();
+                tokenBuffer.push_back(t);
+                if(t.type == TOK_LPAREN) depth++;
+                else if(t.type == TOK_RPAREN) depth--;
+            }
+            t = lexer->nextTok();
+            if(t.type != TOK_LBRACE){ tokenBuffer.push_back(t); return; }
+            tokenBuffer.push_back(t);
+            depth = 1;
+            while(depth > 0){
+                t = lexer->nextTok();
+                tokenBuffer.push_back(t);
+                if(t.type == TOK_LBRACE) depth++;
+                else if(t.type == TOK_RBRACE) depth--;
+            }
+        }
+        else if(first_tok.str == KW_WHILE){
+            Tok t = lexer->nextTok();
+            if(t.type != TOK_LPAREN){ tokenBuffer.push_back(t); return; }
+            tokenBuffer.push_back(t);
+            int depth = 1;
+            while(depth > 0){
+                t = lexer->nextTok();
+                tokenBuffer.push_back(t);
+                if(t.type == TOK_LPAREN) depth++;
+                else if(t.type == TOK_RPAREN) depth--;
+            }
+            t = lexer->nextTok();
+            if(t.type != TOK_LBRACE){ tokenBuffer.push_back(t); return; }
+            tokenBuffer.push_back(t);
+            depth = 1;
+            while(depth > 0){
+                t = lexer->nextTok();
+                tokenBuffer.push_back(t);
+                if(t.type == TOK_LBRACE) depth++;
+                else if(t.type == TOK_RBRACE) depth--;
+            }
+        }
+    }
+
+    unsigned Parser::findMatchingParen(unsigned startIdx) {
+        int depth = 0;
+        for(unsigned i = startIdx; i < tokenBuffer.size(); i++){
+            if(tokenBuffer[i].type == TOK_LPAREN) depth++;
+            else if(tokenBuffer[i].type == TOK_RPAREN){ depth--; if(depth == 0) return i; }
+        }
+        return tokenBuffer.size();
+    }
+
+    unsigned Parser::findMatchingBrace(unsigned startIdx) {
+        int depth = 0;
+        for(unsigned i = startIdx; i < tokenBuffer.size(); i++){
+            if(tokenBuffer[i].type == TOK_LBRACE) depth++;
+            else if(tokenBuffer[i].type == TOK_RBRACE){ depth--; if(depth == 0) return i; }
+        }
+        return tokenBuffer.size();
+    }
+
+    unsigned Parser::findExtentOfStatement(unsigned startIdx) {
+        if(startIdx >= tokenBuffer.size()) return startIdx;
+        OmegaCommon::StrRef s = tokenBuffer[startIdx].str;
+        if(s == KW_IF || s == KW_FOR || s == KW_WHILE){
+            if(s == KW_IF){
+                unsigned p = startIdx + 1;
+                if(p < tokenBuffer.size() && tokenBuffer[p].type == TOK_LPAREN){
+                    unsigned closeP = findMatchingParen(p);
+                    if(closeP + 1 < tokenBuffer.size() && tokenBuffer[closeP + 1].type == TOK_LBRACE){
+                        unsigned closeB = findMatchingBrace(closeP + 1);
+                        unsigned i = closeB + 1;
+                        while(i < tokenBuffer.size() && tokenBuffer[i].type == TOK_KW && tokenBuffer[i].str == KW_ELSE){
+                            i++;
+                            if(i < tokenBuffer.size() && tokenBuffer[i].str == KW_IF){
+                                i++; if(i >= tokenBuffer.size()) return tokenBuffer.size();
+                                if(tokenBuffer[i].type == TOK_LPAREN){
+                                    closeP = findMatchingParen(i);
+                                    if(closeP + 1 < tokenBuffer.size() && tokenBuffer[closeP + 1].type == TOK_LBRACE){
+                                        closeB = findMatchingBrace(closeP + 1);
+                                        i = closeB + 1;
+                                    }
+                                }
+                            }
+                            else if(i < tokenBuffer.size() && tokenBuffer[i].type == TOK_LBRACE){
+                                closeB = findMatchingBrace(i);
+                                i = closeB + 1;
+                            }
+                            else break;
+                        }
+                        return i - 1;
+                    }
+                }
+            }
+            else if(s == KW_FOR || s == KW_WHILE){
+                unsigned p = startIdx + 1;
+                if(p < tokenBuffer.size() && tokenBuffer[p].type == TOK_LPAREN){
+                    unsigned closeP = findMatchingParen(p);
+                    if(closeP + 1 < tokenBuffer.size() && tokenBuffer[closeP + 1].type == TOK_LBRACE){
+                        unsigned closeB = findMatchingBrace(closeP + 1);
+                        return closeB;
+                    }
+                }
+            }
+        }
+        for(unsigned i = startIdx; i < tokenBuffer.size(); i++){
+            if(tokenBuffer[i].type == TOK_SEMICOLON) return i;
+        }
+        return tokenBuffer.size() - 1;
+    }
+
+    ast::Block *Parser::parseBlockBodyFromBuffer(unsigned startIdx,unsigned endIdx,BlockParseContext & ctxt) {
+        auto *block = new ast::Block();
+        std::vector<Tok> savedBuf = tokenBuffer;
+        unsigned i = startIdx;
+        while(i <= endIdx && i < tokenBuffer.size()){
+            unsigned endStmt = findExtentOfStatement(i);
+            if(endStmt < i) break;
+            std::vector<Tok> slice;
+            for(unsigned j = i; j <= endStmt && j < tokenBuffer.size(); j++)
+                slice.push_back(tokenBuffer[j]);
+            tokenBuffer = slice;
+            tokIdx = 0;
+            Tok first = tokenBuffer[0];
+            ast::Stmt *stmt = parseStmtFromBuffer(ctxt);
+            if(!stmt){ delete block; tokenBuffer = savedBuf; return nullptr; }
+            block->body.push_back(stmt);
+            tokenBuffer = savedBuf;
+            i = endStmt + 1;
+        }
+        return block;
+    }
+
+    ast::Stmt *Parser::parseStmtFromBuffer(BlockParseContext & ctxt) {
+        if(tokIdx >= tokenBuffer.size()) return nullptr;
+        Tok first_tok = tokenBuffer[tokIdx];
+        if(first_tok.type == TOK_KW){
+            if(first_tok.str == KW_IF) return parseIfStmtFromBuffer(ctxt);
+            if(first_tok.str == KW_FOR) return parseForStmtFromBuffer(ctxt);
+            if(first_tok.str == KW_WHILE) return parseWhileStmtFromBuffer(ctxt);
+            if(first_tok.str == KW_RETURN){
+                ++tokIdx;
+                auto _decl = new ast::ReturnDecl();
+                _decl->type = RETURN_DECL;
+                Tok exprFirst = (tokIdx < tokenBuffer.size()) ? tokenBuffer[tokIdx] : Tok{};
+                auto _e = parseExpr(exprFirst,ctxt.parentScope);
+                if(!_e){ delete _decl; return nullptr; }
+                _decl->expr = _e;
+                _decl->scope = ctxt.parentScope;
+                return _decl;
+            }
+        }
+        bool isDecl = false;
+        if(first_tok.type == TOK_KW_TYPE || first_tok.type == TOK_ID){
+            auto ahead = (tokIdx + 1 < tokenBuffer.size()) ? tokenBuffer[tokIdx + 1] : Tok{};
+            if(ahead.type == TOK_ASTERISK || ahead.type == TOK_ID) isDecl = true;
+        }
+        if(isDecl){
+            ast::Decl *d = parseGenericDecl(first_tok,ctxt);
+            return d;
+        }
+        return parseExpr(first_tok,ctxt.parentScope);
+    }
+
+    ast::Stmt *Parser::parseIfStmtFromBuffer(BlockParseContext & ctxt) {
+        if(tokIdx >= tokenBuffer.size() || tokenBuffer[tokIdx].str != KW_IF) return nullptr;
+        ++tokIdx;
+        if(tokIdx >= tokenBuffer.size() || tokenBuffer[tokIdx].type != TOK_LPAREN) return nullptr;
+        unsigned condStart = tokIdx + 1;
+        unsigned condEnd = findMatchingParen(tokIdx) - 1;
+        if(condEnd + 1 < condStart) return nullptr;
+        ++tokIdx;
+        unsigned braceStart = condEnd + 2;
+        if(braceStart >= tokenBuffer.size() || tokenBuffer[braceStart].type != TOK_LBRACE) return nullptr;
+        unsigned blockEnd = findMatchingBrace(braceStart) - 1;
+        unsigned blockStart = braceStart + 1;
+
+        auto *node = new ast::IfStmt();
+        node->type = IF_STMT;
+        node->scope = ctxt.parentScope;
+
+        std::vector<Tok> savedBuf = tokenBuffer;
+        std::vector<Tok> condSlice;
+        for(unsigned j = condStart; j <= condEnd; j++) condSlice.push_back(tokenBuffer[j]);
+        tokenBuffer = condSlice;
+        tokIdx = 0;
+        Tok condFirst = condSlice.empty() ? Tok{} : condSlice[0];
+        node->condition = parseExpr(condFirst,ctxt.parentScope);
+        tokenBuffer = savedBuf;
+        if(!node->condition){ delete node; return nullptr; }
+
+        node->thenBlock = std::unique_ptr<ast::Block>(parseBlockBodyFromBuffer(blockStart,blockEnd,ctxt));
+        if(!node->thenBlock){ delete node; return nullptr; }
+
+        unsigned i = blockEnd + 2;
+        while(i < tokenBuffer.size() && tokenBuffer[i].type == TOK_KW && tokenBuffer[i].str == KW_ELSE){
+            i++;
+            if(i >= tokenBuffer.size()) break;
+            if(tokenBuffer[i].str == KW_IF){
+                i++;
+                if(i >= tokenBuffer.size() || tokenBuffer[i].type != TOK_LPAREN) break;
+                unsigned cStart = i + 1;
+                unsigned cEnd = findMatchingParen(i) - 1;
+                i = findMatchingParen(i) + 1;
+                if(i >= tokenBuffer.size() || tokenBuffer[i].type != TOK_LBRACE) break;
+                unsigned bStart = i + 1;
+                unsigned bEnd = findMatchingBrace(i) - 1;
+                ast::ElseIfBranch branch;
+                std::vector<Tok> cSl;
+                for(unsigned j = cStart; j <= cEnd; j++) cSl.push_back(tokenBuffer[j]);
+                tokenBuffer = cSl;
+                tokIdx = 0;
+                Tok cFirst = cSl.empty() ? Tok{} : cSl[0];
+                branch.condition = parseExpr(cFirst,ctxt.parentScope);
+                tokenBuffer = savedBuf;
+                if(!branch.condition) break;
+                branch.block = std::unique_ptr<ast::Block>(parseBlockBodyFromBuffer(bStart,bEnd,ctxt));
+                if(!branch.block) break;
+                node->elseIfs.push_back(std::move(branch));
+                i = findMatchingBrace(i) + 1;
+            }
+            else if(tokenBuffer[i].type == TOK_LBRACE){
+                unsigned bEnd = findMatchingBrace(i) - 1;
+                unsigned bStart = i + 1;
+                node->elseBlock = std::unique_ptr<ast::Block>(parseBlockBodyFromBuffer(bStart,bEnd,ctxt));
+                i = findMatchingBrace(i) + 1;
+                break;
+            }
+            else break;
+        }
+
+        return node;
+    }
+
+    ast::Stmt *Parser::parseForStmtFromBuffer(BlockParseContext & ctxt) {
+        if(tokIdx >= tokenBuffer.size() || tokenBuffer[tokIdx].str != KW_FOR) return nullptr;
+        ++tokIdx;
+        if(tokIdx >= tokenBuffer.size() || tokenBuffer[tokIdx].type != TOK_LPAREN) return nullptr;
+        unsigned initEnd = tokIdx + 1;
+        int depth = 0;
+        while(initEnd < tokenBuffer.size()){
+            Tok &t = tokenBuffer[initEnd];
+            if(t.type == TOK_LPAREN) depth++;
+            else if(t.type == TOK_RPAREN) depth--;
+            else if(t.type == TOK_SEMICOLON && depth == 0) break;
+            initEnd++;
+        }
+        unsigned initStart = tokIdx + 1;
+        unsigned condStart = initEnd + 1;
+        unsigned condEnd = condStart;
+        while(condEnd < tokenBuffer.size() && tokenBuffer[condEnd].type != TOK_SEMICOLON) condEnd++;
+        if(condEnd > condStart) condEnd--;
+        unsigned incStart = condEnd + 2;
+        unsigned incEnd = incStart;
+        while(incEnd < tokenBuffer.size() && tokenBuffer[incEnd].type != TOK_RPAREN) incEnd++;
+        if(incEnd > incStart) incEnd--;
+        unsigned braceStart = incEnd + 1;
+        if(braceStart >= tokenBuffer.size() || tokenBuffer[braceStart].type != TOK_LBRACE) return nullptr;
+        unsigned blockEnd = findMatchingBrace(braceStart) - 1;
+        unsigned blockStart = braceStart + 1;
+
+        auto *node = new ast::ForStmt();
+        node->type = FOR_STMT;
+        node->scope = ctxt.parentScope;
+
+        std::vector<Tok> savedBuf = tokenBuffer;
+        std::vector<Tok> initSlice;
+        for(unsigned j = initStart; j < initEnd; j++) initSlice.push_back(tokenBuffer[j]);
+        tokenBuffer = initSlice;
+        tokIdx = 0;
+        Tok initFirst = initSlice.empty() ? Tok{} : initSlice[0];
+        if(!initSlice.empty()){
+            if(initFirst.type == TOK_KW_TYPE || initFirst.type == TOK_ID){
+                auto ahead = (tokIdx + 1 < tokenBuffer.size()) ? tokenBuffer[tokIdx + 1] : Tok{};
+                if(ahead.type == TOK_ID){ node->init = parseGenericDecl(initFirst,ctxt); }
+                else { node->init = parseExpr(initFirst,ctxt.parentScope); }
+            }
+            else { node->init = parseExpr(initFirst,ctxt.parentScope); }
+        }
+        else node->init = nullptr;
+        tokenBuffer = savedBuf;
+
+        std::vector<Tok> condSlice;
+        for(unsigned j = condStart; j <= condEnd; j++) condSlice.push_back(tokenBuffer[j]);
+        tokenBuffer = condSlice;
+        tokIdx = 0;
+        node->condition = condSlice.empty() ? nullptr : parseExpr(condSlice[0],ctxt.parentScope);
+        tokenBuffer = savedBuf;
+
+        std::vector<Tok> incSlice;
+        for(unsigned j = incStart; j <= incEnd; j++) incSlice.push_back(tokenBuffer[j]);
+        tokenBuffer = incSlice;
+        tokIdx = 0;
+        node->increment = incSlice.empty() ? nullptr : parseExpr(incSlice[0],ctxt.parentScope);
+        tokenBuffer = savedBuf;
+
+        node->body = std::unique_ptr<ast::Block>(parseBlockBodyFromBuffer(blockStart,blockEnd,ctxt));
+        return node;
+    }
+
+    ast::Stmt *Parser::parseWhileStmtFromBuffer(BlockParseContext & ctxt) {
+        if(tokIdx >= tokenBuffer.size() || tokenBuffer[tokIdx].str != KW_WHILE) return nullptr;
+        ++tokIdx;
+        if(tokIdx >= tokenBuffer.size() || tokenBuffer[tokIdx].type != TOK_LPAREN) return nullptr;
+        unsigned condStart = tokIdx + 1;
+        unsigned condEnd = findMatchingParen(tokIdx) - 1;
+        ++tokIdx;
+        unsigned braceStart = condEnd + 2;
+        if(braceStart >= tokenBuffer.size() || tokenBuffer[braceStart].type != TOK_LBRACE) return nullptr;
+        unsigned blockEnd = findMatchingBrace(braceStart) - 1;
+        unsigned blockStart = braceStart + 1;
+
+        auto *node = new ast::WhileStmt();
+        node->type = WHILE_STMT;
+        node->scope = ctxt.parentScope;
+
+        std::vector<Tok> savedBuf = tokenBuffer;
+        std::vector<Tok> condSlice;
+        for(unsigned j = condStart; j <= condEnd; j++) condSlice.push_back(tokenBuffer[j]);
+        tokenBuffer = condSlice;
+        tokIdx = 0;
+        Tok whileCondFirst = condSlice.empty() ? Tok{} : condSlice[0];
+        node->condition = parseExpr(whileCondFirst,ctxt.parentScope);
+        tokenBuffer = savedBuf;
+        if(!node->condition){ delete node; return nullptr; }
+
+        node->body = std::unique_ptr<ast::Block>(parseBlockBodyFromBuffer(blockStart,blockEnd,ctxt));
+        return node;
+    }
+
     ast::Stmt *Parser::parseStmt(Tok &first_tok,BlockParseContext & ctxt) {
 
-        ast::Stmt *stmt;
-        tokIdx = 0;
+        ast::Stmt *stmt = nullptr;
+        if(first_tok.type == TOK_KW && (first_tok.str == KW_IF || first_tok.str == KW_FOR || first_tok.str == KW_WHILE)){
+            collectTokensUntilEndOfStatement(first_tok);
+            tokIdx = 0;
+            first_tok = tokenBuffer.front();
+            if(first_tok.str == KW_IF) stmt = parseIfStmtFromBuffer(ctxt);
+            else if(first_tok.str == KW_FOR) stmt = parseForStmtFromBuffer(ctxt);
+            else if(first_tok.str == KW_WHILE) stmt = parseWhileStmtFromBuffer(ctxt);
+            tokenBuffer.clear();
+            return stmt;
+        }
 
+        tokIdx = 0;
         /// Get Entire Line of Tokens
         while(first_tok.type != TOK_SEMICOLON){
             tokenBuffer.push_back(first_tok);
@@ -1640,6 +2192,21 @@ namespace omegasl {
             _decl->typeExpr = type_for_var_decl;
             _decl->spec.name = first_tok.str;
             first_tok = aheadTok();
+            if(first_tok.type == TOK_LBRACKET){
+                ++tokIdx;
+                first_tok = getTok();
+                if(first_tok.type != TOK_NUM_LITERAL){
+                    std::cout << "Expected array size literal" << std::endl;
+                    return nullptr;
+                }
+                _decl->typeExpr->arraySize = static_cast<unsigned>(std::stoul(first_tok.str));
+                first_tok = getTok();
+                if(first_tok.type != TOK_RBRACKET){
+                    std::cout << "Expected ]" << std::endl;
+                    return nullptr;
+                }
+                first_tok = aheadTok();
+            }
             if(first_tok.type == TOK_OP && first_tok.str == OP_EQUAL){
                 ++tokIdx;
                 first_tok = getTok();
@@ -1665,6 +2232,7 @@ namespace omegasl {
             auto _e = new ast::IdExpr();
             _e->type = ID_EXPR;
             _e->id = first_tok.str;
+            _e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
             *expr = _e;
         }
         else if(first_tok.type == TOK_STR_LITERAL){
@@ -1713,6 +2281,7 @@ namespace omegasl {
                 auto * _call_expr = new ast::CallExpr();
                 _call_expr->type = CALL_EXPR;
                 _call_expr->callee = _expr;
+                if(_expr && _expr->loc) _call_expr->loc = _expr->loc;
 
                 first_tok = getTok();
                 while(first_tok.type != TOK_RPAREN){
@@ -1798,13 +2367,39 @@ namespace omegasl {
         switch (first_tok.type) {
             case TOK_LPAREN : {
                 first_tok = getTok();
-                _expr = parseExpr(first_tok,parentScope);
-                first_tok = getTok();
-                if(first_tok.type != TOK_RPAREN){
-                    if(!_expr)
-                        delete _expr;
-                    std::cout << "Expected RParen!" << std::endl;
-                    return false;
+                if((first_tok.type == TOK_KW_TYPE || first_tok.type == TOK_ID) && aheadTok().type == TOK_RPAREN){
+                    ast::TypeExpr *targetTy = buildTypeRef(first_tok,false,false,nullptr);
+                    if(targetTy){
+                        ++tokIdx;
+                        first_tok = getTok();
+                        _expr = parseExpr(first_tok,parentScope);
+                        if(_expr){
+                            auto *castExpr = new ast::CastExpr();
+                            castExpr->type = CAST_EXPR;
+                            castExpr->targetType = targetTy;
+                            castExpr->expr = _expr;
+                            castExpr->scope = parentScope;
+                            _expr = castExpr;
+                        }
+                    }
+                    else {
+                        _expr = parseExpr(first_tok,parentScope);
+                        first_tok = getTok();
+                        if(first_tok.type != TOK_RPAREN){
+                            if(_expr) delete _expr;
+                            std::cout << "Expected RParen!" << std::endl;
+                            return false;
+                        }
+                    }
+                }
+                else {
+                    _expr = parseExpr(first_tok,parentScope);
+                    first_tok = getTok();
+                    if(first_tok.type != TOK_RPAREN){
+                        if(_expr) delete _expr;
+                        std::cout << "Expected RParen!" << std::endl;
+                        return false;
+                    }
                 }
                 break;
             }
@@ -1941,6 +2536,9 @@ namespace omegasl {
     }
 
     void Parser::parseContext(const ParseContext &ctxt) {
+
+        diagnostics = ctxt.diagnostics;
+        sem->setDiagnostics(ctxt.diagnostics);
 
         auto semContext = std::make_shared<SemContext>();
 

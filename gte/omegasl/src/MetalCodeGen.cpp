@@ -26,6 +26,21 @@ using namespace metal;
         std::map<std::string,std::string> generatedFuncs;
         std::map<std::string,std::string> generatedStructs;
 
+        OmegaCommon::Vector<ast::FuncDecl *> userFuncDecls;
+
+        void emitUserFunction(ast::FuncDecl *f){
+            writeTypeExpr(f->returnType, shaderOut);
+            shaderOut << " " << f->name << "(";
+            for(size_t i = 0; i < f->params.size(); i++){
+                if(i > 0) shaderOut << ", ";
+                writeTypeExpr(f->params[i].typeExpr, shaderOut);
+                shaderOut << " " << f->params[i].name;
+            }
+            shaderOut << ")" << std::endl;
+            generateBlock(*f->block);
+            shaderOut << std::endl;
+        }
+
         MetalCodeOpts & metalCodeOpts;
 
     public:
@@ -44,8 +59,20 @@ using namespace metal;
             if(_t == builtins::void_type){
                 out << "void";
             }
+            else if(_t == builtins::bool_type){
+                out << "bool";
+            }
             else if(_t == builtins::int_type){
                 out << "int";
+            }
+            else if(_t == builtins::int2_type){
+                out << "simd_int2";
+            }
+            else if(_t == builtins::int3_type){
+                out << "simd_int3";
+            }
+            else if(_t == builtins::int4_type){
+                out << "simd_int4";
             }
             else if(_t == builtins::uint_type){
                 out << "uint";
@@ -55,6 +82,9 @@ using namespace metal;
             }
             else if(_t == builtins::uint3_type){
                 out << "simd_uint3";
+            }
+            else if(_t == builtins::uint4_type){
+                out << "simd_uint4";
             }
             else if(_t == builtins::float_type){
                 out << "simd_float";
@@ -68,7 +98,16 @@ using namespace metal;
             else if(_t == builtins::float4_type){
                 out << "simd_float4";
             }
-            else if(_t == builtins::sampler2d_type || _t == builtins::sampler3d_type){
+            else if(_t == builtins::float2x2_type){
+                out << "float2x2";
+            }
+            else if(_t == builtins::float3x3_type){
+                out << "float3x3";
+            }
+            else if(_t == builtins::float4x4_type){
+                out << "float4x4";
+            }
+            else if(_t == builtins::sampler1d_type || _t == builtins::sampler2d_type || _t == builtins::sampler3d_type){
                 out << "sampler";
             }
             else {
@@ -149,6 +188,25 @@ using namespace metal;
                     shaderOut << "]";
                     break;
                 }
+                case UNARY_EXPR : {
+                    auto _expr = (ast::UnaryOpExpr *)expr;
+                    if(_expr->isPrefix){
+                        shaderOut << _expr->op;
+                        generateExpr(_expr->expr);
+                    }
+                    else {
+                        generateExpr(_expr->expr);
+                        shaderOut << _expr->op;
+                    }
+                    break;
+                }
+                case POINTER_EXPR : {
+                    auto _expr = (ast::PointerExpr *)expr;
+                    if(_expr->ptType == ast::PointerExpr::AddressOf) shaderOut << "&";
+                    else shaderOut << "*";
+                    generateExpr(_expr->expr);
+                    break;
+                }
                 case CALL_EXPR : {
                     auto _expr = (ast::CallExpr *)expr;
                     OmegaCommon::StrRef func_name = ((ast::IdExpr *)_expr->callee)->id;
@@ -182,6 +240,23 @@ using namespace metal;
                         generateExpr(_expr->args[1]);
                         shaderOut << ")";
                     }
+                    else if(func_name == BUILTIN_READ){
+                        generated = true;
+                        generateExpr(_expr->args[0]);
+                        shaderOut << ".read";
+                        shaderOut << "(";
+                        generateExpr(_expr->args[1]);
+                        shaderOut << ")";
+                    }
+                    else if(func_name == BUILTIN_MAKE_INT2){ shaderOut << "simd_make_int2"; }
+                    else if(func_name == BUILTIN_MAKE_INT3){ shaderOut << "simd_make_int3"; }
+                    else if(func_name == BUILTIN_MAKE_INT4){ shaderOut << "simd_make_int4"; }
+                    else if(func_name == BUILTIN_MAKE_UINT2){ shaderOut << "simd_make_uint2"; }
+                    else if(func_name == BUILTIN_MAKE_UINT3){ shaderOut << "simd_make_uint3"; }
+                    else if(func_name == BUILTIN_MAKE_UINT4){ shaderOut << "simd_make_uint4"; }
+                    else if(func_name == BUILTIN_MAKE_FLOAT2X2){ shaderOut << "float2x2"; }
+                    else if(func_name == BUILTIN_MAKE_FLOAT3X3){ shaderOut << "float3x3"; }
+                    else if(func_name == BUILTIN_MAKE_FLOAT4X4){ shaderOut << "float4x4"; }
 
                     if(!generated){
                         shaderOut << "(";
@@ -194,6 +269,14 @@ using namespace metal;
                         shaderOut << ")";
                     }
 
+                    break;
+                }
+                case CAST_EXPR : {
+                    auto _expr = (ast::CastExpr *)expr;
+                    writeTypeExpr(_expr->targetType, shaderOut);
+                    shaderOut << "(";
+                    generateExpr(_expr->expr);
+                    shaderOut << ")";
                     break;
                 }
             }
@@ -219,9 +302,11 @@ using namespace metal;
                 for(unsigned l = level_count;l != 0;l--){
                     shaderOut << "    ";
                 }
-                if(stmt->type == VAR_DECL || stmt->type == RETURN_DECL){
+                if(stmt->type == VAR_DECL || stmt->type == RETURN_DECL || stmt->type == IF_STMT || stmt->type == FOR_STMT || stmt->type == WHILE_STMT){
                     generateDecl((ast::Decl *)stmt);
-                    shaderOut << ";" << std::endl;
+                    if(stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT)
+                        shaderOut << ";";
+                    shaderOut << std::endl;
                 }
                 else {
                     generateExpr((ast::Expr *)stmt);
@@ -238,6 +323,9 @@ using namespace metal;
                     auto *_decl = (ast::VarDecl *)decl;
                     writeTypeExpr(_decl->typeExpr,shaderOut);
                     shaderOut << " " << _decl->spec.name;
+                    if(_decl->typeExpr->arraySize.has_value()){
+                        shaderOut << "[" << _decl->typeExpr->arraySize.value() << "]";
+                    }
                     if(_decl->spec.initializer.has_value()){
                         shaderOut << " = ";
                         generateExpr(_decl->spec.initializer.value());
@@ -250,9 +338,51 @@ using namespace metal;
                     generateExpr(_decl->expr);
                     break;
                 }
+                case IF_STMT : {
+                    auto *_stmt = (ast::IfStmt *)decl;
+                    shaderOut << "if(";
+                    generateExpr(_stmt->condition);
+                    shaderOut << ")";
+                    generateBlock(*_stmt->thenBlock);
+                    for(auto & branch : _stmt->elseIfs){
+                        shaderOut << " else if(";
+                        generateExpr(branch.condition);
+                        shaderOut << ")";
+                        generateBlock(*branch.block);
+                    }
+                    if(_stmt->elseBlock){
+                        shaderOut << " else ";
+                        generateBlock(*_stmt->elseBlock);
+                    }
+                    break;
+                }
+                case FOR_STMT : {
+                    auto *_stmt = (ast::ForStmt *)decl;
+                    shaderOut << "for(";
+                    if(_stmt->init){ generateDecl((ast::Decl *)_stmt->init); }
+                    shaderOut << ";";
+                    if(_stmt->condition){ generateExpr(_stmt->condition); }
+                    shaderOut << ";";
+                    if(_stmt->increment){ generateExpr(_stmt->increment); }
+                    shaderOut << ")";
+                    generateBlock(*_stmt->body);
+                    break;
+                }
+                case WHILE_STMT : {
+                    auto *_stmt = (ast::WhileStmt *)decl;
+                    shaderOut << "while(";
+                    generateExpr(_stmt->condition);
+                    shaderOut << ")";
+                    generateBlock(*_stmt->body);
+                    break;
+                }
                 case RESOURCE_DECL : {
                     auto *_decl = (ast::ResourceDecl *)decl;
                     resourceStore.add(_decl);
+                    break;
+                }
+                case FUNC_DECL : {
+                    userFuncDecls.push_back((ast::FuncDecl *)decl);
                     break;
                 }
                 case STRUCT_DECL : {
@@ -295,6 +425,10 @@ using namespace metal;
 
                     shaderOut << defaultHeaders;
 
+                    for(auto *uf : userFuncDecls){
+                        emitUserFunction(uf);
+                    }
+
                     std::vector<std::string> used_type_list;
                     typeResolver->getStructsInFuncDecl(_decl,used_type_list);
 
@@ -324,6 +458,14 @@ using namespace metal;
                         shadermap_entry.threadgroupDesc.x = _decl->threadgroupDesc.x;
                         shadermap_entry.threadgroupDesc.y = _decl->threadgroupDesc.y;
                         shadermap_entry.threadgroupDesc.z = _decl->threadgroupDesc.z;
+                    }
+                    else if(_decl->shaderType == ast::ShaderDecl::Hull){
+                        shaderOut << "vertex";
+                        shadermap_entry.type = OMEGASL_SHADER_HULL;
+                    }
+                    else if(_decl->shaderType == ast::ShaderDecl::Domain){
+                        shaderOut << "vertex";
+                        shadermap_entry.type = OMEGASL_SHADER_DOMAIN;
                     }
 
                     shaderOut << " ";
@@ -420,6 +562,16 @@ using namespace metal;
                             isTexture = true;
                             shaderOut << "texture3d<float,";
                             layoutDescType = OMEGASL_SHADER_TEXTURE3D_DESC;
+                        }
+                        else if(type_ == ast::builtins::sampler1d_type){
+                            isSampler = true;
+                            if(res_desc->isStatic){
+                                layoutDescType = OMEGASL_SHADER_STATIC_SAMPLER1D_DESC;
+                                writeSampler();
+                            }
+                            else {
+                                layoutDescType = OMEGASL_SHADER_SAMPLER1D_DESC;
+                            }
                         }
                         else if(type_ == ast::builtins::sampler2d_type){
                             isSampler = true;

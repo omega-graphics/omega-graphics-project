@@ -136,7 +136,9 @@ struct omegasl_shader_layout_desc {
 typedef enum : int {
     OMEGASL_SHADER_VERTEX,
     OMEGASL_SHADER_FRAGMENT,
-    OMEGASL_SHADER_COMPUTE
+    OMEGASL_SHADER_COMPUTE,
+    OMEGASL_SHADER_HULL,
+    OMEGASL_SHADER_DOMAIN
 } omegasl_shader_type;
 
 

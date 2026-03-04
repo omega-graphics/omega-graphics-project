@@ -13,6 +13,8 @@ namespace omegasl {
         return (subject == KW_VERTEX) ||
         (subject == KW_FRAGMENT) ||
         (subject == KW_COMPUTE) ||
+        (subject == KW_HULL) ||
+        (subject == KW_DOMAIN) ||
         (subject == KW_IF) ||
         (subject == KW_ELSE) ||
         (subject == KW_FOR) ||
@@ -28,12 +30,33 @@ namespace omegasl {
 
     inline bool isKeywordType(OmegaCommon::StrRef subject){
         return (subject == KW_TY_VOID) ||
+        (subject == KW_TY_BOOL) ||
+        (subject == KW_TY_INT) ||
+        (subject == KW_TY_INT2) ||
+        (subject == KW_TY_INT3) ||
+        (subject == KW_TY_INT4) ||
+        (subject == KW_TY_UINT) ||
+        (subject == KW_TY_UINT2) ||
+        (subject == KW_TY_UINT3) ||
+        (subject == KW_TY_UINT4) ||
         (subject == KW_TY_FLOAT) ||
         (subject == KW_TY_FLOAT2) ||
         (subject == KW_TY_FLOAT3) ||
         (subject == KW_TY_FLOAT4) ||
-        (subject == KW_TY_INT) ||
-        (subject == KW_TY_UINT);
+        (subject == KW_TY_FLOAT2X2) ||
+        (subject == KW_TY_FLOAT3X3) ||
+        (subject == KW_TY_FLOAT4X4) ||
+        (subject == KW_TY_DOUBLE) ||
+        (subject == KW_TY_DOUBLE2) ||
+        (subject == KW_TY_DOUBLE3) ||
+        (subject == KW_TY_DOUBLE4) ||
+        (subject == KW_TY_BUFFER) ||
+        (subject == KW_TY_TEXTURE1D) ||
+        (subject == KW_TY_TEXTURE2D) ||
+        (subject == KW_TY_TEXTURE3D) ||
+        (subject == KW_TY_SAMPLER1D) ||
+        (subject == KW_TY_SAMPLER2D) ||
+        (subject == KW_TY_SAMPLER3D);
     }
 
 
@@ -52,11 +75,25 @@ namespace omegasl {
         return c;
     }
 
+    char Lexer::advanceChar() {
+        char c = nextChar(this->in);
+        if (c == '\n') {
+            currentLine++;
+            currentCol = 0;
+        } else if (c != EOF) {
+            currentCol++;
+        }
+        return c;
+    }
+
     Tok Lexer::nextTok() {
+        tokenStartLine = currentLine;
+        tokenStartCol = currentCol;
+
         char *c_buffer_st = c_buffer, *c_buffer_end = c_buffer_st;
 
 
-#define NEXT_CHAR() nextChar(this->in)
+#define NEXT_CHAR() advanceChar()
 
 #define PUSH_CHAR(c) *c_buffer_end = c; ++c_buffer_end
 
@@ -64,10 +101,11 @@ namespace omegasl {
 
 #define SEEK_TO_NEXT_CHAR() in->seekg(1,std::ios::cur)
 
-#define PUSH_TOK(t) auto s = OmegaCommon::String(c_buffer_st,c_buffer_end);   \
-if(isKeyword(s)) return {TOK_KW,s};      \
-else if(isKeywordType(s)) return {TOK_KW_TYPE,s};   \
-else return {t,s};
+#define PUSH_TOK(t) do { \
+    auto s = OmegaCommon::String(c_buffer_st,c_buffer_end); \
+    Tok _tok; _tok.str = s; _tok.line = tokenStartLine; _tok.colStart = tokenStartCol; _tok.colEnd = currentCol; \
+    if(isKeyword(s)) _tok.type = TOK_KW; else if(isKeywordType(s)) _tok.type = TOK_KW_TYPE; else _tok.type = (t); \
+    return _tok; } while(0)
 
 
         char c = NEXT_CHAR();

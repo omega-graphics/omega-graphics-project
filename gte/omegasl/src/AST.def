@@ -15,6 +15,9 @@ typedef int ASTType;
 #define ELSEIF_DECL (0x0070 | DECL)
 #define STRUCT_DECL (0x0080 | DECL)
 #define RETURN_DECL (0x0090 | DECL)
+#define IF_STMT (0x00A0 | DECL)
+#define FOR_STMT (0x00B0 | DECL)
+#define WHILE_STMT (0x00C0 | DECL)
 
 #define ID_EXPR (0x0010 | EXPR)
 #define LITERAL_EXPR (0x0020 | EXPR)
@@ -25,6 +28,7 @@ typedef int ASTType;
 #define POINTER_EXPR (0x0070 | EXPR)
 #define UNARY_EXPR (0x0080 | EXPR)
 #define INDEX_EXPR (0x0090 | EXPR)
+#define CAST_EXPR (0x00A0 | EXPR)
 
 
 /// Builtins Functions
@@ -36,6 +40,18 @@ typedef int ASTType;
 #define BUILTIN_CROSS "cross"
 #define BUILTIN_SAMPLE "sample"
 #define BUILTIN_WRITE "write"
+#define BUILTIN_READ "read"
+
+#define BUILTIN_MAKE_INT2 "make_int2"
+#define BUILTIN_MAKE_INT3 "make_int3"
+#define BUILTIN_MAKE_INT4 "make_int4"
+#define BUILTIN_MAKE_UINT2 "make_uint2"
+#define BUILTIN_MAKE_UINT3 "make_uint3"
+#define BUILTIN_MAKE_UINT4 "make_uint4"
+
+#define BUILTIN_MAKE_FLOAT2X2 "make_float2x2"
+#define BUILTIN_MAKE_FLOAT3X3 "make_float3x3"
+#define BUILTIN_MAKE_FLOAT4X4 "make_float4x4"
 
 //Internal Shader Attributes
 #define ATTRIBUTE_VERTEX_ID "VertexID"

@@ -19,8 +19,10 @@
 #include <algorithm>
 #include <cassert>
 #include <utility>
-
-
+#include <set>
+#include <unordered_set>
+#include <deque>
+#include <functional>
 
 #ifndef OMEGA_COMMON_COMMON_UTILS_H
 #define OMEGA_COMMON_COMMON_UTILS_H
@@ -149,11 +151,16 @@ namespace OmegaCommon {
 
         }
 
-        StrRefBase(const CharTY *c_str):_data(const_cast<char *>(c_str)),_len((size_type)strlen(c_str)){
+        StrRefBase(const CharTY *buffer,size_type length):_data(buffer),_len(length){
 
         }
 
-        StrRefBase( CharTY *c_str):_data(c_str),_len((size_type)strlen(c_str)){
+        /// Construct from null-terminated C string. Length is computed via char_traits (valid for char, char16_t, char32_t).
+        StrRefBase(const CharTY *c_str):_data(c_str),_len(c_str ? (size_type)std::char_traits<CharTY>::length(c_str) : 0){
+
+        }
+
+        StrRefBase(CharTY *c_str):_data(c_str),_len(c_str ? (size_type)std::char_traits<CharTY>::length(c_str) : 0){
 
         }
 
@@ -254,6 +261,28 @@ namespace OmegaCommon {
             return it;
         }
 
+        typename super::const_iterator find(const T & el) const {
+            auto it = super::begin();
+            for(;it != super::end();++it){
+                if(compare(*it,el))
+                    return it;
+            }
+            return super::end();
+        }
+
+        /** @brief Returns true if the element is in the set. */
+        bool contains(const T & el) const {
+            return find(el) != super::end();
+        }
+
+        /** @brief Removes the element if present. Returns true if an element was removed. */
+        bool erase(const T & el) {
+            auto it = find(el);
+            if (it == end()) return false;
+            super::erase(it);
+            return true;
+        }
+
         void push(const T & el){
             if(find(el) == end())
                 super::push_back(el);
@@ -268,6 +297,14 @@ namespace OmegaCommon {
             super::pop_back();
         }
     };
+
+    /** @brief Ordered set of unique elements (backed by std::set). insert, erase, contains, iteration. */
+    template<class T>
+    using Set = std::set<T>;
+
+    /** @brief Hash set of unique elements, O(1) lookup (backed by std::unordered_set). insert, erase, contains, iteration. */
+    template<class T>
+    using SetHash = std::unordered_set<T>;
 
 
 
@@ -372,6 +409,41 @@ namespace OmegaCommon {
         return {begin,end};
     }
 
+    /** @brief Mutable view over contiguous memory. Use for in-place algorithms and output buffers. */
+    template<class T>
+    class Span {
+        T *_data = nullptr;
+        size_t _size = 0;
+    public:
+        using size_type = size_t;
+        using iterator = T *;
+        using reference = T &;
+        Span() = default;
+        Span(T *data, size_type n) : _data(data), _size(n) {}
+        template<class It>
+        Span(It beg, It end) : _data(&*beg), _size(static_cast<size_type>(end - beg)) {}
+        explicit Span(Vector<T> & vec) : _data(vec.data()), _size(vec.size()) {}
+        template<unsigned N>
+        explicit Span(Array<T, N> & arr) : _data(arr.data()), _size(static_cast<size_type>(N)) {}
+        reference operator[](size_type i) { assert(i < _size); return _data[i]; }
+        const T & operator[](size_type i) const { assert(i < _size); return _data[i]; }
+        size_type size() const { return _size; }
+        bool empty() const { return _size == 0; }
+        iterator begin() { return _data; }
+        iterator end() { return _data + _size; }
+        T * data() { return _data; }
+        const T * data() const { return _data; }
+        /** @brief Subspan [offset, offset+count). count may be npos for "to the end". */
+        static constexpr size_type npos = static_cast<size_type>(-1);
+        Span subspan(size_type offset, size_type count = npos) {
+            if (count == npos) count = _size - offset;
+            assert(offset + count <= _size);
+            return Span(_data + offset, count);
+        }
+    };
+    template<class T> Span<T> makeSpan(T * beg, T * end) { return Span<T>(beg, end); }
+    template<class T> Span<T> makeSpan(Vector<T> & v) { return Span<T>(v); }
+
     template<class K,class V>
     using Map = std::map<K,V>;
 
@@ -428,6 +500,26 @@ namespace OmegaCommon {
         return other;
     };
 
+    /** @brief Double-ended queue: pushFront/pushBack, popFront/popBack, front/back, size/empty. */
+    template<class T>
+    using Deque = std::deque<T>;
+
+    /** @brief LIFO stack: push, pop, top, size/empty. */
+    template<class T>
+    class Stack {
+        Vector<T> _vec;
+    public:
+        using value_type = T;
+        using size_type = typename Vector<T>::size_type;
+        void push(const T & x) { _vec.push_back(x); }
+        void push(T && x) { _vec.push_back(std::move(x)); }
+        void pop() { _vec.pop_back(); }
+        T & top() { return _vec.back(); }
+        const T & top() const { return _vec.back(); }
+        bool empty() const { return _vec.empty(); }
+        size_type size() const { return _vec.size(); }
+    };
+
     /// A vector that acts like a queue (first in , first out), but has control over every element and its order in the container.
     template<class Ty>
     class OMEGACOMMON_EXPORT   QueueVector
@@ -443,7 +535,7 @@ namespace OmegaCommon {
         const size_type & size() noexcept {return len;};
         bool empty() noexcept {return len == 0;};
         iterator begin(){ return _data;};
-        iterator end(){return _data + (len * sizeof(Ty));};
+        iterator end(){return _data + len;};
         reference first(){ return begin()[0];};
         reference last(){ return end()[-1];};
         reference operator[](size_type idx){ return begin()[idx];};
@@ -456,7 +548,7 @@ namespace OmegaCommon {
                 std::move(begin(),end(),temp);
                 delete [] _data;
                 _data = new Ty[len + 1];
-                std::move(temp,temp + (sizeof(Ty) * len),begin());
+                std::move(temp,temp + len,begin());
                 begin()[len] = std::move(el);
             };
             ++len;
@@ -469,12 +561,12 @@ namespace OmegaCommon {
             else {
                 assert(idx < len && "Index is out of range!");
                 Ty temp[len + 1];
-                std::move(begin(),begin() + (idx * sizeof(Ty)),temp);
+                std::move(begin(),begin() + idx,temp);
                 temp[idx] = std::move(el);
-                std::move(begin() + (idx * sizeof(Ty)),end(),temp + ((idx+1) * sizeof(Ty)));
+                std::move(begin() + idx,end(),temp + (idx + 1));
                 delete [] _data;
                 _data = new Ty[len + 1];
-                std::move(temp,temp + (sizeof(Ty) * (len + 1)),begin());
+                std::move(temp,temp + (len + 1),begin());
             };
             ++len;
         };
@@ -496,11 +588,11 @@ namespace OmegaCommon {
             auto f_el = first();
             f_el.~Ty();
             Ty temp[len-1];
-            std::move(begin() + sizeof(Ty),end(),temp);
+            std::move(begin() + 1,end(),temp);
             delete [] _data;
             --len;
             _data = new Ty[len];
-            std::move(temp,temp + (len * sizeof(Ty)),begin());
+            std::move(temp,temp + len,begin());
         };
         QueueVector():_data(nullptr),len(0){};
         QueueVector(const QueueVector<Ty> & other):len(other.len){
@@ -748,6 +840,26 @@ namespace OmegaCommon {
     template<class T>
     using Optional = std::optional<T>;
 
+    /** @brief Result type: holds either a value T or an error E. Use for FS/Net APIs instead of StatusCode + out-params. */
+    template<class T, class E>
+    class Result {
+        Optional<T> _value;
+        Optional<E> _error;
+    public:
+        static Result ok(T && v) { Result r; r._value = std::move(v); return r; }
+        static Result ok(const T & v) { Result r; r._value = v; return r; }
+        static Result err(E && e) { Result r; r._error = std::move(e); return r; }
+        static Result err(const E & e) { Result r; r._error = e; return r; }
+        bool isOk() const { return _value.has_value(); }
+        bool isErr() const { return _error.has_value(); }
+        T & value() { assert(isOk()); return *_value; }
+        const T & value() const { assert(isOk()); return *_value; }
+        E & error() { assert(isErr()); return *_error; }
+        const E & error() const { assert(isErr()); return *_error; }
+        T valueOr(T && defaultVal) const { return _value.value_or(std::forward<T>(defaultVal)); }
+        T valueOr(const T & defaultVal) const { return _value.value_or(defaultVal); }
+    };
+
     #define string_enum_field static constexpr const char *
     #define string_enum namespace
 
@@ -862,6 +974,60 @@ namespace OmegaCommon {
 //        };
 //
 //    }
+    // ----- String helpers -----
+    OMEGACOMMON_EXPORT Vector<String> split(StrRef s, char delim);
+    OMEGACOMMON_EXPORT String join(ArrayRef<StrRef> parts, StrRef sep);
+    OMEGACOMMON_EXPORT StrRef trimRef(StrRef s);
+    OMEGACOMMON_EXPORT String trim(StrRef s);
+    OMEGACOMMON_EXPORT bool startsWith(StrRef s, StrRef prefix);
+    OMEGACOMMON_EXPORT bool endsWith(StrRef s, StrRef suffix);
+    OMEGACOMMON_EXPORT String concat(ArrayRef<StrRef> parts);
+
+    // ----- Algorithm helpers -----
+    template<class T, class Compare = std::less<T>>
+    void sort(Span<T> sp, Compare cmp = Compare()) {
+        std::sort(sp.begin(), sp.end(), cmp);
+    }
+    template<class T, class Compare = std::less<T>>
+    void sort(Vector<T> & vec, Compare cmp = Compare()) {
+        std::sort(vec.begin(), vec.end(), cmp);
+    }
+    template<class T, class Compare = std::less<T>>
+    Optional<size_t> binarySearch(ArrayRef<T> arr, const T & value, Compare cmp = Compare()) {
+        auto it = std::lower_bound(arr.begin(), arr.end(), value, cmp);
+        if (it != arr.end() && !cmp(value, *it)) return static_cast<size_t>(it - arr.begin());
+        return std::nullopt;
+    }
+    template<class T, class Compare = std::less<T>>
+    size_t lowerBound(ArrayRef<T> arr, const T & value, Compare cmp = Compare()) {
+        return static_cast<size_t>(std::lower_bound(arr.begin(), arr.end(), value, cmp) - arr.begin());
+    }
+    template<class T, class Compare = std::less<T>>
+    size_t upperBound(ArrayRef<T> arr, const T & value, Compare cmp = Compare()) {
+        return static_cast<size_t>(std::upper_bound(arr.begin(), arr.end(), value, cmp) - arr.begin());
+    }
+    template<class K, class V>
+    bool contains(const Map<K,V> & m, const K & key) { return m.find(key) != m.end(); }
+    template<class K, class V>
+    bool contains(const MapVec<K,V> & m, const K & key) { return m.find(key) != m.end(); }
+    template<class T>
+    bool contains(const Set<T> & s, const T & key) { return s.find(key) != s.end(); }
+    template<class T>
+    bool contains(const SetHash<T> & s, const T & key) { return s.find(key) != s.end(); }
+    template<class T, class Comp>
+    bool contains(const SetVector<T,Comp> & s, const T & key) { return s.contains(key); }
+
+    // ----- Hashing -----
+    OMEGACOMMON_EXPORT size_t hashValue(StrRef s);
+    template<class T>
+    size_t hashValue(const T & x) { return std::hash<T>{}(x); }
+    template<class T, class ...Rest>
+    size_t hashCombine(size_t seed, const T & v, Rest && ...rest) {
+        seed ^= hashValue(v) + 0x9e3779b9u + (seed << 6u) + (seed >> 2u);
+        if constexpr (sizeof...(rest) == 0) return seed;
+        return hashCombine(seed, std::forward<Rest>(rest)...);
+    }
+
     template<class O,class T>
     bool is(std::shared_ptr<T> &object){
         return (dynamic_cast<O *>(object.get()) != nullptr);

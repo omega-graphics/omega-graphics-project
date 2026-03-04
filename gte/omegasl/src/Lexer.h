@@ -12,15 +12,19 @@ namespace omegasl {
     struct Tok {
         TokType type;
         OmegaCommon::String str;
-
-        /*  unsigned line;
-         *  unsigned colStart,colEnd;
-         */
+        unsigned line = 0;
+        unsigned colStart = 0;
+        unsigned colEnd = 0;
     };
 
     class Lexer {
         std::istream *in;
         char c_buffer[TOK_MAX_LEN];
+        unsigned currentLine = 1;
+        unsigned currentCol = 0;
+        unsigned tokenStartLine = 1;
+        unsigned tokenStartCol = 0;
+        char advanceChar();
     public:
         void setInputStream(std::istream *in);
         Tok nextTok();

@@ -28,11 +28,17 @@ namespace OmegaCommon {
         };
         static void HttpStatusCallback(HINTERNET hInternet,DWORD_PTR dwContext,DWORD dwInternetStatus,LPVOID lpvStatusInformation,DWORD dwStatusInformationLength){
             auto data = (PrivData *)dwContext;
-            DWORD bytesAvailable;
-            HttpResponse res {(size_t)bytesAvailable,std::malloc((size_t)bytesAvailable)};
+            DWORD bytesAvailable = 0;
             WinHttpQueryDataAvailable(hInternet,&bytesAvailable);
-            DWORD bytesRead;
-            WinHttpReadData(hInternet,res.data,bytesAvailable,&bytesRead);
+            HttpResponse res;
+            res.statusCode = 200;
+            res.size = (size_t)bytesAvailable;
+            res.data = bytesAvailable ? std::malloc((size_t)bytesAvailable) : nullptr;
+            if (res.data && bytesAvailable) {
+                DWORD bytesRead = 0;
+                WinHttpReadData(hInternet,res.data,bytesAvailable,&bytesRead);
+                res.size = (size_t)bytesRead;
+            }
             data->prom->set_value(res);
             WinHttpCloseHandle(hInternet);
             WinHttpCloseHandle(data->connection);

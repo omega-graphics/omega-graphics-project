@@ -1,5 +1,6 @@
 #include "Lexer.h"
 #include "AST.h"
+#include "Error.h"
 
 #ifndef OMEGASL_PARSER_H
 #define OMEGASL_PARSER_H
@@ -10,6 +11,8 @@ namespace omegasl {
 
     struct ParseContext {
         std::istream & in;
+        SourceFile * sourceFile = nullptr;
+        DiagnosticEngine * diagnostics = nullptr;
     };
 
     class Sem;
@@ -22,6 +25,8 @@ namespace omegasl {
         std::vector<Tok> tokenBuffer;
 
         unsigned tokIdx;
+
+        DiagnosticEngine * diagnostics = nullptr;
 
         Tok & getTok();
         Tok & aheadTok();
@@ -41,6 +46,16 @@ namespace omegasl {
         ast::Decl *parseGenericDecl(Tok &first_tok,BlockParseContext & ctxt);
         ast::Stmt *parseStmt(Tok &first_tok,BlockParseContext & ctxt);
         ast::Decl *parseGlobalDecl();
+
+        void collectTokensUntilEndOfStatement(Tok first_tok);
+        unsigned findMatchingParen(unsigned startIdx);
+        unsigned findMatchingBrace(unsigned startIdx);
+        unsigned findExtentOfStatement(unsigned startIdx);
+        ast::Block *parseBlockBodyFromBuffer(unsigned startIdx,unsigned endIdx,BlockParseContext & ctxt);
+        ast::Stmt *parseStmtFromBuffer(BlockParseContext & ctxt);
+        ast::Stmt *parseIfStmtFromBuffer(BlockParseContext & ctxt);
+        ast::Stmt *parseForStmtFromBuffer(BlockParseContext & ctxt);
+        ast::Stmt *parseWhileStmtFromBuffer(BlockParseContext & ctxt);
 
         ast::TypeExpr *buildTypeRef(Tok &first_tok,bool isPointer,bool hasTypeArgs = false,OmegaCommon::Vector<ast::TypeExpr *> * args = nullptr);
     public:

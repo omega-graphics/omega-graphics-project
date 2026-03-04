@@ -35,7 +35,7 @@ namespace OmegaCommon {
 #else
 
     Semaphore::Semaphore(int initialValue){
-        sem_init(&sem,0,0);
+        sem_init(&sem,0,initialValue);
     };
 
     void Semaphore::get(){
@@ -47,7 +47,7 @@ namespace OmegaCommon {
     }
 
     Semaphore::~Semaphore(){
-        sem_close(&sem);
+        sem_destroy(&sem);
     }
 
 #endif

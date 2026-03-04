@@ -52,7 +52,20 @@ namespace omegasl {
 
         OmegaCommon::Vector<std::pair<OmegaCommon::String,ast::StructDecl *>> internalStructVarMap;
 
+        OmegaCommon::Vector<ast::FuncDecl *> userFuncDecls;
 
+        void emitUserFunction(ast::FuncDecl *f){
+            writeTypeExpr(f->returnType, shaderOut);
+            shaderOut << " " << f->name << "(";
+            for(size_t i = 0; i < f->params.size(); i++){
+                if(i > 0) shaderOut << ", ";
+                writeTypeExpr(f->params[i].typeExpr, shaderOut);
+                shaderOut << " " << f->params[i].name;
+            }
+            shaderOut << ")" << std::endl;
+            generateBlock(*f->block);
+            shaderOut << std::endl;
+        }
 
     public:
         explicit GLSLCodeGen(CodeGenOpts &opts,GLSLCodeOpts &glslCodeOpts): CodeGen(opts),glslCodeOpts(glslCodeOpts), shaderOut(fileOut){
@@ -71,6 +84,9 @@ namespace omegasl {
             if(t == ast::builtins::void_type){
                 out << "void";
             }
+            else if(t == ast::builtins::bool_type){
+                out << "bool";
+            }
             else if(t == ast::builtins::float_type){
                 out << "float";
             }
@@ -83,8 +99,26 @@ namespace omegasl {
             else if(t == ast::builtins::float4_type){
                 out << "vec4";
             }
+            else if(t == ast::builtins::float2x2_type){
+                out << "mat2";
+            }
+            else if(t == ast::builtins::float3x3_type){
+                out << "mat3";
+            }
+            else if(t == ast::builtins::float4x4_type){
+                out << "mat4";
+            }
             else if(t == ast::builtins::int_type){
                 out << "int";
+            }
+            else if(t == ast::builtins::int2_type){
+                out << "ivec2";
+            }
+            else if(t == ast::builtins::int3_type){
+                out << "ivec3";
+            }
+            else if(t == ast::builtins::int4_type){
+                out << "ivec4";
             }
             else if(t == ast::builtins::uint_type){
                 out << "uint";
@@ -94,6 +128,9 @@ namespace omegasl {
             }
             else if(t == ast::builtins::uint3_type){
                 out << "uvec3";
+            }
+            else if(t == ast::builtins::uint4_type){
+                out << "uvec4";
             }
             else {
                 out << t->name;
@@ -117,11 +154,14 @@ namespace omegasl {
                 }
                 if(stmt->type & DECL){
                     generateDecl((ast::Decl *)stmt);
+                    if(stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT)
+                        shaderOut << ";";
                 }
                 else {
                     generateExpr((ast::Expr *)stmt);
+                    shaderOut << ";";
                 }
-                shaderOut << ";" << std::endl; 
+                shaderOut << std::endl;
             }
             indentLevel -= 1;
             shaderOut << "}" << std::endl;
@@ -130,6 +170,44 @@ namespace omegasl {
             switch (decl->type) {
                 case RESOURCE_DECL: {
                     resourceStore.add((ast::ResourceDecl *)decl);
+                    break;
+                }
+                case IF_STMT : {
+                    auto _stmt = (ast::IfStmt *)decl;
+                    shaderOut << "if(";
+                    generateExpr(_stmt->condition);
+                    shaderOut << ")";
+                    generateBlock(*_stmt->thenBlock);
+                    for(auto & branch : _stmt->elseIfs){
+                        shaderOut << " else if(";
+                        generateExpr(branch.condition);
+                        shaderOut << ")";
+                        generateBlock(*branch.block);
+                    }
+                    if(_stmt->elseBlock){
+                        shaderOut << " else ";
+                        generateBlock(*_stmt->elseBlock);
+                    }
+                    break;
+                }
+                case FOR_STMT : {
+                    auto _stmt = (ast::ForStmt *)decl;
+                    shaderOut << "for(";
+                    if(_stmt->init){ generateDecl((ast::Decl *)_stmt->init); }
+                    shaderOut << ";";
+                    if(_stmt->condition){ generateExpr(_stmt->condition); }
+                    shaderOut << ";";
+                    if(_stmt->increment){ generateExpr(_stmt->increment); }
+                    shaderOut << ")";
+                    generateBlock(*_stmt->body);
+                    break;
+                }
+                case WHILE_STMT : {
+                    auto _stmt = (ast::WhileStmt *)decl;
+                    shaderOut << "while(";
+                    generateExpr(_stmt->condition);
+                    shaderOut << ")";
+                    generateBlock(*_stmt->body);
                     break;
                 }
                 case STRUCT_DECL : {
@@ -163,6 +241,9 @@ namespace omegasl {
                         // Write Normal Var Decl if not internal struct
                         writeTypeExpr(_decl->typeExpr, shaderOut);
                         shaderOut << " " << _decl->spec.name;
+                        if(_decl->typeExpr->arraySize.has_value()){
+                            shaderOut << "[" << _decl->typeExpr->arraySize.value() << "]";
+                        }
                         if (_decl->spec.initializer.has_value()) {
                             shaderOut << " = " << std::flush;
                             generateExpr(_decl->spec.initializer.value());
@@ -172,6 +253,10 @@ namespace omegasl {
                         /// Track variable with internal struct
                         internalStructVarMap.push_back(std::make_pair(_decl->spec.name,*internal_struct_found));
                     }
+                    break;
+                }
+                case FUNC_DECL : {
+                    userFuncDecls.push_back((ast::FuncDecl *)decl);
                     break;
                 }
                 case SHADER_DECL : {
@@ -198,7 +283,14 @@ namespace omegasl {
                             file_ext = compute_shader_ext;
                             break;
                         }
-
+                        case ast::ShaderDecl::Hull : {
+                            file_ext = ".tesc";
+                            break;
+                        }
+                        case ast::ShaderDecl::Domain : {
+                            file_ext = ".tese";
+                            break;
+                        }
                     }
 
                     if(opts.runtimeCompile) {
@@ -216,6 +308,10 @@ namespace omegasl {
                     
                     shaderOut << GLSL_HEADER << std::endl;
 
+                    for(auto *uf : userFuncDecls){
+                        emitUserFunction(uf);
+                    }
+
                     omegasl_shader shader_entry {};
 
                     if(_decl->shaderType == ast::ShaderDecl::Compute){
@@ -224,7 +320,11 @@ namespace omegasl {
                         shader_entry.threadgroupDesc.z = _decl->threadgroupDesc.z;
                     }
 
-                    shader_entry.type = _decl->shaderType == ast::ShaderDecl::Vertex? OMEGASL_SHADER_VERTEX : _decl->shaderType == ast::ShaderDecl::Fragment ? OMEGASL_SHADER_FRAGMENT : OMEGASL_SHADER_COMPUTE;
+                    shader_entry.type = _decl->shaderType == ast::ShaderDecl::Vertex? OMEGASL_SHADER_VERTEX :
+                        _decl->shaderType == ast::ShaderDecl::Fragment? OMEGASL_SHADER_FRAGMENT :
+                        _decl->shaderType == ast::ShaderDecl::Compute? OMEGASL_SHADER_COMPUTE :
+                        _decl->shaderType == ast::ShaderDecl::Hull? OMEGASL_SHADER_HULL :
+                        OMEGASL_SHADER_DOMAIN;
                     shader_entry.name = new char[_decl->name.size() + 1];
                     std::copy(_decl->name.begin(),_decl->name.end(),(char *)shader_entry.name);
                     ((char *)shader_entry.name)[_decl->name.size()] = '\0';
@@ -350,6 +450,15 @@ namespace omegasl {
                                 shaderOut << GLSL_IMAGE3D;
                             }
                             shaderOut << " "<< res_decl->name << ";" << std::endl;
+                        }
+                        else if(type_ == ast::builtins::sampler1d_type){
+                            if(res_decl->isStatic){
+                                layoutDesc.type = OMEGASL_SHADER_STATIC_SAMPLER1D_DESC;
+                            }
+                            else {
+                                layoutDesc.type = OMEGASL_SHADER_SAMPLER1D_DESC;
+                            }
+                            shaderOut << "layout(set = "<< set <<",binding =" << binding << ") uniform sampler " << res_decl->name << ";" << std::endl;
                         }
                         else if(type_ == ast::builtins::sampler2d_type){
                             if(res_decl->isStatic){
@@ -537,6 +646,25 @@ namespace omegasl {
                     shaderOut << _expr->id;
                     break;
                 }
+                case UNARY_EXPR : {
+                    auto _expr = (ast::UnaryOpExpr *)expr;
+                    if(_expr->isPrefix){
+                        shaderOut << _expr->op;
+                        generateExpr(_expr->expr);
+                    }
+                    else {
+                        generateExpr(_expr->expr);
+                        shaderOut << _expr->op;
+                    }
+                    break;
+                }
+                case POINTER_EXPR : {
+                    auto _expr = (ast::PointerExpr *)expr;
+                    if(_expr->ptType == ast::PointerExpr::AddressOf) shaderOut << "&";
+                    else shaderOut << "*";
+                    generateExpr(_expr->expr);
+                    break;
+                }
                 case CALL_EXPR : {
                     auto _expr = (ast::CallExpr *)expr;
                     OmegaCommon::StrRef _id = ((ast::IdExpr *)_expr->callee)->id;
@@ -545,7 +673,10 @@ namespace omegasl {
                         auto & sampler_res = *(resourceStore.find(samplerid_expr->id));
                         auto t = typeResolver->resolveTypeWithExpr(sampler_res->typeExpr);
                         OmegaCommon::String samplerType;
-                        if(t == ast::builtins::sampler2d_type){
+                        if(t == ast::builtins::sampler1d_type){
+                            samplerType = "sampler1D";
+                        }
+                        else if(t == ast::builtins::sampler2d_type){
                             samplerType = "sampler2D";
                         }
                         else if(t == ast::builtins::sampler3d_type){
@@ -560,9 +691,45 @@ namespace omegasl {
                         generateExpr(_expr->args[2]);
                         shaderOut << ")";
                     }
+                    else if(_id == BUILTIN_READ){
+                        shaderOut << "texelFetch(";
+                        generateExpr(_expr->args[0]);
+                        shaderOut << ",";
+                        generateExpr(_expr->args[1]);
+                        shaderOut << ",0)";
+                    }
+                    else if(_id == BUILTIN_MAKE_INT2 || _id == BUILTIN_MAKE_INT3 || _id == BUILTIN_MAKE_INT4 ||
+                            _id == BUILTIN_MAKE_UINT2 || _id == BUILTIN_MAKE_UINT3 || _id == BUILTIN_MAKE_UINT4 ||
+                            _id == BUILTIN_MAKE_FLOAT2X2 || _id == BUILTIN_MAKE_FLOAT3X3 || _id == BUILTIN_MAKE_FLOAT4X4){
+                        OmegaCommon::String typeName = (_id == BUILTIN_MAKE_INT2) ? "ivec2" : (_id == BUILTIN_MAKE_INT3) ? "ivec3" : (_id == BUILTIN_MAKE_INT4) ? "ivec4" :
+                            (_id == BUILTIN_MAKE_UINT2) ? "uvec2" : (_id == BUILTIN_MAKE_UINT3) ? "uvec3" : (_id == BUILTIN_MAKE_UINT4) ? "uvec4" :
+                            (_id == BUILTIN_MAKE_FLOAT2X2) ? "mat2" : (_id == BUILTIN_MAKE_FLOAT3X3) ? "mat3" : "mat4";
+                        shaderOut << typeName << "(";
+                        for(size_t i = 0; i < _expr->args.size(); i++){
+                            if(i > 0) shaderOut << ",";
+                            generateExpr(_expr->args[i]);
+                        }
+                        shaderOut << ")";
+                    }
                     else if(_id == BUILTIN_WRITE){
 
                     }
+                    else {
+                        shaderOut << _id << "(";
+                        for(size_t i = 0; i < _expr->args.size(); i++){
+                            if(i > 0) shaderOut << ",";
+                            generateExpr(_expr->args[i]);
+                        }
+                        shaderOut << ")";
+                    }
+                    break;
+                }
+                case CAST_EXPR : {
+                    auto _expr = (ast::CastExpr *)expr;
+                    writeTypeExpr(_expr->targetType, shaderOut);
+                    shaderOut << "(";
+                    generateExpr(_expr->expr);
+                    shaderOut << ")";
                     break;
                 }
                 case INDEX_EXPR : {
