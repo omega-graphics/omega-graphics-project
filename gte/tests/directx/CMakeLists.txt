@@ -19,3 +19,17 @@ add_d3d12_test(
     SOURCES
     "2DTest/main.cpp"
 )
+
+add_d3d12_test(
+    NAME
+    "ComputeTest"
+    SOURCES
+    "ComputeTest/main.cpp"
+)
+
+add_d3d12_test(
+    NAME
+    "GPUTessTest"
+    SOURCES
+    "GPUTessTest/main.cpp"
+)

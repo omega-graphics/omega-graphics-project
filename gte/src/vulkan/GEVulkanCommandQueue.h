@@ -132,6 +132,7 @@ _NAMESPACE_BEGIN_
         void clearSubmittedTraceCommandBufferIds() {
             submittedTraceCommandBufferIds.clear();
         }
+        GEVulkanEngine *getEngine() const { return engine; }
         GEVulkanCommandQueue(GEVulkanEngine *engine,unsigned size);
         ~GEVulkanCommandQueue() override;
     };

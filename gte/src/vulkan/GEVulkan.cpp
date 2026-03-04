@@ -397,15 +397,9 @@ _NAMESPACE_BEGIN_
         if(!enableDeviceExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME,true)){
             std::exit(1);
         }
-        // Keep push descriptors disabled until layouts are created with PUSH_DESCRIPTOR flags.
-        enableDeviceExtension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,false);
-        hasPushDescriptorExt = false;
-        // Keep sync2 disabled until VkPhysicalDeviceSynchronization2Features is explicitly enabled.
-        enableDeviceExtension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,false);
-        hasSynchronization2Ext = false;
-        // Keep topology dynamic state disabled until feature negotiation is wired.
-        enableDeviceExtension(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,false);
-        hasExtendedDynamicState = false;
+        hasPushDescriptorExt = enableDeviceExtension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,false);
+        hasSynchronization2Ext = enableDeviceExtension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,false);
+        hasExtendedDynamicState = enableDeviceExtension(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,false);
 
         count = 0;
 
@@ -441,16 +435,44 @@ _NAMESPACE_BEGIN_
         VkPhysicalDeviceFeatures features;
         vkGetPhysicalDeviceFeatures(physicalDevice,&features);
 
+        VkPhysicalDeviceFeatures2 features2 {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        features2.features = features;
+        features2.pNext = nullptr;
+
+        VkPhysicalDeviceSynchronization2FeaturesKHR sync2Features {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR};
+        sync2Features.synchronization2 = VK_TRUE;
+        sync2Features.pNext = nullptr;
+
+        VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extDynFeatures {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+        extDynFeatures.extendedDynamicState = VK_TRUE;
+        extDynFeatures.pNext = nullptr;
+
+        void **pNextTail = &features2.pNext;
+        if(hasSynchronization2Ext){
+            *pNextTail = &sync2Features;
+            pNextTail = &sync2Features.pNext;
+        }
+        if(hasExtendedDynamicState){
+            *pNextTail = &extDynFeatures;
+            pNextTail = &extDynFeatures.pNext;
+        }
+
         VkDeviceCreateInfo info{};
         info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        info.pNext = nullptr;
         info.pQueueCreateInfos = deviceQueues.data();
         info.queueCreateInfoCount = deviceQueues.size();
         info.enabledExtensionCount = extensionNames.size();
         info.enabledLayerCount = 0;
         info.ppEnabledLayerNames = nullptr;
         info.ppEnabledExtensionNames = extensionNames.data();
-        info.pEnabledFeatures = &features;
+
+        if(hasSynchronization2Ext || hasExtendedDynamicState){
+            info.pNext = &features2;
+            info.pEnabledFeatures = nullptr;
+        } else {
+            info.pNext = nullptr;
+            info.pEnabledFeatures = &features;
+        }
 
         auto deviceRes = vkCreateDevice(physicalDevice,&info,nullptr,&this->device);
         if(deviceRes != VK_SUCCESS || this->device == VK_NULL_HANDLE){

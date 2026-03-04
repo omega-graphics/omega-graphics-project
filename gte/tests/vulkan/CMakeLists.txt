@@ -15,3 +15,21 @@ add_vulkan_test(
     "2DTest"
     SOURCES 
     "2DTest/main.cpp")
+
+add_vulkan_test(
+    NAME
+    "ComputeTest"
+    SOURCES
+    "ComputeTest/main.cpp")
+
+add_vulkan_test(
+    NAME
+    "GPUTessTest"
+    SOURCES
+    "GPUTessTest/main.cpp")
+
+add_vulkan_test(
+    NAME
+    "CPUTessTest"
+    SOURCES
+    "CPUTessTest/main.cpp")
