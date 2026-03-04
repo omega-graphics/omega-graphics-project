@@ -152,14 +152,14 @@ namespace omegasl {
                 for(unsigned i = 0;i < indentLevel;i++){
                     shaderOut << "  ";
                 }
-                if(stmt->type & DECL){
+                if((stmt->type & DECL) == EXPR){
+                    generateExpr((ast::Expr *)stmt);
+                    shaderOut << ";";
+                }
+                else if(stmt->type & DECL){
                     generateDecl((ast::Decl *)stmt);
                     if(stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT)
                         shaderOut << ";";
-                }
-                else {
-                    generateExpr((ast::Expr *)stmt);
-                    shaderOut << ";";
                 }
                 shaderOut << std::endl;
             }
@@ -669,6 +669,7 @@ namespace omegasl {
                     auto _expr = (ast::CallExpr *)expr;
                     OmegaCommon::StrRef _id = ((ast::IdExpr *)_expr->callee)->id;
                     if(_id == BUILTIN_SAMPLE){
+                        /// GLSL Vulkan: combine separate texture + sampler into combined image-sampler (e.g. sampler2D(tex, samp)) for texture().
                         auto samplerid_expr = (ast::IdExpr *)_expr->args[0];
                         auto & sampler_res = *(resourceStore.find(samplerid_expr->id));
                         auto t = typeResolver->resolveTypeWithExpr(sampler_res->typeExpr);

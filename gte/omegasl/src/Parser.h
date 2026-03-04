@@ -40,7 +40,7 @@ namespace omegasl {
 
         bool parseObjectExpr(Tok &first_tok,ast::Expr **expr,ast::Scope *parentScope);
         bool parseArgsExpr(Tok &first_tok,ast::Expr **expr,ast::Scope *parentScope);
-        bool parseOpExpr(Tok &first_tok,ast::Expr **expr,ast::Scope *parentScope);
+        bool parseOpExpr(Tok &first_tok,ast::Expr **expr,ast::Scope *parentScope,int minPrec = 0);
 
         ast::Expr *parseExpr(Tok &first_tok,ast::Scope *parentScope);
         ast::Decl *parseGenericDecl(Tok &first_tok,BlockParseContext & ctxt);

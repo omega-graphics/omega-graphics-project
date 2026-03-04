@@ -1,12 +1,16 @@
 
 
 #include "RenderTarget.h"
+#include "TexturePool.h"
+#include "BufferPool.h"
+#include "FencePool.h"
 #include "omegaWTK/Composition/Canvas.h"
 #include "ResourceTrace.h"
 
 #include "omegaWTK/Media/ImgCodec.h"
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <utility>
 
 namespace OmegaWTK::Composition {
@@ -89,6 +93,14 @@ namespace OmegaWTK::Composition {
     static SharedHandle<OmegaGTE::GERenderPipelineState> finalCopyRenderPipelineState;
 
     static SharedHandle<OmegaGTE::GEComputePipelineState> linearGradientPipelineState;
+
+    static constexpr std::size_t kTextureHeapSize = 64u * 1024u * 1024u;
+    static constexpr std::size_t kBufferHeapSize = 8u * 1024u * 1024u;
+    static SharedHandle<OmegaGTE::GEHeap> textureHeap;
+    static SharedHandle<OmegaGTE::GEHeap> bufferHeap;
+    static std::unique_ptr<TexturePool> texturePool;
+    static std::unique_ptr<BufferPool> bufferPool;
+    static std::unique_ptr<FencePool> fencePool;
 
     OmegaCommon::String librarySource = R"(
 
@@ -341,18 +353,39 @@ fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
         finalTextureDrawBuffer.reset();
     }
 
+    static void createResourcePools(){
+        textureHeap = gte.graphicsEngine->makeHeap({OmegaGTE::HeapDescriptor::Shared, kTextureHeapSize});
+        bufferHeap = gte.graphicsEngine->makeHeap({OmegaGTE::HeapDescriptor::Shared, kBufferHeapSize});
+        texturePool = std::make_unique<TexturePool>(textureHeap);
+        bufferPool = std::make_unique<BufferPool>(bufferHeap);
+        fencePool = std::make_unique<FencePool>();
+    }
+
+    static void destroyResourcePools(){
+        if(fencePool) fencePool->drain();
+        if(bufferPool) bufferPool->drain();
+        if(texturePool) texturePool->drain();
+        fencePool.reset();
+        bufferPool.reset();
+        texturePool.reset();
+        bufferHeap.reset();
+        textureHeap.reset();
+    }
+
     void InitializeEngine(){
         loadGlobalRenderAssets();
+        createResourcePools();
     }
 
     void CleanupEngine(){
+        destroyResourcePools();
         destroyGlobalRenderAssets();
     }
 
 BackendRenderTargetContext::BackendRenderTargetContext(Core::Rect & rect,
         SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTarget,
         float renderScaleValue):
-        fence(gte.graphicsEngine->makeFence()),
+        fence(fencePool ? fencePool->acquire() : gte.graphicsEngine->makeFence()),
         renderTarget(renderTarget),
         renderTargetSize(rect),
         renderScale(1.f)
@@ -389,18 +422,40 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
                         static_cast<float>(backingHeight),
                         renderScale);
 
-    OmegaGTE::TextureDescriptor textureDescriptor {};
-    textureDescriptor.usage = OmegaGTE::GETexture::RenderTarget;
-    textureDescriptor.storage_opts = OmegaGTE::Shared;
-    textureDescriptor.width = backingWidth;
-    textureDescriptor.height = backingHeight;
-    textureDescriptor.type = OmegaGTE::GETexture::Texture2D;
-    textureDescriptor.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm;
+    TexturePoolKey poolKey {
+        backingWidth,
+        backingHeight,
+        OmegaGTE::TexturePixelFormat::RGBA8Unorm,
+        OmegaGTE::GETexture::RenderTarget
+    };
 
-    targetTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
-    effectTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
+    if(texturePool){
+        if(targetTexture)
+            texturePool->release(std::move(targetTexture), poolKey);
+        if(effectTexture)
+            texturePool->release(std::move(effectTexture), poolKey);
+    }
+    targetTexture.reset();
+    effectTexture.reset();
+
+    if(texturePool){
+        targetTexture = texturePool->acquire(poolKey);
+        effectTexture = texturePool->acquire(poolKey);
+    }
+    else {
+        OmegaGTE::TextureDescriptor textureDescriptor {};
+        textureDescriptor.usage = OmegaGTE::GETexture::RenderTarget;
+        textureDescriptor.storage_opts = OmegaGTE::Shared;
+        textureDescriptor.width = backingWidth;
+        textureDescriptor.height = backingHeight;
+        textureDescriptor.type = OmegaGTE::GETexture::Texture2D;
+        textureDescriptor.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm;
+        targetTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
+        effectTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
+    }
+
     if(targetTexture == nullptr || effectTexture == nullptr){
-        std::cout << "Failed to allocate Vulkan backing textures." << std::endl;
+        std::cout << "Failed to allocate backing textures." << std::endl;
         preEffectTarget.reset();
         effectTarget.reset();
         tessellationEngineContext.reset();
@@ -428,6 +483,29 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
                         renderTargetSize.w,
                         renderTargetSize.h,
                         renderScale);
+    TexturePoolKey poolKey {
+        backingWidth,
+        backingHeight,
+        OmegaGTE::TexturePixelFormat::RGBA8Unorm,
+        OmegaGTE::GETexture::RenderTarget
+    };
+    imageProcessor.reset();
+    preEffectTarget.reset();
+    effectTarget.reset();
+    tessellationEngineContext.reset();
+    if(texturePool){
+        if(targetTexture)
+            texturePool->release(std::move(targetTexture), poolKey);
+        if(effectTexture)
+            texturePool->release(std::move(effectTexture), poolKey);
+    }
+    for(auto & entry : deferredBufferReleases){
+        if(bufferPool && entry.first)
+            bufferPool->release(std::move(entry.first), entry.second);
+    }
+    deferredBufferReleases.clear();
+    if(fencePool && fence)
+        fencePool->release(std::move(fence));
 }
 
     void BackendRenderTargetContext::setRenderTargetSize(Core::Rect &rect) {
@@ -569,6 +647,14 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         cb->endRenderPass();
         renderTarget->submitCommandBuffer(cb);
         renderTarget->commitAndPresent();
+
+        if(bufferPool){
+            for(auto & entry : deferredBufferReleases){
+                if(entry.first)
+                    bufferPool->release(std::move(entry.first), entry.second);
+            }
+            deferredBufferReleases.clear();
+        }
 
         #ifdef TARGET_MACOS
 
@@ -850,8 +936,15 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT4});
         }
 
-        OmegaGTE::BufferDescriptor bufferDesc {OmegaGTE::BufferDescriptor::Upload,result.totalVertexCount() *struct_size,struct_size};
-        auto buffer = gte.graphicsEngine->makeBuffer(bufferDesc);
+        std::size_t requiredBytes = result.totalVertexCount() * struct_size;
+        SharedHandle<OmegaGTE::GEBuffer> buffer;
+        if(bufferPool){
+            buffer = bufferPool->acquire(requiredBytes, struct_size);
+        }
+        else {
+            OmegaGTE::BufferDescriptor bufferDesc {OmegaGTE::BufferDescriptor::Upload,requiredBytes,struct_size};
+            buffer = gte.graphicsEngine->makeBuffer(bufferDesc);
+        }
 
         bufferWriter->setOutputBuffer(buffer);
 
@@ -976,8 +1069,70 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         bufferWriter->flush();
         cb->endRenderPass();
         preEffectTarget->submitCommandBuffer(cb);
+        if(bufferPool && buffer){
+            deferredBufferReleases.push_back({std::move(buffer), requiredBytes});
+        }
     }
 
+    static void collectAllLayersFromLimb(LayerTree *tree,
+                                         LayerTree::Limb *limb,
+                                         OmegaCommon::Vector<Layer *> &layers){
+        if(tree == nullptr || limb == nullptr)
+            return;
+        auto & rootLayer = limb->getRootLayer();
+        if(rootLayer != nullptr)
+            layers.push_back(rootLayer.get());
+        for(auto it = limb->begin(); it != limb->end(); ++it){
+            if(*it != nullptr)
+                layers.push_back((*it).get());
+        }
+        const auto childCount = tree->getParentLimbChildCount(limb);
+        for(unsigned idx = 0; idx < childCount; ++idx){
+            collectAllLayersFromLimb(tree, tree->getLimbAtIndexFromParent(idx, limb), layers);
+        }
+    }
 
+    void RenderTargetStore::cleanTargets(LayerTree *tree, LayerTree::Limb *limb){
+        if(tree == nullptr || limb == nullptr)
+            return;
+        OmegaCommon::Vector<Layer *> liveLayers {};
+        collectAllLayersFromLimb(tree, limb, liveLayers);
+
+        for(auto & storeEntry : store){
+            auto & compTarget = storeEntry.second;
+            auto surfIt = compTarget.surfaceTargets.begin();
+            while(surfIt != compTarget.surfaceTargets.end()){
+                bool isLive = false;
+                for(auto *liveLayer : liveLayers){
+                    if(liveLayer == surfIt->first){
+                        isLive = true;
+                        break;
+                    }
+                }
+                if(!isLive){
+                    surfIt = compTarget.surfaceTargets.erase(surfIt);
+                }
+                else {
+                    ++surfIt;
+                }
+            }
+        }
+    }
+
+    void RenderTargetStore::cleanTreeTargets(LayerTree *tree){
+        if(tree == nullptr)
+            return;
+        auto *root = tree->getTreeRoot();
+        if(root != nullptr){
+            cleanTargets(tree, root);
+        }
+    }
+
+    void RenderTargetStore::removeRenderTarget(const SharedHandle<CompositionRenderTarget> & target){
+        auto it = store.find(target);
+        if(it != store.end()){
+            store.erase(it);
+        }
+    }
 
 }

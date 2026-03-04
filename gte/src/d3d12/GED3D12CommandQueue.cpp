@@ -217,37 +217,96 @@ _NAMESPACE_BEGIN_
 
     }
 
+    static void fillGeometryDescsFromGE(const GEAccelerationStructDescriptor &desc,
+                                        std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> &out){
+        for(auto & g : desc.data){
+            D3D12_RAYTRACING_GEOMETRY_DESC gd {};
+            gd.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+            if(g.type == GEAccelerationStructDescriptor::Geometry::TRIANGLES){
+                gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.data.triangleList.buffer);
+                if(d3dBuf){
+                    gd.Triangles.VertexBuffer.StartAddress = d3dBuf->buffer->GetGPUVirtualAddress();
+                    gd.Triangles.VertexBuffer.StrideInBytes = sizeof(float) * 3;
+                    gd.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+                    gd.Triangles.VertexCount = static_cast<UINT>(d3dBuf->size() / (sizeof(float) * 3));
+                }
+            } else {
+                gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
+                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.data.aabb.buffer);
+                if(d3dBuf){
+                    gd.AABBs.AABBs.StartAddress = d3dBuf->buffer->GetGPUVirtualAddress();
+                    gd.AABBs.AABBs.StrideInBytes = sizeof(D3D12_RAYTRACING_AABB);
+                    gd.AABBs.AABBCount = d3dBuf->size() / sizeof(D3D12_RAYTRACING_AABB);
+                }
+            }
+            out.push_back(gd);
+        }
+    }
+
     void GED3D12CommandBuffer::buildAccelerationStructure(SharedHandle<GEAccelerationStruct> &src, const GEAccelerationStructDescriptor &desc){
         auto accel_struct = std::dynamic_pointer_cast<GED3D12AccelerationStruct>(src);
-        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC d;
+
+        std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometryDescs;
+        fillGeometryDescsFromGE(desc, geometryDescs);
+
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC d {};
         d.SourceAccelerationStructureData = NULL;
         d.DestAccelerationStructureData = accel_struct->structBuffer->buffer->GetGPUVirtualAddress();
         d.ScratchAccelerationStructureData = accel_struct->scratchBuffer->buffer->GetGPUVirtualAddress();
         d.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-        d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-        d.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+        d.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+        if(geometryDescs.empty()){
+            d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+        } else {
+            d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+            d.Inputs.NumDescs = static_cast<UINT>(geometryDescs.size());
+            d.Inputs.pGeometryDescs = geometryDescs.data();
+        }
 
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC postBuild;
-        
-        commandList->BuildRaytracingAccelerationStructure(&d,1,&postBuild);
+        commandList->BuildRaytracingAccelerationStructure(&d, 0, nullptr);
 
-        
+        auto uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(accel_struct->structBuffer->buffer.Get());
+        commandList->ResourceBarrier(1, &uavBarrier);
+    }
+
+    void GED3D12CommandBuffer::copyAccelerationStructure(SharedHandle<GEAccelerationStruct> &src, SharedHandle<GEAccelerationStruct> &dest){
+        auto srcAS = std::dynamic_pointer_cast<GED3D12AccelerationStruct>(src);
+        auto destAS = std::dynamic_pointer_cast<GED3D12AccelerationStruct>(dest);
+        commandList->CopyRaytracingAccelerationStructure(
+            destAS->structBuffer->buffer->GetGPUVirtualAddress(),
+            srcAS->structBuffer->buffer->GetGPUVirtualAddress(),
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_CLONE);
+
+        auto uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(destAS->structBuffer->buffer.Get());
+        commandList->ResourceBarrier(1, &uavBarrier);
     }
 
     void GED3D12CommandBuffer::refitAccelerationStructure(SharedHandle<GEAccelerationStruct> &src, SharedHandle<GEAccelerationStruct> &dest, const GEAccelerationStructDescriptor &desc){
-         auto accel_struct_src = std::dynamic_pointer_cast<GED3D12AccelerationStruct>(src);
-         auto accel_struct_dest = std::dynamic_pointer_cast<GED3D12AccelerationStruct>(dest);
-        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC d;
-        d.SourceAccelerationStructureData = accel_struct_src->structBuffer->buffer->GetGPUVirtualAddress();;
+        auto accel_struct_src = std::dynamic_pointer_cast<GED3D12AccelerationStruct>(src);
+        auto accel_struct_dest = std::dynamic_pointer_cast<GED3D12AccelerationStruct>(dest);
+
+        std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometryDescs;
+        fillGeometryDescsFromGE(desc, geometryDescs);
+
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC d {};
+        d.SourceAccelerationStructureData = accel_struct_src->structBuffer->buffer->GetGPUVirtualAddress();
         d.DestAccelerationStructureData = accel_struct_dest->structBuffer->buffer->GetGPUVirtualAddress();
         d.ScratchAccelerationStructureData = accel_struct_dest->scratchBuffer->buffer->GetGPUVirtualAddress();
         d.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-        d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-        d.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+        d.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+        if(geometryDescs.empty()){
+            d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+        } else {
+            d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+            d.Inputs.NumDescs = static_cast<UINT>(geometryDescs.size());
+            d.Inputs.pGeometryDescs = geometryDescs.data();
+        }
 
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC postBuild;
-        
-        commandList->BuildRaytracingAccelerationStructure(&d,1,&postBuild);
+        commandList->BuildRaytracingAccelerationStructure(&d, 0, nullptr);
+
+        auto uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(accel_struct_dest->structBuffer->buffer.Get());
+        commandList->ResourceBarrier(1, &uavBarrier);
     }
 
     void GED3D12CommandBuffer::finishAccelStructPass(){
@@ -821,12 +880,24 @@ _NAMESPACE_BEGIN_
     }
 
     void GED3D12CommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned int z){
-         assert(inComputePass && "");
+         assert(inComputePass && "Must be in a compute pass to dispatch rays");
          D3D12_DISPATCH_RAYS_DESC rays {};
          rays.Width = x;
          rays.Height = y;
          rays.Depth = z;
-         
+
+         rays.RayGenerationShaderRecord.StartAddress = 0;
+         rays.RayGenerationShaderRecord.SizeInBytes = 0;
+         rays.MissShaderTable.StartAddress = 0;
+         rays.MissShaderTable.SizeInBytes = 0;
+         rays.MissShaderTable.StrideInBytes = 0;
+         rays.HitGroupTable.StartAddress = 0;
+         rays.HitGroupTable.SizeInBytes = 0;
+         rays.HitGroupTable.StrideInBytes = 0;
+         rays.CallableShaderTable.StartAddress = 0;
+         rays.CallableShaderTable.SizeInBytes = 0;
+         rays.CallableShaderTable.StrideInBytes = 0;
+
          commandList->DispatchRays(&rays);
     }
 

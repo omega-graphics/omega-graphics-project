@@ -59,6 +59,31 @@ inline void emit(const char *eventType,
     std::cout << ss.str() << std::endl;
 }
 
+inline void emitPoolSnapshot(const char *poolName,
+                             std::uint64_t hits,
+                             std::uint64_t misses,
+                             std::size_t freeCount,
+                             std::size_t pooledBytes = 0){
+    if(!enabled()){
+        return;
+    }
+    double hitRate = (hits + misses > 0)
+        ? static_cast<double>(hits) / static_cast<double>(hits + misses)
+        : 0.0;
+    std::ostringstream ss;
+    ss << "[OmegaWTKGPU] ts=" << timestampMs()
+       << " event=PoolSnapshot"
+       << " pool=" << poolName
+       << " hits=" << hits
+       << " misses=" << misses
+       << " hitRate=" << hitRate
+       << " freeCount=" << freeCount;
+    if(pooledBytes > 0){
+        ss << " pooledBytes=" << pooledBytes;
+    }
+    std::cout << ss.str() << std::endl;
+}
+
 }
 
 #endif

@@ -44,9 +44,23 @@ _NAMESPACE_BEGIN_
         bool hasSynchronization2Ext = false;
         bool hasExtendedDynamicState = false;
 
+        bool hasAccelerationStructureExt = false;
+        bool hasRayTracingPipelineExt = false;
+        bool hasBufferDeviceAddressExt = false;
+        bool hasDeferredHostOperationsExt = false;
+
         PFN_vkCmdPushDescriptorSetKHR vkCmdPushDescriptorSetKhr;
         PFN_vkCmdSetPrimitiveTopologyEXT vkCmdSetPrimitiveTopologyExt;
         PFN_vkCmdPipelineBarrier2KHR vkCmdPipelineBarrier2Khr;
+
+        PFN_vkCreateAccelerationStructureKHR vkCreateAccelerationStructureKhr = nullptr;
+        PFN_vkDestroyAccelerationStructureKHR vkDestroyAccelerationStructureKhr = nullptr;
+        PFN_vkGetAccelerationStructureBuildSizesKHR vkGetAccelerationStructureBuildSizesKhr = nullptr;
+        PFN_vkCmdBuildAccelerationStructuresKHR vkCmdBuildAccelerationStructuresKhr = nullptr;
+        PFN_vkCmdCopyAccelerationStructureKHR vkCmdCopyAccelerationStructureKhr = nullptr;
+        PFN_vkGetAccelerationStructureDeviceAddressKHR vkGetAccelerationStructureDeviceAddressKhr = nullptr;
+        PFN_vkGetBufferDeviceAddressKHR vkGetBufferDeviceAddressKhr = nullptr;
+        PFN_vkCmdTraceRaysKHR vkCmdTraceRaysKhr = nullptr;
 
         VmaAllocator memAllocator;
         unsigned resource_count;
@@ -85,6 +99,11 @@ _NAMESPACE_BEGIN_
         SharedHandle<GETextureRenderTarget> makeTextureRenderTarget(const TextureRenderTargetDescriptor &desc) override;
 
         SharedHandle<GESamplerState> makeSamplerState(const SamplerDescriptor &desc) override;
+
+        #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
+        SharedHandle<GEBuffer> createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes) override;
+        SharedHandle<GEAccelerationStruct> allocateAccelerationStructure(const GEAccelerationStructDescriptor &desc) override;
+        #endif
 
         static SharedHandle<OmegaGraphicsEngine> Create(SharedHandle<GTEDevice> & device);
 
@@ -208,6 +227,39 @@ _NAMESPACE_BEGIN_
 
         ~GEVulkanHeap();
     };
+
+    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
+    class GEVulkanAccelerationStruct : public GEAccelerationStruct {
+    public:
+        GEVulkanEngine *engine;
+        VkAccelerationStructureKHR accelStruct;
+        SharedHandle<GEVulkanBuffer> structBuffer;
+        SharedHandle<GEVulkanBuffer> scratchBuffer;
+
+        void setName(OmegaCommon::StrRef name){
+            VkDebugUtilsObjectNameInfoEXT nameInfoExt {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+            nameInfoExt.pNext = nullptr;
+            nameInfoExt.objectType = VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR;
+            nameInfoExt.objectHandle = (uint64_t)accelStruct;
+            nameInfoExt.pObjectName = name.data();
+            vkSetDebugUtilsObjectNameEXT(engine->device,&nameInfoExt);
+        }
+
+        explicit GEVulkanAccelerationStruct(
+            GEVulkanEngine *engine,
+            VkAccelerationStructureKHR accelStruct,
+            SharedHandle<GEVulkanBuffer> & structBuffer,
+            SharedHandle<GEVulkanBuffer> & scratchBuffer)
+            :engine(engine),accelStruct(accelStruct),
+             structBuffer(structBuffer),scratchBuffer(scratchBuffer){}
+
+        ~GEVulkanAccelerationStruct() override {
+            if(accelStruct != VK_NULL_HANDLE && engine != nullptr && engine->vkDestroyAccelerationStructureKhr != nullptr){
+                engine->vkDestroyAccelerationStructureKhr(engine->device, accelStruct, nullptr);
+            }
+        }
+    };
+    #endif
 
     class GEVulkanSamplerState : public GESamplerState {
     public:

@@ -27,6 +27,20 @@ struct GTED3D12Device : public GTEDevice {
     ~GTED3D12Device() = default;
 };
 
+static bool detectDXRSupport(IDXGIAdapter1 *adapter){
+    ComPtr<ID3D12Device5> tmpDevice;
+    HRESULT hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&tmpDevice));
+    if(FAILED(hr) || !tmpDevice){
+        return false;
+    }
+    D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 {};
+    hr = tmpDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5));
+    if(FAILED(hr)){
+        return false;
+    }
+    return opts5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0;
+}
+
 OmegaCommon::Vector<SharedHandle<GTEDevice>> enumerateDevices(){
     OmegaCommon::Vector<SharedHandle<GTEDevice>> devs;
     ComPtr<IDXGIFactory6> dxgi_factory;
@@ -38,7 +52,7 @@ OmegaCommon::Vector<SharedHandle<GTEDevice>> enumerateDevices(){
                                                                           IID_PPV_ARGS(&adapter)));i++){
         adapter->GetDesc1(&desc);
         CAtlString atlString(desc.Description);
-        GTEDeviceFeatures features {false};
+        GTEDeviceFeatures features {detectDXRSupport(adapter)};
         devs.emplace_back(SharedHandle<GTEDevice>(new GTED3D12Device {GTEDevice::Discrete,atlString.GetBuffer(),features,adapter}));
     }
 
@@ -46,7 +60,7 @@ OmegaCommon::Vector<SharedHandle<GTEDevice>> enumerateDevices(){
                                                                           IID_PPV_ARGS(&adapter)));i++){
         adapter->GetDesc1(&desc);
         CAtlString atlString(desc.Description);
-        GTEDeviceFeatures features {false};
+        GTEDeviceFeatures features {detectDXRSupport(adapter)};
         devs.emplace_back(SharedHandle<GTEDevice>(new GTED3D12Device {GTEDevice::Integrated,atlString.GetBuffer(),features,adapter}));
     }
 
@@ -525,18 +539,57 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
     }
 
     SharedHandle<GEAccelerationStruct> GED3D12Engine::allocateAccelerationStructure(const GEAccelerationStructDescriptor &desc){
+        std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometryDescs;
+        for(auto & g : desc.data){
+            D3D12_RAYTRACING_GEOMETRY_DESC gd {};
+            gd.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+            if(g.type == GEAccelerationStructDescriptor::Geometry::TRIANGLES){
+                gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.data.triangleList.buffer);
+                if(d3dBuf){
+                    gd.Triangles.VertexBuffer.StartAddress = d3dBuf->buffer->GetGPUVirtualAddress();
+                    gd.Triangles.VertexBuffer.StrideInBytes = sizeof(float) * 3;
+                    gd.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+                    gd.Triangles.VertexCount = static_cast<UINT>(d3dBuf->size() / (sizeof(float) * 3));
+                }
+            } else {
+                gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
+                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.data.aabb.buffer);
+                if(d3dBuf){
+                    gd.AABBs.AABBs.StartAddress = d3dBuf->buffer->GetGPUVirtualAddress();
+                    gd.AABBs.AABBs.StrideInBytes = sizeof(D3D12_RAYTRACING_AABB);
+                    gd.AABBs.AABBCount = d3dBuf->size() / sizeof(D3D12_RAYTRACING_AABB);
+                }
+            }
+            geometryDescs.push_back(gd);
+        }
+
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs {};
         inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-        inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-        inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+        inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+        if(geometryDescs.empty()){
+            inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+            inputs.NumDescs = 0;
+            inputs.pGeometryDescs = nullptr;
+        } else {
+            inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+            inputs.NumDescs = static_cast<UINT>(geometryDescs.size());
+            inputs.pGeometryDescs = geometryDescs.data();
+        }
 
         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuildInfo {};
-
         d3d12_device->GetRaytracingAccelerationStructurePrebuildInfo(&inputs,&prebuildInfo);
-        
-        auto dataBuffer = std::dynamic_pointer_cast<GED3D12Buffer>(makeBuffer({BufferDescriptor::GPUOnly,prebuildInfo.ResultDataMaxSizeInBytes}));
-        auto scratchBuffer = std::dynamic_pointer_cast<GED3D12Buffer>(makeBuffer({BufferDescriptor::GPUOnly,prebuildInfo.ScratchDataSizeInBytes}));
-   
+
+        size_t resultSize = prebuildInfo.ResultDataMaxSizeInBytes > 0
+                            ? prebuildInfo.ResultDataMaxSizeInBytes : 256;
+        size_t scratchSize = prebuildInfo.ScratchDataSizeInBytes > 0
+                             ? prebuildInfo.ScratchDataSizeInBytes : 256;
+
+        auto dataBuffer = std::dynamic_pointer_cast<GED3D12Buffer>(
+            makeBuffer({BufferDescriptor::GPUOnly, resultSize}));
+        auto scratchBuffer = std::dynamic_pointer_cast<GED3D12Buffer>(
+            makeBuffer({BufferDescriptor::GPUOnly, scratchSize}));
+
         return (SharedHandle<GEAccelerationStruct>)new GED3D12AccelerationStruct(dataBuffer,scratchBuffer);
     }
 

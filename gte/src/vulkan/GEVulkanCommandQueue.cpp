@@ -759,6 +759,259 @@ _NAMESPACE_BEGIN_
         renderPipelineState = nullptr;
     };
 
+    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
+
+    void GEVulkanCommandBuffer::beginAccelStructPass(){
+    }
+
+    void GEVulkanCommandBuffer::buildAccelerationStructure(SharedHandle<GEAccelerationStruct> &src,
+                                                           const GEAccelerationStructDescriptor &desc){
+        auto *engine = parentQueue->engine;
+        if(!engine->hasAccelerationStructureExt || engine->vkCmdBuildAccelerationStructuresKhr == nullptr){
+            return;
+        }
+        auto vkAS = std::dynamic_pointer_cast<GEVulkanAccelerationStruct>(src);
+        if(!vkAS) return;
+
+        std::vector<VkAccelerationStructureGeometryKHR> geometries;
+        std::vector<VkAccelerationStructureBuildRangeInfoKHR> rangeInfos;
+
+        for(auto & g : desc.data){
+            VkAccelerationStructureGeometryKHR geom {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+            geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+            VkAccelerationStructureBuildRangeInfoKHR rangeInfo {};
+            rangeInfo.firstVertex = 0;
+            rangeInfo.transformOffset = 0;
+
+            if(g.type == GEAccelerationStructDescriptor::Geometry::TRIANGLES){
+                geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+                geom.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+                geom.geometry.triangles.pNext = nullptr;
+                geom.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+                geom.geometry.triangles.vertexStride = sizeof(float) * 3;
+                geom.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(g.data.triangleList.buffer);
+                if(vkBuf && engine->vkGetBufferDeviceAddressKhr){
+                    VkBufferDeviceAddressInfoKHR addrInfo {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR};
+                    addrInfo.buffer = vkBuf->buffer;
+                    geom.geometry.triangles.vertexData.deviceAddress = engine->vkGetBufferDeviceAddressKhr(engine->device, &addrInfo);
+                    uint32_t vertexCount = static_cast<uint32_t>(vkBuf->size() / (sizeof(float) * 3));
+                    geom.geometry.triangles.maxVertex = vertexCount > 0 ? vertexCount - 1 : 0;
+                    rangeInfo.primitiveCount = vertexCount / 3;
+                }
+            } else {
+                geom.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+                geom.geometry.aabbs.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
+                geom.geometry.aabbs.pNext = nullptr;
+                geom.geometry.aabbs.stride = sizeof(VkAabbPositionsKHR);
+                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(g.data.aabb.buffer);
+                if(vkBuf && engine->vkGetBufferDeviceAddressKhr){
+                    VkBufferDeviceAddressInfoKHR addrInfo {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR};
+                    addrInfo.buffer = vkBuf->buffer;
+                    geom.geometry.aabbs.data.deviceAddress = engine->vkGetBufferDeviceAddressKhr(engine->device, &addrInfo);
+                    rangeInfo.primitiveCount = static_cast<uint32_t>(vkBuf->size() / sizeof(VkAabbPositionsKHR));
+                }
+            }
+            geometries.push_back(geom);
+            rangeInfos.push_back(rangeInfo);
+        }
+
+        VkAccelerationStructureBuildGeometryInfoKHR buildInfo {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+        buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR |
+                          VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+        buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        buildInfo.dstAccelerationStructure = vkAS->accelStruct;
+
+        if(geometries.empty()){
+            buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+            buildInfo.geometryCount = 0;
+            buildInfo.pGeometries = nullptr;
+        } else {
+            buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+            buildInfo.geometryCount = static_cast<uint32_t>(geometries.size());
+            buildInfo.pGeometries = geometries.data();
+        }
+
+        if(vkAS->scratchBuffer && engine->vkGetBufferDeviceAddressKhr){
+            VkBufferDeviceAddressInfoKHR addrInfo {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR};
+            addrInfo.buffer = vkAS->scratchBuffer->buffer;
+            buildInfo.scratchData.deviceAddress = engine->vkGetBufferDeviceAddressKhr(engine->device, &addrInfo);
+        }
+
+        const VkAccelerationStructureBuildRangeInfoKHR *pRangeInfos = rangeInfos.empty() ? nullptr : rangeInfos.data();
+        engine->vkCmdBuildAccelerationStructuresKhr(commandBuffer, 1, &buildInfo, &pRangeInfos);
+
+        VkMemoryBarrier memBarrier {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        memBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        memBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                             VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+                             VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR |
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+    }
+
+    void GEVulkanCommandBuffer::copyAccelerationStructure(SharedHandle<GEAccelerationStruct> &src,
+                                                          SharedHandle<GEAccelerationStruct> &dest){
+        auto *engine = parentQueue->engine;
+        if(!engine->hasAccelerationStructureExt || engine->vkCmdCopyAccelerationStructureKhr == nullptr){
+            return;
+        }
+        auto srcAS = std::dynamic_pointer_cast<GEVulkanAccelerationStruct>(src);
+        auto destAS = std::dynamic_pointer_cast<GEVulkanAccelerationStruct>(dest);
+        if(!srcAS || !destAS) return;
+
+        VkCopyAccelerationStructureInfoKHR copyInfo {VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR};
+        copyInfo.src = srcAS->accelStruct;
+        copyInfo.dst = destAS->accelStruct;
+        copyInfo.mode = VK_COPY_ACCELERATION_STRUCTURE_MODE_CLONE_KHR;
+        engine->vkCmdCopyAccelerationStructureKhr(commandBuffer, &copyInfo);
+
+        VkMemoryBarrier memBarrier {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        memBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        memBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                             VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+                             VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                             0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+    }
+
+    void GEVulkanCommandBuffer::refitAccelerationStructure(SharedHandle<GEAccelerationStruct> &src,
+                                                           SharedHandle<GEAccelerationStruct> &dest,
+                                                           const GEAccelerationStructDescriptor &desc){
+        auto *engine = parentQueue->engine;
+        if(!engine->hasAccelerationStructureExt || engine->vkCmdBuildAccelerationStructuresKhr == nullptr){
+            return;
+        }
+        auto srcAS = std::dynamic_pointer_cast<GEVulkanAccelerationStruct>(src);
+        auto destAS = std::dynamic_pointer_cast<GEVulkanAccelerationStruct>(dest);
+        if(!srcAS || !destAS) return;
+
+        std::vector<VkAccelerationStructureGeometryKHR> geometries;
+        std::vector<VkAccelerationStructureBuildRangeInfoKHR> rangeInfos;
+
+        for(auto & g : desc.data){
+            VkAccelerationStructureGeometryKHR geom {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+            geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+            VkAccelerationStructureBuildRangeInfoKHR rangeInfo {};
+            rangeInfo.firstVertex = 0;
+            rangeInfo.transformOffset = 0;
+
+            if(g.type == GEAccelerationStructDescriptor::Geometry::TRIANGLES){
+                geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+                geom.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+                geom.geometry.triangles.pNext = nullptr;
+                geom.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+                geom.geometry.triangles.vertexStride = sizeof(float) * 3;
+                geom.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(g.data.triangleList.buffer);
+                if(vkBuf && engine->vkGetBufferDeviceAddressKhr){
+                    VkBufferDeviceAddressInfoKHR addrInfo {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR};
+                    addrInfo.buffer = vkBuf->buffer;
+                    geom.geometry.triangles.vertexData.deviceAddress = engine->vkGetBufferDeviceAddressKhr(engine->device, &addrInfo);
+                    uint32_t vertexCount = static_cast<uint32_t>(vkBuf->size() / (sizeof(float) * 3));
+                    geom.geometry.triangles.maxVertex = vertexCount > 0 ? vertexCount - 1 : 0;
+                    rangeInfo.primitiveCount = vertexCount / 3;
+                }
+            } else {
+                geom.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+                geom.geometry.aabbs.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
+                geom.geometry.aabbs.pNext = nullptr;
+                geom.geometry.aabbs.stride = sizeof(VkAabbPositionsKHR);
+                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(g.data.aabb.buffer);
+                if(vkBuf && engine->vkGetBufferDeviceAddressKhr){
+                    VkBufferDeviceAddressInfoKHR addrInfo {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR};
+                    addrInfo.buffer = vkBuf->buffer;
+                    geom.geometry.aabbs.data.deviceAddress = engine->vkGetBufferDeviceAddressKhr(engine->device, &addrInfo);
+                    rangeInfo.primitiveCount = static_cast<uint32_t>(vkBuf->size() / sizeof(VkAabbPositionsKHR));
+                }
+            }
+            geometries.push_back(geom);
+            rangeInfos.push_back(rangeInfo);
+        }
+
+        VkAccelerationStructureBuildGeometryInfoKHR buildInfo {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+        buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+        buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+        buildInfo.srcAccelerationStructure = srcAS->accelStruct;
+        buildInfo.dstAccelerationStructure = destAS->accelStruct;
+
+        if(geometries.empty()){
+            buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+        } else {
+            buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+            buildInfo.geometryCount = static_cast<uint32_t>(geometries.size());
+            buildInfo.pGeometries = geometries.data();
+        }
+
+        if(destAS->scratchBuffer && engine->vkGetBufferDeviceAddressKhr){
+            VkBufferDeviceAddressInfoKHR addrInfo {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR};
+            addrInfo.buffer = destAS->scratchBuffer->buffer;
+            buildInfo.scratchData.deviceAddress = engine->vkGetBufferDeviceAddressKhr(engine->device, &addrInfo);
+        }
+
+        const VkAccelerationStructureBuildRangeInfoKHR *pRangeInfos = rangeInfos.empty() ? nullptr : rangeInfos.data();
+        engine->vkCmdBuildAccelerationStructuresKhr(commandBuffer, 1, &buildInfo, &pRangeInfos);
+
+        VkMemoryBarrier memBarrier {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        memBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        memBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                             VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+                             VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR |
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+    }
+
+    void GEVulkanCommandBuffer::finishAccelStructPass(){
+    }
+
+    void GEVulkanCommandBuffer::bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct, unsigned int id){
+        assert(inComputePass && "Must be in compute pass to bind acceleration structure");
+        auto vkAS = std::dynamic_pointer_cast<GEVulkanAccelerationStruct>(accelStruct);
+        if(!vkAS || !parentQueue->engine->hasAccelerationStructureExt) return;
+
+        VkWriteDescriptorSetAccelerationStructureKHR asWrite {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+        asWrite.accelerationStructureCount = 1;
+        asWrite.pAccelerationStructures = &vkAS->accelStruct;
+
+        VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writeInfo.pNext = &asWrite;
+        writeInfo.dstBinding = getBindingForResourceID(id, computePipelineState->computeShader->internal);
+        writeInfo.descriptorCount = 1;
+        writeInfo.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        writeInfo.dstArrayElement = 0;
+        writeInfo.pBufferInfo = nullptr;
+        writeInfo.pImageInfo = nullptr;
+
+        if(parentQueue->engine->hasPushDescriptorExt){
+            parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                                           computePipelineState->layout, 0, 1, &writeInfo);
+        } else {
+            writeInfo.dstSet = computePipelineState->descSet;
+            vkUpdateDescriptorSets(parentQueue->engine->device, 1, &writeInfo, 0, nullptr);
+        }
+    }
+
+    void GEVulkanCommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned int z){
+        assert(inComputePass && "Must be in compute pass to dispatch rays");
+        auto *engine = parentQueue->engine;
+        if(engine->hasRayTracingPipelineExt && engine->vkCmdTraceRaysKhr != nullptr){
+            VkStridedDeviceAddressRegionKHR raygenSBT {};
+            VkStridedDeviceAddressRegionKHR missSBT {};
+            VkStridedDeviceAddressRegionKHR hitSBT {};
+            VkStridedDeviceAddressRegionKHR callableSBT {};
+            engine->vkCmdTraceRaysKhr(commandBuffer, &raygenSBT, &missSBT, &hitSBT, &callableSBT, x, y, z);
+        } else {
+            vkCmdDispatch(commandBuffer, x, y, z);
+        }
+    }
+
+    #endif
+
     void GEVulkanCommandBuffer::startComputePass(const GEComputePassDescriptor &desc) {
         inComputePass = true;
     }

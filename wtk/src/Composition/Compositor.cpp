@@ -833,6 +833,7 @@ void Compositor::unobserveLayerTree(LayerTree *tree){
 }
 
 void Compositor::hasDetached(LayerTree *tree){
+    renderTargetStore.cleanTreeTargets(tree);
     unobserveLayerTree(tree);
 }
 

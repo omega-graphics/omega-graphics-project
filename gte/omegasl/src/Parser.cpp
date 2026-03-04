@@ -13,7 +13,21 @@ namespace std {
 
 namespace omegasl {
 
-
+    /// Operator precedence for binary expressions (higher = tighter binding). Multiplicative > additive > comparison.
+    static int getBinaryPrecedence(const Tok &t) {
+        if (t.type == TOK_ASTERISK) return 3;
+        if (t.type != TOK_OP) return -1;
+        if (t.str == OP_DIV || t.str == "*") return 3;
+        if (t.str == OP_PLUS || t.str == OP_MINUS) return 2;
+        if (t.str == OP_ISEQUAL || t.str == OP_NOTEQUAL || t.str == OP_LESS || t.str == OP_LESSEQUAL ||
+            t.str == OP_GREATER || t.str == OP_GREATEREQUAL) return 1;
+        if (t.str == OP_EQUAL) return 0;
+        return -1;
+    }
+    static OmegaCommon::String getBinaryOpStr(const Tok &t) {
+        if (t.type == TOK_ASTERISK) return "*";
+        return t.str;
+    }
 
     enum class AttributeContext : int {
         VertexShaderArgument,
@@ -2356,7 +2370,7 @@ namespace omegasl {
         return defaultR;
     }
 
-    bool Parser::parseOpExpr(Tok &first_tok, ast::Expr **expr,ast::Scope *parentScope) {
+    bool Parser::parseOpExpr(Tok &first_tok, ast::Expr **expr,ast::Scope *parentScope, int minPrec) {
         bool defaultR = true;
         bool hasPrefixOp = false;
 
@@ -2486,21 +2500,29 @@ namespace omegasl {
                     unaryExpr->expr = _expr;
                     _expr = unaryExpr;
                 }
-                else {
-                    auto binaryExpr = new ast::BinaryExpr();
-                    binaryExpr->type = BINARY_EXPR;
-                    binaryExpr->op = first_tok.str;
-                    binaryExpr->lhs = _expr;
-                    first_tok = getTok();
-                    _expr = parseExpr(first_tok,parentScope);
-                    if(_expr == nullptr){
-                        delete binaryExpr;
-                        return false;
-                    }
-                    binaryExpr->rhs = _expr;
-                    binaryExpr->scope = parentScope;
-                    _expr = binaryExpr;
+            }
+
+            /// Precedence-climbing: parse binary operators with precedence >= minPrec (multiplicative > additive > comparison).
+            while(true){
+                first_tok = aheadTok();
+                int prec = getBinaryPrecedence(first_tok);
+                if(prec < 0 || prec < minPrec)
+                    break;
+                ++tokIdx;
+                OmegaCommon::String opStr = getBinaryOpStr(first_tok);
+                first_tok = getTok();
+                ast::Expr *rhs = nullptr;
+                if(!parseOpExpr(first_tok, &rhs, parentScope, prec + 1)){
+                    if(rhs) delete rhs;
+                    return false;
                 }
+                auto *binaryExpr = new ast::BinaryExpr();
+                binaryExpr->type = BINARY_EXPR;
+                binaryExpr->op = opStr;
+                binaryExpr->lhs = _expr;
+                binaryExpr->rhs = rhs;
+                binaryExpr->scope = parentScope;
+                _expr = binaryExpr;
             }
 
         }

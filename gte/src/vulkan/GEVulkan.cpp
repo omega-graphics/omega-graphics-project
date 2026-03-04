@@ -168,7 +168,22 @@ _NAMESPACE_BEGIN_
         for(auto dev : vk_devs){
             VkPhysicalDeviceProperties props;
             vkGetPhysicalDeviceProperties(dev,&props);
-            GTEDeviceFeatures features {false};
+
+            bool hasRaytracing = false;
+            std::uint32_t devExtCount = 0;
+            if(vkEnumerateDeviceExtensionProperties(dev, nullptr, &devExtCount, nullptr) == VK_SUCCESS && devExtCount > 0){
+                OmegaCommon::Vector<VkExtensionProperties> devExts(devExtCount);
+                if(vkEnumerateDeviceExtensionProperties(dev, nullptr, &devExtCount, devExts.data()) == VK_SUCCESS){
+                    bool hasAS = false, hasRTP = false;
+                    for(auto &e : devExts){
+                        if(std::strcmp(e.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) == 0) hasAS = true;
+                        if(std::strcmp(e.extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) == 0) hasRTP = true;
+                    }
+                    hasRaytracing = hasAS && hasRTP;
+                }
+            }
+
+            GTEDeviceFeatures features {hasRaytracing};
             GTEDevice::Type type = GTEDevice::Discrete;
             if(props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU){
                 type = GTEDevice::Discrete;
@@ -401,6 +416,11 @@ _NAMESPACE_BEGIN_
         hasSynchronization2Ext = enableDeviceExtension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,false);
         hasExtendedDynamicState = enableDeviceExtension(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,false);
 
+        hasBufferDeviceAddressExt = enableDeviceExtension(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,false);
+        hasDeferredHostOperationsExt = enableDeviceExtension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,false);
+        hasAccelerationStructureExt = enableDeviceExtension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,false);
+        hasRayTracingPipelineExt = enableDeviceExtension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,false);
+
         count = 0;
 
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice,&count,nullptr);
@@ -447,6 +467,18 @@ _NAMESPACE_BEGIN_
         extDynFeatures.extendedDynamicState = VK_TRUE;
         extDynFeatures.pNext = nullptr;
 
+        VkPhysicalDeviceBufferDeviceAddressFeaturesKHR bdaFeatures {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_KHR};
+        bdaFeatures.bufferDeviceAddress = VK_TRUE;
+        bdaFeatures.pNext = nullptr;
+
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR accelFeatures {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+        accelFeatures.accelerationStructure = VK_TRUE;
+        accelFeatures.pNext = nullptr;
+
+        VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtPipelineFeatures {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
+        rtPipelineFeatures.rayTracingPipeline = VK_TRUE;
+        rtPipelineFeatures.pNext = nullptr;
+
         void **pNextTail = &features2.pNext;
         if(hasSynchronization2Ext){
             *pNextTail = &sync2Features;
@@ -455,6 +487,18 @@ _NAMESPACE_BEGIN_
         if(hasExtendedDynamicState){
             *pNextTail = &extDynFeatures;
             pNextTail = &extDynFeatures.pNext;
+        }
+        if(hasBufferDeviceAddressExt){
+            *pNextTail = &bdaFeatures;
+            pNextTail = &bdaFeatures.pNext;
+        }
+        if(hasAccelerationStructureExt){
+            *pNextTail = &accelFeatures;
+            pNextTail = &accelFeatures.pNext;
+        }
+        if(hasRayTracingPipelineExt){
+            *pNextTail = &rtPipelineFeatures;
+            pNextTail = &rtPipelineFeatures.pNext;
         }
 
         VkDeviceCreateInfo info{};
@@ -466,7 +510,8 @@ _NAMESPACE_BEGIN_
         info.ppEnabledLayerNames = nullptr;
         info.ppEnabledExtensionNames = extensionNames.data();
 
-        if(hasSynchronization2Ext || hasExtendedDynamicState){
+        if(hasSynchronization2Ext || hasExtendedDynamicState ||
+           hasBufferDeviceAddressExt || hasAccelerationStructureExt || hasRayTracingPipelineExt){
             info.pNext = &features2;
             info.pEnabledFeatures = nullptr;
         } else {
@@ -528,12 +573,31 @@ _NAMESPACE_BEGIN_
             vkCmdSetPrimitiveTopologyExt = (PFN_vkCmdSetPrimitiveTopologyEXT) vkGetDeviceProcAddr(this->device,"vkCmdSetPrimitiveTopologyEXT");
         }
 
+        if(hasBufferDeviceAddressExt){
+            vkGetBufferDeviceAddressKhr = (PFN_vkGetBufferDeviceAddressKHR) vkGetDeviceProcAddr(this->device,"vkGetBufferDeviceAddressKHR");
+        }
+
+        if(hasAccelerationStructureExt){
+            vkCreateAccelerationStructureKhr = (PFN_vkCreateAccelerationStructureKHR) vkGetDeviceProcAddr(this->device,"vkCreateAccelerationStructureKHR");
+            vkDestroyAccelerationStructureKhr = (PFN_vkDestroyAccelerationStructureKHR) vkGetDeviceProcAddr(this->device,"vkDestroyAccelerationStructureKHR");
+            vkGetAccelerationStructureBuildSizesKhr = (PFN_vkGetAccelerationStructureBuildSizesKHR) vkGetDeviceProcAddr(this->device,"vkGetAccelerationStructureBuildSizesKHR");
+            vkCmdBuildAccelerationStructuresKhr = (PFN_vkCmdBuildAccelerationStructuresKHR) vkGetDeviceProcAddr(this->device,"vkCmdBuildAccelerationStructuresKHR");
+            vkCmdCopyAccelerationStructureKhr = (PFN_vkCmdCopyAccelerationStructureKHR) vkGetDeviceProcAddr(this->device,"vkCmdCopyAccelerationStructureKHR");
+            vkGetAccelerationStructureDeviceAddressKhr = (PFN_vkGetAccelerationStructureDeviceAddressKHR) vkGetDeviceProcAddr(this->device,"vkGetAccelerationStructureDeviceAddressKHR");
+        }
+
+        if(hasRayTracingPipelineExt){
+            vkCmdTraceRaysKhr = (PFN_vkCmdTraceRaysKHR) vkGetDeviceProcAddr(this->device,"vkCmdTraceRaysKHR");
+        }
 
         VmaAllocatorCreateInfo allocator_info {};
         allocator_info.instance = instance;
         allocator_info.device = this->device;
         allocator_info.physicalDevice = physicalDevice;
         allocator_info.vulkanApiVersion = VK_API_VERSION_1_2;
+        if(hasBufferDeviceAddressExt){
+            allocator_info.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+        }
         auto _res = vmaCreateAllocator(&allocator_info,&memAllocator);
 
         if(_res != VK_SUCCESS){
@@ -576,6 +640,12 @@ _NAMESPACE_BEGIN_
                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                             VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
                             VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
+        if(hasBufferDeviceAddressExt){
+            buffer_desc.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        }
+        if(hasAccelerationStructureExt){
+            buffer_desc.usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+        }
         buffer_desc.sharingMode = queueFamilyIndices.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
         buffer_desc.queueFamilyIndexCount = buffer_desc.sharingMode == VK_SHARING_MODE_CONCURRENT
                                                 ? static_cast<std::uint32_t>(queueFamilyIndices.size())
@@ -1875,6 +1945,165 @@ _NAMESPACE_BEGIN_
 
         return SharedHandle<GETextureRenderTarget>(new GEVulkanTextureRenderTarget(this,vk_tex,fb));
     };
+
+    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
+
+    SharedHandle<GEBuffer> GEVulkanEngine::createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes){
+        struct VkAABB { float minX,minY,minZ,maxX,maxY,maxZ; };
+        size_t totalSize = sizeof(VkAABB) * boxes.size();
+        auto buffer = std::dynamic_pointer_cast<GEVulkanBuffer>(
+            makeBuffer({BufferDescriptor::Upload, totalSize, sizeof(VkAABB)}));
+        if(!buffer) return nullptr;
+
+        void *mapped = nullptr;
+        vmaMapMemory(memAllocator, buffer->alloc, &mapped);
+        auto *dst = reinterpret_cast<VkAABB *>(mapped);
+        for(size_t i = 0; i < boxes.size(); ++i){
+            dst[i].minX = boxes[i].minX;
+            dst[i].minY = boxes[i].minY;
+            dst[i].minZ = boxes[i].minZ;
+            dst[i].maxX = boxes[i].maxX;
+            dst[i].maxY = boxes[i].maxY;
+            dst[i].maxZ = boxes[i].maxZ;
+        }
+        vmaUnmapMemory(memAllocator, buffer->alloc);
+        return std::static_pointer_cast<GEBuffer>(buffer);
+    }
+
+    SharedHandle<GEAccelerationStruct> GEVulkanEngine::allocateAccelerationStructure(const GEAccelerationStructDescriptor &desc){
+        if(!hasAccelerationStructureExt || vkCreateAccelerationStructureKhr == nullptr ||
+           vkGetAccelerationStructureBuildSizesKhr == nullptr){
+            std::cerr << "Vulkan acceleration structure extension not available." << std::endl;
+            return nullptr;
+        }
+
+        std::vector<VkAccelerationStructureGeometryKHR> geometries;
+        std::vector<uint32_t> maxPrimitiveCounts;
+
+        for(auto & g : desc.data){
+            VkAccelerationStructureGeometryKHR geom {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+            geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+            if(g.type == GEAccelerationStructDescriptor::Geometry::TRIANGLES){
+                geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+                geom.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+                geom.geometry.triangles.pNext = nullptr;
+                geom.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+                geom.geometry.triangles.vertexStride = sizeof(float) * 3;
+                geom.geometry.triangles.maxVertex = 0;
+                geom.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(g.data.triangleList.buffer);
+                if(vkBuf && hasBufferDeviceAddressExt && vkGetBufferDeviceAddressKhr){
+                    VkBufferDeviceAddressInfoKHR addrInfo {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR};
+                    addrInfo.buffer = vkBuf->buffer;
+                    geom.geometry.triangles.vertexData.deviceAddress = vkGetBufferDeviceAddressKhr(device, &addrInfo);
+                    uint32_t vertexCount = static_cast<uint32_t>(vkBuf->size() / (sizeof(float) * 3));
+                    geom.geometry.triangles.maxVertex = vertexCount > 0 ? vertexCount - 1 : 0;
+                    maxPrimitiveCounts.push_back(vertexCount / 3);
+                } else {
+                    maxPrimitiveCounts.push_back(0);
+                }
+            } else {
+                geom.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+                geom.geometry.aabbs.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
+                geom.geometry.aabbs.pNext = nullptr;
+                geom.geometry.aabbs.stride = sizeof(VkAabbPositionsKHR);
+                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(g.data.aabb.buffer);
+                if(vkBuf && hasBufferDeviceAddressExt && vkGetBufferDeviceAddressKhr){
+                    VkBufferDeviceAddressInfoKHR addrInfo {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR};
+                    addrInfo.buffer = vkBuf->buffer;
+                    geom.geometry.aabbs.data.deviceAddress = vkGetBufferDeviceAddressKhr(device, &addrInfo);
+                    maxPrimitiveCounts.push_back(static_cast<uint32_t>(vkBuf->size() / sizeof(VkAabbPositionsKHR)));
+                } else {
+                    maxPrimitiveCounts.push_back(0);
+                }
+            }
+            geometries.push_back(geom);
+        }
+
+        VkAccelerationStructureBuildGeometryInfoKHR buildInfo {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+        buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR |
+                          VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+        buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        if(geometries.empty()){
+            buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+            buildInfo.geometryCount = 0;
+            buildInfo.pGeometries = nullptr;
+        } else {
+            buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+            buildInfo.geometryCount = static_cast<uint32_t>(geometries.size());
+            buildInfo.pGeometries = geometries.data();
+        }
+
+        VkAccelerationStructureBuildSizesInfoKHR sizeInfo {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+        vkGetAccelerationStructureBuildSizesKhr(
+            device,
+            VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+            &buildInfo,
+            maxPrimitiveCounts.empty() ? nullptr : maxPrimitiveCounts.data(),
+            &sizeInfo);
+
+        size_t structSize = sizeInfo.accelerationStructureSize > 0 ? sizeInfo.accelerationStructureSize : 256;
+        size_t scratchSize = sizeInfo.buildScratchSize > 0 ? sizeInfo.buildScratchSize : 256;
+
+        VkBufferCreateInfo structBufInfo {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        structBufInfo.size = structSize;
+        structBufInfo.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        structBufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo structAllocInfo {};
+        structAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+        VkBuffer structBuf = VK_NULL_HANDLE;
+        VmaAllocation structAlloc = nullptr;
+        VmaAllocationInfo structAllocResult {};
+        auto res = vmaCreateBuffer(memAllocator, &structBufInfo, &structAllocInfo, &structBuf, &structAlloc, &structAllocResult);
+        if(res != VK_SUCCESS || structBuf == VK_NULL_HANDLE){
+            std::cerr << "Vulkan accel struct buffer creation failed (" << res << ")" << std::endl;
+            return nullptr;
+        }
+        VkBufferView nullView = VK_NULL_HANDLE;
+        auto structBuffer = SharedHandle<GEVulkanBuffer>(
+            new GEVulkanBuffer(BufferDescriptor::GPUOnly, this, structBuf, nullView, structAlloc, structAllocResult));
+
+        VkBufferCreateInfo scratchBufInfo {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        scratchBufInfo.size = scratchSize;
+        scratchBufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        scratchBufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo scratchAllocInfo {};
+        scratchAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+        VkBuffer scratchBuf = VK_NULL_HANDLE;
+        VmaAllocation scratchAlloc = nullptr;
+        VmaAllocationInfo scratchAllocResult {};
+        res = vmaCreateBuffer(memAllocator, &scratchBufInfo, &scratchAllocInfo, &scratchBuf, &scratchAlloc, &scratchAllocResult);
+        if(res != VK_SUCCESS || scratchBuf == VK_NULL_HANDLE){
+            std::cerr << "Vulkan accel struct scratch buffer creation failed (" << res << ")" << std::endl;
+            return nullptr;
+        }
+        VkBufferView nullView2 = VK_NULL_HANDLE;
+        auto scratchBuffer = SharedHandle<GEVulkanBuffer>(
+            new GEVulkanBuffer(BufferDescriptor::GPUOnly, this, scratchBuf, nullView2, scratchAlloc, scratchAllocResult));
+
+        VkAccelerationStructureCreateInfoKHR asCreateInfo {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
+        asCreateInfo.buffer = structBuf;
+        asCreateInfo.size = structSize;
+        asCreateInfo.type = buildInfo.type;
+
+        VkAccelerationStructureKHR accelStruct = VK_NULL_HANDLE;
+        res = vkCreateAccelerationStructureKhr(device, &asCreateInfo, nullptr, &accelStruct);
+        if(res != VK_SUCCESS || accelStruct == VK_NULL_HANDLE){
+            std::cerr << "Vulkan acceleration structure creation failed (" << res << ")" << std::endl;
+            return nullptr;
+        }
+
+        return SharedHandle<GEAccelerationStruct>(
+            new GEVulkanAccelerationStruct(this, accelStruct, structBuffer, scratchBuffer));
+    }
+
+    #endif
 
     GEVulkanEngine::~GEVulkanEngine(){
         if(device != VK_NULL_HANDLE){

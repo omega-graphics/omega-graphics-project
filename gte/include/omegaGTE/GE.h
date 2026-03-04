@@ -14,7 +14,7 @@
 #include <sdkddkver.h>
 /// If Windows Version is Greater then Windows 10 1809 (Redstone 5)
 #if NTDDI_VERSION >= NTDDI_WIN10_RS5
-// #define OMEGAGTE_RAYTRACING_SUPPORTED 1
+#define OMEGAGTE_RAYTRACING_SUPPORTED 1
 #endif
 
 #define DEBUG_ENGINE_PREFIX "GED3D12Engine_Internal"
@@ -56,6 +56,8 @@
 #endif
 
 #define DEBUG_ENGINE_PREFIX "GEVulkanEngine_Internal"
+
+#define OMEGAGTE_RAYTRACING_SUPPORTED 1
 #endif
 
 #define DEBUG_STREAM(message) std::cout << "[" << DEBUG_ENGINE_PREFIX << "] - " << message << std::endl
@@ -231,8 +233,18 @@ _NAMESPACE_BEGIN_
         };
         OmegaCommon::Vector<Geometry> data;
     public:
-        void addTriangleBuffer(SharedHandle<GEBuffer> & buffer);
-        void addBoundingBoxBuffer(SharedHandle<GEBuffer> & buffer);
+        void addTriangleBuffer(SharedHandle<GEBuffer> & buffer){
+            Geometry g {};
+            g.type = Geometry::TRIANGLES;
+            g.data.triangleList.buffer = buffer;
+            data.push_back(g);
+        }
+        void addBoundingBoxBuffer(SharedHandle<GEBuffer> & buffer){
+            Geometry g {};
+            g.type = Geometry::AABB;
+            g.data.aabb.buffer = buffer;
+            data.push_back(g);
+        }
     };
 
     struct OMEGAGTE_EXPORT GEAccelerationStruct {

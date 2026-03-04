@@ -59,6 +59,7 @@ namespace OmegaWTK::Composition {
         unsigned backingWidth = 1;
         unsigned backingHeight = 1;
         OmegaCommon::Vector<CanvasEffect> effectQueue;
+        OmegaCommon::Vector<std::pair<SharedHandle<OmegaGTE::GEBuffer>,std::size_t>> deferredBufferReleases;
         void rebuildBackingTarget();
         void createGradientTexture(bool linearOrRadial,Gradient & gradient,OmegaGTE::GRect & rect,SharedHandle<OmegaGTE::GETexture> & dest);
     public:
@@ -101,6 +102,7 @@ namespace OmegaWTK::Composition {
         void cleanTargets(LayerTree *tree,LayerTree::Limb *limb);
     public:
         void cleanTreeTargets(LayerTree *tree);
+        void removeRenderTarget(const SharedHandle<CompositionRenderTarget> & target);
         OmegaCommon::Map<SharedHandle<CompositionRenderTarget>,BackendCompRenderTarget> store = {};
     };
 
