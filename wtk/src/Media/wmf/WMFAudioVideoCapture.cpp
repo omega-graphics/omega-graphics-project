@@ -241,6 +241,7 @@ namespace OmegaWTK::Media {
                 std::this_thread::sleep_for(millis);
                 visualSink->presentCurrentFrame();
             }
+            return S_OK;
         }
         HRESULT STDMETHODCALLTYPE OnSetPresentationClock(IMFPresentationClock *pPresentationClock) override {
             pPresentationClock->AddRef();
@@ -626,4 +627,9 @@ namespace OmegaWTK::Media {
 
         }
     };
+
+    SharedHandle<VideoPlaybackSession> VideoPlaybackSession::Create(UniqueHandle<AudioVideoProcessor> & processor, SharedHandle<PlaybackDispatchQueue> & dispatchQueue) {
+        (void)dispatchQueue;
+        return std::shared_ptr<VideoPlaybackSession>(new WMFVideoPlaybackSession(processor));
+    }
 }

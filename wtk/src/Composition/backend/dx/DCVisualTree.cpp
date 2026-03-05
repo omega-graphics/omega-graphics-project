@@ -70,7 +70,7 @@ namespace OmegaWTK::Composition {
     void DCVisualTree::Visual::resize(Core::Rect &newRect){
         const auto backingWidth = toBackingDimension(newRect.w,renderScale);
         const auto backingHeight = toBackingDimension(newRect.h,renderScale);
-        swapChain->ResizeBuffers(2,backingWidth,backingHeight,DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
+        renderTarget.resizeSwapChain(backingWidth, backingHeight);
     }
 
     void DCVisualTree::Visual::updateShadowEffect(LayerEffect::DropShadowParams &params) {

@@ -186,9 +186,13 @@ _NAMESPACE_BEGIN_
          OMEGACOMMON_CLASS("OmegaGTE.GENativeRenderTarget")
         virtual void commitAndPresent() = 0;
 //        virtual void commitAndWait() = 0;
-        #ifdef _WIN32 
+        #ifdef _WIN32
         /// @returns IDXGISwapChain1 * if D3D11, else IDXGISwapChain3 *
         virtual void *getSwapChain() = 0;
+        /// Wait for GPU to finish, resize swap chain, and recreate RTVs. Call instead of IDXGISwapChain::ResizeBuffers.
+        virtual void resizeSwapChain(unsigned int width, unsigned int height) {}
+        /// Wait for this target's command queue to finish. Use to serialize cross-context texture pool use.
+        virtual void waitForGPU() {}
         #endif
      };
      class  OMEGAGTE_EXPORT GETextureRenderTarget : public GERenderTarget {

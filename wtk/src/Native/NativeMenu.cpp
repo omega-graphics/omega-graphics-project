@@ -1,5 +1,8 @@
 #include "omegaWTK/Native/NativeMenu.h"
 
+#ifdef TARGET_WIN32
+#include "win/WinMenu.h"
+#endif
 #ifdef TARGET_GTK
 #include "gtk/GTKMenu.h"
 #endif

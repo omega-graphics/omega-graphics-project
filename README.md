@@ -23,3 +23,6 @@ https://forms.gle/3akUSgjMj3txz2jD8
 
 And you will be given access to our libraries.
 
+wtk\tests\debug_ellipse_cdb.bat
+cmake --build build --target EllipsePathCompositorTest
+

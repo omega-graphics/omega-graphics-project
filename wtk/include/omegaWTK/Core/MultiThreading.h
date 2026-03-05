@@ -76,7 +76,7 @@ namespace Core {
 
     
     template<class _Ty,class ..._Args>
-    OMEGAWTK_EXPORT CopyOnWritePtr<_Ty> make_copy_on_write(_Ty && t,_Args && ...args){
+    inline CopyOnWritePtr<_Ty> make_copy_on_write(_Ty && t,_Args && ...args){
         static_assert(std::is_constructible_v<_Ty,_Args...>,"This item is not constructible");
         return CopyOnWritePtr<_Ty>(new _Ty(std::forward<_Args>(args)...));
     };

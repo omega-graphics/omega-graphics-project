@@ -16,6 +16,8 @@ _NAMESPACE_BEGIN_
     public:
         HWND hwnd;
         void *getSwapChain() override;
+        void resizeSwapChain(unsigned int width, unsigned int height) override;
+        void waitForGPU() override;
         SharedHandle<CommandBuffer> commandBuffer() override;
         void commitAndPresent() override;
         void notifyCommandBuffer(SharedHandle<CommandBuffer> & cb,SharedHandle<GEFence> & waitFence) override;

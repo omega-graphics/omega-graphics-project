@@ -2,6 +2,10 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Canvas.h"
 
+#ifdef TARGET_WIN32
+#include "../Media/wmf/WMFAudioVideoProcessor.h"
+#endif
+
 namespace OmegaWTK {
 
 static Core::Rect computeScaledRect(const Core::Rect &viewRect,

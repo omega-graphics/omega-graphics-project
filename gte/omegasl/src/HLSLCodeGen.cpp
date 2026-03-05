@@ -187,6 +187,16 @@ namespace omegasl {
                     shaderOut << ")";
                     break;
                 }
+                case ARRAY_EXPR : {
+                    auto _expr = (ast::ArrayExpr *)expr;
+                    shaderOut << "{";
+                    for (size_t i = 0; i < _expr->elm.size(); ++i) {
+                        if (i != 0) shaderOut << ",";
+                        generateExpr(_expr->elm[i]);
+                    }
+                    shaderOut << "}";
+                    break;
+                }
             }
         }
     private:

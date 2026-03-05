@@ -41,6 +41,47 @@ _NAMESPACE_BEGIN_
         return (void *)swapChain.Get();
     };
 
+    void GED3D12NativeRenderTarget::resizeSwapChain(unsigned int width, unsigned int height) {
+        if (width == 0 || height == 0) return;
+        if (!renderTargets.empty() && renderTargets[0] != nullptr) {
+            D3D12_RESOURCE_DESC d = renderTargets[0]->GetDesc();
+            if (d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+                static_cast<unsigned>(d.Width) == width && d.Height == height)
+                return;
+        }
+        ComPtr<ID3D12Device> device;
+        if (!renderTargets.empty() && renderTargets[0] != nullptr) {
+            if (FAILED(renderTargets[0]->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
+                return;
+        } else
+            return;
+        auto queue = (GED3D12CommandQueue *)commandQueue.get();
+        if (queue != nullptr)
+            queue->commitToGPUAndWait();
+        for (auto *r : renderTargets)
+            if (r != nullptr) r->Release();
+        renderTargets.clear();
+        HRESULT hr = swapChain->ResizeBuffers(2, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0);
+        if (FAILED(hr)) return;
+        const UINT rtvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvCpuHandle(rtvDescHeap->GetCPUDescriptorHandleForHeapStart());
+        for (unsigned i = 0; i < 2; i++) {
+            ComPtr<ID3D12Resource> backBuffer;
+            hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffer));
+            if (FAILED(hr)) return;
+            device->CreateRenderTargetView(backBuffer.Get(), nullptr, rtvCpuHandle);
+            rtvCpuHandle.Offset(1, rtvDescSize);
+            renderTargets.push_back(backBuffer.Detach());
+        }
+        frameIndex = swapChain->GetCurrentBackBufferIndex();
+    }
+
+    void GED3D12NativeRenderTarget::waitForGPU() {
+        auto queue = (GED3D12CommandQueue *)commandQueue.get();
+        if (queue != nullptr)
+            queue->commitToGPUAndWait();
+    }
+
     void
     GED3D12NativeRenderTarget::notifyCommandBuffer(SharedHandle<CommandBuffer> &cb, SharedHandle<GEFence> &waitFence) {
         commandQueue->notifyCommandBuffer(cb->commandBuffer,waitFence);

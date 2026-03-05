@@ -1,6 +1,8 @@
 #include "omegasl.h"
 
 #include <initializer_list>
+#include <utility>
+#include <variant>
 
 #if !defined(TARGET_METAL) & !defined(TARGET_DIRECTX) & !defined(TARGET_VULKAN)
 #error "Cannot Compile/Link OmegaGTE without specifiying Target Platform"
@@ -222,27 +224,28 @@ _NAMESPACE_BEGIN_
                 TRIANGLES,
                 AABB
             } type;
-            union {
-                struct {
-                    SharedHandle<GEBuffer> buffer;
-                } triangleList;
-                struct {
-                    SharedHandle<GEBuffer> buffer;
-                } aabb;
-            } data;
+            struct TriangleList { SharedHandle<GEBuffer> buffer; };
+            struct Aabb { SharedHandle<GEBuffer> buffer; };
+            std::variant<TriangleList, Aabb> data;
+
+            Geometry() : type(TRIANGLES), data(TriangleList{}) {}
+            void setTriangleList(SharedHandle<GEBuffer>& buffer) { type = TRIANGLES; data = TriangleList{buffer}; }
+            void setAabb(SharedHandle<GEBuffer>& buffer) { type = AABB; data = Aabb{buffer}; }
+            TriangleList& getTriangleList() { return std::get<TriangleList>(data); }
+            const TriangleList& getTriangleList() const { return std::get<TriangleList>(data); }
+            Aabb& getAabb() { return std::get<Aabb>(data); }
+            const Aabb& getAabb() const { return std::get<Aabb>(data); }
         };
         OmegaCommon::Vector<Geometry> data;
     public:
         void addTriangleBuffer(SharedHandle<GEBuffer> & buffer){
-            Geometry g {};
-            g.type = Geometry::TRIANGLES;
-            g.data.triangleList.buffer = buffer;
+            Geometry g;
+            g.setTriangleList(buffer);
             data.push_back(g);
         }
         void addBoundingBoxBuffer(SharedHandle<GEBuffer> & buffer){
-            Geometry g {};
-            g.type = Geometry::AABB;
-            g.data.aabb.buffer = buffer;
+            Geometry g;
+            g.setAabb(buffer);
             data.push_back(g);
         }
     };

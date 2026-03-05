@@ -1991,7 +1991,7 @@ _NAMESPACE_BEGIN_
                 geom.geometry.triangles.vertexStride = sizeof(float) * 3;
                 geom.geometry.triangles.maxVertex = 0;
                 geom.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
-                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(g.data.triangleList.buffer);
+                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(g.getTriangleList().buffer);
                 if(vkBuf && hasBufferDeviceAddressExt && vkGetBufferDeviceAddressKhr){
                     VkBufferDeviceAddressInfoKHR addrInfo {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR};
                     addrInfo.buffer = vkBuf->buffer;
@@ -2007,7 +2007,7 @@ _NAMESPACE_BEGIN_
                 geom.geometry.aabbs.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
                 geom.geometry.aabbs.pNext = nullptr;
                 geom.geometry.aabbs.stride = sizeof(VkAabbPositionsKHR);
-                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(g.data.aabb.buffer);
+                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(g.getAabb().buffer);
                 if(vkBuf && hasBufferDeviceAddressExt && vkGetBufferDeviceAddressKhr){
                     VkBufferDeviceAddressInfoKHR addrInfo {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR};
                     addrInfo.buffer = vkBuf->buffer;

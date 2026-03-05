@@ -121,7 +121,7 @@ namespace OmegaWTK {
          } params;
         VisualCommand() = delete;
 
-        #define VISUAL_COMMAND_ARGS_CHECK(SUBJECT,OBJECT...) std::enable_if_t<std::is_same_v<std::tuple<std::remove_cv_t<std::remove_reference_t<SUBJECT>>...>,std::tuple<OBJECT>>,int> = 0
+        #define VISUAL_COMMAND_ARGS_CHECK(SUBJECT,...) std::enable_if_t<std::is_same_v<std::tuple<std::remove_cv_t<std::remove_reference_t<SUBJECT>>...>,std::tuple<__VA_ARGS__>>,int> = 0
 
         template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::Rect,Core::SharedPtr<Brush>,Core::Optional<Border>)>
         VisualCommand(_Args && ...args):type(Rect),params(args...){};

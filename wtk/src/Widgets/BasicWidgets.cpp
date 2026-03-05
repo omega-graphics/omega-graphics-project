@@ -107,7 +107,7 @@ static inline const char * geometryReasonLabel(GeometryChangeReason reason){
 
 }
 
-SharedHandle<Widget> Container::Create(const Core::Rect & rect,WidgetPtr parent,...){
+SharedHandle<Widget> Container::Create(const Core::Rect & rect,WidgetPtr parent){
     return WIDGET_CREATE<Container>(rect,parent);
 }
 

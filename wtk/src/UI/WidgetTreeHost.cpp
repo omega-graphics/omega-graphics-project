@@ -555,16 +555,16 @@ namespace OmegaWTK {
             const auto durationMs = std::max(0.0,
                     resizeValidationSession.endTimestampMs - resizeValidationSession.beginTimestampMs);
             std::ostringstream failureReason;
+            Composition::Compositor::LaneDiagnosticsSnapshot beforeSnapshot {};
+            beforeSnapshot.submittedPacketCount = resizeValidationSession.baseSubmittedPackets;
+            beforeSnapshot.presentedPacketCount = resizeValidationSession.basePresentedPackets;
+            beforeSnapshot.droppedPacketCount = resizeValidationSession.baseDroppedPackets;
+            beforeSnapshot.failedPacketCount = resizeValidationSession.baseFailedPackets;
+            beforeSnapshot.epochDropCount = resizeValidationSession.baseEpochDrops;
+            beforeSnapshot.staleCoordinatorGenerationPacketCount = resizeValidationSession.baseStaleCoordinatorPackets;
             const bool pass = laneValidationPass(validationTuning,
                                                  resizeValidationSession.sampleCount,
-                                                 Composition::Compositor::LaneDiagnosticsSnapshot{
-                                                     .submittedPacketCount = resizeValidationSession.baseSubmittedPackets,
-                                                     .presentedPacketCount = resizeValidationSession.basePresentedPackets,
-                                                     .droppedPacketCount = resizeValidationSession.baseDroppedPackets,
-                                                     .failedPacketCount = resizeValidationSession.baseFailedPackets,
-                                                     .epochDropCount = resizeValidationSession.baseEpochDrops,
-                                                     .staleCoordinatorGenerationPacketCount = resizeValidationSession.baseStaleCoordinatorPackets
-                                                 },
+                                                 beforeSnapshot,
                                                  after,
                                                  failureReason);
             std::ostringstream summary;

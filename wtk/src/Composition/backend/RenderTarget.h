@@ -67,6 +67,12 @@ namespace OmegaWTK::Composition {
         void renderToTarget(VisualCommand::Type type,void *params);
         void applyEffectToTarget(const CanvasEffect & effect);
         void setRenderTargetSize(Core::Rect &rect);
+#ifdef _WIN32
+        /// Resize swap chain after waiting for GPU; use instead of calling ResizeBuffers on the swap chain directly.
+        void resizeSwapChain(unsigned int backingWidth, unsigned int backingHeight);
+        /// Wait for this context's native target GPU work to complete. Call after commit() to avoid cross-context texture pool races.
+        void waitForGPU();
+#endif
         /**
          Commit all queued render jobs to GPU.
         */

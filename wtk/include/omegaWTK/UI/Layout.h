@@ -1,5 +1,6 @@
 #include "omegaWTK/Core/Core.h"
 #include "omegaWTK/Composition/Animation.h"
+#include "omegaWTK/Composition/Canvas.h"
 
 #include <cstdint>
 #include <functional>
@@ -161,6 +162,22 @@ public:
 };
 
 using LayoutBehaviorPtr = SharedHandle<LayoutBehavior>;
+
+class ViewResizeCoordinator;
+
+class OMEGAWTK_EXPORT LegacyResizeCoordinatorBehavior : public LayoutBehavior {
+    ViewResizeCoordinator & coordinator_;
+public:
+    explicit LegacyResizeCoordinatorBehavior(ViewResizeCoordinator & coordinator);
+    MeasureResult measure(LayoutNode & node, const LayoutContext & ctx) override;
+    void arrange(LayoutNode & node, const LayoutContext & ctx) override;
+};
+
+class OMEGAWTK_EXPORT StackLayoutBehavior : public LayoutBehavior {
+public:
+    MeasureResult measure(LayoutNode & node, const LayoutContext & ctx) override;
+    void arrange(LayoutNode & node, const LayoutContext & ctx) override;
+};
 
 // ---------------------------------------------------------------------------
 // Resolver free functions (A3)

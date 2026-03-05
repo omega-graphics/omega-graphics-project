@@ -19,8 +19,8 @@ namespace OmegaWTK::Native {
         _In_reads_(dataCount) const NOTIFICATION_USER_INPUT_DATA* data,
         ULONG dataCount) override
         {
-
-        };
+            return S_OK;
+        }
     };
 
     CoCreatableClass(WinToastActivator);

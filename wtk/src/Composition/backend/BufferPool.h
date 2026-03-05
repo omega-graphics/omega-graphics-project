@@ -111,7 +111,7 @@ public:
             OmegaGTE::Shared
         };
         SharedHandle<OmegaGTE::GEBuffer> result;
-        if(heap != nullptr){
+        if(heap != nullptr && desc.usage != OmegaGTE::BufferDescriptor::Upload){
             result = heap->makeBuffer(desc);
         }
         if(result == nullptr){

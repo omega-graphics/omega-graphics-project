@@ -481,6 +481,7 @@ class OMEGAWTK_EXPORT SVGView : public View {
 public:
     OMEGACOMMON_CLASS("OmegaWTK.UI.SVGView")
 
+    ~SVGView();
     void setDelegate(SVGViewDelegate *delegate);
     void setRenderOptions(const SVGViewRenderOptions & options);
     const SVGViewRenderOptions & renderOptions() const;

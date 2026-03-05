@@ -63,7 +63,7 @@ Composition::Color parseColor(const OmegaCommon::String & s) {
 
 float parseFloatAttr(Core::XMLDocument::Tag & tag, const char * name, float fallback = 0.f) {
     auto val = tag.attribute(name);
-    if (val.empty())
+    if (val.size() == 0)
         return fallback;
     return std::strtof(OmegaCommon::String(val).c_str(), nullptr);
 }
@@ -303,7 +303,7 @@ namespace {
 
 void parseStyleAttrs(Core::XMLDocument::Tag & tag, SVGDrawOp & op) {
     auto fill = tag.attribute("fill");
-    if (!fill.empty()) {
+    if (fill.size() != 0) {
         OmegaCommon::String fs(fill);
         if (fs == "none")
             op.fillOpacity = 0.f;
@@ -314,11 +314,11 @@ void parseStyleAttrs(Core::XMLDocument::Tag & tag, SVGDrawOp & op) {
     }
 
     auto fo = tag.attribute("fill-opacity");
-    if (!fo.empty())
+    if (fo.size() != 0)
         op.fillOpacity = std::strtof(OmegaCommon::String(fo).c_str(), nullptr);
 
     auto stroke = tag.attribute("stroke");
-    if (!stroke.empty()) {
+    if (stroke.size() != 0) {
         OmegaCommon::String ss(stroke);
         if (ss == "none")
             op.strokeWidth = 0.f;
@@ -327,11 +327,11 @@ void parseStyleAttrs(Core::XMLDocument::Tag & tag, SVGDrawOp & op) {
     }
 
     auto sw = tag.attribute("stroke-width");
-    if (!sw.empty())
+    if (sw.size() != 0)
         op.strokeWidth = std::strtof(OmegaCommon::String(sw).c_str(), nullptr);
 
     auto so = tag.attribute("stroke-opacity");
-    if (!so.empty())
+    if (so.size() != 0)
         op.strokeOpacity = std::strtof(OmegaCommon::String(so).c_str(), nullptr);
 }
 
@@ -417,7 +417,7 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
     }
     else if (name == "path") {
         auto d = tag.attribute("d");
-        if (!d.empty()) {
+        if (d.size() != 0) {
             SVGDrawOp op {};
             op.type = SVGDrawOp::Type::Path;
             op.pathGeom.emplace(parseSVGPathData(OmegaCommon::String(d)));
@@ -443,6 +443,8 @@ SVGView::SVGView(const Core::Rect & rect, Composition::LayerTree * layerTree, Vi
       drawOps_(std::make_unique<SVGDrawOpList>()) {
     svgCanvas = makeCanvas(getLayerTreeLimb()->getRootLayer());
 }
+
+SVGView::~SVGView() = default;
 
 void SVGView::setDelegate(SVGViewDelegate * delegate) {
     delegate_ = delegate;

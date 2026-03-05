@@ -10,8 +10,8 @@
 /**
 * Every Widget Constructor comes with two default parameters: The rect, and the parent widget.
 */
-#define WIDGET_CONSTRUCTOR(args...) static SharedHandle<Widget> Create(const Core::Rect & rect,WidgetPtr parent,...args);
-#define WIDGET_CONSTRUCTOR_IMPL(args...) Create(const Core::Rect & rect,WidgetPtr parent,...args)
+#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(const Core::Rect & rect,WidgetPtr parent,## __VA_ARGS__);
+#define WIDGET_CONSTRUCTOR_IMPL(...) Create(const Core::Rect & rect,WidgetPtr parent,## __VA_ARGS__)
 #define WIDGET_CREATE make
 
 namespace OmegaWTK {

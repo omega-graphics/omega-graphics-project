@@ -8,8 +8,11 @@
 
 #include <atlstr.h>
 #include <cassert>
+#include <cstdio>
 #include <d3d12.h>
 #include <memory>
+
+#include <Windows.h>
 
 #include "OmegaGTE.h"
 
@@ -311,9 +314,14 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
     public:
         void setOutputBuffer(SharedHandle<GEBuffer> &buffer) override {
             _buffer = (GED3D12Buffer *)buffer.get();
-            CD3DX12_RANGE range(0,0);
-
-            _buffer->buffer->Map(0,&range,(void **)&_data_buffer);
+            HRESULT hr = _buffer->buffer->Map(0, nullptr, (void **)&_data_buffer);
+            {
+                char msg[256];
+                std::snprintf(msg, sizeof(msg),
+                    "[GED3D12 BufferWriter] Map(0,nullptr): hr=0x%08X _data_buffer=%p\n",
+                    (unsigned)hr, (void *)_data_buffer);
+                OutputDebugStringA(msg);
+            }
             currentOffset = 0;
         }
         void structBegin() override {
@@ -355,6 +363,8 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
 
         void sendToBuffer() override {
             assert(!inStruct && "");
+            if (_data_buffer == nullptr)
+                return;
             for(auto & block : blocks){
                 size_t dataSize = 0;
                 if(block.type == OMEGASL_FLOAT){
@@ -371,6 +381,14 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
                 }
                 memcpy(_data_buffer + currentOffset,block.data,dataSize);
                 currentOffset += dataSize;
+            }
+            if (currentOffset == 32u) {
+                const float *f = reinterpret_cast<const float *>(_data_buffer);
+                char msg[320];
+                std::snprintf(msg, sizeof(msg),
+                    "[GED3D12 BufferWriter] first vertex: pos=(%.3f,%.3f,%.3f,%.3f) color=(%.3f,%.3f,%.3f,%.3f)\n",
+                    f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
+                OutputDebugStringA(msg);
             }
         }
 
@@ -545,7 +563,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
             gd.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
             if(g.type == GEAccelerationStructDescriptor::Geometry::TRIANGLES){
                 gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.data.triangleList.buffer);
+                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.getTriangleList().buffer);
                 if(d3dBuf){
                     gd.Triangles.VertexBuffer.StartAddress = d3dBuf->buffer->GetGPUVirtualAddress();
                     gd.Triangles.VertexBuffer.StrideInBytes = sizeof(float) * 3;
@@ -554,7 +572,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
                 }
             } else {
                 gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
-                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.data.aabb.buffer);
+                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.getAabb().buffer);
                 if(d3dBuf){
                     gd.AABBs.AABBs.StartAddress = d3dBuf->buffer->GetGPUVirtualAddress();
                     gd.AABBs.AABBs.StrideInBytes = sizeof(D3D12_RAYTRACING_AABB);

@@ -224,7 +224,7 @@ _NAMESPACE_BEGIN_
             gd.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
             if(g.type == GEAccelerationStructDescriptor::Geometry::TRIANGLES){
                 gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.data.triangleList.buffer);
+                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.getTriangleList().buffer);
                 if(d3dBuf){
                     gd.Triangles.VertexBuffer.StartAddress = d3dBuf->buffer->GetGPUVirtualAddress();
                     gd.Triangles.VertexBuffer.StrideInBytes = sizeof(float) * 3;
@@ -233,7 +233,7 @@ _NAMESPACE_BEGIN_
                 }
             } else {
                 gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
-                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.data.aabb.buffer);
+                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.getAabb().buffer);
                 if(d3dBuf){
                     gd.AABBs.AABBs.StartAddress = d3dBuf->buffer->GetGPUVirtualAddress();
                     gd.AABBs.AABBs.StrideInBytes = sizeof(D3D12_RAYTRACING_AABB);

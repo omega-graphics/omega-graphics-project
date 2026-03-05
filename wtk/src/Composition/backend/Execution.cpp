@@ -2,8 +2,10 @@
 #include "VisualTree.h"
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <utility>
@@ -455,12 +457,24 @@ void Compositor::executeCurrentCommand(){
         const auto submitTimeCpu = std::chrono::steady_clock::now();
         markPacketSubmitted(currentCommand->syncLaneId,currentCommand->syncPacketId,submitTimeCpu);
         auto weakTelemetryState = telemetryState();
+        // #region agent log
+        {
+            std::ofstream f("../../../debug-85f774.log", std::ios::app);
+            if (f) {
+                auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                f << "{\"sessionId\":\"85f774\",\"location\":\"Execution.cpp:before_commit\",\"message\":\"before commit\",\"data\":{},\"timestamp\":" << ts << ",\"hypothesisId\":\"D\"}\n";
+            }
+        }
+        // #endregion
         targetContext->commit(currentCommand->syncLaneId,
                               currentCommand->syncPacketId,
                               submitTimeCpu,
                               [weakTelemetryState](const BackendSubmissionTelemetry & telemetry){
                                   Compositor::onBackendSubmissionCompleted(weakTelemetryState,telemetry);
                               });
+#ifdef _WIN32
+        targetContext->waitForGPU();
+#endif
         OMEGAWTK_DEBUG("Committed Data!")
     }
     else if(currentCommand->type == CompositorCommand::Layer){

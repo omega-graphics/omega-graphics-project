@@ -10,7 +10,10 @@
 #include "omegaWTK/Media/ImgCodec.h"
 #include <algorithm>
 #include <cmath>
+#include <chrono>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <utility>
 
 namespace OmegaWTK::Composition {
@@ -139,9 +142,7 @@ buffer<OmegaWTKColoredVertex> v_buffer : 0;
 [in v_buffer]
 vertex OmegaWTKColoredRasterData mainVertex(uint v_id : VertexID){
     OmegaWTKColoredVertex v = v_buffer[v_id];
-    OmegaWTKColoredRasterData rasterData;
-    rasterData.pos = v.pos;
-    rasterData.color = v.color;
+    OmegaWTKColoredRasterData rasterData = { v.pos, v.color };
     return rasterData;
 }
 
@@ -164,9 +165,7 @@ buffer<OmegaWTKTexturedVertex> v_buffer_1 : 1;
 [in v_buffer_1]
 vertex OmegaWTKTexturedRasterData textureVertex(uint v_id : VertexID){
     OmegaWTKTexturedVertex v = v_buffer_1[v_id];
-    OmegaWTKTexturedRasterData rasterData;
-    rasterData.pos = v.pos;
-    rasterData.texCoord = v.texCoord;
+    OmegaWTKTexturedRasterData rasterData = { v.pos, v.texCoord };
     return rasterData;
 }
 
@@ -186,9 +185,7 @@ struct OmegaWTKCopyRasterData internal {
 [in v_buffer_1]
 vertex OmegaWTKCopyRasterData copyVertex(uint v_id : VertexID){
     OmegaWTKTexturedVertex v = v_buffer_1[v_id];
-    OmegaWTKCopyRasterData rasterData;
-    rasterData.pos = v.pos;
-    rasterData.texCoord = v.texCoord;
+    OmegaWTKCopyRasterData rasterData = { v.pos, v.texCoord };
     return rasterData;
 }
 
@@ -354,8 +351,12 @@ fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
     }
 
     static void createResourcePools(){
-        textureHeap = gte.graphicsEngine->makeHeap({OmegaGTE::HeapDescriptor::Shared, kTextureHeapSize});
-        bufferHeap = gte.graphicsEngine->makeHeap({OmegaGTE::HeapDescriptor::Shared, kBufferHeapSize});
+        OmegaGTE::HeapDescriptor texHeapDesc{};
+        texHeapDesc.len = kTextureHeapSize;
+        OmegaGTE::HeapDescriptor bufHeapDesc{};
+        bufHeapDesc.len = kBufferHeapSize;
+        textureHeap = gte.graphicsEngine->makeHeap(texHeapDesc);
+        bufferHeap = gte.graphicsEngine->makeHeap(bufHeapDesc);
         texturePool = std::make_unique<TexturePool>(textureHeap);
         bufferPool = std::make_unique<BufferPool>(bufferHeap);
         fencePool = std::make_unique<FencePool>();
@@ -525,6 +526,17 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
         rebuildBackingTarget();
     }
 
+#ifdef _WIN32
+void BackendRenderTargetContext::resizeSwapChain(unsigned int backingWidth, unsigned int backingHeight) {
+    if (renderTarget != nullptr)
+        renderTarget->resizeSwapChain(backingWidth, backingHeight);
+}
+void BackendRenderTargetContext::waitForGPU() {
+    if (renderTarget != nullptr)
+        renderTarget->waitForGPU();
+}
+#endif
+
 void BackendRenderTargetContext::clear(float r, float g, float b, float a) {
     if(preEffectTarget == nullptr){
         return;
@@ -554,6 +566,15 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                             std::uint64_t syncPacketId,
                                             std::chrono::steady_clock::time_point submitTimeCpu,
                                             BackendSubmissionCompletionHandler completionHandler){
+        // #region agent log
+        {
+            std::ofstream f("../../../debug-85f774.log", std::ios::app);
+            if (f) {
+                auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:commit_start\",\"message\":\"commit start\",\"data\":{},\"timestamp\":" << ts << ",\"hypothesisId\":\"D\"}\n";
+            }
+        }
+        // #endregion
         if(renderTarget == nullptr || preEffectTarget == nullptr){
             if(completionHandler){
                 BackendSubmissionTelemetry telemetry {};
@@ -735,6 +756,21 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                   << " S:" << renderScale
                   << std::endl;
 
+        // #region agent log
+        {
+            std::ofstream f("../../../debug-85f774.log", std::ios::app);
+            if (f) {
+                auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:renderToTarget\",\"message\":\"entry\",\"data\":{\"type\":"
+                  << (int)type << "},\"timestamp\":" << ts << ",\"hypothesisId\":\"A\"}\n";
+            }
+        }
+        // #endregion
+
+        if (params == nullptr) {
+            return;
+        }
+
         size_t struct_size;
         bool useTextureRenderPipeline = false;
         float textureCoordDenomW = 1.f;
@@ -747,6 +783,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         switch (type) {
             case VisualCommand::Rect : {
                 auto & _params = ((VisualCommandParams*)params)->rectParams;
+                if (_params.brush == nullptr) return;
                 OmegaGTE::GRect r{OmegaGTE::GPoint2D {0,0},_params.rect.w,_params.rect.h};
                 auto te_params = OmegaGTE::TETessellationParams::Rect(r);
 
@@ -803,6 +840,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             }
             case VisualCommand::RoundedRect : {
                 auto & _params = ((VisualCommandParams*)params)->roundedRectParams;
+                if (_params.brush == nullptr) return;
                 // Tessellate in local space, then apply one translation by rect origin.
                 OmegaGTE::GRoundedRect localRect{
                         OmegaGTE::GPoint2D{0.f,0.f},
@@ -861,9 +899,9 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 const auto center = toNdcPoint(cx,cy);
 
                 const float twoPi = static_cast<float>(2.0 * OmegaGTE::PI);
-                const unsigned segmentCount = std::max(
+                const unsigned segmentCount = std::min(4096u, std::max(
                         96u,
-                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * renderScale)));
+                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * renderScale))));
                 auto prev = toNdcPoint(cx + rx,cy);
 
                 for(unsigned i = 1; i <= segmentCount; i++){
@@ -918,6 +956,17 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 return;
         }
 
+        // #region agent log
+        {
+            std::ofstream f("../../../debug-85f774.log", std::ios::app);
+            if (f) {
+                auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:after_switch\",\"message\":\"after switch\",\"data\":{\"vertexCount\":"
+                  << result.totalVertexCount() << "},\"timestamp\":" << ts << ",\"hypothesisId\":\"B\"}\n";
+            }
+        }
+        // #endregion
+
         if(result.totalVertexCount() == 0){
             return;
         }
@@ -946,7 +995,21 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             buffer = gte.graphicsEngine->makeBuffer(bufferDesc);
         }
 
+        // #region agent log
+        {
+            std::ofstream f("../../../debug-85f774.log", std::ios::app);
+            if (f) {
+                auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:buffer_ready\",\"message\":\"buffer ready\",\"data\":{},\"timestamp\":" << ts << ",\"hypothesisId\":\"C\"}\n";
+            }
+        }
+        // #endregion
+
         bufferWriter->setOutputBuffer(buffer);
+
+        // #region agent log
+        { std::ofstream f("../../../debug-85f774.log", std::ios::app); if (f) { auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:after_setOutputBuffer\",\"message\":\"after setOutputBuffer\",\"data\":{},\"timestamp\":" << ts << ",\"hypothesisId\":\"C1\"}\n"; } }
+        // #endregion
 
         auto cb = preEffectTarget->commandBuffer();
 
@@ -972,6 +1035,10 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
                 OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),
                 OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve);
+
+        // #region agent log
+        { std::ofstream f("../../../debug-85f774.log", std::ios::app); if (f) { auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:before_vertex_loop\",\"message\":\"before vertex loop\",\"data\":{},\"timestamp\":" << ts << ",\"hypothesisId\":\"C2\"}\n"; } }
+        // #endregion
 
         unsigned startVertexIndex = 0;
 
@@ -1031,15 +1098,32 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     writeTexVertexToBuffer(v.c.pt,cCoord);
                 }
                 else {
-                    auto & aColor = v.a.attachment ? v.a.attachment->color : fallbackColor;
-                    auto & bColor = v.b.attachment ? v.b.attachment->color : fallbackColor;
-                    auto & cColor = v.c.attachment ? v.c.attachment->color : fallbackColor;
-                    writeColorVertexToBuffer(v.a.pt,aColor);
-                    writeColorVertexToBuffer(v.b.pt,bColor);
-                    writeColorVertexToBuffer(v.c.pt,cColor);
+                    auto useColor = [&fallbackColor](const std::optional<OmegaGTE::TETessellationResult::AttachmentData> &att) -> OmegaGTE::FVec<4> {
+                        if (!att) return fallbackColor;
+                        const auto &c = att->color;
+                        if (c[0][0] == 0.f && c[1][0] == 0.f && c[2][0] == 0.f && c[3][0] == 0.f)
+                            return fallbackColor;
+                        return c;
+                    };
+                    OmegaGTE::FVec<4> aColor = useColor(v.a.attachment);
+                    OmegaGTE::FVec<4> bColor = useColor(v.b.attachment);
+                    OmegaGTE::FVec<4> cColor = useColor(v.c.attachment);
+                    writeColorVertexToBuffer(v.a.pt, aColor);
+                    writeColorVertexToBuffer(v.b.pt, bColor);
+                    writeColorVertexToBuffer(v.c.pt, cColor);
                 }
             }
         }
+
+        // #region agent log
+        {
+            std::ofstream f("../../../debug-85f774.log", std::ios::app);
+            if (f) {
+                auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:before_startRenderPass\",\"message\":\"before startRenderPass\",\"data\":{},\"timestamp\":" << ts << ",\"hypothesisId\":\"E\"}\n";
+            }
+        }
+        // #endregion
 
         cb->startRenderPass(renderPassDesc);
         if(useTextureRenderPipeline){

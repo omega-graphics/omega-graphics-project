@@ -602,6 +602,7 @@ _NAMESPACE_BEGIN_
    class Matrix {
    public:
        typedef typename std::array<Ty,row>::iterator row_pointer;
+       typedef typename std::array<Ty,row>::const_iterator const_row_pointer;
        typedef typename std::array<std::array<Ty,row>,column>::iterator column_pointer;
        typedef unsigned size_type;
 
@@ -634,6 +635,30 @@ _NAMESPACE_BEGIN_
                 return at(idx);
             }
             inline Ty & operator[](size_type idx) const{
+                return at(idx);
+            }
+       };
+
+       class const_row_pointer_wrapper {
+            const_row_pointer pt;
+       public:
+           explicit const_row_pointer_wrapper(const_row_pointer _pt):pt(_pt){}
+
+            typedef const_row_pointer iterator;
+            typedef const Ty & reference;
+
+            inline iterator begin(){
+                return pt;
+            }
+            inline iterator end(){
+                return pt + row;
+            }
+
+            inline const Ty & at(size_type idx) const{
+                assert(idx < row && "Cannot index row value at index");
+                return pt[idx];
+            }
+            inline const Ty & operator[](size_type idx) const{
                 return at(idx);
             }
        };
@@ -719,18 +744,18 @@ _NAMESPACE_BEGIN_
         }
        inline row_pointer_wrapper at(size_type idx){
            assert(idx < column && "Cannot index column pointer at index");
-           return row_pointer_wrapper {_data[idx].begin()};
+           return row_pointer_wrapper(_data[idx].begin());
        }
-       inline row_pointer_wrapper at(size_type idx) const{
+       inline const_row_pointer_wrapper at(size_type idx) const{
            assert(idx < column && "Cannot index column pointer at index");
-           return row_pointer_wrapper{_data[idx].begin()};
+           return const_row_pointer_wrapper(_data[idx].begin());
        }
 
        inline row_pointer_wrapper operator[](size_type idx){
             return at(idx);
        };
 
-       inline row_pointer_wrapper operator[](size_type idx) const{
+       inline const_row_pointer_wrapper operator[](size_type idx) const{
            return at(idx);
        };
 

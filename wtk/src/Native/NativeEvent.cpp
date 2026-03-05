@@ -45,7 +45,7 @@ NativeEvent::~NativeEvent() {
             delete reinterpret_cast<KeyUpParams *>(params);
             break;
         case ViewResize:
-            delete reinterpret_cast<ViewResize *>(params);
+            delete reinterpret_cast<struct ViewResize *>(params);
             break;
         case ScrollLeft:
         case ScrollRight:
@@ -55,7 +55,7 @@ NativeEvent::~NativeEvent() {
             break;
         case WindowWillStartResize:
         case WindowWillResize:
-            delete reinterpret_cast<WindowWillResize *>(params);
+            delete reinterpret_cast<struct WindowWillResize *>(params);
             break;
         case HasLoaded:
         case FocusGained:

@@ -86,17 +86,15 @@ namespace OmegaWTK::Native::Win {
     void select_item(void * menu,unsigned idx){
         WinMenu *_menu = (WinMenu *)menu;
         _menu->onSelectItem(idx);
-    };
-};
+    }
 
-namespace OmegaWTK::Native {
-    NM make_native_menu(const OmegaCommon::String &name){
-        return (NM)new Win::WinMenu(name);
-    };
-    NMI make_native_menu_item(const OmegaCommon::String & str,NM parent,bool hasSubMenu,NM subMenu){
-        return (NMI)new Win::WinMenuItem(str,(Win::WinMenu *)parent.get(),hasSubMenu,(Win::WinMenu *)subMenu.get());
-    };
-    NMI make_native_menu_seperator(){
-        return (NMI)new Win::WinMenuItem();
-    };
-}
+    NM make_win_menu(const OmegaCommon::String & name){
+        return (NM)new WinMenu(name);
+    }
+    NMI make_win_menu_item(const OmegaCommon::String & str, NM parent, bool hasSubMenu, NM subMenu){
+        return (NMI)new WinMenuItem(str, (WinMenu *)parent.get(), hasSubMenu, (WinMenu *)subMenu.get());
+    }
+    NMI make_win_menu_seperator(){
+        return (NMI)new WinMenuItem();
+    }
+};

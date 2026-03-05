@@ -32,8 +32,8 @@
          {
              "type":"git_clone",
              "url":"https://github.com/unicode-org/icu.git",
-             "dest":"$(third_party_dest)/icu-69/code",
-             "branch":"maint/maint-69"
+             "dest":"$(third_party_dest)/icu-78/code",
+             "branch":"maint/maint-78"
          },
          {
             "type":"git_clone",
