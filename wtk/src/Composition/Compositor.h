@@ -382,6 +382,7 @@ namespace OmegaWTK::Composition {
         friend class WindowLayer;
 
         void executeCurrentCommand();
+        void onQueueDrained();
 
     public:
         struct LayerTreeSyncSnapshot {

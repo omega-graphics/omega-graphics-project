@@ -140,6 +140,8 @@ _NAMESPACE_BEGIN_
         void notifyCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &waitFence) override;
         void submitCommandBuffer(SharedHandle<GECommandBuffer> & commandBuffer) override;
         void submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &signalFence) override;
+        void signalExternalFence(SharedHandle<GEFence> & fence) override;
+        void waitForFence(SharedHandle<GEFence> & fence, std::uint64_t value) override;
         SharedHandle<GECommandBuffer> getAvailableBuffer() override;
         GED3D12CommandQueue(GED3D12Engine *engine,unsigned size);
         ~GED3D12CommandQueue() override;

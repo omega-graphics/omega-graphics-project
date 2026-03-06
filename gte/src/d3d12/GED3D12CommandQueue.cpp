@@ -1014,6 +1014,26 @@ _NAMESPACE_BEGIN_
         multiQueueSync = false;
     }
 
+    void GED3D12CommandQueue::signalExternalFence(SharedHandle<GEFence> & fence) {
+        auto d3d12Fence = static_cast<GED3D12Fence *>(fence.get());
+        const auto signalValue = d3d12Fence->nextSignalValue++;
+        d3d12Fence->lastSignaledValue = signalValue;
+        commandQueue->Signal(d3d12Fence->fence.Get(), signalValue);
+    }
+
+    void GED3D12CommandQueue::waitForFence(SharedHandle<GEFence> & fence, std::uint64_t value) {
+        if (value == 0) return;
+        auto d3d12Fence = static_cast<GED3D12Fence *>(fence.get());
+        const UINT64 completed = d3d12Fence->fence->GetCompletedValue();
+        if (completed >= value) return;
+        HANDLE ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (ev == nullptr) return;
+        HRESULT hr = d3d12Fence->fence->SetEventOnCompletion(value, ev);
+        if (SUCCEEDED(hr))
+            WaitForSingleObject(ev, INFINITE);
+        CloseHandle(ev);
+    }
+
     void GED3D12CommandBuffer::reset(){
         closed = false;
         firstRenderPass = true;

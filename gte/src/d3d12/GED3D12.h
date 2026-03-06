@@ -82,7 +82,8 @@ _NAMESPACE_BEGIN_
         }
         void *native() override {
             return fence.Get();
-        };
+        }
+        std::uint64_t getLastSignaledValue() const override { return lastSignaledValue; }
         explicit GED3D12Fence(ID3D12Fence *fence):fence(fence){};
     };
 

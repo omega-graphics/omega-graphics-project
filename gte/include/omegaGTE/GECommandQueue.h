@@ -228,6 +228,12 @@ _NAMESPACE_BEGIN_
         /// @brief Schedules all enqueued command buffers to GTEDevice for sequential execution and waits for all command buffers to be completed.
         virtual void commitToGPUAndWait() = 0;
 
+        /// @brief Signal a fence on this queue (e.g. after waitForGPU) for cross-queue sync when no command buffer is being submitted.
+        virtual void signalExternalFence(SharedHandle<GEFence> & fence) { (void)fence; }
+
+        /// @brief CPU wait until the fence reaches or exceeds the given value (e.g. before using a texture from another queue).
+        virtual void waitForFence(SharedHandle<GEFence> & fence, std::uint64_t value) { (void)fence; (void)value; }
+
         virtual ~GECommandQueue() = default;
     };
 _NAMESPACE_END_

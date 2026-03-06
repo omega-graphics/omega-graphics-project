@@ -193,6 +193,8 @@ _NAMESPACE_BEGIN_
         virtual void resizeSwapChain(unsigned int width, unsigned int height) {}
         /// Wait for this target's command queue to finish. Use to serialize cross-context texture pool use.
         virtual void waitForGPU() {}
+        /// CPU wait until the given fence has been signaled (e.g. before using a texture produced on another queue).
+        virtual void waitForFence(SharedHandle<GEFence> & fence) { (void)fence; }
         #endif
      };
      class  OMEGAGTE_EXPORT GETextureRenderTarget : public GERenderTarget {
@@ -200,6 +202,10 @@ _NAMESPACE_BEGIN_
          OMEGACOMMON_CLASS("OmegaGTE.GETextureRenderTarget")
          virtual void commit() = 0;
          virtual SharedHandle<GETexture> underlyingTexture() = 0;
+         /// Wait for this target's command queue to finish. Use before releasing pooled textures.
+         virtual void waitForGPU() {}
+         /// Signal fence after all texture work is done (e.g. after waitForGPU when effects were applied).
+         virtual void signalFence(SharedHandle<GEFence> & fence) { (void)fence; }
      };
 
 _NAMESPACE_END_

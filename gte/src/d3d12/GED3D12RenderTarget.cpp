@@ -82,6 +82,14 @@ _NAMESPACE_BEGIN_
             queue->commitToGPUAndWait();
     }
 
+    void GED3D12NativeRenderTarget::waitForFence(SharedHandle<GEFence> & fence) {
+        auto *q = static_cast<GED3D12CommandQueue *>(commandQueue.get());
+        if (q == nullptr) return;
+        std::uint64_t value = fence->getLastSignaledValue();
+        if (value > 0)
+            q->waitForFence(fence, value);
+    }
+
     void
     GED3D12NativeRenderTarget::notifyCommandBuffer(SharedHandle<CommandBuffer> &cb, SharedHandle<GEFence> &waitFence) {
         commandQueue->notifyCommandBuffer(cb->commandBuffer,waitFence);
@@ -213,6 +221,16 @@ _NAMESPACE_BEGIN_
 
     void GED3D12TextureRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> &cb) {
         commandQueue->submitCommandBuffer(cb->commandBuffer);
+    }
+
+    void GED3D12TextureRenderTarget::waitForGPU() {
+        if (commandQueue != nullptr)
+            commandQueue->commitToGPUAndWait();
+    }
+
+    void GED3D12TextureRenderTarget::signalFence(SharedHandle<GEFence> & fence) {
+        if (commandQueue != nullptr)
+            commandQueue->signalExternalFence(fence);
     }
 
     void GED3D12TextureRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> &cb,

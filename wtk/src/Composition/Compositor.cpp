@@ -1007,6 +1007,12 @@ CompositorScheduler::CompositorScheduler(Compositor * compositor):compositor(com
                 compositor->currentCommand = command;
             }
             processCommand(command);
+            {
+                std::lock_guard<std::mutex> lk(compositor->mutex);
+                if(compositor->commandQueue.empty()){
+                    compositor->onQueueDrained();
+                }
+            }
         };
 
         {

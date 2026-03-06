@@ -430,7 +430,11 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
         OmegaGTE::GETexture::RenderTarget
     };
 
-    if(texturePool){
+    if(texturePool && (targetTexture || effectTexture)){
+#ifdef _WIN32
+        if(renderTarget != nullptr)
+            renderTarget->waitForGPU();
+#endif
         if(targetTexture)
             texturePool->release(std::move(targetTexture), poolKey);
         if(effectTexture)
@@ -490,16 +494,22 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
         OmegaGTE::TexturePixelFormat::RGBA8Unorm,
         OmegaGTE::GETexture::RenderTarget
     };
-    imageProcessor.reset();
-    preEffectTarget.reset();
-    effectTarget.reset();
-    tessellationEngineContext.reset();
-    if(texturePool){
+    if(texturePool && (targetTexture || effectTexture)){
+#ifdef _WIN32
+        if(preEffectTarget != nullptr)
+            preEffectTarget->waitForGPU();
+        if(renderTarget != nullptr)
+            renderTarget->waitForGPU();
+#endif
         if(targetTexture)
             texturePool->release(std::move(targetTexture), poolKey);
         if(effectTexture)
             texturePool->release(std::move(effectTexture), poolKey);
     }
+    imageProcessor.reset();
+    preEffectTarget.reset();
+    effectTarget.reset();
+    tessellationEngineContext.reset();
     for(auto & entry : deferredBufferReleases){
         if(bufferPool && entry.first)
             bufferPool->release(std::move(entry.first), entry.second);
@@ -595,21 +605,25 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                      effectTarget != nullptr;
         if(canApplyEffects){
             preEffectTarget->submitCommandBuffer(_l_cb);
+            preEffectTarget->commit();
+            imageProcessor->applyEffects(effectTexture,preEffectTarget,effectQueue);
+            preEffectTarget->waitForGPU();
+            preEffectTarget->signalFence(fence);
+        } else {
+            preEffectTarget->submitCommandBuffer(_l_cb, fence);
+            preEffectTarget->commit();
         }
-        else {
-            preEffectTarget->submitCommandBuffer(_l_cb,fence);
-        }
-        preEffectTarget->commit();
-
         SharedHandle<OmegaGTE::GETexture> finalTexture = preEffectTarget->underlyingTexture();
         if(canApplyEffects){
-            imageProcessor->applyEffects(effectTexture,preEffectTarget,effectQueue);
             finalTexture = effectTexture;
         }
         effectQueue.clear();
 
         auto cb = renderTarget->commandBuffer();
 
+#ifdef _WIN32
+        renderTarget->waitForFence(fence);
+#endif
         renderTarget->notifyCommandBuffer(cb, fence);
         OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
         renderPassDesc.depthStencilAttachment.disabled = true;
@@ -887,6 +901,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                                 _params.brush->color.b,
                                                 _params.brush->color.a);
                 }
+                if(color[0][0] == 0.f && color[1][0] == 0.f && color[2][0] == 0.f && color[3][0] == 0.f)
+                    color = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
 
                 auto toNdcPoint = [&](float px,float py){
                     return OmegaGTE::GPoint3D{

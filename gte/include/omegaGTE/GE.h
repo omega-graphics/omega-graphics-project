@@ -176,7 +176,12 @@ _NAMESPACE_BEGIN_
     };
 
     /// @brief Provides command synchronization across multiple command queues.
-    class  OMEGAGTE_EXPORT GEFence : public GTEResource { public: OMEGACOMMON_CLASS("OmegaGTE.GEFence")};
+    class  OMEGAGTE_EXPORT GEFence : public GTEResource {
+    public:
+        OMEGACOMMON_CLASS("OmegaGTE.GEFence")
+        /// Value last signaled (or about to be signaled) by the producer queue; use for CPU wait.
+        virtual std::uint64_t getLastSignaledValue() const { return 0; }
+    };
 
     /// @brief Describes a Texture Sampler
     struct OMEGAGTE_EXPORT SamplerDescriptor {

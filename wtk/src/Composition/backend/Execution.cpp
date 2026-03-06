@@ -77,6 +77,13 @@ namespace {
         return normalized;
     }
 
+    static BackendRenderTargetContext *s_lastClearedContext = nullptr;
+    static void *s_lastClearedRenderTarget = nullptr;
+    static void resetLastClearedForNextBatch(){
+        s_lastClearedContext = nullptr;
+        s_lastClearedRenderTarget = nullptr;
+    }
+
     static BackendRenderTargetContext * ensureLayerSurfaceTarget(BackendCompRenderTarget & target,Layer * layer){
         if(layer == nullptr || target.visualTree == nullptr){
             return nullptr;
@@ -443,7 +450,14 @@ void Compositor::executeCurrentCommand(){
             return;
         }
 
-        targetContext->clear(bkgrd.r,bkgrd.g,bkgrd.b,bkgrd.a);
+        {
+            const bool sameTargetAsLast = (targetContext == s_lastClearedContext && comm->renderTarget.get() == s_lastClearedRenderTarget);
+            if (!sameTargetAsLast) {
+                targetContext->clear(bkgrd.r,bkgrd.g,bkgrd.b,bkgrd.a);
+                s_lastClearedContext = targetContext;
+                s_lastClearedRenderTarget = comm->renderTarget.get();
+            }
+        }
 
         for(auto & c : commands){
             targetContext->renderToTarget(c.type,(void *)&c.params);
@@ -604,7 +618,11 @@ void Compositor::executeCurrentCommand(){
     }
 
     currentCommand->status.set(CommandStatus::Ok);
-};
+}
+
+void Compositor::onQueueDrained(){
+    resetLastClearedForNextBatch();
+}
 
 
 };
