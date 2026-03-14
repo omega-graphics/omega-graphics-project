@@ -52,6 +52,7 @@ enum class OMEGAWTK_EXPORT KeyCode : int {
     Num0, Num1, Num2, Num3, Num4, Num5,
     Num6, Num7, Num8, Num9,
     F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+    F13, F14, F15,
     Escape, Tab, CapsLock, Space, Enter, Backspace, Delete,
     LeftShift, RightShift, LeftControl, RightControl,
     LeftAlt, RightAlt, LeftMeta, RightMeta,

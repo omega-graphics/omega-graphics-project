@@ -65,28 +65,65 @@ if(APPLE)
 		Set the variable with your Apple Developer Team ID or goto apple.com and register with the Apple Developer Program")
 	endif()
 	
+	# Strip version numbers from a dylib filename.
+	# e.g. "libicuuc.69.1.dylib" -> "libicuuc.dylib"
+	function(get_library_base_name FILENAME OUT_VAR)
+		string(REGEX REPLACE "\\.[0-9]+(\\.[0-9]+)*\\.dylib$" ".dylib" _STRIPPED "${FILENAME}")
+		set(${OUT_VAR} "${_STRIPPED}" PARENT_SCOPE)
+	endfunction()
+
 	macro(set_library_install_name LIB PATH)
+		cmake_parse_arguments("_ILN" "" "" "AFTER" ${ARGN})
 		get_filename_component(LIBNAME ${LIB} NAME)
-		add_custom_command(
-			OUTPUT "${LIB}_install_name"
-			COMMAND install_name_tool -id ${PATH} ${LIB} && touch ${LIB}_install_name
-			DEPENDS ${NAME}
-			COMMENT "Setting Install Name ${PATH} of Library ${LIB}")
-		add_custom_target("${LIBNAME}_install_name" DEPENDS "${LIB}_install_name")
+		get_library_base_name("${LIBNAME}" LIBNAME_BASE)
+		add_custom_target("${LIBNAME}_install_name"
+			COMMAND install_name_tool -id ${PATH} ${LIB}
+			COMMENT "Setting Install Name ${PATH} of Library ${LIBNAME_BASE}")
+		if(_ILN_AFTER)
+			add_dependencies("${LIBNAME}_install_name" ${_ILN_AFTER})
+		endif()
+		# Chain: subsequent operations on this library serialize after this one.
+		set("_LAST_INSTALL_NAME_OP_${LIBNAME}" "${LIBNAME}_install_name")
 	endmacro()
-	
-	macro(reset_library_dependent_name LIB OLD_PATH PATH)
+
+	macro(add_library_rpath LIB RPATH)
+		cmake_parse_arguments("_ALR" "" "" "AFTER" ${ARGN})
 		get_filename_component(LIBNAME ${LIB} NAME)
+		get_library_base_name("${LIBNAME}" LIBNAME_BASE)
+		set(_RPATH_SANITIZED "${RPATH}")
+		string(REPLACE "/" "_" _RPATH_SANITIZED "${_RPATH_SANITIZED}")
+		string(REPLACE "@" "_" _RPATH_SANITIZED "${_RPATH_SANITIZED}")
+		add_custom_target("${LIBNAME}_${_RPATH_SANITIZED}_add_rpath"
+			COMMAND install_name_tool -add_rpath ${RPATH} ${LIB} 2>/dev/null || true
+			COMMENT "Adding rpath ${RPATH} to ${LIBNAME_BASE}")
+		if(_ALR_AFTER)
+			add_dependencies("${LIBNAME}_${_RPATH_SANITIZED}_add_rpath" ${_ALR_AFTER})
+		endif()
+		if(DEFINED _LAST_INSTALL_NAME_OP_${LIBNAME})
+			add_dependencies("${LIBNAME}_${_RPATH_SANITIZED}_add_rpath" ${_LAST_INSTALL_NAME_OP_${LIBNAME}})
+		endif()
+		set("_LAST_INSTALL_NAME_OP_${LIBNAME}" "${LIBNAME}_${_RPATH_SANITIZED}_add_rpath")
+	endmacro()
+
+	macro(reset_library_dependent_name LIB OLD_PATH PATH)
+		cmake_parse_arguments("_RDN" "" "" "AFTER" ${ARGN})
+		get_filename_component(LIBNAME ${LIB} NAME)
+		get_library_base_name("${LIBNAME}" LIBNAME_BASE)
 		set(OLD_PATH_NAME "${OLD_PATH}")
 		string(REPLACE "/" "_" OLD_PATH_NAME "${OLD_PATH_NAME}")
 		string(REPLACE ":" "_" OLD_PATH_NAME "${OLD_PATH_NAME}")
 		string(REPLACE "@" "_" OLD_PATH_NAME "${OLD_PATH_NAME}")
-		add_custom_command(
-			OUTPUT "${LIB}_${OLD_PATH_NAME}_reset_dependent_name"
-			COMMAND install_name_tool -change ${OLD_PATH} ${PATH} ${LIB} && touch ${LIB}_${OLD_PATH_NAME}_reset_dependent_name
-			DEPENDS ${NAME}
-			COMMENT "Resetting Install Name From ${OLD_PATH} to ${PATH} in Dependent Library ${LIB}")
-		add_custom_target("${LIBNAME}_${OLD_PATH_NAME}_reset_dependent_name" DEPENDS "${LIB}_${OLD_PATH_NAME}_reset_dependent_name")
+		add_custom_target("${LIBNAME}_${OLD_PATH_NAME}_reset_dependent_name"
+			COMMAND install_name_tool -change ${OLD_PATH} ${PATH} ${LIB}
+			COMMENT "Resetting Dependent Name ${OLD_PATH} -> ${PATH} in ${LIBNAME_BASE}")
+		if(_RDN_AFTER)
+			add_dependencies("${LIBNAME}_${OLD_PATH_NAME}_reset_dependent_name" ${_RDN_AFTER})
+		endif()
+		# Chain: serialize with any previous operation on this same library.
+		if(DEFINED _LAST_INSTALL_NAME_OP_${LIBNAME})
+			add_dependencies("${LIBNAME}_${OLD_PATH_NAME}_reset_dependent_name" ${_LAST_INSTALL_NAME_OP_${LIBNAME}})
+		endif()
+		set("_LAST_INSTALL_NAME_OP_${LIBNAME}" "${LIBNAME}_${OLD_PATH_NAME}_reset_dependent_name")
 	endmacro()
 	
 	set(APP_BUNDLE_OUTPUT_DIR "${CMAKE_BINARY_DIR}/Apps")

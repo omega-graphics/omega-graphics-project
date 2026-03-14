@@ -5,6 +5,9 @@
 #ifdef TARGET_WIN32
 #include "../Media/wmf/WMFAudioVideoProcessor.h"
 #endif
+#ifdef TARGET_MACOS
+#include "../Media/avf/AVFAudioVideoProcessor.h"
+#endif
 
 namespace OmegaWTK {
 

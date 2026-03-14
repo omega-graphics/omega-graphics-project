@@ -122,17 +122,17 @@ void CocoaMenuItem::setState(bool state) {
 
 };
 
-namespace OmegaWTK::Native {
-    NMI make_native_menu_item(const OmegaCommon::String & str,NM parent,bool hasSubMenu,NM subMenu){
-        return (NMI)new Cocoa::CocoaMenuItem(str,std::dynamic_pointer_cast<Cocoa::CocoaMenu>(parent),hasSubMenu,std::dynamic_pointer_cast<Cocoa::CocoaMenu>(subMenu));
+namespace OmegaWTK::Native::Cocoa {
+    NMI make_cocoa_menu_item(const OmegaCommon::String & str,NM parent,bool hasSubMenu,NM subMenu){
+        return (NMI)new CocoaMenuItem(str,std::dynamic_pointer_cast<CocoaMenu>(parent),hasSubMenu,std::dynamic_pointer_cast<CocoaMenu>(subMenu));
     };
 
-    NMI make_native_menu_seperator(){
-        return (NMI)new Cocoa::CocoaMenuItem();
+    NMI make_cocoa_menu_seperator(){
+        return (NMI)new CocoaMenuItem();
     };
 
-    NM make_native_menu(const OmegaCommon::String & name){
-        return (NM)new Cocoa::CocoaMenu(name);
+    NM make_cocoa_menu(const OmegaCommon::String & name){
+        return (NM)new CocoaMenu(name);
     };
 }
 

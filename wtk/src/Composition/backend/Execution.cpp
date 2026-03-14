@@ -238,7 +238,6 @@ void Compositor::applyLayerTreePacketDeltasToBackendMirror(std::uint64_t syncLan
                         break;
                 }
                 auto & treeState = backendLayerMirror[delta.tree];
-                assert(delta.epoch >= treeState.lastAppliedEpoch);
                 if(delta.epoch < treeState.lastAppliedEpoch){
                     emitSyncTrace(
                             "deltaApplied nonMonotonicTreeEpoch lane=" + std::to_string(syncLaneId) +
@@ -263,7 +262,6 @@ void Compositor::applyLayerTreePacketDeltasToBackendMirror(std::uint64_t syncLan
                                     treeLayer->getLayerRect(),
                                     Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
                             layerState.enabled = true;
-                            assert(delta.epoch >= layerState.lastAppliedEpoch);
                             layerState.lastAppliedEpoch = std::max(layerState.lastAppliedEpoch,delta.epoch);
                         }
                         break;
@@ -291,7 +289,6 @@ void Compositor::applyLayerTreePacketDeltasToBackendMirror(std::uint64_t syncLan
                         else if(delta.type == LayerTreeDeltaType::LayerDisabled){
                             layerState.enabled = false;
                         }
-                        assert(delta.epoch >= layerState.lastAppliedEpoch);
                         layerState.lastAppliedEpoch = std::max(layerState.lastAppliedEpoch,delta.epoch);
                         break;
                     }

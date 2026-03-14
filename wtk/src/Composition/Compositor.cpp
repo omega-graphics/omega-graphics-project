@@ -508,6 +508,11 @@ void Compositor::coalesceLayerTreeDeltasLocked(OmegaCommon::Vector<LayerTreeDelt
     for(auto & delta : detaches){
         coalesced.push_back(delta);
     }
+    // Restore monotonic epoch order after type-based grouping.
+    std::sort(coalesced.begin(),coalesced.end(),
+              [](const LayerTreeDelta & a,const LayerTreeDelta & b){
+                  return a.epoch < b.epoch;
+              });
     deltas = std::move(coalesced);
 }
 
