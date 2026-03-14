@@ -765,6 +765,10 @@ public:
                 if(state == AnimationState::Pending){
                     AnimationRuntimeRegistry::setState(instance->handle,AnimationState::Running);
                 }
+                if(instance->pendingCompletion){
+                    // Final frame already queued — wait for packets to drain.
+                    continue;
+                }
 
                 float progress = instance->effectiveProgress(now,telemetry);
                 if(instance->lastQueuedProgress >= 0.f &&

@@ -2590,13 +2590,7 @@ void UIView::update(){
         startCompositionSession();
 
         auto viewStyle = resolveViewStyle(currentStyle,tag);
-        auto & rootBackground = rootCanvas->getCurrentFrame()->background;
         auto backgroundColor = viewStyle.backgroundColor.value_or(Composition::Color::Transparent);
-        rootBackground.r = backgroundColor.r;
-        rootBackground.g = backgroundColor.g;
-        rootBackground.b = backgroundColor.b;
-        rootBackground.a = backgroundColor.a;
-        rootCanvas->sendFrame();
 
         for(const auto & entry : resolved){
             const auto & spec = *entry.spec;
@@ -2733,6 +2727,26 @@ void UIView::update(){
             }
 
             target.canvas->sendFrame();
+        }
+
+        // Send the root canvas frame AFTER element frames so that element
+        // visuals are queued first in the packet and rendered before the root.
+        // Draw the view background as a rect so the root frame carries actual
+        // visual content (a "real frame") instead of being classified as a
+        // no-op transparent frame that skips the GPU commit path.  This
+        // ensures the root visual's GPU surface is properly initialised,
+        // allowing child layer visuals to composite correctly on top.
+        {
+            auto & rootBackground = rootCanvas->getCurrentFrame()->background;
+            rootBackground.r = backgroundColor.r;
+            rootBackground.g = backgroundColor.g;
+            rootBackground.b = backgroundColor.b;
+            rootBackground.a = backgroundColor.a;
+
+            auto rootBgBrush = Composition::ColorBrush(backgroundColor);
+            auto rootBgRect = localBounds;
+            rootCanvas->drawRect(rootBgRect, rootBgBrush);
+            rootCanvas->sendFrame();
         }
 
         endCompositionSession();

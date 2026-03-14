@@ -424,18 +424,11 @@ namespace OmegaWTK {
         observeWidgetLayerTreesRecurse(root.get());
         root->setTreeHostRecurse(this);
         initWidgetRecurse(root.get());
-        auto repaintRecurse = [&](auto &&self,Widget *widget) -> void {
-            if(widget == nullptr){
-                return;
-            }
-            if(widget->paintMode() == PaintMode::Automatic){
-                widget->invalidateNow(PaintReason::Initial);
-            }
-            for(auto & child : widget->children){
-                self(self,child);
-            }
-        };
-        repaintRecurse(repaintRecurse,root.get());
+        // Note: Widget::init() already calls executePaint(Initial, true) for
+        // each Automatic-mode widget during initWidgetRecurse, so a second
+        // repaint pass is not needed.  The redundant pass was generating
+        // duplicate compositor commands during startup, causing the first
+        // content frames to be overwritten by a late-arriving clear.
     }
 
     void WidgetTreeHost::notifyWindowResize(const Core::Rect &rect){

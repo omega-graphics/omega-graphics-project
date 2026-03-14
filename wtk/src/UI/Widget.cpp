@@ -191,6 +191,9 @@ void Widget::executePaint(PaintReason reason,bool immediate){
     if(mode != PaintMode::Automatic){
         return;
     }
+    if(reason == PaintReason::Initial && initialDrawComplete){
+        return;
+    }
     if(paintInProgress){
         if(options.coalesceInvalidates){
             hasPendingInvalidate = true;

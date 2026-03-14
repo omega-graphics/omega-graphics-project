@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <atomic>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -19,6 +20,11 @@
 namespace OmegaWTK::Composition {
 
 namespace {
+    /// Global monotonic counter for command sequence numbers.
+    /// Assigned in scheduleCommand() to capture the true submission order
+    /// of commands arriving at the compositor queue.
+    static std::atomic<uint64_t> g_commandSequenceSeed {1};
+
     static constexpr std::size_t kQueueTypeCount = 5;
 
     static inline bool syncTraceEnabled(){
@@ -1122,6 +1128,20 @@ void Compositor::scheduleCommand(SharedHandle<CompositorCommand> & command){
                 // Pressure lanes can additionally coalesce effect-heavy packets.
                 if(isLaneUnderPressure(command->syncLaneId)){
                     dropQueuedStaleForLaneLocked(command->syncLaneId,command);
+                }
+            }
+        }
+        // Assign a globally monotonic sequence number so the priority queue
+        // can preserve FIFO submission order as a final tie-breaker.
+        const uint64_t seq = g_commandSequenceSeed.fetch_add(1,std::memory_order_relaxed);
+        command->sequenceNumber = seq;
+        if(command->type == CompositorCommand::Packet){
+            auto packet = std::dynamic_pointer_cast<CompositorPacketCommand>(command);
+            if(packet != nullptr){
+                for(auto & child : packet->commands){
+                    if(child != nullptr){
+                        child->sequenceNumber = seq;
+                    }
                 }
             }
         }

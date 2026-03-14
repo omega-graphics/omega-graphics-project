@@ -60,6 +60,7 @@ namespace OmegaWTK::Composition {
    struct CompareCommands {
         auto operator()(SharedHandle<Composition::CompositorCommand> & lhs,
                         SharedHandle<Composition::CompositorCommand> & rhs){
+        // View commands first (highest structural priority)
         if(lhs->type == CompositorCommand::View && rhs->type != CompositorCommand::View) return true;
            if(rhs->type == CompositorCommand::View && lhs->type != CompositorCommand::View) return false;
 
@@ -75,19 +76,25 @@ namespace OmegaWTK::Composition {
                    rhs->type == CompositorCommand::Packet;
 
            if(lhsRenderLike && rhsRenderLike) {
+               // 1. Command priority: High before Low
+               if(lhs->priority != rhs->priority)
+                   return lhs->priority > rhs->priority; // High(1) > Low(0)
+               // 2. Timestamp ordering
                if(lhs->thresholdParams.timeStamp != rhs->thresholdParams.timeStamp)
                    return lhs->thresholdParams.timeStamp < rhs->thresholdParams.timeStamp;
-               // tie-breaker: presence of explicit threshold
+               // 3. Presence of explicit threshold
                if(lhs->thresholdParams.hasThreshold != rhs->thresholdParams.hasThreshold)
                    return lhs->thresholdParams.hasThreshold; // true first
+               // 4. Sync lane grouping
                if(lhs->syncLaneId != rhs->syncLaneId){
                    return lhs->syncLaneId < rhs->syncLaneId;
                }
+               // 5. Packet ordering within same lane
                if(lhs->syncPacketId != rhs->syncPacketId){
                    return lhs->syncPacketId < rhs->syncPacketId;
                }
-               // final tie-breaker: id
-               return lhs->id < rhs->id;
+               // 6. Global submission sequence (FIFO tie-breaker)
+               return lhs->sequenceNumber < rhs->sequenceNumber;
            }
             // Fallback deterministic ordering: compare types
            return static_cast<int>(lhs->type) < static_cast<int>(rhs->type);

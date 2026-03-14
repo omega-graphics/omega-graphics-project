@@ -74,6 +74,11 @@ namespace OmegaWTK::Composition {
         uint64_t syncLaneId = 0;
         uint64_t syncPacketId = 0;
         uint64_t requiredTreeEpoch = 0;
+        /// Monotonic global sequence number assigned by Compositor::scheduleCommand().
+        /// Captures the exact order in which commands enter the compositor queue,
+        /// used as the final tie-breaker in CompareCommands to preserve FIFO
+        /// submission order when all other ordering parameters match.
+        uint64_t sequenceNumber = 0;
         ResizeGovernorMetadata resizeGovernor {};
         std::uint64_t resizeCoordinatorGeneration = 0;
         typedef enum : int {

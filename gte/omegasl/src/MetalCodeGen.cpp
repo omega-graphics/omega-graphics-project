@@ -279,6 +279,18 @@ using namespace metal;
                     shaderOut << ")";
                     break;
                 }
+                case ARRAY_EXPR : {
+                    auto _expr = (ast::ArrayExpr *)expr;
+                    shaderOut << "{";
+                    for(auto a_it = _expr->elm.begin();a_it != _expr->elm.end();a_it++){
+                        if(a_it != _expr->elm.begin()){
+                            shaderOut << ", ";
+                        }
+                        generateExpr(*a_it);
+                    }
+                    shaderOut << "}";
+                    break;
+                }
             }
         }
     private:
