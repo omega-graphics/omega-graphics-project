@@ -1,2 +1,22 @@
 import "fs"
 
+var rc_prog = find_program(cmd:"rc")
+
+func WindowsResources(name,rc_file) {
+	var res_target = Script(
+		name:name,
+		cmd:"rc",
+		args:["/fo",name + ".res",rc_file],
+		outputs:[name + ".res"]
+	)
+	return res_target
+}
+
+func Win32App(name,sources) {
+	var exec = Executable(name:name,sources:sources)
+	return exec
+}
+
+func WindowsStoreApp(name,sources) {
+
+}

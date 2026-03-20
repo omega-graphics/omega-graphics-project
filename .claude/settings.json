@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "$schema": "https://json-schema.org/claude-code-settings.json",
   "statusLine": {
     "type": "command",
     "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/statusline.sh\""
@@ -11,6 +11,33 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/evaluate-agent-work.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "symbol-verifier|security-verifier|design-verifier",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"[PIPELINE] Verifier completed. Findings at .verification/phase2-findings/\""
+          }
+        ]
+      },
+      {
+        "matcher": "fixer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"[PIPELINE] Fixer completed. Output at .verification/phase3-fixed/\""
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .verification/clr_compute.py --supervisor --json-only 2>/dev/null | python3 -c \"import sys,json; d=json.load(sys.stdin); print(f'[CLR] Supervisor: {d[\\\"health\\\"]} (proxy CLR={d[\\\"proxy_clr\\\"]:.3f}, calls={d[\\\"subagent_calls\\\"]})') if d.get('health')=='RED' else None\""
           }
         ]
       }

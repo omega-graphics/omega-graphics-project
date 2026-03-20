@@ -5,6 +5,8 @@
 
 Many of the current cross-platform user interface engines such as QT or even Chrome either use a native to web based language bridge such as JavaScript or use outdated 3D pipelines, causing performance delays and an incoherent interface. 
 
+QT costs thousands of dollars a year to use professionally, whereas OmegaWTK is entirely free for any project.
+
 OmegaWTK is a native object oriented interface written entirely in native code that is designed to be not only easy to use but also maxmise performance for the programmer.
 
 ---
@@ -22,7 +24,7 @@ autom-clone https://github.com/omega-graphics/omega-wtk-project ./wtk
 ```
 2. Configure the build
 ```sh
-autom --mode gn --out out
+autom --mode ninja --out out
 ```
 
 3. Build the project

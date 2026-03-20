@@ -1,0 +1,29 @@
+import "fs"
+
+var pkg_config_prog = find_program(cmd:"pkg-config")
+
+func PkgConfigCflags(package) {
+	var cflags_target = Script(
+		name:package + "_cflags",
+		cmd:"pkg-config",
+		args:["--cflags",package],
+		outputs:[package + ".cflags"]
+	)
+	return cflags_target
+}
+
+func PkgConfigLibs(package) {
+	var libs_target = Script(
+		name:package + "_libs",
+		cmd:"pkg-config",
+		args:["--libs",package],
+		outputs:[package + ".libs"]
+	)
+	return libs_target
+}
+
+func LinuxDesktopEntry(name,exec_name,icon,categories) {
+	var entry_file = name + ".desktop"
+	config_file(in:name + ".desktop.in",out:entry_file)
+	install_files(files:[entry_file],dest:"share/applications/")
+}

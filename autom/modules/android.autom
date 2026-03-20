@@ -1,7 +1,15 @@
 import "fs"
 
-var android_prog = find_program(cmd:"")
+var gradle_prog = find_program(cmd:"gradle")
 
-func AndroidApp(name,source_dir){
-	
+func AndroidLib(name,source_dir) {
+	var lib = JarLib(name:name,source_dir:source_dir)
+	lib.maven_repos = ["google()","mavenCentral()"]
+	return lib
+}
+
+func AndroidApp(name,source_dir) {
+	var app = JarExe(name:name,source_dir:source_dir)
+	app.maven_repos = ["google()","mavenCentral()"]
+	return app
 }

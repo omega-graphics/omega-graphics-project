@@ -21,6 +21,8 @@ typedef int AutomBuiltinFunc;
 #define BUILTIN_SOURCE_GROUP "SourceGroup"
 #define BUILTIN_GROUP_TARGET "GroupTarget"
 #define BUILTIN_SCRIPT "Script"
+#define BUILTIN_JAR_LIB "JarLib"
+#define BUILTIN_JAR_EXE "JarExe"
 #define BUILTIN_FS_COPY "Copy"
 #define BUILTIN_FS_SYMLINK "Symlink"
 #define BUILTIN_FS_MKDIR "Mkdir"

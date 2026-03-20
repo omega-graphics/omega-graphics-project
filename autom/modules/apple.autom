@@ -1,25 +1,51 @@
-
 import "fs"
 
 var codesign_script = fs_abspath(path:"./codesign.py")
 
 func AppleFramework(name,sources) {
-    var lib = Shared(name:name,sources:sources)
+	var lib = Shared(name:name,sources:sources)
+
+	var bundle_name = name + ".framework"
+
+	var bundle_dir = Mkdir(name:name + "_bundle",dest:bundle_name)
+
+	var headers_dir = Mkdir(name:name + "_headers",dest:bundle_name + "/Headers")
+	headers_dir.deps = [name + "_bundle"]
+
 	var pre_signed = name + "_pre_signed"
-	GroupTarget(name:pre_signed,targets:[name])
-	var final_target = name + ".framework"
-	GroupTarget(name:final_target,targets:[pre_signed])
+	GroupTarget(name:pre_signed,deps:[name,name + "_bundle",name + "_headers"])
+
+	var sign_target = Script(
+		name:bundle_name,
+		cmd:"python3",
+		args:[codesign_script,"--framework","--code",name,"--output_dir",bundle_name],
+		outputs:[bundle_name + "/" + name]
+	)
+	sign_target.deps = [pre_signed]
+
 	return lib
 }
 
-func AppleApp(name,sources){
+func AppleApp(name,sources) {
 	var exec = Executable(name:name,sources:sources)
+
+	var bundle_name = name + ".app"
+
+	var bundle_dir = Mkdir(name:name + "_bundle",dest:bundle_name)
+
+	var contents_dir = Mkdir(name:name + "_contents",dest:bundle_name + "/Contents/MacOS")
+	contents_dir.deps = [name + "_bundle"]
+
 	var pre_signed = name + "_pre_signed"
-	GroupTarget(name:pre_signed,targets:[name])
-	var final_target = name + ".app"
-	GroupTarget(name:final_target,targets:[pre_signed])
+	GroupTarget(name:pre_signed,deps:[name,name + "_bundle",name + "_contents"])
+
+	var sign_target = Script(
+		name:bundle_name,
+		cmd:"python3",
+		args:[codesign_script,"--code",name,"--output_dir",bundle_name + "/Contents/MacOS"],
+		outputs:[bundle_name + "/Contents/MacOS/" + name]
+	)
+	sign_target.deps = [pre_signed]
+
 	return exec
 }
-
-
-

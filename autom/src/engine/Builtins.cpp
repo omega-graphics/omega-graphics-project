@@ -308,22 +308,63 @@ namespace autom::eval {
     Object *bf_JarLib(MapRef<std::string,Object *> args,EvalContext & ctxt){
         auto *name = castToString(args["name"]);
         auto *srcs = castToString(args["source_dir"]);
-        
+
         srcs->assign(std::filesystem::path(ctxt.eval->currentEvalDir).append(srcs->value().data()).lexically_normal().string());
-        
+
         auto t = JavaTarget::JarLib(name,srcs);
-        
+
+        ctxt.eval->addTarget(t);
+
         return new TargetWrapper(t);
     }
 
     Object *bf_JarExe(MapRef<std::string,Object *> args,EvalContext & ctxt){
         auto *name = castToString(args["name"]);
         auto *srcs = castToString(args["source_dir"]);
-        
+
         srcs->assign(std::filesystem::path(ctxt.eval->currentEvalDir).append(srcs->value().data()).lexically_normal().string());
-        
+
         auto t = JavaTarget::JarExe(name,srcs);
-        
+
+        ctxt.eval->addTarget(t);
+
+        return new TargetWrapper(t);
+    }
+
+    Object *bf_Copy(MapRef<std::string,Object *> args,EvalContext & ctxt){
+        auto *name = castToString(args["name"]);
+        auto *srcs = castToArray(args["sources"]);
+        auto *dest = castToString(args["dest"]);
+
+        resolveSources(srcs,ctxt.eval->currentEvalDir);
+
+        auto t = FSTarget::Copy(name,srcs,dest);
+
+        ctxt.eval->addTarget(t);
+
+        return new TargetWrapper(t);
+    }
+
+    Object *bf_Symlink(MapRef<std::string,Object *> args,EvalContext & ctxt){
+        auto *name = castToString(args["name"]);
+        auto *src = castToString(args["source"]);
+        auto *dest = castToString(args["dest"]);
+
+        auto t = FSTarget::Symlink(name,src,dest);
+
+        ctxt.eval->addTarget(t);
+
+        return new TargetWrapper(t);
+    }
+
+    Object *bf_Mkdir(MapRef<std::string,Object *> args,EvalContext & ctxt){
+        auto *name = castToString(args["name"]);
+        auto *dest = castToString(args["dest"]);
+
+        auto t = FSTarget::Mkdir(name,dest);
+
+        ctxt.eval->addTarget(t);
+
         return new TargetWrapper(t);
     }
 
@@ -520,7 +561,17 @@ namespace autom::eval {
         BUILTIN_FUNC(BUILTIN_CONFIG_FILE,bf_config_file,{"in",Object::String},{"out",Object::String});
         
         BUILTIN_FUNC(BUILTIN_SUBDIR,bf_subdir,{"path",Object::String});
-        
+
+        BUILTIN_FUNC(BUILTIN_JAR_LIB,bf_JarLib,{"name",Object::String},{"source_dir",Object::String});
+
+        BUILTIN_FUNC(BUILTIN_JAR_EXE,bf_JarExe,{"name",Object::String},{"source_dir",Object::String});
+
+        BUILTIN_FUNC(BUILTIN_FS_COPY,bf_Copy,{"name",Object::String},{"sources",Object::Array},{"dest",Object::String});
+
+        BUILTIN_FUNC(BUILTIN_FS_SYMLINK,bf_Symlink,{"name",Object::String},{"source",Object::String},{"dest",Object::String});
+
+        BUILTIN_FUNC(BUILTIN_FS_MKDIR,bf_Mkdir,{"name",Object::String},{"dest",Object::String});
+
         *code = INVOKE_NOTBUILTIN;
         return nullptr;
     };

@@ -1,0 +1,38 @@
+import "fs"
+
+func ExternalProject(name,url,configure_cmd,build_cmd,outputs) {
+	var fetch_target = Script(
+		name:name + "_fetch",
+		cmd:"curl",
+		args:["-L","-o",name + ".tar.gz",url],
+		outputs:[name + ".tar.gz"]
+	)
+
+	var extract_target = Script(
+		name:name + "_extract",
+		cmd:"tar",
+		args:["xzf",name + ".tar.gz","-C",name],
+		outputs:[name + "/"]
+	)
+	extract_target.deps = [name + "_fetch"]
+
+	var configure_target = Script(
+		name:name + "_configure",
+		cmd:configure_cmd,
+		args:[],
+		outputs:[name + "/Makefile"]
+	)
+	configure_target.deps = [name + "_extract"]
+
+	var build_target = Script(
+		name:name + "_build",
+		cmd:build_cmd,
+		args:[],
+		outputs:outputs
+	)
+	build_target.deps = [name + "_configure"]
+
+	GroupTarget(name:name,deps:[name + "_build"])
+
+	return build_target
+}

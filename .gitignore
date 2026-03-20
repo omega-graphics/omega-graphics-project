@@ -70,3 +70,6 @@ build
 .cache
 .DS_Store
 doxygen
+
+# Verification pipeline working state
+.verification/

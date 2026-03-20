@@ -1,9 +1,9 @@
 # AUTOM 
 ## (Automate,Automatic,etc..)
 
-An open-source native code build system generator used by the OmegaG Suite. It can generate to a few build systems including CMake, and GN.
+An open-source native code build system generator used by the OmegaGraphicsProject. It can generate to a few build systems including Xcode, and Ninja.
 
-NOTE: Some build targets declared are only supported by GN.
+
 
 ## Setup
 
@@ -11,7 +11,7 @@ Prerequisites:
 
 - Python (3.4 or greater)
 
-- (For Windows Users Only) Visual Studio 16 2019
+- (For Windows Users Only) Visual Studio 
 
 #### Unix
 
