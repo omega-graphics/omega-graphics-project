@@ -40,14 +40,15 @@ namespace autom {
     }
     
     void SHA256Hash::getResultAsHex(std::string & out){
-        
+
         auto *hash = getResult();
-        
-        std::ostringstream o(out);
+
+        std::ostringstream o;
         o << std::hex << std::uppercase;
         for(unsigned i = 0;i < CC_SHA256_DIGEST_LENGTH;i++){
             o << std::setw(2) << std::setfill('0') << int(hash[i]);
         }
+        out = o.str();
     }
     
     SHA256Hash::~SHA256Hash(){
@@ -78,11 +79,12 @@ namespace autom {
     void SHA256Hash::getResultAsHex(std::string &out) {
         auto *hash = getResult();
 
-        std::ostringstream o(out);
+        std::ostringstream o;
         o << std::hex << std::uppercase;
         for(unsigned i = 0;i < 32;i++){
             o << std::setw(2) << std::setfill('0') << int(hash[i]);
         }
+        out = o.str();
     }
 
     SHA256Hash::~SHA256Hash() {

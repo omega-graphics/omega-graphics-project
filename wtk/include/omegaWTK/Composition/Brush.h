@@ -48,7 +48,7 @@ namespace OmegaWTK::Composition {
         static Color create8Bit(std::uint32_t rgb,std::uint8_t alpha = 0xFF);
         static Color create16Bit(std::uint16_t r,std::uint16_t g,std::uint16_t b,std::uint16_t a);
         static Color create16Bit(std::uint64_t rgb,std::uint16_t alpha = 0xFFFF);
-        static Color create32it(std::uint32_t r,std::uint32_t g,std::uint32_t b,std::uint32_t a);
+        static Color create32Bit(std::uint32_t r,std::uint32_t g,std::uint32_t b,std::uint32_t a);
         static const Color Transparent;
         ~Color() = default;
     };
@@ -74,26 +74,38 @@ namespace OmegaWTK::Composition {
     /// @brief Represents a Brush used for filling in color or texture of vector graphics.
     struct OMEGAWTK_EXPORT  Brush {
         OMEGACOMMON_CLASS("OmegaWTK.Composition.Brush")
-        bool isColor;
-        bool isGradient;
-        union {
-            Color color;
-            Gradient gradient;
+
+        enum class Type : uint8_t {
+            Color,
+            Gradient,
+            None
         };
+        Type type;
+
+        union {
+            Composition::Color color;
+            Composition::Gradient gradient;
+        };
+
+        /// @brief Backward-compatible accessor (prefer type == Type::Color).
+        bool isColor;
+        /// @brief Backward-compatible accessor (prefer type == Type::Gradient).
+        bool isGradient;
+
         /**
          @brief Constructs a Color Brush!
          */
-        Brush(const Color & color);
+        Brush(const Composition::Color & color);
         /**
          @brief Constructs a Gradient Brush!
          */
-        Brush(const Gradient & gradient);
+        Brush(const Composition::Gradient & gradient);
 
         ~Brush();
     };
 
 OMEGAWTK_EXPORT Core::SharedPtr<Brush> ColorBrush(const Color &color);
-OMEGAWTK_EXPORT Core::SharedPtr<Brush> GradientBrush();
+OMEGAWTK_EXPORT Core::SharedPtr<Brush> GradientBrush(const Gradient & gradient);
 
 };
 

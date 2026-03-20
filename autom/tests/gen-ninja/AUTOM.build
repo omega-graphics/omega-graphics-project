@@ -1,0 +1,8 @@
+project(name:"GenNinjaTest",version:"1.0.0")
+
+var utils_grp = SourceGroup(name:"utils_src",sources:["./utils.cpp"])
+
+var mathlib = Archive(name:"MathLib",sources:["./mathlib.cpp"])
+
+var app = Executable(name:"testapp",sources:["./main.cpp"])
+app.deps = ["MathLib","utils_src"]

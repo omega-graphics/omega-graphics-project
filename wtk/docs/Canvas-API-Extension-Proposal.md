@@ -288,18 +288,18 @@ void drawText(const UniString & text,
 
 ## 3. Implementation priority (suggested)
 
-| Priority | Feature | Rationale |
-|----------|---------|-----------|
-| P0 | 2.1 Borders on rect/roundedRect/ellipse | Backend already supports it; closes the main API gap. |
-| P0 | 2.7 setBackground / clear | Makes frame setup explicit and avoids ad-hoc clear rects. |
-| P1 | 2.2 drawLine / drawPolyline | Useful for SVG and UI; small backend surface. |
-| P1 | 2.4 ImageScaleMode (and sourceRect) | Needed for correct image/camera/video display. |
-| P2 | 2.6 save/restore, translate, scale, clipRect | Enables zoom, pan, and clipped content. |
-| P2 | 2.5 DrawOptions (opacity, blend) | Common for overlays and highlights. |
-| P3 | 2.3 drawArc | Convenience for charts and SVG arcs. |
-| P3 | 2.8 TextDrawOptions / gradient text | Improves text layout and styling. |
-| P3 | 2.9 Gradient in canvas space | Better control for fills. |
-| P3 | 2.10 Effect bounds and new effect types | Refinements; can follow after core drawing is complete. |
+| Priority | Feature | Rationale | Status |
+|----------|---------|-----------|--------|
+| ~~P0~~ | ~~2.1 Borders on rect/roundedRect/ellipse~~ | ~~Backend already supports it; closes the main API gap.~~ | Done |
+| ~~P0~~ | ~~2.7 setBackground / clear~~ | ~~Makes frame setup explicit and avoids ad-hoc clear rects.~~ | Done |
+| P1 | 2.2 drawLine / drawPolyline | Useful for SVG and UI; small backend surface. | |
+| P1 | 2.4 ImageScaleMode (and sourceRect) | Needed for correct image/camera/video display. | |
+| P2 | 2.6 save/restore, translate, scale, clipRect | Enables zoom, pan, and clipped content. | |
+| P2 | 2.5 DrawOptions (opacity, blend) | Common for overlays and highlights. | |
+| P3 | 2.3 drawArc | Convenience for charts and SVG arcs. | |
+| P3 | 2.8 TextDrawOptions / gradient text | Improves text layout and styling. | |
+| P3 | 2.9 Gradient in canvas space | Better control for fills. | |
+| P3 | 2.10 Effect bounds and new effect types | Refinements; can follow after core drawing is complete. | |
 
 ---
 

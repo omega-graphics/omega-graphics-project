@@ -1,0 +1,5 @@
+!gen-complex/run.sh
+!gen-ninja/run.sh
+!gen-sln/run.sh
+!gen-xcode/run.sh
+_build

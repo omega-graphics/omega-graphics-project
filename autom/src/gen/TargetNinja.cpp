@@ -299,8 +299,8 @@ namespace autom {
              else if(IS_FS_ACTION_TYPE(target->type)) {
                  auto t = std::dynamic_pointer_cast<FSTarget>(target);
                  mainNinja << "build ";
-                 auto _sources = t->sources->toStringVector();
                  if(t->type == FS_COPY){
+                     auto _sources = t->sources->toStringVector();
                      auto dest = std::filesystem::path(t->dest->value().data());
                      std::ostringstream srcs_out("");
                      for(auto & s : _sources){

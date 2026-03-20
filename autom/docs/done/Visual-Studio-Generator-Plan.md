@@ -1,4 +1,6 @@
-# Visual Studio Solution Generator Plan
+# Visual Studio Solution Generator Plan — DONE
+
+All 7 steps implemented in `autom/src/gen/TargetVisualStudio.cpp`.
 
 ## Background
 

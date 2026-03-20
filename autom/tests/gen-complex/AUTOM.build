@@ -1,0 +1,26 @@
+project(name:"GenComplexTest",version:"1.0.0")
+
+# SourceGroup: extra sources inlined into the executable
+var helper_src = SourceGroup(name:"helper_src",sources:["./helper.cpp"])
+
+# Script target: runs a python script to generate a header
+var gen_ver = Script(
+    name:"gen_version",
+    cmd:"python3",
+    args:["./gen_version.py","version.h"],
+    outputs:["version.h"]
+)
+
+# Mkdir target: create an output staging directory
+var stage_dir = Mkdir(name:"stage_dir",dest:"staging")
+
+# Copy target: copy data files into staging
+var copy_data = Copy(name:"copy_data",sources:["./readme.txt"],dest:"staging")
+copy_data.deps = ["stage_dir"]
+
+# Executable with SourceGroup dep
+var app = Executable(name:"complexapp",sources:["./app.cpp"])
+app.deps = ["helper_src","gen_version"]
+
+# GroupTarget: ties everything together
+GroupTarget(name:"all",deps:["complexapp","copy_data"])

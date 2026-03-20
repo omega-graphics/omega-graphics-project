@@ -62,16 +62,34 @@ Layer & Canvas::getCorrespondingLayer(){
 //     return parentLayer;
 // };
 
-void Canvas::drawRect(Core::Rect &rect, Core::SharedPtr<Brush> &brush){
+void Canvas::drawRect(Core::Rect &rect, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border){
     current->currentVisuals.emplace_back(rect,brush,Core::Optional<Border>{});
+    if(border.has_value()){
+        auto frame = RectFrame(rect, border->width);
+        auto borderBrush = border->brush;
+        frame->setPathBrush(borderBrush);
+        drawPath(*frame);
+    }
 };
 
-void Canvas::drawRoundedRect(Core::RoundedRect &rect, Core::SharedPtr<Brush> &brush){
+void Canvas::drawRoundedRect(Core::RoundedRect &rect, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border){
     current->currentVisuals.emplace_back(rect,brush,Core::Optional<Border>{});
+    if(border.has_value()){
+        auto frame = RoundedRectFrame(rect, border->width);
+        auto borderBrush = border->brush;
+        frame->setPathBrush(borderBrush);
+        drawPath(*frame);
+    }
 }
 
-void Canvas::drawEllipse(Core::Ellipse &ellipse, Core::SharedPtr<Brush> &brush){
+void Canvas::drawEllipse(Core::Ellipse &ellipse, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border){
     current->currentVisuals.emplace_back(ellipse,brush,Core::Optional<Border>{});
+    if(border.has_value()){
+        auto frame = EllipseFrame(ellipse, border->width);
+        auto borderBrush = border->brush;
+        frame->setPathBrush(borderBrush);
+        drawPath(*frame);
+    }
 }
 
 void Canvas::drawText(const UniString &text,
@@ -176,6 +194,20 @@ void Canvas::applyLayerEffect(const SharedHandle<LayerEffect> &effect){
     Timestamp start = std::chrono::high_resolution_clock::now();
     Timestamp deadline = start;
     pushLayerEffectCommand(&layer,queuedEffect,start,deadline);
+}
+
+void Canvas::setBackground(const Color & color){
+    current->background = {color.r, color.g, color.b, color.a};
+}
+
+void Canvas::clear(Core::Optional<Color> color){
+    current->currentVisuals.clear();
+    current->currentEffects.clear();
+    if(color.has_value()){
+        setBackground(*color);
+    } else {
+        current->background = {0.f, 0.f, 0.f, 0.f};
+    }
 }
 
 SharedHandle<CanvasFrame> Canvas::getCurrentFrame() {

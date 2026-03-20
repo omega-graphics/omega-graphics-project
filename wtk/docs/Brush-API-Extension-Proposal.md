@@ -303,19 +303,19 @@ Backend: generates a tiled texture from the image and renders it the same way gr
 
 ## 3. Implementation priority
 
-| Priority | Section | Change | Rationale |
-|----------|---------|--------|-----------|
-| P0 | 2.2 | Fix `GradientBrush` header signature | Correctness; one-line fix. |
-| P0 | 2.3.1 | Fix `create32it` typo | Correctness; one-line rename. |
-| P0 | 2.1 | `Brush::Type` enum, replace booleans | Extensibility foundation; required before new types. |
-| P1 | 2.3.2 | Named `Color` constants | Ergonomics; small surface. |
-| P1 | 2.5 | `Brush::opacity` | Enables fade without layer effects; small backend surface. |
-| P1 | 2.4.1 | Linear start/end, radial center/radii | Unblocks SVG gradient import and CSS-style gradients. |
-| P2 | 2.4.2 | Gradient spread mode | Needed for full SVG compliance. |
-| P2 | 2.4.3 | Gradient coordinate space enum | Needed for `gradientUnits="userSpaceOnUse"` in SVG. |
-| P2 | 2.3.3 | HSL/HSV construction | Useful for animation/themes; pure CPU code. |
-| P2 | 2.3.4 | `lerp`, `withAlpha`, `lighter`/`darker` | Animation and UI conveniences; pure CPU code. |
-| P3 | 2.6 | Pattern brush | Requires sampler/wrap-mode work in each backend. |
+| Priority | Section | Change | Rationale | Status |
+|----------|---------|--------|-----------|--------|
+| ~~P0~~ | ~~2.2~~ | ~~Fix `GradientBrush` header signature~~ | ~~Correctness; one-line fix.~~ | Done |
+| ~~P0~~ | ~~2.3.1~~ | ~~Fix `create32it` typo~~ | ~~Correctness; one-line rename.~~ | Done |
+| ~~P0~~ | ~~2.1~~ | ~~`Brush::Type` enum, replace booleans~~ | ~~Extensibility foundation; required before new types.~~ | Done |
+| P1 | 2.3.2 | Named `Color` constants | Ergonomics; small surface. | |
+| P1 | 2.5 | `Brush::opacity` | Enables fade without layer effects; small backend surface. | |
+| P1 | 2.4.1 | Linear start/end, radial center/radii | Unblocks SVG gradient import and CSS-style gradients. | |
+| P2 | 2.4.2 | Gradient spread mode | Needed for full SVG compliance. | |
+| P2 | 2.4.3 | Gradient coordinate space enum | Needed for `gradientUnits="userSpaceOnUse"` in SVG. | |
+| P2 | 2.3.3 | HSL/HSV construction | Useful for animation/themes; pure CPU code. | |
+| P2 | 2.3.4 | `lerp`, `withAlpha`, `lighter`/`darker` | Animation and UI conveniences; pure CPU code. | |
+| P3 | 2.6 | Pattern brush | Requires sampler/wrap-mode work in each backend. | |
 
 ---
 

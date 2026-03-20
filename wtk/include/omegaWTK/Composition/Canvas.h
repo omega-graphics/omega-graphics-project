@@ -192,22 +192,31 @@ namespace OmegaWTK {
          @brief Draw a Rect.
          @param rect The Rect.
          @param brush The Brush to fill the Rect with.
+         @param border Optional border (brush + width) drawn on top of the fill.
          */
-        void drawRect(Core::Rect & rect,Core::SharedPtr<Brush> & brush);
+        void drawRect(Core::Rect & rect,
+                      Core::SharedPtr<Brush> & brush,
+                      Core::Optional<Border> border = std::nullopt);
 
         /**
          @brief Draw a Rounded Rect.
          @param rect The Rounded Rect.
          @param brush The Brush to fill the Rect with.
+         @param border Optional border (brush + width) drawn on top of the fill.
          */
-        void drawRoundedRect(Core::RoundedRect & rect,Core::SharedPtr<Brush> & brush);
+        void drawRoundedRect(Core::RoundedRect & rect,
+                             Core::SharedPtr<Brush> & brush,
+                             Core::Optional<Border> border = std::nullopt);
 
         /**
          @brief Draw an Ellipse.
          @param ellipse The Ellipse.
-         @param brush The Brush to fill the Rect with.
+         @param brush The Brush to fill the Ellipse with.
+         @param border Optional border (brush + width) drawn on top of the fill.
          */
-        void drawEllipse(Core::Ellipse & ellipse,Core::SharedPtr<Brush> & brush);
+        void drawEllipse(Core::Ellipse & ellipse,
+                         Core::SharedPtr<Brush> & brush,
+                         Core::Optional<Border> border = std::nullopt);
 
         /**
          @brief Draw text into a rectangle.
@@ -261,6 +270,18 @@ namespace OmegaWTK {
            @param effect The LayerEffect to apply.
           */
         void applyLayerEffect(const SharedHandle<LayerEffect> & effect);
+
+        /**
+         @brief Set the background color for the current frame.
+         @param color The background color (used where no draw command covers a pixel).
+         */
+        void setBackground(const Color & color);
+
+        /**
+         @brief Clear the current frame's visual commands and optionally set a background color.
+         @param color If provided, set as the new background; otherwise reset to transparent.
+         */
+        void clear(Core::Optional<Color> color = std::nullopt);
 
         /// @brief Sends current frame to CompositorClientProxy to be drawn.
         void sendFrame();

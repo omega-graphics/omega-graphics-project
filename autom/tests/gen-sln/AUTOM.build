@@ -1,0 +1,8 @@
+project(name:"GenSlnTest",version:"1.0.0")
+
+var engine_lib = Archive(name:"EngineLib",sources:["./engine.cpp"])
+
+var renderer_lib = Shared(name:"RendererLib",sources:["./renderer.cpp"])
+
+var app = Executable(name:"slnapp",sources:["./main.cpp"])
+app.deps = ["EngineLib","RendererLib"]

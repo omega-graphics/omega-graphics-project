@@ -1,0 +1,6 @@
+project(name:"GenXcodeTest",version:"1.0.0")
+
+var codec_lib = Archive(name:"CodecLib",sources:["./codec.cpp"])
+
+var app = Executable(name:"xcodeapp",sources:["./main.cpp"])
+app.deps = ["CodecLib"]

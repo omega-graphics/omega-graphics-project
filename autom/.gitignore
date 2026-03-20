@@ -21,6 +21,11 @@ tm/pyyaml
 *.tmbundle
 *.tmLanguage
 *.ninja_log
+*.xcodeproj
+*.xcworkspace
+*.sln
+*.vcxproj
+
 
 # Compiled Object files
 *.slo

@@ -80,20 +80,24 @@ Gradient Gradient::Radial(std::initializer_list<GradientStop> stops,float radius
     return grad;
 };
 
-Brush::Brush(const Color & color):isColor(true),isGradient(false),color(color){
-    
+Brush::Brush(const Color & color):type(Type::Color),color(color),isColor(true),isGradient(false){
+
 };
 
-Brush::Brush(const Gradient & gradient):isColor(false),isGradient(true),gradient(gradient){
-    
+Brush::Brush(const Gradient & gradient):type(Type::Gradient),gradient(gradient),isColor(false),isGradient(true){
+
 };
 
 Brush::~Brush(){
-    if(isColor){
-        color.~Color();
-    }
-    else {
-        gradient.~Gradient();
+    switch(type){
+        case Type::Color:
+            color.~Color();
+            break;
+        case Type::Gradient:
+            gradient.~Gradient();
+            break;
+        case Type::None:
+            break;
     }
 }
 
