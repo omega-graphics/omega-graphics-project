@@ -51,6 +51,7 @@ _NAMESPACE_BEGIN_
         OmegaCommon::StrRef name;
         SharedHandle<GTEShader> vertexFunc;
         SharedHandle<GTEShader> fragmentFunc;
+        PixelFormat colorPixelFormat = PixelFormat::RGBA8Unorm;
         unsigned rasterSampleCount = 0;
         RasterCullMode cullMode = RasterCullMode::None;
         TriangleFillMode triangleFillMode = TriangleFillMode::Solid;

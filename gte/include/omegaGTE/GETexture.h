@@ -6,11 +6,7 @@
 
 _NAMESPACE_BEGIN_
 
-    enum class TexturePixelFormat : int {
-        RGBA8Unorm,
-        RGBA16Unorm,
-        RGBA8Unorm_SRGB
-    };
+    using TexturePixelFormat = PixelFormat;
 
     /**
      * @brief A Buffer that contains texel data arranged in regular rows.*/

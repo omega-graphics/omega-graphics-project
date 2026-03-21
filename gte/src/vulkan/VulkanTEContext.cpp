@@ -369,20 +369,25 @@ public:
     SharedHandle<GEVulkanNativeRenderTarget> renderTarget;
     VulkanTessPipelines pip;
 
+    GEViewport getEffectiveViewport() override {
+        if(renderTarget != nullptr){
+            return makeViewport(
+                static_cast<float>(renderTarget->extent.width),
+                static_cast<float>(renderTarget->extent.height));
+        }
+        return makeViewport(1.f, 1.f);
+    }
+
     void translateCoords(float x, float y, float z, GEViewport *viewport, float *x_result, float *y_result, float *z_result) override {
         if(viewport != nullptr){
             translateCoordsDefaultImpl(x,y,z,viewport,x_result,y_result,z_result);
         }
         else {
-            const float width = renderTarget != nullptr
-                                ? static_cast<float>(renderTarget->extent.width)
-                                : 1.f;
-            const float height = renderTarget != nullptr
-                                 ? static_cast<float>(renderTarget->extent.height)
-                                 : 1.f;
-            auto vp = makeViewport(width,height);
+            auto vp = getEffectiveViewport();
             translateCoordsDefaultImpl(x,y,z,&vp,x_result,y_result,z_result);
         }
+        // Flip Y for Vulkan NDC (Y points top-to-bottom, opposite of Metal/D3D12)
+        *y_result = -*y_result;
     }
 
     std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params,
@@ -401,7 +406,7 @@ public:
         }
         GPUTessExtractedParams ep;
         extractGPUTessParams(params, ep);
-        GEViewport vp = viewport ? *viewport : GEViewport{0, 0, 1, 1, 0, 1};
+        GEViewport vp = viewport ? *viewport : getEffectiveViewport();
         return vulkanGpuDispatch(ep, vp, arcStep, pip, this, params, direction, viewport);
     }
 
@@ -413,20 +418,25 @@ public:
     SharedHandle<GEVulkanTextureRenderTarget> renderTarget;
     VulkanTessPipelines pip;
 
+    GEViewport getEffectiveViewport() override {
+        if(renderTarget != nullptr && renderTarget->texture != nullptr){
+            return makeViewport(
+                static_cast<float>(renderTarget->texture->descriptor.width),
+                static_cast<float>(renderTarget->texture->descriptor.height));
+        }
+        return makeViewport(1.f, 1.f);
+    }
+
     void translateCoords(float x, float y, float z, GEViewport *viewport, float *x_result, float *y_result, float *z_result) override {
         if (viewport != nullptr){
             translateCoordsDefaultImpl(x,y,z,viewport,x_result,y_result,z_result);
         }
         else {
-            float width = 1.f;
-            float height = 1.f;
-            if(renderTarget != nullptr && renderTarget->texture != nullptr){
-                width = static_cast<float>(renderTarget->texture->descriptor.width);
-                height = static_cast<float>(renderTarget->texture->descriptor.height);
-            }
-            auto defaultViewport = makeViewport(width,height);
-            translateCoordsDefaultImpl(x,y,z,&defaultViewport,x_result,y_result,z_result);
+            auto vp = getEffectiveViewport();
+            translateCoordsDefaultImpl(x,y,z,&vp,x_result,y_result,z_result);
         }
+        // Flip Y for Vulkan NDC (Y points top-to-bottom, opposite of Metal/D3D12)
+        *y_result = -*y_result;
     }
 
     std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params,
@@ -445,7 +455,7 @@ public:
         }
         GPUTessExtractedParams ep;
         extractGPUTessParams(params, ep);
-        GEViewport vp = viewport ? *viewport : GEViewport{0, 0, 1, 1, 0, 1};
+        GEViewport vp = viewport ? *viewport : getEffectiveViewport();
         return vulkanGpuDispatch(ep, vp, arcStep, pip, this, params, direction, viewport);
     }
 

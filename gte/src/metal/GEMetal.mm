@@ -24,6 +24,17 @@
 
 _NAMESPACE_BEGIN_
 
+    inline MTLPixelFormat pixelFormatToMTLPixelFormat(PixelFormat fmt, bool renderTargetUsage = false){
+        switch(fmt){
+            case PixelFormat::RGBA8Unorm:      return renderTargetUsage ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm;
+            case PixelFormat::RGBA16Unorm:     return MTLPixelFormatRGBA16Unorm;
+            case PixelFormat::RGBA8Unorm_SRGB: return renderTargetUsage ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm_sRGB;
+            case PixelFormat::BGRA8Unorm:      return MTLPixelFormatBGRA8Unorm;
+            case PixelFormat::BGRA8Unorm_SRGB: return MTLPixelFormatBGRA8Unorm_sRGB;
+            default:                           return MTLPixelFormatRGBA8Unorm;
+        }
+    }
+
 static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
     if(str.data() == nullptr || str.size() == 0){
         return @"";
@@ -805,7 +816,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 //            pipelineDesc.label = @"RENDER PIPELINE";
             pipelineDesc.vertexFunction = NSOBJECT_OBJC_BRIDGE(id<MTLFunction>,vertexFunc->function.handle());
             pipelineDesc.fragmentFunction = NSOBJECT_OBJC_BRIDGE(id<MTLFunction>,fragmentFunc->function.handle());
-            pipelineDesc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+            pipelineDesc.colorAttachments[0].pixelFormat = pixelFormatToMTLPixelFormat(desc.colorPixelFormat, true);
             pipelineDesc.colorAttachments[0].blendingEnabled = YES;
             pipelineDesc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
             pipelineDesc.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
@@ -941,25 +952,11 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                     break;
             }
 
-            MTLPixelFormat pixelFormat;
             const bool renderTargetUsage =
                     desc.usage == GETexture::RenderTarget ||
                     desc.usage == GETexture::RenderTargetAndDepthStencil ||
                     desc.usage == GETexture::MSResolveSrc;
-            switch (desc.pixelFormat) {
-                case TexturePixelFormat::RGBA8Unorm : {
-                    pixelFormat = renderTargetUsage ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm;
-                    break;
-                }
-                case TexturePixelFormat::RGBA16Unorm : {
-                    pixelFormat = MTLPixelFormatRGBA16Unorm;
-                    break;
-                }
-                case TexturePixelFormat::RGBA8Unorm_SRGB : {
-                    pixelFormat = renderTargetUsage ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm_sRGB;
-                    break;
-                }
-            }
+            MTLPixelFormat pixelFormat = pixelFormatToMTLPixelFormat(desc.pixelFormat, renderTargetUsage);
 
             mtlDesc.pixelFormat = pixelFormat;
             mtlDesc.mipmapLevelCount = desc.mipLevels;

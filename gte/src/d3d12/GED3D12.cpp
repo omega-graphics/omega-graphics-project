@@ -19,6 +19,17 @@
 
 _NAMESPACE_BEGIN_
 
+    inline DXGI_FORMAT pixelFormatToDxgiFormat(PixelFormat fmt){
+        switch(fmt){
+            case PixelFormat::RGBA8Unorm:      return DXGI_FORMAT_R8G8B8A8_UNORM;
+            case PixelFormat::RGBA16Unorm:     return DXGI_FORMAT_R16G16B16A16_UNORM;
+            case PixelFormat::RGBA8Unorm_SRGB: return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+            case PixelFormat::BGRA8Unorm:      return DXGI_FORMAT_B8G8R8A8_UNORM;
+            case PixelFormat::BGRA8Unorm_SRGB: return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+            default:                           return DXGI_FORMAT_R8G8B8A8_UNORM;
+        }
+    }
+
 struct GTED3D12Device : public GTEDevice {
     Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
     const void * native() override {
@@ -142,12 +153,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
     D3D12_RESOURCE_DESC d3d12_desc {};
     D3D12_RESOURCE_STATES res_states = D3D12_RESOURCE_STATE_COMMON;
 
-    DXGI_FORMAT dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-    switch(desc.pixelFormat){
-        case TexturePixelFormat::RGBA8Unorm: dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM; break;
-        case TexturePixelFormat::RGBA16Unorm: dxgiFormat = DXGI_FORMAT_R16G16B16A16_UNORM; break;
-        case TexturePixelFormat::RGBA8Unorm_SRGB: dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; break;
-    }
+    DXGI_FORMAT dxgiFormat = pixelFormatToDxgiFormat(desc.pixelFormat);
 
     D3D12_RESOURCE_FLAGS resFlags = D3D12_RESOURCE_FLAG_NONE;
     if(desc.usage == GETexture::RenderTarget || desc.usage == GETexture::RenderTargetAndDepthStencil){
@@ -772,7 +778,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         d.VS = vertexShader->shaderBytecode;
         d.PS = fragmentShader->shaderBytecode;
         d.pRootSignature = signature;
-        d.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        d.RTVFormats[0] = pixelFormatToDxgiFormat(desc.colorPixelFormat);
         d.NumRenderTargets = 1;
         d.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
 
@@ -1018,21 +1024,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
             return nullptr;
         }
 
-        DXGI_FORMAT dxgiFormat;
-        switch (desc.pixelFormat) {
-            case TexturePixelFormat::RGBA8Unorm : {
-                dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-                break;
-            }
-            case TexturePixelFormat::RGBA16Unorm : {
-                dxgiFormat = DXGI_FORMAT_R16G16B16A16_UNORM;
-                break;
-            }
-            case TexturePixelFormat::RGBA8Unorm_SRGB : {
-                dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-                break;
-            }
-        }
+        DXGI_FORMAT dxgiFormat = pixelFormatToDxgiFormat(desc.pixelFormat);
 
         if(desc.usage == GETexture::RenderTarget){
             res_states |= D3D12_RESOURCE_STATE_RENDER_TARGET;

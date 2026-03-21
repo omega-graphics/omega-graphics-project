@@ -171,15 +171,19 @@ SharedHandle<OmegaTessellationEngine> OmegaTessellationEngine::Create(){
     return std::make_shared<OmegaTessellationEngine>();
 };
 
+GEViewport OmegaTessellationEngineContext::getEffectiveViewport(){
+    return GEViewport{0.f, 0.f, 1.f, 1.f, 0.f, 1.f};
+}
+
 void OmegaTessellationEngineContext::translateCoordsDefaultImpl(float x, float y, float z, GEViewport * viewport, float *x_result, float *y_result, float *z_result){
-    *x_result = (2 * x) / viewport->width;
-    *y_result = (2 * y) / viewport->height;
+    *x_result = (2.f * x / viewport->width) - 1.f;
+    *y_result = (2.f * y / viewport->height) - 1.f;
     if(z_result != nullptr){
         if(z > 0.0){
-            *z_result = (2 *z) / viewport->farDepth;
+            *z_result = (2.f * z / viewport->farDepth) - 1.f;
         }
         else if(z < 0.0){
-            *z_result = (2 *z) / viewport->nearDepth;
+            *z_result = (2.f * z / viewport->nearDepth) - 1.f;
         }
         else {
             *z_result = z;
@@ -189,7 +193,7 @@ void OmegaTessellationEngineContext::translateCoordsDefaultImpl(float x, float y
 
 inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationParams &params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport,TETessellationResult & result){
     assert(params.attachments.size() <= 1 && "Only 1 attachment is allowed for each tessellation params");
-    GEViewport fallbackViewport{0.f, 0.f, 1.f, 1.f, 0.f, 1.f};
+    GEViewport fallbackViewport = getEffectiveViewport();
     if (!viewport) viewport = &fallbackViewport;
 
     switch(params.type){

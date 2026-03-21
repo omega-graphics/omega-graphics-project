@@ -196,6 +196,7 @@ protected:
 
     void translateCoordsDefaultImpl(float x, float y,float z,GEViewport * viewport, float *x_result, float *y_result,float *z_result);
     virtual void translateCoords(float x, float y,float z,GEViewport * viewport, float *x_result, float *y_result,float *z_result) = 0;
+    virtual GEViewport getEffectiveViewport();
     inline void _tessalatePriv(const TETessellationParams & params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport,TETessellationResult & result);
 
 public:

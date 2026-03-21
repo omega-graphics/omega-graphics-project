@@ -2490,16 +2490,15 @@ namespace omegasl {
 
             std::cout << "AHEAD TOK:" << first_tok.str << std::endl;
 
-            if(first_tok.type == TOK_OP || first_tok.type == TOK_ASTERISK){
+            if((first_tok.type == TOK_OP || first_tok.type == TOK_ASTERISK) &&
+               (first_tok.str == OP_MINUSMINUS || first_tok.str == OP_PLUSPLUS)){
                 ++tokIdx;
-                if(first_tok.str == OP_MINUSMINUS || first_tok.str == OP_PLUSPLUS){
-                    auto unaryExpr = new ast::UnaryOpExpr();
-                    unaryExpr->type = UNARY_EXPR;
-                    unaryExpr->op = first_tok.str;
-                    unaryExpr->isPrefix = false;
-                    unaryExpr->expr = _expr;
-                    _expr = unaryExpr;
-                }
+                auto unaryExpr = new ast::UnaryOpExpr();
+                unaryExpr->type = UNARY_EXPR;
+                unaryExpr->op = first_tok.str;
+                unaryExpr->isPrefix = false;
+                unaryExpr->expr = _expr;
+                _expr = unaryExpr;
             }
 
             /// Precedence-climbing: parse binary operators with precedence >= minPrec (multiplicative > additive > comparison).

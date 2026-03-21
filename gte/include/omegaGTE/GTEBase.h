@@ -887,6 +887,15 @@ _NAMESPACE_BEGIN_
         CounterClockwise
     };
 
+    /// @brief Describes a pixel format for render targets, textures, and pipelines.
+    enum class PixelFormat : int {
+        RGBA8Unorm,
+        RGBA16Unorm,
+        RGBA8Unorm_SRGB,
+        BGRA8Unorm,
+        BGRA8Unorm_SRGB
+    };
+
     struct OMEGAGTE_EXPORT TextureRegion {
         unsigned x,y,z;
         unsigned w,h,d;

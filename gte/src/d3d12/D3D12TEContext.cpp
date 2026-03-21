@@ -343,14 +343,18 @@ class D3D12NativeRenderTargetTEContext : public OmegaTessellationEngineContext {
     SharedHandle<GED3D12NativeRenderTarget> target;
     D3D12TessPipelines pip;
 public:
+    GEViewport getEffectiveViewport() override {
+        auto desc = target->renderTargets[target->frameIndex]->GetDesc();
+        return GEViewport{0, 0, (float)desc.Width, (float)desc.Height, 0.f, 1.f};
+    }
+
     void translateCoords(float x, float y, float z, GEViewport *viewport,
                          float *x_result, float *y_result, float *z_result) {
         if (viewport != nullptr) {
             translateCoordsDefaultImpl(x, y, z, viewport, x_result, y_result, z_result);
         } else {
-            auto desc = target->renderTargets[target->frameIndex]->GetDesc();
-            GEViewport geViewport{0, 0, (float)desc.Width, (float)desc.Height};
-            translateCoordsDefaultImpl(x, y, z, &geViewport, x_result, y_result, z_result);
+            auto vp = getEffectiveViewport();
+            translateCoordsDefaultImpl(x, y, z, &vp, x_result, y_result, z_result);
         }
     }
 
@@ -364,7 +368,7 @@ public:
         }
         GPUTessExtractedParams ep;
         extractGPUTessParams(params, ep);
-        GEViewport vp = viewport ? *viewport : GEViewport{0, 0, 1, 1, 0, 1};
+        GEViewport vp = viewport ? *viewport : getEffectiveViewport();
         return d3d12GpuDispatch(ep, vp, arcStep, pip, this, params, direction, viewport);
     }
 
@@ -376,14 +380,18 @@ class D3D12TextureRenderTargetTEContext : public OmegaTessellationEngineContext 
     SharedHandle<GED3D12TextureRenderTarget> target;
     D3D12TessPipelines pip;
 public:
+    GEViewport getEffectiveViewport() override {
+        auto desc = target->texture->resource->GetDesc();
+        return GEViewport{0, 0, (float)desc.Width, (float)desc.Height, 0.f, 1.f};
+    }
+
     void translateCoords(float x, float y, float z, GEViewport *viewport,
                          float *x_result, float *y_result, float *z_result) {
         if (viewport != nullptr) {
             translateCoordsDefaultImpl(x, y, z, viewport, x_result, y_result, z_result);
         } else {
-            auto desc = target->texture->resource->GetDesc();
-            GEViewport geViewport{0, 0, (float)desc.Width, (float)desc.Height};
-            translateCoordsDefaultImpl(x, y, z, &geViewport, x_result, y_result, z_result);
+            auto vp = getEffectiveViewport();
+            translateCoordsDefaultImpl(x, y, z, &vp, x_result, y_result, z_result);
         }
     }
 
@@ -397,7 +405,7 @@ public:
         }
         GPUTessExtractedParams ep;
         extractGPUTessParams(params, ep);
-        GEViewport vp = viewport ? *viewport : GEViewport{0, 0, 1, 1, 0, 1};
+        GEViewport vp = viewport ? *viewport : getEffectiveViewport();
         return d3d12GpuDispatch(ep, vp, arcStep, pip, this, params, direction, viewport);
     }
 

@@ -532,13 +532,15 @@ _NAMESPACE_BEGIN_
 
         vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state);
         renderPipelineState = vulkanPipeline;
-        vkCmdBindDescriptorSets(commandBuffer,
-                                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                vulkanPipeline->layout,
-                                0,
-                                vulkanPipeline->descs.size(),
-                                vulkanPipeline->descs.data(),
-                                0,nullptr);
+        if(!vulkanPipeline->descs.empty()){
+            vkCmdBindDescriptorSets(commandBuffer,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    vulkanPipeline->layout,
+                                    0,
+                                    vulkanPipeline->descs.size(),
+                                    vulkanPipeline->descs.data(),
+                                    0,nullptr);
+        }
     };
 
     void GEVulkanCommandBuffer::bindResourceAtVertexShader(SharedHandle<GEBuffer> &buffer, unsigned id){

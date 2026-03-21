@@ -813,6 +813,16 @@ namespace omegasl {
         void compileShaderOnRuntime(ast::ShaderDecl::Type type, const OmegaCommon::StrRef &name) override {
             auto source = stringOut.str();
             #ifdef TARGET_VULKAN
+                {
+                    std::string shaderName{name.data(),name.size()};
+                    std::string dumpPath = "/tmp/OmegaSL-" + shaderName + ".glsl";
+                    std::ofstream dump(dumpPath,std::ios::out | std::ios::trunc);
+                    if(dump.is_open()){
+                        dump << source;
+                        dump.close();
+                        std::cout << "OMEGASL GLSL debug dump: `" << dumpPath << "`" << std::endl;
+                    }
+                }
                 auto dumpSourceOnError = [&](){
                     std::string shaderName{name.data(),name.size()};
                     std::string dumpPath = "/tmp/OmegaSL-" + shaderName + ".glsl";

@@ -65,7 +65,7 @@ static void writeVertex(OmegaGTE::GPoint3D &pt, OmegaGTE::FVec<4> &color){
 
 static SharedHandle<OmegaGTE::GEBuffer> vertexBuffer;
 
-static void tessellateAndRender(){
+static void tessellateAndRender(int viewWidth, int viewHeight){
     OmegaGTE::GRect rect {};
     rect.h = 100;
     rect.w = 100;
@@ -113,8 +113,8 @@ static void tessellateAndRender(){
         RenderPassDesc::ColorAttachment::ClearColor(1.f, 1.f, 1.f, 1.f),
         RenderPassDesc::ColorAttachment::Clear);
 
-    OmegaGTE::GEViewport viewport{0, 0, 300, 300, 0, 1.f};
-    OmegaGTE::GEScissorRect scissorRect{0, 0, 300, 300};
+    OmegaGTE::GEViewport viewport{0, 0, (float)viewWidth, (float)viewHeight, 0, 1.f};
+    OmegaGTE::GEScissorRect scissorRect{0, 0, (float)viewWidth, (float)viewHeight};
 
     commandBuffer->startRenderPass(renderPass);
     commandBuffer->setRenderPipelineState(renderPipeline);
@@ -147,6 +147,10 @@ static void start_application(GtkApplication *app, gpointer user_data){
     Display *x_display = GDK_WINDOW_XDISPLAY(gdk_win);
     Window x_window = GDK_WINDOW_XID(gdk_win);
 
+    int scale = gdk_window_get_scale_factor(gdk_win);
+    int pixel_width = gdk_window_get_width(gdk_win) * scale;
+    int pixel_height = gdk_window_get_height(gdk_win) * scale;
+
     OmegaGTE::NativeRenderTargetDescriptor desc{};
     desc.x_display = x_display;
     desc.x_window = x_window;
@@ -154,7 +158,7 @@ static void start_application(GtkApplication *app, gpointer user_data){
     nativeRenderTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
     tessContext = gte.tessalationEngine->createTEContextFromNativeRenderTarget(nativeRenderTarget);
 
-    tessellateAndRender();
+    tessellateAndRender(pixel_width, pixel_height);
 }
 
 int main(int argc, char *argv[]){
@@ -175,6 +179,7 @@ int main(int argc, char *argv[]){
     OmegaGTE::RenderPipelineDescriptor pipelineDesc;
     pipelineDesc.vertexFunc = funcLib->shaders[VERTEX_FUNC];
     pipelineDesc.fragmentFunc = funcLib->shaders[FRAGMENT_FUNC];
+    pipelineDesc.colorPixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
     pipelineDesc.depthAndStencilDesc.enableDepth = false;
     pipelineDesc.depthAndStencilDesc.enableStencil = false;
     renderPipeline = gte.graphicsEngine->makeRenderPipelineState(pipelineDesc);

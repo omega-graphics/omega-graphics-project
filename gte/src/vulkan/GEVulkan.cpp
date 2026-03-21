@@ -32,6 +32,17 @@
 
 _NAMESPACE_BEGIN_
 
+    inline VkFormat pixelFormatToVkFormat(PixelFormat fmt){
+        switch(fmt){
+            case PixelFormat::RGBA8Unorm:      return VK_FORMAT_R8G8B8A8_UNORM;
+            case PixelFormat::RGBA16Unorm:     return VK_FORMAT_R16G16B16A16_UNORM;
+            case PixelFormat::RGBA8Unorm_SRGB: return VK_FORMAT_R8G8B8A8_SRGB;
+            case PixelFormat::BGRA8Unorm:      return VK_FORMAT_B8G8R8A8_UNORM;
+            case PixelFormat::BGRA8Unorm_SRGB: return VK_FORMAT_B8G8R8A8_SRGB;
+            default:                           return VK_FORMAT_R8G8B8A8_UNORM;
+        }
+    }
+
     VkInstance GEVulkanEngine::instance = nullptr;
 
     bool vulkanInit = false;
@@ -746,12 +757,7 @@ _NAMESPACE_BEGIN_
         VkImageCreateInfo imageInfo {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         imageInfo.flags = 0;
 
-        VkFormat imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
-        switch(desc.pixelFormat){
-            case TexturePixelFormat::RGBA8Unorm: imageFormat = VK_FORMAT_R8G8B8A8_UNORM; break;
-            case TexturePixelFormat::RGBA16Unorm: imageFormat = VK_FORMAT_R16G16B16A16_UNORM; break;
-            case TexturePixelFormat::RGBA8Unorm_SRGB: imageFormat = VK_FORMAT_R8G8B8A8_SRGB; break;
-        }
+        VkFormat imageFormat = pixelFormatToVkFormat(desc.pixelFormat);
         imageInfo.format = imageFormat;
 
         VkImageType type = VK_IMAGE_TYPE_2D;
@@ -855,26 +861,7 @@ _NAMESPACE_BEGIN_
         image_desc.pNext = nullptr;
         image_desc.flags = 0;
 
-        VkFormat image_format;
-
-        switch (desc.pixelFormat) {
-            case TexturePixelFormat::RGBA8Unorm : {
-                image_format = VK_FORMAT_R8G8B8A8_UNORM;
-                break;
-            }
-            case TexturePixelFormat::RGBA16Unorm : {
-                image_format = VK_FORMAT_R16G16B16A16_UNORM;
-                break;
-            }
-            case TexturePixelFormat::RGBA8Unorm_SRGB : {
-                image_format = VK_FORMAT_R8G8B8A8_SRGB;
-                break;
-            }
-            default: {
-                image_format = VK_FORMAT_R8G8B8A8_UNORM;
-                break;
-            }
-        }
+        VkFormat image_format = pixelFormatToVkFormat(desc.pixelFormat);
 
         image_desc.format = image_format;
 
@@ -1204,6 +1191,9 @@ _NAMESPACE_BEGIN_
             desc_layout_info.pNext = nullptr;
             desc_layout_info.bindingCount = static_cast<std::uint32_t>(bindings.size());
             desc_layout_info.pBindings = bindings.empty() ? nullptr : bindings.data();
+            if(hasPushDescriptorExt && setCount == 0){
+                desc_layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+            }
 
             VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
             auto setLayoutRes = vkCreateDescriptorSetLayout(device,&desc_layout_info,nullptr,&setLayout);
@@ -1227,6 +1217,11 @@ _NAMESPACE_BEGIN_
         }
 
         if(descriptorPool == nullptr || descLayout.empty() || poolSizes.empty()){
+            return pipeline_layout;
+        }
+
+        // Push descriptor layouts cannot have sets allocated from pools.
+        if(hasPushDescriptorExt){
             return pipeline_layout;
         }
 
@@ -1328,7 +1323,7 @@ _NAMESPACE_BEGIN_
         }
 
         VkAttachmentDescription colorAttachment {};
-        colorAttachment.format = VK_FORMAT_R8G8B8A8_UNORM;
+        colorAttachment.format = pixelFormatToVkFormat(desc.colorPixelFormat);
         colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
         colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1877,6 +1872,7 @@ _NAMESPACE_BEGIN_
                 selectedSurfaceFormat = formatCandidate;
             }
         }
+        DEBUG_STREAM("Selected swapchain format: " << selectedSurfaceFormat.format);
 
         OmegaCommon::Vector<VkPresentModeKHR> presentModes;
         auto presentRes = vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice,surfaceKhr,&count,nullptr);

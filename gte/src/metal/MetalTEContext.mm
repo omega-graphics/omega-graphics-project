@@ -228,13 +228,22 @@ public:
         GEViewport vp = viewport ? *viewport : GEViewport{0,0,1,1,0,1};
         return gpuDispatch(ep, vp, arcStep, pip, this, params, ff, viewport);
     }
+    GEViewport getEffectiveViewport() override {
+        if(target != nullptr){
+            CGFloat s = [NSScreen mainScreen].backingScaleFactor;
+            return GEViewport{0.f, 0.f,
+                static_cast<float>(target->drawableSize.width / s),
+                static_cast<float>(target->drawableSize.height / s),
+                0.f, 1.f};
+        }
+        return GEViewport{0.f, 0.f, 1.f, 1.f, 0.f, 1.f};
+    }
+
     void translateCoords(float x, float y, float z, GEViewport *viewport,
                          float *xr, float *yr, float *zr) override {
         if (viewport) { translateCoordsDefaultImpl(x,y,z,viewport,xr,yr,zr); return; }
-        CGFloat s = [NSScreen mainScreen].backingScaleFactor;
-        *xr = x / (target->drawableSize.width / s / 2.f);
-        *yr = y / (target->drawableSize.height / s / 2.f);
-        if (zr) *zr = (z > 0.0 || z < 0.0) ? z / 1.0 : z;
+        auto vp = getEffectiveViewport();
+        translateCoordsDefaultImpl(x,y,z,&vp,xr,yr,zr);
     }
     MetalNativeRenderTargetTEContext(SharedHandle<GEMetalNativeRenderTarget> t) : target(t) {}
 };
@@ -253,14 +262,23 @@ public:
         GEViewport vp = viewport ? *viewport : GEViewport{0,0,1,1,0,1};
         return gpuDispatch(ep, vp, arcStep, pip, this, params, ff, viewport);
     }
+    GEViewport getEffectiveViewport() override {
+        if(target != nullptr){
+            CGFloat s = [NSScreen mainScreen].backingScaleFactor;
+            id<MTLTexture> tex = (id<MTLTexture>)target->texturePtr->native();
+            return GEViewport{0.f, 0.f,
+                static_cast<float>(tex.width / s),
+                static_cast<float>(tex.height / s),
+                0.f, 1.f};
+        }
+        return GEViewport{0.f, 0.f, 1.f, 1.f, 0.f, 1.f};
+    }
+
     void translateCoords(float x, float y, float z, GEViewport *viewport,
                          float *xr, float *yr, float *zr) override {
         if (viewport) { translateCoordsDefaultImpl(x,y,z,viewport,xr,yr,zr); return; }
-        CGFloat s = [NSScreen mainScreen].backingScaleFactor;
-        id<MTLTexture> tex = (id<MTLTexture>)target->texturePtr->native();
-        *xr = x / (tex.width / s);
-        *yr = y / (tex.height / s);
-        if (zr) *zr = (z > 0.0 || z < 0.0) ? z / 1.0 : z;
+        auto vp = getEffectiveViewport();
+        translateCoordsDefaultImpl(x,y,z,&vp,xr,yr,zr);
     }
     MetalTextureRenderTargetTEContext(SharedHandle<GEMetalTextureRenderTarget> t) : target(t) {}
 };
