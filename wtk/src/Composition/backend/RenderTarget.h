@@ -60,13 +60,21 @@ namespace OmegaWTK::Composition {
         unsigned backingHeight = 1;
         OmegaCommon::Vector<CanvasEffect> effectQueue;
         OmegaCommon::Vector<std::pair<SharedHandle<OmegaGTE::GEBuffer>,std::size_t>> deferredBufferReleases;
+        SharedHandle<OmegaGTE::GETexture> committedTexture;
         void rebuildBackingTarget();
         void createGradientTexture(bool linearOrRadial,Gradient & gradient,OmegaGTE::GRect & rect,SharedHandle<OmegaGTE::GETexture> & dest);
     public:
+        bool hasPendingContent = false;
         void clear(float r,float g,float b,float a);
         void renderToTarget(VisualCommand::Type type,void *params);
         void applyEffectToTarget(const CanvasEffect & effect);
         void setRenderTargetSize(Core::Rect &rect);
+        SharedHandle<OmegaGTE::GENativeRenderTarget> & getNativeRenderTarget(){ return renderTarget; }
+        SharedHandle<OmegaGTE::GEFence> & getFence(){ return fence; }
+        SharedHandle<OmegaGTE::GETexture> getCommittedTexture(){ return committedTexture; }
+        unsigned getBackingWidth() const { return backingWidth; }
+        unsigned getBackingHeight() const { return backingHeight; }
+        void releaseDeferredBuffers();
 #ifdef _WIN32
         /// Resize swap chain after waiting for GPU; use instead of calling ResizeBuffers on the swap chain directly.
         void resizeSwapChain(unsigned int backingWidth, unsigned int backingHeight);
@@ -81,7 +89,7 @@ namespace OmegaWTK::Composition {
                     std::uint64_t syncPacketId,
                     std::chrono::steady_clock::time_point submitTimeCpu,
                     BackendSubmissionCompletionHandler completionHandler);
-    
+
         /**
             Create a BackendRenderTarget Context
             @param renderTarget
@@ -99,9 +107,12 @@ namespace OmegaWTK::Composition {
     struct BackendCompRenderTarget {
         SharedHandle<BackendVisualTree> visualTree;
         OmegaCommon::Map<Layer *,BackendRenderTargetContext *> surfaceTargets;
+        bool needsPresent = false;
     };
 
 
+
+    void compositeAndPresentTarget(BackendCompRenderTarget & compTarget);
 
     struct RenderTargetStore {
      private:
@@ -109,6 +120,7 @@ namespace OmegaWTK::Composition {
     public:
         void cleanTreeTargets(LayerTree *tree);
         void removeRenderTarget(const SharedHandle<CompositionRenderTarget> & target);
+        void presentAllPending();
         OmegaCommon::Map<SharedHandle<CompositionRenderTarget>,BackendCompRenderTarget> store = {};
     };
 

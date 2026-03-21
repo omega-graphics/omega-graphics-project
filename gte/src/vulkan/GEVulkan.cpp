@@ -362,7 +362,9 @@ _NAMESPACE_BEGIN_
                       << (shaderDesc->name != nullptr ? shaderDesc->name : "<unnamed>") << "`." << std::endl;
             return nullptr;
         }
-        return SharedHandle<GTEShader>(new GTEVulkanShader(this,*shaderDesc,module));
+        auto result = std::shared_ptr<GTEVulkanShader>(new GTEVulkanShader(this,*shaderDesc,module));
+        trackResource(result);
+        return result;
     }
 
 
@@ -620,7 +622,9 @@ _NAMESPACE_BEGIN_
     };
 
     SharedHandle<GECommandQueue> GEVulkanEngine::makeCommandQueue(unsigned int maxBufferCount){
-        return std::make_shared<GEVulkanCommandQueue>(this,maxBufferCount);
+        auto result = std::make_shared<GEVulkanCommandQueue>(this,maxBufferCount);
+        trackResource(result);
+        return result;
     };
 
     SharedHandle<GEBuffer> GEVulkanEngine::makeBuffer(const BufferDescriptor &desc){
@@ -684,11 +688,23 @@ _NAMESPACE_BEGIN_
         // Structured buffers are bound as storage buffers in current command encoding, so no texel view is required.
         VkBufferView bufferView = VK_NULL_HANDLE;
 
-        return SharedHandle<GEBuffer>(new GEVulkanBuffer(desc.usage,this,buffer,bufferView,allocation,allocationInfo));
+        auto result = std::shared_ptr<GEVulkanBuffer>(new GEVulkanBuffer(desc.usage,this,buffer,bufferView,allocation,allocationInfo));
+        trackResource(result);
+        return result;
     };
-    GEVulkanHeap::~GEVulkanHeap(){
+    void GEVulkanHeap::releaseNative(){
+        if(nativeReleased_) return;
+        nativeReleased_ = true;
         if(pool != VK_NULL_HANDLE){
             vmaDestroyPool(engine->memAllocator, pool);
+            pool = VK_NULL_HANDLE;
+        }
+    }
+    GEVulkanHeap::~GEVulkanHeap(){
+        if(!nativeReleased_){
+            if(pool != VK_NULL_HANDLE){
+                vmaDestroyPool(engine->memAllocator, pool);
+            }
         }
     }
 
@@ -721,7 +737,9 @@ _NAMESPACE_BEGIN_
         }
 
         VkBufferView bufferView = VK_NULL_HANDLE;
-        return SharedHandle<GEBuffer>(new GEVulkanBuffer(desc.usage, engine, buffer, bufferView, alloc, allocationInfo));
+        auto result = std::shared_ptr<GEVulkanBuffer>(new GEVulkanBuffer(desc.usage, engine, buffer, bufferView, alloc, allocationInfo));
+        engine->trackResource(result);
+        return result;
     }
 
     SharedHandle<GETexture> GEVulkanHeap::makeTexture(const TextureDescriptor &desc){
@@ -787,9 +805,11 @@ _NAMESPACE_BEGIN_
         VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
         VmaMemoryUsage memUsage = VMA_MEMORY_USAGE_GPU_ONLY;
 
-        return SharedHandle<GETexture>(new GEVulkanTexture(
+        auto result = std::shared_ptr<GEVulkanTexture>(new GEVulkanTexture(
             desc.type, desc.usage, desc.pixelFormat,
             engine, img, imgView, layout, allocationInfo, alloc, desc, memUsage));
+        engine->trackResource(result);
+        return result;
     }
 
     SharedHandle<GEHeap> GEVulkanEngine::makeHeap(const HeapDescriptor &desc){
@@ -820,7 +840,9 @@ _NAMESPACE_BEGIN_
             return nullptr;
         }
 
-        return SharedHandle<GEHeap>(new GEVulkanHeap(this, pool, desc.len));
+        auto result = std::shared_ptr<GEVulkanHeap>(new GEVulkanHeap(this, pool, desc.len));
+        trackResource(result);
+        return result;
     };
 
     SharedHandle<GETexture>GEVulkanEngine::makeTexture(const TextureDescriptor &desc){
@@ -1044,7 +1066,7 @@ _NAMESPACE_BEGIN_
         sanitizedDesc.height = height;
         sanitizedDesc.depth = depth;
         sanitizedDesc.mipLevels = mipLevels;
-        return SharedHandle<GETexture>(new GEVulkanTexture(
+        auto result = std::shared_ptr<GEVulkanTexture>(new GEVulkanTexture(
                 sanitizedDesc.type,
                 sanitizedDesc.usage,
                 sanitizedDesc.pixelFormat,
@@ -1056,6 +1078,8 @@ _NAMESPACE_BEGIN_
                 alloc,
                 sanitizedDesc,
                 memoryUsage));
+        trackResource(result);
+        return result;
     };
 
 
@@ -1573,7 +1597,7 @@ _NAMESPACE_BEGIN_
             vkSetDebugUtilsObjectNameEXT(device,&nameInfoExt);
         }
       
-        return SharedHandle<GERenderPipelineState>(new GEVulkanRenderPipelineState(desc.vertexFunc,
+        auto result = std::shared_ptr<GEVulkanRenderPipelineState>(new GEVulkanRenderPipelineState(desc.vertexFunc,
                                                                                    desc.fragmentFunc,
                                                                                    this,
                                                                                    pipeline,
@@ -1582,6 +1606,8 @@ _NAMESPACE_BEGIN_
                                                                                    descriptorPool,
                                                                                    descs,
                                                                                    descLayouts));
+        trackResource(result);
+        return result;
     };
     SharedHandle<GEComputePipelineState> GEVulkanEngine::makeComputePipelineState(ComputePipelineDescriptor &desc){
 
@@ -1622,13 +1648,15 @@ _NAMESPACE_BEGIN_
         };
 
         VkDescriptorSet descSet = descs.empty() ? VK_NULL_HANDLE : descs.front();
-        return SharedHandle<GEComputePipelineState>(new GEVulkanComputePipelineState(desc.computeFunc,
+        auto tracked = std::shared_ptr<GEVulkanComputePipelineState>(new GEVulkanComputePipelineState(desc.computeFunc,
                                                                                      this,
                                                                                      pipeline,
                                                                                      pipeline_layout,
                                                                                      descriptorPool,
                                                                                      descSet,
                                                                                      descLayouts));
+        trackResource(tracked);
+        return tracked;
     };
 
     SharedHandle<GEFence> GEVulkanEngine::makeFence(){
@@ -1655,7 +1683,9 @@ _NAMESPACE_BEGIN_
             event = VK_NULL_HANDLE;
         }
 
-        return SharedHandle<GEFence>(new GEVulkanFence(this,fence,event));
+        auto result = std::shared_ptr<GEVulkanFence>(new GEVulkanFence(this,fence,event));
+        trackResource(result);
+        return result;
     };
 
     SharedHandle<GESamplerState> GEVulkanEngine::makeSamplerState(const SamplerDescriptor &desc) {
@@ -1743,7 +1773,9 @@ _NAMESPACE_BEGIN_
             vkSetDebugUtilsObjectNameEXT(device,&nameInfoExt);
         }
 
-        return SharedHandle<GESamplerState>(new GEVulkanSamplerState(this,sampler));
+        auto result = std::shared_ptr<GEVulkanSamplerState>(new GEVulkanSamplerState(this,sampler));
+        trackResource(result);
+        return result;
     }
 
     SharedHandle<GENativeRenderTarget> GEVulkanEngine::makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc){
@@ -1920,13 +1952,15 @@ _NAMESPACE_BEGIN_
 
         unsigned mipLevels = 1;
 
-        return SharedHandle<GENativeRenderTarget>(new GEVulkanNativeRenderTarget(
+        auto result = std::shared_ptr<GEVulkanNativeRenderTarget>(new GEVulkanNativeRenderTarget(
                 this,
                 surfaceKhr,
                 swapchainKhr,
                 selectedSurfaceFormat.format,
                 mipLevels,
                 swapExtent));
+        trackResource(result);
+        return result;
     };
 
     SharedHandle<GETextureRenderTarget> GEVulkanEngine::makeTextureRenderTarget(const TextureRenderTargetDescriptor &desc){
@@ -1943,7 +1977,9 @@ _NAMESPACE_BEGIN_
 
         VkFramebuffer fb = VK_NULL_HANDLE;
 
-        return SharedHandle<GETextureRenderTarget>(new GEVulkanTextureRenderTarget(this,vk_tex,fb));
+        auto result = std::shared_ptr<GEVulkanTextureRenderTarget>(new GEVulkanTextureRenderTarget(this,vk_tex,fb));
+        trackResource(result);
+        return result;
     };
 
     #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
@@ -2063,8 +2099,9 @@ _NAMESPACE_BEGIN_
             return nullptr;
         }
         VkBufferView nullView = VK_NULL_HANDLE;
-        auto structBuffer = SharedHandle<GEVulkanBuffer>(
+        auto structBuffer = std::shared_ptr<GEVulkanBuffer>(
             new GEVulkanBuffer(BufferDescriptor::GPUOnly, this, structBuf, nullView, structAlloc, structAllocResult));
+        trackResource(structBuffer);
 
         VkBufferCreateInfo scratchBufInfo {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         scratchBufInfo.size = scratchSize;
@@ -2084,8 +2121,9 @@ _NAMESPACE_BEGIN_
             return nullptr;
         }
         VkBufferView nullView2 = VK_NULL_HANDLE;
-        auto scratchBuffer = SharedHandle<GEVulkanBuffer>(
+        auto scratchBuffer = std::shared_ptr<GEVulkanBuffer>(
             new GEVulkanBuffer(BufferDescriptor::GPUOnly, this, scratchBuf, nullView2, scratchAlloc, scratchAllocResult));
+        trackResource(scratchBuffer);
 
         VkAccelerationStructureCreateInfoKHR asCreateInfo {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
         asCreateInfo.buffer = structBuf;
@@ -2099,14 +2137,27 @@ _NAMESPACE_BEGIN_
             return nullptr;
         }
 
-        return SharedHandle<GEAccelerationStruct>(
+        auto result = std::shared_ptr<GEVulkanAccelerationStruct>(
             new GEVulkanAccelerationStruct(this, accelStruct, structBuffer, scratchBuffer));
+        trackResource(result);
+        return result;
     }
 
     #endif
 
+    void GEVulkanEngine::releaseAllTrackedResources(){
+        for(auto & tracked : trackedResources){
+            if(tracked.ref.lock()){
+                tracked.releaseFn(tracked.rawPtr);
+            }
+        }
+        trackedResources.clear();
+    }
+
     GEVulkanEngine::~GEVulkanEngine(){
         if(device != VK_NULL_HANDLE){
+            vkDeviceWaitIdle(device);
+            releaseAllTrackedResources();
             for(auto & qf : deviceQueuefamilies){
                 for(auto & q : qf){
                     if(q.first != VK_NULL_HANDLE){

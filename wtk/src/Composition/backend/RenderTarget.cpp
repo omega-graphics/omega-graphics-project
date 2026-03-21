@@ -1,6 +1,7 @@
 
 
 #include "RenderTarget.h"
+#include "VisualTree.h"
 #include "TexturePool.h"
 #include "BufferPool.h"
 #include "FencePool.h"
@@ -613,76 +614,15 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             preEffectTarget->submitCommandBuffer(_l_cb, fence);
             preEffectTarget->commit();
         }
-        SharedHandle<OmegaGTE::GETexture> finalTexture = preEffectTarget->underlyingTexture();
+        committedTexture = preEffectTarget->underlyingTexture();
         if(canApplyEffects){
-            finalTexture = effectTexture;
+            committedTexture = effectTexture;
         }
         effectQueue.clear();
+        hasPendingContent = true;
+    }
 
-        auto cb = renderTarget->commandBuffer();
-
-#ifdef _WIN32
-        renderTarget->waitForFence(fence);
-#endif
-        renderTarget->notifyCommandBuffer(cb, fence);
-        OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
-        renderPassDesc.depthStencilAttachment.disabled = true;
-
-        renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment{
-                {0.f,0.f,0.f,0.f},
-                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction::Clear};
-
-        if(completionHandler){
-            cb->setCompletionHandler(
-                    [completionHandler = std::move(completionHandler),
-                            syncLaneId,
-                            syncPacketId,
-                            submitTimeCpu](const OmegaGTE::GECommandBufferCompletionInfo & info){
-                        BackendSubmissionTelemetry telemetry {};
-                        telemetry.syncLaneId = syncLaneId;
-                        telemetry.syncPacketId = syncPacketId;
-                        telemetry.submitTimeCpu = submitTimeCpu;
-                        telemetry.completeTimeCpu = std::chrono::steady_clock::now();
-                        telemetry.presentTimeCpu = telemetry.completeTimeCpu;
-                        telemetry.gpuStartTimeSec = info.gpuStartTimeSec;
-                        telemetry.gpuEndTimeSec = info.gpuEndTimeSec;
-                        telemetry.status = info.status == OmegaGTE::GECommandBufferCompletionInfo::CompletionStatus::Completed
-                                           ? BackendSubmissionStatus::Completed
-                                           : BackendSubmissionStatus::Error;
-                        completionHandler(telemetry);
-                    });
-        }
-        cb->startRenderPass(renderPassDesc);
-        auto finalPipeline = finalCopyRenderPipelineState ? finalCopyRenderPipelineState : textureRenderPipelineState;
-        if(finalPipeline == nullptr){
-            std::cout << "No final compositing pipeline available." << std::endl;
-            cb->endRenderPass();
-            renderTarget->submitCommandBuffer(cb);
-            renderTarget->commitAndPresent();
-            return;
-        }
-        cb->setRenderPipelineState(finalPipeline);
-        OmegaGTE::GEViewport finalViewport {};
-        finalViewport.x = 0.f;
-        finalViewport.y = 0.f;
-        finalViewport.nearDepth = 0.f;
-        finalViewport.farDepth = 1.f;
-        finalViewport.width = static_cast<float>(backingWidth);
-        finalViewport.height = static_cast<float>(backingHeight);
-        OmegaGTE::GEScissorRect finalScissorRect {
-                0.f,
-                0.f,
-                static_cast<float>(backingWidth),
-                static_cast<float>(backingHeight)};
-        cb->setViewports({finalViewport});
-        cb->setScissorRects({finalScissorRect});
-        cb->bindResourceAtVertexShader(finalTextureDrawBuffer,1);
-        cb->bindResourceAtFragmentShader(finalTexture,2);
-        cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle,6,0);
-        cb->endRenderPass();
-        renderTarget->submitCommandBuffer(cb);
-        renderTarget->commitAndPresent();
-
+    void BackendRenderTargetContext::releaseDeferredBuffers(){
         if(bufferPool){
             for(auto & entry : deferredBufferReleases){
                 if(entry.first)
@@ -690,12 +630,6 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             }
             deferredBufferReleases.clear();
         }
-
-        #ifdef TARGET_MACOS
-
-        stopMTLCapture();
-        
-        #endif
     }
 
     void
@@ -1232,6 +1166,133 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         auto it = store.find(target);
         if(it != store.end()){
             store.erase(it);
+        }
+    }
+
+    void compositeAndPresentTarget(BackendCompRenderTarget & compTarget){
+        compTarget.needsPresent = false;
+
+        // Collect ALL visuals that have ever been rendered to (committedTexture != null),
+        // not just those freshly pending. This is critical because the UIView element
+        // layers and the Widget root layer may commit in separate queue drain cycles.
+        // We must composite all of them together every time any layer updates.
+        OmegaCommon::Vector<BackendRenderTargetContext *> allContexts;
+        OmegaCommon::Vector<BackendRenderTargetContext *> freshlyPending;
+        if(compTarget.visualTree->root != nullptr){
+            auto *ctx = &compTarget.visualTree->root->renderTarget;
+            if(ctx->getCommittedTexture() != nullptr){
+                allContexts.push_back(ctx);
+            }
+            if(ctx->hasPendingContent){
+                freshlyPending.push_back(ctx);
+            }
+        }
+        for(auto & visual : compTarget.visualTree->body){
+            if(visual != nullptr){
+                auto *ctx = &visual->renderTarget;
+                if(ctx->getCommittedTexture() != nullptr){
+                    allContexts.push_back(ctx);
+                }
+                if(ctx->hasPendingContent){
+                    freshlyPending.push_back(ctx);
+                }
+            }
+        }
+        if(allContexts.empty()){
+            return;
+        }
+
+        auto & nativeTarget = allContexts[0]->getNativeRenderTarget();
+        if(nativeTarget == nullptr){
+            for(auto *ctx : freshlyPending){
+                ctx->hasPendingContent = false;
+                ctx->releaseDeferredBuffers();
+            }
+            return;
+        }
+
+        auto cb = nativeTarget->commandBuffer();
+        // Only wait on fences for layers that just committed new content.
+        for(auto *ctx : freshlyPending){
+            nativeTarget->notifyCommandBuffer(cb, ctx->getFence());
+        }
+
+        unsigned maxW = 1;
+        unsigned maxH = 1;
+        for(auto *ctx : allContexts){
+            maxW = std::max(maxW, ctx->getBackingWidth());
+            maxH = std::max(maxH, ctx->getBackingHeight());
+        }
+
+        OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
+        renderPassDesc.depthStencilAttachment.disabled = true;
+        renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment{
+                {0.f,0.f,0.f,0.f},
+                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction::Clear};
+
+        cb->startRenderPass(renderPassDesc);
+
+        auto finalPipeline = finalCopyRenderPipelineState ? finalCopyRenderPipelineState : textureRenderPipelineState;
+        if(finalPipeline == nullptr){
+            cb->endRenderPass();
+            nativeTarget->submitCommandBuffer(cb);
+            nativeTarget->commitAndPresent();
+            for(auto *ctx : freshlyPending){
+                ctx->hasPendingContent = false;
+                ctx->releaseDeferredBuffers();
+            }
+            return;
+        }
+        cb->setRenderPipelineState(finalPipeline);
+
+        OmegaGTE::GEViewport finalViewport {};
+        finalViewport.x = 0.f;
+        finalViewport.y = 0.f;
+        finalViewport.nearDepth = 0.f;
+        finalViewport.farDepth = 1.f;
+        finalViewport.width = static_cast<float>(maxW);
+        finalViewport.height = static_cast<float>(maxH);
+        OmegaGTE::GEScissorRect finalScissorRect {
+                0.f, 0.f,
+                static_cast<float>(maxW),
+                static_cast<float>(maxH)};
+        cb->setViewports({finalViewport});
+        cb->setScissorRects({finalScissorRect});
+
+        // Blit each layer's texture in order. Alpha blending is already enabled
+        // in the Vulkan pipeline state, so transparent regions composite correctly.
+        for(auto *ctx : allContexts){
+            auto tex = ctx->getCommittedTexture();
+            if(tex == nullptr){
+                continue;
+            }
+            cb->bindResourceAtVertexShader(finalTextureDrawBuffer, 1);
+            cb->bindResourceAtFragmentShader(tex, 2);
+            cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
+        }
+
+        cb->endRenderPass();
+        nativeTarget->submitCommandBuffer(cb);
+        nativeTarget->commitAndPresent();
+
+        // Clear pending flags but keep committedTexture alive for future composites.
+        for(auto *ctx : freshlyPending){
+            ctx->hasPendingContent = false;
+            ctx->releaseDeferredBuffers();
+        }
+
+#ifdef TARGET_MACOS
+        stopMTLCapture();
+#endif
+    }
+
+    void RenderTargetStore::presentAllPending(){
+        for(auto & entry : store){
+            auto & compTarget = entry.second;
+            if(!compTarget.needsPresent || compTarget.visualTree == nullptr){
+                continue;
+            }
+            compositeAndPresentTarget(compTarget);
         }
     }
 

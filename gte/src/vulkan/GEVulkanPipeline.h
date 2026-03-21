@@ -9,12 +9,15 @@ _NAMESPACE_BEGIN_
 struct GTEVulkanShader : public GTEShader {
     GEVulkanEngine *parentEngine;
     VkShaderModule shaderModule;
+    bool nativeReleased_ = false;
     GTEVulkanShader(GEVulkanEngine *parentEngine,omegasl_shader & shader,VkShaderModule & shaderModule);
+    void releaseNative();
     ~GTEVulkanShader();
 };
 
 class GEVulkanRenderPipelineState : public __GERenderPipelineState {
     GEVulkanEngine *parentEngine;
+    bool nativeReleased_ = false;
 public:
 
     VkPipeline pipeline;
@@ -36,11 +39,13 @@ public:
                                 VkDescriptorPool & descriptorPool,
                                 OmegaCommon::Vector<VkDescriptorSet> & descs,
                                 OmegaCommon::Vector<VkDescriptorSetLayout> & descLayouts);
+    void releaseNative();
     ~GEVulkanRenderPipelineState();
 };
 
 class GEVulkanComputePipelineState : public __GEComputePipelineState {
     GEVulkanEngine *parentEngine;
+    bool nativeReleased_ = false;
 public:
     VkPipeline pipeline;
     VkPipelineLayout layout;
@@ -58,6 +63,7 @@ public:
                                  VkDescriptorPool & descriptorPool,
                                  VkDescriptorSet & descSet,
                                  OmegaCommon::Vector<VkDescriptorSetLayout> & descLayouts);
+    void releaseNative();
     ~GEVulkanComputePipelineState();
 };
 

@@ -1600,6 +1600,23 @@ _NAMESPACE_BEGIN_
 
    };
 
+   void GEVulkanCommandQueue::releaseNative(){
+       if(nativeReleased_) return;
+       nativeReleased_ = true;
+       if(!commandBuffers.empty()){
+           vkFreeCommandBuffers(engine->device,commandPool,commandBuffers.size(),commandBuffers.data());
+           commandBuffers.resize(0);
+       }
+       if(commandPool != VK_NULL_HANDLE){
+           vkDestroyCommandPool(engine->device,commandPool,nullptr);
+           commandPool = VK_NULL_HANDLE;
+       }
+       if(submitFence != VK_NULL_HANDLE){
+           vkDestroyFence(engine->device,submitFence,nullptr);
+           submitFence = VK_NULL_HANDLE;
+       }
+   }
+
    GEVulkanCommandQueue::~GEVulkanCommandQueue() {
        ResourceTracking::Tracker::instance().emit(
                ResourceTracking::EventType::Destroy,
@@ -1607,9 +1624,11 @@ _NAMESPACE_BEGIN_
                "CommandQueue",
                traceResourceId,
                reinterpret_cast<const void *>(commandPool));
-       vkFreeCommandBuffers(engine->device,commandPool,commandBuffers.size(),commandBuffers.data());
-       commandBuffers.resize(0);
-       vkDestroyCommandPool(engine->device,commandPool,nullptr);
-       vkDestroyFence(engine->device,submitFence,nullptr);
+       if(!nativeReleased_){
+           vkFreeCommandBuffers(engine->device,commandPool,commandBuffers.size(),commandBuffers.data());
+           commandBuffers.resize(0);
+           vkDestroyCommandPool(engine->device,commandPool,nullptr);
+           vkDestroyFence(engine->device,submitFence,nullptr);
+       }
    }
 _NAMESPACE_END_

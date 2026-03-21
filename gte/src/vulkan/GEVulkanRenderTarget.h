@@ -12,6 +12,7 @@ _NAMESPACE_BEGIN_
 class GEVulkanNativeRenderTarget : public GENativeRenderTarget {
     GEVulkanEngine *parentEngine;
     std::uint64_t traceResourceId = 0;
+    bool nativeReleased_ = false;
 public:
 
     SharedHandle<GEVulkanCommandQueue> commandQueue;
@@ -50,12 +51,14 @@ public:
         return commandQueue->native();
     };
 
+    void releaseNative();
     ~GEVulkanNativeRenderTarget();
 };
 
 class GEVulkanTextureRenderTarget : public GETextureRenderTarget {
     GEVulkanEngine *parentEngine;
     std::uint64_t traceResourceId = 0;
+    bool nativeReleased_ = false;
 public:
 
     SharedHandle<GEVulkanCommandQueue> commandQueue;
@@ -79,6 +82,7 @@ public:
     };
     void commit() override;
 
+    void releaseNative();
     ~GEVulkanTextureRenderTarget();
 };
 

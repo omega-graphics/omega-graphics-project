@@ -4,7 +4,6 @@
 
 using namespace metal;
 
-//kernel void locateThreadInThread
 
 /**
  Gradient Texture Generators

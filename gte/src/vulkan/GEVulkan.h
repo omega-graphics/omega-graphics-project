@@ -20,6 +20,8 @@
 #include "omegaGTE/GE.h"
 #include "../common/GEResourceTracker.h"
 
+#include <functional>
+
 #ifndef OMEGAGTE_VULKAN_GEVULKAN_H
 #define OMEGAGTE_VULKAN_GEVULKAN_H
 
@@ -76,6 +78,20 @@ _NAMESPACE_BEGIN_
 
         OmegaCommon::Vector<std::uint32_t> queueFamilyIndices;
 
+        struct TrackedResource {
+            std::weak_ptr<void> ref;
+            void *rawPtr;
+            void (*releaseFn)(void *ptr);
+        };
+        OmegaCommon::Vector<TrackedResource> trackedResources;
+
+        template<typename T>
+        void trackResource(const std::shared_ptr<T> &res) {
+            trackedResources.push_back({res, res.get(),
+                [](void *ptr){ static_cast<T*>(ptr)->releaseNative(); }});
+        }
+        void releaseAllTrackedResources();
+
         explicit GEVulkanEngine(SharedHandle<GTEVulkanDevice> device);
 
         void * underlyingNativeDevice() override;
@@ -111,6 +127,7 @@ _NAMESPACE_BEGIN_
     };
 
     class GEVulkanBuffer : public GEBuffer {
+        bool nativeReleased_ = false;
     public:
         GEVulkanEngine *engine;
         std::uint64_t traceResourceId = 0;
@@ -153,7 +170,7 @@ _NAMESPACE_BEGIN_
             GEVulkanEngine *engine,
             VkBuffer & buffer,
             VkBufferView &view,
-            VmaAllocation alloc, 
+            VmaAllocation alloc,
             VmaAllocationInfo alloc_info):GEBuffer(usage),engine(engine),buffer(buffer),
             bufferView(view),alloc(alloc),alloc_info(alloc_info){
             traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
@@ -165,6 +182,15 @@ _NAMESPACE_BEGIN_
                     reinterpret_cast<const void *>(buffer),
                     static_cast<float>(alloc_info.size));
         };
+        void releaseNative(){
+            if(nativeReleased_) return;
+            nativeReleased_ = true;
+            vmaDestroyBuffer(engine->memAllocator,buffer,alloc);
+            vkDestroyBufferView(engine->device,bufferView,nullptr);
+            buffer = VK_NULL_HANDLE;
+            bufferView = VK_NULL_HANDLE;
+            alloc = nullptr;
+        }
         ~GEVulkanBuffer() override{
             ResourceTracking::Tracker::instance().emit(
                     ResourceTracking::EventType::Destroy,
@@ -173,12 +199,15 @@ _NAMESPACE_BEGIN_
                     traceResourceId,
                     reinterpret_cast<const void *>(buffer),
                     static_cast<float>(alloc_info.size));
-            vmaDestroyBuffer(engine->memAllocator,buffer,alloc);
-            vkDestroyBufferView(engine->device,bufferView,nullptr);
+            if(!nativeReleased_){
+                vmaDestroyBuffer(engine->memAllocator,buffer,alloc);
+                vkDestroyBufferView(engine->device,bufferView,nullptr);
+            }
         };
     };
 
     class GEVulkanFence : public GEFence {
+        bool nativeReleased_ = false;
     public:
         GEVulkanEngine *engine;
 
@@ -202,12 +231,26 @@ _NAMESPACE_BEGIN_
         GEVulkanFence(GEVulkanEngine *engine,VkFence fence,VkEvent event = VK_NULL_HANDLE):engine(engine),fence(fence),event(event){
 
         }
-        ~GEVulkanFence() {
+        void releaseNative(){
+            if(nativeReleased_) return;
+            nativeReleased_ = true;
             if(event != VK_NULL_HANDLE){
                 vkDestroyEvent(engine->device,event,nullptr);
+                event = VK_NULL_HANDLE;
             }
             if(fence != VK_NULL_HANDLE){
                 vkDestroyFence(engine->device,fence,nullptr);
+                fence = VK_NULL_HANDLE;
+            }
+        }
+        ~GEVulkanFence() {
+            if(!nativeReleased_){
+                if(event != VK_NULL_HANDLE){
+                    vkDestroyEvent(engine->device,event,nullptr);
+                }
+                if(fence != VK_NULL_HANDLE){
+                    vkDestroyFence(engine->device,fence,nullptr);
+                }
             }
         }
     };
@@ -216,6 +259,7 @@ _NAMESPACE_BEGIN_
         GEVulkanEngine *engine;
         VmaPool pool;
         size_t heapSize;
+        bool nativeReleased_ = false;
     public:
         GEVulkanHeap(GEVulkanEngine *engine, VmaPool pool, size_t heapSize)
             : engine(engine), pool(pool), heapSize(heapSize) {}
@@ -225,11 +269,13 @@ _NAMESPACE_BEGIN_
         SharedHandle<GEBuffer> makeBuffer(const BufferDescriptor &desc) override;
         SharedHandle<GETexture> makeTexture(const TextureDescriptor &desc) override;
 
+        void releaseNative();
         ~GEVulkanHeap();
     };
 
     #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
     class GEVulkanAccelerationStruct : public GEAccelerationStruct {
+        bool nativeReleased_ = false;
     public:
         GEVulkanEngine *engine;
         VkAccelerationStructureKHR accelStruct;
@@ -253,15 +299,28 @@ _NAMESPACE_BEGIN_
             :engine(engine),accelStruct(accelStruct),
              structBuffer(structBuffer),scratchBuffer(scratchBuffer){}
 
-        ~GEVulkanAccelerationStruct() override {
+        void releaseNative(){
+            if(nativeReleased_) return;
+            nativeReleased_ = true;
             if(accelStruct != VK_NULL_HANDLE && engine != nullptr && engine->vkDestroyAccelerationStructureKhr != nullptr){
                 engine->vkDestroyAccelerationStructureKhr(engine->device, accelStruct, nullptr);
+                accelStruct = VK_NULL_HANDLE;
+            }
+            structBuffer.reset();
+            scratchBuffer.reset();
+        }
+        ~GEVulkanAccelerationStruct() override {
+            if(!nativeReleased_){
+                if(accelStruct != VK_NULL_HANDLE && engine != nullptr && engine->vkDestroyAccelerationStructureKhr != nullptr){
+                    engine->vkDestroyAccelerationStructureKhr(engine->device, accelStruct, nullptr);
+                }
             }
         }
     };
     #endif
 
     class GEVulkanSamplerState : public GESamplerState {
+        bool nativeReleased_ = false;
     public:
         GEVulkanEngine *engine;
 
@@ -270,8 +329,16 @@ _NAMESPACE_BEGIN_
         GEVulkanSamplerState(GEVulkanEngine *engine,VkSampler sampler):engine(engine),sampler(sampler){
 
         }
-        ~GEVulkanSamplerState(){
+        void releaseNative(){
+            if(nativeReleased_) return;
+            nativeReleased_ = true;
             vkDestroySampler(engine->device,sampler,nullptr);
+            sampler = VK_NULL_HANDLE;
+        }
+        ~GEVulkanSamplerState(){
+            if(!nativeReleased_){
+                vkDestroySampler(engine->device,sampler,nullptr);
+            }
         };
     };
     

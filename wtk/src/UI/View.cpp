@@ -363,7 +363,15 @@ SharedHandle<Composition::Layer> View::makeLayer(Core::Rect rect){
 };
 
 SharedHandle<Composition::Canvas> View::makeCanvas(SharedHandle<Composition::Layer> &targetLayer){
-    return std::shared_ptr<Composition::Canvas>(new Composition::Canvas(proxy,*targetLayer));
+    // Route through the root view's proxy so that all layers within a widget's
+    // view hierarchy share a single ViewRenderTarget in the compositor.  This
+    // ensures they are composited together into one swapchain image rather than
+    // presenting to independent Vulkan surfaces.
+    auto *target = this;
+    while(target->parent_ptr != nullptr){
+        target = target->parent_ptr;
+    }
+    return std::shared_ptr<Composition::Canvas>(new Composition::Canvas(target->proxy,*targetLayer));
 }
 
 void View::startCompositionSession(){

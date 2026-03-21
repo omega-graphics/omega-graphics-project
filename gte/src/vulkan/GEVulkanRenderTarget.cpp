@@ -136,6 +136,42 @@ void GEVulkanNativeRenderTarget::commitAndPresent() {
     commandQueue->clearSubmittedTraceCommandBufferIds();
 }
 
+void GEVulkanNativeRenderTarget::releaseNative(){
+    if(nativeReleased_) return;
+    nativeReleased_ = true;
+
+    if(parentEngine == nullptr || parentEngine->device == VK_NULL_HANDLE){
+        return;
+    }
+
+    commandQueue.reset();
+
+    if(framebuffer != VK_NULL_HANDLE){
+        vkDestroyFramebuffer(parentEngine->device,framebuffer, nullptr);
+        framebuffer = VK_NULL_HANDLE;
+    }
+    for(auto view : frameViews){
+        vkDestroyImageView(parentEngine->device,view,nullptr);
+    }
+    frameViews.clear();
+    if(frameIsReadyFence != VK_NULL_HANDLE){
+        vkDestroyFence(parentEngine->device,frameIsReadyFence,nullptr);
+        frameIsReadyFence = VK_NULL_HANDLE;
+    }
+    if(semaphore != VK_NULL_HANDLE){
+        vkDestroySemaphore(parentEngine->device,semaphore,nullptr);
+        semaphore = VK_NULL_HANDLE;
+    }
+    if(swapchainKHR != VK_NULL_HANDLE){
+        vkDestroySwapchainKHR(parentEngine->device,swapchainKHR,nullptr);
+        swapchainKHR = VK_NULL_HANDLE;
+    }
+    if(surface != VK_NULL_HANDLE){
+        vkDestroySurfaceKHR(GEVulkanEngine::instance,surface,nullptr);
+        surface = VK_NULL_HANDLE;
+    }
+}
+
 GEVulkanNativeRenderTarget::~GEVulkanNativeRenderTarget() {
     ResourceTracking::Tracker::instance().emit(
             ResourceTracking::EventType::Destroy,
@@ -146,29 +182,30 @@ GEVulkanNativeRenderTarget::~GEVulkanNativeRenderTarget() {
             static_cast<float>(extent.width),
             static_cast<float>(extent.height));
 
-    if(parentEngine == nullptr || parentEngine->device == VK_NULL_HANDLE){
-        return;
-    }
+    if(!nativeReleased_){
+        if(parentEngine == nullptr || parentEngine->device == VK_NULL_HANDLE){
+            return;
+        }
 
-    if(framebuffer != VK_NULL_HANDLE){
-        vkDestroyFramebuffer(parentEngine->device,framebuffer, nullptr);
+        if(framebuffer != VK_NULL_HANDLE){
+            vkDestroyFramebuffer(parentEngine->device,framebuffer, nullptr);
+        }
+        for(auto view : frameViews){
+            vkDestroyImageView(parentEngine->device,view,nullptr);
+        }
+        if(frameIsReadyFence != VK_NULL_HANDLE){
+            vkDestroyFence(parentEngine->device,frameIsReadyFence,nullptr);
+        }
+        if(semaphore != VK_NULL_HANDLE){
+            vkDestroySemaphore(parentEngine->device,semaphore,nullptr);
+        }
+        if(swapchainKHR != VK_NULL_HANDLE){
+            vkDestroySwapchainKHR(parentEngine->device,swapchainKHR,nullptr);
+        }
+        if(surface != VK_NULL_HANDLE){
+            vkDestroySurfaceKHR(GEVulkanEngine::instance,surface,nullptr);
+        }
     }
-    for(auto view : frameViews){
-        vkDestroyImageView(parentEngine->device,view,nullptr);
-    }
-    if(frameIsReadyFence != VK_NULL_HANDLE){
-        vkDestroyFence(parentEngine->device,frameIsReadyFence,nullptr);
-    }
-    if(semaphore != VK_NULL_HANDLE){
-        vkDestroySemaphore(parentEngine->device,semaphore,nullptr);
-    }
-    if(swapchainKHR != VK_NULL_HANDLE){
-        vkDestroySwapchainKHR(parentEngine->device,swapchainKHR,nullptr);
-    }
-    if(surface != VK_NULL_HANDLE){
-        vkDestroySurfaceKHR(GEVulkanEngine::instance,surface,nullptr);
-    }
-
 }
 
 GEVulkanTextureRenderTarget::GEVulkanTextureRenderTarget(GEVulkanEngine * engine,
@@ -215,6 +252,17 @@ void GEVulkanTextureRenderTarget::commit(){
     commandQueue->clearSubmittedTraceCommandBufferIds();
 }
 
+void GEVulkanTextureRenderTarget::releaseNative(){
+    if(nativeReleased_) return;
+    nativeReleased_ = true;
+    commandQueue.reset();
+    texture.reset();
+    if(frameBuffer != VK_NULL_HANDLE){
+        vkDestroyFramebuffer(parentEngine->device,frameBuffer,nullptr);
+        frameBuffer = VK_NULL_HANDLE;
+    }
+}
+
 GEVulkanTextureRenderTarget::~GEVulkanTextureRenderTarget(){
     ResourceTracking::Tracker::instance().emit(
             ResourceTracking::EventType::Destroy,
@@ -224,8 +272,10 @@ GEVulkanTextureRenderTarget::~GEVulkanTextureRenderTarget(){
             texture != nullptr ? reinterpret_cast<const void *>(texture->img) : nullptr,
             texture != nullptr ? static_cast<float>(texture->descriptor.width) : -1.f,
             texture != nullptr ? static_cast<float>(texture->descriptor.height) : -1.f);
-    if(frameBuffer != VK_NULL_HANDLE){
-        vkDestroyFramebuffer(parentEngine->device,frameBuffer,nullptr);
+    if(!nativeReleased_){
+        if(frameBuffer != VK_NULL_HANDLE){
+            vkDestroyFramebuffer(parentEngine->device,frameBuffer,nullptr);
+        }
     }
 }
 

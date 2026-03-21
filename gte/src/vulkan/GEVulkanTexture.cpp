@@ -50,6 +50,16 @@ void GEVulkanTexture::copyBytes(void *bytes, size_t bytesPerRow){
     vmaUnmapMemory(engine->memAllocator,alloc);
 }
 
+void GEVulkanTexture::releaseNative(){
+    if(nativeReleased_) return;
+    nativeReleased_ = true;
+    vmaDestroyImage(engine->memAllocator,img,alloc);
+    vkDestroyImageView(engine->device,img_view,nullptr);
+    img = VK_NULL_HANDLE;
+    img_view = VK_NULL_HANDLE;
+    alloc = nullptr;
+}
+
 GEVulkanTexture::~GEVulkanTexture(){
     ResourceTracking::Tracker::instance().emit(
             ResourceTracking::EventType::Destroy,
@@ -59,8 +69,10 @@ GEVulkanTexture::~GEVulkanTexture(){
             reinterpret_cast<const void *>(img),
             static_cast<float>(descriptor.width),
             static_cast<float>(descriptor.height));
-    vmaDestroyImage(engine->memAllocator,img,alloc);
-    vkDestroyImageView(engine->device,img_view,nullptr);
+    if(!nativeReleased_){
+        vmaDestroyImage(engine->memAllocator,img,alloc);
+        vkDestroyImageView(engine->device,img_view,nullptr);
+    }
 }
 
 _NAMESPACE_END_

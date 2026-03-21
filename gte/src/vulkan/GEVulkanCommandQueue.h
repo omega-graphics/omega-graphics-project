@@ -99,6 +99,7 @@ _NAMESPACE_BEGIN_
         GEVulkanEngine *engine;
         VkCommandPool commandPool;
         std::uint64_t traceResourceId = 0;
+        bool nativeReleased_ = false;
 
         VkFence submitFence;
 
@@ -144,6 +145,7 @@ _NAMESPACE_BEGIN_
         }
         GEVulkanEngine *getEngine() const { return engine; }
         GEVulkanCommandQueue(GEVulkanEngine *engine,unsigned size);
+        void releaseNative();
         ~GEVulkanCommandQueue() override;
     };
 _NAMESPACE_END_

@@ -12,6 +12,7 @@ _NAMESPACE_BEGIN_
 class GEVulkanTexture : public GETexture {
     GEVulkanEngine *engine;
     std::uint64_t traceResourceId = 0;
+    bool nativeReleased_ = false;
 public:
     VkImage img;
     VkImageView img_view;
@@ -63,9 +64,10 @@ public:
         VkImageView & img_view,
         VkImageLayout & layout,
         VmaAllocationInfo alloc_info,
-        VmaAllocation alloc, 
+        VmaAllocation alloc,
         const TextureDescriptor & descriptor,
         VmaMemoryUsage memoryUsage);
+    void releaseNative();
     ~GEVulkanTexture();
 };
 

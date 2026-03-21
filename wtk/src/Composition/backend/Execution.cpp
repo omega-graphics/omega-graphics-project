@@ -486,6 +486,7 @@ void Compositor::executeCurrentCommand(){
 #ifdef _WIN32
         targetContext->waitForGPU();
 #endif
+        target->needsPresent = true;
         OMEGAWTK_DEBUG("Committed Data!")
     }
     else if(currentCommand->type == CompositorCommand::Layer){
@@ -618,6 +619,7 @@ void Compositor::executeCurrentCommand(){
 }
 
 void Compositor::onQueueDrained(){
+    renderTargetStore.presentAllPending();
     resetLastClearedForNextBatch();
 }
 
