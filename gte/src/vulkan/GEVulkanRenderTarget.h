@@ -41,6 +41,8 @@ public:
                                unsigned & mipLevel,
                                VkExtent2D & surfaceExtent);
 
+    PixelFormat pixelFormat() override;
+
     SharedHandle<CommandBuffer> commandBuffer() override;
     void submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer) override;
     void notifyCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence) override;

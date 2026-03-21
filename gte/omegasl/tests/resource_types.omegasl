@@ -1,0 +1,90 @@
+
+struct Particle {
+    float4 position;
+    float4 velocity;
+};
+
+struct OutputData {
+    float4 result;
+};
+
+buffer<Particle> particles : 0;
+buffer<OutputData> results : 1;
+
+[in particles, out results]
+compute(x=64,y=1,z=1)
+void test_multi_field_buffer(uint3 tid : GlobalThreadID){
+    uint idx = tid[0];
+    float4 pos = particles[idx].position;
+    float4 vel = particles[idx].velocity;
+    results[idx].result = pos + vel;
+}
+
+
+struct TexInput {
+    float4 coord;
+};
+
+struct TexOutput {
+    float4 color;
+};
+
+buffer<TexInput> texCoords : 0;
+buffer<TexOutput> texResults : 1;
+texture2d diffuseMap : 2;
+static sampler2d linearSampler(filter=linear, address_mode=clamp_to_edge);
+
+struct TexVertexData {
+    float4 pos;
+    float2 uv;
+};
+
+struct TexVertexRaster internal {
+    float4 pos : Position;
+    float2 uv : TexCoord;
+};
+
+buffer<TexVertexData> texVertBuf : 3;
+
+[in texVertBuf]
+vertex TexVertexRaster texPassthroughVert(uint vid : VertexID){
+    TexVertexData v = texVertBuf[vid];
+    TexVertexRaster out;
+    out.pos = v.pos;
+    out.uv = v.uv;
+    return out;
+}
+
+[in diffuseMap, in linearSampler]
+fragment float4 texSampleFrag(TexVertexRaster input){
+    return sample(linearSampler, diffuseMap, input.uv);
+}
+
+
+struct WrapTestVertex {
+    float4 pos;
+    float2 uv;
+};
+
+struct WrapTestRaster internal {
+    float4 pos : Position;
+    float2 uv : TexCoord;
+};
+
+texture2d tileTexture : 4;
+static sampler2d wrapSampler(filter=point, address_mode=wrap);
+buffer<WrapTestVertex> wrapBuf : 5;
+
+[in wrapBuf]
+vertex WrapTestRaster wrapVert(uint vid : VertexID){
+    WrapTestVertex v = wrapBuf[vid];
+    WrapTestRaster out;
+    out.pos = v.pos;
+    out.uv = v.uv;
+    return out;
+}
+
+[in tileTexture, in wrapSampler]
+fragment float4 wrapFrag(WrapTestRaster input){
+    return sample(wrapSampler, tileTexture, input.uv);
+}

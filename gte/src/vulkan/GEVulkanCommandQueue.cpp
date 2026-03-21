@@ -302,14 +302,16 @@ _NAMESPACE_BEGIN_
 
     GEVulkanCommandBuffer::~GEVulkanCommandBuffer() {
         if(parentQueue != nullptr && parentQueue->engine != nullptr){
+            // Transfer render pass/framebuffer ownership to the queue for deferred
+            // destruction after the GPU has finished using them.
             for(auto framebuffer : ownedFramebuffers){
                 if(framebuffer != VK_NULL_HANDLE){
-                    vkDestroyFramebuffer(parentQueue->engine->device,framebuffer,nullptr);
+                    parentQueue->deferredFramebufferDestroys.push_back(framebuffer);
                 }
             }
             for(auto renderPass : ownedRenderPasses){
                 if(renderPass != VK_NULL_HANDLE){
-                    vkDestroyRenderPass(parentQueue->engine->device,renderPass,nullptr);
+                    parentQueue->deferredRenderPassDestroys.push_back(renderPass);
                 }
             }
             ownedFramebuffers.clear();
@@ -610,10 +612,10 @@ _NAMESPACE_BEGIN_
 
         if(parentQueue->engine->hasPushDescriptorExt){
             parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,renderPipelineState->layout,
-                                                           0,1,&writeInfo);
+                                                           1,1,&writeInfo);
         }
         else {
-            writeInfo.dstSet = renderPipelineState->descs.front();
+            writeInfo.dstSet = renderPipelineState->descs.back();
             vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
         }
     };
@@ -1357,6 +1359,18 @@ _NAMESPACE_BEGIN_
         return commandQueue.back();
     }
 
+   void GEVulkanCommandQueue::flushDeferredDestroys(){
+       if(engine == nullptr) return;
+       for(auto fb : deferredFramebufferDestroys){
+           if(fb != VK_NULL_HANDLE) vkDestroyFramebuffer(engine->device, fb, nullptr);
+       }
+       deferredFramebufferDestroys.clear();
+       for(auto rp : deferredRenderPassDestroys){
+           if(rp != VK_NULL_HANDLE) vkDestroyRenderPass(engine->device, rp, nullptr);
+       }
+       deferredRenderPassDestroys.clear();
+   }
+
    void GEVulkanCommandQueue::commitToGPU(){
         if(commandQueue.empty()){
             submittedTraceCommandBufferIds.clear();
@@ -1403,7 +1417,7 @@ _NAMESPACE_BEGIN_
        };
 
        commandQueue.clear();
-
+       // No fence wait here — deferred destroys flushed on next fenced submit.
    };
 
    void GEVulkanCommandQueue::commitToGPUPresent(VkPresentInfoKHR *info){
@@ -1463,6 +1477,7 @@ _NAMESPACE_BEGIN_
             submittedTraceCommandBufferIds.clear();
             return;
         }
+        flushDeferredDestroys();
 
         auto presentRes = vkQueuePresentKHR(vkQueue,info);
         if(presentRes != VK_SUCCESS &&
@@ -1539,6 +1554,7 @@ _NAMESPACE_BEGIN_
            submittedTraceCommandBufferIds.clear();
            return;
        }
+       flushDeferredDestroys();
        for(const auto traceId : submittedTraceCommandBufferIds){
            ResourceTracking::Event completeEvent {};
            completeEvent.backend = ResourceTracking::Backend::Vulkan;
@@ -1605,6 +1621,7 @@ _NAMESPACE_BEGIN_
    void GEVulkanCommandQueue::releaseNative(){
        if(nativeReleased_) return;
        nativeReleased_ = true;
+       flushDeferredDestroys();
        if(!commandBuffers.empty()){
            vkFreeCommandBuffers(engine->device,commandPool,commandBuffers.size(),commandBuffers.data());
            commandBuffers.resize(0);
@@ -1626,6 +1643,7 @@ _NAMESPACE_BEGIN_
                "CommandQueue",
                traceResourceId,
                reinterpret_cast<const void *>(commandPool));
+       flushDeferredDestroys();
        if(!nativeReleased_){
            vkFreeCommandBuffers(engine->device,commandPool,commandBuffers.size(),commandBuffers.data());
            commandBuffers.resize(0);

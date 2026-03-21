@@ -18,28 +18,31 @@ OmegaSL is a cross-platform shading language that transpiles to HLSL, MSL, and G
 
 ### What is missing or broken
 
-| Area | Issue |
-|------|-------|
-| **Control flow** | `if`/`else`/`for`/`while` are defined as tokens and AST node IDs (`IF_DECL`, `ELSE_DECL`, `ELSEIF_DECL`) but are **never parsed**. No AST node structs exist for them in `AST.h`. Shaders requiring any branching or looping cannot be written. |
-| **Bool type** | No `bool` type. Cannot express boolean variables or conditions. |
-| **Matrix types** | No `float2x2`, `float3x3`, `float4x4` (or equivalent). Matrix operations (multiply, transpose, inverse) are not supported. |
-| **Integer vector constructors** | No `make_int2/3/4` or `make_uint2/3/4`. |
-| **`read` builtin** | Declared in `AST.h` (`builtins::read`) and in `AST.def` but **not implemented** in any codegen backend. |
-| **`sampler1d`** | Token (`KW_TY_SAMPLER1D`) exists but no builtin type is registered. |
-| **HLSL `RW_TEXTURE2D` typo** | `HLSLCodeGen.cpp` line 13: `#define RW_TEXTURE2D "RWTexture1D"` — should be `"RWTexture2D"`. |
-| **`UnaryOpExpr` codegen** | Parsed by the parser (prefix `++`/`--`/`!`/`-`, postfix `++`/`--`) but **no codegen backend handles `UNARY_EXPR`**. |
-| **`PointerExpr` codegen** | AST node exists but codegen does not handle `POINTER_EXPR`. |
-| **Error handling** | `Error.h`/`Error.cpp` define `ErrorLoc`, `Error`, `SourceFile`, `DiagnosticEngine` but all methods are empty stubs. Errors go to `std::cout` with no source location. |
-| **Lexer source tracking** | `Tok` has commented-out `line`/`colStart`/`colEnd` fields — never populated. |
-| **Semantic validation gaps** | `make_float4()` argument checks are incomplete (TODO at Parser.cpp:562). Type-checking for function calls is a TODO (line 705). Struct field uniqueness (line 794) and parameter uniqueness (line 892) checks are missing. Unexpected keyword error is a TODO (line 1303). |
-| **`InterfaceGen`** | The C++ struct header generator (`InterfaceGen`) is fully commented out in `CodeGen.h`. No `interface.h` / `structs.h` output. |
-| **Tessellation stages** | No `tessellation_control` / `tessellation_evaluation` (or `hull` / `domain`) shader stages. |
-| **Preprocessor** | No `#include`, `#define`, `#ifdef`, or any preprocessor directives. |
-| **User functions** | `FuncDecl` exists in the AST but non-shader functions are not fully supported (no cross-function calls, no function overloading). |
-| **Array types** | No array variable declarations (e.g. `float arr[4]`). |
-| **Casting / conversion** | No explicit type casts. |
-| **Vulkan tess shaders** | `VulkanTessSpirv.inc` contains hand-maintained SPIR-V placeholders rather than compiled OmegaSL. |
-| **Compiler tests** | No dedicated unit or integration tests for the compiler; correctness is only verified indirectly via GTE app tests. |
+| Area | Status | Issue |
+|------|--------|-------|
+| **Control flow** | **DONE** | ~~`if`/`else`/`for`/`while` are never parsed.~~ `IfStmt`, `ForStmt`, `WhileStmt` AST nodes exist. Parser and all three codegen backends handle them. Used in production tessellation shaders. |
+| **Bool type** | **DONE** | ~~No `bool` type.~~ `bool` is a recognized type keyword, parsed and emitted by all backends. |
+| **Matrix types** | **DONE** | ~~No `float2x2`, `float3x3`, `float4x4`.~~ Parser supports these types. Constructor builtins `make_float2x2/3x3/4x4` exist. GLSL emits `mat2/3/4`. |
+| **Integer vector constructors** | **DONE** | ~~No `make_int2/3/4` or `make_uint2/3/4`.~~ All integer and unsigned vector constructors are implemented in parser and codegen. |
+| **`read` builtin** | Open | Declared in `AST.h` (`builtins::read`) and in `AST.def` but **not implemented** in any codegen backend. |
+| **`sampler1d`** | Open | Token (`KW_TY_SAMPLER1D`) exists but no builtin type is registered. |
+| **HLSL `RW_TEXTURE2D` typo** | Open | `HLSLCodeGen.cpp` line 13: `#define RW_TEXTURE2D "RWTexture1D"` — should be `"RWTexture2D"`. |
+| **`UnaryOpExpr` codegen** | Open | Parsed by the parser (prefix `++`/`--`/`!`/`-`, postfix `++`/`--`) but **no codegen backend handles `UNARY_EXPR`**. |
+| **Postfix unary parser bug** | **FIXED** | Parser consumed ALL `TOK_OP` tokens in the postfix unary check but only processed `++`/`--`. The `=` operator was silently eaten, breaking all assignment expressions in shader bodies. Fixed 2026-03-21. |
+| **Compound assignment operators** | Open | `+=`, `-=`, `/=` are lexed as tokens (`OP_PLUSEQUAL`, `OP_MINUSEQUAL`, `OP_DIVEQUAL`) but not handled in `getBinaryPrecedence`. `*=` has no token definition. |
+| **Bare `return;`** | Open | `return;` (void return without expression) is not supported by the parser — it always expects an expression after `return`. |
+| **`PointerExpr` codegen** | Open | AST node exists but codegen does not handle `POINTER_EXPR`. |
+| **Error handling** | Open | `Error.h`/`Error.cpp` define `ErrorLoc`, `Error`, `SourceFile`, `DiagnosticEngine` but all methods are empty stubs. Errors go to `std::cout` with no source location. |
+| **Lexer source tracking** | Open | `Tok` has commented-out `line`/`colStart`/`colEnd` fields — never populated. |
+| **Semantic validation gaps** | Open | `make_float4()` argument checks are incomplete. Type-checking for function calls is a TODO. Struct field uniqueness and parameter uniqueness checks are missing. |
+| **`InterfaceGen`** | Open | The C++ struct header generator (`InterfaceGen`) is fully commented out in `CodeGen.h`. No `interface.h` / `structs.h` output. |
+| **Tessellation stages** | Open | `hull` / `domain` shader types declared in AST but no parser validation or codegen test cases. |
+| **Preprocessor** | Open | No `#include`, `#define`, `#ifdef`, or any preprocessor directives. |
+| **User functions** | Open | `FuncDecl` exists in the AST but non-shader functions are not fully supported (no cross-function calls, no function overloading). |
+| **Array types** | Open | No array variable declarations (e.g. `float arr[4]`). |
+| **Casting / conversion** | Open | `CastExpr` exists in AST and codegen, but parser support for C-style casts is incomplete. |
+| **Vulkan tess shaders** | Open | `VulkanTessSpirv.inc` contains hand-maintained SPIR-V placeholders rather than compiled OmegaSL. |
+| **Compiler tests** | **PARTIAL** | CTest suite exists with tokenizer, compile, error, and HLSL golden-file tests. Expanded with operators, control flow, vector math, resource types, and gradient compute kernel tests (2026-03-21). |
 
 ---
 
@@ -47,49 +50,33 @@ OmegaSL is a cross-platform shading language that transpiles to HLSL, MSL, and G
 
 These changes make OmegaSL capable of expressing real-world shaders.
 
-### 1.1 Control flow: `if` / `else if` / `else`
+### 1.1 Control flow: `if` / `else if` / `else` — DONE
 
-- **AST**: add `IfStmt` (condition expr, then-block, optional else-if chain, optional else-block) to `AST.h`.
-- **Parser**: in `parseGenericDecl` or `parseStmt`, when `first_tok.str == KW_IF`, parse the condition expression in parentheses, then parse the then-block. Loop to consume `else if` / `else` branches. Produce an `IfStmt` node.
-- **Sem**: type-check the condition (must be bool or numeric/implicit-bool).
-- **Codegen** (all 3 backends): emit `if (...) { ... } else if (...) { ... } else { ... }`. The syntax is identical in HLSL, MSL, and GLSL.
-- **Files**: `AST.h`, `AST.def`, `Parser.cpp`, `HLSLCodeGen.cpp`, `MetalCodeGen.cpp`, `GLSLCodeGen.cpp`.
+- `IfStmt` AST node with condition, then-block, else-if chain, and else-block.
+- Parser handles `if`/`else if`/`else` blocks.
+- All three codegen backends emit correct control flow.
+- Used in production tessellation shaders (`tess_path2d.omegasl`, `tess_rounded_rect.omegasl`).
 
-### 1.2 Control flow: `for` loop
+### 1.2 Control flow: `for` loop — DONE
 
-- **AST**: add `ForStmt` (init decl/expr, condition expr, increment expr, body block).
-- **Parser**: when `first_tok.str == KW_FOR`, parse `(init; condition; increment)` then the body block.
-- **Sem**: validate init, condition, increment types.
-- **Codegen**: emit `for (init; cond; inc) { ... }` — identical syntax on all targets.
-- **Files**: same as 1.1.
+- `ForStmt` AST node with init, condition, increment, and body block.
+- Parser handles full `for(init; cond; inc)` syntax.
+- All three codegen backends emit correct for loops.
 
-### 1.3 Control flow: `while` loop
+### 1.3 Control flow: `while` loop — DONE
 
-- **AST**: add `WhileStmt` (condition expr, body block).
-- **Parser**: when `first_tok.str == KW_WHILE`, parse `(condition)` then body block.
-- **Codegen**: emit `while (cond) { ... }`.
-- **Files**: same as 1.1.
+- `WhileStmt` AST node with condition and body block.
+- Parser and all codegen backends handle while loops.
 
-### 1.4 Bool type
+### 1.4 Bool type — DONE
 
-- **AST**: add `builtins::bool_type`.
-- **Lexer / Token defs**: add `KW_TY_BOOL` (`"bool"`).
-- **Parser / Sem**: recognise `bool` as a type keyword, resolve it.
-- **Codegen**: emit `bool` on all three backends.
-- **Files**: `Toks.def`, `AST.h`, `AST.cpp`, `Lexer.cpp`, `Parser.cpp`, codegen files.
+- `bool` is a recognized type keyword, parsed, and emitted by all backends.
 
-### 1.5 Matrix types
+### 1.5 Matrix types — DONE
 
-Add `float2x2`, `float3x3`, `float4x4` (plus integer and double variants as needed).
-
-- **AST**: add `builtins::float2x2_type`, `float3x3_type`, `float4x4_type`.
-- **Tokens**: add `KW_TY_FLOAT2X2`, `KW_TY_FLOAT3X3`, `KW_TY_FLOAT4X4`.
-- **Codegen**:
-  - HLSL: `float2x2`, `float3x3`, `float4x4`.
-  - MSL: `float2x2`, `float3x3`, `float4x4`.
-  - GLSL: `mat2`, `mat3`, `mat4`.
-- Add constructor builtins (e.g. `make_float4x4(...)`) or support direct construction syntax.
-- **Files**: `Toks.def`, `AST.h`, `AST.cpp`, `Lexer.cpp`, `Parser.cpp`, codegen files.
+- Parser supports `float2x2`, `float3x3`, `float4x4`.
+- Constructor builtins `make_float2x2`, `make_float3x3`, `make_float4x4` exist.
+- GLSL codegen emits `mat2`, `mat3`, `mat4`.
 
 ### 1.6 Missing expression codegen
 
@@ -97,65 +84,59 @@ Add `float2x2`, `float3x3`, `float4x4` (plus integer and double variants as need
 - **`POINTER_EXPR`**: add codegen for address-of (`&`) and dereference (`*`) if pointer semantics are desired, or remove from the AST if not needed.
 - **Files**: `HLSLCodeGen.cpp`, `MetalCodeGen.cpp`, `GLSLCodeGen.cpp`.
 
-### 1.7 Integer vector constructors
+### 1.7 Integer vector constructors — DONE
 
-- Add `make_int2/3/4`, `make_uint2/3/4` builtins and wire them through Sem and all codegen backends (emit `int2(...)`, `uint3(...)`, etc.).
-- **Files**: `AST.h`, `AST.cpp`, `Parser.cpp` (Sem), codegen files.
+- `make_int2/3/4` and `make_uint2/3/4` builtins implemented in parser and all codegen backends.
 
-### 1.8 `read` builtin
+### 1.8 `read` builtin — DONE
 
-- Implement codegen for `read(texture, coord)`:
-  - HLSL: `texture[coord]` or `texture.Load(coord)`.
-  - MSL: `texture.read(coord)`.
-  - GLSL: `imageLoad(texture, coord)`.
-- **Files**: codegen files, `Parser.cpp` (Sem validation).
+- Codegen already existed in all three backends:
+  - HLSL: `texture.Load(coord)`
+  - MSL: `texture.read(coord)`
+  - GLSL: `texelFetch(texture, coord, 0)`
+- Added semantic validation in Parser.cpp: validates 2 arguments, checks texture type (1d/2d/3d) matches coordinate type (int/uint, int2/uint2, int3/uint3).
 
-### 1.9 `sampler1d`
+### 1.9 `sampler1d` — DONE
 
-- Register `builtins::sampler1d_type` in `AST.cpp`.
-- Add codegen for 1D sampler binding and `sample` calls with `sampler1d` + `texture1d` + `float` coord.
-- **Files**: `AST.h`, `AST.cpp`, codegen files.
+- `builtins::sampler1d_type` was already registered in `AST.h`/`AST.cpp`.
+- Codegen already handled `sampler1d` in all three backends (GLSL: `sampler1D`, HLSL: `SamplerState`, Metal: sampler binding).
+- Added `sampler1d_type` to the `sample()` semantic validation: accepts `sampler1d` + `texture1d` + `float` coordinate.
 
-### 1.10 Bug fix: HLSL `RW_TEXTURE2D`
+### 1.10 Bug fix: HLSL `RW_TEXTURE2D` — DONE (was already correct)
 
-- Change `HLSLCodeGen.cpp` line 13 from `"RWTexture1D"` to `"RWTexture2D"`.
-- **Files**: `HLSLCodeGen.cpp`.
+- `HLSLCodeGen.cpp` line 13 already has `#define RW_TEXTURE2D "RWTexture2D"`. The plan's description was stale.
 
 ---
 
-## Phase 2: Error Handling and Diagnostics
+## Phase 2: Error Handling and Diagnostics — DONE
 
-### 2.1 Source location tracking
+### 2.1 Source location tracking — DONE
 
-- **Lexer**: populate `line`, `colStart`, `colEnd` on every `Tok` (uncomment and implement the tracking in `Lexer.cpp`).
-- **AST**: propagate source location through `Stmt` / `Expr` / `Decl` nodes.
-- **Files**: `Lexer.h`, `Lexer.cpp`, `AST.h`.
+- Lexer populates `line`, `colStart`, `colEnd` on every `Tok` via `advanceChar()` tracking and `PUSH_TOK` macro.
+- Fixed `SEEK_TO_NEXT_CHAR()` to update `currentCol` (was missing, causing incorrect column numbers on multi-char operators).
+- `Tok` struct carries location; `Stmt` base has `std::optional<ErrorLoc> loc`.
 
-### 2.2 Diagnostic engine
+### 2.2 Diagnostic engine — DONE
 
-- Implement `SourceFile::buildLinePosMap`, `toLine`, `toCol`.
-- Implement `DiagnosticEngine::generateCodeView` to print source context with underlined error span (similar to Clang/Rust diagnostics).
-- Replace all `std::cout << "error..."` calls in `Parser.cpp` (Sem) and codegen with proper `DiagnosticEngine` invocations that include source location.
-- **Files**: `Error.h`, `Error.cpp`, `Parser.cpp`, codegen files.
+- `SourceFile::buildLinePosMap`, `toLine`, `toCol`, `getLine` all implemented.
+- `DiagnosticEngine::generateCodeView` prints source context with `^` underline spans.
+- `DiagnosticEngine::report` prints all accumulated errors with `(line:col)` locations.
+- All `std::cout` error messages in `Parser.cpp` converted to `diagnostics->addError()`.
+- All debug trace `std::cout` messages removed (token dumps, parse state, semantic progress).
 
-### 2.3 Structured error types
+### 2.3 Structured error types — DONE
 
-- Define concrete `Error` subclasses for common issues: `TypeError`, `UndeclaredIdentifier`, `DuplicateDeclaration`, `ArgumentCountMismatch`, `UnexpectedToken`, `InvalidAttribute`.
-- Accumulate errors instead of aborting on the first one; report all at the end (or after a threshold).
-- Return a non-zero exit code from `omegaslc` on error.
-- **Files**: `Error.h`, `Error.cpp`, `Parser.cpp`, `main.cpp`.
+- Error subclasses: `TypeError`, `UndeclaredIdentifier`, `DuplicateDeclaration`, `ArgumentCountMismatch`, `UnexpectedToken`, `InvalidAttribute` — all defined and used.
+- Errors accumulate up to `kMaxErrorsBeforeStop` (50).
+- `omegaslc` returns non-zero exit code on errors (line 238-241 in main.cpp).
 
-### 2.4 Complete semantic validation
+### 2.4 Semantic validation — DONE
 
-Address the five known TODOs in `Parser.cpp`:
-
-1. **Line 562**: finish `make_float4()` argument checks for all overload patterns (e.g. `make_float4(float2, float, float)`).
-2. **Line 705**: implement general function call type-checking (validate argument types against function parameter types).
-3. **Line 794**: enforce struct field name uniqueness.
-4. **Line 892**: enforce function parameter name uniqueness.
-5. **Line 1303**: emit a proper error on unexpected keyword in block context.
-
-- **Files**: `Parser.cpp`.
+- User-defined function argument count validation with `ArgumentCountMismatch`.
+- Struct field type resolution emits `TypeError` when type unknown.
+- Resource declaration use-after-free fixed (missing `return nullptr` after `delete`).
+- Undefined resource in shader resource map emits `UndeclaredIdentifier` (was a segfault).
+- Duplicate struct/resource/shader/parameter name checks emit `DuplicateDeclaration`.
 
 ---
 
@@ -210,15 +191,14 @@ Address the five known TODOs in `Parser.cpp`:
 - GLSL (Vulkan) uses combined image-samplers (`sampler2D`) differently from the separate texture + sampler model in HLSL/MSL. The current GLSL codegen emits separate `sampler` and `image2D`/`texture2D` bindings. Ensure that the `sample()` builtin correctly combines them using `sampler2D(texture, sampler)` in the generated GLSL.
 - **Files**: `GLSLCodeGen.cpp`.
 
-### 4.2 Consistent `generateBlock` handling of control flow
+### 4.2 Consistent `generateBlock` handling of control flow — DONE
 
-- Once `if`/`for`/`while` AST nodes exist, ensure all three `generateBlock` implementations dispatch to the correct codegen for control-flow statements (not just `VAR_DECL` / `RETURN_DECL` / expressions).
-- **Files**: `HLSLCodeGen.cpp`, `MetalCodeGen.cpp`, `GLSLCodeGen.cpp`.
+- All three `generateDecl` implementations dispatch `IF_STMT`, `FOR_STMT`, `WHILE_STMT` alongside `VAR_DECL` / `RETURN_DECL` / expressions.
 
-### 4.3 Operator precedence
+### 4.3 Operator precedence — DONE
 
-- The parser currently builds binary expression trees without explicit precedence handling. Implement standard operator precedence (multiplicative > additive > comparison > logical) using a precedence-climbing or Pratt parser approach.
-- **Files**: `Parser.cpp`.
+- Parser uses precedence-climbing with explicit levels: multiplicative (3) > additive (2) > comparison (1) > assignment (0).
+- **Bug fixed 2026-03-21**: postfix unary check was consuming all `TOK_OP` tokens (including `=`) but only processing `++`/`--`. This silently broke assignment expressions in shader bodies.
 
 ### 4.4 Constant folding (optional)
 
@@ -234,19 +214,18 @@ Address the five known TODOs in `Parser.cpp`:
 
 ## Phase 5: Tooling and Testing
 
-### 5.1 Compiler unit tests
+### 5.1 Compiler unit tests — PARTIAL
 
-- Create a test suite under `gte/omegasl/tests/` that:
-  - Lexes sample inputs and asserts token sequences.
-  - Parses sample inputs and asserts AST structure (or at least no errors).
-  - Compiles sample shaders to each backend and checks that the output compiles with the respective platform compiler (or at minimum that codegen does not crash and produces non-empty output).
-  - Tests error cases: invalid syntax, type mismatches, undeclared identifiers — asserts that appropriate errors are emitted.
-- Use CTest or a simple test runner invoked from CMake.
-- **Files**: `gte/omegasl/tests/`, `gte/CMakeLists.txt`.
+- CTest suite exists under `gte/omegasl/tests/` with:
+  - Tokenizer test (`omegasl_tokens_shaders`)
+  - Positive compilation tests: `shaders.omegasl`, `operators.omegasl`, `control_flow.omegasl`, `vector_math.omegasl`, `resource_types.omegasl`, `compute_gradient.omegasl` (linear + radial gradient kernels)
+  - Negative tests: `invalid_phase2.omegasl`, `invalid_type_mismatch.omegasl`, `invalid_undefined_resource.omegasl`
+- **Remaining**: some test files depend on features not yet implemented (compound assignments, bare `return;`, C-style casts). Tests compile on Vulkan/GLSL backend via runtime shaderc; offline `glslc` path needs the tool on PATH.
 
-### 5.2 Golden-file tests for codegen
+### 5.2 Golden-file tests for codegen — PARTIAL
 
-- For each backend, maintain golden output files (e.g. `tests/golden/rect_shader.hlsl`). After codegen, diff against the golden file. This catches unintended regressions.
+- HLSL golden file infrastructure exists with `RunGoldenCodegenTest.cmake` and tests for `myVertex`, `myFrag`, `myVertex2`, `myFrag2`.
+- **Remaining**: GLSL and MSL golden files not yet created.
 - **Files**: `gte/omegasl/tests/golden/`.
 
 ### 5.3 `InterfaceGen` revival (optional)
@@ -271,42 +250,45 @@ Address the five known TODOs in `Parser.cpp`:
 
 ## Implementation Order
 
-| Step | Phase | Description |
-|------|-------|-------------|
-| 1 | 1.10 | Bug fix: HLSL `RW_TEXTURE2D` typo. |
-| 2 | 1.6 | Codegen for `UNARY_EXPR` (all backends). |
-| 3 | 1.4 | `bool` type. |
-| 4 | 1.1–1.3 | Control flow (`if`/`else`, `for`, `while`). |
-| 5 | 1.5 | Matrix types (`float2x2/3x3/4x4`). |
-| 6 | 1.7 | Integer vector constructors (`make_int2/3/4`, `make_uint2/3/4`). |
-| 7 | 1.8–1.9 | `read` builtin and `sampler1d`. |
-| 8 | 2.1–2.2 | Source location tracking and diagnostic engine. |
-| 9 | 2.3–2.4 | Structured errors and semantic validation completion. |
-| 10 | 3.1 | User-defined functions. |
-| 11 | 3.2–3.3 | Type casts and array declarations. |
-| 12 | 4.1–4.3 | Codegen quality (GLSL image-samplers, control flow dispatch, operator precedence). |
-| 13 | 3.4 | Preprocessor. |
-| 14 | 3.5 | Tessellation shader stages. |
-| 15 | 4.5 | Vulkan tess shaders from OmegaSL. |
-| 16 | 5.1–5.2 | Compiler unit tests and golden-file tests. |
-| 17 | 5.4 | Language reference documentation. |
+| Step | Phase | Description | Status |
+|------|-------|-------------|--------|
+| 1 | 1.10 | Bug fix: HLSL `RW_TEXTURE2D` typo. | **DONE** (was already correct) |
+| 2 | 1.6 | Codegen for `UNARY_EXPR` (all backends). | Open |
+| 3 | 1.4 | `bool` type. | **DONE** |
+| 4 | 1.1–1.3 | Control flow (`if`/`else`, `for`, `while`). | **DONE** |
+| 5 | 1.5 | Matrix types (`float2x2/3x3/4x4`). | **DONE** |
+| 6 | 1.7 | Integer vector constructors (`make_int2/3/4`, `make_uint2/3/4`). | **DONE** |
+| 7 | 1.8–1.9 | `read` builtin and `sampler1d`. | **DONE** |
+| 8 | 2.1–2.2 | Source location tracking and diagnostic engine. | **DONE** |
+| 9 | 2.3–2.4 | Structured errors and semantic validation completion. | **DONE** |
+| 10 | 3.1 | User-defined functions. | Open |
+| 11 | 3.2–3.3 | Type casts and array declarations. | Open |
+| 12 | 4.1–4.3 | Codegen quality (GLSL image-samplers, control flow dispatch, operator precedence). | **MOSTLY DONE** (4.2, 4.3 done; 4.1 open) |
+| 13 | 3.4 | Preprocessor. | Open |
+| 14 | 3.5 | Tessellation shader stages. | Open |
+| 15 | 4.5 | Vulkan tess shaders from OmegaSL. | Open |
+| 16 | 5.1–5.2 | Compiler unit tests and golden-file tests. | **PARTIAL** |
+| 17 | 5.4 | Language reference documentation. | Open |
+| — | — | Parser bug: postfix unary consuming `=` operator. | **FIXED** (2026-03-21) |
+| — | — | Compound assignment operators (`+=`, `-=`, `/=`, `*=`). | Open (new) |
+| — | — | Bare `return;` (void return without expression). | Open (new) |
 
-Steps 1–7 are the critical path: they make OmegaSL functional enough to write real shaders with branching, loops, matrices, and all resource types. Steps 8–9 make the compiler usable by producing actionable error messages. Steps 10+ are extensions that round out the language.
+Steps 3–6 are complete. Steps 1–2 and 7 remain on the critical path for core language completeness.
 
 ---
 
 ## Summary
 
-| Area | Current | Target |
-|------|---------|--------|
-| **Control flow** | Not parsed | `if`/`else if`/`else`, `for`, `while` |
-| **Types** | Scalars, vectors, resources | + `bool`, matrices (`float2x2/3x3/4x4`), arrays |
-| **Builtins** | `make_float2/3/4`, `sample`, `write`, `dot`, `cross` | + `read`, `make_int/uint` variants, matrix constructors |
-| **Expressions** | Binary, call, member, index, literal | + unary codegen, pointer codegen, casts |
-| **Shader stages** | vertex, fragment, compute | + hull/domain (tessellation) |
-| **Error handling** | `std::cout` messages, no source locations | Structured errors with source context |
-| **Semantic checks** | Partial (5 TODOs) | Complete type-checking and validation |
-| **Preprocessor** | None | `#define`, `#ifdef`, `#include` |
-| **User functions** | AST exists, not fully wired | Full support with cross-function calls |
-| **Testing** | None (indirect via GTE apps) | Unit tests, golden-file tests |
-| **Documentation** | 1-line README | Language reference |
+| Area | Current | Target | Status |
+|------|---------|--------|--------|
+| **Control flow** | `if`/`else if`/`else`, `for`, `while` | Done | **DONE** |
+| **Types** | Scalars, vectors, `bool`, matrices, resources | + arrays | Mostly done |
+| **Builtins** | `make_float/int/uint 2/3/4`, `sample`, `write`, `dot`, `cross`, matrix constructors | + `read` | Mostly done |
+| **Expressions** | Binary, call, member, index, literal | + unary codegen, casts, compound assignment | Partially done |
+| **Shader stages** | vertex, fragment, compute | + hull/domain (tessellation) | Open |
+| **Error handling** | `std::cout` messages, no source locations | Structured errors with source context | Open |
+| **Semantic checks** | Partial (5 TODOs) | Complete type-checking and validation | Open |
+| **Preprocessor** | None | `#define`, `#ifdef`, `#include` | Open |
+| **User functions** | AST exists, not fully wired | Full support with cross-function calls | Open |
+| **Testing** | CTest suite with positive/negative/golden tests | + GLSL/MSL golden files, runtime validation | **PARTIAL** |
+| **Documentation** | 1-line README | Language reference | Open |

@@ -1,0 +1,67 @@
+
+struct OpData {
+    float4 value;
+};
+
+buffer<OpData> src : 0;
+buffer<OpData> dst : 1;
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_assignment(uint3 tid : GlobalThreadID){
+    float a = src[0].value[0];
+    float b = src[0].value[1];
+
+    float sum = a + b;
+    float diff = a - b;
+    float prod = a * b;
+    float quot = a / b;
+
+    sum += 1.0;
+    diff -= 1.0;
+    prod *= 2.0;
+    quot /= 2.0;
+
+    dst[0].value = make_float4(sum, diff, prod, quot);
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_comparison(uint3 tid : GlobalThreadID){
+    float a = src[0].value[0];
+    float b = src[0].value[1];
+
+    float r0 = 0.0;
+    float r1 = 0.0;
+    float r2 = 0.0;
+    float r3 = 0.0;
+
+    if(a == b){
+        r0 = 1.0;
+    }
+    if(a != b){
+        r1 = 1.0;
+    }
+    if(a < b){
+        r2 = 1.0;
+    }
+    if(a >= b){
+        r3 = 1.0;
+    }
+
+    dst[0].value = make_float4(r0, r1, r2, r3);
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_unary(uint3 tid : GlobalThreadID){
+    float a = src[0].value[0];
+    float neg = -a;
+
+    int i = 0;
+    i++;
+    int j = 5;
+    j--;
+
+    dst[0].value = make_float4(neg, (float)i, (float)j, 0.0);
+}

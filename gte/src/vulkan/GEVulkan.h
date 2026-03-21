@@ -123,6 +123,7 @@ _NAMESPACE_BEGIN_
 
         static SharedHandle<OmegaGraphicsEngine> Create(SharedHandle<GTEDevice> & device);
 
+        void waitForGPUIdle() override;
         ~GEVulkanEngine();
     };
 

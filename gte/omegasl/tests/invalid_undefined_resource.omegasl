@@ -1,0 +1,12 @@
+
+struct Data {
+    float4 value;
+};
+
+buffer<Data> existing : 0;
+
+[in existing, in nonexistent]
+compute(x=1,y=1,z=1)
+void bad_resource(uint3 tid : GlobalThreadID){
+    existing[0].value = make_float4(0.0, 0.0, 0.0, 0.0);
+}

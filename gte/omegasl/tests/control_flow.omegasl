@@ -1,0 +1,74 @@
+
+struct FlowData {
+    float4 value;
+};
+
+buffer<FlowData> input : 0;
+buffer<FlowData> output : 1;
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_if_else(uint3 tid : GlobalThreadID){
+    float x = input[0].value[0];
+    float result = 0.0;
+
+    if(x > 10.0){
+        result = 3.0;
+    }
+    else if(x > 5.0){
+        result = 2.0;
+    }
+    else if(x > 0.0){
+        result = 1.0;
+    }
+    else {
+        result = -1.0;
+    }
+
+    output[0].value = make_float4(result, 0.0, 0.0, 0.0);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_for_loop(uint3 tid : GlobalThreadID){
+    float sum = 0.0;
+    int count = (int)input[0].value[0];
+
+    for(int i = 0; i < count; i++){
+        sum += (float)i;
+    }
+
+    output[0].value = make_float4(sum, 0.0, 0.0, 0.0);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_while_loop(uint3 tid : GlobalThreadID){
+    float val = input[0].value[0];
+    int iterations = 0;
+
+    while(val > 1.0){
+        val = val / 2.0;
+        iterations++;
+    }
+
+    output[0].value = make_float4(val, (float)iterations, 0.0, 0.0);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_nested(uint3 tid : GlobalThreadID){
+    int rows = (int)input[0].value[0];
+    int cols = (int)input[0].value[1];
+    float sum = 0.0;
+
+    for(int r = 0; r < rows; r++){
+        for(int c = 0; c < cols; c++){
+            if(r == c){
+                sum += 1.0;
+            }
+        }
+    }
+
+    output[0].value = make_float4(sum, 0.0, 0.0, 0.0);
+}

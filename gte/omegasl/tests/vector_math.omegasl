@@ -1,0 +1,95 @@
+
+struct VecData {
+    float4 a;
+    float4 b;
+};
+
+struct VecResult {
+    float4 value;
+};
+
+buffer<VecData> vecIn : 0;
+buffer<VecResult> vecOut : 1;
+
+[in vecIn, out vecOut]
+compute(x=1,y=1,z=1)
+void test_make_float2(uint3 tid : GlobalThreadID){
+    float x = vecIn[0].a[0];
+    float y = vecIn[0].a[1];
+    float2 v = make_float2(x, y);
+    vecOut[0].value = make_float4(v[0], v[1], 0.0, 0.0);
+}
+
+[in vecIn, out vecOut]
+compute(x=1,y=1,z=1)
+void test_make_float3(uint3 tid : GlobalThreadID){
+    float x = vecIn[0].a[0];
+    float y = vecIn[0].a[1];
+    float z = vecIn[0].a[2];
+    float3 v = make_float3(x, y, z);
+    vecOut[0].value = make_float4(v[0], v[1], v[2], 0.0);
+}
+
+[in vecIn, out vecOut]
+compute(x=1,y=1,z=1)
+void test_make_float4(uint3 tid : GlobalThreadID){
+    float x = vecIn[0].a[0];
+    float y = vecIn[0].a[1];
+    float z = vecIn[0].a[2];
+    float w = vecIn[0].a[3];
+    float4 v = make_float4(x, y, z, w);
+    vecOut[0].value = v;
+}
+
+[in vecIn, out vecOut]
+compute(x=1,y=1,z=1)
+void test_make_float3_from_float2(uint3 tid : GlobalThreadID){
+    float2 xy = make_float2(vecIn[0].a[0], vecIn[0].a[1]);
+    float3 v = make_float3(xy, vecIn[0].a[2]);
+    vecOut[0].value = make_float4(v[0], v[1], v[2], 0.0);
+}
+
+[in vecIn, out vecOut]
+compute(x=1,y=1,z=1)
+void test_make_float4_from_float3(uint3 tid : GlobalThreadID){
+    float3 xyz = make_float3(vecIn[0].a[0], vecIn[0].a[1], vecIn[0].a[2]);
+    float4 v = make_float4(xyz, vecIn[0].a[3]);
+    vecOut[0].value = v;
+}
+
+[in vecIn, out vecOut]
+compute(x=1,y=1,z=1)
+void test_dot_product(uint3 tid : GlobalThreadID){
+    float3 a = make_float3(vecIn[0].a[0], vecIn[0].a[1], vecIn[0].a[2]);
+    float3 b = make_float3(vecIn[0].b[0], vecIn[0].b[1], vecIn[0].b[2]);
+    float d = dot(a, b);
+    vecOut[0].value = make_float4(d, 0.0, 0.0, 0.0);
+}
+
+[in vecIn, out vecOut]
+compute(x=1,y=1,z=1)
+void test_cross_product(uint3 tid : GlobalThreadID){
+    float3 a = make_float3(vecIn[0].a[0], vecIn[0].a[1], vecIn[0].a[2]);
+    float3 b = make_float3(vecIn[0].b[0], vecIn[0].b[1], vecIn[0].b[2]);
+    float3 c = cross(a, b);
+    vecOut[0].value = make_float4(c[0], c[1], c[2], 0.0);
+}
+
+[in vecIn, out vecOut]
+compute(x=1,y=1,z=1)
+void test_vector_arithmetic(uint3 tid : GlobalThreadID){
+    float4 a = vecIn[0].a;
+    float4 b = vecIn[0].b;
+    float4 sum = a + b;
+    float4 diff = a - b;
+    float4 scaled = a * 2.0;
+    vecOut[0].value = sum + diff + scaled;
+}
+
+[in vecIn, out vecOut]
+compute(x=1,y=1,z=1)
+void test_int_vectors(uint3 tid : GlobalThreadID){
+    int2 iv = make_int2(3, 7);
+    uint2 uv = make_uint2(10, 20);
+    vecOut[0].value = make_float4((float)iv[0], (float)iv[1], (float)uv[0], (float)uv[1]);
+}

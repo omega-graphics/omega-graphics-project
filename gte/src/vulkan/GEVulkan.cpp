@@ -814,6 +814,7 @@ _NAMESPACE_BEGIN_
         auto result = std::shared_ptr<GEVulkanTexture>(new GEVulkanTexture(
             desc.type, desc.usage, desc.pixelFormat,
             engine, img, imgView, layout, allocationInfo, alloc, desc, memUsage));
+        result->format = imageFormat;
         engine->trackResource(result);
         return result;
     }
@@ -1065,6 +1066,7 @@ _NAMESPACE_BEGIN_
                 alloc,
                 sanitizedDesc,
                 memoryUsage));
+        result->format = image_format;
         trackResource(result);
         return result;
     };
@@ -1157,6 +1159,12 @@ _NAMESPACE_BEGIN_
                         binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
                         break;
                     }
+                    case OMEGASL_SHADER_STATIC_SAMPLER1D_DESC:
+                    case OMEGASL_SHADER_STATIC_SAMPLER2D_DESC:
+                    case OMEGASL_SHADER_STATIC_SAMPLER3D_DESC: {
+                        binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                        break;
+                    }
                     case OMEGASL_SHADER_TEXTURE1D_DESC:
                     case OMEGASL_SHADER_TEXTURE2D_DESC:
                     case OMEGASL_SHADER_TEXTURE3D_DESC: {
@@ -1191,6 +1199,8 @@ _NAMESPACE_BEGIN_
             desc_layout_info.pNext = nullptr;
             desc_layout_info.bindingCount = static_cast<std::uint32_t>(bindings.size());
             desc_layout_info.pBindings = bindings.empty() ? nullptr : bindings.data();
+            // Push descriptor only allowed on one set; use it for set 0 (vertex).
+            // Set 1+ (fragment) uses a regular descriptor pool.
             if(hasPushDescriptorExt && setCount == 0){
                 desc_layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
             }
@@ -2148,6 +2158,12 @@ _NAMESPACE_BEGIN_
             }
         }
         trackedResources.clear();
+    }
+
+    void GEVulkanEngine::waitForGPUIdle(){
+        if(device != VK_NULL_HANDLE){
+            vkDeviceWaitIdle(device);
+        }
     }
 
     GEVulkanEngine::~GEVulkanEngine(){

@@ -107,12 +107,15 @@ _NAMESPACE_BEGIN_
 
         OmegaCommon::Vector<VkCommandBuffer> commandQueue;
         OmegaCommon::Vector<std::uint64_t> submittedTraceCommandBufferIds;
+        OmegaCommon::Vector<VkRenderPass> deferredRenderPassDestroys;
+        OmegaCommon::Vector<VkFramebuffer> deferredFramebufferDestroys;
         unsigned currentBufferIndex;
         friend class GEVulkanCommandBuffer;
     public:
         void notifyCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &waitFence) override;
         void submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer) override;
         void submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &signalFence) override;
+        void flushDeferredDestroys();
         void commitToGPU() override;
         void commitToGPUPresent(VkPresentInfoKHR * info);
         void commitToGPUAndWait() override;

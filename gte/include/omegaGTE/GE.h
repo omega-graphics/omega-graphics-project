@@ -372,6 +372,8 @@ _NAMESPACE_BEGIN_
           @returns SharedHandle<GECommandQueue>
          */
         virtual SharedHandle<GECommandQueue> makeCommandQueue(unsigned maxBufferCount) = 0;
+
+        virtual void waitForGPUIdle() {}
     };
 
 

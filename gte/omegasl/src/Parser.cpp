@@ -187,7 +187,6 @@ namespace omegasl {
             auto b_type_it = builtinsTypeMap.begin();
             for(;b_type_it != builtinsTypeMap.end();b_type_it++){
                 auto & t = *b_type_it;
-//                std::cout << "BUILTIN:" << t->name << " COMPARE TO:" << expr->name << std::endl;
                 if(t->name == expr->name){
                     return t;
                 }
@@ -196,13 +195,10 @@ namespace omegasl {
             auto type_it = currentContext->typeMap.begin();
             for(;type_it != currentContext->typeMap.end();type_it++){
                 auto & t = *type_it;
-//                std::cout << "Struct Type:" << t->name << std::endl;
                 if(t->name == expr->name){
                     return t;
                 }
             }
-
-//            std::cout << "Unknown Type:" << expr->name << std::endl;
 
             return nullptr;
         };
@@ -299,12 +295,9 @@ namespace omegasl {
 
                 auto _id_found = currentContext->variableMap.find(_expr->id);
                 if(_id_found == currentContext->variableMap.end()){
-                    if(diagnostics){
-                        auto err = std::make_unique<UndeclaredIdentifier>(_expr->id);
-                        err->loc = _expr->loc.value_or(ErrorLoc{});
-                        diagnostics->addError(std::move(err));
-                    } else
-                        std::cout << "Unknown Identifier: " << _expr->id << std::endl;
+                    auto err = std::make_unique<UndeclaredIdentifier>(_expr->id);
+                    err->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(err));
                     return nullptr;
                 }
                 else {
@@ -332,8 +325,6 @@ namespace omegasl {
                 auto _expr = (ast::MemberExpr *)expr;
                 auto t = performSemForExpr(_expr->lhs,funcContext);
 
-                std::cout << "MEMBER EXPR " << t->name << " MEMBER:" << _expr->rhs_id << std::endl;
-
                 if(t == nullptr){
                     return nullptr;
                 }
@@ -342,7 +333,9 @@ namespace omegasl {
                 if(!type_res->builtin){
                     auto member_found = type_res->fields.find(_expr->rhs_id);
                     if(member_found == type_res->fields.end()){
-                        std::cout << "Member `" << _expr->rhs_id << "` does not exist on struct " << type_res->name << std::endl;
+                        auto e = std::make_unique<TypeError>(std::string("Member `") + _expr->rhs_id + "` does not exist on struct " + type_res->name);
+                        e->loc = _expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
                         return nullptr;
                     }
                     else {
@@ -368,7 +361,11 @@ namespace omegasl {
                             return ast::TypeExpr::Create(type_res);
                         MATCH_CASE_END()
 
-                        std::cout << subject << " does not exist on type `float2`" << std::endl;
+                        {
+                            auto e = std::make_unique<TypeError>(std::string(subject) + " does not exist on type `float2`");
+                            e->loc = _expr->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                        }
                         return nullptr;
                     }
                     else if(type_res == ast::builtins::float3_type){
@@ -396,7 +393,11 @@ namespace omegasl {
                         return ast::TypeExpr::Create(type_res);
                         MATCH_CASE_END()
 
-                        std::cout << subject << " does not exist on type `float3`" << std::endl;
+                        {
+                            auto e = std::make_unique<TypeError>(std::string(subject) + " does not exist on type `float3`");
+                            e->loc = _expr->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                        }
                         return nullptr;
                     }
                     else if(ast::builtins::float4_type){
@@ -440,11 +441,19 @@ namespace omegasl {
                         return ast::TypeExpr::Create(type_res);
                         MATCH_CASE_END()
 
-                        std::cout << subject << " does not exist on type `float4`" << std::endl;
+                        {
+                            auto e = std::make_unique<TypeError>(std::string(subject) + " does not exist on type `float4`");
+                            e->loc = _expr->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                        }
                         return nullptr;
                     }
                     else {
-                        std::cout << "There are no members available with this type." << std::endl;
+                        {
+                            auto e = std::make_unique<TypeError>("There are no members available with this type.");
+                            e->loc = _expr->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                        }
                         return nullptr;
                     }
 
@@ -465,7 +474,9 @@ namespace omegasl {
                 }
 
                 if(!rhs_res->compare(lhs_res)){
-                    std::cout << "Failed to match type in binary expr." << std::endl;
+                    auto e = std::make_unique<TypeError>("Failed to match type in binary expr.");
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
                 return lhs_res;
@@ -483,14 +494,12 @@ namespace omegasl {
 
                 auto _t = resolveTypeWithExpr(lhs_res);
                 if(_t != ast::builtins::buffer_type){
-                    if(diagnostics){ auto e = std::make_unique<TypeError>("Indexing is only supported on buffer types"); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                    else std::cout << "Indexing is only supported on buffer types" << std::endl;
+                    auto e = std::make_unique<TypeError>("Indexing is only supported on buffer types"); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                 }
 
                 _t = resolveTypeWithExpr(idx_expr_res);
                 if(_t != ast::builtins::uint_type){
-                    if(diagnostics){ auto e = std::make_unique<TypeError>("Index of buffer can only be a uint type."); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                    else std::cout << "Index of buffer can only be a uint type." << std::endl;
+                    auto e = std::make_unique<TypeError>("Index of buffer can only be a uint type."); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                 }
 
                 return lhs_res->args[0];
@@ -506,14 +515,12 @@ namespace omegasl {
                 auto func_found = resolveFuncTypeWithName(_id_expr->id);
 
                 if(func_found == nullptr){
-                    if(diagnostics){ auto e = std::make_unique<UndeclaredIdentifier>(_id_expr->id); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                    else std::cout << "Function " << _id_expr->id << " does not exist!" << std::endl;
+                    auto e = std::make_unique<UndeclaredIdentifier>(_id_expr->id); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
                 auto reportTypeErr = [&](const std::string& msg) {
-                    if(diagnostics){ auto e = std::make_unique<TypeError>(msg); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                    else std::cout << msg << std::endl;
+                    auto e = std::make_unique<TypeError>(msg); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                 };
 
                 /// Check if is builtin.
@@ -521,8 +528,7 @@ namespace omegasl {
                 if(func_found == ast::builtins::make_float2){
 
                     if(_expr->args.size() != 2){
-                        if(diagnostics){ auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_MAKE_FLOAT2; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                        else std::cout << BUILTIN_MAKE_FLOAT2 << "() expects 2 arguments with type `float`" << std::endl;
+                        auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_MAKE_FLOAT2; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                         return nullptr;
                     }
 
@@ -541,8 +547,7 @@ namespace omegasl {
                 }
                 else if(func_found == ast::builtins::make_float3){
                     if(!(_expr->args.size() == 2 || _expr->args.size() == 3)){
-                        if(diagnostics){ auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_MAKE_FLOAT3; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                        else std::cout << BUILTIN_MAKE_FLOAT3 << "() expects 2 or 3 arguments with type `float` or `float2`" << std::endl;
+                        auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_MAKE_FLOAT3; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                         return nullptr;
                     }
 
@@ -575,8 +580,7 @@ namespace omegasl {
                 }
                 else if(func_found == ast::builtins::make_float4){
                     if(_expr->args.size() < 2 || _expr->args.size() > 4){
-                        if(diagnostics){ auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_MAKE_FLOAT4; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                        else std::cout << BUILTIN_MAKE_FLOAT4 << "() expects 2, 3, or 4 arguments" << std::endl;
+                        auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_MAKE_FLOAT4; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                         return nullptr;
                     }
 
@@ -591,8 +595,7 @@ namespace omegasl {
                     }
 
                     auto reportTy = [&](const std::string& msg) {
-                        if(diagnostics){ auto e = std::make_unique<TypeError>(msg); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                        else std::cout << msg << std::endl;
+                        auto e = std::make_unique<TypeError>(msg); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                     };
 
                     if(_expr->args.size() == 4){
@@ -625,8 +628,7 @@ namespace omegasl {
                 else if(func_found == ast::builtins::sample){
 
                     if(_expr->args.size() != 3){
-                        if(diagnostics){ auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_SAMPLE; e->expected = 3; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                        else std::cout << BUILTIN_SAMPLE << " expects 3 arguments." << std::endl;
+                        auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_SAMPLE; e->expected = 3; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                         return nullptr;
                     }
 
@@ -643,7 +645,7 @@ namespace omegasl {
                         return nullptr;
                     }
 
-                    if(!(_t == ast::builtins::sampler2d_type || _t == ast::builtins::sampler3d_type)){
+                    if(!(_t == ast::builtins::sampler1d_type || _t == ast::builtins::sampler2d_type || _t == ast::builtins::sampler3d_type)){
                         reportTypeErr("1st param of function " + std::string(BUILTIN_SAMPLE) + " must be a sampler.");
                         return nullptr;
                     }
@@ -653,8 +655,27 @@ namespace omegasl {
                     if(_t == nullptr){
                         return nullptr;
                     }
+                    ///sampler1d
+                    if(_first_t == ast::builtins::sampler1d_type){
+
+                        if(_t != ast::builtins::texture1d_type){
+                            reportTypeErr("2nd param of function " + std::string(BUILTIN_SAMPLE) + " must be a texture1d");
+                            return nullptr;
+                        }
+
+                        _t = resolveTypeWithExpr(third_t_e);
+                        if(_t == nullptr){
+                            return nullptr;
+                        }
+
+                        if(_t != ast::builtins::float_type){
+                            reportTypeErr("3rd param of function " + std::string(BUILTIN_SAMPLE) + " must be a float");
+                            return nullptr;
+                        }
+
+                    }
                     ///sampler2d
-                    if(_first_t == ast::builtins::sampler2d_type){
+                    else if(_first_t == ast::builtins::sampler2d_type){
 
                         if(_t != ast::builtins::texture2d_type){
                             reportTypeErr("2nd param of function " + std::string(BUILTIN_SAMPLE) + " must be a texture2d");
@@ -694,8 +715,7 @@ namespace omegasl {
                 else if(func_found == ast::builtins::write){
 
                     if(_expr->args.size() != 3){
-                        if(diagnostics){ auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_WRITE; e->expected = 3; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                        else std::cout << BUILTIN_WRITE << " expects 3 arguments." << std::endl;
+                        auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_WRITE; e->expected = 3; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                         return nullptr;
                     }
 
@@ -763,12 +783,61 @@ namespace omegasl {
                     }
 
                 }
+                    /// @brief read(texture texture,texcoord coord) function
+                else if(func_found == ast::builtins::read){
+
+                    if(_expr->args.size() != 2){
+                        auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_READ; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+
+                    auto first_t_e = performSemForExpr(_expr->args[0],funcContext);
+                    auto second_t_e = performSemForExpr(_expr->args[1],funcContext);
+
+                    if(first_t_e == nullptr || second_t_e == nullptr){
+                        return nullptr;
+                    }
+
+                    auto _t = resolveTypeWithExpr(first_t_e);
+                    if(_t == nullptr){
+                        return nullptr;
+                    }
+
+                    if(_t == ast::builtins::texture1d_type){
+                        _t = resolveTypeWithExpr(second_t_e);
+                        if(_t == nullptr) return nullptr;
+                        if(_t != ast::builtins::int_type && _t != ast::builtins::uint_type){
+                            reportTypeErr("2nd param of function " + std::string(BUILTIN_READ) + " must be an int or uint for texture1d");
+                            return nullptr;
+                        }
+                    }
+                    else if(_t == ast::builtins::texture2d_type){
+                        _t = resolveTypeWithExpr(second_t_e);
+                        if(_t == nullptr) return nullptr;
+                        if(_t != ast::builtins::int2_type && _t != ast::builtins::uint2_type){
+                            reportTypeErr("2nd param of function " + std::string(BUILTIN_READ) + " must be an int2 or uint2 for texture2d");
+                            return nullptr;
+                        }
+                    }
+                    else if(_t == ast::builtins::texture3d_type){
+                        _t = resolveTypeWithExpr(second_t_e);
+                        if(_t == nullptr) return nullptr;
+                        if(_t != ast::builtins::int3_type && _t != ast::builtins::uint3_type){
+                            reportTypeErr("2nd param of function " + std::string(BUILTIN_READ) + " must be an int3 or uint3 for texture3d");
+                            return nullptr;
+                        }
+                    }
+                    else {
+                        reportTypeErr(std::string(BUILTIN_READ) + " expects a texture-type for the first argument.");
+                        return nullptr;
+                    }
+
+                }
                 else {
                     /// General function call type-check: validate argument count and types where possible.
                     if(func_found == ast::builtins::dot || func_found == ast::builtins::cross){
                         if(_expr->args.size() != 2){
-                            if(diagnostics){ auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = func_found->name; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                            else std::cout << func_found->name << " expects 2 arguments." << std::endl;
+                            auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = func_found->name; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                             return nullptr;
                         }
                         auto a0 = performSemForExpr(_expr->args[0],funcContext);
@@ -777,12 +846,25 @@ namespace omegasl {
                         auto t0 = resolveTypeWithExpr(a0), t1 = resolveTypeWithExpr(a1);
                         if(func_found == ast::builtins::cross &&
                            (!(t0 == ast::builtins::float3_type) || !(t1 == ast::builtins::float3_type))){
-                            if(diagnostics){ auto e = std::make_unique<TypeError>("cross() requires float3 arguments"); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                            else std::cout << "cross() expects two float3 arguments" << std::endl;
+                            auto e = std::make_unique<TypeError>("cross() requires float3 arguments"); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                             return nullptr;
                         }
                     }
                     else {
+                        /// User-defined function call: validate argument count against parameter count.
+                        if(!func_found->builtin){
+                            unsigned expectedCount = (unsigned)func_found->fields.size();
+                            unsigned actualCount = (unsigned)_expr->args.size();
+                            if(actualCount != expectedCount){
+                                auto e = std::make_unique<ArgumentCountMismatch>();
+                                e->functionName = func_found->name;
+                                e->expected = expectedCount;
+                                e->actual = actualCount;
+                                e->loc = _expr->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return nullptr;
+                            }
+                        }
                         for(unsigned i = 0; i < _expr->args.size(); i++){
                             if(performSemForExpr(_expr->args[i],funcContext) == nullptr)
                                 return nullptr;
@@ -836,7 +918,8 @@ namespace omegasl {
                 for(auto s : block.body){
                     auto res = performSemForStmt(s,funcContext);
                     if(!res){
-                        std::cout << "Failed to perform sem on Block stmt" << std::endl;
+                        auto e = std::make_unique<TypeError>("Failed to perform sem on block statement");
+                        diagnostics->addError(std::move(e));
                         return nullptr;
                     }
 
@@ -852,11 +935,11 @@ namespace omegasl {
             }
             /// Pick first type to check with all others.
             auto picked_type = allTypes.front();
-            std::cout << "Picked Type:" << picked_type->name << std::endl;
             if(allTypes.size() > 1) {
                 for(auto t_it = allTypes.begin() + 1;t_it != allTypes.end();++t_it){
                     if(!picked_type->compare(*t_it)){
-                        std::cout << "In function return Context" << std::endl;
+                        auto e = std::make_unique<TypeError>("Inconsistent return types in function block");
+                        diagnostics->addError(std::move(e));
                         return nullptr;
                     }
                 }
@@ -872,7 +955,9 @@ namespace omegasl {
                     ast::TypeExpr *test_expr = ast::TypeExpr::Create(_decl->name);
                     auto res = resolveTypeWithExpr(test_expr);
                     if(res != nullptr){
-                        std::cout << _decl->name << " already is defined as a type." << std::endl;
+                        auto e = std::make_unique<DuplicateDeclaration>(_decl->name);
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
                         delete test_expr;
                         return false;
                     }
@@ -884,26 +969,26 @@ namespace omegasl {
 
                     for(auto & f : _decl->fields){
                         if(field_types.find(f.name) != field_types.end()){
-                            if(diagnostics){ auto e = std::make_unique<DuplicateDeclaration>(f.name); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                            else std::cout << "In struct " << _decl->name << ": duplicate field name `" << f.name << "`" << std::endl;
+                            auto e = std::make_unique<DuplicateDeclaration>(f.name); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                             return false;
                         }
 
                         auto field_ty = resolveTypeWithExpr(f.typeExpr);
                         if(field_ty == nullptr){
+                            auto e = std::make_unique<TypeError>(std::string("Unknown type `") + f.typeExpr->name + "` for field `" + f.name + "` in struct `" + _decl->name + "`");
+                            e->loc = _decl->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
                             return false;
                         }
 
                         if(f.attributeName.has_value()){
                             if(!isInternal){
-                                if(diagnostics){ auto e = std::make_unique<InvalidAttribute>("Cannot use attributes on fields in public structs"); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                                else std::cout << "In struct " << _decl->name << std::endl << "Cannot use attributes on fields in public structs" << std::endl;
+                                auto e = std::make_unique<InvalidAttribute>("Cannot use attributes on fields in public structs"); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                                 return false;
                             }
 
                             if(!isValidAttributeInContext(f.attributeName.value(),AttributeContext::StructField)){
-                                if(diagnostics){ auto e = std::make_unique<InvalidAttribute>(std::string("Invalid attribute name `") + f.attributeName.value() + "`"); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                                else std::cout << "In struct " << _decl->name << std::endl << "Invalid attribute name `" << f.attributeName.value() << "` " << std::endl;
+                                auto e = std::make_unique<InvalidAttribute>(std::string("Invalid attribute name `") + f.attributeName.value() + "`"); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                                 return false;
                             }
                         }
@@ -913,7 +998,6 @@ namespace omegasl {
                     }
 
                     /// 3. If all of the above checks succeed, add struct type to TypeMap.
-                    std::cout << "Adding Struct Type:" << _decl->name << std::endl;
                     addTypeToCurrentContext(_decl->name,_decl->scope,field_types);
                     break;
                 }
@@ -925,7 +1009,9 @@ namespace omegasl {
                         currentContext->resourceSet.push(_decl);
                     }
                     else {
-                        std::cout << "Resource " << _decl->name << " has already been declared!" << std::endl;
+                        auto e = std::make_unique<DuplicateDeclaration>(_decl->name);
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
                         return false;
                     }
 
@@ -938,7 +1024,9 @@ namespace omegasl {
                     && ty != ast::builtins::texture3d_type
                     && ty != ast::builtins::sampler2d_type
                     && ty != ast::builtins::sampler3d_type){
-                        std::cout << "Resource `" << _decl->name << "` is not a valid type. (" << _decl->typeExpr->name << ")" << std::endl;
+                        auto e = std::make_unique<TypeError>(std::string("Resource `") + _decl->name + "` is not a valid type. (" + _decl->typeExpr->name + ")");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
                         return false;
                     }
 
@@ -946,7 +1034,9 @@ namespace omegasl {
 
                     if(_decl->isStatic && ty != ast::builtins::sampler2d_type
                        && ty != ast::builtins::sampler3d_type){
-                        std::cout << "Resource `" << _decl->name << "` with type `" << ty->name << "` cannot be declared static unless it is a sampler type." << std::endl;
+                        auto e = std::make_unique<TypeError>(std::string("Resource `") + _decl->name + "` with type `" + ty->name + "` cannot be declared static unless it is a sampler type.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
                         return false;
                     }
 
@@ -965,8 +1055,7 @@ namespace omegasl {
                     OmegaCommon::MapVec<OmegaCommon::String, int> paramNames;
                     for(auto & p : _decl->params){
                         if(paramNames.find(p.name) != paramNames.end()){
-                            if(diagnostics){ auto e = std::make_unique<DuplicateDeclaration>(p.name); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                            else std::cout << "Function " << _decl->name << ": duplicate parameter name `" << p.name << "`" << std::endl;
+                            auto e = std::make_unique<DuplicateDeclaration>(p.name); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                             return false;
                         }
                         paramNames.insert(std::make_pair(p.name, 0));
@@ -1019,7 +1108,9 @@ namespace omegasl {
 
                     auto found = findShader();
                     if(found){
-                        std::cout << "Shader " << _decl->name << " has already been declared." << std::endl;
+                        auto e = std::make_unique<DuplicateDeclaration>(_decl->name);
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
                         return false;
                     }
 
@@ -1029,24 +1120,33 @@ namespace omegasl {
                     OmegaCommon::MapVec<OmegaCommon::String, int> paramNames;
                     for(auto & p : _decl->params){
                         if(paramNames.find(p.name) != paramNames.end()){
-                            if(diagnostics){ auto e = std::make_unique<DuplicateDeclaration>(p.name); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e)); }
-                            else std::cout << "Shader " << _decl->name << ": duplicate parameter name `" << p.name << "`" << std::endl;
+                            auto e = std::make_unique<DuplicateDeclaration>(p.name); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                             return false;
                         }
                         paramNames.insert(std::make_pair(p.name, 0));
                     }
 
                     for(auto & r : _decl->resourceMap){
+                        bool found = false;
                         for(auto res : currentContext->resourceSet){
                             if(res->name == r.name){
-                                /// Resource Exists!
+                                found = true;
                                 auto _t = resolveTypeWithExpr(res->typeExpr);
                                 if((_t == ast::builtins::sampler2d_type || _t == ast::builtins::sampler3d_type) && r.access != ast::ShaderDecl::ResourceMapDesc::In){
-                                    std::cout << "In Shader Decl `" << _decl->name << "`, resource `" << r.name << "` with type `" << _t->name << "` can only be granted input access to shader." << std::endl;
+                                    auto e = std::make_unique<TypeError>(std::string("In Shader Decl `") + _decl->name + "`, resource `" + r.name + "` with type `" + _t->name + "` can only be granted input access to shader.");
+                                    e->loc = _decl->loc.value_or(ErrorLoc{});
+                                    diagnostics->addError(std::move(e));
                                     return false;
                                 }
                                 currentContext->variableMap.insert(std::make_pair(r.name,res->typeExpr));
+                                break;
                             }
+                        }
+                        if(!found){
+                            auto e = std::make_unique<UndeclaredIdentifier>(r.name);
+                            e->loc = _decl->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                            return false;
                         }
                     }
 
@@ -1071,20 +1171,28 @@ namespace omegasl {
                                 : shaderType == ast::ShaderDecl::Hull? AttributeContext::HullShaderArgument
                                 : AttributeContext::DomainShaderArgument;
                             if(!isValidAttributeInContext(p.attributeName.value(),context)){
-                                std::cout << "Attribute `" << p.attributeName.value() << "` is not valid in parameter context." << std::endl;
+                                auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + p.attributeName.value() + "` is not valid in parameter context.");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
                                 return false;
                             }
                             if(shaderType == ast::ShaderDecl::Compute){
                                 if(p.attributeName.value() == ATTRIBUTE_GLOBALTHREAD_ID && paramIndex != 0){
-                                    std::cout << "Attribute `" << ATTRIBUTE_GLOBALTHREAD_ID << "` must be the first parameter in a compute shader" << std::endl;
+                                    auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + ATTRIBUTE_GLOBALTHREAD_ID + "` must be the first parameter in a compute shader");
+                                    e->loc = _decl->loc.value_or(ErrorLoc{});
+                                    diagnostics->addError(std::move(e));
                                     return false;
                                 }
                                 else if(p.attributeName.value() == ATTRIBUTE_LOCALTHREAD_ID && paramIndex != 1){
-                                    std::cout << "Attribute `" << ATTRIBUTE_LOCALTHREAD_ID << "` must be the second parameter in a compute shader" << std::endl;
+                                    auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + ATTRIBUTE_LOCALTHREAD_ID + "` must be the second parameter in a compute shader");
+                                    e->loc = _decl->loc.value_or(ErrorLoc{});
+                                    diagnostics->addError(std::move(e));
                                     return false;
                                 }
                                 else if(p.attributeName.value() == ATTRIBUTE_THREADGROUP_ID && paramIndex != 2){
-                                    std::cout << "Attribute `" << ATTRIBUTE_THREADGROUP_ID << "` must be the last parameter in a compute shader" << std::endl;
+                                    auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + ATTRIBUTE_THREADGROUP_ID + "` must be the last parameter in a compute shader");
+                                    e->loc = _decl->loc.value_or(ErrorLoc{});
+                                    diagnostics->addError(std::move(e));
                                     return false;
                                 }
                             }
@@ -1106,20 +1214,26 @@ namespace omegasl {
                     /// (Vertex shaders can return internal struct types while, fragment shaders return float4 and compute shaders do not return any value.)
                     if(shaderType == ast::ShaderDecl::Fragment){
                         if(!_decl->returnType->compare(ast::TypeExpr::Create(ast::builtins::float4_type))){
-                            std::cout << "Fragment shader `" << _decl->name << "` must return a float4, not " << _decl->returnType->name << std::endl;
+                            auto e = std::make_unique<TypeError>(std::string("Fragment shader `") + _decl->name + "` must return a float4, not " + _decl->returnType->name);
+                            e->loc = _decl->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
                             return false;
                         }
                     }
 
                     if(shaderType == ast::ShaderDecl::Compute){
                         if(!_decl->returnType->compare(ast::TypeExpr::Create(ast::builtins::void_type))){
-                            std::cout << "Compute shader `" << _decl->name << "` must return void, not " << _decl->returnType->name << std::endl;
+                            auto e = std::make_unique<TypeError>(std::string("Compute shader `") + _decl->name + "` must return void, not " + _decl->returnType->name);
+                            e->loc = _decl->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
                             return false;
                         }
                     }
 
                     if(!_decl->returnType->compare(eval_result)){
-                        std::cout << "In Function Return Type: Failed to match type." << "(" << _decl->returnType->name << " vs. " << eval_result->name << ")" << std::endl;
+                        auto e = std::make_unique<TypeError>(std::string("In Function Return Type: Failed to match type. (") + _decl->returnType->name + " vs. " + eval_result->name + ")");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
                         return false;
                     }
 
@@ -1140,7 +1254,8 @@ namespace omegasl {
                     break;
                 }
                 default : {
-                    std::cout << "Cannot declare ast::Stmt of type:" << std::hex << decl->type << std::dec << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>(std::string("Cannot declare ast::Stmt of type: 0x") + std::to_string(decl->type));
+                    diagnostics->addError(std::move(e));
                     return false;
                 }
             }
@@ -1173,7 +1288,6 @@ namespace omegasl {
 
         auto t = lexer->nextTok();
         if(t.type == TOK_EOF){
-            std::cout << "EOF" << std::endl;
             return nullptr;
         }
 
@@ -1190,7 +1304,9 @@ namespace omegasl {
 
                 if(t.type != TOK_KW){
                     // error
-                    std::cout << "Expected KW" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected keyword in resource map");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
@@ -1207,14 +1323,18 @@ namespace omegasl {
                 }
                 else {
                     /// Error (Unexpected Keyword)
-                    std::cout << "Unexpected KW" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>(std::string("Unexpected keyword `") + t.str + "` in resource map");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
                 t = lexer->nextTok();
                 if(t.type != TOK_ID){
                     /// Error Expected Keyword
-                    std::cout << "Expected KW" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected identifier for resource name");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
                 mapDesc.name = t.str;
@@ -1243,7 +1363,9 @@ namespace omegasl {
                 if(t.type == TOK_KW){
                     if(t.str != KW_INTERNAL){
                         // Expected No Keyword or Internal
-                        std::cout << "Expected Internal Keyword or No Keyword" << std::endl;
+                        auto e = std::make_unique<UnexpectedToken>("Expected `internal` keyword or no keyword");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
                         return nullptr;
                     }
                     _decl->internal = true;
@@ -1268,7 +1390,9 @@ namespace omegasl {
 
                         if(t.type != TOK_ID){
                             /// ERROR!
-                            std::cout << "Expected ID. Instead got:" << t.str << std::endl;
+                            auto e = std::make_unique<UnexpectedToken>(std::string("Expected identifier, got `") + t.str + "`");
+                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            diagnostics->addError(std::move(e));
                             return nullptr;
                         }
                         auto var_id = t.str;
@@ -1277,7 +1401,9 @@ namespace omegasl {
                             t = lexer->nextTok();
                             if(t.type != TOK_ID){
                                 /// ERROR!
-                                std::cout << "Expected ID. Instead got:" << t.str << std::endl;
+                                auto e = std::make_unique<UnexpectedToken>(std::string("Expected identifier for attribute, got `") + t.str + "`");
+                                e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                                diagnostics->addError(std::move(e));
                                 return nullptr;
                             }
                             _decl->fields.push_back({var_ty,var_id,t.str});
@@ -1289,7 +1415,9 @@ namespace omegasl {
 
                         if(t.type != TOK_SEMICOLON){
                             /// Error. Expected Semicolon.
-                            std::cout << "Expected SemiColon" << std::endl;
+                            auto e = std::make_unique<UnexpectedToken>("Expected semicolon after struct field");
+                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            diagnostics->addError(std::move(e));
                             return nullptr;
                         }
                         t = lexer->nextTok();
@@ -1299,7 +1427,9 @@ namespace omegasl {
 
                     if(t.type != TOK_SEMICOLON){
                         /// Error. Expected Semicolon.
-                        std::cout << "Expected Semicolon" << std::endl;
+                        auto e = std::make_unique<UnexpectedToken>("Expected semicolon after struct declaration");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
                         return nullptr;
                     }
                     else {
@@ -1309,13 +1439,17 @@ namespace omegasl {
                 }
                 else {
                     /// Error Unexpected Token
-                    std::cout << "Unexpected Token" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected `{` after struct name");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
             }
             else if(t.str == KW_STRUCT) {
                 // Error . Struct cannot have a resource map.
-                std::cout << "Struct cannot have a resource map!" << std::endl;
+                auto e = std::make_unique<UnexpectedToken>("Struct cannot have a resource map");
+                e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                diagnostics->addError(std::move(e));
                 return nullptr;
             }
 
@@ -1349,14 +1483,18 @@ namespace omegasl {
 
                 if(t.type != TOK_LPAREN){
                     delete _s;
-                    std::cout << "Expected LParen" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected `(` after compute keyword");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
                 t = lexer->nextTok();
                 if(t.type != TOK_ID && t.str != "x"){
                     delete _s;
-                    std::cout << "Expected ID with value of x" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected identifier `x`");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
@@ -1364,14 +1502,18 @@ namespace omegasl {
 
                 if(t.type != TOK_OP && t.str != "="){
                     delete _s;
-                    std::cout << "Expected =" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected `=`");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
                 t = lexer->nextTok();
                 if(t.type != TOK_NUM_LITERAL){
                     delete _s;
-                    std::cout << "Expected Num Literal" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected numeric literal for threadgroup x dimension");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
@@ -1380,7 +1522,9 @@ namespace omegasl {
                 t = lexer->nextTok();
                 if(t.type != TOK_COMMA){
                     delete _s;
-                    std::cout << "Expected Comma" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected `,` after x dimension");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
@@ -1388,7 +1532,9 @@ namespace omegasl {
                 t = lexer->nextTok();
                 if(t.type != TOK_ID && t.str != "y"){
                     delete _s;
-                    std::cout << "Expected ID with value of y" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected identifier `y`");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
@@ -1396,14 +1542,18 @@ namespace omegasl {
 
                 if(t.type != TOK_OP && t.str != "="){
                     delete _s;
-                    std::cout << "Expected =" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected `=`");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
                 t = lexer->nextTok();
                 if(t.type != TOK_NUM_LITERAL){
                     delete _s;
-                    std::cout << "Expected Num Literal" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected numeric literal for threadgroup y dimension");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
@@ -1412,7 +1562,9 @@ namespace omegasl {
                 t = lexer->nextTok();
                 if(t.type != TOK_COMMA){
                     delete _s;
-                    std::cout << "Expected Comma" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected `,` after y dimension");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
@@ -1421,7 +1573,9 @@ namespace omegasl {
                 t = lexer->nextTok();
                 if(t.type != TOK_ID && t.str != "z"){
                     delete _s;
-                    std::cout << "Expected ID with value of z" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected identifier `z`");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
@@ -1429,14 +1583,18 @@ namespace omegasl {
 
                 if(t.type != TOK_OP && t.str != "="){
                     delete _s;
-                    std::cout << "Expected =" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected `=`");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
                 t = lexer->nextTok();
                 if(t.type != TOK_NUM_LITERAL){
                     delete _s;
-                    std::cout << "Expected Num Literal" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected numeric literal for threadgroup z dimension");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
@@ -1445,7 +1603,9 @@ namespace omegasl {
                 t = lexer->nextTok();
                 if(t.type != TOK_RPAREN){
                     delete _s;
-                    std::cout << "Expected RParen" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected `)` after threadgroup descriptor");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
@@ -1457,8 +1617,7 @@ namespace omegasl {
                 staticResourceDecl = true;
             }
             else {
-                if(diagnostics){ auto e = std::make_unique<UnexpectedToken>(std::string("Unexpected keyword: ") + t.str); e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd }; diagnostics->addError(std::move(e)); }
-                else std::cout << "Unexpected Keyword" << std::endl;
+                auto e = std::make_unique<UnexpectedToken>(std::string("Unexpected keyword: ") + t.str); e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd }; diagnostics->addError(std::move(e));
                 delete node;
                 return nullptr;
             }
@@ -1492,7 +1651,9 @@ namespace omegasl {
         if(t.type != TOK_ID){
             /// ERROR!
             delete node;
-            std::cout << "Expected ID. Instead got:" << t.str << std::endl;
+            auto e = std::make_unique<UnexpectedToken>(std::string("Expected identifier, got `") + t.str + "`");
+            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+            diagnostics->addError(std::move(e));
             return nullptr;
         }
 
@@ -1516,7 +1677,9 @@ namespace omegasl {
 
                     if(t.type != TOK_ID){
                         delete res_decl;
-                        std::cout << "Expected ID. Instead got:" << t.str << std::endl;
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Expected identifier for sampler property, got `") + t.str + "`");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
                         return nullptr;
                     }
 
@@ -1525,7 +1688,9 @@ namespace omegasl {
                     t = lexer->nextTok();
                     if(t.type != TOK_OP && t.str != OP_EQUAL){
                         delete res_decl;
-                        std::cout << "Expected =" << std::endl;
+                        auto e = std::make_unique<UnexpectedToken>("Expected `=`");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
                         return nullptr;
                     }
 
@@ -1538,7 +1703,9 @@ namespace omegasl {
                     }
                     else {
                         delete res_decl;
-                        std::cout << "Expected ID or Num Literal. Instead got:" << t.str << std::endl;
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Expected identifier or numeric literal, got `") + t.str + "`");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
                         return nullptr;
                     }
 
@@ -1580,7 +1747,9 @@ namespace omegasl {
                     }
                     else {
                         delete res_decl;
-                        std::cout << "Unexpected TOK:" << t.str << std::endl;
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Unexpected token `") + t.str + "`");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
                         return nullptr;
                     }
 
@@ -1589,14 +1758,15 @@ namespace omegasl {
                 t = lexer->nextTok();
                 if(t.type != TOK_SEMICOLON){
                     delete res_decl;
-                    std::cout << "Expected Semicolon. Instead got:" << t.str << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>(std::string("Expected semicolon, got `") + t.str + "`");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
 
                 auto pt = new ast::ResourceDecl::StaticSamplerDesc;
                 memcpy(pt,&samplerDesc,sizeof(samplerDesc));
                 res_decl->staticSamplerDesc.reset(pt);
-
             }
             else {
                 /// Parse FuncDecl/ShaderDecl
@@ -1628,7 +1798,9 @@ namespace omegasl {
                     if (t.type != TOK_ID) {
                         /// ERROR!
                         delete node;
-                        std::cout << "Expected ID. Instead got:" << t.str << std::endl;
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Expected identifier for parameter name, got `") + t.str + "`");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
                         return nullptr;
                     }
 
@@ -1640,7 +1812,9 @@ namespace omegasl {
                         if (t.type != TOK_ID) {
                             // Error!
                             delete node;
-                            std::cout << "Expected ID. Instead got:" << t.str << std::endl;
+                            auto e = std::make_unique<UnexpectedToken>(std::string("Expected identifier for attribute, got `") + t.str + "`");
+                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            diagnostics->addError(std::move(e));
                             return nullptr;
                         }
 
@@ -1653,8 +1827,10 @@ namespace omegasl {
                     if (t.type == TOK_COMMA) {
                         t = lexer->nextTok();
                         if (t.type == TOK_RPAREN) {
-                            /// Error; Unexpected TOken.
-                            std::cout << "Expected RParen" << std::endl;
+                            /// Error; Unexpected Token.
+                            auto e = std::make_unique<UnexpectedToken>("Unexpected `)` after `,` in parameter list");
+                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            diagnostics->addError(std::move(e));
                             return nullptr;
                         }
                     }
@@ -1662,7 +1838,9 @@ namespace omegasl {
 
                 t = lexer->nextTok();
                 if (t.type != TOK_LBRACE) {
-                    std::cout << "Expected Tok. Expected LBrace.";
+                    auto e = std::make_unique<UnexpectedToken>("Expected `{` to begin function body");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
                     /// Error. Unexpected Token.
                     return nullptr;
                 }
@@ -1684,7 +1862,9 @@ namespace omegasl {
             }
             else {
                 delete node;
-                std::cout << "Expected LParen for Static Resource" << std::endl;
+                auto e = std::make_unique<UnexpectedToken>("Expected `(` for static resource declaration");
+                e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                diagnostics->addError(std::move(e));
                 return nullptr;
             }
             resourceDecl->name = id_for_decl;
@@ -1692,14 +1872,19 @@ namespace omegasl {
             t = lexer->nextTok();
             if(t.type != TOK_NUM_LITERAL){
                 delete resourceDecl;
-                std::cout << "Expected NUM Literal" << std::endl;
+                auto e = std::make_unique<UnexpectedToken>("Expected numeric literal for register number");
+                e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                diagnostics->addError(std::move(e));
                 return nullptr;
             }
             resourceDecl->registerNumber = std::stoul(t.str);
             t = lexer->nextTok();
             if(t.type != TOK_SEMICOLON){
                 delete resourceDecl;
-                std::cout << "Expected Semicolon" << std::endl;
+                auto e = std::make_unique<UnexpectedToken>("Expected semicolon after resource declaration");
+                e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                diagnostics->addError(std::move(e));
+                return nullptr;
             }
             node = resourceDecl;
         }
@@ -2136,10 +2321,6 @@ namespace omegasl {
 
         tokenBuffer.push_back(first_tok);
 
-        for(auto & t : tokenBuffer){
-            std::cout << "TOK: {t:" << std::hex << t.type << std::dec << ",str:" << t.str << "}" << std::endl;
-        }
-
 
         first_tok = tokenBuffer.front();
 
@@ -2158,11 +2339,9 @@ namespace omegasl {
         }
 
         if(isDecl){
-            std::cout << "Parse Generic Decl" << std::endl;
             stmt = parseGenericDecl(first_tok,ctxt);
         }
         else {
-            std::cout << "Parse Expr" << std::endl;
             stmt = parseExpr(first_tok,ctxt.parentScope);
         }
 
@@ -2198,7 +2377,9 @@ namespace omegasl {
             auto type_for_var_decl = buildTypeRef(_tok,type_is_pointer);
             first_tok = getTok();
             if(first_tok.type != TOK_ID){
-                std::cout << "Expected ID!" << std::endl;
+                auto e = std::make_unique<UnexpectedToken>("Expected identifier for variable name");
+                e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                diagnostics->addError(std::move(e));
                 return nullptr;
             }
             auto _decl = new ast::VarDecl();
@@ -2210,13 +2391,17 @@ namespace omegasl {
                 ++tokIdx;
                 first_tok = getTok();
                 if(first_tok.type != TOK_NUM_LITERAL){
-                    std::cout << "Expected array size literal" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected array size literal");
+                    e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
                 _decl->typeExpr->arraySize = static_cast<unsigned>(std::stoul(first_tok.str));
                 first_tok = getTok();
                 if(first_tok.type != TOK_RBRACKET){
-                    std::cout << "Expected ]" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected `]`");
+                    e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
                 first_tok = aheadTok();
@@ -2231,7 +2416,9 @@ namespace omegasl {
                 _decl->spec.initializer = _e;
             }
             else if(first_tok.type == TOK_OP){
-                std::cout << "Unknown Operator" << first_tok.str << std::endl;
+                auto e = std::make_unique<UnexpectedToken>(std::string("Unknown operator `") + first_tok.str + "`");
+                e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                diagnostics->addError(std::move(e));
                 return nullptr;
             }
             node = _decl;
@@ -2275,7 +2462,9 @@ namespace omegasl {
             *expr = _e;
         }
         else {
-            std::cout << "Unexpected Token:" << first_tok.str << std::endl;
+            auto e = std::make_unique<UnexpectedToken>(std::string("Unexpected token `") + first_tok.str + "`");
+            e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+            diagnostics->addError(std::move(e));
             return false;
         }
         (*expr)->scope = parentScope;
@@ -2325,7 +2514,9 @@ namespace omegasl {
 
                 first_tok = getTok();
                 if(first_tok.type != TOK_ID){
-                    std::cout <<"Expected ID" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected identifier after `.`");
+                    e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                    diagnostics->addError(std::move(e));
                     *expr = nullptr;
                     delete _member_expr;
                     return false;
@@ -2349,7 +2540,9 @@ namespace omegasl {
                 }
                 first_tok = getTok();
                 if(first_tok.type != TOK_RBRACKET){
-                    std::cout <<"Expected RBracket" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Expected `]`");
+                    e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                    diagnostics->addError(std::move(e));
                     *expr = nullptr;
                     delete _index_expr;
                     return false;
@@ -2401,7 +2594,9 @@ namespace omegasl {
                         first_tok = getTok();
                         if(first_tok.type != TOK_RPAREN){
                             if(_expr) delete _expr;
-                            std::cout << "Expected RParen!" << std::endl;
+                            auto e = std::make_unique<UnexpectedToken>("Expected `)`");
+                            e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                            diagnostics->addError(std::move(e));
                             return false;
                         }
                     }
@@ -2411,7 +2606,9 @@ namespace omegasl {
                     first_tok = getTok();
                     if(first_tok.type != TOK_RPAREN){
                         if(_expr) delete _expr;
-                        std::cout << "Expected RParen!" << std::endl;
+                        auto e = std::make_unique<UnexpectedToken>("Expected `)`");
+                        e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                        diagnostics->addError(std::move(e));
                         return false;
                     }
                 }
@@ -2456,7 +2653,9 @@ namespace omegasl {
                 hasPrefixOp = true;
                 OmegaCommon::StrRef op_type = first_tok.str;
                 if(op_type != OP_NOT && op_type != OP_PLUSPLUS && op_type != OP_MINUSMINUS){
-                    std::cout << "Invalid operator" << op_type << "in this context." << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>(std::string("Invalid operator `") + std::string(op_type) + "` in this context.");
+                    e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                    diagnostics->addError(std::move(e));
                     return false;
                 }
                 auto _unary_op_expr = new ast::UnaryOpExpr();
@@ -2487,8 +2686,6 @@ namespace omegasl {
         if(!hasPrefixOp) {
 
             first_tok = aheadTok();
-
-            std::cout << "AHEAD TOK:" << first_tok.str << std::endl;
 
             if((first_tok.type == TOK_OP || first_tok.type == TOK_ASTERISK) &&
                (first_tok.str == OP_MINUSMINUS || first_tok.str == OP_PLUSPLUS)){
@@ -2546,7 +2743,9 @@ namespace omegasl {
             if(first_tok.type != TOK_SEMICOLON){
                 auto stmt = parseStmt(first_tok,ctxt);
                 if(!stmt){
-                    std::cout << "Failed to parse block stmt" << std::endl;
+                    auto e = std::make_unique<UnexpectedToken>("Failed to parse block statement");
+                    e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                    diagnostics->addError(std::move(e));
                     delete block;
                     return nullptr;
                 }
@@ -2568,14 +2767,13 @@ namespace omegasl {
         lexer->setInputStream(&ctxt.in);
         ast::Decl *decl;
         while((decl = parseGlobalDecl()) != nullptr){
-            std::cout << std::hex << "NODE TYPE:" << decl->type << std::dec << std::endl;
             if(sem->performSemForGlobalDecl(decl)){
-                std::cout << "SUCCESS SEM" << std::endl;
                 gen->generateDecl(decl);
                 gen->generateInterfaceAndCompileShader(decl);
             }
             else {
-                std::cout << "Failed to evaluate stmt" << std::endl;
+                auto e = std::make_unique<UnexpectedToken>("Failed to evaluate statement");
+                diagnostics->addError(std::move(e));
                 break;
             }
         }

@@ -5,7 +5,27 @@ enable_testing()
 set(OMEGASL_TEST_TEMP_DIR "${CMAKE_CURRENT_BINARY_DIR}/temp")
 file(MAKE_DIRECTORY "${OMEGASL_TEST_TEMP_DIR}")
 
-# 5.1 Compiler unit tests: basic end-to-end and error cases
+# --- Helper: add a compile-only test for an .omegasl file ---
+function(add_omegasl_compile_test TEST_NAME SOURCE_FILE)
+    add_test(
+        NAME ${TEST_NAME}
+        COMMAND $<TARGET_FILE:omegaslc>
+                -t ${OMEGASL_TEST_TEMP_DIR}
+                -o ${OMEGASL_TEST_TEMP_DIR}/${TEST_NAME}.omegasllib
+                ${CMAKE_CURRENT_SOURCE_DIR}/${SOURCE_FILE}
+    )
+endfunction()
+
+# --- Helper: add a negative test expected to fail ---
+function(add_omegasl_fail_test TEST_NAME SOURCE_FILE)
+    add_omegasl_compile_test(${TEST_NAME} ${SOURCE_FILE})
+    set_tests_properties(${TEST_NAME} PROPERTIES WILL_FAIL TRUE)
+endfunction()
+
+
+# =============================================================
+# 1. Tokenizer test
+# =============================================================
 
 add_test(
     NAME omegasl_tokens_shaders
@@ -16,26 +36,29 @@ add_test(
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders.omegasl
 )
 
-add_test(
-    NAME omegasl_compile_shaders
-    COMMAND $<TARGET_FILE:omegaslc>
-            -t ${OMEGASL_TEST_TEMP_DIR}
-            -o ${OMEGASL_TEST_TEMP_DIR}/shaders.omegasllib
-            ${CMAKE_CURRENT_SOURCE_DIR}/shaders.omegasl
-)
+# =============================================================
+# 2. Positive compilation tests
+# =============================================================
 
-add_test(
-    NAME omegasl_invalid_phase2_errors
-    COMMAND $<TARGET_FILE:omegaslc>
-            -t ${OMEGASL_TEST_TEMP_DIR}
-            -o ${OMEGASL_TEST_TEMP_DIR}/invalid.omegasllib
-            ${CMAKE_CURRENT_SOURCE_DIR}/invalid_phase2.omegasl
-)
+add_omegasl_compile_test(omegasl_compile_shaders             shaders.omegasl)
+add_omegasl_compile_test(omegasl_compile_operators           operators.omegasl)
+add_omegasl_compile_test(omegasl_compile_control_flow        control_flow.omegasl)
+add_omegasl_compile_test(omegasl_compile_vector_math         vector_math.omegasl)
+add_omegasl_compile_test(omegasl_compile_resource_types      resource_types.omegasl)
+add_omegasl_compile_test(omegasl_compile_compute_gradient    compute_gradient.omegasl)
 
-# This test is expected to fail compilation and produce diagnostics.
-set_tests_properties(omegasl_invalid_phase2_errors PROPERTIES WILL_FAIL TRUE)
+# =============================================================
+# 3. Negative compilation tests (expected to fail)
+# =============================================================
 
-# 5.2 Golden-file tests for HLSL codegen (only when DirectX backend is available)
+add_omegasl_fail_test(omegasl_invalid_phase2_errors          invalid_phase2.omegasl)
+add_omegasl_fail_test(omegasl_invalid_type_mismatch          invalid_type_mismatch.omegasl)
+add_omegasl_fail_test(omegasl_invalid_undefined_resource     invalid_undefined_resource.omegasl)
+
+# =============================================================
+# 4. Golden-file tests for HLSL codegen (DirectX only)
+# =============================================================
+
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/golden")
 
 if(TARGET_DIRECTX)
@@ -85,4 +108,3 @@ if(TARGET_DIRECTX)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/RunGoldenCodegenTest.cmake
     )
 endif()
-

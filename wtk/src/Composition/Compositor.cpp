@@ -1084,6 +1084,11 @@ Compositor::~Compositor(){
          }
      }
      scheduler.shutdownAndJoin();
+     // Wait for all GPU work to complete before releasing render targets.
+     if(gte.graphicsEngine != nullptr){
+         gte.graphicsEngine->waitForGPUIdle();
+     }
+     renderTargetStore.store.clear();
      std::cout << "~Compositor()" << std::endl;
 };
 

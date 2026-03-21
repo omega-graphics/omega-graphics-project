@@ -95,6 +95,7 @@ namespace OmegaWTK::Composition {
     static SharedHandle<OmegaGTE::GERenderPipelineState> renderPipelineState;
     static SharedHandle<OmegaGTE::GERenderPipelineState> textureRenderPipelineState;
     static SharedHandle<OmegaGTE::GERenderPipelineState> finalCopyRenderPipelineState;
+    static OmegaCommon::Map<OmegaGTE::PixelFormat,SharedHandle<OmegaGTE::GERenderPipelineState>> finalCopyPipelinesByFormat;
 
     static SharedHandle<OmegaGTE::GEComputePipelineState> linearGradientPipelineState;
 
@@ -342,6 +343,7 @@ fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
     }
 
     void destroyGlobalRenderAssets(){
+        finalCopyPipelinesByFormat.clear();
         shaderLibrary.reset();
         renderPipelineState.reset();
         textureRenderPipelineState.reset();
@@ -349,6 +351,40 @@ fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
         linearGradientPipelineState.reset();
         bufferWriter.reset();
         finalTextureDrawBuffer.reset();
+    }
+
+    static SharedHandle<OmegaGTE::GERenderPipelineState> getFinalCopyPipelineForFormat(OmegaGTE::PixelFormat fmt){
+        auto it = finalCopyPipelinesByFormat.find(fmt);
+        if(it != finalCopyPipelinesByFormat.end() && it->second != nullptr){
+            return it->second;
+        }
+        // The default pipeline was created with RGBA8Unorm. If that matches, reuse it.
+        if(fmt == OmegaGTE::PixelFormat::RGBA8Unorm && finalCopyRenderPipelineState != nullptr){
+            finalCopyPipelinesByFormat[fmt] = finalCopyRenderPipelineState;
+            return finalCopyRenderPipelineState;
+        }
+        // Create a new pipeline for this format using the copy shaders.
+        if(shaderLibrary == nullptr){
+            return finalCopyRenderPipelineState;
+        }
+        auto copyVertex = shaderLibrary->shaders.count("copyVertex") ? shaderLibrary->shaders["copyVertex"] : nullptr;
+        auto copyFragment = shaderLibrary->shaders.count("copyFragment") ? shaderLibrary->shaders["copyFragment"] : nullptr;
+        if(copyVertex == nullptr || copyFragment == nullptr){
+            return finalCopyRenderPipelineState;
+        }
+        OmegaGTE::RenderPipelineDescriptor desc {};
+        desc.cullMode = OmegaGTE::RasterCullMode::None;
+        desc.depthAndStencilDesc = {false,false};
+        desc.triangleFillMode = OmegaGTE::TriangleFillMode::Solid;
+        desc.rasterSampleCount = 1;
+        desc.vertexFunc = copyVertex;
+        desc.fragmentFunc = copyFragment;
+        desc.colorPixelFormat = fmt;
+        auto pipeline = gte.graphicsEngine->makeRenderPipelineState(desc);
+        if(pipeline != nullptr){
+            finalCopyPipelinesByFormat[fmt] = pipeline;
+        }
+        return pipeline;
     }
 
     static void createResourcePools(){
@@ -747,8 +783,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 }
 
                 result = tessellationEngineContext->tessalateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
-                result.translate(-((viewPort.width/2) - _params.rect.pos.x),
-                                 -((viewPort.height/2) - _params.rect.pos.y),
+                result.translate(_params.rect.pos.x,
+                                 -_params.rect.pos.y,
                                  0,
                                  viewPort);
 
@@ -779,8 +815,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 te_params.addAttachment(OmegaGTE::TETessellationParams::Attachment::makeTexture2D(r.w,r.h));
 
                 result = tessellationEngineContext->tessalateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
-                result.translate(-((viewPort.width/2) - _params.rect.pos.x),
-                                 -((viewPort.height/2) - _params.rect.pos.y),
+                result.translate(_params.rect.pos.x,
+                                 -_params.rect.pos.y,
                                  0,
                                  viewPort);
 
@@ -811,8 +847,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     te_params.addAttachment(OmegaGTE::TETessellationParams::Attachment::makeColor(color));
                 }
                 result = tessellationEngineContext->tessalateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
-                result.translate(-((viewPort.width/2) - _params.rect.pos.x),
-                                 -((viewPort.height/2) - _params.rect.pos.y),
+                result.translate(_params.rect.pos.x,
+                                 -_params.rect.pos.y,
                                  0,
                                  viewPort);
 
@@ -1232,7 +1268,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
         cb->startRenderPass(renderPassDesc);
 
-        auto finalPipeline = finalCopyRenderPipelineState ? finalCopyRenderPipelineState : textureRenderPipelineState;
+        auto nativeFormat = nativeTarget->pixelFormat();
+        auto finalPipeline = getFinalCopyPipelineForFormat(nativeFormat);
         if(finalPipeline == nullptr){
             cb->endRenderPass();
             nativeTarget->submitCommandBuffer(cb);

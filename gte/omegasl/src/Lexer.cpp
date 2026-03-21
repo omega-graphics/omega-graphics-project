@@ -99,7 +99,7 @@ namespace omegasl {
 
 #define AHEAD_CHAR() aheadChar(this->in)
 
-#define SEEK_TO_NEXT_CHAR() in->seekg(1,std::ios::cur)
+#define SEEK_TO_NEXT_CHAR() do { in->seekg(1,std::ios::cur); currentCol++; } while(0)
 
 #define PUSH_TOK(t) do { \
     auto s = OmegaCommon::String(c_buffer_st,c_buffer_end); \

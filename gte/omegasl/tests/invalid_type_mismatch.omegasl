@@ -1,0 +1,13 @@
+
+struct BadData {
+    float4 value;
+};
+
+buffer<BadData> buf : 0;
+
+[in buf]
+compute(x=1,y=1,z=1)
+void bad_type(uint3 tid : GlobalThreadID){
+    float4 v = buf[0].value;
+    int result = v + 1.0;
+}

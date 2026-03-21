@@ -184,6 +184,7 @@ _NAMESPACE_BEGIN_
     class  OMEGAGTE_EXPORT GENativeRenderTarget : public GERenderTarget {
         public:
          OMEGACOMMON_CLASS("OmegaGTE.GENativeRenderTarget")
+        virtual PixelFormat pixelFormat() { return PixelFormat::RGBA8Unorm; }
         virtual void commitAndPresent() = 0;
 //        virtual void commitAndWait() = 0;
         #ifdef _WIN32

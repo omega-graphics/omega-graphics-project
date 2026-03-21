@@ -88,6 +88,17 @@ GEVulkanNativeRenderTarget::GEVulkanNativeRenderTarget(GEVulkanEngine *parentEng
 
 }
 
+PixelFormat GEVulkanNativeRenderTarget::pixelFormat() {
+    switch(format){
+        case VK_FORMAT_B8G8R8A8_UNORM: return PixelFormat::BGRA8Unorm;
+        case VK_FORMAT_B8G8R8A8_SRGB:  return PixelFormat::BGRA8Unorm_SRGB;
+        case VK_FORMAT_R8G8B8A8_SRGB:  return PixelFormat::RGBA8Unorm_SRGB;
+        case VK_FORMAT_R16G16B16A16_UNORM: return PixelFormat::RGBA16Unorm;
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        default: return PixelFormat::RGBA8Unorm;
+    }
+}
+
 SharedHandle<GERenderTarget::CommandBuffer> GEVulkanNativeRenderTarget::commandBuffer() {
     return SharedHandle<GERenderTarget::CommandBuffer>(new GERenderTarget::CommandBuffer(this,
                                                                                          GERenderTarget::CommandBuffer::GERTType::Native,

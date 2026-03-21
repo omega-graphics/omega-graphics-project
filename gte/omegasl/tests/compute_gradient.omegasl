@@ -1,0 +1,105 @@
+
+struct GradientParams {
+    float4 startColor;
+    float4 endColor;
+    float4 dimensions;
+    float4 config;
+};
+
+struct Pixel {
+    float4 color;
+};
+
+buffer<GradientParams> params : 0;
+buffer<Pixel> pixels : 1;
+
+[in params, out pixels]
+compute(x=8,y=8,z=1)
+void linear_gradient(uint3 tid : GlobalThreadID){
+    float width = params[0].dimensions[0];
+    float height = params[0].dimensions[1];
+    float angle = params[0].config[0];
+
+    float fx = (float)tid[0];
+    float fy = (float)tid[1];
+
+    if(fx >= width){
+        return;
+    }
+    if(fy >= height){
+        return;
+    }
+
+    float cosA = cos(angle);
+    float sinA = sin(angle);
+
+    float projected = fx * cosA + fy * sinA;
+    float maxProj = width * cosA + height * sinA;
+
+    float t = 0.0;
+    if(maxProj > 0.0){
+        t = projected / maxProj;
+    }
+
+    if(t < 0.0){
+        t = 0.0;
+    }
+    if(t > 1.0){
+        t = 1.0;
+    }
+
+    float4 startCol = params[0].startColor;
+    float4 endCol = params[0].endColor;
+
+    float r = startCol[0] + (endCol[0] - startCol[0]) * t;
+    float g = startCol[1] + (endCol[1] - startCol[1]) * t;
+    float b = startCol[2] + (endCol[2] - startCol[2]) * t;
+    float a = startCol[3] + (endCol[3] - startCol[3]) * t;
+
+    uint pixelIdx = (uint)fy * (uint)width + (uint)fx;
+    pixels[pixelIdx].color = make_float4(r, g, b, a);
+}
+
+[in params, out pixels]
+compute(x=8,y=8,z=1)
+void radial_gradient(uint3 tid : GlobalThreadID){
+    float width = params[0].dimensions[0];
+    float height = params[0].dimensions[1];
+    float centerX = params[0].config[0];
+    float centerY = params[0].config[1];
+    float radius = params[0].config[2];
+
+    float fx = (float)tid[0];
+    float fy = (float)tid[1];
+
+    if(fx >= width){
+        return;
+    }
+    if(fy >= height){
+        return;
+    }
+
+    float dx = fx - centerX;
+    float dy = fy - centerY;
+    float dist = sqrt(dx * dx + dy * dy);
+
+    float t = 0.0;
+    if(radius > 0.0){
+        t = dist / radius;
+    }
+
+    if(t > 1.0){
+        t = 1.0;
+    }
+
+    float4 startCol = params[0].startColor;
+    float4 endCol = params[0].endColor;
+
+    float r = startCol[0] + (endCol[0] - startCol[0]) * t;
+    float g = startCol[1] + (endCol[1] - startCol[1]) * t;
+    float b = startCol[2] + (endCol[2] - startCol[2]) * t;
+    float a = startCol[3] + (endCol[3] - startCol[3]) * t;
+
+    uint pixelIdx = (uint)fy * (uint)width + (uint)fx;
+    pixels[pixelIdx].color = make_float4(r, g, b, a);
+}
