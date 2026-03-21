@@ -1,4 +1,10 @@
-#include <OmegaWTK.h>
+#include <omegaWTK/UI/Widget.h>
+#include <omegaWTK/UI/UIView.h>
+#include <omegaWTK/UI/AppWindow.h>
+#include <omegaWTK/UI/App.h>
+#include <omegaWTK/Widgets/Containers.h>
+#include <omegaWTK/Composition/Canvas.h>
+#include <omegaWTK/Main.h>
 #include <algorithm>
 #include <iostream>
 #include <memory>

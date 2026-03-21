@@ -1,4 +1,9 @@
-#include <OmegaWTK.h>
+#include <omegaWTK/UI/Widget.h>
+#include <omegaWTK/UI/AppWindow.h>
+#include <omegaWTK/UI/App.h>
+#include <omegaWTK/Composition/Canvas.h>
+#include <omegaWTK/Composition/FontEngine.h>
+#include <omegaWTK/Main.h>
 
 using namespace OmegaWTK;
 

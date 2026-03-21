@@ -58,7 +58,7 @@ macro(add_stdlib_module _NAME DIR)
 endmacro()
 
 add_stdlib_module("fs" "modules/fs")
-add_stdlib_module("bridge" "modules/bridge")
+# add_stdlib_module("bridge" "modules/bridge")  # modules/bridge dir does not exist
 
 file(GLOB STDLIB_MODS "${CMAKE_SOURCE_DIR}/modules/*.autom")
 if(WIN32)
@@ -86,5 +86,5 @@ add_custom_target(autom-tests
         --interface-dir ${CMAKE_CURRENT_SOURCE_DIR}/modules
         --extension-dir ${CMAKE_BINARY_DIR}/stdlib
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    DEPENDS autom fs bridge
+    DEPENDS autom fs
     COMMENT "Running AUTOM integration tests")

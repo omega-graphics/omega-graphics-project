@@ -5,6 +5,7 @@
 
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Native/NativeEvent.h"
 #include "omegaWTK/Native/NativeItem.h"
 #include "omegaWTK/Native/NativeApp.h"
 

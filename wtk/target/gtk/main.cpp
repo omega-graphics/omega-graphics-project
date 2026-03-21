@@ -1,4 +1,6 @@
-#include <OmegaWTK.h>
+#include <omegaWTK/UI/App.h>
+#include <omegaWTK/Native/NativeApp.h>
+#include <omegaWTK/Main.h>
 
 int main(int argc,char *argv[]){
     OmegaWTK::Native::NativeAppLaunchArgs launchArgs {argc,argv};

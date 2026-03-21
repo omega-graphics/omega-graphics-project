@@ -457,7 +457,7 @@ public:
 SharedHandle<OmegaTessellationEngineContext> CreateNativeRenderTargetTEContext(SharedHandle<GENativeRenderTarget> & renderTarget){
     auto vulkanRenderTarget = std::dynamic_pointer_cast<GEVulkanNativeRenderTarget>(renderTarget);
     if(vulkanRenderTarget == nullptr){
-        return pnullptr;
+        return nullptr;
     }
     return SharedHandle<OmegaTessellationEngineContext>(new VulkanNativeRenderTargetTEContext(vulkanRenderTarget));
 };

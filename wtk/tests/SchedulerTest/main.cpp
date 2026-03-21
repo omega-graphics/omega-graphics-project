@@ -1,4 +1,4 @@
-#include <OmegaWTK.h>
+#include <omegaWTK/Composition/CompositorClient.h>
 #include <chrono>
 #include <thread>
 

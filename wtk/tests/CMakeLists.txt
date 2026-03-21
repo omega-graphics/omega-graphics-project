@@ -4,12 +4,14 @@
 # # endif()
 
 OmegaWTKApp(
-    NAME 
-    BasicAppTest 
-    BUNDLE_ID 
+    NAME
+    BasicAppTest
+    BUNDLE_ID
     "org.omegagraphics.BasicAppTest"
-    SOURCES 
-    BasicAppTest/main.cpp)
+    SOURCES
+    BasicAppTest/main.cpp
+    BasicAppTest/BasicAppTestRun.cpp)
+target_compile_options(BasicAppTest PRIVATE -g -O0)
 
 OmegaWTKApp(
     NAME

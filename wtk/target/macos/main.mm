@@ -1,4 +1,5 @@
-#include <OmegaWTK.h>
+#include <omegaWTK/UI/App.h>
+#include <omegaWTK/Main.h>
 
 int main(int argc,const char * argv[]){
     auto * app = new OmegaWTK::AppInst(nullptr);

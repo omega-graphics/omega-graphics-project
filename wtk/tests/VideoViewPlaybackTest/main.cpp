@@ -1,4 +1,10 @@
-#include <OmegaWTK.h>
+#include <omegaWTK/UI/Widget.h>
+#include <omegaWTK/UI/View.h>
+#include <omegaWTK/UI/AppWindow.h>
+#include <omegaWTK/UI/App.h>
+#include <omegaWTK/Composition/Canvas.h>
+#include <omegaWTK/Media/MediaIO.h>
+#include <omegaWTK/Main.h>
 #include <iostream>
 
 class PlaybackDelegate final : public OmegaWTK::VideoViewDelegate {

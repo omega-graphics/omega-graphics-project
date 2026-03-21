@@ -1,5 +1,6 @@
 //#include "resource.h"
-#include <OmegaWTK.h>
+#include <omegaWTK/UI/App.h>
+#include <omegaWTK/Main.h>
 
 #define MAX_LOADSTRING 100
 

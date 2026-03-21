@@ -1,4 +1,6 @@
-#include <OmegaWTK.h>
+#include <omegaWTK/UI/AppWindow.h>
+#include <omegaWTK/UI/App.h>
+#include <omegaWTK/Main.h>
 
 using namespace OmegaWTK;
 

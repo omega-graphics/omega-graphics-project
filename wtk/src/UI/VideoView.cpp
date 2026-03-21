@@ -8,6 +8,9 @@
 #ifdef TARGET_MACOS
 #include "../Media/avf/AVFAudioVideoProcessor.h"
 #endif
+#ifdef TARGET_GTK
+#include "../Media/ffmpeg/FFmpegAudioVideoProcessor.h"
+#endif
 
 namespace OmegaWTK {
 

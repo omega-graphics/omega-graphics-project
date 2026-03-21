@@ -2779,6 +2779,7 @@ void UIView::update(){
     if(orderChanged){
         rootOrderDirty = true;
     }
+    activeTagOrder = nextOrder;
 
     const bool layoutChanged = layoutDirty;
     const bool styleChanged = styleDirty;

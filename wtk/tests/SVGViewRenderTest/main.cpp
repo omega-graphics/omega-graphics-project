@@ -1,4 +1,9 @@
-#include <OmegaWTK.h>
+#include <omegaWTK/UI/Widget.h>
+#include <omegaWTK/UI/SVGView.h>
+#include <omegaWTK/UI/AppWindow.h>
+#include <omegaWTK/UI/App.h>
+#include <omegaWTK/Composition/Canvas.h>
+#include <omegaWTK/Main.h>
 #include <iostream>
 
 class SVGDelegate final : public OmegaWTK::SVGViewDelegate {

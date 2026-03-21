@@ -2,6 +2,7 @@
 #include <cstdint>
 
 #include "omegaWTK/Composition/CompositorClient.h"
+#include "omegaWTK/Native/NativeEvent.h"
 #include "omegaWTK/Native/NativeDialog.h"
 #include "omegaWTK/Native/NativeTheme.h"
 
