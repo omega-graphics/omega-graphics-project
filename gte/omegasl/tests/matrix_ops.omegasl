@@ -1,0 +1,59 @@
+
+struct MatData {
+    float4 value;
+};
+
+buffer<MatData> src : 0;
+buffer<MatData> dst : 1;
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_matrix_multiply(uint3 tid : GlobalThreadID){
+    float4x4 a = make_float4x4(
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    );
+    float4 v = src[0].value;
+    float4 result = a * v;
+    dst[0].value = result;
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_matrix_chain(uint3 tid : GlobalThreadID){
+    float4x4 a = make_float4x4(
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    );
+    float4x4 b = a * a;
+    float4 v = b * src[0].value;
+    dst[0].value = v;
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_transpose(uint3 tid : GlobalThreadID){
+    float2x2 m = make_float2x2(1.0, 2.0, 3.0, 4.0);
+    float2x2 t = transpose(m);
+    dst[0].value = make_float4(t[0][0], t[0][1], t[1][0], t[1][1]);
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_determinant(uint3 tid : GlobalThreadID){
+    float2x2 m = make_float2x2(1.0, 2.0, 3.0, 4.0);
+    float d = determinant(m);
+    dst[0].value = make_float4(d, 0.0, 0.0, 0.0);
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_nonsquare_matrix(uint3 tid : GlobalThreadID){
+    float3x2 m = make_float3x2(1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+    float3x2 t = transpose(transpose(m));
+    dst[0].value = make_float4(t[0][0], t[0][1], t[1][0], t[1][1]);
+}

@@ -23,6 +23,12 @@ namespace omegasl::ast {
         Type *float2x2_type;
         Type *float3x3_type;
         Type *float4x4_type;
+        Type *float2x3_type;
+        Type *float2x4_type;
+        Type *float3x2_type;
+        Type *float3x4_type;
+        Type *float4x2_type;
+        Type *float4x3_type;
 
         Type *uint_type;
         Type *uint2_type;
@@ -50,6 +56,12 @@ namespace omegasl::ast {
         FuncType *make_float2x2;
         FuncType *make_float3x3;
         FuncType *make_float4x4;
+        FuncType *make_float2x3;
+        FuncType *make_float2x4;
+        FuncType *make_float3x2;
+        FuncType *make_float3x4;
+        FuncType *make_float4x2;
+        FuncType *make_float4x3;
 
         FuncType *dot;
         FuncType *cross;
@@ -76,7 +88,13 @@ namespace omegasl::ast {
                 float3_type = new Type{KW_TY_FLOAT3,global_scope};
                 float4_type = new Type{KW_TY_FLOAT4,global_scope};
                 float2x2_type = new Type{KW_TY_FLOAT2X2,global_scope};
+                float2x3_type = new Type{KW_TY_FLOAT2X3,global_scope};
+                float2x4_type = new Type{KW_TY_FLOAT2X4,global_scope};
+                float3x2_type = new Type{KW_TY_FLOAT3X2,global_scope};
                 float3x3_type = new Type{KW_TY_FLOAT3X3,global_scope};
+                float3x4_type = new Type{KW_TY_FLOAT3X4,global_scope};
+                float4x2_type = new Type{KW_TY_FLOAT4X2,global_scope};
+                float4x3_type = new Type{KW_TY_FLOAT4X3,global_scope};
                 float4x4_type = new Type{KW_TY_FLOAT4X4,global_scope};
 
                 uint_type = new Type{KW_TY_UINT,global_scope};
@@ -112,7 +130,13 @@ namespace omegasl::ast {
                 make_uint3 = new FuncType{BUILTIN_MAKE_UINT3,global_scope,true,{},{},TypeExpr::Create(uint3_type)};
                 make_uint4 = new FuncType{BUILTIN_MAKE_UINT4,global_scope,true,{},{},TypeExpr::Create(uint4_type)};
                 make_float2x2 = new FuncType{BUILTIN_MAKE_FLOAT2X2,global_scope,true,{},{},TypeExpr::Create(float2x2_type)};
+                make_float2x3 = new FuncType{BUILTIN_MAKE_FLOAT2X3,global_scope,true,{},{},TypeExpr::Create(float2x3_type)};
+                make_float2x4 = new FuncType{BUILTIN_MAKE_FLOAT2X4,global_scope,true,{},{},TypeExpr::Create(float2x4_type)};
+                make_float3x2 = new FuncType{BUILTIN_MAKE_FLOAT3X2,global_scope,true,{},{},TypeExpr::Create(float3x2_type)};
                 make_float3x3 = new FuncType{BUILTIN_MAKE_FLOAT3X3,global_scope,true,{},{},TypeExpr::Create(float3x3_type)};
+                make_float3x4 = new FuncType{BUILTIN_MAKE_FLOAT3X4,global_scope,true,{},{},TypeExpr::Create(float3x4_type)};
+                make_float4x2 = new FuncType{BUILTIN_MAKE_FLOAT4X2,global_scope,true,{},{},TypeExpr::Create(float4x2_type)};
+                make_float4x3 = new FuncType{BUILTIN_MAKE_FLOAT4X3,global_scope,true,{},{},TypeExpr::Create(float4x3_type)};
                 make_float4x4 = new FuncType{BUILTIN_MAKE_FLOAT4X4,global_scope,true,{},{},TypeExpr::Create(float4x4_type)};
 
                 dot = new FuncType {BUILTIN_DOT,global_scope,true,{},{
@@ -159,7 +183,13 @@ namespace omegasl::ast {
                 delete float3_type;
                 delete float4_type;
                 delete float2x2_type;
+                delete float2x3_type;
+                delete float2x4_type;
+                delete float3x2_type;
                 delete float3x3_type;
+                delete float3x4_type;
+                delete float4x2_type;
+                delete float4x3_type;
                 delete float4x4_type;
                 delete uint_type;
                 delete uint2_type;
@@ -182,7 +212,13 @@ namespace omegasl::ast {
                 delete make_uint3;
                 delete make_uint4;
                 delete make_float2x2;
+                delete make_float2x3;
+                delete make_float2x4;
+                delete make_float3x2;
                 delete make_float3x3;
+                delete make_float3x4;
+                delete make_float4x2;
+                delete make_float4x3;
                 delete make_float4x4;
                 delete dot;
                 delete cross;

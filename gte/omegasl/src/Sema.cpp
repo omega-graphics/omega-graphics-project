@@ -22,7 +22,13 @@ namespace omegasl {
         ast::builtins::float3_type,
         ast::builtins::float4_type,
         ast::builtins::float2x2_type,
+        ast::builtins::float2x3_type,
+        ast::builtins::float2x4_type,
+        ast::builtins::float3x2_type,
         ast::builtins::float3x3_type,
+        ast::builtins::float3x4_type,
+        ast::builtins::float4x2_type,
+        ast::builtins::float4x3_type,
         ast::builtins::float4x4_type,
 
         ast::builtins::buffer_type,
@@ -45,7 +51,13 @@ namespace omegasl {
             ast::builtins::make_uint3,
             ast::builtins::make_uint4,
             ast::builtins::make_float2x2,
+            ast::builtins::make_float2x3,
+            ast::builtins::make_float2x4,
+            ast::builtins::make_float3x2,
             ast::builtins::make_float3x3,
+            ast::builtins::make_float3x4,
+            ast::builtins::make_float4x2,
+            ast::builtins::make_float4x3,
             ast::builtins::make_float4x4,
             ast::builtins::dot,
             ast::builtins::cross,
@@ -153,10 +165,23 @@ namespace omegasl {
         return nullptr;
     }
 
-    /// Check if a resolved type is a numeric scalar (float, int, uint, double).
+    /// Check if a resolved type is a numeric scalar (float, int, uint).
     static bool isNumericScalar(ast::Type *t) {
         return t == ast::builtins::float_type || t == ast::builtins::int_type ||
                t == ast::builtins::uint_type;
+    }
+
+    /// Check if a resolved type is a matrix type.
+    static bool isMatrixType(ast::Type *t) {
+        return t == ast::builtins::float2x2_type || t == ast::builtins::float3x3_type || t == ast::builtins::float4x4_type ||
+               t == ast::builtins::float2x3_type || t == ast::builtins::float2x4_type ||
+               t == ast::builtins::float3x2_type || t == ast::builtins::float3x4_type ||
+               t == ast::builtins::float4x2_type || t == ast::builtins::float4x3_type;
+    }
+
+    /// Check if a resolved type is a float vector type.
+    static bool isFloatVectorType(ast::Type *t) {
+        return t == ast::builtins::float2_type || t == ast::builtins::float3_type || t == ast::builtins::float4_type;
     }
 
     ast::TypeExpr *Sem::performSemForDecl(ast::Decl * decl,ast::FuncDecl *funcContext){
@@ -237,6 +262,10 @@ namespace omegasl {
 
     ast::TypeExpr *Sem::performSemForExpr(ast::Expr * expr,ast::FuncDecl *funcContext){
         auto ret = ast::TypeExpr::Create(KW_TY_VOID);
+        auto setAndReturn = [&](ast::TypeExpr *ty) -> ast::TypeExpr* {
+            if(ty && expr) expr->resolvedType = ty;
+            return ty;
+        };
         if(expr->type == ID_EXPR){
             auto _expr = (ast::IdExpr *)expr;
 
@@ -431,26 +460,38 @@ namespace omegasl {
                 return nullptr;
             }
 
+            /// Set resolvedType on sub-expressions for type-aware codegen (HLSL mul()).
+            _expr->lhs->resolvedType = lhs_res;
+            _expr->rhs->resolvedType = rhs_res;
+
             if(!rhs_res->compare(lhs_res)){
-                /// Allow scalar-vector and vector-scalar binary operations.
                 auto lhsTy = resolveTypeWithExpr(lhs_res);
                 auto rhsTy = resolveTypeWithExpr(rhs_res);
-                bool scalarVecOk = false;
+                bool compatible = false;
                 if(lhsTy && rhsTy){
                     bool lhsScalar = isNumericScalar(lhsTy);
                     bool rhsScalar = isNumericScalar(rhsTy);
-                    if(lhsScalar != rhsScalar) scalarVecOk = true;
+                    /// scalar-vector or vector-scalar
+                    if(lhsScalar != rhsScalar) compatible = true;
+                    /// matrix * matrix, matrix * vector, vector * matrix, scalar * matrix
+                    if(isMatrixType(lhsTy) || isMatrixType(rhsTy)) compatible = true;
                 }
-                if(!scalarVecOk){
+                if(!compatible){
                     auto e = std::make_unique<TypeError>("Failed to match type in binary expr.");
                     e->loc = _expr->loc.value_or(ErrorLoc{});
                     diagnostics->addError(std::move(e));
                     return nullptr;
                 }
             }
-            /// Return the vector type if one side is vector, otherwise lhs.
+            /// Return type inference.
             auto lhsTy = resolveTypeWithExpr(lhs_res);
-            if(lhsTy && isNumericScalar(lhsTy)) return rhs_res;
+            auto rhsTy = resolveTypeWithExpr(rhs_res);
+            /// matrix * vector → vector
+            if(lhsTy && rhsTy && isMatrixType(lhsTy) && isFloatVectorType(rhsTy)) return rhs_res;
+            /// vector * matrix → vector
+            if(lhsTy && rhsTy && isFloatVectorType(lhsTy) && isMatrixType(rhsTy)) return lhs_res;
+            /// scalar * non-scalar → non-scalar
+            if(lhsTy && isNumericScalar(lhsTy) && rhsTy && !isNumericScalar(rhsTy)) return rhs_res;
             return lhs_res;
         }
         else if(expr->type == INDEX_EXPR){
@@ -477,8 +518,22 @@ namespace omegasl {
                 return ast::TypeExpr::Create(ast::builtins::uint_type);
             }
 
+            /// Matrix column access: matNxM[i] -> floatM (column vector)
+            if(isMatrixType(_t)){
+                /// For NxM matrices, indexing returns a column of M elements.
+                /// Square matrices return the matching vector size.
+                if(_t == ast::builtins::float2x2_type) return ast::TypeExpr::Create(ast::builtins::float2_type);
+                if(_t == ast::builtins::float3x3_type) return ast::TypeExpr::Create(ast::builtins::float3_type);
+                if(_t == ast::builtins::float4x4_type) return ast::TypeExpr::Create(ast::builtins::float4_type);
+                if(_t == ast::builtins::float2x3_type || _t == ast::builtins::float3x3_type) return ast::TypeExpr::Create(ast::builtins::float3_type);
+                if(_t == ast::builtins::float2x4_type || _t == ast::builtins::float3x4_type || _t == ast::builtins::float4x4_type) return ast::TypeExpr::Create(ast::builtins::float4_type);
+                if(_t == ast::builtins::float3x2_type || _t == ast::builtins::float4x2_type) return ast::TypeExpr::Create(ast::builtins::float2_type);
+                if(_t == ast::builtins::float4x3_type) return ast::TypeExpr::Create(ast::builtins::float3_type);
+                return ast::TypeExpr::Create(ast::builtins::float4_type); // fallback
+            }
+
             if(_t != ast::builtins::buffer_type){
-                auto e = std::make_unique<TypeError>("Indexing is only supported on buffer and vector types."); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
+                auto e = std::make_unique<TypeError>("Indexing is only supported on buffer, vector, and matrix types."); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                 return nullptr;
             }
 
@@ -531,6 +586,13 @@ namespace omegasl {
                     expectedArgs = 3;
                 }
 
+                /// Matrix intrinsics with special return types
+                bool isTranspose = (fname == "transpose");
+                bool isDeterminant = (fname == "determinant");
+                if(isTranspose || isDeterminant){
+                    expectedArgs = 1;
+                }
+
                 if(expectedArgs > 0 && (int)_expr->args.size() != expectedArgs){
                     auto e = std::make_unique<ArgumentCountMismatch>();
                     e->functionName = fname;
@@ -549,7 +611,24 @@ namespace omegasl {
                     if(i == 0) firstArgType = argType;
                 }
 
-                /// Return type: first arg's type (or float for length()).
+                /// Return type: special cases first.
+                if(isDeterminant && firstArgType){
+                    return ast::TypeExpr::Create(ast::builtins::float_type);
+                }
+                if(isTranspose && firstArgType){
+                    /// Transpose return type: NxM → MxN
+                    auto argTy = resolveTypeWithExpr(firstArgType);
+                    if(argTy == ast::builtins::float2x2_type) return ast::TypeExpr::Create(ast::builtins::float2x2_type);
+                    if(argTy == ast::builtins::float3x3_type) return ast::TypeExpr::Create(ast::builtins::float3x3_type);
+                    if(argTy == ast::builtins::float4x4_type) return ast::TypeExpr::Create(ast::builtins::float4x4_type);
+                    if(argTy == ast::builtins::float2x3_type) return ast::TypeExpr::Create(ast::builtins::float3x2_type);
+                    if(argTy == ast::builtins::float2x4_type) return ast::TypeExpr::Create(ast::builtins::float4x2_type);
+                    if(argTy == ast::builtins::float3x2_type) return ast::TypeExpr::Create(ast::builtins::float2x3_type);
+                    if(argTy == ast::builtins::float3x4_type) return ast::TypeExpr::Create(ast::builtins::float4x3_type);
+                    if(argTy == ast::builtins::float4x2_type) return ast::TypeExpr::Create(ast::builtins::float2x4_type);
+                    if(argTy == ast::builtins::float4x3_type) return ast::TypeExpr::Create(ast::builtins::float3x4_type);
+                    return firstArgType; // fallback
+                }
                 if(returnsScalar && firstArgType){
                     return ast::TypeExpr::Create(ast::builtins::float_type);
                 }

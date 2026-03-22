@@ -108,6 +108,12 @@ namespace omegasl {
             else if(t == ast::builtins::float4x4_type){
                 out << "mat4";
             }
+            else if(t == ast::builtins::float2x3_type){ out << "mat2x3"; }
+            else if(t == ast::builtins::float2x4_type){ out << "mat2x4"; }
+            else if(t == ast::builtins::float3x2_type){ out << "mat3x2"; }
+            else if(t == ast::builtins::float3x4_type){ out << "mat3x4"; }
+            else if(t == ast::builtins::float4x2_type){ out << "mat4x2"; }
+            else if(t == ast::builtins::float4x3_type){ out << "mat4x3"; }
             else if(t == ast::builtins::int_type){
                 out << "int";
             }
@@ -738,10 +744,16 @@ namespace omegasl {
                     }
                     else if(_id == BUILTIN_MAKE_INT2 || _id == BUILTIN_MAKE_INT3 || _id == BUILTIN_MAKE_INT4 ||
                             _id == BUILTIN_MAKE_UINT2 || _id == BUILTIN_MAKE_UINT3 || _id == BUILTIN_MAKE_UINT4 ||
-                            _id == BUILTIN_MAKE_FLOAT2X2 || _id == BUILTIN_MAKE_FLOAT3X3 || _id == BUILTIN_MAKE_FLOAT4X4){
+                            _id == BUILTIN_MAKE_FLOAT2X2 || _id == BUILTIN_MAKE_FLOAT3X3 || _id == BUILTIN_MAKE_FLOAT4X4 ||
+                            _id == BUILTIN_MAKE_FLOAT2X3 || _id == BUILTIN_MAKE_FLOAT2X4 ||
+                            _id == BUILTIN_MAKE_FLOAT3X2 || _id == BUILTIN_MAKE_FLOAT3X4 ||
+                            _id == BUILTIN_MAKE_FLOAT4X2 || _id == BUILTIN_MAKE_FLOAT4X3){
                         OmegaCommon::String typeName = (_id == BUILTIN_MAKE_INT2) ? "ivec2" : (_id == BUILTIN_MAKE_INT3) ? "ivec3" : (_id == BUILTIN_MAKE_INT4) ? "ivec4" :
                             (_id == BUILTIN_MAKE_UINT2) ? "uvec2" : (_id == BUILTIN_MAKE_UINT3) ? "uvec3" : (_id == BUILTIN_MAKE_UINT4) ? "uvec4" :
-                            (_id == BUILTIN_MAKE_FLOAT2X2) ? "mat2" : (_id == BUILTIN_MAKE_FLOAT3X3) ? "mat3" : "mat4";
+                            (_id == BUILTIN_MAKE_FLOAT2X2) ? "mat2" : (_id == BUILTIN_MAKE_FLOAT3X3) ? "mat3" : (_id == BUILTIN_MAKE_FLOAT4X4) ? "mat4" :
+                            (_id == BUILTIN_MAKE_FLOAT2X3) ? "mat2x3" : (_id == BUILTIN_MAKE_FLOAT2X4) ? "mat2x4" :
+                            (_id == BUILTIN_MAKE_FLOAT3X2) ? "mat3x2" : (_id == BUILTIN_MAKE_FLOAT3X4) ? "mat3x4" :
+                            (_id == BUILTIN_MAKE_FLOAT4X2) ? "mat4x2" : (_id == BUILTIN_MAKE_FLOAT4X3) ? "mat4x3" : "mat4";
                         shaderOut << typeName << "(";
                         for(size_t i = 0; i < _expr->args.size(); i++){
                             if(i > 0) shaderOut << ",";

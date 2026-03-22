@@ -1,4 +1,5 @@
 #include "omegaGTE/TE.h"
+#include "omegaGTE/GTEMath.h"
 // #include "omegaGTE/GTEShaderTypes.h"
 #include <optional>
 #include <thread>
@@ -1026,69 +1027,33 @@ void TETriangulationResult::scale(float w,float h,float l){
 };
 
 void TETriangulationResult::TEMesh::translate(float x, float y, float z,const GEViewport & viewport) {
-    auto _x = (2 * x)/viewport.width;
-    auto _y = (2 * y)/viewport.height;
-    auto _z = (2 * z)/viewport.farDepth;
-
+    auto m = translationMatrix(
+        (2.f * x) / viewport.width,
+        (2.f * y) / viewport.height,
+        (2.f * z) / viewport.farDepth
+    );
     for(auto & polygon : vertexPolygons){
-        polygon.a.pt.x += _x;
-        polygon.b.pt.x += _x;
-        polygon.c.pt.x += _x;
-
-        polygon.a.pt.y += _y;
-        polygon.b.pt.y += _y;
-        polygon.c.pt.y += _y;
-
-        polygon.a.pt.z += _z;
-        polygon.b.pt.z += _z;
-        polygon.c.pt.z += _z;
+        polygon.a.pt = transformPoint(m, polygon.a.pt);
+        polygon.b.pt = transformPoint(m, polygon.b.pt);
+        polygon.c.pt = transformPoint(m, polygon.c.pt);
     }
 }
 
 void TETriangulationResult::TEMesh::rotate(float pitch, float yaw, float roll) {
-
-    /// Pitch Rotation -- X Axis.
-    /// Yaw Rotation -- Y Axis.
-    /// Roll Rotation -- Z Axis.
-
-    auto cos_pitch = cosf(pitch),sin_pitch = sinf(pitch);
-    auto cos_yaw = cosf(yaw),sin_yaw =sinf(yaw);
-    auto cos_roll = cosf(roll),sin_roll = sinf(roll);
-
-    auto rotatePoint = [&](GPoint3D & pt){
-        float x = pt.x, y = pt.y, z = pt.z;
-        /// Pitch Rotation (X axis)
-        float y1 = (cos_pitch * y) - (sin_pitch * z);
-        float z1 = (sin_pitch * y) + (cos_pitch * z);
-        /// Yaw Rotation (Y axis)
-        float x2 = (cos_yaw * x) + (sin_yaw * z1);
-        float z2 = -(sin_yaw * x) + (cos_yaw * z1);
-        /// Roll Rotation (Z axis)
-        pt.x = (cos_roll * x2) - (sin_roll * y1);
-        pt.y = (sin_roll * x2) + (cos_roll * y1);
-        pt.z = z2;
-    };
-
+    auto m = rotationEuler(pitch, yaw, roll);
     for(auto & polygon : vertexPolygons){
-        rotatePoint(polygon.a.pt);
-        rotatePoint(polygon.b.pt);
-        rotatePoint(polygon.c.pt);
+        polygon.a.pt = transformPoint(m, polygon.a.pt);
+        polygon.b.pt = transformPoint(m, polygon.b.pt);
+        polygon.c.pt = transformPoint(m, polygon.c.pt);
     }
 }
 
-void TETriangulationResult::TEMesh::scale(float w, float h,float l) {
+void TETriangulationResult::TEMesh::scale(float w, float h, float l) {
+    auto m = scalingMatrix(w, h, l);
     for(auto & polygon : vertexPolygons){
-        polygon.a.pt.x *= w;
-        polygon.b.pt.x *= w;
-        polygon.c.pt.x *= w;
-
-        polygon.a.pt.y *= h;
-        polygon.b.pt.y *= h;
-        polygon.c.pt.y *= h;
-
-        polygon.a.pt.z *= l;
-        polygon.b.pt.z *= l;
-        polygon.c.pt.z *= l;
+        polygon.a.pt = transformPoint(m, polygon.a.pt);
+        polygon.b.pt = transformPoint(m, polygon.b.pt);
+        polygon.c.pt = transformPoint(m, polygon.c.pt);
     }
 }
 

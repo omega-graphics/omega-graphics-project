@@ -62,6 +62,12 @@ namespace omegasl {
             DECLARE_BUILTIN_TYPE(float2x2_type);
             DECLARE_BUILTIN_TYPE(float3x3_type);
             DECLARE_BUILTIN_TYPE(float4x4_type);
+            DECLARE_BUILTIN_TYPE(float2x3_type);
+            DECLARE_BUILTIN_TYPE(float2x4_type);
+            DECLARE_BUILTIN_TYPE(float3x2_type);
+            DECLARE_BUILTIN_TYPE(float3x4_type);
+            DECLARE_BUILTIN_TYPE(float4x2_type);
+            DECLARE_BUILTIN_TYPE(float4x3_type);
 
             DECLARE_BUILTIN_TYPE(buffer_type);
             DECLARE_BUILTIN_TYPE(texture1d_type);
@@ -87,6 +93,12 @@ namespace omegasl {
             DECLARE_BUILTIN_FUNC(make_float2x2);
             DECLARE_BUILTIN_FUNC(make_float3x3);
             DECLARE_BUILTIN_FUNC(make_float4x4);
+            DECLARE_BUILTIN_FUNC(make_float2x3);
+            DECLARE_BUILTIN_FUNC(make_float2x4);
+            DECLARE_BUILTIN_FUNC(make_float3x2);
+            DECLARE_BUILTIN_FUNC(make_float3x4);
+            DECLARE_BUILTIN_FUNC(make_float4x2);
+            DECLARE_BUILTIN_FUNC(make_float4x3);
 
             DECLARE_BUILTIN_FUNC(dot);
 
@@ -273,7 +285,9 @@ namespace omegasl {
             TessellationDesc tessDesc;
         };
 
-        struct Expr : public Stmt {};
+        struct Expr : public Stmt {
+            TypeExpr *resolvedType = nullptr;
+        };
 
         struct IdExpr : public Expr {
             OmegaCommon::String id;

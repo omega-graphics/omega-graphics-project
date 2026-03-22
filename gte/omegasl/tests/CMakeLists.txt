@@ -50,6 +50,7 @@ add_omegasl_compile_test(omegasl_compile_user_functions      user_functions.omeg
 add_omegasl_compile_test(omegasl_compile_const_fold          const_fold.omegasl)
 add_omegasl_compile_test(omegasl_compile_tessellation        tessellation.omegasl)
 add_omegasl_compile_test(omegasl_compile_math_builtins       math_builtins.omegasl)
+add_omegasl_compile_test(omegasl_compile_matrix_ops          matrix_ops.omegasl)
 
 # =============================================================
 # 3. Negative compilation tests (expected to fail)

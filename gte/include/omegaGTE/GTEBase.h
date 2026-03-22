@@ -844,6 +844,94 @@ _NAMESPACE_BEGIN_
            return m;
        };
        ~Matrix() = default;
+
+       // ---- Arithmetic operators ----
+
+       template<class, unsigned, unsigned> friend class Matrix;
+
+       Matrix operator+(const Matrix& other) const {
+           auto r = Create();
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   r._data[i][j] = _data[i][j] + other._data[i][j];
+           return r;
+       }
+       Matrix operator-(const Matrix& other) const {
+           auto r = Create();
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   r._data[i][j] = _data[i][j] - other._data[i][j];
+           return r;
+       }
+       Matrix operator-() const {
+           auto r = Create();
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   r._data[i][j] = -_data[i][j];
+           return r;
+       }
+       Matrix operator*(Ty scalar) const {
+           auto r = Create();
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   r._data[i][j] = _data[i][j] * scalar;
+           return r;
+       }
+       friend Matrix operator*(Ty scalar, const Matrix& m) { return m * scalar; }
+
+       /// Matrix * Matrix: (CxR) * (RxP) = (CxP)
+       template<unsigned P>
+       Matrix<Ty, column, P> operator*(const Matrix<Ty, row, P>& other) const {
+           auto r = Matrix<Ty, column, P>::Create();
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < P; j++){
+                   Ty sum = 0;
+                   for(unsigned k = 0; k < row; k++)
+                       sum += _data[i][k] * other._data[k][j];
+                   r._data[i][j] = sum;
+               }
+           return r;
+       }
+
+       Matrix& operator+=(const Matrix& other){
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   _data[i][j] += other._data[i][j];
+           return *this;
+       }
+       Matrix& operator-=(const Matrix& other){
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   _data[i][j] -= other._data[i][j];
+           return *this;
+       }
+       Matrix& operator*=(Ty scalar){
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   _data[i][j] *= scalar;
+           return *this;
+       }
+
+       bool operator==(const Matrix& other) const {
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   if(_data[i][j] != other._data[i][j]) return false;
+           return true;
+       }
+       bool operator!=(const Matrix& other) const { return !(*this == other); }
+
+       // ---- Utility ----
+
+       Matrix<Ty, row, column> transposed() const {
+           auto r = Matrix<Ty, row, column>::Create();
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   r._data[j][i] = _data[i][j];
+           return r;
+       }
+
+       const Ty* data() const { return &_data[0][0]; }
+       Ty* data() { return &_data[0][0]; }
    };
 
     template<unsigned c,unsigned r>

@@ -166,6 +166,12 @@ namespace omegasl {
                     else if(_id_expr == BUILTIN_MAKE_FLOAT2X2){ shaderOut << "float2x2"; }
                     else if(_id_expr == BUILTIN_MAKE_FLOAT3X3){ shaderOut << "float3x3"; }
                     else if(_id_expr == BUILTIN_MAKE_FLOAT4X4){ shaderOut << "float4x4"; }
+                    else if(_id_expr == BUILTIN_MAKE_FLOAT2X3){ shaderOut << "float2x3"; }
+                    else if(_id_expr == BUILTIN_MAKE_FLOAT2X4){ shaderOut << "float2x4"; }
+                    else if(_id_expr == BUILTIN_MAKE_FLOAT3X2){ shaderOut << "float3x2"; }
+                    else if(_id_expr == BUILTIN_MAKE_FLOAT3X4){ shaderOut << "float3x4"; }
+                    else if(_id_expr == BUILTIN_MAKE_FLOAT4X2){ shaderOut << "float4x2"; }
+                    else if(_id_expr == BUILTIN_MAKE_FLOAT4X3){ shaderOut << "float4x3"; }
                     else {
                         shaderOut << _id_expr;
                     }
@@ -275,6 +281,12 @@ namespace omegasl {
             else if(_ty == ast::builtins::float4x4_type){
                 out << "float4x4";
             }
+            else if(_ty == ast::builtins::float2x3_type){ out << "float2x3"; }
+            else if(_ty == ast::builtins::float2x4_type){ out << "float2x4"; }
+            else if(_ty == ast::builtins::float3x2_type){ out << "float3x2"; }
+            else if(_ty == ast::builtins::float3x4_type){ out << "float3x4"; }
+            else if(_ty == ast::builtins::float4x2_type){ out << "float4x2"; }
+            else if(_ty == ast::builtins::float4x3_type){ out << "float4x3"; }
             else if(_ty == ast::builtins::int_type){
                 out << "int";
             }

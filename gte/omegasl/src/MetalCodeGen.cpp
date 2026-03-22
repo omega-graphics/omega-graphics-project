@@ -107,6 +107,12 @@ using namespace metal;
             else if(_t == builtins::float4x4_type){
                 out << "float4x4";
             }
+            else if(_t == builtins::float2x3_type){ out << "float2x3"; }
+            else if(_t == builtins::float2x4_type){ out << "float2x4"; }
+            else if(_t == builtins::float3x2_type){ out << "float3x2"; }
+            else if(_t == builtins::float3x4_type){ out << "float3x4"; }
+            else if(_t == builtins::float4x2_type){ out << "float4x2"; }
+            else if(_t == builtins::float4x3_type){ out << "float4x3"; }
             else if(_t == builtins::sampler1d_type || _t == builtins::sampler2d_type || _t == builtins::sampler3d_type){
                 out << "sampler";
             }
@@ -260,6 +266,12 @@ using namespace metal;
                     else if(func_name == BUILTIN_MAKE_FLOAT2X2){ shaderOut << "float2x2"; }
                     else if(func_name == BUILTIN_MAKE_FLOAT3X3){ shaderOut << "float3x3"; }
                     else if(func_name == BUILTIN_MAKE_FLOAT4X4){ shaderOut << "float4x4"; }
+                    else if(func_name == BUILTIN_MAKE_FLOAT2X3){ shaderOut << "float2x3"; }
+                    else if(func_name == BUILTIN_MAKE_FLOAT2X4){ shaderOut << "float2x4"; }
+                    else if(func_name == BUILTIN_MAKE_FLOAT3X2){ shaderOut << "float3x2"; }
+                    else if(func_name == BUILTIN_MAKE_FLOAT3X4){ shaderOut << "float3x4"; }
+                    else if(func_name == BUILTIN_MAKE_FLOAT4X2){ shaderOut << "float4x2"; }
+                    else if(func_name == BUILTIN_MAKE_FLOAT4X3){ shaderOut << "float4x3"; }
                     else {
                         /// Map OmegaSL names to MSL names where they differ.
                         if(func_name == BUILTIN_LERP) shaderOut << "mix";

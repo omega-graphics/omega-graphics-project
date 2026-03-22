@@ -52,6 +52,12 @@ typedef int ASTType;
 #define BUILTIN_MAKE_FLOAT2X2 "make_float2x2"
 #define BUILTIN_MAKE_FLOAT3X3 "make_float3x3"
 #define BUILTIN_MAKE_FLOAT4X4 "make_float4x4"
+#define BUILTIN_MAKE_FLOAT2X3 "make_float2x3"
+#define BUILTIN_MAKE_FLOAT2X4 "make_float2x4"
+#define BUILTIN_MAKE_FLOAT3X2 "make_float3x2"
+#define BUILTIN_MAKE_FLOAT3X4 "make_float3x4"
+#define BUILTIN_MAKE_FLOAT4X2 "make_float4x2"
+#define BUILTIN_MAKE_FLOAT4X3 "make_float4x3"
 
 /// Math Intrinsics
 /// 1-arg: same type in, same type out
