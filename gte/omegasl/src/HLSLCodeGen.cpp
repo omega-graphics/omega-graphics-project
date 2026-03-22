@@ -324,8 +324,13 @@ namespace omegasl {
                 }
                 case RETURN_DECL : {
                     auto _decl = (ast::ReturnDecl *)decl;
-                    shaderOut << "return ";
-                    generateExpr(_decl->expr);
+                    if(_decl->expr){
+                        shaderOut << "return ";
+                        generateExpr(_decl->expr);
+                    }
+                    else {
+                        shaderOut << "return";
+                    }
                     break;
                 }
                 case IF_STMT : {

@@ -44,6 +44,7 @@ namespace omegasl {
 #define OP_MINUSEQUAL OP("-=")
 #define OP_DIV OP("/")
 #define OP_DIVEQUAL OP("/=")
+#define OP_MULEQUAL OP("*=")
 #define OP_GREATER OP(">")
 #define OP_GREATEREQUAL OP(">=")
 #define OP_LESS OP("<")

@@ -1,0 +1,35 @@
+
+struct FuncData {
+    float4 value;
+};
+
+buffer<FuncData> src : 0;
+buffer<FuncData> dst : 1;
+
+float square(float x){
+    return x * x;
+}
+
+float add(float a, float b){
+    return a + b;
+}
+
+float apply_twice(float x, float offset){
+    float first = add(x, offset);
+    float second = add(first, offset);
+    return second;
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_user_functions(uint3 tid : GlobalThreadID){
+    float a = src[0].value[0];
+    float b = src[0].value[1];
+
+    float sq = square(a);
+    float sum = add(a, b);
+    float twice = apply_twice(a, b);
+    float d = dot(make_float3(a, b, 1.0), make_float3(1.0, 0.0, 0.0));
+
+    dst[0].value = make_float4(sq, sum, twice, d);
+}

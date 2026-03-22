@@ -1,0 +1,16 @@
+
+struct FoldData {
+    float4 value;
+};
+
+buffer<FoldData> dst : 0;
+
+[out dst]
+compute(x=1,y=1,z=1)
+void test_const_fold(uint3 tid : GlobalThreadID){
+    float pi = 3.14159 * 2.0;
+    float area = 3.14159 * 10.0 * 10.0;
+    float negval = -1.0 + -2.0;
+    int ival = 10 / 3;
+    dst[0].value = make_float4(pi, area, negval, (float)ival);
+}

@@ -26,6 +26,8 @@ namespace omegasl {
 
         unsigned tokIdx;
 
+        std::optional<Tok> putbackTok;
+
         DiagnosticEngine * diagnostics = nullptr;
 
         Tok & getTok();

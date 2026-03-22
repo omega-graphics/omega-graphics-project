@@ -60,8 +60,12 @@ void test_unary(uint3 tid : GlobalThreadID){
 
     int i = 0;
     i++;
+    ++i;
     int j = 5;
     j--;
+    --j;
+
+    bool flag = !false;
 
     dst[0].value = make_float4(neg, (float)i, (float)j, 0.0);
 }

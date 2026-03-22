@@ -66,37 +66,37 @@ using namespace metal;
                 out << "int";
             }
             else if(_t == builtins::int2_type){
-                out << "simd_int2";
+                out << "int2";
             }
             else if(_t == builtins::int3_type){
-                out << "simd_int3";
+                out << "int3";
             }
             else if(_t == builtins::int4_type){
-                out << "simd_int4";
+                out << "int4";
             }
             else if(_t == builtins::uint_type){
                 out << "uint";
             }
             else if(_t == builtins::uint2_type){
-                out << "simd_uint2";
+                out << "uint2";
             }
             else if(_t == builtins::uint3_type){
-                out << "simd_uint3";
+                out << "uint3";
             }
             else if(_t == builtins::uint4_type){
-                out << "simd_uint4";
+                out << "uint4";
             }
             else if(_t == builtins::float_type){
-                out << "simd_float";
+                out << "float";
             }
             else if(_t == builtins::float2_type){
-                out << "simd_float2";
+                out << "float2";
             }
             else if(_t == builtins::float3_type){
-                out << "simd_float3";
+                out << "float3";
             }
             else if(_t == builtins::float4_type){
-                out << "simd_float4";
+                out << "float4";
             }
             else if(_t == builtins::float2x2_type){
                 out << "float2x2";
@@ -214,13 +214,13 @@ using namespace metal;
                     bool generated = false;
 
                     if(func_name == BUILTIN_MAKE_FLOAT2){
-                        shaderOut << "simd_make_float2";
+                        shaderOut << "float2";
                     }
                     else if(func_name == BUILTIN_MAKE_FLOAT3){
-                        shaderOut << "simd_make_float3";
+                        shaderOut << "float3";
                     }
                     else if(func_name == BUILTIN_MAKE_FLOAT4){
-                        shaderOut << "simd_make_float4";
+                        shaderOut << "float4";
                     }
                     else if(func_name == BUILTIN_SAMPLE){
                         generated = true;
@@ -248,15 +248,18 @@ using namespace metal;
                         generateExpr(_expr->args[1]);
                         shaderOut << ")";
                     }
-                    else if(func_name == BUILTIN_MAKE_INT2){ shaderOut << "simd_make_int2"; }
-                    else if(func_name == BUILTIN_MAKE_INT3){ shaderOut << "simd_make_int3"; }
-                    else if(func_name == BUILTIN_MAKE_INT4){ shaderOut << "simd_make_int4"; }
-                    else if(func_name == BUILTIN_MAKE_UINT2){ shaderOut << "simd_make_uint2"; }
-                    else if(func_name == BUILTIN_MAKE_UINT3){ shaderOut << "simd_make_uint3"; }
-                    else if(func_name == BUILTIN_MAKE_UINT4){ shaderOut << "simd_make_uint4"; }
+                    else if(func_name == BUILTIN_MAKE_INT2){ shaderOut << "int2"; }
+                    else if(func_name == BUILTIN_MAKE_INT3){ shaderOut << "int3"; }
+                    else if(func_name == BUILTIN_MAKE_INT4){ shaderOut << "int4"; }
+                    else if(func_name == BUILTIN_MAKE_UINT2){ shaderOut << "uint2"; }
+                    else if(func_name == BUILTIN_MAKE_UINT3){ shaderOut << "uint3"; }
+                    else if(func_name == BUILTIN_MAKE_UINT4){ shaderOut << "uint4"; }
                     else if(func_name == BUILTIN_MAKE_FLOAT2X2){ shaderOut << "float2x2"; }
                     else if(func_name == BUILTIN_MAKE_FLOAT3X3){ shaderOut << "float3x3"; }
                     else if(func_name == BUILTIN_MAKE_FLOAT4X4){ shaderOut << "float4x4"; }
+                    else {
+                        shaderOut << func_name;
+                    }
 
                     if(!generated){
                         shaderOut << "(";
@@ -346,8 +349,13 @@ using namespace metal;
                 }
                 case RETURN_DECL : {
                     auto *_decl = (ast::ReturnDecl *)decl;
-                    shaderOut << "return ";
-                    generateExpr(_decl->expr);
+                    if(_decl->expr){
+                        shaderOut << "return ";
+                        generateExpr(_decl->expr);
+                    }
+                    else {
+                        shaderOut << "return";
+                    }
                     break;
                 }
                 case IF_STMT : {

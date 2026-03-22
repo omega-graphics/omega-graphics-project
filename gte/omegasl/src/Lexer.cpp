@@ -178,7 +178,7 @@ namespace omegasl {
                 case '+' : {
                     PUSH_CHAR(c);
                     c = AHEAD_CHAR();
-                    if(c == '='){
+                    if(c == '=' || c == '+'){
                         PUSH_CHAR(c);
                         SEEK_TO_NEXT_CHAR();
                     }
@@ -188,7 +188,7 @@ namespace omegasl {
                 case '-' : {
                     PUSH_CHAR(c);
                     c = AHEAD_CHAR();
-                    if(c == '='){
+                    if(c == '=' || c == '-'){
                         PUSH_CHAR(c);
                         SEEK_TO_NEXT_CHAR();
                     }
@@ -227,6 +227,12 @@ namespace omegasl {
 
                 case '*' : {
                     PUSH_CHAR(c);
+                    c = AHEAD_CHAR();
+                    if(c == '='){
+                        PUSH_CHAR(c);
+                        SEEK_TO_NEXT_CHAR();
+                        PUSH_TOK(TOK_OP);
+                    }
                     PUSH_TOK(TOK_ASTERISK);
                 }
                 case '.' : {

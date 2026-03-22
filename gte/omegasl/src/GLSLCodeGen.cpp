@@ -231,6 +231,17 @@ namespace omegasl {
 
                     break;
                 }
+                case RETURN_DECL : {
+                    auto _decl = (ast::ReturnDecl *)decl;
+                    if(_decl->expr){
+                        shaderOut << "return ";
+                        generateExpr(_decl->expr);
+                    }
+                    else {
+                        shaderOut << "return";
+                    }
+                    break;
+                }
                 case VAR_DECL : {
                     auto _decl = (ast::VarDecl *)decl;
                     auto pred = [&](ast::StructDecl * decl) -> bool{
@@ -572,11 +583,19 @@ namespace omegasl {
                         }
                         if(stmt->type == VAR_DECL || stmt->type == RETURN_DECL){
                             if(stmt->type == RETURN_DECL){
-                                if(_decl->shaderType == ast::ShaderDecl::Fragment) {
-                                    auto _return_stmt = (ast::ReturnDecl *) stmt;
+                                auto _return_stmt = (ast::ReturnDecl *) stmt;
+                                if(_return_stmt->expr && _decl->shaderType == ast::ShaderDecl::Fragment) {
                                     shaderOut << return_val_replacement << " = ";
                                     generateExpr(_return_stmt->expr);
                                     shaderOut << ";" << std::endl;
+                                }
+                                else if(_return_stmt->expr){
+                                    shaderOut << "return ";
+                                    generateExpr(_return_stmt->expr);
+                                    shaderOut << ";" << std::endl;
+                                }
+                                else {
+                                    shaderOut << "return;" << std::endl;
                                 }
                             }
                             else {

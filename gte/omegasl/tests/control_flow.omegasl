@@ -72,3 +72,13 @@ void test_nested(uint3 tid : GlobalThreadID){
 
     output[0].value = make_float4(sum, 0.0, 0.0, 0.0);
 }
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_bare_return(uint3 tid : GlobalThreadID){
+    float x = input[0].value[0];
+    if(x < 0.0){
+        return;
+    }
+    output[0].value = make_float4(x, 0.0, 0.0, 0.0);
+}

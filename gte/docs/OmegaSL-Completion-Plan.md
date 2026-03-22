@@ -6,15 +6,17 @@ OmegaSL is a cross-platform shading language that transpiles to HLSL, MSL, and G
 
 ### What works
 
-- **Lexer**: tokenizes keywords, operators, identifiers, numeric and string literals, comments.
-- **Parser**: parses global declarations (struct, resource, shader), expressions (binary, unary, call, member access, index, literals, identifiers), variable declarations, and return statements inside shader bodies.
-- **Semantic analysis (`Sem`)**: resolves types, validates builtin function arguments (`make_float2/3/4`, `sample`, `write`, `dot`, `cross`), resolves swizzle member access on vector types, builds vertex input descriptors and resource layout descriptors.
-- **Code generation**: HLSL, MSL, and GLSL backends all emit struct declarations, resource bindings, shader entry points, and function bodies for the supported statement and expression types.
+- **Lexer**: tokenizes keywords, operators, identifiers, numeric and string literals, comments. Populates `line`/`colStart`/`colEnd` on every token.
+- **Preprocessor**: `#define`, `#ifdef`/`#ifndef`/`#endif`, `#include "file"` with depth-limited recursion. Integrated into `omegaslc` before lexing.
+- **Parser**: parses global declarations (struct, resource, shader, user function), expressions (binary, unary, call, member access, index, cast, literals, identifiers), variable declarations (including fixed-size arrays), control flow (`if`/`else if`/`else`, `for`, `while`), and return statements inside shader/function bodies.
+- **Semantic analysis (`Sem`)**: resolves types, validates builtin function arguments (`make_float2/3/4`, `make_int2/3/4`, `make_uint2/3/4`, `sample`, `read`, `write`, `dot`, `cross`), resolves swizzle member access on vector types, validates struct field/parameter uniqueness, builds vertex input descriptors and resource layout descriptors. Extracted to `Sema.h`/`Sema.cpp` (2026-03-21).
+- **Error handling**: `DiagnosticEngine` with structured error types (`TypeError`, `UndeclaredIdentifier`, `DuplicateDeclaration`, `ArgumentCountMismatch`, `UnexpectedToken`, `InvalidAttribute`), source location tracking, and `^` underline code views.
+- **Code generation**: HLSL, MSL, and GLSL backends all emit struct declarations, resource bindings, shader entry points, user function definitions, and function bodies for all supported statement and expression types.
 - **Offline compilation**: `omegaslc` invokes platform compilers (`dxc` / `xcrun metal` / `glslc`) and serialises compiled bytecode + layout metadata into `.omegasllib` binary archives.
 - **Runtime compilation**: `OmegaSLCompiler::compile()` parses OmegaSL, generates target source, and compiles in-process via `D3DCompile` / `newLibraryWithSource:` / `shaderc`.
-- **Types**: `void`, `int`, `uint`, `uint2`, `uint3`, `float`, `float2`, `float3`, `float4`, `double`, `double2`, `double3`, `double4`, `buffer<T>`, `texture1d/2d/3d`, `sampler2d/3d`.
-- **Shader stages**: vertex, fragment, compute.
-- **Builtins**: `make_float2/3/4`, `dot`, `cross`, `sample`, `write`. Math functions (`cos`, `sin`, `sqrt`, etc.) pass through to the target language.
+- **Types**: `void`, `bool`, `int`, `int2/3/4`, `uint`, `uint2/3/4`, `float`, `float2/3/4`, `float2x2/3x3/4x4`, `double`, `double2/3/4`, `buffer<T>`, `texture1d/2d/3d`, `sampler1d/2d/3d`.
+- **Shader stages**: vertex, fragment, compute. Hull/domain parsed and partially codegen'd.
+- **Builtins**: `make_float2/3/4`, `make_int2/3/4`, `make_uint2/3/4`, `make_float2x2/3x3/4x4`, `dot`, `cross`, `sample`, `read`, `write`. Math functions (`cos`, `sin`, `sqrt`, etc.) pass through to the target language.
 
 ### What is missing or broken
 
@@ -24,29 +26,29 @@ OmegaSL is a cross-platform shading language that transpiles to HLSL, MSL, and G
 | **Bool type** | **DONE** | ~~No `bool` type.~~ `bool` is a recognized type keyword, parsed and emitted by all backends. |
 | **Matrix types** | **DONE** | ~~No `float2x2`, `float3x3`, `float4x4`.~~ Parser supports these types. Constructor builtins `make_float2x2/3x3/4x4` exist. GLSL emits `mat2/3/4`. |
 | **Integer vector constructors** | **DONE** | ~~No `make_int2/3/4` or `make_uint2/3/4`.~~ All integer and unsigned vector constructors are implemented in parser and codegen. |
-| **`read` builtin** | Open | Declared in `AST.h` (`builtins::read`) and in `AST.def` but **not implemented** in any codegen backend. |
-| **`sampler1d`** | Open | Token (`KW_TY_SAMPLER1D`) exists but no builtin type is registered. |
-| **HLSL `RW_TEXTURE2D` typo** | Open | `HLSLCodeGen.cpp` line 13: `#define RW_TEXTURE2D "RWTexture1D"` — should be `"RWTexture2D"`. |
-| **`UnaryOpExpr` codegen** | Open | Parsed by the parser (prefix `++`/`--`/`!`/`-`, postfix `++`/`--`) but **no codegen backend handles `UNARY_EXPR`**. |
+| **`read` builtin** | **DONE** | ~~Not implemented in any codegen backend.~~ All three backends implement `read`: HLSL `texture.Load()`, MSL `texture.read()`, GLSL `texelFetch()`. Semantic validation checks argument count and texture/coordinate type matching. |
+| **`sampler1d`** | **DONE** | ~~No builtin type registered.~~ `builtins::sampler1d_type` registered in `AST.cpp`. All three codegen backends handle it. Added to `sample()` semantic validation. |
+| **HLSL `RW_TEXTURE2D` typo** | **DONE** | ~~`RWTexture1D` typo.~~ `HLSLCodeGen.cpp` already has `#define RW_TEXTURE2D "RWTexture2D"`. Plan description was stale. |
+| **`UnaryOpExpr` codegen** | **DONE** | All three codegen backends handle `UNARY_EXPR` (prefix and postfix). Parser prefix check was missing `-` (negation) — fixed 2026-03-21. |
 | **Postfix unary parser bug** | **FIXED** | Parser consumed ALL `TOK_OP` tokens in the postfix unary check but only processed `++`/`--`. The `=` operator was silently eaten, breaking all assignment expressions in shader bodies. Fixed 2026-03-21. |
-| **Compound assignment operators** | Open | `+=`, `-=`, `/=` are lexed as tokens (`OP_PLUSEQUAL`, `OP_MINUSEQUAL`, `OP_DIVEQUAL`) but not handled in `getBinaryPrecedence`. `*=` has no token definition. |
-| **Bare `return;`** | Open | `return;` (void return without expression) is not supported by the parser — it always expects an expression after `return`. |
-| **`PointerExpr` codegen** | Open | AST node exists but codegen does not handle `POINTER_EXPR`. |
-| **Error handling** | Open | `Error.h`/`Error.cpp` define `ErrorLoc`, `Error`, `SourceFile`, `DiagnosticEngine` but all methods are empty stubs. Errors go to `std::cout` with no source location. |
-| **Lexer source tracking** | Open | `Tok` has commented-out `line`/`colStart`/`colEnd` fields — never populated. |
-| **Semantic validation gaps** | Open | `make_float4()` argument checks are incomplete. Type-checking for function calls is a TODO. Struct field uniqueness and parameter uniqueness checks are missing. |
+| **Compound assignment operators** | **DONE** | ~~`+=`, `-=`, `/=` not handled in precedence; `*=` no token.~~ Lexer now produces `++`/`--` tokens (was broken — two separate `+`/`-` tokens before). Added `OP_MULEQUAL` (`*=`) token. All four compound assignments (`+=`, `-=`, `*=`, `/=`) added to `getBinaryPrecedence` at precedence 0. Fixed 2026-03-21. |
+| **Bare `return;`** | **DONE** | ~~Parser always expects expression after `return`.~~ Both `parseStmtFromBuffer` and `parseGenericDecl` now check for semicolon/brace/EOF after `return` and produce `ReturnDecl` with `expr = nullptr`. All three codegen backends and Sema handle null expr. Fixed 2026-03-21. |
+| **`PointerExpr` codegen** | **DONE** | All three codegen backends handle `POINTER_EXPR` (address-of `&` and dereference `*`). |
+| **Error handling** | **DONE** | ~~Empty stubs.~~ `DiagnosticEngine` fully implemented with `addError()`, `generateCodeView()`, `report()`. Source locations tracked via `ErrorLoc`. Structured error types in use throughout `Sema.cpp`. |
+| **Lexer source tracking** | **DONE** | ~~`line`/`colStart`/`colEnd` commented out.~~ `Tok` struct has active `line`, `colStart`, `colEnd` fields populated by the lexer. |
+| **Semantic validation gaps** | **DONE** | ~~`make_float4()` checks incomplete, no struct field uniqueness.~~ All builtin function argument validation implemented in `Sema.cpp`. Struct field uniqueness, parameter uniqueness, and duplicate declaration checks all present. |
 | **`InterfaceGen`** | Open | The C++ struct header generator (`InterfaceGen`) is fully commented out in `CodeGen.h`. No `interface.h` / `structs.h` output. |
-| **Tessellation stages** | Open | `hull` / `domain` shader types declared in AST but no parser validation or codegen test cases. |
-| **Preprocessor** | Open | No `#include`, `#define`, `#ifdef`, or any preprocessor directives. |
-| **User functions** | Open | `FuncDecl` exists in the AST but non-shader functions are not fully supported (no cross-function calls, no function overloading). |
-| **Array types** | Open | No array variable declarations (e.g. `float arr[4]`). |
-| **Casting / conversion** | Open | `CastExpr` exists in AST and codegen, but parser support for C-style casts is incomplete. |
+| **Tessellation stages** | **PARTIAL** | Parser handles `hull`/`domain` keywords. All three codegen backends have Hull/Domain cases (HLSL emits `[domain("tri")]` attributes, GLSL uses `.tesc`/`.tese` extensions, Metal emits `vertex`). No test cases or full tessellation attribute support (patch topology, control point count, etc.). |
+| **Preprocessor** | **DONE** | ~~No directives.~~ `Preprocessor.h`/`.cpp` implements `#define`, `#ifdef`/`#ifndef`/`#endif`, `#include "file"` with depth-limited recursion. Integrated into `main.cpp` before lexing. |
+| **User functions** | **DONE** | ~~Not fully supported.~~ Parser, semantic analysis, and all three codegen backends support user-defined functions with cross-function calls. Metal codegen bug fixed 2026-03-21 (missing function name in non-builtin calls). Function overloading not implemented. |
+| **Array types** | **DONE** | ~~No array variable declarations.~~ Parser handles `type name[size]` syntax. `TypeExpr::arraySize` field stores the size. All three codegen backends emit `name[size]` in variable declarations. |
+| **Casting / conversion** | **DONE** | ~~Parser support incomplete.~~ Parser handles C-style casts `(type)expr` via `CastExpr` AST node. All three codegen backends emit functional-cast syntax `type(expr)`. Sema validates target type exists. |
 | **Vulkan tess shaders** | Open | `VulkanTessSpirv.inc` contains hand-maintained SPIR-V placeholders rather than compiled OmegaSL. |
-| **Compiler tests** | **PARTIAL** | CTest suite exists with tokenizer, compile, error, and HLSL golden-file tests. Expanded with operators, control flow, vector math, resource types, and gradient compute kernel tests (2026-03-21). |
+| **Compiler tests** | **PARTIAL** | CTest suite exists with tokenizer, compile, error, and HLSL golden-file tests. Expanded with operators, control flow, vector math, resource types, gradient compute kernel, and user function tests. |
 
 ---
 
-## Phase 1: Core Language Completeness
+## Phase 1: Core Language Completeness — DONE
 
 These changes make OmegaSL capable of expressing real-world shaders.
 
@@ -78,11 +80,12 @@ These changes make OmegaSL capable of expressing real-world shaders.
 - Constructor builtins `make_float2x2`, `make_float3x3`, `make_float4x4` exist.
 - GLSL codegen emits `mat2`, `mat3`, `mat4`.
 
-### 1.6 Missing expression codegen
+### 1.6 Missing expression codegen — DONE
 
-- **`UNARY_EXPR`**: add codegen for prefix/postfix unary operators in all three backends. Emit the operator and operand in the correct order.
-- **`POINTER_EXPR`**: add codegen for address-of (`&`) and dereference (`*`) if pointer semantics are desired, or remove from the AST if not needed.
-- **Files**: `HLSLCodeGen.cpp`, `MetalCodeGen.cpp`, `GLSLCodeGen.cpp`.
+- **`UNARY_EXPR`**: All three codegen backends already handle prefix/postfix unary operators correctly.
+- **`POINTER_EXPR`**: All three codegen backends already handle address-of (`&`) and dereference (`*`).
+- **Parser fix**: The prefix unary check was missing `-` (negation). Only `!`, `++`, `--` were allowed. Added `OP_MINUS` to the allowed prefix operators (2026-03-21).
+- **Test expansion**: `operators.omegasl` `test_unary` shader now covers prefix `-`, prefix `++`/`--`, postfix `++`/`--`, and logical `!`.
 
 ### 1.7 Integer vector constructors — DONE
 
@@ -140,56 +143,63 @@ These changes make OmegaSL capable of expressing real-world shaders.
 
 ---
 
-## Phase 3: Language Extensions
+## Phase 3: Language Extensions — MOSTLY DONE
 
-### 3.1 User-defined functions
+### 3.1 User-defined functions — DONE
 
-- Allow non-shader `FuncDecl` functions that can be called from shaders or other functions.
-- Parser already has `FuncDecl`; ensure the codegen backends emit helper functions above the shader entry point when referenced.
-- Add function overload resolution if multiple functions share a name.
-- **Files**: `Parser.cpp`, `AST.h`, codegen files.
+- Parser, semantic analysis, and all three codegen backends already support user-defined functions:
+  - Parser creates `FuncDecl` nodes for non-shader functions.
+  - Semantic analysis validates parameter uniqueness, type resolution, body, and registers `FuncType` in `functionMap` for call resolution.
+  - All three codegen backends accumulate `userFuncDecls` and emit them via `emitUserFunction()` before each shader entry point.
+  - `CALL_EXPR` codegen falls through to a default branch that emits the user function name and arguments.
+- **Bug fix (2026-03-21)**: `MetalCodeGen.cpp` `CALL_EXPR` was missing an `else` branch for non-builtin function names. Calls to user functions (and `dot`/`cross`) would emit `(args)` without the function name. Added the missing `else { shaderOut << func_name; }`.
+- **Test**: `user_functions.omegasl` tests single-param, multi-param, and cross-function calls (function A calling function B).
+- **Not implemented**: Function overload resolution (multiple functions with the same name but different parameter types). Functions must be declared before use (no forward declarations).
 
-### 3.2 Explicit type casts
+### 3.2 Explicit type casts — DONE
 
-- Support cast syntax (e.g. `(float)intVal` or a functional cast `float(intVal)`).
-- Codegen: HLSL/MSL use functional casts directly; GLSL uses constructor syntax.
-- **Files**: `Parser.cpp`, `AST.h` (new `CastExpr`), codegen files.
+- Parser handles C-style casts `(type)expr` in `parseOpExpr`: detects `(` followed by a type name and `)`, constructs `CastExpr` AST node.
+- `CastExpr` AST node with `targetType` and `expr` fields.
+- All three codegen backends handle `CAST_EXPR`, emitting functional-cast syntax `type(expr)`.
+- Sema validates the target type exists via `resolveTypeWithExpr`.
 
-### 3.3 Array declarations
+### 3.3 Array declarations — DONE
 
-- Support fixed-size array variables: `float arr[4]`.
-- Support array indexing (already handled by `IndexExpr`).
-- Codegen: direct mapping on all backends.
-- **Files**: `Parser.cpp`, `AST.h` (extend `VarDecl` or `TypeExpr`), codegen files.
+- Parser handles `type name[size]` syntax after variable name in `parseGenericDecl`. Reads `[`, numeric literal, `]` and stores in `TypeExpr::arraySize`.
+- `TypeExpr` has `std::optional<unsigned> arraySize` field.
+- All three codegen backends emit `name[size]` when `arraySize.has_value()`.
+- Array indexing already handled by `IndexExpr`.
 
-### 3.4 Preprocessor directives
+### 3.4 Preprocessor directives — DONE
 
-- Implement a lightweight preprocessor pass before lexing:
-  - `#define NAME VALUE` — simple text macros (no function-like macros initially).
-  - `#ifdef` / `#ifndef` / `#endif` — conditional compilation.
-  - `#include "file.omegasl"` — file inclusion.
-- This enables sharing struct definitions across shader files and conditional platform code.
-- **Files**: new `Preprocessor.h`/`.cpp`, integrate before `Lexer` in `Parser::parseContext` and `main.cpp`.
+- `Preprocessor.h`/`Preprocessor.cpp` implements:
+  - `#define NAME VALUE` — simple text macros with word-boundary-aware expansion.
+  - `#ifdef` / `#ifndef` / `#endif` — conditional compilation with nesting via skip stack.
+  - `#include "file.omegasl"` — file inclusion with `kMaxIncludeDepth = 10`.
+- Integrated into `main.cpp`: source file is preprocessed before being passed to the parser.
+- Not yet wired into the runtime compilation path (`Parser::parseContext`).
 
-### 3.5 Tessellation shader stages
+### 3.5 Tessellation shader stages — PARTIAL
 
-- Add `hull` (or `tessellation_control`) and `domain` (or `tessellation_evaluation`) shader types.
-- Tokens: `KW_HULL`, `KW_DOMAIN` (or `KW_TESS_CONTROL`, `KW_TESS_EVAL`).
-- AST: extend `ShaderDecl::Type` with the new stages.
-- Codegen:
-  - HLSL: emit `[domain("tri")]`, `[partitioning("...")]`, `[outputtopology("...")]`, `[outputcontrolpoints(...)]`, `[patchconstantfunc("...")]` attributes and hull/domain shader signatures.
-  - MSL: emit `[[patch(triangle, N)]]` kernel signatures.
-  - GLSL: emit `layout(vertices = N) out;` for tess control and `layout(triangles, ...) in;` for tess evaluation.
-- **Files**: `Toks.def`, `AST.h`, `AST.def`, `Parser.cpp`, codegen files.
+- Parser handles `hull` and `domain` keywords, creates `ShaderDecl` with `Hull`/`Domain` type.
+- AST: `ShaderDecl::Type` includes `Hull` and `Domain`.
+- Codegen (basic):
+  - HLSL: emits `[domain("tri")]`, `[partitioning("integer")]`, `[outputtopology("triangle_cw")]`, `[outputcontrolpoints(3)]` for hull shaders.
+  - GLSL: uses `.tesc`/`.tese` file extensions.
+  - Metal: emits `vertex` qualifier for both.
+- **Remaining**: No configurable patch topology, control point count, or partition mode. No `[patchconstantfunc]` support. No MSL `[[patch(triangle, N)]]` or GLSL `layout(vertices = N) out;` emission. No test cases.
 
 ---
 
-## Phase 4: Codegen Quality and Backend Parity
+## Phase 4: Codegen Quality and Backend Parity — MOSTLY DONE
 
-### 4.1 GLSL combined image-sampler support
+### 4.1 GLSL combined image-sampler support — DONE
 
-- GLSL (Vulkan) uses combined image-samplers (`sampler2D`) differently from the separate texture + sampler model in HLSL/MSL. The current GLSL codegen emits separate `sampler` and `image2D`/`texture2D` bindings. Ensure that the `sample()` builtin correctly combines them using `sampler2D(texture, sampler)` in the generated GLSL.
-- **Files**: `GLSLCodeGen.cpp`.
+- `GLSLCodeGen.cpp` `CALL_EXPR` for `BUILTIN_SAMPLE` already combines separate texture + sampler into `sampler1D`/`sampler2D`/`sampler3D`:
+  ```glsl
+  texture(sampler2D(textureVar, samplerVar), coord)
+  ```
+- Resolves sampler type from the resource store to select the correct combined type.
 
 ### 4.2 Consistent `generateBlock` handling of control flow — DONE
 
@@ -200,10 +210,15 @@ These changes make OmegaSL capable of expressing real-world shaders.
 - Parser uses precedence-climbing with explicit levels: multiplicative (3) > additive (2) > comparison (1) > assignment (0).
 - **Bug fixed 2026-03-21**: postfix unary check was consuming all `TOK_OP` tokens (including `=`) but only processing `++`/`--`. This silently broke assignment expressions in shader bodies.
 
-### 4.4 Constant folding (optional)
+### 4.4 Constant folding — DONE
 
-- Evaluate constant expressions at compile time (e.g. `2.0 * 3.14159` → `6.28318`) to simplify generated code.
-- **Files**: new optimization pass or integrated into codegen.
+- `ConstFold.h`/`ConstFold.cpp` implements a recursive AST pass that runs after semantic analysis, before codegen.
+- Folds binary operations (`+`, `-`, `*`, `/`) on same-type numeric literals (`float`, `int`, `uint`, `double`).
+- Folds prefix unary negation (`-`) on numeric literals.
+- Division by zero is left unfolded (passed through to the target compiler).
+- Recursively walks all expression slots: variable initializers, return values, call arguments, conditions, for-loop init/increment, array elements, member/index sub-expressions.
+- Wired into `Parser::parseContext` between `performSemForGlobalDecl` and `generateDecl`.
+- **Test**: `const_fold.omegasl` exercises float multiplication chains, negation addition, and integer division.
 
 ### 4.5 Vulkan tessellation shaders from OmegaSL
 
@@ -218,9 +233,9 @@ These changes make OmegaSL capable of expressing real-world shaders.
 
 - CTest suite exists under `gte/omegasl/tests/` with:
   - Tokenizer test (`omegasl_tokens_shaders`)
-  - Positive compilation tests: `shaders.omegasl`, `operators.omegasl`, `control_flow.omegasl`, `vector_math.omegasl`, `resource_types.omegasl`, `compute_gradient.omegasl` (linear + radial gradient kernels)
+  - Positive compilation tests: `shaders.omegasl`, `operators.omegasl`, `control_flow.omegasl`, `vector_math.omegasl`, `resource_types.omegasl`, `compute_gradient.omegasl`, `user_functions.omegasl`
   - Negative tests: `invalid_phase2.omegasl`, `invalid_type_mismatch.omegasl`, `invalid_undefined_resource.omegasl`
-- **Remaining**: some test files depend on features not yet implemented (compound assignments, bare `return;`, C-style casts). Tests compile on Vulkan/GLSL backend via runtime shaderc; offline `glslc` path needs the tool on PATH.
+- **Remaining**: some test files depend on features not yet implemented (compound assignments, bare `return;`). Tests compile on Vulkan/GLSL backend via runtime shaderc; offline `glslc` path needs the tool on PATH.
 
 ### 5.2 Golden-file tests for codegen — PARTIAL
 
@@ -253,7 +268,7 @@ These changes make OmegaSL capable of expressing real-world shaders.
 | Step | Phase | Description | Status |
 |------|-------|-------------|--------|
 | 1 | 1.10 | Bug fix: HLSL `RW_TEXTURE2D` typo. | **DONE** (was already correct) |
-| 2 | 1.6 | Codegen for `UNARY_EXPR` (all backends). | Open |
+| 2 | 1.6 | Codegen for `UNARY_EXPR` (all backends) + parser prefix `-` fix. | **DONE** |
 | 3 | 1.4 | `bool` type. | **DONE** |
 | 4 | 1.1–1.3 | Control flow (`if`/`else`, `for`, `while`). | **DONE** |
 | 5 | 1.5 | Matrix types (`float2x2/3x3/4x4`). | **DONE** |
@@ -261,19 +276,19 @@ These changes make OmegaSL capable of expressing real-world shaders.
 | 7 | 1.8–1.9 | `read` builtin and `sampler1d`. | **DONE** |
 | 8 | 2.1–2.2 | Source location tracking and diagnostic engine. | **DONE** |
 | 9 | 2.3–2.4 | Structured errors and semantic validation completion. | **DONE** |
-| 10 | 3.1 | User-defined functions. | Open |
-| 11 | 3.2–3.3 | Type casts and array declarations. | Open |
-| 12 | 4.1–4.3 | Codegen quality (GLSL image-samplers, control flow dispatch, operator precedence). | **MOSTLY DONE** (4.2, 4.3 done; 4.1 open) |
-| 13 | 3.4 | Preprocessor. | Open |
-| 14 | 3.5 | Tessellation shader stages. | Open |
+| 10 | 3.1 | User-defined functions. | **DONE** |
+| 11 | 3.2–3.3 | Type casts and array declarations. | **DONE** |
+| 12 | 4.1–4.3 | Codegen quality (GLSL image-samplers, control flow dispatch, operator precedence). | **DONE** |
+| 13 | 3.4 | Preprocessor. | **DONE** |
+| 14 | 3.5 | Tessellation shader stages. | **PARTIAL** |
 | 15 | 4.5 | Vulkan tess shaders from OmegaSL. | Open |
 | 16 | 5.1–5.2 | Compiler unit tests and golden-file tests. | **PARTIAL** |
 | 17 | 5.4 | Language reference documentation. | Open |
 | — | — | Parser bug: postfix unary consuming `=` operator. | **FIXED** (2026-03-21) |
-| — | — | Compound assignment operators (`+=`, `-=`, `/=`, `*=`). | Open (new) |
-| — | — | Bare `return;` (void return without expression). | Open (new) |
+| — | — | Compound assignment operators (`+=`, `-=`, `/=`, `*=`) + `++`/`--` lexer fix. | **DONE** (2026-03-21) |
+| — | — | Bare `return;` (void return without expression). | **DONE** (2026-03-21) |
 
-Steps 3–6 are complete. Steps 1–2 and 7 remain on the critical path for core language completeness.
+Steps 1–13 are complete. Remaining work is tessellation polish, Vulkan tess shader migration, test expansion, and documentation.
 
 ---
 
@@ -282,13 +297,13 @@ Steps 3–6 are complete. Steps 1–2 and 7 remain on the critical path for core
 | Area | Current | Target | Status |
 |------|---------|--------|--------|
 | **Control flow** | `if`/`else if`/`else`, `for`, `while` | Done | **DONE** |
-| **Types** | Scalars, vectors, `bool`, matrices, resources | + arrays | Mostly done |
-| **Builtins** | `make_float/int/uint 2/3/4`, `sample`, `write`, `dot`, `cross`, matrix constructors | + `read` | Mostly done |
-| **Expressions** | Binary, call, member, index, literal | + unary codegen, casts, compound assignment | Partially done |
-| **Shader stages** | vertex, fragment, compute | + hull/domain (tessellation) | Open |
-| **Error handling** | `std::cout` messages, no source locations | Structured errors with source context | Open |
-| **Semantic checks** | Partial (5 TODOs) | Complete type-checking and validation | Open |
-| **Preprocessor** | None | `#define`, `#ifdef`, `#include` | Open |
-| **User functions** | AST exists, not fully wired | Full support with cross-function calls | Open |
-| **Testing** | CTest suite with positive/negative/golden tests | + GLSL/MSL golden files, runtime validation | **PARTIAL** |
+| **Types** | Scalars, vectors, `bool`, matrices, arrays, resources | Done | **DONE** |
+| **Builtins** | `make_float/int/uint 2/3/4`, `make_float 2x2/3x3/4x4`, `sample`, `read`, `write`, `dot`, `cross` | Done | **DONE** |
+| **Expressions** | Binary, unary, call, member, index, literal, pointer, cast, compound assignment (`+=`/`-=`/`*=`/`/=`) | Done | **DONE** |
+| **Shader stages** | vertex, fragment, compute, hull/domain (basic) | + full tessellation attributes | **PARTIAL** |
+| **Error handling** | Structured errors with source location and code views | Done | **DONE** |
+| **Semantic checks** | Type-checking, uniqueness, argument validation | Done | **DONE** |
+| **Preprocessor** | `#define`, `#ifdef`/`#ifndef`/`#endif`, `#include` | Done | **DONE** |
+| **User functions** | Parsing, semantic analysis, codegen all working | + overloading (optional) | **DONE** |
+| **Testing** | CTest suite with positive/negative/golden tests | + GLSL/MSL golden files | **PARTIAL** |
 | **Documentation** | 1-line README | Language reference | Open |
