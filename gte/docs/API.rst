@@ -41,4 +41,4 @@ and wl_surface on Linux with Wayland support.)
 
 .. cpp:class:: GETextureRenderTarget
 
-**Tesselation API**
+**Triangulation API**

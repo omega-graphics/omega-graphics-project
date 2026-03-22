@@ -53,6 +53,38 @@ typedef int ASTType;
 #define BUILTIN_MAKE_FLOAT3X3 "make_float3x3"
 #define BUILTIN_MAKE_FLOAT4X4 "make_float4x4"
 
+/// Math Intrinsics
+/// 1-arg: same type in, same type out
+#define BUILTIN_SIN "sin"
+#define BUILTIN_COS "cos"
+#define BUILTIN_TAN "tan"
+#define BUILTIN_ASIN "asin"
+#define BUILTIN_ACOS "acos"
+#define BUILTIN_ATAN "atan"
+#define BUILTIN_SQRT "sqrt"
+#define BUILTIN_ABS "abs"
+#define BUILTIN_FLOOR "floor"
+#define BUILTIN_CEIL "ceil"
+#define BUILTIN_ROUND "round"
+#define BUILTIN_FRAC "frac"
+#define BUILTIN_NORMALIZE "normalize"
+#define BUILTIN_LENGTH "length"
+#define BUILTIN_EXP "exp"
+#define BUILTIN_EXP2 "exp2"
+#define BUILTIN_LOG "log"
+#define BUILTIN_LOG2 "log2"
+/// 2-arg: same type in, same type out
+#define BUILTIN_ATAN2 "atan2"
+#define BUILTIN_POW "pow"
+#define BUILTIN_MIN "min"
+#define BUILTIN_MAX "max"
+#define BUILTIN_STEP "step"
+#define BUILTIN_REFLECT "reflect"
+/// 3-arg: same type in, same type out
+#define BUILTIN_CLAMP "clamp"
+#define BUILTIN_LERP "lerp"
+#define BUILTIN_SMOOTHSTEP "smoothstep"
+
 //Internal Shader Attributes
 #define ATTRIBUTE_VERTEX_ID "VertexID"
 #define ATTRIBUTE_INSTANCE_ID "InstanceID"

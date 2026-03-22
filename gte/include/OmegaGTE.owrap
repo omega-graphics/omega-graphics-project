@@ -13,7 +13,7 @@ namespace OmegaGTE {
 
     }
 
-    interface OmegaTessellationEngine {
+    interface OmegaTriangulationEngine {
 
     }
 

@@ -91,16 +91,16 @@ ComPtr<ID3D12PipelineState> compileD3D12Kernel(ID3D12Device *dev, const char *sr
     return SUCCEEDED(hr) ? pso : nullptr;
 }
 
-TETessellationResult readbackD3D12(ID3D12Resource *buf, unsigned vc,
-                                   const std::optional<TETessellationResult::AttachmentData> &att) {
-    TETessellationResult res;
-    TETessellationResult::TEMesh mesh{TETessellationResult::TEMesh::TopologyTriangle};
+TETriangulationResult readbackD3D12(ID3D12Resource *buf, unsigned vc,
+                                   const std::optional<TETriangulationResult::AttachmentData> &att) {
+    TETriangulationResult res;
+    TETriangulationResult::TEMesh mesh{TETriangulationResult::TEMesh::TopologyTriangle};
     D3D12TessVertex *v = nullptr;
     CD3DX12_RANGE readRange(0, vc * sizeof(D3D12TessVertex));
     buf->Map(0, &readRange, (void **)&v);
     if (!v) return res;
     for (unsigned i = 0; i + 2 < vc; i += 3) {
-        TETessellationResult::TEMesh::Polygon p{};
+        TETriangulationResult::TEMesh::Polygon p{};
         p.a.pt = {v[i].pos[0], v[i].pos[1], v[i].pos[2]};
         p.b.pt = {v[i+1].pos[0], v[i+1].pos[1], v[i+1].pos[2]};
         p.c.pt = {v[i+2].pos[0], v[i+2].pos[1], v[i+2].pos[2]};
@@ -148,25 +148,25 @@ struct D3D12TessPipelines {
     }
 };
 
-std::future<TETessellationResult> d3d12GpuDispatch(
-        OmegaTessellationEngineContext::GPUTessExtractedParams &ep,
+std::future<TETriangulationResult> d3d12GpuDispatch(
+        OmegaTriangulationEngineContext::GPUTriangulationExtractedParams &ep,
         GEViewport &vp, float ctxArcStep, D3D12TessPipelines &pip,
-        OmegaTessellationEngineContext *ctx,
-        const TETessellationParams &origParams,
+        OmegaTriangulationEngineContext *ctx,
+        const TETriangulationParams &origParams,
         GTEPolygonFrontFaceRotation ff, GEViewport *origVP) {
 
-    std::optional<TETessellationResult::AttachmentData> colorAtt;
+    std::optional<TETriangulationResult::AttachmentData> colorAtt;
     float cv[4] = {0,0,0,1};
     if (ep.hasColor) {
-        colorAtt = TETessellationResult::AttachmentData{FVec<4>::Create(), FVec<2>::Create(), FVec<3>::Create()};
+        colorAtt = TETriangulationResult::AttachmentData{FVec<4>::Create(), FVec<2>::Create(), FVec<3>::Create()};
         colorAtt->color[0][0] = ep.cr; colorAtt->color[1][0] = ep.cg;
         colorAtt->color[2][0] = ep.cb; colorAtt->color[3][0] = ep.ca;
         cv[0] = ep.cr; cv[1] = ep.cg; cv[2] = ep.cb; cv[3] = ep.ca;
     }
 
     auto fallback = [&]() {
-        auto r = ctx->tessalateSync(origParams, ff, origVP);
-        std::promise<TETessellationResult> p; p.set_value(std::move(r)); return p.get_future();
+        auto r = ctx->triangulateSync(origParams, ff, origVP);
+        std::promise<TETriangulationResult> p; p.set_value(std::move(r)); return p.get_future();
     };
 
     ID3D12PipelineState *pso = nullptr;
@@ -175,7 +175,7 @@ std::future<TETessellationResult> d3d12GpuDispatch(
     size_t paramBufSize = 0;
     void *paramData = nullptr;
 
-    using ET = OmegaTessellationEngineContext::GPUTessExtractedParams;
+    using ET = OmegaTriangulationEngineContext::GPUTriangulationExtractedParams;
     D3D12TessParams tp {};
     D3D12PathSeg *pathSegs = nullptr;
 
@@ -331,7 +331,7 @@ std::future<TETessellationResult> d3d12GpuDispatch(
 
     auto result = readbackD3D12(readbackBuf.Get(), vc, colorAtt);
 
-    std::promise<TETessellationResult> prom;
+    std::promise<TETriangulationResult> prom;
     prom.set_value(std::move(result));
     return prom.get_future();
 }
@@ -339,7 +339,7 @@ std::future<TETessellationResult> d3d12GpuDispatch(
 } // anon namespace
 
 
-class D3D12NativeRenderTargetTEContext : public OmegaTessellationEngineContext {
+class D3D12NativeRenderTargetTEContext : public OmegaTriangulationEngineContext {
     SharedHandle<GED3D12NativeRenderTarget> target;
     D3D12TessPipelines pip;
 public:
@@ -358,7 +358,7 @@ public:
         }
     }
 
-    std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params,
+    std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams &params,
             GTEPolygonFrontFaceRotation direction, GEViewport *viewport) override {
         if (!pip.ready) {
             auto *queue = (ID3D12CommandQueue *)target->nativeCommandQueue();
@@ -366,8 +366,8 @@ public:
             queue->GetDevice(IID_PPV_ARGS(&dev));
             pip.init(dev.Get(), queue);
         }
-        GPUTessExtractedParams ep;
-        extractGPUTessParams(params, ep);
+        GPUTriangulationExtractedParams ep;
+        extractGPUTriangulationParams(params, ep);
         GEViewport vp = viewport ? *viewport : getEffectiveViewport();
         return d3d12GpuDispatch(ep, vp, arcStep, pip, this, params, direction, viewport);
     }
@@ -376,7 +376,7 @@ public:
         : target(target) {}
 };
 
-class D3D12TextureRenderTargetTEContext : public OmegaTessellationEngineContext {
+class D3D12TextureRenderTargetTEContext : public OmegaTriangulationEngineContext {
     SharedHandle<GED3D12TextureRenderTarget> target;
     D3D12TessPipelines pip;
 public:
@@ -395,7 +395,7 @@ public:
         }
     }
 
-    std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params,
+    std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams &params,
             GTEPolygonFrontFaceRotation direction, GEViewport *viewport) override {
         if (!pip.ready) {
             auto *queue = (ID3D12CommandQueue *)target->nativeCommandQueue();
@@ -403,8 +403,8 @@ public:
             queue->GetDevice(IID_PPV_ARGS(&dev));
             pip.init(dev.Get(), queue);
         }
-        GPUTessExtractedParams ep;
-        extractGPUTessParams(params, ep);
+        GPUTriangulationExtractedParams ep;
+        extractGPUTriangulationParams(params, ep);
         GEViewport vp = viewport ? *viewport : getEffectiveViewport();
         return d3d12GpuDispatch(ep, vp, arcStep, pip, this, params, direction, viewport);
     }
@@ -413,11 +413,11 @@ public:
         : target(target) {}
 };
 
-SharedHandle<OmegaTessellationEngineContext> CreateNativeRenderTargetTEContext(SharedHandle<GENativeRenderTarget> &renderTarget) {
+SharedHandle<OmegaTriangulationEngineContext> CreateNativeRenderTargetTEContext(SharedHandle<GENativeRenderTarget> &renderTarget) {
     return std::make_shared<D3D12NativeRenderTargetTEContext>(std::dynamic_pointer_cast<GED3D12NativeRenderTarget>(renderTarget));
 }
 
-SharedHandle<OmegaTessellationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> &renderTarget) {
+SharedHandle<OmegaTriangulationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> &renderTarget) {
     return std::make_shared<D3D12TextureRenderTargetTEContext>(std::dynamic_pointer_cast<GED3D12TextureRenderTarget>(renderTarget));
 }
 

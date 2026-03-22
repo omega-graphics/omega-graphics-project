@@ -43,7 +43,7 @@ static SharedHandle<OmegaGTE::GTEShaderLibrary> funcLib;
 static SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
 static SharedHandle<OmegaGTE::GERenderPipelineState> renderPipeline;
 static SharedHandle<OmegaGTE::GENativeRenderTarget> nativeRenderTarget = nullptr;
-static SharedHandle<OmegaGTE::OmegaTessellationEngineContext> tessContext;
+static SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> tessContext;
 
 static void formatGPoint3D(std::ostream &os, OmegaGTE::GPoint3D &pt){
     os << "{ x:" << pt.x << ", y:" << pt.y << ", z:" << pt.z << "}";
@@ -71,7 +71,7 @@ static void tessellateAndRender(int viewWidth, int viewHeight){
     rect.w = 100;
     rect.pos.x = 0;
     rect.pos.y = 0;
-    auto rect_mesh = tessContext->tessalateSync(OmegaGTE::TETessellationParams::Rect(rect));
+    auto rect_mesh = tessContext->triangulateSync(OmegaGTE::TETriangulationParams::Rect(rect));
 
     std::cout << "Tessellated GRect" << std::endl;
 
@@ -156,7 +156,7 @@ static void start_application(GtkApplication *app, gpointer user_data){
     desc.x_window = x_window;
 
     nativeRenderTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
-    tessContext = gte.tessalationEngine->createTEContextFromNativeRenderTarget(nativeRenderTarget);
+    tessContext = gte.triangulationEngine->createTEContextFromNativeRenderTarget(nativeRenderTarget);
 
     tessellateAndRender(pixel_width, pixel_height);
 }

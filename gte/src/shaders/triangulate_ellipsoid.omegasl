@@ -16,7 +16,7 @@ buffer<TessVertex> vertices : 1;
 
 [in params, out vertices]
 compute(x=64,y=1,z=1)
-void tess_ellipsoid_kernel(uint3 tid : GlobalThreadID){
+void triangulate_ellipsoid_kernel(uint3 tid : GlobalThreadID){
     float cx = params[0].rect[0];
     float cy = params[0].rect[1];
     float rad_x = params[0].extra[0];

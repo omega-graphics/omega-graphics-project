@@ -9,14 +9,14 @@
 _NAMESPACE_BEGIN_
 
 
-struct TETessellationParams::GraphicsPath3DParams {
+struct TETriangulationParams::GraphicsPath3DParams {
     GVectorPath3D * pathes;
     unsigned pathCount;
 };
 
-union TETessellationParams::Data {
+union TETriangulationParams::Data {
 
-    TessalationType type;
+    TriangulationType type;
 
     GRect rect;
 
@@ -35,20 +35,20 @@ union TETessellationParams::Data {
     GraphicsPath3DParams path3D;
 
     ~Data(){
-        if(type == TESSALATE_RECT){
+        if(type == TRIANGULATE_RECT){
 
         }
     };
 };
 
 
-TETessellationParams::Attachment TETessellationParams::Attachment::makeColor(const FVec<4> &color) {
+TETriangulationParams::Attachment TETriangulationParams::Attachment::makeColor(const FVec<4> &color) {
     Attachment at{TypeColor};
     at.colorData.color = color;
     return at;
 }
 
-TETessellationParams::Attachment TETessellationParams::Attachment::makeTexture2D(unsigned width,unsigned height) {
+TETriangulationParams::Attachment TETriangulationParams::Attachment::makeTexture2D(unsigned width,unsigned height) {
    Attachment at{TypeTexture2D};
    at.colorData.color.~Matrix();
    at.texture2DData.width = width;
@@ -56,7 +56,7 @@ TETessellationParams::Attachment TETessellationParams::Attachment::makeTexture2D
    return at;
 }
 
-TETessellationParams::Attachment TETessellationParams::Attachment::makeTexture3D(unsigned width,unsigned height,unsigned depth) {
+TETriangulationParams::Attachment TETriangulationParams::Attachment::makeTexture3D(unsigned width,unsigned height,unsigned depth) {
     Attachment at{TypeTexture3D};
    at.colorData.color.~Matrix();
    at.texture3DData.width = width;
@@ -65,98 +65,98 @@ TETessellationParams::Attachment TETessellationParams::Attachment::makeTexture3D
    return at;
 }
 
-TETessellationParams::Attachment::~Attachment(){
+TETriangulationParams::Attachment::~Attachment(){
     if(type == TypeColor){
         colorData.color.~Matrix();
     }
 }
 
-void TETessellationParams::addAttachment(const Attachment &attachment) {
+void TETriangulationParams::addAttachment(const Attachment &attachment) {
     attachments.push_back(attachment);
 }
 
-TETessellationParams TETessellationParams::Rect(GRect &rect){
-    TETessellationParams params;
+TETriangulationParams TETriangulationParams::Rect(GRect &rect){
+    TETriangulationParams params;
     params.params.reset(new Data{});
-    params.type = params.params->type = TESSALATE_RECT;
+    params.type = params.params->type = TRIANGULATE_RECT;
     params.params->rect = rect;
     return params;
 };
 
-TETessellationParams TETessellationParams::RoundedRect(GRoundedRect &roundedRect){
-    TETessellationParams params;
+TETriangulationParams TETriangulationParams::RoundedRect(GRoundedRect &roundedRect){
+    TETriangulationParams params;
     params.params.reset(new Data{});
-    params.type = params.params->type = TESSALATE_ROUNDEDRECT;
+    params.type = params.params->type = TRIANGULATE_ROUNDEDRECT;
     params.params->rounded_rect = roundedRect;
     return params;
 };
 
-TETessellationParams TETessellationParams::RectangularPrism(GRectangularPrism &prism){
-    TETessellationParams params;
+TETriangulationParams TETriangulationParams::RectangularPrism(GRectangularPrism &prism){
+    TETriangulationParams params;
     params.params.reset(new Data{});
     // params.params.get_deleter().t = params.type;
     params.params->prism = prism;
-    params.type = params.params->type = TESSELLATE_RECTANGULAR_PRISM;
+    params.type = params.params->type = TRIANGULATE_RECTANGULAR_PRISM;
     return params;
 };
 
-TETessellationParams TETessellationParams::Pyramid(GPyramid &pyramid){
-    TETessellationParams params;
+TETriangulationParams TETriangulationParams::Pyramid(GPyramid &pyramid){
+    TETriangulationParams params;
     params.params.reset(new Data{});
     params.params->pyramid = pyramid;
-    params.type = params.params->type =  TESSALATE_PYRAMID;
+    params.type = params.params->type =  TRIANGULATE_PYRAMID;
     return params;
 };
 
-TETessellationParams TETessellationParams::Ellipsoid(GEllipsoid &ellipsoid){
-    TETessellationParams params;
+TETriangulationParams TETriangulationParams::Ellipsoid(GEllipsoid &ellipsoid){
+    TETriangulationParams params;
     params.params.reset(new Data{});
     params.params->ellipsoid = ellipsoid;
-    params.type = params.params->type =  TESSALATE_ELLIPSOID;
+    params.type = params.params->type =  TRIANGULATE_ELLIPSOID;
     return params;
 };
 
-TETessellationParams TETessellationParams::Cylinder(GCylinder &cylinder){
-    TETessellationParams params;
+TETriangulationParams TETriangulationParams::Cylinder(GCylinder &cylinder){
+    TETriangulationParams params;
     params.params.reset(new Data{});
     params.params->cylinder = cylinder;
-    params.type = params.params->type =  TESSALATE_CYLINDER;
+    params.type = params.params->type =  TRIANGULATE_CYLINDER;
     return params;
 };
 
-TETessellationParams TETessellationParams::Cone(GCone &cone){
-    TETessellationParams params;
+TETriangulationParams TETriangulationParams::Cone(GCone &cone){
+    TETriangulationParams params;
     params.params.reset(new Data{});
     params.params->cone = cone;
-    params.type = params.params->type =  TESSALATE_CONE;
+    params.type = params.params->type =  TRIANGULATE_CONE;
     return params;
 };
 
-TETessellationParams TETessellationParams::GraphicsPath2D(GVectorPath2D & path,float strokeWidth,bool contour,bool fill){
-    TETessellationParams params;
+TETriangulationParams TETriangulationParams::GraphicsPath2D(GVectorPath2D & path,float strokeWidth,bool contour,bool fill){
+    TETriangulationParams params;
     params.params.reset(new Data{});
     params.graphicsPath2D = std::make_shared<GVectorPath2D>(path);
     params.graphicsPath2DContour = contour;
     params.graphicsPath2DFill = fill;
     params.graphicsPath2DStrokeWidth = strokeWidth;
-    params.type = params.params->type = TESSALATE_GRAPHICSPATH2D;
+    params.type = params.params->type = TRIANGULATE_GRAPHICSPATH2D;
     return params;
 };
 
-TETessellationParams TETessellationParams::GraphicsPath3D(unsigned int vectorPathCount, GVectorPath3D *const vectorPaths){
-    TETessellationParams params;
+TETriangulationParams TETriangulationParams::GraphicsPath3D(unsigned int vectorPathCount, GVectorPath3D *const vectorPaths){
+    TETriangulationParams params;
     params.params.reset(new Data{});
     params.params->path3D = {vectorPaths,vectorPathCount};
-    params.type = params.params->type =  TESSALATE_GRAPHICSPATH3D;
+    params.type = params.params->type =  TRIANGULATE_GRAPHICSPATH3D;
     return params;
 };
 
-unsigned int TETessellationResult::TEMesh::vertexCount() {
+unsigned int TETriangulationResult::TEMesh::vertexCount() {
     auto polygonCount = vertexPolygons.size();
     return polygonCount * 3;
 }
 
-unsigned int TETessellationResult::totalVertexCount() {
+unsigned int TETriangulationResult::totalVertexCount() {
     unsigned vertexCount = 0;
     for(auto & m : meshes){
         vertexCount += m.vertexCount();
@@ -164,18 +164,18 @@ unsigned int TETessellationResult::totalVertexCount() {
     return vertexCount;
 }
 
-TETessellationParams::~TETessellationParams() = default;
+TETriangulationParams::~TETriangulationParams() = default;
 
 
-SharedHandle<OmegaTessellationEngine> OmegaTessellationEngine::Create(){
-    return std::make_shared<OmegaTessellationEngine>();
+SharedHandle<OmegaTriangulationEngine> OmegaTriangulationEngine::Create(){
+    return std::make_shared<OmegaTriangulationEngine>();
 };
 
-GEViewport OmegaTessellationEngineContext::getEffectiveViewport(){
+GEViewport OmegaTriangulationEngineContext::getEffectiveViewport(){
     return GEViewport{0.f, 0.f, 1.f, 1.f, 0.f, 1.f};
 }
 
-void OmegaTessellationEngineContext::translateCoordsDefaultImpl(float x, float y, float z, GEViewport * viewport, float *x_result, float *y_result, float *z_result){
+void OmegaTriangulationEngineContext::translateCoordsDefaultImpl(float x, float y, float z, GEViewport * viewport, float *x_result, float *y_result, float *z_result){
     *x_result = (2.f * x / viewport->width) - 1.f;
     *y_result = (2.f * y / viewport->height) - 1.f;
     if(z_result != nullptr){
@@ -191,19 +191,19 @@ void OmegaTessellationEngineContext::translateCoordsDefaultImpl(float x, float y
     };
 };
 
-inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationParams &params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport,TETessellationResult & result){
+inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulationParams &params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport,TETriangulationResult & result){
     assert(params.attachments.size() <= 1 && "Only 1 attachment is allowed for each tessellation params");
     GEViewport fallbackViewport = getEffectiveViewport();
     if (!viewport) viewport = &fallbackViewport;
 
     switch(params.type){
-        case TETessellationParams::TESSALATE_RECT : {
+        case TETriangulationParams::TRIANGULATE_RECT : {
             std::cout << "Tessalate GRect" << std::endl;
             std::cout << "Viewport: x:" << viewport->x << " y:" << viewport->y << " w:" << viewport->width << " h:" << viewport->height << " " << std::endl;
             GRect &object = params.params->rect;
 
-            TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
-            TETessellationResult::TEMesh::Polygon tri {};
+            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
+            TETriangulationResult::TEMesh::Polygon tri {};
             float x0,x1,y0,y1;
             float u,v;
             translateCoords(object.pos.x,object.pos.y,0.f,viewport,&x0,&y0,nullptr);
@@ -218,15 +218,15 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
             tri.c.pt.x = x1;
             tri.c.pt.y = y0;
 
-            std::optional<TETessellationResult::AttachmentData> extra;
+            std::optional<TETriangulationResult::AttachmentData> extra;
 
             if(!params.attachments.empty()){
                 auto & attachment = params.attachments.front();
-                if(attachment.type == TETessellationParams::Attachment::TypeColor){
-                    extra = std::make_optional<TETessellationResult::AttachmentData>({attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                if(attachment.type == TETriangulationParams::Attachment::TypeColor){
+                    extra = std::make_optional<TETriangulationResult::AttachmentData>({attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
                     tri.a.attachment = tri.b.attachment = tri.c.attachment = extra;
                 }
-                else if(attachment.type == TETessellationParams::Attachment::TypeTexture2D){
+                else if(attachment.type == TETriangulationParams::Attachment::TypeTexture2D){
                     
                     translateCoords(attachment.texture2DData.width,attachment.texture2DData.height,0, viewport,&u,&v,nullptr);
                     auto texCoord = FVec<2>::Create();
@@ -234,16 +234,16 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
                     texCoord[0][0] = 0;
                     texCoord[1][0] = 0;
 
-                    extra = std::make_optional<TETessellationResult::AttachmentData>({FVec<4>::Create(),texCoord,FVec<3>::Create()});
+                    extra = std::make_optional<TETriangulationResult::AttachmentData>({FVec<4>::Create(),texCoord,FVec<3>::Create()});
                     tri.b.attachment = extra;
 
                     texCoord[1][0] = 1;
-                    extra = std::make_optional<TETessellationResult::AttachmentData>({FVec<4>::Create(),texCoord,FVec<3>::Create()});
+                    extra = std::make_optional<TETriangulationResult::AttachmentData>({FVec<4>::Create(),texCoord,FVec<3>::Create()});
                      tri.a.attachment = extra;
 
                      texCoord[0][0] = 1;
                       texCoord[1][0] = 1;
-                    extra = std::make_optional<TETessellationResult::AttachmentData>({FVec<4>::Create(),texCoord,FVec<3>::Create()});
+                    extra = std::make_optional<TETriangulationResult::AttachmentData>({FVec<4>::Create(),texCoord,FVec<3>::Create()});
                      tri.c.attachment = extra;
                 }
             }
@@ -256,11 +256,11 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
 
             if(!params.attachments.empty()){
                  auto & attachment = params.attachments.front();
-                 if(attachment.type == TETessellationParams::Attachment::TypeTexture2D){
+                 if(attachment.type == TETriangulationParams::Attachment::TypeTexture2D){
                      auto texCoord = FVec<2>::Create();
                      texCoord[0][0] = 1;
                      texCoord[1][0] = 0;
-                     extra = std::make_optional<TETessellationResult::AttachmentData>({FVec<4>::Create(),texCoord,FVec<3>::Create()});
+                     extra = std::make_optional<TETriangulationResult::AttachmentData>({FVec<4>::Create(),texCoord,FVec<3>::Create()});
                     tri.a.attachment = extra;
                  }
             }
@@ -272,40 +272,40 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
 
             break;
         }
-        case TETessellationParams::TESSALATE_ROUNDEDRECT : {
+        case TETriangulationParams::TRIANGULATE_ROUNDEDRECT : {
             auto & object = params.params->rounded_rect;
             const float rad_x = std::fmax(0.0f,std::fmin(object.rad_x,object.w * 0.5f));
             const float rad_y = std::fmax(0.0f,std::fmin(object.rad_y,object.h * 0.5f));
-            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            std::optional<TETriangulationResult::AttachmentData> colorAttachment;
             if(!params.attachments.empty()){
                 auto & attachment = params.attachments.front();
-                if(attachment.type == TETessellationParams::Attachment::TypeColor){
-                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
-                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                if(attachment.type == TETriangulationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                            TETriangulationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
                 }
             }
 
             GRect middle_rect {rad_x,rad_y,object.w - (2 * rad_x),object.h - (2 * rad_y)};
 
-            auto middle_rect_params = TETessellationParams::Rect(middle_rect);
+            auto middle_rect_params = TETriangulationParams::Rect(middle_rect);
             if(colorAttachment){
                 middle_rect_params.addAttachment(
-                        TETessellationParams::Attachment::makeColor(colorAttachment->color));
+                        TETriangulationParams::Attachment::makeColor(colorAttachment->color));
             }
 
-            _tessalatePriv(middle_rect_params,frontFaceRotation,viewport,result);
+            _triangulatePriv(middle_rect_params,frontFaceRotation,viewport,result);
 
             auto tessellateArc = [&](GPoint2D start, float rad_x, float rad_y, float angle_start, float angle_end, float _arcStep){
                 if(std::fabs(_arcStep) < 0.0001f){
                     return;
                 }
-                TETessellationResult::TEMesh m {TETessellationResult::TEMesh::TopologyTriangleStrip};
+                TETriangulationResult::TEMesh m {TETriangulationResult::TEMesh::TopologyTriangleStrip};
                 float centerX,centerY;
                 translateCoords(start.x,start.y,0.f,viewport,&centerX,&centerY,nullptr);
                 GPoint3D pt_a {centerX,centerY,0.f};
                 float angle = angle_start;
                 while((_arcStep > 0.f) ? (angle < angle_end) : (angle > angle_end)){
-                    TETessellationResult::TEMesh::Polygon p {};
+                    TETriangulationResult::TEMesh::Polygon p {};
 
                     float nextAngle = angle + _arcStep;
                     if(_arcStep > 0.f && nextAngle > angle_end){
@@ -350,62 +350,62 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
 
             /// Left Rect
             middle_rect = GRect {GPoint2D{0.f,rad_y},rad_x,object.h - (2 * rad_y)};
-            middle_rect_params = TETessellationParams::Rect(middle_rect);
+            middle_rect_params = TETriangulationParams::Rect(middle_rect);
             if(colorAttachment){
                 middle_rect_params.addAttachment(
-                        TETessellationParams::Attachment::makeColor(colorAttachment->color));
+                        TETriangulationParams::Attachment::makeColor(colorAttachment->color));
             }
 
-            _tessalatePriv(middle_rect_params,frontFaceRotation,viewport,result);
+            _triangulatePriv(middle_rect_params,frontFaceRotation,viewport,result);
             /// Top Left Arc
             tessellateArc(GPoint2D {rad_x, object.h - rad_y}, rad_x, rad_y, PI, float(PI) / 2.f, -arcStep);
 
             /// Top Rect
             middle_rect = GRect {GPoint2D{rad_x,object.h - rad_y},object.w - (rad_x * 2),rad_y};
-            middle_rect_params = TETessellationParams::Rect(middle_rect);
+            middle_rect_params = TETriangulationParams::Rect(middle_rect);
             if(colorAttachment){
                 middle_rect_params.addAttachment(
-                        TETessellationParams::Attachment::makeColor(colorAttachment->color));
+                        TETriangulationParams::Attachment::makeColor(colorAttachment->color));
             }
 
-            _tessalatePriv(middle_rect_params,frontFaceRotation,viewport,result);
+            _triangulatePriv(middle_rect_params,frontFaceRotation,viewport,result);
             /// Top Right Arc
             tessellateArc(GPoint2D {object.w - rad_x, object.h - rad_y}, rad_x, rad_y, float(PI) / 2.f, 0, -arcStep);
 
             /// Right Rect
             middle_rect = GRect {GPoint2D{object.w - rad_x,rad_y},rad_x,object.h - (2 * rad_y)};
-            middle_rect_params = TETessellationParams::Rect(middle_rect);
+            middle_rect_params = TETriangulationParams::Rect(middle_rect);
             if(colorAttachment){
                 middle_rect_params.addAttachment(
-                        TETessellationParams::Attachment::makeColor(colorAttachment->color));
+                        TETriangulationParams::Attachment::makeColor(colorAttachment->color));
             }
 
-            _tessalatePriv(middle_rect_params,frontFaceRotation,viewport,result);
+            _triangulatePriv(middle_rect_params,frontFaceRotation,viewport,result);
 
             /// Bottom Right Arc
             tessellateArc(GPoint2D {object.w - rad_x, rad_y}, rad_x, rad_y, 0, -float(PI) / 2.f, -arcStep);
 
             /// Bottom Rect
             middle_rect = GRect {GPoint2D{rad_x,0.f},object.w - (rad_x * 2),rad_y};
-            middle_rect_params = TETessellationParams::Rect(middle_rect);
+            middle_rect_params = TETriangulationParams::Rect(middle_rect);
             if(colorAttachment){
                 middle_rect_params.addAttachment(
-                        TETessellationParams::Attachment::makeColor(colorAttachment->color));
+                        TETriangulationParams::Attachment::makeColor(colorAttachment->color));
             }
-            _tessalatePriv(middle_rect_params,frontFaceRotation,viewport,result);
+            _triangulatePriv(middle_rect_params,frontFaceRotation,viewport,result);
 
             break;
         }
-        case TETessellationParams::TESSALATE_ELLIPSOID : {
+        case TETriangulationParams::TRIANGULATE_ELLIPSOID : {
             auto & object = params.params->ellipsoid;
 
-            TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
-            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
+            std::optional<TETriangulationResult::AttachmentData> colorAttachment;
             if(!params.attachments.empty()){
                 auto & attachment = params.attachments.front();
-                if(attachment.type == TETessellationParams::Attachment::TypeColor){
-                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
-                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                if(attachment.type == TETriangulationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                            TETriangulationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
                 }
             }
 
@@ -432,7 +432,7 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
                 }
                 auto next = makePoint(nextAngle);
 
-                TETessellationResult::TEMesh::Polygon tri {};
+                TETriangulationResult::TEMesh::Polygon tri {};
                 tri.a.pt = center;
                 tri.b.pt = prev;
                 tri.c.pt = next;
@@ -448,17 +448,17 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
             result.meshes.push_back(mesh);
             break;
         }
-        case TETessellationParams::TESSELLATE_RECTANGULAR_PRISM : {
+        case TETriangulationParams::TRIANGULATE_RECTANGULAR_PRISM : {
             auto & object = params.params->prism;
 
 
-            TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
-            TETessellationResult::TEMesh::Polygon tri {};
+            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
+            TETriangulationResult::TEMesh::Polygon tri {};
 
             if(!params.attachments.empty()){
                 auto & attachment = params.attachments.front();
-                if(attachment.type == TETessellationParams::Attachment::TypeColor) {
-                    tri.a.attachment = tri.b.attachment = tri.c.attachment = std::make_optional<TETessellationResult::AttachmentData>(
+                if(attachment.type == TETriangulationParams::Attachment::TypeColor) {
+                    tri.a.attachment = tri.b.attachment = tri.c.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
                             {attachment.colorData.color, FVec<2>::Create(), FVec<3>::Create()});
                 }
             }
@@ -546,19 +546,19 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
 
             break;
         }
-        case TETessellationParams::TESSALATE_GRAPHICSPATH2D : {
+        case TETriangulationParams::TRIANGULATE_GRAPHICSPATH2D : {
             if(params.graphicsPath2D == nullptr){
                 break;
             }
             auto & path = *params.graphicsPath2D;
 
-            TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
-            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
+            std::optional<TETriangulationResult::AttachmentData> colorAttachment;
             if(!params.attachments.empty()){
                 auto & attachment = params.attachments.front();
-                if(attachment.type == TETessellationParams::Attachment::TypeColor){
-                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
-                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                if(attachment.type == TETriangulationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                            TETriangulationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
                 }
             }
 
@@ -590,7 +590,7 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
                 const GPoint2D c{end.x + nx * halfStroke,end.y + ny * halfStroke};
                 const GPoint2D d{end.x - nx * halfStroke,end.y - ny * halfStroke};
 
-                TETessellationResult::TEMesh::Polygon p {};
+                TETriangulationResult::TEMesh::Polygon p {};
                 p.a.pt = toDevicePoint(a);
                 p.b.pt = toDevicePoint(b);
                 p.c.pt = toDevicePoint(c);
@@ -625,18 +625,18 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
             }
             break;
         }
-        case TETessellationParams::TESSALATE_PYRAMID : {
+        case TETriangulationParams::TRIANGULATE_PYRAMID : {
             auto & object = params.params->pyramid;
 
-            TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
-            TETessellationResult::TEMesh::Polygon tri {};
+            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
+            TETriangulationResult::TEMesh::Polygon tri {};
 
-            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            std::optional<TETriangulationResult::AttachmentData> colorAttachment;
             if(!params.attachments.empty()){
                 auto & attachment = params.attachments.front();
-                if(attachment.type == TETessellationParams::Attachment::TypeColor){
-                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
-                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                if(attachment.type == TETriangulationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                            TETriangulationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
                     tri.a.attachment = tri.b.attachment = tri.c.attachment = colorAttachment;
                 }
             }
@@ -675,16 +675,16 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
             result.meshes.push_back(mesh);
             break;
         }
-        case TETessellationParams::TESSALATE_CYLINDER : {
+        case TETriangulationParams::TRIANGULATE_CYLINDER : {
             auto & object = params.params->cylinder;
 
-            TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
-            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
+            std::optional<TETriangulationResult::AttachmentData> colorAttachment;
             if(!params.attachments.empty()){
                 auto & attachment = params.attachments.front();
-                if(attachment.type == TETessellationParams::Attachment::TypeColor){
-                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
-                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                if(attachment.type == TETriangulationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                            TETriangulationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
                 }
             }
 
@@ -715,7 +715,7 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
                 GPoint3D tCur = makeRimPoint(angle, object.pos.y + object.h);
                 GPoint3D tNext = makeRimPoint(nextAngle, object.pos.y + object.h);
 
-                TETessellationResult::TEMesh::Polygon p {};
+                TETriangulationResult::TEMesh::Polygon p {};
                 if(colorAttachment){
                     p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
                 }
@@ -738,16 +738,16 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
             result.meshes.push_back(mesh);
             break;
         }
-        case TETessellationParams::TESSALATE_CONE : {
+        case TETriangulationParams::TRIANGULATE_CONE : {
             auto & object = params.params->cone;
 
-            TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
-            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
+            std::optional<TETriangulationResult::AttachmentData> colorAttachment;
             if(!params.attachments.empty()){
                 auto & attachment = params.attachments.front();
-                if(attachment.type == TETessellationParams::Attachment::TypeColor){
-                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
-                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                if(attachment.type == TETriangulationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                            TETriangulationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
                 }
             }
 
@@ -777,7 +777,7 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
                 GPoint3D cur = makeBasePoint(angle);
                 GPoint3D next = makeBasePoint(nextAngle);
 
-                TETessellationResult::TEMesh::Polygon p {};
+                TETriangulationResult::TEMesh::Polygon p {};
                 if(colorAttachment){
                     p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
                 }
@@ -795,19 +795,19 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
             result.meshes.push_back(mesh);
             break;
         }
-        case TETessellationParams::TESSALATE_GRAPHICSPATH3D : {
+        case TETriangulationParams::TRIANGULATE_GRAPHICSPATH3D : {
             auto & path3DParams = params.params->path3D;
             if(path3DParams.pathes == nullptr || path3DParams.pathCount == 0){
                 break;
             }
 
-            TETessellationResult::TEMesh mesh {TETessellationResult::TEMesh::TopologyTriangle};
-            std::optional<TETessellationResult::AttachmentData> colorAttachment;
+            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
+            std::optional<TETriangulationResult::AttachmentData> colorAttachment;
             if(!params.attachments.empty()){
                 auto & attachment = params.attachments.front();
-                if(attachment.type == TETessellationParams::Attachment::TypeColor){
-                    colorAttachment = std::make_optional<TETessellationResult::AttachmentData>(
-                            TETessellationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                if(attachment.type == TETriangulationParams::Attachment::TypeColor){
+                    colorAttachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                            TETriangulationResult::AttachmentData{attachment.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
                 }
             }
 
@@ -857,7 +857,7 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
                     GPoint3D b0 = toDevice3D({B.x + nx, B.y + ny, B.z + nz});
                     GPoint3D b1 = toDevice3D({B.x - nx, B.y - ny, B.z - nz});
 
-                    TETessellationResult::TEMesh::Polygon p {};
+                    TETriangulationResult::TEMesh::Polygon p {};
                     if(colorAttachment){
                         p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
                     }
@@ -880,11 +880,11 @@ inline void OmegaTessellationEngineContext::_tessalatePriv(const TETessellationP
 
 };
 
-void OmegaTessellationEngineContext::extractGPUTessParams(const TETessellationParams &params, GPUTessExtractedParams &out) {
+void OmegaTriangulationEngineContext::extractGPUTriangulationParams(const TETriangulationParams &params, GPUTriangulationExtractedParams &out) {
     out = {};
     if (!params.attachments.empty()) {
         auto &att = params.attachments.front();
-        if (att.type == TETessellationParams::Attachment::TypeColor) {
+        if (att.type == TETriangulationParams::Attachment::TypeColor) {
             out.hasColor = true;
             FVec<4> c = att.colorData.color;
             out.cr = c[0][0];
@@ -894,27 +894,27 @@ void OmegaTessellationEngineContext::extractGPUTessParams(const TETessellationPa
         }
     }
     switch (params.type) {
-        case TETessellationParams::TESSALATE_RECT: {
-            out.type = GPUTessExtractedParams::Rect;
+        case TETriangulationParams::TRIANGULATE_RECT: {
+            out.type = GPUTriangulationExtractedParams::Rect;
             out.rx = params.params->rect.pos.x;
             out.ry = params.params->rect.pos.y;
             out.rw = params.params->rect.w;
             out.rh = params.params->rect.h;
             break;
         }
-        case TETessellationParams::TESSALATE_ROUNDEDRECT:
-            out.type = GPUTessExtractedParams::RoundedRect;
+        case TETriangulationParams::TRIANGULATE_ROUNDEDRECT:
+            out.type = GPUTriangulationExtractedParams::RoundedRect;
             break;
-        case TETessellationParams::TESSALATE_ELLIPSOID: {
-            out.type = GPUTessExtractedParams::Ellipsoid;
+        case TETriangulationParams::TRIANGULATE_ELLIPSOID: {
+            out.type = GPUTriangulationExtractedParams::Ellipsoid;
             out.ex = params.params->ellipsoid.x;
             out.ey = params.params->ellipsoid.y;
             out.erad_x = params.params->ellipsoid.rad_x;
             out.erad_y = params.params->ellipsoid.rad_y;
             break;
         }
-        case TETessellationParams::TESSELLATE_RECTANGULAR_PRISM: {
-            out.type = GPUTessExtractedParams::RectPrism;
+        case TETriangulationParams::TRIANGULATE_RECTANGULAR_PRISM: {
+            out.type = GPUTriangulationExtractedParams::RectPrism;
             out.px = params.params->prism.pos.x;
             out.py = params.params->prism.pos.y;
             out.pz = params.params->prism.pos.z;
@@ -923,8 +923,8 @@ void OmegaTessellationEngineContext::extractGPUTessParams(const TETessellationPa
             out.pd = params.params->prism.d;
             break;
         }
-        case TETessellationParams::TESSALATE_GRAPHICSPATH2D: {
-            out.type = GPUTessExtractedParams::Path2D;
+        case TETriangulationParams::TRIANGULATE_GRAPHICSPATH2D: {
+            out.type = GPUTriangulationExtractedParams::Path2D;
             out.strokeWidth = params.graphicsPath2DStrokeWidth;
             out.contour = params.graphicsPath2DContour;
             if (params.graphicsPath2D) {
@@ -943,26 +943,26 @@ void OmegaTessellationEngineContext::extractGPUTessParams(const TETessellationPa
             break;
         }
         default:
-            out.type = GPUTessExtractedParams::Other;
+            out.type = GPUTriangulationExtractedParams::Other;
             break;
     }
 }
 
-SharedHandle<OmegaTessellationEngineContext> CreateNativeRenderTargetTEContext(SharedHandle<GENativeRenderTarget> & renderTarget);
-SharedHandle<OmegaTessellationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> & renderTarget);
+SharedHandle<OmegaTriangulationEngineContext> CreateNativeRenderTargetTEContext(SharedHandle<GENativeRenderTarget> & renderTarget);
+SharedHandle<OmegaTriangulationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> & renderTarget);
 
-SharedHandle<OmegaTessellationEngineContext> OmegaTessellationEngine::createTEContextFromNativeRenderTarget(SharedHandle<GENativeRenderTarget> & renderTarget){
+SharedHandle<OmegaTriangulationEngineContext> OmegaTriangulationEngine::createTEContextFromNativeRenderTarget(SharedHandle<GENativeRenderTarget> & renderTarget){
     return CreateNativeRenderTargetTEContext(renderTarget);
 };
 
-SharedHandle<OmegaTessellationEngineContext> OmegaTessellationEngine::createTEContextFromTextureRenderTarget(SharedHandle<GETextureRenderTarget> & renderTarget){
+SharedHandle<OmegaTriangulationEngineContext> OmegaTriangulationEngine::createTEContextFromTextureRenderTarget(SharedHandle<GETextureRenderTarget> & renderTarget){
     return CreateTextureRenderTargetTEContext(renderTarget);
 };
 
-std::future<TETessellationResult> OmegaTessellationEngineContext::tessalateAsync(const TETessellationParams &params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport){
-    std::promise<TETessellationResult> prom;
+std::future<TETriangulationResult> OmegaTriangulationEngineContext::triangulateAsync(const TETriangulationParams &params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport){
+    std::promise<TETriangulationResult> prom;
     auto fut = prom.get_future();
-    TETessellationParams paramsCopy = params;
+    TETriangulationParams paramsCopy = params;
     std::optional<GEViewport> viewportCopy = std::nullopt;
     if(viewport != nullptr){
         viewportCopy = *viewport;
@@ -975,7 +975,7 @@ std::future<TETessellationResult> OmegaTessellationEngineContext::tessalateAsync
                 _viewport = viewportCopy.value();
                 viewportPtr = &_viewport;
             }
-            promise.set_value_at_thread_exit(tessalateSync(paramsCopy,frontFaceRotation,viewportPtr));
+            promise.set_value_at_thread_exit(triangulateSync(paramsCopy,frontFaceRotation,viewportPtr));
         }
         catch(...){
             promise.set_exception(std::current_exception());
@@ -988,13 +988,13 @@ std::future<TETessellationResult> OmegaTessellationEngineContext::tessalateAsync
     return fut;
 };
 
-TETessellationResult OmegaTessellationEngineContext::tessalateSync(const TETessellationParams &params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport){
-    TETessellationResult res;
-    _tessalatePriv(params,frontFaceRotation,viewport,res);
+TETriangulationResult OmegaTriangulationEngineContext::triangulateSync(const TETriangulationParams &params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport){
+    TETriangulationResult res;
+    _triangulatePriv(params,frontFaceRotation,viewport,res);
     return res;
 };
 
-OmegaTessellationEngineContext::~OmegaTessellationEngineContext(){
+OmegaTriangulationEngineContext::~OmegaTriangulationEngineContext(){
     std::vector<std::thread> threads;
     {
         std::lock_guard<std::mutex> lock(activeThreadsMutex);
@@ -1007,25 +1007,25 @@ OmegaTessellationEngineContext::~OmegaTessellationEngineContext(){
     }
 };
 
-void TETessellationResult::translate(float x,float y,float z,const GEViewport & viewport){
+void TETriangulationResult::translate(float x,float y,float z,const GEViewport & viewport){
     for(auto & m : meshes){
         m.translate(x,y,z,viewport);
     }
 };
 
-void TETessellationResult::rotate(float pitch,float yaw,float roll){
+void TETriangulationResult::rotate(float pitch,float yaw,float roll){
     for(auto & m : meshes){
         m.rotate(pitch,yaw,roll);
     }
 };
 
-void TETessellationResult::scale(float w,float h,float l){
+void TETriangulationResult::scale(float w,float h,float l){
     for(auto & m : meshes){
         m.scale(w,h,l);
     }
 };
 
-void TETessellationResult::TEMesh::translate(float x, float y, float z,const GEViewport & viewport) {
+void TETriangulationResult::TEMesh::translate(float x, float y, float z,const GEViewport & viewport) {
     auto _x = (2 * x)/viewport.width;
     auto _y = (2 * y)/viewport.height;
     auto _z = (2 * z)/viewport.farDepth;
@@ -1045,7 +1045,7 @@ void TETessellationResult::TEMesh::translate(float x, float y, float z,const GEV
     }
 }
 
-void TETessellationResult::TEMesh::rotate(float pitch, float yaw, float roll) {
+void TETriangulationResult::TEMesh::rotate(float pitch, float yaw, float roll) {
 
     /// Pitch Rotation -- X Axis.
     /// Yaw Rotation -- Y Axis.
@@ -1076,7 +1076,7 @@ void TETessellationResult::TEMesh::rotate(float pitch, float yaw, float roll) {
     }
 }
 
-void TETessellationResult::TEMesh::scale(float w, float h,float l) {
+void TETriangulationResult::TEMesh::scale(float w, float h,float l) {
     for(auto & polygon : vertexPolygons){
         polygon.a.pt.x *= w;
         polygon.b.pt.x *= w;

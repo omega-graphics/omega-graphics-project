@@ -605,13 +605,19 @@ namespace omegasl {
                         << _decl->threadgroupDesc.z << ")]" << std::endl;
                     }
                     else if(_decl->shaderType == ast::ShaderDecl::Hull){
-                        shaderOut << "[domain(\"tri\")]" << std::endl;
-                        shaderOut << "[partitioning(\"integer\")]" << std::endl;
-                        shaderOut << "[outputtopology(\"triangle_cw\")]" << std::endl;
-                        shaderOut << "[outputcontrolpoints(3)]" << std::endl;
+                        auto & td = _decl->tessDesc;
+                        shaderOut << "[domain(\"" << (td.domain == ast::ShaderDecl::TessellationDesc::Triangle ? "tri" : "quad") << "\")]" << std::endl;
+                        const char *partStr = td.partitioning == ast::ShaderDecl::TessellationDesc::Integer ? "integer" :
+                                              td.partitioning == ast::ShaderDecl::TessellationDesc::FractionalEven ? "fractional_even" : "fractional_odd";
+                        shaderOut << "[partitioning(\"" << partStr << "\")]" << std::endl;
+                        const char *topoStr = td.outputTopology == ast::ShaderDecl::TessellationDesc::TriangleCW ? "triangle_cw" :
+                                              td.outputTopology == ast::ShaderDecl::TessellationDesc::TriangleCCW ? "triangle_ccw" : "line";
+                        shaderOut << "[outputtopology(\"" << topoStr << "\")]" << std::endl;
+                        shaderOut << "[outputcontrolpoints(" << td.outputControlPoints << ")]" << std::endl;
                     }
                     else if(_decl->shaderType == ast::ShaderDecl::Domain){
-                        shaderOut << "[domain(\"tri\")]" << std::endl;
+                        auto & td = _decl->tessDesc;
+                        shaderOut << "[domain(\"" << (td.domain == ast::ShaderDecl::TessellationDesc::Triangle ? "tri" : "quad") << "\")]" << std::endl;
                     }
 
                     writeTypeExpr(_decl->returnType,shaderOut);
@@ -674,6 +680,12 @@ namespace omegasl {
             }
             else if(type == ast::ShaderDecl::Compute){
                 out << "cs_5_0";
+            }
+            else if(type == ast::ShaderDecl::Hull){
+                out << "hs_5_0";
+            }
+            else if(type == ast::ShaderDecl::Domain){
+                out << "ds_5_0";
             }
             out << " -E" << name.data() << " -Fo " << OmegaCommon::FS::Path(outputPath).append(name).concat(".cso").str();
             out << " " << OmegaCommon::FS::Path(path).append(name).concat(".hlsl").str() << " /Zi";

@@ -38,7 +38,7 @@ OmegaSL is a cross-platform shading language that transpiles to HLSL, MSL, and G
 | **Lexer source tracking** | **DONE** | ~~`line`/`colStart`/`colEnd` commented out.~~ `Tok` struct has active `line`, `colStart`, `colEnd` fields populated by the lexer. |
 | **Semantic validation gaps** | **DONE** | ~~`make_float4()` checks incomplete, no struct field uniqueness.~~ All builtin function argument validation implemented in `Sema.cpp`. Struct field uniqueness, parameter uniqueness, and duplicate declaration checks all present. |
 | **`InterfaceGen`** | Open | The C++ struct header generator (`InterfaceGen`) is fully commented out in `CodeGen.h`. No `interface.h` / `structs.h` output. |
-| **Tessellation stages** | **PARTIAL** | Parser handles `hull`/`domain` keywords. All three codegen backends have Hull/Domain cases (HLSL emits `[domain("tri")]` attributes, GLSL uses `.tesc`/`.tese` extensions, Metal emits `vertex`). No test cases or full tessellation attribute support (patch topology, control point count, etc.). |
+| **Tessellation stages** | **DONE** | Full tessellation descriptor support: `hull(domain=tri, partitioning=integer, outputtopology=triangle_cw, outputcontrolpoints=3)` and `domain(domain=tri)`. All three backends emit correct platform-specific attributes. Test: `tessellation.omegasl`. |
 | **Preprocessor** | **DONE** | ~~No directives.~~ `Preprocessor.h`/`.cpp` implements `#define`, `#ifdef`/`#ifndef`/`#endif`, `#include "file"` with depth-limited recursion. Integrated into `main.cpp` before lexing. |
 | **User functions** | **DONE** | ~~Not fully supported.~~ Parser, semantic analysis, and all three codegen backends support user-defined functions with cross-function calls. Metal codegen bug fixed 2026-03-21 (missing function name in non-builtin calls). Function overloading not implemented. |
 | **Array types** | **DONE** | ~~No array variable declarations.~~ Parser handles `type name[size]` syntax. `TypeExpr::arraySize` field stores the size. All three codegen backends emit `name[size]` in variable declarations. |
@@ -179,15 +179,20 @@ These changes make OmegaSL capable of expressing real-world shaders.
 - Integrated into `main.cpp`: source file is preprocessed before being passed to the parser.
 - Not yet wired into the runtime compilation path (`Parser::parseContext`).
 
-### 3.5 Tessellation shader stages — PARTIAL
+### 3.5 Tessellation shader stages — DONE
 
-- Parser handles `hull` and `domain` keywords, creates `ShaderDecl` with `Hull`/`Domain` type.
-- AST: `ShaderDecl::Type` includes `Hull` and `Domain`.
-- Codegen (basic):
-  - HLSL: emits `[domain("tri")]`, `[partitioning("integer")]`, `[outputtopology("triangle_cw")]`, `[outputcontrolpoints(3)]` for hull shaders.
-  - GLSL: uses `.tesc`/`.tese` file extensions.
-  - Metal: emits `vertex` qualifier for both.
-- **Remaining**: No configurable patch topology, control point count, or partition mode. No `[patchconstantfunc]` support. No MSL `[[patch(triangle, N)]]` or GLSL `layout(vertices = N) out;` emission. No test cases.
+- Parser handles `hull(...)` and `domain(...)` with parenthesized tessellation descriptors following the `compute(...)` pattern:
+  - `hull(domain=tri, partitioning=integer, outputtopology=triangle_cw, outputcontrolpoints=3)`
+  - `domain(domain=tri)`
+  - Supported domains: `tri`, `quad`.
+  - Supported partitioning: `integer`, `fractional_even`, `fractional_odd`.
+  - Supported output topology: `triangle_cw`, `triangle_ccw`, `line`.
+- AST: `ShaderDecl::TessellationDesc` stores domain, partitioning, output topology, and control point count.
+- Codegen:
+  - HLSL: emits `[domain("tri")]`, `[partitioning("integer")]`, `[outputtopology("triangle_cw")]`, `[outputcontrolpoints(N)]` from descriptor values. Hull compiles as `hs_5_0`, domain as `ds_5_0`.
+  - GLSL: emits `layout(vertices = N) out;` for tess control and `layout(triangles, equal_spacing, cw) in;` for tess evaluation. Uses `.tesc`/`.tese` file extensions and shader stages.
+  - Metal: emits `kernel` for hull shaders, `[[patch(triangle, N)]] vertex` for domain shaders.
+- **Test**: `tessellation.omegasl` exercises tri hull, tri domain, and quad hull with non-default descriptor values.
 
 ---
 
@@ -248,18 +253,10 @@ These changes make OmegaSL capable of expressing real-world shaders.
 - Uncomment and complete the `InterfaceGen` class to emit a C++ header (`interface.h` / `structs.h`) with struct layouts matching the OmegaSL declarations. This lets C++ code share struct definitions with shaders without manual duplication.
 - **Files**: `CodeGen.h`, new `InterfaceGen.cpp`.
 
-### 5.4 Language reference documentation
+### 5.4 Language reference documentation — DONE
 
-- Write a concise OmegaSL language reference covering:
-  - Types (scalar, vector, matrix, resource, sampler).
-  - Declarations (struct, resource, shader, function).
-  - Statements (variable, return, if/else, for, while).
-  - Expressions (arithmetic, comparison, logical, call, member, index, unary, cast).
-  - Builtins (constructors, math pass-throughs, `sample`, `read`, `write`, `dot`, `cross`).
-  - Attributes (`VertexID`, `Position`, `TexCoord`, etc.).
-  - Resource maps (`[in ...]`, `[out ...]`, `[inout ...]`).
-  - Static samplers.
-- Update `gte/docs/OmegaSL.rst` or create `gte/docs/OmegaSL-Reference.md`.
+- `OmegaSL-Reference.md`: Complete language reference with 10 sections covering preprocessor, types, declarations, resource maps, statements, expressions, builtins, attributes, compilation, and backend mapping tables.
+- `OmegaSL.rst`: Updated overview with feature summary pointing to the reference.
 
 ---
 
@@ -280,10 +277,10 @@ These changes make OmegaSL capable of expressing real-world shaders.
 | 11 | 3.2–3.3 | Type casts and array declarations. | **DONE** |
 | 12 | 4.1–4.3 | Codegen quality (GLSL image-samplers, control flow dispatch, operator precedence). | **DONE** |
 | 13 | 3.4 | Preprocessor. | **DONE** |
-| 14 | 3.5 | Tessellation shader stages. | **PARTIAL** |
+| 14 | 3.5 | Tessellation shader stages. | **DONE** |
 | 15 | 4.5 | Vulkan tess shaders from OmegaSL. | Open |
 | 16 | 5.1–5.2 | Compiler unit tests and golden-file tests. | **PARTIAL** |
-| 17 | 5.4 | Language reference documentation. | Open |
+| 17 | 5.4 | Language reference documentation. | **DONE** |
 | — | — | Parser bug: postfix unary consuming `=` operator. | **FIXED** (2026-03-21) |
 | — | — | Compound assignment operators (`+=`, `-=`, `/=`, `*=`) + `++`/`--` lexer fix. | **DONE** (2026-03-21) |
 | — | — | Bare `return;` (void return without expression). | **DONE** (2026-03-21) |
@@ -300,10 +297,10 @@ Steps 1–13 are complete. Remaining work is tessellation polish, Vulkan tess sh
 | **Types** | Scalars, vectors, `bool`, matrices, arrays, resources | Done | **DONE** |
 | **Builtins** | `make_float/int/uint 2/3/4`, `make_float 2x2/3x3/4x4`, `sample`, `read`, `write`, `dot`, `cross` | Done | **DONE** |
 | **Expressions** | Binary, unary, call, member, index, literal, pointer, cast, compound assignment (`+=`/`-=`/`*=`/`/=`) | Done | **DONE** |
-| **Shader stages** | vertex, fragment, compute, hull/domain (basic) | + full tessellation attributes | **PARTIAL** |
+| **Shader stages** | vertex, fragment, compute, hull/domain (configurable descriptors) | Done | **DONE** |
 | **Error handling** | Structured errors with source location and code views | Done | **DONE** |
 | **Semantic checks** | Type-checking, uniqueness, argument validation | Done | **DONE** |
 | **Preprocessor** | `#define`, `#ifdef`/`#ifndef`/`#endif`, `#include` | Done | **DONE** |
 | **User functions** | Parsing, semantic analysis, codegen all working | + overloading (optional) | **DONE** |
 | **Testing** | CTest suite with positive/negative/golden tests | + GLSL/MSL golden files | **PARTIAL** |
-| **Documentation** | 1-line README | Language reference | Open |
+| **Documentation** | `OmegaSL-Reference.md` (10 sections) + `OmegaSL.rst` overview | Done | **DONE** |

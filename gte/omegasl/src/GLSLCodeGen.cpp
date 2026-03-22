@@ -296,10 +296,12 @@ namespace omegasl {
                         }
                         case ast::ShaderDecl::Hull : {
                             file_ext = ".tesc";
+                            return_val_replacement = GLSL_POSITION;
                             break;
                         }
                         case ast::ShaderDecl::Domain : {
                             file_ext = ".tese";
+                            return_val_replacement = GLSL_POSITION;
                             break;
                         }
                     }
@@ -329,6 +331,19 @@ namespace omegasl {
                         shader_entry.threadgroupDesc.x = _decl->threadgroupDesc.x;
                         shader_entry.threadgroupDesc.y = _decl->threadgroupDesc.y;
                         shader_entry.threadgroupDesc.z = _decl->threadgroupDesc.z;
+                    }
+
+                    /// Emit tessellation layout directives.
+                    if(_decl->shaderType == ast::ShaderDecl::Hull){
+                        shaderOut << "layout(vertices = " << _decl->tessDesc.outputControlPoints << ") out;" << std::endl;
+                    }
+                    else if(_decl->shaderType == ast::ShaderDecl::Domain){
+                        auto & td = _decl->tessDesc;
+                        const char *domStr = (td.domain == ast::ShaderDecl::TessellationDesc::Triangle) ? "triangles" : "quads";
+                        const char *spacingStr = td.partitioning == ast::ShaderDecl::TessellationDesc::Integer ? "equal_spacing" :
+                                                 td.partitioning == ast::ShaderDecl::TessellationDesc::FractionalEven ? "fractional_even_spacing" : "fractional_odd_spacing";
+                        const char *windStr = (td.outputTopology == ast::ShaderDecl::TessellationDesc::TriangleCCW) ? "ccw" : "cw";
+                        shaderOut << "layout(" << domStr << ", " << spacingStr << ", " << windStr << ") in;" << std::endl;
                     }
 
                     shader_entry.type = _decl->shaderType == ast::ShaderDecl::Vertex? OMEGASL_SHADER_VERTEX :
@@ -738,7 +753,11 @@ namespace omegasl {
 
                     }
                     else {
-                        shaderOut << _id << "(";
+                        /// Map OmegaSL names to GLSL names where they differ.
+                        if(_id == BUILTIN_LERP) shaderOut << "mix";
+                        else if(_id == BUILTIN_FRAC) shaderOut << "fract";
+                        else shaderOut << _id;
+                        shaderOut << "(";
                         for(size_t i = 0; i < _expr->args.size(); i++){
                             if(i > 0) shaderOut << ",";
                             generateExpr(_expr->args[i]);
@@ -813,6 +832,14 @@ namespace omegasl {
             else if(type == ast::ShaderDecl::Fragment){
                 shader_stage = fragment_shader_stage;
                 file_ext = fragment_shader_ext;
+            }
+            else if(type == ast::ShaderDecl::Hull){
+                shader_stage = "tesc";
+                file_ext = ".tesc";
+            }
+            else if(type == ast::ShaderDecl::Domain){
+                shader_stage = "tese";
+                file_ext = ".tese";
             }
             else  {
                 shader_stage = compute_shader_stage;

@@ -29,18 +29,18 @@ struct VulkanTessVertex { float pos[4]; float color[4]; };
 struct VulkanTessParams { float rect[4]; float viewport[4]; float color[4]; float extra[4]; };
 struct VulkanPathSeg { float se[4]; float sv[4]; float c[4]; float r[4]; };
 
-TETessellationResult readbackVulkan(VmaAllocator allocator, VkBuffer buf, VmaAllocation alloc,
+TETriangulationResult readbackVulkan(VmaAllocator allocator, VkBuffer buf, VmaAllocation alloc,
                                     unsigned vc,
-                                    const std::optional<TETessellationResult::AttachmentData> &att) {
-    TETessellationResult res;
-    TETessellationResult::TEMesh mesh{TETessellationResult::TEMesh::TopologyTriangle};
+                                    const std::optional<TETriangulationResult::AttachmentData> &att) {
+    TETriangulationResult res;
+    TETriangulationResult::TEMesh mesh{TETriangulationResult::TEMesh::TopologyTriangle};
 
     VulkanTessVertex *v = nullptr;
     vmaMapMemory(allocator, alloc, (void **)&v);
     if (!v) return res;
 
     for (unsigned i = 0; i + 2 < vc; i += 3) {
-        TETessellationResult::TEMesh::Polygon p{};
+        TETriangulationResult::TEMesh::Polygon p{};
         p.a.pt = {v[i].pos[0], v[i].pos[1], v[i].pos[2]};
         p.b.pt = {v[i+1].pos[0], v[i+1].pos[1], v[i+1].pos[2]};
         p.c.pt = {v[i+2].pos[0], v[i+2].pos[1], v[i+2].pos[2]};
@@ -188,25 +188,25 @@ struct VulkanTessPipelines {
     }
 };
 
-std::future<TETessellationResult> vulkanGpuDispatch(
-        OmegaTessellationEngineContext::GPUTessExtractedParams &ep,
+std::future<TETriangulationResult> vulkanGpuDispatch(
+        OmegaTriangulationEngineContext::GPUTriangulationExtractedParams &ep,
         GEViewport &vp, float ctxArcStep, VulkanTessPipelines &pip,
-        OmegaTessellationEngineContext *ctx,
-        const TETessellationParams &origParams,
+        OmegaTriangulationEngineContext *ctx,
+        const TETriangulationParams &origParams,
         GTEPolygonFrontFaceRotation ff, GEViewport *origVP) {
 
-    std::optional<TETessellationResult::AttachmentData> colorAtt;
+    std::optional<TETriangulationResult::AttachmentData> colorAtt;
     float cv[4] = {0,0,0,1};
     if (ep.hasColor) {
-        colorAtt = TETessellationResult::AttachmentData{FVec<4>::Create(), FVec<2>::Create(), FVec<3>::Create()};
+        colorAtt = TETriangulationResult::AttachmentData{FVec<4>::Create(), FVec<2>::Create(), FVec<3>::Create()};
         colorAtt->color[0][0] = ep.cr; colorAtt->color[1][0] = ep.cg;
         colorAtt->color[2][0] = ep.cb; colorAtt->color[3][0] = ep.ca;
         cv[0] = ep.cr; cv[1] = ep.cg; cv[2] = ep.cb; cv[3] = ep.ca;
     }
 
     auto fallback = [&]() {
-        auto r = ctx->tessalateSync(origParams, ff, origVP);
-        std::promise<TETessellationResult> p; p.set_value(std::move(r)); return p.get_future();
+        auto r = ctx->triangulateSync(origParams, ff, origVP);
+        std::promise<TETriangulationResult> p; p.set_value(std::move(r)); return p.get_future();
     };
 
     if (!pip.gpuReady) return fallback();
@@ -216,7 +216,7 @@ std::future<TETessellationResult> vulkanGpuDispatch(
     size_t paramSize = 0;
     void *paramData = nullptr;
 
-    using ET = OmegaTessellationEngineContext::GPUTessExtractedParams;
+    using ET = OmegaTriangulationEngineContext::GPUTriangulationExtractedParams;
     VulkanTessParams tp {};
     VulkanPathSeg *pathSegs = nullptr;
 
@@ -356,14 +356,14 @@ std::future<TETessellationResult> vulkanGpuDispatch(
     vmaDestroyBuffer(e->memAllocator, paramBuf.buffer, paramBuf.alloc);
     vmaDestroyBuffer(e->memAllocator, outBuf.buffer, outBuf.alloc);
 
-    std::promise<TETessellationResult> prom;
+    std::promise<TETriangulationResult> prom;
     prom.set_value(std::move(result));
     return prom.get_future();
 }
 
 } // anon namespace
 
-class VulkanNativeRenderTargetTEContext : public OmegaTessellationEngineContext {
+class VulkanNativeRenderTargetTEContext : public OmegaTriangulationEngineContext {
 public:
 
     SharedHandle<GEVulkanNativeRenderTarget> renderTarget;
@@ -390,22 +390,22 @@ public:
         *y_result = -*y_result;
     }
 
-    std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params,
+    std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams &params,
             GTEPolygonFrontFaceRotation direction, GEViewport *viewport) override {
         if (!pip.ready && renderTarget && renderTarget->commandQueue) {
             auto *engine = renderTarget->commandQueue->getEngine();
             if (engine) pip.init(engine);
         }
         if (!pip.ready || !pip.gpuReady) {
-            GPUTessExtractedParams ep;
-            extractGPUTessParams(params, ep);
-            auto result = tessalateSync(params, direction, viewport);
-            std::promise<TETessellationResult> p;
+            GPUTriangulationExtractedParams ep;
+            extractGPUTriangulationParams(params, ep);
+            auto result = triangulateSync(params, direction, viewport);
+            std::promise<TETriangulationResult> p;
             p.set_value(std::move(result));
             return p.get_future();
         }
-        GPUTessExtractedParams ep;
-        extractGPUTessParams(params, ep);
+        GPUTriangulationExtractedParams ep;
+        extractGPUTriangulationParams(params, ep);
         GEViewport vp = viewport ? *viewport : getEffectiveViewport();
         return vulkanGpuDispatch(ep, vp, arcStep, pip, this, params, direction, viewport);
     }
@@ -413,7 +413,7 @@ public:
     explicit VulkanNativeRenderTargetTEContext(SharedHandle<GEVulkanNativeRenderTarget> renderTarget):renderTarget(renderTarget){};
 };
 
-class VulkanTextureRenderTargetTEContext : public OmegaTessellationEngineContext {
+class VulkanTextureRenderTargetTEContext : public OmegaTriangulationEngineContext {
 public:
     SharedHandle<GEVulkanTextureRenderTarget> renderTarget;
     VulkanTessPipelines pip;
@@ -439,22 +439,22 @@ public:
         *y_result = -*y_result;
     }
 
-    std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params,
+    std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams &params,
             GTEPolygonFrontFaceRotation direction, GEViewport *viewport) override {
         if (!pip.ready && renderTarget && renderTarget->commandQueue) {
             auto *engine = renderTarget->commandQueue->getEngine();
             if (engine) pip.init(engine);
         }
         if (!pip.ready || !pip.gpuReady) {
-            GPUTessExtractedParams ep;
-            extractGPUTessParams(params, ep);
-            auto result = tessalateSync(params, direction, viewport);
-            std::promise<TETessellationResult> p;
+            GPUTriangulationExtractedParams ep;
+            extractGPUTriangulationParams(params, ep);
+            auto result = triangulateSync(params, direction, viewport);
+            std::promise<TETriangulationResult> p;
             p.set_value(std::move(result));
             return p.get_future();
         }
-        GPUTessExtractedParams ep;
-        extractGPUTessParams(params, ep);
+        GPUTriangulationExtractedParams ep;
+        extractGPUTriangulationParams(params, ep);
         GEViewport vp = viewport ? *viewport : getEffectiveViewport();
         return vulkanGpuDispatch(ep, vp, arcStep, pip, this, params, direction, viewport);
     }
@@ -464,20 +464,20 @@ public:
 };
 
 
-SharedHandle<OmegaTessellationEngineContext> CreateNativeRenderTargetTEContext(SharedHandle<GENativeRenderTarget> & renderTarget){
+SharedHandle<OmegaTriangulationEngineContext> CreateNativeRenderTargetTEContext(SharedHandle<GENativeRenderTarget> & renderTarget){
     auto vulkanRenderTarget = std::dynamic_pointer_cast<GEVulkanNativeRenderTarget>(renderTarget);
     if(vulkanRenderTarget == nullptr){
         return nullptr;
     }
-    return SharedHandle<OmegaTessellationEngineContext>(new VulkanNativeRenderTargetTEContext(vulkanRenderTarget));
+    return SharedHandle<OmegaTriangulationEngineContext>(new VulkanNativeRenderTargetTEContext(vulkanRenderTarget));
 };
 
-SharedHandle<OmegaTessellationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> & renderTarget){
+SharedHandle<OmegaTriangulationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> & renderTarget){
     auto vulkanRenderTarget = std::dynamic_pointer_cast<GEVulkanTextureRenderTarget>(renderTarget);
     if(vulkanRenderTarget == nullptr){
         return nullptr;
     }
-    return SharedHandle<OmegaTessellationEngineContext>(new VulkanTextureRenderTargetTEContext(vulkanRenderTarget));
+    return SharedHandle<OmegaTriangulationEngineContext>(new VulkanTextureRenderTargetTEContext(vulkanRenderTarget));
 };
 
 _NAMESPACE_END_

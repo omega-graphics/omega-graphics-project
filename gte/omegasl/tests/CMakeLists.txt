@@ -48,6 +48,8 @@ add_omegasl_compile_test(omegasl_compile_resource_types      resource_types.omeg
 add_omegasl_compile_test(omegasl_compile_compute_gradient    compute_gradient.omegasl)
 add_omegasl_compile_test(omegasl_compile_user_functions      user_functions.omegasl)
 add_omegasl_compile_test(omegasl_compile_const_fold          const_fold.omegasl)
+add_omegasl_compile_test(omegasl_compile_tessellation        tessellation.omegasl)
+add_omegasl_compile_test(omegasl_compile_math_builtins       math_builtins.omegasl)
 
 # =============================================================
 # 3. Negative compilation tests (expected to fail)

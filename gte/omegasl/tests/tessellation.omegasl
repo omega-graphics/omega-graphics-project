@@ -1,0 +1,40 @@
+
+struct HullInput {
+    float4 pos;
+};
+
+struct HullOutput {
+    float4 pos;
+};
+
+struct PatchConst {
+    float edgeTess;
+    float insideTess;
+};
+
+buffer<HullInput> controlPoints : 0;
+buffer<HullOutput> hullOut : 1;
+
+[in controlPoints, out hullOut]
+hull(domain=tri, partitioning=integer, outputtopology=triangle_cw, outputcontrolpoints=3)
+HullOutput triHull(uint vid : VertexID){
+    HullOutput o;
+    o.pos = controlPoints[vid].pos;
+    return o;
+}
+
+[in controlPoints]
+domain(domain=tri)
+HullOutput triDomain(uint vid : VertexID){
+    HullOutput o;
+    o.pos = controlPoints[vid].pos;
+    return o;
+}
+
+[in controlPoints, out hullOut]
+hull(domain=quad, partitioning=fractional_even, outputtopology=triangle_ccw, outputcontrolpoints=4)
+HullOutput quadHull(uint vid : VertexID){
+    HullOutput o;
+    o.pos = controlPoints[vid].pos;
+    return o;
+}

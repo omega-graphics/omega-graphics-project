@@ -16,7 +16,7 @@ buffer<TessVertex> vertices : 1;
 
 [in params, out vertices]
 compute(x=1,y=1,z=1)
-void tess_rect_prism_kernel(uint3 tid : GlobalThreadID){
+void triangulate_rect_prism_kernel(uint3 tid : GlobalThreadID){
     float x0 = params[0].rect[0];
     float y0 = params[0].rect[1];
     float z0 = params[0].rect[2];

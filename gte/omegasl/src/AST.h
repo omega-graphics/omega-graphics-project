@@ -250,6 +250,27 @@ namespace omegasl {
             struct {
                 unsigned x,y,z;
             } threadgroupDesc;
+            struct TessellationDesc {
+                typedef enum : int {
+                    Triangle,
+                    Quad
+                } Domain;
+                typedef enum : int {
+                    Integer,
+                    FractionalEven,
+                    FractionalOdd
+                } Partitioning;
+                typedef enum : int {
+                    TriangleCW,
+                    TriangleCCW,
+                    Line
+                } OutputTopology;
+                Domain domain = Triangle;
+                Partitioning partitioning = Integer;
+                OutputTopology outputTopology = TriangleCW;
+                unsigned outputControlPoints = 3;
+            };
+            TessellationDesc tessDesc;
         };
 
         struct Expr : public Stmt {};

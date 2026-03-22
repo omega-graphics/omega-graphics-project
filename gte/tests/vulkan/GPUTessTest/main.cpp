@@ -37,7 +37,7 @@ static void activate(GtkApplication *app, gpointer user_data){
     rtDesc.x_window = x_window;
     auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc);
 
-    auto teCtx = gte.tessalationEngine->createTEContextFromNativeRenderTarget(renderTarget);
+    auto teCtx = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);
     assert(teCtx && "Failed to create TE context");
 
     OmegaGTE::GEViewport vp{0, 0, 800, 600, 0, 1};
@@ -49,14 +49,14 @@ static void activate(GtkApplication *app, gpointer user_data){
     colorVec[3][0] = 1.0f;
 
     OmegaGTE::GRect rect{OmegaGTE::GPoint2D{100, 100}, 200, 150};
-    auto tessParams = OmegaGTE::TETessellationParams::Rect(rect);
-    tessParams.addAttachment(OmegaGTE::TETessellationParams::Attachment::makeColor(colorVec));
+    auto tessParams = OmegaGTE::TETriangulationParams::Rect(rect);
+    tessParams.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(colorVec));
 
-    auto cpuResult = teCtx->tessalateSync(tessParams, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
+    auto cpuResult = teCtx->triangulateSync(tessParams, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
     std::cout << "CPU tessellation: " << cpuResult.totalVertexCount() << " vertices, "
               << cpuResult.meshes.size() << " meshes" << std::endl;
 
-    auto gpuFuture = teCtx->tessalateOnGPU(tessParams, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
+    auto gpuFuture = teCtx->triangulateOnGPU(tessParams, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
     auto gpuResult = gpuFuture.get();
     std::cout << "GPU tessellation: " << gpuResult.totalVertexCount() << " vertices, "
               << gpuResult.meshes.size() << " meshes" << std::endl;

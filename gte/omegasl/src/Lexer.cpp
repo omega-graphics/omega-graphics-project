@@ -46,10 +46,8 @@ namespace omegasl {
         (subject == KW_TY_FLOAT2X2) ||
         (subject == KW_TY_FLOAT3X3) ||
         (subject == KW_TY_FLOAT4X4) ||
-        (subject == KW_TY_DOUBLE) ||
-        (subject == KW_TY_DOUBLE2) ||
-        (subject == KW_TY_DOUBLE3) ||
-        (subject == KW_TY_DOUBLE4) ||
+        /// Note: double/double2/3/4 intentionally omitted.
+        /// Metal has no double support; GLSL requires extensions.
         (subject == KW_TY_BUFFER) ||
         (subject == KW_TY_TEXTURE1D) ||
         (subject == KW_TY_TEXTURE2D) ||

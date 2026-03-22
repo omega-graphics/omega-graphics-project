@@ -18,7 +18,7 @@ LRESULT CALLBACK   WndProc(HWND, UINT, WPARAM, LPARAM);
 static OmegaGTE::GTE gte;
 static OmegaGTE::SharedHandle<OmegaGTE::GTEShaderLibrary> library;
 static OmegaGTE::SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget;
-static OmegaGTE::SharedHandle<OmegaGTE::OmegaTessellationEngineContext> tessContext;
+static OmegaGTE::SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> tessContext;
 static OmegaGTE::SharedHandle<OmegaGTE::GERenderPipelineState> renderPipelineState;
 static OmegaGTE::SharedHandle<OmegaGTE::GEBuffer> vertexBuffer;
 static OmegaGTE::SharedHandle<OmegaGTE::GETexture> texture;
@@ -49,7 +49,7 @@ void tessalate(){
     rect.w = 100;
     rect.pos.x = 0;
     rect.pos.y = 0;
-    auto rect_mesh = tessContext->tessalateSync(OmegaGTE::TETessellationParams::Rect(rect));
+    auto rect_mesh = tessContext->triangulateSync(OmegaGTE::TETriangulationParams::Rect(rect));
 
     std::cout << "Tessalated GRect" << std::endl;
     auto coord = OmegaGTE::FVec<2>::Create();
@@ -228,7 +228,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
        
     renderTarget = gte.graphicsEngine->makeNativeRenderTarget(renderTargetDesc);
 
-    tessContext = gte.tessalationEngine->createTEContextFromNativeRenderTarget(renderTarget);
+    tessContext = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);
 
     tessalate();
 

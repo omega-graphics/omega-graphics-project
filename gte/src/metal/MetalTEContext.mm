@@ -86,13 +86,13 @@ id<MTLComputePipelineState> compileKernel(id<MTLDevice> dev, NSString *src) {
     return [dev newComputePipelineStateWithFunction:fn error:&err];
 }
 
-TETessellationResult readback(id<MTLBuffer> buf, unsigned vc,
-                              const std::optional<TETessellationResult::AttachmentData> &att) {
-    TETessellationResult res;
-    TETessellationResult::TEMesh mesh{TETessellationResult::TEMesh::TopologyTriangle};
+TETriangulationResult readback(id<MTLBuffer> buf, unsigned vc,
+                              const std::optional<TETriangulationResult::AttachmentData> &att) {
+    TETriangulationResult res;
+    TETriangulationResult::TEMesh mesh{TETriangulationResult::TEMesh::TopologyTriangle};
     auto *v = (MetalTessVertex *)[buf contents];
     for (unsigned i = 0; i + 2 < vc; i += 3) {
-        TETessellationResult::TEMesh::Polygon p{};
+        TETriangulationResult::TEMesh::Polygon p{};
         p.a.pt = {v[i].pos[0], v[i].pos[1], v[i].pos[2]};
         p.b.pt = {v[i+1].pos[0], v[i+1].pos[1], v[i+1].pos[2]};
         p.c.pt = {v[i+2].pos[0], v[i+2].pos[1], v[i+2].pos[2]};
@@ -117,25 +117,25 @@ struct Pipelines {
     }
 };
 
-std::future<TETessellationResult> gpuDispatch(
-        OmegaTessellationEngineContext::GPUTessExtractedParams &ep,
+std::future<TETriangulationResult> gpuDispatch(
+        OmegaTriangulationEngineContext::GPUTriangulationExtractedParams &ep,
         GEViewport &vp, float ctxArcStep, Pipelines &pip,
-        OmegaTessellationEngineContext *ctx,
-        const TETessellationParams &origParams,
+        OmegaTriangulationEngineContext *ctx,
+        const TETriangulationParams &origParams,
         GTEPolygonFrontFaceRotation ff, GEViewport *origVP) {
 
-    std::optional<TETessellationResult::AttachmentData> colorAtt;
+    std::optional<TETriangulationResult::AttachmentData> colorAtt;
     simd_float4 cv = {0,0,0,1};
     if (ep.hasColor) {
-        colorAtt = TETessellationResult::AttachmentData{FVec<4>::Create(), FVec<2>::Create(), FVec<3>::Create()};
+        colorAtt = TETriangulationResult::AttachmentData{FVec<4>::Create(), FVec<2>::Create(), FVec<3>::Create()};
         colorAtt->color[0][0] = ep.cr; colorAtt->color[1][0] = ep.cg;
         colorAtt->color[2][0] = ep.cb; colorAtt->color[3][0] = ep.ca;
         cv = {ep.cr, ep.cg, ep.cb, ep.ca};
     }
 
     auto fallback = [&]() {
-        auto r = ctx->tessalateSync(origParams, ff, origVP);
-        std::promise<TETessellationResult> p; p.set_value(std::move(r)); return p.get_future();
+        auto r = ctx->triangulateSync(origParams, ff, origVP);
+        std::promise<TETriangulationResult> p; p.set_value(std::move(r)); return p.get_future();
     };
 
     id<MTLComputePipelineState> pso = nil;
@@ -143,7 +143,7 @@ std::future<TETessellationResult> gpuDispatch(
     NSUInteger tc = 1;
     id<MTLBuffer> paramBuf = nil, outBuf = nil;
 
-    using ET = OmegaTessellationEngineContext::GPUTessExtractedParams;
+    using ET = OmegaTriangulationEngineContext::GPUTriangulationExtractedParams;
     switch (ep.type) {
         case ET::Rect: {
             pso = pip.rect; vc = 6; tc = 1;
@@ -191,7 +191,7 @@ std::future<TETessellationResult> gpuDispatch(
 
     if (!pso || !paramBuf || !outBuf) return fallback();
 
-    auto prom = std::make_shared<std::promise<TETessellationResult>>();
+    auto prom = std::make_shared<std::promise<TETriangulationResult>>();
     auto fut = prom->get_future();
     id<MTLCommandBuffer> cmd = [pip.queue commandBuffer];
     id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
@@ -214,17 +214,17 @@ std::future<TETessellationResult> gpuDispatch(
 } // anon namespace
 
 
-class MetalNativeRenderTargetTEContext : public OmegaTessellationEngineContext {
+class MetalNativeRenderTargetTEContext : public OmegaTriangulationEngineContext {
     SharedHandle<GEMetalNativeRenderTarget> target;
     Pipelines pip;
 public:
-    std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params,
+    std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams &params,
             GTEPolygonFrontFaceRotation ff, GEViewport *viewport) override {
         if (!pip.ready) {
             id<MTLCommandQueue> q = (id<MTLCommandQueue>)target->nativeCommandQueue();
             pip.init(q.device, q);
         }
-        GPUTessExtractedParams ep; extractGPUTessParams(params, ep);
+        GPUTriangulationExtractedParams ep; extractGPUTriangulationParams(params, ep);
         GEViewport vp = viewport ? *viewport : GEViewport{0,0,1,1,0,1};
         return gpuDispatch(ep, vp, arcStep, pip, this, params, ff, viewport);
     }
@@ -248,17 +248,17 @@ public:
     MetalNativeRenderTargetTEContext(SharedHandle<GEMetalNativeRenderTarget> t) : target(t) {}
 };
 
-class MetalTextureRenderTargetTEContext : public OmegaTessellationEngineContext {
+class MetalTextureRenderTargetTEContext : public OmegaTriangulationEngineContext {
     SharedHandle<GEMetalTextureRenderTarget> target;
     Pipelines pip;
 public:
-    std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams &params,
+    std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams &params,
             GTEPolygonFrontFaceRotation ff, GEViewport *viewport) override {
         if (!pip.ready) {
             id<MTLCommandQueue> q = (id<MTLCommandQueue>)target->nativeCommandQueue();
             pip.init(q.device, q);
         }
-        GPUTessExtractedParams ep; extractGPUTessParams(params, ep);
+        GPUTriangulationExtractedParams ep; extractGPUTriangulationParams(params, ep);
         GEViewport vp = viewport ? *viewport : GEViewport{0,0,1,1,0,1};
         return gpuDispatch(ep, vp, arcStep, pip, this, params, ff, viewport);
     }
@@ -284,13 +284,13 @@ public:
 };
 
 
-SharedHandle<OmegaTessellationEngineContext> CreateNativeRenderTargetTEContext(SharedHandle<GENativeRenderTarget> &renderTarget) {
-    return (SharedHandle<OmegaTessellationEngineContext>) new MetalNativeRenderTargetTEContext(
+SharedHandle<OmegaTriangulationEngineContext> CreateNativeRenderTargetTEContext(SharedHandle<GENativeRenderTarget> &renderTarget) {
+    return (SharedHandle<OmegaTriangulationEngineContext>) new MetalNativeRenderTargetTEContext(
         std::dynamic_pointer_cast<GEMetalNativeRenderTarget>(renderTarget));
 }
 
-SharedHandle<OmegaTessellationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> &renderTarget) {
-    return (SharedHandle<OmegaTessellationEngineContext>) new MetalTextureRenderTargetTEContext(
+SharedHandle<OmegaTriangulationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> &renderTarget) {
+    return (SharedHandle<OmegaTriangulationEngineContext>) new MetalTextureRenderTargetTEContext(
         std::dynamic_pointer_cast<GEMetalTextureRenderTarget>(renderTarget));
 }
 

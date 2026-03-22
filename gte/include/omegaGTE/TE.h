@@ -13,28 +13,28 @@
 _NAMESPACE_BEGIN_
 /**
  *
- Defines the arguments for the tessellation operations.
+ Defines the arguments for the triangulation operations.
 */
-struct OMEGAGTE_EXPORT TETessellationParams {
+struct OMEGAGTE_EXPORT TETriangulationParams {
     private:
     struct GraphicsPath3DParams;
     typedef enum : unsigned char {
-        TESSALATE_RECT,
-        TESSALATE_ROUNDEDRECT,
-        TESSELLATE_RECTANGULAR_PRISM,
-        TESSALATE_PYRAMID,
-        TESSALATE_ELLIPSOID,
-        TESSALATE_CYLINDER,
-        TESSALATE_CONE,
-        TESSALATE_GRAPHICSPATH2D,
-        TESSALATE_GRAPHICSPATH3D
-    } TessalationType;
-    TessalationType type;
+        TRIANGULATE_RECT,
+        TRIANGULATE_ROUNDEDRECT,
+        TRIANGULATE_RECTANGULAR_PRISM,
+        TRIANGULATE_PYRAMID,
+        TRIANGULATE_ELLIPSOID,
+        TRIANGULATE_CYLINDER,
+        TRIANGULATE_CONE,
+        TRIANGULATE_GRAPHICSPATH2D,
+        TRIANGULATE_GRAPHICSPATH3D
+    } TriangulationType;
+    TriangulationType type;
 
     union Data;
 
     struct DataDelete {
-        TessalationType t;
+        TriangulationType t;
     public:
         void operator()(Data *ptr);
     };
@@ -45,7 +45,7 @@ struct OMEGAGTE_EXPORT TETessellationParams {
     bool graphicsPath2DFill = false;
     float graphicsPath2DStrokeWidth = 1.f;
 
-    friend class OmegaTessellationEngineContext;
+    friend class OmegaTriangulationEngineContext;
 public:
     struct OMEGAGTE_EXPORT Attachment {
         typedef enum : int {
@@ -82,76 +82,76 @@ private:
 public:
   
     /**
-      Tessalate a GRect
-      @param[in] rect 
-      @returns TETessalationParams
+      Triangulate a GRect
+      @param[in] rect
+      @returns TETriangulationParams
     */
-    static TETessellationParams Rect(GRect & rect);
+    static TETriangulationParams Rect(GRect & rect);
 
     /**
-      Tessalate a GRoundedRect
-      @param[in] roundedRect 
-      @returns TETessalationParams
+      Triangulate a GRoundedRect
+      @param[in] roundedRect
+      @returns TETriangulationParams
     */
-    static TETessellationParams RoundedRect(GRoundedRect & roundedRect);
+    static TETriangulationParams RoundedRect(GRoundedRect & roundedRect);
 
     /**
-      Tessalate a GRectangularPrism
-      @param[in] rectPrism 
-      @returns TETessalationParams
+      Triangulate a GRectangularPrism
+      @param[in] rectPrism
+      @returns TETriangulationParams
     */
-    static TETessellationParams RectangularPrism(GRectangularPrism &rectPrism);
+    static TETriangulationParams RectangularPrism(GRectangularPrism &rectPrism);
 
     /**
-      Tessalate a GPyramid
-      @param[in] pyramid 
-      @returns TETessalationParams
+      Triangulate a GPyramid
+      @param[in] pyramid
+      @returns TETriangulationParams
     */
-    static TETessellationParams Pyramid(GPyramid &pyramid);
+    static TETriangulationParams Pyramid(GPyramid &pyramid);
 
     /**
-      Tessalate a GRect
-      @param[in] rect 
-      @returns TETessalationParams
+      Triangulate a GRect
+      @param[in] rect
+      @returns TETriangulationParams
     */
-    static TETessellationParams Ellipsoid(GEllipsoid & ellipsoid);
+    static TETriangulationParams Ellipsoid(GEllipsoid & ellipsoid);
 
     /**
-      Tessalate a GCylinder
-      @param[in] cylinder 
-      @returns TETessalationParams
+      Triangulate a GCylinder
+      @param[in] cylinder
+      @returns TETriangulationParams
     */
-    static TETessellationParams Cylinder(GCylinder &cylinder);
+    static TETriangulationParams Cylinder(GCylinder &cylinder);
 
     /**
-      Tessalate a GCone
-      @param[in] cone 
-      @returns TETessalationParams
+      Triangulate a GCone
+      @param[in] cone
+      @returns TETriangulationParams
     */
-    static TETessellationParams Cone(GCone &cone);
+    static TETriangulationParams Cone(GCone &cone);
 
     /**
-      Tessalate 2D vector paths
+      Triangulate 2D vector paths
       @param[in] vectorPaths A small array with *only* 2 GVectorPath2D objects.
-      @returns TETessalationParams
+      @returns TETriangulationParams
     */
-    static TETessellationParams GraphicsPath2D(GVectorPath2D & path,float strokeWidth = 1.f,bool contour = false,bool fill = false);
+    static TETriangulationParams GraphicsPath2D(GVectorPath2D & path,float strokeWidth = 1.f,bool contour = false,bool fill = false);
     /**
-      Tessalate 3D vector paths
-      @param[in] vectorPathCount The number of vectorPathes to tessalate 
+      Triangulate 3D vector paths
+      @param[in] vectorPathCount The number of vectorPathes to triangulate
       @param[in] vectorPaths An array of GVectorPath3D objects. (Ensure that it has the same length as the `vectorPathCount`)
-      @returns TETessalationParams
+      @returns TETriangulationParams
     */
-    static TETessellationParams GraphicsPath3D(unsigned vectorPathCount,GVectorPath3D * const vectorPaths);
+    static TETriangulationParams GraphicsPath3D(unsigned vectorPathCount,GVectorPath3D * const vectorPaths);
 
-    ~TETessellationParams();
+    ~TETriangulationParams();
 };
 
 /**
  A small struct for holding one (or more) 
- meshes that result from a tesslation operation.
+ meshes that result from a triangulation operation.
 */
-struct OMEGAGTE_EXPORT TETessellationResult {
+struct OMEGAGTE_EXPORT TETriangulationResult {
     struct OMEGAGTE_EXPORT AttachmentData {
         FVec<4> color;
         FVec<2> texture2Dcoord;
@@ -185,8 +185,8 @@ struct OMEGAGTE_EXPORT TETessellationResult {
 /**
  
 */
-class OMEGAGTE_EXPORT OmegaTessellationEngineContext {
-    friend class OmegaTessellationEngine;
+class OMEGAGTE_EXPORT OmegaTriangulationEngineContext {
+    friend class OmegaTriangulationEngine;
 protected:
     GEViewport defaultViewport;
     std::vector<std::thread> activeThreads;
@@ -197,10 +197,10 @@ protected:
     void translateCoordsDefaultImpl(float x, float y,float z,GEViewport * viewport, float *x_result, float *y_result,float *z_result);
     virtual void translateCoords(float x, float y,float z,GEViewport * viewport, float *x_result, float *y_result,float *z_result) = 0;
     virtual GEViewport getEffectiveViewport();
-    inline void _tessalatePriv(const TETessellationParams & params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport,TETessellationResult & result);
+    inline void _triangulatePriv(const TETriangulationParams & params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport,TETriangulationResult & result);
 
 public:
-    struct GPUTessExtractedParams {
+    struct GPUTriangulationExtractedParams {
         enum Type { Rect, RoundedRect, Ellipsoid, RectPrism, Path2D, Other } type = Other;
         float rx, ry, rw, rh;
         float ex, ey, erad_x, erad_y;
@@ -212,67 +212,67 @@ public:
         struct Segment { float sx, sy, ex, ey; };
         std::vector<Segment> pathSegments;
     };
-    void extractGPUTessParams(const TETessellationParams &params, GPUTessExtractedParams &out);
-    OMEGACOMMON_CLASS("OmegaGTE.OmegaTessellationEngineContext")
+    void extractGPUTriangulationParams(const TETriangulationParams &params, GPUTriangulationExtractedParams &out);
+    OMEGACOMMON_CLASS("OmegaGTE.OmegaTriangulationEngineContext")
     // Default Value: 0.01 radians.
     void setArcStep(float newArcStep){
         arcStep = newArcStep;
     };
-    ~OmegaTessellationEngineContext();
+    ~OmegaTriangulationEngineContext();
     /**
-     Tessalate according to the parameters and viewport.
+     Triangulate according to the parameters and viewport.
      @param params
       @param frontFaceRotation
      @param viewport
-     @returns TETessellationResult
+     @returns TETriangulationResult
     */
-    TETessellationResult tessalateSync(const TETessellationParams & params, GTEPolygonFrontFaceRotation frontFaceRotation = GTEPolygonFrontFaceRotation::Clockwise,GEViewport * viewport = nullptr);
+    TETriangulationResult triangulateSync(const TETriangulationParams & params, GTEPolygonFrontFaceRotation frontFaceRotation = GTEPolygonFrontFaceRotation::Clockwise,GEViewport * viewport = nullptr);
 
     /**
-      Performs tessalation like `tessalateSync` (@see tessalateSync), 
+      Performs triangulation like `triangulateSync` (@see triangulateSync), 
       however it performs the computation in a compute pipeline.
      @param params
       @param frontFaceRotation
      @param viewport
-     @returns std::future<TETessellationResult>
+     @returns std::future<TETriangulationResult>
     */
-    virtual std::future<TETessellationResult> tessalateOnGPU(const TETessellationParams & params,GTEPolygonFrontFaceRotation frontFaceRotation = GTEPolygonFrontFaceRotation::Clockwise, GEViewport * viewport = nullptr) = 0;
+    virtual std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams & params,GTEPolygonFrontFaceRotation frontFaceRotation = GTEPolygonFrontFaceRotation::Clockwise, GEViewport * viewport = nullptr) = 0;
 
     /**
-      Performs tessalation like `tessalateSync` (@see tessalateSync), 
+      Performs triangulation like `triangulateSync` (@see triangulateSync), 
       however it performs the computation in a seperate thread
      @param params
      @param frontFaceRotation
      @param viewport
-     @returns std::future<TETessellationResult>
+     @returns std::future<TETriangulationResult>
     */
-    std::future<TETessellationResult> tessalateAsync(const TETessellationParams & params,GTEPolygonFrontFaceRotation frontFaceRotation = GTEPolygonFrontFaceRotation::Clockwise, GEViewport * viewport = nullptr);
+    std::future<TETriangulationResult> triangulateAsync(const TETriangulationParams & params,GTEPolygonFrontFaceRotation frontFaceRotation = GTEPolygonFrontFaceRotation::Clockwise, GEViewport * viewport = nullptr);
 
 };
 
 /**
- @brief The Omega Tessalation Engine
+ @brief The Omega Triangulation Engine
 */
-class OMEGAGTE_EXPORT OmegaTessellationEngine {
+class OMEGAGTE_EXPORT OmegaTriangulationEngine {
 public:
-    OMEGACOMMON_CLASS("OmegaGTE.OmegaTessellationEngine")
+    OMEGACOMMON_CLASS("OmegaGTE.OmegaTriangulationEngine")
   /**
    NEVER CALL THIS FUNCTION! Please invoke GTE::Init()
   */
-  static SharedHandle<OmegaTessellationEngine> Create();
+  static SharedHandle<OmegaTriangulationEngine> Create();
     /**
-        Create a Tessalation Context from a GENativeRenderTarget
+        Create a Triangulation Context from a GENativeRenderTarget
         @param[in] renderTarget
-        @returns SharedHandle<OmegaTessellationEngineContext>
+        @returns SharedHandle<OmegaTriangulationEngineContext>
     */
-    SharedHandle<OmegaTessellationEngineContext> createTEContextFromNativeRenderTarget(SharedHandle<GENativeRenderTarget> & renderTarget);
+    SharedHandle<OmegaTriangulationEngineContext> createTEContextFromNativeRenderTarget(SharedHandle<GENativeRenderTarget> & renderTarget);
 
     /**
-        Create a Tessalation Context from a GETextureRenderTarget
+        Create a Triangulation Context from a GETextureRenderTarget
         @param[in] renderTarget
-        @returns SharedHandle<OmegaTessellationEngineContext>
+        @returns SharedHandle<OmegaTriangulationEngineContext>
     */
-    SharedHandle<OmegaTessellationEngineContext> createTEContextFromTextureRenderTarget(SharedHandle<GETextureRenderTarget> & renderTarget);
+    SharedHandle<OmegaTriangulationEngineContext> createTEContextFromTextureRenderTarget(SharedHandle<GETextureRenderTarget> & renderTarget);
 };
 
 _NAMESPACE_END_

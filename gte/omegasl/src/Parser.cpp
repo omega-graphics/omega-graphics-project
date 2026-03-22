@@ -217,13 +217,64 @@ namespace omegasl {
                 auto _s = (ast::ShaderDecl *)node;
                 _s->shaderType = ast::ShaderDecl::Fragment;
             }
-            else if(t.str == KW_HULL){
+            else if(t.str == KW_HULL || t.str == KW_DOMAIN){
                 auto _s = (ast::ShaderDecl *)node;
-                _s->shaderType = ast::ShaderDecl::Hull;
-            }
-            else if(t.str == KW_DOMAIN){
-                auto _s = (ast::ShaderDecl *)node;
-                _s->shaderType = ast::ShaderDecl::Domain;
+                _s->shaderType = (t.str == KW_HULL) ? ast::ShaderDecl::Hull : ast::ShaderDecl::Domain;
+
+                /// Parse tessellation descriptor: hull(domain=tri, partitioning=integer, outputtopology=triangle_cw, outputcontrolpoints=3)
+                /// or: domain(domain=tri)
+                t = lexer->nextTok();
+                if(t.type == TOK_LPAREN){
+                    t = lexer->nextTok();
+                    while(t.type != TOK_RPAREN){
+                        if(t.type != TOK_ID && t.type != TOK_KW){
+                            auto e = std::make_unique<UnexpectedToken>(std::string("Expected property name in tessellation descriptor, got `") + t.str + "`");
+                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            diagnostics->addError(std::move(e));
+                            return nullptr;
+                        }
+                        auto propName = t.str;
+                        t = lexer->nextTok();
+                        if(t.type != TOK_OP || t.str != OP_EQUAL){
+                            auto e = std::make_unique<UnexpectedToken>("Expected `=` after tessellation property name");
+                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            diagnostics->addError(std::move(e));
+                            return nullptr;
+                        }
+                        t = lexer->nextTok();
+                        auto propValue = t.str;
+
+                        if(propName == "domain"){
+                            if(propValue == "tri") _s->tessDesc.domain = ast::ShaderDecl::TessellationDesc::Triangle;
+                            else if(propValue == "quad") _s->tessDesc.domain = ast::ShaderDecl::TessellationDesc::Quad;
+                        }
+                        else if(propName == "partitioning"){
+                            if(propValue == "integer") _s->tessDesc.partitioning = ast::ShaderDecl::TessellationDesc::Integer;
+                            else if(propValue == "fractional_even") _s->tessDesc.partitioning = ast::ShaderDecl::TessellationDesc::FractionalEven;
+                            else if(propValue == "fractional_odd") _s->tessDesc.partitioning = ast::ShaderDecl::TessellationDesc::FractionalOdd;
+                        }
+                        else if(propName == "outputtopology"){
+                            if(propValue == "triangle_cw") _s->tessDesc.outputTopology = ast::ShaderDecl::TessellationDesc::TriangleCW;
+                            else if(propValue == "triangle_ccw") _s->tessDesc.outputTopology = ast::ShaderDecl::TessellationDesc::TriangleCCW;
+                            else if(propValue == "line") _s->tessDesc.outputTopology = ast::ShaderDecl::TessellationDesc::Line;
+                        }
+                        else if(propName == "outputcontrolpoints"){
+                            _s->tessDesc.outputControlPoints = std::stoul(propValue);
+                        }
+
+                        t = lexer->nextTok();
+                        if(t.type == TOK_COMMA){
+                            t = lexer->nextTok();
+                        }
+                    }
+                }
+                else {
+                    auto e = std::make_unique<UnexpectedToken>("Expected `(` after hull/domain keyword with tessellation descriptor");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
+                    delete _s;
+                    return nullptr;
+                }
             }
             else if(t.str == KW_COMPUTE){
                 auto _s = (ast::ShaderDecl *)node;

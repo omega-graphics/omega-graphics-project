@@ -261,7 +261,10 @@ using namespace metal;
                     else if(func_name == BUILTIN_MAKE_FLOAT3X3){ shaderOut << "float3x3"; }
                     else if(func_name == BUILTIN_MAKE_FLOAT4X4){ shaderOut << "float4x4"; }
                     else {
-                        shaderOut << func_name;
+                        /// Map OmegaSL names to MSL names where they differ.
+                        if(func_name == BUILTIN_LERP) shaderOut << "mix";
+                        else if(func_name == BUILTIN_FRAC) shaderOut << "fract";
+                        else shaderOut << func_name;
                     }
 
                     if(!generated){
@@ -483,11 +486,13 @@ using namespace metal;
                         shadermap_entry.threadgroupDesc.z = _decl->threadgroupDesc.z;
                     }
                     else if(_decl->shaderType == ast::ShaderDecl::Hull){
-                        shaderOut << "vertex";
+                        shaderOut << "kernel";
                         shadermap_entry.type = OMEGASL_SHADER_HULL;
                     }
                     else if(_decl->shaderType == ast::ShaderDecl::Domain){
-                        shaderOut << "vertex";
+                        auto & td = _decl->tessDesc;
+                        shaderOut << "[[patch(" << (td.domain == ast::ShaderDecl::TessellationDesc::Triangle ? "triangle" : "quad")
+                                  << ", " << td.outputControlPoints << ")]] vertex";
                         shadermap_entry.type = OMEGASL_SHADER_DOMAIN;
                     }
 

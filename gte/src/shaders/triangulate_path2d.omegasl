@@ -16,7 +16,7 @@ buffer<TessVertex> vertices : 1;
 
 [in segments, out vertices]
 compute(x=64,y=1,z=1)
-void tess_path2d_kernel(uint3 tid : GlobalThreadID){
+void triangulate_path2d_kernel(uint3 tid : GlobalThreadID){
     uint segIdx = tid[0];
 
     float sx = segments[segIdx].startEnd[0];

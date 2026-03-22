@@ -42,7 +42,7 @@ static SharedHandle<OmegaGTE::GTEShaderLibrary> funcLib;
 static SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
 static SharedHandle<OmegaGTE::GERenderPipelineState> renderPipeline;
 static SharedHandle<OmegaGTE::GENativeRenderTarget> nativeRenderTarget = nullptr;
-static SharedHandle<OmegaGTE::OmegaTessellationEngineContext> tessContext;
+static SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> tessContext;
 //static OmegaGTE::SharedHandle<OmegaGTE::GETexture> texture;
 
 
@@ -73,7 +73,7 @@ static void render(id<MTLDevice> dev){
     rect.w = 100;
     rect.pos.x = 0;
     rect.pos.y = 0;
-    auto rect_mesh = tessContext->tessalateSync(OmegaGTE::TETessellationParams::Rect(rect));
+    auto rect_mesh = tessContext->triangulateSync(OmegaGTE::TETriangulationParams::Rect(rect));
 
 
     auto coord = OmegaGTE::makeColor(1.f,0.f,0.f,1.f);
@@ -174,7 +174,7 @@ static void render(id<MTLDevice> dev){
 
         nativeRenderTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
 
-        tessContext = gte.tessalationEngine->createTEContextFromNativeRenderTarget(nativeRenderTarget);
+        tessContext = gte.triangulationEngine->createTEContextFromNativeRenderTarget(nativeRenderTarget);
         
         MTLCaptureManager *manager = [MTLCaptureManager sharedCaptureManager];
         

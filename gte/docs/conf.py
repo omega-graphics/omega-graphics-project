@@ -13,7 +13,7 @@ project = "OmegaGTE"
 
 author = "Omega Graphics"
 
-copyright = "2021," + author
+copyright = "2026," + author
 version = "0.3"
 
 extensions = ["sphinx.ext.viewcode"]

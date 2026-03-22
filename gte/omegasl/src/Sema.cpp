@@ -500,16 +500,61 @@ namespace omegasl {
             auto func_found = resolveFuncTypeWithName(_id_expr->id);
 
             if(func_found == nullptr){
-                /// Unknown function — treat as pass-through (math builtins like cos, sin, sqrt, etc.).
-                /// Validate arguments but allow the call; the target compiler handles the actual type.
-                for(unsigned i = 0; i < _expr->args.size(); i++){
-                    if(performSemForExpr(_expr->args[i],funcContext) == nullptr)
-                        return nullptr;
+                /// Check if it's a known math intrinsic.
+                OmegaCommon::StrRef fname = _id_expr->id;
+                int expectedArgs = -1; // -1 = unknown function
+                bool returnsScalar = false; // true for length() which returns scalar from vector
+
+                /// 1-arg intrinsics (same type in, same type out)
+                if(fname == BUILTIN_SIN || fname == BUILTIN_COS || fname == BUILTIN_TAN ||
+                   fname == BUILTIN_ASIN || fname == BUILTIN_ACOS || fname == BUILTIN_ATAN ||
+                   fname == BUILTIN_SQRT || fname == BUILTIN_ABS || fname == BUILTIN_FLOOR ||
+                   fname == BUILTIN_CEIL || fname == BUILTIN_ROUND || fname == BUILTIN_FRAC ||
+                   fname == BUILTIN_NORMALIZE ||
+                   fname == BUILTIN_EXP || fname == BUILTIN_EXP2 ||
+                   fname == BUILTIN_LOG || fname == BUILTIN_LOG2){
+                    expectedArgs = 1;
                 }
-                /// Return the argument type if single-arg (e.g. cos(x) returns same type as x),
-                /// otherwise return void.
-                if(_expr->args.size() == 1){
-                    return performSemForExpr(_expr->args[0],funcContext);
+                else if(fname == BUILTIN_LENGTH){
+                    expectedArgs = 1;
+                    returnsScalar = true;
+                }
+                /// 2-arg intrinsics
+                else if(fname == BUILTIN_ATAN2 || fname == BUILTIN_POW ||
+                        fname == BUILTIN_MIN || fname == BUILTIN_MAX ||
+                        fname == BUILTIN_STEP || fname == BUILTIN_REFLECT){
+                    expectedArgs = 2;
+                }
+                /// 3-arg intrinsics
+                else if(fname == BUILTIN_CLAMP || fname == BUILTIN_LERP ||
+                        fname == BUILTIN_SMOOTHSTEP){
+                    expectedArgs = 3;
+                }
+
+                if(expectedArgs > 0 && (int)_expr->args.size() != expectedArgs){
+                    auto e = std::make_unique<ArgumentCountMismatch>();
+                    e->functionName = fname;
+                    e->expected = (unsigned)expectedArgs;
+                    e->actual = (unsigned)_expr->args.size();
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+
+                /// Validate all arguments.
+                ast::TypeExpr *firstArgType = nullptr;
+                for(unsigned i = 0; i < _expr->args.size(); i++){
+                    auto argType = performSemForExpr(_expr->args[i],funcContext);
+                    if(!argType) return nullptr;
+                    if(i == 0) firstArgType = argType;
+                }
+
+                /// Return type: first arg's type (or float for length()).
+                if(returnsScalar && firstArgType){
+                    return ast::TypeExpr::Create(ast::builtins::float_type);
+                }
+                if(firstArgType){
+                    return firstArgType;
                 }
                 return ret;
             }

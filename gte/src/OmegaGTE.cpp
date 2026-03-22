@@ -7,9 +7,9 @@ _NAMESPACE_BEGIN_
 GTE Init(SharedHandle<GTEDevice> & device){
     auto ge = OmegaGraphicsEngine::Create(device);
 #ifdef RUNTIME_SHADER_COMP_SUPPORT
-    return {ge, OmegaTessellationEngine::Create(),OmegaSLCompiler::Create(device)};
+    return {ge, OmegaTriangulationEngine::Create(),OmegaSLCompiler::Create(device)};
 #else
-    return {ge, OmegaTessellationEngine::Create()};
+    return {ge, OmegaTriangulationEngine::Create()};
 #endif
 
 
@@ -27,7 +27,7 @@ GTE InitWithDefaultDevice(){
 
 void Close(GTE &gte){
     gte.graphicsEngine.reset();
-    gte.tessalationEngine.reset();
+    gte.triangulationEngine.reset();
 };
 
 _NAMESPACE_END_

@@ -16,38 +16,36 @@ buffer<TessVertex> vertices : 1;
 
 [in params, out vertices]
 compute(x=1,y=1,z=1)
-void tess_rect_kernel(uint3 tid : GlobalThreadID){
+void triangulate_rounded_rect_kernel(uint3 tid : GlobalThreadID){
     float x0 = params[0].rect[0];
     float y0 = params[0].rect[1];
     float w  = params[0].rect[2];
     float h  = params[0].rect[3];
+    float rad_x = params[0].extra[0];
+    float rad_y = params[0].extra[1];
     float vw = params[0].viewport[2];
     float vh = params[0].viewport[3];
     float4 col = params[0].color;
+    float arcStep = params[0].extra[2];
 
-    float nx0 = (2.0 * x0) / vw;
-    float ny0 = (2.0 * y0) / vh;
-    float nx1 = (2.0 * (x0 + w)) / vw;
-    float ny1 = (2.0 * (y0 + h)) / vh;
+    float cx0 = (2.0 * (x0 + rad_x)) / vw;
+    float cy0 = (2.0 * (y0 + rad_y)) / vh;
+    float cx1 = (2.0 * (x0 + w - rad_x)) / vw;
+    float cy1 = (2.0 * (y0 + h - rad_y)) / vh;
 
     TessVertex v;
     v.color = col;
 
-    v.pos = make_float4(nx0, ny0, 0.0, 1.0);
+    v.pos = make_float4(cx0, cy0, 0.0, 1.0);
     vertices[0] = v;
-
-    v.pos = make_float4(nx0, ny1, 0.0, 1.0);
+    v.pos = make_float4(cx0, cy1, 0.0, 1.0);
     vertices[1] = v;
-
-    v.pos = make_float4(nx1, ny0, 0.0, 1.0);
+    v.pos = make_float4(cx1, cy0, 0.0, 1.0);
     vertices[2] = v;
-
-    v.pos = make_float4(nx1, ny1, 0.0, 1.0);
+    v.pos = make_float4(cx1, cy1, 0.0, 1.0);
     vertices[3] = v;
-
-    v.pos = make_float4(nx0, ny1, 0.0, 1.0);
+    v.pos = make_float4(cx0, cy1, 0.0, 1.0);
     vertices[4] = v;
-
-    v.pos = make_float4(nx1, ny0, 0.0, 1.0);
+    v.pos = make_float4(cx1, cy0, 0.0, 1.0);
     vertices[5] = v;
 }

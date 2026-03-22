@@ -11,7 +11,7 @@
 static OmegaGTE::GTE gte;
 static int exitCode = 1;
 
-static void runTests(SharedHandle<OmegaGTE::OmegaTessellationEngineContext> &teCtx){
+static void runTests(SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> &teCtx){
     OmegaGTE::GEViewport vp{0, 0, 800, 600, 0, 1};
     bool allPassed = true;
 
@@ -20,8 +20,8 @@ static void runTests(SharedHandle<OmegaGTE::OmegaTessellationEngineContext> &teC
         OmegaGTE::GPyramid pyramid{};
         pyramid.x = 0; pyramid.y = 0; pyramid.z = 0;
         pyramid.w = 100; pyramid.d = 100; pyramid.h = 150;
-        auto params = OmegaGTE::TETessellationParams::Pyramid(pyramid);
-        auto result = teCtx->tessalateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
+        auto params = OmegaGTE::TETriangulationParams::Pyramid(pyramid);
+        auto result = teCtx->triangulateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
         std::cout << "  Meshes: " << result.meshes.size()
                   << ", Vertices: " << result.totalVertexCount() << std::endl;
         if(result.totalVertexCount() == 0){
@@ -38,8 +38,8 @@ static void runTests(SharedHandle<OmegaGTE::OmegaTessellationEngineContext> &teC
         cylinder.pos = {0, 0, 0};
         cylinder.r = 50;
         cylinder.h = 200;
-        auto params = OmegaGTE::TETessellationParams::Cylinder(cylinder);
-        auto result = teCtx->tessalateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
+        auto params = OmegaGTE::TETriangulationParams::Cylinder(cylinder);
+        auto result = teCtx->triangulateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
         std::cout << "  Meshes: " << result.meshes.size()
                   << ", Vertices: " << result.totalVertexCount() << std::endl;
         if(result.totalVertexCount() == 0){
@@ -56,8 +56,8 @@ static void runTests(SharedHandle<OmegaGTE::OmegaTessellationEngineContext> &teC
         cone.x = 0; cone.y = 0; cone.z = 0;
         cone.r = 50;
         cone.h = 150;
-        auto params = OmegaGTE::TETessellationParams::Cone(cone);
-        auto result = teCtx->tessalateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
+        auto params = OmegaGTE::TETriangulationParams::Cone(cone);
+        auto result = teCtx->triangulateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
         std::cout << "  Meshes: " << result.meshes.size()
                   << ", Vertices: " << result.totalVertexCount() << std::endl;
         if(result.totalVertexCount() == 0){
@@ -75,8 +75,8 @@ static void runTests(SharedHandle<OmegaGTE::OmegaTessellationEngineContext> &teC
         path3d.append(OmegaGTE::GPoint3D{100, 100, 0});
         path3d.append(OmegaGTE::GPoint3D{0, 100, 0});
         path3d.append(OmegaGTE::GPoint3D{0, 0, 0});
-        auto params = OmegaGTE::TETessellationParams::GraphicsPath3D(1, &path3d);
-        auto result = teCtx->tessalateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
+        auto params = OmegaGTE::TETriangulationParams::GraphicsPath3D(1, &path3d);
+        auto result = teCtx->triangulateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
         std::cout << "  Meshes: " << result.meshes.size()
                   << ", Vertices: " << result.totalVertexCount() << std::endl;
         if(result.totalVertexCount() == 0){
@@ -116,7 +116,7 @@ static void activate(GtkApplication *app, gpointer user_data){
     rtDesc.x_window = x_window;
     auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc);
 
-    auto teCtx = gte.tessalationEngine->createTEContextFromNativeRenderTarget(renderTarget);
+    auto teCtx = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);
     assert(teCtx && "Failed to create TE context");
 
     runTests(teCtx);
