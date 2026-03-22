@@ -61,14 +61,7 @@ namespace omegasl {
                     t = lexer->nextTok();
                 }
 
-                if(t.type != TOK_KW){
-                    // error
-                    auto e = std::make_unique<UnexpectedToken>("Expected keyword in resource map");
-                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
-                    diagnostics->addError(std::move(e));
-                    return nullptr;
-                }
-
+                /// in/out/inout are contextual keywords — lexed as TOK_ID.
                 ast::ShaderDecl::ResourceMapDesc mapDesc;
 
                 if(t.str == KW_IN){
@@ -81,8 +74,7 @@ namespace omegasl {
                     mapDesc.access = ast::ShaderDecl::ResourceMapDesc::Out;
                 }
                 else {
-                    /// Error (Unexpected Keyword)
-                    auto e = std::make_unique<UnexpectedToken>(std::string("Unexpected keyword `") + t.str + "` in resource map");
+                    auto e = std::make_unique<UnexpectedToken>(std::string("Expected `in`, `out`, or `inout` in resource map, got `") + t.str + "`");
                     e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
                     diagnostics->addError(std::move(e));
                     return nullptr;
@@ -1205,7 +1197,14 @@ namespace omegasl {
 
     bool Parser::parseObjectExpr(Tok &first_tok, ast::Expr **expr,ast::Scope *parentScope) {
         bool defaultR = true;
-        if(first_tok.type == TOK_ID){
+        if(first_tok.type == TOK_ID && (first_tok.str == "true" || first_tok.str == "false")){
+            auto _e = new ast::LiteralExpr();
+            _e->type = LITERAL_EXPR;
+            _e->b_val = (first_tok.str == "true");
+            _e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+            *expr = _e;
+        }
+        else if(first_tok.type == TOK_ID){
             auto _e = new ast::IdExpr();
             _e->type = ID_EXPR;
             _e->id = first_tok.str;
@@ -1361,12 +1360,17 @@ namespace omegasl {
                     if(targetTy){
                         ++tokIdx;
                         first_tok = getTok();
-                        _expr = parseExpr(first_tok,parentScope);
-                        if(_expr){
+                        /// Parse cast operand at unary precedence (higher than any binary op)
+                        /// so that `(uint)fx * y` parses as `((uint)fx) * y`, not `(uint)(fx * y)`.
+                        ast::Expr *operand = nullptr;
+                        if(!parseOpExpr(first_tok, &operand, parentScope, 100)){
+                            return false;
+                        }
+                        if(operand){
                             auto *castExpr = new ast::CastExpr();
                             castExpr->type = CAST_EXPR;
                             castExpr->targetType = targetTy;
-                            castExpr->expr = _expr;
+                            castExpr->expr = operand;
                             castExpr->scope = parentScope;
                             _expr = castExpr;
                         }

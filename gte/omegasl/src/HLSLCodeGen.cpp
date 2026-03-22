@@ -72,6 +72,9 @@ namespace omegasl {
                     else if(_expr->isUint()) {
                         shaderOut << _expr->ui_num.value();
                     }
+                    else if(_expr->isBool()){
+                        shaderOut << (_expr->b_val.value() ? "true" : "false");
+                    }
                     else if(_expr->isString()){
                         shaderOut << _expr->str.value();
                     }

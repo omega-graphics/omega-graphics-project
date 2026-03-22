@@ -153,6 +153,12 @@ namespace omegasl {
         return nullptr;
     }
 
+    /// Check if a resolved type is a numeric scalar (float, int, uint, double).
+    static bool isNumericScalar(ast::Type *t) {
+        return t == ast::builtins::float_type || t == ast::builtins::int_type ||
+               t == ast::builtins::uint_type;
+    }
+
     ast::TypeExpr *Sem::performSemForDecl(ast::Decl * decl,ast::FuncDecl *funcContext){
         auto ret = ast::TypeExpr::Create(KW_TY_VOID);
         switch (decl->type) {
@@ -172,6 +178,25 @@ namespace omegasl {
                 }
 
                 currentContext->variableMap.insert(std::make_pair(_decl->spec.name,_decl->typeExpr));
+
+                if(_decl->spec.initializer.has_value()){
+                    auto initType = performSemForExpr(_decl->spec.initializer.value(), funcContext);
+                    if(!initType) return nullptr;
+                    /// Check initializer type is compatible with declared type.
+                    auto initTy = resolveTypeWithExpr(initType);
+                    if(initTy && type_res && initTy != type_res){
+                        bool compatible = false;
+                        /// Allow numeric scalar implicit conversions.
+                        if(isNumericScalar(initTy) && isNumericScalar(type_res)) compatible = true;
+                        /// Allow scalar-to-vector is not valid, but same-type is fine.
+                        if(!compatible){
+                            auto e = std::make_unique<TypeError>(std::string("Cannot initialize `") + _decl->typeExpr->name + "` variable with expression of type `" + initType->name + "`");
+                            e->loc = _decl->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                            return nullptr;
+                        }
+                    }
+                }
                 break;
             }
             case RETURN_DECL : {
@@ -238,6 +263,9 @@ namespace omegasl {
             }
             else if(_expr->isFloat()){
                 return ast::TypeExpr::Create(ast::builtins::float_type);
+            }
+            else if(_expr->isBool()){
+                return ast::TypeExpr::Create(ast::builtins::bool_type);
             }
         }
         else if(expr->type == ARRAY_EXPR){
@@ -404,11 +432,25 @@ namespace omegasl {
             }
 
             if(!rhs_res->compare(lhs_res)){
-                auto e = std::make_unique<TypeError>("Failed to match type in binary expr.");
-                e->loc = _expr->loc.value_or(ErrorLoc{});
-                diagnostics->addError(std::move(e));
-                return nullptr;
+                /// Allow scalar-vector and vector-scalar binary operations.
+                auto lhsTy = resolveTypeWithExpr(lhs_res);
+                auto rhsTy = resolveTypeWithExpr(rhs_res);
+                bool scalarVecOk = false;
+                if(lhsTy && rhsTy){
+                    bool lhsScalar = isNumericScalar(lhsTy);
+                    bool rhsScalar = isNumericScalar(rhsTy);
+                    if(lhsScalar != rhsScalar) scalarVecOk = true;
+                }
+                if(!scalarVecOk){
+                    auto e = std::make_unique<TypeError>("Failed to match type in binary expr.");
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
             }
+            /// Return the vector type if one side is vector, otherwise lhs.
+            auto lhsTy = resolveTypeWithExpr(lhs_res);
+            if(lhsTy && isNumericScalar(lhsTy)) return rhs_res;
             return lhs_res;
         }
         else if(expr->type == INDEX_EXPR){
@@ -458,8 +500,18 @@ namespace omegasl {
             auto func_found = resolveFuncTypeWithName(_id_expr->id);
 
             if(func_found == nullptr){
-                auto e = std::make_unique<UndeclaredIdentifier>(_id_expr->id); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
-                return nullptr;
+                /// Unknown function — treat as pass-through (math builtins like cos, sin, sqrt, etc.).
+                /// Validate arguments but allow the call; the target compiler handles the actual type.
+                for(unsigned i = 0; i < _expr->args.size(); i++){
+                    if(performSemForExpr(_expr->args[i],funcContext) == nullptr)
+                        return nullptr;
+                }
+                /// Return the argument type if single-arg (e.g. cos(x) returns same type as x),
+                /// otherwise return void.
+                if(_expr->args.size() == 1){
+                    return performSemForExpr(_expr->args[0],funcContext);
+                }
+                return ret;
             }
 
             auto reportTypeErr = [&](const std::string& msg) {
@@ -483,9 +535,9 @@ namespace omegasl {
                 }
 
                 auto _t = resolveTypeWithExpr(first_t_e);
-                if(_t != ast::builtins::float_type){ reportTypeErr("1st param of function " + std::string(BUILTIN_MAKE_FLOAT2) + " must be a type `float`"); return nullptr; }
+                if(!isNumericScalar(_t)){ reportTypeErr("1st param of function " + std::string(BUILTIN_MAKE_FLOAT2) + " must be a numeric scalar"); return nullptr; }
                 _t = resolveTypeWithExpr(second_t_e);
-                if(_t != ast::builtins::float_type){ reportTypeErr("2nd param of function " + std::string(BUILTIN_MAKE_FLOAT2) + " must be a type `float`"); return nullptr; }
+                if(!isNumericScalar(_t)){ reportTypeErr("2nd param of function " + std::string(BUILTIN_MAKE_FLOAT2) + " must be a numeric scalar"); return nullptr; }
 
             }
             else if(func_found == ast::builtins::make_float3){
@@ -505,18 +557,18 @@ namespace omegasl {
 
                 if(_expr->args.size() == 3){
                     auto _t = resolveTypeWithExpr(first_t_e);
-                    if(_t != ast::builtins::float_type){ reportTypeErr("1st param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a type `float`"); return nullptr; }
+                    if(!isNumericScalar(_t)){ reportTypeErr("1st param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a numeric scalar"); return nullptr; }
                     _t = resolveTypeWithExpr(second_t_e);
-                    if(_t != ast::builtins::float_type){ reportTypeErr("2nd param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a type `float`"); return nullptr; }
+                    if(!isNumericScalar(_t)){ reportTypeErr("2nd param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a numeric scalar"); return nullptr; }
                     _t = resolveTypeWithExpr(third_t_e);
-                    if(_t != ast::builtins::float_type){ reportTypeErr("3rd param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a type `float`"); return nullptr; }
+                    if(!isNumericScalar(_t)){ reportTypeErr("3rd param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a numeric scalar"); return nullptr; }
                 }
                 else {
                     auto _t = resolveTypeWithExpr(first_t_e);
-                    if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type)){ reportTypeErr("1st param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a type `float` or type `float2`"); return nullptr; }
+                    if(!isNumericScalar(_t) && _t != ast::builtins::float2_type){ reportTypeErr("1st param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a numeric scalar or float2"); return nullptr; }
                     auto _first_t = _t;
                     _t = resolveTypeWithExpr(second_t_e);
-                    if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type)){ reportTypeErr("2nd param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a type `float` or type `float2`"); return nullptr; }
+                    if(!isNumericScalar(_t) && _t != ast::builtins::float2_type){ reportTypeErr("2nd param of function " + std::string(BUILTIN_MAKE_FLOAT3) + " must be a numeric scalar or float2"); return nullptr; }
                     if(_first_t == _t){ reportTypeErr("Invalid args for " + std::string(BUILTIN_MAKE_FLOAT3)); return nullptr; }
                 }
 
@@ -543,28 +595,28 @@ namespace omegasl {
 
                 if(_expr->args.size() == 4){
                     auto _t = resolveTypeWithExpr(first_t_e);
-                    if(_t != ast::builtins::float_type){ reportTy("1st param of function " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a type `float`"); return nullptr; }
+                    if(!isNumericScalar(_t)){ reportTy("1st param of function " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a numeric scalar"); return nullptr; }
                     _t = resolveTypeWithExpr(second_t_e);
-                    if(_t != ast::builtins::float_type){ reportTy("2nd param of function " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a type `float`"); return nullptr; }
+                    if(!isNumericScalar(_t)){ reportTy("2nd param of function " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a numeric scalar"); return nullptr; }
                     _t = resolveTypeWithExpr(third_t_e);
-                    if(_t != ast::builtins::float_type){ reportTy("3rd param of function " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a type `float`"); return nullptr; }
+                    if(!isNumericScalar(_t)){ reportTy("3rd param of function " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a numeric scalar"); return nullptr; }
                     _t = resolveTypeWithExpr(fourth_t_e);
-                    if(_t != ast::builtins::float_type){ reportTy("4th param of function " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a type `float`"); return nullptr; }
+                    if(!isNumericScalar(_t)){ reportTy("4th param of function " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a numeric scalar"); return nullptr; }
                 }
                 else if(_expr->args.size() == 3){
                     auto _t = resolveTypeWithExpr(first_t_e);
-                    if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type)){ reportTy("1st param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be float or float2"); return nullptr; }
+                    if(!isNumericScalar(_t) && _t != ast::builtins::float2_type){ reportTy("1st param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a numeric scalar or float2"); return nullptr; }
                     auto _t1 = _t;
                     _t = resolveTypeWithExpr(second_t_e);
-                    if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type)){ reportTy("2nd param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be float or float2"); return nullptr; }
+                    if(!isNumericScalar(_t) && _t != ast::builtins::float2_type){ reportTy("2nd param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a numeric scalar or float2"); return nullptr; }
                     _t = resolveTypeWithExpr(third_t_e);
-                    if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type)){ reportTy("3rd param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be float or float2"); return nullptr; }
+                    if(!isNumericScalar(_t) && _t != ast::builtins::float2_type){ reportTy("3rd param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a numeric scalar or float2"); return nullptr; }
                 }
                 else {
                     auto _t = resolveTypeWithExpr(first_t_e);
-                    if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type || _t == ast::builtins::float3_type)){ reportTy("1st param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be float, float2, or float3"); return nullptr; }
+                    if(!isNumericScalar(_t) && _t != ast::builtins::float2_type && _t != ast::builtins::float3_type){ reportTy("1st param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a numeric scalar, float2, or float3"); return nullptr; }
                     _t = resolveTypeWithExpr(second_t_e);
-                    if(!(_t == ast::builtins::float_type || _t == ast::builtins::float2_type || _t == ast::builtins::float3_type)){ reportTy("2nd param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be float, float2, or float3"); return nullptr; }
+                    if(!isNumericScalar(_t) && _t != ast::builtins::float2_type && _t != ast::builtins::float3_type){ reportTy("2nd param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a numeric scalar, float2, or float3"); return nullptr; }
                 }
             }
             /// @brief sample(sampler sampler,texture texture,texcoord coord) function

@@ -214,6 +214,10 @@ namespace omegasl::ast {
         return ui_num.has_value();
     }
 
+    bool LiteralExpr::isBool() const {
+        return b_val.has_value();
+    }
+
     bool LiteralExpr::isString() const {
         return str.has_value();
     }

@@ -265,6 +265,8 @@ namespace omegasl {
             std::optional<int> i_num;
             std::optional<unsigned int> ui_num;
             std::optional<double> d_num;
+            /// Bool Literal
+            std::optional<bool> b_val;
             /// Str Literal
             std::optional<OmegaCommon::String> str;
 
@@ -272,6 +274,7 @@ namespace omegasl {
             bool isInt() const;
             bool isUint() const;
             bool isDouble() const;
+            bool isBool() const;
 
             bool isString() const;
         };
