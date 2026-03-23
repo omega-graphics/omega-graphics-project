@@ -52,7 +52,7 @@ namespace OmegaWTK::Composition {
         SharedHandle<OmegaGTE::GETextureRenderTarget> preEffectTarget;
         SharedHandle<OmegaGTE::GETextureRenderTarget> effectTarget;
         SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget;
-        SharedHandle<OmegaGTE::OmegaTessellationEngineContext> tessellationEngineContext;
+        SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> tessellationEngineContext;
         SharedHandle<BackendCanvasEffectProcessor> imageProcessor;
         Core::Rect renderTargetSize;
         float renderScale = 1.0f;

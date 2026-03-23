@@ -289,7 +289,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
 
         D3D12GetDebugInterface(IID_PPV_ARGS(&debug_interface));
         debug_interface->EnableDebugLayer();
-        debug_interface->SetEnableGPUBasedValidation(true);
+        debug_interface->SetEnableGPUBasedValidation(false);
 
         hr = D3D12CreateDevice(device->adapter.Get(),D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d3d12_device));
         if(FAILED(hr)){

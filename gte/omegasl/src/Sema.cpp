@@ -205,20 +205,26 @@ namespace omegasl {
                 currentContext->variableMap.insert(std::make_pair(_decl->spec.name,_decl->typeExpr));
 
                 if(_decl->spec.initializer.has_value()){
-                    auto initType = performSemForExpr(_decl->spec.initializer.value(), funcContext);
+                    auto initExpr = _decl->spec.initializer.value();
+                    auto initType = performSemForExpr(initExpr, funcContext);
                     if(!initType) return nullptr;
-                    /// Check initializer type is compatible with declared type.
-                    auto initTy = resolveTypeWithExpr(initType);
-                    if(initTy && type_res && initTy != type_res){
-                        bool compatible = false;
-                        /// Allow numeric scalar implicit conversions.
-                        if(isNumericScalar(initTy) && isNumericScalar(type_res)) compatible = true;
-                        /// Allow scalar-to-vector is not valid, but same-type is fine.
-                        if(!compatible){
-                            auto e = std::make_unique<TypeError>(std::string("Cannot initialize `") + _decl->typeExpr->name + "` variable with expression of type `" + initType->name + "`");
-                            e->loc = _decl->loc.value_or(ErrorLoc{});
-                            diagnostics->addError(std::move(e));
-                            return nullptr;
+                    /// Aggregate (brace) initializers produce void type — allow them
+                    /// for struct types without further type checking.
+                    bool isAggregateInit = (initExpr->type == ARRAY_EXPR);
+                    if(!isAggregateInit){
+                        /// Check initializer type is compatible with declared type.
+                        auto initTy = resolveTypeWithExpr(initType);
+                        if(initTy && type_res && initTy != type_res){
+                            bool compatible = false;
+                            /// Allow numeric scalar implicit conversions.
+                            if(isNumericScalar(initTy) && isNumericScalar(type_res)) compatible = true;
+                            /// Allow scalar-to-vector is not valid, but same-type is fine.
+                            if(!compatible){
+                                auto e = std::make_unique<TypeError>(std::string("Cannot initialize `") + _decl->typeExpr->name + "` variable with expression of type `" + initType->name + "`");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return nullptr;
+                            }
                         }
                     }
                 }
@@ -299,6 +305,12 @@ namespace omegasl {
         }
         else if(expr->type == ARRAY_EXPR){
             auto _expr = (ast::ArrayExpr *)expr;
+            /// Validate each element expression, but the aggregate itself
+            /// has no single resolved type — return void to signal aggregate init.
+            for(auto & elem : _expr->elm){
+                performSemForExpr(elem, funcContext);
+            }
+            return ast::TypeExpr::Create(KW_TY_VOID);
         }
         else if(expr->type == MEMBER_EXPR){
             auto _expr = (ast::MemberExpr *)expr;

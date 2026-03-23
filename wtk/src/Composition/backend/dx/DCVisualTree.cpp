@@ -141,7 +141,7 @@ namespace OmegaWTK::Composition {
             MessageBoxA(HWND_DESKTOP,(std::string("Failed to set Content of Visual. ERROR:") + ss.str()).c_str(),NULL,MB_OK);
         };
         // rc.visual = nullptr;
-        return (SharedHandle<Parent::Visual>)new DCVisualTree::Visual {pos,context,v,swapChain,renderScale};
+        return SharedHandle<Parent::Visual>(new DCVisualTree::Visual {pos,context,v,swapChain,renderScale});
     };
 
     void DCVisualTree::setRootVisual(Core::SharedPtr<Parent::Visual> & visual){

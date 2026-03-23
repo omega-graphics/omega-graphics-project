@@ -709,6 +709,7 @@ namespace omegasl {
         void compileShaderOnRuntime(ast::ShaderDecl::Type type, const OmegaCommon::StrRef &name) override {
 #ifdef TARGET_DIRECTX
             auto source = stringOut.str();
+            std::cout << "[OmegaSL HLSL] Compiling shader '" << name.data() << "' target=" << (type == ast::ShaderDecl::Vertex ? "vs" : type == ast::ShaderDecl::Fragment ? "ps" : "cs") << "\n" << source << std::endl;
             ID3DBlob *blob;
             OmegaCommon::String target;
             if(type == ast::ShaderDecl::Vertex){

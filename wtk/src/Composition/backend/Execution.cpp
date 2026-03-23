@@ -484,7 +484,9 @@ void Compositor::executeCurrentCommand(){
                                   Compositor::onBackendSubmissionCompleted(weakTelemetryState,telemetry);
                               });
 #ifdef _WIN32
+        std::cout << "[WTK Diag] Execution: waitForGPU..." << std::endl;
         targetContext->waitForGPU();
+        std::cout << "[WTK Diag] Execution: waitForGPU done" << std::endl;
 #endif
         target->needsPresent = true;
         OMEGAWTK_DEBUG("Committed Data!")

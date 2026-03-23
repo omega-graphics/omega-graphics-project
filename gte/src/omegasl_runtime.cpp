@@ -3,6 +3,7 @@
 #include "../omegasl/src/Parser.h"
 
 #include "OmegaGTE.h"
+#include <iostream>
 #include <stdexcept>
 
 #ifdef RUNTIME_SHADER_COMP_SUPPORT
@@ -35,6 +36,7 @@ class OmegaSLCompilerImpl : public OmegaSLCompiler {
     std::shared_ptr<omegasl::Parser> parser;
     omegasl::CodeGenOpts genOpts;
     std::ostringstream sourceBuf;
+    omegasl::DiagnosticEngine diagnostics;
 #if defined(TARGET_METAL)
     omegasl::MetalCodeOpts metalCodeOpts;
 #endif
@@ -70,9 +72,14 @@ public:
            else {
               in = &source->in;
            }
-           omegasl::ParseContext context {*in};
+           omegasl::ParseContext context {*in, nullptr, &diagnostics};
            parser->parseContext(context);
+           if(diagnostics.hasErrors()){
+               std::cerr << "[OmegaSL Runtime] Shader compilation produced " << diagnostics.getErrorCount() << " error(s):" << std::endl;
+               diagnostics.report(std::cerr);
+           }
        }
+       std::cout << "[OmegaSL Runtime] Generated HLSL:\n" << sourceBuf.str() << std::endl;
        auto res = gen->getLibrary("RUNTIME");
        gen->resetShaderMap();
        return res;

@@ -1059,6 +1059,7 @@ _NAMESPACE_BEGIN_
 
     void GED3D12CommandQueue::commitToGPUAndWait() {
         commitToGPU();
+        fence->SetEventOnCompletion(1,cpuEvent);
         commandQueue->Signal(fence.Get(),1);
         WaitForSingleObject(cpuEvent,INFINITE);
         commandQueue->Signal(fence.Get(),0);

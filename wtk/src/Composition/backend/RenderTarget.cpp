@@ -510,7 +510,7 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
         tessellationEngineContext.reset();
         return;
     }
-    tessellationEngineContext = gte.tessalationEngine->createTEContextFromTextureRenderTarget(preEffectTarget);
+    tessellationEngineContext = gte.triangulationEngine->createTEContextFromTextureRenderTarget(preEffectTarget);
     if(tessellationEngineContext == nullptr){
         std::cout << "Failed to create tessellation context for backing render target." << std::endl;
     }
@@ -640,15 +640,20 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                      imageProcessor != nullptr &&
                                      effectTexture != nullptr &&
                                      effectTarget != nullptr;
+        std::cout << "[WTK Diag] commit: canApplyEffects=" << canApplyEffects << std::endl;
         if(canApplyEffects){
             preEffectTarget->submitCommandBuffer(_l_cb);
+            std::cout << "[WTK Diag] commit: preEffectTarget->commit()" << std::endl;
             preEffectTarget->commit();
+            std::cout << "[WTK Diag] commit: applyEffects" << std::endl;
             imageProcessor->applyEffects(effectTexture,preEffectTarget,effectQueue);
             preEffectTarget->waitForGPU();
             preEffectTarget->signalFence(fence);
         } else {
             preEffectTarget->submitCommandBuffer(_l_cb, fence);
+            std::cout << "[WTK Diag] commit: preEffectTarget->commit()" << std::endl;
             preEffectTarget->commit();
+            std::cout << "[WTK Diag] commit: preEffectTarget->commit() done" << std::endl;
         }
         committedTexture = preEffectTarget->underlyingTexture();
         if(canApplyEffects){
@@ -725,7 +730,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         if(bufferWriter == nullptr || preEffectTarget == nullptr || tessellationEngineContext == nullptr){
             return;
         }
-        OmegaGTE::TETessellationResult result;
+        OmegaGTE::TETriangulationResult result;
 
         OmegaGTE::GEViewport viewPort {};
         viewPort.x = viewPort.y = viewPort.nearDepth = 0.f;
@@ -769,7 +774,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 auto & _params = ((VisualCommandParams*)params)->rectParams;
                 if (_params.brush == nullptr) return;
                 OmegaGTE::GRect r{OmegaGTE::GPoint2D {0,0},_params.rect.w,_params.rect.h};
-                auto te_params = OmegaGTE::TETessellationParams::Rect(r);
+                auto te_params = OmegaGTE::TETriangulationParams::Rect(r);
 
                 useTextureRenderPipeline = !_params.brush->isColor;
                 textureCoordDenomW = std::max(1.f,_params.rect.w);
@@ -779,10 +784,10 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                                      _params.brush->color.g,
                                                      _params.brush->color.b,
                                                      _params.brush->color.a);
-                    te_params.addAttachment(OmegaGTE::TETessellationParams::Attachment::makeColor(color));
+                    te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(color));
                 }
 
-                result = tessellationEngineContext->tessalateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
                 result.translate(_params.rect.pos.x,
                                  -_params.rect.pos.y,
                                  0,
@@ -793,7 +798,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             case VisualCommand::Bitmap : {
                 auto & _params = ((VisualCommandParams*)params)->bitmapParams;
                 OmegaGTE::GRect r{OmegaGTE::GPoint2D {0,0},_params.rect.w,_params.rect.h};
-                auto te_params = OmegaGTE::TETessellationParams::Rect(r);
+                auto te_params = OmegaGTE::TETriangulationParams::Rect(r);
 
                 useTextureRenderPipeline = true;
                 textureCoordDenomW = std::max(1.f,_params.rect.w);
@@ -812,9 +817,9 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     texturePaint->copyBytes((void *)_params.img->data,_params.img->header.stride);
                 }
 
-                te_params.addAttachment(OmegaGTE::TETessellationParams::Attachment::makeTexture2D(r.w,r.h));
+                te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeTexture2D(r.w,r.h));
 
-                result = tessellationEngineContext->tessalateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
                 result.translate(_params.rect.pos.x,
                                  -_params.rect.pos.y,
                                  0,
@@ -833,7 +838,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                         _params.rect.rad_x,
                         _params.rect.rad_y
                 };
-                auto te_params = OmegaGTE::TETessellationParams::RoundedRect(localRect);
+                auto te_params = OmegaGTE::TETriangulationParams::RoundedRect(localRect);
 
                 useTextureRenderPipeline = !_params.brush->isColor;
                 textureCoordDenomW = std::max(1.f,_params.rect.w);
@@ -844,9 +849,9 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                                      _params.brush->color.g,
                                                      _params.brush->color.b,
                                                      _params.brush->color.a);
-                    te_params.addAttachment(OmegaGTE::TETessellationParams::Attachment::makeColor(color));
+                    te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(color));
                 }
-                result = tessellationEngineContext->tessalateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
                 result.translate(_params.rect.pos.x,
                                  -_params.rect.pos.y,
                                  0,
@@ -881,7 +886,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                             0.0f};
                 };
 
-                OmegaGTE::TETessellationResult::TEMesh mesh {OmegaGTE::TETessellationResult::TEMesh::TopologyTriangle};
+                OmegaGTE::TETriangulationResult::TEMesh mesh {OmegaGTE::TETriangulationResult::TEMesh::TopologyTriangle};
                 const auto center = toNdcPoint(cx,cy);
 
                 const float twoPi = static_cast<float>(2.0 * OmegaGTE::PI);
@@ -896,13 +901,13 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     const float py = cy + (std::sin(angle) * ry);
                     auto next = toNdcPoint(px,py);
 
-                    OmegaGTE::TETessellationResult::TEMesh::Polygon tri {};
+                    OmegaGTE::TETriangulationResult::TEMesh::Polygon tri {};
                     tri.a.pt = center;
                     tri.b.pt = prev;
                     tri.c.pt = next;
                     tri.a.attachment = tri.b.attachment = tri.c.attachment =
-                            std::make_optional<OmegaGTE::TETessellationResult::AttachmentData>(
-                                    OmegaGTE::TETessellationResult::AttachmentData{
+                            std::make_optional<OmegaGTE::TETriangulationResult::AttachmentData>(
+                                    OmegaGTE::TETriangulationResult::AttachmentData{
                                             color,
                                             OmegaGTE::FVec<2>::Create(),
                                             OmegaGTE::FVec<3>::Create()});
@@ -920,7 +925,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 if(_params.path == nullptr || _params.path->size() < 2){
                     return;
                 }
-                auto te_params = OmegaGTE::TETessellationParams::GraphicsPath2D(*_params.path,
+                auto te_params = OmegaGTE::TETriangulationParams::GraphicsPath2D(*_params.path,
                                                                                  _params.strokeWidth,
                                                                                  _params.contour,
                                                                                  _params.fill);
@@ -931,8 +936,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                                 _params.brush->color.b,
                                                 _params.brush->color.a);
                 }
-                te_params.addAttachment(OmegaGTE::TETessellationParams::Attachment::makeColor(color));
-                result = tessellationEngineContext->tessalateSync(te_params,
+                te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(color));
+                result = tessellationEngineContext->triangulateSync(te_params,
                                                                   OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,
                                                                   &viewPort);
                 break;
@@ -1084,7 +1089,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     writeTexVertexToBuffer(v.c.pt,cCoord);
                 }
                 else {
-                    auto useColor = [&fallbackColor](const std::optional<OmegaGTE::TETessellationResult::AttachmentData> &att) -> OmegaGTE::FVec<4> {
+                    auto useColor = [&fallbackColor](const std::optional<OmegaGTE::TETriangulationResult::AttachmentData> &att) -> OmegaGTE::FVec<4> {
                         if (!att) return fallbackColor;
                         const auto &c = att->color;
                         if (c[0][0] == 0.f && c[1][0] == 0.f && c[2][0] == 0.f && c[3][0] == 0.f)
@@ -1111,6 +1116,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         }
         // #endregion
 
+        std::cout << "[WTK Diag] startRenderPass" << std::endl;
         cb->startRenderPass(renderPassDesc);
         if(useTextureRenderPipeline){
             cb->setRenderPipelineState(textureRenderPipelineState);
@@ -1123,11 +1129,12 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         }
         cb->setViewports({viewport});
         cb->setScissorRects({scissorRect});
+        std::cout << "[WTK Diag] drawPolygons" << std::endl;
 
 
         for(auto & m : result.meshes){
             OmegaGTE::GERenderTarget::CommandBuffer::PolygonType topology;
-            if(m.topology == OmegaGTE::TETessellationResult::TEMesh::TopologyTriangleStrip){
+            if(m.topology == OmegaGTE::TETriangulationResult::TEMesh::TopologyTriangleStrip){
                 topology = OmegaGTE::GERenderTarget::CommandBuffer::TriangleStrip;
             }
             else {
@@ -1136,12 +1143,15 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             cb->drawPolygons(topology, m.vertexCount(), startVertexIndex);
             startVertexIndex += m.vertexCount();
         }
+        std::cout << "[WTK Diag] flush+endRenderPass" << std::endl;
         bufferWriter->flush();
         cb->endRenderPass();
+        std::cout << "[WTK Diag] submitCommandBuffer" << std::endl;
         preEffectTarget->submitCommandBuffer(cb);
         if(bufferPool && buffer){
             deferredBufferReleases.push_back({std::move(buffer), requiredBytes});
         }
+        std::cout << "[WTK Diag] renderToTarget done" << std::endl;
     }
 
     static void collectAllLayersFromLimb(LayerTree *tree,
@@ -1263,14 +1273,18 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
         renderPassDesc.depthStencilAttachment.disabled = true;
         renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment{
-                {0.f,0.f,0.f,0.f},
+                {0.f,1.f,0.f,1.f},  // TEMP: bright green to test swap chain present
                 OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction::Clear};
 
         cb->startRenderPass(renderPassDesc);
 
         auto nativeFormat = nativeTarget->pixelFormat();
+        std::cout << "[WTK Diag] compositeAndPresent: nativeFormat=" << (int)nativeFormat
+                  << " allContexts=" << allContexts.size()
+                  << " freshlyPending=" << freshlyPending.size() << std::endl;
         auto finalPipeline = getFinalCopyPipelineForFormat(nativeFormat);
         if(finalPipeline == nullptr){
+            std::cout << "[WTK Diag] compositeAndPresent: finalPipeline is NULL — skipping blit!" << std::endl;
             cb->endRenderPass();
             nativeTarget->submitCommandBuffer(cb);
             nativeTarget->commitAndPresent();
@@ -1298,19 +1312,28 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
         // Blit each layer's texture in order. Alpha blending is already enabled
         // in the Vulkan pipeline state, so transparent regions composite correctly.
+        unsigned blitIdx = 0;
         for(auto *ctx : allContexts){
             auto tex = ctx->getCommittedTexture();
+            std::cout << "[WTK Diag] blit layer " << blitIdx
+                      << " tex=" << (tex ? "valid" : "NULL")
+                      << " backing=" << ctx->getBackingWidth() << "x" << ctx->getBackingHeight()
+                      << " pending=" << ctx->hasPendingContent << std::endl;
             if(tex == nullptr){
+                blitIdx++;
                 continue;
             }
             cb->bindResourceAtVertexShader(finalTextureDrawBuffer, 1);
             cb->bindResourceAtFragmentShader(tex, 2);
             cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
+            blitIdx++;
         }
 
         cb->endRenderPass();
         nativeTarget->submitCommandBuffer(cb);
+        std::cout << "[WTK Diag] compositeAndPresent: calling commitAndPresent" << std::endl;
         nativeTarget->commitAndPresent();
+        std::cout << "[WTK Diag] compositeAndPresent: present done" << std::endl;
 
         // Clear pending flags but keep committedTexture alive for future composites.
         for(auto *ctx : freshlyPending){

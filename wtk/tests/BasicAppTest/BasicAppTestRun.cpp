@@ -69,7 +69,7 @@ protected:
         uiView->setLayout(layout);
 
         auto style = OmegaWTK::StyleSheet::Create();
-        style = style->backgroundColor("basic_view",OmegaWTK::Composition::Color::Transparent);
+        style = style->backgroundColor("basic_view",OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Black8));
         style = style->elementBrush("center_rect",OmegaWTK::Composition::ColorBrush(
             OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)));
         uiView->setStyleSheet(style);
