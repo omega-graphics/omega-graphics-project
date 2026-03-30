@@ -1154,29 +1154,11 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         std::cout << "[WTK Diag] renderToTarget done" << std::endl;
     }
 
-    static void collectAllLayersFromLimb(LayerTree *tree,
-                                         LayerTree::Limb *limb,
-                                         OmegaCommon::Vector<Layer *> &layers){
-        if(tree == nullptr || limb == nullptr)
-            return;
-        auto & rootLayer = limb->getRootLayer();
-        if(rootLayer != nullptr)
-            layers.push_back(rootLayer.get());
-        for(auto it = limb->begin(); it != limb->end(); ++it){
-            if(*it != nullptr)
-                layers.push_back((*it).get());
-        }
-        const auto childCount = tree->getParentLimbChildCount(limb);
-        for(unsigned idx = 0; idx < childCount; ++idx){
-            collectAllLayersFromLimb(tree, tree->getLimbAtIndexFromParent(idx, limb), layers);
-        }
-    }
-
-    void RenderTargetStore::cleanTargets(LayerTree *tree, LayerTree::Limb *limb){
-        if(tree == nullptr || limb == nullptr)
+    void RenderTargetStore::cleanTargets(LayerTree *tree){
+        if(tree == nullptr)
             return;
         OmegaCommon::Vector<Layer *> liveLayers {};
-        collectAllLayersFromLimb(tree, limb, liveLayers);
+        tree->collectAllLayers(liveLayers);
 
         for(auto & storeEntry : store){
             auto & compTarget = storeEntry.second;
@@ -1202,10 +1184,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
     void RenderTargetStore::cleanTreeTargets(LayerTree *tree){
         if(tree == nullptr)
             return;
-        auto *root = tree->getTreeRoot();
-        if(root != nullptr){
-            cleanTargets(tree, root);
-        }
+        cleanTargets(tree);
     }
 
     void RenderTargetStore::removeRenderTarget(const SharedHandle<CompositionRenderTarget> & target){
@@ -1217,6 +1196,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
     void compositeAndPresentTarget(BackendCompRenderTarget & compTarget){
         compTarget.needsPresent = false;
+
+        // --- Direct present test: bypass blit pipeline, render solid color to drawable ---
 
         // Collect ALL visuals that have ever been rendered to (committedTexture != null),
         // not just those freshly pending. This is critical because the UIView element
@@ -1273,18 +1254,14 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
         renderPassDesc.depthStencilAttachment.disabled = true;
         renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment{
-                {0.f,1.f,0.f,1.f},  // TEMP: bright green to test swap chain present
+                {0.f,0.f,0.f,0.f},
                 OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction::Clear};
 
         cb->startRenderPass(renderPassDesc);
 
         auto nativeFormat = nativeTarget->pixelFormat();
-        std::cout << "[WTK Diag] compositeAndPresent: nativeFormat=" << (int)nativeFormat
-                  << " allContexts=" << allContexts.size()
-                  << " freshlyPending=" << freshlyPending.size() << std::endl;
         auto finalPipeline = getFinalCopyPipelineForFormat(nativeFormat);
         if(finalPipeline == nullptr){
-            std::cout << "[WTK Diag] compositeAndPresent: finalPipeline is NULL — skipping blit!" << std::endl;
             cb->endRenderPass();
             nativeTarget->submitCommandBuffer(cb);
             nativeTarget->commitAndPresent();
@@ -1310,15 +1287,9 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         cb->setViewports({finalViewport});
         cb->setScissorRects({finalScissorRect});
 
-        // Blit each layer's texture in order. Alpha blending is already enabled
-        // in the Vulkan pipeline state, so transparent regions composite correctly.
         unsigned blitIdx = 0;
         for(auto *ctx : allContexts){
             auto tex = ctx->getCommittedTexture();
-            std::cout << "[WTK Diag] blit layer " << blitIdx
-                      << " tex=" << (tex ? "valid" : "NULL")
-                      << " backing=" << ctx->getBackingWidth() << "x" << ctx->getBackingHeight()
-                      << " pending=" << ctx->hasPendingContent << std::endl;
             if(tex == nullptr){
                 blitIdx++;
                 continue;
@@ -1341,9 +1312,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             ctx->releaseDeferredBuffers();
         }
 
-#ifdef TARGET_MACOS
-        stopMTLCapture();
-#endif
+        // GPU capture stop removed — capture is now disabled.
     }
 
     void RenderTargetStore::presentAllPending(){

@@ -581,23 +581,8 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                 NSLog(@"Metal is not supported on this device! Exiting...");
                 exit(1);
             }
-            MTLCaptureManager *manager = [MTLCaptureManager sharedCaptureManager];
-
-            MTLCaptureDescriptor *captureDesc = [[MTLCaptureDescriptor alloc] init];
-            captureDesc.captureObject = device;
-            captureDesc.destination = MTLCaptureDestinationGPUTraceDocument;
-            NSString *tracePath = @"/tmp/OmegaWTK-Trace.gputrace";
-            [[NSFileManager defaultManager] removeItemAtPath:tracePath error:nil];
-            captureDesc.outputURL = [NSURL fileURLWithPath:tracePath];
-            NSError *error;
-            BOOL res = [manager startCaptureWithDescriptor:captureDesc error:&error];
-
-            if(!res){
-                NSLog(@"Failed to Start GPU Capture. %@",error);
-            }
-            else {
-                NSLog(@"Started GPU Capture. Output: %@",tracePath);
-            }
+            // GPU capture disabled — it intercepts Metal calls via CaptureMTLDevice
+            // and can interfere with drawable presentation.
 
             metalDevice = NSObjectHandle {NSOBJECT_CPP_BRIDGE device};
             DEBUG_STREAM("GEMetalEngine Successfully Created");

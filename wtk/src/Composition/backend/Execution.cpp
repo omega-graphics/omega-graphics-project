@@ -91,12 +91,18 @@ namespace {
 
         auto existing = target.surfaceTargets.find(layer);
         if(existing != target.surfaceTargets.end() && existing->second != nullptr){
+            std::cout << "[WTK Diag] ensureLayerSurface: reusing existing for layer=" << layer
+                      << " isChild=" << layer->isChildLayer()
+                      << " hasRoot=" << target.visualTree->hasRootVisual() << std::endl;
             return existing->second;
         }
+        std::cout << "[WTK Diag] ensureLayerSurface: CREATING for layer=" << layer
+                  << " isChild=" << layer->isChildLayer()
+                  << " hasRoot=" << target.visualTree->hasRootVisual() << std::endl;
 
         if(layer->isChildLayer()){
             if(!target.visualTree->hasRootVisual()){
-                auto treeRoot = layer->getParentLimb()->getRootLayer();
+                auto treeRoot = layer->getParentTree()->getRootLayer();
                 auto rootRect = sanitizeCommandRect(
                         treeRoot->getLayerRect(),
                         Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
@@ -148,25 +154,12 @@ namespace {
         return inserted.first->second;
     }
 
-    static void collectLayersForTreeLimb(LayerTree *tree,
-                                         LayerTree::Limb *limb,
-                                         OmegaCommon::Vector<Layer *> &layers){
-        if(tree == nullptr || limb == nullptr){
+    static void collectLayersForTree(LayerTree *tree,
+                                     OmegaCommon::Vector<Layer *> &layers){
+        if(tree == nullptr){
             return;
         }
-        auto &rootLayer = limb->getRootLayer();
-        if(rootLayer != nullptr){
-            layers.push_back(rootLayer.get());
-        }
-        for(auto it = limb->begin(); it != limb->end(); ++it){
-            if(*it != nullptr){
-                layers.push_back((*it).get());
-            }
-        }
-        const auto childCount = tree->getParentLimbChildCount(limb);
-        for(unsigned idx = 0; idx < childCount; ++idx){
-            collectLayersForTreeLimb(tree,tree->getLimbAtIndexFromParent(idx,limb),layers);
-        }
+        tree->collectAllLayers(layers);
     }
 
     static void resizeVisualForSurface(BackendCompRenderTarget & target,
@@ -252,7 +245,7 @@ void Compositor::applyLayerTreePacketDeltasToBackendMirror(std::uint64_t syncLan
                     case LayerTreeDeltaType::TreeAttached: {
                         treeState.attached = true;
                         OmegaCommon::Vector<Layer *> treeLayers {};
-                        collectLayersForTreeLimb(delta.tree,delta.tree->getTreeRoot(),treeLayers);
+                        collectLayersForTree(delta.tree,treeLayers);
                         for(auto *treeLayer : treeLayers){
                             if(treeLayer == nullptr){
                                 continue;

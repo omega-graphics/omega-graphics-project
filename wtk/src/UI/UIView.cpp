@@ -624,11 +624,11 @@ static Core::Rect localBoundsFromView(UIView *view){
     float limbWidth = 0.f;
     float limbHeight = 0.f;
 
-    auto limb = view->getLayerTreeLimb();
-    if(limb != nullptr && limb->getRootLayer() != nullptr){
-        const auto & limbRect = limb->getRootLayer()->getLayerRect();
-        limbWidth = limbRect.w;
-        limbHeight = limbRect.h;
+    auto *tree = view->getLayerTree();
+    if(tree != nullptr && tree->getRootLayer() != nullptr){
+        const auto & treeRect = tree->getRootLayer()->getLayerRect();
+        limbWidth = treeRect.w;
+        limbHeight = treeRect.h;
     }
 
     const bool viewValid = isValidDimension(viewWidth) &&
@@ -1263,11 +1263,11 @@ void UIRenderer::handleAnimation(UIElementTag tag,
     (void)curve;
 }
 
-UIView::UIView(const Core::Rect &rect,Composition::LayerTree *layerTree,ViewPtr parent,UIViewTag tag):
-CanvasView(rect,layerTree,parent),
+UIView::UIView(const Core::Rect &rect,ViewPtr parent,UIViewTag tag):
+CanvasView(rect,parent),
 UIRenderer(this),
 tag(tag){
-    rootCanvas = makeCanvas(getLayerTreeLimb()->getRootLayer());
+    rootCanvas = makeCanvas(getLayerTree()->getRootLayer());
     // UIView is a pure View (not a Widget), so ensure it is visible when attached.
     enable();
 }
@@ -1484,8 +1484,8 @@ SharedHandle<Composition::LayerAnimator> UIView::ensureAnimationLayerAnimator(co
 
     SharedHandle<Composition::Layer> layer = nullptr;
     if(tag == kUIViewRootEffectTag){
-        if(getLayerTreeLimb() != nullptr){
-            layer = getLayerTreeLimb()->getRootLayer();
+        if(getLayerTree() != nullptr){
+            layer = getLayerTree()->getRootLayer();
         }
     }
     else {
@@ -2497,7 +2497,7 @@ SharedHandle<Composition::Font> UIView::resolveFallbackTextFont(){
 
 void UIView::update(){
     if(rootCanvas == nullptr){
-        rootCanvas = makeCanvas(getLayerTreeLimb()->getRootLayer());
+        rootCanvas = makeCanvas(getLayerTree()->getRootLayer());
         markRootDirty();
         firstFrameCoherentSubmit = true;
     }

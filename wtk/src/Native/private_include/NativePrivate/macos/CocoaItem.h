@@ -76,7 +76,8 @@ public:
             };
             [CATransaction begin];
             [CATransaction setDisableActions:YES];
-            _ptr.wantsLayer = YES;
+
+            CALayer *hostLayer = _ptr.layer;
             NSRect hostBounds = _ptr.bounds;
             if(hostBounds.size.width <= 0.f || hostBounds.size.height <= 0.f){
                 hostBounds = _ptr.frame;
@@ -92,42 +93,17 @@ public:
             const CGFloat maxPointDimension = maxDrawableDimension / scale;
             hostBounds.size.width = MIN(MAX(hostBounds.size.width,1.f),maxPointDimension);
             hostBounds.size.height = MIN(MAX(hostBounds.size.height,1.f),maxPointDimension);
-            if(_ptr.layer == nil || [_ptr.layer isKindOfClass:[CAMetalLayer class]]){
-                _ptr.layer = [CALayer layer];
-            }
-            CALayer *hostLayer = _ptr.layer;
-            hostLayer.actions = noActions;
-            hostLayer.anchorPoint = CGPointMake(0.f,0.f);
-            hostLayer.position = CGPointMake(0.f,0.f);
-            hostLayer.bounds = hostBounds;
-            hostLayer.frame = hostBounds;
-            hostLayer.autoresizingMask = kCALayerNotSizable;
-            hostLayer.masksToBounds = NO;
-            hostLayer.opaque = NO;
-            CGColorRef hostColor = CGColorCreateGenericRGB(0.f,0.f,0.f,0.f);
-            hostLayer.backgroundColor = hostColor;
-            CGColorRelease(hostColor);
-            hostLayer.contentsScale = scale;
-            _ptr.layerContentsRedrawPolicy = NSViewLayerContentsRedrawDuringViewResize;
 
-            // Geometry for compositor-owned visuals is written by backend only.
             layer.actions = noActions;
             layer.autoresizingMask = kCALayerNotSizable;
             layer.masksToBounds = NO;
             layer.contentsScale = scale;
             layer.hidden = NO;
-            const bool bootstrapGeometry =
-                    layer.bounds.size.width <= 1.f ||
-                    layer.bounds.size.height <= 1.f ||
-                    !std::isfinite(layer.bounds.size.width) ||
-                    !std::isfinite(layer.bounds.size.height);
-            if(bootstrapGeometry){
-                // Bootstrap only: backend remains the sole geometry authority after attach.
-                layer.anchorPoint = CGPointMake(0.f,0.f);
-                layer.position = CGPointMake(0.f,0.f);
-                layer.bounds = hostBounds;
-                layer.frame = hostBounds;
-            }
+            layer.anchorPoint = CGPointMake(0.f,0.f);
+            layer.position = CGPointMake(0.f,0.f);
+            layer.bounds = hostBounds;
+            layer.frame = hostBounds;
+
             if([layer isKindOfClass:[CAMetalLayer class]]){
                 CAMetalLayer *metalLayer = (CAMetalLayer *)layer;
                 metalLayer.opaque = NO;
@@ -136,16 +112,9 @@ public:
                 CGColorRef clearColor = CGColorCreateGenericRGB(0.f,0.f,0.f,0.f);
                 metalLayer.backgroundColor = clearColor;
                 CGColorRelease(clearColor);
-                if(bootstrapGeometry){
-                    metalLayer.drawableSize = CGSizeMake(
-                            MIN(MAX(hostBounds.size.width * scale,1.f),maxDrawableDimension),
-                            MIN(MAX(hostBounds.size.height * scale,1.f),maxDrawableDimension));
-                }
-                NSLog(@"Root CAMetalLayer attached: frame={%.1f,%.1f,%.1f,%.1f} drawable={%.1f,%.1f} hostSublayers=%lu",
-                      metalLayer.frame.origin.x,metalLayer.frame.origin.y,
-                      metalLayer.frame.size.width,metalLayer.frame.size.height,
-                      metalLayer.drawableSize.width,metalLayer.drawableSize.height,
-                      (unsigned long)hostLayer.sublayers.count);
+                metalLayer.drawableSize = CGSizeMake(
+                        MIN(MAX(hostBounds.size.width * scale,1.f),maxDrawableDimension),
+                        MIN(MAX(hostBounds.size.height * scale,1.f),maxDrawableDimension));
             }
 
             if(layer.superlayer != hostLayer){
@@ -156,7 +125,6 @@ public:
             [hostLayer setNeedsDisplay];
             [layer setNeedsDisplay];
             [_ptr setNeedsDisplay:YES];
-            [_ptr layoutSubtreeIfNeeded];
             [CATransaction commit];
         }
     }

@@ -33,6 +33,11 @@ int AppInst::start(){
 
 void AppInst::terminate() {
     instance->windowManager->closeAllWindows();
+    instance->windowManager.reset();
+    Composition::FontEngine::Destroy();
+    Composition::CleanupEngine();
+    OmegaGTE::Close(gte);
+    OMEGAWTK_DEBUG("Application Shutdown")
     instance->ptr->terminate();
 };
 
@@ -41,15 +46,16 @@ void AppInst::terminate() {
 // }
 
 AppInst::~AppInst(){
-    instance = nullptr;
+    // Cleanup may already have been performed by terminate().
+    // Guard against double-cleanup.
     if(windowManager != nullptr){
         windowManager->closeAllWindows();
         windowManager.reset();
+        Composition::FontEngine::Destroy();
+        Composition::CleanupEngine();
+        OmegaGTE::Close(gte);
     }
-    Composition::FontEngine::Destroy();
-    Composition::CleanupEngine();
-    OmegaGTE::Close(gte);
-    OMEGAWTK_DEBUG("Application Shutdown")
+    instance = nullptr;
 };
 
 };

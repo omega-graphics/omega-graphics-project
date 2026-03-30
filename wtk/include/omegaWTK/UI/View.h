@@ -103,7 +103,7 @@ namespace OmegaWTK {
         void setFrontendRecurse(Composition::Compositor *frontend);
         void setSyncLaneRecurse(uint64_t syncLaneId);
         ViewResizeCoordinator resizeCoordinator;
-        Composition::LayerTree *widgetLayerTree;
+        SharedHandle<Composition::LayerTree> ownLayerTree;
         View *parent_ptr = nullptr;
         Core::Rect rect {Core::Position{0.f,0.f},1.f,1.f};
         ViewDelegate *delegate = nullptr;
@@ -111,7 +111,6 @@ namespace OmegaWTK {
         void addSubView(View *view);
         void removeSubView(View * view);
         friend class AppWindow;
-        SharedHandle<Composition::LayerTree::Limb> layerTreeLimb;
         friend class Composition::ViewAnimator;
         friend class ScrollView;
         friend class Widget;
@@ -130,20 +129,19 @@ namespace OmegaWTK {
             Constructs a View using a Rect param and a NativeItem; (With NO Layers!!)
             NOTE:
             This Constructed is only called when making a ScrollView.
-            In other words, the View that is returned has NO layers will be completlty blank.
             @param rect[in] The Rect to use
             @param nativeItem[in] The Native View to bind to
             @param parent[in] The Parent View
             @returns A View!
          */
-        View(const Core::Rect & rect,Native::NativeItemPtr nativeItem,Composition::LayerTree *layerTree,ViewPtr parent);
+        View(const Core::Rect & rect,Native::NativeItemPtr nativeItem,ViewPtr parent);
         /**
-            Constructs a View using a Rect param and constructs a LayerTree::Limb to be used on the layerTree;
+            Constructs a View. Creates its own LayerTree with a root Layer.
             @param rect The Rect to use
-            @param layerTree
+            @param parent The parent View (nullptr for root views)
             @returns A View!
          */
-        View(const Core::Rect & rect,Composition::LayerTree *layerTree,ViewPtr parent = nullptr);
+        View(const Core::Rect & rect,ViewPtr parent = nullptr);
     public:
         OMEGACOMMON_CLASS("OmegaWTK.View")
         /**
@@ -160,8 +158,8 @@ namespace OmegaWTK {
 
         /// @brief Retrieves the Rect that defines the position and bounds of the View.
         Core::Rect & getRect(){ return rect;};
-        /// @brief Retrieves the corresponding limb bound to this View on the parent's Widget's LayerTree.
-        SharedHandle<Composition::LayerTree::Limb> & getLayerTreeLimb(){ return layerTreeLimb;};
+        /// @brief Retrieves the View's own LayerTree.
+        Composition::LayerTree * getLayerTree(){ return ownLayerTree.get(); };
         /// @brief Checks to see if this View is the root View of a Widget.
         bool isRootView(){return parent_ptr == nullptr;};
         /// @brief Returns the resize coordinator associated with this view.
@@ -179,7 +177,7 @@ namespace OmegaWTK {
         virtual void resize(Core::Rect newRect);
 
         /// @brief Starts a Composition Session for this View.
-        /// @paragraph Upon invocation, this will allow Canvases to render to child Layers in the corresponding LayerTree::Limb
+        /// @paragraph Upon invocation, this will allow Canvases to render to child Layers in the View's LayerTree
         /// and it will allow submission of render and animation commands from the child LayerAnimators and ViewAnimator.
         /// If one attempts to try animate or render to the View or any child Layers without calling this method FIRST, will recieve an access error.
         void startCompositionSession();
@@ -279,7 +277,7 @@ namespace OmegaWTK {
         bool hasDelegate();
         bool hasVerticalScrollBar,hasHorizontalScrollBar;
         friend class Widget;
-        explicit ScrollView(const Core::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, Composition::LayerTree *layerTree, ViewPtr parent = nullptr);
+        explicit ScrollView(const Core::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, ViewPtr parent = nullptr);
     public:
         OMEGACOMMON_CLASS("OmegaWTK.ScrollView")
         void toggleVerticalScrollBar();
@@ -416,7 +414,7 @@ namespace OmegaWTK {
         OMEGACOMMON_CLASS("OmegaWTK.VideoView")
         friend class Widget;
 
-        VideoView(const Core::Rect & rect, Composition::LayerTree * layerTree, ViewPtr parent = nullptr);
+        VideoView(const Core::Rect & rect, ViewPtr parent = nullptr);
 
         void setDelegate(VideoViewDelegate *delegate);
         void setScaleMode(VideoScaleMode mode);
@@ -478,7 +476,7 @@ class OMEGAWTK_EXPORT SVGView : public View {
     void rebuildDisplayList();
     friend class Widget;
 
-    explicit SVGView(const Core::Rect & rect,Composition::LayerTree *layerTree,ViewPtr parent);
+    explicit SVGView(const Core::Rect & rect,ViewPtr parent);
 public:
     OMEGACOMMON_CLASS("OmegaWTK.UI.SVGView")
 

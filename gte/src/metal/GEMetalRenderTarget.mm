@@ -79,7 +79,20 @@ SharedHandle<GERenderTarget::CommandBuffer> GEMetalNativeRenderTarget::commandBu
 void GEMetalNativeRenderTarget::commitAndPresent(){
     auto mtlqueue = (GEMetalCommandQueue *)commandQueue.get();
     if(currentDrawable.handle() != nullptr){
-        mtlqueue->commitToGPUAndPresent(currentDrawable);
+        // Use waitUntilScheduled + present pattern for reliable display
+        id<CAMetalDrawable> drawable = NSOBJECT_OBJC_BRIDGE(id<CAMetalDrawable>,currentDrawable.handle());
+
+        // Get the last command buffer that will do the present
+        auto & lastCB = mtlqueue->commandBuffers.back();
+        auto *metalCB = (GEMetalCommandBuffer *)lastCB.get();
+        id<MTLCommandBuffer> mtlCB = NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,metalCB->buffer.handle());
+
+        // Commit all buffers (without present scheduled via _present_drawable)
+        mtlqueue->commitToGPU();
+
+        // Wait until the GPU has scheduled the work, then present manually
+        [mtlCB waitUntilScheduled];
+        [drawable present];
     }
     else {
         mtlqueue->commitToGPU();

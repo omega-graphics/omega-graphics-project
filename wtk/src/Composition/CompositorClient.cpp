@@ -245,8 +245,6 @@ namespace OmegaWTK::Composition {
            std::lock_guard<std::mutex> lk(commandMutex);
            targetFrontend = frontend;
            if(targetFrontend == nullptr){
-               // Frontend can be wired after view construction; keep commands queued
-               // so initial frames are not permanently dropped.
                return;
            }
            laneId = syncLaneId;

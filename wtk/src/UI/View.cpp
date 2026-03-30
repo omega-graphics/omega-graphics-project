@@ -2,13 +2,21 @@
 #include "omegaWTK/UI/Layout.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <utility>
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Canvas.h"
+#include "../Composition/Compositor.h"
 
 namespace OmegaWTK {
+
+    namespace {
+        // Per-view sync lane allocator. Each View gets its own lane so that
+        // packets from independent Views don't block each other via lane admission.
+        static std::atomic<uint64_t> g_viewSyncLaneSeed {1000};
+    }
 
     namespace {
 #if defined(TARGET_MACOS)
@@ -253,27 +261,24 @@ namespace OmegaWTK {
         }
     }
 
-    View::View(const Core::Rect & rect,Composition::LayerTree *layerTree,ViewPtr parent):
+    View::View(const Core::Rect & rect,ViewPtr parent):
         renderTarget(std::make_shared<Composition::ViewRenderTarget>(
                 Native::make_native_item(
                         sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f})))),
         proxy(std::static_pointer_cast<Composition::CompositionRenderTarget>(renderTarget)),
-        widgetLayerTree(layerTree),
+        ownLayerTree(std::make_shared<Composition::LayerTree>(
+                sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f}))),
         parent_ptr(parent.get()),
         rect(sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f})){
 
         resizeCoordinator.attachView(this);
 
-        layerTreeLimb = widgetLayerTree->createLimb(this->rect);
-        renderTarget->getNativePtr()->setLayerTreeLimb(layerTreeLimb.get());
+        renderTarget->getNativePtr()->setLayerTreeLimb(ownLayerTree.get());
         renderTarget->getNativePtr()->event_emitter = this;
-        
+
         if(parent_ptr) {
             parent->addSubView(this);
-            layerTree->addChildLimb(layerTreeLimb,parent->layerTreeLimb.get());
         }
-        else
-            layerTree->setRootLimb(layerTreeLimb);
     };
 //    View::View(const Core::Rect & rect,View *parent):
 //        renderTarget(std::make_shared<Composition::ViewRenderTarget>(Native::make_native_item(rect))),
@@ -334,18 +339,18 @@ void View::resize(Core::Rect newRect){
     }
     rect = sanitized;
     renderTarget->getNativePtr()->resize(rect);
-    if(layerTreeLimb != nullptr){
-        // Preserve positioned layer rect so child visuals keep stack/layout offsets.
-        layerTreeLimb->getRootLayer()->resize(rect);
+    if(ownLayerTree != nullptr && ownLayerTree->getRootLayer() != nullptr){
+        ownLayerTree->getRootLayer()->resize(rect);
     }
 };
 
-View::View(const Core::Rect & rect,Native::NativeItemPtr nativeItem,Composition::LayerTree *layerTree,ViewPtr parent):
-rect(sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f})),
-widgetLayerTree(layerTree),
+View::View(const Core::Rect & rect,Native::NativeItemPtr nativeItem,ViewPtr parent):
 renderTarget(std::make_shared<Composition::ViewRenderTarget>(nativeItem)),
 proxy(std::static_pointer_cast<Composition::CompositionRenderTarget>(renderTarget)),
-parent_ptr(parent.get()){
+ownLayerTree(std::make_shared<Composition::LayerTree>(
+        sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f}))),
+parent_ptr(parent.get()),
+rect(sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f})){
     resizeCoordinator.attachView(this);
     if(renderTarget != nullptr && renderTarget->getNativePtr() != nullptr){
         renderTarget->getNativePtr()->resize(this->rect);
@@ -357,21 +362,14 @@ parent_ptr(parent.get()){
 
 SharedHandle<Composition::Layer> View::makeLayer(Core::Rect rect){
     auto layer = std::make_shared<Composition::Layer>(rect);
-    layer->parentLimb = layerTreeLimb.get();
-    layerTreeLimb->addLayer(layer);
+    layer->parentTree = ownLayerTree.get();
+    ownLayerTree->addLayer(layer);
     return layer;
 };
 
 SharedHandle<Composition::Canvas> View::makeCanvas(SharedHandle<Composition::Layer> &targetLayer){
-    // Route through the root view's proxy so that all layers within a widget's
-    // view hierarchy share a single ViewRenderTarget in the compositor.  This
-    // ensures they are composited together into one swapchain image rather than
-    // presenting to independent Vulkan surfaces.
-    auto *target = this;
-    while(target->parent_ptr != nullptr){
-        target = target->parent_ptr;
-    }
-    return std::shared_ptr<Composition::Canvas>(new Composition::Canvas(target->proxy,*targetLayer));
+    // Each View owns its own render target and visual tree.
+    return std::shared_ptr<Composition::Canvas>(new Composition::Canvas(proxy,*targetLayer));
 }
 
 void View::startCompositionSession(){
@@ -433,7 +431,14 @@ View::~View(){
 };
 
 void View::setFrontendRecurse(Composition::Compositor *frontend){
+    auto *previousFrontend = proxy.getFrontendPtr();
+    if(previousFrontend != nullptr && previousFrontend != frontend && ownLayerTree != nullptr){
+        previousFrontend->unobserveLayerTree(ownLayerTree.get());
+    }
     proxy.setFrontendPtr(frontend);
+    if(frontend != nullptr && ownLayerTree != nullptr){
+        frontend->observeLayerTree(ownLayerTree.get(),proxy.getSyncLaneId());
+    }
     for(auto *subView : subviews){
         if(subView != nullptr){
             subView->setFrontendRecurse(frontend);
@@ -442,10 +447,14 @@ void View::setFrontendRecurse(Composition::Compositor *frontend){
 };
 
 void View::setSyncLaneRecurse(uint64_t syncLaneId){
-    proxy.setSyncLaneId(syncLaneId);
+    // Each View gets its own sync lane so that per-view LayerTree isolation
+    // extends to the compositor's lane admission system. Packets from
+    // independent Views no longer block each other's budget/inFlight counters.
+    auto ownLaneId = g_viewSyncLaneSeed.fetch_add(1);
+    proxy.setSyncLaneId(ownLaneId);
     for(auto *subView : subviews){
         if(subView != nullptr){
-            subView->setSyncLaneRecurse(syncLaneId);
+            subView->setSyncLaneRecurse(ownLaneId);
         }
     }
 }
@@ -549,8 +558,8 @@ void ViewDelegate::onRecieveEvent(Native::NativeEventPtr event){
     }
 };
 
-ScrollView::ScrollView(const Core::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, Composition::LayerTree *layerTree, ViewPtr parent):
-        View(rect,Native::make_native_item(rect,Native::ScrollItem),layerTree,parent),
+ScrollView::ScrollView(const Core::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, ViewPtr parent):
+        View(rect,Native::make_native_item(rect,Native::ScrollItem),parent),
         child(child),
         childViewRect(child ? &child->getRect() : nullptr),
         delegate(nullptr),

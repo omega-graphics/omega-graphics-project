@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>MetalCaptureEnabled</key>
-    <true/>
+    <false/>
 	<key>CFBundleIdentifier</key>
 	<string>@BUNDLE_ID@</string>
 	<key>CFBundleDevelopmentRegion</key>

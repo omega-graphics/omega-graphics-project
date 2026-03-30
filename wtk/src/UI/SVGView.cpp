@@ -438,10 +438,10 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
 // SVGView implementation
 // ---------------------------------------------------------------------------
 
-SVGView::SVGView(const Core::Rect & rect, Composition::LayerTree * layerTree, ViewPtr parent)
-    : View(rect, layerTree, parent),
+SVGView::SVGView(const Core::Rect & rect, ViewPtr parent)
+    : View(rect, parent),
       drawOps_(std::make_unique<SVGDrawOpList>()) {
-    svgCanvas = makeCanvas(getLayerTreeLimb()->getRootLayer());
+    svgCanvas = makeCanvas(getLayerTree()->getRootLayer());
 }
 
 SVGView::~SVGView() = default;

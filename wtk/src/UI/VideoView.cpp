@@ -49,10 +49,10 @@ static Core::Rect computeScaledRect(const Core::Rect &viewRect,
     return Core::Rect{Core::Position{x, y}, destW, destH};
 }
 
-VideoView::VideoView(const Core::Rect & rect, Composition::LayerTree *layerTree, ViewPtr parent)
-    : View(rect, layerTree, parent),
+VideoView::VideoView(const Core::Rect & rect, ViewPtr parent)
+    : View(rect, parent),
       framebuffer(2) {
-    videoCanvas = makeCanvas(getLayerTreeLimb()->getRootLayer());
+    videoCanvas = makeCanvas(getLayerTree()->getRootLayer());
 }
 
 void VideoView::queueFrame(SharedHandle<Media::VideoFrame> &frame) {

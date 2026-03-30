@@ -116,7 +116,7 @@ namespace OmegaWTK::Composition {
 
     struct RenderTargetStore {
      private:
-        void cleanTargets(LayerTree *tree,LayerTree::Limb *limb);
+        void cleanTargets(LayerTree *tree);
     public:
         void cleanTreeTargets(LayerTree *tree);
         void removeRenderTarget(const SharedHandle<CompositionRenderTarget> & target);

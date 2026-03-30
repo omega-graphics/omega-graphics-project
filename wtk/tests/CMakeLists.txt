@@ -71,6 +71,15 @@ OmegaWTKApp(
 
 if(TARGET_MACOS)
     add_custom_target(2DAppTest DEPENDS EllipsePathCompositorTest.app)
+
+    add_executable(MetalLayerTest MetalLayerTest/main.mm)
+    target_link_libraries(MetalLayerTest PRIVATE OmegaGTE OmegaCommon)
+    target_link_libraries(MetalLayerTest PRIVATE "-framework Cocoa" "-framework Metal" "-framework QuartzCore")
+    target_include_directories(MetalLayerTest PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(MetalLayerTest PRIVATE TARGET_MACOS TARGET_METAL)
+    if(TARGET OmegaGTE.framework)
+        add_dependencies(MetalLayerTest OmegaGTE.framework)
+    endif()
 else()
     add_custom_target(2DAppTest DEPENDS EllipsePathCompositorTest)
 endif()

@@ -165,14 +165,11 @@ void PaintContext::drawText(const UniString &text,
 
 
 Widget::Widget(const Core::Rect & rect,WidgetPtr parent):parent(parent.get()){
-    layerTree = std::make_shared<Composition::LayerTree>();
-    rootView = SharedHandle<CanvasView>(new CanvasView(rect,layerTree.get(),nullptr));
-    // std::cout << "Constructing View for Widget" << std::endl;
+    rootView = SharedHandle<CanvasView>(new CanvasView(rect,nullptr));
     if(parent != nullptr) {
         parent->rootView->addSubView(this->rootView.get());
         parent->children.push_back(this);
     }
-//    std::cout << "RenderTargetPtr:" << rootView->renderTarget.get() << std::endl;
 };
 
 //Widget::Widget(Widget & widget):parent(std::move(widget.parent)),compositor(std::move(widget.compositor)),rootView(std::move(widget.rootView)){
@@ -181,7 +178,7 @@ Widget::Widget(const Core::Rect & rect,WidgetPtr parent):parent(parent.get()){
 
 SharedHandle<Composition::Canvas> Widget::getRootPaintCanvas(){
     if(rootPaintCanvas == nullptr){
-        auto rootLayer = rootView->getLayerTreeLimb()->getRootLayer();
+        auto rootLayer = rootView->getLayerTree()->getRootLayer();
         rootPaintCanvas = rootView->makeCanvas(rootLayer);
     }
     return rootPaintCanvas;
@@ -322,7 +319,7 @@ void Widget::onThemeSetRecurse(Native::ThemeDesc &desc){
 }
 
 SharedHandle<View> Widget::makeCanvasView(const Core::Rect & rect,ViewPtr parent){
-    return SharedHandle<CanvasView>(new CanvasView(rect,layerTree.get(),parent));
+    return SharedHandle<CanvasView>(new CanvasView(rect,parent));
 };
 
 SharedHandle<ScrollView> Widget::makeScrollView(const Core::Rect & rect,
@@ -335,7 +332,6 @@ SharedHandle<ScrollView> Widget::makeScrollView(const Core::Rect & rect,
                                                    child,
                                                    hasVerticalScrollBar,
                                                    hasHorizontalScrollBar,
-                                                   layerTree.get(),
                                                    parent));
 }
 
@@ -344,15 +340,15 @@ SharedHandle<ScrollView> Widget::makeScrollView(const Core::Rect & rect,
 // };
 
 SharedHandle<SVGView> Widget::makeSVGView(const Core::Rect & rect,ViewPtr parent){
-    return SharedHandle<SVGView>(new SVGView(rect,layerTree.get(),parent));
+    return SharedHandle<SVGView>(new SVGView(rect,parent));
 }
 
 SharedHandle<VideoView> Widget::makeVideoView(const Core::Rect & rect,ViewPtr parent){
-    return SharedHandle<VideoView>(new VideoView(rect,layerTree.get(),parent));
+    return SharedHandle<VideoView>(new VideoView(rect,parent));
 };
 
 SharedHandle<UIView> Widget::makeUIView(const Core::Rect & rect,ViewPtr parent,UIViewTag tag){
-    return SharedHandle<UIView>(new UIView(rect,layerTree.get(),parent,tag));
+    return SharedHandle<UIView>(new UIView(rect,parent,tag));
 }
 
 Core::Rect & Widget::rect(){
@@ -418,20 +414,9 @@ void Widget::addObserver(WidgetObserverPtr observer){
 };
 
 void Widget::setTreeHostRecurse(WidgetTreeHost *host){
-    auto *previousHost = treeHost;
-    if(previousHost != nullptr && previousHost != host && layerTree != nullptr){
-        auto *previousComp = previousHost->compPtr();
-        if(previousComp != nullptr){
-            previousComp->unobserveLayerTree(layerTree.get());
-        }
-    }
-
     treeHost = host;
     if(host != nullptr){
-        auto *comp = host->compPtr();
-        if(comp != nullptr && layerTree != nullptr){
-            comp->observeLayerTree(layerTree.get(),host->laneId());
-        }
+        // View::setFrontendRecurse handles per-view LayerTree observation.
         rootView->setFrontendRecurse(host->compPtr());
         rootView->setSyncLaneRecurse(host->laneId());
     }
@@ -584,7 +569,9 @@ void Widget::removeChildWidget(Widget *ptr){
             ptr->parent = nullptr;
             ptr->setTreeHostRecurse(nullptr);
             ptr->notifyObservers(Detach,{});
-            ptr->layerTree->notifyObserversOfWidgetDetach();
+            if(ptr->rootView && ptr->rootView->getLayerTree()){
+                ptr->rootView->getLayerTree()->notifyObserversOfWidgetDetach();
+            }
             break;
         };
     };

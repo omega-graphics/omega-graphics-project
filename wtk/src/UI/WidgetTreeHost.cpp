@@ -349,8 +349,9 @@ namespace OmegaWTK {
         if(parent == nullptr || compositor == nullptr){
             return;
         }
-        if(parent->layerTree != nullptr){
-            compositor->observeLayerTree(parent->layerTree.get(),syncLaneId);
+        auto *rootTree = parent->rootView ? parent->rootView->getLayerTree() : nullptr;
+        if(rootTree != nullptr){
+            compositor->observeLayerTree(rootTree,syncLaneId);
         }
         for(auto & child : parent->children){
             observeWidgetLayerTreesRecurse(child);
@@ -361,8 +362,9 @@ namespace OmegaWTK {
         if(parent == nullptr || compositor == nullptr){
             return;
         }
-        if(parent->layerTree != nullptr){
-            compositor->unobserveLayerTree(parent->layerTree.get());
+        auto *rootTree = parent->rootView ? parent->rootView->getLayerTree() : nullptr;
+        if(rootTree != nullptr){
+            compositor->unobserveLayerTree(rootTree);
         }
         for(auto & child : parent->children){
             unobserveWidgetLayerTreesRecurse(child);

@@ -431,7 +431,7 @@ private:
                                bool styleChanged,
                                bool orderChanged);
 public:
-    explicit UIView(const Core::Rect & rect,Composition::LayerTree *layerTree,ViewPtr parent,UIViewTag tag);
+    explicit UIView(const Core::Rect & rect,ViewPtr parent,UIViewTag tag);
     UIViewLayout & layout();
     void setLayout(const UIViewLayout & layout);
     void setStyleSheet(const StyleSheetPtr & style);

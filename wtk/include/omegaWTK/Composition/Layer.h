@@ -10,8 +10,6 @@
 
 #include "Brush.h"
 
-#include <functional>
-
 #ifndef OMEGAWTK_COMPOSITION_LAYER_H
 #define OMEGAWTK_COMPOSITION_LAYER_H
 
@@ -38,7 +36,15 @@ namespace Composition {
     /**
      An entire widget's layer construct
      */
-    class OMEGAWTK_EXPORT LayerTree {
+    /**
+     @brief A per-View layer tree. Owns a root Layer and its sublayers.
+
+     After the Per-View LayerTree isolation refactor, each View creates and
+     owns its own LayerTree. The former Limb subclass has been consolidated
+     into LayerTree directly — the 1:1 View-to-tree mapping makes the
+     intermediate grouping node unnecessary.
+     */
+    class OMEGAWTK_EXPORT LayerTree : public Native::NativeLayerTreeLimb {
         friend class ::OmegaWTK::View;
         friend class ::OmegaWTK::Widget;
     protected:
@@ -47,66 +53,43 @@ namespace Composition {
         friend class Layer;
 
         void notifyObserversOfResize(Layer *layer);
-
         void notifyObserversOfDisable(Layer *layer);
-
         void notifyObserversOfEnable(Layer *layer);
 
-         /**
+        /**
          @note Only called by ::OmegaWTK::Widget
         */
         void notifyObserversOfWidgetDetach();
 
-    public:
-       
-        class OMEGAWTK_EXPORT Limb : public Native::NativeLayerTreeLimb {
-            LayerTree *parentTree;
-            SharedHandle<Layer> limbRoot;
-            bool enabled;
-           
-            friend class LayerTree;
-        public:
-            LayerTree *getParentTree();
-            using iterator = OmegaCommon::Vector<SharedHandle<Layer>>::iterator;
-            SharedHandle<Layer> & getRootLayer();
-            void addLayer(SharedHandle<Layer> layer);
-            /**
-             Constructs a LayerTree::Limb
-             @param rect The Root Layer's Rect
-             @param compClient A Pointer to the parent CompositorClient.
-             @returns A Limb
-             */
-            Limb(const Core::Rect & rect);
-            iterator begin();
-            iterator end();
-            void disable();
-            void enable();
-            // void commit();
-            // void layout();
-        };
     private:
-        SharedHandle<Limb> rootLimb;
-        OmegaCommon::Map<Limb *,OmegaCommon::Vector<SharedHandle<Limb>>> body;
+        SharedHandle<Layer> rootLayer;
+        bool enabled;
+
     public:
+        using iterator = OmegaCommon::Vector<SharedHandle<Layer>>::iterator;
+
+        /// @brief Retrieve the root Layer of this tree.
+        SharedHandle<Layer> & getRootLayer();
+        /// @brief Add a child Layer (becomes a sublayer of the root Layer).
+        void addLayer(SharedHandle<Layer> layer);
+
+        iterator begin();
+        iterator end();
+
+        void enable();
+        void disable();
+
         void addObserver(LayerTreeObserver * observer);
         void removeObserver(LayerTreeObserver * observer);
-        Limb *getTreeRoot();
-        unsigned getParentLimbChildCount(Limb *parent);
-        Limb *getLimbAtIndexFromParent(unsigned idx,Limb *parent);
+
+        /// @brief Collect all layers in the tree (root + children) into a flat vector.
+        void collectAllLayers(OmegaCommon::Vector<Layer *> & out);
+
         /**
-         Creates a Limb for the Layer Tree
+         Construct a LayerTree with a root Layer sized to the given rect.
          */
-        SharedHandle<Limb> createLimb(const Core::Rect &rect_for_root_layer);
-        /**
-         Adds a Limb to the Layer Tree.
-         @param limb
-         @param parent Assumes the root limb is the parent unless this value is specified
-         */
-        void addChildLimb(SharedHandle<Limb> & limb,Limb *parent = nullptr);
-        /**
-         NOTE: Only Call this function once!!
-         */
-        void setRootLimb(SharedHandle<Limb> & limb);
+        explicit LayerTree(const Core::Rect & rect);
+        /// @brief Default-construct an empty tree (no root layer). Legacy compat only.
         LayerTree();
         ~LayerTree();
     };
@@ -155,14 +138,14 @@ namespace Composition {
      */
     class OMEGAWTK_EXPORT Layer {
         unsigned id_gen = 0;
-        LayerTree::Limb *parentLimb;
+        LayerTree *parentTree;
         OmegaCommon::Vector<SharedHandle<Layer>> children;
 
         Layer * parent_ptr;
         Core::Rect surface_rect;
         bool enabled;
         bool needsNativeResize;
-        
+
         friend class LayerTree;
         friend class ::OmegaWTK::View;
         void addSubLayer(SharedHandle<Layer> & layer);
@@ -170,7 +153,7 @@ namespace Composition {
     public:
         OMEGACOMMON_CLASS("OmegaWTK.Composition.Layer")
 
-        LayerTree::Limb *getParentLimb();
+        LayerTree *getParentTree();
 
         /**
             @brief Resize the Layer with the new rect
@@ -195,11 +178,10 @@ namespace Composition {
           @returns bool
           */
         bool isChildLayer(){return parent_ptr != nullptr;}
-   
+
         /** @brief Construct a Layer.
            @param rect*/
         explicit Layer(const Core::Rect & rect);
-//            Layer(Layer &layer);
         ~Layer();
     };
 

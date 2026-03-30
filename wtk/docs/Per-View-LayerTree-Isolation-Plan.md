@@ -167,7 +167,7 @@ UIView's NSView   → one CAMetalLayer, element layers are textures composited i
 
 ### Structural Changes
 
-#### Phase 1: View owns its own LayerTree
+#### Phase 1: View owns its own LayerTree (DONE)
 
 **View.h**
 
@@ -202,10 +202,27 @@ Proposed:
   Widget::setTreeHostRecurse delegates to View::registerTreeRecurse
 ```
 
-- `Widget::getRootPaintCanvas()` gets the root layer from `rootView->ownLayerTree->getTreeRoot()->getRootLayer()`.
+- `Widget::getRootPaintCanvas()` gets the root layer from `rootView->getLayerTree()->getRootLayer()`.
 - All `make*View` calls simplified: `new UIView(rect, parent, tag)` etc.
 
-#### Phase 2: Remove makeCanvas parent-walk — each View targets its own proxy
+#### Phase 1b: Consolidate LayerTree::Limb into LayerTree (DONE)
+
+Now that each View owns its own LayerTree, every tree has exactly one Limb (the root). The `Limb` abstraction existed for the old model where multiple Views grafted limbs onto one shared widget tree. With 1:1 View-to-tree mapping, the intermediate grouping node is unnecessary.
+
+**Changes:**
+
+- `Limb`'s members move directly onto `LayerTree`: `rootLayer`, `addLayer()`, `getRootLayer()`, `begin()`/`end()` iterators, `enable()`/`disable()`.
+- `LayerTree` constructor takes a `Core::Rect` and creates the root Layer directly (like `Limb(rect)` did).
+- `Layer::parentLimb` (type `Limb*`) → `Layer::parentTree` (type `LayerTree*`). `getParentLimb()` → `getParentTree()`.
+- `LayerTree` inherits `NativeLayerTreeLimb` (the empty native interface that `Limb` used to inherit). `NativeItem::setLayerTreeLimb` now accepts `LayerTree*` directly.
+- `collectLayersForTreeLimb(tree, limb, layers)` → `tree->collectAllLayers(layers)`. No more recursive limb traversal.
+- The `Limb` class, `createLimb()`, `setRootLimb()`, `addChildLimb()`, `getTreeRoot()`, `getParentLimbChildCount()`, `getLimbAtIndexFromParent()`, and the `body` map are all removed.
+- All callsites updated: `getLayerTreeLimb()->getRootLayer()` → `getLayerTree()->getRootLayer()`.
+- View constructor signatures drop the `LayerTree*` parameter: `View(rect, parent)`.
+- All `make*View` factory methods in Widget drop the `layerTree.get()` argument.
+- Widget removes its `SharedHandle<LayerTree> layerTree` field entirely.
+
+#### Phase 2: Remove makeCanvas parent-walk — each View targets its own proxy (DONE)
 
 **This is the critical change.** Currently `View::makeCanvas()` walks `parent_ptr` to the root view, funneling all Metal content to one ViewRenderTarget. After this change:
 
@@ -299,7 +316,7 @@ NSView._ptr.layer = CAMetalLayer (root visual — IS the backing layer)
 - `OmegaWTKCocoaView initWithFrame:` currently creates a placeholder `[CALayer layer]` as `self.layer`. After `setRootLayer`, this is replaced by the `CAMetalLayer`. The init placeholder only needs to be a valid layer until the compositor attaches the real one.
 - The `BackendVisualTree::Visual::resize` method (`CALayerTree.h:57-112`) operates on its own `metalLayer` pointer directly — it does not go through `_ptr.layer`. So the backend visual resize and the `CocoaItem::resize` (which updates `_ptr.layer`) are independent and both work correctly.
 
-#### Phase 3: Per-View compositor observation
+#### Phase 3: Per-View compositor observation 
 
 Each View's `LayerTree` is registered with the Compositor independently:
 
@@ -336,13 +353,12 @@ With per-view trees, resize notifications are naturally scoped:
 
 | Step | Change | Risk | Rollback |
 |------|--------|------|----------|
-| 1 | Add `ownLayerTree` to `View`, create it in the constructor, wire `makeLayer` to it. Keep old `widgetLayerTree` pointer alive but unused. | Low — additive | Remove `ownLayerTree` |
-| 2 | **Remove `parent_ptr` walk in `View::makeCanvas()`.** Each View's canvases target its own `proxy`. This causes the `RenderTargetStore` to create per-View `BackendCompRenderTarget`s with per-View `BackendVisualTree`s. Each View's root `CAMetalLayer` gets attached to its own NSView. | **High — this is the key behavioral change.** Each View now presents independently. | Restore parent walk |
-| 3 | **Flatten `setRootLayer`**: change `CocoaItem::setRootLayer` to assign `_ptr.layer = layer` directly instead of creating a host `CALayer` and adding the `CAMetalLayer` as a sublayer. | Low — `CocoaItem::resize` already handles `_ptr.layer` being a `CAMetalLayer`. | Revert to host+sublayer approach |
-| 4 | Switch `View` constructor to set root limb on `ownLayerTree` instead of grafting onto the widget's tree. Stop calling `layerTree->addChildLimb`. | Medium — breaks cross-view limb parenting | Revert constructor |
-| 5 | Move compositor observation from `Widget::setTreeHostRecurse` to `View::setFrontendRecurse`. Each View registers its own tree. | Medium — changes compositor state cardinality | Revert to widget-level registration |
-| 6 | Remove `widgetLayerTree` from `View`. Remove `layerTree` from `Widget`. Remove `layerTree` param from all View subclass constructors. Clean up all `make*View` call sites in Widget.cpp. | High — removes backward compat | Restore both fields |
-| 7 | Verify all test apps render correctly. | Verification | N/A |
+| 1 | **(DONE)** Add `ownLayerTree` to `View`, create it in constructor, wire `makeLayer` to it. Remove `widgetLayerTree` and `layerTree` from Widget. Drop `LayerTree*` param from all View/subclass ctors and `make*View` factories. | Low–Medium | Restore old fields and ctor signatures |
+| 1b | **(DONE)** Consolidate `Limb` into `LayerTree`. LayerTree gets rootLayer, addLayer, getRootLayer, iterators, enable/disable, `collectAllLayers`. Remove Limb class. `Layer::parentLimb` → `Layer::parentTree`. Update all callsites (Compositor, Execution, RenderTarget). | Medium — changes Layer.h public API | Restore Limb class |
+| 2 | **(DONE)** Remove `parent_ptr` walk in `View::makeCanvas()`. Each View's canvases target its own `proxy`. Per-View `BackendCompRenderTarget`s and `BackendVisualTree`s. Each View's root `CAMetalLayer` gets attached to its own NSView. | High — key behavioral change | Restore parent walk |
+| 2b | **(DONE)** Flatten `setRootLayer`: `_ptr.layer = layer` directly. No intermediate host `CALayer`. | Low | Revert to host+sublayer approach |
+| 4 | Move compositor observation from `Widget::setTreeHostRecurse` to `View::setFrontendRecurse`. Each View registers its own tree. | Medium — changes compositor state cardinality | Revert to widget-level registration |
+| 5 | Verify all test apps render correctly. | Verification | N/A |
 
 ### Files Touched
 

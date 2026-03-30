@@ -19,36 +19,16 @@ static void dbg_log(const char* location, const char* message, const char* hypot
 // #endregion
 
 class MyWidget final : public OmegaWTK::Widget {
-    OmegaWTK::UIViewPtr uiView {};
-
-    void ensureUIView(const OmegaWTK::Core::Rect & bounds){
-        if(uiView == nullptr){
-            uiView = makeUIView(bounds,rootView,"basic_view");
-        }
-        else {
-            uiView->resize(bounds);
-        }
-    }
 
 protected:
     void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {}
-
-    void onMount() override {
-        // #region agent log
-        auto r = rect();
-        dbg_log("BasicAppTestRun.cpp:onMount", "onMount", "D", r.w, r.h, r.pos.x, r.pos.y, rootView ? 1 : 0);
-        // #endregion
-        ensureUIView(rect());
-    }
+    void onMount() override {}
 
     void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
         (void)reason;
         auto bounds = context.bounds();
-        // #region agent log
-        dbg_log("BasicAppTestRun.cpp:onPaint:entry", "onPaint entry", "A", bounds.w, bounds.h, bounds.pos.x, bounds.pos.y, uiView ? 1 : 0);
-        // #endregion
-        ensureUIView(bounds);
 
+        // Render directly to the rootView's CanvasView — no UIView.
         context.clear(OmegaWTK::Composition::Color::create8Bit(
             OmegaWTK::Composition::Color::Black8));
 
@@ -60,23 +40,8 @@ protected:
             kRectSize,
             kRectSize};
 
-        // #region agent log
-        dbg_log("BasicAppTestRun.cpp:onPaint:redRect", "redRect", "B", redRect.pos.x, redRect.pos.y, redRect.w, redRect.h, 0);
-        // #endregion
-
-        OmegaWTK::UIViewLayout layout {};
-        layout.shape("center_rect",OmegaWTK::Shape::Rect(redRect));
-        uiView->setLayout(layout);
-
-        auto style = OmegaWTK::StyleSheet::Create();
-        style = style->backgroundColor("basic_view",OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Black8));
-        style = style->elementBrush("center_rect",OmegaWTK::Composition::ColorBrush(
+        context.drawRect(redRect, OmegaWTK::Composition::ColorBrush(
             OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)));
-        uiView->setStyleSheet(style);
-        uiView->update();
-        // #region agent log
-        dbg_log("BasicAppTestRun.cpp:onPaint:afterUpdate", "after uiView->update()", "C", 0, 0, 0, 0, 1);
-        // #endregion
     }
 
 public:

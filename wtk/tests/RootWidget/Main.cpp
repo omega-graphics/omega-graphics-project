@@ -18,7 +18,7 @@ public:
     };
 
     void render() override {
-        auto & surface = rootView->getLayerTreeLimb()->getRootLayer()->getSurface();
+        auto & surface = rootView->getLayerTree()->getRootLayer()->getSurface();
         surface->drawRect(rect(),brush);
         rootView->commitRender();
     };

@@ -25,19 +25,15 @@
         self.layer.bounds = NSMakeRect(0.f,0.f,rect.size.width,rect.size.height);
         self.autoresizesSubviews = NO;
         self.layer.autoresizingMask = kCALayerNotSizable;
-        NSLog(@"Old Origin: { x:%f, y:%f}",self.layer.anchorPoint.x,self.layer.anchorPoint.y);
-        self.layer.anchorPoint = CGPointMake(0.0,0.0);
+        self.layer.anchorPoint = CGPointMake(0.f,0.f);
         self.layer.position = CGPointMake(0.f,0.f);
         CGFloat startupScale = [NSScreen mainScreen].backingScaleFactor;
         if(startupScale <= 0.f || !std::isfinite(static_cast<double>(startupScale))){
             startupScale = 2.f;
         }
         self.layer.contentsScale = std::max(startupScale,static_cast<CGFloat>(2.f));
-        // self.layer.contentsGravity = kCAGravityCenter;
-        self.layer.magnificationFilter = kCAFilterLinear;
-//        self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawDuringViewResize;
-//        self.layerContentsPlacement = NSViewLayerContentsPlacementCenter;
-        NSLog(@"New Origin: { x:%f, y:%f}",self.layer.anchorPoint.x,self.layer.anchorPoint.y);
+        self.layer.opaque = NO;
+        self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawNever;
         _delegate = delegate;
         _trackingArea = [[NSTrackingArea alloc] initWithRect:rect options:NSTrackingMouseEnteredAndExited | NSTrackingCursorUpdate | NSTrackingActiveInKeyWindow owner:self userInfo:nil];
         [self addTrackingArea:_trackingArea];
@@ -50,8 +46,13 @@
     };
 };
 
+- (BOOL)isOpaque {
+    return NO;
+}
 - (BOOL)acceptsFirstResponder {
     return YES;
+};
+- (void)drawRect:(NSRect)dirtyRect{
 };
 
 - (void)mouseDown:(NSEvent *)event{
@@ -74,9 +75,6 @@
     [super mouseExited:event];
 };
 
-- (void)drawRect:(NSRect)dirtyRect{
-    NSLog(@"NEVER CALL THIS FUNCTION!!!");
-};
 - (CALayer *)getCALayer {
     return (CALayer *)self.layer;
 };
@@ -231,6 +229,9 @@ void * CocoaItem::getBinding(){
 
 void CocoaItem::enable(){
     if(_ptr != nil){
+        NSLog(@"[CocoaItem::enable] view=%@ wasHidden=%d window=%@ superview=%@ superview.hidden=%d contentView=%@ contentView.hidden=%d",
+              _ptr, _ptr.isHidden, _ptr.window, _ptr.superview, _ptr.superview.isHidden,
+              _ptr.window.contentView, _ptr.window.contentView.isHidden);
         if([_ptr isHidden] == YES){
             [_ptr setHidden:NO];
         }
@@ -242,6 +243,7 @@ void CocoaItem::enable(){
 
 void CocoaItem::disable(){
     if(_ptr != nil){
+        NSLog(@"[CocoaItem::disable] view=%@ wasHidden=%d", _ptr, _ptr.isHidden);
         if([_ptr isHidden] == NO){
             [_ptr setHidden:YES];
         }

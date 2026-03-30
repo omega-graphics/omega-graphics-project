@@ -24,6 +24,9 @@ public:
     CGSize drawableSize;
     SharedHandle<CommandBuffer> commandBuffer() override;
     NSSmartPtr & getDrawable();
+    PixelFormat pixelFormat() override {
+        return PixelFormat::BGRA8Unorm;
+    };
     void *nativeCommandQueue() override {
         return commandQueue->native();
     };

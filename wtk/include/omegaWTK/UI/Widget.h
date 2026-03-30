@@ -153,7 +153,6 @@ protected:
 
     SharedHandle<CanvasView> rootView;
     Widget *parent = nullptr;
-    SharedHandle<Composition::LayerTree> layerTree;
     /**
      The WidgetTreeHost that hosts this widget.
     */

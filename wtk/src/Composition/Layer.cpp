@@ -4,46 +4,40 @@
 
 namespace OmegaWTK::Composition {
 
+// --- Layer ---
 
 Layer::Layer(const Core::Rect &rect)
-    :
-        surface_rect(rect), needsNativeResize(false),parent_ptr(nullptr){
-          
+    : parentTree(nullptr), surface_rect(rect), needsNativeResize(false), parent_ptr(nullptr){
 };
 
 void Layer::addSubLayer(SharedHandle<Layer> &layer) {
-  layer->parent_ptr = this;
-  children.push_back(layer);
-//  compTarget->native->addChildNativeItem(layer->getTargetNativePtr());
+    layer->parent_ptr = this;
+    children.push_back(layer);
 };
 
 void Layer::removeSubLayer(SharedHandle<Layer> &layer) {
-  auto it = children.begin();
-  while (it != children.end()) {
-    auto l = *it;
-    if (l == layer) {
-      children.erase(it);
-      layer->parent_ptr = nullptr;
-//      compTarget->native->removeChildNativeItem(layer->getTargetNativePtr());
-      return;
-      break;
+    auto it = children.begin();
+    while (it != children.end()) {
+        auto l = *it;
+        if (l == layer) {
+            children.erase(it);
+            layer->parent_ptr = nullptr;
+            return;
+        };
+        ++it;
     };
-    ++it;
-  };
-  std::cout << "Error! Could not Remove Sublayer!" << std::endl;
+    std::cout << "Error! Could not Remove Sublayer!" << std::endl;
 };
-
-// void Layer::setStyle(SharedHandle<LayerStyle> & style){
-//     this->style = style;
-// };
 
 void Layer::resize(Core::Rect &newRect){
     surface_rect = newRect;
-    parentLimb->getParentTree()->notifyObserversOfResize(this);
+    if(parentTree != nullptr){
+        parentTree->notifyObserversOfResize(this);
+    }
 };
 
-LayerTree::Limb * Layer::getParentLimb(){
-    return parentLimb;
+LayerTree * Layer::getParentTree(){
+    return parentTree;
 };
 
 Layer::~Layer() { };
@@ -54,27 +48,56 @@ LayerEffect::~LayerEffect(){
     }
 }
 
+// --- LayerTree ---
 
-LayerTree::LayerTree():rootLimb(nullptr){};
+LayerTree::LayerTree():rootLayer(nullptr),enabled(true){};
 
-void LayerTree::addChildLimb(SharedHandle<LayerTree::Limb> & limb,Limb *parent){
-    if(!parent)
-        parent = rootLimb.get();
-    
-    auto it = body.find(parent);
-    if(it == body.end()){
-        /// If Limb has never been a parent.
-        body.insert(std::make_pair(parent,OmegaCommon::Vector<SharedHandle<Limb>>({limb})));
+LayerTree::LayerTree(const Core::Rect &rect):
+rootLayer(std::make_shared<Layer>(rect)),
+enabled(true){
+    rootLayer->parentTree = this;
+};
+
+SharedHandle<Layer> & LayerTree::getRootLayer(){
+    return rootLayer;
+}
+
+void LayerTree::addLayer(SharedHandle<Layer> layer){
+    layer->parentTree = this;
+    rootLayer->addSubLayer(layer);
+};
+
+LayerTree::iterator LayerTree::begin(){
+    return rootLayer->children.begin();
+};
+
+LayerTree::iterator LayerTree::end(){
+    return rootLayer->children.end();
+};
+
+void LayerTree::enable(){
+    if(!enabled && rootLayer != nullptr){
+        rootLayer->setEnabled(true);
+        enabled = true;
     }
-    else {
-        /// If the limb is currently a parent of other limbs.
-        it->second.push_back(limb);
-    };
 };
 
-void LayerTree::setRootLimb(SharedHandle<Limb> & limb){
-    rootLimb = limb;
+void LayerTree::disable(){
+    if(enabled && rootLayer != nullptr){
+        rootLayer->setEnabled(false);
+        enabled = false;
+    }
 };
+
+void LayerTree::collectAllLayers(OmegaCommon::Vector<Layer *> & out){
+    if(rootLayer == nullptr){
+        return;
+    }
+    out.push_back(rootLayer.get());
+    for(auto & child : rootLayer->children){
+        out.push_back(child.get());
+    }
+}
 
 void LayerTree::notifyObserversOfResize(Layer *layer){
     for(auto & observer : observers){
@@ -100,67 +123,6 @@ void LayerTree::notifyObserversOfWidgetDetach(){
     };
 };
 
-LayerTree::Limb::Limb(const Core::Rect &rect):
-limbRoot(new Layer(rect)),
-enabled(true){
-    limbRoot->parentLimb = this;
-};
-
-SharedHandle<Layer> & LayerTree::Limb::getRootLayer() {
-    return limbRoot;
-}
-
-void LayerTree::Limb::addLayer(SharedHandle<Layer> layer){
-    layer->parentLimb = this;
-    limbRoot->addSubLayer(layer);
-};
-
-// void LayerTree::Limb::commit(){
-    
-// };
-
-// void LayerTree::Limb::redraw(){
-//     limbRoot->ownerCompositor->updateRequestedLayerTreeLimb(this);
-// };
-
-// void LayerTree::Limb::layout(){
-//     limbRoot->ownerCompositor->layoutLayerTreeLimb(this);
-// };
-
-LayerTree::Limb::iterator LayerTree::Limb::begin(){
-    return limbRoot->children.begin();
-};
-
-LayerTree::Limb::iterator LayerTree::Limb::end(){
-    return limbRoot->children.end();
-};
-
-void LayerTree::Limb::enable(){
-    if(!enabled)
-        limbRoot->setEnabled(true);
-};
-
-void LayerTree::Limb::disable(){
-    if(enabled)
-        limbRoot->setEnabled(false);
-};
-
-LayerTree *LayerTree::Limb::getParentTree(){
-    return parentTree;
-};
-
-LayerTree::Limb * LayerTree::getTreeRoot(){
-    return rootLimb.get();
-};
-
-unsigned LayerTree::getParentLimbChildCount(LayerTree::Limb * parent){
-    return body[parent].size();
-};
-
-LayerTree::Limb * LayerTree::getLimbAtIndexFromParent(unsigned idx,Limb *parent){
-    return body[parent][idx].get();
-};
-
 void LayerTree::addObserver(LayerTreeObserver * observer){
     observers.push_back(observer);
 };
@@ -175,27 +137,16 @@ void LayerTree::removeObserver(LayerTreeObserver * observer){
 };
 
 LayerTree::~LayerTree(){
-    
+
 };
 
-SharedHandle<LayerTree::Limb> LayerTree::createLimb(const Core::Rect & rect){
-    auto limb = std::make_shared<LayerTree::Limb>(rect);
-    limb->parentTree = this;
-    return limb;
-};
-
+// --- WindowLayer ---
 
 WindowLayer::WindowLayer(Core::Rect & rect,Native::NWH native_window_ptr):native_window_ptr(native_window_ptr),rect(rect){
-    // MessageBoxA(HWND_DESKTOP,"Creating Window Layer!","NOTE",MB_OK);
-//    native_window_ptr->setNativeLayer(this);
 };
 
-// void WindowLayer::setWindowStyle(SharedHandle<WindowStyle> & style){
-//     this->style = style;
-// };
-
 void WindowLayer::redraw(){
-    
+
 };
 
 } // namespace OmegaWTK::Composition

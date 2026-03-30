@@ -148,19 +148,26 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         NSSmartPtr barrier = NSObjectHandle{nullptr};
 
         if(desc.nRenderTarget != nullptr){
-            NSLog(@"Prepare Render Pass For NativeTarget");
             auto *n_rt = (GEMetalNativeRenderTarget *)desc.nRenderTarget;
             auto metalDrawable = n_rt->getDrawable();
             metalDrawable.assertExists();
+            id<CAMetalDrawable> drawable = NSOBJECT_OBJC_BRIDGE(id<CAMetalDrawable>,metalDrawable.handle());
+            id<MTLTexture> drawableTexture = drawable.texture;
+            CAMetalLayer *drawableLayer = (CAMetalLayer *)drawable.layer;
+            NSLog(@"Prepare Render Pass For NativeTarget: drawable=%p texture=%p %lux%lu format=%lu layer=%p layer.superlayer=%@",
+                  drawable, drawableTexture,
+                  (unsigned long)drawableTexture.width, (unsigned long)drawableTexture.height,
+                  (unsigned long)drawableTexture.pixelFormat,
+                  drawableLayer, drawableLayer.superlayer);
             renderPassDesc.renderTargetWidth = (NSUInteger)n_rt->drawableSize.width;
             renderPassDesc.renderTargetHeight = (NSUInteger)n_rt->drawableSize.height;
             id<MTLTexture> renderTarget;
             if(desc.multisampleResolve){
                 renderTarget = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,((GEMetalTexture *)desc.resolveDesc.multiSampleTextureSrc.get())->texture.handle());
-                multiSampleTextureTarget = NSOBJECT_OBJC_BRIDGE(id<CAMetalDrawable>,metalDrawable.handle()).texture;
+                multiSampleTextureTarget = drawableTexture;
             }
             else {
-                renderTarget =  NSOBJECT_OBJC_BRIDGE(id<CAMetalDrawable>,metalDrawable.handle()).texture;
+                renderTarget = drawableTexture;
             }
             renderPassDesc.colorAttachments[0].texture =renderTarget;
            
@@ -540,6 +547,9 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     };
     
     void GEMetalCommandBuffer::_commit(){
+         NSLog(@"[_commit] MTLCommandBuffer=%p status=%lu",
+               NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()),
+               (unsigned long)NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()).status);
          buffer.assertExists();
          auto completion = completionHandler;
          completionHandler = nullptr;
@@ -640,6 +650,10 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
     void GEMetalCommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer){
         auto _commandBuffer = (GEMetalCommandBuffer *)commandBuffer.get();
         [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,_commandBuffer->buffer.handle()) enqueue];
+        NSLog(@"[submitCB] queue=%p enqueue CB=%p bufferCount=%lu->%lu",
+              this, _commandBuffer->buffer.handle(),
+              (unsigned long)commandBuffers.size(),
+              (unsigned long)(commandBuffers.size()+1));
         ResourceTracking::Event submitEvent {};
         submitEvent.backend = ResourceTracking::Backend::Metal;
         submitEvent.eventType = ResourceTracking::EventType::Submit;
@@ -671,6 +685,11 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
     };
 
     void GEMetalCommandQueue::commitToGPUAndPresent(NSSmartPtr & drawable){
+        NSLog(@"[commitToGPUAndPresent] commandBuffers.size=%lu", (unsigned long)commandBuffers.size());
+        if(commandBuffers.empty()){
+            NSLog(@"[commitToGPUAndPresent] ERROR: no command buffers to present!");
+            return;
+        }
         auto & b = commandBuffers.back();
         ((GEMetalCommandBuffer *)b.get())->_present_drawable(drawable);
         commitToGPU();

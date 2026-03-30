@@ -282,25 +282,12 @@ namespace {
         return std::chrono::duration<double,std::milli>(duration).count();
     }
 
-    static void collectLayersForTreeLimb(LayerTree *tree,
-                                         LayerTree::Limb *limb,
-                                         OmegaCommon::Vector<Layer *> &layers){
-        if(tree == nullptr || limb == nullptr){
+    static void collectLayersForTree(LayerTree *tree,
+                                     OmegaCommon::Vector<Layer *> &layers){
+        if(tree == nullptr){
             return;
         }
-        auto &rootLayer = limb->getRootLayer();
-        if(rootLayer != nullptr){
-            layers.push_back(rootLayer.get());
-        }
-        for(auto it = limb->begin(); it != limb->end(); ++it){
-            if(*it != nullptr){
-                layers.push_back((*it).get());
-            }
-        }
-        const auto childCount = tree->getParentLimbChildCount(limb);
-        for(unsigned idx = 0; idx < childCount; ++idx){
-            collectLayersForTreeLimb(tree,tree->getLimbAtIndexFromParent(idx,limb),layers);
-        }
+        tree->collectAllLayers(layers);
     }
 
 }
@@ -852,11 +839,10 @@ void Compositor::layerHasResized(Layer *layer){
     if(layer == nullptr){
         return;
     }
-    auto *limb = layer->getParentLimb();
-    if(limb == nullptr){
+    auto *tree = layer->getParentTree();
+    if(tree == nullptr){
         return;
     }
-    auto *tree = limb->getParentTree();
     std::lock_guard<std::mutex> lk(mutex);
     enqueueLayerTreeDeltaLocked(tree,LayerTreeDeltaType::LayerResized,layer,&layer->getLayerRect());
 }
@@ -865,11 +851,10 @@ void Compositor::layerHasDisabled(Layer *layer){
     if(layer == nullptr){
         return;
     }
-    auto *limb = layer->getParentLimb();
-    if(limb == nullptr){
+    auto *tree = layer->getParentTree();
+    if(tree == nullptr){
         return;
     }
-    auto *tree = limb->getParentTree();
     std::lock_guard<std::mutex> lk(mutex);
     enqueueLayerTreeDeltaLocked(tree,LayerTreeDeltaType::LayerDisabled,layer,&layer->getLayerRect());
 }
@@ -878,11 +863,10 @@ void Compositor::layerHasEnabled(Layer *layer){
     if(layer == nullptr){
         return;
     }
-    auto *limb = layer->getParentLimb();
-    if(limb == nullptr){
+    auto *tree = layer->getParentTree();
+    if(tree == nullptr){
         return;
     }
-    auto *tree = limb->getParentTree();
     std::lock_guard<std::mutex> lk(mutex);
     enqueueLayerTreeDeltaLocked(tree,LayerTreeDeltaType::LayerEnabled,layer,&layer->getLayerRect());
 }
@@ -941,18 +925,7 @@ void CompositorScheduler::processCommand(SharedHandle<CompositorCommand> & comma
     auto _now = std::chrono::high_resolution_clock::now();
     std::cout << "Processing Command:" << command->id << std::endl;
     auto executeCurrentCommand = [&](){
-#if defined(TARGET_MACOS)
-        if(pthread_main_np() != 0){
-            compositor->executeCurrentCommand();
-        }
-        else {
-            dispatch_sync_f(dispatch_get_main_queue(),compositor,[](void *ctx){
-                ((Compositor *)ctx)->executeCurrentCommand();
-            });
-        }
-#else
         compositor->executeCurrentCommand();
-#endif
     };
 
     if(command->thresholdParams.hasThreshold) {
@@ -1018,6 +991,11 @@ CompositorScheduler::CompositorScheduler(Compositor * compositor):compositor(com
                 compositor->currentCommand = command;
             }
             processCommand(command);
+            // Present completed render targets after each command so that
+            // lane admission (inFlight budget) can advance for the next command.
+            // Previously this only ran on queue drain, causing a circular
+            // dependency when packets from different Views shared a lane.
+            compositor->renderTargetStore.presentAllPending();
             {
                 std::lock_guard<std::mutex> lk(compositor->mutex);
                 if(compositor->commandQueue.empty()){

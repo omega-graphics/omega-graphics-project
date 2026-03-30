@@ -115,15 +115,10 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
      layer.drawableSize = CGSizeMake(
              std::clamp(saneRect.w * layer.contentsScale,static_cast<CGFloat>(1.f),kMaxDrawableDimension),
              std::clamp(saneRect.h * layer.contentsScale,static_cast<CGFloat>(1.f),kMaxDrawableDimension));
-    //  layer.bounds = CGRectMake(0,0,rect.w,rect.h);
-
-
 
      OmegaGTE::NativeRenderTargetDescriptor nativeRenderTargetDescriptor {false,layer};
-
      auto target = gte.graphicsEngine->makeNativeRenderTarget(nativeRenderTargetDescriptor);
      Core::Rect r {saneRect};
-     NSLog(@"Layer: W:%f H:%f",r.w,r.h);
      CGFloat scale = layer.contentsScale;
      if(scale <= 0.f || !std::isfinite(static_cast<double>(scale))){
          scale = 2.f;
@@ -137,13 +132,6 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
  void MTLCALayerTree::setRootVisual(Core::SharedPtr<Parent::Visual> & visual){
      root = visual;
      auto v = std::dynamic_pointer_cast<Visual>(visual);
-     if(v != nullptr){
-         ResourceTrace::emit("Bind",
-                             "BackendVisual",
-                             v->traceResourceId,
-                             "MTLCALayerTree::Root",
-                             this);
-     }
      runOnMainThreadSync(^{
          view->setRootLayer(v->metalLayer);
      });
@@ -160,10 +148,10 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
                              "MTLCALayerTree::Body",
                              this);
      }
-     runOnMainThreadSync(^{
-         [r->metalLayer addSublayer:v->metalLayer];
-         v->metalLayer.position = CGPointMake(v->pos.x,v->pos.y);
-     });
+     // Child visual CAMetalLayers are NOT added as sublayers of the root.
+     // Their content is composited via the blit pass in compositeAndPresentTarget.
+     // Adding them as sublayers would occlude the root's presented drawable
+     // with undefined/blank content (orphan CAMetalLayer problem).
  };
 
 // void BackendCompRenderTarget::renderVisualTree(){
