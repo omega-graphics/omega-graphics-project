@@ -1,5 +1,6 @@
 #include "../Compositor.h"
 #include "VisualTree.h"
+#include "ResourceFactory.h"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -107,8 +108,8 @@ namespace {
                         treeRoot->getLayerRect(),
                         Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
                 rootRect = normalizeRootVisualRect(rootRect);
-                auto rootVisual = target.visualTree->makeVisual(rootRect,rootRect.pos);
-                target.visualTree->setRootVisual(rootVisual);
+                BackendResourceFactory factory;
+                auto rootVisual = factory.createRootVisual(*target.visualTree, rootRect);
                 auto insertedRoot = target.surfaceTargets.insert(std::make_pair(treeRoot.get(),&rootVisual->renderTarget));
                 if(!insertedRoot.second){
                     insertedRoot.first->second = &rootVisual->renderTarget;
@@ -117,8 +118,8 @@ namespace {
             auto layerRect = sanitizeCommandRect(
                     layer->getLayerRect(),
                     Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
-            auto visual = target.visualTree->makeVisual(layerRect,layerRect.pos);
-            target.visualTree->addVisual(visual);
+            BackendResourceFactory factory;
+            auto visual = factory.createChildVisual(*target.visualTree, layerRect);
             auto inserted = target.surfaceTargets.insert(std::make_pair(layer,&visual->renderTarget));
             if(!inserted.second){
                 inserted.first->second = &visual->renderTarget;
@@ -145,8 +146,8 @@ namespace {
                 layer->getLayerRect(),
                 Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
         layerRect = normalizeRootVisualRect(layerRect);
-        auto visual = target.visualTree->makeVisual(layerRect,layerRect.pos);
-        target.visualTree->setRootVisual(visual);
+        BackendResourceFactory factory;
+        auto visual = factory.createRootVisual(*target.visualTree, layerRect);
         auto inserted = target.surfaceTargets.insert(std::make_pair(layer,&visual->renderTarget));
         if(!inserted.second){
             inserted.first->second = &visual->renderTarget;
@@ -362,10 +363,17 @@ void Compositor::executeCurrentCommand(){
         auto found = renderTargetStore.store.find(comm->renderTarget);
         if (found == renderTargetStore.store.end()) {
              _buildVisualTree = true;
-             auto renderTarget = std::dynamic_pointer_cast<ViewRenderTarget>(comm->renderTarget);
-             auto visualTree = BackendVisualTree::Create(renderTarget);
-             BackendCompRenderTarget compRenderTarget {visualTree};
-             target = &renderTargetStore.store.insert(std::make_pair(comm->renderTarget,compRenderTarget)).first->second;
+             auto *preCreated = PreCreatedResourceRegistry::lookup(comm->renderTarget.get());
+             if(preCreated != nullptr && preCreated->bundle.visualTree != nullptr){
+                 BackendCompRenderTarget compRenderTarget {preCreated->bundle.visualTree};
+                 target = &renderTargetStore.store.insert(std::make_pair(comm->renderTarget,compRenderTarget)).first->second;
+             } else {
+                 std::cout << "[WTK Diag] executeCurrentCommand(Render): no pre-created visual tree for target "
+                           << comm->renderTarget.get() << " — dropping frame" << std::endl;
+                 markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
+                 currentCommand->status.set(CommandStatus::Delayed);
+                 return;
+             }
         } else {
             target = &renderTargetStore.store[comm->renderTarget];
         };
@@ -508,15 +516,17 @@ void Compositor::executeCurrentCommand(){
             BackendCompRenderTarget *viewTarget = nullptr;
             auto viewRenderTarget = renderTargetStore.store.find(params->parentTarget);
             if(viewRenderTarget == renderTargetStore.store.end()){
-                auto parentRenderTarget = std::dynamic_pointer_cast<ViewRenderTarget>(params->parentTarget);
-                if(parentRenderTarget == nullptr){
-                    markPacketFailed(currentCommand->syncLaneId,currentCommand->syncPacketId);
-                    currentCommand->status.set(CommandStatus::Failed);
+                auto *preCreated = PreCreatedResourceRegistry::lookup(params->parentTarget.get());
+                if(preCreated != nullptr && preCreated->bundle.visualTree != nullptr){
+                    BackendCompRenderTarget compRenderTarget {preCreated->bundle.visualTree};
+                    viewTarget = &renderTargetStore.store.insert(std::make_pair(params->parentTarget,compRenderTarget)).first->second;
+                } else {
+                    std::cout << "[WTK Diag] executeCurrentCommand(Layer): no pre-created visual tree for parent target "
+                              << params->parentTarget.get() << " — dropping command" << std::endl;
+                    markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
+                    currentCommand->status.set(CommandStatus::Delayed);
                     return;
                 }
-                auto visualTree = BackendVisualTree::Create(parentRenderTarget);
-                BackendCompRenderTarget compRenderTarget {visualTree};
-                viewTarget = &renderTargetStore.store.insert(std::make_pair(params->parentTarget,compRenderTarget)).first->second;
             }
             else {
                 viewTarget = &viewRenderTarget->second;

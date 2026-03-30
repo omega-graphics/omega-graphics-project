@@ -9,6 +9,7 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Canvas.h"
 #include "../Composition/Compositor.h"
+#include "../Composition/backend/ResourceFactory.h"
 
 namespace OmegaWTK {
 
@@ -261,6 +262,18 @@ namespace OmegaWTK {
         }
     }
 
+    void View::preCreateVisualResources(){
+        if(renderTarget == nullptr){
+            return;
+        }
+        Composition::BackendResourceFactory factory;
+        auto bundle = factory.createVisualTreeForView(renderTarget, rect);
+        preCreatedVisualTree_ = std::make_unique<Composition::PreCreatedVisualTreeData>(
+                Composition::PreCreatedVisualTreeData{std::move(bundle)});
+        Composition::PreCreatedResourceRegistry::store(
+                renderTarget.get(), preCreatedVisualTree_.get());
+    }
+
     View::View(const Core::Rect & rect,ViewPtr parent):
         renderTarget(std::make_shared<Composition::ViewRenderTarget>(
                 Native::make_native_item(
@@ -275,6 +288,8 @@ namespace OmegaWTK {
 
         renderTarget->getNativePtr()->setLayerTreeLimb(ownLayerTree.get());
         renderTarget->getNativePtr()->event_emitter = this;
+
+        preCreateVisualResources();
 
         if(parent_ptr) {
             parent->addSubView(this);
@@ -355,6 +370,7 @@ rect(sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f})){
     if(renderTarget != nullptr && renderTarget->getNativePtr() != nullptr){
         renderTarget->getNativePtr()->resize(this->rect);
     }
+    preCreateVisualResources();
     if(parent_ptr) {
         parent->addSubView(this);
     };
@@ -427,6 +443,9 @@ void View::applyLayoutDelta(const LayoutDelta & delta,
 }
 
 View::~View(){
+    if(preCreatedVisualTree_ != nullptr && renderTarget != nullptr){
+        Composition::PreCreatedResourceRegistry::remove(renderTarget.get());
+    }
     std::cout << "View will destruct" << std::endl;
 };
 

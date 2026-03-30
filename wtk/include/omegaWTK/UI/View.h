@@ -23,6 +23,7 @@ namespace OmegaWTK {
         class ViewAnimator;
         class Font;
         class TextRect;
+        struct PreCreatedVisualTreeData;
     }
 
     namespace Native {
@@ -110,6 +111,8 @@ namespace OmegaWTK {
         virtual bool hasDelegate();
         void addSubView(View *view);
         void removeSubView(View * view);
+        Core::UniquePtr<Composition::PreCreatedVisualTreeData> preCreatedVisualTree_;
+        void preCreateVisualResources();
         friend class AppWindow;
         friend class Composition::ViewAnimator;
         friend class ScrollView;

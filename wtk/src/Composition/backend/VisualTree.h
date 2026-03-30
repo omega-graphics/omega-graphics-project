@@ -9,9 +9,12 @@ namespace OmegaWTK::Composition {
     /**
      @brief The Interface for rendering LayerTreeLimbs
     */
+    class BackendResourceFactory;
+
     INTERFACE BackendVisualTree {
+        friend class BackendResourceFactory;
     protected:
-        
+
         struct Visual {
             std::uint64_t traceResourceId = 0;
             Core::Position pos;

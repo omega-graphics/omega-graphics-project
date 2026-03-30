@@ -142,25 +142,27 @@ These functions no longer create resources. They only:
 
 ### Migration Path
 
-| Step | Change | Risk |
-|------|--------|------|
-| 1 | Add `BackendResourceFactory` class with `dispatch_sync` to main thread | Low — additive |
-| 2 | Move `BackendVisualTree::Create` + `makeVisual` + `setRootVisual` into factory, called from `View` constructor | Medium — changes initialization order |
-| 3 | Move `rebuildBackingTarget` (offscreen texture creation) into factory | Medium — textures currently resize lazily |
-| 4 | Update `ensureLayerSurfaceTarget` to use pre-created resources | Medium — removes lazy creation path |
-| 5 | Move child visual creation (`addVisual`) into factory with request queue | Medium — adds sync point |
-| 6 | Remove all resource creation from compositor thread code paths | High — final cutover |
+| Step | Change | Risk | Status |
+|------|--------|------|--------|
+| 1 | Add `BackendResourceFactory` class with `dispatch_sync` to main thread | Low — additive | **Done** |
+| 2 | Move `BackendVisualTree::Create` + `makeVisual` + `setRootVisual` into factory, called from `View` constructor | Medium — changes initialization order | **Done** |
+| 3 | Move `rebuildBackingTarget` (offscreen texture creation) into factory | Medium — textures currently resize lazily | **Done** |
+| 4 | Update `ensureLayerSurfaceTarget` to use pre-created resources | Medium — removes lazy creation path | **Done** |
+| 5 | Move child visual creation (`addVisual`) into factory with request queue | Medium — adds sync point | **Done** |
+| 6 | Remove all resource creation from compositor thread code paths | High — final cutover | **Done** |
 
 ### Files Touched
 
 | File | Change |
 |------|--------|
-| NEW: `src/Composition/backend/ResourceFactory.h` | BackendResourceFactory class |
-| NEW: `src/Composition/backend/ResourceFactory.cpp` | Implementation with platform dispatch |
+| NEW: `src/Composition/backend/ResourceFactory.h` | BackendResourceFactory, PreCreatedVisualTreeData, PreCreatedResourceRegistry |
+| NEW: `src/Composition/backend/ResourceFactory.cpp` | Implementation with platform dispatch + registry |
+| NEW: `src/Composition/backend/MainThreadDispatch.h` | Shared `runOnMainThread` utility for main-thread dispatch |
+| `src/Composition/backend/VisualTree.h` | `friend class BackendResourceFactory` for protected Visual access |
 | `include/omegaWTK/UI/View.h` | Store pre-created visual tree metadata |
 | `src/UI/View.cpp` | Call factory during construction |
 | `src/Composition/backend/Execution.cpp` | `ensureLayerSurfaceTarget` uses pre-created resources |
-| `src/Composition/backend/RenderTarget.cpp` | `rebuildBackingTarget` delegates to factory |
+| `src/Composition/backend/RenderTarget.cpp` | `rebuildBackingTarget` GPU creation dispatched to main thread |
 | `src/Composition/backend/RenderTarget.h` | `BackendRenderTargetContext` accepts pre-created resources |
 | `src/Composition/backend/mtl/CALayerTree.mm` | `makeVisual` / `setRootVisual` called from factory |
 

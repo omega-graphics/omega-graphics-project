@@ -5,6 +5,7 @@
 #include "TexturePool.h"
 #include "BufferPool.h"
 #include "FencePool.h"
+#include "MainThreadDispatch.h"
 #include "omegaWTK/Composition/Canvas.h"
 #include "ResourceTrace.h"
 
@@ -480,40 +481,46 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
     targetTexture.reset();
     effectTexture.reset();
 
-    if(texturePool){
-        targetTexture = texturePool->acquire(poolKey);
-        effectTexture = texturePool->acquire(poolKey);
-    }
-    else {
-        OmegaGTE::TextureDescriptor textureDescriptor {};
-        textureDescriptor.usage = OmegaGTE::GETexture::RenderTarget;
-        textureDescriptor.storage_opts = OmegaGTE::Shared;
-        textureDescriptor.width = backingWidth;
-        textureDescriptor.height = backingHeight;
-        textureDescriptor.type = OmegaGTE::GETexture::Texture2D;
-        textureDescriptor.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm;
-        targetTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
-        effectTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
-    }
+    // GPU resource creation must happen on the main thread so that
+    // textures and render targets integrate correctly with Core Animation /
+    // the platform display pipeline. Pool acquire is included because
+    // a pool miss triggers fresh texture allocation internally.
+    runOnMainThread([&]{
+        if(texturePool){
+            targetTexture = texturePool->acquire(poolKey);
+            effectTexture = texturePool->acquire(poolKey);
+        }
+        else {
+            OmegaGTE::TextureDescriptor textureDescriptor {};
+            textureDescriptor.usage = OmegaGTE::GETexture::RenderTarget;
+            textureDescriptor.storage_opts = OmegaGTE::Shared;
+            textureDescriptor.width = backingWidth;
+            textureDescriptor.height = backingHeight;
+            textureDescriptor.type = OmegaGTE::GETexture::Texture2D;
+            textureDescriptor.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm;
+            targetTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
+            effectTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
+        }
 
-    if(targetTexture == nullptr || effectTexture == nullptr){
-        std::cout << "Failed to allocate backing textures." << std::endl;
-        preEffectTarget.reset();
-        effectTarget.reset();
-        tessellationEngineContext.reset();
-        return;
-    }
-    preEffectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,targetTexture});
-    effectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,effectTexture});
-    if(preEffectTarget == nullptr || effectTarget == nullptr){
-        std::cout << "Failed to allocate Vulkan texture render targets." << std::endl;
-        tessellationEngineContext.reset();
-        return;
-    }
-    tessellationEngineContext = gte.triangulationEngine->createTEContextFromTextureRenderTarget(preEffectTarget);
-    if(tessellationEngineContext == nullptr){
-        std::cout << "Failed to create tessellation context for backing render target." << std::endl;
-    }
+        if(targetTexture == nullptr || effectTexture == nullptr){
+            std::cout << "Failed to allocate backing textures." << std::endl;
+            preEffectTarget.reset();
+            effectTarget.reset();
+            tessellationEngineContext.reset();
+            return;
+        }
+        preEffectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,targetTexture});
+        effectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,effectTexture});
+        if(preEffectTarget == nullptr || effectTarget == nullptr){
+            std::cout << "Failed to allocate Vulkan texture render targets." << std::endl;
+            tessellationEngineContext.reset();
+            return;
+        }
+        tessellationEngineContext = gte.triangulationEngine->createTEContextFromTextureRenderTarget(preEffectTarget);
+        if(tessellationEngineContext == nullptr){
+            std::cout << "Failed to create tessellation context for backing render target." << std::endl;
+        }
+    });
 }
 
 BackendRenderTargetContext::~BackendRenderTargetContext(){
