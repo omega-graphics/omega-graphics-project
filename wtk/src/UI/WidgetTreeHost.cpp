@@ -349,7 +349,7 @@ namespace OmegaWTK {
         if(parent == nullptr || compositor == nullptr){
             return;
         }
-        auto *rootTree = parent->rootView ? parent->rootView->getLayerTree() : nullptr;
+        auto *rootTree = parent->view ? parent->view->getLayerTree() : nullptr;
         if(rootTree != nullptr){
             compositor->observeLayerTree(rootTree,syncLaneId);
         }
@@ -362,7 +362,7 @@ namespace OmegaWTK {
         if(parent == nullptr || compositor == nullptr){
             return;
         }
-        auto *rootTree = parent->rootView ? parent->rootView->getLayerTree() : nullptr;
+        auto *rootTree = parent->view ? parent->view->getLayerTree() : nullptr;
         if(rootTree != nullptr){
             compositor->unobserveLayerTree(rootTree);
         }
@@ -391,10 +391,10 @@ namespace OmegaWTK {
     }
 
     void WidgetTreeHost::beginResizeCoordinatorSessionRecurse(Widget *parent,std::uint64_t sessionId){
-        if(parent == nullptr || parent->rootView == nullptr){
+        if(parent == nullptr || parent->view == nullptr){
             return;
         }
-        parent->rootView->getResizeCoordinator().beginResizeSession(sessionId);
+        parent->view->getResizeCoordinator().beginResizeSession(sessionId);
         for(auto & child : parent->children){
             beginResizeCoordinatorSessionRecurse(child,sessionId);
         }
@@ -416,10 +416,10 @@ namespace OmegaWTK {
     }
 
     void WidgetTreeHost::applyResizeGovernorMetadata(const Composition::ResizeGovernorMetadata & metadata){
-        if(root == nullptr || root->rootView == nullptr){
+        if(root == nullptr || root->view == nullptr){
             return;
         }
-        root->rootView->setResizeGovernorMetadataRecurse(metadata,resizeCoordinatorGeneration);
+        root->view->setResizeGovernorMetadataRecurse(metadata,resizeCoordinatorGeneration);
     }
 
     void WidgetTreeHost::initWidgetTree(){
@@ -595,7 +595,6 @@ namespace OmegaWTK {
     void WidgetTreeHost::attachToWindow(AppWindow * window){
         if(!attachedToWindow) {
             attachedToWindow = true;
-            window->_add_widget(root.get());
             window->proxy.setFrontendPtr(compositor);
         }
     };

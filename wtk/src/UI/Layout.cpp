@@ -198,7 +198,7 @@ void StackLayoutBehavior::arrange(LayoutNode & /*node*/, const LayoutContext & /
 
 void runWidgetLayout(Widget & root, const LayoutContext & ctx){
     if(!root.hasExplicitLayoutStyle()){
-        auto & coordinator = root.rootViewRef().getResizeCoordinator();
+        auto & coordinator = root.viewRef().getResizeCoordinator();
         coordinator.resolve(ctx.availableRectPx);
         return;
     }

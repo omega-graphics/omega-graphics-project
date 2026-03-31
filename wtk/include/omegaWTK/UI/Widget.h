@@ -151,67 +151,13 @@ private:
     using Native::NativeThemeObserver::onThemeSet;
 protected:
 
-    SharedHandle<CanvasView> rootView;
+    ViewPtr view;
     Widget *parent = nullptr;
     /**
      The WidgetTreeHost that hosts this widget.
     */
     WidgetTreeHost *treeHost = nullptr;
-        /**
-     Makes a Canvas View attached to this widget and returns it.
-     @param rect The Rectangle to use
-     @param parent The Parent View (NOTE: This view MUST be within this widget's view heirarchy)
-     @returns A standard View
-     */
-    CanvasViewPtr makeCanvasView(const Core::Rect & rect,ViewPtr parent);
-
-    /**
-     Makes a Scroll View attached to this widget and returns it.
-     @param rect The Rectangle to use
-     @param child The child view to clip and scroll
-     @param hasVerticalScrollBar Enable vertical scrollbar
-     @param hasHorizontalScrollBar Enable horizontal scrollbar
-     @param parent The parent view in this widget view hierarchy
-     @returns A Scroll View
-     */
-    ScrollViewPtr makeScrollView(const Core::Rect & rect,
-                                 ViewPtr child,
-                                 bool hasVerticalScrollBar,
-                                 bool hasHorizontalScrollBar,
-                                 ViewPtr parent);
-
-    //    /**
-    //  Makes a Canvas View attached to this widget and returns it.
-    //  @param rect The Rectangle to use
-    //  @param parent The Parent View (NOTE: This view MUST be within this widget's view heirarchy)
-    //  @returns A standard View
-    //  */
-    // TextViewPtr makeTextView(const Core::Rect & rect,View *parent);
-
-    /**
-     Makes an SVG View attached to this widget and returns it.
-     @param rect The Rectangle to use
-     @param parent The Parent View (NOTE: This view MUST be within this widget's view heirarchy)
-     @returns A Video View
-     */
-    SVGViewPtr makeSVGView(const Core::Rect & rect,ViewPtr parent);
-
-    /**
-     Makes a Video View attached to this widget and returns it.
-     @param rect The Rectangle to use
-     @param parent The Parent View (NOTE: This view MUST be within this widget's view heirarchy)
-     @returns A Video View
-     */
-    VideoViewPtr makeVideoView(const Core::Rect & rect,ViewPtr parent);
-
-     /**
-     Makes a UI View attached to this widget and returns it.
-     @param rect The Rectangle to use
-     @param parent The Parent View (NOTE: This view MUST be within this widget's view heirarchy)
-     @returns A Video View
-     */
-    UIViewPtr makeUIView(const Core::Rect & rect,ViewPtr parent,UIViewTag tag = "");
-    
+        
 private:
     OmegaCommon::Vector<Widget *> children;
     void setTreeHostRecurse(WidgetTreeHost *host);
@@ -279,7 +225,7 @@ public:
     LayoutBehaviorPtr layoutBehavior() const;
     void requestLayout();
     bool hasExplicitLayoutStyle() const;
-    View & rootViewRef();
+    View & viewRef();
     virtual bool acceptsChildWidget(const Widget *child) const;
     virtual bool isLayoutResizable() const {
         return true;
@@ -315,7 +261,7 @@ public:
     */
     void hide();
 protected:
-    Widget(const Core::Rect & rect,WidgetPtr parent);
+    Widget(ViewPtr view,WidgetPtr parent);
 public:
     ~Widget() override;
 };

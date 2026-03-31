@@ -147,6 +147,12 @@ namespace OmegaWTK {
         View(const Core::Rect & rect,ViewPtr parent = nullptr);
     public:
         OMEGACOMMON_CLASS("OmegaWTK.View")
+
+        /// Creates a View. Public factory for use by Widget subclass constructors.
+        static ViewPtr Create(const Core::Rect & rect,ViewPtr parent = nullptr){
+            return ViewPtr(new View(rect,parent));
+        }
+
         /**
          * @brief Create A Layer
          * @param rect The Rectangle defining the bounds of the layer.
@@ -280,8 +286,8 @@ namespace OmegaWTK {
         bool hasDelegate();
         bool hasVerticalScrollBar,hasHorizontalScrollBar;
         friend class Widget;
-        explicit ScrollView(const Core::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, ViewPtr parent = nullptr);
     public:
+        explicit ScrollView(const Core::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, ViewPtr parent = nullptr);
         OMEGACOMMON_CLASS("OmegaWTK.ScrollView")
         void toggleVerticalScrollBar();
         void toggleHorizontalScrollBar();
@@ -478,9 +484,8 @@ class OMEGAWTK_EXPORT SVGView : public View {
 
     void rebuildDisplayList();
     friend class Widget;
-
-    explicit SVGView(const Core::Rect & rect,ViewPtr parent);
 public:
+    explicit SVGView(const Core::Rect & rect,ViewPtr parent);
     OMEGACOMMON_CLASS("OmegaWTK.UI.SVGView")
 
     ~SVGView();

@@ -37,7 +37,7 @@ class RoundedFrameWidget final : public OmegaWTK::Widget {
     void ensureUIView(const OmegaWTK::Core::Rect & bounds){
         auto localBounds = localViewBounds(bounds);
         if(uiView == nullptr){
-            uiView = makeUIView(localBounds,rootView,"rounded_frame_view");
+            uiView = OmegaWTK::UIViewPtr(new OmegaWTK::UIView(localBounds,view,"rounded_frame_view"));
         }
         else {
             uiView->resize(localBounds);
@@ -110,8 +110,8 @@ protected:
     }
 
 public:
-    explicit RoundedFrameWidget(const OmegaWTK::Core::Rect & rect,OmegaWTK::WidgetPtr parent):
-        OmegaWTK::Widget(rect,parent){}
+    explicit RoundedFrameWidget(OmegaWTK::ViewPtr view,OmegaWTK::WidgetPtr parent):
+        OmegaWTK::Widget(std::move(view),parent){}
 };
 
 class EllipseOnlyWidget final : public OmegaWTK::Widget {
@@ -121,7 +121,7 @@ class EllipseOnlyWidget final : public OmegaWTK::Widget {
     void ensureUIView(const OmegaWTK::Core::Rect & bounds){
         auto localBounds = localViewBounds(bounds);
         if(uiView == nullptr){
-            uiView = makeUIView(localBounds,rootView,"ellipse_view");
+            uiView = OmegaWTK::UIViewPtr(new OmegaWTK::UIView(localBounds,view,"ellipse_view"));
         }
         else {
             uiView->resize(localBounds);
@@ -171,8 +171,8 @@ protected:
     }
 
 public:
-    explicit EllipseOnlyWidget(const OmegaWTK::Core::Rect & rect,OmegaWTK::WidgetPtr parent):
-        OmegaWTK::Widget(rect,parent){}
+    explicit EllipseOnlyWidget(OmegaWTK::ViewPtr view,OmegaWTK::WidgetPtr parent):
+        OmegaWTK::Widget(std::move(view),parent){}
 };
 
 class PathOnlyWidget final : public OmegaWTK::Widget {
@@ -182,7 +182,7 @@ class PathOnlyWidget final : public OmegaWTK::Widget {
     void ensureUIView(const OmegaWTK::Core::Rect & bounds){
         auto localBounds = localViewBounds(bounds);
         if(uiView == nullptr){
-            uiView = makeUIView(localBounds,rootView,"path_view");
+            uiView = OmegaWTK::UIViewPtr(new OmegaWTK::UIView(localBounds,view,"path_view"));
         }
         else {
             uiView->resize(localBounds);
@@ -239,8 +239,8 @@ protected:
     }
 
 public:
-    explicit PathOnlyWidget(const OmegaWTK::Core::Rect & rect,OmegaWTK::WidgetPtr parent):
-        OmegaWTK::Widget(rect,parent){}
+    explicit PathOnlyWidget(OmegaWTK::ViewPtr view,OmegaWTK::WidgetPtr parent):
+        OmegaWTK::Widget(std::move(view),parent){}
 };
 
 class GeometryHStack final : public OmegaWTK::HStack {
@@ -256,10 +256,10 @@ protected:
     }
 
 public:
-    explicit GeometryHStack(const OmegaWTK::Core::Rect & rect,
+    explicit GeometryHStack(OmegaWTK::ViewPtr view,
                             OmegaWTK::WidgetPtr parent,
                             const OmegaWTK::StackOptions & options):
-        OmegaWTK::HStack(rect,parent,options){}
+        OmegaWTK::HStack(std::move(view),parent,options){}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -284,21 +284,21 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
     options.crossAlign = OmegaWTK::StackCrossAlign::Center;
 
     auto stack = make<GeometryHStack>(
-        windowRect,
+        OmegaWTK::View::Create(windowRect),
         OmegaWTK::WidgetPtr{},
         options);
 
     const OmegaWTK::Core::Rect childRect{{0,0},130,220};
 
     auto pathWidget = make<PathOnlyWidget>(
-        childRect,
+        OmegaWTK::View::Create(childRect),
         OmegaWTK::WidgetPtr{});
-    auto roundedFrameWidget = make<RoundedFrameWidget>(
-        childRect,
-        OmegaWTK::WidgetPtr{});
-    auto ellipseWidget = make<EllipseOnlyWidget>(
-        childRect,
-        OmegaWTK::WidgetPtr{});
+    // auto roundedFrameWidget = make<RoundedFrameWidget>(
+    //     OmegaWTK::View::Create(childRect),
+    //     OmegaWTK::WidgetPtr{});
+    // auto ellipseWidget = make<EllipseOnlyWidget>(
+    //     OmegaWTK::View::Create(childRect),
+    //     OmegaWTK::WidgetPtr{});
 
     OmegaWTK::StackSlot slot {};
     slot.flexGrow = 0.0f;
@@ -307,10 +307,10 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
     slot.alignSelf = OmegaWTK::StackCrossAlign::Center;
 
     stack->addChild(pathWidget,slot);
-    stack->addChild(roundedFrameWidget,slot);
-    stack->addChild(ellipseWidget,slot);
+    // stack->addChild(roundedFrameWidget,slot);
+    // stack->addChild(ellipseWidget,slot);
 
-    window->add(stack);
+    window->setRootWidget(stack);
 
     auto & windowManager = app->windowManager;
     windowManager->setRootWindow(window);

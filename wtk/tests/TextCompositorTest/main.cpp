@@ -41,7 +41,7 @@ class TextCompositorWidget final : public OmegaWTK::Widget {
     void ensureAccentView(const OmegaWTK::Core::Rect & bounds){
         auto targetRect = accentRectForBounds(bounds);
         if(accentView == nullptr){
-            accentView = makeUIView(targetRect,rootView,"text_accent_view");
+            accentView = OmegaWTK::UIViewPtr(new OmegaWTK::UIView(targetRect,view,"text_accent_view"));
         }
         else {
             accentView->resize(targetRect);
@@ -174,8 +174,8 @@ protected:
     }
 
 public:
-    explicit TextCompositorWidget(const OmegaWTK::Core::Rect & rect,OmegaWTK::WidgetPtr parent):
-        OmegaWTK::Widget(rect,parent){}
+    explicit TextCompositorWidget(OmegaWTK::ViewPtr view,OmegaWTK::WidgetPtr parent):
+        OmegaWTK::Widget(std::move(view),parent){}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -192,9 +192,9 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
         new MyWindowDelegate());
 
     auto widget = make<TextCompositorWidget>(
-        OmegaWTK::Core::Rect{{0,0},500,500},
+        OmegaWTK::View::Create(OmegaWTK::Core::Rect{{0,0},500,500}),
         OmegaWTK::WidgetPtr{});
-    window->add(widget);
+    window->setRootWidget(widget);
 
     auto & windowManager = app->windowManager;
     windowManager->setRootWindow(window);

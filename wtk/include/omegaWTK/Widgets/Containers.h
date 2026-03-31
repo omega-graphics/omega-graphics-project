@@ -80,7 +80,7 @@ protected:
     void onPaint(PaintContext & context,PaintReason reason) override;
     void resize(Core::Rect & newRect) override;
 public:
-    StackWidget(StackAxis axis,const Core::Rect & rect,WidgetPtr parent,const StackOptions & options = {});
+    StackWidget(StackAxis axis,ViewPtr view,WidgetPtr parent,const StackOptions & options = {});
 
     StackAxis getAxis() const;
     const StackOptions & getOptions() const;
@@ -102,12 +102,12 @@ public:
 
 class OMEGAWTK_EXPORT HStack : public StackWidget {
 public:
-    explicit HStack(const Core::Rect & rect,WidgetPtr parent,const StackOptions & options = {});
+    explicit HStack(ViewPtr view,WidgetPtr parent,const StackOptions & options = {});
 };
 
 class OMEGAWTK_EXPORT VStack : public StackWidget {
 public:
-    explicit VStack(const Core::Rect & rect,WidgetPtr parent,const StackOptions & options = {});
+    explicit VStack(ViewPtr view,WidgetPtr parent,const StackOptions & options = {});
 };
 
 }

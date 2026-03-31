@@ -13,14 +13,14 @@ static SharedHandle<Composition::Font> font;
 
 class RectWidget : public Widget {
 public:
-    RectWidget(const Core::Rect &rect,Widget *parent):Widget(rect,parent){
-        
+    RectWidget(ViewPtr view,WidgetPtr parent):Widget(std::move(view),parent){
+
     };
 
     void render() override {
-        auto & surface = rootView->getLayerTree()->getRootLayer()->getSurface();
+        auto & surface = view->getLayerTree()->getRootLayer()->getSurface();
         surface->drawRect(rect(),brush);
-        rootView->commitRender();
+        view->commitRender();
     };
 
 };

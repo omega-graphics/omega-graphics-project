@@ -41,7 +41,7 @@ class ClampAnimatedChildWidget final : public OmegaWTK::Widget {
     void ensureUIView(const OmegaWTK::Core::Rect & bounds){
         auto local = localBounds(bounds);
         if(uiView == nullptr){
-            uiView = makeUIView(local,rootView,"clamp_anim_child_view");
+            uiView = OmegaWTK::UIViewPtr(new OmegaWTK::UIView(local,view,"clamp_anim_child_view"));
         }
         else {
             uiView->resize(local);
@@ -138,8 +138,8 @@ protected:
     }
 
 public:
-    explicit ClampAnimatedChildWidget(const OmegaWTK::Core::Rect & rect,OmegaWTK::WidgetPtr parent):
-            OmegaWTK::Widget(rect,parent){}
+    explicit ClampAnimatedChildWidget(OmegaWTK::ViewPtr view,OmegaWTK::WidgetPtr parent):
+            OmegaWTK::Widget(std::move(view),parent){}
 };
 
 class ClampRootContainer final : public OmegaWTK::Container {
@@ -154,8 +154,8 @@ protected:
         OmegaWTK::Container::onPaint(context,reason);
     }
 public:
-    explicit ClampRootContainer(const OmegaWTK::Core::Rect & rect,OmegaWTK::WidgetPtr parent):
-            OmegaWTK::Container(rect,parent){}
+    explicit ClampRootContainer(OmegaWTK::ViewPtr view,OmegaWTK::WidgetPtr parent):
+            OmegaWTK::Container(std::move(view),parent){}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -172,7 +172,7 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
             new MyWindowDelegate());
 
     auto container = make<ClampRootContainer>(
-            OmegaWTK::Core::Rect{{0,0},500,500},
+            OmegaWTK::View::Create(OmegaWTK::Core::Rect{{0,0},500,500}),
             OmegaWTK::WidgetPtr{});
 
     OmegaWTK::ContainerClampPolicy clampPolicy {};
@@ -184,11 +184,11 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
     container->setClampPolicy(clampPolicy);
 
     auto child = make<ClampAnimatedChildWidget>(
-            OmegaWTK::Core::Rect{{190.f,160.f},120.f,120.f},
+            OmegaWTK::View::Create(OmegaWTK::Core::Rect{{190.f,160.f},120.f,120.f}),
             OmegaWTK::WidgetPtr{});
     container->addChild(child);
 
-    window->add(container);
+    window->setRootWidget(container);
 
     auto & windowManager = app->windowManager;
     windowManager->setRootWindow(window);

@@ -10,8 +10,8 @@
 /**
 * Every Widget Constructor comes with two default parameters: The rect, and the parent widget.
 */
-#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(const Core::Rect & rect,WidgetPtr parent,## __VA_ARGS__);
-#define WIDGET_CONSTRUCTOR_IMPL(...) Create(const Core::Rect & rect,WidgetPtr parent,## __VA_ARGS__)
+#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(ViewPtr view,WidgetPtr parent,## __VA_ARGS__);
+#define WIDGET_CONSTRUCTOR_IMPL(...) Create(ViewPtr view,WidgetPtr parent,## __VA_ARGS__)
 #define WIDGET_CREATE make
 
 namespace OmegaWTK {
@@ -85,7 +85,7 @@ protected:
                               GeometryChangeReason reason) override;
 public:
     WIDGET_CONSTRUCTOR()
-    explicit Container(const Core::Rect & rect,WidgetPtr parent);
+    explicit Container(ViewPtr view,WidgetPtr parent);
 
     void setClampPolicy(const ContainerClampPolicy & policy);
     const ContainerClampPolicy & getClampPolicy() const;

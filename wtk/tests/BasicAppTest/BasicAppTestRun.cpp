@@ -45,8 +45,8 @@ protected:
     }
 
 public:
-    explicit MyWidget(const OmegaWTK::Core::Rect & rect, OmegaWTK::WidgetPtr parent)
-        : OmegaWTK::Widget(rect, parent) {}
+    explicit MyWidget(OmegaWTK::ViewPtr view, OmegaWTK::WidgetPtr parent)
+        : OmegaWTK::Widget(std::move(view), parent) {}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -62,9 +62,9 @@ int RunBasicAppTest(OmegaWTK::AppInst *app) {
         new MyWindowDelegate());
 
     auto widget = make<MyWidget>(
-        OmegaWTK::Core::Rect{{0, 0}, 500, 500},
+        OmegaWTK::View::Create(OmegaWTK::Core::Rect{{0, 0}, 500, 500}),
         OmegaWTK::WidgetPtr{});
-    window->add(widget);
+    window->setRootWidget(widget);
     // #region agent log
     dbg_log("BasicAppTestRun.cpp:RunBasicAppTest", "widget added", "E", 500, 500, 0, 0, 1);
     // #endregion

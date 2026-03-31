@@ -125,8 +125,8 @@ struct LayoutItem {
 
 }
 
-StackWidget::StackWidget(StackAxis axis,const Core::Rect & rect,WidgetPtr parent,const StackOptions & options):
-Widget(rect,parent),
+StackWidget::StackWidget(StackAxis axis,ViewPtr view,WidgetPtr parent,const StackOptions & options):
+Widget(std::move(view),parent),
 axis(axis),
 options(options){
 
@@ -585,13 +585,13 @@ StackWidget::~StackWidget(){
     stackChildren.clear();
 }
 
-HStack::HStack(const Core::Rect & rect,WidgetPtr parent,const StackOptions & options):
-StackWidget(StackAxis::Horizontal,rect,parent,options){
+HStack::HStack(ViewPtr view,WidgetPtr parent,const StackOptions & options):
+StackWidget(StackAxis::Horizontal,std::move(view),parent,options){
 
 }
 
-VStack::VStack(const Core::Rect & rect,WidgetPtr parent,const StackOptions & options):
-StackWidget(StackAxis::Vertical,rect,parent,options){
+VStack::VStack(ViewPtr view,WidgetPtr parent,const StackOptions & options):
+StackWidget(StackAxis::Vertical,std::move(view),parent,options){
 
 }
 

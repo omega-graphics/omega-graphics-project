@@ -107,12 +107,12 @@ static inline const char * geometryReasonLabel(GeometryChangeReason reason){
 
 }
 
-SharedHandle<Widget> Container::Create(const Core::Rect & rect,WidgetPtr parent){
-    return WIDGET_CREATE<Container>(rect,parent);
+SharedHandle<Widget> Container::Create(ViewPtr view,WidgetPtr parent){
+    return WIDGET_CREATE<Container>(std::move(view),parent);
 }
 
-Container::Container(const Core::Rect & rect,WidgetPtr parent):
-Widget(rect,parent){
+Container::Container(ViewPtr view,WidgetPtr parent):
+Widget(std::move(view),parent){
 
 }
 
@@ -197,7 +197,7 @@ Core::Rect Container::clampChildRect(const Widget & child,const GeometryProposal
     clamped.w = std::clamp(clamped.w,minW,kMaxContainerDimension);
     clamped.h = std::clamp(clamped.h,minH,kMaxContainerDimension);
 
-    auto hostBounds = sanitizeHostBounds(rootView->getRect());
+    auto hostBounds = sanitizeHostBounds(view->getRect());
     auto contentBounds = contentBoundsFromHost(hostBounds,clampPolicy);
 
     if(!suspiciousBounds(contentBounds)){

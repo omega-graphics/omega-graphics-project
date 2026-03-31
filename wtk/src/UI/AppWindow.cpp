@@ -59,20 +59,17 @@ void AppWindow::setEnableWindowHeader(bool enable) {
 // };
 
 void AppWindow::onThemeSet(Native::ThemeDesc &desc){
-    for(auto &host : widgetTreeHosts){
-        host->root->onThemeSetRecurse(desc);
+    if(widgetTreeHost != nullptr){
+        widgetTreeHost->root->onThemeSetRecurse(desc);
     }
 }
 
-void AppWindow::_add_widget(Widget *widget){
-    layer->native_window_ptr->addNativeItem(widget->rootView->renderTarget->getNativePtr());
-}
-
-void AppWindow::add(WidgetPtr widget){
-    auto treeHost = WidgetTreeHost::Create();
-    treeHost->setRoot(widget);
-    treeHost->attachToWindow(this);
-    widgetTreeHosts.push_back(treeHost);
+void AppWindow::setRootWidget(WidgetPtr widget){
+    widgetTreeHost = WidgetTreeHost::Create();
+    widgetTreeHost->setRoot(widget);
+    layer->native_window_ptr->addNativeItem(widget->view->renderTarget->getNativePtr());
+    proxy.setFrontendPtr(widgetTreeHost->compositor);
+    widgetTreeHost->attachedToWindow = true;
 };
 
 
@@ -109,8 +106,8 @@ AppWindowPtr AppWindowManager::getRootWindow(){
 
 void AppWindowManager::displayRootWindow(){
     rootWindow->layer->native_window_ptr->initialDisplay();
-    for(auto & host : rootWindow->widgetTreeHosts){
-        host->initWidgetTree();
+    if(rootWindow->widgetTreeHost != nullptr){
+        rootWindow->widgetTreeHost->initWidgetTree();
     }
 };
 
@@ -123,22 +120,22 @@ void AppWindowManager::closeAllWindows(){
 
 void AppWindowDelegate::dispatchResizeToHosts(const Core::Rect & rect){
     window->rect = rect;
-    for(auto & host : window->widgetTreeHosts){
-        host->notifyWindowResize(rect);
+    if(window->widgetTreeHost != nullptr){
+        window->widgetTreeHost->notifyWindowResize(rect);
     }
 }
 
 void AppWindowDelegate::dispatchResizeBeginToHosts(const Core::Rect & rect){
     window->rect = rect;
-    for(auto & host : window->widgetTreeHosts){
-        host->notifyWindowResizeBegin(rect);
+    if(window->widgetTreeHost != nullptr){
+        window->widgetTreeHost->notifyWindowResizeBegin(rect);
     }
 }
 
 void AppWindowDelegate::dispatchResizeEndToHosts(const Core::Rect & rect){
     window->rect = rect;
-    for(auto & host : window->widgetTreeHosts){
-        host->notifyWindowResizeEnd(rect);
+    if(window->widgetTreeHost != nullptr){
+        window->widgetTreeHost->notifyWindowResizeEnd(rect);
     }
 }
 

@@ -3,7 +3,6 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "../Composition/Compositor.h"
 #include "omegaWTK/UI/View.h"
-#include "omegaWTK/UI/UIView.h"
 #include "omegaWTK/UI/WidgetTreeHost.h"
 
 #include <algorithm>
@@ -115,7 +114,7 @@ Composition::Canvas & PaintContext::rootCanvas(){
 }
 
 SharedHandle<Composition::Canvas> PaintContext::makeCanvas(SharedHandle<Composition::Layer> &targetLayer){
-    return widget->rootView->makeCanvas(targetLayer);
+    return widget->view->makeCanvas(targetLayer);
 }
 
 void PaintContext::clear(const Composition::Color &color){
@@ -164,22 +163,21 @@ void PaintContext::drawText(const UniString &text,
 }
 
 
-Widget::Widget(const Core::Rect & rect,WidgetPtr parent):parent(parent.get()){
-    rootView = SharedHandle<CanvasView>(new CanvasView(rect,nullptr));
+Widget::Widget(ViewPtr view,WidgetPtr parent):view(std::move(view)),parent(parent.get()){
     if(parent != nullptr) {
-        parent->rootView->addSubView(this->rootView.get());
+        parent->view->addSubView(this->view.get());
         parent->children.push_back(this);
     }
 };
 
-//Widget::Widget(Widget & widget):parent(std::move(widget.parent)),compositor(std::move(widget.compositor)),rootView(std::move(widget.rootView)){
+//Widget::Widget(Widget & widget):parent(std::move(widget.parent)),compositor(std::move(widget.compositor)),view(std::move(widget.view)){
 //    
 //};
 
 SharedHandle<Composition::Canvas> Widget::getRootPaintCanvas(){
     if(rootPaintCanvas == nullptr){
-        auto rootLayer = rootView->getLayerTree()->getRootLayer();
-        rootPaintCanvas = rootView->makeCanvas(rootLayer);
+        auto rootLayer = view->getLayerTree()->getRootLayer();
+        rootPaintCanvas = view->makeCanvas(rootLayer);
     }
     return rootPaintCanvas;
 }
@@ -205,27 +203,27 @@ void Widget::executePaint(PaintReason reason,bool immediate){
     if(treeHost != nullptr){
         auto desiredFrontend = treeHost->compPtr();
         auto desiredLane = treeHost->laneId();
-        if(rootView->proxy.getFrontendPtr() != desiredFrontend ||
-           rootView->proxy.getSyncLaneId() != desiredLane){
-            rootView->setFrontendRecurse(desiredFrontend);
-            rootView->setSyncLaneRecurse(desiredLane);
+        if(view->proxy.getFrontendPtr() != desiredFrontend ||
+           view->proxy.getSyncLaneId() != desiredLane){
+            view->setFrontendRecurse(desiredFrontend);
+            view->setSyncLaneRecurse(desiredLane);
         }
     }
-    else if(parent != nullptr && parent->rootView != nullptr){
-        auto inheritedFrontend = parent->rootView->proxy.getFrontendPtr();
-        auto inheritedLane = parent->rootView->proxy.getSyncLaneId();
+    else if(parent != nullptr && parent->view != nullptr){
+        auto inheritedFrontend = parent->view->proxy.getFrontendPtr();
+        auto inheritedLane = parent->view->proxy.getSyncLaneId();
         if(inheritedFrontend != nullptr &&
-           (rootView->proxy.getFrontendPtr() != inheritedFrontend ||
-            rootView->proxy.getSyncLaneId() != inheritedLane)){
-            rootView->setFrontendRecurse(inheritedFrontend);
-            rootView->setSyncLaneRecurse(inheritedLane);
+           (view->proxy.getFrontendPtr() != inheritedFrontend ||
+            view->proxy.getSyncLaneId() != inheritedLane)){
+            view->setFrontendRecurse(inheritedFrontend);
+            view->setSyncLaneRecurse(inheritedLane);
         }
     }
     PaintReason activeReason = reason;
     while(true){
         auto canvas = getRootPaintCanvas();
         PaintContext context(this,canvas,activeReason);
-        rootView->startCompositionSession();
+        view->startCompositionSession();
         onPaint(context,activeReason);
         int submissions = 1;
         if(activeReason == PaintReason::Initial &&
@@ -236,7 +234,7 @@ void Widget::executePaint(PaintReason reason,bool immediate){
         for(int i = 0; i < submissions; i++){
             canvas->sendFrame();
         }
-        rootView->endCompositionSession();
+        view->endCompositionSession();
         if(activeReason == PaintReason::Initial){
             initialDrawComplete = true;
         }
@@ -255,7 +253,7 @@ void Widget::init(){
     }
     onMount();
     hasMounted = true;
-    rootView->enable();
+    view->enable();
     if(mode == PaintMode::Automatic){
         executePaint(PaintReason::Initial,true);
     }
@@ -287,8 +285,8 @@ void Widget::invalidateNow(PaintReason reason){
 
 void Widget::handleHostResize(const Core::Rect &rect){
     auto oldRect = this->rect();
-    rootView->resize(rect);
-    auto & rootRect = rootView->getRect();
+    view->resize(rect);
+    auto & rootRect = view->getRect();
     auto newRect = rootRect;
     this->resize(newRect);
 
@@ -318,41 +316,9 @@ void Widget::onThemeSetRecurse(Native::ThemeDesc &desc){
     }
 }
 
-SharedHandle<View> Widget::makeCanvasView(const Core::Rect & rect,ViewPtr parent){
-    return SharedHandle<CanvasView>(new CanvasView(rect,parent));
-};
-
-SharedHandle<ScrollView> Widget::makeScrollView(const Core::Rect & rect,
-                                                ViewPtr child,
-                                                bool hasVerticalScrollBar,
-                                                bool hasHorizontalScrollBar,
-                                                ViewPtr parent){
-    assert(child != nullptr && "Cannot create ScrollView with null child View");
-    return SharedHandle<ScrollView>(new ScrollView(rect,
-                                                   child,
-                                                   hasVerticalScrollBar,
-                                                   hasHorizontalScrollBar,
-                                                   parent));
-}
-
-// SharedHandle<TextView> Widget::makeTextView(const Core::Rect & rect,View *parent){
-//     return SharedHandle<TextView>(new TextView(rect,layerTree.get(),parent,false));
-// };
-
-SharedHandle<SVGView> Widget::makeSVGView(const Core::Rect & rect,ViewPtr parent){
-    return SharedHandle<SVGView>(new SVGView(rect,parent));
-}
-
-SharedHandle<VideoView> Widget::makeVideoView(const Core::Rect & rect,ViewPtr parent){
-    return SharedHandle<VideoView>(new VideoView(rect,parent));
-};
-
-SharedHandle<UIView> Widget::makeUIView(const Core::Rect & rect,ViewPtr parent,UIViewTag tag){
-    return SharedHandle<UIView>(new UIView(rect,parent,tag));
-}
 
 Core::Rect & Widget::rect(){
-    return rootView->getRect();
+    return view->getRect();
 };
 
 bool Widget::requestRect(const Core::Rect &requested,GeometryChangeReason reason){
@@ -378,8 +344,8 @@ bool Widget::requestRect(const Core::Rect &requested,GeometryChangeReason reason
 
 void Widget::setRect(const Core::Rect &newRect){
     auto oldRect = rect();
-    rootView->resize(newRect);
-    auto & rootRect = rootView->getRect();
+    view->resize(newRect);
+    auto & rootRect = view->getRect();
     auto updatedRect = rootRect;
     this->resize(updatedRect);
     WIDGET_NOTIFY_OBSERVERS_RESIZE(oldRect);
@@ -397,12 +363,12 @@ bool Widget::acceptsChildWidget(const Widget *child) const{
 
 void Widget::show(){
 
-    rootView->enable();
+    view->enable();
     WIDGET_NOTIFY_OBSERVERS_SHOW();
 
 };
 void Widget::hide(){
-    rootView->disable();
+    view->disable();
     WIDGET_NOTIFY_OBSERVERS_HIDE();
 };
 
@@ -417,12 +383,12 @@ void Widget::setTreeHostRecurse(WidgetTreeHost *host){
     treeHost = host;
     if(host != nullptr){
         // View::setFrontendRecurse handles per-view LayerTree observation.
-        rootView->setFrontendRecurse(host->compPtr());
-        rootView->setSyncLaneRecurse(host->laneId());
+        view->setFrontendRecurse(host->compPtr());
+        view->setSyncLaneRecurse(host->laneId());
     }
     else {
-        rootView->setFrontendRecurse(nullptr);
-        rootView->setSyncLaneRecurse(0);
+        view->setFrontendRecurse(nullptr);
+        view->setSyncLaneRecurse(0);
     }
     for(auto c : children){
         if(c != nullptr){
@@ -455,7 +421,7 @@ void Widget::notifyObservers(Widget::WidgetEventType event_ty,Widget::WidgetEven
                 break;
             };
             case Resize : {
-                observer->onWidgetChangeSize(params.rect,rootView->rect);
+                observer->onWidgetChangeSize(params.rect,view->rect);
                 break;
             }
             case Attach : {
@@ -520,8 +486,8 @@ bool Widget::hasExplicitLayoutStyle() const {
     return hasExplicitLayoutStyle_;
 }
 
-View & Widget::rootViewRef(){
-    return *rootView;
+View & Widget::viewRef(){
+    return *view;
 }
 
 MeasureResult Widget::measureSelf(const LayoutContext & /*ctx*/){
@@ -539,12 +505,12 @@ bool Widget::geometryTraceLoggingEnabled(){
 
 Widget::GeometryTraceContext Widget::geometryTraceContext() const{
     GeometryTraceContext ctx {};
-    if(rootView == nullptr){
+    if(view == nullptr){
         return ctx;
     }
 
-    ctx.syncLaneId = rootView->proxy.getSyncLaneId();
-    auto diag = rootView->proxy.getSyncLaneDiagnostics();
+    ctx.syncLaneId = view->proxy.getSyncLaneId();
+    auto diag = view->proxy.getSyncLaneDiagnostics();
     if(diag.lastSubmittedPacketId > 0){
         ctx.predictedPacketId = diag.lastSubmittedPacketId + 1;
     }
@@ -563,14 +529,14 @@ void Widget::removeChildWidget(Widget *ptr){
     }
     for(auto it = children.begin();it != children.end();it++){
         if(ptr == *it){
-            rootView->removeSubView(ptr->rootView.get());
+            view->removeSubView(ptr->view.get());
             onChildDetached(ptr);
             children.erase(it);
             ptr->parent = nullptr;
             ptr->setTreeHostRecurse(nullptr);
             ptr->notifyObservers(Detach,{});
-            if(ptr->rootView && ptr->rootView->getLayerTree()){
-                ptr->rootView->getLayerTree()->notifyObserversOfWidgetDetach();
+            if(ptr->view && ptr->view->getLayerTree()){
+                ptr->view->getLayerTree()->notifyObserversOfWidgetDetach();
             }
             break;
         };
@@ -592,7 +558,7 @@ void Widget::setParentWidgetImpl(Widget *widget,WidgetPtr widgetHandle){
     parent->children.push_back(this);
     parent->onChildAttached(this);
     setTreeHostRecurse(widget->treeHost);
-    parent->rootView->addSubView(rootView.get());
+    parent->view->addSubView(view.get());
     notifyObservers(Attach,{widgetHandle});
 }
 

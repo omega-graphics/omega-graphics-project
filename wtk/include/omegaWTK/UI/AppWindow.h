@@ -43,9 +43,7 @@ class AppWindowDelegate;
         Composition::CompositorClientProxy proxy;
 
         SharedHandle<AppWindowDelegate> delegate;
-        /// A list of all attached widget tree hosts. 
-        /// (Only needed to keep widget tree hosts alive during application)
-        OmegaCommon::Vector<SharedHandle<WidgetTreeHost>> widgetTreeHosts;
+        SharedHandle<WidgetTreeHost> widgetTreeHost;
 
         Core::Rect rect;
 
@@ -58,11 +56,10 @@ class AppWindowDelegate;
         friend class WidgetTreeHost;
 
         void onThemeSet(Native::ThemeDesc &desc) override;
-        void _add_widget(Widget *widget);
     public:
         OMEGACOMMON_CLASS("OmegaWTK.AppWindow")
 
-        void add(WidgetPtr widget);
+        void setRootWidget(WidgetPtr widget);
 
     #ifndef TARGET_MOBILE
         void setMenu(SharedHandle<Menu> & menu);
