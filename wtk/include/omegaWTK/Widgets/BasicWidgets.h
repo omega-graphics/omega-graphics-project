@@ -9,10 +9,11 @@
 
 /**
 * Every Widget Constructor comes with two default parameters: The rect, and the parent widget.
+ @note These macros are used on subclasses of Widget (Widgets that have real implementation rules, 
+ so that users don't have to specify the View as the Widget subclass already handles it.
 */
-#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(ViewPtr view,WidgetPtr parent,## __VA_ARGS__);
-#define WIDGET_CONSTRUCTOR_IMPL(...) Create(ViewPtr view,WidgetPtr parent,## __VA_ARGS__)
-#define WIDGET_CREATE make
+#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(Core::Rect rect,WidgetPtr parent,## __VA_ARGS__);
+#define WIDGET_CONSTRUCTOR_IMPL(...) Create(Core::Rect rect,WidgetPtr parent,## __VA_ARGS__)
 
 namespace OmegaWTK {
 
@@ -100,17 +101,6 @@ public:
     ~Container() override;
 
 };
-
-// /**
-//  * @brief Similar to `Container` except all widgets can be moved (drag-dropped, animated) with native events or object methods.
-//  * 
-//  */
-
-class OMEGAWTK_EXPORT AnimatedContainer : public Widget {
-public:
-    WIDGET_CONSTRUCTOR()
-};
-
 
 class OMEGAWTK_EXPORT ScrollableContainer : public Widget {
     WIDGET_CONSTRUCTOR()

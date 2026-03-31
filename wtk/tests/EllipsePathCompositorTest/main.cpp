@@ -293,12 +293,12 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
     auto pathWidget = make<PathOnlyWidget>(
         OmegaWTK::View::Create(childRect),
         OmegaWTK::WidgetPtr{});
-    // auto roundedFrameWidget = make<RoundedFrameWidget>(
-    //     OmegaWTK::View::Create(childRect),
-    //     OmegaWTK::WidgetPtr{});
-    // auto ellipseWidget = make<EllipseOnlyWidget>(
-    //     OmegaWTK::View::Create(childRect),
-    //     OmegaWTK::WidgetPtr{});
+    auto roundedFrameWidget = make<RoundedFrameWidget>(
+        OmegaWTK::View::Create(childRect),
+        OmegaWTK::WidgetPtr{});
+    auto ellipseWidget = make<EllipseOnlyWidget>(
+        OmegaWTK::View::Create(childRect),
+        OmegaWTK::WidgetPtr{});
 
     OmegaWTK::StackSlot slot {};
     slot.flexGrow = 0.0f;
@@ -307,8 +307,8 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
     slot.alignSelf = OmegaWTK::StackCrossAlign::Center;
 
     stack->addChild(pathWidget,slot);
-    // stack->addChild(roundedFrameWidget,slot);
-    // stack->addChild(ellipseWidget,slot);
+    stack->addChild(roundedFrameWidget,slot);
+    stack->addChild(ellipseWidget,slot);
 
     window->setRootWidget(stack);
 
