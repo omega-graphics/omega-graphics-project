@@ -17,8 +17,8 @@ public:
 };
 
 class SVGWidget final : public OmegaWTK::Widget {
-    OmegaWTK::SVGViewPtr svgView;
     SVGDelegate svgDelegate;
+    OmegaWTK::SVGViewPtr svgView;
 
 protected:
     void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
@@ -27,8 +27,6 @@ protected:
 
     void onMount() override {
         auto bounds = rect();
-        OmegaWTK::Core::Rect localBounds{OmegaWTK::Core::Position{0.f, 0.f}, bounds.w, bounds.h};
-        svgView = OmegaWTK::SVGViewPtr(new OmegaWTK::SVGView(localBounds, view));
         svgView->setDelegate(&svgDelegate);
 
         const OmegaCommon::String svg =
@@ -58,19 +56,21 @@ protected:
             "</svg>";
 
         svgView->setSourceString(svg);
-        svgView->renderNow();
     }
 
     void onPaint(OmegaWTK::PaintContext & context, OmegaWTK::PaintReason reason) override {
         (void)reason;
         context.clear(OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::White8));
+        svgView->renderNow();
     }
 
     bool isLayoutResizable() const override { return false; }
 
 public:
-    explicit SVGWidget(OmegaWTK::ViewPtr view, OmegaWTK::WidgetPtr parent)
-        : OmegaWTK::Widget(std::move(view), parent) {}
+    explicit SVGWidget(OmegaWTK::Core::Rect rect,OmegaWTK::WidgetPtr parent)
+        : OmegaWTK::Widget(OmegaWTK::SVGView::Create(rect), parent) {
+            svgView = std::dynamic_pointer_cast<OmegaWTK::SVGView>(view);
+        }
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -89,7 +89,7 @@ int omegaWTKMain(OmegaWTK::AppInst * app) {
         new MyWindowDelegate());
 
     auto widget = make<SVGWidget>(
-        OmegaWTK::View::Create(windowRect),
+        OmegaWTK::Core::Rect{{0, 0}, 500, 500},
         OmegaWTK::WidgetPtr{});
 
     window->setRootWidget(widget);

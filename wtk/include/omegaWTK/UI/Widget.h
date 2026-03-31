@@ -266,9 +266,14 @@ public:
     ~Widget() override;
 };
 
-// #define WIDGET_TEMPLATE_BEGIN()
-// #define WIDGET_TEMPLATE_VIEW(class_name,...)
-// #define WIDGET_TEMPLATE_END()
+/**
+* Every Widget Constructor comes with two default parameters: The rect, and the parent widget.
+ @note These macros are used on subclasses of Widget (Widgets that have real implementation rules, 
+ so that users don't have to specify the View as the Widget subclass already handles it.
+*/
+#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(Core::Rect rect,WidgetPtr parent,## __VA_ARGS__);
+#define WIDGET_CONSTRUCTOR_IMPL(...) Create(Core::Rect rect,WidgetPtr parent,## __VA_ARGS__)
+
 
 
 #define WIDGET_NOTIFY_OBSERVERS_SHOW() notifyObservers(Widget::Show,{})

@@ -7,13 +7,6 @@
 #ifndef OMEGAWTK_WIDGETS_BASICWIDGETS_H
 #define OMEGAWTK_WIDGETS_BASICWIDGETS_H
 
-/**
-* Every Widget Constructor comes with two default parameters: The rect, and the parent widget.
- @note These macros are used on subclasses of Widget (Widgets that have real implementation rules, 
- so that users don't have to specify the View as the Widget subclass already handles it.
-*/
-#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(Core::Rect rect,WidgetPtr parent,## __VA_ARGS__);
-#define WIDGET_CONSTRUCTOR_IMPL(...) Create(Core::Rect rect,WidgetPtr parent,## __VA_ARGS__)
 
 namespace OmegaWTK {
 
@@ -40,22 +33,6 @@ struct OMEGAWTK_EXPORT ContainerClampPolicy {
     ContainerOverflowMode verticalOverflow = ContainerOverflowMode::Clamp;
     bool keepLastStableBoundsOnInvalidResize = true;
 };
-
-
-// /**
-//  * @brief A single view widget responsible for managing one view's capability.
-//  * 
-//  */
-
-// class OMEGAWTK_EXPORT WrapperWidget : public Widget {
-// public:
-//     static SharedHandle<WrapperWidget> CreateVideoViewWrapper(const Core::Rect & rect,WidgetPtr parent);
-//     static SharedHandle<WrapperWidget> CreateSVGViewWrapper(const Core::Rect & rect,WidgetPtr parent);
-//     static SharedHandle<WrapperWidget> CreateUIViewWrapper(const Core::Rect & rect,WidgetPtr parent);
-//     static SharedHandle<WrapperWidget> CreateScollViewWrapper(const Core::Rect & rect,WidgetPtr parent);
-
-//     SharedHandle<View> getUnderlyingView();
-// };
 
    /**
  * @brief A widget designed for holding other widgets (No rendering or native event handling can change Widget positioning)
