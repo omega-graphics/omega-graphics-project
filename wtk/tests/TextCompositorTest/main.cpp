@@ -174,8 +174,8 @@ protected:
     }
 
 public:
-    explicit TextCompositorWidget(OmegaWTK::ViewPtr view,OmegaWTK::WidgetPtr parent):
-        OmegaWTK::Widget(std::move(view),parent){}
+    explicit TextCompositorWidget(OmegaWTK::ViewPtr view):
+        OmegaWTK::Widget(std::move(view)){}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -192,8 +192,7 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
         new MyWindowDelegate());
 
     auto widget = make<TextCompositorWidget>(
-        OmegaWTK::View::Create(OmegaWTK::Core::Rect{{0,0},500,500}),
-        OmegaWTK::WidgetPtr{});
+        OmegaWTK::View::Create(OmegaWTK::Core::Rect{{0,0},500,500}));
     window->setRootWidget(widget);
 
     auto & windowManager = app->windowManager;

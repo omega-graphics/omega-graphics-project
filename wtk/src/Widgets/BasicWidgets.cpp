@@ -107,12 +107,12 @@ static inline const char * geometryReasonLabel(GeometryChangeReason reason){
 
 }
 
-SharedHandle<Widget> Container::Create(ViewPtr view,WidgetPtr parent){
-    return WIDGET_CREATE<Container>(std::move(view),parent);
+SharedHandle<Widget> Container::Create(ViewPtr view){
+    return WIDGET_CREATE<Container>(std::move(view));
 }
 
-Container::Container(ViewPtr view,WidgetPtr parent):
-Widget(std::move(view),parent){
+Container::Container(ViewPtr view):
+Widget(std::move(view)){
 
 }
 
@@ -150,37 +150,36 @@ void Container::resize(Core::Rect & newRect){
     relayout();
 }
 
-bool Container::acceptsChildWidget(const Widget *child) const{
-    if(!Widget::acceptsChildWidget(child)){
-        return false;
-    }
-    for(auto * existing : containerChildren){
-        if(existing == child){
-            return false;
-        }
-    }
-    return true;
-}
-
-void Container::onChildAttached(Widget *child){
+void Container::wireChild(Widget *child){
     if(child == nullptr){
         return;
     }
-    if(std::find(containerChildren.begin(),containerChildren.end(),child) == containerChildren.end()){
-        containerChildren.push_back(child);
-    }
-    relayout();
+    child->parent = this;
+    view->addSubView(child->view.get());
+    children.push_back(child);
+    child->setTreeHostRecurse(treeHost);
+    child->notifyObservers(Widget::Attach,{});
 }
 
-void Container::onChildDetached(Widget *child){
+void Container::unwireChild(Widget *child){
     if(child == nullptr){
         return;
     }
-    auto it = std::find(containerChildren.begin(),containerChildren.end(),child);
-    if(it != containerChildren.end()){
-        containerChildren.erase(it);
+    auto it = std::find(children.begin(),children.end(),child);
+    if(it != children.end()){
+        children.erase(it);
     }
-    relayout();
+    view->removeSubView(child->view.get());
+    child->parent = nullptr;
+    child->setTreeHostRecurse(nullptr);
+    child->notifyObservers(Widget::Detach,{});
+    if(child->view && child->view->getLayerTree()){
+        child->view->getLayerTree()->notifyObserversOfWidgetDetach();
+    }
+}
+
+OmegaCommon::Vector<Widget *> Container::childWidgets() const{
+    return children;
 }
 
 Core::Rect Container::clampChildRect(const Widget & child,const GeometryProposal & proposal) const{
@@ -279,40 +278,39 @@ void Container::onChildRectCommitted(const Widget & child,
 }
 
 std::size_t Container::childCount() const{
-    return containerChildren.size();
+    return children.size();
 }
 
 Widget *Container::childAt(std::size_t idx) const{
-    if(idx >= containerChildren.size()){
+    if(idx >= children.size()){
         return nullptr;
     }
-    return containerChildren[idx];
+    return children[idx];
 }
 
 WidgetPtr Container::addChild(const WidgetPtr & child){
     if(child == nullptr || child.get() == this){
         return nullptr;
     }
-    if(std::find(containerChildren.begin(),containerChildren.end(),child.get()) != containerChildren.end()){
+    if(std::find(children.begin(),children.end(),child.get()) != children.end()){
         return child;
     }
 
-    child->setParentWidget(this);
-    if(std::find(containerChildren.begin(),containerChildren.end(),child.get()) != containerChildren.end()){
-        return child;
-    }
-    return nullptr;
+    wireChild(child.get());
+    relayout();
+    return child;
 }
 
 bool Container::removeChild(const WidgetPtr & child){
     if(child == nullptr){
         return false;
     }
-    auto it = std::find(containerChildren.begin(),containerChildren.end(),child.get());
-    if(it == containerChildren.end()){
+    auto it = std::find(children.begin(),children.end(),child.get());
+    if(it == children.end()){
         return false;
     }
-    child->detachFromParent();
+    unwireChild(child.get());
+    relayout();
     return true;
 }
 
@@ -327,16 +325,16 @@ void Container::layoutChildren(){
     }
     inLayout = true;
 
-    for(auto it = containerChildren.begin();it != containerChildren.end();){
+    for(auto it = children.begin();it != children.end();){
         if(*it == nullptr){
-            it = containerChildren.erase(it);
+            it = children.erase(it);
         }
         else {
             ++it;
         }
     }
 
-    for(auto * child : containerChildren){
+    for(auto * child : children){
         if(child == nullptr){
             continue;
         }
@@ -355,7 +353,12 @@ void Container::layoutChildren(){
 }
 
 Container::~Container(){
-    containerChildren.clear();
+    for(auto * child : children){
+        if(child != nullptr){
+            child->parent = nullptr;
+        }
+    }
+    children.clear();
 }
 
 }

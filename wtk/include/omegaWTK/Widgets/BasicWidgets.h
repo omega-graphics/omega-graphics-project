@@ -39,13 +39,17 @@ struct OMEGAWTK_EXPORT ContainerClampPolicy {
  * 
  */
 class OMEGAWTK_EXPORT Container: public Widget {
-    OmegaCommon::Vector<Widget *> containerChildren;
-    bool layoutPending = true;
-    bool inLayout = false;
     ContainerClampPolicy clampPolicy {};
     mutable bool hasLastStableContentBounds = false;
     mutable Core::Rect lastStableContentBounds {Core::Position{0.f,0.f},1.f,1.f};
 protected:
+    OmegaCommon::Vector<Widget *> children;
+    bool layoutPending = true;
+    bool inLayout = false;
+
+    void wireChild(Widget *child);
+    void unwireChild(Widget *child);
+
     void onThemeSet(Native::ThemeDesc & desc) override;
     virtual void layoutChildren();
 
@@ -53,9 +57,6 @@ protected:
     void onPaint(PaintContext & context,PaintReason reason) override;
     void resize(Core::Rect & newRect) override;
 
-    bool acceptsChildWidget(const Widget *child) const override;
-    void onChildAttached(Widget *child) override;
-    void onChildDetached(Widget *child) override;
     Core::Rect clampChildRect(const Widget & child,const GeometryProposal & proposal) const override;
     void onChildRectCommitted(const Widget & child,
                               const Core::Rect & oldRect,
@@ -63,15 +64,16 @@ protected:
                               GeometryChangeReason reason) override;
 public:
     WIDGET_CONSTRUCTOR()
-    explicit Container(ViewPtr view,WidgetPtr parent);
+    explicit Container(ViewPtr view);
 
     void setClampPolicy(const ContainerClampPolicy & policy);
     const ContainerClampPolicy & getClampPolicy() const;
 
     std::size_t childCount() const;
     Widget *childAt(std::size_t idx) const;
-    WidgetPtr addChild(const WidgetPtr & child);
-    bool removeChild(const WidgetPtr & child);
+    virtual WidgetPtr addChild(const WidgetPtr & child);
+    virtual bool removeChild(const WidgetPtr & child);
+    OmegaCommon::Vector<Widget *> childWidgets() const override;
 
     void relayout();
 

@@ -67,8 +67,8 @@ protected:
     bool isLayoutResizable() const override { return false; }
 
 public:
-    explicit SVGWidget(OmegaWTK::Core::Rect rect,OmegaWTK::WidgetPtr parent)
-        : OmegaWTK::Widget(OmegaWTK::SVGView::Create(rect), parent) {
+    explicit SVGWidget(OmegaWTK::Core::Rect rect)
+        : OmegaWTK::Widget(OmegaWTK::SVGView::Create(rect)) {
             svgView = std::dynamic_pointer_cast<OmegaWTK::SVGView>(view);
         }
 };
@@ -89,8 +89,7 @@ int omegaWTKMain(OmegaWTK::AppInst * app) {
         new MyWindowDelegate());
 
     auto widget = make<SVGWidget>(
-        OmegaWTK::Core::Rect{{0, 0}, 500, 500},
-        OmegaWTK::WidgetPtr{});
+        OmegaWTK::Core::Rect{{0, 0}, 500, 500});
 
     window->setRootWidget(widget);
 

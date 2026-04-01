@@ -125,10 +125,10 @@ struct LayoutItem {
 
 }
 
-StackWidget::StackWidget(StackAxis axis,ViewPtr view,WidgetPtr parent,const StackOptions & options):
-Widget(std::move(view),parent),
+StackWidget::StackWidget(StackAxis axis,ViewPtr view,const StackOptions & options):
+Container(std::move(view)),
 axis(axis),
-options(options){
+stackOptions(options){
 
 }
 
@@ -137,8 +137,7 @@ void StackWidget::onMount(){
 }
 
 void StackWidget::onPaint(PaintContext & context,PaintReason reason){
-    (void)context;
-    (void)reason;
+    Container::onPaint(context,reason);
     if(needsLayout){
         layoutChildren();
     }
@@ -154,23 +153,16 @@ StackAxis StackWidget::getAxis() const{
 }
 
 const StackOptions & StackWidget::getOptions() const{
-    return options;
+    return stackOptions;
 }
 
 void StackWidget::setOptions(const StackOptions & options){
-    this->options = options;
+    this->stackOptions = options;
     relayout();
 }
 
-std::size_t StackWidget::childCount() const{
-    return stackChildren.size();
-}
-
-WidgetPtr StackWidget::childAt(std::size_t idx) const{
-    if(idx >= stackChildren.size()){
-        return nullptr;
-    }
-    return stackChildren[idx].widget;
+WidgetPtr StackWidget::addChild(const WidgetPtr & child){
+    return addChild(child,{});
 }
 
 WidgetPtr StackWidget::addChild(const WidgetPtr & child,const StackSlot & slot){
@@ -178,22 +170,25 @@ WidgetPtr StackWidget::addChild(const WidgetPtr & child,const StackSlot & slot){
         return nullptr;
     }
 
-    for(auto & entry : stackChildren){
-        if(entry.widget == child){
-            entry.slot = slot;
+    for(std::size_t i = 0; i < children.size(); ++i){
+        if(children[i] == child.get()){
+            if(i < childSlots.size()){
+                childSlots[i] = slot;
+            }
             relayout();
             return child;
         }
     }
 
-    child->setParentWidget(this);
+    wireChild(child.get());
     auto childRect = child->rect();
     const float preferredMain = axis == StackAxis::Horizontal ? childRect.w : childRect.h;
     const float preferredCross = axis == StackAxis::Horizontal ? childRect.h : childRect.w;
     const bool hasPreferred =
             !suspiciousSizePair(preferredMain,preferredCross) &&
             !tinyPlaceholderSize(preferredMain,preferredCross);
-    stackChildren.push_back({child,slot,preferredMain,preferredCross,hasPreferred});
+    childSlots.push_back(slot);
+    childSizeCache.push_back({preferredMain,preferredCross,hasPreferred});
     relayout();
     return child;
 }
@@ -202,10 +197,15 @@ bool StackWidget::removeChild(const WidgetPtr & child){
     if(child == nullptr){
         return false;
     }
-    for(auto it = stackChildren.begin(); it != stackChildren.end(); ++it){
-        if(it->widget == child){
-            child->detachFromParent();
-            stackChildren.erase(it);
+    for(std::size_t i = 0; i < children.size(); ++i){
+        if(children[i] == child.get()){
+            unwireChild(child.get());
+            if(i < childSlots.size()){
+                childSlots.erase(childSlots.begin() + static_cast<std::ptrdiff_t>(i));
+            }
+            if(i < childSizeCache.size()){
+                childSizeCache.erase(childSizeCache.begin() + static_cast<std::ptrdiff_t>(i));
+            }
             relayout();
             return true;
         }
@@ -217,9 +217,11 @@ bool StackWidget::setSlot(const WidgetPtr & child,const StackSlot & slot){
     if(child == nullptr){
         return false;
     }
-    for(auto & entry : stackChildren){
-        if(entry.widget == child){
-            entry.slot = slot;
+    for(std::size_t i = 0; i < children.size(); ++i){
+        if(children[i] == child.get()){
+            if(i < childSlots.size()){
+                childSlots[i] = slot;
+            }
             relayout();
             return true;
         }
@@ -228,10 +230,10 @@ bool StackWidget::setSlot(const WidgetPtr & child,const StackSlot & slot){
 }
 
 bool StackWidget::setSlot(std::size_t idx,const StackSlot & slot){
-    if(idx >= stackChildren.size()){
+    if(idx >= childSlots.size()){
         return false;
     }
-    stackChildren[idx].slot = slot;
+    childSlots[idx] = slot;
     relayout();
     return true;
 }
@@ -240,9 +242,9 @@ Core::Optional<StackSlot> StackWidget::getSlot(const WidgetPtr & child) const{
     if(child == nullptr){
         return {};
     }
-    for(const auto & entry : stackChildren){
-        if(entry.widget == child){
-            return entry.slot;
+    for(std::size_t i = 0; i < children.size(); ++i){
+        if(children[i] == child.get() && i < childSlots.size()){
+            return childSlots[i];
         }
     }
     return {};
@@ -260,16 +262,18 @@ void StackWidget::layoutChildren(){
 
     inLayout = true;
 
-    for(auto it = stackChildren.begin(); it != stackChildren.end(); ){
-        if(it->widget == nullptr){
-            it = stackChildren.erase(it);
+    for(std::size_t i = 0; i < children.size(); ){
+        if(children[i] == nullptr){
+            children.erase(children.begin() + static_cast<std::ptrdiff_t>(i));
+            if(i < childSlots.size()) childSlots.erase(childSlots.begin() + static_cast<std::ptrdiff_t>(i));
+            if(i < childSizeCache.size()) childSizeCache.erase(childSizeCache.begin() + static_cast<std::ptrdiff_t>(i));
         }
         else {
-            ++it;
+            ++i;
         }
     }
 
-    const auto count = stackChildren.size();
+    const auto count = children.size();
     if(count == 0){
         needsLayout = false;
         inLayout = false;
@@ -295,34 +299,42 @@ void StackWidget::layoutChildren(){
         0.f,
         (axis == StackAxis::Horizontal ? frame.w : frame.h) -
         (axis == StackAxis::Horizontal
-            ? (options.padding.left + options.padding.right)
-            : (options.padding.top + options.padding.bottom)));
+            ? (stackOptions.padding.left + stackOptions.padding.right)
+            : (stackOptions.padding.top + stackOptions.padding.bottom)));
     const float contentCross = std::max(
         0.f,
         (axis == StackAxis::Horizontal ? frame.h : frame.w) -
         (axis == StackAxis::Horizontal
-            ? (options.padding.top + options.padding.bottom)
-            : (options.padding.left + options.padding.right)));
+            ? (stackOptions.padding.top + stackOptions.padding.bottom)
+            : (stackOptions.padding.left + stackOptions.padding.right)));
     Core::Rect contentBoundsRect {
             Core::Position{
-                    frame.pos.x + options.padding.left,
-                    frame.pos.y + options.padding.top
+                    frame.pos.x + stackOptions.padding.left,
+                    frame.pos.y + stackOptions.padding.top
             },
-            std::max(0.f,frame.w - options.padding.left - options.padding.right),
-            std::max(0.f,frame.h - options.padding.top - options.padding.bottom)
+            std::max(0.f,frame.w - stackOptions.padding.left - stackOptions.padding.right),
+            std::max(0.f,frame.h - stackOptions.padding.top - stackOptions.padding.bottom)
     };
 
-    const float mainStart = (axis == StackAxis::Horizontal) ? options.padding.left : options.padding.top;
-    const float crossStart = (axis == StackAxis::Horizontal) ? options.padding.top : options.padding.left;
+    const float mainStart = (axis == StackAxis::Horizontal) ? stackOptions.padding.left : stackOptions.padding.top;
+    const float crossStart = (axis == StackAxis::Horizontal) ? stackOptions.padding.top : stackOptions.padding.left;
 
     OmegaCommon::Vector<LayoutItem> items;
     items.reserve(count);
 
-    for(auto & entry : stackChildren){
-        auto *child = entry.widget.get();
+    const auto slotCount = childSlots.size();
+    const auto cacheCount = childSizeCache.size();
+
+    for(std::size_t idx = 0; idx < count; ++idx){
+        auto *child = children[idx];
         if(child == nullptr){
             continue;
         }
+
+        const auto & slot = idx < slotCount ? childSlots[idx] : StackSlot{};
+        StackChildCache defaultCache {};
+        auto & cache = idx < cacheCount ? childSizeCache[idx] : defaultCache;
+        const bool hasCache = idx < cacheCount;
 
         auto childRect = child->rect();
         float currentMain = axis == StackAxis::Horizontal ? childRect.w : childRect.h;
@@ -331,18 +343,18 @@ void StackWidget::layoutChildren(){
         const bool currentSuspicious = suspiciousSizePair(currentMain,currentCross);
         const bool currentPlaceholder = tinyPlaceholderSize(currentMain,currentCross);
         const bool hasPreferred =
-                entry.hasPreferredSize &&
-                !suspiciousSizePair(entry.preferredMainSize,entry.preferredCrossSize) &&
-                !tinyPlaceholderSize(entry.preferredMainSize,entry.preferredCrossSize);
+                hasCache && cache.hasPreferredSize &&
+                !suspiciousSizePair(cache.preferredMainSize,cache.preferredCrossSize) &&
+                !tinyPlaceholderSize(cache.preferredMainSize,cache.preferredCrossSize);
 
-        if(!currentSuspicious && !currentPlaceholder){
-            entry.preferredMainSize = currentMain;
-            entry.preferredCrossSize = currentCross;
-            entry.hasPreferredSize = true;
+        if(!currentSuspicious && !currentPlaceholder && hasCache){
+            cache.preferredMainSize = currentMain;
+            cache.preferredCrossSize = currentCross;
+            cache.hasPreferredSize = true;
         }
         else if(hasPreferred){
-            currentMain = entry.preferredMainSize;
-            currentCross = entry.preferredCrossSize;
+            currentMain = cache.preferredMainSize;
+            currentCross = cache.preferredCrossSize;
         }
 
         currentMain = std::clamp(
@@ -356,40 +368,40 @@ void StackWidget::layoutChildren(){
 
         LayoutItem item {};
         item.widget = child;
-        item.slot = entry.slot;
+        item.slot = slot;
         item.resizable = child->isLayoutResizable();
         item.currentMain = currentMain;
         item.currentCross = currentCross;
 
-        item.marginMainBefore = axis == StackAxis::Horizontal ? entry.slot.margin.left : entry.slot.margin.top;
-        item.marginMainAfter = axis == StackAxis::Horizontal ? entry.slot.margin.right : entry.slot.margin.bottom;
-        item.marginCrossBefore = axis == StackAxis::Horizontal ? entry.slot.margin.top : entry.slot.margin.left;
-        item.marginCrossAfter = axis == StackAxis::Horizontal ? entry.slot.margin.bottom : entry.slot.margin.right;
+        item.marginMainBefore = axis == StackAxis::Horizontal ? slot.margin.left : slot.margin.top;
+        item.marginMainAfter = axis == StackAxis::Horizontal ? slot.margin.right : slot.margin.bottom;
+        item.marginCrossBefore = axis == StackAxis::Horizontal ? slot.margin.top : slot.margin.left;
+        item.marginCrossAfter = axis == StackAxis::Horizontal ? slot.margin.bottom : slot.margin.right;
 
         item.resolvedMain = item.currentMain;
         item.resolvedCross = item.currentCross;
 
         if(item.resizable){
             const bool lockMainToPreferred =
-                    entry.slot.flexGrow <= 0.f &&
-                    entry.slot.flexShrink <= 0.f &&
-                    entry.hasPreferredSize;
+                    slot.flexGrow <= 0.f &&
+                    slot.flexShrink <= 0.f &&
+                    hasCache && cache.hasPreferredSize;
 
-            if(entry.slot.basis){
-                item.resolvedMain = *entry.slot.basis;
+            if(slot.basis){
+                item.resolvedMain = *slot.basis;
             }
             else if(lockMainToPreferred){
-                item.resolvedMain = entry.preferredMainSize;
+                item.resolvedMain = cache.preferredMainSize;
             }
-            item.resolvedMain = clampSize(item.resolvedMain,entry.slot.minMain,entry.slot.maxMain);
+            item.resolvedMain = clampSize(item.resolvedMain,slot.minMain,slot.maxMain);
 
-            if((!std::isfinite(item.resolvedCross) || item.resolvedCross <= 1.f) && entry.hasPreferredSize){
-                item.resolvedCross = entry.preferredCrossSize;
+            if((!std::isfinite(item.resolvedCross) || item.resolvedCross <= 1.f) && hasCache && cache.hasPreferredSize){
+                item.resolvedCross = cache.preferredCrossSize;
             }
-            item.resolvedCross = clampSize(item.resolvedCross,entry.slot.minCross,entry.slot.maxCross);
+            item.resolvedCross = clampSize(item.resolvedCross,slot.minCross,slot.maxCross);
         }
 
-        item.minMain = entry.slot.minMain.value_or(0.f);
+        item.minMain = slot.minMain.value_or(0.f);
         items.push_back(item);
     }
 
@@ -399,7 +411,7 @@ void StackWidget::layoutChildren(){
         return;
     }
 
-    float usedMain = options.spacing * static_cast<float>(items.size() > 0 ? items.size() - 1 : 0);
+    float usedMain = stackOptions.spacing * static_cast<float>(items.size() > 0 ? items.size() - 1 : 0);
     float totalGrow = 0.f;
     float totalShrinkWeight = 0.f;
 
@@ -438,16 +450,16 @@ void StackWidget::layoutChildren(){
         }
     }
 
-    usedMain = options.spacing * static_cast<float>(items.size() > 0 ? items.size() - 1 : 0);
+    usedMain = stackOptions.spacing * static_cast<float>(items.size() > 0 ? items.size() - 1 : 0);
     for(const auto & item : items){
         usedMain += item.marginMainBefore + item.resolvedMain + item.marginMainAfter;
     }
 
     float extraMain = std::max(0.f,contentMain - usedMain);
-    float layoutSpacing = options.spacing;
+    float layoutSpacing = stackOptions.spacing;
     float startOffset = 0.f;
 
-    switch(options.mainAlign){
+    switch(stackOptions.mainAlign){
         case StackMainAlign::Start:
             break;
         case StackMainAlign::Center:
@@ -487,7 +499,7 @@ void StackWidget::layoutChildren(){
 
         cursor += item.marginMainBefore;
 
-        auto align = item.slot.alignSelf.value_or(options.crossAlign);
+        auto align = item.slot.alignSelf.value_or(stackOptions.crossAlign);
         float crossSize = item.resizable ? item.resolvedCross : item.currentCross;
 
         float crossAvailable = std::max(0.f,contentCross - (item.marginCrossBefore + item.marginCrossAfter));
@@ -545,10 +557,10 @@ void StackWidget::layoutChildren(){
         targetRect = ViewResizeCoordinator::clampRectToParent(targetRect,contentBoundsRect,resizeSpec);
 
         if(rectChanged(childRect,targetRect)){
-            auto prevOptions = item.widget->paintOptions();
-            const bool suppressResizeInvalidate = prevOptions.invalidateOnResize;
+            auto prevOpts = item.widget->paintOptions();
+            const bool suppressResizeInvalidate = prevOpts.invalidateOnResize;
             if(suppressResizeInvalidate){
-                auto suppressed = prevOptions;
+                auto suppressed = prevOpts;
                 suppressed.invalidateOnResize = false;
                 item.widget->setPaintOptions(suppressed);
             }
@@ -556,7 +568,7 @@ void StackWidget::layoutChildren(){
             item.widget->setRect(targetRect);
 
             if(suppressResizeInvalidate){
-                item.widget->setPaintOptions(prevOptions);
+                item.widget->setPaintOptions(prevOpts);
                 if(std::find(resizedWidgets.begin(),resizedWidgets.end(),item.widget) == resizedWidgets.end()){
                     resizedWidgets.push_back(item.widget);
                 }
@@ -577,21 +589,17 @@ void StackWidget::layoutChildren(){
 }
 
 StackWidget::~StackWidget(){
-    for(auto & entry : stackChildren){
-        if(entry.widget != nullptr){
-            entry.widget->detachFromParent();
-        }
-    }
-    stackChildren.clear();
+    childSlots.clear();
+    childSizeCache.clear();
 }
 
-HStack::HStack(ViewPtr view,WidgetPtr parent,const StackOptions & options):
-StackWidget(StackAxis::Horizontal,std::move(view),parent,options){
+HStack::HStack(ViewPtr view,const StackOptions & options):
+StackWidget(StackAxis::Horizontal,std::move(view),options){
 
 }
 
-VStack::VStack(ViewPtr view,WidgetPtr parent,const StackOptions & options):
-StackWidget(StackAxis::Vertical,std::move(view),parent,options){
+VStack::VStack(ViewPtr view,const StackOptions & options):
+StackWidget(StackAxis::Vertical,std::move(view),options){
 
 }
 

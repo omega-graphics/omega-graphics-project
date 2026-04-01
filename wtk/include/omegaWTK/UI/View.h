@@ -32,6 +32,7 @@ namespace OmegaWTK {
     }
 
     
+    class Container;
     class Widget;
     class AppInst;
     class ViewDelegate;
@@ -117,6 +118,7 @@ namespace OmegaWTK {
         friend class Composition::ViewAnimator;
         friend class ScrollView;
         friend class Widget;
+        friend class Container;
     protected:
 //        /**
 //            Constructs a View using a Rect param; (With NO Layers!!)

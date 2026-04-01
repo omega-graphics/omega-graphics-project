@@ -17,6 +17,7 @@ namespace OmegaWTK {
 
 class AppWindow;
 class AppWindowManager;
+class Container;
 class View;
 class Widget;
 
@@ -47,6 +48,7 @@ namespace Composition {
     class OMEGAWTK_EXPORT LayerTree : public Native::NativeLayerTreeLimb {
         friend class ::OmegaWTK::View;
         friend class ::OmegaWTK::Widget;
+        friend class ::OmegaWTK::Container;
     protected:
         OmegaCommon::Vector<LayerTreeObserver *> observers;
 

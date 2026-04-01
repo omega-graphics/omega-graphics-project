@@ -157,11 +157,9 @@ protected:
      The WidgetTreeHost that hosts this widget.
     */
     WidgetTreeHost *treeHost = nullptr;
-        
-private:
-    OmegaCommon::Vector<Widget *> children;
     void setTreeHostRecurse(WidgetTreeHost *host);
-    void removeChildWidget(Widget *ptr);
+
+private:
     /// Observers
     OmegaCommon::Vector<WidgetObserverPtr> observers;
 protected:
@@ -177,8 +175,6 @@ protected:
         Core::Rect rect;
     };
     void notifyObservers(WidgetEventType eventType,WidgetEventParams params);
-    virtual void onChildAttached(Widget *child);
-    virtual void onChildDetached(Widget *child);
 
     virtual void onMount(){};
     virtual void onPaint(PaintContext & context,PaintReason reason){};
@@ -197,7 +193,6 @@ protected:
     @note Manual-mode widgets can still override this to use low-level composition APIs.*/
     virtual void init();
 private:
-    void setParentWidgetImpl(Widget *widget,WidgetPtr widgetHandle);
     friend class AppWindow;
     friend class AppWindowManager;
     friend class WidgetTreeHost;
@@ -226,13 +221,10 @@ public:
     void requestLayout();
     bool hasExplicitLayoutStyle() const;
     View & viewRef();
-    virtual bool acceptsChildWidget(const Widget *child) const;
+    virtual OmegaCommon::Vector<Widget *> childWidgets() const;
     virtual bool isLayoutResizable() const {
         return true;
     }
-    void setParentWidget(WidgetPtr widget);
-    void setParentWidget(Widget *widget);
-    void detachFromParent();
     /**
      Add a WidgetObserver to be notified.
     */
@@ -261,18 +253,20 @@ public:
     */
     void hide();
 protected:
-    Widget(ViewPtr view,WidgetPtr parent);
+    explicit Widget(ViewPtr view);
+    friend class Container;
 public:
     ~Widget() override;
 };
 
 /**
-* Every Widget Constructor comes with two default parameters: The rect, and the parent widget.
- @note These macros are used on subclasses of Widget (Widgets that have real implementation rules, 
+* Every Widget Constructor comes with one default parameter: The rect.
+ @note These macros are used on subclasses of Widget (Widgets that have real implementation rules,
  so that users don't have to specify the View as the Widget subclass already handles it.
+ Parent attachment happens afterward via Container::addChild, never at construction.
 */
-#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(Core::Rect rect,WidgetPtr parent,## __VA_ARGS__);
-#define WIDGET_CONSTRUCTOR_IMPL(...) Create(Core::Rect rect,WidgetPtr parent,## __VA_ARGS__)
+#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(Core::Rect rect,## __VA_ARGS__);
+#define WIDGET_CONSTRUCTOR_IMPL(...) Create(Core::Rect rect,## __VA_ARGS__)
 
 
 

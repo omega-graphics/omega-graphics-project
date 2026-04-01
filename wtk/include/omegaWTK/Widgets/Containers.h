@@ -1,4 +1,4 @@
-#include "omegaWTK/UI/Widget.h"
+#include "omegaWTK/Widgets/BasicWidgets.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -56,41 +56,36 @@ struct OMEGAWTK_EXPORT StackSlot {
     Core::Optional<StackCrossAlign> alignSelf {};
 };
 
-class OMEGAWTK_EXPORT StackWidget : public Widget {
-public:
-    struct ChildEntry {
-        WidgetPtr widget;
-        StackSlot slot;
+class OMEGAWTK_EXPORT StackWidget : public Container {
+    struct StackChildCache {
         float preferredMainSize = 0.f;
         float preferredCrossSize = 0.f;
         bool hasPreferredSize = false;
     };
-private:
+
     StackAxis axis;
-    StackOptions options;
-    OmegaCommon::Vector<ChildEntry> stackChildren;
+    StackOptions stackOptions;
+    OmegaCommon::Vector<StackSlot> childSlots;
+    OmegaCommon::Vector<StackChildCache> childSizeCache;
     bool needsLayout = true;
-    bool inLayout = false;
     bool hasLastStableFrame = false;
     Core::Rect lastStableFrame {Core::Position{0.f,0.f},1.f,1.f};
 
-    void layoutChildren();
 protected:
+    void layoutChildren() override;
     void onMount() override;
     void onPaint(PaintContext & context,PaintReason reason) override;
     void resize(Core::Rect & newRect) override;
 public:
-    StackWidget(StackAxis axis,ViewPtr view,WidgetPtr parent,const StackOptions & options = {});
+    StackWidget(StackAxis axis,ViewPtr view,const StackOptions & options = {});
 
     StackAxis getAxis() const;
     const StackOptions & getOptions() const;
     void setOptions(const StackOptions & options);
 
-    std::size_t childCount() const;
-    WidgetPtr childAt(std::size_t idx) const;
-
-    WidgetPtr addChild(const WidgetPtr & child,const StackSlot & slot = {});
-    bool removeChild(const WidgetPtr & child);
+    WidgetPtr addChild(const WidgetPtr & child) override;
+    WidgetPtr addChild(const WidgetPtr & child,const StackSlot & slot);
+    bool removeChild(const WidgetPtr & child) override;
     bool setSlot(const WidgetPtr & child,const StackSlot & slot);
     bool setSlot(std::size_t idx,const StackSlot & slot);
     Core::Optional<StackSlot> getSlot(const WidgetPtr & child) const;
@@ -102,12 +97,12 @@ public:
 
 class OMEGAWTK_EXPORT HStack : public StackWidget {
 public:
-    explicit HStack(ViewPtr view,WidgetPtr parent,const StackOptions & options = {});
+    explicit HStack(ViewPtr view,const StackOptions & options = {});
 };
 
 class OMEGAWTK_EXPORT VStack : public StackWidget {
 public:
-    explicit VStack(ViewPtr view,WidgetPtr parent,const StackOptions & options = {});
+    explicit VStack(ViewPtr view,const StackOptions & options = {});
 };
 
 }

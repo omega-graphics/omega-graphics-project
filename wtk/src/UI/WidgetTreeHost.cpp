@@ -340,7 +340,7 @@ namespace OmegaWTK {
 
     void WidgetTreeHost::initWidgetRecurse(Widget *parent){
         parent->init();
-        for(auto & child : parent->children){
+        for(auto * child : parent->childWidgets()){
             initWidgetRecurse(child);
         }
     }
@@ -353,7 +353,7 @@ namespace OmegaWTK {
         if(rootTree != nullptr){
             compositor->observeLayerTree(rootTree,syncLaneId);
         }
-        for(auto & child : parent->children){
+        for(auto * child : parent->childWidgets()){
             observeWidgetLayerTreesRecurse(child);
         }
     }
@@ -366,7 +366,7 @@ namespace OmegaWTK {
         if(rootTree != nullptr){
             compositor->unobserveLayerTree(rootTree);
         }
-        for(auto & child : parent->children){
+        for(auto * child : parent->childWidgets()){
             unobserveWidgetLayerTreesRecurse(child);
         }
     }
@@ -385,7 +385,7 @@ namespace OmegaWTK {
                 parent->invalidate(reason);
             }
         }
-        for(auto & child : parent->children){
+        for(auto * child : parent->childWidgets()){
             invalidateWidgetRecurse(child,reason,immediate);
         }
     }
@@ -395,7 +395,7 @@ namespace OmegaWTK {
             return;
         }
         parent->view->getResizeCoordinator().beginResizeSession(sessionId);
-        for(auto & child : parent->children){
+        for(auto * child : parent->childWidgets()){
             beginResizeCoordinatorSessionRecurse(child,sessionId);
         }
     }
@@ -407,7 +407,7 @@ namespace OmegaWTK {
         if(parent->paintMode() != PaintMode::Automatic){
             return true;
         }
-        for(auto & child : parent->children){
+        for(auto * child : parent->childWidgets()){
             if(detectAnimatedTreeRecurse(child)){
                 return true;
             }

@@ -110,8 +110,8 @@ protected:
     }
 
 public:
-    explicit RoundedFrameWidget(OmegaWTK::ViewPtr view,OmegaWTK::WidgetPtr parent):
-        OmegaWTK::Widget(std::move(view),parent){}
+    explicit RoundedFrameWidget(OmegaWTK::ViewPtr view):
+        OmegaWTK::Widget(std::move(view)){}
 };
 
 class EllipseOnlyWidget final : public OmegaWTK::Widget {
@@ -171,8 +171,8 @@ protected:
     }
 
 public:
-    explicit EllipseOnlyWidget(OmegaWTK::ViewPtr view,OmegaWTK::WidgetPtr parent):
-        OmegaWTK::Widget(std::move(view),parent){}
+    explicit EllipseOnlyWidget(OmegaWTK::ViewPtr view):
+        OmegaWTK::Widget(std::move(view)){}
 };
 
 class PathOnlyWidget final : public OmegaWTK::Widget {
@@ -239,8 +239,8 @@ protected:
     }
 
 public:
-    explicit PathOnlyWidget(OmegaWTK::ViewPtr view,OmegaWTK::WidgetPtr parent):
-        OmegaWTK::Widget(std::move(view),parent){}
+    explicit PathOnlyWidget(OmegaWTK::ViewPtr view):
+        OmegaWTK::Widget(std::move(view)){}
 };
 
 class GeometryHStack final : public OmegaWTK::HStack {
@@ -257,9 +257,8 @@ protected:
 
 public:
     explicit GeometryHStack(OmegaWTK::ViewPtr view,
-                            OmegaWTK::WidgetPtr parent,
                             const OmegaWTK::StackOptions & options):
-        OmegaWTK::HStack(std::move(view),parent,options){}
+        OmegaWTK::HStack(std::move(view),options){}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -285,20 +284,16 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
 
     auto stack = make<GeometryHStack>(
         OmegaWTK::View::Create(windowRect),
-        OmegaWTK::WidgetPtr{},
         options);
 
     const OmegaWTK::Core::Rect childRect{{0,0},130,220};
 
     auto pathWidget = make<PathOnlyWidget>(
-        OmegaWTK::View::Create(childRect),
-        OmegaWTK::WidgetPtr{});
+        OmegaWTK::View::Create(childRect));
     auto roundedFrameWidget = make<RoundedFrameWidget>(
-        OmegaWTK::View::Create(childRect),
-        OmegaWTK::WidgetPtr{});
+        OmegaWTK::View::Create(childRect));
     auto ellipseWidget = make<EllipseOnlyWidget>(
-        OmegaWTK::View::Create(childRect),
-        OmegaWTK::WidgetPtr{});
+        OmegaWTK::View::Create(childRect));
 
     OmegaWTK::StackSlot slot {};
     slot.flexGrow = 0.0f;

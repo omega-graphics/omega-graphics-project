@@ -163,11 +163,7 @@ void PaintContext::drawText(const UniString &text,
 }
 
 
-Widget::Widget(ViewPtr view,WidgetPtr parent):view(std::move(view)),parent(parent.get()){
-    if(parent != nullptr) {
-        parent->view->addSubView(this->view.get());
-        parent->children.push_back(this);
-    }
+Widget::Widget(ViewPtr view):view(std::move(view)){
 };
 
 //Widget::Widget(Widget & widget):parent(std::move(widget.parent)),compositor(std::move(widget.compositor)),view(std::move(widget.view)){
@@ -309,7 +305,7 @@ void Widget::onThemeSetRecurse(Native::ThemeDesc &desc){
     if(mode == PaintMode::Automatic){
         invalidate(PaintReason::ThemeChanged);
     }
-    for(auto & child : children){
+    for(auto * child : childWidgets()){
         if(child != nullptr){
             child->onThemeSetRecurse(desc);
         }
@@ -357,8 +353,8 @@ void Widget::setRect(const Core::Rect &newRect){
     }
 }
 
-bool Widget::acceptsChildWidget(const Widget *child) const{
-    return child != nullptr && child != this;
+OmegaCommon::Vector<Widget *> Widget::childWidgets() const{
+    return {};
 }
 
 void Widget::show(){
@@ -390,7 +386,7 @@ void Widget::setTreeHostRecurse(WidgetTreeHost *host){
         view->setFrontendRecurse(nullptr);
         view->setSyncLaneRecurse(0);
     }
-    for(auto c : children){
+    for(auto * c : childWidgets()){
         if(c != nullptr){
             c->setTreeHostRecurse(host);
         }
@@ -435,14 +431,6 @@ void Widget::notifyObservers(Widget::WidgetEventType event_ty,Widget::WidgetEven
         }
     };
 };
-
-void Widget::onChildAttached(Widget *child){
-    (void)child;
-}
-
-void Widget::onChildDetached(Widget *child){
-    (void)child;
-}
 
 Core::Rect Widget::clampChildRect(const Widget &child,const GeometryProposal &proposal) const{
     (void)child;
@@ -523,71 +511,8 @@ Widget::GeometryTraceContext Widget::geometryTraceContext() const{
     return ctx;
 }
 
-void Widget::removeChildWidget(Widget *ptr){
-    if(ptr == nullptr){
-        return;
-    }
-    for(auto it = children.begin();it != children.end();it++){
-        if(ptr == *it){
-            view->removeSubView(ptr->view.get());
-            onChildDetached(ptr);
-            children.erase(it);
-            ptr->parent = nullptr;
-            ptr->setTreeHostRecurse(nullptr);
-            ptr->notifyObservers(Detach,{});
-            if(ptr->view && ptr->view->getLayerTree()){
-                ptr->view->getLayerTree()->notifyObserversOfWidgetDetach();
-            }
-            break;
-        };
-    };
-};
-
-void Widget::setParentWidgetImpl(Widget *widget,WidgetPtr widgetHandle){
-    assert(widget != nullptr && "Cannot set Widget as child of a null Widget");
-    if(parent == widget){
-        return;
-    }
-    if(!widget->acceptsChildWidget(this)){
-        return;
-    }
-    if(parent != nullptr){
-        parent->removeChildWidget(this);
-    }
-    parent = widget;
-    parent->children.push_back(this);
-    parent->onChildAttached(this);
-    setTreeHostRecurse(widget->treeHost);
-    parent->view->addSubView(view.get());
-    notifyObservers(Attach,{widgetHandle});
-}
-
-void Widget::setParentWidget(WidgetPtr widget){
-    assert(widget != nullptr && "Cannot set Widget as child of a null Widget");
-    setParentWidgetImpl(widget.get(),widget);
-};
-
-void Widget::setParentWidget(Widget *widget){
-    setParentWidgetImpl(widget,{});
-};
-
-void Widget::detachFromParent(){
-    if(parent != nullptr){
-        parent->removeChildWidget(this);
-    }
-}
-
 Widget::~Widget(){
-    for(auto child : children){
-        if(child != nullptr){
-            child->parent = nullptr;
-        }
-    }
-    children.clear();
-    if(parent != nullptr){
-        parent->removeChildWidget(this);
-        parent = nullptr;
-    }
+    parent = nullptr;
 }
 
 
