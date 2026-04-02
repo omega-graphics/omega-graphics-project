@@ -86,6 +86,7 @@ namespace OmegaWTK {
             struct {
                 Core::SharedPtr<OmegaGTE::GVectorPath2D> path;
                 Core::SharedPtr<Brush> brush;
+                Core::SharedPtr<Brush> fillBrush;
                 float strokeWidth;
                 bool contour;
                 bool fill;
@@ -106,6 +107,7 @@ namespace OmegaWTK {
 
             Data(const Core::SharedPtr<OmegaGTE::GVectorPath2D> & path,
                  Core::SharedPtr<Brush> brush,
+                 Core::SharedPtr<Brush> fillBrush,
                  float strokeWidth,
                  bool contour,
                  bool fill);
@@ -133,11 +135,12 @@ namespace OmegaWTK {
         VisualCommand(_Args && ...args):type(Ellipse),params(args...){};
         VisualCommand(const Core::SharedPtr<OmegaGTE::GVectorPath2D> & path,
                       Core::SharedPtr<Brush> brush,
+                      Core::SharedPtr<Brush> fillBrush,
                       float strokeWidth,
                       bool contour,
                       bool fill):
         type(VectorPath),
-        params(path,brush,strokeWidth,contour,fill){};
+        params(path,brush,fillBrush,strokeWidth,contour,fill){};
 
         template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::SharedPtr<Media::BitmapImage>,Core::Rect)>
         VisualCommand(_Args && ...args):type(Bitmap),params(args...){};

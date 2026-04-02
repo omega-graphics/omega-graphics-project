@@ -25,10 +25,11 @@ ellipseParams({ellipse,brush,border}){
 
 VisualCommand::Data::Data(const Core::SharedPtr<OmegaGTE::GVectorPath2D> &path,
                           Core::SharedPtr<Brush> brush,
+                          Core::SharedPtr<Brush> fillBrush,
                           float strokeWidth,
                           bool contour,
                           bool fill):
-pathParams({path,brush,strokeWidth,contour,fill}){
+pathParams({path,brush,fillBrush,strokeWidth,contour,fill}){
 
 }
 
@@ -145,12 +146,16 @@ void Canvas::drawPath(Path &path){
     }
 
     const float strokeWidth = static_cast<float>(path.currentStroke);
+    const bool isFill = (strokeWidth == 0.f);
     for(auto & segment : path.segments){
         if(segment.path.size() < 2){
             continue;
         }
         auto pathData = std::make_shared<OmegaGTE::GVectorPath2D>(segment.path);
-        current->currentVisuals.emplace_back(pathData,brush,strokeWidth,segment.closed,false);
+        // When stroke is 0, treat as a fill request: the brush becomes the fill brush.
+        Core::SharedPtr<Brush> strokeBrush = isFill ? nullptr : brush;
+        Core::SharedPtr<Brush> fillBrush = isFill ? brush : nullptr;
+        current->currentVisuals.emplace_back(pathData,strokeBrush,fillBrush,strokeWidth,segment.closed,isFill);
     }
 }
 

@@ -193,7 +193,7 @@ void OmegaTriangulationEngineContext::translateCoordsDefaultImpl(float x, float 
 };
 
 inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulationParams &params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport,TETriangulationResult & result){
-    assert(params.attachments.size() <= 1 && "Only 1 attachment is allowed for each tessellation params");
+    assert(params.attachments.size() <= 2 && "At most 2 attachments are allowed for each tessellation params");
     GEViewport fallbackViewport = getEffectiveViewport();
     if (!viewport) viewport = &fallbackViewport;
 
@@ -555,7 +555,6 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             }
             auto & path = *params.graphicsPath2D;
 
-            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
             std::optional<TETriangulationResult::AttachmentData> colorAttachment;
             if(!params.attachments.empty()){
                 auto & attachment = params.attachments.front();
@@ -565,62 +564,103 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 }
             }
 
-            const float strokeWidth = params.graphicsPath2DStrokeWidth > 0.f ? params.graphicsPath2DStrokeWidth : 1.f;
             auto toDevicePoint = [&](const GPoint2D &point){
                 float x,y;
                 translateCoords(point.x,point.y,0.f,viewport,&x,&y,nullptr);
                 return GPoint3D{x,y,0.f};
             };
 
-            auto appendStrokeSegment = [&](const GPoint2D & start,const GPoint2D & end){
-                const float dx = end.x - start.x;
-                const float dy = end.y - start.y;
-                const float len = std::sqrt((dx * dx) + (dy * dy));
-                if(len <= 0.000001f){
-                    return;
+            // --- Fill ---
+            // Fan triangulation from the first vertex using the second attachment as fill color.
+            if(params.graphicsPath2DFill && path.size() >= 2){
+                std::optional<TETriangulationResult::AttachmentData> fillAttachment;
+                if(params.attachments.size() >= 2){
+                    auto & att = params.attachments[1];
+                    if(att.type == TETriangulationParams::Attachment::TypeColor){
+                        fillAttachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                                TETriangulationResult::AttachmentData{att.colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+                    }
                 }
-
-                const float halfStroke = strokeWidth * 0.5f;
-                const float nx = -dy / len;
-                const float ny = dx / len;
-
-                const GPoint2D a{start.x + nx * halfStroke,start.y + ny * halfStroke};
-                const GPoint2D b{start.x - nx * halfStroke,start.y - ny * halfStroke};
-                const GPoint2D c{end.x + nx * halfStroke,end.y + ny * halfStroke};
-                const GPoint2D d{end.x - nx * halfStroke,end.y - ny * halfStroke};
-
-                TETriangulationResult::TEMesh::Polygon p {};
-                p.a.pt = toDevicePoint(a);
-                p.b.pt = toDevicePoint(b);
-                p.c.pt = toDevicePoint(c);
-                if(colorAttachment){
-                    p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
+                if(fillAttachment){
+                    TETriangulationResult::TEMesh fillMesh {TETriangulationResult::TEMesh::TopologyTriangle};
+                    // Collect all unique points from the path.
+                    std::vector<GPoint3D> pts;
+                    pts.push_back(toDevicePoint(path.firstPt()));
+                    for(auto it = path.begin(); it != path.end(); it.operator++()){
+                        auto seg = *it;
+                        if(seg.pt_B == nullptr) break;
+                        pts.push_back(toDevicePoint(*seg.pt_B));
+                    }
+                    // Fan triangulate from the first vertex.
+                    for(size_t i = 1; i + 1 < pts.size(); ++i){
+                        TETriangulationResult::TEMesh::Polygon tri {};
+                        tri.a.pt = pts[0];
+                        tri.b.pt = pts[i];
+                        tri.c.pt = pts[i + 1];
+                        tri.a.attachment = tri.b.attachment = tri.c.attachment = fillAttachment;
+                        fillMesh.vertexPolygons.push_back(tri);
+                    }
+                    if(!fillMesh.vertexPolygons.empty()){
+                        result.meshes.push_back(fillMesh);
+                    }
                 }
-                mesh.vertexPolygons.push_back(p);
-
-                p.a.pt = toDevicePoint(c);
-                p.b.pt = toDevicePoint(b);
-                p.c.pt = toDevicePoint(d);
-                if(colorAttachment){
-                    p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
-                }
-                mesh.vertexPolygons.push_back(p);
-            };
-
-            for(auto path_it = path.begin();path_it != path.end();path_it.operator++()){
-                auto segment = *path_it;
-                if(segment.pt_A == nullptr || segment.pt_B == nullptr){
-                    break;
-                }
-                appendStrokeSegment(*segment.pt_A,*segment.pt_B);
             }
 
-            if(params.graphicsPath2DContour && path.size() >= 2){
-                appendStrokeSegment(path.lastPt(),path.firstPt());
-            }
+            // --- Stroke ---
+            const float strokeWidth = params.graphicsPath2DStrokeWidth > 0.f ? params.graphicsPath2DStrokeWidth : 0.f;
+            if(strokeWidth > 0.f){
+                TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
 
-            if(!mesh.vertexPolygons.empty()){
-                result.meshes.push_back(mesh);
+                auto appendStrokeSegment = [&](const GPoint2D & start,const GPoint2D & end){
+                    const float dx = end.x - start.x;
+                    const float dy = end.y - start.y;
+                    const float len = std::sqrt((dx * dx) + (dy * dy));
+                    if(len <= 0.000001f){
+                        return;
+                    }
+
+                    const float halfStroke = strokeWidth * 0.5f;
+                    const float nx = -dy / len;
+                    const float ny = dx / len;
+
+                    const GPoint2D a{start.x + nx * halfStroke,start.y + ny * halfStroke};
+                    const GPoint2D b{start.x - nx * halfStroke,start.y - ny * halfStroke};
+                    const GPoint2D c{end.x + nx * halfStroke,end.y + ny * halfStroke};
+                    const GPoint2D d{end.x - nx * halfStroke,end.y - ny * halfStroke};
+
+                    TETriangulationResult::TEMesh::Polygon p {};
+                    p.a.pt = toDevicePoint(a);
+                    p.b.pt = toDevicePoint(b);
+                    p.c.pt = toDevicePoint(c);
+                    if(colorAttachment){
+                        p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
+                    }
+                    mesh.vertexPolygons.push_back(p);
+
+                    p.a.pt = toDevicePoint(c);
+                    p.b.pt = toDevicePoint(b);
+                    p.c.pt = toDevicePoint(d);
+                    if(colorAttachment){
+                        p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
+                    }
+                    mesh.vertexPolygons.push_back(p);
+                };
+
+                for(auto path_it = path.begin();path_it != path.end();path_it.operator++()){
+                    auto segment = *path_it;
+                    if(segment.pt_A == nullptr || segment.pt_B == nullptr){
+                        break;
+                    }
+                    appendStrokeSegment(*segment.pt_A,*segment.pt_B);
+                }
+
+                if(params.graphicsPath2DContour && path.size() >= 2){
+                    appendStrokeSegment(path.lastPt(),path.firstPt());
+                }
+
+                if(!mesh.vertexPolygons.empty()){
+                    result.meshes.push_back(mesh);
+                }
             }
             break;
         }

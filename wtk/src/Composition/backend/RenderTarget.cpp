@@ -914,14 +914,25 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                                                                  _params.strokeWidth,
                                                                                  _params.contour,
                                                                                  _params.fill);
-                auto color = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
+                // First attachment: stroke color.
+                auto strokeColor = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
                 if(_params.brush != nullptr && _params.brush->isColor){
-                    color = OmegaGTE::makeColor(_params.brush->color.r,
-                                                _params.brush->color.g,
-                                                _params.brush->color.b,
-                                                _params.brush->color.a);
+                    strokeColor = OmegaGTE::makeColor(_params.brush->color.r,
+                                                      _params.brush->color.g,
+                                                      _params.brush->color.b,
+                                                      _params.brush->color.a);
                 }
-                te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(color));
+                te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(strokeColor));
+
+                // Second attachment: fill color.
+                if(_params.fill && _params.fillBrush != nullptr && _params.fillBrush->isColor){
+                    auto fillColor = OmegaGTE::makeColor(_params.fillBrush->color.r,
+                                                         _params.fillBrush->color.g,
+                                                         _params.fillBrush->color.b,
+                                                         _params.fillBrush->color.a);
+                    te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(fillColor));
+                }
+
                 result = tessellationEngineContext->triangulateSync(te_params,
                                                                   OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,
                                                                   &viewPort);

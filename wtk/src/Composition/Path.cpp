@@ -64,18 +64,6 @@ constexpr float kPi = 3.14159265358979f;
     void Path::addArc(OmegaGTE::GRect bounds,float startAngle,float endAngle) {
         auto & current = segments.back();
 
-        float angle;
-
-        if(current.path.size() == 0){
-            angle = 0;
-        }
-        else {
-            auto & pt = current.path.lastPt();
-            auto & pt_other = current.final_path_a.lastPt();
-            /// Get Angle of Path. (Perpendicular slope scalar from center point to path edge.)
-            angle = std::atan(-(pt_other.x - pt.x)/(pt_other.y - pt.y));
-        }
-
         auto pivot_x = bounds.pos.x + (bounds.w/2.f);
         auto pivot_y = bounds.pos.y + (bounds.h/2.f);
 
@@ -86,34 +74,21 @@ constexpr float kPi = 3.14159265358979f;
 
         auto angle_it = startAngle;
 
-
-        auto transform = [&](float x,float y,float * x_res,float * y_res){
-            *x_res = (x * std::cos(angle) - y * std::sin(angle)) + pivot_x;
-            *y_res = (x * std::sin(angle) + y * std::cos(angle)) + pivot_y;
-        };
-
         while(angle_it <= endAngle){
             auto _cos = std::cos(angle_it);
             auto _sin = std::sin(angle_it);
 
-            auto _x = rad_x * _cos;
-            auto _y = rad_y * _sin;
+            current.path.append(OmegaGTE::GPoint2D {
+                pivot_x + rad_x * _cos,
+                pivot_y + rad_y * _sin});
 
-            auto _x_l = (rad_x - width) * _cos;
-            auto _x_r = (rad_x + width) * _cos;
+            current.final_path_a.append(OmegaGTE::GPoint2D {
+                pivot_x + (rad_x - width) * _cos,
+                pivot_y + (rad_y - width) * _sin});
 
-            auto _y_l = (rad_y - width) * _sin;
-            auto _y_r = (rad_y + width) * _sin;
-
-            float _x_f,_y_f;
-            transform(_x,_y,&_x_f,&_y_f);
-            current.path.append(OmegaGTE::GPoint2D {_x_f,_y_f});
-
-            transform(_x_l,_y_l,&_x_f,&_y_f);
-            current.final_path_a.append(OmegaGTE::GPoint2D {_x_f,_y_f});
-
-            transform(_x_r,_y_r,&_x_f,&_y_f);
-            current.final_path_b.append(OmegaGTE::GPoint2D {_x_f,_y_f});
+            current.final_path_b.append(OmegaGTE::GPoint2D {
+                pivot_x + (rad_x + width) * _cos,
+                pivot_y + (rad_y + width) * _sin});
 
             angle_it += arcPrecision;
         }
@@ -149,7 +124,7 @@ constexpr float kPi = 3.14159265358979f;
     }
 
     void Path::close(){
-        if(segments.back().path.size() >= 3){
+        if(segments.back().path.size() >= 2){
             segments.back().closed = true;
         }
     }
@@ -173,29 +148,43 @@ constexpr float kPi = 3.14159265358979f;
         if (rad_x < 0.f) rad_x = 0.f;
         if (rad_y < 0.f) rad_y = 0.f;
 
+        const float x = rect.pos.x;
+        const float y = rect.pos.y;
+        const float w = rect.w;
+        const float h = rect.h;
+
+        // Counterclockwise winding for Y-up: bottom → right → top → left.
         auto path = std::make_shared<Path>(
-            OmegaGTE::GPoint2D{rect.pos.x + rect.w - rad_x, rect.pos.y},
+            OmegaGTE::GPoint2D{x + rad_x, y},
             width);
 
-        path->addLine(OmegaGTE::GPoint2D{rect.pos.x + rad_x, rect.pos.y});
+        // Bottom edge →
+        path->addLine(OmegaGTE::GPoint2D{x + w - rad_x, y});
 
-        OmegaGTE::GRect tlBounds{{rect.pos.x, rect.pos.y}, rad_x * 2.f, rad_y * 2.f};
-        path->addArc(tlBounds, kPi * 0.5f, kPi);
+        // Bottom-right arc (3π/2 → 2π)
+        OmegaGTE::GRect brArc{{x + w - rad_x * 2.f, y}, rad_x * 2.f, rad_y * 2.f};
+        path->addArc(brArc, kPi * 1.5f, kPi * 2.f);
 
-        path->addLine(OmegaGTE::GPoint2D{rect.pos.x, rect.pos.y + rect.h - rad_y});
+        // Right edge ↑
+        path->addLine(OmegaGTE::GPoint2D{x + w, y + h - rad_y});
 
-        OmegaGTE::GRect blBounds{{rect.pos.x, rect.pos.y + rect.h - rad_y * 2.f}, rad_x * 2.f, rad_y * 2.f};
-        path->addArc(blBounds, kPi, kPi * 1.5f);
+        // Top-right arc (0 → π/2)
+        OmegaGTE::GRect trArc{{x + w - rad_x * 2.f, y + h - rad_y * 2.f}, rad_x * 2.f, rad_y * 2.f};
+        path->addArc(trArc, 0.f, kPi * 0.5f);
 
-        path->addLine(OmegaGTE::GPoint2D{rect.pos.x + rect.w - rad_x, rect.pos.y + rect.h});
+        // Top edge ←
+        path->addLine(OmegaGTE::GPoint2D{x + rad_x, y + h});
 
-        OmegaGTE::GRect brBounds{{rect.pos.x + rect.w - rad_x * 2.f, rect.pos.y + rect.h - rad_y * 2.f}, rad_x * 2.f, rad_y * 2.f};
-        path->addArc(brBounds, kPi * 1.5f, kPi * 2.f);
+        // Top-left arc (π/2 → π)
+        OmegaGTE::GRect tlArc{{x, y + h - rad_y * 2.f}, rad_x * 2.f, rad_y * 2.f};
+        path->addArc(tlArc, kPi * 0.5f, kPi);
 
-        path->addLine(OmegaGTE::GPoint2D{rect.pos.x + rect.w, rect.pos.y + rad_y});
+        // Left edge ↓
+        path->addLine(OmegaGTE::GPoint2D{x, y + rad_y});
 
-        OmegaGTE::GRect trBounds{{rect.pos.x + rect.w - rad_x * 2.f, rect.pos.y}, rad_x * 2.f, rad_y * 2.f};
-        path->addArc(trBounds, 0.f, kPi * 0.5f);
+        // Bottom-left arc (π → 3π/2)
+        OmegaGTE::GRect blArc{{x, y}, rad_x * 2.f, rad_y * 2.f};
+        path->addArc(blArc, kPi, kPi * 1.5f);
 
         path->close();
         return path;
