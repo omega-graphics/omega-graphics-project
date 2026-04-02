@@ -3,6 +3,8 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Layer.h"
 
+#include <cassert>
+
 namespace OmegaWTK::Composition {
 
 VisualCommand::Data::Data(const Core::Rect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border) :
@@ -51,8 +53,14 @@ VisualCommand::~VisualCommand(){
 }
 
 Canvas::Canvas(CompositorClientProxy &proxy,Layer &layer): CompositorClient(proxy),rect(layer.getLayerRect()),layer(layer),current(new CanvasFrame {&layer,rect}){
-
+    assert(layer.boundCanvas_ == nullptr &&
+           "Layer already has a Canvas bound -- one Canvas per Layer");
+    layer.boundCanvas_ = this;
 };
+
+Canvas::~Canvas(){
+    layer.boundCanvas_ = nullptr;
+}
 
 Layer & Canvas::getCorrespondingLayer(){
     return layer;

@@ -41,7 +41,7 @@ class ClampAnimatedChildWidget final : public OmegaWTK::Widget {
     void ensureUIView(const OmegaWTK::Core::Rect & bounds){
         auto local = localBounds(bounds);
         if(uiView == nullptr){
-            uiView = OmegaWTK::UIViewPtr(new OmegaWTK::UIView(local,view,"clamp_anim_child_view"));
+            uiView = makeSubView<OmegaWTK::UIView>(local,"clamp_anim_child_view");
         }
         else {
             uiView->resize(local);
@@ -79,9 +79,9 @@ protected:
         ensureUIView(rect());
     }
 
-    void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
+    void onPaint(OmegaWTK::PaintReason reason) override {
         (void)reason;
-        auto bounds = context.bounds();
+        auto bounds = localBounds(rect());
         ensureUIView(bounds);
 
         OmegaWTK::UIViewLayout layout {};
@@ -138,8 +138,8 @@ protected:
     }
 
 public:
-    explicit ClampAnimatedChildWidget(OmegaWTK::ViewPtr view):
-            OmegaWTK::Widget(std::move(view)){}
+    explicit ClampAnimatedChildWidget(OmegaWTK::Core::Rect rect):
+            OmegaWTK::Widget(rect){}
 };
 
 class ClampRootContainer final : public OmegaWTK::Container {
@@ -148,14 +148,14 @@ protected:
         (void)desc;
     }
 
-    void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
-        context.clear(OmegaWTK::Composition::Color::create8Bit(
+    void onPaint(OmegaWTK::PaintReason reason) override {
+        viewAs<OmegaWTK::CanvasView>().clear(OmegaWTK::Composition::Color::create8Bit(
             OmegaWTK::Composition::Color::White8));
-        OmegaWTK::Container::onPaint(context,reason);
+        OmegaWTK::Container::onPaint(reason);
     }
 public:
-    explicit ClampRootContainer(OmegaWTK::ViewPtr view):
-            OmegaWTK::Container(std::move(view)){}
+    explicit ClampRootContainer(OmegaWTK::Core::Rect rect):
+            OmegaWTK::Container(rect){}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -172,7 +172,7 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
             new MyWindowDelegate());
 
     auto container = make<ClampRootContainer>(
-            OmegaWTK::View::Create(OmegaWTK::Core::Rect{{0,0},500,500}));
+            OmegaWTK::Core::Rect{{0,0},500,500});
 
     OmegaWTK::ContainerClampPolicy clampPolicy {};
     clampPolicy.contentInsets = {24.f,24.f,24.f,24.f};
@@ -183,7 +183,7 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
     container->setClampPolicy(clampPolicy);
 
     auto child = make<ClampAnimatedChildWidget>(
-            OmegaWTK::View::Create(OmegaWTK::Core::Rect{{190.f,160.f},120.f,120.f}));
+            OmegaWTK::Core::Rect{{190.f,160.f},120.f,120.f});
     container->addChild(child);
 
     window->setRootWidget(container);

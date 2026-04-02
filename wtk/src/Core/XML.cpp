@@ -23,12 +23,8 @@ namespace OmegaWTK::Core {
     OmegaCommon::Vector<XMLDocument::Tag> XMLDocument::Tag::children() {
         auto node = (xmlNodePtr)data;
         OmegaCommon::Vector<XMLDocument::Tag> tags;
-        auto count = xmlChildElementCount(node);
-        auto child_it = node->children;
-        while(count > 0){
+        for(auto child_it = node->children; child_it != nullptr; child_it = child_it->next){
             tags.push_back(Tag(child_it));
-            ++child_it;
-            --count;
         }
         return tags;
     }
@@ -69,8 +65,9 @@ namespace OmegaWTK::Core {
         auto * buffer = new char[fileSize];
 
         in.read(buffer,fileSize);
-        
+
         auto doc =  xmlParseMemory(buffer,(int)fileSize);
+        delete[] buffer;
         XMLDocument ret {};
         ret.data = doc;
         return ret;
@@ -86,9 +83,21 @@ namespace OmegaWTK::Core {
         return out.str();
     };
 
+    XMLDocument & XMLDocument::operator=(XMLDocument && other) noexcept {
+        if(this != &other){
+            if(data != nullptr){
+                xmlFreeDoc((xmlDocPtr)data);
+            }
+            data = other.data;
+            other.data = nullptr;
+        }
+        return *this;
+    }
+
     XMLDocument::~XMLDocument() {
-        auto doc = (xmlDocPtr)data;
-        xmlFreeDoc(doc);
+        if(data != nullptr){
+            xmlFreeDoc((xmlDocPtr)data);
+        }
     }
 
 }

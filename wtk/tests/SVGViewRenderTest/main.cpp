@@ -16,20 +16,7 @@ public:
     }
 };
 
-class SVGWidget final : public OmegaWTK::Widget {
-    SVGDelegate svgDelegate;
-    OmegaWTK::SVGViewPtr svgView;
-
-protected:
-    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
-        (void)desc;
-    }
-
-    void onMount() override {
-        auto bounds = rect();
-        svgView->setDelegate(&svgDelegate);
-
-        const OmegaCommon::String svg =
+ const OmegaCommon::String svg =
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"500\" height=\"500\">"
 
             "<rect x=\"30\" y=\"30\" width=\"120\" height=\"80\" "
@@ -55,22 +42,31 @@ protected:
 
             "</svg>";
 
-        svgView->setSourceString(svg);
+class SVGWidget final : public OmegaWTK::Widget {
+    SVGDelegate svgDelegate;
+
+protected:
+    OmegaWTK::SVGView & svgView() { return viewAs<OmegaWTK::SVGView>(); }
+
+    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
+        (void)desc;
     }
 
-    void onPaint(OmegaWTK::PaintContext & context, OmegaWTK::PaintReason reason) override {
+    void onMount() override {
+        svgView().setDelegate(&svgDelegate);
+        svgView().setSourceString(svg);
+    }
+
+    void onPaint(OmegaWTK::PaintReason reason) override {
         (void)reason;
-        context.clear(OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::White8));
-        svgView->renderNow();
+        svgView().renderNow();
     }
 
     bool isLayoutResizable() const override { return false; }
 
 public:
     explicit SVGWidget(OmegaWTK::Core::Rect rect)
-        : OmegaWTK::Widget(OmegaWTK::SVGView::Create(rect)) {
-            svgView = std::dynamic_pointer_cast<OmegaWTK::SVGView>(view);
-        }
+        : OmegaWTK::Widget(OmegaWTK::ViewPtr(new OmegaWTK::SVGView(rect, nullptr))) {}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -88,8 +84,7 @@ int omegaWTKMain(OmegaWTK::AppInst * app) {
         windowRect,
         new MyWindowDelegate());
 
-    auto widget = make<SVGWidget>(
-        OmegaWTK::Core::Rect{{0, 0}, 500, 500});
+    auto widget = make<SVGWidget>(OmegaWTK::Core::Rect{{0, 0}, 500, 500});
 
     window->setRootWidget(widget);
 

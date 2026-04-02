@@ -33,7 +33,7 @@ protected:
     void onMount() override {
         auto bounds = rect();
         OmegaWTK::Core::Rect localBounds{OmegaWTK::Core::Position{0.f, 0.f}, bounds.w, bounds.h};
-        videoView = OmegaWTK::VideoViewPtr(new OmegaWTK::VideoView(localBounds, view));
+        videoView = makeSubView<OmegaWTK::VideoView>(localBounds);
         videoView->setDelegate(&playbackDelegate);
         videoView->setScaleMode(OmegaWTK::VideoScaleMode::AspectFit);
 
@@ -51,19 +51,18 @@ protected:
         videoView->play();
     }
 
-    void onPaint(OmegaWTK::PaintContext & context, OmegaWTK::PaintReason reason) override {
+    void onPaint(OmegaWTK::PaintReason reason) override {
         (void)reason;
-        context.clear(OmegaWTK::Composition::Color::create8Bit(
+        viewAs<OmegaWTK::CanvasView>().clear(OmegaWTK::Composition::Color::create8Bit(
             OmegaWTK::Composition::Color::Black8));
     }
 
     bool isLayoutResizable() const override { return false; }
 
 public:
-    explicit VideoWidget(OmegaWTK::ViewPtr view,
-                         OmegaWTK::WidgetPtr parent,
+    explicit VideoWidget(OmegaWTK::Core::Rect rect,
                          const OmegaCommon::String & path)
-        : OmegaWTK::Widget(std::move(view), parent), filePath(path) {}
+        : OmegaWTK::Widget(rect), filePath(path) {}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -84,8 +83,7 @@ int omegaWTKMain(OmegaWTK::AppInst * app) {
         new MyWindowDelegate());
 
     auto widget = make<VideoWidget>(
-        OmegaWTK::View::Create(windowRect),
-        OmegaWTK::WidgetPtr{},
+        windowRect,
         videoPath);
 
     window->setRootWidget(widget);

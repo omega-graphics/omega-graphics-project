@@ -107,8 +107,13 @@ static inline const char * geometryReasonLabel(GeometryChangeReason reason){
 
 }
 
-SharedHandle<Widget> Container::Create(ViewPtr view){
-    return WIDGET_CREATE<Container>(std::move(view));
+// SharedHandle<Widget> Container::Create(ViewPtr view){
+//     return make<Container>(std::move(view));
+// }
+
+Container::Container(Core::Rect rect):
+Widget(rect){
+
 }
 
 Container::Container(ViewPtr view):
@@ -137,8 +142,7 @@ void Container::onMount(){
     relayout();
 }
 
-void Container::onPaint(PaintContext & context,PaintReason reason){
-    (void)context;
+void Container::onPaint(PaintReason reason){
     (void)reason;
     if(layoutPending){
         layoutChildren();

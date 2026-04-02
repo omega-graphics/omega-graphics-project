@@ -54,7 +54,7 @@ protected:
     virtual void layoutChildren();
 
     void onMount() override;
-    void onPaint(PaintContext & context,PaintReason reason) override;
+    void onPaint(PaintReason reason) override;
     void resize(Core::Rect & newRect) override;
 
     Core::Rect clampChildRect(const Widget & child,const GeometryProposal & proposal) const override;
@@ -63,7 +63,8 @@ protected:
                               const Core::Rect & newRect,
                               GeometryChangeReason reason) override;
 public:
-    WIDGET_CONSTRUCTOR()
+    // WIDGET_CONSTRUCTOR()
+    explicit Container(Core::Rect rect);
     explicit Container(ViewPtr view);
 
     void setClampPolicy(const ContainerClampPolicy & policy);

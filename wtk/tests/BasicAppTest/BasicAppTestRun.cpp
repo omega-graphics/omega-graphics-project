@@ -1,5 +1,5 @@
 #include <omegaWTK/UI/Widget.h>
-#include <omegaWTK/UI/UIView.h>
+#include <omegaWTK/UI/View.h>
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
 #include <omegaWTK/Composition/Canvas.h>
@@ -24,29 +24,29 @@ protected:
     void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {}
     void onMount() override {}
 
-    void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
+    void onPaint(OmegaWTK::PaintReason reason) override {
         (void)reason;
-        auto bounds = context.bounds();
+        auto & cv = viewAs<OmegaWTK::CanvasView>();
+        auto & r = rect();
 
-        // Render directly to the rootView's CanvasView — no UIView.
-        context.clear(OmegaWTK::Composition::Color::create8Bit(
+        cv.clear(OmegaWTK::Composition::Color::create8Bit(
             OmegaWTK::Composition::Color::Black8));
 
         constexpr float kRectSize = 48.0f;
         OmegaWTK::Core::Rect redRect{
             OmegaWTK::Core::Position{
-                (bounds.w - kRectSize) * 0.5f,
-                (bounds.h - kRectSize) * 0.5f},
+                (r.w - kRectSize) * 0.5f,
+                (r.h - kRectSize) * 0.5f},
             kRectSize,
             kRectSize};
 
-        context.drawRect(redRect, OmegaWTK::Composition::ColorBrush(
+        cv.drawRect(redRect, OmegaWTK::Composition::ColorBrush(
             OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)));
     }
 
 public:
-    explicit MyWidget(OmegaWTK::ViewPtr view)
-        : OmegaWTK::Widget(std::move(view)) {}
+    explicit MyWidget(OmegaWTK::Core::Rect rect)
+        : OmegaWTK::Widget(rect) {}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -62,7 +62,7 @@ int RunBasicAppTest(OmegaWTK::AppInst *app) {
         new MyWindowDelegate());
 
     auto widget = make<MyWidget>(
-        OmegaWTK::View::Create(OmegaWTK::Core::Rect{{0, 0}, 500, 500}));
+        OmegaWTK::Core::Rect{{0, 0}, 500, 500});
     window->setRootWidget(widget);
     // #region agent log
     dbg_log("BasicAppTestRun.cpp:RunBasicAppTest", "widget added", "E", 500, 500, 0, 0, 1);

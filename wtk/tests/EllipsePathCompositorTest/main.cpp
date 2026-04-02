@@ -37,7 +37,7 @@ class RoundedFrameWidget final : public OmegaWTK::Widget {
     void ensureUIView(const OmegaWTK::Core::Rect & bounds){
         auto localBounds = localViewBounds(bounds);
         if(uiView == nullptr){
-            uiView = OmegaWTK::UIViewPtr(new OmegaWTK::UIView(localBounds,view,"rounded_frame_view"));
+            uiView = makeSubView<OmegaWTK::UIView>(localBounds,"rounded_frame_view");
         }
         else {
             uiView->resize(localBounds);
@@ -52,9 +52,9 @@ protected:
         ensureUIView(rect());
     }
 
-    void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
+    void onPaint(OmegaWTK::PaintReason reason) override {
         (void)reason;
-        auto & bounds = context.bounds();
+        auto bounds = localViewBounds(rect());
         ensureUIView(bounds);
 
         const float outerSize = std::min(bounds.w,bounds.h) * 0.70f;
@@ -110,8 +110,8 @@ protected:
     }
 
 public:
-    explicit RoundedFrameWidget(OmegaWTK::ViewPtr view):
-        OmegaWTK::Widget(std::move(view)){}
+    explicit RoundedFrameWidget(OmegaWTK::Core::Rect rect):
+        OmegaWTK::Widget(rect){}
 };
 
 class EllipseOnlyWidget final : public OmegaWTK::Widget {
@@ -121,7 +121,7 @@ class EllipseOnlyWidget final : public OmegaWTK::Widget {
     void ensureUIView(const OmegaWTK::Core::Rect & bounds){
         auto localBounds = localViewBounds(bounds);
         if(uiView == nullptr){
-            uiView = OmegaWTK::UIViewPtr(new OmegaWTK::UIView(localBounds,view,"ellipse_view"));
+            uiView = makeSubView<OmegaWTK::UIView>(localBounds,"ellipse_view");
         }
         else {
             uiView->resize(localBounds);
@@ -136,9 +136,9 @@ protected:
         ensureUIView(rect());
     }
 
-    void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
+    void onPaint(OmegaWTK::PaintReason reason) override {
         (void)reason;
-        auto & bounds = context.bounds();
+        auto bounds = localViewBounds(rect());
         ensureUIView(bounds);
         OmegaWTK::Core::Ellipse ellipse{
             bounds.w * 0.5f,
@@ -171,8 +171,8 @@ protected:
     }
 
 public:
-    explicit EllipseOnlyWidget(OmegaWTK::ViewPtr view):
-        OmegaWTK::Widget(std::move(view)){}
+    explicit EllipseOnlyWidget(OmegaWTK::Core::Rect rect):
+        OmegaWTK::Widget(rect){}
 };
 
 class PathOnlyWidget final : public OmegaWTK::Widget {
@@ -182,7 +182,7 @@ class PathOnlyWidget final : public OmegaWTK::Widget {
     void ensureUIView(const OmegaWTK::Core::Rect & bounds){
         auto localBounds = localViewBounds(bounds);
         if(uiView == nullptr){
-            uiView = OmegaWTK::UIViewPtr(new OmegaWTK::UIView(localBounds,view,"path_view"));
+            uiView = makeSubView<OmegaWTK::UIView>(localBounds,"path_view");
         }
         else {
             uiView->resize(localBounds);
@@ -197,9 +197,9 @@ protected:
         ensureUIView(rect());
     }
 
-    void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
+    void onPaint(OmegaWTK::PaintReason reason) override {
         (void)reason;
-        auto & bounds = context.bounds();
+        auto bounds = localViewBounds(rect());
         ensureUIView(bounds);
 
         const float x0 = bounds.w * 0.12f;
@@ -239,8 +239,8 @@ protected:
     }
 
 public:
-    explicit PathOnlyWidget(OmegaWTK::ViewPtr view):
-        OmegaWTK::Widget(std::move(view)){}
+    explicit PathOnlyWidget(OmegaWTK::Core::Rect rect):
+        OmegaWTK::Widget(rect){}
 };
 
 class GeometryHStack final : public OmegaWTK::HStack {
@@ -249,16 +249,16 @@ protected:
         (void)desc;
     }
 
-    void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
-        context.clear(OmegaWTK::Composition::Color::create8Bit(
+    void onPaint(OmegaWTK::PaintReason reason) override {
+        viewAs<OmegaWTK::CanvasView>().clear(OmegaWTK::Composition::Color::create8Bit(
             OmegaWTK::Composition::Color::White8));
-        OmegaWTK::HStack::onPaint(context,reason);
+        OmegaWTK::HStack::onPaint(reason);
     }
 
 public:
-    explicit GeometryHStack(OmegaWTK::ViewPtr view,
+    explicit GeometryHStack(OmegaWTK::Core::Rect rect,
                             const OmegaWTK::StackOptions & options):
-        OmegaWTK::HStack(std::move(view),options){}
+        OmegaWTK::HStack(rect,options){}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -283,17 +283,14 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
     options.crossAlign = OmegaWTK::StackCrossAlign::Center;
 
     auto stack = make<GeometryHStack>(
-        OmegaWTK::View::Create(windowRect),
+        windowRect,
         options);
 
     const OmegaWTK::Core::Rect childRect{{0,0},130,220};
 
-    auto pathWidget = make<PathOnlyWidget>(
-        OmegaWTK::View::Create(childRect));
-    auto roundedFrameWidget = make<RoundedFrameWidget>(
-        OmegaWTK::View::Create(childRect));
-    auto ellipseWidget = make<EllipseOnlyWidget>(
-        OmegaWTK::View::Create(childRect));
+    auto pathWidget = make<PathOnlyWidget>(childRect);
+    auto roundedFrameWidget = make<RoundedFrameWidget>(childRect);
+    auto ellipseWidget = make<EllipseOnlyWidget>(childRect);
 
     OmegaWTK::StackSlot slot {};
     slot.flexGrow = 0.0f;

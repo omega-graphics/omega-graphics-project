@@ -87,81 +87,8 @@ static inline void geometryTraceLog(const char * phase,
 
 }
 
-PaintContext::PaintContext(Widget *widget,SharedHandle<Composition::Canvas> mainCanvas,PaintReason reason):
-widget(widget),
-mainCanvas(mainCanvas),
-paintReason(reason),
-paintBounds(widget != nullptr ?
-            Core::Rect{
-                    Core::Position{0.f,0.f},
-                    widget->rect().w,
-                    widget->rect().h
-            } :
-            Core::Rect{{0.f,0.f},0.f,0.f}){
-
+Widget::Widget(Core::Rect rect):view(CanvasView::Create(rect)){
 }
-
-const Core::Rect & PaintContext::bounds() const{
-    return paintBounds;
-}
-
-PaintReason PaintContext::reason() const{
-    return paintReason;
-}
-
-Composition::Canvas & PaintContext::rootCanvas(){
-    return *mainCanvas.get();
-}
-
-SharedHandle<Composition::Canvas> PaintContext::makeCanvas(SharedHandle<Composition::Layer> &targetLayer){
-    return widget->view->makeCanvas(targetLayer);
-}
-
-void PaintContext::clear(const Composition::Color &color){
-    auto & background = rootCanvas().getCurrentFrame()->background;
-    background.r = color.r;
-    background.g = color.g;
-    background.b = color.b;
-    background.a = color.a;
-}
-
-void PaintContext::drawRect(const Core::Rect &rect,const SharedHandle<Composition::Brush> &brush){
-    auto _rect = rect;
-    auto _brush = brush;
-    rootCanvas().drawRect(_rect,_brush);
-}
-
-void PaintContext::drawRoundedRect(const Core::RoundedRect &rect,const SharedHandle<Composition::Brush> &brush){
-    auto _rect = rect;
-    auto _brush = brush;
-    rootCanvas().drawRoundedRect(_rect,_brush);
-}
-
-void PaintContext::drawImage(const SharedHandle<Media::BitmapImage> &img,const Core::Rect &rect){
-    auto _rect = rect;
-    auto _img = img;
-    rootCanvas().drawImage(_img,_rect);
-}
-
-void PaintContext::drawText(const UniString &text,
-                            const SharedHandle<Composition::Font> &font,
-                            const Core::Rect &rect,
-                            const Composition::Color &color,
-                            const Composition::TextLayoutDescriptor &layoutDesc){
-    auto _rect = rect;
-    auto _font = font;
-    rootCanvas().drawText(text,_font,_rect,color,layoutDesc);
-}
-
-void PaintContext::drawText(const UniString &text,
-                            const SharedHandle<Composition::Font> &font,
-                            const Core::Rect &rect,
-                            const Composition::Color &color){
-    auto _rect = rect;
-    auto _font = font;
-    rootCanvas().drawText(text,_font,_rect,color);
-}
-
 
 Widget::Widget(ViewPtr view):view(std::move(view)){
 };
@@ -169,14 +96,6 @@ Widget::Widget(ViewPtr view):view(std::move(view)){
 //Widget::Widget(Widget & widget):parent(std::move(widget.parent)),compositor(std::move(widget.compositor)),view(std::move(widget.view)){
 //    
 //};
-
-SharedHandle<Composition::Canvas> Widget::getRootPaintCanvas(){
-    if(rootPaintCanvas == nullptr){
-        auto rootLayer = view->getLayerTree()->getRootLayer();
-        rootPaintCanvas = view->makeCanvas(rootLayer);
-    }
-    return rootPaintCanvas;
-}
 
 void Widget::executePaint(PaintReason reason,bool immediate){
     if(mode != PaintMode::Automatic){
@@ -201,35 +120,21 @@ void Widget::executePaint(PaintReason reason,bool immediate){
         auto desiredLane = treeHost->laneId();
         if(view->proxy.getFrontendPtr() != desiredFrontend ||
            view->proxy.getSyncLaneId() != desiredLane){
-            view->setFrontendRecurse(desiredFrontend);
-            view->setSyncLaneRecurse(desiredLane);
-        }
-    }
-    else if(parent != nullptr && parent->view != nullptr){
-        auto inheritedFrontend = parent->view->proxy.getFrontendPtr();
-        auto inheritedLane = parent->view->proxy.getSyncLaneId();
-        if(inheritedFrontend != nullptr &&
-           (view->proxy.getFrontendPtr() != inheritedFrontend ||
-            view->proxy.getSyncLaneId() != inheritedLane)){
-            view->setFrontendRecurse(inheritedFrontend);
-            view->setSyncLaneRecurse(inheritedLane);
+            view->proxy.setFrontendPtr(desiredFrontend);
+            view->proxy.setSyncLaneId(desiredLane);
         }
     }
     PaintReason activeReason = reason;
     while(true){
-        auto canvas = getRootPaintCanvas();
-        PaintContext context(this,canvas,activeReason);
         view->startCompositionSession();
-        onPaint(context,activeReason);
+        onPaint(activeReason);
         int submissions = 1;
         if(activeReason == PaintReason::Initial &&
            !initialDrawComplete &&
            options.autoWarmupOnInitialPaint){
             submissions = std::max<int>(1,options.warmupFrameCount);
         }
-        for(int i = 0; i < submissions; i++){
-            canvas->sendFrame();
-        }
+        view->submitPaintFrame(submissions);
         view->endCompositionSession();
         if(activeReason == PaintReason::Initial){
             initialDrawComplete = true;

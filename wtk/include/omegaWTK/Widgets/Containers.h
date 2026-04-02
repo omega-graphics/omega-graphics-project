@@ -74,9 +74,10 @@ class OMEGAWTK_EXPORT StackWidget : public Container {
 protected:
     void layoutChildren() override;
     void onMount() override;
-    void onPaint(PaintContext & context,PaintReason reason) override;
+    void onPaint(PaintReason reason) override;
     void resize(Core::Rect & newRect) override;
 public:
+    StackWidget(StackAxis axis,Core::Rect rect,const StackOptions & options = {});
     StackWidget(StackAxis axis,ViewPtr view,const StackOptions & options = {});
 
     StackAxis getAxis() const;
@@ -97,11 +98,13 @@ public:
 
 class OMEGAWTK_EXPORT HStack : public StackWidget {
 public:
+    explicit HStack(Core::Rect rect,const StackOptions & options = {});
     explicit HStack(ViewPtr view,const StackOptions & options = {});
 };
 
 class OMEGAWTK_EXPORT VStack : public StackWidget {
 public:
+    explicit VStack(Core::Rect rect,const StackOptions & options = {});
     explicit VStack(ViewPtr view,const StackOptions & options = {});
 };
 

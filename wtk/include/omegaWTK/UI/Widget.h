@@ -19,7 +19,7 @@ class AppWindowManager;
 
 class View;
 OMEGACOMMON_SHARED_CLASS(View);
-typedef View CanvasView;
+class CanvasView;
 OMEGACOMMON_SHARED_CLASS(CanvasView);
 class ScrollView;
 OMEGACOMMON_SHARED_CLASS(ScrollView);
@@ -87,34 +87,6 @@ public:
     }
 };
 
-class OMEGAWTK_EXPORT PaintContext {
-    Widget *widget = nullptr;
-    SharedHandle<Composition::Canvas> mainCanvas;
-    PaintReason paintReason = PaintReason::StateChanged;
-    Core::Rect paintBounds {};
-    PaintContext(Widget *widget,SharedHandle<Composition::Canvas> mainCanvas,PaintReason reason);
-    friend class Widget;
-public:
-    const Core::Rect & bounds() const;
-    PaintReason reason() const;
-    Composition::Canvas & rootCanvas();
-    SharedHandle<Composition::Canvas> makeCanvas(SharedHandle<Composition::Layer> & targetLayer);
-    void clear(const Composition::Color & color);
-    void drawRect(const Core::Rect & rect,const SharedHandle<Composition::Brush> & brush);
-    void drawRoundedRect(const Core::RoundedRect & rect,const SharedHandle<Composition::Brush> & brush);
-    void drawImage(const SharedHandle<Media::BitmapImage> & img,const Core::Rect & rect);
-    void drawText(const UniString & text,
-                  const SharedHandle<Composition::Font> & font,
-                  const Core::Rect & rect,
-                  const Composition::Color & color,
-                  const Composition::TextLayoutDescriptor & layoutDesc);
-    void drawText(const UniString & text,
-                  const SharedHandle<Composition::Font> & font,
-                  const Core::Rect & rect,
-                  const Composition::Color & color);
-};
-
-
 /**
  @brief A singular moduler UI component. (Consists usually of one view)
  Can be attached to a WidgetTreeHost or another Widget as a child.
@@ -141,10 +113,7 @@ private:
     LayoutBehaviorPtr layoutBehavior_ = nullptr;
     bool hasExplicitLayoutStyle_ = false;
 
-    SharedHandle<Composition::Canvas> rootPaintCanvas;
-
     void onThemeSetRecurse(Native::ThemeDesc &desc);
-    SharedHandle<Composition::Canvas> getRootPaintCanvas();
     void executePaint(PaintReason reason,bool immediate);
     void handleHostResize(const Core::Rect & rect);
 
@@ -177,7 +146,7 @@ protected:
     void notifyObservers(WidgetEventType eventType,WidgetEventParams params);
 
     virtual void onMount(){};
-    virtual void onPaint(PaintContext & context,PaintReason reason){};
+    virtual void onPaint(PaintReason reason){};
     virtual Core::Rect clampChildRect(const Widget & child,const GeometryProposal & proposal) const;
     virtual void onChildRectCommitted(const Widget & child,
                                       const Core::Rect & oldRect,
@@ -196,7 +165,6 @@ private:
     friend class AppWindow;
     friend class AppWindowManager;
     friend class WidgetTreeHost;
-    friend class PaintContext;
     friend void runWidgetLayout(Widget & root, const LayoutContext & ctx);
 public:
     OMEGACOMMON_CLASS("OmegaWTK.Widget")
@@ -253,7 +221,25 @@ public:
     */
     void hide();
 protected:
+    explicit Widget(Core::Rect rect);
     explicit Widget(ViewPtr view);
+
+    /// Returns a typed reference to this widget's root view.
+    /// The caller is responsible for ensuring the actual View type matches T.
+    template<typename T>
+    T & viewAs() { return static_cast<T&>(*view); }
+
+    template<typename T>
+    const T & viewAs() const { return static_cast<const T&>(*view); }
+
+    /// Create a subview of type T, automatically wired to this widget's
+    /// root view as its parent. The first argument is the rect; the parent
+    /// ViewPtr is inserted as the second argument to T's constructor.
+    template<typename T, typename... Args>
+    SharedHandle<T> makeSubView(const Core::Rect & rect, Args&&... args) {
+        return SharedHandle<T>(new T(rect, view, std::forward<Args>(args)...));
+    }
+
     friend class Container;
 public:
     ~Widget() override;

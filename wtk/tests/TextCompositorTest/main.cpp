@@ -41,7 +41,7 @@ class TextCompositorWidget final : public OmegaWTK::Widget {
     void ensureAccentView(const OmegaWTK::Core::Rect & bounds){
         auto targetRect = accentRectForBounds(bounds);
         if(accentView == nullptr){
-            accentView = OmegaWTK::UIViewPtr(new OmegaWTK::UIView(targetRect,view,"text_accent_view"));
+            accentView = makeSubView<OmegaWTK::UIView>(targetRect,"text_accent_view");
         }
         else {
             accentView->resize(targetRect);
@@ -76,14 +76,17 @@ protected:
         ensureAccentView(newRect);
     }
 
-    void onPaint(OmegaWTK::PaintContext & context,OmegaWTK::PaintReason reason) override {
+    void onPaint(OmegaWTK::PaintReason reason) override {
         (void)reason;
         ensureFontLoaded();
 
-        context.clear(OmegaWTK::Composition::Color::create8Bit(
+        auto & cv = viewAs<OmegaWTK::CanvasView>();
+        auto & r = rect();
+
+        cv.clear(OmegaWTK::Composition::Color::create8Bit(
             OmegaWTK::Composition::Color::White8));
 
-        auto & bounds = context.bounds();
+        OmegaWTK::Core::Rect bounds{OmegaWTK::Core::Position{0.f,0.f},r.w,r.h};
         ensureAccentView(bounds);
 
         if(accentView != nullptr){
@@ -147,7 +150,7 @@ protected:
             OmegaWTK::Core::Position{24.0f,24.0f},
             bounds.w - 48.0f,
             54.0f};
-        context.drawText(
+        cv.drawText(
             OmegaWTK::UniString::fromUTF8("OmegaWTK Text Compositor"),
             font,
             titleRect,
@@ -164,7 +167,7 @@ protected:
             OmegaWTK::Composition::TextLayoutDescriptor::MiddleCenter,
             OmegaWTK::Composition::TextLayoutDescriptor::WrapByWord};
 
-        context.drawText(
+        cv.drawText(
             OmegaWTK::UniString::fromUTF8("Centered, wrapped text rendered through the compositor."),
             font,
             bodyRect,
@@ -174,8 +177,8 @@ protected:
     }
 
 public:
-    explicit TextCompositorWidget(OmegaWTK::ViewPtr view):
-        OmegaWTK::Widget(std::move(view)){}
+    explicit TextCompositorWidget(OmegaWTK::Core::Rect rect):
+        OmegaWTK::Widget(rect){}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -192,7 +195,7 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
         new MyWindowDelegate());
 
     auto widget = make<TextCompositorWidget>(
-        OmegaWTK::View::Create(OmegaWTK::Core::Rect{{0,0},500,500}));
+        OmegaWTK::Core::Rect{{0,0},500,500});
     window->setRootWidget(widget);
 
     auto & windowManager = app->windowManager;

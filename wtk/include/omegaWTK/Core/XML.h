@@ -7,7 +7,7 @@ namespace OmegaWTK {
     namespace Core {
 
         class XMLDocument {
-            void *data;
+            void *data = nullptr;
         public:
             class Tag {
                 void *data;
@@ -21,6 +21,13 @@ namespace OmegaWTK {
                 OmegaCommon::StrRef attribute(const OmegaCommon::StrRef & name);
                 OmegaCommon::Vector<Tag> children();
             };
+
+            XMLDocument() = default;
+            XMLDocument(XMLDocument && other) noexcept : data(other.data) { other.data = nullptr; }
+            XMLDocument & operator=(XMLDocument && other) noexcept;
+            XMLDocument(const XMLDocument &) = delete;
+            XMLDocument & operator=(const XMLDocument &) = delete;
+
             Tag root();
             OmegaCommon::String serialize();
 

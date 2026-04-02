@@ -289,6 +289,8 @@ namespace OmegaWTK {
         SharedHandle<CanvasFrame> getCurrentFrame();
         /// @brief Retrives current Frame drawn and resets Canvas state.
         SharedHandle<CanvasFrame> nextFrame();
+
+        ~Canvas();
     };
 
 

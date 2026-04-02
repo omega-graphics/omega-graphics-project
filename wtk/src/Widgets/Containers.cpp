@@ -125,6 +125,13 @@ struct LayoutItem {
 
 }
 
+StackWidget::StackWidget(StackAxis axis,Core::Rect rect,const StackOptions & options):
+Container(rect),
+axis(axis),
+stackOptions(options){
+
+}
+
 StackWidget::StackWidget(StackAxis axis,ViewPtr view,const StackOptions & options):
 Container(std::move(view)),
 axis(axis),
@@ -136,8 +143,8 @@ void StackWidget::onMount(){
     relayout();
 }
 
-void StackWidget::onPaint(PaintContext & context,PaintReason reason){
-    Container::onPaint(context,reason);
+void StackWidget::onPaint(PaintReason reason){
+    Container::onPaint(reason);
     if(needsLayout){
         layoutChildren();
     }
@@ -593,8 +600,18 @@ StackWidget::~StackWidget(){
     childSizeCache.clear();
 }
 
+HStack::HStack(Core::Rect rect,const StackOptions & options):
+StackWidget(StackAxis::Horizontal,rect,options){
+
+}
+
 HStack::HStack(ViewPtr view,const StackOptions & options):
 StackWidget(StackAxis::Horizontal,std::move(view),options){
+
+}
+
+VStack::VStack(Core::Rect rect,const StackOptions & options):
+StackWidget(StackAxis::Vertical,rect,options){
 
 }
 
