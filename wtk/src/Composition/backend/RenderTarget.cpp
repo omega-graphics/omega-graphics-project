@@ -780,8 +780,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             case VisualCommand::Rect : {
                 auto & _params = ((VisualCommandParams*)params)->rectParams;
                 if (_params.brush == nullptr) return;
-                OmegaGTE::GRect r{OmegaGTE::GPoint2D {0,0},_params.rect.w,_params.rect.h};
-                auto te_params = OmegaGTE::TETriangulationParams::Rect(r);
+                auto te_params = OmegaGTE::TETriangulationParams::Rect(_params.rect);
 
                 useTextureRenderPipeline = !_params.brush->isColor;
                 textureCoordDenomW = std::max(1.f,_params.rect.w);
@@ -795,17 +794,12 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 }
 
                 result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
-                result.translate(_params.rect.pos.x,
-                                 -_params.rect.pos.y,
-                                 0,
-                                 viewPort);
 
                 break;
             }
             case VisualCommand::Bitmap : {
                 auto & _params = ((VisualCommandParams*)params)->bitmapParams;
-                OmegaGTE::GRect r{OmegaGTE::GPoint2D {0,0},_params.rect.w,_params.rect.h};
-                auto te_params = OmegaGTE::TETriangulationParams::Rect(r);
+                auto te_params = OmegaGTE::TETriangulationParams::Rect(_params.rect);
 
                 useTextureRenderPipeline = true;
                 textureCoordDenomW = std::max(1.f,_params.rect.w);
@@ -824,28 +818,16 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     texturePaint->copyBytes((void *)_params.img->data,_params.img->header.stride);
                 }
 
-                te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeTexture2D(r.w,r.h));
+                te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeTexture2D(_params.rect.w,_params.rect.h));
 
                 result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
-                result.translate(_params.rect.pos.x,
-                                 -_params.rect.pos.y,
-                                 0,
-                                 viewPort);
 
                 break;
             }
             case VisualCommand::RoundedRect : {
                 auto & _params = ((VisualCommandParams*)params)->roundedRectParams;
                 if (_params.brush == nullptr) return;
-                // Tessellate in local space, then apply one translation by rect origin.
-                OmegaGTE::GRoundedRect localRect{
-                        OmegaGTE::GPoint2D{0.f,0.f},
-                        _params.rect.w,
-                        _params.rect.h,
-                        _params.rect.rad_x,
-                        _params.rect.rad_y
-                };
-                auto te_params = OmegaGTE::TETriangulationParams::RoundedRect(localRect);
+                auto te_params = OmegaGTE::TETriangulationParams::RoundedRect(_params.rect);
 
                 useTextureRenderPipeline = !_params.brush->isColor;
                 textureCoordDenomW = std::max(1.f,_params.rect.w);
@@ -859,10 +841,6 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(color));
                 }
                 result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
-                result.translate(_params.rect.pos.x,
-                                 -_params.rect.pos.y,
-                                 0,
-                                 viewPort);
 
                 break;
             }

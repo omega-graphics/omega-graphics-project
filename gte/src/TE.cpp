@@ -275,6 +275,8 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
         }
         case TETriangulationParams::TRIANGULATE_ROUNDEDRECT : {
             auto & object = params.params->rounded_rect;
+            const float ox = object.pos.x;
+            const float oy = object.pos.y;
             const float rad_x = std::fmax(0.0f,std::fmin(object.rad_x,object.w * 0.5f));
             const float rad_y = std::fmax(0.0f,std::fmin(object.rad_y,object.h * 0.5f));
             std::optional<TETriangulationResult::AttachmentData> colorAttachment;
@@ -286,7 +288,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 }
             }
 
-            GRect middle_rect {rad_x,rad_y,object.w - (2 * rad_x),object.h - (2 * rad_y)};
+            GRect middle_rect {GPoint2D{ox + rad_x, oy + rad_y},object.w - (2 * rad_x),object.h - (2 * rad_y)};
 
             auto middle_rect_params = TETriangulationParams::Rect(middle_rect);
             if(colorAttachment){
@@ -347,10 +349,10 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             };
 
             /// Bottom Left Arc
-            tessellateArc(GPoint2D {rad_x, rad_y}, rad_x, rad_y, float(3.f * PI) / 2.f, PI, -arcStep);
+            tessellateArc(GPoint2D {ox + rad_x, oy + rad_y}, rad_x, rad_y, float(3.f * PI) / 2.f, PI, -arcStep);
 
             /// Left Rect
-            middle_rect = GRect {GPoint2D{0.f,rad_y},rad_x,object.h - (2 * rad_y)};
+            middle_rect = GRect {GPoint2D{ox, oy + rad_y},rad_x,object.h - (2 * rad_y)};
             middle_rect_params = TETriangulationParams::Rect(middle_rect);
             if(colorAttachment){
                 middle_rect_params.addAttachment(
@@ -359,10 +361,10 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
 
             _triangulatePriv(middle_rect_params,frontFaceRotation,viewport,result);
             /// Top Left Arc
-            tessellateArc(GPoint2D {rad_x, object.h - rad_y}, rad_x, rad_y, PI, float(PI) / 2.f, -arcStep);
+            tessellateArc(GPoint2D {ox + rad_x, oy + object.h - rad_y}, rad_x, rad_y, PI, float(PI) / 2.f, -arcStep);
 
             /// Top Rect
-            middle_rect = GRect {GPoint2D{rad_x,object.h - rad_y},object.w - (rad_x * 2),rad_y};
+            middle_rect = GRect {GPoint2D{ox + rad_x, oy + object.h - rad_y},object.w - (rad_x * 2),rad_y};
             middle_rect_params = TETriangulationParams::Rect(middle_rect);
             if(colorAttachment){
                 middle_rect_params.addAttachment(
@@ -371,10 +373,10 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
 
             _triangulatePriv(middle_rect_params,frontFaceRotation,viewport,result);
             /// Top Right Arc
-            tessellateArc(GPoint2D {object.w - rad_x, object.h - rad_y}, rad_x, rad_y, float(PI) / 2.f, 0, -arcStep);
+            tessellateArc(GPoint2D {ox + object.w - rad_x, oy + object.h - rad_y}, rad_x, rad_y, float(PI) / 2.f, 0, -arcStep);
 
             /// Right Rect
-            middle_rect = GRect {GPoint2D{object.w - rad_x,rad_y},rad_x,object.h - (2 * rad_y)};
+            middle_rect = GRect {GPoint2D{ox + object.w - rad_x, oy + rad_y},rad_x,object.h - (2 * rad_y)};
             middle_rect_params = TETriangulationParams::Rect(middle_rect);
             if(colorAttachment){
                 middle_rect_params.addAttachment(
@@ -384,10 +386,10 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             _triangulatePriv(middle_rect_params,frontFaceRotation,viewport,result);
 
             /// Bottom Right Arc
-            tessellateArc(GPoint2D {object.w - rad_x, rad_y}, rad_x, rad_y, 0, -float(PI) / 2.f, -arcStep);
+            tessellateArc(GPoint2D {ox + object.w - rad_x, oy + rad_y}, rad_x, rad_y, 0, -float(PI) / 2.f, -arcStep);
 
             /// Bottom Rect
-            middle_rect = GRect {GPoint2D{rad_x,0.f},object.w - (rad_x * 2),rad_y};
+            middle_rect = GRect {GPoint2D{ox + rad_x, oy},object.w - (rad_x * 2),rad_y};
             middle_rect_params = TETriangulationParams::Rect(middle_rect);
             if(colorAttachment){
                 middle_rect_params.addAttachment(
@@ -566,11 +568,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             const float strokeWidth = params.graphicsPath2DStrokeWidth > 0.f ? params.graphicsPath2DStrokeWidth : 1.f;
             auto toDevicePoint = [&](const GPoint2D &point){
                 float x,y;
-                // Path points are provided in canvas pixel-space (top-left origin),
-                // so shift by half viewport like other 2D primitives before NDC conversion.
-                const float px = point.x - (viewport->width * 0.5f);
-                const float py = (viewport->height * 0.5f) - point.y;
-                translateCoords(px,py,0.f,viewport,&x,&y,nullptr);
+                translateCoords(point.x,point.y,0.f,viewport,&x,&y,nullptr);
                 return GPoint3D{x,y,0.f};
             };
 
