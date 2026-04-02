@@ -22,10 +22,11 @@ namespace OmegaWTK::Composition {
 
         /// Creates a BackendVisualTree for the given ViewRenderTarget,
         /// with a root visual sized to `rect`.
-        /// All underlying GPU resources (CAMetalLayer, GENativeRenderTarget,
-        /// offscreen textures) are created on the main thread.
+        /// The root visual's native present surface is stored in outPresentTarget.
+        /// All underlying GPU resources are created on the main thread.
         VisualTreeBundle createVisualTreeForView(SharedHandle<ViewRenderTarget> & renderTarget,
-                                                  Core::Rect & rect);
+                                                  Core::Rect & rect,
+                                                  ViewPresentTarget & outPresentTarget);
 
         /// Creates an offscreen texture + texture render target pair
         /// on the main thread.
@@ -36,24 +37,25 @@ namespace OmegaWTK::Composition {
         TextureTargetBundle createTextureTarget(unsigned width, unsigned height,
                                                  OmegaGTE::TexturePixelFormat format);
 
-        /// Creates a child visual within an existing visual tree
-        /// on the main thread. Used for element layers within a View.
+        /// Creates a texture-only child visual within an existing visual tree
+        /// on the main thread. No native present surface.
         Core::SharedPtr<BackendVisualTree::Visual> createChildVisual(
                 BackendVisualTree & tree,
                 Core::Rect & rect);
 
-        /// Creates a root visual within an existing visual tree
-        /// on the main thread. Used as a fallback when the compositor
-        /// thread encounters a tree that has no root visual yet.
+        /// Creates a root visual with a native present surface within
+        /// an existing visual tree on the main thread.
         Core::SharedPtr<BackendVisualTree::Visual> createRootVisual(
                 BackendVisualTree & tree,
-                Core::Rect & rect);
+                Core::Rect & rect,
+                ViewPresentTarget & outPresentTarget);
     };
 
     /// Holds pre-created visual tree resources for a View.
     /// Populated during View construction on the main thread.
     struct PreCreatedVisualTreeData {
         BackendResourceFactory::VisualTreeBundle bundle;
+        ViewPresentTarget presentTarget;
     };
 
     /// Thread-safe registry mapping render targets to their pre-created

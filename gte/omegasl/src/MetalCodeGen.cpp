@@ -244,8 +244,9 @@ using namespace metal;
                     else if(func_name == BUILTIN_WRITE){
                         generated = true;
                         generateExpr(_expr->args[0]);
-                        shaderOut << ".write";
-                        shaderOut << "(";
+                        shaderOut << ".write(";
+                        generateExpr(_expr->args[2]);
+                        shaderOut << ",";
                         generateExpr(_expr->args[1]);
                         shaderOut << ")";
                     }

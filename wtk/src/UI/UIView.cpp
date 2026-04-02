@@ -1212,77 +1212,47 @@ bool UIViewLayoutV2::hasElement(UIElementTag tag) const{
     }) != elements_.end();
 }
 
-UIRenderer::UIRenderer(UIView *view):
-view(view){
-
-}
-
-UIRenderer::RenderTargetBundle & UIRenderer::buildLayerRenderTarget(UIElementTag tag){
-    auto entry = renderTargetStore.find(tag);
-    if(entry != renderTargetStore.end()){
-        if(entry->second.layer != nullptr){
-            auto localRect = localBoundsFromView(view);
-            auto currentRect = entry->second.layer->getLayerRect();
-            if(currentRect.pos.x != localRect.pos.x ||
-               currentRect.pos.y != localRect.pos.y ||
-               currentRect.w != localRect.w ||
-               currentRect.h != localRect.h){
-                entry->second.layer->resize(localRect);
-            }
-        }
-        return entry->second;
-    }
-
-    auto layerRect = localBoundsFromView(view);
-    auto layer = view->makeLayer(layerRect);
-    auto canvas = view->makeCanvas(layer);
-    renderTargetStore[tag] = {layer,canvas};
-    return renderTargetStore[tag];
-}
-
-void UIRenderer::handleElement(UIElementTag tag){
-    auto & target = buildLayerRenderTarget(tag);
-    if(target.canvas != nullptr){
-        target.canvas->sendFrame();
-    }
-}
-
-void UIRenderer::handleTransition(UIElementTag tag,ElementAnimationKey k,float duration){
-    (void)tag;
-    (void)k;
-    (void)duration;
-}
-
-void UIRenderer::handleAnimation(UIElementTag tag,
-                                 ElementAnimationKey k,
-                                 float duration,
-                                 SharedHandle<Composition::AnimationCurve> &curve){
-    (void)tag;
-    (void)k;
-    (void)duration;
-    (void)curve;
-}
-
 UIView::UIView(const Core::Rect &rect,ViewPtr parent,UIViewTag tag):
-CanvasView(rect,parent),
-UIRenderer(this),
+View(rect,parent),
 tag(tag){
     rootCanvas = makeCanvas(getLayerTree()->getRootLayer());
-    // UIView is a pure View (not a Widget), so ensure it is visible when attached.
     enable();
 }
 
 UIViewLayout & UIView::layout(){
     layoutDirty = true;
-    markRootDirty();
     firstFrameCoherentSubmit = true;
     return currentLayout;
 }
 
 void UIView::setLayout(const UIViewLayout &layout){
     currentLayout = layout;
+    convertLegacyLayoutToV2();
+}
+
+void UIView::convertLegacyLayoutToV2(){
+    UIViewLayoutV2 v2 {};
+    for(const auto & element : currentLayout.elements()){
+        UIElementLayoutSpec spec {};
+        spec.tag = element.tag;
+        spec.style.width = LayoutLength::Auto();
+        spec.style.height = LayoutLength::Auto();
+        if(element.shape){
+            spec.shape = element.shape;
+        }
+        if(element.str){
+            spec.text = element.str;
+        }
+        if(element.textRect){
+            spec.textRect = element.textRect;
+        }
+        if(element.textStyleTag){
+            spec.textStyleTag = element.textStyleTag;
+        }
+        v2.element(spec);
+    }
+    currentLayoutV2_ = std::move(v2);
     layoutDirty = true;
-    markRootDirty();
     markAllElementsDirty();
     firstFrameCoherentSubmit = true;
 }
@@ -1296,11 +1266,6 @@ void UIView::setStyleSheet(const StyleSheetPtr &style){
     styleDirtyGlobal = previousScope.touchesAllElements || nextScope.touchesAllElements;
     styleChangeRequiresCoherentFrame = styleDirtyGlobal;
 
-    if(previousScope.touchesRoot || nextScope.touchesRoot){
-        rootStyleDirty = true;
-        rootContentDirty = true;
-    }
-
     if(styleDirtyGlobal){
         markAllElementsDirty();
         firstFrameCoherentSubmit = true;
@@ -1311,17 +1276,13 @@ void UIView::setStyleSheet(const StyleSheetPtr &style){
     for(const auto & nextTag : nextScope.elementTags){
         addUniqueTag(affectedTags,nextTag);
     }
-    // Text style selectors may target a shared style tag instead of the concrete element tag.
     OmegaCommon::Vector<UIElementTag> expandedTags = affectedTags;
-    for(const auto & element : currentLayout.elements()){
-        if(element.type != UIViewLayout::Element::Type::Text){
+    for(const auto & spec : currentLayoutV2_.elements()){
+        if(!spec.text || !spec.textStyleTag){
             continue;
         }
-        if(!element.textStyleTag){
-            continue;
-        }
-        if(containsTag(affectedTags,*element.textStyleTag)){
-            addUniqueTag(expandedTags,element.tag);
+        if(containsTag(affectedTags,*spec.textStyleTag)){
+            addUniqueTag(expandedTags,spec.tag);
         }
     }
     for(const auto & affectedTag : expandedTags){
@@ -1343,7 +1304,6 @@ const UIView::AnimationDiagnostics & UIView::getLastAnimationDiagnostics() const
 
 UIViewLayoutV2 & UIView::layoutV2(){
     layoutDirty = true;
-    markRootDirty();
     firstFrameCoherentSubmit = true;
     return currentLayoutV2_;
 }
@@ -1351,23 +1311,8 @@ UIViewLayoutV2 & UIView::layoutV2(){
 void UIView::setLayoutV2(const UIViewLayoutV2 & layout){
     currentLayoutV2_ = layout;
     layoutDirty = true;
-    markRootDirty();
     markAllElementsDirty();
     firstFrameCoherentSubmit = true;
-}
-
-bool UIView::useLayoutV2() const{
-    return useLayoutV2_;
-}
-
-void UIView::setUseLayoutV2(bool use){
-    if(useLayoutV2_ != use){
-        useLayoutV2_ = use;
-        layoutDirty = true;
-        markRootDirty();
-        markAllElementsDirty();
-        firstFrameCoherentSubmit = true;
-    }
 }
 
 void UIView::setDiagnosticSink(LayoutDiagnosticSink * sink){
@@ -1404,13 +1349,6 @@ void UIView::applyLayoutDelta(const UIElementTag & elementTag,
         curve = Composition::AnimationCurve::Linear();
     }
     layerAnimator->resizeTransition(dx,dy,dw,dh,durationMs,curve);
-}
-
-void UIView::markRootDirty(){
-    rootLayoutDirty = true;
-    rootStyleDirty = true;
-    rootContentDirty = true;
-    rootOrderDirty = true;
 }
 
 void UIView::markAllElementsDirty(){
@@ -1483,14 +1421,8 @@ SharedHandle<Composition::LayerAnimator> UIView::ensureAnimationLayerAnimator(co
     }
 
     SharedHandle<Composition::Layer> layer = nullptr;
-    if(tag == kUIViewRootEffectTag){
-        if(getLayerTree() != nullptr){
-            layer = getLayerTree()->getRootLayer();
-        }
-    }
-    else {
-        auto & target = buildLayerRenderTarget(tag);
-        layer = target.layer;
+    if(getLayerTree() != nullptr){
+        layer = getLayerTree()->getRootLayer();
     }
     if(layer == nullptr){
         return nullptr;
@@ -1546,38 +1478,6 @@ Composition::AnimationHandle UIView::beginCompositionClock(const UIElementTag & 
     return layerAnimator->animate(clip,timing);
 }
 
-void UIView::syncElementDirtyState(const OmegaCommon::Vector<UIViewLayout::Element> &elements,
-                                   bool layoutChanged,
-                                   bool styleChanged,
-                                   bool orderChanged){
-    OmegaCommon::Vector<UIElementTag> activeTags {};
-    activeTags.reserve(elements.size());
-    for(const auto & element : elements){
-        activeTags.push_back(element.tag);
-        auto it = elementDirtyState.find(element.tag);
-        const bool isNewTag = (it == elementDirtyState.end());
-        if(isNewTag){
-            elementDirtyState[element.tag] = ElementDirtyState{};
-        }
-
-        markElementDirty(
-                element.tag,
-                layoutChanged || isNewTag,
-                styleChanged || isNewTag,
-                layoutChanged || isNewTag,
-                orderChanged || isNewTag,
-                layoutChanged || styleChanged || isNewTag);
-    }
-
-    for(auto & entry : elementDirtyState){
-        if(!containsTag(activeTags,entry.first)){
-            entry.second.visibilityDirty = true;
-        }
-    }
-
-    activeTagOrder = std::move(activeTags);
-}
-
 void UIView::startOrUpdateAnimation(const UIElementTag &tag,
                                     int key,
                                     float from,
@@ -1624,13 +1524,10 @@ void UIView::startOrUpdateAnimation(const UIElementTag &tag,
     }
     state.compositionHandle = beginCompositionClock(tag,state.durationSec,state.curve);
     state.compositionClock = state.compositionHandle.valid();
-    if(tag == kUIViewRootEffectTag){
-        rootStyleDirty = true;
-        rootContentDirty = true;
-    }
-    else {
+    if(tag != kUIViewRootEffectTag){
         markElementDirty(tag,false,false,true,false,false);
     }
+    styleDirty = true;
 }
 
 bool UIView::advanceAnimations(){
@@ -1746,13 +1643,10 @@ bool UIView::advanceAnimations(){
 
             if(std::fabs(nextValue - state.value) > 0.0001f){
                 state.value = nextValue;
-                if(tagEntry.first == kUIViewRootEffectTag){
-                    rootStyleDirty = true;
-                    rootContentDirty = true;
-                }
-                else {
+                if(tagEntry.first != kUIViewRootEffectTag){
                     markElementDirty(tagEntry.first,false,false,true,false,false);
                 }
+                styleDirty = true;
                 changed = true;
             }
 
@@ -1763,13 +1657,10 @@ bool UIView::advanceAnimations(){
                 state.lastProgress = 1.f;
                 state.compositionHandle = {};
                 completedTrackCountThisTick += 1;
-                if(tagEntry.first == kUIViewRootEffectTag){
-                    rootStyleDirty = true;
-                    rootContentDirty = true;
-                }
-                else {
+                if(tagEntry.first != kUIViewRootEffectTag){
                     markElementDirty(tagEntry.first,false,false,true,false,false);
                 }
+                styleDirty = true;
                 changed = true;
                 removeKeys.push_back(propertyEntry.first);
             }
@@ -1934,548 +1825,6 @@ Shape UIView::applyAnimatedShape(const UIElementTag &tag,const Shape &inputShape
     return output;
 }
 
-void UIView::prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::Element> &elements,
-                                      bool layoutChanged,
-                                      bool styleChanged){
-    OmegaCommon::Map<UIElementTag,Shape> currentShapes {};
-    OmegaCommon::Map<UIElementTag,Composition::Color> targetColors {};
-    OmegaCommon::Map<UIElementTag,UIElementTag> textStyleSelectorByElement {};
-
-    for(const auto & element : elements){
-        if(element.type == UIViewLayout::Element::Type::Shape && element.shape){
-            currentShapes[element.tag] = *element.shape;
-            auto brush = resolveElementBrush(currentStyle,tag,element.tag);
-            auto color = colorFromBrush(brush);
-            if(color){
-                targetColors[element.tag] = *color;
-            }
-        }
-        else if(element.type == UIViewLayout::Element::Type::Text && element.str){
-            UIElementTag styleTag = element.textStyleTag.value_or(element.tag);
-            textStyleSelectorByElement[element.tag] = styleTag;
-            auto textStyle = resolveTextStyle(currentStyle,tag,styleTag);
-            targetColors[element.tag] = textStyle.color;
-        }
-    }
-
-    if(currentStyle != nullptr && (layoutChanged || styleChanged)){
-        const auto defaultCurve = Composition::AnimationCurve::Linear();
-        const auto now = std::chrono::steady_clock::now();
-        for(const auto & entry : currentStyle->entries){
-            if(!entry.viewTag.empty() && !matchesTag(entry.viewTag,tag)){
-                continue;
-            }
-
-            auto applyColorAnimation = [&](const UIElementTag & elementTag,
-                                           ElementAnimationKey animationKey,
-                                           float to,
-                                           float durationSec,
-                                           const SharedHandle<Composition::AnimationCurve> & curve){
-                auto fromColorIt = lastResolvedElementColor.find(elementTag);
-                auto targetColorIt = targetColors.find(elementTag);
-                const float from = [&]() -> float {
-                    if(fromColorIt != lastResolvedElementColor.end()){
-                        switch(animationKey){
-                            case ElementAnimationKeyColorRed: return fromColorIt->second.r;
-                            case ElementAnimationKeyColorGreen: return fromColorIt->second.g;
-                            case ElementAnimationKeyColorBlue: return fromColorIt->second.b;
-                            case ElementAnimationKeyColorAlpha: return fromColorIt->second.a;
-                            default: return to;
-                        }
-                    }
-                    if(targetColorIt != targetColors.end()){
-                        switch(animationKey){
-                            case ElementAnimationKeyColorRed: return targetColorIt->second.r;
-                            case ElementAnimationKeyColorGreen: return targetColorIt->second.g;
-                            case ElementAnimationKeyColorBlue: return targetColorIt->second.b;
-                            case ElementAnimationKeyColorAlpha: return targetColorIt->second.a;
-                            default: return to;
-                        }
-                    }
-                    return to;
-                }();
-                startOrUpdateAnimation(elementTag,
-                                       animationKey,
-                                       from,
-                                       to,
-                                       durationSec,
-                                       curve != nullptr ? curve : defaultCurve);
-            };
-
-            auto applyDimensionAnimation = [&](const UIElementTag & elementTag,
-                                               ElementAnimationKey animationKey,
-                                               float durationSec,
-                                               const SharedHandle<Composition::AnimationCurve> & curve){
-                auto currentShapeIt = currentShapes.find(elementTag);
-                auto prevShapeIt = previousShapeByTag.find(elementTag);
-                if(currentShapeIt == currentShapes.end() || prevShapeIt == previousShapeByTag.end()){
-                    return;
-                }
-                auto toValue = shapeDimension(currentShapeIt->second,animationKey);
-                auto fromValue = shapeDimension(prevShapeIt->second,animationKey);
-                if(!toValue || !fromValue){
-                    return;
-                }
-                startOrUpdateAnimation(elementTag,
-                                       animationKey,
-                                       *fromValue,
-                                       *toValue,
-                                       durationSec,
-                                       curve != nullptr ? curve : defaultCurve);
-            };
-
-            auto applyPathNodeAnimation = [&](const UIElementTag & elementTag,
-                                              int nodeIndex,
-                                              float durationSec,
-                                              const SharedHandle<Composition::AnimationCurve> & curve){
-                auto currentShapeIt = currentShapes.find(elementTag);
-                auto prevShapeIt = previousShapeByTag.find(elementTag);
-                if(currentShapeIt == currentShapes.end() || prevShapeIt == previousShapeByTag.end()){
-                    return;
-                }
-                if(currentShapeIt->second.type != Shape::Type::Path ||
-                   prevShapeIt->second.type != Shape::Type::Path ||
-                   !currentShapeIt->second.path ||
-                   !prevShapeIt->second.path){
-                    return;
-                }
-
-                auto currentPoints = pathToPoints(*currentShapeIt->second.path);
-                auto previousPoints = pathToPoints(*prevShapeIt->second.path);
-                const auto maxIndex = std::min(currentPoints.size(),previousPoints.size());
-                if(maxIndex == 0){
-                    return;
-                }
-
-                const auto idx = static_cast<std::size_t>(nodeIndex);
-                if(nodeIndex < 0 || idx >= maxIndex){
-                    return;
-                }
-
-                auto & nodeAnimations = pathNodeAnimations[elementTag];
-                auto existingNodeIt = std::find_if(nodeAnimations.begin(),
-                                                   nodeAnimations.end(),
-                                                   [&](const PathNodeAnimationState & state){
-                                                       return state.nodeIndex == nodeIndex;
-                                                   });
-                if(existingNodeIt == nodeAnimations.end()){
-                    nodeAnimations.push_back(PathNodeAnimationState{});
-                    existingNodeIt = std::prev(nodeAnimations.end());
-                    existingNodeIt->nodeIndex = nodeIndex;
-                }
-
-                auto startPathAnimationProperty =
-                        [&](PropertyAnimationState & propertyState,float from,float to){
-                    if(!std::isfinite(from) || !std::isfinite(to)){
-                        if(propertyState.compositionHandle.valid()){
-                            propertyState.compositionHandle.cancel();
-                        }
-                        propertyState.compositionClock = false;
-                        propertyState.active = false;
-                        propertyState.value = to;
-                        propertyState.lastProgress = 1.f;
-                        return;
-                    }
-                    if(durationSec <= 0.f || std::fabs(to - from) <= 0.0001f){
-                        if(propertyState.compositionHandle.valid()){
-                            propertyState.compositionHandle.cancel();
-                        }
-                        propertyState.compositionClock = false;
-                        propertyState.active = false;
-                        propertyState.value = to;
-                        propertyState.lastProgress = 1.f;
-                        return;
-                    }
-                    if(propertyState.active && std::fabs(propertyState.to - to) <= 0.0001f){
-                        return;
-                    }
-                    const float startValue = propertyState.active ? propertyState.value : from;
-                    propertyState.active = true;
-                    propertyState.from = startValue;
-                    propertyState.to = to;
-                    propertyState.value = propertyState.from;
-                    propertyState.lastProgress = 0.f;
-                    propertyState.durationSec = std::max(0.001f,durationSec);
-                    propertyState.startTime = now;
-                    propertyState.curve = curve != nullptr ? curve : defaultCurve;
-                    if(propertyState.compositionHandle.valid()){
-                        propertyState.compositionHandle.cancel();
-                    }
-                    propertyState.compositionHandle = beginCompositionClock(
-                            elementTag,
-                            propertyState.durationSec,
-                            propertyState.curve);
-                    propertyState.compositionClock = propertyState.compositionHandle.valid();
-                    markElementDirty(elementTag,false,false,true,false,false);
-                };
-
-                startPathAnimationProperty(existingNodeIt->x,
-                                           previousPoints[idx].x,
-                                           currentPoints[idx].x);
-                startPathAnimationProperty(existingNodeIt->y,
-                                           previousPoints[idx].y,
-                                           currentPoints[idx].y);
-            };
-
-            if(entry.kind == StyleSheet::Entry::Kind::ElementBrush){
-                if(!entry.transition || entry.duration <= 0.f){
-                    continue;
-                }
-                for(const auto & colorEntry : targetColors){
-                    if(!entry.elementTag.empty() && !matchesTag(entry.elementTag,colorEntry.first)){
-                        continue;
-                    }
-                    auto previousColorIt = lastResolvedElementColor.find(colorEntry.first);
-                    if(previousColorIt == lastResolvedElementColor.end() ||
-                       colorsClose(previousColorIt->second,colorEntry.second)){
-                        continue;
-                    }
-
-                    startOrUpdateAnimation(
-                            colorEntry.first,
-                            ElementAnimationKeyColorRed,
-                            previousColorIt->second.r,
-                            colorEntry.second.r,
-                            entry.duration,
-                            entry.curve != nullptr ? entry.curve : defaultCurve);
-                    startOrUpdateAnimation(
-                            colorEntry.first,
-                            ElementAnimationKeyColorGreen,
-                            previousColorIt->second.g,
-                            colorEntry.second.g,
-                            entry.duration,
-                            entry.curve != nullptr ? entry.curve : defaultCurve);
-                    startOrUpdateAnimation(
-                            colorEntry.first,
-                            ElementAnimationKeyColorBlue,
-                            previousColorIt->second.b,
-                            colorEntry.second.b,
-                            entry.duration,
-                            entry.curve != nullptr ? entry.curve : defaultCurve);
-                    startOrUpdateAnimation(
-                            colorEntry.first,
-                            ElementAnimationKeyColorAlpha,
-                            previousColorIt->second.a,
-                            colorEntry.second.a,
-                            entry.duration,
-                            entry.curve != nullptr ? entry.curve : defaultCurve);
-                }
-                continue;
-            }
-
-            if(entry.kind == StyleSheet::Entry::Kind::TextColor){
-                if(!entry.transition || entry.duration <= 0.f){
-                    continue;
-                }
-                for(const auto & styleSelectorEntry : textStyleSelectorByElement){
-                    const auto & elementTag = styleSelectorEntry.first;
-                    const auto & styleSelectorTag = styleSelectorEntry.second;
-                    if(!entry.elementTag.empty() &&
-                       !matchesTag(entry.elementTag,styleSelectorTag) &&
-                       !matchesTag(entry.elementTag,elementTag)){
-                        continue;
-                    }
-                    auto targetColorIt = targetColors.find(elementTag);
-                    auto previousColorIt = lastResolvedElementColor.find(elementTag);
-                    if(targetColorIt == targetColors.end() ||
-                       previousColorIt == lastResolvedElementColor.end() ||
-                       colorsClose(previousColorIt->second,targetColorIt->second)){
-                        continue;
-                    }
-
-                    startOrUpdateAnimation(
-                            elementTag,
-                            ElementAnimationKeyColorRed,
-                            previousColorIt->second.r,
-                            targetColorIt->second.r,
-                            entry.duration,
-                            entry.curve != nullptr ? entry.curve : defaultCurve);
-                    startOrUpdateAnimation(
-                            elementTag,
-                            ElementAnimationKeyColorGreen,
-                            previousColorIt->second.g,
-                            targetColorIt->second.g,
-                            entry.duration,
-                            entry.curve != nullptr ? entry.curve : defaultCurve);
-                    startOrUpdateAnimation(
-                            elementTag,
-                            ElementAnimationKeyColorBlue,
-                            previousColorIt->second.b,
-                            targetColorIt->second.b,
-                            entry.duration,
-                            entry.curve != nullptr ? entry.curve : defaultCurve);
-                    startOrUpdateAnimation(
-                            elementTag,
-                            ElementAnimationKeyColorAlpha,
-                            previousColorIt->second.a,
-                            targetColorIt->second.a,
-                            entry.duration,
-                            entry.curve != nullptr ? entry.curve : defaultCurve);
-                }
-                continue;
-            }
-
-            if(entry.kind == StyleSheet::Entry::Kind::ElementAnimation){
-                if(entry.elementTag.empty()){
-                    continue;
-                }
-                switch(entry.animationKey){
-                    case ElementAnimationKeyColorRed:
-                    case ElementAnimationKeyColorGreen:
-                    case ElementAnimationKeyColorBlue:
-                    case ElementAnimationKeyColorAlpha: {
-                        auto colorIt = targetColors.find(entry.elementTag);
-                        if(colorIt == targetColors.end()){
-                            break;
-                        }
-                        float to = colorIt->second.a;
-                        if(entry.animationKey == ElementAnimationKeyColorRed){
-                            to = colorIt->second.r;
-                        }
-                        else if(entry.animationKey == ElementAnimationKeyColorGreen){
-                            to = colorIt->second.g;
-                        }
-                        else if(entry.animationKey == ElementAnimationKeyColorBlue){
-                            to = colorIt->second.b;
-                        }
-                        applyColorAnimation(entry.elementTag,
-                                            entry.animationKey,
-                                            to,
-                                            entry.duration,
-                                            entry.curve);
-                        break;
-                    }
-                    case ElementAnimationKeyWidth:
-                    case ElementAnimationKeyHeight:
-                        applyDimensionAnimation(entry.elementTag,
-                                               entry.animationKey,
-                                               entry.duration,
-                                               entry.curve);
-                        break;
-                    default:
-                        break;
-                }
-                continue;
-            }
-
-            if(entry.kind == StyleSheet::Entry::Kind::ElementPathAnimation){
-                if(entry.elementTag.empty()){
-                    continue;
-                }
-                applyPathNodeAnimation(entry.elementTag,entry.nodeIndex,entry.duration,entry.curve);
-                continue;
-            }
-
-            if(entry.kind == StyleSheet::Entry::Kind::ElementBrushAnimation){
-                auto animatedColor = colorFromBrush(entry.brush);
-                if(!animatedColor){
-                    continue;
-                }
-                for(const auto & colorEntry : targetColors){
-                    if(!entry.elementTag.empty() && !matchesTag(entry.elementTag,colorEntry.first)){
-                        continue;
-                    }
-                    float targetComponent = animatedColor->a;
-                    switch(entry.animationKey){
-                        case ElementAnimationKeyColorRed:
-                            targetComponent = animatedColor->r;
-                            break;
-                        case ElementAnimationKeyColorGreen:
-                            targetComponent = animatedColor->g;
-                            break;
-                        case ElementAnimationKeyColorBlue:
-                            targetComponent = animatedColor->b;
-                            break;
-                        case ElementAnimationKeyColorAlpha:
-                            targetComponent = animatedColor->a;
-                            break;
-                        default:
-                            continue;
-                    }
-                    applyColorAnimation(colorEntry.first,
-                                        entry.animationKey,
-                                        targetComponent,
-                                        entry.duration,
-                                        entry.curve);
-                }
-            }
-        }
-    }
-
-    for(const auto & shapeEntry : currentShapes){
-        previousShapeByTag[shapeEntry.first] = shapeEntry.second;
-    }
-    for(const auto & colorEntry : targetColors){
-        lastResolvedElementColor[colorEntry.first] = colorEntry.second;
-    }
-
-    OmegaCommon::Vector<UIElementTag> removeShapeTags {};
-    for(const auto & previousShapeEntry : previousShapeByTag){
-        if(currentShapes.find(previousShapeEntry.first) == currentShapes.end()){
-            removeShapeTags.push_back(previousShapeEntry.first);
-        }
-    }
-    for(const auto & tagToRemove : removeShapeTags){
-        previousShapeByTag.erase(tagToRemove);
-    }
-
-    OmegaCommon::Vector<UIElementTag> removeColorTags {};
-    for(const auto & colorEntry : lastResolvedElementColor){
-        if(targetColors.find(colorEntry.first) == targetColors.end()){
-            removeColorTags.push_back(colorEntry.first);
-        }
-    }
-    for(const auto & tagToRemove : removeColorTags){
-        lastResolvedElementColor.erase(tagToRemove);
-    }
-}
-
-void UIView::prepareEffectAnimations(const OmegaCommon::Vector<UIViewLayout::Element> &elements,
-                                     bool layoutChanged,
-                                     bool styleChanged){
-    OmegaCommon::Map<UIElementTag,ResolvedEffectStyle> resolvedByTag {};
-    resolvedByTag[kUIViewRootEffectTag] = resolveRootEffectStyle(currentStyle,tag);
-    for(const auto & element : elements){
-        resolvedByTag[element.tag] = resolveElementEffectStyle(currentStyle,tag,element.tag);
-    }
-
-    if(layoutChanged || styleChanged){
-        const auto defaultCurve = Composition::AnimationCurve::Linear();
-        for(const auto & effectEntry : resolvedByTag){
-            const auto & targetTag = effectEntry.first;
-            const auto & resolved = effectEntry.second;
-            auto prevIt = lastResolvedEffects.find(targetTag);
-            EffectState previous {};
-            if(prevIt != lastResolvedEffects.end()){
-                previous = prevIt->second;
-            }
-            auto next = toEffectState(resolved);
-
-            auto markTargetDirty = [&](){
-                if(targetTag == kUIViewRootEffectTag){
-                    rootStyleDirty = true;
-                    rootContentDirty = true;
-                }
-                else {
-                    markElementDirty(targetTag,false,true,true,false,false);
-                }
-            };
-
-            if(!effectStateClose(previous,next)){
-                markTargetDirty();
-            }
-
-            auto startTransition = [&](int animationKey,
-                                       float from,
-                                       float to,
-                                       const ResolvedEffectTransition & transitionSpec){
-                startOrUpdateAnimation(
-                        targetTag,
-                        animationKey,
-                        from,
-                        to,
-                        transitionSpec.transition ? transitionSpec.duration : 0.f,
-                        transitionSpec.curve != nullptr ? transitionSpec.curve : defaultCurve);
-            };
-
-            auto fromShadow = previous.dropShadow.value_or(makeDefaultShadowParams());
-            auto toShadow = resolved.dropShadow.value_or(makeClearShadowParams(fromShadow));
-            const bool useShadowTransition = resolved.dropShadowTransition.transition &&
-                                             resolved.dropShadowTransition.duration > 0.f;
-            startTransition(EffectAnimationKeyShadowOffsetX,
-                            fromShadow.x_offset,
-                            toShadow.x_offset,
-                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
-            startTransition(EffectAnimationKeyShadowOffsetY,
-                            fromShadow.y_offset,
-                            toShadow.y_offset,
-                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
-            startTransition(EffectAnimationKeyShadowRadius,
-                            fromShadow.radius,
-                            toShadow.radius,
-                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
-            startTransition(EffectAnimationKeyShadowBlur,
-                            fromShadow.blurAmount,
-                            toShadow.blurAmount,
-                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
-            startTransition(EffectAnimationKeyShadowOpacity,
-                            fromShadow.opacity,
-                            toShadow.opacity,
-                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
-            startTransition(EffectAnimationKeyShadowColorR,
-                            fromShadow.color.r,
-                            toShadow.color.r,
-                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
-            startTransition(EffectAnimationKeyShadowColorG,
-                            fromShadow.color.g,
-                            toShadow.color.g,
-                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
-            startTransition(EffectAnimationKeyShadowColorB,
-                            fromShadow.color.b,
-                            toShadow.color.b,
-                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
-            startTransition(EffectAnimationKeyShadowColorA,
-                            fromShadow.color.a,
-                            toShadow.color.a,
-                            useShadowTransition ? resolved.dropShadowTransition : ResolvedEffectTransition{});
-
-            const float fromGaussian = previous.gaussianBlur ? previous.gaussianBlur->radius : 0.f;
-            const float toGaussian = resolved.gaussianBlur ? resolved.gaussianBlur->radius : 0.f;
-            const bool useGaussianTransition = resolved.gaussianBlurTransition.transition &&
-                                               resolved.gaussianBlurTransition.duration > 0.f;
-            startTransition(EffectAnimationKeyGaussianRadius,
-                            fromGaussian,
-                            toGaussian,
-                            useGaussianTransition ? resolved.gaussianBlurTransition : ResolvedEffectTransition{});
-
-            const auto fromDirectional = previous.directionalBlur.value_or(
-                    Composition::CanvasEffect::DirectionalBlurParams{0.f,0.f});
-            const auto toDirectional = resolved.directionalBlur.value_or(
-                    Composition::CanvasEffect::DirectionalBlurParams{0.f,fromDirectional.angle});
-            const bool useDirectionalTransition = resolved.directionalBlurTransition.transition &&
-                                                  resolved.directionalBlurTransition.duration > 0.f;
-            startTransition(EffectAnimationKeyDirectionalRadius,
-                            fromDirectional.radius,
-                            toDirectional.radius,
-                            useDirectionalTransition ? resolved.directionalBlurTransition
-                                                     : ResolvedEffectTransition{});
-            startTransition(EffectAnimationKeyDirectionalAngle,
-                            fromDirectional.angle,
-                            toDirectional.angle,
-                            useDirectionalTransition ? resolved.directionalBlurTransition
-                                                     : ResolvedEffectTransition{});
-
-            if(hasAnyEffect(next)){
-                lastResolvedEffects[targetTag] = next;
-            }
-            else {
-                lastResolvedEffects.erase(targetTag);
-            }
-        }
-    }
-    else {
-        for(const auto & effectEntry : resolvedByTag){
-            auto next = toEffectState(effectEntry.second);
-            if(hasAnyEffect(next)){
-                lastResolvedEffects[effectEntry.first] = next;
-            }
-            else {
-                lastResolvedEffects.erase(effectEntry.first);
-            }
-        }
-    }
-
-    OmegaCommon::Vector<UIElementTag> staleTags {};
-    for(const auto & last : lastResolvedEffects){
-        if(resolvedByTag.find(last.first) == resolvedByTag.end()){
-            staleTags.push_back(last.first);
-        }
-    }
-    for(const auto & staleTag : staleTags){
-        lastResolvedEffects.erase(staleTag);
-    }
-}
-
 SharedHandle<Composition::Font> UIView::resolveFallbackTextFont(){
     if(fallbackTextFont != nullptr){
         return fallbackTextFont;
@@ -2498,180 +1847,179 @@ SharedHandle<Composition::Font> UIView::resolveFallbackTextFont(){
 void UIView::update(){
     if(rootCanvas == nullptr){
         rootCanvas = makeCanvas(getLayerTree()->getRootLayer());
-        markRootDirty();
         firstFrameCoherentSubmit = true;
     }
 
-    // -----------------------------------------------------------------------
-    // Layout V2 resolve path (C2)
-    // -----------------------------------------------------------------------
-    if(useLayoutV2_){
-        const auto & v2Elements = currentLayoutV2_.elements();
-        if(v2Elements.empty()){
-            layoutDirty = false;
-            styleDirty = false;
-            styleDirtyGlobal = false;
-            styleChangeRequiresCoherentFrame = false;
-            firstFrameCoherentSubmit = false;
-            ++lastUpdateDiagnostics.revision;
-            return;
-        }
+    const auto & v2Elements = currentLayoutV2_.elements();
+    if(v2Elements.empty()){
+        layoutDirty = false;
+        styleDirty = false;
+        styleDirtyGlobal = false;
+        styleChangeRequiresCoherentFrame = false;
+        firstFrameCoherentSubmit = false;
+        ++lastUpdateDiagnostics.revision;
+        return;
+    }
 
-        const auto localBounds = localBoundsFromView(this);
-        const float dpiScale = 1.f;
-        LayoutContext ctx {};
-        ctx.availableRectPx = localBounds;
-        ctx.dpiScale = dpiScale;
-        const auto availDp = ctx.availableRectDp();
+    const auto localBounds = localBoundsFromView(this);
+    const float dpiScale = 1.f;
+    LayoutContext ctx {};
+    ctx.availableRectPx = localBounds;
+    ctx.dpiScale = dpiScale;
+    const auto availDp = ctx.availableRectDp();
 
-        OmegaCommon::Vector<StyleRule> layoutRules {};
-        if(currentStyle != nullptr){
-            layoutRules = convertEntriesToRules(*currentStyle,tag);
-        }
+    OmegaCommon::Vector<StyleRule> layoutRules {};
+    if(currentStyle != nullptr){
+        layoutRules = convertEntriesToRules(*currentStyle,tag);
+    }
 
-        struct V2Resolved {
-            UIElementTag tag;
-            const UIElementLayoutSpec * spec;
-            Core::Rect resolvedRectDp {};
-            Core::Rect resolvedRectPx {};
-            int zIndex = 0;
-            std::size_t insertionOrder = 0;
+    struct V2Resolved {
+        UIElementTag tag;
+        const UIElementLayoutSpec * spec;
+        Core::Rect resolvedRectDp {};
+        Core::Rect resolvedRectPx {};
+        int zIndex = 0;
+        std::size_t insertionOrder = 0;
+    };
+    OmegaCommon::Vector<V2Resolved> resolved {};
+    resolved.reserve(v2Elements.size());
+
+    for(std::size_t i = 0; i < v2Elements.size(); ++i){
+        const auto & spec = v2Elements[i];
+        LayoutStyle effectiveStyle = spec.style;
+        mergeLayoutRulesIntoStyle(effectiveStyle,layoutRules,spec.tag);
+
+        Core::Rect rectDp = resolveClampedRect(effectiveStyle,availDp,dpiScale);
+        Core::Rect rectPx {
+            Core::Position{rectDp.pos.x * dpiScale,rectDp.pos.y * dpiScale},
+            rectDp.w * dpiScale,
+            rectDp.h * dpiScale
         };
-        OmegaCommon::Vector<V2Resolved> resolved {};
-        resolved.reserve(v2Elements.size());
 
-        for(std::size_t i = 0; i < v2Elements.size(); ++i){
-            const auto & spec = v2Elements[i];
-            LayoutStyle effectiveStyle = spec.style;
-            mergeLayoutRulesIntoStyle(effectiveStyle,layoutRules,spec.tag);
-
-            Core::Rect rectDp = resolveClampedRect(effectiveStyle,availDp,dpiScale);
-            Core::Rect rectPx {
-                Core::Position{rectDp.pos.x * dpiScale,rectDp.pos.y * dpiScale},
-                rectDp.w * dpiScale,
-                rectDp.h * dpiScale
-            };
-
-            if(diagnosticSink_ != nullptr){
-                diagnosticSink_->record(LayoutDiagnosticEntry{
-                    spec.tag,rectDp,rectPx,LayoutDiagnosticEntry::Pass::Arrange});
-            }
-
-            V2Resolved entry {};
-            entry.tag = spec.tag;
-            entry.spec = &spec;
-            entry.resolvedRectDp = rectDp;
-            entry.resolvedRectPx = rectPx;
-            entry.zIndex = spec.zIndex;
-            entry.insertionOrder = i;
-            resolved.push_back(entry);
+        if(diagnosticSink_ != nullptr){
+            diagnosticSink_->record(LayoutDiagnosticEntry{
+                spec.tag,rectDp,rectPx,LayoutDiagnosticEntry::Pass::Arrange});
         }
 
-        std::stable_sort(resolved.begin(),resolved.end(),
-            [](const V2Resolved & a,const V2Resolved & b){
-                if(a.zIndex != b.zIndex){
-                    return a.zIndex < b.zIndex;
-                }
-                return a.insertionOrder < b.insertionOrder;
-            });
+        V2Resolved entry {};
+        entry.tag = spec.tag;
+        entry.spec = &spec;
+        entry.resolvedRectDp = rectDp;
+        entry.resolvedRectPx = rectPx;
+        entry.zIndex = spec.zIndex;
+        entry.insertionOrder = i;
+        resolved.push_back(entry);
+    }
 
-        OmegaCommon::Vector<UIElementTag> nextOrder {};
-        nextOrder.reserve(resolved.size());
-        for(const auto & r : resolved){
-            nextOrder.push_back(r.tag);
+    std::stable_sort(resolved.begin(),resolved.end(),
+        [](const V2Resolved & a,const V2Resolved & b){
+            if(a.zIndex != b.zIndex){
+                return a.zIndex < b.zIndex;
+            }
+            return a.insertionOrder < b.insertionOrder;
+        });
+
+    OmegaCommon::Vector<UIElementTag> nextOrder {};
+    nextOrder.reserve(resolved.size());
+    for(const auto & r : resolved){
+        nextOrder.push_back(r.tag);
+    }
+
+    OmegaCommon::Vector<UIElementTag> previousOrder = activeTagOrder;
+    const bool orderChanged = previousOrder.size() != nextOrder.size() ||
+                              !std::equal(previousOrder.begin(),previousOrder.end(),
+                                          nextOrder.begin(),nextOrder.end());
+    activeTagOrder = nextOrder;
+
+    startCompositionSession();
+
+    auto viewStyle = resolveViewStyle(currentStyle,tag);
+    auto backgroundColor = viewStyle.backgroundColor.value_or(Composition::Color::Transparent);
+
+    auto & rootBackground = rootCanvas->getCurrentFrame()->background;
+    rootBackground.r = backgroundColor.r;
+    rootBackground.g = backgroundColor.g;
+    rootBackground.b = backgroundColor.b;
+    rootBackground.a = backgroundColor.a;
+
+    // Draw background fill.
+    auto rootBgBrush = Composition::ColorBrush(backgroundColor);
+    auto rootBgRect = localBounds;
+    rootCanvas->drawRect(rootBgRect, rootBgBrush);
+
+    ChildResizeSpec layoutClamp {};
+    layoutClamp.resizable = true;
+    layoutClamp.policy = ChildResizePolicy::FitContent;
+
+    // All elements draw to rootCanvas in z-order.
+    for(const auto & entry : resolved){
+        const auto & spec = *entry.spec;
+
+        auto previousRectIt = lastResolvedV2Rects_.find(entry.tag);
+        Core::Rect previousRectPx = (previousRectIt != lastResolvedV2Rects_.end())
+                                        ? previousRectIt->second
+                                        : entry.resolvedRectPx;
+        LayoutDelta delta = computeLayoutDelta(previousRectPx,entry.resolvedRectPx);
+        lastResolvedV2Rects_[entry.tag] = entry.resolvedRectPx;
+
+        if(!delta.changedProperties.empty()){
+            auto transSpec = resolveLayoutTransition(layoutRules,entry.tag);
+            if(transSpec && transSpec->enabled){
+                applyLayoutDelta(entry.tag,delta,*transSpec);
+            }
         }
 
-        OmegaCommon::Vector<UIElementTag> previousOrder = activeTagOrder;
-        const bool orderChanged = previousOrder.size() != nextOrder.size() ||
-                                  !std::equal(previousOrder.begin(),previousOrder.end(),
-                                              nextOrder.begin(),nextOrder.end());
-        activeTagOrder = nextOrder;
+        if(diagnosticSink_ != nullptr){
+            diagnosticSink_->record(LayoutDiagnosticEntry{
+                entry.tag,entry.resolvedRectDp,entry.resolvedRectPx,
+                LayoutDiagnosticEntry::Pass::Commit});
+        }
 
-        startCompositionSession();
+        // Resolve per-element effects (shadow).
+        auto effectStyle = resolveElementEffectStyle(currentStyle,tag,entry.tag);
 
-        auto viewStyle = resolveViewStyle(currentStyle,tag);
-        auto backgroundColor = viewStyle.backgroundColor.value_or(Composition::Color::Transparent);
+        if(spec.shape){
+            auto shapeToDraw = *spec.shape;
+            auto brush = resolveElementBrush(currentStyle,tag,entry.tag);
 
-        for(const auto & entry : resolved){
-            const auto & spec = *entry.spec;
-            auto & target = buildLayerRenderTarget(entry.tag);
-            if(target.layer != nullptr){
-                auto layerRect = entry.resolvedRectPx;
-                auto currentLayerRect = target.layer->getLayerRect();
-                if(currentLayerRect.pos.x != layerRect.pos.x ||
-                   currentLayerRect.pos.y != layerRect.pos.y ||
-                   currentLayerRect.w != layerRect.w ||
-                   currentLayerRect.h != layerRect.h){
-                    target.layer->resize(layerRect);
-                }
-                target.layer->setEnabled(true);
-            }
-            if(target.canvas == nullptr){
-                continue;
-            }
+            // Draw shadow before the element (if any).
+            if(effectStyle.dropShadow){
+                auto shadowParams = *effectStyle.dropShadow;
+                // Apply animated shadow properties if active.
+                if(auto v = animatedValue(entry.tag,EffectAnimationKeyShadowOffsetX); v)
+                    shadowParams.x_offset = *v;
+                if(auto v = animatedValue(entry.tag,EffectAnimationKeyShadowOffsetY); v)
+                    shadowParams.y_offset = *v;
+                if(auto v = animatedValue(entry.tag,EffectAnimationKeyShadowRadius); v)
+                    shadowParams.radius = *v;
+                if(auto v = animatedValue(entry.tag,EffectAnimationKeyShadowBlur); v)
+                    shadowParams.blurAmount = *v;
+                if(auto v = animatedValue(entry.tag,EffectAnimationKeyShadowOpacity); v)
+                    shadowParams.opacity = *v;
 
-            auto previousRectIt = lastResolvedV2Rects_.find(entry.tag);
-            Core::Rect previousRectPx = (previousRectIt != lastResolvedV2Rects_.end())
-                                            ? previousRectIt->second
-                                            : entry.resolvedRectPx;
-            LayoutDelta delta = computeLayoutDelta(previousRectPx,entry.resolvedRectPx);
-            lastResolvedV2Rects_[entry.tag] = entry.resolvedRectPx;
-
-            if(!delta.changedProperties.empty()){
-                auto transSpec = resolveLayoutTransition(layoutRules,entry.tag);
-                if(transSpec && transSpec->enabled){
-                    applyLayoutDelta(entry.tag,delta,*transSpec);
-                }
-            }
-
-            if(diagnosticSink_ != nullptr){
-                diagnosticSink_->record(LayoutDiagnosticEntry{
-                    entry.tag,entry.resolvedRectDp,entry.resolvedRectPx,
-                    LayoutDiagnosticEntry::Pass::Commit});
-            }
-
-            auto & elementBg = target.canvas->getCurrentFrame()->background;
-            elementBg.r = 0.f;
-            elementBg.g = 0.f;
-            elementBg.b = 0.f;
-            elementBg.a = 0.f;
-
-            bool emittedVisual = false;
-            ChildResizeSpec layoutClamp {};
-            layoutClamp.resizable = true;
-            layoutClamp.policy = ChildResizePolicy::FitContent;
-
-            if(spec.shape){
-                auto shapeToDraw = *spec.shape;
-                auto brush = resolveElementBrush(currentStyle,tag,entry.tag);
                 switch(shapeToDraw.type){
                     case Shape::Type::Rect: {
                         auto rect = shapeToDraw.rect;
                         rect = ViewResizeCoordinator::clampRectToParent(rect,localBounds,layoutClamp);
-                        target.canvas->drawRect(rect,brush);
-                        emittedVisual = true;
+                        rootCanvas->drawShadow(rect,shadowParams);
                         break;
                     }
                     case Shape::Type::RoundedRect: {
-                        auto rect = shapeToDraw.roundedRect;
-                        Core::Rect clampedRect {rect.pos,rect.w,rect.h};
+                        auto rr = shapeToDraw.roundedRect;
+                        Core::Rect clampedRect {rr.pos,rr.w,rr.h};
                         clampedRect = ViewResizeCoordinator::clampRectToParent(clampedRect,localBounds,layoutClamp);
-                        rect.pos = clampedRect.pos;
-                        rect.w = clampedRect.w;
-                        rect.h = clampedRect.h;
-                        rect.rad_x = std::min(rect.rad_x,rect.w * 0.5f);
-                        rect.rad_y = std::min(rect.rad_y,rect.h * 0.5f);
-                        target.canvas->drawRoundedRect(rect,brush);
-                        emittedVisual = true;
+                        rr.pos = clampedRect.pos;
+                        rr.w = clampedRect.w;
+                        rr.h = clampedRect.h;
+                        rr.rad_x = std::min(rr.rad_x,rr.w * 0.5f);
+                        rr.rad_y = std::min(rr.rad_y,rr.h * 0.5f);
+                        rootCanvas->drawShadow(rr,shadowParams);
                         break;
                     }
                     case Shape::Type::Ellipse: {
                         const auto & srcEllipse = shapeToDraw.ellipse;
                         Core::Rect ellipseRect {
-                            Core::Position{
-                                srcEllipse.x - srcEllipse.rad_x,
-                                srcEllipse.y - srcEllipse.rad_y
-                            },
+                            Core::Position{srcEllipse.x - srcEllipse.rad_x,srcEllipse.y - srcEllipse.rad_y},
                             std::max(1.f,srcEllipse.rad_x * 2.f),
                             std::max(1.f,srcEllipse.rad_y * 2.f)
                         };
@@ -2682,393 +2030,31 @@ void UIView::update(){
                             ellipseRect.w * 0.5f,
                             ellipseRect.h * 0.5f
                         };
-                        target.canvas->drawEllipse(ellipse,brush);
-                        emittedVisual = true;
-                        break;
-                    }
-                    case Shape::Type::Path: {
-                        if(shapeToDraw.path){
-                            auto vectorPath = *shapeToDraw.path;
-                            auto path = Composition::Path(vectorPath,shapeToDraw.pathStrokeWidth);
-                            if(shapeToDraw.closePath){
-                                path.close();
-                            }
-                            path.setPathBrush(brush);
-                            target.canvas->drawPath(path);
-                            emittedVisual = true;
-                        }
+                        rootCanvas->drawShadow(ellipse,shadowParams);
                         break;
                     }
                     default:
                         break;
                 }
             }
-            else if(spec.text){
-                UIElementTag textStyleTag = spec.textStyleTag.value_or(entry.tag);
-                auto textStyle = resolveTextStyle(currentStyle,tag,textStyleTag);
-                auto font = textStyle.font != nullptr ? textStyle.font : resolveFallbackTextFont();
-                if(font != nullptr){
-                    auto textRect = localBounds;
-                    textRect = ViewResizeCoordinator::clampRectToParent(textRect,localBounds,layoutClamp);
-                    auto unicodeText = UniString::fromUTF32(
-                        reinterpret_cast<const UChar32 *>(spec.text->data()),
-                        static_cast<int32_t>(spec.text->size()));
-                    auto textLayout = textStyle.layout;
-                    textLayout.lineLimit = textStyle.lineLimit;
-                    target.canvas->drawText(unicodeText,font,textRect,textStyle.color,textLayout);
-                    emittedVisual = true;
-                }
-            }
-
-            if(!emittedVisual){
-                auto clearBrush = Composition::ColorBrush(Composition::Color::Transparent);
-                auto clearRect = localBounds;
-                target.canvas->drawRect(clearRect,clearBrush);
-            }
-
-            target.canvas->sendFrame();
-        }
-
-        // Send the root canvas frame AFTER element frames so that element
-        // visuals are queued first in the packet and rendered before the root.
-        // Draw the view background as a rect so the root frame carries actual
-        // visual content (a "real frame") instead of being classified as a
-        // no-op transparent frame that skips the GPU commit path.  This
-        // ensures the root visual's GPU surface is properly initialised,
-        // allowing child layer visuals to composite correctly on top.
-        {
-            auto & rootBackground = rootCanvas->getCurrentFrame()->background;
-            rootBackground.r = backgroundColor.r;
-            rootBackground.g = backgroundColor.g;
-            rootBackground.b = backgroundColor.b;
-            rootBackground.a = backgroundColor.a;
-
-            auto rootBgBrush = Composition::ColorBrush(backgroundColor);
-            auto rootBgRect = localBounds;
-            rootCanvas->drawRect(rootBgRect, rootBgBrush);
-            rootCanvas->sendFrame();
-        }
-
-        endCompositionSession();
-        layoutDirty = false;
-        styleDirty = false;
-        styleDirtyGlobal = false;
-        styleChangeRequiresCoherentFrame = false;
-        firstFrameCoherentSubmit = false;
-        ++lastUpdateDiagnostics.revision;
-        return;
-    }
-
-    // -----------------------------------------------------------------------
-    // Legacy UIViewLayout path (unchanged)
-    // -----------------------------------------------------------------------
-
-    OmegaCommon::Vector<UIElementTag> previousOrder = activeTagOrder;
-    OmegaCommon::Vector<UIElementTag> nextOrder {};
-    nextOrder.reserve(currentLayout.elements().size());
-    for(const auto & element : currentLayout.elements()){
-        nextOrder.push_back(element.tag);
-    }
-
-    const bool orderChanged = previousOrder.size() != nextOrder.size() ||
-                              !std::equal(previousOrder.begin(),
-                                          previousOrder.end(),
-                                          nextOrder.begin(),
-                                          nextOrder.end());
-
-    if(orderChanged){
-        rootOrderDirty = true;
-    }
-    activeTagOrder = nextOrder;
-
-    const bool layoutChanged = layoutDirty;
-    const bool styleChanged = styleDirty;
-    const bool styleChangedGlobal = styleDirtyGlobal;
-    const bool forceCoherentFrame = firstFrameCoherentSubmit ||
-                                    layoutChanged ||
-                                    styleChangeRequiresCoherentFrame;
-
-    if(layoutChanged){
-        rootLayoutDirty = true;
-        rootContentDirty = true;
-    }
-    if(styleChanged && styleChangedGlobal){
-        rootStyleDirty = true;
-    }
-
-    syncElementDirtyState(currentLayout.elements(),layoutChanged,styleChangedGlobal,orderChanged);
-
-    const auto previousEffectsSnapshot = lastResolvedEffects;
-
-    bool styleUsesAnimation = false;
-    if(currentStyle != nullptr){
-        for(const auto & entry : currentStyle->entries){
-            if(!entry.viewTag.empty() && !matchesTag(entry.viewTag,tag)){
-                continue;
-            }
-            if(entry.transition ||
-               entry.kind == StyleSheet::Entry::Kind::ElementAnimation ||
-               entry.kind == StyleSheet::Entry::Kind::ElementPathAnimation ||
-               entry.kind == StyleSheet::Entry::Kind::ElementBrushAnimation){
-                styleUsesAnimation = true;
-                break;
-            }
-        }
-    }
-    prepareEffectAnimations(currentLayout.elements(),layoutChanged,styleChanged);
-
-    const bool hasActiveRuntimeAnimations = !elementAnimations.empty() ||
-                                            !pathNodeAnimations.empty();
-    if(styleUsesAnimation || hasActiveRuntimeAnimations){
-        prepareElementAnimations(currentLayout.elements(),layoutChanged,styleChanged);
-        (void)advanceAnimations();
-    }
-
-    const bool submitRoot = forceCoherentFrame ||
-                            rootLayoutDirty ||
-                            rootStyleDirty ||
-                            rootContentDirty ||
-                            rootOrderDirty;
-
-    OmegaCommon::Vector<UIElementTag> dirtyActiveTags {};
-    dirtyActiveTags.reserve(activeTagOrder.size());
-    for(const auto & tagToCheck : activeTagOrder){
-        if(forceCoherentFrame || isElementDirty(tagToCheck)){
-            dirtyActiveTags.push_back(tagToCheck);
-        }
-    }
-    lastUpdateDiagnostics.activeTagCount = activeTagOrder.size();
-    lastUpdateDiagnostics.dirtyTagCount = dirtyActiveTags.size();
-    lastUpdateDiagnostics.submittedTagCount = 0;
-
-    bool hasInactiveVisibilityChanges = false;
-    for(const auto & entry : elementDirtyState){
-        if(containsTag(activeTagOrder,entry.first)){
-            continue;
-        }
-        if(entry.second.visibilityDirty){
-            hasInactiveVisibilityChanges = true;
-            break;
-        }
-    }
-
-    const bool hasDirtyWork = submitRoot ||
-                              !dirtyActiveTags.empty() ||
-                              hasInactiveVisibilityChanges;
-    if(!hasDirtyWork){
-        layoutDirty = false;
-        styleDirty = false;
-        styleDirtyGlobal = false;
-        styleChangeRequiresCoherentFrame = false;
-        firstFrameCoherentSubmit = false;
-        ++lastUpdateDiagnostics.revision;
-        return;
-    }
-
-    startCompositionSession();
-
-    auto effectStateForTag = [&](const UIElementTag & targetTag) -> EffectState {
-        if(targetTag == kUIViewRootEffectTag){
-            return toEffectState(resolveRootEffectStyle(currentStyle,tag));
-        }
-        return toEffectState(resolveElementEffectStyle(currentStyle,tag,targetTag));
-    };
-
-    auto previousEffectStateForTag = [&](const UIElementTag & targetTag) -> EffectState {
-        auto prevIt = previousEffectsSnapshot.find(targetTag);
-        if(prevIt != previousEffectsSnapshot.end()){
-            return prevIt->second;
-        }
-        return {};
-    };
-
-    auto applyEffects = [&](const UIElementTag & targetTag,
-                            const EffectState & resolved,
-                            const EffectState & previous,
-                            const SharedHandle<Composition::Canvas> & targetCanvas){
-        if(targetCanvas == nullptr){
-            return;
-        }
-
-        const bool hasShadowAnimation = animatedValue(targetTag,EffectAnimationKeyShadowOffsetX).has_value() ||
-                                        animatedValue(targetTag,EffectAnimationKeyShadowOffsetY).has_value() ||
-                                        animatedValue(targetTag,EffectAnimationKeyShadowRadius).has_value() ||
-                                        animatedValue(targetTag,EffectAnimationKeyShadowBlur).has_value() ||
-                                        animatedValue(targetTag,EffectAnimationKeyShadowOpacity).has_value() ||
-                                        animatedValue(targetTag,EffectAnimationKeyShadowColorR).has_value() ||
-                                        animatedValue(targetTag,EffectAnimationKeyShadowColorG).has_value() ||
-                                        animatedValue(targetTag,EffectAnimationKeyShadowColorB).has_value() ||
-                                        animatedValue(targetTag,EffectAnimationKeyShadowColorA).has_value();
-
-        auto shadowParams = resolved.dropShadow.value_or(
-                previous.dropShadow.value_or(makeDefaultShadowParams()));
-        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowOffsetX); v){
-            shadowParams.x_offset = *v;
-        }
-        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowOffsetY); v){
-            shadowParams.y_offset = *v;
-        }
-        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowRadius); v){
-            shadowParams.radius = std::max(0.f,*v);
-        }
-        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowBlur); v){
-            shadowParams.blurAmount = std::max(0.f,*v);
-        }
-        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowOpacity); v){
-            shadowParams.opacity = clamp01(*v);
-        }
-        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowColorR); v){
-            shadowParams.color.r = clamp01(*v);
-        }
-        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowColorG); v){
-            shadowParams.color.g = clamp01(*v);
-        }
-        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowColorB); v){
-            shadowParams.color.b = clamp01(*v);
-        }
-        if(auto v = animatedValue(targetTag,EffectAnimationKeyShadowColorA); v){
-            shadowParams.color.a = clamp01(*v);
-        }
-
-        if(resolved.dropShadow || previous.dropShadow || hasShadowAnimation){
-            auto layerEffect = std::make_shared<Composition::LayerEffect>(
-                    Composition::LayerEffect{Composition::LayerEffect::DropShadow});
-            layerEffect->dropShadow = shadowParams;
-            targetCanvas->applyLayerEffect(layerEffect);
-        }
-
-        float gaussianRadius = resolved.gaussianBlur ? resolved.gaussianBlur->radius : 0.f;
-        if(auto v = animatedValue(targetTag,EffectAnimationKeyGaussianRadius); v){
-            gaussianRadius = std::max(0.f,*v);
-        }
-        if(gaussianRadius > 0.f){
-            auto blurEffect = std::make_shared<Composition::CanvasEffect>();
-            blurEffect->type = Composition::CanvasEffect::GaussianBlur;
-            blurEffect->gaussianBlur.radius = gaussianRadius;
-            targetCanvas->applyEffect(blurEffect);
-        }
-
-        Composition::CanvasEffect::DirectionalBlurParams directionalParams {};
-        bool hasDirectional = false;
-        if(resolved.directionalBlur){
-            directionalParams = *resolved.directionalBlur;
-            hasDirectional = true;
-        }
-        else if(previous.directionalBlur){
-            directionalParams = *previous.directionalBlur;
-        }
-        if(auto v = animatedValue(targetTag,EffectAnimationKeyDirectionalRadius); v){
-            directionalParams.radius = std::max(0.f,*v);
-            hasDirectional = true;
-        }
-        if(auto v = animatedValue(targetTag,EffectAnimationKeyDirectionalAngle); v){
-            directionalParams.angle = *v;
-            hasDirectional = true;
-        }
-        if(hasDirectional && directionalParams.radius > 0.f){
-            auto directionalEffect = std::make_shared<Composition::CanvasEffect>();
-            directionalEffect->type = Composition::CanvasEffect::DirectionalBlur;
-            directionalEffect->directionalBlur = directionalParams;
-            targetCanvas->applyEffect(directionalEffect);
-        }
-    };
-
-    if(submitRoot){
-        auto viewStyle = resolveViewStyle(currentStyle,tag);
-        auto & rootBackground = rootCanvas->getCurrentFrame()->background;
-        auto backgroundColor = viewStyle.backgroundColor.value_or(Composition::Color::Transparent);
-        rootBackground.r = backgroundColor.r;
-        rootBackground.g = backgroundColor.g;
-        rootBackground.b = backgroundColor.b;
-        rootBackground.a = backgroundColor.a;
-
-        if(viewStyle.useBorder && viewStyle.borderColor && viewStyle.borderWidth > 0.f){
-            auto borderBrush = Composition::ColorBrush(*viewStyle.borderColor);
-            auto outer = localBoundsFromView(this);
-            rootCanvas->drawRect(outer,borderBrush);
-
-            float borderWidth = std::max(0.f,viewStyle.borderWidth);
-            Core::Rect inner {
-                    {outer.pos.x + borderWidth,outer.pos.y + borderWidth},
-                    std::max(0.f,outer.w - (borderWidth * 2.f)),
-                    std::max(0.f,outer.h - (borderWidth * 2.f))
-            };
-            if(inner.w > 0.f && inner.h > 0.f){
-                auto fillBrush = Composition::ColorBrush(backgroundColor);
-                rootCanvas->drawRect(inner,fillBrush);
-            }
-        }
-        applyEffects(kUIViewRootEffectTag,
-                     effectStateForTag(kUIViewRootEffectTag),
-                     previousEffectStateForTag(kUIViewRootEffectTag),
-                     rootCanvas);
-        rootCanvas->sendFrame();
-    }
-
-    for(const auto & dirtyTag : dirtyActiveTags){
-        auto layoutIt = std::find_if(currentLayout.elements().begin(),
-                                     currentLayout.elements().end(),
-                                     [&](const UIViewLayout::Element & element){
-                                         return element.tag == dirtyTag;
-                                     });
-        if(layoutIt == currentLayout.elements().end()){
-            continue;
-        }
-
-        auto & target = buildLayerRenderTarget(dirtyTag);
-        if(target.layer != nullptr){
-            target.layer->setEnabled(true);
-        }
-        if(target.canvas == nullptr){
-            clearElementDirty(dirtyTag);
-            continue;
-        }
-
-        auto & elementBg = target.canvas->getCurrentFrame()->background;
-        elementBg.r = 0.f;
-        elementBg.g = 0.f;
-        elementBg.b = 0.f;
-        elementBg.a = 0.f;
-
-        bool emittedVisual = false;
-        const auto localBounds = localBoundsFromView(this);
-        ChildResizeSpec layoutClamp {};
-        layoutClamp.resizable = true;
-        layoutClamp.policy = ChildResizePolicy::FitContent;
-        if(layoutIt->type == UIViewLayout::Element::Type::Shape && layoutIt->shape){
-            auto shapeToDraw = styleUsesAnimation ?
-                               applyAnimatedShape(dirtyTag,*layoutIt->shape) :
-                               *layoutIt->shape;
-            auto brush = resolveElementBrush(currentStyle,tag,dirtyTag);
-            auto animatedBrushColor = styleUsesAnimation ? colorFromBrush(brush) : Core::Optional<Composition::Color>{};
-            if(animatedBrushColor && styleUsesAnimation){
-                auto animatedColor = applyAnimatedColor(dirtyTag,*animatedBrushColor);
-                brush = Composition::ColorBrush(animatedColor);
-            }
 
             switch(shapeToDraw.type){
                 case Shape::Type::Rect: {
                     auto rect = shapeToDraw.rect;
                     rect = ViewResizeCoordinator::clampRectToParent(rect,localBounds,layoutClamp);
-                    target.canvas->drawRect(rect,brush);
-                    emittedVisual = true;
+                    rootCanvas->drawRect(rect,brush);
                     break;
                 }
                 case Shape::Type::RoundedRect: {
                     auto rect = shapeToDraw.roundedRect;
-                    Core::Rect clampedRect {
-                        rect.pos,
-                        rect.w,
-                        rect.h
-                    };
+                    Core::Rect clampedRect {rect.pos,rect.w,rect.h};
                     clampedRect = ViewResizeCoordinator::clampRectToParent(clampedRect,localBounds,layoutClamp);
                     rect.pos = clampedRect.pos;
                     rect.w = clampedRect.w;
                     rect.h = clampedRect.h;
                     rect.rad_x = std::min(rect.rad_x,rect.w * 0.5f);
                     rect.rad_y = std::min(rect.rad_y,rect.h * 0.5f);
-                    target.canvas->drawRoundedRect(rect,brush);
-                    emittedVisual = true;
+                    rootCanvas->drawRoundedRect(rect,brush);
                     break;
                 }
                 case Shape::Type::Ellipse: {
@@ -3083,13 +2069,12 @@ void UIView::update(){
                     };
                     ellipseRect = ViewResizeCoordinator::clampRectToParent(ellipseRect,localBounds,layoutClamp);
                     Core::Ellipse ellipse {
-                            ellipseRect.pos.x + (ellipseRect.w * 0.5f),
-                            ellipseRect.pos.y + (ellipseRect.h * 0.5f),
-                            ellipseRect.w * 0.5f,
-                            ellipseRect.h * 0.5f
+                        ellipseRect.pos.x + (ellipseRect.w * 0.5f),
+                        ellipseRect.pos.y + (ellipseRect.h * 0.5f),
+                        ellipseRect.w * 0.5f,
+                        ellipseRect.h * 0.5f
                     };
-                    target.canvas->drawEllipse(ellipse,brush);
-                    emittedVisual = true;
+                    rootCanvas->drawEllipse(ellipse,brush);
                     break;
                 }
                 case Shape::Type::Path: {
@@ -3100,8 +2085,7 @@ void UIView::update(){
                             path.close();
                         }
                         path.setPathBrush(brush);
-                        target.canvas->drawPath(path);
-                        emittedVisual = true;
+                        rootCanvas->drawPath(path);
                     }
                     break;
                 }
@@ -3109,75 +2093,25 @@ void UIView::update(){
                     break;
             }
         }
-        else if(layoutIt->type == UIViewLayout::Element::Type::Text && layoutIt->str){
-            UIElementTag textStyleTag = layoutIt->textStyleTag.value_or(dirtyTag);
+        else if(spec.text){
+            UIElementTag textStyleTag = spec.textStyleTag.value_or(entry.tag);
             auto textStyle = resolveTextStyle(currentStyle,tag,textStyleTag);
             auto font = textStyle.font != nullptr ? textStyle.font : resolveFallbackTextFont();
             if(font != nullptr){
-                auto textRect = layoutIt->textRect.value_or(localBounds);
+                auto textRect = spec.textRect.value_or(localBounds);
                 textRect = ViewResizeCoordinator::clampRectToParent(textRect,localBounds,layoutClamp);
-                auto textColor = styleUsesAnimation ? applyAnimatedColor(dirtyTag,textStyle.color) : textStyle.color;
                 auto unicodeText = UniString::fromUTF32(
-                        reinterpret_cast<const UChar32 *>(layoutIt->str->data()),
-                        static_cast<int32_t>(layoutIt->str->size()));
+                    reinterpret_cast<const UChar32 *>(spec.text->data()),
+                    static_cast<int32_t>(spec.text->size()));
                 auto textLayout = textStyle.layout;
                 textLayout.lineLimit = textStyle.lineLimit;
-                target.canvas->drawText(unicodeText,font,textRect,textColor,textLayout);
-                emittedVisual = true;
+                rootCanvas->drawText(unicodeText,font,textRect,textStyle.color,textLayout);
             }
         }
-
-        if(!emittedVisual){
-            auto clearBrush = Composition::ColorBrush(Composition::Color::Transparent);
-            auto clearRect = localBounds;
-            target.canvas->drawRect(clearRect,clearBrush);
-        }
-
-        applyEffects(dirtyTag,
-                     effectStateForTag(dirtyTag),
-                     previousEffectStateForTag(dirtyTag),
-                     target.canvas);
-
-        target.canvas->sendFrame();
-        ++lastUpdateDiagnostics.submittedTagCount;
-        clearElementDirty(dirtyTag);
     }
 
-    for(auto & entry : elementDirtyState){
-        if(containsTag(activeTagOrder,entry.first)){
-            continue;
-        }
-        if(!entry.second.visibilityDirty){
-            continue;
-        }
-
-        auto targetIt = renderTargetStore.find(entry.first);
-        if(targetIt != renderTargetStore.end()){
-            auto & target = targetIt->second;
-            if(target.canvas != nullptr){
-                auto & elementBg = target.canvas->getCurrentFrame()->background;
-                elementBg.r = 0.f;
-                elementBg.g = 0.f;
-                elementBg.b = 0.f;
-                elementBg.a = 0.f;
-                auto clearBrush = Composition::ColorBrush(Composition::Color::Transparent);
-                auto clearRect = localBoundsFromView(this);
-                target.canvas->drawRect(clearRect,clearBrush);
-                target.canvas->sendFrame();
-                ++lastUpdateDiagnostics.submittedTagCount;
-            }
-            if(target.layer != nullptr){
-                target.layer->setEnabled(false);
-            }
-        }
-
-        clearElementDirty(entry.first);
-    }
-
-    rootLayoutDirty = false;
-    rootStyleDirty = false;
-    rootContentDirty = false;
-    rootOrderDirty = false;
+    // Single sendFrame for all elements.
+    rootCanvas->sendFrame();
 
     endCompositionSession();
     layoutDirty = false;
@@ -3187,5 +2121,6 @@ void UIView::update(){
     firstFrameCoherentSubmit = false;
     ++lastUpdateDiagnostics.revision;
 }
+
 
 }

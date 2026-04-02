@@ -90,9 +90,10 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
  };
 
 
- Core::SharedPtr<BackendVisualTree::Visual> MTLCALayerTree::makeVisual(
+ Core::SharedPtr<BackendVisualTree::Visual> MTLCALayerTree::makeRootVisual(
                                                              Core::Rect &rect,
-                                                             Core::Position & pos){
+                                                             Core::Position & pos,
+                                                             ViewPresentTarget & outPresentTarget){
      auto saneRect = sanitizeVisualRect(rect);
      auto sanePos = saneRect.pos;
 
@@ -116,25 +117,50 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
              std::clamp(saneRect.w * layer.contentsScale,static_cast<CGFloat>(1.f),kMaxDrawableDimension),
              std::clamp(saneRect.h * layer.contentsScale,static_cast<CGFloat>(1.f),kMaxDrawableDimension));
 
+     // Create the native render target — owned by ViewPresentTarget, not the Visual's context.
      OmegaGTE::NativeRenderTargetDescriptor nativeRenderTargetDescriptor {false,layer};
-     auto target = gte.graphicsEngine->makeNativeRenderTarget(nativeRenderTargetDescriptor);
-     Core::Rect r {saneRect};
+     auto nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(nativeRenderTargetDescriptor);
+
      CGFloat scale = layer.contentsScale;
      if(scale <= 0.f || !std::isfinite(static_cast<double>(scale))){
          scale = 2.f;
      }
      scale = std::max(scale,static_cast<CGFloat>(2.f));
-     BackendRenderTargetContext compTarget (r,target,(float)scale);
 
-     return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::Visual(sanePos,compTarget,layer,nil,false));
+     outPresentTarget.nativeTarget = nativeTarget;
+     outPresentTarget.backingWidth = static_cast<unsigned>(std::clamp(saneRect.w * scale,static_cast<CGFloat>(1.f),kMaxDrawableDimension));
+     outPresentTarget.backingHeight = static_cast<unsigned>(std::clamp(saneRect.h * scale,static_cast<CGFloat>(1.f),kMaxDrawableDimension));
+
+     // Root visual's BackendRenderTargetContext is texture-only (nullptr native target).
+     SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
+     Core::Rect r {saneRect};
+     BackendRenderTargetContext compTarget (r,nullNative,(float)scale);
+
+     return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::RootVisual(sanePos,compTarget,layer));
+ };
+
+ Core::SharedPtr<BackendVisualTree::Visual> MTLCALayerTree::makeSurfaceVisual(
+                                                             Core::Rect &rect,
+                                                             Core::Position & pos){
+     auto saneRect = sanitizeVisualRect(rect);
+     auto sanePos = saneRect.pos;
+
+     CGFloat scale = safeScale();
+     SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
+     Core::Rect r {saneRect};
+     BackendRenderTargetContext compTarget (r,nullNative,(float)scale);
+
+     return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::SurfaceVisual(sanePos,compTarget));
  };
 
  void MTLCALayerTree::setRootVisual(Core::SharedPtr<Parent::Visual> & visual){
      root = visual;
-     auto v = std::dynamic_pointer_cast<Visual>(visual);
-     runOnMainThreadSync(^{
-         view->setRootLayer(v->metalLayer);
-     });
+     auto v = std::dynamic_pointer_cast<RootVisual>(visual);
+     if(v != nullptr){
+         runOnMainThreadSync(^{
+             view->setRootLayer(v->metalLayer);
+         });
+     }
  };
 
  void MTLCALayerTree::addVisual(Core::SharedPtr<Parent::Visual> & visual){

@@ -695,10 +695,18 @@ namespace omegasl {
         return node;
     }
 
+    static Tok eofSentinel {TOK_EOF, "", 0, 0, 0};
+
     Tok &Parser::getTok() {
+        if(tokIdx + 1 >= tokenBuffer.size()){
+            return eofSentinel;
+        }
         return tokenBuffer[++tokIdx];
     }
     Tok & Parser::aheadTok() {
+        if(tokIdx + 1 >= tokenBuffer.size()){
+            return eofSentinel;
+        }
         return tokenBuffer[tokIdx + 1];
     }
 

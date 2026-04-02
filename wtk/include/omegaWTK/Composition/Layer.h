@@ -180,7 +180,7 @@ namespace Composition {
          @brief Enable the layer
          @param state The boolean to use.
          */
-        void setEnabled(bool state){enabled = state;};
+        void setEnabled(bool state);
 
         /**
           @brief Checks if this layer is a child of another layer.

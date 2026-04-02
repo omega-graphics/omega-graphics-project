@@ -7,13 +7,14 @@ namespace OmegaWTK::Composition {
     BackendResourceFactory::VisualTreeBundle
     BackendResourceFactory::createVisualTreeForView(
             SharedHandle<ViewRenderTarget> & renderTarget,
-            Core::Rect & rect)
+            Core::Rect & rect,
+            ViewPresentTarget & outPresentTarget)
     {
         VisualTreeBundle result {};
 
         runOnMainThread([&]{
             result.visualTree = BackendVisualTree::Create(renderTarget);
-            result.rootVisual = result.visualTree->makeVisual(rect, rect.pos);
+            result.rootVisual = result.visualTree->makeRootVisual(rect, rect.pos, outPresentTarget);
             result.visualTree->setRootVisual(result.rootVisual);
             result.rootContext = &result.rootVisual->renderTarget;
         });
@@ -55,7 +56,7 @@ namespace OmegaWTK::Composition {
         Core::SharedPtr<BackendVisualTree::Visual> result;
 
         runOnMainThread([&]{
-            result = tree.makeVisual(rect, rect.pos);
+            result = tree.makeSurfaceVisual(rect, rect.pos);
             tree.addVisual(result);
         });
 
@@ -65,12 +66,13 @@ namespace OmegaWTK::Composition {
     Core::SharedPtr<BackendVisualTree::Visual>
     BackendResourceFactory::createRootVisual(
             BackendVisualTree & tree,
-            Core::Rect & rect)
+            Core::Rect & rect,
+            ViewPresentTarget & outPresentTarget)
     {
         Core::SharedPtr<BackendVisualTree::Visual> result;
 
         runOnMainThread([&]{
-            result = tree.makeVisual(rect, rect.pos);
+            result = tree.makeRootVisual(rect, rect.pos, outPresentTarget);
             tree.setRootVisual(result);
         });
 

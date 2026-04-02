@@ -31,28 +31,17 @@ namespace OmegaWTK::Composition {
      public:
          using Parent::body;
          using Parent::root;
-         /**
-          A small structure that holds CAMetalLayer, CATransformLayer,
-          as well a SharedHandle to the original BDCompositionImage
-          */
-         struct Visual : public Parent::Visual {
+
+         /// Root visual — owns a CAMetalLayer for presentation.
+         struct RootVisual : public Parent::Visual {
              CAMetalLayer *metalLayer;
-             CATransformLayer *transformLayer;
-             bool attachTransformLayer;
-             explicit Visual(Core::Position & pos,
+             explicit RootVisual(Core::Position & pos,
                     BackendRenderTargetContext &renderTarget,
-                    CAMetalLayer *metalLayer,
-                    CATransformLayer *transformLayer,
-                    bool attachTransformLayer):
+                    CAMetalLayer *metalLayer):
                      Parent::Visual(pos,renderTarget),
                      metalLayer(metalLayer != nil ?
                                 (CAMetalLayer *)CFRetain((__bridge CFTypeRef)metalLayer) :
-                                nil),
-                     transformLayer(transformLayer != nil ?
-                                    (CATransformLayer *)CFRetain((__bridge CFTypeRef)transformLayer) :
-                                    nil),
-                     attachTransformLayer(attachTransformLayer){
-
+                                nil){
              };
              void resize(Core::Rect & newRect) override {
                  if(metalLayer == nil){
@@ -96,11 +85,6 @@ namespace OmegaWTK::Composition {
                      metalLayer.drawableSize = CGSizeMake(
                              std::clamp(w * scale,static_cast<CGFloat>(1.f),maxDrawableDimension),
                              std::clamp(h * scale,static_cast<CGFloat>(1.f),maxDrawableDimension));
-                     if(attachTransformLayer && transformLayer != nil){
-                         transformLayer.actions = noActions;
-                         transformLayer.frame = frame;
-                         transformLayer.position = CGPointMake(x,y);
-                     }
                      [CATransaction commit];
                  };
                  if([NSThread isMainThread]){
@@ -110,62 +94,35 @@ namespace OmegaWTK::Composition {
                      dispatch_sync(dispatch_get_main_queue(),applyGeometry);
                  }
              }
-             void updateShadowEffect(LayerEffect::DropShadowParams & params) override {
-                 CALayer *targetLayer = attachTransformLayer && transformLayer != nil ?
-                                        (CALayer *)transformLayer :
-                                        (CALayer *)metalLayer;
-                 targetLayer.masksToBounds = NO;
-                 targetLayer.shadowOpacity = params.opacity;
-                 targetLayer.shadowRadius = params.radius;
-                 targetLayer.shadowOffset = CGSizeMake(params.x_offset,params.y_offset);
-                 auto color = CGColorCreateGenericRGB(params.color.r,params.color.g,params.color.b,params.color.a);
-                 targetLayer.shadowColor = color;
-                 CGColorRelease(color);
-             }
-             void updateTransformEffect(LayerEffect::TransformationParams &params) override {
-                 CATransformLayer *tLayer = transformLayer;
-                 if(!attachTransformLayer){
-                     CALayer *superLayer = metalLayer.superlayer;
-                     CGPoint pos = metalLayer.position;
-                     auto newTransformLayer = [CATransformLayer layer];
-                     if(transformLayer != nil){
-                         CFRelease((__bridge CFTypeRef)transformLayer);
-                     }
-                     transformLayer = (CATransformLayer *)CFRetain((__bridge CFTypeRef)newTransformLayer);
-                     tLayer = newTransformLayer;
-                     tLayer.anchorPoint = CGPointMake(0,0);
-                     tLayer.position = pos;
-                     tLayer.frame = metalLayer.frame;
-                     [superLayer replaceSublayer:metalLayer with:transformLayer];
-                     [transformLayer addSublayer:metalLayer];
-                     metalLayer.position = CGPointMake(0,0);
-                     attachTransformLayer = true;
-                 }
-                 auto first = CATransform3DMakeTranslation(params.translate.x,params.translate.y,params.translate.z);
-                 auto second = CATransform3DConcat(first, CATransform3DMakeRotation(params.rotate.pitch,0.f,0.f,1.f));
-                 second = CATransform3DConcat(second, CATransform3DMakeRotation(params.rotate.yaw,0.f,1.f,0.f));
-                 second = CATransform3DConcat(second, CATransform3DMakeRotation(params.rotate.roll,1.f,0.f,0.f));
-                 auto third = CATransform3DConcat(second, CATransform3DMakeScale(params.scale.x,params.scale.y,params.scale.z));
-                 tLayer.transform = third;
-             }
 
-             ~Visual() override {
-                 if(transformLayer != nil){
-                     CFRelease((__bridge CFTypeRef)transformLayer);
-                     transformLayer = nil;
-                 }
+             ~RootVisual() override {
                  if(metalLayer != nil){
                      CFRelease((__bridge CFTypeRef)metalLayer);
                      metalLayer = nil;
                  }
              };
          };
+
+         /// Surface-only visual — GPU texture, no native layer.
+         struct SurfaceVisual : public Parent::Visual {
+             explicit SurfaceVisual(Core::Position & pos,
+                    BackendRenderTargetContext & renderTarget):
+                     Parent::Visual(pos,renderTarget){
+             };
+             void resize(Core::Rect & newRect) override {
+                 renderTarget.setRenderTargetSize(newRect);
+             }
+         };
+
      public:
          explicit MTLCALayerTree(SharedHandle<ViewRenderTarget> & renderTarget);
          ~MTLCALayerTree() override = default;
          void addVisual(Core::SharedPtr<Parent::Visual> & visual) override;
-         Core::SharedPtr<Parent::Visual> makeVisual(Core::Rect & rect,
-                                                    Core::Position & pos) override;
+         Core::SharedPtr<Parent::Visual> makeRootVisual(Core::Rect & rect,
+                                                         Core::Position & pos,
+                                                         ViewPresentTarget & outPresentTarget) override;
+         Core::SharedPtr<Parent::Visual> makeSurfaceVisual(Core::Rect & rect,
+                                                            Core::Position & pos) override;
          void setRootVisual(Core::SharedPtr<Parent::Visual> & visual) override;
      };
 

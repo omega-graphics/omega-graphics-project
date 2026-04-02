@@ -762,7 +762,13 @@ namespace omegasl {
                         shaderOut << ")";
                     }
                     else if(_id == BUILTIN_WRITE){
-
+                        shaderOut << "imageStore(";
+                        generateExpr(_expr->args[0]);
+                        shaderOut << ",ivec2(";
+                        generateExpr(_expr->args[1]);
+                        shaderOut << "),";
+                        generateExpr(_expr->args[2]);
+                        shaderOut << ")";
                     }
                     else {
                         /// Map OmegaSL names to GLSL names where they differ.

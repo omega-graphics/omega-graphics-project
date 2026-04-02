@@ -1,6 +1,7 @@
 #include "omegaWTK/Core/Core.h"
 #include "Path.h"
 #include "FontEngine.h"
+#include "Layer.h"
 
 #include "CompositorClient.h"
 
@@ -62,7 +63,10 @@ namespace OmegaWTK {
             Ellipse,
             VectorPath,
             Text,
-            Bitmap
+            Bitmap,
+            Shadow,
+            SetTransform,
+            SetOpacity
         } Type;
         Type type;
         struct OMEGAWTK_EXPORT Data {
@@ -97,6 +101,14 @@ namespace OmegaWTK {
                 Core::SharedPtr<OmegaGTE::GEFence> textureFence;
                 Core::Rect rect;
             } bitmapParams;
+            struct ShadowParamsData {
+                LayerEffect::DropShadowParams shadow {};
+                Core::Rect shapeRect {};
+                float cornerRadius = 0.f;
+                bool isEllipse = false;
+            } shadowParams {};
+            OmegaGTE::FMatrix<4,4> transformMatrix = OmegaGTE::FMatrix<4,4>::Identity();
+            float opacityValue = 1.f;
 
 
             Data(const Core::Rect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border);
@@ -115,6 +127,12 @@ namespace OmegaWTK {
             Data(Core::SharedPtr<Media::BitmapImage> img,const Core::Rect &rect);
 
             Data(Core::SharedPtr<OmegaGTE::GETexture> texture,Core::SharedPtr<OmegaGTE::GEFence> textureFence,const Core::Rect &rect);
+
+            Data(const LayerEffect::DropShadowParams & shadow,const Core::Rect & shapeRect,float cornerRadius,bool isEllipse);
+
+            explicit Data(const OmegaGTE::FMatrix<4,4> & matrix);
+
+            explicit Data(float opacityVal);
 
             void _destroy(Type t);
 
@@ -147,6 +165,21 @@ namespace OmegaWTK {
 
         template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::SharedPtr<OmegaGTE::GETexture>,Core::SharedPtr<OmegaGTE::GEFence>,Core::Rect)>
         VisualCommand(_Args && ...args):type(Bitmap),params(args...){};
+
+        VisualCommand(const LayerEffect::DropShadowParams & shadow,
+                      const Core::Rect & shapeRect,
+                      float cornerRadius,
+                      bool isEllipse):
+        type(Shadow),
+        params(shadow,shapeRect,cornerRadius,isEllipse){};
+
+        explicit VisualCommand(const OmegaGTE::FMatrix<4,4> & matrix):
+        type(SetTransform),
+        params(matrix){};
+
+        explicit VisualCommand(float opacity):
+        type(SetOpacity),
+        params(opacity){};
 
         ~VisualCommand();
 
@@ -273,6 +306,38 @@ namespace OmegaWTK {
            @param effect The LayerEffect to apply.
           */
         void applyLayerEffect(const SharedHandle<LayerEffect> & effect);
+
+        /**
+         @brief Draw a drop shadow for a rect shape (draw-time, inline geometry).
+         @param rect The shape to shadow.
+         @param shadow Shadow parameters (offset, blur, color, opacity).
+         */
+        void drawShadow(Core::Rect & rect,
+                        const LayerEffect::DropShadowParams & shadow);
+
+        /**
+         @brief Draw a drop shadow for a rounded rect shape.
+         */
+        void drawShadow(Core::RoundedRect & rect,
+                        const LayerEffect::DropShadowParams & shadow);
+
+        /**
+         @brief Draw a drop shadow for an ellipse shape.
+         */
+        void drawShadow(Core::Ellipse & ellipse,
+                        const LayerEffect::DropShadowParams & shadow);
+
+        /**
+         @brief Set the per-element transform matrix for subsequent draw calls.
+         @param matrix 4x4 transform matrix. Use Identity to reset.
+         */
+        void setElementTransform(const OmegaGTE::FMatrix<4,4> & matrix);
+
+        /**
+         @brief Set the per-element opacity for subsequent draw calls.
+         @param opacity Opacity scalar [0..1]. Use 1.0 to reset.
+         */
+        void setElementOpacity(float opacity);
 
         /**
          @brief Set the background color for the current frame.

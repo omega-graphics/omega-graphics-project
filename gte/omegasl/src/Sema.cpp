@@ -882,8 +882,8 @@ namespace omegasl {
                         return nullptr;
                     }
 
-                    if(_t != ast::builtins::float2_type){
-                        reportTypeErr("2nd param of function " + std::string(BUILTIN_WRITE) + " must be a float2");
+                    if(_t != ast::builtins::int2_type && _t != ast::builtins::uint2_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_WRITE) + " must be an int2 or uint2 for texture2d");
                         return nullptr;
                     }
                 }

@@ -55,78 +55,59 @@ namespace OmegaWTK::Composition {
         }
     };
 
-     DCVisualTree::Visual::Visual(Core::Position &pos,
+     DCVisualTree::RootVisual::RootVisual(Core::Position &pos,
                                   BackendRenderTargetContext & context,
                                   IDCompositionVisual2 * visual,
-                                  IDXGISwapChain3 *swapChain,
                                   float renderScale):
      Parent::Visual(pos,context),
-     swapChain(swapChain),
      visual(visual),
      renderScale(renderScale){
-        
      };
 
-    void DCVisualTree::Visual::resize(Core::Rect &newRect){
-        const auto backingWidth = toBackingDimension(newRect.w,renderScale);
-        const auto backingHeight = toBackingDimension(newRect.h,renderScale);
-        renderTarget.resizeSwapChain(backingWidth, backingHeight);
+    void DCVisualTree::RootVisual::resize(Core::Rect &newRect){
+        renderTarget.setRenderTargetSize(newRect);
     }
 
-    void DCVisualTree::Visual::updateShadowEffect(LayerEffect::DropShadowParams &params) {
-        if(shadowVisual == nullptr){
-            comp_device->CreateShadowEffect(&shadowEffect);
-            comp_device_desktop->CreateVisual(&shadowVisual);
-            shadowVisual->SetOpacityMode(DCOMPOSITION_OPACITY_MODE_INHERIT);
-            if(parent != nullptr){
-                parent->AddVisual(shadowVisual,FALSE,visual);
-            }
+    DCVisualTree::RootVisual::~RootVisual(){
+        if(visual != nullptr){
+            visual->RemoveAllVisuals();
+            Core::SafeRelease(&visual);
         }
-        shadowEffect->SetColor(D2D1::Vector4F(params.color.r,params.color.g,params.color.b,params.color.a * params.opacity));
-        shadowEffect->SetStandardDeviation(params.blurAmount);
-        shadowVisual->SetOffsetX(params.x_offset);
-        shadowVisual->SetOffsetY(params.y_offset);
-        shadowVisual->SetEffect(shadowEffect);
-        comp_device->Commit();
-        comp_device->WaitForCommitCompletion();
-    }
-
-    void DCVisualTree::Visual::updateTransformEffect(LayerEffect::TransformationParams &params) {
-        if(transformEffect == nullptr){
-            comp_device->CreateMatrixTransform3D(&transformEffect);
-        }
-        D2D1_MATRIX_4X4_F matrix =
-                D2D1::Matrix4x4F::Translation(params.translate.x,params.translate.y,params.translate.z)
-                * D2D1::Matrix4x4F::RotationX(params.rotate.roll)
-                * D2D1::Matrix4x4F::RotationY(params.rotate.yaw)
-                * D2D1::Matrix4x4F::RotationZ(params.rotate.pitch)
-                * D2D1::Matrix4x4F::Scale(params.scale.x,params.scale.y,params.scale.z);
-        D3DMATRIX m;
-        memcpy(m.m,matrix.m,sizeof(matrix.m));
-        transformEffect->SetMatrix(m);
-        visual->SetEffect(transformEffect);
-        comp_device->Commit();
-        comp_device->WaitForCommitCompletion();
-    }
-
-    DCVisualTree::Visual::~Visual(){
-        visual->RemoveAllVisuals();
-        Core::SafeRelease(&visual);
     };
 
-    Core::SharedPtr<BackendVisualTree::Visual> DCVisualTree::makeVisual(Core::Rect & rect,Core::Position & pos){
-        
+    DCVisualTree::SurfaceVisual::SurfaceVisual(Core::Position &pos,
+                                  BackendRenderTargetContext & context,
+                                  float renderScale):
+     Parent::Visual(pos,context),
+     renderScale(renderScale){
+     };
+
+    void DCVisualTree::SurfaceVisual::resize(Core::Rect &newRect){
+        renderTarget.setRenderTargetSize(newRect);
+    }
+
+    Core::SharedPtr<BackendVisualTree::Visual> DCVisualTree::makeRootVisual(
+            Core::Rect & rect,Core::Position & pos,
+            ViewPresentTarget & outPresentTarget){
+
         OmegaGTE::NativeRenderTargetDescriptor desc {};
         desc.isHwnd = false;
         desc.hwnd = nullptr;
         desc.height = toBackingDimension(rect.h,renderScale);
         desc.width = toBackingDimension(rect.w,renderScale);
 
-        auto target = gte.graphicsEngine->makeNativeRenderTarget(desc);
-        auto swapChain = (IDXGISwapChain3 *)target->getSwapChain();
+        // Create the native render target — owned by ViewPresentTarget.
+        auto nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
+        auto swapChain = (IDXGISwapChain3 *)nativeTarget->getSwapChain();
 
-        BackendRenderTargetContext context {rect,target,renderScale};
-        
+        outPresentTarget.nativeTarget = nativeTarget;
+        outPresentTarget.backingWidth = desc.width;
+        outPresentTarget.backingHeight = desc.height;
+
+        // Root visual's BackendRenderTargetContext is texture-only.
+        SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
+        BackendRenderTargetContext context {rect,nullNative,renderScale};
+
         HRESULT hr;
         IDCompositionVisual2 *v;
         hr = comp_device->CreateVisual(&v);
@@ -140,13 +121,23 @@ namespace OmegaWTK::Composition {
             ss << std::hex << hr;
             MessageBoxA(HWND_DESKTOP,(std::string("Failed to set Content of Visual. ERROR:") + ss.str()).c_str(),NULL,MB_OK);
         };
-        // rc.visual = nullptr;
-        return SharedHandle<Parent::Visual>(new DCVisualTree::Visual {pos,context,v,swapChain,renderScale});
+
+        return SharedHandle<Parent::Visual>(new DCVisualTree::RootVisual {pos,context,v,renderScale});
+    };
+
+    Core::SharedPtr<BackendVisualTree::Visual> DCVisualTree::makeSurfaceVisual(
+            Core::Rect & rect,Core::Position & pos){
+
+        // Surface-only: texture + texture render target, no swap chain, no DComp visual.
+        SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
+        BackendRenderTargetContext context {rect,nullNative,renderScale};
+
+        return SharedHandle<Parent::Visual>(new DCVisualTree::SurfaceVisual {pos,context,renderScale});
     };
 
     void DCVisualTree::setRootVisual(Core::SharedPtr<Parent::Visual> & visual){
         root = visual;
-        auto v = std::dynamic_pointer_cast<Visual>(visual);
+        auto v = std::dynamic_pointer_cast<RootVisual>(visual);
         if(v != nullptr){
             ResourceTrace::emit("Bind",
                                 "BackendVisual",
@@ -154,30 +145,24 @@ namespace OmegaWTK::Composition {
                                 "DCVisualTree::Root",
                                 this);
             v->visual->SetOpacityMode(DCOMPOSITION_OPACITY_MODE_LAYER);
+            hwndTarget->SetRoot(v->visual);
+            comp_device_desktop->Commit();
+            comp_device_desktop->WaitForCommitCompletion();
         }
-        hwndTarget->SetRoot(v->visual);
-        comp_device_desktop->Commit();
-        comp_device_desktop->WaitForCommitCompletion();
     };
 
 
     void DCVisualTree::addVisual(Core::SharedPtr<Parent::Visual> & visual){
         body.push_back(visual);
-        auto r = std::dynamic_pointer_cast<Visual>(root),v =  std::dynamic_pointer_cast<Visual>(visual);
-        if(v != nullptr){
+        if(visual != nullptr){
             ResourceTrace::emit("Bind",
                                 "BackendVisual",
-                                v->traceResourceId,
+                                visual->traceResourceId,
                                 "DCVisualTree::Body",
                                 this);
         }
-        r->visual->AddVisual(v->visual,TRUE,nullptr);
-        if(v->shadowVisual != nullptr){
-            r->visual->AddVisual(v->shadowVisual,FALSE,v->visual);
-        }
-        v->parent = r->visual;
-        comp_device_desktop->Commit();
-        comp_device_desktop->WaitForCommitCompletion();
+        // Surface-only visuals have no DComp visual representation.
+        // Their content is composited via the blit pass in compositeAndPresentTarget.
     };
 
 

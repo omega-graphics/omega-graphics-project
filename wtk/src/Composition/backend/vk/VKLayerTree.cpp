@@ -18,24 +18,8 @@ namespace OmegaWTK::Composition {
                     static_cast<long>(std::lround(logical))));
         }
 
-        class VKCanvasEffectProcessor : public BackendCanvasEffectProcessor {
-        public:
-            explicit VKCanvasEffectProcessor(SharedHandle<OmegaGTE::GEFence> &fence):
-            BackendCanvasEffectProcessor(fence){
-            }
-
-            void applyEffects(SharedHandle<OmegaGTE::GETexture> &dest,
-                              SharedHandle<OmegaGTE::GETextureRenderTarget> &textureTarget,
-                              OmegaCommon::Vector<CanvasEffect> &effects) override {
-                (void)dest;
-                (void)textureTarget;
-                (void)effects;
-            }
-        };
-
         class VKFallbackVisualTree : public BackendVisualTree {
             SharedHandle<Native::GTK::GTKItem> view;
-            SharedHandle<OmegaGTE::GENativeRenderTarget> nativeTarget;
             bool warnedMissingNativeHandle = false;
             bool warnedNativeTargetInitFailure = false;
 
@@ -64,26 +48,6 @@ namespace OmegaWTK::Composition {
                 return false;
             }
 
-            SharedHandle<OmegaGTE::GENativeRenderTarget> getOrCreateNativeTarget(const Core::Rect &rect){
-                if(nativeTarget != nullptr){
-                    return nativeTarget;
-                }
-                OmegaGTE::NativeRenderTargetDescriptor desc {};
-                if(!resolveNativeRenderTargetDescriptor(rect,desc)){
-                    if(!warnedMissingNativeHandle){
-                        std::cout << "[OmegaWTK][Vulkan][GTK] Native window handle unavailable for Vulkan render target." << std::endl;
-                        warnedMissingNativeHandle = true;
-                    }
-                    return nullptr;
-                }
-                nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
-                if(nativeTarget == nullptr && !warnedNativeTargetInitFailure){
-                    std::cout << "[OmegaWTK][Vulkan][GTK] Failed to create Vulkan native render target from GTK descriptor." << std::endl;
-                    warnedNativeTargetInitFailure = true;
-                }
-                return nativeTarget;
-            }
-
             struct Visual : public BackendVisualTree::Visual {
                 explicit Visual(Core::Position &pos, BackendRenderTargetContext &context):
                 BackendVisualTree::Visual(pos,context){
@@ -91,14 +55,6 @@ namespace OmegaWTK::Composition {
 
                 void resize(Core::Rect &newRect) override {
                     renderTarget.setRenderTargetSize(newRect);
-                }
-
-                void updateShadowEffect(LayerEffect::DropShadowParams &params) override {
-                    (void)params;
-                }
-
-                void updateTransformEffect(LayerEffect::TransformationParams &params) override {
-                    (void)params;
                 }
             };
         public:
@@ -110,10 +66,31 @@ namespace OmegaWTK::Composition {
                 body.push_back(visual);
             }
 
-            Core::SharedPtr<BackendVisualTree::Visual> makeVisual(Core::Rect &rect,Core::Position &pos) override {
-                auto target = getOrCreateNativeTarget(rect);
-                BackendRenderTargetContext context {rect,target,1.f};
+            Core::SharedPtr<BackendVisualTree::Visual> makeRootVisual(
+                    Core::Rect &rect,Core::Position &pos,
+                    ViewPresentTarget & outPresentTarget) override {
+                OmegaGTE::NativeRenderTargetDescriptor desc {};
+                if(resolveNativeRenderTargetDescriptor(rect,desc)){
+                    outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
+                    outPresentTarget.backingWidth = toBackingDimension(rect.w);
+                    outPresentTarget.backingHeight = toBackingDimension(rect.h);
+                }
+                else {
+                    if(!warnedMissingNativeHandle){
+                        std::cout << "[OmegaWTK][Vulkan][GTK] Native window handle unavailable for Vulkan render target." << std::endl;
+                        warnedMissingNativeHandle = true;
+                    }
+                }
 
+                SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
+                BackendRenderTargetContext context {rect,nullNative,1.f};
+                return Core::SharedPtr<BackendVisualTree::Visual>(new Visual(pos,context));
+            }
+
+            Core::SharedPtr<BackendVisualTree::Visual> makeSurfaceVisual(
+                    Core::Rect &rect,Core::Position &pos) override {
+                SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
+                BackendRenderTargetContext context {rect,nullNative,1.f};
                 return Core::SharedPtr<BackendVisualTree::Visual>(new Visual(pos,context));
             }
 
@@ -121,11 +98,6 @@ namespace OmegaWTK::Composition {
                 root = visual;
             }
         };
-    }
-
-    SharedHandle<BackendCanvasEffectProcessor>
-    BackendCanvasEffectProcessor::Create(SharedHandle<OmegaGTE::GEFence> &fence) {
-        return SharedHandle<BackendCanvasEffectProcessor>(new VKCanvasEffectProcessor(fence));
     }
 
     SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRenderTarget> &view){

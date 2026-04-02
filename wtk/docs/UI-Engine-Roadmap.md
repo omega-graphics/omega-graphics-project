@@ -66,7 +66,6 @@ Related documents:
 | 2.4 SplitView | Resizable panes; divider drag. |
 | 2.5 Tabs + TabItem | Tab bar + content switching. |
 | 2.6 ScrollableContainer | Real implementation using `ScrollView`; scrollable content host. |
-| 2.7 AnimatedContainer | Container + layout/state transitions via animation runtime. |
 
 **Exit criteria:** Any full-page layout can be expressed with stacks, grid, split, tabs, and scroll.
 
@@ -100,10 +99,10 @@ Related documents:
 
 | Milestone | Deliverables |
 |-----------|----------------|
-| 4.1 ListView | Virtualized list; cell reuse; stable key model; vertical/horizontal. |
-| 4.2 TreeView | Hierarchical list; expand/collapse; selection. |
-| 4.3 TableView | Columnar data; sorting; column resize; selection model. |
-| 4.4 CollectionView | Grid/flow layout with reusable item renderer. |
+| 4.1 List | Virtualized list; cell reuse; stable key model; vertical/horizontal. |
+| 4.2 Tree | Hierarchical list; expand/collapse; selection. |
+| 4.3 Table | Columnar data; sorting; column resize; selection model. |
+| 4.4 Collection | Grid/flow layout with reusable item renderer. |
 | 4.5 PropertyGrid | Label/value editing panel for tooling. |
 | 4.6 NavigationStack | Push/pop page flow (wizard/mobile-style). |
 | 4.7 Sidebar | Section/category navigation (desktop shell). |
@@ -136,9 +135,9 @@ Related documents:
 
 | Milestone | Deliverables |
 |-----------|----------------|
-| 6.1 VideoViewWidget, AudioPlayerWidget | Widget wrappers over VideoView; transport + optional waveform/levels. |
-| 6.2 SVGViewWidget, CanvasWidget | SVG document widget; immediate-mode drawing escape hatch. |
-| 6.3 PDFView (optional) | Multi-page document view for desktop. |
+<!-- | 6.1 VideoViewWidget, AudioPlayerWidget | Widget wrappers over VideoView; transport + optional waveform/levels. |
+| 6.2 SVGViewWidget, CanvasWidget | SVG document widget; immediate-mode drawing escape hatch. | -->
+| 6.3 PDFViewer (optional) | Multi-page document view for desktop. |
 | 6.4 FocusRingHost, shortcut hints | Centralized focus visuals; keyboard shortcut annotation. |
 | 6.5 InspectorPanel (optional) | Runtime property inspection for devtools. |
 
@@ -156,9 +155,7 @@ The following table lists every widget type that, once implemented, brings Omega
 |--------|---------|--------|
 | `Widget` | Base visual/control unit | **Done** |
 | `Container` | Parent-managed child host, clamp policy | **Done** |
-| `AnimatedContainer` | Container + layout/state transitions | **Stub** |
 | `ScrollableContainer` | Scroll viewport + content host | **Stub** |
-| `UIViewWidget` | Widget wrapping UIView (layout + StyleSheet) | **Planned** |
 
 ### 3.2 Layout
 

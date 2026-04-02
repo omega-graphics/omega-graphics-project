@@ -363,6 +363,30 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
             };
             blocks.push_back(block);
         }
+        void writeInt(int &v) override {
+            blocks.push_back(DataBlock {OMEGASL_INT,new int(v)});
+        }
+        void writeInt2(IVec<2> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_INT2,new DirectX::XMINT2{v[0][0],v[1][0]}});
+        }
+        void writeInt3(IVec<3> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_INT3,new DirectX::XMINT3{v[0][0],v[1][0],v[2][0]}});
+        }
+        void writeInt4(IVec<4> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_INT4,new DirectX::XMINT4{v[0][0],v[1][0],v[2][0],v[3][0]}});
+        }
+        void writeUint(unsigned &v) override {
+            blocks.push_back(DataBlock {OMEGASL_UINT,new unsigned(v)});
+        }
+        void writeUint2(UVec<2> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_UINT2,new DirectX::XMUINT2{v[0][0],v[1][0]}});
+        }
+        void writeUint3(UVec<3> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_UINT3,new DirectX::XMUINT3{v[0][0],v[1][0],v[2][0]}});
+        }
+        void writeUint4(UVec<4> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_UINT4,new DirectX::XMUINT4{v[0][0],v[1][0],v[2][0],v[3][0]}});
+        }
         void structEnd() override {
             inStruct = false;
         }
@@ -384,6 +408,18 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
                 }
                 else if(block.type == OMEGASL_FLOAT4){
                     dataSize = sizeof(DirectX::XMFLOAT4);
+                }
+                else if(block.type == OMEGASL_INT || block.type == OMEGASL_UINT){
+                    dataSize = sizeof(int);
+                }
+                else if(block.type == OMEGASL_INT2 || block.type == OMEGASL_UINT2){
+                    dataSize = sizeof(DirectX::XMINT2);
+                }
+                else if(block.type == OMEGASL_INT3 || block.type == OMEGASL_UINT3){
+                    dataSize = sizeof(DirectX::XMINT3);
+                }
+                else if(block.type == OMEGASL_INT4 || block.type == OMEGASL_UINT4){
+                    dataSize = sizeof(DirectX::XMINT4);
                 }
                 memcpy(_data_buffer + currentOffset,block.data,dataSize);
                 currentOffset += dataSize;

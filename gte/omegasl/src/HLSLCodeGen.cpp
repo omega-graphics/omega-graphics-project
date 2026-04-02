@@ -143,12 +143,13 @@ namespace omegasl {
                         shaderOut << ")";
                     }
                     else if(_id_expr == BUILTIN_WRITE){
-                        /// Texture has method for accessing texel data.
+                        /// RWTexture2D write: texture[coord] = data
                         generatedExprBody = true;
                         generateExpr(_expr->args[0]);
                         shaderOut << "[";
                         generateExpr(_expr->args[1]);
-                        shaderOut << "]";
+                        shaderOut << "] = ";
+                        generateExpr(_expr->args[2]);
                     }
                     else if(_id_expr == BUILTIN_READ){
                         generatedExprBody = true;

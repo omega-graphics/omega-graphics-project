@@ -82,17 +82,13 @@ protected:
 
         OmegaWTK::UIViewLayout layout {};
         layout.shape("rounded_outer",OmegaWTK::Shape::RoundedRect(outer));
-        layout.shape("rounded_inner",OmegaWTK::Shape::RoundedRect(inner));
+        // layout.shape("rounded_inner",OmegaWTK::Shape::RoundedRect(inner));
         uiView->setLayout(layout);
 
         auto style = OmegaWTK::StyleSheet::Create();
         style = style->backgroundColor("rounded_frame_view",OmegaWTK::Composition::Color::Transparent);
         style = style->elementBrush("rounded_outer",OmegaWTK::Composition::ColorBrush(
             OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)),
-            true,
-            0.28f);
-        style = style->elementBrush("rounded_inner",OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::Transparent),
             true,
             0.28f);
         style = style->elementDropShadow("rounded_outer",makeShadow(0.f,4.f,2.f,8.f,0.55f),true,0.28f);

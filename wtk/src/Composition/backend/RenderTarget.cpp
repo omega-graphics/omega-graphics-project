@@ -99,6 +99,9 @@ namespace OmegaWTK::Composition {
     static OmegaCommon::Map<OmegaGTE::PixelFormat,SharedHandle<OmegaGTE::GERenderPipelineState>> finalCopyPipelinesByFormat;
 
     static SharedHandle<OmegaGTE::GEComputePipelineState> linearGradientPipelineState;
+    static SharedHandle<OmegaGTE::GEComputePipelineState> gaussianBlurHPipelineState;
+    static SharedHandle<OmegaGTE::GEComputePipelineState> gaussianBlurVPipelineState;
+    static SharedHandle<OmegaGTE::GEComputePipelineState> directionalBlurPipelineState;
 
     static constexpr std::size_t kTextureHeapSize = 64u * 1024u * 1024u;
     static constexpr std::size_t kBufferHeapSize = 8u * 1024u * 1024u;
@@ -197,6 +200,118 @@ fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
     return sample(mainSampler,tex,raster.texCoord);
 }
 
+struct BlurParams {
+    float radius;
+    uint texWidth;
+    uint texHeight;
+    float angle;
+};
+
+buffer<BlurParams> blurParams : 5;
+texture2d blurSrcTex : 3;
+texture2d blurDstTex : 4;
+
+[in blurParams, in blurSrcTex, out blurDstTex]
+compute(x=8,y=8,z=1)
+void gaussianBlurH(uint3 tid : GlobalThreadID){
+    uint x = tid[0];
+    uint y = tid[1];
+    uint texW = blurParams[0].texWidth;
+    uint texH = blurParams[0].texHeight;
+    if(x >= texW){ return; }
+    if(y >= texH){ return; }
+
+    float radius = blurParams[0].radius;
+    float sigma = max(radius * 0.5, 0.5);
+    int kernelRadius = max(1, (int)(radius * 2.0));
+
+    float4 accum = make_float4(0.0, 0.0, 0.0, 0.0);
+    float weightSum = 0.0;
+    int k = 0 - kernelRadius;
+
+    for(; k <= kernelRadius; k = k + 1){
+        float fk = (float)k;
+        int sx = max(0, min((int)x + k, (int)texW - 1));
+        uint2 sc = make_uint2((uint)sx, y);
+        float4 s = read(blurSrcTex, sc);
+        float w = exp(0.0 - (fk * fk) / (2.0 * sigma * sigma));
+        accum = accum + s * w;
+        weightSum = weightSum + w;
+    }
+
+    float4 result = accum * (1.0 / max(weightSum, 0.0001));
+    uint2 coord = make_uint2(x, y);
+    write(blurDstTex, coord, result);
+}
+
+[in blurParams, in blurSrcTex, out blurDstTex]
+compute(x=8,y=8,z=1)
+void gaussianBlurV(uint3 tid : GlobalThreadID){
+    uint x = tid[0];
+    uint y = tid[1];
+    uint texW = blurParams[0].texWidth;
+    uint texH = blurParams[0].texHeight;
+    if(x >= texW){ return; }
+    if(y >= texH){ return; }
+
+    float radius = blurParams[0].radius;
+    float sigma = max(radius * 0.5, 0.5);
+    int kernelRadius = max(1, (int)(radius * 2.0));
+
+    float4 accum = make_float4(0.0, 0.0, 0.0, 0.0);
+    float weightSum = 0.0;
+    int k = 0 - kernelRadius;
+
+    for(; k <= kernelRadius; k = k + 1){
+        float fk = (float)k;
+        int sy = max(0, min((int)y + k, (int)texH - 1));
+        uint2 sc = make_uint2(x, (uint)sy);
+        float4 s = read(blurSrcTex, sc);
+        float w = exp(0.0 - (fk * fk) / (2.0 * sigma * sigma));
+        accum = accum + s * w;
+        weightSum = weightSum + w;
+    }
+
+    float4 result = accum * (1.0 / max(weightSum, 0.0001));
+    uint2 coord = make_uint2(x, y);
+    write(blurDstTex, coord, result);
+}
+
+[in blurParams, in blurSrcTex, out blurDstTex]
+compute(x=8,y=8,z=1)
+void directionalBlur(uint3 tid : GlobalThreadID){
+    uint x = tid[0];
+    uint y = tid[1];
+    uint texW = blurParams[0].texWidth;
+    uint texH = blurParams[0].texHeight;
+    if(x >= texW){ return; }
+    if(y >= texH){ return; }
+
+    float radius = blurParams[0].radius;
+    float angle = blurParams[0].angle;
+    float dirX = cos(angle);
+    float dirY = sin(angle);
+    int samplesPerSide = max(1, (int)(radius * 2.0));
+
+    float4 accum = make_float4(0.0, 0.0, 0.0, 0.0);
+    float weightSum = 0.0;
+    int s = 0 - samplesPerSide;
+
+    for(; s <= samplesPerSide; s = s + 1){
+        float t = (radius * (float)s) / (float)samplesPerSide;
+        int sx = max(0, min((int)((float)x + dirX * t), (int)texW - 1));
+        int sy = max(0, min((int)((float)y + dirY * t), (int)texH - 1));
+        uint2 sc = make_uint2((uint)sx, (uint)sy);
+        float4 sp = read(blurSrcTex, sc);
+        accum = accum + sp;
+        weightSum = weightSum + 1.0;
+    }
+
+    float4 result = accum * (1.0 / max(weightSum, 0.0001));
+    uint2 coord = make_uint2(x, y);
+    write(blurDstTex, coord, result);
+}
+
 )";
 
     static SharedHandle<OmegaGTE::GEBuffer> finalTextureDrawBuffer;
@@ -269,6 +384,27 @@ fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
 //        OmegaGTE::ComputePipelineDescriptor linearGradientPipelineDesc {};
 //        linearGradientPipelineDesc.computeFunc = shaderLibrary->shaders["linearGradient"];
 //        linearGradientPipelineState = gte.graphicsEngine->makeComputePipelineState(linearGradientPipelineDesc);
+
+        // Blur compute pipelines.
+        auto blurHFunc = getShader("gaussianBlurH");
+        auto blurVFunc = getShader("gaussianBlurV");
+        auto dirBlurFunc = getShader("directionalBlur");
+        if(blurHFunc != nullptr){
+            OmegaGTE::ComputePipelineDescriptor desc {};
+            desc.computeFunc = blurHFunc;
+            gaussianBlurHPipelineState = gte.graphicsEngine->makeComputePipelineState(desc);
+        }
+        if(blurVFunc != nullptr){
+            OmegaGTE::ComputePipelineDescriptor desc {};
+            desc.computeFunc = blurVFunc;
+            gaussianBlurVPipelineState = gte.graphicsEngine->makeComputePipelineState(desc);
+        }
+        if(dirBlurFunc != nullptr){
+            OmegaGTE::ComputePipelineDescriptor desc {};
+            desc.computeFunc = dirBlurFunc;
+            directionalBlurPipelineState = gte.graphicsEngine->makeComputePipelineState(desc);
+        }
+
         auto struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT2});
 
         auto pos = OmegaGTE::FVec<4>::Create();
@@ -629,7 +765,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             }
         }
         // #endregion
-        if(renderTarget == nullptr || preEffectTarget == nullptr){
+        if(preEffectTarget == nullptr){
             if(completionHandler){
                 BackendSubmissionTelemetry telemetry {};
                 telemetry.syncLaneId = syncLaneId;
@@ -653,7 +789,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             std::cout << "[WTK Diag] commit: preEffectTarget->commit()" << std::endl;
             preEffectTarget->commit();
             std::cout << "[WTK Diag] commit: applyEffects" << std::endl;
-            imageProcessor->applyEffects(effectTexture,preEffectTarget,effectQueue);
+            imageProcessor->applyEffects(effectTexture,preEffectTarget,effectQueue,backingWidth,backingHeight);
             preEffectTarget->waitForGPU();
             preEffectTarget->signalFence(fence);
         } else {
@@ -663,9 +799,6 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             std::cout << "[WTK Diag] commit: preEffectTarget->commit() done" << std::endl;
         }
         committedTexture = preEffectTarget->underlyingTexture();
-        if(canApplyEffects){
-            committedTexture = effectTexture;
-        }
         effectQueue.clear();
         hasPendingContent = true;
     }
@@ -938,6 +1071,89 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                                                   &viewPort);
                 break;
             }
+            case VisualCommand::Shadow: {
+                auto & _params = ((VisualCommandParams*)params)->shadowParams;
+                const auto & shadow = _params.shadow;
+
+                // Offset and expand the shape rect by blurAmount.
+                float expand = std::max(0.f,shadow.blurAmount);
+                Core::Rect shadowRect {
+                    Core::Position{
+                        _params.shapeRect.pos.x + shadow.x_offset - expand,
+                        _params.shapeRect.pos.y + shadow.y_offset - expand
+                    },
+                    std::max(1.f,_params.shapeRect.w + expand * 2.f),
+                    std::max(1.f,_params.shapeRect.h + expand * 2.f)
+                };
+
+                auto shadowColor = OmegaGTE::makeColor(shadow.color.r,
+                                                         shadow.color.g,
+                                                         shadow.color.b,
+                                                         shadow.color.a * shadow.opacity);
+
+                if(_params.isEllipse){
+                    // Tessellate as ellipse.
+                    float cx = shadowRect.pos.x + shadowRect.w * 0.5f;
+                    float cy = shadowRect.pos.y + shadowRect.h * 0.5f;
+                    float rx = shadowRect.w * 0.5f;
+                    float ry = shadowRect.h * 0.5f;
+
+                    auto toNdcPoint = [&](float px,float py){
+                        return OmegaGTE::GPoint3D{
+                                ((2.0f * px) / viewPort.width) - 1.0f,
+                                ((2.0f * py) / viewPort.height) - 1.0f,
+                                0.0f};
+                    };
+
+                    OmegaGTE::TETriangulationResult::TEMesh mesh {OmegaGTE::TETriangulationResult::TEMesh::TopologyTriangle};
+                    const auto center = toNdcPoint(cx,cy);
+                    const unsigned segCount = std::min(4096u,std::max(96u,
+                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * renderScale))));
+                    auto prev = toNdcPoint(cx + rx,cy);
+                    const float twoPi = static_cast<float>(2.0 * OmegaGTE::PI);
+
+                    for(unsigned i = 1; i <= segCount; i++){
+                        const float angle = (twoPi * static_cast<float>(i)) / static_cast<float>(segCount);
+                        auto next = toNdcPoint(cx + std::cos(angle) * rx,cy + std::sin(angle) * ry);
+
+                        OmegaGTE::TETriangulationResult::TEMesh::Polygon tri {};
+                        tri.a.pt = center; tri.b.pt = prev; tri.c.pt = next;
+                        tri.a.attachment = tri.b.attachment = tri.c.attachment =
+                            std::make_optional<OmegaGTE::TETriangulationResult::AttachmentData>(
+                                OmegaGTE::TETriangulationResult::AttachmentData{
+                                    shadowColor,OmegaGTE::FVec<2>::Create(),OmegaGTE::FVec<3>::Create()});
+                        mesh.vertexPolygons.push_back(tri);
+                        prev = next;
+                    }
+                    result.meshes.push_back(mesh);
+                }
+                else if(_params.cornerRadius > 0.f){
+                    Core::RoundedRect rr {};
+                    rr.pos = shadowRect.pos;
+                    rr.w = shadowRect.w;
+                    rr.h = shadowRect.h;
+                    rr.rad_x = std::min(_params.cornerRadius + expand,shadowRect.w * 0.5f);
+                    rr.rad_y = rr.rad_x;
+                    auto te_params = OmegaGTE::TETriangulationParams::RoundedRect(rr);
+                    te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(shadowColor));
+                    result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                }
+                else {
+                    auto te_params = OmegaGTE::TETriangulationParams::Rect(shadowRect);
+                    te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(shadowColor));
+                    result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                }
+                break;
+            }
+            case VisualCommand::SetTransform: {
+                auto & _params = ((VisualCommandParams*)params)->transformMatrix;
+                currentTransform = _params;
+                return;
+            }
+            case VisualCommand::SetOpacity: {
+                currentOpacity = ((VisualCommandParams*)params)->opacityValue;
+                return;
+            }
             case VisualCommand::Text:
             default:
                 return;
@@ -1029,12 +1245,25 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
         unsigned startVertexIndex = 0;
 
+        const bool hasTransform = !(currentTransform == OmegaGTE::FMatrix<4,4>::Identity());
+        const float opacityMul = currentOpacity;
+
+        auto applyTransform = [&](OmegaGTE::FVec<4> & pos){
+            if(hasTransform){
+                pos = currentTransform * pos;
+            }
+        };
+
         auto writeColorVertexToBuffer = [&](OmegaGTE::GPoint3D & pt,OmegaGTE::FVec<4> color){
             auto pos = OmegaGTE::FVec<4>::Create();
             pos[0][0] = pt.x;
             pos[1][0] = pt.y;
             pos[2][0] = pt.z;
             pos[3][0] = 1.f;
+            applyTransform(pos);
+            if(opacityMul < 1.f){
+                color[3][0] *= opacityMul;
+            }
             bufferWriter->structBegin();
             bufferWriter->writeFloat4(pos);
             bufferWriter->writeFloat4(color);
@@ -1061,6 +1290,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             pos[1][0] = pt.y;
             pos[2][0] = pt.z;
             pos[3][0] = 1.f;
+            applyTransform(pos);
             bufferWriter->structBegin();
             bufferWriter->writeFloat4(pos);
             bufferWriter->writeFloat2(normalizedCoord);
@@ -1225,7 +1455,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             return;
         }
 
-        auto & nativeTarget = allContexts[0]->getNativeRenderTarget();
+        auto & nativeTarget = compTarget.viewPresentTarget.nativeTarget;
         if(nativeTarget == nullptr){
             for(auto *ctx : freshlyPending){
                 ctx->hasPendingContent = false;
@@ -1319,6 +1549,175 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             }
             compositeAndPresentTarget(compTarget);
         }
+    }
+
+    SharedHandle<OmegaGTE::GEComputePipelineState> getGaussianBlurHPipeline(){
+        return gaussianBlurHPipelineState;
+    }
+    SharedHandle<OmegaGTE::GEComputePipelineState> getGaussianBlurVPipeline(){
+        return gaussianBlurVPipelineState;
+    }
+    SharedHandle<OmegaGTE::GEComputePipelineState> getDirectionalBlurPipeline(){
+        return directionalBlurPipelineState;
+    }
+
+    /// Unified cross-platform effect processor using OmegaSL compute shaders.
+    class GPUCanvasEffectProcessor : public BackendCanvasEffectProcessor {
+    public:
+        explicit GPUCanvasEffectProcessor(SharedHandle<OmegaGTE::GEFence> & fence):
+            BackendCanvasEffectProcessor(fence){}
+
+        void applyEffects(SharedHandle<OmegaGTE::GETexture> & dest,
+                          SharedHandle<OmegaGTE::GETextureRenderTarget> & textureTarget,
+                          OmegaCommon::Vector<CanvasEffect> & effects,
+                          unsigned width,
+                          unsigned height) override {
+            if(effects.empty()){
+                return;
+            }
+            auto src = textureTarget->underlyingTexture();
+            if(src == nullptr || dest == nullptr){
+                return;
+            }
+            if(width == 0 || height == 0){
+                return;
+            }
+
+            for(auto & effect : effects){
+                switch(effect.type){
+                    case CanvasEffect::GaussianBlur: {
+                        auto blurH = gaussianBlurHPipelineState;
+                        auto blurV = gaussianBlurVPipelineState;
+                        if(blurH == nullptr || blurV == nullptr){ break; }
+                        float radius = std::max(0.f, effect.gaussianBlur.radius);
+                        if(radius <= 0.f){ break; }
+
+                        // BlurParams: float radius, uint texWidth, uint texHeight, float angle
+                        auto structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT,OMEGASL_UINT,OMEGASL_UINT,OMEGASL_FLOAT});
+                        OmegaGTE::BufferDescriptor bd {OmegaGTE::BufferDescriptor::Upload,structSize,structSize};
+                        auto pb = gte.graphicsEngine->makeBuffer(bd);
+                        if(pb == nullptr){ break; }
+                        bufferWriter->setOutputBuffer(pb);
+                        float angle = 0.f;
+                        bufferWriter->structBegin();
+                        bufferWriter->writeFloat(radius);
+                        bufferWriter->writeUint(width);
+                        bufferWriter->writeUint(height);
+                        bufferWriter->writeFloat(angle);
+                        bufferWriter->structEnd();
+                        bufferWriter->sendToBuffer();
+                        bufferWriter->flush();
+
+                        unsigned gx = (width + 7) / 8;
+                        unsigned gy = (height + 7) / 8;
+
+                        // H pass: src → dest
+                        {
+                            auto cb = textureTarget->commandBuffer();
+                            cb->startComputePass(blurH);
+                            cb->bindResourceAtComputeShader(pb, 5);
+                            cb->bindResourceAtComputeShader(src, 3);
+                            cb->bindResourceAtComputeShader(dest, 4);
+                            cb->dispatchThreadgroups(gx, gy, 1);
+                            cb->endComputePass();
+                            textureTarget->submitCommandBuffer(cb);
+                        }
+                        // V pass: dest → src (ping-pong)
+                        {
+                            auto cb = textureTarget->commandBuffer();
+                            cb->startComputePass(blurV);
+                            cb->bindResourceAtComputeShader(pb, 5);
+                            cb->bindResourceAtComputeShader(dest, 3);
+                            cb->bindResourceAtComputeShader(src, 4);
+                            cb->dispatchThreadgroups(gx, gy, 1);
+                            cb->endComputePass();
+                            textureTarget->submitCommandBuffer(cb);
+                        }
+                        // After H→dest, V→src ping-pong, result is back in src
+                        // (the preEffectTarget's underlying texture), which commit()
+                        // uses as committedTexture.
+                        break;
+                    }
+                    case CanvasEffect::DirectionalBlur: {
+                        auto dirPipe = directionalBlurPipelineState;
+                        if(dirPipe == nullptr){ break; }
+                        float radius = std::max(0.f, effect.directionalBlur.radius);
+                        if(radius <= 0.f){ break; }
+
+                        float dirAngle = effect.directionalBlur.angle;
+
+                        auto structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT,OMEGASL_UINT,OMEGASL_UINT,OMEGASL_FLOAT});
+                        OmegaGTE::BufferDescriptor bd {OmegaGTE::BufferDescriptor::Upload,structSize,structSize};
+                        auto pb = gte.graphicsEngine->makeBuffer(bd);
+                        if(pb == nullptr){ break; }
+                        bufferWriter->setOutputBuffer(pb);
+                        bufferWriter->structBegin();
+                        bufferWriter->writeFloat(radius);
+                        bufferWriter->writeUint(width);
+                        bufferWriter->writeUint(height);
+                        bufferWriter->writeFloat(dirAngle);
+                        bufferWriter->structEnd();
+                        bufferWriter->sendToBuffer();
+                        bufferWriter->flush();
+
+                        unsigned gx = (width + 7) / 8;
+                        unsigned gy = (height + 7) / 8;
+
+                        // Pass 1: directional blur src→dest
+                        {
+                            auto cb = textureTarget->commandBuffer();
+                            cb->startComputePass(dirPipe);
+                            cb->bindResourceAtComputeShader(pb, 5);
+                            cb->bindResourceAtComputeShader(src, 3);
+                            cb->bindResourceAtComputeShader(dest, 4);
+                            cb->dispatchThreadgroups(gx, gy, 1);
+                            cb->endComputePass();
+                            textureTarget->submitCommandBuffer(cb);
+                        }
+                        // Pass 2: copy dest→src using H blur with zero radius (identity)
+                        {
+                            auto pb2 = gte.graphicsEngine->makeBuffer(bd);
+                            if(pb2 != nullptr){
+                                float zeroRadius = 0.f;
+                                float zeroAngle = 0.f;
+                                bufferWriter->setOutputBuffer(pb2);
+                                bufferWriter->structBegin();
+                                bufferWriter->writeFloat(zeroRadius);
+                                bufferWriter->writeUint(width);
+                                bufferWriter->writeUint(height);
+                                bufferWriter->writeFloat(zeroAngle);
+                                bufferWriter->structEnd();
+                                bufferWriter->sendToBuffer();
+                                bufferWriter->flush();
+
+                                auto blurH = gaussianBlurHPipelineState;
+                                if(blurH != nullptr){
+                                    auto cb2 = textureTarget->commandBuffer();
+                                    cb2->startComputePass(blurH);
+                                    cb2->bindResourceAtComputeShader(pb2, 5);
+                                    cb2->bindResourceAtComputeShader(dest, 3);
+                                    cb2->bindResourceAtComputeShader(src, 4);
+                                    cb2->dispatchThreadgroups(gx, gy, 1);
+                                    cb2->endComputePass();
+                                    textureTarget->submitCommandBuffer(cb2);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // Fence synchronization for the composite pass.
+            auto cb = textureTarget->commandBuffer();
+            textureTarget->submitCommandBuffer(cb, fence);
+            textureTarget->commit();
+        }
+    };
+
+    SharedHandle<BackendCanvasEffectProcessor>
+    BackendCanvasEffectProcessor::Create(SharedHandle<OmegaGTE::GEFence> & fence){
+        return SharedHandle<BackendCanvasEffectProcessor>(new GPUCanvasEffectProcessor(fence));
     }
 
 }

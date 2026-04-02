@@ -18,28 +18,36 @@ class DCVisualTree : public BackendVisualTree {
     float renderScale = 1.f;
     typedef BackendVisualTree Parent;
     public:
-    struct Visual : public Parent::Visual {
-        IDXGISwapChain3 *swapChain;
-        IDCompositionVisual2 * visual,*parent = nullptr;
-        IDCompositionVisual2 * shadowVisual = nullptr;
-        IDCompositionMatrixTransform3D *transformEffect = nullptr;
-        IDCompositionShadowEffect *shadowEffect = nullptr;
+
+    /// Root visual — owns IDCompositionVisual2 for DComp tree.
+    /// The IDXGISwapChain3 is owned by ViewPresentTarget, not this struct.
+    struct RootVisual : public Parent::Visual {
+        IDCompositionVisual2 * visual;
         float renderScale = 1.f;
-        explicit Visual(Core::Position & pos,
+        explicit RootVisual(Core::Position & pos,
                         BackendRenderTargetContext &context,
                         IDCompositionVisual2 * visual,
-                        IDXGISwapChain3 *swapChain,
                         float renderScale);
-        void updateShadowEffect(LayerEffect::DropShadowParams &params) override;
-        void updateTransformEffect(LayerEffect::TransformationParams &params) override;
         void resize(Core::Rect &newRect) override;
-        ~Visual() override;
+        ~RootVisual() override;
     };
+
+    /// Surface-only visual — GPU texture, no swap chain or DComp visual.
+    struct SurfaceVisual : public Parent::Visual {
+        float renderScale = 1.f;
+        explicit SurfaceVisual(Core::Position & pos,
+                        BackendRenderTargetContext &context,
+                        float renderScale);
+        void resize(Core::Rect &newRect) override;
+    };
+
     explicit DCVisualTree(SharedHandle<ViewRenderTarget> & view);
     void addVisual(Core::SharedPtr<Parent::Visual> & visual) override;
-    Core::SharedPtr<Parent::Visual> makeVisual(Core::Rect & rect,Core::Position & pos) override;
+    Core::SharedPtr<Parent::Visual> makeRootVisual(Core::Rect & rect,Core::Position & pos,
+                                                    ViewPresentTarget & outPresentTarget) override;
+    Core::SharedPtr<Parent::Visual> makeSurfaceVisual(Core::Rect & rect,Core::Position & pos) override;
     void setRootVisual(Core::SharedPtr<Parent::Visual> & visual) override;
-   
+
 };
 
 };

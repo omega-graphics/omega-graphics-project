@@ -20,6 +20,7 @@ size_t omegaSLStructSize(OmegaCommon::Vector<omegasl_data_type> data) noexcept{
         switch (d) {
             case OMEGASL_FLOAT :
             case OMEGASL_INT :
+            case OMEGASL_UINT :
             {
                 auto _s = sizeof(float);
                 if(biggestWord < _s){
@@ -29,7 +30,8 @@ size_t omegaSLStructSize(OmegaCommon::Vector<omegasl_data_type> data) noexcept{
                 break;
             }
             case OMEGASL_FLOAT2 :
-            case OMEGASL_INT2 : {
+            case OMEGASL_INT2 :
+            case OMEGASL_UINT2 : {
 #if defined(TARGET_METAL)
                 auto _s = sizeof(simd_float2);
                 if(biggestWord < _s){
@@ -49,6 +51,7 @@ size_t omegaSLStructSize(OmegaCommon::Vector<omegasl_data_type> data) noexcept{
             }
             case OMEGASL_FLOAT3 :
             case OMEGASL_INT3 :
+            case OMEGASL_UINT3 :
             {
 #if defined(TARGET_METAL)
                 auto _s = sizeof(simd_float3);
@@ -69,6 +72,7 @@ size_t omegaSLStructSize(OmegaCommon::Vector<omegasl_data_type> data) noexcept{
             }
             case OMEGASL_FLOAT4 :
             case OMEGASL_INT4 :
+            case OMEGASL_UINT4 :
             {
 #if defined(TARGET_METAL)
                 auto _s = sizeof(simd_float4);

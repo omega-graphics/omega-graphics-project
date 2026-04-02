@@ -248,6 +248,30 @@ _NAMESPACE_BEGIN_
             glm::vec4 vec {v[0][0],v[1][0],v[2][0],v[3][0]};
             blocks.push_back(DataBlock {OMEGASL_FLOAT4,new glm::vec4(vec)});
         }
+        void writeInt(int &v) override {
+            blocks.push_back(DataBlock {OMEGASL_INT,new int(v)});
+        }
+        void writeInt2(IVec<2> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_INT2,new glm::ivec2(v[0][0],v[1][0])});
+        }
+        void writeInt3(IVec<3> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_INT3,new glm::ivec3(v[0][0],v[1][0],v[2][0])});
+        }
+        void writeInt4(IVec<4> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_INT4,new glm::ivec4(v[0][0],v[1][0],v[2][0],v[3][0])});
+        }
+        void writeUint(unsigned &v) override {
+            blocks.push_back(DataBlock {OMEGASL_UINT,new unsigned(v)});
+        }
+        void writeUint2(UVec<2> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_UINT2,new glm::uvec2(v[0][0],v[1][0])});
+        }
+        void writeUint3(UVec<3> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_UINT3,new glm::uvec3(v[0][0],v[1][0],v[2][0])});
+        }
+        void writeUint4(UVec<4> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_UINT4,new glm::uvec4(v[0][0],v[1][0],v[2][0],v[3][0])});
+        }
 
         void sendToBuffer() override {
             assert(!inStruct && "Struct record must be finished before sending object to buffer");
@@ -273,6 +297,27 @@ _NAMESPACE_BEGIN_
                         si = sizeof(glm::vec4);
                         break;
                     }
+                    case OMEGASL_INT :
+                    case OMEGASL_UINT : {
+                        si = sizeof(int);
+                        break;
+                    }
+                    case OMEGASL_INT2 :
+                    case OMEGASL_UINT2 : {
+                        si = sizeof(glm::ivec2);
+                        break;
+                    }
+                    case OMEGASL_INT3 :
+                    case OMEGASL_UINT3 : {
+                        si = sizeof(glm::ivec3);
+                        break;
+                    }
+                    case OMEGASL_INT4 :
+                    case OMEGASL_UINT4 : {
+                        si = sizeof(glm::ivec4);
+                        break;
+                    }
+                    default: break;
                 }
                 memcpy(mem_map + currentOffset,b.data,si);
                 currentOffset += si;

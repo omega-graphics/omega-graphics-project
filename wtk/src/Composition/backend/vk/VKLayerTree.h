@@ -15,10 +15,6 @@ namespace OmegaWTK::Composition {
     protected:
         using Parent::body;
         using Parent::root;
-
-        struct Visual : public Parent::Visual {
-            SharedHandle<OmegaGTE::GETexture> underlyingImg;
-        };
     };
 
     

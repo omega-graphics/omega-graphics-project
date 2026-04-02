@@ -170,6 +170,27 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                         delete (simd_float4 *)b.data;
                         break;
                     }
+                    case OMEGASL_INT :
+                    case OMEGASL_UINT : {
+                        delete (int *)b.data;
+                        break;
+                    }
+                    case OMEGASL_INT2 :
+                    case OMEGASL_UINT2 : {
+                        delete (simd_int2 *)b.data;
+                        break;
+                    }
+                    case OMEGASL_INT3 :
+                    case OMEGASL_UINT3 : {
+                        delete (simd_int3 *)b.data;
+                        break;
+                    }
+                    case OMEGASL_INT4 :
+                    case OMEGASL_UINT4 : {
+                        delete (simd_int4 *)b.data;
+                        break;
+                    }
+                    default: break;
                 }
             }
             blocks.clear();
@@ -203,6 +224,30 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             DataBlock block {OMEGASL_FLOAT4,new simd_float4(simd_make_float4(v[0][0],v[1][0],v[2][0],v[3][0]))};
             blocks.push_back(block);
         }
+        void writeInt(int &v) override {
+            blocks.push_back(DataBlock {OMEGASL_INT,new int(v)});
+        }
+        void writeInt2(IVec<2> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_INT2,new simd_int2(simd_make_int2(v[0][0],v[1][0]))});
+        }
+        void writeInt3(IVec<3> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_INT3,new simd_int3(simd_make_int3(v[0][0],v[1][0],v[2][0]))});
+        }
+        void writeInt4(IVec<4> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_INT4,new simd_int4(simd_make_int4(v[0][0],v[1][0],v[2][0],v[3][0]))});
+        }
+        void writeUint(unsigned &v) override {
+            blocks.push_back(DataBlock {OMEGASL_UINT,new unsigned(v)});
+        }
+        void writeUint2(UVec<2> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_UINT2,new simd_uint2(simd_make_uint2(v[0][0],v[1][0]))});
+        }
+        void writeUint3(UVec<3> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_UINT3,new simd_uint3(simd_make_uint3(v[0][0],v[1][0],v[2][0]))});
+        }
+        void writeUint4(UVec<4> &v) override {
+            blocks.push_back(DataBlock {OMEGASL_UINT4,new simd_uint4(simd_make_uint4(v[0][0],v[1][0],v[2][0],v[3][0]))});
+        }
         void structEnd() override {
             inStruct = false;
         }
@@ -230,6 +275,27 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                         s = sizeof(simd_float4);
                         break;
                     }
+                    case OMEGASL_INT :
+                    case OMEGASL_UINT : {
+                        s = sizeof(int);
+                        break;
+                    }
+                    case OMEGASL_INT2 :
+                    case OMEGASL_UINT2 : {
+                        s = sizeof(simd_int2);
+                        break;
+                    }
+                    case OMEGASL_INT3 :
+                    case OMEGASL_UINT3 : {
+                        s = sizeof(simd_int3);
+                        break;
+                    }
+                    case OMEGASL_INT4 :
+                    case OMEGASL_UINT4 : {
+                        s = sizeof(simd_int4);
+                        break;
+                    }
+                    default: break;
                 }
                 if(s > biggestSize){
                     biggestSize = s;

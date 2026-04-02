@@ -109,7 +109,7 @@ namespace {
                         Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
                 rootRect = normalizeRootVisualRect(rootRect);
                 BackendResourceFactory factory;
-                auto rootVisual = factory.createRootVisual(*target.visualTree, rootRect);
+                auto rootVisual = factory.createRootVisual(*target.visualTree, rootRect, target.viewPresentTarget);
                 auto insertedRoot = target.surfaceTargets.insert(std::make_pair(treeRoot.get(),&rootVisual->renderTarget));
                 if(!insertedRoot.second){
                     insertedRoot.first->second = &rootVisual->renderTarget;
@@ -147,7 +147,7 @@ namespace {
                 Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
         layerRect = normalizeRootVisualRect(layerRect);
         BackendResourceFactory factory;
-        auto visual = factory.createRootVisual(*target.visualTree, layerRect);
+        auto visual = factory.createRootVisual(*target.visualTree, layerRect, target.viewPresentTarget);
         auto inserted = target.surfaceTargets.insert(std::make_pair(layer,&visual->renderTarget));
         if(!inserted.second){
             inserted.first->second = &visual->renderTarget;
@@ -365,7 +365,7 @@ void Compositor::executeCurrentCommand(){
              _buildVisualTree = true;
              auto *preCreated = PreCreatedResourceRegistry::lookup(comm->renderTarget.get());
              if(preCreated != nullptr && preCreated->bundle.visualTree != nullptr){
-                 BackendCompRenderTarget compRenderTarget {preCreated->bundle.visualTree};
+                 BackendCompRenderTarget compRenderTarget {preCreated->bundle.visualTree, {}, preCreated->presentTarget};
                  target = &renderTargetStore.store.insert(std::make_pair(comm->renderTarget,compRenderTarget)).first->second;
              } else {
                  std::cout << "[WTK Diag] executeCurrentCommand(Render): no pre-created visual tree for target "
@@ -513,87 +513,10 @@ void Compositor::executeCurrentCommand(){
             params->layer->resize(layerRect);
         }
         else {
-            BackendCompRenderTarget *viewTarget = nullptr;
-            auto viewRenderTarget = renderTargetStore.store.find(params->parentTarget);
-            if(viewRenderTarget == renderTargetStore.store.end()){
-                auto *preCreated = PreCreatedResourceRegistry::lookup(params->parentTarget.get());
-                if(preCreated != nullptr && preCreated->bundle.visualTree != nullptr){
-                    BackendCompRenderTarget compRenderTarget {preCreated->bundle.visualTree};
-                    viewTarget = &renderTargetStore.store.insert(std::make_pair(params->parentTarget,compRenderTarget)).first->second;
-                } else {
-                    std::cout << "[WTK Diag] executeCurrentCommand(Layer): no pre-created visual tree for parent target "
-                              << params->parentTarget.get() << " — dropping command" << std::endl;
-                    markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
-                    currentCommand->status.set(CommandStatus::Delayed);
-                    return;
-                }
-            }
-            else {
-                viewTarget = &viewRenderTarget->second;
-            }
-            if(viewTarget == nullptr || viewTarget->visualTree == nullptr){
-                markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
-                currentCommand->status.set(CommandStatus::Delayed);
-                return;
-            }
-            if(params->effect == nullptr){
-                markPacketFailed(currentCommand->syncLaneId,currentCommand->syncPacketId);
-                currentCommand->status.set(CommandStatus::Failed);
-                return;
-            }
-
-            auto surfaceIt = viewTarget->surfaceTargets.find(params->layer);
-            if(surfaceIt == viewTarget->surfaceTargets.end() || surfaceIt->second == nullptr){
-                auto * ensuredSurface = ensureLayerSurfaceTarget(*viewTarget,params->layer);
-                if(ensuredSurface == nullptr){
-                    markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
-                    currentCommand->status.set(CommandStatus::Delayed);
-                    return;
-                }
-                surfaceIt = viewTarget->surfaceTargets.find(params->layer);
-                if(surfaceIt == viewTarget->surfaceTargets.end() || surfaceIt->second == nullptr){
-                    markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
-                    currentCommand->status.set(CommandStatus::Delayed);
-                    return;
-                }
-            }
-
-            auto *s = surfaceIt->second;
-            auto & visualTree = viewTarget->visualTree;
-            bool applied = false;
-            if(visualTree->root != nullptr &&
-               s == &(visualTree->root->renderTarget)){
-                if(params->effect->type == LayerEffect::DropShadow){
-                    auto adaptedShadow = adaptDropShadowForLane(currentCommand->syncLaneId,
-                                                                 params->effect->dropShadow);
-                    visualTree->root->updateShadowEffect(adaptedShadow);
-                }
-                else {
-                    visualTree->root->updateTransformEffect(params->effect->transform);
-                }
-                applied = true;
-            }
-            else {
-                for(auto & v : visualTree->body){
-                    if(v != nullptr && s == &(v->renderTarget)){
-                        if(params->effect->type == LayerEffect::DropShadow){
-                            auto adaptedShadow = adaptDropShadowForLane(currentCommand->syncLaneId,
-                                                                         params->effect->dropShadow);
-                            v->updateShadowEffect(adaptedShadow);
-                        }
-                        else {
-                            v->updateTransformEffect(params->effect->transform);
-                        }
-                        applied = true;
-                        break;
-                    }
-                }
-            }
-            if(!applied){
-                markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
-                currentCommand->status.set(CommandStatus::Delayed);
-                return;
-            }
+            // Layer effect commands (shadow, transform) are no longer applied via
+            // native layer properties. Effects are now draw-time Canvas operations
+            // (Phase 2 of the Unified Rendering Architecture Plan).
+            // Effect commands are accepted but ignored until the draw-time path is implemented.
         }
     }
     else if(currentCommand->type == CompositorCommand::View){

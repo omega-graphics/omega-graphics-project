@@ -3,6 +3,7 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Layer.h"
 
+#include <algorithm>
 #include <cassert>
 
 namespace OmegaWTK::Composition {
@@ -40,6 +41,21 @@ bitmapParams({img,nullptr,nullptr,rect}){
 
 VisualCommand::Data::Data(Core::SharedPtr<OmegaGTE::GETexture> texture,Core::SharedPtr<OmegaGTE::GEFence> textureFence,const Core::Rect &rect) :
 bitmapParams({nullptr,texture,textureFence,rect}){
+
+};
+
+VisualCommand::Data::Data(const LayerEffect::DropShadowParams & shadow,const Core::Rect & shapeRect,float cornerRadius,bool isEllipse) :
+shadowParams({shadow,shapeRect,cornerRadius,isEllipse}){
+
+};
+
+VisualCommand::Data::Data(const OmegaGTE::FMatrix<4,4> & matrix) :
+transformMatrix(matrix){
+
+};
+
+VisualCommand::Data::Data(float opacityVal) :
+opacityValue(opacityVal){
 
 };
 
@@ -207,6 +223,37 @@ void Canvas::applyLayerEffect(const SharedHandle<LayerEffect> &effect){
     Timestamp start = std::chrono::high_resolution_clock::now();
     Timestamp deadline = start;
     pushLayerEffectCommand(&layer,queuedEffect,start,deadline);
+}
+
+void Canvas::drawShadow(Core::Rect & rect,
+                        const LayerEffect::DropShadowParams & shadow){
+    Core::Rect shapeRect = rect;
+    current->currentVisuals.emplace_back(shadow,shapeRect,0.f,false);
+}
+
+void Canvas::drawShadow(Core::RoundedRect & rect,
+                        const LayerEffect::DropShadowParams & shadow){
+    Core::Rect shapeRect {rect.pos,rect.w,rect.h};
+    float cornerRadius = std::max(rect.rad_x,rect.rad_y);
+    current->currentVisuals.emplace_back(shadow,shapeRect,cornerRadius,false);
+}
+
+void Canvas::drawShadow(Core::Ellipse & ellipse,
+                        const LayerEffect::DropShadowParams & shadow){
+    Core::Rect shapeRect {
+        Core::Position{ellipse.x - ellipse.rad_x,ellipse.y - ellipse.rad_y},
+        ellipse.rad_x * 2.f,
+        ellipse.rad_y * 2.f
+    };
+    current->currentVisuals.emplace_back(shadow,shapeRect,0.f,true);
+}
+
+void Canvas::setElementTransform(const OmegaGTE::FMatrix<4,4> & matrix){
+    current->currentVisuals.emplace_back(matrix);
+}
+
+void Canvas::setElementOpacity(float opacity){
+    current->currentVisuals.emplace_back(opacity);
 }
 
 void Canvas::setBackground(const Color & color){

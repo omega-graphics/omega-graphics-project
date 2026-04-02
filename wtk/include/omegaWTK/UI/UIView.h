@@ -247,6 +247,7 @@ struct OMEGAWTK_EXPORT UIElementLayoutSpec {
     LayoutStyle style {};
     Core::Optional<Shape> shape {};
     Core::Optional<OmegaCommon::UString> text {};
+    Core::Optional<Core::Rect> textRect {};
     Core::Optional<UIElementTag> textStyleTag {};
     int zIndex = 0;
 };
@@ -261,28 +262,7 @@ public:
     bool hasElement(UIElementTag tag) const;
 };
 
-class UIRenderer {
-protected:
-    struct RenderTargetBundle {
-        SharedHandle<Composition::Layer> layer;
-        SharedHandle<Composition::Canvas> canvas;
-    };
-
-    int framesPerSec = 60;
-    UIView *view;
-    OmegaCommon::Map<UIElementTag,RenderTargetBundle> renderTargetStore;
-    RenderTargetBundle & buildLayerRenderTarget(UIElementTag tag);
-public:
-    explicit UIRenderer(UIView *view);
-    void handleElement(UIElementTag tag);
-    void handleTransition(UIElementTag tag,ElementAnimationKey k,float duration);
-    void handleAnimation(UIElementTag tag,
-                         ElementAnimationKey k,
-                         float duration,
-                         SharedHandle<Composition::AnimationCurve> & curve);
-};
-
-class OMEGAWTK_EXPORT UIView : public CanvasView, UIRenderer {
+class OMEGAWTK_EXPORT UIView : public View {
 public:
     struct UpdateDiagnostics {
         std::size_t activeTagCount = 0;
@@ -320,6 +300,8 @@ public:
     };
 
 private:
+    int framesPerSec = 60;
+
     struct ElementDirtyState {
         bool layoutDirty = true;
         bool styleDirty = true;
@@ -367,10 +349,6 @@ private:
     StyleSheetPtr currentStyle;
     bool layoutDirty = true;
     bool styleDirty = true;
-    bool rootLayoutDirty = true;
-    bool rootStyleDirty = true;
-    bool rootContentDirty = true;
-    bool rootOrderDirty = true;
     bool firstFrameCoherentSubmit = true;
     bool styleDirtyGlobal = false;
     bool styleChangeRequiresCoherentFrame = false;
@@ -386,7 +364,6 @@ private:
     OmegaCommon::Map<UIElementTag,Shape> previousShapeByTag;
     SharedHandle<Composition::Font> fallbackTextFont = nullptr;
     UIViewLayoutV2 currentLayoutV2_;
-    bool useLayoutV2_ = false;
     OmegaCommon::Map<UIElementTag,Core::Rect> lastResolvedV2Rects_;
     LayoutDiagnosticSink * diagnosticSink_ = nullptr;
     UpdateDiagnostics lastUpdateDiagnostics {};
@@ -394,7 +371,6 @@ private:
     std::uint64_t lastObservedDroppedPacketCount = 0;
     bool hasObservedLaneDiagnostics = false;
 
-    void markRootDirty();
     void markAllElementsDirty();
     void markElementDirty(const UIElementTag & tag,
                           bool layout,
@@ -419,17 +395,8 @@ private:
     Core::Optional<float> animatedValue(const UIElementTag & tag,int key) const;
     Composition::Color applyAnimatedColor(const UIElementTag & tag,const Composition::Color & baseColor) const;
     Shape applyAnimatedShape(const UIElementTag & tag,const Shape & inputShape) const;
-    void prepareElementAnimations(const OmegaCommon::Vector<UIViewLayout::Element> & elements,
-                                  bool layoutChanged,
-                                  bool styleChanged);
-    void prepareEffectAnimations(const OmegaCommon::Vector<UIViewLayout::Element> & elements,
-                                 bool layoutChanged,
-                                 bool styleChanged);
     SharedHandle<Composition::Font> resolveFallbackTextFont();
-    void syncElementDirtyState(const OmegaCommon::Vector<UIViewLayout::Element> & elements,
-                               bool layoutChanged,
-                               bool styleChanged,
-                               bool orderChanged);
+    void convertLegacyLayoutToV2();
 public:
     explicit UIView(const Core::Rect & rect,ViewPtr parent,UIViewTag tag);
     UIViewLayout & layout();
@@ -441,8 +408,6 @@ public:
 
     UIViewLayoutV2 & layoutV2();
     void setLayoutV2(const UIViewLayoutV2 & layout);
-    bool useLayoutV2() const;
-    void setUseLayoutV2(bool use);
 
     void setDiagnosticSink(LayoutDiagnosticSink * sink);
 

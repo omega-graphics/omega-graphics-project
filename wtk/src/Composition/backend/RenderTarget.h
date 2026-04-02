@@ -39,7 +39,9 @@ namespace OmegaWTK::Composition {
         SharedHandle<OmegaGTE::GEFence> fence;
       INTERFACE_METHOD void applyEffects(SharedHandle<OmegaGTE::GETexture> & dest,
                                          SharedHandle<OmegaGTE::GETextureRenderTarget> & textureTarget,
-                                         OmegaCommon::Vector<CanvasEffect> & effects) ABSTRACT;
+                                         OmegaCommon::Vector<CanvasEffect> & effects,
+                                         unsigned texWidth,
+                                         unsigned texHeight) ABSTRACT;
       static SharedHandle<BackendCanvasEffectProcessor> Create(SharedHandle<OmegaGTE::GEFence> & fence);
       virtual ~BackendCanvasEffectProcessor() = default;
     };
@@ -61,6 +63,8 @@ namespace OmegaWTK::Composition {
         OmegaCommon::Vector<CanvasEffect> effectQueue;
         OmegaCommon::Vector<std::pair<SharedHandle<OmegaGTE::GEBuffer>,std::size_t>> deferredBufferReleases;
         SharedHandle<OmegaGTE::GETexture> committedTexture;
+        OmegaGTE::FMatrix<4,4> currentTransform = OmegaGTE::FMatrix<4,4>::Identity();
+        float currentOpacity = 1.f;
         void rebuildBackingTarget();
         void createGradientTexture(bool linearOrRadial,Gradient & gradient,OmegaGTE::GRect & rect,SharedHandle<OmegaGTE::GETexture> & dest);
     public:
@@ -102,17 +106,28 @@ namespace OmegaWTK::Composition {
 
     class BackendVisualTree;
 
-
+    /// Owns the single native present surface for a View.
+    /// One per View — the only thing that calls commitAndPresent.
+    struct ViewPresentTarget {
+        SharedHandle<OmegaGTE::GENativeRenderTarget> nativeTarget;
+        unsigned backingWidth = 1;
+        unsigned backingHeight = 1;
+    };
 
     struct BackendCompRenderTarget {
         SharedHandle<BackendVisualTree> visualTree;
         OmegaCommon::Map<Layer *,BackendRenderTargetContext *> surfaceTargets;
+        ViewPresentTarget viewPresentTarget;
         bool needsPresent = false;
     };
 
 
 
     void compositeAndPresentTarget(BackendCompRenderTarget & compTarget);
+
+    SharedHandle<OmegaGTE::GEComputePipelineState> getGaussianBlurHPipeline();
+    SharedHandle<OmegaGTE::GEComputePipelineState> getGaussianBlurVPipeline();
+    SharedHandle<OmegaGTE::GEComputePipelineState> getDirectionalBlurPipeline();
 
     struct RenderTargetStore {
      private:

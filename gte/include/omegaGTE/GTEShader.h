@@ -23,6 +23,14 @@ struct OMEGAGTE_EXPORT GEBufferWriter {
     virtual void writeFloat2(FVec<2> & v) = 0;
     virtual void writeFloat3(FVec<3> & v) = 0;
     virtual void writeFloat4(FVec<4> & v) = 0;
+    virtual void writeInt(int & v) = 0;
+    virtual void writeInt2(IVec<2> & v) = 0;
+    virtual void writeInt3(IVec<3> & v) = 0;
+    virtual void writeInt4(IVec<4> & v) = 0;
+    virtual void writeUint(unsigned & v) = 0;
+    virtual void writeUint2(UVec<2> & v) = 0;
+    virtual void writeUint3(UVec<3> & v) = 0;
+    virtual void writeUint4(UVec<4> & v) = 0;
     virtual void structEnd() = 0;
     virtual void sendToBuffer() = 0;
     virtual void flush() = 0;

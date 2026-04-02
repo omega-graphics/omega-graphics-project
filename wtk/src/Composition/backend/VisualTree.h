@@ -30,8 +30,6 @@ namespace OmegaWTK::Composition {
                                     this);
             }
             virtual void resize(Core::Rect & newRect) = 0;
-            virtual void updateShadowEffect(LayerEffect::DropShadowParams & params) = 0;
-            virtual void updateTransformEffect(LayerEffect::TransformationParams & params) = 0;
             virtual ~Visual(){
                 ResourceTrace::emit("Destroy",
                                     "BackendVisual",
@@ -48,8 +46,13 @@ namespace OmegaWTK::Composition {
         };
         static SharedHandle<BackendVisualTree> Create(SharedHandle<ViewRenderTarget> & view);
         INTERFACE_METHOD void addVisual(Core::SharedPtr<Visual> & visual) ABSTRACT;
-        INTERFACE_METHOD Core::SharedPtr<Visual> makeVisual(Core::Rect & rect,Core::Position & pos) ABSTRACT;
-        INTERFACE_METHOD void setRootVisual(Core::SharedPtr<Visual> & visual) ABSTRACT;    
+        /// Create the root visual with a native present surface (swap chain / CAMetalLayer).
+        /// The native render target is stored in the ViewPresentTarget, not in the Visual's context.
+        INTERFACE_METHOD Core::SharedPtr<Visual> makeRootVisual(Core::Rect & rect,Core::Position & pos,
+                                                                 ViewPresentTarget & outPresentTarget) ABSTRACT;
+        /// Create a surface-only visual (GPU texture, no native present surface).
+        INTERFACE_METHOD Core::SharedPtr<Visual> makeSurfaceVisual(Core::Rect & rect,Core::Position & pos) ABSTRACT;
+        INTERFACE_METHOD void setRootVisual(Core::SharedPtr<Visual> & visual) ABSTRACT;
         INTERFACE_METHOD ~BackendVisualTree() = default;
     };
 

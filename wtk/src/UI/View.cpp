@@ -267,9 +267,10 @@ namespace OmegaWTK {
             return;
         }
         Composition::BackendResourceFactory factory;
-        auto bundle = factory.createVisualTreeForView(renderTarget, rect);
+        Composition::ViewPresentTarget presentTarget {};
+        auto bundle = factory.createVisualTreeForView(renderTarget, rect, presentTarget);
         preCreatedVisualTree_ = std::make_unique<Composition::PreCreatedVisualTreeData>(
-                Composition::PreCreatedVisualTreeData{std::move(bundle)});
+                Composition::PreCreatedVisualTreeData{std::move(bundle), std::move(presentTarget)});
         Composition::PreCreatedResourceRegistry::store(
                 renderTarget.get(), preCreatedVisualTree_.get());
     }
