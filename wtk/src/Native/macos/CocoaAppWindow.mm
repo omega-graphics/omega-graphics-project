@@ -213,7 +213,11 @@ NativeItemPtr CocoaAppWindow::getRootView() {
     }
     self.resizeDispatchQueued = YES;
     OmegaWTKNativeCocoaAppWindowDelegate *delegate = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    // Use CFRunLoopPerformBlock with kCFRunLoopCommonModes so that the
+    // block fires during live resize (NSEventTrackingRunLoopMode).
+    // dispatch_async targets NSDefaultRunLoopMode only, which is suspended
+    // while the user drags a window edge.
+    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
         delegate.resizeDispatchQueued = NO;
         if(!delegate.hasPendingResizeBounds){
             return;
@@ -238,6 +242,7 @@ NativeItemPtr CocoaAppWindow::getRootView() {
         }
         [delegate emitResizeBoundsIfPossible:pending generation:pendingGeneration];
     });
+    CFRunLoopWakeUp(CFRunLoopGetMain());
 }
 
 -(void)attachHostContentViewObservers:(NSView *)hostView{

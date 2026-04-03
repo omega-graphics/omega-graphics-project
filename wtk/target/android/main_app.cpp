@@ -1,4 +1,5 @@
-#include <OmegaWTKM.h>
+// No super header anymore
+// #include <OmegaWTKM.h>
 
 #include <android_native_app_glue.h>
 

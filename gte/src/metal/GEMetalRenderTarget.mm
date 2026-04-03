@@ -49,28 +49,8 @@ NSSmartPtr & GEMetalNativeRenderTarget::getDrawable(){
 };
 
 SharedHandle<GERenderTarget::CommandBuffer> GEMetalNativeRenderTarget::commandBuffer(){
-    __block CGRect bounds = CGRectZero;
-    __block CGFloat scale = 1.f;
-    runOnMainThreadSync(^{
-        bounds = metalLayer.bounds;
-        scale = metalLayer.contentsScale;
-        if(scale <= 0.f){
-            scale = 1.f;
-            metalLayer.contentsScale = scale;
-        }
-        CGSize desiredSize = CGSizeMake(
-            MAX(bounds.size.width * scale,1.f),
-            MAX(bounds.size.height * scale,1.f));
-        if(metalLayer.drawableSize.width != desiredSize.width ||
-           metalLayer.drawableSize.height != desiredSize.height){
-            metalLayer.drawableSize = desiredSize;
-        }
-        drawableSize = metalLayer.drawableSize;
-    });
-    NSLog(@"NativeTarget drawableSize: %.1fx%.1f bounds: %.1fx%.1f scale: %.2f",
-          drawableSize.width,drawableSize.height,
-          bounds.size.width,bounds.size.height,
-          scale);
+    // Read CAMetalLayer properties directly — thread-safe.
+    drawableSize = metalLayer.drawableSize;
     reset();
     return std::shared_ptr<GERenderTarget::CommandBuffer>(new GERenderTarget::CommandBuffer(this,GERenderTarget::CommandBuffer::Native,commandQueue->getAvailableBuffer()));
 };
@@ -79,20 +59,13 @@ SharedHandle<GERenderTarget::CommandBuffer> GEMetalNativeRenderTarget::commandBu
 void GEMetalNativeRenderTarget::commitAndPresent(){
     auto mtlqueue = (GEMetalCommandQueue *)commandQueue.get();
     if(currentDrawable.handle() != nullptr){
-        // Use waitUntilScheduled + present pattern for reliable display
         id<CAMetalDrawable> drawable = NSOBJECT_OBJC_BRIDGE(id<CAMetalDrawable>,currentDrawable.handle());
 
-        // Get the last command buffer that will do the present
         auto & lastCB = mtlqueue->commandBuffers.back();
         auto *metalCB = (GEMetalCommandBuffer *)lastCB.get();
         id<MTLCommandBuffer> mtlCB = NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,metalCB->buffer.handle());
-
-        // Commit all buffers (without present scheduled via _present_drawable)
+        [mtlCB presentDrawable:drawable];
         mtlqueue->commitToGPU();
-
-        // Wait until the GPU has scheduled the work, then present manually
-        [mtlCB waitUntilScheduled];
-        [drawable present];
     }
     else {
         mtlqueue->commitToGPU();
@@ -171,7 +144,7 @@ void GEMetalTextureRenderTarget::submitCommandBuffer(SharedHandle<GERenderTarget
 
 void GEMetalTextureRenderTarget::commit(){
     texturePtr->needsBarrier = false;
-    commandQueue->commitToGPUAndWait();
+    commandQueue->commitToGPU();
 };
 
 SharedHandle<GETexture> GEMetalTextureRenderTarget::underlyingTexture() {

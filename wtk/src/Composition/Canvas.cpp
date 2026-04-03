@@ -276,6 +276,11 @@ SharedHandle<CanvasFrame> Canvas::getCurrentFrame() {
 
 SharedHandle<CanvasFrame> Canvas::nextFrame() {
     auto frame = getCurrentFrame();
+    // Snapshot the current layer rect into the outgoing frame so it
+    // matches the draw commands that were just recorded during onPaint.
+    // The frame was created at the end of the *previous* paint cycle,
+    // so its rect is stale if the layer resized since then.
+    frame->rect = rect;
     current.reset(new CanvasFrame {&layer,rect});
     return frame;
 }

@@ -553,6 +553,10 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
          buffer.assertExists();
          auto completion = completionHandler;
          completionHandler = nullptr;
+         // Capture member values by copy so the block remains valid even
+         // if this GEMetalCommandBuffer is destroyed before the GPU finishes.
+         const auto capturedTraceId = traceResourceId;
+         const auto capturedQueueTraceId = parentQueue != nullptr ? parentQueue->traceResourceId : static_cast<std::uint64_t>(0);
          [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer){
             if(commandBuffer.status == MTLCommandBufferStatusError){
                 NSLog(@"Command Buffer Failed to Execute. Error: %@",commandBuffer.error);
@@ -577,9 +581,9 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
                 completeEvent.backend = ResourceTracking::Backend::Metal;
                 completeEvent.eventType = ResourceTracking::EventType::Complete;
                 completeEvent.resourceType = "CommandBuffer";
-                completeEvent.resourceId = traceResourceId;
-                completeEvent.queueId = parentQueue != nullptr ? parentQueue->traceResourceId : 0;
-                completeEvent.commandBufferId = traceResourceId;
+                completeEvent.resourceId = capturedTraceId;
+                completeEvent.queueId = capturedQueueTraceId;
+                completeEvent.commandBufferId = capturedTraceId;
                 completeEvent.nativeHandle = reinterpret_cast<std::uint64_t>(commandBuffer);
                 ResourceTracking::Tracker::instance().emit(completeEvent);
             }

@@ -191,7 +191,10 @@ namespace OmegaWTK {
     /// @brief A frozen state of visual items drawn to a Canvas.
     struct CanvasFrame {
         Layer *targetLayer;
-        Core::Rect & rect;
+        /// Snapshot of the layer rect at the time the frame was recorded.
+        /// Previously a live reference to Layer::surface_rect, which caused
+        /// a size mismatch when the layer resized between paint and execution.
+        Core::Rect rect;
         struct {
             float r = 0.f,g = 0.f,b = 0.f,a = 0.f;
         } background;

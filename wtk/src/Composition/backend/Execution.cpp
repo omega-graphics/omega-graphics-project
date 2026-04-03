@@ -403,8 +403,12 @@ void Compositor::executeCurrentCommand(){
         }
 
         targetContext = layer_found->second;
+        // Use the frame's snapshot rect — not the live getLayerRect() —
+        // so the render target and viewport match the draw commands that
+        // were recorded at paint time.  The live layer rect may have
+        // advanced due to subsequent resize events on the main thread.
         auto layerRect = sanitizeCommandRect(
-                comm->frame->targetLayer->getLayerRect(),
+                comm->frame->rect,
                 Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
         if(target->visualTree != nullptr &&
            target->visualTree->root != nullptr &&
@@ -413,7 +417,6 @@ void Compositor::executeCurrentCommand(){
         }
         targetContext->setRenderTargetSize(layerRect);
         resizeVisualForSurface(*target,targetContext,layerRect);
-
 
         OmegaCommon::ArrayRef<VisualCommand> commands{comm->frame->currentVisuals};
 

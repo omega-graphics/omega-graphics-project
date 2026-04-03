@@ -923,7 +923,14 @@ void CompositorScheduler::processCommand(SharedHandle<CompositorCommand> & comma
         return;
     }
     auto _now = std::chrono::high_resolution_clock::now();
-    std::cout << "Processing Command:" << command->id << std::endl;
+    {
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch()).count();
+        std::cout << "Processing Command:" << command->id
+                  << " t=" << ms
+                  << " lane=" << command->syncLaneId
+                  << " pkt=" << command->syncPacketId << std::endl;
+    }
     auto executeCurrentCommand = [&](){
         compositor->executeCurrentCommand();
     };
@@ -996,6 +1003,38 @@ CompositorScheduler::CompositorScheduler(Compositor * compositor):compositor(com
             // Previously this only ran on queue drain, causing a circular
             // dependency when packets from different Views shared a lane.
             compositor->renderTargetStore.presentAllPending();
+            // Decrement inFlight after present so the next frame can be
+            // admitted.  We bypass recordGPUCompletion / onBackendSubmissionCompleted
+            // because those update the submit-to-present EWMA — and using
+            // wall-clock time here (which includes queue wait) would inflate
+            // the EWMA and trigger false pressure / quality degradation.
+            if(command != nullptr &&
+               command->syncLaneId != 0 && command->syncPacketId != 0 &&
+               compositor->packetTelemetryState != nullptr){
+                std::lock_guard<std::mutex> telemetryLk(compositor->packetTelemetryState->mutex);
+                auto & laneState = compositor->packetTelemetryState->laneRuntime[command->syncLaneId];
+                auto & entry = compositor->packetTelemetryState->lanes[command->syncLaneId][command->syncPacketId];
+                if(entry.pendingSubmissions > 0){
+                    entry.pendingSubmissions -= 1;
+                }
+                if(entry.pendingSubmissions == 0 && laneState.inFlight > 0){
+                    laneState.inFlight -= 1;
+                    if(entry.phase != Compositor::PacketLifecyclePhase::Presented){
+                        entry.phase = Compositor::PacketLifecyclePhase::Presented;
+                        laneState.packetsPresented += 1;
+                        if(!laneState.startupStabilized){
+                            laneState.startupStabilized = true;
+                            laneState.firstPresentedPacketId = command->syncPacketId;
+                        }
+                        if(entry.hasNonNoOpRender){
+                            laneState.hasPresentedRenderableContent = true;
+                        }
+                    }
+                }
+                if(compositor->packetTelemetryState->wakeCondition != nullptr){
+                    compositor->packetTelemetryState->wakeCondition->notify_all();
+                }
+            }
             {
                 std::lock_guard<std::mutex> lk(compositor->mutex);
                 if(compositor->commandQueue.empty()){
@@ -1180,33 +1219,18 @@ bool Compositor::targetsOverlap(const OmegaCommon::Vector<RenderTargetEpoch> & l
 
 unsigned Compositor::laneBudgetForNow(const LaneRuntimeState & laneState,
                                       std::chrono::steady_clock::time_point now) const {
-    const auto & tuning = governorTuning;
-    const bool resizeBudgetActive = now < laneState.resizeModeUntil ||
-                                    resizeGovernorIndicatesActive(laneState.latestResizeGovernor);
-    unsigned budget = resizeBudgetActive
-                      ? kMaxFramesInFlightResize
-                      : kMaxFramesInFlightNormal;
-    const float velocity = finiteAbs(laneState.latestResizeGovernor.velocityPxPerSec);
-    if(resizeBudgetActive && !laneState.underPressure){
-        // Relax to the normal budget at low resize velocity so static-heavy
-        // trees can keep up without corner-collapse.
-        if(velocity <= tuning.velocityBudgetRelaxPxPerSec &&
-           (!laneState.hasSubmitToPresentSample ||
-            laneState.submitToPresentEwmaMs <= tuning.pressureExitLatencyMsResize)){
-            budget = std::max(budget,kMaxFramesInFlightNormal);
-        }
-        // Tighten under aggressive velocity spikes.
-        if(velocity >= tuning.velocityBudgetTightenPxPerSec){
-            budget = 1;
-        }
-    }
+    // Start with the normal budget regardless of resize state.
+    // Only tighten if the GPU is actually under pressure (high latency).
+    unsigned budget = kMaxFramesInFlightNormal;
     if(laneState.underPressure){
         budget = 1;
     }
     if(laneState.hasSubmitToPresentSample){
+        const bool resizeBudgetActive = now < laneState.resizeModeUntil ||
+                                        resizeGovernorIndicatesActive(laneState.latestResizeGovernor);
         const double pressureGate = resizeBudgetActive
-                                    ? tuning.pressureEnterLatencyMsResize
-                                    : tuning.pressureEnterLatencyMsNormal;
+                                    ? governorTuning.pressureEnterLatencyMsResize
+                                    : governorTuning.pressureEnterLatencyMsNormal;
         if(laneState.submitToPresentEwmaMs >= (pressureGate * 1.25)){
             budget = 1;
         }
@@ -1218,28 +1242,10 @@ unsigned Compositor::laneBudgetForNow(const LaneRuntimeState & laneState,
 }
 
 std::chrono::microseconds Compositor::laneMinSubmitSpacingForNow(const LaneRuntimeState & laneState,
-                                                                 std::chrono::steady_clock::time_point now) const {
-    const auto & tuning = governorTuning;
+                                                                 std::chrono::steady_clock::time_point) const {
+    // No artificial pacing — let the GPU back-pressure via inFlight
+    // budget and nextDrawable naturally throttle frame submission.
     double spacingMs = 0.0;
-    if(laneState.hasSubmitToPresentSample){
-        spacingMs = std::max(spacingMs,laneState.submitToPresentEwmaMs * tuning.admissionSpacingFromLatencyFactor);
-    }
-    if(laneState.hasGpuDurationSample){
-        spacingMs = std::max(spacingMs,laneState.gpuDurationEwmaMs * tuning.admissionSpacingFromGpuFactor);
-    }
-
-    const bool resizeBudgetActive = now < laneState.resizeModeUntil ||
-                                    resizeGovernorIndicatesActive(laneState.latestResizeGovernor);
-    if(resizeBudgetActive){
-        const float velocity = finiteAbs(laneState.latestResizeGovernor.velocityPxPerSec);
-        const double velocityNorm = std::min(1.0,std::max(0.0,static_cast<double>(velocity) / tuning.velocityPacingMaxPxPerSec));
-        const double resizeSpacing = tuning.admissionSpacingResizeMinMs +
-                                     ((tuning.admissionSpacingResizeMaxMs - tuning.admissionSpacingResizeMinMs) * velocityNorm);
-        spacingMs = std::max(spacingMs,resizeSpacing);
-    }
-    if(laneState.underPressure){
-        spacingMs = std::max(spacingMs,tuning.admissionSpacingPressureMs);
-    }
     spacingMs = std::min(16.0,std::max(0.0,spacingMs));
     return std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::duration<double,std::milli>(spacingMs));

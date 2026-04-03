@@ -66,33 +66,30 @@ namespace OmegaWTK::Composition {
                          static_cast<CGFloat>(1.f),
                          maxPointDimension);
 
-                 auto applyGeometry = ^{
-                     NSDictionary *noActions = @{
-                         @"bounds":[NSNull null],
-                         @"position":[NSNull null],
-                         @"frame":[NSNull null],
-                         @"contents":[NSNull null],
-                         @"transform":[NSNull null]
-                     };
-                     [CATransaction begin];
-                     [CATransaction setDisableActions:YES];
-                     CGRect frame = CGRectMake(x,y,w,h);
-                     metalLayer.actions = noActions;
-                     [metalLayer setFrame:frame];
-                     metalLayer.bounds = CGRectMake(0.f,0.f,w,h);
-                     metalLayer.position = CGPointMake(x,y);
-                     metalLayer.contentsScale = scale;
-                     metalLayer.drawableSize = CGSizeMake(
-                             std::clamp(w * scale,static_cast<CGFloat>(1.f),maxDrawableDimension),
-                             std::clamp(h * scale,static_cast<CGFloat>(1.f),maxDrawableDimension));
-                     [CATransaction commit];
+                 // CAMetalLayer geometry is thread-safe when implicit
+                 // animations are suppressed via actions dictionary.
+                 // Avoid dispatch_sync to the main thread — during live
+                 // resize the main thread is busy processing events and
+                 // the synchronous dispatch would stall the compositor.
+                 NSDictionary *noActions = @{
+                     @"bounds":[NSNull null],
+                     @"position":[NSNull null],
+                     @"frame":[NSNull null],
+                     @"contents":[NSNull null],
+                     @"transform":[NSNull null]
                  };
-                 if([NSThread isMainThread]){
-                     applyGeometry();
-                 }
-                 else {
-                     dispatch_sync(dispatch_get_main_queue(),applyGeometry);
-                 }
+                 [CATransaction begin];
+                 [CATransaction setDisableActions:YES];
+                 CGRect frame = CGRectMake(x,y,w,h);
+                 metalLayer.actions = noActions;
+                 [metalLayer setFrame:frame];
+                 metalLayer.bounds = CGRectMake(0.f,0.f,w,h);
+                 metalLayer.position = CGPointMake(x,y);
+                 metalLayer.contentsScale = scale;
+                 metalLayer.drawableSize = CGSizeMake(
+                         std::clamp(w * scale,static_cast<CGFloat>(1.f),maxDrawableDimension),
+                         std::clamp(h * scale,static_cast<CGFloat>(1.f),maxDrawableDimension));
+                 [CATransaction commit];
              }
 
              ~RootVisual() override {

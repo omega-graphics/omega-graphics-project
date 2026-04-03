@@ -125,10 +125,6 @@ namespace OmegaWTK::Composition {
 
     void compositeAndPresentTarget(BackendCompRenderTarget & compTarget);
 
-    SharedHandle<OmegaGTE::GEComputePipelineState> getGaussianBlurHPipeline();
-    SharedHandle<OmegaGTE::GEComputePipelineState> getGaussianBlurVPipeline();
-    SharedHandle<OmegaGTE::GEComputePipelineState> getDirectionalBlurPipeline();
-
     struct RenderTargetStore {
      private:
         void cleanTargets(LayerTree *tree);
