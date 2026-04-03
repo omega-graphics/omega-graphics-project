@@ -30,6 +30,13 @@ namespace OmegaWTK {
             INTERFACE_METHOD Core::Rect &getRect() ABSTRACT;
 
             INTERFACE_METHOD void resize(const Core::Rect & newRect) ABSTRACT;
+            /// Update the native present layer (CAMetalLayer, swap chain, etc.)
+            /// geometry to match the new rect.  Called on the main thread from
+            /// View::resize so the native layer is always in sync without
+            /// routing through the compositor thread.
+            virtual void resizeNativeLayer(const Core::Rect & newRect, float scale){
+                (void)newRect; (void)scale;
+            }
             INTERFACE_METHOD void * getBinding() ABSTRACT;
 
             INTERFACE_METHOD void enable() ABSTRACT;

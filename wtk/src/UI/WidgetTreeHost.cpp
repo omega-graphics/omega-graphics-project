@@ -104,51 +104,6 @@ namespace OmegaWTK {
             return tuning;
         }
 
-        static const ResizeValidationTuning & resizeValidationTuning(){
-            static const ResizeValidationTuning tuning = []{
-                ResizeValidationTuning cfg {};
-                cfg.enabled = readEnvBool("OMEGAWTK_RESIZE_VALIDATION",cfg.enabled);
-                cfg.failHard = readEnvBool("OMEGAWTK_RESIZE_VALIDATION_FAIL_HARD",cfg.failHard);
-                cfg.maxDropRatio = readEnvDoubleClamp(
-                        "OMEGAWTK_RESIZE_VALIDATION_MAX_DROP_RATIO",
-                        cfg.maxDropRatio,
-                        0.0,
-                        1.0);
-                cfg.maxFailedPackets = readEnvU64Clamp(
-                        "OMEGAWTK_RESIZE_VALIDATION_MAX_FAILED_PACKETS",
-                        cfg.maxFailedPackets,
-                        0,
-                        1000000);
-                cfg.maxEpochDrops = readEnvU64Clamp(
-                        "OMEGAWTK_RESIZE_VALIDATION_MAX_EPOCH_DROPS",
-                        cfg.maxEpochDrops,
-                        0,
-                        1000000);
-                cfg.maxStaleCoordinatorPackets = readEnvU64Clamp(
-                        "OMEGAWTK_RESIZE_VALIDATION_MAX_STALE_COORD_PACKETS",
-                        cfg.maxStaleCoordinatorPackets,
-                        0,
-                        1000000);
-                cfg.minResizeSamples = static_cast<std::uint32_t>(readEnvU64Clamp(
-                        "OMEGAWTK_RESIZE_VALIDATION_MIN_SAMPLES",
-                        cfg.minResizeSamples,
-                        1,
-                        100000));
-                return cfg;
-            }();
-            return tuning;
-        }
-
-        static const std::string & resizeValidationScenario(){
-            static const std::string scenario = []{
-                const char *raw = std::getenv("OMEGAWTK_RESIZE_VALIDATION_SCENARIO");
-                if(raw == nullptr || raw[0] == '\0'){
-                    return std::string("unspecified");
-                }
-                return std::string(raw);
-            }();
-            return scenario;
-        }
 
         static const char *resizePhaseName(ResizePhase phase){
             switch(phase){
@@ -165,21 +120,6 @@ namespace OmegaWTK {
             }
         }
 
-        static Composition::ResizeGovernorPhase toGovernorPhase(ResizePhase phase){
-            switch(phase){
-                case ResizePhase::Idle:
-                    return Composition::ResizeGovernorPhase::Idle;
-                case ResizePhase::Active:
-                    return Composition::ResizeGovernorPhase::Active;
-                case ResizePhase::Settling:
-                    return Composition::ResizeGovernorPhase::Settling;
-                case ResizePhase::Completed:
-                    return Composition::ResizeGovernorPhase::Completed;
-                default:
-                    return Composition::ResizeGovernorPhase::Idle;
-            }
-        }
-
         static double nowMs(){
             using namespace std::chrono;
             return duration<double,std::milli>(steady_clock::now().time_since_epoch()).count();
@@ -187,57 +127,6 @@ namespace OmegaWTK {
 
         static float finiteOrZero(float value){
             return std::isfinite(value) ? value : 0.f;
-        }
-
-        static Composition::ResizeGovernorMetadata makeResizeGovernorMetadata(const ResizeSessionState & state){
-            Composition::ResizeGovernorMetadata metadata {};
-            metadata.sessionId = state.sessionId;
-            metadata.active = state.phase == ResizePhase::Active ||
-                              state.phase == ResizePhase::Settling;
-            metadata.animatedTree = state.animatedTree;
-            metadata.velocityPxPerSec = finiteOrZero(state.sample.velocityPxPerSec);
-            metadata.accelerationPxPerSec2 = finiteOrZero(state.sample.accelerationPxPerSec2);
-            metadata.phase = toGovernorPhase(state.phase);
-            return metadata;
-        }
-
-        static bool laneValidationPass(const ResizeValidationTuning & tuning,
-                                       std::uint32_t sampleCount,
-                                       const Composition::Compositor::LaneDiagnosticsSnapshot & before,
-                                       const Composition::Compositor::LaneDiagnosticsSnapshot & after,
-                                       std::ostringstream & failureReason){
-            const auto submittedDelta = after.submittedPacketCount - before.submittedPacketCount;
-            const auto droppedDelta = after.droppedPacketCount - before.droppedPacketCount;
-            const auto failedDelta = after.failedPacketCount - before.failedPacketCount;
-            const auto epochDropDelta = after.epochDropCount - before.epochDropCount;
-            const auto staleCoordDelta = after.staleCoordinatorGenerationPacketCount -
-                                         before.staleCoordinatorGenerationPacketCount;
-            const double dropRatio = submittedDelta == 0
-                                     ? 0.0
-                                     : static_cast<double>(droppedDelta) / static_cast<double>(submittedDelta);
-
-            bool pass = true;
-            if(sampleCount < tuning.minResizeSamples){
-                failureReason << "insufficient_samples=" << sampleCount << " ";
-                pass = false;
-            }
-            if(failedDelta > tuning.maxFailedPackets){
-                failureReason << "failed_packets_delta=" << failedDelta << " ";
-                pass = false;
-            }
-            if(dropRatio > tuning.maxDropRatio){
-                failureReason << "drop_ratio=" << dropRatio << " ";
-                pass = false;
-            }
-            if(epochDropDelta > tuning.maxEpochDrops){
-                failureReason << "epoch_drops_delta=" << epochDropDelta << " ";
-                pass = false;
-            }
-            if(staleCoordDelta > tuning.maxStaleCoordinatorPackets){
-                failureReason << "stale_coord_delta=" << staleCoordDelta << " ";
-                pass = false;
-            }
-            return pass;
         }
     }
 
@@ -415,12 +304,7 @@ namespace OmegaWTK {
         return false;
     }
 
-    void WidgetTreeHost::applyResizeGovernorMetadata(const Composition::ResizeGovernorMetadata & metadata){
-        if(root == nullptr || root->view == nullptr){
-            return;
-        }
-        root->view->setResizeGovernorMetadataRecurse(metadata,resizeCoordinatorGeneration);
-    }
+   
 
     void WidgetTreeHost::initWidgetTree(){
         observeWidgetLayerTreesRecurse(root.get());
@@ -440,28 +324,13 @@ namespace OmegaWTK {
         lastResizeSessionState = resizeTracker.update(rect.w,rect.h,nowMs());
         lastResizeSessionState.animatedTree = detectAnimatedTreeRecurse(root.get());
         resizeCoordinatorGeneration += 1;
-        applyResizeGovernorMetadata(makeResizeGovernorMetadata(lastResizeSessionState));
-        if(resizeValidationSession.active &&
-           resizeValidationSession.sessionId == lastResizeSessionState.sessionId){
-            resizeValidationSession.sampleCount += 1;
-            resizeValidationSession.peakVelocityPxPerSec = std::max(
-                    resizeValidationSession.peakVelocityPxPerSec,
-                    finiteOrZero(std::fabs(lastResizeSessionState.sample.velocityPxPerSec)));
-            resizeValidationSession.peakAccelerationPxPerSec2 = std::max(
-                    resizeValidationSession.peakAccelerationPxPerSec2,
-                    finiteOrZero(std::fabs(lastResizeSessionState.sample.accelerationPxPerSec2)));
-            resizeValidationSession.endTimestampMs = lastResizeSessionState.sample.timestampMs;
-        }
         std::ostringstream stream;
         stream << "ResizeSession lane=" << syncLaneId
                << " id=" << lastResizeSessionState.sessionId
                << " phase=" << resizePhaseName(lastResizeSessionState.phase)
                << " w=" << lastResizeSessionState.sample.width
                << " h=" << lastResizeSessionState.sample.height
-               << " v=" << lastResizeSessionState.sample.velocityPxPerSec
-               << " a=" << lastResizeSessionState.sample.accelerationPxPerSec2
-               << " gen=" << resizeCoordinatorGeneration
-               << " policy=Paced";
+               << " gen=" << resizeCoordinatorGeneration;
         OMEGAWTK_DEBUG(stream.str());
     }
 
@@ -473,44 +342,13 @@ namespace OmegaWTK {
         if(root != nullptr){
             root->handleHostResize(rect);
         }
-        applyResizeGovernorMetadata(makeResizeGovernorMetadata(lastResizeSessionState));
-        const auto & validationTuning = resizeValidationTuning();
-        if(validationTuning.enabled && compositor != nullptr){
-            auto before = compositor->getLaneDiagnosticsSnapshot(syncLaneId);
-            resizeValidationSession.active = true;
-            resizeValidationSession.sessionId = lastResizeSessionState.sessionId;
-            resizeValidationSession.sampleCount = 1;
-            resizeValidationSession.beginTimestampMs = lastResizeSessionState.sample.timestampMs;
-            resizeValidationSession.endTimestampMs = lastResizeSessionState.sample.timestampMs;
-            resizeValidationSession.peakVelocityPxPerSec =
-                    finiteOrZero(std::fabs(lastResizeSessionState.sample.velocityPxPerSec));
-            resizeValidationSession.peakAccelerationPxPerSec2 =
-                    finiteOrZero(std::fabs(lastResizeSessionState.sample.accelerationPxPerSec2));
-            resizeValidationSession.baseSubmittedPackets = before.submittedPacketCount;
-            resizeValidationSession.basePresentedPackets = before.presentedPacketCount;
-            resizeValidationSession.baseDroppedPackets = before.droppedPacketCount;
-            resizeValidationSession.baseFailedPackets = before.failedPacketCount;
-            resizeValidationSession.baseEpochDrops = before.epochDropCount;
-            resizeValidationSession.baseStaleCoordinatorPackets = before.staleCoordinatorGenerationPacketCount;
-            std::ostringstream validationConfig;
-            validationConfig << "ResizeValidationConfig lane=" << syncLaneId
-                             << " scenario=" << resizeValidationScenario()
-                             << " minSamples=" << validationTuning.minResizeSamples
-                             << " maxDropRatio=" << validationTuning.maxDropRatio
-                             << " maxFailedPackets=" << validationTuning.maxFailedPackets
-                             << " maxEpochDrops=" << validationTuning.maxEpochDrops
-                             << " maxStaleCoord=" << validationTuning.maxStaleCoordinatorPackets
-                             << " failHard=" << (validationTuning.failHard ? "yes" : "no");
-            OMEGAWTK_DEBUG(validationConfig.str());
-        }
         std::ostringstream stream;
         stream << "ResizeSession lane=" << syncLaneId
                << " id=" << lastResizeSessionState.sessionId
                << " phase=" << resizePhaseName(lastResizeSessionState.phase)
                << " w=" << lastResizeSessionState.sample.width
                << " h=" << lastResizeSessionState.sample.height
-               << " gen=" << resizeCoordinatorGeneration
-               << " policy=Paced";
+               << " gen=" << resizeCoordinatorGeneration;
         OMEGAWTK_DEBUG(stream.str());
     }
 
@@ -521,75 +359,14 @@ namespace OmegaWTK {
         lastResizeSessionState = resizeTracker.end(rect.w,rect.h,nowMs());
         lastResizeSessionState.animatedTree = detectAnimatedTreeRecurse(root.get());
         resizeCoordinatorGeneration += 1;
-        applyResizeGovernorMetadata(makeResizeGovernorMetadata(lastResizeSessionState));
         std::ostringstream stream;
         stream << "ResizeSession lane=" << syncLaneId
                << " id=" << lastResizeSessionState.sessionId
                << " phase=" << resizePhaseName(lastResizeSessionState.phase)
                << " w=" << lastResizeSessionState.sample.width
                << " h=" << lastResizeSessionState.sample.height
-               << " v=" << lastResizeSessionState.sample.velocityPxPerSec
-               << " a=" << lastResizeSessionState.sample.accelerationPxPerSec2
-               << " gen=" << resizeCoordinatorGeneration
-               << " policy=Paced";
+               << " gen=" << resizeCoordinatorGeneration;
         OMEGAWTK_DEBUG(stream.str());
-
-        const auto & validationTuning = resizeValidationTuning();
-        if(validationTuning.enabled &&
-           resizeValidationSession.active &&
-           resizeValidationSession.sessionId == lastResizeSessionState.sessionId &&
-           compositor != nullptr){
-            auto after = compositor->getLaneDiagnosticsSnapshot(syncLaneId);
-            const auto submittedDelta = after.submittedPacketCount - resizeValidationSession.baseSubmittedPackets;
-            const auto presentedDelta = after.presentedPacketCount - resizeValidationSession.basePresentedPackets;
-            const auto droppedDelta = after.droppedPacketCount - resizeValidationSession.baseDroppedPackets;
-            const auto failedDelta = after.failedPacketCount - resizeValidationSession.baseFailedPackets;
-            const auto epochDropDelta = after.epochDropCount - resizeValidationSession.baseEpochDrops;
-            const auto staleCoordDelta = after.staleCoordinatorGenerationPacketCount -
-                                         resizeValidationSession.baseStaleCoordinatorPackets;
-            const auto durationMs = std::max(0.0,
-                    resizeValidationSession.endTimestampMs - resizeValidationSession.beginTimestampMs);
-            std::ostringstream failureReason;
-            Composition::Compositor::LaneDiagnosticsSnapshot beforeSnapshot {};
-            beforeSnapshot.submittedPacketCount = resizeValidationSession.baseSubmittedPackets;
-            beforeSnapshot.presentedPacketCount = resizeValidationSession.basePresentedPackets;
-            beforeSnapshot.droppedPacketCount = resizeValidationSession.baseDroppedPackets;
-            beforeSnapshot.failedPacketCount = resizeValidationSession.baseFailedPackets;
-            beforeSnapshot.epochDropCount = resizeValidationSession.baseEpochDrops;
-            beforeSnapshot.staleCoordinatorGenerationPacketCount = resizeValidationSession.baseStaleCoordinatorPackets;
-            const bool pass = laneValidationPass(validationTuning,
-                                                 resizeValidationSession.sampleCount,
-                                                 beforeSnapshot,
-                                                 after,
-                                                 failureReason);
-            std::ostringstream summary;
-            summary << "ResizeValidation lane=" << syncLaneId
-                    << " session=" << resizeValidationSession.sessionId
-                    << " scenario=" << resizeValidationScenario()
-                    << " result=" << (pass ? "PASS" : "FAIL")
-                    << " samples=" << resizeValidationSession.sampleCount
-                    << " durationMs=" << durationMs
-                    << " animatedTree=" << (lastResizeSessionState.animatedTree ? "yes" : "no")
-                    << " peakV=" << resizeValidationSession.peakVelocityPxPerSec
-                    << " peakA=" << resizeValidationSession.peakAccelerationPxPerSec2
-                    << " submittedDelta=" << submittedDelta
-                    << " presentedDelta=" << presentedDelta
-                    << " droppedDelta=" << droppedDelta
-                    << " failedDelta=" << failedDelta
-                    << " epochDropDelta=" << epochDropDelta
-                    << " staleCoordDelta=" << staleCoordDelta
-                    << " dropRatio="
-                    << (submittedDelta == 0 ? 0.0 :
-                        static_cast<double>(droppedDelta) / static_cast<double>(submittedDelta));
-            if(!pass){
-                summary << " reason=\"" << failureReason.str() << "\"";
-            }
-            OMEGAWTK_DEBUG(summary.str());
-            if(!pass && validationTuning.failHard){
-                assert(false && "Resize validation failed. See ResizeValidation log.");
-            }
-        }
-        resizeValidationSession = {};
     }
 
     void WidgetTreeHost::attachToWindow(AppWindow * window){

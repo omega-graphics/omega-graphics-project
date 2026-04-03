@@ -608,9 +608,6 @@ public:
                     const std::uint32_t safeExpected = std::max<std::uint32_t>(1,expectedFrames);
                     float allowance = static_cast<float>(std::max<std::uint8_t>(1,timing.maxCatchupSteps)) /
                                       static_cast<float>(safeExpected);
-                    if(timing.preferResizeSafeBudget && snapshot.resizeBudgetActive){
-                        allowance = std::min(allowance,1.f / static_cast<float>(safeExpected));
-                    }
                     float clamped = std::min(wall,presented + allowance);
                     if(wall >= 1.f && pendingPacketIds.empty()){
                         clamped = 1.f;

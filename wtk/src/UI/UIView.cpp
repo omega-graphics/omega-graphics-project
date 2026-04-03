@@ -1541,8 +1541,6 @@ bool UIView::advanceAnimations(){
     if(hasLaneDiagnostics){
         const bool droppedCountIncreased = hasObservedLaneDiagnostics &&
                                            laneDiagnostics.droppedPacketCount > lastObservedDroppedPacketCount;
-        staleSkipMode = laneDiagnostics.resizeBudgetActive ||
-                        laneDiagnostics.underPressure ||
                         laneDiagnostics.inFlight > 0 ||
                         droppedCountIncreased;
         lastObservedDroppedPacketCount = laneDiagnostics.droppedPacketCount;
@@ -1757,8 +1755,6 @@ bool UIView::advanceAnimations(){
     lastAnimationDiagnostics.lastPresentedPacketId = laneDiagnostics.lastPresentedPacketId;
     lastAnimationDiagnostics.inFlight = laneDiagnostics.inFlight;
     lastAnimationDiagnostics.staleSkipMode = staleSkipMode;
-    lastAnimationDiagnostics.laneUnderPressure = laneDiagnostics.underPressure;
-    lastAnimationDiagnostics.resizeBudgetActive = laneDiagnostics.resizeBudgetActive;
 
     return changed;
 }

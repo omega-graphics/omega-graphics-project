@@ -115,14 +115,6 @@ void Widget::executePaint(PaintReason reason,bool immediate){
         }
     }
     paintInProgress = true;
-    {
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                      std::chrono::steady_clock::now().time_since_epoch()).count();
-        std::cout << "[Paint] t=" << ms
-                  << " reason=" << (int)reason
-                  << " rect={" << view->getRect().w << "x" << view->getRect().h << "}"
-                  << std::endl;
-    }
     if(treeHost != nullptr){
         auto desiredFrontend = treeHost->compPtr();
         auto desiredLane = treeHost->laneId();

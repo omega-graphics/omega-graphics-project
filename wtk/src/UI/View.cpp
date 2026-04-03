@@ -355,6 +355,12 @@ void View::resize(Core::Rect newRect){
     }
     rect = sanitized;
     renderTarget->getNativePtr()->resize(rect);
+    // Update the native present layer (CAMetalLayer / swap chain) geometry
+    // immediately on the main thread so it is always in sync with the view.
+    {
+        Core::Rect localRect {Core::Position{0.f,0.f},sanitized.w,sanitized.h};
+        renderTarget->getNativePtr()->resizeNativeLayer(localRect,0.f);
+    }
     if(ownLayerTree != nullptr && ownLayerTree->getRootLayer() != nullptr){
         ownLayerTree->getRootLayer()->resize(rect);
     }
@@ -479,16 +485,8 @@ void View::setSyncLaneRecurse(uint64_t syncLaneId){
     }
 }
 
-void View::setResizeGovernorMetadataRecurse(const Composition::ResizeGovernorMetadata & metadata,
-                                            std::uint64_t coordinatorGeneration){
-    proxy.setResizeGovernorMetadata(metadata,coordinatorGeneration);
-    for(auto *subView : subviews){
-        if(subView != nullptr){
-            subView->setResizeGovernorMetadataRecurse(metadata,coordinatorGeneration);
-        }
-    }
-}
-    
+// setResizeGovernorMetadataRecurse removed (Phase 3).
+
 // Composition::Compositor * View::getWidgetCompositor(){
 //     return widgetLayerTree->widgetCompositor;
 // };

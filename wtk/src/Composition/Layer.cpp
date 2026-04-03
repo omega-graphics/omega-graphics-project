@@ -30,22 +30,11 @@ void Layer::removeSubLayer(SharedHandle<Layer> &layer) {
 };
 
 void Layer::setEnabled(bool state){
-    bool changed = (enabled != state);
     enabled = state;
-    if(changed && parentTree != nullptr){
-        if(state){
-            parentTree->notifyObserversOfEnable(this);
-        } else {
-            parentTree->notifyObserversOfDisable(this);
-        }
-    }
 }
 
 void Layer::resize(Core::Rect &newRect){
     surface_rect = newRect;
-    if(parentTree != nullptr){
-        parentTree->notifyObserversOfResize(this);
-    }
 };
 
 LayerTree * Layer::getParentTree(){
@@ -77,7 +66,6 @@ SharedHandle<Layer> & LayerTree::getRootLayer(){
 void LayerTree::addLayer(SharedHandle<Layer> layer){
     layer->parentTree = this;
     rootLayer->addSubLayer(layer);
-    notifyObserversOfEnable(layer.get());
 };
 
 LayerTree::iterator LayerTree::begin(){

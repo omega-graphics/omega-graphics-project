@@ -42,6 +42,7 @@ class CocoaItem : public NativeItem {
     OmegaWTKCocoaViewController *cont;
     NSScrollView *scrollView;
     OmegaWTKCocoaScrollViewDelegate *scrollViewDelegate;
+    CAMetalLayer *metalLayer_ = nil;
     friend class CocoaEventHandler;
     void enable() override;
     void disable() override;
@@ -122,11 +123,54 @@ public:
                 [hostLayer addSublayer:layer];
             }
 
+            // Store reference for resizeNativeLayer.
+            if([layer isKindOfClass:[CAMetalLayer class]]){
+                metalLayer_ = (CAMetalLayer *)layer;
+            }
+
             [hostLayer setNeedsDisplay];
             [layer setNeedsDisplay];
             [_ptr setNeedsDisplay:YES];
             [CATransaction commit];
         }
+    }
+    void resizeNativeLayer(const Core::Rect & newRect, float) override {
+        if(metalLayer_ == nil){
+            return;
+        }
+        constexpr CGFloat kMaxDrawableDimension = 16384.f;
+        CGFloat scale = [NSScreen mainScreen].backingScaleFactor;
+        if(scale <= 0.f || !std::isfinite(static_cast<double>(scale))){
+            scale = 2.f;
+        }
+        scale = std::max(scale,static_cast<CGFloat>(2.f));
+        const CGFloat maxPointDimension = kMaxDrawableDimension / scale;
+        const CGFloat w = std::clamp(
+                std::isfinite(newRect.w) ? static_cast<CGFloat>(newRect.w) : 1.f,
+                static_cast<CGFloat>(1.f),
+                maxPointDimension);
+        const CGFloat h = std::clamp(
+                std::isfinite(newRect.h) ? static_cast<CGFloat>(newRect.h) : 1.f,
+                static_cast<CGFloat>(1.f),
+                maxPointDimension);
+        NSDictionary *noActions = @{
+            @"bounds":[NSNull null],
+            @"position":[NSNull null],
+            @"frame":[NSNull null],
+            @"contents":[NSNull null],
+            @"transform":[NSNull null]
+        };
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        metalLayer_.actions = noActions;
+        metalLayer_.frame = CGRectMake(0.f,0.f,w,h);
+        metalLayer_.bounds = CGRectMake(0.f,0.f,w,h);
+        metalLayer_.position = CGPointMake(0.f,0.f);
+        metalLayer_.contentsScale = scale;
+        metalLayer_.drawableSize = CGSizeMake(
+                std::clamp(w * scale,static_cast<CGFloat>(1.f),kMaxDrawableDimension),
+                std::clamp(h * scale,static_cast<CGFloat>(1.f),kMaxDrawableDimension));
+        [CATransaction commit];
     }
     void setNeedsDisplay();
     void * getBinding() override;

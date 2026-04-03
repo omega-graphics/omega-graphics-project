@@ -138,7 +138,6 @@ namespace {
                     Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
             layerRect = normalizeRootVisualRect(layerRect);
             rootTarget->setRenderTargetSize(layerRect);
-            target.visualTree->root->resize(layerRect);
             return inserted.first->second;
         }
 
@@ -155,38 +154,11 @@ namespace {
         return inserted.first->second;
     }
 
-    static void collectLayersForTree(LayerTree *tree,
-                                     OmegaCommon::Vector<Layer *> &layers){
-        if(tree == nullptr){
-            return;
-        }
-        tree->collectAllLayers(layers);
-    }
-
-    static void resizeVisualForSurface(BackendCompRenderTarget & target,
-                                       BackendRenderTargetContext *surface,
-                                       const Core::Rect & rect){
-        if(surface == nullptr || target.visualTree == nullptr){
-            return;
-        }
-        if(target.visualTree->root != nullptr &&
-           surface == &(target.visualTree->root->renderTarget)){
-            auto mutableRect = rect;
-            mutableRect = normalizeRootVisualRect(mutableRect);
-            target.visualTree->root->resize(mutableRect);
-            return;
-        }
-        for(auto & visual : target.visualTree->body){
-            if(visual != nullptr && surface == &(visual->renderTarget)){
-                auto mutableRect = rect;
-                visual->resize(mutableRect);
-                break;
-            }
-        }
-    }
 }
 
-void Compositor::applyLayerTreePacketDeltasToBackendMirror(std::uint64_t syncLaneId,
+// applyLayerTreePacketDeltasToBackendMirror removed (Phase 2).
+#if 0
+void Compositor::applyLayerTreePacketDeltasToBackendMirror_REMOVED(std::uint64_t syncLaneId,
                                                             std::uint64_t syncPacketId,
                                                             BackendCompRenderTarget *target){
     if(syncLaneId == 0 || syncPacketId == 0){
@@ -340,10 +312,10 @@ void Compositor::applyLayerTreePacketDeltasToBackendMirror(std::uint64_t syncLan
                     sanitizeCommandRect(layer->getLayerRect(),
                                         Core::Rect{Core::Position{0.f,0.f},1.f,1.f}));
             surface->setRenderTargetSize(rect);
-            resizeVisualForSurface(*target,surface,rect);
         }
     }
 }
+#endif
 
 
 void Compositor::executeCurrentCommand(){
@@ -378,9 +350,8 @@ void Compositor::executeCurrentCommand(){
             target = &renderTargetStore.store[comm->renderTarget];
         };
 
-        applyLayerTreePacketDeltasToBackendMirror(currentCommand->syncLaneId,
-                                                  currentCommand->syncPacketId,
-                                                  target);
+        // Layer tree mirror application removed (Phase 2).
+        // Native layer geometry is managed on the main thread.
 
         /// 2. Locate / Create Layer Render Target in Visual Tree.
         BackendRenderTargetContext *targetContext = nullptr;
@@ -416,7 +387,6 @@ void Compositor::executeCurrentCommand(){
             layerRect = normalizeRootVisualRect(layerRect);
         }
         targetContext->setRenderTargetSize(layerRect);
-        resizeVisualForSurface(*target,targetContext,layerRect);
 
         OmegaCommon::ArrayRef<VisualCommand> commands{comm->frame->currentVisuals};
 
@@ -465,8 +435,7 @@ void Compositor::executeCurrentCommand(){
         }
 
         for(auto & effect : comm->frame->currentEffects){
-            auto adaptedEffect = adaptCanvasEffectForLane(currentCommand->syncLaneId,effect);
-            targetContext->applyEffectToTarget(adaptedEffect);
+            targetContext->applyEffectToTarget(effect);
         }
 
         const auto submitTimeCpu = std::chrono::steady_clock::now();
