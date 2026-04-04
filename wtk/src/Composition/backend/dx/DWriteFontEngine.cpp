@@ -15,6 +15,7 @@
 #include <vector>
 
 #pragma comment(lib,"dxguid.lib")
+#pragma comment(lib,"d2d1.lib")
 
 namespace OmegaWTK::Composition {
 

@@ -153,9 +153,35 @@ namespace omegasl {
                     }
                     else if(_id_expr == BUILTIN_READ){
                         generatedExprBody = true;
+                        ast::TypeExpr *textureTypeExpr = _expr->args[0]->resolvedType;
+                        if(textureTypeExpr == nullptr && _expr->args[0]->type == ID_EXPR){
+                            auto *resourceId = static_cast<ast::IdExpr *>(_expr->args[0]);
+                            auto resourceIt = resourceStore.find(resourceId->id);
+                            if(resourceIt != resourceStore.end()){
+                                textureTypeExpr = (*resourceIt)->typeExpr;
+                            }
+                        }
+                        auto *textureTy = textureTypeExpr != nullptr ? typeResolver->resolveTypeWithExpr(textureTypeExpr) : nullptr;
                         generateExpr(_expr->args[0]);
                         shaderOut << ".Load(";
-                        generateExpr(_expr->args[1]);
+                        if(textureTy == ast::builtins::texture1d_type){
+                            shaderOut << "int2(";
+                            generateExpr(_expr->args[1]);
+                            shaderOut << ",0)";
+                        }
+                        else if(textureTy == ast::builtins::texture2d_type){
+                            shaderOut << "int3(";
+                            generateExpr(_expr->args[1]);
+                            shaderOut << ",0)";
+                        }
+                        else if(textureTy == ast::builtins::texture3d_type){
+                            shaderOut << "int4(";
+                            generateExpr(_expr->args[1]);
+                            shaderOut << ",0)";
+                        }
+                        else {
+                            generateExpr(_expr->args[1]);
+                        }
                         shaderOut << ")";
                     }
                     else if(_id_expr == BUILTIN_MAKE_INT2){ shaderOut << "int2"; }
@@ -471,8 +497,8 @@ namespace omegasl {
 
                         if(_t == ast::builtins::buffer_type){
                             layoutDesc.type = OMEGASL_SHADER_BUFFER_DESC;
-                            isTResource = true;
                             if(res.access == ast::ShaderDecl::ResourceMapDesc::In){
+                                isTResource = true;
                                 shaderOut << BUFFER;
                             }
                             else {
@@ -485,23 +511,25 @@ namespace omegasl {
                         }
                         else if(_t == ast::builtins::texture1d_type){
                             layoutDesc.type = OMEGASL_SHADER_TEXTURE1D_DESC;
-                            isTResource = true;
                             if(res.access == ast::ShaderDecl::ResourceMapDesc::In){
+                                isTResource = true;
                                 shaderOut << TEXTURE1D;
                             }
                             else {
                                 shaderOut << RW_TEXTURE1D;
                             }
+                            shaderOut << "<float4>";
                         }
                         else if(_t == ast::builtins::texture2d_type){
                             layoutDesc.type = OMEGASL_SHADER_TEXTURE2D_DESC;
-                            isTResource = true;
                             if(res.access == ast::ShaderDecl::ResourceMapDesc::In){
+                                isTResource = true;
                                 shaderOut << TEXTURE2D;
                             }
                             else {
                                 shaderOut << RW_TEXTURE2D;
                             }
+                            shaderOut << "<float4>";
                         }
                         else if(_t == ast::builtins::sampler1d_type){
                             isSResource = true;
