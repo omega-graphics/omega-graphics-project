@@ -48,7 +48,7 @@ _NAMESPACE_BEGIN_
     };
 
     struct  OMEGAGTE_EXPORT RenderPipelineDescriptor {
-        OmegaCommon::StrRef name;
+        OmegaCommon::String name;
         SharedHandle<GTEShader> vertexFunc;
         SharedHandle<GTEShader> fragmentFunc;
         PixelFormat colorPixelFormat = PixelFormat::RGBA8Unorm;
