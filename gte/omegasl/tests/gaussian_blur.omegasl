@@ -1,0 +1,106 @@
+
+struct BlurParams {
+    float4 config;
+};
+
+buffer<BlurParams> params : 0;
+texture2d srcTex : 1;
+texture2d dstTex : 2;
+
+[in params, in srcTex, out dstTex]
+compute(x=8,y=8,z=1)
+void blur_horizontal(uint3 tid : GlobalThreadID){
+    int width = (int)params[0].config[0];
+    int height = (int)params[0].config[1];
+    float sigma = params[0].config[2];
+
+    int px = (int)tid[0];
+    int py = (int)tid[1];
+
+    if(px >= width){
+        return;
+    }
+    if(py >= height){
+        return;
+    }
+
+    float twoSigmaSq = 2.0 * sigma * sigma;
+    float weightSum = 0.0;
+    float sumR = 0.0;
+    float sumG = 0.0;
+    float sumB = 0.0;
+    float sumA = 0.0;
+
+    for(int i = -4; i <= 4; ++i){
+        int sampleX = px + i;
+        if(sampleX < 0){
+            sampleX = 0;
+        }
+        if(sampleX >= width){
+            sampleX = width - 1;
+        }
+
+        float fi = (float)i;
+        float w = exp(-(fi * fi) / twoSigmaSq);
+
+        float4 texel = read(srcTex, make_int2(sampleX, py));
+        sumR = sumR + texel[0] * w;
+        sumG = sumG + texel[1] * w;
+        sumB = sumB + texel[2] * w;
+        sumA = sumA + texel[3] * w;
+        weightSum = weightSum + w;
+    }
+
+    float invWeight = 1.0 / weightSum;
+    float4 result = make_float4(sumR * invWeight, sumG * invWeight, sumB * invWeight, sumA * invWeight);
+    write(dstTex, make_int2(px, py), result);
+}
+
+[in params, in srcTex, out dstTex]
+compute(x=8,y=8,z=1)
+void blur_vertical(uint3 tid : GlobalThreadID){
+    int width = (int)params[0].config[0];
+    int height = (int)params[0].config[1];
+    float sigma = params[0].config[2];
+
+    int px = (int)tid[0];
+    int py = (int)tid[1];
+
+    if(px >= width){
+        return;
+    }
+    if(py >= height){
+        return;
+    }
+
+    float twoSigmaSq = 2.0 * sigma * sigma;
+    float weightSum = 0.0;
+    float sumR = 0.0;
+    float sumG = 0.0;
+    float sumB = 0.0;
+    float sumA = 0.0;
+
+    for(int i = -4; i <= 4; ++i){
+        int sampleY = py + i;
+        if(sampleY < 0){
+            sampleY = 0;
+        }
+        if(sampleY >= height){
+            sampleY = height - 1;
+        }
+
+        float fi = (float)i;
+        float w = exp(-(fi * fi) / twoSigmaSq);
+
+        float4 texel = read(srcTex, make_int2(px, sampleY));
+        sumR = sumR + texel[0] * w;
+        sumG = sumG + texel[1] * w;
+        sumB = sumB + texel[2] * w;
+        sumA = sumA + texel[3] * w;
+        weightSum = weightSum + w;
+    }
+
+    float invWeight = 1.0 / weightSum;
+    float4 result = make_float4(sumR * invWeight, sumG * invWeight, sumB * invWeight, sumA * invWeight);
+    write(dstTex, make_int2(px, py), result);
+}

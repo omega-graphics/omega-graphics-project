@@ -291,6 +291,229 @@ _NAMESPACE_BEGIN_
         return vec4ToPoint(v);
     }
 
+    // ==================================================================
+    // Quaternion
+    // ==================================================================
+
+    template<class Ty>
+    struct Quaternion {
+        Ty x, y, z, w;
+
+        // --- Construction ---
+
+        /// Returns the identity quaternion (0, 0, 0, 1).
+        static Quaternion Identity(){
+            return {Ty(0), Ty(0), Ty(0), Ty(1)};
+        }
+
+        /// Rotation of `radians` around the unit axis (ax, ay, az).
+        static Quaternion fromAxisAngle(Ty ax, Ty ay, Ty az, Ty radians){
+            Ty half = radians * Ty(0.5);
+            Ty s = std::sin(half);
+            return {ax * s, ay * s, az * s, std::cos(half)};
+        }
+
+        /// Equivalent to rotationEuler() but as a quaternion.
+        /// Applies X (pitch) -> Y (yaw) -> Z (roll), matching the existing convention.
+        static Quaternion fromEuler(Ty pitch, Ty yaw, Ty roll){
+            Ty cx = std::cos(pitch * Ty(0.5)), sx = std::sin(pitch * Ty(0.5));
+            Ty cy = std::cos(yaw   * Ty(0.5)), sy = std::sin(yaw   * Ty(0.5));
+            Ty cz = std::cos(roll  * Ty(0.5)), sz = std::sin(roll  * Ty(0.5));
+            return {
+                sx*cy*cz - cx*sy*sz,
+                cx*sy*cz + sx*cy*sz,
+                cx*cy*sz - sx*sy*cz,
+                cx*cy*cz + sx*sy*sz
+            };
+        }
+
+        /// Extracts the rotation from a 4x4 matrix (upper-left 3x3).
+        /// Uses Shepperd's method for numerical stability.
+        static Quaternion fromMatrix(const Matrix<Ty,4,4>& m){
+            Ty m00 = m[0][0], m11 = m[1][1], m22 = m[2][2];
+            Ty trace = m00 + m11 + m22;
+            Ty qx, qy, qz, qw;
+
+            if(trace > Ty(0)){
+                Ty s = std::sqrt(trace + Ty(1)) * Ty(2); // s = 4*w
+                qw = Ty(0.25) * s;
+                qx = (m[1][2] - m[2][1]) / s;
+                qy = (m[2][0] - m[0][2]) / s;
+                qz = (m[0][1] - m[1][0]) / s;
+            } else if(m00 > m11 && m00 > m22){
+                Ty s = std::sqrt(Ty(1) + m00 - m11 - m22) * Ty(2); // s = 4*x
+                qw = (m[1][2] - m[2][1]) / s;
+                qx = Ty(0.25) * s;
+                qy = (m[0][1] + m[1][0]) / s;
+                qz = (m[2][0] + m[0][2]) / s;
+            } else if(m11 > m22){
+                Ty s = std::sqrt(Ty(1) + m11 - m00 - m22) * Ty(2); // s = 4*y
+                qw = (m[2][0] - m[0][2]) / s;
+                qx = (m[0][1] + m[1][0]) / s;
+                qy = Ty(0.25) * s;
+                qz = (m[1][2] + m[2][1]) / s;
+            } else {
+                Ty s = std::sqrt(Ty(1) + m22 - m00 - m11) * Ty(2); // s = 4*z
+                qw = (m[0][1] - m[1][0]) / s;
+                qx = (m[2][0] + m[0][2]) / s;
+                qy = (m[1][2] + m[2][1]) / s;
+                qz = Ty(0.25) * s;
+            }
+            return {qx, qy, qz, qw};
+        }
+
+        // --- Arithmetic ---
+
+        /// Hamilton product. Composes rotations: (q1 * q2) applies q2 first, then q1.
+        Quaternion operator*(const Quaternion& o) const {
+            return {
+                w*o.x + x*o.w + y*o.z - z*o.y,
+                w*o.y - x*o.z + y*o.w + z*o.x,
+                w*o.z + x*o.y - y*o.x + z*o.w,
+                w*o.w - x*o.x - y*o.y - z*o.z
+            };
+        }
+
+        Quaternion operator*(Ty scalar) const {
+            return {x*scalar, y*scalar, z*scalar, w*scalar};
+        }
+        friend Quaternion operator*(Ty scalar, const Quaternion& q){
+            return q * scalar;
+        }
+
+        Quaternion operator+(const Quaternion& o) const {
+            return {x+o.x, y+o.y, z+o.z, w+o.w};
+        }
+        Quaternion operator-(const Quaternion& o) const {
+            return {x-o.x, y-o.y, z-o.z, w-o.w};
+        }
+        Quaternion operator-() const {
+            return {-x, -y, -z, -w};
+        }
+
+        // --- Operations ---
+
+        Ty lengthSquared() const { return x*x + y*y + z*z + w*w; }
+        Ty length() const { return std::sqrt(lengthSquared()); }
+
+        Quaternion normalized() const {
+            Ty len = length();
+            return {x/len, y/len, z/len, w/len};
+        }
+
+        Quaternion conjugate() const { return {-x, -y, -z, w}; }
+
+        Quaternion inverse() const {
+            Ty lenSq = lengthSquared();
+            return {-x/lenSq, -y/lenSq, -z/lenSq, w/lenSq};
+        }
+
+        Ty dot(const Quaternion& o) const {
+            return x*o.x + y*o.y + z*o.z + w*o.w;
+        }
+
+        // --- Conversion ---
+
+        /// Produces a 4x4 rotation matrix (no translation/scale).
+        Matrix<Ty,4,4> toMatrix() const {
+            Ty xx = x*x, yy = y*y, zz = z*z;
+            Ty xy = x*y, xz = x*z, yz = y*z;
+            Ty wx = w*x, wy = w*y, wz = w*z;
+
+            auto m = Matrix<Ty,4,4>::Create();
+            m[0][0] = Ty(1) - Ty(2)*(yy + zz);
+            m[0][1] = Ty(2)*(xy + wz);
+            m[0][2] = Ty(2)*(xz - wy);
+
+            m[1][0] = Ty(2)*(xy - wz);
+            m[1][1] = Ty(1) - Ty(2)*(xx + zz);
+            m[1][2] = Ty(2)*(yz + wx);
+
+            m[2][0] = Ty(2)*(xz + wy);
+            m[2][1] = Ty(2)*(yz - wx);
+            m[2][2] = Ty(1) - Ty(2)*(xx + yy);
+
+            m[3][3] = Ty(1);
+            return m;
+        }
+
+        // --- Interpolation ---
+
+        /// Normalized linear interpolation. Cheaper than slerp, nearly identical
+        /// for small angular differences.
+        static Quaternion nlerp(const Quaternion& a, const Quaternion& b, Ty t){
+            Quaternion target = (a.dot(b) < Ty(0)) ? -b : b;
+            return (a * (Ty(1) - t) + target * t).normalized();
+        }
+
+        /// Spherical linear interpolation. t=0 returns a, t=1 returns b.
+        /// Follows the shortest arc (flips b if dot(a,b) < 0).
+        static Quaternion slerp(const Quaternion& a, const Quaternion& b, Ty t){
+            Ty cosTheta = a.dot(b);
+            Quaternion target = b;
+            if(cosTheta < Ty(0)){
+                target = -b;
+                cosTheta = -cosTheta;
+            }
+            if(cosTheta > Ty(0.9995)){
+                return nlerp(a, target, t);
+            }
+            Ty theta = std::acos(cosTheta);
+            Ty sinTheta = std::sin(theta);
+            Ty wa = std::sin((Ty(1) - t) * theta) / sinTheta;
+            Ty wb = std::sin(t * theta) / sinTheta;
+            return a * wa + target * wb;
+        }
+    };
+
+    using FQuaternion = Quaternion<float>;
+
+    // ==================================================================
+    // Quaternion free functions
+    // ==================================================================
+
+    /// Rotate a point by a quaternion (optimized q * p * q_inverse).
+    template<class Ty>
+    inline GPoint3D rotatePoint(const Quaternion<Ty>& q, const GPoint3D& pt){
+        // t = 2 * cross(q.xyz, pt)
+        Ty tx = Ty(2) * (q.y * pt.z - q.z * pt.y);
+        Ty ty = Ty(2) * (q.z * pt.x - q.x * pt.z);
+        Ty tz = Ty(2) * (q.x * pt.y - q.y * pt.x);
+        // result = pt + w*t + cross(q.xyz, t)
+        return {
+            pt.x + q.w * tx + (q.y * tz - q.z * ty),
+            pt.y + q.w * ty + (q.z * tx - q.x * tz),
+            pt.z + q.w * tz + (q.x * ty - q.y * tx)
+        };
+    }
+
+    /// Build a lookAt-style quaternion (camera orientation).
+    inline FQuaternion lookAtQuaternion(const GPoint3D& forward, const GPoint3D& up){
+        // Normalize forward
+        float flen = std::sqrt(forward.x*forward.x + forward.y*forward.y + forward.z*forward.z);
+        float fx = forward.x/flen, fy = forward.y/flen, fz = forward.z/flen;
+
+        // side = normalize(cross(forward, up))
+        float sx = fy*up.z - fz*up.y;
+        float sy = fz*up.x - fx*up.z;
+        float sz = fx*up.y - fy*up.x;
+        float slen = std::sqrt(sx*sx + sy*sy + sz*sz);
+        sx /= slen; sy /= slen; sz /= slen;
+
+        // recomputed up = cross(side, forward)
+        float ux = sy*fz - sz*fy;
+        float uy = sz*fx - sx*fz;
+        float uz = sx*fy - sy*fx;
+
+        // Build 3x3 rotation matrix and extract quaternion
+        // Row 0: side,  Row 1: up,  Row 2: -forward
+        auto m = FMatrix<4,4>::Identity();
+        m[0][0] = sx;  m[0][1] = ux;  m[0][2] = -fx;
+        m[1][0] = sy;  m[1][1] = uy;  m[1][2] = -fy;
+        m[2][0] = sz;  m[2][1] = uz;  m[2][2] = -fz;
+        return FQuaternion::fromMatrix(m);
+    }
+
 _NAMESPACE_END_
 
 #endif

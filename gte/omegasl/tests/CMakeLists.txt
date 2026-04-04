@@ -53,6 +53,14 @@ add_omegasl_compile_test(omegasl_compile_math_builtins       math_builtins.omega
 add_omegasl_compile_test(omegasl_compile_matrix_ops          matrix_ops.omegasl)
 add_omegasl_compile_test(omegasl_compile_texture_write       texture_write.omegasl)
 
+# --- Real-world shader tests (UI / game engine patterns) ---
+add_omegasl_compile_test(omegasl_compile_blinn_phong         blinn_phong.omegasl)
+add_omegasl_compile_test(omegasl_compile_gaussian_blur       gaussian_blur.omegasl)
+add_omegasl_compile_test(omegasl_compile_sdf_shapes          sdf_shapes.omegasl)
+add_omegasl_compile_test(omegasl_compile_pbr_metallic        pbr_metallic.omegasl)
+add_omegasl_compile_test(omegasl_compile_post_process        post_process.omegasl)
+add_omegasl_compile_test(omegasl_compile_particle_sim        particle_sim.omegasl)
+
 # =============================================================
 # 3. Negative compilation tests (expected to fail)
 # =============================================================

@@ -1,0 +1,65 @@
+
+struct Vertex {
+    float4 position;
+    float4 normal;
+};
+
+struct LightData {
+    float4 lightDir;
+    float4 lightColor;
+    float4 ambientColor;
+    float4 viewConfig;
+};
+
+struct PhongRaster internal {
+    float4 pos : Position;
+    float4 color : Color;
+};
+
+buffer<Vertex> vertices : 0;
+buffer<LightData> light : 1;
+
+float saturate(float x){
+    return clamp(x, 0.0, 1.0);
+}
+
+float lambert_diffuse(float3 N, float3 L){
+    return max(dot(N, L), 0.0);
+}
+
+float blinn_specular(float3 N, float3 L, float3 V, float shininess){
+    float3 H = normalize(make_float3(L[0] + V[0], L[1] + V[1], L[2] + V[2]));
+    float NdotH = max(dot(N, H), 0.0);
+    return pow(NdotH, shininess);
+}
+
+[in vertices, in light]
+vertex PhongRaster phongVertex(uint vid : VertexID){
+    Vertex v = vertices[vid];
+
+    float3 N = normalize(make_float3(v.normal[0], v.normal[1], v.normal[2]));
+    float3 L = normalize(make_float3(light[0].lightDir[0], light[0].lightDir[1], light[0].lightDir[2]));
+    float3 V = normalize(make_float3(light[0].viewConfig[0], light[0].viewConfig[1], light[0].viewConfig[2]));
+    float shininess = light[0].viewConfig[3];
+
+    float diff = lambert_diffuse(N, L);
+    float spec = blinn_specular(N, L, V, shininess);
+
+    float intensity = light[0].lightColor[3];
+    float ar = light[0].ambientColor[0];
+    float ag = light[0].ambientColor[1];
+    float ab = light[0].ambientColor[2];
+
+    float r = ar + (diff + spec) * light[0].lightColor[0] * intensity;
+    float g = ag + (diff + spec) * light[0].lightColor[1] * intensity;
+    float b = ab + (diff + spec) * light[0].lightColor[2] * intensity;
+
+    PhongRaster result;
+    result.pos = v.position;
+    result.color = make_float4(saturate(r), saturate(g), saturate(b), 1.0);
+    return result;
+}
+
+fragment float4 phongFragment(PhongRaster raster){
+    return raster.color;
+}

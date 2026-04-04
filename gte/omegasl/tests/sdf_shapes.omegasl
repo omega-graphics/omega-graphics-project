@@ -1,0 +1,117 @@
+
+struct ShapeParams {
+    float4 dimensions;
+    float4 rectParams;
+    float4 circleParams;
+    float4 bgColor;
+    float4 fgColor;
+};
+
+struct Pixel {
+    float4 color;
+};
+
+buffer<ShapeParams> params : 0;
+buffer<Pixel> pixels : 1;
+
+float sdf_circle(float px, float py, float cx, float cy, float radius){
+    float dx = px - cx;
+    float dy = py - cy;
+    return sqrt(dx * dx + dy * dy) - radius;
+}
+
+float sdf_box(float px, float py, float cx, float cy, float halfW, float halfH){
+    float dx = abs(px - cx) - halfW;
+    float dy = abs(py - cy) - halfH;
+    float outsideDist = sqrt(max(dx, 0.0) * max(dx, 0.0) + max(dy, 0.0) * max(dy, 0.0));
+    float insideDist = min(max(dx, dy), 0.0);
+    return outsideDist + insideDist;
+}
+
+float sdf_rounded_rect(float px, float py, float cx, float cy, float halfW, float halfH, float radius){
+    float dx = abs(px - cx) - halfW + radius;
+    float dy = abs(py - cy) - halfH + radius;
+    float outsideDist = sqrt(max(dx, 0.0) * max(dx, 0.0) + max(dy, 0.0) * max(dy, 0.0));
+    float insideDist = min(max(dx, dy), 0.0);
+    return outsideDist + insideDist - radius;
+}
+
+float sdf_ring(float px, float py, float cx, float cy, float radius, float thickness){
+    float d = sdf_circle(px, py, cx, cy, radius);
+    return abs(d) - thickness;
+}
+
+float antialias_edge(float distance, float edgeWidth){
+    return 1.0 - smoothstep(-edgeWidth, edgeWidth, distance);
+}
+
+float sdf_union(float d1, float d2){
+    return min(d1, d2);
+}
+
+[in params, out pixels]
+compute(x=8,y=8,z=1)
+void render_rounded_rect(uint3 tid : GlobalThreadID){
+    float width = params[0].dimensions[0];
+    float height = params[0].dimensions[1];
+
+    float fx = (float)tid[0];
+    float fy = (float)tid[1];
+
+    if(fx >= width){
+        return;
+    }
+    if(fy >= height){
+        return;
+    }
+
+    float cx = params[0].rectParams[0];
+    float cy = params[0].rectParams[1];
+    float halfW = params[0].rectParams[2];
+    float halfH = params[0].rectParams[3];
+    float radius = params[0].circleParams[0];
+    float edgeWidth = params[0].circleParams[1];
+
+    float d = sdf_rounded_rect(fx, fy, cx, cy, halfW, halfH, radius);
+    float alpha = antialias_edge(d, edgeWidth);
+
+    float r = lerp(params[0].bgColor[0], params[0].fgColor[0], alpha);
+    float g = lerp(params[0].bgColor[1], params[0].fgColor[1], alpha);
+    float b = lerp(params[0].bgColor[2], params[0].fgColor[2], alpha);
+
+    uint idx = (uint)fy * (uint)width + (uint)fx;
+    pixels[idx].color = make_float4(r, g, b, 1.0);
+}
+
+[in params, out pixels]
+compute(x=8,y=8,z=1)
+void render_scene(uint3 tid : GlobalThreadID){
+    float width = params[0].dimensions[0];
+    float height = params[0].dimensions[1];
+
+    float fx = (float)tid[0];
+    float fy = (float)tid[1];
+
+    if(fx >= width){
+        return;
+    }
+    if(fy >= height){
+        return;
+    }
+
+    float cx = params[0].rectParams[0];
+    float cy = params[0].rectParams[1];
+
+    float dBox = sdf_box(fx, fy, cx, cy, params[0].rectParams[2], params[0].rectParams[3]);
+    float dRing = sdf_ring(fx, fy, cx, cy, params[0].circleParams[2], params[0].circleParams[3]);
+    float dScene = sdf_union(dBox, dRing);
+
+    float alpha = antialias_edge(dScene, 1.0);
+
+    float r = lerp(params[0].bgColor[0], params[0].fgColor[0], alpha);
+    float g = lerp(params[0].bgColor[1], params[0].fgColor[1], alpha);
+    float b = lerp(params[0].bgColor[2], params[0].fgColor[2], alpha);
+
+    uint idx = (uint)fy * (uint)width + (uint)fx;
+    pixels[idx].color = make_float4(r, g, b, 1.0);
+}

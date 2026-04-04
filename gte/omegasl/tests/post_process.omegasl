@@ -1,0 +1,132 @@
+
+struct PostParams {
+    float4 config;
+    float4 vignetteConfig;
+};
+
+struct Pixel {
+    float4 color;
+};
+
+buffer<PostParams> params : 0;
+buffer<Pixel> hdrPixels : 1;
+buffer<Pixel> ldrPixels : 2;
+
+float luminance(float r, float g, float b){
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+float aces_curve(float x){
+    float a = 2.51;
+    float b = 0.03;
+    float c = 2.43;
+    float d = 0.59;
+    float e = 0.14;
+    float num = x * (a * x + b);
+    float den = x * (c * x + d) + e;
+    return clamp(num / den, 0.0, 1.0);
+}
+
+float gamma_encode(float linear, float gamma){
+    return pow(linear, 1.0 / gamma);
+}
+
+[in params, in hdrPixels, out ldrPixels]
+compute(x=8,y=8,z=1)
+void tonemap_aces(uint3 tid : GlobalThreadID){
+    float width = params[0].config[0];
+    float height = params[0].config[1];
+    float exposure = params[0].config[2];
+    float gamma = params[0].config[3];
+
+    float fx = (float)tid[0];
+    float fy = (float)tid[1];
+
+    if(fx >= width){
+        return;
+    }
+    if(fy >= height){
+        return;
+    }
+
+    uint idx = (uint)fy * (uint)width + (uint)fx;
+    float4 hdr = hdrPixels[idx].color;
+
+    float r = hdr[0] * exposure;
+    float g = hdr[1] * exposure;
+    float b = hdr[2] * exposure;
+
+    r = aces_curve(r);
+    g = aces_curve(g);
+    b = aces_curve(b);
+
+    r = gamma_encode(r, gamma);
+    g = gamma_encode(g, gamma);
+    b = gamma_encode(b, gamma);
+
+    ldrPixels[idx].color = make_float4(r, g, b, hdr[3]);
+}
+
+[in params, inout ldrPixels]
+compute(x=8,y=8,z=1)
+void apply_vignette(uint3 tid : GlobalThreadID){
+    float width = params[0].config[0];
+    float height = params[0].config[1];
+    float strength = params[0].vignetteConfig[0];
+    float radius = params[0].vignetteConfig[1];
+    float softness = params[0].vignetteConfig[2];
+
+    float fx = (float)tid[0];
+    float fy = (float)tid[1];
+
+    if(fx >= width){
+        return;
+    }
+    if(fy >= height){
+        return;
+    }
+
+    float centerX = width * 0.5;
+    float centerY = height * 0.5;
+    float maxDist = sqrt(centerX * centerX + centerY * centerY);
+
+    float dx = fx - centerX;
+    float dy = fy - centerY;
+    float dist = sqrt(dx * dx + dy * dy) / maxDist;
+
+    float fade = 1.0 - smoothstep(radius, radius + softness, dist) * strength;
+
+    uint idx = (uint)fy * (uint)width + (uint)fx;
+    float4 color = ldrPixels[idx].color;
+    ldrPixels[idx].color = make_float4(color[0] * fade, color[1] * fade, color[2] * fade, color[3]);
+}
+
+[in params, in hdrPixels, out ldrPixels]
+compute(x=8,y=8,z=1)
+void brightness_threshold(uint3 tid : GlobalThreadID){
+    float width = params[0].config[0];
+    float height = params[0].config[1];
+    float threshold = params[0].vignetteConfig[3];
+
+    float fx = (float)tid[0];
+    float fy = (float)tid[1];
+
+    if(fx >= width){
+        return;
+    }
+    if(fy >= height){
+        return;
+    }
+
+    uint idx = (uint)fy * (uint)width + (uint)fx;
+    float4 color = hdrPixels[idx].color;
+    float lum = luminance(color[0], color[1], color[2]);
+
+    float contribution = smoothstep(threshold - 0.1, threshold + 0.1, lum);
+    ldrPixels[idx].color = make_float4(
+        color[0] * contribution,
+        color[1] * contribution,
+        color[2] * contribution,
+        color[3]
+    );
+}

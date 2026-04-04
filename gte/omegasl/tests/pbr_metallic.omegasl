@@ -1,0 +1,118 @@
+
+struct GBufferData {
+    float4 position;
+    float4 normal;
+    float4 albedo;
+    float4 material;
+};
+
+struct LightInfo {
+    float4 lightPos;
+    float4 lightColor;
+    float4 cameraPos;
+    float4 config;
+};
+
+struct OutputPixel {
+    float4 color;
+};
+
+buffer<GBufferData> gbuffer : 0;
+buffer<LightInfo> lightInfo : 1;
+buffer<OutputPixel> outPixels : 2;
+
+float distribution_ggx(float NdotH, float roughness){
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH2 = NdotH * NdotH;
+    float denom = NdotH2 * (a2 - 1.0) + 1.0;
+    return a2 / (3.14159265 * denom * denom);
+}
+
+float geometry_schlick(float NdotV, float roughness){
+    float r = roughness + 1.0;
+    float k = r * r / 8.0;
+    return NdotV / (NdotV * (1.0 - k) + k);
+}
+
+float geometry_smith(float NdotV, float NdotL, float roughness){
+    float ggx1 = geometry_schlick(NdotV, roughness);
+    float ggx2 = geometry_schlick(NdotL, roughness);
+    return ggx1 * ggx2;
+}
+
+float3 fresnel_schlick(float cosTheta, float3 F0){
+    float t = 1.0 - cosTheta;
+    float t2 = t * t;
+    float t5 = t2 * t2 * t;
+    return make_float3(
+        F0[0] + (1.0 - F0[0]) * t5,
+        F0[1] + (1.0 - F0[1]) * t5,
+        F0[2] + (1.0 - F0[2]) * t5
+    );
+}
+
+[in gbuffer, in lightInfo, out outPixels]
+compute(x=64,y=1,z=1)
+void pbr_lighting(uint3 tid : GlobalThreadID){
+    uint pixelCount = (uint)lightInfo[0].config[0];
+    uint idx = tid[0];
+
+    if(idx >= pixelCount){
+        return;
+    }
+
+    float3 worldPos = make_float3(gbuffer[idx].position[0], gbuffer[idx].position[1], gbuffer[idx].position[2]);
+    float3 N = normalize(make_float3(gbuffer[idx].normal[0], gbuffer[idx].normal[1], gbuffer[idx].normal[2]));
+    float3 albedo = make_float3(gbuffer[idx].albedo[0], gbuffer[idx].albedo[1], gbuffer[idx].albedo[2]);
+    float metallic = gbuffer[idx].material[0];
+    float roughness = gbuffer[idx].material[1];
+
+    float3 lightPos = make_float3(lightInfo[0].lightPos[0], lightInfo[0].lightPos[1], lightInfo[0].lightPos[2]);
+    float3 camPos = make_float3(lightInfo[0].cameraPos[0], lightInfo[0].cameraPos[1], lightInfo[0].cameraPos[2]);
+
+    float3 V = normalize(make_float3(camPos[0] - worldPos[0], camPos[1] - worldPos[1], camPos[2] - worldPos[2]));
+    float3 L = normalize(make_float3(lightPos[0] - worldPos[0], lightPos[1] - worldPos[1], lightPos[2] - worldPos[2]));
+    float3 H = normalize(make_float3(L[0] + V[0], L[1] + V[1], L[2] + V[2]));
+
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotH = max(dot(N, H), 0.0);
+    float HdotV = max(dot(H, V), 0.0);
+
+    float3 F0 = make_float3(
+        0.04 + (albedo[0] - 0.04) * metallic,
+        0.04 + (albedo[1] - 0.04) * metallic,
+        0.04 + (albedo[2] - 0.04) * metallic
+    );
+
+    float D = distribution_ggx(NdotH, roughness);
+    float G = geometry_smith(NdotV, NdotL, roughness);
+    float3 F = fresnel_schlick(HdotV, F0);
+
+    float denom = 4.0 * NdotV * NdotL + 0.0001;
+
+    float kDr = (1.0 - F[0]) * (1.0 - metallic);
+    float kDg = (1.0 - F[1]) * (1.0 - metallic);
+    float kDb = (1.0 - F[2]) * (1.0 - metallic);
+
+    float diffR = kDr * albedo[0] / 3.14159265;
+    float diffG = kDg * albedo[1] / 3.14159265;
+    float diffB = kDb * albedo[2] / 3.14159265;
+
+    float specR = D * G * F[0] / denom;
+    float specG = D * G * F[1] / denom;
+    float specB = D * G * F[2] / denom;
+
+    float lightIntensity = lightInfo[0].lightColor[3];
+    float radR = lightInfo[0].lightColor[0] * lightIntensity;
+    float radG = lightInfo[0].lightColor[1] * lightIntensity;
+    float radB = lightInfo[0].lightColor[2] * lightIntensity;
+
+    float ambient = 0.03;
+    float r = (diffR + specR) * radR * NdotL + ambient * albedo[0];
+    float g = (diffG + specG) * radG * NdotL + ambient * albedo[1];
+    float b = (diffB + specB) * radB * NdotL + ambient * albedo[2];
+
+    outPixels[idx].color = make_float4(r, g, b, 1.0);
+}
