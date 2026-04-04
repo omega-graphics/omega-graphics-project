@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>name</key>
+	<string>OmegaSL</string>
+	<key>description</key>
+	<string>OmegaSL syntax highlighting bundle</string>
+	<key>ordering</key>
+	<array>
+		<string>0c7af5c0-ded7-44af-8b49-15e3e0203d8f</string>
+	</array>
+	<key>uuid</key>
+	<string>49b3360f-a17a-50e1-bf90-3a354053929d</string>
+</dict>
+</plist>

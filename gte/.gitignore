@@ -20,6 +20,9 @@ sphinx*
 .build
 *.gn
 
+# Ignore Generated OmegaSL Syntax Files
+omegasl/vscode/syntaxes
+
 # Prerequisites
 *.d
 

@@ -1,0 +1,213 @@
+name: OmegaSL
+scopeName: source.omegasl
+fileTypes:
+  - omegasl
+foldingStartMarker: '\{\s*$'
+foldingStopMarker: '^\s*\}'
+uuid: 0c7af5c0-ded7-44af-8b49-15e3e0203d8f
+variables:
+  ident: '[A-Za-z_][A-Za-z0-9_]*'
+  builtin_math: 'sin|cos|tan|asin|acos|atan|atan2|sqrt|abs|floor|ceil|round|frac|exp|exp2|log|log2|normalize|length|pow|min|max|step|reflect|clamp|lerp|smoothstep'
+  builtin_ctor: 'make_(?:float(?:2|3|4|2x2|2x3|2x4|3x2|3x3|3x4|4x2|4x3|4x4)|int(?:2|3|4)|uint(?:2|3|4))'
+  builtin_core: 'sample|read|write|dot|cross'
+  stage_keywords: 'vertex|fragment|compute|hull|domain'
+  control_keywords: 'if|else|for|while|return'
+  declaration_keywords: 'struct|internal|static'
+  resource_access_keywords: 'inout|in|out'
+  scalar_types: 'void|bool|int|uint|float|double'
+  vector_types: '(?:int|uint|float|double)(?:2|3|4)'
+  matrix_types: 'float(?:2x2|2x3|2x4|3x2|3x3|3x4|4x2|4x3|4x4)'
+  resource_types: 'buffer|texture1d|texture2d|texture3d|sampler1d|sampler2d|sampler3d'
+  attribute_names: 'VertexID|InstanceID|Position|Color|TexCoord|GlobalThreadID|LocalThreadID|ThreadGroupID'
+  decorator_values: 'linear|point|anisotropic|wrap|clamp_to_edge|mirror|mirror_wrap|tri|quad|integer|fractional_even|fractional_odd|triangle_cw|triangle_ccw|line'
+patterns:
+  - include: "#comments"
+  - include: "#preprocessor"
+  - include: "#strings"
+  - include: "#numbers"
+  - include: "#shader-declarations"
+  - include: "#struct-declarations"
+  - include: "#resource-declarations"
+  - include: "#resource-map"
+  - include: "#attributes"
+  - include: "#keywords"
+  - include: "#types"
+  - include: "#builtins"
+  - include: "#constants"
+  - include: "#member-access"
+  - include: "#function-calls"
+  - include: "#operators"
+  - include: "#punctuation"
+repository:
+  comments:
+    patterns:
+      - name: comment.line.double-slash.omegasl
+        match: '//.*$'
+      - name: comment.block.omegasl
+        begin: '/\*'
+        end: '\*/'
+  preprocessor:
+    patterns:
+      - name: meta.preprocessor.omegasl
+        begin: '^\s*(#)\s*(define|ifdef|ifndef|endif|include)\b'
+        beginCaptures:
+          "1":
+            name: punctuation.definition.preprocessor.omegasl
+          "2":
+            name: keyword.control.import.omegasl
+        end: '$'
+        patterns:
+          - include: "#strings"
+          - name: entity.name.function.preprocessor.omegasl
+            match: '\b{{ident}}\b'
+  strings:
+    patterns:
+      - name: string.quoted.double.omegasl
+        begin: '"'
+        end: '"'
+        patterns:
+          - name: constant.character.escape.omegasl
+            match: '\\.'
+  numbers:
+    patterns:
+      - name: constant.numeric.float.omegasl
+        match: '\b(?:\d+\.\d*|\.\d+)(?:[eE][+\-]?\d+)?f?\b'
+      - name: constant.numeric.float.omegasl
+        match: '\b\d+[eE][+\-]?\d+f?\b'
+      - name: constant.numeric.integer.omegasl
+        match: '\b\d+u?\b'
+  shader-declarations:
+    patterns:
+      - name: meta.function.shader.omegasl
+        match: '\b({{stage_keywords}})\b(?:\s*\([^)]*\))?\s+((?:{{scalar_types}}|{{vector_types}}|{{matrix_types}}|{{ident}}))\s+({{ident}})\s*(?=\()'
+        captures:
+          "1":
+            name: storage.type.function.shader.omegasl
+          "2":
+            name: storage.type.return-type.omegasl
+          "3":
+            name: entity.name.function.shader.omegasl
+  struct-declarations:
+    patterns:
+      - name: meta.struct.omegasl
+        match: '\b(struct)\s+({{ident}})(?:\s+(internal))?\b'
+        captures:
+          "1":
+            name: storage.type.struct.omegasl
+          "2":
+            name: entity.name.type.struct.omegasl
+          "3":
+            name: storage.modifier.omegasl
+  resource-declarations:
+    patterns:
+      - name: meta.resource.buffer.omegasl
+        match: '\b(buffer)\s*(<)\s*({{ident}})\s*(>)\s+({{ident}})\s*(:)\s*(\d+)\b'
+        captures:
+          "1":
+            name: storage.type.resource.omegasl
+          "2":
+            name: punctuation.definition.generic.begin.omegasl
+          "3":
+            name: entity.name.type.omegasl
+          "4":
+            name: punctuation.definition.generic.end.omegasl
+          "5":
+            name: variable.other.resource.omegasl
+          "6":
+            name: punctuation.separator.annotation.omegasl
+          "7":
+            name: constant.numeric.integer.decimal.omegasl
+      - name: meta.resource.texture-sampler.omegasl
+        match: '\b(texture1d|texture2d|texture3d|sampler1d|sampler2d|sampler3d)\b\s+({{ident}})\s*(?::\s*(\d+))?'
+        captures:
+          "1":
+            name: storage.type.resource.omegasl
+          "2":
+            name: variable.other.resource.omegasl
+          "3":
+            name: constant.numeric.integer.decimal.omegasl
+  resource-map:
+    patterns:
+      - name: meta.resource-map.omegasl
+        begin: '\['
+        end: '\]'
+        beginCaptures:
+          "0":
+            name: punctuation.section.brackets.begin.omegasl
+        endCaptures:
+          "0":
+            name: punctuation.section.brackets.end.omegasl
+        patterns:
+          - name: keyword.control.resource-access.omegasl
+            match: '\b{{resource_access_keywords}}\b'
+          - name: variable.other.resource.omegasl
+            match: '\b{{ident}}\b'
+          - name: punctuation.separator.comma.omegasl
+            match: ','
+  attributes:
+    patterns:
+      - name: meta.attribute.annotation.omegasl
+        match: '(:)\s*({{attribute_names}})\b'
+        captures:
+          "1":
+            name: punctuation.separator.annotation.omegasl
+          "2":
+            name: support.constant.attribute.omegasl
+      - name: meta.shader.decorator.property.omegasl
+        match: '\b(domain|partitioning|outputtopology|outputcontrolpoints|filter|address_mode|max_anisotropy|x|y|z)\b(?=\s*=)'
+        captures:
+          "1":
+            name: variable.parameter.decorator.omegasl
+      - name: support.constant.decorator.omegasl
+        match: '\b{{decorator_values}}\b'
+  keywords:
+    patterns:
+      - name: keyword.control.omegasl
+        match: '\b{{control_keywords}}\b'
+      - name: storage.modifier.omegasl
+        match: '\b{{declaration_keywords}}\b'
+      - name: storage.type.function.shader.omegasl
+        match: '\b{{stage_keywords}}\b'
+  types:
+    patterns:
+      - name: storage.type.primitive.omegasl
+        match: '\b(?:{{matrix_types}}|{{vector_types}}|{{scalar_types}})\b'
+      - name: storage.type.resource.omegasl
+        match: '\b{{resource_types}}\b'
+  builtins:
+    patterns:
+      - name: support.function.constructor.omegasl
+        match: '\b{{builtin_ctor}}\b'
+      - name: support.function.builtin.omegasl
+        match: '\b(?:{{builtin_core}}|{{builtin_math}})\b'
+  constants:
+    patterns:
+      - name: constant.language.boolean.omegasl
+        match: '\b(?:true|false)\b'
+  member-access:
+    patterns:
+      - name: variable.other.member.omegasl
+        match: '(?<=\.){{ident}}\b'
+  function-calls:
+    patterns:
+      - name: entity.name.function.omegasl
+        match: '\b({{ident}})\s*(?=\()'
+        captures:
+          "1":
+            name: entity.name.function.omegasl
+  operators:
+    patterns:
+      - name: keyword.operator.omegasl
+        match: '(?:\+\+|--|\+=|-=|\*=|/=|==|!=|<=|>=|&&|\|\||[-+*/=!<>])'
+  punctuation:
+    patterns:
+      - name: punctuation.accessor.omegasl
+        match: '\.'
+      - name: punctuation.separator.comma.omegasl
+        match: ','
+      - name: punctuation.terminator.statement.omegasl
+        match: ';'
+      - name: punctuation.section.group.begin.omegasl
+        match: '[({]'
+      - name: punctuation.section.group.end.omegasl
+        match: '[)}]'

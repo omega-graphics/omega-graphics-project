@@ -1,0 +1,35 @@
+{
+  "name": "omegasl-vscode",
+  "displayName": "OmegaSL",
+  "description": "VS Code support for the OmegaSL shading language.",
+  "version": "0.1.0",
+  "publisher": "unpublished",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "omegasl",
+        "aliases": [
+          "OmegaSL"
+        ],
+        "extensions": [
+          ".omegasl"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "omegasl",
+        "scopeName": "source.omegasl",
+        "path": "./syntaxes/OmegaSL.tmLanguage.json"
+      }
+    ]
+  }
+}
