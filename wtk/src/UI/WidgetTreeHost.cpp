@@ -1,6 +1,7 @@
 #include "WidgetTreeHost.h"
 #include "../Composition/Compositor.h"
 
+#include "AppWindowImpl.h"
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/UI/View.h"
@@ -372,7 +373,7 @@ namespace OmegaWTK {
     void WidgetTreeHost::attachToWindow(AppWindow * window){
         if(!attachedToWindow) {
             attachedToWindow = true;
-            window->proxy.setFrontendPtr(compositor);
+            window->impl_->proxy.setFrontendPtr(compositor);
         }
     };
 

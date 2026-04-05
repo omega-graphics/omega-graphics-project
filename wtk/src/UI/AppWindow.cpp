@@ -1,4 +1,4 @@
-#include "omegaWTK/UI/AppWindow.h"
+#include "AppWindowImpl.h"
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/Native/NativeWindow.h"
 #include "omegaWTK/Native/NativeDialog.h"
@@ -9,6 +9,7 @@
 #include "omegaWTK/UI/View.h"
 
 #include <cmath>
+#include <iostream>
 
 namespace OmegaWTK {
 
@@ -25,29 +26,25 @@ static inline bool resizeRectChanged(const Core::Rect &lhs,const Core::Rect &rhs
 #endif
 
     AppWindow::AppWindow(Core::Rect rect,AppWindowDelegate *delegate):
-    layer(std::make_unique<Composition::WindowLayer>(rect,Native::make_native_window(rect,this))),
-    rootViewRenderTarget(new Composition::ViewRenderTarget(layer->native_window_ptr->getRootView())),
-    proxy(rootViewRenderTarget),
-    delegate(delegate),
-    rect(rect){
+    impl_(std::make_unique<Impl>(*this,rect,delegate)){
         // MessageBoxA(HWND_DESKTOP,"Create Window Layer!","NOTE",MB_OK);
-        if(delegate != nullptr) {
-            setReciever(delegate);
-            delegate->window = this;
+        if(impl_->delegate != nullptr) {
+            setReciever(impl_->delegate.get());
+            impl_->delegate->window = this;
         }
     };
 
 void AppWindow::setMenu(SharedHandle<Menu> & menu){
-    this->menu = menu;
-    layer->native_window_ptr->setMenu(this->menu->getNativeMenu());
+    impl_->menu = menu;
+    impl_->layer->native_window_ptr->setMenu(impl_->menu->getNativeMenu());
 };
 
 void AppWindow::setTitle(OmegaCommon::StrRef title){
-    layer->native_window_ptr->setTitle(title);
+    impl_->layer->native_window_ptr->setTitle(title);
 }
 
 void AppWindow::setEnableWindowHeader(bool enable) {
-    layer->native_window_ptr->setEnableWindowHeader(enable);
+    impl_->layer->native_window_ptr->setEnableWindowHeader(enable);
 }
 
 // void AppWindow::setLayerStyle(SharedHandle<Composition::WindowStyle> & style){
@@ -59,30 +56,30 @@ void AppWindow::setEnableWindowHeader(bool enable) {
 // };
 
 void AppWindow::onThemeSet(Native::ThemeDesc &desc){
-    if(widgetTreeHost != nullptr){
-        widgetTreeHost->root->onThemeSetRecurse(desc);
+    if(impl_->widgetTreeHost != nullptr){
+        impl_->widgetTreeHost->root->onThemeSetRecurse(desc);
     }
 }
 
 void AppWindow::setRootWidget(WidgetPtr widget){
-    widgetTreeHost = WidgetTreeHost::Create();
-    widgetTreeHost->setRoot(widget);
-    layer->native_window_ptr->addNativeItem(widget->view->renderTarget->getNativePtr());
-    proxy.setFrontendPtr(widgetTreeHost->compositor);
-    widgetTreeHost->attachedToWindow = true;
+    impl_->widgetTreeHost = WidgetTreeHost::Create();
+    impl_->widgetTreeHost->setRoot(widget);
+    impl_->layer->native_window_ptr->addNativeItem(widget->view->renderTargetHandle()->getNativePtr());
+    impl_->proxy.setFrontendPtr(impl_->widgetTreeHost->compositor);
+    impl_->widgetTreeHost->attachedToWindow = true;
 };
 
 
 SharedHandle<Native::NativeFSDialog> AppWindow::openFSDialog(const Native::NativeFSDialog::Descriptor & desc){
-    return Native::NativeFSDialog::Create(desc,layer->native_window_ptr);
+    return Native::NativeFSDialog::Create(desc,impl_->layer->native_window_ptr);
 };
 
 SharedHandle<Native::NativeNoteDialog> AppWindow::openNoteDialog(const Native::NativeNoteDialog::Descriptor & desc){
-    return Native::NativeNoteDialog::Create(desc,layer->native_window_ptr);
+    return Native::NativeNoteDialog::Create(desc,impl_->layer->native_window_ptr);
 };
 
 void AppWindow::close(){
-    layer->native_window_ptr->close();
+    impl_->layer->native_window_ptr->close();
 };
 
 AppWindow::~AppWindow(){
@@ -105,9 +102,9 @@ AppWindowPtr AppWindowManager::getRootWindow(){
 };
 
 void AppWindowManager::displayRootWindow(){
-    rootWindow->layer->native_window_ptr->initialDisplay();
-    if(rootWindow->widgetTreeHost != nullptr){
-        rootWindow->widgetTreeHost->initWidgetTree();
+    rootWindow->impl_->layer->native_window_ptr->initialDisplay();
+    if(rootWindow->impl_->widgetTreeHost != nullptr){
+        rootWindow->impl_->widgetTreeHost->initWidgetTree();
     }
 };
 
@@ -119,23 +116,23 @@ void AppWindowManager::closeAllWindows(){
 };
 
 void AppWindowDelegate::dispatchResizeToHosts(const Core::Rect & rect){
-    window->rect = rect;
-    if(window->widgetTreeHost != nullptr){
-        window->widgetTreeHost->notifyWindowResize(rect);
+    window->impl_->rect = rect;
+    if(window->impl_->widgetTreeHost != nullptr){
+        window->impl_->widgetTreeHost->notifyWindowResize(rect);
     }
 }
 
 void AppWindowDelegate::dispatchResizeBeginToHosts(const Core::Rect & rect){
-    window->rect = rect;
-    if(window->widgetTreeHost != nullptr){
-        window->widgetTreeHost->notifyWindowResizeBegin(rect);
+    window->impl_->rect = rect;
+    if(window->impl_->widgetTreeHost != nullptr){
+        window->impl_->widgetTreeHost->notifyWindowResizeBegin(rect);
     }
 }
 
 void AppWindowDelegate::dispatchResizeEndToHosts(const Core::Rect & rect){
-    window->rect = rect;
-    if(window->widgetTreeHost != nullptr){
-        window->widgetTreeHost->notifyWindowResizeEnd(rect);
+    window->impl_->rect = rect;
+    if(window->impl_->widgetTreeHost != nullptr){
+        window->impl_->widgetTreeHost->notifyWindowResizeEnd(rect);
     }
 }
 
@@ -215,17 +212,17 @@ void AppWindowDelegate::onRecieveEvent(Native::NativeEventPtr event){
             }
             else if(window != nullptr &&
                     (!hasLastDispatchedLiveResizeRect ||
-                     resizeRectChanged(window->rect,lastDispatchedLiveResizeRect))){
-                dispatchResizeToHosts(window->rect);
-                dispatchResizeEndToHosts(window->rect);
+                     resizeRectChanged(window->impl_->rect,lastDispatchedLiveResizeRect))){
+                dispatchResizeToHosts(window->impl_->rect);
+                dispatchResizeEndToHosts(window->impl_->rect);
             } else if(window != nullptr){
-                dispatchResizeEndToHosts(window->rect);
+                dispatchResizeEndToHosts(window->impl_->rect);
             }
             hasLastDispatchedLiveResizeRect = false;
             lastResizeBeginGeneration = 0;
 #else
             if(window != nullptr){
-                dispatchResizeEndToHosts(window->rect);
+                dispatchResizeEndToHosts(window->impl_->rect);
             }
 #endif
             liveResizeActive = false;

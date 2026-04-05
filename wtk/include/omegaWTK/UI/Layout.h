@@ -3,8 +3,6 @@
 #include "omegaWTK/Composition/Canvas.h"
 
 #include <cstdint>
-#include <functional>
-
 #ifndef OMEGAWTK_UI_LAYOUT_H
 #define OMEGAWTK_UI_LAYOUT_H
 
@@ -165,20 +163,6 @@ using LayoutBehaviorPtr = SharedHandle<LayoutBehavior>;
 
 class ViewResizeCoordinator;
 
-class OMEGAWTK_EXPORT LegacyResizeCoordinatorBehavior : public LayoutBehavior {
-    ViewResizeCoordinator & coordinator_;
-public:
-    explicit LegacyResizeCoordinatorBehavior(ViewResizeCoordinator & coordinator);
-    MeasureResult measure(LayoutNode & node, const LayoutContext & ctx) override;
-    void arrange(LayoutNode & node, const LayoutContext & ctx) override;
-};
-
-class OMEGAWTK_EXPORT StackLayoutBehavior : public LayoutBehavior {
-public:
-    MeasureResult measure(LayoutNode & node, const LayoutContext & ctx) override;
-    void arrange(LayoutNode & node, const LayoutContext & ctx) override;
-};
-
 // ---------------------------------------------------------------------------
 // Resolver free functions (A3)
 // ---------------------------------------------------------------------------
@@ -260,7 +244,7 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// E2 — Internal StyleRule structure
+// Style rule helpers
 // ---------------------------------------------------------------------------
 
 struct StyleRule {

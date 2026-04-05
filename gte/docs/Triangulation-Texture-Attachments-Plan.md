@@ -2,7 +2,7 @@
 
 ## Goal
 
-Support triangulating primitives with texture attachments end-to-end: params can specify a 2D or 3D texture attachment, triangulation produces per-vertex UVs (and optionally normals), and the result is consumable as a **GEMesh** — a GPU-ready mesh (vertex buffer, optional index buffer, vertex layout, and texture bindings). On the D3D12 backend, use **DirectXTex** for texture handling and **DirectXMesh** for mesh buffer creation and optimization.
+Support triangulating primitives with texture attachments end-to-end: params can specify a 2D or 3D texture attachment, triangulation produces per-vertex UVs (and optionally normals), and the result is consumable as a **GEMesh** — a GPU-ready mesh (vertex buffer, optional index buffer, vertex layout, and texture bindings). Texture loading, mesh buffer creation, and optimization are handled by our own cross-platform code on all backends.
 
 ## Current State
 
@@ -65,7 +65,7 @@ Support triangulating primitives with texture attachments end-to-end: params can
   - Flatten `result.meshes` and `vertexPolygons` into a single vertex buffer (and optionally an index buffer) with the requested layout.
   - If the result was produced with a texture attachment that had a `GETexture` reference, store that texture in the GEMesh’s texture bindings (e.g. slot 0 = base color texture).
   - Buffer creation uses existing **OmegaGraphicsEngine::makeBuffer** (and optionally makeHeap); no new buffer API required.
-- **Files**: `gte/include/omegaGTE/GEMesh.h`, `gte/src/common/GEMesh.cpp` (or backend-neutral builder), plus backend-specific code if any (see Phase 3).
+- **Files**: `gte/include/omegaGTE/GEMesh.h`, `gte/src/common/GEMesh.cpp` (or backend-neutral builder).
 
 ### 2.3 Command encoding: draw GEMesh
 
@@ -77,42 +77,7 @@ Support triangulating primitives with texture attachments end-to-end: params can
 
 ---
 
-## Phase 3: D3D12 — DirectXTex and DirectXMesh
-
-### 3.1 DirectXTex integration
-
-- **Purpose**: Load and process texture data used as triangulation attachments (e.g. load from DDS, WIC, or HDR), and optionally generate mipmaps or convert formats before uploading to **GETexture**.
-- **Scope**:
-  - Add DirectXTex as a dependency for the D3D12 build (e.g. vcpkg or existing SDK path).
-  - Provide a D3D12-specific helper (or optional API) that:
-    - Loads an image (file or memory) via DirectXTex.
-    - Optionally generates mip levels and converts to a format suitable for the engine (e.g. RGBA8).
-    - Creates a **GETexture** (or fills a staging buffer) and uploads the data so that the texture can be used as a triangulation attachment or as a GEMesh texture binding.
-  - This supports “triangulate with texture attachment” when the attachment texture comes from disk (e.g. a decal or atlas).
-- **Files**: D3D12-only source (e.g. `gte/src/d3d12/DirectXTexLoader.cpp` or under a `tex/` subfolder), and optional public API in a D3D12-specific header or behind a compile-time switch.
-
-### 3.2 DirectXMesh integration
-
-- **Purpose**: Build optimized vertex and index buffers from the triangulation result (position, UV, normal arrays) and optionally optimize for vertex cache and overdraw.
-- **Scope**:
-  - Add DirectXMesh as a dependency for the D3D12 build.
-  - When building a **GEMesh** from a **TETriangulationResult** on D3D12:
-    - Convert `TETriangulationResult` to position (and optionally UV, normal) arrays plus an index array (triangles).
-    - Use DirectXMesh to:
-      - Generate optimized index buffer (vertex cache optimization, e.g. `OptimizeFaces`).
-      - Optionally generate normals/tangents if we have positions and UVs but no normals (`ComputeNormals`, etc.).
-    - Create **ID3D12Resource** vertex and index buffers (via existing GED3D12 buffer creation or heap) and fill them from the processed data.
-  - The resulting GEMesh then holds D3D12 vertex/index buffers and optional texture bindings; the rest of the engine stays backend-agnostic.
-- **Files**: D3D12-only source (e.g. `gte/src/d3d12/GED3D12Mesh.cpp` or `DirectXMeshBuilder.cpp`), plus `GEMesh` implementation that delegates to this builder when building from a triangulation result on D3D12.
-
-### 3.3 Build and dependencies
-
-- Document and add CMake (or project) options to enable DirectXTex and DirectXMesh for D3D12. Keep them optional so that GEMesh and triangulation-with-texture-attachments can still be implemented and used on Metal/Vulkan without these libraries.
-- **Files**: `gte/CMakeLists.txt` (or equivalent), `gte/docs/` or root README for dependency and build instructions.
-
----
-
-## Phase 4: Testing and documentation
+## Phase 3: Testing and documentation
 
 - Add or extend tests that:
   - Triangulate a primitive (e.g. Rect, RoundedRect, Prism) with **TypeTexture2D** (and optionally a **GETexture** reference).
@@ -122,7 +87,6 @@ Support triangulating primitives with texture attachments end-to-end: params can
 - Document in `gte/docs` or in-code:
   - How to add a texture attachment to triangulation params.
   - How to build a GEMesh from a TETriangulationResult and bind its textures.
-  - D3D12: how to load a texture with DirectXTex and pass it as an attachment; how GEMesh uses DirectXMesh for optimized buffers.
 
 ---
 
@@ -130,12 +94,9 @@ Support triangulating primitives with texture attachments end-to-end: params can
 
 1. **Phase 1.1–1.2**: Attachment descriptor (optional texture handle) and UV assignment for all primitives in `_triangulatePriv`.
 2. **Phase 1.3**: Optional normals in AttachmentData and fill for 3D primitives.
-3. **Phase 2.1–2.2**: GEMesh type, descriptor, and builder from TETriangulationResult (backend-neutral buffer creation first).
+3. **Phase 2.1–2.2**: GEMesh type, descriptor, and builder from TETriangulationResult (backend-neutral buffer creation).
 4. **Phase 2.3**: Command encoding support to draw a GEMesh and bind its textures.
-5. **Phase 3.1**: D3D12 DirectXTex helper for loading textures for attachments.
-6. **Phase 3.2**: D3D12 DirectXMesh-based GEMesh build from TETriangulationResult.
-7. **Phase 3.3**: Build integration and optional dependency handling.
-8. **Phase 4**: Tests and documentation.
+5. **Phase 3**: Tests and documentation.
 
 ---
 
@@ -147,4 +108,3 @@ Support triangulating primitives with texture attachments end-to-end: params can
 | **Triangulation result** | All primitives emit texture2D/texture3D coords (and optional normals) when a texture attachment is set. |
 | **GEMesh** | New type: vertex (+ optional index) buffer, layout, and texture bindings; buildable from TETriangulationResult. |
 | **Command encoding** | Draw GEMesh (set vertex/index buffer, bind mesh textures). |
-| **D3D12** | DirectXTex for texture load/process for attachments; DirectXMesh for optimized vertex/index buffer creation when building GEMesh from triangulation result. |

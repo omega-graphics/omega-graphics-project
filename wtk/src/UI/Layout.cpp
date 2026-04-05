@@ -2,6 +2,7 @@
 #include "omegaWTK/UI/View.h"
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/UI/UIView.h"
+#include "LayoutBehaviors.h"
 
 #include <algorithm>
 #include <cmath>

@@ -1,7 +1,6 @@
 
 #include "omegaWTK/Core/Core.h"
 #include "omegaWTK/Native/NativeTheme.h"
-#include "omegaWTK/Composition/Canvas.h"
 #include "omegaWTK/UI/Layout.h"
 #include <cstdint>
 
@@ -9,10 +8,6 @@
 #define OMEGAWTK_UI_WIDGET_H
 
 namespace OmegaWTK {
-
-namespace Composition {
-    class LayerTree;
-}
 
 class AppWindow;
 class AppWindowManager;
@@ -101,17 +96,8 @@ public:
         std::uint64_t predictedPacketId = 0;
     };
 private:
-    bool initialDrawComplete = false;
-    bool hasMounted = false;
-    bool paintInProgress = false;
-    bool hasPendingInvalidate = false;
-    PaintReason pendingPaintReason = PaintReason::StateChanged;
-    PaintMode mode = PaintMode::Automatic;
-    PaintOptions options {};
-
-    LayoutStyle layoutStyle_ {};
-    LayoutBehaviorPtr layoutBehavior_ = nullptr;
-    bool hasExplicitLayoutStyle_ = false;
+    struct Impl;
+    Core::UniquePtr<Impl> impl_;
 
     void onThemeSetRecurse(Native::ThemeDesc &desc);
     void executePaint(PaintReason reason,bool immediate);
@@ -127,11 +113,6 @@ protected:
     */
     WidgetTreeHost *treeHost = nullptr;
     void setTreeHostRecurse(WidgetTreeHost *host);
-
-private:
-    /// Observers
-    OmegaCommon::Vector<WidgetObserverPtr> observers;
-protected:
     typedef enum : OPT_PARAM {
         Resize,
         Show,

@@ -9,10 +9,10 @@ namespace OmegaWTK {
             delegate(nullptr),
             hasVerticalScrollBar(hasVerticalScrollBar){
                 
-        renderTarget->getNativePtr()->event_emitter = this;
-        Native::NativeItemPtr ptr = renderTarget->getNativePtr();
+        renderTargetHandle()->getNativePtr()->event_emitter = this;
+        Native::NativeItemPtr ptr = renderTargetHandle()->getNativePtr();
         if(child != nullptr){
-            ptr->setClippedView(child->renderTarget->getNativePtr());
+            ptr->setClippedView(child->renderTargetHandle()->getNativePtr());
         }
         if(hasHorizontalScrollBar)
             ptr->toggleHorizontalScrollBar(hasHorizontalScrollBar);
@@ -26,12 +26,12 @@ namespace OmegaWTK {
 
     void ScrollView::toggleVerticalScrollBar(){
         hasVerticalScrollBar = !hasVerticalScrollBar;
-        renderTarget->getNativePtr()->toggleVerticalScrollBar(hasVerticalScrollBar);
+        renderTargetHandle()->getNativePtr()->toggleVerticalScrollBar(hasVerticalScrollBar);
     }
 
     void ScrollView::toggleHorizontalScrollBar(){
         hasHorizontalScrollBar = !hasHorizontalScrollBar;
-        renderTarget->getNativePtr()->toggleHorizontalScrollBar(hasHorizontalScrollBar);
+        renderTargetHandle()->getNativePtr()->toggleHorizontalScrollBar(hasHorizontalScrollBar);
     }
 
     void ScrollView::setDelegate(ScrollViewDelegate *_delegate){

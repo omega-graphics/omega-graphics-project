@@ -1,7 +1,6 @@
 #include "omegaWTK/Core/Core.h"
 #include <cstdint>
 
-#include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Native/NativeEvent.h"
 #include "omegaWTK/Native/NativeDialog.h"
 #include "omegaWTK/Native/NativeTheme.h"
@@ -13,7 +12,6 @@ namespace OmegaWTK {
 
 namespace Composition {
     class WindowLayer;
-    class ViewRenderTarget;
 }
 
 class Menu;
@@ -35,22 +33,8 @@ class AppWindowDelegate;
 */
  class OMEGAWTK_EXPORT AppWindow : public Native::NativeEventEmitter,
                                     public Native::NativeThemeObserver {
-
-        /// Its Window Layer
-        UniqueHandle<Composition::WindowLayer> layer;
-
-        SharedHandle<Composition::ViewRenderTarget> rootViewRenderTarget;
-
-        Composition::CompositorClientProxy proxy;
-
-        SharedHandle<AppWindowDelegate> delegate;
-        SharedHandle<WidgetTreeHost> widgetTreeHost;
-
-        Core::Rect rect;
-
-        SharedHandle<Menu> menu;
-
-        // SharedHandle<Composition::MenuStyle> menuStyle;
+        struct Impl;
+        Core::UniquePtr<Impl> impl_;
 
         friend class AppWindowDelegate;
         friend class AppWindowManager;

@@ -1,4 +1,3 @@
-#include "Widget.h"
 #include "omegaWTK/Composition/Canvas.h"
 #include "omegaWTK/Composition/Animation.h"
 #include "View.h"

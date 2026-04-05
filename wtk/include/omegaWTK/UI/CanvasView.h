@@ -2,6 +2,7 @@
 #define OMEGAWTK_UI_CANVASVIEW_H
 
 #include "View.h"
+#include "omegaWTK/Composition/Canvas.h"
 
 namespace OmegaWTK {
 

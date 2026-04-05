@@ -3,8 +3,6 @@
  
  */
 
-#include "omegaWTK/Composition/CompositorClient.h"
-#include "omegaWTK/Composition/Canvas.h"
 #include "omegaWTK/Native/NativeEvent.h"
 #include "omegaWTK/Native/NativeItem.h"
 
@@ -16,10 +14,13 @@
 
 namespace OmegaWTK {
     namespace Composition {
+        class Compositor;
+        class CompositorClientProxy;
+        class ViewRenderTarget;
+        class LayerTree;
+        class Layer;
+        class Canvas;
         class ViewAnimator;
-        class Font;
-        class TextRect;
-        struct PreCreatedVisualTreeData;
     }
 
     namespace Native {
@@ -30,7 +31,6 @@ namespace OmegaWTK {
     
     class Container;
     class Widget;
-    class AppInst;
     class ViewDelegate;
     class ScrollView;
     class View;
@@ -90,25 +90,20 @@ namespace OmegaWTK {
         @relates Widget
      */ 
     class OMEGAWTK_EXPORT View : public Native::NativeEventEmitter {
-        OmegaCommon::Vector<View *> subviews;
     protected:
-        SharedHandle<Composition::ViewRenderTarget> renderTarget;
-        Composition::CompositorClientProxy & compositorProxy(){ return proxy; }
-        const Composition::CompositorClientProxy & compositorProxy() const { return proxy; }
+        Composition::CompositorClientProxy & compositorProxy();
+        const Composition::CompositorClientProxy & compositorProxy() const;
         friend class Widget;
     private:
-        Composition::CompositorClientProxy proxy;
+        struct Impl;
+        Core::UniquePtr<Impl> impl_;
+        SharedHandle<Composition::ViewRenderTarget> & renderTargetHandle();
+        const SharedHandle<Composition::ViewRenderTarget> & renderTargetHandle() const;
         void setFrontendRecurse(Composition::Compositor *frontend);
         void setSyncLaneRecurse(uint64_t syncLaneId);
-        ViewResizeCoordinator resizeCoordinator;
-        SharedHandle<Composition::LayerTree> ownLayerTree;
-        View *parent_ptr = nullptr;
-        Core::Rect rect {Core::Position{0.f,0.f},1.f,1.f};
-        ViewDelegate *delegate = nullptr;
         virtual bool hasDelegate();
         void addSubView(View *view);
         void removeSubView(View * view);
-        Core::UniquePtr<Composition::PreCreatedVisualTreeData> preCreatedVisualTree_;
         void preCreateVisualResources();
         friend class AppWindow;
         friend class Composition::ViewAnimator;
@@ -116,16 +111,6 @@ namespace OmegaWTK {
         friend class Widget;
         friend class Container;
     protected:
-//        /**
-//            Constructs a View using a Rect param; (With NO Layers!!)
-//            NOTE:
-//            This Constructed is only called when making a VideoView
-//            In other words, the View that is returned has NO layers will be completlty blank.
-//            @param rect[in] The Rect to use
-//            @param parent[in] The Parent View
-//            @returns A View!
-//         */
-//        View(const Core::Rect & rect,View *parent);
         /**
             Constructs a View using a Rect param and a NativeItem; (With NO Layers!!)
             NOTE:
@@ -164,14 +149,14 @@ namespace OmegaWTK {
         SharedHandle<Composition::Canvas> makeCanvas(SharedHandle<Composition::Layer> & targetLayer);
 
         /// @brief Retrieves the Rect that defines the position and bounds of the View.
-        Core::Rect & getRect(){ return rect;};
+        Core::Rect & getRect();
         /// @brief Retrieves the View's own LayerTree.
-        Composition::LayerTree * getLayerTree(){ return ownLayerTree.get(); };
+        Composition::LayerTree * getLayerTree();
         /// @brief Checks to see if this View is the root View of a Widget.
-        bool isRootView(){return parent_ptr == nullptr;};
+        bool isRootView();
         /// @brief Returns the resize coordinator associated with this view.
-        ViewResizeCoordinator & getResizeCoordinator(){ return resizeCoordinator; }
-        const ViewResizeCoordinator & getResizeCoordinator() const { return resizeCoordinator; }
+        ViewResizeCoordinator & getResizeCoordinator();
+        const ViewResizeCoordinator & getResizeCoordinator() const;
 
         /// @brief Sets the object to recieve View related events.
         virtual void setDelegate(ViewDelegate *_delegate);
@@ -220,15 +205,6 @@ namespace OmegaWTK {
 
         void setForwardDelegate(ViewDelegate *delegate);
         /**
-            @name Interface Methods
-         
-         */
-        /// @{
-//        /**
-//            Called when the view has loaded. NOTE: All View Delegates must implement this method!
-//        */
-//        virtual void viewHasLoaded(Native::NativeEventPtr event) = 0;
-        /**
             Called when the Mouse Enters the View
          */
         virtual void onMouseEnter(Native::NativeEventPtr event) DEFAULT;
@@ -260,7 +236,6 @@ namespace OmegaWTK {
             Called when a key on a keyboard is raised after being pressed
          */
         virtual void onKeyUp(Native::NativeEventPtr event) DEFAULT;
-        /// @}
         public:
         ViewDelegate();
         ~ViewDelegate();

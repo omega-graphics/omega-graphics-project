@@ -200,7 +200,7 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
          std::memset(data,0,byteCount);
          
          CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-         CGContextRef context = CGBitmapContextCreateWithData(data,pixelWidth,pixelHeight,8,bytesPerRow,colorSpace,kCGImageAlphaPremultipliedLast,NULL,NULL);
+         CGContextRef context = CGBitmapContextCreateWithData(data,pixelWidth,pixelHeight,8,bytesPerRow,colorSpace,kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little,NULL,NULL);
          CGColorSpaceRelease(colorSpace);
          if(context == nullptr){
              delete [](unsigned char *) data;
@@ -225,7 +225,7 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
          OmegaGTE::TextureDescriptor desc {};
          desc.usage = OmegaGTE::GETexture::ToGPU;
          desc.storage_opts = OmegaGTE::Shared;
-         desc.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm;
+         desc.pixelFormat = OmegaGTE::TexturePixelFormat::BGRA8Unorm;
          desc.type = OmegaGTE::GETexture::Texture2D;
          desc.width = (unsigned)pixelWidth;
          desc.height = (unsigned)pixelHeight;

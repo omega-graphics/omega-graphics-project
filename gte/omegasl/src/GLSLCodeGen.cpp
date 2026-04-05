@@ -602,27 +602,42 @@ namespace omegasl {
                         for(unsigned i = 0;i < indentLevel;i++){
                             shaderOut << "  ";
                         }
-                        if(stmt->type == VAR_DECL || stmt->type == RETURN_DECL){
-                            if(stmt->type == RETURN_DECL){
-                                auto _return_stmt = (ast::ReturnDecl *) stmt;
-                                if(_return_stmt->expr && _decl->shaderType == ast::ShaderDecl::Fragment) {
-                                    shaderOut << return_val_replacement << " = ";
-                                    generateExpr(_return_stmt->expr);
-                                    shaderOut << ";" << std::endl;
+                        if(stmt->type == RETURN_DECL){
+                            auto _return_stmt = (ast::ReturnDecl *) stmt;
+                            if(_return_stmt->expr && _decl->shaderType == ast::ShaderDecl::Fragment) {
+                                shaderOut << return_val_replacement << " = ";
+                                generateExpr(_return_stmt->expr);
+                                shaderOut << ";" << std::endl;
+                            }
+                            else if(_return_stmt->expr){
+                                /// If returning an internal struct variable, emit bare return
+                                /// since fields were already assigned via member expressions.
+                                bool isInternalStructReturn = false;
+                                if(_return_stmt->expr->type == ID_EXPR){
+                                    auto *idExpr = (ast::IdExpr *)_return_stmt->expr;
+                                    isInternalStructReturn = std::any_of(internalStructVarMap.begin(),internalStructVarMap.end(),
+                                                           [&](std::pair<OmegaCommon::String,ast::StructDecl *> & p){
+                                        return p.first == idExpr->id;
+                                    });
                                 }
-                                else if(_return_stmt->expr){
+                                if(isInternalStructReturn){
+                                    shaderOut << "return;" << std::endl;
+                                }
+                                else {
                                     shaderOut << "return ";
                                     generateExpr(_return_stmt->expr);
                                     shaderOut << ";" << std::endl;
                                 }
-                                else {
-                                    shaderOut << "return;" << std::endl;
-                                }
                             }
                             else {
-                                generateDecl((ast::Decl *)stmt);
-                                shaderOut << ";" << std::endl;
+                                shaderOut << "return;" << std::endl;
                             }
+                        }
+                        else if((stmt->type & DECL) != EXPR){
+                            generateDecl((ast::Decl *)stmt);
+                            if(stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT)
+                                shaderOut << ";";
+                            shaderOut << std::endl;
                         }
                         else {
                             generateExpr((ast::Expr *)stmt);
@@ -742,13 +757,15 @@ namespace omegasl {
                         generateExpr(_expr->args[1]);
                         shaderOut << ",0)";
                     }
-                    else if(_id == BUILTIN_MAKE_INT2 || _id == BUILTIN_MAKE_INT3 || _id == BUILTIN_MAKE_INT4 ||
+                    else if(_id == BUILTIN_MAKE_FLOAT2 || _id == BUILTIN_MAKE_FLOAT3 || _id == BUILTIN_MAKE_FLOAT4 ||
+                            _id == BUILTIN_MAKE_INT2 || _id == BUILTIN_MAKE_INT3 || _id == BUILTIN_MAKE_INT4 ||
                             _id == BUILTIN_MAKE_UINT2 || _id == BUILTIN_MAKE_UINT3 || _id == BUILTIN_MAKE_UINT4 ||
                             _id == BUILTIN_MAKE_FLOAT2X2 || _id == BUILTIN_MAKE_FLOAT3X3 || _id == BUILTIN_MAKE_FLOAT4X4 ||
                             _id == BUILTIN_MAKE_FLOAT2X3 || _id == BUILTIN_MAKE_FLOAT2X4 ||
                             _id == BUILTIN_MAKE_FLOAT3X2 || _id == BUILTIN_MAKE_FLOAT3X4 ||
                             _id == BUILTIN_MAKE_FLOAT4X2 || _id == BUILTIN_MAKE_FLOAT4X3){
-                        OmegaCommon::String typeName = (_id == BUILTIN_MAKE_INT2) ? "ivec2" : (_id == BUILTIN_MAKE_INT3) ? "ivec3" : (_id == BUILTIN_MAKE_INT4) ? "ivec4" :
+                        OmegaCommon::String typeName = (_id == BUILTIN_MAKE_FLOAT2) ? "vec2" : (_id == BUILTIN_MAKE_FLOAT3) ? "vec3" : (_id == BUILTIN_MAKE_FLOAT4) ? "vec4" :
+                            (_id == BUILTIN_MAKE_INT2) ? "ivec2" : (_id == BUILTIN_MAKE_INT3) ? "ivec3" : (_id == BUILTIN_MAKE_INT4) ? "ivec4" :
                             (_id == BUILTIN_MAKE_UINT2) ? "uvec2" : (_id == BUILTIN_MAKE_UINT3) ? "uvec3" : (_id == BUILTIN_MAKE_UINT4) ? "uvec4" :
                             (_id == BUILTIN_MAKE_FLOAT2X2) ? "mat2" : (_id == BUILTIN_MAKE_FLOAT3X3) ? "mat3" : (_id == BUILTIN_MAKE_FLOAT4X4) ? "mat4" :
                             (_id == BUILTIN_MAKE_FLOAT2X3) ? "mat2x3" : (_id == BUILTIN_MAKE_FLOAT2X4) ? "mat2x4" :

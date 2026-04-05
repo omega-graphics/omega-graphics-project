@@ -474,9 +474,12 @@ if(TARGET_LINUX)
 		message("FFMPEG development files not found. Please install libavcodec, libavutil and libavdevice")
 	endif()
 
-	target_compile_options("OmegaWTK" PUBLIC ${GTK3_CFLAGS} ${FFMPEG_CFLAGS})
-	target_link_directories("OmegaWTK" PUBLIC ${GTK3_LIBRARY_DIRS} ${FFMPEG_LIBRARY_DIRS})
-	target_link_libraries("OmegaWTK" PUBLIC ${GTK3_LIBRARIES} ${FFMPEG_LIBRARIES})
+	pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
+	pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
+
+	target_compile_options("OmegaWTK" PUBLIC ${GTK3_CFLAGS} ${FFMPEG_CFLAGS} ${PANGOCAIRO_CFLAGS} ${FONTCONFIG_CFLAGS})
+	target_link_directories("OmegaWTK" PUBLIC ${GTK3_LIBRARY_DIRS} ${FFMPEG_LIBRARY_DIRS} ${PANGOCAIRO_LIBRARY_DIRS} ${FONTCONFIG_LIBRARY_DIRS})
+	target_link_libraries("OmegaWTK" PUBLIC ${GTK3_LIBRARIES} ${FFMPEG_LIBRARIES} ${PANGOCAIRO_LIBRARIES} ${FONTCONFIG_LIBRARIES})
 endif()
 
 include(cmake/OmegaWTKApp.cmake)
