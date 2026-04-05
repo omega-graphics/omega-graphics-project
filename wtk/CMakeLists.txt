@@ -402,6 +402,7 @@ SOURCES ${CORE_SRCS} ${NATIVE_SRCS} ${MEDIA_SRCS} ${COMPOSITION_SRCS} ${UI_SRCS}
 if(NOT OMEGAWTK_SKIP_THIRD_PARTY_BUILD)
 	add_dependencies("OmegaWTK" ThirdParty)
 endif()
+add_dependencies("OmegaWTK" "OmegaWTK_CompositorShaders")
 if(TARGET_ANDROID)
 	add_library( app-glue
 			STATIC

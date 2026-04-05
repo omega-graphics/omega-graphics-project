@@ -18,6 +18,14 @@
 #include <sstream>
 #include <utility>
 
+#if defined(TARGET_MACOS)
+#include <mach-o/dyld.h>
+#elif defined(TARGET_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace OmegaWTK::Composition {
     #ifdef TARGET_MACOS
     void stopMTLCapture();
@@ -111,216 +119,53 @@ namespace OmegaWTK::Composition {
     static std::unique_ptr<BufferPool> bufferPool;
     static std::unique_ptr<FencePool> fencePool;
 
-    OmegaCommon::String librarySource = R"(
-
-struct GradientTextureConstParams {
-    float arg;
-};
-
-struct LinearGradientStop {
-    float pos;
-    float4 color;
-};
-
-buffer<GradientTextureConstParams> input : 5;
-
-buffer<LinearGradientStop> stops : 3;
-texture2d outputTex : 4;
-
-// [in input,in stops,out outputTex]
-// compute(x=1,y=1,z=1)
-// void linearGradient(uint3 thread_id : GlobalThreadID){
-//
-// }
-
- struct OmegaWTKColoredVertex {
-   float4 pos;
-   float4 color;
- };
-
- struct OmegaWTKColoredRasterData internal {
-   float4 pos : Position;
-   float4 color : Color;
- };
-
-buffer<OmegaWTKColoredVertex> v_buffer : 0;
-
-[in v_buffer]
-vertex OmegaWTKColoredRasterData mainVertex(uint v_id : VertexID){
-    OmegaWTKColoredVertex v = v_buffer[v_id];
-    OmegaWTKColoredRasterData rasterData = { v.pos, v.color };
-    return rasterData;
-}
-
-fragment float4 mainFragment(OmegaWTKColoredRasterData raster){
-    return raster.color;
-}
-
-struct OmegaWTKTexturedVertex {
-    float4 pos;
-    float2 texCoord;
-};
-
-struct OmegaWTKTexturedRasterData internal {
-    float4 pos : Position;
-    float2 texCoord : TexCoord;
-};
-
-buffer<OmegaWTKTexturedVertex> v_buffer_1 : 1;
-
-[in v_buffer_1]
-vertex OmegaWTKTexturedRasterData textureVertex(uint v_id : VertexID){
-    OmegaWTKTexturedVertex v = v_buffer_1[v_id];
-    OmegaWTKTexturedRasterData rasterData = { v.pos, v.texCoord };
-    return rasterData;
-}
-
-texture2d tex : 2;
-static sampler2d mainSampler(filter=linear);
-
-[in tex,in mainSampler]
-fragment float4 textureFragment(OmegaWTKTexturedRasterData raster){
-    return sample(mainSampler,tex,raster.texCoord);
-}
-
-struct OmegaWTKCopyRasterData internal {
-    float4 pos : Position;
-    float2 texCoord : TexCoord;
-};
-
-[in v_buffer_1]
-vertex OmegaWTKCopyRasterData copyVertex(uint v_id : VertexID){
-    OmegaWTKTexturedVertex v = v_buffer_1[v_id];
-    OmegaWTKCopyRasterData rasterData = { v.pos, v.texCoord };
-    return rasterData;
-}
-
-[in tex,in mainSampler]
-fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
-    return sample(mainSampler,tex,raster.texCoord);
-}
-
-struct BlurParams {
-    float radius;
-    uint texWidth;
-    uint texHeight;
-    float angle;
-};
-
-buffer<BlurParams> blurParams : 5;
-texture2d blurSrcTex : 3;
-texture2d blurDstTex : 4;
-
-[in blurParams, in blurSrcTex, out blurDstTex]
-compute(x=8,y=8,z=1)
-void gaussianBlurH(uint3 tid : GlobalThreadID){
-    uint x = tid[0];
-    uint y = tid[1];
-    uint texW = blurParams[0].texWidth;
-    uint texH = blurParams[0].texHeight;
-    if(x >= texW){ return; }
-    if(y >= texH){ return; }
-
-    float radius = blurParams[0].radius;
-    float sigma = max(radius * 0.5, 0.5);
-    int kernelRadius = max(1, (int)(radius * 2.0));
-
-    float4 accum = make_float4(0.0, 0.0, 0.0, 0.0);
-    float weightSum = 0.0;
-    int k = 0 - kernelRadius;
-
-    for(; k <= kernelRadius; k = k + 1){
-        float fk = (float)k;
-        int sx = max(0, min((int)x + k, (int)texW - 1));
-        uint2 sc = make_uint2((uint)sx, y);
-        float4 s = read(blurSrcTex, sc);
-        float w = exp(0.0 - (fk * fk) / (2.0 * sigma * sigma));
-        accum = accum + s * w;
-        weightSum = weightSum + w;
+    static OmegaCommon::String getCompositorShaderLibPath() {
+#if defined(TARGET_MACOS)
+        char buf[2048];
+        uint32_t bufSize = sizeof(buf);
+        if(_NSGetExecutablePath(buf, &bufSize) == 0) {
+            std::string path(buf);
+            // exe: .../Contents/MacOS/AppName -> .../Contents/Resources/compositor.omegasllib
+            auto lastSlash = path.rfind('/');
+            if(lastSlash != std::string::npos) {
+                std::string macosDir = path.substr(0, lastSlash);
+                auto parentSlash = macosDir.rfind('/');
+                if(parentSlash != std::string::npos) {
+                    return macosDir.substr(0, parentSlash) + "/Resources/compositor.omegasllib";
+                }
+            }
+        }
+        return {};
+#elif defined(TARGET_WIN32)
+        char buf[MAX_PATH];
+        GetModuleFileNameA(NULL, buf, MAX_PATH);
+        std::string path(buf);
+        auto pos = path.rfind('\\');
+        if(pos != std::string::npos) {
+            return path.substr(0, pos + 1) + "compositor.omegasllib";
+        }
+        return {};
+#else
+        char buf[2048];
+        ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if(len > 0) {
+            buf[len] = '\0';
+            std::string path(buf);
+            auto pos = path.rfind('/');
+            if(pos != std::string::npos) {
+                return path.substr(0, pos + 1) + "compositor.omegasllib";
+            }
+        }
+        return {};
+#endif
     }
-
-    float4 result = accum * (1.0 / max(weightSum, 0.0001));
-    uint2 coord = make_uint2(x, y);
-    write(blurDstTex, coord, result);
-}
-
-[in blurParams, in blurSrcTex, out blurDstTex]
-compute(x=8,y=8,z=1)
-void gaussianBlurV(uint3 tid : GlobalThreadID){
-    uint x = tid[0];
-    uint y = tid[1];
-    uint texW = blurParams[0].texWidth;
-    uint texH = blurParams[0].texHeight;
-    if(x >= texW){ return; }
-    if(y >= texH){ return; }
-
-    float radius = blurParams[0].radius;
-    float sigma = max(radius * 0.5, 0.5);
-    int kernelRadius = max(1, (int)(radius * 2.0));
-
-    float4 accum = make_float4(0.0, 0.0, 0.0, 0.0);
-    float weightSum = 0.0;
-    int k = 0 - kernelRadius;
-
-    for(; k <= kernelRadius; k = k + 1){
-        float fk = (float)k;
-        int sy = max(0, min((int)y + k, (int)texH - 1));
-        uint2 sc = make_uint2(x, (uint)sy);
-        float4 s = read(blurSrcTex, sc);
-        float w = exp(0.0 - (fk * fk) / (2.0 * sigma * sigma));
-        accum = accum + s * w;
-        weightSum = weightSum + w;
-    }
-
-    float4 result = accum * (1.0 / max(weightSum, 0.0001));
-    uint2 coord = make_uint2(x, y);
-    write(blurDstTex, coord, result);
-}
-
-[in blurParams, in blurSrcTex, out blurDstTex]
-compute(x=8,y=8,z=1)
-void directionalBlur(uint3 tid : GlobalThreadID){
-    uint x = tid[0];
-    uint y = tid[1];
-    uint texW = blurParams[0].texWidth;
-    uint texH = blurParams[0].texHeight;
-    if(x >= texW){ return; }
-    if(y >= texH){ return; }
-
-    float radius = blurParams[0].radius;
-    float angle = blurParams[0].angle;
-    float dirX = cos(angle);
-    float dirY = sin(angle);
-    int samplesPerSide = max(1, (int)(radius * 2.0));
-
-    float4 accum = make_float4(0.0, 0.0, 0.0, 0.0);
-    float weightSum = 0.0;
-    int s = 0 - samplesPerSide;
-
-    for(; s <= samplesPerSide; s = s + 1){
-        float t = (radius * (float)s) / (float)samplesPerSide;
-        int sx = max(0, min((int)((float)x + dirX * t), (int)texW - 1));
-        int sy = max(0, min((int)((float)y + dirY * t), (int)texH - 1));
-        uint2 sc = make_uint2((uint)sx, (uint)sy);
-        float4 sp = read(blurSrcTex, sc);
-        accum = accum + sp;
-        weightSum = weightSum + 1.0;
-    }
-
-    float4 result = accum * (1.0 / max(weightSum, 0.0001));
-    uint2 coord = make_uint2(x, y);
-    write(blurDstTex, coord, result);
-}
-
-)";
 
     static SharedHandle<OmegaGTE::GEBuffer> finalTextureDrawBuffer;
 
     void loadGlobalRenderAssets(){
         bufferWriter = OmegaGTE::GEBufferWriter::Create();
-        auto & compiler = gte.omegaSlCompiler;
-        auto library = compiler->compile({OmegaSLCompiler::Source::fromString(librarySource)});
-        shaderLibrary = gte.graphicsEngine->loadShaderLibraryRuntime(library);
+        auto shaderLibPath = getCompositorShaderLibPath();
+        shaderLibrary = gte.graphicsEngine->loadShaderLibrary(shaderLibPath);
         auto getShader = [&](const char *name) -> SharedHandle<OmegaGTE::GTEShader> {
             auto it = shaderLibrary->shaders.find(name);
             if(it == shaderLibrary->shaders.end() || it->second == nullptr){

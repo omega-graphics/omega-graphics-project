@@ -48,7 +48,7 @@ endif()
 
 if(TARGET_MACOS)
     # set(COMPOSITION_MAC_SOURCES "QuartzBackend.h" "QuartzBackend.mm" "MetalBackend.h" "MetalBackend.mm" "MetalBridgeHeader.h" "OmegaWTKShaders.metal")
-    # set(COMPOSITION_MAC_SOURCES 
+    # set(COMPOSITION_MAC_SOURCES
     # "MTLBDCALayerTree.h"
     # "MTLBDCALayerTree.mm")
     # list(TRANSFORM COMPOSITION_MAC_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/mtl/")
@@ -57,3 +57,14 @@ if(TARGET_MACOS)
 
     target_sources("omegaWTKComposition" PRIVATE "CTFontEngine.mm")
 endif()
+
+# Precompile compositor OmegaSL shaders into a shader library.
+set(OMEGASLC_EXE ${CMAKE_BINARY_DIR}/bin/omegaslc)
+if(WIN32)
+    set(OMEGASLC_EXE ${OMEGASLC_EXE}.exe)
+endif()
+set(OMEGAWTK_COMPOSITOR_SHADERLIB "${CMAKE_CURRENT_BINARY_DIR}/compositor.omegasllib" CACHE INTERNAL "")
+add_omegasl_lib("OmegaWTK_CompositorShaders"
+    "${CMAKE_CURRENT_SOURCE_DIR}/backend/shaders/compositor.omegasl"
+    "${OMEGAWTK_COMPOSITOR_SHADERLIB}")
+add_dependencies("OmegaWTK_CompositorShaders" omegaslc)
