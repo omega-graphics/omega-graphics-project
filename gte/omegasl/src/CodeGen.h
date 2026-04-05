@@ -1,6 +1,7 @@
 #include "AST.h"
 #include <omegasl.h>
 #include <memory>
+#include <iostream>
 
 #ifndef OMEGASL_CODEGEN_H
 #define OMEGASL_CODEGEN_H
@@ -67,7 +68,7 @@ namespace omegasl {
         virtual void generateExpr(ast::Expr *expr) = 0;
         virtual void generateBlock(ast::Block &block) = 0;
 //        virtual void writeNativeStructDecl(ast::StructDecl *decl,std::ostream & out) = 0;
-        void generateInterfaceAndCompileShader(ast::Decl *decl);
+        bool generateInterfaceAndCompileShader(ast::Decl *decl);
 
         /** @brief Compiles the shader with the provided name and outputs the compiled version to the output path provided.
          * @param type The Shader Type
@@ -75,7 +76,7 @@ namespace omegasl {
          * @param path The source file location.
          * @param outputPath The output file location.
          * */
-        virtual void compileShader(ast::ShaderDecl::Type type,const OmegaCommon::StrRef & name,const OmegaCommon::FS::Path & path,const OmegaCommon::FS::Path & outputPath) = 0;
+        virtual bool compileShader(ast::ShaderDecl::Type type,const OmegaCommon::StrRef & name,const OmegaCommon::FS::Path & path,const OmegaCommon::FS::Path & outputPath) = 0;
         /** @brief Compiles the Shader with the provided name and outputs the compiled version to the shadermap.
          * @param type The Shader Type
          * @param name The Shader Name
@@ -83,7 +84,7 @@ namespace omegasl {
          * This function is only called when compiling omegasl on runtime.
          * */
         virtual void compileShaderOnRuntime(ast::ShaderDecl::Type type,const OmegaCommon::StrRef & name) = 0;
-        void linkShaderObjects(){
+        bool linkShaderObjects(){
             OmegaCommon::StrRef libname = OmegaCommon::FS::Path(opts.outputLib).dir();
             std::ofstream out(OmegaCommon::FS::Path(opts.outputLib).str(), std::ios::out | std::ios::binary);
             out.write((char *)&libname.size(),sizeof(OmegaCommon::StrRef::size_type));
@@ -91,39 +92,34 @@ namespace omegasl {
             unsigned int s = shaderMap.size();
             out.write((char *)&s,sizeof(s));
 
-//            std::cout << "Write Shader Lib :" << libname.data() << std::endl;
-
             for(auto & p : shaderMap){
                 auto & shader_data = p.second;
+
+                //0.  Pre-check: verify compiled shader object is readable before writing anything
+                std::ifstream in(p.first,std::ios::in | std::ios::binary);
+                if(!in.is_open()){
+                    std::cerr << "error: cannot open compiled shader object: " << p.first << std::endl;
+                    return false;
+                }
+
                 //1.  Write Shader Type
                 out.write((char *)&shader_data.type,sizeof(shader_data.type));
-//                std::cout << "Write Shader :" << p.first << std::endl;
 
                 //2.  Write Shader Name Size and Name
                 size_t shader_name_size = strlen(p.second.name);
-
                 out.write((char *)&shader_name_size,sizeof(shader_name_size));
                 out.write(shader_data.name,shader_name_size);
-//                std::cout << shader_data.name << std::endl;
-//                std::cout << "Write Shader Name:" << shader_data.name << std::endl;
+
                 //3.  Write Shader Data Size and Data
                 {
-                    std::ifstream in(p.first,std::ios::in | std::ios::binary);
-                    if(in.is_open()){
-                        in.seekg(0,std::ios::end);
-                        size_t dataSize = in.tellg();
-//                        std::cout <<  "Shader Len:" << dataSize << std::endl;
-                        in.seekg(0,std::ios::beg);
-                        out.write((char *)&dataSize,sizeof(dataSize));
-                        for(size_t i = 0;i < dataSize;i++){
-                            out << (char)in.get();
-                        }
-                        in.close();
+                    in.seekg(0,std::ios::end);
+                    size_t dataSize = in.tellg();
+                    in.seekg(0,std::ios::beg);
+                    out.write((char *)&dataSize,sizeof(dataSize));
+                    for(size_t i = 0;i < dataSize;i++){
+                        out << (char)in.get();
                     }
-                    else {
-//                        std::cout << "Cannot find file:" << p.first << std::endl;
-                        return;
-                    }
+                    in.close();
                 }
 
                 //4. Write Shader Layout Length and Data
@@ -166,6 +162,7 @@ namespace omegasl {
             }
 
             out.close();
+            return true;
         };
 #ifdef RUNTIME_SHADER_COMP_SUPPORT
         std::shared_ptr<omegasl_shader_lib> getLibrary(OmegaCommon::StrRef name){

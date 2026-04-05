@@ -457,7 +457,7 @@ using namespace metal;
                         stringOut.str("");
                     }
                     else {
-                        object_file =  OmegaCommon::FS::Path(opts.tempDir).append(_decl->name).concat(".metallib").str();
+                        object_file =  OmegaCommon::FS::Path(opts.tempDir).append(_decl->name).concat(".metallib").absPath();
                         fileOut.open(OmegaCommon::FS::Path(opts.tempDir).append(_decl->name).concat(".metal").str(),
                                      std::ios::out);
                     }
@@ -752,9 +752,9 @@ using namespace metal;
                 }
             }
         }
-        void compileShader(ast::ShaderDecl::Type type, const OmegaCommon::StrRef &name, const OmegaCommon::FS::Path &path,const OmegaCommon::FS::Path & outputPath) override {
+        bool compileShader(ast::ShaderDecl::Type type, const OmegaCommon::StrRef &name, const OmegaCommon::FS::Path &path,const OmegaCommon::FS::Path & outputPath) override {
 
-            auto object_file =OmegaCommon::FS::Path(outputPath).append(name).concat(".metallib").str() ;
+            auto object_file = OmegaCommon::FS::Path(outputPath).append(name).concat(".metallib").absPath();
 
             std::ostringstream out;
             out << "  -o " << object_file.c_str() << " " << OmegaCommon::FS::Path(path).append(name).concat(".metal").absPath();
@@ -762,7 +762,11 @@ using namespace metal;
             auto metal_process = OmegaCommon::ChildProcess::OpenWithStdoutPipe(metalCodeOpts.metal_cmd,out.str().c_str());
             auto res = metal_process.wait();
 
-
+            if(res != 0){
+                std::cerr << "error: metal compiler failed (exit " << res << ") for shader '" << name.data() << "'" << std::endl;
+                return false;
+            }
+            return true;
         }
         void compileShaderOnRuntime(ast::ShaderDecl::Type type,const OmegaCommon::StrRef &name) override {
             #ifdef TARGET_METAL

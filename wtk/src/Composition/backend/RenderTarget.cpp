@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <exception>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -163,9 +164,54 @@ namespace OmegaWTK::Composition {
     static SharedHandle<OmegaGTE::GEBuffer> finalTextureDrawBuffer;
 
     void loadGlobalRenderAssets(){
+        auto resetGlobalRenderAssetsState = [](){
+            finalCopyPipelinesByFormat.clear();
+            shaderLibrary.reset();
+            renderPipelineState.reset();
+            textureRenderPipelineState.reset();
+            finalCopyRenderPipelineState.reset();
+            linearGradientPipelineState.reset();
+            gaussianBlurHPipelineState.reset();
+            gaussianBlurVPipelineState.reset();
+            directionalBlurPipelineState.reset();
+            bufferWriter.reset();
+            finalTextureDrawBuffer.reset();
+        };
+
+        resetGlobalRenderAssetsState();
         bufferWriter = OmegaGTE::GEBufferWriter::Create();
+        if(bufferWriter == nullptr){
+            std::cout << "Failed to create compositor buffer writer." << std::endl;
+            resetGlobalRenderAssetsState();
+            return;
+        }
+
         auto shaderLibPath = getCompositorShaderLibPath();
-        shaderLibrary = gte.graphicsEngine->loadShaderLibrary(shaderLibPath);
+        if(shaderLibPath.empty()){
+            std::cout << "Failed to resolve compositor shader library path." << std::endl;
+            resetGlobalRenderAssetsState();
+            return;
+        }
+        try {
+            shaderLibrary = gte.graphicsEngine->loadShaderLibrary(shaderLibPath);
+        }
+        catch(const std::exception &ex){
+            std::cout << "Failed to load compositor shader library `" << shaderLibPath
+                      << "`: " << ex.what() << std::endl;
+            resetGlobalRenderAssetsState();
+            return;
+        }
+        catch(...){
+            std::cout << "Failed to load compositor shader library `" << shaderLibPath
+                      << "` due to an unknown exception." << std::endl;
+            resetGlobalRenderAssetsState();
+            return;
+        }
+        if(shaderLibrary == nullptr){
+            std::cout << "Failed to load compositor shader library `" << shaderLibPath << "`." << std::endl;
+            resetGlobalRenderAssetsState();
+            return;
+        }
         auto getShader = [&](const char *name) -> SharedHandle<OmegaGTE::GTEShader> {
             auto it = shaderLibrary->shaders.find(name);
             if(it == shaderLibrary->shaders.end() || it->second == nullptr){
@@ -187,12 +233,14 @@ namespace OmegaWTK::Composition {
 
         if(renderPipelineDescriptor.vertexFunc == nullptr || renderPipelineDescriptor.fragmentFunc == nullptr){
             std::cout << "Failed to initialize mandatory color pipeline shaders." << std::endl;
+            resetGlobalRenderAssetsState();
             return;
         }
 
         renderPipelineState = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
         if(renderPipelineState == nullptr){
             std::cout << "Failed to create mandatory color render pipeline state." << std::endl;
+            resetGlobalRenderAssetsState();
             return;
         }
 
@@ -262,6 +310,11 @@ namespace OmegaWTK::Composition {
         texCoord[0][0] = 0.f;
         texCoord[1][0] = 0.f;
         finalTextureDrawBuffer = gte.graphicsEngine->makeBuffer({OmegaGTE::BufferDescriptor::Upload,struct_size * 6,struct_size});
+        if(finalTextureDrawBuffer == nullptr){
+            std::cout << "Failed to create compositor fullscreen draw buffer." << std::endl;
+            resetGlobalRenderAssetsState();
+            return;
+        }
         bufferWriter->setOutputBuffer(finalTextureDrawBuffer);
 
         OMEGAWTK_DEBUG("Phase 4");
@@ -331,6 +384,9 @@ namespace OmegaWTK::Composition {
         textureRenderPipelineState.reset();
         finalCopyRenderPipelineState.reset();
         linearGradientPipelineState.reset();
+        gaussianBlurHPipelineState.reset();
+        gaussianBlurVPipelineState.reset();
+        directionalBlurPipelineState.reset();
         bufferWriter.reset();
         finalTextureDrawBuffer.reset();
     }

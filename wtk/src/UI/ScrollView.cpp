@@ -1,4 +1,5 @@
 #include "omegaWTK/UI/ScrollView.h"
+#include "omegaWTK/Composition/CompositorClient.h"
 
 namespace OmegaWTK {
 

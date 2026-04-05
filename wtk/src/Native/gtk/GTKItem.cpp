@@ -1,4 +1,5 @@
 #include "NativePrivate/gtk/GTKItem.h"
+#include "omegaWTK/Native/NativeEvent.h"
 
 #include <algorithm>
 #include <cmath>
@@ -24,6 +25,273 @@ static Core::Rect sanitizeRect(const Core::Rect &candidate,const Core::Rect &fal
     sane.h = std::max(1.f,sane.h);
     return sane;
 }
+
+static gint toGtkCoordinate(float value){
+    if(!std::isfinite(value)){
+        return 0;
+    }
+    return static_cast<gint>(std::lround(value));
+}
+
+static gint toGtkSize(float value){
+    if(!std::isfinite(value) || value <= 0.f){
+        return 1;
+    }
+    return std::max<gint>(1,toGtkCoordinate(value));
+}
+
+static ModifierFlags modifierFlagsFromState(guint state){
+    ModifierFlags flags;
+    flags.shift = (state & GDK_SHIFT_MASK) != 0;
+    flags.control = (state & GDK_CONTROL_MASK) != 0;
+    flags.alt = (state & GDK_MOD1_MASK) != 0;
+#ifdef GDK_META_MASK
+    flags.meta = (state & GDK_META_MASK) != 0;
+#endif
+#ifdef GDK_SUPER_MASK
+    flags.meta = flags.meta || ((state & GDK_SUPER_MASK) != 0);
+#endif
+    flags.capsLock = (state & GDK_LOCK_MASK) != 0;
+    return flags;
+}
+
+static void setWidgetVisibility(GtkWidget *widget,bool visible){
+    if(widget == nullptr){
+        return;
+    }
+    if(visible){
+        gtk_widget_show(widget);
+    }
+    else {
+        gtk_widget_hide(widget);
+    }
+}
+
+static gboolean onButtonPressEvent(GtkWidget *,GdkEventButton *event,gpointer data){
+    auto *self = static_cast<GTKItem *>(data);
+    if(self == nullptr || event == nullptr){
+        return FALSE;
+    }
+
+    NativeEvent::EventType type = NativeEvent::Unknown;
+    if(event->button == 1u){
+        type = NativeEvent::LMouseDown;
+    }
+    else if(event->button == 3u){
+        type = NativeEvent::RMouseDown;
+    }
+    else {
+        return FALSE;
+    }
+
+    Core::Position clientPos {
+        static_cast<float>(event->x),
+        static_cast<float>(event->y)
+    };
+    Core::Position screenPos {
+        static_cast<float>(event->x_root),
+        static_cast<float>(event->y_root)
+    };
+
+    NativeEventParams params = nullptr;
+    if(type == NativeEvent::LMouseDown){
+        auto *mouseParams = new LMouseDownParams();
+        mouseParams->position = clientPos;
+        mouseParams->screenPosition = screenPos;
+        mouseParams->modifiers = modifierFlagsFromState(event->state);
+        mouseParams->clickCount = 1u;
+        params = mouseParams;
+    }
+    else {
+        auto *mouseParams = new RMouseDownParams();
+        mouseParams->position = clientPos;
+        mouseParams->screenPosition = screenPos;
+        mouseParams->modifiers = modifierFlagsFromState(event->state);
+        mouseParams->clickCount = 1u;
+        params = mouseParams;
+    }
+
+    self->emitIfPossible(NativeEventPtr(new NativeEvent(type,params)));
+    return FALSE;
+}
+
+static gboolean onButtonReleaseEvent(GtkWidget *,GdkEventButton *event,gpointer data){
+    auto *self = static_cast<GTKItem *>(data);
+    if(self == nullptr || event == nullptr){
+        return FALSE;
+    }
+
+    NativeEvent::EventType type = NativeEvent::Unknown;
+    if(event->button == 1u){
+        type = NativeEvent::LMouseUp;
+    }
+    else if(event->button == 3u){
+        type = NativeEvent::RMouseUp;
+    }
+    else {
+        return FALSE;
+    }
+
+    Core::Position clientPos {
+        static_cast<float>(event->x),
+        static_cast<float>(event->y)
+    };
+    Core::Position screenPos {
+        static_cast<float>(event->x_root),
+        static_cast<float>(event->y_root)
+    };
+
+    NativeEventParams params = nullptr;
+    if(type == NativeEvent::LMouseUp){
+        auto *mouseParams = new LMouseUpParams();
+        mouseParams->position = clientPos;
+        mouseParams->screenPosition = screenPos;
+        mouseParams->modifiers = modifierFlagsFromState(event->state);
+        mouseParams->clickCount = 1u;
+        params = mouseParams;
+    }
+    else {
+        auto *mouseParams = new RMouseUpParams();
+        mouseParams->position = clientPos;
+        mouseParams->screenPosition = screenPos;
+        mouseParams->modifiers = modifierFlagsFromState(event->state);
+        mouseParams->clickCount = 1u;
+        params = mouseParams;
+    }
+
+    self->emitIfPossible(NativeEventPtr(new NativeEvent(type,params)));
+    return FALSE;
+}
+
+static gboolean onMotionNotifyEvent(GtkWidget *,GdkEventMotion *event,gpointer data){
+    auto *self = static_cast<GTKItem *>(data);
+    if(self == nullptr || event == nullptr){
+        return FALSE;
+    }
+
+    auto *params = new CursorMoveParams();
+    params->position = Core::Position {
+        static_cast<float>(event->x),
+        static_cast<float>(event->y)
+    };
+    params->screenPosition = Core::Position {
+        static_cast<float>(event->x_root),
+        static_cast<float>(event->y_root)
+    };
+    params->modifiers = modifierFlagsFromState(event->state);
+    self->emitIfPossible(NativeEventPtr(new NativeEvent(NativeEvent::CursorMove,params)));
+    return FALSE;
+}
+
+static gboolean onEnterNotifyEvent(GtkWidget *,GdkEventCrossing *event,gpointer data){
+    auto *self = static_cast<GTKItem *>(data);
+    if(self == nullptr || event == nullptr){
+        return FALSE;
+    }
+
+    auto *params = new CursorEnterParams();
+    params->position = Core::Position {
+        static_cast<float>(event->x),
+        static_cast<float>(event->y)
+    };
+    self->emitIfPossible(NativeEventPtr(new NativeEvent(NativeEvent::CursorEnter,params)));
+    return FALSE;
+}
+
+static gboolean onLeaveNotifyEvent(GtkWidget *,GdkEventCrossing *event,gpointer data){
+    auto *self = static_cast<GTKItem *>(data);
+    if(self == nullptr || event == nullptr){
+        return FALSE;
+    }
+
+    auto *params = new CursorExitParams();
+    params->position = Core::Position {
+        static_cast<float>(event->x),
+        static_cast<float>(event->y)
+    };
+    self->emitIfPossible(NativeEventPtr(new NativeEvent(NativeEvent::CursorExit,params)));
+    return FALSE;
+}
+
+static gboolean onScrollEvent(GtkWidget *,GdkEventScroll *event,gpointer data){
+    auto *self = static_cast<GTKItem *>(data);
+    if(self == nullptr || event == nullptr){
+        return FALSE;
+    }
+
+    constexpr double epsilon = 0.0001;
+    if(event->direction == GDK_SCROLL_SMOOTH){
+        double deltaX = 0.0;
+        double deltaY = 0.0;
+        if(gdk_event_get_scroll_deltas(reinterpret_cast<GdkEvent *>(event),&deltaX,&deltaY)){
+            if(std::fabs(deltaX) > epsilon){
+                auto type = deltaX > 0.0 ? NativeEvent::ScrollRight : NativeEvent::ScrollLeft;
+                self->emitIfPossible(NativeEventPtr(new NativeEvent(type,new ScrollParams {
+                    static_cast<float>(deltaX),
+                    0.f
+                })));
+            }
+            if(std::fabs(deltaY) > epsilon){
+                auto type = deltaY > 0.0 ? NativeEvent::ScrollDown : NativeEvent::ScrollUp;
+                self->emitIfPossible(NativeEventPtr(new NativeEvent(type,new ScrollParams {
+                    0.f,
+                    static_cast<float>(deltaY)
+                })));
+            }
+        }
+        return FALSE;
+    }
+
+    switch(event->direction){
+        case GDK_SCROLL_UP:
+            self->emitIfPossible(NativeEventPtr(new NativeEvent(
+                    NativeEvent::ScrollUp,
+                    new ScrollParams {0.f,-1.f})));
+            break;
+        case GDK_SCROLL_DOWN:
+            self->emitIfPossible(NativeEventPtr(new NativeEvent(
+                    NativeEvent::ScrollDown,
+                    new ScrollParams {0.f,1.f})));
+            break;
+        case GDK_SCROLL_LEFT:
+            self->emitIfPossible(NativeEventPtr(new NativeEvent(
+                    NativeEvent::ScrollLeft,
+                    new ScrollParams {-1.f,0.f})));
+            break;
+        case GDK_SCROLL_RIGHT:
+            self->emitIfPossible(NativeEventPtr(new NativeEvent(
+                    NativeEvent::ScrollRight,
+                    new ScrollParams {1.f,0.f})));
+            break;
+        default:
+            break;
+    }
+    return FALSE;
+}
+
+static void onSizeAllocate(GtkWidget *,GtkAllocation *allocation,gpointer data){
+    auto *self = static_cast<GTKItem *>(data);
+    if(self == nullptr || allocation == nullptr){
+        return;
+    }
+    self->handleAllocation(*allocation);
+}
+
+static void onHorizontalAdjustmentChanged(GtkAdjustment *adjustment,gpointer data){
+    auto *self = static_cast<GTKItem *>(data);
+    if(self == nullptr || adjustment == nullptr){
+        return;
+    }
+    self->handleScrollAdjustmentValue(gtk_adjustment_get_value(adjustment),true);
+}
+
+static void onVerticalAdjustmentChanged(GtkAdjustment *adjustment,gpointer data){
+    auto *self = static_cast<GTKItem *>(data);
+    if(self == nullptr || adjustment == nullptr){
+        return;
+    }
+    self->handleScrollAdjustmentValue(gtk_adjustment_get_value(adjustment),false);
+}
 }
 
 GTKItem::GTKItem(Core::Rect rect,Native::ItemType type):
@@ -35,13 +303,47 @@ isScrollItem(type == Native::ScrollItem){
         gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(widget),GTK_POLICY_NEVER,GTK_POLICY_NEVER);
         horizontalScrollEnabled = false;
         verticalScrollEnabled = false;
+        auto *horizontal = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(widget));
+        if(horizontal != nullptr){
+            lastHorizontalScrollValue = gtk_adjustment_get_value(horizontal);
+            g_signal_connect(horizontal,"value-changed",G_CALLBACK(onHorizontalAdjustmentChanged),this);
+        }
+        auto *vertical = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(widget));
+        if(vertical != nullptr){
+            lastVerticalScrollValue = gtk_adjustment_get_value(vertical);
+            g_signal_connect(vertical,"value-changed",G_CALLBACK(onVerticalAdjustmentChanged),this);
+        }
     }
     else {
-        widget = gtk_layout_new(nullptr,nullptr);
-        contentWidget = nullptr;
+        widget = gtk_event_box_new();
+        gtk_event_box_set_visible_window(GTK_EVENT_BOX(widget),TRUE);
+        gtk_widget_set_app_paintable(widget,TRUE);
+        contentWidget = gtk_fixed_new();
+        gtk_container_add(GTK_CONTAINER(widget),contentWidget);
+        gtk_widget_show(contentWidget);
     }
     if(widget != nullptr){
         g_object_add_weak_pointer(G_OBJECT(widget),reinterpret_cast<gpointer *>(&widget));
+        gtk_widget_add_events(widget,
+                              GDK_BUTTON_PRESS_MASK
+                              | GDK_BUTTON_RELEASE_MASK
+                              | GDK_ENTER_NOTIFY_MASK
+                              | GDK_LEAVE_NOTIFY_MASK
+                              | GDK_POINTER_MOTION_MASK
+                              | GDK_SCROLL_MASK
+                              | GDK_SMOOTH_SCROLL_MASK);
+        g_signal_connect(widget,"button-press-event",G_CALLBACK(onButtonPressEvent),this);
+        g_signal_connect(widget,"button-release-event",G_CALLBACK(onButtonReleaseEvent),this);
+        g_signal_connect(widget,"motion-notify-event",G_CALLBACK(onMotionNotifyEvent),this);
+        g_signal_connect(widget,"enter-notify-event",G_CALLBACK(onEnterNotifyEvent),this);
+        g_signal_connect(widget,"leave-notify-event",G_CALLBACK(onLeaveNotifyEvent),this);
+        if(!isScrollItem){
+            g_signal_connect(widget,"scroll-event",G_CALLBACK(onScrollEvent),this);
+        }
+        g_signal_connect(widget,"size-allocate",G_CALLBACK(onSizeAllocate),this);
+    }
+    if(contentWidget != nullptr){
+        g_object_add_weak_pointer(G_OBJECT(contentWidget),reinterpret_cast<gpointer *>(&contentWidget));
     }
     updateWidgetSize();
 }
@@ -52,11 +354,60 @@ GtkWidget *GTKItem::getWidget(){
 
 void GTKItem::updateWidgetSize(){
     if(widget != nullptr){
-        gtk_widget_set_size_request(widget,(gint)rect.w,(gint)rect.h);
+        gtk_widget_set_size_request(widget,toGtkSize(rect.w),toGtkSize(rect.h));
     }
     if(contentWidget != nullptr){
-        gtk_widget_set_size_request(contentWidget,(gint)rect.w,(gint)rect.h);
+        gtk_widget_set_size_request(contentWidget,toGtkSize(rect.w),toGtkSize(rect.h));
     }
+}
+
+void GTKItem::emitIfPossible(NativeEventPtr event){
+    if(event != nullptr && hasEventEmitter()){
+        sendEventToEmitter(event);
+    }
+}
+
+void GTKItem::handleAllocation(const GtkAllocation &allocation){
+    Core::Rect allocatedRect {
+        rect.pos,
+        static_cast<float>(allocation.width),
+        static_cast<float>(allocation.height)
+    };
+    auto sanitized = sanitizeRect(allocatedRect,rect);
+    if(rect.w == sanitized.w && rect.h == sanitized.h){
+        return;
+    }
+    rect.w = sanitized.w;
+    rect.h = sanitized.h;
+    emitIfPossible(NativeEventPtr(new NativeEvent(NativeEvent::ViewResize,new ViewResize {rect})));
+}
+
+void GTKItem::handleScrollAdjustmentValue(double value,bool horizontal){
+    if(!isScrollItem){
+        return;
+    }
+
+    const double previous = horizontal ? lastHorizontalScrollValue : lastVerticalScrollValue;
+    if(horizontal){
+        lastHorizontalScrollValue = value;
+    }
+    else {
+        lastVerticalScrollValue = value;
+    }
+
+    const double delta = value - previous;
+    constexpr double epsilon = 0.0001;
+    if(std::fabs(delta) <= epsilon){
+        return;
+    }
+
+    const auto type = horizontal
+        ? (delta > 0.0 ? NativeEvent::ScrollRight : NativeEvent::ScrollLeft)
+        : (delta > 0.0 ? NativeEvent::ScrollDown : NativeEvent::ScrollUp);
+    emitIfPossible(NativeEventPtr(new NativeEvent(type,new ScrollParams {
+        horizontal ? static_cast<float>(delta) : 0.f,
+        horizontal ? 0.f : static_cast<float>(delta)
+    })));
 }
 
 void GTKItem::applyScrollPolicy(){
@@ -73,8 +424,8 @@ void GTKItem::moveInParent(){
         return;
     }
     GtkWidget *parent = gtk_widget_get_parent(widget);
-    if(parent != nullptr && GTK_IS_LAYOUT(parent)){
-        gtk_layout_move(GTK_LAYOUT(parent),widget,(gint)rect.pos.x,(gint)rect.pos.y);
+    if(parent != nullptr && GTK_IS_FIXED(parent)){
+        gtk_fixed_move(GTK_FIXED(parent),widget,toGtkCoordinate(rect.pos.x),toGtkCoordinate(rect.pos.y));
     }
 }
 
@@ -85,17 +436,7 @@ GdkWindow *GTKItem::resolveGdkWindow(){
     if(!gtk_widget_get_realized(widget)){
         gtk_widget_realize(widget);
     }
-    auto *window = gtk_widget_get_window(widget);
-    if(window != nullptr){
-        return window;
-    }
-    if(contentWidget != nullptr && contentWidget != widget){
-        if(!gtk_widget_get_realized(contentWidget)){
-            gtk_widget_realize(contentWidget);
-        }
-        return gtk_widget_get_window(contentWidget);
-    }
-    return nullptr;
+    return gtk_widget_get_window(widget);
 }
 
 void GTKItem::resize(const Core::Rect &newRect) {
@@ -106,41 +447,25 @@ void GTKItem::resize(const Core::Rect &newRect) {
 
 void GTKItem::enable() {
     isVisible = true;
-    if(widget != nullptr){
-        gtk_widget_show(widget);
-    }
-    if(contentWidget != nullptr){
-        gtk_widget_show(contentWidget);
-    }
+    setWidgetVisibility(widget,true);
+    setWidgetVisibility(contentWidget,true);
     if(clippedView != nullptr && clippedView->widget != nullptr){
-        if(clippedView->isVisible){
-            gtk_widget_show(clippedView->widget);
-        }
-        else {
-            gtk_widget_hide(clippedView->widget);
-        }
+        setWidgetVisibility(clippedView->widget,clippedView->isVisible);
+        setWidgetVisibility(clippedView->contentWidget,clippedView->isVisible);
     }
     for(auto &child : childItems){
         if(child == nullptr || child->widget == nullptr){
             continue;
         }
-        if(child->isVisible){
-            gtk_widget_show(child->widget);
-        }
-        else {
-            gtk_widget_hide(child->widget);
-        }
+        setWidgetVisibility(child->widget,child->isVisible);
+        setWidgetVisibility(child->contentWidget,child->isVisible);
     }
 }
 
 void GTKItem::disable() {
     isVisible = false;
-    if(widget != nullptr){
-        gtk_widget_hide(widget);
-    }
-    if(contentWidget != nullptr){
-        gtk_widget_hide(contentWidget);
-    }
+    setWidgetVisibility(widget,false);
+    setWidgetVisibility(contentWidget,false);
 }
 
 void *GTKItem::getBinding() {
@@ -163,20 +488,17 @@ void GTKItem::addChildNativeItem(NativeItemPtr nativeItem) {
         return;
     }
     auto *container = contentWidget != nullptr ? contentWidget : widget;
-    if(container != nullptr && GTK_IS_LAYOUT(container)){
+    if(container != nullptr && GTK_IS_FIXED(container)){
         auto *existingParent = gtk_widget_get_parent(item->widget);
         if(existingParent != nullptr && GTK_IS_CONTAINER(existingParent)){
             gtk_container_remove(GTK_CONTAINER(existingParent),item->widget);
         }
-        gtk_layout_put(GTK_LAYOUT(container),item->widget,(gint)item->rect.pos.x,(gint)item->rect.pos.y);
+        gtk_fixed_put(GTK_FIXED(container),item->widget,toGtkCoordinate(item->rect.pos.x),toGtkCoordinate(item->rect.pos.y));
         item->updateWidgetSize();
         childItems.push_back(item);
-        if(isVisible && item->isVisible){
-            gtk_widget_show(item->widget);
-        }
-        else {
-            gtk_widget_hide(item->widget);
-        }
+        const bool childVisible = isVisible && item->isVisible;
+        setWidgetVisibility(item->widget,childVisible);
+        setWidgetVisibility(item->contentWidget,childVisible);
     }
 }
 
@@ -222,12 +544,9 @@ void GTKItem::setClippedView(SharedHandle<NativeItem> clippedView) {
     }
     gtk_container_add(GTK_CONTAINER(widget),next->widget);
     next->updateWidgetSize();
-    if(isVisible && next->isVisible){
-        gtk_widget_show(next->widget);
-    }
-    else {
-        gtk_widget_hide(next->widget);
-    }
+    const bool childVisible = isVisible && next->isVisible;
+    setWidgetVisibility(next->widget,childVisible);
+    setWidgetVisibility(next->contentWidget,childVisible);
     this->clippedView = next;
 }
 
@@ -254,6 +573,9 @@ void GTKItem::toggleVerticalScrollBar(bool &state) {
 wl_surface * GTKItem::getSurface() {
     auto *window = resolveGdkWindow();
     if(window == nullptr){
+        return nullptr;
+    }
+    if(!gdk_window_ensure_native(window)){
         return nullptr;
     }
     if(!GDK_IS_WAYLAND_WINDOW(window)){
@@ -296,6 +618,9 @@ Window GTKItem::getX11Window() {
     if(window == nullptr){
         return 0;
     }
+    if(!gdk_window_ensure_native(window)){
+        return 0;
+    }
     if(!GDK_IS_X11_WINDOW(window)){
         return 0;
     }
@@ -305,6 +630,9 @@ Window GTKItem::getX11Window() {
 #endif
 
 GTKItem::~GTKItem(){
+    if(contentWidget != nullptr){
+        g_object_remove_weak_pointer(G_OBJECT(contentWidget),reinterpret_cast<gpointer *>(&contentWidget));
+    }
     if(widget != nullptr){
         g_object_remove_weak_pointer(G_OBJECT(widget),reinterpret_cast<gpointer *>(&widget));
         gtk_widget_destroy(widget);

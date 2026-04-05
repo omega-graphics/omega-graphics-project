@@ -107,6 +107,17 @@ if(TARGET_VULKAN)
 	set(VMA_INCLUDE_DIRECTORY "${THIRD_PARTY_DIR}/vulkan-memory-allocator/include")
 	set(GLM_INCLUDE_DIRECTORY "${THIRD_PARTY_DIR}/glm")
 
+	set(VULKAN_SDK_GLSLC "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/bin/glslc")
+
+	# Copy glslc into the build bin/ directory so omegaslc (and tests) can find it.
+	file(COPY "${VULKAN_SDK_GLSLC}" DESTINATION "${CMAKE_BINARY_DIR}/bin"
+		 FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+
+	target_compile_definitions("omegaslc" PRIVATE "OMEGASL_DEFAULT_GLSLC=\"${CMAKE_BINARY_DIR}/bin/glslc\"")
+
+	# Bundle glslc into the installed distribution.
+	install(PROGRAMS "${VULKAN_SDK_GLSLC}" DESTINATION bin)
+
 	target_link_directories("OmegaGTE" PRIVATE "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/lib")
 	target_link_libraries("omegaslc" PRIVATE "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/lib/libshaderc_shared.so.1")
 	target_include_directories("omegaslc" PRIVATE ${VULKAN_INCLUDE_DIRECTORY})

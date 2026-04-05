@@ -220,7 +220,11 @@ int main(int argc,char *argv[]){
     }
     else {
         #ifdef TARGET_VULKAN
+        #ifdef OMEGASL_DEFAULT_GLSLC
+        glslCodeOpts.glslc_cmd = OMEGASL_DEFAULT_GLSLC;
+        #else
         glslCodeOpts.glslc_cmd = "glslc";
+        #endif
         if(glslc_cmd != nullptr){
             glslCodeOpts.glslc_cmd = glslc_cmd;
         }
@@ -241,7 +245,10 @@ int main(int argc,char *argv[]){
         return 1;
     }
 
-    codeGen->linkShaderObjects();
+    if(!codeGen->linkShaderObjects()){
+        omegasl::ast::builtins::Cleanup();
+        return 1;
+    }
 
     omegasl::ast::builtins::Cleanup();
 

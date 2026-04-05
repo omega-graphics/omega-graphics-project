@@ -26,6 +26,8 @@ namespace OmegaWTK::Native::GTK {
         bool isScrollItem = false;
         bool horizontalScrollEnabled = false;
         bool verticalScrollEnabled = false;
+        double lastHorizontalScrollValue = 0.0;
+        double lastVerticalScrollValue = 0.0;
         OmegaCommon::Vector<SharedHandle<GTKItem>> childItems;
         SharedHandle<GTKItem> clippedView = nullptr;
 
@@ -35,6 +37,9 @@ namespace OmegaWTK::Native::GTK {
         void applyScrollPolicy();
     public:
         GtkWidget *getWidget();
+        void emitIfPossible(NativeEventPtr event);
+        void handleAllocation(const GtkAllocation &allocation);
+        void handleScrollAdjustmentValue(double value,bool horizontal);
         void enable() override;
         void disable() override;
         void resize(const Core::Rect &newRect) override;

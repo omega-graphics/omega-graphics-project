@@ -1625,7 +1625,9 @@ namespace omegasl {
             if(sem->performSemForGlobalDecl(decl)){
                 foldConstantsInDecl(decl);
                 gen->generateDecl(decl);
-                gen->generateInterfaceAndCompileShader(decl);
+                if(!gen->generateInterfaceAndCompileShader(decl)){
+                    break;
+                }
             }
             else {
                 auto e = std::make_unique<UnexpectedToken>("Failed to evaluate statement");

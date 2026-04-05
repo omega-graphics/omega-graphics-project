@@ -696,7 +696,7 @@ namespace omegasl {
 
                     OmegaCommon::String object_file;
                     if(!opts.runtimeCompile) {
-                        object_file = OmegaCommon::FS::Path(opts.tempDir).append(_decl->name).concat(".cso").str();
+                        object_file = OmegaCommon::FS::Path(opts.tempDir).append(_decl->name).concat(".cso").absPath();
                     }
                     else {
                         object_file = _decl->name;
@@ -710,7 +710,7 @@ namespace omegasl {
                 }
             }
         }
-        void compileShader(ast::ShaderDecl::Type type, const OmegaCommon::StrRef &name, const OmegaCommon::FS::Path &path, const OmegaCommon::FS::Path &outputPath) override {
+        bool compileShader(ast::ShaderDecl::Type type, const OmegaCommon::StrRef &name, const OmegaCommon::FS::Path &path, const OmegaCommon::FS::Path &outputPath) override {
             std::ostringstream out;
             out << " -nologo -T";
             if(type == ast::ShaderDecl::Vertex){
@@ -728,11 +728,17 @@ namespace omegasl {
             else if(type == ast::ShaderDecl::Domain){
                 out << "ds_5_0";
             }
-            out << " -E" << name.data() << " -Fo " << OmegaCommon::FS::Path(outputPath).append(name).concat(".cso").str();
-            out << " " << OmegaCommon::FS::Path(path).append(name).concat(".hlsl").str() << " /Zi";
+            out << " -E" << name.data() << " -Fo " << OmegaCommon::FS::Path(outputPath).append(name).concat(".cso").absPath();
+            out << " " << OmegaCommon::FS::Path(path).append(name).concat(".hlsl").absPath() << " /Zi";
 
             auto dxc_process = OmegaCommon::ChildProcess::OpenWithStdoutPipe(hlslCodeOpts.dxc_cmd,out.str().c_str());
             auto res = dxc_process.wait();
+
+            if(res != 0){
+                std::cerr << "error: dxc failed (exit " << res << ") for shader '" << name.data() << "'" << std::endl;
+                return false;
+            }
+            return true;
         }
 
         void compileShaderOnRuntime(ast::ShaderDecl::Type type, const OmegaCommon::StrRef &name) override {

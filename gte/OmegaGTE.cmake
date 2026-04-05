@@ -7,6 +7,8 @@ endif()
 function(add_omegasl_lib _NAME _SRC _OUTPUT)
 
     add_custom_target(${_NAME} DEPENDS "${_OUTPUT}")
+
+    make_directory(${CMAKE_CURRENT_BINARY_DIR}/omegasl)
     
     add_custom_command(OUTPUT "${_OUTPUT}"
                        COMMAND ${OMEGASLC_EXE} --temp-dir ${CMAKE_CURRENT_BINARY_DIR}/omegasl --output ${_OUTPUT} ${_SRC}

@@ -3,6 +3,7 @@
 
 #include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/Native/NativeWindow.h"
+#include "omegaWTK/Composition/CompositorClient.h"
 
 namespace OmegaWTK {
 

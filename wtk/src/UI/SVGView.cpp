@@ -2,6 +2,7 @@
 #include "omegaWTK/Composition/Animation.h"
 #include "omegaWTK/Composition/Path.h"
 #include "omegaWTK/Composition/Brush.h"
+#include "omegaWTK/Composition/Canvas.h"
 
 #include <cctype>
 #include <cstdlib>

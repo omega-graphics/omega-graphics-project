@@ -2,7 +2,6 @@
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/Native/NativeWindow.h"
 #include "omegaWTK/Native/NativeDialog.h"
-#include "omegaWTK/Composition/CompositorClient.h"
 #include "WidgetTreeHost.h"
 
 #include "omegaWTK/UI/Menu.h"

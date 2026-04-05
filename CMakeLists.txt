@@ -4,7 +4,7 @@ include(cmake/OmegaGraphicsSuite.cmake)
 
 project(OmegaGraphics C CXX)
 
-# Allow Objecitve C /Objetive C++ to be built for any projects
+# Allow Objecitve C /Objective C++ to be built for any projects
 if(APPLE)
     enable_language(OBJCXX)
 endif()
