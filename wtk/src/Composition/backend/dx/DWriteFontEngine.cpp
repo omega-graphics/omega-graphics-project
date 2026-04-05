@@ -1,6 +1,7 @@
 #include "omegaWTK/Composition/FontEngine.h"
 #include "NativePrivate/win/WinUtils.h"
 #include "omegaWTK/Core/Microsoft.h"
+#include "omegaWTK/Core/Unicode.h"
 
 #include <dwrite.h>
 
@@ -17,7 +18,6 @@
 #include <dwrite.h>
 #include <dxgi.h>
 #include <dxgiformat.h>
-#include <unicode/ustring.h>
 #include <vector>
 
 #pragma comment(lib,"dxguid.lib")
@@ -99,15 +99,31 @@ namespace OmegaWTK::Composition {
         }
     };
 
+    class DWriteFont : public Font {
+     public:
+         Core::UniqueComPtr<IDWriteTextFormat> textFormat;
+         DWriteFont(FontDescriptor & desc,IDWriteTextFormat *textFormat):Font(desc),textFormat(textFormat){};
+         void * getNativeFont(){
+             return (void *)textFormat.get();
+         };
+         ~DWriteFont(){
+             Core::SafeRelease(&textFormat);
+         };
+     };
+
+    FontEngine * FontEngine::instance;
     class DWriteFontEngineImpl : public FontEngine {
-          Core::UniqueComPtr<ID3D11On12Device> d3d11_device;
+    public:
+        Core::UniqueComPtr<ID3D11On12Device> d3d11_device;
         Core::UniqueComPtr<ID3D11DeviceContext> d3d11_devicecontext;
         Core::UniqueComPtr<ID3D12CommandQueue> d3d11_on_12_queue;
         Core::UniqueComPtr<ID2D1Device> d2d1device;
         Core::UniqueComPtr<IDWriteFactory> dwrite_factory;
+
+        SharedHandle<FontLoader> font_loader;
+
         friend class DWriteTextRect;
         friend class DWriteGlyphRun;
-        public:
             DWriteFontEngineImpl(){
                   font_loader = std::make_shared<FontLoader>();
                     
@@ -150,6 +166,7 @@ namespace OmegaWTK::Composition {
                     }
                     dwrite_factory->RegisterFontCollectionLoader(font_loader.get());
             }
+            
             Core::SharedPtr<Font> CreateFont(FontDescriptor & desc) override {
                         HRESULT hr;
                         IDWriteTextFormat *textFormat;
@@ -195,13 +212,10 @@ namespace OmegaWTK::Composition {
                         return std::make_shared<DWriteFont>(desc,textFormat);
             };
             Core::SharedPtr<Font> CreateFontFromFile(OmegaCommon::FS::Path path, FontDescriptor & desc)  override {
-                auto path_utf8 = path.str();
-                UChar *str = new UChar[path_utf8.length()];
-                int32_t len;
-                UErrorCode err = U_ZERO_ERROR;
-                u_strFromUTF8(str,path_utf8.length(),&len,path_utf8.c_str(),path_utf8.length(),&err);
+                auto path_ustring = UniString::fromUTF8(path.str().c_str());
+                
                 IDWriteFontCollection *collection;
-                dwrite_factory->CreateCustomFontCollection(font_loader.get(),str,len,&collection);
+                dwrite_factory->CreateCustomFontCollection(font_loader.get(),path_ustring.getBuffer(),path_ustring.length(),&collection);
 
 
                 HRESULT hr;
@@ -252,31 +266,29 @@ namespace OmegaWTK::Composition {
                 font_loader.reset();
             }
         };
-    }
 
 
-     void FontEngine::Create(){
-         instance = new DWriteFontEngine();
-     };
+        FontEngine * FontEngine::inst(){
+        return instance;
+        };
 
-     class DWriteFont : public Font {
-     public:
-         Core::UniqueComPtr<IDWriteTextFormat> textFormat;
-         DWriteFont(FontDescriptor & desc,IDWriteTextFormat *textFormat):Font(desc),textFormat(textFormat){};
-         void * getNativeFont(){
-             return (void *)textFormat.get();
-         };
-         ~DWriteFont(){
-             Core::SafeRelease(&textFormat);
-         };
-     };
+
+        void FontEngine::Create(){
+            instance = new DWriteFontEngineImpl();
+        };
+
+
+        void FontEngine::Destroy(){
+            delete instance;
+        };
 
      class DWriteGlyphRun : public GlyphRun {
      public:
          Core::UniqueComPtr<IDWriteTextLayout> textLayout;
          explicit DWriteGlyphRun(const OmegaWTK::UniString & str, Core::SharedPtr<Font> &font){
              auto *_font = (DWriteFont *)font.get();
-            FontEngine::instance->dwrite_factory->CreateTextLayout((WCHAR *)str.getBuffer(),str.length(),_font->textFormat.get(),0,0,&textLayout);
+             auto FontEngineImpl = (DWriteFontEngineImpl *)FontEngine::inst();
+            FontEngineImpl->dwrite_factory->CreateTextLayout((WCHAR *)str.getBuffer(),str.length(),_font->textFormat.get(),0,0,&textLayout);
          }
          Core::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) override {
             return Core::Rect {{0.f,0.f},0,0};
@@ -330,8 +342,8 @@ namespace OmegaWTK::Composition {
                      }
                  }
              }
-
-               FontEngine::inst()->d3d11_device->AcquireWrappedResources((ID3D11Resource *const *)&resource,1);
+               auto FontEngineImpl = (DWriteFontEngineImpl *)FontEngine::inst();
+               FontEngineImpl->d3d11_device->AcquireWrappedResources((ID3D11Resource *const *)&resource,1);
 
              context->BeginDraw();
              context->Clear(D2D1::ColorF(1.f,0.f,0.f,1.f));
@@ -340,13 +352,13 @@ namespace OmegaWTK::Composition {
              context->DrawTextLayout(D2D1::Point2F(0,0),run->textLayout.get(),brush,D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
              HRESULT hr = context->EndDraw();
 
-              FontEngine::instance->d3d11_device->ReleaseWrappedResources((ID3D11Resource *const *)&resource,1);
+              FontEngineImpl->d3d11_device->ReleaseWrappedResources((ID3D11Resource *const *)&resource,1);
             
-             FontEngine::inst()->d3d11_devicecontext->Flush();
+             FontEngineImpl->d3d11_devicecontext->Flush();
 
             auto native_fence = (ID3D12Fence *)fence->native();
 
-            FontEngine::inst()->d3d11_on_12_queue->Signal(native_fence,1);
+            FontEngineImpl->d3d11_on_12_queue->Signal(native_fence,1);
 
              Core::SafeRelease(&brush);
              if(hr == D2DERR_RECREATE_TARGET){
@@ -413,7 +425,9 @@ namespace OmegaWTK::Composition {
 
              OMEGAWTK_DEBUG("Ok! 1");
 
-             hr = FontEngine::inst()->d3d11_device->CreateWrappedResource((IUnknown *)target->native(),&fgs,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,IID_PPV_ARGS(&resource));
+              auto FontEngineImpl = (DWriteFontEngineImpl *)FontEngine::inst();
+
+             hr = FontEngineImpl->d3d11_device->CreateWrappedResource((IUnknown *)target->native(),&fgs,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,IID_PPV_ARGS(&resource));
              if(FAILED(hr)){
                  OMEGAWTK_DEBUG("Failed to Create Wrapped Resource. ERR:" << std::hex << hr << std::dec);
                  exit(1);
@@ -427,7 +441,7 @@ namespace OmegaWTK::Composition {
              }
 
              OMEGAWTK_DEBUG("Ok! 3");
-             hr = FontEngine::inst()->d2d1device->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_ENABLE_MULTITHREADED_OPTIMIZATIONS,&context);
+             hr = FontEngineImpl->d2d1device->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_ENABLE_MULTITHREADED_OPTIMIZATIONS,&context);
              if(FAILED(hr)){
                   OMEGAWTK_DEBUG("Failed to create D2D1DeviceContext ERR:" << std::hex << hr << std::dec);
                  exit(1);
@@ -461,7 +475,5 @@ namespace OmegaWTK::Composition {
      SharedHandle<TextRect> TextRect::Create(Core::Rect rect,const TextLayoutDescriptor & layoutDesc){
          return SharedHandle<TextRect>(new DWriteTextRect(rect,layoutDesc));
      };
+    }
 
-
-
-};

@@ -127,10 +127,12 @@ namespace OmegaCommon {
     /// @paragraph
     /// The pipe in this implementation is represented a one-way bridge between Point A and Point B.
     class OMEGACOMMON_EXPORT Pipe {
+   
         struct Impl;
         bool sideA;
         std::unique_ptr<Impl> impl;
         friend class ChildProcess;
+    public:
         Pipe();
         Pipe(const Pipe &) = delete;
         Pipe & operator=(const Pipe &) = delete;

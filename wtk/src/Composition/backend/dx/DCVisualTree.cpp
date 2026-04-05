@@ -118,8 +118,8 @@ namespace OmegaWTK::Composition {
         hr = v->SetContent(swapChain);
         if(FAILED(hr)){
             std::stringstream ss;
-            ss << std::hex << hr;
-            MessageBoxA(HWND_DESKTOP,(std::string("Failed to set Content of Visual. ERROR:") + ss.str()).c_str(),NULL,MB_OK);
+            // ss << std::hex << hr;
+            // MessageBoxA(HWND_DESKTOP,(std::string("Failed to set Content of Visual. ERROR:") + ss.str()).c_str(),NULL,MB_OK);
         };
 
         return SharedHandle<Parent::Visual>(new DCVisualTree::RootVisual {pos,context,v,renderScale});

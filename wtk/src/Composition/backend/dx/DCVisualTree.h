@@ -1,6 +1,8 @@
 #include "../RenderTarget.h"
 #include "../VisualTree.h"
 
+#include "omegaWTK/Core/Microsoft.h"
+
 #include <dcomp.h>
 
 #pragma comment(lib,"dcomp.lib")

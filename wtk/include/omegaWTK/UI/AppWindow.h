@@ -24,6 +24,7 @@ class AppWindowManager;
 class WidgetTreeHost;
 class Widget;
 OMEGACOMMON_SHARED_CLASS(Widget);
+class View;
 
 class AppWindowDelegate;
 /**
@@ -166,10 +167,5 @@ INTERFACE OMEGAWTK_EXPORT  AppWindowDelegate : public Native::NativeEventProcess
 
 }
 
-#ifdef TARGET_MOBILE
-class OMEGAWTK_EXPORT StoryBoard {
-
-};
-#endif
 
 #endif

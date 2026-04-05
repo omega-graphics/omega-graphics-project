@@ -1,5 +1,4 @@
 #include "omegaWTK/Core/Core.h"
-#include "NativeItem.h"
 
 #ifndef OMEGAWTK_NATIVE_NATIVEAPP_H
 #define OMEGAWTK_NATIVE_NATIVEAPP_H

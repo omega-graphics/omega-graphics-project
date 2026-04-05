@@ -7,7 +7,6 @@
 #include "omegaWTK/Composition/Canvas.h"
 #include "omegaWTK/Native/NativeEvent.h"
 #include "omegaWTK/Native/NativeItem.h"
-#include "omegaWTK/Native/NativeApp.h"
 
 #include <cstdint>
 #include <limits>
@@ -44,7 +43,7 @@ namespace OmegaWTK {
         float maxHeight = std::numeric_limits<float>::infinity();
     };
 
-    enum class OMEGAWTK_EXPORT ChildResizePolicy : std::uint8_t {
+    enum class ChildResizePolicy : std::uint8_t {
         Fixed,
         Fill,
         FitContent,
@@ -206,7 +205,7 @@ namespace OmegaWTK {
         /// their frames in their own rendering methods).
         virtual void submitPaintFrame(int submissions) { (void)submissions; }
 
-        ~View();
+        virtual ~View();
     };
 
     /**
@@ -267,11 +266,6 @@ namespace OmegaWTK {
         ~ViewDelegate();
     };
 
-    // class ViewTreeChildObserver {
-    //     SharedHandle<View> view;
-    // public:
-        
-    // };
 
 };
 

@@ -1,6 +1,6 @@
 #include "omegaWTK/Media/MediaPlaybackSession.h"
 
-#include "omegaWTK/Core/Core.h"
+#include "omegaWTK/Core/Microsoft.h"
 
 #include <mfidl.h>
 #include <ShlObj.h>
@@ -8,7 +8,6 @@
 #include <mfapi.h>
 #include <mmdeviceapi.h>
 #include <mfcaptureengine.h>
-#include <unicode/ustring.h>
 
 #include <memory>
 
@@ -22,10 +21,9 @@
 namespace OmegaWTK::Media {
 
     void cpp_to_wstring(OmegaCommon::StrRef str,LPWSTR * output){
-        UChar *temp = new UChar[str.size()];
-        int32_t len;
-        UErrorCode err = U_ZERO_ERROR;
-        u_strFromUTF8(temp,str.size(),&len,str.data(),str.size(),&err);
+        auto wstr = UniString::fromUTF8(str.data());
+        LPWSTR temp = new WCHAR[wstr.length()];
+        memcpy(temp,wstr.getBuffer(),wstr.length());
         *output = (LPWSTR)temp;
     }
 

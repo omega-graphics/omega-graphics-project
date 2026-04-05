@@ -1,12 +1,10 @@
-#include <memory>
-#include <vector>
+
 #include <cmath>
 #include <cassert>
 #include <string>
 #include <sstream>
 #include <algorithm>
 #include <iostream>
-#include <new>
 
 #include <omega-common/common.h>
 
@@ -90,7 +88,7 @@ _NAMESPACE_BEGIN_
         };
         size_type length(){ return len; };
 
-        explicit VectorHeap(unsigned maxSize):maxSize(maxSize),len(0),_data(::new T[maxSize]){
+        explicit VectorHeap(unsigned maxSize):_data(::new T[maxSize]),maxSize(maxSize),len(0){
             
         };
         VectorHeap(const VectorHeap & other){
@@ -799,15 +797,15 @@ _NAMESPACE_BEGIN_
             else {
                 row_to_cpy = o_row;
             }
-            copy_data_to<column,row>(other._data.begin(),_data.begin());
+            copy_data_to<col_to_cpy,row_to_cpy>(other._data.begin(),_data.begin());
         };
-       template<unsigned o_column,unsigned o_row>
-       explicit Matrix(Matrix<Ty,o_column,o_row> && other){
-            alloc_matrix_mem(nullptr);
-            unsigned col_to_cpy,row_to_cpy;
+    //    template<unsigned o_column,unsigned o_row>
+    //    explicit Matrix(Matrix<Ty,o_column,o_row> && other){
+    //         // alloc_matrix_mem(nullptr);
+    //         // unsigned col_to_cpy,row_to_cpy;
 
-            copy_data_to<o_column,o_row>(other._data.begin(),_data.begin());
-        };
+    //         // copy_data_to<o_column,o_row>(other._data.begin(),_data.begin());
+    //     };
 
         /// Construct a Matrix from a Vector2D
         explicit Matrix(Vector2D_Base<Ty> & vec){

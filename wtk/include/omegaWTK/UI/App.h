@@ -1,12 +1,14 @@
 #include "omegaWTK/Core/Core.h"
-#include "omegaWTK/Native/NativeApp.h"
-#include "omegaWTK/Native/NativeTheme.h"
 
 #ifndef OMEGAWTK_UI_APP_H
 #define OMEGAWTK_UI_APP_H
 
 
 namespace OmegaWTK {
+    namespace Native {
+        class NativeApp;
+        typedef SharedHandle<NativeApp> NAP;
+    };
 
 class AppWindowManager;
 
@@ -30,7 +32,7 @@ public:
 // #ifdef TARGET_WIN32
 //     AppInst(void * windows_inst);
 // #endif
-    Native::NAP & getNAP(){ return ptr;};
+    Native::NAP & getNAP();
     ~AppInst();
 };
 

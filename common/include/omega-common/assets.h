@@ -5,7 +5,7 @@
 
 namespace OmegaCommon {
   
-  class AssetLibrary {
+  class OMEGACOMMON_EXPORT AssetLibrary {
     public:
         
         struct AssetBuffer {

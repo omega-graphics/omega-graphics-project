@@ -1,12 +1,12 @@
 #include "omegaWTK/UI/App.h"
-#include "omegaWTK/UI/Menu.h"
 #include "omegaWTK/Composition/FontEngine.h"
-#include "omegaWTK/Native/NativeTheme.h"
 
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/UI/AppWindow.h"
 
 #include "omega-common/assets.h"
+
+#include "omegaWTK/Native/NativeApp.h"
 
 namespace OmegaWTK {
 
@@ -60,6 +60,10 @@ AppInst::~AppInst(){
     }
     instance = nullptr;
 };
+
+Native::NAP & AppInst::getNAP(){
+    return ptr;
+}
 
 };
 
