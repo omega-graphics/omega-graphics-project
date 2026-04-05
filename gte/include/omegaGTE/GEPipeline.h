@@ -1,7 +1,5 @@
 #include "GTEBase.h"
 #include "GTEShader.h"
-#include <initializer_list>
-#include <map>
 
 #ifndef OMEGAGTE_GEPIPELINE_H
 #define OMEGAGTE_GEPIPELINE_H

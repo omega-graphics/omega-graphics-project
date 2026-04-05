@@ -51,26 +51,6 @@ static NSLineBreakMode toNSLineBreakMode(TextLayoutDescriptor::Wrapping wrapping
 }
 
 
- FontEngine * FontEngine::instance;
-
- FontEngine::FontEngine(){
-    
- };
-
- FontEngine::~FontEngine() = default;
-
-FontEngine *FontEngine::inst() {
-    return instance;
-}
-
- void FontEngine::Create(){
-         instance = new FontEngine();
-     };
-
-     void FontEngine::Destroy(){
-         delete instance;
-     };
-
 
 
  class CoreTextFont : public Font {
@@ -277,7 +257,10 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
      return Core::SharedPtr<TextRect>(new CTTextRect(rect,layoutDesc));
  };
 
- Core::SharedPtr<Font> FontEngine::CreateFont(FontDescriptor & desc){
+  FontEngine * FontEngine::instance;
+class CTFontEngine : public FontEngine {
+public:
+    Core::SharedPtr<Font> CreateFont(FontDescriptor & desc) override{
      CTFontRef ref = CTFontCreateWithNameAndOptions((__bridge CFStringRef)[NSString stringWithUTF8String:desc.family.c_str()],CGFloat(desc.size),NULL,kCTFontOptionsPreferSystemFont);
      CTFontSymbolicTraits fontTraits;
     
@@ -305,7 +288,11 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
      return SharedHandle<Font>(new CoreTextFont(desc,_font_final));
  };
 
- Core::SharedPtr<Font> FontEngine::CreateFontFromFile(OmegaCommon::FS::Path path, FontDescriptor &desc){
+ CTFontEngine() = default;
+
+~CTFontEngine() = default;
+
+ Core::SharedPtr<Font> CreateFontFromFile(OmegaCommon::FS::Path path, FontDescriptor &desc) override{
      CTFontSymbolicTraits fontTraits;
     
      switch (desc.style) {
@@ -345,4 +332,17 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
      CTFontRef f = CTFontCreateWithFontDescriptor(idealFont,CGFloat(desc.size) * scaleFactor,NULL);
      return std::make_shared<CoreTextFont>(desc,f);
  };
+};
+
+FontEngine * FontEngine::inst(){
+    return instance;
+};
+
+ void FontEngine::Create(){
+        instance = new CTFontEngine();
+     };
+      void FontEngine::Destroy(){
+         delete instance;
+     };
+
 };

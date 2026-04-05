@@ -18,7 +18,7 @@ namespace OmegaWTK {
                 bool isText() const;
                 OmegaCommon::StrRef name();
                 OmegaCommon::StrRef content();
-                OmegaCommon::StrRef attribute(const OmegaCommon::StrRef & name);
+                OmegaCommon::String attribute(const OmegaCommon::StrRef & name);
                 OmegaCommon::Vector<Tag> children();
             };
 

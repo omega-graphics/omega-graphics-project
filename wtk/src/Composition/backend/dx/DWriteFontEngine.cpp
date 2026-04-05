@@ -1,6 +1,11 @@
 #include "omegaWTK/Composition/FontEngine.h"
 #include "NativePrivate/win/WinUtils.h"
-// #include <atlstr.h>
+#include "omegaWTK/Core/Microsoft.h"
+
+#include <dwrite.h>
+
+#pragma comment(lib,"dwrite.lib")
+
 #include <d2d1.h>
 #include <d2d1_1.h>
 #include <d2d1_1helper.h>
@@ -12,6 +17,7 @@
 #include <dwrite.h>
 #include <dxgi.h>
 #include <dxgiformat.h>
+#include <unicode/ustring.h>
 #include <vector>
 
 #pragma comment(lib,"dxguid.lib")
@@ -93,68 +99,164 @@ namespace OmegaWTK::Composition {
         }
     };
 
-     FontEngine * FontEngine::instance = nullptr;
-     SharedHandle<FontLoader> font_loader;
+    class DWriteFontEngineImpl : public FontEngine {
+          Core::UniqueComPtr<ID3D11On12Device> d3d11_device;
+        Core::UniqueComPtr<ID3D11DeviceContext> d3d11_devicecontext;
+        Core::UniqueComPtr<ID3D12CommandQueue> d3d11_on_12_queue;
+        Core::UniqueComPtr<ID2D1Device> d2d1device;
+        Core::UniqueComPtr<IDWriteFactory> dwrite_factory;
+        friend class DWriteTextRect;
+        friend class DWriteGlyphRun;
+        public:
+            DWriteFontEngineImpl(){
+                  font_loader = std::make_shared<FontLoader>();
+                    
+                    HRESULT hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown **)&dwrite_factory);
+                    if(FAILED(hr)){
+                        exit(1);
+                    };
+
+                    D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0};
+                    auto d3d12_dev = (ID3D12Device *)gte.graphicsEngine->underlyingNativeDevice();
+
+                    D3D12_COMMAND_QUEUE_DESC desc {};
+                    desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+                    desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+                    desc.NodeMask = d3d12_dev->GetNodeCount();
+                    desc.Priority = 0;
+                    hr = d3d12_dev->CreateCommandQueue(&desc,IID_PPV_ARGS(&d3d11_on_12_queue));
+
+                    ID3D11Device *dev;
+
+                    hr = D3D11On12CreateDevice(d3d12_dev,D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_DEBUG,levels,1,(IUnknown *const *)&d3d11_on_12_queue,1,d3d12_dev->GetNodeCount(),(ID3D11Device **)&dev,&d3d11_devicecontext,nullptr);
+                    if(FAILED(hr)){
+                        OMEGAWTK_DEBUG("Failed to create D3D11On12");
+                        exit(1);
+                    }
+                    dev->QueryInterface(&d3d11_device);
+                    
+                    IDXGIDevice *dxgi_dev;
+
+                    dev->QueryInterface(IID_PPV_ARGS(&dxgi_dev));
+                    if(FAILED(hr)){
+                        OMEGAWTK_DEBUG("Failed to Query DXGI Device from D3D11on12Device");
+                        exit(1);
+                    }
+
+                    hr = D2D1CreateDevice(dxgi_dev,D2D1::CreationProperties(D2D1_THREADING_MODE_SINGLE_THREADED,D2D1_DEBUG_LEVEL_WARNING,D2D1_DEVICE_CONTEXT_OPTIONS_ENABLE_MULTITHREADED_OPTIMIZATIONS),&d2d1device);
+                    if(FAILED(hr)){
+                        OMEGAWTK_DEBUG("Failed to Create D2D1 Device");
+                        exit(1);
+                    }
+                    dwrite_factory->RegisterFontCollectionLoader(font_loader.get());
+            }
+            Core::SharedPtr<Font> CreateFont(FontDescriptor & desc) override {
+                        HRESULT hr;
+                        IDWriteTextFormat *textFormat;
+                        std::wstring w_str;
+                        Native::cpp_str_to_cpp_wstr(desc.family,w_str);
+
+                        DWRITE_FONT_WEIGHT weight;
+                        DWRITE_FONT_STYLE style;
+
+                        switch (desc.style) {
+                            case FontDescriptor::BoldAndItalic : {
+                                style = DWRITE_FONT_STYLE_ITALIC;
+                                weight = DWRITE_FONT_WEIGHT_BOLD;
+                                break;
+                            }
+                            case FontDescriptor::Bold : {
+                                weight = DWRITE_FONT_WEIGHT_BOLD;
+                                style = DWRITE_FONT_STYLE_NORMAL;
+                                break;
+                            }
+                            case FontDescriptor::Italic : {
+                                weight = DWRITE_FONT_WEIGHT_NORMAL;
+                                style = DWRITE_FONT_STYLE_ITALIC;
+                                break;
+                            }
+                            case FontDescriptor::Regular : {
+                                weight = DWRITE_FONT_WEIGHT_NORMAL;
+                                style = DWRITE_FONT_STYLE_NORMAL;
+                                break;
+                            };
+                        }
+
+                        UINT dpi = GetDpiForWindow(GetForegroundWindow());
+                        FLOAT scaleFactor = FLOAT(dpi)/96.f;
+
+                        /// TODO: Use Custom Fonts with custom font Collection!
+                        hr = dwrite_factory->CreateTextFormat(w_str.c_str(),NULL,weight,style,DWRITE_FONT_STRETCH_NORMAL,FLOAT(desc.size) * scaleFactor,L"en-us",&textFormat);
+                        if(FAILED(hr)){
+
+                        };
+
+
+                        return std::make_shared<DWriteFont>(desc,textFormat);
+            };
+            Core::SharedPtr<Font> CreateFontFromFile(OmegaCommon::FS::Path path, FontDescriptor & desc)  override {
+                auto path_utf8 = path.str();
+                UChar *str = new UChar[path_utf8.length()];
+                int32_t len;
+                UErrorCode err = U_ZERO_ERROR;
+                u_strFromUTF8(str,path_utf8.length(),&len,path_utf8.c_str(),path_utf8.length(),&err);
+                IDWriteFontCollection *collection;
+                dwrite_factory->CreateCustomFontCollection(font_loader.get(),str,len,&collection);
+
+
+                HRESULT hr;
+                IDWriteTextFormat *textFormat;
+                std::wstring w_str;
+                Native::cpp_str_to_cpp_wstr(desc.family,w_str);
+
+                DWRITE_FONT_WEIGHT weight;
+                DWRITE_FONT_STYLE style;
+
+                switch (desc.style) {
+                    case FontDescriptor::BoldAndItalic : {
+                        style = DWRITE_FONT_STYLE_ITALIC;
+                        weight = DWRITE_FONT_WEIGHT_BOLD;
+                        break;
+                    }
+                    case FontDescriptor::Bold : {
+                        weight = DWRITE_FONT_WEIGHT_BOLD;
+                        style = DWRITE_FONT_STYLE_NORMAL;
+                        break;
+                    }
+                    case FontDescriptor::Italic : {
+                        weight = DWRITE_FONT_WEIGHT_NORMAL;
+                        style = DWRITE_FONT_STYLE_ITALIC;
+                        break;
+                    }
+                    case FontDescriptor::Regular : {
+                        weight = DWRITE_FONT_WEIGHT_NORMAL;
+                        style = DWRITE_FONT_STYLE_NORMAL;
+                        break;
+                    };
+                }
+
+                UINT dpi = GetDpiForWindow(GetForegroundWindow());
+                FLOAT scaleFactor = FLOAT(dpi)/96.f;
+
+                /// TODO: Use Custom Fonts with custom font Collection!
+                hr = dwrite_factory->CreateTextFormat(w_str.c_str(),collection,weight,style,DWRITE_FONT_STRETCH_NORMAL,FLOAT(desc.size) * scaleFactor,L"en-us",&textFormat);
+                if(FAILED(hr)){
+
+                };
+
+
+                return std::make_shared<DWriteFont>(desc,textFormat);
+            };
+            ~DWriteFontEngineImpl(){
+                dwrite_factory->UnregisterFontCollectionLoader(font_loader.get());
+                font_loader.reset();
+            }
+        };
+    }
+
 
      void FontEngine::Create(){
-         instance = new FontEngine();
-     };
-
-     FontEngine * FontEngine::inst(){
-         return instance;
-     }
-
-     void FontEngine::Destroy(){
-         delete instance;
-     };
-
-     FontEngine::~FontEngine(){
-         dwrite_factory->UnregisterFontCollectionLoader(font_loader.get());
-         font_loader.reset();
-     }
-
-     FontEngine::FontEngine(){
-
-         font_loader = std::make_shared<FontLoader>();
-        
-         HRESULT hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown **)&dwrite_factory);
-         if(FAILED(hr)){
-             exit(1);
-         };
-
-         D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0};
-         auto d3d12_dev = (ID3D12Device *)gte.graphicsEngine->underlyingNativeDevice();
-
-         D3D12_COMMAND_QUEUE_DESC desc {};
-         desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-         desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-         desc.NodeMask = d3d12_dev->GetNodeCount();
-         desc.Priority = 0;
-         hr = d3d12_dev->CreateCommandQueue(&desc,IID_PPV_ARGS(&d3d11_on_12_queue));
-
-         ID3D11Device *dev;
-
-         hr = D3D11On12CreateDevice(d3d12_dev,D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_DEBUG,levels,1,(IUnknown *const *)&d3d11_on_12_queue,1,d3d12_dev->GetNodeCount(),(ID3D11Device **)&dev,&d3d11_devicecontext,nullptr);
-         if(FAILED(hr)){
-             OMEGAWTK_DEBUG("Failed to create D3D11On12");
-             exit(1);
-         }
-         dev->QueryInterface(&d3d11_device);
-         
-         IDXGIDevice *dxgi_dev;
-
-         dev->QueryInterface(IID_PPV_ARGS(&dxgi_dev));
-         if(FAILED(hr)){
-             OMEGAWTK_DEBUG("Failed to Query DXGI Device from D3D11on12Device");
-            exit(1);
-         }
-
-         hr = D2D1CreateDevice(dxgi_dev,D2D1::CreationProperties(D2D1_THREADING_MODE_SINGLE_THREADED,D2D1_DEBUG_LEVEL_WARNING,D2D1_DEVICE_CONTEXT_OPTIONS_ENABLE_MULTITHREADED_OPTIMIZATIONS),&d2d1device);
-        if(FAILED(hr)){
-            OMEGAWTK_DEBUG("Failed to Create D2D1 Device");
-            exit(1);
-        }
-         dwrite_factory->RegisterFontCollectionLoader(font_loader.get());
+         instance = new DWriteFontEngine();
      };
 
      class DWriteFont : public Font {
@@ -360,104 +462,6 @@ namespace OmegaWTK::Composition {
          return SharedHandle<TextRect>(new DWriteTextRect(rect,layoutDesc));
      };
 
-     Core::SharedPtr<Font> FontEngine::CreateFont(FontDescriptor &desc){
-         HRESULT hr;
-         IDWriteTextFormat *textFormat;
-         std::wstring w_str;
-         Native::cpp_str_to_cpp_wstr(desc.family,w_str);
 
-         DWRITE_FONT_WEIGHT weight;
-         DWRITE_FONT_STYLE style;
-
-         switch (desc.style) {
-             case FontDescriptor::BoldAndItalic : {
-                 style = DWRITE_FONT_STYLE_ITALIC;
-                 weight = DWRITE_FONT_WEIGHT_BOLD;
-                 break;
-             }
-             case FontDescriptor::Bold : {
-                 weight = DWRITE_FONT_WEIGHT_BOLD;
-                 style = DWRITE_FONT_STYLE_NORMAL;
-                 break;
-             }
-             case FontDescriptor::Italic : {
-                 weight = DWRITE_FONT_WEIGHT_NORMAL;
-                 style = DWRITE_FONT_STYLE_ITALIC;
-                 break;
-             }
-             case FontDescriptor::Regular : {
-                 weight = DWRITE_FONT_WEIGHT_NORMAL;
-                 style = DWRITE_FONT_STYLE_NORMAL;
-                 break;
-             };
-         }
-
-         UINT dpi = GetDpiForWindow(GetForegroundWindow());
-         FLOAT scaleFactor = FLOAT(dpi)/96.f;
-
-         /// TODO: Use Custom Fonts with custom font Collection!
-         hr = dwrite_factory->CreateTextFormat(w_str.c_str(),NULL,weight,style,DWRITE_FONT_STRETCH_NORMAL,FLOAT(desc.size) * scaleFactor,L"en-us",&textFormat);
-         if(FAILED(hr)){
-
-         };
-
-
-         return std::make_shared<DWriteFont>(desc,textFormat);
-     };
-
-
-    Core::SharedPtr<Font> FontEngine::CreateFontFromFile(OmegaCommon::FS::Path path, FontDescriptor &desc) {
-        auto path_utf8 = path.str();
-        UChar *str = new UChar[path_utf8.length()];
-        int32_t len;
-        UErrorCode err;
-        u_strFromUTF8(str,path_utf8.length(),&len,path_utf8.c_str(),path_utf8.length(),&err);
-        IDWriteFontCollection *collection;
-        dwrite_factory->CreateCustomFontCollection(font_loader.get(),str,len,&collection);
-
-
-        HRESULT hr;
-        IDWriteTextFormat *textFormat;
-        std::wstring w_str;
-        Native::cpp_str_to_cpp_wstr(desc.family,w_str);
-
-        DWRITE_FONT_WEIGHT weight;
-        DWRITE_FONT_STYLE style;
-
-        switch (desc.style) {
-            case FontDescriptor::BoldAndItalic : {
-                style = DWRITE_FONT_STYLE_ITALIC;
-                weight = DWRITE_FONT_WEIGHT_BOLD;
-                break;
-            }
-            case FontDescriptor::Bold : {
-                weight = DWRITE_FONT_WEIGHT_BOLD;
-                style = DWRITE_FONT_STYLE_NORMAL;
-                break;
-            }
-            case FontDescriptor::Italic : {
-                weight = DWRITE_FONT_WEIGHT_NORMAL;
-                style = DWRITE_FONT_STYLE_ITALIC;
-                break;
-            }
-            case FontDescriptor::Regular : {
-                weight = DWRITE_FONT_WEIGHT_NORMAL;
-                style = DWRITE_FONT_STYLE_NORMAL;
-                break;
-            };
-        }
-
-        UINT dpi = GetDpiForWindow(GetForegroundWindow());
-        FLOAT scaleFactor = FLOAT(dpi)/96.f;
-
-        /// TODO: Use Custom Fonts with custom font Collection!
-        hr = dwrite_factory->CreateTextFormat(w_str.c_str(),collection,weight,style,DWRITE_FONT_STRETCH_NORMAL,FLOAT(desc.size) * scaleFactor,L"en-us",&textFormat);
-        if(FAILED(hr)){
-
-        };
-
-
-        return std::make_shared<DWriteFont>(desc,textFormat);
-    }
 
 };

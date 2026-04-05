@@ -5,15 +5,12 @@
 #include <cassert>
 #include <iomanip>
 #include <memory>
+#include <string>
 
 
 #include "OmegaWTKExport.h"
 #include "Unicode.h"
 
-#ifdef TARGET_WIN32
-#include <wrl.h>
-#pragma comment(lib,"runtimeobject.lib")
-#endif
 
 #ifndef OMEGAWTK_CORE_CORE_H
 #define OMEGAWTK_CORE_CORE_H
@@ -123,58 +120,6 @@ namespace OmegaWTK {
             rad_y(OmegaGTE::GEllipsoid::rad_y){
             };
         };
-
-
-
-
-        #ifdef TARGET_WIN32
-        template <class T> void SafeRelease(T **ppT)
-        {
-            if (*ppT)
-            {
-                (*ppT)->Release();
-                *ppT = NULL;
-            }
-        }            
-        /// A ComPtr that releases its object on its destruction. (Similar to the std::unique_ptr)
-        template<class T>
-        class UniqueComPtr {
-        public:
-            Microsoft::WRL::ComPtr<T> comPtr;
-            T * get() { return comPtr.Get();};
-            T * operator->(){
-                return comPtr.Get();
-            };
-            T ** operator&(){
-                return comPtr.GetAddressOf();
-            };
-            UniqueComPtr() = default;
-            // UniqueComPtr(Microsoft::WRL::ComPtr<T> _com):comPtr(_com){};
-            UniqueComPtr(T *ptr):comPtr(ptr){};
-            ~UniqueComPtr(){
-                auto ptr = comPtr.Detach();
-                Core::SafeRelease(&ptr);
-            };
-        };
-        #endif
-
-        // class OMEGAWTK_EXPORT RegularExpression {
-        //     pcre2_code *code;
-        // public:
-        //     RegularExpression(String pattern,bool multiLine = true);
-            
-        //     struct Match {
-        //         pcre2_match_data *mdata;
-        //     public:
-        //         String main;
-        //         String getSubMatchByNum(unsigned n);
-        //         ~Match();
-        //     };
-        //     Match match(String subject);
-        //     ~RegularExpression();
-        // };
-
-        // typedef RegularExpression Regex;
     };
 
     void loadAssetFile(OmegaCommon::FS::Path path);
@@ -183,37 +128,26 @@ namespace OmegaWTK {
     class StatusWithObj {
         StatusCode code;
         std::shared_ptr<Ty> data;
-        char * message;
+        std::string message;
 
     public:
-        operator bool(){
+        operator bool() const {
             return code == CodeOk;
         };
-        StatusCode getCode(){ return code;};
-        const char * getError(){ return message;};
-        Core::SharedPtr<Ty> getValue(){
+        StatusCode getCode() const { return code;};
+        const char * getError() const { return message.c_str();};
+        Core::SharedPtr<Ty> getValue() const {
            return data;
         };
-        StatusWithObj(const Ty & obj):message(nullptr){
-            data = std::make_shared<Ty>(std::move(obj));
+        StatusWithObj(const Ty & obj):code(CodeOk),data(std::make_shared<Ty>(obj)){
         };
 
-        StatusWithObj(Ty && obj):message(nullptr){
-             data = std::make_shared<Ty>(obj);
+        StatusWithObj(Ty && obj):code(CodeOk),data(std::make_shared<Ty>(std::move(obj))){
         };
 
-        StatusWithObj(const char * message):data(nullptr){
-            auto len = strlen(message);
-            this->message = new char[len];
-            std::move((char *)message,(char *)message + len,this->message);
-            code = CodeFailed;
+        StatusWithObj(const char * message):code(CodeFailed),data(nullptr),message(message ? message : ""){
         };
-        ~StatusWithObj(){
-            // if(data != nullptr){
-            //     data->~_Ty();
-            //     delete data;
-            // }
-        };
+        ~StatusWithObj() = default;
     };
 
 }

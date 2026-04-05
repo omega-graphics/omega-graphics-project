@@ -2097,7 +2097,7 @@ void UIView::update(){
                 auto textRect = spec.textRect.value_or(localBounds);
                 textRect = ViewResizeCoordinator::clampRectToParent(textRect,localBounds,layoutClamp);
                 auto unicodeText = UniString::fromUTF32(
-                    reinterpret_cast<const UChar32 *>(spec.text->data()),
+                    reinterpret_cast<const Unicode32Char *>(spec.text->data()),
                     static_cast<int32_t>(spec.text->size()));
                 auto textLayout = textStyle.layout;
                 textLayout.lineLimit = textStyle.lineLimit;

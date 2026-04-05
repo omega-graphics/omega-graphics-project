@@ -1,4 +1,4 @@
-#include "omegaWTK/UI/View.h"
+#include "omegaWTK/UI/VideoView.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Canvas.h"
 

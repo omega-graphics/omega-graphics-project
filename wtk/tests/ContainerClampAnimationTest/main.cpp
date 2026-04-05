@@ -1,4 +1,5 @@
 #include <omegaWTK/UI/Widget.h>
+#include <omegaWTK/UI/CanvasView.h>
 #include <omegaWTK/UI/UIView.h>
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>

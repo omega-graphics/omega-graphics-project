@@ -161,6 +161,7 @@ void AssetFileLoader::loadAssetFile(OmegaCommon::FS::Path & path){
             in.read((char *)data,fentry.file_size);
 
             std::string filename ((char *)name,fentry.string_size);
+            delete[] name;
             AssetBuffer buffer {};
             buffer.filesize = fentry.file_size;
             buffer.data = data;

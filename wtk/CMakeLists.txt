@@ -395,6 +395,16 @@ if(OMEGAWTK_SKIP_THIRD_PARTY_BUILD)
 	set(OMEGAWTK_MODULE_DEPS OmegaGTE)
 endif()
 
+set(OMEGASLC_EXE ${CMAKE_BINARY_DIR}/bin/omegaslc)
+if(WIN32)
+    set(OMEGASLC_EXE ${OMEGASLC_EXE}.exe)
+endif()
+set(OMEGAWTK_COMPOSITOR_SHADERLIB "${CMAKE_CURRENT_BINARY_DIR}/compositor.omegasllib" CACHE INTERNAL "")
+add_omegasl_lib("OmegaWTK_CompositorShaders"
+    "${OMEGAWTK_SOURCE_DIR}/src/Composition/backend/shaders/compositor.omegasl"
+    "${OMEGAWTK_COMPOSITOR_SHADERLIB}")
+add_dependencies("OmegaWTK_CompositorShaders" omegaslc)
+
 add_omega_graphics_module("OmegaWTK" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION ${OMEGAWTK_VERSION} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include" 
 DEPENDS ${OMEGAWTK_MODULE_DEPS}
 EMBEDDED_LIBS ${ICU_EXPORT} ${LIBXML2_EXPORT} ${ZLIB_EXPORT} ${LIBPNG_EXPORT} ${LIBJPEGTURBO_EXPORT} ${LIBTIFF_EXPORT} 

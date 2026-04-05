@@ -15,7 +15,6 @@
 #define OMEGAGTE_GTEBASE_H
 
 #ifdef TARGET_DIRECTX
-#include <Windows.h>
 #ifdef OMEGAGTE__BUILD__
 #define OMEGAGTE_EXPORT __declspec( dllexport ) 
 #else 

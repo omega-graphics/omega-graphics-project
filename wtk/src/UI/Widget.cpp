@@ -1,8 +1,8 @@
 #include "omegaWTK/UI/Widget.h"
+#include "omegaWTK/UI/CanvasView.h"
 #include "omegaWTK/UI/Layout.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "../Composition/Compositor.h"
-#include "omegaWTK/UI/View.h"
 #include "omegaWTK/UI/WidgetTreeHost.h"
 
 #include <algorithm>

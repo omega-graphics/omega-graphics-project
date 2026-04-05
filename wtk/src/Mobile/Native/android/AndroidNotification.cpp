@@ -19,7 +19,7 @@ namespace OmegaWTK::Mobile::Native {
             jstring string;
             UChar *uChar;
             int32_t outLen;
-            UErrorCode err;
+            UErrorCode err = U_ZERO_ERROR;
             u_strFromUTF8(uChar,title.size(),&outLen,title.data(),title.size(),&err);
             string = env->NewString((jchar *)uChar,title.size());
             env->CallVoidMethod(object,env->GetMethodID(clazz,"sendNotification","(Ljava/lang/String;,Ljava/lang/String;)V"));

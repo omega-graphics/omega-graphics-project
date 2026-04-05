@@ -1,28 +1,9 @@
 #include "omegaWTK/Core/Core.h"
 #include "Brush.h"
 
-#ifdef TARGET_WIN32
-#include <dwrite.h>
-
-#pragma comment(lib,"dwrite.lib")
-#endif
-
-#ifdef TARGET_MACOS
-#import <CoreText/CoreText.h>
-#endif
 
 #ifndef OMEGAWTK_COMPOSITION_FONTENGINE_H
 #define OMEGAWTK_COMPOSITION_FONTENGINE_H
-
-#ifdef TARGET_WIN32
-
-struct ID3D12CommandQueue;
-struct ID3D11On12Device;
-struct ID3D11DeviceContext;
-struct ID2D1Device;
-#undef CreateFont
-
-#endif
 
  namespace OmegaWTK {
     class AppInst;
@@ -137,7 +118,6 @@ struct ID2D1Device;
      FontDescriptor desc;
      Font(FontDescriptor & desc):desc(desc){};
      virtual void *getNativeFont() = 0;
- //    virtual void getBoundingBoxesFromTextBox(TextRect &textRect) = 0;
  };
  /**
   @brief Font creation engine for Application
@@ -145,16 +125,7 @@ struct ID2D1Device;
    On application startup, a global instance of this class is created and ONLY one may exist throughout the entirety of the app's runtime.
    This is mainly due to preventing the spawning of multiple IDWriteFactory instances (on Windows).
  */
- class OMEGAWTK_EXPORT  FontEngine {
- #ifdef TARGET_WIN32
-     Core::UniqueComPtr<ID3D11On12Device> d3d11_device;
-     Core::UniqueComPtr<ID3D11DeviceContext> d3d11_devicecontext;
-     Core::UniqueComPtr<ID3D12CommandQueue> d3d11_on_12_queue;
-     Core::UniqueComPtr<ID2D1Device> d2d1device;
-     Core::UniqueComPtr<IDWriteFactory> dwrite_factory;
-     friend class DWriteTextRect;
-     friend class DWriteGlyphRun;
- #endif
+ class OMEGAWTK_EXPORT FontEngine {
       static FontEngine * instance;
  public:
      /**
@@ -165,21 +136,14 @@ struct ID2D1Device;
       which can be used global context or local context such as a within the context of a CanvasView.
       @returns SharedPtr<Font>
      */
-     Core::SharedPtr<Font> CreateFont(FontDescriptor & desc);
-     Core::SharedPtr<Font> CreateFontFromFile(OmegaCommon::FS::Path path,FontDescriptor & desc);
+     INTERFACE_METHOD Core::SharedPtr<Font> CreateFont(FontDescriptor & desc) ABSTRACT;
+     INTERFACE_METHOD Core::SharedPtr<Font> CreateFontFromFile(OmegaCommon::FS::Path path,FontDescriptor & desc) ABSTRACT;
      static FontEngine *inst();
-     /// @name Duplication Prevention Method Rules
-     /// @{
-     FontEngine(FontEngine &&) = delete;
-     FontEngine(const FontEngine &) = delete;
-     FontEngine operator=(FontEngine &&) = delete;
-     /// @}
+     virtual ~FontEngine() = default;
  private:
-     FontEngine();
      friend class ::OmegaWTK::AppInst;
      static void Create();
      static void Destroy();
-     ~FontEngine();
  };
 
  };

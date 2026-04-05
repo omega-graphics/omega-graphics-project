@@ -48,7 +48,7 @@ namespace Core {
          Retrieves the status of the data.
          @returns bool (Limited to COWPTR_STATUS_READONLY or COWPTR_STATUS_READWRITE)
         */
-        bool & getStatus(){
+        bool getStatus(){
             std::lock_guard<std::mutex> lk(mutex);
             return status;
         };
@@ -112,7 +112,9 @@ namespace Core {
             return std::shared_ptr<CPUThreadP>(new CPUThreadP<_IPTy>(f,args...));
         };
         void close(){
-            t.join();
+            if(t.joinable()){
+                t.join();
+            }
         };
         ~CPUThreadP(){
            close();

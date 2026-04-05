@@ -8,6 +8,7 @@
 #include <mfapi.h>
 #include <mmdeviceapi.h>
 #include <mfcaptureengine.h>
+#include <unicode/ustring.h>
 
 #include <memory>
 
@@ -23,7 +24,7 @@ namespace OmegaWTK::Media {
     void cpp_to_wstring(OmegaCommon::StrRef str,LPWSTR * output){
         UChar *temp = new UChar[str.size()];
         int32_t len;
-        UErrorCode err;
+        UErrorCode err = U_ZERO_ERROR;
         u_strFromUTF8(temp,str.size(),&len,str.data(),str.size(),&err);
         *output = (LPWSTR)temp;
     }

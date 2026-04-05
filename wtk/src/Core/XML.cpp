@@ -15,9 +15,15 @@ namespace OmegaWTK::Core {
 
     }
 
-    OmegaCommon::StrRef XMLDocument::Tag::attribute(const OmegaCommon::StrRef & name) {
+    OmegaCommon::String XMLDocument::Tag::attribute(const OmegaCommon::StrRef & name) {
         auto node = (xmlNodePtr)data;
-        return (const char *)xmlGetProp(node,(xmlChar *)name.data());
+        xmlChar * prop = xmlGetProp(node,(xmlChar *)name.data());
+        if(prop == nullptr){
+            return {};
+        }
+        OmegaCommon::String value((const char *)prop);
+        xmlFree(prop);
+        return value;
     }
 
     OmegaCommon::Vector<XMLDocument::Tag> XMLDocument::Tag::children() {
@@ -74,14 +80,25 @@ namespace OmegaWTK::Core {
     };
 
     OmegaCommon::String XMLDocument::serialize(){
-        std::ostringstream out;
         xmlChar *buffer;
         int _size;
         auto doc = (xmlDocPtr)data;
         xmlDocDumpMemory(doc,&buffer,&_size);
-        out.write((char *)buffer,_size);
-        return out.str();
+        OmegaCommon::String serialized((char *)buffer,_size);
+        xmlFree(buffer);
+        return serialized;
     };
+
+    void XMLDocument::serializeToStream(std::ostream & out) {
+        xmlChar *buffer = nullptr;
+        int size = 0;
+        auto doc = (xmlDocPtr)data;
+        xmlDocDumpMemory(doc,&buffer,&size);
+        if(buffer != nullptr && size > 0){
+            out.write((char *)buffer,size);
+        }
+        xmlFree(buffer);
+    }
 
     XMLDocument & XMLDocument::operator=(XMLDocument && other) noexcept {
         if(this != &other){

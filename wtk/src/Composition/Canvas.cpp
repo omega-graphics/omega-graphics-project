@@ -122,7 +122,7 @@ void Canvas::drawText(const UniString &text,
                       const Core::Rect &rect,
                       const Color &color,
                       const TextLayoutDescriptor &layoutDesc){
-    if(font == nullptr || text.isEmpty() || rect.w <= 0.f || rect.h <= 0.f){
+    if(font == nullptr || text.length() == 0 || rect.w <= 0.f || rect.h <= 0.f){
         return;
     }
 

@@ -5,15 +5,6 @@
 
 #include "utils.h"
 #include <condition_variable>
-#ifdef _WIN32
-#include <Windows.h>
-#elif defined(__APPLE__)
-
-#include <dispatch/dispatch.h>
-
-#else
-#include <semaphore.h>
-#endif
 #include <mutex>
 #include <thread>
 #include <future>
@@ -119,15 +110,14 @@ namespace OmegaCommon {
     };
 
     class OMEGACOMMON_EXPORT Semaphore {
-        #ifdef _WIN32
-        HANDLE sem;
-        #elif defined(__APPLE__)
-        dispatch_semaphore_t sem;
-        #else
-        sem_t sem;
-        #endif
+        struct Impl;
+        std::unique_ptr<Impl> impl;
     public:
         explicit Semaphore(int initialValue);
+        Semaphore(const Semaphore &) = delete;
+        Semaphore & operator=(const Semaphore &) = delete;
+        Semaphore(Semaphore &&) noexcept;
+        Semaphore & operator=(Semaphore &&) noexcept;
         void release();
         void get();
         ~Semaphore();
@@ -137,15 +127,15 @@ namespace OmegaCommon {
     /// @paragraph
     /// The pipe in this implementation is represented a one-way bridge between Point A and Point B.
     class OMEGACOMMON_EXPORT Pipe {
+        struct Impl;
         bool sideA;
+        std::unique_ptr<Impl> impl;
         friend class ChildProcess;
-#ifdef _WIN32
-        HANDLE h;
-        HANDLE file_a,file_b;
-#else
-        int pipe_fd[2];
-#endif
         Pipe();
+        Pipe(const Pipe &) = delete;
+        Pipe & operator=(const Pipe &) = delete;
+        Pipe(Pipe &&) noexcept;
+        Pipe & operator=(Pipe &&) noexcept;
         /// @brief Sets the Current Process As Point A
         void setCurrentProcessAsA();
         /// @brief Sets the Current Process As Point B
@@ -162,18 +152,14 @@ namespace OmegaCommon {
 
     /// @brief A Subprocess of the current process.
     class OMEGACOMMON_EXPORT ChildProcess {
-#ifdef _WIN32
-        bool off = false;
-        PROCESS_INFORMATION processInformation;
-        STARTUPINFO startupinfo;
-        Pipe pipe;
-        bool use_pipe;
-#else
-        FILE *p_file = nullptr;
-        bool use_pipe;
-        pid_t pid;
-#endif
+        struct Impl;
+        std::unique_ptr<Impl> impl;
     public:
+        ChildProcess();
+        ChildProcess(const ChildProcess &) = delete;
+        ChildProcess & operator=(const ChildProcess &) = delete;
+        ChildProcess(ChildProcess &&) noexcept;
+        ChildProcess & operator=(ChildProcess &&) noexcept;
         static ChildProcess OpenWithStdoutPipe(const OmegaCommon::String & cmd,const char * args);
         static ChildProcess Open(const OmegaCommon::String & cmd,const OmegaCommon::Vector<const char *> & args);
         int wait();
