@@ -3,7 +3,7 @@
 
 #include "omega-common/net.h"
 
-#include "../Core/AssetsPriv.h"
+#include "omega-common/assets.h"
 
 #include <sstream>
 
@@ -65,7 +65,7 @@ Core::UniquePtr<ImgCodec> obtainCodecForImageFormat(BitmapImage::Format &format,
         if(ext == "png"){
             f = BitmapImage::PNG;
         };
-        auto & asset = AssetFileLoader::assets_res[path.str()];
+        auto & asset = OmegaCommon::AssetLibrary::assets_res[path.str()];
         ImgBuffer buffer (asset.data,(char *)asset.data + asset.filesize);
         std::istream in(&buffer);
         Core::UniquePtr<ImgCodec> codec = obtainCodecForImageFormat(f,in,&img);

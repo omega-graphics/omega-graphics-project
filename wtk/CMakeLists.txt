@@ -481,6 +481,4 @@ endif()
 
 include(cmake/OmegaWTKApp.cmake)
 
-add_subdirectory(tools)
-
  add_subdirectory(tests)

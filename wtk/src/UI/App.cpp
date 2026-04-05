@@ -6,6 +6,8 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/UI/AppWindow.h"
 
+#include "omega-common/assets.h"
+
 namespace OmegaWTK {
 
 
@@ -22,9 +24,10 @@ AppInst::AppInst(void *data):ptr(Native::make_native_app(data)),windowManager(st
     Composition::InitializeEngine();
     OMEGAWTK_DEBUG("Application Startup")
     Composition::FontEngine::Create();
+    /// Load your app's assets here. 
     OmegaCommon::FS::Path assets_path("./assets.omxa");
     if(assets_path.exists())
-        loadAssetFile("./assets.omxa");
+        OmegaCommon::AssetLibrary::loadAssetFile(assets_path);
 };
 
 int AppInst::start(){

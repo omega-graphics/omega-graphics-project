@@ -3,7 +3,7 @@
 #ifndef OMEGAWTK_ASSETC_ASSETC_H
 #define OMEGAWTK_ASSETC_ASSETC_H
 
-namespace OmegaWTK::assetc {
+namespace OmegaCommon::assetc {
 
 struct AssetsFileHeader {
    unsigned asset_count;
