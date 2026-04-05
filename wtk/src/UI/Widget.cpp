@@ -3,7 +3,7 @@
 #include "omegaWTK/UI/Layout.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "../Composition/Compositor.h"
-#include "omegaWTK/UI/WidgetTreeHost.h"
+#include "WidgetTreeHost.h"
 
 #include <algorithm>
 #include <cctype>

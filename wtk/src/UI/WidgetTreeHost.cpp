@@ -1,4 +1,4 @@
-#include "omegaWTK/UI/WidgetTreeHost.h"
+#include "WidgetTreeHost.h"
 #include "../Composition/Compositor.h"
 
 #include "omegaWTK/UI/Widget.h"

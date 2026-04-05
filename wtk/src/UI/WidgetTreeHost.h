@@ -60,13 +60,13 @@ namespace OmegaWTK {
     /**
      @brief Owns a widget tree. (Owns the Widget tree's Compositor, and the Compositor's Scheduler)
      @paragraph An instance of this class gets attached to an AppWindow directly and the root widget
-     the host is assigned to the AppWindow. 
+     the host is assigned to the AppWindow.
      NOTE: An AppWindow also has a WindowLayer that can be drawn on by a Compositor, so in order
      to guarantee a fast runtime it uses the **first WidgetTreeHost's Compositor**.
     */
     class OMEGAWTK_EXPORT WidgetTreeHost {
         /** The Widget Tree's Compositor
-         NOTE: The instance of this class that was first attached to an 
+         NOTE: The instance of this class that was first attached to an
          AppWindow will be used for managing composition of the WindowLayer.
          */
         Composition::Compositor * compositor;
@@ -125,7 +125,7 @@ namespace OmegaWTK {
 
         /**
          @brief Attach this host to an AppWindow
-         @param[in] window The AppWindow to attach to. 
+         @param[in] window The AppWindow to attach to.
          @paragraph
          If this instance of this class is the first to be attached to the AppWindow specified,
          its Compositor will be used to manage composition for its WindowLayer.

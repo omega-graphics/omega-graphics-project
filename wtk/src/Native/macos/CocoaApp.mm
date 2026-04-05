@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #include "omegaWTK/Native/NativeApp.h"
+#include "omegaWTK/Native/NativeTheme.h"
 #include "omegaWTK/UI/App.h"
 
 #import <Metal/Metal.h>
