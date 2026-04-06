@@ -33,3 +33,9 @@ add_vulkan_test(
     "CPUTessTest"
     SOURCES
     "CPUTessTest/main.cpp")
+
+add_vulkan_test(
+    NAME
+    "BlitTest"
+    SOURCES
+    "BlitTest/main.cpp")

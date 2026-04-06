@@ -97,6 +97,19 @@ namespace OmegaWTK::Composition {
             void setRootVisual(Core::SharedPtr<BackendVisualTree::Visual> &visual) override {
                 root = visual;
             }
+
+            void resolveDeferredNativeTarget(ViewPresentTarget & outPresentTarget) override {
+                if(outPresentTarget.nativeTarget != nullptr || view == nullptr){
+                    return;
+                }
+                Core::Rect r = view->getRect();
+                OmegaGTE::NativeRenderTargetDescriptor desc {};
+                if(resolveNativeRenderTargetDescriptor(r,desc)){
+                    outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
+                    outPresentTarget.backingWidth = toBackingDimension(r.w);
+                    outPresentTarget.backingHeight = toBackingDimension(r.h);
+                }
+            }
         };
     }
 

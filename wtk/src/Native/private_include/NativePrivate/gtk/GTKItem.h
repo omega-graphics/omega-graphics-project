@@ -20,6 +20,7 @@ namespace OmegaWTK::Native::GTK {
     class GTKItem : public NativeItem {
 
         GtkWidget *widget = nullptr;
+        GtkWidget *renderWidget = nullptr;
         GtkWidget *contentWidget = nullptr;
         Core::Rect rect;
         bool isVisible = true;

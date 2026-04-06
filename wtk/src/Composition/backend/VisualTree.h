@@ -53,6 +53,9 @@ namespace OmegaWTK::Composition {
         /// Create a surface-only visual (GPU texture, no native present surface).
         INTERFACE_METHOD Core::SharedPtr<Visual> makeSurfaceVisual(Core::Rect & rect,Core::Position & pos) ABSTRACT;
         INTERFACE_METHOD void setRootVisual(Core::SharedPtr<Visual> & visual) ABSTRACT;
+        /// Called lazily on first render when the native present target was unavailable at
+        /// construction time (e.g. GTK widget not yet anchored to a toplevel).
+        virtual void resolveDeferredNativeTarget(ViewPresentTarget &) {}
         INTERFACE_METHOD ~BackendVisualTree() = default;
     };
 

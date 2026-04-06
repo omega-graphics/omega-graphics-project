@@ -194,11 +194,16 @@ _NAMESPACE_BEGIN_
                 shaderAccess = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT_KHR;
                 layout = VK_IMAGE_LAYOUT_GENERAL;
             }
-            /// If not first time access, pipeline barrier must be inserted before binding.
-            if (texture->priorShaderAccess2 != 0 && hasPipelineAccess) {
+            /// Insert barrier when layout transition is needed or prior shader access exists.
+            /// The layout may differ even without prior shader access — e.g. when the
+            /// texture was used as a render target attachment (GENERAL/COLOR_ATTACHMENT)
+            /// and is now being read as a shader resource (SHADER_READ_ONLY_OPTIMAL).
+            if ((texture->priorShaderAccess2 != 0 && hasPipelineAccess) || texture->layout != layout) {
                 VkImageMemoryBarrier2KHR imageMemoryBarrier2Khr{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2_KHR};
                 imageMemoryBarrier2Khr.pNext = nullptr;
-                imageMemoryBarrier2Khr.srcAccessMask = texture->priorShaderAccess2;
+                imageMemoryBarrier2Khr.srcAccessMask = texture->priorShaderAccess2 != 0
+                                                       ? texture->priorShaderAccess2
+                                                       : VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
                 imageMemoryBarrier2Khr.dstAccessMask = shaderAccess;
                 imageMemoryBarrier2Khr.image = texture->img;
                 imageMemoryBarrier2Khr.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -249,11 +254,13 @@ _NAMESPACE_BEGIN_
                 shaderAccess = VK_ACCESS_SHADER_WRITE_BIT;
                 layout = VK_IMAGE_LAYOUT_GENERAL;
             }
-            /// If not first time access, pipeline barrier must be inserted before binding.
-            if (texture->priorShaderAccess != 0 && hasPipelineAccess) {
+            /// Insert barrier when layout transition is needed or prior shader access exists.
+            if ((texture->priorShaderAccess != 0 && hasPipelineAccess) || texture->layout != layout) {
                 VkImageMemoryBarrier imageMemoryBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
                 imageMemoryBarrier.pNext = nullptr;
-                imageMemoryBarrier.srcAccessMask = texture->priorShaderAccess;
+                imageMemoryBarrier.srcAccessMask = texture->priorShaderAccess != 0
+                                                   ? texture->priorShaderAccess
+                                                   : VK_ACCESS_MEMORY_WRITE_BIT;
                 imageMemoryBarrier.dstAccessMask = shaderAccess;
                 imageMemoryBarrier.image = texture->img;
                 imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -325,6 +332,13 @@ _NAMESPACE_BEGIN_
                 "CommandBuffer",
                 traceResourceId,
                 reinterpret_cast<const void *>(commandBuffer));
+    }
+
+    void GEVulkanCommandBuffer::beginRenderPassIfDeferred(){
+        if(renderPassBeginDeferred){
+            renderPassBeginDeferred = false;
+            vkCmdBeginRenderPass(commandBuffer,&deferredBeginInfo,VK_SUBPASS_CONTENTS_INLINE);
+        }
     }
 
     void GEVulkanCommandBuffer::startRenderPass(const GERenderPassDescriptor &desc){
@@ -520,12 +534,18 @@ _NAMESPACE_BEGIN_
         val.color.float32[2] = desc.colorAttachment->clearColor.b;
         val.color.float32[3] = desc.colorAttachment->clearColor.a;
 
-        beginInfo.clearValueCount = 1;
-        beginInfo.pClearValues = &val;
         beginInfo.renderPass = activeRenderPass;
         beginInfo.framebuffer = activeFramebuffer;
 
-        vkCmdBeginRenderPass(commandBuffer,&beginInfo,VK_SUBPASS_CONTENTS_INLINE);
+        // Defer vkCmdBeginRenderPass so that resource barriers issued by
+        // bind* calls (e.g. image layout transitions) are recorded OUTSIDE
+        // the render pass instance — Vulkan forbids image layout transitions
+        // for non-attachment images inside a render pass.
+        deferredClearValue = val;
+        deferredBeginInfo = beginInfo;
+        deferredBeginInfo.clearValueCount = 1;
+        deferredBeginInfo.pClearValues = &deferredClearValue;
+        renderPassBeginDeferred = true;
     };
 
     void GEVulkanCommandBuffer::setRenderPipelineState(SharedHandle<GERenderPipelineState> &pipelineState){
@@ -535,11 +555,14 @@ _NAMESPACE_BEGIN_
         vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state);
         renderPipelineState = vulkanPipeline;
         if(!vulkanPipeline->descs.empty()){
+            // When push descriptors are used, set 0 is push and descs[]
+            // contains only non-push sets (starting from set 1).
+            std::uint32_t firstSet = parentQueue->engine->hasPushDescriptorExt ? 1 : 0;
             vkCmdBindDescriptorSets(commandBuffer,
                                     VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     vulkanPipeline->layout,
-                                    0,
-                                    vulkanPipeline->descs.size(),
+                                    firstSet,
+                                    static_cast<std::uint32_t>(vulkanPipeline->descs.size()),
                                     vulkanPipeline->descs.data(),
                                     0,nullptr);
         }
@@ -640,11 +663,9 @@ _NAMESPACE_BEGIN_
         writeInfo.pImageInfo = nullptr;
         writeInfo.pTexelBufferView = nullptr;
 
-        if(parentQueue->engine->hasPushDescriptorExt){
-            parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,renderPipelineState->layout,
-                                                           1,1,&writeInfo);
-        }
-        else {
+        // Fragment shader always uses regular descriptor sets (never push).
+        // descs.back() is the fragment descriptor set in both push and non-push modes.
+        if(!renderPipelineState->descs.empty()){
             writeInfo.dstSet = renderPipelineState->descs.back();
             vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
         }
@@ -682,11 +703,9 @@ _NAMESPACE_BEGIN_
         writeInfo.pBufferInfo = nullptr;
         writeInfo.pImageInfo = &imgInfo;
 
-        if(parentQueue->engine->hasPushDescriptorExt){
-            parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,renderPipelineState->layout,
-                                                           1,1,&writeInfo);
-        }
-        else {
+        // Fragment shader always uses regular descriptor sets (never push).
+        // descs.back() is the fragment descriptor set in both push and non-push modes.
+        if(!renderPipelineState->descs.empty()){
             writeInfo.dstSet = renderPipelineState->descs.back();
             vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
         }
@@ -695,6 +714,10 @@ _NAMESPACE_BEGIN_
 
 
     void GEVulkanCommandBuffer::drawPolygons(RenderPassDrawPolygonType polygonType, unsigned int vertexCount, size_t startIdx){
+        // Begin the render pass now — any barriers from bind* calls have
+        // already been recorded outside the render pass instance.
+        beginRenderPassIfDeferred();
+
         VkPrimitiveTopology topology;
 
         switch (polygonType) {
@@ -755,6 +778,7 @@ _NAMESPACE_BEGIN_
     }
 
     void GEVulkanCommandBuffer::finishRenderPass(){
+        beginRenderPassIfDeferred();
         if(activeRenderPass != VK_NULL_HANDLE){
             vkCmdEndRenderPass(commandBuffer);
         }

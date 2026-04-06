@@ -1155,12 +1155,14 @@ _NAMESPACE_BEGIN_
                                                                          omegasl_shader *shaders,
                                                                          VkDescriptorPool * descriptorPool,
                                                                          OmegaCommon::Vector<VkDescriptorSet> & descs,
-                                                                         OmegaCommon::Vector<VkDescriptorSetLayout> & descLayout){
+                                                                         OmegaCommon::Vector<VkDescriptorSetLayout> & descLayout,
+                                                                         OmegaCommon::Vector<VkSampler> & outImmutableSamplers){
         if(descriptorPool != nullptr){
             *descriptorPool = VK_NULL_HANDLE;
         }
         descs.clear();
         descLayout.clear();
+        outImmutableSamplers.clear();
 
         VkPipelineLayoutCreateInfo layout_info {};
         layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1172,6 +1174,23 @@ _NAMESPACE_BEGIN_
 
         OmegaCommon::Vector<VkDescriptorPoolSize> poolSizes;
         std::uint32_t setCount = 0;
+
+        // Pre-count static samplers across all shaders so we can reserve
+        // the vector and avoid pointer invalidation from reallocation.
+        {
+            std::size_t totalStaticSamplers = 0;
+            for(auto & s : shadersArr){
+                OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layouts {s.pLayout,s.pLayout + s.nLayout};
+                for(auto & l : layouts){
+                    if(l.type == OMEGASL_SHADER_STATIC_SAMPLER1D_DESC ||
+                       l.type == OMEGASL_SHADER_STATIC_SAMPLER2D_DESC ||
+                       l.type == OMEGASL_SHADER_STATIC_SAMPLER3D_DESC){
+                        ++totalStaticSamplers;
+                    }
+                }
+            }
+            outImmutableSamplers.reserve(totalStaticSamplers);
+        }
 
         for(auto & s : shadersArr){
             VkShaderStageFlags shaderStageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -1207,7 +1226,52 @@ _NAMESPACE_BEGIN_
                     case OMEGASL_SHADER_STATIC_SAMPLER1D_DESC:
                     case OMEGASL_SHADER_STATIC_SAMPLER2D_DESC:
                     case OMEGASL_SHADER_STATIC_SAMPLER3D_DESC: {
-                        binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                        // GLSL codegen emits `uniform sampler` (bare sampler),
+                        // so the descriptor type must be VK_DESCRIPTOR_TYPE_SAMPLER.
+                        // Create an immutable VkSampler from the static sampler
+                        // description and bake it into the descriptor set layout.
+                        binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+
+                        VkSamplerCreateInfo sci {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+                        sci.pNext = nullptr;
+                        sci.addressModeU = convertAddressMode(l.sampler_desc.u_address_mode);
+                        sci.addressModeV = convertAddressMode(l.sampler_desc.v_address_mode);
+                        sci.addressModeW = convertAddressMode(l.sampler_desc.w_address_mode);
+                        sci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+                        sci.unnormalizedCoordinates = VK_FALSE;
+                        sci.compareEnable = VK_FALSE;
+                        sci.mipLodBias = 0.f;
+                        sci.minLod = 0.f;
+                        sci.maxLod = VK_LOD_CLAMP_NONE;
+                        sci.anisotropyEnable = VK_FALSE;
+                        sci.maxAnisotropy = 1.f;
+                        switch(l.sampler_desc.filter){
+                            case OMEGASL_SHADER_SAMPLER_LINEAR_FILTER:
+                                sci.magFilter = VK_FILTER_LINEAR;
+                                sci.minFilter = VK_FILTER_LINEAR;
+                                sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+                                break;
+                            case OMEGASL_SHADER_SAMPLER_POINT_FILTER:
+                                sci.magFilter = VK_FILTER_NEAREST;
+                                sci.minFilter = VK_FILTER_NEAREST;
+                                sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+                                break;
+                            case OMEGASL_SHADER_SAMPLER_MAX_ANISOTROPY_FILTER:
+                            case OMEGASL_SHADER_SAMPLER_MIN_ANISOTROPY_FILTER:
+                                sci.magFilter = VK_FILTER_LINEAR;
+                                sci.minFilter = VK_FILTER_LINEAR;
+                                sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+                                sci.anisotropyEnable = VK_TRUE;
+                                sci.maxAnisotropy = static_cast<float>(l.sampler_desc.max_anisotropy);
+                                break;
+                        }
+                        VkSampler sampler = VK_NULL_HANDLE;
+                        auto samplerRes = vkCreateSampler(device,&sci,nullptr,&sampler);
+                        if(samplerRes == VK_SUCCESS && sampler != VK_NULL_HANDLE){
+                            outImmutableSamplers.push_back(sampler);
+                            // Safe: vector was pre-reserved, no reallocation.
+                            binding.pImmutableSamplers = &outImmutableSamplers.back();
+                        }
                         break;
                     }
                     case OMEGASL_SHADER_TEXTURE1D_DESC:
@@ -1275,8 +1339,34 @@ _NAMESPACE_BEGIN_
             return pipeline_layout;
         }
 
-        // Push descriptor layouts cannot have sets allocated from pools.
+        // Set 0 (vertex) uses push descriptors and doesn't need pool allocation.
+        // But sets 1+ (fragment, etc.) use regular descriptor sets and need
+        // pool allocation — especially for immutable samplers (static samplers)
+        // which are only populated when descriptor sets are allocated from a
+        // layout that contains them.
         if(hasPushDescriptorExt){
+            if(descriptorPool != nullptr && descLayout.size() > 1 && !poolSizes.empty()){
+                VkDescriptorPoolCreateInfo pushPoolInfo {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+                pushPoolInfo.maxSets = static_cast<std::uint32_t>(descLayout.size() - 1);
+                pushPoolInfo.poolSizeCount = static_cast<std::uint32_t>(poolSizes.size());
+                pushPoolInfo.pPoolSizes = poolSizes.data();
+
+                auto pushPoolRes = vkCreateDescriptorPool(device,&pushPoolInfo,nullptr,descriptorPool);
+                if(pushPoolRes == VK_SUCCESS && *descriptorPool != VK_NULL_HANDLE){
+                    VkDescriptorSetAllocateInfo nonPushAllocInfo {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+                    nonPushAllocInfo.descriptorPool = *descriptorPool;
+                    nonPushAllocInfo.descriptorSetCount = static_cast<std::uint32_t>(descLayout.size() - 1);
+                    nonPushAllocInfo.pSetLayouts = &descLayout[1];
+                    nonPushAllocInfo.pNext = nullptr;
+
+                    descs.resize(descLayout.size() - 1);
+                    auto nonPushAllocRes = vkAllocateDescriptorSets(device,&nonPushAllocInfo,descs.data());
+                    if(nonPushAllocRes != VK_SUCCESS){
+                        std::cerr << "Vulkan descriptor set allocation for non-push sets failed (" << nonPushAllocRes << ")" << std::endl;
+                        descs.clear();
+                    }
+                }
+            }
             return pipeline_layout;
         }
 
@@ -1360,11 +1450,12 @@ _NAMESPACE_BEGIN_
         omegasl_shader shaders[] = {desc.vertexFunc->internal,desc.fragmentFunc->internal};
 
         OmegaCommon::Vector<VkDescriptorSetLayout> descLayouts;
-        
+
         OmegaCommon::Vector<VkDescriptorSet> descs;
         VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+        OmegaCommon::Vector<VkSampler> immutableSamplers;
 
-        VkPipelineLayout layout = createPipelineLayoutFromShaderDescs(2,shaders,&descriptorPool,descs,descLayouts);
+        VkPipelineLayout layout = createPipelineLayoutFromShaderDescs(2,shaders,&descriptorPool,descs,descLayouts,immutableSamplers);
         if(layout == VK_NULL_HANDLE){
             for(auto & descLayout : descLayouts){
                 if(descLayout != VK_NULL_HANDLE){
@@ -1373,6 +1464,9 @@ _NAMESPACE_BEGIN_
             }
             if(descriptorPool != VK_NULL_HANDLE){
                 vkDestroyDescriptorPool(device,descriptorPool,nullptr);
+            }
+            for(auto & s : immutableSamplers){
+                if(s != VK_NULL_HANDLE) vkDestroySampler(device,s,nullptr);
             }
             return nullptr;
         }
@@ -1424,6 +1518,9 @@ _NAMESPACE_BEGIN_
                 if(descLayout != VK_NULL_HANDLE){
                     vkDestroyDescriptorSetLayout(device,descLayout,nullptr);
                 }
+            }
+            for(auto & s : immutableSamplers){
+                if(s != VK_NULL_HANDLE) vkDestroySampler(device,s,nullptr);
             }
             return nullptr;
         }
@@ -1635,6 +1732,9 @@ _NAMESPACE_BEGIN_
                     vkDestroyDescriptorSetLayout(device,descLayout,nullptr);
                 }
             }
+            for(auto & s : immutableSamplers){
+                if(s != VK_NULL_HANDLE) vkDestroySampler(device,s,nullptr);
+            }
             return nullptr;
         }
 
@@ -1655,7 +1755,8 @@ _NAMESPACE_BEGIN_
                                                                                    layout,
                                                                                    descriptorPool,
                                                                                    descs,
-                                                                                   descLayouts));
+                                                                                   descLayouts,
+                                                                                   immutableSamplers));
         trackResource(result);
         return result;
     };
@@ -1664,8 +1765,13 @@ _NAMESPACE_BEGIN_
         OmegaCommon::Vector<VkDescriptorSetLayout> descLayouts;
         OmegaCommon::Vector<VkDescriptorSet> descs;
         VkDescriptorPool descriptorPool;
+        OmegaCommon::Vector<VkSampler> immutableSamplers;
 
-        VkPipelineLayout pipeline_layout = createPipelineLayoutFromShaderDescs(1,&desc.computeFunc->internal,&descriptorPool,descs,descLayouts);
+        VkPipelineLayout pipeline_layout = createPipelineLayoutFromShaderDescs(1,&desc.computeFunc->internal,&descriptorPool,descs,descLayouts,immutableSamplers);
+        // Compute pipelines don't use static samplers currently, but clean up if any were created.
+        for(auto & s : immutableSamplers){
+            if(s != VK_NULL_HANDLE) vkDestroySampler(device,s,nullptr);
+        }
 
         
 
@@ -1917,14 +2023,23 @@ _NAMESPACE_BEGIN_
             return nullptr;
         }
 
+        // Prefer RGBA8 (matches offscreen texture format), then BGRA8
+        // (common on X11/Wayland).  Accept SRGB variants as fallback.
         VkSurfaceFormatKHR selectedSurfaceFormat = surfaceFormats[0];
+        int bestRank = 99;
         for(auto &formatCandidate : surfaceFormats){
-            if(formatCandidate.format == VK_FORMAT_R8G8B8A8_UNORM){
-                selectedSurfaceFormat = formatCandidate;
-                break;
+            int rank = 99;
+            switch(formatCandidate.format){
+                case VK_FORMAT_R8G8B8A8_UNORM: rank = 0; break;
+                case VK_FORMAT_B8G8R8A8_UNORM: rank = 1; break;
+                case VK_FORMAT_R8G8B8A8_SRGB:  rank = 2; break;
+                case VK_FORMAT_B8G8R8A8_SRGB:  rank = 3; break;
+                default: break;
             }
-            if(formatCandidate.format == VK_FORMAT_R8G8B8A8_SRGB){
+            if(rank < bestRank){
+                bestRank = rank;
                 selectedSurfaceFormat = formatCandidate;
+                if(rank == 0) break;
             }
         }
         DEBUG_STREAM("Selected swapchain format: " << selectedSurfaceFormat.format);

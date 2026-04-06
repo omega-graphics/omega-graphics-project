@@ -22,14 +22,16 @@ GEVulkanRenderPipelineState::GEVulkanRenderPipelineState(SharedHandle<GTEShader>
                                                          VkRenderPass & compatibilityRenderPass,
                                                          VkPipelineLayout &layout, VkDescriptorPool &descriptorPool,
                                                          OmegaCommon::Vector<VkDescriptorSet> & descs,
-                                                         OmegaCommon::Vector<VkDescriptorSetLayout> & descLayouts) : __GERenderPipelineState(vertexShader,fragmentShader),
+                                                         OmegaCommon::Vector<VkDescriptorSetLayout> & descLayouts,
+                                                         OmegaCommon::Vector<VkSampler> & immutableSamplers) : __GERenderPipelineState(vertexShader,fragmentShader),
                                                          parentEngine(parentEngine),
                                                          pipeline(pipeline),
                                                          compatibilityRenderPass(compatibilityRenderPass),
                                                          layout(layout),
                                                          descriptorPool(descriptorPool),
                                                          descLayouts(descLayouts),
-                                                         descs(descs){
+                                                         descs(descs),
+                                                         immutableSamplers(immutableSamplers){
 
 }
 
@@ -60,6 +62,10 @@ void GEVulkanRenderPipelineState::releaseNative(){
         vkDestroyDescriptorPool(parentEngine->device,descriptorPool,nullptr);
         descriptorPool = VK_NULL_HANDLE;
     }
+    for(auto & s : immutableSamplers){
+        if(s != VK_NULL_HANDLE) vkDestroySampler(parentEngine->device,s,nullptr);
+    }
+    immutableSamplers.clear();
 }
 
 GEVulkanRenderPipelineState::~GEVulkanRenderPipelineState() {
@@ -82,6 +88,9 @@ GEVulkanRenderPipelineState::~GEVulkanRenderPipelineState() {
         descs.clear();
         if(descriptorPool != VK_NULL_HANDLE){
             vkDestroyDescriptorPool(parentEngine->device,descriptorPool,nullptr);
+        }
+        for(auto & s : immutableSamplers){
+            if(s != VK_NULL_HANDLE) vkDestroySampler(parentEngine->device,s,nullptr);
         }
     }
 }

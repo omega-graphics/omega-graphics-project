@@ -269,6 +269,16 @@ static gboolean onScrollEvent(GtkWidget *,GdkEventScroll *event,gpointer data){
     return FALSE;
 }
 
+static void onRenderWidgetMap(GtkWidget *widget,gpointer){
+    if(widget == nullptr){
+        return;
+    }
+    GdkWindow *window = gtk_widget_get_window(widget);
+    if(window != nullptr){
+        gdk_window_ensure_native(window);
+    }
+}
+
 static void onSizeAllocate(GtkWidget *,GtkAllocation *allocation,gpointer data){
     auto *self = static_cast<GTKItem *>(data);
     if(self == nullptr || allocation == nullptr){
@@ -315,16 +325,28 @@ isScrollItem(type == Native::ScrollItem){
         }
     }
     else {
-        widget = gtk_event_box_new();
-        gtk_event_box_set_visible_window(GTK_EVENT_BOX(widget),TRUE);
-        gtk_widget_set_app_paintable(widget,TRUE);
+        widget = gtk_overlay_new();
+        renderWidget = gtk_drawing_area_new();
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+        gtk_widget_set_double_buffered(renderWidget,FALSE);
+G_GNUC_END_IGNORE_DEPRECATIONS
+        gtk_widget_set_app_paintable(renderWidget,TRUE);
+        gtk_container_add(GTK_CONTAINER(widget),renderWidget);
+        g_signal_connect(renderWidget,"map",G_CALLBACK(onRenderWidgetMap),nullptr);
+        gtk_widget_show(renderWidget);
         contentWidget = gtk_fixed_new();
-        gtk_container_add(GTK_CONTAINER(widget),contentWidget);
+        gtk_widget_set_halign(contentWidget,GTK_ALIGN_FILL);
+        gtk_widget_set_valign(contentWidget,GTK_ALIGN_FILL);
+        gtk_overlay_add_overlay(GTK_OVERLAY(widget),contentWidget);
         gtk_widget_show(contentWidget);
     }
     if(widget != nullptr){
         g_object_add_weak_pointer(G_OBJECT(widget),reinterpret_cast<gpointer *>(&widget));
-        gtk_widget_add_events(widget,
+        g_signal_connect(widget,"size-allocate",G_CALLBACK(onSizeAllocate),this);
+    }
+    auto *eventTarget = renderWidget != nullptr ? renderWidget : widget;
+    if(eventTarget != nullptr){
+        gtk_widget_add_events(eventTarget,
                               GDK_BUTTON_PRESS_MASK
                               | GDK_BUTTON_RELEASE_MASK
                               | GDK_ENTER_NOTIFY_MASK
@@ -332,15 +354,17 @@ isScrollItem(type == Native::ScrollItem){
                               | GDK_POINTER_MOTION_MASK
                               | GDK_SCROLL_MASK
                               | GDK_SMOOTH_SCROLL_MASK);
-        g_signal_connect(widget,"button-press-event",G_CALLBACK(onButtonPressEvent),this);
-        g_signal_connect(widget,"button-release-event",G_CALLBACK(onButtonReleaseEvent),this);
-        g_signal_connect(widget,"motion-notify-event",G_CALLBACK(onMotionNotifyEvent),this);
-        g_signal_connect(widget,"enter-notify-event",G_CALLBACK(onEnterNotifyEvent),this);
-        g_signal_connect(widget,"leave-notify-event",G_CALLBACK(onLeaveNotifyEvent),this);
+        g_signal_connect(eventTarget,"button-press-event",G_CALLBACK(onButtonPressEvent),this);
+        g_signal_connect(eventTarget,"button-release-event",G_CALLBACK(onButtonReleaseEvent),this);
+        g_signal_connect(eventTarget,"motion-notify-event",G_CALLBACK(onMotionNotifyEvent),this);
+        g_signal_connect(eventTarget,"enter-notify-event",G_CALLBACK(onEnterNotifyEvent),this);
+        g_signal_connect(eventTarget,"leave-notify-event",G_CALLBACK(onLeaveNotifyEvent),this);
         if(!isScrollItem){
-            g_signal_connect(widget,"scroll-event",G_CALLBACK(onScrollEvent),this);
+            g_signal_connect(eventTarget,"scroll-event",G_CALLBACK(onScrollEvent),this);
         }
-        g_signal_connect(widget,"size-allocate",G_CALLBACK(onSizeAllocate),this);
+    }
+    if(renderWidget != nullptr){
+        g_object_add_weak_pointer(G_OBJECT(renderWidget),reinterpret_cast<gpointer *>(&renderWidget));
     }
     if(contentWidget != nullptr){
         g_object_add_weak_pointer(G_OBJECT(contentWidget),reinterpret_cast<gpointer *>(&contentWidget));
@@ -355,6 +379,9 @@ GtkWidget *GTKItem::getWidget(){
 void GTKItem::updateWidgetSize(){
     if(widget != nullptr){
         gtk_widget_set_size_request(widget,toGtkSize(rect.w),toGtkSize(rect.h));
+    }
+    if(renderWidget != nullptr){
+        gtk_widget_set_size_request(renderWidget,toGtkSize(rect.w),toGtkSize(rect.h));
     }
     if(contentWidget != nullptr){
         gtk_widget_set_size_request(contentWidget,toGtkSize(rect.w),toGtkSize(rect.h));
@@ -430,13 +457,14 @@ void GTKItem::moveInParent(){
 }
 
 GdkWindow *GTKItem::resolveGdkWindow(){
-    if(widget == nullptr){
+    auto *target = renderWidget != nullptr ? renderWidget : widget;
+    if(target == nullptr){
         return nullptr;
     }
-    if(!gtk_widget_get_realized(widget)){
-        gtk_widget_realize(widget);
+    if(!gtk_widget_get_realized(target)){
+        return nullptr;
     }
-    return gtk_widget_get_window(widget);
+    return gtk_widget_get_window(target);
 }
 
 void GTKItem::resize(const Core::Rect &newRect) {
@@ -448,6 +476,7 @@ void GTKItem::resize(const Core::Rect &newRect) {
 void GTKItem::enable() {
     isVisible = true;
     setWidgetVisibility(widget,true);
+    setWidgetVisibility(renderWidget,true);
     setWidgetVisibility(contentWidget,true);
     if(clippedView != nullptr && clippedView->widget != nullptr){
         setWidgetVisibility(clippedView->widget,clippedView->isVisible);
@@ -465,6 +494,7 @@ void GTKItem::enable() {
 void GTKItem::disable() {
     isVisible = false;
     setWidgetVisibility(widget,false);
+    setWidgetVisibility(renderWidget,false);
     setWidgetVisibility(contentWidget,false);
 }
 
@@ -633,11 +663,15 @@ GTKItem::~GTKItem(){
     if(contentWidget != nullptr){
         g_object_remove_weak_pointer(G_OBJECT(contentWidget),reinterpret_cast<gpointer *>(&contentWidget));
     }
+    if(renderWidget != nullptr){
+        g_object_remove_weak_pointer(G_OBJECT(renderWidget),reinterpret_cast<gpointer *>(&renderWidget));
+    }
     if(widget != nullptr){
         g_object_remove_weak_pointer(G_OBJECT(widget),reinterpret_cast<gpointer *>(&widget));
         gtk_widget_destroy(widget);
         widget = nullptr;
     }
+    renderWidget = nullptr;
     contentWidget = nullptr;
     clippedView = nullptr;
     childItems.clear();

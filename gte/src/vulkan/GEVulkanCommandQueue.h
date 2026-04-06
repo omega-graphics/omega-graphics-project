@@ -25,6 +25,15 @@ _NAMESPACE_BEGIN_
         OmegaCommon::Vector<VkRenderPass> ownedRenderPasses;
         OmegaCommon::Vector<VkFramebuffer> ownedFramebuffers;
 
+        /// Deferred render pass begin: barriers issued between startRenderPass
+        /// and drawPolygons execute outside the render pass instance, avoiding
+        /// Vulkan spec violations for image layout transitions.
+        bool renderPassBeginDeferred = false;
+        VkRenderPassBeginInfo deferredBeginInfo {};
+        VkClearValue deferredClearValue {};
+
+        void beginRenderPassIfDeferred();
+
         friend class GEVulkanCommandQueue;
 
         bool inBlitPass = false;

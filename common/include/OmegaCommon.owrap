@@ -1,6 +1,87 @@
-header "./omega-common/common.h"
+header "common/include/omega-common/common.h"
+header "common/include/omega-common/net.h"
 
+// OmegaCommon test surface for the current omega-wrapgen implementation.
+// This file intentionally uses a normalized subset of the API:
+// - bool returns are modeled as int
+// - size_t and StatusCode are modeled as long/int
+// - StrRef/String inputs are modeled as string
+// The current wrapgen language cannot yet express templates, typedef aliases,
+// constructors, static-only APIs, nested types, operator overloads, or futures.
+// It also cannot use reserved keywords as identifiers, so a few names are
+// normalized for testability.
+// Header paths are repo-relative because current C generation rewrites them
+// relative to the output directory rather than relative to this .owrap file.
 
+namespace OmegaCommon {
 
+  struct RuntimeObject {
+    refCount:long
+  }
 
+  struct HttpRequestDescriptor {
+    url:string,
+    headerValue:string
+  }
 
+  struct HttpResponse {
+    statusCode:int,
+    size:long,
+    data:void*
+  }
+
+  func startsWith(s:string, prefix:string) int
+
+  func endsWith(s:string, suffix:string) int
+
+  func hashValue(s:string) long
+
+  class JSON {
+    func isString() int
+    func isArray() int
+    func isNumber() int
+    func isMap() int
+    func asFloat() float
+    func asBool() int
+  }
+
+  class Semaphore {
+    func release() void
+    func get() void
+  }
+
+  class Pipe {
+    func setCurrentProcessAsA() void
+    func setCurrentProcessAsB() void
+    func readA(buffer:char*, nread:long) long
+    func writeA(buffer:char*, nwrite:long) void
+    func readB(buffer:char*, nread:long) long
+    func writeB(buffer:char*, nwrite:long) void
+  }
+
+  class ChildProcess {
+    func wait() int
+  }
+
+  namespace FS {
+
+    func changeCWD(path:string) int
+
+    func createSymLink(file:string, symlinkDest:string) int
+
+    func createDirectory(path:string) int
+
+    func deleteDirectory(path:string) int
+
+    class Path {
+      func exists() int
+      func isFile() int
+      func isDirectory() int
+      func isSymLink() int
+    }
+
+    class DirectoryIterator {
+      func end() int
+    }
+  }
+}

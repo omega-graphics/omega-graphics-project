@@ -177,6 +177,9 @@ void Compositor::executeCurrentCommand(){
              _buildVisualTree = true;
              auto *preCreated = PreCreatedResourceRegistry::lookup(comm->renderTarget.get());
              if(preCreated != nullptr && preCreated->bundle.visualTree != nullptr){
+                 if(preCreated->presentTarget.nativeTarget == nullptr){
+                     preCreated->bundle.visualTree->resolveDeferredNativeTarget(preCreated->presentTarget);
+                 }
                  BackendCompRenderTarget compRenderTarget {preCreated->bundle.visualTree, {}, preCreated->presentTarget};
                  target = &renderTargetStore.store.insert(std::make_pair(comm->renderTarget,compRenderTarget)).first->second;
              } else {

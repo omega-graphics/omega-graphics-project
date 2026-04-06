@@ -402,13 +402,19 @@ namespace OmegaWTK::Composition {
             return finalCopyRenderPipelineState;
         }
         // Create a new pipeline for this format using the copy shaders.
+        // Do NOT fall back to finalCopyRenderPipelineState when the requested
+        // format differs from RGBA8Unorm — the Vulkan render pass formats
+        // would be incompatible (e.g. BGRA8Unorm swapchain vs RGBA8Unorm
+        // pipeline), resulting in a validation error and blank output.
         if(shaderLibrary == nullptr){
-            return finalCopyRenderPipelineState;
+            std::cout << "[WTK Diag] getFinalCopyPipelineForFormat: shaderLibrary is null, cannot create pipeline for format " << static_cast<int>(fmt) << std::endl;
+            return nullptr;
         }
         auto copyVertex = shaderLibrary->shaders.count("copyVertex") ? shaderLibrary->shaders["copyVertex"] : nullptr;
         auto copyFragment = shaderLibrary->shaders.count("copyFragment") ? shaderLibrary->shaders["copyFragment"] : nullptr;
         if(copyVertex == nullptr || copyFragment == nullptr){
-            return finalCopyRenderPipelineState;
+            std::cout << "[WTK Diag] getFinalCopyPipelineForFormat: copy shaders missing, cannot create pipeline for format " << static_cast<int>(fmt) << std::endl;
+            return nullptr;
         }
         OmegaGTE::RenderPipelineDescriptor desc {};
         desc.cullMode = OmegaGTE::RasterCullMode::None;
@@ -421,6 +427,9 @@ namespace OmegaWTK::Composition {
         auto pipeline = gte.graphicsEngine->makeRenderPipelineState(desc);
         if(pipeline != nullptr){
             finalCopyPipelinesByFormat[fmt] = pipeline;
+            std::cout << "[WTK Diag] getFinalCopyPipelineForFormat: created pipeline for format " << static_cast<int>(fmt) << std::endl;
+        } else {
+            std::cout << "[WTK Diag] getFinalCopyPipelineForFormat: pipeline creation FAILED for format " << static_cast<int>(fmt) << std::endl;
         }
         return pipeline;
     }
@@ -1328,14 +1337,14 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         auto nativeFormat = nativeTarget->pixelFormat();
         auto finalPipeline = getFinalCopyPipelineForFormat(nativeFormat);
         if(finalPipeline == nullptr){
-            auto cb = nativeTarget->commandBuffer();
-            OmegaGTE::GERenderTarget::RenderPassDesc rp {};
-            cb->startRenderPass(rp);
-            cb->endRenderPass();
-            nativeTarget->submitCommandBuffer(cb);
-            nativeTarget->commitAndPresent();
+            std::cout << "[WTK Diag] blitAndPresent: finalCopyPipeline is null for format "
+                      << static_cast<int>(nativeFormat) << " — skipping present" << std::endl;
             return;
         }
+
+        std::cout << "[WTK Diag] blitAndPresent: format=" << static_cast<int>(nativeFormat)
+                  << " w=" << w << " h=" << h
+                  << " tex=" << (tex ? tex->native() : nullptr) << std::endl;
 
         OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
         renderPassDesc.depthStencilAttachment.disabled = true;
@@ -1363,6 +1372,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         cb->endRenderPass();
         nativeTarget->submitCommandBuffer(cb);
         nativeTarget->commitAndPresent();
+        std::cout << "[WTK Diag] blitAndPresent: commitAndPresent done" << std::endl;
     }
 
     void compositeAndPresentTarget(BackendCompRenderTarget & compTarget){
@@ -1375,6 +1385,9 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         if(compTarget.visualTree->body.empty() && compTarget.visualTree->root != nullptr){
             auto *ctx = &compTarget.visualTree->root->renderTarget;
             auto tex = ctx->getCommittedTexture();
+            std::cout << "[WTK Diag] compositeAndPresent(fast): tex=" << tex.get()
+                      << " nativeTarget=" << nativeTarget.get()
+                      << " hasPending=" << ctx->hasPendingContent << std::endl;
             if(tex == nullptr || nativeTarget == nullptr){
                 if(ctx->hasPendingContent){
                     ctx->hasPendingContent = false;
@@ -1449,11 +1462,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         auto nativeFormat = nativeTarget->pixelFormat();
         auto finalPipeline = getFinalCopyPipelineForFormat(nativeFormat);
         if(finalPipeline == nullptr){
-            OmegaGTE::GERenderTarget::RenderPassDesc rp {};
-            cb->startRenderPass(rp);
-            cb->endRenderPass();
-            nativeTarget->submitCommandBuffer(cb);
-            nativeTarget->commitAndPresent();
+            std::cout << "[WTK Diag] compositeAndPresent: finalCopyPipeline is null for format "
+                      << static_cast<int>(nativeFormat) << " — skipping present" << std::endl;
             for(auto *ctx : freshlyPending){
                 ctx->hasPendingContent = false;
                 ctx->releaseDeferredBuffers();

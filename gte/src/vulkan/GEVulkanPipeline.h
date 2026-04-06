@@ -30,6 +30,9 @@ public:
 
     OmegaCommon::Vector<VkDescriptorSet> descs;
 
+    /// Immutable samplers baked into descriptor set layouts (static samplers).
+    OmegaCommon::Vector<VkSampler> immutableSamplers;
+
     GEVulkanRenderPipelineState(SharedHandle<GTEShader> & vertexShader,
                                 SharedHandle<GTEShader> & fragmentShader,
                                 GEVulkanEngine *parentEngine,
@@ -38,7 +41,8 @@ public:
                                 VkPipelineLayout & layout,
                                 VkDescriptorPool & descriptorPool,
                                 OmegaCommon::Vector<VkDescriptorSet> & descs,
-                                OmegaCommon::Vector<VkDescriptorSetLayout> & descLayouts);
+                                OmegaCommon::Vector<VkDescriptorSetLayout> & descLayouts,
+                                OmegaCommon::Vector<VkSampler> & immutableSamplers);
     void releaseNative();
     ~GEVulkanRenderPipelineState();
 };

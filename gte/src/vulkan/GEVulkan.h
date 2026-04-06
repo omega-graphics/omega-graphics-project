@@ -38,7 +38,8 @@ _NAMESPACE_BEGIN_
                                                              omegasl_shader *shaders,
                                                              VkDescriptorPool * descriptorPool,
                                                              OmegaCommon::Vector<VkDescriptorSet> & descs,
-                                                             OmegaCommon::Vector<VkDescriptorSetLayout> & descLayout);
+                                                             OmegaCommon::Vector<VkDescriptorSetLayout> & descLayout,
+                                                             OmegaCommon::Vector<VkSampler> & outImmutableSamplers);
     public:
         static VkInstance instance;
 
