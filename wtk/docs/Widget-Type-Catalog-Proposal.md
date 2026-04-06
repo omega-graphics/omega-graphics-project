@@ -20,7 +20,6 @@ These are mandatory building blocks.
 |---|---|---|
 | `Widget` | Base visual/control unit | Already present; keep low-level extensibility primary. |
 | `Container` | Parent-managed child host with clamp policy | New geometry authority for child proposals. |
-| `AnimatedContainer` | Container with timeline/state transitions built-in | Existing placeholder; should layer on animation runtime. |
 | `ScrollableContainer` | Container with scroll viewport and content host | Existing placeholder; integrate with `ScrollView` behavior. |
 | `UIViewWidget` | Widget wrapper around `UIView` layout+stylesheet | High-level shape/text composition surface. |
 

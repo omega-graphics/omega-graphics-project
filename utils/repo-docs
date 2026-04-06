@@ -1,0 +1,449 @@
+#!/usr/bin/env python3
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional, Sequence, Tuple
+
+
+MODULE_ORDER: Tuple[str, ...] = (
+    "OmegaCommon",
+    "OmegaGTE",
+    "OmegaWTK",
+    "AUTOM",
+    "AQUA",
+)
+
+
+@dataclass(frozen=True)
+class ModuleConfig:
+    name: str
+    root_dir: str
+    input_dirs: Tuple[str, ...]
+    dependencies: Tuple[str, ...] = ()
+    base_doxyfile: Optional[str] = "Doxyfile"
+    project_brief: str = ""
+
+
+MODULES: Sequence[ModuleConfig] = (
+    ModuleConfig(
+        name="OmegaCommon",
+        root_dir="common",
+        input_dirs=("src", "include"),
+        project_brief="Common utilities and shared platform support for the Omega Graphics Project.",
+    ),
+    ModuleConfig(
+        name="OmegaGTE",
+        root_dir="gte",
+        input_dirs=("src", "include"),
+        dependencies=("OmegaCommon",),
+        project_brief="Rendering and graphics technology layer for the Omega Graphics Project.",
+    ),
+    ModuleConfig(
+        name="OmegaWTK",
+        root_dir="wtk",
+        input_dirs=("src", "include"),
+        dependencies=("OmegaCommon", "OmegaGTE"),
+        project_brief="Widget toolkit built on top of the Omega graphics stack.",
+    ),
+    ModuleConfig(
+        name="AUTOM",
+        root_dir="autom",
+        input_dirs=("src", "modules"),
+        base_doxyfile=None,
+        project_brief="AUTOM build tooling and execution engine.",
+    ),
+    ModuleConfig(
+        name="AQUA",
+        root_dir="aqua",
+        input_dirs=("engine/src", "engine/include"),
+        dependencies=("OmegaGTE",),
+        project_brief="AQUA engine module built on top of OmegaGTE.",
+    ),
+)
+
+
+SUPPRESSED_OUTPUT_TAGS: Tuple[str, ...] = (
+    "GENERATE_LATEX",
+    "GENERATE_MAN",
+    "GENERATE_RTF",
+    "GENERATE_XML",
+    "GENERATE_DOCBOOK",
+    "GENERATE_QHP",
+    "GENERATE_ECLIPSEHELP",
+    "GENERATE_DOCSET",
+    "GENERATE_SQLITE3",
+)
+
+
+def detect_repo_root(script_path: Path) -> Path:
+    repo_root = script_path.resolve().parent.parent
+    return validate_repo_root(
+        repo_root,
+        "Could not locate repository root from script location. "
+        "Expected the repository CMakeLists.txt at the root.",
+    )
+
+
+def validate_repo_root(repo_root: Path, error_message: str) -> Path:
+    if not (repo_root / "CMakeLists.txt").is_file():
+        raise RuntimeError(error_message)
+    return repo_root
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate Doxygen HTML documentation for the Omega Graphics Project "
+            "modules, including cross-module links via tagfiles."
+        )
+    )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Repository root to scan. Defaults to the root detected from the script location.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("build/doxygen"),
+        help="Output directory relative to the repository root by default.",
+    )
+    parser.add_argument(
+        "--module",
+        dest="modules",
+        action="append",
+        choices=MODULE_ORDER,
+        help="Generate docs for only the named module. May be passed more than once.",
+    )
+    parser.add_argument(
+        "--doxygen",
+        default="doxygen",
+        help="Doxygen executable to invoke. Defaults to `doxygen` from PATH.",
+    )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Delete the output directory before generating documentation.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the work plan without invoking doxygen.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print the generated config paths as they are used.",
+    )
+    return parser.parse_args()
+
+
+def resolve_output_directory(repo_root: Path, output_arg: Path) -> Path:
+    if output_arg.is_absolute():
+        return output_arg
+    return repo_root / output_arg
+
+
+def select_modules(selected_names: Optional[Sequence[str]]) -> List[ModuleConfig]:
+    module_map = {module.name: module for module in MODULES}
+    if not selected_names:
+        return list(MODULES)
+    return [module_map[name] for name in MODULE_ORDER if name in selected_names]
+
+
+def ensure_doxygen_available(executable: str) -> None:
+    if shutil.which(executable) is None:
+        raise RuntimeError(
+            f"Could not find `{executable}` in PATH. Install Doxygen or pass --doxygen with an explicit path."
+        )
+
+
+def quote_value(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f"\"{escaped}\""
+
+
+def relative_input_dirs(repo_root: Path, module: ModuleConfig) -> List[str]:
+    module_root = repo_root / module.root_dir
+    inputs = []
+    for input_dir in module.input_dirs:
+        candidate = module_root / input_dir
+        if candidate.exists():
+            inputs.append(str(candidate.relative_to(repo_root)))
+    return inputs
+
+
+def module_output_dir(output_root: Path, module: ModuleConfig) -> Path:
+    return output_root / module.name
+
+
+def module_html_dir(output_root: Path, module: ModuleConfig) -> Path:
+    return module_output_dir(output_root, module) / "html"
+
+
+def module_tagfile(output_root: Path, module: ModuleConfig) -> Path:
+    return module_output_dir(output_root, module) / f"{module.name}.tag"
+
+
+def build_tagfiles_line(
+    module: ModuleConfig,
+    selected_modules: Sequence[ModuleConfig],
+    output_root: Path,
+) -> str:
+    current_html_dir = module_html_dir(output_root, module)
+    entries: List[str] = []
+
+    for other in selected_modules:
+        if other.name == module.name:
+            continue
+        tag_path = module_tagfile(output_root, other)
+        html_path = module_html_dir(output_root, other)
+        relative_html = os.path.relpath(html_path, start=current_html_dir)
+        entries.append(quote_value(f"{tag_path}={relative_html}"))
+
+    if not entries:
+        return "TAGFILES               ="
+
+    return "TAGFILES               = " + " ".join(entries)
+
+
+def synthetic_autom_config(repo_root: Path, module: ModuleConfig) -> List[str]:
+    inputs = relative_input_dirs(repo_root, module)
+    lines = [
+        f"PROJECT_NAME           = {quote_value(module.name)}",
+        f"PROJECT_BRIEF          = {quote_value(module.project_brief)}",
+        "OPTIMIZE_OUTPUT_FOR_C  = NO",
+        "EXTRACT_ALL            = YES",
+        "EXTRACT_PRIVATE        = YES",
+        "EXTRACT_STATIC         = YES",
+        "RECURSIVE              = YES",
+        "QUIET                  = YES",
+        "WARN_IF_UNDOCUMENTED   = NO",
+        "WARN_IF_DOC_ERROR      = YES",
+        "JAVADOC_AUTOBRIEF      = YES",
+        "MULTILINE_CPP_IS_BRIEF = YES",
+    ]
+
+    if inputs:
+        lines.append("INPUT                  = " + " ".join(quote_value(path) for path in inputs))
+    else:
+        lines.append("INPUT                  =")
+
+    lines.extend(
+        [
+            "FILE_PATTERNS          = *.c *.cc *.cxx *.cpp *.c++ *.h *.hh *.hxx *.hpp *.h++ *.inl *.ipp *.tpp *.py *.md *.dox *.def",
+            "EXTENSION_MAPPING      = def=C++",
+        ]
+    )
+    return lines
+
+
+def build_override_lines(
+    repo_root: Path,
+    output_root: Path,
+    module: ModuleConfig,
+    selected_modules: Sequence[ModuleConfig],
+    html_enabled: bool,
+) -> List[str]:
+    input_dirs = relative_input_dirs(repo_root, module)
+    module_dir = module_output_dir(output_root, module)
+    tagfile = module_tagfile(output_root, module)
+    strip_from_path = str(repo_root)
+
+    lines = [
+        f"OUTPUT_DIRECTORY       = {quote_value(str(module_dir))}",
+        "HTML_OUTPUT            = html",
+        f"GENERATE_TAGFILE       = {quote_value(str(tagfile))}",
+        f"STRIP_FROM_PATH        = {quote_value(strip_from_path)}",
+        "FULL_PATH_NAMES        = YES",
+        "RECURSIVE              = YES",
+        "EXTRACT_ALL            = YES",
+        "WARN_IF_UNDOCUMENTED   = NO",
+        "QUIET                  = YES",
+        "WARN_IF_DOC_ERROR      = YES",
+        f"PROJECT_BRIEF          = {quote_value(module.project_brief)}",
+    ]
+
+    if input_dirs:
+        lines.append("INPUT                  = " + " ".join(quote_value(path) for path in input_dirs))
+    else:
+        lines.append("INPUT                  =")
+
+    if html_enabled:
+        lines.append("GENERATE_HTML          = YES")
+        lines.append(build_tagfiles_line(module, selected_modules, output_root))
+    else:
+        lines.append("GENERATE_HTML          = NO")
+        lines.append("TAGFILES               =")
+
+    for tag_name in SUPPRESSED_OUTPUT_TAGS:
+        lines.append(f"{tag_name:<23}= NO")
+
+    return lines
+
+
+def write_config_file(
+    config_dir: Path,
+    repo_root: Path,
+    output_root: Path,
+    module: ModuleConfig,
+    selected_modules: Sequence[ModuleConfig],
+    html_enabled: bool,
+) -> Path:
+    config_path = config_dir / f"{module.name}-{'html' if html_enabled else 'tags'}.doxyfile"
+    lines: List[str] = []
+
+    if module.base_doxyfile is not None:
+        base_path = repo_root / module.root_dir / module.base_doxyfile
+        lines.append(f"@INCLUDE               = {quote_value(str(base_path))}")
+    else:
+        lines.extend(synthetic_autom_config(repo_root, module))
+
+    lines.append("")
+    lines.extend(build_override_lines(repo_root, output_root, module, selected_modules, html_enabled))
+    lines.append("")
+
+    config_path.write_text("\n".join(lines), encoding="utf-8")
+    return config_path
+
+
+def run_doxygen(
+    executable: str,
+    config_path: Path,
+    working_directory: Path,
+    dry_run: bool,
+    verbose: bool,
+) -> None:
+    command = [executable, str(config_path)]
+    if dry_run or verbose:
+        print(" ".join(command))
+    if dry_run:
+        return
+
+    subprocess.run(command, cwd=working_directory, check=True)
+
+
+def write_landing_page(output_root: Path, selected_modules: Sequence[ModuleConfig]) -> None:
+    lines = [
+        "<!doctype html>",
+        "<html lang=\"en\">",
+        "<head>",
+        "  <meta charset=\"utf-8\">",
+        "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+        "  <title>Omega Graphics Project Doxygen</title>",
+        "  <style>",
+        "    body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; margin: 2rem auto; max-width: 56rem; line-height: 1.5; color: #111827; }",
+        "    h1 { margin-bottom: 0.5rem; }",
+        "    ul { padding-left: 1.25rem; }",
+        "    code { background: #f3f4f6; padding: 0.1rem 0.35rem; border-radius: 0.25rem; }",
+        "    .meta { color: #4b5563; }",
+        "  </style>",
+        "</head>",
+        "<body>",
+        "  <h1>Omega Graphics Project Doxygen</h1>",
+        "  <p class=\"meta\">Generated per-module HTML docs with cross-module tagfile links.</p>",
+        "  <ul>",
+    ]
+
+    for module in selected_modules:
+        html_index = module_html_dir(output_root, module) / "index.html"
+        relative_html_index = html_index.relative_to(output_root)
+        deps = ", ".join(module.dependencies) if module.dependencies else "none"
+        lines.append(
+            "    <li><a href=\"{href}\">{name}</a> <span class=\"meta\">(dependencies: {deps})</span></li>".format(
+                href=relative_html_index.as_posix(),
+                name=module.name,
+                deps=deps,
+            )
+        )
+
+    lines.extend(
+        [
+            "  </ul>",
+            "  <p class=\"meta\">Tip: the module docs live under <code>MODULE/html</code> and the tagfiles live beside them.</p>",
+            "</body>",
+            "</html>",
+        ]
+    )
+
+    (output_root / "index.html").write_text("\n".join(lines), encoding="utf-8")
+
+
+def validate_selected_modules(selected_modules: Sequence[ModuleConfig]) -> None:
+    if not selected_modules:
+        raise RuntimeError("No modules selected for documentation generation.")
+
+
+def main() -> int:
+    args = parse_args()
+
+    try:
+        if args.root is not None:
+            repo_root = validate_repo_root(
+                args.root.resolve(),
+                "The supplied --root path does not look like the repository root.",
+            )
+        else:
+            repo_root = detect_repo_root(Path(__file__))
+
+        selected_modules = select_modules(args.modules)
+        validate_selected_modules(selected_modules)
+        output_root = resolve_output_directory(repo_root, args.output)
+
+        if not args.dry_run:
+            ensure_doxygen_available(args.doxygen)
+
+        if args.clean and output_root.exists():
+            shutil.rmtree(output_root)
+        output_root.mkdir(parents=True, exist_ok=True)
+
+        with tempfile.TemporaryDirectory(prefix="repo-docs-") as temp_dir_name:
+            config_dir = Path(temp_dir_name)
+
+            print(f"Repository root: {repo_root}")
+            print(f"Output root: {output_root}")
+            print("Modules:", ", ".join(module.name for module in selected_modules))
+            print("Pass 1/2: generating tagfiles")
+
+            for module in selected_modules:
+                config_path = write_config_file(
+                    config_dir,
+                    repo_root,
+                    output_root,
+                    module,
+                    selected_modules,
+                    html_enabled=False,
+                )
+                run_doxygen(args.doxygen, config_path, repo_root, args.dry_run, args.verbose)
+
+            print("Pass 2/2: generating HTML documentation")
+            for module in selected_modules:
+                config_path = write_config_file(
+                    config_dir,
+                    repo_root,
+                    output_root,
+                    module,
+                    selected_modules,
+                    html_enabled=True,
+                )
+                run_doxygen(args.doxygen, config_path, repo_root, args.dry_run, args.verbose)
+
+        if not args.dry_run:
+            write_landing_page(output_root, selected_modules)
+            print(f"Landing page: {output_root / 'index.html'}")
+
+        return 0
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -83,7 +83,7 @@ public:
 };
 
 /**
- * @brief A container that allows its content to overflow, and can be scrolled (No rendering or native event handling can change Widget positioning)
+ * @brief A container that allows its content to overflow, and can be scrolled.
  * 
  */ 
 class OMEGAWTK_EXPORT ScrollableContainer : public Widget {
