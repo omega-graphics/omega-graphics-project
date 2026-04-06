@@ -26,6 +26,7 @@ fragment float4 mainFragment(OmegaWTKColoredRasterData raster){
 struct OmegaWTKTexturedVertex {
     float4 pos;
     float2 texCoord;
+    float2 _pad;
 };
 
 struct OmegaWTKTexturedRasterData internal {

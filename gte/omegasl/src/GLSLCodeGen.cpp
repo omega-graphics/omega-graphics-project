@@ -67,6 +67,14 @@ namespace omegasl {
 
         OmegaCommon::Vector<ast::FuncDecl *> userFuncDecls;
 
+        /// Tracks whether the current shader being generated is a fragment
+        /// shader, and if so, the GLSL variable name that replaces `return`
+        /// expressions (e.g. "_outColor").  Used by generateDecl's
+        /// RETURN_DECL case so that `return expr;` inside if/for/while
+        /// blocks is correctly lowered to `_outColor = expr; return;`.
+        ast::ShaderDecl::Type currentShaderType = ast::ShaderDecl::Compute;
+        OmegaCommon::String activeReturnReplacement;
+
         void emitUserFunction(ast::FuncDecl *f){
             writeTypeExpr(f->returnType, shaderOut);
             shaderOut << " " << f->name << "(";
@@ -253,7 +261,19 @@ namespace omegasl {
                 }
                 case RETURN_DECL : {
                     auto _decl = (ast::ReturnDecl *)decl;
-                    if(_decl->expr){
+                    if(_decl->expr && currentShaderType == ast::ShaderDecl::Fragment
+                       && !activeReturnReplacement.empty()){
+                        // Fragment shader: main() is void in GLSL, so
+                        // `return expr;` becomes `_outColor = expr; return;`
+                        shaderOut << activeReturnReplacement << " = ";
+                        generateExpr(_decl->expr);
+                        shaderOut << ";" << std::endl;
+                        for(unsigned i = 0;i < indentLevel;i++){
+                            shaderOut << "  ";
+                        }
+                        shaderOut << "return";
+                    }
+                    else if(_decl->expr){
                         shaderOut << "return ";
                         generateExpr(_decl->expr);
                     }
@@ -283,6 +303,32 @@ namespace omegasl {
                     else {
                         /// Track variable with internal struct
                         internalStructVarMap.push_back(std::make_pair(_decl->spec.name,*internal_struct_found));
+
+                        /// If the declaration has a brace initializer (ARRAY_EXPR),
+                        /// decompose it into assignments to gl_Position and output
+                        /// varyings.  Without this, `Raster r = { pos, uv };` would
+                        /// silently drop the initializer and leave gl_Position unset.
+                        if(_decl->spec.initializer.has_value() &&
+                           _decl->spec.initializer.value()->type == ARRAY_EXPR){
+                            auto *initList = (ast::ArrayExpr *)_decl->spec.initializer.value();
+                            auto *structDecl = *internal_struct_found;
+                            size_t count = std::min(initList->elm.size(), structDecl->fields.size());
+                            for(size_t fi = 0; fi < count; fi++){
+                                for(unsigned i = 0;i < indentLevel;i++){
+                                    shaderOut << "  ";
+                                }
+                                auto &field = structDecl->fields[fi];
+                                if(field.attributeName.has_value() &&
+                                   field.attributeName.value() == ATTRIBUTE_POSITION){
+                                    shaderOut << GLSL_POSITION;
+                                } else {
+                                    shaderOut << structDecl->name << "_" << field.name;
+                                }
+                                shaderOut << " = ";
+                                generateExpr(initList->elm[fi]);
+                                shaderOut << ";" << std::endl;
+                            }
+                        }
                     }
                     break;
                 }
@@ -298,6 +344,8 @@ namespace omegasl {
 
                     const char *file_ext = nullptr;
                     OmegaCommon::String return_val_replacement;
+
+                    currentShaderType = _decl->shaderType;
 
                     switch (_decl->shaderType) {
                         case ast::ShaderDecl::Vertex : {
@@ -325,6 +373,8 @@ namespace omegasl {
                             break;
                         }
                     }
+
+                    activeReturnReplacement = return_val_replacement;
 
                     if(opts.runtimeCompile) {
                         stringOut.str("");
@@ -710,6 +760,7 @@ namespace omegasl {
 
                     shaderMap.insert(std::make_pair(object_file,shader_entry));
                     internalStructVarMap.clear();
+                    activeReturnReplacement.clear();
                     break;
                 }
             }

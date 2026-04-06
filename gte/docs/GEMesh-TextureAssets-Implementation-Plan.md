@@ -1,8 +1,10 @@
-# Triangulation with Texture Attachments — Implementation Plan
+# GEMesh and Texture Assets — Implementation Plan
 
 ## Goal
 
-Support triangulating primitives with texture attachments end-to-end: params can specify a 2D or 3D texture attachment, triangulation produces per-vertex UVs (and optionally normals), and the result is consumable as a **GEMesh** — a GPU-ready mesh (vertex buffer, optional index buffer, vertex layout, and texture bindings). Texture loading, mesh buffer creation, and optimization are handled by our own cross-platform code on all backends.
+Support triangulating primitives with texture attachments end-to-end: params can specify a 2D or 3D texture attachment, triangulation produces per-vertex UVs (and optionally normals), and the result is consumable as a **GEMesh** — a GPU-ready mesh (vertex buffer, optional index buffer, vertex layout, and texture bindings).
+
+In addition, provide a **TextureAsset** class for high-level texture loading (from common image and container formats) and a **MeshAsset** class for loading meshes from standard 3D model formats. These asset classes use platform-native libraries for loading and GPU upload, abstracting away format details and backend differences.
 
 ## Current State
 
@@ -16,7 +18,8 @@ Support triangulating primitives with texture attachments end-to-end: params can
 
 - Changing the existing triangulation API shape (e.g. `triangulateSync` / `triangulateOnGPU`) or removing CPU triangulation.
 - Implementing texture attachments inside GPU triangulation kernels (Metal compute) in this plan; that can be a follow-up.
-- Adding new primitive types; the plan only adds texture-attachment support to existing primitives and a GEMesh abstraction.
+- Adding new primitive types; the plan only adds texture-attachment support to existing primitives, a GEMesh abstraction, and asset loading.
+- Writing a custom image decoder or mesh parser from scratch when a platform-native library already handles the format.
 
 ---
 
@@ -77,16 +80,81 @@ Support triangulating primitives with texture attachments end-to-end: params can
 
 ---
 
-## Phase 3: Testing and documentation
+## Phase 3: Asset Loading (TextureAsset and MeshAsset)
+
+### 3.1 TextureAsset class
+
+Introduce a **TextureAsset** class that handles loading textures from common image and container formats (PNG, JPEG, HDR, DDS, KTX, etc.) and uploading them into a `GETexture`. The public API is backend-agnostic; the implementation delegates to a platform-native library for decoding, mip generation, and format conversion.
+
+```
+TextureAsset
+├── load(path)          → decode image, create GETexture, upload
+├── loadAsync(path)     → non-blocking variant
+├── texture()           → SharedHandle<GETexture>
+├── descriptor()        → TextureDescriptor (dimensions, format, mips)
+└── release()           → free GPU + CPU resources
+```
+
+**Backend libraries:**
+
+| Platform | Library | Notes |
+|----------|---------|-------|
+| **Windows (D3D12)** | **DirectXTex** | Loads DDS, WIC formats (PNG, JPEG, TIFF, BMP, HDR), generates mipmaps, handles BC compression, converts to DXGI formats. |
+| **macOS / iOS (Metal)** | **MetalKit** (`MTKTextureLoader`) | Loads common image formats plus KTX/PVR/ASTC via `MTKTextureLoader`, returns `MTLTexture` directly. Handles mip generation and sRGB. |
+| **Linux / Android (Vulkan)** | **KTX-Software** (libktx) | Loads KTX and KTX2 containers (which can wrap any Vulkan format including BC, ETC2, ASTC). For plain image formats (PNG, JPEG), a lightweight decoder (stb_image or similar) feeds raw pixels into `GETexture::copyBytes`. |
+
+**Files**: new `gte/include/omegaGTE/GETextureAsset.h`, and per-backend implementations:
+- `gte/src/d3d12/GED3D12TextureAsset.cpp`
+- `gte/src/metal/GEMetalTextureAsset.mm`
+- `gte/src/vulkan/GEVulkanTextureAsset.cpp`
+
+### 3.2 MeshAsset class
+
+Introduce a **MeshAsset** class that loads mesh data from standard 3D model formats and produces a **GEMesh**. Like TextureAsset, the public API is backend-agnostic.
+
+```
+MeshAsset
+├── load(path)          → decode mesh, create GEMesh (vertex + index buffers)
+├── loadAsync(path)     → non-blocking variant
+├── mesh()              → GEMesh (vertex buffer, index buffer, layout)
+├── textureAssets()     → associated TextureAssets (if embedded/referenced)
+└── release()           → free GPU + CPU resources
+```
+
+**Backend libraries:**
+
+| Platform | Library | Notes |
+|----------|---------|-------|
+| **Windows (D3D12)** | **DirectXMesh** | Provides mesh optimization (vertex cache, overdraw), adjacency computation, normal/tangent generation, and vertex buffer format conversion. Mesh parsing (OBJ, glTF, etc.) still needs a loader front-end (e.g. Assimp or a minimal glTF parser) that feeds geometry to DirectXMesh for processing before GPU upload. |
+| **macOS / iOS (Metal)** | **MetalKit** (`MTKMesh` / Model I/O) | `MDLAsset` + `MTKMesh` loads OBJ, USD, Alembic, and glTF. Produces Metal vertex/index buffers directly with configurable vertex descriptors. Handles submeshes and material references. |
+| **Linux / Android (Vulkan)** | **Custom code** | No single platform-native mesh library equivalent. Use a loader front-end (e.g. a minimal glTF parser or Assimp) to parse geometry, then write vertex/index data into `GEBuffer` via `GEBufferWriter`. Vertex optimization (cache reordering, etc.) can be handled by meshoptimizer or equivalent if needed. |
+
+**Files**: new `gte/include/omegaGTE/GEMeshAsset.h`, and per-backend implementations:
+- `gte/src/d3d12/GED3D12MeshAsset.cpp`
+- `gte/src/metal/GEMetalMeshAsset.mm`
+- `gte/src/vulkan/GEVulkanMeshAsset.cpp`
+
+### 3.3 Asset integration with GEMesh and triangulation
+
+- **GEMesh from MeshAsset**: `MeshAsset::mesh()` returns a fully populated `GEMesh` with vertex/index buffers and layout — the same type produced by the triangulation builder in Phase 2.2. Rendering code does not need to distinguish between a triangulated mesh and a loaded mesh.
+- **TextureAsset in GEMesh bindings**: When a MeshAsset references textures (e.g. a glTF material's base color texture), the loader creates `TextureAsset` instances and stores them in the GEMesh's texture bindings map. A `TextureAsset` loaded standalone can also be attached to a triangulated GEMesh via the texture bindings API.
+- **Lifetime**: Asset objects own their GPU resources. Releasing an asset releases its textures/buffers. GEMesh texture bindings use `SharedHandle`, so a texture stays alive as long as any mesh or user code holds a reference.
+
+---
+
+## Phase 4: Testing and documentation
 
 - Add or extend tests that:
   - Triangulate a primitive (e.g. Rect, RoundedRect, Prism) with **TypeTexture2D** (and optionally a **GETexture** reference).
   - Build a **GEMesh** from the result with a layout that includes UVs.
   - Render the mesh with the bound texture (and optionally verify visually or via readback).
+  - Load a texture from disk via **TextureAsset** (e.g. a PNG on each backend) and bind it to a triangulated GEMesh.
+  - Load a mesh from disk via **MeshAsset** (e.g. a glTF or OBJ file) and render it with its associated textures.
 - Prefer reusing existing 2DTest-style apps: add a code path that uses texture attachment and GEMesh instead of manual vertex writing.
 - Document in `gte/docs` or in-code:
   - How to add a texture attachment to triangulation params.
   - How to build a GEMesh from a TETriangulationResult and bind its textures.
+  - How to load textures and meshes via the asset classes on each platform.
 
 ---
 
@@ -96,7 +164,10 @@ Support triangulating primitives with texture attachments end-to-end: params can
 2. **Phase 1.3**: Optional normals in AttachmentData and fill for 3D primitives.
 3. **Phase 2.1–2.2**: GEMesh type, descriptor, and builder from TETriangulationResult (backend-neutral buffer creation).
 4. **Phase 2.3**: Command encoding support to draw a GEMesh and bind its textures.
-5. **Phase 3**: Tests and documentation.
+5. **Phase 3.1**: TextureAsset — D3D12 (DirectXTex), Metal (MetalKit), Vulkan (KTX-Software).
+6. **Phase 3.2**: MeshAsset — D3D12 (DirectXMesh), Metal (MetalKit/Model I/O), Vulkan (custom).
+7. **Phase 3.3**: Wire asset outputs into GEMesh bindings.
+8. **Phase 4**: Tests and documentation.
 
 ---
 
@@ -106,5 +177,7 @@ Support triangulating primitives with texture attachments end-to-end: params can
 |------|--------|
 | **Triangulation params** | Texture attachments can carry optional `SharedHandle<GETexture>`; dimensions remain in existing union. |
 | **Triangulation result** | All primitives emit texture2D/texture3D coords (and optional normals) when a texture attachment is set. |
-| **GEMesh** | New type: vertex (+ optional index) buffer, layout, and texture bindings; buildable from TETriangulationResult. |
+| **GEMesh** | New type: vertex (+ optional index) buffer, layout, and texture bindings; buildable from TETriangulationResult or MeshAsset. |
+| **TextureAsset** | High-level texture loading via DirectXTex (D3D12), MetalKit (Metal), KTX-Software (Vulkan). |
+| **MeshAsset** | High-level mesh loading via DirectXMesh (D3D12), MetalKit/Model I/O (Metal), custom loader (Vulkan). |
 | **Command encoding** | Draw GEMesh (set vertex/index buffer, bind mesh textures). |

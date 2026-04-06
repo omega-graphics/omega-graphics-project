@@ -1,0 +1,1168 @@
+#!/usr/bin/env python3
+
+import argparse
+import html
+import math
+import os
+import re
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+
+SCAN_EXTENSIONS = {
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".inc",
+    ".inl",
+    ".ipp",
+    ".tpp",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".cp",
+    ".m",
+    ".mm",
+    ".ixx",
+    ".cppm",
+    ".owrap",
+}
+
+EXCLUDED_BASENAMES = {
+    "d3dx12.h",
+}
+
+TOKEN_RE = re.compile(r"::|[A-Za-z_][A-Za-z0-9_]*|[{};:,<>()[\]]")
+IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+INCLUDE_RE = re.compile(r"^\s*#\s*include\s+[<\"]([^\">]+)[\">]", re.MULTILINE)
+
+MODULE_DEPENDENCIES = {
+    "OmegaCommon": [],
+    "OmegaGTE": ["OmegaCommon"],
+    "OmegaWTK": ["OmegaCommon", "OmegaGTE"],
+    "AUTOM": [],
+    "AQUA": ["OmegaGTE"],
+}
+
+
+@dataclass(frozen=True)
+class ModuleConfig:
+    name: str
+    root_dir: str
+    scan_dirs: Tuple[str, ...]
+    primary_namespace: str
+    class_fill_color: str
+    struct_fill_color: str
+    stroke_color: str
+    font_color: str
+    namespace_macros: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class TypeInfo:
+    module: str
+    kind: str
+    name: str
+    qualified_name: str
+    namespace: str
+    file_path: str
+    bases: List[str]
+    source_root: str
+
+    @property
+    def display_namespace(self) -> str:
+        return self.namespace or "(global)"
+
+
+@dataclass
+class ModuleScanResult:
+    module: str
+    roots: List[str]
+    types: Dict[str, TypeInfo] = field(default_factory=dict)
+    include_dependencies: List[str] = field(default_factory=list)
+    scanned_files: int = 0
+
+
+MODULES: Sequence[ModuleConfig] = (
+    ModuleConfig(
+        name="OmegaCommon",
+        root_dir="common",
+        scan_dirs=("include", "src"),
+        primary_namespace="OmegaCommon",
+        class_fill_color="#1d4ed8",
+        struct_fill_color="#1e3a8a",
+        stroke_color="#1e40af",
+        font_color="#f8fafc",
+    ),
+    ModuleConfig(
+        name="OmegaGTE",
+        root_dir="gte",
+        scan_dirs=("include", "src"),
+        primary_namespace="OmegaGTE",
+        class_fill_color="#166534",
+        struct_fill_color="#14532d",
+        stroke_color="#166534",
+        font_color="#f8fafc",
+        namespace_macros={
+            "_NAMESPACE_BEGIN_": "namespace OmegaGTE {",
+            "_NAMESPACE_END_": "}",
+        },
+    ),
+    ModuleConfig(
+        name="OmegaWTK",
+        root_dir="wtk",
+        scan_dirs=("include", "src"),
+        primary_namespace="OmegaWTK",
+        class_fill_color="#b45309",
+        struct_fill_color="#92400e",
+        stroke_color="#92400e",
+        font_color="#fffbeb",
+    ),
+    ModuleConfig(
+        name="AUTOM",
+        root_dir="autom",
+        scan_dirs=("src",),
+        primary_namespace="autom",
+        class_fill_color="#b91c1c",
+        struct_fill_color="#7f1d1d",
+        stroke_color="#991b1b",
+        font_color="#fef2f2",
+    ),
+    ModuleConfig(
+        name="AQUA",
+        root_dir="aqua",
+        scan_dirs=("engine/include", "engine/src"),
+        primary_namespace="AQUA",
+        class_fill_color="#6d28d9",
+        struct_fill_color="#4c1d95",
+        stroke_color="#5b21b6",
+        font_color="#faf5ff",
+        namespace_macros={
+            "AQUA_NAMESPACE_BEGIN": "namespace AQUA {",
+            "AQUA_NAMESPACE_END": "}",
+        },
+    ),
+)
+
+
+@dataclass
+class Context:
+    kind: str
+    names: List[str] = field(default_factory=list)
+
+
+def detect_repo_root(script_path: Path) -> Path:
+    repo_root = script_path.resolve().parent.parent
+    return validate_repo_root(
+        repo_root,
+        "Could not locate repository root from script location. "
+        "Expected the repository CMakeLists.txt at the root.",
+    )
+
+
+def validate_repo_root(repo_root: Path, error_message: str) -> Path:
+    if not (repo_root / "CMakeLists.txt").is_file():
+        raise RuntimeError(error_message)
+    return repo_root
+
+
+def iter_source_files(directory: Path) -> Iterable[Path]:
+    if not directory.is_dir():
+        return ()
+    return sorted(
+        path
+        for path in directory.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in SCAN_EXTENSIONS
+        and path.name not in EXCLUDED_BASENAMES
+    )
+
+
+def strip_comments_and_strings(text: str) -> str:
+    output: List[str] = []
+    index = 0
+    length = len(text)
+    state = "code"
+
+    while index < length:
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < length else ""
+
+        if state == "code":
+            if char == "/" and next_char == "/":
+                output.extend("  ")
+                index += 2
+                state = "line_comment"
+                continue
+            if char == "/" and next_char == "*":
+                output.extend("  ")
+                index += 2
+                state = "block_comment"
+                continue
+            if char == '"':
+                output.append(" ")
+                index += 1
+                state = "string"
+                continue
+            if char == "'":
+                output.append(" ")
+                index += 1
+                state = "char"
+                continue
+
+            output.append(char)
+            index += 1
+            continue
+
+        if state == "line_comment":
+            if char == "\n":
+                output.append("\n")
+                state = "code"
+            else:
+                output.append(" ")
+            index += 1
+            continue
+
+        if state == "block_comment":
+            if char == "*" and next_char == "/":
+                output.extend("  ")
+                index += 2
+                state = "code"
+            else:
+                output.append("\n" if char == "\n" else " ")
+                index += 1
+            continue
+
+        if state == "string":
+            if char == "\\" and index + 1 < length:
+                output.extend("  ")
+                index += 2
+                continue
+            if char == '"':
+                output.append(" ")
+                index += 1
+                state = "code"
+            else:
+                output.append("\n" if char == "\n" else " ")
+                index += 1
+            continue
+
+        if state == "char":
+            if char == "\\" and index + 1 < length:
+                output.extend("  ")
+                index += 2
+                continue
+            if char == "'":
+                output.append(" ")
+                index += 1
+                state = "code"
+            else:
+                output.append("\n" if char == "\n" else " ")
+                index += 1
+            continue
+
+    return "".join(output)
+
+
+def preprocess_for_parser(text: str, macro_replacements: Dict[str, str]) -> str:
+    processed_lines: List[str] = []
+    for line in text.splitlines(keepends=True):
+        if line.lstrip().startswith("#"):
+            processed_lines.append("\n" if line.endswith("\n") else "")
+            continue
+
+        updated = line
+        for token, replacement in macro_replacements.items():
+            updated = re.sub(rf"\b{re.escape(token)}\b", replacement, updated)
+        processed_lines.append(updated)
+
+    return strip_comments_and_strings("".join(processed_lines))
+
+
+def current_namespace(stack: Sequence[Context]) -> List[str]:
+    names: List[str] = []
+    for context in stack:
+        if context.kind == "namespace":
+            names.extend(context.names)
+    return names
+
+
+def inside_class(stack: Sequence[Context]) -> bool:
+    return any(context.kind == "class" for context in stack)
+
+
+def is_identifier(token: str) -> bool:
+    return bool(IDENTIFIER_RE.match(token))
+
+
+def simplify_type_name(name: str) -> str:
+    if "::" in name:
+        return name.rsplit("::", 1)[1]
+    return name
+
+
+def parse_base_name(tokens: Sequence[str]) -> Optional[str]:
+    filtered: List[str] = []
+    for token in tokens:
+        if token in {"public", "protected", "private", "virtual", "final"}:
+            continue
+        filtered.append(token)
+
+    if not filtered:
+        return None
+
+    base_parts: List[str] = []
+    angle_depth = 0
+    for token in filtered:
+        if token == "<":
+            if base_parts:
+                break
+            angle_depth += 1
+            continue
+        if token == ">":
+            if angle_depth > 0:
+                angle_depth -= 1
+            continue
+        if angle_depth > 0:
+            continue
+        if token == "::" or is_identifier(token):
+            base_parts.append(token)
+
+    if not base_parts:
+        return None
+
+    return "".join(base_parts)
+
+
+def parse_type_clause(tokens: Sequence[str]) -> Tuple[Optional[str], List[str]]:
+    if not tokens:
+        return None, []
+
+    if ":" in tokens:
+        colon_index = tokens.index(":")
+        prelude = tokens[:colon_index]
+        base_tokens = tokens[colon_index + 1 :]
+    else:
+        prelude = tokens
+        base_tokens = []
+
+    name_tokens = list(prelude)
+    angle_depth = 0
+    top_level_template_index: Optional[int] = None
+    for index, token in enumerate(prelude):
+        if token == "<":
+            if angle_depth == 0:
+                top_level_template_index = index
+                break
+            angle_depth += 1
+        elif token == ">" and angle_depth > 0:
+            angle_depth -= 1
+
+    if top_level_template_index is not None:
+        name_tokens = prelude[:top_level_template_index]
+
+    name_candidates = [token for token in name_tokens if is_identifier(token)]
+    name = name_candidates[-1] if name_candidates else None
+
+    bases: List[str] = []
+    if base_tokens:
+        current: List[str] = []
+        angle_depth = 0
+        paren_depth = 0
+        for token in base_tokens:
+            if token == "<":
+                angle_depth += 1
+            elif token == ">" and angle_depth > 0:
+                angle_depth -= 1
+            elif token == "(":
+                paren_depth += 1
+            elif token == ")" and paren_depth > 0:
+                paren_depth -= 1
+
+            if token == "," and angle_depth == 0 and paren_depth == 0:
+                base_name = parse_base_name(current)
+                if base_name:
+                    bases.append(base_name)
+                current = []
+                continue
+
+            current.append(token)
+
+        if current:
+            base_name = parse_base_name(current)
+            if base_name:
+                bases.append(base_name)
+
+    return name, bases
+
+
+def parse_named_types(
+    code: str,
+    module: ModuleConfig,
+    relative_file_path: str,
+    source_root: str,
+) -> List[TypeInfo]:
+    tokens = TOKEN_RE.findall(code)
+    stack: List[Context] = []
+    parsed_types: List[TypeInfo] = []
+    index = 0
+
+    while index < len(tokens):
+        token = tokens[index]
+
+        if token == "template" and index + 1 < len(tokens) and tokens[index + 1] == "<":
+            depth = 1
+            index += 2
+            while index < len(tokens) and depth > 0:
+                if tokens[index] == "<":
+                    depth += 1
+                elif tokens[index] == ">":
+                    depth -= 1
+                index += 1
+            continue
+
+        if token == "namespace":
+            scan = index + 1
+            names: List[str] = []
+            terminator = None
+            while scan < len(tokens):
+                candidate = tokens[scan]
+                if candidate in {"{", ";"}:
+                    terminator = candidate
+                    break
+                if is_identifier(candidate):
+                    names.append(candidate)
+                scan += 1
+
+            if terminator == "{":
+                if names:
+                    stack.append(Context(kind="namespace", names=names))
+                else:
+                    stack.append(Context(kind="other"))
+                index = scan + 1
+                continue
+
+            index = scan + 1
+            continue
+
+        if token in {"class", "struct"}:
+            previous_token = tokens[index - 1] if index > 0 else None
+            if previous_token == "enum":
+                index += 1
+                continue
+
+            scan = index + 1
+            clause_tokens: List[str] = []
+            terminator = None
+            while scan < len(tokens):
+                candidate = tokens[scan]
+                if candidate in {"{", ";"}:
+                    terminator = candidate
+                    break
+                clause_tokens.append(candidate)
+                scan += 1
+
+            type_name, bases = parse_type_clause(clause_tokens)
+
+            if terminator == "{":
+                if type_name and not inside_class(stack):
+                    namespace_parts = current_namespace(stack)
+                    namespace_name = "::".join(namespace_parts)
+                    qualified_name = "::".join(namespace_parts + [type_name]) if namespace_parts else type_name
+                    parsed_types.append(
+                        TypeInfo(
+                            module=module.name,
+                            kind=token,
+                            name=type_name,
+                            qualified_name=qualified_name,
+                            namespace=namespace_name,
+                            file_path=relative_file_path,
+                            bases=bases,
+                            source_root=source_root,
+                        )
+                    )
+
+                stack.append(Context(kind="class", names=[type_name] if type_name else []))
+                index = scan + 1
+                continue
+
+            index = scan + 1
+            continue
+
+        if token == "{":
+            stack.append(Context(kind="other"))
+            index += 1
+            continue
+
+        if token == "}":
+            if stack:
+                stack.pop()
+            index += 1
+            continue
+
+        index += 1
+
+    return parsed_types
+
+
+def infer_include_dependencies(module_name: str, include_targets: Iterable[str]) -> List[str]:
+    dependencies = set()
+    for include_target in include_targets:
+        if include_target.startswith("omega-common/") or include_target.startswith("OmegaCommon"):
+            dependencies.add("OmegaCommon")
+        elif (
+            include_target.startswith("omegaGTE/")
+            or include_target.startswith("OmegaGTE")
+            or include_target == "omegasl.h"
+        ):
+            dependencies.add("OmegaGTE")
+        elif include_target.startswith("omegaWTK/") or include_target.startswith("OmegaWTK"):
+            dependencies.add("OmegaWTK")
+        elif include_target.startswith("aqua/") or include_target.startswith("AQUA"):
+            dependencies.add("AQUA")
+
+    dependencies.discard(module_name)
+    return sorted(dependencies)
+
+
+def scan_module(repo_root: Path, module: ModuleConfig) -> ModuleScanResult:
+    module_root = repo_root / module.root_dir
+    roots = [str((module_root / scan_dir).relative_to(repo_root)) for scan_dir in module.scan_dirs]
+    result = ModuleScanResult(module=module.name, roots=roots)
+    include_targets = set()
+
+    for scan_dir in module.scan_dirs:
+        directory = module_root / scan_dir
+        source_root = str(directory.relative_to(repo_root))
+        for path in iter_source_files(directory):
+            result.scanned_files += 1
+            relative_path = str(path.relative_to(repo_root))
+            source_text = path.read_text(encoding="utf-8", errors="replace")
+            include_targets.update(INCLUDE_RE.findall(source_text))
+            parser_input = preprocess_for_parser(source_text, module.namespace_macros)
+            for type_info in parse_named_types(parser_input, module, relative_path, source_root):
+                result.types.setdefault(type_info.qualified_name, type_info)
+
+    result.include_dependencies = infer_include_dependencies(module.name, include_targets)
+    return result
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate a multi-page Draw.io UML overview for the Omega Graphics Project."
+    )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Repository root to scan. Defaults to the root detected from the script location.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("build/omega-graphics-uml.drawio"),
+        help="Output Draw.io file path, relative to the repository root by default.",
+    )
+    parser.add_argument(
+        "--drawpyo-path",
+        default=os.environ.get("DRAWPYO_PATH"),
+        help="Optional extra sys.path entry for a custom drawpyo installation.",
+    )
+    return parser.parse_args()
+
+
+def load_drawpyo(extra_path: Optional[str]) -> Tuple[object, object, object, object, object]:
+    if extra_path:
+        sys.path.insert(0, extra_path)
+
+    try:
+        from drawpyo.diagram import Edge, Object, TextFormat
+        from drawpyo.file import File
+        from drawpyo.page import Page
+    except ImportError as exc:
+        raise RuntimeError(
+            "drawpyo is required to generate the UML document. "
+            "Install it with `python3 -m pip install drawpyo`, or provide "
+            "`--drawpyo-path` / `DRAWPYO_PATH` if it lives in a custom location."
+        ) from exc
+
+    return File, Page, Object, Edge, TextFormat
+
+
+def preferred_dependencies(module_name: str, scan_result: ModuleScanResult) -> List[str]:
+    configured = MODULE_DEPENDENCIES.get(module_name, [])
+    if configured:
+        return configured
+    return scan_result.include_dependencies
+
+
+def type_sort_key(type_info: TypeInfo) -> Tuple[str, str, str]:
+    return (type_info.namespace, type_info.name, type_info.file_path)
+
+
+def qualified_name_sort_key(qualified_name: str, type_map: Dict[str, TypeInfo]) -> Tuple[str, str, str]:
+    type_info = type_map[qualified_name]
+    return type_sort_key(type_info)
+
+
+def build_internal_parent_map(types: Sequence[TypeInfo]) -> Dict[str, List[str]]:
+    type_map = {type_info.qualified_name: type_info for type_info in types}
+    parent_map: Dict[str, List[str]] = {}
+
+    for type_info in types:
+        parents: List[str] = []
+        for base_name in type_info.bases:
+            target = edge_target_for_base(base_name, type_map)
+            if target and target != type_info.qualified_name and target not in parents:
+                parents.append(target)
+        parent_map[type_info.qualified_name] = sorted(parents, key=lambda item: qualified_name_sort_key(item, type_map))
+
+    return parent_map
+
+
+def build_primary_relationships(
+    types: Sequence[TypeInfo],
+) -> Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, List[str]], Dict[str, int]]:
+    type_map = {type_info.qualified_name: type_info for type_info in types}
+    parent_map = build_internal_parent_map(types)
+    child_map: Dict[str, List[str]] = {type_info.qualified_name: [] for type_info in types}
+    indegree = {type_info.qualified_name: len(parent_map[type_info.qualified_name]) for type_info in types}
+
+    for child_name, parents in parent_map.items():
+        for parent_name in parents:
+            child_map[parent_name].append(child_name)
+
+    for parent_name, children in child_map.items():
+        child_map[parent_name] = sorted(children, key=lambda item: qualified_name_sort_key(item, type_map))
+
+    order: List[str] = []
+    remaining = set(child_map.keys())
+    zero_indegree = sorted(
+        [node_name for node_name, degree in indegree.items() if degree == 0],
+        key=lambda item: qualified_name_sort_key(item, type_map),
+    )
+
+    while remaining:
+        if not zero_indegree:
+            forced_root = min(remaining, key=lambda item: qualified_name_sort_key(item, type_map))
+            zero_indegree.append(forced_root)
+
+        node_name = zero_indegree.pop(0)
+        if node_name not in remaining:
+            continue
+
+        remaining.remove(node_name)
+        order.append(node_name)
+
+        for child_name in child_map[node_name]:
+            if child_name not in remaining:
+                continue
+            indegree[child_name] -= 1
+            if indegree[child_name] == 0:
+                zero_indegree.append(child_name)
+        zero_indegree.sort(key=lambda item: qualified_name_sort_key(item, type_map))
+
+    levels: Dict[str, int] = {}
+    primary_parent: Dict[str, str] = {}
+
+    for node_name in order:
+        candidate_parents = [parent_name for parent_name in parent_map[node_name] if parent_name in levels]
+        if not candidate_parents:
+            levels[node_name] = 0
+            continue
+
+        best_parent = sorted(
+            candidate_parents,
+            key=lambda item: (levels[item], qualified_name_sort_key(item, type_map)),
+        )[-1]
+        primary_parent[node_name] = best_parent
+        levels[node_name] = levels[best_parent] + 1
+
+    primary_children: Dict[str, List[str]] = {type_info.qualified_name: [] for type_info in types}
+    for child_name, parent_name in primary_parent.items():
+        primary_children[parent_name].append(child_name)
+
+    for parent_name, children in primary_children.items():
+        children.sort(key=lambda item: (levels[item], qualified_name_sort_key(item, type_map)))
+
+    return parent_map, primary_parent, primary_children, levels
+
+
+def namespace_order_key(namespace_name: str, primary_namespace: str) -> Tuple[int, str]:
+    if namespace_name == primary_namespace:
+        return (0, namespace_name)
+    if namespace_name.startswith(primary_namespace + "::"):
+        return (1, namespace_name)
+    if namespace_name == "(global)":
+        return (3, namespace_name)
+    return (2, namespace_name)
+
+
+def local_tree_depth(root_name: str, local_children: Dict[str, List[str]]) -> int:
+    children = local_children.get(root_name, [])
+    if not children:
+        return 0
+    return 1 + max(local_tree_depth(child_name, local_children) for child_name in children)
+
+
+def estimate_namespace_column_width(
+    namespace_name: str,
+    roots: Sequence[str],
+    local_children: Dict[str, List[str]],
+    indent_width: int,
+    box_width: int,
+) -> int:
+    if not roots:
+        return box_width + 60
+    max_depth = max(local_tree_depth(root_name, local_children) for root_name in roots)
+    return box_width + 60 + max_depth * indent_width
+
+
+def add_box(
+    page: object,
+    object_cls: object,
+    text_format_cls: object,
+    value: str,
+    position: Tuple[int, int],
+    width: int,
+    height: int,
+    fill_color: str,
+    stroke_color: str,
+    font_color: str,
+    rounded: int = 0,
+) -> object:
+    text_format = text_format_cls(
+        formattedText=True,
+        align="left",
+        verticalAlign="top",
+        fontFamily="Courier New",
+        fontSize=11,
+        fontColor=font_color,
+        spacing=8,
+    )
+    return object_cls(
+        value=value,
+        position=position,
+        width=width,
+        height=height,
+        page=page,
+        fillColor=fill_color,
+        strokeColor=stroke_color,
+        rounded=rounded,
+        whiteSpace="wrap",
+        text_format=text_format,
+    )
+
+
+def add_title_box(page: object, object_cls: object, text_format_cls: object, title: str, subtitle: str, width: int) -> object:
+    value = "<b>{}</b><br/>{}".format(html.escape(title), html.escape(subtitle))
+    text_format = text_format_cls(
+        formattedText=True,
+        align="left",
+        verticalAlign="middle",
+        fontFamily="Helvetica",
+        fontSize=15,
+        fontColor="#f9fafb",
+        spacing=12,
+        bold=True,
+    )
+    return object_cls(
+        value=value,
+        position=(20, 20),
+        width=width,
+        height=70,
+        page=page,
+        fillColor="#111827",
+        strokeColor="#111827",
+        rounded=1,
+        whiteSpace="wrap",
+        text_format=text_format,
+    )
+
+
+def build_overview_page(
+    draw_file: object,
+    page_cls: object,
+    object_cls: object,
+    edge_cls: object,
+    text_format_cls: object,
+    repo_root: Path,
+    scan_results: Sequence[ModuleScanResult],
+) -> None:
+    page = page_cls(file=draw_file, name="Overview", width=1700, height=1100)
+    add_title_box(
+        page,
+        object_cls,
+        text_format_cls,
+        "Omega Graphics Project UML Overview",
+        "Generated {} from {}".format(datetime.now().strftime("%Y-%m-%d %H:%M"), repo_root),
+        width=1120,
+    )
+
+    note_value = (
+        "<b>Scope</b><br/>"
+        "Pages show package dependencies plus namespace-level named class/struct definitions.<br/>"
+        "The parser is regex/token based and focuses on architecture-level relationships, not a full C++ AST."
+    )
+    add_box(
+        page,
+        object_cls,
+        text_format_cls,
+        note_value,
+        position=(1160, 20),
+        width=500,
+        height=90,
+        fill_color="#374151",
+        stroke_color="#374151",
+        font_color="#f9fafb",
+        rounded=1,
+    )
+
+    box_width = 300
+    box_height = 170
+    horizontal_gap = 80
+    positions = {
+        "OmegaCommon": (80, 220),
+        "OmegaGTE": (460, 220),
+        "OmegaWTK": (840, 220),
+        "AUTOM": (80, 520),
+        "AQUA": (460, 520),
+    }
+    objects: Dict[str, object] = {}
+
+    result_map = {result.module: result for result in scan_results}
+    for module in MODULES:
+        result = result_map[module.name]
+        type_count = len(result.types)
+        dependencies = preferred_dependencies(module.name, result)
+        body = [
+            "<b>{}</b>".format(html.escape(module.name)),
+            "namespace: {}".format(html.escape(module.primary_namespace)),
+            "scan roots: {}".format(html.escape(", ".join(result.roots))),
+            "scanned files: {}".format(result.scanned_files),
+            "types: {}".format(type_count),
+            "deps: {}".format(html.escape(", ".join(dependencies) if dependencies else "none")),
+        ]
+        objects[module.name] = add_box(
+            page,
+            object_cls,
+            text_format_cls,
+            "<br/>".join(body),
+            position=positions[module.name],
+            width=box_width,
+            height=box_height,
+            fill_color=module.class_fill_color,
+            stroke_color=module.stroke_color,
+            font_color=module.font_color,
+            rounded=1,
+        )
+
+    for module in MODULES:
+        for dependency in preferred_dependencies(module.name, result_map[module.name]):
+            if dependency not in objects:
+                continue
+            edge_cls(
+                page=page,
+                source=objects[module.name],
+                target=objects[dependency],
+                pattern="dashed_medium",
+                line_end_target="open",
+                stroke_color=module.stroke_color,
+                strokeWidth=2,
+                label="depends on",
+            )
+
+
+def edge_target_for_base(base_name: str, type_map: Dict[str, TypeInfo]) -> Optional[str]:
+    if base_name in type_map:
+        return base_name
+
+    short_name = simplify_type_name(base_name)
+    matches = [qualified_name for qualified_name in type_map if qualified_name.endswith(f"::{short_name}") or qualified_name == short_name]
+    if len(matches) == 1:
+        return matches[0]
+
+    return None
+
+
+def build_type_box_value(type_info: TypeInfo) -> str:
+    body = [
+        "&lt;&lt;{}&gt;&gt;".format(html.escape(type_info.kind)),
+        "<b>{}</b>".format(html.escape(type_info.name)),
+        html.escape(type_info.display_namespace),
+        "<font color=\"#666666\">{}</font>".format(html.escape(type_info.file_path)),
+    ]
+
+    if type_info.bases:
+        preview = ", ".join(type_info.bases[:3])
+        if len(type_info.bases) > 3:
+            preview += ", ..."
+        body.append("bases: {}".format(html.escape(preview)))
+
+    return "<br/>".join(body)
+
+
+def build_module_page(
+    draw_file: object,
+    page_cls: object,
+    object_cls: object,
+    edge_cls: object,
+    text_format_cls: object,
+    module: ModuleConfig,
+    scan_result: ModuleScanResult,
+) -> None:
+    types = sorted(scan_result.types.values(), key=type_sort_key)
+    box_width = 320
+    box_height = 112
+    row_gap = 18
+    root_gap = 12
+    indent_width = 86
+    namespace_gap = 72
+    header_height = 48
+    top_offset = 140
+    left_margin = 20
+
+    if not types:
+        page = page_cls(file=draw_file, name=module.name, width=1400, height=900)
+        add_title_box(
+            page,
+            object_cls,
+            text_format_cls,
+            "{} Class Diagram".format(module.name),
+            "0 types across {} files. Roots: {}".format(
+                scan_result.scanned_files,
+                ", ".join(scan_result.roots),
+            ),
+            width=1360,
+        )
+        add_box(
+            page,
+            object_cls,
+            text_format_cls,
+            "No named namespace-level classes or structs were discovered in the configured scan roots.",
+            position=(20, 120),
+            width=720,
+            height=80,
+            fill_color="#374151",
+            stroke_color="#374151",
+            font_color="#f9fafb",
+            rounded=1,
+        )
+        return
+
+    type_map = {type_info.qualified_name: type_info for type_info in types}
+    parent_map, primary_parent, primary_children, levels = build_primary_relationships(types)
+    namespace_names = sorted(
+        {type_info.display_namespace for type_info in types},
+        key=lambda item: namespace_order_key(item, module.primary_namespace),
+    )
+
+    local_children: Dict[str, List[str]] = {type_info.qualified_name: [] for type_info in types}
+    roots_by_namespace: Dict[str, List[str]] = {namespace_name: [] for namespace_name in namespace_names}
+
+    for child_name, parent_name in primary_parent.items():
+        child_namespace = type_map[child_name].display_namespace
+        parent_namespace = type_map[parent_name].display_namespace
+        if child_namespace == parent_namespace:
+            local_children[parent_name].append(child_name)
+
+    for parent_name, children in local_children.items():
+        children.sort(
+            key=lambda item: (
+                0 if primary_children[item] else 1,
+                levels[item],
+                qualified_name_sort_key(item, type_map),
+            )
+        )
+
+    for type_info in types:
+        namespace_name = type_info.display_namespace
+        parent_name = primary_parent.get(type_info.qualified_name)
+        if parent_name is None or type_map[parent_name].display_namespace != namespace_name:
+            roots_by_namespace[namespace_name].append(type_info.qualified_name)
+
+    for namespace_name, roots in roots_by_namespace.items():
+        roots.sort(
+            key=lambda item: (
+                0 if local_children[item] else 1,
+                levels[item],
+                qualified_name_sort_key(item, type_map),
+            )
+        )
+
+    positions: Dict[str, Tuple[int, int]] = {}
+    namespace_headers: Dict[str, Tuple[int, int, int]] = {}
+    current_x = left_margin
+    page_height = 900
+
+    for namespace_name in namespace_names:
+        roots = roots_by_namespace[namespace_name]
+        column_width = estimate_namespace_column_width(namespace_name, roots, local_children, indent_width, box_width)
+        namespace_headers[namespace_name] = (current_x, top_offset, column_width)
+
+        cursor_y = top_offset + header_height + 20
+
+        def place_subtree(node_name: str, depth: int) -> None:
+            nonlocal cursor_y
+            x_position = current_x + depth * indent_width
+            positions[node_name] = (x_position, cursor_y)
+            cursor_y += box_height + row_gap
+            for child_name in local_children[node_name]:
+                place_subtree(child_name, depth + 1)
+
+        for root_name in roots:
+            place_subtree(root_name, 0)
+            cursor_y += root_gap
+
+        page_height = max(page_height, cursor_y + 40)
+        current_x += column_width + namespace_gap
+
+    page_width = max(1600, current_x - namespace_gap + left_margin)
+    page = page_cls(file=draw_file, name=module.name, width=page_width, height=page_height)
+    add_title_box(
+        page,
+        object_cls,
+        text_format_cls,
+        "{} Class Diagram".format(module.name),
+        "{} types across {} files. Solid edges mark primary inheritance placement; dashed edges mark extra or cross-namespace inheritance.".format(
+            len(types),
+            scan_result.scanned_files,
+        ),
+        width=page_width - 40,
+    )
+
+    header_object_map: Dict[str, object] = {}
+    for namespace_name in namespace_names:
+        header_x, header_y, header_width = namespace_headers[namespace_name]
+        header_object_map[namespace_name] = add_box(
+            page,
+            object_cls,
+            text_format_cls,
+            "<b>namespace</b><br/>{}".format(html.escape(namespace_name)),
+            position=(header_x, header_y),
+            width=header_width - 12,
+            height=header_height,
+            fill_color="#111827",
+            stroke_color=module.stroke_color,
+            font_color="#f9fafb",
+            rounded=1,
+        )
+
+    object_map: Dict[str, object] = {}
+    for type_info in types:
+        fill_color = module.class_fill_color if type_info.kind == "class" else module.struct_fill_color
+        object_map[type_info.qualified_name] = add_box(
+            page,
+            object_cls,
+            text_format_cls,
+            build_type_box_value(type_info),
+            position=positions[type_info.qualified_name],
+            width=box_width,
+            height=box_height,
+            fill_color=fill_color,
+            stroke_color=module.stroke_color,
+            font_color=module.font_color,
+            rounded=1,
+        )
+
+    for namespace_name in namespace_names:
+        roots = roots_by_namespace[namespace_name]
+        if not roots:
+            continue
+        for root_name in roots:
+            edge_cls(
+                page=page,
+                source=header_object_map[namespace_name],
+                target=object_map[root_name],
+                pattern="dotted_small",
+                line_end_target="open",
+                stroke_color="#94a3b8",
+                strokeWidth=1,
+                waypoints="straight",
+            )
+
+    for child_name, parents in parent_map.items():
+        for parent_name in parents:
+            if parent_name == child_name:
+                continue
+            is_primary = primary_parent.get(child_name) == parent_name
+            same_namespace = type_map[child_name].display_namespace == type_map[parent_name].display_namespace
+            edge_cls(
+                page=page,
+                source=object_map[child_name],
+                target=object_map[parent_name],
+                pattern="solid" if is_primary and same_namespace else "dashed_small",
+                line_end_target="classic",
+                endFill_target=False,
+                stroke_color=module.stroke_color,
+                strokeWidth=2,
+            )
+
+
+def build_document(
+    repo_root: Path,
+    output_path: Path,
+    scan_results: Sequence[ModuleScanResult],
+    drawpyo_types: Tuple[object, object, object, object, object],
+) -> Path:
+    file_cls, page_cls, object_cls, edge_cls, text_format_cls = drawpyo_types
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    draw_file = file_cls(file_name=output_path.name, file_path=str(output_path.parent))
+    build_overview_page(draw_file, page_cls, object_cls, edge_cls, text_format_cls, repo_root, scan_results)
+
+    module_result_map = {result.module: result for result in scan_results}
+    for module in MODULES:
+        build_module_page(
+            draw_file,
+            page_cls,
+            object_cls,
+            edge_cls,
+            text_format_cls,
+            module,
+            module_result_map[module.name],
+        )
+
+    draw_file.write(overwrite=True)
+    return output_path
+
+
+def main() -> int:
+    args = parse_args()
+
+    try:
+        if args.root is not None:
+            repo_root = validate_repo_root(
+                args.root.resolve(),
+                "The supplied --root path does not look like the repository root.",
+            )
+        else:
+            repo_root = detect_repo_root(Path(__file__))
+
+        drawpyo_types = load_drawpyo(args.drawpyo_path)
+    except RuntimeError as exc:
+        print("error:", exc, file=sys.stderr)
+        return 1
+
+    scan_results = [scan_module(repo_root, module) for module in MODULES]
+    requested_output = args.output
+    output_path = requested_output if requested_output.is_absolute() else (repo_root / requested_output)
+    written_path = build_document(repo_root, output_path, scan_results, drawpyo_types)
+
+    total_types = sum(len(result.types) for result in scan_results)
+    print("Wrote UML document to {}".format(written_path))
+    print("Pages: {}".format(1 + len(MODULES)))
+    print("Types: {}".format(total_types))
+    for result in scan_results:
+        print("  {}: {} types across {} scanned files".format(result.module, len(result.types), result.scanned_files))
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

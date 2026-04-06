@@ -337,6 +337,11 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandBuffer::beginRenderPassIfDeferred(){
         if(renderPassBeginDeferred){
             renderPassBeginDeferred = false;
+            std::cerr << "[DIAG beginRP] renderPass=" << (void*)deferredBeginInfo.renderPass
+                      << " framebuffer=" << (void*)deferredBeginInfo.framebuffer
+                      << " extent=" << deferredBeginInfo.renderArea.extent.width
+                      << "x" << deferredBeginInfo.renderArea.extent.height
+                      << std::endl;
             vkCmdBeginRenderPass(commandBuffer,&deferredBeginInfo,VK_SUBPASS_CONTENTS_INLINE);
         }
     }
@@ -526,6 +531,16 @@ _NAMESPACE_BEGIN_
 
             textureTarget->texture->layout = VK_IMAGE_LAYOUT_GENERAL;
             beginInfo.renderArea.extent = {framebufferInfo.width,framebufferInfo.height};
+
+            std::cerr << "[DIAG startRP-tex] format=" << attachmentDescription.format
+                      << " loadOp=" << attachmentDescription.loadOp
+                      << " storeOp=" << attachmentDescription.storeOp
+                      << " initLayout=" << attachmentDescription.initialLayout
+                      << " finalLayout=" << attachmentDescription.finalLayout
+                      << " fb=" << framebufferInfo.width << "x" << framebufferInfo.height
+                      << " img=" << (void*)textureTarget->texture->img
+                      << " view=" << (void*)attachmentView
+                      << std::endl;
         }
 
         VkClearValue val {};
@@ -677,7 +692,18 @@ _NAMESPACE_BEGIN_
 
         auto ioMode = getResourceIOModeForResourceID(id,renderPipelineState->fragmentShader->internal);
 
+        // DIAG: trace fragment texture bind
+        std::cerr << "[DIAG bindFragTex] id=" << id
+                  << " ioMode=" << ioMode
+                  << " texture=" << (void*)vk_texture
+                  << " img=" << (void*)vk_texture->img
+                  << " view=" << (void*)vk_texture->img_view
+                  << " layoutBefore=" << vk_texture->layout
+                  << std::endl;
+
         insertResourceBarrierIfNeeded(vk_texture,id,renderPipelineState->fragmentShader->internal);
+
+        std::cerr << "[DIAG bindFragTex] layoutAfterBarrier=" << vk_texture->layout << std::endl;
 
         VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writeInfo.dstBinding = getBindingForResourceID(id,renderPipelineState->fragmentShader->internal);
@@ -703,11 +729,20 @@ _NAMESPACE_BEGIN_
         writeInfo.pBufferInfo = nullptr;
         writeInfo.pImageInfo = &imgInfo;
 
+        std::cerr << "[DIAG bindFragTex] dstBinding=" << writeInfo.dstBinding
+                  << " descType=" << writeInfo.descriptorType
+                  << " descs.size=" << renderPipelineState->descs.size()
+                  << std::endl;
+
         // Fragment shader always uses regular descriptor sets (never push).
         // descs.back() is the fragment descriptor set in both push and non-push modes.
         if(!renderPipelineState->descs.empty()){
             writeInfo.dstSet = renderPipelineState->descs.back();
             vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
+            std::cerr << "[DIAG bindFragTex] descriptor written OK" << std::endl;
+        }
+        else {
+            std::cerr << "[DIAG bindFragTex] WARNING: descs empty, texture NOT bound!" << std::endl;
         }
     };
 
@@ -1433,6 +1468,8 @@ _NAMESPACE_BEGIN_
        submission.pNext = nullptr;
 
        auto res = vkQueueSubmit(vkQueue, 1, &submission,VK_NULL_HANDLE);
+       std::cerr << "[DIAG commitToGPU] submitted " << commandQueue.size()
+                 << " cmd bufs, result=" << res << std::endl;
        if(!VK_RESULT_SUCCEEDED(res)){
            std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
            commandQueue.clear();

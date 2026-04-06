@@ -298,10 +298,12 @@ namespace OmegaWTK::Composition {
             directionalBlurPipelineState = gte.graphicsEngine->makeComputePipelineState(desc);
         }
 
-        auto struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT2});
+        auto struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT2,OMEGASL_FLOAT2});
 
         auto pos = OmegaGTE::FVec<4>::Create();
         auto texCoord = OmegaGTE::FVec<2>::Create();
+        auto pad = OmegaGTE::FVec<2>::Create();
+        pad[0][0] = 0.f; pad[1][0] = 0.f;
         pos[0][0] = -1.f;
         pos[1][0] = 1.f;
         pos[2][0] = 0.f;
@@ -322,6 +324,7 @@ namespace OmegaWTK::Composition {
         bufferWriter->structBegin();
         bufferWriter->writeFloat4(pos);
         bufferWriter->writeFloat2(texCoord);
+        bufferWriter->writeFloat2(pad);
         bufferWriter->structEnd();
         bufferWriter->sendToBuffer();
 
@@ -331,6 +334,7 @@ namespace OmegaWTK::Composition {
         bufferWriter->structBegin();
         bufferWriter->writeFloat4(pos);
         bufferWriter->writeFloat2(texCoord);
+        bufferWriter->writeFloat2(pad);
         bufferWriter->structEnd();
         bufferWriter->sendToBuffer();
 
@@ -340,6 +344,7 @@ namespace OmegaWTK::Composition {
         bufferWriter->structBegin();
         bufferWriter->writeFloat4(pos);
         bufferWriter->writeFloat2(texCoord);
+        bufferWriter->writeFloat2(pad);
         bufferWriter->structEnd();
         bufferWriter->sendToBuffer();
 
@@ -353,6 +358,7 @@ namespace OmegaWTK::Composition {
         bufferWriter->structBegin();
         bufferWriter->writeFloat4(pos);
         bufferWriter->writeFloat2(texCoord);
+        bufferWriter->writeFloat2(pad);
         bufferWriter->structEnd();
         bufferWriter->sendToBuffer();
 
@@ -362,6 +368,7 @@ namespace OmegaWTK::Composition {
         bufferWriter->structBegin();
         bufferWriter->writeFloat4(pos);
         bufferWriter->writeFloat2(texCoord);
+        bufferWriter->writeFloat2(pad);
         bufferWriter->structEnd();
         bufferWriter->sendToBuffer();
 
@@ -371,6 +378,7 @@ namespace OmegaWTK::Composition {
         bufferWriter->structBegin();
         bufferWriter->writeFloat4(pos);
         bufferWriter->writeFloat2(texCoord);
+        bufferWriter->writeFloat2(pad);
         bufferWriter->structEnd();
         bufferWriter->sendToBuffer();
 
@@ -1088,7 +1096,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 std::cout << "Texture render pipeline unavailable. Skipping textured draw command." << std::endl;
                 return;
             }
-            struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT2});
+            struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT2,OMEGASL_FLOAT2});
         }
         else {
             if(renderPipelineState == nullptr){
@@ -1201,9 +1209,12 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             pos[2][0] = pt.z;
             pos[3][0] = 1.f;
             applyTransform(pos);
+            auto texPad = OmegaGTE::FVec<2>::Create();
+            texPad[0][0] = 0.f; texPad[1][0] = 0.f;
             bufferWriter->structBegin();
             bufferWriter->writeFloat4(pos);
             bufferWriter->writeFloat2(normalizedCoord);
+            bufferWriter->writeFloat2(texPad);
             bufferWriter->structEnd();
             bufferWriter->sendToBuffer();
         };

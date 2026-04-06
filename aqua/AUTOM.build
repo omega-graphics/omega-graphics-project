@@ -1,5 +1,5 @@
-#! /usr/bin/env python3
 
-Project("AQUA","0.0.1pre-alpha")
+
+project("AQUA","0.0.1pre-alpha")
 
 subdir("./engine")

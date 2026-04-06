@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+
+import argparse
+import json
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, Iterable, List, Sequence, Tuple
+
+
+IMPLEMENTATION_EXTENSIONS = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".c++",
+    ".cp",
+    ".m",
+    ".mm",
+    ".ixx",
+    ".cppm",
+    ".cu",
+    ".metal",
+    ".glsl",
+    ".vert",
+    ".frag",
+    ".geom",
+    ".comp",
+    ".tesc",
+    ".tese",
+    ".hlsl",
+    ".hlsli",
+    ".wgsl",
+}
+
+HEADER_EXTENSIONS = {
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".h++",
+    ".inl",
+    ".inc",
+    ".ipp",
+    ".tpp",
+}
+
+
+@dataclass(frozen=True)
+class ModuleConfig:
+    name: str
+    root_dir: str
+    src_dir: str = "src"
+    include_dir: str = "include"
+
+
+@dataclass
+class BucketStats:
+    files: int = 0
+    lines: int = 0
+    nonblank_lines: int = 0
+
+    def add_file(self, lines: int, nonblank_lines: int) -> None:
+        self.files += 1
+        self.lines += lines
+        self.nonblank_lines += nonblank_lines
+
+    def add_bucket(self, other: "BucketStats") -> None:
+        self.files += other.files
+        self.lines += other.lines
+        self.nonblank_lines += other.nonblank_lines
+
+    def to_dict(self) -> Dict[str, int]:
+        return {
+            "files": self.files,
+            "lines": self.lines,
+            "nonblank_lines": self.nonblank_lines,
+        }
+
+
+@dataclass
+class ModuleStats:
+    name: str
+    src_path: str
+    include_path: str
+    implementation: BucketStats = field(default_factory=BucketStats)
+    private_headers: BucketStats = field(default_factory=BucketStats)
+    public_headers: BucketStats = field(default_factory=BucketStats)
+    other: BucketStats = field(default_factory=BucketStats)
+
+    def total_files(self) -> int:
+        return (
+            self.implementation.files
+            + self.private_headers.files
+            + self.public_headers.files
+            + self.other.files
+        )
+
+    def total_lines(self) -> int:
+        return (
+            self.implementation.lines
+            + self.private_headers.lines
+            + self.public_headers.lines
+            + self.other.lines
+        )
+
+    def total_nonblank_lines(self) -> int:
+        return (
+            self.implementation.nonblank_lines
+            + self.private_headers.nonblank_lines
+            + self.public_headers.nonblank_lines
+            + self.other.nonblank_lines
+        )
+
+    def add_module(self, other: "ModuleStats") -> None:
+        self.implementation.add_bucket(other.implementation)
+        self.private_headers.add_bucket(other.private_headers)
+        self.public_headers.add_bucket(other.public_headers)
+        self.other.add_bucket(other.other)
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "name": self.name,
+            "paths": {
+                "src": self.src_path,
+                "include": self.include_path,
+            },
+            "implementation": self.implementation.to_dict(),
+            "private_headers": self.private_headers.to_dict(),
+            "public_headers": self.public_headers.to_dict(),
+            "other": self.other.to_dict(),
+            "totals": {
+                "files": self.total_files(),
+                "lines": self.total_lines(),
+                "nonblank_lines": self.total_nonblank_lines(),
+            },
+        }
+
+
+MODULES: Sequence[ModuleConfig] = (
+    ModuleConfig(name="OmegaCommon", root_dir="common"),
+    ModuleConfig(name="OmegaGTE", root_dir="gte"),
+    ModuleConfig(name="OmegaWTK", root_dir="wtk"),
+    ModuleConfig(name="AUTOM", root_dir="autom"),
+    ModuleConfig(name="AQUA", root_dir="aqua", src_dir="engine/src", include_dir="engine/include"),
+)
+
+
+def detect_repo_root(script_path: Path) -> Path:
+    repo_root = script_path.resolve().parent.parent
+    return validate_repo_root(
+        repo_root,
+        "Could not locate repository root from script location. "
+        "Expected a CMakeLists.txt alongside the module directories.",
+    )
+
+
+def validate_repo_root(repo_root: Path, error_message: str) -> Path:
+    if not (repo_root / "CMakeLists.txt").is_file():
+        raise RuntimeError(error_message)
+    return repo_root
+
+
+def iter_files(directory: Path) -> Iterable[Path]:
+    if not directory.is_dir():
+        return ()
+    return sorted(path for path in directory.rglob("*") if path.is_file())
+
+
+def count_lines(path: Path) -> Tuple[int, int]:
+    total_lines = 0
+    nonblank_lines = 0
+
+    with path.open("r", encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            total_lines += 1
+            if line.strip():
+                nonblank_lines += 1
+
+    return total_lines, nonblank_lines
+
+
+def classify_file(path: Path, public_header_tree: bool) -> str:
+    extension = path.suffix.lower()
+
+    if extension in HEADER_EXTENSIONS:
+        return "public_headers" if public_header_tree else "private_headers"
+    if extension in IMPLEMENTATION_EXTENSIONS:
+        return "implementation"
+    return "other"
+
+
+def scan_tree(directory: Path, stats: ModuleStats, public_header_tree: bool) -> None:
+    for path in iter_files(directory):
+        lines, nonblank_lines = count_lines(path)
+        bucket_name = classify_file(path, public_header_tree)
+        getattr(stats, bucket_name).add_file(lines, nonblank_lines)
+
+
+def scan_module(repo_root: Path, config: ModuleConfig) -> ModuleStats:
+    module_root = repo_root / config.root_dir
+    src_path = module_root / config.src_dir
+    include_path = module_root / config.include_dir
+    stats = ModuleStats(
+        name=config.name,
+        src_path=str(src_path.relative_to(repo_root)),
+        include_path=str(include_path.relative_to(repo_root)),
+    )
+
+    scan_tree(src_path, stats, public_header_tree=False)
+    scan_tree(include_path, stats, public_header_tree=True)
+    return stats
+
+
+def build_total_stats(module_stats: Sequence[ModuleStats]) -> ModuleStats:
+    total = ModuleStats(name="TOTAL", src_path="-", include_path="-")
+    for stats in module_stats:
+        total.add_module(stats)
+    return total
+
+
+def format_number(value: int) -> str:
+    return f"{value:,}"
+
+
+def render_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+
+    rendered_rows = []
+    rendered_rows.append("  ".join(cell.ljust(widths[index]) for index, cell in enumerate(headers)))
+    rendered_rows.append("  ".join("-" * width for width in widths))
+
+    for row in rows:
+        rendered_rows.append("  ".join(cell.rjust(widths[index]) if index else cell.ljust(widths[index]) for index, cell in enumerate(row)))
+
+    return "\n".join(rendered_rows)
+
+
+def build_count_rows(module_stats: Sequence[ModuleStats]) -> List[List[str]]:
+    rows: List[List[str]] = []
+    for stats in module_stats:
+        rows.append(
+            [
+                stats.name,
+                format_number(stats.total_files()),
+                format_number(stats.implementation.files),
+                format_number(stats.private_headers.files),
+                format_number(stats.public_headers.files),
+                format_number(stats.other.files),
+            ]
+        )
+    return rows
+
+
+def build_line_rows(module_stats: Sequence[ModuleStats]) -> List[List[str]]:
+    rows: List[List[str]] = []
+    for stats in module_stats:
+        rows.append(
+            [
+                stats.name,
+                format_number(stats.implementation.lines),
+                format_number(stats.private_headers.lines),
+                format_number(stats.public_headers.lines),
+                format_number(stats.other.lines),
+                format_number(stats.total_lines()),
+                format_number(stats.total_nonblank_lines()),
+            ]
+        )
+    return rows
+
+
+def emit_text_report(repo_root: Path, module_stats: Sequence[ModuleStats]) -> None:
+    total_stats = build_total_stats(module_stats)
+    summary_rows = build_count_rows([*module_stats, total_stats])
+    line_rows = build_line_rows([*module_stats, total_stats])
+
+    print("Omega Graphics Project repository stats")
+    print("Repository root:", repo_root)
+    print()
+    print("File counts")
+    print(
+        render_table(
+            ["Module", "Files", "Impl", "PrivHdr", "PubHdr", "Other"],
+            summary_rows,
+        )
+    )
+    print()
+    print("Line counts")
+    print(
+        render_table(
+            ["Module", "ImplLines", "PrivHdrLines", "PubHdrLines", "OtherLines", "TotalLines", "Nonblank"],
+            line_rows,
+        )
+    )
+    print()
+    print("Scan roots")
+    for stats in module_stats:
+        print(f"{stats.name}: src={stats.src_path} include={stats.include_path}")
+
+
+def emit_json_report(repo_root: Path, module_stats: Sequence[ModuleStats]) -> None:
+    total_stats = build_total_stats(module_stats)
+    payload = {
+        "repository_root": str(repo_root),
+        "modules": [stats.to_dict() for stats in module_stats],
+        "aggregate": total_stats.to_dict(),
+    }
+    json.dump(payload, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Report source/header file counts and line counts for the Omega Graphics Project modules."
+        )
+    )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Repository root to scan. Defaults to the root detected from the script location.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the report as JSON instead of a text table.",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+
+    try:
+        if args.root is not None:
+            repo_root = validate_repo_root(
+                args.root.resolve(),
+                "The supplied --root path does not look like the repository root.",
+            )
+        else:
+            repo_root = detect_repo_root(Path(__file__))
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    module_stats = [scan_module(repo_root, config) for config in MODULES]
+
+    if args.json:
+        emit_json_report(repo_root, module_stats)
+    else:
+        emit_text_report(repo_root, module_stats)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

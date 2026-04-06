@@ -36,6 +36,7 @@ fragment float4 colorFragment(ColorRaster r){
 struct CopyVertex {
     float4 pos;
     float2 texCoord;
+    float2 _pad;
 };
 
 struct CopyRaster internal {
@@ -56,7 +57,15 @@ vertex CopyRaster copyVertexFunc(uint v_id : VertexID){
 
 [in copyTex, in copySampler]
 fragment float4 copyFragFunc(CopyRaster r){
-    return sample(copySampler, copyTex, r.texCoord);
+    float4 s = sample(copySampler, copyTex, r.texCoord);
+    // DIAG: yellow if sampled alpha <= 0.5, cyan if rgb all near zero
+    if(s[3] > 0.5){
+        if(s[0] > 0.01 || s[1] > 0.01 || s[2] > 0.01){
+            return s;
+        }
+        return make_float4(0.0, 1.0, 1.0, 1.0);
+    }
+    return make_float4(1.0, 1.0, 0.0, 1.0);
 }
 
 )";
@@ -96,9 +105,12 @@ static void writeCopyVertex(float x, float y, float u, float v){
     pos[0][0] = x; pos[1][0] = y; pos[2][0] = 0.f; pos[3][0] = 1.f;
     auto tc = OmegaGTE::FVec<2>::Create();
     tc[0][0] = u; tc[1][0] = v;
+    auto pad = OmegaGTE::FVec<2>::Create();
+    pad[0][0] = 0.f; pad[1][0] = 0.f;
     bufferWriter->structBegin();
     bufferWriter->writeFloat4(pos);
     bufferWriter->writeFloat2(tc);
+    bufferWriter->writeFloat2(pad);
     bufferWriter->structEnd();
     bufferWriter->sendToBuffer();
 }
@@ -131,13 +143,13 @@ static void renderAndBlit(int w, int h){
         std::cout << "[BlitTest] Pass 1: committed" << std::endl;
     }
 
+    // DIAG: Force GPU idle between passes to rule out VkEvent sync issues.
+    gte.graphicsEngine->waitForGPUIdle();
+    std::cout << "[BlitTest] GPU idle after pass 1" << std::endl;
+
     // ---- Pass 2: blit offscreen texture to swapchain ----
     std::cout << "[BlitTest] Pass 2: blit texture to swapchain" << std::endl;
     {
-        // Wait for pass 1 to finish
-        auto waitCb = nativeTarget->commandBuffer();
-        nativeTarget->notifyCommandBuffer(waitCb, fence);
-        nativeTarget->submitCommandBuffer(waitCb);
 
         auto cb = nativeTarget->commandBuffer();
 
@@ -245,7 +257,7 @@ static void start_application(GtkApplication *app, gpointer){
 
     // ---- Fill fullscreen quad buffer (6 verts, 2 triangles) ----
     {
-        size_t structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4, OMEGASL_FLOAT2});
+        size_t structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4, OMEGASL_FLOAT2, OMEGASL_FLOAT2});
         quadBuffer = gte.graphicsEngine->makeBuffer(
             {OmegaGTE::BufferDescriptor::Upload, 6 * structSize, structSize});
         bufferWriter->setOutputBuffer(quadBuffer);
