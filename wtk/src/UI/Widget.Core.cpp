@@ -18,8 +18,9 @@ Widget::Widget(ViewPtr view):
     view(std::move(view)){
 }
 
-OmegaCommon::Vector<Widget *> Widget::childWidgets() const{
-    return {};
+OmegaCommon::ArrayRef<WidgetPtr> Widget::childWidgets(){
+    static OmegaCommon::Vector<WidgetPtr> empty;
+    return empty;
 }
 
 void Widget::show(){
@@ -50,7 +51,7 @@ void Widget::setTreeHostRecurse(WidgetTreeHost *host){
         view->setFrontendRecurse(nullptr);
         view->setSyncLaneRecurse(0);
     }
-    for(auto * c : childWidgets()){
+    for(const auto & c : childWidgets()){
         if(c != nullptr){
             c->setTreeHostRecurse(host);
         }

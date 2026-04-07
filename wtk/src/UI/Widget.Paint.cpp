@@ -97,7 +97,7 @@ void Widget::onThemeSetRecurse(Native::ThemeDesc &desc){
     if(impl_->mode == PaintMode::Automatic){
         invalidate(PaintReason::ThemeChanged);
     }
-    for(auto * child : childWidgets()){
+    for(const auto & child : childWidgets()){
         if(child != nullptr){
             child->onThemeSetRecurse(desc);
         }

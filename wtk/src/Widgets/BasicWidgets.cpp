@@ -154,7 +154,7 @@ void Container::resize(Core::Rect & newRect){
     relayout();
 }
 
-void Container::wireChild(Widget *child){
+void Container::wireChild(const WidgetPtr & child){
     if(child == nullptr){
         return;
     }
@@ -165,7 +165,7 @@ void Container::wireChild(Widget *child){
     child->notifyObservers(Widget::Attach,{});
 }
 
-void Container::unwireChild(Widget *child){
+void Container::unwireChild(const WidgetPtr & child){
     if(child == nullptr){
         return;
     }
@@ -182,7 +182,7 @@ void Container::unwireChild(Widget *child){
     }
 }
 
-OmegaCommon::Vector<Widget *> Container::childWidgets() const{
+OmegaCommon::ArrayRef<WidgetPtr> Container::childWidgets(){
     return children;
 }
 
@@ -289,18 +289,18 @@ Widget *Container::childAt(std::size_t idx) const{
     if(idx >= children.size()){
         return nullptr;
     }
-    return children[idx];
+    return children[idx].get();
 }
 
 WidgetPtr Container::addChild(const WidgetPtr & child){
     if(child == nullptr || child.get() == this){
         return nullptr;
     }
-    if(std::find(children.begin(),children.end(),child.get()) != children.end()){
+    if(std::find(children.begin(),children.end(),child) != children.end()){
         return child;
     }
 
-    wireChild(child.get());
+    wireChild(child);
     relayout();
     return child;
 }
@@ -309,11 +309,11 @@ bool Container::removeChild(const WidgetPtr & child){
     if(child == nullptr){
         return false;
     }
-    auto it = std::find(children.begin(),children.end(),child.get());
+    auto it = std::find(children.begin(),children.end(),child);
     if(it == children.end()){
         return false;
     }
-    unwireChild(child.get());
+    unwireChild(child);
     relayout();
     return true;
 }
@@ -338,7 +338,7 @@ void Container::layoutChildren(){
         }
     }
 
-    for(auto * child : children){
+    for(auto & child : children){
         if(child == nullptr){
             continue;
         }
@@ -357,7 +357,7 @@ void Container::layoutChildren(){
 }
 
 Container::~Container(){
-    for(auto * child : children){
+    for(auto & child : children){
         if(child != nullptr){
             child->parent = nullptr;
         }

@@ -43,12 +43,12 @@ class OMEGAWTK_EXPORT Container: public Widget {
     mutable bool hasLastStableContentBounds = false;
     mutable Core::Rect lastStableContentBounds {Core::Position{0.f,0.f},1.f,1.f};
 protected:
-    OmegaCommon::Vector<Widget *> children;
+    OmegaCommon::Vector<WidgetPtr> children;
     bool layoutPending = true;
     bool inLayout = false;
 
-    void wireChild(Widget *child);
-    void unwireChild(Widget *child);
+    void wireChild(const WidgetPtr & child);
+    void unwireChild(const WidgetPtr & child);
 
     void onThemeSet(Native::ThemeDesc & desc) override;
     virtual void layoutChildren();
@@ -74,7 +74,7 @@ public:
     Widget *childAt(std::size_t idx) const;
     virtual WidgetPtr addChild(const WidgetPtr & child);
     virtual bool removeChild(const WidgetPtr & child);
-    OmegaCommon::Vector<Widget *> childWidgets() const override;
+    OmegaCommon::ArrayRef<WidgetPtr> childWidgets() override;
 
     void relayout();
 

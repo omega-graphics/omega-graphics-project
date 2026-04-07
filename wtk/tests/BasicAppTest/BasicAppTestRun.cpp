@@ -11,7 +11,7 @@
 using namespace OmegaWTK;
 
 // ---------------------------------------------------------------------------
-// Menu delegate — responds to menu item selections
+// Menu delegates
 // ---------------------------------------------------------------------------
 
 static AppWindow *g_mainWindow = nullptr;
@@ -20,16 +20,12 @@ class TestMenuDelegate final : public MenuDelegate {
 public:
     void onSelectItem(unsigned itemIndex) override {
         switch (itemIndex) {
-        case 0: {
+        case 0:
             // "Open" — show a file dialog
             if (g_mainWindow) {
                 g_mainWindow->openFSDialog(
                     {Native::NativeFSDialog::Read, "."});
             }
-            break;
-        }
-        case 1:
-            // separator — unreachable
             break;
         case 2:
             // "Quit"
@@ -44,7 +40,6 @@ public:
 class EditMenuDelegate final : public MenuDelegate {
 public:
     void onSelectItem(unsigned itemIndex) override {
-        // Edit menu items — placeholder for future clipboard actions
         (void)itemIndex;
     }
 };
@@ -53,7 +48,6 @@ class HelpMenuDelegate final : public MenuDelegate {
 public:
     void onSelectItem(unsigned itemIndex) override {
         if (itemIndex == 0) {
-            // "About" — send a system notification
             NotificationCenter nc;
             nc.send({"BasicAppTest", "OmegaWTK Widget & Menu Integration Test"});
         }
@@ -72,31 +66,64 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// Build the widget tree
+// Entry point — all widget shared_ptrs must stay alive until start() returns
 // ---------------------------------------------------------------------------
 
-static WidgetPtr buildWidgetTree(const Core::Rect & bounds) {
-    // Root: VStack filling the window
-    auto root = make<VStack>(bounds, StackOptions{
+int RunBasicAppTest(AppInst *app) {
+    Core::Rect windowRect{{0, 0}, 600, 500};
+
+    auto window = make<AppWindow>(windowRect, new TestWindowDelegate());
+    g_mainWindow = window.get();
+    window->setTitle("BasicAppTest");
+
+    // --- Menu bar ---
+
+    static TestMenuDelegate fileDelegate;
+    static EditMenuDelegate editDelegate;
+    static HelpMenuDelegate helpDelegate;
+
+    auto menu = make<Menu>("MainMenu", std::initializer_list<SharedHandle<MenuItem>>{
+        CategoricalMenu("File", {
+            ButtonMenuItem("Open"),
+            MenuItemSeperator(),
+            ButtonMenuItem("Quit")
+        }, &fileDelegate),
+        CategoricalMenu("Edit", {
+            ButtonMenuItem("Cut"),
+            ButtonMenuItem("Copy"),
+            ButtonMenuItem("Paste")
+        }, &editDelegate),
+        CategoricalMenu("Help", {
+            ButtonMenuItem("About")
+        }, &helpDelegate)
+    });
+    window->setMenu(menu);
+
+    // --- Widget tree ---
+    // All shared_ptrs live in this scope until AppInst::start() blocks and returns.
+
+    float contentW = windowRect.w - 32.f;
+
+    auto root = make<VStack>(windowRect, StackOptions{
         .spacing = 8.f,
         .padding = {16.f, 16.f, 16.f, 16.f},
         .mainAlign = StackMainAlign::Start,
         .crossAlign = StackCrossAlign::Stretch
     });
 
-    // 1. Title label
+    // Title
     LabelProps titleProps;
     titleProps.text = U"BasicAppTest — Widget Integration";
     titleProps.textColor = Composition::Color::create8Bit(Composition::Color::White8);
     titleProps.alignment = Composition::TextLayoutDescriptor::MiddleCenter;
     titleProps.wrapping = Composition::TextLayoutDescriptor::None;
     auto titleLabel = make<Label>(
-        Core::Rect{{0, 0}, bounds.w - 32.f, 30.f}, titleProps);
+        Core::Rect{{0, 0}, contentW, 30.f}, titleProps);
     root->addChild(titleLabel, StackSlot{.flexGrow = 0.f});
 
-    // 2. Separator
+    // Separator
     auto sep1 = make<Separator>(
-        Core::Rect{{0, 0}, bounds.w - 32.f, 4.f},
+        Core::Rect{{0, 0}, contentW, 4.f},
         SeparatorProps{
             .orientation = Orientation::Horizontal,
             .thickness = 1.f,
@@ -106,16 +133,15 @@ static WidgetPtr buildWidgetTree(const Core::Rect & bounds) {
         });
     root->addChild(sep1, StackSlot{.flexGrow = 0.f});
 
-    // 3. Row of shape primitives in an HStack
+    // Shape row
     auto shapeRow = make<HStack>(
-        Core::Rect{{0, 0}, bounds.w - 32.f, 100.f},
+        Core::Rect{{0, 0}, contentW, 100.f},
         StackOptions{
             .spacing = 12.f,
             .mainAlign = StackMainAlign::Center,
             .crossAlign = StackCrossAlign::Center
         });
 
-    // Red rectangle
     auto redRect = make<Rectangle>(
         Core::Rect{{0, 0}, 80.f, 80.f},
         RectangleProps{
@@ -124,7 +150,6 @@ static WidgetPtr buildWidgetTree(const Core::Rect & bounds) {
         });
     shapeRow->addChild(redRect);
 
-    // Blue rounded rectangle
     auto blueRR = make<RoundedRectangle>(
         Core::Rect{{0, 0}, 80.f, 80.f},
         RoundedRectangleProps{
@@ -135,7 +160,6 @@ static WidgetPtr buildWidgetTree(const Core::Rect & bounds) {
         });
     shapeRow->addChild(blueRR);
 
-    // Green ellipse
     auto greenEllipse = make<Ellipse>(
         Core::Rect{{0, 0}, 80.f, 80.f},
         EllipseProps{
@@ -144,7 +168,6 @@ static WidgetPtr buildWidgetTree(const Core::Rect & bounds) {
         });
     shapeRow->addChild(greenEllipse);
 
-    // Yellow rectangle with border
     auto yellowRect = make<Rectangle>(
         Core::Rect{{0, 0}, 80.f, 80.f},
         RectangleProps{
@@ -158,9 +181,9 @@ static WidgetPtr buildWidgetTree(const Core::Rect & bounds) {
 
     root->addChild(shapeRow, StackSlot{.flexGrow = 0.f});
 
-    // 4. Another separator
+    // Separator
     auto sep2 = make<Separator>(
-        Core::Rect{{0, 0}, bounds.w - 32.f, 4.f},
+        Core::Rect{{0, 0}, contentW, 4.f},
         SeparatorProps{
             .orientation = Orientation::Horizontal,
             .thickness = 1.f,
@@ -169,7 +192,7 @@ static WidgetPtr buildWidgetTree(const Core::Rect & bounds) {
         });
     root->addChild(sep2, StackSlot{.flexGrow = 0.f});
 
-    // 5. Description label
+    // Description
     LabelProps descProps;
     descProps.text = U"This test exercises shape primitives (Rectangle, RoundedRectangle, "
                      U"Ellipse), text (Label), layout (VStack/HStack), and the app menu "
@@ -178,63 +201,12 @@ static WidgetPtr buildWidgetTree(const Core::Rect & bounds) {
     descProps.alignment = Composition::TextLayoutDescriptor::LeftUpper;
     descProps.wrapping = Composition::TextLayoutDescriptor::WrapByWord;
     auto descLabel = make<Label>(
-        Core::Rect{{0, 0}, bounds.w - 32.f, 60.f}, descProps);
+        Core::Rect{{0, 0}, contentW, 60.f}, descProps);
     root->addChild(descLabel, StackSlot{.flexGrow = 1.f});
 
-    return root;
-}
-
-// ---------------------------------------------------------------------------
-// Build the menu bar
-// ---------------------------------------------------------------------------
-
-static SharedHandle<Menu> buildMenuBar() {
-    static TestMenuDelegate fileDelegate;
-    static EditMenuDelegate editDelegate;
-    static HelpMenuDelegate helpDelegate;
-
-    auto menu = make<Menu>("MainMenu", std::initializer_list<SharedHandle<MenuItem>>{
-        CategoricalMenu("File", {
-            ButtonMenuItem("Open"),
-            MenuItemSeperator(),
-            ButtonMenuItem("Quit")
-        }, &fileDelegate),
-
-        CategoricalMenu("Edit", {
-            ButtonMenuItem("Cut"),
-            ButtonMenuItem("Copy"),
-            ButtonMenuItem("Paste")
-        }, &editDelegate),
-
-        CategoricalMenu("Help", {
-            ButtonMenuItem("About")
-        }, &helpDelegate)
-    });
-
-    return menu;
-}
-
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
-int RunBasicAppTest(AppInst *app) {
-    Core::Rect windowRect{{0, 0}, 600, 500};
-
-    auto window = make<AppWindow>(windowRect, new TestWindowDelegate());
-    g_mainWindow = window.get();
-
-    window->setTitle("BasicAppTest");
-
-    // Menu bar
-    auto menu = buildMenuBar();
-    window->setMenu(menu);
-
-    // Widget tree
-    auto root = buildWidgetTree(windowRect);
     window->setRootWidget(root);
 
-    // Show a startup notification
+    // Startup notification
     NotificationCenter nc;
     nc.send({"BasicAppTest", "Window opened with widget tree and menu bar."});
 

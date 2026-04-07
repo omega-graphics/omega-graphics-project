@@ -18,6 +18,8 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 | 2.8 NativeDialog | Alert dialog, file filters | Not started |
 | 2.9 NativeScreen | New subsystem | Not started |
 | 2.10 NativeAccessibility | New subsystem (stub) | Not started |
+| 2.11 NativeNote / NotificationCenter | Permissions, scheduling, callbacks, removal | Not started |
+| 2.12 NativeMenu / Menu | Shortcuts, check/radio items, contextual menus, icons, dynamic updates | Not started |
 
 ---
 
@@ -525,6 +527,238 @@ Initial implementations can be no-ops; the point is to lock the API so the UI la
 
 ---
 
+### 2.11 NativeNote / NotificationCenter — Complete Notification API
+
+**Goal:** Bring notification support from "fire-and-forget" to production-complete: permission management, scheduling, interaction callbacks, and notification lifecycle.
+
+These are the only UI subsystem classes (`Notification.h`) that are thin wrappers around their Native counterpart (`NativeNote.h` / `NativeNoteCenter`). Both layers need extension.
+
+#### Native layer (`NativeNote.h`)
+
+```cpp
+enum class NativeNotePermission : uint8_t {
+    NotDetermined,
+    Authorized,
+    Denied,
+    Provisional   // macOS: silent delivery to Notification Center
+};
+
+struct NativeNote {
+    OmegaCommon::String title;
+    OmegaCommon::String body;
+    OmegaCommon::String identifier;                   // For removal / update
+    OmegaCommon::String categoryIdentifier;           // Action category
+    float delaySeconds = 0.f;                         // 0 = immediate
+    // Future: badge count, sound name, image attachment
+};
+
+struct NativeNoteAction {
+    OmegaCommon::String identifier;
+    OmegaCommon::String title;
+    bool destructive = false;
+};
+
+struct NativeNoteCategory {
+    OmegaCommon::String identifier;
+    OmegaCommon::Vector<NativeNoteAction> actions;
+};
+
+INTERFACE NativeNoteCenterDelegate {
+public:
+    /// Called when the user taps/clicks a notification.
+    virtual void onNoteActivated(const OmegaCommon::String & noteId) {}
+    /// Called when the user selects an action on a notification.
+    virtual void onNoteAction(const OmegaCommon::String & noteId,
+                              const OmegaCommon::String & actionId) {}
+    virtual ~NativeNoteCenterDelegate() = default;
+};
+
+INTERFACE NativeNoteCenter {
+public:
+    virtual void requestPermission(std::function<void(NativeNotePermission)> callback) = 0;
+    virtual NativeNotePermission currentPermission() const = 0;
+
+    virtual void sendNativeNote(NativeNote & note) = 0;     // existing
+    virtual void removeNote(const OmegaCommon::String & identifier) = 0;
+    virtual void removeAllNotes() = 0;
+
+    virtual void registerCategories(
+        const OmegaCommon::Vector<NativeNoteCategory> & categories) = 0;
+
+    virtual void setDelegate(NativeNoteCenterDelegate * delegate) = 0;
+};
+```
+
+**Platform notes:**
+- **macOS:** Maps to `UNUserNotificationCenter`. `requestPermission` calls `requestAuthorizationWithOptions:`. Scheduled notes use `UNTimeIntervalNotificationTrigger`. Delegate maps to `UNUserNotificationCenterDelegate`.
+- **Win32:** Maps to `ToastNotificationManager` (WinRT). Permission is always Authorized on Win32. Actions map to toast button elements.
+- **GTK:** Maps to `libnotify` (`notify_notification_new` / `notify_notification_show`). Actions via `notify_notification_add_action`. No scheduling (immediate only; `delaySeconds` ignored or implemented via `NativeTimer`).
+
+#### UI layer (`Notification.h`)
+
+```cpp
+struct NotificationDesc {
+    OmegaCommon::String title;
+    OmegaCommon::String body;
+    OmegaCommon::String identifier;      // Optional; auto-generated if empty
+    float delaySeconds = 0.f;
+};
+
+INTERFACE NotificationDelegate {
+public:
+    virtual void onNotificationActivated(const OmegaCommon::String & id) {}
+    virtual void onNotificationAction(const OmegaCommon::String & id,
+                                      const OmegaCommon::String & actionId) {}
+    virtual ~NotificationDelegate() = default;
+};
+
+class OMEGAWTK_EXPORT NotificationCenter {
+    Native::NNCP nativeNoteCenter;
+public:
+    NotificationCenter();
+
+    void requestPermission(std::function<void(bool granted)> callback);
+    bool isAuthorized() const;
+
+    void send(NotificationDesc desc);
+    void remove(const OmegaCommon::String & identifier);
+    void removeAll();
+
+    void setDelegate(NotificationDelegate * delegate);
+};
+```
+
+---
+
+### 2.12 NativeMenu / Menu — Complete Menu API
+
+**Goal:** Extend the menu system from basic button/separator items to full-featured menus: keyboard shortcuts, check/radio items, icons, dynamic updates, and contextual (right-click) menus.
+
+Both `Menu.h` (UI wrapper) and `NativeMenu.h` (Native abstraction) need extension. The macOS app-bound menu issue is noted in Section 1.
+
+#### Native layer (`NativeMenu.h`)
+
+```cpp
+struct NativeMenuShortcut {
+    OmegaCommon::String key;         // e.g. "c", "q", "n"
+    bool shift = false;
+    bool alt = false;
+    bool meta = true;                // Cmd on macOS, Ctrl on Win32/GTK
+};
+
+enum class NativeMenuItemType : uint8_t {
+    Button,
+    Separator,
+    Checkbox,
+    Radio
+};
+
+class NativeMenuItem {
+public:
+    virtual void setState(bool state) = 0;         // existing: enable/disable
+
+    virtual void setTitle(const OmegaCommon::String & title) = 0;
+    virtual void setChecked(bool checked) = 0;      // For Checkbox/Radio
+    virtual bool isChecked() const = 0;
+    virtual void setShortcut(const NativeMenuShortcut & shortcut) = 0;
+    virtual void setIcon(/* platform icon handle */) = 0;   // Phase 2
+    virtual NativeMenuItemType getType() const = 0;
+
+    virtual ~NativeMenuItem() = default;
+};
+
+class NativeMenu {
+public:
+    // ... existing: addMenuItem, insertMenuItem, getNativeBinding, setDelegate ...
+
+    virtual void removeMenuItem(unsigned idx) = 0;
+    virtual void removeAllItems() = 0;
+    virtual unsigned itemCount() const = 0;
+
+    virtual ~NativeMenu() = default;
+};
+
+// Existing factories
+NMI make_native_menu_item(const OmegaCommon::String & str, NM parent,
+                          bool hasSubMenu, NM subMenu);
+NMI make_native_menu_seperator();
+NM  make_native_menu(const OmegaCommon::String & name);
+
+// New factories
+NMI make_native_checkbox_item(const OmegaCommon::String & str, NM parent,
+                              bool initialChecked = false);
+NMI make_native_radio_item(const OmegaCommon::String & str, NM parent,
+                           bool initialChecked = false);
+
+// Contextual menu
+void show_native_context_menu(NM menu, Core::Position screenPos);
+```
+
+**Platform notes:**
+- **macOS:** Shortcuts via `NSMenuItem.keyEquivalent` + `keyEquivalentModifierMask`. Check state via `NSMenuItem.state` (`NSControlStateValueOn`/`Off`). Context menus via `NSMenu popUpContextMenu:withEvent:forView:`.
+- **Win32:** Shortcuts via accelerator table (`ACCEL` struct). Check state via `CheckMenuItem`. Context menus via `TrackPopupMenu`.
+- **GTK:** Shortcuts via `gtk_widget_add_accelerator`. Check items via `GtkCheckMenuItem`. Context menus via `gtk_menu_popup_at_pointer`.
+
+#### UI layer (`Menu.h`)
+
+```cpp
+class OMEGAWTK_EXPORT MenuItem {
+    // ... existing ...
+public:
+    // New
+    void setTitle(const OmegaCommon::String & title);
+    void setShortcut(const OmegaCommon::String & key,
+                     bool shift = false, bool alt = false);
+    void setChecked(bool checked);
+    bool isChecked() const;
+};
+
+class OMEGAWTK_EXPORT Menu {
+    // ... existing ...
+public:
+    // New — dynamic mutation
+    void addItem(SharedHandle<MenuItem> item);
+    void insertItem(SharedHandle<MenuItem> item, unsigned idx);
+    void removeItem(unsigned idx);
+    void removeAllItems();
+    unsigned itemCount() const;
+};
+
+// Existing factories
+SharedHandle<MenuItem> CategoricalMenu(...);
+SharedHandle<MenuItem> SubMenu(...);
+SharedHandle<MenuItem> ButtonMenuItem(const OmegaCommon::String & name);
+SharedHandle<MenuItem> MenuItemSeperator();
+
+// New factories
+SharedHandle<MenuItem> CheckboxMenuItem(const OmegaCommon::String & name,
+                                        bool initialChecked = false);
+SharedHandle<MenuItem> RadioMenuItem(const OmegaCommon::String & name,
+                                     bool initialChecked = false);
+
+// Contextual menus — show a Menu as a right-click popup at a screen position
+void ShowContextMenu(SharedHandle<Menu> menu, Core::Position screenPos);
+```
+
+#### Menu validation delegate
+
+On macOS, the system calls `validateMenuItem:` before displaying a menu to let the app enable/disable items dynamically. Extend `MenuDelegate` to support this:
+
+```cpp
+INTERFACE MenuDelegate : public Native::NativeMenuDelegate {
+protected:
+    Menu *menu;
+public:
+    MenuDelegate();
+    virtual void onSelectItem(unsigned itemIndex) = 0;            // existing
+    virtual bool onValidateItem(unsigned itemIndex) { return true; }  // new
+};
+```
+
+When `onValidateItem` returns `false`, the item is greyed out for that menu display cycle. On macOS this maps directly to `validateMenuItem:`; on Win32/GTK it can be called before `TrackPopupMenu` / menu show.
+
+---
+
 ## 3. GTK Platform Parity
 
 The GTK backend currently only implements `NativeApp`, `NativeWindow`, `NativeItem`, and `NativeMenu`. The following need GTK implementations to reach parity:
@@ -540,6 +774,8 @@ The GTK backend currently only implements `NativeApp`, `NativeWindow`, `NativeIt
 | NativeTimer | New | New | New | P1 |
 | NativeScreen | New | New | New | P2 |
 | NativeAccessibility | New | New | New | P3 |
+| NativeNote (permissions, scheduling, callbacks) | Needs update | Needs update | Missing | P1 |
+| NativeMenu (shortcuts, check/radio, context menus) | Needs update | Needs update | Needs update | P1 |
 
 ---
 
@@ -556,6 +792,8 @@ The GTK backend currently only implements `NativeApp`, `NativeWindow`, `NativeIt
 | **P1** | 2.8 NativeDialog (alert dialog, file filters) | Common user-facing pattern |
 | **P2** | 2.7 NativeDragDrop | Important for content apps, less critical initially |
 | **P2** | 2.9 NativeScreen | Multi-monitor support |
+| **P1** | 2.11 NativeNote / NotificationCenter | Permissions required on macOS; scheduling and callbacks for real use |
+| **P1** | 2.12 NativeMenu / Menu | Keyboard shortcuts and context menus are baseline UX |
 | **P3** | 2.10 NativeAccessibility | Stub now, implement per-platform over time |
 
 ---
@@ -576,6 +814,10 @@ The GTK backend currently only implements `NativeApp`, `NativeWindow`, `NativeIt
 - `NativeApp.h` — NativeAppDelegate, commandLineArgs(), launchArgs()
 - `NativeTheme.h` — ThemeAppearance, populated ThemeDesc (colors, typography)
 - `NativeDialog.h` — NativeAlertDialog, FileFilter in FS descriptor
+- `NativeNote.h` — NativeNotePermission, NativeNoteAction/Category, NativeNoteCenterDelegate, extended NativeNoteCenter
+- `NativeMenu.h` — NativeMenuShortcut, NativeMenuItemType, setTitle/setChecked/setShortcut on NativeMenuItem, removeMenuItem/removeAllItems on NativeMenu, checkbox/radio factories, context menu
+- `Notification.h` (UI) — NotificationDelegate, requestPermission, remove/removeAll
+- `Menu.h` (UI) — setTitle/setShortcut/setChecked on MenuItem, addItem/removeItem/removeAllItems on Menu, CheckboxMenuItem/RadioMenuItem factories, ShowContextMenu, onValidateItem delegate
 
 ### New source files per platform
 Each of the three backends (macos/, win/, gtk/) needs:

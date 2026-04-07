@@ -15,7 +15,8 @@ namespace OmegaWTK {
         Native::NNCP nativeNoteCenter;
     public:
         OMEGACOMMON_CLASS("OmegaWTK.NotifcationCenter")
-    
+
+        NotificationCenter();
         void send(NotificationDesc desc);
     };
 };

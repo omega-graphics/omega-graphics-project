@@ -170,7 +170,7 @@ public:
     void requestLayout();
     bool hasExplicitLayoutStyle() const;
     View & viewRef();
-    virtual OmegaCommon::Vector<Widget *> childWidgets() const;
+    virtual OmegaCommon::ArrayRef<WidgetPtr> childWidgets();
     virtual bool isLayoutResizable() const {
         return true;
     }

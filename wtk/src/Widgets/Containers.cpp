@@ -178,7 +178,7 @@ WidgetPtr StackWidget::addChild(const WidgetPtr & child,const StackSlot & slot){
     }
 
     for(std::size_t i = 0; i < children.size(); ++i){
-        if(children[i] == child.get()){
+        if(children[i] == child){
             if(i < childSlots.size()){
                 childSlots[i] = slot;
             }
@@ -187,7 +187,7 @@ WidgetPtr StackWidget::addChild(const WidgetPtr & child,const StackSlot & slot){
         }
     }
 
-    wireChild(child.get());
+    wireChild(child);
     auto childRect = child->rect();
     const float preferredMain = axis == StackAxis::Horizontal ? childRect.w : childRect.h;
     const float preferredCross = axis == StackAxis::Horizontal ? childRect.h : childRect.w;
@@ -205,8 +205,8 @@ bool StackWidget::removeChild(const WidgetPtr & child){
         return false;
     }
     for(std::size_t i = 0; i < children.size(); ++i){
-        if(children[i] == child.get()){
-            unwireChild(child.get());
+        if(children[i] == child){
+            unwireChild(child);
             if(i < childSlots.size()){
                 childSlots.erase(childSlots.begin() + static_cast<std::ptrdiff_t>(i));
             }
@@ -225,7 +225,7 @@ bool StackWidget::setSlot(const WidgetPtr & child,const StackSlot & slot){
         return false;
     }
     for(std::size_t i = 0; i < children.size(); ++i){
-        if(children[i] == child.get()){
+        if(children[i] == child){
             if(i < childSlots.size()){
                 childSlots[i] = slot;
             }
@@ -250,7 +250,7 @@ Core::Optional<StackSlot> StackWidget::getSlot(const WidgetPtr & child) const{
         return {};
     }
     for(std::size_t i = 0; i < children.size(); ++i){
-        if(children[i] == child.get() && i < childSlots.size()){
+        if(children[i] == child && i < childSlots.size()){
             return childSlots[i];
         }
     }
@@ -333,7 +333,7 @@ void StackWidget::layoutChildren(){
     const auto cacheCount = childSizeCache.size();
 
     for(std::size_t idx = 0; idx < count; ++idx){
-        auto *child = children[idx];
+        auto *child = children[idx].get();
         if(child == nullptr){
             continue;
         }

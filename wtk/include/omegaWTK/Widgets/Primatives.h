@@ -21,6 +21,7 @@ struct OMEGAWTK_EXPORT RectangleProps {
 class OMEGAWTK_EXPORT Rectangle : public Widget {
     RectangleProps props_;
 protected:
+    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
     void resize(Core::Rect & newRect) override;
@@ -42,6 +43,7 @@ struct OMEGAWTK_EXPORT RoundedRectangleProps {
 class OMEGAWTK_EXPORT RoundedRectangle : public Widget {
     RoundedRectangleProps props_;
 protected:
+    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
     void resize(Core::Rect & newRect) override;
@@ -59,6 +61,7 @@ struct OMEGAWTK_EXPORT EllipseProps {
 class OMEGAWTK_EXPORT Ellipse : public Widget {
     EllipseProps props_;
 protected:
+    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
     void resize(Core::Rect & newRect) override;
@@ -78,6 +81,7 @@ struct OMEGAWTK_EXPORT PathProps {
 class OMEGAWTK_EXPORT Path : public Widget {
     PathProps props_;
 protected:
+    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
     void resize(Core::Rect & newRect) override;
@@ -96,6 +100,7 @@ struct OMEGAWTK_EXPORT SeparatorProps {
 class OMEGAWTK_EXPORT Separator : public Widget {
     SeparatorProps props_;
 protected:
+    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
     void resize(Core::Rect & newRect) override;
@@ -120,6 +125,7 @@ struct OMEGAWTK_EXPORT LabelProps {
 class OMEGAWTK_EXPORT Label : public Widget {
     LabelProps props_;
 protected:
+    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
     void resize(Core::Rect & newRect) override;
@@ -141,6 +147,7 @@ struct OMEGAWTK_EXPORT IconProps {
 class OMEGAWTK_EXPORT Icon : public Widget {
     IconProps props_;
 protected:
+    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
     void resize(Core::Rect & newRect) override;
@@ -165,6 +172,7 @@ struct OMEGAWTK_EXPORT ImageProps {
 class OMEGAWTK_EXPORT Image : public Widget {
     ImageProps props_;
 protected:
+    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onPaint(PaintReason reason) override;
     void resize(Core::Rect & newRect) override;
 public:

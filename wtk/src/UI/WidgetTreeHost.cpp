@@ -230,8 +230,8 @@ namespace OmegaWTK {
 
     void WidgetTreeHost::initWidgetRecurse(Widget *parent){
         parent->init();
-        for(auto * child : parent->childWidgets()){
-            initWidgetRecurse(child);
+        for(const auto & child : parent->childWidgets()){
+            initWidgetRecurse(child.get());
         }
     }
 
@@ -243,8 +243,8 @@ namespace OmegaWTK {
         if(rootTree != nullptr){
             compositor->observeLayerTree(rootTree,syncLaneId);
         }
-        for(auto * child : parent->childWidgets()){
-            observeWidgetLayerTreesRecurse(child);
+        for(const auto & child : parent->childWidgets()){
+            observeWidgetLayerTreesRecurse(child.get());
         }
     }
 
@@ -256,8 +256,8 @@ namespace OmegaWTK {
         if(rootTree != nullptr){
             compositor->unobserveLayerTree(rootTree);
         }
-        for(auto * child : parent->childWidgets()){
-            unobserveWidgetLayerTreesRecurse(child);
+        for(const auto & child : parent->childWidgets()){
+            unobserveWidgetLayerTreesRecurse(child.get());
         }
     }
 
@@ -275,8 +275,8 @@ namespace OmegaWTK {
                 parent->invalidate(reason);
             }
         }
-        for(auto * child : parent->childWidgets()){
-            invalidateWidgetRecurse(child,reason,immediate);
+        for(const auto & child : parent->childWidgets()){
+            invalidateWidgetRecurse(child.get(),reason,immediate);
         }
     }
 
@@ -285,8 +285,8 @@ namespace OmegaWTK {
             return;
         }
         parent->view->getResizeCoordinator().beginResizeSession(sessionId);
-        for(auto * child : parent->childWidgets()){
-            beginResizeCoordinatorSessionRecurse(child,sessionId);
+        for(const auto & child : parent->childWidgets()){
+            beginResizeCoordinatorSessionRecurse(child.get(),sessionId);
         }
     }
 
@@ -297,8 +297,8 @@ namespace OmegaWTK {
         if(parent->paintMode() != PaintMode::Automatic){
             return true;
         }
-        for(auto * child : parent->childWidgets()){
-            if(detectAnimatedTreeRecurse(child)){
+        for(const auto & child : parent->childWidgets()){
+            if(detectAnimatedTreeRecurse(child.get())){
                 return true;
             }
         }
