@@ -175,8 +175,6 @@ struct OMEGAGTE_EXPORT TETriangulationResult {
         unsigned vertexCount();
     };
     std::vector<TEMesh> meshes;
-    SharedHandle<GEBuffer> gpuVertexBuffer;
-    unsigned gpuVertexCount = 0;
     unsigned totalVertexCount();
     void translate(float x,float y,float z,const GEViewport & viewport);
     void rotate(float pitch,float yaw,float roll);

@@ -535,10 +535,6 @@ void Compositor::scheduleCommand(SharedHandle<CompositorCommand> & command){
 
         if(hasSyncPacketMetadata(command)){
             markPacketQueued(command->syncLaneId,command->syncPacketId,command);
-            const bool renderLike = isRenderLikeCommand(command);
-            if(renderLike && commandHasNonNoOpRender(command)){
-                dropQueuedStaleForLaneLocked(command->syncLaneId,command);
-            }
         }
         // Assign a globally monotonic sequence number so the priority queue
         // can preserve FIFO submission order as a final tie-breaker.
@@ -958,6 +954,7 @@ bool Compositor::shouldDropNoOpTransparentFrame(std::uint64_t syncLaneId,std::ui
     if(entry.hasNonNoOpRender){
         return true;
     }
+    return false;
 }
 
 void Compositor::completePacketWithoutGpu(std::uint64_t syncLaneId,std::uint64_t syncPacketId){

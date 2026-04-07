@@ -9,6 +9,7 @@ This site features all the documentation for using OmegaWTK
   :maxdepth: 3
 
   About
+  UIModel
   Building
   BasicProject
   API

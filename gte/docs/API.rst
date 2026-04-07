@@ -1578,15 +1578,6 @@ TETriangulationResult
 
         CPU-side mesh data, one ``TEMesh`` per geometry sub-section.
 
-    .. cpp:member:: SharedHandle<GEBuffer> gpuVertexBuffer
-
-        The GPU vertex buffer, already uploaded and ready to bind to a render
-        pass at the appropriate register.
-
-    .. cpp:member:: unsigned gpuVertexCount
-
-        Total number of vertices in ``gpuVertexBuffer``.
-
     .. cpp:function:: unsigned totalVertexCount()
 
         Returns the sum of all vertex counts across all meshes.
@@ -1654,10 +1645,6 @@ Complete triangulation example
     // --- Draw: bind the GPU vertex buffer in a render pass ---
     cmdBuf->startRenderPass(passDesc);
     cmdBuf->setRenderPipelineState(pipeline);
-    cmdBuf->bindResourceAtVertexShader(rectResult.gpuVertexBuffer, 0);
-    cmdBuf->drawPolygons(
-        OmegaGTE::GERenderTarget::CommandBuffer::Triangle,
-        rectResult.gpuVertexCount, 0);
     cmdBuf->endRenderPass();
 
 ----
