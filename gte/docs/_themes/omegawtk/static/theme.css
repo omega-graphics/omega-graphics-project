@@ -5,13 +5,34 @@
 
 body {
     font-family: 'Avenir';
-    background-color: #525252;    
+    background-color: white;    
 }
 
-body h1 {
-    font-size: 32;
-    margin: auto;
-    background-color: #808080;
+div.highlight {
+    padding: 1%;
+    border: gray;
+    border-radius: 5px;
 }
+
+div.related {
+	padding:4%;
+}
+
+div.document {
+	padding:4%;
+}
+
+div.body { 
+	padding:8%;
+}
+
+section {
+	padding:2%;
+}
+
+h1, h2, h3, h4 {
+    margin: auto;
+}
+
 
 

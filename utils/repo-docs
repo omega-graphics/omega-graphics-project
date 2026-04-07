@@ -99,8 +99,8 @@ def validate_repo_root(repo_root: Path, error_message: str) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate Doxygen HTML documentation for the Omega Graphics Project "
-            "modules, including cross-module links via tagfiles."
+            "Generate Doxygen and Sphinx HTML documentation for the Omega Graphics Project "
+            "modules, including cross-module Doxygen tagfile links."
         )
     )
     parser.add_argument(
@@ -128,6 +128,16 @@ def parse_args() -> argparse.Namespace:
         help="Doxygen executable to invoke. Defaults to `doxygen` from PATH.",
     )
     parser.add_argument(
+        "--sphinx",
+        default="sphinx-build",
+        help="sphinx-build executable to invoke. Defaults to `sphinx-build` from PATH.",
+    )
+    parser.add_argument(
+        "--no-sphinx",
+        action="store_true",
+        help="Skip Sphinx documentation generation.",
+    )
+    parser.add_argument(
         "--clean",
         action="store_true",
         help="Delete the output directory before generating documentation.",
@@ -135,12 +145,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the work plan without invoking doxygen.",
+        help="Print the work plan without invoking doxygen or sphinx-build.",
     )
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="Print the generated config paths as they are used.",
+        help="Print the generated config paths and commands as they are used.",
     )
     return parser.parse_args()
 
@@ -330,6 +340,37 @@ def run_doxygen(
     subprocess.run(command, cwd=working_directory, check=True)
 
 
+def has_sphinx_docs(repo_root: Path, module: ModuleConfig) -> bool:
+    return (repo_root / module.root_dir / "docs" / "conf.py").is_file()
+
+
+def module_sphinx_dir(output_root: Path, module: ModuleConfig) -> Path:
+    return module_output_dir(output_root, module) / "sphinx"
+
+
+def ensure_sphinx_available(executable: str) -> None:
+    if shutil.which(executable) is None:
+        raise RuntimeError(
+            f"Could not find `{executable}` in PATH. Install Sphinx or pass --sphinx with an explicit path."
+        )
+
+
+def run_sphinx_build(
+    executable: str,
+    source_dir: Path,
+    output_dir: Path,
+    dry_run: bool,
+    verbose: bool,
+) -> None:
+    command = [executable, "-b", "html", str(source_dir), str(output_dir)]
+    if dry_run or verbose:
+        print(" ".join(command))
+    if dry_run:
+        return
+    output_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(command, check=True)
+
+
 def write_landing_page(output_root: Path, selected_modules: Sequence[ModuleConfig]) -> None:
     lines = [
         "<!doctype html>",
@@ -337,37 +378,53 @@ def write_landing_page(output_root: Path, selected_modules: Sequence[ModuleConfi
         "<head>",
         "  <meta charset=\"utf-8\">",
         "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
-        "  <title>Omega Graphics Project Doxygen</title>",
+        "  <title>Omega Graphics Project Documentation</title>",
         "  <style>",
         "    body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; margin: 2rem auto; max-width: 56rem; line-height: 1.5; color: #111827; }",
         "    h1 { margin-bottom: 0.5rem; }",
         "    ul { padding-left: 1.25rem; }",
+        "    li { margin-bottom: 0.35rem; }",
         "    code { background: #f3f4f6; padding: 0.1rem 0.35rem; border-radius: 0.25rem; }",
         "    .meta { color: #4b5563; }",
+        "    .links a { margin-right: 0.75rem; }",
         "  </style>",
         "</head>",
         "<body>",
-        "  <h1>Omega Graphics Project Doxygen</h1>",
-        "  <p class=\"meta\">Generated per-module HTML docs with cross-module tagfile links.</p>",
+        "  <h1>Omega Graphics Project Documentation</h1>",
+        "  <p class=\"meta\">Per-module HTML docs. Doxygen includes cross-module tagfile links.</p>",
         "  <ul>",
     ]
 
     for module in selected_modules:
-        html_index = module_html_dir(output_root, module) / "index.html"
-        relative_html_index = html_index.relative_to(output_root)
         deps = ", ".join(module.dependencies) if module.dependencies else "none"
+
+        link_parts: List[str] = []
+
+        doxy_index = module_html_dir(output_root, module) / "index.html"
+        if doxy_index.exists():
+            href = doxy_index.relative_to(output_root).as_posix()
+            link_parts.append(f"<a href=\"{href}\">API (Doxygen)</a>")
+
+        sphinx_index = module_sphinx_dir(output_root, module) / "index.html"
+        if sphinx_index.exists():
+            href = sphinx_index.relative_to(output_root).as_posix()
+            link_parts.append(f"<a href=\"{href}\">Guide (Sphinx)</a>")
+
+        links_html = " ".join(link_parts) if link_parts else "<span class=\"meta\">no docs built</span>"
+
         lines.append(
-            "    <li><a href=\"{href}\">{name}</a> <span class=\"meta\">(dependencies: {deps})</span></li>".format(
-                href=relative_html_index.as_posix(),
+            "    <li><strong>{name}</strong> <span class=\"meta\">(dependencies: {deps})</span>"
+            " &mdash; <span class=\"links\">{links}</span></li>".format(
                 name=module.name,
                 deps=deps,
+                links=links_html,
             )
         )
 
     lines.extend(
         [
             "  </ul>",
-            "  <p class=\"meta\">Tip: the module docs live under <code>MODULE/html</code> and the tagfiles live beside them.</p>",
+            "  <p class=\"meta\">Doxygen output: <code>MODULE/html/</code> &nbsp; Sphinx output: <code>MODULE/sphinx/</code></p>",
             "</body>",
             "</html>",
         ]
@@ -397,12 +454,18 @@ def main() -> int:
         validate_selected_modules(selected_modules)
         output_root = resolve_output_directory(repo_root, args.output)
 
+        run_sphinx = not args.no_sphinx
+
         if not args.dry_run:
             ensure_doxygen_available(args.doxygen)
+            if run_sphinx:
+                ensure_sphinx_available(args.sphinx)
 
         if args.clean and output_root.exists():
             shutil.rmtree(output_root)
         output_root.mkdir(parents=True, exist_ok=True)
+
+        total_passes = 3 if run_sphinx else 2
 
         with tempfile.TemporaryDirectory(prefix="repo-docs-") as temp_dir_name:
             config_dir = Path(temp_dir_name)
@@ -410,7 +473,7 @@ def main() -> int:
             print(f"Repository root: {repo_root}")
             print(f"Output root: {output_root}")
             print("Modules:", ", ".join(module.name for module in selected_modules))
-            print("Pass 1/2: generating tagfiles")
+            print(f"Pass 1/{total_passes}: generating tagfiles")
 
             for module in selected_modules:
                 config_path = write_config_file(
@@ -423,7 +486,7 @@ def main() -> int:
                 )
                 run_doxygen(args.doxygen, config_path, repo_root, args.dry_run, args.verbose)
 
-            print("Pass 2/2: generating HTML documentation")
+            print(f"Pass 2/{total_passes}: generating Doxygen HTML documentation")
             for module in selected_modules:
                 config_path = write_config_file(
                     config_dir,
@@ -434,6 +497,19 @@ def main() -> int:
                     html_enabled=True,
                 )
                 run_doxygen(args.doxygen, config_path, repo_root, args.dry_run, args.verbose)
+
+        if run_sphinx:
+            print(f"Pass 3/{total_passes}: generating Sphinx HTML documentation")
+            for module in selected_modules:
+                if not has_sphinx_docs(repo_root, module):
+                    if args.verbose:
+                        print(f"  {module.name}: no Sphinx conf.py found, skipping")
+                    continue
+                source_dir = repo_root / module.root_dir / "docs"
+                sphinx_out = module_sphinx_dir(output_root, module)
+                if args.verbose or args.dry_run:
+                    print(f"  {module.name}: {source_dir} -> {sphinx_out}")
+                run_sphinx_build(args.sphinx, source_dir, sphinx_out, args.dry_run, args.verbose)
 
         if not args.dry_run:
             write_landing_page(output_root, selected_modules)

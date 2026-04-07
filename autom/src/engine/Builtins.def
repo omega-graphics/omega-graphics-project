@@ -27,7 +27,7 @@ typedef int AutomBuiltinFunc;
 #define BUILTIN_FS_SYMLINK "Symlink"
 #define BUILTIN_FS_MKDIR "Mkdir"
 
-#define BUILTIN_CONFIG_FILE "config_file"
+#define BUILTIN_CONFIG_FILE "configure"
 #define BUILTIN_FIND_PROGRAM "find_program"
 
 #endif

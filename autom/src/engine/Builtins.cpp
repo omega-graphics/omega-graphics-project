@@ -394,82 +394,87 @@ namespace autom::eval {
         std::istream & in;
         std::ostream & out;
     public:
-        explicit SourceFileConfigDriver(std::istream &in,std::ostream &out) :out(out),in(in) {
+        explicit SourceFileConfigDriver(std::istream &in,std::ostream &out) :out(out),in(in) {};
 
-        };
-        void performConfiguration(EvalContext & ctxt){
+        bool performConfiguration(EvalContext & ctxt){
 
-            auto getChar = [&](){
+            auto getChar = [&]() -> char {
                 return char(in.get());
             };
 
-            auto aheadChar = [&](){
-                auto c = (char)in.get();
-                in.seekg(-1,std::ios::cur);
-                return c;
+            auto peekChar = [&]() -> char {
+                return char(in.peek());
             };
 
-            auto isIdentifierChar = [=](char & c){
-                return (bool)std::isalnum(c) || c == '_';
+            auto isIdentStart = [](char c) -> bool {
+                return (bool)std::isalpha((unsigned char)c) || c == '_';
+            };
+
+            auto isIdentChar = [](char c) -> bool {
+                return (bool)std::isalnum((unsigned char)c) || c == '_';
             };
 
             char c;
-            while((c = getChar()) != -1){
-                switch (c) {
-                    case '@': {
-                        char at = c;
-                        std::string variable;
+            while(in.good()) {
+                c = getChar();
+                if(c == char(-1)) break;
 
-                        while((c = getChar()) != '@'){
-                            if(!isIdentifierChar(c)){
-                                out << formatmsg("@0@1",at,variable).res;
-                                continue;
-                            }
-                            variable.push_back(c);
-                        }
-
-                        auto object = ctxt.eval->referVarWithScope(ctxt.currentScope,variable);
-                        if(object != nullptr) {
-                            if(objectIsString(object)){
-                                out << castToString(object)->value();
-                            }
-                            else {
-                                ctxt.logError("Unsupported variable type");
-                                return;
-                            }
-                        }
-
-
-                        break;
+                if(c == '@' && in.good() && isIdentStart(peekChar())) {
+                    std::string variable;
+                    while(in.good() && isIdentChar(peekChar())) {
+                        variable.push_back(getChar());
                     }
-                    default: {
-                        out << c;
-                        break;
+
+                    if(!in.good() || peekChar() != '@') {
+                        // Not a well-formed @IDENT@ — pass through literally.
+                        out << '@' << variable;
+                        continue;
                     }
+                    getChar(); // consume closing '@'
+
+                    auto object = ctxt.eval->referVarWithScope(ctxt.currentScope, variable);
+                    if(object == nullptr) {
+                        // referVarWithScope already printed the error.
+                        return false;
+                    }
+                    if(!objectIsString(object)) {
+                        ctxt.logError(formatmsg("configure: variable `@0` must be a String", variable).res);
+                        return false;
+                    }
+                    out << castToString(object)->value();
+                } else {
+                    out << c;
                 }
             }
+            return true;
         }
     };
 
-    Object *bf_config_file(MapRef<std::string,Object *> args,EvalContext & ctxt){
+    Object *bf_configure(MapRef<std::string,Object *> args,EvalContext & ctxt){
 
         auto *inFile = castToString(args["in"]);
         auto *outFile = castToString(args["out"]);
 
         if(!std::filesystem::exists(inFile->value().data())){
-            ctxt.logError("Input file in config_file function does not exist");
-        }
-        auto inFileDir = std::filesystem::path(outFile->value().data()).parent_path();
-        if(!std::filesystem::exists(inFileDir)){
-            std::filesystem::create_directories(inFileDir);
+            ctxt.logError(formatmsg("configure: input file `@0` does not exist", inFile->value()).res);
+            ctxt.setCode(INVOKE_FAILED);
+            return nullptr;
         }
 
-        std::ifstream in(inFile->value().data(),std::ios::in);
-        std::ofstream out(outFile->value().data(),std::ios::out);
+        auto outPath = std::filesystem::path(outFile->value().data());
+        if(!std::filesystem::exists(outPath.parent_path())){
+            std::filesystem::create_directories(outPath.parent_path());
+        }
 
-        SourceFileConfigDriver configDriver {in,out};
-        configDriver.performConfiguration(ctxt);
+        std::ifstream in(inFile->value().data(), std::ios::in);
+        std::ofstream out(outPath, std::ios::out);
 
+        SourceFileConfigDriver configDriver{in, out};
+        if(!configDriver.performConfiguration(ctxt)){
+            out.close();
+            std::filesystem::remove(outPath);
+            ctxt.setCode(INVOKE_FAILED);
+        }
 
         return nullptr;
     }
@@ -524,7 +529,9 @@ namespace autom::eval {
 
         #define BUILTIN_FUNC(name,func,...)if(subject == name){\
             if(checkArgs({__VA_ARGS__})){\
-                return func({ready_args.data(),ready_args.data() + ready_args.size()},ctxt);\
+                auto _result = func({ready_args.data(),ready_args.data() + ready_args.size()},ctxt);\
+                if(ctxt.code != INVOKE_SUCCESS){ *code = ctxt.code; return nullptr; }\
+                return _result;\
             }\
             else {\
                 *code = INVOKE_FAILED;\
@@ -558,7 +565,7 @@ namespace autom::eval {
 
         BUILTIN_FUNC(BUILTIN_FIND_PROGRAM,bf_find_program,{"cmd",Object::String});
 
-        BUILTIN_FUNC(BUILTIN_CONFIG_FILE,bf_config_file,{"in",Object::String},{"out",Object::String});
+        BUILTIN_FUNC(BUILTIN_CONFIG_FILE,bf_configure,{"in",Object::String},{"out",Object::String});
         
         BUILTIN_FUNC(BUILTIN_SUBDIR,bf_subdir,{"path",Object::String});
 

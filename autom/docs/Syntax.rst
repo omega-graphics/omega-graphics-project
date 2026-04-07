@@ -52,6 +52,16 @@ Keywords
 **else**
     Defines the end of a conditional collection.
 
+**foreach**
+    Iterates over the elements of an array.
+
+    Usage::
+
+        var items = ["a", "b", "c"]
+        foreach item in items {
+            print(msg:item)
+        }
+
 --------------------------
 Builtin Variables/Objects:
 --------------------------
@@ -118,7 +128,7 @@ Builtin Functions:
 ------------------
 
 **print(msg:any) -> Void**
-    Prints a value to the console
+    Prints a value to the console.
 
     Usage::
 
@@ -131,25 +141,107 @@ Builtin Functions:
         print(msg:true)
         # --> true
 
+**project(name:string, version:string) -> Void**
+    Declares the current project. Must be called before any targets are created.
 
+    Usage::
 
-**Executable(name:string,sources:string[]) -> Executable**
+        project(name:"MyLib", version:"1.0")
 
-    Creates an Executable target.
+**subdir(path:string) -> Void**
+    Evaluates the ``AUTOM.build`` file found in the given subdirectory.
+    The subdirectory path is relative to the current build file.
 
+    Usage::
 
-**Shared(name:string,sources:string[]) -> Shared**
+        subdir(path:"./engine")
 
-    Creates a Shared Library target.
+**configure(in:string, out:string) -> Void**
+    Reads the input file, substitutes all ``@VAR@`` tokens with the value of
+    the corresponding variable in the current scope, and writes the result to
+    the output file. The output directory is created automatically if it does
+    not exist.
 
+    Substitution rules:
 
-**Static(name:string,sources:string[]) -> Static**
+    - ``@IDENT@`` is replaced by the string value of variable ``IDENT``.
+    - Lookup is case-sensitive and matches the exact variable name.
+    - A bare ``@`` not followed by a valid identifier (letters, digits, ``_``)
+      is passed through literally, so email addresses and similar text are safe.
+    - If ``IDENT`` is not defined in the current scope, or is not a ``String``,
+      the build stops with an error and the output file is removed.
 
-    Creates an Static Library target.
+    Usage::
 
-**SourceGroup(name:string,sources:string[]) -> SourceGroup**
+        var APP_VERSION = "1.2.0"
+        configure(in:"./src/version.h.in", out:"./gen/version.h")
 
-    Creates a Source Group target.
+        # version.h.in contains:
+        #   #define APP_VERSION "@APP_VERSION@"
+        # version.h output:
+        #   #define APP_VERSION "1.2.0"
+
+**find_program(cmd:string) -> string**
+    Searches ``PATH`` for the given program name and returns its absolute path,
+    or ``Void`` if the program is not found.
+
+    Usage::
+
+        var cmake_path = find_program(cmd:"cmake")
+
+**Executable(name:string, sources:string[]) -> Executable**
+    Creates an executable target.
+
+**Shared(name:string, sources:string[]) -> Shared**
+    Creates a shared library target.
+
+**Archive(name:string, sources:string[]) -> Archive**
+    Creates a static library target (produces a ``.a`` / ``.lib`` archive).
+
+**SourceGroup(name:string, sources:string[]) -> SourceGroup**
+    Creates a source group — a named collection of source files that can be
+    linked into other targets as a dependency but does not produce its own
+    output binary.
+
+**GroupTarget(name:string, deps:string[]) -> GroupTarget**
+    Creates a group target that aggregates other named targets under a single
+    dependency name. Useful for expressing "build all of these together."
+
+    Usage::
+
+        GroupTarget(name:"all_libs", deps:["engine", "renderer"])
+
+**Script(name:string, cmd:string, args:string[], outputs:string[]) -> Script**
+    Creates a custom script target. ``cmd`` is the program to invoke,
+    ``args`` are the arguments passed to it, and ``outputs`` lists the files
+    the script produces. At least one output must be declared.
+
+    Usage::
+
+        Script(
+            name:"gen_header",
+            cmd:"python3",
+            args:["./tools/gen.py", "--out", "./gen/header.h"],
+            outputs:["./gen/header.h"]
+        )
+
+**Copy(name:string, sources:string[], dest:string) -> Copy**
+    Creates a target that copies one or more files or directories to ``dest``.
+
+**Symlink(name:string, source:string, dest:string) -> Symlink**
+    Creates a target that creates a symbolic link at ``dest`` pointing to
+    ``source``.
+
+**Mkdir(name:string, dest:string) -> Mkdir**
+    Creates a target that creates the directory at ``dest``.
+
+**install_targets(targets:string[], dest:string) -> Void**
+    Registers one or more targets for installation to the given destination
+    prefix. Records an entry in the ``AUTOMINSTALL`` file.
+
+**install_files(files:string[], dest:string) -> Void**
+    Registers one or more files for installation to the given destination
+    prefix. Records an entry in the ``AUTOMINSTALL`` file.
 
 
 

@@ -28,7 +28,7 @@ file(GLOB WRAPGEN_SRCS "wrapgen/*.cpp")
 
 add_omega_graphics_tool("omega-wrapgen" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} "wrapgen/main/main.cpp")
 
-add_omega_graphics_tool("omegawtk-assetc" LIBS "OmegaCommon" SOURCES assetc/assetc.h assetc/main.cpp)
+add_omega_graphics_tool("omega-assetc" LIBS "OmegaCommon" SOURCES assetc/assetc.h assetc/main.cpp)
 
 # add_omega_graphics_tool("lex-test" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} "wrapgen/tests/lex-test.cpp")
 
