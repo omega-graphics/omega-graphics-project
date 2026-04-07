@@ -3,6 +3,21 @@
          "third_party_dest":"./deps"
     },
     "commands":[
-    
+         {
+             "type":"download",
+             "url":"https://github.com/PhilipHazel/pcre2/releases/download/pcre2-10.38/pcre2-10.38.zip",
+             "dest":"./temp/pcre2.zip"
+         },
+         {
+             "type":"unzip",
+             "zipfile":"./temp/pcre2.zip",
+             "dest":"$(third_party_dest)/pcre2/code"
+         },
+          {
+            "type":"git_clone",
+            "url":"https://github.com/openssl/openssl.git",
+            "dest":"$(third_party_dest)/openssl/code",
+            "branch":"default"
+         }
     ]
 }

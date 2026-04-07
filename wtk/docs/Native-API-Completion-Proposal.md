@@ -30,6 +30,8 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 | `NativeItem.h` | View/HWND tree: add/remove children, events, scroll | macOS, Win32, GTK |
 | `NativeEvent.h` | Event types and emitter/processor | macOS, Win32; GTK incomplete |
 | `NativeMenu.h` | Menu and menu item abstraction | macOS, Win32, GTK |
+
+> **Note (macOS):** `NativeMenu` on macOS is bound to the application (`NSApp.mainMenu`), not to individual windows. On Win32 and GTK, menus are per-window. The current `AppWindow::setMenu` API hides this distinction, but on macOS the menu bar is shared across all windows. A future revision should consider moving menu ownership to `NativeApp` for macOS targets (or making the binding strategy platform-aware) so that menu changes when switching windows are handled correctly.
 | `NativeDialog.h` | File dialog, note dialog | macOS, Win32; GTK missing |
 | `NativeNote.h` | System notification (NoteCenter) | macOS, Win32; GTK missing |
 | `NativeTheme.h` | Theme query and observer | macOS, Win32; GTK missing |

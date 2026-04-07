@@ -2,11 +2,30 @@
 
 This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) into a concrete, phase-by-phase implementation plan. Each phase lists tasks in order, files to create or modify, and how to verify the phase is complete.
 
+The plan is constrained by `aqua/AGENTS.md` and therefore assumes the following implementation rules for all phases:
+
+- AQUA should borrow proven ideas from Unreal Engine and Unity, but avoid cloning either engine's code structure or reproducing systems that OmegaGTE, OmegaWTK, or PhysX already provide well.
+- All new engine code stays modular, with clear subsystem boundaries and no editor-specific code inside core runtime modules.
+- All new files use PascalCase with the `AQUA<Name>` prefix.
+- `OmegaGTE` is the required rendering backend integration for AQUA.
+- `OmegaWTK` is the required editor UI/runtime shell for AQUA tools.
+- `PhysX` by NVIDIA is the required physics stack.
+- Rendering phases must converge on physically based rendering, not a permanently unlit or ad hoc shading path.
+
+## Constraint Alignment
+
+These constraints change the implementation priorities in a few important ways:
+
+- Phase 1 must establish naming and modularity guardrails early, otherwise later work will accumulate incompatible files and APIs.
+- Rendering work must be built directly on `OmegaGTE`, and material/shader APIs should be shaped for a future PBR pipeline from the beginning.
+- Editor integration must assume `OmegaWTK` is the long-term host, not just a temporary bootstrap window.
+- PhysX is not an optional long-term backend choice; it is the physics architecture this plan targets.
+
 ---
 
 ## Phase 1: Core and Scene Consistency
 
-**Goal:** Fix stub inconsistencies, introduce a single “scene node” type, add application lifecycle, and wire the editor to AQUA—no rendering yet.
+**Goal:** Fix stub inconsistencies, introduce a single scene entity type, add application lifecycle, establish module/naming compliance, and wire the OmegaWTK editor shell to AQUA. No rendering yet.
 
 **Prerequisites:** None (start from current stub).
 
@@ -79,6 +98,20 @@ This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) in
 
 ---
 
+### 1.6 Modularity and naming compliance
+
+| # | Task | Details |
+|---|------|---------|
+| 1 | Audit file and type names | Rename or queue renames for any noncompliant engine files/types so new work follows `AQUA<Name>` PascalCase consistently. |
+| 2 | Split runtime/editor concerns | Keep OmegaWTK usage in editor targets and interfaces only; core engine modules should expose platform/editor-agnostic APIs. |
+| 3 | Document module boundaries | In `aqua/CMakeLists.txt` and any new module CMake files, make Rendering, Physics, Scene, and Editor dependencies explicit so future work remains modular. |
+
+**Files:** `aqua/CMakeLists.txt`, engine headers/sources that violate naming, optional `aqua/docs/` notes if a migration list is needed.
+
+**Done when:** New engine work has a compliant naming pattern, runtime/editor boundaries are explicit, and module ownership is clear in build files.
+
+---
+
 ### Phase 1 summary
 
 | Deliverable | Description |
@@ -88,12 +121,13 @@ This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) in
 | AQUAApplication | Init / Tick / Shutdown; no GTE yet. |
 | Component base | Base type for future mesh/camera/light components. |
 | Editor | Links AQUA; creates Application + empty Scene; runs tick loop. |
+| Modularity | Naming and runtime/editor boundaries are enforced before later phases. |
 
 ---
 
 ## Phase 2: First Frame with OmegaGTE
 
-**Goal:** Drive OmegaGTE from AQUA: create GTE and a render target from a window, then draw one frame (e.g. clear + fullscreen quad or cube) and present.
+**Goal:** Drive OmegaGTE from AQUA: create GTE and a render target from a window, draw one frame, and establish renderer/material APIs that can grow into physically based rendering instead of a throwaway unlit path.
 
 **Prerequisites:** Phase 1 done; OmegaGTE built and linkable.
 
@@ -129,12 +163,12 @@ This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) in
 | # | Task | Details |
 |---|------|---------|
 | 1 | AQUAMesh | Create `engine/include/aqua/Rendering/AQUAMesh.h` (and .cpp if needed). Hold a GTE buffer (vertex + index) or reference to one, and topology. For Phase 2, a single hardcoded quad or cube is enough (e.g. 4 or 8 vertices, 6 or 12 indices). |
-| 2 | AQUAMaterial | Create `engine/include/aqua/Rendering/AQUAMaterial.h` (and .cpp). Hold or reference a `GERenderPipelineState` and any bindings (can be empty for a single unlit pass). |
-| 3 | Create default pipeline and mesh in renderer | In AQUARenderer (or a small helper), create one pipeline state (e.g. from a built-in or minimal OmegaSL shader) and one mesh (quad or cube). |
+| 2 | AQUAMaterial | Create `engine/include/aqua/Rendering/AQUAMaterial.h` (and .cpp). Hold or reference a `GERenderPipelineState` plus the minimum material inputs needed for the future PBR path: base color, roughness, metallic, and optional normal/emissive placeholders. |
+| 3 | Create default pipeline and mesh in renderer | In AQUARenderer (or a small helper), create one pipeline state and one mesh (quad or cube). Even if the first shader is simple, its resource layout should be compatible with later PBR expansion rather than a dead-end unlit API. |
 
 **Files:** `engine/include/aqua/Rendering/AQUAMesh.h`, `engine/src/Rendering/AQUAMesh.cpp`, `engine/include/aqua/Rendering/AQUAMaterial.h`, `engine/src/Rendering/AQUAMaterial.cpp`.
 
-**Done when:** Renderer can create one mesh and one material; draw one draw call (e.g. fullscreen quad or cube) inside beginFrame/endFrame.
+**Done when:** Renderer can create one mesh and one material, issue one draw call inside beginFrame/endFrame, and expose a material interface that does not need to be redesigned when PBR arrives.
 
 ---
 
@@ -158,14 +192,14 @@ This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) in
 |-------------|-------------|
 | AQUARenderer | Owns GTE and render target; beginFrame / endFrame / present. |
 | AQUACamera | Data only; FOV, near/far, viewport. |
-| AQUAMesh / AQUAMaterial | One default mesh and one pipeline; used by renderer. |
+| AQUAMesh / AQUAMaterial | One default mesh and one OmegaGTE pipeline; material API already shaped for later PBR. |
 | First frame | Clear + one draw + present from AQUA. |
 
 ---
 
-## Phase 3: Scene-Driven Rendering
+## Phase 3: Scene-Driven Rendering and First PBR Slice
 
-**Goal:** Renderer reads from Scene: traverse entities, collect camera and mesh components, and draw all meshes (one camera, multiple meshes); optional simple lighting.
+**Goal:** Renderer reads from Scene: traverse entities, collect camera and mesh components, draw all meshes, and land the first physically based lighting/material pass on top of OmegaGTE.
 
 **Prerequisites:** Phase 1 and 2 done.
 
@@ -197,16 +231,17 @@ This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) in
 
 ---
 
-### 3.3 Optional: simple lighting
+### 3.3 First physically based lighting pass
 
 | # | Task | Details |
 |---|------|---------|
-| 1 | Light component (data) | Add a simple light component (directional or point): direction/position, color, intensity. No PhysX or rendering logic beyond data. |
-| 2 | Pass to renderer | Renderer collects light components and passes them to the pipeline (e.g. one directional light in a constant buffer). Extend the default shader to use it. |
+| 1 | Light component (data) | Add a light component (directional first, point optional): direction/position, color, intensity. Keep the data model compatible with a PBR lighting pass. |
+| 2 | Pass to renderer | Renderer collects light components and passes them to the pipeline (e.g. one directional light in a constant buffer). Extend the default shader to evaluate at least one physically based lighting path using the material parameters introduced in Phase 2. |
+| 3 | Validate material model | Confirm the default material supports base color, roughness, and metallic values end to end, even if texture support comes later. |
 
 **Files:** `engine/include/aqua/Scene/AQUALightComponent.h` (or Rendering), shader or pipeline update.
 
-**Done when:** One light affects the scene (e.g. directional); optional for phase completion.
+**Done when:** Scene rendering supports at least one light and a basic physically based shading path. This is part of phase completion, not optional.
 
 ---
 
@@ -216,13 +251,13 @@ This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) in
 |-------------|-------------|
 | Camera / mesh components | Attachable to entities; scene can be queried. |
 | Scene-driven draw | One camera, N meshes; transforms applied. |
-| Optional lighting | One light (e.g. directional) in a simple pass. |
+| First PBR pass | One light and physically based material evaluation running through the OmegaGTE renderer. |
 
 ---
 
 ## Phase 4: Editor Integration
 
-**Goal:** Editor viewport shows the current scene; hierarchy and inspector for entities and transforms; scene load/save.
+**Goal:** The OmegaWTK-powered editor viewport shows the current scene; hierarchy and inspector edit entities and transforms; scene load/save works through engine serialization.
 
 **Prerequisites:** Phase 1–3 done; OmegaWTK builds and runs.
 
@@ -230,7 +265,7 @@ This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) in
 
 | # | Task | Details |
 |---|------|---------|
-| 1 | Viewport widget or panel | In the editor, add a widget/panel that can provide a native window handle (or GTE-compatible render target). On resize, notify or recreate render target if needed. |
+| 1 | Viewport widget or panel | In the OmegaWTK editor, add a widget/panel that can provide a native window handle (or GTE-compatible render target). On resize, notify or recreate render target if needed. |
 | 2 | Render current scene to viewport | Each editor frame (or on timer): get current Scene from AQUAApplication (or editor state), call AQUARenderer with the viewport’s render target and that scene. Use the same GTE device/context as the rest of the app. |
 | 3 | Camera for viewport | Either use the scene’s main camera or a dedicated editor camera (e.g. orbit) for the viewport; ensure the renderer can use it for view/projection. |
 
@@ -281,7 +316,7 @@ This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) in
 
 ## Phase 5: Physics (PhysX)
 
-**Goal:** Integrate NVIDIA PhysX: scene, rigid bodies, collision shapes; sync entity transforms each frame; physics step in main loop.
+**Goal:** Integrate NVIDIA PhysX as AQUA's required physics backend: scene, rigid bodies, collision shapes, material properties, transform sync, and physics step in the main loop.
 
 **Prerequisites:** Phase 1–4 (or at least 1–3); PhysX SDK available (build or package).
 
@@ -290,12 +325,12 @@ This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) in
 | # | Task | Details |
 |---|------|---------|
 | 1 | Obtain PhysX | Add PhysX as submodule, vendored source, or `find_package(PhysX)`; ensure the project builds PhysX (or links to prebuilt) for the target platforms. |
-| 2 | CMake option | Add an option (e.g. `AQUA_USE_PHYSX`) to enable/disable the Physics module. When disabled, do not compile or link PhysX. |
-| 3 | AQUA Physics sources | Add `engine/src/Physics/*.cpp` to the AQUA target only when PhysX is enabled; add PhysX include dirs and libraries. |
+| 2 | Build policy | If a temporary bootstrap option is needed during early bring-up, keep it explicitly temporary. The target engine configuration should treat PhysX as required and enable it by default on supported platforms. |
+| 3 | AQUA Physics sources | Add `engine/src/Physics/*.cpp` to the AQUA target, wire PhysX include dirs and libraries, and make PhysX-backed physics the canonical implementation rather than an interchangeable afterthought. |
 
 **Files:** `aqua/CMakeLists.txt`, possibly `cmake/FindPhysX.cmake` or similar.
 
-**Done when:** With AQUA_USE_PHYSX=ON, AQUA builds and links PhysX; with OFF, build succeeds without Physics.
+**Done when:** Supported AQUA builds link and run against PhysX by default, and the physics module is not blocked on a placeholder backend.
 
 ---
 
@@ -332,11 +367,11 @@ This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) in
 | # | Task | Details |
 |---|------|---------|
 | 1 | AQUACollisionShape header | Create `engine/include/aqua/Physics/AQUACollisionShape.h`. Wrapper for PhysX shapes: box, sphere, capsule (and optionally convex/triangle mesh). Create shape, attach to rigid body. |
-| 2 | Implementation | Create `engine/src/Physics/AQUACollisionShape.cpp`. Create PxBoxGeometry, PxSphereGeometry, PxCapsuleGeometry, etc.; create PxShape and attach to the rigid body actor. |
+| 2 | Implementation | Create `engine/src/Physics/AQUACollisionShape.cpp`. Create PxBoxGeometry, PxSphereGeometry, PxCapsuleGeometry, etc.; create PxShape and attach to the rigid body actor. Include PhysX material setup so friction/restitution are part of the authoring model instead of hardcoded constants. |
 
 **Files:** `engine/include/aqua/Physics/AQUACollisionShape.h`, `engine/src/Physics/AQUACollisionShape.cpp`.
 
-**Done when:** Rigid bodies can have box/sphere/capsule collision shapes; simulation runs and collisions are resolved.
+**Done when:** Rigid bodies can have box/sphere/capsule collision shapes with PhysX material data; simulation runs and collisions are resolved.
 
 ---
 
@@ -357,17 +392,17 @@ This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) in
 
 | Deliverable | Description |
 |-------------|-------------|
-| PhysX in build | Optional Physics module; links PhysX when enabled. |
+| PhysX in build | Required physics backend for supported AQUA builds. |
 | AQUAPhysicsScene | Create, step(dt), destroy. |
 | AQUARigidBody | Sync Transform ↔ PhysX actor; dynamic and kinematic. |
-| AQUACollisionShape | Box, sphere, capsule (and optionally more). |
+| AQUACollisionShape | Box, sphere, capsule (and optionally more), with PhysX material properties. |
 | Main loop | Physics step → sync → render. |
 
 ---
 
 ## Phase 6: Polish and Extension
 
-**Goal:** Input, extended PhysX features, audio placeholder, documentation and samples.
+**Goal:** Input, extended PhysX features, audio placeholder, documentation and samples, with the final docs reflecting the mandated OmegaGTE + OmegaWTK + PhysX stack and modular naming rules.
 
 **Prerequisites:** Phases 1–5 (or at least 1–3 and 5 for a physics-focused path).
 
@@ -415,7 +450,7 @@ This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) in
 
 | # | Task | Details |
 |---|------|---------|
-| 1 | README and build instructions | Update `aqua/README.md` with how to build AQUA (with/without PhysX, editor), and how to run a minimal game or editor. |
+| 1 | README and build instructions | Update `aqua/README.md` with how to build AQUA with the required `OmegaGTE`, `OmegaWTK`, and `PhysX` stack, plus how to run a minimal game or editor. Document naming and module rules for contributors. |
 | 2 | Sample: blank scene | Minimal sample that creates a scene, one camera, no meshes; runs and renders (clear only or one quad). |
 | 3 | Sample: cube + camera | Scene with one camera and one cube (mesh); demonstrates scene-driven rendering. |
 | 4 | Sample: rigid body + collision | Scene with static ground and one or two dynamic boxes; demonstrates physics and transform sync. |
@@ -436,6 +471,14 @@ This document turns the [AQUA Design Document](AQUA-Design-Stub-to-Engine.md) in
 | Docs and samples | README, blank scene, cube+camera, physics sample. |
 
 ---
+
+## Cross-Phase Guardrails
+
+- Do not introduce engine files that break `AQUA<Name>` PascalCase naming.
+- Keep rendering code centered on `OmegaGTE`; do not create a parallel graphics abstraction that bypasses it.
+- Keep editor UI centered on `OmegaWTK`; editor-only conveniences should not leak into the runtime core.
+- Prefer adopting concepts from Unity and Unreal where they help ergonomics or capability, but avoid copying those engines' APIs or redundant subsystem layering verbatim.
+- Maintain modular boundaries so Rendering, Physics, Scene, Core, and Editor can evolve independently.
 
 ## Dependency overview
 
@@ -462,8 +505,8 @@ Phase 1 ────────────────────────
 ## Checklist: am I done with a phase?
 
 - **Phase 1:** Transform works; one scene node type; Application init/tick/shutdown; editor runs and ticks with empty scene.
-- **Phase 2:** One frame drawn via AQUA (clear + one mesh + present).
-- **Phase 3:** Scene with multiple entities and mesh/camera components renders correctly.
+- **Phase 2:** One frame drawn via AQUA on top of OmegaGTE, with renderer/material APIs ready for PBR.
+- **Phase 3:** Scene with multiple entities and mesh/camera components renders correctly through a first physically based lighting pass.
 - **Phase 4:** Editor viewport shows scene; hierarchy and inspector edit transforms; load/save scene.
-- **Phase 5:** PhysX scene steps; rigid bodies and shapes work; transforms sync; main loop runs physics then render.
-- **Phase 6:** Input and audio stubs exist; at least one sample and README updated.
+- **Phase 5:** PhysX scene steps; rigid bodies, shapes, and PhysX material properties work; transforms sync; main loop runs physics then render.
+- **Phase 6:** Input and audio stubs exist; at least one sample and README updated with the required OmegaGTE/OmegaWTK/PhysX stack and contributor rules.

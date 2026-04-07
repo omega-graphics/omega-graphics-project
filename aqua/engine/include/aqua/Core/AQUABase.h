@@ -1,9 +1,9 @@
-#include <vector>
-#include <memory>
-
 #ifndef AQUA_CORE_AQUABASE_H
 #define AQUA_CORE_AQUABASE_H
 
+#include <cstdint>
+#include <memory>
+#include <vector>
 
 #ifdef _WIN32
 #ifdef __BUILD__ 
@@ -29,7 +29,6 @@ template<class T>
 using Vector = std::vector<T>;
 template<class T>
 using SharedHandle = std::shared_ptr<T>;
-
 
 AQUA_NAMESPACE_END
 

@@ -1,19 +1,22 @@
-#include "aqua/Core/AQUACore.h"
+#ifndef AQUA_AQUAFRONTEND_H
+#define AQUA_AQUAFRONTEND_H
+
+#include "aqua/Core/AQUAApplication.h"
 
 AQUA_NAMESPACE_BEGIN
 
-class Frontend {
+class AQUA_PUBLIC AQUAFrontend {
 public:
+    bool Launch();
+    void Shutdown();
+    void LoadScene(const SharedHandle<Scene> & scene);
+    AQUAApplication & Application();
+    const AQUAApplication & Application() const;
 
-    /**
-     * @brief Load inital scene
-     * 
-     */
-    void launch();
-
-    void loadScene(SharedHandle<Scene> & scene);
-
-
+private:
+    AQUAApplication application_;
 };
 
 AQUA_NAMESPACE_END
+
+#endif

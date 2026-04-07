@@ -2,328 +2,463 @@
 
 ## Overview
 
-OmegaCommon is the cross-platform base API for the omega-graphics project. It provides an **ADT library** (strings, containers, references, queues, smart pointers), filesystem operations, networking (HTTP), JSON, formatting, multithreading (threads, mutexes, async/promise, semaphore, pipes, child processes), and a minimal C runtime (CRT) for C interop. This document proposes an implementation plan to extend and complete the library, including evolving the ADT layer into a full-featured ADT lib.
+OmegaCommon is the cross-platform base API for the omega-graphics project. It already provides a substantial ADT layer, filesystem operations, networking, JSON, formatting, multithreading primitives, and a minimal C runtime for C interop. This plan now serves two purposes:
+
+- Record what has already been completed in the codebase.
+- Define the remaining implementation work, including the currently blank `regex.h` and `crypto.h` headers.
+
+This document treats status as one of:
+
+- `Completed`: implemented in the current tree.
+- `Partial`: some public surface exists, but important functionality is still missing or incomplete.
+- `Planned`: not yet implemented.
+
+The new library work proposed here is:
+
+- `Regex`: a lightweight OmegaCommon wrapper over PCRE2.
+- `Crypto`: a lightweight OmegaCommon wrapper over OpenSSL using safe, modern EVP/RAND APIs.
 
 ---
 
-## ADT Library: Current State and Full ADT Lib Vision
+## Current State Snapshot
 
-### Current ADT Inventory
-
-| Category | Type | Notes |
-|----------|------|-------|
-| **Strings** | `String`, `WString`, `UString` | `std::string` / `u16string` / `u32string` aliases |
-| **String refs** | `StrRef`, `WStrRef`, `UStrRef` | Immutable view; `StrRef` has `strlen` bug for wide chars |
-| **Small string** | `SmallHeapString`, `SmallWHeapString`, `SmallUHeapString` | HeapString with small buffer (10 chars) |
-| **Sequences** | `Vector<T>`, `Array<T,N>` | `std::vector` / `std::array` aliases |
-| **Sequence refs** | `ArrayRef<T>`, `ContainerRefBase<T>` | Immutable view over contiguous sequence; `makeArrayRef(beg,end)` |
-| **Sets** | `SetVector<T>` | Vector with uniqueness (linear scan; no ordering guarantee) |
-| **Maps** | `Map<K,V>`, `MapVec<K,V>` | `std::map` (ordered) / `std::unordered_map` aliases |
-| **Map refs** | `MapRef<K,V>` | Const view over map |
-| **Queues** | `QueueHeap<T>`, `PriorityQueueHeap<T,Cmp>` | FIFO with resize; priority queue by comparison |
-| **Queues (broken)** | `QueueVector<T>` | Buggy (wrong `sizeof` usage); FIFO with index access |
-| **Optional / RC** | `Optional<T>`, `ARC<T>`, `ARCAny<T>`, `RuntimeObject` | `std::optional`; ref-counted pointer |
-| **Handles** | `SharedHandle<T>`, `UniqueHandle<T>`, `make`, `construct` | `shared_ptr` / `unique_ptr` wrappers |
-| **Allocators** | `HeapAllocator<T,N>` | Fixed initial size, grows; used by HeapString/HeapVector |
-
-### Gaps for a Full ADT Library
-
-- **Set (hash / ordered)**: No dedicated `Set<T>` (unique keys, no value). Only `SetVector` (vector + uniqueness).
-- **Deque**: No double-ended queue (push/pop front and back in O(1) amortized).
-- **Stack**: No LIFO abstraction; could be a thin wrapper over `Vector` or `Deque`.
-- **Mutable span**: `ArrayRef` is const-only; no `Span<T>` or mutable view for in-place algorithms.
-- **Result / Either**: No `Result<T,E>` or `Either<L,R>` for explicit error handling (vs. `Optional` or out-params).
-- **String utilities**: No `join`, `split`, `trim`, `startsWith`/`endsWith` on `StrRef`/`String`; no string builder.
-- **Algorithms**: No generic `sort`, `binarySearch`, `lowerBound` on `ArrayRef`/`Vector`; no `contains` for sets/maps.
-- **Hashing**: No `Hash` trait or `hashCombine` for use with `MapVec`/future `Set`; no standard hash for `StrRef`.
-- **Iteration**: No range/iterator helpers (e.g. `enumerate`, `zip`) beyond STL; optional.
-- **BitSet**: No fixed or dynamic bit set for flags / small integer sets.
-- **Ring buffer**: No fixed-capacity circular buffer (useful for streaming / queues with bounded memory).
-
-### ADT Library Completion Goals
-
-- **Correctness**: Fix `StrRef` wide-char and `QueueVector` (or remove); make existing types robust.
-- **Completeness**: Add Set, Deque, Stack, mutable Span, Result/Either, string helpers, and algorithm helpers so that OmegaCommon can serve as the single ADT dependency for omega-graphics.
-- **Consistency**: Uniform naming (e.g. `push`/`pop`/`front`/`back` where applicable), optional custom allocator support later.
-- **Documentation**: Clear ownership (view vs. owned), complexity, and thread-safety notes for each type.
-
----
-
-## Current State
-
-### What Exists and Works
+### Module Status
 
 | Area | Status | Notes |
 |------|--------|-------|
-| **Core types / ADT (utils.h)** | Implemented | See [ADT Library](#adt-library-current-state-and-full-adt-lib-vision): `String`, `StrRef`, `Vector`, `Map`, `MapVec`, `ArrayRef`, `SetVector`, `QueueHeap`, `PriorityQueueHeap`, `ARC`, `Optional`, `SharedHandle`/`UniqueHandle`; no `Set`/`Deque`/`Stack`/`Span`/`Result` yet. |
-| **FS (fs.h)** | Implemented | `Path` (parse, append/concat, dir/filename/ext, `absPath`, `exists`, `isFile`, `isDirectory`, `isSymLink`, `followSymlink`), `DirectoryIterator`, `changeCWD`, `createSymLink`, `createDirectory`, `deleteDirectory`; platform impls: Win, Cocoa, Unix |
-| **Net (net.h)** | Partial | `HttpClientContext::Create()`, `makeRequest()`; CURL on Apple, Win impl on Windows; **Unix (non-Apple)** uses `NullHttpClientContext` (no-op) |
-| **Multithread (multithread.h)** | Implemented | `Thread`, `Mutex`, `Async`/`Promise`, `Semaphore`, `Pipe`, `ChildProcess`, `WorkerFarm`; platform impls for Win and Unix/Apple |
-| **JSON (json.h)** | Implemented | `JSON` (string/array/map/number/boolean), `parse`/`serialize`, `JSONConvertible`; lexer/parser in json.cpp |
-| **Format (format.h)** | Implemented | `FormatProvider`, `fmtString`, `Formatter` with `@` placeholders, `LogV` |
-| **CRT (crt.h)** | Minimal | `OmegaRTObject`, `omega_common_alloc`/`get_data`/`exists`/`typecheck`/`free` in crt.c |
-| **C binding (owrap)** | Minimal | `OmegaCommon.owrap` only includes `common.h`; wrapgen exists for multi-language bindings |
-| **Utilities** | Implemented | `findProgramInPath()` in utils.cpp |
+| **Core ADT (`utils.h`)** | Partial | Large ADT surface exists and several previously planned additions are now implemented; a few rough edges remain, especially `QueueVector`. |
+| **FS (`fs.h`)** | Partial | `Path`, `DirectoryIterator`, cwd/symlink/directory operations exist. File read/write, copy/move, and filtered enumeration are still missing. |
+| **Net (`net.h`)** | Partial | Windows and Apple implementations exist. Non-Apple Unix still returns `NullHttpClientContext`. |
+| **Multithread (`multithread.h`)** | Partial | Core threading, async/promise, semaphore, pipe, child process, and worker farm exist. Pipe and child-process ergonomics still need cleanup/documentation. |
+| **JSON (`json.h`)** | Completed | Parser/serializer and object model are implemented. |
+| **Format (`format.h`)** | Partial | Formatting and `LogV` exist, but structured logging and sink abstraction do not. |
+| **CRT (`crt.h`)** | Partial | Minimal runtime object allocation/type helpers exist for C interop. |
+| **C binding / wrapgen (`OmegaCommon.owrap`)** | Partial | A normalized test surface exists and now includes `net.h`, but the full OmegaCommon surface is not yet exposed. |
+| **Regex (`regex.h`)** | Planned | Header exists but is blank. No implementation, tests, or build integration yet. |
+| **Crypto (`crypto.h`)** | Planned | Header exists but is blank. No implementation, tests, or build integration yet. |
+| **Third-party dependency bootstrap** | Partial | `common/AUTOMDEPS` already fetches PCRE2 and OpenSSL sources, but `common/CMakeLists.txt` does not yet build/link them into OmegaCommon. |
 
-### What Is Missing or Broken
+### ADT Status
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `String`, `WString`, `UString` | Completed | String aliases are present. |
+| `StrRef`, `WStrRef`, `UStrRef` | Completed | Wide-character constructor bug has been fixed using `std::char_traits`. |
+| `Vector`, `Array`, `ArrayRef`, `Map`, `MapVec`, `MapRef` | Completed | Core collection/view layer exists. |
+| `SetVector` | Completed | Unique-by-linear-scan vector wrapper exists. |
+| `Set`, `SetHash` | Completed | Added as wrappers over `std::set` and `std::unordered_set`. |
+| `Span` | Completed | Mutable contiguous view exists. |
+| `Deque` | Completed | Added as wrapper over `std::deque`. |
+| `Stack` | Completed | Simple LIFO wrapper exists. |
+| `Optional` | Completed | Alias over `std::optional`. |
+| `Result<T,E>` | Completed | Lightweight success/error type now exists. |
+| String helpers | Completed | `split`, `join`, `trimRef`, `trim`, `startsWith`, `endsWith`, `concat` are present. |
+| Algorithm helpers | Completed | `sort`, `binarySearch`, `lowerBound`, `upperBound`, and `contains` helpers exist. |
+| Hash helpers | Completed | `hashValue(StrRef)` and `hashCombine` exist. |
+| `QueueHeap`, `PriorityQueueHeap` | Completed | Existing queue abstractions remain available. |
+| `QueueVector` | Partial | Major `sizeof` misuse appears corrected, but the class still uses fragile manual allocation/destruction patterns and should be reviewed, fixed properly, or deprecated. |
+| BitSet / RingBuffer | Planned | Still not implemented. |
+
+### Completed Since The Original Plan
+
+- `StrRefBase` null-terminated constructors now use `std::char_traits<CharTY>::length`.
+- `Set`, `SetHash`, `Span`, `Deque`, `Stack`, and `Result<T,E>` have been added to `utils.h`.
+- String helper utilities and algorithm/hash helpers have been added to `utils.h` / `utils.cpp`.
+- Unix semaphore initialization now respects the constructor's `initialValue`.
+- `HttpResponse` now documents allocation ownership and includes an explicit `statusCode`.
+
+### Current Gaps And Risks
 
 | Area | Issue |
-|------|--------|
-| **StrRef** | `StrRefBase(const CharTY *c_str)` uses `strlen(c_str)` — invalid for `char16_t`/`char32_t`; should use `std::char_traits<CharTY>::length` or overloads. |
-| **QueueVector** | Uses `len * sizeof(Ty)` and `sizeof(Ty)` for element counts and pointer arithmetic in multiple places; should use `len` (number of elements) and `_data + len`. Class is buggy and likely unused; consider deprecating or fixing. |
-| **codec.h** | `Image` struct is empty; no image encode/decode (e.g. PNG/JPEG), no width/height/format/pixel buffer. |
-| **Argv (CLI)** | Entire `Argv` namespace in utils.h is commented out — no command-line argument parsing. |
-| **C bindings** | CRT covers only generic object alloc/free/typecheck. No C API for FS, JSON, Net, or Format. `OmegaCommon.owrap` does not expose these. |
-| **Net (Unix)** | On non-Apple Unix, `HttpClientContext::Create()` returns a null implementation; no real HTTP. |
-| **FS helpers** | No `readFile`/`writeFile`, `copyFile`/`moveFile`, or glob/regex-based enumeration. |
-| **Logging** | `LogV` only writes to stdout; no log levels, file/sink abstraction, or filtering. |
-| **Semaphore (Unix)** | `sem_init(&sem, 0, 0)` uses 0 for initial value; should use `initialValue` parameter. |
-| **Pipe (Unix)** | `pipe(pipe_fd)` is used but `Pipe` constructor is private; `Pipe` is only used as friend by `ChildProcess`. API and lifecycle are unclear. |
-| **ChildProcess** | `OpenWithStdoutPipe` takes a single `const char *args` string (e.g. concatenated); no structured argv. `wait()` on Unix with pipe reads and prints stdout instead of exposing it. |
-| **HttpResponse** | `void *data` with no documented ownership; caller may not know whether to free. |
-| **ADT gaps** | No `Set`/`SetHash`, `Deque`, `Stack`, mutable `Span`, `Result`/`Either`; no string helpers (split/join/trim/startsWith); no algorithm helpers (sort, binarySearch, contains); no hashing for `StrRef`. See [ADT Library](#adt-library-current-state-and-full-adt-lib-vision). |
+|------|-------|
+| **QueueVector** | Still manually manages allocation and destruction in a way that is easy to get wrong; should either be fully repaired or deprecated in favor of `QueueHeap`/`Deque`. |
+| **Regex** | `common/include/omega-common/regex.h` is empty; there is no regex API at all yet. |
+| **Crypto** | `common/include/omega-common/crypto.h` is empty; there is no crypto API at all yet. |
+| **Net (Unix)** | Non-Apple Unix still returns a null HTTP implementation. |
+| **FS helpers** | No read/write/copy/move helpers or regex/glob-based enumeration yet. |
+| **Logging** | Only `LogV` to stdout exists; no levels, sinks, or filtering. |
+| **CLI / Argv** | Argument parser code remains commented out. |
+| **C bindings** | Minimal CRT exists, but FS/JSON/Net/Regex/Crypto C APIs are not exposed. |
+| **ChildProcess / Pipe** | Current API is usable but underspecified, and stdout piping is awkward. |
+| **Codec / image** | Still not implemented. |
 
 ---
 
-## Phase 1: Correctness and Safety
+## Phase 1: Correctness, Cleanup, And Plan Alignment
 
-Stabilize existing APIs and fix known bugs before adding features.
+Use this phase to close the remaining correctness gaps and to keep documentation aligned with the actual codebase.
 
-### 1.1 StrRef wide-character constructors
+### 1.1 Already Completed
 
-- **Problem**: `StrRefBase<CharTY>(const CharTY *c_str)` uses `strlen()`, which is only valid for `char`.
-- **Change**: Use `std::char_traits<CharTY>::length(c_str)` for the two `c_str` constructors, or provide explicit overloads for `char`, `char16_t`, `char32_t` with the correct length function.
-- **Files**: `common/include/omega-common/utils.h`.
+- `StrRef` wide-character constructor fix is complete.
+- Unix semaphore initial value fix is complete.
+- `HttpResponse` ownership/status-code documentation is complete.
+- The ADT additions originally planned in Phase 1.5 are mostly complete and should now be tracked as implemented rather than pending.
 
-### 1.2 QueueVector fix or deprecation
+### 1.2 Remaining Work
 
-- **Problem**: Multiple uses of `len * sizeof(Ty)` and `sizeof(Ty)` where element count or pointer offset is intended (e.g. `end()` returns `_data + (len * sizeof(Ty))`).
-- **Options**:  
-  - **Fix**: Use `_data + len` for `end()`, and fix all move/copy loops to use element counts and `_data + idx` (not `sizeof(Ty)*idx`).  
-  - **Deprecate**: If unused, mark deprecated and add a short comment; prefer `QueueHeap` or `std::queue` for new code.
-- **Files**: `common/include/omega-common/utils.h`.
+- Review `QueueVector` thoroughly and choose one of:
+  - fully repair it using correct array allocation/object lifetime rules, or
+  - deprecate it and direct new code to `Deque` / `QueueHeap`.
+- Update documentation and comments anywhere they still claim missing ADT features that are now present.
+- Consider whether `common.h` should eventually include `net.h`, `regex.h`, and `crypto.h`, or whether those stay opt-in headers.
 
-### 1.3 Semaphore initial value (Unix)
+### Files
 
-- **Problem**: `sem_init(&sem, 0, 0)` ignores `initialValue`; should be `sem_init(&sem, 0, initialValue)`.
-- **Files**: `common/src/multithread-unix.cpp`.
-
-### 1.4 HttpResponse ownership
-
-- **Change**: Document that `HttpResponse::data` is allocated with `malloc` and must be freed by the caller (or provide a small helper that wraps response + free). Optionally add a `StatusCode` or success flag to `HttpResponse`.
-- **Files**: `common/include/omega-common/net.h`, and all HTTP implementations (e.g. net-curl.cpp, net-win.cpp).
+- `common/include/omega-common/utils.h`
+- `common/include/omega-common/common.h`
+- `common/docs/OmegaCommon-Completion-Plan.md`
 
 ---
 
-## Phase 1.5: ADT Library Completion
+## Phase 2: Filesystem And I/O Extensions
 
-Expand the ADT layer so OmegaCommon qualifies as a full ADT library: fix bugs, add missing container and value types, string helpers, and algorithm helpers.
+### 2.1 File Read/Write Helpers
 
-### 1.5.1 Set types
+- Add:
+  - `Result<String, StatusCode> readFile(Path path)`
+  - `StatusCode writeFile(Path path, StrRef contents)`
+  - Optional binary variants for `Vector<std::uint8_t>`
+- Keep text and binary helpers small and predictable; avoid hidden newline conversion.
 
-- **Add**:
-  - `Set<T>` — unique elements, ordered (backed by sorted structure or `std::set`); `insert`, `erase`, `contains`, iteration.
-  - `SetHash<T>` or `HashSet<T>` — unique elements, O(1) lookup (backed by `std::unordered_set`); same operations.
-- **Optional**: `SetVector` remains as “ordered insertion, uniqueness, vector iteration”; document as “set with insertion order and vector API”. Consider `contains(T)` and `erase(T)` for consistency.
-- **Files**: `common/include/omega-common/utils.h` (or new `common/include/omega-common/adt.h` if splitting).
+### 2.2 Copy / Move
 
-### 1.5.2 Deque and Stack
+- Add:
+  - `StatusCode copyFile(Path src, Path dest)`
+  - `StatusCode moveFile(Path src, Path dest)`
+  - Optional directory variants later if needed
 
-- **Add**:
-  - `Deque<T>` — double-ended queue: `pushFront`/`pushBack`, `popFront`/`popBack`, `front`/`back`, `size`/`empty`. Implement via chunked buffer or wrap `std::deque`.
-  - `Stack<T>` — LIFO: `push`, `pop`, `top`, `size`/`empty`. Can wrap `Vector<T>` or `Deque<T>`.
-- **Files**: `common/include/omega-common/utils.h` (or `adt.h`).
+### 2.3 Enumeration / Filtering
 
-### 1.5.3 Mutable Span
+- Extend directory enumeration with one or both of:
+  - `glob(Path dir, StrRef pattern)`
+  - callback-based enumeration with filtering
+- When regex lands, allow regex-based filename filtering without exposing PCRE2 details directly in FS APIs.
 
-- **Add**: `Span<T>` — mutable view over contiguous memory (like `ArrayRef<T>` but non-const). Construct from `Vector<T>&`, `T*`+length, iterators. Support `operator[]`, `size`, `begin`/`end`, and optional `subspan(offset, count)`.
-- **Note**: Keep `ArrayRef<T>` as the const view; `Span<T>` for in-place algorithms and output buffers.
-- **Files**: `common/include/omega-common/utils.h` (or `adt.h`).
+### Files
 
-### 1.5.4 Result / Either
-
-- **Add**: `Result<T, E>` — holds either a value `T` or an error `E`; `isOk()`/`isErr()`, `value()`/`error()`, `valueOr(default)`, and optional `map`/`andThen`-style helpers. Alternative: `Either<L, R>` if a single sum type is preferred.
-- **Use case**: Return types for FS/Net APIs instead of only `StatusCode` + out-params.
-- **Files**: `common/include/omega-common/utils.h` (or `adt.h`).
-
-### 1.5.5 String helpers
-
-- **Add** (on `StrRef` and/or free functions taking `StrRef`):
-  - `split(StrRef s, CharTY delim)` → `Vector<String>` (or split on `StrRef` delimiter).
-  - `join(ArrayRef<StrRef> parts, StrRef sep)` → `String`.
-  - `trim(StrRef s)` → `StrRef` (view of trimmed range) or `String`.
-  - `startsWith(StrRef s, StrRef prefix)`, `endsWith(StrRef s, StrRef suffix)` → `bool`.
-  - Optional: `StringBuilder` or `concat(ArrayRef<StrRef>)` for efficient multi-part concatenation.
-- **Files**: `common/include/omega-common/utils.h`, `common/src/utils.cpp`.
-
-### 1.5.6 Algorithm helpers
-
-- **Add**: Non-member functions operating on `ArrayRef<T>` / `Span<T>` / `Vector<T>`:
-  - `sort(ArrayRef<T>)`, `sort(ArrayRef<T>, Compare)` — in-place sort.
-  - `binarySearch(ArrayRef<T>, const T&)` → `Optional<size_t>`; `lowerBound`/`upperBound` → index or iterator.
-  - `contains(const Set/Map/SetVector&, key)` — consistent `contains` API where applicable.
-- **Files**: `common/include/omega-common/utils.h` (or `adt.h`), possibly `common/src/adt.cpp` if non-inline.
-
-### 1.5.7 Hashing
-
-- **Add**: `hashValue(StrRef)`, `hashValue(T)` for common types (delegate to `std::hash` where possible). Optional: `hashCombine(size_t seed, T...)` for composite keys. Ensures `StrRef` and OmegaCommon types can be used as keys in `MapVec`/`SetHash` with stable hashing.
-- **Files**: `common/include/omega-common/utils.h`, `common/src/utils.cpp` if non-inline.
-
-### 1.5.8 BitSet and RingBuffer (optional)
-
-- **BitSet**: Fixed-size or dynamic bit set: `BitSet<N>` or `BitSet` (dynamic); `set(i)`, `reset(i)`, `test(i)`, `count()`, iteration over set bits.
-- **RingBuffer**: `RingBuffer<T, N>` (fixed capacity) or `RingBuffer<T>` (dynamic); push/pop front/back, overwrite semantics when full. Useful for streams and bounded queues.
-- **Files**: `common/include/omega-common/utils.h` (or `adt.h`). Lower priority; add when needed.
-
-### 1.5.9 QueueVector resolution
-
-- **Action**: Either fix `QueueVector` (Phase 1.2) or remove/deprecate it in favor of `QueueHeap` + `Deque`. If kept, add to ADT docs with correct complexity and semantics.
-
----
-
-## Phase 2: Filesystem and I/O Extensions
-
-### 2.1 File read/write helpers
-
-- **Add**:  
-  - `OmegaCommon::FS::readFile(Path path) -> Optional<String>` (or `StatusCode readFile(Path, String &out)`).  
-  - `StatusCode writeFile(Path path, StrRef contents)`.  
-  - Optionally: binary variants `readFileBinary` / `writeFileBinary` returning/accepting `std::vector<uint8_t>` or `ArrayRef<uint8_t>`.
-- **Files**: `common/include/omega-common/fs.h`, `common/src/fs.cpp` (+ platform files if needed).
-
-### 2.2 Copy and move
-
-- **Add**:  
-  - `StatusCode copyFile(Path src, Path dest)` (and optionally `copyDirectory`).  
-  - `StatusCode moveFile(Path src, Path dest)` (and optionally `moveDirectory`).  
-- Implement via platform APIs (CopyFile/MoveFile on Windows, copyfile()/rename on macOS, copy_file/rename on C++17/posix).
-- **Files**: `common/include/omega-common/fs.h`, `common/src/fs.cpp`, `fs-win.cpp`, `fs-cocoa.mm`, `fs-unixother.cpp`.
-
-### 2.3 Directory enumeration improvements
-
-- **Current**: `DirectoryIterator` exists; behavior and completeness on all platforms should be verified.
-- **Add (optional)**:  
-  - `FS::glob(Path dir, StrRef pattern)` or `enumerate(Path dir, std::function<bool(Path)>)` to allow filtering (e.g. by extension or regex).  
-  - Explicit documentation of iteration order and symlink behavior.
+- `common/include/omega-common/fs.h`
+- `common/src/fs.cpp`
+- `common/src/win/fs-win.cpp`
+- `common/src/macos/fs-cocoa.mm`
+- `common/src/unix/fs-unixother.cpp`
 
 ---
 
 ## Phase 3: Networking Completion
 
-### 3.1 HTTP on Unix (non-Apple)
+### 3.1 HTTP On Unix
 
-- **Problem**: On Unix, `HttpClientContext::Create()` returns `NullHttpClientContext`; no real HTTP.
-- **Options**:  
-  - Use libcurl on Unix as well (add `curl` dependency and a `net-curl.cpp` path for Unix, or a single net-curl.cpp used for both Apple and Unix).  
-  - Or implement a small request path with another library (e.g. libcurl is the most portable).
-- **Files**: `common/CMakeLists.txt`, `common/src/net-unix.cpp` (or new/refactored net-curl.cpp), `net.h`.
+- Replace `NullHttpClientContext` on non-Apple Unix with a real implementation.
+- Prefer a shared curl-backed implementation for Apple and Unix to reduce drift.
 
-### 3.2 HTTP API improvements
+### 3.2 API Improvements
 
-- **Add**:  
-  - HTTP method (GET/POST/etc.) and optional body in `HttpRequestDescriptor`.  
-  - Response status code and headers (e.g. `int statusCode`, `Map<String,String> headers`) in `HttpResponse`.  
-  - Clear ownership and error semantics (see Phase 1.4).
+- Extend `HttpRequestDescriptor` with:
+  - HTTP method
+  - optional request body
+  - optional headers collection instead of a single header string
+- Extend `HttpResponse` with:
+  - response headers
+  - clearer failure semantics
+  - optional convenience helpers for body-as-string
 
----
+### Files
 
-## Phase 4: Codec and Image
-
-### 4.1 Image type and codec.h
-
-- **Add**:  
-  - `Image` with at least: width, height, pixel format (e.g. enum: RGBA8, RGB8, Gray8), and a pixel buffer (`Vector<uint8_t>` or similar).  
-  - Optional: `Image decodeImage(StrRef path)` / `decodeImage(ArrayRef<uint8_t> buffer)` and `encodeImage(Path path, const Image &)` using a chosen backend (e.g. stb_image/stb_image_write, or libpng/libjpeg if already in tree).  
-- **Files**: `common/include/omega-common/codec.h`, new `common/src/codec.cpp` (and possibly optional backend files or CMake options for dependencies).
+- `common/include/omega-common/net.h`
+- `common/src/macos/net-curl.cpp`
+- `common/src/unix/net-unix.cpp`
+- `common/src/win/net-win.cpp`
+- `common/CMakeLists.txt`
 
 ---
 
-## Phase 5: Logging and CLI
+## Phase 4: Regex Library Using PCRE2
 
-### 5.1 Logging
+Add a lightweight OmegaCommon regex wrapper built on PCRE2. The goal is not to expose the full PCRE2 surface, but to provide a small, portable, OmegaCommon-style API for matching, searching, capture extraction, splitting, and replacement.
 
-- **Add**:  
-  - Log level (e.g. Debug, Info, Warn, Error).  
-  - `Log(level, fmt, ...)` and optionally a small `Logger` class with configurable sink (ostream, file, or callback).  
-  - Keep `LogV` as a simple default (e.g. Info level to stdout).
-- **Files**: `common/include/omega-common/format.h` (or new `log.h`), `common/src/format.cpp` or new `log.cpp`.
+### 4.1 Scope
 
-### 5.2 Argument parser (Argv)
+- Use PCRE2's 8-bit API to operate on `OmegaCommon::String` / `StrRef`.
+- Target common needs only:
+  - compile pattern
+  - full match
+  - search
+  - capture groups
+  - repeated find / find-all
+  - replace / replace-all
+  - split
+  - escape helper
+- Avoid exposing raw `pcre2_code*` or PCRE2 headers in user code if possible.
 
-- **Current**: Entire `Argv` namespace commented out in utils.h.
-- **Option A**: Uncomment and complete the design (flags, positional args, help generation, type parsers for bool/String/Vector<String>).  
-- **Option B**: Introduce a minimal API: e.g. `parseArgs(int argc, char **argv, Map<String,String> &flags, Vector<String> &positional)` and optional helpers for common types.  
-- **Files**: `common/include/omega-common/utils.h` (and possibly a new `argv.h` or `cli.h`), plus a small implementation file.
+### 4.2 Proposed Public API
+
+- `enum class RegexOption`
+  - `CaseInsensitive`
+  - `Multiline`
+  - `DotAll`
+  - `Utf`
+  - `Anchored`
+- `struct RegexError`
+  - error code
+  - compile offset
+  - message string
+- `struct RegexCapture`
+  - start offset
+  - end offset
+  - matched view/string
+- `struct RegexMatch`
+  - full match range
+  - capture list
+  - convenience `group(size_t)`
+- `class Regex`
+  - compiled pattern object
+  - move-only or shared-handle-backed
+  - `static Result<Regex, RegexError> compile(StrRef pattern, unsigned options = 0)`
+  - `bool matches(StrRef input) const`
+  - `Optional<RegexMatch> search(StrRef input) const`
+  - `Vector<RegexMatch> findAll(StrRef input) const`
+  - `Result<String, RegexError> replace(StrRef input, StrRef replacement) const`
+  - `Vector<String> split(StrRef input) const`
+- Free helpers:
+  - `String regexEscape(StrRef input)`
+
+### 4.3 Implementation Notes
+
+- Store compiled PCRE2 objects behind a private implementation or opaque pointer.
+- Convert PCRE2 error codes into `RegexError`.
+- Decide whether match results should hold copied strings or source-relative offsets plus `StrRef` views. Offsets plus views are lighter and should be preferred.
+- Keep UTF behavior explicit. Do not silently assume Unicode mode unless the caller requested it.
+
+### 4.4 Build Integration
+
+- Wire PCRE2 into `common/CMakeLists.txt`.
+- Prefer one of:
+  - building from `common/deps/pcre2/code`, or
+  - using a system-installed PCRE2 when available and falling back to the vendored copy
+- Keep the OmegaCommon public API independent from the build strategy.
+
+### 4.5 Tests And Docs
+
+- Add dedicated tests covering:
+  - compile errors
+  - simple match/search
+  - capture groups
+  - UTF behavior
+  - replace / split semantics
+  - edge cases like empty matches
+- Document ownership, match offset semantics, and supported options.
+
+### Files
+
+- `common/include/omega-common/regex.h`
+- `common/src/regex.cpp`
+- `common/CMakeLists.txt`
+- `common/AUTOMDEPS`
+- optional new tests such as `common/tests/regex-test.cpp`
 
 ---
 
-## Phase 6: C API and Bindings
+## Phase 5: Lightweight Crypto Library Using OpenSSL
 
-### 6.1 Extend CRT for common types
+Add a deliberately small crypto module built on OpenSSL. This should wrap safe primitives instead of exposing broad low-level crypto machinery.
 
-- **Add** (as needed for C consumers):  
-  - Opaque handles for `FS::Path` (e.g. `OmegaFSPath*`), create/destroy and get string.  
-  - JSON: create from string, get type, get string/number/array/map, serialize.  
-  - Optional: HTTP request/response C API (create context, make request, read response, free).  
-- **Files**: `common/include/omega-common/crt.h`, `common/src/crt.c` (and possibly C++ bridge in crt.cpp that calls into OmegaCommon C++).
+### 5.1 Scope
 
-### 6.2 OmegaCommon.owrap and wrapgen
+Initial scope should focus on safe, common building blocks:
 
-- **Extend** `OmegaCommon.owrap` to declare the C++ APIs that should be exposed to C (and thus to wrapgen’s C ABI layer).  
-- Align with wrapgen’s type translation strategy (opaque handles, explicit ownership).  
-- **Files**: `common/include/OmegaCommon.owrap`, wrapgen targets as needed.
+- secure random bytes
+- digest / hashing
+- HMAC
+- constant-time byte comparison
+- optional hex encoding helpers for digest output
+
+Encryption can be added later if there is a concrete use case, but it should not bloat the first version.
+
+### 5.2 Proposed Public API
+
+- `enum class DigestAlgorithm`
+  - `SHA256`
+  - `SHA512`
+  - optional additional algorithms only when there is a clear need
+- `struct CryptoError`
+  - OpenSSL/library error code
+  - message string
+- `struct DigestResult`
+  - `Vector<std::uint8_t> bytes`
+  - `String hex() const`
+- Free functions:
+  - `Result<Vector<std::uint8_t>, CryptoError> randomBytes(size_t n)`
+  - `Result<DigestResult, CryptoError> digest(DigestAlgorithm alg, ArrayRef<std::uint8_t> data)`
+  - `Result<DigestResult, CryptoError> digest(DigestAlgorithm alg, StrRef text)`
+  - `Result<Vector<std::uint8_t>, CryptoError> hmac(DigestAlgorithm alg, ArrayRef<std::uint8_t> key, ArrayRef<std::uint8_t> data)`
+  - `bool constantTimeEquals(ArrayRef<std::uint8_t> a, ArrayRef<std::uint8_t> b)`
+
+Optional second step if needed:
+
+- authenticated symmetric encryption only, preferably AES-256-GCM via EVP
+- explicit key/nonce/tag types to reduce misuse
+
+### 5.3 Implementation Notes
+
+- Use OpenSSL EVP and RAND APIs rather than handwritten algorithm-specific paths.
+- Do not expose raw `EVP_MD_CTX*`, `EVP_CIPHER_CTX*`, or other OpenSSL types in the public header.
+- Keep failure reporting explicit through `Result<..., CryptoError>`.
+- Prefer byte-oriented APIs and then add thin `StrRef` overloads for text.
+- For equality checks, use a constant-time comparison helper rather than normal `==`.
+
+### 5.4 Build Integration
+
+- Wire OpenSSL into `common/CMakeLists.txt`.
+- Prefer either:
+  - vendored source from `common/deps/openssl/code`, or
+  - system OpenSSL when present with fallback to vendored source
+- Keep the public OmegaCommon API independent of the exact build source.
+
+### 5.5 Tests And Docs
+
+- Add tests for:
+  - random byte generation success
+  - known-answer hash vectors
+  - HMAC test vectors
+  - constant-time comparison behavior
+- Document clearly that this is a lightweight utility crypto layer, not a full TLS/PKI framework.
+- Explicitly state what is intentionally out of scope in the first version.
+
+### Files
+
+- `common/include/omega-common/crypto.h`
+- `common/src/crypto.cpp`
+- `common/CMakeLists.txt`
+- `common/AUTOMDEPS`
+- optional new tests such as `common/tests/crypto-test.cpp`
 
 ---
 
-## Phase 7: Child Process and Pipe Clarity
+## Phase 6: Codec And Image
 
-### 7.1 ChildProcess API
+### 6.1 Image Type
 
-- **Improve**:  
-  - `OpenWithStdoutPipe`: consider taking `Vector<StrRef>` or `ArrayRef<const char*>` for argv instead of a single concatenated string, to avoid quoting issues.  
-  - Provide a way to read stdout into a buffer or string instead of printing in `wait()`.  
-  - Document that on some platforms stdout is only available after the process exits (e.g. current popen behavior).
-- **Files**: `common/include/omega-common/multithread.h`, `common/src/multithread-unix.cpp`, `multithread-win.cpp`.
+- Add an `Image` type with:
+  - width
+  - height
+  - pixel format
+  - owned pixel buffer
 
-### 7.2 Pipe
+### 6.2 Decode / Encode
 
-- **Document**: Pipe is for use with ChildProcess; clarify which side is parent/child and how to use read/write. Fix or document the Unix `Pipe` constructor (e.g. `pipe()` in constructor) and destructor (close fds).
+- Add decode/encode helpers if there is a concrete consumer.
+- Keep this phase separate from regex/crypto so those blank headers are not blocked on image work.
 
----
+### Files
 
-## Implementation Order (Suggested)
-
-1. **Phase 1** (correctness): 1.1 StrRef, 1.2 QueueVector, 1.3 Semaphore, 1.4 HttpResponse.  
-2. **Phase 1.5** (ADT lib): 1.5.1 Set types, 1.5.2 Deque/Stack, 1.5.3 Span, 1.5.4 Result, 1.5.5 string helpers, 1.5.6 algorithm helpers, 1.5.7 hashing; then 1.5.8 BitSet/RingBuffer and 1.5.9 QueueVector resolution as needed.  
-3. **Phase 2** (FS): 2.1 read/write, 2.2 copy/move, 2.3 directory enumeration if needed.  
-4. **Phase 3** (Net): 3.1 HTTP on Unix, 3.2 HTTP API improvements.  
-5. **Phase 5.1** (logging): small addition so other modules can log consistently.  
-6. **Phase 4** (Image/codec) and **Phase 5.2** (Argv): as needed by apps.  
-7. **Phase 6** (C API / owrap): when C or generated bindings are required.  
-8. **Phase 7** (ChildProcess/Pipe): when subprocess use cases are critical.
+- `common/include/omega-common/codec.h`
+- `common/src/codec.cpp`
+- `common/CMakeLists.txt`
 
 ---
 
-## Out of Scope (for this plan)
+## Phase 7: Logging And CLI
 
-- **omega-wrapgen** and **omega-ebin**: Remain separate tools; this plan focuses on the OmegaCommon library API and implementation.  
-- **C++ standard**: No specific bump (e.g. C++17/20) mandated here; assume current project standard.  
-- **Build**: OmegaCommon is not built standalone by default; CMake and dependency changes (e.g. curl on Unix) are noted only where they affect the plan.  
-- **ADT**: The plan does not require replacing all `std::` usage in the codebase with OmegaCommon types; the goal is to offer a complete, consistent ADT lib for new code and gradual adoption.
+### 7.1 Logging
+
+- Add log levels such as `Debug`, `Info`, `Warn`, `Error`.
+- Add configurable sink support.
+- Keep `LogV` as the simplest default path.
+
+### 7.2 CLI / Argv
+
+- Either finish the commented-out argument parser design or replace it with a smaller API.
+- Prefer a small, predictable parser over a large framework-like layer.
+
+### Files
+
+- `common/include/omega-common/format.h`
+- `common/src/format.cpp`
+- `common/include/omega-common/utils.h`
+- optional new `common/src/cli.cpp`
+
+---
+
+## Phase 8: C API And Bindings
+
+### 8.1 CRT Expansion
+
+- Add C-facing wrappers for selected OmegaCommon types when needed:
+  - FS path helpers
+  - JSON parsing/serialization
+  - HTTP
+  - Regex
+  - Crypto
+
+### 8.2 `OmegaCommon.owrap`
+
+- Expand the wrapper surface after Regex and Crypto stabilize.
+- Keep ownership explicit and binding-friendly.
+- Avoid trying to expose templates or implementation details directly.
+
+### Files
+
+- `common/include/omega-common/crt.h`
+- `common/src/crt.c`
+- `common/include/OmegaCommon.owrap`
+
+---
+
+## Phase 9: ChildProcess And Pipe Clarity
+
+### 9.1 ChildProcess
+
+- Replace the single concatenated `const char *args` path with a structured argv-based API where practical.
+- Provide a clean way to capture stdout/stderr as data instead of printing inside `wait()`.
+
+### 9.2 Pipe
+
+- Document endpoint semantics clearly.
+- Confirm construction/destruction behavior on all supported platforms.
+
+### Files
+
+- `common/include/omega-common/multithread.h`
+- `common/src/unix/multithread-unix.cpp`
+- `common/src/win/multithread-win.cpp`
+
+---
+
+## Suggested Implementation Order
+
+1. Finish Phase 1 cleanup so the plan and the code agree about what is already done.
+2. Implement Phase 4 Regex first, because `regex.h` is currently blank and filesystem/tooling work can benefit from it.
+3. Implement Phase 5 Crypto next, starting with RNG, digests, HMAC, and constant-time compare only.
+4. Complete Phase 3 networking on Unix and modernize the HTTP request/response API.
+5. Add Phase 2 filesystem helpers, especially read/write and filtered enumeration.
+6. Do Phase 7 logging/CLI and Phase 9 subprocess cleanup as concrete consumers need them.
+7. Leave Phase 6 codec/image and Phase 8 bindings for when there is a clear consumer.
+
+---
+
+## Out Of Scope For The First Regex/Crypto Pass
+
+- Exposing the full PCRE2 feature set directly.
+- Re-implementing cryptographic primitives manually.
+- Building a full TLS, certificate, or key-management framework.
+- Requiring all OmegaCommon consumers to include regex or crypto headers through `common.h` on day one.
+- Replacing all STL use across the project with OmegaCommon wrappers.
 
 ---
 
 ## Summary Table
 
-| Phase | Focus | Priority |
-|-------|--------|----------|
-| 1 | StrRef, QueueVector, Semaphore, HttpResponse correctness | High |
-| **1.5** | **ADT lib: Set, Deque, Stack, Span, Result, string/algo/hash helpers** | **High** |
-| 2 | readFile/writeFile, copyFile/moveFile, directory | High |
-| 3 | HTTP on Unix, request/response API | Medium |
-| 4 | Image type and decode/encode | Medium |
-| 5 | Logging levels/sinks, Argv/CLI | Medium |
-| 6 | C API and owrap | Lower |
-| 7 | ChildProcess/Pipe API and docs | Lower |
+| Phase | Focus | Status | Priority |
+|-------|-------|--------|----------|
+| 1 | Correctness cleanup and doc alignment | Partial | High |
+| 2 | Filesystem read/write/copy/move/filtering | Planned | High |
+| 3 | Unix HTTP support and request/response cleanup | Partial | High |
+| 4 | PCRE2-backed regex library | Planned | High |
+| 5 | OpenSSL-backed lightweight crypto library | Planned | High |
+| 6 | Image/codec | Planned | Medium |
+| 7 | Logging and CLI | Planned | Medium |
+| 8 | C API and wrapgen surface | Partial | Medium |
+| 9 | ChildProcess / Pipe cleanup | Partial | Medium |
 
-This plan can be implemented incrementally; each phase can be split into smaller tasks and merged as needed.
+This plan is intentionally incremental. The important update is that it now reflects completed ADT/correctness work and explicitly treats Regex and Crypto as first-class implementation phases rather than placeholder headers.

@@ -36,26 +36,10 @@
              "branch":"maint/maint-78"
          },
          {
-            "type":"git_clone",
-            "url":"https://github.com/openssl/openssl.git",
-            "dest":"$(third_party_dest)/openssl/code",
-            "branch":"default"
-         },
-         {
              "type":"git_clone",
              "url":"https://gitlab.gnome.org/GNOME/libxml2.git",
              "dest":"$(third_party_dest)/libxml2/code",
              "branch":"default"
-         },
-         {
-             "type":"download",
-             "url":"https://github.com/PhilipHazel/pcre2/releases/download/pcre2-10.38/pcre2-10.38.zip",
-             "dest":"./temp/pcre2.zip"
-         },
-         {
-             "type":"unzip",
-             "zipfile":"./temp/pcre2.zip",
-             "dest":"$(third_party_dest)/pcre2/code"
          }
     ]
 }

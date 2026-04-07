@@ -1,7 +1,9 @@
-#include "aqua/Core/AQUAObject.h"
-
 #ifndef AQUA_SCENE_AQUASCENE_H
 #define AQUA_SCENE_AQUASCENE_H
+
+#include "aqua/Scene/AQUAEntity.h"
+
+#include <string>
 
 AQUA_NAMESPACE_BEGIN
 
@@ -25,16 +27,23 @@ public:
  * 
  */
 class AQUA_PUBLIC Scene {
-
-    READWRITE_I_PROPERTY Vector<SharedHandle<Object>> objectContainer;
-
 public:
+    using EntityHandle = SharedHandle<AQUAEntity>;
 
     struct Dimensions {
-        unsigned x,y,z;
+        unsigned x = 0;
+        unsigned y = 0;
+        unsigned z = 0;
     } dimensions;
 
-    void addObject(SharedHandle<Object> object);
+    EntityHandle createEntity(const std::string & name = {});
+    void addEntity(const EntityHandle & entity);
+    void addObject(const EntityHandle & entity);
+    bool removeEntity(const EntityHandle & entity);
+    const Vector<EntityHandle> & entities() const;
+
+private:
+    Vector<EntityHandle> entityContainer_;
 };
 
 AQUA_NAMESPACE_END

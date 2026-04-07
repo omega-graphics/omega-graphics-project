@@ -1,8 +1,9 @@
-#include "AQUABase.h"
-
 #ifndef AQUA_CORE_AQUAOBJECT_H
 #define AQUA_CORE_AQUAOBJECT_H
 
+#include "AQUABase.h"
+
+#include <utility>
 
 AQUA_NAMESPACE_BEGIN
 
@@ -11,39 +12,35 @@ AQUA_NAMESPACE_BEGIN
 */
 class AQUA_PUBLIC Object {
 public:
+    virtual ~Object() = default;
+
     struct Attribute {
 
     };
-    template<class T,class ...Args>
-    static SharedHandle<T> Construct(Args && ...args){
-        return std::make_shared<T,Args...>(args...);
-    };
+
+    template<class T, class... Args>
+    static SharedHandle<T> Construct(Args &&...args) {
+        return std::make_shared<T>(std::forward<Args>(args)...);
+    }
+
 protected:
-    READWRITE_I_PROPERTY Vector<Attribute> programmableAttrs;    
+    READWRITE_I_PROPERTY Vector<Attribute> programmableAttrs;
 };
 
 struct AQUA_PUBLIC Transform {
-    float x,y,z,pitch,yaw,roll;
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float pitch = 0.0f;
+    float yaw = 0.0f;
+    float roll = 0.0f;
+
 public:
-    Transform() = delete;
-    Transform(float x,float y,float z,float pitch,float yaw,float roll);
-    void Translate(float x,float y,float z);
-    void Rotate(float pitch,float yaw,float roll);
+    Transform() = default;
+    Transform(float x, float y, float z, float pitch, float yaw, float roll);
+    void Translate(float x, float y, float z);
+    void Rotate(float pitch, float yaw, float roll);
 };
-
-
-// /**
-//  @brief A phyiscal object with physical and programmable attributes located anywhere in a Scene.
-// */
-// class AQUA_PUBLIC PhysObject : public Object {
-// public:
-//     struct PhysicalAttribute {
-
-//     };
-//     READWRITE_I_PROPERTY Transform transform;
-// protected:
-//     READWRITE_I_PROPERTY Vector<PhysicalAttribute> physicalAttrs; 
-// };
 
 AQUA_NAMESPACE_END
 

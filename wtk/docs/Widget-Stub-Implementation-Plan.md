@@ -91,7 +91,7 @@ Widgets that have user-modifiable values expose:
 
 ---
 
-## Phase 0: Widget Infrastructure Prep
+## Phase 0: Widget Infrastructure Prep [Implemented]
 
 **Goal:** Establish shared types and utilities that multiple widget phases depend on.
 
@@ -164,7 +164,7 @@ Confirm this glob already exists or add it. New `.cpp` files under `src/Widgets/
 
 ---
 
-## Phase 1: Display Primitives
+## Phase 1: Display Primitives [Implemented]
 
 **Goal:** Implement the shape primitives and `Separator` from catalog section C.
 
@@ -223,6 +223,15 @@ All shape primitives follow the same pattern. Constructor creates a `UIView`, `o
 - Resize correctly updates the shape element bounds.
 - StyleSheet overrides (brush, border, shadow) work.
 
+### Notes
+
+ - RoundedRectangle stores per-corner radii in props (matching the plan API)   
+  but uses std::max of the four as uniform rad_x/rad_y since GRoundedRect       
+  doesn't support per-corner yet                                         
+  - Path supports strokeWidth and closePath — joins/caps/fill-rule deferred     
+  until the Shape system exposes them                                         
+  - Separator computes a thin rect centered in the widget bounds, respecting    
+  Orientation, thickness, and inset
 ---
 
 ## Phase 2: Text and Image Primitives
@@ -288,6 +297,121 @@ Backed by `CanvasView` (uses `drawImage`). `onPaint` computes the destination re
 - Label `measureSelf` returns correct intrinsic size for layout participation.
 - Image displays with each fit mode at various aspect ratios.
 - Icon renders a glyph at the specified size and tint.
+
+---
+
+## Phase 2A: Text Measurement
+
+**Goal:** Replace the heuristic `Label::measureSelf` with accurate text measurement using platform font metrics.
+
+### Problem
+
+`Label::measureSelf` currently estimates intrinsic size using `fontSize * 0.6 * charCount` (width) and `fontSize * 1.2` (height). This is inaccurate for proportional fonts, multi-line text with wrapping, and non-Latin scripts.
+
+### Required Infrastructure
+
+Add a text measurement method to `Composition::Font`:
+
+```cpp
+struct TextMeasurement {
+    float width;
+    float height;
+    unsigned lineCount;
+};
+
+class Font {
+public:
+    // ... existing ...
+    virtual TextMeasurement measureText(const OmegaCommon::UString & text,
+                                        float maxWidth,
+                                        const TextLayoutDescriptor & layout) = 0;
+};
+```
+
+Each platform backend (`DWriteFont`, `CTFont`, `PangoFont`) implements `measureText` using its native text layout engine:
+- **Windows:** `IDWriteTextLayout::GetMetrics`
+- **macOS:** `CTFramesetterSuggestFrameSizeWithConstraints`
+- **Linux:** `pango_layout_get_pixel_size`
+
+### Label Integration
+
+Replace the heuristic in `Label::measureSelf`:
+
+```cpp
+MeasureResult Label::measureSelf(const LayoutContext & ctx) {
+    if (!props_.font || props_.text.empty()) {
+        return {rect().w / ctx.dpiScale, rect().h / ctx.dpiScale};
+    }
+    TextLayoutDescriptor desc;
+    desc.alignment = props_.alignment;
+    desc.wrapping = props_.wrapping;
+    desc.lineLimit = props_.lineLimit;
+    float maxWidthPx = ctx.availableRectPx.w;
+    auto m = props_.font->measureText(props_.text, maxWidthPx, desc);
+    return {m.width / ctx.dpiScale, m.height / ctx.dpiScale};
+}
+```
+
+### Verification
+
+- `measureSelf` returns accurate dimensions for single-line and wrapped multi-line text.
+- Layout containers using `Label` children produce correct geometry without manual sizing.
+- Non-Latin scripts (CJK, Arabic) measure correctly via ICU/platform shaping.
+
+---
+
+## Phase 2B: Icon Rendering from Image/SVG
+
+**Goal:** Replace the glyph-based `Icon` placeholder with image-based and SVG-based icon rendering.
+
+### Problem
+
+`Icon` currently renders the `token` string as a text glyph via UIView. Real icon systems use rasterized icon sheets (sprite atlases) or inline SVG. The glyph approach is a placeholder; production icons need:
+- Resolution-independent rendering (SVG preferred).
+- Named lookup from an icon registry so widget code uses semantic names (`"arrow-left"`, `"settings"`) rather than raw glyphs.
+
+### Design
+
+```cpp
+struct IconSource {
+    enum class Kind : uint8_t { Glyph, Image, SVG };
+    Kind kind = Kind::Glyph;
+    OmegaCommon::String token {};                  // glyph: the codepoint string
+    SharedHandle<Media::BitmapImage> image = nullptr; // image: raster icon
+    OmegaCommon::FS::Path svgPath {};              // svg: path to SVG asset
+};
+
+struct IconProps {
+    IconSource source {};
+    float size = 16.f;
+    Composition::Color tintColor {0.f, 0.f, 0.f, 1.f};
+};
+```
+
+- **Glyph mode:** Current behavior (text element via UIView).
+- **Image mode:** Backed by `CanvasView`, draws the raster icon scaled to `size × size`.
+- **SVG mode:** Backed by `SVGView`, loads and renders the SVG asset at `size × size`.
+
+### Icon Registry (optional follow-up)
+
+A global `IconRegistry` maps semantic names to `IconSource` entries, loaded from an asset manifest at app startup:
+
+```cpp
+class IconRegistry {
+public:
+    static IconRegistry & instance();
+    void registerIcon(const OmegaCommon::String & name, const IconSource & source);
+    Core::Optional<IconSource> resolve(const OmegaCommon::String & name) const;
+};
+```
+
+Widgets can then use `Icon(rect, IconProps{.source = IconRegistry::instance().resolve("settings").value()})`.
+
+### Verification
+
+- SVG icons render at correct size and tint.
+- Image icons render without distortion at various DPI scales.
+- Glyph fallback continues to work when no image/SVG source is provided.
 
 ---
 

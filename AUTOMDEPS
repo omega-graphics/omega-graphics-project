@@ -3,7 +3,8 @@
         "./autom",
         "./common",
         "./gte",
-        "./wtk"
+        "./wtk",
+        "./aqua"
     ],
     "rootCommands":[
         {

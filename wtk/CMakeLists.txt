@@ -83,7 +83,9 @@ set(THIRD_PARTY_SRC_DIR ${OMEGAWTK_SOURCE_DIR}/deps)
 set(THIRD_PARTY_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/deps)
 set(THIRD_PARTY_INCLUDEDIRS)
 
-set(ICU_VERSION 69)
+
+
+set(ICU_VERSION "78")
 
 if(TARGET_WIN32)
 
@@ -93,30 +95,30 @@ file(MAKE_DIRECTORY  ${THIRD_PARTY_OUTPUT_DIR}/icu/lib)
 add_third_party(
 	CUSTOM_PROJECT
 	NAME icu 
-	SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source/allinone" 
-	BINARY_DIR "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source/allinone"
+	SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/allinone" 
+	BINARY_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/allinone"
 	INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/icu"
 	CONF "" 
 	BUILD msbuild allinone.sln /p:Configuration=Release /p:SkipUWP=true
-	INSTALL ${CMAKE_COMMAND} -E copy_directory "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/include" "${THIRD_PARTY_OUTPUT_DIR}/icu/include"
-	&& ${CMAKE_COMMAND} -E copy "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/bin64/icuuc${ICU_VERSION}.dll" "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/bin64/icudt${ICU_VERSION}.dll" "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/bin64/icuin${ICU_VERSION}.dll" "${THIRD_PARTY_OUTPUT_DIR}/icu/bin"
-	&& ${CMAKE_COMMAND} -E copy "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/lib64/icuuc.lib" "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/lib64/icudt.lib" "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/lib64/icuin.lib" "${THIRD_PARTY_OUTPUT_DIR}/icu/lib")
+	INSTALL ${CMAKE_COMMAND} -E copy_directory "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/include" "${THIRD_PARTY_OUTPUT_DIR}/icu/include"
+	&& ${CMAKE_COMMAND} -E copy "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/bin64/icuuc${ICU_VERSION}.dll" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/bin64/icudt${ICU_VERSION}.dll" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/bin64/icuin${ICU_VERSION}.dll" "${THIRD_PARTY_OUTPUT_DIR}/icu/bin"
+	&& ${CMAKE_COMMAND} -E copy "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/lib64/icuuc.lib" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/lib64/icudt.lib" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/lib64/icuin.lib" "${THIRD_PARTY_OUTPUT_DIR}/icu/lib")
 
 	set(THIRD_PARTY_INCLUDEDIRS ${THIRD_PARTY_INCLUDEDIRS} "${THIRD_PARTY_OUTPUT_DIR}/icu/include")
 
 	set(ICU_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/icu/lib/icuuc.lib" "${THIRD_PARTY_OUTPUT_DIR}/icu/lib/icudt.lib" "${THIRD_PARTY_OUTPUT_DIR}/icu/lib/icuin.lib")
 
-	set(ICU_DLLS "${THIRD_PARTY_OUTPUT_DIR}/icu/bin/icuuc69.dll" "${THIRD_PARTY_OUTPUT_DIR}/icu/bin/icudt69.dll" "${THIRD_PARTY_OUTPUT_DIR}/icu/bin/icuin69.dll")
+	set(ICU_DLLS "${THIRD_PARTY_OUTPUT_DIR}/icu/bin/icuuc${ICU_VERSION}.dll" "${THIRD_PARTY_OUTPUT_DIR}/icu/bin/icudt${ICU_VERSION}.dll" "${THIRD_PARTY_OUTPUT_DIR}/icu/bin/icuin${ICU_VERSION}.dll")
 else()
 
 if(TARGET_IOS)
 	add_third_party(
 		CUSTOM_PROJECT
 		NAME icu_tools 
-		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-69" 
+		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}" 
 		BINARY_DIR "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac"
 		INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac"
-		CONF cd "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac" &&  ${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu
+		CONF cd "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac" &&  ${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu
 		BUILD make all
 		INSTALL echo "ICU Cross Tools Complete")
 		
@@ -124,13 +126,13 @@ if(TARGET_IOS)
 	add_third_party(
 		CUSTOM_PROJECT
 		NAME icu 
-		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-69" 
+		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}" 
 		BINARY_DIR "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_ios"
 		INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/icu"
 		CONF 
 		export CFLAGS=--sysroot=${CMAKE_OSX_SYSROOT} && 
 		export CXXFLAGS=--sysroot=${CMAKE_OSX_SYSROOT} &&
-		${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu --with-cross-build=${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac
+		${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu --with-cross-build=${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac
 		BUILD make all
 		INSTALL make install
 		DEPS icu_tools)
@@ -138,10 +140,10 @@ else()
 	add_third_party(
 		CUSTOM_PROJECT
 		NAME icu 
-		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source" 
-		BINARY_DIR "${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source"
+		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source" 
+		BINARY_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source"
 		INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/icu"
-		CONF  ${THIRD_PARTY_SRC_DIR}/icu-69/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu
+		CONF  ${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu
 		BUILD make all
 		INSTALL make install)
 endif()
@@ -153,9 +155,9 @@ endif()
 		set_library_install_name("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicuuc.dylib" "@rpath/libicuuc.dylib" AFTER icu)
 		set_library_install_name("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicudata.dylib" "@rpath/libicudata.dylib" AFTER icu)
 		set_library_install_name("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib" "@rpath/libicui18n.dylib" AFTER icu)
-		reset_library_dependent_name("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicuuc.dylib" "libicudata.69.dylib" "@rpath/libicudata.dylib" AFTER icu)
-		reset_library_dependent_name("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib" "libicudata.69.dylib" "@rpath/libicudata.dylib" AFTER icu)
-		reset_library_dependent_name("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib" "libicuuc.69.dylib" "@rpath/libicuuc.dylib" AFTER icu)
+		reset_library_dependent_name("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicuuc.dylib" "libicudata.${ICU_VERSION}.dylib" "@rpath/libicudata.dylib" AFTER icu)
+		reset_library_dependent_name("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib" "libicudata.${ICU_VERSION}.dylib" "@rpath/libicudata.dylib" AFTER icu)
+		reset_library_dependent_name("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib" "libicuuc.${ICU_VERSION}.dylib" "@rpath/libicuuc.dylib" AFTER icu)
 		# Add @loader_path rpath so co-located dylibs can find each other at runtime
 		add_library_rpath("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicuuc.dylib" "@loader_path" AFTER icu)
 		add_library_rpath("${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib" "@loader_path" AFTER icu)
@@ -429,9 +431,9 @@ if(TARGET_MACOS)
 			get_filename_component(LIBNAME ${lib} NAME)
 			add_dependencies("OmegaWTK_ThirdPartyInstallNames" ${LIBNAME}_install_name)
 		endforeach ()
-		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicuuc.dylib_libicudata.69.dylib_reset_dependent_name)
-		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicui18n.dylib_libicudata.69.dylib_reset_dependent_name)
-		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicui18n.dylib_libicuuc.69.dylib_reset_dependent_name)
+		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicuuc.dylib_libicudata.${ICU_VERSION}.dylib_reset_dependent_name)
+		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicui18n.dylib_libicudata.${ICU_VERSION}.dylib_reset_dependent_name)
+		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicui18n.dylib_libicuuc.${ICU_VERSION}.dylib_reset_dependent_name)
 		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libpng.dylib__rpath_libz.1.dylib_reset_dependent_name)
 		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libtiff.dylib__rpath_libz.1.dylib_reset_dependent_name)
 		# Ensure @loader_path rpath additions complete before framework assembly
