@@ -1,5 +1,5 @@
-# OmegaGTE (Omega Graphics and Tessellation Engine)
-A cross platform low level api for rendering 3D graphics, performing computations on a gpu, and performing tessalations on 2D and 3D geometric primatives. This api is paticularly useful for designing cross platform user interface apis, video renderers, and even 3D game engines.
+# OmegaGTE (Omega Graphics and Triangulation Engine)
+A cross platform low level api for rendering 3D graphics, performing computations on a gpu, and performing triangulation on 2D and 3D geometric primitives. This api is particularly useful for designing cross platform user interface apis, video renderers, and even 3D game engines.
 
 This repo also features a cross platform shading language OmegaSL.
 
@@ -28,6 +28,10 @@ See [OmegaSL](./omegasl)
 
 Apache License 2.0
 
+## WHY??
+
+We are living in an age where people demand simple straightforward API's without the hassle of recoding everything. Even with AI's help, tokens are still being burned and it's more important than to ever to conserve code length and focus on creating amazing applications and tools. 
+For graphics-based applications, that's no exception. 
 
 #### Why no OpenGL support?
 
