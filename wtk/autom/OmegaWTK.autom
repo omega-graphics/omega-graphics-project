@@ -1,9 +1,8 @@
-#! /usr/bin/env python3
 
 
-third_party_script = abspath("./third_party.py")
+var third_party_script = abspath("./third_party.py")
 
-def ThirdParty(name:str,deps:"list[str]",exports:"list[str]",source_dir:str,binary_dir:str,install_dir:str,config:str,build:str,install:str,libs:"list[str]",install_name:str):
+func ThirdParty(name:str,deps:"list[str]",exports:"list[str]",source_dir:str,binary_dir:str,install_dir:str,config:str,build:str,install:str,libs:"list[str]",install_name:str){
    args = ["--src-dir",abspath(source_dir),
    "--tmp-dir",abspath(binary_dir),
    "--out-dir",install_dir,
@@ -20,3 +19,4 @@ def ThirdParty(name:str,deps:"list[str]",exports:"list[str]",source_dir:str,bina
       set_property(f"{name}__conf","libs",libs)
    else:
       set_property(f"{name}__conf","libs",exports)
+}
