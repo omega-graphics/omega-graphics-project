@@ -11,17 +11,40 @@ file(GLOB COMMON_SRCS "src/*.cpp")
 
 configure_file("src/Info.plist.in" "${CMAKE_CURRENT_BINARY_DIR}/Info.plist")
 
+# --- Third-party: PCRE2 ---
+set(PCRE2_VERSION "10.38")
+set(PCRE2_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/pcre2/code/pcre2-${PCRE2_VERSION}")
+set(PCRE2_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps/pcre2")
+
+add_third_party(
+	NAME pcre2
+	SOURCE_DIR "${PCRE2_SOURCE_DIR}"
+	BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps/pcre2-build"
+	INSTALL_DIR "${PCRE2_OUTPUT_DIR}"
+	CMAKE_BUILD_ARGS
+		-DPCRE2_BUILD_PCRE2_8=ON
+		-DPCRE2_BUILD_PCRE2_16=OFF
+		-DPCRE2_BUILD_PCRE2_32=OFF
+		-DPCRE2_BUILD_TESTS=OFF
+		-DPCRE2_BUILD_PCRE2GREP=OFF
+		-DBUILD_SHARED_LIBS=OFF
+	EXPORT_STATIC_LIBS "pcre2-8:lib/libpcre2-8.a:lib/pcre2-8-static.lib"
+	EXPORT_INCLUDE_DIRS "include"
+)
 
 add_omega_graphics_module("OmegaCommon" SHARED SOURCES ${COMMON_SRCS} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+target_link_libraries("OmegaCommon" PRIVATE pcre2-8)
 if(WIN32)
 	target_sources("OmegaCommon" PRIVATE "src/win/fs-win.cpp"  "src/win/net-win.cpp" "src/win/multithread-win.cpp")
 	target_compile_definitions("OmegaCommon" PRIVATE "OMEGACOMMON__BUILD__")
 elseif(APPLE)
-	target_sources("OmegaCommon" PRIVATE "src/macos/fs-cocoa.mm"  "src/macos/net-curl.cpp" "src/unix/multithread-unix.cpp")
+	target_sources("OmegaCommon" PRIVATE "src/macos/fs-cocoa.mm" "src/posix/net-curl.cpp" "src/unix/multithread-unix.cpp")
 	target_link_system_frameworks("OmegaCommon" "Foundation")
 	target_link_libraries("OmegaCommon" PRIVATE curl)
 elseif(UNIX)
-	target_sources("OmegaCommon" PRIVATE "src/unix/fs-unixother.cpp" "src/unix/net-unix.cpp" "src/unix/multithread-unix.cpp")
+	target_sources("OmegaCommon" PRIVATE "src/unix/fs-unixother.cpp" "src/posix/net-curl.cpp" "src/unix/multithread-unix.cpp")
+	target_link_libraries("OmegaCommon" PRIVATE curl)
 endif()
 
 file(GLOB WRAPGEN_SRCS "wrapgen/*.cpp")

@@ -19,15 +19,18 @@ namespace OmegaCommon {
     refCount:long
   }
 
+  // HttpRequestDescriptor and HttpResponse contain Vector and enum fields
+  // that the current wrapgen language cannot express. Only scalar fields
+  // are listed here; see net.h for the full API.
+
   struct HttpRequestDescriptor {
     url:string,
-    headerValue:string
+    method:int,
+    body:string
   }
 
   struct HttpResponse {
-    statusCode:int,
-    size:long,
-    data:void*
+    statusCode:int
   }
 
   func startsWith(s:string, prefix:string) int

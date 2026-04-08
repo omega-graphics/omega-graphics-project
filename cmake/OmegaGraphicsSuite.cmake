@@ -465,7 +465,8 @@ include(ExternalProject)
 function(add_third_party)
 
     cmake_parse_arguments(
-        "_ARG" "CUSTOM_PROJECT" "NAME;SOURCE_DIR;BINARY_DIR;INSTALL_DIR" "DEPS;CMAKE_BUILD_ARGS;CONF;BUILD;INSTALL" 
+        "_ARG" "CUSTOM_PROJECT" "NAME;SOURCE_DIR;BINARY_DIR;INSTALL_DIR"
+        "DEPS;CMAKE_BUILD_ARGS;CONF;BUILD;INSTALL;EXPORT_STATIC_LIBS;EXPORT_SHARED_LIBS;EXPORT_INCLUDE_DIRS"
         ${ARGN})
 
 
@@ -494,7 +495,80 @@ function(add_third_party)
             DEPENDS ${_ARG_DEPS}
         )
     endif()
-    
+
+    # Build absolute include dir list for exported targets.
+    set(_EXPORT_INC_DIRS)
+    if(_ARG_EXPORT_INCLUDE_DIRS)
+        foreach(_inc ${_ARG_EXPORT_INCLUDE_DIRS})
+            list(APPEND _EXPORT_INC_DIRS "${_ARG_INSTALL_DIR}/${_inc}")
+        endforeach()
+    endif()
+
+    # Create IMPORTED STATIC library targets for each export entry.
+    # Format: "target_name:unix_lib_path:win_lib_path"  (paths relative to INSTALL_DIR)
+    #     or: "target_name:lib_path"                     (same path on all platforms)
+    foreach(_export ${_ARG_EXPORT_STATIC_LIBS})
+        string(REPLACE ":" ";" _parts "${_export}")
+        list(LENGTH _parts _nparts)
+        list(GET _parts 0 _tgt)
+
+        if(_nparts EQUAL 3)
+            list(GET _parts 1 _unix_rel)
+            list(GET _parts 2 _win_rel)
+        elseif(_nparts EQUAL 2)
+            list(GET _parts 1 _unix_rel)
+            set(_win_rel "${_unix_rel}")
+        else()
+            message(FATAL_ERROR "EXPORT_STATIC_LIBS: expected target:path or target:unix_path:win_path, got '${_export}'")
+        endif()
+
+        if(WIN32)
+            set(_lib_location "${_ARG_INSTALL_DIR}/${_win_rel}")
+        else()
+            set(_lib_location "${_ARG_INSTALL_DIR}/${_unix_rel}")
+        endif()
+
+        add_library(${_tgt} STATIC IMPORTED GLOBAL)
+        set_target_properties(${_tgt} PROPERTIES IMPORTED_LOCATION "${_lib_location}")
+        add_dependencies(${_tgt} ${_ARG_NAME})
+
+        if(_EXPORT_INC_DIRS)
+            set_target_properties(${_tgt} PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${_EXPORT_INC_DIRS}")
+        endif()
+    endforeach()
+
+    # Create IMPORTED SHARED library targets for each export entry.
+    # Same format as EXPORT_STATIC_LIBS. On Windows the path is treated as
+    # the import library (IMPORTED_IMPLIB); on Unix it is the shared library
+    # itself (IMPORTED_LOCATION).
+    foreach(_export ${_ARG_EXPORT_SHARED_LIBS})
+        string(REPLACE ":" ";" _parts "${_export}")
+        list(LENGTH _parts _nparts)
+        list(GET _parts 0 _tgt)
+
+        if(_nparts EQUAL 3)
+            list(GET _parts 1 _unix_rel)
+            list(GET _parts 2 _win_rel)
+        elseif(_nparts EQUAL 2)
+            list(GET _parts 1 _unix_rel)
+            set(_win_rel "${_unix_rel}")
+        else()
+            message(FATAL_ERROR "EXPORT_SHARED_LIBS: expected target:path or target:unix_path:win_path, got '${_export}'")
+        endif()
+
+        add_library(${_tgt} SHARED IMPORTED GLOBAL)
+        if(WIN32)
+            set_target_properties(${_tgt} PROPERTIES IMPORTED_IMPLIB "${_ARG_INSTALL_DIR}/${_win_rel}")
+        else()
+            set_target_properties(${_tgt} PROPERTIES IMPORTED_LOCATION "${_ARG_INSTALL_DIR}/${_unix_rel}")
+        endif()
+        add_dependencies(${_tgt} ${_ARG_NAME})
+
+        if(_EXPORT_INC_DIRS)
+            set_target_properties(${_tgt} PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${_EXPORT_INC_DIRS}")
+        endif()
+    endforeach()
+
 endfunction()
 
 

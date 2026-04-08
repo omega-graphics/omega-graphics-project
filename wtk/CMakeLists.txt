@@ -81,7 +81,6 @@ endif()
 
 set(THIRD_PARTY_SRC_DIR ${OMEGAWTK_SOURCE_DIR}/deps)
 set(THIRD_PARTY_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/deps)
-set(THIRD_PARTY_INCLUDEDIRS)
 
 
 
@@ -94,17 +93,17 @@ file(MAKE_DIRECTORY  ${THIRD_PARTY_OUTPUT_DIR}/icu/lib)
 
 add_third_party(
 	CUSTOM_PROJECT
-	NAME icu 
-	SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/allinone" 
+	NAME icu
+	SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/allinone"
 	BINARY_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/allinone"
 	INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/icu"
-	CONF "" 
+	CONF ""
 	BUILD msbuild allinone.sln /p:Configuration=Release /p:SkipUWP=true
 	INSTALL ${CMAKE_COMMAND} -E copy_directory "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/include" "${THIRD_PARTY_OUTPUT_DIR}/icu/include"
 	&& ${CMAKE_COMMAND} -E copy "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/bin64/icuuc${ICU_VERSION}.dll" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/bin64/icudt${ICU_VERSION}.dll" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/bin64/icuin${ICU_VERSION}.dll" "${THIRD_PARTY_OUTPUT_DIR}/icu/bin"
-	&& ${CMAKE_COMMAND} -E copy "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/lib64/icuuc.lib" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/lib64/icudt.lib" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/lib64/icuin.lib" "${THIRD_PARTY_OUTPUT_DIR}/icu/lib")
-
-	set(THIRD_PARTY_INCLUDEDIRS ${THIRD_PARTY_INCLUDEDIRS} "${THIRD_PARTY_OUTPUT_DIR}/icu/include")
+	&& ${CMAKE_COMMAND} -E copy "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/lib64/icuuc.lib" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/lib64/icudt.lib" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/lib64/icuin.lib" "${THIRD_PARTY_OUTPUT_DIR}/icu/lib"
+	EXPORT_SHARED_LIBS "icuuc:lib/icuuc.lib" "icudata:lib/icudt.lib" "icui18n:lib/icuin.lib"
+	EXPORT_INCLUDE_DIRS "include")
 
 	set(ICU_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/icu/lib/icuuc.lib" "${THIRD_PARTY_OUTPUT_DIR}/icu/lib/icudt.lib" "${THIRD_PARTY_OUTPUT_DIR}/icu/lib/icuin.lib")
 
@@ -125,30 +124,32 @@ if(TARGET_IOS)
 	# message("SYSROOT:${CMAKE_OSX_SYSROOT}")
 	add_third_party(
 		CUSTOM_PROJECT
-		NAME icu 
-		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}" 
+		NAME icu
+		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}"
 		BINARY_DIR "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_ios"
 		INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/icu"
-		CONF 
-		export CFLAGS=--sysroot=${CMAKE_OSX_SYSROOT} && 
+		CONF
+		export CFLAGS=--sysroot=${CMAKE_OSX_SYSROOT} &&
 		export CXXFLAGS=--sysroot=${CMAKE_OSX_SYSROOT} &&
 		${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu --with-cross-build=${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac
 		BUILD make all
 		INSTALL make install
+		EXPORT_SHARED_LIBS "icuuc:lib/libicuuc${CMAKE_SHARED_LIBRARY_SUFFIX}" "icudata:lib/libicudata${CMAKE_SHARED_LIBRARY_SUFFIX}" "icui18n:lib/libicui18n${CMAKE_SHARED_LIBRARY_SUFFIX}"
+		EXPORT_INCLUDE_DIRS "include"
 		DEPS icu_tools)
 else()
 	add_third_party(
 		CUSTOM_PROJECT
-		NAME icu 
-		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source" 
+		NAME icu
+		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source"
 		BINARY_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source"
 		INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/icu"
 		CONF  ${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu
 		BUILD make all
-		INSTALL make install)
+		INSTALL make install
+		EXPORT_SHARED_LIBS "icuuc:lib/libicuuc${CMAKE_SHARED_LIBRARY_SUFFIX}" "icudata:lib/libicudata${CMAKE_SHARED_LIBRARY_SUFFIX}" "icui18n:lib/libicui18n${CMAKE_SHARED_LIBRARY_SUFFIX}"
+		EXPORT_INCLUDE_DIRS "include")
 endif()
-
-	set(THIRD_PARTY_INCLUDEDIRS ${THIRD_PARTY_INCLUDEDIRS} "${THIRD_PARTY_OUTPUT_DIR}/icu/include")
 
 	if(TARGET_MACOS)
 		set(ICU_EXPORT ${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicuuc.dylib ${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicudata.dylib ${THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib)
@@ -174,14 +175,14 @@ endif()
 set(PREFIX_PATH ${THIRD_PARTY_OUTPUT_DIR}/zlib)
 
 add_third_party(
-	NAME libxml2 
-	SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/libxml2/code" 
+	NAME libxml2
+	SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/libxml2/code"
 	BINARY_DIR "${THIRD_PARTY_OUTPUT_DIR}/temp/libxml2"
 	INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/libxml2"
 	CMAKE_BUILD_ARGS -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME} -DLIBXML2_WITH_PYTHON=FALSE -DLIBXML2_WITH_ICU=FALSE -DLIBXML2_WITH_ICONV=FALSE -DLIBXML2_WITH_LZMA=FALSE -DCMAKE_PREFIX_PATH=${PREFIX_PATH} -DCMAKE_C_FLAGS="-I${THIRD_PARTY_OUTPUT_DIR}/icu/include"
+	EXPORT_SHARED_LIBS "xml2:lib/libxml2${CMAKE_SHARED_LIBRARY_SUFFIX}:lib/libxml2.lib"
+	EXPORT_INCLUDE_DIRS "include/libxml2"
 	DEPS icu)
-	
-	set(THIRD_PARTY_INCLUDEDIRS ${THIRD_PARTY_INCLUDEDIRS} "${THIRD_PARTY_OUTPUT_DIR}/libxml2/include/libxml2")
 	if(TARGET_WIN32)
 		set(LIBXML2_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libxml2/lib/libxml2.lib")
 
@@ -194,12 +195,12 @@ add_third_party(
 	endif()
 
 add_third_party(
-	NAME zlib 
-	SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/zlib/code" 
+	NAME zlib
+	SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/zlib/code"
 	BINARY_DIR "${THIRD_PARTY_OUTPUT_DIR}/temp/zlib"
-	INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/zlib")
-	
-	set(THIRD_PARTY_INCLUDEDIRS ${THIRD_PARTY_INCLUDEDIRS} "${THIRD_PARTY_OUTPUT_DIR}/zlib/include")
+	INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/zlib"
+	EXPORT_SHARED_LIBS "z:lib/libz${CMAKE_SHARED_LIBRARY_SUFFIX}:lib/zlib.lib"
+	EXPORT_INCLUDE_DIRS "include")
 	if(TARGET_WIN32)
 		set(ZLIB_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/zlib/lib/zlib.lib")
 
@@ -217,6 +218,8 @@ add_third_party(
 	BINARY_DIR "${THIRD_PARTY_OUTPUT_DIR}/temp/libpng"
 	INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/libpng"
 	CMAKE_BUILD_ARGS -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME} -DCMAKE_PREFIX_PATH=${THIRD_PARTY_OUTPUT_DIR}/zlib  -DCMAKE_C_FLAGS:LIST=-DPNG_ARM_NEON_OPT=0;-DPNG_ARM_NEON_IMPLEMENTATION=0
+	EXPORT_SHARED_LIBS "png:lib/libpng${CMAKE_SHARED_LIBRARY_SUFFIX}:lib/libpng16.lib"
+	EXPORT_INCLUDE_DIRS "include"
 	DEPS zlib)
 
 	if(TARGET_WIN32)
@@ -231,8 +234,6 @@ add_third_party(
 	elseif(TARGET_LINUX)
 		set(LIBPNG_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libpng/lib/libpng.so")
 	endif()
-	
-	set(THIRD_PARTY_INCLUDEDIRS ${THIRD_PARTY_INCLUDEDIRS} "${THIRD_PARTY_OUTPUT_DIR}/libpng/include")
 
 add_third_party(
 	NAME libjpeg-turbo
@@ -240,6 +241,8 @@ add_third_party(
 	BINARY_DIR ${THIRD_PARTY_OUTPUT_DIR}/temp/libjpeg-turbo
 	INSTALL_DIR ${THIRD_PARTY_OUTPUT_DIR}/libjpeg-turbo
 	CMAKE_BUILD_ARGS -DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR} -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME} -DCMAKE_PREFIX_PATH=${THIRD_PARTY_OUTPUT_DIR}/zlib
+	EXPORT_SHARED_LIBS "turbojpeg:lib/libturbojpeg${CMAKE_SHARED_LIBRARY_SUFFIX}:lib/turbojpeg.lib"
+	EXPORT_INCLUDE_DIRS "include"
 	DEPS zlib)
 
 	if(TARGET_WIN32)
@@ -252,8 +255,6 @@ add_third_party(
 	elseif(TARGET_LINUX)
 		set(LIBJPEGTURBO_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libjpeg-turbo/lib/libturbojpeg.so")
 	endif()
-	
-	set(THIRD_PARTY_INCLUDEDIRS ${THIRD_PARTY_INCLUDEDIRS} "${THIRD_PARTY_OUTPUT_DIR}/libjpeg-turbo/include")
 	
 add_third_party(
 	NAME libtiff
@@ -270,6 +271,8 @@ add_third_party(
 	-Dtiff-tests=OFF
 	-Dtiff-contrib=OFF
 	-Dtiff-docs=OFF
+	EXPORT_SHARED_LIBS "tiff:lib/libtiff${CMAKE_SHARED_LIBRARY_SUFFIX}:lib/tiff.lib"
+	EXPORT_INCLUDE_DIRS "include"
 	DEPS zlib libjpeg-turbo)
 
 	if(TARGET_WIN32)
@@ -284,8 +287,6 @@ add_third_party(
 	elseif(TARGET_LINUX)
 		set(LIBTIFF_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libtiff/lib/libtiff.so")
 	endif()
-	
-	set(THIRD_PARTY_INCLUDEDIRS ${THIRD_PARTY_INCLUDEDIRS} "${THIRD_PARTY_OUTPUT_DIR}/libtiff/include")
 
 
 # For Building ThirdParty, so one can edit code through IDE with all code symbols.
@@ -448,7 +449,7 @@ if(TARGET_MACOS)
 elseif(TARGET_WIN32)
 	set(THIRD_PARTY_DLLS ${ICU_DLLS} ${LIBXML2_DLL} ${ZLIB_DLL} ${LIBPNG_DLL} ${LIBJPEGTURBO_DLL} ${LIBTIFF_DLL})
 endif()
-target_include_directories("OmegaWTK" PUBLIC ${THIRD_PARTY_INCLUDEDIRS} $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES> )
+target_include_directories("OmegaWTK" PUBLIC $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>)
 if(TARGET_MACOS)
 	target_compile_definitions("OmegaWTK" PUBLIC RUNTIME_SHADER_COMP_SUPPORT)
 	target_link_system_frameworks("OmegaWTK" Metal Cocoa QuartzCore AVFoundation VideoToolbox AudioToolbox CoreMedia CoreAudio UserNotifications)
@@ -457,7 +458,7 @@ else()
 	target_link_libraries("OmegaWTK" PUBLIC OmegaGTE)
 	target_include_directories("OmegaWTK" PUBLIC $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
 endif()
-target_link_libraries("OmegaWTK" PUBLIC "OmegaCommon" ${ICU_EXPORT} ${LIBXML2_EXPORT} ${LIBPNG_EXPORT} ${LIBJPEGTURBO_EXPORT} ${LIBTIFF_EXPORT})
+target_link_libraries("OmegaWTK" PUBLIC "OmegaCommon" icuuc icudata icui18n xml2 png turbojpeg tiff)
 
 if(TARGET_WIN32)
 	target_compile_definitions("OmegaWTK" PRIVATE WINDOWS_PRIVATE)

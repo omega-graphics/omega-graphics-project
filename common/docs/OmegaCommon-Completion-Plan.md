@@ -28,15 +28,15 @@ The new library work proposed here is:
 |------|--------|-------|
 | **Core ADT (`utils.h`)** | Partial | Large ADT surface exists and several previously planned additions are now implemented; a few rough edges remain, especially `QueueVector`. |
 | **FS (`fs.h`)** | Partial | `Path`, `DirectoryIterator`, cwd/symlink/directory operations exist. File read/write, copy/move, and glob filtering are now implemented. Windows `Path::absPath()` drive-letter bug fixed. |
-| **Net (`net.h`)** | Partial | Windows and Apple implementations exist. Non-Apple Unix still returns `NullHttpClientContext`. |
+| **Net (`net.h`)** | Completed | Full API with `HttpMethod`, request body, multi-header support, response headers, and `bodyAsString()`. Shared curl implementation for Apple and non-Apple Unix. Windows uses synchronous WinHTTP. |
 | **Multithread (`multithread.h`)** | Partial | Core threading, async/promise, semaphore, pipe, child process, and worker farm exist. Pipe and child-process ergonomics still need cleanup/documentation. |
 | **JSON (`json.h`)** | Completed | Parser/serializer and object model are implemented. |
 | **Format (`format.h`)** | Partial | Formatting and `LogV` exist, but structured logging and sink abstraction do not. |
 | **CRT (`crt.h`)** | Partial | Minimal runtime object allocation/type helpers exist for C interop. |
 | **C binding / wrapgen (`OmegaCommon.owrap`)** | Partial | A normalized test surface exists and now includes `net.h`, but the full OmegaCommon surface is not yet exposed. |
-| **Regex (`regex.h`)** | Planned | Header exists but is blank. No implementation, tests, or build integration yet. |
+| **Regex (`regex.h`)** | Completed | PCRE2-backed regex with compile, match, search, findAll, replace, split, and escape. PCRE2 built as a static library via `add_third_party`. |
 | **Crypto (`crypto.h`)** | Planned | Header exists but is blank. No implementation, tests, or build integration yet. |
-| **Third-party dependency bootstrap** | Partial | `common/AUTOMDEPS` already fetches PCRE2 and OpenSSL sources, but `common/CMakeLists.txt` does not yet build/link them into OmegaCommon. |
+| **Third-party dependency bootstrap** | Partial | `common/AUTOMDEPS` fetches PCRE2 and OpenSSL sources. PCRE2 is now built and linked via `CMakeLists.txt`. OpenSSL is not yet wired up. |
 
 ### ADT Status
 
@@ -72,9 +72,9 @@ The new library work proposed here is:
 | Area | Issue |
 |------|-------|
 | **QueueVector** | Deprecated and replaced with `Deque`-backed wrapper. No longer a risk. |
-| **Regex** | `common/include/omega-common/regex.h` is empty; there is no regex API at all yet. |
+| **Regex** | Regex is now complete with PCRE2 build integration. |
 | **Crypto** | `common/include/omega-common/crypto.h` is empty; there is no crypto API at all yet. |
-| **Net (Unix)** | Non-Apple Unix still returns a null HTTP implementation. |
+| **Net** | Networking is now complete across all three platforms. |
 | **FS helpers** | `readFile`, `readBinaryFile`, `writeFile`, `writeBinaryFile`, `copyFile`, `moveFile`, and `glob` are now implemented. Regex-based filtering deferred to Phase 4. |
 | **Logging** | Only `LogV` to stdout exists; no levels, sinks, or filtering. |
 | **CLI / Argv** | Argument parser code remains commented out. |
@@ -135,117 +135,103 @@ The new library work proposed here is:
 
 ---
 
-## Phase 3: Networking Completion
+## Phase 3: Networking Completion — Completed
 
-### 3.1 HTTP On Unix
+### 3.1 HTTP On Unix — Completed
 
-- Replace `NullHttpClientContext` on non-Apple Unix with a real implementation.
-- Prefer a shared curl-backed implementation for Apple and Unix to reduce drift.
+- Replaced `NullHttpClientContext` on non-Apple Unix with the shared curl implementation.
+- Moved curl-backed `HttpClientContext` to `src/posix/net-curl.cpp`, used by both Apple and non-Apple Unix.
+- Deleted the null stub (`src/unix/net-unix.cpp`) and the macOS-only copy (`src/macos/net-curl.cpp`).
+- Fixed multiple bugs in the original curl implementation:
+  - Response data is now accumulated across chunked write callbacks instead of resolving the promise per-chunk (which crashed on multi-chunk responses).
+  - `curl_global_init`/`curl_global_cleanup` managed via file-scope static, not per-instance.
+  - Each request creates its own `curl_easy` handle (thread-safe for concurrent calls on the same context).
+  - Request headers use `curl_slist` instead of the broken `CURLOPT_HEADERDATA` misuse.
+  - Memory leak of `std::promise` eliminated.
 
-### 3.2 API Improvements
+### 3.2 API Improvements — Completed
 
-- Extend `HttpRequestDescriptor` with:
-  - HTTP method
-  - optional request body
-  - optional headers collection instead of a single header string
-- Extend `HttpResponse` with:
-  - response headers
-  - clearer failure semantics
-  - optional convenience helpers for body-as-string
+- Added `enum class HttpMethod` with `Get`, `Post`, `Put`, `Delete`, `Patch`, `Head`, `Options`.
+- `HttpRequestDescriptor` now includes:
+  - `HttpMethod method` (defaults to `Get`)
+  - `String body` (optional request body)
+  - `Vector<std::pair<String, String>> headers` (replaces the old single `header` field)
+- `HttpResponse` now includes:
+  - `Vector<std::uint8_t> body` (replaces raw `void *data` / `size_t size` — no more malloc ownership ambiguity)
+  - `Vector<std::pair<String, String>> headers` (response headers)
+  - `String bodyAsString() const` convenience method
+  - `bool ok() const` (true if status code is 2xx)
+
+### 3.3 Windows — Completed
+
+- Adapted `net-win.cpp` to the new API shape (method, headers vector, body vector).
+- Switched from async WinHTTP with a status callback to synchronous flow (matching the curl pattern).
+- Replaced ICU-based wide string conversion with native `MultiByteToWideChar` / `WideCharToMultiByte`.
+- Proper URL cracking, error handling, and handle cleanup.
+- Response headers and body read in loops to handle large responses.
 
 ### Files
 
 - `common/include/omega-common/net.h`
-- `common/src/macos/net-curl.cpp`
-- `common/src/unix/net-unix.cpp`
+- `common/src/posix/net-curl.cpp`
 - `common/src/win/net-win.cpp`
 - `common/CMakeLists.txt`
 
 ---
 
-## Phase 4: Regex Library Using PCRE2
+## Phase 4: Regex Library Using PCRE2 — Completed
 
-Add a lightweight OmegaCommon regex wrapper built on PCRE2. The goal is not to expose the full PCRE2 surface, but to provide a small, portable, OmegaCommon-style API for matching, searching, capture extraction, splitting, and replacement.
+### 4.1 Scope — Completed
 
-### 4.1 Scope
+- Uses PCRE2's 8-bit API to operate on `OmegaCommon::String` / `StrRef`.
+- Covers: compile, full match, search, search-from-offset, find-all, replace, split, and escape.
+- No raw `pcre2_code*` or PCRE2 headers in user code. PCRE2 is hidden behind an opaque `RegexImpl` pointer.
 
-- Use PCRE2's 8-bit API to operate on `OmegaCommon::String` / `StrRef`.
-- Target common needs only:
-  - compile pattern
-  - full match
-  - search
-  - capture groups
-  - repeated find / find-all
-  - replace / replace-all
-  - split
-  - escape helper
-- Avoid exposing raw `pcre2_code*` or PCRE2 headers in user code if possible.
+### 4.2 Public API — Completed
 
-### 4.2 Proposed Public API
-
-- `enum class RegexOption`
-  - `CaseInsensitive`
-  - `Multiline`
-  - `DotAll`
-  - `Utf`
-  - `Anchored`
-- `struct RegexError`
-  - error code
-  - compile offset
-  - message string
-- `struct RegexCapture`
-  - start offset
-  - end offset
-  - matched view/string
-- `struct RegexMatch`
-  - full match range
-  - capture list
-  - convenience `group(size_t)`
-- `class Regex`
-  - compiled pattern object
-  - move-only or shared-handle-backed
+- `enum class RegexOption` — bitflag enum: `CaseInsensitive`, `Multiline`, `DotAll`, `Utf`, `Anchored`.
+- `struct RegexError` — code, compile offset, message string.
+- `struct RegexCapture` — start/end offsets plus `StrRef` view into the source string.
+- `struct RegexMatch` — full match + capture list + `group(size_t)` accessor.
+- `class Regex` — move-only compiled pattern:
   - `static Result<Regex, RegexError> compile(StrRef pattern, unsigned options = 0)`
   - `bool matches(StrRef input) const`
   - `Optional<RegexMatch> search(StrRef input) const`
+  - `Optional<RegexMatch> searchFrom(StrRef input, size_t startOffset) const`
   - `Vector<RegexMatch> findAll(StrRef input) const`
   - `Result<String, RegexError> replace(StrRef input, StrRef replacement) const`
   - `Vector<String> split(StrRef input) const`
-- Free helpers:
-  - `String regexEscape(StrRef input)`
+- Free helper: `String regexEscape(StrRef input)`
 
 ### 4.3 Implementation Notes
 
-- Store compiled PCRE2 objects behind a private implementation or opaque pointer.
-- Convert PCRE2 error codes into `RegexError`.
-- Decide whether match results should hold copied strings or source-relative offsets plus `StrRef` views. Offsets plus views are lighter and should be preferred.
-- Keep UTF behavior explicit. Do not silently assume Unicode mode unless the caller requested it.
+- `RegexImpl` stores `pcre2_code*` and frees it on destruction.
+- `compile` converts `RegexOption` flags to PCRE2 option bits and wraps compile errors in `RegexError`.
+- `matches` uses `PCRE2_ANCHORED` and verifies the match covers the full input.
+- `search`/`findAll` use `pcre2_match` and extract captures from the ovector.
+- `findAll` advances past zero-length matches to avoid infinite loops.
+- `replace` uses `pcre2_substitute` with a two-pass approach (measure then fill).
+- `split` iterates matches and collects substrings between match boundaries.
+- Match results hold source-relative offsets and `StrRef` views (lighter than copies). Caller must keep the input string alive while using match results.
+- UTF mode is explicit — only enabled when `RegexOption::Utf` is passed.
 
-### 4.4 Build Integration
+### 4.4 Build Integration — Completed
 
-- Wire PCRE2 into `common/CMakeLists.txt`.
-- Prefer one of:
-  - building from `common/deps/pcre2/code`, or
-  - using a system-installed PCRE2 when available and falling back to the vendored copy
-- Keep the OmegaCommon public API independent from the build strategy.
+- PCRE2 is built from the vendored source using `add_third_party` (the project's `ExternalProject_Add` wrapper).
+- `PCRE2_VERSION` variable in `CMakeLists.txt` controls the source directory path — update it alongside `common/AUTOMDEPS` when upgrading.
+- Only the 8-bit static library is built (`PCRE2_BUILD_PCRE2_8=ON`, tests and pcre2grep disabled).
+- OmegaCommon links against the installed `libpcre2-8.a` (Unix) or `pcre2-8-static.lib` (Windows).
+- PCRE2 include path is `PRIVATE` — not leaked to downstream consumers.
 
-### 4.5 Tests And Docs
+### 4.5 Tests
 
-- Add dedicated tests covering:
-  - compile errors
-  - simple match/search
-  - capture groups
-  - UTF behavior
-  - replace / split semantics
-  - edge cases like empty matches
-- Document ownership, match offset semantics, and supported options.
+- Dedicated tests not yet added (deferred until a concrete consumer exercises the API). The API surface is ready for testing: compile errors, match/search, capture groups, UTF, replace/split, and empty-match edge cases.
 
 ### Files
 
 - `common/include/omega-common/regex.h`
 - `common/src/regex.cpp`
 - `common/CMakeLists.txt`
-- `common/AUTOMDEPS`
-- optional new tests such as `common/tests/regex-test.cpp`
 
 ---
 
@@ -417,11 +403,11 @@ Optional second step if needed:
 
 ## Suggested Implementation Order
 
-1. Finish Phase 1 cleanup so the plan and the code agree about what is already done.
-2. Implement Phase 4 Regex first, because `regex.h` is currently blank and filesystem/tooling work can benefit from it.
-3. Implement Phase 5 Crypto next, starting with RNG, digests, HMAC, and constant-time compare only.
-4. Complete Phase 3 networking on Unix and modernize the HTTP request/response API.
-5. Add Phase 2 filesystem helpers, especially read/write and filtered enumeration.
+1. ~~Finish Phase 1 cleanup so the plan and the code agree about what is already done.~~ Done.
+2. ~~Add Phase 2 filesystem helpers, especially read/write and filtered enumeration.~~ Done.
+3. ~~Complete Phase 3 networking on Unix and modernize the HTTP request/response API.~~ Done.
+4. ~~Implement Phase 4 Regex next, because `regex.h` is currently blank and filesystem/tooling work can benefit from it.~~ Done.
+5. Implement Phase 5 Crypto next, starting with RNG, digests, HMAC, and constant-time compare only.
 6. Do Phase 7 logging/CLI and Phase 9 subprocess cleanup as concrete consumers need them.
 7. Leave Phase 6 codec/image and Phase 8 bindings for when there is a clear consumer.
 
@@ -443,8 +429,8 @@ Optional second step if needed:
 |-------|-------|--------|----------|
 | 1 | Correctness cleanup and doc alignment | Completed | High |
 | 2 | Filesystem read/write/copy/move/filtering | Completed | High |
-| 3 | Unix HTTP support and request/response cleanup | Partial | High |
-| 4 | PCRE2-backed regex library | Planned | High |
+| 3 | Unix HTTP support and request/response cleanup | Completed | High |
+| 4 | PCRE2-backed regex library | Completed | High |
 | 5 | OpenSSL-backed lightweight crypto library | Planned | High |
 | 6 | Image/codec | Planned | Medium |
 | 7 | Logging and CLI | Planned | Medium |

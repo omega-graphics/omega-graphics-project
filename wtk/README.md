@@ -1,6 +1,8 @@
 # OmegaWTK (Omega Widget ToolKit)
- A cross-platform UI written in c++
 
+![Logo](public/omega-wtk-1.png)
+
+A cross-platform UI written in c++
 ## Why??
 
 We are living in an age where people demand simple straightforward API's without the hassle of recoding everything. Even with AI's help, tokens are still being burned and it's more important than to ever to conserve code length and focus on creating amazing applications and tools. There are issues with current cross-platform UI engines.

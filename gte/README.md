@@ -1,4 +1,7 @@
 # OmegaGTE (Omega Graphics and Triangulation Engine)
+
+![Logo](public/omega-gte-1.png)
+
 A cross platform low level api for rendering 3D graphics, performing computations on a gpu, and performing triangulation on 2D and 3D geometric primitives. This api is particularly useful for designing cross platform user interface apis, video renderers, and even 3D game engines.
 
 This repo also features a cross platform shading language OmegaSL.

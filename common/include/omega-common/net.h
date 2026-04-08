@@ -1,5 +1,6 @@
 #include "common.h"
 
+#include <cstdint>
 #include <future>
 
 #ifndef OMEGA_COMMON_NET_H
@@ -7,23 +8,36 @@
 
 namespace OmegaCommon {
 
-
+    enum class HttpMethod {
+        Get,
+        Post,
+        Put,
+        Delete,
+        Patch,
+        Head,
+        Options
+    };
 
     struct HttpRequestDescriptor {
         StrRef url;
-        StrRef header;
+        HttpMethod method = HttpMethod::Get;
+        String body;
+        Vector<std::pair<String, String>> headers;
     };
 
-    /**
-     * HTTP response body and metadata.
-     * Ownership: data is allocated with malloc() and must be freed by the caller (e.g. free(resp.data)).
-     * If the request failed or no body was returned, data may be nullptr and size 0; still call free(data) if non-null.
-     */
     struct HttpResponse {
-        /** HTTP status code (e.g. 200, 404). 0 or negative indicates failure or unknown. */
         int statusCode = 0;
-        size_t size = 0;
-        void *data = nullptr;
+        Vector<std::uint8_t> body;
+        Vector<std::pair<String, String>> headers;
+
+        String bodyAsString() const {
+            if (body.empty()) return {};
+            return String(reinterpret_cast<const char *>(body.data()), body.size());
+        }
+
+        bool ok() const {
+            return statusCode >= 200 && statusCode < 300;
+        }
     };
 
     class OMEGACOMMON_EXPORT HttpClientContext {
