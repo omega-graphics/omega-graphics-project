@@ -85,9 +85,15 @@ namespace omegasl {
          * */
         virtual void compileShaderOnRuntime(ast::ShaderDecl::Type type,const OmegaCommon::StrRef & name) = 0;
         bool linkShaderObjects(){
-            OmegaCommon::StrRef libname = OmegaCommon::FS::Path(opts.outputLib).dir();
-            std::ofstream out(OmegaCommon::FS::Path(opts.outputLib).str(), std::ios::out | std::ios::binary);
-            out.write((char *)&libname.size(),sizeof(OmegaCommon::StrRef::size_type));
+            auto outputPath = OmegaCommon::FS::Path(opts.outputLib);
+            OmegaCommon::String libname = outputPath.filename();
+            std::ofstream out(outputPath.str(), std::ios::out | std::ios::binary);
+            if(!out.is_open()){
+                std::cerr << "error: cannot create output library: " << outputPath.str() << std::endl;
+                return false;
+            }
+            size_t libname_size = libname.size();
+            out.write((char *)&libname_size,sizeof(libname_size));
             out.write(libname.data(),libname.size());
             unsigned int s = shaderMap.size();
             out.write((char *)&s,sizeof(s));

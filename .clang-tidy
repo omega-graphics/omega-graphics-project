@@ -1,0 +1,187 @@
+---
+# Cross-platform clang-tidy config for C++17
+# Targets: Windows (MSVC/LLP64), macOS (Apple Clang/LP64), Linux (GCC+Clang/LP64)
+
+Checks: >
+  -*,
+
+  clang-diagnostic-*,
+  clang-analyzer-*,
+
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+
+  cppcoreguidelines-*,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-owning-memory,
+
+  modernize-*,
+  -modernize-use-trailing-return-type,
+
+  performance-*,
+
+  readability-*,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+
+  cert-*,
+
+  misc-*,
+  -misc-non-private-member-variables-in-classes,
+
+  portability-*,
+
+  concurrency-*,
+
+  # -- Cross-platform critical checks (explicit enables) --
+
+  # Narrowing conversions: catches long/int size mismatches across LLP64 (Win) vs LP64 (Linux/macOS)
+  bugprone-narrowing-conversions,
+  cppcoreguidelines-narrowing-conversions,
+
+  # Signed/unsigned mismatches: MSVC warns on these by default (C4018, C4244, C4267)
+  bugprone-signed-char-misuse,
+  bugprone-implicit-widening-of-multiplication-result,
+  bugprone-misplaced-widening-cast,
+
+  # Catches sizeof(long), sizeof(pointer) assumptions that differ across platforms
+  bugprone-sizeof-expression,
+
+  # MSVC, GCC, and Clang disagree on implicit conversion warnings
+  bugprone-argument-comment,
+
+  # Macro hygiene: platform #ifdef blocks are error-prone
+  bugprone-macro-parentheses,
+  bugprone-macro-repeated-side-effects,
+
+  # Catches non-portable bitwise ops on signed types (MSVC vs GCC/Clang behavior differs)
+  hicpp-signed-bitwise,
+
+  # ODR violations from headers: one toolchain links fine, another gets duplicate symbols
+  misc-definitions-in-headers,
+
+  # Unused includes cause different warnings/errors per platform
+  misc-unused-using-decls,
+
+  # Catches compiler extension usage that won't compile on all three targets
+  cert-dcl50-cpp,
+
+  # Catches non-portable exception handling patterns
+  bugprone-exception-escape,
+  bugprone-throw-keyword-missing,
+
+  # Uninitialized members: MSVC debug fills with 0xCC, release leaves garbage — different behavior per platform
+  cppcoreguidelines-pro-type-member-init,
+
+  # Virtual dispatch in constructors/destructors: subtle ABI differences across compilers
+  clang-analyzer-optin.cplusplus.VirtualCall,
+
+  # Thread safety: platform threading models differ
+  bugprone-posix-return,
+  concurrency-mt-unsafe
+
+WarningsAsErrors: >
+  bugprone-narrowing-conversions,
+  cppcoreguidelines-narrowing-conversions,
+  bugprone-sizeof-expression,
+  portability-*,
+  bugprone-signed-char-misuse,
+  hicpp-signed-bitwise,
+  misc-definitions-in-headers
+
+HeaderFilterRegex: '.*'
+
+FormatStyle: file
+
+ExtraArgs:
+  - '-std=c++17'
+  - '-Wno-unknown-warning-option'
+
+CheckOptions:
+  # -- Narrowing / type-size checks --
+  - key: bugprone-narrowing-conversions.WarnOnIntegerNarrowingConversion
+    value: true
+  - key: bugprone-narrowing-conversions.WarnOnIntegerToFloatingPointNarrowingConversion
+    value: true
+  - key: bugprone-narrowing-conversions.WarnOnFloatingPointNarrowingConversion
+    value: true
+  - key: bugprone-signed-char-misuse.CharTypdefsToIgnore
+    value: ''
+  - key: bugprone-signed-char-misuse.DiagnoseSignedUnsignedCharComparisons
+    value: true
+  - key: bugprone-implicit-widening-of-multiplication-result.UseCXXStaticCastsInCppSources
+    value: true
+
+  # -- Modernize --
+  - key: modernize-use-nullptr.NullMacros
+    value: 'NULL'
+  - key: modernize-loop-convert.NamingStyle
+    value: CamelCase
+  - key: modernize-loop-convert.MinConfidence
+    value: reasonable
+
+  # -- Naming conventions --
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: camelBack
+  - key: readability-identifier-naming.VariableCase
+    value: camelBack
+  - key: readability-identifier-naming.MemberCase
+    value: camelBack
+  - key: readability-identifier-naming.ParameterCase
+    value: camelBack
+  - key: readability-identifier-naming.NamespaceCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: CamelCase
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.TypeAliasCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypedefCase
+    value: CamelCase
+  - key: readability-identifier-naming.TemplateParameterCase
+    value: CamelCase
+
+  # -- Complexity / readability --
+  - key: readability-function-cognitive-complexity.Threshold
+    value: 25
+
+  # -- Special member functions --
+  - key: cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor
+    value: true
+  - key: cppcoreguidelines-explicit-virtual-functions.IgnoreDestructors
+    value: true
+  - key: cppcoreguidelines-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic
+    value: true
+
+  # -- Member initialization (cross-platform UB prevention) --
+  - key: cppcoreguidelines-pro-type-member-init.IgnoreArrays
+    value: false
+  - key: cppcoreguidelines-pro-type-member-init.UseAssignment
+    value: false
+
+  # -- Performance --
+  - key: performance-move-const-arg.CheckTriviallyCopyableMove
+    value: false
+
+  # -- Misc --
+  - key: misc-unused-parameters.StrictMode
+    value: false
+  - key: cert-dcl16-c.NewSuffixes
+    value: 'L;LL;LU;LLU'
+
+  # -- Signed bitwise (portability) --
+  - key: hicpp-signed-bitwise.IgnorePositiveIntegerLiterals
+    value: true
+...

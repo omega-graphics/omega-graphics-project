@@ -5,11 +5,13 @@
 
 #include <algorithm>
 #include <cassert>
+#include <utility>
+#include <utility>
 
 namespace OmegaWTK::Composition {
 
 VisualCommand::Data::Data(const Core::Rect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border) :
-rectParams({rect,brush,border})
+rectParams({rect,std::move(brush),std::move(border)})
 {
 
 }
@@ -122,7 +124,7 @@ void Canvas::drawText(const UniString &text,
                       const Core::Rect &rect,
                       const Color &color,
                       const TextLayoutDescriptor &layoutDesc){
-    if(font == nullptr || text.length() == 0 || rect.w <= 0.f || rect.h <= 0.f){
+    if(font == nullptr || text.length() == 0 || rect.w <= 0.F || rect.h <= 0.f){
         return;
     }
 

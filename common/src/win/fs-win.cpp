@@ -11,33 +11,46 @@ namespace OmegaCommon::FS {
 
     bool Path::isDirectory(){
         DWORD attrs = GetFileAttributes(str().c_str());
-        return attrs & FILE_ATTRIBUTE_DIRECTORY;
+        return bool(attrs & FILE_ATTRIBUTE_DIRECTORY);
     };
 
     bool Path::isFile(){
         DWORD attrs = GetFileAttributes(str().c_str());
-        return attrs & FILE_ATTRIBUTE_NORMAL;
+        return bool(attrs & FILE_ATTRIBUTE_NORMAL);
     };
 
     bool Path::isSymLink(){
         DWORD attrs = GetFileAttributes(str().c_str());
-        return attrs & FILE_ATTRIBUTE_REPARSE_POINT;
+        return bool(attrs & FILE_ATTRIBUTE_REPARSE_POINT);
     };
 
     Path Path::followSymlink() {
         DWORD attrs = GetFileAttributesA(str().c_str());
         HANDLE h = CreateFileA(_str.c_str(),GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,NULL);
         DWORD bufferLen = GetFinalPathNameByHandleA(h,NULL,0,FILE_NAME_OPENED);
-        auto pathBuf = new char[bufferLen];
+        auto *pathBuf = new char[bufferLen];
         GetFinalPathNameByHandleA(h,pathBuf,bufferLen,FILE_NAME_OPENED);
         return {pathBuf};
     }
 
     bool Path::exists(){
-        return PathFileExistsA(str().c_str());
+        return bool(PathFileExistsA(str().c_str()));
     };
 
     OmegaCommon::String Path::absPath(){
+        // Windows drive letter check: if _str is already absolute (e.g. "C:\..." or "C:/..."),
+        // the tokenizer drops the ':' which causes isRelative to be true incorrectly.
+        // Bypass token reconstruction and just normalize slashes on the original string.
+        if(_str.size() >= 3 && std::isalpha(static_cast<unsigned char>(_str[0]))
+           && _str[1] == ':' && (_str[2] == '/' || _str[2] == '\\')){
+            auto result = _str;
+            for(auto & c : result){
+                if(c == '/')
+                    c = PATH_SLASH;
+            }
+            return result;
+        }
+
         auto n_dir = _dir;
         for(auto & c : n_dir){
             if(c == '/')
@@ -47,16 +60,16 @@ namespace OmegaCommon::FS {
         if(isRelative){
             CHAR buffer[MAX_PATH];
             GetCurrentDirectoryA(MAX_PATH,buffer);
-            if(_dir.front() == '.')
+            if(!_dir.empty() && _dir.front() == '.')
                 return buffer + n_dir.substr(1,n_dir.size()-1) + PATH_SLASH + _fname + "." + _ext;
-            else 
+            else
                 return std::string(buffer) + PATH_SLASH + n_dir + _fname + "." + _ext;
 
         }
         else {
             return n_dir + PATH_SLASH + _fname + "." + _ext;
         }
-        
+
     };
 
 

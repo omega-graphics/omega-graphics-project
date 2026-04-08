@@ -47,7 +47,7 @@ namespace OmegaCommon {
         WinHTTPHttpClientContext(){
             hinternet = WinHttpOpen(L"OmegaCommon",WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,WINHTTP_FLAG_ASYNC);
         }
-        std::future<HttpResponse> makeRequest(HttpRequestDescriptor descriptor){
+        std::future<HttpResponse> makeRequest(HttpRequestDescriptor descriptor) override{
             size_t urlLen = descriptor.url.size();
             auto * url_w = new UChar[urlLen];
             u_charsToUChars(descriptor.url.data(),url_w,(int32_t)urlLen);

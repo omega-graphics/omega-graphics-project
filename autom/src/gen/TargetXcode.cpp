@@ -769,7 +769,7 @@ public:
                 auto buildFileId = addBuildFileRef(std::filesystem::path(source).filename().string(), fileRefId);
                 entry.sourceBuildFileRefs.push_back(refWithComment(buildFileId, std::filesystem::path(source).filename().string() + " in Sources"));
             }
-
+            /// TODO: Add frameworks as property for compiled targets.
             auto frameworks = compiled->frameworks->toStringVector();
             for (auto framework : frameworks) {
                 if (framework.find(".framework") == std::string::npos && framework.find('/') == std::string::npos) {

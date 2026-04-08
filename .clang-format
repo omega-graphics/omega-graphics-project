@@ -1,0 +1,72 @@
+---
+Language: Cpp
+Standard: c++17
+BasedOnStyle: LLVM
+
+# Indentation
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+IndentCaseLabels: true
+IndentPPDirectives: AfterHash
+NamespaceIndentation: None
+
+# Braces
+BreakBeforeBraces: Attach
+AllowShortBlocksOnASingleLine: Empty
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+
+# Alignment
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignOperands: true
+AlignTrailingComments: true
+
+# Line breaks
+ColumnLimit: 120
+AllowAllParametersOfDeclarationOnNextLine: true
+BinPackArguments: true
+BinPackParameters: true
+BreakConstructorInitializers: BeforeColon
+BreakInheritanceList: BeforeColon
+
+# Spaces
+SpaceAfterCStyleCast: false
+SpaceAfterTemplateKeyword: true
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeParens: ControlStatements
+SpaceInEmptyBlock: false
+SpacesInAngles: false
+SpacesInContainerLiterals: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# Includes
+SortIncludes: true
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^".*"'
+    Priority: 1
+  - Regex: '^<.*\.h>'
+    Priority: 3
+  - Regex: '^<.*>'
+    Priority: 2
+
+# Cross-platform consistency
+DeriveLineEnding: false
+UseCRLF: false
+
+# Misc
+AccessModifierOffset: -4
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 4
+Cpp11BracedListStyle: true
+DerivePointerAlignment: false
+PointerAlignment: Right
+FixNamespaceComments: true
+ReflowComments: true
+SortUsingDeclarations: true
+...

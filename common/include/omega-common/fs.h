@@ -26,7 +26,7 @@ namespace OmegaCommon::FS {
             bool isRelative;
 
             void parse(const OmegaCommon::String & str);
-            typedef Path SELF;
+            using SELF = Path;
         public:
             // const unsigned getTokenCount(){ return tokens.size();};
             // String debugString(){
@@ -165,10 +165,10 @@ namespace OmegaCommon::FS {
         };
 };
 
-inline OmegaCommon::FS::Path operator "" _FS_PATH(const char *path,size_t len){
-    OmegaCommon::StrRef str(const_cast<char *>(path),len);
-    return {str};
-};
+// inline OmegaCommon::FS::Path operator "" _FS_PATH(const char *path,size_t len){
+//     OmegaCommon::StrRef str(const_cast<char *>(path),len);
+//     return {str};
+// };
 
 // inline void f(){
 //     auto s = "Hello"_P;
