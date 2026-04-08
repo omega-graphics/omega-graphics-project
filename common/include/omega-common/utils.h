@@ -520,100 +520,35 @@ namespace OmegaCommon {
         size_type size() const { return _vec.size(); }
     };
 
-    /// A vector that acts like a queue (first in , first out), but has control over every element and its order in the container.
+    /// @deprecated QueueVector is deprecated due to unsafe manual memory management
+    /// (VLA usage, double-destruction). Use Deque or QueueHeap instead.
     template<class Ty>
-    class OMEGACOMMON_EXPORT   QueueVector
+    class [[deprecated("Use Deque or QueueHeap instead")]] OMEGACOMMON_EXPORT QueueVector
     {
-        Ty *_data;
+        Deque<Ty> _impl;
     public:
         typedef unsigned int size_type;
-    private:
-        size_type len = 0;
-    public:
-        using iterator = Ty *;
+        using iterator = typename Deque<Ty>::iterator;
         using reference = Ty &;
-        const size_type & size() noexcept {return len;};
-        bool empty() noexcept {return len == 0;};
-        iterator begin(){ return _data;};
-        iterator end(){return _data + len;};
-        reference first(){ return begin()[0];};
-        reference last(){ return end()[-1];};
-        reference operator[](size_type idx){ return begin()[idx];};
-    private:
-        void _push_el(const Ty & el){
-            if(len == 0)
-                _data = new Ty(std::move(el));
-            else {
-                Ty temp[len];
-                std::move(begin(),end(),temp);
-                delete [] _data;
-                _data = new Ty[len + 1];
-                std::move(temp,temp + len,begin());
-                begin()[len] = std::move(el);
-            };
-            ++len;
-        };
-        void _insert_el_at_idx(const Ty & el,size_type & idx){
-            if(len == 0) {
-                assert(idx == 0 && "Cannot emplace item at requested index! No mem allocated!");
-                _data = new Ty(std::move(el));
-            }
-            else {
-                assert(idx < len && "Index is out of range!");
-                Ty temp[len + 1];
-                std::move(begin(),begin() + idx,temp);
-                temp[idx] = std::move(el);
-                std::move(begin() + idx,end(),temp + (idx + 1));
-                delete [] _data;
-                _data = new Ty[len + 1];
-                std::move(temp,temp + (len + 1),begin());
-            };
-            ++len;
-        };
-    public:
-        void insert(const Ty & el,size_type idx){
-            _insert_el_at_idx(el,idx);
-        };
-        void insert(Ty && el,size_type idx){
-            _insert_el_at_idx(el,idx);
-        };
-        void push(const Ty & el){
-            _push_el(el);
-        };
-        void push(Ty && el){
-            _push_el(el);
-        };
+        const size_type size() noexcept { return (size_type)_impl.size(); }
+        bool empty() noexcept { return _impl.empty(); }
+        iterator begin(){ return _impl.begin(); }
+        iterator end(){ return _impl.end(); }
+        reference first(){ return _impl.front(); }
+        reference last(){ return _impl.back(); }
+        reference operator[](size_type idx){ return _impl[idx]; }
+        void insert(const Ty & el, size_type idx){ _impl.insert(_impl.begin() + idx, el); }
+        void insert(Ty && el, size_type idx){ _impl.insert(_impl.begin() + idx, std::move(el)); }
+        void push(const Ty & el){ _impl.push_back(el); }
+        void push(Ty && el){ _impl.push_back(std::move(el)); }
         void pop(){
             assert(!empty() && "Cannot call pop() on empty QueueVector!");
-            auto f_el = first();
-            f_el.~Ty();
-            Ty temp[len-1];
-            std::move(begin() + 1,end(),temp);
-            delete [] _data;
-            --len;
-            _data = new Ty[len];
-            std::move(temp,temp + len,begin());
-        };
-        QueueVector():_data(nullptr),len(0){};
-        QueueVector(const QueueVector<Ty> & other):len(other.len){
-            _data = new Ty[len];
-            std::copy(other.begin(),other.end(),begin());
-        };
-        QueueVector(QueueVector<Ty> && other):len(other.len){
-            _data = new Ty[len];
-            std::copy(other.begin(),other.end(),begin());
-
-        };
-        ~QueueVector(){
-            auto it = begin();
-            while(it != end()){
-                reference item = *it;
-                item.~Ty();
-                ++it;
-            };
-            delete [] _data;
-        };
-
+            _impl.pop_front();
+        }
+        QueueVector() = default;
+        QueueVector(const QueueVector &) = default;
+        QueueVector(QueueVector &&) = default;
+        ~QueueVector() = default;
     };
 
     /** @brief A queue data type that preallocates its memory on the heap that has a limited capacity, however it can be resized when nesscary.

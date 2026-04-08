@@ -27,7 +27,7 @@ The new library work proposed here is:
 | Area | Status | Notes |
 |------|--------|-------|
 | **Core ADT (`utils.h`)** | Partial | Large ADT surface exists and several previously planned additions are now implemented; a few rough edges remain, especially `QueueVector`. |
-| **FS (`fs.h`)** | Partial | `Path`, `DirectoryIterator`, cwd/symlink/directory operations exist. File read/write, copy/move, and filtered enumeration are still missing. |
+| **FS (`fs.h`)** | Partial | `Path`, `DirectoryIterator`, cwd/symlink/directory operations exist. File read/write, copy/move, and glob filtering are now implemented. Windows `Path::absPath()` drive-letter bug fixed. |
 | **Net (`net.h`)** | Partial | Windows and Apple implementations exist. Non-Apple Unix still returns `NullHttpClientContext`. |
 | **Multithread (`multithread.h`)** | Partial | Core threading, async/promise, semaphore, pipe, child process, and worker farm exist. Pipe and child-process ergonomics still need cleanup/documentation. |
 | **JSON (`json.h`)** | Completed | Parser/serializer and object model are implemented. |
@@ -56,7 +56,7 @@ The new library work proposed here is:
 | Algorithm helpers | Completed | `sort`, `binarySearch`, `lowerBound`, `upperBound`, and `contains` helpers exist. |
 | Hash helpers | Completed | `hashValue(StrRef)` and `hashCombine` exist. |
 | `QueueHeap`, `PriorityQueueHeap` | Completed | Existing queue abstractions remain available. |
-| `QueueVector` | Partial | Major `sizeof` misuse appears corrected, but the class still uses fragile manual allocation/destruction patterns and should be reviewed, fixed properly, or deprecated. |
+| `QueueVector` | Deprecated | Marked `[[deprecated]]` and reimplemented as a thin `Deque` wrapper. New code should use `Deque` or `QueueHeap`. |
 | BitSet / RingBuffer | Planned | Still not implemented. |
 
 ### Completed Since The Original Plan
@@ -71,11 +71,11 @@ The new library work proposed here is:
 
 | Area | Issue |
 |------|-------|
-| **QueueVector** | Still manually manages allocation and destruction in a way that is easy to get wrong; should either be fully repaired or deprecated in favor of `QueueHeap`/`Deque`. |
+| **QueueVector** | Deprecated and replaced with `Deque`-backed wrapper. No longer a risk. |
 | **Regex** | `common/include/omega-common/regex.h` is empty; there is no regex API at all yet. |
 | **Crypto** | `common/include/omega-common/crypto.h` is empty; there is no crypto API at all yet. |
 | **Net (Unix)** | Non-Apple Unix still returns a null HTTP implementation. |
-| **FS helpers** | No read/write/copy/move helpers or regex/glob-based enumeration yet. |
+| **FS helpers** | `readFile`, `readBinaryFile`, `writeFile`, `writeBinaryFile`, `copyFile`, `moveFile`, and `glob` are now implemented. Regex-based filtering deferred to Phase 4. |
 | **Logging** | Only `LogV` to stdout exists; no levels, sinks, or filtering. |
 | **CLI / Argv** | Argument parser code remains commented out. |
 | **C bindings** | Minimal CRT exists, but FS/JSON/Net/Regex/Crypto C APIs are not exposed. |
@@ -84,64 +84,54 @@ The new library work proposed here is:
 
 ---
 
-## Phase 1: Correctness, Cleanup, And Plan Alignment
+## Phase 1: Correctness, Cleanup, And Plan Alignment — Completed
 
-Use this phase to close the remaining correctness gaps and to keep documentation aligned with the actual codebase.
+### 1.1 Previously Completed
 
-### 1.1 Already Completed
+- `StrRef` wide-character constructor fix.
+- Unix semaphore initial value fix.
+- `HttpResponse` ownership/status-code documentation.
+- ADT additions (Set, SetHash, Span, Deque, Stack, Result, string/algorithm/hash helpers).
 
-- `StrRef` wide-character constructor fix is complete.
-- Unix semaphore initial value fix is complete.
-- `HttpResponse` ownership/status-code documentation is complete.
-- The ADT additions originally planned in Phase 1.5 are mostly complete and should now be tracked as implemented rather than pending.
+### 1.2 Completed
 
-### 1.2 Remaining Work
-
-- Review `QueueVector` thoroughly and choose one of:
-  - fully repair it using correct array allocation/object lifetime rules, or
-  - deprecate it and direct new code to `Deque` / `QueueHeap`.
-- Update documentation and comments anywhere they still claim missing ADT features that are now present.
-- Consider whether `common.h` should eventually include `net.h`, `regex.h`, and `crypto.h`, or whether those stay opt-in headers.
+- `QueueVector` deprecated: its unsafe manual memory management (VLA usage, double-destruction in destructor) has been replaced with a thin `Deque`-backed wrapper marked `[[deprecated]]`. New code should use `Deque` or `QueueHeap`.
+- `common.h` decision: `net.h`, `regex.h`, and `crypto.h` remain opt-in headers. They are not included by `common.h` because regex and crypto are not yet implemented, and networking is still partial on Unix.
+- Windows `Path::absPath()` drive-letter bug fixed in `fs-win.cpp`: the tokenizer was dropping the `:` from drive letters (`C:`), causing `isRelative` to be incorrectly set to `true` and `absPath()` to prepend CWD to already-absolute paths.
 
 ### Files
 
 - `common/include/omega-common/utils.h`
 - `common/include/omega-common/common.h`
-- `common/docs/OmegaCommon-Completion-Plan.md`
+- `common/src/win/fs-win.cpp`
 
 ---
 
-## Phase 2: Filesystem And I/O Extensions
+## Phase 2: Filesystem And I/O Extensions — Completed
 
-### 2.1 File Read/Write Helpers
+### 2.1 File Read/Write Helpers — Completed
 
-- Add:
-  - `Result<String, StatusCode> readFile(Path path)`
-  - `StatusCode writeFile(Path path, StrRef contents)`
-  - Optional binary variants for `Vector<std::uint8_t>`
-- Keep text and binary helpers small and predictable; avoid hidden newline conversion.
+- `Result<String, StatusCode> readFile(Path path)` — reads entire text file.
+- `Result<Vector<std::uint8_t>, StatusCode> readBinaryFile(Path path)` — reads entire binary file.
+- `StatusCode writeFile(Path path, StrRef contents)` — writes text, creates or overwrites.
+- `StatusCode writeBinaryFile(Path path, ArrayRef<std::uint8_t> data)` — writes binary, creates or overwrites.
+- All implementations are cross-platform via `std::fstream` in `fs.cpp`. No hidden newline conversion.
 
-### 2.2 Copy / Move
+### 2.2 Copy / Move — Completed
 
-- Add:
-  - `StatusCode copyFile(Path src, Path dest)`
-  - `StatusCode moveFile(Path src, Path dest)`
-  - Optional directory variants later if needed
+- `StatusCode copyFile(Path src, Path dest)` — binary stream copy.
+- `StatusCode moveFile(Path src, Path dest)` — uses `std::rename`, falls back to copy+delete across filesystems.
+- Directory variants deferred to when there is a concrete consumer.
 
-### 2.3 Enumeration / Filtering
+### 2.3 Enumeration / Filtering — Completed
 
-- Extend directory enumeration with one or both of:
-  - `glob(Path dir, StrRef pattern)`
-  - callback-based enumeration with filtering
-- When regex lands, allow regex-based filename filtering without exposing PCRE2 details directly in FS APIs.
+- `Vector<Path> glob(Path dir, StrRef pattern)` — enumerates directory and filters by simple wildcard pattern (`*` and `?`).
+- Regex-based filtering will be possible once Phase 4 (Regex) lands.
 
 ### Files
 
 - `common/include/omega-common/fs.h`
 - `common/src/fs.cpp`
-- `common/src/win/fs-win.cpp`
-- `common/src/macos/fs-cocoa.mm`
-- `common/src/unix/fs-unixother.cpp`
 
 ---
 
@@ -451,8 +441,8 @@ Optional second step if needed:
 
 | Phase | Focus | Status | Priority |
 |-------|-------|--------|----------|
-| 1 | Correctness cleanup and doc alignment | Partial | High |
-| 2 | Filesystem read/write/copy/move/filtering | Planned | High |
+| 1 | Correctness cleanup and doc alignment | Completed | High |
+| 2 | Filesystem read/write/copy/move/filtering | Completed | High |
 | 3 | Unix HTTP support and request/response cleanup | Partial | High |
 | 4 | PCRE2-backed regex library | Planned | High |
 | 5 | OpenSSL-backed lightweight crypto library | Planned | High |

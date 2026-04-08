@@ -1,4 +1,5 @@
 #include "utils.h"
+#include <cstdint>
 
 #ifndef OMEGA_COMMON_FS_H
 #define OMEGA_COMMON_FS_H
@@ -137,6 +138,33 @@ namespace OmegaCommon::FS {
         inline bool exists(Path path){
             return path.exists();
         };
+
+        // -- File I/O helpers --
+
+        /// @brief Read entire text file into a String.
+        OMEGACOMMON_EXPORT Result<String, StatusCode> readFile(Path path);
+
+        /// @brief Read entire binary file into a byte vector.
+        OMEGACOMMON_EXPORT Result<Vector<std::uint8_t>, StatusCode> readBinaryFile(Path path);
+
+        /// @brief Write text contents to a file (creates or overwrites).
+        OMEGACOMMON_EXPORT StatusCode writeFile(Path path, StrRef contents);
+
+        /// @brief Write binary data to a file (creates or overwrites).
+        OMEGACOMMON_EXPORT StatusCode writeBinaryFile(Path path, ArrayRef<std::uint8_t> data);
+
+        // -- Copy / Move --
+
+        /// @brief Copy a single file from src to dest.
+        OMEGACOMMON_EXPORT StatusCode copyFile(Path src, Path dest);
+
+        /// @brief Move (rename) a single file from src to dest. Falls back to copy+delete across filesystems.
+        OMEGACOMMON_EXPORT StatusCode moveFile(Path src, Path dest);
+
+        // -- Enumeration / Filtering --
+
+        /// @brief Return all entries in dir whose filename matches a simple glob pattern (* and ? wildcards).
+        OMEGACOMMON_EXPORT Vector<Path> glob(Path dir, StrRef pattern);
 
         OMEGACOMMON_EXPORT StatusCode changeCWD(Path newPath);
 
