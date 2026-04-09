@@ -224,12 +224,21 @@ void Compositor::executeCurrentCommand(){
         auto layerRect = sanitizeCommandRect(
                 comm->frame->rect,
                 Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
-        if(target->visualTree != nullptr &&
-           target->visualTree->root != nullptr &&
-           targetContext == &(target->visualTree->root->renderTarget)){
-            layerRect = normalizeRootVisualRect(layerRect);
+        const bool isRootVisualContext = (target->visualTree != nullptr &&
+                                          target->visualTree->root != nullptr &&
+                                          targetContext == &(target->visualTree->root->renderTarget));
+        if(isRootVisualContext){
+            // Phase 3: all Views render into the root visual's shared
+            // surface.  Use viewport override to position each View's
+            // content within the window surface.  The backing surface
+            // grows automatically if the window resizes.
+            auto & offset = comm->frame->windowOffset;
+            targetContext->setViewportOverride(offset.x,offset.y,layerRect.w,layerRect.h);
+        } else {
+            // Own surface (child layer).
+            targetContext->clearViewportOverride();
+            targetContext->setRenderTargetSize(layerRect);
         }
-        targetContext->setRenderTargetSize(layerRect);
 
         OmegaCommon::ArrayRef<VisualCommand> commands{comm->frame->currentVisuals};
 

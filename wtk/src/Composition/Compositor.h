@@ -230,7 +230,7 @@ namespace OmegaWTK::Composition {
 
         friend class Layer;
         friend class LayerTree;
-        friend class WindowLayer;
+        friend class ::OmegaWTK::AppWindow;
 
         void executeCurrentCommand();
         void onQueueDrained();

@@ -222,101 +222,152 @@ single surface.**
 
 ## Proposed architecture
 
-### Single native view per window
+### Single native view per window, owned by the backend
 
-Each `AppWindow` creates exactly one native platform view:
+Each backend's `AppWindow` implementation internally creates and owns
+exactly one native platform view. This is not exposed to the widget
+layer — it is a private implementation detail of the native backend.
 
-- **macOS:** One `OmegaWTKCocoaView` as the window's `contentView`
-- **Windows:** One HWND per top-level window
-- **Linux:** One GtkWidget per top-level window
+- **macOS:** `CocoaAppWindow` creates one `CocoaItem` as its internal
+  `rootView`, set as the window's `contentViewController`
+- **Windows:** The `HWNDAppWindow` creates one HWND per top-level window
+- **Linux:** The `GTKAppWindow` creates one GtkWidget per top-level window
 
-All child widgets are virtual — they have bounds, can paint, and can
-receive events, but they have no native platform view. The widget tree
-is a purely in-memory hierarchy managed by OmegaWTK.
+All widget `View` objects are purely virtual — they hold bounds, can
+paint, and can receive events, but they never create or reference a
+`NativeItem`. The widget tree is a purely in-memory hierarchy managed
+by OmegaWTK. The `View` class has no concept of "root" vs "child" —
+all Views are virtual. The native root is below the widget layer.
+
+### WindowLayer elimination
+
+The current `Composition::WindowLayer` class wraps a `NWH` (native
+window handle), a rect reference, and a canvas. All access to the
+native window already goes through `WindowLayer::native_window_ptr`,
+making WindowLayer a pass-through with no independent logic. Its
+responsibilities are absorbed:
+
+- **Native window handle:** `AppWindow::Impl` holds the `NWH` directly
+- **Window-level render target:** `AppWindow::Impl` holds the
+  `ViewRenderTarget` directly (already does — created from
+  `native_window_ptr->getRootView()`)
+- **Window surface/canvas:** Moves to the compositor, which owns the
+  single surface per window
+
+`WindowLayer` is deleted. `AppWindow::getLayer()` is removed from the
+public API.
 
 ### What changes
 
 | Current | Proposed |
 |---------|----------|
-| `View` creates a `NativeItem` | `View` holds virtual bounds only |
+| `View` creates a `NativeItem` via `make_native_item()` | `View` holds virtual bounds only — no `NativeItem` |
+| `WindowLayer` wraps `NWH` + rect + canvas | Deleted. `AppWindow::Impl` holds `NWH` directly |
+| `AppWindow::setRootWidget()` calls `addNativeItem()` | `AppWindow::setRootWidget()` registers widget tree with compositor — no native view creation |
 | `Container::wireChild()` calls `addSubView()` → `addChildNativeItem()` | `Container::wireChild()` adds child to virtual tree |
 | Platform layer manages child positions | OmegaWTK layout manages all positions |
 | Each widget has a native compositor layer | All widgets render into the window's single surface |
-| Platform dispatches events to individual native views | Root view receives all events, OmegaWTK hit-tests the virtual tree |
-| N widgets = N NSViews/HWNDs/GtkWidgets | N widgets = 1 NSView/HWND/GtkWidget |
+| Platform dispatches events to individual native views | Backend AppWindow receives all events, OmegaWTK hit-tests the virtual tree |
+| N widgets = N NSViews/HWNDs/GtkWidgets | N widgets = 1 NSView/HWND/GtkWidget (internal to backend) |
 
-### Phase 1 — Root-only native view
+### Phase 1 — Pure virtual Views + WindowLayer removal [COMPLETED]
 
-**Goal:** Only the window-level View creates a native platform view.
-Child Views become virtual.
+**Goal:** Views become purely virtual. The root native view is an
+internal detail of each backend's `AppWindow`. `WindowLayer` is
+deleted. (NativeItem pointers remain on Views for render target
+access — full removal deferred to Phase 3.)
 
-Introduce a distinction between **root views** and **child views**:
+The `View` class loses all `NativeItem` references. There is no
+`isRootView()` — the concept doesn't exist at the View level. The
+native root view lives inside the backend `AppWindow` implementation,
+which already creates it today (`CocoaAppWindow::rootView`,
+`HWNDAppWindow`'s HWND, `GTKAppWindow`'s widget).
 
 ```cpp
 class View {
-    // ...
-    bool isRootView() const;  // true for the top-level View owned by AppWindow
-
-    // For root views: owns the native item
-    std::shared_ptr<Native::NativeItem> nativeItem_;
-
-    // For child views: no native item, just virtual bounds
-    // Rendering goes through the root view's surface
+    // Purely virtual — no NativeItem, no native platform calls
+    Core::Rect rect_;
+    OmegaCommon::Vector<ViewPtr> children_;
+    View * parent_ = nullptr;
+    // ... layer tree, compositor proxy, etc.
 };
 ```
 
-`View::addSubView()` no longer calls `addChildNativeItem()`. Instead,
-it adds the child to a virtual child list. The child's position and
-size are tracked in OmegaWTK coordinates only — no platform calls.
+**AppWindow::Impl changes:**
+
+```cpp
+struct AppWindow::Impl {
+    // WindowLayer is gone. NWH held directly.
+    Native::NWH nativeWindow;
+    SharedHandle<Composition::ViewRenderTarget> rootViewRenderTarget;
+    Composition::CompositorClientProxy proxy;
+    // ...
+};
+```
+
+`AppWindow::setRootWidget()` no longer calls `addNativeItem()`. It
+registers the widget tree with the compositor and connects the
+compositor to the window's single render target. The native backend
+never sees widget Views.
 
 **Platform layer changes:**
 
 | Platform | Change |
 |----------|--------|
-| macOS | `CocoaItem::addChildNativeItem()` becomes a no-op for virtual views. Root `OmegaWTKCocoaView` is the only NSView. Override `isFlipped` to return YES for top-left origin. |
-| Windows | `HWNDItem::addChildNativeItem()` becomes a no-op. Root HWND is the only window. No more `SetParent`/`SetWindowPos` for children. |
-| GTK | `GTKItem::addChildNativeItem()` becomes a no-op. Root widget is the only GtkWidget. No more `gtk_fixed_put` for children. |
+| macOS | `CocoaAppWindow::addNativeItem()` removed. Root `CocoaItem` is the only NSView — internal to `CocoaAppWindow`. Override `isFlipped` → YES on the root view for top-left origin. |
+| Windows | `HWNDAppWindow::addNativeItem()` removed. Root HWND is the only window — internal to the backend. No more `SetParent`/`SetWindowPos` for children. |
+| GTK | `GTKAppWindow::addNativeItem()` removed. Root widget is the only GtkWidget — internal to the backend. No more `gtk_fixed_put` for children. |
+| `NativeWindow` interface | `addNativeItem()` removed. `getRootView()` becomes private to the backend (compositor accesses it through `AppWindow`, not through `View`). |
 
-### Phase 2 — Virtual hit testing
+### Phase 2 — Virtual hit testing [COMPLETED]
 
-**Goal:** Route native events from the root view to the correct virtual
-widget.
+**Goal:** Route native events from the backend's root native view to
+the correct virtual widget.
 
-The root native view receives all mouse, keyboard, and touch events.
-OmegaWTK walks the virtual widget tree to find the target:
+The backend `AppWindow` receives all mouse, keyboard, and touch events
+from its single native view. It forwards them to the `WidgetTreeHost`,
+which walks the virtual widget tree to find the target:
 
 ```cpp
-Widget * View::hitTest(const Core::Position &point) const {
+Widget * WidgetTreeHost::hitTest(const Core::Position &point) const {
+    // Delegate to the root widget's view tree
+    return hitTestView(root->getView(), point);
+}
+
+Widget * WidgetTreeHost::hitTestView(View *view, const Core::Position &point) const {
     // Walk children in reverse z-order (front to back)
-    for (auto it = children_.rbegin(); it != children_.rend(); ++it) {
+    for (auto it = view->children_.rbegin(); it != view->children_.rend(); ++it) {
         if ((*it)->containsPoint(point)) {
-            // Recurse into child, translating to child-local coordinates
-            auto *hit = (*it)->hitTest(
+            auto *hit = hitTestView(*it,
                 {point.x - (*it)->rect().pos.x,
                  point.y - (*it)->rect().pos.y});
             if (hit != nullptr) return hit;
         }
     }
-    // No child hit — this view is the target
-    return owningWidget();
+    return view->owningWidget();
 }
 ```
 
 This replaces the current model where each native view independently
-receives its own events from the platform.
+receives its own events from the platform. The backend `AppWindow`
+translates platform coordinates to OmegaWTK coordinates once (at the
+window boundary), then the hit test operates entirely in virtual
+coordinates.
 
 **Prior art:** Chromium's `ViewTargeter` performs exactly this traversal.
 The `RootView` receives the native event, calls
 `GetEventHandlerForPoint()`, and walks the View tree from leaf to root.
 
-### Phase 3 — Single-surface rendering
+### Phase 3 — Single-surface rendering [COMPLETED]
 
-**Goal:** All widgets render into the root view's single backing surface.
+**Goal:** All widgets render into the window's single backing surface.
 
 Currently each View has its own compositor surface (render target,
-layer texture, Metal/GL backing). In the new model, only the root
-view has a backing surface. Child widgets paint by recording drawing
-commands that are composited into the root surface.
+layer texture, Metal/GL backing). In the new model, the compositor
+owns one surface per window, backed by the render target that
+`AppWindow::Impl` creates from the backend's root native view. All
+widget Views paint by recording drawing commands that the compositor
+composites into this single surface.
 
 This connects directly to the Render Execution Efficiency Plan's
 Tier 1 (surface mailbox architecture). Instead of each widget depositing
@@ -333,9 +384,170 @@ Current:
 
 Proposed:
     Widget A ──┐
-    Widget B ──┼─→ Root View → Root NativeView → Single Surface → Present
+    Widget B ──┼─→ Compositor → Window Surface (from AppWindow backend) → Present
     Widget C ──┘
-    (1 present, 1 native view)
+    (1 present, 1 native view internal to backend)
+```
+
+**Sub-phases:**
+
+**3a — Window-offset CanvasFrames.** [DONE] Add `Core::Position windowOffset`
+to `CanvasFrame`. Each Canvas stamps its frame with the owning View's
+window-relative position (computed by walking the View parent chain).
+The backend uses this offset to place the frame's draw commands at the
+correct region within the shared window surface.
+
+**3b — Views stop creating per-View NativeItems.** [DONE] The `View`
+constructor no longer calls `make_native_item()`. Views become purely
+virtual: rect, children, layer tree, compositor proxy — no native
+backing. The View holds a *shared* reference to a `ViewRenderTarget`
+that is propagated from the window (not owned per-View).
+
+**3c — Window render target propagation.** [DONE] `View::setWindowRenderTarget()`
+accepts the window's `ViewRenderTarget`, updates the View's
+`CompositorClientProxy`, and recurses to subviews.
+`WidgetTreeHost::initWidgetTree()` propagates
+`AppWindow::Impl::rootViewRenderTarget` down the entire widget tree.
+
+**3d — Visual tree consolidation.** [DONE] The per-View
+`PreCreatedVisualTreeData` / `PreCreatedResourceRegistry` pipeline is
+removed from `View`. Only `AppWindow::Impl` pre-creates a
+`BackendVisualTree` (with its root visual and native present surface)
+for the window's render target. All Views submit
+`CompositionRenderCommand`s that reference the window's single render
+target, and the backend maps them to the window's single
+`BackendCompRenderTarget` entry. The `ensureLayerSurfaceTarget()` path
+in `Execution.cpp` creates layer surfaces within the window's visual
+tree (not per-View visual trees). `PreCreatedResourceRegistry` stores
+one entry (the window's render target → the window's visual tree data).
+
+**3e — Virtual View operations.** [DONE] `View::resize()` updates the virtual
+rect and layer rect — no `NativeItem::resize()` or
+`resizeNativeLayer()` calls. `View::enable()`/`disable()` become state
+flags — no `NativeItem::enable()`/`disable()` calls.
+
+**3f — Backend viewport offset.** [DONE] In
+`Compositor::executeCurrentCommand(Render)`, the backend reads
+`frame->windowOffset` and sets the GPU viewport/scissor to the View's
+region within the shared window surface before rendering the frame's
+commands. `BackendRenderTargetContext::setViewportOverride()` positions
+each View's rendering within the shared backing surface. The backing
+surface grows automatically on window resize but never shrinks.
+
+### Phase 3g — Virtual ScrollView
+
+**Goal:** Replace the NativeItem-backed `ScrollView` with a fully virtual
+implementation. After this phase, **no** View subclass creates a
+NativeItem — the only path to a native view is the Phase 5
+`NativeViewHost` escape hatch.
+
+The current `ScrollView` calls `make_native_item(rect, ScrollItem)` in
+its constructor and delegates everything to the platform scroll view
+(`NSScrollView`, `ScrollViewer`, `GtkScrolledWindow`). This is the last
+remaining use of the legacy `View(rect, NativeItemPtr, parent)`
+constructor. Replacing it with a virtual scroll view:
+
+1. Eliminates the last NativeItem dependency from View subclasses
+2. Makes scroll behavior fully customizable (custom scroll bars, custom
+   momentum physics, overscroll effects, pull-to-refresh)
+3. Unblocks removal of the legacy View constructor and the NativeItem.h
+   include from View.h
+4. Brings ScrollView in line with Phase 3's single-surface model — scroll
+   content renders into the window surface via viewport/scissor clipping
+
+**Sub-phases:**
+
+**3g-i — Virtual scroll container.** [DONE] Replace `ScrollView`'s constructor
+to use the standard purely virtual `View(rect, parent)` path instead
+of `View(rect, NativeItemPtr, parent)`. The ScrollView becomes a
+virtual View that owns a content child and tracks a scroll offset
+(`Core::Position scrollOffset`). Content is clipped to the ScrollView's
+visible bounds via the compositor's scissor rect.
+
+**3g-ii — Scroll input handling.** [DONE] Route scroll wheel / trackpad events
+through the virtual hit-test path (`WidgetTreeHost::dispatchInputEvent`).
+Add `NativeEvent::ScrollWheel` with delta-x/delta-y and cursor position.
+`ScrollViewDelegate` receives these and updates `scrollOffset`. On macOS,
+`scrollWheel:` on the root `CocoaItem` emits `ScrollWheel` events. On
+Windows, `WM_MOUSEWHEEL` / `WM_MOUSEHWHEEL` emit `ScrollWheel`. On GTK,
+the `scroll` signal emits `ScrollWheel`. `AppWindowDelegate` routes
+`ScrollWheel` to `WidgetTreeHost::dispatchInputEvent`, which hit-tests
+and delivers to the target View. A `DefaultScrollHandler` on `ScrollView`
+updates `scrollOffset` when no delegate is set.
+
+**3g-iii — Virtual scroll bars.** [DONE] Implement scroll bar indicators as
+composited Layers within the ScrollView's LayerTree. Always-visible
+minimal overlay style: thin rounded-rect thumbs drawn via
+`Canvas::drawRoundedRect`. Thumb size and position proportional to
+content size vs visible size. Repainted on each `setScrollOffset()`.
+
+**3g-iv — Scroll content offset in compositor.** When painting, the
+ScrollView applies a translation to its content child's `windowOffset`
+so the compositor renders the content at `(windowOffset - scrollOffset)`.
+The viewport/scissor clips to the ScrollView's visible bounds, hiding
+content that has scrolled out of view. Only visible content needs to
+paint.
+
+The scroll offset is integrated into the existing `computeWindowOffset()`
+parent-chain walk. `View::computeWindowOffset()` accumulates position
+offsets by walking up the parent chain. At each ancestor, if that
+ancestor is a `ScrollView`, its `scrollOffset` is subtracted from the
+running total. This means any View inside a ScrollView automatically
+gets a window offset that reflects the current scroll position — no
+changes to the Canvas or Compositor are needed beyond what Phase 3f
+already established.
+
+Implementation detail: `View::computeWindowOffset()` currently walks
+`impl_->parent_ptr` and sums `rect.pos`. To support scroll offsets
+without coupling View to ScrollView, add a virtual method
+`View::scrollOffsetContribution()` that returns `{0,0}` by default.
+`ScrollView` overrides it to return its `scrollOffset`. The walk
+becomes:
+
+```cpp
+Core::Position View::computeWindowOffset() const {
+    Core::Position offset {0.f, 0.f};
+    const View *v = this;
+    while (v != nullptr) {
+        offset.x += v->impl_->rect.pos.x;
+        offset.y += v->impl_->rect.pos.y;
+        // If this View's parent is a scrolling container, subtract
+        // the scroll offset so content appears translated.
+        if (v->impl_->parent_ptr != nullptr) {
+            auto scroll = v->impl_->parent_ptr->scrollOffsetContribution();
+            offset.x -= scroll.x;
+            offset.y -= scroll.y;
+        }
+        v = v->impl_->parent_ptr;
+    }
+    return offset;
+}
+```
+
+This keeps View decoupled from ScrollView — the virtual dispatch
+handles the polymorphism, and non-scrolling Views pay only for a
+trivial `{0,0}` return. Nested ScrollViews compose naturally: each
+ancestor ScrollView subtracts its own offset during the walk.
+
+**3g-v — Remove legacy View constructor.** [DONE] Delete `View(rect,
+NativeItemPtr, parent)` constructor, the corresponding `Impl` constructor
+in `ViewImpl.h`, and `View::preCreateVisualResources()`. Remove the
+`#include "omegaWTK/Native/NativeItem.h"` from `View.h`. The
+`NativeItem.h` include in `Layer.h` remains until `NativeLayerTreeLimb`
+inheritance is refactored.
+
+```
+Current ScrollView:
+    ScrollView → make_native_item(ScrollItem)
+              → NSScrollView / ScrollViewer / GtkScrolledWindow
+              → platform-managed scroll bars, clipping, momentum
+
+Virtual ScrollView:
+    ScrollView → View (purely virtual, no NativeItem)
+              → scrollOffset applied as content translation
+              → scissor clips to visible bounds
+              → custom scroll bar Layers drawn by Canvas
+              → scroll wheel events via virtual hit-test path
 ```
 
 ### Phase 4 — Coordinate system unification
@@ -375,7 +587,8 @@ controls. Provide a `NativeViewHost` widget (analogous to Chromium's
 `NativeViewHost` or WPF's `HwndHost`) that:
 
 1. Creates a real native view
-2. Embeds it as a child of the root native view
+2. Requests the backend `AppWindow` to embed it as a child of the
+   backend's internal root native view
 3. Synchronizes its bounds with the virtual widget tree
 4. Handles the "airspace" problem (native views render on top of
    virtual content)
@@ -384,12 +597,18 @@ controls. Provide a `NativeViewHost` widget (analogous to Chromium's
 class NativeViewHost : public Widget {
     std::shared_ptr<Native::NativeItem> embeddedItem_;
 public:
-    /// Attach a real native view. It will be positioned and sized
-    /// to match this widget's bounds in the virtual tree.
+    /// Attach a real native view. The backend AppWindow will add it
+    /// as a child of its internal root native view. Bounds are
+    /// synchronized with this widget's position in the virtual tree.
     void attach(std::shared_ptr<Native::NativeItem> nativeItem);
     void detach();
 };
 ```
+
+This is the **only** path for creating native subviews. The backend
+`AppWindow` exposes a method specifically for `NativeViewHost` to
+embed/unembed native views — this replaces the old `addNativeItem()`
+which was the general-purpose path for all widgets.
 
 This is the exception, not the rule. Standard widgets (labels, buttons,
 containers, separators, shapes) should never need a native view.
@@ -428,6 +647,16 @@ renders all widget commands in one render pass, and presents once. This
 eliminates the staggered per-widget rendering that causes content gaps
 during resize.
 
+### WindowLayer indirection removed
+
+`WindowLayer` was a pass-through that held the native window handle, a
+rect reference, and a canvas — all of which are already directly
+accessible. Every call site went through `impl_->layer->native_window_ptr`
+to reach the native window. With WindowLayer deleted, `AppWindow::Impl`
+holds the `NWH` directly, reducing indirection and making the ownership
+model explicit: `AppWindow` owns the native window, the native window
+owns the root native view, the compositor owns the single surface.
+
 ---
 
 ## Risk assessment
@@ -449,11 +678,12 @@ widget. On Windows this means implementing UI Automation providers.
 Chromium does this for all its virtual Views.
 
 **Scroll views.** The current `ScrollView` uses `NSScrollView` on
-macOS, which requires a native view hierarchy (`documentView`). With
-virtual views, scrolling becomes a clipping + translation operation on
-the virtual tree, with custom scroll bar widgets. Alternatively,
-`NativeViewHost` can embed a real `NSScrollView` for platform-native
-scroll behavior.
+macOS, which requires a native view hierarchy (`documentView`). Phase 3g
+replaces this with a fully virtual scroll view: scrolling becomes a
+clipping + translation operation on the virtual tree, with custom
+scroll bar Layers. If platform-native scroll behavior is ever needed
+(e.g. rubber-banding or momentum physics that exactly match the OS),
+`NativeViewHost` (Phase 5) can embed a real `NSScrollView`.
 
 **Platform integration features.** Drag-and-drop, tooltips, context
 menus, and focus rings may interact with the native view hierarchy. Each
@@ -491,18 +721,36 @@ window's composite rate) rather than N widget rates.
 ## Phase dependency graph
 
 ```
-Phase 1: Root-only native view (foundational)
-    └─→ Phase 2: Virtual hit testing (required for interaction)
-    └─→ Phase 3: Single-surface rendering (required for display)
-            └─→ Phase 4: Coordinate system unification (cleanup)
+Phase 1: Pure virtual Views + WindowLayer removal (foundational) [COMPLETED]
+    └─→ Phase 2: Virtual hit testing (required for interaction) [COMPLETED]
+    └─→ Phase 3: Single-surface rendering (required for display) [COMPLETED]
+        ├─ 3a: Window-offset CanvasFrames [DONE]
+        ├─ 3b: Views stop creating per-View NativeItems [DONE]
+        ├─ 3c: Window render target propagation [DONE]
+        ├─ 3d: Visual tree consolidation (per-View → per-window) [DONE]
+        ├─ 3e: Virtual View operations [DONE]
+        └─ 3f: Backend viewport offset [DONE]
+            └─→ Phase 3g: Virtual ScrollView [DONE]
+                ├─ 3g-i: Virtual scroll container [DONE]
+                ├─ 3g-ii: Scroll input handling [DONE]
+                ├─ 3g-iii: Virtual scroll bars [DONE]
+                ├─ 3g-iv: Scroll content offset in compositor [DONE]
+                └─ 3g-v: Remove legacy View constructor [DONE]
+                    └─→ Phase 4: Coordinate system unification (cleanup)
     └─→ Phase 5: Native view embedding (escape hatch, can parallel)
 ```
 
-Phases 1 and 2 should be implemented together — without hit testing,
-virtual widgets can't receive events. Phase 3 connects to the Render
-Execution Efficiency Plan's Tier 1 and can be developed in coordination.
-Phase 4 is a cleanup pass. Phase 5 is independent and can proceed
-whenever a native-view-requiring widget is needed.
+Phases 1, 2, and 3 are complete. Phase 3 sub-phases 3a–3g are done —
+per-View render targets, NativeItems, visual trees, and GPU surfaces
+have been consolidated to a single-per-window model. Phase 3g virtualized
+ScrollView, removing the last NativeItem dependency from View subclasses
+and the legacy View constructor. No View subclass creates a NativeItem.
+The only path to a native view is the Phase 5 `NativeViewHost` escape
+hatch. Phase 3
+connects to the Render Execution Efficiency Plan's Tier 1 and can be
+developed in coordination. Phase 4 is a cleanup pass. Phase 5 is
+independent and can proceed whenever a native-view-requiring widget is
+needed.
 
 ---
 
@@ -510,19 +758,47 @@ whenever a native-view-requiring widget is needed.
 
 | File | Phase | Changes |
 |------|-------|---------|
-| `wtk/include/omegaWTK/UI/View.h` | 1, 2 | Add `isRootView()`, virtual child list, `hitTest()`. Remove per-view `NativeItem` for child views |
-| `wtk/src/UI/View.Core.cpp` | 1, 2 | `addSubView()` adds to virtual list instead of calling `addChildNativeItem()`. Root view creation unchanged |
-| `wtk/src/Widgets/BasicWidgets.cpp` | 1 | `wireChild()` / `unwireChild()` use virtual tree operations |
-| `wtk/src/Native/macos/CocoaItem.mm` | 1, 4 | Override `isFlipped` → YES on root view. `addChildNativeItem()` becomes no-op for virtual children |
-| `wtk/src/Native/win/HWNDItem.cpp` | 1, 4 | `addChildNativeItem()` becomes no-op. Remove Y-inversion for children |
-| `wtk/src/Native/gtk/GTKItem.cpp` | 1 | `addChildNativeItem()` becomes no-op. Remove `gtk_fixed_put` for children |
-| `wtk/include/omegaWTK/Native/NativeItem.h` | 1 | Child management methods become optional (only used by root) |
-| `wtk/src/UI/WidgetTreeHost.cpp` | 2 | Event dispatch routes through root view's `hitTest()` |
-| `wtk/src/Composition/Compositor.cpp` | 3 | Surface count reduces to one per window |
+| `wtk/include/omegaWTK/UI/View.h` | 1 | Remove `NativeItem` dependency entirely. View becomes purely virtual: bounds, virtual child list, layer tree, compositor proxy. Remove `isRootView()`. Remove `NativeItem.h` include |
+| `wtk/src/UI/View.Core.cpp` | 1 | `addSubView()` adds to virtual child list only — no `addChildNativeItem()`. View constructor no longer calls `make_native_item()` |
+| `wtk/include/omegaWTK/Composition/Layer.h` | 1 | Delete `WindowLayer` class. Remove `NativeWindow.h` include |
+| `wtk/src/Composition/Layer.cpp` | 1 | Delete `WindowLayer` implementation |
+| `wtk/src/UI/AppWindowImpl.h` | 1 | Replace `UniqueHandle<WindowLayer>` with `Native::NWH` held directly. Remove `WindowLayer` include |
+| `wtk/src/UI/AppWindow.cpp` | 1 | `setRootWidget()` registers widget tree with compositor — no `addNativeItem()` call. All `impl_->layer->native_window_ptr` becomes `impl_->nativeWindow`. Remove `getLayer()` |
+| `wtk/include/omegaWTK/UI/AppWindow.h` | 1 | Remove `getLayer()` from public API. Remove `WindowLayer` forward declaration |
+| `wtk/include/omegaWTK/Native/NativeWindow.h` | 1 | Remove `addNativeItem()` from interface. `getRootView()` stays but is accessed only by `AppWindow::Impl`, not by `View` |
+| `wtk/src/Native/macos/CocoaAppWindow.mm` | 1, 4 | Remove `addNativeItem()`. Override `isFlipped` → YES on root view. Root `CocoaItem` remains internal |
+| `wtk/src/Native/win/HWNDAppWindow.cpp` | 1, 4 | Remove `addNativeItem()`. Remove child Y-inversion |
+| `wtk/src/Native/gtk/GTKAppWindow.cpp` | 1 | Remove `addNativeItem()`. Remove child `gtk_fixed_put` |
+| `wtk/include/omegaWTK/Native/NativeItem.h` | 1 | Remove `addChildNativeItem()` and child management methods entirely |
+| `wtk/src/Widgets/BasicWidgets.cpp` | 1 | `wireChild()` / `unwireChild()` use virtual tree operations only |
+| `wtk/include/omegaWTK/UI/View.h` | 2 | **Done.** Added `containsPoint()` — bounds check for hit testing |
+| `wtk/src/UI/View.Core.cpp` | 2 | **Done.** Implemented `containsPoint()` |
+| `wtk/src/UI/WidgetTreeHost.h` | 2 | **Done.** Declared `hitTest()`, `hitTestWidget()`, `dispatchInputEvent()`, `hoveredView_` |
+| `wtk/src/UI/WidgetTreeHost.cpp` | 2 | **Done.** Implemented hit test (reverse z-order widget tree walk), event dispatch with hover tracking |
+| `wtk/src/UI/AppWindow.cpp` | 2 | **Done.** `AppWindowDelegate::onRecieveEvent` routes input events to `WidgetTreeHost::dispatchInputEvent` |
+| `wtk/src/UI/AppWindowImpl.h` | 2 | **Done.** Root NativeItem's `event_emitter` wired to AppWindow for input event routing |
+| `wtk/include/omegaWTK/Composition/Canvas.h` | 3a | Add `Core::Position windowOffset` to `CanvasFrame` |
+| `wtk/src/Composition/Canvas.cpp` | 3a | `nextFrame()` stamps `windowOffset` via `View::computeWindowOffset()` |
+| `wtk/include/omegaWTK/UI/View.h` | 3b,3c,3e | Add `setWindowRenderTarget()`, `computeWindowOffset()`. Remove `NativeItem.h` include. `enable()`/`disable()` become virtual state |
+| `wtk/src/UI/View.Core.cpp` | 3b,3c,3e | Remove `make_native_item()` from constructor. Remove `preCreateVisualResources()`. `resize()`/`enable()`/`disable()` become purely virtual. Implement `setWindowRenderTarget()`, `computeWindowOffset()` |
+| `wtk/src/UI/ViewImpl.h` | 3b,3d | Render target becomes shared/propagated from window. Remove `PreCreatedVisualTreeData` ownership. Add `enabled_` flag |
+| `wtk/src/UI/WidgetTreeHost.cpp` | 3c | `initWidgetTree()` propagates window's `rootViewRenderTarget` to all Views |
+| `wtk/src/Composition/backend/Execution.cpp` | 3d,3f | `ensureLayerSurfaceTarget()` uses window's visual tree. `executeCurrentCommand(Render)` applies `windowOffset` viewport/scissor |
+| `wtk/include/omegaWTK/Composition/Layer.h` | 3b | Remove `NativeItem.h` include |
+| `wtk/src/Composition/Compositor.cpp` | 3 | Surface count reduces to one per window, obtained from `AppWindow`'s render target |
 | `wtk/include/omegaWTK/Composition/CompositorClient.h` | 3 | `CompositorClientProxy` deposits into window-level surface |
-| `wtk/include/omegaWTK/UI/Widget.h` | 2, 4 | Coordinate system uses top-left origin |
-| New: `wtk/include/omegaWTK/UI/NativeViewHost.h` | 5 | `NativeViewHost` widget for embedding real native views |
-| New: `wtk/src/UI/NativeViewHost.cpp` | 5 | Platform-specific native view embedding |
+| `wtk/include/omegaWTK/UI/ScrollView.h` | 3g | Remove `NativeItem` dependency. `ScrollView` becomes virtual View with `scrollOffset`, custom scroll bar Layers. `ScrollViewDelegate` receives scroll-wheel events instead of platform callbacks |
+| `wtk/src/UI/ScrollView.cpp` | 3g | Replace `make_native_item(ScrollItem)` constructor with `View(rect,parent)`. Implement virtual scroll: offset tracking, scissor clipping, scroll bar painting. Remove `getNativePtr()` calls |
+| `wtk/include/omegaWTK/Native/NativeEvent.h` | 3g-ii | Add `NativeEvent::ScrollWheel` type with delta-x/delta-y params |
+| `wtk/src/Native/macos/CocoaAppWindow.mm` | 3g-ii | Forward `scrollWheel:` events from root CocoaItem to the event emitter |
+| `wtk/src/Native/win/WinAppWindow.cpp` | 3g-ii | Forward `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` as ScrollWheel events |
+| `wtk/src/Native/gtk/GTKAppWindow.cpp` | 3g-ii | Forward `scroll` signal as ScrollWheel events |
+| `wtk/include/omegaWTK/UI/View.h` | 3g-v | Remove `View(rect, NativeItemPtr, parent)` constructor. Remove `#include "omegaWTK/Native/NativeItem.h"`. Remove `preCreateVisualResources()` |
+| `wtk/src/UI/View.Core.cpp` | 3g-v | Delete legacy NativeItem constructor and `preCreateVisualResources()` stub |
+| `wtk/src/UI/ViewImpl.h` | 3g-v | Delete legacy `Impl(owner, renderTargetValue, rect, parent)` constructor |
+| `wtk/include/omegaWTK/UI/Widget.h` | 4 | Coordinate system uses top-left origin |
+| New: `wtk/include/omegaWTK/UI/NativeViewHost.h` | 5 | `NativeViewHost` widget — the only path to create a native subview |
+| New: `wtk/src/UI/NativeViewHost.cpp` | 5 | Platform-specific native view embedding via backend `AppWindow` |
 
 ---
 
@@ -530,6 +806,12 @@ whenever a native-view-requiring widget is needed.
 
 ### Codebase
 
+- `WindowLayer` (to be deleted): `Layer.h:235–248` — wraps `NWH` + rect + canvas, pass-through only
+- `AppWindow::Impl`: `AppWindowImpl.h:10–28` — creates `WindowLayer`, holds `ViewRenderTarget` from `native_window_ptr->getRootView()`
+- `AppWindow::setRootWidget()`: `AppWindow.cpp:63–69` — calls `addNativeItem()` (to be removed)
+- `CocoaAppWindow` root view: `CocoaAppWindow.mm:49` — creates `CocoaItem` as internal root, sets as `contentViewController`
+- `CocoaAppWindow::addNativeItem()`: `CocoaAppWindow.mm:93–114` — adds widget view as native subview (to be removed)
+- `NativeWindow::addNativeItem()`: `NativeWindow.h:34` — interface method (to be removed)
 - Native view creation: `View.Core.cpp:73–90` (`make_native_item`)
 - Child view attachment: `View.Core.cpp:102–118` (`addSubView` → `addChildNativeItem`)
 - Container wiring: `BasicWidgets.cpp:157–166` (`wireChild`)

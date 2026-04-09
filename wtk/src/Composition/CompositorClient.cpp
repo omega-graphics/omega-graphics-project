@@ -24,6 +24,17 @@ namespace OmegaWTK::Composition {
 
     }
 
+    CompositorClientProxy::CompositorClientProxy():
+    renderTarget(nullptr),
+    syncLaneId(g_syncLaneSeed.fetch_add(1)) {
+
+    }
+
+    void CompositorClientProxy::setRenderTarget(SharedHandle<CompositionRenderTarget> newRenderTarget){
+        std::lock_guard<std::mutex> lk(commandMutex);
+        renderTarget = std::move(newRenderTarget);
+    }
+
     void CompositorClientProxy::setSyncLaneId(uint64_t syncLaneId){
         std::lock_guard<std::mutex> lk(commandMutex);
         this->syncLaneId = syncLaneId;

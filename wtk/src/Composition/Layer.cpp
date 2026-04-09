@@ -141,13 +141,4 @@ LayerTree::~LayerTree(){
 
 };
 
-// --- WindowLayer ---
-
-WindowLayer::WindowLayer(Core::Rect & rect,Native::NWH native_window_ptr):native_window_ptr(native_window_ptr),rect(rect){
-};
-
-void WindowLayer::redraw(){
-
-};
-
 } // namespace OmegaWTK::Composition

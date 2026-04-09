@@ -32,19 +32,50 @@ add_third_party(
 	EXPORT_INCLUDE_DIRS "include"
 )
 
+# --- Third-party: OpenSSL ---
+set(OPENSSL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/openssl/code")
+set(OPENSSL_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps/openssl")
+
+if(WIN32)
+	add_third_party(
+		CUSTOM_PROJECT
+		NAME openssl
+		SOURCE_DIR "${OPENSSL_SOURCE_DIR}"
+		BINARY_DIR "${OPENSSL_SOURCE_DIR}"
+		INSTALL_DIR "${OPENSSL_OUTPUT_DIR}"
+		CONF perl "${OPENSSL_SOURCE_DIR}/Configure" --prefix=${OPENSSL_OUTPUT_DIR} no-shared no-tests no-apps VC-WIN64A
+		BUILD nmake
+		INSTALL nmake install_sw
+		EXPORT_STATIC_LIBS "crypto:lib/libcrypto.a:lib/libcrypto.lib" "ssl:lib/libssl.a:lib/libssl.lib"
+		EXPORT_INCLUDE_DIRS "include")
+else()
+	add_third_party(
+		CUSTOM_PROJECT
+		NAME openssl
+		SOURCE_DIR "${OPENSSL_SOURCE_DIR}"
+		BINARY_DIR "${OPENSSL_SOURCE_DIR}"
+		INSTALL_DIR "${OPENSSL_OUTPUT_DIR}"
+		CONF perl "${OPENSSL_SOURCE_DIR}/Configure" --prefix=${OPENSSL_OUTPUT_DIR} no-shared no-tests no-apps
+		BUILD make
+		INSTALL make install_sw
+		EXPORT_STATIC_LIBS "crypto:lib/libcrypto.a:lib/libcrypto.lib" "ssl:lib/libssl.a:lib/libssl.lib"
+		EXPORT_INCLUDE_DIRS "include")
+endif()
+
 add_omega_graphics_module("OmegaCommon" SHARED SOURCES ${COMMON_SRCS} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
-target_link_libraries("OmegaCommon" PRIVATE pcre2-8)
+target_link_libraries("OmegaCommon" PRIVATE pcre2-8 ssl crypto)
 if(WIN32)
 	target_sources("OmegaCommon" PRIVATE "src/win/fs-win.cpp"  "src/win/net-win.cpp" "src/win/multithread-win.cpp")
 	target_compile_definitions("OmegaCommon" PRIVATE "OMEGACOMMON__BUILD__")
+	target_link_libraries("OmegaCommon" PRIVATE ws2_32 advapi32 crypt32 user32)
 elseif(APPLE)
 	target_sources("OmegaCommon" PRIVATE "src/macos/fs-cocoa.mm" "src/posix/net-curl.cpp" "src/unix/multithread-unix.cpp")
 	target_link_system_frameworks("OmegaCommon" "Foundation")
 	target_link_libraries("OmegaCommon" PRIVATE curl)
 elseif(UNIX)
 	target_sources("OmegaCommon" PRIVATE "src/unix/fs-unixother.cpp" "src/posix/net-curl.cpp" "src/unix/multithread-unix.cpp")
-	target_link_libraries("OmegaCommon" PRIVATE curl)
+	target_link_libraries("OmegaCommon" PRIVATE curl dl pthread)
 endif()
 
 file(GLOB WRAPGEN_SRCS "wrapgen/*.cpp")

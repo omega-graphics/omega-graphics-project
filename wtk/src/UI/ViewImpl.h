@@ -103,6 +103,8 @@ inline float clampAxis(float value,float minValue,float maxValue){
 
 struct View::Impl {
     OmegaCommon::Vector<View *> subviews;
+    /// Shared render target propagated from the window (Phase 3).
+    /// Null until setWindowRenderTarget() is called. Not owned per-View.
     SharedHandle<Composition::ViewRenderTarget> renderTarget;
     Composition::CompositorClientProxy proxy;
     ViewResizeCoordinator resizeCoordinator;
@@ -110,19 +112,22 @@ struct View::Impl {
     View * parent_ptr = nullptr;
     Core::Rect rect {Core::Position{0.f,0.f},1.f,1.f};
     ViewDelegate * delegate = nullptr;
-    Core::UniquePtr<Composition::PreCreatedVisualTreeData> preCreatedVisualTree_;
+    bool enabled_ = true;
 
+    /// Construct a purely virtual View (Phase 3). No NativeItem, no
+    /// per-View render target. The render target is propagated from the
+    /// window via setWindowRenderTarget().
     Impl(View & owner,
-         SharedHandle<Composition::ViewRenderTarget> renderTargetValue,
          const Core::Rect & initialRect,
          View * parent):
-        renderTarget(std::move(renderTargetValue)),
-        proxy(std::static_pointer_cast<Composition::CompositionRenderTarget>(renderTarget)),
+        renderTarget(nullptr),
+        proxy(),
         ownLayerTree(std::make_shared<Composition::LayerTree>(initialRect)),
         parent_ptr(parent),
         rect(initialRect){
         resizeCoordinator.attachView(&owner);
     }
+
 };
 
 }

@@ -65,6 +65,14 @@ namespace OmegaWTK::Composition {
         SharedHandle<OmegaGTE::GETexture> committedTexture;
         OmegaGTE::FMatrix<4,4> currentTransform = OmegaGTE::FMatrix<4,4>::Identity();
         float currentOpacity = 1.f;
+        struct ViewportOverride {
+            bool active = false;
+            float offsetX = 0.f;
+            float offsetY = 0.f;
+            float width = 0.f;
+            float height = 0.f;
+        };
+        ViewportOverride viewportOverride_;
         void rebuildBackingTarget();
         void createGradientTexture(bool linearOrRadial,Gradient & gradient,OmegaGTE::GRect & rect,SharedHandle<OmegaGTE::GETexture> & dest);
     public:
@@ -73,6 +81,8 @@ namespace OmegaWTK::Composition {
         void renderToTarget(VisualCommand::Type type,void *params);
         void applyEffectToTarget(const CanvasEffect & effect);
         void setRenderTargetSize(Core::Rect &rect);
+        void setViewportOverride(float offsetX, float offsetY, float width, float height);
+        void clearViewportOverride();
         SharedHandle<OmegaGTE::GENativeRenderTarget> & getNativeRenderTarget(){ return renderTarget; }
         SharedHandle<OmegaGTE::GEFence> & getFence(){ return fence; }
         SharedHandle<OmegaGTE::GETexture> getCommittedTexture(){ return committedTexture; }

@@ -100,7 +100,7 @@ Core::UniquePtr<ImgCodec> obtainCodecForImageFormat(BitmapImage::Format &format,
             http_client = OmegaCommon::HttpClientContext::Create();
         }
         auto resp = http_client->makeRequest({url}).get();
-        return loadImageFromBuffer((ImgByte *)resp.data,resp.size,format);
+        return loadImageFromBuffer((ImgByte *)resp.body.data(),resp.body.size(),format);
     }
 
     StatusWithObj<BitmapImage> loadImageFromBuffer(ImgByte *bufferData,size_t bufferSize,BitmapImage::Format f){

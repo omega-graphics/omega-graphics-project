@@ -35,15 +35,15 @@ static inline bool resizeRectChanged(const Core::Rect &lhs,const Core::Rect &rhs
 
 void AppWindow::setMenu(SharedHandle<Menu> & menu){
     impl_->menu = menu;
-    impl_->layer->native_window_ptr->setMenu(impl_->menu->getNativeMenu());
+    impl_->nativeWindow->setMenu(impl_->menu->getNativeMenu());
 };
 
 void AppWindow::setTitle(OmegaCommon::StrRef title){
-    impl_->layer->native_window_ptr->setTitle(title);
+    impl_->nativeWindow->setTitle(title);
 }
 
 void AppWindow::setEnableWindowHeader(bool enable) {
-    impl_->layer->native_window_ptr->setEnableWindowHeader(enable);
+    impl_->nativeWindow->setEnableWindowHeader(enable);
 }
 
 // void AppWindow::setLayerStyle(SharedHandle<Composition::WindowStyle> & style){
@@ -63,22 +63,25 @@ void AppWindow::onThemeSet(Native::ThemeDesc &desc){
 void AppWindow::setRootWidget(WidgetPtr widget){
     impl_->widgetTreeHost = WidgetTreeHost::Create();
     impl_->widgetTreeHost->setRoot(widget);
-    impl_->layer->native_window_ptr->addNativeItem(widget->view->renderTargetHandle()->getNativePtr());
+    // Phase 3: propagate the window's single render target to the
+    // WidgetTreeHost so it can be distributed to all Views during
+    // initWidgetTree(). All Views in this window share this target.
+    impl_->widgetTreeHost->setWindowRenderTarget(impl_->rootViewRenderTarget);
     impl_->proxy.setFrontendPtr(impl_->widgetTreeHost->compositor);
     impl_->widgetTreeHost->attachedToWindow = true;
 };
 
 
 SharedHandle<Native::NativeFSDialog> AppWindow::openFSDialog(const Native::NativeFSDialog::Descriptor & desc){
-    return Native::NativeFSDialog::Create(desc,impl_->layer->native_window_ptr);
+    return Native::NativeFSDialog::Create(desc,impl_->nativeWindow);
 };
 
 SharedHandle<Native::NativeNoteDialog> AppWindow::openNoteDialog(const Native::NativeNoteDialog::Descriptor & desc){
-    return Native::NativeNoteDialog::Create(desc,impl_->layer->native_window_ptr);
+    return Native::NativeNoteDialog::Create(desc,impl_->nativeWindow);
 };
 
 void AppWindow::close(){
-    impl_->layer->native_window_ptr->close();
+    impl_->nativeWindow->close();
 };
 
 AppWindow::~AppWindow(){
@@ -101,7 +104,7 @@ AppWindowPtr AppWindowManager::getRootWindow(){
 };
 
 void AppWindowManager::displayRootWindow(){
-    rootWindow->impl_->layer->native_window_ptr->initialDisplay();
+    rootWindow->impl_->nativeWindow->initialDisplay();
     if(rootWindow->impl_->widgetTreeHost != nullptr){
         rootWindow->impl_->widgetTreeHost->initWidgetTree();
     }
@@ -225,6 +228,22 @@ void AppWindowDelegate::onRecieveEvent(Native::NativeEventPtr event){
             }
 #endif
             liveResizeActive = false;
+            break;
+        }
+        // Input events: route through WidgetTreeHost hit testing.
+        case Native::NativeEvent::LMouseDown:
+        case Native::NativeEvent::LMouseUp:
+        case Native::NativeEvent::RMouseDown:
+        case Native::NativeEvent::RMouseUp:
+        case Native::NativeEvent::CursorEnter:
+        case Native::NativeEvent::CursorExit:
+        case Native::NativeEvent::CursorMove:
+        case Native::NativeEvent::KeyDown:
+        case Native::NativeEvent::KeyUp:
+        case Native::NativeEvent::ScrollWheel: {
+            if(window != nullptr && window->impl_->widgetTreeHost != nullptr){
+                window->impl_->widgetTreeHost->dispatchInputEvent(event);
+            }
             break;
         }
         default:

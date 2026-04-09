@@ -5,7 +5,7 @@
         Use clang-format, clang-tidy to help cleanup and tidy the project files.
     Use PascalCase for file-naming conventions
     Use an object-oriented, Modular coding style that has modular rules so if a specific rule needs to be changed across the object it can be.
-- All algorithims/implementations will be revised through multi-phase plans before being implemented.
+- All implementations will be revised through multi-phase plans before being implemented.
 (This is only for code, not for documentation, or other utilites)
    - 1 research existing/working idas solutions from other projects
    - 2 devise a new solution from those old solutions

@@ -83,6 +83,7 @@ struct OMEGAWTK_EXPORT ViewResize {
 struct OMEGAWTK_EXPORT ScrollParams {
     float deltaX;
     float deltaY;
+    Core::Position position;
 };
 
 struct OMEGAWTK_EXPORT WindowWillResize {
@@ -115,6 +116,7 @@ public:
         ScrollRight,
         ScrollUp,
         ScrollDown,
+        ScrollWheel,
         FocusGained,
         FocusLost,
         GesturePinch,

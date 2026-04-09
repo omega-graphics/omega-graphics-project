@@ -29,12 +29,6 @@ namespace OmegaWTK::Native::Win {
         return (NativeItemPtr)this;
     }
 
-    void WinAppWindow::addNativeItem(NativeItemPtr item){
-       auto hwndItem = std::dynamic_pointer_cast<HWNDItem>(item);
-       SetParent(hwndItem->hwnd,hwnd);
-       ShowWindow(hwndItem->hwnd,SW_SHOW);
-    };
-
     void WinAppWindow::setMenu(NM menu){
         this->menu = menu;
         auto nm = std::dynamic_pointer_cast<Win::WinMenu>(menu);
@@ -232,11 +226,6 @@ namespace OmegaWTK::Native::Win {
     };
 
     void WinAppWindow::attachWidgets(){
-        auto it = windowWidgetRootViews.begin();
-        while(it != windowWidgetRootViews.end()){
-            addChildNativeItem(*it);
-            ++it;
-        };
        if(menu) {
            auto hmenu = (HMENU)menu->getNativeBinding();
             if(SetMenu(hwnd,hmenu) == FALSE){

@@ -307,7 +307,29 @@ namespace OmegaWTK {
 
    
 
+    void WidgetTreeHost::propagateWindowRenderTargetRecurse(Widget *parent){
+        if(parent == nullptr || windowRenderTarget_ == nullptr){
+            return;
+        }
+        if(parent->view != nullptr){
+            parent->view->setWindowRenderTarget(windowRenderTarget_);
+        }
+        for(const auto & child : parent->childWidgets()){
+            propagateWindowRenderTargetRecurse(child.get());
+        }
+    }
+
+    void WidgetTreeHost::setWindowRenderTarget(SharedHandle<Composition::ViewRenderTarget> rt){
+        windowRenderTarget_ = std::move(rt);
+    }
+
     void WidgetTreeHost::initWidgetTree(){
+        // Phase 3: propagate the window's shared render target to all
+        // Views before observing layer trees or initializing widgets,
+        // so that compositor wiring uses the correct (shared) target.
+        if(windowRenderTarget_ != nullptr){
+            propagateWindowRenderTargetRecurse(root.get());
+        }
         observeWidgetLayerTreesRecurse(root.get());
         root->setTreeHostRecurse(this);
         initWidgetRecurse(root.get());
@@ -368,6 +390,125 @@ namespace OmegaWTK {
                << " h=" << lastResizeSessionState.sample.height
                << " gen=" << resizeCoordinatorGeneration;
         OMEGAWTK_DEBUG(stream.str());
+    }
+
+    View * WidgetTreeHost::hitTest(const Core::Position &point) const{
+        if(root == nullptr){
+            return nullptr;
+        }
+        return hitTestWidget(root.get(),point);
+    }
+
+    View * WidgetTreeHost::hitTestWidget(Widget *widget,const Core::Position &point) const{
+        if(widget == nullptr){
+            return nullptr;
+        }
+        auto children = widget->childWidgets();
+        // Walk children in reverse z-order (last child = frontmost).
+        for(auto i = children.size(); i > 0; --i){
+            auto &child = children[i - 1];
+            if(child == nullptr || child->view == nullptr){
+                continue;
+            }
+            View &childView = child->viewRef();
+            if(childView.containsPoint(point)){
+                Core::Position localPoint {
+                    point.x - childView.getRect().pos.x,
+                    point.y - childView.getRect().pos.y
+                };
+                View *hit = hitTestWidget(child.get(),localPoint);
+                if(hit != nullptr){
+                    return hit;
+                }
+            }
+        }
+        if(widget->view != nullptr){
+            return widget->view.get();
+        }
+        return nullptr;
+    }
+
+    void WidgetTreeHost::dispatchInputEvent(Native::NativeEventPtr event){
+        if(root == nullptr){
+            return;
+        }
+        using Native::NativeEvent;
+
+        // Extract position for positional events.
+        Core::Position pos {};
+        bool hasPosition = false;
+
+        switch(event->type){
+            case NativeEvent::LMouseDown:
+            case NativeEvent::LMouseUp:
+            case NativeEvent::RMouseDown:
+            case NativeEvent::RMouseUp: {
+                auto *p = static_cast<Native::MouseEventParams *>(event->params);
+                if(p != nullptr){ pos = p->position; hasPosition = true; }
+                break;
+            }
+            case NativeEvent::CursorMove: {
+                auto *p = static_cast<Native::CursorMoveParams *>(event->params);
+                if(p != nullptr){ pos = p->position; hasPosition = true; }
+                break;
+            }
+            case NativeEvent::CursorEnter: {
+                auto *p = static_cast<Native::CursorEnterParams *>(event->params);
+                if(p != nullptr){ pos = p->position; hasPosition = true; }
+                break;
+            }
+            case NativeEvent::ScrollWheel: {
+                auto *p = static_cast<Native::ScrollParams *>(event->params);
+                if(p != nullptr){ pos = p->position; hasPosition = true; }
+                break;
+            }
+            case NativeEvent::CursorExit: {
+                // Cursor left the window — send exit to hovered view.
+                if(hoveredView_ != nullptr){
+                    hoveredView_->emit(event);
+                    hoveredView_ = nullptr;
+                }
+                return;
+            }
+            case NativeEvent::KeyDown:
+            case NativeEvent::KeyUp: {
+                // Keyboard events go to root widget for now.
+                // TODO: route to focused widget once focus tracking exists.
+                if(root->view != nullptr){
+                    root->view->emit(event);
+                }
+                return;
+            }
+            default:
+                return;
+        }
+
+        if(!hasPosition){
+            return;
+        }
+
+        View *target = hitTest(pos);
+
+        // Synthesize CursorEnter/CursorExit when the hovered view changes.
+        if(target != hoveredView_){
+            if(hoveredView_ != nullptr){
+                auto *exitParams = new Native::CursorExitParams();
+                exitParams->position = pos;
+                hoveredView_->emit(Native::NativeEventPtr(
+                    new NativeEvent(NativeEvent::CursorExit,exitParams)));
+            }
+            hoveredView_ = target;
+            if(hoveredView_ != nullptr){
+                auto *enterParams = new Native::CursorEnterParams();
+                enterParams->position = pos;
+                hoveredView_->emit(Native::NativeEventPtr(
+                    new NativeEvent(NativeEvent::CursorEnter,enterParams)));
+            }
+        }
+
+        if(target != nullptr){
+            target->emit(event);
+        }
     }
 
     void WidgetTreeHost::attachToWindow(AppWindow * window){

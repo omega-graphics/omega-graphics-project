@@ -2,6 +2,7 @@
 #include "omegaWTK/Composition/Brush.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Layer.h"
+#include "omegaWTK/UI/View.h"
 
 #include <algorithm>
 #include <cassert>
@@ -71,7 +72,7 @@ VisualCommand::~VisualCommand(){
     // Data is a regular struct (not a tagged union), so RAII handles destruction.
 }
 
-Canvas::Canvas(CompositorClientProxy &proxy,Layer &layer): CompositorClient(proxy),rect(layer.getLayerRect()),layer(layer),current(new CanvasFrame {&layer,rect}){
+Canvas::Canvas(CompositorClientProxy &proxy,Layer &layer,::OmegaWTK::View *owner): CompositorClient(proxy),rect(layer.getLayerRect()),layer(layer),ownerView_(owner),current(new CanvasFrame {&layer,rect}){
     assert(layer.boundCanvas_ == nullptr &&
            "Layer already has a Canvas bound -- one Canvas per Layer");
     layer.boundCanvas_ = this;
@@ -193,12 +194,12 @@ void Canvas::applyEffect(SharedHandle<CanvasEffect> &effect){
     CanvasEffect copied = *effect;
     if(copied.params != nullptr){
         switch(copied.type){
-            case CanvasEffect::DirectionalBlur: {
+            case CanvasEffect::Type::DirectionalBlur: {
                 auto *params = (CanvasEffect::DirectionalBlurParams *)copied.params;
                 copied.directionalBlur = *params;
                 break;
             }
-            case CanvasEffect::GaussianBlur:
+            case CanvasEffect::Type::GaussianBlur:
             default: {
                 auto *params = (CanvasEffect::GaussianBlurParams *)copied.params;
                 copied.gaussianBlur = *params;
@@ -283,6 +284,12 @@ SharedHandle<CanvasFrame> Canvas::nextFrame() {
     // The frame was created at the end of the *previous* paint cycle,
     // so its rect is stale if the layer resized since then.
     frame->rect = rect;
+    // Phase 3: stamp the View's window-relative position so the backend
+    // can render this frame at the correct offset within the shared
+    // window surface.
+    if(ownerView_ != nullptr){
+        frame->windowOffset = ownerView_->computeWindowOffset();
+    }
     current.reset(new CanvasFrame {&layer,rect});
     return frame;
 }

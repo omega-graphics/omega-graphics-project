@@ -179,8 +179,17 @@ namespace OmegaWTK::Native::Win {
             break;
         }
         case WM_MOUSEWHEEL : {
+            const float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / static_cast<float>(WHEEL_DELTA);
+            POINT pt;
+            pt.x = GET_X_LPARAM(lParam);
+            pt.y = GET_Y_LPARAM(lParam);
+            ScreenToClient(hwnd, &pt);
+            FLOAT scaleFactor = currentDpi / 96.f;
+            auto *p = new ScrollParams{0.f, delta * 10.f,
+                Core::Position{static_cast<float>(pt.x) / scaleFactor,
+                               static_cast<float>(pt.y) / scaleFactor}};
+            emitIfPossible(NativeEventPtr(new NativeEvent(NativeEvent::ScrollWheel, p)));
             if(isScrollView){
-                const float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / static_cast<float>(WHEEL_DELTA);
                 auto eventType = delta >= 0.f ? NativeEvent::ScrollUp : NativeEvent::ScrollDown;
                 emitIfPossible(scroll_event_to_native_event(eventType,0.f,delta));
             }
@@ -188,8 +197,17 @@ namespace OmegaWTK::Native::Win {
             break;
         }
         case WM_MOUSEHWHEEL : {
+            const float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / static_cast<float>(WHEEL_DELTA);
+            POINT pt;
+            pt.x = GET_X_LPARAM(lParam);
+            pt.y = GET_Y_LPARAM(lParam);
+            ScreenToClient(hwnd, &pt);
+            FLOAT scaleFactor = currentDpi / 96.f;
+            auto *p = new ScrollParams{delta * 10.f, 0.f,
+                Core::Position{static_cast<float>(pt.x) / scaleFactor,
+                               static_cast<float>(pt.y) / scaleFactor}};
+            emitIfPossible(NativeEventPtr(new NativeEvent(NativeEvent::ScrollWheel, p)));
             if(isScrollView){
-                const float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / static_cast<float>(WHEEL_DELTA);
                 auto eventType = delta >= 0.f ? NativeEvent::ScrollRight : NativeEvent::ScrollLeft;
                 emitIfPossible(scroll_event_to_native_event(eventType,delta,0.f));
             }

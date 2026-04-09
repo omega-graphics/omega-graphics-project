@@ -469,6 +469,38 @@ function(add_third_party)
         "DEPS;CMAKE_BUILD_ARGS;CONF;BUILD;INSTALL;EXPORT_STATIC_LIBS;EXPORT_SHARED_LIBS;EXPORT_INCLUDE_DIRS"
         ${ARGN})
 
+    # Pre-create exported include directories so CMake's
+    # INTERFACE_INCLUDE_DIRECTORIES validation passes at configure time.
+    set(_EXPORT_INC_DIRS)
+    if(_ARG_EXPORT_INCLUDE_DIRS)
+        foreach(_inc ${_ARG_EXPORT_INCLUDE_DIRS})
+            set(_abs_inc "${_ARG_INSTALL_DIR}/${_inc}")
+            file(MAKE_DIRECTORY "${_abs_inc}")
+            list(APPEND _EXPORT_INC_DIRS "${_abs_inc}")
+        endforeach()
+    endif()
+
+    # Collect library file paths as BUILD_BYPRODUCTS so Ninja knows
+    # which ExternalProject step produces each file.
+    set(_BYPRODUCTS)
+    foreach(_export ${_ARG_EXPORT_STATIC_LIBS} ${_ARG_EXPORT_SHARED_LIBS})
+        string(REPLACE ":" ";" _bp "${_export}")
+        list(LENGTH _bp _bp_n)
+        if(_bp_n EQUAL 3)
+            list(GET _bp 1 _bp_unix)
+            list(GET _bp 2 _bp_win)
+        elseif(_bp_n EQUAL 2)
+            list(GET _bp 1 _bp_unix)
+            set(_bp_win "${_bp_unix}")
+        else()
+            continue()
+        endif()
+        if(WIN32)
+            list(APPEND _BYPRODUCTS "${_ARG_INSTALL_DIR}/${_bp_win}")
+        else()
+            list(APPEND _BYPRODUCTS "${_ARG_INSTALL_DIR}/${_bp_unix}")
+        endif()
+    endforeach()
 
     if(NOT ${_ARG_CUSTOM_PROJECT})
         message("CMAKE PROJECT:${_ARG_NAME}")
@@ -480,6 +512,7 @@ function(add_third_party)
             CONFIGURE_COMMAND ${CMAKE_COMMAND} -S ${_ARG_SOURCE_DIR} -G${CMAKE_GENERATOR} -B ${_ARG_BINARY_DIR} -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=${_ARG_INSTALL_DIR} ${_ARG_CMAKE_BUILD_ARGS}
             BUILD_COMMAND ${CMAKE_COMMAND} --build ${_ARG_BINARY_DIR}
             INSTALL_COMMAND ${CMAKE_COMMAND} --install ${_ARG_BINARY_DIR}
+            BUILD_BYPRODUCTS ${_BYPRODUCTS}
             DEPENDS ${_ARG_DEPS}
         )
     else()
@@ -492,16 +525,9 @@ function(add_third_party)
             CONFIGURE_COMMAND "${_ARG_CONF}"
             BUILD_COMMAND "${_ARG_BUILD}"
             INSTALL_COMMAND "${_ARG_INSTALL}"
+            BUILD_BYPRODUCTS ${_BYPRODUCTS}
             DEPENDS ${_ARG_DEPS}
         )
-    endif()
-
-    # Build absolute include dir list for exported targets.
-    set(_EXPORT_INC_DIRS)
-    if(_ARG_EXPORT_INCLUDE_DIRS)
-        foreach(_inc ${_ARG_EXPORT_INCLUDE_DIRS})
-            list(APPEND _EXPORT_INC_DIRS "${_ARG_INSTALL_DIR}/${_inc}")
-        endforeach()
     endif()
 
     # Create IMPORTED STATIC library targets for each export entry.

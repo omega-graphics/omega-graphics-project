@@ -1,5 +1,10 @@
 #include <curl/curl.h>
 
+#include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
+#include <sys/stat.h>
+
 #include "omega-common/net.h"
 
 namespace OmegaCommon {
@@ -9,7 +14,59 @@ namespace OmegaCommon {
         ~CurlGlobalInit() { curl_global_cleanup(); }
     } curlInit;
 
+    // RAII wrapper for a PEM temp file with secure cleanup.
+    class TempPemFile {
+        String path_;
+    public:
+        TempPemFile() = default;
+
+        explicit TempPemFile(const String &pemData) {
+            char tmpl[] = "/tmp/omega-crypto-XXXXXX";
+            int fd = mkstemp(tmpl);
+            if (fd == -1) return;
+            fchmod(fd, 0600);
+            ::write(fd, pemData.data(), pemData.size());
+            ::close(fd);
+            path_ = tmpl;
+        }
+
+        ~TempPemFile() { cleanup(); }
+
+        TempPemFile(TempPemFile &&o) noexcept : path_(std::move(o.path_)) { o.path_.clear(); }
+        TempPemFile &operator=(TempPemFile &&o) noexcept {
+            if (this != &o) { cleanup(); path_ = std::move(o.path_); o.path_.clear(); }
+            return *this;
+        }
+        TempPemFile(const TempPemFile &) = delete;
+        TempPemFile &operator=(const TempPemFile &) = delete;
+
+        const char *path() const { return path_.empty() ? nullptr : path_.c_str(); }
+
+    private:
+        void cleanup() {
+            if (path_.empty()) return;
+            // Overwrite with zeros before unlinking
+            FILE *f = fopen(path_.c_str(), "r+b");
+            if (f) {
+                fseek(f, 0, SEEK_END);
+                long sz = ftell(f);
+                if (sz > 0) {
+                    fseek(f, 0, SEEK_SET);
+                    Vector<char> zeros(static_cast<size_t>(sz), 0);
+                    fwrite(zeros.data(), 1, static_cast<size_t>(sz), f);
+                }
+                fclose(f);
+            }
+            unlink(path_.c_str());
+            path_.clear();
+        }
+    };
+
     class CURLHttpClientContext : public HttpClientContext {
+        HttpTlsConfig tlsConfig_;
+        TempPemFile caTempFile_;
+        TempPemFile certTempFile_;
+        TempPemFile keyTempFile_;
 
         struct TransferState {
             Vector<std::uint8_t> body;
@@ -45,7 +102,36 @@ namespace OmegaCommon {
             return bytes;
         }
 
+        void applyTlsConfig(CURL *curl) const {
+            if (!tlsConfig_.verifyPeer) {
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+            }
+
+            if (caTempFile_.path())
+                curl_easy_setopt(curl, CURLOPT_CAINFO, caTempFile_.path());
+
+            if (certTempFile_.path())
+                curl_easy_setopt(curl, CURLOPT_SSLCERT, certTempFile_.path());
+
+            if (keyTempFile_.path())
+                curl_easy_setopt(curl, CURLOPT_SSLKEY, keyTempFile_.path());
+        }
+
     public:
+        CURLHttpClientContext() = default;
+
+        explicit CURLHttpClientContext(HttpTlsConfig config)
+            : tlsConfig_(std::move(config))
+        {
+            if (!tlsConfig_.caBundlePem.empty())
+                caTempFile_ = TempPemFile(tlsConfig_.caBundlePem);
+            if (!tlsConfig_.clientCertPem.empty())
+                certTempFile_ = TempPemFile(tlsConfig_.clientCertPem);
+            if (!tlsConfig_.clientKeyPem.empty())
+                keyTempFile_ = TempPemFile(tlsConfig_.clientKeyPem);
+        }
+
         std::future<HttpResponse> makeRequest(HttpRequestDescriptor descriptor) override {
             std::promise<HttpResponse> promise;
             auto future = promise.get_future();
@@ -100,6 +186,8 @@ namespace OmegaCommon {
             curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headerCallback);
             curl_easy_setopt(curl, CURLOPT_HEADERDATA, &state);
 
+            applyTlsConfig(curl);
+
             CURLcode res = curl_easy_perform(curl);
 
             HttpResponse response;
@@ -124,5 +212,9 @@ namespace OmegaCommon {
 
     std::shared_ptr<HttpClientContext> HttpClientContext::Create() {
         return std::make_shared<CURLHttpClientContext>();
+    }
+
+    std::shared_ptr<HttpClientContext> HttpClientContext::Create(HttpTlsConfig config) {
+        return std::make_shared<CURLHttpClientContext>(std::move(config));
     }
 }

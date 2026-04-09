@@ -1,4 +1,5 @@
 #include "omegaWTK/Core/Core.h"
+#include "omegaWTK/Native/NativeEvent.h"
 #include <type_traits>
 #include <cstdint>
 #include <chrono>
@@ -10,6 +11,7 @@ namespace OmegaWTK {
 
     namespace Composition {
         class Compositor;
+        class ViewRenderTarget;
         struct ResizeGovernorMetadata;
     }
 
@@ -18,6 +20,7 @@ namespace OmegaWTK {
     OMEGACOMMON_SHARED_CLASS(AppWindow);
     class Widget;
     OMEGACOMMON_SHARED_CLASS(Widget);
+    class View;
     enum class PaintReason : std::uint8_t;
 
     struct OMEGAWTK_EXPORT ResizeDynamicsSample {
@@ -61,18 +64,21 @@ namespace OmegaWTK {
      @brief Owns a widget tree. (Owns the Widget tree's Compositor, and the Compositor's Scheduler)
      @paragraph An instance of this class gets attached to an AppWindow directly and the root widget
      the host is assigned to the AppWindow.
-     NOTE: An AppWindow also has a WindowLayer that can be drawn on by a Compositor, so in order
-     to guarantee a fast runtime it uses the **first WidgetTreeHost's Compositor**.
+     NOTE: The first WidgetTreeHost attached to an AppWindow provides the
+     Compositor that manages composition for the window's single surface.
     */
     class OMEGAWTK_EXPORT WidgetTreeHost {
-        /** The Widget Tree's Compositor
+        /** The Widget Tree's Compositor.
          NOTE: The instance of this class that was first attached to an
-         AppWindow will be used for managing composition of the WindowLayer.
+         AppWindow provides the Compositor for the window's single surface.
          */
         Composition::Compositor * compositor;
         uint64_t syncLaneId;
         /// The Root Widget
         WidgetPtr root;
+        /// Window's shared render target (Phase 3). Propagated to all
+        /// Views in the tree during initWidgetTree().
+        SharedHandle<Composition::ViewRenderTarget> windowRenderTarget_;
         ResizeDynamicsTracker resizeTracker;
         ResizeSessionState lastResizeSessionState {};
         std::uint64_t resizeCoordinatorGeneration = 0;
@@ -94,6 +100,7 @@ namespace OmegaWTK {
         ResizeValidationSession resizeValidationSession {};
 
         bool attachedToWindow;
+        View * hoveredView_ = nullptr;
 
         WidgetTreeHost();
 
@@ -102,12 +109,14 @@ namespace OmegaWTK {
         friend class Widget;
 
         void initWidgetRecurse(Widget *parent);
+        void propagateWindowRenderTargetRecurse(Widget *parent);
         void observeWidgetLayerTreesRecurse(Widget *parent);
         void unobserveWidgetLayerTreesRecurse(Widget *parent);
         void invalidateWidgetRecurse(Widget *parent,PaintReason reason,bool immediate);
         void beginResizeCoordinatorSessionRecurse(Widget *parent,std::uint64_t sessionId);
         void applyResizeGovernorMetadata(const Composition::ResizeGovernorMetadata & metadata);
         bool detectAnimatedTreeRecurse(Widget *parent) const;
+        View * hitTestWidget(Widget *widget,const Core::Position &point) const;
         void initWidgetTree();
         Composition::Compositor *compPtr(){return compositor;};
         uint64_t laneId() const { return syncLaneId; }
@@ -128,13 +137,27 @@ namespace OmegaWTK {
          @param[in] window The AppWindow to attach to.
          @paragraph
          If this instance of this class is the first to be attached to the AppWindow specified,
-         its Compositor will be used to manage composition for its WindowLayer.
+         its Compositor will be used to manage composition for the window's single surface.
         */
         void attachToWindow(AppWindow * window);
+
+        /// Set the window's shared render target. Called by AppWindow
+        /// before initWidgetTree() so the render target can be propagated
+        /// to all Views in the tree (Phase 3, single-surface rendering).
+        void setWindowRenderTarget(SharedHandle<Composition::ViewRenderTarget> rt);
 
         void notifyWindowResizeBegin(const Core::Rect & rect);
         void notifyWindowResize(const Core::Rect & rect);
         void notifyWindowResizeEnd(const Core::Rect & rect);
+
+        /// Walk the virtual widget tree and return the deepest View whose
+        /// bounds contain `point` (in window-relative coordinates).
+        View * hitTest(const Core::Position &point) const;
+
+        /// Dispatch a native input event (mouse, keyboard) through the
+        /// virtual widget tree via hit testing. Mouse events are routed
+        /// to the View under the cursor; keyboard events go to the root.
+        void dispatchInputEvent(Native::NativeEventPtr event);
 
         ~WidgetTreeHost();
     };

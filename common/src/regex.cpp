@@ -68,21 +68,23 @@ namespace OmegaCommon {
     static RegexMatch buildMatch(StrRef input, pcre2_match_data *matchData, uint32_t captureCount) {
         PCRE2_SIZE *ovector = pcre2_get_ovector_pointer(matchData);
 
-        RegexMatch result;
-        result.fullMatch.start = ovector[0];
-        result.fullMatch.end = ovector[1];
-        result.fullMatch.matched = StrRef(input.data() + ovector[0], (StrRef::size_type)(ovector[1] - ovector[0]));
+        RegexCapture full{
+            ovector[0],
+            ovector[1],
+            StrRef(input.data() + ovector[0], (StrRef::size_type)(ovector[1] - ovector[0]))
+        };
 
+        Vector<RegexCapture> caps;
         for (uint32_t i = 1; i < captureCount; ++i) {
-            RegexCapture cap;
             if (ovector[2 * i] != PCRE2_UNSET) {
-                cap.start = ovector[2 * i];
-                cap.end = ovector[2 * i + 1];
-                cap.matched = StrRef(input.data() + cap.start, (StrRef::size_type)(cap.end - cap.start));
+                size_t s = ovector[2 * i];
+                size_t e = ovector[2 * i + 1];
+                caps.push_back({s, e, StrRef(input.data() + s, (StrRef::size_type)(e - s))});
+            } else {
+                caps.push_back({0, 0, StrRef()});
             }
-            result.captures.push_back(cap);
         }
-        return result;
+        return RegexMatch{std::move(full), std::move(caps)};
     }
 
     // --- Regex API ---

@@ -206,14 +206,6 @@ public:
         }
     }
 
-    void addNativeItem(NativeItemPtr item) override {
-        if(item == nullptr || rootView == nullptr){
-            return;
-        }
-        windowWidgetRootViews.push_back(item);
-        rootView->addChildNativeItem(item);
-    }
-
     ~GTKAppWindow() {
         if(resizeFinishDebounceSource != 0){
             g_source_remove(resizeFinishDebounceSource);

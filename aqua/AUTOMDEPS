@@ -3,11 +3,6 @@
         "third_party_dest":"./deps"
     },
     "commands":[
-        {
-            "type":"git_clone",
-            "url":"https://github.com/NVIDIA-Omniverse/PhysX.git",
-            "dest":"$(third_party_dest)/PhysX",
-            "branch":"default"
-        }
+      
     ]
 }

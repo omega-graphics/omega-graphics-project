@@ -90,7 +90,7 @@ NativeEventPtr scroll_event_to_native_event(NativeEvent::EventType event_type, f
         case NativeEvent::ScrollRight:
         case NativeEvent::ScrollUp:
         case NativeEvent::ScrollDown:
-            return NativeEventPtr(new NativeEvent(event_type, new ScrollParams{deltaX, deltaY}));
+            return NativeEventPtr(new NativeEvent(event_type, new ScrollParams{deltaX, deltaY, Core::Position{0.f,0.f}}));
         default:
             return NativeEventPtr(new NativeEvent(NativeEvent::Unknown, nullptr));
     }

@@ -10,10 +10,6 @@
 
 namespace OmegaWTK {
 
-namespace Composition {
-    class WindowLayer;
-}
-
 class Menu;
    
 class AppWindow;
@@ -56,7 +52,6 @@ class AppWindowDelegate;
         SharedHandle<View> getMinimizeButton();
 #endif
         void setTitle(OmegaCommon::StrRef title);
-        SharedHandle<Composition::WindowLayer> & getLayer();
         void close();
 
 

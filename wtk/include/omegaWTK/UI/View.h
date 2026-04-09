@@ -1,10 +1,9 @@
 /**
  @file View.h
- 
+
  */
 
 #include "omegaWTK/Native/NativeEvent.h"
-#include "omegaWTK/Native/NativeItem.h"
 
 #include <cstdint>
 #include <limits>
@@ -104,23 +103,12 @@ namespace OmegaWTK {
         virtual bool hasDelegate();
         void addSubView(View *view);
         void removeSubView(View * view);
-        void preCreateVisualResources();
         friend class AppWindow;
         friend class Composition::ViewAnimator;
         friend class ScrollView;
         friend class Widget;
         friend class Container;
     protected:
-        /**
-            Constructs a View using a Rect param and a NativeItem; (With NO Layers!!)
-            NOTE:
-            This Constructed is only called when making a ScrollView.
-            @param rect[in] The Rect to use
-            @param nativeItem[in] The Native View to bind to
-            @param parent[in] The Parent View
-            @returns A View!
-         */
-        View(const Core::Rect & rect,Native::NativeItemPtr nativeItem,ViewPtr parent);
         /**
             Constructs a View. Creates its own LayerTree with a root Layer.
             @param rect The Rect to use
@@ -161,6 +149,10 @@ namespace OmegaWTK {
         /// @brief Sets the object to recieve View related events.
         virtual void setDelegate(ViewDelegate *_delegate);
 
+        /// @brief Returns true if `point` (in parent-relative coordinates)
+        /// falls within this View's rect.
+        bool containsPoint(const Core::Position &point) const;
+
         /// @brief Resize the view synchronously.
         /// @note If you wish to animate the View resize, please use the ViewAnimator to perform that action.
         virtual void resize(Core::Rect newRect);
@@ -181,6 +173,26 @@ namespace OmegaWTK {
 
         /// @brief Make the View invisible.
         void disable();
+
+        /// @brief Returns true if the View is enabled (visible).
+        bool isEnabled() const;
+
+        /// @brief Set the shared window render target for this View and
+        /// all subviews. Called by WidgetTreeHost when the widget tree
+        /// attaches to an AppWindow (Phase 3, single-surface rendering).
+        void setWindowRenderTarget(SharedHandle<Composition::ViewRenderTarget> windowRT);
+
+        /// @brief Compute this View's position relative to the window
+        /// origin by walking the parent chain. Used by Canvas to stamp
+        /// CanvasFrame::windowOffset at paint time. If any ancestor is a
+        /// scrolling container, its scroll offset is subtracted so content
+        /// appears translated by the scroll amount.
+        Core::Position computeWindowOffset() const;
+
+        /// Returns the scroll offset that this View contributes to
+        /// child content positioning. Non-scrolling Views return {0,0}.
+        /// ScrollView overrides this to return its scrollOffset.
+        virtual Core::Position scrollOffsetContribution() const;
 
         void applyLayoutDelta(const struct LayoutDelta & delta,
                               const struct LayoutTransitionSpec & spec);

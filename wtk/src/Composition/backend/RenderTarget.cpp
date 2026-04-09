@@ -634,6 +634,31 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
         rebuildBackingTarget();
     }
 
+    void BackendRenderTargetContext::setViewportOverride(float offsetX,float offsetY,float width,float height){
+        viewportOverride_.active = true;
+        viewportOverride_.offsetX = offsetX;
+        viewportOverride_.offsetY = offsetY;
+        viewportOverride_.width = width;
+        viewportOverride_.height = height;
+        // Update logical size for tessellation without rebuilding backing.
+        renderTargetSize.pos.x = 0.f;
+        renderTargetSize.pos.y = 0.f;
+        renderTargetSize.w = width;
+        renderTargetSize.h = height;
+        // Grow backing surface if needed (e.g. window resize). Never shrink.
+        unsigned neededW = toBackingDimension(offsetX + width,renderScale);
+        unsigned neededH = toBackingDimension(offsetY + height,renderScale);
+        if(neededW > backingWidth || neededH > backingHeight){
+            backingWidth = std::max(backingWidth,neededW);
+            backingHeight = std::max(backingHeight,neededH);
+            rebuildBackingTarget();
+        }
+    }
+
+    void BackendRenderTargetContext::clearViewportOverride(){
+        viewportOverride_.active = false;
+    }
+
 #ifdef _WIN32
 void BackendRenderTargetContext::resizeSwapChain(unsigned int backingWidth, unsigned int backingHeight) {
     if (renderTarget != nullptr)
@@ -869,7 +894,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     texturePaint->copyBytes((void *)_params.img->data,_params.img->header.stride);
                 }
 
-                te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeTexture2D(_params.rect.w,_params.rect.h));
+                te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeTexture2D(uint32_t(_params.rect.w),uint32_t(_params.rect.h)));
 
                 result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
 
@@ -1141,17 +1166,24 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
 
         OmegaGTE::GEViewport viewport {};
-        viewport.x = 0;
-        viewport.y = 0;
-        viewport.farDepth = 1.f;
         viewport.nearDepth = 0.f;
-        viewport.width = static_cast<float>(backingWidth);
-        viewport.height = static_cast<float>(backingHeight);
+        viewport.farDepth = 1.f;
+        if(viewportOverride_.active){
+            viewport.x = viewportOverride_.offsetX * renderScale;
+            viewport.y = viewportOverride_.offsetY * renderScale;
+            viewport.width = viewportOverride_.width * renderScale;
+            viewport.height = viewportOverride_.height * renderScale;
+        } else {
+            viewport.x = 0;
+            viewport.y = 0;
+            viewport.width = static_cast<float>(backingWidth);
+            viewport.height = static_cast<float>(backingHeight);
+        }
         OmegaGTE::GEScissorRect scissorRect {
-                0,
-                0,
-                static_cast<float>(backingWidth),
-                static_cast<float>(backingHeight)};
+                viewport.x,
+                viewport.y,
+                viewport.width,
+                viewport.height};
 
         renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
                 OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),
@@ -1557,7 +1589,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
             for(auto & effect : effects){
                 switch(effect.type){
-                    case CanvasEffect::GaussianBlur: {
+                    case CanvasEffect::Type::GaussianBlur: {
                         auto blurH = gaussianBlurHPipelineState;
                         auto blurV = gaussianBlurVPipelineState;
                         if(blurH == nullptr || blurV == nullptr){ break; }
@@ -1610,7 +1642,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                         // uses as committedTexture.
                         break;
                     }
-                    case CanvasEffect::DirectionalBlur: {
+                    case CanvasEffect::Type::DirectionalBlur: {
                         auto dirPipe = directionalBlurPipelineState;
                         if(dirPipe == nullptr){ break; }
                         float radius = std::max(0.f, effect.directionalBlur.radius);

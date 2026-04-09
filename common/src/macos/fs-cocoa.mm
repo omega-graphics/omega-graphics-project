@@ -151,5 +151,12 @@ namespace OmegaCommon::FS {
     Path DirectoryIterator::operator*(){
         return result_path;
     };
-    
+
+    DirectoryIterator::~DirectoryIterator(){
+        auto *dir = static_cast<DIR *>(data);
+        if(dir != nullptr){
+            closedir(dir);
+        }
+    }
+
 };

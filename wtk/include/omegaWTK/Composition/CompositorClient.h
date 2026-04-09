@@ -288,6 +288,13 @@ namespace OmegaWTK::Composition {
         void submit();
     public:
         explicit CompositorClientProxy(SharedHandle<CompositionRenderTarget> renderTarget);
+        /// Construct with no render target. The render target must be set
+        /// via setRenderTarget() before any commands can be queued.
+        CompositorClientProxy();
+        /// Replace the render target. Used by Phase 3 (single-surface
+        /// rendering) to propagate the window's shared render target to
+        /// all Views.
+        void setRenderTarget(SharedHandle<CompositionRenderTarget> renderTarget);
         void setSyncLaneId(uint64_t syncLaneId);
         uint64_t getSyncLaneId() const;
         SyncLaneDiagnostics getSyncLaneDiagnostics() const;

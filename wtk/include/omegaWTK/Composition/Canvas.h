@@ -31,18 +31,18 @@ namespace OmegaWTK {
         };
 
         struct OMEGAWTK_EXPORT  CanvasEffect {
-            typedef enum : OPT_PARAM {
+            enum class Type : OPT_PARAM {
                 DirectionalBlur,
                 GaussianBlur
-            } Type;
-            typedef struct {
-                float radius = 0.f;
-            } GaussianBlurParams;
-            typedef struct {
-                float radius = 0.f;
-                float angle = 0.f;
-            } DirectionalBlurParams;
-            Type type = GaussianBlur;
+            };
+            struct GaussianBlurParams {
+                float radius = 0.F;
+            } ;
+            struct DirectionalBlurParams {
+                float radius = 0.F;
+                float angle = 0.F;
+            } ;
+            Type type = Type::GaussianBlur;
             /// Legacy optional payload pointer. Prefer gaussianBlur/directionalBlur owned fields.
             void *params = nullptr;
             GaussianBlurParams gaussianBlur {};
@@ -195,6 +195,11 @@ namespace OmegaWTK {
         /// Previously a live reference to Layer::surface_rect, which caused
         /// a size mismatch when the layer resized between paint and execution.
         Core::Rect rect;
+        /// Position of the owning View relative to the window origin.
+        /// Set by Canvas::nextFrame() at paint time so the backend can
+        /// render this frame's commands at the correct offset within the
+        /// window's single shared surface (Phase 3, Native View Architecture).
+        Core::Position windowOffset {0.f, 0.f};
         struct {
             float r = 0.f,g = 0.f,b = 0.f,a = 0.f;
         } background;
@@ -214,9 +219,13 @@ namespace OmegaWTK {
 
         Layer &layer;
 
+        /// Non-owning back-pointer to the View that created this Canvas.
+        /// Used to compute windowOffset at paint time (Phase 3).
+        ::OmegaWTK::View *ownerView_;
+
         friend class ::OmegaWTK::View;
 
-        explicit Canvas(CompositorClientProxy &proxy,Layer &layer);
+        Canvas(CompositorClientProxy &proxy,Layer &layer,::OmegaWTK::View *owner);
 
     public:
         OMEGACOMMON_CLASS("OmegaWTK.Composition.Canvas")

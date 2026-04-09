@@ -4,14 +4,12 @@ Address the architectural flaws in the compositor that cause frame
 rendering to take seconds, not milliseconds, during resize. The problem
 exists at three levels:
 
-1. **Native view tree.** OmegaWTK creates one native platform view
-   (NSView, HWND, GtkWidget) per widget. Every widget has its own
-   compositor surface, its own render target, and its own GPU texture.
-   During resize, the platform must reposition every native view, the
-   compositor must manage N surfaces, and the GPU must maintain N
-   render targets. Every production toolkit that has solved this problem
-   — Chromium, WPF, Qt 4.4+, GTK4, Flutter, WinUI 3 — has converged
-   on a single native view per window with a virtual widget tree.
+1. **Native view tree.** ~~OmegaWTK creates one native platform view
+   per widget.~~ **NV-1 and NV-2 are complete:** child widgets are now
+   virtual (no native views) and input events route through hit testing.
+   However, each View still has its own compositor surface, render
+   target, and GPU texture. NV-3 (single-surface rendering) consolidates
+   these to one per window.
 
 2. **Scheduler architecture.** The compositor processes one widget's
    commands at a time, presents after each widget, and only then moves
@@ -319,7 +317,9 @@ present.
 The plan is structured in three tiers. **Tier 0** consolidates the
 native view tree to one native view per window with a virtual widget
 tree — the foundational change that makes the compositor redesign
-possible. **Tier 1** (Phases A–C) addresses the compositor scheduling
+possible. NV-1 (root-only native view) and NV-2 (virtual hit testing)
+are complete; NV-3 (single-surface rendering) is the next milestone.
+**Tier 1** (Phases A–C) addresses the compositor scheduling
 architecture — the frame model, collection strategy, and present
 discipline, now operating on a single surface per window. **Tier 2**
 (Phases 0–5) addresses per-command rendering efficiency within the new
@@ -332,25 +332,25 @@ The full rationale and migration plan are in
 `Native-View-Architecture-Plan.md`. This section covers the aspects
 that directly affect the compositor and rendering architecture.
 
-#### The current model and why it fails
+#### The previous model and why it failed
 
-Each Widget owns a View. Each View creates a native platform view:
+Prior to NV-1/NV-2, each Widget owned a View, and each View created a
+native platform view. This meant N widgets = N native views = N compositor
+surfaces = N render targets = N GPU textures = N present operations.
 
-- **macOS:** `OmegaWTKCocoaView` (NSView) — layer-hosting mode, no
-  `isFlipped` override (bottom-left origin), `autoresizesSubviews = NO`
-- **Windows:** child HWND — manual Y-inversion, no batched repositioning
-- **Linux:** GtkWidget in `GtkFixed` — absolute pixel positioning
+**NV-1 (COMPLETED)** eliminated the native view tree: `addNativeItem()`
+was removed from `NativeWindow`, `WindowLayer` was deleted, and child
+Views became virtual. Views still create NativeItem pointers for render
+target access — those are removed in NV-3.
 
-This means N widgets = N native views = N compositor surfaces = N render
-targets = N GPU textures = N present operations. During resize, the
-platform must reposition every native view, the compositor must manage
-N surfaces, and the GPU must rebuild N render targets.
+**NV-2 (COMPLETED)** restored event dispatch: `WidgetTreeHost::hitTest()`
+walks the virtual widget tree in reverse z-order to route input events
+from the single root native view to the correct virtual View.
 
-The native view tree is also the root cause of the NSView position reset
-bug: child NSViews use Cocoa's default bottom-left origin, have no
-autoresizing mask, and are in layer-hosting mode where AppKit does not
-manage child layer geometry. During resize, there is a window where the
-parent has resized but child layers haven't been updated.
+**Remaining problem:** each View still has its own render target and
+compositor surface. N widgets still = N compositor surfaces = N render
+targets = N GPU textures = N present operations. NV-3 (single-surface
+rendering) eliminates this.
 
 #### The target model
 
@@ -396,17 +396,27 @@ render pass, and presents once.
 
 #### Phases (from Native View Architecture Plan)
 
-1. **Root-only native view** — only the window-level View creates a
-   native item. Child Views become virtual. `addSubView()` adds to a
-   virtual child list instead of calling `addChildNativeItem()`.
+1. **Root-only native view [COMPLETED]** — only the window-level View
+   creates a native item. Child Views are virtual. `addSubView()` adds
+   to a virtual child list instead of calling `addChildNativeItem()`.
+   `WindowLayer` deleted. `addNativeItem()` removed from `NativeWindow`.
+   NativeItem pointers remain on Views for render target access —
+   full removal deferred to NV-3.
 
-2. **Virtual hit testing** — the root native view receives all events.
-   OmegaWTK walks the virtual widget tree to find the target widget.
+2. **Virtual hit testing [COMPLETED]** — the root native view receives
+   all events. `WidgetTreeHost::hitTest()` walks the virtual widget
+   tree (reverse z-order) to find the deepest `View` under the cursor.
+   `AppWindowDelegate` routes input events (mouse, keyboard) through
+   `WidgetTreeHost::dispatchInputEvent()`. Hover tracking synthesizes
+   `CursorEnter`/`CursorExit` when the hovered view changes. Root
+   NativeItem's `event_emitter` wired to `AppWindow` in `Impl`
+   constructor.
 
 3. **Single-surface rendering** — all widgets render into the root
    view's single backing surface. This is where Tier 0 connects to
    Tier 1: the single `CompositorSurface` per window is the surface
-   mailbox for the frame loop.
+   mailbox for the frame loop. Also completes NativeItem pointer
+   removal from Views.
 
 4. **Coordinate system unification** — standardize on top-left origin
    across all platforms. Platform conversion happens once at the root
@@ -1063,8 +1073,8 @@ existing tessellation-based model.
 ```
 Tier 0 (Native View Consolidation):
 
-NV-1: Root-only native view
-    └─→ NV-2: Virtual hit testing
+NV-1: Root-only native view [COMPLETED]
+    └─→ NV-2: Virtual hit testing [COMPLETED]
     └─→ NV-3: Single-surface rendering ──→ Tier 1
     └─→ NV-5: Native view embedding (independent, as needed)
 NV-3 ──→ NV-4: Coordinate system unification (cleanup)
@@ -1093,8 +1103,8 @@ Phase 0 can begin in parallel with Tier 0/1 (logging removal is local to render 
 ```
 
 **Tier 0** is the foundational change. NV-1 (root-only native view) and
-NV-2 (virtual hit testing) must come first — without them, widgets can't
-function without native views. NV-3 (single-surface rendering) connects
+NV-2 (virtual hit testing) are complete. NV-3 (single-surface rendering)
+is the next milestone — it connects
 directly to Tier 1 Phase A: the single `CompositorSurface` per window is
 the mailbox that Phase A defines. NV-5 (native view embedding) is an
 independent escape hatch that can be implemented whenever needed.
@@ -1113,11 +1123,11 @@ Phase 2. Phase 5 replaces Phases 2 and 4.
 
 ### Tier 0 — Native view consolidation
 
-| Phase | Impact | Metric |
-|-------|--------|--------|
-| NV-1 + NV-2 | Eliminates native view management overhead | 0 native child views to reposition on resize. No `SetWindowPos`, `setFrame:`, or `gtk_fixed_move` per child. Eliminates NSView (0,0) reset bug |
-| NV-3 | Reduces GPU resources from N to 1 | 1 render target, 1 GPU texture, 1 compositor surface per window instead of N. Eliminates N-1 render target rebuilds on resize |
-| NV-4 | Eliminates coordinate conversion bugs | One coordinate system, one conversion point at root view |
+| Phase | Impact | Metric | Status |
+|-------|--------|--------|--------|
+| NV-1 + NV-2 | Eliminates native view management overhead | 0 native child views to reposition on resize. No `SetWindowPos`, `setFrame:`, or `gtk_fixed_move` per child. Eliminates NSView (0,0) reset bug. Input events routed through virtual hit testing | **COMPLETED** |
+| NV-3 | Reduces GPU resources from N to 1 | 1 render target, 1 GPU texture, 1 compositor surface per window instead of N. Eliminates N-1 render target rebuilds on resize | Pending |
+| NV-4 | Eliminates coordinate conversion bugs | One coordinate system, one conversion point at root view | Pending |
 
 ### Tier 1 — Scheduling architecture
 
@@ -1192,16 +1202,27 @@ coalescing infrastructure is removed as dead code.
 
 ### Tier 0 — Native view consolidation
 
+#### NV-1 + NV-2 (COMPLETED)
+
 | File | Phase | Changes |
 |------|-------|---------|
-| `wtk/include/omegaWTK/UI/View.h` | NV-1, NV-2 | Add `isRootView()`, virtual child list, `hitTest()`. Remove per-view `NativeItem` for child views |
-| `wtk/src/UI/View.Core.cpp` | NV-1, NV-2 | `addSubView()` adds to virtual list instead of calling `addChildNativeItem()`. Root view creation unchanged |
-| `wtk/src/Widgets/BasicWidgets.cpp` | NV-1 | `wireChild()` / `unwireChild()` use virtual tree operations |
-| `wtk/src/Native/macos/CocoaItem.mm` | NV-1, NV-4 | Override `isFlipped` → YES on root view. `addChildNativeItem()` becomes no-op |
-| `wtk/src/Native/win/HWNDItem.cpp` | NV-1, NV-4 | `addChildNativeItem()` becomes no-op. Remove Y-inversion for children |
-| `wtk/src/Native/gtk/GTKItem.cpp` | NV-1 | `addChildNativeItem()` becomes no-op. Remove `gtk_fixed_put` for children |
-| `wtk/include/omegaWTK/Native/NativeItem.h` | NV-1 | Child management methods become optional (only used by root + NativeViewHost) |
-| `wtk/src/UI/WidgetTreeHost.cpp` | NV-2 | Event dispatch routes through root view's `hitTest()` |
+| `wtk/include/omegaWTK/Native/NativeWindow.h` | NV-1 | **Done.** `addNativeItem()` removed from interface |
+| `wtk/src/Widgets/BasicWidgets.cpp` | NV-1 | **Done.** `wireChild()` / `unwireChild()` use virtual tree operations |
+| `wtk/include/omegaWTK/UI/View.h` | NV-2 | **Done.** Added `containsPoint()` for hit testing |
+| `wtk/src/UI/View.Core.cpp` | NV-2 | **Done.** Implemented `containsPoint()` |
+| `wtk/src/UI/WidgetTreeHost.h` | NV-2 | **Done.** Declared `hitTest()`, `hitTestWidget()`, `dispatchInputEvent()`, `hoveredView_` |
+| `wtk/src/UI/WidgetTreeHost.cpp` | NV-2 | **Done.** Hit test (reverse z-order widget tree walk), event dispatch with hover tracking |
+| `wtk/src/UI/AppWindow.cpp` | NV-2 | **Done.** `AppWindowDelegate::onRecieveEvent` routes input events to `WidgetTreeHost::dispatchInputEvent` |
+| `wtk/src/UI/AppWindowImpl.h` | NV-2 | **Done.** Root NativeItem's `event_emitter` wired to AppWindow |
+
+#### NV-3 through NV-5 (pending)
+
+| File | Phase | Changes |
+|------|-------|---------|
+| `wtk/include/omegaWTK/UI/View.h` | NV-3 | Remove NativeItem dependency entirely (render target access refactored) |
+| `wtk/src/UI/View.Core.cpp` | NV-3 | Remove `make_native_item()` from View constructor |
+| `wtk/src/Native/macos/CocoaItem.mm` | NV-4 | Override `isFlipped` → YES on root view |
+| `wtk/src/Native/win/HWNDItem.cpp` | NV-4 | Remove Y-inversion for children |
 | `wtk/include/omegaWTK/UI/Widget.h` | NV-4 | Coordinate system uses top-left origin |
 | New: `wtk/include/omegaWTK/UI/NativeViewHost.h` | NV-5 | `NativeViewHost` widget for embedding real native views |
 | New: `wtk/src/UI/NativeViewHost.cpp` | NV-5 | Platform-specific native view embedding |
@@ -1238,15 +1259,13 @@ coalescing infrastructure is removed as dead code.
 
 ### Codebase
 
-#### Tier 0 — Native view tree (to be consolidated)
-- Native view creation: `View.Core.cpp:73–90` (`make_native_item` — one per View)
-- Child view attachment: `View.Core.cpp:102–118` (`addSubView` → `addChildNativeItem`)
-- Container wiring: `BasicWidgets.cpp:157–166` (`wireChild` → `addSubView`)
-- macOS child attachment: `CocoaItem.mm:307–319` (`addSubview`, `translatesAutoresizingMaskIntoConstraints = NO`)
-- macOS view init: `CocoaItem.mm:17–42` (layer-hosting mode, no `isFlipped`, `autoresizesSubviews = NO`)
-- macOS resize: `CocoaItem.mm:256–305` ("Child layer geometry is owned by the compositor backend")
-- Windows child attachment: `HWNDItem.cpp:228–241` (`SetParent`, `SetWindowPos`, Y-inversion)
-- GTK child attachment: `GTKItem.cpp:511–533` (`gtk_fixed_put` absolute positioning)
+#### Tier 0 — Native view consolidation
+- **NV-1 (COMPLETED):** `addNativeItem()` removed from `NativeWindow` interface. `wireChild()` uses virtual tree. `WindowLayer` deleted. Views still create NativeItems for render target access (removed in NV-3)
+- **NV-2 (COMPLETED):** `WidgetTreeHost::hitTest()` — reverse z-order widget tree walk. `dispatchInputEvent()` — extracts position, hit tests, dispatches to target View. Hover tracking synthesizes `CursorEnter`/`CursorExit`. `AppWindowDelegate` routes input events. Root NativeItem `event_emitter` wired to AppWindow
+- Native view creation: `View.Core.cpp:77` (`make_native_item` — still present, removed in NV-3)
+- Hit test entry: `WidgetTreeHost.cpp` (`hitTest`, `hitTestWidget`, `dispatchInputEvent`)
+- Event routing: `AppWindow.cpp` (input cases in `AppWindowDelegate::onRecieveEvent`)
+- Root emitter wiring: `AppWindowImpl.h` (`nativeWindow->getRootView()->event_emitter = &owner`)
 
 #### Tier 1 — Scheduling architecture (to be replaced)
 - Compositor scheduler loop: `Compositor.cpp:395–455` (`CompositorScheduler` constructor, serial pop → process → present)

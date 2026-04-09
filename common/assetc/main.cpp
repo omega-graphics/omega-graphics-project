@@ -7,7 +7,7 @@
 
 // #include <openssl/evp.h>
 
-using namespace OmegaWTK::assetc;
+using namespace OmegaCommon::assetc;
 
 typedef unsigned char Byte;
 
@@ -117,7 +117,7 @@ int main(int argc,char * const argv[]){
                 asset_in.seekg(0,asset_in.beg);
 
                 Byte *ptr = new Byte[filesize];
-                asset_in.read((char *)ptr,filesize);
+                asset_in.read((char *)ptr,std::streamsize(filesize));
                 asset_in.close();
 
                 AssetsFileEntry ent;
@@ -125,9 +125,9 @@ int main(int argc,char * const argv[]){
                 ent.file_size = filesize;
                 out.write((const char *)&ent,sizeof(AssetsFileEntry));
                 /// Write the Filename
-                out.write(file.c_str(),file.size());
+                out.write(file.c_str(),std::streamsize(file.size()));
                 /// Write the Asset Data
-                out.write((char *)ptr,filesize);
+                out.write((char *)ptr,std::streamsize(filesize));
             }
             else {
                 std::cerr << PROG_NAME <<  ": error: Cannot Open File: " << file << "\nExiting..." << std::endl;

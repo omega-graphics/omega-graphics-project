@@ -90,29 +90,6 @@ void CocoaAppWindow::setEnableWindowHeader(bool &enable) {
     [windowController.window setTitleVisibility:NSWindowTitleHidden];
 }
 
-void CocoaAppWindow::addNativeItem(NativeItemPtr item){
-        // auto *cocoaitem = (CocoaItem *)item;
-        NSViewController *viewC = (NSViewController *)item->getBinding();
-        NSView *contentView = windowController.window.contentView;
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        [contentView setAutoresizesSubviews:NO];
-        viewC.view.frame = contentView.bounds;
-        viewC.view.translatesAutoresizingMaskIntoConstraints = NO;
-        viewC.view.autoresizingMask = NSViewNotSizable;
-        viewC.view.hidden = NO;
-        [windowController.window.contentViewController addChildViewController:viewC];
-        [contentView addSubview:viewC.view];
-        [CATransaction commit];
-        NSLog(@"Added Native Item View: frame={%.1f,%.1f,%.1f,%.1f} bounds={%.1f,%.1f,%.1f,%.1f} hidden=%d subviews=%lu",
-              viewC.view.frame.origin.x,viewC.view.frame.origin.y,
-              viewC.view.frame.size.width,viewC.view.frame.size.height,
-              viewC.view.bounds.origin.x,viewC.view.bounds.origin.y,
-              viewC.view.bounds.size.width,viewC.view.bounds.size.height,
-              viewC.view.isHidden,
-              (unsigned long)contentView.subviews.count);
-};
-
 void CocoaAppWindow::initialDisplay(){
     [windowController.window center];
     // NSView *rootView = [[NSView alloc] initWithFrame:window.frame];

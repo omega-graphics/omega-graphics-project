@@ -20,7 +20,6 @@ public:
     void enable() override;
     void initialDisplay() override;
     void close() override;
-    void addNativeItem(NativeItemPtr item) override;
     void setMenu(NM menu) override;
     void setTitle(OmegaCommon::StrRef title) override;
     void setEnableWindowHeader(bool & enable) override;

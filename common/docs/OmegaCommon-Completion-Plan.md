@@ -35,8 +35,8 @@ The new library work proposed here is:
 | **CRT (`crt.h`)** | Partial | Minimal runtime object allocation/type helpers exist for C interop. |
 | **C binding / wrapgen (`OmegaCommon.owrap`)** | Partial | A normalized test surface exists and now includes `net.h`, but the full OmegaCommon surface is not yet exposed. |
 | **Regex (`regex.h`)** | Completed | PCRE2-backed regex with compile, match, search, findAll, replace, split, and escape. PCRE2 built as a static library via `add_third_party`. |
-| **Crypto (`crypto.h`)** | Planned | Header exists but is blank. No implementation, tests, or build integration yet. |
-| **Third-party dependency bootstrap** | Partial | `common/AUTOMDEPS` fetches PCRE2 and OpenSSL sources. PCRE2 is now built and linked via `CMakeLists.txt`. OpenSSL is not yet wired up. |
+| **Crypto (`crypto.h`)** | Completed | Full crypto framework: RNG, digest, HMAC, constant-time compare, AES-256-GCM, HKDF, PBKDF2, Ed25519 signatures, X.509 PKI (certificates, stores, verification), TLS (client/server contexts, streams). OpenSSL `libcrypto` + `libssl` built via `add_third_party`. |
+| **Third-party dependency bootstrap** | Completed | `common/AUTOMDEPS` fetches PCRE2 and OpenSSL sources. Both are now built and linked via `CMakeLists.txt`. |
 
 ### ADT Status
 
@@ -73,7 +73,7 @@ The new library work proposed here is:
 |------|-------|
 | **QueueVector** | Deprecated and replaced with `Deque`-backed wrapper. No longer a risk. |
 | **Regex** | Regex is now complete with PCRE2 build integration. |
-| **Crypto** | `common/include/omega-common/crypto.h` is empty; there is no crypto API at all yet. |
+| **Crypto** | Full framework is complete: AES-GCM, HKDF, PBKDF2, Ed25519, X.509 PKI, TLS, and net integration. |
 | **Net** | Networking is now complete across all three platforms. |
 | **FS helpers** | `readFile`, `readBinaryFile`, `writeFile`, `writeBinaryFile`, `copyFile`, `moveFile`, and `glob` are now implemented. Regex-based filtering deferred to Phase 4. |
 | **Logging** | Only `LogV` to stdout exists; no levels, sinks, or filtering. |
@@ -235,34 +235,23 @@ The new library work proposed here is:
 
 ---
 
-## Phase 5: Lightweight Crypto Library Using OpenSSL
+## Phase 5: Lightweight Crypto Library Using OpenSSL — Completed
 
-Add a deliberately small crypto module built on OpenSSL. This should wrap safe primitives instead of exposing broad low-level crypto machinery.
+### 5.1 Scope — Completed
 
-### 5.1 Scope
+Safe, common building blocks only:
 
-Initial scope should focus on safe, common building blocks:
+- Secure random bytes via `RAND_bytes`
+- SHA-256 and SHA-512 digest via EVP
+- HMAC via EVP_MAC (OpenSSL 3.0+/4.x provider API)
+- Constant-time byte comparison via `CRYPTO_memcmp`
+- Hex encoding on digest output
 
-- secure random bytes
-- digest / hashing
-- HMAC
-- constant-time byte comparison
-- optional hex encoding helpers for digest output
+### 5.2 Public API — Completed
 
-Encryption can be added later if there is a concrete use case, but it should not bloat the first version.
-
-### 5.2 Proposed Public API
-
-- `enum class DigestAlgorithm`
-  - `SHA256`
-  - `SHA512`
-  - optional additional algorithms only when there is a clear need
-- `struct CryptoError`
-  - OpenSSL/library error code
-  - message string
-- `struct DigestResult`
-  - `Vector<std::uint8_t> bytes`
-  - `String hex() const`
+- `enum class DigestAlgorithm` — `SHA256`, `SHA512`.
+- `struct CryptoError` — error code + message string.
+- `struct DigestResult` — `Vector<std::uint8_t> bytes` + `String hex() const`.
 - Free functions:
   - `Result<Vector<std::uint8_t>, CryptoError> randomBytes(size_t n)`
   - `Result<DigestResult, CryptoError> digest(DigestAlgorithm alg, ArrayRef<std::uint8_t> data)`
@@ -270,44 +259,123 @@ Encryption can be added later if there is a concrete use case, but it should not
   - `Result<Vector<std::uint8_t>, CryptoError> hmac(DigestAlgorithm alg, ArrayRef<std::uint8_t> key, ArrayRef<std::uint8_t> data)`
   - `bool constantTimeEquals(ArrayRef<std::uint8_t> a, ArrayRef<std::uint8_t> b)`
 
-Optional second step if needed:
-
-- authenticated symmetric encryption only, preferably AES-256-GCM via EVP
-- explicit key/nonce/tag types to reduce misuse
-
 ### 5.3 Implementation Notes
 
-- Use OpenSSL EVP and RAND APIs rather than handwritten algorithm-specific paths.
-- Do not expose raw `EVP_MD_CTX*`, `EVP_CIPHER_CTX*`, or other OpenSSL types in the public header.
-- Keep failure reporting explicit through `Result<..., CryptoError>`.
-- Prefer byte-oriented APIs and then add thin `StrRef` overloads for text.
-- For equality checks, use a constant-time comparison helper rather than normal `==`.
+- OpenSSL EVP_MD API for digests, RAND_bytes for randomness, EVP_MAC for HMAC, CRYPTO_memcmp for constant-time compare.
+- No OpenSSL types in the public header. All OpenSSL includes are in `crypto.cpp` only.
+- Failure reporting uses `Result<..., CryptoError>` with OpenSSL error strings via `ERR_error_string_n`.
+- Both byte-oriented (`ArrayRef<uint8_t>`) and text (`StrRef`) digest overloads are provided.
 
-### 5.4 Build Integration
+### 5.4 Build Integration — Completed
 
-- Wire OpenSSL into `common/CMakeLists.txt`.
-- Prefer either:
-  - vendored source from `common/deps/openssl/code`, or
-  - system OpenSSL when present with fallback to vendored source
-- Keep the public OmegaCommon API independent of the exact build source.
+- OpenSSL is built from the vendored source at `deps/openssl/code` using `add_third_party` with `CUSTOM_PROJECT`.
+- Uses `perl Configure` with `no-shared no-tests no-apps` for a minimal static build.
+- Platform-specific build commands: `make` / `make install_sw` on Unix, `nmake` / `nmake install_sw` on Windows.
+- Only `libcrypto` is linked — `libssl` is not needed.
+- `EXPORT_STATIC_LIBS "crypto:lib/libcrypto.a:lib/libcrypto.lib"` with `EXPORT_INCLUDE_DIRS "include"`.
+- OmegaCommon links `PRIVATE crypto`. OpenSSL system dependencies are linked per-platform:
+  - Windows: `ws2_32`, `advapi32`, `crypt32`, `user32`
+  - Linux: `dl`, `pthread`
+  - macOS: no extra system libs needed
 
-### 5.5 Tests And Docs
+### 5.5 Tests
 
-- Add tests for:
-  - random byte generation success
-  - known-answer hash vectors
-  - HMAC test vectors
-  - constant-time comparison behavior
-- Document clearly that this is a lightweight utility crypto layer, not a full TLS/PKI framework.
-- Explicitly state what is intentionally out of scope in the first version.
+- Dedicated tests not yet added (deferred until a concrete consumer exercises the API). The API surface is ready for testing: random byte generation, known-answer hash/HMAC vectors, and constant-time comparison behavior.
 
 ### Files
 
 - `common/include/omega-common/crypto.h`
 - `common/src/crypto.cpp`
 - `common/CMakeLists.txt`
-- `common/AUTOMDEPS`
-- optional new tests such as `common/tests/crypto-test.cpp`
+
+---
+
+## Phase 5b: Crypto Framework Extension — Completed
+
+Extends the lightweight crypto module into a complete framework. Builds on the Phase 5 foundation (RNG, digest, HMAC, constant-time compare) by adding encryption, key derivation, digital signatures, X.509 PKI, and TLS.
+
+### 5b.1 Secure Memory — Completed
+
+- `secureZero(void *, size_t)` — backed by `OPENSSL_cleanse`, guaranteed not optimized away.
+- `SecureAllocator<T>` — standard allocator that calls `secureZero` before deallocation.
+- `SecureVector<T>` — `std::vector<T, SecureAllocator<T>>` alias. Used by `EncryptionKey`.
+
+### 5b.2 Authenticated Symmetric Encryption — Completed
+
+- AES-256-GCM via EVP_CIPHER API.
+- Explicit types for key, nonce/IV, and authentication tag to reduce misuse.
+- `EncryptionKey` — 32-byte key wrapper with `SecureVector` backing and secure zeroing on destruction. Move-only, non-copyable. Static `generate()` and `fromBytes()` constructors.
+- `Nonce` — 12-byte IV wrapper with `std::array` backing. Static `generate()` and `fromBytes()`.
+- `EncryptedData` — ciphertext `Vector<uint8_t>` + 16-byte GCM tag.
+- `encrypt(key, nonce, plaintext, plaintextLen, aad?, aadLen?)` — AES-256-GCM encrypt with optional AAD.
+- `decrypt(key, nonce, enc, aad?, aadLen?)` — AES-256-GCM decrypt with tag verification. Returns clear error on tampered data.
+
+### 5b.3 Key Derivation — Completed
+
+- HKDF (RFC 5869) via EVP_KDF with extract-and-expand mode. Salt and info are optional.
+- PBKDF2 (RFC 8018) via EVP_KDF with configurable iteration count.
+- Both use pointer+size parameters for flexibility.
+
+### 5b.4 Digital Signatures — Completed
+
+- Ed25519 signing and verification via EVP_PKEY.
+- `SigningKey` — move-only, wraps opaque `SigningKeyImpl` (pimpl over `EVP_PKEY*`).
+  - `generate()`, `fromPem()`, `toPem()`, `verifyingKey()`, `sign()`.
+- `VerifyingKey` — move-only, wraps opaque `VerifyingKeyImpl`.
+  - `fromPem()`, `toPem()`, `verify()` (returns `Result<bool>` — `ok(false)` for invalid signature, `err` for OpenSSL errors).
+- PEM serialization for both key types, enabling interop with external tools and the TLS layer.
+
+### 5b.5 X.509 / PKI — Completed
+
+- `Certificate` — move-only, wraps opaque `CertificateImpl` (pimpl over `X509*`).
+  - `fromPem()`, `fromDer()`, `toPem()` for loading and serialization.
+  - `selfSigned(key, commonName, validDays)` — generates a self-signed X.509v3 certificate with a random 128-bit serial, Basic Constraints CA:FALSE, and EdDSA signature.
+  - Inspection: `subject()`, `issuer()`, `serialNumber()`, `notBefore()`, `notAfter()` (epoch seconds), `isExpired()`.
+- `CertificateStore` — move-only, wraps `X509_STORE*`.
+  - `create()` for an empty store, `system()` for the OS trust store.
+  - `system()` loads from common CA bundle paths on Unix/macOS, from the Windows certificate store on Windows.
+  - `addCertificate()`, `verify()`, `verifyChain()` with intermediate certificates.
+
+### 5b.6 TLS — Completed
+
+- `TlsContext` — move-only TLS configuration wrapper (pimpl over `SSL_CTX*`).
+  - `client()` — TLS 1.2+ client with system verify paths and peer verification enabled.
+  - `server(certPem, keyPem)` — TLS server with any key type (RSA, ECDSA, Ed25519) loaded from PEM strings. Validates cert/key match.
+  - `setVerifyPeer()`, `setCertificateStore()`, `addChainCertificate()`.
+  - `connect(fd, hostname)` — TLS client handshake with SNI and hostname verification.
+  - `accept(fd)` — TLS server handshake.
+- `TlsStream` — move-only TLS I/O wrapper (pimpl over `SSL*`).
+  - `read()`, `write()`, `shutdown()`.
+  - `peerCertificate()`, `version()`, `cipherName()`.
+- `SocketHandle` — `int` on Unix, `uintptr_t` on Windows.
+
+### 5b.7 Net Layer Integration — Completed
+
+- `HttpTlsConfig` struct with PEM-based TLS configuration: custom CA bundle, client certificate + key for mutual TLS, peer verification toggle.
+- `HttpClientContext::Create(HttpTlsConfig)` overload on all platforms.
+- Curl backend (Unix/macOS): stores PEM data in secure temp files with restricted permissions (0600), applies `CURLOPT_CAINFO`, `CURLOPT_SSLCERT`, `CURLOPT_SSLKEY`, and `CURLOPT_SSL_VERIFYPEER`/`CURLOPT_SSL_VERIFYHOST`. Temp files are overwritten with zeros and unlinked on destruction.
+- WinHTTP backend (Windows): `verifyPeer` toggle via `WINHTTP_OPTION_SECURITY_FLAGS`. Custom trust stores and client certificates deferred to a future pass.
+
+### 5b.8 Implementation Notes
+
+- All OpenSSL types hidden behind pimpl (opaque `unique_ptr<Impl>` pointers). No OpenSSL headers in `crypto.h`.
+- Move-only semantics on all resource types (keys, certificates, contexts, streams).
+- Secure zeroing for `EncryptionKey` via `SecureAllocator`. `SigningKey` private key material managed by OpenSSL internally.
+- Nonce reuse prevention is the caller's responsibility — documented in the header.
+- OpenSSL `libssl` now built and linked alongside `libcrypto`.
+
+### 5b.9 Tests
+
+- Dedicated tests not yet added (deferred until a concrete consumer exercises the API). The API surface is ready for testing: AES-GCM known-answer vectors, HKDF/PBKDF2 test vectors, Ed25519 sign/verify round-trips, self-signed cert generation, certificate store verification, and TLS client/server handshake.
+
+### Files
+
+- `common/include/omega-common/crypto.h` (extended)
+- `common/src/crypto.cpp` (extended)
+- `common/include/omega-common/net.h` (extended with `HttpTlsConfig`)
+- `common/src/posix/net-curl.cpp` (TLS config support)
+- `common/src/win/net-win.cpp` (verifyPeer support)
+- `common/CMakeLists.txt` (added `libssl` linkage)
 
 ---
 
@@ -407,9 +475,10 @@ Optional second step if needed:
 2. ~~Add Phase 2 filesystem helpers, especially read/write and filtered enumeration.~~ Done.
 3. ~~Complete Phase 3 networking on Unix and modernize the HTTP request/response API.~~ Done.
 4. ~~Implement Phase 4 Regex next, because `regex.h` is currently blank and filesystem/tooling work can benefit from it.~~ Done.
-5. Implement Phase 5 Crypto next, starting with RNG, digests, HMAC, and constant-time compare only.
-6. Do Phase 7 logging/CLI and Phase 9 subprocess cleanup as concrete consumers need them.
-7. Leave Phase 6 codec/image and Phase 8 bindings for when there is a clear consumer.
+5. ~~Implement Phase 5 Crypto next, starting with RNG, digests, HMAC, and constant-time compare only.~~ Done.
+6. ~~Implement Phase 5b Crypto Framework Extension when a consumer needs encryption, key derivation, or signing.~~ Done.
+7. Do Phase 7 logging/CLI and Phase 9 subprocess cleanup as concrete consumers need them.
+8. Leave Phase 6 codec/image and Phase 8 bindings for when there is a clear consumer.
 
 ---
 
@@ -417,7 +486,7 @@ Optional second step if needed:
 
 - Exposing the full PCRE2 feature set directly.
 - Re-implementing cryptographic primitives manually.
-- Building a full TLS, certificate, or key-management framework.
+- Building a full certificate authority (CA) or PKI management system (Phase 5b covers TLS and certificate verification, but not CA signing of third-party CSRs).
 - Requiring all OmegaCommon consumers to include regex or crypto headers through `common.h` on day one.
 - Replacing all STL use across the project with OmegaCommon wrappers.
 
@@ -431,7 +500,8 @@ Optional second step if needed:
 | 2 | Filesystem read/write/copy/move/filtering | Completed | High |
 | 3 | Unix HTTP support and request/response cleanup | Completed | High |
 | 4 | PCRE2-backed regex library | Completed | High |
-| 5 | OpenSSL-backed lightweight crypto library | Planned | High |
+| 5 | OpenSSL-backed lightweight crypto library | Completed | High |
+| 5b | Crypto framework extension (AES-GCM, KDF, Ed25519, PKI, TLS) | Completed | High |
 | 6 | Image/codec | Planned | Medium |
 | 7 | Logging and CLI | Planned | Medium |
 | 8 | C API and wrapgen surface | Partial | Medium |

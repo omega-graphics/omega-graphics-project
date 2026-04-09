@@ -51,6 +51,7 @@ NativeEvent::~NativeEvent() {
         case ScrollRight:
         case ScrollUp:
         case ScrollDown:
+        case ScrollWheel:
             delete reinterpret_cast<ScrollParams *>(params);
             break;
         case WindowWillStartResize:

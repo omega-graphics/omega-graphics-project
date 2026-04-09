@@ -57,33 +57,22 @@ const ViewResizeCoordinator & View::getResizeCoordinator() const{
     return impl_->resizeCoordinator;
 }
 
-void View::preCreateVisualResources(){
-    if(renderTargetHandle() == nullptr){
-        return;
-    }
-    Composition::BackendResourceFactory factory;
-    Composition::ViewPresentTarget presentTarget {};
-    auto bundle = factory.createVisualTreeForView(renderTargetHandle(), impl_->rect, presentTarget);
-    impl_->preCreatedVisualTree_ = std::make_unique<Composition::PreCreatedVisualTreeData>(
-            Composition::PreCreatedVisualTreeData{std::move(bundle), std::move(presentTarget)});
-    Composition::PreCreatedResourceRegistry::store(
-            renderTargetHandle().get(), impl_->preCreatedVisualTree_.get());
+bool View::containsPoint(const Core::Position &point) const{
+    const auto &r = impl_->rect;
+    return point.x >= r.pos.x && point.x < r.pos.x + r.w &&
+           point.y >= r.pos.y && point.y < r.pos.y + r.h;
 }
+
 
 View::View(const Core::Rect & rect,ViewPtr parent):
     impl_(std::make_unique<Impl>(
             *this,
-            std::make_shared<Composition::ViewRenderTarget>(
-                Native::make_native_item(
-                    ViewInternal::sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f}))),
             ViewInternal::sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f}),
             parent.get())){
-
-    renderTargetHandle()->getNativePtr()->setLayerTreeLimb(impl_->ownLayerTree.get());
-    renderTargetHandle()->getNativePtr()->event_emitter = this;
-
-    preCreateVisualResources();
-
+    // Phase 3: View is purely virtual. No NativeItem, no per-View render
+    // target, no pre-created visual resources. The window's render target
+    // is propagated via setWindowRenderTarget() when the widget tree
+    // attaches to an AppWindow.
     if(impl_->parent_ptr != nullptr) {
         parent->addSubView(this);
     }
@@ -111,7 +100,6 @@ void View::addSubView(View * view){
     impl_->subviews.emplace_back(view);
     view->impl_->parent_ptr = this;
     impl_->resizeCoordinator.registerChild(view,{});
-    renderTargetHandle()->getNativePtr()->addChildNativeItem(view->renderTargetHandle()->getNativePtr());
     // Newly created subviews must inherit compositor wiring immediately.
     view->setFrontendRecurse(compositorProxy().getFrontendPtr());
     view->setSyncLaneRecurse(compositorProxy().getSyncLaneId());
@@ -124,7 +112,6 @@ void View::removeSubView(View *view){
         if(v == view){
             impl_->subviews.erase(it);
             impl_->resizeCoordinator.unregisterChild(view);
-            renderTargetHandle()->getNativePtr()->removeChildNativeItem(view->renderTargetHandle()->getNativePtr());
             view->impl_->parent_ptr = nullptr;
             return;
         }
@@ -138,32 +125,13 @@ void View::resize(Core::Rect newRect){
         return;
     }
     impl_->rect = sanitized;
-    renderTargetHandle()->getNativePtr()->resize(impl_->rect);
-    // Update the native present layer (CAMetalLayer / swap chain) geometry
-    // immediately on the main thread so it is always in sync with the view.
-    {
-        Core::Rect localRect {Core::Position{0.f,0.f},sanitized.w,sanitized.h};
-        renderTargetHandle()->getNativePtr()->resizeNativeLayer(localRect,0.f);
-    }
+    // Phase 3: View is purely virtual. Update the layer tree rect but
+    // do not call through to any NativeItem — there isn't one.
     if(impl_->ownLayerTree != nullptr && impl_->ownLayerTree->getRootLayer() != nullptr){
         impl_->ownLayerTree->getRootLayer()->resize(impl_->rect);
     }
 }
 
-View::View(const Core::Rect & rect,Native::NativeItemPtr nativeItem,ViewPtr parent):
-    impl_(std::make_unique<Impl>(
-            *this,
-            std::make_shared<Composition::ViewRenderTarget>(nativeItem),
-            ViewInternal::sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f}),
-            parent.get())){
-    if(renderTargetHandle() != nullptr && renderTargetHandle()->getNativePtr() != nullptr){
-        renderTargetHandle()->getNativePtr()->resize(impl_->rect);
-    }
-    preCreateVisualResources();
-    if(impl_->parent_ptr != nullptr) {
-        parent->addSubView(this);
-    }
-}
 
 SharedHandle<Composition::Layer> View::makeLayer(Core::Rect rect){
     auto layer = std::make_shared<Composition::Layer>(rect);
@@ -173,8 +141,7 @@ SharedHandle<Composition::Layer> View::makeLayer(Core::Rect rect){
 }
 
 SharedHandle<Composition::Canvas> View::makeCanvas(SharedHandle<Composition::Layer> &targetLayer){
-    // Each View owns its own render target and visual tree.
-    return std::shared_ptr<Composition::Canvas>(new Composition::Canvas(compositorProxy(),*targetLayer));
+    return std::shared_ptr<Composition::Canvas>(new Composition::Canvas(compositorProxy(),*targetLayer,this));
 }
 
 void View::startCompositionSession(){
@@ -196,11 +163,11 @@ void View::endCompositionSession(){
 }
 
 void View::enable() {
-    renderTargetHandle()->getNativePtr()->enable();
+    impl_->enabled_ = true;
 }
 
 void View::disable() {
-    renderTargetHandle()->getNativePtr()->disable();
+    impl_->enabled_ = false;
 }
 
 void View::applyLayoutDelta(const LayoutDelta & delta,
@@ -231,10 +198,46 @@ void View::applyLayoutDelta(const LayoutDelta & delta,
     viewAnimator->resizeTransition(dx,dy,dw,dh,durationMs,curve);
 }
 
-View::~View(){
-    if(impl_->preCreatedVisualTree_ != nullptr && renderTargetHandle() != nullptr){
-        Composition::PreCreatedResourceRegistry::remove(renderTargetHandle().get());
+void View::setWindowRenderTarget(SharedHandle<Composition::ViewRenderTarget> windowRT){
+    impl_->renderTarget = std::move(windowRT);
+    compositorProxy().setRenderTarget(
+            std::static_pointer_cast<Composition::CompositionRenderTarget>(impl_->renderTarget));
+    for(auto *subView : impl_->subviews){
+        if(subView != nullptr){
+            subView->setWindowRenderTarget(impl_->renderTarget);
+        }
     }
+}
+
+Core::Position View::computeWindowOffset() const{
+    Core::Position offset {0.f, 0.f};
+    const View *v = this;
+    while(v != nullptr){
+        offset.x += v->impl_->rect.pos.x;
+        offset.y += v->impl_->rect.pos.y;
+        // If this View's parent is a scrolling container, subtract
+        // the scroll offset so content appears translated.
+        if(v->impl_->parent_ptr != nullptr){
+            auto scroll = v->impl_->parent_ptr->scrollOffsetContribution();
+            offset.x -= scroll.x;
+            offset.y -= scroll.y;
+        }
+        v = v->impl_->parent_ptr;
+    }
+    return offset;
+}
+
+Core::Position View::scrollOffsetContribution() const{
+    return {0.f, 0.f};
+}
+
+bool View::isEnabled() const{
+    return impl_->enabled_;
+}
+
+View::~View(){
+    // Phase 3: per-View PreCreatedVisualTreeData removed.
+    // The window's visual tree is managed by AppWindow::Impl.
     std::cout << "View will destruct" << std::endl;
 }
 

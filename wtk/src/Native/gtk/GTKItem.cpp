@@ -219,52 +219,76 @@ static gboolean onScrollEvent(GtkWidget *,GdkEventScroll *event,gpointer data){
         return FALSE;
     }
 
+    Core::Position scrollPos {
+        static_cast<float>(event->x),
+        static_cast<float>(event->y)
+    };
+
     constexpr double epsilon = 0.0001;
     if(event->direction == GDK_SCROLL_SMOOTH){
         double deltaX = 0.0;
         double deltaY = 0.0;
         if(gdk_event_get_scroll_deltas(reinterpret_cast<GdkEvent *>(event),&deltaX,&deltaY)){
+            if(std::fabs(deltaX) > epsilon || std::fabs(deltaY) > epsilon){
+                self->emitIfPossible(NativeEventPtr(new NativeEvent(
+                        NativeEvent::ScrollWheel,
+                        new ScrollParams {static_cast<float>(deltaX),
+                                          static_cast<float>(deltaY),
+                                          scrollPos})));
+            }
             if(std::fabs(deltaX) > epsilon){
                 auto type = deltaX > 0.0 ? NativeEvent::ScrollRight : NativeEvent::ScrollLeft;
                 self->emitIfPossible(NativeEventPtr(new NativeEvent(type,new ScrollParams {
                     static_cast<float>(deltaX),
-                    0.f
+                    0.f,
+                    scrollPos
                 })));
             }
             if(std::fabs(deltaY) > epsilon){
                 auto type = deltaY > 0.0 ? NativeEvent::ScrollDown : NativeEvent::ScrollUp;
                 self->emitIfPossible(NativeEventPtr(new NativeEvent(type,new ScrollParams {
                     0.f,
-                    static_cast<float>(deltaY)
+                    static_cast<float>(deltaY),
+                    scrollPos
                 })));
             }
         }
         return FALSE;
     }
 
+    float dirDx = 0.f, dirDy = 0.f;
     switch(event->direction){
         case GDK_SCROLL_UP:
+            dirDy = -1.f;
             self->emitIfPossible(NativeEventPtr(new NativeEvent(
                     NativeEvent::ScrollUp,
-                    new ScrollParams {0.f,-1.f})));
+                    new ScrollParams {0.f,-1.f,scrollPos})));
             break;
         case GDK_SCROLL_DOWN:
+            dirDy = 1.f;
             self->emitIfPossible(NativeEventPtr(new NativeEvent(
                     NativeEvent::ScrollDown,
-                    new ScrollParams {0.f,1.f})));
+                    new ScrollParams {0.f,1.f,scrollPos})));
             break;
         case GDK_SCROLL_LEFT:
+            dirDx = -1.f;
             self->emitIfPossible(NativeEventPtr(new NativeEvent(
                     NativeEvent::ScrollLeft,
-                    new ScrollParams {-1.f,0.f})));
+                    new ScrollParams {-1.f,0.f,scrollPos})));
             break;
         case GDK_SCROLL_RIGHT:
+            dirDx = 1.f;
             self->emitIfPossible(NativeEventPtr(new NativeEvent(
                     NativeEvent::ScrollRight,
-                    new ScrollParams {1.f,0.f})));
+                    new ScrollParams {1.f,0.f,scrollPos})));
             break;
         default:
             break;
+    }
+    if(std::fabs(dirDx) > epsilon || std::fabs(dirDy) > epsilon){
+        self->emitIfPossible(NativeEventPtr(new NativeEvent(
+                NativeEvent::ScrollWheel,
+                new ScrollParams {dirDx * 10.f, dirDy * 10.f, scrollPos})));
     }
     return FALSE;
 }
@@ -428,12 +452,14 @@ void GTKItem::handleScrollAdjustmentValue(double value,bool horizontal){
         return;
     }
 
+    Core::Position pos {0.f, 0.f};
     const auto type = horizontal
         ? (delta > 0.0 ? NativeEvent::ScrollRight : NativeEvent::ScrollLeft)
         : (delta > 0.0 ? NativeEvent::ScrollDown : NativeEvent::ScrollUp);
     emitIfPossible(NativeEventPtr(new NativeEvent(type,new ScrollParams {
         horizontal ? static_cast<float>(delta) : 0.f,
-        horizontal ? 0.f : static_cast<float>(delta)
+        horizontal ? 0.f : static_cast<float>(delta),
+        pos
     })));
 }
 

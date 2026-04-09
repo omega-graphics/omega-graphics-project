@@ -75,6 +75,28 @@
     [super mouseExited:event];
 };
 
+- (void)scrollWheel:(NSEvent *)event {
+    if(!self.delegate->hasEventEmitter()){
+        [super scrollWheel:event];
+        return;
+    }
+    CGFloat dx = [event scrollingDeltaX];
+    CGFloat dy = [event scrollingDeltaY];
+    if(![event hasPreciseScrollingDeltas]){
+        dx *= 10.0;
+        dy *= 10.0;
+    }
+    NSPoint localPt = [self convertPoint:[event locationInWindow] fromView:nil];
+    auto *p = new OmegaWTK::Native::ScrollParams {
+        static_cast<float>(dx),
+        static_cast<float>(dy),
+        OmegaWTK::Core::Position{static_cast<float>(localPt.x), static_cast<float>(localPt.y)}
+    };
+    self.delegate->sendEventToEmitter(OmegaWTK::Native::NativeEventPtr(
+            new OmegaWTK::Native::NativeEvent(
+                    OmegaWTK::Native::NativeEvent::ScrollWheel, p)));
+}
+
 - (CALayer *)getCALayer {
     return (CALayer *)self.layer;
 };
@@ -412,15 +434,16 @@ void CocoaItem::setNeedsDisplay(){
     float dx = static_cast<float>(origin.x - _lastOrigin.x);
     float dy = static_cast<float>(origin.y - _lastOrigin.y);
     constexpr float epsilon = FLT_EPSILON;
+    OmegaWTK::Core::Position scrollPos {0.f, 0.f};
     if(std::fabs(dx) > epsilon){
         auto type = dx > 0.f ? OmegaWTK::Native::NativeEvent::ScrollRight : OmegaWTK::Native::NativeEvent::ScrollLeft;
         _delegate->sendEventToEmitter(OmegaWTK::Native::NativeEventPtr(
-                new OmegaWTK::Native::NativeEvent(type,new OmegaWTK::Native::ScrollParams{dx,0.f})));
+                new OmegaWTK::Native::NativeEvent(type,new OmegaWTK::Native::ScrollParams{dx,0.f,scrollPos})));
     }
     if(std::fabs(dy) > epsilon){
         auto type = dy > 0.f ? OmegaWTK::Native::NativeEvent::ScrollDown : OmegaWTK::Native::NativeEvent::ScrollUp;
         _delegate->sendEventToEmitter(OmegaWTK::Native::NativeEventPtr(
-                new OmegaWTK::Native::NativeEvent(type,new OmegaWTK::Native::ScrollParams{0.f,dy})));
+                new OmegaWTK::Native::NativeEvent(type,new OmegaWTK::Native::ScrollParams{0.f,dy,scrollPos})));
     }
     _lastOrigin = origin;
 }

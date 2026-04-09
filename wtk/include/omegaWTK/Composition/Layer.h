@@ -6,7 +6,6 @@
 
 #include "omegaWTK/Core/Core.h"
 #include "omegaWTK/Native/NativeItem.h"
-#include "omegaWTK/Native/NativeWindow.h"
 
 #include "Brush.h"
 
@@ -229,24 +228,6 @@ namespace Composition {
         virtual ~LayerTreeObserver() = default;
     };
 
-    /**
-     A singular surface
-     */
-    class OMEGAWTK_EXPORT  WindowLayer {
-        Native::NWH native_window_ptr;
-        Core::Rect & rect;
-        SharedHandle<Canvas> windowSurface;
-        // SharedHandle<MenuStyle> menuStyle;
-        friend class OmegaWTK::AppWindow;
-        friend class OmegaWTK::AppWindowManager;
-        friend class Compositor;
-        void redraw();
-        // void setWindowStyle(SharedHandle<WindowStyle> & style);
-        // void setMenuStyle(SharedHandle<MenuStyle> & style);
-    public:
-        WindowLayer(Core::Rect & rect,Native::NWH native_window_ptr);
-    };
-    
 };
 
 

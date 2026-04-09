@@ -31,7 +31,9 @@ namespace OmegaWTK::Native {
         virtual void setMenu(NM menu) = 0;
         virtual void setTitle(OmegaCommon::StrRef title) = 0;
         virtual void setEnableWindowHeader(bool & enable) = 0;
-        virtual void addNativeItem(NativeItemPtr item) = 0;
+        // addNativeItem() removed — widget Views are virtual (Phase 1,
+        // Native View Architecture Plan). NativeViewHost (Phase 5)
+        // will provide a dedicated escape-hatch embed/unembed API.
         #ifdef TARGET_MACOS
         protected:
         Core::Rect & rect;

@@ -9,6 +9,7 @@ namespace OmegaCommon {
 
     class WinHTTPHttpClientContext : public HttpClientContext {
         HINTERNET hSession;
+        HttpTlsConfig tlsConfig_;
     public:
         WinHTTPHttpClientContext() {
             hSession = WinHttpOpen(L"OmegaCommon",
@@ -16,6 +17,12 @@ namespace OmegaCommon {
                                    WINHTTP_NO_PROXY_NAME,
                                    WINHTTP_NO_PROXY_BYPASS,
                                    0);
+        }
+
+        explicit WinHTTPHttpClientContext(HttpTlsConfig config)
+            : WinHTTPHttpClientContext()
+        {
+            tlsConfig_ = std::move(config);
         }
 
         std::future<HttpResponse> makeRequest(HttpRequestDescriptor descriptor) override {
@@ -87,6 +94,15 @@ namespace OmegaCommon {
                                      &hdrWide[0], hdrWideLen);
                 WinHttpAddRequestHeaders(hRequest, hdrWide.c_str(), (DWORD)hdrWide.size(),
                                           WINHTTP_ADDREQ_FLAG_ADD);
+            }
+
+            if (!tlsConfig_.verifyPeer) {
+                DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                                 SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                                 SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                                 SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+                WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS,
+                                 &secFlags, sizeof(secFlags));
             }
 
             LPVOID bodyPtr = WINHTTP_NO_REQUEST_DATA;
@@ -182,5 +198,9 @@ namespace OmegaCommon {
 
     std::shared_ptr<HttpClientContext> HttpClientContext::Create() {
         return std::make_shared<WinHTTPHttpClientContext>();
+    }
+
+    std::shared_ptr<HttpClientContext> HttpClientContext::Create(HttpTlsConfig config) {
+        return std::make_shared<WinHTTPHttpClientContext>(std::move(config));
     }
 }
