@@ -13,26 +13,29 @@ A minimal executable that:
 ## Architecture
 
 ```
-┌──────────────────────────────────────────┐
-│  main()                                  │
-│    AquaWindow::create(...)               │
-│    OmegaGTE::InitWithDefaultDevice()     │
-│    engine->makeNativeRenderTarget(desc)  │
-│    run loop                              │
-│    OmegaGTE::Close()                     │
-└──────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│  tests/BasicGame  (add_omega_graphics_test)      │
+│    #include <aqua/App.h>                         │
+│    Instantiate Aqua::App, open window, run loop  │
+└──────────────────┬───────────────────────────────┘
+                   │ links
+┌──────────────────▼───────────────────────────────┐
+│  AQUA  (add_omega_graphics_module SHARED)        │
+│    Aqua::App          — app lifecycle            │
+│    Aqua::Window       — platform window shim     │
+│    GTE init / render target wiring               │
+├──────────────────────────────────────────────────┤
+│  Win32       │  Cocoa       │  GTK               │
+│  HWND        │  NSWindow +  │  GtkWindow         │
+│              │  CAMetalLayer│                     │
+└──────────────┴──────────────┴────────────────────┘
+                   │ links
+              ┌────▼────┐
+              │ OmegaGTE│
+              └─────────┘
 
-┌──────────────────────────────────────────┐
-│  AquaWindow  (lightweight platform shim) │
-│    - create / destroy                    │
-│    - pollEvents / shouldClose            │
-│    - nativeHandle()                      │
-│    - width / height                      │
-├──────────────────────────────────────────┤
-│  Win32       │  Cocoa       │  GTK       │
-│  HWND        │  NSWindow +  │  GtkWindow │
-│              │  CAMetalLayer│            │
-└──────────────┴──────────────┴────────────┘
+app/        — entry point template (main() → Aqua::App)
+tests/      — BasicGame test executable
 ```
 
 ### AquaWindow
@@ -140,18 +143,23 @@ OmegaGTE::Close(gte);
 ```
 aqua/
   include/aqua/
-    Window.h
+    Window.h                    # Platform window abstraction
+    App.h                       # App lifecycle (init GTE, create window, run loop)
   src/
-    main.cpp                    # Entry point: create window, init GTE, run loop
+    App.cpp                     # Aqua::App implementation
     platform/
       Win32Window.cpp
       CocoaWindow.mm
       X11Window.cpp
+  app/
+    Main.cpp                    # Entry point template: main() → Aqua::App
+  tests/
+    BasicGame.cpp               # Minimal test: opens window, clears to color, exits
 ```
 
 ## Build (CMakeLists.txt changes)
 
-Uncomment and adapt the existing CMake scaffolding:
+Uses the project's `add_omega_graphics_module` and `add_omega_graphics_test` functions:
 
 ```cmake
 omega_graphics_project(AQUA VERSION 0.1 LANGUAGES CXX OBJCXX)
@@ -165,22 +173,31 @@ elseif(UNIX)
     list(APPEND PLATFORM_SRCS src/platform/X11Window.cpp)
 endif()
 
-add_executable(AQUA
-    src/main.cpp
-    ${PLATFORM_SRCS}
+# AQUA shared library
+add_omega_graphics_module(AQUA SHARED
+    HEADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include
+    SOURCES src/App.cpp ${PLATFORM_SRCS}
+    DEPENDS OmegaGTE
 )
-target_include_directories(AQUA PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(AQUA PRIVATE OmegaGTE)
+target_link_libraries(AQUA PUBLIC OmegaGTE)
+
+# BasicGame test
+add_omega_graphics_test(BasicGame
+    SOURCES tests/BasicGame.cpp
+    LIBS AQUA
+)
 ```
 
 ## Steps
 
 1. **Window.h** — write the platform-agnostic header
-2. **CocoaWindow.mm** — macOS implementation (current dev platform)
-3. **main.cpp** — init GTE, create render target, run clear-color loop
-4. **Build & verify** — window opens, clears to dark gray, closes cleanly
-5. **Win32Window.cpp** — Windows implementation
-6. **X11Window.cpp** — Linux implementation
+2. **App.h / App.cpp** — app lifecycle class (init GTE, wire render target, run loop)
+3. **CocoaWindow.mm** — macOS implementation (current dev platform)
+4. **BasicGame.cpp** — test that uses Aqua::App to open a window and clear-color loop
+5. **Main.cpp** — entry point template in `app/`
+6. **Build & verify** — window opens, clears to dark gray, closes cleanly
+7. **Win32Window.cpp** — Windows implementation
+8. **X11Window.cpp** — Linux implementation
 
 Start with macOS since that's what we can test on immediately. Windows and Linux follow once the interface is proven.
 

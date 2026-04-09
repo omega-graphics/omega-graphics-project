@@ -293,10 +293,11 @@ add_third_party(
 
 add_custom_target(ThirdParty)
 add_dependencies(ThirdParty icu zlib libpng libjpeg-turbo libtiff libxml2)
-#Omega WTK Core SubModule
+# ─── Gather submodule sources ───
+
+#OmegaWTK Core SubModule
 
 file(GLOB CORE_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Core/*.cpp")
-set_source_files_properties(${CORE_SRCS} PROPERTIES INCLUDE_DIRECTORIES "${OMEGAWTK_SOURCE_DIR}/tools/assetc")
 source_group(OmegaWTKCore ${CORE_SRCS})
 
 if(NOT ${OMEGAWTK_MOBILE})
@@ -308,7 +309,7 @@ file(GLOB NATIVE_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Native/*.cpp")
 if(TARGET_WIN32)
 	file(GLOB WIN_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Native/win/*.cpp")
 	set(NATIVE_SRCS ${NATIVE_SRCS} ${WIN_SRCS})
-	
+
 elseif(TARGET_MACOS)
 	file(GLOB MACOS_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Native/macos/*.mm")
 	set(NATIVE_SRCS ${NATIVE_SRCS} ${MACOS_SRCS})
@@ -362,8 +363,6 @@ else()
 	endif()
 endif()
 
-set_source_files_properties(${NATIVE_SRCS} PROPERTIES INCLUDE_DIRECTORIES ${NATIVE_PRIVATE_INCLUDE_DIR})
-
 #OmegaWTK Composition SubModule
 
 file(GLOB COMPOSITION_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Composition/*.cpp" "${OMEGAWTK_SOURCE_DIR}/src/Composition/backend/*.cpp")
@@ -380,7 +379,6 @@ elseif(TARGET_LINUX)
 endif()
 
 source_group(OmegaWTKComposition ${COMPOSITION_SRCS})
-set_source_files_properties(${COMPOSITION_SRCS} PROPERTIES INCLUDE_DIRECTORIES ${NATIVE_PRIVATE_INCLUDE_DIR})
 
 #OmegaWTK UI SubModule
 file(GLOB UI_SRCS "${OMEGAWTK_SOURCE_DIR}/src/UI/*.cpp")
@@ -389,7 +387,54 @@ source_group(OmegaWTKUI ${UI_SRCS})
 #OmegaWTK Widgets Submodule
 file(GLOB WIDGETS_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Widgets/*.cpp")
 source_group(OmegaWTKWidgets ${WIDGETS_SRCS})
-message("OmegaWTKWidgets: ${WIDGETS_SRCS}")
+
+# ─── Submodule static libraries ───
+
+set(OMEGAWTK_PUBLIC_INCLUDE_DIR "${OMEGAWTK_SOURCE_DIR}/include")
+
+add_library(OmegaWTK_Core STATIC ${CORE_SRCS})
+target_include_directories(OmegaWTK_Core
+	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
+	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	PRIVATE "${OMEGAWTK_SOURCE_DIR}/tools/assetc")
+target_link_libraries(OmegaWTK_Core PUBLIC OmegaCommon icuuc icudata icui18n xml2)
+
+add_library(OmegaWTK_Native STATIC ${NATIVE_SRCS})
+target_include_directories(OmegaWTK_Native
+	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
+	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	PRIVATE ${NATIVE_PRIVATE_INCLUDE_DIR})
+target_link_libraries(OmegaWTK_Native PUBLIC OmegaCommon)
+
+add_library(OmegaWTK_Media STATIC ${MEDIA_SRCS})
+target_include_directories(OmegaWTK_Media
+	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
+	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>)
+target_link_libraries(OmegaWTK_Media PUBLIC OmegaCommon png turbojpeg tiff)
+
+add_library(OmegaWTK_Composition STATIC ${COMPOSITION_SRCS})
+target_include_directories(OmegaWTK_Composition
+	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
+	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	       $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>
+	PRIVATE ${NATIVE_PRIVATE_INCLUDE_DIR})
+target_link_libraries(OmegaWTK_Composition PUBLIC OmegaCommon)
+
+add_library(OmegaWTK_UI STATIC ${UI_SRCS})
+target_include_directories(OmegaWTK_UI
+	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
+	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>)
+target_link_libraries(OmegaWTK_UI PUBLIC OmegaCommon)
+
+add_library(OmegaWTK_Widgets STATIC ${WIDGETS_SRCS})
+target_include_directories(OmegaWTK_Widgets
+	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
+	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>)
+target_link_libraries(OmegaWTK_Widgets PUBLIC OmegaCommon)
+
+set(OMEGAWTK_SUBMODULE_LIBS OmegaWTK_Core OmegaWTK_Native OmegaWTK_Media OmegaWTK_Composition OmegaWTK_UI OmegaWTK_Widgets)
+
+# ─── OmegaWTK framework module ───
 
 configure_file("${OMEGAWTK_SOURCE_DIR}/src/Info.plist.in" ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
 
@@ -408,20 +453,36 @@ add_omegasl_lib("OmegaWTK_CompositorShaders"
     "${OMEGAWTK_COMPOSITOR_SHADERLIB}")
 add_dependencies("OmegaWTK_CompositorShaders" omegaslc)
 
-add_omega_graphics_module("OmegaWTK" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION ${OMEGAWTK_VERSION} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include" 
+# Generate a stub translation unit -- all real code lives in the submodule static libs.
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/OmegaWTK_framework_stub.cpp" "// OmegaWTK framework entry point -- submodules linked as static libraries\n")
+
+add_omega_graphics_module("OmegaWTK" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION ${OMEGAWTK_VERSION} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include"
 DEPENDS ${OMEGAWTK_MODULE_DEPS}
-EMBEDDED_LIBS ${ICU_EXPORT} ${LIBXML2_EXPORT} ${ZLIB_EXPORT} ${LIBPNG_EXPORT} ${LIBJPEGTURBO_EXPORT} ${LIBTIFF_EXPORT} 
-SOURCES ${CORE_SRCS} ${NATIVE_SRCS} ${MEDIA_SRCS} ${COMPOSITION_SRCS} ${UI_SRCS} ${WIDGETS_SRCS})
+EMBEDDED_LIBS ${ICU_EXPORT} ${LIBXML2_EXPORT} ${ZLIB_EXPORT} ${LIBPNG_EXPORT} ${LIBJPEGTURBO_EXPORT} ${LIBTIFF_EXPORT}
+SOURCES "${CMAKE_CURRENT_BINARY_DIR}/OmegaWTK_framework_stub.cpp")
 if(NOT OMEGAWTK_SKIP_THIRD_PARTY_BUILD)
 	add_dependencies("OmegaWTK" ThirdParty)
 endif()
 add_dependencies("OmegaWTK" "OmegaWTK_CompositorShaders")
-if(TARGET_ANDROID)
-	add_library( app-glue
-			STATIC
-			${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c )
 
-	# You need to link static libraries against your shared native library.
+# Link submodule static libraries into the framework.
+# Use whole-archive flags to ensure all symbols are exported from the shared library.
+if(APPLE)
+	foreach(_submod ${OMEGAWTK_SUBMODULE_LIBS})
+		target_link_libraries("OmegaWTK" PRIVATE "-Wl,-force_load,$<TARGET_FILE:${_submod}>")
+	endforeach()
+elseif(WIN32)
+	foreach(_submod ${OMEGAWTK_SUBMODULE_LIBS})
+		target_link_options("OmegaWTK" PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:${_submod}>")
+	endforeach()
+else()
+	target_link_libraries("OmegaWTK" PRIVATE
+		"-Wl,--whole-archive" ${OMEGAWTK_SUBMODULE_LIBS} "-Wl,--no-whole-archive")
+endif()
+
+if(TARGET_ANDROID)
+	add_library(app-glue STATIC
+		${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c)
 	target_link_libraries("OmegaWTK" PRIVATE "app-glue")
 	target_include_directories("OmegaWTK" PRIVATE ${ANDROID_NDK}/sources/android/native_app_glue)
 endif()
