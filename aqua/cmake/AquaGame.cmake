@@ -21,7 +21,7 @@ set(AQUA_SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/..)
 function(add_aqua_game)
     cmake_parse_arguments("_ARG" "" "NAME;BUNDLE_ID;BUNDLE_ICON" "SOURCES;DEPS" ${ARGN})
 
-    if(TARGET_MACOS)
+    if(APPLE)
         # --- macOS: .app bundle with embedded frameworks ---
         set(BUNDLE_ID ${_ARG_BUNDLE_ID})
         set(APPNAME ${_ARG_NAME})
@@ -50,7 +50,7 @@ function(add_aqua_game)
             ${AQUA_SOURCE_DIR}/include)
         target_compile_definitions(${_ARG_NAME} PRIVATE TARGET_MACOS TARGET_METAL)
 
-    elseif(TARGET_WIN32)
+    elseif(WIN32)
         # --- Win32: executable with manifest + DLL copy ---
         set(EMBED "\"${AQUA_SOURCE_DIR}/target/win32/app.exe.manifest\"")
         configure_file(
@@ -62,6 +62,9 @@ function(add_aqua_game)
             ${AQUA_SOURCE_DIR}/target/win32/mmain.cpp
             ${CMAKE_CURRENT_BINARY_DIR}/${_ARG_NAME}_res.rc)
 
+        set_target_properties(${_ARG_NAME} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Apps")
+
         target_link_libraries(${_ARG_NAME} PRIVATE AQUA)
         target_include_directories(${_ARG_NAME} PRIVATE
             ${AQUA_SOURCE_DIR}/include)
@@ -71,17 +74,20 @@ function(add_aqua_game)
         # Copy AQUA and GTE DLLs next to the executable
         add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy
-                $<TARGET_FILE:AQUA> $<TARGET_FILE_DIR:${_ARG_NAME}>/$<TARGET_FILE_NAME:AQUA>
+                $<TARGET_FILE:AQUA> "${CMAKE_BINARY_DIR}/Apps/$<TARGET_FILE_NAME:AQUA>"
             COMMAND ${CMAKE_COMMAND} -E copy
-                $<TARGET_FILE:OmegaGTE> $<TARGET_FILE_DIR:${_ARG_NAME}>/$<TARGET_FILE_NAME:OmegaGTE>
+                $<TARGET_FILE:OmegaGTE> "${CMAKE_BINARY_DIR}/Apps/$<TARGET_FILE_NAME:OmegaGTE>"
             COMMAND ${CMAKE_COMMAND} -E copy
-                $<TARGET_FILE:OmegaCommon> $<TARGET_FILE_DIR:${_ARG_NAME}>/$<TARGET_FILE_NAME:OmegaCommon>)
+                $<TARGET_FILE:OmegaCommon> "${CMAKE_BINARY_DIR}/Apps/$<TARGET_FILE_NAME:OmegaCommon>")
 
     else()
         # --- Linux: plain executable ---
         add_executable(${_ARG_NAME}
             ${_ARG_SOURCES}
             ${AQUA_SOURCE_DIR}/target/linux/main.cpp)
+
+        set_target_properties(${_ARG_NAME} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Apps")
 
         target_link_libraries(${_ARG_NAME} PRIVATE AQUA)
         target_include_directories(${_ARG_NAME} PRIVATE
