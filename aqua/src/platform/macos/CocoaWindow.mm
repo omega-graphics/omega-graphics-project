@@ -10,19 +10,18 @@
 
 @implementation AquaMetalView
 
-+ (Class)layerClass {
-    return [CAMetalLayer class];
-}
-
-- (BOOL)wantsLayer {
-    return YES;
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.wantsLayer = YES;
+    }
+    return self;
 }
 
 - (CALayer *)makeBackingLayer {
     CAMetalLayer *layer = [CAMetalLayer layer];
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     layer.framebufferOnly = YES;
-    layer.contentsScale = self.window.backingScaleFactor;
     return layer;
 }
 
@@ -128,7 +127,11 @@ unsigned Window::width() const { return impl->w; }
 unsigned Window::height() const { return impl->h; }
 
 void Window::fillNativeRenderTargetDesc(OmegaGTE::NativeRenderTargetDescriptor &desc) const {
-    desc.metalLayer = (CAMetalLayer *)[impl->metalView layer];
+    CAMetalLayer *layer = (CAMetalLayer *)[impl->metalView layer];
+    CGFloat scale = impl->nsWindow.backingScaleFactor;
+    layer.contentsScale = scale;
+    layer.drawableSize = CGSizeMake(impl->w * scale, impl->h * scale);
+    desc.metalLayer = layer;
 }
 
 } // namespace Aqua

@@ -2,11 +2,11 @@ omega_graphics_project(AQUA VERSION 0.1 LANGUAGES CXX)
 
 set(PLATFORM_SRCS)
 if(WIN32)
-    list(APPEND PLATFORM_SRCS src/platform/Win32Window.cpp)
+    list(APPEND PLATFORM_SRCS src/platform/windows/Win32Window.cpp)
 elseif(APPLE)
-    list(APPEND PLATFORM_SRCS src/platform/CocoaWindow.mm)
+    list(APPEND PLATFORM_SRCS src/platform/macos/CocoaWindow.mm)
 else()
-    list(APPEND PLATFORM_SRCS src/platform/X11Window.cpp)
+    list(APPEND PLATFORM_SRCS src/platform/linux/X11Window.cpp)
 endif()
 
 # AQUA shared library
