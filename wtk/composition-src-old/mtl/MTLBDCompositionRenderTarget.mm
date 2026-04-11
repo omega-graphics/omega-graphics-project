@@ -115,16 +115,16 @@ id<MTLTexture> make_gradient_texture_and_mask(id<MTLTexture> main,
 };
 
 
-Core::SharedPtr<MTLBDCompositionViewRenderTarget> MTLBDCompositionViewRenderTarget::Create(MTLBDCompositionDeviceContext *deviceContext,Core::Rect & rect){
+Core::SharedPtr<MTLBDCompositionViewRenderTarget> MTLBDCompositionViewRenderTarget::Create(MTLBDCompositionDeviceContext *deviceContext,Composition::Rect & rect){
     return std::make_shared<MTLBDCompositionViewRenderTarget>(deviceContext,rect);
 };
 
-Core::SharedPtr<MTLBDCompositionViewRenderTarget> MTLBDCompositionViewRenderTarget::CreateWithExistingCAMetalLayer(MTLBDCompositionDeviceContext *deviceContext,CAMetalLayer *layer,Core::Rect & rect){
+Core::SharedPtr<MTLBDCompositionViewRenderTarget> MTLBDCompositionViewRenderTarget::CreateWithExistingCAMetalLayer(MTLBDCompositionDeviceContext *deviceContext,CAMetalLayer *layer,Composition::Rect & rect){
     return std::make_shared<MTLBDCompositionViewRenderTarget>(deviceContext,layer,rect);
 };
 /// Metal Composition Render Target!
 
-MTLBDCompositionViewRenderTarget::MTLBDCompositionViewRenderTarget(MTLBDCompositionDeviceContext *deviceContext,Core::Rect & _rect):MTLBDCompositionRenderTarget(deviceContext,Color(0,0,0,0),_rect),rect(_rect){
+MTLBDCompositionViewRenderTarget::MTLBDCompositionViewRenderTarget(MTLBDCompositionDeviceContext *deviceContext,Composition::Rect & _rect):MTLBDCompositionRenderTarget(deviceContext,Color(0,0,0,0),_rect),rect(_rect){
     triangulator->setScaleFactor(1);
     metalLayer = [CAMetalLayer layer];
     auto scaleFactor = [NSScreen mainScreen].backingScaleFactor;
@@ -147,7 +147,7 @@ MTLBDCompositionViewRenderTarget::MTLBDCompositionViewRenderTarget(MTLBDComposit
 //    metalLayer.allowsNextDrawableTimeout = YES;
 };
 
-MTLBDCompositionViewRenderTarget::MTLBDCompositionViewRenderTarget(MTLBDCompositionDeviceContext *deviceContext,CAMetalLayer *layer,Core::Rect & rect):MTLBDCompositionRenderTarget(deviceContext,Color(0,0,0,0),rect),
+MTLBDCompositionViewRenderTarget::MTLBDCompositionViewRenderTarget(MTLBDCompositionDeviceContext *deviceContext,CAMetalLayer *layer,Composition::Rect & rect):MTLBDCompositionRenderTarget(deviceContext,Color(0,0,0,0),rect),
 rect(rect),
 metalLayer(layer)
 {
@@ -271,7 +271,7 @@ void MTLBDCompositionViewRenderTarget::commit(){
     NSLog(@"Returning");
 };
 
-void MTLBDCompositionViewRenderTarget::resizeBuffers(Core::Rect &newRect){
+void MTLBDCompositionViewRenderTarget::resizeBuffers(Composition::Rect &newRect){
     rect = newRect;
     CGFloat scaleFactor = [NSScreen mainScreen].backingScaleFactor;
     auto rect = Native::Cocoa::core_rect_to_cg_rect(newRect);
@@ -282,12 +282,12 @@ void MTLBDCompositionViewRenderTarget::resizeBuffers(Core::Rect &newRect){
 
 /// Metal Image Render Target!
 
-MTLBDCompositionImageRenderTarget::MTLBDCompositionImageRenderTarget(MTLBDCompositionDeviceContext * deviceContext,Core::Rect & rect,id<MTLTexture> target,MTLTextureDescriptor *desc):MTLBDCompositionRenderTarget(deviceContext,Color(0,0,0,0),rect),target(target),rect(rect),desc(desc){
+MTLBDCompositionImageRenderTarget::MTLBDCompositionImageRenderTarget(MTLBDCompositionDeviceContext * deviceContext,Composition::Rect & rect,id<MTLTexture> target,MTLTextureDescriptor *desc):MTLBDCompositionRenderTarget(deviceContext,Color(0,0,0,0),rect),target(target),rect(rect),desc(desc){
     triangulator->setScaleFactor([NSScreen mainScreen].backingScaleFactor);
     triangulator->isImageTarget = true;
 };
 
-Core::SharedPtr<BDCompositionImageRenderTarget> MTLBDCompositionImageRenderTarget::Create(MTLBDCompositionDeviceContext *deviceContext,Core::Rect & rect,id<MTLTexture> texture,MTLTextureDescriptor *desc){
+Core::SharedPtr<BDCompositionImageRenderTarget> MTLBDCompositionImageRenderTarget::Create(MTLBDCompositionDeviceContext *deviceContext,Composition::Rect & rect,id<MTLTexture> texture,MTLTextureDescriptor *desc){
     return std::make_shared<MTLBDCompositionImageRenderTarget>(deviceContext,rect,texture,desc);
 };
 
@@ -374,8 +374,8 @@ void MTLBDCompositionImageRenderTarget::commit(){
     // desc = nil;
 };
 
-void MTLBDCompositionImageRenderTarget::resizeBuffers(Core::Rect &newRect){
-    Core::Rect r = newRect;
+void MTLBDCompositionImageRenderTarget::resizeBuffers(Composition::Rect &newRect){
+    Composition::Rect r = newRect;
     CGFloat scaleFactor = [NSScreen mainScreen].backingScaleFactor;
     if(rect.dimen.minWidth < (r.dimen.minWidth *= scaleFactor) || rect.dimen.minHeight < (r.dimen.minHeight *= scaleFactor)){
         needsResize = true;

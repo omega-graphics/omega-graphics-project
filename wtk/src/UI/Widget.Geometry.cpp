@@ -3,11 +3,11 @@
 
 namespace OmegaWTK {
 
-Core::Rect & Widget::rect(){
+Composition::Rect & Widget::rect(){
     return view->getRect();
 }
 
-bool Widget::requestRect(const Core::Rect &requested,GeometryChangeReason reason){
+bool Widget::requestRect(const Composition::Rect &requested,GeometryChangeReason reason){
     auto oldRect = rect();
     auto syncCtx = geometryTraceContext();
     WidgetInternal::geometryTraceLog("proposal",this,parent,reason,oldRect,requested,syncCtx);
@@ -28,7 +28,7 @@ bool Widget::requestRect(const Core::Rect &requested,GeometryChangeReason reason
     return true;
 }
 
-void Widget::setRect(const Core::Rect &newRect){
+void Widget::setRect(const Composition::Rect &newRect){
     auto oldRect = rect();
     view->resize(newRect);
     auto & rootRect = view->getRect();

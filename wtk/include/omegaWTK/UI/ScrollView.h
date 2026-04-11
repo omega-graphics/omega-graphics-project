@@ -20,7 +20,7 @@ class ScrollViewDelegate;
 /// by Canvas commands.
 class OMEGAWTK_EXPORT ScrollView : public View {
     SharedHandle<View> child;
-    Core::Position scrollOffset {0.f, 0.f};
+    Composition::Point2D scrollOffset {0.f, 0.f};
     ScrollViewDelegate *delegate = nullptr;
     bool hasVerticalScrollBar,hasHorizontalScrollBar;
     bool hasDelegate() override;
@@ -43,7 +43,7 @@ class OMEGAWTK_EXPORT ScrollView : public View {
 
     friend class Widget;
 public:
-    explicit ScrollView(const Core::Rect & rect,
+    explicit ScrollView(const Composition::Rect & rect,
                         SharedHandle<View> child,
                         bool hasVerticalScrollBar,
                         bool hasHorizontalScrollBar,
@@ -53,15 +53,15 @@ public:
     void setDelegate(ScrollViewDelegate *_delegate);
 
     /// Returns the current scroll offset.
-    const Core::Position & getScrollOffset() const { return scrollOffset; }
+    const Composition::Point2D & getScrollOffset() const { return scrollOffset; }
 
     /// Sets the scroll offset directly. Repaints scroll bar indicators.
-    void setScrollOffset(const Core::Position & offset);
+    void setScrollOffset(const Composition::Point2D & offset);
 
     /// Returns the scroll offset contribution for computeWindowOffset().
     /// Child Views inside this ScrollView subtract this from their
     /// window offset so content appears translated by the scroll amount.
-    Core::Position scrollOffsetContribution() const override;
+    Composition::Point2D scrollOffsetContribution() const override;
 };
 
 class OMEGAWTK_EXPORT ScrollViewDelegate : public Native::NativeEventProcessor {

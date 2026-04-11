@@ -25,7 +25,7 @@ static inline float clampSize(float value,const Core::Optional<float> & minValue
     return value;
 }
 
-static inline bool rectChanged(const Core::Rect &a,const Core::Rect &b){
+static inline bool rectChanged(const Composition::Rect &a,const Composition::Rect &b){
     constexpr float kEpsilon = 0.001f;
     return std::fabs(a.pos.x - b.pos.x) > kEpsilon ||
            std::fabs(a.pos.y - b.pos.y) > kEpsilon ||
@@ -33,14 +33,14 @@ static inline bool rectChanged(const Core::Rect &a,const Core::Rect &b){
            std::fabs(a.h - b.h) > kEpsilon;
 }
 
-static inline bool finiteRect(const Core::Rect & rect){
+static inline bool finiteRect(const Composition::Rect & rect){
     return std::isfinite(rect.pos.x) &&
            std::isfinite(rect.pos.y) &&
            std::isfinite(rect.w) &&
            std::isfinite(rect.h);
 }
 
-static inline bool suspiciousFrame(const Core::Rect & rect){
+static inline bool suspiciousFrame(const Composition::Rect & rect){
     if(!finiteRect(rect)){
         return true;
     }
@@ -89,8 +89,8 @@ static inline bool tinyPlaceholderSize(float mainSize,float crossSize){
            crossSize <= 1.5f;
 }
 
-static inline Core::Rect sanitizeStackFrame(const Core::Rect & candidate){
-    Core::Rect frame = candidate;
+static inline Composition::Rect sanitizeStackFrame(const Composition::Rect & candidate){
+    Composition::Rect frame = candidate;
     if(!std::isfinite(frame.pos.x)){
         frame.pos.x = 0.f;
     }
@@ -125,7 +125,7 @@ struct LayoutItem {
 
 }
 
-StackWidget::StackWidget(StackAxis axis,Core::Rect rect,const StackOptions & options):
+StackWidget::StackWidget(StackAxis axis,Composition::Rect rect,const StackOptions & options):
 Container(rect),
 axis(axis),
 stackOptions(options){
@@ -150,7 +150,7 @@ void StackWidget::onPaint(PaintReason reason){
     }
 }
 
-void StackWidget::resize(Core::Rect & newRect){
+void StackWidget::resize(Composition::Rect & newRect){
     (void)newRect;
     relayout();
 }
@@ -314,8 +314,8 @@ void StackWidget::layoutChildren(){
         (axis == StackAxis::Horizontal
             ? (stackOptions.padding.top + stackOptions.padding.bottom)
             : (stackOptions.padding.left + stackOptions.padding.right)));
-    Core::Rect contentBoundsRect {
-            Core::Position{
+    Composition::Rect contentBoundsRect {
+            Composition::Point2D{
                     frame.pos.x + stackOptions.padding.left,
                     frame.pos.y + stackOptions.padding.top
             },
@@ -532,7 +532,7 @@ void StackWidget::layoutChildren(){
                 break;
         }
 
-        Core::Rect targetRect = childRect;
+        Composition::Rect targetRect = childRect;
         if(axis == StackAxis::Horizontal){
             targetRect.pos.x = cursor;
             targetRect.pos.y = crossPos;
@@ -600,7 +600,7 @@ StackWidget::~StackWidget(){
     childSizeCache.clear();
 }
 
-HStack::HStack(Core::Rect rect,const StackOptions & options):
+HStack::HStack(Composition::Rect rect,const StackOptions & options):
 StackWidget(StackAxis::Horizontal,rect,options){
 
 }
@@ -610,7 +610,7 @@ StackWidget(StackAxis::Horizontal,std::move(view),options){
 
 }
 
-VStack::VStack(Core::Rect rect,const StackOptions & options):
+VStack::VStack(Composition::Rect rect,const StackOptions & options):
 StackWidget(StackAxis::Vertical,rect,options){
 
 }

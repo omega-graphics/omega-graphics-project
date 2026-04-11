@@ -132,13 +132,13 @@ struct OMEGAWTK_EXPORT LayoutStyle {
 // ---------------------------------------------------------------------------
 
 struct OMEGAWTK_EXPORT LayoutContext {
-    Core::Rect availableRectPx {};
+    Composition::Rect availableRectPx {};
     float dpiScale = 1.f;
     std::uint64_t resizeSessionId = 0;
     bool liveResize = false;
 
     float dpToPx(float dp) const;
-    Core::Rect availableRectDp() const;
+    Composition::Rect availableRectDp() const;
 };
 
 struct OMEGAWTK_EXPORT MeasureResult {
@@ -177,8 +177,8 @@ OMEGAWTK_EXPORT float clampValue(float value,
                                  float availableDp,
                                  float dpiScale);
 
-OMEGAWTK_EXPORT Core::Rect resolveClampedRect(const LayoutStyle & style,
-                                              const Core::Rect & availableDp,
+OMEGAWTK_EXPORT Composition::Rect resolveClampedRect(const LayoutStyle & style,
+                                              const Composition::Rect & availableDp,
                                               float dpiScale);
 
 // ---------------------------------------------------------------------------
@@ -204,13 +204,13 @@ struct OMEGAWTK_EXPORT LayoutTransitionSpec {
 };
 
 struct OMEGAWTK_EXPORT LayoutDelta {
-    Core::Rect fromRectPx {};
-    Core::Rect toRectPx {};
+    Composition::Rect fromRectPx {};
+    Composition::Rect toRectPx {};
     OmegaCommon::Vector<LayoutTransitionProperty> changedProperties;
 };
 
-OMEGAWTK_EXPORT LayoutDelta computeLayoutDelta(const Core::Rect & fromPx,
-                                               const Core::Rect & toPx);
+OMEGAWTK_EXPORT LayoutDelta computeLayoutDelta(const Composition::Rect & fromPx,
+                                               const Composition::Rect & toPx);
 
 // ---------------------------------------------------------------------------
 // F1 — Diagnostic sink
@@ -224,8 +224,8 @@ struct OMEGAWTK_EXPORT LayoutDiagnosticEntry {
     };
 
     OmegaCommon::String nodeId {};
-    Core::Rect rectDp {};
-    Core::Rect rectPx {};
+    Composition::Rect rectDp {};
+    Composition::Rect rectPx {};
     Pass pass = Pass::Measure;
 };
 

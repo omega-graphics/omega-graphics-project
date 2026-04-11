@@ -41,8 +41,8 @@ inline bool suspiciousDimensionPair(float w,float h){
     return false;
 }
 
-inline Core::Rect sanitizeRect(const Core::Rect & candidate,const Core::Rect & fallback){
-    Core::Rect saneFallback = fallback;
+inline Composition::Rect sanitizeRect(const Composition::Rect & candidate,const Composition::Rect & fallback){
+    Composition::Rect saneFallback = fallback;
     if(!finiteFloat(saneFallback.pos.x)){
         saneFallback.pos.x = 0.f;
     }
@@ -62,7 +62,7 @@ inline Core::Rect sanitizeRect(const Core::Rect & candidate,const Core::Rect & f
         saneFallback.h = 1.f;
     }
 
-    Core::Rect sanitized = candidate;
+    Composition::Rect sanitized = candidate;
     if(!finiteFloat(sanitized.pos.x)){
         sanitized.pos.x = saneFallback.pos.x;
     }
@@ -84,7 +84,7 @@ inline Core::Rect sanitizeRect(const Core::Rect & candidate,const Core::Rect & f
     return sanitized;
 }
 
-inline bool sameRect(const Core::Rect & a,const Core::Rect & b){
+inline bool sameRect(const Composition::Rect & a,const Composition::Rect & b){
     constexpr float kEpsilon = 0.001f;
     return std::fabs(a.pos.x - b.pos.x) <= kEpsilon &&
            std::fabs(a.pos.y - b.pos.y) <= kEpsilon &&
@@ -110,7 +110,7 @@ struct View::Impl {
     ViewResizeCoordinator resizeCoordinator;
     SharedHandle<Composition::LayerTree> ownLayerTree;
     View * parent_ptr = nullptr;
-    Core::Rect rect {Core::Position{0.f,0.f},1.f,1.f};
+    Composition::Rect rect {Composition::Point2D{0.f,0.f},1.f,1.f};
     ViewDelegate * delegate = nullptr;
     bool enabled_ = true;
 
@@ -118,7 +118,7 @@ struct View::Impl {
     /// per-View render target. The render target is propagated from the
     /// window via setWindowRenderTarget().
     Impl(View & owner,
-         const Core::Rect & initialRect,
+         const Composition::Rect & initialRect,
          View * parent):
         renderTarget(nullptr),
         proxy(),

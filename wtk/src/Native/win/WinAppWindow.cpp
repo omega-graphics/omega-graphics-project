@@ -9,7 +9,7 @@
 #pragma comment(lib,"dwmapi.lib")
 
 namespace OmegaWTK::Native::Win {
-    WinAppWindow::WinAppWindow(Core::Rect & rect,NativeEventEmitter *emitter):HWNDItem(rect),isReady(false){
+    WinAppWindow::WinAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter):HWNDItem(rect),isReady(false){
         this->event_emitter = emitter;
         // MessageBoxA(HWND_DESKTOP,"Creating WinAppWindow!","NOTE",MB_OK);
         atom = HWNDFactory::appFactoryInst->registerAppWindow();
@@ -181,7 +181,7 @@ namespace OmegaWTK::Native::Win {
                         FLOAT scaleFactor = currentDpi/96.f;
                         UINT width = LOWORD(lParam);
                         UINT height = HIWORD(lParam);
-                        wndrect = OmegaWTK::Core::Rect {OmegaGTE::GPoint2D {wndrect.pos.x,wndrect.pos.y},FLOAT(width)/scaleFactor,FLOAT(height)/scaleFactor};
+                        wndrect = OmegaWTK::Composition::Rect {OmegaGTE::GPoint2D {wndrect.pos.x,wndrect.pos.y},FLOAT(width)/scaleFactor,FLOAT(height)/scaleFactor};
                         auto params = new Native::WindowWillResize(wndrect);
                         emitIfPossible((NativeEventPtr)new NativeEvent(NativeEvent::WindowWillResize,params));
                     };
@@ -266,7 +266,7 @@ namespace OmegaWTK::Native::Win {
 };
 
 namespace OmegaWTK::Native {
-    NWH make_native_window(Core::Rect &rect, NativeEventEmitter *emitter){
+    NWH make_native_window(Composition::Rect &rect, NativeEventEmitter *emitter){
         return (NWH)new Win::WinAppWindow(rect,emitter);
     }
     

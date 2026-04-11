@@ -79,13 +79,13 @@ float LayoutContext::dpToPx(float dp) const{
     return dp * dpiScale;
 }
 
-Core::Rect LayoutContext::availableRectDp() const{
+Composition::Rect LayoutContext::availableRectDp() const{
     if(dpiScale <= 0.f){
         return availableRectPx;
     }
     const float inv = 1.f / dpiScale;
-    return Core::Rect{
-        Core::Position{availableRectPx.pos.x * inv,availableRectPx.pos.y * inv},
+    return Composition::Rect{
+        Composition::Point2D{availableRectPx.pos.x * inv,availableRectPx.pos.y * inv},
         availableRectPx.w * inv,
         availableRectPx.h * inv
     };
@@ -127,8 +127,8 @@ float clampValue(float value,
     return std::clamp(value,minResolved,maxResolved);
 }
 
-Core::Rect resolveClampedRect(const LayoutStyle & style,
-                              const Core::Rect & availableDp,
+Composition::Rect resolveClampedRect(const LayoutStyle & style,
+                              const Composition::Rect & availableDp,
                               float dpiScale){
     float w = resolveLength(style.width,availableDp.w,dpiScale);
     float h = resolveLength(style.height,availableDp.h,dpiScale);
@@ -162,7 +162,7 @@ Core::Rect resolveClampedRect(const LayoutStyle & style,
         }
     }
 
-    return Core::Rect{Core::Position{x,y},std::max(1.f,w),std::max(1.f,h)};
+    return Composition::Rect{Composition::Point2D{x,y},std::max(1.f,w),std::max(1.f,h)};
 }
 
 // ---------------------------------------------------------------------------
@@ -212,8 +212,8 @@ void runWidgetLayout(Widget & root, const LayoutContext & ctx){
 
     auto resolved = resolveClampedRect(root.layoutStyle(), dpRect, ctx.dpiScale);
 
-    Core::Rect finalPx {
-        Core::Position{ctx.dpToPx(resolved.pos.x), ctx.dpToPx(resolved.pos.y)},
+    Composition::Rect finalPx {
+        Composition::Point2D{ctx.dpToPx(resolved.pos.x), ctx.dpToPx(resolved.pos.y)},
         ctx.dpToPx(resolved.w),
         ctx.dpToPx(resolved.h)
     };
@@ -225,7 +225,7 @@ void runWidgetLayout(Widget & root, const LayoutContext & ctx){
 // LayoutDelta computation (D1)
 // ---------------------------------------------------------------------------
 
-LayoutDelta computeLayoutDelta(const Core::Rect & fromPx,const Core::Rect & toPx){
+LayoutDelta computeLayoutDelta(const Composition::Rect & fromPx,const Composition::Rect & toPx){
     LayoutDelta delta {};
     delta.fromRectPx = fromPx;
     delta.toRectPx = toPx;

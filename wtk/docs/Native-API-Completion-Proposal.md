@@ -92,24 +92,24 @@ struct ModifierFlags {
 };
 
 struct MouseEventParams {
-    Core::Position position;      // Local to the NativeItem
-    Core::Position screenPosition;
+    Composition::Point2D position;      // Local to the NativeItem
+    Composition::Point2D screenPosition;
     ModifierFlags modifiers;
     unsigned clickCount = 1;
 };
 
 struct CursorMoveParams {
-    Core::Position position;
-    Core::Position screenPosition;
+    Composition::Point2D position;
+    Composition::Point2D screenPosition;
     ModifierFlags modifiers;
 };
 
 struct CursorEnterParams {
-    Core::Position position;
+    Composition::Point2D position;
 };
 
 struct CursorExitParams {
-    Core::Position position;
+    Composition::Point2D position;
 };
 
 struct LMouseDownParams : MouseEventParams {};
@@ -187,8 +187,8 @@ INTERFACE NativeWindow {
     virtual bool isFullscreen() const = 0;
     virtual bool isVisible() const = 0;
 
-    virtual Core::Rect getRect() const = 0;
-    virtual void setRect(const Core::Rect & rect) = 0;
+    virtual Composition::Rect getRect() const = 0;
+    virtual void setRect(const Composition::Rect & rect) = 0;
 
     virtual float scaleFactor() const = 0;  // DPI / backing scale
 
@@ -249,7 +249,7 @@ INTERFACE NativeItem {
     virtual float getOpacity() const = 0;
 
     // Hit test
-    virtual bool hitTest(Core::Position point) const = 0;
+    virtual bool hitTest(Composition::Point2D point) const = 0;
 };
 ```
 
@@ -403,10 +403,10 @@ public:
 
 INTERFACE NativeDropTarget {
 public:
-    virtual DropEffect onDragEnter(const DragData & data, Core::Position position) { return DropEffect::None; }
-    virtual DropEffect onDragOver(const DragData & data, Core::Position position) { return DropEffect::None; }
+    virtual DropEffect onDragEnter(const DragData & data, Composition::Point2D position) { return DropEffect::None; }
+    virtual DropEffect onDragOver(const DragData & data, Composition::Point2D position) { return DropEffect::None; }
     virtual void onDragLeave() {}
-    virtual DropEffect onDrop(const DragData & data, Core::Position position) { return DropEffect::None; }
+    virtual DropEffect onDrop(const DragData & data, Composition::Point2D position) { return DropEffect::None; }
     virtual ~NativeDropTarget() = default;
 };
 
@@ -470,8 +470,8 @@ New header `NativeScreen.h`:
 ```cpp
 struct NativeScreenDesc {
     unsigned id = 0;
-    Core::Rect frame;           // Full screen rect in global coords
-    Core::Rect visibleFrame;    // Minus dock/taskbar
+    Composition::Rect frame;           // Full screen rect in global coords
+    Composition::Rect visibleFrame;    // Minus dock/taskbar
     float scaleFactor = 1.f;
     bool isPrimary = false;
 };
@@ -691,7 +691,7 @@ NMI make_native_radio_item(const OmegaCommon::String & str, NM parent,
                            bool initialChecked = false);
 
 // Contextual menu
-void show_native_context_menu(NM menu, Core::Position screenPos);
+void show_native_context_menu(NM menu, Composition::Point2D screenPos);
 ```
 
 **Platform notes:**
@@ -737,7 +737,7 @@ SharedHandle<MenuItem> RadioMenuItem(const OmegaCommon::String & name,
                                      bool initialChecked = false);
 
 // Contextual menus — show a Menu as a right-click popup at a screen position
-void ShowContextMenu(SharedHandle<Menu> menu, Core::Position screenPos);
+void ShowContextMenu(SharedHandle<Menu> menu, Composition::Point2D screenPos);
 ```
 
 #### Menu validation delegate

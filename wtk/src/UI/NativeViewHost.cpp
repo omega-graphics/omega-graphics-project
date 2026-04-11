@@ -4,7 +4,7 @@
 
 namespace OmegaWTK {
 
-NativeViewHost::NativeViewHost(Core::Rect rect)
+NativeViewHost::NativeViewHost(Composition::Rect rect)
     : Widget(rect){}
 
 NativeViewHost::~NativeViewHost(){
@@ -47,7 +47,7 @@ void NativeViewHost::onMount(){
     }
 }
 
-void NativeViewHost::onLayoutResolved(const Core::Rect & finalRectPx){
+void NativeViewHost::onLayoutResolved(const Composition::Rect & finalRectPx){
     Widget::onLayoutResolved(finalRectPx);
     syncBounds();
 }
@@ -58,7 +58,7 @@ void NativeViewHost::syncBounds(){
     }
     auto offset = view->computeWindowOffset();
     auto & r = view->getRect();
-    embeddedItem_->resize(Core::Rect{offset, r.w, r.h});
+    embeddedItem_->resize(Composition::Rect{offset, r.w, r.h});
 }
 
 }

@@ -41,7 +41,7 @@ struct OMEGAWTK_EXPORT ContainerClampPolicy {
 class OMEGAWTK_EXPORT Container: public Widget {
     ContainerClampPolicy clampPolicy {};
     mutable bool hasLastStableContentBounds = false;
-    mutable Core::Rect lastStableContentBounds {Core::Position{0.f,0.f},1.f,1.f};
+    mutable Composition::Rect lastStableContentBounds {Composition::Point2D{0.f,0.f},1.f,1.f};
 protected:
     OmegaCommon::Vector<WidgetPtr> children;
     bool layoutPending = true;
@@ -55,16 +55,16 @@ protected:
 
     void onMount() override;
     void onPaint(PaintReason reason) override;
-    void resize(Core::Rect & newRect) override;
+    void resize(Composition::Rect & newRect) override;
 
-    Core::Rect clampChildRect(const Widget & child,const GeometryProposal & proposal) const override;
+    Composition::Rect clampChildRect(const Widget & child,const GeometryProposal & proposal) const override;
     void onChildRectCommitted(const Widget & child,
-                              const Core::Rect & oldRect,
-                              const Core::Rect & newRect,
+                              const Composition::Rect & oldRect,
+                              const Composition::Rect & newRect,
                               GeometryChangeReason reason) override;
 public:
     // WIDGET_CONSTRUCTOR()
-    explicit Container(Core::Rect rect);
+    explicit Container(Composition::Rect rect);
     explicit Container(ViewPtr view);
 
     void setClampPolicy(const ContainerClampPolicy & policy);

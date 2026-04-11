@@ -206,7 +206,7 @@ protected:
     void onMount() override;   // set up UIViewLayoutV2 element with tag "bg", apply StyleSheet
     void onPaint(PaintReason reason) override; // update element rect to match widget rect, reapply brush
 public:
-    explicit Rectangle(Core::Rect rect, const RectangleProps & props = {});
+    explicit Rectangle(Composition::Rect rect, const RectangleProps & props = {});
     void setProps(const RectangleProps & props);
 };
 ```
@@ -439,7 +439,7 @@ class ZStack : public Container {
 protected:
     void layoutChildren() override; // position each child based on alignment
 public:
-    explicit ZStack(Core::Rect rect, const ZStackOptions & options = {});
+    explicit ZStack(Composition::Rect rect, const ZStackOptions & options = {});
     explicit ZStack(ViewPtr view, const ZStackOptions & options = {});
 };
 ```
@@ -469,7 +469,7 @@ class Grid : public Container {
 protected:
     void layoutChildren() override; // compute column widths, row heights, place children
 public:
-    explicit Grid(Core::Rect rect, const GridOptions & options = {});
+    explicit Grid(Composition::Rect rect, const GridOptions & options = {});
     WidgetPtr addChild(const WidgetPtr & child) override;
     WidgetPtr addChild(const WidgetPtr & child, const GridSlot & slot);
 };
@@ -482,7 +482,7 @@ A non-visual widget that participates in stack layout to consume available space
 ```cpp
 class Spacer : public Widget {
 public:
-    explicit Spacer(Core::Rect rect = {Core::Position{0.f,0.f}, 1.f, 1.f});
+    explicit Spacer(Composition::Rect rect = {Composition::Point2D{0.f,0.f}, 1.f, 1.f});
     bool isLayoutResizable() const override { return true; }
 };
 ```
@@ -510,7 +510,7 @@ class SplitView : public Container {
 protected:
     void layoutChildren() override;
 public:
-    explicit SplitView(Core::Rect rect, const SplitViewOptions & options = {});
+    explicit SplitView(Composition::Rect rect, const SplitViewOptions & options = {});
     void setRatio(float ratio);
     float ratio() const;
 };
@@ -529,7 +529,7 @@ struct TabItemProps {
 class TabItem : public Container {
     TabItemProps props_;
 public:
-    explicit TabItem(Core::Rect rect, const TabItemProps & props);
+    explicit TabItem(Composition::Rect rect, const TabItemProps & props);
     const TabItemProps & tabProps() const;
 };
 
@@ -539,7 +539,7 @@ class Tabs : public Container {
 protected:
     void layoutChildren() override;
 public:
-    explicit Tabs(Core::Rect rect);
+    explicit Tabs(Composition::Rect rect);
     WidgetPtr addTab(const WidgetPtr & tabItem);
     void setActiveIndex(std::size_t index);
     std::size_t activeIndex() const;
@@ -588,7 +588,7 @@ protected:
     void onMount() override;
     void onPaint(PaintReason reason) override;
 public:
-    explicit Button(Core::Rect rect, const ButtonProps & props = {});
+    explicit Button(Composition::Rect rect, const ButtonProps & props = {});
     void setOnPress(std::function<void()> callback);
     void setProps(const ButtonProps & props);
 };
@@ -619,7 +619,7 @@ protected:
     void onMount() override;
     void onPaint(PaintReason reason) override;
 public:
-    explicit TextInput(Core::Rect rect, const TextInputProps & props = {});
+    explicit TextInput(Composition::Rect rect, const TextInputProps & props = {});
     void setText(const OmegaCommon::UString & text);
     const OmegaCommon::UString & text() const;
     void setOnValueChange(std::function<void(const OmegaCommon::UString &)> callback);
@@ -638,7 +638,7 @@ Multi-line variant of `TextInput`. Wraps a `ScrollView` internally for overflow.
 class TextArea : public Container {
     // Similar to TextInput but with line-break handling and vertical scroll
 public:
-    explicit TextArea(Core::Rect rect, const TextInputProps & props = {});
+    explicit TextArea(Composition::Rect rect, const TextInputProps & props = {});
 };
 ```
 
@@ -655,7 +655,7 @@ protected:
     void onMount() override;  // "track" + "thumb" elements
     void onPaint(PaintReason reason) override;  // animate thumb position
 public:
-    explicit Toggle(Core::Rect rect, bool initialValue = false);
+    explicit Toggle(Composition::Rect rect, bool initialValue = false);
     void setValue(bool value);
     bool value() const;
     void setOnToggle(std::function<void(bool)> callback);
@@ -671,7 +671,7 @@ class Checkbox : public Widget {
     CheckboxState checkState_ = CheckboxState::Unchecked;
     // "bg" box + "indicator" checkmark element
 public:
-    explicit Checkbox(Core::Rect rect, CheckboxState initial = CheckboxState::Unchecked);
+    explicit Checkbox(Composition::Rect rect, CheckboxState initial = CheckboxState::Unchecked);
     void setCheckState(CheckboxState state);
     CheckboxState checkState() const;
     void setOnChange(std::function<void(CheckboxState)> callback);
@@ -689,14 +689,14 @@ class RadioButton : public Widget {
     RadioGroup *group_ = nullptr;
     // "bg" circle + "indicator" filled circle
 public:
-    explicit RadioButton(Core::Rect rect, const OmegaCommon::UString & label);
+    explicit RadioButton(Composition::Rect rect, const OmegaCommon::UString & label);
 };
 
 class RadioGroup : public Container {
     std::size_t selectedIndex_ = 0;
     std::function<void(std::size_t)> onSelectionChange_ = nullptr;
 public:
-    explicit RadioGroup(Core::Rect rect);
+    explicit RadioGroup(Composition::Rect rect);
     WidgetPtr addOption(const WidgetPtr & radioButton);
     void setSelectedIndex(std::size_t index);
     std::size_t selectedIndex() const;
@@ -720,7 +720,7 @@ class Slider : public Widget {
     float value_ = 0.f;
     // "track" + "fill" + "thumb" elements; drag delegate on thumb
 public:
-    explicit Slider(Core::Rect rect, const SliderProps & props = {});
+    explicit Slider(Composition::Rect rect, const SliderProps & props = {});
     void setValue(float value);
     float value() const;
     void setOnValueChange(std::function<void(float)> callback);
@@ -737,7 +737,7 @@ class Stepper : public Container {
     float max_ = 100.f;
     // Internal: minus button, value label, plus button (HStack layout)
 public:
-    explicit Stepper(Core::Rect rect, float initialValue = 0.f, float step = 1.f);
+    explicit Stepper(Composition::Rect rect, float initialValue = 0.f, float step = 1.f);
 };
 ```
 
@@ -756,7 +756,7 @@ class Select : public Container {
     Core::Optional<std::size_t> selectedIndex_ {};
     // Internal: display button + dropdown overlay (Phase 6 dependency for overlay)
 public:
-    explicit Select(Core::Rect rect);
+    explicit Select(Composition::Rect rect);
     void setOptions(const OmegaCommon::Vector<SelectOption> & options);
     void setSelectedIndex(std::size_t index);
 };
@@ -773,7 +773,7 @@ class ProgressBar : public Widget {
     float progress_ = 0.f; // 0..1, or < 0 for indeterminate
     // "track" + "fill" elements
 public:
-    explicit ProgressBar(Core::Rect rect, float progress = 0.f);
+    explicit ProgressBar(Composition::Rect rect, float progress = 0.f);
     void setProgress(float progress);
     float progress() const;
     bool isIndeterminate() const;
@@ -787,7 +787,7 @@ class Spinner : public Widget {
     bool active_ = true;
     // Animated rotating arc element
 public:
-    explicit Spinner(Core::Rect rect, bool active = true);
+    explicit Spinner(Composition::Rect rect, bool active = true);
     void setActive(bool active);
 };
 ```
@@ -832,11 +832,11 @@ class ScrollableContainer : public Widget {
     Container *contentContainer_ = nullptr;  // the inner container that holds children
     // Uses ScrollView as backing view; ScrollViewDelegate for scroll events
 public:
-    explicit ScrollableContainer(Core::Rect rect, const ScrollableContainerOptions & options = {});
+    explicit ScrollableContainer(Composition::Rect rect, const ScrollableContainerOptions & options = {});
     WidgetPtr addChild(const WidgetPtr & child);
     bool removeChild(const WidgetPtr & child);
     void scrollTo(float x, float y);
-    Core::Position scrollOffset() const;
+    Composition::Point2D scrollOffset() const;
 };
 ```
 
@@ -858,7 +858,7 @@ class ListView : public Widget {
     ListViewDataSource *dataSource_ = nullptr;
     // Internal: ScrollableContainer + item pool + visible range tracking
 public:
-    explicit ListView(Core::Rect rect);
+    explicit ListView(Composition::Rect rect);
     void setDataSource(ListViewDataSource *source);
     void reloadData();
     void scrollToItem(std::size_t index);
@@ -883,7 +883,7 @@ class TreeView : public Widget {
     TreeViewNode *rootNode_ = nullptr;
     // Internal: flattened visible list driven through ListView
 public:
-    explicit TreeView(Core::Rect rect);
+    explicit TreeView(Composition::Rect rect);
     void setRootNode(TreeViewNode *root);
     void expandNode(TreeViewNode *node);
     void collapseNode(TreeViewNode *node);
@@ -915,7 +915,7 @@ class TableView : public Widget {
     TableViewDataSource *dataSource_ = nullptr;
     // Internal: header row (HStack) + virtualized row list (ListView)
 public:
-    explicit TableView(Core::Rect rect);
+    explicit TableView(Composition::Rect rect);
     void setColumns(const OmegaCommon::Vector<TableColumn> & columns);
     void setDataSource(TableViewDataSource *source);
 };
@@ -930,7 +930,7 @@ class CollectionViewDataSource {
 public:
     virtual ~CollectionViewDataSource() = default;
     virtual std::size_t itemCount() = 0;
-    virtual Core::Rect itemSize(std::size_t index) = 0;
+    virtual Composition::Rect itemSize(std::size_t index) = 0;
     virtual WidgetPtr createItem(std::size_t index) = 0;
 };
 
@@ -938,7 +938,7 @@ class CollectionView : public Widget {
     CollectionViewDataSource *dataSource_ = nullptr;
     // Internal: ScrollableContainer + Grid-like placement + item pool
 public:
-    explicit CollectionView(Core::Rect rect);
+    explicit CollectionView(Composition::Rect rect);
     void setDataSource(CollectionViewDataSource *source);
     void reloadData();
 };
@@ -959,7 +959,7 @@ class PropertyGrid : public Widget {
     OmegaCommon::Vector<PropertyGridEntry> entries_ {};
     // Internal: two-column Grid with Label + TextInput per row
 public:
-    explicit PropertyGrid(Core::Rect rect);
+    explicit PropertyGrid(Composition::Rect rect);
     void setEntries(const OmegaCommon::Vector<PropertyGridEntry> & entries);
 };
 ```
@@ -1014,7 +1014,7 @@ class Tooltip : public Widget {
     TooltipProps props_;
     // Presented via OverlayHost on hover of anchor widget
 public:
-    explicit Tooltip(Core::Rect rect, const TooltipProps & props);
+    explicit Tooltip(Composition::Rect rect, const TooltipProps & props);
     static void attachTo(Widget *target, const TooltipProps & props);
 };
 ```
@@ -1030,7 +1030,7 @@ class Popover : public Container {
     PopoverEdge preferredEdge_ = PopoverEdge::Bottom;
     Widget *anchor_ = nullptr;
 public:
-    explicit Popover(Core::Rect rect, PopoverEdge edge = PopoverEdge::Bottom);
+    explicit Popover(Composition::Rect rect, PopoverEdge edge = PopoverEdge::Bottom);
     void present(Widget *anchor);
     void dismiss();
 };
@@ -1054,7 +1054,7 @@ class ContextMenu : public Widget {
     OmegaCommon::Vector<MenuItem> items_ {};
 public:
     explicit ContextMenu(const OmegaCommon::Vector<MenuItem> & items);
-    void present(Widget *anchor, Core::Position screenPos);
+    void present(Widget *anchor, Composition::Point2D screenPos);
     void dismiss();
 };
 ```
@@ -1070,7 +1070,7 @@ class ModalDialog : public Container {
     bool visible_ = false;
     // Backdrop overlay + centered content container
 public:
-    explicit ModalDialog(Core::Rect rect);
+    explicit ModalDialog(Composition::Rect rect);
     void present();
     void dismiss();
     void setOnDismiss(std::function<void()> callback);
@@ -1107,7 +1107,7 @@ class Sheet : public Container {
     SheetEdge edge_ = SheetEdge::Bottom;
     float height_ = 300.f; // or width for side sheets
 public:
-    explicit Sheet(Core::Rect rect, SheetEdge edge = SheetEdge::Bottom);
+    explicit Sheet(Composition::Rect rect, SheetEdge edge = SheetEdge::Bottom);
     void present();
     void dismiss();
 };
@@ -1145,7 +1145,7 @@ Push/pop page flow.
 class NavigationStack : public Container {
     OmegaCommon::Vector<WidgetPtr> pageStack_ {};
 public:
-    explicit NavigationStack(Core::Rect rect);
+    explicit NavigationStack(Composition::Rect rect);
     void push(const WidgetPtr & page);
     WidgetPtr pop();
     std::size_t depth() const;
@@ -1161,7 +1161,7 @@ class Sidebar : public Container {
     std::size_t selectedIndex_ = 0;
     // Internal: VStack of clickable items
 public:
-    explicit Sidebar(Core::Rect rect);
+    explicit Sidebar(Composition::Rect rect);
     WidgetPtr addSection(const OmegaCommon::UString & title, const WidgetPtr & content);
     void setSelectedIndex(std::size_t index);
 };
@@ -1175,7 +1175,7 @@ class Breadcrumb : public Widget {
     std::function<void(std::size_t)> onNavigate_ = nullptr;
     // Internal: HStack of clickable labels + separator labels
 public:
-    explicit Breadcrumb(Core::Rect rect);
+    explicit Breadcrumb(Composition::Rect rect);
     void setSegments(const OmegaCommon::Vector<OmegaCommon::UString> & segments);
     void setOnNavigate(std::function<void(std::size_t)> callback);
 };
@@ -1187,7 +1187,7 @@ public:
 class Toolbar : public Container {
     // Internal: HStack with overflow detection
 public:
-    explicit Toolbar(Core::Rect rect);
+    explicit Toolbar(Composition::Rect rect);
     WidgetPtr addItem(const WidgetPtr & item);
     void addSeparator();
 };
@@ -1199,7 +1199,7 @@ public:
 class StatusBar : public Container {
     // Internal: HStack with left/center/right zones
 public:
-    explicit StatusBar(Core::Rect rect);
+    explicit StatusBar(Composition::Rect rect);
     void setLeftContent(const WidgetPtr & widget);
     void setCenterContent(const WidgetPtr & widget);
     void setRightContent(const WidgetPtr & widget);
@@ -1230,7 +1230,7 @@ public:
 class VideoViewWidget : public Widget {
     // Backing: VideoView (created in constructor)
 public:
-    explicit VideoViewWidget(Core::Rect rect);
+    explicit VideoViewWidget(Composition::Rect rect);
     VideoView & videoView();
     // Delegates to VideoView API: bindPlaybackSource, play, pause, stop, etc.
 };
@@ -1242,7 +1242,7 @@ public:
 class SVGViewWidget : public Widget {
     // Backing: SVGView
 public:
-    explicit SVGViewWidget(Core::Rect rect);
+    explicit SVGViewWidget(Composition::Rect rect);
     SVGView & svgView();
     bool setSourceString(const OmegaCommon::String & svg);
     bool setSourceDocument(Core::XMLDocument doc);
@@ -1256,7 +1256,7 @@ class AudioPlayerWidget : public Container {
     // Internal: transport controls (Button: play/pause/stop) + Slider (seek) + Label (time)
     // Backed by Media::AudioPlaybackSession or similar
 public:
-    explicit AudioPlayerWidget(Core::Rect rect);
+    explicit AudioPlayerWidget(Composition::Rect rect);
 };
 ```
 
@@ -1268,11 +1268,11 @@ Escape hatch for custom immediate-mode drawing.
 
 ```cpp
 class CanvasWidget : public Widget {
-    std::function<void(Composition::Canvas &, const Core::Rect &)> drawCallback_ = nullptr;
+    std::function<void(Composition::Canvas &, const Composition::Rect &)> drawCallback_ = nullptr;
     // Backing: CanvasView
 public:
-    explicit CanvasWidget(Core::Rect rect);
-    void setDrawCallback(std::function<void(Composition::Canvas &, const Core::Rect &)> callback);
+    explicit CanvasWidget(Composition::Rect rect);
+    void setDrawCallback(std::function<void(Composition::Canvas &, const Composition::Rect &)> callback);
     Composition::Canvas & canvas();
 protected:
     void onPaint(PaintReason reason) override; // calls drawCallback_
@@ -1315,7 +1315,7 @@ class FocusRingHost : public Widget {
     Widget *focusedWidget_ = nullptr;
     // Draws a ring overlay via OverlayHost
 public:
-    explicit FocusRingHost(Core::Rect rect);
+    explicit FocusRingHost(Composition::Rect rect);
     void setFocusedWidget(Widget *widget);
 };
 ```
@@ -1329,7 +1329,7 @@ class ShortcutHint : public Widget {
     OmegaCommon::UString shortcutText_ {};
     // Small label, typically right-aligned in a menu item
 public:
-    explicit ShortcutHint(Core::Rect rect, const OmegaCommon::UString & shortcut);
+    explicit ShortcutHint(Composition::Rect rect, const OmegaCommon::UString & shortcut);
 };
 ```
 
@@ -1342,7 +1342,7 @@ class InspectorPanel : public Container {
     Widget *inspectedWidget_ = nullptr;
     // Internal: PropertyGrid showing widget rect, state, paint info
 public:
-    explicit InspectorPanel(Core::Rect rect);
+    explicit InspectorPanel(Composition::Rect rect);
     void inspect(Widget *widget);
 };
 ```

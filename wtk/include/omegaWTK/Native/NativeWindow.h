@@ -36,13 +36,13 @@ namespace OmegaWTK::Native {
         // will provide a dedicated escape-hatch embed/unembed API.
         #ifdef TARGET_MACOS
         protected:
-        Core::Rect & rect;
+        Composition::Rect & rect;
         public:
-        NativeWindow(Core::Rect & rect);
+        NativeWindow(Composition::Rect & rect);
         #endif
     };
     typedef SharedHandle<NativeWindow> NWH;
-    NWH make_native_window(Core::Rect & rect,NativeEventEmitter *emitter);
+    NWH make_native_window(Composition::Rect & rect,NativeEventEmitter *emitter);
 };
 
 #endif

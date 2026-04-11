@@ -56,7 +56,7 @@ Views
 
 A ``View`` is the owner of a platform-native item (``NativeItemPtr``),
 a ``LayerTree``, and a ``CompositorClientProxy``. Views are created with
-a ``Core::Rect`` defining their position and size. Each View constructs
+a ``Composition::Rect`` defining their position and size. Each View constructs
 its own LayerTree with a root Layer at construction time.
 
 Views expose the composition session API:
@@ -83,7 +83,7 @@ Layer, and child Layers can be added beneath it. The LayerTree notifies
 registered ``LayerTreeObserver`` instances (the Compositor) when layers
 resize, enable, or disable.
 
-A ``Layer`` is a resizable rectangular surface (``Core::Rect``) that
+A ``Layer`` is a resizable rectangular surface (``Composition::Rect``) that
 serves as the render target for a single ``Canvas``. Each Layer may
 contain child Layers, forming the sublayer hierarchy. The one-Canvas-
 per-Layer invariant is enforced structurally: the ``boundCanvas_``

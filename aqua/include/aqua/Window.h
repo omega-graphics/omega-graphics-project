@@ -2,16 +2,7 @@
 #define AQUA_WINDOW_H
 
 #include <memory>
-
-#ifdef _WIN32
-#ifdef AQUA__BUILD__
-#define AQUA_EXPORT __declspec(dllexport)
-#else
-#define AQUA_EXPORT __declspec(dllimport)
-#endif
-#else
-#define AQUA_EXPORT
-#endif
+#include "Base.h"
 
 namespace OmegaGTE {
     struct NativeRenderTargetDescriptor;

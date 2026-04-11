@@ -35,7 +35,7 @@ namespace OmegaWTK::Composition {
          /// Root visual — owns a CAMetalLayer for presentation.
          struct RootVisual : public Parent::Visual {
              CAMetalLayer *metalLayer;
-             explicit RootVisual(Core::Position & pos,
+             explicit RootVisual(Composition::Point2D & pos,
                     BackendRenderTargetContext &renderTarget,
                     CAMetalLayer *metalLayer):
                      Parent::Visual(pos,renderTarget),
@@ -43,7 +43,7 @@ namespace OmegaWTK::Composition {
                                 (CAMetalLayer *)CFRetain((__bridge CFTypeRef)metalLayer) :
                                 nil){
              };
-             void resize(Core::Rect & newRect) override {
+             void resize(Composition::Rect & newRect) override {
                  // Native layer geometry (CAMetalLayer frame/bounds/drawableSize)
                  // is now updated on the main thread by CocoaItem::resizeNativeLayer.
                  // This method only sizes the GPU render target texture.
@@ -60,11 +60,11 @@ namespace OmegaWTK::Composition {
 
          /// Surface-only visual — GPU texture, no native layer.
          struct SurfaceVisual : public Parent::Visual {
-             explicit SurfaceVisual(Core::Position & pos,
+             explicit SurfaceVisual(Composition::Point2D & pos,
                     BackendRenderTargetContext & renderTarget):
                      Parent::Visual(pos,renderTarget){
              };
-             void resize(Core::Rect & newRect) override {
+             void resize(Composition::Rect & newRect) override {
                  renderTarget.setRenderTargetSize(newRect);
              }
          };
@@ -73,11 +73,11 @@ namespace OmegaWTK::Composition {
          explicit MTLCALayerTree(SharedHandle<ViewRenderTarget> & renderTarget);
          ~MTLCALayerTree() override = default;
          void addVisual(Core::SharedPtr<Parent::Visual> & visual) override;
-         Core::SharedPtr<Parent::Visual> makeRootVisual(Core::Rect & rect,
-                                                         Core::Position & pos,
+         Core::SharedPtr<Parent::Visual> makeRootVisual(Composition::Rect & rect,
+                                                         Composition::Point2D & pos,
                                                          ViewPresentTarget & outPresentTarget) override;
-         Core::SharedPtr<Parent::Visual> makeSurfaceVisual(Core::Rect & rect,
-                                                            Core::Position & pos) override;
+         Core::SharedPtr<Parent::Visual> makeSurfaceVisual(Composition::Rect & rect,
+                                                            Composition::Point2D & pos) override;
          void setRootVisual(Core::SharedPtr<Parent::Visual> & visual) override;
      };
 

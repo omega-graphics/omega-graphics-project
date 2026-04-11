@@ -21,10 +21,10 @@ namespace OmegaWTK::Native{
             auto getAllHwnds(){ return &all_hwnds;};
             void setRootWindowAndHINST(HWND root,HINSTANCE hinst);
             // HWND getRootWnd();
-            HWND makeWindow(ATOM atom,LPCSTR name,Core::Rect rect,DWORD base_style,LPVOID custom_params,HWND parent,DWORD ext_style = NULL);
+            HWND makeWindow(ATOM atom,LPCSTR name,Composition::Rect rect,DWORD base_style,LPVOID custom_params,HWND parent,DWORD ext_style = NULL);
             ATOM registerWindow();
             ATOM registerAppWindow();
-            HWND makeAppWindow(ATOM atom,LPCSTR name,Core::Rect & rect,DWORD base_style,DWORD ext_style,LPVOID custom_params);
+            HWND makeAppWindow(ATOM atom,LPCSTR name,Composition::Rect & rect,DWORD base_style,DWORD ext_style,LPVOID custom_params);
             // One HWND Factory Allowed!
             HWNDFactory(HINSTANCE hinst);
             ~HWNDFactory();

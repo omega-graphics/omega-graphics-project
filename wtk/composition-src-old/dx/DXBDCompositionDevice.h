@@ -68,7 +68,7 @@ namespace OmegaWTK::Composition {
     public:
         DXBDCompositionDeviceContext(DXBDCompositionDevice *device);
         static Core::SharedPtr<BDCompositionDeviceContext> Create(DXBDCompositionDevice *device);
-        Core::SharedPtr<BDCompositionImageRenderTarget> makeImageRenderTarget(Core::Rect &size);
+        Core::SharedPtr<BDCompositionImageRenderTarget> makeImageRenderTarget(Composition::Rect &size);
         Core::SharedPtr<BDCompositionImageRenderTarget> makeImageRenderTarget(Core::SharedPtr<BDCompositionImage> &img);
         Core::SharedPtr<BDCompositionVisualTree> createVisualTree();
         void destroyTarget(Layer *layer, Core::SharedPtr<BDCompositionRenderTarget> &target);

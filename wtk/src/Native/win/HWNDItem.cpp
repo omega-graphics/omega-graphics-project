@@ -7,12 +7,12 @@
 #include <winuser.h>
 
 namespace OmegaWTK::Native::Win {
-    HWNDItem::HWNDItem(Core::Rect & rect):wndrect(rect){
+    HWNDItem::HWNDItem(Composition::Rect & rect):wndrect(rect){
         /// Passes implemenation to children!
 
         
     };
-    HWNDItem::HWNDItem(Core::Rect & rect,Type type,HWNDItem *parent):wndrect(rect){
+    HWNDItem::HWNDItem(Composition::Rect & rect,Type type,HWNDItem *parent):wndrect(rect){
         this->parent = parent;
         std::cout << "Registering Window!" << std::endl;
         atom = HWNDFactory::appFactoryInst->registerWindow();
@@ -173,7 +173,7 @@ namespace OmegaWTK::Native::Win {
             UINT width = LOWORD(lParam);
             UINT height = HIWORD(lParam);
 
-             Core::Rect rect {{wndrect.pos},FLOAT(width)/scaleFactor,FLOAT(height)/scaleFactor};
+             Composition::Rect rect {{wndrect.pos},FLOAT(width)/scaleFactor,FLOAT(height)/scaleFactor};
             
             emitIfPossible(std::shared_ptr<NativeEvent>(new NativeEvent{NativeEvent::ViewResize,new ViewResize{rect}}));
             break;
@@ -186,7 +186,7 @@ namespace OmegaWTK::Native::Win {
             ScreenToClient(hwnd, &pt);
             FLOAT scaleFactor = currentDpi / 96.f;
             auto *p = new ScrollParams{0.f, delta * 10.f,
-                Core::Position{static_cast<float>(pt.x) / scaleFactor,
+                Composition::Point2D{static_cast<float>(pt.x) / scaleFactor,
                                static_cast<float>(pt.y) / scaleFactor}};
             emitIfPossible(NativeEventPtr(new NativeEvent(NativeEvent::ScrollWheel, p)));
             if(isScrollView){
@@ -204,7 +204,7 @@ namespace OmegaWTK::Native::Win {
             ScreenToClient(hwnd, &pt);
             FLOAT scaleFactor = currentDpi / 96.f;
             auto *p = new ScrollParams{delta * 10.f, 0.f,
-                Core::Position{static_cast<float>(pt.x) / scaleFactor,
+                Composition::Point2D{static_cast<float>(pt.x) / scaleFactor,
                                static_cast<float>(pt.y) / scaleFactor}};
             emitIfPossible(NativeEventPtr(new NativeEvent(NativeEvent::ScrollWheel, p)));
             if(isScrollView){
@@ -276,7 +276,7 @@ namespace OmegaWTK::Native::Win {
             ++_hwnd_it;
         };
     };
-    void HWNDItem::resize(const Core::Rect & newRect){
+    void HWNDItem::resize(const Composition::Rect & newRect){
         this->wndrect = newRect;
 
         auto & rect = parent->wndrect;
@@ -301,7 +301,7 @@ namespace OmegaWTK::Native::Win {
 }
 
 namespace OmegaWTK::Native {
-    NativeItemPtr make_native_item(Core::Rect rect,Native::ItemType type,NativeItemPtr parent){
+    NativeItemPtr make_native_item(Composition::Rect rect,Native::ItemType type,NativeItemPtr parent){
         Win::HWNDItem::Type win_type = Win::HWNDItem::View;
         if(type == Native::Default){
             win_type = Win::HWNDItem::View;

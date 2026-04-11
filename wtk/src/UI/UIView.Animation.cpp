@@ -10,30 +10,6 @@ float clamp01(float value){
     return std::clamp(value,0.f,1.f);
 }
 
-OmegaCommon::Vector<OmegaGTE::GPoint2D> pathToPoints(const OmegaGTE::GVectorPath2D & path){
-    OmegaCommon::Vector<OmegaGTE::GPoint2D> points {};
-    auto copy = path;
-    points.push_back(copy.firstPt());
-    for(auto it = copy.begin(); it != copy.end(); ++it){
-        auto seg = *it;
-        if(seg.pt_B != nullptr){
-            points.push_back(*(seg.pt_B));
-        }
-    }
-    return points;
-}
-
-Core::Optional<OmegaGTE::GVectorPath2D> pointsToPath(const OmegaCommon::Vector<OmegaGTE::GPoint2D> & points){
-    if(points.empty()){
-        return {};
-    }
-    OmegaGTE::GVectorPath2D path(points.front());
-    for(std::size_t i = 1; i < points.size(); i++){
-        path.append(points[i]);
-    }
-    return path;
-}
-
 bool applyShapeDimension(Shape & shape,ElementAnimationKey key,float value){
     const float safeValue = std::max(1.f,value);
     switch(shape.type){
@@ -519,7 +495,7 @@ Shape UIView::Impl::applyAnimatedShape(const UIElementTag &tag,const Shape &inpu
     if(pathAnimIt != pathNodeAnimations.end() &&
        output.type == Shape::Type::Path &&
        output.path){
-        auto points = pathToPoints(*output.path);
+        auto points = output.path->getControlPoints();
         for(const auto & nodeAnimation : pathAnimIt->second){
             if(nodeAnimation.nodeIndex < 0){
                 continue;
@@ -531,9 +507,9 @@ Shape UIView::Impl::applyAnimatedShape(const UIElementTag &tag,const Shape &inpu
             points[nodeIndex].x = nodeAnimation.x.value;
             points[nodeIndex].y = nodeAnimation.y.value;
         }
-        auto rebuiltPath = pointsToPath(points);
-        if(rebuiltPath){
-            output.path = *rebuiltPath;
+        if(!points.empty()){
+            output.path = std::make_shared<Composition::Path>(
+                Composition::Path::fromControlPoints(points, output.pathStrokeWidth));
         }
     }
     return output;

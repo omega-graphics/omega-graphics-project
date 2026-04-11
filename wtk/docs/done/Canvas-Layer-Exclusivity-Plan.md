@@ -151,7 +151,7 @@ void PaintContext::clear(const Composition::Color & color) {
     ...
 }
 
-void PaintContext::drawRect(const Core::Rect & rect, const SharedHandle<Composition::Brush> & brush) {
+void PaintContext::drawRect(const Composition::Rect & rect, const SharedHandle<Composition::Brush> & brush) {
     if(mainCanvas == nullptr) return;
     ...
 }
@@ -243,24 +243,24 @@ View  (base -- no Canvas, no drawing API)
 class CanvasView : public View {
     SharedHandle<Composition::Canvas> rootCanvas_;
 public:
-    CanvasView(const Core::Rect & rect, ViewPtr parent = nullptr);
+    CanvasView(const Composition::Rect & rect, ViewPtr parent = nullptr);
 
     Composition::Canvas & rootCanvas();
     SharedHandle<Composition::Canvas> makeLayerCanvas(SharedHandle<Composition::Layer> & layer);
 
     void clear(const Composition::Color & color);
-    void drawRect(const Core::Rect & rect, const SharedHandle<Composition::Brush> & brush);
-    void drawRoundedRect(const Core::RoundedRect & rect, const SharedHandle<Composition::Brush> & brush);
-    void drawEllipse(const Core::Ellipse & ellipse, const SharedHandle<Composition::Brush> & brush);
-    void drawImage(const SharedHandle<Media::BitmapImage> & img, const Core::Rect & rect);
+    void drawRect(const Composition::Rect & rect, const SharedHandle<Composition::Brush> & brush);
+    void drawRoundedRect(const Composition::RoundedRect & rect, const SharedHandle<Composition::Brush> & brush);
+    void drawEllipse(const Composition::Ellipse & ellipse, const SharedHandle<Composition::Brush> & brush);
+    void drawImage(const SharedHandle<Media::BitmapImage> & img, const Composition::Rect & rect);
     void drawText(const UniString & text,
                   const SharedHandle<Composition::Font> & font,
-                  const Core::Rect & rect,
+                  const Composition::Rect & rect,
                   const Composition::Color & color,
                   const Composition::TextLayoutDescriptor & layoutDesc);
     void drawText(const UniString & text,
                   const SharedHandle<Composition::Font> & font,
-                  const Core::Rect & rect,
+                  const Composition::Rect & rect,
                   const Composition::Color & color);
 };
 ```
@@ -337,7 +337,7 @@ Then `executePaint` just calls `view->submitPaintFrame(submissions)` uncondition
 ```cpp
 class MyWidget : public Widget {
 public:
-    MyWidget(Core::Rect rect) : Widget(rect) {}  // creates CanvasView internally
+    MyWidget(Composition::Rect rect) : Widget(rect) {}  // creates CanvasView internally
 protected:
     void onPaint(PaintReason reason) override {
         auto & cv = viewAs<CanvasView>();
@@ -351,7 +351,7 @@ protected:
 ```cpp
 class SVGWidget : public Widget {
 public:
-    SVGWidget(Core::Rect rect)
+    SVGWidget(Composition::Rect rect)
         : Widget(ViewPtr(new SVGView(rect, nullptr))) {}
 protected:
     SVGView & svgView() { return viewAs<SVGView>(); }
@@ -378,10 +378,10 @@ No PaintContext anywhere. Each view type owns its drawing. The Canvas-per-Layer 
 
 ### Interaction with Widget-View API Cleanup (Option B+)
 
-This composes cleanly. The `Widget(Core::Rect)` constructor from Option B+ would create a CanvasView instead of a plain View:
+This composes cleanly. The `Widget(Composition::Rect)` constructor from Option B+ would create a CanvasView instead of a plain View:
 
 ```cpp
-Widget::Widget(Core::Rect rect)
+Widget::Widget(Composition::Rect rect)
     : view(SharedHandle<CanvasView>(new CanvasView(rect))) {}
 ```
 

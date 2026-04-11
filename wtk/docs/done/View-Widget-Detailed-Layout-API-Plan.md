@@ -158,7 +158,7 @@ struct LayoutStyle {
 ### 3) Layout Context and Passes
 ```cpp
 struct LayoutContext {
-    Core::Rect availableRectPx {}; // host bounds in physical pixels
+    Composition::Rect availableRectPx {}; // host bounds in physical pixels
     float dpiScale = 1.f;
     std::uint64_t resizeSessionId = 0;
     bool liveResize = false;
@@ -219,7 +219,7 @@ protected:
     /// Default: use the root View's rect and intrinsic content.
     virtual MeasureResult measureSelf(const LayoutContext & ctx);
     /// Final px rect after clamp/delegate.
-    virtual void onLayoutResolved(const Core::Rect & finalRectPx);
+    virtual void onLayoutResolved(const Composition::Rect & finalRectPx);
 };
 ```
 
@@ -414,7 +414,7 @@ A1 → A2 → A3
 
 | Sub-slice | Scope | Deliverables |
 |-----------|--------|--------------|
-| **B1** | Widget layout API surface | In `Widget.h`/`.cpp`: `setLayoutStyle`, `layoutStyle`, `setLayoutBehavior`, `layoutBehavior`, `requestLayout`; protected `measureSelf(LayoutContext)`, `onLayoutResolved(Core::Rect finalRectPx)`. Default `measureSelf` uses current root View rect (no new layout run yet). Storage for `LayoutStyle` and optional `LayoutBehaviorPtr`; when both unset, all existing code paths unchanged. |
+| **B1** | Widget layout API surface | In `Widget.h`/`.cpp`: `setLayoutStyle`, `layoutStyle`, `setLayoutBehavior`, `layoutBehavior`, `requestLayout`; protected `measureSelf(LayoutContext)`, `onLayoutResolved(Composition::Rect finalRectPx)`. Default `measureSelf` uses current root View rect (no new layout run yet). Storage for `LayoutStyle` and optional `LayoutBehaviorPtr`; when both unset, all existing code paths unchanged. |
 | **B2** | Legacy behavior wrapper | `LegacyResizeCoordinatorBehavior`: implements `LayoutBehavior` by delegating to existing `ViewResizeCoordinator` (register child, resolve, clamp). When a Widget has no explicit behavior, use this so one code path can “run layout” for the widget subtree. Wire host/parent resize to call into this path when no new layout style is set. |
 | **B3** | Widget layout driver + default behavior | Driver that: given root Widget and `LayoutContext`, runs measure (widget’s `measureSelf` or behavior’s measure of children), then arrange (behavior’s arrange or legacy coordinator resolve), converts dp → px once per node, optionally calls `WidgetGeometryDelegate::clampChildRect`, then `Widget::onLayoutResolved(finalRectPx)`. Widget’s `onLayoutResolved` updates `rect()` and root View’s rect. Add `StackLayoutBehavior` (or equivalent) as first non-legacy behavior; use it when `layoutStyle().display == Stack` and behavior is null. |
 

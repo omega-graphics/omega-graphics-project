@@ -4,7 +4,7 @@ namespace OmegaWTK {
 
     // --- CanvasView ---
 
-    CanvasView::CanvasView(const Core::Rect & rect,ViewPtr parent):
+    CanvasView::CanvasView(const Composition::Rect & rect,ViewPtr parent):
     View(rect,parent){
         auto & rootLayer = getLayerTree()->getRootLayer();
         rootCanvas_ = makeCanvas(rootLayer);
@@ -22,19 +22,19 @@ namespace OmegaWTK {
         background.a = color.a;
     }
 
-    void CanvasView::drawRect(const Core::Rect & rect,const SharedHandle<Composition::Brush> & brush){
+    void CanvasView::drawRect(const Composition::Rect & rect,const SharedHandle<Composition::Brush> & brush){
         auto _rect = rect;
         auto _brush = brush;
         rootCanvas_->drawRect(_rect,_brush);
     }
 
-    void CanvasView::drawRoundedRect(const Core::RoundedRect & rect,const SharedHandle<Composition::Brush> & brush){
+    void CanvasView::drawRoundedRect(const Composition::RoundedRect & rect,const SharedHandle<Composition::Brush> & brush){
         auto _rect = rect;
         auto _brush = brush;
         rootCanvas_->drawRoundedRect(_rect,_brush);
     }
 
-    void CanvasView::drawImage(const SharedHandle<Media::BitmapImage> & img,const Core::Rect & rect){
+    void CanvasView::drawImage(const SharedHandle<Media::BitmapImage> & img,const Composition::Rect & rect){
         auto _rect = rect;
         auto _img = img;
         rootCanvas_->drawImage(_img,_rect);
@@ -42,7 +42,7 @@ namespace OmegaWTK {
 
     void CanvasView::drawText(const UniString & text,
                             const SharedHandle<Composition::Font> & font,
-                            const Core::Rect & rect,
+                            const Composition::Rect & rect,
                             const Composition::Color & color,
                             const Composition::TextLayoutDescriptor & layoutDesc){
         auto _rect = rect;
@@ -52,7 +52,7 @@ namespace OmegaWTK {
 
     void CanvasView::drawText(const UniString & text,
                             const SharedHandle<Composition::Font> & font,
-                            const Core::Rect & rect,
+                            const Composition::Rect & rect,
                             const Composition::Color & color){
         auto _rect = rect;
         auto _font = font;

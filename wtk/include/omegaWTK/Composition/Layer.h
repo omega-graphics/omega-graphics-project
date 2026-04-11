@@ -8,6 +8,7 @@
 #include "omegaWTK/Native/NativeItem.h"
 
 #include "Brush.h"
+#include "Geometry.h"
 
 #ifndef OMEGAWTK_COMPOSITION_LAYER_H
 #define OMEGAWTK_COMPOSITION_LAYER_H
@@ -89,7 +90,7 @@ namespace Composition {
         /**
          Construct a LayerTree with a root Layer sized to the given rect.
          */
-        explicit LayerTree(const Core::Rect & rect);
+        explicit LayerTree(const Composition::Rect & rect);
         /// @brief Default-construct an empty tree (no root layer). Legacy compat only.
         LayerTree();
         ~LayerTree();
@@ -143,7 +144,7 @@ namespace Composition {
         OmegaCommon::Vector<SharedHandle<Layer>> children;
 
         Layer * parent_ptr;
-        Core::Rect surface_rect;
+        Composition::Rect surface_rect;
         bool enabled;
         bool needsNativeResize;
 
@@ -167,13 +168,13 @@ namespace Composition {
             @brief Resize the Layer with the new rect
             @param newRect
          */
-        void resize(Core::Rect & newRect);
+        void resize(Composition::Rect & newRect);
 
         /**
            @brief Retrieves the rect that defines the bounds.
-           @returns A reference to the Core::Rect.
+           @returns A reference to the Composition::Rect.
            */
-        Core::Rect & getLayerRect(){return surface_rect;};
+        Composition::Rect & getLayerRect(){return surface_rect;};
 
         /**
          @brief Enable the layer
@@ -189,7 +190,7 @@ namespace Composition {
 
         /** @brief Construct a Layer.
            @param rect*/
-        explicit Layer(const Core::Rect & rect);
+        explicit Layer(const Composition::Rect & rect);
         ~Layer();
     };
 

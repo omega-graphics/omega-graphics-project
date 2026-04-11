@@ -105,7 +105,7 @@ static void testResolveClampedRect(){
     style.width  = LayoutLength::Dp(120.f);
     style.height = LayoutLength::Dp(60.f);
 
-    Core::Rect avail {Core::Position{0.f, 0.f}, 400.f, 300.f};
+    Composition::Rect avail {Composition::Point2D{0.f, 0.f}, 400.f, 300.f};
     auto result = resolveClampedRect(style, avail, 1.f);
     assert(approx(result.w, 120.f));
     assert(approx(result.h, 60.f));
@@ -126,7 +126,7 @@ static void testResolveClampedRect(){
 
 static void testLayoutContextDpi(){
     LayoutContext ctx {};
-    ctx.availableRectPx = {Core::Position{0.f, 0.f}, 800.f, 600.f};
+    ctx.availableRectPx = {Composition::Point2D{0.f, 0.f}, 800.f, 600.f};
 
     ctx.dpiScale = 1.f;
     assert(approx(ctx.dpToPx(100.f), 100.f));

@@ -2,27 +2,27 @@
 #include "omegaWTK/Composition/Brush.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Layer.h"
+#include "PathImpl.h"
 #include "omegaWTK/UI/View.h"
 
 #include <algorithm>
 #include <cassert>
 #include <utility>
-#include <utility>
 
 namespace OmegaWTK::Composition {
 
-VisualCommand::Data::Data(const Core::Rect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border) :
+VisualCommand::Data::Data(const Composition::Rect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border) :
 rectParams({rect,std::move(brush),std::move(border)})
 {
 
 }
 
-VisualCommand::Data::Data(const Core::RoundedRect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border) :
+VisualCommand::Data::Data(const Composition::RoundedRect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border) :
 roundedRectParams({rect,brush,border}){
 
 };
 
-VisualCommand::Data::Data(const Core::Ellipse & ellipse,Core::SharedPtr<Brush> brush,Core::Optional<Border> border) :
+VisualCommand::Data::Data(const Composition::Ellipse & ellipse,Core::SharedPtr<Brush> brush,Core::Optional<Border> border) :
 ellipseParams({ellipse,brush,border}){
 
 };
@@ -37,22 +37,22 @@ pathParams({path,brush,fillBrush,strokeWidth,contour,fill}){
 
 }
 
-VisualCommand::Data::Data(Core::SharedPtr<Media::BitmapImage> img,const Core::Rect &rect) :
+VisualCommand::Data::Data(Core::SharedPtr<Media::BitmapImage> img,const Composition::Rect &rect) :
 bitmapParams({img,nullptr,nullptr,rect}){
 
 };
 
-VisualCommand::Data::Data(Core::SharedPtr<OmegaGTE::GETexture> texture,Core::SharedPtr<OmegaGTE::GEFence> textureFence,const Core::Rect &rect) :
+VisualCommand::Data::Data(Core::SharedPtr<OmegaGTE::GETexture> texture,Core::SharedPtr<OmegaGTE::GEFence> textureFence,const Composition::Rect &rect) :
 bitmapParams({nullptr,texture,textureFence,rect}){
 
 };
 
-VisualCommand::Data::Data(const LayerEffect::DropShadowParams & shadow,const Core::Rect & shapeRect,float cornerRadius,bool isEllipse) :
+VisualCommand::Data::Data(const LayerEffect::DropShadowParams & shadow,const Composition::Rect & shapeRect,float cornerRadius,bool isEllipse) :
 shadowParams({shadow,shapeRect,cornerRadius,isEllipse}){
 
 };
 
-VisualCommand::Data::Data(const OmegaGTE::FMatrix<4,4> & matrix) :
+VisualCommand::Data::Data(const Matrix4x4 & matrix) :
 transformMatrix(matrix){
 
 };
@@ -90,7 +90,7 @@ Layer & Canvas::getCorrespondingLayer(){
 //     return parentLayer;
 // };
 
-void Canvas::drawRect(Core::Rect &rect, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border){
+void Canvas::drawRect(Composition::Rect &rect, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border){
     current->currentVisuals.emplace_back(rect,brush,Core::Optional<Border>{});
     if(border.has_value()){
         auto frame = RectFrame(rect, border->width);
@@ -100,7 +100,7 @@ void Canvas::drawRect(Core::Rect &rect, Core::SharedPtr<Brush> &brush, Core::Opt
     }
 };
 
-void Canvas::drawRoundedRect(Core::RoundedRect &rect, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border){
+void Canvas::drawRoundedRect(Composition::RoundedRect &rect, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border){
     current->currentVisuals.emplace_back(rect,brush,Core::Optional<Border>{});
     if(border.has_value()){
         auto frame = RoundedRectFrame(rect, border->width);
@@ -110,7 +110,7 @@ void Canvas::drawRoundedRect(Core::RoundedRect &rect, Core::SharedPtr<Brush> &br
     }
 }
 
-void Canvas::drawEllipse(Core::Ellipse &ellipse, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border){
+void Canvas::drawEllipse(Composition::Ellipse &ellipse, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border){
     current->currentVisuals.emplace_back(ellipse,brush,Core::Optional<Border>{});
     if(border.has_value()){
         auto frame = EllipseFrame(ellipse, border->width);
@@ -122,7 +122,7 @@ void Canvas::drawEllipse(Core::Ellipse &ellipse, Core::SharedPtr<Brush> &brush, 
 
 void Canvas::drawText(const UniString &text,
                       Core::SharedPtr<Font> font,
-                      const Core::Rect &rect,
+                      const Composition::Rect &rect,
                       const Color &color,
                       const TextLayoutDescriptor &layoutDesc){
     if(font == nullptr || text.length() == 0 || rect.w <= 0.F || rect.h <= 0.f){
@@ -149,7 +149,7 @@ void Canvas::drawText(const UniString &text,
 
 void Canvas::drawText(const UniString &text,
                       Core::SharedPtr<Font> font,
-                      const Core::Rect &rect,
+                      const Composition::Rect &rect,
                       const Color &color){
     drawText(text,
              font,
@@ -159,14 +159,14 @@ void Canvas::drawText(const UniString &text,
 }
 
 void Canvas::drawPath(Path &path){
-    auto brush = path.pathBrush;
+    auto brush = path.impl_->pathBrush;
     if(brush == nullptr){
         brush = ColorBrush(Color::create8Bit(Color::White8));
     }
 
-    const float strokeWidth = static_cast<float>(path.currentStroke);
+    const float strokeWidth = static_cast<float>(path.impl_->currentStroke);
     const bool isFill = (strokeWidth == 0.f);
-    for(auto & segment : path.segments){
+    for(auto & segment : path.impl_->segments){
         if(segment.path.size() < 2){
             continue;
         }
@@ -178,11 +178,11 @@ void Canvas::drawPath(Path &path){
     }
 }
 
-void Canvas::drawImage(SharedHandle<Media::BitmapImage> &img,const Core::Rect & rect) {
+void Canvas::drawImage(SharedHandle<Media::BitmapImage> &img,const Composition::Rect & rect) {
     current->currentVisuals.emplace_back(img,rect);
 }
 
-void Canvas::drawGETexture(SharedHandle<OmegaGTE::GETexture> &img,const Core::Rect & rect,SharedHandle<OmegaGTE::GEFence> fence) {
+void Canvas::drawGETexture(SharedHandle<OmegaGTE::GETexture> &img,const Composition::Rect & rect,SharedHandle<OmegaGTE::GEFence> fence) {
     current->currentVisuals.emplace_back(img,fence,rect);
 }
 
@@ -228,30 +228,30 @@ void Canvas::applyLayerEffect(const SharedHandle<LayerEffect> &effect){
     pushLayerEffectCommand(&layer,queuedEffect,start,deadline);
 }
 
-void Canvas::drawShadow(Core::Rect & rect,
+void Canvas::drawShadow(Composition::Rect & rect,
                         const LayerEffect::DropShadowParams & shadow){
-    Core::Rect shapeRect = rect;
+    Composition::Rect shapeRect = rect;
     current->currentVisuals.emplace_back(shadow,shapeRect,0.f,false);
 }
 
-void Canvas::drawShadow(Core::RoundedRect & rect,
+void Canvas::drawShadow(Composition::RoundedRect & rect,
                         const LayerEffect::DropShadowParams & shadow){
-    Core::Rect shapeRect {rect.pos,rect.w,rect.h};
+    Composition::Rect shapeRect {rect.pos,rect.w,rect.h};
     float cornerRadius = std::max(rect.rad_x,rect.rad_y);
     current->currentVisuals.emplace_back(shadow,shapeRect,cornerRadius,false);
 }
 
-void Canvas::drawShadow(Core::Ellipse & ellipse,
+void Canvas::drawShadow(Composition::Ellipse & ellipse,
                         const LayerEffect::DropShadowParams & shadow){
-    Core::Rect shapeRect {
-        Core::Position{ellipse.x - ellipse.rad_x,ellipse.y - ellipse.rad_y},
+    Composition::Rect shapeRect {
+        Composition::Point2D{ellipse.x - ellipse.rad_x,ellipse.y - ellipse.rad_y},
         ellipse.rad_x * 2.f,
         ellipse.rad_y * 2.f
     };
     current->currentVisuals.emplace_back(shadow,shapeRect,0.f,true);
 }
 
-void Canvas::setElementTransform(const OmegaGTE::FMatrix<4,4> & matrix){
+void Canvas::setElementTransform(const Matrix4x4 & matrix){
     current->currentVisuals.emplace_back(matrix);
 }
 

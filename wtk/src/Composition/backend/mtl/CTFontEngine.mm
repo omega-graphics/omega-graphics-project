@@ -1,4 +1,5 @@
 #include "omegaWTK/Composition/FontEngine.h"
+#include "omegaWTK/Core/GTEHandle.h"
 #include "NativePrivate/macos/CocoaUtils.h"
 
 #include "omegaWTK/Core/Unicode.h"
@@ -68,7 +69,7 @@ public:
     NSAttributedString *str;
     Core::SharedPtr<CoreTextFont> font;
 
-    Core::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) override {
+    Composition::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) override {
         return {};
     }
 
@@ -99,7 +100,7 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
         
      };
  public:
-     CTTextRect(Core::Rect & rect,const TextLayoutDescriptor &layoutDesc):
+     CTTextRect(Composition::Rect & rect,const TextLayoutDescriptor &layoutDesc):
      TextRect(rect),
      framesetterRef(nullptr),
      frame(nullptr),
@@ -170,7 +171,7 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
      void * getNative() override{
          return (void *)frame;
      };
-     void getGlyphBoundingBoxes(Core::Rect **rects, unsigned * count){
+     void getGlyphBoundingBoxes(Composition::Rect **rects, unsigned * count){
          *count = 0;
          CoreTextFont *fontRef = nullptr;
          CFArrayRef lines = CTFrameGetLines(frame);
@@ -253,7 +254,7 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
      };
  };
 
- Core::SharedPtr<TextRect> TextRect::Create(Core::Rect rect,const TextLayoutDescriptor & layoutDesc){
+ Core::SharedPtr<TextRect> TextRect::Create(Composition::Rect rect,const TextLayoutDescriptor & layoutDesc){
      return Core::SharedPtr<TextRect>(new CTTextRect(rect,layoutDesc));
  };
 

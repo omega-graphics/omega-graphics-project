@@ -1,5 +1,7 @@
 #include "omegaWTK/Core/Core.h"
 #include "Brush.h"
+#include "Geometry.h"
+#include "GTEForward.h"
 
 
 #ifndef OMEGAWTK_COMPOSITION_FONTENGINE_H
@@ -21,7 +23,7 @@
  class OMEGAWTK_EXPORT GlyphRun {
  public:
 
-     virtual Core::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) = 0;
+     virtual Composition::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) = 0;
 
      /**
       @brief Creates a Glyph Run from a Unicode String.
@@ -40,7 +42,7 @@
   features and bindings.
  */
 
- struct OMEGAGTE_EXPORT TextLayoutDescriptor {
+ struct OMEGAWTK_EXPORT TextLayoutDescriptor {
       typedef enum : OPT_PARAM {
          LeftUpper,
          LeftCenter,
@@ -70,7 +72,7 @@
         };
      virtual BitmapRes toBitmap() = 0;
 
-     Core::Rect rect;
+     Composition::Rect rect;
 
      virtual void *getNative() = 0;
 
@@ -87,10 +89,10 @@
       @param layoutDesc[in]
       @returns SharedPtr<TextRect>
      */
-     static Core::SharedPtr<TextRect> Create(Core::Rect rect,const TextLayoutDescriptor & layoutDesc);
+     static Core::SharedPtr<TextRect> Create(Composition::Rect rect,const TextLayoutDescriptor & layoutDesc);
      virtual ~TextRect() = default;
  protected:
-     TextRect(Core::Rect & rect):rect(rect){};
+     TextRect(Composition::Rect & rect):rect(rect){};
  };
  /**
   @brief A struct that describes a Font that can be created by the FontEngine.

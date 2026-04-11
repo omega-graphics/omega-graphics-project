@@ -48,7 +48,7 @@ NSString * common_string_to_ns_string(const OmegaCommon::String & str){
     return [nsString autorelease];
 };
 
-NSRect core_rect_to_cg_rect(const Core::Rect & rect){
+NSRect core_rect_to_cg_rect(const Composition::Rect & rect){
     auto x = clampCoordinate(rect.pos.x);
     auto y = clampCoordinate(rect.pos.y);
     auto w = clampPointDimension(rect.w);
@@ -59,7 +59,7 @@ NSRect core_rect_to_cg_rect(const Core::Rect & rect){
 
 
 
-CGPoint core_pos_to_cg_point(const Core::Position & pos){
+CGPoint core_pos_to_cg_point(const Composition::Point2D & pos){
     return CGPointMake(pos.x,pos.y);
 };
 

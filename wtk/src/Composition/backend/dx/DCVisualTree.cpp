@@ -55,7 +55,7 @@ namespace OmegaWTK::Composition {
         }
     };
 
-     DCVisualTree::RootVisual::RootVisual(Core::Position &pos,
+     DCVisualTree::RootVisual::RootVisual(Composition::Point2D &pos,
                                   BackendRenderTargetContext & context,
                                   IDCompositionVisual2 * visual,
                                   float renderScale):
@@ -64,7 +64,7 @@ namespace OmegaWTK::Composition {
      renderScale(renderScale){
      };
 
-    void DCVisualTree::RootVisual::resize(Core::Rect &newRect){
+    void DCVisualTree::RootVisual::resize(Composition::Rect &newRect){
         renderTarget.setRenderTargetSize(newRect);
     }
 
@@ -75,19 +75,19 @@ namespace OmegaWTK::Composition {
         }
     };
 
-    DCVisualTree::SurfaceVisual::SurfaceVisual(Core::Position &pos,
+    DCVisualTree::SurfaceVisual::SurfaceVisual(Composition::Point2D &pos,
                                   BackendRenderTargetContext & context,
                                   float renderScale):
      Parent::Visual(pos,context),
      renderScale(renderScale){
      };
 
-    void DCVisualTree::SurfaceVisual::resize(Core::Rect &newRect){
+    void DCVisualTree::SurfaceVisual::resize(Composition::Rect &newRect){
         renderTarget.setRenderTargetSize(newRect);
     }
 
     Core::SharedPtr<BackendVisualTree::Visual> DCVisualTree::makeRootVisual(
-            Core::Rect & rect,Core::Position & pos,
+            Composition::Rect & rect,Composition::Point2D & pos,
             ViewPresentTarget & outPresentTarget){
 
         OmegaGTE::NativeRenderTargetDescriptor desc {};
@@ -126,7 +126,7 @@ namespace OmegaWTK::Composition {
     };
 
     Core::SharedPtr<BackendVisualTree::Visual> DCVisualTree::makeSurfaceVisual(
-            Core::Rect & rect,Core::Position & pos){
+            Composition::Rect & rect,Composition::Point2D & pos){
 
         // Surface-only: texture + texture render target, no swap chain, no DComp visual.
         SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;

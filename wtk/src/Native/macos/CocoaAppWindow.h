@@ -24,7 +24,7 @@ public:
     void setTitle(OmegaCommon::StrRef title) override;
     void setEnableWindowHeader(bool & enable) override;
     __strong NSWindow *getWindow();
-    CocoaAppWindow(Core::Rect & rect,NativeEventEmitter *emitter);
+    CocoaAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter);
     // ~CocoaAppWindow();
 };
 };

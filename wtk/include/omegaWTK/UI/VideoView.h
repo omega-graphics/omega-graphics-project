@@ -56,7 +56,7 @@ public:
     OMEGACOMMON_CLASS("OmegaWTK.VideoView")
     friend class Widget;
 
-    VideoView(const Core::Rect & rect,ViewPtr parent = nullptr);
+    VideoView(const Composition::Rect & rect,ViewPtr parent = nullptr);
 
     void setDelegate(VideoViewDelegate *delegate);
     void setScaleMode(VideoScaleMode mode);

@@ -12,8 +12,8 @@ namespace OmegaWTK::Native::GTK {
 
 namespace {
 
-static Core::Rect sanitizeRect(const Core::Rect &candidate,const Core::Rect &fallback){
-    Core::Rect sane = candidate;
+static Composition::Rect sanitizeRect(const Composition::Rect &candidate,const Composition::Rect &fallback){
+    Composition::Rect sane = candidate;
     if(!std::isfinite(sane.pos.x)){
         sane.pos.x = fallback.pos.x;
     }
@@ -34,7 +34,7 @@ static Core::Rect sanitizeRect(const Core::Rect &candidate,const Core::Rect &fal
 }
 
 class GTKAppWindow : public NativeWindow {
-    Core::Rect rect;
+    Composition::Rect rect;
     NativeEventEmitter *eventEmitter = nullptr;
     SharedHandle<GTKItem> rootView = nullptr;
     GtkWindow *window = nullptr;
@@ -86,8 +86,8 @@ class GTKAppWindow : public NativeWindow {
         if(configure == nullptr){
             return FALSE;
         }
-        Core::Rect resizeRect{
-            Core::Position{0.f,0.f},
+        Composition::Rect resizeRect{
+            Composition::Point2D{0.f,0.f},
             static_cast<float>(configure->width),
             static_cast<float>(configure->height)
         };
@@ -101,8 +101,8 @@ class GTKAppWindow : public NativeWindow {
     }
 
 public:
-    GTKAppWindow(Core::Rect &rect,NativeEventEmitter *emitter):
-    rect(sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f})),
+    GTKAppWindow(Composition::Rect &rect,NativeEventEmitter *emitter):
+    rect(sanitizeRect(rect,Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f})),
     eventEmitter(emitter){
         if(gdk_display_get_default() == nullptr){
             std::cerr << "[OmegaWTK][GTK] No active GDK display. Skipping native window creation." << std::endl;
@@ -227,7 +227,7 @@ public:
 
 namespace OmegaWTK::Native {
 
-NWH make_native_window(Core::Rect &rect,NativeEventEmitter *emitter){
+NWH make_native_window(Composition::Rect &rect,NativeEventEmitter *emitter){
     return (NWH)new GTK::GTKAppWindow(rect,emitter);
 }
 

@@ -272,7 +272,7 @@ class GTEViewWidget : public Widget {
     GTEView *gteView_;         // internal, manages GPU resources
     GTEViewDescriptor desc_;
 public:
-    explicit GTEViewWidget(Core::Rect rect,
+    explicit GTEViewWidget(Composition::Rect rect,
                            const GTEViewDescriptor & desc = {});
     GTEView & gteView();
     void setDelegate(GTEViewDelegate *delegate);

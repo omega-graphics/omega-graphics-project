@@ -36,7 +36,7 @@ static StyleSheetPtr makeShapeStyleSheet(
 // Rectangle
 // ---------------------------------------------------------------------------
 
-Rectangle::Rectangle(Core::Rect rect, const RectangleProps & props)
+Rectangle::Rectangle(Composition::Rect rect, const RectangleProps & props)
     : Widget(ViewPtr(new UIView(rect, nullptr, "rectangle"))),
       props_(props) {}
 
@@ -65,7 +65,7 @@ void Rectangle::onPaint(PaintReason reason) {
     viewAs<UIView>().update();
 }
 
-void Rectangle::resize(Core::Rect & newRect) {
+void Rectangle::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
     invalidate(PaintReason::Resize);
 }
@@ -79,14 +79,14 @@ void Rectangle::setProps(const RectangleProps & props) {
 // RoundedRectangle
 // ---------------------------------------------------------------------------
 
-RoundedRectangle::RoundedRectangle(Core::Rect rect, const RoundedRectangleProps & props)
+RoundedRectangle::RoundedRectangle(Composition::Rect rect, const RoundedRectangleProps & props)
     : Widget(ViewPtr(new UIView(rect, nullptr, "roundedRectangle"))),
       props_(props) {}
 
 void RoundedRectangle::onMount() {
     float maxR = std::max({props_.topLeft, props_.topRight,
                            props_.bottomLeft, props_.bottomRight});
-    Core::RoundedRect rr;
+    Composition::RoundedRect rr;
     rr.pos = rect().pos;
     rr.w = rect().w;
     rr.h = rect().h;
@@ -107,7 +107,7 @@ void RoundedRectangle::onMount() {
 void RoundedRectangle::onPaint(PaintReason reason) {
     float maxR = std::max({props_.topLeft, props_.topRight,
                            props_.bottomLeft, props_.bottomRight});
-    Core::RoundedRect rr;
+    Composition::RoundedRect rr;
     rr.pos = rect().pos;
     rr.w = rect().w;
     rr.h = rect().h;
@@ -126,7 +126,7 @@ void RoundedRectangle::onPaint(PaintReason reason) {
     viewAs<UIView>().update();
 }
 
-void RoundedRectangle::resize(Core::Rect & newRect) {
+void RoundedRectangle::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
     invalidate(PaintReason::Resize);
 }
@@ -140,16 +140,16 @@ void RoundedRectangle::setProps(const RoundedRectangleProps & props) {
 // Ellipse
 // ---------------------------------------------------------------------------
 
-Ellipse::Ellipse(Core::Rect rect, const EllipseProps & props)
+Ellipse::Ellipse(Composition::Rect rect, const EllipseProps & props)
     : Widget(ViewPtr(new UIView(rect, nullptr, "ellipse"))),
       props_(props) {}
 
 void Ellipse::onMount() {
-    Core::Ellipse e(
+    Composition::Ellipse e{
         rect().pos.x + rect().w * 0.5f,
         rect().pos.y + rect().h * 0.5f,
         rect().w * 0.5f,
-        rect().h * 0.5f);
+        rect().h * 0.5f};
 
     auto & lv2 = viewAs<UIView>().layoutV2();
     UIElementLayoutSpec spec;
@@ -163,11 +163,11 @@ void Ellipse::onMount() {
 }
 
 void Ellipse::onPaint(PaintReason reason) {
-    Core::Ellipse e(
+    Composition::Ellipse e{
         rect().pos.x + rect().w * 0.5f,
         rect().pos.y + rect().h * 0.5f,
         rect().w * 0.5f,
-        rect().h * 0.5f);
+        rect().h * 0.5f};
 
     auto & lv2 = viewAs<UIView>().layoutV2();
     lv2.clear();
@@ -181,7 +181,7 @@ void Ellipse::onPaint(PaintReason reason) {
     viewAs<UIView>().update();
 }
 
-void Ellipse::resize(Core::Rect & newRect) {
+void Ellipse::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
     invalidate(PaintReason::Resize);
 }
@@ -195,7 +195,7 @@ void Ellipse::setProps(const EllipseProps & props) {
 // Path
 // ---------------------------------------------------------------------------
 
-Path::Path(Core::Rect rect, const PathProps & props)
+Path::Path(Composition::Rect rect, const PathProps & props)
     : Widget(ViewPtr(new UIView(rect, nullptr, "path"))),
       props_(props) {}
 
@@ -226,7 +226,7 @@ void Path::onPaint(PaintReason reason) {
     viewAs<UIView>().update();
 }
 
-void Path::resize(Core::Rect & newRect) {
+void Path::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
     invalidate(PaintReason::Resize);
 }
@@ -240,20 +240,20 @@ void Path::setProps(const PathProps & props) {
 // Separator
 // ---------------------------------------------------------------------------
 
-Separator::Separator(Core::Rect rect, const SeparatorProps & props)
+Separator::Separator(Composition::Rect rect, const SeparatorProps & props)
     : Widget(ViewPtr(new UIView(rect, nullptr, "separator"))),
       props_(props) {}
 
 void Separator::onMount() {
-    Core::Rect r = rect();
-    Core::Rect line;
+    Composition::Rect r = rect();
+    Composition::Rect line;
     if (props_.orientation == Orientation::Horizontal) {
         float center = r.pos.y + r.h * 0.5f - props_.thickness * 0.5f;
-        line = {Core::Position{r.pos.x + props_.inset, center},
+        line = {Composition::Point2D{r.pos.x + props_.inset, center},
                 r.w - props_.inset * 2.f, props_.thickness};
     } else {
         float center = r.pos.x + r.w * 0.5f - props_.thickness * 0.5f;
-        line = {Core::Position{center, r.pos.y + props_.inset},
+        line = {Composition::Point2D{center, r.pos.y + props_.inset},
                 props_.thickness, r.h - props_.inset * 2.f};
     }
 
@@ -272,15 +272,15 @@ void Separator::onMount() {
 }
 
 void Separator::onPaint(PaintReason reason) {
-    Core::Rect r = rect();
-    Core::Rect line;
+    Composition::Rect r = rect();
+    Composition::Rect line;
     if (props_.orientation == Orientation::Horizontal) {
         float center = r.pos.y + r.h * 0.5f - props_.thickness * 0.5f;
-        line = {Core::Position{r.pos.x + props_.inset, center},
+        line = {Composition::Point2D{r.pos.x + props_.inset, center},
                 r.w - props_.inset * 2.f, props_.thickness};
     } else {
         float center = r.pos.x + r.w * 0.5f - props_.thickness * 0.5f;
-        line = {Core::Position{center, r.pos.y + props_.inset},
+        line = {Composition::Point2D{center, r.pos.y + props_.inset},
                 props_.thickness, r.h - props_.inset * 2.f};
     }
 
@@ -299,7 +299,7 @@ void Separator::onPaint(PaintReason reason) {
     viewAs<UIView>().update();
 }
 
-void Separator::resize(Core::Rect & newRect) {
+void Separator::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
     invalidate(PaintReason::Resize);
 }
@@ -313,7 +313,7 @@ void Separator::setProps(const SeparatorProps & props) {
 // Label
 // ---------------------------------------------------------------------------
 
-Label::Label(Core::Rect rect, const LabelProps & props)
+Label::Label(Composition::Rect rect, const LabelProps & props)
     : Widget(ViewPtr(new UIView(rect, nullptr, "label"))),
       props_(props) {}
 
@@ -362,7 +362,7 @@ void Label::onPaint(PaintReason reason) {
     viewAs<UIView>().update();
 }
 
-void Label::resize(Core::Rect & newRect) {
+void Label::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
     invalidate(PaintReason::Resize);
 }
@@ -404,7 +404,7 @@ void Label::setProps(const LabelProps & props) {
 // Icon
 // ---------------------------------------------------------------------------
 
-Icon::Icon(Core::Rect rect, const IconProps & props)
+Icon::Icon(Composition::Rect rect, const IconProps & props)
     : Widget(ViewPtr(new UIView(rect, nullptr, "icon"))),
       props_(props) {}
 
@@ -438,7 +438,7 @@ void Icon::onPaint(PaintReason reason) {
     viewAs<UIView>().update();
 }
 
-void Icon::resize(Core::Rect & newRect) {
+void Icon::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
     invalidate(PaintReason::Resize);
 }
@@ -456,7 +456,7 @@ namespace {
 
 /// Compute destination rect for an image given the widget bounds, native image
 /// dimensions, and the requested fit mode.
-static Core::Rect computeFitRect(const Core::Rect & bounds,
+static Composition::Rect computeFitRect(const Composition::Rect & bounds,
                                  float imgW, float imgH,
                                  ImageFitMode mode) {
     if (imgW <= 0.f || imgH <= 0.f) return bounds;
@@ -468,7 +468,7 @@ static Core::Rect computeFitRect(const Core::Rect & bounds,
     case ImageFitMode::Center: {
         float cx = bounds.pos.x + (bounds.w - imgW) * 0.5f;
         float cy = bounds.pos.y + (bounds.h - imgH) * 0.5f;
-        return {Core::Position{cx, cy}, imgW, imgH};
+        return {Composition::Point2D{cx, cy}, imgW, imgH};
     }
 
     case ImageFitMode::Contain: {
@@ -477,7 +477,7 @@ static Core::Rect computeFitRect(const Core::Rect & bounds,
         float dh = imgH * scale;
         float cx = bounds.pos.x + (bounds.w - dw) * 0.5f;
         float cy = bounds.pos.y + (bounds.h - dh) * 0.5f;
-        return {Core::Position{cx, cy}, dw, dh};
+        return {Composition::Point2D{cx, cy}, dw, dh};
     }
 
     case ImageFitMode::Cover:
@@ -487,7 +487,7 @@ static Core::Rect computeFitRect(const Core::Rect & bounds,
         float dh = imgH * scale;
         float cx = bounds.pos.x + (bounds.w - dw) * 0.5f;
         float cy = bounds.pos.y + (bounds.h - dh) * 0.5f;
-        return {Core::Position{cx, cy}, dw, dh};
+        return {Composition::Point2D{cx, cy}, dw, dh};
     }
     }
     return bounds;
@@ -495,7 +495,7 @@ static Core::Rect computeFitRect(const Core::Rect & bounds,
 
 } // anonymous namespace
 
-Image::Image(Core::Rect rect, const ImageProps & props)
+Image::Image(Composition::Rect rect, const ImageProps & props)
     : Widget(rect), props_(props) {}
 
 void Image::onPaint(PaintReason reason) {
@@ -505,11 +505,11 @@ void Image::onPaint(PaintReason reason) {
 
     float imgW = static_cast<float>(props_.source->header.width);
     float imgH = static_cast<float>(props_.source->header.height);
-    Core::Rect dest = computeFitRect(rect(), imgW, imgH, props_.fitMode);
+    Composition::Rect dest = computeFitRect(rect(), imgW, imgH, props_.fitMode);
     cv.drawImage(props_.source, dest);
 }
 
-void Image::resize(Core::Rect & newRect) {
+void Image::resize(Composition::Rect & newRect) {
     view->resize(newRect);
     invalidate(PaintReason::Resize);
 }

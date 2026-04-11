@@ -88,15 +88,15 @@ public:
     MTLBDCompositionDevice * getParentDevice();
     Core::SharedPtr<BDCompositionViewRenderTarget> makeViewRenderTarget(Layer *layer);
     /**
-     Creates a  CALayer Render Target from a Core::Rect (Creates a CAMetalLayer)
+     Creates a  CALayer Render Target from a Composition::Rect (Creates a CAMetalLayer)
     */
-    Core::SharedPtr<MTLBDCompositionViewRenderTarget> makeCALayerRenderTarget(Core::Rect & rect);
+    Core::SharedPtr<MTLBDCompositionViewRenderTarget> makeCALayerRenderTarget(Composition::Rect & rect);
     /**
      Creates a  CALayer Render Target from an existing CAMetalLayer (Does NOT create nor own its own layer)
     */
-    Core::SharedPtr<MTLBDCompositionViewRenderTarget> makeCALayerRenderTarget(CAMetalLayer *layer,Core::Rect & rect);
+    Core::SharedPtr<MTLBDCompositionViewRenderTarget> makeCALayerRenderTarget(CAMetalLayer *layer,Composition::Rect & rect);
     
-    Core::SharedPtr<BDCompositionImageRenderTarget> makeImageRenderTarget(Core::Rect &size);
+    Core::SharedPtr<BDCompositionImageRenderTarget> makeImageRenderTarget(Composition::Rect &size);
     Core::SharedPtr<BDCompositionImageRenderTarget> makeImageRenderTarget(Core::SharedPtr<BDCompositionImage> &img);
     
     Core::SharedPtr<BDCompositionVisualTree> createVisualTree();

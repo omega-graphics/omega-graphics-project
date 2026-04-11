@@ -29,19 +29,19 @@ struct OMEGAWTK_EXPORT Shape {
     };
 
     Type type = Type::Rect;
-    Core::Rect rect {};
-    Core::RoundedRect roundedRect {};
-    OmegaGTE::GEllipsoid ellipse {};
-    Core::Optional<OmegaGTE::GVectorPath2D> path {};
+    Composition::Rect rect {};
+    Composition::RoundedRect roundedRect {};
+    Composition::Ellipse ellipse {};
+    Core::SharedPtr<Composition::Path> path {};
     unsigned pathStrokeWidth = 1;
     bool closePath = false;
 
     static Shape Scalar(int width,int height);
-    static Shape Rect(const Core::Rect & rect);
-    static Shape RoundedRect(const Core::RoundedRect & rect);
+    static Shape Rect(const Composition::Rect & rect);
+    static Shape RoundedRect(const Composition::RoundedRect & rect);
     static Shape Ellipse(const OmegaGTE::GEllipsoid & ellipse);
-    static Shape Ellipse(const Core::Ellipse & ellipse);
-    static Shape Path(const OmegaGTE::GVectorPath2D & path,unsigned strokeWidth = 1,bool closePath = false);
+    static Shape Ellipse(const Composition::Ellipse & ellipse);
+    static Shape Path(Composition::Path path,unsigned strokeWidth = 1,bool closePath = false);
 };
 
 enum ElementAnimationKey : int {
@@ -224,7 +224,7 @@ public:
         UIElementTag tag;
         Core::Optional<OmegaCommon::UString> str;
         Core::Optional<Shape> shape;
-        Core::Optional<Core::Rect> textRect;
+        Core::Optional<Composition::Rect> textRect;
         Core::Optional<UIElementTag> textStyleTag;
     };
 
@@ -232,8 +232,8 @@ private:
     OmegaCommon::Vector<Element> _content;
 public:
     void text(UIElementTag tag,OmegaCommon::UString content);
-    void text(UIElementTag tag,OmegaCommon::UString content,const Core::Rect & rect);
-    void text(UIElementTag tag,OmegaCommon::UString content,const Core::Rect & rect,UIElementTag styleTag);
+    void text(UIElementTag tag,OmegaCommon::UString content,const Composition::Rect & rect);
+    void text(UIElementTag tag,OmegaCommon::UString content,const Composition::Rect & rect,UIElementTag styleTag);
     void shape(UIElementTag tag,const Shape & shape);
     bool remove(UIElementTag tag);
     void clear();
@@ -245,7 +245,7 @@ struct OMEGAWTK_EXPORT UIElementLayoutSpec {
     LayoutStyle style {};
     Core::Optional<Shape> shape {};
     Core::Optional<OmegaCommon::UString> text {};
-    Core::Optional<Core::Rect> textRect {};
+    Core::Optional<Composition::Rect> textRect {};
     Core::Optional<UIElementTag> textStyleTag {};
     int zIndex = 0;
 };
@@ -301,7 +301,7 @@ private:
     struct Impl;
     Core::UniquePtr<Impl> impl_;
 public:
-    explicit UIView(const Core::Rect & rect,ViewPtr parent,UIViewTag tag);
+    explicit UIView(const Composition::Rect & rect,ViewPtr parent,UIViewTag tag);
     ~UIView() override;
     UIViewLayout & layout();
     void setLayout(const UIViewLayout & layout);

@@ -32,16 +32,16 @@ namespace OmegaWTK::Native {
                 enabled = false;
                 ShowWindow(hwnd,SW_HIDE);
             };
-            void resize(const Core::Rect &newRect) override;
+            void resize(const Composition::Rect &newRect) override;
             void addChildNativeItem(NativeItemPtr nativeItem) override;
             void removeChildNativeItem(NativeItemPtr nativeItem) override;
             public:
              /**
-            Constructs a null HWNDItem! (Sets the Core::Rect only)
+            Constructs a null HWNDItem! (Sets the Composition::Rect only)
             */
-            HWNDItem(Core::Rect & rect);
-            Core::Rect wndrect;
-            Core::Rect & getRect() override {
+            HWNDItem(Composition::Rect & rect);
+            Composition::Rect wndrect;
+            Composition::Rect & getRect() override {
                 return wndrect;
             }
             ATOM getAtom();
@@ -71,7 +71,7 @@ namespace OmegaWTK::Native {
              /**
             Constructs/Registers an HWND and returns an HWNDItem!
             */
-            HWNDItem(Core::Rect & rect,Type _type,HWNDItem *parent);
+            HWNDItem(Composition::Rect & rect,Type _type,HWNDItem *parent);
             ~HWNDItem(){
                 if(IsWindow(hwnd)){
                     DestroyWindow(hwnd);

@@ -6,7 +6,7 @@ namespace OmegaWTK::Composition {
 
 // --- Layer ---
 
-Layer::Layer(const Core::Rect &rect)
+Layer::Layer(const Composition::Rect &rect)
     : parentTree(nullptr), surface_rect(rect), needsNativeResize(false), parent_ptr(nullptr){
 };
 
@@ -33,7 +33,7 @@ void Layer::setEnabled(bool state){
     enabled = state;
 }
 
-void Layer::resize(Core::Rect &newRect){
+void Layer::resize(Composition::Rect &newRect){
     surface_rect = newRect;
 };
 
@@ -53,7 +53,7 @@ LayerEffect::~LayerEffect(){
 
 LayerTree::LayerTree():rootLayer(nullptr),enabled(true){};
 
-LayerTree::LayerTree(const Core::Rect &rect):
+LayerTree::LayerTree(const Composition::Rect &rect):
 rootLayer(std::make_shared<Layer>(rect)),
 enabled(true){
     rootLayer->parentTree = this;

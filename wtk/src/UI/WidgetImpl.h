@@ -65,8 +65,8 @@ inline void geometryTraceLog(const char * phase,
                              const Widget * widget,
                              const Widget * parent,
                              GeometryChangeReason reason,
-                             const Core::Rect & lhs,
-                             const Core::Rect & rhs,
+                             const Composition::Rect & lhs,
+                             const Composition::Rect & rhs,
                              const Widget::GeometryTraceContext & syncCtx){
     if(!geometryTraceEnvEnabled()){
         return;

@@ -34,7 +34,7 @@ int omegaWTKMain(OmegaWTK::AppInst *app){
 
     font = Composition::FontEngine::instance->CreateFont(desc);
 
-    AppWindow window (Core::Rect {Core::Position {0,0},500,500});
+    AppWindow window (Composition::Rect {Composition::Point2D {0,0},500,500});
 
     
     app->windowManager->setRootWindow(&window);

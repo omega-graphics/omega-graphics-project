@@ -2,35 +2,35 @@
 #include "DXBDCompositionRenderTarget.h"
 
 namespace OmegaWTK::Composition {
-DXBDCompositionImage::DXBDCompositionImage(Core::SharedPtr<Media::BitmapImage> & _img,Core::Rect & rect,DXBDCompositionViewRenderTarget *renderTarget,ID2D1Image *img):BDCompositionImage(_img),viewRenderTarget(renderTarget),createdByImageRenderTarget(false),createdByLayerRenderTarget(true),createdFromBitmap(true),rect(rect),native_image(img){
+DXBDCompositionImage::DXBDCompositionImage(Core::SharedPtr<Media::BitmapImage> & _img,Composition::Rect & rect,DXBDCompositionViewRenderTarget *renderTarget,ID2D1Image *img):BDCompositionImage(_img),viewRenderTarget(renderTarget),createdByImageRenderTarget(false),createdByLayerRenderTarget(true),createdFromBitmap(true),rect(rect),native_image(img){
 
 };
 
-DXBDCompositionImage::DXBDCompositionImage(Core::SharedPtr<Media::BitmapImage> & _img,Core::Rect & rect,DXBDCompositionImageRenderTarget *renderTarget,ID2D1Image *img):BDCompositionImage(_img),imageRenderTarget(renderTarget),createdByImageRenderTarget(true),createdByLayerRenderTarget(false),createdFromBitmap(true),rect(rect),native_image(img){
+DXBDCompositionImage::DXBDCompositionImage(Core::SharedPtr<Media::BitmapImage> & _img,Composition::Rect & rect,DXBDCompositionImageRenderTarget *renderTarget,ID2D1Image *img):BDCompositionImage(_img),imageRenderTarget(renderTarget),createdByImageRenderTarget(true),createdByLayerRenderTarget(false),createdFromBitmap(true),rect(rect),native_image(img){
 
 };
 
-DXBDCompositionImage::DXBDCompositionImage(Core::Rect & rect,DXBDCompositionViewRenderTarget *renderTarget,ID2D1Image *img):BDCompositionImage(),viewRenderTarget(renderTarget),createdByImageRenderTarget(false),createdByLayerRenderTarget(true),createdFromBitmap(false),rect(rect),native_image(img){
+DXBDCompositionImage::DXBDCompositionImage(Composition::Rect & rect,DXBDCompositionViewRenderTarget *renderTarget,ID2D1Image *img):BDCompositionImage(),viewRenderTarget(renderTarget),createdByImageRenderTarget(false),createdByLayerRenderTarget(true),createdFromBitmap(false),rect(rect),native_image(img){
 
 };
 
-DXBDCompositionImage::DXBDCompositionImage(Core::Rect & rect,DXBDCompositionImageRenderTarget *renderTarget,ID2D1Image *img):BDCompositionImage(),imageRenderTarget(renderTarget),createdByImageRenderTarget(true),createdByLayerRenderTarget(false),createdFromBitmap(false),rect(rect),native_image(img){
+DXBDCompositionImage::DXBDCompositionImage(Composition::Rect & rect,DXBDCompositionImageRenderTarget *renderTarget,ID2D1Image *img):BDCompositionImage(),imageRenderTarget(renderTarget),createdByImageRenderTarget(true),createdByLayerRenderTarget(false),createdFromBitmap(false),rect(rect),native_image(img){
 
 };
 
-Core::SharedPtr<BDCompositionImage> DXBDCompositionImage::Create(Core::SharedPtr<Media::BitmapImage> & _img,Core::Rect & rect,DXBDCompositionViewRenderTarget *renderTarget,ID2D1Image *img){
+Core::SharedPtr<BDCompositionImage> DXBDCompositionImage::Create(Core::SharedPtr<Media::BitmapImage> & _img,Composition::Rect & rect,DXBDCompositionViewRenderTarget *renderTarget,ID2D1Image *img){
     return std::make_shared<DXBDCompositionImage>(_img,rect,renderTarget,img);
 };
 
-Core::SharedPtr<BDCompositionImage> DXBDCompositionImage::Create(Core::SharedPtr<Media::BitmapImage> & _img,Core::Rect & rect,DXBDCompositionImageRenderTarget *renderTarget,ID2D1Image *img){
+Core::SharedPtr<BDCompositionImage> DXBDCompositionImage::Create(Core::SharedPtr<Media::BitmapImage> & _img,Composition::Rect & rect,DXBDCompositionImageRenderTarget *renderTarget,ID2D1Image *img){
     return std::make_shared<DXBDCompositionImage>(_img,rect,renderTarget,img);
 };
 
-Core::SharedPtr<BDCompositionImage> DXBDCompositionImage::Create(Core::Rect & rect,DXBDCompositionViewRenderTarget *renderTarget,ID2D1Image *img){
+Core::SharedPtr<BDCompositionImage> DXBDCompositionImage::Create(Composition::Rect & rect,DXBDCompositionViewRenderTarget *renderTarget,ID2D1Image *img){
     return std::make_shared<DXBDCompositionImage>(rect,renderTarget,img);
 };
 
-Core::SharedPtr<BDCompositionImage> DXBDCompositionImage::Create(Core::Rect & rect,DXBDCompositionImageRenderTarget *renderTarget,ID2D1Image *img){
+Core::SharedPtr<BDCompositionImage> DXBDCompositionImage::Create(Composition::Rect & rect,DXBDCompositionImageRenderTarget *renderTarget,ID2D1Image *img){
     return std::make_shared<DXBDCompositionImage>(rect,renderTarget,img);
 };
 

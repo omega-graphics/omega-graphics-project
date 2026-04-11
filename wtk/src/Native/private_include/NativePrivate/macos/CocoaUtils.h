@@ -1,4 +1,5 @@
 #include "omegaWTK/Core/Core.h"
+#include "omegaWTK/Composition/Geometry.h"
 
 #import <Cocoa/Cocoa.h>
 
@@ -10,8 +11,8 @@ namespace Cocoa {
 
 void ns_string_to_common_string(NSString *str,OmegaCommon::String & res);
 NSString * common_string_to_ns_string(const OmegaCommon::String & str);
-NSRect core_rect_to_cg_rect(const Core::Rect & rect);
-CGPoint core_pos_to_cg_point(const Core::Position & pos);
+NSRect core_rect_to_cg_rect(const Composition::Rect & rect);
+CGPoint core_pos_to_cg_point(const Composition::Point2D & pos);
 
 };
 };

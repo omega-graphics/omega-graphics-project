@@ -62,7 +62,7 @@ ResolvedEffectStyle resolveElementEffectStyle(const StyleSheetPtr & style,
 bool containsTag(const OmegaCommon::Vector<UIElementTag> & tags,const UIElementTag & tag);
 void addUniqueTag(OmegaCommon::Vector<UIElementTag> & tags,const UIElementTag & tag);
 StyleScope collectStyleScope(const StyleSheetPtr & style,const UIViewTag & viewTag);
-Core::Rect localBoundsFromView(UIView * view);
+Composition::Rect localBoundsFromView(UIView * view);
 
 }
 
@@ -133,7 +133,7 @@ struct UIView::Impl {
     OmegaCommon::Map<UIElementTag,Shape> previousShapeByTag;
     SharedHandle<Composition::Font> fallbackTextFont = nullptr;
     UIViewLayoutV2 currentLayoutV2_;
-    OmegaCommon::Map<UIElementTag,Core::Rect> lastResolvedV2Rects_;
+    OmegaCommon::Map<UIElementTag,Composition::Rect> lastResolvedV2Rects_;
     LayoutDiagnosticSink * diagnosticSink_ = nullptr;
     UpdateDiagnostics lastUpdateDiagnostics {};
     AnimationDiagnostics lastAnimationDiagnostics {};

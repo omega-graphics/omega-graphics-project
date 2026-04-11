@@ -93,7 +93,7 @@
     auto *p = new OmegaWTK::Native::ScrollParams {
         static_cast<float>(dx),
         static_cast<float>(dy),
-        OmegaWTK::Core::Position{static_cast<float>(localPt.x), static_cast<float>(localPt.y)}
+        OmegaWTK::Composition::Point2D{static_cast<float>(localPt.x), static_cast<float>(localPt.y)}
     };
     self.delegate->sendEventToEmitter(OmegaWTK::Native::NativeEventPtr(
             new OmegaWTK::Native::NativeEvent(
@@ -171,8 +171,8 @@ static inline CGFloat safeScale(){
     return std::max(scale,static_cast<CGFloat>(2.f));
 }
 
-static inline Core::Rect sanitizeNativeRect(const Core::Rect & candidate,const Core::Rect & fallback){
-    Core::Rect saneFallback = fallback;
+static inline Composition::Rect sanitizeNativeRect(const Composition::Rect & candidate,const Composition::Rect & fallback){
+    Composition::Rect saneFallback = fallback;
     if(!std::isfinite(saneFallback.pos.x)){
         saneFallback.pos.x = 0.f;
     }
@@ -190,7 +190,7 @@ static inline Core::Rect sanitizeNativeRect(const Core::Rect & candidate,const C
     saneFallback.w = std::clamp(saneFallback.w,1.f,maxPointDimension);
     saneFallback.h = std::clamp(saneFallback.h,1.f,maxPointDimension);
 
-    Core::Rect sanitized = candidate;
+    Composition::Rect sanitized = candidate;
     if(!std::isfinite(sanitized.pos.x)){
         sanitized.pos.x = saneFallback.pos.x;
     }
@@ -210,7 +210,7 @@ static inline Core::Rect sanitizeNativeRect(const Core::Rect & candidate,const C
 
 }
 
-CocoaItem::CocoaItem(const Core::Rect & rect,
+CocoaItem::CocoaItem(const Composition::Rect & rect,
                      CocoaItem::Type _type,
                      SharedHandle<CocoaItem> parent):
 rect(rect),
@@ -220,7 +220,7 @@ scrollView(nil),
 scrollViewDelegate(nil),
 type(_type),
 isReady(false){
-    this->rect = sanitizeNativeRect(this->rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+    this->rect = sanitizeNativeRect(this->rect,Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f});
     if(type == View){
         cont = [[OmegaWTKCocoaViewController alloc] initWithFrame:core_rect_to_cg_rect(this->rect) delegate:this];
         [cont setClass:[OmegaWTKCocoaView class]];
@@ -278,7 +278,7 @@ void CocoaItem::disable(){
     }
 };
 
-void CocoaItem::resize(const Core::Rect &newRect){
+void CocoaItem::resize(const Composition::Rect &newRect){
     rect = sanitizeNativeRect(newRect,rect);
     CGRect r = core_rect_to_cg_rect(rect);
     if(_ptr != nil){
@@ -437,7 +437,7 @@ void CocoaItem::setNeedsDisplay(){
     float dx = static_cast<float>(origin.x - _lastOrigin.x);
     float dy = static_cast<float>(origin.y - _lastOrigin.y);
     constexpr float epsilon = FLT_EPSILON;
-    OmegaWTK::Core::Position scrollPos {0.f, 0.f};
+    OmegaWTK::Composition::Point2D scrollPos {0.f, 0.f};
     if(std::fabs(dx) > epsilon){
         auto type = dx > 0.f ? OmegaWTK::Native::NativeEvent::ScrollRight : OmegaWTK::Native::NativeEvent::ScrollLeft;
         _delegate->sendEventToEmitter(OmegaWTK::Native::NativeEventPtr(
@@ -458,7 +458,7 @@ void CocoaItem::setNeedsDisplay(){
 @end
 
 namespace OmegaWTK::Native {
-    NativeItemPtr make_native_item(Core::Rect rect,ItemType type,NativeItemPtr parent){
+    NativeItemPtr make_native_item(Composition::Rect rect,ItemType type,NativeItemPtr parent){
         Cocoa::CocoaItem::Type item_type;
         if(type == Default)
             item_type = Cocoa::CocoaItem::View;

@@ -29,7 +29,7 @@ class OMEGAWTK_EXPORT NativeViewHost : public Widget {
 
     void syncBounds();
 public:
-    explicit NativeViewHost(Core::Rect rect);
+    explicit NativeViewHost(Composition::Rect rect);
     ~NativeViewHost() override;
 
     /// Attach a real native view. The backend AppWindow will add it
@@ -48,7 +48,7 @@ public:
 
 protected:
     void onMount() override;
-    void onLayoutResolved(const Core::Rect & finalRectPx) override;
+    void onLayoutResolved(const Composition::Rect & finalRectPx) override;
 };
 
 }

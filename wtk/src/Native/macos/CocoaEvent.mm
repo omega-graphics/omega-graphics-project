@@ -17,8 +17,8 @@ static ModifierFlags modifier_flags_from_ns(NSEventModifierFlags flags) {
 }
 
 static void fill_position_from_event(NSEvent *event, NSView *inView,
-                                     Core::Position &position,
-                                     Core::Position &screenPosition) {
+                                     Composition::Point2D &position,
+                                     Composition::Point2D &screenPosition) {
     NSPoint loc = event.locationInWindow;
     if (inView != nil) {
         NSPoint viewLoc = [inView convertPoint:loc fromView:nil];
@@ -180,7 +180,7 @@ NativeEventPtr ns_event_to_omega_wtk_native_event(NSEvent *event, NSView *inView
     switch (event.type) {
         case NSEventTypeMouseEntered: {
             auto *p = new CursorEnterParams();
-            Core::Position screenTmp;
+            Composition::Point2D screenTmp;
             fill_position_from_event(event, inView, p->position, screenTmp);
             params = p;
             type = NativeEvent::CursorEnter;
@@ -188,7 +188,7 @@ NativeEventPtr ns_event_to_omega_wtk_native_event(NSEvent *event, NSView *inView
         }
         case NSEventTypeMouseExited: {
             auto *p = new CursorExitParams();
-            Core::Position screenTmp;
+            Composition::Point2D screenTmp;
             fill_position_from_event(event, inView, p->position, screenTmp);
             params = p;
             type = NativeEvent::CursorExit;

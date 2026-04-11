@@ -1,4 +1,6 @@
 #include "omegaWTK/Core/Core.h"
+#include "omegaWTK/Core/GTEHandle.h"
+#include "omegaWTK/Composition/Geometry.h"
 #include <cstring>
 #include <algorithm>
 #include <sstream>
@@ -13,11 +15,11 @@ namespace OmegaWTK {
 namespace OmegaWTK {
 
 
-Core::Rect Rect(float x,float y,float w,float h){
+Composition::Rect Rect(float x,float y,float w,float h){
     return {{x,y},w,h};
 };
 
-Core::RoundedRect RoundedRect(float x,float y,float w,float h,float radius_x,float radius_y) {
+Composition::RoundedRect RoundedRect(float x,float y,float w,float h,float radius_x,float radius_y) {
     return {{x,y},w,h,radius_x,radius_y};
 }
 

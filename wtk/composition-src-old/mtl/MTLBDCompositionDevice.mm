@@ -189,16 +189,16 @@ Core::SharedPtr<BDCompositionViewRenderTarget> MTLBDCompositionDeviceContext::ma
 //    return MTLBDCompositionViewRenderTarget::Create(this,(Native::Cocoa::CocoaItem *)layer->getTargetNativePtr());
 };
 
-Core::SharedPtr<MTLBDCompositionViewRenderTarget> MTLBDCompositionDeviceContext::makeCALayerRenderTarget(Core::Rect & rect){
+Core::SharedPtr<MTLBDCompositionViewRenderTarget> MTLBDCompositionDeviceContext::makeCALayerRenderTarget(Composition::Rect & rect){
     return MTLBDCompositionViewRenderTarget::Create(this,rect);
 };
 
-Core::SharedPtr<MTLBDCompositionViewRenderTarget> MTLBDCompositionDeviceContext::makeCALayerRenderTarget(CAMetalLayer *layer,Core::Rect & rect){
+Core::SharedPtr<MTLBDCompositionViewRenderTarget> MTLBDCompositionDeviceContext::makeCALayerRenderTarget(CAMetalLayer *layer,Composition::Rect & rect){
     return MTLBDCompositionViewRenderTarget::CreateWithExistingCAMetalLayer(this,layer,rect);
 };
 
-Core::SharedPtr<BDCompositionImageRenderTarget> MTLBDCompositionDeviceContext::makeImageRenderTarget(Core::Rect & size){
-    Core::Rect r = size;
+Core::SharedPtr<BDCompositionImageRenderTarget> MTLBDCompositionDeviceContext::makeImageRenderTarget(Composition::Rect & size){
+    Composition::Rect r = size;
     CGFloat scaleFactor =  [NSScreen mainScreen].backingScaleFactor;
     MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:int(r.dimen.minWidth *= scaleFactor) height:int(r.dimen.minHeight *= scaleFactor) mipmapped:NO];
     desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView  | MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;

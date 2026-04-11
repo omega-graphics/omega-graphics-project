@@ -8,7 +8,7 @@ MTLBDCompositionImage::MTLBDCompositionImage(MTLBDCompositionDeviceContext *devi
     
 };
 
-MTLBDCompositionImage::MTLBDCompositionImage(MTLBDCompositionDeviceContext *deviceContext,Core::Rect &rect,id<MTLTexture> img,MTLTextureDescriptor *desc):BDCompositionImage(),deviceContext(deviceContext),n_rect(rect),rect(FRect(rect.pos.x,rect.pos.y,rect.dimen.minWidth,rect.dimen.minHeight)),desc(desc),img(img){
+MTLBDCompositionImage::MTLBDCompositionImage(MTLBDCompositionDeviceContext *deviceContext,Composition::Rect &rect,id<MTLTexture> img,MTLTextureDescriptor *desc):BDCompositionImage(),deviceContext(deviceContext),n_rect(rect),rect(FRect(rect.pos.x,rect.pos.y,rect.dimen.minWidth,rect.dimen.minHeight)),desc(desc),img(img){
     
 };
 
@@ -16,7 +16,7 @@ Core::SharedPtr<BDCompositionImage> MTLBDCompositionImage::Create(MTLBDCompositi
     return std::make_shared<MTLBDCompositionImage>(deviceContext,_img,rect,desc,img);
 };
 
-Core::SharedPtr<BDCompositionImage> MTLBDCompositionImage::Create(MTLBDCompositionDeviceContext *deviceContext,Core::Rect & rect, id<MTLTexture> img,MTLTextureDescriptor *desc){
+Core::SharedPtr<BDCompositionImage> MTLBDCompositionImage::Create(MTLBDCompositionDeviceContext *deviceContext,Composition::Rect & rect, id<MTLTexture> img,MTLTextureDescriptor *desc){
     return std::make_shared<MTLBDCompositionImage>(deviceContext,rect,img,desc);
 };
 

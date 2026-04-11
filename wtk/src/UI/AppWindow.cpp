@@ -14,7 +14,7 @@ namespace OmegaWTK {
 
 #if defined(TARGET_MACOS)
 namespace {
-static inline bool resizeRectChanged(const Core::Rect &lhs,const Core::Rect &rhs){
+static inline bool resizeRectChanged(const Composition::Rect &lhs,const Composition::Rect &rhs){
     constexpr float kEpsilon = 0.25f;
     return std::fabs(lhs.pos.x - rhs.pos.x) > kEpsilon ||
            std::fabs(lhs.pos.y - rhs.pos.y) > kEpsilon ||
@@ -24,7 +24,7 @@ static inline bool resizeRectChanged(const Core::Rect &lhs,const Core::Rect &rhs
 }
 #endif
 
-    AppWindow::AppWindow(Core::Rect rect,AppWindowDelegate *delegate):
+    AppWindow::AppWindow(Composition::Rect rect,AppWindowDelegate *delegate):
     impl_(std::make_unique<Impl>(*this,rect,delegate)){
         // MessageBoxA(HWND_DESKTOP,"Create Window Layer!","NOTE",MB_OK);
         if(impl_->delegate != nullptr) {
@@ -120,21 +120,21 @@ void AppWindowManager::closeAllWindows(){
     }
 };
 
-void AppWindowDelegate::dispatchResizeToHosts(const Core::Rect & rect){
+void AppWindowDelegate::dispatchResizeToHosts(const Composition::Rect & rect){
     window->impl_->rect = rect;
     if(window->impl_->widgetTreeHost != nullptr){
         window->impl_->widgetTreeHost->notifyWindowResize(rect);
     }
 }
 
-void AppWindowDelegate::dispatchResizeBeginToHosts(const Core::Rect & rect){
+void AppWindowDelegate::dispatchResizeBeginToHosts(const Composition::Rect & rect){
     window->impl_->rect = rect;
     if(window->impl_->widgetTreeHost != nullptr){
         window->impl_->widgetTreeHost->notifyWindowResizeBegin(rect);
     }
 }
 
-void AppWindowDelegate::dispatchResizeEndToHosts(const Core::Rect & rect){
+void AppWindowDelegate::dispatchResizeEndToHosts(const Composition::Rect & rect){
     window->impl_->rect = rect;
     if(window->impl_->widgetTreeHost != nullptr){
         window->impl_->widgetTreeHost->notifyWindowResizeEnd(rect);
@@ -258,7 +258,7 @@ void AppWindowDelegate::windowWillClose(Native::NativeEventPtr event){
     /// To Be Overrided by its sub-classes!
 };
 
-void AppWindowDelegate::windowWillResize(Core::Rect & nRect){
+void AppWindowDelegate::windowWillResize(Composition::Rect & nRect){
     /// To Be Overrided by its sub-classes!
 };
 

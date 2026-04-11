@@ -2,6 +2,7 @@
 #define OMEGAWTK_COMPOSITION_BACKEND_TEXTUREPOOL_H
 
 #include "omegaWTK/Core/Core.h"
+#include "omegaWTK/Core/GTEHandle.h"
 #include "ResourceTrace.h"
 
 #include <chrono>

@@ -24,9 +24,9 @@ protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
-    void resize(Core::Rect & newRect) override;
+    void resize(Composition::Rect & newRect) override;
 public:
-    explicit Rectangle(Core::Rect rect, const RectangleProps & props = {});
+    explicit Rectangle(Composition::Rect rect, const RectangleProps & props = {});
     void setProps(const RectangleProps & props);
 };
 
@@ -46,9 +46,9 @@ protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
-    void resize(Core::Rect & newRect) override;
+    void resize(Composition::Rect & newRect) override;
 public:
-    explicit RoundedRectangle(Core::Rect rect, const RoundedRectangleProps & props = {});
+    explicit RoundedRectangle(Composition::Rect rect, const RoundedRectangleProps & props = {});
     void setProps(const RoundedRectangleProps & props);
 };
 
@@ -64,14 +64,14 @@ protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
-    void resize(Core::Rect & newRect) override;
+    void resize(Composition::Rect & newRect) override;
 public:
-    explicit Ellipse(Core::Rect rect, const EllipseProps & props = {});
+    explicit Ellipse(Composition::Rect rect, const EllipseProps & props = {});
     void setProps(const EllipseProps & props);
 };
 
 struct OMEGAWTK_EXPORT PathProps {
-    OmegaGTE::GVectorPath2D path {OmegaGTE::GPoint2D{0.f, 0.f}};
+    Composition::Path path {Composition::Point2D{0.f, 0.f}};
     SharedHandle<Composition::Brush> fill = nullptr;
     SharedHandle<Composition::Brush> stroke = nullptr;
     unsigned strokeWidth = 1;
@@ -84,9 +84,9 @@ protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
-    void resize(Core::Rect & newRect) override;
+    void resize(Composition::Rect & newRect) override;
 public:
-    explicit Path(Core::Rect rect, const PathProps & props);
+    explicit Path(Composition::Rect rect, const PathProps & props);
     void setProps(const PathProps & props);
 };
 
@@ -103,9 +103,9 @@ protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
-    void resize(Core::Rect & newRect) override;
+    void resize(Composition::Rect & newRect) override;
 public:
-    explicit Separator(Core::Rect rect, const SeparatorProps & props = {});
+    explicit Separator(Composition::Rect rect, const SeparatorProps & props = {});
     void setProps(const SeparatorProps & props);
 };
 
@@ -128,10 +128,10 @@ protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
-    void resize(Core::Rect & newRect) override;
+    void resize(Composition::Rect & newRect) override;
     MeasureResult measureSelf(const LayoutContext & ctx) override;
 public:
-    explicit Label(Core::Rect rect, const LabelProps & props = {});
+    explicit Label(Composition::Rect rect, const LabelProps & props = {});
     void setText(const OmegaCommon::UString & text);
     void setProps(const LabelProps & props);
 };
@@ -150,9 +150,9 @@ protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     void onPaint(PaintReason reason) override;
-    void resize(Core::Rect & newRect) override;
+    void resize(Composition::Rect & newRect) override;
 public:
-    explicit Icon(Core::Rect rect, const IconProps & props = {});
+    explicit Icon(Composition::Rect rect, const IconProps & props = {});
     void setProps(const IconProps & props);
 };
 
@@ -174,9 +174,9 @@ class OMEGAWTK_EXPORT Image : public Widget {
 protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onPaint(PaintReason reason) override;
-    void resize(Core::Rect & newRect) override;
+    void resize(Composition::Rect & newRect) override;
 public:
-    explicit Image(Core::Rect rect, const ImageProps & props = {});
+    explicit Image(Composition::Rect rect, const ImageProps & props = {});
     void setProps(const ImageProps & props);
 };
 

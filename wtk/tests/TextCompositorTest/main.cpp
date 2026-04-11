@@ -29,17 +29,17 @@ class TextCompositorWidget final : public OmegaWTK::Widget {
     OmegaWTK::UIViewPtr accentView {};
     bool loggedUIViewValidation = false;
 
-    static OmegaWTK::Core::Rect accentRectForBounds(const OmegaWTK::Core::Rect & bounds){
+    static OmegaWTK::Composition::Rect accentRectForBounds(const OmegaWTK::Composition::Rect & bounds){
         constexpr float kLayerSize = 120.0f;
-        return OmegaWTK::Core::Rect{
-            OmegaWTK::Core::Position{
+        return OmegaWTK::Composition::Rect{
+            OmegaWTK::Composition::Point2D{
                 (bounds.w - kLayerSize) * 0.5f,
                 (bounds.h - kLayerSize) * 0.5f},
             kLayerSize,
             kLayerSize};
     }
 
-    void ensureAccentView(const OmegaWTK::Core::Rect & bounds){
+    void ensureAccentView(const OmegaWTK::Composition::Rect & bounds){
         auto targetRect = accentRectForBounds(bounds);
         if(accentView == nullptr){
             accentView = makeSubView<OmegaWTK::UIView>(targetRect,"text_accent_view");
@@ -73,7 +73,7 @@ protected:
         ensureAccentView(rect());
     }
 
-    void resize(OmegaWTK::Core::Rect & newRect) override {
+    void resize(OmegaWTK::Composition::Rect & newRect) override {
         ensureAccentView(newRect);
     }
 
@@ -87,14 +87,14 @@ protected:
         cv.clear(OmegaWTK::Composition::Color::create8Bit(
             OmegaWTK::Composition::Color::White8));
 
-        OmegaWTK::Core::Rect bounds{OmegaWTK::Core::Position{0.f,0.f},r.w,r.h};
+        OmegaWTK::Composition::Rect bounds{OmegaWTK::Composition::Point2D{0.f,0.f},r.w,r.h};
         ensureAccentView(bounds);
 
         if(accentView != nullptr){
             constexpr float kRectSize = 56.0f;
             constexpr float kLayerSize = 120.0f;
-            OmegaWTK::Core::Rect redRect{
-                OmegaWTK::Core::Position{
+            OmegaWTK::Composition::Rect redRect{
+                OmegaWTK::Composition::Point2D{
                     (kLayerSize - kRectSize) * 0.5f,
                     (kLayerSize - kRectSize) * 0.5f},
                 kRectSize,
@@ -105,8 +105,8 @@ protected:
             layout.text(
                 "accent_label",
                 U"UI",
-                OmegaWTK::Core::Rect{
-                    OmegaWTK::Core::Position{0.f,6.f},
+                OmegaWTK::Composition::Rect{
+                    OmegaWTK::Composition::Point2D{0.f,6.f},
                     kLayerSize,
                     22.f});
             accentView->setLayout(layout);
@@ -147,8 +147,8 @@ protected:
             return;
         }
 
-        OmegaWTK::Core::Rect titleRect{
-            OmegaWTK::Core::Position{24.0f,24.0f},
+        OmegaWTK::Composition::Rect titleRect{
+            OmegaWTK::Composition::Point2D{24.0f,24.0f},
             bounds.w - 48.0f,
             54.0f};
         cv.drawText(
@@ -158,8 +158,8 @@ protected:
             OmegaWTK::Composition::Color::create8Bit(
                 OmegaWTK::Composition::Color::Black8));
 
-        OmegaWTK::Core::Rect bodyRect{
-            OmegaWTK::Core::Position{
+        OmegaWTK::Composition::Rect bodyRect{
+            OmegaWTK::Composition::Point2D{
                 bounds.w * 0.17f,
                 bounds.h * 0.64f},
             bounds.w * 0.66f,
@@ -178,7 +178,7 @@ protected:
     }
 
 public:
-    explicit TextCompositorWidget(OmegaWTK::Core::Rect rect):
+    explicit TextCompositorWidget(OmegaWTK::Composition::Rect rect):
         OmegaWTK::Widget(rect){}
 };
 
@@ -192,11 +192,11 @@ public:
 
 int omegaWTKMain(OmegaWTK::AppInst *app) {
     auto window = make<OmegaWTK::AppWindow>(
-        OmegaWTK::Core::Rect{{0,0},500,500},
+        OmegaWTK::Composition::Rect{{0,0},500,500},
         new MyWindowDelegate());
 
     auto widget = make<TextCompositorWidget>(
-        OmegaWTK::Core::Rect{{0,0},500,500});
+        OmegaWTK::Composition::Rect{{0,0},500,500});
     window->setRootWidget(widget);
 
     auto & windowManager = app->windowManager;

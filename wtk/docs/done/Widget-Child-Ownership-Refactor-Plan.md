@@ -97,16 +97,16 @@ HStack/VStack remain thin constructors over StackWidget, unchanged.
 
 ### WIDGET_CONSTRUCTOR Macro
 
-The `WIDGET_CONSTRUCTOR` macro exists for concrete widget subclasses (Label, Button, TextInput, etc.) that know their own View type and create it internally. Users of these widgets pass a `Core::Rect` and the `Create()` method handles View construction. With the parent parameter removed from Widget, the macro simplifies:
+The `WIDGET_CONSTRUCTOR` macro exists for concrete widget subclasses (Label, Button, TextInput, etc.) that know their own View type and create it internally. Users of these widgets pass a `Composition::Rect` and the `Create()` method handles View construction. With the parent parameter removed from Widget, the macro simplifies:
 
 Before:
 ```cpp
-#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(Core::Rect rect, WidgetPtr parent, ## __VA_ARGS__);
+#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(Composition::Rect rect, WidgetPtr parent, ## __VA_ARGS__);
 ```
 
 After:
 ```cpp
-#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(Core::Rect rect, ## __VA_ARGS__);
+#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(Composition::Rect rect, ## __VA_ARGS__);
 ```
 
 `WIDGET_CONSTRUCTOR_IMPL` follows the same change. The `WIDGET_CREATE` alias (`make`) is unchanged.
@@ -149,7 +149,7 @@ No further changes needed beyond what was just done (`setRootWidget`). The root 
 |------|--------|
 | `Widget.h` | Remove `children`, `setParentWidget`, `detachFromParent`, `removeChildWidget`, `onChildAttached`, `onChildDetached`, `acceptsChildWidget`. Remove parent from constructor. Add virtual `childWidgets()`. |
 | `Widget.cpp` | Delete `setParentWidgetImpl`, `removeChildWidget`, `onChildAttached`, `onChildDetached`, `acceptsChildWidget`. Simplify destructor. Update `setTreeHostRecurse` / `onThemeSetRecurse` to use `childWidgets()`. |
-| `BasicWidgets.h` | Simplify `WIDGET_CONSTRUCTOR` / `WIDGET_CONSTRUCTOR_IMPL` macros to `(Core::Rect rect, ...)` (drop parent). Update Container constructor. `children` becomes protected. Make `addChild`/`removeChild` virtual. Remove `onChildAttached`/`onChildDetached` overrides. Override `childWidgets()`. |
+| `BasicWidgets.h` | Simplify `WIDGET_CONSTRUCTOR` / `WIDGET_CONSTRUCTOR_IMPL` macros to `(Composition::Rect rect, ...)` (drop parent). Update Container constructor. `children` becomes protected. Make `addChild`/`removeChild` virtual. Remove `onChildAttached`/`onChildDetached` overrides. Override `childWidgets()`. |
 | `BasicWidgets.cpp` | Container::addChild does full wiring (view, parent ptr, tree host, compositor). Container::removeChild reverses it. Remove `onChildAttached`/`onChildDetached`. |
 | `Containers.h` | StackWidget inherits from Container (was Widget). Replace `stackChildren` with `childSlots` parallel vector. Override `addChild`/`removeChild`. Constructor becomes `(StackAxis, ViewPtr view, ...)`. |
 | `Containers.cpp` | StackWidget::addChild calls `Container::addChild` then appends slot. StackWidget::removeChild calls `Container::removeChild` then erases slot. Layout reads Container's `children` paired with `childSlots`. |

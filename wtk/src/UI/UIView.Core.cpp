@@ -1,4 +1,5 @@
 #include "UIViewImpl.h"
+#include <OmegaGTE.h>
 
 namespace OmegaWTK {
 
@@ -10,18 +11,18 @@ UIView::Impl::Impl(UIView & ownerRef,UIViewTag tagValue)
 Shape Shape::Scalar(int width,int height){
     Shape shape {};
     shape.type = Shape::Type::Rect;
-    shape.rect = Core::Rect{{0.f,0.f},static_cast<float>(width),static_cast<float>(height)};
+    shape.rect = Composition::Rect{{0.f,0.f},static_cast<float>(width),static_cast<float>(height)};
     return shape;
 }
 
-Shape Shape::Rect(const Core::Rect &rect){
+Shape Shape::Rect(const Composition::Rect &rect){
     Shape shape {};
     shape.type = Shape::Type::Rect;
     shape.rect = rect;
     return shape;
 }
 
-Shape Shape::RoundedRect(const Core::RoundedRect &rect){
+Shape Shape::RoundedRect(const Composition::RoundedRect &rect){
     Shape shape {};
     shape.type = Shape::Type::RoundedRect;
     shape.roundedRect = rect;
@@ -31,25 +32,21 @@ Shape Shape::RoundedRect(const Core::RoundedRect &rect){
 Shape Shape::Ellipse(const OmegaGTE::GEllipsoid &ellipse){
     Shape shape {};
     shape.type = Shape::Type::Ellipse;
+    shape.ellipse = Composition::Ellipse{ellipse.x, ellipse.y, ellipse.rad_x, ellipse.rad_y};
+    return shape;
+}
+
+Shape Shape::Ellipse(const Composition::Ellipse &ellipse){
+    Shape shape {};
+    shape.type = Shape::Type::Ellipse;
     shape.ellipse = ellipse;
     return shape;
 }
 
-Shape Shape::Ellipse(const Core::Ellipse &ellipse){
-    return Shape::Ellipse(OmegaGTE::GEllipsoid{
-            ellipse.x,
-            ellipse.y,
-            0.f,
-            ellipse.rad_x,
-            ellipse.rad_y,
-            0.f
-    });
-}
-
-Shape Shape::Path(const OmegaGTE::GVectorPath2D &path,unsigned strokeWidth,bool closePath){
+Shape Shape::Path(Composition::Path path,unsigned strokeWidth,bool closePath){
     Shape shape {};
     shape.type = Shape::Type::Path;
-    shape.path = path;
+    shape.path = std::make_shared<Composition::Path>(std::move(path));
     shape.pathStrokeWidth = std::max(1u,strokeWidth);
     shape.closePath = closePath;
     return shape;
@@ -77,7 +74,7 @@ void UIViewLayout::text(UIElementTag tag,OmegaCommon::UString content){
     _content.push_back(element);
 }
 
-void UIViewLayout::text(UIElementTag tag,OmegaCommon::UString content,const Core::Rect & rect){
+void UIViewLayout::text(UIElementTag tag,OmegaCommon::UString content,const Composition::Rect & rect){
     auto taggedElementIt = std::find_if(_content.begin(),_content.end(),[&](const Element & element){
         return element.tag == tag;
     });
@@ -99,7 +96,7 @@ void UIViewLayout::text(UIElementTag tag,OmegaCommon::UString content,const Core
     _content.push_back(element);
 }
 
-void UIViewLayout::text(UIElementTag tag,OmegaCommon::UString content,const Core::Rect & rect,UIElementTag styleTag){
+void UIViewLayout::text(UIElementTag tag,OmegaCommon::UString content,const Composition::Rect & rect,UIElementTag styleTag){
     auto taggedElementIt = std::find_if(_content.begin(),_content.end(),[&](const Element & element){
         return element.tag == tag;
     });
@@ -540,7 +537,7 @@ bool UIViewLayoutV2::hasElement(UIElementTag tag) const{
     }) != elements_.end();
 }
 
-UIView::UIView(const Core::Rect &rect,ViewPtr parent,UIViewTag tag)
+UIView::UIView(const Composition::Rect &rect,ViewPtr parent,UIViewTag tag)
     : View(rect,parent),
       impl_(std::make_unique<Impl>(*this,std::move(tag))){
     impl_->rootCanvas = makeCanvas(getLayerTree()->getRootLayer());

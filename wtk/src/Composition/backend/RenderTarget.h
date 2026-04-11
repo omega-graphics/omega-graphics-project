@@ -1,5 +1,6 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Core/GTEHandle.h"
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -56,7 +57,7 @@ namespace OmegaWTK::Composition {
         SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget;
         SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> tessellationEngineContext;
         SharedHandle<BackendCanvasEffectProcessor> imageProcessor;
-        Core::Rect renderTargetSize;
+        Composition::Rect renderTargetSize;
         float renderScale = 1.0f;
         unsigned backingWidth = 1;
         unsigned backingHeight = 1;
@@ -80,7 +81,7 @@ namespace OmegaWTK::Composition {
         void clear(float r,float g,float b,float a);
         void renderToTarget(VisualCommand::Type type,void *params);
         void applyEffectToTarget(const CanvasEffect & effect);
-        void setRenderTargetSize(Core::Rect &rect);
+        void setRenderTargetSize(Composition::Rect &rect);
         void setViewportOverride(float offsetX, float offsetY, float width, float height);
         void clearViewportOverride();
         SharedHandle<OmegaGTE::GENativeRenderTarget> & getNativeRenderTarget(){ return renderTarget; }
@@ -108,7 +109,7 @@ namespace OmegaWTK::Composition {
             Create a BackendRenderTarget Context
             @param renderTarget
         */
-        explicit BackendRenderTargetContext(Core::Rect & rect,
+        explicit BackendRenderTargetContext(Composition::Rect & rect,
                                             SharedHandle<OmegaGTE::GENativeRenderTarget> & renderTarget,
                                             float renderScale = 1.0f);
         ~BackendRenderTargetContext();

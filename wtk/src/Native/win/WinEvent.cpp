@@ -15,10 +15,10 @@ NativeEventPtr button_event_to_native_event(NativeEvent::EventType event_type, L
     if (pt == nullptr) {
         return NativeEventPtr(new NativeEvent(event_type, nullptr));
     }
-    Core::Position clientPos;
+    Composition::Point2D clientPos;
     clientPos.x = static_cast<float>(pt->x);
     clientPos.y = static_cast<float>(pt->y);
-    Core::Position screenPos = clientPos;
+    Composition::Point2D screenPos = clientPos;
     if (hwnd != nullptr) {
         POINT screenPt = *pt;
         if (ClientToScreen(hwnd, &screenPt)) {
@@ -90,7 +90,7 @@ NativeEventPtr scroll_event_to_native_event(NativeEvent::EventType event_type, f
         case NativeEvent::ScrollRight:
         case NativeEvent::ScrollUp:
         case NativeEvent::ScrollDown:
-            return NativeEventPtr(new NativeEvent(event_type, new ScrollParams{deltaX, deltaY, Core::Position{0.f,0.f}}));
+            return NativeEventPtr(new NativeEvent(event_type, new ScrollParams{deltaX, deltaY, Composition::Point2D{0.f,0.f}}));
         default:
             return NativeEventPtr(new NativeEvent(NativeEvent::Unknown, nullptr));
     }

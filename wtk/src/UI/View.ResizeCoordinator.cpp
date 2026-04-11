@@ -41,7 +41,7 @@ void ViewResizeCoordinator::unregisterChild(View * child){
 void ViewResizeCoordinator::beginResizeSession(std::uint64_t sessionId){
     activeSessionId = sessionId;
     (void)activeSessionId;
-    Core::Rect parentBaseline {Core::Position{0.f,0.f},1.f,1.f};
+    Composition::Rect parentBaseline {Composition::Point2D{0.f,0.f},1.f,1.f};
     if(parentView != nullptr){
         parentBaseline = parentView->getRect();
     }
@@ -57,10 +57,10 @@ void ViewResizeCoordinator::beginResizeSession(std::uint64_t sessionId){
     }
 }
 
-Core::Rect ViewResizeCoordinator::clampRectToParent(const Core::Rect & requested,
-                                                    const Core::Rect & parentContentRect,
+Composition::Rect ViewResizeCoordinator::clampRectToParent(const Composition::Rect & requested,
+                                                    const Composition::Rect & parentContentRect,
                                                     const ChildResizeSpec & spec){
-    auto fallback = ViewInternal::sanitizeRect(parentContentRect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+    auto fallback = ViewInternal::sanitizeRect(parentContentRect,Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f});
     auto parent = ViewInternal::sanitizeRect(parentContentRect,fallback);
     auto output = ViewInternal::sanitizeRect(requested,parent);
 
@@ -90,9 +90,9 @@ Core::Rect ViewResizeCoordinator::clampRectToParent(const Core::Rect & requested
     return output;
 }
 
-Core::Rect ViewResizeCoordinator::resolveChildRect(View * child,
-                                                   const Core::Rect & requested,
-                                                   const Core::Rect & parentContentRect){
+Composition::Rect ViewResizeCoordinator::resolveChildRect(View * child,
+                                                   const Composition::Rect & requested,
+                                                   const Composition::Rect & parentContentRect){
     if(child == nullptr){
         return requested;
     }
@@ -107,7 +107,7 @@ Core::Rect ViewResizeCoordinator::resolveChildRect(View * child,
 
     auto & state = stateIt->second;
     auto output = ViewInternal::sanitizeRect(requested,child->getRect());
-    auto parent = ViewInternal::sanitizeRect(parentContentRect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+    auto parent = ViewInternal::sanitizeRect(parentContentRect,Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f});
 
     switch(state.spec.policy){
         case ChildResizePolicy::Fill: {
@@ -144,7 +144,7 @@ Core::Rect ViewResizeCoordinator::resolveChildRect(View * child,
     return output;
 }
 
-void ViewResizeCoordinator::resolve(const Core::Rect & parentContentRect){
+void ViewResizeCoordinator::resolve(const Composition::Rect & parentContentRect){
     for(auto & entry : childState){
         auto * child = entry.first;
         if(child == nullptr){

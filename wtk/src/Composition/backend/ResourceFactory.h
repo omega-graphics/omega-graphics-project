@@ -25,7 +25,7 @@ namespace OmegaWTK::Composition {
         /// The root visual's native present surface is stored in outPresentTarget.
         /// All underlying GPU resources are created on the main thread.
         VisualTreeBundle createVisualTreeForView(SharedHandle<ViewRenderTarget> & renderTarget,
-                                                  Core::Rect & rect,
+                                                  Composition::Rect & rect,
                                                   ViewPresentTarget & outPresentTarget);
 
         /// Creates an offscreen texture + texture render target pair
@@ -41,13 +41,13 @@ namespace OmegaWTK::Composition {
         /// on the main thread. No native present surface.
         Core::SharedPtr<BackendVisualTree::Visual> createChildVisual(
                 BackendVisualTree & tree,
-                Core::Rect & rect);
+                Composition::Rect & rect);
 
         /// Creates a root visual with a native present surface within
         /// an existing visual tree on the main thread.
         Core::SharedPtr<BackendVisualTree::Visual> createRootVisual(
                 BackendVisualTree & tree,
-                Core::Rect & rect,
+                Composition::Rect & rect,
                 ViewPresentTarget & outPresentTarget);
     };
 

@@ -126,7 +126,7 @@ namespace OmegaWTK {
         void beginResizeCoordinatorSessionRecurse(Widget *parent,std::uint64_t sessionId);
         void applyResizeGovernorMetadata(const Composition::ResizeGovernorMetadata & metadata);
         bool detectAnimatedTreeRecurse(Widget *parent) const;
-        View * hitTestWidget(Widget *widget,const Core::Position &point) const;
+        View * hitTestWidget(Widget *widget,const Composition::Point2D &point) const;
         void initWidgetTree();
         Composition::Compositor *compPtr(){return compositor;};
         uint64_t laneId() const { return syncLaneId; }
@@ -168,13 +168,13 @@ namespace OmegaWTK {
         /// root native view. Used by NativeViewHost (Phase 5).
         void unembedNativeItem(Native::NativeItemPtr item);
 
-        void notifyWindowResizeBegin(const Core::Rect & rect);
-        void notifyWindowResize(const Core::Rect & rect);
-        void notifyWindowResizeEnd(const Core::Rect & rect);
+        void notifyWindowResizeBegin(const Composition::Rect & rect);
+        void notifyWindowResize(const Composition::Rect & rect);
+        void notifyWindowResizeEnd(const Composition::Rect & rect);
 
         /// Walk the virtual widget tree and return the deepest View whose
         /// bounds contain `point` (in window-relative coordinates).
-        View * hitTest(const Core::Position &point) const;
+        View * hitTest(const Composition::Point2D &point) const;
 
         /// Dispatch a native input event (mouse, keyboard) through the
         /// virtual widget tree via hit testing. Mouse events are routed

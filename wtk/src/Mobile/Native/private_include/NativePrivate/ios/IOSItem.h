@@ -11,10 +11,10 @@ namespace OmegaWTK::Mobile::Native {
     class IOSItem : public NativeItem {
         OmegaWTKMobileUIViewController *viewC;
     public:
-        explicit IOSItem(const Core::Rect & rect);
+        explicit IOSItem(const Composition::Rect & rect);
         void enable() override;
         void disable() override;
-        void resize(const Core::Rect &newRect) override;
+        void resize(const Composition::Rect &newRect) override;
         void addChildNativeItem(SharedHandle<NativeItem> &child) override;
         void removeChildNativeItem(SharedHandle<NativeItem> &child) override;
     };

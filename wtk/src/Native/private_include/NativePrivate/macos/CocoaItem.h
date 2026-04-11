@@ -53,7 +53,7 @@ class CocoaItem : public NativeItem {
     void toggleHorizontalScrollBar(bool &state) override;
     void toggleVerticalScrollBar(bool &state) override;
 public:
-    Core::Rect rect;
+    Composition::Rect rect;
     typedef enum : OPT_PARAM {
         View,
         ScrollView
@@ -62,7 +62,7 @@ private:
     Type type;
 public:
     bool isReady;
-    void resize(const Core::Rect &newRect) override;
+    void resize(const Composition::Rect &newRect) override;
     CALayer *getLayer(){ return [_ptr getCALayer];};
     NSView *getView(){ return _ptr != nil ? (NSView *)_ptr : (NSView *)scrollView; };
     void setRootLayer(CALayer *layer){
@@ -134,7 +134,7 @@ public:
             [CATransaction commit];
         }
     }
-    void resizeNativeLayer(const Core::Rect & newRect, float) override {
+    void resizeNativeLayer(const Composition::Rect & newRect, float) override {
         if(metalLayer_ == nil){
             return;
         }
@@ -174,10 +174,10 @@ public:
     }
     void setNeedsDisplay();
     void * getBinding() override;
-    Core::Rect & getRect() override {
+    Composition::Rect & getRect() override {
         return rect;
     }
-    explicit CocoaItem(const Core::Rect & rect,Type _type,SharedHandle<CocoaItem> parent);
+    explicit CocoaItem(const Composition::Rect & rect,Type _type,SharedHandle<CocoaItem> parent);
     ~CocoaItem();
 };
 

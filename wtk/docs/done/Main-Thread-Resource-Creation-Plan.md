@@ -80,7 +80,7 @@ public:
         BackendRenderTargetContext *rootContext;
     };
     VisualTreeBundle createVisualTreeForView(SharedHandle<ViewRenderTarget> & renderTarget,
-                                              Core::Rect & rect);
+                                              Composition::Rect & rect);
 
     // Creates an offscreen texture + texture render target pair.
     struct TextureTargetBundle {
@@ -92,7 +92,7 @@ public:
 
     // Creates a child visual (for element layers within a View).
     Core::SharedPtr<BackendVisualTree::Visual> createChildVisual(
-            BackendVisualTree & tree, Core::Rect & rect);
+            BackendVisualTree & tree, Composition::Rect & rect);
 };
 ```
 

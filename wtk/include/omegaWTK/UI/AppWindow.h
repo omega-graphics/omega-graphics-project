@@ -67,7 +67,7 @@ class AppWindowDelegate;
 
         #endif
         
-        explicit AppWindow(Core::Rect rect,AppWindowDelegate * delegate = nullptr);
+        explicit AppWindow(Composition::Rect rect,AppWindowDelegate * delegate = nullptr);
         ~AppWindow() override;
     };
 /**
@@ -124,23 +124,23 @@ class OMEGAWTK_EXPORT  AppWindowManager : public Native::NativeThemeObserver {
 INTERFACE OMEGAWTK_EXPORT  AppWindowDelegate : public Native::NativeEventProcessor {
     private:
         void onRecieveEvent(Native::NativeEventPtr event);
-        void dispatchResizeBeginToHosts(const Core::Rect & rect);
-        void dispatchResizeToHosts(const Core::Rect & rect);
-        void dispatchResizeEndToHosts(const Core::Rect & rect);
+        void dispatchResizeBeginToHosts(const Composition::Rect & rect);
+        void dispatchResizeToHosts(const Composition::Rect & rect);
+        void dispatchResizeEndToHosts(const Composition::Rect & rect);
         friend class AppWindow;
         bool liveResizeActive = false;
 #if defined(TARGET_MACOS)
         bool hasPendingLiveResize = false;
-        Core::Rect pendingLiveResizeRect {};
+        Composition::Rect pendingLiveResizeRect {};
         bool hasLastDispatchedLiveResizeRect = false;
-        Core::Rect lastDispatchedLiveResizeRect {};
+        Composition::Rect lastDispatchedLiveResizeRect {};
         std::uint64_t lastDispatchedResizeGeneration = 0;
         std::uint64_t lastResizeBeginGeneration = 0;
 #endif
     protected:
        AppWindow * window;
          INTERFACE_METHOD void windowWillClose(Native::NativeEventPtr event);
-        INTERFACE_METHOD void windowWillResize(Core::Rect & nRect);
+        INTERFACE_METHOD void windowWillResize(Composition::Rect & nRect);
     };
 
 

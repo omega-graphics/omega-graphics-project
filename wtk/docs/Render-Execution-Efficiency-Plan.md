@@ -490,7 +490,7 @@ struct CompositeFrame {
     /// Each entry identifies the widget, its bounds in window coordinates,
     /// and its list of visual commands.
     struct WidgetSlice {
-        Core::Rect bounds;          // Widget bounds in window coordinates
+        Composition::Rect bounds;          // Widget bounds in window coordinates
         OmegaCommon::Vector<VisualCommand> commands;
         uint64_t contentHash = 0;   // For per-widget dirty detection
     };
@@ -628,7 +628,7 @@ widgets render into one composite frame. The resize path becomes:
 ```cpp
 struct ResizeState {
     uint64_t generation = 0;         // Incremented on each resize
-    Core::Rect pendingSize {};       // The target size
+    Composition::Rect pendingSize {};       // The target size
     bool renderTargetStale = false;  // True when generation > rendered generation
 };
 ```

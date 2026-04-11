@@ -44,9 +44,9 @@ bool isSuspiciousDimensionPair(float w,float h){
 
 }
 
-Core::Rect localBoundsFromView(UIView *view){
-    constexpr Core::Rect kFallbackRect{
-            Core::Position{0.f,0.f},
+Composition::Rect localBoundsFromView(UIView *view){
+    constexpr Composition::Rect kFallbackRect{
+            Composition::Point2D{0.f,0.f},
             1.f,
             1.f
     };
@@ -56,7 +56,7 @@ Core::Rect localBoundsFromView(UIView *view){
 
     struct StableBoundsState {
         bool hasStable = false;
-        Core::Rect bounds {Core::Position{0.f,0.f},1.f,1.f};
+        Composition::Rect bounds {Composition::Point2D{0.f,0.f},1.f,1.f};
     };
     static std::unordered_map<UIView *,StableBoundsState> stableBoundsByView {};
 
@@ -105,8 +105,8 @@ Core::Rect localBoundsFromView(UIView *view){
     width = clampDrawableDimension(width);
     height = clampDrawableDimension(height);
 
-    Core::Rect resolved {
-            Core::Position{0.f,0.f},
+    Composition::Rect resolved {
+            Composition::Point2D{0.f,0.f},
             width,
             height
     };
@@ -149,8 +149,8 @@ void UIView::update(){
     struct V2Resolved {
         UIElementTag tag;
         const UIElementLayoutSpec * spec;
-        Core::Rect resolvedRectDp {};
-        Core::Rect resolvedRectPx {};
+        Composition::Rect resolvedRectDp {};
+        Composition::Rect resolvedRectPx {};
         int zIndex = 0;
         std::size_t insertionOrder = 0;
     };
@@ -162,9 +162,9 @@ void UIView::update(){
         LayoutStyle effectiveStyle = spec.style;
         mergeLayoutRulesIntoStyle(effectiveStyle,layoutRules,spec.tag);
 
-        Core::Rect rectDp = resolveClampedRect(effectiveStyle,availDp,dpiScale);
-        Core::Rect rectPx {
-            Core::Position{rectDp.pos.x * dpiScale,rectDp.pos.y * dpiScale},
+        Composition::Rect rectDp = resolveClampedRect(effectiveStyle,availDp,dpiScale);
+        Composition::Rect rectPx {
+            Composition::Point2D{rectDp.pos.x * dpiScale,rectDp.pos.y * dpiScale},
             rectDp.w * dpiScale,
             rectDp.h * dpiScale
         };
@@ -228,7 +228,7 @@ void UIView::update(){
         const auto & spec = *entry.spec;
 
         auto previousRectIt = impl_->lastResolvedV2Rects_.find(entry.tag);
-        Core::Rect previousRectPx = (previousRectIt != impl_->lastResolvedV2Rects_.end())
+        Composition::Rect previousRectPx = (previousRectIt != impl_->lastResolvedV2Rects_.end())
                                         ? previousRectIt->second
                                         : entry.resolvedRectPx;
         LayoutDelta delta = computeLayoutDelta(previousRectPx,entry.resolvedRectPx);
@@ -275,7 +275,7 @@ void UIView::update(){
                     }
                     case Shape::Type::RoundedRect: {
                         auto rr = shapeToDraw.roundedRect;
-                        Core::Rect clampedRect {rr.pos,rr.w,rr.h};
+                        Composition::Rect clampedRect {rr.pos,rr.w,rr.h};
                         clampedRect = ViewResizeCoordinator::clampRectToParent(clampedRect,localBounds,layoutClamp);
                         rr.pos = clampedRect.pos;
                         rr.w = clampedRect.w;
@@ -287,13 +287,13 @@ void UIView::update(){
                     }
                     case Shape::Type::Ellipse: {
                         const auto & srcEllipse = shapeToDraw.ellipse;
-                        Core::Rect ellipseRect {
-                            Core::Position{srcEllipse.x - srcEllipse.rad_x,srcEllipse.y - srcEllipse.rad_y},
+                        Composition::Rect ellipseRect {
+                            Composition::Point2D{srcEllipse.x - srcEllipse.rad_x,srcEllipse.y - srcEllipse.rad_y},
                             std::max(1.f,srcEllipse.rad_x * 2.f),
                             std::max(1.f,srcEllipse.rad_y * 2.f)
                         };
                         ellipseRect = ViewResizeCoordinator::clampRectToParent(ellipseRect,localBounds,layoutClamp);
-                        Core::Ellipse ellipse {
+                        Composition::Ellipse ellipse {
                             ellipseRect.pos.x + (ellipseRect.w * 0.5f),
                             ellipseRect.pos.y + (ellipseRect.h * 0.5f),
                             ellipseRect.w * 0.5f,
@@ -316,7 +316,7 @@ void UIView::update(){
                 }
                 case Shape::Type::RoundedRect: {
                     auto rect = shapeToDraw.roundedRect;
-                    Core::Rect clampedRect {rect.pos,rect.w,rect.h};
+                    Composition::Rect clampedRect {rect.pos,rect.w,rect.h};
                     clampedRect = ViewResizeCoordinator::clampRectToParent(clampedRect,localBounds,layoutClamp);
                     rect.pos = clampedRect.pos;
                     rect.w = clampedRect.w;
@@ -328,8 +328,8 @@ void UIView::update(){
                 }
                 case Shape::Type::Ellipse: {
                     const auto & srcEllipse = shapeToDraw.ellipse;
-                    Core::Rect ellipseRect {
-                        Core::Position{
+                    Composition::Rect ellipseRect {
+                        Composition::Point2D{
                             srcEllipse.x - srcEllipse.rad_x,
                             srcEllipse.y - srcEllipse.rad_y
                         },
@@ -337,7 +337,7 @@ void UIView::update(){
                         std::max(1.f,srcEllipse.rad_y * 2.f)
                     };
                     ellipseRect = ViewResizeCoordinator::clampRectToParent(ellipseRect,localBounds,layoutClamp);
-                    Core::Ellipse ellipse {
+                    Composition::Ellipse ellipse {
                         ellipseRect.pos.x + (ellipseRect.w * 0.5f),
                         ellipseRect.pos.y + (ellipseRect.h * 0.5f),
                         ellipseRect.w * 0.5f,
@@ -348,8 +348,8 @@ void UIView::update(){
                 }
                 case Shape::Type::Path: {
                     if(shapeToDraw.path){
-                        auto vectorPath = *shapeToDraw.path;
-                        auto path = Composition::Path(vectorPath,shapeToDraw.pathStrokeWidth);
+                        auto & path = *shapeToDraw.path;
+                        path.setStroke(shapeToDraw.pathStrokeWidth);
                         if(shapeToDraw.closePath){
                             path.close();
                         }

@@ -3,6 +3,7 @@
 
 #include "omegaWTK/Native/NativeItem.h"
 #include "CompositorClient.h"
+#include "Geometry.h"
 
 #include "Layer.h"
 
@@ -27,9 +28,9 @@ namespace OmegaWTK::Composition {
 
     /// @brief Traverse any 2D scalar.
     class OMEGAWTK_EXPORT ScalarTraverse {
-        OmegaGTE::GPoint2D start_pt;
-        OmegaGTE::GPoint2D end_pt;
-        OmegaGTE::GPoint2D cur;
+        Point2D start_pt;
+        Point2D end_pt;
+        Point2D cur;
         float delta_x;
         float delta_y;
         unsigned speed;
@@ -38,11 +39,11 @@ namespace OmegaWTK::Composition {
         /// @param start Start Point of Scalar.
         /// @param end End Point of Scalar.
         /// @param speed The Speed of Traversal. (In units per step.)
-        explicit ScalarTraverse(OmegaGTE::GPoint2D start,OmegaGTE::GPoint2D end,unsigned speed = 1);
+        explicit ScalarTraverse(Point2D start,Point2D end,unsigned speed = 1);
 
         /// @brief Retrieve the current position of the traversal along the scalar.
         /// @returns A 2D Point.
-        OmegaGTE::GPoint2D get();
+        Point2D get();
 
         /// @brief Step forward in the curve by `speed` number of units.
         void forward();
@@ -60,7 +61,7 @@ namespace OmegaWTK::Composition {
         /// @note Will only change scalar if current position intersects new scalar.
         /// @param start The New Start Point.
         /// @param end The New End Point.
-        void changeScalar(OmegaGTE::GPoint2D start,OmegaGTE::GPoint2D end);
+        void changeScalar(Point2D start,Point2D end);
     };
 
     /// @brief Represents a generic mathematical linear or bezier curve used for animation.
@@ -79,7 +80,7 @@ namespace OmegaWTK::Composition {
         float start_h;
         float end_h;
 
-        OmegaGTE::GPoint2D a = {0,0},b = {0,0};
+        Point2D a = {0,0},b = {0,0};
     public:
 
         /// @brief Traversal of an AnimationCurve in a scaled integral 2D coordinate space.
@@ -88,7 +89,7 @@ namespace OmegaWTK::Composition {
             void *data, *initState;
 
         public:
-            OmegaGTE::GPoint2D get();
+            Point2D get();
             void next();
             bool end();
             void reset();
@@ -115,15 +116,15 @@ namespace OmegaWTK::Composition {
         /// @brief Create a Quadratic Bezier AnimationCurve.
         /// @param a The 'A' control point used in the curve.
         /// @returns AnimationCurve
-        static SharedHandle<AnimationCurve> Quadratic(OmegaGTE::GPoint2D a);
+        static SharedHandle<AnimationCurve> Quadratic(Point2D a);
 
         /// @brief Create a Cubic Bezier AnimationCurve.
         /// @param a The 'A' control point used in the curve.
         /// @param b The 'B' control point used in the curve.
         /// @returns AnimationCurve
-        static SharedHandle<AnimationCurve> Cubic(OmegaGTE::GPoint2D a,OmegaGTE::GPoint2D b);
-        static SharedHandle<AnimationCurve> CubicBezier(OmegaGTE::GPoint2D a,
-                                                        OmegaGTE::GPoint2D b,
+        static SharedHandle<AnimationCurve> Cubic(Point2D a,Point2D b);
+        static SharedHandle<AnimationCurve> CubicBezier(Point2D a,
+                                                        Point2D b,
                                                         float start_h = 0.f,
                                                         float end_h = 1.f);
 
@@ -261,10 +262,10 @@ namespace OmegaWTK::Composition {
         };
 
         template<>
-        struct KeyframeLerp<Core::Rect> {
-            static Core::Rect apply(const Core::Rect & lhs,const Core::Rect & rhs,float t){
-                return Core::Rect{
-                        Core::Position{
+        struct KeyframeLerp<Composition::Rect> {
+            static Composition::Rect apply(const Composition::Rect & lhs,const Composition::Rect & rhs,float t){
+                return Composition::Rect{
+                        Composition::Point2D{
                                 lerp(lhs.pos.x,rhs.pos.x,t),
                                 lerp(lhs.pos.y,rhs.pos.y,t)},
                         lerp(lhs.w,rhs.w,t),
@@ -371,14 +372,14 @@ namespace OmegaWTK::Composition {
     };
 
     struct LayerClip {
-        Core::Optional<KeyframeTrack<Core::Rect>> rect;
+        Core::Optional<KeyframeTrack<Composition::Rect>> rect;
         Core::Optional<KeyframeTrack<LayerEffect::TransformationParams>> transform;
         Core::Optional<KeyframeTrack<LayerEffect::DropShadowParams>> shadow;
         Core::Optional<KeyframeTrack<float>> opacity;
     };
 
     struct ViewClip {
-        Core::Optional<KeyframeTrack<Core::Rect>> rect;
+        Core::Optional<KeyframeTrack<Composition::Rect>> rect;
         Core::Optional<KeyframeTrack<float>> opacity;
     };
 

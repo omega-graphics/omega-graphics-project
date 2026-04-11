@@ -3,7 +3,7 @@
 
 namespace OmegaWTK::Native {
     #ifdef TARGET_MACOS
-    NativeWindow::NativeWindow(Core::Rect & rect):rect(rect){};
+    NativeWindow::NativeWindow(Composition::Rect & rect):rect(rect){};
     #endif
     #ifdef TARGET_MACOS
     bool NativeWindow::hasEventEmitter() {

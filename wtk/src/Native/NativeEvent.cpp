@@ -3,7 +3,7 @@
 
 namespace OmegaWTK::Native {
 
-WindowWillResize::WindowWillResize(Core::Rect r, std::uint64_t gen) : rect(r), generation(gen) {}
+WindowWillResize::WindowWillResize(Composition::Rect r, std::uint64_t gen) : rect(r), generation(gen) {}
 
 NativeEvent::NativeEvent(EventType _type, NativeEventParams p) : type(_type), params(p) {}
 

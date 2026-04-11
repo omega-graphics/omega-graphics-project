@@ -60,8 +60,8 @@ namespace OmegaWTK {
     class OMEGAWTK_EXPORT ViewResizeCoordinator {
         struct ChildState {
             ChildResizeSpec spec {};
-            Core::Rect baselineParentRect {Core::Position{0.f,0.f},1.f,1.f};
-            Core::Rect baselineChildRect {Core::Position{0.f,0.f},1.f,1.f};
+            Composition::Rect baselineParentRect {Composition::Point2D{0.f,0.f},1.f,1.f};
+            Composition::Rect baselineChildRect {Composition::Point2D{0.f,0.f},1.f,1.f};
             bool hasBaseline = false;
         };
         View * parentView = nullptr;
@@ -73,12 +73,12 @@ namespace OmegaWTK {
         void updateChildSpec(View * child,const ChildResizeSpec & spec);
         void unregisterChild(View * child);
         void beginResizeSession(std::uint64_t sessionId);
-        Core::Rect resolveChildRect(View * child,
-                                    const Core::Rect & requested,
-                                    const Core::Rect & parentContentRect);
-        void resolve(const Core::Rect & parentContentRect);
-        static Core::Rect clampRectToParent(const Core::Rect & requested,
-                                            const Core::Rect & parentContentRect,
+        Composition::Rect resolveChildRect(View * child,
+                                    const Composition::Rect & requested,
+                                    const Composition::Rect & parentContentRect);
+        void resolve(const Composition::Rect & parentContentRect);
+        static Composition::Rect clampRectToParent(const Composition::Rect & requested,
+                                            const Composition::Rect & parentContentRect,
                                             const ChildResizeSpec & spec);
     };
     
@@ -115,12 +115,12 @@ namespace OmegaWTK {
             @param parent The parent View (nullptr for root views)
             @returns A View!
          */
-        View(const Core::Rect & rect,ViewPtr parent = nullptr);
+        View(const Composition::Rect & rect,ViewPtr parent = nullptr);
     public:
         OMEGACOMMON_CLASS("OmegaWTK.View")
 
         /// Creates a View. Public factory for use by Widget subclass constructors.
-        static ViewPtr Create(const Core::Rect & rect,ViewPtr parent = nullptr){
+        static ViewPtr Create(const Composition::Rect & rect,ViewPtr parent = nullptr){
             return ViewPtr(new View(rect,parent));
         }
 
@@ -128,7 +128,7 @@ namespace OmegaWTK {
          * @brief Create A Layer
          * @param rect The Rectangle defining the bounds of the layer.
          * @returns Layer*/
-        SharedHandle<Composition::Layer> makeLayer(Core::Rect rect);
+        SharedHandle<Composition::Layer> makeLayer(Composition::Rect rect);
 
         /**
          * @brief Create a Canvas that renders to CanvasFrames compatible with a Layer.
@@ -137,7 +137,7 @@ namespace OmegaWTK {
         SharedHandle<Composition::Canvas> makeCanvas(SharedHandle<Composition::Layer> & targetLayer);
 
         /// @brief Retrieves the Rect that defines the position and bounds of the View.
-        Core::Rect & getRect();
+        Composition::Rect & getRect();
         /// @brief Retrieves the View's own LayerTree.
         Composition::LayerTree * getLayerTree();
         /// @brief Checks to see if this View is the root View of a Widget.
@@ -151,11 +151,11 @@ namespace OmegaWTK {
 
         /// @brief Returns true if `point` (in parent-relative coordinates)
         /// falls within this View's rect.
-        bool containsPoint(const Core::Position &point) const;
+        bool containsPoint(const Composition::Point2D &point) const;
 
         /// @brief Resize the view synchronously.
         /// @note If you wish to animate the View resize, please use the ViewAnimator to perform that action.
-        virtual void resize(Core::Rect newRect);
+        virtual void resize(Composition::Rect newRect);
 
         /// @brief Starts a Composition Session for this View.
         /// @paragraph Upon invocation, this will allow Canvases to render to child Layers in the View's LayerTree
@@ -187,12 +187,12 @@ namespace OmegaWTK {
         /// CanvasFrame::windowOffset at paint time. If any ancestor is a
         /// scrolling container, its scroll offset is subtracted so content
         /// appears translated by the scroll amount.
-        Core::Position computeWindowOffset() const;
+        Composition::Point2D computeWindowOffset() const;
 
         /// Returns the scroll offset that this View contributes to
         /// child content positioning. Non-scrolling Views return {0,0}.
         /// ScrollView overrides this to return its scrollOffset.
-        virtual Core::Position scrollOffsetContribution() const;
+        virtual Composition::Point2D scrollOffsetContribution() const;
 
         void applyLayoutDelta(const struct LayoutDelta & delta,
                               const struct LayoutTransitionSpec & spec);

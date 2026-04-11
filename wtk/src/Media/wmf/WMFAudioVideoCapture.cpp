@@ -165,10 +165,10 @@ namespace OmegaWTK::Media {
     class WMFVideoSampleGrabber : public IMFSampleGrabberSinkCallback {
         VideoFrameSink *visualSink;
         unsigned refCount = 1;
-        Core::Rect frameRect;
+        Composition::Rect frameRect;
         IMFPresentationClock *clock;
     public:
-        explicit WMFVideoSampleGrabber(VideoFrameSink * sink,const Core::Rect & frameRect):
+        explicit WMFVideoSampleGrabber(VideoFrameSink * sink,const Composition::Rect & frameRect):
         visualSink(sink),
         frameRect(frameRect){
 
@@ -566,7 +566,7 @@ namespace OmegaWTK::Media {
         IMFSourceResolver *sourceResolver;
         PROPVARIANT p;
         IMFMediaSource *mediaSource;
-        Core::Rect frameRect;
+        Composition::Rect frameRect;
     public:
         explicit WMFVideoPlaybackSession(UniqueHandle<AudioVideoProcessor> & processor) : VideoPlaybackSession(processor){
             IMFAttributes *attrs;
@@ -614,7 +614,7 @@ namespace OmegaWTK::Media {
             handler->GetCurrentMediaType(&type);
             UINT32 w,h;
             MFGetAttributeSize(type,MF_MT_FRAME_SIZE,&w,&h);
-            frameRect = Core::Rect {Core::Position {0,0},(float)w,(float)h};
+            frameRect = Composition::Rect {Composition::Point2D {0,0},(float)w,(float)h};
         }
         void start() override {
 

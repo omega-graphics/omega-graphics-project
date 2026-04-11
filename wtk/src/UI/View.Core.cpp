@@ -37,7 +37,7 @@ const SharedHandle<Composition::ViewRenderTarget> & View::renderTargetHandle() c
     return impl_->renderTarget;
 }
 
-Core::Rect & View::getRect(){
+Composition::Rect & View::getRect(){
     return impl_->rect;
 }
 
@@ -57,17 +57,17 @@ const ViewResizeCoordinator & View::getResizeCoordinator() const{
     return impl_->resizeCoordinator;
 }
 
-bool View::containsPoint(const Core::Position &point) const{
+bool View::containsPoint(const Composition::Point2D &point) const{
     const auto &r = impl_->rect;
     return point.x >= r.pos.x && point.x < r.pos.x + r.w &&
            point.y >= r.pos.y && point.y < r.pos.y + r.h;
 }
 
 
-View::View(const Core::Rect & rect,ViewPtr parent):
+View::View(const Composition::Rect & rect,ViewPtr parent):
     impl_(std::make_unique<Impl>(
             *this,
-            ViewInternal::sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f}),
+            ViewInternal::sanitizeRect(rect,Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f}),
             parent.get())){
     // Phase 3: View is purely virtual. No NativeItem, no per-View render
     // target, no pre-created visual resources. The window's render target
@@ -119,7 +119,7 @@ void View::removeSubView(View *view){
     }
 }
 
-void View::resize(Core::Rect newRect){
+void View::resize(Composition::Rect newRect){
     auto sanitized = ViewInternal::sanitizeRect(newRect,impl_->rect);
     if(ViewInternal::sameRect(impl_->rect,sanitized)){
         return;
@@ -133,7 +133,7 @@ void View::resize(Core::Rect newRect){
 }
 
 
-SharedHandle<Composition::Layer> View::makeLayer(Core::Rect rect){
+SharedHandle<Composition::Layer> View::makeLayer(Composition::Rect rect){
     auto layer = std::make_shared<Composition::Layer>(rect);
     layer->parentTree = impl_->ownLayerTree.get();
     impl_->ownLayerTree->addLayer(layer);
@@ -209,8 +209,8 @@ void View::setWindowRenderTarget(SharedHandle<Composition::ViewRenderTarget> win
     }
 }
 
-Core::Position View::computeWindowOffset() const{
-    Core::Position offset {0.f, 0.f};
+Composition::Point2D View::computeWindowOffset() const{
+    Composition::Point2D offset {0.f, 0.f};
     const View *v = this;
     while(v != nullptr){
         offset.x += v->impl_->rect.pos.x;
@@ -227,7 +227,7 @@ Core::Position View::computeWindowOffset() const{
     return offset;
 }
 
-Core::Position View::scrollOffsetContribution() const{
+Composition::Point2D View::scrollOffsetContribution() const{
     return {0.f, 0.f};
 }
 

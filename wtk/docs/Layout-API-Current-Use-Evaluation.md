@@ -216,13 +216,13 @@ using namespace OmegaWTK;
 
 class ColorBlock final : public Widget {
 public:
-    explicit ColorBlock(Core::Rect rect) : Widget(rect) {}
+    explicit ColorBlock(Composition::Rect rect) : Widget(rect) {}
 };
 
 static void mockCurrentUserLayoutTest() {
-    auto root = make<Container>(Core::Rect{{0,0},800,600});
-    auto header = make<ColorBlock>(Core::Rect{{0,0},1,1});
-    auto content = make<ColorBlock>(Core::Rect{{0,0},1,1});
+    auto root = make<Container>(Composition::Rect{{0,0},800,600});
+    auto header = make<ColorBlock>(Composition::Rect{{0,0},1,1});
+    auto content = make<ColorBlock>(Composition::Rect{{0,0},1,1});
 
     LayoutStyle rootStyle {};
     rootStyle.display = LayoutDisplay::Flex;
@@ -299,9 +299,9 @@ using namespace OmegaWTK;
 static void mockCurrentUIViewUsage(UIView *view) {
     UIViewLayout layout {};
     layout.shape("card_rect",Shape::RoundedRect(
-        Core::RoundedRect{Core::Position{0.f,0.f},280.f,160.f,16.f,16.f}));
+        Composition::RoundedRect{Composition::Point2D{0.f,0.f},280.f,160.f,16.f,16.f}));
     layout.text("card_title",U"Layout Audit",
-                Core::Rect{Core::Position{24.f,24.f},232.f,24.f});
+                Composition::Rect{Composition::Point2D{24.f,24.f},232.f,24.f});
     view->setLayout(layout);
 
     auto style = StyleSheet::Create();

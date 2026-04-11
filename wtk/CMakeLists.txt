@@ -396,7 +396,8 @@ add_library(OmegaWTK_Core STATIC ${CORE_SRCS})
 target_include_directories(OmegaWTK_Core
 	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
 	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
-	PRIVATE "${OMEGAWTK_SOURCE_DIR}/tools/assetc")
+	PRIVATE "${OMEGAWTK_SOURCE_DIR}/tools/assetc"
+	        $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
 target_link_libraries(OmegaWTK_Core PUBLIC OmegaCommon icuuc icudata icui18n xml2)
 
 add_library(OmegaWTK_Native STATIC ${NATIVE_SRCS})
@@ -416,20 +417,22 @@ add_library(OmegaWTK_Composition STATIC ${COMPOSITION_SRCS})
 target_include_directories(OmegaWTK_Composition
 	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
 	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
-	       $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>
-	PRIVATE ${NATIVE_PRIVATE_INCLUDE_DIR})
-target_link_libraries(OmegaWTK_Composition PUBLIC OmegaCommon)
+	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>
+	        ${NATIVE_PRIVATE_INCLUDE_DIR})
+target_link_libraries(OmegaWTK_Composition PUBLIC OmegaCommon PRIVATE OmegaGTE)
 
 add_library(OmegaWTK_UI STATIC ${UI_SRCS})
 target_include_directories(OmegaWTK_UI
 	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
-	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>)
+	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
 target_link_libraries(OmegaWTK_UI PUBLIC OmegaCommon)
 
 add_library(OmegaWTK_Widgets STATIC ${WIDGETS_SRCS})
 target_include_directories(OmegaWTK_Widgets
 	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
-	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>)
+	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
 target_link_libraries(OmegaWTK_Widgets PUBLIC OmegaCommon)
 
 set(OMEGAWTK_SUBMODULE_LIBS OmegaWTK_Core OmegaWTK_Native OmegaWTK_Media OmegaWTK_Composition OmegaWTK_UI OmegaWTK_Widgets)
@@ -516,8 +519,7 @@ if(TARGET_MACOS)
 	target_link_system_frameworks("OmegaWTK" Metal Cocoa QuartzCore AVFoundation VideoToolbox AudioToolbox CoreMedia CoreAudio UserNotifications)
 	target_link_frameworks("OmegaWTK" OmegaGTE)
 else()
-	target_link_libraries("OmegaWTK" PUBLIC OmegaGTE)
-	target_include_directories("OmegaWTK" PUBLIC $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
+	target_link_libraries("OmegaWTK" PRIVATE OmegaGTE)
 endif()
 target_link_libraries("OmegaWTK" PUBLIC "OmegaCommon" icuuc icudata icui18n xml2 png turbojpeg tiff)
 

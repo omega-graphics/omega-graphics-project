@@ -1,4 +1,5 @@
 #include "omegaWTK/Core/Core.h"
+#include "omegaWTK/Composition/Geometry.h"
 #include <functional>
 #include <cstdint>
 
@@ -21,24 +22,24 @@ struct OMEGAWTK_EXPORT ModifierFlags {
 };
 
 struct OMEGAWTK_EXPORT MouseEventParams {
-    Core::Position position;
-    Core::Position screenPosition;
+    Composition::Point2D position;
+    Composition::Point2D screenPosition;
     ModifierFlags modifiers;
     unsigned clickCount = 1;
 };
 
 struct OMEGAWTK_EXPORT CursorMoveParams {
-    Core::Position position;
-    Core::Position screenPosition;
+    Composition::Point2D position;
+    Composition::Point2D screenPosition;
     ModifierFlags modifiers;
 };
 
 struct OMEGAWTK_EXPORT CursorEnterParams {
-    Core::Position position;
+    Composition::Point2D position;
 };
 
 struct OMEGAWTK_EXPORT CursorExitParams {
-    Core::Position position;
+    Composition::Point2D position;
 };
 
 struct OMEGAWTK_EXPORT LMouseDownParams : MouseEventParams {};
@@ -77,19 +78,19 @@ struct OMEGAWTK_EXPORT KeyUpParams {
 struct OMEGAWTK_EXPORT ViewHasLoaded {};
 
 struct OMEGAWTK_EXPORT ViewResize {
-    Core::Rect rect;
+    Composition::Rect rect;
 };
 
 struct OMEGAWTK_EXPORT ScrollParams {
     float deltaX;
     float deltaY;
-    Core::Position position;
+    Composition::Point2D position;
 };
 
 struct OMEGAWTK_EXPORT WindowWillResize {
-    Core::Rect rect;
+    Composition::Rect rect;
     std::uint64_t generation;
-    WindowWillResize(Core::Rect rect, std::uint64_t generation = 0);
+    WindowWillResize(Composition::Rect rect, std::uint64_t generation = 0);
 };
 
 // --- NativeEvent ---

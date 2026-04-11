@@ -3,7 +3,7 @@
 
 namespace OmegaWTK {
 
-void Widget::handleHostResize(const Core::Rect &rect){
+void Widget::handleHostResize(const Composition::Rect &rect){
     auto oldRect = this->rect();
     view->resize(rect);
     auto & rootRect = view->getRect();
@@ -56,7 +56,7 @@ MeasureResult Widget::measureSelf(const LayoutContext & /*ctx*/){
     return {r.w, r.h};
 }
 
-void Widget::onLayoutResolved(const Core::Rect & finalRectPx){
+void Widget::onLayoutResolved(const Composition::Rect & finalRectPx){
     setRect(finalRectPx);
 }
 

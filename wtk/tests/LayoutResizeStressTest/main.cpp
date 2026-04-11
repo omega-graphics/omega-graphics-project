@@ -57,7 +57,7 @@ static void testResolveClampedRect(){
     style.width = LayoutLength::Dp(100.f);
     style.height = LayoutLength::Dp(60.f);
 
-    Core::Rect avail {Core::Position{0.f,0.f},400.f,300.f};
+    Composition::Rect avail {Composition::Point2D{0.f,0.f},400.f,300.f};
     auto rect = resolveClampedRect(style,avail,1.f);
     assert(nearEq(rect.w,100.f));
     assert(nearEq(rect.h,60.f));
@@ -73,7 +73,7 @@ static void testResolveClampedRect(){
 
 static void testDpiConversion(){
     LayoutContext ctx {};
-    ctx.availableRectPx = {Core::Position{0.f,0.f},400.f,300.f};
+    ctx.availableRectPx = {Composition::Point2D{0.f,0.f},400.f,300.f};
     ctx.dpiScale = 2.f;
     assert(nearEq(ctx.dpToPx(50.f),100.f));
 
@@ -97,7 +97,7 @@ static void testMultiDpiDeterminism(){
 
     for(float dpi : dpiScales){
         LayoutContext ctx {};
-        ctx.availableRectPx = {Core::Position{0.f,0.f},800.f * dpi,600.f * dpi};
+        ctx.availableRectPx = {Composition::Point2D{0.f,0.f},800.f * dpi,600.f * dpi};
         ctx.dpiScale = dpi;
         auto avail = ctx.availableRectDp();
 
@@ -132,7 +132,7 @@ static void testResizeStress(){
             float parentH = 80.f + static_cast<float>(i) * 1.2f;
 
             LayoutContext ctx {};
-            ctx.availableRectPx = {Core::Position{0.f,0.f},parentW * dpi,parentH * dpi};
+            ctx.availableRectPx = {Composition::Point2D{0.f,0.f},parentW * dpi,parentH * dpi};
             ctx.dpiScale = dpi;
             auto avail = ctx.availableRectDp();
 
@@ -154,8 +154,8 @@ static void testResizeStress(){
 }
 
 static void testLayoutDeltaComputation(){
-    Core::Rect from {Core::Position{10.f,20.f},100.f,80.f};
-    Core::Rect to {Core::Position{15.f,20.f},100.f,90.f};
+    Composition::Rect from {Composition::Point2D{10.f,20.f},100.f,80.f};
+    Composition::Rect to {Composition::Point2D{15.f,20.f},100.f,90.f};
     auto delta = computeLayoutDelta(from,to);
     assert(delta.changedProperties.size() == 2);
 
@@ -168,7 +168,7 @@ static void testLayoutDeltaComputation(){
     assert(hasX);
     assert(hasH);
 
-    Core::Rect same {Core::Position{0.f,0.f},100.f,100.f};
+    Composition::Rect same {Composition::Point2D{0.f,0.f},100.f,100.f};
     auto noDelta = computeLayoutDelta(same,same);
     assert(noDelta.changedProperties.empty());
 
@@ -179,8 +179,8 @@ static void testDiagnosticSink(){
     VectorDiagnosticSink sink;
     LayoutDiagnosticEntry entry {};
     entry.nodeId = "testNode";
-    entry.rectDp = {Core::Position{0.f,0.f},100.f,50.f};
-    entry.rectPx = {Core::Position{0.f,0.f},200.f,100.f};
+    entry.rectDp = {Composition::Point2D{0.f,0.f},100.f,50.f};
+    entry.rectPx = {Composition::Point2D{0.f,0.f},200.f,100.f};
     entry.pass = LayoutDiagnosticEntry::Pass::Arrange;
     sink.record(entry);
     assert(sink.entries().size() == 1);
@@ -248,7 +248,7 @@ static void testAspectRatioResolve(){
     style.height = LayoutLength::Auto();
     style.aspectRatio = 2.f;
 
-    Core::Rect avail {Core::Position{0.f,0.f},400.f,300.f};
+    Composition::Rect avail {Composition::Point2D{0.f,0.f},400.f,300.f};
     auto rect = resolveClampedRect(style,avail,1.f);
     assert(nearEq(rect.w,200.f));
     assert(nearEq(rect.h,100.f));
@@ -264,7 +264,7 @@ static void testAbsolutePositioning(){
     style.insetLeft = LayoutLength::Dp(10.f);
     style.insetTop = LayoutLength::Dp(20.f);
 
-    Core::Rect avail {Core::Position{0.f,0.f},400.f,300.f};
+    Composition::Rect avail {Composition::Point2D{0.f,0.f},400.f,300.f};
     auto rect = resolveClampedRect(style,avail,1.f);
     assert(nearEq(rect.pos.x,10.f));
     assert(nearEq(rect.pos.y,20.f));

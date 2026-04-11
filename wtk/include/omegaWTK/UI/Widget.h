@@ -52,7 +52,7 @@ enum class GeometryChangeReason : uint8_t {
 };
 
 struct GeometryProposal {
-    Core::Rect requested {};
+    Composition::Rect requested {};
     GeometryChangeReason reason = GeometryChangeReason::ChildRequest;
 };
 
@@ -66,13 +66,13 @@ struct PaintOptions {
 class OMEGAWTK_EXPORT WidgetGeometryDelegate {
 public:
     virtual ~WidgetGeometryDelegate() = default;
-    virtual Core::Rect clampChildRect(Widget & parent,
+    virtual Composition::Rect clampChildRect(Widget & parent,
                                       Widget & child,
                                       const GeometryProposal & proposal) = 0;
     virtual void onChildRectCommitted(Widget & parent,
                                       Widget & child,
-                                      const Core::Rect & oldRect,
-                                      const Core::Rect & newRect,
+                                      const Composition::Rect & oldRect,
+                                      const Composition::Rect & newRect,
                                       GeometryChangeReason reason){
         (void)parent;
         (void)child;
@@ -104,7 +104,7 @@ private:
 
     void onThemeSetRecurse(Native::ThemeDesc &desc);
     void executePaint(PaintReason reason,bool immediate);
-    void handleHostResize(const Core::Rect & rect);
+    void handleHostResize(const Composition::Rect & rect);
 
     using Native::NativeThemeObserver::onThemeSet;
 protected:
@@ -125,19 +125,19 @@ protected:
     } WidgetEventType;
     struct WidgetEventParams {
         WidgetPtr widget;
-        Core::Rect rect;
+        Composition::Rect rect;
     };
     void notifyObservers(WidgetEventType eventType,WidgetEventParams params);
 
     virtual void onMount(){};
     virtual void onPaint(PaintReason reason){};
-    virtual Core::Rect clampChildRect(const Widget & child,const GeometryProposal & proposal) const;
+    virtual Composition::Rect clampChildRect(const Widget & child,const GeometryProposal & proposal) const;
     virtual void onChildRectCommitted(const Widget & child,
-                                      const Core::Rect & oldRect,
-                                      const Core::Rect & newRect,
+                                      const Composition::Rect & oldRect,
+                                      const Composition::Rect & newRect,
                                       GeometryChangeReason reason);
     virtual MeasureResult measureSelf(const LayoutContext & ctx);
-    virtual void onLayoutResolved(const Core::Rect & finalRectPx);
+    virtual void onLayoutResolved(const Composition::Rect & finalRectPx);
     static bool geometryTraceLoggingEnabled();
     GeometryTraceContext geometryTraceContext() const;
 
@@ -161,9 +161,9 @@ public:
     /**
      Get the Widget's root View's rect
     */
-    Core::Rect & rect();
-    void setRect(const Core::Rect & newRect);
-    bool requestRect(const Core::Rect & requested,
+    Composition::Rect & rect();
+    void setRect(const Composition::Rect & newRect);
+    bool requestRect(const Composition::Rect & requested,
                      GeometryChangeReason reason = GeometryChangeReason::ChildRequest);
 
     void setLayoutStyle(const LayoutStyle & style);
@@ -193,7 +193,7 @@ public:
     void invalidate(PaintReason reason = PaintReason::StateChanged);
     void invalidateNow(PaintReason reason = PaintReason::StateChanged);
     // bool & isResizable();
-    virtual void resize(Core::Rect & newRect){
+    virtual void resize(Composition::Rect & newRect){
         // std::cout << "THIS WIDGET IS NOT RESIZABLE" << std::endl;
     };
     /**
@@ -205,7 +205,7 @@ public:
     */
     void hide();
 protected:
-    explicit Widget(Core::Rect rect);
+    explicit Widget(Composition::Rect rect);
     explicit Widget(ViewPtr view);
 
     /// Returns a typed reference to this widget's root view.
@@ -220,7 +220,7 @@ protected:
     /// root view as its parent. The first argument is the rect; the parent
     /// ViewPtr is inserted as the second argument to T's constructor.
     template<typename T, typename... Args>
-    SharedHandle<T> makeSubView(const Core::Rect & rect, Args&&... args) {
+    SharedHandle<T> makeSubView(const Composition::Rect & rect, Args&&... args) {
         return SharedHandle<T>(new T(rect, view, std::forward<Args>(args)...));
     }
 
@@ -235,8 +235,8 @@ public:
  so that users don't have to specify the View as the Widget subclass already handles it.
  Parent attachment happens afterward via Container::addChild, never at construction.
 */
-#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(Core::Rect rect,## __VA_ARGS__);
-#define WIDGET_CONSTRUCTOR_IMPL(...) Create(Core::Rect rect,## __VA_ARGS__)
+#define WIDGET_CONSTRUCTOR(...) static SharedHandle<Widget> Create(Composition::Rect rect,## __VA_ARGS__);
+#define WIDGET_CONSTRUCTOR_IMPL(...) Create(Composition::Rect rect,## __VA_ARGS__)
 
 
 
@@ -262,7 +262,7 @@ public:
      /// Called when the Widget has been dettached from a WidgetTree.
     INTERFACE_METHOD void onWidgetDetach(WidgetPtr parent) DEFAULT;
     /// Called when the Widget has changed size.
-    INTERFACE_METHOD void onWidgetChangeSize(Core::Rect oldRect,Core::Rect & newRect) DEFAULT;
+    INTERFACE_METHOD void onWidgetChangeSize(Composition::Rect oldRect,Composition::Rect & newRect) DEFAULT;
     /// Called when the Widget has just been Hidden.
     INTERFACE_METHOD void onWidgetDidHide() DEFAULT;
     /// Called when the Widget has just been Shown.

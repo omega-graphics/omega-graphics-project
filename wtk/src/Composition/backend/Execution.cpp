@@ -36,8 +36,8 @@ namespace {
         }
     }
 
-    static inline Core::Rect sanitizeCommandRect(const Core::Rect & candidate,const Core::Rect & fallback){
-        Core::Rect saneFallback = fallback;
+    static inline Composition::Rect sanitizeCommandRect(const Composition::Rect & candidate,const Composition::Rect & fallback){
+        Composition::Rect saneFallback = fallback;
         if(!std::isfinite(saneFallback.pos.x)){
             saneFallback.pos.x = 0.f;
         }
@@ -53,7 +53,7 @@ namespace {
         saneFallback.w = std::clamp(saneFallback.w,1.f,kMaxLogicalLayerDimension);
         saneFallback.h = std::clamp(saneFallback.h,1.f,kMaxLogicalLayerDimension);
 
-        Core::Rect sane = candidate;
+        Composition::Rect sane = candidate;
         if(!std::isfinite(sane.pos.x)){
             sane.pos.x = saneFallback.pos.x;
         }
@@ -71,8 +71,8 @@ namespace {
         return sane;
     }
 
-    static inline Core::Rect normalizeRootVisualRect(const Core::Rect & rect){
-        Core::Rect normalized = rect;
+    static inline Composition::Rect normalizeRootVisualRect(const Composition::Rect & rect){
+        Composition::Rect normalized = rect;
         normalized.pos.x = 0.f;
         normalized.pos.y = 0.f;
         return normalized;
@@ -106,7 +106,7 @@ namespace {
                 auto treeRoot = layer->getParentTree()->getRootLayer();
                 auto rootRect = sanitizeCommandRect(
                         treeRoot->getLayerRect(),
-                        Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+                        Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f});
                 rootRect = normalizeRootVisualRect(rootRect);
                 BackendResourceFactory factory;
                 auto rootVisual = factory.createRootVisual(*target.visualTree, rootRect, target.viewPresentTarget);
@@ -117,7 +117,7 @@ namespace {
             }
             auto layerRect = sanitizeCommandRect(
                     layer->getLayerRect(),
-                    Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+                    Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f});
             BackendResourceFactory factory;
             auto visual = factory.createChildVisual(*target.visualTree, layerRect);
             auto inserted = target.surfaceTargets.insert(std::make_pair(layer,&visual->renderTarget));
@@ -135,7 +135,7 @@ namespace {
             }
             auto layerRect = sanitizeCommandRect(
                     layer->getLayerRect(),
-                    Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+                    Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f});
             layerRect = normalizeRootVisualRect(layerRect);
             rootTarget->setRenderTargetSize(layerRect);
             return inserted.first->second;
@@ -143,7 +143,7 @@ namespace {
 
         auto layerRect = sanitizeCommandRect(
                 layer->getLayerRect(),
-                Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+                Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f});
         layerRect = normalizeRootVisualRect(layerRect);
         BackendResourceFactory factory;
         auto visual = factory.createRootVisual(*target.visualTree, layerRect, target.viewPresentTarget);
@@ -223,7 +223,7 @@ void Compositor::executeCurrentCommand(){
         // advanced due to subsequent resize events on the main thread.
         auto layerRect = sanitizeCommandRect(
                 comm->frame->rect,
-                Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+                Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f});
         const bool isRootVisualContext = (target->visualTree != nullptr &&
                                           target->visualTree->root != nullptr &&
                                           targetContext == &(target->visualTree->root->renderTarget));
@@ -327,7 +327,7 @@ void Compositor::executeCurrentCommand(){
         if(params->subtype == CompositorLayerCommand::Resize){
             auto priorRect = sanitizeCommandRect(
                     params->layer->getLayerRect(),
-                    Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+                    Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f});
             auto layerRect = priorRect;
             layerRect.pos.x += (float)params->delta_x;
             layerRect.pos.y += (float)params->delta_y;
@@ -348,7 +348,7 @@ void Compositor::executeCurrentCommand(){
         if(params->subType == CompositorViewCommand::Resize){
             auto currentRect = sanitizeCommandRect(
                     params->viewPtr->getRect(),
-                    Core::Rect{Core::Position{0.f,0.f},1.f,1.f});
+                    Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f});
             auto nextRect = currentRect;
             nextRect.pos.x += static_cast<float>(params->delta_x);
             nextRect.pos.y += static_cast<float>(params->delta_y);

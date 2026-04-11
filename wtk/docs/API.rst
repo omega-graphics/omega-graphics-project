@@ -96,7 +96,7 @@ OmegaWTK does not use ``main``. Instead, you provide a function named
     };
 
     int omegaWTKMain(AppInst *app) {
-        Core::Rect windowRect{{0, 0}, 800, 600};
+        Composition::Rect windowRect{{0, 0}, 800, 600};
 
         auto window = make<AppWindow>(windowRect, new MyWindowDelegate());
         window->setTitle("My App");
@@ -122,7 +122,7 @@ App Window
     A top-level OS window. Holds a root widget, an optional menu bar
     (desktop), and exposes dialog APIs.
 
-    .. cpp:function:: explicit AppWindow(Core::Rect rect, AppWindowDelegate *delegate = nullptr)
+    .. cpp:function:: explicit AppWindow(Composition::Rect rect, AppWindowDelegate *delegate = nullptr)
 
         Constructs the window at the given screen rect. ``delegate`` receives
         resize and close events; pass ``nullptr`` if not needed.
@@ -202,7 +202,7 @@ App Window
         Called when the OS is about to close the window (e.g. the user clicked
         the close button). The typical action is ``AppInst::terminate()``.
 
-    .. cpp:function:: virtual void windowWillResize(Core::Rect &nRect)
+    .. cpp:function:: virtual void windowWillResize(Composition::Rect &nRect)
 
         Called during a live resize. ``nRect`` contains the new proposed
         dimensions. Modify ``nRect`` to constrain the resize.
@@ -227,14 +227,14 @@ are typedefs of their OmegaGTE equivalents.
 
     .. code-block:: cpp
 
-        Core::Rect r{{10.f, 20.f}, 300.f, 200.f};
+        Composition::Rect r{{10.f, 20.f}, 300.f, 200.f};
         // x=10, y=20, width=300, height=200
 
 .. cpp:struct:: RoundedRect
 
     A ``Rect`` extended with per-corner radii::
 
-        Core::RoundedRect rr{{{0,0}, 200, 60}, 8.f};   // uniform radius
+        Composition::RoundedRect rr{{{0,0}, 200, 60}, 8.f};   // uniform radius
 
 .. cpp:struct:: Ellipse
 
@@ -260,7 +260,7 @@ Widget
 
     Subclasses call one of the two protected constructors:
 
-    * ``Widget(Core::Rect rect)`` — creates a new ``CanvasView`` sized to ``rect``.
+    * ``Widget(Composition::Rect rect)`` — creates a new ``CanvasView`` sized to ``rect``.
     * ``Widget(ViewPtr view)`` — wraps an existing View.
 
     The ``WIDGET_CONSTRUCTOR(...)`` macro declares a public static ``Create``
@@ -268,17 +268,17 @@ Widget
 
     **Geometry**
 
-    .. cpp:function:: Core::Rect &rect()
+    .. cpp:function:: Composition::Rect &rect()
 
         Returns a reference to the widget's current bounding rect (in window
         coordinates).
 
-    .. cpp:function:: void setRect(const Core::Rect &newRect)
+    .. cpp:function:: void setRect(const Composition::Rect &newRect)
 
         Immediately sets the widget's rect without animation. Triggers a
         paint if the size changed.
 
-    .. cpp:function:: bool requestRect(const Core::Rect &requested, GeometryChangeReason reason)
+    .. cpp:function:: bool requestRect(const Composition::Rect &requested, GeometryChangeReason reason)
 
         Requests a geometry change from the widget's parent (or tree host if
         root). Returns ``true`` if the parent accepted the new rect. Prefer
@@ -352,7 +352,7 @@ Widget
         Override to report the widget's intrinsic size in dp units. The
         layout engine calls this during the measure pass.
 
-    .. cpp:function:: virtual void onLayoutResolved(const Core::Rect &finalRectPx)
+    .. cpp:function:: virtual void onLayoutResolved(const Composition::Rect &finalRectPx)
 
         Called after the layout engine has committed a final pixel rect for
         the widget. Use this to update sub-views that depend on the resolved
@@ -365,7 +365,7 @@ Widget
     class MyWidget : public OmegaWTK::Widget {
         SharedHandle<Composition::Font> font_;
     public:
-        explicit MyWidget(Core::Rect rect)
+        explicit MyWidget(Composition::Rect rect)
             : Widget(rect) {}
 
         void onMount() override {
@@ -401,7 +401,7 @@ Widget
 
         Called when the widget is removed from a widget tree.
 
-    .. cpp:function:: virtual void onWidgetChangeSize(Core::Rect oldRect, Core::Rect &newRect)
+    .. cpp:function:: virtual void onWidgetChangeSize(Composition::Rect oldRect, Composition::Rect &newRect)
 
         Called when the widget's bounding rect changes. ``newRect`` can be
         modified to veto or clamp the resize.
@@ -644,7 +644,7 @@ Containers
     ``StackOptions``. Each child may carry an optional ``StackSlot`` that
     overrides flex grow/shrink and margin per-child.
 
-    .. cpp:function:: StackWidget(StackAxis axis, Core::Rect rect, const StackOptions &options = {})
+    .. cpp:function:: StackWidget(StackAxis axis, Composition::Rect rect, const StackOptions &options = {})
 
         ``axis`` is ``StackAxis::Horizontal`` or ``StackAxis::Vertical``.
 
@@ -720,7 +720,7 @@ Containers
 .. code-block:: cpp
 
     auto toolbar = make<HStack>(
-        Core::Rect{{0,0}, 600.f, 48.f},
+        Composition::Rect{{0,0}, 600.f, 48.f},
         StackOptions{
             .spacing = 8.f,
             .padding = {8.f, 4.f, 8.f, 4.f},
@@ -737,7 +737,7 @@ Primitive Widgets
 -----------------
 
 All primitives live in ``omegaWTK/Widgets/Primatives.h``. Each takes a
-``Core::Rect`` and a props struct. Call ``setProps()`` to update appearance
+``Composition::Rect`` and a props struct. Call ``setProps()`` to update appearance
 at runtime; the widget repaints automatically.
 
 ``Rectangle``
@@ -764,7 +764,7 @@ at runtime; the widget repaints automatically.
 .. code-block:: cpp
 
     auto rect = make<Rectangle>(
-        Core::Rect{{0,0}, 100.f, 60.f},
+        Composition::Rect{{0,0}, 100.f, 60.f},
         RectangleProps{
             .fill = ColorBrush(Color::create8Bit(Color::Blue8)),
             .stroke = ColorBrush(Color::create8Bit(Color::White8)),
@@ -788,7 +788,7 @@ at runtime; the widget repaints automatically.
 .. code-block:: cpp
 
     auto card = make<RoundedRectangle>(
-        Core::Rect{{0,0}, 200.f, 120.f},
+        Composition::Rect{{0,0}, 200.f, 120.f},
         RoundedRectangleProps{
             .fill = ColorBrush(Color::create8Bit(0x2A2A2A, 0xFF)),
             .topLeft = 12.f, .topRight = 12.f,
@@ -812,7 +812,7 @@ at runtime; the widget repaints automatically.
 .. code-block:: cpp
 
     auto dot = make<Ellipse>(
-        Core::Rect{{0,0}, 24.f, 24.f},
+        Composition::Rect{{0,0}, 24.f, 24.f},
         EllipseProps{.fill = ColorBrush(Color::create8Bit(Color::Green8))});
 
 ----
@@ -876,7 +876,7 @@ at runtime; the widget repaints automatically.
 .. code-block:: cpp
 
     auto divider = make<Separator>(
-        Core::Rect{{0,0}, 400.f, 2.f},
+        Composition::Rect{{0,0}, 400.f, 2.f},
         SeparatorProps{
             .orientation = Orientation::Horizontal,
             .thickness = 1.f,
@@ -936,7 +936,7 @@ at runtime; the widget repaints automatically.
     props.alignment = TextLayoutDescriptor::MiddleCenter;
     props.wrapping  = TextLayoutDescriptor::WrapByWord;
 
-    auto label = make<Label>(Core::Rect{{0,0}, 300.f, 40.f}, props);
+    auto label = make<Label>(Composition::Rect{{0,0}, 300.f, 40.f}, props);
 
 ----
 
@@ -998,11 +998,11 @@ API is needed when implementing custom widgets or low-level composition.
     ``Layer`` plus optional sublayers), receives native input events, and
     mediates the composition session lifecycle.
 
-    .. cpp:function:: static ViewPtr Create(const Core::Rect &rect, ViewPtr parent = nullptr)
+    .. cpp:function:: static ViewPtr Create(const Composition::Rect &rect, ViewPtr parent = nullptr)
 
         Public factory for widget subclass constructors.
 
-    .. cpp:function:: SharedHandle<Composition::Layer> makeLayer(Core::Rect rect)
+    .. cpp:function:: SharedHandle<Composition::Layer> makeLayer(Composition::Rect rect)
 
         Creates a new sublayer within this view's ``LayerTree``.
 
@@ -1011,7 +1011,7 @@ API is needed when implementing custom widgets or low-level composition.
         Creates a ``Canvas`` targeting the given layer. One ``Canvas`` per
         ``Layer`` is the enforced invariant.
 
-    .. cpp:function:: Core::Rect &getRect()
+    .. cpp:function:: Composition::Rect &getRect()
 
         Returns the current bounding rect of the view.
 
@@ -1030,7 +1030,7 @@ API is needed when implementing custom widgets or low-level composition.
         Closes the composition window and submits all queued commands to
         the compositor.
 
-    .. cpp:function:: void resize(Core::Rect newRect)
+    .. cpp:function:: void resize(Composition::Rect newRect)
 
         Synchronously resizes the view. Use ``ViewAnimator`` for animated
         resize.
@@ -1067,11 +1067,11 @@ API is needed when implementing custom widgets or low-level composition.
 
         Clears the canvas to the given background color.
 
-    .. cpp:function:: void drawRect(const Core::Rect &rect, const SharedHandle<Composition::Brush> &brush)
-    .. cpp:function:: void drawRoundedRect(const Core::RoundedRect &rect, const SharedHandle<Composition::Brush> &brush)
-    .. cpp:function:: void drawImage(const SharedHandle<Media::BitmapImage> &img, const Core::Rect &rect)
-    .. cpp:function:: void drawText(const UniString &text, const SharedHandle<Composition::Font> &font, const Core::Rect &rect, const Composition::Color &color)
-    .. cpp:function:: void drawText(const UniString &text, const SharedHandle<Composition::Font> &font, const Core::Rect &rect, const Composition::Color &color, const Composition::TextLayoutDescriptor &layoutDesc)
+    .. cpp:function:: void drawRect(const Composition::Rect &rect, const SharedHandle<Composition::Brush> &brush)
+    .. cpp:function:: void drawRoundedRect(const Composition::RoundedRect &rect, const SharedHandle<Composition::Brush> &brush)
+    .. cpp:function:: void drawImage(const SharedHandle<Media::BitmapImage> &img, const Composition::Rect &rect)
+    .. cpp:function:: void drawText(const UniString &text, const SharedHandle<Composition::Font> &font, const Composition::Rect &rect, const Composition::Color &color)
+    .. cpp:function:: void drawText(const UniString &text, const SharedHandle<Composition::Font> &font, const Composition::Rect &rect, const Composition::Color &color, const Composition::TextLayoutDescriptor &layoutDesc)
 
 ----
 
@@ -1117,7 +1117,7 @@ API is needed when implementing custom widgets or low-level composition.
 
         Adds or replaces a text element with the given tag.
 
-    .. cpp:function:: void text(UIElementTag tag, OmegaCommon::UString content, const Core::Rect &rect)
+    .. cpp:function:: void text(UIElementTag tag, OmegaCommon::UString content, const Composition::Rect &rect)
 
         Same as above with an explicit bounding rect.
 
@@ -1349,11 +1349,11 @@ All composition types live in ``OmegaWTK::Composition``.
     A rectangular GPU surface within a ``LayerTree``. Exactly one ``Canvas``
     may be bound to a layer at a time.
 
-    .. cpp:function:: void resize(Core::Rect &newRect)
+    .. cpp:function:: void resize(Composition::Rect &newRect)
 
         Resizes the layer. Triggers a ``LayerTree`` resize notification.
 
-    .. cpp:function:: Core::Rect &getLayerRect()
+    .. cpp:function:: Composition::Rect &getLayerRect()
 
         Returns the current layer bounds.
 
@@ -1415,15 +1415,15 @@ All composition types live in ``OmegaWTK::Composition``.
         Discards all pending draw commands. If a color is provided it
         becomes the new background.
 
-    .. cpp:function:: void drawRect(Core::Rect &rect, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border = std::nullopt)
+    .. cpp:function:: void drawRect(Composition::Rect &rect, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border = std::nullopt)
 
         Draws a filled rectangle, with an optional border.
 
-    .. cpp:function:: void drawRoundedRect(Core::RoundedRect &rect, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border = std::nullopt)
+    .. cpp:function:: void drawRoundedRect(Composition::RoundedRect &rect, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border = std::nullopt)
 
         Draws a filled rounded rectangle.
 
-    .. cpp:function:: void drawEllipse(Core::Ellipse &ellipse, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border = std::nullopt)
+    .. cpp:function:: void drawEllipse(Composition::Ellipse &ellipse, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border = std::nullopt)
 
         Draws a filled ellipse.
 
@@ -1431,30 +1431,30 @@ All composition types live in ``OmegaWTK::Composition``.
 
         Draws a vector path.
 
-    .. cpp:function:: void drawText(const UniString &text, Core::SharedPtr<Font> font, const Core::Rect &rect, const Color &color)
+    .. cpp:function:: void drawText(const UniString &text, Core::SharedPtr<Font> font, const Composition::Rect &rect, const Color &color)
 
         Draws text into a bounding rect with default (top-left, no-wrap)
         layout.
 
-    .. cpp:function:: void drawText(const UniString &text, Core::SharedPtr<Font> font, const Core::Rect &rect, const Color &color, const TextLayoutDescriptor &layoutDesc)
+    .. cpp:function:: void drawText(const UniString &text, Core::SharedPtr<Font> font, const Composition::Rect &rect, const Color &color, const TextLayoutDescriptor &layoutDesc)
 
         Draws text with explicit alignment and wrapping settings.
 
-    .. cpp:function:: void drawImage(SharedHandle<Media::BitmapImage> &img, const Core::Rect &rect)
+    .. cpp:function:: void drawImage(SharedHandle<Media::BitmapImage> &img, const Composition::Rect &rect)
 
         Draws a bitmap image scaled to the given rect.
 
-    .. cpp:function:: void drawGETexture(SharedHandle<OmegaGTE::GETexture> &img, const Core::Rect &rect, SharedHandle<OmegaGTE::GEFence> fence = nullptr)
+    .. cpp:function:: void drawGETexture(SharedHandle<OmegaGTE::GETexture> &img, const Composition::Rect &rect, SharedHandle<OmegaGTE::GEFence> fence = nullptr)
 
         Draws a GTE texture directly. ``fence`` is used to synchronise GPU
         producers (e.g. a GTE render pass) with the compositor.
 
-    .. cpp:function:: void drawShadow(Core::Rect &rect, const LayerEffect::DropShadowParams &shadow)
+    .. cpp:function:: void drawShadow(Composition::Rect &rect, const LayerEffect::DropShadowParams &shadow)
 
         Draws an inline drop shadow for a rect shape.
 
-    .. cpp:function:: void drawShadow(Core::RoundedRect &rect, const LayerEffect::DropShadowParams &shadow)
-    .. cpp:function:: void drawShadow(Core::Ellipse &ellipse, const LayerEffect::DropShadowParams &shadow)
+    .. cpp:function:: void drawShadow(Composition::RoundedRect &rect, const LayerEffect::DropShadowParams &shadow)
+    .. cpp:function:: void drawShadow(Composition::Ellipse &ellipse, const LayerEffect::DropShadowParams &shadow)
 
     .. cpp:function:: void setElementTransform(const OmegaGTE::FMatrix<4,4> &matrix)
 
@@ -1504,7 +1504,7 @@ All composition types live in ``OmegaWTK::Composition``.
 
         canvas.setBackground(Color::create8Bit(0x1A1A1A, 0xFF));
         canvas.drawRoundedRect(
-            Core::RoundedRect{rect(), 8.f},
+            Composition::RoundedRect{rect(), 8.f},
             brush,
             border);
         canvas.drawText(U"Click me", font_, rect(),
@@ -1665,7 +1665,7 @@ All animation types live in ``OmegaWTK::Composition``.
 .. cpp:class:: template<typename T> OmegaWTK::Composition::KeyframeTrack
 
     A sorted list of typed keyframes with per-segment easing. Supported
-    interpolation types: ``float``, ``Core::Rect``,
+    interpolation types: ``float``, ``Composition::Rect``,
     ``LayerEffect::TransformationParams``, ``LayerEffect::DropShadowParams``.
 
     .. cpp:function:: static KeyframeTrack<T> From(const OmegaCommon::Vector<KeyframeValue<T>> &source)

@@ -11,7 +11,7 @@
 @end
 
 namespace OmegaWTK::Mobile::Native {
-    IOSItem::IOSItem(const Core::Rect &rect): NativeItem(rect) {
+    IOSItem::IOSItem(const Composition::Rect &rect): NativeItem(rect) {
         viewC = [[OmegaWTKMobileUIViewController alloc]initWithFrame:CGRectMake(0,0,0,0) andDelegate:this];
     }
 
@@ -27,7 +27,7 @@ namespace OmegaWTK::Mobile::Native {
         }
     }
 
-    void IOSItem::resize(const Core::Rect &newRect){
+    void IOSItem::resize(const Composition::Rect &newRect){
         [viewC.view setBounds:CGRectMake(0,0,newRect.w,newRect.h)];
         [viewC.view setFrame:CGRectMake(newRect.pos.x,newRect.pos.y,newRect.w,newRect.h)];
     }
@@ -41,7 +41,7 @@ namespace OmegaWTK::Mobile::Native {
         auto item = std::dynamic_pointer_cast<IOSItem>(child);
         [item->viewC.view removeFromSuperview];
     }
-    NativeItemPtr NativeItem::Create(const Core::Rect &rect){
+    NativeItemPtr NativeItem::Create(const Composition::Rect &rect){
         return (NativeItemPtr)new IOSItem(rect);
     }
 }

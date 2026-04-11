@@ -7,7 +7,7 @@ namespace OmegaWTK::Composition {
     BackendResourceFactory::VisualTreeBundle
     BackendResourceFactory::createVisualTreeForView(
             SharedHandle<ViewRenderTarget> & renderTarget,
-            Core::Rect & rect,
+            Composition::Rect & rect,
             ViewPresentTarget & outPresentTarget)
     {
         VisualTreeBundle result {};
@@ -51,7 +51,7 @@ namespace OmegaWTK::Composition {
     Core::SharedPtr<BackendVisualTree::Visual>
     BackendResourceFactory::createChildVisual(
             BackendVisualTree & tree,
-            Core::Rect & rect)
+            Composition::Rect & rect)
     {
         Core::SharedPtr<BackendVisualTree::Visual> result;
 
@@ -66,7 +66,7 @@ namespace OmegaWTK::Composition {
     Core::SharedPtr<BackendVisualTree::Visual>
     BackendResourceFactory::createRootVisual(
             BackendVisualTree & tree,
-            Core::Rect & rect,
+            Composition::Rect & rect,
             ViewPresentTarget & outPresentTarget)
     {
         Core::SharedPtr<BackendVisualTree::Visual> result;

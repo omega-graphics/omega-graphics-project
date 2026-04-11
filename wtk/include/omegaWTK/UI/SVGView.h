@@ -41,7 +41,7 @@ class OMEGAWTK_EXPORT SVGView : public View {
     void rebuildDisplayList();
     friend class Widget;
 public:
-    explicit SVGView(const Core::Rect & rect,ViewPtr parent);
+    explicit SVGView(const Composition::Rect & rect,ViewPtr parent);
     OMEGACOMMON_CLASS("OmegaWTK.UI.SVGView")
 
     ~SVGView();
@@ -55,7 +55,7 @@ public:
 
     void renderNow();
 
-    void resize(Core::Rect newRect) override;
+    void resize(Composition::Rect newRect) override;
 };
 
 }

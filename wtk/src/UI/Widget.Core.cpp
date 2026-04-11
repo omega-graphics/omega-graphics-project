@@ -8,7 +8,7 @@
 
 namespace OmegaWTK {
 
-Widget::Widget(Core::Rect rect):
+Widget::Widget(Composition::Rect rect):
     impl_(std::make_unique<Impl>()),
     view(CanvasView::Create(rect)){
 }
@@ -97,14 +97,14 @@ void Widget::notifyObservers(Widget::WidgetEventType event_ty,Widget::WidgetEven
     }
 }
 
-Core::Rect Widget::clampChildRect(const Widget &child,const GeometryProposal &proposal) const{
+Composition::Rect Widget::clampChildRect(const Widget &child,const GeometryProposal &proposal) const{
     (void)child;
     return proposal.requested;
 }
 
 void Widget::onChildRectCommitted(const Widget & child,
-                                  const Core::Rect & oldRect,
-                                  const Core::Rect & newRect,
+                                  const Composition::Rect & oldRect,
+                                  const Composition::Rect & newRect,
                                   GeometryChangeReason reason){
     (void)child;
     (void)oldRect;

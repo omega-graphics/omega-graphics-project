@@ -26,28 +26,28 @@ class DCVisualTree : public BackendVisualTree {
     struct RootVisual : public Parent::Visual {
         IDCompositionVisual2 * visual;
         float renderScale = 1.f;
-        explicit RootVisual(Core::Position & pos,
+        explicit RootVisual(Composition::Point2D & pos,
                         BackendRenderTargetContext &context,
                         IDCompositionVisual2 * visual,
                         float renderScale);
-        void resize(Core::Rect &newRect) override;
+        void resize(Composition::Rect &newRect) override;
         ~RootVisual() override;
     };
 
     /// Surface-only visual — GPU texture, no swap chain or DComp visual.
     struct SurfaceVisual : public Parent::Visual {
         float renderScale = 1.f;
-        explicit SurfaceVisual(Core::Position & pos,
+        explicit SurfaceVisual(Composition::Point2D & pos,
                         BackendRenderTargetContext &context,
                         float renderScale);
-        void resize(Core::Rect &newRect) override;
+        void resize(Composition::Rect &newRect) override;
     };
 
     explicit DCVisualTree(SharedHandle<ViewRenderTarget> & view);
     void addVisual(Core::SharedPtr<Parent::Visual> & visual) override;
-    Core::SharedPtr<Parent::Visual> makeRootVisual(Core::Rect & rect,Core::Position & pos,
+    Core::SharedPtr<Parent::Visual> makeRootVisual(Composition::Rect & rect,Composition::Point2D & pos,
                                                     ViewPresentTarget & outPresentTarget) override;
-    Core::SharedPtr<Parent::Visual> makeSurfaceVisual(Core::Rect & rect,Core::Position & pos) override;
+    Core::SharedPtr<Parent::Visual> makeSurfaceVisual(Composition::Rect & rect,Composition::Point2D & pos) override;
     void setRootVisual(Core::SharedPtr<Parent::Visual> & visual) override;
 
 };

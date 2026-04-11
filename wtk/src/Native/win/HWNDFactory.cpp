@@ -96,7 +96,7 @@ namespace OmegaWTK::Native::Win {
     void HWNDFactory::setRootWindowAndHINST(HWND root,HINSTANCE hinst){
         hInst = hinst;
     };
-    HWND HWNDFactory::makeWindow(ATOM atom,LPCSTR name,Core::Rect rect,DWORD base_style,LPVOID custom_params,HWND parent,DWORD ext_style){
+    HWND HWNDFactory::makeWindow(ATOM atom,LPCSTR name,Composition::Rect rect,DWORD base_style,LPVOID custom_params,HWND parent,DWORD ext_style){
         HWND wind_parent;
         if(parent != nullptr) {
             wind_parent = parent;
@@ -134,7 +134,7 @@ namespace OmegaWTK::Native::Win {
         #undef DEFAULT_DPI
         
     };
-    HWND HWNDFactory::makeAppWindow(ATOM atom,LPCSTR name,Core::Rect & rect,DWORD base_style,DWORD ext_style,LPVOID custom_params){
+    HWND HWNDFactory::makeAppWindow(ATOM atom,LPCSTR name,Composition::Rect & rect,DWORD base_style,DWORD ext_style,LPVOID custom_params){
         UINT dpi = GetDpiForWindow(GetForegroundWindow());
         FLOAT scaleFactor = FLOAT(dpi)/96.f;
 

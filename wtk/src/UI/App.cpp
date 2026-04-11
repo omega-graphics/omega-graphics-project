@@ -1,5 +1,6 @@
 #include "omegaWTK/UI/App.h"
 #include "omegaWTK/Composition/FontEngine.h"
+#include "omegaWTK/Core/GTEHandle.h"
 
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/UI/AppWindow.h"

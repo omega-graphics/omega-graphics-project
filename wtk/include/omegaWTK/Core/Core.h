@@ -1,7 +1,5 @@
 #include <omega-common/common.h>
 
-#include <OmegaGTE.h>
-
 #include <cassert>
 #include <iomanip>
 #include <memory>
@@ -20,9 +18,7 @@
 namespace OmegaWTK {
     
 
-    extern OmegaGTE::GTE gte;
-
-    #ifdef INTERFACE 
+    #ifdef INTERFACE
     #undef INTERFACE
     #endif
     #define INTERFACE class
@@ -98,28 +94,6 @@ namespace OmegaWTK {
         typedef std::ostream OStream;
 
 
-        typedef OmegaGTE::GRect Rect;
-
-        typedef OmegaGTE::GPoint2D Position;
-
-        typedef OmegaGTE::GRoundedRect RoundedRect;
-
-        struct OMEGAWTK_EXPORT Ellipse : private OmegaGTE::GEllipsoid {
-            float x;
-            float y;
-            float rad_x;
-            float rad_y;
-
-            Ellipse():OmegaGTE::GEllipsoid(){}
-
-            Ellipse(float x,float y,float rad_x,float rad_y):
-            GEllipsoid({x,y,0,rad_x,rad_y,0}),
-            x(OmegaGTE::GEllipsoid::x),
-            y(OmegaGTE::GEllipsoid::y),
-            rad_x(OmegaGTE::GEllipsoid::rad_x),
-            rad_y(OmegaGTE::GEllipsoid::rad_y){
-            };
-        };
     };
 
     void loadAssetFile(OmegaCommon::FS::Path path);

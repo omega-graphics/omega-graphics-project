@@ -28,7 +28,7 @@ namespace OmegaWTK::Native::Win {
 
         LRESULT ProcessWndMsg(UINT,WPARAM,LPARAM) override;
         BOOL ProcessWndMsgImpl(HWND, UINT, WPARAM, LPARAM, LRESULT *) override;
-        WinAppWindow(Core::Rect & rect,NativeEventEmitter *emitter);
+        WinAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter);
         ~WinAppWindow();
     };
 };

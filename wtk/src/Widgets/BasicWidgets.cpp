@@ -16,7 +16,7 @@ constexpr float kMaxContainerDimension = 8192.f;
 constexpr float kMaxContainerDimension = 16384.f;
 #endif
 
-static inline bool rectChanged(const Core::Rect &a,const Core::Rect &b){
+static inline bool rectChanged(const Composition::Rect &a,const Composition::Rect &b){
     constexpr float kEpsilon = 0.001f;
     return std::fabs(a.pos.x - b.pos.x) > kEpsilon ||
            std::fabs(a.pos.y - b.pos.y) > kEpsilon ||
@@ -32,7 +32,7 @@ static inline float safeFloat(float value,float fallback){
     return finiteFloat(value) ? value : fallback;
 }
 
-static inline bool suspiciousBounds(const Core::Rect & rect){
+static inline bool suspiciousBounds(const Composition::Rect & rect){
     if(!finiteFloat(rect.w) || !finiteFloat(rect.h) || rect.w <= 0.f || rect.h <= 0.f){
         return true;
     }
@@ -50,8 +50,8 @@ static inline bool suspiciousBounds(const Core::Rect & rect){
     return false;
 }
 
-static inline Core::Rect sanitizeHostBounds(const Core::Rect & candidate){
-    Core::Rect out = candidate;
+static inline Composition::Rect sanitizeHostBounds(const Composition::Rect & candidate){
+    Composition::Rect out = candidate;
     out.pos.x = safeFloat(out.pos.x,0.f);
     out.pos.y = safeFloat(out.pos.y,0.f);
     out.w = safeFloat(out.w,1.f);
@@ -70,10 +70,10 @@ static inline ContainerInsets sanitizeInsets(const ContainerInsets &insets){
     return out;
 }
 
-static inline Core::Rect contentBoundsFromHost(const Core::Rect &host,const ContainerClampPolicy &policy){
+static inline Composition::Rect contentBoundsFromHost(const Composition::Rect &host,const ContainerClampPolicy &policy){
     auto insets = sanitizeInsets(policy.contentInsets);
-    Core::Rect content {
-        Core::Position{host.pos.x + insets.left,host.pos.y + insets.top},
+    Composition::Rect content {
+        Composition::Point2D{host.pos.x + insets.left,host.pos.y + insets.top},
         host.w - insets.left - insets.right,
         host.h - insets.top - insets.bottom
     };
@@ -111,7 +111,7 @@ static inline const char * geometryReasonLabel(GeometryChangeReason reason){
 //     return make<Container>(std::move(view));
 // }
 
-Container::Container(Core::Rect rect):
+Container::Container(Composition::Rect rect):
 Widget(rect){
 
 }
@@ -149,7 +149,7 @@ void Container::onPaint(PaintReason reason){
     }
 }
 
-void Container::resize(Core::Rect & newRect){
+void Container::resize(Composition::Rect & newRect){
     (void)newRect;
     relayout();
 }
@@ -186,7 +186,7 @@ OmegaCommon::ArrayRef<WidgetPtr> Container::childWidgets(){
     return children;
 }
 
-Core::Rect Container::clampChildRect(const Widget & child,const GeometryProposal & proposal) const{
+Composition::Rect Container::clampChildRect(const Widget & child,const GeometryProposal & proposal) const{
     (void)child;
     auto clamped = proposal.requested;
     clamped.pos.x = safeFloat(clamped.pos.x,0.f);
@@ -260,8 +260,8 @@ Core::Rect Container::clampChildRect(const Widget & child,const GeometryProposal
 }
 
 void Container::onChildRectCommitted(const Widget & child,
-                                     const Core::Rect & oldRect,
-                                     const Core::Rect & newRect,
+                                     const Composition::Rect & oldRect,
+                                     const Composition::Rect & newRect,
                                      GeometryChangeReason reason){
     if(Widget::geometryTraceLoggingEnabled()){
         auto syncCtx = geometryTraceContext();

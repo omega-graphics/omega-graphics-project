@@ -1,4 +1,5 @@
 #include "omegaWTK/Composition/FontEngine.h"
+#include "omegaWTK/Core/GTEHandle.h"
 
 #include "omega-common/fs.h"
 
@@ -104,7 +105,7 @@ namespace OmegaWTK::Composition {
             :str(str), font(std::dynamic_pointer_cast<HarfBuzzFont>(font)){
         }
 
-        Core::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) override {
+        Composition::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) override {
             (void)glyphIdx;
             return {};
         }
@@ -117,7 +118,7 @@ namespace OmegaWTK::Composition {
         size_t pixelHeight = 0;
         size_t bytesPerRow = 0;
     public:
-        explicit HarfBuzzTextRect(Core::Rect rect, const TextLayoutDescriptor &layoutDesc)
+        explicit HarfBuzzTextRect(Composition::Rect rect, const TextLayoutDescriptor &layoutDesc)
             :TextRect(rect), layoutDesc(layoutDesc){
         }
 
@@ -307,7 +308,7 @@ namespace OmegaWTK::Composition {
         return Core::SharedPtr<GlyphRun>(new HarfBuzzGlyphRun(str, font));
     }
 
-    Core::SharedPtr<TextRect> TextRect::Create(Core::Rect rect, const TextLayoutDescriptor &layoutDesc){
+    Core::SharedPtr<TextRect> TextRect::Create(Composition::Rect rect, const TextLayoutDescriptor &layoutDesc){
         return Core::SharedPtr<TextRect>(new HarfBuzzTextRect(rect, layoutDesc));
     }
 

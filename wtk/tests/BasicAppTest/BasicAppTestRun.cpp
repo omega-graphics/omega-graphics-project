@@ -70,7 +70,7 @@ public:
 // ---------------------------------------------------------------------------
 
 int RunBasicAppTest(AppInst *app) {
-    Core::Rect windowRect{{0, 0}, 600, 500};
+    Composition::Rect windowRect{{0, 0}, 600, 500};
 
     auto window = make<AppWindow>(windowRect, new TestWindowDelegate());
     g_mainWindow = window.get();
@@ -118,12 +118,12 @@ int RunBasicAppTest(AppInst *app) {
     titleProps.alignment = Composition::TextLayoutDescriptor::MiddleCenter;
     titleProps.wrapping = Composition::TextLayoutDescriptor::None;
     auto titleLabel = make<Label>(
-        Core::Rect{{0, 0}, contentW, 30.f}, titleProps);
+        Composition::Rect{{0, 0}, contentW, 30.f}, titleProps);
     root->addChild(titleLabel, StackSlot{.flexGrow = 0.f});
 
     // Separator
     auto sep1 = make<Separator>(
-        Core::Rect{{0, 0}, contentW, 4.f},
+        Composition::Rect{{0, 0}, contentW, 4.f},
         SeparatorProps{
             .orientation = Orientation::Horizontal,
             .thickness = 1.f,
@@ -135,7 +135,7 @@ int RunBasicAppTest(AppInst *app) {
 
     // Shape row
     auto shapeRow = make<HStack>(
-        Core::Rect{{0, 0}, contentW, 100.f},
+        Composition::Rect{{0, 0}, contentW, 100.f},
         StackOptions{
             .spacing = 12.f,
             .mainAlign = StackMainAlign::Center,
@@ -143,7 +143,7 @@ int RunBasicAppTest(AppInst *app) {
         });
 
     auto redRect = make<Rectangle>(
-        Core::Rect{{0, 0}, 80.f, 80.f},
+        Composition::Rect{{0, 0}, 80.f, 80.f},
         RectangleProps{
             .fill = Composition::ColorBrush(
                 Composition::Color::create8Bit(Composition::Color::Red8))
@@ -151,7 +151,7 @@ int RunBasicAppTest(AppInst *app) {
     shapeRow->addChild(redRect);
 
     auto blueRR = make<RoundedRectangle>(
-        Core::Rect{{0, 0}, 80.f, 80.f},
+        Composition::Rect{{0, 0}, 80.f, 80.f},
         RoundedRectangleProps{
             .fill = Composition::ColorBrush(
                 Composition::Color::create8Bit(Composition::Color::Blue8)),
@@ -161,7 +161,7 @@ int RunBasicAppTest(AppInst *app) {
     shapeRow->addChild(blueRR);
 
     auto greenEllipse = make<Ellipse>(
-        Core::Rect{{0, 0}, 80.f, 80.f},
+        Composition::Rect{{0, 0}, 80.f, 80.f},
         EllipseProps{
             .fill = Composition::ColorBrush(
                 Composition::Color::create8Bit(Composition::Color::Green8))
@@ -169,7 +169,7 @@ int RunBasicAppTest(AppInst *app) {
     shapeRow->addChild(greenEllipse);
 
     auto yellowRect = make<Rectangle>(
-        Core::Rect{{0, 0}, 80.f, 80.f},
+        Composition::Rect{{0, 0}, 80.f, 80.f},
         RectangleProps{
             .fill = Composition::ColorBrush(
                 Composition::Color::create8Bit(Composition::Color::Yellow8)),
@@ -183,7 +183,7 @@ int RunBasicAppTest(AppInst *app) {
 
     // Separator
     auto sep2 = make<Separator>(
-        Core::Rect{{0, 0}, contentW, 4.f},
+        Composition::Rect{{0, 0}, contentW, 4.f},
         SeparatorProps{
             .orientation = Orientation::Horizontal,
             .thickness = 1.f,
@@ -201,7 +201,7 @@ int RunBasicAppTest(AppInst *app) {
     descProps.alignment = Composition::TextLayoutDescriptor::LeftUpper;
     descProps.wrapping = Composition::TextLayoutDescriptor::WrapByWord;
     auto descLabel = make<Label>(
-        Core::Rect{{0, 0}, contentW, 60.f}, descProps);
+        Composition::Rect{{0, 0}, contentW, 60.f}, descProps);
     root->addChild(descLabel, StackSlot{.flexGrow = 1.f});
 
     window->setRootWidget(root);

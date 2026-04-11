@@ -20,7 +20,7 @@ User creates a View just to hand it in. View is an implementation detail leaking
 ```cpp
 class RoundedFrameWidget : public Widget {
     UIViewPtr uiView;
-    void ensureUIView(const Core::Rect & bounds) {
+    void ensureUIView(const Composition::Rect & bounds) {
         uiView = UIViewPtr(new UIView(localBounds, view, "tag"));
         //                                         ^^^^
         //     Widget's protected `view` member leaks as parent_ptr
@@ -33,7 +33,7 @@ class RoundedFrameWidget : public Widget {
 class SVGWidget : public Widget {
     SVGViewPtr svgView;
 public:
-    SVGWidget(ViewPtr view, Core::Rect rect) : Widget(view) {
+    SVGWidget(ViewPtr view, Composition::Rect rect) : Widget(view) {
         svgView = std::dynamic_pointer_cast<SVGView>(view);
         // Cast back to recover the type you already had
     }
@@ -64,7 +64,7 @@ One class with 35+ members spanning two domains: rendering surface (renderTarget
 
 Keep the composition relationship. Hide View from the surface API. Three changes.
 
-### 1. `Widget(Core::Rect)` primary constructor
+### 1. `Widget(Composition::Rect)` primary constructor
 
 Widget creates its own View internally. The existing `Widget(ViewPtr)` becomes a protected escape hatch for framework internals and specialized-view subclasses.
 
@@ -72,7 +72,7 @@ Widget creates its own View internally. The existing `Widget(ViewPtr)` becomes a
 class Widget {
 protected:
     // Primary constructor -- creates a plain View internally.
-    explicit Widget(Core::Rect rect);
+    explicit Widget(Composition::Rect rect);
 
     // Escape hatch for subclasses that need a specific View type.
     explicit Widget(ViewPtr view);
@@ -83,13 +83,13 @@ User code becomes:
 ```cpp
 class MyWidget : public Widget {
 public:
-    MyWidget(Core::Rect rect) : Widget(rect) {}
+    MyWidget(Composition::Rect rect) : Widget(rect) {}
     void onPaint(PaintContext & ctx, PaintReason reason) override {
         ctx.clear(Color::create8Bit(Color::White8));
     }
 };
 
-auto w = make<MyWidget>(Core::Rect{{0,0},500,500});
+auto w = make<MyWidget>(Composition::Rect{{0,0},500,500});
 ```
 
 ### 2. Protected `makeSubView<T>()` helper
@@ -150,7 +150,7 @@ Specialized-view subclasses encapsulate their View type internally:
 ```cpp
 class SVGWidget : public Widget {
 public:
-    SVGWidget(Core::Rect rect)
+    SVGWidget(Composition::Rect rect)
         : Widget(ViewPtr(new SVGView(rect, nullptr))) {}
 
 protected:
@@ -167,7 +167,7 @@ protected:
 };
 
 // Usage -- no ViewPtr, no casting, no duplicate rect:
-auto w = make<SVGWidget>(Core::Rect{{0,0},500,500});
+auto w = make<SVGWidget>(Composition::Rect{{0,0},500,500});
 ```
 
 ## Result
@@ -183,11 +183,11 @@ auto w = make<SVGWidget>(Core::Rect{{0,0},500,500});
 
 | File | Change |
 |------|--------|
-| `Widget.h` | Add `Widget(Core::Rect)` constructor. Add `makeSubView<T>()` and `viewAs<T>()` protected templates. Existing `Widget(ViewPtr)` stays as protected. |
-| `Widget.cpp` | Implement `Widget(Core::Rect)` constructor: `Widget::Widget(Core::Rect rect) : view(View::Create(rect)) {}` |
-| `BasicWidgets.h` | Update `Container` constructor to add `Container(Core::Rect)` overload. |
-| `BasicWidgets.cpp` | Implement `Container(Core::Rect)`. |
-| `Containers.h` | Update `StackWidget`, `HStack`, `VStack` constructors to accept `Core::Rect` instead of `ViewPtr`. |
+| `Widget.h` | Add `Widget(Composition::Rect)` constructor. Add `makeSubView<T>()` and `viewAs<T>()` protected templates. Existing `Widget(ViewPtr)` stays as protected. |
+| `Widget.cpp` | Implement `Widget(Composition::Rect)` constructor: `Widget::Widget(Composition::Rect rect) : view(View::Create(rect)) {}` |
+| `BasicWidgets.h` | Update `Container` constructor to add `Container(Composition::Rect)` overload. |
+| `BasicWidgets.cpp` | Implement `Container(Composition::Rect)`. |
+| `Containers.h` | Update `StackWidget`, `HStack`, `VStack` constructors to accept `Composition::Rect` instead of `ViewPtr`. |
 | `Containers.cpp` | Update constructor implementations. |
 
 ### Test migration (can be done incrementally)
@@ -196,11 +196,11 @@ Each test file replaces `View::Create(rect)` in the constructor call with just `
 
 | Test file | Change |
 |-----------|--------|
-| `BasicAppTest/BasicAppTestRun.cpp` | `MyWidget(Core::Rect)` constructor, remove `View::Create` at call site |
-| `EllipsePathCompositorTest/main.cpp` | `RoundedFrameWidget(Core::Rect)`, `EllipseOnlyWidget(Core::Rect)`, `PathOnlyWidget(Core::Rect)` constructors; `ensureUIView` uses `makeSubView<UIView>`. `GeometryHStack` passes rect to `HStack`. |
-| `TextCompositorTest/main.cpp` | `TextCompositorWidget(Core::Rect)`; `ensureAccentView` uses `makeSubView<UIView>` |
-| `SVGViewRenderTest/main.cpp` | `SVGWidget(Core::Rect)` creates SVGView internally; uses `viewAs<SVGView>()` |
-| `VideoViewPlaybackTest/main.cpp` | `VideoWidget(Core::Rect)` creates VideoView internally; uses `viewAs<VideoView>()` |
+| `BasicAppTest/BasicAppTestRun.cpp` | `MyWidget(Composition::Rect)` constructor, remove `View::Create` at call site |
+| `EllipsePathCompositorTest/main.cpp` | `RoundedFrameWidget(Composition::Rect)`, `EllipseOnlyWidget(Composition::Rect)`, `PathOnlyWidget(Composition::Rect)` constructors; `ensureUIView` uses `makeSubView<UIView>`. `GeometryHStack` passes rect to `HStack`. |
+| `TextCompositorTest/main.cpp` | `TextCompositorWidget(Composition::Rect)`; `ensureAccentView` uses `makeSubView<UIView>` |
+| `SVGViewRenderTest/main.cpp` | `SVGWidget(Composition::Rect)` creates SVGView internally; uses `viewAs<SVGView>()` |
+| `VideoViewPlaybackTest/main.cpp` | `VideoWidget(Composition::Rect)` creates VideoView internally; uses `viewAs<VideoView>()` |
 | `ContainerClampAnimationTest/main.cpp` | Rect-based constructors |
 | `RootWidget/Main.cpp` | Rect-based constructor |
 
@@ -215,8 +215,8 @@ Each test file replaces `View::Create(rect)` in the constructor call with just `
 
 ## Sequencing
 
-1. Add `Widget(Core::Rect)` constructor, `makeSubView<T>()`, `viewAs<T>()` to Widget.h/cpp.
-2. Add `Container(Core::Rect)` overload.
+1. Add `Widget(Composition::Rect)` constructor, `makeSubView<T>()`, `viewAs<T>()` to Widget.h/cpp.
+2. Add `Container(Composition::Rect)` overload.
 3. Update `StackWidget`/`HStack`/`VStack` to accept Rect.
 4. Migrate tests one at a time (each independently compilable).
 5. Once all call sites are migrated, consider making `Widget(ViewPtr)` private or removing it.

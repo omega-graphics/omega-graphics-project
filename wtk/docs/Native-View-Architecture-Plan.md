@@ -286,7 +286,7 @@ which already creates it today (`CocoaAppWindow::rootView`,
 ```cpp
 class View {
     // Purely virtual — no NativeItem, no native platform calls
-    Core::Rect rect_;
+    Composition::Rect rect_;
     OmegaCommon::Vector<ViewPtr> children_;
     View * parent_ = nullptr;
     // ... layer tree, compositor proxy, etc.
@@ -329,12 +329,12 @@ from its single native view. It forwards them to the `WidgetTreeHost`,
 which walks the virtual widget tree to find the target:
 
 ```cpp
-Widget * WidgetTreeHost::hitTest(const Core::Position &point) const {
+Widget * WidgetTreeHost::hitTest(const Composition::Point2D &point) const {
     // Delegate to the root widget's view tree
     return hitTestView(root->getView(), point);
 }
 
-Widget * WidgetTreeHost::hitTestView(View *view, const Core::Position &point) const {
+Widget * WidgetTreeHost::hitTestView(View *view, const Composition::Point2D &point) const {
     // Walk children in reverse z-order (front to back)
     for (auto it = view->children_.rbegin(); it != view->children_.rend(); ++it) {
         if ((*it)->containsPoint(point)) {
@@ -391,7 +391,7 @@ Proposed:
 
 **Sub-phases:**
 
-**3a — Window-offset CanvasFrames.** [DONE] Add `Core::Position windowOffset`
+**3a — Window-offset CanvasFrames.** [DONE] Add `Composition::Point2D windowOffset`
 to `CanvasFrame`. Each Canvas stamps its frame with the owning View's
 window-relative position (computed by walking the View parent chain).
 The backend uses this offset to place the frame's draw commands at the
@@ -461,7 +461,7 @@ constructor. Replacing it with a virtual scroll view:
 to use the standard purely virtual `View(rect, parent)` path instead
 of `View(rect, NativeItemPtr, parent)`. The ScrollView becomes a
 virtual View that owns a content child and tracks a scroll offset
-(`Core::Position scrollOffset`). Content is clipped to the ScrollView's
+(`Composition::Point2D scrollOffset`). Content is clipped to the ScrollView's
 visible bounds via the compositor's scissor rect.
 
 **3g-ii — Scroll input handling.** [DONE] Route scroll wheel / trackpad events
@@ -505,8 +505,8 @@ without coupling View to ScrollView, add a virtual method
 becomes:
 
 ```cpp
-Core::Position View::computeWindowOffset() const {
-    Core::Position offset {0.f, 0.f};
+Composition::Point2D View::computeWindowOffset() const {
+    Composition::Point2D offset {0.f, 0.f};
     const View *v = this;
     while (v != nullptr) {
         offset.x += v->impl_->rect.pos.x;
@@ -777,7 +777,7 @@ needed.
 | `wtk/src/UI/WidgetTreeHost.cpp` | 2 | **Done.** Implemented hit test (reverse z-order widget tree walk), event dispatch with hover tracking |
 | `wtk/src/UI/AppWindow.cpp` | 2 | **Done.** `AppWindowDelegate::onRecieveEvent` routes input events to `WidgetTreeHost::dispatchInputEvent` |
 | `wtk/src/UI/AppWindowImpl.h` | 2 | **Done.** Root NativeItem's `event_emitter` wired to AppWindow for input event routing |
-| `wtk/include/omegaWTK/Composition/Canvas.h` | 3a | Add `Core::Position windowOffset` to `CanvasFrame` |
+| `wtk/include/omegaWTK/Composition/Canvas.h` | 3a | Add `Composition::Point2D windowOffset` to `CanvasFrame` |
 | `wtk/src/Composition/Canvas.cpp` | 3a | `nextFrame()` stamps `windowOffset` via `View::computeWindowOffset()` |
 | `wtk/include/omegaWTK/UI/View.h` | 3b,3c,3e | Add `setWindowRenderTarget()`, `computeWindowOffset()`. Remove `NativeItem.h` include. `enable()`/`disable()` become virtual state |
 | `wtk/src/UI/View.Core.cpp` | 3b,3c,3e | Remove `make_native_item()` from constructor. Remove `preCreateVisualResources()`. `resize()`/`enable()`/`disable()` become purely virtual. Implement `setWindowRenderTarget()`, `computeWindowOffset()` |

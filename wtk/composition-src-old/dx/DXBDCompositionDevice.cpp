@@ -156,7 +156,7 @@ namespace OmegaWTK::Composition {
     //     // MessageBoxA(GetForegroundWindow(),"Making DX Render Target","",MB_OK);
     //     return DXBDCompositionViewRenderTarget::Create(this,(Native::Win::HWNDItem *));
     // };
-    Core::SharedPtr<BDCompositionImageRenderTarget> DXBDCompositionDeviceContext::makeImageRenderTarget(Core::Rect &size){
+    Core::SharedPtr<BDCompositionImageRenderTarget> DXBDCompositionDeviceContext::makeImageRenderTarget(Composition::Rect &size){
         return DXBDCompositionImageRenderTarget::Create(device,size);
     };
     Core::SharedPtr<BDCompositionImageRenderTarget> DXBDCompositionDeviceContext::makeImageRenderTarget(Core::SharedPtr<BDCompositionImage> &img){

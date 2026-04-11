@@ -14,7 +14,7 @@ class MTLBDCALayerTree;
 
 class MTLBDCompositionImage : public BDCompositionImage {
     MTLTextureDescriptor *desc;
-    Core::Rect n_rect;
+    Composition::Rect n_rect;
     Core::FRect rect;
     LayerEffect *dropShadow = nullptr;
     Core::Vector<LayerEffect *> imageEffects;
@@ -32,9 +32,9 @@ public:
     /**
      Create a Compositon Image from a id<MTLTexture>
     */
-    MTLBDCompositionImage(MTLBDCompositionDeviceContext *deviceContext,Core::Rect & rect,id<MTLTexture> img,MTLTextureDescriptor *desc);
+    MTLBDCompositionImage(MTLBDCompositionDeviceContext *deviceContext,Composition::Rect & rect,id<MTLTexture> img,MTLTextureDescriptor *desc);
     static Core::SharedPtr<BDCompositionImage> Create(MTLBDCompositionDeviceContext *deviceContext,Core::SharedPtr<Media::BitmapImage> & _img,Core::FRect & rect,MTLTextureDescriptor *desc,id<MTLTexture> img);
-    static Core::SharedPtr<BDCompositionImage> Create(MTLBDCompositionDeviceContext *deviceContext,Core::Rect & rect,id<MTLTexture> img,MTLTextureDescriptor *desc);
+    static Core::SharedPtr<BDCompositionImage> Create(MTLBDCompositionDeviceContext *deviceContext,Composition::Rect & rect,id<MTLTexture> img,MTLTextureDescriptor *desc);
     void applyEffect(LayerEffect *effect);
     /**
      Will only commit Image Compatible Effects

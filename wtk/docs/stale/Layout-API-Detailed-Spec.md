@@ -13,7 +13,7 @@ This document defines a concrete, implementation-oriented API for layout across 
 | View layout API | `omegaWTK/UI/View.h` | `OmegaWTK` |
 | UIView layout API | `omegaWTK/UI/UIView.h` | `OmegaWTK` |
 
-All layout types live in `OmegaWTK` and use existing project types: `Core::Rect`, `Core::Optional`, `SharedHandle`, `OmegaCommon::Vector`, `OmegaCommon::Map`, `OmegaCommon::String`, `OmegaCommon::UString`.
+All layout types live in `OmegaWTK` and use existing project types: `Composition::Rect`, `Core::Optional`, `SharedHandle`, `OmegaCommon::Vector`, `OmegaCommon::Map`, `OmegaCommon::String`, `OmegaCommon::UString`.
 
 ---
 
@@ -139,7 +139,7 @@ struct OMEGAWTK_EXPORT LayoutStyle {
 
 ```cpp
 struct OMEGAWTK_EXPORT LayoutContext {
-    Core::Rect availableRectPx {};  // host/content bounds in physical pixels
+    Composition::Rect availableRectPx {};  // host/content bounds in physical pixels
     float dpiScale = 1.f;          // px per dp (e.g. 1.f, 1.5f, 2.f)
     std::uint64_t resizeSessionId = 0;
     bool liveResize = false;
@@ -147,7 +147,7 @@ struct OMEGAWTK_EXPORT LayoutContext {
     /// Convert a dp value to px using dpiScale.
     float dpToPx(float dp) const;
     /// Convert available rect from px to dp for layout math.
-    Core::Rect availableRectDp() const;
+    Composition::Rect availableRectDp() const;
 };
 
 struct OMEGAWTK_EXPORT MeasureResult {
@@ -192,22 +192,22 @@ public:
     void requestLayout();
 
     // --- Existing geometry (unchanged) ---
-    Core::Rect & rect();
-    void setRect(const Core::Rect & newRect);
-    bool requestRect(const Core::Rect & requested,
+    Composition::Rect & rect();
+    void setRect(const Composition::Rect & newRect);
+    bool requestRect(const Composition::Rect & requested,
                      GeometryChangeReason reason = GeometryChangeReason::ChildRequest);
     // ...
 protected:
     /// Return intrinsic size in dp. Default uses root View rect and content.
     virtual MeasureResult measureSelf(const LayoutContext & ctx);
     /// Invoked after layout resolve with final rect in px (after clamp/delegate).
-    virtual void onLayoutResolved(const Core::Rect & finalRectPx);
+    virtual void onLayoutResolved(const Composition::Rect & finalRectPx);
 
     // Existing hooks unchanged:
-    virtual Core::Rect clampChildRect(const Widget & child, const GeometryProposal & proposal) const;
+    virtual Composition::Rect clampChildRect(const Widget & child, const GeometryProposal & proposal) const;
     virtual void onChildRectCommitted(const Widget & child,
-                                      const Core::Rect & oldRect,
-                                      const Core::Rect & newRect,
+                                      const Composition::Rect & oldRect,
+                                      const Composition::Rect & newRect,
                                       GeometryChangeReason reason);
 };
 ```
@@ -255,8 +255,8 @@ public:
     void resolveLayout(const LayoutContext & context);
 
     // --- Existing (unchanged) ---
-    Core::Rect & getRect();
-    virtual void resize(Core::Rect newRect);
+    Composition::Rect & getRect();
+    virtual void resize(Composition::Rect newRect);
     ViewResizeCoordinator & getResizeCoordinator();
     const ViewResizeCoordinator & getResizeCoordinator() const;
     // ...
@@ -357,8 +357,8 @@ struct OMEGAWTK_EXPORT LayoutTransitionSpec {
 };
 
 struct OMEGAWTK_EXPORT LayoutDelta {
-    Core::Rect fromRectPx {};
-    Core::Rect toRectPx {};
+    Composition::Rect fromRectPx {};
+    Composition::Rect toRectPx {};
     OmegaCommon::Vector<LayoutTransitionProperty> changedProperties;
 };
 ```

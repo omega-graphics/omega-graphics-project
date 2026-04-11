@@ -22,7 +22,7 @@ namespace OmegaWTK::Native::GTK {
         GtkWidget *widget = nullptr;
         GtkWidget *renderWidget = nullptr;
         GtkWidget *contentWidget = nullptr;
-        Core::Rect rect;
+        Composition::Rect rect;
         bool isVisible = true;
         bool isScrollItem = false;
         bool horizontalScrollEnabled = false;
@@ -43,17 +43,17 @@ namespace OmegaWTK::Native::GTK {
         void handleScrollAdjustmentValue(double value,bool horizontal);
         void enable() override;
         void disable() override;
-        void resize(const Core::Rect &newRect) override;
+        void resize(const Composition::Rect &newRect) override;
         void * getBinding() override;
         void addChildNativeItem(SharedHandle<NativeItem> nativeItem) override;
         void removeChildNativeItem(SharedHandle<NativeItem> nativeItem) override;
         void setClippedView(SharedHandle<NativeItem> clippedView) override;
         void toggleHorizontalScrollBar(bool &state) override;
         void toggleVerticalScrollBar(bool &state) override;
-        Core::Rect & getRect() override {
+        Composition::Rect & getRect() override {
             return rect;
         };
-        GTKItem(Core::Rect rect,Native::ItemType type);
+        GTKItem(Composition::Rect rect,Native::ItemType type);
         #if WTK_NATIVE_WAYLAND
         wl_surface * getSurface();
         wl_display * getDisplay();

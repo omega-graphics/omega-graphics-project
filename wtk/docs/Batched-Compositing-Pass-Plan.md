@@ -63,7 +63,7 @@ Option A is recommended — it's consistent with how `renderToTarget` already wo
 | `wtk/src/Composition/backend/RenderTarget.h` | Add `CompositeEntry` struct. Add `OmegaCommon::Vector<CompositeEntry> pendingEntries` to `BackendCompRenderTarget`. Remove `hasPendingContent` flag from `BackendRenderTargetContext`. |
 | `wtk/src/Composition/backend/RenderTarget.cpp` | `commit()` builds a `CompositeEntry` with the layer's committed texture, position, and fence, and pushes it onto the owning `BackendCompRenderTarget`. Replace `compositeAndPresentTarget()` with the batched pass: sort, coalesce fences, emit bounded blits. |
 | `wtk/src/Composition/backend/Execution.cpp` | `executeCurrentCommand()` passes a pointer to the owning `BackendCompRenderTarget` into `commit()` so it can push its entry. No other changes needed — `onQueueDrained()` already calls `presentAllPending()`. |
-| `wtk/src/Composition/backend/VisualTree.h` | Add `Core::Position` accessor to `Visual` so the compositing pass can read each layer's position for `dstRect`. |
+| `wtk/src/Composition/backend/VisualTree.h` | Add `Composition::Point2D` accessor to `Visual` so the compositing pass can read each layer's position for `dstRect`. |
 
 ### Opaque Root Optimization
 

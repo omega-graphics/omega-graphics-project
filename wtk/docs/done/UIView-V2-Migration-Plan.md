@@ -75,13 +75,13 @@ void UIView::setLayout(const UIViewLayout & layout){
 
 The V2 rendering path already handles `Shape` and text the same way the legacy path does — `drawRect`, `drawEllipse`, `drawPath`, `drawText` with the shape's own coordinates. The `LayoutStyle` defaults to Auto, so `resolveClampedRect` returns the full available rect and the shape coordinates pass through unchanged.
 
-**Risk**: The legacy `text()` overload with an explicit `Core::Rect` sets `element.textRect`. The V2 path uses `localBounds` for text rect instead of `element.textRect`. This needs to be carried through — either via a new field on `UIElementLayoutSpec` or by encoding the text rect into the `LayoutStyle` as absolute position + size.
+**Risk**: The legacy `text()` overload with an explicit `Composition::Rect` sets `element.textRect`. The V2 path uses `localBounds` for text rect instead of `element.textRect`. This needs to be carried through — either via a new field on `UIElementLayoutSpec` or by encoding the text rect into the `LayoutStyle` as absolute position + size.
 
 ### Step 2 — Add text rect support to V2
 
 The legacy `UIViewLayout::Element` has an optional `textRect` field used by `TextCompositorTest`. The V2 path currently ignores this and uses `localBounds` for all text elements.
 
-Option A: Add `Core::Optional<Core::Rect> textRect` to `UIElementLayoutSpec`. The V2 rendering path checks this before falling back to localBounds.
+Option A: Add `Core::Optional<Composition::Rect> textRect` to `UIElementLayoutSpec`. The V2 rendering path checks this before falling back to localBounds.
 
 Option B: Convert the textRect into LayoutStyle absolute positioning:
 ```cpp

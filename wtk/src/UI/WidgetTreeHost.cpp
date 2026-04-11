@@ -356,7 +356,7 @@ namespace OmegaWTK {
         // content frames to be overwritten by a late-arriving clear.
     }
 
-    void WidgetTreeHost::notifyWindowResize(const Core::Rect &rect){
+    void WidgetTreeHost::notifyWindowResize(const Composition::Rect &rect){
         if(root != nullptr){
             root->handleHostResize(rect);
         }
@@ -373,7 +373,7 @@ namespace OmegaWTK {
         OMEGAWTK_DEBUG(stream.str());
     }
 
-    void WidgetTreeHost::notifyWindowResizeBegin(const Core::Rect &rect){
+    void WidgetTreeHost::notifyWindowResizeBegin(const Composition::Rect &rect){
         lastResizeSessionState = resizeTracker.begin(rect.w,rect.h,nowMs());
         lastResizeSessionState.animatedTree = detectAnimatedTreeRecurse(root.get());
         resizeCoordinatorGeneration += 1;
@@ -391,7 +391,7 @@ namespace OmegaWTK {
         OMEGAWTK_DEBUG(stream.str());
     }
 
-    void WidgetTreeHost::notifyWindowResizeEnd(const Core::Rect &rect){
+    void WidgetTreeHost::notifyWindowResizeEnd(const Composition::Rect &rect){
         if(root != nullptr){
             root->handleHostResize(rect);
         }
@@ -408,14 +408,14 @@ namespace OmegaWTK {
         OMEGAWTK_DEBUG(stream.str());
     }
 
-    View * WidgetTreeHost::hitTest(const Core::Position &point) const{
+    View * WidgetTreeHost::hitTest(const Composition::Point2D &point) const{
         if(root == nullptr){
             return nullptr;
         }
         return hitTestWidget(root.get(),point);
     }
 
-    View * WidgetTreeHost::hitTestWidget(Widget *widget,const Core::Position &point) const{
+    View * WidgetTreeHost::hitTestWidget(Widget *widget,const Composition::Point2D &point) const{
         if(widget == nullptr){
             return nullptr;
         }
@@ -428,7 +428,7 @@ namespace OmegaWTK {
             }
             View &childView = child->viewRef();
             if(childView.containsPoint(point)){
-                Core::Position localPoint {
+                Composition::Point2D localPoint {
                     point.x - childView.getRect().pos.x,
                     point.y - childView.getRect().pos.y
                 };
@@ -451,7 +451,7 @@ namespace OmegaWTK {
         using Native::NativeEvent;
 
         // Extract position for positional events.
-        Core::Position pos {};
+        Composition::Point2D pos {};
         bool hasPosition = false;
 
         switch(event->type){

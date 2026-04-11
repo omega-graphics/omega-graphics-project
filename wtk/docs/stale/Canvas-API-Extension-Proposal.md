@@ -10,13 +10,13 @@ This document proposes API and feature extensions to complete and extend the Com
 
 | Method | Parameters | Notes |
 |--------|------------|--------|
-| `drawRect` | `Core::Rect&`, `SharedPtr<Brush>&` | Fill only; no border |
-| `drawRoundedRect` | `Core::RoundedRect&`, `SharedPtr<Brush>&` | Fill only; no border |
-| `drawEllipse` | `Core::Ellipse&`, `SharedPtr<Brush>&` | Fill only; no border |
+| `drawRect` | `Composition::Rect&`, `SharedPtr<Brush>&` | Fill only; no border |
+| `drawRoundedRect` | `Composition::RoundedRect&`, `SharedPtr<Brush>&` | Fill only; no border |
+| `drawEllipse` | `Composition::Ellipse&`, `SharedPtr<Brush>&` | Fill only; no border |
 | `drawPath` | `Path&` | Uses path’s internal brush/stroke |
 | `drawText` | text, font, rect, color, optional `TextLayoutDescriptor` | Two overloads |
-| `drawImage` | `BitmapImage&`, `Core::Rect` | Destination rect |
-| `drawGETexture` | `GETexture&`, `Core::Rect`, optional `GEFence` | GPU texture to rect |
+| `drawImage` | `BitmapImage&`, `Composition::Rect` | Destination rect |
+| `drawGETexture` | `GETexture&`, `Composition::Rect`, optional `GEFence` | GPU texture to rect |
 
 ### 1.2 Effects and frame lifecycle
 
@@ -44,15 +44,15 @@ This document proposes API and feature extensions to complete and extend the Com
 
 ```cpp
 // Optional border for rect/roundedRect/ellipse (Core::Optional<Border>)
-void drawRect(Core::Rect & rect,
+void drawRect(Composition::Rect & rect,
               Core::SharedPtr<Brush> & brush,
               Core::Optional<Border> border = Core::nullopt);
 
-void drawRoundedRect(Core::RoundedRect & rect,
+void drawRoundedRect(Composition::RoundedRect & rect,
                      Core::SharedPtr<Brush> & brush,
                      Core::Optional<Border> border = Core::nullopt);
 
-void drawEllipse(Core::Ellipse & ellipse,
+void drawEllipse(Composition::Ellipse & ellipse,
                  Core::SharedPtr<Brush> & brush,
                  Core::Optional<Border> border = Core::nullopt);
 ```
@@ -131,13 +131,13 @@ enum class ImageScaleMode : int {
 
 /// Extend drawImage to accept scale mode (and optionally source rect for subregion).
 void drawImage(SharedHandle<Media::BitmapImage> & img,
-               const Core::Rect & destRect,
+               const Composition::Rect & destRect,
                ImageScaleMode scaleMode = ImageScaleMode::Stretch,
-               Core::Optional<Core::Rect> sourceRect = Core::nullopt);
+               Core::Optional<Composition::Rect> sourceRect = Core::nullopt);
 
 /// Optional: explicit sampling mode for GPU backends (linear/nearest).
 void drawGETexture(SharedHandle<OmegaGTE::GETexture> & texture,
-                   const Core::Rect & rect,
+                   const Composition::Rect & rect,
                    SharedHandle<OmegaGTE::GEFence> fence,
                    ImageScaleMode scaleMode = ImageScaleMode::Stretch);
 ```
@@ -200,8 +200,8 @@ void rotate(float radians);
 void transform(float m00, float m01, float m10, float m11, float tx, float ty);
 // Or: void setTransform(const float m[6]);  // 2D affine row-major
 
-void clipRect(Core::Rect & rect);
-void clipRoundedRect(Core::RoundedRect & rect);
+void clipRect(Composition::Rect & rect);
+void clipRoundedRect(Composition::RoundedRect & rect);
 void clipPath(Path & path);  // Intersect current clip with path (fill) region
 ```
 
@@ -246,7 +246,7 @@ struct TextDrawOptions {
 
 void drawText(const UniString & text,
               Core::SharedPtr<Font> font,
-              const Core::Rect & rect,
+              const Composition::Rect & rect,
               const Color & color,
               const TextLayoutDescriptor & layoutDesc,
               TextDrawOptions textOptions = {});
@@ -254,7 +254,7 @@ void drawText(const UniString & text,
 /// Overload: use a Brush for text color (e.g. gradient text).
 void drawText(const UniString & text,
               Core::SharedPtr<Font> font,
-              const Core::Rect & rect,
+              const Composition::Rect & rect,
               Core::SharedPtr<Brush> & brush,
               const TextLayoutDescriptor & layoutDesc,
               TextDrawOptions textOptions = {});

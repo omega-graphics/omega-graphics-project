@@ -1,4 +1,5 @@
 #include "omegaWTK/Core/Core.h"
+#include "omegaWTK/Composition/Geometry.h"
 
 #ifndef OMEGAWTK_NATIVE_NATIVEITEM_H
 #define OMEGAWTK_NATIVE_NATIVEITEM_H
@@ -27,14 +28,14 @@ namespace OmegaWTK {
             bool hasEventEmitter();
             void setLayerTreeLimb(NativeLayerTreeLimb *limb){ layerTreelimb = limb;};
 
-            INTERFACE_METHOD Core::Rect &getRect() ABSTRACT;
+            INTERFACE_METHOD Composition::Rect &getRect() ABSTRACT;
 
-            INTERFACE_METHOD void resize(const Core::Rect & newRect) ABSTRACT;
+            INTERFACE_METHOD void resize(const Composition::Rect & newRect) ABSTRACT;
             /// Update the native present layer (CAMetalLayer, swap chain, etc.)
             /// geometry to match the new rect.  Called on the main thread from
             /// View::resize so the native layer is always in sync without
             /// routing through the compositor thread.
-            virtual void resizeNativeLayer(const Core::Rect & newRect, float scale){
+            virtual void resizeNativeLayer(const Composition::Rect & newRect, float scale){
                 (void)newRect; (void)scale;
             }
             INTERFACE_METHOD void * getBinding() ABSTRACT;
@@ -63,7 +64,7 @@ namespace OmegaWTK {
         }ItemType;
 
         /// Makes Native Item (If `parent` arg is nullptr, the native_item will be attached as a child to the root HWND or NSView *)
-        NativeItemPtr make_native_item(Core::Rect rect,Native::ItemType type = Native::Default,NativeItemPtr parent = nullptr);
+        NativeItemPtr make_native_item(Composition::Rect rect,Native::ItemType type = Native::Default,NativeItemPtr parent = nullptr);
         // void set_native_item_event_emitter(NativeItemPtr ptr,NativeEventEmitter * emitter);
     }
 };

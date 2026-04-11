@@ -212,7 +212,7 @@ Now that each View owns its own LayerTree, every tree has exactly one Limb (the 
 **Changes:**
 
 - `Limb`'s members move directly onto `LayerTree`: `rootLayer`, `addLayer()`, `getRootLayer()`, `begin()`/`end()` iterators, `enable()`/`disable()`.
-- `LayerTree` constructor takes a `Core::Rect` and creates the root Layer directly (like `Limb(rect)` did).
+- `LayerTree` constructor takes a `Composition::Rect` and creates the root Layer directly (like `Limb(rect)` did).
 - `Layer::parentLimb` (type `Limb*`) → `Layer::parentTree` (type `LayerTree*`). `getParentLimb()` → `getParentTree()`.
 - `LayerTree` inherits `NativeLayerTreeLimb` (the empty native interface that `Limb` used to inherit). `NativeItem::setLayerTreeLimb` now accepts `LayerTree*` directly.
 - `collectLayersForTreeLimb(tree, limb, layers)` → `tree->collectAllLayers(layers)`. No more recursive limb traversal.

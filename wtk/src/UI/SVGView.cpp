@@ -129,9 +129,9 @@ Composition::Path parseSVGPathData(const OmegaCommon::String & d, float svgH) {
     float curX = 0.f, curY = 0.f;
     float startX = 0.f, startY = 0.f;
     bool started = false;
-    Composition::Path path(OmegaGTE::GPoint2D{0.f, 0.f});
+    Composition::Path path(Composition::Point2D{0.f, 0.f});
 
-    auto emit = [&](float ax, float ay) -> OmegaGTE::GPoint2D {
+    auto emit = [&](float ax, float ay) -> Composition::Point2D {
         return {ax, flipY(ay, svgH)};
     };
 
@@ -251,8 +251,8 @@ done:
 // Parse SVG `points` attribute  (polyline / polygon)
 // ---------------------------------------------------------------------------
 
-OmegaCommon::Vector<OmegaGTE::GPoint2D> parsePointsList(const OmegaCommon::String & pts, float svgH) {
-    OmegaCommon::Vector<OmegaGTE::GPoint2D> result;
+OmegaCommon::Vector<Composition::Point2D> parsePointsList(const OmegaCommon::String & pts, float svgH) {
+    OmegaCommon::Vector<Composition::Point2D> result;
     const char * p = pts.c_str();
     const char * end = p + pts.size();
     auto skip = [&]() {
@@ -268,7 +268,7 @@ OmegaCommon::Vector<OmegaGTE::GPoint2D> parsePointsList(const OmegaCommon::Strin
         float y = std::strtof(p, &after);
         if (after == p) break;
         p = after;
-        result.push_back(OmegaGTE::GPoint2D{x, flipY(y, svgH)});
+        result.push_back(Composition::Point2D{x, flipY(y, svgH)});
     }
     return result;
 }
@@ -290,9 +290,9 @@ struct SVGDrawOp {
 
     Type type;
 
-    Core::Rect rectGeom {};
-    Core::RoundedRect roundedRectGeom {};
-    Core::Ellipse ellipseGeom {};
+    Composition::Rect rectGeom {};
+    Composition::RoundedRect roundedRectGeom {};
+    Composition::Ellipse ellipseGeom {};
     Core::Optional<Composition::Path> pathGeom;
 
     Composition::Color fillColor {};
@@ -369,10 +369,10 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
             if (rx == 0.f) rx = ry;
             if (ry == 0.f) ry = rx;
             op.type = SVGDrawOp::Type::RoundedRect;
-            op.roundedRectGeom = Core::RoundedRect{Core::Position{x, fy}, w, h, rx, ry};
+            op.roundedRectGeom = Composition::RoundedRect{Composition::Point2D{x, fy}, w, h, rx, ry};
         } else {
             op.type = SVGDrawOp::Type::Rect;
-            op.rectGeom = Core::Rect{Core::Position{x, fy}, w, h};
+            op.rectGeom = Composition::Rect{Composition::Point2D{x, fy}, w, h};
         }
         parseStyleAttrs(tag, op);
         ops.push_back(std::move(op));
@@ -383,7 +383,7 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
         float cy = parseFloatAttr(tag, "cy");
         float r  = parseFloatAttr(tag, "r");
         op.type = SVGDrawOp::Type::Ellipse;
-        op.ellipseGeom = Core::Ellipse(cx, flipY(cy, svgH), r, r);
+        op.ellipseGeom = Composition::Ellipse{cx, flipY(cy, svgH), r, r};
         parseStyleAttrs(tag, op);
         ops.push_back(std::move(op));
     }
@@ -394,7 +394,7 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
         float rx = parseFloatAttr(tag, "rx");
         float ry = parseFloatAttr(tag, "ry");
         op.type = SVGDrawOp::Type::Ellipse;
-        op.ellipseGeom = Core::Ellipse(cx, flipY(cy, svgH), rx, ry);
+        op.ellipseGeom = Composition::Ellipse{cx, flipY(cy, svgH), rx, ry};
         parseStyleAttrs(tag, op);
         ops.push_back(std::move(op));
     }
@@ -405,8 +405,8 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
         float x2 = parseFloatAttr(tag, "x2");
         float y2 = parseFloatAttr(tag, "y2");
         op.type = SVGDrawOp::Type::Path;
-        Composition::Path p(OmegaGTE::GPoint2D{x1, flipY(y1, svgH)});
-        p.addLine(OmegaGTE::GPoint2D{x2, flipY(y2, svgH)});
+        Composition::Path p(Composition::Point2D{x1, flipY(y1, svgH)});
+        p.addLine(Composition::Point2D{x2, flipY(y2, svgH)});
         op.pathGeom.emplace(std::move(p));
         parseStyleAttrs(tag, op);
         if (op.strokeWidth == 0.f)
@@ -451,7 +451,7 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
 // SVGView implementation
 // ---------------------------------------------------------------------------
 
-SVGView::SVGView(const Core::Rect & rect, ViewPtr parent)
+SVGView::SVGView(const Composition::Rect & rect, ViewPtr parent)
     : View(rect, parent),
       drawOps_(std::make_unique<SVGDrawOpList>()) {
     svgCanvas = makeCanvas(getLayerTree()->getRootLayer());
@@ -559,7 +559,7 @@ void SVGView::renderNow() {
                 Composition::Color sc = op.strokeColor;
                 sc.a = op.strokeOpacity;
                 auto strokeBrush = Composition::ColorBrush(sc);
-                Core::RoundedRect rr{op.rectGeom.pos, op.rectGeom.w, op.rectGeom.h, 0.f, 0.f};
+                Composition::RoundedRect rr{op.rectGeom.pos, op.rectGeom.w, op.rectGeom.h, 0.f, 0.f};
                 auto frame = Composition::RoundedRectFrame(rr, static_cast<unsigned>(op.strokeWidth));
                 frame->setPathBrush(strokeBrush);
                 svgCanvas->drawPath(*frame);
@@ -625,7 +625,7 @@ void SVGView::renderNow() {
     endCompositionSession();
 }
 
-void SVGView::resize(Core::Rect newRect) {
+void SVGView::resize(Composition::Rect newRect) {
     View::resize(newRect);
     needsRebuild_ = true;
     renderNow();

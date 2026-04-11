@@ -190,8 +190,8 @@ Split the `BackendVisualTree` interface:
 
 ```cpp
 // VisualTree.h — new interface
-INTERFACE_METHOD Core::SharedPtr<Visual> makeRootVisual(Core::Rect & rect, Core::Position & pos) ABSTRACT;
-INTERFACE_METHOD Core::SharedPtr<Visual> makeSurfaceVisual(Core::Rect & rect, Core::Position & pos) ABSTRACT;
+INTERFACE_METHOD Core::SharedPtr<Visual> makeRootVisual(Composition::Rect & rect, Composition::Point2D & pos) ABSTRACT;
+INTERFACE_METHOD Core::SharedPtr<Visual> makeSurfaceVisual(Composition::Rect & rect, Composition::Point2D & pos) ABSTRACT;
 ```
 
 `makeRootVisual` creates the native present surface. `makeSurfaceVisual` allocates texture-only. The old `makeVisual` is removed.
@@ -251,9 +251,9 @@ Remove `updateShadowEffect` and `updateTransformEffect` from the `Visual` base c
 
 ```cpp
 struct Visual {
-    Core::Position pos;
+    Composition::Point2D pos;
     BackendRenderTargetContext renderTarget;
-    virtual void resize(Core::Rect & newRect) = 0;
+    virtual void resize(Composition::Rect & newRect) = 0;
     virtual ~Visual() = default;
 };
 ```
@@ -333,13 +333,13 @@ These are per-object effects that execute inline during the element's draw call,
 Add a draw command that renders a blurred, tinted, offset copy of a shape:
 
 ```cpp
-void Canvas::drawShadow(Core::Rect & rect,
+void Canvas::drawShadow(Composition::Rect & rect,
                          Composition::LayerEffect::DropShadowParams & shadow);
 
-void Canvas::drawShadow(Core::RoundedRect & rect,
+void Canvas::drawShadow(Composition::RoundedRect & rect,
                          Composition::LayerEffect::DropShadowParams & shadow);
 
-void Canvas::drawShadow(Core::Ellipse & ellipse,
+void Canvas::drawShadow(Composition::Ellipse & ellipse,
                          Composition::LayerEffect::DropShadowParams & shadow);
 ```
 

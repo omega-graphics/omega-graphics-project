@@ -7,8 +7,8 @@
 namespace OmegaWTK::Native::GTK {
 
 namespace {
-static Core::Rect sanitizeRect(const Core::Rect &candidate,const Core::Rect &fallback){
-    Core::Rect sane = candidate;
+static Composition::Rect sanitizeRect(const Composition::Rect &candidate,const Composition::Rect &fallback){
+    Composition::Rect sane = candidate;
     if(!std::isfinite(sane.pos.x)){
         sane.pos.x = fallback.pos.x;
     }
@@ -84,11 +84,11 @@ static gboolean onButtonPressEvent(GtkWidget *,GdkEventButton *event,gpointer da
         return FALSE;
     }
 
-    Core::Position clientPos {
+    Composition::Point2D clientPos {
         static_cast<float>(event->x),
         static_cast<float>(event->y)
     };
-    Core::Position screenPos {
+    Composition::Point2D screenPos {
         static_cast<float>(event->x_root),
         static_cast<float>(event->y_root)
     };
@@ -132,11 +132,11 @@ static gboolean onButtonReleaseEvent(GtkWidget *,GdkEventButton *event,gpointer 
         return FALSE;
     }
 
-    Core::Position clientPos {
+    Composition::Point2D clientPos {
         static_cast<float>(event->x),
         static_cast<float>(event->y)
     };
-    Core::Position screenPos {
+    Composition::Point2D screenPos {
         static_cast<float>(event->x_root),
         static_cast<float>(event->y_root)
     };
@@ -170,11 +170,11 @@ static gboolean onMotionNotifyEvent(GtkWidget *,GdkEventMotion *event,gpointer d
     }
 
     auto *params = new CursorMoveParams();
-    params->position = Core::Position {
+    params->position = Composition::Point2D {
         static_cast<float>(event->x),
         static_cast<float>(event->y)
     };
-    params->screenPosition = Core::Position {
+    params->screenPosition = Composition::Point2D {
         static_cast<float>(event->x_root),
         static_cast<float>(event->y_root)
     };
@@ -190,7 +190,7 @@ static gboolean onEnterNotifyEvent(GtkWidget *,GdkEventCrossing *event,gpointer 
     }
 
     auto *params = new CursorEnterParams();
-    params->position = Core::Position {
+    params->position = Composition::Point2D {
         static_cast<float>(event->x),
         static_cast<float>(event->y)
     };
@@ -205,7 +205,7 @@ static gboolean onLeaveNotifyEvent(GtkWidget *,GdkEventCrossing *event,gpointer 
     }
 
     auto *params = new CursorExitParams();
-    params->position = Core::Position {
+    params->position = Composition::Point2D {
         static_cast<float>(event->x),
         static_cast<float>(event->y)
     };
@@ -219,7 +219,7 @@ static gboolean onScrollEvent(GtkWidget *,GdkEventScroll *event,gpointer data){
         return FALSE;
     }
 
-    Core::Position scrollPos {
+    Composition::Point2D scrollPos {
         static_cast<float>(event->x),
         static_cast<float>(event->y)
     };
@@ -328,8 +328,8 @@ static void onVerticalAdjustmentChanged(GtkAdjustment *adjustment,gpointer data)
 }
 }
 
-GTKItem::GTKItem(Core::Rect rect,Native::ItemType type):
-rect(sanitizeRect(rect,Core::Rect{Core::Position{0.f,0.f},1.f,1.f})),
+GTKItem::GTKItem(Composition::Rect rect,Native::ItemType type):
+rect(sanitizeRect(rect,Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f})),
 isScrollItem(type == Native::ScrollItem){
     if(isScrollItem){
         widget = gtk_scrolled_window_new(nullptr,nullptr);
@@ -419,7 +419,7 @@ void GTKItem::emitIfPossible(NativeEventPtr event){
 }
 
 void GTKItem::handleAllocation(const GtkAllocation &allocation){
-    Core::Rect allocatedRect {
+    Composition::Rect allocatedRect {
         rect.pos,
         static_cast<float>(allocation.width),
         static_cast<float>(allocation.height)
@@ -452,7 +452,7 @@ void GTKItem::handleScrollAdjustmentValue(double value,bool horizontal){
         return;
     }
 
-    Core::Position pos {0.f, 0.f};
+    Composition::Point2D pos {0.f, 0.f};
     const auto type = horizontal
         ? (delta > 0.0 ? NativeEvent::ScrollRight : NativeEvent::ScrollLeft)
         : (delta > 0.0 ? NativeEvent::ScrollDown : NativeEvent::ScrollUp);
@@ -493,7 +493,7 @@ GdkWindow *GTKItem::resolveGdkWindow(){
     return gtk_widget_get_window(target);
 }
 
-void GTKItem::resize(const Core::Rect &newRect) {
+void GTKItem::resize(const Composition::Rect &newRect) {
     rect = sanitizeRect(newRect,rect);
     updateWidgetSize();
     moveInParent();
@@ -706,7 +706,7 @@ GTKItem::~GTKItem(){
 }
 
 namespace OmegaWTK::Native {
-NativeItemPtr make_native_item(Core::Rect rect,Native::ItemType type,NativeItemPtr parent){
+NativeItemPtr make_native_item(Composition::Rect rect,Native::ItemType type,NativeItemPtr parent){
     auto item = NativeItemPtr(new GTK::GTKItem(rect,type));
     if(parent != nullptr){
         parent->addChildNativeItem(item);

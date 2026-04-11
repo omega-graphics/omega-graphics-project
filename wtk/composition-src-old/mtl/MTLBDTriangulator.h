@@ -12,7 +12,7 @@ namespace OmegaWTK::Composition {
  NOTE: Rect Position Inputs are NOT scaled to the backingScaleFactor however the Dimenensions are.
  */
 class MTLBDTriangulator {
-    Core::Rect targetFrame;
+    Composition::Rect targetFrame;
     Core::Math::Point2D getRenderTargetCenter();
     CGFloat scaleFactor;
 public:
@@ -53,11 +53,11 @@ public:
     Core::UniquePtr<SolidColor2DMesh> triangulateToSolidColorMesh(Core::FRect & rect,bool frame = false,unsigned frameWidth = 0);
     TriangulationResult<SolidColor2DMesh> triangulateToSolidColorMeshes(Core::FRoundedRect &rect,bool frame = false,unsigned frameWidth = 0);
     Core::UniquePtr<SolidColor2DMesh> triangulateToSolidColorMesh(Core::FEllipse &ellipse,bool frame = false,unsigned frameWidth = 0);
-//    Core::UniquePtr<SolidColor2DMesh> triangulateToSolidColorMesh(Core::RoundedRect & rect);
+//    Core::UniquePtr<SolidColor2DMesh> triangulateToSolidColorMesh(Composition::RoundedRect & rect);
     
     Core::UniquePtr<Textured2DMesh> triangulateToTexturedMesh(Core::FRect & rect);
     /// @}
-    MTLBDTriangulator(Core::Rect & targetFrame);
+    MTLBDTriangulator(Composition::Rect & targetFrame);
 };
 
 };

@@ -234,7 +234,7 @@ class OMEGAWTK_EXPORT GTEView : public View {
 public:
     OMEGACOMMON_CLASS("OmegaWTK.GTEView")
 
-    explicit GTEView(const Core::Rect & rect,
+    explicit GTEView(const Composition::Rect & rect,
                      const GTEViewDescriptor & desc,
                      ViewPtr parent = nullptr);
     ~GTEView() override;
@@ -269,7 +269,7 @@ public:
     SharedHandle<OmegaGTE::GEFence> fence();
 
     /// Override: resize rebuilds depth/stencil and notifies delegate.
-    void resize(Core::Rect newRect) override;
+    void resize(Composition::Rect newRect) override;
 
     /// Override: submits the current color texture to the Compositor.
     void submitPaintFrame(int submissions) override;
@@ -449,7 +449,7 @@ When `OMEGAGTE_RAYTRACING_SUPPORTED` is defined:
 class GTEViewWidget : public Widget {
     GTEViewDescriptor desc_;
 public:
-    explicit GTEViewWidget(Core::Rect rect,
+    explicit GTEViewWidget(Composition::Rect rect,
                            const GTEViewDescriptor & desc = {});
 
     GTEView & gteView();

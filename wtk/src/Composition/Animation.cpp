@@ -1,6 +1,7 @@
 #include "omegaWTK/Composition/Animation.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Canvas.h"
+#include "backend/GeometryConvert.h"
 #include "Compositor.h"
 #include <algorithm>
 #include <atomic>
@@ -40,7 +41,7 @@ float cubicBezier(float p0,float p1,float p2,float p3,float t){
 }
 }
 
-ScalarTraverse::ScalarTraverse(OmegaGTE::GPoint2D start, OmegaGTE::GPoint2D end, unsigned int speed) :
+ScalarTraverse::ScalarTraverse(Point2D start, Point2D end, unsigned int speed) :
 start_pt(start),
 end_pt(end),
 cur(start_pt),speed(speed)
@@ -53,7 +54,7 @@ cur(start_pt),speed(speed)
 
 }
 
-OmegaGTE::GPoint2D ScalarTraverse::get() {
+Point2D ScalarTraverse::get() {
     return cur;
 }
 
@@ -77,7 +78,7 @@ void ScalarTraverse::back() {
     cur.y -= delta_y;
 }
 
-void ScalarTraverse::changeScalar(OmegaGTE::GPoint2D start, OmegaGTE::GPoint2D end) {
+void ScalarTraverse::changeScalar(Point2D start, Point2D end) {
     start_pt = start;
     end_pt = end;
 
@@ -111,18 +112,18 @@ SharedHandle<AnimationCurve> AnimationCurve::EaseInOut(){
     return CubicBezier({0.42f,0.0f},{0.58f,1.0f});
 }
 
-SharedHandle<AnimationCurve> AnimationCurve::Quadratic(OmegaGTE::GPoint2D a){
+SharedHandle<AnimationCurve> AnimationCurve::Quadratic(Point2D a){
     auto curve = SharedHandle<AnimationCurve>(new AnimationCurve{Type::QuadraticBezier,0.f,1.f});
     curve->a = a;
     return curve;
 }
 
-SharedHandle<AnimationCurve> AnimationCurve::Cubic(OmegaGTE::GPoint2D a,OmegaGTE::GPoint2D b){
+SharedHandle<AnimationCurve> AnimationCurve::Cubic(Point2D a,Point2D b){
     return CubicBezier(a,b,0.f,1.f);
 }
 
-SharedHandle<AnimationCurve> AnimationCurve::CubicBezier(OmegaGTE::GPoint2D a,
-                                                         OmegaGTE::GPoint2D b,
+SharedHandle<AnimationCurve> AnimationCurve::CubicBezier(Point2D a,
+                                                         Point2D b,
                                                          float start_h,
                                                          float end_h){
     auto curve = SharedHandle<AnimationCurve>(new AnimationCurve{Type::CubicBezier,start_h,end_h});
@@ -174,8 +175,8 @@ AnimationCurve::Traversal::Traversal(AnimationCurve &curve,
     if(curve.type == Type::Linear){
         data = new AnimationCurveLinearTraversal {
             ScalarTraverse( 
-            OmegaGTE::GPoint2D {0.f,curve.start_h * space_h},
-            OmegaGTE::GPoint2D {space_w,curve.end_h * space_h}
+            Point2D {0.f,curve.start_h * space_h},
+            Point2D {space_w,curve.end_h * space_h}
             )
         };
         initState = malloc(sizeof(AnimationCurveLinearTraversal));
@@ -184,18 +185,18 @@ AnimationCurve::Traversal::Traversal(AnimationCurve &curve,
     else if(curve.type == Type::QuadraticBezier){
         data = new AnimationCurveQuadraticTraversal{
             ScalarTraverse(
-                OmegaGTE::GPoint2D{0.f,curve.start_h * space_h},
-                OmegaGTE::GPoint2D{curve.a.x * space_w,curve.a.y * space_h}
+                Point2D{0.f,curve.start_h * space_h},
+                Point2D{curve.a.x * space_w,curve.a.y * space_h}
             ),
             ScalarTraverse(
-                OmegaGTE::GPoint2D{curve.a.x * space_w,curve.a.y * space_h},
-                OmegaGTE::GPoint2D{space_w,curve.end_h * space_h}
+                Point2D{curve.a.x * space_w,curve.a.y * space_h},
+                Point2D{space_w,curve.end_h * space_h}
             ),
 
 
             ScalarTraverse(
-                OmegaGTE::GPoint2D{0.f,curve.start_h * space_h},
-                OmegaGTE::GPoint2D{curve.a.x * space_w,curve.a.y * space_h}
+                Point2D{0.f,curve.start_h * space_h},
+                Point2D{curve.a.x * space_w,curve.a.y * space_h}
             )
         };
         initState = malloc(sizeof(AnimationCurveQuadraticTraversal));
@@ -204,31 +205,31 @@ AnimationCurve::Traversal::Traversal(AnimationCurve &curve,
     else {
         data = new AnimationCurveCubicTraversal{
                     ScalarTraverse(
-                        OmegaGTE::GPoint2D{0.f,curve.start_h * space_h},
-                        OmegaGTE::GPoint2D{curve.a.x * space_w,curve.a.y * space_h}
+                        Point2D{0.f,curve.start_h * space_h},
+                        Point2D{curve.a.x * space_w,curve.a.y * space_h}
                     ),
                     ScalarTraverse(
-                        OmegaGTE::GPoint2D{curve.a.x * space_w,curve.a.y * space_h},
-                        OmegaGTE::GPoint2D{curve.b.x * space_w,curve.b.y * space_h}
+                        Point2D{curve.a.x * space_w,curve.a.y * space_h},
+                        Point2D{curve.b.x * space_w,curve.b.y * space_h}
                     ),
                     ScalarTraverse(
-                        OmegaGTE::GPoint2D{curve.a.x * space_w,curve.a.y * space_h},
-                        OmegaGTE::GPoint2D{space_w,curve.end_h * space_h}
-                    ),
-
-
-                    ScalarTraverse(
-                        OmegaGTE::GPoint2D{0.f,curve.start_h * space_h},
-                        OmegaGTE::GPoint2D{curve.a.x * space_w,curve.a.y * space_h}
-                    ),
-                    ScalarTraverse(
-                        OmegaGTE::GPoint2D{curve.a.x * space_w,curve.a.y * space_h},
-                        OmegaGTE::GPoint2D{curve.b.x * space_w,curve.b.y * space_h}
+                        Point2D{curve.a.x * space_w,curve.a.y * space_h},
+                        Point2D{space_w,curve.end_h * space_h}
                     ),
 
+
                     ScalarTraverse(
-                        OmegaGTE::GPoint2D{0.f,curve.start_h * space_h},
-                        OmegaGTE::GPoint2D{curve.a.x * space_w,curve.a.y * space_h}
+                        Point2D{0.f,curve.start_h * space_h},
+                        Point2D{curve.a.x * space_w,curve.a.y * space_h}
+                    ),
+                    ScalarTraverse(
+                        Point2D{curve.a.x * space_w,curve.a.y * space_h},
+                        Point2D{curve.b.x * space_w,curve.b.y * space_h}
+                    ),
+
+                    ScalarTraverse(
+                        Point2D{0.f,curve.start_h * space_h},
+                        Point2D{curve.a.x * space_w,curve.a.y * space_h}
                     ),
         };
         initState = malloc(sizeof(AnimationCurveCubicTraversal));
@@ -264,7 +265,7 @@ void AnimationCurve::Traversal::next() {
     }
 }
 
-OmegaGTE::GPoint2D AnimationCurve::Traversal::get() {
+Point2D AnimationCurve::Traversal::get() {
     if(curve.type == Type::Linear){
        auto d = (AnimationCurveLinearTraversal *)data;
        return d->traversal.get();
@@ -448,7 +449,7 @@ public:
         return animator->nativeView;
     }
 
-    static Core::Rect getLayerRect(LayerAnimator * animator){
+    static Composition::Rect getLayerRect(LayerAnimator * animator){
         if(animator == nullptr){
             return {};
         }
@@ -524,7 +525,7 @@ public:
         bool markedForRemoval = false;
         LayerClip layerClip {};
         ViewClip viewClip {};
-        Core::Rect lastSampledRect {};
+        Composition::Rect lastSampledRect {};
         bool hasSampledRect = false;
 
         void syncFromTelemetry(const Compositor::LaneTelemetrySnapshot & snapshot){
@@ -1221,16 +1222,16 @@ void LayerAnimator::resizeTransition(unsigned int delta_x,
     endRect.w += static_cast<float>(delta_w);
     endRect.h += static_cast<float>(delta_h);
 
-    KeyframeValue<Core::Rect> startKey {};
+    KeyframeValue<Composition::Rect> startKey {};
     startKey.offset = 0.f;
     startKey.value = startRect;
     startKey.easingToNext = curve ? curve : AnimationCurve::Linear();
-    KeyframeValue<Core::Rect> endKey {};
+    KeyframeValue<Composition::Rect> endKey {};
     endKey.offset = 1.f;
     endKey.value = endRect;
 
     LayerClip clip {};
-    clip.rect = KeyframeTrack<Core::Rect>::From({startKey,endKey});
+    clip.rect = KeyframeTrack<Composition::Rect>::From({startKey,endKey});
     TimingOptions options {};
     options.durationMs = duration;
     options.frameRateHint = static_cast<std::uint16_t>(parentAnimator.framePerSec);
@@ -1386,16 +1387,16 @@ void ViewAnimator::resizeTransition(unsigned int delta_x,
     endRect.w += static_cast<float>(delta_w);
     endRect.h += static_cast<float>(delta_h);
 
-    KeyframeValue<Core::Rect> startKey {};
+    KeyframeValue<Composition::Rect> startKey {};
     startKey.offset = 0.f;
     startKey.value = startRect;
     startKey.easingToNext = curve ? curve : AnimationCurve::Linear();
-    KeyframeValue<Core::Rect> endKey {};
+    KeyframeValue<Composition::Rect> endKey {};
     endKey.offset = 1.f;
     endKey.value = endRect;
 
     ViewClip clip {};
-    clip.rect = KeyframeTrack<Core::Rect>::From({startKey,endKey});
+    clip.rect = KeyframeTrack<Composition::Rect>::From({startKey,endKey});
     TimingOptions options {};
     options.durationMs = duration;
     options.frameRateHint = static_cast<std::uint16_t>(framePerSec);

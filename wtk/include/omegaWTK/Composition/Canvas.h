@@ -1,4 +1,6 @@
 #include "omegaWTK/Core/Core.h"
+#include "Geometry.h"
+#include "GTEForward.h"
 #include "Path.h"
 #include "FontEngine.h"
 #include "Layer.h"
@@ -71,19 +73,19 @@ namespace OmegaWTK {
         Type type;
         struct OMEGAWTK_EXPORT Data {
             struct {
-                Core::Rect rect;
+                Composition::Rect rect;
                 Core::SharedPtr<Brush> brush;
                 Core::Optional<Border> border;
             } rectParams;
             
             struct  {
-                Core::RoundedRect rect;
+                Composition::RoundedRect rect;
                 Core::SharedPtr<Brush> brush;
                 Core::Optional<Border> border;
             } roundedRectParams;
             
             struct {
-                Core::Ellipse ellipse;
+                Composition::Ellipse ellipse;
                 Core::SharedPtr<Brush> brush;
                 Core::Optional<Border> border;
             } ellipseParams;
@@ -99,23 +101,23 @@ namespace OmegaWTK {
                 Core::SharedPtr<Media::BitmapImage> img;
                 Core::SharedPtr<OmegaGTE::GETexture> texture;
                 Core::SharedPtr<OmegaGTE::GEFence> textureFence;
-                Core::Rect rect;
+                Composition::Rect rect;
             } bitmapParams;
             struct ShadowParamsData {
                 LayerEffect::DropShadowParams shadow {};
-                Core::Rect shapeRect {};
+                Composition::Rect shapeRect {};
                 float cornerRadius = 0.f;
                 bool isEllipse = false;
             } shadowParams {};
-            OmegaGTE::FMatrix<4,4> transformMatrix = OmegaGTE::FMatrix<4,4>::Identity();
+            Matrix4x4 transformMatrix = Matrix4x4::Identity();
             float opacityValue = 1.f;
 
 
-            Data(const Core::Rect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border);
+            Data(const Composition::Rect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border);
 
-            Data(const Core::RoundedRect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border);
+            Data(const Composition::RoundedRect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border);
 
-            Data(const Core::Ellipse & ellipse,Core::SharedPtr<Brush> brush,Core::Optional<Border> border);
+            Data(const Composition::Ellipse & ellipse,Core::SharedPtr<Brush> brush,Core::Optional<Border> border);
 
             Data(const Core::SharedPtr<OmegaGTE::GVectorPath2D> & path,
                  Core::SharedPtr<Brush> brush,
@@ -124,13 +126,13 @@ namespace OmegaWTK {
                  bool contour,
                  bool fill);
 
-            Data(Core::SharedPtr<Media::BitmapImage> img,const Core::Rect &rect);
+            Data(Core::SharedPtr<Media::BitmapImage> img,const Composition::Rect &rect);
 
-            Data(Core::SharedPtr<OmegaGTE::GETexture> texture,Core::SharedPtr<OmegaGTE::GEFence> textureFence,const Core::Rect &rect);
+            Data(Core::SharedPtr<OmegaGTE::GETexture> texture,Core::SharedPtr<OmegaGTE::GEFence> textureFence,const Composition::Rect &rect);
 
-            Data(const LayerEffect::DropShadowParams & shadow,const Core::Rect & shapeRect,float cornerRadius,bool isEllipse);
+            Data(const LayerEffect::DropShadowParams & shadow,const Composition::Rect & shapeRect,float cornerRadius,bool isEllipse);
 
-            explicit Data(const OmegaGTE::FMatrix<4,4> & matrix);
+            explicit Data(const Matrix4x4 & matrix);
 
             explicit Data(float opacityVal);
 
@@ -143,13 +145,13 @@ namespace OmegaWTK {
 
         #define VISUAL_COMMAND_ARGS_CHECK(SUBJECT,...) std::enable_if_t<std::is_same_v<std::tuple<std::remove_cv_t<std::remove_reference_t<SUBJECT>>...>,std::tuple<__VA_ARGS__>>,int> = 0
 
-        template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::Rect,Core::SharedPtr<Brush>,Core::Optional<Border>)>
+        template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Composition::Rect,Core::SharedPtr<Brush>,Core::Optional<Border>)>
         VisualCommand(_Args && ...args):type(Rect),params(args...){};
 
-        template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::RoundedRect,Core::SharedPtr<Brush>,Core::Optional<Border>)>
+        template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Composition::RoundedRect,Core::SharedPtr<Brush>,Core::Optional<Border>)>
         VisualCommand(_Args && ...args):type(RoundedRect),params(args...){};
 
-        template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::Ellipse,Core::SharedPtr<Brush>,Core::Optional<Border>)>
+        template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Composition::Ellipse,Core::SharedPtr<Brush>,Core::Optional<Border>)>
         VisualCommand(_Args && ...args):type(Ellipse),params(args...){};
         VisualCommand(const Core::SharedPtr<OmegaGTE::GVectorPath2D> & path,
                       Core::SharedPtr<Brush> brush,
@@ -160,20 +162,20 @@ namespace OmegaWTK {
         type(VectorPath),
         params(path,brush,fillBrush,strokeWidth,contour,fill){};
 
-        template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::SharedPtr<Media::BitmapImage>,Core::Rect)>
+        template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::SharedPtr<Media::BitmapImage>,Composition::Rect)>
         VisualCommand(_Args && ...args):type(Bitmap),params(args...){};
 
-        template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::SharedPtr<OmegaGTE::GETexture>,Core::SharedPtr<OmegaGTE::GEFence>,Core::Rect)>
+        template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::SharedPtr<OmegaGTE::GETexture>,Core::SharedPtr<OmegaGTE::GEFence>,Composition::Rect)>
         VisualCommand(_Args && ...args):type(Bitmap),params(args...){};
 
         VisualCommand(const LayerEffect::DropShadowParams & shadow,
-                      const Core::Rect & shapeRect,
+                      const Composition::Rect & shapeRect,
                       float cornerRadius,
                       bool isEllipse):
         type(Shadow),
         params(shadow,shapeRect,cornerRadius,isEllipse){};
 
-        explicit VisualCommand(const OmegaGTE::FMatrix<4,4> & matrix):
+        explicit VisualCommand(const Matrix4x4 & matrix):
         type(SetTransform),
         params(matrix){};
 
@@ -194,12 +196,12 @@ namespace OmegaWTK {
         /// Snapshot of the layer rect at the time the frame was recorded.
         /// Previously a live reference to Layer::surface_rect, which caused
         /// a size mismatch when the layer resized between paint and execution.
-        Core::Rect rect;
+        Composition::Rect rect;
         /// Position of the owning View relative to the window origin.
         /// Set by Canvas::nextFrame() at paint time so the backend can
         /// render this frame's commands at the correct offset within the
         /// window's single shared surface (Phase 3, Native View Architecture).
-        Core::Position windowOffset {0.f, 0.f};
+        Composition::Point2D windowOffset {0.f, 0.f};
         struct {
             float r = 0.f,g = 0.f,b = 0.f,a = 0.f;
         } background;
@@ -213,7 +215,7 @@ namespace OmegaWTK {
     */
     class OMEGAWTK_EXPORT Canvas : public CompositorClient {
 
-        Core::Rect & rect;
+        Composition::Rect & rect;
 
         SharedHandle<CanvasFrame> current;
 
@@ -242,7 +244,7 @@ namespace OmegaWTK {
          @param brush The Brush to fill the Rect with.
          @param border Optional border (brush + width) drawn on top of the fill.
          */
-        void drawRect(Core::Rect & rect,
+        void drawRect(Composition::Rect & rect,
                       Core::SharedPtr<Brush> & brush,
                       Core::Optional<Border> border = std::nullopt);
 
@@ -252,7 +254,7 @@ namespace OmegaWTK {
          @param brush The Brush to fill the Rect with.
          @param border Optional border (brush + width) drawn on top of the fill.
          */
-        void drawRoundedRect(Core::RoundedRect & rect,
+        void drawRoundedRect(Composition::RoundedRect & rect,
                              Core::SharedPtr<Brush> & brush,
                              Core::Optional<Border> border = std::nullopt);
 
@@ -262,7 +264,7 @@ namespace OmegaWTK {
          @param brush The Brush to fill the Ellipse with.
          @param border Optional border (brush + width) drawn on top of the fill.
          */
-        void drawEllipse(Core::Ellipse & ellipse,
+        void drawEllipse(Composition::Ellipse & ellipse,
                          Core::SharedPtr<Brush> & brush,
                          Core::Optional<Border> border = std::nullopt);
 
@@ -276,7 +278,7 @@ namespace OmegaWTK {
          */
         void drawText(const UniString & text,
                       Core::SharedPtr<Font> font,
-                      const Core::Rect & rect,
+                      const Composition::Rect & rect,
                       const Color & color,
                       const TextLayoutDescriptor & layoutDesc);
 
@@ -289,7 +291,7 @@ namespace OmegaWTK {
          */
         void drawText(const UniString & text,
                       Core::SharedPtr<Font> font,
-                      const Core::Rect & rect,
+                      const Composition::Rect & rect,
                       const Color & color);
 
         /**
@@ -297,7 +299,7 @@ namespace OmegaWTK {
             @param img The Image.
             @param rect The Rect to bound the image to.
            */
-        void drawImage(SharedHandle<Media::BitmapImage> & img,const Core::Rect & rect);
+        void drawImage(SharedHandle<Media::BitmapImage> & img,const Composition::Rect & rect);
 
         /**
            @brief Draw a GETexture to the corresponding rect.
@@ -305,7 +307,7 @@ namespace OmegaWTK {
            @param rect The Rect to bound the image to.
            @param fence
           */
-        void drawGETexture(SharedHandle<OmegaGTE::GETexture> & img,const Core::Rect & rect,SharedHandle<OmegaGTE::GEFence> fence = nullptr);
+        void drawGETexture(SharedHandle<OmegaGTE::GETexture> & img,const Composition::Rect & rect,SharedHandle<OmegaGTE::GEFence> fence = nullptr);
 
         /**
            @brief Apply an effect to the current frame.
@@ -324,26 +326,26 @@ namespace OmegaWTK {
          @param rect The shape to shadow.
          @param shadow Shadow parameters (offset, blur, color, opacity).
          */
-        void drawShadow(Core::Rect & rect,
+        void drawShadow(Composition::Rect & rect,
                         const LayerEffect::DropShadowParams & shadow);
 
         /**
          @brief Draw a drop shadow for a rounded rect shape.
          */
-        void drawShadow(Core::RoundedRect & rect,
+        void drawShadow(Composition::RoundedRect & rect,
                         const LayerEffect::DropShadowParams & shadow);
 
         /**
          @brief Draw a drop shadow for an ellipse shape.
          */
-        void drawShadow(Core::Ellipse & ellipse,
+        void drawShadow(Composition::Ellipse & ellipse,
                         const LayerEffect::DropShadowParams & shadow);
 
         /**
          @brief Set the per-element transform matrix for subsequent draw calls.
          @param matrix 4x4 transform matrix. Use Identity to reset.
          */
-        void setElementTransform(const OmegaGTE::FMatrix<4,4> & matrix);
+        void setElementTransform(const Matrix4x4 & matrix);
 
         /**
          @brief Set the per-element opacity for subsequent draw calls.

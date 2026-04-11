@@ -42,10 +42,10 @@ namespace OmegaWTK::Composition {
             return std::max(scale,static_cast<CGFloat>(2.f));
         }
 
-        static inline Core::Rect sanitizeVisualRect(const Core::Rect & candidate){
+        static inline Composition::Rect sanitizeVisualRect(const Composition::Rect & candidate){
             const CGFloat scale = safeScale();
             const float maxPointDimension = static_cast<float>(kMaxDrawableDimension / scale);
-            Core::Rect sanitized = candidate;
+            Composition::Rect sanitized = candidate;
             if(!std::isfinite(sanitized.pos.x)){
                 sanitized.pos.x = 0.f;
             }
@@ -91,8 +91,8 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
 
 
  Core::SharedPtr<BackendVisualTree::Visual> MTLCALayerTree::makeRootVisual(
-                                                             Core::Rect &rect,
-                                                             Core::Position & pos,
+                                                             Composition::Rect &rect,
+                                                             Composition::Point2D & pos,
                                                              ViewPresentTarget & outPresentTarget){
      auto saneRect = sanitizeVisualRect(rect);
      auto sanePos = saneRect.pos;
@@ -133,21 +133,21 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
 
      // Root visual's BackendRenderTargetContext is texture-only (nullptr native target).
      SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
-     Core::Rect r {saneRect};
+     Composition::Rect r {saneRect};
      BackendRenderTargetContext compTarget (r,nullNative,(float)scale);
 
      return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::RootVisual(sanePos,compTarget,layer));
  };
 
  Core::SharedPtr<BackendVisualTree::Visual> MTLCALayerTree::makeSurfaceVisual(
-                                                             Core::Rect &rect,
-                                                             Core::Position & pos){
+                                                             Composition::Rect &rect,
+                                                             Composition::Point2D & pos){
      auto saneRect = sanitizeVisualRect(rect);
      auto sanePos = saneRect.pos;
 
      CGFloat scale = safeScale();
      SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
-     Core::Rect r {saneRect};
+     Composition::Rect r {saneRect};
      BackendRenderTargetContext compTarget (r,nullNative,(float)scale);
 
      return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::SurfaceVisual(sanePos,compTarget));

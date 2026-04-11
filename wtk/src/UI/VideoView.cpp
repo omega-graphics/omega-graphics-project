@@ -14,7 +14,7 @@
 
 namespace OmegaWTK {
 
-static Core::Rect computeScaledRect(const Core::Rect &viewRect,
+static Composition::Rect computeScaledRect(const Composition::Rect &viewRect,
                                     uint32_t frameW, uint32_t frameH,
                                     VideoScaleMode mode) {
     if (mode == VideoScaleMode::Stretch || frameW == 0 || frameH == 0)
@@ -46,10 +46,10 @@ static Core::Rect computeScaledRect(const Core::Rect &viewRect,
 
     float x = viewRect.pos.x + (vw - destW) / 2.f;
     float y = viewRect.pos.y + (vh - destH) / 2.f;
-    return Core::Rect{Core::Position{x, y}, destW, destH};
+    return Composition::Rect{Composition::Point2D{x, y}, destW, destH};
 }
 
-VideoView::VideoView(const Core::Rect & rect, ViewPtr parent)
+VideoView::VideoView(const Composition::Rect & rect, ViewPtr parent)
     : View(rect, parent),
       framebuffer(2) {
     videoCanvas = makeCanvas(getLayerTree()->getRootLayer());
@@ -57,7 +57,7 @@ VideoView::VideoView(const Core::Rect & rect, ViewPtr parent)
 
 void VideoView::queueFrame(SharedHandle<Media::VideoFrame> &frame) {
     auto &hdr = frame->videoFrame.header;
-    Core::Rect destRect = computeScaledRect(getRect(), hdr.width, hdr.height, scaleMode_);
+    Composition::Rect destRect = computeScaledRect(getRect(), hdr.width, hdr.height, scaleMode_);
     SharedHandle<Media::BitmapImage> f(&frame->videoFrame);
     videoCanvas->drawImage(f, destRect);
     f.reset();

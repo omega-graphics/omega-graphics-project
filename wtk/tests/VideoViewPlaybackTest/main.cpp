@@ -33,7 +33,7 @@ protected:
 
     void onMount() override {
         auto bounds = rect();
-        OmegaWTK::Core::Rect localBounds{OmegaWTK::Core::Position{0.f, 0.f}, bounds.w, bounds.h};
+        OmegaWTK::Composition::Rect localBounds{OmegaWTK::Composition::Point2D{0.f, 0.f}, bounds.w, bounds.h};
         videoView = makeSubView<OmegaWTK::VideoView>(localBounds);
         videoView->setDelegate(&playbackDelegate);
         videoView->setScaleMode(OmegaWTK::VideoScaleMode::AspectFit);
@@ -61,7 +61,7 @@ protected:
     bool isLayoutResizable() const override { return false; }
 
 public:
-    explicit VideoWidget(OmegaWTK::Core::Rect rect,
+    explicit VideoWidget(OmegaWTK::Composition::Rect rect,
                          const OmegaCommon::String & path)
         : OmegaWTK::Widget(rect), filePath(path) {}
 };
@@ -77,7 +77,7 @@ public:
 int omegaWTKMain(OmegaWTK::AppInst * app) {
     OmegaCommon::String videoPath = "test_video.mp4";
 
-    const OmegaWTK::Core::Rect windowRect{{0, 0}, 500, 400};
+    const OmegaWTK::Composition::Rect windowRect{{0, 0}, 500, 400};
 
     auto window = make<OmegaWTK::AppWindow>(
         windowRect,

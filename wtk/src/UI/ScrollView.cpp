@@ -21,7 +21,7 @@ namespace OmegaWTK {
         if(event->type == Native::NativeEvent::ScrollWheel){
             auto *p = static_cast<Native::ScrollParams *>(event->params);
             if(p != nullptr){
-                Core::Position newOffset = owner->scrollOffset;
+                Composition::Point2D newOffset = owner->scrollOffset;
                 if(owner->hasHorizontalScrollBar){
                     newOffset.x -= p->deltaX;
                 }
@@ -35,7 +35,7 @@ namespace OmegaWTK {
         }
     }
 
-    ScrollView::ScrollView(const Core::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, ViewPtr parent):
+    ScrollView::ScrollView(const Composition::Rect & rect, SharedHandle<View> child, bool hasVerticalScrollBar, bool hasHorizontalScrollBar, ViewPtr parent):
             View(rect, parent),
             child(child),
             hasVerticalScrollBar(hasVerticalScrollBar),
@@ -47,8 +47,8 @@ namespace OmegaWTK {
         }
         // Create scroll bar overlay layers.
         if(hasVerticalScrollBar){
-            Core::Rect vBarRect {
-                Core::Position{rect.w - kScrollBarThickness - kScrollBarMargin, kScrollBarMargin},
+            Composition::Rect vBarRect {
+                Composition::Point2D{rect.w - kScrollBarThickness - kScrollBarMargin, kScrollBarMargin},
                 kScrollBarThickness,
                 rect.h - 2.f * kScrollBarMargin
             };
@@ -56,8 +56,8 @@ namespace OmegaWTK {
             vScrollBarCanvas = makeCanvas(vScrollBarLayer);
         }
         if(hasHorizontalScrollBar){
-            Core::Rect hBarRect {
-                Core::Position{kScrollBarMargin, rect.h - kScrollBarThickness - kScrollBarMargin},
+            Composition::Rect hBarRect {
+                Composition::Point2D{kScrollBarMargin, rect.h - kScrollBarThickness - kScrollBarMargin},
                 rect.w - 2.f * kScrollBarMargin,
                 kScrollBarThickness
             };
@@ -86,8 +86,8 @@ namespace OmegaWTK {
             float thumbY = scrollRatio * (trackH - thumbH);
 
             // Update layer rect.
-            Core::Rect vBarRect {
-                Core::Position{viewRect.w - kScrollBarThickness - kScrollBarMargin, kScrollBarMargin},
+            Composition::Rect vBarRect {
+                Composition::Point2D{viewRect.w - kScrollBarThickness - kScrollBarMargin, kScrollBarMargin},
                 kScrollBarThickness,
                 trackH
             };
@@ -95,7 +95,7 @@ namespace OmegaWTK {
 
             startCompositionSession();
             vScrollBarCanvas->clear();
-            Core::RoundedRect thumbRect {
+            Composition::RoundedRect thumbRect {
                 {0.f, thumbY},
                 kScrollBarThickness, thumbH,
                 kScrollBarRadius, kScrollBarRadius
@@ -119,8 +119,8 @@ namespace OmegaWTK {
             scrollRatio = std::clamp(scrollRatio, 0.f, 1.f);
             float thumbX = scrollRatio * (trackW - thumbW);
 
-            Core::Rect hBarRect {
-                Core::Position{kScrollBarMargin, viewRect.h - kScrollBarThickness - kScrollBarMargin},
+            Composition::Rect hBarRect {
+                Composition::Point2D{kScrollBarMargin, viewRect.h - kScrollBarThickness - kScrollBarMargin},
                 trackW,
                 kScrollBarThickness
             };
@@ -128,7 +128,7 @@ namespace OmegaWTK {
 
             startCompositionSession();
             hScrollBarCanvas->clear();
-            Core::RoundedRect thumbRect {
+            Composition::RoundedRect thumbRect {
                 {thumbX, 0.f},
                 thumbW, kScrollBarThickness,
                 kScrollBarRadius, kScrollBarRadius
@@ -156,12 +156,12 @@ namespace OmegaWTK {
         setReciever(delegate);
     };
 
-    void ScrollView::setScrollOffset(const Core::Position & offset){
+    void ScrollView::setScrollOffset(const Composition::Point2D & offset){
         scrollOffset = offset;
         paintScrollBars();
     }
 
-    Core::Position ScrollView::scrollOffsetContribution() const{
+    Composition::Point2D ScrollView::scrollOffsetContribution() const{
         return scrollOffset;
     }
 

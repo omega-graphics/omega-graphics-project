@@ -1,4 +1,5 @@
 #include "omegaWTK/Composition/FontEngine.h"
+#include "omegaWTK/Core/GTEHandle.h"
 #include "NativePrivate/win/WinUtils.h"
 #include "omegaWTK/Core/Microsoft.h"
 #include "omegaWTK/Core/Unicode.h"
@@ -290,8 +291,8 @@ namespace OmegaWTK::Composition {
              auto FontEngineImpl = (DWriteFontEngineImpl *)FontEngine::inst();
             FontEngineImpl->dwrite_factory->CreateTextLayout((WCHAR *)str.getBuffer(),str.length(),_font->textFormat.get(),0,0,&textLayout);
          }
-         Core::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) override {
-            return Core::Rect {{0.f,0.f},0,0};
+         Composition::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) override {
+            return Composition::Rect {{0.f,0.f},0,0};
          }
      };
 
@@ -369,7 +370,7 @@ namespace OmegaWTK::Composition {
          void * getNative() override{
             return nullptr;
          };
-         explicit DWriteTextRect(Core::Rect & rect,const TextLayoutDescriptor & layoutDesc):
+         explicit DWriteTextRect(Composition::Rect & rect,const TextLayoutDescriptor & layoutDesc):
          TextRect(rect),
          lineLimit(layoutDesc.lineLimit),
          target(nullptr),
@@ -472,7 +473,7 @@ namespace OmegaWTK::Composition {
          }
      };
 
-     SharedHandle<TextRect> TextRect::Create(Core::Rect rect,const TextLayoutDescriptor & layoutDesc){
+     SharedHandle<TextRect> TextRect::Create(Composition::Rect rect,const TextLayoutDescriptor & layoutDesc){
          return SharedHandle<TextRect>(new DWriteTextRect(rect,layoutDesc));
      };
     }

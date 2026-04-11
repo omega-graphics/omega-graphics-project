@@ -23,7 +23,7 @@ namespace OmegaWTK::Composition {
             bool warnedMissingNativeHandle = false;
             bool warnedNativeTargetInitFailure = false;
 
-            bool resolveNativeRenderTargetDescriptor(const Core::Rect &rect,OmegaGTE::NativeRenderTargetDescriptor &desc){
+            bool resolveNativeRenderTargetDescriptor(const Composition::Rect &rect,OmegaGTE::NativeRenderTargetDescriptor &desc){
                 desc = {};
                 if(view == nullptr){
                     return false;
@@ -49,11 +49,11 @@ namespace OmegaWTK::Composition {
             }
 
             struct Visual : public BackendVisualTree::Visual {
-                explicit Visual(Core::Position &pos, BackendRenderTargetContext &context):
+                explicit Visual(Composition::Point2D &pos, BackendRenderTargetContext &context):
                 BackendVisualTree::Visual(pos,context){
                 }
 
-                void resize(Core::Rect &newRect) override {
+                void resize(Composition::Rect &newRect) override {
                     renderTarget.setRenderTargetSize(newRect);
                 }
             };
@@ -67,7 +67,7 @@ namespace OmegaWTK::Composition {
             }
 
             Core::SharedPtr<BackendVisualTree::Visual> makeRootVisual(
-                    Core::Rect &rect,Core::Position &pos,
+                    Composition::Rect &rect,Composition::Point2D &pos,
                     ViewPresentTarget & outPresentTarget) override {
                 OmegaGTE::NativeRenderTargetDescriptor desc {};
                 if(resolveNativeRenderTargetDescriptor(rect,desc)){
@@ -88,7 +88,7 @@ namespace OmegaWTK::Composition {
             }
 
             Core::SharedPtr<BackendVisualTree::Visual> makeSurfaceVisual(
-                    Core::Rect &rect,Core::Position &pos) override {
+                    Composition::Rect &rect,Composition::Point2D &pos) override {
                 SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
                 BackendRenderTargetContext context {rect,nullNative,1.f};
                 return Core::SharedPtr<BackendVisualTree::Visual>(new Visual(pos,context));
@@ -102,7 +102,7 @@ namespace OmegaWTK::Composition {
                 if(outPresentTarget.nativeTarget != nullptr || view == nullptr){
                     return;
                 }
-                Core::Rect r = view->getRect();
+                Composition::Rect r = view->getRect();
                 OmegaGTE::NativeRenderTargetDescriptor desc {};
                 if(resolveNativeRenderTargetDescriptor(r,desc)){
                     outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);

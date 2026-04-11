@@ -63,8 +63,8 @@ Responsibilities:
 ```cpp
 class Widget {
 public:
-    void setRect(const Core::Rect & newRect);
-    bool requestRect(const Core::Rect & requested,
+    void setRect(const Composition::Rect & newRect);
+    bool requestRect(const Composition::Rect & requested,
                      GeometryChangeReason reason = GeometryChangeReason::ChildRequest);
     // No Composition animation API on Widget.
 };

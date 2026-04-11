@@ -87,11 +87,6 @@ namespace OmegaWTK::Composition {
             Composition::Gradient gradient;
         };
 
-        /// @brief Backward-compatible accessor (prefer type == Type::Color).
-        bool isColor;
-        /// @brief Backward-compatible accessor (prefer type == Type::Gradient).
-        bool isGradient;
-
         /**
          @brief Constructs a Color Brush!
          */

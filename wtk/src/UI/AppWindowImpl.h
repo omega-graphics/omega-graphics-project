@@ -13,10 +13,10 @@ struct AppWindow::Impl {
     Composition::CompositorClientProxy proxy;
     SharedHandle<AppWindowDelegate> delegate;
     SharedHandle<WidgetTreeHost> widgetTreeHost;
-    Core::Rect rect;
+    Composition::Rect rect;
     SharedHandle<Menu> menu;
 
-    Impl(AppWindow & owner,Core::Rect rectValue,AppWindowDelegate * delegateValue):
+    Impl(AppWindow & owner,Composition::Rect rectValue,AppWindowDelegate * delegateValue):
         nativeWindow(Native::make_native_window(rectValue,&owner)),
         rootViewRenderTarget(new Composition::ViewRenderTarget(nativeWindow->getRootView())),
         proxy(rootViewRenderTarget),

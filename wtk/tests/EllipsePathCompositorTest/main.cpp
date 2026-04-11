@@ -11,9 +11,9 @@
 #include <memory>
 
 namespace {
-OmegaWTK::Core::Rect localViewBounds(const OmegaWTK::Core::Rect & bounds){
-    return OmegaWTK::Core::Rect{
-        OmegaWTK::Core::Position{0.f,0.f},
+OmegaWTK::Composition::Rect localViewBounds(const OmegaWTK::Composition::Rect & bounds){
+    return OmegaWTK::Composition::Rect{
+        OmegaWTK::Composition::Point2D{0.f,0.f},
         bounds.w,
         bounds.h
     };
@@ -35,7 +35,7 @@ class RoundedFrameWidget final : public OmegaWTK::Widget {
     OmegaWTK::UIViewPtr uiView {};
     bool loggedLayout = false;
 
-    void ensureUIView(const OmegaWTK::Core::Rect & bounds){
+    void ensureUIView(const OmegaWTK::Composition::Rect & bounds){
         auto localBounds = localViewBounds(bounds);
         if(uiView == nullptr){
             uiView = makeSubView<OmegaWTK::UIView>(localBounds,"rounded_frame_view");
@@ -64,16 +64,16 @@ protected:
         const float innerSize = std::max(1.0f,outerSize - (thickness * 2.0f));
         const float innerRadius = std::max(1.0f,outerRadius - (thickness * 0.75f));
 
-        OmegaWTK::Core::RoundedRect outer{
-            OmegaWTK::Core::Position{
+        OmegaWTK::Composition::RoundedRect outer{
+            OmegaWTK::Composition::Point2D{
                 (bounds.w - outerSize) * 0.5f,
                 (bounds.h - outerSize) * 0.5f},
             outerSize,
             outerSize,
             outerRadius,
             outerRadius};
-        OmegaWTK::Core::RoundedRect inner{
-            OmegaWTK::Core::Position{
+        OmegaWTK::Composition::RoundedRect inner{
+            OmegaWTK::Composition::Point2D{
                 outer.pos.x + thickness,
                 outer.pos.y + thickness},
                 innerSize,
@@ -107,7 +107,7 @@ protected:
     }
 
 public:
-    explicit RoundedFrameWidget(OmegaWTK::Core::Rect rect):
+    explicit RoundedFrameWidget(OmegaWTK::Composition::Rect rect):
         OmegaWTK::Widget(rect){}
 };
 
@@ -115,7 +115,7 @@ class EllipseOnlyWidget final : public OmegaWTK::Widget {
     OmegaWTK::UIViewPtr uiView {};
     bool loggedLayout = false;
 
-    void ensureUIView(const OmegaWTK::Core::Rect & bounds){
+    void ensureUIView(const OmegaWTK::Composition::Rect & bounds){
         auto localBounds = localViewBounds(bounds);
         if(uiView == nullptr){
             uiView = makeSubView<OmegaWTK::UIView>(localBounds,"ellipse_view");
@@ -137,7 +137,7 @@ protected:
         (void)reason;
         auto bounds = localViewBounds(rect());
         ensureUIView(bounds);
-        OmegaWTK::Core::Ellipse ellipse{
+        OmegaWTK::Composition::Ellipse ellipse{
             bounds.w * 0.5f,
             bounds.h * 0.5f,
             bounds.w * 0.30f,
@@ -168,7 +168,7 @@ protected:
     }
 
 public:
-    explicit EllipseOnlyWidget(OmegaWTK::Core::Rect rect):
+    explicit EllipseOnlyWidget(OmegaWTK::Composition::Rect rect):
         OmegaWTK::Widget(rect){}
 };
 
@@ -176,7 +176,7 @@ class PathOnlyWidget final : public OmegaWTK::Widget {
     OmegaWTK::UIViewPtr uiView {};
     bool loggedLayout = false;
 
-    void ensureUIView(const OmegaWTK::Core::Rect & bounds){
+    void ensureUIView(const OmegaWTK::Composition::Rect & bounds){
         auto localBounds = localViewBounds(bounds);
         if(uiView == nullptr){
             uiView = makeSubView<OmegaWTK::UIView>(localBounds,"path_view");
@@ -206,13 +206,13 @@ protected:
         const float yHigh = bounds.h * 0.36f;
         const float yLow = bounds.h * 0.64f;
 
-        OmegaGTE::GVectorPath2D vectorPath({x0,yLow});
-        vectorPath.append({x1,yHigh});
-        vectorPath.append({x2,yLow});
-        vectorPath.append({x3,yHigh});
+        OmegaWTK::Composition::Path compPath(OmegaWTK::Composition::Point2D{x0,yLow});
+        compPath.addLine(OmegaWTK::Composition::Point2D{x1,yHigh});
+        compPath.addLine(OmegaWTK::Composition::Point2D{x2,yLow});
+        compPath.addLine(OmegaWTK::Composition::Point2D{x3,yHigh});
 
         OmegaWTK::UIViewLayout layout {};
-        layout.shape("path_shape",OmegaWTK::Shape::Path(vectorPath,6));
+        layout.shape("path_shape",OmegaWTK::Shape::Path(std::move(compPath),6));
         uiView->setLayout(layout);
 
         auto style = OmegaWTK::StyleSheet::Create();
@@ -236,7 +236,7 @@ protected:
     }
 
 public:
-    explicit PathOnlyWidget(OmegaWTK::Core::Rect rect):
+    explicit PathOnlyWidget(OmegaWTK::Composition::Rect rect):
         OmegaWTK::Widget(rect){}
 };
 
@@ -253,7 +253,7 @@ protected:
     }
 
 public:
-    explicit GeometryHStack(OmegaWTK::Core::Rect rect,
+    explicit GeometryHStack(OmegaWTK::Composition::Rect rect,
                             const OmegaWTK::StackOptions & options):
         OmegaWTK::HStack(rect,options){}
 };
@@ -267,7 +267,7 @@ public:
 };
 
 int omegaWTKMain(OmegaWTK::AppInst *app) {
-    const OmegaWTK::Core::Rect windowRect{{0,0},500,500};
+    const OmegaWTK::Composition::Rect windowRect{{0,0},500,500};
 
     auto window = make<OmegaWTK::AppWindow>(
         windowRect,
@@ -283,7 +283,7 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
         windowRect,
         options);
 
-    const OmegaWTK::Core::Rect childRect{{0,0},130,220};
+    const OmegaWTK::Composition::Rect childRect{{0,0},130,220};
 
     auto pathWidget = make<PathOnlyWidget>(childRect);
     auto roundedFrameWidget = make<RoundedFrameWidget>(childRect);

@@ -7,6 +7,7 @@
 #include "FencePool.h"
 #include "MainThreadDispatch.h"
 #include "omegaWTK/Composition/Canvas.h"
+#include "GeometryConvert.h"
 #include "ResourceTrace.h"
 
 #include "omegaWTK/Media/ImgCodec.h"
@@ -54,10 +55,10 @@ namespace OmegaWTK::Composition {
             return value;
         }
 
-        static inline Core::Rect sanitizeRenderRect(const Core::Rect & candidate,
-                                                    const Core::Rect & fallback,
+        static inline Composition::Rect sanitizeRenderRect(const Composition::Rect & candidate,
+                                                    const Composition::Rect & fallback,
                                                     float renderScale){
-            Core::Rect sanitizedFallback = fallback;
+            Composition::Rect sanitizedFallback = fallback;
             sanitizedFallback.pos.x = sanitizeCoordinate(sanitizedFallback.pos.x,0.f);
             sanitizedFallback.pos.y = sanitizeCoordinate(sanitizedFallback.pos.y,0.f);
             if(!std::isfinite(sanitizedFallback.w) || sanitizedFallback.w <= 0.f){
@@ -72,7 +73,7 @@ namespace OmegaWTK::Composition {
             sanitizedFallback.w = std::clamp(sanitizedFallback.w,1.f,maxLogicalDimension);
             sanitizedFallback.h = std::clamp(sanitizedFallback.h,1.f,maxLogicalDimension);
 
-            Core::Rect sanitized = candidate;
+            Composition::Rect sanitized = candidate;
             sanitized.pos.x = sanitizeCoordinate(sanitized.pos.x,sanitizedFallback.pos.x);
             sanitized.pos.y = sanitizeCoordinate(sanitized.pos.y,sanitizedFallback.pos.y);
 
@@ -475,7 +476,7 @@ namespace OmegaWTK::Composition {
         destroyGlobalRenderAssets();
     }
 
-BackendRenderTargetContext::BackendRenderTargetContext(Core::Rect & rect,
+BackendRenderTargetContext::BackendRenderTargetContext(Composition::Rect & rect,
         SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTarget,
         float renderScaleValue):
         fence(fencePool ? fencePool->acquire() : gte.graphicsEngine->makeFence()),
@@ -485,7 +486,7 @@ BackendRenderTargetContext::BackendRenderTargetContext(Core::Rect & rect,
         {
     renderScale = sanitizeRenderScale(renderScaleValue);
     renderTargetSize = sanitizeRenderRect(rect,
-                                          Core::Rect{Core::Position{0.f,0.f},1.f,1.f},
+                                          Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f},
                                           renderScale);
     traceResourceId = ResourceTrace::nextResourceId();
     ResourceTrace::emit("Create",
@@ -502,7 +503,7 @@ BackendRenderTargetContext::BackendRenderTargetContext(Core::Rect & rect,
 
 void BackendRenderTargetContext::rebuildBackingTarget(){
     renderTargetSize = sanitizeRenderRect(renderTargetSize,
-                                          Core::Rect{Core::Position{0.f,0.f},1.f,1.f},
+                                          Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f},
                                           renderScale);
     backingWidth = toBackingDimension(renderTargetSize.w,renderScale);
     backingHeight = toBackingDimension(renderTargetSize.h,renderScale);
@@ -617,7 +618,7 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
         fencePool->release(std::move(fence));
 }
 
-    void BackendRenderTargetContext::setRenderTargetSize(Core::Rect &rect) {
+    void BackendRenderTargetContext::setRenderTargetSize(Composition::Rect &rect) {
         const unsigned oldW = backingWidth;
         const unsigned oldH = backingHeight;
 
@@ -856,9 +857,14 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             case VisualCommand::Rect : {
                 auto & _params = ((VisualCommandParams*)params)->rectParams;
                 if (_params.brush == nullptr) return;
-                auto te_params = OmegaGTE::TETriangulationParams::Rect(_params.rect);
+                auto gteRect = toGTE(_params.rect);
+                auto te_params = OmegaGTE::TETriangulationParams::Rect(gteRect);
 
-                useTextureRenderPipeline = !_params.brush->isColor;
+                switch (_params.brush->type) {
+                    case Brush::Type::Color:    useTextureRenderPipeline = false; break;
+                    case Brush::Type::Gradient: useTextureRenderPipeline = true;  break;
+                    case Brush::Type::None:     return;
+                }
                 textureCoordDenomW = std::max(1.f,_params.rect.w);
                 textureCoordDenomH = std::max(1.f,_params.rect.h);
                 if(!useTextureRenderPipeline){
@@ -875,7 +881,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             }
             case VisualCommand::Bitmap : {
                 auto & _params = ((VisualCommandParams*)params)->bitmapParams;
-                auto te_params = OmegaGTE::TETriangulationParams::Rect(_params.rect);
+                auto gteBmpRect = toGTE(_params.rect);
+                auto te_params = OmegaGTE::TETriangulationParams::Rect(gteBmpRect);
 
                 useTextureRenderPipeline = true;
                 textureCoordDenomW = std::max(1.f,_params.rect.w);
@@ -903,9 +910,14 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             case VisualCommand::RoundedRect : {
                 auto & _params = ((VisualCommandParams*)params)->roundedRectParams;
                 if (_params.brush == nullptr) return;
-                auto te_params = OmegaGTE::TETriangulationParams::RoundedRect(_params.rect);
+                auto gteRR = toGTE(_params.rect);
+                auto te_params = OmegaGTE::TETriangulationParams::RoundedRect(gteRR);
 
-                useTextureRenderPipeline = !_params.brush->isColor;
+                switch (_params.brush->type) {
+                    case Brush::Type::Color:    useTextureRenderPipeline = false; break;
+                    case Brush::Type::Gradient: useTextureRenderPipeline = true;  break;
+                    case Brush::Type::None:     return;
+                }
                 textureCoordDenomW = std::max(1.f,_params.rect.w);
                 textureCoordDenomH = std::max(1.f,_params.rect.h);
 
@@ -931,7 +943,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 }
 
                 auto color = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
-                if(_params.brush != nullptr && _params.brush->isColor){
+                if(_params.brush != nullptr && _params.brush->type == Brush::Type::Color){
                     color = OmegaGTE::makeColor(_params.brush->color.r,
                                                 _params.brush->color.g,
                                                 _params.brush->color.b,
@@ -992,7 +1004,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                                                                  _params.fill);
                 // First attachment: stroke color.
                 auto strokeColor = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
-                if(_params.brush != nullptr && _params.brush->isColor){
+                if(_params.brush != nullptr && _params.brush->type == Brush::Type::Color){
                     strokeColor = OmegaGTE::makeColor(_params.brush->color.r,
                                                       _params.brush->color.g,
                                                       _params.brush->color.b,
@@ -1001,7 +1013,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(strokeColor));
 
                 // Second attachment: fill color.
-                if(_params.fill && _params.fillBrush != nullptr && _params.fillBrush->isColor){
+                if(_params.fill && _params.fillBrush != nullptr && _params.fillBrush->type == Brush::Type::Color){
                     auto fillColor = OmegaGTE::makeColor(_params.fillBrush->color.r,
                                                          _params.fillBrush->color.g,
                                                          _params.fillBrush->color.b,
@@ -1020,8 +1032,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
                 // Offset and expand the shape rect by blurAmount.
                 float expand = std::max(0.f,shadow.blurAmount);
-                Core::Rect shadowRect {
-                    Core::Position{
+                Composition::Rect shadowRect {
+                    Composition::Point2D{
                         _params.shapeRect.pos.x + shadow.x_offset - expand,
                         _params.shapeRect.pos.y + shadow.y_offset - expand
                     },
@@ -1071,18 +1083,20 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     result.meshes.push_back(mesh);
                 }
                 else if(_params.cornerRadius > 0.f){
-                    Core::RoundedRect rr {};
+                    Composition::RoundedRect rr {};
                     rr.pos = shadowRect.pos;
                     rr.w = shadowRect.w;
                     rr.h = shadowRect.h;
                     rr.rad_x = std::min(_params.cornerRadius + expand,shadowRect.w * 0.5f);
                     rr.rad_y = rr.rad_x;
-                    auto te_params = OmegaGTE::TETriangulationParams::RoundedRect(rr);
+                    auto gteRR_s = toGTE(rr);
+                    auto te_params = OmegaGTE::TETriangulationParams::RoundedRect(gteRR_s);
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(shadowColor));
                     result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
                 }
                 else {
-                    auto te_params = OmegaGTE::TETriangulationParams::Rect(shadowRect);
+                    auto gteShadowRect = toGTE(shadowRect);
+                    auto te_params = OmegaGTE::TETriangulationParams::Rect(gteShadowRect);
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(shadowColor));
                     result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
                 }
@@ -1090,7 +1104,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             }
             case VisualCommand::SetTransform: {
                 auto & _params = ((VisualCommandParams*)params)->transformMatrix;
-                currentTransform = _params;
+                currentTransform = toGTEMatrix(_params);
                 return;
             }
             case VisualCommand::SetOpacity: {

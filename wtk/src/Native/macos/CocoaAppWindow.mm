@@ -38,7 +38,7 @@ static inline bool traceResizeFlowEnabled(){
 }
 
 
-CocoaAppWindow::CocoaAppWindow(Core::Rect & rect,NativeEventEmitter *emitter):NativeWindow(rect){
+CocoaAppWindow::CocoaAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter):NativeWindow(rect){
     eventEmitter = emitter;
 
     windowDelegate = [[OmegaWTKNativeCocoaAppWindowDelegate alloc] init];
@@ -140,7 +140,7 @@ NativeItemPtr CocoaAppWindow::getRootView() {
         return;
     }
     auto *params = new OmegaWTK::Native::WindowWillResize(
-            OmegaWTK::Core::Rect
+            OmegaWTK::Composition::Rect
                     {0.f,
                      0.f,
                      (float)bounds.size.width,
@@ -159,7 +159,7 @@ NativeItemPtr CocoaAppWindow::getRootView() {
         return;
     }
     auto *params = new OmegaWTK::Native::WindowWillResize(
-            OmegaWTK::Core::Rect
+            OmegaWTK::Composition::Rect
                     {0.f,
                      0.f,
                      (float)bounds.size.width,
@@ -391,7 +391,7 @@ NativeItemPtr CocoaAppWindow::getRootView() {
 @end
 
 namespace OmegaWTK::Native {
-    NWH make_native_window(Core::Rect & rect,NativeEventEmitter *emitter){
+    NWH make_native_window(Composition::Rect & rect,NativeEventEmitter *emitter){
         return (NWH)new Cocoa::CocoaAppWindow(rect,emitter);
     };
 }
