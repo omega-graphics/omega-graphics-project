@@ -8,7 +8,7 @@
 - **Interface headers**: `Audio.h`, `Video.h`, `AudioVideoProcessorContext.h`, `MediaPlaybackSession.h` define the public API surface for capture, playback, and processing.
 
 ### What is stubbed (no implementation file)
-- **`MediaInputStream` / `MediaOutputStream` factory methods** — `fromFile()`, `fromBuffer()`, `toFile()`, `toBuffer()` are declared in `MediaIO.h` but **no `MediaIO.cpp` exists** to define them. Any call site (e.g., `VideoViewPlaybackTest/main.cpp` line 46: `MediaInputStream::fromFile(filePath)`) will fail at link time. Every platform backend that consumes these structs (`AVFAudioVideoCapture.mm`, `WMFAudioVideoCapture.cpp`) reads their fields directly, assuming someone else constructed them — but there is currently no way to construct them correctly.
+- **`MediaInputStream` / `MediaOutputStream` factory methods** — `fromFile()` and `toFile()` are declared in `MediaIO.h` but **no `MediaIO.cpp` exists** to define them. Any call site (e.g., `VideoViewPlaybackTest/main.cpp` line 46: `MediaInputStream::fromFile(filePath)`) will fail at link time. Every platform backend that consumes these structs (`AVFAudioVideoCapture.mm`, `WMFAudioVideoCapture.cpp`) reads their `file` field directly, assuming someone else constructed them — but there is currently no way to construct them correctly.
 
 ### What is incomplete
 
@@ -136,25 +136,46 @@ INTERFACE_METHOD void setVideoFrameSink(VideoFrameSink & sink) ABSTRACT;
 
 ---
 
-## Phase 1b: MediaInputStream / MediaOutputStream — Implement Factory Methods
+## Phase 1b: MediaInputStream / MediaOutputStream — Simplify to File-Only & Implement
 
 ### Problem
 
-`MediaInputStream` and `MediaOutputStream` declare four static factory methods in `MediaIO.h`, but **no implementation file exists**. Every call site (e.g., `VideoViewPlaybackTest/main.cpp` line 46: `MediaInputStream::fromFile(filePath)`) will produce an unresolved-symbol link error. The structs themselves are used pervasively — every platform backend has helpers that read their `bufferOrFile`, `file`, and `buffer` fields:
+`MediaInputStream` and `MediaOutputStream` currently declare `bufferOrFile`, `file`, and `buffer` fields plus four factory methods (`fromFile`, `fromBuffer`, `toFile`, `toBuffer`), but **no implementation file exists** — every call site fails at link time. The buffer option is a waste of memory: media I/O is inherently file-based (or URL-based on macOS), and holding raw byte buffers in these structs duplicates data that should live in the codec/processor layer (`MediaBuffer` already serves that role).
 
-| Platform | Input helper | Output helper |
+### Struct changes in `MediaIO.h`
+
+Remove `bufferOrFile`, `buffer`, `fromBuffer()`, and `toBuffer()`. The structs become file-path wrappers:
+
+```cpp
+struct MediaInputStream {
+    OmegaCommon::String file;
+    static MediaInputStream fromFile(const OmegaCommon::FS::Path & path);
+};
+
+struct MediaOutputStream {
+    OmegaCommon::String file;
+    static MediaOutputStream toFile(const OmegaCommon::FS::Path & path);
+};
+```
+
+### Backend helper cleanup
+
+Every platform backend currently branches on `bufferOrFile`. With the buffer path removed, these helpers simplify to file-only:
+
+| Platform | Helper | Change |
 |---|---|---|
-| macOS | `createURLFromMediaInputStream()` in `AVFAudioVideoCapture.mm` | `createURLFromMediaOutputStream()` in `AVFAudioVideoCapture.mm` |
-| Windows | `createMFByteStreamMediaInputStream()` in `WMFAudioVideoCapture.cpp` | `createMFByteStreamMediaOutputStream()` in `WMFAudioVideoCapture.cpp` |
-| Linux | Not yet implemented | Not yet implemented |
-
-All of these helpers assume the struct fields are already populated — they branch on `bufferOrFile` and read either `file` or `buffer.data`/`buffer.length`. The missing piece is the factory methods that populate those fields.
+| macOS | `createURLFromMediaInputStream()` | Remove `if(bufferOrFile)` branch. Always use `[NSURL fileURLWithFileSystemRepresentation:stream.file.data() ...]` |
+| macOS | `createURLFromMediaOutputStream()` | Same — remove buffer branch |
+| Windows | `createMFByteStreamMediaInputStream()` | Remove `SHCreateMemStream` branch. Always use `MFCreateFile` |
+| Windows | `createMFByteStreamMediaOutputStream()` | Same — remove `SHCreateMemStream` branch |
+| Linux | `openMediaInputStream()` (new) | File-only: `avformat_open_input(ctx, stream.file.c_str(), ...)` |
+| Linux | `openMediaOutputStream()` (new) | File-only: `avformat_alloc_output_context2(ctx, ..., stream.file.c_str())` |
 
 ### Implementation
 
 **New file**: `wtk/src/Media/MediaIO.cpp`
 
-This file is platform-agnostic (no platform-specific code). The CMake `file(GLOB MEDIA_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Media/*.cpp")` will pick it up automatically on all platforms.
+Platform-agnostic. CMake `file(GLOB MEDIA_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Media/*.cpp")` auto-picks it up.
 
 ```cpp
 #include "omegaWTK/Media/MediaIO.h"
@@ -163,51 +184,18 @@ namespace OmegaWTK::Media {
 
     MediaInputStream MediaInputStream::fromFile(const OmegaCommon::FS::Path & path) {
         MediaInputStream s;
-        s.bufferOrFile = false;            // false = file mode
         s.file = path.string();
-        s.buffer = {nullptr, 0};
-        return s;
-    }
-
-    MediaInputStream MediaInputStream::fromBuffer(void *data, size_t length) {
-        MediaInputStream s;
-        s.bufferOrFile = true;             // true = buffer mode
-        s.file = {};
-        s.buffer = {data, length};
         return s;
     }
 
     MediaOutputStream MediaOutputStream::toFile(const OmegaCommon::FS::Path & path) {
         MediaOutputStream s;
-        s.bufferOrFile = false;
         s.file = path.string();
-        s.buffer = {nullptr, 0};
-        return s;
-    }
-
-    MediaOutputStream MediaOutputStream::toBuffer(void *data, size_t length) {
-        MediaOutputStream s;
-        s.bufferOrFile = true;
-        s.file = {};
-        s.buffer = {data, length};
         return s;
     }
 
 }
 ```
-
-### Semantics
-
-| Factory | `bufferOrFile` | `file` | `buffer` |
-|---|---|---|---|
-| `fromFile(path)` | `false` | `path.string()` | `{nullptr, 0}` |
-| `fromBuffer(data, len)` | `true` | empty | `{data, len}` |
-| `toFile(path)` | `false` | `path.string()` | `{nullptr, 0}` |
-| `toBuffer(data, len)` | `true` | empty | `{data, len}` |
-
-The `bufferOrFile` discriminant matches the convention already used by every platform backend:
-- macOS: `if(inputStream.bufferOrFile)` → `NSData` memory URL; `else` → `fileURLWithFileSystemRepresentation`
-- Windows: `if(inputStream.bufferOrFile)` → `SHCreateMemStream`; `else` → `MFCreateFile`
 
 ### Call sites that will link once implemented
 
@@ -219,9 +207,9 @@ The `bufferOrFile` discriminant matches the convention already used by every pla
 
 ### Notes
 
-- **No ownership transfer** for buffer mode: the factories store the raw pointer and length as-is. The caller must ensure the buffer outlives the stream. This matches how WMF's `SHCreateMemStream` and AVFoundation's `dataWithBytesNoCopy:` consume the data — neither copies.
-- **`OmegaCommon::FS::Path`**: The `path.string()` call converts to `OmegaCommon::String` (which is `std::string`). The macOS backend then converts via `file.data()` → `fileURLWithFileSystemRepresentation`, and WMF converts via `cpp_to_wstring`.
-- **Future**: If `MediaSourceDesc` gains its own factory/builder methods, they should construct a `MediaInputStream` internally via these factories and attach format metadata.
+- **`MediaBuffer` is not removed** — it remains in `MediaIO.h` for the `AudioVideoProcessor` encode/decode API, where it represents compressed codec data. It is no longer used by the stream structs.
+- **`OmegaCommon::FS::Path`**: `path.string()` converts to `OmegaCommon::String` (`std::string`). macOS converts via `file.data()` → `fileURLWithFileSystemRepresentation`; WMF converts via `cpp_to_wstring`.
+- **Future**: If in-memory source support is ever needed (e.g., streaming from a network buffer), it should be handled at the platform backend level (custom `AVIOContext` for FFmpeg, `SHCreateMemStream` for WMF) rather than baked into the stream struct.
 
 ---
 
@@ -359,16 +347,16 @@ public:
 
 **`MediaInputStream` / `MediaOutputStream` consumption** (depends on Phase 1b):
 
-The FFmpeg backend needs helpers analogous to the macOS/WMF ones. These bridge from the Phase 1b-populated struct fields to FFmpeg I/O contexts:
+The FFmpeg backend needs helpers analogous to the macOS/WMF ones. These bridge from the stream's `file` field to FFmpeg I/O contexts:
 
 ```cpp
-// File mode:  avformat_open_input(ctx, stream.file.c_str(), nullptr, nullptr)
-// Buffer mode: create a custom AVIOContext via avio_alloc_context() backed by stream.buffer.data/length
+// Opens the file path stored in stream.file as an AVFormatContext for reading
 AVFormatContext *openMediaInputStream(MediaInputStream &stream);
+// avformat_open_input(ctx, stream.file.c_str(), nullptr, nullptr)
 
-// File mode:  avformat_alloc_output_context2(ctx, nullptr, nullptr, stream.file.c_str())
-// Buffer mode: custom AVIOContext for writing to stream.buffer
+// Opens the file path stored in stream.file as an AVFormatContext for writing
 AVFormatContext *openMediaOutputStream(MediaOutputStream &stream, const char *formatName);
+// avformat_alloc_output_context2(ctx, nullptr, formatName, stream.file.c_str())
 ```
 
 **`FFmpegAudioPlaybackSession`**:
@@ -486,7 +474,7 @@ SharedHandle<VideoPlaybackSession> VideoPlaybackSession::Create(
 
 The `start/stop/record/preview` methods are empty shells. Implement:
 - `startPreview`: `[captureSession startRunning]`, set preview flag.
-- `startRecord`: Start the `AVAssetWriter` if buffer output, or the file output already configured.
+- `startRecord`: Start the `AVAssetWriter` with the file output already configured.
 - `stopRecord` / `stopPreview`: Mirror the pattern from `AVFAudioCaptureSession`.
 
 ### 3.4 `AVFAudioCaptureDevice::createCaptureSession`
