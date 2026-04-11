@@ -46,6 +46,9 @@
     };
 };
 
+- (BOOL)isFlipped {
+    return YES;
+}
 - (BOOL)isOpaque {
     return NO;
 }

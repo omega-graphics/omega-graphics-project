@@ -67,6 +67,9 @@ void AppWindow::setRootWidget(WidgetPtr widget){
     // WidgetTreeHost so it can be distributed to all Views during
     // initWidgetTree(). All Views in this window share this target.
     impl_->widgetTreeHost->setWindowRenderTarget(impl_->rootViewRenderTarget);
+    // Phase 5: provide the root native item so NativeViewHost can
+    // embed real native views as children of the window's root view.
+    impl_->widgetTreeHost->setRootNativeItem(impl_->nativeWindow->getRootView());
     impl_->proxy.setFrontendPtr(impl_->widgetTreeHost->compositor);
     impl_->widgetTreeHost->attachedToWindow = true;
 };

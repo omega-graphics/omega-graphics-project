@@ -25,7 +25,7 @@ namespace OmegaWTK::Native::Win {
 
         //  auto n_str = std::string("RECT {") + "x:" + std::to_string(rc.left * scaleFactor) + ",y:" + std::to_string(root_wnd_height - (rc.top* scaleFactor)) + ",w:" + std::to_string(w * scaleFactor) + ",h:" + std::to_string(h* scaleFactor) + "}";
         //   MessageBoxA(GetForegroundWindow(),n_str.c_str(),"NOTE",MB_OK);
-         DeferWindowPos(hdwp,hwnd,hwnd,rc.left * scaleFactor,(root_wnd_height - (rc.top* scaleFactor)),w * scaleFactor,h* scaleFactor,SWP_NOZORDER | SWP_NOACTIVATE);
+         DeferWindowPos(hdwp,hwnd,hwnd,rc.left * scaleFactor,rc.top * scaleFactor,w * scaleFactor,h* scaleFactor,SWP_NOZORDER | SWP_NOACTIVATE);
          ++it;
      };
      EndDeferWindowPos(hdwp);
@@ -118,7 +118,7 @@ namespace OmegaWTK::Native::Win {
         
         // unsigned wndHeight = rc.bottom - rc.top;
         // unsigned height = rect.dimen.minHeight * scaleFactor;
-        HWND hwnd = CreateWindowExA(ext_style,MAKEINTATOM(atom),name,base_style,rect.pos.x *scaleFactor,(rc.bottom - (rect.h) * scaleFactor) - (rect.pos.y * scaleFactor),rect.w * scaleFactor,rect.h * scaleFactor,wind_parent,NULL,hInst,custom_params);
+        HWND hwnd = CreateWindowExA(ext_style,MAKEINTATOM(atom),name,base_style,rect.pos.x *scaleFactor,rect.pos.y * scaleFactor,rect.w * scaleFactor,rect.h * scaleFactor,wind_parent,NULL,hInst,custom_params);
        
         BLENDFUNCTION blend = { 0 };
         blend.BlendOp = AC_SRC_OVER;
@@ -135,13 +135,9 @@ namespace OmegaWTK::Native::Win {
         
     };
     HWND HWNDFactory::makeAppWindow(ATOM atom,LPCSTR name,Core::Rect & rect,DWORD base_style,DWORD ext_style,LPVOID custom_params){
-        RECT rc;
-        GetClientRect(HWND_DESKTOP,&rc);
         UINT dpi = GetDpiForWindow(GetForegroundWindow());
-        // MessageBox(HWND_DESKTOP,"Making Window from Atom","NOTE",MB_OK);
         FLOAT scaleFactor = FLOAT(dpi)/96.f;
-        
-        auto y = rc.bottom - ((rect.h - rect.pos.y) * scaleFactor);
+
         HWND hwnd = CreateWindowA(MAKEINTATOM(atom),name,base_style,CW_USEDEFAULT,CW_USEDEFAULT,rect.w * scaleFactor,rect.h * scaleFactor,HWND_DESKTOP,NULL,hInst,custom_params);
         std::ostringstream ss;
         RECT wndRECT;

@@ -323,6 +323,22 @@ namespace OmegaWTK {
         windowRenderTarget_ = std::move(rt);
     }
 
+    void WidgetTreeHost::setRootNativeItem(Native::NativeItemPtr item){
+        rootNativeItem_ = std::move(item);
+    }
+
+    void WidgetTreeHost::embedNativeItem(Native::NativeItemPtr item){
+        if(rootNativeItem_ != nullptr && item != nullptr){
+            rootNativeItem_->addChildNativeItem(item);
+        }
+    }
+
+    void WidgetTreeHost::unembedNativeItem(Native::NativeItemPtr item){
+        if(rootNativeItem_ != nullptr && item != nullptr){
+            rootNativeItem_->removeChildNativeItem(item);
+        }
+    }
+
     void WidgetTreeHost::initWidgetTree(){
         // Phase 3: propagate the window's shared render target to all
         // Views before observing layer trees or initializing widgets,

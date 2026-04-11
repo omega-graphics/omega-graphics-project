@@ -9,6 +9,11 @@
 
 namespace OmegaWTK {
 
+    namespace Native {
+        class NativeItem;
+        typedef SharedHandle<NativeItem> NativeItemPtr;
+    }
+
     namespace Composition {
         class Compositor;
         class ViewRenderTarget;
@@ -21,6 +26,7 @@ namespace OmegaWTK {
     class Widget;
     OMEGACOMMON_SHARED_CLASS(Widget);
     class View;
+    class NativeViewHost;
     enum class PaintReason : std::uint8_t;
 
     struct OMEGAWTK_EXPORT ResizeDynamicsSample {
@@ -79,6 +85,9 @@ namespace OmegaWTK {
         /// Window's shared render target (Phase 3). Propagated to all
         /// Views in the tree during initWidgetTree().
         SharedHandle<Composition::ViewRenderTarget> windowRenderTarget_;
+        /// Root native item for this window (Phase 5). Used by
+        /// NativeViewHost to embed/unembed real native views.
+        Native::NativeItemPtr rootNativeItem_;
         ResizeDynamicsTracker resizeTracker;
         ResizeSessionState lastResizeSessionState {};
         std::uint64_t resizeCoordinatorGeneration = 0;
@@ -107,6 +116,7 @@ namespace OmegaWTK {
         friend class AppWindowManager;
         friend class AppWindow;
         friend class Widget;
+        friend class NativeViewHost;
 
         void initWidgetRecurse(Widget *parent);
         void propagateWindowRenderTargetRecurse(Widget *parent);
@@ -145,6 +155,18 @@ namespace OmegaWTK {
         /// before initWidgetTree() so the render target can be propagated
         /// to all Views in the tree (Phase 3, single-surface rendering).
         void setWindowRenderTarget(SharedHandle<Composition::ViewRenderTarget> rt);
+
+        /// Set the root native item for this window (Phase 5).
+        /// Called by AppWindow during setRootWidget().
+        void setRootNativeItem(Native::NativeItemPtr item);
+
+        /// Embed a real native view as a child of the window's root
+        /// native view. Used by NativeViewHost (Phase 5).
+        void embedNativeItem(Native::NativeItemPtr item);
+
+        /// Remove a previously embedded native view from the window's
+        /// root native view. Used by NativeViewHost (Phase 5).
+        void unembedNativeItem(Native::NativeItemPtr item);
 
         void notifyWindowResizeBegin(const Core::Rect & rect);
         void notifyWindowResize(const Core::Rect & rect);

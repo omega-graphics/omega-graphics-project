@@ -252,7 +252,7 @@ namespace OmegaWTK::Native::Win {
         auto scaleFactor = FLOAT(GetDpiForWindow(child))/96.f;
         hwndItem->parent = this;
         const auto childX = static_cast<int>(hwndItem->wndrect.pos.x * scaleFactor);
-        const auto childY = static_cast<int>((wndrect.h - hwndItem->wndrect.pos.y - hwndItem->wndrect.h) * scaleFactor);
+        const auto childY = static_cast<int>(hwndItem->wndrect.pos.y * scaleFactor);
         const auto childW = static_cast<int>(hwndItem->wndrect.w * scaleFactor);
         const auto childH = static_cast<int>(hwndItem->wndrect.h * scaleFactor);
         SetWindowPos(child,HWND_TOP,childX,childY,childW,childH,SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -283,7 +283,7 @@ namespace OmegaWTK::Native::Win {
         UINT dpi = GetDpiForWindow(hwnd);
         FLOAT scaleFactor = FLOAT(dpi)/96.f;
         HDWP dp = BeginDeferWindowPos(1);
-        DeferWindowPos(dp,hwnd,hwnd,wndrect.pos.x * scaleFactor,(rect.h - wndrect.pos.y - wndrect.h) * scaleFactor,wndrect.w * scaleFactor,wndrect.h * scaleFactor,SWP_NOZORDER);
+        DeferWindowPos(dp,hwnd,hwnd,wndrect.pos.x * scaleFactor,wndrect.pos.y * scaleFactor,wndrect.w * scaleFactor,wndrect.h * scaleFactor,SWP_NOZORDER);
         EndDeferWindowPos(dp);
 
         emitIfPossible(std::shared_ptr<NativeEvent>(new NativeEvent{NativeEvent::ViewResize,new ViewResize{rect}}));
