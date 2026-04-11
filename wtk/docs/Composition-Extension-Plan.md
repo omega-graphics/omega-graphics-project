@@ -121,7 +121,7 @@ struct OMEGAWTK_EXPORT Ellipse {
 
 These are layout-compatible with the GTE originals (same field order and types) so conversion is a `reinterpret_cast` or member-wise copy — no runtime cost.
 
-The existing `Core::Rect`, `Core::Position`, `Core::RoundedRect`, `Core::Ellipse` become typedefs into `Composition::` for backward compatibility (see 0A.3).
+Composition now owns these types. The old `Core::Rect`, `Core::Position`, `Core::RoundedRect`, `Core::Ellipse` are removed entirely — all callsites migrate to `Composition::` (see 0A.3).
 
 ### 0A.2 Create `Composition/GeometryConvert.h` (private/backend-only)
 
@@ -147,22 +147,27 @@ inline Rect fromGTE(const OmegaGTE::GRect & r) {
 
 This header lives in the Composition source tree, not in the public include directory. Only Composition `.cpp` files include it.
 
-### 0A.3 Migrate `Core/Core.h`
+### 0A.3 Remove geometry types from `Core/Core.h`
 
 - Remove `#include <OmegaGTE.h>` from `Core/Core.h`.
-- Instead `#include "omegaWTK/Composition/Geometry.h"`.
-- Replace the existing typedefs and `Ellipse` wrapper struct with aliases into the Composition namespace:
+- Delete the existing typedefs (`typedef OmegaGTE::GRect Rect`, `typedef OmegaGTE::GPoint2D Position`, `typedef OmegaGTE::GRoundedRect RoundedRect`) and the `Ellipse` wrapper struct.
+- **No aliases back into Core.** Core stops owning geometry types entirely. Composition is upstream of the geometric vocabulary.
+- Move `extern OmegaGTE::GTE gte;` to a separate `Core/GTEHandle.h` that only Composition backend code includes.
 
-```cpp
-namespace Core {
-    using Rect = Composition::Rect;
-    using Position = Composition::Point2D;
-    using RoundedRect = Composition::RoundedRect;
-    using Ellipse = Composition::Ellipse;
-}
-```
+### 0A.3a Migrate all `Core::` geometry callsites to `Composition::`
 
-- Move `extern OmegaGTE::GTE gte;` to a separate `Core/GTEHandle.h` that only backend code includes.
+~978 occurrences across ~130 files. Mechanical rename:
+
+| Old | New |
+|-----|-----|
+| `Core::Rect` | `Composition::Rect` |
+| `Core::Position` | `Composition::Point2D` |
+| `Core::RoundedRect` | `Composition::RoundedRect` |
+| `Core::Ellipse` | `Composition::Ellipse` |
+
+Files span all submodules: Composition headers/sources, UI, Widgets, Native, Media, tests, and docs. Since the rename is purely mechanical (no semantic change), it can be done in a single pass with search-and-replace tooling.
+
+Headers that currently include `Core/Core.h` for geometry types should include `Composition/Geometry.h` instead (or in addition, if they still need other Core utilities). Since `Composition/Geometry.h` is a standalone header with no Core dependency, this does not introduce a circular include.
 
 ### 0A.4 Wrap remaining raw GTE types in Composition public API
 
@@ -217,12 +222,14 @@ Every `.cpp` file in the Composition submodule that actually constructs GTE obje
 
 ### Files touched
 
-- `wtk/include/omegaWTK/Composition/Geometry.h` — **new** standalone geometry structs
+- `wtk/include/omegaWTK/Composition/Geometry.h` — **new** standalone geometry structs (no GTE dependency)
 - `wtk/src/Composition/backend/GeometryConvert.h` — **new** conversion helpers (Composition-private)
-- `wtk/include/omegaWTK/Core/Core.h` — remove `#include <OmegaGTE.h>`, remove old typedefs, add `using` aliases into `Composition::`
+- `wtk/include/omegaWTK/Core/Core.h` — remove `#include <OmegaGTE.h>`, delete geometry typedefs and `Ellipse` struct, move `extern GTE gte` to `GTEHandle.h`
+- `wtk/include/omegaWTK/Core/GTEHandle.h` — **new** backend-only header for the GTE engine handle
 - `wtk/include/omegaWTK/Composition/Path.h` — `GPoint2D` → `Composition::Point2D`, `GRect` → `Composition::Rect` in public API
-- `wtk/include/omegaWTK/Composition/Canvas.h` — forward-declare GTE types for `drawGETexture`/`VisualCommand` internals; remove direct GTE includes from public surface
+- `wtk/include/omegaWTK/Composition/Canvas.h` — forward-declare GTE types for `drawGETexture`/`VisualCommand` internals; `Core::Rect` → `Composition::Rect` etc.
 - `wtk/include/omegaWTK/Composition/Animation.h` — `GPoint2D` → `Composition::Point2D` in public signatures
+- ~130 files across all submodules — mechanical `Core::Rect` → `Composition::Rect` (and Position/RoundedRect/Ellipse) rename
 - `wtk/src/Composition/Canvas.cpp` — add `GeometryConvert.h`, convert at boundary
 - `wtk/src/Composition/Path.cpp` — add `GeometryConvert.h`, convert at boundary
 - `wtk/src/Composition/backend/RenderTarget.cpp` — add `GeometryConvert.h` (already includes GTE)
@@ -422,10 +429,10 @@ Change Canvas draw methods to accept `const Core::SharedPtr<Brush> &` instead of
 
 ```cpp
 // Before:
-void drawRect(Core::Rect & rect, Core::SharedPtr<Brush> & brush, ...);
+void drawRect(Rect & rect, SharedPtr<Brush> & brush, ...);
 
 // After:
-void drawRect(Core::Rect & rect, const Core::SharedPtr<Brush> & brush, ...);
+void drawRect(Rect & rect, const SharedPtr<Brush> & brush, ...);
 ```
 
 This lets callers write `canvas->drawRect(r, ColorBrush(Color::create8Bit(0xFF0000)))` without naming the brush.
@@ -513,8 +520,8 @@ Each modifies the current 2D affine matrix. All subsequent `VisualCommand` coord
 ### 5.3 Clipping
 
 ```cpp
-void clipRect(const Core::Rect & rect);
-void clipRoundedRect(const Core::RoundedRect & rect);
+void clipRect(const Rect & rect);
+void clipRoundedRect(const RoundedRect & rect);
 ```
 
 Intersect the current clip region. Applied at submit time or during compositing.
@@ -560,7 +567,7 @@ Phase 0A: Geometry type isolation (independent — can run in parallel with Phas
 Phase 4: Color improvements (independent — can run in parallel with any phase)
 ```
 
-Phases 0 and 0A can run in parallel. Phase 0A should complete before Phase 3 so that new Canvas methods use `Core::Point2D` / `Core::Rect` instead of GTE types from the start. Phases 3 and 4 can proceed in parallel with Phases 1–2. Phase 5 should follow both Phase 3 (builds on `DrawOptions`) and Phase 0A (transform types).
+Phases 0 and 0A can run in parallel. Phase 0A should complete before Phase 3 so that new Canvas methods use `Composition::Point2D` / `Composition::Rect` instead of GTE types from the start. Phases 3 and 4 can proceed in parallel with Phases 1–2. Phase 5 should follow both Phase 3 (builds on `DrawOptions`) and Phase 0A (transform types).
 
 ---
 
@@ -570,13 +577,15 @@ Phases 0 and 0A can run in parallel. Phase 0A should complete before Phase 3 so 
 |------|-------|---------|
 | `wtk/include/omegaWTK/Composition/Geometry.h` | 0A | **New** — standalone `Point2D`, `Rect`, `RoundedRect`, `Ellipse` structs (no GTE dependency), owned by Composition submodule |
 | `wtk/src/Composition/backend/GeometryConvert.h` | 0A | **New** — WTK↔GTE conversion helpers (Composition-private) |
-| `wtk/include/omegaWTK/Core/Core.h` | 0A | Remove `#include <OmegaGTE.h>`; remove old typedefs; add `using` aliases into `Composition::` |
+| `wtk/include/omegaWTK/Core/Core.h` | 0A | Remove `#include <OmegaGTE.h>`; delete geometry typedefs and `Ellipse` struct; move GTE handle to `GTEHandle.h` |
+| `wtk/include/omegaWTK/Core/GTEHandle.h` | 0A | **New** — backend-only header for `extern OmegaGTE::GTE gte` |
+| ~130 files across all submodules | 0A | Mechanical rename: `Core::Rect` → `Composition::Rect`, `Core::Position` → `Composition::Point2D`, etc. |
 | `wtk/CMakeLists.txt` | 0A | Link OmegaGTE `PRIVATE` to `OmegaWTK_Composition`; remove `PUBLIC` GTE link from `OmegaWTK` framework |
 | `wtk/include/omegaWTK/Composition/Brush.h` | 0, 2, 4 | Remove `isColor`/`isGradient`; add `LinearDef`, `RadialDef`, `GradientSpread`, new gradient factories; add `Color` statics and helpers |
 | `wtk/src/Composition/Brush.cpp` | 0, 2, 4 | Remove boolean init; implement new gradient factories, color constants, HSL/HSV, lerp, withAlpha, lighter/darker |
 | `wtk/include/omegaWTK/Composition/Canvas.h` | 0A, 3, 5 | Forward-declare GTE types for internal fields; `drawLine`, `drawPolyline`, `drawArc`, `DrawOptions`, const-ref brush params, save/restore/transform/clip |
 | `wtk/src/Composition/Canvas.cpp` | 0A, 3, 5 | Add `GeometryConvert.h`; implement new draw methods, state stack |
-| `wtk/include/omegaWTK/Composition/Path.h` | 0A | `GPoint2D` → `Core::Point2D`, `GRect` → `Core::Rect` in public API; privatize `GVectorPath2D` constructor |
+| `wtk/include/omegaWTK/Composition/Path.h` | 0A | `GPoint2D` → `Composition::Point2D`, `GRect` → `Composition::Rect` in public API; privatize `GVectorPath2D` constructor |
 | `wtk/src/Composition/Path.cpp` | 0A | Add `GeometryConvert.h`, convert at boundary |
 | `wtk/include/omegaWTK/Composition/Animation.h` | 0A | `GPoint2D` → `Core::Point2D` in public signatures |
 | `wtk/src/Composition/backend/RenderTarget.cpp` | 0, 0A, 1, 2, 3, 5 | Type-based dispatch; `GeometryConvert.h`; gradient compute shader; extended gradient params; opacity multiplier; transform application |
