@@ -1,4 +1,6 @@
 #include "omegaWTK/Composition/CompositorClient.h"
+#include "omegaWTK/Composition/CompositeFrame.h"
+#include "omegaWTK/Composition/Canvas.h"
 #include "Compositor.h"
 
 #include <atomic>
@@ -91,6 +93,10 @@ namespace OmegaWTK::Composition {
     bool CompositorClientProxy::isRecording() const {
         std::lock_guard<std::mutex> lk(commandMutex);
         return recordDepth > 0;
+    }
+
+    void CompositorClientProxy::setActiveCompositeFrame(CompositeFrame *frame){
+        activeCompositeFrame_ = frame;
     }
 
     void CompositorClientProxy::beginRecord() {
@@ -346,6 +352,20 @@ namespace OmegaWTK::Composition {
     }
 
     void CompositorClient::pushFrame(SharedHandle<CanvasFrame> &frame, Timestamp &start) {
+        if(parentProxy.activeCompositeFrame_ != nullptr && frame != nullptr){
+            CompositeFrame::WidgetSlice slice;
+            slice.bounds = frame->rect;
+            slice.windowOffset = frame->windowOffset;
+            slice.commands = frame->currentVisuals;
+            slice.effects = frame->currentEffects;
+            slice.background = {frame->background.r,
+                                frame->background.g,
+                                frame->background.b,
+                                frame->background.a};
+            slice.targetLayer = frame->targetLayer;
+            parentProxy.activeCompositeFrame_->slices.push_back(std::move(slice));
+            return;
+        }
         busy();
         currentJobStatuses.push_back({currentCommandID,
                                     parentProxy.queueFrame(currentCommandID,*this,frame,start)

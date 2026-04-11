@@ -1,4 +1,5 @@
 #include "AppWindowImpl.h"
+#include "../Composition/Compositor.h"
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/Native/NativeWindow.h"
 #include "omegaWTK/Native/NativeDialog.h"
@@ -71,6 +72,14 @@ void AppWindow::setRootWidget(WidgetPtr widget){
     // embed real native views as children of the window's root view.
     impl_->widgetTreeHost->setRootNativeItem(impl_->nativeWindow->getRootView());
     impl_->proxy.setFrontendPtr(impl_->widgetTreeHost->compositor);
+    // Phase A: create the per-window compositor surface mailbox and
+    // wire it to both the WidgetTreeHost (deposit side) and the
+    // Compositor (consumption side).
+    impl_->windowSurface = SharedHandle<Composition::CompositorSurface>(
+        new Composition::CompositorSurface());
+    impl_->widgetTreeHost->setWindowSurface(impl_->windowSurface);
+    impl_->widgetTreeHost->compPtr()->registerWindowSurface(
+        impl_->rootViewRenderTarget.get(), impl_->windowSurface);
     impl_->widgetTreeHost->attachedToWindow = true;
 };
 

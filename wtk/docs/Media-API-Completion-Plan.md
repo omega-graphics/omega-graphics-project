@@ -4,8 +4,11 @@
 
 ### What exists and works
 - **Image codecs** (PNG, JPEG, TIFF): Fully implemented cross-platform via libpng, turbojpeg, libtiff.
-- **MediaIO.h**: Minimal `MediaBuffer`, `MediaInputStream`, `MediaOutputStream` types for file/buffer I/O.
+- **MediaIO.h**: Struct declarations for `MediaBuffer`, `MediaInputStream`, `MediaOutputStream`, plus Phase 0 type additions (`AudioSampleFormat`, `AudioStreamDesc`, `PixelFormat`, `MediaCodecID`, `VideoStreamDesc`, `ContainerFormat`, `MediaSourceDesc`). `AudioSample` added to `AudioVideoProcessorContext.h`.
 - **Interface headers**: `Audio.h`, `Video.h`, `AudioVideoProcessorContext.h`, `MediaPlaybackSession.h` define the public API surface for capture, playback, and processing.
+
+### What is stubbed (no implementation file)
+- **`MediaInputStream` / `MediaOutputStream` factory methods** — `fromFile()`, `fromBuffer()`, `toFile()`, `toBuffer()` are declared in `MediaIO.h` but **no `MediaIO.cpp` exists** to define them. Any call site (e.g., `VideoViewPlaybackTest/main.cpp` line 46: `MediaInputStream::fromFile(filePath)`) will fail at link time. Every platform backend that consumes these structs (`AVFAudioVideoCapture.mm`, `WMFAudioVideoCapture.cpp`) reads their fields directly, assuming someone else constructed them — but there is currently no way to construct them correctly.
 
 ### What is incomplete
 
@@ -130,6 +133,95 @@ INTERFACE_METHOD void setVideoFrameSink(VideoFrameSink & sink) ABSTRACT
 // After:
 INTERFACE_METHOD void setVideoFrameSink(VideoFrameSink & sink) ABSTRACT;
 ```
+
+---
+
+## Phase 1b: MediaInputStream / MediaOutputStream — Implement Factory Methods
+
+### Problem
+
+`MediaInputStream` and `MediaOutputStream` declare four static factory methods in `MediaIO.h`, but **no implementation file exists**. Every call site (e.g., `VideoViewPlaybackTest/main.cpp` line 46: `MediaInputStream::fromFile(filePath)`) will produce an unresolved-symbol link error. The structs themselves are used pervasively — every platform backend has helpers that read their `bufferOrFile`, `file`, and `buffer` fields:
+
+| Platform | Input helper | Output helper |
+|---|---|---|
+| macOS | `createURLFromMediaInputStream()` in `AVFAudioVideoCapture.mm` | `createURLFromMediaOutputStream()` in `AVFAudioVideoCapture.mm` |
+| Windows | `createMFByteStreamMediaInputStream()` in `WMFAudioVideoCapture.cpp` | `createMFByteStreamMediaOutputStream()` in `WMFAudioVideoCapture.cpp` |
+| Linux | Not yet implemented | Not yet implemented |
+
+All of these helpers assume the struct fields are already populated — they branch on `bufferOrFile` and read either `file` or `buffer.data`/`buffer.length`. The missing piece is the factory methods that populate those fields.
+
+### Implementation
+
+**New file**: `wtk/src/Media/MediaIO.cpp`
+
+This file is platform-agnostic (no platform-specific code). The CMake `file(GLOB MEDIA_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Media/*.cpp")` will pick it up automatically on all platforms.
+
+```cpp
+#include "omegaWTK/Media/MediaIO.h"
+
+namespace OmegaWTK::Media {
+
+    MediaInputStream MediaInputStream::fromFile(const OmegaCommon::FS::Path & path) {
+        MediaInputStream s;
+        s.bufferOrFile = false;            // false = file mode
+        s.file = path.string();
+        s.buffer = {nullptr, 0};
+        return s;
+    }
+
+    MediaInputStream MediaInputStream::fromBuffer(void *data, size_t length) {
+        MediaInputStream s;
+        s.bufferOrFile = true;             // true = buffer mode
+        s.file = {};
+        s.buffer = {data, length};
+        return s;
+    }
+
+    MediaOutputStream MediaOutputStream::toFile(const OmegaCommon::FS::Path & path) {
+        MediaOutputStream s;
+        s.bufferOrFile = false;
+        s.file = path.string();
+        s.buffer = {nullptr, 0};
+        return s;
+    }
+
+    MediaOutputStream MediaOutputStream::toBuffer(void *data, size_t length) {
+        MediaOutputStream s;
+        s.bufferOrFile = true;
+        s.file = {};
+        s.buffer = {data, length};
+        return s;
+    }
+
+}
+```
+
+### Semantics
+
+| Factory | `bufferOrFile` | `file` | `buffer` |
+|---|---|---|---|
+| `fromFile(path)` | `false` | `path.string()` | `{nullptr, 0}` |
+| `fromBuffer(data, len)` | `true` | empty | `{data, len}` |
+| `toFile(path)` | `false` | `path.string()` | `{nullptr, 0}` |
+| `toBuffer(data, len)` | `true` | empty | `{data, len}` |
+
+The `bufferOrFile` discriminant matches the convention already used by every platform backend:
+- macOS: `if(inputStream.bufferOrFile)` → `NSData` memory URL; `else` → `fileURLWithFileSystemRepresentation`
+- Windows: `if(inputStream.bufferOrFile)` → `SHCreateMemStream`; `else` → `MFCreateFile`
+
+### Call sites that will link once implemented
+
+| File | Line | Call |
+|---|---|---|
+| `wtk/tests/VideoViewPlaybackTest/main.cpp` | 46 | `MediaInputStream::fromFile(filePath)` |
+| `wtk/src/UI/VideoView.cpp` | 110+ | Receives `MediaInputStream &` (constructed by caller) |
+| `wtk/src/UI/VideoView.cpp` | 168+ | Receives `MediaOutputStream &` (constructed by caller) |
+
+### Notes
+
+- **No ownership transfer** for buffer mode: the factories store the raw pointer and length as-is. The caller must ensure the buffer outlives the stream. This matches how WMF's `SHCreateMemStream` and AVFoundation's `dataWithBytesNoCopy:` consume the data — neither copies.
+- **`OmegaCommon::FS::Path`**: The `path.string()` call converts to `OmegaCommon::String` (which is `std::string`). The macOS backend then converts via `file.data()` → `fileURLWithFileSystemRepresentation`, and WMF converts via `cpp_to_wstring`.
+- **Future**: If `MediaSourceDesc` gains its own factory/builder methods, they should construct a `MediaInputStream` internally via these factories and attach format metadata.
 
 ---
 
@@ -265,8 +357,22 @@ public:
 - Each client has a demux context (`AVFormatContext`), a decode context, and a sink.
 - The loop reads packets, decodes, and dispatches to the appropriate sink with presentation-time synchronization.
 
+**`MediaInputStream` / `MediaOutputStream` consumption** (depends on Phase 1b):
+
+The FFmpeg backend needs helpers analogous to the macOS/WMF ones. These bridge from the Phase 1b-populated struct fields to FFmpeg I/O contexts:
+
+```cpp
+// File mode:  avformat_open_input(ctx, stream.file.c_str(), nullptr, nullptr)
+// Buffer mode: create a custom AVIOContext via avio_alloc_context() backed by stream.buffer.data/length
+AVFormatContext *openMediaInputStream(MediaInputStream &stream);
+
+// File mode:  avformat_alloc_output_context2(ctx, nullptr, nullptr, stream.file.c_str())
+// Buffer mode: custom AVIOContext for writing to stream.buffer
+AVFormatContext *openMediaOutputStream(MediaOutputStream &stream, const char *formatName);
+```
+
 **`FFmpegAudioPlaybackSession`**:
-1. `setAudioSource`: Open `MediaInputStream` as `AVFormatContext` via `avformat_open_input` / `avio_alloc_context` for buffer sources. Find the audio stream via `avformat_find_stream_info`.
+1. `setAudioSource`: Open `MediaInputStream` via `openMediaInputStream()`. Find the audio stream via `avformat_find_stream_info`.
 2. `setAudioPlaybackDevice`: Open a PulseAudio/ALSA output stream matching the audio format.
 3. `start`: Register with the `PlaybackDispatchQueue`. The queue thread reads audio packets, decodes to PCM, and writes to the output device via `pa_simple_write` (PulseAudio) or `snd_pcm_writei` (ALSA).
 4. `pause` / `reset`: Signal the queue to stop/remove the client.
@@ -479,12 +585,13 @@ Each platform's `AudioVideoProcessor` becomes a concrete subclass. The existing 
 
 1. **Phase 0**: Add types to `MediaIO.h`. No functional change, just new declarations.
 2. **Phase 1**: Fix the semicolon. One character.
-3. **Phase 2**: Linux/FFmpeg — the largest piece, no existing code to break.
-4. **Phase 3**: macOS — filling gaps in existing code. Higher risk of regressions.
-5. **Phase 4**: Windows — finishing partially-written code.
-6. **Phase 5**: API unification — refactor after all three backends work.
+3. **Phase 1b**: Create `MediaIO.cpp` with factory method bodies. Unblocks linking for any code that constructs streams.
+4. **Phase 2**: Linux/FFmpeg — the largest piece, no existing code to break.
+5. **Phase 3**: macOS — filling gaps in existing code. Higher risk of regressions.
+6. **Phase 4**: Windows — finishing partially-written code.
+7. **Phase 5**: API unification — refactor after all three backends work.
 
-Phases 2, 3, and 4 are independent and can be developed in parallel on separate platform branches.
+Phases 0, 1, and 1b are prerequisites — they must land first. Phases 2, 3, and 4 are independent and can be developed in parallel on separate platform branches.
 
 ---
 

@@ -36,7 +36,7 @@ namespace OmegaWTK::Media {
         static SharedHandle<VideoPlaybackSession> Create(UniqueHandle<AudioVideoProcessor> & processor,
                                                          SharedHandle<PlaybackDispatchQueue> & dispatchQueue);
         INTERFACE_METHOD void setVideoSource(MediaInputStream & inputStream) ABSTRACT;
-        INTERFACE_METHOD void setVideoFrameSink(VideoFrameSink & sink) ABSTRACT
+        INTERFACE_METHOD void setVideoFrameSink(VideoFrameSink & sink) ABSTRACT;
         INTERFACE_METHOD void setAudioPlaybackDevice(SharedHandle<AudioPlaybackDevice> & device) ABSTRACT;
         INTERFACE_METHOD void start() ABSTRACT;
         INTERFACE_METHOD void pause() ABSTRACT;

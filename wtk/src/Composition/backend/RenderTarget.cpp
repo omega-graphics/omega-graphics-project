@@ -15,7 +15,6 @@
 #include <cmath>
 #include <chrono>
 #include <exception>
-#include <fstream>
 #include <memory>
 #include <sstream>
 #include <utility>
@@ -416,13 +415,17 @@ namespace OmegaWTK::Composition {
         // would be incompatible (e.g. BGRA8Unorm swapchain vs RGBA8Unorm
         // pipeline), resulting in a validation error and blank output.
         if(shaderLibrary == nullptr){
+#ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "[WTK Diag] getFinalCopyPipelineForFormat: shaderLibrary is null, cannot create pipeline for format " << static_cast<int>(fmt) << std::endl;
+#endif
             return nullptr;
         }
         auto copyVertex = shaderLibrary->shaders.count("copyVertex") ? shaderLibrary->shaders["copyVertex"] : nullptr;
         auto copyFragment = shaderLibrary->shaders.count("copyFragment") ? shaderLibrary->shaders["copyFragment"] : nullptr;
         if(copyVertex == nullptr || copyFragment == nullptr){
+#ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "[WTK Diag] getFinalCopyPipelineForFormat: copy shaders missing, cannot create pipeline for format " << static_cast<int>(fmt) << std::endl;
+#endif
             return nullptr;
         }
         OmegaGTE::RenderPipelineDescriptor desc {};
@@ -436,9 +439,13 @@ namespace OmegaWTK::Composition {
         auto pipeline = gte.graphicsEngine->makeRenderPipelineState(desc);
         if(pipeline != nullptr){
             finalCopyPipelinesByFormat[fmt] = pipeline;
+#ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "[WTK Diag] getFinalCopyPipelineForFormat: created pipeline for format " << static_cast<int>(fmt) << std::endl;
+#endif
         } else {
+#ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "[WTK Diag] getFinalCopyPipelineForFormat: pipeline creation FAILED for format " << static_cast<int>(fmt) << std::endl;
+#endif
         }
         return pipeline;
     }
@@ -558,7 +565,9 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
         }
 
         if(targetTexture == nullptr || effectTexture == nullptr){
+#ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "Failed to allocate backing textures." << std::endl;
+#endif
             preEffectTarget.reset();
             effectTarget.reset();
             tessellationEngineContext.reset();
@@ -567,13 +576,17 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
         preEffectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,targetTexture});
         effectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,effectTexture});
         if(preEffectTarget == nullptr || effectTarget == nullptr){
+#ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "Failed to allocate Vulkan texture render targets." << std::endl;
+#endif
             tessellationEngineContext.reset();
             return;
         }
         tessellationEngineContext = gte.triangulationEngine->createTEContextFromTextureRenderTarget(preEffectTarget);
         if(tessellationEngineContext == nullptr){
+#ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "Failed to create tessellation context for backing render target." << std::endl;
+#endif
         }
     }
 }
@@ -687,6 +700,56 @@ void BackendRenderTargetContext::clear(float r, float g, float b, float a) {
     preEffectTarget->submitCommandBuffer(cb);
 }
 
+void BackendRenderTargetContext::beginFrame(float clearR, float clearG, float clearB, float clearA) {
+    if(preEffectTarget == nullptr){
+        return;
+    }
+    frameCB_ = preEffectTarget->commandBuffer();
+
+    OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
+    renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(clearR, clearG, clearB, clearA),
+            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear);
+    renderPassDesc.depthStencilAttachment.disabled = true;
+    frameCB_->startRenderPass(renderPassDesc);
+
+    // Set viewport and scissor for the frame
+    OmegaGTE::GEViewport viewport {};
+    viewport.nearDepth = 0.f;
+    viewport.farDepth = 1.f;
+    if(viewportOverride_.active){
+        viewport.x = viewportOverride_.offsetX * renderScale;
+        viewport.y = viewportOverride_.offsetY * renderScale;
+        viewport.width = viewportOverride_.width * renderScale;
+        viewport.height = viewportOverride_.height * renderScale;
+    } else {
+        viewport.x = 0;
+        viewport.y = 0;
+        viewport.width = static_cast<float>(backingWidth);
+        viewport.height = static_cast<float>(backingHeight);
+    }
+    OmegaGTE::GEScissorRect scissorRect {
+            viewport.x,
+            viewport.y,
+            viewport.width,
+            viewport.height};
+    frameCB_->setViewports({viewport});
+    frameCB_->setScissorRects({scissorRect});
+
+    frameActive_ = true;
+    lastPipelineWasTexture_ = false;  // Reset pipeline tracking
+}
+
+void BackendRenderTargetContext::endFrame() {
+    if(!frameActive_ || frameCB_ == nullptr){
+        return;
+    }
+    frameCB_->endRenderPass();
+    preEffectTarget->submitCommandBuffer(frameCB_);
+    frameCB_ = nullptr;
+    frameActive_ = false;
+}
+
 void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect) {
     effectQueue.push_back(effect);
 }
@@ -700,15 +763,6 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                             std::uint64_t syncPacketId,
                                             std::chrono::steady_clock::time_point submitTimeCpu,
                                             BackendSubmissionCompletionHandler completionHandler){
-        // #region agent log
-        {
-            std::ofstream f("../../../debug-85f774.log", std::ios::app);
-            if (f) {
-                auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-                f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:commit_start\",\"message\":\"commit start\",\"data\":{},\"timestamp\":" << ts << ",\"hypothesisId\":\"D\"}\n";
-            }
-        }
-        // #endregion
         if(preEffectTarget == nullptr){
             if(completionHandler){
                 BackendSubmissionTelemetry telemetry {};
@@ -727,20 +781,30 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                      imageProcessor != nullptr &&
                                      effectTexture != nullptr &&
                                      effectTarget != nullptr;
+#ifdef OMEGAWTK_TRACE_RENDER
         std::cout << "[WTK Diag] commit: canApplyEffects=" << canApplyEffects << std::endl;
+#endif
         if(canApplyEffects){
             preEffectTarget->submitCommandBuffer(_l_cb);
+#ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "[WTK Diag] commit: preEffectTarget->commit()" << std::endl;
+#endif
             preEffectTarget->commit();
+#ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "[WTK Diag] commit: applyEffects" << std::endl;
+#endif
             imageProcessor->applyEffects(effectTexture,preEffectTarget,effectQueue,backingWidth,backingHeight);
             preEffectTarget->waitForGPU();
             preEffectTarget->signalFence(fence);
         } else {
             preEffectTarget->submitCommandBuffer(_l_cb, fence);
+#ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "[WTK Diag] commit: preEffectTarget->commit()" << std::endl;
+#endif
             preEffectTarget->commit();
+#ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "[WTK Diag] commit: preEffectTarget->commit() done" << std::endl;
+#endif
         }
         committedTexture = preEffectTarget->underlyingTexture();
         effectQueue.clear();
@@ -822,23 +886,14 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         viewPort.width = renderTargetSize.w;
         viewPort.height = renderTargetSize.h;
 
+#ifdef OMEGAWTK_TRACE_RENDER
         std::cout << "W:" << renderTargetSize.w
                   << " H:" << renderTargetSize.h
                   << " BW:" << backingWidth
                   << " BH:" << backingHeight
                   << " S:" << renderScale
                   << std::endl;
-
-        // #region agent log
-        {
-            std::ofstream f("../../../debug-85f774.log", std::ios::app);
-            if (f) {
-                auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-                f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:renderToTarget\",\"message\":\"entry\",\"data\":{\"type\":"
-                  << (int)type << "},\"timestamp\":" << ts << ",\"hypothesisId\":\"A\"}\n";
-            }
-        }
-        // #endregion
+#endif
 
         if (params == nullptr) {
             return;
@@ -896,7 +951,9 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     texDesc.usage = OmegaGTE::GETexture::ToGPU;
                     texDesc.width = _params.img->header.width;
                     texDesc.height = _params.img->header.height;
+#ifdef OMEGAWTK_TRACE_RENDER
                     std::cout << "TEX W:" << texDesc.width << "TEX H:" << texDesc.height << std::endl;
+#endif
                     texturePaint = gte.graphicsEngine->makeTexture(texDesc);
                     texturePaint->copyBytes((void *)_params.img->data,_params.img->header.stride);
                 }
@@ -1116,30 +1173,23 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 return;
         }
 
-        // #region agent log
-        {
-            std::ofstream f("../../../debug-85f774.log", std::ios::app);
-            if (f) {
-                auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-                f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:after_switch\",\"message\":\"after switch\",\"data\":{\"vertexCount\":"
-                  << result.totalVertexCount() << "},\"timestamp\":" << ts << ",\"hypothesisId\":\"B\"}\n";
-            }
-        }
-        // #endregion
-
         if(result.totalVertexCount() == 0){
             return;
         }
         if(useTextureRenderPipeline){
             if(textureRenderPipelineState == nullptr){
+#ifdef OMEGAWTK_TRACE_RENDER
                 std::cout << "Texture render pipeline unavailable. Skipping textured draw command." << std::endl;
+#endif
                 return;
             }
             struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT2,OMEGASL_FLOAT2});
         }
         else {
             if(renderPipelineState == nullptr){
+#ifdef OMEGAWTK_TRACE_RENDER
                 std::cout << "Color render pipeline unavailable. Skipping draw command." << std::endl;
+#endif
                 return;
             }
             struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT4});
@@ -1155,57 +1205,76 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             buffer = gte.graphicsEngine->makeBuffer(bufferDesc);
         }
 
-        // #region agent log
-        {
-            std::ofstream f("../../../debug-85f774.log", std::ios::app);
-            if (f) {
-                auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-                f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:buffer_ready\",\"message\":\"buffer ready\",\"data\":{},\"timestamp\":" << ts << ",\"hypothesisId\":\"C\"}\n";
-            }
-        }
-        // #endregion
-
         bufferWriter->setOutputBuffer(buffer);
 
-        // #region agent log
-        { std::ofstream f("../../../debug-85f774.log", std::ios::app); if (f) { auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:after_setOutputBuffer\",\"message\":\"after setOutputBuffer\",\"data\":{},\"timestamp\":" << ts << ",\"hypothesisId\":\"C1\"}\n"; } }
-        // #endregion
-
-        auto cb = preEffectTarget->commandBuffer();
-
-        if(textureFence != nullptr){
-            preEffectTarget->notifyCommandBuffer(cb,textureFence);
+        SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> cb = frameCB_;
+        if(cb == nullptr){
+            // Fallback: not inside a beginFrame/endFrame pair.
+            // This shouldn't happen in the normal render path, but
+            // keeps the standalone path working.
+            cb = preEffectTarget->commandBuffer();
         }
-        
-        OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
+        const bool standaloneCB = (cb != frameCB_);
 
-        OmegaGTE::GEViewport viewport {};
-        viewport.nearDepth = 0.f;
-        viewport.farDepth = 1.f;
-        if(viewportOverride_.active){
-            viewport.x = viewportOverride_.offsetX * renderScale;
-            viewport.y = viewportOverride_.offsetY * renderScale;
-            viewport.width = viewportOverride_.width * renderScale;
-            viewport.height = viewportOverride_.height * renderScale;
-        } else {
-            viewport.x = 0;
-            viewport.y = 0;
-            viewport.width = static_cast<float>(backingWidth);
-            viewport.height = static_cast<float>(backingHeight);
+        // Handle texture fence: must be registered outside a render pass.
+        if(textureFence != nullptr && frameActive_){
+            cb->endRenderPass();
+            preEffectTarget->notifyCommandBuffer(cb, textureFence);
+            // Restart the render pass with LoadPreserve to keep prior content.
+            OmegaGTE::GERenderTarget::RenderPassDesc restartDesc {};
+            restartDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),
+                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve);
+            restartDesc.depthStencilAttachment.disabled = true;
+            cb->startRenderPass(restartDesc);
+            // Re-set viewport/scissor after restart
+            OmegaGTE::GEViewport viewport {};
+            viewport.nearDepth = 0.f;
+            viewport.farDepth = 1.f;
+            if(viewportOverride_.active){
+                viewport.x = viewportOverride_.offsetX * renderScale;
+                viewport.y = viewportOverride_.offsetY * renderScale;
+                viewport.width = viewportOverride_.width * renderScale;
+                viewport.height = viewportOverride_.height * renderScale;
+            } else {
+                viewport.x = 0;
+                viewport.y = 0;
+                viewport.width = static_cast<float>(backingWidth);
+                viewport.height = static_cast<float>(backingHeight);
+            }
+            OmegaGTE::GEScissorRect scissorRect {viewport.x, viewport.y, viewport.width, viewport.height};
+            cb->setViewports({viewport});
+            cb->setScissorRects({scissorRect});
+            lastPipelineWasTexture_ = false; // Force rebind after restart
+        } else if(textureFence != nullptr && standaloneCB){
+            preEffectTarget->notifyCommandBuffer(cb, textureFence);
         }
-        OmegaGTE::GEScissorRect scissorRect {
-                viewport.x,
-                viewport.y,
-                viewport.width,
-                viewport.height};
 
-        renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
-                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),
-                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve);
-
-        // #region agent log
-        { std::ofstream f("../../../debug-85f774.log", std::ios::app); if (f) { auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:before_vertex_loop\",\"message\":\"before vertex loop\",\"data\":{},\"timestamp\":" << ts << ",\"hypothesisId\":\"C2\"}\n"; } }
-        // #endregion
+        if(standaloneCB){
+            OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
+            renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),
+                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve);
+            renderPassDesc.depthStencilAttachment.disabled = true;
+            OmegaGTE::GEViewport viewport {};
+            viewport.nearDepth = 0.f;
+            viewport.farDepth = 1.f;
+            if(viewportOverride_.active){
+                viewport.x = viewportOverride_.offsetX * renderScale;
+                viewport.y = viewportOverride_.offsetY * renderScale;
+                viewport.width = viewportOverride_.width * renderScale;
+                viewport.height = viewportOverride_.height * renderScale;
+            } else {
+                viewport.x = 0;
+                viewport.y = 0;
+                viewport.width = static_cast<float>(backingWidth);
+                viewport.height = static_cast<float>(backingHeight);
+            }
+            OmegaGTE::GEScissorRect scissorRect {viewport.x, viewport.y, viewport.width, viewport.height};
+            cb->startRenderPass(renderPassDesc);
+            cb->setViewports({viewport});
+            cb->setScissorRects({scissorRect});
+        }
 
         unsigned startVertexIndex = 0;
 
@@ -1299,31 +1368,25 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             }
         }
 
-        // #region agent log
-        {
-            std::ofstream f("../../../debug-85f774.log", std::ios::app);
-            if (f) {
-                auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-                f << "{\"sessionId\":\"85f774\",\"location\":\"RenderTarget.cpp:before_startRenderPass\",\"message\":\"before startRenderPass\",\"data\":{},\"timestamp\":" << ts << ",\"hypothesisId\":\"E\"}\n";
-            }
-        }
-        // #endregion
+        // Flush vertex data before draw calls
+        bufferWriter->flush();
 
-        std::cout << "[WTK Diag] startRenderPass" << std::endl;
-        cb->startRenderPass(renderPassDesc);
+        // Bind pipeline and resources (skip if same pipeline as last command)
         if(useTextureRenderPipeline){
-            cb->setRenderPipelineState(textureRenderPipelineState);
+            if(!lastPipelineWasTexture_ || standaloneCB){
+                cb->setRenderPipelineState(textureRenderPipelineState);
+                lastPipelineWasTexture_ = true;
+            }
             cb->bindResourceAtVertexShader(buffer,1);
             cb->bindResourceAtFragmentShader(texturePaint,2);
         }
         else {
-             cb->setRenderPipelineState(renderPipelineState);
-             cb->bindResourceAtVertexShader(buffer,0);
+            if(lastPipelineWasTexture_ || standaloneCB){
+                cb->setRenderPipelineState(renderPipelineState);
+                lastPipelineWasTexture_ = false;
+            }
+            cb->bindResourceAtVertexShader(buffer,0);
         }
-        cb->setViewports({viewport});
-        cb->setScissorRects({scissorRect});
-        std::cout << "[WTK Diag] drawPolygons" << std::endl;
-
 
         for(auto & m : result.meshes){
             OmegaGTE::GERenderTarget::CommandBuffer::PolygonType topology;
@@ -1336,15 +1399,15 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             cb->drawPolygons(topology, m.vertexCount(), startVertexIndex);
             startVertexIndex += m.vertexCount();
         }
-        std::cout << "[WTK Diag] flush+endRenderPass" << std::endl;
-        bufferWriter->flush();
-        cb->endRenderPass();
-        std::cout << "[WTK Diag] submitCommandBuffer" << std::endl;
-        preEffectTarget->submitCommandBuffer(cb);
+
+        if(standaloneCB){
+            cb->endRenderPass();
+            preEffectTarget->submitCommandBuffer(cb);
+        }
+
         if(bufferPool && buffer){
             deferredBufferReleases.push_back({std::move(buffer), requiredBytes});
         }
-        std::cout << "[WTK Diag] renderToTarget done" << std::endl;
     }
 
     void RenderTargetStore::cleanTargets(LayerTree *tree){

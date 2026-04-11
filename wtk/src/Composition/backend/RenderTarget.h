@@ -74,11 +74,19 @@ namespace OmegaWTK::Composition {
             float height = 0.f;
         };
         ViewportOverride viewportOverride_;
+        SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> frameCB_;
+        bool frameActive_ = false;
+        bool lastPipelineWasTexture_ = false;
         void rebuildBackingTarget();
         void createGradientTexture(bool linearOrRadial,Gradient & gradient,OmegaGTE::GRect & rect,SharedHandle<OmegaGTE::GETexture> & dest);
     public:
         bool hasPendingContent = false;
         void clear(float r,float g,float b,float a);
+        /// Open a frame-level render pass that clears to the given color.
+        /// All subsequent renderToTarget() calls record into this pass.
+        void beginFrame(float clearR, float clearG, float clearB, float clearA);
+        /// Close the frame-level render pass and submit the command buffer.
+        void endFrame();
         void renderToTarget(VisualCommand::Type type,void *params);
         void applyEffectToTarget(const CanvasEffect & effect);
         void setRenderTargetSize(Composition::Rect &rect);

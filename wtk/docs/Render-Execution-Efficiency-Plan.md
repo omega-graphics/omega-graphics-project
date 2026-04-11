@@ -5,11 +5,11 @@ rendering to take seconds, not milliseconds, during resize. The problem
 exists at three levels:
 
 1. **Native view tree.** ~~OmegaWTK creates one native platform view
-   per widget.~~ **NV-1 and NV-2 are complete:** child widgets are now
-   virtual (no native views) and input events route through hit testing.
-   However, each View still has its own compositor surface, render
-   target, and GPU texture. NV-3 (single-surface rendering) consolidates
-   these to one per window.
+   per widget.~~ **NV-1, NV-2, and NV-3 are complete:** child widgets
+   are virtual (no native views), input events route through hit testing,
+   and all widgets render into the root view's single backing surface
+   via viewport override. One compositor surface, one render target, and
+   one GPU texture per window.
 
 2. **Scheduler architecture.** The compositor processes one widget's
    commands at a time, presents after each widget, and only then moves
@@ -56,8 +56,8 @@ with its source location and cost category.
 | **Per-command vertex generation** (×30) | `RenderTarget.cpp:1164–1254` | 2–5ms | CPU matrix mul per vertex |
 | **Per-command GPU submission** (×30) | `RenderTarget.cpp:1266–1297` | **10–20ms** | 30 separate render passes |
 | `commit()` | `RenderTarget.cpp:673–722` | **5–15ms** | `waitForGPU()` on effects path |
-| Presentation blit | `RenderTarget.cpp:1345–1387` | 2–5ms | One more submission |
-| **Total** | | **39–95ms** | **10–26 FPS during resize** |
+| Presentation blit | `RenderTarget.cpp:1345–1387` | 2–5ms | One more submission — **eliminated by Phase A-1** |
+| **Total** | | **39–95ms → 37–90ms after A-1** | **10–26 FPS during resize** |
 
 The same frame on a production compositor (Chromium, game engine) would
 take **under 2ms** — most of it GPU execution time, not CPU overhead.
@@ -412,15 +412,17 @@ render pass, and presents once.
    NativeItem's `event_emitter` wired to `AppWindow` in `Impl`
    constructor.
 
-3. **Single-surface rendering** — all widgets render into the root
-   view's single backing surface. This is where Tier 0 connects to
-   Tier 1: the single `CompositorSurface` per window is the surface
-   mailbox for the frame loop. Also completes NativeItem pointer
-   removal from Views.
+3. **Single-surface rendering [COMPLETED]** — all widgets render into
+   the root view's single backing surface via `setViewportOverride()`.
+   Child Views share the root visual's `BackendRenderTargetContext`;
+   `ensureLayerSurfaceTarget()` resolves child layers to the root
+   visual's surface. This is where Tier 0 connects to Tier 1: the
+   single surface per window is the surface mailbox for the frame loop.
 
-4. **Coordinate system unification** — standardize on top-left origin
-   across all platforms. Platform conversion happens once at the root
-   view boundary.
+4. **Coordinate system unification [COMPLETED]** — top-left origin is
+   now standard across all platforms. macOS: `isFlipped` returns YES.
+   Windows: no Y-inversion. Widget.h documents the convention. Hit
+   testing uses top-left coordinates throughout.
 
 5. **Native view embedding** — `NativeViewHost` escape hatch for
    widgets that genuinely need a native view (IME text input, video
@@ -512,6 +514,155 @@ compositor reads all surfaces during `SurfaceAggregator::Aggregate()`.
 With Tier 0's single-window model, this simplifies to one surface per
 window — analogous to a single-process Chromium renderer.
 
+#### Phase A-1 — Direct-to-drawable rendering
+
+**Goal:** Eliminate the intermediate offscreen texture and fullscreen-quad
+blit. Render visual commands directly to the native drawable
+(`CAMetalLayer` / DXGI swap chain). If a frame fails to render, the
+previously presented content remains visible — the native presentation
+layer handles this automatically.
+
+**The problem:** The current pipeline renders to an RGBA8Unorm offscreen
+texture via `BackendRenderTargetContext::beginFrame()`/`endFrame()` →
+`commit()`. Then `compositeAndPresentTarget()` runs a second render pass
+using the `finalCopyRenderPipelineState` shader to blit the texture onto
+the BGRA8Unorm native drawable. This is:
+
+1. An extra GPU render pass (the fullscreen-quad blit)
+2. An extra texture allocation per visual (the offscreen `targetTexture`)
+3. A pixel format mismatch requiring a separate copy shader pipeline
+4. Dead complexity — `blitAndPresent()`, `compositeAndPresentTarget()`,
+   `getFinalCopyPipelineForFormat()`, `finalCopyRenderPipelineState`,
+   `finalTextureDrawBuffer`, copy vertex/fragment shaders
+
+**The fix:** Render directly to the native drawable. The
+`BackendRenderTargetContext` already holds a `GENativeRenderTarget`
+reference (`renderTarget` member) — it is just never used for rendering
+(always null for visual contexts). Wire it up.
+
+##### A-1.1 Unify pixel format to BGRA8Unorm
+
+The render pipeline states (`renderPipelineState`,
+`textureRenderPipelineState`) are compiled with the default
+`colorPixelFormat = RGBA8Unorm`. The native drawable uses BGRA8Unorm.
+These are incompatible — Metal/Vulkan require the pipeline's color
+attachment format to match the render pass attachment.
+
+Change: compile all render pipeline states with BGRA8Unorm. This matches
+the native drawable format. Effect textures that still need intermediate
+allocation also switch to BGRA8Unorm for consistency.
+
+**Files:**
+- `RenderTarget.cpp` — `initGlobalRenderAssets()`: set
+  `renderPipelineDescriptor.colorPixelFormat = BGRA8Unorm` before
+  creating `renderPipelineState` and `textureRenderPipelineState`
+- `RenderTarget.cpp` — `rebuildBackingTarget()`: change texture pool key
+  and `TextureDescriptor.pixelFormat` from `RGBA8Unorm` to `BGRA8Unorm`
+  (for effect-path textures that still need allocation)
+
+##### A-1.2 Render to native drawable in `beginFrame()`/`endFrame()`
+
+When a `BackendRenderTargetContext` has a non-null native render target
+and no effects are queued, `beginFrame()` gets the command buffer from
+the native target instead of the texture target. Drawing commands go
+directly to the drawable.
+
+```
+beginFrame():
+    if renderTarget != nullptr && effectQueue.empty():
+        frameCB_ = renderTarget->commandBuffer()
+        // render pass targets the native drawable directly
+    else:
+        frameCB_ = preEffectTarget->commandBuffer()
+        // render pass targets the offscreen texture (effect path)
+
+endFrame():
+    // same as before — end pass, submit CB
+
+commit():
+    if rendered to native:
+        renderTarget->commitAndPresent()    // present directly
+        // no committedTexture, no hasPendingContent
+    else:
+        // existing effect path unchanged
+```
+
+##### A-1.3 Wire native target into visual contexts
+
+Currently, `CALayerTree.mm` (and `DCVisualTree.cpp`) create
+`BackendRenderTargetContext` with `nullptr` for the native target:
+
+```cpp
+// Current (CALayerTree.mm line ~137):
+BackendRenderTargetContext compTarget(r, nullNative, scale);
+```
+
+Change: pass the actual `GENativeRenderTarget` from the
+`ViewPresentTarget` to the root visual's `BackendRenderTargetContext`:
+
+```cpp
+// New:
+BackendRenderTargetContext compTarget(r, nativeTarget, scale);
+```
+
+For body/child visuals: also pass the native target. All visuals in a
+single-surface window share the same native drawable (Tier 0
+established this — one surface per window).
+
+**Files:**
+- `wtk/src/Composition/backend/mtl/CALayerTree.mm` — pass native target
+  to `BackendRenderTargetContext` constructor
+- `wtk/src/Composition/backend/dx/DCVisualTree.cpp` — same change for
+  D3D12
+
+##### A-1.4 Remove the blit infrastructure
+
+Once direct rendering is in place, the following become dead code:
+
+- `blitAndPresent()` function
+- `compositeAndPresentTarget()` — replaced by direct present in
+  `commit()`
+- `getFinalCopyPipelineForFormat()` and `finalCopyPipelinesByFormat` map
+- `finalCopyRenderPipelineState` and `finalTextureDrawBuffer`
+- `copyVertex` / `copyFragment` shader lookups in
+  `initGlobalRenderAssets()`
+- `committedTexture` field on `BackendRenderTargetContext` (unless
+  retained for effect path)
+- `hasPendingContent` flag (present happens immediately in `commit()`)
+- `ViewPresentTarget` struct (native target now lives on the context)
+- `RenderTargetStore::presentAllPending()` (present happens in
+  `commit()`, not deferred)
+
+**What stays for the effect path:** When effects are queued, the context
+still renders to the offscreen texture, applies effects, then does a
+single blit to native. This is the only case where the blit is
+justified — effects need intermediate texture ping-ponging. A dedicated
+`presentEffectResult()` method handles this narrow case.
+
+##### Effect path detail
+
+Effects (blur, shadow) require rendering to a texture first, applying
+the effect as a compute/render pass, and then presenting the result.
+For this case:
+
+1. `beginFrame()` detects `!effectQueue.empty()` → renders to texture
+2. `commit()` applies effects (existing ping-pong logic)
+3. After effects: single blit from result texture to native drawable
+4. `renderTarget->commitAndPresent()`
+
+This keeps the effect path correct while eliminating the blit for the
+common no-effect case.
+
+##### Files touched
+
+| File | Changes |
+|------|---------|
+| `RenderTarget.h` | Remove `committedTexture`, `hasPendingContent`. Remove `ViewPresentTarget`. Simplify `BackendCompRenderTarget` |
+| `RenderTarget.cpp` | Change pixel format to BGRA8Unorm. Modify `beginFrame()`/`commit()` for direct native rendering. Remove `blitAndPresent()`, `compositeAndPresentTarget()`, blit pipeline setup. Keep effect-path blit |
+| `Execution.cpp` | Remove `presentAllPending()` calls (present happens in `commit()`). Simplify `onQueueDrained()` |
+| `mtl/CALayerTree.mm` | Pass native target to visual contexts |
+| `dx/DCVisualTree.cpp` | Pass native target to visual contexts |
+
 #### Phase B — Frame-oriented compositor loop
 
 **Goal:** Replace the serial command-processing loop with a
@@ -539,10 +690,10 @@ Proposed:
         // CONSUME: read the window's single surface
         compositeFrame = surface.consume()
         if compositeFrame == nullptr:
-            continue    // no new content
+            continue    // no new content — previous frame stays visible
 
-        // RENDER: one render pass for ALL widgets' commands
-        cb = renderTarget->commandBuffer()
+        // RENDER directly to the native drawable (Phase A-1)
+        cb = nativeRenderTarget->commandBuffer()
         cb->startRenderPass(renderPassDesc)
 
         for each widgetSlice in compositeFrame.slices:
@@ -551,10 +702,10 @@ Proposed:
                 renderToTarget(cb, command)   // Tier 2 optimisations apply
 
         cb->endRenderPass()
-        renderTarget->submitCommandBuffer(cb)   // ONE GPU submission
+        nativeRenderTarget->submitCommandBuffer(cb)   // ONE GPU submission
 
-        // PRESENT: one atomic present to the swapchain
-        present()
+        // PRESENT: one atomic present to the drawable
+        nativeRenderTarget->commitAndPresent()
 
         // TELEMETRY
         updateTelemetry()
@@ -568,21 +719,22 @@ The critical properties of this loop:
    already contains all widgets' commands in z-order.
 
 2. **One render pass, one GPU submission.** All widgets' visual commands
-   from all `WidgetSlice`s are recorded into a single open render pass.
-   This is the maximum possible batching — the entire window's content
-   is one GPU submission. The Batched Compositing Pass Plan's entry-based
-   compositing becomes unnecessary: there are no layer textures to
-   composite because all widgets render directly into the window's
-   single render target.
+   from all `WidgetSlice`s are recorded into a single open render pass
+   targeting the native drawable directly (Phase A-1). This is the
+   maximum possible batching — the entire window's content is one GPU
+   submission. No intermediate textures, no blit pass.
 
 3. **One present per iteration.** Never per-widget, never per-command.
    The swapchain present happens once, after all widgets' commands have
    been rendered into the single surface.
 
 4. **Stale content fallback.** If no new composite frame is available
-   (no widget invalidated since last present), the compositor shows the
-   `committedTexture` from the previous frame. The display always shows
-   complete content.
+   (no widget invalidated since last present), the compositor simply
+   does not present — the native drawable retains the previously
+   presented content automatically (Metal/D3D12 behavior). With Phase
+   A-1's direct-to-drawable rendering, there is no intermediate
+   `committedTexture` to manage. The display always shows complete
+   content.
 
 5. **Frame trigger.** The loop runs on a trigger rather than draining a
    queue. Trigger sources:
@@ -621,9 +773,13 @@ widgets render into one composite frame. The resize path becomes:
    commands at the new dimensions.
 4. The `CompositeFrame` is deposited into the window's single
    `CompositorSurface` with an incremented `sizeGeneration`.
-5. The compositor's frame loop consumes the frame, resizes the single
-   render target (using bucketed dimensions from Tier 2 Phase 3),
-   renders all commands in one pass, and presents.
+5. The compositor's frame loop consumes the frame, renders all commands
+   directly to the native drawable in one pass, and presents. With
+   Phase A-1's direct-to-drawable rendering, there is no offscreen
+   texture to resize — the native drawable is managed by the platform
+   (`CAMetalLayer` auto-sizes on macOS, swap chain resize on Windows).
+   Effect-path textures still use bucketed dimensions (Tier 2 Phase 3)
+   when effects are active.
 
 ```cpp
 struct ResizeState {
@@ -641,10 +797,12 @@ content fallback). There is no partial state.
 
 **Render target management during resize:**
 
-The single render target needs to be resized when the window size
-crosses a bucket boundary (Tier 2 Phase 3). With one render target
-instead of N, this is one `rebuildBackingTarget()` call instead of N —
-and with bucketed dimensions, it only happens every ~64 pixels of drag.
+With Phase A-1's direct-to-drawable rendering, the native drawable is
+resized by the platform automatically — `CAMetalLayer` tracks the view
+bounds on macOS, and the swap chain is resized on Windows. There is no
+`rebuildBackingTarget()` call for the common no-effect path. For widgets
+using effects, the offscreen effect textures still use bucketed
+dimensions (Tier 2 Phase 3), but this is the uncommon case.
 
 **Prior art:** Chromium `LocalSurfaceId` uses generation tracking for
 multi-surface resize coordination. With OmegaWTK's single-surface model,
@@ -690,109 +848,123 @@ impact: batched submission covers ALL widgets' commands (not just one
 widget's), geometry caching covers the entire window, and frame diffing
 can skip unchanged widget slices.
 
-### Phase 0 — Remove hot-path logging
+### Phase 0 — Remove hot-path logging [COMPLETED]
 
 **Goal:** Establish a clean performance baseline before optimising.
 
 **Files:** `RenderTarget.cpp`, `Execution.cpp`
 
-Remove or gate behind a compile-time flag (`#ifdef OMEGAWTK_TRACE_RENDER`)
-all `std::cout` and file-write calls in:
-
-- `renderToTarget()` — command entry, tessellation result, buffer ready,
-  render pass start/end
-- `executeCurrentCommand()` — command processing trace
-- `commit()` — commit trace
-- `compositeAndPresentTarget()` — present trace
-- The `debug-85f774.log` JSON logging
-
-This is not a premature optimisation — console I/O on the render thread
-is measurable overhead that distorts profiling of everything else.
+All `std::cout` calls in `renderToTarget()`, `commit()`,
+`rebuildBackingTarget()`, `getFinalCopyPipelineForFormat()`,
+`ensureLayerSurfaceTarget()`, and `executeCurrentCommand()` are now
+gated behind `#ifdef OMEGAWTK_TRACE_RENDER`. All `debug-85f774.log`
+JSON file writes (`#region agent log` blocks) have been removed.
+The `#include <fstream>` was removed from both files.
 
 ---
 
-### Phase 1 — Batched GPU submission
+### Phase 1 — Batched GPU submission [COMPLETED]
 
 **Goal:** Reduce GPU submissions per frame from N (one per visual
 command) to 1.
 
 **The core change:** Instead of starting and ending a render pass for
-each visual command, start a single render pass at the beginning of the
-frame, record all draw calls into it, and end/submit once at the end.
+each visual command, a single render pass is opened at the beginning of
+the frame, all draw calls are recorded into it, and it is ended/submitted
+once at the end.
+
+#### Implemented API
+
+Two new methods on `BackendRenderTargetContext`:
+
+```cpp
+/// Open a frame-level render pass that clears to the given color.
+/// All subsequent renderToTarget() calls record into this pass.
+void beginFrame(float clearR, float clearG, float clearB, float clearA);
+
+/// Close the frame-level render pass and submit the command buffer.
+void endFrame();
+```
+
+The call site in `executeCurrentCommand()` changed from:
+
+```
+Before:
+    targetContext->clear(bkgrd.r,bkgrd.g,bkgrd.b,bkgrd.a);
+    for each visual command:
+        targetContext->renderToTarget(type, params)
+            ← each one: create CB, start pass, draw, end pass, submit
+
+After:
+    targetContext->beginFrame(bkgrd.r, bkgrd.g, bkgrd.b, bkgrd.a);
+    for each visual command:
+        targetContext->renderToTarget(type, params)
+            ← records draws into open pass using frameCB_
+    targetContext->endFrame();
+        ← ONE endRenderPass + ONE submitCommandBuffer
+```
+
+Private members added to `BackendRenderTargetContext`:
+
+```cpp
+SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> frameCB_;
+bool frameActive_ = false;
+bool lastPipelineWasTexture_ = false;
+```
 
 #### 1.1 Single render pass per frame
 
-Restructure `renderToTarget()` from a self-contained function that
-allocates a command buffer, starts a render pass, draws, ends, and
-submits — into a function that **records into an already-open render
-pass**.
+`beginFrame()` creates one command buffer, starts a render pass with
+`Clear` load action (merging the former separate `clear()` call), and
+sets viewport/scissor for the frame. `endFrame()` ends the render pass
+and submits.
 
-The render pass lifecycle moves to `executeCurrentCommand()`:
+`renderToTarget()` uses the open `frameCB_` instead of creating its own
+command buffer. It no longer starts/ends render passes or submits.
+A standalone fallback path is preserved for any call outside a
+`beginFrame()`/`endFrame()` pair.
 
-```
-Before (current):
-    for each visual command:
-        renderToTarget(type, params)   ← each one: start pass, draw, end pass, submit
-
-After:
-    cb = preEffectTarget->commandBuffer()
-    cb->startRenderPass(renderPassDesc)
-
-    for each visual command:
-        renderToTarget(cb, type, params)   ← records draws into open pass
-
-    cb->endRenderPass()
-    preEffectTarget->submitCommandBuffer(cb)   ← ONE submission
-```
-
-This requires `renderToTarget()` to accept an open command buffer instead
-of creating its own. The function signature changes from:
-
-```cpp
-void renderToTarget(VisualCommand::Type type, void *params);
-```
-
-to:
-
-```cpp
-void renderToTarget(GERenderTarget::CommandBuffer *cb,
-                    VisualCommand::Type type, void *params);
-```
+The `renderToTarget()` signature is unchanged — it accesses the open
+command buffer via the `frameCB_` member rather than accepting a
+parameter.
 
 #### 1.2 Pipeline state batching
 
-Currently, each visual command sets the pipeline state (`renderPipelineState`
-or `textureRenderPipelineState`) independently. With a single open render
-pass, consecutive commands that use the same pipeline can skip the
-redundant `setRenderPipelineState` call. Track the last-bound pipeline
-and only rebind on change.
+A `lastPipelineWasTexture_` flag tracks the currently bound pipeline.
+`setRenderPipelineState()` is only called when the pipeline type changes
+between consecutive commands (color vs. texture). Reset on each
+`beginFrame()` and after any render pass restart (texture fence handling).
 
-#### 1.3 Vertex buffer batching
+#### 1.3 Vertex buffer batching (deferred)
 
-Currently, each command acquires its own vertex buffer from the
-`BufferPool`, writes vertices, and binds it. With batched submission, all
-commands can write into a **single large vertex buffer** acquired at
-frame start:
+Per-command vertex buffer acquisition from `BufferPool` is retained.
+Each command acquires its own buffer, writes vertices, flushes, binds,
+and draws. A single shared vertex buffer per frame (ring buffer pattern)
+is deferred to a future phase.
 
-- Before the frame loop, estimate total vertex count (or use a generous
-  upper bound) and acquire one buffer from the pool.
-- Each `renderToTarget()` call writes its vertices at the current offset.
-- Draw calls use `startVertexIndex` to index into the shared buffer.
-- After the loop, flush once and submit once.
+#### Texture fence handling
 
-This reduces buffer pool interactions from N per frame to 1.
+When a command has a texture fence (rare — only pre-created bitmap
+textures), the open render pass is temporarily ended, the fence is
+registered via `notifyCommandBuffer()`, and the render pass is restarted
+with `LoadPreserve`. Viewport/scissor and pipeline state are re-set
+after restart.
 
-**Prior art:** Chromium's `SkCanvas` records into a single `PaintOpBuffer`.
-Game engines use per-frame ring buffers (a single large `VkBuffer`
-divided into per-frame segments, no allocation per draw).
+#### Other changes
+
+- The per-packet clear deduplication (`s_lastClearedContext`,
+  `s_lastClearedRenderTarget`, `resetLastClearedForNextBatch()`) was
+  removed — `beginFrame()` always clears.
+- `bufferWriter->flush()` moved before draw calls (was after in old code)
+  for correct ordering within the batched pass.
 
 #### Files touched
 
 | File | Changes |
 |------|---------|
-| `RenderTarget.h` | Change `renderToTarget` signature to accept open command buffer |
-| `RenderTarget.cpp` | Remove per-command render pass lifecycle from `renderToTarget`. Add frame-level vertex buffer management |
-| `Execution.cpp` | Open render pass before command loop, close after. Pass command buffer to `renderToTarget` |
+| `RenderTarget.h` | Added `beginFrame()`, `endFrame()`, `frameCB_`, `frameActive_`, `lastPipelineWasTexture_` |
+| `RenderTarget.cpp` | Implemented `beginFrame()`/`endFrame()`. Restructured `renderToTarget()` to record into open pass. Pipeline state tracking. Standalone fallback. Texture fence end/restart |
+| `Execution.cpp` | Replaced clear + command loop with `beginFrame()`/loop/`endFrame()`. Removed clear dedup statics and `resetLastClearedForNextBatch()` |
 
 ---
 
@@ -872,17 +1044,24 @@ their buffer and offset, and extending the buffer pool to support
 
 ---
 
-### Phase 3 — Render target resize tolerance
+### Phase 3 — Effect-path texture resize tolerance
 
-**Goal:** Eliminate GPU allocation on every resize event.
+**Goal:** Eliminate GPU allocation on every resize event for the effect
+path. (The common no-effect path renders directly to the native drawable
+after Phase A-1 and does not allocate offscreen textures at all.)
 
-#### 3.1 Power-of-two backing dimensions
+**Scope change from Phase A-1:** Before Phase A-1, every visual rendered
+to an offscreen texture and `rebuildBackingTarget()` ran on every resize,
+making this phase critical. After Phase A-1, the offscreen texture path
+only applies when effects (blur, shadow) are active. The optimization
+still matters for effect-heavy UIs but has reduced scope.
 
-Instead of allocating a texture at the exact pixel dimensions of the
-layer, round up to the nearest power-of-two (or a coarser bucket like
-64-pixel increments). The layer renders into a sub-region of the
-oversized texture. Viewport and scissor rect are set to the actual
-dimensions; the excess texture area is never touched.
+#### 3.1 Bucketed effect texture dimensions
+
+When effects are queued and the context falls back to texture rendering,
+round the texture dimensions up to the nearest 64-pixel bucket instead
+of allocating at exact pixel dimensions. The effect texture is reused
+across resize events that stay within the same bucket.
 
 ```cpp
 static unsigned roundToBucket(unsigned dim) {
@@ -892,64 +1071,44 @@ static unsigned roundToBucket(unsigned dim) {
 ```
 
 With 64-pixel buckets, a resize from 800×600 to 805×603 reuses the
-same 832×640 texture — no reallocation. Reallocations only occur when
-crossing a bucket boundary (approximately every 64 pixels of drag).
+same 832×640 effect texture — no reallocation.
 
 **Prior art:** Chromium's `TileManager` uses fixed tile sizes (256×256
-or 512×512). Render target requests are rounded to tile boundaries.
-Game engines allocate render targets at power-of-two or next-multiple
-sizes and render into sub-regions.
+or 512×512). Game engines allocate render targets at power-of-two or
+next-multiple sizes and render into sub-regions.
 
 #### 3.2 Deferred tessellation context recreation
 
-Currently `rebuildBackingTarget()` recreates the
-`OmegaTriangulationEngineContext` on every resize. The tessellation
-context is derived from the render target, but it only needs the target's
-dimensions for output sizing. If the backing texture didn't change (same
-bucket), the tessellation context can be reused. Only recreate it when
-the actual backing texture changes.
+The tessellation context is derived from the render target dimensions.
+If the backing texture didn't change (same bucket), the tessellation
+context can be reused. Only recreate it when the actual backing texture
+changes.
 
-#### 3.3 Remove synchronous GPU wait from resize path
+#### 3.3 Deferred texture release
 
-`rebuildBackingTarget()` calls `renderTarget->waitForGPU()` before
-releasing old textures to the pool. This blocks the compositor thread
-until all in-flight GPU work completes.
-
-Replace with deferred release: instead of waiting and releasing
-immediately, move old textures to a "pending release" list. When the
-GPU signals completion (via the existing fence/completion handler
-infrastructure), the textures are returned to the pool. This is the
-same pattern used by swap chains — you don't wait for the current back
-buffer to finish before acquiring the next one.
+When effect textures do get reallocated (bucket boundary crossing),
+move old textures to a "pending release" list instead of calling
+`waitForGPU()` synchronously. The GPU signals completion via fences and
+the textures return to the pool asynchronously.
 
 ```cpp
 void BackendRenderTargetContext::rebuildBackingTarget(){
-    // Defer old textures — they will be released when the GPU
-    // signals completion of any in-flight work referencing them.
     if(targetTexture){
         deferredReleases.push_back({std::move(targetTexture), poolKey});
     }
     if(effectTexture){
         deferredReleases.push_back({std::move(effectTexture), poolKey});
     }
-
-    // Allocate new textures (from pool, at bucketed size)
     targetTexture = texturePool->acquire(bucketedPoolKey);
     effectTexture = texturePool->acquire(bucketedPoolKey);
-    // ... create render targets ...
 }
 ```
-
-**Prior art:** Chromium never synchronously waits for the GPU during
-resize. Textures are reference-counted; when the last reference (held by
-the GPU command buffer) is released, the texture goes back to the pool.
-Game engines use frame-indexed deferred destruction queues.
 
 #### Files touched
 
 | File | Changes |
 |------|---------|
-| `RenderTarget.cpp` | `setRenderTargetSize` uses bucketed dimensions. `rebuildBackingTarget` uses deferred release instead of `waitForGPU()`. Tessellation context reuse when backing unchanged |
+| `RenderTarget.cpp` | Bucketed dimensions for effect textures. Deferred release instead of `waitForGPU()`. Tessellation context reuse when backing unchanged |
 | `RenderTarget.h` | Add deferred release queue to `BackendRenderTargetContext` |
 | `TexturePool.h` | Add bucket-aware acquire that accepts a size range |
 
@@ -1075,42 +1234,46 @@ Tier 0 (Native View Consolidation):
 
 NV-1: Root-only native view [COMPLETED]
     └─→ NV-2: Virtual hit testing [COMPLETED]
-    └─→ NV-3: Single-surface rendering ──→ Tier 1
+    └─→ NV-3: Single-surface rendering [COMPLETED] ──→ Tier 1
     └─→ NV-5: Native view embedding (independent, as needed)
-NV-3 ──→ NV-4: Coordinate system unification (cleanup)
+NV-3 ──→ NV-4: Coordinate system unification [COMPLETED]
 
 Tier 1 (Scheduling Architecture) — requires Tier 0 NV-3:
 
 Phase A: Surface mailbox (single per-window surface)
-    └─→ Phase B: Frame-oriented compositor loop
-            └─→ Phase C: Resize coordination
+    └─→ Phase A-1: Direct-to-drawable rendering (remove offscreen blit)
+            └─→ Phase B: Frame-oriented compositor loop
+                    └─→ Phase C: Resize coordination
 
 Tier 2 (Per-Command Rendering) — operates within Phase B's render step:
 
-Phase 0: Remove hot-path logging (prerequisite — clean baseline)
-    └─→ Phase 1: Batched GPU submission (highest impact)
+Phase 0: Remove hot-path logging [COMPLETED]
+    └─→ Phase 1: Batched GPU submission [COMPLETED]
             └─→ Phase 2: Geometry caching (second highest impact)
                     └─→ Phase 4: Frame diffing (builds on cache infrastructure)
                             └─→ Phase 5: SDF rendering (replaces tessellation entirely)
-    └─→ Phase 3: Render target resize tolerance (independent of Phase 1)
+    └─→ Phase 3: Effect-path texture resize tolerance (independent of Phase 1)
 
 Cross-tier:
 
 Tier 0 NV-3 ──→ Tier 1 Phase A (single surface enables per-window mailbox)
-Phase A ──→ Phase B ──→ Tier 2 phases (Tier 2 operates inside Phase B's render step)
+Phase A ──→ Phase A-1 (direct rendering removes blit overhead)
+Phase A-1 ──→ Phase B (frame loop renders directly to drawable)
 Phase B ──→ Phase C (resize coordination requires frame loop)
+Phase A-1 reduces Phase 3's scope (no offscreen texture for common path)
 Phase 0 can begin in parallel with Tier 0/1 (logging removal is local to render path)
 ```
 
-**Tier 0** is the foundational change. NV-1 (root-only native view) and
-NV-2 (virtual hit testing) are complete. NV-3 (single-surface rendering)
-is the next milestone — it connects
-directly to Tier 1 Phase A: the single `CompositorSurface` per window is
-the mailbox that Phase A defines. NV-5 (native view embedding) is an
-independent escape hatch that can be implemented whenever needed.
+**Tier 0** is the foundational change. NV-1 (root-only native view),
+NV-2 (virtual hit testing), NV-3 (single-surface rendering), and NV-4
+(coordinate system unification) are complete. All child Views render
+into the root visual's shared surface via viewport override. NV-5
+(native view embedding) is an independent escape hatch.
 
-**Tier 1** depends on Tier 0 NV-3. Phase A and Phase B are sequential.
-Phase C depends on Phase B.
+**Tier 1** depends on Tier 0 NV-3. Phase A → A-1 → B are sequential.
+Phase C depends on Phase B. Phase A-1 eliminates the offscreen texture
+blit, which simplifies Phase B's rendering loop and reduces Phase 3's
+scope to effect-path textures only.
 
 **Tier 2** operates inside Phase B's render step. Phase 0 (logging removal)
 is purely local and can proceed in parallel with all other work. Phases 1
@@ -1126,15 +1289,16 @@ Phase 2. Phase 5 replaces Phases 2 and 4.
 | Phase | Impact | Metric | Status |
 |-------|--------|--------|--------|
 | NV-1 + NV-2 | Eliminates native view management overhead | 0 native child views to reposition on resize. No `SetWindowPos`, `setFrame:`, or `gtk_fixed_move` per child. Eliminates NSView (0,0) reset bug. Input events routed through virtual hit testing | **COMPLETED** |
-| NV-3 | Reduces GPU resources from N to 1 | 1 render target, 1 GPU texture, 1 compositor surface per window instead of N. Eliminates N-1 render target rebuilds on resize | Pending |
-| NV-4 | Eliminates coordinate conversion bugs | One coordinate system, one conversion point at root view | Pending |
+| NV-3 | Reduces GPU resources from N to 1 | 1 render target, 1 GPU texture, 1 compositor surface per window instead of N. Eliminates N-1 render target rebuilds on resize. Implemented via `setViewportOverride()` and root visual surface sharing in `ensureLayerSurfaceTarget()` | **COMPLETED** |
+| NV-4 | Eliminates coordinate conversion bugs | One coordinate system, one conversion point at root view | **COMPLETED** |
 
 ### Tier 1 — Scheduling architecture
 
 | Phase | Impact | Metric |
 |-------|--------|--------|
 | Phase A | Eliminates queue flooding | Widgets deposit into single composite frame instead of queuing packets. Queue depth drops from O(widgets × resize_events) to 0 |
-| Phase B | Eliminates staggered partial updates | One render pass + one present per frame. 10 widgets = 1 GPU submission, not 10. All widgets' commands batched into single render pass |
+| Phase A-1 | Eliminates offscreen texture blit | Removes intermediate GPU texture, fullscreen-quad copy pass, and blit shader infrastructure. Saves 2–5ms per frame (the presentation blit). Eliminates per-visual texture allocation on resize |
+| Phase B | Eliminates staggered partial updates | One render pass + one present per frame directly to native drawable. 10 widgets = 1 GPU submission, not 10 |
 | Phase C | Eliminates resize content gaps | Single composite frame is always complete — no waiting for individual surfaces |
 
 Tier 0 + Tier 1 together transform the resize scenario from 29–58
@@ -1144,17 +1308,18 @@ render targets × N presents to 1 surface × 1 render target × 1 present.
 
 ### Tier 2 — Per-command rendering
 
-| Phase | Estimated per-frame savings | Cumulative |
-|-------|---------------------------|------------|
-| Phase 0 | 1–5ms (console I/O) | ~35–90ms |
-| Phase 1 | 10–25ms (submission overhead) | ~15–65ms |
-| Phase 2 | 10–25ms (tessellation) | ~5–40ms |
-| Phase 3 | 5–20ms (resize allocation) | ~2–20ms |
-| Phase 4 | 0–15ms (skip unchanged) | ~2–10ms |
+| Phase | Estimated per-frame savings | Cumulative | Status |
+|-------|---------------------------|------------|--------|
+| Phase 0 | 1–5ms (console I/O) | ~35–90ms | **COMPLETED** |
+| Phase 1 | 10–25ms (submission overhead) | ~15–65ms | **COMPLETED** |
+| Phase 2 | 10–25ms (tessellation) | ~5–40ms | Pending |
+| Phase 3 | 0–5ms (effect-path resize only) | ~2–15ms | Pending (scope reduced by A-1) |
+| Phase 4 | 0–15ms (skip unchanged) | ~2–10ms | Pending |
 
-Note: with Tier 0's single render target, Phase 3's impact is larger —
-one render target rebuild instead of N. And Phase 1's batched submission
-now covers ALL widgets' commands in the window, not just one widget's.
+Note: Phase A-1 eliminates offscreen texture allocation for the common
+no-effect path, reducing Phase 3's scope to effect-path textures only.
+Phase 1's batched submission now covers ALL widgets' commands in the
+window, not just one widget's.
 
 After all tiers, a 30-command frame during resize should drop from
 39–95ms to approximately 2–10ms — well within the 16.67ms budget for
@@ -1238,15 +1403,19 @@ coalescing infrastructure is removed as dead code.
 | `wtk/src/Composition/Compositor.cpp` | A, B, C | Replace `CompositorScheduler` command loop with frame-oriented loop (consume → render → present). Remove `scheduleCommand`, `processCommand`, `dropQueuedStaleForLaneLocked`, `waitForLaneAdmission`, all packet lifecycle tracking. Single render pass for all widget slices |
 | `wtk/src/UI/View.Core.cpp` | A, C | `endCompositionSession` appends to `CompositeFrame` builder. Resize path sets size generation |
 | `wtk/src/UI/WidgetTreeHost.cpp` | A, C | Paint pass builds `CompositeFrame` and deposits into window surface. `notifyWindowResize()` increments generation |
-| `wtk/src/Composition/backend/Execution.cpp` | B | `executeCurrentCommand()` replaced by single-render-pass loop over `WidgetSlice` entries |
+| `wtk/src/Composition/backend/Execution.cpp` | A-1, B | Remove `presentAllPending()` calls. `executeCurrentCommand()` replaced by single-render-pass loop over `WidgetSlice` entries |
+| `wtk/src/Composition/backend/RenderTarget.h` | A-1 | Remove `committedTexture`, `hasPendingContent`, `ViewPresentTarget`. Simplify `BackendCompRenderTarget` |
+| `wtk/src/Composition/backend/RenderTarget.cpp` | A-1 | Pixel format → BGRA8Unorm. `beginFrame()`/`commit()` render directly to native drawable. Remove `blitAndPresent()`, `compositeAndPresentTarget()`, blit pipeline setup. Keep effect-path blit |
+| `wtk/src/Composition/backend/mtl/CALayerTree.mm` | A-1 | Pass native target to `BackendRenderTargetContext` constructor |
+| `wtk/src/Composition/backend/dx/DCVisualTree.cpp` | A-1 | Pass native target to `BackendRenderTargetContext` constructor |
 
 ### Tier 2 — Per-command rendering
 
 | File | Phase | Changes |
 |------|-------|---------|
-| `wtk/src/Composition/backend/RenderTarget.cpp` | 0, 1, 2, 3, 4 | Remove logging, batched render pass, tessellation cache integration, bucketed resize, frame hash comparison |
-| `wtk/src/Composition/backend/RenderTarget.h` | 1, 2, 3, 4 | `renderToTarget` signature change, `TessellationCache` member, deferred release queue, `lastRenderedHash` |
-| `wtk/src/Composition/backend/Execution.cpp` | 0, 1, 4 | Remove logging, frame-level render pass open/close, hash passthrough |
+| `wtk/src/Composition/backend/RenderTarget.cpp` | 0, 1, 2, 3, 4 | **0+1 DONE:** Logging gated behind `OMEGAWTK_TRACE_RENDER`, debug file writes removed. `beginFrame()`/`endFrame()` implemented. `renderToTarget()` records into open `frameCB_`. Pipeline state tracking. Texture fence end/restart. Remaining: tessellation cache integration, bucketed resize, frame hash comparison |
+| `wtk/src/Composition/backend/RenderTarget.h` | 1, 2, 3, 4 | **1 DONE:** Added `beginFrame()`, `endFrame()`, `frameCB_`, `frameActive_`, `lastPipelineWasTexture_`. Remaining: `TessellationCache` member, deferred release queue, `lastRenderedHash` |
+| `wtk/src/Composition/backend/Execution.cpp` | 0, 1, 4 | **0+1 DONE:** Logging gated, debug file writes removed. Command loop wrapped with `beginFrame()`/`endFrame()`. Clear dedup statics removed. Remaining: hash passthrough |
 | `wtk/include/omegaWTK/Composition/Canvas.h` | 4 | `contentHash` on `CanvasFrame` |
 | `wtk/src/Composition/Canvas.cpp` | 4 | Hash update in `draw*` methods |
 | New: `wtk/src/Composition/backend/TessellationCache.h` | 2 | `ShapeKey`, `CachedTessellation`, `TessellationCache` |
@@ -1279,6 +1448,20 @@ coalescing infrastructure is removed as dead code.
 - Widget submission path: `Widget.Paint.cpp:35–70` (`executePaint` → composition session → submit)
 - View composition session: `View.Core.cpp:135–151` (`startCompositionSession` / `endCompositionSession`)
 - Widget tree resize: `WidgetTreeHost.cpp:85–110` (`notifyWindowResize` → recursive invalidation)
+
+#### Phase A-1 — Direct-to-drawable rendering (blit removal)
+- Offscreen texture allocation: `RenderTarget.cpp:486–509` (`BackendRenderTargetContext` constructor, RGBA8Unorm)
+- Texture format key: `RenderTarget.cpp:511–578` (`rebuildBackingTarget`, `RGBA8Unorm` pool key)
+- Pipeline format default: `GEPipeline.h:52` (`colorPixelFormat = PixelFormat::RGBA8Unorm` — must change to BGRA8Unorm)
+- Native drawable format: `GEMetalRenderTarget.h` (`pixelFormat()` returns `BGRA8Unorm`)
+- `beginFrame()`: `RenderTarget.cpp:703` (currently targets offscreen texture)
+- `commit()`: `RenderTarget.cpp:762` (sets `committedTexture`, `hasPendingContent`)
+- `blitAndPresent()`: `RenderTarget.cpp:1454` (fullscreen-quad shader blit — removed by A-1)
+- `compositeAndPresentTarget()`: `RenderTarget.cpp:1498` (fast/general path blit — removed by A-1)
+- `getFinalCopyPipelineForFormat()`: `RenderTarget.cpp:402` (format-specific copy pipelines — removed by A-1)
+- `presentAllPending()`: `RenderTarget.cpp:1635` (iterates store — simplified by A-1)
+- Pipeline creation: `RenderTarget.cpp:226–265` (render pipeline states, format must match drawable)
+- Visual context creation: `mtl/CALayerTree.mm:137` (passes `nullNative` — A-1 passes real target)
 
 #### Tier 2 — Per-command rendering
 - Per-command render pass: `RenderTarget.cpp:1266–1297`

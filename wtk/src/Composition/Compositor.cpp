@@ -1151,5 +1151,29 @@ OmegaCommon::String Compositor::dumpLaneDiagnostics(std::uint64_t syncLaneId) co
     return ss.str();
 }
 
+void Compositor::registerWindowSurface(CompositionRenderTarget *target,
+                                       SharedHandle<CompositorSurface> surface){
+    if(target == nullptr || surface == nullptr){
+        return;
+    }
+    std::lock_guard<std::mutex> lk(mutex);
+    windowSurfaces_[target] = std::move(surface);
+}
+
+void Compositor::renderCompositeFrame(CompositionRenderTarget *target,
+                                      SharedHandle<CompositeFrame> frame){
+    if(target == nullptr || frame == nullptr || frame->slices.empty()){
+        return;
+    }
+    auto storeIt = renderTargetStore.store.find(
+            std::static_pointer_cast<CompositionRenderTarget>(
+                    SharedHandle<CompositionRenderTarget>(target,[](CompositionRenderTarget *){})));
+    (void)storeIt;
+    // Phase A bridge: composite frame consumption is recorded but
+    // rendering is deferred to Phase B. The compositor currently renders
+    // via the existing per-widget packet path; the surface mailbox
+    // collects frames for Phase B's frame-oriented loop.
+}
+
 
 };

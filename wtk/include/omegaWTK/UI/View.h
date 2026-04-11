@@ -107,6 +107,7 @@ namespace OmegaWTK {
         friend class Composition::ViewAnimator;
         friend class ScrollView;
         friend class Widget;
+        friend class WidgetTreeHost;
         friend class Container;
     protected:
         /**

@@ -18,6 +18,7 @@ namespace OmegaWTK::Composition {
     void CleanupEngine();
     
     struct CanvasFrame;
+    struct CompositeFrame;
 
 
     typedef std::chrono::time_point<std::chrono::high_resolution_clock> Timestamp;
@@ -249,6 +250,11 @@ namespace OmegaWTK::Composition {
         mutable uint64_t reservedPacketId = 0;
         mutable std::mutex commandMutex;
 
+        /// When non-null, pushFrame() appends to this CompositeFrame
+        /// instead of creating a CompositionRenderCommand. Set by
+        /// WidgetTreeHost during the composite paint pass.
+        CompositeFrame *activeCompositeFrame_ = nullptr;
+
         OmegaCommon::Async<CommandStatus> queueTimedFrame(unsigned & id,CompositorClient &client,
                                                           SharedHandle<CanvasFrame> & frame,
                                                           Timestamp & start,
@@ -304,6 +310,7 @@ namespace OmegaWTK::Composition {
         void setFrontendPtr(Compositor *frontend);
         void beginRecord();
         void endRecord();
+        void setActiveCompositeFrame(CompositeFrame *frame);
         virtual ~CompositorClientProxy() = default;
     };
 

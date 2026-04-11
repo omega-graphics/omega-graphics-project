@@ -1,5 +1,6 @@
 #include "omegaWTK/Core/Core.h"
 #include "omegaWTK/Media/ImgCodec.h"
+#include "omegaWTK/Media/MediaIO.h"
 
 #include <chrono>
 
@@ -11,10 +12,20 @@ namespace OmegaWTK {
 
         typedef std::chrono::high_resolution_clock::time_point TimePoint;
 
+        /// @brief A decoded video frame with timing metadata.
         struct VideoFrame {
             BitmapImage videoFrame;
             TimePoint decodeFinishTime;
             TimePoint presentTime;
+        };
+
+        /// @brief A decoded audio sample buffer with format and timing metadata.
+        struct AudioSample {
+            void *data = nullptr;
+            size_t length = 0;
+            AudioStreamDesc format {};
+            TimePoint presentTime;
+            TimePoint decodeTime;
         };
 
         INTERFACE VideoFrameSink {

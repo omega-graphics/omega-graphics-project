@@ -178,9 +178,7 @@ namespace OmegaWTK::Media {
         explicit AVFAudioCaptureDevice(AVCaptureDevice *dev):device(dev){
 
         };
-        UniqueHandle<AudioCaptureSession> createCaptureSession() override {
-
-        }
+        UniqueHandle<AudioCaptureSession> createCaptureSession() override;
         ~AVFAudioCaptureDevice() = default;
     };
 
@@ -238,9 +236,7 @@ namespace OmegaWTK::Media {
          explicit AVFVideoDevice(AVCaptureDevice *dev):device(dev){
 
          };
-         UniqueHandle<VideoCaptureSession> createCaptureSession(SharedHandle<AudioCaptureDevice> &audioCaptureDevice) override {
-
-         }
+         UniqueHandle<VideoCaptureSession> createCaptureSession(SharedHandle<AudioCaptureDevice> &audioCaptureDevice) override;
          ~AVFVideoDevice() = default;
      };
 
@@ -272,15 +268,21 @@ namespace OmegaWTK::Media {
         bool previewOn = false;
         bool isBufferOutput = false;
 
-        explicit AVFAudioCaptureSession(SharedHandle<AVFAudioCaptureDevice> & device){
+        explicit AVFAudioCaptureSession(AVFAudioCaptureDevice *device){
             captureSession = [[AVCaptureSession alloc] init];
             NSError *error;
             renderSynchronizer = [[AVSampleBufferRenderSynchronizer alloc] init];
-            audioRenderer = [[AVSampleBufferAudioRenderer alloc]init];
+            audioRenderer = [[AVSampleBufferAudioRenderer alloc] init];
             [renderSynchronizer addRenderer:audioRenderer];
             audioInput = [AVCaptureDeviceInput deviceInputWithDevice:device->device error:&error];
+            [captureSession addInput:audioInput];
+            audioPreviewDelegate = [[OmegaWTKMediaAVFAudioCaptureSampleBufferDelegate alloc]
+                                    initWithCppContext:this videoCaptureDelegate:NO preview:YES];
+            audioCaptureDelegate = [[OmegaWTKMediaAVFAudioCaptureSampleBufferDelegate alloc]
+                                    initWithCppContext:this videoCaptureDelegate:NO preview:NO];
             previewOut = [[AVCaptureAudioDataOutput alloc] init];
             [previewOut setSampleBufferDelegate:audioPreviewDelegate queue:dispatch_get_main_queue()];
+            [captureSession addOutput:previewOut];
         }
         void setAudioPlaybackDeviceForPreview(SharedHandle<AudioPlaybackDevice> &device) override {
             CFStringRef uid;
@@ -340,6 +342,10 @@ namespace OmegaWTK::Media {
         }
     };
 
+    UniqueHandle<AudioCaptureSession> AVFAudioCaptureDevice::createCaptureSession() {
+        return UniqueHandle<AudioCaptureSession>(new AVFAudioCaptureSession(this));
+    }
+
 
     struct AVFVideoCaptureSession : public VideoCaptureSession {
         AVCaptureSession *captureSession;
@@ -362,17 +368,29 @@ namespace OmegaWTK::Media {
 
         VideoFrameSink *sink;
 
-        explicit AVFVideoCaptureSession(SharedHandle<AVFVideoDevice> & videoDevice,SharedHandle<AVFAudioCaptureDevice> & audioDevice){
+        AVSampleBufferAudioRenderer *audioRenderer;
+        bool previewOn = false;
+        bool isBufferOutput = false;
+
+        explicit AVFVideoCaptureSession(AVFVideoDevice *videoDevice, AVFAudioCaptureDevice *audioDevice){
             captureSession = [[AVCaptureSession alloc] init];
             NSError *error;
+            renderSynchronizer = [[AVSampleBufferRenderSynchronizer alloc] init];
+            audioRenderer = [[AVSampleBufferAudioRenderer alloc] init];
+            [renderSynchronizer addRenderer:audioRenderer];
             inputVideo = [AVCaptureDeviceInput deviceInputWithDevice:videoDevice->device error:&error];
             inputAudio = [AVCaptureDeviceInput deviceInputWithDevice:audioDevice->device error:&error];
             [captureSession addInput:inputVideo];
             [captureSession addInput:inputAudio];
+            videoPreviewDelegate = [[OmegaWTKMediaAVFVideoCaptureSampleBufferDelegate alloc]
+                                    initWithCppContext:this preview:YES];
+            videoCaptureDelegate = [[OmegaWTKMediaAVFVideoCaptureSampleBufferDelegate alloc]
+                                    initWithCppContext:this preview:NO];
+            audioCaptureDelegate = [[OmegaWTKMediaAVFAudioCaptureSampleBufferDelegate alloc]
+                                    initWithCppContext:this videoCaptureDelegate:YES preview:NO];
             videoPreviewOut = [[AVCaptureVideoDataOutput alloc] init];
             [videoPreviewOut setSampleBufferDelegate:videoPreviewDelegate queue:dispatch_get_main_queue()];
-            OSType e = kCVPixelFormatType_Lossless_32BGRA;
-            [videoPreviewOut setVideoSettings:@{(__bridge id)kCVPixelBufferPixelFormatTypeKey:(__bridge id)&e}];
+            [videoPreviewOut setVideoSettings:@{(__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)}];
             [captureSession addOutput:videoPreviewOut];
         }
         void setVideoFrameSinkForPreview(VideoFrameSink &frameSink) override {
@@ -401,21 +419,55 @@ namespace OmegaWTK::Media {
 
         }
         void setAudioPlaybackDeviceForPreview(SharedHandle<AudioPlaybackDevice> &device) override {
-
+            CFStringRef uid;
+            UInt32 uid_size = sizeof(CFStringRef);
+            AudioDeviceGetProperty(device->unit.deviceID,0,0,kAudioDevicePropertyDeviceUID,&uid_size,(void *)uid);
+            [audioRenderer setAudioOutputDeviceUniqueID:(__bridge id)uid];
         }
         void startPreview() override {
-
+            [captureSession startRunning];
+            previewOn = true;
         }
         void startRecord() override {
-
+            if (![captureSession isRunning]) {
+                [captureSession startRunning];
+            }
+            if (isBufferOutput && bufferWriter != nil) {
+                [bufferWriter startWriting];
+            }
         }
         void stopRecord() override {
-
+            if (isBufferOutput && bufferWriter != nil) {
+                [bufferWriterVideoInput markAsFinished];
+                [bufferWriterAudioInput markAsFinished];
+                [bufferWriter finishWritingWithCompletionHandler:^{}];
+            } else if (mainOut != nil) {
+                auto *fileOutput = (AVCaptureMovieFileOutput *)mainOut;
+                [fileOutput stopRecording];
+            }
+            if (mainOut != nil) {
+                [captureSession removeOutput:mainOut];
+            }
+            if (previewOn) {
+                if (![captureSession isRunning]) {
+                    [captureSession startRunning];
+                }
+            } else {
+                [captureSession stopRunning];
+            }
         }
         void stopPreview() override {
-
+            if ([captureSession isRunning]) {
+                [captureSession stopRunning];
+            }
+            previewOn = false;
         }
     };
+
+    UniqueHandle<VideoCaptureSession> AVFVideoDevice::createCaptureSession(SharedHandle<AudioCaptureDevice> &audioCaptureDevice) {
+        auto *audioDevice = static_cast<AVFAudioCaptureDevice *>(audioCaptureDevice.get());
+        return UniqueHandle<VideoCaptureSession>(new AVFVideoCaptureSession(this, audioDevice));
+    }
 
 
     struct AVFAudioPlaybackSession :
@@ -489,20 +541,28 @@ namespace OmegaWTK::Media {
 
         }
         void setAudioPlaybackDevice(SharedHandle<AudioPlaybackDevice> &device) override {
-
+            synchronizer = [[AVSampleBufferRenderSynchronizer alloc] init];
+            renderer = [[AVSampleBufferAudioRenderer alloc] init];
+            [synchronizer addRenderer:renderer];
+            CFStringRef uid;
+            UInt32 uid_size = sizeof(CFStringRef);
+            AudioDeviceGetProperty(device->unit.deviceID,0,0,kAudioDevicePropertyDeviceUID,&uid_size,(void *)uid);
+            [renderer setAudioOutputDeviceUniqueID:(__bridge id)uid];
         }
         void setVideoFrameSink(VideoFrameSink &sink) override {
-            PlaybackDispatchQueue::Client c;
+            PlaybackDispatchQueue::Client c {};
             c.audioOrVideo = false;
-            c.useProcessor = true;
+            c.skipPlease = true;
             c.cursor = videoCursor;
             c.videoSink = &sink;
             c.generator = sampleBufferGen;
             c.sampleBufferRequest = videoSampleRequest;
-            playbackClientIndex = dispatchQueue->addClient({true,true});
+            c.useProcessor = false;
+            c.processor = this->processor;
+            playbackClientIndex = dispatchQueue->addClient(c);
         }
         void setVideoSource(MediaInputStream &inputStream) override {
-            AVAsset *asset = [AVAsset assetWithURL:[NSURL fileURLWithPath:@""]];
+            AVAsset *asset = [AVAsset assetWithURL:createURLFromMediaInputStream(inputStream)];
 
             AVAssetTrack *videoTrack = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
             AVAssetTrack *audioTrack = [asset tracksWithMediaType:AVMediaTypeAudio].firstObject;
@@ -515,7 +575,7 @@ namespace OmegaWTK::Media {
             videoSampleRequest.maxSampleCount = 1;
             videoSampleRequest.preferredMinSampleCount = 1;
 
-            audioSampleRequest = [[AVSampleBufferRequest alloc] initWithStartCursor:videoCursor];
+            audioSampleRequest = [[AVSampleBufferRequest alloc] initWithStartCursor:audioCursor];
 
             sampleBufferGen = [[AVSampleBufferGenerator alloc] initWithAsset:asset timebase:nil];
         }
@@ -529,9 +589,20 @@ namespace OmegaWTK::Media {
             dispatchQueue->stopPlaybackForClient(playbackClientIndex);
         }
         void reset() override {
-
+            dispatchQueue->removeClient(playbackClientIndex);
+            sampleBufferGen = nil;
+            videoCursor = nil;
+            audioCursor = nil;
+            videoSampleRequest = nil;
+            audioSampleRequest = nil;
         }
     };
+
+    SharedHandle<VideoPlaybackSession> VideoPlaybackSession::Create(
+            AudioVideoProcessorRef processor,
+            PlaybackDispatchQueueRef dispatchQueue) {
+        return SharedHandle<VideoPlaybackSession>(new AVFVideoPlaybackSession(processor, dispatchQueue));
+    }
 
 }
 

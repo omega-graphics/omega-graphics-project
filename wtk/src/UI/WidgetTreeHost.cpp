@@ -5,6 +5,9 @@
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/UI/View.h"
+#include "omegaWTK/Composition/CompositeFrame.h"
+#include "omegaWTK/Composition/CompositorSurface.h"
+#include "omegaWTK/Composition/CompositorClient.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -323,6 +326,36 @@ namespace OmegaWTK {
         windowRenderTarget_ = std::move(rt);
     }
 
+    void WidgetTreeHost::setWindowSurface(SharedHandle<Composition::CompositorSurface> surface){
+        windowSurface_ = std::move(surface);
+    }
+
+    void WidgetTreeHost::setActiveCompositeFrameRecurse(Widget *parent,Composition::CompositeFrame *frame){
+        if(parent == nullptr){
+            return;
+        }
+        if(parent->view != nullptr){
+            parent->view->compositorProxy().setActiveCompositeFrame(frame);
+        }
+        for(const auto & child : parent->childWidgets()){
+            setActiveCompositeFrameRecurse(child.get(),frame);
+        }
+    }
+
+    void WidgetTreeHost::paintAndDeposit(PaintReason reason,bool immediate){
+        if(root == nullptr){
+            return;
+        }
+        pendingFrame_ = std::make_shared<Composition::CompositeFrame>();
+        setActiveCompositeFrameRecurse(root.get(),pendingFrame_.get());
+        invalidateWidgetRecurse(root.get(),reason,immediate);
+        setActiveCompositeFrameRecurse(root.get(),nullptr);
+        if(windowSurface_ != nullptr && !pendingFrame_->slices.empty()){
+            windowSurface_->deposit(pendingFrame_);
+        }
+        pendingFrame_ = nullptr;
+    }
+
     void WidgetTreeHost::setRootNativeItem(Native::NativeItemPtr item){
         rootNativeItem_ = std::move(item);
     }
@@ -358,7 +391,18 @@ namespace OmegaWTK {
 
     void WidgetTreeHost::notifyWindowResize(const Composition::Rect &rect){
         if(root != nullptr){
+            if(windowSurface_ != nullptr){
+                pendingFrame_ = std::make_shared<Composition::CompositeFrame>();
+                setActiveCompositeFrameRecurse(root.get(),pendingFrame_.get());
+            }
             root->handleHostResize(rect);
+            if(windowSurface_ != nullptr){
+                setActiveCompositeFrameRecurse(root.get(),nullptr);
+                if(!pendingFrame_->slices.empty()){
+                    windowSurface_->deposit(pendingFrame_);
+                }
+                pendingFrame_ = nullptr;
+            }
         }
         lastResizeSessionState = resizeTracker.update(rect.w,rect.h,nowMs());
         lastResizeSessionState.animatedTree = detectAnimatedTreeRecurse(root.get());
@@ -379,7 +423,18 @@ namespace OmegaWTK {
         resizeCoordinatorGeneration += 1;
         beginResizeCoordinatorSessionRecurse(root.get(),lastResizeSessionState.sessionId);
         if(root != nullptr){
+            if(windowSurface_ != nullptr){
+                pendingFrame_ = std::make_shared<Composition::CompositeFrame>();
+                setActiveCompositeFrameRecurse(root.get(),pendingFrame_.get());
+            }
             root->handleHostResize(rect);
+            if(windowSurface_ != nullptr){
+                setActiveCompositeFrameRecurse(root.get(),nullptr);
+                if(!pendingFrame_->slices.empty()){
+                    windowSurface_->deposit(pendingFrame_);
+                }
+                pendingFrame_ = nullptr;
+            }
         }
         std::ostringstream stream;
         stream << "ResizeSession lane=" << syncLaneId
@@ -393,7 +448,18 @@ namespace OmegaWTK {
 
     void WidgetTreeHost::notifyWindowResizeEnd(const Composition::Rect &rect){
         if(root != nullptr){
+            if(windowSurface_ != nullptr){
+                pendingFrame_ = std::make_shared<Composition::CompositeFrame>();
+                setActiveCompositeFrameRecurse(root.get(),pendingFrame_.get());
+            }
             root->handleHostResize(rect);
+            if(windowSurface_ != nullptr){
+                setActiveCompositeFrameRecurse(root.get(),nullptr);
+                if(!pendingFrame_->slices.empty()){
+                    windowSurface_->deposit(pendingFrame_);
+                }
+                pendingFrame_ = nullptr;
+            }
         }
         lastResizeSessionState = resizeTracker.end(rect.w,rect.h,nowMs());
         lastResizeSessionState.animatedTree = detectAnimatedTreeRecurse(root.get());

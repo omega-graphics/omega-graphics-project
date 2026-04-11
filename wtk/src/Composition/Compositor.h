@@ -1,6 +1,7 @@
 #include "omegaWTK/Core/Core.h"
 #include "omegaWTK/Composition/Layer.h"
 #include "omegaWTK/Composition/CompositorClient.h"
+#include "omegaWTK/Composition/CompositorSurface.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -228,6 +229,15 @@ namespace OmegaWTK::Composition {
 
         CompositorScheduler scheduler;
 
+        /// Per-window surface mailboxes (Phase A). Registered by AppWindow.
+        OmegaCommon::Map<CompositionRenderTarget *,SharedHandle<CompositorSurface>> windowSurfaces_;
+
+        /// Render a composite frame from a surface mailbox into its
+        /// associated render target. Bridge for Phase A — Phase B replaces
+        /// the scheduler loop to consume surfaces directly.
+        void renderCompositeFrame(CompositionRenderTarget *target,
+                                  SharedHandle<CompositeFrame> frame);
+
         friend class Layer;
         friend class LayerTree;
         friend class ::OmegaWTK::AppWindow;
@@ -269,6 +279,9 @@ namespace OmegaWTK::Composition {
 
         void observeLayerTree(LayerTree *tree,std::uint64_t syncLaneId = 0);
         void unobserveLayerTree(LayerTree *tree);
+
+        void registerWindowSurface(CompositionRenderTarget *target,
+                                   SharedHandle<CompositorSurface> surface);
 
         void scheduleCommand(SharedHandle<CompositorCommand> & command);
 

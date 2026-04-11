@@ -6,7 +6,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
-#include <fstream>
 #include <iostream>
 #include <string>
 #include <utility>
@@ -78,13 +77,6 @@ namespace {
         return normalized;
     }
 
-    static BackendRenderTargetContext *s_lastClearedContext = nullptr;
-    static void *s_lastClearedRenderTarget = nullptr;
-    static void resetLastClearedForNextBatch(){
-        s_lastClearedContext = nullptr;
-        s_lastClearedRenderTarget = nullptr;
-    }
-
     static BackendRenderTargetContext * ensureLayerSurfaceTarget(BackendCompRenderTarget & target,Layer * layer){
         if(layer == nullptr || target.visualTree == nullptr){
             return nullptr;
@@ -92,14 +84,18 @@ namespace {
 
         auto existing = target.surfaceTargets.find(layer);
         if(existing != target.surfaceTargets.end() && existing->second != nullptr){
+#ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "[WTK Diag] ensureLayerSurface: reusing existing for layer=" << layer
                       << " isChild=" << layer->isChildLayer()
                       << " hasRoot=" << target.visualTree->hasRootVisual() << std::endl;
+#endif
             return existing->second;
         }
+#ifdef OMEGAWTK_TRACE_RENDER
         std::cout << "[WTK Diag] ensureLayerSurface: CREATING for layer=" << layer
                   << " isChild=" << layer->isChildLayer()
                   << " hasRoot=" << target.visualTree->hasRootVisual() << std::endl;
+#endif
 
         if(layer->isChildLayer()){
             if(!target.visualTree->hasRootVisual()){
@@ -183,8 +179,10 @@ void Compositor::executeCurrentCommand(){
                  BackendCompRenderTarget compRenderTarget {preCreated->bundle.visualTree, {}, preCreated->presentTarget};
                  target = &renderTargetStore.store.insert(std::make_pair(comm->renderTarget,compRenderTarget)).first->second;
              } else {
+#ifdef OMEGAWTK_TRACE_RENDER
                  std::cout << "[WTK Diag] executeCurrentCommand(Render): no pre-created visual tree for target "
                            << comm->renderTarget.get() << " — dropping frame" << std::endl;
+#endif
                  markPacketDropped(currentCommand->syncLaneId,currentCommand->syncPacketId);
                  currentCommand->status.set(CommandStatus::Delayed);
                  return;
@@ -273,18 +271,13 @@ void Compositor::executeCurrentCommand(){
             return;
         }
 
-        {
-            const bool sameTargetAsLast = (targetContext == s_lastClearedContext && comm->renderTarget.get() == s_lastClearedRenderTarget);
-            if (!sameTargetAsLast) {
-                targetContext->clear(bkgrd.r,bkgrd.g,bkgrd.b,bkgrd.a);
-                s_lastClearedContext = targetContext;
-                s_lastClearedRenderTarget = comm->renderTarget.get();
-            }
-        }
+        targetContext->beginFrame(bkgrd.r, bkgrd.g, bkgrd.b, bkgrd.a);
 
         for(auto & c : commands){
             targetContext->renderToTarget(c.type,(void *)&c.params);
         }
+
+        targetContext->endFrame();
 
         for(auto & effect : comm->frame->currentEffects){
             targetContext->applyEffectToTarget(effect);
@@ -293,15 +286,6 @@ void Compositor::executeCurrentCommand(){
         const auto submitTimeCpu = std::chrono::steady_clock::now();
         markPacketSubmitted(currentCommand->syncLaneId,currentCommand->syncPacketId,submitTimeCpu);
         auto weakTelemetryState = telemetryState();
-        // #region agent log
-        {
-            std::ofstream f("../../../debug-85f774.log", std::ios::app);
-            if (f) {
-                auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-                f << "{\"sessionId\":\"85f774\",\"location\":\"Execution.cpp:before_commit\",\"message\":\"before commit\",\"data\":{},\"timestamp\":" << ts << ",\"hypothesisId\":\"D\"}\n";
-            }
-        }
-        // #endregion
         targetContext->commit(currentCommand->syncLaneId,
                               currentCommand->syncPacketId,
                               submitTimeCpu,
@@ -309,9 +293,13 @@ void Compositor::executeCurrentCommand(){
                                   Compositor::onBackendSubmissionCompleted(weakTelemetryState,telemetry);
                               });
 #ifdef _WIN32
+#ifdef OMEGAWTK_TRACE_RENDER
         std::cout << "[WTK Diag] Execution: waitForGPU..." << std::endl;
+#endif
         targetContext->waitForGPU();
+#ifdef OMEGAWTK_TRACE_RENDER
         std::cout << "[WTK Diag] Execution: waitForGPU done" << std::endl;
+#endif
 #endif
         target->needsPresent = true;
         OMEGAWTK_DEBUG("Committed Data!")
@@ -372,7 +360,19 @@ void Compositor::executeCurrentCommand(){
 
 void Compositor::onQueueDrained(){
     renderTargetStore.presentAllPending();
-    resetLastClearedForNextBatch();
+
+    // Phase A surface consumption bridge: when the command queue is
+    // drained, check registered window surfaces for pending composite
+    // frames and render them.  Phase B replaces the scheduler loop to
+    // consume surfaces directly on vsync.
+    for(auto & [target, surface] : windowSurfaces_){
+        if(surface != nullptr && surface->hasPendingUpdate()){
+            auto frame = surface->consume();
+            if(frame != nullptr){
+                renderCompositeFrame(target, std::move(frame));
+            }
+        }
+    }
 }
 
 

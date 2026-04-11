@@ -16,6 +16,8 @@ namespace OmegaWTK {
 
     namespace Composition {
         class Compositor;
+        class CompositorSurface;
+        struct CompositeFrame;
         class ViewRenderTarget;
         struct ResizeGovernorMetadata;
     }
@@ -108,6 +110,11 @@ namespace OmegaWTK {
         };
         ResizeValidationSession resizeValidationSession {};
 
+        /// Per-window surface mailbox (Phase A). Created by AppWindow.
+        SharedHandle<Composition::CompositorSurface> windowSurface_;
+        /// Composite frame being built during a paint pass.
+        SharedHandle<Composition::CompositeFrame> pendingFrame_;
+
         bool attachedToWindow;
         View * hoveredView_ = nullptr;
 
@@ -125,6 +132,7 @@ namespace OmegaWTK {
         void invalidateWidgetRecurse(Widget *parent,PaintReason reason,bool immediate);
         void beginResizeCoordinatorSessionRecurse(Widget *parent,std::uint64_t sessionId);
         void applyResizeGovernorMetadata(const Composition::ResizeGovernorMetadata & metadata);
+        void setActiveCompositeFrameRecurse(Widget *parent,Composition::CompositeFrame *frame);
         bool detectAnimatedTreeRecurse(Widget *parent) const;
         View * hitTestWidget(Widget *widget,const Composition::Point2D &point) const;
         void initWidgetTree();
@@ -155,6 +163,14 @@ namespace OmegaWTK {
         /// before initWidgetTree() so the render target can be propagated
         /// to all Views in the tree (Phase 3, single-surface rendering).
         void setWindowRenderTarget(SharedHandle<Composition::ViewRenderTarget> rt);
+
+        /// Set the window's compositor surface mailbox (Phase A).
+        /// Called by AppWindow during creation.
+        void setWindowSurface(SharedHandle<Composition::CompositorSurface> surface);
+
+        /// Paint all widgets and deposit the composite frame into the
+        /// window's surface mailbox (Phase A).
+        void paintAndDeposit(PaintReason reason,bool immediate = false);
 
         /// Set the root native item for this window (Phase 5).
         /// Called by AppWindow during setRootWidget().
