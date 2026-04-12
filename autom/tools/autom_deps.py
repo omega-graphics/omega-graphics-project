@@ -15,6 +15,7 @@ import requests
 
 
 tar_file_regex = Regex.compile(r"(?:\.tar\.(\w{2}))|\.t(\w{2})$",Regex.DOTALL | Regex.MULTILINE)
+variable_regex = Regex.compile(r"\$\(([A-Za-z0-9_]+)\)")
 
 
 class Counter:
@@ -72,14 +73,28 @@ default_platform:str
 
 def processStringWithVariables(string:str) -> str:
     s = string
-    for k in variables:
-        # print(k)
-        regexExp = Regex.compile(rf"\$\({k}\)",Regex.DOTALL | Regex.MULTILINE)
-        if isinstance(variables.get(k),str):
-            s = regexExp.sub(variables.get(k),s)
-        else:
-            s = regexExp.sub(json.dumps(variables.get(k)),s)
-    # print(s)
+    max_passes = max(len(variables), 1) + 1
+
+    for _ in range(max_passes):
+        changed = False
+
+        def _replace(match: "Regex.Match[str]") -> str:
+            nonlocal changed
+            key = match.group(1)
+            if key not in variables:
+                return match.group(0)
+
+            changed = True
+            value = variables.get(key)
+            if isinstance(value, str):
+                return value
+            return json.dumps(value)
+
+        next_s = variable_regex.sub(_replace, s)
+        s = next_s
+        if not changed:
+            break
+
     return s
     
 def processCommand(c:Command):
@@ -191,11 +206,29 @@ def processCommand(c:Command):
             if not os.path.exists(os.path.dirname(dest)):
                 os.makedirs(os.path.dirname(dest))
             print(f"Download {url}")
-            res = requests.get(url)
-            w = open(dest,mode="wb")
-            w.write(res.content)
-            w.close()
-            print(res.ok)
+            temp_dest = dest + ".part"
+            try:
+                with requests.get(
+                    url,
+                    stream=True,
+                    allow_redirects=True,
+                    timeout=(30, 300),
+                    headers={"User-Agent": "autom-deps/1.0"}
+                ) as res:
+                    res.raise_for_status()
+                    total_bytes = 0
+                    with open(temp_dest,mode="wb") as w:
+                        for chunk in res.iter_content(chunk_size=1024 * 1024):
+                            if not chunk:
+                                continue
+                            w.write(chunk)
+                            total_bytes += len(chunk)
+                    os.replace(temp_dest, dest)
+                    print(f"Downloaded {total_bytes} bytes from {res.url}")
+            except requests.RequestException as ex:
+                if os.path.exists(temp_dest):
+                    os.remove(temp_dest)
+                raise RuntimeError(f"Download failed for {url}: {ex}") from ex
         elif c.get("type") == "tar":
             assert(c.get("tarfile"))
             assert(c.get("dest"))

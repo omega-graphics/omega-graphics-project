@@ -1,6 +1,9 @@
 {
     "variables":{
-         "third_party_dest":"./deps"
+         "third_party_dest":"./deps",
+         "strawberry_perl_version":"5.40.2.2",
+         "strawberry_perl_release_dir":"SP_54022_64bit",
+         "strawberry_perl_archive":"strawberry-perl-$(strawberry_perl_version)-64bit-portable.zip"
     },
     "commands":[
          {
@@ -18,6 +21,18 @@
             "url":"https://github.com/openssl/openssl.git",
             "dest":"$(third_party_dest)/openssl/code",
             "branch":"default"
+         },
+         {
+             "type":"download",
+             "platforms":["windows"],
+             "url":"https://downloads.sourceforge.net/project/perl-dist-strawberry.mirror/$(strawberry_perl_release_dir)/$(strawberry_perl_archive)",
+             "dest":"./temp/$(strawberry_perl_archive)"
+         },
+         {
+             "type":"unzip",
+             "platforms":["windows"],
+             "zipfile":"./temp/$(strawberry_perl_archive)",
+             "dest":"$(third_party_dest)/strawberry-perl"
          }
     ]
 }

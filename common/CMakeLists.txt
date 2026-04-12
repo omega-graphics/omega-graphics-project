@@ -12,7 +12,7 @@ file(GLOB COMMON_SRCS "src/*.cpp")
 configure_file("src/Info.plist.in" "${CMAKE_CURRENT_BINARY_DIR}/Info.plist")
 
 # --- Third-party: PCRE2 ---
-set(PCRE2_VERSION "10.38")
+set(PCRE2_VERSION "10.47")
 set(PCRE2_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/pcre2/code/pcre2-${PCRE2_VERSION}")
 set(PCRE2_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps/pcre2")
 
@@ -32,9 +32,49 @@ add_third_party(
 	EXPORT_INCLUDE_DIRS "include"
 )
 
+if(WIN32)
+	# PCRE2's Windows headers default to dllimport/dllexport semantics unless
+	# static consumers define PCRE2_STATIC. Propagate that from the imported target.
+	set_property(TARGET pcre2-8 APPEND PROPERTY INTERFACE_COMPILE_DEFINITIONS PCRE2_STATIC)
+endif()
+
 # --- Third-party: OpenSSL ---
 set(OPENSSL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/openssl/code")
 set(OPENSSL_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps/openssl")
+set(OMEGACOMMON_OPENSSL_PERL)
+
+if(WIN32)
+	set(OMEGACOMMON_STRAWBERRY_PERL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/strawberry-perl")
+	set(_OMEGACOMMON_STRAWBERRY_PERL_CANDIDATES
+		"${OMEGACOMMON_STRAWBERRY_PERL_DIR}/perl/bin/perl.exe")
+	file(GLOB _OMEGACOMMON_STRAWBERRY_PERL_NESTED
+		LIST_DIRECTORIES FALSE
+		"${OMEGACOMMON_STRAWBERRY_PERL_DIR}/*/perl/bin/perl.exe")
+	list(APPEND _OMEGACOMMON_STRAWBERRY_PERL_CANDIDATES ${_OMEGACOMMON_STRAWBERRY_PERL_NESTED})
+
+	foreach(_OMEGACOMMON_PERL_CANDIDATE IN LISTS _OMEGACOMMON_STRAWBERRY_PERL_CANDIDATES)
+		if(EXISTS "${_OMEGACOMMON_PERL_CANDIDATE}")
+			set(OMEGACOMMON_OPENSSL_PERL "${_OMEGACOMMON_PERL_CANDIDATE}")
+			break()
+		endif()
+	endforeach()
+
+	unset(_OMEGACOMMON_PERL_CANDIDATE)
+	unset(_OMEGACOMMON_STRAWBERRY_PERL_CANDIDATES)
+	unset(_OMEGACOMMON_STRAWBERRY_PERL_NESTED)
+
+	if(NOT OMEGACOMMON_OPENSSL_PERL)
+		find_program(OMEGACOMMON_OPENSSL_PERL NAMES perl perl.exe)
+	endif()
+else()
+	find_program(OMEGACOMMON_OPENSSL_PERL NAMES perl)
+endif()
+
+if(NOT OMEGACOMMON_OPENSSL_PERL)
+	message(FATAL_ERROR "OpenSSL configuration requires Perl. On Windows run AUTOMDEPS to fetch Strawberry Perl; on other platforms install perl.")
+endif()
+
+message(STATUS "OmegaCommon OpenSSL Configure Perl: ${OMEGACOMMON_OPENSSL_PERL}")
 
 if(WIN32)
 	add_third_party(
@@ -43,7 +83,7 @@ if(WIN32)
 		SOURCE_DIR "${OPENSSL_SOURCE_DIR}"
 		BINARY_DIR "${OPENSSL_SOURCE_DIR}"
 		INSTALL_DIR "${OPENSSL_OUTPUT_DIR}"
-		CONF perl "${OPENSSL_SOURCE_DIR}/Configure" --prefix=${OPENSSL_OUTPUT_DIR} no-shared no-tests no-apps VC-WIN64A
+		CONF "${OMEGACOMMON_OPENSSL_PERL}" "${OPENSSL_SOURCE_DIR}/Configure" --prefix=${OPENSSL_OUTPUT_DIR} no-shared no-tests no-apps VC-WIN64A
 		BUILD nmake
 		INSTALL nmake install_sw
 		EXPORT_STATIC_LIBS "crypto:lib/libcrypto.a:lib/libcrypto.lib" "ssl:lib/libssl.a:lib/libssl.lib"
@@ -55,7 +95,7 @@ else()
 		SOURCE_DIR "${OPENSSL_SOURCE_DIR}"
 		BINARY_DIR "${OPENSSL_SOURCE_DIR}"
 		INSTALL_DIR "${OPENSSL_OUTPUT_DIR}"
-		CONF perl "${OPENSSL_SOURCE_DIR}/Configure" --prefix=${OPENSSL_OUTPUT_DIR} no-shared no-tests no-apps
+		CONF "${OMEGACOMMON_OPENSSL_PERL}" "${OPENSSL_SOURCE_DIR}/Configure" --prefix=${OPENSSL_OUTPUT_DIR} no-shared no-tests no-apps
 		BUILD make
 		INSTALL make install_sw
 		EXPORT_STATIC_LIBS "crypto:lib/libcrypto.a:lib/libcrypto.lib" "ssl:lib/libssl.a:lib/libssl.lib"

@@ -3,10 +3,6 @@
         "third_party_dest":"./deps"
     },
     "rootCommands":[
-        {
-            "type":"gnpkg",
-            "command":"utils --get"
-        }
     ],
     "commands":[
         {

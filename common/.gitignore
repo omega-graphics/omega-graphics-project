@@ -10,6 +10,7 @@ compile_commands.json
 *.idea
 
 deps
+temp
 
 # Compiled Object files
 *.slo

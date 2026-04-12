@@ -69,7 +69,7 @@ function(add_aqua_game)
         target_include_directories(${_ARG_NAME} PRIVATE
             ${AQUA_SOURCE_DIR}/include)
         target_compile_definitions(${_ARG_NAME} PRIVATE TARGET_WIN32 TARGET_DIRECTX)
-        target_link_options(${_ARG_NAME} PRIVATE /SUBSYSTEM:CONSOLE /MANIFEST:NO)
+        target_link_options(${_ARG_NAME} PRIVATE /SUBSYSTEM:CONSOLE /ENTRY:WinMainCRTStartup /MANIFEST:NO)
 
         # Copy AQUA and GTE DLLs next to the executable
         add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
