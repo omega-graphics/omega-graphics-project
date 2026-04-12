@@ -22,6 +22,7 @@ gradlew.bat
 .gradle
 .cursor
 utils/pyyaml
+.idea
 *.vpp.bak*
 *.vpp.vbak
 !utils/*.sh
