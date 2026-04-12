@@ -28,13 +28,13 @@ NAP make_native_app(void *data);
 };
 
 #ifdef TARGET_WIN32 
-#ifdef WINDOWS_PRIVATE
+
+#include <Windows.h>
 
 void * __create_hwnd_factory(void *hinst);
 void * __hwnd_factory_get_all_hwnds(void * hwnd_factory);
 void __free_hwnd_factory(void *hwnd_factory);
 RECT __get_hwnd_real_coords(HWND hwnd);
-#endif
 #endif
 
 

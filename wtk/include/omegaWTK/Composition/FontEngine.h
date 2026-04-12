@@ -43,7 +43,7 @@
  */
 
  struct OMEGAWTK_EXPORT TextLayoutDescriptor {
-      typedef enum : OPT_PARAM {
+      using Alignment = enum : OPT_PARAM {
          LeftUpper,
          LeftCenter,
          LeftLower,
@@ -53,12 +53,12 @@
          RightUpper,
          RightCenter,
          RightLower
-     }Alignment;
-     typedef enum : OPT_PARAM {
+     };
+     using Wrapping = enum : OPT_PARAM {
          None,
          WrapByWord,
          WrapByCharacter
-     } Wrapping;
+     };
      Alignment alignment;
      Wrapping wrapping;
      unsigned lineLimit = 0;
@@ -98,12 +98,12 @@
   @brief A struct that describes a Font that can be created by the FontEngine.
  */
  struct OMEGAWTK_EXPORT  FontDescriptor {
-     typedef enum : OPT_PARAM {
+     using FontStyle = enum : OPT_PARAM {
          Regular,
          Italic,
          Bold,
          BoldAndItalic
-     } FontStyle;
+     };
      OmegaCommon::String family;
      FontStyle style;
      unsigned size;

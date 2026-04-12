@@ -63,7 +63,6 @@ namespace OmegaWTK::Composition {
         unsigned backingHeight = 1;
         OmegaCommon::Vector<CanvasEffect> effectQueue;
         OmegaCommon::Vector<std::pair<SharedHandle<OmegaGTE::GEBuffer>,std::size_t>> deferredBufferReleases;
-        SharedHandle<OmegaGTE::GETexture> committedTexture;
         OmegaGTE::FMatrix<4,4> currentTransform = OmegaGTE::FMatrix<4,4>::Identity();
         float currentOpacity = 1.f;
         struct ViewportOverride {
@@ -77,10 +76,10 @@ namespace OmegaWTK::Composition {
         SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> frameCB_;
         bool frameActive_ = false;
         bool lastPipelineWasTexture_ = false;
+        bool renderingToNative_ = false;
         void rebuildBackingTarget();
         void createGradientTexture(bool linearOrRadial,Gradient & gradient,OmegaGTE::GRect & rect,SharedHandle<OmegaGTE::GETexture> & dest);
     public:
-        bool hasPendingContent = false;
         void clear(float r,float g,float b,float a);
         /// Open a frame-level render pass that clears to the given color.
         /// All subsequent renderToTarget() calls record into this pass.
@@ -94,7 +93,6 @@ namespace OmegaWTK::Composition {
         void clearViewportOverride();
         SharedHandle<OmegaGTE::GENativeRenderTarget> & getNativeRenderTarget(){ return renderTarget; }
         SharedHandle<OmegaGTE::GEFence> & getFence(){ return fence; }
-        SharedHandle<OmegaGTE::GETexture> getCommittedTexture(){ return committedTexture; }
         unsigned getBackingWidth() const { return backingWidth; }
         unsigned getBackingHeight() const { return backingHeight; }
         void releaseDeferredBuffers();
@@ -125,8 +123,10 @@ namespace OmegaWTK::Composition {
 
     class BackendVisualTree;
 
-    /// Owns the single native present surface for a View.
-    /// One per View — the only thing that calls commitAndPresent.
+    /// Construction-time output for the native render target created by
+    /// makeRootVisual().  With Phase A-1 the native target is also passed
+    /// into BackendRenderTargetContext, so this struct is retained only for
+    /// the visual tree creation API.  It will be removed with Phase B.
     struct ViewPresentTarget {
         SharedHandle<OmegaGTE::GENativeRenderTarget> nativeTarget;
         unsigned backingWidth = 1;
@@ -137,12 +137,7 @@ namespace OmegaWTK::Composition {
         SharedHandle<BackendVisualTree> visualTree;
         OmegaCommon::Map<Layer *,BackendRenderTargetContext *> surfaceTargets;
         ViewPresentTarget viewPresentTarget;
-        bool needsPresent = false;
     };
-
-
-
-    void compositeAndPresentTarget(BackendCompRenderTarget & compTarget);
 
     struct RenderTargetStore {
      private:
@@ -150,7 +145,6 @@ namespace OmegaWTK::Composition {
     public:
         void cleanTreeTargets(LayerTree *tree);
         void removeRenderTarget(const SharedHandle<CompositionRenderTarget> & target);
-        void presentAllPending();
         OmegaCommon::Map<SharedHandle<CompositionRenderTarget>,BackendCompRenderTarget> store = {};
     };
 

@@ -82,8 +82,8 @@ namespace OmegaWTK::Composition {
                     }
                 }
 
-                SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
-                BackendRenderTargetContext context {rect,nullNative,1.f};
+                // Root visual renders directly to the native drawable (Phase A-1).
+                BackendRenderTargetContext context {rect,outPresentTarget.nativeTarget,1.f};
                 return Core::SharedPtr<BackendVisualTree::Visual>(new Visual(pos,context));
             }
 

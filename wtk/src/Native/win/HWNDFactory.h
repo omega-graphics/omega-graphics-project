@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include "omegaWTK/Core/Core.h"
+#include "omegaWTK/Composition/Geometry.h"
 
 #ifndef OMEGAWTK_NATIVE_WIN_HWNDFACTORY_H
 #define OMEGAWTK_NATIVE_WIN_HWNDFACTORY_H

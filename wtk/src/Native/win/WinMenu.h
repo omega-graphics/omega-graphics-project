@@ -1,5 +1,6 @@
 #include "omegaWTK/Native/NativeMenu.h"
 
+#include <Windows.h>
 
 #ifndef OMEGAWTK_NATIVE_WIN_WINMENU_H
 #define OMEGAWTK_NATIVE_WIN_WINMENU_H

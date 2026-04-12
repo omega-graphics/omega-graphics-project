@@ -130,30 +130,6 @@ namespace OmegaWTK::Composition {
 
     };
 
-    /// @brief A generic keyframe-based animation timeline for any given duration of time.
-    class OMEGAWTK_EXPORT AnimationTimeline {
-    public:
-        struct Keyframe;
-    private:
-        OmegaCommon::Vector<Keyframe> keyframes;
-    public:
-        /// @brief A Keyframe in a timeline.
-        /// @paragraph The `time` field can ONLY be between 0 - 1.0. (0 to 100%).
-        struct Keyframe {
-            float time;
-            SharedHandle<AnimationCurve> curve;
-
-            SharedHandle<CanvasFrame> frame;
-            SharedHandle<LayerEffect> effect;
-
-            static Keyframe CanvasFrameStop(float time,SharedHandle<AnimationCurve> curve,SharedHandle<CanvasFrame> & frame);
-            static Keyframe DropShadowStop(float time,SharedHandle<AnimationCurve> curve,LayerEffect::DropShadowParams & params);
-            static Keyframe TransformationStop(float time,SharedHandle<AnimationCurve> curve,LayerEffect::TransformationParams & params);
-        };
-
-        static SharedHandle<AnimationTimeline> Create(const OmegaCommon::Vector<Keyframe> & keyframes);
-    };
-
     using AnimationId = std::uint64_t;
 
     enum class AnimationState : std::uint8_t {
@@ -398,7 +374,6 @@ namespace OmegaWTK::Composition {
                                       const TimingOptions & timing,
                                       std::uint64_t syncLaneId);
         void setFrameRate(unsigned _framePerSec);
-        void animate(const SharedHandle<AnimationTimeline> & timeline,unsigned duration);
         void pause();
         void resume();
         void resizeTransition(unsigned delta_x,unsigned delta_y,unsigned delta_w,unsigned delta_h,unsigned duration,

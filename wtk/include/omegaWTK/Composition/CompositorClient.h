@@ -104,7 +104,7 @@ namespace OmegaWTK::Composition {
     struct CompositorLayerCommand : public CompositorCommand {
         class Layer *layer;
         SharedHandle<CompositionRenderTarget> parentTarget;
-        enum : int {
+        enum : std::uint8_t {
            Resize,
            Effect
         } subtype;
@@ -119,9 +119,9 @@ namespace OmegaWTK::Composition {
                                         class Layer *layer,
                                         SharedHandle<CompositionRenderTarget> & parentTarget,
                                         SharedHandle<LayerEffect> & effect):CompositorCommand(id,client,type,priority,thresholdParams,std::move(status)),
-                                        subtype(Effect),
                                         layer(layer),
                                         parentTarget(parentTarget),
+                                        subtype(Effect),
                                         effect(effect){
 
         };
@@ -137,9 +137,9 @@ namespace OmegaWTK::Composition {
                                     int delta_y,
                                     int delta_w,
                                     int delta_h): CompositorCommand(id,client,type,priority,thresholdParams,std::move(status)),
-                                    subtype(Resize),
                                     layer(layer),
                                     parentTarget(parentTarget),
+                                    subtype(Resize),
                                     delta_x(delta_x),
                                     delta_y(delta_y),
                                     delta_w(delta_w),

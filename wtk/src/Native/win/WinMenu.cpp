@@ -1,6 +1,5 @@
 #include "WinMenu.h"
 
-#include <Windows.h>
 #include <memory>
 #include <windowsx.h>
 namespace OmegaWTK::Native::Win {

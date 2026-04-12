@@ -104,8 +104,12 @@ namespace OmegaWTK::Composition {
     static SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
     static SharedHandle<OmegaGTE::GERenderPipelineState> renderPipelineState;
     static SharedHandle<OmegaGTE::GERenderPipelineState> textureRenderPipelineState;
+    // Copy pipeline and fullscreen quad buffer — retained for the effect path
+    // blit in commit().  Will be removed when effects use a dedicated present
+    // method (Phase B).
     static SharedHandle<OmegaGTE::GERenderPipelineState> finalCopyRenderPipelineState;
     static OmegaCommon::Map<OmegaGTE::PixelFormat,SharedHandle<OmegaGTE::GERenderPipelineState>> finalCopyPipelinesByFormat;
+    static SharedHandle<OmegaGTE::GEBuffer> finalTextureDrawBuffer;
 
     static SharedHandle<OmegaGTE::GEComputePipelineState> linearGradientPipelineState;
     static SharedHandle<OmegaGTE::GEComputePipelineState> gaussianBlurHPipelineState;
@@ -160,8 +164,6 @@ namespace OmegaWTK::Composition {
         return {};
 #endif
     }
-
-    static SharedHandle<OmegaGTE::GEBuffer> finalTextureDrawBuffer;
 
     void loadGlobalRenderAssets(){
         auto resetGlobalRenderAssetsState = [](){
@@ -228,6 +230,7 @@ namespace OmegaWTK::Composition {
         renderPipelineDescriptor.depthAndStencilDesc = {false,false};
         renderPipelineDescriptor.triangleFillMode = OmegaGTE::TriangleFillMode::Solid;
         renderPipelineDescriptor.rasterSampleCount = 1;
+        renderPipelineDescriptor.colorPixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
         renderPipelineDescriptor.vertexFunc = getShader("mainVertex");
         renderPipelineDescriptor.fragmentFunc = getShader("mainFragment");
 
@@ -387,16 +390,16 @@ namespace OmegaWTK::Composition {
 
     void destroyGlobalRenderAssets(){
         finalCopyPipelinesByFormat.clear();
+        finalCopyRenderPipelineState.reset();
+        finalTextureDrawBuffer.reset();
         shaderLibrary.reset();
         renderPipelineState.reset();
         textureRenderPipelineState.reset();
-        finalCopyRenderPipelineState.reset();
         linearGradientPipelineState.reset();
         gaussianBlurHPipelineState.reset();
         gaussianBlurVPipelineState.reset();
         directionalBlurPipelineState.reset();
         bufferWriter.reset();
-        finalTextureDrawBuffer.reset();
     }
 
     static SharedHandle<OmegaGTE::GERenderPipelineState> getFinalCopyPipelineForFormat(OmegaGTE::PixelFormat fmt){
@@ -526,7 +529,7 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
     TexturePoolKey poolKey {
         backingWidth,
         backingHeight,
-        OmegaGTE::TexturePixelFormat::RGBA8Unorm,
+        OmegaGTE::TexturePixelFormat::BGRA8Unorm,
         OmegaGTE::GETexture::RenderTarget
     };
 
@@ -559,7 +562,7 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
             textureDescriptor.width = backingWidth;
             textureDescriptor.height = backingHeight;
             textureDescriptor.type = OmegaGTE::GETexture::Texture2D;
-            textureDescriptor.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm;
+            textureDescriptor.pixelFormat = OmegaGTE::TexturePixelFormat::BGRA8Unorm;
             targetTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
             effectTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
         }
@@ -603,7 +606,7 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
     TexturePoolKey poolKey {
         backingWidth,
         backingHeight,
-        OmegaGTE::TexturePixelFormat::RGBA8Unorm,
+        OmegaGTE::TexturePixelFormat::BGRA8Unorm,
         OmegaGTE::GETexture::RenderTarget
     };
     if(texturePool && (targetTexture || effectTexture)){
@@ -701,10 +704,20 @@ void BackendRenderTargetContext::clear(float r, float g, float b, float a) {
 }
 
 void BackendRenderTargetContext::beginFrame(float clearR, float clearG, float clearB, float clearA) {
-    if(preEffectTarget == nullptr){
-        return;
+    // Direct-to-drawable path: when we have a native render target and no
+    // effects queued, render directly to the swap chain drawable instead of
+    // the intermediate offscreen texture.  This eliminates the fullscreen-
+    // quad blit that compositeAndPresentTarget() used to perform.
+    renderingToNative_ = (renderTarget != nullptr && effectQueue.empty());
+
+    if(renderingToNative_){
+        frameCB_ = renderTarget->commandBuffer();
+    } else {
+        if(preEffectTarget == nullptr){
+            return;
+        }
+        frameCB_ = preEffectTarget->commandBuffer();
     }
-    frameCB_ = preEffectTarget->commandBuffer();
 
     OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
     renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
@@ -745,7 +758,11 @@ void BackendRenderTargetContext::endFrame() {
         return;
     }
     frameCB_->endRenderPass();
-    preEffectTarget->submitCommandBuffer(frameCB_);
+    if(renderingToNative_){
+        renderTarget->submitCommandBuffer(frameCB_);
+    } else {
+        preEffectTarget->submitCommandBuffer(frameCB_);
+    }
     frameCB_ = nullptr;
     frameActive_ = false;
 }
@@ -763,6 +780,25 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                             std::uint64_t syncPacketId,
                                             std::chrono::steady_clock::time_point submitTimeCpu,
                                             BackendSubmissionCompletionHandler completionHandler){
+        // Direct-to-native path: rendering already went to the native
+        // drawable in beginFrame/endFrame.  Just present.
+        if(renderingToNative_){
+            renderTarget->commitAndPresent();
+            renderingToNative_ = false;
+            if(completionHandler){
+                BackendSubmissionTelemetry telemetry {};
+                telemetry.syncLaneId = syncLaneId;
+                telemetry.syncPacketId = syncPacketId;
+                telemetry.submitTimeCpu = submitTimeCpu;
+                telemetry.completeTimeCpu = std::chrono::steady_clock::now();
+                telemetry.presentTimeCpu = telemetry.completeTimeCpu;
+                telemetry.status = BackendSubmissionStatus::Completed;
+                completionHandler(telemetry);
+            }
+            return;
+        }
+
+        // Texture (effect) path — unchanged from before.
         if(preEffectTarget == nullptr){
             if(completionHandler){
                 BackendSubmissionTelemetry telemetry {};
@@ -806,9 +842,44 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             std::cout << "[WTK Diag] commit: preEffectTarget->commit() done" << std::endl;
 #endif
         }
-        committedTexture = preEffectTarget->underlyingTexture();
         effectQueue.clear();
-        hasPendingContent = true;
+
+        // Effect path: blit the result to the native drawable and present.
+        if(renderTarget != nullptr){
+            // The effect result is in preEffectTarget's underlying texture.
+            // Do a single blit to the native drawable.
+            auto tex = preEffectTarget->underlyingTexture();
+            if(tex != nullptr){
+                auto nativeFormat = renderTarget->pixelFormat();
+                auto finalPipeline = getFinalCopyPipelineForFormat(nativeFormat);
+                if(finalPipeline != nullptr){
+                    auto cb = renderTarget->commandBuffer();
+                    renderTarget->notifyCommandBuffer(cb, fence);
+
+                    OmegaGTE::GERenderTarget::RenderPassDesc rpd {};
+                    rpd.depthStencilAttachment.disabled = true;
+                    rpd.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment{
+                            {0.f,0.f,0.f,0.f},
+                            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction::Clear};
+                    cb->startRenderPass(rpd);
+                    cb->setRenderPipelineState(finalPipeline);
+                    OmegaGTE::GEViewport vp {};
+                    vp.x = 0.f; vp.y = 0.f;
+                    vp.nearDepth = 0.f; vp.farDepth = 1.f;
+                    vp.width = static_cast<float>(backingWidth);
+                    vp.height = static_cast<float>(backingHeight);
+                    OmegaGTE::GEScissorRect sr {0.f, 0.f, static_cast<float>(backingWidth), static_cast<float>(backingHeight)};
+                    cb->setViewports({vp});
+                    cb->setScissorRects({sr});
+                    cb->bindResourceAtVertexShader(finalTextureDrawBuffer, 1);
+                    cb->bindResourceAtFragmentShader(tex, 2);
+                    cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
+                    cb->endRenderPass();
+                    renderTarget->submitCommandBuffer(cb);
+                    renderTarget->commitAndPresent();
+                }
+            }
+        }
     }
 
     void BackendRenderTargetContext::releaseDeferredBuffers(){
@@ -1450,198 +1521,6 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         }
     }
 
-    /// Blits one texture onto the native drawable and presents.
-    static void blitAndPresent(SharedHandle<OmegaGTE::GENativeRenderTarget> & nativeTarget,
-                               SharedHandle<OmegaGTE::GETexture> & tex,
-                               unsigned w, unsigned h){
-        auto nativeFormat = nativeTarget->pixelFormat();
-        auto finalPipeline = getFinalCopyPipelineForFormat(nativeFormat);
-        if(finalPipeline == nullptr){
-            std::cout << "[WTK Diag] blitAndPresent: finalCopyPipeline is null for format "
-                      << static_cast<int>(nativeFormat) << " — skipping present" << std::endl;
-            return;
-        }
-
-        std::cout << "[WTK Diag] blitAndPresent: format=" << static_cast<int>(nativeFormat)
-                  << " w=" << w << " h=" << h
-                  << " tex=" << (tex ? tex->native() : nullptr) << std::endl;
-
-        OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
-        renderPassDesc.depthStencilAttachment.disabled = true;
-        renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment{
-                {0.f,0.f,0.f,0.f},
-                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction::Clear};
-
-        auto cb = nativeTarget->commandBuffer();
-        cb->startRenderPass(renderPassDesc);
-        cb->setRenderPipelineState(finalPipeline);
-
-        OmegaGTE::GEViewport vp {};
-        vp.x = 0.f; vp.y = 0.f;
-        vp.nearDepth = 0.f; vp.farDepth = 1.f;
-        vp.width = static_cast<float>(w);
-        vp.height = static_cast<float>(h);
-        OmegaGTE::GEScissorRect sr {0.f, 0.f, static_cast<float>(w), static_cast<float>(h)};
-        cb->setViewports({vp});
-        cb->setScissorRects({sr});
-
-        cb->bindResourceAtVertexShader(finalTextureDrawBuffer, 1);
-        cb->bindResourceAtFragmentShader(tex, 2);
-        cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
-
-        cb->endRenderPass();
-        nativeTarget->submitCommandBuffer(cb);
-        nativeTarget->commitAndPresent();
-        std::cout << "[WTK Diag] blitAndPresent: commitAndPresent done" << std::endl;
-    }
-
-    void compositeAndPresentTarget(BackendCompRenderTarget & compTarget){
-        compTarget.needsPresent = false;
-
-        auto & nativeTarget = compTarget.viewPresentTarget.nativeTarget;
-
-        // --- Fast path: single-canvas View (no body visuals) ---
-        // UIView and SVGView after Phase 1 have exactly one root visual and no children.
-        if(compTarget.visualTree->body.empty() && compTarget.visualTree->root != nullptr){
-            auto *ctx = &compTarget.visualTree->root->renderTarget;
-            auto tex = ctx->getCommittedTexture();
-            std::cout << "[WTK Diag] compositeAndPresent(fast): tex=" << tex.get()
-                      << " nativeTarget=" << nativeTarget.get()
-                      << " hasPending=" << ctx->hasPendingContent << std::endl;
-            if(tex == nullptr || nativeTarget == nullptr){
-                if(ctx->hasPendingContent){
-                    ctx->hasPendingContent = false;
-                    ctx->releaseDeferredBuffers();
-                }
-                return;
-            }
-
-            if(ctx->hasPendingContent){
-                auto cb = nativeTarget->commandBuffer();
-                nativeTarget->notifyCommandBuffer(cb, ctx->getFence());
-                nativeTarget->submitCommandBuffer(cb);
-            }
-
-            blitAndPresent(nativeTarget, tex, ctx->getBackingWidth(), ctx->getBackingHeight());
-
-            if(ctx->hasPendingContent){
-                ctx->hasPendingContent = false;
-                ctx->releaseDeferredBuffers();
-            }
-            return;
-        }
-
-        // --- General path: multi-layer compositing ---
-        // Collect ALL visuals that have ever been rendered to (committedTexture != null).
-        OmegaCommon::Vector<BackendRenderTargetContext *> allContexts;
-        OmegaCommon::Vector<BackendRenderTargetContext *> freshlyPending;
-        if(compTarget.visualTree->root != nullptr){
-            auto *ctx = &compTarget.visualTree->root->renderTarget;
-            if(ctx->getCommittedTexture() != nullptr){
-                allContexts.push_back(ctx);
-            }
-            if(ctx->hasPendingContent){
-                freshlyPending.push_back(ctx);
-            }
-        }
-        for(auto & visual : compTarget.visualTree->body){
-            if(visual != nullptr){
-                auto *ctx = &visual->renderTarget;
-                if(ctx->getCommittedTexture() != nullptr){
-                    allContexts.push_back(ctx);
-                }
-                if(ctx->hasPendingContent){
-                    freshlyPending.push_back(ctx);
-                }
-            }
-        }
-        if(allContexts.empty()){
-            return;
-        }
-
-        if(nativeTarget == nullptr){
-            for(auto *ctx : freshlyPending){
-                ctx->hasPendingContent = false;
-                ctx->releaseDeferredBuffers();
-            }
-            return;
-        }
-
-        auto cb = nativeTarget->commandBuffer();
-        for(auto *ctx : freshlyPending){
-            nativeTarget->notifyCommandBuffer(cb, ctx->getFence());
-        }
-
-        unsigned maxW = 1;
-        unsigned maxH = 1;
-        for(auto *ctx : allContexts){
-            maxW = std::max(maxW, ctx->getBackingWidth());
-            maxH = std::max(maxH, ctx->getBackingHeight());
-        }
-
-        auto nativeFormat = nativeTarget->pixelFormat();
-        auto finalPipeline = getFinalCopyPipelineForFormat(nativeFormat);
-        if(finalPipeline == nullptr){
-            std::cout << "[WTK Diag] compositeAndPresent: finalCopyPipeline is null for format "
-                      << static_cast<int>(nativeFormat) << " — skipping present" << std::endl;
-            for(auto *ctx : freshlyPending){
-                ctx->hasPendingContent = false;
-                ctx->releaseDeferredBuffers();
-            }
-            return;
-        }
-
-        OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
-        renderPassDesc.depthStencilAttachment.disabled = true;
-        renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment{
-                {0.f,0.f,0.f,0.f},
-                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction::Clear};
-
-        cb->startRenderPass(renderPassDesc);
-        cb->setRenderPipelineState(finalPipeline);
-
-        OmegaGTE::GEViewport finalViewport {};
-        finalViewport.x = 0.f;
-        finalViewport.y = 0.f;
-        finalViewport.nearDepth = 0.f;
-        finalViewport.farDepth = 1.f;
-        finalViewport.width = static_cast<float>(maxW);
-        finalViewport.height = static_cast<float>(maxH);
-        OmegaGTE::GEScissorRect finalScissorRect {
-                0.f, 0.f,
-                static_cast<float>(maxW),
-                static_cast<float>(maxH)};
-        cb->setViewports({finalViewport});
-        cb->setScissorRects({finalScissorRect});
-
-        for(auto *ctx : allContexts){
-            auto tex = ctx->getCommittedTexture();
-            if(tex == nullptr){ continue; }
-            cb->bindResourceAtVertexShader(finalTextureDrawBuffer, 1);
-            cb->bindResourceAtFragmentShader(tex, 2);
-            cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
-        }
-
-        cb->endRenderPass();
-        nativeTarget->submitCommandBuffer(cb);
-        nativeTarget->commitAndPresent();
-
-        for(auto *ctx : freshlyPending){
-            ctx->hasPendingContent = false;
-            ctx->releaseDeferredBuffers();
-        }
-    }
-
-    void RenderTargetStore::presentAllPending(){
-        for(auto & entry : store){
-            auto & compTarget = entry.second;
-            if(!compTarget.needsPresent || compTarget.visualTree == nullptr){
-                continue;
-            }
-            compositeAndPresentTarget(compTarget);
-        }
-    }
-
     /// Unified cross-platform effect processor using OmegaSL compute shaders.
     class GPUCanvasEffectProcessor : public BackendCanvasEffectProcessor {
     public:
@@ -1716,7 +1595,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                         }
                         // After H→dest, V→src ping-pong, result is back in src
                         // (the preEffectTarget's underlying texture), which commit()
-                        // uses as committedTexture.
+                        // blits to the native drawable.
                         break;
                     }
                     case CanvasEffect::Type::DirectionalBlur: {

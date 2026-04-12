@@ -131,10 +131,9 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
      outPresentTarget.backingWidth = static_cast<unsigned>(std::clamp(saneRect.w * scale,static_cast<CGFloat>(1.f),kMaxDrawableDimension));
      outPresentTarget.backingHeight = static_cast<unsigned>(std::clamp(saneRect.h * scale,static_cast<CGFloat>(1.f),kMaxDrawableDimension));
 
-     // Root visual's BackendRenderTargetContext is texture-only (nullptr native target).
-     SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
+     // Root visual renders directly to the native drawable (Phase A-1).
      Composition::Rect r {saneRect};
-     BackendRenderTargetContext compTarget (r,nullNative,(float)scale);
+     BackendRenderTargetContext compTarget (r,nativeTarget,(float)scale);
 
      return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::RootVisual(sanePos,compTarget,layer));
  };
@@ -175,7 +174,7 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
                              this);
      }
      // Child visual CAMetalLayers are NOT added as sublayers of the root.
-     // Their content is composited via the blit pass in compositeAndPresentTarget.
+     // Their content is composited via viewport override into the root surface.
      // Adding them as sublayers would occlude the root's presented drawable
      // with undefined/blank content (orphan CAMetalLayer problem).
  };

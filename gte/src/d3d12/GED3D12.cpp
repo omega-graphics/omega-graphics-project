@@ -529,13 +529,16 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         IDXGISwapChain1 *swapChain;
         HRESULT hr = dxgi_factory->CreateSwapChainForHwnd(d3d12_queue->commandQueue.Get(),hwnd,desc,NULL,NULL,&swapChain);
         if(FAILED(hr)){
-             MessageBoxA(GetForegroundWindow(),"Failed to Create SwapChain.","NOTE",MB_OK);
+            // TODO
+            // Proper GTE logging.
+            //  MessageBoxA(GetForegroundWindow(),"Failed to Create SwapChain.","NOTE",MB_OK);
             exit(1);
         };
         IDXGISwapChain3 *lswapChain;
         hr = swapChain->QueryInterface(&lswapChain);
         if(FAILED(hr)){
-            MessageBoxA(GetForegroundWindow(),"Failed to Query SwapChain.","NOTE",MB_OK);
+            // MessageBoxA(GetForegroundWindow(),"Failed to Query SwapChain.","NOTE",MB_OK);
+            // Proper GTE logging.
             exit(1);
         };
         return lswapChain;
@@ -886,11 +889,13 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         d.SampleDesc.Quality = 0;
         d.SampleDesc.Count = 1;
 
-        MessageBoxA(GetForegroundWindow(),"Create Bytecode Funcs","NOTE",MB_OK);
+        // MessageBoxA(GetForegroundWindow(),"Create Bytecode Funcs","NOTE",MB_OK);
         ID3D12PipelineState *state;
         hr = d3d12_device->CreateGraphicsPipelineState(&d,IID_PPV_ARGS(&state));
         if(FAILED(hr)){
-            MessageBoxA(GetForegroundWindow(),"Failed to Create Pipeline State","NOTE",MB_OK);
+            // TODO
+            // Proper Logging.
+            // MessageBoxA(GetForegroundWindow(),"Failed to Create Pipeline State","NOTE",MB_OK);
             exit(1);
         };
         ATL::CStringW wstr(desc.name.data());

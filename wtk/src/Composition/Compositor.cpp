@@ -411,12 +411,9 @@ CompositorScheduler::CompositorScheduler(Compositor * compositor):compositor(com
                 compositor->currentCommand = command;
             }
             processCommand(command);
-            // Present completed render targets after each command so that
-            // lane admission (inFlight budget) can advance for the next command.
-            // Previously this only ran on queue drain, causing a circular
-            // dependency when packets from different Views shared a lane.
-            compositor->renderTargetStore.presentAllPending();
-            // Decrement inFlight after present so the next frame can be
+            // Phase A-1: presentation now happens directly in commit(),
+            // so presentAllPending() is no longer needed here.
+            // Decrement inFlight after command so the next frame can be
             // admitted.  We bypass recordGPUCompletion / onBackendSubmissionCompleted
             // because those update the submit-to-present EWMA — and using
             // wall-clock time here (which includes queue wait) would inflate

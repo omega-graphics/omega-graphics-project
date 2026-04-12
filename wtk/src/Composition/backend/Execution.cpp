@@ -301,7 +301,6 @@ void Compositor::executeCurrentCommand(){
         std::cout << "[WTK Diag] Execution: waitForGPU done" << std::endl;
 #endif
 #endif
-        target->needsPresent = true;
         OMEGAWTK_DEBUG("Committed Data!")
     }
     else if(currentCommand->type == CompositorCommand::Layer){
@@ -359,7 +358,8 @@ void Compositor::executeCurrentCommand(){
 }
 
 void Compositor::onQueueDrained(){
-    renderTargetStore.presentAllPending();
+    // Phase A-1: presentation now happens directly in commit(), so
+    // presentAllPending() is no longer needed.
 
     // Phase A surface consumption bridge: when the command queue is
     // drained, check registered window surfaces for pending composite

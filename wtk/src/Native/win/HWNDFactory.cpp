@@ -11,7 +11,7 @@ namespace OmegaWTK::Native::Win {
     void updateAllHWNDPos(UINT root_wnd_height,OmegaCommon::Vector<HWND> * hwnds_to_update){
      RECT rc;
      auto it = hwnds_to_update->begin();
-     HDWP hdwp = BeginDeferWindowPos(hwnds_to_update->size());
+     HDWP hdwp = BeginDeferWindowPos(INT(hwnds_to_update->size()));
      while(it != hwnds_to_update->end()){
          HWND hwnd = *it;
          rc = __get_hwnd_real_coords(hwnd);
@@ -25,7 +25,14 @@ namespace OmegaWTK::Native::Win {
 
         //  auto n_str = std::string("RECT {") + "x:" + std::to_string(rc.left * scaleFactor) + ",y:" + std::to_string(root_wnd_height - (rc.top* scaleFactor)) + ",w:" + std::to_string(w * scaleFactor) + ",h:" + std::to_string(h* scaleFactor) + "}";
         //   MessageBoxA(GetForegroundWindow(),n_str.c_str(),"NOTE",MB_OK);
-         DeferWindowPos(hdwp,hwnd,hwnd,rc.left * scaleFactor,rc.top * scaleFactor,w * scaleFactor,h* scaleFactor,SWP_NOZORDER | SWP_NOACTIVATE);
+         DeferWindowPos(hdwp,
+            hwnd,
+            hwnd,
+            INT(FLOAT(rc.left) * scaleFactor),
+            INT(FLOAT(rc.top) * scaleFactor),
+            INT(FLOAT(w) * scaleFactor),
+            INT(FLOAT(h)* scaleFactor),
+            SWP_NOZORDER | SWP_NOACTIVATE);
          ++it;
      };
      EndDeferWindowPos(hdwp);
@@ -55,7 +62,7 @@ namespace OmegaWTK::Native::Win {
     LRESULT HWNDFactory::WndProc(HWND hwnd,UINT uMsg,WPARAM wParam,LPARAM lParam){
         HWNDItem *hwndItem;
         if(uMsg == WM_NCCREATE){
-            CREATESTRUCT *ctstrt = (CREATESTRUCT *)lParam;
+            auto *ctstrt = (CREATESTRUCT *)lParam;
             hwndItem = (HWNDItem *)ctstrt->lpCreateParams;
             setHWNDUserData(hwnd,(void *)hwndItem);
             hwndItem->hwnd = hwnd;
@@ -64,8 +71,9 @@ namespace OmegaWTK::Native::Win {
             hwndItem = (HWNDItem *)getHWNDUserData(hwnd);
         };
 
-        if(!hwndItem)
+        if(hwndItem == NULL){
             return 0;
+        }
 
        // MessageBoxA(HWND_DESKTOP,"Std WndProc","NOTE",MB_OK);
         
@@ -76,7 +84,7 @@ namespace OmegaWTK::Native::Win {
         WinAppWindow *hwndItem = nullptr;
         if(uMsg == WM_NCCREATE){
             // MessageBoxA(HWND_DESKTOP,"WM_NCCREATE","NOTE",MB_OK);
-            CREATESTRUCT *ctstrt = (CREATESTRUCT *)lParam;
+            auto *ctstrt = (CREATESTRUCT *)lParam;
             hwndItem = (WinAppWindow *)ctstrt->lpCreateParams;
             setHWNDUserData(hwnd,(void *)hwndItem);
             hwndItem->hwnd = hwnd;

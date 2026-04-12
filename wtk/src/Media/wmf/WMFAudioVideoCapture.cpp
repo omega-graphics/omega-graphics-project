@@ -1,6 +1,7 @@
 #include "omegaWTK/Media/MediaPlaybackSession.h"
 
 #include "omegaWTK/Core/Microsoft.h"
+#include "omegaWTK/Composition/Geometry.h"
 
 #include <mfidl.h>
 #include <ShlObj.h>

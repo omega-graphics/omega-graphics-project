@@ -104,9 +104,8 @@ namespace OmegaWTK::Composition {
         outPresentTarget.backingWidth = desc.width;
         outPresentTarget.backingHeight = desc.height;
 
-        // Root visual's BackendRenderTargetContext is texture-only.
-        SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
-        BackendRenderTargetContext context {rect,nullNative,renderScale};
+        // Root visual renders directly to the native drawable (Phase A-1).
+        BackendRenderTargetContext context {rect,nativeTarget,renderScale};
 
         HRESULT hr;
         IDCompositionVisual2 *v;
@@ -162,7 +161,7 @@ namespace OmegaWTK::Composition {
                                 this);
         }
         // Surface-only visuals have no DComp visual representation.
-        // Their content is composited via the blit pass in compositeAndPresentTarget.
+        // Their content is composited via viewport override into the root surface.
     };
 
 

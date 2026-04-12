@@ -211,6 +211,8 @@ add_third_party(
 	elseif(TARGET_LINUX)
 		set(ZLIB_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/zlib/lib/libz.so")
 	endif()
+
+get_target_property(ZLIB_INCLUDE_DIRS z INTERFACE_INCLUDE_DIRECTORIES)
 	
 add_third_party(
 	NAME libpng
@@ -234,6 +236,8 @@ add_third_party(
 	elseif(TARGET_LINUX)
 		set(LIBPNG_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libpng/lib/libpng.so")
 	endif()
+
+set_property(TARGET png APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES "${ZLIB_INCLUDE_DIRS}")
 
 add_third_party(
 	NAME libjpeg-turbo
@@ -287,6 +291,8 @@ add_third_party(
 	elseif(TARGET_LINUX)
 		set(LIBTIFF_EXPORT "${THIRD_PARTY_OUTPUT_DIR}/libtiff/lib/libtiff.so")
 	endif()
+
+set_property(TARGET tiff APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES "${ZLIB_INCLUDE_DIRS}")
 
 
 # For Building ThirdParty, so one can edit code through IDE with all code symbols.

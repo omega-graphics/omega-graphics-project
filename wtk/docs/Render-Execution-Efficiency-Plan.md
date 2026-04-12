@@ -432,7 +432,7 @@ render pass, and presents once.
 
 ### Tier 1: Compositor scheduling architecture
 
-#### Phase A — Surface mailbox abstraction
+#### Phase A — Surface mailbox abstraction [COMPLETED]
 
 **Goal:** Decouple widget submission from compositor rendering. Widgets
 deposit frames into a mailbox; the compositor reads the mailbox on its
@@ -514,7 +514,7 @@ compositor reads all surfaces during `SurfaceAggregator::Aggregate()`.
 With Tier 0's single-window model, this simplifies to one surface per
 window — analogous to a single-process Chromium renderer.
 
-#### Phase A-1 — Direct-to-drawable rendering
+#### Phase A-1 — Direct-to-drawable rendering [COMPLETED]
 
 **Goal:** Eliminate the intermediate offscreen texture and fullscreen-quad
 blit. Render visual commands directly to the native drawable
@@ -1240,8 +1240,8 @@ NV-3 ──→ NV-4: Coordinate system unification [COMPLETED]
 
 Tier 1 (Scheduling Architecture) — requires Tier 0 NV-3:
 
-Phase A: Surface mailbox (single per-window surface)
-    └─→ Phase A-1: Direct-to-drawable rendering (remove offscreen blit)
+Phase A: Surface mailbox (single per-window surface) [COMPLETED]
+    └─→ Phase A-1: Direct-to-drawable rendering (remove offscreen blit) [COMPLETED]
             └─→ Phase B: Frame-oriented compositor loop
                     └─→ Phase C: Resize coordination
 

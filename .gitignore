@@ -1,5 +1,6 @@
 __pycache__
 *.pyc
+.automdeps
 compile_commands.json
 compile_flags.txt
 swift

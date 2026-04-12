@@ -11,6 +11,7 @@ struct IMFSample;
 struct ID3D12CommandQueue;
 struct ID3D11VideoContext;
 struct ID3D11VideoDecoder;
+typedef struct _GUID GUID;
 
 namespace OmegaWTK::Media {
 

@@ -1,5 +1,3 @@
-#include <zlib.h>
-
 #include "ImgCodecPriv.h"
 
 #include <png.h>
@@ -12,7 +10,7 @@ namespace OmegaWTK::Media {
         png_colorp palette;
         static void userReadData(png_structp png_ptr, png_bytep data, png_size_t length){
             png_voidp stream = png_get_io_ptr(png_ptr);
-            ((std::istream *)stream)->read((char *)data,length);
+            ((std::istream *)stream)->read((char *)data,std::streamsize(length));
         };
         #define SIG_SIZE 8
         bool validate_signature(){
@@ -295,7 +293,7 @@ namespace OmegaWTK::Media {
             }
     };
     public:
-        void readToStorage() {
+        void readToStorage() override {
             if(!load_png_from_file()){
                 storage->data = nullptr;
                 // storage->header = nullptr;

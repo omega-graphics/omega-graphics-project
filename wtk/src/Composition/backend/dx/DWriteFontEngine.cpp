@@ -16,7 +16,6 @@
 #include <d3d11on12.h>
 #include <d3d12.h>
 #include <dcommon.h>
-#include <dwrite.h>
 #include <dxgi.h>
 #include <dxgiformat.h>
 #include <vector>
@@ -167,6 +166,10 @@ namespace OmegaWTK::Composition {
                     }
                     dwrite_factory->RegisterFontCollectionLoader(font_loader.get());
             }
+            // Fix for CreateFontA (So MSVC doesn't get confused with our function.)
+            #ifdef CreateFont
+            #undef CreateFont
+            #endif
             
             Core::SharedPtr<Font> CreateFont(FontDescriptor & desc) override {
                         HRESULT hr;

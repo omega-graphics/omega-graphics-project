@@ -335,69 +335,6 @@ AnimationCurve::Traversal AnimationCurve::traverse(float space_w,float space_h) 
     return Traversal(*this,space_w,space_h);
 }
 
-AnimationTimeline::Keyframe AnimationTimeline::Keyframe::CanvasFrameStop(float time, SharedHandle<AnimationCurve> curve,
-                                                          SharedHandle<CanvasFrame> &frame) {
-    Keyframe k {};
-    k.time = time;
-    k.curve = std::move(curve);
-    k.frame = frame;
-    k.effect = nullptr;
-    return k;
-}
-
-AnimationTimeline::Keyframe AnimationTimeline::Keyframe::DropShadowStop(float time, SharedHandle<AnimationCurve> curve,
-                                                                        LayerEffect::DropShadowParams &params) {
-    Keyframe k {};
-    k.time = time;
-    k.curve = std::move(curve);
-    k.frame = nullptr;
-
-    k.effect = std::make_shared<LayerEffect>(LayerEffect{LayerEffect::DropShadow});
-    k.effect->dropShadow = params;
-
-    return k;
-}
-
-AnimationTimeline::Keyframe AnimationTimeline::Keyframe::TransformationStop(float time,
-                                                                            SharedHandle<AnimationCurve> curve,
-                                                                            LayerEffect::TransformationParams &params) {
-    Keyframe k {};
-    k.time = time;
-    k.curve = std::move(curve);
-    k.frame = nullptr;
-
-    k.effect = std::make_shared<LayerEffect>(LayerEffect{LayerEffect::Transformation});
-    k.effect->transform = params;
-
-    return k;
-}
-
-
-SharedHandle<AnimationTimeline> AnimationTimeline::Create(const OmegaCommon::Vector<Keyframe> &keyframes) {
-    auto object = std::make_shared<AnimationTimeline>();
-    bool canvasFrameStop = (bool)keyframes.front().frame;
-
-    if(!canvasFrameStop) {
-        bool shadowFrameStop = keyframes.front().effect->type == LayerEffect::DropShadow;
-
-        for(auto & k : keyframes){
-            if(shadowFrameStop){
-                assert(k.effect->type == LayerEffect::DropShadow && "All keyframes must animate the Drop Shadow effect Only");
-            }
-            else {
-                assert(k.effect->type == LayerEffect::Transformation && "All keyframes must animate the Transformation effect Only");
-            }
-        }
-    }
-    else {
-        for(auto & k : keyframes){
-            assert(k.frame && "All keyframes must be a typeof Canvas Frame Stop.");
-        }
-    }
-    object->keyframes = keyframes;
-    return object;
-}
-
 struct AnimationHandle::StateBlock {
     AnimationId animationId = 0;
     std::atomic<AnimationState> animationState {AnimationState::Pending};
@@ -1237,12 +1174,6 @@ void LayerAnimator::resizeTransition(unsigned int delta_x,
     options.frameRateHint = static_cast<std::uint16_t>(parentAnimator.framePerSec);
     options.clockMode = ClockMode::Hybrid;
     animate(clip,options);
-}
-
-void LayerAnimator::animate(const SharedHandle<AnimationTimeline> &timeline,
-                            unsigned duration) {
-    (void)timeline;
-    (void)duration;
 }
 
 void LayerAnimator::pause() {

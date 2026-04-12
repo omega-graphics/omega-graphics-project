@@ -178,11 +178,11 @@ namespace OmegaWTK::Native::Win {
                 }
                 case WM_SIZE : {
                     if(isReady) {
-                        FLOAT scaleFactor = currentDpi/96.f;
+                        FLOAT scaleFactor = FLOAT(currentDpi)/96.F;
                         UINT width = LOWORD(lParam);
                         UINT height = HIWORD(lParam);
-                        wndrect = OmegaWTK::Composition::Rect {OmegaGTE::GPoint2D {wndrect.pos.x,wndrect.pos.y},FLOAT(width)/scaleFactor,FLOAT(height)/scaleFactor};
-                        auto params = new Native::WindowWillResize(wndrect);
+                        wndrect = OmegaWTK::Composition::Rect {Composition::Point2D {wndrect.pos.x,wndrect.pos.y},FLOAT(width)/scaleFactor,FLOAT(height)/scaleFactor};
+                        auto *params = new Native::WindowWillResize(wndrect);
                         emitIfPossible((NativeEventPtr)new NativeEvent(NativeEvent::WindowWillResize,params));
                     };
                     break;

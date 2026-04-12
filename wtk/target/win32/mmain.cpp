@@ -2,6 +2,9 @@
 #include <omegaWTK/UI/App.h>
 #include <omegaWTK/Main.h>
 
+#include <Windows.h>
+#include <wrl.h>
+
 #define MAX_LOADSTRING 100
 
 // LPCSTR szTitle = "@APPNAME@";                
@@ -18,7 +21,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,  PSTR lpCmdLi
         //Handle Error!
     }
    
-    OmegaWTK::AppInst *appInst = new OmegaWTK::AppInst((void *)hInstance);
+    auto *appInst = new OmegaWTK::AppInst((void *)hInstance);
    
    
     int returnCode = omegaWTKMain(appInst);
