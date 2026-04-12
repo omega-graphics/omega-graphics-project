@@ -30,13 +30,29 @@ For 3D graphics — scene rendering, mesh display, CAD views, game viewports, da
 
 ## Architecture
 
+GTEView renders directly to a native GPU surface owned by a
+`NativeViewHost` widget (Phase 5, Native View Architecture Plan). The
+3D content presents through its own native layer (CAMetalLayer, DXGI
+swap chain, VkSurface) — no off-screen texture, no Compositor blit, no
+fence-synced copy. The native surface renders on top of virtual content
+(the "airspace" constraint — acceptable for opaque 3D viewports).
+
 ```
-OmegaGTEView (public header: wtk/include/omegaWTK/UI/GTEView.h)
-  ├── Owns: GETextureRenderTarget (off-screen, with depth/stencil)
-  ├── Owns: GECommandQueue (dedicated or shared, configurable)
-  ├── Owns: GEFence (for cross-queue sync with Compositor)
-  ├── Owns: Depth/stencil GETexture
-  ├── Inherits: View (participates in widget tree, resize, enable/disable)
+GTEViewWidget : Widget
+  ├── NativeViewHost
+  │     └── platform native GPU surface:
+  │           macOS:   CocoaItem with CAMetalLayer
+  │           Windows: HWNDItem with DXGI SwapChain
+  │           Linux:   GTKItem with VkSurfaceKHR
+  │
+  ├── GTEView (owns render resources)
+  │     ├── Owns: GECommandQueue (dedicated or shared, configurable)
+  │     ├── Owns: Depth/stencil GETexture
+  │     │
+  │     └── Present path:
+  │           → acquires drawable from NativeViewHost's native GPU surface
+  │           → renders to drawable's color attachment directly
+  │           → presents drawable (no Compositor involvement)
   │
   ├── GTEViewDelegate (user implements)
   │     ├── onSetup(GTEViewContext &)       — one-time: create pipelines, buffers, textures
@@ -61,19 +77,23 @@ OmegaGTEView (public header: wtk/include/omegaWTK/UI/GTEView.h)
 ### Frame Lifecycle
 
 ```
-1. Compositor tick or display-link callback fires
-2. OmegaGTEView acquires a command buffer from its render target
-3. Calls delegate->onFrame(context)
-   3a. Delegate encodes render passes (3D scene)
-   3b. Delegate encodes compute passes (particles, post-FX)
-   3c. Delegate ends encoding
-4. OmegaGTEView submits the command buffer, signals its fence
-5. Compositor composites the GTE color texture into the View's layer
-   (blit from texture render target → native present target)
-6. Compositor presents
+1. Display-link callback or invalidateFrame() fires
+2. GTEView acquires a drawable from the NativeViewHost's native GPU surface
+   macOS:   [metalLayer nextDrawable]
+   Windows: swapChain->GetBuffer()
+   Linux:   vkAcquireNextImageKHR()
+3. Builds GTEViewContext with the drawable as color attachment
+4. Calls delegate->onFrame(context)
+   4a. Delegate encodes render passes (3D scene)
+   4b. Delegate encodes compute passes (particles, post-FX)
+   4c. Delegate ends encoding
+5. GTEView presents the drawable directly (no Compositor involvement)
 ```
 
-The key design: GTE renders to an **off-screen texture**, and the Compositor blits that texture into the View's native layer during the normal composition pass. This keeps the Compositor's present timing authoritative while giving the GTE delegate full control over what's rendered.
+The Compositor is not involved — GTEView manages its own present timing.
+The NativeViewHost handles bounds synchronization with the virtual widget
+tree. The native GPU surface renders on top of virtual content (the
+"airspace" constraint — acceptable for opaque 3D viewports).
 
 ## Public API
 
@@ -218,10 +238,10 @@ public:
 
 /// A View subclass for rendering 3D graphics using OmegaGTE.
 ///
-/// The view renders to an off-screen texture render target, which the
-/// Compositor blits into the view's native layer during composition.
-/// The delegate receives a per-frame callback with a command buffer
-/// ready for encoding render, compute, and blit passes.
+/// Renders directly to a native GPU surface owned by a NativeViewHost —
+/// no off-screen texture or Compositor blit. The delegate receives a
+/// per-frame callback with a command buffer ready for encoding render,
+/// compute, and blit passes.
 class OMEGAWTK_EXPORT GTEView : public View {
     struct Impl;
     Core::UniquePtr<Impl> impl_;
@@ -261,18 +281,8 @@ public:
     /// Returns true if the render loop is currently running.
     bool isRenderLoopActive() const;
 
-    /// Returns the color texture from the most recent frame.
-    /// The Compositor uses this during composition.
-    SharedHandle<OmegaGTE::GETexture> currentColorTexture();
-
-    /// Returns the fence used for cross-queue synchronization.
-    SharedHandle<OmegaGTE::GEFence> fence();
-
     /// Override: resize rebuilds depth/stencil and notifies delegate.
     void resize(Composition::Rect newRect) override;
-
-    /// Override: submits the current color texture to the Compositor.
-    void submitPaintFrame(int submissions) override;
 };
 
 }
@@ -282,58 +292,39 @@ public:
 
 ## Implementation Plan
 
-### Phase 1: Core View and Off-Screen Rendering
+### Phase 1: Core View and Direct Rendering
 
-**Goal:** GTEView creates a texture render target and a command queue. Delegate can encode a single render pass per frame and the result appears in the widget tree.
+**Goal:** GTEView creates a command queue and depth/stencil resources. Delegate can encode a single render pass per frame, rendering directly to the native GPU surface.
 
 #### 1A. GTEView Construction
 
 ```
 GTEView(rect, desc, parent)
   → engine().makeCommandQueue(desc.maxCommandBuffers)
-  → engine().makeFence()
-  → engine().makeTexture(color, backing W × H, RenderTarget usage)
   → engine().makeTexture(depth, backing W × H, RenderTargetAndDepthStencil usage)  [if enableDepth]
-  → engine().makeTextureRenderTarget(color texture)
 ```
 
-Store all of these in `GTEView::Impl`.
+Store all of these in `GTEView::Impl`. The color attachment comes from
+the native GPU surface drawable each frame — no owned color texture.
 
 #### 1B. Frame Execution
 
 ```
 executeFrame()
-  → acquire command buffer from texture render target
-  → build GTEViewContext wrapping the command buffer + resources
+  → acquire drawable from NativeViewHost's native GPU surface
+  → build GTEViewContext with drawable as color attachment
   → delegate->onFrame(context)
-  → submit command buffer, signal fence
-  → mark view as needing composition blit
+  → present drawable
 ```
 
-#### 1C. Compositor Integration
-
-`submitPaintFrame` is already the hook that `View` subclasses override to hand content to the Compositor. For GTEView:
-
-```
-submitPaintFrame(submissions)
-  → if no new frame, skip
-  → schedule a blit from currentColorTexture → the View's native layer
-  → the blit uses the Compositor's existing GENativeRenderTarget present path
-```
-
-This is analogous to how `VideoView` presents frames: the View owns a texture, and the Compositor blits it during its present pass.
-
-The cross-queue synchronization fence ensures the Compositor doesn't read the color texture before the GTE queue finishes writing it.
-
-#### 1D. Resize
+#### 1C. Resize
 
 ```
 resize(newRect)
   → View::resize(newRect)
   → compute new backingWidth/backingHeight from rect * renderScale
-  → release old color + depth textures
-  → create new textures at new size
-  → rebuild texture render target
+  → release old depth texture
+  → create new depth texture at new size
   → delegate->onResize(context, newWidth, newHeight)
 ```
 
@@ -345,9 +336,9 @@ resize(newRect)
 
 #### Verification
 
-- GTEView renders a colored triangle to its off-screen target.
+- GTEView renders a colored triangle to the native GPU surface.
 - The triangle appears in the widget tree at the correct position and size.
-- Resizing the view updates the render target dimensions.
+- Resizing the view updates the depth texture dimensions.
 
 ---
 
@@ -403,7 +394,7 @@ When `sampleCount > 1`:
 - Color and depth textures are created with `sampleCount` in the `TextureDescriptor`.
 - A resolve texture is created at 1x sample count.
 - The render pass uses `multisampleResolve = true` with the resolve texture as the destination.
-- The Compositor blits the resolved texture (not the MSAA texture) to the native layer.
+- The resolve texture is presented to the native GPU surface (not the MSAA texture).
 
 #### Verification
 
@@ -441,12 +432,39 @@ When `OMEGAGTE_RAYTRACING_SUPPORTED` is defined:
 
 ---
 
-### Phase 5: GTEViewWidget
+### Phase 5: GTEViewWidget (NativeViewHost integration)
 
-**Goal:** Widget wrapper for `GTEView`, following the same pattern as `VideoViewWidget` / `SVGViewWidget` in the Widget Stub Implementation Plan.
+**Goal:** Widget wrapper that uses `NativeViewHost` (Phase 5, Native
+View Architecture Plan) to embed a real native GPU surface for
+direct-present rendering.
+
+**Dependency:** `NativeViewHost` (already implemented).
+
+#### 5A. Native GPU surface item
+
+Create a `make_native_gpu_item()` factory that returns a NativeItem
+wrapping a platform-specific GPU surface:
+
+- **macOS:** `CocoaItem` + `CAMetalLayer` (the `metalLayer_` member
+  already exists in `CocoaItem` — reuse and configure for direct
+  rendering rather than compositor-managed presentation)
+- **Windows:** `HWNDItem` + DXGI SwapChain
+- **Linux:** `GTKItem` + `VkSurfaceKHR` (or `GtkGLArea`)
+
+```
+Files:
+  wtk/include/omegaWTK/Native/NativeGPUItem.h    — factory interface
+  wtk/src/Native/macos/CocoaGPUItem.mm            — macOS impl
+  wtk/src/Native/win/HWNDGPUItem.cpp              — Windows impl
+  wtk/src/Native/gtk/GTKGPUItem.cpp               — Linux impl
+```
+
+#### 5B. GTEViewWidget
 
 ```cpp
 class GTEViewWidget : public Widget {
+    NativeViewHost *hostView_;
+    GTEView *gteView_;         // internal, manages GPU resources
     GTEViewDescriptor desc_;
 public:
     explicit GTEViewWidget(Composition::Rect rect,
@@ -463,7 +481,11 @@ public:
 };
 ```
 
-The widget creates a `GTEView` as its backing view, delegates paint to `submitPaintFrame`, and forwards resize events.
+The constructor:
+1. Creates a `NativeViewHost` as a child widget
+2. Creates a native GPU item via `make_native_gpu_item()`
+3. Calls `hostView_->attach(gpuItem)` to embed it
+4. Creates `GTEView` configured to render to the native surface
 
 #### Source Files
 
@@ -475,6 +497,7 @@ The widget creates a `GTEView` as its backing view, delegates paint to `submitPa
 - `GTEViewWidget` embedded in an `HStack` with other UI widgets.
 - 3D view resizes correctly when the stack layout changes.
 - Multiple `GTEViewWidget` instances in the same window render independently.
+- No Compositor blit — GPU surface presents directly.
 
 ---
 
@@ -482,61 +505,40 @@ The widget creates a `GTEView` as its backing view, delegates paint to `submitPa
 
 ### Metal (macOS/iOS)
 
-- `GTEView` creates its render target through `engine().makeTextureRenderTarget()`, which uses Metal textures internally.
-- The Compositor blits the GTE color texture into the `CAMetalLayer` drawable during `commitAndPresent()`.
+- `GTEView` acquires drawables directly from `CAMetalLayer` via `NativeViewHost`.
+- Depth texture uses Metal textures internally.
 - Display link: `CVDisplayLink` on macOS, `CADisplayLink` on iOS.
 - Depth format: `MTLPixelFormatDepth32Float` or `MTLPixelFormatDepth32Float_Stencil8`.
 
 ### Direct3D 12 (Windows)
 
-- GTE creates D3D12 textures for color/depth.
-- Cross-queue sync via `GEFence` (wrapping `ID3D12Fence`).
-- The Compositor uses a copy/blit command to move the GTE texture into the swap chain's back buffer before present.
+- `GTEView` acquires back buffers from a DXGI SwapChain owned by the `NativeViewHost`.
+- GTE creates D3D12 depth textures.
 - Display link: `IDXGIOutput::WaitForVBlank` or `WaitableTimer`.
 - Depth format: `DXGI_FORMAT_D32_FLOAT` or `DXGI_FORMAT_D24_UNORM_S8_UINT`.
 
 ### Vulkan (Linux/Android)
 
-- GTE creates Vulkan images for color/depth.
-- Cross-queue sync via `VkSemaphore` (wrapped by `GEFence`).
-- The Compositor transitions the GTE image layout and copies it to the swapchain image.
+- `GTEView` acquires swapchain images from the `VkSurfaceKHR` owned by the `NativeViewHost`.
+- GTE creates Vulkan depth images.
 - Display link: Timer thread (no native display link on Vulkan).
 - Depth format: `VK_FORMAT_D32_SFLOAT` or `VK_FORMAT_D24_UNORM_S8_UINT`.
-
-## Cross-Queue Synchronization Detail
-
-The GTE view renders on its own command queue. The Compositor presents on the window's native render target queue. They must not access the shared color texture simultaneously.
-
-```
-Frame N:
-  GTE Queue:         [encode render pass] → [submit] → [signal fence value=N]
-  Compositor Queue:  [wait fence value=N] → [blit color texture to layer] → [present]
-```
-
-The `GEFence` abstraction already supports this: `submitCommandBuffer(buffer, signalFence)` on the GTE side, `notifyCommandBuffer(buffer, waitFence)` on the Compositor side.
-
-Double-buffering the color texture (two textures, alternating) avoids stalling either queue:
-- Frame N renders to texture A, frame N+1 renders to texture B.
-- The Compositor blits the most recently completed texture.
 
 ## Resource Lifecycle
 
 | Resource | Created | Rebuilt on Resize | Destroyed |
 |----------|---------|-------------------|-----------|
 | `GECommandQueue` | Construction | No | Destruction |
-| `GEFence` | Construction | No | Destruction |
-| Color texture(s) | Construction | Yes | Destruction |
 | Depth/stencil texture | Construction | Yes | Destruction |
-| `GETextureRenderTarget` | Construction | Yes (new texture) | Destruction |
 | User pipelines, buffers | `onSetup` | User decides | `onTeardown` |
 
 ## Open Questions
 
 1. **Shared vs dedicated queue:** Should the default be a dedicated queue, or should we default to sharing the Compositor's queue to reduce GPU context-switching overhead? On macOS Metal, multiple queues are cheap. On D3D12, they're heavier.
 
-2. **Texture blit path:** Should the Compositor blit the GTE texture as a regular `CanvasFrame`, or should `GTEView` composite directly into the native render target (bypassing the layer tree)? The former is simpler and composable (the 3D view layers correctly with 2D UI). The latter is faster for full-screen 3D.
+2. ~~**Texture blit path:**~~ **Resolved:** GTEView renders directly to the NativeViewHost's native GPU surface — no Compositor blit, no off-screen texture.
 
-3. **Double vs triple buffering:** Two color textures cover most cases. Triple buffering adds latency but avoids stalls when the GPU is slower than the display rate. Should this be configurable?
+3. **Swap chain buffering:** The native GPU surface manages its own back buffer count (typically double or triple buffered by the platform). Should `GTEViewDescriptor` expose a preferred buffer count, or leave it to platform defaults?
 
 4. **Render scale:** Should the GTE view respect the system render scale (2x on Retina), or should this be configurable independently? 3D content may prefer a lower render scale for performance.
 
