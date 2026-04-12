@@ -1,9 +1,15 @@
-
+from pathlib import Path
 import pygments.lexers._mapping
 import sys
-import os
 
-sys.path.append(os.path.dirname(__file__))
+
+DOCS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = DOCS_DIR.parent.parent
+sys.path.append(str(DOCS_DIR))
+sys.path.insert(0, str(REPO_ROOT / "utils" / "sphinx"))
+
+from shared_conf import apply_shared_sphinx_style
+
 import omegasl_highlight
 
 pygments.lexers._mapping.LEXERS["OmegaSLLexer"] = ('omegasl_highlight', 'OmegaSL', ('omegasl',), ('AUTOM.build', '*.build'), ('text/omegasl',))
@@ -18,8 +24,4 @@ version = "0.3"
 
 extensions = ["sphinx.ext.viewcode"]
 
-# html_theme_path = ["_themes"]
-html_theme = "alabaster"
-
-
-
+apply_shared_sphinx_style(globals(), DOCS_DIR)

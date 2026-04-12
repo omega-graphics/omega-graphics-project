@@ -1,6 +1,13 @@
+from pathlib import Path
 import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(__file__),"_ext"))
+
+
+DOCS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = DOCS_DIR.parent.parent
+sys.path.append(str(DOCS_DIR / "_ext"))
+sys.path.insert(0, str(REPO_ROOT / "utils" / "sphinx"))
+
+from shared_conf import apply_shared_sphinx_style
 
 
 project = "AUTOM Build System"
@@ -9,12 +16,10 @@ author = "Omega Graphics"
 
 copyright = "2021, Omega Graphics"
 
-html_theme_path = ["_themes"]
-
-html_theme = "autom"
-
 extensions = ["autom-sphinx"]
 
 highlight_language = "autom"
 
 html_codeblock_linenos_style = 'inline'
+
+apply_shared_sphinx_style(globals(), DOCS_DIR)

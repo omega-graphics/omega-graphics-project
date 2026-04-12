@@ -136,7 +136,7 @@ MODULES: Sequence[ModuleConfig] = (
     ModuleConfig(
         name="AQUA",
         root_dir="aqua",
-        scan_dirs=("engine/include", "engine/src"),
+        scan_dirs=("include", "src"),
         primary_namespace="AQUA",
         class_fill_color="#6d28d9",
         struct_fill_color="#4c1d95",
@@ -180,6 +180,22 @@ def iter_source_files(directory: Path) -> Iterable[Path]:
         if path.is_file()
         and path.suffix.lower() in SCAN_EXTENSIONS
         and path.name not in EXCLUDED_BASENAMES
+    )
+
+
+def resolve_scan_dirs(repo_root: Path, module: ModuleConfig) -> List[Path]:
+    module_root = repo_root / module.root_dir
+    directories = [module_root / scan_dir for scan_dir in module.scan_dirs if (module_root / scan_dir).is_dir()]
+    if directories:
+        return directories
+
+    expected_paths = ", ".join(
+        str((Path(module.root_dir) / scan_dir).as_posix()) for scan_dir in module.scan_dirs
+    )
+    raise RuntimeError(
+        f"{module.name} UML scan directories were not found. "
+        f"Expected at least one of: {expected_paths}. "
+        "Update utils/repo-uml to match the module source tree before generating diagrams."
     )
 
 
@@ -531,13 +547,12 @@ def infer_include_dependencies(module_name: str, include_targets: Iterable[str])
 
 
 def scan_module(repo_root: Path, module: ModuleConfig) -> ModuleScanResult:
-    module_root = repo_root / module.root_dir
-    roots = [str((module_root / scan_dir).relative_to(repo_root)) for scan_dir in module.scan_dirs]
+    directories = resolve_scan_dirs(repo_root, module)
+    roots = [str(directory.relative_to(repo_root)) for directory in directories]
     result = ModuleScanResult(module=module.name, roots=roots)
     include_targets = set()
 
-    for scan_dir in module.scan_dirs:
-        directory = module_root / scan_dir
+    for directory in directories:
         source_root = str(directory.relative_to(repo_root))
         for path in iter_source_files(directory):
             result.scanned_files += 1

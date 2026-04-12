@@ -1,0 +1,75 @@
+@import url("./styles.css");
+
+body.omegagraphics-docs {
+    color-scheme: dark;
+}
+
+body.omegagraphics-docs .site-shell {
+    width: min(1320px, calc(100% - 40px));
+    padding-top: 24px;
+    padding-bottom: 0;
+}
+
+body.omegagraphics-docs .topbar {
+    margin-bottom: 0;
+}
+
+body.omegagraphics-docs .nav a[aria-current="page"] {
+    background: rgba(104, 163, 255, 0.12);
+    color: var(--text);
+}
+
+body.omegagraphics-docs .document {
+    margin-top: 20px;
+}
+
+body.omegagraphics-docs .og-sidebar-brand {
+    padding-bottom: 18px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+body.omegagraphics-docs .og-sidebar-brand .brand {
+    margin-bottom: 12px;
+}
+
+body.omegagraphics-docs .og-sidebar-brand .brand-copy strong {
+    font-size: 1rem;
+}
+
+body.omegagraphics-docs .og-sidebar-brand .eyebrow {
+    margin: 0;
+}
+
+body.omegagraphics-docs .sphinxsidebar h3,
+body.omegagraphics-docs .sphinxsidebar h4 {
+    padding-top: 14px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+body.omegagraphics-docs .related h3 {
+    margin: 0 0 10px;
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+}
+
+body.omegagraphics-docs .site-footer {
+    margin-top: 0;
+}
+
+body.omegagraphics-docs .site-footer span {
+    line-height: 1.6;
+}
+
+body.omegagraphics-docs .site-footer a {
+    color: var(--blue);
+}
+
+@media (max-width: 720px) {
+    body.omegagraphics-docs .site-shell {
+        width: min(100% - 24px, 1320px);
+        padding-top: 16px;
+    }
+}

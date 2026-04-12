@@ -1,0 +1,64 @@
+{%- extends "basic/layout.html" %}
+
+{% block body_tag %}<body class="omegagraphics-docs">{% endblock %}
+
+{% block extrahead %}
+  {{ super() }}
+  <meta name="theme-color" content="#060812" />
+{% endblock %}
+
+{% block header %}
+  <div class="site-shell">
+    <header class="topbar" role="banner">
+      <a class="brand" href="https://omegagraphics.org">
+        <span class="brand-mark">OG</span>
+        <span class="brand-copy">
+          <strong>Omega Graphics</strong>
+          <small>{{ project|e }}</small>
+        </span>
+      </a>
+      <nav class="nav" aria-label="Project">
+        <a href="https://omegagraphics.org">Home</a>
+        <a href="{{ pathto(root_doc)|e }}"{% if pagename == root_doc %} aria-current="page"{% endif %}>Docs</a>
+        {% if hasdoc('genindex') %}
+          <a href="{{ pathto('genindex')|e }}">Index</a>
+        {% endif %}
+        {% if hasdoc('search') %}
+          <a href="{{ pathto('search')|e }}">Search</a>
+        {% endif %}
+      </nav>
+    </header>
+  </div>
+{% endblock %}
+
+{% block rootrellink %}
+  <li><a href="https://omegagraphics.org">Omega Graphics Home</a>{{ reldelim1 }}</li>
+  <li class="nav-item nav-item-0"><a href="{{ pathto(root_doc)|e }}">{{ shorttitle|e }}</a>{{ reldelim1 }}</li>
+{% endblock %}
+
+{% block sidebarlogo %}
+  <div class="og-sidebar-brand">
+    <a class="brand" href="{{ pathto(root_doc)|e }}">
+      <span class="brand-mark">OG</span>
+      <span class="brand-copy">
+        <strong>{{ project|e }}</strong>
+        <small>{% if release %}{{ release|e }}{% elif version %}{{ version|e }}{% else %}Documentation{% endif %}</small>
+      </span>
+    </a>
+    <p class="eyebrow">Omega Graphics Docs</p>
+  </div>
+{% endblock %}
+
+{% block relbar2 %}{% endblock %}
+
+{% block footer %}
+  <div class="site-shell">
+    <footer class="site-footer" role="contentinfo">
+      <p>{{ project|e }} documentation</p>
+      <span>
+        {%- if show_copyright and copyright %}&#169; {{ copyright|e }}.{% endif -%}
+        {%- if show_sphinx %} Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> {{ sphinx_version|e }}.{% endif -%}
+      </span>
+    </footer>
+  </div>
+{% endblock %}

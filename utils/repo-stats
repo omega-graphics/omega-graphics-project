@@ -142,7 +142,7 @@ MODULES: Sequence[ModuleConfig] = (
     ModuleConfig(name="OmegaGTE", root_dir="gte"),
     ModuleConfig(name="OmegaWTK", root_dir="wtk"),
     ModuleConfig(name="AUTOM", root_dir="autom"),
-    ModuleConfig(name="AQUA", root_dir="aqua", src_dir="engine/src", include_dir="engine/include"),
+    ModuleConfig(name="AQUA", root_dir="aqua", src_dir="src", include_dir="include"),
 )
 
 
@@ -165,6 +165,24 @@ def iter_files(directory: Path) -> Iterable[Path]:
     if not directory.is_dir():
         return ()
     return sorted(path for path in directory.rglob("*") if path.is_file())
+
+
+def resolve_module_paths(repo_root: Path, config: ModuleConfig) -> Tuple[Path, Path]:
+    module_root = repo_root / config.root_dir
+    src_path = module_root / config.src_dir
+    include_path = module_root / config.include_dir
+    if src_path.is_dir() or include_path.is_dir():
+        return src_path, include_path
+
+    expected_paths = ", ".join(
+        str((Path(config.root_dir) / scan_dir).as_posix())
+        for scan_dir in (config.src_dir, config.include_dir)
+    )
+    raise RuntimeError(
+        f"{config.name} stats scan directories were not found. "
+        f"Expected at least one of: {expected_paths}. "
+        "Update utils/repo-stats to match the module source tree before collecting stats."
+    )
 
 
 def count_lines(path: Path) -> Tuple[int, int]:
@@ -198,9 +216,7 @@ def scan_tree(directory: Path, stats: ModuleStats, public_header_tree: bool) -> 
 
 
 def scan_module(repo_root: Path, config: ModuleConfig) -> ModuleStats:
-    module_root = repo_root / config.root_dir
-    src_path = module_root / config.src_dir
-    include_path = module_root / config.include_dir
+    src_path, include_path = resolve_module_paths(repo_root, config)
     stats = ModuleStats(
         name=config.name,
         src_path=str(src_path.relative_to(repo_root)),
@@ -343,11 +359,10 @@ def main() -> int:
             )
         else:
             repo_root = detect_repo_root(Path(__file__))
+        module_stats = [scan_module(repo_root, config) for config in MODULES]
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-
-    module_stats = [scan_module(repo_root, config) for config in MODULES]
 
     if args.json:
         emit_json_report(repo_root, module_stats)

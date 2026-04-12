@@ -61,7 +61,7 @@ MODULES: Sequence[ModuleConfig] = (
     ModuleConfig(
         name="AQUA",
         root_dir="aqua",
-        input_dirs=("engine/src", "engine/include"),
+        input_dirs=("src", "include"),
         dependencies=("OmegaGTE",),
         project_brief="AQUA engine module built on top of OmegaGTE.",
     ),
@@ -190,6 +190,21 @@ def relative_input_dirs(repo_root: Path, module: ModuleConfig) -> List[str]:
     return inputs
 
 
+def resolve_input_dirs(repo_root: Path, module: ModuleConfig) -> List[str]:
+    input_dirs = relative_input_dirs(repo_root, module)
+    if input_dirs:
+        return input_dirs
+
+    expected_paths = ", ".join(
+        str((Path(module.root_dir) / input_dir).as_posix()) for input_dir in module.input_dirs
+    )
+    raise RuntimeError(
+        f"{module.name} documentation input directories were not found. "
+        f"Expected at least one of: {expected_paths}. "
+        "Update utils/repo-docs to match the module source tree before generating docs."
+    )
+
+
 def module_output_dir(output_root: Path, module: ModuleConfig) -> Path:
     return output_root / module.name
 
@@ -225,7 +240,7 @@ def build_tagfiles_line(
 
 
 def synthetic_autom_config(repo_root: Path, module: ModuleConfig) -> List[str]:
-    inputs = relative_input_dirs(repo_root, module)
+    inputs = resolve_input_dirs(repo_root, module)
     lines = [
         f"PROJECT_NAME           = {quote_value(module.name)}",
         f"PROJECT_BRIEF          = {quote_value(module.project_brief)}",
@@ -241,10 +256,7 @@ def synthetic_autom_config(repo_root: Path, module: ModuleConfig) -> List[str]:
         "MULTILINE_CPP_IS_BRIEF = YES",
     ]
 
-    if inputs:
-        lines.append("INPUT                  = " + " ".join(quote_value(path) for path in inputs))
-    else:
-        lines.append("INPUT                  =")
+    lines.append("INPUT                  = " + " ".join(quote_value(path) for path in inputs))
 
     lines.extend(
         [
@@ -262,7 +274,7 @@ def build_override_lines(
     selected_modules: Sequence[ModuleConfig],
     html_enabled: bool,
 ) -> List[str]:
-    input_dirs = relative_input_dirs(repo_root, module)
+    input_dirs = resolve_input_dirs(repo_root, module)
     module_dir = module_output_dir(output_root, module)
     tagfile = module_tagfile(output_root, module)
     strip_from_path = str(repo_root)
@@ -281,10 +293,8 @@ def build_override_lines(
         f"PROJECT_BRIEF          = {quote_value(module.project_brief)}",
     ]
 
-    if input_dirs:
-        lines.append("INPUT                  = " + " ".join(quote_value(path) for path in input_dirs))
-    else:
-        lines.append("INPUT                  =")
+    lines.append("INPUT                  = " + " ".join(quote_value(path) for path in input_dirs))
+    lines.append("INCLUDE_PATH           = " + " ".join(quote_value(path) for path in input_dirs))
 
     if html_enabled:
         lines.append("GENERATE_HTML          = YES")
