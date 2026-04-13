@@ -58,9 +58,7 @@ OMEGAGTE_EXPORT OmegaCommon::Vector<SharedHandle<GTEDevice>> enumerateDevices();
 struct OMEGAGTE_EXPORT GTE {
     SharedHandle<OmegaGraphicsEngine> graphicsEngine;
     SharedHandle<OmegaTriangulationEngine> triangulationEngine;
-#if RUNTIME_SHADER_COMP_SUPPORT
     SharedHandle<OmegaSLCompiler> omegaSlCompiler;
-#endif
 };
 
 

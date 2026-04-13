@@ -26,9 +26,13 @@ AppInst::AppInst(void *data):ptr(Native::make_native_app(data)),windowManager(st
     OMEGAWTK_DEBUG("Application Startup")
     Composition::FontEngine::Create();
     /// Load your app's assets here. 
-    OmegaCommon::FS::Path assets_path("./assets.omxa");
-    if(assets_path.exists())
-        OmegaCommon::AssetLibrary::loadAssetFile(assets_path);
+    OmegaCommon::FS::Path assets_path("./assets.pak");
+    if(assets_path.exists()){
+        auto bundleResult = OmegaCommon::AssetBundle::open(assets_path);
+        if(bundleResult.isOk()){
+            assetBundle = std::move(bundleResult.value());
+        }
+    }
 };
 
 int AppInst::start(){
@@ -64,6 +68,20 @@ AppInst::~AppInst(){
 
 Native::NAP & AppInst::getNAP(){
     return ptr;
+}
+
+OmegaCommon::AssetBundle * AppInst::getAssetBundle(){
+    if(!assetBundle.has_value()){
+        return nullptr;
+    }
+    return &(*assetBundle);
+}
+
+const OmegaCommon::AssetBundle * AppInst::getAssetBundle() const{
+    if(!assetBundle.has_value()){
+        return nullptr;
+    }
+    return &(*assetBundle);
 }
 
 };

@@ -309,8 +309,6 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibrary(FS::Path p
     return res;
 }
 
-#ifdef RUNTIME_SHADER_COMP_SUPPORT
-
 SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryRuntime(std::shared_ptr<omegasl_shader_lib> &lib) {
     OmegaCommon::ArrayRef<omegasl_shader> shaders {lib->shaders,lib->shaders + lib->header.entry_count};
     auto shaderLib = std::make_shared<GTEShaderLibrary>();
@@ -319,7 +317,6 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryRuntime(std
     }
     return shaderLib;
 }
-#endif
 
 SharedHandle<OmegaGraphicsEngine> OmegaGraphicsEngine::Create(SharedHandle<GTEDevice> & device){
     #ifdef TARGET_METAL

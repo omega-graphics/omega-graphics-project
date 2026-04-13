@@ -170,7 +170,6 @@ namespace omegasl {
             out.close();
             return true;
         };
-#ifdef RUNTIME_SHADER_COMP_SUPPORT
         std::shared_ptr<omegasl_shader_lib> getLibrary(OmegaCommon::StrRef name){
             auto res = std::make_shared<omegasl_shader_lib>();
             res->header.name = name.data();
@@ -187,7 +186,6 @@ namespace omegasl {
         void resetShaderMap(){
             shaderMap.clear();
         }
-#endif
     };
 
 //    class InterfaceGen final {

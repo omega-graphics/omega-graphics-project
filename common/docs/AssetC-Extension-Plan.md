@@ -41,7 +41,7 @@
 
 ---
 
-## Phase A: Binary Format v2
+## Phase A: Binary Format v2 [COMPLETED]
 
 ### A.1 Bundle Layout
 
@@ -56,7 +56,7 @@
 
 ```cpp
 struct BundleHeader {
-    uint8_t  magic[4];       // "OMXA"
+    uint8_t  magic[4];       // "PAK"
     uint16_t version;        // 2
     uint16_t flags;          // BundleFlags bitfield
     uint32_t entryCount;
@@ -263,10 +263,10 @@ WTK's `loadImageFromAssets()` is updated to accept an `AssetBundle &` parameter 
 
 ### D.1 CMake Function
 
-Add an `omega_compile_assets` function to `OmegaGraphicsSuite.cmake`:
+Add an `omega_pack_assets` function to `OmegaGraphicsSuite.cmake`:
 
 ```cmake
-function(omega_compile_assets)
+function(omega_pack_assets)
     cmake_parse_arguments("_ARG" "COMPRESS;SIGN" "TARGET;OUTPUT;APP_ID;MANIFEST" "INPUTS" ${ARGN})
 
     if(_ARG_MANIFEST)
@@ -301,7 +301,7 @@ Update `OmegaWTKApp.cmake` to use the `ASSET_DIR` parameter:
 ```cmake
 if(_ARG_ASSET_DIR)
     file(GLOB_RECURSE _ASSET_FILES "${_ARG_ASSET_DIR}/*")
-    omega_compile_assets(
+    omega_pack_assets(
         TARGET ${_ARG_NAME}
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/assets.pak"
         APP_ID "${_ARG_BUNDLE_ID}"
@@ -390,5 +390,5 @@ Steps 1-4 form a minimum viable asset system. Steps 5-6 add the security/size fe
 | `common/include/omega-common/assets.h` | Runtime API (`AssetBundle` + deprecated `AssetLibrary`) |
 | `common/src/assets.cpp` | Runtime implementation |
 | `common/CMakeLists.txt` | Build wiring |
-| `cmake/OmegaGraphicsSuite.cmake` | `omega_compile_assets` / `omega_embed_assets` functions |
+| `cmake/OmegaGraphicsSuite.cmake` | `omega_pack_assets` / `omega_embed_assets` functions |
 | `wtk/cmake/OmegaWTKApp.cmake` | `ASSET_DIR` integration |

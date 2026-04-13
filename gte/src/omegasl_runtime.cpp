@@ -6,9 +6,6 @@
 #include <iostream>
 #include <stdexcept>
 
-#ifdef RUNTIME_SHADER_COMP_SUPPORT
-
-
 struct SourceImpl : public OmegaSLCompiler::Source {
     bool file;
     std::ifstream in_file;
@@ -94,6 +91,3 @@ std::shared_ptr<OmegaSLCompiler> OmegaSLCompiler::Create(SharedHandle<OmegaGTE::
     return std::make_shared<OmegaSLCompilerImpl>(device);
 }
 
-
-
-#endif

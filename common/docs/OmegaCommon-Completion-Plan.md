@@ -31,7 +31,7 @@ The new library work proposed here is:
 | **Net (`net.h`)** | Completed | Full API with `HttpMethod`, request body, multi-header support, response headers, and `bodyAsString()`. Shared curl implementation for Apple and non-Apple Unix. Windows uses synchronous WinHTTP. |
 | **Multithread (`multithread.h`)** | Partial | Core threading, async/promise, semaphore, pipe, child process, and worker farm exist. Pipe and child-process ergonomics still need cleanup/documentation. |
 | **JSON (`json.h`)** | Completed | Parser/serializer and object model are implemented. |
-| **Format (`format.h`)** | Partial | Formatting and `LogV` exist, but structured logging and sink abstraction do not. |
+| **Format (`format.h`)** | Partial | Formatting plus leveled logging, filtering, and configurable sink support now exist. Structured logging is still not implemented. |
 | **CRT (`crt.h`)** | Partial | Minimal runtime object allocation/type helpers exist for C interop. |
 | **C binding / wrapgen (`OmegaCommon.owrap`)** | Partial | A normalized test surface exists and now includes `net.h`, but the full OmegaCommon surface is not yet exposed. |
 | **Regex (`regex.h`)** | Completed | PCRE2-backed regex with compile, match, search, findAll, replace, split, and escape. PCRE2 built as a static library via `add_third_party`. |
@@ -66,6 +66,8 @@ The new library work proposed here is:
 - String helper utilities and algorithm/hash helpers have been added to `utils.h` / `utils.cpp`.
 - Unix semaphore initialization now respects the constructor's `initialValue`.
 - `HttpResponse` now documents allocation ownership and includes an explicit `statusCode`.
+- Leveled logging plus configurable sink support have been added to `format.h` / `format.cpp`.
+- CLI parsing now lives in `cli.h` / `cli.cpp` with `omega-wrapgen` as the first consumer.
 
 ### Current Gaps And Risks
 
@@ -76,8 +78,8 @@ The new library work proposed here is:
 | **Crypto** | Full framework is complete: AES-GCM, HKDF, PBKDF2, Ed25519, X.509 PKI, TLS, and net integration. |
 | **Net** | Networking is now complete across all three platforms. |
 | **FS helpers** | `readFile`, `readBinaryFile`, `writeFile`, `writeBinaryFile`, `copyFile`, `moveFile`, and `glob` are now implemented. Regex-based filtering deferred to Phase 4. |
-| **Logging** | Only `LogV` to stdout exists; no levels, sinks, or filtering. |
-| **CLI / Argv** | Argument parser code remains commented out. |
+| **Logging** | Leveled logging, filtering, and configurable sink support now exist. Structured logging remains out of scope. |
+| **CLI / Argv** | Small parser now lives in `cli.h` / `cli.cpp` and is exercised by `omega-wrapgen`. |
 | **C bindings** | Minimal CRT exists, but FS/JSON/Net/Regex/Crypto C APIs are not exposed. |
 | **ChildProcess / Pipe** | Current API is usable but underspecified, and stdout piping is awkward. |
 | **Codec / image** | Still not implemented. |
@@ -377,50 +379,38 @@ Extends the lightweight crypto module into a complete framework. Builds on the P
 - `common/src/win/net-win.cpp` (verifyPeer support)
 - `common/CMakeLists.txt` (added `libssl` linkage)
 
----
+## Phase 6 [COMPLETED]
 
-## Phase 6: Codec And Image
+## Phase 7: Logging And CLI — Completed
 
-### 6.1 Image Type
+### 7.1 Logging — Completed
 
-- Add an `Image` type with:
-  - width
-  - height
-  - pixel format
-  - owned pixel buffer
+- Added `LogLevel` with `Debug`, `Info`, `Warn`, and `Error`.
+- Added `LogSink` plus global sink/minimum-level configuration.
+- `LogV` now routes through the leveled logger as the simple default path.
+- Default sink writes leveled messages to stdio.
 
-### 6.2 Decode / Encode
+### 7.2 CLI / Argv — Completed
 
-- Add decode/encode helpers if there is a concrete consumer.
-- Keep this phase separate from regex/crypto so those blank headers are not blocked on image work.
-
-### Files
-
-- `common/include/omega-common/codec.h`
-- `common/src/codec.cpp`
-- `common/CMakeLists.txt`
-
----
-
-## Phase 7: Logging And CLI
-
-### 7.1 Logging
-
-- Add log levels such as `Debug`, `Info`, `Warn`, `Error`.
-- Add configurable sink support.
-- Keep `LogV` as the simplest default path.
-
-### 7.2 CLI / Argv
-
-- Either finish the commented-out argument parser design or replace it with a smaller API.
-- Prefer a small, predictable parser over a large framework-like layer.
+- Replaced the old commented-out parser sketch with a smaller API in `cli.h`.
+- Supported surface:
+  - Bool flags
+  - Single-value options
+  - Repeated options
+  - Positional arguments
+  - `--long`, `--long=value`, `-o value`, and `--`
+  - Generated help text
+  - Structured parse errors
+- `omega-wrapgen` now uses the parser as the first concrete consumer.
 
 ### Files
 
 - `common/include/omega-common/format.h`
 - `common/src/format.cpp`
-- `common/include/omega-common/utils.h`
-- optional new `common/src/cli.cpp`
+- `common/include/omega-common/cli.h`
+- `common/src/cli.cpp`
+- `common/wrapgen/main/main.cpp`
+- `common/CMakeLists.txt`
 
 ---
 
@@ -503,7 +493,7 @@ Extends the lightweight crypto module into a complete framework. Builds on the P
 | 5 | OpenSSL-backed lightweight crypto library | Completed | High |
 | 5b | Crypto framework extension (AES-GCM, KDF, Ed25519, PKI, TLS) | Completed | High |
 | 6 | Image/codec | Planned | Medium |
-| 7 | Logging and CLI | Planned | Medium |
+| 7 | Logging and CLI | Completed | Medium |
 | 8 | C API and wrapgen surface | Partial | Medium |
 | 9 | ChildProcess / Pipe cleanup | Partial | Medium |
 

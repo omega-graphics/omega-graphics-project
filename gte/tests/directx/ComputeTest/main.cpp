@@ -27,12 +27,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     auto gte = OmegaGTE::InitWithDefaultDevice();
     std::cout << "GTE Initialized" << std::endl;
 
-#if RUNTIME_SHADER_COMP_SUPPORT
     auto compiledLib = gte.omegaSlCompiler->compile({OmegaSLCompiler::Source::fromString(computeShader)});
     auto funcLib = gte.graphicsEngine->loadShaderLibraryRuntime(compiledLib);
-#else
-    auto funcLib = gte.graphicsEngine->loadShaderLibrary("./compute_shaders.omegasllib");
-#endif
 
     std::cout << "Shader library loaded, shader count: " << funcLib->shaders.size() << std::endl;
 

@@ -33,6 +33,12 @@
              "platforms":["windows"],
              "zipfile":"./temp/$(strawberry_perl_archive)",
              "dest":"$(third_party_dest)/strawberry-perl"
-         }
+         }, 
+         {
+            "type":"git_clone",
+            "url":"https://github.com/Tencent/rapidjson.git",
+            "dest":"$(third_party_dest)/rapidjson",
+            "branch":"default"
+        }
     ]
 }

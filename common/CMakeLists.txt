@@ -7,7 +7,7 @@ omega_graphics_project(OmegaCommon VERSION ${OMEGACOMMON_VERSION} LANGUAGES C CX
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_LIST_DIR}/cmake)
 
-file(GLOB COMMON_SRCS "src/*.cpp")
+file(GLOB COMMON_SRCS CONFIGURE_DEPENDS "src/*.cpp")
 
 configure_file("src/Info.plist.in" "${CMAKE_CURRENT_BINARY_DIR}/Info.plist")
 
@@ -103,6 +103,7 @@ else()
 endif()
 
 add_omega_graphics_module("OmegaCommon" SHARED SOURCES ${COMMON_SRCS} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_include_directories("OmegaCommon" PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/deps/rapidjson/include")
 
 target_link_libraries("OmegaCommon" PRIVATE pcre2-8 ssl crypto)
 if(WIN32)
@@ -123,6 +124,11 @@ file(GLOB WRAPGEN_SRCS "wrapgen/*.cpp")
 add_omega_graphics_tool("omega-wrapgen" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} "wrapgen/main/main.cpp")
 
 add_omega_graphics_tool("omega-assetc" LIBS "OmegaCommon" SOURCES assetc/assetc.h assetc/main.cpp)
+add_custom_command(TARGET omega-assetc POST_BUILD
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		"${CMAKE_CURRENT_SOURCE_DIR}/assetc/AssetTypes.json"
+		"$<TARGET_FILE_DIR:omega-assetc>/AssetTypes.json")
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assetc/AssetTypes.json" DESTINATION bin)
 
 # add_omega_graphics_tool("lex-test" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} "wrapgen/tests/lex-test.cpp")
 

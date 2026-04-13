@@ -1,0 +1,13 @@
+[
+  ["Image", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp", ".tga", ".dds", ".ktx", ".ktx2", ".basis", ".hdr", ".exr"],
+  ["Font", ".ttf", ".otf", ".woff", ".woff2"],
+  ["Shader", ".omegasllib", ".omegasl", ".spv", ".spirv", ".glsl", ".vert", ".frag", ".comp", ".geom", ".tesc", ".tese", ".rgen", ".rchit", ".rahit", ".rmiss", ".rcall", ".metal", ".hlsl"],
+  ["Model", ".gltf", ".glb", ".fbx", ".obj", ".dae", ".3ds", ".blend", ".abc", ".usd", ".usda", ".usdc", ".usdz", ".stl", ".ply"],
+  ["Material", ".mtl", ".mat", ".material", ".matinst", ".physmat", ".sbsar"],
+  ["Scene", ".scene", ".scn", ".world", ".map", ".umap", ".unity", ".tscn", ".prefab"],
+  ["Animation", ".anim", ".ani", ".anm", ".animation"],
+  ["Skeleton", ".skel", ".skeleton", ".rig", ".armature"],
+  ["Text", ".txt", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".csv", ".md", ".lua"],
+  ["Audio", ".wav", ".mp3", ".ogg", ".flac", ".opus", ".m4a"],
+  ["Binary", ".bin", ".dat", ".blob", ".pak"]
+]

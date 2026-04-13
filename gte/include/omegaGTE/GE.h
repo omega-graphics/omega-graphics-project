@@ -287,14 +287,12 @@ _NAMESPACE_BEGIN_
          */
          SharedHandle<GTEShaderLibrary> loadShaderLibrary(FS::Path path);
 
-#ifdef RUNTIME_SHADER_COMP_SUPPORT
         /**
          @brief Loads an OmegaSL Shader Library on Runtime.
          @param lib A std::shared_ptr to an a runtime compiled omegasl library.
          @returns SharedHandle<GTEShaderLibrary>
         */
         SharedHandle<GTEShaderLibrary> loadShaderLibraryRuntime(std::shared_ptr<omegasl_shader_lib> & lib);
-#endif
 
     #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
         virtual SharedHandle<GEBuffer> createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes) = 0;

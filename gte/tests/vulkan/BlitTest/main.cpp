@@ -317,12 +317,8 @@ static void start_application(GtkApplication *app, gpointer){
 int main(int argc, char *argv[]){
     gte = OmegaGTE::InitWithDefaultDevice();
 
-#if RUNTIME_SHADER_COMP_SUPPORT
     auto compiled = gte.omegaSlCompiler->compile({OmegaSLCompiler::Source::fromString(shaders)});
     shaderLib = gte.graphicsEngine->loadShaderLibraryRuntime(compiled);
-#else
-    #error "BlitTest requires runtime shader compilation"
-#endif
 
     bufferWriter = OmegaGTE::GEBufferWriter::Create();
 

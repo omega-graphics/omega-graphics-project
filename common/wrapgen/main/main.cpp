@@ -1,29 +1,9 @@
 #include "omega-common/common.h"
+#include "omega-common/cli.h"
 #include "../parser.h"
 #include <iostream>
 #include <filesystem>
 #include <memory>
-
-void printHelp(){
-    std::cout << 
-    R"(
-    Omega Wrapper Generator
-    =======================
-    Usage : omega-wrapgen [options] <input_file>
-    
-    Options:
-    
-       Args:
-           --help, -h        -> Display this info
-           --output-dir, -o  -> Output dir of generated wrapper files
-       Modes:
-           --cc     -> Generate C Code
-           --python -> Generate Python Code
-           --go     -> Generate Go Code
-           --java   -> Generate Java Code
-           --swift  -> Generate Swift Code
-           --rust   -> Generate Rust Code)" << std::endl;
-};
 
 int main(int argc,char *argv[]){
     enum class Mode {
@@ -35,29 +15,94 @@ int main(int argc,char *argv[]){
         Rust
     };
 
-    if(argc < 2){
-        printHelp();
-        return 1;
-    }
-
-    OmegaCommon::String src_file;
-    OmegaCommon::String output_dir = ".";
-    Mode mode = Mode::C;
+    auto configure_cli =
+        [](OmegaCommon::Argv::Parser & cli,
+           bool & help_flag,
+           OmegaCommon::String & output_dir,
+           bool & mode_cc,
+           bool & mode_python,
+           bool & mode_go,
+           bool & mode_java,
+           bool & mode_swift,
+           bool & mode_rust,
+           OmegaCommon::String & input_file) {
+            cli.setDescription("Omega Wrapper Generator");
+            cli.setUsage("[options] <input_file>");
+            cli.addFlag(help_flag,"help","h","Display this info");
+            cli.addOption(output_dir,"output-dir","o","dir","Output dir of generated wrapper files");
+            cli.addFlag(mode_cc,"cc",{},"Generate C code");
+            cli.addFlag(mode_python,"python",{},"Generate Python code");
+            cli.addFlag(mode_go,"go",{},"Generate Go code");
+            cli.addFlag(mode_java,"java",{},"Generate Java code");
+            cli.addFlag(mode_swift,"swift",{},"Generate Swift code");
+            cli.addFlag(mode_rust,"rust",{},"Generate Rust code");
+            cli.addPositional(input_file,"input_file","Input .owrap file");
+        };
 
     for(int i = 1; i < argc; ++i){
         OmegaCommon::StrRef arg(argv[i]);
         if(arg == "--help" || arg == "-h"){
-            printHelp();
+            OmegaCommon::Argv::Parser help_cli("omega-wrapgen");
+            help_cli.setDescription("Omega Wrapper Generator");
+            bool help_flag = false;
+            OmegaCommon::String help_output_dir;
+            bool help_mode_cc = false;
+            bool help_mode_python = false;
+            bool help_mode_go = false;
+            bool help_mode_java = false;
+            bool help_mode_swift = false;
+            bool help_mode_rust = false;
+            OmegaCommon::String help_input_file;
+
+            configure_cli(help_cli,help_flag,help_output_dir,help_mode_cc,help_mode_python,help_mode_go,help_mode_java,help_mode_swift,help_mode_rust,help_input_file);
+            help_cli.printHelp(std::cout);
             return 0;
         }
-        else if(arg == "-o" || arg == "--output-dir"){
-            if((i + 1) >= argc){
-                std::cerr << "ERROR: missing output directory after " << arg.data() << std::endl;
-                return 1;
-            }
-            output_dir = argv[++i];
+    }
+
+    OmegaCommon::String src_file;
+    OmegaCommon::String output_dir = ".";
+    bool show_help = false;
+    bool mode_cc = false;
+    bool mode_python = false;
+    bool mode_go = false;
+    bool mode_java = false;
+    bool mode_swift = false;
+    bool mode_rust = false;
+
+    OmegaCommon::Argv::Parser cli("omega-wrapgen");
+    configure_cli(cli,show_help,output_dir,mode_cc,mode_python,mode_go,mode_java,mode_swift,mode_rust,src_file);
+
+    OmegaCommon::Argv::ParseError parse_error;
+    if(!cli.parse(argc,argv,&parse_error)){
+        std::cerr << "ERROR: " << parse_error.toString() << std::endl;
+        return 1;
+    }
+
+    if(src_file.empty()){
+        std::cerr << "ERROR: missing input .owrap file" << std::endl;
+        cli.printHelp(std::cerr);
+        return 1;
+    }
+
+    (void)mode_cc;
+    (void)mode_python;
+    (void)mode_go;
+    (void)mode_java;
+    (void)mode_swift;
+    (void)mode_rust;
+
+    Mode mode = Mode::C;
+    for(int i = 1; i < argc; ++i){
+        OmegaCommon::StrRef arg(argv[i]);
+        if(arg == "-o" || arg == "--output-dir"){
+            ++i;
+            continue;
         }
-        else if(arg == "--cc"){
+        if(OmegaCommon::startsWith(arg,"--output-dir=")){
+            continue;
+        }
+        if(arg == "--cc"){
             mode = Mode::C;
         }
         else if(arg == "--python"){
@@ -75,22 +120,6 @@ int main(int argc,char *argv[]){
         else if(arg == "--rust"){
             mode = Mode::Rust;
         }
-        else if(arg.data()[0] == '-'){
-            std::cerr << "ERROR: unknown option " << arg.data() << std::endl;
-            return 1;
-        }
-        else {
-            if(!src_file.empty()){
-                std::cerr << "ERROR: multiple input files provided: " << src_file << " and " << arg.data() << std::endl;
-                return 1;
-            }
-            src_file = arg.data();
-        }
-    }
-
-    if(src_file.empty()){
-        std::cerr << "ERROR: missing input .owrap file" << std::endl;
-        return 1;
     }
 
     std::ifstream in(src_file);

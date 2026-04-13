@@ -165,12 +165,8 @@ int main(int argc, char *argv[]){
 
     gte = OmegaGTE::InitWithDefaultDevice();
 
-#if RUNTIME_SHADER_COMP_SUPPORT
     auto compiledLib = gte.omegaSlCompiler->compile({OmegaSLCompiler::Source::fromString(shaders)});
     funcLib = gte.graphicsEngine->loadShaderLibraryRuntime(compiledLib);
-#else
-    funcLib = gte.graphicsEngine->loadShaderLibrary("./shaders.omegasllib");
-#endif
 
     bufferWriter = OmegaGTE::GEBufferWriter::Create();
 

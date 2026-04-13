@@ -179,8 +179,6 @@ struct omegasl_shader {
 
 
 /// Build Library
-#ifdef RUNTIME_SHADER_COMP_SUPPORT
-
 #include <omega-common/common.h>
 
 #include "omegaGTE/GTEBase.h"
@@ -228,7 +226,5 @@ public:
     static std::shared_ptr<OmegaSLCompiler> Create(SharedHandle<OmegaGTE::GTEDevice> & device);
     virtual std::shared_ptr<omegasl_shader_lib> compile(std::initializer_list<std::shared_ptr<Source>> sources) = 0;
 };
-
-#endif
 
 #endif

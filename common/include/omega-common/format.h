@@ -9,6 +9,19 @@
 
 namespace OmegaCommon {
 
+    enum class LogLevel : int {
+        Debug = 0,
+        Info = 1,
+        Warn = 2,
+        Error = 3,
+    };
+
+    class OMEGACOMMON_EXPORT LogSink {
+    public:
+        virtual ~LogSink() = default;
+        virtual void log(LogLevel level, StrRef message) = 0;
+    };
+
     template<typename T>
     struct FormatProvider;
 
@@ -59,7 +72,9 @@ namespace OmegaCommon {
     template<>
     struct FormatProvider<StrRef> {
         static void format(std::ostream & os, StrRef & object){
-            os << object.data();
+            if(object.data() != nullptr && object.size() > 0){
+                os.write(object.data(), static_cast<std::streamsize>(object.size()));
+            }
         }
     };
 
@@ -85,6 +100,13 @@ namespace OmegaCommon {
     OMEGACOMMON_EXPORT Formatter *createFormatter(StrRef fmt, std::ostream & out);
     OMEGACOMMON_EXPORT void format(Formatter * formatter,ArrayRef<ObjectFormatProviderBase *> objectFormatProviders);
     OMEGACOMMON_EXPORT void freeFormatter(Formatter *formatter);
+    OMEGACOMMON_EXPORT const char * logLevelName(LogLevel level);
+    OMEGACOMMON_EXPORT void setLogSink(std::shared_ptr<LogSink> sink);
+    OMEGACOMMON_EXPORT std::shared_ptr<LogSink> getLogSink();
+    OMEGACOMMON_EXPORT void setLogMinimumLevel(LogLevel level);
+    OMEGACOMMON_EXPORT LogLevel getLogMinimumLevel();
+    OMEGACOMMON_EXPORT bool shouldLog(LogLevel level);
+    OMEGACOMMON_EXPORT void logMessage(LogLevel level, StrRef message);
 
     template<typename T>
      ObjectFormatProvider<std::decay_t<T>> * buildFormatProvider(T && object){
@@ -108,9 +130,37 @@ namespace OmegaCommon {
     };
 
     template<class ..._Args>
+    void Log(LogLevel level, const char *fmt,_Args && ...args){
+        if(!shouldLog(level)){
+            return;
+        }
+        auto message = fmtString(fmt,std::forward<_Args>(args)...);
+        logMessage(level,message);
+    }
+
+    template<class ..._Args>
+    void LogDebug(const char *fmt,_Args && ...args){
+        Log(LogLevel::Debug,fmt,std::forward<_Args>(args)...);
+    }
+
+    template<class ..._Args>
+    void LogInfo(const char *fmt,_Args && ...args){
+        Log(LogLevel::Info,fmt,std::forward<_Args>(args)...);
+    }
+
+    template<class ..._Args>
+    void LogWarn(const char *fmt,_Args && ...args){
+        Log(LogLevel::Warn,fmt,std::forward<_Args>(args)...);
+    }
+
+    template<class ..._Args>
+    void LogError(const char *fmt,_Args && ...args){
+        Log(LogLevel::Error,fmt,std::forward<_Args>(args)...);
+    }
+
+    template<class ..._Args>
     void LogV(const char *fmt,_Args && ...args){
-        auto t = std::time(nullptr);
-        std::cout << "[" << "LOG" << "] " << fmtString(fmt,std::forward<_Args>(args)...) << std::endl;
+        LogInfo(fmt,std::forward<_Args>(args)...);
     }
     
 };

@@ -84,19 +84,11 @@ endif()
 add_omega_graphics_tool("omegaslc" SOURCES ${OMEGASL_SRCS} LIBS "OmegaCommon")
 target_include_directories("omegaslc" PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
-set(OMEGASLC_RUNTIME_COMPILE TRUE)
-
-
-
 add_omega_graphics_module("OmegaGTE" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION "0.5" HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include" DEPENDS "OmegaCommon" SOURCES ${MAIN_SRCS})
 target_compile_definitions("OmegaGTE" PRIVATE OMEGAGTE__BUILD__)
 target_compile_definitions("OmegaGTE" PUBLIC ${PUBLIC_DEFS})
 target_compile_definitions("omegaslc" PUBLIC ${PUBLIC_DEFS})
-if (${OMEGASLC_RUNTIME_COMPILE})
-	target_compile_definitions("OmegaGTE" PUBLIC "RUNTIME_SHADER_COMP_SUPPORT=1")
-	target_compile_definitions("omegaslc" PUBLIC "RUNTIME_SHADER_COMP_SUPPORT=1")
-	target_sources("OmegaGTE" PRIVATE ${OMEGASL_SRCS})
-endif ()
+target_sources("OmegaGTE" PRIVATE ${OMEGASL_SRCS})
 target_link_libraries("OmegaGTE" PUBLIC "OmegaCommon")
 
 if(TARGET_VULKAN)

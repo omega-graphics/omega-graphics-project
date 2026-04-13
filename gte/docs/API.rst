@@ -38,8 +38,7 @@ The ``GTE`` struct
 
     .. cpp:member:: SharedHandle<OmegaSLCompiler> omegaSlCompiler
 
-        Available when ``RUNTIME_SHADER_COMP_SUPPORT`` is defined. Provides
-        in-process OmegaSL compilation. See :ref:`runtime-compilation`.
+        Provides in-process OmegaSL compilation. See :ref:`runtime-compilation`.
 
 Device Enumeration
 ~~~~~~~~~~~~~~~~~~
@@ -178,20 +177,17 @@ Loading a library
 Runtime compilation
 ~~~~~~~~~~~~~~~~~~~
 
-When ``RUNTIME_SHADER_COMP_SUPPORT`` is defined the runtime compiler is
-available as ``gte.omegaSlCompiler``. See the OmegaSL documentation for
-the ``OmegaSLCompiler`` API.
+The runtime compiler is always available as ``gte.omegaSlCompiler``. See
+the OmegaSL documentation for the ``OmegaSLCompiler`` API.
 
 .. code-block:: cpp
 
-    #ifdef RUNTIME_SHADER_COMP_SUPPORT
     std::string src = R"(
         vertex VertexRaster myVert(uint vid : VertexID){ … }
         fragment float4 myFrag(VertexRaster r){ … }
     )";
     auto runtimeLib = gte.omegaSlCompiler->compile(src, "myShaders.omegasl");
     auto shaderLib  = gte.graphicsEngine->loadShaderLibraryRuntime(runtimeLib);
-    #endif
 
 ----
 

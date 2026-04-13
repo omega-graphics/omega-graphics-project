@@ -1,8 +1,38 @@
 #include "omega-common/format.h"
 #include <cassert>
 #include <cctype>
+#include <mutex>
 
 namespace OmegaCommon {
+
+    namespace {
+
+        class StdIOLogSink : public LogSink {
+            std::mutex writeMutex;
+        public:
+            void log(LogLevel level, StrRef message) override {
+                auto & out = (level == LogLevel::Warn || level == LogLevel::Error) ? std::cerr : std::cout;
+                std::lock_guard<std::mutex> lock(writeMutex);
+                out << "[" << logLevelName(level) << "] ";
+                if(message.data() != nullptr && message.size() > 0){
+                    out.write(message.data(), static_cast<std::streamsize>(message.size()));
+                }
+                out << std::endl;
+            }
+        };
+
+        struct LogState {
+            std::mutex mutex;
+            LogLevel minimumLevel = LogLevel::Info;
+            std::shared_ptr<LogSink> sink = std::make_shared<StdIOLogSink>();
+        };
+
+        LogState & globalLogState() {
+            static LogState state;
+            return state;
+        }
+
+    } // namespace
 
     class Formatter {
         OmegaCommon::String fmt;
@@ -99,6 +129,69 @@ namespace OmegaCommon {
 
     void freeFormatter(Formatter *formatter){
         delete formatter;
+    }
+
+    const char * logLevelName(LogLevel level) {
+        switch(level){
+            case LogLevel::Debug:
+                return "DEBUG";
+            case LogLevel::Info:
+                return "INFO";
+            case LogLevel::Warn:
+                return "WARN";
+            case LogLevel::Error:
+                return "ERROR";
+        }
+        return "INFO";
+    }
+
+    void setLogSink(std::shared_ptr<LogSink> sink) {
+        if(!sink){
+            sink = std::make_shared<StdIOLogSink>();
+        }
+        auto & state = globalLogState();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.sink = std::move(sink);
+    }
+
+    std::shared_ptr<LogSink> getLogSink() {
+        auto & state = globalLogState();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        return state.sink;
+    }
+
+    void setLogMinimumLevel(LogLevel level) {
+        auto & state = globalLogState();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.minimumLevel = level;
+    }
+
+    LogLevel getLogMinimumLevel() {
+        auto & state = globalLogState();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        return state.minimumLevel;
+    }
+
+    bool shouldLog(LogLevel level) {
+        auto & state = globalLogState();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        return static_cast<int>(level) >= static_cast<int>(state.minimumLevel);
+    }
+
+    void logMessage(LogLevel level, StrRef message) {
+        std::shared_ptr<LogSink> sink;
+        {
+            auto & state = globalLogState();
+            std::lock_guard<std::mutex> lock(state.mutex);
+            if(static_cast<int>(level) < static_cast<int>(state.minimumLevel)){
+                return;
+            }
+            sink = state.sink;
+        }
+
+        if(sink){
+            sink->log(level,message);
+        }
     }
 
 } // namespace OmegaCommon

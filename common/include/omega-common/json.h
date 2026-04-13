@@ -50,6 +50,8 @@ namespace OmegaCommon {
         
         friend class JSONParser;
         friend class JSONSerializer;
+        friend class JSONReader;
+        friend class RapidJSONBridge;
     public:
         typedef std::remove_pointer_t<decltype(data.map)>::iterator map_iterator;
 
