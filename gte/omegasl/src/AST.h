@@ -222,6 +222,13 @@ namespace omegasl {
             std::unique_ptr<Block> body;
         };
 
+        /// @brief `break;` statement — exits the innermost `for`/`while` loop.
+        struct BreakStmt : public Stmt {};
+
+        /// @brief `continue;` statement — jumps to the next iteration of the
+        /// innermost `for`/`while` loop.
+        struct ContinueStmt : public Stmt {};
+
         /// @brief Declares a Struct.
         /// @paragraph Can be either public or for shader internal use only
         /// by marking it with the `internal` keyword)

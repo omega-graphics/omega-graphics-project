@@ -3,22 +3,41 @@
 #include "ConstFold.h"
 #include "CodeGen.h"
 
+#include <limits>
+
 namespace omegasl {
 
-    /// Operator precedence for binary expressions (higher = tighter binding). Multiplicative > additive > comparison.
+    /// Operator precedence for binary expressions (higher = tighter binding).
+    /// C-style ladder: assign < logical-or < logical-and < bitwise-or < bitwise-xor
+    /// < bitwise-and < equality < relational < shift < additive < multiplicative.
     static int getBinaryPrecedence(const Tok &t) {
-        if (t.type == TOK_ASTERISK) return 3;
+        if (t.type == TOK_ASTERISK) return 10;
+        /// TOK_AMPERSAND carries the single `&` character — address-of in
+        /// prefix position, bitwise-AND in binary position. The parser's
+        /// prefix branch consumes it before this runs, so reaching here
+        /// means it's being used as a binary operator.
+        if (t.type == TOK_AMPERSAND) return 5;
         if (t.type != TOK_OP) return -1;
-        if (t.str == OP_DIV || t.str == "*") return 3;
-        if (t.str == OP_PLUS || t.str == OP_MINUS) return 2;
-        if (t.str == OP_ISEQUAL || t.str == OP_NOTEQUAL || t.str == OP_LESS || t.str == OP_LESSEQUAL ||
-            t.str == OP_GREATER || t.str == OP_GREATEREQUAL) return 1;
+        if (t.str == OP_DIV || t.str == "*") return 10;
+        if (t.str == OP_PLUS || t.str == OP_MINUS) return 9;
+        if (t.str == OP_LSHIFT || t.str == OP_RSHIFT) return 8;
+        if (t.str == OP_LESS || t.str == OP_LESSEQUAL ||
+            t.str == OP_GREATER || t.str == OP_GREATEREQUAL) return 7;
+        if (t.str == OP_ISEQUAL || t.str == OP_NOTEQUAL) return 6;
+        if (t.str == OP_BITAND) return 5;
+        if (t.str == OP_BITXOR) return 4;
+        if (t.str == OP_BITOR) return 3;
+        if (t.str == OP_LOGAND) return 2;
+        if (t.str == OP_LOGOR) return 1;
         if (t.str == OP_EQUAL || t.str == OP_PLUSEQUAL || t.str == OP_MINUSEQUAL ||
-            t.str == OP_MULEQUAL || t.str == OP_DIVEQUAL) return 0;
+            t.str == OP_MULEQUAL || t.str == OP_DIVEQUAL ||
+            t.str == OP_ANDEQUAL || t.str == OP_OREQUAL || t.str == OP_XOREQUAL ||
+            t.str == OP_LSHIFTEQUAL || t.str == OP_RSHIFTEQUAL) return 0;
         return -1;
     }
     static OmegaCommon::String getBinaryOpStr(const Tok &t) {
         if (t.type == TOK_ASTERISK) return "*";
+        if (t.type == TOK_AMPERSAND) return "&";
         return t.str;
     }
 
@@ -1191,6 +1210,20 @@ namespace omegasl {
                 }
                 node = _decl;
             }
+            else if(first_tok.str == KW_BREAK){
+                auto *_stmt = new ast::BreakStmt();
+                _stmt->type = BREAK_STMT;
+                _stmt->scope = ctxt.parentScope;
+                _stmt->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                node = (ast::Decl *)_stmt;
+            }
+            else if(first_tok.str == KW_CONTINUE){
+                auto *_stmt = new ast::ContinueStmt();
+                _stmt->type = CONTINUE_STMT;
+                _stmt->scope = ctxt.parentScope;
+                _stmt->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                node = (ast::Decl *)_stmt;
+            }
         }
         else {
             /// @note Build TypeRef for VarDecl.
@@ -1280,8 +1313,26 @@ namespace omegasl {
             auto _e = new ast::LiteralExpr();
             _e->type = LITERAL_EXPR;
             const auto &s = first_tok.str;
-            if(s.find('.') != std::string::npos || s.back() == 'f' || s.back() == 'F'){
+            bool isHex = s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X');
+            bool hasUintSuffix = !s.empty() && (s.back() == 'u' || s.back() == 'U');
+            bool hasFloatSuffix = !s.empty() && (s.back() == 'f' || s.back() == 'F');
+            if(isHex){
+                /// Strip `0x` prefix and optional `u` suffix, parse as unsigned.
+                OmegaCommon::String digits = s.substr(2, s.size() - 2 - (hasUintSuffix ? 1 : 0));
+                unsigned long v = std::stoul(digits, nullptr, 16);
+                if(hasUintSuffix || v > static_cast<unsigned long>(std::numeric_limits<int>::max())){
+                    _e->ui_num = static_cast<unsigned>(v);
+                }
+                else {
+                    _e->i_num = static_cast<int>(v);
+                }
+            }
+            else if(s.find('.') != std::string::npos || hasFloatSuffix){
                 _e->f_num = std::stof(s);
+            }
+            else if(hasUintSuffix){
+                /// Strip trailing `u`/`U`.
+                _e->ui_num = static_cast<unsigned>(std::stoul(s.substr(0, s.size() - 1)));
             }
             else {
                 _e->i_num = std::stoi(s);
@@ -1497,7 +1548,7 @@ namespace omegasl {
             case TOK_OP : {
                 hasPrefixOp = true;
                 OmegaCommon::StrRef op_type = first_tok.str;
-                if(op_type != OP_NOT && op_type != OP_MINUS && op_type != OP_PLUSPLUS && op_type != OP_MINUSMINUS){
+                if(op_type != OP_NOT && op_type != OP_MINUS && op_type != OP_PLUSPLUS && op_type != OP_MINUSMINUS && op_type != OP_BITNOT){
                     auto e = std::make_unique<UnexpectedToken>(std::string("Invalid operator `") + std::string(op_type) + "` in this context.");
                     e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
                     diagnostics->addError(std::move(e));

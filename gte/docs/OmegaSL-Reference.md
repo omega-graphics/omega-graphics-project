@@ -81,12 +81,20 @@ int indices[16];
 ### Literals
 
 ```omegasl
-42          // int
+42          // int (decimal)
+42u         // uint (explicit suffix)
+0xFF        // int (hex)
+0xFFu       // uint (hex with suffix)
+0xFFFFFFFF  // uint (hex that overflows int → auto-promoted to uint)
 3.14        // float
 3.14f       // float (explicit)
 true        // bool
 false       // bool
 ```
+
+- **Hex literals** use the `0x` / `0X` prefix. Digits are `0-9a-fA-F`.
+- **`u` / `U` suffix** forces `uint`. A hex literal that does not fit in a signed `int` is also promoted to `uint` automatically.
+- **`f` / `F` suffix** forces `float` on a decimal literal.
 
 ## 3. Declarations
 
@@ -275,6 +283,20 @@ while(val > 1.0){
 }
 ```
 
+`break;` exits the innermost enclosing `for` or `while` loop. `continue;` skips the rest of the current iteration and proceeds to the next. Both must appear inside a loop body — placing them outside a loop produces a target-backend error.
+
+```omegasl
+for(int i = 0; i < 100; i++){
+    if(i >= limit){
+        break;
+    }
+    if((i % 2) == 0){
+        continue;
+    }
+    sum += (float)i;
+}
+```
+
 ## 6. Expressions
 
 ### Binary operators
@@ -284,10 +306,16 @@ while(val > 1.0){
 | `+`, `-`, `*`, `/` | Arithmetic |
 | `==`, `!=` | Equality |
 | `<`, `<=`, `>`, `>=` | Comparison |
+| `&&`, `\|\|` | Logical AND / OR (short-circuit) |
+| `&`, `\|`, `^` | Bitwise AND / OR / XOR |
+| `<<`, `>>` | Bitwise left / right shift |
 | `=` | Assignment |
-| `+=`, `-=`, `*=`, `/=` | Compound assignment |
+| `+=`, `-=`, `*=`, `/=` | Arithmetic compound assignment |
+| `&=`, `\|=`, `^=`, `<<=`, `>>=` | Bitwise compound assignment |
 
 Scalar-vector operations are supported (e.g. `float4 * float`).
+
+Precedence (highest to lowest): multiplicative (`* /`), additive (`+ -`), shift (`<< >>`), relational (`< <= > >=`), equality (`== !=`), bitwise AND (`&`), bitwise XOR (`^`), bitwise OR (`|`), logical AND (`&&`), logical OR (`||`), assignment and compound assignment. This matches the C family.
 
 ### Unary operators
 
@@ -295,8 +323,26 @@ Scalar-vector operations are supported (e.g. `float4 * float`).
 |----------|----------|-------------|
 | `-` | Prefix | Negation |
 | `!` | Prefix | Logical NOT |
+| `~` | Prefix | Bitwise NOT |
 | `++` | Prefix/Postfix | Increment |
 | `--` | Prefix/Postfix | Decrement |
+
+### Literal coercion
+
+In variable initializers and binary expressions, a numeric scalar **literal** implicitly takes the type of the adjacent scalar. This avoids the need for a cast on every integer constant:
+
+```omegasl
+uint a = input[0].value[0];
+uint masked = a & 0xFF;    // `0xFF` is an int literal but coerces to uint
+uint shifted = a << 2;     // same — `2` coerces to uint
+int  i = 0;                // plain int
+float f = 1;               // `1` coerces to float
+```
+
+Rules:
+- **Integer literals** (including hex) coerce to `int`, `uint`, or `float`.
+- **Float literals** coerce to `float` only. Writing `int x = 3.14;` is a type error — use `(int)3.14` if that's intended.
+- **Non-literal** operands must match exactly. Mixing a non-literal `int` and `uint` in the same expression, or assigning a `float` variable to a `uint`, requires an explicit cast. This catches accidental sign/width confusion that is a real bug most of the time.
 
 ### Other expressions
 
@@ -481,3 +527,53 @@ The compiler performs constant folding before code generation: binary operations
 | `compute` | `cs_5_0` | `kernel` | `.comp` |
 | `hull` | `hs_5_0` | `kernel` | `.tesc` |
 | `domain` | `ds_5_0` | `[[patch(...)]] vertex` | `.tese` |
+
+## 11. Feature Status
+
+A snapshot of what is implemented, what is partial, and what is intentionally absent. Useful when planning shaders around the language's current capabilities.
+
+### Working
+
+- **Preprocessor** — `#define`, `#ifdef`, `#ifndef`, `#endif`, `#include` (depth 10).
+- **Scalar / vector / matrix types** — `bool`, `int`, `uint`, `float`; `int2/3/4`, `uint2/3/4`, `float2/3/4`; `float2x2/3x3/4x4`.
+- **Swizzles and index access** — `.x/.y/.z/.w`, `.xy`, `.xyz`, `.xyzw`, `v[i]`.
+- **Fixed-size arrays** — supported in variable declarations (`float arr[4];`).
+- **Structs** — plain data structs and `internal` structs (with attribute fields) for inter-stage data.
+- **Structured buffers** — `buffer<T>` with `in` / `out` / `inout` access.
+- **Textures / samplers** — `texture1d/2d/3d`, `sampler1d/2d/3d`, static samplers with filter + address mode configuration.
+- **User-defined functions** — emitted as helpers ahead of shader entry points.
+- **Shader stages** — `vertex`, `fragment`, `compute`, `hull`, `domain` across all three backends.
+- **Statements** — variable declaration, assignment (`=`, `+=`, `-=`, `*=`, `/=`, `&=`, `|=`, `^=`, `<<=`, `>>=`), `return` (bare and with value), `if` / `else if` / `else`, `for`, `while`, **`break`**, **`continue`**.
+- **Operators** — arithmetic (`+ - * /`), comparison (`< <= > >=`), equality (`== !=`), logical (`&& || !`), bitwise binary (`& | ^ << >>`), bitwise unary (`~`), prefix/postfix `++`/`--`, prefix `-`, C-style cast, address-of / dereference.
+- **Numeric literals** — decimal `int`, hex `int` (`0xFF`), `uint` suffix (`42u`, `0xFFu`), `float` suffix (`3.14f`), auto-promotion of oversized hex literals to `uint`, and literal coercion between numeric scalars (int/uint/float literals adapt to the target scalar type in variable initializers and binary expressions; float literals only coerce to float).
+- **Builtins** — vector and matrix constructors, `dot`, `cross`, `sample`, `read`, `write`, full math intrinsic set (1/2/3-argument).
+- **Constant folding** — literal arithmetic is folded before code generation.
+- **Three backends** — HLSL (`D3DCompile`), MSL (`newLibraryWithSource:`), GLSL (`shaderc`).
+- **Runtime and offline compilation** — `omegaslc` CLI and in-process `OmegaSLCompiler`.
+
+### Partial / caveats
+
+- **`break` / `continue` loop-context enforcement** — the parser and codegen accept these statements anywhere. When used outside a loop the target backend (fxc / metal / glslang) is what ultimately rejects the shader. Frontend Sema does not yet produce a friendly OmegaSL-level diagnostic for this case.
+- **Shift tokens and nested templates** — the lexer eagerly tokenizes `<<` and `>>` as shift operators. `buffer<buffer<T>>` written without a space between the two `>` characters will mis-lex. Nested buffer templates are not currently supported, so this is a theoretical hazard today; if nesting is ever added, users will need to write `> >` with a space.
+- **Non-literal numeric coercion** — only literals coerce implicitly between numeric scalars. Mixing a non-literal `int` and `uint`, or assigning a non-literal across types, still requires an explicit cast. This is intentional to catch sign/width confusion bugs until a dedicated promotion pass lands.
+- **Function declarations** — must be defined before use; there are no forward declarations.
+- **Array types** — only valid in local variable declarations. Function parameters, struct fields, and return types cannot be array types.
+- **Constant folding** — only folds literal-on-literal binary ops and unary negation; folded identifiers / `#define` constants are not propagated.
+- **Static sampler properties** — only `filter`, `address_mode`, and `max_anisotropy` are recognized. No LOD bias, comparison functions, or border colors.
+
+### Not implemented
+
+- **`double` / 64-bit floats** — intentionally omitted. Metal has no `double`, and GLSL requires extensions. Use `float`.
+- **`do { } while(...)` loops** — no backend emission.
+- **`switch` / `case` / `default` statements** — parse and codegen are absent.
+- **Ternary `?:`** — not implemented.
+- **Function overloading / default arguments** — a function name uniquely identifies a function.
+- **Generic / template functions** — not implemented; builtin math functions are the only polymorphic calls.
+- **Atomic operations** — no `atomic_add` / `atomic_exchange` / etc. for compute shaders.
+- **Threadgroup / shared memory** — no `groupshared` / `threadgroup` storage class.
+- **Barrier intrinsics** — no `GroupMemoryBarrierWithGroupSync` / `threadgroup_barrier` / `barrier`.
+- **Derivative intrinsics** — no `ddx` / `ddy` / `fwidth`.
+- **Push constants / root constants** — only structured buffers and textures are exposed as resources.
+- **Specialization constants** — no runtime specialization path.
+- **Raytracing stages** — no `raygeneration`, `closesthit`, `miss`, etc.
+- **Mesh / task shaders** — not implemented.

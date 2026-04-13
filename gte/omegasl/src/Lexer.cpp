@@ -19,6 +19,8 @@ namespace omegasl {
         (subject == KW_ELSE) ||
         (subject == KW_FOR) ||
         (subject == KW_WHILE) ||
+        (subject == KW_BREAK) ||
+        (subject == KW_CONTINUE) ||
         (subject == KW_STRUCT) ||
         (subject == KW_INTERNAL) ||
         (subject == KW_RETURN) ||
@@ -206,6 +208,15 @@ namespace omegasl {
                         PUSH_CHAR(c);
                         SEEK_TO_NEXT_CHAR();
                     }
+                    else if(c == '>'){
+                        PUSH_CHAR(c);
+                        SEEK_TO_NEXT_CHAR();
+                        c = AHEAD_CHAR();
+                        if(c == '='){
+                            PUSH_CHAR(c);
+                            SEEK_TO_NEXT_CHAR();
+                        }
+                    }
                     PUSH_TOK(TOK_OP);
                 }
 
@@ -215,6 +226,15 @@ namespace omegasl {
                     if(c == '='){
                         PUSH_CHAR(c);
                         SEEK_TO_NEXT_CHAR();
+                    }
+                    else if(c == '<'){
+                        PUSH_CHAR(c);
+                        SEEK_TO_NEXT_CHAR();
+                        c = AHEAD_CHAR();
+                        if(c == '='){
+                            PUSH_CHAR(c);
+                            SEEK_TO_NEXT_CHAR();
+                        }
                     }
                     PUSH_TOK(TOK_OP);
                 }
@@ -273,7 +293,35 @@ namespace omegasl {
                 }
                 case '&' : {
                     PUSH_CHAR(c);
+                    c = AHEAD_CHAR();
+                    if(c == '&' || c == '='){
+                        PUSH_CHAR(c);
+                        SEEK_TO_NEXT_CHAR();
+                        PUSH_TOK(TOK_OP);
+                    }
                     PUSH_TOK(TOK_AMPERSAND);
+                }
+                case '|' : {
+                    PUSH_CHAR(c);
+                    c = AHEAD_CHAR();
+                    if(c == '|' || c == '='){
+                        PUSH_CHAR(c);
+                        SEEK_TO_NEXT_CHAR();
+                    }
+                    PUSH_TOK(TOK_OP);
+                }
+                case '^' : {
+                    PUSH_CHAR(c);
+                    c = AHEAD_CHAR();
+                    if(c == '='){
+                        PUSH_CHAR(c);
+                        SEEK_TO_NEXT_CHAR();
+                    }
+                    PUSH_TOK(TOK_OP);
+                }
+                case '~' : {
+                    PUSH_CHAR(c);
+                    PUSH_TOK(TOK_OP);
                 }
                 case ':' : {
                     PUSH_CHAR(c);
@@ -287,24 +335,53 @@ namespace omegasl {
                     /// If Tok starts with digit
                     if(std::isdigit(c)){
                         PUSH_CHAR(c);
+                        bool isHex = false;
+                        /// Hex literal prefix: `0x` / `0X`.
+                        if(c == '0'){
+                            char peek = AHEAD_CHAR();
+                            if(peek == 'x' || peek == 'X'){
+                                isHex = true;
+                                c = NEXT_CHAR();
+                                PUSH_CHAR(c);
+                                while(true){
+                                    peek = AHEAD_CHAR();
+                                    if(std::isdigit(peek) ||
+                                       (peek >= 'a' && peek <= 'f') ||
+                                       (peek >= 'A' && peek <= 'F')){
+                                        c = NEXT_CHAR();
+                                        PUSH_CHAR(c);
+                                        continue;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
                         bool hasDecimalPoint = false;
-                        while(true){
-                            c = AHEAD_CHAR();
-                            if(std::isdigit(c)){
-                                c = NEXT_CHAR();
-                                PUSH_CHAR(c);
-                                continue;
+                        if(!isHex){
+                            while(true){
+                                c = AHEAD_CHAR();
+                                if(std::isdigit(c)){
+                                    c = NEXT_CHAR();
+                                    PUSH_CHAR(c);
+                                    continue;
+                                }
+                                if(!hasDecimalPoint && c == '.'){
+                                    hasDecimalPoint = true;
+                                    c = NEXT_CHAR();
+                                    PUSH_CHAR(c);
+                                    continue;
+                                }
+                                break;
                             }
-                            if(!hasDecimalPoint && c == '.'){
-                                hasDecimalPoint = true;
-                                c = NEXT_CHAR();
-                                PUSH_CHAR(c);
-                                continue;
-                            }
-                            break;
                         }
                         c = AHEAD_CHAR();
-                        if(c == 'f' || c == 'F'){
+                        /// Suffixes: `f`/`F` = float, `u`/`U` = uint.
+                        /// `f` is only valid on decimal literals (never on hex).
+                        if((c == 'f' || c == 'F') && !isHex){
+                            c = NEXT_CHAR();
+                            PUSH_CHAR(c);
+                        }
+                        else if(c == 'u' || c == 'U'){
                             c = NEXT_CHAR();
                             PUSH_CHAR(c);
                         }

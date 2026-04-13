@@ -75,6 +75,33 @@ void test_nested(uint3 tid : GlobalThreadID){
 
 [in input, out output]
 compute(x=1,y=1,z=1)
+void test_break_continue(uint3 tid : GlobalThreadID){
+    float sum = 0.0;
+    int limit = (int)input[0].value[0];
+
+    for(int i = 0; i < 100; i++){
+        if(i >= limit){
+            break;
+        }
+        if((i % 2) == 0){
+            continue;
+        }
+        sum += (float)i;
+    }
+
+    int j = 0;
+    while(j < 1000){
+        j++;
+        if(j > limit){
+            break;
+        }
+    }
+
+    output[0].value = make_float4(sum, (float)j, 0.0, 0.0);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
 void test_bare_return(uint3 tid : GlobalThreadID){
     float x = input[0].value[0];
     if(x < 0.0){

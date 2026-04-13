@@ -1242,7 +1242,7 @@ Tier 1 (Scheduling Architecture) — requires Tier 0 NV-3:
 
 Phase A: Surface mailbox (single per-window surface) [COMPLETED]
     └─→ Phase A-1: Direct-to-drawable rendering (remove offscreen blit) [COMPLETED]
-            └─→ Phase B: Frame-oriented compositor loop
+            └─→ Phase B: Frame-oriented compositor loop [COMPLETED]
                     └─→ Phase C: Resize coordination
 
 Tier 2 (Per-Command Rendering) — operates within Phase B's render step:

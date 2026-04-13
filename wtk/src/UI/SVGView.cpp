@@ -602,7 +602,8 @@ void SVGView::renderNow() {
                 if (hasFill) {
                     auto brush = makeFillBrush();
                     p.setPathBrush(brush);
-                    p.setStroke(0);
+                    // Fill path has to be drawn with 
+                    p.setStroke(1);
                     svgCanvas->drawPath(p);
                 }
                 if (hasStroke) {

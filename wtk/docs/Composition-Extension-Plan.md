@@ -243,7 +243,7 @@ Every `.cpp` file in the Composition submodule that actually constructs GTE obje
 
 ### 1.1 Implement the gradient compute shader
 
-The shader source in `RenderTarget.cpp` already defines `GradientTextureConstParams` and `LinearGradientStop`, but the `linearGradient` compute function is commented out. Implement:
+The shader source `compositor.omegasl` already defines `GradientTextureConstParams` and `LinearGradientStop`, but the `linearGradient` compute function is commented out. Implement:
 
 ```
 // Linear: sample along the line defined by angle, 
@@ -370,6 +370,76 @@ Extend `GradientTextureConstParams` to carry `startX, startY, endX, endY` (linea
 ## Phase 3 — Canvas drawing extensions
 
 **Goal:** Fill the gaps in the Canvas drawing surface for general UI work.
+
+### 3.0 Unified `drawPath` with explicit fill + stroke brushes
+
+**Goal:** Collapse the current split between "stroked path" and "filled path" into a single `drawPath` call that takes both a fill brush and a stroke brush as separate parameters. Either brush may be null to skip that component.
+
+#### Current state
+
+`Canvas::drawPath(Path &)` reads brush + stroke width from the `Path` itself (`path.impl_->pathBrush`, `path.impl_->currentStroke`). It then branches on `strokeWidth == 0.f`:
+
+- `strokeWidth == 0` → treat the single brush as a fill, emit one `VectorPath` command with `fillBrush = brush`, `strokeBrush = nullptr`.
+- `strokeWidth > 0` → treat the single brush as a stroke, emit one command with `strokeBrush = brush`, `fillBrush = nullptr`.
+
+A path can never be stroked *and* filled in one call. Callers that want both (the common SVG case) have to build two `Path` objects or call `drawPath` twice with different brushes — neither is clean, and SVGView currently works around this by duplicating geometry. The stroke-vs-fill toggle is also implicit (zero stroke width == fill), which is a footgun.
+
+The backend (`RenderTarget.cpp` VectorPath dispatch) already accepts separate `brush` + `fillBrush` fields on `VisualCommand::Data::pathParams`, so the underlying command model already supports fill+stroke in one command. Only the Canvas-facing API forces the either/or.
+
+#### 3.0.1 New signature
+
+```cpp
+void drawPath(Path & path,
+              const Core::SharedPtr<Brush> & fillBrush,
+              const Core::SharedPtr<Brush> & strokeBrush = nullptr,
+              float strokeWidth = 0.f);
+```
+
+Semantics:
+
+- `fillBrush != nullptr` → fill the path's interior with that brush.
+- `strokeBrush != nullptr && strokeWidth > 0` → stroke the path outline with that brush at the given width.
+- Both set → one draw that fills and strokes (single `VectorPath` command per segment, fill rendered before stroke).
+- Both null or stroke width 0 with null fill → no-op.
+
+The `Path`'s own `pathBrush` and `currentStroke` fields become fallbacks for callers that don't pass explicit arguments (see 3.0.3), not the primary API.
+
+#### 3.0.2 Backend dispatch
+
+`VisualCommand` VectorPath already carries `brush` (stroke), `fillBrush`, `strokeWidth`, `contour`, `fill`. The Canvas implementation constructs one command per path segment with:
+
+- `fill = (fillBrush != nullptr)`
+- `contour = (strokeBrush != nullptr && strokeWidth > 0)`
+- `brush = strokeBrush`
+- `fillBrush = fillBrush`
+
+`RenderTarget.cpp` VectorPath handling (lines ~919 stroke, ~928 fill) must be audited to ensure a single command with both `fill` and `contour` true renders fill first, then stroke on top. If the current code assumes mutual exclusion, split it into sequential fill-then-stroke passes within one command.
+
+#### 3.0.3 Migration of existing `drawPath(Path &)` callers
+
+The zero-arg overload stays as a thin shim for backwards compatibility:
+
+```cpp
+void drawPath(Path & path); // reads path.pathBrush + path.currentStroke, delegates to new overload
+```
+
+Internally it resolves:
+
+- `strokeWidth = path.impl_->currentStroke`
+- If `strokeWidth == 0` → `fillBrush = path.pathBrush`, `strokeBrush = nullptr`
+- If `strokeWidth > 0` → `strokeBrush = path.pathBrush`, `fillBrush = nullptr`, pass strokeWidth through
+
+This preserves the current `RectFrame` / `RoundedRectFrame` / `EllipseFrame` border path used by `drawRect`/`drawRoundedRect`/`drawEllipse` without touching them.
+
+#### 3.0.4 Simplify shape draw methods (optional, follow-up)
+
+With the unified `drawPath`, the border handling in `drawRect`/`drawRoundedRect`/`drawEllipse` (which currently builds a frame `Path`, sets its brush, and delegates to `drawPath`) can eventually be replaced by a single path-based implementation. Out of scope for Phase 3.0 — the existing behavior stays intact.
+
+#### Files touched
+
+- `wtk/include/omegaWTK/Composition/Canvas.h` — new `drawPath` overload with fill+stroke brushes
+- `wtk/src/Composition/Canvas.cpp` — implement new overload, keep legacy single-arg as shim
+- `wtk/src/Composition/backend/RenderTarget.cpp` — ensure VectorPath dispatch handles `fill && contour` together (fill then stroke)
 
 ### 3.1 `drawLine`
 

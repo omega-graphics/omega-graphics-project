@@ -245,7 +245,7 @@ namespace omegasl {
                 for(unsigned i = 0;i < level_count;i++){
                     shaderOut << "  ";
                 }
-                if(s->type == VAR_DECL || s->type == RETURN_DECL || s->type == IF_STMT || s->type == FOR_STMT || s->type == WHILE_STMT){
+                if(s->type == VAR_DECL || s->type == RETURN_DECL || s->type == IF_STMT || s->type == FOR_STMT || s->type == WHILE_STMT || s->type == BREAK_STMT || s->type == CONTINUE_STMT){
                     generateDecl((ast::Decl *)s);
                     if(s->type != IF_STMT && s->type != FOR_STMT && s->type != WHILE_STMT)
                         shaderOut << ";";
@@ -411,6 +411,14 @@ namespace omegasl {
                     generateExpr(_stmt->condition);
                     shaderOut << ")";
                     generateBlock(*_stmt->body);
+                    break;
+                }
+                case BREAK_STMT : {
+                    shaderOut << "break";
+                    break;
+                }
+                case CONTINUE_STMT : {
+                    shaderOut << "continue";
                     break;
                 }
                 case STRUCT_DECL : {

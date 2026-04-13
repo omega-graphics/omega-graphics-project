@@ -1,0 +1,86 @@
+
+struct Data {
+    uint4 value;
+};
+
+buffer<Data> input : 0;
+buffer<Data> output : 1;
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_bitwise_binary(uint3 tid : GlobalThreadID){
+    uint a = input[0].value[0];
+    uint b = input[0].value[1];
+
+    uint r_and = a & b;
+    uint r_or  = a | b;
+    uint r_xor = a ^ b;
+    uint r_shl = a << 2;
+    uint r_shr = b >> 1;
+
+    output[0].value = make_uint4(r_and, r_or, r_xor, r_shl ^ r_shr);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_bitwise_unary(uint3 tid : GlobalThreadID){
+    uint a = input[0].value[0];
+    uint inverted = ~a;
+    uint masked = ~a & 0xFF;
+    uint high = a & 0xFF00;
+    uint tagged = masked | 0x80u;
+    output[0].value = make_uint4(inverted, masked, high, tagged);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_logical(uint3 tid : GlobalThreadID){
+    int x = (int)input[0].value[0];
+    int y = (int)input[0].value[1];
+    uint result = 0;
+
+    if(x > 0 && y > 0){
+        result = 1;
+    }
+    else if(x < 0 || y < 0){
+        result = 2;
+    }
+
+    if(!(x == y)){
+        result = result | 4;
+    }
+
+    output[0].value = make_uint4(result, 0, 0, 0);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_compound_assign(uint3 tid : GlobalThreadID){
+    uint acc = input[0].value[0];
+    uint mask = input[0].value[1];
+
+    acc &= mask;
+    acc |= 0x1;
+    acc ^= 0xFF;
+    acc <<= 1;
+    acc >>= 2;
+
+    output[0].value = make_uint4(acc, 0, 0, 0);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_precedence(uint3 tid : GlobalThreadID){
+    uint a = input[0].value[0];
+    uint b = input[0].value[1];
+    uint c = input[0].value[2];
+
+    /// Verifies relational > bitwise-and > logical-and ordering:
+    /// parses as ((a > 0) && ((b & c) == 0)).
+    if(a > 0 && (b & c) == 0){
+        output[0].value = make_uint4(1, 0, 0, 0);
+    }
+    else {
+        output[0].value = make_uint4(0, 0, 0, 0);
+    }
+}

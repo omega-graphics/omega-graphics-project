@@ -336,7 +336,7 @@ using namespace metal;
                 for(unsigned l = level_count;l != 0;l--){
                     shaderOut << "    ";
                 }
-                if(stmt->type == VAR_DECL || stmt->type == RETURN_DECL || stmt->type == IF_STMT || stmt->type == FOR_STMT || stmt->type == WHILE_STMT){
+                if(stmt->type == VAR_DECL || stmt->type == RETURN_DECL || stmt->type == IF_STMT || stmt->type == FOR_STMT || stmt->type == WHILE_STMT || stmt->type == BREAK_STMT || stmt->type == CONTINUE_STMT){
                     generateDecl((ast::Decl *)stmt);
                     if(stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT)
                         shaderOut << ";";
@@ -413,6 +413,14 @@ using namespace metal;
                     generateExpr(_stmt->condition);
                     shaderOut << ")";
                     generateBlock(*_stmt->body);
+                    break;
+                }
+                case BREAK_STMT : {
+                    shaderOut << "break";
+                    break;
+                }
+                case CONTINUE_STMT : {
+                    shaderOut << "continue";
                     break;
                 }
                 case RESOURCE_DECL : {

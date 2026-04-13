@@ -237,6 +237,14 @@ namespace omegasl {
                     generateBlock(*_stmt->body);
                     break;
                 }
+                case BREAK_STMT : {
+                    shaderOut << "break";
+                    break;
+                }
+                case CONTINUE_STMT : {
+                    shaderOut << "continue";
+                    break;
+                }
                 case STRUCT_DECL : {
                     auto _decl = (ast::StructDecl *)decl;
 

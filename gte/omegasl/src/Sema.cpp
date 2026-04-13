@@ -184,6 +184,38 @@ namespace omegasl {
         return t == ast::builtins::float2_type || t == ast::builtins::float3_type || t == ast::builtins::float4_type;
     }
 
+    /// Unwrap a prefix `-` on a numeric literal so `-5` is treated as a
+    /// literal for coercion purposes. ConstFold runs after Sema, so at
+    /// this point `-5` is still a UnaryOpExpr(LITERAL_EXPR).
+    static ast::LiteralExpr *asNumericLiteral(ast::Expr *e) {
+        if(e == nullptr) return nullptr;
+        if(e->type == UNARY_EXPR){
+            auto *u = static_cast<ast::UnaryOpExpr *>(e);
+            if(u->isPrefix && u->op == OP_MINUS && u->expr && u->expr->type == LITERAL_EXPR){
+                auto *lit = static_cast<ast::LiteralExpr *>(u->expr);
+                if(lit->isInt() || lit->isUint() || lit->isFloat()) return lit;
+            }
+            return nullptr;
+        }
+        if(e->type == LITERAL_EXPR){
+            auto *lit = static_cast<ast::LiteralExpr *>(e);
+            if(lit->isInt() || lit->isUint() || lit->isFloat()) return lit;
+        }
+        return nullptr;
+    }
+
+    /// Literal coercion rules:
+    ///   - int / uint literals coerce to any numeric scalar (int, uint, float).
+    ///   - float literals coerce only to float. Coercing `3.14` into an int
+    ///     or uint slot requires an explicit cast.
+    static bool canCoerceLiteralTo(ast::LiteralExpr *lit, ast::Type *target) {
+        if(lit == nullptr || target == nullptr) return false;
+        if(!isNumericScalar(target)) return false;
+        if(lit->isFloat()) return target == ast::builtins::float_type;
+        if(lit->isInt() || lit->isUint()) return true;
+        return false;
+    }
+
     ast::TypeExpr *Sem::performSemForDecl(ast::Decl * decl,ast::FuncDecl *funcContext){
         auto ret = ast::TypeExpr::Create(KW_TY_VOID);
         switch (decl->type) {
@@ -216,9 +248,18 @@ namespace omegasl {
                         auto initTy = resolveTypeWithExpr(initType);
                         if(initTy && type_res && initTy != type_res){
                             bool compatible = false;
-                            /// Allow numeric scalar implicit conversions.
-                            if(isNumericScalar(initTy) && isNumericScalar(type_res)) compatible = true;
-                            /// Allow scalar-to-vector is not valid, but same-type is fine.
+                            /// Literal coercion: a numeric scalar literal
+                            /// implicitly takes the declared scalar type.
+                            /// Non-literal int↔uint↔float mixing is a real
+                            /// bug most of the time — require an explicit
+                            /// cast for those.
+                            if(isNumericScalar(type_res)){
+                                auto *lit = asNumericLiteral(initExpr);
+                                if(canCoerceLiteralTo(lit, type_res)){
+                                    initExpr->resolvedType = _decl->typeExpr;
+                                    compatible = true;
+                                }
+                            }
                             if(!compatible){
                                 auto e = std::make_unique<TypeError>(std::string("Cannot initialize `") + _decl->typeExpr->name + "` variable with expression of type `" + initType->name + "`");
                                 e->loc = _decl->loc.value_or(ErrorLoc{});
@@ -260,6 +301,13 @@ namespace omegasl {
                 auto _stmt = (ast::WhileStmt *)decl;
                 if(_stmt->condition && !performSemForExpr(_stmt->condition,funcContext)) return nullptr;
                 if(_stmt->body) for(auto s : _stmt->body->body) if(!performSemForStmt(s,funcContext)) return nullptr;
+                break;
+            }
+            case BREAK_STMT :
+            case CONTINUE_STMT : {
+                /// `break` / `continue` carry no subexpressions and produce no type.
+                /// Loop-context enforcement is left to the target backend —
+                /// HLSL/MSL/GLSL all reject these outside loops at compile time.
                 break;
             }
         }
@@ -487,6 +535,26 @@ namespace omegasl {
                     if(lhsScalar != rhsScalar) compatible = true;
                     /// matrix * matrix, matrix * vector, vector * matrix, scalar * matrix
                     if(isMatrixType(lhsTy) || isMatrixType(rhsTy)) compatible = true;
+                }
+                /// Literal coercion: a numeric scalar literal on one side
+                /// takes the other side's scalar type. Non-literal int↔uint
+                /// (and int↔float) mixing stays a type error — the user
+                /// should cast explicitly in those cases.
+                if(!compatible && lhsTy && isNumericScalar(lhsTy)){
+                    auto *rhsLit = asNumericLiteral(_expr->rhs);
+                    if(canCoerceLiteralTo(rhsLit, lhsTy)){
+                        _expr->rhs->resolvedType = lhs_res;
+                        rhs_res = lhs_res;
+                        compatible = true;
+                    }
+                }
+                if(!compatible && rhsTy && isNumericScalar(rhsTy)){
+                    auto *lhsLit = asNumericLiteral(_expr->lhs);
+                    if(canCoerceLiteralTo(lhsLit, rhsTy)){
+                        _expr->lhs->resolvedType = rhs_res;
+                        lhs_res = rhs_res;
+                        compatible = true;
+                    }
                 }
                 if(!compatible){
                     auto e = std::make_unique<TypeError>("Failed to match type in binary expr.");
