@@ -75,7 +75,8 @@ namespace OmegaWTK::Composition {
         ViewportOverride viewportOverride_;
         SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> frameCB_;
         bool frameActive_ = false;
-        bool lastPipelineWasTexture_ = false;
+        enum class PipelineKind { None, Color, Texture };
+        PipelineKind lastPipelineKind_ = PipelineKind::None;
         bool renderingToNative_ = false;
         void rebuildBackingTarget();
         void createGradientTexture(bool linearOrRadial,Gradient & gradient,OmegaGTE::GRect & rect,SharedHandle<OmegaGTE::GETexture> & dest);

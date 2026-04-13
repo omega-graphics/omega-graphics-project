@@ -2,6 +2,8 @@
 
 #include "WidgetTreeHost.h"
 #include "omegaWTK/UI/View.h"
+#include "omegaWTK/Composition/CompositeFrame.h"
+#include "omegaWTK/Composition/CompositorClient.h"
 
 namespace OmegaWTK {
 
@@ -34,6 +36,13 @@ void Widget::executePaint(PaintReason reason,bool immediate){
     }
     PaintReason activeReason = reason;
     while(true){
+        // Per Direction 3: each executePaint owns a CompositeFrame.
+        // Canvas::sendFrame -> pushFrame appends a slice into this
+        // frame; depositFrame() lands it in the window mailbox; the
+        // surface deposit callback wakes the compositor frame worker.
+        auto pendingFrame = std::make_shared<Composition::CompositeFrame>();
+        view->compositorProxy().setActiveCompositeFrame(pendingFrame.get());
+
         view->startCompositionSession();
         onPaint(activeReason);
         int submissions = 1;
@@ -43,7 +52,14 @@ void Widget::executePaint(PaintReason reason,bool immediate){
             submissions = std::max<int>(1,impl_->options.warmupFrameCount);
         }
         view->submitPaintFrame(submissions);
+
+        if(treeHost != nullptr){
+            treeHost->depositFrame(pendingFrame);
+        }
+
         view->endCompositionSession();
+        view->compositorProxy().setActiveCompositeFrame(nullptr);
+
         if(activeReason == PaintReason::Initial){
             impl_->initialDrawComplete = true;
         }

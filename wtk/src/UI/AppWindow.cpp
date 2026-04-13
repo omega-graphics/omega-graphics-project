@@ -1,5 +1,6 @@
 #include "AppWindowImpl.h"
 #include "../Composition/Compositor.h"
+#include "../Composition/backend/ResourceFactory.h"
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/Native/NativeWindow.h"
 #include "omegaWTK/Native/NativeDialog.h"
@@ -67,6 +68,20 @@ void AppWindow::setRootWidget(WidgetPtr widget){
     // Phase 3: propagate the window's single render target to the
     // WidgetTreeHost so it can be distributed to all Views during
     // initWidgetTree(). All Views in this window share this target.
+    // Build the window's single backend visual tree and register it so
+    // the compositor can resolve the window render target during draining.
+    {
+        Composition::BackendResourceFactory factory;
+        Composition::Rect rootRect = impl_->rect;
+        rootRect.pos = {0.f, 0.f};
+        impl_->windowVisualTreeData.bundle = factory.createVisualTreeForView(
+            impl_->rootViewRenderTarget,
+            rootRect,
+            impl_->windowVisualTreeData.presentTarget);
+        Composition::PreCreatedResourceRegistry::store(
+            impl_->rootViewRenderTarget.get(),
+            &impl_->windowVisualTreeData);
+    }
     impl_->widgetTreeHost->setWindowRenderTarget(impl_->rootViewRenderTarget);
     // Phase 5: provide the root native item so NativeViewHost can
     // embed real native views as children of the window's root view.
@@ -98,6 +113,9 @@ void AppWindow::close(){
 
 AppWindow::~AppWindow(){
     std::cout << "Closing Window" << std::endl;
+    if(impl_->rootViewRenderTarget != nullptr){
+        Composition::PreCreatedResourceRegistry::remove(impl_->rootViewRenderTarget.get());
+    }
     close();
 };
 

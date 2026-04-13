@@ -753,7 +753,7 @@ void BackendRenderTargetContext::beginFrame(float clearR, float clearG, float cl
     frameCB_->setScissorRects({scissorRect});
 
     frameActive_ = true;
-    lastPipelineWasTexture_ = false;  // Reset pipeline tracking
+    lastPipelineKind_ = PipelineKind::None;  // Reset pipeline tracking; first draw must rebind
 }
 
 void BackendRenderTargetContext::endFrame() {
@@ -1319,7 +1319,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             OmegaGTE::GEScissorRect scissorRect {viewport.x, viewport.y, viewport.width, viewport.height};
             cb->setViewports({viewport});
             cb->setScissorRects({scissorRect});
-            lastPipelineWasTexture_ = false; // Force rebind after restart
+            lastPipelineKind_ = PipelineKind::None; // Force rebind after restart
         } else if(textureFence != nullptr && standaloneCB){
             preEffectTarget->notifyCommandBuffer(cb, textureFence);
         }
@@ -1445,19 +1445,19 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         // Flush vertex data before draw calls
         bufferWriter->flush();
 
-        // Bind pipeline and resources (skip if same pipeline as last command)
+        // Bind pipeline and resources (skip only if same pipeline already bound on this command buffer)
         if(useTextureRenderPipeline){
-            if(!lastPipelineWasTexture_ || standaloneCB){
+            if(lastPipelineKind_ != PipelineKind::Texture || standaloneCB){
                 cb->setRenderPipelineState(textureRenderPipelineState);
-                lastPipelineWasTexture_ = true;
+                lastPipelineKind_ = PipelineKind::Texture;
             }
             cb->bindResourceAtVertexShader(buffer,1);
             cb->bindResourceAtFragmentShader(texturePaint,2);
         }
         else {
-            if(lastPipelineWasTexture_ || standaloneCB){
+            if(lastPipelineKind_ != PipelineKind::Color || standaloneCB){
                 cb->setRenderPipelineState(renderPipelineState);
-                lastPipelineWasTexture_ = false;
+                lastPipelineKind_ = PipelineKind::Color;
             }
             cb->bindResourceAtVertexShader(buffer,0);
         }

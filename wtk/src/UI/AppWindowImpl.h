@@ -5,6 +5,7 @@
 #include "omegaWTK/Native/NativeWindow.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/CompositorSurface.h"
+#include "../Composition/backend/ResourceFactory.h"
 
 namespace OmegaWTK {
 
@@ -17,6 +18,7 @@ struct AppWindow::Impl {
     Composition::Rect rect;
     SharedHandle<Menu> menu;
     SharedHandle<Composition::CompositorSurface> windowSurface;
+    Composition::PreCreatedVisualTreeData windowVisualTreeData;
 
     Impl(AppWindow & owner,Composition::Rect rectValue,AppWindowDelegate * delegateValue):
         nativeWindow(Native::make_native_window(rectValue,&owner)),

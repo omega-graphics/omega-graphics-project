@@ -342,6 +342,13 @@ namespace OmegaWTK {
         }
     }
 
+    void WidgetTreeHost::depositFrame(SharedHandle<Composition::CompositeFrame> frame){
+        if(windowSurface_ == nullptr || frame == nullptr || frame->slices.empty()){
+            return;
+        }
+        windowSurface_->deposit(std::move(frame));
+    }
+
     void WidgetTreeHost::paintAndDeposit(PaintReason reason,bool immediate){
         if(root == nullptr){
             return;

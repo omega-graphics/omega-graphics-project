@@ -172,6 +172,11 @@ namespace OmegaWTK {
         /// window's surface mailbox (Phase A).
         void paintAndDeposit(PaintReason reason,bool immediate = false);
 
+        /// Deposit a per-paint composite frame into the window's surface
+        /// mailbox. Called by Widget::executePaint after the slice has
+        /// been pushed via Canvas::sendFrame -> pushFrame.
+        void depositFrame(SharedHandle<Composition::CompositeFrame> frame);
+
         /// Set the root native item for this window (Phase 5).
         /// Called by AppWindow during setRootWidget().
         void setRootNativeItem(Native::NativeItemPtr item);
