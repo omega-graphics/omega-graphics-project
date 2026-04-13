@@ -19,29 +19,20 @@
 namespace OmegaWTK::Composition {
     struct CanvasEffect;
 
-   class CompositorScheduler {
-       Compositor *compositor;
-   public:
+    /// Frame worker thread. Sleeps on the compositor's queueCondition
+    /// until either shutdown is requested or frameDirty_ is set by a
+    /// CompositorSurface deposit. On wake, drains all registered
+    /// window surfaces.
+    class CompositorFrameWorker {
+        Compositor *compositor;
+    public:
         bool shutdown;
-
-        void shutdownAndJoin();
-        void processCommand(SharedHandle<CompositorCommand> & command,bool laneAdmissionBypassed = false);
         std::thread t;
 
-       explicit CompositorScheduler(Compositor *compositor);
-       ~CompositorScheduler();
-   };
+        void shutdownAndJoin();
 
-
-   struct CompareCommands {
-        auto operator()(SharedHandle<Composition::CompositorCommand> & lhs,
-                        SharedHandle<Composition::CompositorCommand> & rhs){
-           // View commands first (highest structural priority)
-           if(lhs->type == CompositorCommand::View && rhs->type != CompositorCommand::View) return true;
-           if(rhs->type == CompositorCommand::View && lhs->type != CompositorCommand::View) return false;
-           // Fallback deterministic ordering: compare types
-           return static_cast<int>(lhs->type) < static_cast<int>(rhs->type);
-        };
+        explicit CompositorFrameWorker(Compositor *compositor);
+        ~CompositorFrameWorker();
     };
 
 
@@ -55,33 +46,27 @@ namespace OmegaWTK::Composition {
         RenderTargetStore renderTargetStore;
 
         std::mutex mutex;
-
-        bool queueIsReady;
-
         std::condition_variable queueCondition;
-        OmegaCommon::PriorityQueueHeap<SharedHandle<CompositorCommand>,CompareCommands> commandQueue;
 
         friend class CompositorClientProxy;
-        friend class CompositorScheduler;
+        friend class CompositorFrameWorker;
 
-        SharedHandle<CompositorCommand> currentCommand;
-
-        CompositorScheduler scheduler;
+        CompositorFrameWorker frameWorker;
 
         /// Per-window surface mailboxes. Keyed by SharedHandle so the
         /// render target stays alive for as long as the compositor knows
         /// about it (matches RenderTargetStore keying).
         OmegaCommon::Map<SharedHandle<CompositionRenderTarget>,SharedHandle<CompositorSurface>> windowSurfaces_;
 
-        /// Phase B frame trigger. Set by deposit callback, cleared at
-        /// the top of each scheduler iteration before draining surfaces.
+        /// Frame trigger. Set by deposit callback, cleared at the top
+        /// of each frame worker iteration before draining surfaces.
         std::atomic<bool> frameDirty_ {false};
 
-        /// Wake the scheduler thread to drain window surfaces.
+        /// Wake the frame worker thread.
         void notifyFrameDirty();
 
         /// Drain all registered window surfaces and render any pending
-        /// composite frame. Called from the scheduler loop on wake.
+        /// composite frame. Called from the frame worker on wake.
         void drainWindowSurfaces();
 
         /// Render a composite frame consumed from a window surface into
@@ -92,9 +77,6 @@ namespace OmegaWTK::Composition {
         friend class Layer;
         friend class LayerTree;
         friend class ::OmegaWTK::AppWindow;
-
-        void executeCurrentCommand();
-        void onQueueDrained();
 
     public:
         /// Stub retained for Animation API compatibility. Real lane
@@ -118,8 +100,6 @@ namespace OmegaWTK::Composition {
 
         void registerWindowSurface(SharedHandle<CompositionRenderTarget> target,
                                    SharedHandle<CompositorSurface> surface);
-
-        void scheduleCommand(SharedHandle<CompositorCommand> & command);
 
         void hasDetached(LayerTree *tree) override;
         void layerHasResized(Layer *layer) override;

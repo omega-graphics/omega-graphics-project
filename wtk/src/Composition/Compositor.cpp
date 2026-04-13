@@ -4,9 +4,7 @@
 #include "omegaWTK/Composition/CompositeFrame.h"
 #include "backend/ResourceFactory.h"
 #include "backend/VisualTree.h"
-#include <algorithm>
 #include <cmath>
-#include <iostream>
 #include <mutex>
 #include <utility>
 
@@ -69,55 +67,19 @@ Compositor::LaneTelemetrySnapshot Compositor::getLaneTelemetrySnapshot(std::uint
     return snapshot;
 }
 
-void CompositorScheduler::processCommand(SharedHandle<CompositorCommand> & command, bool /*laneAdmissionBypassed*/){
-    if(command == nullptr){
-        return;
-    }
-    if(command->type == CompositorCommand::Packet){
-        auto packet = std::dynamic_pointer_cast<CompositorPacketCommand>(command);
-        if(packet == nullptr){
-            command->status.set(CommandStatus::Failed);
-            return;
-        }
-        for(auto & childCommand : packet->commands){
-            if(childCommand == nullptr){
-                continue;
-            }
-            {
-                std::lock_guard<std::mutex> lk(compositor->mutex);
-                compositor->currentCommand = childCommand;
-            }
-            processCommand(childCommand, true);
-        }
-        command->status.set(CommandStatus::Ok);
-        return;
-    }
-    compositor->executeCurrentCommand();
-}
-
-CompositorScheduler::CompositorScheduler(Compositor * compositor):compositor(compositor),shutdown(false),t([this](Compositor *compositor){
+CompositorFrameWorker::CompositorFrameWorker(Compositor * compositor):
+compositor(compositor),
+shutdown(false),
+t([this](Compositor *compositor){
     while(true){
-        SharedHandle<CompositorCommand> command;
         bool frameWake = false;
         {
             std::unique_lock<std::mutex> lk(compositor->mutex);
             compositor->queueCondition.wait(lk,[&]{
-                return shutdown
-                    || !compositor->commandQueue.empty()
-                    || compositor->frameDirty_.load(std::memory_order_acquire);
+                return shutdown || compositor->frameDirty_.load(std::memory_order_acquire);
             });
             if(shutdown){
-                while(!compositor->commandQueue.empty()){
-                    auto pending = compositor->commandQueue.first();
-                    compositor->commandQueue.pop();
-                    pending->status.set(CommandStatus::Failed);
-                }
                 break;
-            }
-            if(!compositor->commandQueue.empty()){
-                command = compositor->commandQueue.first();
-                compositor->commandQueue.pop();
-                compositor->currentCommand = command;
             }
             if(compositor->frameDirty_.exchange(false, std::memory_order_acq_rel)){
                 frameWake = true;
@@ -126,16 +88,11 @@ CompositorScheduler::CompositorScheduler(Compositor * compositor):compositor(com
         if(frameWake){
             compositor->drainWindowSurfaces();
         }
-        if(command == nullptr){
-            continue;
-        }
-        processCommand(command);
     }
-    std::cout << "--> Shutting Down" << std::endl;
 }, compositor){
 }
 
-void CompositorScheduler::shutdownAndJoin(){
+void CompositorFrameWorker::shutdownAndJoin(){
     {
         std::lock_guard<std::mutex> lk(compositor->mutex);
         shutdown = true;
@@ -151,15 +108,12 @@ void CompositorScheduler::shutdownAndJoin(){
     }
 }
 
-CompositorScheduler::~CompositorScheduler(){
+CompositorFrameWorker::~CompositorFrameWorker(){
     shutdownAndJoin();
 }
 
 Compositor::Compositor():
-queueIsReady(false),
-queueCondition(),
-commandQueue(200),
-scheduler(this){
+frameWorker(this){
 }
 
 Compositor::~Compositor(){
@@ -174,22 +128,11 @@ Compositor::~Compositor(){
             tree->removeObserver(this);
         }
     }
-    scheduler.shutdownAndJoin();
+    frameWorker.shutdownAndJoin();
     if(gte.graphicsEngine != nullptr){
         gte.graphicsEngine->waitForGPUIdle();
     }
     renderTargetStore.store.clear();
-}
-
-void Compositor::scheduleCommand(SharedHandle<CompositorCommand> & command){
-    if(command == nullptr){
-        return;
-    }
-    {
-        std::lock_guard<std::mutex> lk(mutex);
-        commandQueue.push(std::move(command));
-    }
-    queueCondition.notify_one();
 }
 
 void Compositor::registerWindowSurface(SharedHandle<CompositionRenderTarget> target,

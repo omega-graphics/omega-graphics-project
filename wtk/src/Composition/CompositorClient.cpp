@@ -3,21 +3,62 @@
 #include "omegaWTK/Composition/Canvas.h"
 #include "Compositor.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 
 namespace OmegaWTK::Composition {
 
     namespace {
         std::atomic<uint64_t> g_syncLaneSeed {1};
-        std::atomic<uint64_t> g_syncPacketSeed {1};
 
-        inline uint64_t allocateGlobalPacketId(){
-            return g_syncPacketSeed.fetch_add(1,std::memory_order_relaxed);
+        constexpr float kMaxTextureDimension = 16384.f;
+#if defined(TARGET_MACOS)
+        constexpr float kLogicalScaleFloor = 2.f;
+#else
+        constexpr float kLogicalScaleFloor = 1.f;
+#endif
+        constexpr float kMaxLogicalLayerDimension = kMaxTextureDimension / kLogicalScaleFloor;
+
+        Composition::Rect sanitizeRect(const Composition::Rect & candidate,
+                                       const Composition::Rect & fallback){
+            Composition::Rect saneFallback = fallback;
+            if(!std::isfinite(saneFallback.pos.x)){
+                saneFallback.pos.x = 0.f;
+            }
+            if(!std::isfinite(saneFallback.pos.y)){
+                saneFallback.pos.y = 0.f;
+            }
+            if(!std::isfinite(saneFallback.w) || saneFallback.w <= 0.f){
+                saneFallback.w = 1.f;
+            }
+            if(!std::isfinite(saneFallback.h) || saneFallback.h <= 0.f){
+                saneFallback.h = 1.f;
+            }
+            saneFallback.w = std::clamp(saneFallback.w,1.f,kMaxLogicalLayerDimension);
+            saneFallback.h = std::clamp(saneFallback.h,1.f,kMaxLogicalLayerDimension);
+
+            Composition::Rect sane = candidate;
+            if(!std::isfinite(sane.pos.x)){
+                sane.pos.x = saneFallback.pos.x;
+            }
+            if(!std::isfinite(sane.pos.y)){
+                sane.pos.y = saneFallback.pos.y;
+            }
+            if(!std::isfinite(sane.w) || sane.w <= 0.f){
+                sane.w = saneFallback.w;
+            }
+            if(!std::isfinite(sane.h) || sane.h <= 0.f){
+                sane.h = saneFallback.h;
+            }
+            sane.w = std::clamp(sane.w,1.f,kMaxLogicalLayerDimension);
+            sane.h = std::clamp(sane.h,1.f,kMaxLogicalLayerDimension);
+            return sane;
         }
     }
 
     CompositorClientProxy::CompositorClientProxy(SharedHandle<CompositionRenderTarget> renderTarget):
-    renderTarget(renderTarget),
+    renderTarget(std::move(renderTarget)),
     syncLaneId(g_syncLaneSeed.fetch_add(1)) {
 
     }
@@ -59,212 +100,77 @@ namespace OmegaWTK::Composition {
         activeCompositeFrame_ = frame;
     }
 
-    OmegaCommon::Async<CommandStatus> CompositorClientProxy::queueViewResizeCommand(unsigned & id,
-                                                       CompositorClient & client,
-                                                       Native::NativeItemPtr nativeView,
-                                                       int delta_x,
-                                                       int delta_y,
-                                                       int delta_w,
-                                                       int delta_h,
-                                                       Timestamp &start,
-                                                       Timestamp &deadline) {
-        OmegaCommon::Promise<CommandStatus> status;
-        auto async = status.async();
-        std::lock_guard<std::mutex> lk(commandMutex);
-        commandQueue.emplace(new CompositorViewCommand{
-            id,
-            client,
-            CompositorCommand::Type::View,
-            CompositorCommand::Priority::High,
-            {true,start,deadline},
-            std::move(status),
-            CompositorViewCommand::Resize,nativeView,delta_x,delta_y,delta_w,delta_h});
-        return async;
-    }
-
-    OmegaCommon::Async<CommandStatus> CompositorClientProxy::queueLayerResizeCommand(unsigned & id,
-                                                                                     CompositorClient & client,
-                                                                                     Layer *target,
-                                                                                     int delta_x,
-                                                                                     int delta_y,
-                                                                                     int delta_w,
-                                                                                     int delta_h,
-                                                                                     Timestamp &start,
-                                                                                     Timestamp &deadline) {
-        OmegaCommon::Promise<CommandStatus> status;
-        auto async = status.async();
-        std::lock_guard<std::mutex> lk(commandMutex);
-
-        commandQueue.emplace(new CompositorLayerCommand {
-            id,
-            client,
-            CompositorCommand::Type::Layer,
-            CompositorCommand::Priority::High,
-            {true,start,deadline},std::move(status),target,renderTarget,delta_x,delta_y,delta_w,delta_h});
-        return async;
-    }
-
-    OmegaCommon::Async<CommandStatus>
-    CompositorClientProxy::queueLayerEffectCommand(unsigned int &id, CompositorClient &client, Layer *target,
-                                                   SharedHandle<LayerEffect> &effect, Timestamp &start,
-                                                   Timestamp &deadline) {
-        OmegaCommon::Promise<CommandStatus> status;
-        auto async = status.async();
-        std::lock_guard<std::mutex> lk(commandMutex);
-
-        commandQueue.emplace(new CompositorLayerCommand {
-                id,
-                client,
-                CompositorCommand::Type::Layer,
-                CompositorCommand::Priority::High,
-                {true,start,deadline},std::move(status),target,renderTarget,effect});
-        return async;
-    }
-
     void CompositorClientProxy::setFrontendPtr(Compositor *frontend){
-        bool shouldFlush = false;
-        {
-            std::lock_guard<std::mutex> lk(commandMutex);
-            this->frontend = frontend;
-            shouldFlush = (this->frontend != nullptr && !commandQueue.empty());
-        }
-        if(shouldFlush){
-            submit();
-        }
-    };
-
-    void CompositorClientProxy::submit(){
-       Compositor *targetFrontend = nullptr;
-       uint64_t laneId = 0;
-       uint64_t packetId = 0;
-       OmegaCommon::Vector<SharedHandle<CompositorCommand>> packetCommands {};
-       {
-           std::lock_guard<std::mutex> lk(commandMutex);
-           targetFrontend = frontend;
-           if(targetFrontend == nullptr){
-               return;
-           }
-           laneId = syncLaneId;
-           while(!commandQueue.empty()){
-               auto comm = commandQueue.front();
-               commandQueue.pop();
-               if(comm != nullptr){
-                   packetCommands.push_back(comm);
-               }
-           }
-           if(packetCommands.empty()){
-               return;
-           }
-           packetId = allocateGlobalPacketId();
-           for(auto & packetCommand : packetCommands){
-               if(packetCommand != nullptr){
-                   packetCommand->syncLaneId = laneId;
-                   packetCommand->syncPacketId = packetId;
-               }
-           }
-       }
-
-       if(packetCommands.size() == 1){
-           auto command = packetCommands.front();
-           targetFrontend->scheduleCommand(command);
-           return;
-       }
-
-       auto firstCommand = packetCommands.front();
-       if(firstCommand == nullptr){
-           return;
-       }
-       OmegaCommon::Promise<CommandStatus> packetStatus;
-       auto packet = SharedHandle<CompositorCommand>(new CompositorPacketCommand{
-               firstCommand->id,
-               firstCommand->client,
-               firstCommand->priority,
-               firstCommand->thresholdParams,
-               std::move(packetStatus),
-               std::move(packetCommands)
-       });
-       packet->syncLaneId = laneId;
-       packet->syncPacketId = packetId;
-       targetFrontend->scheduleCommand(packet);
+        std::lock_guard<std::mutex> lk(commandMutex);
+        this->frontend = frontend;
     };
 
     CompositorClient::CompositorClient(CompositorClientProxy &proxy):
-    parentProxy(proxy),
-    currentCommandID(0){
+    parentProxy(proxy){
 
     }
 
     void CompositorClient::pushLayerResizeCommand(Layer *target, int delta_x, int delta_y,
-                                                  int delta_w, int delta_h, Timestamp &start,
-                                                  Timestamp &deadline) {
-        busy();
-        currentJobStatuses.push_back({
-            currentCommandID,
-            parentProxy.queueLayerResizeCommand(currentCommandID,*this,target,delta_x,delta_y,delta_w,delta_h,start,deadline)
-            });
-        ++currentCommandID;
-        parentProxy.submit();
-    }
-
-    void CompositorClient::pushLayerEffectCommand(Layer *target,
-                                                  SharedHandle<LayerEffect> &effect,
-                                                  Timestamp &start,
-                                                  Timestamp &deadline) {
-        busy();
-        currentJobStatuses.push_back({
-            currentCommandID,
-            parentProxy.queueLayerEffectCommand(currentCommandID,*this,target,effect,start,deadline)
-        });
-        ++currentCommandID;
-        parentProxy.submit();
-    }
-
-    void CompositorClient::pushViewResizeCommand(Native::NativeItemPtr nativeView,int delta_x,int delta_y,int delta_w,int delta_h,Timestamp &start,Timestamp & deadline){
-        busy();
-        currentJobStatuses.push_back(
-            {currentCommandID,
-            parentProxy.queueViewResizeCommand(currentCommandID,*this,nativeView,delta_x,delta_y,delta_w,delta_h,start,deadline)
-            });
-        ++currentCommandID;
-        parentProxy.submit();
-    }
-
-    void CompositorClient::pushFrame(SharedHandle<CanvasFrame> &frame, Timestamp &start) {
-        if(parentProxy.activeCompositeFrame_ != nullptr && frame != nullptr){
-            CompositeFrame::WidgetSlice slice;
-            slice.bounds = frame->rect;
-            slice.windowOffset = frame->windowOffset;
-            slice.commands = frame->currentVisuals;
-            slice.effects = frame->currentEffects;
-            slice.background = {frame->background.r,
-                                frame->background.g,
-                                frame->background.b,
-                                frame->background.a};
-            slice.targetLayer = frame->targetLayer;
-            parentProxy.activeCompositeFrame_->slices.push_back(std::move(slice));
+                                                  int delta_w, int delta_h, Timestamp &/*start*/,
+                                                  Timestamp &/*deadline*/) {
+        if(target == nullptr){
             return;
         }
-        // Without an active CompositeFrame the frame has no destination.
-        // The legacy queue-based render path was removed in Tier 1 Phase B.
+        auto priorRect = sanitizeRect(
+                target->getLayerRect(),
+                Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f});
+        auto layerRect = priorRect;
+        layerRect.pos.x += static_cast<float>(delta_x);
+        layerRect.pos.y += static_cast<float>(delta_y);
+        layerRect.w += static_cast<float>(delta_w);
+        layerRect.h += static_cast<float>(delta_h);
+        layerRect = sanitizeRect(layerRect,priorRect);
+        target->resize(layerRect);
     }
 
-    bool CompositorClient::busy() {
-        OmegaCommon::Vector<unsigned> jobsToDelete;
-        for(unsigned i = 0;i < currentJobStatuses.size();i++){
-            auto & job = currentJobStatuses[i];
-            if(job.status.ready()){
-                jobsToDelete.push_back(i);
-            }
-        }
-
-        for(auto it = jobsToDelete.rbegin(); it != jobsToDelete.rend(); ++it){
-            currentJobStatuses.erase(currentJobStatuses.begin() + *it);
-        }
-
-        return !currentJobStatuses.empty();
+    void CompositorClient::pushLayerEffectCommand(Layer */*target*/,
+                                                  SharedHandle<LayerEffect> &/*effect*/,
+                                                  Timestamp &/*start*/,
+                                                  Timestamp &/*deadline*/) {
+        // Layer effects (shadow, transform) are now draw-time Canvas
+        // operations. The legacy command path is a no-op until the
+        // Animation API rework wires effects through the new path.
     }
 
-    ViewRenderTarget::ViewRenderTarget(Native::NativeItemPtr _native) : native(_native){};
+    void CompositorClient::pushViewResizeCommand(Native::NativeItemPtr nativeView,int delta_x,int delta_y,int delta_w,int delta_h,Timestamp &/*start*/,Timestamp &/*deadline*/){
+        if(nativeView == nullptr){
+            return;
+        }
+        auto currentRect = sanitizeRect(
+                nativeView->getRect(),
+                Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f});
+        auto nextRect = currentRect;
+        nextRect.pos.x += static_cast<float>(delta_x);
+        nextRect.pos.y += static_cast<float>(delta_y);
+        nextRect.w += static_cast<float>(delta_w);
+        nextRect.h += static_cast<float>(delta_h);
+        nextRect = sanitizeRect(nextRect,currentRect);
+        nativeView->resize(nextRect);
+    }
+
+    void CompositorClient::pushFrame(SharedHandle<CanvasFrame> &frame, Timestamp &/*start*/) {
+        if(parentProxy.activeCompositeFrame_ == nullptr || frame == nullptr){
+            return;
+        }
+        CompositeFrame::WidgetSlice slice;
+        slice.bounds = frame->rect;
+        slice.windowOffset = frame->windowOffset;
+        slice.commands = frame->currentVisuals;
+        slice.effects = frame->currentEffects;
+        slice.background = {frame->background.r,
+                            frame->background.g,
+                            frame->background.b,
+                            frame->background.a};
+        slice.targetLayer = frame->targetLayer;
+        parentProxy.activeCompositeFrame_->slices.push_back(std::move(slice));
+    }
+
+    ViewRenderTarget::ViewRenderTarget(Native::NativeItemPtr _native) : native(std::move(_native)){};
     Native::NativeItemPtr ViewRenderTarget::getNativePtr(){ return native;};
     ViewRenderTarget::~ViewRenderTarget(){};
 
