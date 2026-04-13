@@ -739,8 +739,7 @@ public:
                     continue;
                 }
 
-                proxy->beginRecord();
-                const auto packetId = proxy->peekNextPacketId();
+                const std::uint64_t packetId = 0;
                 bool queuedAny = false;
                 for(auto & job : jobs){
                     auto & instance = job.first;
@@ -757,7 +756,7 @@ public:
                         instance->pendingCompletion = true;
                     }
                 }
-                proxy->endRecord();
+                (void)proxy;
 
                 if(queuedAny){
                     for(auto & job : jobs){

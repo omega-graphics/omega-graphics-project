@@ -6,10 +6,6 @@
 #include <atomic>
 
 namespace OmegaWTK::Composition {
-    
-    // CompositorClient::CompositorClient(){
-
-    // };
 
     namespace {
         std::atomic<uint64_t> g_syncLaneSeed {1};
@@ -48,107 +44,20 @@ namespace OmegaWTK::Composition {
     }
 
     SyncLaneDiagnostics CompositorClientProxy::getSyncLaneDiagnostics() const {
-        Compositor *targetFrontend = nullptr;
-        uint64_t laneId = 0;
-        {
-            std::lock_guard<std::mutex> lk(commandMutex);
-            targetFrontend = frontend;
-            laneId = syncLaneId;
-        }
-
         SyncLaneDiagnostics diagnostics {};
-        diagnostics.syncLaneId = laneId;
-        if(targetFrontend == nullptr || laneId == 0){
-            return diagnostics;
-        }
-
-        const auto snapshot = targetFrontend->getLaneDiagnosticsSnapshot(laneId);
-        diagnostics.syncLaneId = snapshot.syncLaneId;
-        diagnostics.queuedPacketCount = snapshot.queuedPacketCount;
-        diagnostics.submittedPacketCount = snapshot.submittedPacketCount;
-        diagnostics.presentedPacketCount = snapshot.presentedPacketCount;
-        diagnostics.droppedPacketCount = snapshot.droppedPacketCount;
-        diagnostics.failedPacketCount = snapshot.failedPacketCount;
-        diagnostics.lastSubmittedPacketId = snapshot.lastSubmittedPacketId;
-        diagnostics.lastPresentedPacketId = snapshot.lastPresentedPacketId;
-        diagnostics.inFlight = snapshot.inFlight;
-        diagnostics.startupStabilized = snapshot.startupStabilized;
+        std::lock_guard<std::mutex> lk(commandMutex);
+        diagnostics.syncLaneId = syncLaneId;
         return diagnostics;
     }
-
-    uint64_t CompositorClientProxy::peekNextPacketId() const {
-        std::lock_guard<std::mutex> lk(commandMutex);
-        if(reservedPacketId == 0){
-            reservedPacketId = allocateGlobalPacketId();
-        }
-        return reservedPacketId;
-    }
-
 
     Compositor *CompositorClientProxy::getFrontendPtr() const {
         std::lock_guard<std::mutex> lk(commandMutex);
         return frontend;
     }
 
-    bool CompositorClientProxy::isRecording() const {
-        std::lock_guard<std::mutex> lk(commandMutex);
-        return recordDepth > 0;
-    }
-
     void CompositorClientProxy::setActiveCompositeFrame(CompositeFrame *frame){
         activeCompositeFrame_ = frame;
     }
-
-    void CompositorClientProxy::beginRecord() {
-        std::lock_guard<std::mutex> lk(commandMutex);
-        recordDepth += 1;
-    }
-
-    void CompositorClientProxy::endRecord() {
-        bool shouldSubmit = false;
-        {
-            std::lock_guard<std::mutex> lk(commandMutex);
-            if(recordDepth == 0){
-                return;
-            }
-            recordDepth -= 1;
-            shouldSubmit = (recordDepth == 0);
-        }
-        if(shouldSubmit){
-            submit();
-        }
-    }
-
-   OmegaCommon::Async<CommandStatus> CompositorClientProxy::queueTimedFrame(unsigned & id,
-                                                                            CompositorClient & client,
-                                                                            SharedHandle<CanvasFrame> &frame,
-                                                                            Timestamp &start,
-                                                                            Timestamp &deadline){
-       OmegaCommon::Promise<CommandStatus> status;
-       auto async = status.async();
-       std::lock_guard<std::mutex> lk(commandMutex);
-        commandQueue.emplace(new
-                        CompositionRenderCommand(id,client,CompositorCommand::Type::Render,
-                                 CompositorCommand::Priority::High,
-                                 {true,start,deadline},std::move(status),renderTarget,frame));
-        return async;
-    };
-
-    OmegaCommon::Async<CommandStatus> CompositorClientProxy::queueFrame(unsigned & id,
-                                           CompositorClient & client,
-                                           SharedHandle<CanvasFrame> & frame,
-                                           Timestamp &start){
-        OmegaCommon::Promise<CommandStatus> status;
-        auto async = status.async();
-        std::lock_guard<std::mutex> lk(commandMutex);
-        commandQueue.emplace(
-            new
-            CompositionRenderCommand{
-                                id,client,CompositorCommand::Type::Render,
-                                 CompositorCommand::Priority::Low,
-                                 {false,start,start},std::move(status),std::static_pointer_cast<CompositionRenderTarget>(renderTarget),frame});
-        return async;
-    };
 
     OmegaCommon::Async<CommandStatus> CompositorClientProxy::queueViewResizeCommand(unsigned & id,
                                                        CompositorClient & client,
@@ -212,31 +121,12 @@ namespace OmegaWTK::Composition {
         return async;
     }
 
-    OmegaCommon::Async<CommandStatus> CompositorClientProxy::queueCancelCommand(unsigned & id,
-                                                                                CompositorClient & client,
-                                                                                unsigned startID,
-                                                                                unsigned endID) {
-        Timestamp ts = std::chrono::high_resolution_clock::now();
-        OmegaCommon::Promise<CommandStatus> status;
-        auto async = status.async();
-        std::lock_guard<std::mutex> lk(commandMutex);
-        commandQueue.emplace(new CompositorCancelCommand {
-            id,
-            client,
-            CompositorCommand::Type::Cancel,
-            CompositorCommand::Priority::High,
-            {false,ts,ts},std::move(status),startID,endID});
-        return async;
-    }
-
     void CompositorClientProxy::setFrontendPtr(Compositor *frontend){
         bool shouldFlush = false;
         {
             std::lock_guard<std::mutex> lk(commandMutex);
             this->frontend = frontend;
-            shouldFlush = (this->frontend != nullptr &&
-                           recordDepth == 0 &&
-                           !commandQueue.empty());
+            shouldFlush = (this->frontend != nullptr && !commandQueue.empty());
         }
         if(shouldFlush){
             submit();
@@ -265,13 +155,7 @@ namespace OmegaWTK::Composition {
            if(packetCommands.empty()){
                return;
            }
-           if(reservedPacketId != 0){
-               packetId = reservedPacketId;
-               reservedPacketId = 0;
-           }
-           else {
-               packetId = allocateGlobalPacketId();
-           }
+           packetId = allocateGlobalPacketId();
            for(auto & packetCommand : packetCommands){
                if(packetCommand != nullptr){
                    packetCommand->syncLaneId = laneId;
@@ -319,6 +203,7 @@ namespace OmegaWTK::Composition {
             parentProxy.queueLayerResizeCommand(currentCommandID,*this,target,delta_x,delta_y,delta_w,delta_h,start,deadline)
             });
         ++currentCommandID;
+        parentProxy.submit();
     }
 
     void CompositorClient::pushLayerEffectCommand(Layer *target,
@@ -331,15 +216,7 @@ namespace OmegaWTK::Composition {
             parentProxy.queueLayerEffectCommand(currentCommandID,*this,target,effect,start,deadline)
         });
         ++currentCommandID;
-    }
-
-    void CompositorClient::pushTimedFrame(SharedHandle<CanvasFrame> &frame, Timestamp &start, Timestamp &deadline) {
-        busy();
-        currentJobStatuses.push_back(
-            {currentCommandID,
-            parentProxy.queueTimedFrame(currentCommandID,*this,frame,start,deadline)
-            });
-        ++currentCommandID;
+        parentProxy.submit();
     }
 
     void CompositorClient::pushViewResizeCommand(Native::NativeItemPtr nativeView,int delta_x,int delta_y,int delta_w,int delta_h,Timestamp &start,Timestamp & deadline){
@@ -349,6 +226,7 @@ namespace OmegaWTK::Composition {
             parentProxy.queueViewResizeCommand(currentCommandID,*this,nativeView,delta_x,delta_y,delta_w,delta_h,start,deadline)
             });
         ++currentCommandID;
+        parentProxy.submit();
     }
 
     void CompositorClient::pushFrame(SharedHandle<CanvasFrame> &frame, Timestamp &start) {
@@ -366,22 +244,8 @@ namespace OmegaWTK::Composition {
             parentProxy.activeCompositeFrame_->slices.push_back(std::move(slice));
             return;
         }
-        busy();
-        currentJobStatuses.push_back({currentCommandID,
-                                    parentProxy.queueFrame(currentCommandID,*this,frame,start)
-                                                    });
-        ++currentCommandID;
-    }
-
-    void CompositorClient::cancelCurrentJobs() {
-        if(busy()) {
-            auto idStart = currentJobStatuses.front().id;
-            auto idEnd = currentJobStatuses.back().id;
-            currentJobStatuses.push_back({currentCommandID,
-                                            parentProxy.queueCancelCommand(currentCommandID, *this, idStart,idEnd)
-                                            });
-            ++currentCommandID;
-        }
+        // Without an active CompositeFrame the frame has no destination.
+        // The legacy queue-based render path was removed in Tier 1 Phase B.
     }
 
     bool CompositorClient::busy() {
@@ -404,12 +268,4 @@ namespace OmegaWTK::Composition {
     Native::NativeItemPtr ViewRenderTarget::getNativePtr(){ return native;};
     ViewRenderTarget::~ViewRenderTarget(){};
 
-////ViewRenderTargetFrameScheduler::ViewRenderTargetFrameScheduler(Composition::Compositor * comp):
-////compositor(comp){
-////    
-////};
-//
-//Core::UniquePtr<ViewRenderTargetFrameScheduler> ViewRenderTargetFrameScheduler::Create(Core::UniquePtr<ViewRenderTarget> & ptr,Compositor * comp){
-//    
-//};
 }

@@ -155,11 +155,9 @@ void View::startCompositionSession(){
             }
         }
     }
-    compositorProxy().beginRecord();
 }
 
 void View::endCompositionSession(){
-    compositorProxy().endRecord();
 }
 
 void View::enable() {

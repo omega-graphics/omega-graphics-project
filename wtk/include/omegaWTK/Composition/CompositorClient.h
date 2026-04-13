@@ -16,13 +16,16 @@ namespace OmegaWTK::Composition {
 
     void InitializeEngine();
     void CleanupEngine();
-    
+
     struct CanvasFrame;
     struct CompositeFrame;
 
 
     typedef std::chrono::time_point<std::chrono::high_resolution_clock> Timestamp;
 
+    /// Stub retained for compatibility with Widget.Geometry.cpp /
+    /// UIView.Animation.cpp. Real diagnostics were removed with the
+    /// queue-based render path — this is now always default-constructed.
     struct SyncLaneDiagnostics {
         std::uint64_t syncLaneId = 0;
         std::uint64_t queuedPacketCount = 0;
@@ -54,20 +57,12 @@ namespace OmegaWTK::Composition {
         CompositorClient & client;
         uint64_t syncLaneId = 0;
         uint64_t syncPacketId = 0;
-        /// Monotonic global sequence number assigned by Compositor::scheduleCommand().
-        /// Captures the exact order in which commands enter the compositor queue,
-        /// used as the final tie-breaker in CompareCommands to preserve FIFO
-        /// submission order when all other ordering parameters match.
         uint64_t sequenceNumber = 0;
         typedef enum : int {
-            /// A frame draw commmand
-            Render,
             /// A view command
             View,
             /// A Layer command
             Layer,
-            /// Cancel execution of commands from client.
-            Cancel,
             /// Atomic group of commands from one sync lane.
             Packet
         } Type;
@@ -149,24 +144,6 @@ namespace OmegaWTK::Composition {
         ~CompositorLayerCommand() override = default;
     };
 
-   struct CompositionRenderCommand : public CompositorCommand {
-       SharedHandle<CompositionRenderTarget> renderTarget;
-       SharedHandle<CanvasFrame> frame;
-       explicit CompositionRenderCommand(unsigned id,
-                        CompositorClient &client,
-                        Type type,
-                        Priority priority,
-                        decltype(thresholdParams) thresholdParams,
-                        OmegaCommon::Promise<CommandStatus> status,
-                        SharedHandle<CompositionRenderTarget> renderTarget,
-                        SharedHandle<CanvasFrame> frame):CompositorCommand(id,client,type,priority,thresholdParams,std::move(status)),
-                        renderTarget(renderTarget),
-                        frame(frame){
-
-                        }
-       ~CompositionRenderCommand() override = default;
-   };
-
    struct CompositorViewCommand : public CompositorCommand {
        typedef enum : int {
            Resize,
@@ -198,21 +175,6 @@ namespace OmegaWTK::Composition {
        ~CompositorViewCommand() override = default;
    };
 
-   struct CompositorCancelCommand : public CompositorCommand {
-       unsigned startID = 0,endID = 0;
-       CompositorCancelCommand(unsigned id,
-                        CompositorClient &client,
-                        Type type,
-                        Priority priority,
-                        decltype(thresholdParams) thresholdParams,
-                        OmegaCommon::Promise<CommandStatus> status,unsigned startID,unsigned endID):CompositorCommand(id,client,type,priority,thresholdParams,std::move(status)),
-                        startID(startID),
-                        endID(endID){
-
-                        };
-       ~CompositorCancelCommand() override = default;
-   };
-
     struct CompositorPacketCommand : public CompositorCommand {
         OmegaCommon::Vector<SharedHandle<CompositorCommand>> commands;
         explicit CompositorPacketCommand(unsigned id,
@@ -231,38 +193,25 @@ namespace OmegaWTK::Composition {
 
 
     /** @brief Compositor Client Proxy class for interaction with a Compositor
-        @paragraph Interaction includes submitting render commands to a Compositor,
-        and verifying successful frame completion. 
+        @paragraph Interaction includes submitting Layer/View commands to a
+        Compositor. Frame submission goes through the per-window CompositeFrame
+        mailbox path (see WidgetTreeHost::paintAndDeposit), not through here.
     */
     class OMEGAWTK_EXPORT CompositorClientProxy {
         friend class CompositorClient;
 
         Compositor *frontend = nullptr;
 
-        unsigned recordDepth = 0;
-
         SharedHandle<CompositionRenderTarget> renderTarget;
 
         std::queue<SharedHandle<CompositorCommand>> commandQueue;
         uint64_t syncLaneId = 0;
-        // Reserved packet id used by preview paths (animations) so
-        // the id returned by peekNextPacketId() matches the next submit().
-        mutable uint64_t reservedPacketId = 0;
         mutable std::mutex commandMutex;
 
         /// When non-null, pushFrame() appends to this CompositeFrame
-        /// instead of creating a CompositionRenderCommand. Set by
+        /// instead of going through the legacy path. Set by
         /// WidgetTreeHost during the composite paint pass.
         CompositeFrame *activeCompositeFrame_ = nullptr;
-
-        OmegaCommon::Async<CommandStatus> queueTimedFrame(unsigned & id,CompositorClient &client,
-                                                          SharedHandle<CanvasFrame> & frame,
-                                                          Timestamp & start,
-                                                          Timestamp & deadline);
-
-        OmegaCommon::Async<CommandStatus> queueFrame(unsigned & id,CompositorClient &client,
-                                                     SharedHandle<CanvasFrame> & frame,
-                                                     Timestamp & start);
 
         OmegaCommon::Async<CommandStatus> queueLayerResizeCommand(unsigned & id,CompositorClient &client,
                                                                   Layer *target,
@@ -288,8 +237,6 @@ namespace OmegaWTK::Composition {
                                                                  Timestamp &start,
                                                                  Timestamp & deadline);
 
-        OmegaCommon::Async<CommandStatus> queueCancelCommand(unsigned & id,CompositorClient &client,unsigned startID,unsigned endID);
-
     protected:
         void submit();
     public:
@@ -303,13 +250,11 @@ namespace OmegaWTK::Composition {
         void setRenderTarget(SharedHandle<CompositionRenderTarget> renderTarget);
         void setSyncLaneId(uint64_t syncLaneId);
         uint64_t getSyncLaneId() const;
+        /// Stub retained for compatibility. Always returns a default-
+        /// constructed SyncLaneDiagnostics; real telemetry was removed.
         SyncLaneDiagnostics getSyncLaneDiagnostics() const;
-        uint64_t peekNextPacketId() const;
         Compositor *getFrontendPtr() const;
-        bool isRecording() const;
         void setFrontendPtr(Compositor *frontend);
-        void beginRecord();
-        void endRecord();
         void setActiveCompositeFrame(CompositeFrame *frame);
         virtual ~CompositorClientProxy() = default;
     };
@@ -328,12 +273,10 @@ namespace OmegaWTK::Composition {
         unsigned currentCommandID = 0;
 
     protected:
-        void pushTimedFrame(SharedHandle<CanvasFrame> & frame,Timestamp & start,Timestamp & deadline);
         void pushFrame(SharedHandle<CanvasFrame> & frame,Timestamp & start);
         void pushLayerResizeCommand(Layer *target,int delta_x,int delta_y,int delta_w,int delta_h,Timestamp &start,Timestamp & deadline);
         void pushLayerEffectCommand(Layer *target,SharedHandle<LayerEffect> & effect,Timestamp &start,Timestamp & deadline);
         void pushViewResizeCommand(Native::NativeItemPtr nativeView,int delta_x,int delta_y,int delta_w,int delta_h,Timestamp &start,Timestamp & deadline);
-        void cancelCurrentJobs();
     public:
         bool busy();
 
@@ -341,7 +284,7 @@ namespace OmegaWTK::Composition {
         virtual ~CompositorClient() = default;
     };
 
-    
+
 
     /**
      The Compositor's interface for composing to a widget's view.
@@ -354,7 +297,7 @@ namespace OmegaWTK::Composition {
         ~ViewRenderTarget() override;
     };
 
-    
+
 };
 
 
