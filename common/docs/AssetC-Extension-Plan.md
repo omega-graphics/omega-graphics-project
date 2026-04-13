@@ -2,7 +2,7 @@
 
 ## Current State
 
-`omega-assetc` is a minimal CLI tool that packs raw files into a flat binary bundle (`.omxa`). At runtime, `AssetLibrary` in OmegaCommon reads the bundle into a static `Map<String, AssetBuffer>` of raw `void*` pointers. Consumers like WTK's `ImgCodec` look up assets by path string and reinterpret the buffer manually.
+`omega-assetc` is a minimal CLI tool that packs raw files into a flat binary bundle (`.pak`). At runtime, `AssetLibrary` in OmegaCommon reads the bundle into a static `Map<String, AssetBuffer>` of raw `void*` pointers. Consumers like WTK's `ImgCodec` look up assets by path string and reinterpret the buffer manually.
 
 ### What exists today
 
@@ -10,7 +10,7 @@
 |-----------|----------|--------|
 | Binary format structs | `common/assetc/assetc.h` | `AssetsFileHeader` (asset count) + `AssetsFileEntry` (name length, data length) |
 | Compiler CLI | `common/assetc/main.cpp` | Packs input files sequentially. Commented-out SHA-256 + AES-128-CBC signing code. Hardcoded key/IV. |
-| Runtime loader | `common/src/assets.cpp` | Reads `.omxa`, stores raw buffers in a global static map. No deallocation. |
+| Runtime loader | `common/src/assets.cpp` | Reads `.pak`, stores raw buffers in a global static map. No deallocation. |
 | Runtime API | `common/include/omega-common/assets.h` | `AssetLibrary` with `loadAssetFile` and a public `assets_res` map of `{size_t filesize, void *data}`. |
 | WTK consumer | `wtk/src/Media/ImgCodec.cpp` | `loadImageFromAssets()` indexes into `assets_res` by path string, wraps the buffer as an `istream`. |
 | WTK build integration | `wtk/cmake/OmegaWTKApp.cmake` | `ASSET_DIR` parameter exists but is unused. |
@@ -37,7 +37,7 @@
 - **Runtime loading** that is safe (RAII, typed access), efficient (lazy/streaming), and thread-safe.
 - **Encryption and integrity** using OmegaCommon's crypto module (Phase 5 / 5b) rather than raw OpenSSL calls.
 - **Build integration** so WTK and AQUA apps automatically compile their asset directories into bundles.
-- **Backward compatible** with the existing `.omxa` format (read old bundles, write new format).
+- **Backward compatible** with the existing `.pak` format (read old bundles, write new format).
 
 ---
 
@@ -303,7 +303,7 @@ if(_ARG_ASSET_DIR)
     file(GLOB_RECURSE _ASSET_FILES "${_ARG_ASSET_DIR}/*")
     omega_compile_assets(
         TARGET ${_ARG_NAME}
-        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/assets.omxa"
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/assets.pak"
         APP_ID "${_ARG_BUNDLE_ID}"
         COMPRESS SIGN
         INPUTS ${_ASSET_FILES})

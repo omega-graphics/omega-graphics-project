@@ -12,8 +12,8 @@ function(OmegaWTKApp)
         add_app_bundle(
             NAME ${_ARG_NAME}
             PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
-            RESOURCES ${OMEGAWTK_SOURCE_DIR}/target/macos/MainMenu.nib ${_ARG_BUNDLE_ICON} ${OMEGAWTK_COMPOSITOR_SHADERLIB}
-            DEPS OmegaWTK.framework OmegaGTE.framework OmegaWTK_CompositorShaders ${_ARG_DEPS}
+            RESOURCES ${OMEGAWTK_SOURCE_DIR}/target/macos/MainMenu.nib ${_ARG_BUNDLE_ICON} ${OMEGAWTK_COMPOSITOR_SHADER_SRC}
+            DEPS OmegaWTK.framework OmegaGTE.framework ${_ARG_DEPS}
             EMBEDDED_FRAMEWORKS OmegaWTK OmegaGTE
             SOURCES ${_ARG_SOURCES})
         add_dependencies(${_ARG_NAME} OmegaWTK.framework)
@@ -53,14 +53,12 @@ function(OmegaWTKApp)
                             COMMAND
                             ${CMAKE_COMMAND} -E copy $<TARGET_FILE:OmegaWTK> ${CMAKE_CURRENT_BINARY_DIR}/$<TARGET_FILE_NAME:OmegaWTK>
                             COMMAND
-                            ${CMAKE_COMMAND} -E copy ${OMEGAWTK_COMPOSITOR_SHADERLIB} ${CMAKE_CURRENT_BINARY_DIR}/compositor.omegasllib)
-        add_dependencies(${_ARG_NAME} OmegaWTK_CompositorShaders)
+                            ${CMAKE_COMMAND} -E copy ${OMEGAWTK_COMPOSITOR_SHADER_SRC} ${CMAKE_CURRENT_BINARY_DIR}/compositor.omegasl)
     elseif(TARGET_LINUX)
         target_include_directories(${_ARG_NAME} PRIVATE "include" "gte/include" "gte/common/include" "${CMAKE_BINARY_DIR}/deps/icu/include")
         target_compile_definitions(${_ARG_NAME} PRIVATE OMEGAWTK_APP TARGET_GTK TARGET_VULKAN)
         target_sources(${_ARG_NAME} PRIVATE ${OMEGAWTK_SOURCE_DIR}/target/gtk/main.cpp)
         add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy ${OMEGAWTK_COMPOSITOR_SHADERLIB} $<TARGET_FILE_DIR:${_ARG_NAME}>/compositor.omegasllib)
-        add_dependencies(${_ARG_NAME} OmegaWTK_CompositorShaders)
+            COMMAND ${CMAKE_COMMAND} -E copy ${OMEGAWTK_COMPOSITOR_SHADER_SRC} $<TARGET_FILE_DIR:${_ARG_NAME}>/compositor.omegasl)
     endif()
 endfunction()

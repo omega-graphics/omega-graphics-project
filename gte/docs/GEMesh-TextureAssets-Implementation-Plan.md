@@ -23,9 +23,9 @@ In addition, provide a **TextureAsset** class for high-level texture loading (fr
 
 ---
 
-## Phase 1: Attachment and Result Model
+## Phase 1: Attachment and Result Model ✅
 
-### 1.1 Texture attachment descriptor
+### 1.1 Texture attachment descriptor ✅
 
 - Extend **TETriangulationParams::Attachment** so that texture attachments can optionally reference a texture:
   - For **TypeTexture2D**: add optional `SharedHandle<GETexture> texture = nullptr`. When non-null, the mesh can later bind this texture for rendering; dimensions can still come from `texture2DData` or from the texture descriptor.
@@ -33,7 +33,7 @@ In addition, provide a **TextureAsset** class for high-level texture loading (fr
 - Keep a single attachment per params (no array of attachments in this phase).
 - **Files**: `gte/include/omegaGTE/TE.h`, `gte/src/TE.cpp` (factory helpers if needed).
 
-### 1.2 Triangulation: assign UVs for all primitives
+### 1.2 Triangulation: assign UVs for all primitives ✅
 
 - In **OmegaTriangulationEngineContext::_triangulatePriv**, for every branch that currently handles **TypeColor** (RoundedRect, Ellipsoid, RectangularPrism, Path2D, Pyramid, Cylinder, Cone, GraphicsPath3D), add handling for **TypeTexture2D** and **TypeTexture3D**:
   - **TypeTexture2D**: assign meaningful **texture2Dcoord** per vertex (and leave color as default or unused). Define UV mapping per primitive (e.g. RoundedRect: derive from normalized position; Ellipsoid: spherical or planar projection; Prism: per-face quad UVs; Path2D/Path3D: stroke-based or path-length-based UVs; Pyramid/Cylinder/Cone: cylindrical or planar as appropriate).
@@ -41,7 +41,7 @@ In addition, provide a **TextureAsset** class for high-level texture loading (fr
 - Rect already has Texture2D UVs; ensure they remain correct and that Rect can also carry an optional texture reference.
 - **Files**: `gte/src/TE.cpp`.
 
-### 1.3 Optional normals in AttachmentData
+### 1.3 Optional normals in AttachmentData ✅
 
 - Add optional **FVec<3> normal** to **TETriangulationResult::AttachmentData** for 3D primitives (Prism, Pyramid, Cylinder, Cone, Path3D). Triangulation paths that produce solid 3D geometry should fill this when an attachment is present, so that GEMesh can use it for lighting or other shaders.
 - **Files**: `gte/include/omegaGTE/TE.h`, `gte/src/TE.cpp` (all 3D and path triangulation branches).

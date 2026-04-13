@@ -5,6 +5,7 @@
 #include <optional> 
 #include <type_traits>
 #include "GE.h"
+#include "GETexture.h"
 
 
 #ifndef OMEGAGTE_TE_H
@@ -68,11 +69,16 @@ public:
                 unsigned depth;
             } texture3DData;
         };
+        SharedHandle<GETexture> texture = nullptr;
 
 
         static Attachment makeColor(const FVec<4> & color);
-        static Attachment makeTexture2D(unsigned width,unsigned height);
-        static Attachment makeTexture3D(unsigned width,unsigned height,unsigned depth);
+        static Attachment makeTexture2D(unsigned width,unsigned height,SharedHandle<GETexture> texture = nullptr);
+        static Attachment makeTexture3D(unsigned width,unsigned height,unsigned depth,SharedHandle<GETexture> texture = nullptr);
+        Attachment() : type(TypeColor) {}
+        Attachment(Type t) : type(t) {}
+        Attachment(const Attachment & other);
+        Attachment & operator=(const Attachment & other);
         ~Attachment();
     };
 
@@ -156,6 +162,7 @@ struct OMEGAGTE_EXPORT TETriangulationResult {
         FVec<4> color;
         FVec<2> texture2Dcoord;
         FVec<3> texture3Dcoord;
+        FVec<3> normal = FVec<3>::Create();
     };
     struct OMEGAGTE_EXPORT TEMesh {
         enum : int {

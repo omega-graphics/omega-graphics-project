@@ -452,15 +452,10 @@ if(OMEGAWTK_SKIP_THIRD_PARTY_BUILD)
 	set(OMEGAWTK_MODULE_DEPS OmegaGTE)
 endif()
 
-set(OMEGASLC_EXE ${CMAKE_BINARY_DIR}/bin/omegaslc)
-if(WIN32)
-    set(OMEGASLC_EXE ${OMEGASLC_EXE}.exe)
-endif()
-set(OMEGAWTK_COMPOSITOR_SHADERLIB "${CMAKE_CURRENT_BINARY_DIR}/compositor.omegasllib" CACHE INTERNAL "")
-add_omegasl_lib("OmegaWTK_CompositorShaders"
-    "${OMEGAWTK_SOURCE_DIR}/src/Composition/backend/shaders/compositor.omegasl"
-    "${OMEGAWTK_COMPOSITOR_SHADERLIB}")
-add_dependencies("OmegaWTK_CompositorShaders" omegaslc)
+# Compositor shaders are compiled at runtime by OmegaSLCompiler so the shader
+# source travels with the app and is compiled for the actual GPU architecture
+# on first use. The source file is deployed alongside the executable below.
+set(OMEGAWTK_COMPOSITOR_SHADER_SRC "${OMEGAWTK_SOURCE_DIR}/src/Composition/backend/shaders/compositor.omegasl" CACHE INTERNAL "")
 
 # Generate a stub translation unit -- all real code lives in the submodule static libs.
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/OmegaWTK_framework_stub.cpp" "// OmegaWTK framework entry point -- submodules linked as static libraries\n")
@@ -472,8 +467,6 @@ SOURCES "${CMAKE_CURRENT_BINARY_DIR}/OmegaWTK_framework_stub.cpp")
 if(NOT OMEGAWTK_SKIP_THIRD_PARTY_BUILD)
 	add_dependencies("OmegaWTK" ThirdParty)
 endif()
-add_dependencies("OmegaWTK" "OmegaWTK_CompositorShaders")
-
 # Link submodule static libraries into the framework.
 # Use whole-archive flags to ensure all symbols are exported from the shared library.
 if(APPLE)

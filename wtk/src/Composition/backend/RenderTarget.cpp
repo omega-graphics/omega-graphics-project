@@ -124,19 +124,19 @@ namespace OmegaWTK::Composition {
     static std::unique_ptr<BufferPool> bufferPool;
     static std::unique_ptr<FencePool> fencePool;
 
-    static OmegaCommon::String getCompositorShaderLibPath() {
+    static OmegaCommon::String getCompositorShaderSourcePath() {
 #if defined(TARGET_MACOS)
         char buf[2048];
         uint32_t bufSize = sizeof(buf);
         if(_NSGetExecutablePath(buf, &bufSize) == 0) {
             std::string path(buf);
-            // exe: .../Contents/MacOS/AppName -> .../Contents/Resources/compositor.omegasllib
+            // exe: .../Contents/MacOS/AppName -> .../Contents/Resources/compositor.omegasl
             auto lastSlash = path.rfind('/');
             if(lastSlash != std::string::npos) {
                 std::string macosDir = path.substr(0, lastSlash);
                 auto parentSlash = macosDir.rfind('/');
                 if(parentSlash != std::string::npos) {
-                    return macosDir.substr(0, parentSlash) + "/Resources/compositor.omegasllib";
+                    return macosDir.substr(0, parentSlash) + "/Resources/compositor.omegasl";
                 }
             }
         }
@@ -147,7 +147,7 @@ namespace OmegaWTK::Composition {
         std::string path(buf);
         auto pos = path.rfind('\\');
         if(pos != std::string::npos) {
-            return path.substr(0, pos + 1) + "compositor.omegasllib";
+            return path.substr(0, pos + 1) + "compositor.omegasl";
         }
         return {};
 #else
@@ -158,7 +158,7 @@ namespace OmegaWTK::Composition {
             std::string path(buf);
             auto pos = path.rfind('/');
             if(pos != std::string::npos) {
-                return path.substr(0, pos + 1) + "compositor.omegasllib";
+                return path.substr(0, pos + 1) + "compositor.omegasl";
             }
         }
         return {};
@@ -188,29 +188,32 @@ namespace OmegaWTK::Composition {
             return;
         }
 
-        auto shaderLibPath = getCompositorShaderLibPath();
-        if(shaderLibPath.empty()){
-            std::cout << "Failed to resolve compositor shader library path." << std::endl;
+        auto shaderSrcPath = getCompositorShaderSourcePath();
+        if(shaderSrcPath.empty()){
+            std::cout << "Failed to resolve compositor shader source path." << std::endl;
             resetGlobalRenderAssetsState();
             return;
         }
         try {
-            shaderLibrary = gte.graphicsEngine->loadShaderLibrary(shaderLibPath);
+            auto compiledLib = gte.omegaSlCompiler->compile({
+                OmegaSLCompiler::Source::fromFile(shaderSrcPath)
+            });
+            shaderLibrary = gte.graphicsEngine->loadShaderLibraryRuntime(compiledLib);
         }
         catch(const std::exception &ex){
-            std::cout << "Failed to load compositor shader library `" << shaderLibPath
+            std::cout << "Failed to compile compositor shader source `" << shaderSrcPath
                       << "`: " << ex.what() << std::endl;
             resetGlobalRenderAssetsState();
             return;
         }
         catch(...){
-            std::cout << "Failed to load compositor shader library `" << shaderLibPath
+            std::cout << "Failed to compile compositor shader source `" << shaderSrcPath
                       << "` due to an unknown exception." << std::endl;
             resetGlobalRenderAssetsState();
             return;
         }
         if(shaderLibrary == nullptr){
-            std::cout << "Failed to load compositor shader library `" << shaderLibPath << "`." << std::endl;
+            std::cout << "Failed to load compositor shader library from `" << shaderSrcPath << "`." << std::endl;
             resetGlobalRenderAssetsState();
             return;
         }
