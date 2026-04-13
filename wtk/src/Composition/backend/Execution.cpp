@@ -358,21 +358,8 @@ void Compositor::executeCurrentCommand(){
 }
 
 void Compositor::onQueueDrained(){
-    // Phase A-1: presentation now happens directly in commit(), so
-    // presentAllPending() is no longer needed.
-
-    // Phase A surface consumption bridge: when the command queue is
-    // drained, check registered window surfaces for pending composite
-    // frames and render them.  Phase B replaces the scheduler loop to
-    // consume surfaces directly on vsync.
-    for(auto & [target, surface] : windowSurfaces_){
-        if(surface != nullptr && surface->hasPendingUpdate()){
-            auto frame = surface->consume();
-            if(frame != nullptr){
-                renderCompositeFrame(target, std::move(frame));
-            }
-        }
-    }
+    // Phase B (Commit 2): window surfaces are now drained from the
+    // scheduler loop on deposit-callback wake, not here.
 }
 
 

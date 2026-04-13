@@ -79,7 +79,7 @@ void AppWindow::setRootWidget(WidgetPtr widget){
         new Composition::CompositorSurface());
     impl_->widgetTreeHost->setWindowSurface(impl_->windowSurface);
     impl_->widgetTreeHost->compPtr()->registerWindowSurface(
-        impl_->rootViewRenderTarget.get(), impl_->windowSurface);
+        impl_->rootViewRenderTarget, impl_->windowSurface);
     impl_->widgetTreeHost->attachedToWindow = true;
 };
 

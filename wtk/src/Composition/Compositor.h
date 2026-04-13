@@ -229,14 +229,28 @@ namespace OmegaWTK::Composition {
 
         CompositorScheduler scheduler;
 
-        /// Per-window surface mailboxes (Phase A). Registered by AppWindow.
-        OmegaCommon::Map<CompositionRenderTarget *,SharedHandle<CompositorSurface>> windowSurfaces_;
+        /// Per-window surface mailboxes. Keyed by SharedHandle so the
+        /// render target stays alive for as long as the compositor knows
+        /// about it (matches RenderTargetStore keying).
+        OmegaCommon::Map<SharedHandle<CompositionRenderTarget>,SharedHandle<CompositorSurface>> windowSurfaces_;
 
-        /// Render a composite frame from a surface mailbox into its
-        /// associated render target. Bridge for Phase A — Phase B replaces
-        /// the scheduler loop to consume surfaces directly.
-        void renderCompositeFrame(CompositionRenderTarget *target,
-                                  SharedHandle<CompositeFrame> frame);
+        /// Phase B frame trigger. Set by deposit callback, cleared at
+        /// the top of each scheduler iteration before draining surfaces.
+        std::atomic<bool> frameDirty_ {false};
+
+        /// Wake the scheduler thread to drain window surfaces.
+        void notifyFrameDirty();
+
+        /// Drain all registered window surfaces and render any pending
+        /// composite frame. Called from the scheduler loop on wake.
+        void drainWindowSurfaces();
+
+        /// Render a composite frame consumed from a window surface into
+        /// the target's root visual. Phase B: one beginFrame/endFrame for
+        /// all slices, one commit + present (Phase A-1 makes commit
+        /// present directly).
+        void renderCompositeFrame(const SharedHandle<CompositionRenderTarget> & target,
+                                  const SharedHandle<CompositeFrame> & frame);
 
         friend class Layer;
         friend class LayerTree;
@@ -280,7 +294,7 @@ namespace OmegaWTK::Composition {
         void observeLayerTree(LayerTree *tree,std::uint64_t syncLaneId = 0);
         void unobserveLayerTree(LayerTree *tree);
 
-        void registerWindowSurface(CompositionRenderTarget *target,
+        void registerWindowSurface(SharedHandle<CompositionRenderTarget> target,
                                    SharedHandle<CompositorSurface> surface);
 
         void scheduleCommand(SharedHandle<CompositorCommand> & command);
