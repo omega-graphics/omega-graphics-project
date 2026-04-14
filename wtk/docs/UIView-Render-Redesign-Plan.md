@@ -513,12 +513,16 @@ codebase should override anything in §3:
    `View` as the public handle and `SceneNode` as the internal
    retained node, like Blink's `LayoutObject` / `Node` split.
 
+   ANSWER: View is a scene node.
+
 2. **Where does `Widget` fit?** `Widget` today sits above `View` and
    has its own paint lifecycle (`Widget.Paint.cpp`). The cleanest
    answer is that `Widget::executePaint` becomes the thing that asks
    the window to invalidate its subtree, and `Widget` no longer has
    its own paint method. But this touches every widget subclass, so
    it should be its own follow-up plan, not rolled into this one.
+
+   ANSWER: Widget's are effecetively a light wrapper around View and can be removed.
 
 3. **Layerization opt-in.** When does a `SceneNode` get its own
    composition layer (for scrolling, opacity animation, transforms)?
@@ -528,6 +532,8 @@ codebase should override anything in §3:
    pragmatic answer is: **start with zero layerization**; add a
    `SceneNode::forceLayer()` escape hatch; let `ScrollView` be the
    first and possibly only consumer.
+
+   ANSWER: Agreed
 
 4. **Dirty-region culling.** §3.4 propagates dirty bits up but the
    proposal does not yet specify region-based culling (the union of
@@ -540,6 +546,8 @@ codebase should override anything in §3:
    plan keeps it single-threaded. The `DisplayList` snapshot is the
    hand-off point where a future compositor thread *could* take over,
    but nothing here forces that decision.
+
+   
 
 ---
 
