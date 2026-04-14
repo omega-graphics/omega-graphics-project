@@ -40,13 +40,13 @@ class TextCompositorWidget final : public OmegaWTK::Widget {
     }
 
     void ensureAccentView(const OmegaWTK::Composition::Rect & bounds){
-        auto targetRect = accentRectForBounds(bounds);
-        if(accentView == nullptr){
-            accentView = makeSubView<OmegaWTK::UIView>(targetRect,"text_accent_view");
-        }
-        else {
-            accentView->resize(targetRect);
-        }
+        // auto targetRect = accentRectForBounds(bounds);
+        // if(accentView == nullptr){
+        //     accentView = makeSubView<OmegaWTK::UIView>(targetRect,"text_accent_view");
+        // }
+        // else {
+        //     accentView->resize(targetRect);
+        // }
     }
 
     void ensureFontLoaded(){
@@ -88,60 +88,60 @@ protected:
             OmegaWTK::Composition::Color::White8));
 
         OmegaWTK::Composition::Rect bounds{OmegaWTK::Composition::Point2D{0.f,0.f},r.w,r.h};
-        ensureAccentView(bounds);
+        // ensureAccentView(bounds);
 
-        if(accentView != nullptr){
-            constexpr float kRectSize = 56.0f;
-            constexpr float kLayerSize = 120.0f;
-            OmegaWTK::Composition::Rect redRect{
-                OmegaWTK::Composition::Point2D{
-                    (kLayerSize - kRectSize) * 0.5f,
-                    (kLayerSize - kRectSize) * 0.5f},
-                kRectSize,
-                kRectSize};
+        // if(accentView != nullptr){
+        //     constexpr float kRectSize = 56.0f;
+        //     constexpr float kLayerSize = 120.0f;
+        //     OmegaWTK::Composition::Rect redRect{
+        //         OmegaWTK::Composition::Point2D{
+        //             (kLayerSize - kRectSize) * 0.5f,
+        //             (kLayerSize - kRectSize) * 0.5f},
+        //         kRectSize,
+        //         kRectSize};
 
-            OmegaWTK::UIViewLayout layout {};
-            layout.shape("accent_rect",OmegaWTK::Shape::Rect(redRect));
-            layout.text(
-                "accent_label",
-                U"UI",
-                OmegaWTK::Composition::Rect{
-                    OmegaWTK::Composition::Point2D{0.f,6.f},
-                    kLayerSize,
-                    22.f});
-            accentView->setLayout(layout);
+        //     OmegaWTK::UIViewLayout layout {};
+        //     layout.shape("accent_rect",OmegaWTK::Shape::Rect(redRect));
+        //     layout.text(
+        //         "accent_label",
+        //         U"UI",
+        //         OmegaWTK::Composition::Rect{
+        //             OmegaWTK::Composition::Point2D{0.f,6.f},
+        //             kLayerSize,
+        //             22.f});
+        //     accentView->setLayout(layout);
 
-            auto style = OmegaWTK::StyleSheet::Create();
-            style = style->backgroundColor("text_accent_view",OmegaWTK::Composition::Color::Transparent);
-            style = style->elementBrush("accent_rect",OmegaWTK::Composition::ColorBrush(
-                OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)),
-                true,
-                0.30f);
-            style = style->elementDropShadow("accent_rect",makeShadow(0.f,6.f,3.f,12.f,0.60f),true,0.30f);
-            style = style->textColor(
-                "accent_label",
-                OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::White8),
-                true,
-                0.30f);
-            style = style->textAlignment(
-                "accent_label",
-                OmegaWTK::Composition::TextLayoutDescriptor::MiddleUpper);
-            style = style->textWrapping(
-                "accent_label",
-                OmegaWTK::Composition::TextLayoutDescriptor::None);
-            style = style->textLineLimit("accent_label",1);
-            style = style->dropShadow("text_accent_view",makeShadow(0.f,8.f,3.f,14.f,0.50f),true,0.30f);
-            if(font != nullptr){
-                style = style->textFont("accent_label",font);
-            }
-            accentView->setStyleSheet(style);
-            accentView->update();
+        //     auto style = OmegaWTK::StyleSheet::Create();
+        //     style = style->backgroundColor("text_accent_view",OmegaWTK::Composition::Color::Transparent);
+        //     style = style->elementBrush("accent_rect",OmegaWTK::Composition::ColorBrush(
+        //         OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)),
+        //         true,
+        //         0.30f);
+        //     style = style->elementDropShadow("accent_rect",makeShadow(0.f,6.f,3.f,12.f,0.60f),true,0.30f);
+        //     style = style->textColor(
+        //         "accent_label",
+        //         OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::White8),
+        //         true,
+        //         0.30f);
+        //     style = style->textAlignment(
+        //         "accent_label",
+        //         OmegaWTK::Composition::TextLayoutDescriptor::MiddleUpper);
+        //     style = style->textWrapping(
+        //         "accent_label",
+        //         OmegaWTK::Composition::TextLayoutDescriptor::None);
+        //     style = style->textLineLimit("accent_label",1);
+        //     style = style->dropShadow("text_accent_view",makeShadow(0.f,8.f,3.f,14.f,0.50f),true,0.30f);
+        //     if(font != nullptr){
+        //         style = style->textFont("accent_label",font);
+        //     }
+        //     accentView->setStyleSheet(style);
+        //     accentView->update();
 
-            if(!loggedUIViewValidation){
-                std::cout << "[TextCompositorTest] Accent layer rendered through UIView." << std::endl;
-                loggedUIViewValidation = true;
-            }
-        }
+        //     if(!loggedUIViewValidation){
+        //         std::cout << "[TextCompositorTest] Accent layer rendered through UIView." << std::endl;
+        //         loggedUIViewValidation = true;
+        //     }
+        // }
 
         if(font == nullptr){
             return;

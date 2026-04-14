@@ -223,7 +223,6 @@ public:
     void setArcStep(float newArcStep){
         arcStep = newArcStep;
     };
-    ~OmegaTriangulationEngineContext();
     /**
      Triangulate according to the parameters and viewport.
      @param params
@@ -252,7 +251,7 @@ public:
      @returns std::future<TETriangulationResult>
     */
     std::future<TETriangulationResult> triangulateAsync(const TETriangulationParams & params,GTEPolygonFrontFaceRotation frontFaceRotation = GTEPolygonFrontFaceRotation::Clockwise, GEViewport * viewport = nullptr);
-
+    virtual ~OmegaTriangulationEngineContext();
 };
 
 /**

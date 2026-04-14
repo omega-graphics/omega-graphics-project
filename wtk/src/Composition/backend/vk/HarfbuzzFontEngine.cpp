@@ -308,7 +308,11 @@ namespace OmegaWTK::Composition {
         return Core::SharedPtr<GlyphRun>(new HarfBuzzGlyphRun(str, font));
     }
 
-    Core::SharedPtr<TextRect> TextRect::Create(Composition::Rect rect, const TextLayoutDescriptor &layoutDesc){
+    Core::SharedPtr<TextRect> TextRect::Create(Composition::Rect rect, const TextLayoutDescriptor &layoutDesc, float renderScale){
+        // TODO: DPI plumbing — see wtk/docs/DPI-Aware-Text-Plan.md. Currently
+        // ignores renderScale; HarfBuzz path needs to scale the rasterization
+        // target and pass an FT_Set_Char_Size resolution driven by the scale.
+        (void)renderScale;
         return Core::SharedPtr<TextRect>(new HarfBuzzTextRect(rect, layoutDesc));
     }
 

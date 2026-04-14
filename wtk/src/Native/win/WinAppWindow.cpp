@@ -26,7 +26,8 @@ namespace OmegaWTK::Native::Win {
     };
 
     NativeItemPtr WinAppWindow::getRootView() {
-        return (NativeItemPtr)this;
+        return std::static_pointer_cast<NativeItem>(
+            std::static_pointer_cast<HWNDItem>(shared_from_this()));
     }
 
     void WinAppWindow::setMenu(NM menu){

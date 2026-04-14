@@ -109,8 +109,14 @@ namespace OmegaWTK::Composition {
      */
     class OMEGAWTK_EXPORT ViewRenderTarget : public CompositionRenderTarget {
         Native::NativeItemPtr native;
+        /// Logical-to-physical pixel scale factor for the owning window.
+        /// 1.0 = 96 DPI. Populated by the backend visual tree at creation
+        /// time from the native window's DPI.
+        float renderScale_ = 1.f;
     public:
         Native::NativeItemPtr getNativePtr();
+        float getRenderScale() const;
+        void setRenderScale(float scale);
         explicit ViewRenderTarget(Native::NativeItemPtr _native);
         ~ViewRenderTarget() override;
     };

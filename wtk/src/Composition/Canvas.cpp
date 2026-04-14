@@ -129,7 +129,8 @@ void Canvas::drawText(const UniString &text,
         return;
     }
 
-    auto textRect = TextRect::Create(rect,layoutDesc);
+    const float renderScale = (ownerView_ != nullptr) ? ownerView_->getRenderScale() : 1.f;
+    auto textRect = TextRect::Create(rect,layoutDesc,renderScale);
     if(textRect == nullptr){
         return;
     }

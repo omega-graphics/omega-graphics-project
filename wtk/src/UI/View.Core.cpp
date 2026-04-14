@@ -207,6 +207,13 @@ void View::setWindowRenderTarget(SharedHandle<Composition::ViewRenderTarget> win
     }
 }
 
+float View::getRenderScale() const {
+    if(impl_ != nullptr && impl_->renderTarget != nullptr){
+        return impl_->renderTarget->getRenderScale();
+    }
+    return 1.f;
+}
+
 Composition::Point2D View::computeWindowOffset() const{
     Composition::Point2D offset {0.f, 0.f};
     const View *v = this;

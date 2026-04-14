@@ -258,43 +258,24 @@ def _extract_archive_with_strip(archive_path: Path, extract_dest: Path, strip_co
 
 
 def _download_to_file(
+    ctx: "RunContext",
     url: str,
     dest: Path,
     *,
     manifest_path: Path,
     dependency_name: str,
     dependency_type: str,
-    printer,
-    dry_run: bool,
 ) -> str:
-    if dry_run:
-        printer.note("DRYRUN", f"would download {url} -> {dest}")
-        return url
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    temp_dest = Path(str(dest) + ".part")
     try:
-        with requests.get(
+        result = ctx.download_manager.download(
             url,
-            stream=True,
-            allow_redirects=True,
-            timeout=(30, 300),
-            headers={"User-Agent": "autom-deps/1.0"},
-        ) as response:
-            response.raise_for_status()
-            total_bytes = 0
-            with temp_dest.open("wb") as out:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if not chunk:
-                        continue
-                    out.write(chunk)
-                    total_bytes += len(chunk)
-            os.replace(temp_dest, dest)
-            printer.note("OK", f"downloaded {total_bytes} bytes from {response.url}")
-            return str(response.url)
+            dest,
+            printer=ctx.printer,  # type: ignore[arg-type]
+            label=f"{dependency_type}:{dependency_name}",
+            dry_run=ctx.dry_run,
+        )
+        return result.final_url
     except requests.RequestException as ex:
-        if temp_dest.exists():
-            temp_dest.unlink()
         raise DependencyExecutionError(
             f"download failed: {ex}",
             manifest_path=str(manifest_path),
@@ -579,13 +560,12 @@ def _execute_file(ctx: "RunContext", dependency: dict, manifest_path: Path, curr
     phase = "REFRESH" if (dest.exists() or _should_refresh(ctx, name) or ctx.update_only) else "FETCH"
     ctx.printer.step(phase, f"file {name} -> {dest}")  # type: ignore[union-attr]
     final_url = _download_to_file(
+        ctx,
         url,
         dest,
         manifest_path=manifest_path,
         dependency_name=name,
         dependency_type="file",
-        printer=ctx.printer,
-        dry_run=ctx.dry_run,
     )
 
     if ctx.dry_run:
@@ -766,13 +746,12 @@ def _execute_archive(ctx: "RunContext", dependency: dict, manifest_path: Path, c
     phase = "REFRESH" if (extract_dest.exists() or _should_refresh(ctx, name) or ctx.update_only) else "FETCH"
     ctx.printer.step(phase, f"archive {name} -> {extract_dest}")  # type: ignore[union-attr]
     final_url = _download_to_file(
+        ctx,
         url,
         archive_path,
         manifest_path=manifest_path,
         dependency_name=name,
         dependency_type="archive",
-        printer=ctx.printer,
-        dry_run=ctx.dry_run,
     )
 
     if ctx.dry_run:

@@ -49,6 +49,7 @@ namespace OmegaWTK::Composition {
                 renderScale = static_cast<float>(dpi) / 96.f;
             }
         }
+        view->setRenderScale(renderScale);
         HRESULT res = comp_device_desktop->CreateTargetForHwnd(hwndItem->hwnd,FALSE,&hwndTarget.comPtr);
         if(FAILED(res)){
             OMEGAWTK_DEBUG("Failed to Create Render Target for HWND");

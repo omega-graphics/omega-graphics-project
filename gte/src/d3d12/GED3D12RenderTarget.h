@@ -38,7 +38,7 @@ _NAMESPACE_BEGIN_
                                  unsigned frameIndex,
                                  ID3D12Resource *const *renderTargets,
                                  size_t renderTargetViewCount,HWND hwnd);
-        ~GED3D12NativeRenderTarget();
+        ~GED3D12NativeRenderTarget() override;
     };
 
     class GED3D12TextureRenderTarget : public GETextureRenderTarget {
@@ -50,7 +50,8 @@ _NAMESPACE_BEGIN_
         explicit GED3D12TextureRenderTarget(
                 SharedHandle<GED3D12Texture> texture,
                 SharedHandle<GECommandQueue> & commandQueue);
-        ~GED3D12TextureRenderTarget();
+
+        ~GED3D12TextureRenderTarget() override;
 
         void commit() override;
         SharedHandle<CommandBuffer> commandBuffer() override;
@@ -61,6 +62,7 @@ _NAMESPACE_BEGIN_
         SharedHandle<GETexture> underlyingTexture() override;
         void waitForGPU() override;
         void signalFence(SharedHandle<GEFence> & fence) override;
+
     };
 _NAMESPACE_END_
 

@@ -183,6 +183,11 @@ namespace OmegaWTK {
         /// attaches to an AppWindow (Phase 3, single-surface rendering).
         void setWindowRenderTarget(SharedHandle<Composition::ViewRenderTarget> windowRT);
 
+        /// @brief Logical-to-physical pixel scale factor for this view's
+        /// window (1.0 = 96 DPI). Sourced from the attached ViewRenderTarget.
+        /// Returns 1.0 if no render target is attached yet.
+        float getRenderScale() const;
+
         /// @brief Compute this View's position relative to the window
         /// origin by walking the parent chain. Used by Canvas to stamp
         /// CanvasFrame::windowOffset at paint time. If any ancestor is a

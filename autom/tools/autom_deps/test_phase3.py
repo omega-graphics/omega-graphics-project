@@ -2,26 +2,39 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from autom_deps.cli import parse_args
+from autom_deps.downloads import DownloadManager
 from autom_deps.errors import DependencyExecutionError
 from autom_deps.resolution import resolve_version_source
 from autom_deps.runner import run
+from autom_deps.ui import StatusPrinter
 
 
 class FakeDownloadResponse:
-    def __init__(self, payload: bytes, url: str) -> None:
+    def __init__(
+        self,
+        payload: bytes,
+        url: str,
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self._payload = payload
         self.url = url
+        self.status_code = status_code
+        self.headers = headers or {"Content-Length": str(len(payload))}
 
     def __enter__(self):
         return self
@@ -35,6 +48,16 @@ class FakeDownloadResponse:
     def iter_content(self, chunk_size: int = 0):
         del chunk_size
         yield self._payload
+
+
+class FakeDownloadSession:
+    def __init__(self, response: FakeDownloadResponse) -> None:
+        self.response = response
+        self.calls: list[dict[str, object]] = []
+
+    def get(self, url: str, **kwargs):
+        self.calls.append({"url": url, **kwargs})
+        return self.response
 
 
 class FakeJsonResponse:
@@ -92,11 +115,17 @@ class AutomDepsPhase3Tests(unittest.TestCase):
             ]
         }
 
+    def _zip_payload(self) -> bytes:
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            archive.writestr("pkg/include/data.txt", "hello")
+        return stream.getvalue()
+
     def test_file_dependency_download_and_skip_with_checksum(self) -> None:
         self._write_manifest(self._file_manifest())
 
         with self._pushd(self.root), mock.patch(
-            "autom_deps.dependencies.requests.get",
+            "autom_deps.downloads.requests.Session.get",
             return_value=FakeDownloadResponse(self.payload, "https://cdn.example.invalid/payload.bin"),
         ) as download_get:
             self.assertEqual(run([], parse_args([])), 0)
@@ -109,7 +138,7 @@ class AutomDepsPhase3Tests(unittest.TestCase):
         self.assertEqual(self._load_exports()["payload.bin"], str(artifact.resolve()))
 
         with self._pushd(self.root), mock.patch(
-            "autom_deps.dependencies.requests.get",
+            "autom_deps.downloads.requests.Session.get",
             side_effect=AssertionError("skip path should not redownload"),
         ):
             self.assertEqual(run([], parse_args([])), 0)
@@ -121,7 +150,7 @@ class AutomDepsPhase3Tests(unittest.TestCase):
         self._write_manifest(self._file_manifest())
 
         with self._pushd(self.root), mock.patch(
-            "autom_deps.dependencies.requests.get",
+            "autom_deps.downloads.requests.Session.get",
             return_value=FakeDownloadResponse(self.payload, "https://cdn.example.invalid/payload.bin"),
         ):
             self.assertEqual(run([], parse_args([])), 0)
@@ -137,7 +166,7 @@ class AutomDepsPhase3Tests(unittest.TestCase):
         self._write_manifest(self._file_manifest())
 
         with self._pushd(self.root), mock.patch(
-            "autom_deps.dependencies.requests.get",
+            "autom_deps.downloads.requests.Session.get",
             return_value=FakeDownloadResponse(self.payload, "https://cdn.example.invalid/payload.bin"),
         ):
             self.assertEqual(run([], parse_args([])), 0)
@@ -157,7 +186,7 @@ class AutomDepsPhase3Tests(unittest.TestCase):
         self._write_manifest(self._file_manifest())
 
         with self._pushd(self.root), mock.patch(
-            "autom_deps.dependencies.requests.get",
+            "autom_deps.downloads.requests.Session.get",
             side_effect=AssertionError("dry-run should not download"),
         ):
             self.assertEqual(run([], parse_args(["--dry-run"])), 0)
@@ -224,6 +253,99 @@ class AutomDepsPhase3Tests(unittest.TestCase):
             side_effect=AssertionError("existing checkout should not reclone"),
         ):
             self.assertEqual(run([], parse_args([])), 0)
+
+    def test_legacy_download_and_unzip_skip_existing_outputs(self) -> None:
+        zip_payload = self._zip_payload()
+        self._write_manifest(
+            {
+                "commands": [
+                    {
+                        "type": "download",
+                        "url": "https://example.invalid/pkg.zip",
+                        "dest": "./temp/pkg.zip",
+                    },
+                    {
+                        "type": "unzip",
+                        "zipfile": "./temp/pkg.zip",
+                        "dest": "./deps/pkg",
+                    },
+                ]
+            }
+        )
+
+        with self._pushd(self.root), mock.patch(
+            "autom_deps.downloads.requests.Session.get",
+            return_value=FakeDownloadResponse(zip_payload, "https://cdn.example.invalid/pkg.zip"),
+        ) as download_get:
+            self.assertEqual(run([], parse_args([])), 0)
+            self.assertEqual(download_get.call_count, 1)
+
+        archive_path = self.root / "temp" / "pkg.zip"
+        extracted_file = self.root / "deps" / "pkg" / "pkg" / "include" / "data.txt"
+        self.assertTrue(archive_path.exists())
+        self.assertEqual(extracted_file.read_text(encoding="utf-8"), "hello")
+
+        with self._pushd(self.root), mock.patch(
+            "autom_deps.downloads.requests.Session.get",
+            side_effect=AssertionError("legacy skip path should not redownload"),
+        ):
+            self.assertEqual(run([], parse_args([])), 0)
+
+        state = self._load_state()
+        self.assertEqual(len(state["commands"]), 2)
+        self.assertTrue(all(entry["status"] == "present" for entry in state["commands"].values()))
+
+    def test_json_log_emits_machine_readable_events(self) -> None:
+        self._write_manifest(
+            {
+                "commands": [
+                    {
+                        "type": "system",
+                        "path": "echo skipped",
+                    }
+                ]
+            }
+        )
+
+        output = io.StringIO()
+        with self._pushd(self.root), contextlib.redirect_stdout(output):
+            self.assertEqual(run([], parse_args(["--dry-run", "--json-log"])), 0)
+
+        events = [json.loads(line) for line in output.getvalue().splitlines() if line.strip()]
+        self.assertEqual(events[0]["event"], "session_start")
+        self.assertTrue(any(event["event"] == "step" for event in events))
+        self.assertEqual(events[-1]["event"], "summary")
+
+    def test_download_manager_resumes_partial_files(self) -> None:
+        payload = b"hello world"
+        dest = self.root / "resume.bin"
+        partial = self.root / "resume.bin.part"
+        partial.write_bytes(payload[:6])
+
+        session = FakeDownloadSession(
+            FakeDownloadResponse(
+                payload[6:],
+                "https://cdn.example.invalid/resume.bin",
+                status_code=206,
+                headers={
+                    "Content-Length": str(len(payload[6:])),
+                    "Content-Range": f"bytes 6-{len(payload) - 1}/{len(payload)}",
+                },
+            )
+        )
+        manager = DownloadManager(session=session)
+        printer = StatusPrinter(total_steps=1, stream=io.StringIO())
+
+        result = manager.download(
+            "https://example.invalid/resume.bin",
+            dest,
+            printer=printer,
+            label="resume-test",
+        )
+
+        self.assertTrue(result.resumed)
+        self.assertEqual(dest.read_bytes(), payload)
+        self.assertEqual(session.calls[0]["headers"]["Range"], "bytes=6-")
 
 
 if __name__ == "__main__":

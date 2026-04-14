@@ -50,8 +50,8 @@ _NAMESPACE_BEGIN_
         GED3D12Buffer(const BufferDescriptor::Usage & usage,ID3D12Resource *buffer,ID3D12DescriptorHeap *bufferDescHeap, D3D12_RESOURCE_STATES currentState):
         GEBuffer(usage),buffer(buffer),
         bufferDescHeap(bufferDescHeap),
-        currentState(currentState){
-            traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+        traceResourceId(ResourceTracking::Tracker::instance().nextResourceId()), currentState(currentState){
+            
             ResourceTracking::Tracker::instance().emit(
                     ResourceTracking::EventType::Create,
                     ResourceTracking::Backend::D3D12,
@@ -77,7 +77,7 @@ _NAMESPACE_BEGIN_
         std::uint64_t lastSignaledValue = 0;
         std::uint64_t nextSignalValue = 1;
         void setName(OmegaCommon::StrRef name) override{
-            ATL::CStringW str(name.data(),name.size());
+            ATL::CStringW str(name.data(),INT(name.size()));
             fence->SetName(str);
         }
         void *native() override {
@@ -85,6 +85,7 @@ _NAMESPACE_BEGIN_
         }
         std::uint64_t getLastSignaledValue() const override { return lastSignaledValue; }
         explicit GED3D12Fence(ID3D12Fence *fence):fence(fence){};
+        ~GED3D12Fence() override = default;
     };
 
     class GED3D12SamplerState : public GESamplerState {
@@ -110,6 +111,7 @@ _NAMESPACE_BEGIN_
         };
         SharedHandle<GEBuffer> makeBuffer(const BufferDescriptor &desc) override;
         SharedHandle<GETexture> makeTexture(const TextureDescriptor &desc) override;
+        ~GED3D12Heap() override = default;
     };
     #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
     struct GED3D12AccelerationStruct : public GEAccelerationStruct {
@@ -126,6 +128,7 @@ _NAMESPACE_BEGIN_
     public:
         ComPtr<IDXGIFactory6> dxgi_factory;
         explicit GED3D12Engine(SharedHandle<GTED3D12Device> device);
+        ~GED3D12Engine() override = default;
         ComPtr<ID3D12Debug1> debug_interface;
         ComPtr<ID3D12Device8> d3d12_device;
         void * underlyingNativeDevice() override {
@@ -135,10 +138,10 @@ _NAMESPACE_BEGIN_
         static SharedHandle<OmegaGraphicsEngine> Create(SharedHandle<GTEDevice> & device);
         // SharedHandle<GEShaderLibrary> loadShaderLibrary(FS::Path path);
         // SharedHandle<GEShaderLibrary> loadStdShaderLibrary();
-        #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
+        
         SharedHandle<GEBuffer> createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes) override;
         SharedHandle<GEAccelerationStruct> allocateAccelerationStructure(const GEAccelerationStructDescriptor &desc) override;
-        #endif
+       
         bool createRootSignatureFromOmegaSLShaders(unsigned shaderN,omegasl_shader *shader,D3D12_ROOT_SIGNATURE_DESC1 * rootSignatureDesc,ID3D12RootSignature **pRootSignature);
         SharedHandle<GEFence> makeFence() override;
         SharedHandle<GESamplerState> makeSamplerState(const SamplerDescriptor &desc) override;

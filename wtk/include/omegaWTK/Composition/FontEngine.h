@@ -85,13 +85,17 @@
 
      /**
       @brief Creates an empty TextRect from a Rect and a TextLayoutDescriptor.
-      @param rect[in] The Rect to draw the text in.
+      @param rect[in] The Rect to draw the text in (logical pixels / DIPs).
       @param layoutDesc[in]
+      @param renderScale[in] Logical-to-physical pixel scale factor (1.0 = 96 DPI).
+             The backend allocates a physical-sized offscreen surface and
+             configures the device context so font sizes stay in DIPs.
       @returns SharedPtr<TextRect>
      */
-     static Core::SharedPtr<TextRect> Create(Composition::Rect rect,const TextLayoutDescriptor & layoutDesc);
+     static Core::SharedPtr<TextRect> Create(Composition::Rect rect,const TextLayoutDescriptor & layoutDesc, float renderScale = 1.f);
      virtual ~TextRect() = default;
  protected:
+     float renderScale = 1.f;
      TextRect(Composition::Rect & rect):rect(rect){};
  };
  /**

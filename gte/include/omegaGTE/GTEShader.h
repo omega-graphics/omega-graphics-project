@@ -35,6 +35,7 @@ struct OMEGAGTE_EXPORT GEBufferWriter {
     virtual void sendToBuffer() = 0;
     virtual void flush() = 0;
     static SharedHandle<GEBufferWriter> Create();
+    virtual ~GEBufferWriter() = default;
 };
 
 struct OMEGAGTE_EXPORT GEBufferReader {
@@ -49,6 +50,7 @@ struct OMEGAGTE_EXPORT GEBufferReader {
     virtual void structEnd() = 0;
     virtual void reset() = 0;
     static SharedHandle<GEBufferReader> Create();
+    virtual ~GEBufferReader() = default;
 };
 
 

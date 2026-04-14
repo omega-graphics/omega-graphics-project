@@ -115,7 +115,7 @@ The loader checks `magic` and `version`. If the file starts with the old format 
 
 ---
 
-## Phase B: Compiler Rewrite
+## Phase B: Compiler Rewrite [COMPLETED]
 
 Rewrite `omega-assetc` as a proper asset pipeline tool.
 
@@ -183,7 +183,7 @@ shaders/compositor.omegasllib  type=Shader
 
 ---
 
-## Phase C: Runtime Loader Rewrite
+## Phase C: Runtime Loader Rewrite [COMPLETED]
 
 Replace the current `AssetLibrary` with a safe, typed runtime API.
 

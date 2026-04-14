@@ -8,10 +8,12 @@ if __package__ in {None, ""}:
     from autom_deps.cli import parse_args
     from autom_deps.errors import AutomDepsError
     from autom_deps.runner import run
+    from autom_deps.ui import emit_error
 else:
     from .cli import parse_args
     from .errors import AutomDepsError
     from .runner import run
+    from .ui import emit_error
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -19,10 +21,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return run(argv, args)
     except AutomDepsError as ex:
-        print(f"[ERROR] {ex}", file=sys.stderr)
+        emit_error(str(ex), json_log=args.json_log, stream=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("[ERROR] interrupted", file=sys.stderr)
+        emit_error("interrupted", json_log=args.json_log, stream=sys.stderr)
         return 130
 
 

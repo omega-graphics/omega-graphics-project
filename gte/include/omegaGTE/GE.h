@@ -173,6 +173,7 @@ _NAMESPACE_BEGIN_
          @returns SharedHandle<GETexture>
         */
         virtual SharedHandle<GETexture> makeTexture(const TextureDescriptor & desc) = 0;
+        virtual ~GEHeap() = default;
     };
 
     /// @brief Provides command synchronization across multiple command queues.
@@ -181,6 +182,8 @@ _NAMESPACE_BEGIN_
         OMEGACOMMON_CLASS("OmegaGTE.GEFence")
         /// Value last signaled (or about to be signaled) by the producer queue; use for CPU wait.
         virtual std::uint64_t getLastSignaledValue() const { return 0; }
+
+        virtual ~GEFence() = default;
     };
 
     /// @brief Describes a Texture Sampler
@@ -370,8 +373,11 @@ _NAMESPACE_BEGIN_
           @returns SharedHandle<GECommandQueue>
          */
         virtual SharedHandle<GECommandQueue> makeCommandQueue(unsigned maxBufferCount) = 0;
-
+        /// TODO:
+        /// Cleaner API for GE.h
         virtual void waitForGPUIdle() {}
+
+        virtual ~OmegaGraphicsEngine() = default;
     };
 
 

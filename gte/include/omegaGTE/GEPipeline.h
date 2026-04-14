@@ -72,12 +72,12 @@ _NAMESPACE_BEGIN_
     };
 
     struct  OMEGAGTE_EXPORT ComputePipelineDescriptor {
-        OmegaCommon::StrRef name;
+        OmegaCommon::String name;
         SharedHandle<GTEShader> computeFunc;
 
     };
-    typedef struct __GERenderPipelineState  GERenderPipelineState;
-    typedef struct __GEComputePipelineState GEComputePipelineState;
+    using GERenderPipelineState = struct __GERenderPipelineState;
+    using GEComputePipelineState = struct __GEComputePipelineState;
 
 
 _NAMESPACE_END_

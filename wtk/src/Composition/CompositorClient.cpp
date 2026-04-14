@@ -172,6 +172,8 @@ namespace OmegaWTK::Composition {
 
     ViewRenderTarget::ViewRenderTarget(Native::NativeItemPtr _native) : native(std::move(_native)){};
     Native::NativeItemPtr ViewRenderTarget::getNativePtr(){ return native;};
+    float ViewRenderTarget::getRenderScale() const { return renderScale_; }
+    void ViewRenderTarget::setRenderScale(float scale){ if(scale > 0.f) renderScale_ = scale; }
     ViewRenderTarget::~ViewRenderTarget(){};
 
 }

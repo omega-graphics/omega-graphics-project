@@ -13,19 +13,19 @@ _NAMESPACE_BEGIN_
     class  OMEGAGTE_EXPORT GETexture : public GTEResource {
     public:
         OMEGACOMMON_CLASS("OmegaGTE.GETexture")
-        typedef enum : unsigned char {
+        using GETextureType = enum : unsigned char {
             Texture1D,
             Texture2D,
             Texture3D,
-        } GETextureType;
-        typedef enum : unsigned char {
+        };
+        using GETextureUsage = enum : unsigned char {
             ToGPU = 0x00,
             FromGPU = 0x01,
             GPUAccessOnly = 0x02,
             RenderTarget = 0x03,
             MSResolveSrc = 0x04,
             RenderTargetAndDepthStencil = 0x05
-        } GETextureUsage;
+        };
     protected:
         GETextureType type;
         GETextureUsage usage;

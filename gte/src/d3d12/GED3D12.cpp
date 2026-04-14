@@ -308,7 +308,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         return SharedHandle<GTEShader>(shader);
     }
 
-    typedef unsigned char D3DByte;
+    using D3DByte = unsigned char;
 
     class GED3D12BufferWriter : public GEBufferWriter {
         GED3D12Buffer * _buffer = nullptr;
@@ -441,6 +441,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
             // std::cout << "LastOffset:" << currentOffset << std::endl;
             currentOffset = 0;
         }
+        ~GED3D12BufferWriter() override = default;
     };
 
     SharedHandle<GEBufferWriter> GEBufferWriter::Create() {
@@ -502,6 +503,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
             _buffer->buffer->Unmap(0,nullptr);
             _buffer = nullptr;
         }
+        ~GED3D12BufferReader() override = default;
     };
 
     SharedHandle<GEBufferReader> GEBufferReader::Create() {
@@ -903,7 +905,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         return SharedHandle<GERenderPipelineState>(new GED3D12RenderPipelineState(desc.vertexFunc,desc.fragmentFunc,state,signature,rootSigDesc));
     };
     SharedHandle<GEComputePipelineState> GED3D12Engine::makeComputePipelineState(ComputePipelineDescriptor &desc){
-        D3D12_COMPUTE_PIPELINE_STATE_DESC d;
+        D3D12_COMPUTE_PIPELINE_STATE_DESC d {};
         HRESULT hr;
         ID3D12PipelineState *state;
 
@@ -929,6 +931,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         hr = d3d12_device->CreateComputePipelineState(&d,IID_PPV_ARGS(&state));
         if(FAILED(hr)){
             DEBUG_STREAM("Failed to Create Compute Pipeline State");
+            exit(1);
         }
         ATL::CStringW wstr(desc.name.data());
         state->SetName(wstr);
@@ -937,7 +940,6 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
 
     SharedHandle<GENativeRenderTarget> GED3D12Engine::makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc){
         HRESULT hr;
-
         /// Swap Chain must have 2 Frames
         auto rtv_desc_size = d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         auto dsv_desc_Size = d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);

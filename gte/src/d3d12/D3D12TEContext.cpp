@@ -374,6 +374,7 @@ public:
 
     explicit D3D12NativeRenderTargetTEContext(const SharedHandle<GED3D12NativeRenderTarget> &target)
         : target(target) {}
+    ~D3D12NativeRenderTargetTEContext() override = default;
 };
 
 class D3D12TextureRenderTargetTEContext : public OmegaTriangulationEngineContext {
@@ -411,6 +412,7 @@ public:
 
     explicit D3D12TextureRenderTargetTEContext(const SharedHandle<GED3D12TextureRenderTarget> &target)
         : target(target) {}
+    ~D3D12TextureRenderTargetTEContext() override = default;
 };
 
 SharedHandle<OmegaTriangulationEngineContext> CreateNativeRenderTargetTEContext(SharedHandle<GENativeRenderTarget> &renderTarget) {

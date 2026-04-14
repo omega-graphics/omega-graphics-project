@@ -203,11 +203,11 @@ namespace OmegaWTK::Composition {
                             };
                         }
 
-                        UINT dpi = GetDpiForWindow(GetForegroundWindow());
-                        FLOAT scaleFactor = FLOAT(dpi)/96.f;
-
+                        // Font size stays in DIPs. Physical pixel scaling is
+                        // applied by the D2D device context via SetDpi() in
+                        // DWriteTextRect, driven by ViewRenderTarget::renderScale.
                         /// TODO: Use Custom Fonts with custom font Collection!
-                        hr = dwrite_factory->CreateTextFormat(w_str.c_str(),NULL,weight,style,DWRITE_FONT_STRETCH_NORMAL,FLOAT(desc.size) * scaleFactor,L"en-us",&textFormat);
+                        hr = dwrite_factory->CreateTextFormat(w_str.c_str(),NULL,weight,style,DWRITE_FONT_STRETCH_NORMAL,FLOAT(desc.size),L"en-us",&textFormat);
                         if(FAILED(hr)){
 
                         };
@@ -253,11 +253,9 @@ namespace OmegaWTK::Composition {
                     };
                 }
 
-                UINT dpi = GetDpiForWindow(GetForegroundWindow());
-                FLOAT scaleFactor = FLOAT(dpi)/96.f;
-
+                // Font size stays in DIPs. See CreateFont() above.
                 /// TODO: Use Custom Fonts with custom font Collection!
-                hr = dwrite_factory->CreateTextFormat(w_str.c_str(),collection,weight,style,DWRITE_FONT_STRETCH_NORMAL,FLOAT(desc.size) * scaleFactor,L"en-us",&textFormat);
+                hr = dwrite_factory->CreateTextFormat(w_str.c_str(),collection,weight,style,DWRITE_FONT_STRETCH_NORMAL,FLOAT(desc.size),L"en-us",&textFormat);
                 if(FAILED(hr)){
 
                 };
@@ -350,8 +348,8 @@ namespace OmegaWTK::Composition {
                FontEngineImpl->d3d11_device->AcquireWrappedResources((ID3D11Resource *const *)&resource,1);
 
              context->BeginDraw();
-             context->Clear(D2D1::ColorF(1.f,0.f,0.f,1.f));
-             ID2D1Brush * brush;
+             context->Clear(D2D1::ColorF(0.f,0.f,0.f,0.f));
+             ID2D1Brush * brush = nullptr;
              context->CreateSolidColorBrush(D2D1::ColorF(color.r,color.g,color.b,color.a),(ID2D1SolidColorBrush **)&brush);
              context->DrawTextLayout(D2D1::Point2F(0,0),run->textLayout.get(),brush,D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
              HRESULT hr = context->EndDraw();
@@ -373,11 +371,12 @@ namespace OmegaWTK::Composition {
          void * getNative() override{
             return nullptr;
          };
-         explicit DWriteTextRect(Composition::Rect & rect,const TextLayoutDescriptor & layoutDesc):
+         explicit DWriteTextRect(Composition::Rect & rect,const TextLayoutDescriptor & layoutDesc, float renderScale):
          TextRect(rect),
          lineLimit(layoutDesc.lineLimit),
          target(nullptr),
          context(nullptr){
+             this->renderScale = renderScale > 0.f ? renderScale : 1.f;
              HRESULT hr;
 
              switch (layoutDesc.alignment) {
@@ -416,8 +415,9 @@ namespace OmegaWTK::Composition {
 
              OmegaGTE::TextureDescriptor textureDesc {OmegaGTE::GETexture::Texture2D};
              textureDesc.usage = OmegaGTE::GETexture::RenderTarget;
-             textureDesc.height = (unsigned)rect.h;
-             textureDesc.width = (unsigned)rect.w;             
+             textureDesc.pixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
+             textureDesc.height = (unsigned)(rect.h * this->renderScale);
+             textureDesc.width = (unsigned)(rect.w * this->renderScale);
 
              target = gte.graphicsEngine->makeTexture(textureDesc);
              
@@ -466,6 +466,8 @@ namespace OmegaWTK::Composition {
              OMEGAWTK_DEBUG("Ok! 5");
 
              context->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+             const float dpi = 96.f * this->renderScale;
+             context->SetDpi(dpi, dpi);
               OMEGAWTK_DEBUG("DWriteTextRect Successfully Created");
 
               fence = gte.graphicsEngine->makeFence();
@@ -476,8 +478,8 @@ namespace OmegaWTK::Composition {
          }
      };
 
-     SharedHandle<TextRect> TextRect::Create(Composition::Rect rect,const TextLayoutDescriptor & layoutDesc){
-         return SharedHandle<TextRect>(new DWriteTextRect(rect,layoutDesc));
+     SharedHandle<TextRect> TextRect::Create(Composition::Rect rect,const TextLayoutDescriptor & layoutDesc, float renderScale){
+         return SharedHandle<TextRect>(new DWriteTextRect(rect,layoutDesc,renderScale));
      };
     }
 

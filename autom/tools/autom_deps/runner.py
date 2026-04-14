@@ -4,7 +4,6 @@ import json
 import os
 import platform
 import runpy
-import shutil
 import tarfile
 import zipfile
 from dataclasses import dataclass, field
@@ -14,30 +13,12 @@ import requests
 
 from .conditions import item_enabled
 from .dependencies import execute_dependency
+from .downloads import DownloadManager
 from .errors import CommandExecutionError, ManifestValidationError
 from .state import exports_from_state, load_state, save_exports, save_state
+from .ui import StatusPrinter
 from .validation import validate_manifest
 from .variables import resolve_string, validate_local_variables
-
-
-@dataclass
-class StatusPrinter:
-    total_steps: int
-    current_step: int = 0
-
-    def header(self, root_dir: str, target: str, mode: str) -> None:
-        print(f"[INFO] root={root_dir}")
-        print(f"[INFO] target={target}")
-        print(f"[INFO] mode={mode}")
-
-    def step(self, kind: str, message: str) -> None:
-        self.current_step += 1
-        if self.current_step > self.total_steps:
-            self.total_steps = self.current_step
-        print(f"[{self.current_step}/{self.total_steps}] {kind:<8} {message}")
-
-    def note(self, kind: str, message: str) -> None:
-        print(f"[{kind}] {message}")
 
 
 @dataclass
@@ -52,13 +33,20 @@ class RunContext:
     clean_targets: set[str]
     resolve_stable: bool
     print_resolved: str | None
+    download_manager: DownloadManager
     variables: dict[str, object] = field(default_factory=dict)
     clone_automdeps_queue: list[str] = field(default_factory=list)
-    state: dict = field(default_factory=lambda: {"dependencies": {}})
+    state: dict = field(default_factory=lambda: {"dependencies": {}, "commands": {}})
     exports: dict[str, str] = field(default_factory=dict)
     seen_dependency_names: set[str] = field(default_factory=set)
     seen_export_names: set[str] = field(default_factory=set)
     printer: StatusPrinter | None = None
+
+
+@dataclass
+class CommandResult:
+    state_entry: dict | None = None
+    skipped: bool = False
 
 
 def detect_default_platform(target: str | None) -> str:
@@ -154,29 +142,79 @@ def _is_existing_git_checkout(path: str) -> bool:
     return os.path.isdir(path) and git_path.exists()
 
 
+def _command_state_key(manifest_path: Path, command_field: str, command_index: int) -> str:
+    return f"{manifest_path}::{command_field}[{command_index}]"
+
+
+def _resolve_command_path(value: str, manifest_path: Path) -> str:
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+    return str((manifest_path.parent / path).resolve())
+
+
+def _command_inputs_match(current_entry: dict | None, desired_inputs: dict[str, object]) -> bool:
+    if not isinstance(current_entry, dict):
+        return False
+    current_inputs = current_entry.get("inputs")
+    if not isinstance(current_inputs, dict):
+        return False
+    return current_inputs == desired_inputs
+
+
+def _record_command_state_entry(
+    command_type: str,
+    manifest_path: Path,
+    command_field: str,
+    command_index: int,
+    status: str,
+    *,
+    inputs: dict[str, object] | None = None,
+    outputs: dict[str, object] | None = None,
+    resolved: dict[str, object] | None = None,
+) -> dict:
+    entry = {
+        "type": command_type,
+        "manifest": str(manifest_path),
+        "field": command_field,
+        "index": command_index,
+        "status": status,
+    }
+    if inputs:
+        entry["inputs"] = inputs
+    if outputs:
+        entry["outputs"] = outputs
+    if resolved:
+        entry["resolved"] = resolved
+    return entry
+
+
 def process_command(
     ctx: RunContext,
     command: dict,
     manifest_path: Path,
     command_index: int,
     command_field: str,
-) -> None:
+) -> CommandResult:
     command_type = command["type"]
+    command_key = _command_state_key(manifest_path, command_field, command_index)
+    current_entry = ctx.state.get("commands", {}).get(command_key)
+
     if not item_enabled(command, ctx.default_platform, ctx.variables, str(manifest_path), command_field, manifest_path.parent):
         ctx.printer.step("SKIP", f"{command_type} (condition)")  # type: ignore[union-attr]
-        return
+        return CommandResult(skipped=True)
 
     if ctx.clean_targets:
         ctx.printer.step("SKIP", f"{command_type} (clean mode)")  # type: ignore[union-attr]
-        return
+        return CommandResult(skipped=True)
 
     if ctx.verify_only:
         ctx.printer.step("SKIP", f"{command_type} (verify mode)")  # type: ignore[union-attr]
-        return
+        return CommandResult(skipped=True)
 
     if ctx.update_only and command_type not in {"git_clone", "clone"}:
         ctx.printer.step("SKIP", f"{command_type} (sync mode)")  # type: ignore[union-attr]
-        return
+        return CommandResult(skipped=True)
 
     resolved: dict[str, str] = {}
     for key, value in command.items():
@@ -189,12 +227,15 @@ def process_command(
     ctx.printer.step(step_kind, _command_detail(command_type, resolved))  # type: ignore[union-attr]
 
     if ctx.dry_run:
-        return
+        return CommandResult(
+            state_entry=_record_command_state_entry(command_type, manifest_path, command_field, command_index, "planned", inputs=resolved)
+        )
 
     if command_type in {"git_clone", "clone"}:
         url = resolved["url"]
-        dest = resolved["dest"]
+        dest = _resolve_command_path(resolved["dest"], manifest_path)
         branch = None if resolved["branch"] == "default" else resolved["branch"]
+        desired_inputs = {"url": url, "dest": dest, "branch": branch or "default"}
         if ctx.update_only:
             if not os.path.isdir(dest):
                 raise CommandExecutionError(
@@ -204,6 +245,17 @@ def process_command(
                     command_index=command_index,
                 )
             _run_shell("git pull", dest, manifest_path=manifest_path, command_type=command_type, command_index=command_index)
+            return CommandResult(
+                state_entry=_record_command_state_entry(
+                    command_type,
+                    manifest_path,
+                    command_field,
+                    command_index,
+                    "updated",
+                    inputs=desired_inputs,
+                    outputs={"dest": dest},
+                )
+            )
         else:
             if os.path.exists(dest):
                 if not _is_existing_git_checkout(dest):
@@ -214,20 +266,43 @@ def process_command(
                         command_index=command_index,
                     )
                 ctx.printer.note("OK", f"using existing repository {os.path.abspath(dest)}")  # type: ignore[union-attr]
+                result = CommandResult(
+                    state_entry=_record_command_state_entry(
+                        command_type,
+                        manifest_path,
+                        command_field,
+                        command_index,
+                        "present",
+                        inputs=desired_inputs,
+                        outputs={"dest": dest},
+                    ),
+                    skipped=True,
+                )
             else:
                 clone_cmd = f"git clone {url} {dest}" if branch is None else f"git clone {url} --branch {branch} {dest}"
                 _run_shell(clone_cmd, os.getcwd(), manifest_path=manifest_path, command_type=command_type, command_index=command_index)
+                result = CommandResult(
+                    state_entry=_record_command_state_entry(
+                        command_type,
+                        manifest_path,
+                        command_field,
+                        command_index,
+                        "cloned",
+                        inputs=desired_inputs,
+                        outputs={"dest": dest},
+                    )
+                )
             if command_type == "clone":
                 ctx.clone_automdeps_queue.append(os.path.abspath(dest))
-        return
+            return result
 
     if command_type == "chdir":
         os.chdir(resolved["dir"])
-        return
+        return CommandResult()
 
     if command_type == "system":
         _run_shell(resolved["path"], os.getcwd(), manifest_path=manifest_path, command_type=command_type, command_index=command_index)
-        return
+        return CommandResult()
 
     if command_type == "script":
         script_path = Path(resolved["path"]).resolve()
@@ -244,61 +319,118 @@ def process_command(
         finally:
             os.sys.argv = old_argv
             os.chdir(prior_dir)
-        return
+        return CommandResult()
 
     if command_type == "download":
         url = resolved["url"]
-        dest = resolved["dest"]
-        dest_dir = os.path.dirname(dest)
-        if dest_dir:
-            os.makedirs(dest_dir, exist_ok=True)
-        temp_dest = dest + ".part"
+        dest = _resolve_command_path(resolved["dest"], manifest_path)
+        desired_inputs = {"url": url, "dest": dest}
+        if os.path.isfile(dest) and (_command_inputs_match(current_entry, desired_inputs) or current_entry is None):
+            ctx.printer.note("OK", f"using existing download {dest}")  # type: ignore[union-attr]
+            return CommandResult(
+                state_entry=_record_command_state_entry(
+                    command_type,
+                    manifest_path,
+                    command_field,
+                    command_index,
+                    "present",
+                    inputs=desired_inputs,
+                    outputs={"dest": dest},
+                ),
+                skipped=True,
+            )
         try:
-            with requests.get(
+            download_result = ctx.download_manager.download(
                 url,
-                stream=True,
-                allow_redirects=True,
-                timeout=(30, 300),
-                headers={"User-Agent": "autom-deps/1.0"},
-            ) as response:
-                response.raise_for_status()
-                total_bytes = 0
-                with open(temp_dest, "wb") as out:
-                    for chunk in response.iter_content(chunk_size=1024 * 1024):
-                        if not chunk:
-                            continue
-                        out.write(chunk)
-                        total_bytes += len(chunk)
-                os.replace(temp_dest, dest)
-                ctx.printer.note("OK", f"downloaded {total_bytes} bytes from {response.url}")  # type: ignore[union-attr]
+                dest,
+                printer=ctx.printer,  # type: ignore[arg-type]
+                label=f"command:{command_type}[{command_index}]",
+            )
         except requests.RequestException as ex:
-            if os.path.exists(temp_dest):
-                os.remove(temp_dest)
             raise CommandExecutionError(
                 f"download failed: {ex}",
                 manifest_path=str(manifest_path),
                 command_type=command_type,
                 command_index=command_index,
             ) from ex
-        return
+        return CommandResult(
+            state_entry=_record_command_state_entry(
+                command_type,
+                manifest_path,
+                command_field,
+                command_index,
+                "downloaded",
+                inputs=desired_inputs,
+                outputs={"dest": dest},
+                resolved={"final_url": download_result.final_url},
+            )
+        )
 
     if command_type == "tar":
-        archive_path = resolved["tarfile"]
-        dest = resolved["dest"]
+        archive_path = _resolve_command_path(resolved["tarfile"], manifest_path)
+        dest = _resolve_command_path(resolved["dest"], manifest_path)
+        desired_inputs = {"archive_path": archive_path, "dest": dest}
+        if os.path.isdir(dest) and (_command_inputs_match(current_entry, desired_inputs) or current_entry is None):
+            ctx.printer.note("OK", f"using existing extracted directory {dest}")  # type: ignore[union-attr]
+            return CommandResult(
+                state_entry=_record_command_state_entry(
+                    command_type,
+                    manifest_path,
+                    command_field,
+                    command_index,
+                    "present",
+                    inputs=desired_inputs,
+                    outputs={"dest": dest},
+                ),
+                skipped=True,
+            )
+        Path(dest).mkdir(parents=True, exist_ok=True)
         with tarfile.open(archive_path, "r:*") as tar:
             tar.extractall(dest)
-        os.remove(archive_path)
-        shutil.rmtree(os.path.dirname(archive_path), ignore_errors=True)
-        return
+        return CommandResult(
+            state_entry=_record_command_state_entry(
+                command_type,
+                manifest_path,
+                command_field,
+                command_index,
+                "extracted",
+                inputs=desired_inputs,
+                outputs={"dest": dest},
+            )
+        )
 
     if command_type == "unzip":
-        zip_path = resolved["zipfile"]
-        dest = resolved["dest"]
+        zip_path = _resolve_command_path(resolved["zipfile"], manifest_path)
+        dest = _resolve_command_path(resolved["dest"], manifest_path)
+        desired_inputs = {"archive_path": zip_path, "dest": dest}
+        if os.path.isdir(dest) and (_command_inputs_match(current_entry, desired_inputs) or current_entry is None):
+            ctx.printer.note("OK", f"using existing extracted directory {dest}")  # type: ignore[union-attr]
+            return CommandResult(
+                state_entry=_record_command_state_entry(
+                    command_type,
+                    manifest_path,
+                    command_field,
+                    command_index,
+                    "present",
+                    inputs=desired_inputs,
+                    outputs={"dest": dest},
+                ),
+                skipped=True,
+            )
+        Path(dest).mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zip_path, "r") as archive:
             archive.extractall(dest)
-        os.remove(zip_path)
-        shutil.rmtree(os.path.dirname(zip_path), ignore_errors=True)
-        return
+        return CommandResult(
+            state_entry=_record_command_state_entry(
+                command_type,
+                manifest_path,
+                command_field,
+                command_index,
+                "extracted",
+                inputs=desired_inputs,
+                outputs={"dest": dest},
+            )
+        )
 
     raise CommandExecutionError(
         f"unhandled command type '{command_type}'",
@@ -316,6 +448,21 @@ def _replace_dependency_exports(ctx: RunContext, dependency_name: str, exports: 
     ctx.exports.update(exports)
 
 
+def _store_command_result(
+    ctx: RunContext,
+    manifest_path: Path,
+    command_field: str,
+    command_index: int,
+    result: CommandResult,
+) -> None:
+    command_key = _command_state_key(manifest_path, command_field, command_index)
+    if result.state_entry is None:
+        ctx.state["commands"].pop(command_key, None)
+    else:
+        ctx.state["commands"][command_key] = result.state_entry
+    ctx.printer.record_completion(skipped=result.skipped)  # type: ignore[union-attr]
+
+
 def run_manifest(ctx: RunContext, manifest_path: Path, is_root_manifest: bool) -> None:
     manifest = load_manifest(manifest_path)
     manifest_dir = manifest_path.parent
@@ -331,7 +478,7 @@ def run_manifest(ctx: RunContext, manifest_path: Path, is_root_manifest: bool) -
 
         if is_root_manifest:
             for index, command in enumerate(manifest.get("rootCommands", [])):
-                process_command(ctx, command, manifest_path, index, "rootCommands")
+                _store_command_result(ctx, manifest_path, "rootCommands", index, process_command(ctx, command, manifest_path, index, "rootCommands"))
 
         for index, dependency in enumerate(manifest.get("dependencies", [])):
             result = execute_dependency(ctx, dependency, manifest_path, field=f"dependencies[{index}]")
@@ -340,9 +487,10 @@ def run_manifest(ctx: RunContext, manifest_path: Path, is_root_manifest: bool) -
                 ctx.state["dependencies"].pop(result.name, None)
             else:
                 ctx.state["dependencies"][result.name] = result.state_entry
+            ctx.printer.record_completion(skipped=result.skipped)  # type: ignore[union-attr]
 
         for index, command in enumerate(manifest.get("commands", [])):
-            process_command(ctx, command, manifest_path, index, "commands")
+            _store_command_result(ctx, manifest_path, "commands", index, process_command(ctx, command, manifest_path, index, "commands"))
 
         for subdir in manifest.get("subdirs", []):
             child_manifest_path = (manifest_dir / subdir / "AUTOMDEPS").resolve()
@@ -350,11 +498,11 @@ def run_manifest(ctx: RunContext, manifest_path: Path, is_root_manifest: bool) -
             run_manifest(ctx, child_manifest_path, is_root_manifest=False)
 
         for index, command in enumerate(manifest.get("postCommands", [])):
-            process_command(ctx, command, manifest_path, index, "postCommands")
+            _store_command_result(ctx, manifest_path, "postCommands", index, process_command(ctx, command, manifest_path, index, "postCommands"))
 
         if is_root_manifest:
             for index, command in enumerate(manifest.get("postRootCommands", [])):
-                process_command(ctx, command, manifest_path, index, "postRootCommands")
+                _store_command_result(ctx, manifest_path, "postRootCommands", index, process_command(ctx, command, manifest_path, index, "postRootCommands"))
     finally:
         ctx.variables.clear()
         ctx.variables.update(prior_variables)
@@ -408,24 +556,40 @@ def run(argv: list[str] | None, args) -> int:
         clean_targets=set(args.clean),
         resolve_stable=args.resolve_stable,
         print_resolved=args.print_resolved,
+        download_manager=DownloadManager(
+            resume_enabled=not args.no_resume,
+            single_stream=True,
+        ),
         state=state,
         exports=exports_from_state(state) if args.clean else {},
-        printer=StatusPrinter(total_steps=max(total_steps, 1)),
+        printer=StatusPrinter(
+            total_steps=max(total_steps, 1),
+            verbose=args.verbose,
+            quiet=args.quiet,
+            json_log=args.json_log,
+            show_progress=args.show_progress,
+        ),
     )
 
     ctx.printer.header(ctx.absroot, ctx.default_platform, execution_mode_label(args))
-    run_manifest(ctx, manifest_path.resolve(), is_root_manifest=True)
+    try:
+        run_manifest(ctx, manifest_path.resolve(), is_root_manifest=True)
 
-    if ctx.clone_automdeps_queue and not (ctx.dry_run or ctx.verify_only or ctx.clean_targets):
-        for clone_root in list(ctx.clone_automdeps_queue):
-            clone_manifest = Path(clone_root) / "AUTOMDEPS"
-            if not clone_manifest.exists():
-                continue
-            ctx.printer.note("INFO", f"entering cloned component {os.path.relpath(clone_root, start=ctx.absroot)}")
-            run_manifest(ctx, clone_manifest.resolve(), is_root_manifest=True)
+        if ctx.clone_automdeps_queue and not (ctx.dry_run or ctx.verify_only or ctx.clean_targets):
+            for clone_root in list(ctx.clone_automdeps_queue):
+                clone_manifest = Path(clone_root) / "AUTOMDEPS"
+                if not clone_manifest.exists():
+                    continue
+                ctx.printer.note("INFO", f"entering cloned component {os.path.relpath(clone_root, start=ctx.absroot)}")
+                run_manifest(ctx, clone_manifest.resolve(), is_root_manifest=True)
 
-    if not ctx.dry_run:
-        save_state(ctx.absroot, ctx.state)
-        save_exports(ctx.absroot, ctx.exports)
-    ctx.printer.note("DONE", "autom-deps completed successfully")
-    return 0
+        if not ctx.dry_run:
+            save_state(ctx.absroot, ctx.state)
+            save_exports(ctx.absroot, ctx.exports)
+        ctx.printer.note("DONE", "autom-deps completed successfully")
+        ctx.printer.finish()
+        return 0
+    except Exception:
+        ctx.printer.record_failure()
+        ctx.printer.finish()
+        raise

@@ -254,7 +254,11 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
      };
  };
 
- Core::SharedPtr<TextRect> TextRect::Create(Composition::Rect rect,const TextLayoutDescriptor & layoutDesc){
+ Core::SharedPtr<TextRect> TextRect::Create(Composition::Rect rect,const TextLayoutDescriptor & layoutDesc, float renderScale){
+     // TODO: DPI plumbing — see wtk/docs/DPI-Aware-Text-Plan.md. Currently
+     // ignores renderScale; CoreText path needs an offscreen bitmap sized to
+     // physical pixels plus a backingScaleFactor on the CGContext.
+     (void)renderScale;
      return Core::SharedPtr<TextRect>(new CTTextRect(rect,layoutDesc));
  };
 

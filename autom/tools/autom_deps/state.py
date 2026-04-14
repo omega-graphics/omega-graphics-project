@@ -20,13 +20,15 @@ def exports_path(root_dir: str | Path) -> Path:
 def load_state(root_dir: str | Path) -> dict:
     path = state_path(root_dir)
     if not path.exists():
-        return {"dependencies": {}}
+        return {"dependencies": {}, "commands": {}}
     with path.open("r", encoding="utf-8") as stream:
         data = json.load(stream)
     if not isinstance(data, dict):
-        return {"dependencies": {}}
+        return {"dependencies": {}, "commands": {}}
     if "dependencies" not in data or not isinstance(data["dependencies"], dict):
         data["dependencies"] = {}
+    if "commands" not in data or not isinstance(data["commands"], dict):
+        data["commands"] = {}
     return data
 
 

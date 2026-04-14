@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 
 def parse_args(argv: list[str] | None):
@@ -23,6 +24,13 @@ def parse_args(argv: list[str] | None):
     parser.add_argument("--clean", action="append", default=[])
     parser.add_argument("--resolve-stable", dest="resolve_stable", action="store_const", const=True, default=False)
     parser.add_argument("--print-resolved", dest="print_resolved")
+    parser.add_argument("--verbose", action="store_const", const=True, default=False)
+    parser.add_argument("--quiet", action="store_const", const=True, default=False)
+    parser.add_argument("--json-log", dest="json_log", action="store_const", const=True, default=False)
+    parser.add_argument("--progress", action="store_const", const=True, default=False)
+    parser.add_argument("--no-progress", dest="no_progress", action="store_const", const=True, default=False)
+    parser.add_argument("--no-resume", dest="no_resume", action="store_const", const=True, default=False)
+    parser.add_argument("--single-stream", dest="single_stream", action="store_const", const=True, default=False)
 
     args = parser.parse_args(argv)
 
@@ -34,7 +42,12 @@ def parse_args(argv: list[str] | None):
         parser.error("--sync cannot be combined with phase 3 execution mode flags")
     if args.clean and args.print_resolved:
         parser.error("--clean cannot be combined with --print-resolved")
+    if args.verbose and args.quiet:
+        parser.error("--verbose cannot be combined with --quiet")
+    if args.progress and args.no_progress:
+        parser.error("--progress cannot be combined with --no-progress")
 
     args.refresh = list(dict.fromkeys(args.refresh))
     args.clean = list(dict.fromkeys(args.clean))
+    args.show_progress = args.progress or (not args.no_progress and not args.quiet and not args.json_log and sys.stdout.isatty())
     return args

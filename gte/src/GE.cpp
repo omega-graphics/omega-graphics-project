@@ -27,7 +27,7 @@
 _NAMESPACE_BEGIN_
 
 
-typedef unsigned char ShaderByte;
+using ShaderByte = unsigned char;
 
 namespace {
     constexpr std::size_t kMaxShaderLibraryNameBytes = 4096u;
@@ -312,7 +312,7 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibrary(FS::Path p
 SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryRuntime(std::shared_ptr<omegasl_shader_lib> &lib) {
     OmegaCommon::ArrayRef<omegasl_shader> shaders {lib->shaders,lib->shaders + lib->header.entry_count};
     auto shaderLib = std::make_shared<GTEShaderLibrary>();
-    for(auto & s : shaders){
+    for(const auto & s : shaders){
         shaderLib->shaders.insert(std::make_pair(std::string(s.name), _loadShaderFromDesc((omegasl_shader *)&s,true)));
     }
     return shaderLib;

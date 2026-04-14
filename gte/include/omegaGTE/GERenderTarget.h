@@ -20,12 +20,12 @@ _NAMESPACE_BEGIN_
     public:
         struct OMEGAGTE_EXPORT RenderPassDesc {
             struct OMEGAGTE_EXPORT ColorAttachment {
-                typedef enum {
+                using LoadAction = enum {
                     Load,
                     LoadPreserve,
                     Clear,
                     Discard
-                } LoadAction;
+                };
                 LoadAction loadAction;
                 struct OMEGAGTE_EXPORT ClearColor {
                     float r,g,b,a;
@@ -36,15 +36,15 @@ _NAMESPACE_BEGIN_
             };
             struct OMEGAGTE_EXPORT DepthStencilAttachment {
                 bool disabled = true;
-                typedef enum {
+                using LoadAction = enum {
                     Load,
                     LoadPreserve,
                     Clear,
                     Discard
-                } LoadAction;
+                };
                 LoadAction depthloadAction = Discard;
                 LoadAction stencilLoadAction = Discard;
-                float clearDepth = 1.f;
+                float clearDepth = 1.F;
                 unsigned clearStencil = 0;
             } depthStencilAttachment;
             ColorAttachment * colorAttachment;
@@ -75,10 +75,10 @@ _NAMESPACE_BEGIN_
         
             /// Do NOT CALL THESE CONSTRUCTORS!!!
 
-            typedef enum : uint8_t {
+            using GERTType = enum : uint8_t {
                 Native,
                 Texture
-            } GERTType;
+            };
             GERTType renderTargetTy;
             /// Do NOT CALL THIS CONSTRUCTOR!!!
             CommandBuffer(GERenderTarget *renderTarget,GERTType type,SharedHandle<GECommandBuffer> commandBuffer);
@@ -131,10 +131,10 @@ _NAMESPACE_BEGIN_
             void setScissorRects(std::vector<GEScissorRect> scissorRects);
         
             /// @brief Defines the Primitive Topology.
-            typedef enum : uint8_t {
+            using PolygonType = enum : uint8_t {
                 Triangle,
                 TriangleStrip
-            } PolygonType;
+            };
 
             /// @brief Encodes a draw command in the current Render Pass.
             /// @param polygonType The Type of Polygons to draw.
@@ -192,6 +192,7 @@ _NAMESPACE_BEGIN_
         /// CPU wait until the given fence has been signaled (e.g. before using a texture produced on another queue).
         virtual void waitForFence(SharedHandle<GEFence> & fence) { (void)fence; }
         #endif
+        virtual ~GENativeRenderTarget() = default;
      };
      class  OMEGAGTE_EXPORT GETextureRenderTarget : public GERenderTarget {
          public:
@@ -202,6 +203,7 @@ _NAMESPACE_BEGIN_
          virtual void waitForGPU() {}
          /// Signal fence after all texture work is done (e.g. after waitForGPU when effects were applied).
          virtual void signalFence(SharedHandle<GEFence> & fence) { (void)fence; }
+        virtual ~GETextureRenderTarget() = default;
      };
 
 _NAMESPACE_END_
