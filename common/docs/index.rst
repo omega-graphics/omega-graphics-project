@@ -8,8 +8,6 @@ This site features all the documentation for using OmegaCommon
   :caption: Table of Contents
   :maxdepth: 3
 
-  API
-  OmegaSL
 
 
 

@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from autom_deps.cli import parse_args
 from autom_deps.downloads import DownloadManager
-from autom_deps.errors import DependencyExecutionError
+from autom_deps.errors import DependencyExecutionError, ManifestValidationError
 from autom_deps.resolution import resolve_version_source
 from autom_deps.runner import run
 from autom_deps.ui import StatusPrinter
@@ -315,6 +315,92 @@ class AutomDepsPhase3Tests(unittest.TestCase):
         self.assertEqual(events[0]["event"], "session_start")
         self.assertTrue(any(event["event"] == "step" for event in events))
         self.assertEqual(events[-1]["event"], "summary")
+
+    def test_cmake_exports_are_generated_from_project_namespaced_exports(self) -> None:
+        tool_path = self.root / "deps" / "sample-tool" / "bin" / "tool.exe"
+        tool_path.parent.mkdir(parents=True, exist_ok=True)
+        tool_path.write_text("tool", encoding="utf-8")
+
+        self._write_manifest(
+            {
+                "project": "Omega Common",
+                "dependencies": [
+                    {
+                        "name": "sample-tool",
+                        "type": "local",
+                        "path": "./deps/sample-tool",
+                        "exports": {
+                            "bin-path": "./deps/sample-tool/bin/tool.exe",
+                        },
+                    }
+                ],
+            }
+        )
+
+        with self._pushd(self.root):
+            self.assertEqual(run([], parse_args(["--cmake", ".automdeps/exports.cmake"])), 0)
+
+        exports_cmake = (self.root / ".automdeps" / "exports.cmake").read_text(encoding="utf-8")
+        self.assertIn('set(OMEGA_COMMON_SAMPLE_TOOL_BIN_PATH "', exports_cmake)
+        self.assertIn(str(tool_path.resolve()), exports_cmake)
+
+    def test_cmake_exports_require_manifest_project(self) -> None:
+        sdk_dir = self.root / "deps" / "sdk"
+        sdk_dir.mkdir(parents=True)
+
+        self._write_manifest(
+            {
+                "dependencies": [
+                    {
+                        "name": "sdk",
+                        "type": "local",
+                        "path": "./deps/sdk",
+                    }
+                ]
+            }
+        )
+
+        with self._pushd(self.root):
+            with self.assertRaises(ManifestValidationError):
+                run([], parse_args(["--cmake", ".automdeps/exports.cmake"]))
+
+    def test_cmake_exports_include_subdir_manifest_exports(self) -> None:
+        child_dir = self.root / "child"
+        sdk_dir = child_dir / "deps" / "sdk"
+        sdk_dir.mkdir(parents=True)
+
+        (self.root / "AUTOMDEPS").write_text(
+            json.dumps(
+                {
+                    "subdirs": ["child"],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (child_dir / "AUTOMDEPS").write_text(
+            json.dumps(
+                {
+                    "project": "ChildProject",
+                    "dependencies": [
+                        {
+                            "name": "sdk",
+                            "type": "local",
+                            "path": "./deps/sdk",
+                        }
+                    ],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        with self._pushd(self.root):
+            self.assertEqual(run([], parse_args(["--cmake", ".automdeps/exports.cmake"])), 0)
+
+        exports_cmake = (self.root / ".automdeps" / "exports.cmake").read_text(encoding="utf-8")
+        self.assertIn('set(CHILDPROJECT_SDK_ROOT "', exports_cmake)
+        self.assertIn(str(sdk_dir.resolve()), exports_cmake)
 
     def test_download_manager_resumes_partial_files(self) -> None:
         payload = b"hello world"

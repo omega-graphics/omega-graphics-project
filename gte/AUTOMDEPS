@@ -1,76 +1,62 @@
 {
-    "variables":{
-        "external_lib_path":"./deps"
+    "project": "OMEGAGTE",
+    "variables": {
+        "external_lib_path": "./deps"
     },
-    "commands":[ 
+    "dependencies": [
         {
-            "type":"git_clone",
-            "url":"https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git",
-            "branch":"default",
-            "dest":"$(external_lib_path)/vulkan-memory-allocator",
-            "platforms":[
+            "name": "vulkan-memory-allocator",
+            "type": "git",
+            "url": "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git",
+            "dest": "$(external_lib_path)/vulkan-memory-allocator",
+            "platforms": [
                 "linux",
                 "android"
             ]
         },
         {
-            "type":"git_clone",
-            "url":"https://github.com/microsoft/DirectXMath.git",
-            "branch":"default",
-            "dest":"$(external_lib_path)/DirectXMath",
-            "platforms":[
+            "name": "DirectXMath",
+            "type": "git",
+            "url": "https://github.com/microsoft/DirectXMath.git",
+            "dest": "$(external_lib_path)/DirectXMath",
+            "platforms": [
                 "windows"
             ]
         },
         {
-            "type":"git_clone",
-            "url":"https://github.com/microsoft/DirectXTex.git",
-            "branch":"default",
-            "dest":"$(external_lib_path)/DirectXTex",
-            "platforms":[
+            "name": "DirectXTex",
+            "type": "git",
+            "url": "https://github.com/microsoft/DirectXTex.git",
+            "dest": "$(external_lib_path)/DirectXTex",
+            "platforms": [
                 "windows"
             ]
         },
         {
-            "type":"git_clone",
-            "url":"https://github.com/microsoft/DirectXMesh.git",
-            "branch":"default",
-            "dest":"$(external_lib_path)/DirectXMesh",
-            "platforms":[
+            "name": "DirectXMesh",
+            "type": "git",
+            "url": "https://github.com/microsoft/DirectXMesh.git",
+            "dest": "$(external_lib_path)/DirectXMesh",
+            "platforms": [
                 "windows"
             ]
         },
         {
-            "type":"git_clone",
-            "url":"https://github.com/g-truc/glm.git",
-            "branch":"default",
-            "dest":"$(external_lib_path)/glm",
-            "platforms":[
+            "name": "glm",
+            "type": "git",
+            "url": "https://github.com/g-truc/glm.git",
+            "dest": "$(external_lib_path)/glm",
+            "platforms": [
                 "linux",
                 "android"
             ]
         },
         {
-            "type":"system",
-            "path":"mkdir temp && curl https://sdk.lunarg.com/sdk/download/latest/linux/vulkan-sdk.tar.gz --output ./temp/vulkan-sdk.tar.gz",
-            "platforms":[
-                "linux",
-                "android"
-            ]
-        },
-        {
-            "type":"tar",
-            "tarfile":"./temp/vulkan-sdk.tar.gz",
-            "dest":"$(external_lib_path)/vulkan_sdk",
-            "platforms":[
-                "linux",
-                "android"
-            ]
-        },
-        {
-            "type":"system",
-            "path":"rm -r ./temp",
-            "platforms":[
+            "name": "vulkan-sdk",
+            "type": "archive",
+            "url": "https://sdk.lunarg.com/sdk/download/latest/linux/vulkan-sdk.tar.gz",
+            "dest": "$(external_lib_path)/vulkan_sdk",
+            "platforms": [
                 "linux",
                 "android"
             ]

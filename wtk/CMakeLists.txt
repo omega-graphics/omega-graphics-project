@@ -40,7 +40,12 @@ elseif(UNIX AND NOT APPLE)
 	set(TARGET_LINUX TRUE)
 	add_compile_definitions(TARGET_GTK TARGET_VULKAN)
 
-	find_package(PkgConfig)
+	find_package(PkgConfig REQUIRED)
+
+	pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+	pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
+	pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
+	pkg_check_modules(FFMPEG REQUIRED libavcodec libavutil libavdevice)
 
 	pkg_check_modules(PKG_WAYLAND wayland-client wayland-server wayland-egl wayland-cursor)
 	set(OMEGA_LINUX_VK_BACKEND "AUTO" CACHE STRING "Linux Vulkan native backend selection (AUTO, WAYLAND, X11)")
@@ -412,12 +417,24 @@ target_include_directories(OmegaWTK_Native
 	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
 	PRIVATE ${NATIVE_PRIVATE_INCLUDE_DIR})
 target_link_libraries(OmegaWTK_Native PUBLIC OmegaCommon)
+if(TARGET_LINUX)
+	target_include_directories(OmegaWTK_Native PUBLIC ${GTK3_INCLUDE_DIRS})
+	target_compile_options(OmegaWTK_Native PUBLIC ${GTK3_CFLAGS_OTHER})
+	target_link_directories(OmegaWTK_Native PUBLIC ${GTK3_LIBRARY_DIRS})
+	target_link_libraries(OmegaWTK_Native PUBLIC ${GTK3_LIBRARIES})
+endif()
 
 add_library(OmegaWTK_Media STATIC ${MEDIA_SRCS})
 target_include_directories(OmegaWTK_Media
 	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
 	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>)
 target_link_libraries(OmegaWTK_Media PUBLIC OmegaCommon png turbojpeg tiff)
+if(TARGET_LINUX)
+	target_include_directories(OmegaWTK_Media PRIVATE ${FFMPEG_INCLUDE_DIRS})
+	target_compile_options(OmegaWTK_Media PRIVATE ${FFMPEG_CFLAGS_OTHER})
+	target_link_directories(OmegaWTK_Media PUBLIC ${FFMPEG_LIBRARY_DIRS})
+	target_link_libraries(OmegaWTK_Media PUBLIC ${FFMPEG_LIBRARIES})
+endif()
 
 add_library(OmegaWTK_Composition STATIC ${COMPOSITION_SRCS})
 target_include_directories(OmegaWTK_Composition
@@ -426,6 +443,17 @@ target_include_directories(OmegaWTK_Composition
 	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>
 	        ${NATIVE_PRIVATE_INCLUDE_DIR})
 target_link_libraries(OmegaWTK_Composition PUBLIC OmegaCommon PRIVATE OmegaGTE)
+if(TARGET_LINUX)
+	# vk backend pulls in GTKItem.h (GTK) plus pangocairo/fontconfig for text layout.
+	target_include_directories(OmegaWTK_Composition
+		PRIVATE ${GTK3_INCLUDE_DIRS} ${PANGOCAIRO_INCLUDE_DIRS} ${FONTCONFIG_INCLUDE_DIRS})
+	target_compile_options(OmegaWTK_Composition
+		PRIVATE ${GTK3_CFLAGS_OTHER} ${PANGOCAIRO_CFLAGS_OTHER} ${FONTCONFIG_CFLAGS_OTHER})
+	target_link_directories(OmegaWTK_Composition
+		PUBLIC ${GTK3_LIBRARY_DIRS} ${PANGOCAIRO_LIBRARY_DIRS} ${FONTCONFIG_LIBRARY_DIRS})
+	target_link_libraries(OmegaWTK_Composition
+		PUBLIC ${GTK3_LIBRARIES} ${PANGOCAIRO_LIBRARIES} ${FONTCONFIG_LIBRARIES})
+endif()
 
 add_library(OmegaWTK_UI STATIC ${UI_SRCS})
 target_include_directories(OmegaWTK_UI
@@ -442,6 +470,10 @@ target_include_directories(OmegaWTK_Widgets
 target_link_libraries(OmegaWTK_Widgets PUBLIC OmegaCommon)
 
 set(OMEGAWTK_SUBMODULE_LIBS OmegaWTK_Core OmegaWTK_Native OmegaWTK_Media OmegaWTK_Composition OmegaWTK_UI OmegaWTK_Widgets)
+
+# Submodule archives get whole-archive'd into the OmegaWTK shared library, so
+# every object file must be position-independent.
+set_target_properties(${OMEGAWTK_SUBMODULE_LIBS} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ─── OmegaWTK framework module ───
 
@@ -525,25 +557,9 @@ if(TARGET_WIN32)
 	target_compile_definitions("OmegaWTK" PRIVATE WINDOWS_PRIVATE)
 endif()
 if(TARGET_LINUX)
-	find_package(PkgConfig QUIET REQUIRED)
-
-	pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
-	if(NOT GTK3_FOUND)
-		message("GTK 3 not found. Please install gtk3.")
-	endif()
-
-	pkg_check_modules(FFMPEG REQUIRED libavcodec libavutil libavdevice)
-
-	if(NOT FFMPEG_FOUND)
-		message("FFMPEG development files not found. Please install libavcodec, libavutil and libavdevice")
-	endif()
-
-	pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
-	pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
-
-	target_compile_options("OmegaWTK" PUBLIC ${GTK3_CFLAGS} ${FFMPEG_CFLAGS} ${PANGOCAIRO_CFLAGS} ${FONTCONFIG_CFLAGS})
-	target_link_directories("OmegaWTK" PUBLIC ${GTK3_LIBRARY_DIRS} ${FFMPEG_LIBRARY_DIRS} ${PANGOCAIRO_LIBRARY_DIRS} ${FONTCONFIG_LIBRARY_DIRS})
-	target_link_libraries("OmegaWTK" PUBLIC ${GTK3_LIBRARIES} ${FFMPEG_LIBRARIES} ${PANGOCAIRO_LIBRARIES} ${FONTCONFIG_LIBRARIES})
+	# GTK/FFmpeg/Pango/Fontconfig flags are bound directly to the submodule
+	# static libraries (Native, Media, Composition) above; the framework
+	# inherits them transitively via PUBLIC linkage against those submodules.
 endif()
 
 include(cmake/OmegaWTKApp.cmake)

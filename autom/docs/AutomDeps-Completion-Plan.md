@@ -670,7 +670,7 @@ var perl_exe = AutomDepsExport(name:"strawberry-perl.perl")
 var pcre2_include = AutomDepsExport(name:"pcre2.include")
 ```
 
-3. optionally expose a bulk read form:
+3. optionally expose a bulk read form (Preffered):
 
 ```autom
 var deps = AutomDepsExports()
@@ -699,12 +699,14 @@ Suggested outputs from `autom-deps`:
 .automdeps/exports.cmake
 ```
 
-The CMake export file should contain resolved variables such as:
+The CMake export file should contain resolved variables.
+Also, we need to add a `project` field to our deps file so we can namespace the vars like this:
+(This is to help organize so the exports are clean)
 
 ```cmake
-set(AUTOM_DEPS_OPENSSL_SRC_ROOT "/abs/path/common/deps/openssl/code")
-set(AUTOM_DEPS_STRAWBERRY_PERL_PERL "/abs/path/common/deps/strawberry-perl/perl/bin/perl.exe")
-set(AUTOM_DEPS_PCRE2_INCLUDE "/abs/path/common/deps/pcre2/code/pcre2-10.47/include")
+set(<project>_OPENSSL_SRC_ROOT "/abs/path/common/deps/openssl/code")
+set(<project>_STRAWBERRY_PERL_PERL "/abs/path/common/deps/strawberry-perl/perl/bin/perl.exe")
+set(<project>_PCRE2_INCLUDE "/abs/path/common/deps/pcre2/code/pcre2-10.47/include")
 ```
 
 Then CMake projects can do:

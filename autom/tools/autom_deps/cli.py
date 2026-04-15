@@ -24,6 +24,7 @@ def parse_args(argv: list[str] | None):
     parser.add_argument("--clean", action="append", default=[])
     parser.add_argument("--resolve-stable", dest="resolve_stable", action="store_const", const=True, default=False)
     parser.add_argument("--print-resolved", dest="print_resolved")
+    parser.add_argument("--cmake", dest="cmake")
     parser.add_argument("--verbose", action="store_const", const=True, default=False)
     parser.add_argument("--quiet", action="store_const", const=True, default=False)
     parser.add_argument("--json-log", dest="json_log", action="store_const", const=True, default=False)
@@ -42,6 +43,8 @@ def parse_args(argv: list[str] | None):
         parser.error("--sync cannot be combined with phase 3 execution mode flags")
     if args.clean and args.print_resolved:
         parser.error("--clean cannot be combined with --print-resolved")
+    if args.print_resolved and args.cmake:
+        parser.error("--print-resolved cannot be combined with --cmake")
     if args.verbose and args.quiet:
         parser.error("--verbose cannot be combined with --quiet")
     if args.progress and args.no_progress:

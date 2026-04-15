@@ -1,4 +1,5 @@
 {
+    "project":"OMEGACOMMON",
     "variables":{
          "third_party_dest":"./deps",
          "pcre2_version":"10.47",

@@ -57,6 +57,11 @@ function(OmegaWTKApp)
     elseif(TARGET_LINUX)
         target_include_directories(${_ARG_NAME} PRIVATE "include" "gte/include" "gte/common/include" "${CMAKE_BINARY_DIR}/deps/icu/include")
         target_compile_definitions(${_ARG_NAME} PRIVATE OMEGAWTK_APP TARGET_GTK TARGET_VULKAN)
+        # libOmegaWTK.so pulls in ffmpeg, which drags in system libavformat/librsvg.
+        # Those expect versioned libxml2 symbols (LIBXML2_2.4.30, etc.) that the
+        # bundled libxml2.so does not expose. Defer indirect-library symbol
+        # resolution to the runtime loader, which finds the system libxml2.
+        target_link_options(${_ARG_NAME} PRIVATE "-Wl,--allow-shlib-undefined")
         target_sources(${_ARG_NAME} PRIVATE ${OMEGAWTK_SOURCE_DIR}/target/gtk/main.cpp)
         add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy ${OMEGAWTK_COMPOSITOR_SHADER_SRC} $<TARGET_FILE_DIR:${_ARG_NAME}>/compositor.omegasl)

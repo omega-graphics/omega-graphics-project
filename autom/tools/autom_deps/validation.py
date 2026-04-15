@@ -4,6 +4,7 @@ from .errors import ManifestValidationError
 
 
 TOP_LEVEL_KEYS = {
+    "project",
     "variables",
     "dependencies",
     "commands",
@@ -489,6 +490,14 @@ def validate_manifest(manifest: dict, manifest_path: str) -> None:
             "variables must be an object",
             manifest_path=manifest_path,
             field="variables",
+        )
+
+    project = manifest.get("project")
+    if project is not None and not isinstance(project, str):
+        raise ManifestValidationError(
+            "project must be a string",
+            manifest_path=manifest_path,
+            field="project",
         )
 
     subdirs = manifest.get("subdirs")

@@ -6,6 +6,7 @@ if(WIN32)
 elseif(APPLE)
     list(APPEND PLATFORM_SRCS src/platform/macos/CocoaWindow.mm)
 else()
+    find_package(X11 REQUIRED)
     list(APPEND PLATFORM_SRCS src/platform/linux/X11Window.cpp)
 endif()
 
@@ -17,6 +18,11 @@ add_omega_graphics_module(AQUA SHARED
 )
 target_compile_definitions(AQUA PRIVATE AQUA__BUILD__)
 target_link_libraries(AQUA PUBLIC OmegaGTE)
+
+if(UNIX AND NOT APPLE)
+    target_include_directories(AQUA PRIVATE ${X11_INCLUDE_DIR})
+    target_link_libraries(AQUA PRIVATE ${X11_LIBRARIES})
+endif()
 
 if(APPLE)
     target_link_system_frameworks(AQUA Cocoa QuartzCore Metal)

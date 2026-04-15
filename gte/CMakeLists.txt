@@ -41,8 +41,10 @@ else()
 	string(TOUPPER "${OMEGA_LINUX_VK_BACKEND}" OMEGA_LINUX_VK_BACKEND_UPPER)
 	set(OMEGA_LINUX_USE_WAYLAND FALSE)
 
+	set(PUBLIC_DEFS "TARGET_VULKAN")
+
 	if(ANDROID)
-		add_compile_definitions("VULKAN_TARGET_ANDROID")
+		list(APPEND PUBLIC_DEFS "VULKAN_TARGET_ANDROID")
 	elseif(OMEGA_LINUX_VK_BACKEND_UPPER STREQUAL "WAYLAND")
 		if(NOT PKG_WAYLAND_FOUND)
 			message(FATAL_ERROR "OMEGA_LINUX_VK_BACKEND=WAYLAND requested, but Wayland development packages were not found.")
@@ -60,14 +62,11 @@ else()
 
 	if(OMEGA_LINUX_USE_WAYLAND)
 		message("OmegaGTE: Linux Vulkan backend = Wayland")
-		add_compile_definitions("VULKAN_TARGET_WAYLAND")
+		list(APPEND PUBLIC_DEFS "VULKAN_TARGET_WAYLAND")
 	elseif(NOT ANDROID)
 		message("OmegaGTE: Linux Vulkan backend = X11")
-		add_compile_definitions("VULKAN_TARGET_X11")
+		list(APPEND PUBLIC_DEFS "VULKAN_TARGET_X11")
 	endif()
-
-
-	set(PUBLIC_DEFS "TARGET_VULKAN")
 
 	file(GLOB RHI_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/*.cpp")
 endif()

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import argparse
+import html
+import json
 import os
 import shutil
 import subprocess
@@ -8,7 +10,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 
 MODULE_ORDER: Tuple[str, ...] = (
@@ -19,6 +21,9 @@ MODULE_ORDER: Tuple[str, ...] = (
     "AQUA",
 )
 
+REPO_SPHINX_SITE_KEY = "OmegaGraphicsProject"
+REPO_SPHINX_SITE_TITLE = "Omega Graphics Project"
+
 
 @dataclass(frozen=True)
 class ModuleConfig:
@@ -28,6 +33,14 @@ class ModuleConfig:
     dependencies: Tuple[str, ...] = ()
     base_doxyfile: Optional[str] = "Doxyfile"
     project_brief: str = ""
+
+
+@dataclass(frozen=True)
+class SphinxSite:
+    key: str
+    title: str
+    source_dir: Path
+    output_dir: Path
 
 
 MODULES: Sequence[ModuleConfig] = (
@@ -358,6 +371,67 @@ def module_sphinx_dir(output_root: Path, module: ModuleConfig) -> Path:
     return module_output_dir(output_root, module) / "sphinx"
 
 
+def has_repo_sphinx_docs(repo_root: Path) -> bool:
+    return (repo_root / "docs" / "conf.py").is_file()
+
+
+def repo_sphinx_dir(output_root: Path) -> Path:
+    return output_root / "sphinx"
+
+
+def collect_sphinx_sites(
+    repo_root: Path,
+    output_root: Path,
+    selected_modules: Sequence[ModuleConfig],
+) -> List[SphinxSite]:
+    sites: List[SphinxSite] = []
+
+    if has_repo_sphinx_docs(repo_root):
+        sites.append(
+            SphinxSite(
+                key=REPO_SPHINX_SITE_KEY,
+                title=REPO_SPHINX_SITE_TITLE,
+                source_dir=repo_root / "docs",
+                output_dir=repo_sphinx_dir(output_root),
+            )
+        )
+
+    for module in selected_modules:
+        if not has_sphinx_docs(repo_root, module):
+            continue
+        sites.append(
+            SphinxSite(
+                key=module.name,
+                title=module.name,
+                source_dir=repo_root / module.root_dir / "docs",
+                output_dir=module_sphinx_dir(output_root, module),
+            )
+        )
+
+    return sites
+
+
+def build_sphinx_nav(current_site: SphinxSite, all_sites: Sequence[SphinxSite]) -> List[Dict[str, object]]:
+    nav_items: List[Dict[str, object]] = []
+    for site in all_sites:
+        target_index = site.output_dir / "index.html"
+        relative_target = os.path.relpath(target_index, start=current_site.output_dir)
+        nav_items.append(
+            {
+                "title": site.title,
+                "path": Path(relative_target).as_posix(),
+                "current": site.key == current_site.key,
+            }
+        )
+    return nav_items
+
+
+def build_sphinx_environment(current_site: SphinxSite, all_sites: Sequence[SphinxSite]) -> Dict[str, str]:
+    environment = os.environ.copy()
+    environment["OMEGA_SPHINX_NAV_JSON"] = json.dumps(build_sphinx_nav(current_site, all_sites))
+    return environment
+
+
 def ensure_sphinx_available(executable: str) -> None:
     if shutil.which(executable) is None:
         raise RuntimeError(
@@ -371,6 +445,7 @@ def run_sphinx_build(
     output_dir: Path,
     dry_run: bool,
     verbose: bool,
+    environment: Optional[Dict[str, str]] = None,
 ) -> None:
     command = [executable, "-b", "html", str(source_dir), str(output_dir)]
     if dry_run or verbose:
@@ -378,10 +453,32 @@ def run_sphinx_build(
     if dry_run:
         return
     output_dir.mkdir(parents=True, exist_ok=True)
-    subprocess.run(command, check=True)
+    subprocess.run(command, check=True, env=environment)
 
 
-def write_landing_page(output_root: Path, selected_modules: Sequence[ModuleConfig]) -> None:
+def landing_page_theme_href(output_root: Path, selected_modules: Sequence[ModuleConfig]) -> Optional[str]:
+    candidates = [Path("sphinx") / "_static" / "theme.css"]
+    candidates.extend(Path(module.name) / "sphinx" / "_static" / "theme.css" for module in selected_modules)
+
+    for candidate in candidates:
+        if (output_root / candidate).is_file():
+            return candidate.as_posix()
+
+    return None
+
+
+def write_landing_page(
+    output_root: Path,
+    selected_modules: Sequence[ModuleConfig],
+    sphinx_sites: Sequence[SphinxSite],
+) -> None:
+    theme_href = landing_page_theme_href(output_root, selected_modules)
+    site_nav: List[Tuple[str, str, bool]] = [("Home", "https://omegagraphics.org", False)]
+
+    for site in sphinx_sites:
+        href = os.path.relpath(site.output_dir / "index.html", start=output_root)
+        site_nav.append((site.title, Path(href).as_posix(), True))
+
     lines = [
         "<!doctype html>",
         "<html lang=\"en\">",
@@ -389,52 +486,127 @@ def write_landing_page(output_root: Path, selected_modules: Sequence[ModuleConfi
         "  <meta charset=\"utf-8\">",
         "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
         "  <title>Omega Graphics Project Documentation</title>",
-        "  <style>",
-        "    body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; margin: 2rem auto; max-width: 56rem; line-height: 1.5; color: #111827; }",
-        "    h1 { margin-bottom: 0.5rem; }",
-        "    ul { padding-left: 1.25rem; }",
-        "    li { margin-bottom: 0.35rem; }",
-        "    code { background: #f3f4f6; padding: 0.1rem 0.35rem; border-radius: 0.25rem; }",
-        "    .meta { color: #4b5563; }",
-        "    .links a { margin-right: 0.75rem; }",
-        "  </style>",
-        "</head>",
-        "<body>",
-        "  <h1>Omega Graphics Project Documentation</h1>",
-        "  <p class=\"meta\">Per-module HTML docs. Doxygen includes cross-module tagfile links.</p>",
-        "  <ul>",
+        "  <meta name=\"theme-color\" content=\"#060812\">",
     ]
+
+    if theme_href is not None:
+        lines.append(f"  <link rel=\"stylesheet\" href=\"{theme_href}\">")
+
+    lines.extend(
+        [
+            "  <style>",
+            "    body.omegagraphics-docs { color-scheme: dark; }",
+            "    .landing-main { padding: 36px 0 56px; }",
+            "    .landing-main .section-heading h2 { max-width: 18ch; }",
+            "    .landing-meta { margin-top: 16px; color: #d7e1ff; font-size: 0.94rem; font-weight: 600; }",
+            "    .landing-main .docs-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }",
+            "    .landing-main .project-links { margin-top: 0; }",
+            "    .landing-main .doc-card { min-height: 100%; }",
+            "    @media (max-width: 720px) { .landing-main { padding-top: 24px; } }",
+            "  </style>",
+            "</head>",
+            "<body class=\"omegagraphics-docs\">",
+            "  <div class=\"site-shell\">",
+            "    <header class=\"topbar\" role=\"banner\">",
+            "      <a class=\"brand\" href=\"index.html\">",
+            "        <span class=\"brand-mark\">OG</span>",
+            "        <span class=\"brand-copy\">",
+            "          <strong>Omega Graphics</strong>",
+            "          <small>Documentation Hub</small>",
+            "        </span>",
+            "      </a>",
+            "      <nav class=\"nav\" aria-label=\"Project\">",
+        ]
+    )
+
+    for title, href, is_local in site_nav:
+        escaped_title = html.escape(title)
+        escaped_href = Path(href).as_posix() if is_local else href
+        lines.append(f"        <a href=\"{escaped_href}\">{escaped_title}</a>")
+
+    lines.extend(
+        [
+            "      </nav>",
+            "    </header>",
+            "    <main class=\"landing-main\">",
+            "      <section class=\"module-summary\">",
+            "        <div class=\"section-heading\">",
+            "          <p class=\"eyebrow\">Docs Output</p>",
+            "          <h2>Guides, build notes, and API references for the Omega Graphics Project.</h2>",
+            "        </div>",
+            "        <article class=\"module-summary-card\">",
+            "          <p>This output tree combines the repo-level Sphinx docs, per-module Sphinx guides, and per-module Doxygen API references generated by <code>utils/repo-docs</code>.</p>",
+            "        </article>",
+            "      </section>",
+            "      <section class=\"docs-section\">",
+            "        <div class=\"section-heading\">",
+            "          <p class=\"eyebrow\">Docs Sites</p>",
+            "          <h2>Open the suite docs or jump straight into a module guide and API reference.</h2>",
+            "        </div>",
+            "        <div class=\"docs-grid\">",
+        ]
+    )
+
+    repo_site = next((site for site in sphinx_sites if site.key == REPO_SPHINX_SITE_KEY), None)
+    if repo_site is not None:
+        repo_href = os.path.relpath(repo_site.output_dir / "index.html", start=output_root)
+        lines.extend(
+            [
+                "          <article class=\"doc-card\">",
+                "            <div>",
+                f"              <strong>{html.escape(repo_site.title)}</strong>",
+                "              <p>Suite-level documentation for the repository, including the build guide and shared project overview.</p>",
+                "              <p class=\"landing-meta\">Shared entry point for the Omega Graphics docs suite.</p>",
+                "            </div>",
+                "            <div class=\"project-links\">",
+                f"              <a class=\"text-link\" href=\"{Path(repo_href).as_posix()}\">Open Suite Docs</a>",
+                "            </div>",
+                "          </article>",
+            ]
+        )
 
     for module in selected_modules:
         deps = ", ".join(module.dependencies) if module.dependencies else "none"
-
-        link_parts: List[str] = []
+        links: List[str] = []
 
         doxy_index = module_html_dir(output_root, module) / "index.html"
         if doxy_index.exists():
             href = doxy_index.relative_to(output_root).as_posix()
-            link_parts.append(f"<a href=\"{href}\">API (Doxygen)</a>")
+            links.append(f"              <a class=\"text-link\" href=\"{href}\">API (Doxygen)</a>")
 
         sphinx_index = module_sphinx_dir(output_root, module) / "index.html"
         if sphinx_index.exists():
             href = sphinx_index.relative_to(output_root).as_posix()
-            link_parts.append(f"<a href=\"{href}\">Guide (Sphinx)</a>")
+            links.append(f"              <a class=\"text-link\" href=\"{href}\">Guide (Sphinx)</a>")
 
-        links_html = " ".join(link_parts) if link_parts else "<span class=\"meta\">no docs built</span>"
+        if not links:
+            links.append("              <span class=\"landing-meta\">No docs were built for this module.</span>")
 
-        lines.append(
-            "    <li><strong>{name}</strong> <span class=\"meta\">(dependencies: {deps})</span>"
-            " &mdash; <span class=\"links\">{links}</span></li>".format(
-                name=module.name,
-                deps=deps,
-                links=links_html,
-            )
+        lines.extend(
+            [
+                "          <article class=\"doc-card\">",
+                "            <div>",
+                f"              <strong>{html.escape(module.name)}</strong>",
+                f"              <p>{html.escape(module.project_brief)}</p>",
+                f"              <p class=\"landing-meta\">Dependencies: {html.escape(deps)}</p>",
+                "            </div>",
+                "            <div class=\"project-links\">",
+                *links,
+                "            </div>",
+                "          </article>",
+            ]
         )
 
     lines.extend(
         [
-            "  </ul>",
-            "  <p class=\"meta\">Doxygen output: <code>MODULE/html/</code> &nbsp; Sphinx output: <code>MODULE/sphinx/</code></p>",
+            "        </div>",
+            "      </section>",
+            "    </main>",
+            "    <footer class=\"site-footer\" role=\"contentinfo\">",
+            "      <p>Omega Graphics Project documentation</p>",
+            "      <span>Doxygen output: <code>MODULE/html/</code> &nbsp; Sphinx output: <code>MODULE/sphinx/</code></span>",
+            "    </footer>",
+            "  </div>",
             "</body>",
             "</html>",
         ]
@@ -465,17 +637,18 @@ def main() -> int:
         output_root = resolve_output_directory(repo_root, args.output)
 
         run_sphinx = not args.no_sphinx
+        sphinx_sites = collect_sphinx_sites(repo_root, output_root, selected_modules) if run_sphinx else []
 
         if not args.dry_run:
             ensure_doxygen_available(args.doxygen)
-            if run_sphinx:
+            if sphinx_sites:
                 ensure_sphinx_available(args.sphinx)
 
         if args.clean and output_root.exists():
             shutil.rmtree(output_root)
         output_root.mkdir(parents=True, exist_ok=True)
 
-        total_passes = 3 if run_sphinx else 2
+        total_passes = 3 if sphinx_sites else 2
 
         with tempfile.TemporaryDirectory(prefix="repo-docs-") as temp_dir_name:
             config_dir = Path(temp_dir_name)
@@ -508,21 +681,23 @@ def main() -> int:
                 )
                 run_doxygen(args.doxygen, config_path, repo_root, args.dry_run, args.verbose)
 
-        if run_sphinx:
+        if sphinx_sites:
             print(f"Pass 3/{total_passes}: generating Sphinx HTML documentation")
-            for module in selected_modules:
-                if not has_sphinx_docs(repo_root, module):
-                    if args.verbose:
-                        print(f"  {module.name}: no Sphinx conf.py found, skipping")
-                    continue
-                source_dir = repo_root / module.root_dir / "docs"
-                sphinx_out = module_sphinx_dir(output_root, module)
+            for site in sphinx_sites:
+                sphinx_environment = build_sphinx_environment(site, sphinx_sites)
                 if args.verbose or args.dry_run:
-                    print(f"  {module.name}: {source_dir} -> {sphinx_out}")
-                run_sphinx_build(args.sphinx, source_dir, sphinx_out, args.dry_run, args.verbose)
+                    print(f"  {site.title}: {site.source_dir} -> {site.output_dir}")
+                run_sphinx_build(
+                    args.sphinx,
+                    site.source_dir,
+                    site.output_dir,
+                    args.dry_run,
+                    args.verbose,
+                    sphinx_environment,
+                )
 
         if not args.dry_run:
-            write_landing_page(output_root, selected_modules)
+            write_landing_page(output_root, selected_modules, sphinx_sites)
             print(f"Landing page: {output_root / 'index.html'}")
 
         return 0

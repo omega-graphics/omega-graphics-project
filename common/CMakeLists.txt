@@ -6,14 +6,57 @@ omega_graphics_project(OmegaCommon VERSION ${OMEGACOMMON_VERSION} LANGUAGES C CX
 
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_LIST_DIR}/cmake)
+set(OMEGACOMMON_AUTOMDEPS_CMAKE_CANDIDATES
+	"${CMAKE_CURRENT_SOURCE_DIR}/.automdeps/exports.cmake"
+	"${CMAKE_SOURCE_DIR}/.automdeps/exports.cmake")
+foreach(OMEGACOMMON_AUTOMDEPS_CMAKE IN LISTS OMEGACOMMON_AUTOMDEPS_CMAKE_CANDIDATES)
+	if(EXISTS "${OMEGACOMMON_AUTOMDEPS_CMAKE}")
+		include("${OMEGACOMMON_AUTOMDEPS_CMAKE}")
+		break()
+	endif()
+endforeach()
+unset(OMEGACOMMON_AUTOMDEPS_CMAKE)
+unset(OMEGACOMMON_AUTOMDEPS_CMAKE_CANDIDATES)
 
 file(GLOB COMMON_SRCS CONFIGURE_DEPENDS "src/*.cpp")
 
 configure_file("src/Info.plist.in" "${CMAKE_CURRENT_BINARY_DIR}/Info.plist")
 
+if(NOT WIN32)
+	set(OMEGACOMMON_CURL_TARGET "")
+	set(OMEGACOMMON_CURL_INCLUDE_DIRS "")
+	set(OMEGACOMMON_CURL_LIBRARIES "")
+
+	find_package(CURL QUIET)
+	if(TARGET CURL::libcurl)
+		set(OMEGACOMMON_CURL_TARGET CURL::libcurl)
+	elseif(CURL_FOUND)
+		set(OMEGACOMMON_CURL_INCLUDE_DIRS ${CURL_INCLUDE_DIRS})
+		set(OMEGACOMMON_CURL_LIBRARIES ${CURL_LIBRARIES})
+	endif()
+
+	if((UNIX AND NOT APPLE) AND NOT OMEGACOMMON_CURL_TARGET AND NOT OMEGACOMMON_CURL_LIBRARIES)
+		find_package(PkgConfig QUIET)
+		if(PkgConfig_FOUND)
+			pkg_check_modules(LIBCURL QUIET IMPORTED_TARGET libcurl)
+			if(TARGET PkgConfig::LIBCURL)
+				set(OMEGACOMMON_CURL_TARGET PkgConfig::LIBCURL)
+			endif()
+		endif()
+	endif()
+
+	if(NOT OMEGACOMMON_CURL_TARGET AND NOT OMEGACOMMON_CURL_LIBRARIES)
+		message(FATAL_ERROR "OmegaCommon requires libcurl on non-Windows platforms. Install the libcurl development package so CMake or pkg-config can find it.")
+	endif()
+endif()
+
 # --- Third-party: PCRE2 ---
 set(PCRE2_VERSION "10.47")
-set(PCRE2_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/pcre2/code/pcre2-${PCRE2_VERSION}")
+if(DEFINED OMEGACOMMON_PCRE2_SOURCE_ROOT)
+	set(PCRE2_SOURCE_DIR "${OMEGACOMMON_PCRE2_SOURCE_ROOT}")
+else()
+	set(PCRE2_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/pcre2/code/pcre2-${PCRE2_VERSION}")
+endif()
 set(PCRE2_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps/pcre2")
 
 add_third_party(
@@ -39,29 +82,37 @@ if(WIN32)
 endif()
 
 # --- Third-party: OpenSSL ---
-set(OPENSSL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/openssl/code")
+if(DEFINED OMEGACOMMON_OPENSSL_ROOT)
+	set(OPENSSL_SOURCE_DIR "${OMEGACOMMON_OPENSSL_ROOT}")
+else()
+	set(OPENSSL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/openssl/code")
+endif()
 set(OPENSSL_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps/openssl")
 set(OMEGACOMMON_OPENSSL_PERL)
 
 if(WIN32)
-	set(OMEGACOMMON_STRAWBERRY_PERL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/strawberry-perl")
-	set(_OMEGACOMMON_STRAWBERRY_PERL_CANDIDATES
-		"${OMEGACOMMON_STRAWBERRY_PERL_DIR}/perl/bin/perl.exe")
-	file(GLOB _OMEGACOMMON_STRAWBERRY_PERL_NESTED
-		LIST_DIRECTORIES FALSE
-		"${OMEGACOMMON_STRAWBERRY_PERL_DIR}/*/perl/bin/perl.exe")
-	list(APPEND _OMEGACOMMON_STRAWBERRY_PERL_CANDIDATES ${_OMEGACOMMON_STRAWBERRY_PERL_NESTED})
+	if(DEFINED OMEGACOMMON_STRAWBERRY_PERL_PERL AND EXISTS "${OMEGACOMMON_STRAWBERRY_PERL_PERL}")
+		set(OMEGACOMMON_OPENSSL_PERL "${OMEGACOMMON_STRAWBERRY_PERL_PERL}")
+	else()
+		set(OMEGACOMMON_STRAWBERRY_PERL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/strawberry-perl")
+		set(_OMEGACOMMON_STRAWBERRY_PERL_CANDIDATES
+			"${OMEGACOMMON_STRAWBERRY_PERL_DIR}/perl/bin/perl.exe")
+		file(GLOB _OMEGACOMMON_STRAWBERRY_PERL_NESTED
+			LIST_DIRECTORIES FALSE
+			"${OMEGACOMMON_STRAWBERRY_PERL_DIR}/*/perl/bin/perl.exe")
+		list(APPEND _OMEGACOMMON_STRAWBERRY_PERL_CANDIDATES ${_OMEGACOMMON_STRAWBERRY_PERL_NESTED})
 
-	foreach(_OMEGACOMMON_PERL_CANDIDATE IN LISTS _OMEGACOMMON_STRAWBERRY_PERL_CANDIDATES)
-		if(EXISTS "${_OMEGACOMMON_PERL_CANDIDATE}")
-			set(OMEGACOMMON_OPENSSL_PERL "${_OMEGACOMMON_PERL_CANDIDATE}")
-			break()
-		endif()
-	endforeach()
+		foreach(_OMEGACOMMON_PERL_CANDIDATE IN LISTS _OMEGACOMMON_STRAWBERRY_PERL_CANDIDATES)
+			if(EXISTS "${_OMEGACOMMON_PERL_CANDIDATE}")
+				set(OMEGACOMMON_OPENSSL_PERL "${_OMEGACOMMON_PERL_CANDIDATE}")
+				break()
+			endif()
+		endforeach()
 
-	unset(_OMEGACOMMON_PERL_CANDIDATE)
-	unset(_OMEGACOMMON_STRAWBERRY_PERL_CANDIDATES)
-	unset(_OMEGACOMMON_STRAWBERRY_PERL_NESTED)
+		unset(_OMEGACOMMON_PERL_CANDIDATE)
+		unset(_OMEGACOMMON_STRAWBERRY_PERL_CANDIDATES)
+		unset(_OMEGACOMMON_STRAWBERRY_PERL_NESTED)
+	endif()
 
 	if(NOT OMEGACOMMON_OPENSSL_PERL)
 		find_program(OMEGACOMMON_OPENSSL_PERL NAMES perl perl.exe)
@@ -95,7 +146,7 @@ else()
 		SOURCE_DIR "${OPENSSL_SOURCE_DIR}"
 		BINARY_DIR "${OPENSSL_SOURCE_DIR}"
 		INSTALL_DIR "${OPENSSL_OUTPUT_DIR}"
-		CONF "${OMEGACOMMON_OPENSSL_PERL}" "${OPENSSL_SOURCE_DIR}/Configure" --prefix=${OPENSSL_OUTPUT_DIR} no-shared no-tests no-apps
+		CONF "${OMEGACOMMON_OPENSSL_PERL}" "${OPENSSL_SOURCE_DIR}/Configure" --prefix=${OPENSSL_OUTPUT_DIR} --libdir=lib no-shared no-tests no-apps
 		BUILD make
 		INSTALL make install_sw
 		EXPORT_STATIC_LIBS "crypto:lib/libcrypto.a:lib/libcrypto.lib" "ssl:lib/libssl.a:lib/libssl.lib"
@@ -103,9 +154,23 @@ else()
 endif()
 
 add_omega_graphics_module("OmegaCommon" SHARED SOURCES ${COMMON_SRCS} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_include_directories("OmegaCommon" PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/deps/rapidjson/include")
+if(DEFINED OMEGACOMMON_RAPIDJSON_ROOT)
+	set(OMEGACOMMON_RAPIDJSON_INCLUDE_DIR "${OMEGACOMMON_RAPIDJSON_ROOT}/include")
+else()
+	set(OMEGACOMMON_RAPIDJSON_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/rapidjson/include")
+endif()
+target_include_directories("OmegaCommon" PRIVATE "${OMEGACOMMON_RAPIDJSON_INCLUDE_DIR}")
 
 target_link_libraries("OmegaCommon" PRIVATE pcre2-8 ssl crypto)
+if(NOT WIN32)
+	if(OMEGACOMMON_CURL_TARGET)
+		target_link_libraries("OmegaCommon" PRIVATE ${OMEGACOMMON_CURL_TARGET})
+	else()
+		target_include_directories("OmegaCommon" PRIVATE ${OMEGACOMMON_CURL_INCLUDE_DIRS})
+		target_link_libraries("OmegaCommon" PRIVATE ${OMEGACOMMON_CURL_LIBRARIES})
+	endif()
+endif()
+
 if(WIN32)
 	target_sources("OmegaCommon" PRIVATE "src/win/fs-win.cpp"  "src/win/net-win.cpp" "src/win/multithread-win.cpp")
 	target_compile_definitions("OmegaCommon" PRIVATE "OMEGACOMMON__BUILD__")
@@ -113,10 +178,10 @@ if(WIN32)
 elseif(APPLE)
 	target_sources("OmegaCommon" PRIVATE "src/macos/fs-cocoa.mm" "src/posix/net-curl.cpp" "src/unix/multithread-unix.cpp")
 	target_link_system_frameworks("OmegaCommon" "Foundation")
-	target_link_libraries("OmegaCommon" PRIVATE curl)
 elseif(UNIX)
+	
 	target_sources("OmegaCommon" PRIVATE "src/unix/fs-unixother.cpp" "src/posix/net-curl.cpp" "src/unix/multithread-unix.cpp")
-	target_link_libraries("OmegaCommon" PRIVATE curl dl pthread)
+	target_link_libraries("OmegaCommon" PRIVATE dl pthread)
 endif()
 
 file(GLOB WRAPGEN_SRCS "wrapgen/*.cpp")

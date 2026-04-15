@@ -9,8 +9,9 @@
 
 {% block header %}
   <div class="site-shell">
+    {% set omega_global_nav_items = omega_global_nav | default([], true) %}
     <header class="topbar" role="banner">
-      <a class="brand" href="https://omegagraphics.org">
+      <a class="brand" href="{{ pathto(root_doc)|e }}">
         <span class="brand-mark">OG</span>
         <span class="brand-copy">
           <strong>Omega Graphics</strong>
@@ -19,7 +20,13 @@
       </a>
       <nav class="nav" aria-label="Project">
         <a href="https://omegagraphics.org">Home</a>
-        <a href="{{ pathto(root_doc)|e }}"{% if pagename == root_doc %} aria-current="page"{% endif %}>Docs</a>
+        {% if omega_global_nav_items %}
+          {% for item in omega_global_nav_items %}
+            <a href="{{ pathto(item.path, 1)|e }}"{% if item.current %} aria-current="page"{% endif %}>{{ item.title|e }}</a>
+          {% endfor %}
+        {% else %}
+          <a href="{{ pathto(root_doc)|e }}"{% if pagename == root_doc %} aria-current="page"{% endif %}>Docs</a>
+        {% endif %}
         {% if hasdoc('genindex') %}
           <a href="{{ pathto('genindex')|e }}">Index</a>
         {% endif %}

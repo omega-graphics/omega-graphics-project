@@ -15,6 +15,7 @@ from .conditions import item_enabled
 from .dependencies import execute_dependency
 from .downloads import DownloadManager
 from .errors import CommandExecutionError, ManifestValidationError
+from .exports import write_cmake_exports
 from .state import exports_from_state, load_state, save_exports, save_state
 from .ui import StatusPrinter
 from .validation import validate_manifest
@@ -33,11 +34,13 @@ class RunContext:
     clean_targets: set[str]
     resolve_stable: bool
     print_resolved: str | None
+    cmake_path: str | None
     download_manager: DownloadManager
     variables: dict[str, object] = field(default_factory=dict)
     clone_automdeps_queue: list[str] = field(default_factory=list)
     state: dict = field(default_factory=lambda: {"dependencies": {}, "commands": {}})
     exports: dict[str, str] = field(default_factory=dict)
+    manifest_projects: dict[str, str | None] = field(default_factory=dict)
     seen_dependency_names: set[str] = field(default_factory=set)
     seen_export_names: set[str] = field(default_factory=set)
     printer: StatusPrinter | None = None
@@ -465,6 +468,7 @@ def _store_command_result(
 
 def run_manifest(ctx: RunContext, manifest_path: Path, is_root_manifest: bool) -> None:
     manifest = load_manifest(manifest_path)
+    ctx.manifest_projects[str(manifest_path.resolve())] = manifest.get("project")
     manifest_dir = manifest_path.parent
 
     local_variables = manifest.get("variables", {})
@@ -556,6 +560,7 @@ def run(argv: list[str] | None, args) -> int:
         clean_targets=set(args.clean),
         resolve_stable=args.resolve_stable,
         print_resolved=args.print_resolved,
+        cmake_path=args.cmake,
         download_manager=DownloadManager(
             resume_enabled=not args.no_resume,
             single_stream=True,
@@ -586,6 +591,8 @@ def run(argv: list[str] | None, args) -> int:
         if not ctx.dry_run:
             save_state(ctx.absroot, ctx.state)
             save_exports(ctx.absroot, ctx.exports)
+            if ctx.cmake_path:
+                write_cmake_exports(Path(ctx.absroot) / ctx.cmake_path, ctx.state, ctx.manifest_projects)
         ctx.printer.note("DONE", "autom-deps completed successfully")
         ctx.printer.finish()
         return 0

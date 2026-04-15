@@ -15,8 +15,8 @@
 #include <cassert>
 
 namespace OmegaCommon {
-    typedef std::thread Thread;
-    typedef std::mutex Mutex;
+    using Thread = std::thread;
+    using Mutex = std::mutex;
 
     template<class T>
     class Async {
@@ -40,11 +40,11 @@ namespace OmegaCommon {
 
         }
         bool ready(){
-            std::lock_guard<Mutex> lk(*mutex.get());
+            std::lock_guard<Mutex> lk(*mutex);
             return *hasValue;
         }
         T & get(){
-            std::unique_lock<Mutex> lk(*mutex.get());
+            std::unique_lock<Mutex> lk(*mutex);
             condition->wait(lk,[this](){
                 return *hasValue;
             });
@@ -81,7 +81,7 @@ namespace OmegaCommon {
         void set(const T & v){
            bool wake = false;
            {
-               std::lock_guard<Mutex> lk(*mutex.get());
+               std::lock_guard<Mutex> lk(*mutex);
                if(!(*hasValue)){
                 *val = v;
                 *hasValue = true;
@@ -95,7 +95,7 @@ namespace OmegaCommon {
         void set(T && v){
             bool wake = false;
             {
-                std::lock_guard<Mutex> lk(*mutex.get());
+                std::lock_guard<Mutex> lk(*mutex);
                 if(!(*hasValue)){
                     *val = std::move(v);
                     *hasValue = true;
