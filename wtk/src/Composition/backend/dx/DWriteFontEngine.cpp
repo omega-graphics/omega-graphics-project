@@ -5,6 +5,7 @@
 #include "omegaWTK/Core/Unicode.h"
 
 #include <dwrite.h>
+#include <dwrite_1.h>
 
 #pragma comment(lib,"dwrite.lib")
 
@@ -271,7 +272,7 @@ namespace OmegaWTK::Composition {
 
 
         FontEngine * FontEngine::inst(){
-        return instance;
+            return instance;
         };
 
 
@@ -306,16 +307,19 @@ namespace OmegaWTK::Composition {
         DWRITE_PARAGRAPH_ALIGNMENT paraAlignment;
         DWRITE_TEXT_ALIGNMENT textAlignment;
         DWRITE_WORD_WRAPPING wrapping;
-        DWRITE_FLOW_DIRECTION flowDirection;
+        DWRITE_FLOW_DIRECTION flowDirection = DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT;
         unsigned lineLimit;
         SharedHandle<OmegaGTE::GETexture> target;
         SharedHandle<OmegaGTE::GEFence> fence;
-        ID3D11Texture2D *resource;
-        IDXGISurface *surface;
+        ID3D11Texture2D *resource{};
+        IDXGISurface *surface{};
         ID2D1DeviceContext *context;
      public:
+         // Return a null fence: drawRun CPU-waits for the D2D work to
+         // complete before returning, so the compositor can treat the
+         // texture as ready without cross-queue GPU synchronisation.
          BitmapRes toBitmap() override {
-             return {target,fence};
+             return {target, nullptr};
          };
          void drawRun(Core::SharedPtr<GlyphRun> &glyphRun,const Composition::Color &color) override {
              auto run = std::dynamic_pointer_cast<DWriteGlyphRun>(glyphRun);
@@ -344,7 +348,7 @@ namespace OmegaWTK::Composition {
                      }
                  }
              }
-               auto FontEngineImpl = (DWriteFontEngineImpl *)FontEngine::inst();
+               auto *FontEngineImpl = dynamic_cast<DWriteFontEngineImpl *>(FontEngine::inst());
                FontEngineImpl->d3d11_device->AcquireWrappedResources((ID3D11Resource *const *)&resource,1);
 
              context->BeginDraw();
@@ -355,12 +359,29 @@ namespace OmegaWTK::Composition {
              HRESULT hr = context->EndDraw();
 
               FontEngineImpl->d3d11_device->ReleaseWrappedResources((ID3D11Resource *const *)&resource,1);
-            
+
              FontEngineImpl->d3d11_devicecontext->Flush();
 
             auto native_fence = (ID3D12Fence *)fence->native();
 
+            // Signal the fence from the D3D11On12 queue so we can block
+            // the CPU until the D2D rasterisation has fully committed to
+            // the wrapped D3D12 resource. Using a CPU wait rather than a
+            // cross-queue GEFence wait avoids two problems:
+            //   1. The external Signal bypasses GED3D12Fence's cached
+            //      lastSignaledValue, so GECommandQueue::notifyCommandBuffer
+            //      would silently skip its commandQueue->Wait.
+            //   2. Returning a null fence from toBitmap lets the compositor
+            //      path mirror Metal exactly (no endRenderPass churn).
             FontEngineImpl->d3d11_on_12_queue->Signal(native_fence,1);
+            if(native_fence->GetCompletedValue() < 1){
+                HANDLE ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+                if(ev != nullptr){
+                    native_fence->SetEventOnCompletion(1, ev);
+                    WaitForSingleObject(ev, INFINITE);
+                    CloseHandle(ev);
+                }
+            }
 
              Core::SafeRelease(&brush);
              if(hr == D2DERR_RECREATE_TARGET){
@@ -372,46 +393,78 @@ namespace OmegaWTK::Composition {
             return nullptr;
          };
          explicit DWriteTextRect(Composition::Rect & rect,const TextLayoutDescriptor & layoutDesc, float renderScale):
-         TextRect(rect),
+         TextRect(rect), 
          lineLimit(layoutDesc.lineLimit),
          target(nullptr),
          context(nullptr){
              this->renderScale = renderScale > 0.f ? renderScale : 1.f;
              HRESULT hr;
 
+             
+
              switch (layoutDesc.alignment) {
                 case TextLayoutDescriptor::LeftUpper : {
-                    textAlignment = DWRITE_TEXT_ALIGNMENT_TRAILING;
+                    textAlignment = DWRITE_TEXT_ALIGNMENT_LEADING;
                     paraAlignment = DWRITE_PARAGRAPH_ALIGNMENT_NEAR;
                     break;
                 }
                 case TextLayoutDescriptor::LeftCenter : {
-
+                    textAlignment = DWRITE_TEXT_ALIGNMENT_LEADING;
+                    paraAlignment = DWRITE_PARAGRAPH_ALIGNMENT_CENTER;
+                    break;
                 }
                 case TextLayoutDescriptor::LeftLower : {
-
-                }
-                case TextLayoutDescriptor::RightCenter : {
-
-                }
-                case TextLayoutDescriptor::RightLower : {
-
-                }
-                case TextLayoutDescriptor::RightUpper : {
-
-                }
-                case TextLayoutDescriptor::MiddleCenter : {
-
-                }
-                case TextLayoutDescriptor::MiddleLower : {
-
+                    textAlignment = DWRITE_TEXT_ALIGNMENT_LEADING;
+                    paraAlignment = DWRITE_PARAGRAPH_ALIGNMENT_FAR;
+                    break;
                 }
                 case TextLayoutDescriptor::MiddleUpper : {
-
+                    textAlignment = DWRITE_TEXT_ALIGNMENT_CENTER;
+                    paraAlignment = DWRITE_PARAGRAPH_ALIGNMENT_NEAR;
+                    break;
+                }
+                case TextLayoutDescriptor::MiddleCenter : {
+                    textAlignment = DWRITE_TEXT_ALIGNMENT_CENTER;
+                    paraAlignment = DWRITE_PARAGRAPH_ALIGNMENT_CENTER;
+                    break;
+                }
+                case TextLayoutDescriptor::MiddleLower : {
+                    textAlignment = DWRITE_TEXT_ALIGNMENT_CENTER;
+                    paraAlignment = DWRITE_PARAGRAPH_ALIGNMENT_FAR;
+                    break;
+                }
+                case TextLayoutDescriptor::RightUpper : {
+                    textAlignment = DWRITE_TEXT_ALIGNMENT_TRAILING;
+                    paraAlignment = DWRITE_PARAGRAPH_ALIGNMENT_NEAR;
+                    break;
+                }
+                case TextLayoutDescriptor::RightCenter : {
+                    textAlignment = DWRITE_TEXT_ALIGNMENT_TRAILING;
+                    paraAlignment = DWRITE_PARAGRAPH_ALIGNMENT_CENTER;
+                    break;
+                }
+                case TextLayoutDescriptor::RightLower : {
+                    textAlignment = DWRITE_TEXT_ALIGNMENT_TRAILING;
+                    paraAlignment = DWRITE_PARAGRAPH_ALIGNMENT_FAR;
+                    break;
                 }
              }
 
-             wrapping = DWRITE_WORD_WRAPPING_NO_WRAP;
+             switch (layoutDesc.wrapping) {
+                case TextLayoutDescriptor::WrapByWord : {
+                    wrapping = DWRITE_WORD_WRAPPING_WRAP;
+                    break;
+                }
+                case TextLayoutDescriptor::WrapByCharacter : {
+                    wrapping = DWRITE_WORD_WRAPPING_CHARACTER;
+                    break;
+                }
+                case TextLayoutDescriptor::None :
+                default : {
+                    wrapping = DWRITE_WORD_WRAPPING_NO_WRAP;
+                    break;
+                }
+             }
 
              OmegaGTE::TextureDescriptor textureDesc {OmegaGTE::GETexture::Texture2D};
              textureDesc.usage = OmegaGTE::GETexture::RenderTarget;
@@ -431,7 +484,17 @@ namespace OmegaWTK::Composition {
 
               auto FontEngineImpl = (DWriteFontEngineImpl *)FontEngine::inst();
 
-             hr = FontEngineImpl->d3d11_device->CreateWrappedResource((IUnknown *)target->native(),&fgs,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,IID_PPV_ARGS(&resource));
+             // OutState intentionally stays at RENDER_TARGET: that's the
+             // state GED3D12Texture caches for a usage=RenderTarget texture
+             // (see gte/src/d3d12/GED3D12.cpp makeTexture). If OutState were
+             // PIXEL_SHADER_RESOURCE, 11on12 would transition the actual
+             // D3D12 state but GED3D12Texture::currentState would stay
+             // RENDER_TARGET, and the next bindResourceAtFragmentShader
+             // would emit a malformed RENDER_TARGET→PIXEL_SHADER_RESOURCE
+             // barrier against a resource already in PIXEL_SHADER_RESOURCE.
+             // Leaving it in RENDER_TARGET lets the compositor's normal
+             // bind path issue a correct transition barrier.
+             hr = FontEngineImpl->d3d11_device->CreateWrappedResource((IUnknown *)target->native(),&fgs,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_RENDER_TARGET,IID_PPV_ARGS(&resource));
              if(FAILED(hr)){
                  OMEGAWTK_DEBUG("Failed to Create Wrapped Resource. ERR:" << std::hex << hr << std::dec);
                  exit(1);
@@ -454,8 +517,14 @@ namespace OmegaWTK::Composition {
              OMEGAWTK_DEBUG("Ok! 4");
 
              ID2D1Bitmap1 *bitmap;
-             
-            hr = context->CreateBitmapFromDxgiSurface(surface,D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET,D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED)),&bitmap);
+
+             // Stamp the bitmap with 96 * renderScale DPI so its *logical*
+             // (DIP) size equals rect.w × rect.h — matching the DIP-valued
+             // text layout box and the DIP-valued font size. Without this
+             // the bitmap defaults to 96 DPI, so its logical size becomes
+             // rect.w*scale × rect.h*scale DIPs and DrawTextLayout with
+             // MaxWidth=rect.w only fills the top-left corner.
+            hr = context->CreateBitmapFromDxgiSurface(surface,D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET,D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),96.f * this->renderScale,96.f * this->renderScale),&bitmap);
              
             if(FAILED(hr)){
                   OMEGAWTK_DEBUG("Failed to create Bitmap from DXGISurface ERR:" << std::hex << hr << std::dec);
@@ -466,8 +535,11 @@ namespace OmegaWTK::Composition {
              OMEGAWTK_DEBUG("Ok! 5");
 
              context->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
-             const float dpi = 96.f * this->renderScale;
-             context->SetDpi(dpi, dpi);
+             // No explicit transform: the bitmap is already authored at
+             // 96*renderScale DPI, so draw calls in DIPs are rasterised
+             // into physical pixels automatically. Adding a SetTransform
+             // scale on top would double-scale.
+             context->SetTransform(D2D1::Matrix3x2F::Identity());
               OMEGAWTK_DEBUG("DWriteTextRect Successfully Created");
 
               fence = gte.graphicsEngine->makeFence();
