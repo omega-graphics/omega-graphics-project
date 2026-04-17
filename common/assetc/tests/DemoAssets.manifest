@@ -1,0 +1,5 @@
+# Demo asset manifest for omega-assetc integration tests.
+DemoAssets/Config/AppConfig.json
+DemoAssets/Shaders/Basic.omegasl
+DemoAssets/Materials/Hero.asset
+DemoAssets/Worlds/Intro.scene

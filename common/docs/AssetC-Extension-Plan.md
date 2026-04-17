@@ -8,7 +8,7 @@
 
 | Component | Location | Status |
 |-----------|----------|--------|
-| Binary format structs | `common/assetc/assetc.h` | `AssetsFileHeader` (asset count) + `AssetsFileEntry` (name length, data length) |
+| Binary format structs | `common/assetc/assetc.h` | `BundleHeader` + `AssetEntry` for the v2 `.pak` format |
 | Compiler CLI | `common/assetc/main.cpp` | Packs input files sequentially. Commented-out SHA-256 + AES-128-CBC signing code. Hardcoded key/IV. |
 | Runtime loader | `common/src/assets.cpp` | Reads `.pak`, stores raw buffers in a global static map. No deallocation. |
 | Runtime API | `common/include/omega-common/assets.h` | `AssetLibrary` with `loadAssetFile` and a public `assets_res` map of `{size_t filesize, void *data}`. |
@@ -37,7 +37,7 @@
 - **Runtime loading** that is safe (RAII, typed access), efficient (lazy/streaming), and thread-safe.
 - **Encryption and integrity** using OmegaCommon's crypto module (Phase 5 / 5b) rather than raw OpenSSL calls.
 - **Build integration** so WTK and AQUA apps automatically compile their asset directories into bundles.
-- **Backward compatible** with the existing `.pak` format (read old bundles, write new format).
+- **Single supported runtime format** centered on the v2 `.pak` layout.
 
 ---
 
@@ -126,16 +126,15 @@ omega-assetc [options] inputs...
 
 Options:
   --output, -o <file>           Output bundle path (required)
-  --app-id <id>                 Application identifier (used as salt for signing)
+  --app-id <id>                 Application identifier reserved for future signing/encryption phases
   --compress                    Enable zlib compression for eligible assets
-  --encrypt                     Enable AES-256-GCM encryption
-  --key-file <path>             Encryption key file (32 bytes, or derived via HKDF from passphrase)
+  --encrypt                     Enable AES-256-GCM encryption (enabled by default)
+  --key-file <path>             Bundle key file. Defaults to a companion <output>.key file
   --key-passphrase              Derive encryption key from passphrase (prompted or via env var)
-  --sign                        Compute and embed integrity hashes
+  --sign                        Compute and embed integrity hashes (enabled by default)
   --type <name>=<type>          Override asset type for a specific file
   --strip-prefix <prefix>       Strip leading path prefix from asset names
   --manifest <file>             Read asset list from a manifest file instead of CLI args
-  --legacy                      Write v1 format (no metadata, no compression, no encryption)
   --verbose, -v                 Print per-asset details during compilation
   --help, -h                    Show help
 ```
@@ -148,7 +147,7 @@ For each input file:
 2. **Read** the raw file content.
 3. **Hash** the raw content (SHA-256) for integrity.
 4. **Compress** (if `--compress` and asset type is eligible). Use zlib deflate. Store both `rawSize` and `storedSize`.
-5. **Encrypt** (if `--encrypt`). AES-256-GCM via OmegaCommon crypto. Per-entry nonce derived from entry index + bundle salt. Authentication tag stored alongside ciphertext.
+5. **Encrypt** (enabled by default). AES-256-GCM via OmegaCommon crypto. Per-entry nonces are derived deterministically from the bundle key, entry hash, and logical asset path. Authentication tags are appended to the stored payload.
 6. **Write** the entry to the data region.
 
 After all entries:
@@ -172,8 +171,8 @@ shaders/compositor.omegasllib  type=Shader
 ### B.4 Encryption Design
 
 - Key material is never stored in the bundle. The bundle only contains encrypted ciphertext + per-entry GCM authentication tags.
-- Key can be provided as a raw 32-byte file, or derived from a passphrase using HKDF (Phase 5b) with the `--app-id` as salt.
-- Per-entry nonces are deterministic: `HKDF-Expand(bundleKey, entryIndex || entryName, 12)`. This allows decryption of individual entries without reading the whole bundle.
+- Key can be provided explicitly via `--key-file`, or `omega-assetc` can create/reuse a companion `<output>.key` file automatically.
+- Per-entry nonces are deterministic: `HKDF-Expand(bundleKey, entryHash || entryName, 12)`. This keeps bundle output reproducible when the key is fixed and avoids storing nonces separately.
 - At runtime, the application provides the key to the asset loader. No key = no access to encrypted assets.
 
 ### B.5 Dependencies
@@ -244,7 +243,7 @@ namespace OmegaCommon {
 - **Thread-safe reads.** Multiple threads can call `load()` concurrently on the same bundle (the implementation uses per-call file reads or memory-mapped regions, no shared cursor).
 - **Integrity verification.** Each `load()` call verifies the entry's SHA-256 hash after decompression/decryption. Tampered or corrupted assets produce an error, not silent garbage.
 
-### C.3 Migration From v1
+### C.3 Migration From v1 [HISTORICAL]
 
 The existing `AssetLibrary` API is kept but deprecated. Its implementation is updated to wrap the new `AssetBundle`:
 

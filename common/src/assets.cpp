@@ -6,6 +6,7 @@
 #include "../assetc/assetc.h"
 
 #include <array>
+#include <cctype>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -17,6 +18,7 @@ namespace {
 namespace assetc = OmegaCommon::assetc;
 
 using Byte = unsigned char;
+constexpr const char *EncryptionNonceLabel = "omega-assetc:entry-nonce:v1";
 
 struct RuntimeAssetEntry {
     String name;
@@ -108,11 +110,146 @@ Result<std::array<std::uint8_t, 32>, String> sha256(ArrayRef<std::uint8_t> bytes
     return Result<std::array<std::uint8_t, 32>, String>::ok(std::move(out));
 }
 
+String bundleKeyPath(StrRef bundlePath) {
+    return String(bundlePath.data(), bundlePath.size()) + ".key";
+}
+
+bool isHexDigit(char ch) {
+    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') ||
+           (ch >= 'A' && ch <= 'F');
+}
+
+int hexValue(char ch) {
+    if(ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    if(ch >= 'a' && ch <= 'f') {
+        return 10 + (ch - 'a');
+    }
+    return 10 + (ch - 'A');
+}
+
+Result<Vector<std::uint8_t>, String> parseKeyFileBytes(const Vector<std::uint8_t> &bytes,
+                                                       const String &sourcePath) {
+    if(bytes.size() == EncryptionKey::KeySize) {
+        return Result<Vector<std::uint8_t>, String>::ok(bytes);
+    }
+
+    String hex;
+    hex.reserve(bytes.size());
+    for(auto byte : bytes) {
+        auto ch = static_cast<char>(byte);
+        if(std::isspace(static_cast<unsigned char>(ch)) != 0) {
+            continue;
+        }
+        if(!isHexDigit(ch)) {
+            return Result<Vector<std::uint8_t>, String>::err(
+                "Key file contains non-hex data and is not a raw 32-byte key: " + sourcePath);
+        }
+        hex.push_back(ch);
+    }
+
+    if(hex.size() != (EncryptionKey::KeySize * 2)) {
+        return Result<Vector<std::uint8_t>, String>::err(
+            "Key file must contain either 32 raw bytes or 64 hex characters: " + sourcePath);
+    }
+
+    Vector<std::uint8_t> parsed;
+    parsed.reserve(EncryptionKey::KeySize);
+    for(size_t i = 0; i < hex.size(); i += 2) {
+        auto high = hexValue(hex[i]);
+        auto low = hexValue(hex[i + 1]);
+        parsed.push_back(static_cast<std::uint8_t>((high << 4) | low));
+    }
+    return Result<Vector<std::uint8_t>, String>::ok(std::move(parsed));
+}
+
+Result<Vector<std::uint8_t>, String> readKeyFile(StrRef pathValue) {
+    String path(pathValue.data(), pathValue.size());
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if(!in.is_open()) {
+        return Result<Vector<std::uint8_t>, String>::err("Failed to open key file: " + path);
+    }
+
+    auto size = in.tellg();
+    if(size < 0) {
+        return Result<Vector<std::uint8_t>, String>::err("Failed to read key file: " + path);
+    }
+
+    in.seekg(0, std::ios::beg);
+    Vector<std::uint8_t> bytes(static_cast<size_t>(size));
+    if(!bytes.empty()) {
+        in.read(reinterpret_cast<char *>(bytes.data()), size);
+    }
+    if(in.bad()) {
+        return Result<Vector<std::uint8_t>, String>::err("Failed to read key file: " + path);
+    }
+
+    return parseKeyFileBytes(bytes, path);
+}
+
+Result<Vector<std::uint8_t>, String> tryLoadCompanionKey(StrRef bundlePath) {
+    auto keyPath = bundleKeyPath(bundlePath);
+    auto keyBytes = readKeyFile(keyPath);
+    if(keyBytes.isErr()) {
+        return Result<Vector<std::uint8_t>, String>::err(
+            "Encrypted asset bundle requires a 32-byte key. Tried companion key file: " + keyPath);
+    }
+    return keyBytes;
+}
+
+template <typename T>
+void appendScalarBytes(Vector<std::uint8_t> &out, const T &value) {
+    auto ptr = reinterpret_cast<const std::uint8_t *>(std::addressof(value));
+    out.insert(out.end(), ptr, ptr + sizeof(T));
+}
+
+Vector<std::uint8_t> buildEntryAad(StrRef bundleName,
+                                   AssetType assetType,
+                                   std::uint64_t rawSize,
+                                   std::uint32_t flags) {
+    Vector<std::uint8_t> aad;
+    auto nameLength = static_cast<std::uint16_t>(bundleName.size());
+    auto serializedType = static_cast<std::uint16_t>(assetType);
+    aad.reserve(sizeof(nameLength) + bundleName.size() + sizeof(serializedType) +
+                sizeof(rawSize) + sizeof(flags));
+    appendScalarBytes(aad, nameLength);
+    aad.insert(aad.end(), bundleName.begin(), bundleName.end());
+    appendScalarBytes(aad, serializedType);
+    appendScalarBytes(aad, rawSize);
+    appendScalarBytes(aad, flags);
+    return aad;
+}
+
+Result<Nonce, String> deriveEntryNonce(const EncryptionKey &key,
+                                       const std::array<std::uint8_t, 32> &entryHash,
+                                       StrRef bundleName) {
+    Vector<std::uint8_t> info;
+    auto labelLength = std::char_traits<char>::length(EncryptionNonceLabel);
+    info.reserve(labelLength + bundleName.size());
+    info.insert(info.end(), EncryptionNonceLabel, EncryptionNonceLabel + labelLength);
+    info.insert(info.end(), bundleName.begin(), bundleName.end());
+
+    auto derived = hkdf(DigestAlgorithm::SHA256, key.data(), key.size(), entryHash.data(),
+                        entryHash.size(), info.data(), info.size(), Nonce::NonceSize);
+    if(derived.isErr()) {
+        return Result<Nonce, String>::err("Failed to derive entry nonce: " +
+                                          derived.error().message);
+    }
+
+    auto nonce = Nonce::fromBytes(derived.value().data(), derived.value().size());
+    if(nonce.isErr()) {
+        return Result<Nonce, String>::err("Failed to build entry nonce: " +
+                                          nonce.error().message);
+    }
+
+    return Result<Nonce, String>::ok(std::move(nonce.value()));
+}
+
 } // namespace
 
 struct AssetBundle::Impl {
     String bundlePath;
-    bool legacy = false;
     bool signedBundle = false;
     bool compressedBundle = false;
     bool encryptedBundle = false;
@@ -130,62 +267,6 @@ Result<void *, String> indexEntry(AssetBundle::Impl &impl, RuntimeAssetEntry &&e
     }
 
     impl.entries.push_back(std::move(entry));
-    return Result<void *, String>::ok(nullptr);
-}
-
-Result<void *, String> loadLegacyBundleMetadata(std::ifstream &in, AssetBundle::Impl &impl) {
-    assetc::LegacyAssetsFileHeader header {};
-    if(!readExact(in, reinterpret_cast<char *>(&header), sizeof(header))) {
-        return Result<void *, String>::err("Failed to read legacy asset bundle header.");
-    }
-
-    impl.legacy = true;
-    impl.entries.reserve(header.asset_count);
-    for(std::uint32_t i = 0; i < header.asset_count; ++i) {
-        assetc::LegacyAssetsFileEntry entryHeader {};
-        if(!readExact(in, reinterpret_cast<char *>(&entryHeader), sizeof(entryHeader))) {
-            return Result<void *, String>::err("Failed to read legacy asset bundle entry.");
-        }
-
-        std::streamsize nameSize = 0;
-        if(!toStreamSize(entryHeader.string_size, nameSize)) {
-            return Result<void *, String>::err("Legacy asset name is too large to read.");
-        }
-
-        String name;
-        name.resize(static_cast<size_t>(nameSize));
-        if(nameSize > 0 && !readExact(in, name.data(), nameSize)) {
-            return Result<void *, String>::err("Failed to read legacy asset name.");
-        }
-
-        auto dataOffset = in.tellg();
-        if(dataOffset < 0) {
-            return Result<void *, String>::err("Failed to determine legacy asset data offset.");
-        }
-
-        std::streamoff skip = 0;
-        if(!toStreamOffset(entryHeader.file_size, skip)) {
-            return Result<void *, String>::err("Legacy asset payload is too large to index.");
-        }
-
-        in.seekg(skip, std::ios::cur);
-        if(!in.good()) {
-            return Result<void *, String>::err("Failed to skip legacy asset payload.");
-        }
-
-        RuntimeAssetEntry entry {};
-        entry.name = std::move(name);
-        entry.type = AssetType::Raw;
-        entry.fileOffset = static_cast<std::uint64_t>(dataOffset);
-        entry.rawSize = entryHeader.file_size;
-        entry.storedSize = entryHeader.file_size;
-
-        auto indexed = indexEntry(impl, std::move(entry));
-        if(indexed.isErr()) {
-            return indexed;
-        }
-    }
-
     return Result<void *, String>::ok(nullptr);
 }
 
@@ -212,8 +293,11 @@ Result<void *, String> loadBundleV2Metadata(std::ifstream &in, AssetBundle::Impl
         (header.flags & static_cast<std::uint16_t>(assetc::BundleFlags::Encrypted)) != 0;
 
     if(impl.encryptedBundle && impl.key.empty()) {
-        return Result<void *, String>::err(
-            "Encrypted asset bundle requires a 32-byte key.");
+        auto keyLoad = tryLoadCompanionKey(impl.bundlePath);
+        if(keyLoad.isErr()) {
+            return Result<void *, String>::err(keyLoad.error());
+        }
+        impl.key = std::move(keyLoad.value());
     }
 
     Vector<assetc::AssetEntry> entries;
@@ -337,9 +421,13 @@ Result<AssetBundle::Impl *, String> openBundleImpl(FS::Path path, ArrayRef<std::
     in.clear();
     in.seekg(0, std::ios::beg);
 
-    Result<void *, String> loadResult = assetc::hasBundleMagic(magic.data())
-                                            ? loadBundleV2Metadata(in, *impl)
-                                            : loadLegacyBundleMetadata(in, *impl);
+    if(!assetc::hasBundleMagic(magic.data())) {
+        delete impl;
+        return Result<AssetBundle::Impl *, String>::err(
+            "Unsupported legacy asset bundle format. Rebuild this bundle with omega-assetc.");
+    }
+
+    Result<void *, String> loadResult = loadBundleV2Metadata(in, *impl);
     if(loadResult.isErr()) {
         auto error = loadResult.error();
         delete impl;
@@ -494,18 +582,50 @@ Result<Vector<std::uint8_t>, String> AssetBundle::load(StrRef name) const {
             "Compressed asset bundles are not implemented yet.");
     }
 
-    if(isEncrypted) {
-        return Result<Vector<std::uint8_t>, String>::err(
-            "Encrypted asset bundles are not implemented yet.");
-    }
-
     auto bytesResult = readStoredBytes(*impl, entry);
     if(bytesResult.isErr()) {
         return bytesResult;
     }
 
     auto bytes = std::move(bytesResult.value());
-    if(entry.storedSize != entry.rawSize) {
+    if(isEncrypted) {
+        if(impl->key.size() != EncryptionKey::KeySize) {
+            return Result<Vector<std::uint8_t>, String>::err(
+                "Encrypted asset bundle requires a 32-byte key.");
+        }
+
+        if(bytes.size() < 16) {
+            return Result<Vector<std::uint8_t>, String>::err(
+                "Encrypted asset payload is truncated: " + entry.name);
+        }
+
+        auto key = EncryptionKey::fromBytes(impl->key.data(), impl->key.size());
+        if(key.isErr()) {
+            return Result<Vector<std::uint8_t>, String>::err(
+                "Failed to load bundle key: " + key.error().message);
+        }
+
+        auto nonce = deriveEntryNonce(key.value(), entry.entryHash, entry.name);
+        if(nonce.isErr()) {
+            return Result<Vector<std::uint8_t>, String>::err(
+                "While decrypting \"" + entry.name + "\": " + nonce.error());
+        }
+
+        EncryptedData encrypted {};
+        encrypted.ciphertext.assign(bytes.begin(), bytes.end() - 16);
+        std::copy(bytes.end() - 16, bytes.end(), encrypted.tag.begin());
+
+        auto aad = buildEntryAad(entry.name, entry.type, entry.rawSize, entry.flags);
+        auto decrypted = decrypt(key.value(), nonce.value(), encrypted, aad.data(), aad.size());
+        if(decrypted.isErr()) {
+            return Result<Vector<std::uint8_t>, String>::err(
+                "While decrypting \"" + entry.name + "\": " + decrypted.error().message);
+        }
+
+        bytes = std::move(decrypted.value());
+    }
+
+    if(bytes.size() != entry.rawSize) {
         return Result<Vector<std::uint8_t>, String>::err(
             "Asset entry requires decoding that is not implemented yet: " + entry.name);
     }

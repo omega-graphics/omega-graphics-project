@@ -2,7 +2,10 @@
 AQUA
 ====
 
-This site features all the documentation for using AQUA
+AQUA Game Engine 
+
+AQUA is our 3D game engine built using OmegaGTE, and OmegaSL.
+
 
 .. toctree::
   :caption: Table of Contents

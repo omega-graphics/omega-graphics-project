@@ -1,0 +1,4 @@
+// Demo shader fixture used by omega-assetc tests.
+shader DemoBasic {
+  stage = "fragment"
+}

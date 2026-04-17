@@ -1,0 +1,5 @@
+material HeroMaterial
+{
+  albedo = [0.9, 0.7, 0.2]
+  roughness = 0.35
+}

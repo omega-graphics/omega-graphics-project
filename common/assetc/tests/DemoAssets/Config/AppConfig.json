@@ -1,0 +1,8 @@
+{
+  "name": "DemoApp",
+  "version": 1,
+  "window": {
+    "width": 1280,
+    "height": 720
+  }
+}

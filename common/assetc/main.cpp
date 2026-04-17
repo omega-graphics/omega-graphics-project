@@ -19,6 +19,8 @@ namespace {
 
 using OmegaCommon::ArrayRef;
 using OmegaCommon::DigestAlgorithm;
+using OmegaCommon::EncryptionKey;
+using OmegaCommon::Nonce;
 using OmegaCommon::Optional;
 using OmegaCommon::Result;
 using OmegaCommon::String;
@@ -31,13 +33,13 @@ namespace fs = std::filesystem;
 constexpr const char *ProgramName = "omega-assetc";
 constexpr const char *AssetTypesConfigFileName = "AssetTypes.json";
 constexpr const char *AssetTypesConfigEnvVar = "OMEGA_ASSET_TYPES_JSON";
+constexpr const char *EncryptionNonceLabel = "omega-assetc:entry-nonce:v1";
 
 struct CompilerOptions {
   bool help = false;
   bool compress = false;
-  bool encrypt = false;
-  bool sign = false;
-  bool legacy = false;
+  bool encrypt = true;
+  bool sign = true;
   bool verbose = false;
   bool keyPassphrase = false;
   String outputFile;
@@ -73,6 +75,238 @@ struct AssetTypeConfig {
   fs::path sourcePath;
   TypeOverrideMap extensionTypes;
 };
+
+String bundleKeyPath(const fs::path &bundlePath) {
+  return bundlePath.string() + ".key";
+}
+
+bool isHexDigit(char ch) {
+  return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') ||
+         (ch >= 'A' && ch <= 'F');
+}
+
+int hexValue(char ch) {
+  if (ch >= '0' && ch <= '9') {
+    return ch - '0';
+  }
+  if (ch >= 'a' && ch <= 'f') {
+    return 10 + (ch - 'a');
+  }
+  return 10 + (ch - 'A');
+}
+
+Result<Vector<std::uint8_t>, String> parseKeyFileBytes(const Vector<std::uint8_t> &bytes,
+                                                       const String &sourcePath) {
+  if (bytes.size() == EncryptionKey::KeySize) {
+    return Result<Vector<std::uint8_t>, String>::ok(bytes);
+  }
+
+  String hex;
+  hex.reserve(bytes.size());
+  for (auto byte : bytes) {
+    auto ch = static_cast<char>(byte);
+    if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
+      continue;
+    }
+    if (!isHexDigit(ch)) {
+      return Result<Vector<std::uint8_t>, String>::err(
+          "Key file contains non-hex data and is not a raw 32-byte key: " + sourcePath);
+    }
+    hex.push_back(ch);
+  }
+
+  if (hex.size() != (EncryptionKey::KeySize * 2)) {
+    return Result<Vector<std::uint8_t>, String>::err(
+        "Key file must contain either 32 raw bytes or 64 hex characters: " +
+        sourcePath);
+  }
+
+  Vector<std::uint8_t> parsed;
+  parsed.reserve(EncryptionKey::KeySize);
+  for (size_t i = 0; i < hex.size(); i += 2) {
+    auto high = hexValue(hex[i]);
+    auto low = hexValue(hex[i + 1]);
+    parsed.push_back(static_cast<std::uint8_t>((high << 4) | low));
+  }
+  return Result<Vector<std::uint8_t>, String>::ok(std::move(parsed));
+}
+
+Result<Vector<std::uint8_t>, String> readKeyFile(const fs::path &path) {
+  std::ifstream in(path, std::ios::binary | std::ios::ate);
+  if (!in.is_open()) {
+    return Result<Vector<std::uint8_t>, String>::err("Failed to open key file: " +
+                                                     path.string());
+  }
+
+  auto size = in.tellg();
+  if (size < 0) {
+    return Result<Vector<std::uint8_t>, String>::err("Failed to read key file: " +
+                                                     path.string());
+  }
+
+  in.seekg(0, std::ios::beg);
+  Vector<std::uint8_t> bytes(static_cast<size_t>(size));
+  if (!bytes.empty()) {
+    in.read(reinterpret_cast<char *>(bytes.data()), size);
+  }
+  if (in.bad()) {
+    return Result<Vector<std::uint8_t>, String>::err("Failed to read key file: " +
+                                                     path.string());
+  }
+
+  return parseKeyFileBytes(bytes, path.string());
+}
+
+String bytesToHex(const std::uint8_t *bytes, size_t byteCount) {
+  static constexpr char HexChars[] = "0123456789abcdef";
+  String out;
+  out.reserve(byteCount * 2);
+  for (size_t i = 0; i < byteCount; ++i) {
+    auto byte = bytes[i];
+    out.push_back(HexChars[(byte >> 4) & 0x0F]);
+    out.push_back(HexChars[byte & 0x0F]);
+  }
+  return out;
+}
+
+Result<void *, String> writeHexKeyFile(const fs::path &path,
+                                       const std::uint8_t *keyBytes,
+                                       size_t keySize) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out.is_open()) {
+    return Result<void *, String>::err("Failed to write key file: " + path.string());
+  }
+
+  auto hex = bytesToHex(keyBytes, keySize);
+  out.write(hex.data(), static_cast<std::streamsize>(hex.size()));
+  out.put('\n');
+  if (!out.good()) {
+    return Result<void *, String>::err("Failed while writing key file: " +
+                                       path.string());
+  }
+
+  return Result<void *, String>::ok(nullptr);
+}
+
+Result<EncryptionKey, String> resolveEncryptionKey(const CompilerOptions &options) {
+  if (!options.encrypt) {
+    return Result<EncryptionKey, String>::err(
+        "Encryption key requested while encryption is disabled.");
+  }
+
+  if (options.keyPassphrase) {
+    return Result<EncryptionKey, String>::err(
+        "Passphrase-derived bundle keys are not implemented yet. Use --key-file or the default companion key file.");
+  }
+
+  fs::path keyPath =
+      options.keyFile.empty() ? fs::path(bundleKeyPath(fs::path(options.outputFile)))
+                              : fs::path(options.keyFile);
+
+  std::error_code ec;
+  if (fs::exists(keyPath, ec) && !ec) {
+    auto keyBytes = readKeyFile(keyPath);
+    if (keyBytes.isErr()) {
+      return Result<EncryptionKey, String>::err(keyBytes.error());
+    }
+
+    auto key = EncryptionKey::fromBytes(keyBytes.value().data(), keyBytes.value().size());
+    if (key.isErr()) {
+      return Result<EncryptionKey, String>::err("Failed to parse key file \"" +
+                                                keyPath.string() + "\": " +
+                                                key.error().message);
+    }
+    return Result<EncryptionKey, String>::ok(std::move(key.value()));
+  }
+
+  auto generatedKey = EncryptionKey::generate();
+  if (generatedKey.isErr()) {
+    return Result<EncryptionKey, String>::err("Failed to generate bundle key: " +
+                                              generatedKey.error().message);
+  }
+
+  auto writeResult =
+      writeHexKeyFile(keyPath, generatedKey.value().data(), generatedKey.value().size());
+  if (writeResult.isErr()) {
+    return Result<EncryptionKey, String>::err(writeResult.error());
+  }
+
+  return Result<EncryptionKey, String>::ok(std::move(generatedKey.value()));
+}
+
+template <typename T>
+void appendScalarBytes(Vector<std::uint8_t> &out, const T &value) {
+  auto ptr = reinterpret_cast<const std::uint8_t *>(std::addressof(value));
+  out.insert(out.end(), ptr, ptr + sizeof(T));
+}
+
+Vector<std::uint8_t> buildEntryAad(StrRef bundleName,
+                                   assetc::AssetType assetType,
+                                   std::uint64_t rawSize,
+                                   std::uint32_t flags) {
+  Vector<std::uint8_t> aad;
+  auto nameLength = static_cast<std::uint16_t>(bundleName.size());
+  auto serializedType = static_cast<std::uint16_t>(assetType);
+  aad.reserve(sizeof(nameLength) + bundleName.size() + sizeof(serializedType) +
+              sizeof(rawSize) + sizeof(flags));
+  appendScalarBytes(aad, nameLength);
+  aad.insert(aad.end(), bundleName.begin(), bundleName.end());
+  appendScalarBytes(aad, serializedType);
+  appendScalarBytes(aad, rawSize);
+  appendScalarBytes(aad, flags);
+  return aad;
+}
+
+Result<Nonce, String> deriveEntryNonce(const EncryptionKey &key,
+                                       const std::array<std::uint8_t, 32> &entryHash,
+                                       StrRef bundleName) {
+  Vector<std::uint8_t> info;
+  auto labelLength = std::char_traits<char>::length(EncryptionNonceLabel);
+  info.reserve(labelLength + bundleName.size());
+  info.insert(info.end(), EncryptionNonceLabel,
+              EncryptionNonceLabel + labelLength);
+  info.insert(info.end(), bundleName.begin(), bundleName.end());
+
+  auto derived = OmegaCommon::hkdf(
+      DigestAlgorithm::SHA256, key.data(), key.size(), entryHash.data(), entryHash.size(),
+      info.data(), info.size(), Nonce::NonceSize);
+  if (derived.isErr()) {
+    return Result<Nonce, String>::err("Failed to derive entry nonce: " +
+                                      derived.error().message);
+  }
+
+  auto nonce = Nonce::fromBytes(derived.value().data(), derived.value().size());
+  if (nonce.isErr()) {
+    return Result<Nonce, String>::err("Failed to build entry nonce: " +
+                                      nonce.error().message);
+  }
+
+  return Result<Nonce, String>::ok(std::move(nonce.value()));
+}
+
+Result<void *, String> encryptCompiledAsset(CompiledAsset &asset,
+                                            const EncryptionKey &key) {
+  asset.flags |= static_cast<std::uint32_t>(assetc::AssetEntryFlags::Encrypted);
+
+  auto aad = buildEntryAad(asset.bundleName, asset.type, asset.rawBytes.size(), asset.flags);
+  auto nonce = deriveEntryNonce(key, asset.entryHash, asset.bundleName);
+  if (nonce.isErr()) {
+    return Result<void *, String>::err("While encrypting \"" + asset.bundleName +
+                                       "\": " + nonce.error());
+  }
+
+  auto encrypted = OmegaCommon::encrypt(key, nonce.value(), asset.rawBytes.data(),
+                                        asset.rawBytes.size(), aad.data(), aad.size());
+  if (encrypted.isErr()) {
+    return Result<void *, String>::err("While encrypting \"" + asset.bundleName +
+                                       "\": " + encrypted.error().message);
+  }
+
+  asset.storedBytes = std::move(encrypted.value().ciphertext);
+  asset.storedBytes.insert(asset.storedBytes.end(), encrypted.value().tag.begin(),
+                           encrypted.value().tag.end());
+  return Result<void *, String>::ok(nullptr);
+}
 
 String toLowerCopy(StrRef value) {
   String out(value.data(), value.size());
@@ -586,41 +820,6 @@ void appendBytes(Vector<std::uint8_t> &out, const Vector<std::uint8_t> &bytes) {
   out.insert(out.end(), bytes.begin(), bytes.end());
 }
 
-Result<void *, String> writeLegacyBundle(const CompilerOptions &options,
-                                         const Vector<CompiledAsset> &assets) {
-  assetc::LegacyAssetsFileHeader header {};
-  header.asset_count = static_cast<std::uint32_t>(assets.size());
-
-  std::ofstream out(options.outputFile, std::ios::binary | std::ios::trunc);
-  if (!out.is_open()) {
-    return Result<void *, String>::err("Failed to open output file: " + options.outputFile);
-  }
-
-  out.write(reinterpret_cast<const char *>(&header), sizeof(header));
-  for (const auto &asset : assets) {
-    assetc::LegacyAssetsFileEntry entry {};
-    entry.string_size = static_cast<std::uint64_t>(asset.bundleName.size());
-    entry.file_size = static_cast<std::uint64_t>(asset.rawBytes.size());
-
-    out.write(reinterpret_cast<const char *>(&entry), sizeof(entry));
-    if (!asset.bundleName.empty()) {
-      out.write(asset.bundleName.data(),
-                static_cast<std::streamsize>(asset.bundleName.size()));
-    }
-    if (!asset.rawBytes.empty()) {
-      out.write(reinterpret_cast<const char *>(asset.rawBytes.data()),
-                static_cast<std::streamsize>(asset.rawBytes.size()));
-    }
-  }
-
-  if (!out.good()) {
-    return Result<void *, String>::err("Failed while writing output file: " +
-                                       options.outputFile);
-  }
-
-  return Result<void *, String>::ok(nullptr);
-}
-
 Result<void *, String> writeBundleV2(const CompilerOptions &options,
                                      const Vector<CompiledAsset> &assets) {
   Vector<assetc::AssetEntry> entries;
@@ -661,6 +860,9 @@ Result<void *, String> writeBundleV2(const CompilerOptions &options,
   header.flags = static_cast<std::uint16_t>(assetc::BundleFlags::None);
   if (options.sign) {
     header.flags |= static_cast<std::uint16_t>(assetc::BundleFlags::Signed);
+  }
+  if (options.encrypt) {
+    header.flags |= static_cast<std::uint16_t>(assetc::BundleFlags::Encrypted);
   }
 
   if (options.sign) {
@@ -717,8 +919,10 @@ void printHelp(const OmegaCommon::Argv::Parser &parser) {
   std::cout << "Notes:\n"
             << "  Asset type inference is loaded from " << AssetTypesConfigFileName
             << " at runtime.\n"
-            << "  --compress and --encrypt are reserved for later phases and currently\n"
-            << "  return an error if requested.\n";
+            << "  Bundles are signed and encrypted by default.\n"
+            << "  When no --key-file is provided, " << ProgramName
+            << " will create or reuse a companion key file at <output>.key.\n"
+            << "  --compress is reserved for a later phase and currently returns an error.\n";
 }
 
 void printVerboseAsset(const CompiledAsset &asset) {
@@ -739,14 +943,9 @@ Result<void *, String> validateOptions(const CompilerOptions &options) {
         "Compression is planned for a later asset pipeline phase and is not implemented yet.");
   }
 
-  if (options.encrypt || !options.keyFile.empty() || options.keyPassphrase) {
+  if (options.keyPassphrase) {
     return Result<void *, String>::err(
-        "Encryption is planned for a later asset pipeline phase and is not implemented yet.");
-  }
-
-  if (options.legacy && options.sign) {
-    return Result<void *, String>::err(
-        "--sign cannot be combined with --legacy because the v1 format has no hash metadata.");
+        "Passphrase-derived bundle keys are not implemented yet. Use --key-file or the default companion key file.");
   }
 
   if (options.manifestFile.empty() && options.inputs.empty()) {
@@ -773,12 +972,12 @@ int main(int argc, char *const argv[]) {
   parser.addOption(options.appId, "application-id", {}, "id",
                    "Backward-compatible alias for --app-id.");
   parser.addFlag(options.compress, "compress", {}, "Enable compression (not implemented yet).");
-  parser.addFlag(options.encrypt, "encrypt", {}, "Enable encryption (not implemented yet).");
+  parser.addFlag(options.encrypt, "encrypt", {}, "Enable encryption (enabled by default).");
   parser.addOption(options.keyFile, "key-file", {}, "path",
-                   "Encryption key file (not implemented yet).");
+                   "Bundle key file. Defaults to a companion <output>.key file.");
   parser.addFlag(options.keyPassphrase, "key-passphrase", {},
                  "Derive an encryption key from a passphrase (not implemented yet).");
-  parser.addFlag(options.sign, "sign", {}, "Compute and embed the bundle hash.");
+  parser.addFlag(options.sign, "sign", {}, "Compute and embed the bundle hash (enabled by default).");
   parser.addMultiOption(options.typeOverrides, "type", {}, "name=type",
                         "Override the inferred asset type for a specific asset.");
   parser.addMultiOption(options.stripPrefixes, "strip-prefix", {}, "prefix",
@@ -787,8 +986,6 @@ int main(int argc, char *const argv[]) {
                    "Read asset entries from a manifest file.");
   parser.addOption(options.assetTypesFile, "asset-types", {}, "file",
                    "Asset type JSON config path. Defaults to AssetTypes.json.");
-  parser.addFlag(options.legacy, "legacy", {},
-                 "Write the legacy v1 flat .pak format.");
   parser.addFlag(options.verbose, "verbose", "v",
                  "Print per-asset details while compiling.");
   parser.addPositional(options.inputs, "inputs", "Input asset files.", false);
@@ -835,6 +1032,21 @@ int main(int argc, char *const argv[]) {
               << std::endl;
   }
 
+  Optional<EncryptionKey> encryptionKey;
+  if (options.encrypt) {
+    auto resolvedKey = resolveEncryptionKey(options);
+    if (resolvedKey.isErr()) {
+      std::cerr << ProgramName << ": error: " << resolvedKey.error() << std::endl;
+      return 1;
+    }
+    if (options.verbose) {
+      auto keyPath =
+          options.keyFile.empty() ? bundleKeyPath(fs::path(options.outputFile)) : options.keyFile;
+      std::cout << "Using bundle key file: " << keyPath << std::endl;
+    }
+    encryptionKey = std::move(resolvedKey.value());
+  }
+
   Vector<CompiledAsset> assets;
   assets.reserve(gatheredInputs.value().size());
   std::unordered_map<String, String> seenAssetNames;
@@ -857,6 +1069,13 @@ int main(int argc, char *const argv[]) {
     }
 
     seenAssetNames[compiled.value().bundleName] = compiled.value().declaredPath;
+    if (options.encrypt) {
+      auto encrypted = encryptCompiledAsset(compiled.value(), *encryptionKey);
+      if (encrypted.isErr()) {
+        std::cerr << ProgramName << ": error: " << encrypted.error() << std::endl;
+        return 1;
+      }
+    }
     if (options.verbose) {
       printVerboseAsset(compiled.value());
     }
@@ -874,8 +1093,7 @@ int main(int argc, char *const argv[]) {
     }
   }
 
-  auto writeResult = options.legacy ? writeLegacyBundle(options, assets)
-                                    : writeBundleV2(options, assets);
+  auto writeResult = writeBundleV2(options, assets);
   if (writeResult.isErr()) {
     std::cerr << ProgramName << ": error: " << writeResult.error() << std::endl;
     return 1;
@@ -883,7 +1101,7 @@ int main(int argc, char *const argv[]) {
 
   std::cout << ProgramName << ": wrote " << assets.size() << " asset"
             << (assets.size() == 1 ? "" : "s") << " to " << options.outputFile
-            << (options.legacy ? " (legacy v1 format)" : " (bundle v2 format)")
+            << " (bundle v2 format)"
             << std::endl;
   return 0;
 }

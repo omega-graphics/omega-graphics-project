@@ -2,7 +2,7 @@
 API
 ===
 
-This page documents every public class, struct, and free function in OmegaWTK.
+
 All symbols live in the ``OmegaWTK`` namespace unless otherwise noted. Pull in
 the relevant headers as shown in each section, or include the top-level
 umbrella header::
@@ -1610,7 +1610,7 @@ All animation types live in ``OmegaWTK::Composition``.
     +-----------------------+-----------------------------------------------+-----------+
     | ``iterations``        | How many times to repeat (``INFINITY`` loops).| ``1.0``   |
     +-----------------------+-----------------------------------------------+-----------+
-    | ``fillMode``          | ``None``, ``Forwards``, ``Backwards``,        | ``Forwards``|
+    | ``fillMode``          | ``None``, ``Forwards``, ``Backwards``,        |``Forwards``|
     |                       | ``Both``.                                     |           |
     +-----------------------+-----------------------------------------------+-----------+
     | ``direction``         | ``Normal``, ``Reverse``, ``Alternate``,       | ``Normal``|
