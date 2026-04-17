@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cstdio>
 #include <d3d12.h>
+#include <limits>
 #include <memory>
 
 #include <Windows.h>
@@ -32,27 +33,187 @@ _NAMESPACE_BEGIN_
 
 struct GTED3D12Device : public GTEDevice {
     Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+    bool isUMA = false;
     const void * native() override {
         return (const void *)adapter.Get();
     }
-    GTED3D12Device(GTEDevice::Type type,const char *name,GTEDeviceFeatures & features,IDXGIAdapter1 *adapter) : GTEDevice(type,name,features),adapter(adapter){
+    GTED3D12Device(GTEDevice::Type type,const char *name,GTEDeviceFeatures & features,IDXGIAdapter1 *adapter,bool isUMA_)
+        : GTEDevice(type,name,features),adapter(adapter),isUMA(isUMA_) {
 
     };
+    GTEDeviceMemoryBudget queryMemoryBudget() override {
+        GTEDeviceMemoryBudget out;
+        out.unifiedMemory = isUMA;
+
+        DXGI_ADAPTER_DESC1 desc{};
+        adapter->GetDesc1(&desc);
+        out.dedicatedVideoMemory = isUMA ? 0ULL : (uint64_t)desc.DedicatedVideoMemory;
+
+        ComPtr<IDXGIAdapter3> adapter3;
+        if(SUCCEEDED(adapter.As(&adapter3))){
+            DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+            DXGI_MEMORY_SEGMENT_GROUP segment = isUMA
+                ? DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL
+                : DXGI_MEMORY_SEGMENT_GROUP_LOCAL;
+            if(SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, segment, &info))){
+                uint64_t used = info.CurrentUsage;
+                uint64_t budget = info.Budget;
+                out.availableVideoMemory = (budget > used) ? (budget - used) : 0;
+            }
+        }
+        return out;
+    }
     ~GTED3D12Device() = default;
 };
 
-static bool detectDXRSupport(IDXGIAdapter1 *adapter){
+static GTEDeviceFeatures queryDeviceFeatures(IDXGIAdapter1 *adapter, bool *outIsUMA){
+    GTEDeviceFeatures features {};
+    if(outIsUMA) *outIsUMA = false;
+
     ComPtr<ID3D12Device5> tmpDevice;
     HRESULT hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&tmpDevice));
     if(FAILED(hr) || !tmpDevice){
-        return false;
+        return features;
     }
-    D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 {};
-    hr = tmpDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5));
-    if(FAILED(hr)){
-        return false;
+
+    // ── OPTIONS ─────────────────────────────────────────────
+    D3D12_FEATURE_DATA_D3D12_OPTIONS opts{};
+    if(SUCCEEDED(tmpDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &opts, sizeof(opts)))){
+        if(opts.DoublePrecisionFloatShaderOps)
+            features.flags |= GTEDEVICE_FEATURE_SHADER_FLOAT64;
+        if(opts.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_3)
+            features.flags |= GTEDEVICE_FEATURE_DESCRIPTOR_INDEXING;
+        if(opts.ConservativeRasterizationTier >= D3D12_CONSERVATIVE_RASTERIZATION_TIER_1)
+            features.flags |= GTEDEVICE_FEATURE_CONSERVATIVE_RASTERIZATION;
     }
-    return opts5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0;
+
+    // ── OPTIONS1 (Int64) ────────────────────────────────────
+    D3D12_FEATURE_DATA_D3D12_OPTIONS1 opts1{};
+    if(SUCCEEDED(tmpDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &opts1, sizeof(opts1)))){
+        if(opts1.Int64ShaderOps)
+            features.flags |= GTEDEVICE_FEATURE_SHADER_INT64;
+    }
+
+    // ── OPTIONS3 (Barycentrics) ─────────────────────────────
+    D3D12_FEATURE_DATA_D3D12_OPTIONS3 opts3{};
+    if(SUCCEEDED(tmpDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &opts3, sizeof(opts3)))){
+        if(opts3.BarycentricsSupported)
+            features.flags |= GTEDEVICE_FEATURE_SHADER_BARYCENTRIC;
+    }
+
+    // ── OPTIONS4 (Native 16-bit shader ops) ─────────────────
+    D3D12_FEATURE_DATA_D3D12_OPTIONS4 opts4{};
+    if(SUCCEEDED(tmpDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS4, &opts4, sizeof(opts4)))){
+        if(opts4.Native16BitShaderOpsSupported){
+            features.flags |= GTEDEVICE_FEATURE_SHADER_FLOAT16;
+            features.flags |= GTEDEVICE_FEATURE_SHADER_INT16;
+        }
+    }
+
+    // ── OPTIONS5 (Raytracing) ───────────────────────────────
+    D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5{};
+    if(SUCCEEDED(tmpDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5)))
+       && opts5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0){
+        features.flags |= GTEDEVICE_FEATURE_RAYTRACING;
+    }
+
+    // ── OPTIONS6 (Variable Rate Shading) ────────────────────
+#ifdef D3D12_FEATURE_D3D12_OPTIONS6
+    D3D12_FEATURE_DATA_D3D12_OPTIONS6 opts6{};
+    if(SUCCEEDED(tmpDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS6, &opts6, sizeof(opts6)))){
+        if(opts6.VariableShadingRateTier >= D3D12_VARIABLE_SHADING_RATE_TIER_1)
+            features.flags |= GTEDEVICE_FEATURE_VARIABLE_RATE_SHADING;
+    }
+#endif
+
+    // ── OPTIONS7 (Mesh shaders) ─────────────────────────────
+#ifdef D3D12_FEATURE_D3D12_OPTIONS7
+    D3D12_FEATURE_DATA_D3D12_OPTIONS7 opts7{};
+    if(SUCCEEDED(tmpDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &opts7, sizeof(opts7)))){
+        if(opts7.MeshShaderTier >= D3D12_MESH_SHADER_TIER_1)
+            features.flags |= GTEDEVICE_FEATURE_MESH_SHADER;
+    }
+#endif
+
+    // ── ARCHITECTURE (UMA) ──────────────────────────────────
+    D3D12_FEATURE_DATA_ARCHITECTURE arch{};
+    arch.NodeIndex = 0;
+    if(SUCCEEDED(tmpDevice->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &arch, sizeof(arch)))){
+        if(outIsUMA) *outIsUMA = arch.UMA;
+    }
+
+    // ── SHADER_MODEL ────────────────────────────────────────
+    D3D12_FEATURE_DATA_SHADER_MODEL smQuery{};
+    smQuery.HighestShaderModel = D3D_SHADER_MODEL_6_7;
+    if(SUCCEEDED(tmpDevice->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &smQuery, sizeof(smQuery)))){
+        switch(smQuery.HighestShaderModel){
+            case D3D_SHADER_MODEL_6_7: features.shaderModel = GTEDeviceFeatures::ShaderModel::SM_6_7; break;
+            case D3D_SHADER_MODEL_6_6: features.shaderModel = GTEDeviceFeatures::ShaderModel::SM_6_6; break;
+            case D3D_SHADER_MODEL_6_5: features.shaderModel = GTEDeviceFeatures::ShaderModel::SM_6_5; break;
+            case D3D_SHADER_MODEL_6_4: features.shaderModel = GTEDeviceFeatures::ShaderModel::SM_6_4; break;
+            case D3D_SHADER_MODEL_6_0: features.shaderModel = GTEDeviceFeatures::ShaderModel::SM_6_0; break;
+            default:                    features.shaderModel = GTEDeviceFeatures::ShaderModel::SM_5_1; break;
+        }
+    }
+
+    // ── Always-true flags per D3D12 feature level 11_0+ ─────
+    features.flags |= GTEDEVICE_FEATURE_INDEPENDENT_BLEND;
+    features.flags |= GTEDEVICE_FEATURE_DUAL_SOURCE_BLENDING;
+    features.flags |= GTEDEVICE_FEATURE_DEPTH_CLAMP;
+    features.flags |= GTEDEVICE_FEATURE_DEPTH_BIAS_CLAMP;
+    features.flags |= GTEDEVICE_FEATURE_FILL_MODE_NON_SOLID;
+    features.flags |= GTEDEVICE_FEATURE_SAMPLER_ANISOTROPY;
+    features.flags |= GTEDEVICE_FEATURE_MULTI_DRAW_INDIRECT;
+    features.flags |= GTEDEVICE_FEATURE_DRAW_INDIRECT_FIRST_INSTANCE;
+    features.flags |= GTEDEVICE_FEATURE_GEOMETRY_SHADER;
+    features.flags |= GTEDEVICE_FEATURE_TESSELLATION_SHADER;
+    features.flags |= GTEDEVICE_FEATURE_TIMESTAMP_QUERIES;
+    features.flags |= GTEDEVICE_FEATURE_TEXTURE_COMPRESSION_BC;
+    // WIDE_LINES, ETC2, ASTC: unsupported on D3D12.
+
+    // ── MSAA ────────────────────────────────────────────────
+    uint8_t maxSamples = 1;
+    for(UINT n : {32u, 16u, 8u, 4u, 2u}){
+        D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS ms {};
+        ms.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        ms.SampleCount = n;
+        ms.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
+        if(SUCCEEDED(tmpDevice->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &ms, sizeof(ms)))
+           && ms.NumQualityLevels > 0){
+            maxSamples = (uint8_t)n;
+            break;
+        }
+    }
+    features.maxMSAASamples = maxSamples;
+
+    // ── Limits (D3D12 spec constants) ───────────────────────
+    features.maxTextureDimension2D   = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
+    features.maxTextureDimension3D   = D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION;
+    features.maxTextureDimensionCube = D3D12_REQ_TEXTURECUBE_DIMENSION;
+
+    features.maxComputeWorkGroupSizeX       = D3D12_CS_THREAD_GROUP_MAX_X;
+    features.maxComputeWorkGroupSizeY       = D3D12_CS_THREAD_GROUP_MAX_Y;
+    features.maxComputeWorkGroupSizeZ       = D3D12_CS_THREAD_GROUP_MAX_Z;
+    features.maxComputeWorkGroupInvocations = D3D12_CS_THREAD_GROUP_MAX_THREADS_PER_GROUP;
+    // TGSM: 8192 32-bit scalar registers == 32 KB per threadgroup.
+    features.maxComputeSharedMemorySize     = D3D12_CS_TGSM_REGISTER_COUNT * 4u;
+
+    features.maxSamplerAnisotropy = 16;  // D3D12 requires exactly 16 for anisotropic sampling.
+    // D3D12 has no hard per-buffer cap — bounded by VRAM / process address space.
+    features.maxBufferSize = (std::numeric_limits<uint64_t>::max)();
+
+    // ── Timestamp period ────────────────────────────────────
+    D3D12_COMMAND_QUEUE_DESC cqDesc{};
+    cqDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    ComPtr<ID3D12CommandQueue> cq;
+    if(SUCCEEDED(tmpDevice->CreateCommandQueue(&cqDesc, IID_PPV_ARGS(&cq)))){
+        UINT64 freq = 0;
+        if(SUCCEEDED(cq->GetTimestampFrequency(&freq)) && freq > 0){
+            features.timestampPeriod = 1.0e9f / (float)freq;
+        }
+    }
+
+    return features;
 }
 
 OmegaCommon::Vector<SharedHandle<GTEDevice>> enumerateDevices(){
@@ -66,16 +227,18 @@ OmegaCommon::Vector<SharedHandle<GTEDevice>> enumerateDevices(){
                                                                           IID_PPV_ARGS(&adapter)));i++){
         adapter->GetDesc1(&desc);
         CAtlString atlString(desc.Description);
-        GTEDeviceFeatures features {detectDXRSupport(adapter)};
-        devs.emplace_back(SharedHandle<GTEDevice>(new GTED3D12Device {GTEDevice::Discrete,atlString.GetBuffer(),features,adapter}));
+        bool isUMA = false;
+        GTEDeviceFeatures features = queryDeviceFeatures(adapter, &isUMA);
+        devs.emplace_back(SharedHandle<GTEDevice>(new GTED3D12Device {GTEDevice::Discrete,atlString.GetBuffer(),features,adapter,isUMA}));
     }
 
     for(unsigned i = 0;SUCCEEDED(dxgi_factory->EnumAdapterByGpuPreference(i,DXGI_GPU_PREFERENCE_MINIMUM_POWER,
                                                                           IID_PPV_ARGS(&adapter)));i++){
         adapter->GetDesc1(&desc);
         CAtlString atlString(desc.Description);
-        GTEDeviceFeatures features {detectDXRSupport(adapter)};
-        devs.emplace_back(SharedHandle<GTEDevice>(new GTED3D12Device {GTEDevice::Integrated,atlString.GetBuffer(),features,adapter}));
+        bool isUMA = false;
+        GTEDeviceFeatures features = queryDeviceFeatures(adapter, &isUMA);
+        devs.emplace_back(SharedHandle<GTEDevice>(new GTED3D12Device {GTEDevice::Integrated,atlString.GetBuffer(),features,adapter,isUMA}));
     }
 
     return devs;

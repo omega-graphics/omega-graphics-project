@@ -287,6 +287,21 @@ Query all fields in `GEMetal.mm` `enumerateDevices()` using `MTLDevice` properti
 
 **Files:** `gte/src/metal/GEMetal.mm`
 
+Note: 
+                                               
+  1. maxComputeWorkGroupInvocations approximation. Metal has no dedicated "max
+  total invocations per threadgroup" property; I used                           
+  maxThreadsPerThreadgroup.width since the documented total matches the X-dim 
+  cap on every current Apple/Mac GPU. If you'd rather be conservative, swap for 
+  min(width, height, depth).                                                   
+  2. timestampPeriod = 1.0f when supported. This treats Metal MTLTimestamp at
+  stage boundaries as nanoseconds, which holds on Apple Silicon and modern Mac
+  GPUs. If you need a calibrated ns/tick (two-sample delta), that's a separate  
+  per-device calibration pass at engine-init time rather than a feature query.
+  3. Texture-dimension limits are hardcoded from Apple's feature-set tables     
+  rather than queried — Metal exposes no runtime property for them. If Apple  
+  ever bumps the limits on a new family, this table needs updating. 
+
 ### Phase 4: D3D12 backend
 
 Create a helper that takes `IDXGIAdapter1*` + a temporary `ID3D12Device`, calls `CheckFeatureSupport` for OPTIONS through OPTIONS7, SHADER_MODEL, and populates `GTEDeviceFeatures`. Replace the single `detectDXRSupport` call.
@@ -298,6 +313,40 @@ Create a helper that takes `IDXGIAdapter1*` + a temporary `ID3D12Device`, calls 
 Query `VkPhysicalDeviceFeatures`, `VkPhysicalDeviceLimits`, and relevant extension feature structs via `vkGetPhysicalDeviceFeatures2`. Populate all fields.
 
 **Files:** `gte/src/vulkan/GEVulkan.cpp`
+
+Notes:
+
+  1. maxBufferSize = UINT64_MAX. D3D12 has no documented per-buffer cap —       
+  resources are bounded by heap size / VRAM / process address space. The plan   
+  offered D3D12_REQ_RESOURCE_SIZE_IN_MEGABYTES_EXPRESSION_C_TERM (a formula     
+  constant, not a ceiling). UINT64_MAX is honest ("no platform-level cap") but
+  callers doing min(device.maxBufferSize, ...) need to treat it as "unlimited" —
+   if the engine expects a concrete byte count, tell me and I'll swap in
+  desc.DedicatedVideoMemory instead.
+  2. OPTIONS6/7 are #ifdef-guarded on the D3D12_FEATURE_D3D12_OPTIONS6/7 macros.
+   If the Windows SDK headers are older than ~19041 (May 2020), those blocks    
+  compile out silently and VRS/mesh-shader bits stay at 0. Worth verifying the
+  project's SDK floor and removing the guards if you're willing to hard-require 
+  a modern SDK.                                                               
+  3. Transient command-queue creation on every enumerateDevices() call just to
+  read GetTimestampFrequency. Cheap, but if it ever becomes a cold-start concern
+   the frequency is also retrievable by caching it on the device and querying
+  lazily on first use. 
+
+Notes: 
+
+maxBufferSize uses maxStorageBufferRange (per-binding range). The plan also
+   mentions VkPhysicalDeviceMaintenance3Properties.maxMemoryAllocationSize — the
+   allocation ceiling. Which one do you want exposed? They're different         
+  semantically. 
+
+  2. descriptorIndexing bit requires both runtimeDescriptorArray and          
+  shaderSampledImageArrayNonUniformIndexing. Many real devices support the
+  former without the latter on every resource type — if consumers need a looser 
+  check, we should split this into two flags. 
+
+  ANSWER: Split into two flags.
+   
 
 ### Phase 6: Update docs
 
@@ -315,8 +364,16 @@ Update `OmegaGTEView` proposal and any feature-gated code paths (e.g. accelerati
 
 1. **ShaderModel granularity** — The mapping from Metal GPU families and Vulkan versions to D3D12 shader model tiers is imprecise. Is a coarse enum sufficient, or do you want separate capability bits (e.g. `waveIntrinsics`, `nativeFP16`, `meshShader`) without the tier abstraction?
 
+ANSWER: Add Capability Bits. (GTEDEVICE_FEATURE_<FEATURE_NAME>)
+
 2. **Dedicated video memory** — On Apple Silicon / unified memory architectures, there's no meaningful "VRAM" number. Should this field exist, or should memory queries be a separate API (`GTEDevice::queryMemoryBudget()`)?
+
+ANSWER: Yes, Memory budgeting should be queried per device. (Not just for Apple Silcon but PC/Linux users may have multiple GPU's with different VRAM specs)
 
 3. **Feature gating strategy** — Today, raytracing is gated by compile-time `#ifdef OMEGAGTE_RAYTRACING_SUPPORTED`. Should new features (mesh shaders, VRS, etc.) follow the same pattern, or should we move toward runtime checks via `GTEDeviceFeatures` fields? Runtime checks are more flexible but require stub implementations.
 
+ANSWER: Remove compile-time macro. We should move toward runtime checks.
+
 4. **MSAA granularity** — Should we keep individual `msaaNx` bools, or switch to a bitmask / `maxSampleCount` integer? A single `uint8_t maxMSAASamples` (1, 2, 4, 8, 16, 32) would be more compact and extensible.
+
+ANSWER: Let's move to a single MSAASample count.

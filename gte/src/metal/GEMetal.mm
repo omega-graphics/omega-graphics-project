@@ -54,8 +54,150 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         const void * native() override {
             return device;
         }
+        GTEDeviceMemoryBudget queryMemoryBudget() override {
+            GTEDeviceMemoryBudget out;
+            if(@available(macOS 10.15, iOS 13.0, *)){
+                if(device.hasUnifiedMemory){
+                    out.unifiedMemory = true;
+                    out.dedicatedVideoMemory = 0;
+                    out.availableVideoMemory = 0;
+                    return out;
+                }
+            }
+            out.unifiedMemory = false;
+            out.dedicatedVideoMemory = (uint64_t)device.recommendedMaxWorkingSetSize;
+            uint64_t used = (uint64_t)device.currentAllocatedSize;
+            out.availableVideoMemory = (out.dedicatedVideoMemory > used)
+                ? (out.dedicatedVideoMemory - used) : 0;
+            return out;
+        }
         ~GTEMetalDevice() = default;
     };
+
+    static GTEDeviceFeatures queryMetalFeatures(id<MTLDevice> dev){
+        GTEDeviceFeatures features{};
+
+        // Family detection. MTLGPUFamily enum is available macOS 10.15+/iOS 13.0+.
+        bool appleSilicon = false, apple4 = false, apple6 = false, apple7 = false, mac2 = false;
+        if(@available(macOS 10.15, iOS 13.0, *)){
+            appleSilicon = [dev supportsFamily:MTLGPUFamilyApple1];
+            apple4 = [dev supportsFamily:MTLGPUFamilyApple4];
+            apple6 = [dev supportsFamily:MTLGPUFamilyApple6];
+            apple7 = [dev supportsFamily:MTLGPUFamilyApple7];
+            mac2   = [dev supportsFamily:MTLGPUFamilyMac2];
+        }
+
+        // ── Raytracing ─────────────────────────────────────────
+        if(dev.supportsRaytracing){
+            features.flags |= GTEDEVICE_FEATURE_RAYTRACING;
+        }
+
+        // ── Rasterizer / blend / sampler ───────────────────────
+        features.flags |= GTEDEVICE_FEATURE_INDEPENDENT_BLEND;
+        features.flags |= GTEDEVICE_FEATURE_DUAL_SOURCE_BLENDING;
+        features.flags |= GTEDEVICE_FEATURE_DEPTH_CLAMP;
+        features.flags |= GTEDEVICE_FEATURE_DEPTH_BIAS_CLAMP;
+        features.flags |= GTEDEVICE_FEATURE_FILL_MODE_NON_SOLID;
+        // WIDE_LINES, CONSERVATIVE_RASTERIZATION: unsupported on Metal.
+        features.flags |= GTEDEVICE_FEATURE_SAMPLER_ANISOTROPY;
+        features.flags |= GTEDEVICE_FEATURE_DRAW_INDIRECT_FIRST_INSTANCE;
+        if(apple4 || mac2){
+            features.flags |= GTEDEVICE_FEATURE_MULTI_DRAW_INDIRECT;
+        }
+
+        // ── Shader stages ──────────────────────────────────────
+        // GEOMETRY_SHADER: Metal has no geometry stage.
+        features.flags |= GTEDEVICE_FEATURE_TESSELLATION_SHADER;
+        if(apple7){
+            features.flags |= GTEDEVICE_FEATURE_MESH_SHADER;
+            features.flags |= GTEDEVICE_FEATURE_VARIABLE_RATE_SHADING;
+        }
+
+        // ── Fragment extras ────────────────────────────────────
+        if([dev respondsToSelector:@selector(supportsShaderBarycentricCoordinates)]){
+            if(dev.supportsShaderBarycentricCoordinates){
+                features.flags |= GTEDEVICE_FEATURE_SHADER_BARYCENTRIC;
+            }
+        }
+
+        // ── Bindless / argument buffers ────────────────────────
+        if(dev.argumentBuffersSupport == MTLArgumentBuffersTier2){
+            features.flags |= GTEDEVICE_FEATURE_DESCRIPTOR_INDEXING;
+        }
+
+        // ── Shader precision ───────────────────────────────────
+        // Metal natively supports half/short; no double or 64-bit int.
+        features.flags |= GTEDEVICE_FEATURE_SHADER_FLOAT16;
+        features.flags |= GTEDEVICE_FEATURE_SHADER_INT16;
+        // SHADER_FLOAT64, SHADER_INT64: Metal does not expose these in MSL.
+
+        // ── Texture compression ────────────────────────────────
+        bool bcSupported = false;
+        if([dev respondsToSelector:@selector(supportsBCTextureCompression)]){
+            bcSupported = dev.supportsBCTextureCompression;
+        } else {
+            bcSupported = mac2;
+        }
+        if(bcSupported) features.flags |= GTEDEVICE_FEATURE_TEXTURE_COMPRESSION_BC;
+        if(appleSilicon){
+            features.flags |= GTEDEVICE_FEATURE_TEXTURE_COMPRESSION_ETC2;
+            features.flags |= GTEDEVICE_FEATURE_TEXTURE_COMPRESSION_ASTC;
+        }
+
+        // ── Timestamp queries ──────────────────────────────────
+        if(@available(macOS 11.0, iOS 14.0, *)){
+            if([dev supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]){
+                features.flags |= GTEDEVICE_FEATURE_TIMESTAMP_QUERIES;
+                // Apple GPUs: MTLTimestamp at stage boundaries is already in nanoseconds.
+                features.timestampPeriod = 1.0f;
+            }
+        }
+
+        // ── MSAA ───────────────────────────────────────────────
+        uint8_t maxSamples = 1;
+        for(NSUInteger n : {(NSUInteger)32,(NSUInteger)16,(NSUInteger)8,(NSUInteger)4,(NSUInteger)2}){
+            if([dev supportsTextureSampleCount:n]){
+                maxSamples = (uint8_t)n;
+                break;
+            }
+        }
+        features.maxMSAASamples = maxSamples;
+
+        // ── Shader model (coarse mapping from GPU family) ──────
+        if(apple7)      features.shaderModel = GTEDeviceFeatures::ShaderModel::SM_6_5;
+        else if(apple6) features.shaderModel = GTEDeviceFeatures::ShaderModel::SM_6_4;
+        else if(apple4 || mac2) features.shaderModel = GTEDeviceFeatures::ShaderModel::SM_6_0;
+        else            features.shaderModel = GTEDeviceFeatures::ShaderModel::SM_5_0;
+
+        // ── Limits ─────────────────────────────────────────────
+        features.maxBufferSize = (uint64_t)dev.maxBufferLength;
+
+        MTLSize mtg = dev.maxThreadsPerThreadgroup;
+        features.maxComputeWorkGroupSizeX = (uint32_t)mtg.width;
+        features.maxComputeWorkGroupSizeY = (uint32_t)mtg.height;
+        features.maxComputeWorkGroupSizeZ = (uint32_t)mtg.depth;
+        // Metal does not expose a distinct "max total invocations" property;
+        // the X-dim cap matches the documented per-threadgroup total on all current GPUs.
+        features.maxComputeWorkGroupInvocations = (uint32_t)mtg.width;
+        features.maxComputeSharedMemorySize = (uint32_t)dev.maxThreadgroupMemoryLength;
+
+        features.maxSamplerAnisotropy = 16;
+
+        // Texture dimension limits from Metal feature-set tables.
+        if(apple4 || mac2){
+            features.maxTextureDimension2D   = 16384;
+            features.maxTextureDimensionCube = 16384;
+        } else if(appleSilicon){
+            features.maxTextureDimension2D   = 8192;
+            features.maxTextureDimensionCube = 8192;
+        } else {
+            features.maxTextureDimension2D   = 16384;
+            features.maxTextureDimensionCube = 16384;
+        }
+        features.maxTextureDimension3D = 2048;
+
+        return features;
+    }
 
     /// GTE Device Enumerate
     OmegaCommon::Vector<SharedHandle<GTEDevice>> enumerateDevices(){
@@ -63,11 +205,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         NSArray<id<MTLDevice>> *mtlDevices = MTLCopyAllDevices();
 
         for(id<MTLDevice> dev in mtlDevices){
-            GTEDeviceFeatures features {
-                    (bool)dev.supportsRaytracing,
-                    (bool)[dev supportsTextureSampleCount:4],
-                    (bool)[dev supportsTextureSampleCount:8]
-            };
+            GTEDeviceFeatures features = queryMetalFeatures(dev);
             GTEDevice::Type type;
             if(dev.lowPower){
                 type = GTEDevice::Integrated;

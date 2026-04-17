@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/claude-code-settings.json",
+  // "$schema": "https://json-schema.org/claude-code-settings.json",
   "statusLine": {
     "type": "command",
     "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/statusline.sh\""

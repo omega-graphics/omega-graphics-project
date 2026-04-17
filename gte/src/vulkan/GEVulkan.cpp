@@ -141,14 +141,239 @@ _NAMESPACE_BEGIN_
 
     struct GTEVulkanDevice : public GTEDevice {
         VkPhysicalDevice device;
-        GTEVulkanDevice(GTEDevice::Type type,const char *name,GTEDeviceFeatures & features,VkPhysicalDevice &device) : GTEDevice(type,name,features),device(device) {
+        bool hasMemoryBudgetExt = false;
+        GTEVulkanDevice(GTEDevice::Type type,const char *name,GTEDeviceFeatures & features,VkPhysicalDevice &device,bool hasMemoryBudgetExt_)
+            : GTEDevice(type,name,features),device(device),hasMemoryBudgetExt(hasMemoryBudgetExt_) {
 
         };
         const void * native() override{
             return (void *)device;
         }
+        GTEDeviceMemoryBudget queryMemoryBudget() override {
+            GTEDeviceMemoryBudget out;
+            VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+            budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+            VkPhysicalDeviceMemoryProperties2 props2{};
+            props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+            if(hasMemoryBudgetExt){
+                props2.pNext = &budget;
+            }
+            if(vkGetPhysicalDeviceMemoryProperties2 != nullptr){
+                vkGetPhysicalDeviceMemoryProperties2(device, &props2);
+            } else {
+                vkGetPhysicalDeviceMemoryProperties(device, &props2.memoryProperties);
+            }
+            const auto &mp = props2.memoryProperties;
+            uint64_t dedicated = 0;
+            bool sawDeviceLocal = false;
+            bool allDeviceLocalHostVisible = true;
+            for(uint32_t i = 0; i < mp.memoryHeapCount; ++i){
+                if(!(mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)) continue;
+                sawDeviceLocal = true;
+                bool heapHostVisible = false;
+                for(uint32_t j = 0; j < mp.memoryTypeCount; ++j){
+                    if(mp.memoryTypes[j].heapIndex == i
+                       && (mp.memoryTypes[j].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)){
+                        heapHostVisible = true;
+                        break;
+                    }
+                }
+                if(!heapHostVisible){
+                    allDeviceLocalHostVisible = false;
+                    dedicated += mp.memoryHeaps[i].size;
+                }
+            }
+            out.unifiedMemory = sawDeviceLocal && allDeviceLocalHostVisible;
+            out.dedicatedVideoMemory = out.unifiedMemory ? 0 : dedicated;
+            if(hasMemoryBudgetExt){
+                uint64_t avail = 0;
+                for(uint32_t i = 0; i < mp.memoryHeapCount; ++i){
+                    if(!(mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)) continue;
+                    uint64_t b = budget.heapBudget[i];
+                    uint64_t u = budget.heapUsage[i];
+                    avail += (b > u) ? (b - u) : 0;
+                }
+                out.availableVideoMemory = avail;
+            }
+            return out;
+        }
         ~GTEVulkanDevice() override = default;
     };
+
+    static GTEDeviceFeatures queryVulkanFeatures(VkPhysicalDevice dev,
+                                                 const VkPhysicalDeviceProperties &props,
+                                                 bool *outHasMemoryBudgetExt){
+        GTEDeviceFeatures features{};
+
+        std::unordered_set<std::string> extSet;
+        std::uint32_t devExtCount = 0;
+        if(vkEnumerateDeviceExtensionProperties(dev, nullptr, &devExtCount, nullptr) == VK_SUCCESS && devExtCount > 0){
+            OmegaCommon::Vector<VkExtensionProperties> devExts(devExtCount);
+            if(vkEnumerateDeviceExtensionProperties(dev, nullptr, &devExtCount, devExts.data()) == VK_SUCCESS){
+                for(auto &e : devExts){
+                    extSet.emplace(e.extensionName);
+                }
+            }
+        }
+        auto hasExt = [&](const char *name){ return extSet.find(name) != extSet.end(); };
+
+        bool hasAS            = hasExt(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        bool hasRTP           = hasExt(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+        bool hasConservative  = hasExt(VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
+        bool hasMemBudget     = hasExt(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+        if(outHasMemoryBudgetExt) *outHasMemoryBudgetExt = hasMemBudget;
+    #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+        bool hasMesh          = hasExt(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+    #else
+        bool hasMesh          = false;
+    #endif
+    #ifdef VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME
+        bool hasVRS           = hasExt(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
+    #else
+        bool hasVRS           = false;
+    #endif
+    #ifdef VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME
+        bool hasBary          = hasExt(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
+    #else
+        bool hasBary          = false;
+    #endif
+        bool hasDescIdxExt    = hasExt(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+
+        bool has11 = props.apiVersion >= VK_API_VERSION_1_1;
+    #ifdef VK_VERSION_1_2
+        bool has12 = props.apiVersion >= VK_API_VERSION_1_2;
+    #else
+        bool has12 = false;
+    #endif
+
+        VkPhysicalDeviceFeatures baseFeats{};
+
+        VkPhysicalDeviceDescriptorIndexingFeatures descIdxFeats{};
+        descIdxFeats.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+    #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+        VkPhysicalDeviceMeshShaderFeaturesEXT meshFeats{};
+        meshFeats.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+    #endif
+    #ifdef VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME
+        VkPhysicalDeviceFragmentShadingRateFeaturesKHR vrsFeats{};
+        vrsFeats.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR;
+    #endif
+    #ifdef VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME
+        VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR baryFeats{};
+        baryFeats.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR;
+    #endif
+    #ifdef VK_VERSION_1_2
+        VkPhysicalDeviceVulkan12Features v12Feats{};
+        v12Feats.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    #endif
+
+        if(has11 && vkGetPhysicalDeviceFeatures2 != nullptr){
+            VkPhysicalDeviceFeatures2 feats2{};
+            feats2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            feats2.pNext = nullptr;
+            auto chain = [&](void *s, void **pNextField){
+                *pNextField = feats2.pNext;
+                feats2.pNext = s;
+            };
+    #ifdef VK_VERSION_1_2
+            if(has12) chain(&v12Feats, (void**)&v12Feats.pNext);
+    #endif
+            if(hasDescIdxExt || has12) chain(&descIdxFeats, (void**)&descIdxFeats.pNext);
+    #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+            if(hasMesh) chain(&meshFeats, (void**)&meshFeats.pNext);
+    #endif
+    #ifdef VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME
+            if(hasVRS) chain(&vrsFeats, (void**)&vrsFeats.pNext);
+    #endif
+    #ifdef VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME
+            if(hasBary) chain(&baryFeats, (void**)&baryFeats.pNext);
+    #endif
+            vkGetPhysicalDeviceFeatures2(dev, &feats2);
+            baseFeats = feats2.features;
+        } else {
+            vkGetPhysicalDeviceFeatures(dev, &baseFeats);
+        }
+
+        // Capability bits — extension-gated features
+        if(hasAS && hasRTP)        features.flags |= GTEDEVICE_FEATURE_RAYTRACING;
+        if(hasConservative)        features.flags |= GTEDEVICE_FEATURE_CONSERVATIVE_RASTERIZATION;
+    #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+        if(hasMesh && meshFeats.meshShader)
+            features.flags |= GTEDEVICE_FEATURE_MESH_SHADER;
+    #endif
+    #ifdef VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME
+        if(hasVRS && vrsFeats.pipelineFragmentShadingRate)
+            features.flags |= GTEDEVICE_FEATURE_VARIABLE_RATE_SHADING;
+    #endif
+    #ifdef VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME
+        if(hasBary && baryFeats.fragmentShaderBarycentric)
+            features.flags |= GTEDEVICE_FEATURE_SHADER_BARYCENTRIC;
+    #endif
+        if(descIdxFeats.runtimeDescriptorArray
+           && descIdxFeats.shaderSampledImageArrayNonUniformIndexing)
+            features.flags |= GTEDEVICE_FEATURE_DESCRIPTOR_INDEXING;
+
+        // Capability bits — core VkPhysicalDeviceFeatures
+        if(baseFeats.independentBlend)           features.flags |= GTEDEVICE_FEATURE_INDEPENDENT_BLEND;
+        if(baseFeats.dualSrcBlend)               features.flags |= GTEDEVICE_FEATURE_DUAL_SOURCE_BLENDING;
+        if(baseFeats.depthClamp)                 features.flags |= GTEDEVICE_FEATURE_DEPTH_CLAMP;
+        if(baseFeats.depthBiasClamp)             features.flags |= GTEDEVICE_FEATURE_DEPTH_BIAS_CLAMP;
+        if(baseFeats.fillModeNonSolid)           features.flags |= GTEDEVICE_FEATURE_FILL_MODE_NON_SOLID;
+        if(baseFeats.wideLines)                  features.flags |= GTEDEVICE_FEATURE_WIDE_LINES;
+        if(baseFeats.samplerAnisotropy)          features.flags |= GTEDEVICE_FEATURE_SAMPLER_ANISOTROPY;
+        if(baseFeats.multiDrawIndirect)          features.flags |= GTEDEVICE_FEATURE_MULTI_DRAW_INDIRECT;
+        if(baseFeats.drawIndirectFirstInstance)  features.flags |= GTEDEVICE_FEATURE_DRAW_INDIRECT_FIRST_INSTANCE;
+        if(baseFeats.geometryShader)             features.flags |= GTEDEVICE_FEATURE_GEOMETRY_SHADER;
+        if(baseFeats.tessellationShader)         features.flags |= GTEDEVICE_FEATURE_TESSELLATION_SHADER;
+        if(baseFeats.shaderInt16)                features.flags |= GTEDEVICE_FEATURE_SHADER_INT16;
+        if(baseFeats.shaderFloat64)              features.flags |= GTEDEVICE_FEATURE_SHADER_FLOAT64;
+        if(baseFeats.shaderInt64)                features.flags |= GTEDEVICE_FEATURE_SHADER_INT64;
+        if(baseFeats.textureCompressionBC)       features.flags |= GTEDEVICE_FEATURE_TEXTURE_COMPRESSION_BC;
+        if(baseFeats.textureCompressionETC2)     features.flags |= GTEDEVICE_FEATURE_TEXTURE_COMPRESSION_ETC2;
+        if(baseFeats.textureCompressionASTC_LDR) features.flags |= GTEDEVICE_FEATURE_TEXTURE_COMPRESSION_ASTC;
+
+    #ifdef VK_VERSION_1_2
+        if(has12 && v12Feats.shaderFloat16)      features.flags |= GTEDEVICE_FEATURE_SHADER_FLOAT16;
+    #endif
+        if(props.limits.timestampComputeAndGraphics)
+            features.flags |= GTEDEVICE_FEATURE_TIMESTAMP_QUERIES;
+
+        // MSAA — highest bit set in framebufferColorSampleCounts.
+        VkSampleCountFlags colorCounts = props.limits.framebufferColorSampleCounts;
+        if(colorCounts & VK_SAMPLE_COUNT_64_BIT)      features.maxMSAASamples = 64;
+        else if(colorCounts & VK_SAMPLE_COUNT_32_BIT) features.maxMSAASamples = 32;
+        else if(colorCounts & VK_SAMPLE_COUNT_16_BIT) features.maxMSAASamples = 16;
+        else if(colorCounts & VK_SAMPLE_COUNT_8_BIT)  features.maxMSAASamples = 8;
+        else if(colorCounts & VK_SAMPLE_COUNT_4_BIT)  features.maxMSAASamples = 4;
+        else if(colorCounts & VK_SAMPLE_COUNT_2_BIT)  features.maxMSAASamples = 2;
+        else                                          features.maxMSAASamples = 1;
+
+        // Numeric limits.
+        features.maxTextureDimension2D         = props.limits.maxImageDimension2D;
+        features.maxTextureDimension3D         = props.limits.maxImageDimension3D;
+        features.maxTextureDimensionCube       = props.limits.maxImageDimensionCube;
+        features.maxBufferSize                 = props.limits.maxStorageBufferRange;
+        features.maxComputeWorkGroupSizeX      = props.limits.maxComputeWorkGroupSize[0];
+        features.maxComputeWorkGroupSizeY      = props.limits.maxComputeWorkGroupSize[1];
+        features.maxComputeWorkGroupSizeZ      = props.limits.maxComputeWorkGroupSize[2];
+        features.maxComputeWorkGroupInvocations= props.limits.maxComputeWorkGroupInvocations;
+        features.maxComputeSharedMemorySize    = props.limits.maxComputeSharedMemorySize;
+        features.maxSamplerAnisotropy          = (uint32_t)props.limits.maxSamplerAnisotropy;
+        features.timestampPeriod               = props.limits.timestampPeriod;
+
+        // Shader model — coarse mapping from Vulkan API version + features.
+        auto sm = GTEDeviceFeatures::ShaderModel::SM_5_0;
+        if(has11) sm = GTEDeviceFeatures::ShaderModel::SM_6_0;
+    #ifdef VK_VERSION_1_2
+        if(has12 && v12Feats.shaderFloat16) sm = GTEDeviceFeatures::ShaderModel::SM_6_4;
+    #endif
+    #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+        if(hasMesh && meshFeats.meshShader) sm = GTEDeviceFeatures::ShaderModel::SM_6_5;
+    #endif
+        features.shaderModel = sm;
+
+        return features;
+    }
 
     OmegaCommon::Vector<SharedHandle<GTEDevice>> enumerateDevices(){
         OmegaCommon::Vector<SharedHandle<GTEDevice>> devs;
@@ -180,21 +405,9 @@ _NAMESPACE_BEGIN_
             VkPhysicalDeviceProperties props;
             vkGetPhysicalDeviceProperties(dev,&props);
 
-            bool hasRaytracing = false;
-            std::uint32_t devExtCount = 0;
-            if(vkEnumerateDeviceExtensionProperties(dev, nullptr, &devExtCount, nullptr) == VK_SUCCESS && devExtCount > 0){
-                OmegaCommon::Vector<VkExtensionProperties> devExts(devExtCount);
-                if(vkEnumerateDeviceExtensionProperties(dev, nullptr, &devExtCount, devExts.data()) == VK_SUCCESS){
-                    bool hasAS = false, hasRTP = false;
-                    for(auto &e : devExts){
-                        if(std::strcmp(e.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) == 0) hasAS = true;
-                        if(std::strcmp(e.extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) == 0) hasRTP = true;
-                    }
-                    hasRaytracing = hasAS && hasRTP;
-                }
-            }
+            bool hasMemBudgetExt = false;
+            GTEDeviceFeatures features = queryVulkanFeatures(dev, props, &hasMemBudgetExt);
 
-            GTEDeviceFeatures features {hasRaytracing};
             GTEDevice::Type type = GTEDevice::Discrete;
             if(props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU){
                 type = GTEDevice::Discrete;
@@ -202,7 +415,7 @@ _NAMESPACE_BEGIN_
             else if(props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU){
                 type = GTEDevice::Integrated;
             }
-            devs.emplace_back(SharedHandle<GTEDevice>(new GTEVulkanDevice(type,props.deviceName,features,dev)));
+            devs.emplace_back(SharedHandle<GTEDevice>(new GTEVulkanDevice(type,props.deviceName,features,dev,hasMemBudgetExt)));
         }
         return devs;
     }
