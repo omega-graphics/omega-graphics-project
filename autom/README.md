@@ -13,10 +13,13 @@ Prerequisites:
 
 - (For Windows Users Only) Visual Studio 
 
+
+(UPDATE THIS README)
+
 #### Unix
 
 ```sh
-git clone https://github.com/omega-graphics/autom ./autom
+git clone https://github.com/omega-graphics/omega ./autom
 cd ./autom
 python3 ./init.py
 

@@ -4,7 +4,7 @@ Utils
 
 `repo-stats`
 
-A script that report the repo size in files, lines of code, and total size on disk.
+A script that reports repo file counts, line counts, module SourceCode/deps/total disk usage, and repository root total size.
 
 `repo-docs`
 

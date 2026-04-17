@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +53,7 @@ class ModuleConfig:
     root_dir: str
     src_dir: str = "src"
     include_dir: str = "include"
+    dependency_dirs: Sequence[str] = ()
 
 
 @dataclass
@@ -81,12 +83,17 @@ class BucketStats:
 @dataclass
 class ModuleStats:
     name: str
+    module_path: str
     src_path: str
     include_path: str
+    dependency_paths: List[str] = field(default_factory=list)
     implementation: BucketStats = field(default_factory=BucketStats)
     private_headers: BucketStats = field(default_factory=BucketStats)
     public_headers: BucketStats = field(default_factory=BucketStats)
     other: BucketStats = field(default_factory=BucketStats)
+    source_code_bytes: int = 0
+    deps_bytes: int = 0
+    total_bytes: int = 0
 
     def total_files(self) -> int:
         return (
@@ -117,18 +124,28 @@ class ModuleStats:
         self.private_headers.add_bucket(other.private_headers)
         self.public_headers.add_bucket(other.public_headers)
         self.other.add_bucket(other.other)
+        self.source_code_bytes += other.source_code_bytes
+        self.deps_bytes += other.deps_bytes
+        self.total_bytes += other.total_bytes
 
     def to_dict(self) -> Dict[str, object]:
         return {
             "name": self.name,
             "paths": {
+                "module": self.module_path,
                 "src": self.src_path,
                 "include": self.include_path,
+                "dependencies": self.dependency_paths,
             },
             "implementation": self.implementation.to_dict(),
             "private_headers": self.private_headers.to_dict(),
             "public_headers": self.public_headers.to_dict(),
             "other": self.other.to_dict(),
+            "sizes": {
+                "source_code_bytes": self.source_code_bytes,
+                "deps_bytes": self.deps_bytes,
+                "total_bytes": self.total_bytes,
+            },
             "totals": {
                 "files": self.total_files(),
                 "lines": self.total_lines(),
@@ -138,10 +155,10 @@ class ModuleStats:
 
 
 MODULES: Sequence[ModuleConfig] = (
-    ModuleConfig(name="OmegaCommon", root_dir="common"),
+    ModuleConfig(name="OmegaCommon", root_dir="common", dependency_dirs=("deps",)),
     ModuleConfig(name="OmegaGTE", root_dir="gte"),
-    ModuleConfig(name="OmegaWTK", root_dir="wtk"),
-    ModuleConfig(name="AUTOM", root_dir="autom"),
+    ModuleConfig(name="OmegaWTK", root_dir="wtk", dependency_dirs=("deps",)),
+    ModuleConfig(name="AUTOM", root_dir="autom", dependency_dirs=("deps",)),
     ModuleConfig(name="AQUA", root_dir="aqua", src_dir="src", include_dir="include"),
 )
 
@@ -198,6 +215,36 @@ def count_lines(path: Path) -> Tuple[int, int]:
     return total_lines, nonblank_lines
 
 
+def is_relative_to(path: Path, other: Path) -> bool:
+    try:
+        path.relative_to(other)
+        return True
+    except ValueError:
+        return False
+
+
+def normalize_directories(paths: Iterable[Path]) -> List[Path]:
+    unique_paths: List[Path] = []
+    for path in sorted((path for path in paths if path.is_dir()), key=lambda item: len(item.parts)):
+        if any(is_relative_to(path, existing_path) for existing_path in unique_paths):
+            continue
+        unique_paths.append(path)
+    return unique_paths
+
+
+def count_bytes(directory: Path) -> int:
+    if not directory.is_dir():
+        return 0
+
+    total_bytes = 0
+    for root, _, filenames in os.walk(directory, followlinks=False):
+        root_path = Path(root)
+        for filename in filenames:
+            total_bytes += (root_path / filename).stat(follow_symlinks=False).st_size
+
+    return total_bytes
+
+
 def classify_file(path: Path, public_header_tree: bool) -> str:
     extension = path.suffix.lower()
 
@@ -216,12 +263,22 @@ def scan_tree(directory: Path, stats: ModuleStats, public_header_tree: bool) -> 
 
 
 def scan_module(repo_root: Path, config: ModuleConfig) -> ModuleStats:
+    module_root = repo_root / config.root_dir
     src_path, include_path = resolve_module_paths(repo_root, config)
+    dependency_paths = [module_root / dependency_dir for dependency_dir in config.dependency_dirs]
+    normalized_dependency_paths = normalize_directories(dependency_paths)
     stats = ModuleStats(
         name=config.name,
+        module_path=str(module_root.relative_to(repo_root)),
         src_path=str(src_path.relative_to(repo_root)),
         include_path=str(include_path.relative_to(repo_root)),
+        dependency_paths=[
+            str(path.relative_to(repo_root)) for path in normalized_dependency_paths
+        ],
+        deps_bytes=sum(count_bytes(path) for path in normalized_dependency_paths),
+        total_bytes=count_bytes(module_root),
     )
+    stats.source_code_bytes = stats.total_bytes - stats.deps_bytes
 
     scan_tree(src_path, stats, public_header_tree=False)
     scan_tree(include_path, stats, public_header_tree=True)
@@ -229,14 +286,28 @@ def scan_module(repo_root: Path, config: ModuleConfig) -> ModuleStats:
 
 
 def build_total_stats(module_stats: Sequence[ModuleStats]) -> ModuleStats:
-    total = ModuleStats(name="TOTAL", src_path="-", include_path="-")
+    total = ModuleStats(name="TOTAL", module_path="-", src_path="-", include_path="-")
     for stats in module_stats:
         total.add_module(stats)
+    total.source_code_bytes = total.total_bytes - total.deps_bytes
     return total
 
 
 def format_number(value: int) -> str:
     return f"{value:,}"
+
+
+def format_bytes(value: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    size = float(value)
+    unit_index = 0
+    while size >= 1024.0 and unit_index < len(units) - 1:
+        size /= 1024.0
+        unit_index += 1
+
+    if unit_index == 0:
+        return f"{value} {units[unit_index]}"
+    return f"{size:.1f} {units[unit_index]}"
 
 
 def render_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
@@ -288,10 +359,25 @@ def build_line_rows(module_stats: Sequence[ModuleStats]) -> List[List[str]]:
     return rows
 
 
-def emit_text_report(repo_root: Path, module_stats: Sequence[ModuleStats]) -> None:
+def build_size_rows(module_stats: Sequence[ModuleStats]) -> List[List[str]]:
+    rows: List[List[str]] = []
+    for stats in module_stats:
+        rows.append(
+            [
+                stats.name,
+                format_bytes(stats.source_code_bytes),
+                format_bytes(stats.deps_bytes),
+                format_bytes(stats.total_bytes),
+            ]
+        )
+    return rows
+
+
+def emit_text_report(repo_root: Path, module_stats: Sequence[ModuleStats], repo_root_total_bytes: int) -> None:
     total_stats = build_total_stats(module_stats)
     summary_rows = build_count_rows([*module_stats, total_stats])
     line_rows = build_line_rows([*module_stats, total_stats])
+    size_rows = build_size_rows([*module_stats, total_stats])
 
     print("Omega Graphics Project repository stats")
     print("Repository root:", repo_root)
@@ -312,15 +398,30 @@ def emit_text_report(repo_root: Path, module_stats: Sequence[ModuleStats]) -> No
         )
     )
     print()
+    print("Disk usage")
+    print(
+        render_table(
+            ["Module", "SourceCode", "Deps", "Total"],
+            size_rows,
+        )
+    )
+    print()
+    print("Repository root total:", format_bytes(repo_root_total_bytes))
+    print()
     print("Scan roots")
     for stats in module_stats:
-        print(f"{stats.name}: src={stats.src_path} include={stats.include_path}")
+        dependency_paths = ", ".join(stats.dependency_paths) if stats.dependency_paths else "-"
+        print(
+            f"{stats.name}: module={stats.module_path} src={stats.src_path} "
+            f"include={stats.include_path} deps={dependency_paths}"
+        )
 
 
-def emit_json_report(repo_root: Path, module_stats: Sequence[ModuleStats]) -> None:
+def emit_json_report(repo_root: Path, module_stats: Sequence[ModuleStats], repo_root_total_bytes: int) -> None:
     total_stats = build_total_stats(module_stats)
     payload = {
         "repository_root": str(repo_root),
+        "repository_root_total_bytes": repo_root_total_bytes,
         "modules": [stats.to_dict() for stats in module_stats],
         "aggregate": total_stats.to_dict(),
     }
@@ -331,7 +432,7 @@ def emit_json_report(repo_root: Path, module_stats: Sequence[ModuleStats]) -> No
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Report source/header file counts and line counts for the Omega Graphics Project modules."
+            "Report source/header file counts, line counts, and disk usage for the Omega Graphics Project modules."
         )
     )
     parser.add_argument(
@@ -360,14 +461,15 @@ def main() -> int:
         else:
             repo_root = detect_repo_root(Path(__file__))
         module_stats = [scan_module(repo_root, config) for config in MODULES]
+        repo_root_total_bytes = count_bytes(repo_root)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     if args.json:
-        emit_json_report(repo_root, module_stats)
+        emit_json_report(repo_root, module_stats, repo_root_total_bytes)
     else:
-        emit_text_report(repo_root, module_stats)
+        emit_text_report(repo_root, module_stats, repo_root_total_bytes)
 
     return 0
 
