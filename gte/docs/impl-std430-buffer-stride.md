@@ -1,4 +1,5 @@
 # std430 Buffer Stride Fix — Vulkan Buffer Writer/Reader
+ (MERGE THIS FIX Into Our Existing GEBufferWriter/Reader so we keep API clean and cross-platform.)
 
 ## Problem
 
