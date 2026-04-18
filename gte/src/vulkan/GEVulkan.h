@@ -117,10 +117,8 @@ _NAMESPACE_BEGIN_
 
         SharedHandle<GESamplerState> makeSamplerState(const SamplerDescriptor &desc) override;
 
-        #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
         SharedHandle<GEBuffer> createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes) override;
         SharedHandle<GEAccelerationStruct> allocateAccelerationStructure(const GEAccelerationStructDescriptor &desc) override;
-        #endif
 
         static SharedHandle<OmegaGraphicsEngine> Create(SharedHandle<GTEDevice> & device);
 
@@ -275,7 +273,6 @@ _NAMESPACE_BEGIN_
         ~GEVulkanHeap();
     };
 
-    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
     class GEVulkanAccelerationStruct : public GEAccelerationStruct {
         bool nativeReleased_ = false;
     public:
@@ -319,7 +316,6 @@ _NAMESPACE_BEGIN_
             }
         }
     };
-    #endif
 
     class GEVulkanSamplerState : public GESamplerState {
         bool nativeReleased_ = false;

@@ -1634,6 +1634,71 @@ _NAMESPACE_BEGIN_
         return res;
     }
 
+    inline VkFormat convertVertexFormatToVk(VertexFormat fmt){
+        switch(fmt){
+            case VertexFormat::Float:    return VK_FORMAT_R32_SFLOAT;
+            case VertexFormat::Float2:   return VK_FORMAT_R32G32_SFLOAT;
+            case VertexFormat::Float3:   return VK_FORMAT_R32G32B32_SFLOAT;
+            case VertexFormat::Float4:   return VK_FORMAT_R32G32B32A32_SFLOAT;
+            case VertexFormat::Int:      return VK_FORMAT_R32_SINT;
+            case VertexFormat::Int2:     return VK_FORMAT_R32G32_SINT;
+            case VertexFormat::Int3:     return VK_FORMAT_R32G32B32_SINT;
+            case VertexFormat::Int4:     return VK_FORMAT_R32G32B32A32_SINT;
+            case VertexFormat::UInt:     return VK_FORMAT_R32_UINT;
+            case VertexFormat::UInt2:    return VK_FORMAT_R32G32_UINT;
+            case VertexFormat::UInt3:    return VK_FORMAT_R32G32B32_UINT;
+            case VertexFormat::UInt4:    return VK_FORMAT_R32G32B32A32_UINT;
+            case VertexFormat::UNorm8x4: return VK_FORMAT_R8G8B8A8_UNORM;
+            case VertexFormat::SNorm8x4: return VK_FORMAT_R8G8B8A8_SNORM;
+            case VertexFormat::UShort2:  return VK_FORMAT_R16G16_UINT;
+            case VertexFormat::UShort4:  return VK_FORMAT_R16G16B16A16_UINT;
+            case VertexFormat::Half2:    return VK_FORMAT_R16G16_SFLOAT;
+            case VertexFormat::Half4:    return VK_FORMAT_R16G16B16A16_SFLOAT;
+        }
+        return VK_FORMAT_UNDEFINED;
+    }
+
+    inline VkBlendFactor convertBlendFactorVk(BlendFactor f){
+        switch(f){
+            case BlendFactor::Zero:             return VK_BLEND_FACTOR_ZERO;
+            case BlendFactor::One:              return VK_BLEND_FACTOR_ONE;
+            case BlendFactor::SrcColor:         return VK_BLEND_FACTOR_SRC_COLOR;
+            case BlendFactor::InvSrcColor:      return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+            case BlendFactor::SrcAlpha:         return VK_BLEND_FACTOR_SRC_ALPHA;
+            case BlendFactor::InvSrcAlpha:      return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            case BlendFactor::DestColor:        return VK_BLEND_FACTOR_DST_COLOR;
+            case BlendFactor::InvDestColor:     return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+            case BlendFactor::DestAlpha:        return VK_BLEND_FACTOR_DST_ALPHA;
+            case BlendFactor::InvDestAlpha:     return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+            case BlendFactor::SrcAlphaSaturated:return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
+            case BlendFactor::Src1Color:        return VK_BLEND_FACTOR_SRC1_COLOR;
+            case BlendFactor::InvSrc1Color:     return VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR;
+            case BlendFactor::Src1Alpha:        return VK_BLEND_FACTOR_SRC1_ALPHA;
+            case BlendFactor::InvSrc1Alpha:     return VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
+        }
+        return VK_BLEND_FACTOR_ONE;
+    }
+
+    inline VkBlendOp convertBlendOperationVk(BlendOperation op){
+        switch(op){
+            case BlendOperation::Add:             return VK_BLEND_OP_ADD;
+            case BlendOperation::Subtract:        return VK_BLEND_OP_SUBTRACT;
+            case BlendOperation::ReverseSubtract: return VK_BLEND_OP_REVERSE_SUBTRACT;
+            case BlendOperation::Min:             return VK_BLEND_OP_MIN;
+            case BlendOperation::Max:             return VK_BLEND_OP_MAX;
+        }
+        return VK_BLEND_OP_ADD;
+    }
+
+    inline VkColorComponentFlags convertColorWriteMaskVk(uint8_t mask){
+        VkColorComponentFlags res = 0;
+        if(mask & ColorWriteRed)   res |= VK_COLOR_COMPONENT_R_BIT;
+        if(mask & ColorWriteGreen) res |= VK_COLOR_COMPONENT_G_BIT;
+        if(mask & ColorWriteBlue)  res |= VK_COLOR_COMPONENT_B_BIT;
+        if(mask & ColorWriteAlpha) res |= VK_COLOR_COMPONENT_A_BIT;
+        return res;
+    }
+
     inline VkStencilOp convertStencilOp(StencilOperation & op){
         VkStencilOp res;
         switch (op) {
@@ -1746,11 +1811,36 @@ _NAMESPACE_BEGIN_
         createInfo.renderPass = compatibilityRenderPass;
         createInfo.subpass = 0;
 
+        OmegaCommon::Vector<VkVertexInputBindingDescription>   vkBindings;
+        OmegaCommon::Vector<VkVertexInputAttributeDescription> vkAttributes;
+        if(!desc.vertexInputDescriptor.attributes.empty()){
+            vkBindings.reserve(desc.vertexInputDescriptor.bufferLayouts.size());
+            for(unsigned i = 0; i < desc.vertexInputDescriptor.bufferLayouts.size(); ++i){
+                const auto & bl = desc.vertexInputDescriptor.bufferLayouts[i];
+                VkVertexInputBindingDescription bd {};
+                bd.binding   = i;
+                bd.stride    = bl.stride;
+                bd.inputRate = (bl.stepFunction == VertexStepFunction::PerInstance)
+                                 ? VK_VERTEX_INPUT_RATE_INSTANCE
+                                 : VK_VERTEX_INPUT_RATE_VERTEX;
+                vkBindings.push_back(bd);
+            }
+            vkAttributes.reserve(desc.vertexInputDescriptor.attributes.size());
+            for(const auto & a : desc.vertexInputDescriptor.attributes){
+                VkVertexInputAttributeDescription ad {};
+                ad.binding  = a.bufferIndex;
+                ad.location = a.shaderLocation;
+                ad.format   = convertVertexFormatToVk(a.format);
+                ad.offset   = a.offset;
+                vkAttributes.push_back(ad);
+            }
+        }
+
         VkPipelineVertexInputStateCreateInfo vertexInputState {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-        vertexInputState.vertexBindingDescriptionCount = 0;
-        vertexInputState.pVertexBindingDescriptions = nullptr;
-        vertexInputState.vertexAttributeDescriptionCount = 0;
-        vertexInputState.pVertexAttributeDescriptions = nullptr;
+        vertexInputState.vertexBindingDescriptionCount   = (uint32_t)vkBindings.size();
+        vertexInputState.pVertexBindingDescriptions      = vkBindings.empty() ? nullptr : vkBindings.data();
+        vertexInputState.vertexAttributeDescriptionCount = (uint32_t)vkAttributes.size();
+        vertexInputState.pVertexAttributeDescriptions    = vkAttributes.empty() ? nullptr : vkAttributes.data();
 
         VkPipelineInputAssemblyStateCreateInfo inputAssemblyState {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         inputAssemblyState.primitiveRestartEnable = VK_FALSE;
@@ -1839,23 +1929,48 @@ _NAMESPACE_BEGIN_
         multisampleState.rasterizationSamples = sampleCount;
         multisampleState.sampleShadingEnable = VK_FALSE;
 
-        VkPipelineColorBlendAttachmentState colorBlendAttachment {};
-        colorBlendAttachment.blendEnable = VK_TRUE;
-        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
-        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
-                                              VK_COLOR_COMPONENT_G_BIT |
-                                              VK_COLOR_COMPONENT_B_BIT |
-                                              VK_COLOR_COMPONENT_A_BIT;
+        OmegaCommon::Vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments;
+        {
+            // One blend attachment per color target. When the descriptor supplies
+            // no blend state, the attachment is configured for opaque writes.
+            size_t attachmentCount = desc.colorBlendDescriptors.empty()
+                                         ? 1
+                                         : desc.colorBlendDescriptors.size();
+            colorBlendAttachments.resize(attachmentCount);
+            for(size_t i = 0; i < attachmentCount; ++i){
+                VkPipelineColorBlendAttachmentState & att = colorBlendAttachments[i];
+                att = {};
+                if(i < desc.colorBlendDescriptors.size()){
+                    const auto & b = desc.colorBlendDescriptors[i];
+                    att.blendEnable         = b.blendEnabled ? VK_TRUE : VK_FALSE;
+                    att.srcColorBlendFactor = convertBlendFactorVk(b.srcColorFactor);
+                    att.dstColorBlendFactor = convertBlendFactorVk(b.destColorFactor);
+                    att.colorBlendOp        = convertBlendOperationVk(b.colorOp);
+                    att.srcAlphaBlendFactor = convertBlendFactorVk(b.srcAlphaFactor);
+                    att.dstAlphaBlendFactor = convertBlendFactorVk(b.destAlphaFactor);
+                    att.alphaBlendOp        = convertBlendOperationVk(b.alphaOp);
+                    att.colorWriteMask      = convertColorWriteMaskVk(b.writeMask);
+                }
+                else {
+                    att.blendEnable = VK_FALSE;
+                    att.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+                    att.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+                    att.colorBlendOp = VK_BLEND_OP_ADD;
+                    att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+                    att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+                    att.alphaBlendOp = VK_BLEND_OP_ADD;
+                    att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                                         VK_COLOR_COMPONENT_G_BIT |
+                                         VK_COLOR_COMPONENT_B_BIT |
+                                         VK_COLOR_COMPONENT_A_BIT;
+                }
+            }
+        }
 
         VkPipelineColorBlendStateCreateInfo colorBlendState {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
         colorBlendState.logicOpEnable = VK_FALSE;
-        colorBlendState.attachmentCount = 1;
-        colorBlendState.pAttachments = &colorBlendAttachment;
+        colorBlendState.attachmentCount = (uint32_t)colorBlendAttachments.size();
+        colorBlendState.pAttachments = colorBlendAttachments.data();
 
         VkPipelineDynamicStateCreateInfo dynamicState {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
         OmegaCommon::Vector<VkDynamicState> dynamicStates = {
@@ -2361,8 +2476,6 @@ _NAMESPACE_BEGIN_
         return result;
     };
 
-    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
-
     SharedHandle<GEBuffer> GEVulkanEngine::createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes){
         struct VkAABB { float minX,minY,minZ,maxX,maxY,maxZ; };
         size_t totalSize = sizeof(VkAABB) * boxes.size();
@@ -2521,8 +2634,6 @@ _NAMESPACE_BEGIN_
         trackResource(result);
         return result;
     }
-
-    #endif
 
     void GEVulkanEngine::releaseAllTrackedResources(){
         for(auto & tracked : trackedResources){

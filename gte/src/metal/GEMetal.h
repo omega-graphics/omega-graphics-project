@@ -74,7 +74,6 @@ struct GEMetalSamplerState : public GESamplerState {
     GEMetalSamplerState(NSSmartPtr & samplerState);
 };
 
-#ifdef OMEGAGTE_RAYTRACING_SUPPORTED
 
 struct GEMetalAccelerationStruct : public GEAccelerationStruct {
     NSSmartPtr accelStruct;
@@ -84,8 +83,6 @@ struct GEMetalAccelerationStruct : public GEAccelerationStruct {
     SharedHandle<GEMetalBuffer> & scratchBuffer);
     ~GEMetalAccelerationStruct() override = default;
 };
-
-#endif
 
 
 SharedHandle<OmegaGraphicsEngine> CreateMetalEngine(SharedHandle<GTEDevice> & device);

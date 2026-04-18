@@ -57,8 +57,7 @@
             "url": "https://github.com/FFmpeg/FFmpeg.git",
             "dest": "$(third_party_dest)/ffmpeg/code",
             "platforms": [
-                "linux",
-                "android"
+                "linux"
             ]
         }
     ]

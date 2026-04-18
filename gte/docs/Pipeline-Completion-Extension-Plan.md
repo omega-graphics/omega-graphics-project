@@ -77,7 +77,7 @@ Ray tracing is covered separately in `Raytracing-Full-Implementation-Plan.md` an
 
 ## Extension 1: Render Pipeline Completion
 
-### 1.1 Vertex Input Layout in `RenderPipelineDescriptor`
+### 1.1 Vertex Input Layout in `RenderPipelineDescriptor` ✅ Implemented
 
 Today each backend hardcodes the vertex input layout during PSO creation. The descriptor should describe vertex attributes so pipelines can be created for arbitrary vertex formats.
 
@@ -142,7 +142,7 @@ VertexInputDescriptor vertexInputDescriptor;
 
 All three backends support this identically. No compatibility concerns.
 
-### 1.2 Blend State in `RenderPipelineDescriptor`
+### 1.2 Blend State in `RenderPipelineDescriptor` ✅ Implemented
 
 The current D3D12 backend hardcodes SrcAlpha/InvSrcAlpha blending. The descriptor should expose blend configuration.
 
@@ -216,7 +216,7 @@ OmegaCommon::Vector<BlendDescriptor> colorBlendDescriptors;
 
 All three backends support per-attachment blend state natively. D3D12 and Vulkan call it "independent blend"; Metal always supports it.
 
-### 1.3 Indexed Drawing
+### 1.3 Indexed Drawing ✅ Implemented
 
 **Add to `GECommandBuffer` (private, render pass section):**
 
@@ -249,7 +249,7 @@ void drawIndexedPolygons(PolygonType polygonType, unsigned indexCount,
 
 All three backends support indexed drawing identically. No compatibility concerns.
 
-### 1.4 Instanced Drawing
+### 1.4 Instanced Drawing ✅ Implemented
 
 **Add to `GECommandBuffer` (private):**
 
@@ -814,15 +814,15 @@ virtual void fillBuffer(SharedHandle<GEBuffer> & buffer,
 
 ---
 
-## Extension 5: Fix Existing Bugs
+## Extension 5: Fix Existing Bugs ✅ Implemented
 
 These are bugs found during the audit that should be fixed regardless of new features.
 
-### 5.1 Metal Region Copy
+### 5.1 Metal Region Copy ✅ Implemented
 
 `GEMetalCommandQueue.mm` copies entire mipmaps instead of the specified region when `copyTextureToTexture(src, dest, region, destCoord)` is called. The Metal blit encoder's `copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:` method should be used with the region parameters mapped to `MTLOrigin` + `MTLSize`.
 
-### 5.2 D3D12 Blend State Hardcoding
+### 5.2 D3D12 Blend State Hardcoding ✅ Implemented
 
 `GED3D12.cpp:790-799` hardcodes SrcAlpha / InvSrcAlpha blending for all render pipelines. This should be driven by `RenderPipelineDescriptor.colorBlendDescriptors` once Extension 1.2 is implemented. Until then, the hardcoded blend is a known limitation.
 
@@ -859,16 +859,16 @@ Extension 2.3 (threadgroup override) ── deferred
 ### Priority Tiers
 
 **Tier 1 — High Impact, Low Risk** (implement first):
-- 5.1, 5.2: Bug fixes
-- 1.3: Indexed drawing
-- 1.4: Instanced drawing
+- 5.1, 5.2: Bug fixes ✅
+- 1.3: Indexed drawing ✅
+- 1.4: Instanced drawing ✅
 - 4.1: Buffer-to-buffer copy
 - 4.2: Buffer ↔ texture transfers
 - 1.7: Additional polygon types
 
 **Tier 2 — High Impact, Medium Risk** (implement second):
-- 1.1: Vertex input layout (touches PSO creation on all backends)
-- 1.2: Blend state (touches PSO creation on all backends)
+- 1.1: Vertex input layout (touches PSO creation on all backends) ✅
+- 1.2: Blend state (touches PSO creation on all backends) ✅
 - 2.1: Indirect dispatch
 - 4.3: Mipmap generation
 

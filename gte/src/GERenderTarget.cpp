@@ -64,6 +64,27 @@ void GERenderTarget::CommandBuffer::drawPolygons(PolygonType polygonType, unsign
     commandBuffer->drawPolygons(polygonType,vertexCount,start);
 };
 
+void GERenderTarget::CommandBuffer::setIndexBuffer(SharedHandle<GEBuffer> & buffer, IndexType indexType){
+    commandBuffer->setIndexBuffer(buffer,indexType);
+};
+
+void GERenderTarget::CommandBuffer::drawIndexedPolygons(PolygonType polygonType, unsigned indexCount,
+                                                        size_t startIndex, int baseVertex){
+    commandBuffer->drawIndexedPolygons(polygonType,indexCount,startIndex,baseVertex);
+};
+
+void GERenderTarget::CommandBuffer::drawPolygonsInstanced(PolygonType polygonType, unsigned vertexCount,
+                                                          size_t start, unsigned instanceCount,
+                                                          unsigned firstInstance){
+    commandBuffer->drawPolygonsInstanced(polygonType,vertexCount,start,instanceCount,firstInstance);
+};
+
+void GERenderTarget::CommandBuffer::drawIndexedPolygonsInstanced(PolygonType polygonType, unsigned indexCount,
+                                                                 size_t startIndex, int baseVertex,
+                                                                 unsigned instanceCount, unsigned firstInstance){
+    commandBuffer->drawIndexedPolygonsInstanced(polygonType,indexCount,startIndex,baseVertex,instanceCount,firstInstance);
+};
+
 void GERenderTarget::CommandBuffer::setViewports(std::vector<GEViewport> viewports) {
     commandBuffer->setViewports(viewports);
 }

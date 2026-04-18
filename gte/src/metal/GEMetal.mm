@@ -269,14 +269,12 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                 static_cast<float>(NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer.handle()).length));
     };
 
-    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
 
     GEMetalAccelerationStruct::GEMetalAccelerationStruct(NSSmartPtr & accelStruct,
     SharedHandle<GEMetalBuffer> & scratchBuffer):accelStruct(accelStruct),scratchBuffer(scratchBuffer){
 
     }
 
-    #endif
 
     /// @brief Metal Buffer Reader/Writer.
 
@@ -739,6 +737,71 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         return res;
     }
 
+    inline MTLVertexFormat convertVertexFormatToMTL(VertexFormat fmt){
+        switch(fmt){
+            case VertexFormat::Float:    return MTLVertexFormatFloat;
+            case VertexFormat::Float2:   return MTLVertexFormatFloat2;
+            case VertexFormat::Float3:   return MTLVertexFormatFloat3;
+            case VertexFormat::Float4:   return MTLVertexFormatFloat4;
+            case VertexFormat::Int:      return MTLVertexFormatInt;
+            case VertexFormat::Int2:     return MTLVertexFormatInt2;
+            case VertexFormat::Int3:     return MTLVertexFormatInt3;
+            case VertexFormat::Int4:     return MTLVertexFormatInt4;
+            case VertexFormat::UInt:     return MTLVertexFormatUInt;
+            case VertexFormat::UInt2:    return MTLVertexFormatUInt2;
+            case VertexFormat::UInt3:    return MTLVertexFormatUInt3;
+            case VertexFormat::UInt4:    return MTLVertexFormatUInt4;
+            case VertexFormat::UNorm8x4: return MTLVertexFormatUChar4Normalized;
+            case VertexFormat::SNorm8x4: return MTLVertexFormatChar4Normalized;
+            case VertexFormat::UShort2:  return MTLVertexFormatUShort2;
+            case VertexFormat::UShort4:  return MTLVertexFormatUShort4;
+            case VertexFormat::Half2:    return MTLVertexFormatHalf2;
+            case VertexFormat::Half4:    return MTLVertexFormatHalf4;
+        }
+        return MTLVertexFormatFloat4;
+    }
+
+    inline MTLBlendFactor convertBlendFactorMTL(BlendFactor f){
+        switch(f){
+            case BlendFactor::Zero:             return MTLBlendFactorZero;
+            case BlendFactor::One:              return MTLBlendFactorOne;
+            case BlendFactor::SrcColor:         return MTLBlendFactorSourceColor;
+            case BlendFactor::InvSrcColor:      return MTLBlendFactorOneMinusSourceColor;
+            case BlendFactor::SrcAlpha:         return MTLBlendFactorSourceAlpha;
+            case BlendFactor::InvSrcAlpha:      return MTLBlendFactorOneMinusSourceAlpha;
+            case BlendFactor::DestColor:        return MTLBlendFactorDestinationColor;
+            case BlendFactor::InvDestColor:     return MTLBlendFactorOneMinusDestinationColor;
+            case BlendFactor::DestAlpha:        return MTLBlendFactorDestinationAlpha;
+            case BlendFactor::InvDestAlpha:     return MTLBlendFactorOneMinusDestinationAlpha;
+            case BlendFactor::SrcAlphaSaturated:return MTLBlendFactorSourceAlphaSaturated;
+            case BlendFactor::Src1Color:        return MTLBlendFactorSource1Color;
+            case BlendFactor::InvSrc1Color:     return MTLBlendFactorOneMinusSource1Color;
+            case BlendFactor::Src1Alpha:        return MTLBlendFactorSource1Alpha;
+            case BlendFactor::InvSrc1Alpha:     return MTLBlendFactorOneMinusSource1Alpha;
+        }
+        return MTLBlendFactorOne;
+    }
+
+    inline MTLBlendOperation convertBlendOperationMTL(BlendOperation op){
+        switch(op){
+            case BlendOperation::Add:             return MTLBlendOperationAdd;
+            case BlendOperation::Subtract:        return MTLBlendOperationSubtract;
+            case BlendOperation::ReverseSubtract: return MTLBlendOperationReverseSubtract;
+            case BlendOperation::Min:             return MTLBlendOperationMin;
+            case BlendOperation::Max:             return MTLBlendOperationMax;
+        }
+        return MTLBlendOperationAdd;
+    }
+
+    inline MTLColorWriteMask convertColorWriteMaskMTL(uint8_t mask){
+        MTLColorWriteMask res = MTLColorWriteMaskNone;
+        if(mask & ColorWriteRed)   res |= MTLColorWriteMaskRed;
+        if(mask & ColorWriteGreen) res |= MTLColorWriteMaskGreen;
+        if(mask & ColorWriteBlue)  res |= MTLColorWriteMaskBlue;
+        if(mask & ColorWriteAlpha) res |= MTLColorWriteMaskAlpha;
+        return res;
+    }
+
     class GEMetalEngine : public OmegaGraphicsEngine {
         NSSmartPtr metalDevice;
         SharedHandle<GTEShader> _loadShaderFromDesc(omegasl_shader *shaderDesc,bool runtime) override {
@@ -793,8 +856,6 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             
         };
 
-        #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
-
         SharedHandle<GEBuffer> createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes) override {
             auto buffer = std::dynamic_pointer_cast<GEMetalBuffer>(makeBuffer({BufferDescriptor::Upload,sizeof(MTLAxisAlignedBoundingBox) * boxes.size(),sizeof(MTLAxisAlignedBoundingBox)}));
             std::vector<MTLAxisAlignedBoundingBox> bb;
@@ -816,8 +877,6 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             auto buffer = std::dynamic_pointer_cast<GEMetalBuffer>(makeBuffer({BufferDescriptor::GPUOnly,sizes.buildScratchBufferSize}));
             return (SharedHandle<GEAccelerationStruct>)new GEMetalAccelerationStruct (handle,buffer);
         }
-        
-        #endif
 
         SharedHandle<GECommandQueue> makeCommandQueue(unsigned int maxBufferCount) override{
             metalDevice.assertExists();
@@ -1005,14 +1064,44 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 //            pipelineDesc.label = @"RENDER PIPELINE";
             pipelineDesc.vertexFunction = NSOBJECT_OBJC_BRIDGE(id<MTLFunction>,vertexFunc->function.handle());
             pipelineDesc.fragmentFunction = NSOBJECT_OBJC_BRIDGE(id<MTLFunction>,fragmentFunc->function.handle());
+
+            if(!desc.vertexInputDescriptor.attributes.empty()){
+                MTLVertexDescriptor *vDesc = [[MTLVertexDescriptor alloc] init];
+                for(unsigned i = 0; i < desc.vertexInputDescriptor.bufferLayouts.size(); ++i){
+                    const auto & bl = desc.vertexInputDescriptor.bufferLayouts[i];
+                    vDesc.layouts[i].stride = bl.stride;
+                    vDesc.layouts[i].stepFunction = (bl.stepFunction == VertexStepFunction::PerInstance)
+                                                        ? MTLVertexStepFunctionPerInstance
+                                                        : MTLVertexStepFunctionPerVertex;
+                    vDesc.layouts[i].stepRate = bl.stepRate;
+                }
+                for(const auto & a : desc.vertexInputDescriptor.attributes){
+                    vDesc.attributes[a.shaderLocation].format = convertVertexFormatToMTL(a.format);
+                    vDesc.attributes[a.shaderLocation].offset = a.offset;
+                    vDesc.attributes[a.shaderLocation].bufferIndex = a.bufferIndex;
+                }
+                pipelineDesc.vertexDescriptor = vDesc;
+            }
+
             pipelineDesc.colorAttachments[0].pixelFormat = pixelFormatToMTLPixelFormat(desc.colorPixelFormat, true);
-            pipelineDesc.colorAttachments[0].blendingEnabled = YES;
-            pipelineDesc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
-            pipelineDesc.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
-            pipelineDesc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-            pipelineDesc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-            pipelineDesc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
-            pipelineDesc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+            {
+                MTLRenderPipelineColorAttachmentDescriptor *ca = pipelineDesc.colorAttachments[0];
+                if(!desc.colorBlendDescriptors.empty()){
+                    const auto & b = desc.colorBlendDescriptors[0];
+                    ca.blendingEnabled             = b.blendEnabled ? YES : NO;
+                    ca.rgbBlendOperation           = convertBlendOperationMTL(b.colorOp);
+                    ca.alphaBlendOperation         = convertBlendOperationMTL(b.alphaOp);
+                    ca.sourceRGBBlendFactor        = convertBlendFactorMTL(b.srcColorFactor);
+                    ca.destinationRGBBlendFactor   = convertBlendFactorMTL(b.destColorFactor);
+                    ca.sourceAlphaBlendFactor      = convertBlendFactorMTL(b.srcAlphaFactor);
+                    ca.destinationAlphaBlendFactor = convertBlendFactorMTL(b.destAlphaFactor);
+                    ca.writeMask                   = convertColorWriteMaskMTL(b.writeMask);
+                }
+                else {
+                    ca.blendingEnabled = NO;
+                    ca.writeMask = MTLColorWriteMaskAll;
+                }
+            }
 
 
             MTLCullMode cullMode;

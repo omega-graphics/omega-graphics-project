@@ -5,7 +5,7 @@
 
 /// @name Standard *.omegasllib structs
 /// @{
-typedef const char * CString;
+using CString = const char *;
 
 struct omegasl_lib_header {
     unsigned name_length;
@@ -13,13 +13,13 @@ struct omegasl_lib_header {
     unsigned entry_count;
 };
 
-typedef enum : int {
+using omegasl_shader_layout_desc_io_mode = enum : int {
     OMEGASL_SHADER_DESC_IO_IN,
     OMEGASL_SHADER_DESC_IO_OUT,
     OMEGASL_SHADER_DESC_IO_INOUT
-} omegasl_shader_layout_desc_io_mode;
+};
 
-typedef enum : int {
+using omegasl_shader_layout_desc_type = enum : int {
     OMEGASL_SHADER_CONSTANT_DESC,
     OMEGASL_SHADER_BUFFER_DESC,
     OMEGASL_SHADER_TEXTURE1D_DESC,
@@ -33,21 +33,21 @@ typedef enum : int {
     OMEGASL_SHADER_STATIC_SAMPLER1D_DESC,
     OMEGASL_SHADER_STATIC_SAMPLER2D_DESC,
     OMEGASL_SHADER_STATIC_SAMPLER3D_DESC
-} omegasl_shader_layout_desc_type;
+};
 
-typedef enum : int {
+using omegasl_shader_static_sampler_filter = enum : int {
     OMEGASL_SHADER_SAMPLER_LINEAR_FILTER,
     OMEGASL_SHADER_SAMPLER_POINT_FILTER,
     OMEGASL_SHADER_SAMPLER_MAX_ANISOTROPY_FILTER,
     OMEGASL_SHADER_SAMPLER_MIN_ANISOTROPY_FILTER
-} omegasl_shader_static_sampler_filter;
+};
 
-typedef enum : int {
+using omegasl_shader_static_sampler_address_mode = enum : int {
     OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_CLAMPTOEDGE,
     OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_WRAP,
     OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_MIRROR,
     OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_MIRRORWRAP
-} omegasl_shader_static_sampler_address_mode;
+};
 
 struct omegasl_shader_static_sampler_desc {
     omegasl_shader_static_sampler_filter filter;
@@ -55,7 +55,7 @@ struct omegasl_shader_static_sampler_desc {
     unsigned int max_anisotropy;
 };
 
-typedef enum : int {
+using omegasl_data_type = enum : int {
     //Int Types
     OMEGASL_INT,
     OMEGASL_INT2,
@@ -91,7 +91,7 @@ typedef enum : int {
     OMEGASL_DOUBLE3,
     OMEGASL_DOUBLE4
 
-} omegasl_data_type;
+};
 
 struct omegasl_shader_constant_desc {
     omegasl_data_type type;
@@ -133,13 +133,13 @@ struct omegasl_shader_layout_desc {
     omegasl_shader_constant_desc constant_desc;
 };
 
-typedef enum : int {
+using omegasl_shader_type = enum : int {
     OMEGASL_SHADER_VERTEX,
     OMEGASL_SHADER_FRAGMENT,
     OMEGASL_SHADER_COMPUTE,
     OMEGASL_SHADER_HULL,
     OMEGASL_SHADER_DOMAIN
-} omegasl_shader_type;
+};
 
 
 struct omegasl_vertex_shader_param_desc {

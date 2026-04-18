@@ -495,6 +495,13 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
         }
 
         switch (desc.depthStencilAttachment.depthloadAction) {
+            case GERenderTarget::RenderPassDesc::DepthStencilAttachment::Discard : {
+                   ds_desc.DepthBeginningAccess.Type = ds_desc.StencilBeginningAccess.Type =
+                    D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_DISCARD;
+                if (!desc.multisampleResolve)
+                    ds_desc.DepthEndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD;
+                break;
+            }
             case GERenderPassDescriptor::DepthStencilAttachment::LoadAction::Load: {
                 ds_desc.DepthBeginningAccess.Type = ds_desc.StencilBeginningAccess.Type =
                     D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR;
@@ -777,18 +784,56 @@ void GED3D12CommandBuffer::setVertexBuffer(SharedHandle<GEBuffer> &buffer) {
     commandList->IASetVertexBuffers(0, 1, &view);
 };
 
+static D3D12_PRIMITIVE_TOPOLOGY d3d12TopologyForPolygonType(GERenderTarget::CommandBuffer::PolygonType polygonType) {
+    switch (polygonType) {
+        case GERenderTarget::CommandBuffer::Triangle:
+            return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        case GERenderTarget::CommandBuffer::TriangleStrip:
+            return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+    }
+    return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+}
+
 void GED3D12CommandBuffer::drawPolygons(RenderPassDrawPolygonType polygonType, unsigned int vertexCount,
                                         size_t startIdx) {
     assert(!inComputePass && "Cannot Draw Polygons while in Compute Pass");
-    D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-    if (polygonType == GECommandBuffer::RenderPassDrawPolygonType::Triangle) {
-        topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-    } else if (polygonType == GECommandBuffer::RenderPassDrawPolygonType::TriangleStrip) {
-        topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
-    };
-    commandList->IASetPrimitiveTopology(topology);
+    commandList->IASetPrimitiveTopology(d3d12TopologyForPolygonType(polygonType));
     commandList->DrawInstanced(vertexCount, 1, startIdx, 0);
 };
+
+void GED3D12CommandBuffer::setIndexBuffer(SharedHandle<GEBuffer> & buffer, RenderPassIndexType indexType) {
+    auto *b = (GED3D12Buffer *)buffer.get();
+    D3D12_INDEX_BUFFER_VIEW view;
+    view.BufferLocation = b->buffer->GetGPUVirtualAddress();
+    view.SizeInBytes = UINT(b->size());
+    view.Format = (indexType == RenderPassIndexType::UInt16) ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
+    commandList->IASetIndexBuffer(&view);
+}
+
+void GED3D12CommandBuffer::drawIndexedPolygons(RenderPassDrawPolygonType polygonType,
+                                               unsigned indexCount, size_t startIndex,
+                                               int baseVertex) {
+    assert(!inComputePass && "Cannot Draw Polygons while in Compute Pass");
+    commandList->IASetPrimitiveTopology(d3d12TopologyForPolygonType(polygonType));
+    commandList->DrawIndexedInstanced(indexCount, 1, UINT(startIndex), baseVertex, 0);
+}
+
+void GED3D12CommandBuffer::drawPolygonsInstanced(RenderPassDrawPolygonType polygonType,
+                                                 unsigned vertexCount, size_t startIdx,
+                                                 unsigned instanceCount, unsigned firstInstance) {
+    assert(!inComputePass && "Cannot Draw Polygons while in Compute Pass");
+    commandList->IASetPrimitiveTopology(d3d12TopologyForPolygonType(polygonType));
+    commandList->DrawInstanced(vertexCount, instanceCount, UINT(startIdx), firstInstance);
+}
+
+void GED3D12CommandBuffer::drawIndexedPolygonsInstanced(RenderPassDrawPolygonType polygonType,
+                                                        unsigned indexCount, size_t startIndex,
+                                                        int baseVertex, unsigned instanceCount,
+                                                        unsigned firstInstance) {
+    assert(!inComputePass && "Cannot Draw Polygons while in Compute Pass");
+    commandList->IASetPrimitiveTopology(d3d12TopologyForPolygonType(polygonType));
+    commandList->DrawIndexedInstanced(indexCount, instanceCount, UINT(startIndex), baseVertex, firstInstance);
+}
 
 void GED3D12CommandBuffer::finishRenderPass() {
     assert(inRenderPass && "");

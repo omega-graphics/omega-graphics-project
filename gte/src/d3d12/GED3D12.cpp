@@ -873,6 +873,71 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         return res;
     }
 
+    inline DXGI_FORMAT convertVertexFormatToDxgi(VertexFormat fmt){
+        switch(fmt){
+            case VertexFormat::Float:   return DXGI_FORMAT_R32_FLOAT;
+            case VertexFormat::Float2:  return DXGI_FORMAT_R32G32_FLOAT;
+            case VertexFormat::Float3:  return DXGI_FORMAT_R32G32B32_FLOAT;
+            case VertexFormat::Float4:  return DXGI_FORMAT_R32G32B32A32_FLOAT;
+            case VertexFormat::Int:     return DXGI_FORMAT_R32_SINT;
+            case VertexFormat::Int2:    return DXGI_FORMAT_R32G32_SINT;
+            case VertexFormat::Int3:    return DXGI_FORMAT_R32G32B32_SINT;
+            case VertexFormat::Int4:    return DXGI_FORMAT_R32G32B32A32_SINT;
+            case VertexFormat::UInt:    return DXGI_FORMAT_R32_UINT;
+            case VertexFormat::UInt2:   return DXGI_FORMAT_R32G32_UINT;
+            case VertexFormat::UInt3:   return DXGI_FORMAT_R32G32B32_UINT;
+            case VertexFormat::UInt4:   return DXGI_FORMAT_R32G32B32A32_UINT;
+            case VertexFormat::UNorm8x4: return DXGI_FORMAT_R8G8B8A8_UNORM;
+            case VertexFormat::SNorm8x4: return DXGI_FORMAT_R8G8B8A8_SNORM;
+            case VertexFormat::UShort2: return DXGI_FORMAT_R16G16_UINT;
+            case VertexFormat::UShort4: return DXGI_FORMAT_R16G16B16A16_UINT;
+            case VertexFormat::Half2:   return DXGI_FORMAT_R16G16_FLOAT;
+            case VertexFormat::Half4:   return DXGI_FORMAT_R16G16B16A16_FLOAT;
+        }
+        return DXGI_FORMAT_UNKNOWN;
+    }
+
+    inline D3D12_BLEND convertBlendFactor(BlendFactor f){
+        switch(f){
+            case BlendFactor::Zero:             return D3D12_BLEND_ZERO;
+            case BlendFactor::One:              return D3D12_BLEND_ONE;
+            case BlendFactor::SrcColor:         return D3D12_BLEND_SRC_COLOR;
+            case BlendFactor::InvSrcColor:      return D3D12_BLEND_INV_SRC_COLOR;
+            case BlendFactor::SrcAlpha:         return D3D12_BLEND_SRC_ALPHA;
+            case BlendFactor::InvSrcAlpha:      return D3D12_BLEND_INV_SRC_ALPHA;
+            case BlendFactor::DestColor:        return D3D12_BLEND_DEST_COLOR;
+            case BlendFactor::InvDestColor:     return D3D12_BLEND_INV_DEST_COLOR;
+            case BlendFactor::DestAlpha:        return D3D12_BLEND_DEST_ALPHA;
+            case BlendFactor::InvDestAlpha:     return D3D12_BLEND_INV_DEST_ALPHA;
+            case BlendFactor::SrcAlphaSaturated:return D3D12_BLEND_SRC_ALPHA_SAT;
+            case BlendFactor::Src1Color:        return D3D12_BLEND_SRC1_COLOR;
+            case BlendFactor::InvSrc1Color:     return D3D12_BLEND_INV_SRC1_COLOR;
+            case BlendFactor::Src1Alpha:        return D3D12_BLEND_SRC1_ALPHA;
+            case BlendFactor::InvSrc1Alpha:     return D3D12_BLEND_INV_SRC1_ALPHA;
+        }
+        return D3D12_BLEND_ONE;
+    }
+
+    inline D3D12_BLEND_OP convertBlendOperation(BlendOperation op){
+        switch(op){
+            case BlendOperation::Add:             return D3D12_BLEND_OP_ADD;
+            case BlendOperation::Subtract:        return D3D12_BLEND_OP_SUBTRACT;
+            case BlendOperation::ReverseSubtract: return D3D12_BLEND_OP_REV_SUBTRACT;
+            case BlendOperation::Min:             return D3D12_BLEND_OP_MIN;
+            case BlendOperation::Max:             return D3D12_BLEND_OP_MAX;
+        }
+        return D3D12_BLEND_OP_ADD;
+    }
+
+    inline UINT8 convertColorWriteMask(uint8_t mask){
+        UINT8 res = 0;
+        if(mask & ColorWriteRed)   res |= D3D12_COLOR_WRITE_ENABLE_RED;
+        if(mask & ColorWriteGreen) res |= D3D12_COLOR_WRITE_ENABLE_GREEN;
+        if(mask & ColorWriteBlue)  res |= D3D12_COLOR_WRITE_ENABLE_BLUE;
+        if(mask & ColorWriteAlpha) res |= D3D12_COLOR_WRITE_ENABLE_ALPHA;
+        return res;
+    }
+
     SharedHandle<GERenderPipelineState> GED3D12Engine::makeRenderPipelineState(RenderPipelineDescriptor &desc){
         auto & vertexFunc = desc.vertexFunc->internal;
         auto & fragmentFunc = desc.fragmentFunc->internal;
@@ -893,6 +958,35 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
             // so no IA vertex layout is required.
             inputLayoutDesc.NumElements = 0;
             inputLayoutDesc.pInputElementDescs = nullptr;
+        }
+        else if(!desc.vertexInputDescriptor.attributes.empty()){
+            // Descriptor-driven vertex input layout.
+            auto & vid = desc.vertexInputDescriptor;
+            for(auto & attr : vid.attributes){
+                D3D12_INPUT_ELEMENT_DESC el {};
+                el.SemanticName = "TEXCOORD";
+                el.SemanticIndex = attr.shaderLocation;
+                el.Format = convertVertexFormatToDxgi(attr.format);
+                el.InputSlot = attr.bufferIndex;
+                el.AlignedByteOffset = attr.offset;
+                VertexStepFunction step = VertexStepFunction::PerVertex;
+                unsigned stepRate = 0;
+                if(attr.bufferIndex < vid.bufferLayouts.size()){
+                    step = vid.bufferLayouts[attr.bufferIndex].stepFunction;
+                    stepRate = vid.bufferLayouts[attr.bufferIndex].stepRate;
+                }
+                if(step == VertexStepFunction::PerInstance){
+                    el.InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA;
+                    el.InstanceDataStepRate = stepRate;
+                }
+                else {
+                    el.InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+                    el.InstanceDataStepRate = 0;
+                }
+                inputs.push_back(el);
+            }
+            inputLayoutDesc.pInputElementDescs = inputs.data();
+            inputLayoutDesc.NumElements = (UINT)inputs.size();
         }
         else {
             ArrayRef<omegasl_vertex_shader_param_desc> inputDesc{vertexFunc.vertexShaderInputDesc.pParams,
@@ -951,15 +1045,39 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC d {};
         d.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-        d.BlendState.RenderTarget[0].BlendEnable = TRUE;
-        d.BlendState.RenderTarget[0].LogicOpEnable = FALSE;
-        d.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
-        d.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-        d.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
-        d.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-        d.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-        d.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-        d.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        {
+            // Honour per-attachment blend state from the descriptor.
+            // When the caller supplies more than one BlendDescriptor, enable
+            // independent per-target blending.
+            const auto & blendDescs = desc.colorBlendDescriptors;
+            d.BlendState.IndependentBlendEnable = blendDescs.size() > 1 ? TRUE : FALSE;
+            for(unsigned i = 0; i < 8; ++i){
+                auto & rt = d.BlendState.RenderTarget[i];
+                rt.LogicOpEnable = FALSE;
+                if(i < blendDescs.size()){
+                    const auto & b = blendDescs[i];
+                    rt.BlendEnable          = b.blendEnabled ? TRUE : FALSE;
+                    rt.SrcBlend             = convertBlendFactor(b.srcColorFactor);
+                    rt.DestBlend            = convertBlendFactor(b.destColorFactor);
+                    rt.BlendOp              = convertBlendOperation(b.colorOp);
+                    rt.SrcBlendAlpha        = convertBlendFactor(b.srcAlphaFactor);
+                    rt.DestBlendAlpha       = convertBlendFactor(b.destAlphaFactor);
+                    rt.BlendOpAlpha         = convertBlendOperation(b.alphaOp);
+                    rt.RenderTargetWriteMask = convertColorWriteMask(b.writeMask);
+                }
+                else {
+                    // No descriptor supplied → blending disabled, opaque write.
+                    rt.BlendEnable = FALSE;
+                    rt.SrcBlend = D3D12_BLEND_ONE;
+                    rt.DestBlend = D3D12_BLEND_ZERO;
+                    rt.BlendOp = D3D12_BLEND_OP_ADD;
+                    rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+                    rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+                    rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+                    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+                }
+            }
+        }
         d.NodeMask = d3d12_device->GetNodeCount();
         d.InputLayout = inputLayoutDesc;
         
@@ -1704,7 +1822,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         
 
         D3D12_FILTER filter;
-
+        /// TOOD: Handle all Filter Cases
         switch (desc.filter) {
             case SamplerDescriptor::Filter::Linear : {
                 filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;

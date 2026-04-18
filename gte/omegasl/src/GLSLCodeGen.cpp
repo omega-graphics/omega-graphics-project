@@ -89,17 +89,18 @@ namespace omegasl {
         }
 
     public:
-        explicit GLSLCodeGen(CodeGenOpts &opts,GLSLCodeOpts &glslCodeOpts): CodeGen(opts),glslCodeOpts(glslCodeOpts), shaderOut(fileOut){
+        explicit GLSLCodeGen(CodeGenOpts &opts,GLSLCodeOpts &glslCodeOpts): CodeGen(opts), shaderOut(fileOut),glslCodeOpts(glslCodeOpts){
             #ifdef TARGET_VULKAN
             compiler = shaderc_compiler_initialize();
             #endif
         }
         explicit GLSLCodeGen(CodeGenOpts &opts,GLSLCodeOpts & glslCodeOpts,std::ostringstream & stringOut):
-                CodeGen(opts), stringOut(std::move(stringOut)),shaderOut(this->stringOut),glslCodeOpts(glslCodeOpts){
+                CodeGen(opts),shaderOut(this->stringOut), stringOut(std::move(stringOut)),glslCodeOpts(glslCodeOpts){
 #ifdef TARGET_VULKAN
             compiler = shaderc_compiler_initialize();
 #endif
         }
+
         inline void writeTypeExpr(ast::TypeExpr *typeExpr,std::ostream & out) {
             auto t = typeResolver->resolveTypeWithExpr(typeExpr);
             if(t == ast::builtins::void_type){
@@ -1100,7 +1101,7 @@ namespace omegasl {
 
             #endif
         }
-        ~GLSLCodeGen(){
+        ~GLSLCodeGen() override{
 #ifdef TARGET_VULKAN
             shaderc_compiler_release(compiler);
 #endif

@@ -387,7 +387,7 @@ public:
     }
 
     void translateCoords(float x, float y, float z, GEViewport *viewport,
-                         float *x_result, float *y_result, float *z_result) {
+                         float *x_result, float *y_result, float *z_result) override {
         if (viewport != nullptr) {
             translateCoordsDefaultImpl(x, y, z, viewport, x_result, y_result, z_result);
         } else {

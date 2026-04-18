@@ -71,6 +71,17 @@ _NAMESPACE_BEGIN_
         void setStencilRef(unsigned int ref) override;
        
         void drawPolygons(RenderPassDrawPolygonType polygonType, unsigned int vertexCount, size_t startIdx) override;
+        void setIndexBuffer(SharedHandle<GEBuffer> & buffer, RenderPassIndexType indexType) override;
+        void drawIndexedPolygons(RenderPassDrawPolygonType polygonType,
+                                 unsigned indexCount, size_t startIndex,
+                                 int baseVertex) override;
+        void drawPolygonsInstanced(RenderPassDrawPolygonType polygonType,
+                                   unsigned vertexCount, size_t startIdx,
+                                   unsigned instanceCount, unsigned firstInstance) override;
+        void drawIndexedPolygonsInstanced(RenderPassDrawPolygonType polygonType,
+                                           unsigned indexCount, size_t startIndex,
+                                           int baseVertex, unsigned instanceCount,
+                                           unsigned firstInstance) override;
         void setViewports(std::vector<GEViewport> viewports) override;
         void setScissorRects(std::vector<GEScissorRect> scissorRects) override;
         void finishRenderPass() override;

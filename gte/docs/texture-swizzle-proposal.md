@@ -248,6 +248,12 @@ The existing `vulkan_metal_d3d12_format_translation_comparison.md` recommends vi
 
 1. **Should `TextureDescriptor` also carry a default swizzle?** This would bake the swizzle into the texture's primary view at creation time, avoiding per-bind overhead entirely for textures that are always sampled with the same remapping. Trade-off: less flexible, but cheaper for the common case.
 
+ANSWER: No, default swizzle.
+
 2. **OmegaSL syntax timing.** The `omegasl_texture_swizzle_desc` field in the layout descriptor is proposed now so the binary format is forward-compatible. The actual OmegaSL language syntax (`texture2d myTex : 2 (swizzle=bgra)`) and code generator changes can land in a follow-up without breaking the library format.
 
+ANSWER: We have a proposed OmegaSL syntax for this in OmegaSL-Swizzle-Subgroup-Plan.md
+
 3. **Compute shader writes.** Swizzle on UAV/storage-image writes is not proposed here. All three APIs are more restrictive about write-side remapping. If needed, a shader-side swizzle (`output.bgra = value.rgba`) is the portable path.
+
+ANSWER: Good idea. We can try this. (If the API)

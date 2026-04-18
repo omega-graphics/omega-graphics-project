@@ -78,14 +78,14 @@ std::string Preprocessor::processInternal(const std::string& source, const std::
             if (!name.empty()) define(name, value);
         }
         else if (directive == "ifdef") {
-            std::string name(line.begin() + argStart, line.end());
+            std::string name(line.begin() + std::string::difference_type(argStart), line.end());
             name.erase(0, name.find_first_not_of(" \t"));
             name.erase(name.find_last_not_of(" \t") + 1);
             skipStack.push_back(skipping);
             skipping = skipping || !isDefined(name);
         }
         else if (directive == "ifndef") {
-            std::string name(line.begin() + argStart, line.end());
+            std::string name(line.begin() + std::string::difference_type(argStart), line.end());
             name.erase(0, name.find_first_not_of(" \t"));
             name.erase(name.find_last_not_of(" \t") + 1);
             skipStack.push_back(skipping);

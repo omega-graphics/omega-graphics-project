@@ -28,6 +28,9 @@ _NAMESPACE_BEGIN_
         GEMetalRenderPipelineState *renderPipelineState = nullptr;
         GEMetalComputePipelineState *computePipelineState = nullptr;
 
+        id<MTLBuffer> pendingIndexBuffer = nil;
+        MTLIndexType pendingIndexType = MTLIndexTypeUInt32;
+
         friend class GEMetalCommandQueue;
         unsigned getResourceLocalIndexFromGlobalIndex(unsigned _id,omegasl_shader & shader);
         bool shaderHasWriteAccessForResource(unsigned & _id,omegasl_shader & shader);
@@ -81,6 +84,17 @@ _NAMESPACE_BEGIN_
         void setScissorRects(std::vector<GEScissorRect> scissorRects) override;
         void setStencilRef(unsigned ref) override;
         void drawPolygons(RenderPassDrawPolygonType polygonType, unsigned vertexCount, size_t startIdx) override;
+        void setIndexBuffer(SharedHandle<GEBuffer> & buffer, RenderPassIndexType indexType) override;
+        void drawIndexedPolygons(RenderPassDrawPolygonType polygonType,
+                                 unsigned indexCount, size_t startIndex,
+                                 int baseVertex) override;
+        void drawPolygonsInstanced(RenderPassDrawPolygonType polygonType,
+                                   unsigned vertexCount, size_t startIdx,
+                                   unsigned instanceCount, unsigned firstInstance) override;
+        void drawIndexedPolygonsInstanced(RenderPassDrawPolygonType polygonType,
+                                           unsigned indexCount, size_t startIndex,
+                                           int baseVertex, unsigned instanceCount,
+                                           unsigned firstInstance) override;
         void finishRenderPass() override;
         
         void startComputePass(const GEComputePassDescriptor &desc) override;

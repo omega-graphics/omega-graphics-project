@@ -748,28 +748,61 @@ _NAMESPACE_BEGIN_
 
 
 
+    static VkPrimitiveTopology vulkanTopologyForPolygonType(GERenderTarget::CommandBuffer::PolygonType polygonType){
+        switch(polygonType){
+            case GERenderTarget::CommandBuffer::Triangle:
+                return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+            case GERenderTarget::CommandBuffer::TriangleStrip:
+                return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+        }
+        return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    }
+
+    void GEVulkanCommandBuffer::applyTopologyIfDynamic(RenderPassDrawPolygonType polygonType){
+        if(parentQueue->engine->hasExtendedDynamicState) {
+            parentQueue->engine->vkCmdSetPrimitiveTopologyExt(commandBuffer, vulkanTopologyForPolygonType(polygonType));
+        }
+    }
+
     void GEVulkanCommandBuffer::drawPolygons(RenderPassDrawPolygonType polygonType, unsigned int vertexCount, size_t startIdx){
         // Begin the render pass now — any barriers from bind* calls have
         // already been recorded outside the render pass instance.
         beginRenderPassIfDeferred();
-
-        VkPrimitiveTopology topology;
-
-        switch (polygonType) {
-            case GERenderTarget::CommandBuffer::Triangle :
-                topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-                break;
-            case GERenderTarget::CommandBuffer::TriangleStrip : {
-                topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-                break;
-            }
-        }
-
-        if(parentQueue->engine->hasExtendedDynamicState) {
-            parentQueue->engine->vkCmdSetPrimitiveTopologyExt(commandBuffer, topology);
-        }
+        applyTopologyIfDynamic(polygonType);
         vkCmdDraw(commandBuffer,vertexCount,1,startIdx,0);
     };
+
+    void GEVulkanCommandBuffer::setIndexBuffer(SharedHandle<GEBuffer> & buffer, RenderPassIndexType indexType){
+        auto vkBuffer = ((GEVulkanBuffer *)buffer.get());
+        VkIndexType vkType = (indexType == RenderPassIndexType::UInt16) ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+        vkCmdBindIndexBuffer(commandBuffer, vkBuffer->buffer, 0, vkType);
+        pendingIndexType = vkType;
+    }
+
+    void GEVulkanCommandBuffer::drawIndexedPolygons(RenderPassDrawPolygonType polygonType,
+                                                    unsigned indexCount, size_t startIndex,
+                                                    int baseVertex){
+        beginRenderPassIfDeferred();
+        applyTopologyIfDynamic(polygonType);
+        vkCmdDrawIndexed(commandBuffer, indexCount, 1, uint32_t(startIndex), baseVertex, 0);
+    }
+
+    void GEVulkanCommandBuffer::drawPolygonsInstanced(RenderPassDrawPolygonType polygonType,
+                                                      unsigned vertexCount, size_t startIdx,
+                                                      unsigned instanceCount, unsigned firstInstance){
+        beginRenderPassIfDeferred();
+        applyTopologyIfDynamic(polygonType);
+        vkCmdDraw(commandBuffer, vertexCount, instanceCount, uint32_t(startIdx), firstInstance);
+    }
+
+    void GEVulkanCommandBuffer::drawIndexedPolygonsInstanced(RenderPassDrawPolygonType polygonType,
+                                                             unsigned indexCount, size_t startIndex,
+                                                             int baseVertex, unsigned instanceCount,
+                                                             unsigned firstInstance){
+        beginRenderPassIfDeferred();
+        applyTopologyIfDynamic(polygonType);
+        vkCmdDrawIndexed(commandBuffer, indexCount, instanceCount, uint32_t(startIndex), baseVertex, firstInstance);
+    }
 
     void GEVulkanCommandBuffer::setStencilRef(unsigned ref){
         VkStencilFaceFlags faceflags = VK_STENCIL_FACE_FRONT_AND_BACK;

@@ -82,9 +82,8 @@ _NAMESPACE_BEGIN_
             GERTType renderTargetTy;
             /// Do NOT CALL THIS CONSTRUCTOR!!!
             CommandBuffer(GERenderTarget *renderTarget,GERTType type,SharedHandle<GECommandBuffer> commandBuffer);
-          
         public:
-
+            ~CommandBuffer() = default;
             OMEGACOMMON_CLASS("OmegaGTE.GECommandBuffer")
 
             void setName(OmegaCommon::StrRef name) override;
@@ -136,11 +135,50 @@ _NAMESPACE_BEGIN_
                 TriangleStrip
             };
 
+            /// @brief Index element type for indexed draw calls.
+            enum class IndexType : uint8_t {
+                UInt16,
+                UInt32
+            };
+
             /// @brief Encodes a draw command in the current Render Pass.
             /// @param polygonType The Type of Polygons to draw.
             /// @param vertexCount The Number of Vertices to draw.
             /// @param start The Index of the first Vertex to draw.
             void drawPolygons(PolygonType polygonType, unsigned vertexCount, size_t start);
+
+            /// @brief Binds an index buffer for subsequent indexed draw calls.
+            /// @param buffer The GEBuffer containing the index data.
+            /// @param indexType The element type (UInt16 or UInt32).
+            void setIndexBuffer(SharedHandle<GEBuffer> & buffer, IndexType indexType = IndexType::UInt32);
+
+            /// @brief Encodes an indexed draw command in the current Render Pass.
+            /// @param polygonType The Type of Polygons to draw.
+            /// @param indexCount The Number of Indices to read.
+            /// @param startIndex Index of the first index.
+            /// @param baseVertex Value added to the vertex index before fetching vertex attributes.
+            void drawIndexedPolygons(PolygonType polygonType, unsigned indexCount,
+                                     size_t startIndex, int baseVertex = 0);
+
+            /// @brief Encodes an instanced draw command in the current Render Pass.
+            /// @param polygonType The Type of Polygons to draw.
+            /// @param vertexCount The Number of Vertices to draw per instance.
+            /// @param start The Index of the first Vertex to draw.
+            /// @param instanceCount Number of instances.
+            /// @param firstInstance Value of gl_InstanceIndex / SV_InstanceID of the first instance.
+            void drawPolygonsInstanced(PolygonType polygonType, unsigned vertexCount, size_t start,
+                                       unsigned instanceCount, unsigned firstInstance = 0);
+
+            /// @brief Encodes an indexed, instanced draw command in the current Render Pass.
+            /// @param polygonType The Type of Polygons to draw.
+            /// @param indexCount The Number of Indices to read per instance.
+            /// @param startIndex Index of the first index.
+            /// @param baseVertex Value added to the vertex index before fetching vertex attributes.
+            /// @param instanceCount Number of instances.
+            /// @param firstInstance Value of gl_InstanceIndex / SV_InstanceID of the first instance.
+            void drawIndexedPolygonsInstanced(PolygonType polygonType, unsigned indexCount,
+                                              size_t startIndex, int baseVertex,
+                                              unsigned instanceCount, unsigned firstInstance = 0);
 
             /// @brief Finish Encoding a Render Pass.
             /// @paragraph This method must be called once a draw command has been encoded into the Render Pass.

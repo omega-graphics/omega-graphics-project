@@ -52,6 +52,7 @@ using namespace metal;
                 CodeGen(opts), stringOut(std::move(stringOut)),shaderOut(this->stringOut),metalCodeOpts(metalCodeOpts){
 
         }
+        ~MetalCodeGen() override = default;
         inline void writeTypeExpr(ast::TypeExpr *t,std::ostream & out){
             using namespace ast;
             auto * _t = typeResolver->resolveTypeWithExpr(t);

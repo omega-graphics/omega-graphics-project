@@ -80,11 +80,24 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             [bp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_src_texture->resourceBarrier.handle())];
         }
 
-        [bp copyFromTexture: NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,mtl_src_texture->texture.handle())
-                sourceSlice:0 sourceLevel:0
-                  toTexture: NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,mtl_dest_texture->texture.handle())
-           destinationSlice:0 destinationLevel:0 sliceCount:1 levelCount:
-                        NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,mtl_src_texture->texture.handle()).mipmapLevelCount];
+        id<MTLTexture> src_mtl = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,mtl_src_texture->texture.handle());
+        id<MTLTexture> dest_mtl = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,mtl_dest_texture->texture.handle());
+
+        MTLOrigin srcOrigin = MTLOriginMake(region.x, region.y, region.z);
+        MTLSize   srcSize   = MTLSizeMake(region.w, region.h, region.d == 0 ? 1 : region.d);
+        MTLOrigin destOrigin = MTLOriginMake((NSUInteger)destCoord.x,
+                                             (NSUInteger)destCoord.y,
+                                             (NSUInteger)destCoord.z);
+
+        [bp copyFromTexture: src_mtl
+                sourceSlice: 0
+                sourceLevel: 0
+               sourceOrigin: srcOrigin
+                 sourceSize: srcSize
+                  toTexture: dest_mtl
+           destinationSlice: 0
+           destinationLevel: 0
+          destinationOrigin: destOrigin];
 
         mtl_dest_texture->needsBarrier = true;
         [bp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_dest_texture->resourceBarrier.handle())];
@@ -429,21 +442,69 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         [rp setStencilReferenceValue:ref];
     }
     
+    static MTLPrimitiveType metalPrimitiveTypeForPolygonType(GERenderTarget::CommandBuffer::PolygonType polygonType){
+        switch(polygonType){
+            case GERenderTarget::CommandBuffer::Triangle:
+                return MTLPrimitiveTypeTriangle;
+            case GERenderTarget::CommandBuffer::TriangleStrip:
+                return MTLPrimitiveTypeTriangleStrip;
+        }
+        return MTLPrimitiveTypeTriangle;
+    }
+
     void GEMetalCommandBuffer::drawPolygons(RenderPassDrawPolygonType polygonType,unsigned vertexCount,size_t startIdx){
         assert((rp && (cp == nil)) && "Cannot Draw Polygons when not in render pass");
-        MTLPrimitiveType primativeType;
-        if(polygonType == GECommandBuffer::RenderPassDrawPolygonType::Triangle){
-            primativeType = MTLPrimitiveTypeTriangle;
-        }
-        else if(polygonType == GECommandBuffer::RenderPassDrawPolygonType::TriangleStrip){
-            primativeType = MTLPrimitiveTypeTriangleStrip;
-        }
-        else {
-            primativeType = MTLPrimitiveTypeTriangle;
-        };
+        [rp drawPrimitives:metalPrimitiveTypeForPolygonType(polygonType) vertexStart:startIdx vertexCount:vertexCount];
+    };
 
-//        NSLog(@"CALLING DRAW PRIMITIVES");
-        [rp drawPrimitives:primativeType vertexStart:startIdx vertexCount:vertexCount];
+    void GEMetalCommandBuffer::setIndexBuffer(SharedHandle<GEBuffer> & buffer, RenderPassIndexType indexType){
+        auto *metalBuffer = (GEMetalBuffer *)buffer.get();
+        pendingIndexBuffer = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>, metalBuffer->metalBuffer.handle());
+        pendingIndexType = (indexType == RenderPassIndexType::UInt16) ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32;
+    };
+
+    void GEMetalCommandBuffer::drawIndexedPolygons(RenderPassDrawPolygonType polygonType,
+                                                   unsigned indexCount, size_t startIndex,
+                                                   int baseVertex){
+        assert((rp && (cp == nil)) && "Cannot Draw Polygons when not in render pass");
+        assert(pendingIndexBuffer != nil && "Index buffer must be set before drawIndexedPolygons");
+        NSUInteger indexByteSize = (pendingIndexType == MTLIndexTypeUInt16) ? 2u : 4u;
+        [rp drawIndexedPrimitives:metalPrimitiveTypeForPolygonType(polygonType)
+                       indexCount:indexCount
+                        indexType:pendingIndexType
+                      indexBuffer:pendingIndexBuffer
+                indexBufferOffset:startIndex * indexByteSize
+                    instanceCount:1
+                       baseVertex:baseVertex
+                     baseInstance:0];
+    };
+
+    void GEMetalCommandBuffer::drawPolygonsInstanced(RenderPassDrawPolygonType polygonType,
+                                                     unsigned vertexCount, size_t startIdx,
+                                                     unsigned instanceCount, unsigned firstInstance){
+        assert((rp && (cp == nil)) && "Cannot Draw Polygons when not in render pass");
+        [rp drawPrimitives:metalPrimitiveTypeForPolygonType(polygonType)
+               vertexStart:startIdx
+               vertexCount:vertexCount
+             instanceCount:instanceCount
+              baseInstance:firstInstance];
+    };
+
+    void GEMetalCommandBuffer::drawIndexedPolygonsInstanced(RenderPassDrawPolygonType polygonType,
+                                                            unsigned indexCount, size_t startIndex,
+                                                            int baseVertex, unsigned instanceCount,
+                                                            unsigned firstInstance){
+        assert((rp && (cp == nil)) && "Cannot Draw Polygons when not in render pass");
+        assert(pendingIndexBuffer != nil && "Index buffer must be set before drawIndexedPolygonsInstanced");
+        NSUInteger indexByteSize = (pendingIndexType == MTLIndexTypeUInt16) ? 2u : 4u;
+        [rp drawIndexedPrimitives:metalPrimitiveTypeForPolygonType(polygonType)
+                       indexCount:indexCount
+                        indexType:pendingIndexType
+                      indexBuffer:pendingIndexBuffer
+                indexBufferOffset:startIndex * indexByteSize
+                    instanceCount:instanceCount
+                       baseVertex:baseVertex
+                     baseInstance:firstInstance];
     };
 
     void GEMetalCommandBuffer::finishRenderPass(){

@@ -113,7 +113,6 @@ _NAMESPACE_BEGIN_
         SharedHandle<GETexture> makeTexture(const TextureDescriptor &desc) override;
         ~GED3D12Heap() override = default;
     };
-    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
     struct GED3D12AccelerationStruct : public GEAccelerationStruct {
         SharedHandle<GED3D12Buffer> structBuffer;
         SharedHandle<GED3D12Buffer> scratchBuffer;
@@ -121,7 +120,6 @@ _NAMESPACE_BEGIN_
             SharedHandle<GED3D12Buffer> & structBuffer,
             SharedHandle<GED3D12Buffer> & scratchBuffer);
     };
-    #endif
 
     class GED3D12Engine : public OmegaGraphicsEngine {
         SharedHandle<GTEShader> _loadShaderFromDesc(omegasl_shader *shaderDesc,bool runtime) override;

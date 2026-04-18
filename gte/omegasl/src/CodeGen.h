@@ -57,12 +57,15 @@ namespace omegasl {
 
         CodeGenOpts & opts;
         explicit CodeGen(CodeGenOpts & opts):
-        opts(opts),
-        typeResolver(nullptr)
+        typeResolver(nullptr),
+        opts(opts)
 //        interfaceGen(std::make_shared<InterfaceGen>(OmegaCommon::FS::Path(opts.outputLib).append(INTERFACE_FILENAME).absPath(), this))
         {
 
         }
+
+        virtual ~CodeGen() = default;
+
         void setTypeResolver(ast::SemFrontend *_typeResolver){ typeResolver = _typeResolver;}
         virtual void generateDecl(ast::Decl *decl) = 0;
         virtual void generateExpr(ast::Expr *expr) = 0;
@@ -114,7 +117,7 @@ namespace omegasl {
                 //2.  Write Shader Name Size and Name
                 size_t shader_name_size = strlen(p.second.name);
                 out.write((char *)&shader_name_size,sizeof(shader_name_size));
-                out.write(shader_data.name,shader_name_size);
+                out.write(shader_data.name,std::streamsize(shader_name_size));
 
                 //3.  Write Shader Data Size and Data
                 {
@@ -154,7 +157,7 @@ namespace omegasl {
                     for (auto &param: vertexShaderParamDescArr) {
                         size_t param_name_len = strlen(param.name);
                         out.write((char *)&param_name_len,sizeof(param_name_len));
-                        out.write(param.name,param_name_len);
+                        out.write(param.name,std::streamsize(param_name_len));
                         out.write((char *)&param.type,sizeof(param.type));
                         out.write((char *)&param.offset,sizeof(param.offset));
                     }

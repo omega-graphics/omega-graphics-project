@@ -29,17 +29,22 @@ _NAMESPACE_BEGIN_
     struct  OMEGAGTE_EXPORT GERenderPassDescriptor {
         GENativeRenderTarget *nRenderTarget = nullptr;
         GETextureRenderTarget *tRenderTarget = nullptr;
-        typedef GERenderTarget::RenderPassDesc::ColorAttachment ColorAttachment;
-        typedef GERenderTarget::RenderPassDesc::DepthStencilAttachment DepthStencilAttachment;
+        using ColorAttachment = GERenderTarget::RenderPassDesc::ColorAttachment;
+        using DepthStencilAttachment = GERenderTarget::RenderPassDesc::DepthStencilAttachment;
         ColorAttachment *colorAttachment;
         DepthStencilAttachment depthStencilAttachment;
         bool multisampleResolve = false;
-        typedef GERenderTarget::RenderPassDesc::MultisampleResolveDesc MultisampleResolveDesc;
+        using MultisampleResolveDesc = GERenderTarget::RenderPassDesc::MultisampleResolveDesc;
         MultisampleResolveDesc resolveDesc;
     };
 
     /// @brief Describes a Compute Pass or Ray Tracing Pass.
     struct  OMEGAGTE_EXPORT GEComputePassDescriptor {};
+
+    /// @brief Describes a Blit Pass
+    struct  OMEGAGTE_EXPORT GEBlitPassDescriptor {
+        
+    };
 
 
     /**
@@ -50,7 +55,8 @@ _NAMESPACE_BEGIN_
 
         friend class GERenderTarget::CommandBuffer;
     protected:
-        typedef GERenderTarget::CommandBuffer::PolygonType RenderPassDrawPolygonType;
+        using RenderPassDrawPolygonType = GERenderTarget::CommandBuffer::PolygonType;
+        using RenderPassIndexType = GERenderTarget::CommandBuffer::IndexType;
     private:
          /**
          Render Pass (For usage, please use the GERenderTarget::CommandBuffer instead.)
@@ -72,6 +78,19 @@ _NAMESPACE_BEGIN_
         virtual void setScissorRects(std::vector<GEScissorRect> scissorRects) = 0;
         
         virtual void drawPolygons(RenderPassDrawPolygonType polygonType,unsigned vertexCount,size_t startIdx) = 0;
+
+        virtual void setIndexBuffer(SharedHandle<GEBuffer> & buffer, RenderPassIndexType indexType) = 0;
+        virtual void drawIndexedPolygons(RenderPassDrawPolygonType polygonType,
+                                         unsigned indexCount, size_t startIndex,
+                                         int baseVertex) = 0;
+        virtual void drawPolygonsInstanced(RenderPassDrawPolygonType polygonType,
+                                           unsigned vertexCount, size_t startIdx,
+                                           unsigned instanceCount, unsigned firstInstance) = 0;
+        virtual void drawIndexedPolygonsInstanced(RenderPassDrawPolygonType polygonType,
+                                                   unsigned indexCount, size_t startIndex,
+                                                   int baseVertex, unsigned instanceCount,
+                                                   unsigned firstInstance) = 0;
+
         virtual void finishRenderPass() = 0;
         /**
          Compute Pass
