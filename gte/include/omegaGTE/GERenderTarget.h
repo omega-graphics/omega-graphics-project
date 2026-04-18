@@ -32,7 +32,13 @@ _NAMESPACE_BEGIN_
                     ClearColor(float r,float g,float b,float a);
                 };
                 ClearColor clearColor;
+                /// Optional per-attachment render-to-texture target.
+                /// If null, attachment 0 falls back to the render pass's
+                /// `nRenderTarget` / `tRenderTarget`. Attachments with index
+                /// > 0 must supply a texture.
+                SharedHandle<GETexture> texture = nullptr;
                 ColorAttachment(ClearColor clearColor,LoadAction loadAction);
+                ColorAttachment(ClearColor clearColor,LoadAction loadAction,SharedHandle<GETexture> texture);
             };
             struct OMEGAGTE_EXPORT DepthStencilAttachment {
                 bool disabled = true;
@@ -47,7 +53,12 @@ _NAMESPACE_BEGIN_
                 float clearDepth = 1.F;
                 unsigned clearStencil = 0;
             } depthStencilAttachment;
-            ColorAttachment * colorAttachment;
+            /// Per-color-attachment load/clear state. Index 0 is the primary
+            /// color attachment (falls back to the render target's native
+            /// texture when no per-attachment texture is supplied). Indices
+            /// > 0 enable multi-render-target output and require an explicit
+            /// texture on each attachment.
+            OmegaCommon::Vector<ColorAttachment> colorAttachments;
             struct OMEGAGTE_EXPORT MultisampleResolveDesc {
                 SharedHandle<GETexture> multiSampleTextureSrc = nullptr;
                 unsigned level,slice,depth;
@@ -130,9 +141,17 @@ _NAMESPACE_BEGIN_
             void setScissorRects(std::vector<GEScissorRect> scissorRects);
         
             /// @brief Defines the Primitive Topology.
+            /// @note Line / LineStrip / Point require a compatible pipeline
+            /// (see `RenderPipelineDescriptor::primitiveTopologyCategory`).
+            /// Wide lines (line width > 1.0) are only supported on Vulkan with
+            /// `GTEDeviceFeatures::wideLines`; D3D12 and Metal always use
+            /// 1-pixel lines.
             using PolygonType = enum : uint8_t {
                 Triangle,
-                TriangleStrip
+                TriangleStrip,
+                Line,
+                LineStrip,
+                Point
             };
 
             /// @brief Index element type for indexed draw calls.

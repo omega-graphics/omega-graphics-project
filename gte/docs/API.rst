@@ -712,9 +712,21 @@ function rasteriser settings. Create it once and reuse across frames.
 
         The fragment shader entry point.
 
-    .. cpp:member:: PixelFormat colorPixelFormat
+    .. cpp:member:: Vector<PixelFormat> colorPixelFormats
 
-        Must match the pixel format of the render target. Default ``RGBA8Unorm``.
+        Pixel formats for each colour attachment (MRT). Entry ``[0]`` must match
+        the primary render target's format. Up to 8 entries are supported.
+        Default ``{ RGBA8Unorm }``.
+
+    .. cpp:member:: PrimitiveTopologyCategory primitiveTopologyCategory
+
+        Topology class baked into the pipeline state. One of ``Triangle``
+        (default), ``Line``, or ``Point``. The concrete topology at draw time
+        (triangle list / strip, line list / strip, point) is selected by the
+        ``PolygonType`` passed to ``drawPolygons``, but it must belong to this
+        category. This field is load-bearing on D3D12 where the PSO bakes the
+        topology class; Metal and Vulkan derive topology from the draw call
+        directly.
 
     .. cpp:member:: unsigned rasterSampleCount
 
@@ -781,7 +793,7 @@ function rasteriser settings. Create it once and reuse across frames.
     pipeDesc.name             = "MainPipeline";
     pipeDesc.vertexFunc       = shaderLib->shaders["myVertex"];
     pipeDesc.fragmentFunc     = shaderLib->shaders["myFragment"];
-    pipeDesc.colorPixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
+    pipeDesc.colorPixelFormats = { OmegaGTE::PixelFormat::BGRA8Unorm };
     pipeDesc.cullMode         = OmegaGTE::RasterCullMode::Back;
 
     // Enable depth testing
@@ -1093,6 +1105,17 @@ Render Pass
         +---------------------+----------------------------------------------+
         | ``TriangleStrip``   | Vertices form a connected triangle strip     |
         +---------------------+----------------------------------------------+
+        | ``Line``            | Each pair of vertices forms a line segment   |
+        +---------------------+----------------------------------------------+
+        | ``LineStrip``       | Vertices form a connected polyline           |
+        +---------------------+----------------------------------------------+
+        | ``Point``           | Each vertex is rasterised as a point         |
+        +---------------------+----------------------------------------------+
+
+        The selected value must match the pipeline state's
+        ``primitiveTopologyCategory`` (``Triangle``/``TriangleStrip`` require
+        category ``Triangle``; ``Line``/``LineStrip`` require ``Line``;
+        ``Point`` requires ``Point``).
 
     .. cpp:function:: void endRenderPass()
 
@@ -1125,10 +1148,14 @@ Render Pass
     Describes a render pass — what to do with the colour and depth buffers at
     the start of the pass.
 
-    .. cpp:member:: ColorAttachment *colorAttachment
+    .. cpp:member:: Vector<ColorAttachment> colorAttachments
 
-        Pointer to a ``ColorAttachment`` describing the load action and clear
-        colour.
+        One ``ColorAttachment`` per bound render target (MRT). Entry ``[0]``
+        targets the primary render target — its ``texture`` field may be left
+        null and the pass will bind the native/texture-backed target directly.
+        Entries ``[1..N]`` must each supply a ``texture`` whose pixel format
+        matches the corresponding entry in ``RenderPipelineDescriptor::colorPixelFormats``.
+        Up to 8 attachments are supported.
 
     .. cpp:member:: DepthStencilAttachment depthStencilAttachment
 
@@ -1203,7 +1230,7 @@ GEViewport and GEScissorRect
     depthAttach.clearDepth      = 1.0f;
 
     OmegaGTE::GERenderTarget::RenderPassDesc passDesc;
-    passDesc.colorAttachment          = &colorAttach;
+    passDesc.colorAttachments.push_back(colorAttach);
     passDesc.depthStencilAttachment   = depthAttach;
 
     cmdBuf->startRenderPass(passDesc);

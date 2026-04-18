@@ -147,11 +147,27 @@ _NAMESPACE_BEGIN_
         uint8_t writeMask = ColorWriteAll;
     };
 
+    /// @brief Primitive category a render pipeline rasterizes. Maps to
+    /// D3D12's `PrimitiveTopologyType`; Metal / Vulkan pick up the actual
+    /// topology at draw time and ignore this field.
+    enum class PrimitiveTopologyCategory : uint8_t {
+        Triangle,
+        Line,
+        Point
+    };
+
     struct  OMEGAGTE_EXPORT RenderPipelineDescriptor {
         OmegaCommon::String name;
         SharedHandle<GTEShader> vertexFunc;
         SharedHandle<GTEShader> fragmentFunc;
-        PixelFormat colorPixelFormat = PixelFormat::RGBA8Unorm;
+        /// Pixel formats of the color attachments this pipeline writes to.
+        /// Index `i` corresponds to color attachment `i`. Empty vector is
+        /// treated as a single default-format attachment.
+        OmegaCommon::Vector<PixelFormat> colorPixelFormats = { PixelFormat::RGBA8Unorm };
+        /// Primitive category the pipeline rasterizes. Must match the
+        /// polygon type passed to draw commands bound to this pipeline on
+        /// D3D12. Ignored on Metal / Vulkan.
+        PrimitiveTopologyCategory primitiveTopologyCategory = PrimitiveTopologyCategory::Triangle;
         unsigned rasterSampleCount = 0;
         RasterCullMode cullMode = RasterCullMode::None;
         TriangleFillMode triangleFillMode = TriangleFillMode::Solid;

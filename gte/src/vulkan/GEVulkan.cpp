@@ -1749,24 +1749,34 @@ _NAMESPACE_BEGIN_
             return nullptr;
         }
 
-        VkAttachmentDescription colorAttachment {};
-        colorAttachment.format = pixelFormatToVkFormat(desc.colorPixelFormat);
-        colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        const unsigned colorFormatCount = desc.colorPixelFormats.empty()
+                                              ? 1u
+                                              : (unsigned)desc.colorPixelFormats.size();
 
-        VkAttachmentReference colorRef {};
-        colorRef.attachment = 0;
-        colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        OmegaCommon::Vector<VkAttachmentDescription> colorAttachments;
+        OmegaCommon::Vector<VkAttachmentReference> colorRefs;
+        colorAttachments.resize(colorFormatCount);
+        colorRefs.resize(colorFormatCount);
+        for(unsigned i = 0; i < colorFormatCount; ++i){
+            VkAttachmentDescription & a = colorAttachments[i];
+            a = {};
+            a.format = pixelFormatToVkFormat(desc.colorPixelFormats.empty()
+                                                 ? PixelFormat::RGBA8Unorm
+                                                 : desc.colorPixelFormats[i]);
+            a.samples = VK_SAMPLE_COUNT_1_BIT;
+            a.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            a.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            a.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            a.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorRefs[i] = {i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        }
 
         VkSubpassDescription subpassDesc {};
         subpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpassDesc.colorAttachmentCount = 1;
-        subpassDesc.pColorAttachments = &colorRef;
+        subpassDesc.colorAttachmentCount = colorFormatCount;
+        subpassDesc.pColorAttachments = colorRefs.data();
 
         VkSubpassDependency dependency {};
         dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -1777,8 +1787,8 @@ _NAMESPACE_BEGIN_
         dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
         VkRenderPassCreateInfo renderPassInfo {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-        renderPassInfo.attachmentCount = 1;
-        renderPassInfo.pAttachments = &colorAttachment;
+        renderPassInfo.attachmentCount = colorFormatCount;
+        renderPassInfo.pAttachments = colorAttachments.data();
         renderPassInfo.subpassCount = 1;
         renderPassInfo.pSubpasses = &subpassDesc;
         renderPassInfo.dependencyCount = 1;
@@ -1844,7 +1854,18 @@ _NAMESPACE_BEGIN_
 
         VkPipelineInputAssemblyStateCreateInfo inputAssemblyState {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         inputAssemblyState.primitiveRestartEnable = VK_FALSE;
-        inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        switch(desc.primitiveTopologyCategory){
+            case PrimitiveTopologyCategory::Line:
+                inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+                break;
+            case PrimitiveTopologyCategory::Point:
+                inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+                break;
+            case PrimitiveTopologyCategory::Triangle:
+            default:
+                inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+                break;
+        }
 
         /// Rasterizer State
         VkPipelineRasterizationStateCreateInfo rasterState {};
@@ -1933,9 +1954,7 @@ _NAMESPACE_BEGIN_
         {
             // One blend attachment per color target. When the descriptor supplies
             // no blend state, the attachment is configured for opaque writes.
-            size_t attachmentCount = desc.colorBlendDescriptors.empty()
-                                         ? 1
-                                         : desc.colorBlendDescriptors.size();
+            size_t attachmentCount = colorFormatCount;
             colorBlendAttachments.resize(attachmentCount);
             for(size_t i = 0; i < attachmentCount; ++i){
                 VkPipelineColorBlendAttachmentState & att = colorBlendAttachments[i];

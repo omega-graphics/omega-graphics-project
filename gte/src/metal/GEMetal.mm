@@ -1083,23 +1083,30 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                 pipelineDesc.vertexDescriptor = vDesc;
             }
 
-            pipelineDesc.colorAttachments[0].pixelFormat = pixelFormatToMTLPixelFormat(desc.colorPixelFormat, true);
             {
-                MTLRenderPipelineColorAttachmentDescriptor *ca = pipelineDesc.colorAttachments[0];
-                if(!desc.colorBlendDescriptors.empty()){
-                    const auto & b = desc.colorBlendDescriptors[0];
-                    ca.blendingEnabled             = b.blendEnabled ? YES : NO;
-                    ca.rgbBlendOperation           = convertBlendOperationMTL(b.colorOp);
-                    ca.alphaBlendOperation         = convertBlendOperationMTL(b.alphaOp);
-                    ca.sourceRGBBlendFactor        = convertBlendFactorMTL(b.srcColorFactor);
-                    ca.destinationRGBBlendFactor   = convertBlendFactorMTL(b.destColorFactor);
-                    ca.sourceAlphaBlendFactor      = convertBlendFactorMTL(b.srcAlphaFactor);
-                    ca.destinationAlphaBlendFactor = convertBlendFactorMTL(b.destAlphaFactor);
-                    ca.writeMask                   = convertColorWriteMaskMTL(b.writeMask);
-                }
-                else {
-                    ca.blendingEnabled = NO;
-                    ca.writeMask = MTLColorWriteMaskAll;
+                const unsigned attachmentCount =
+                    desc.colorPixelFormats.empty() ? 1u : (unsigned)desc.colorPixelFormats.size();
+                for(unsigned i = 0; i < attachmentCount; ++i){
+                    const PixelFormat pf = desc.colorPixelFormats.empty()
+                                               ? PixelFormat::RGBA8Unorm
+                                               : desc.colorPixelFormats[i];
+                    MTLRenderPipelineColorAttachmentDescriptor *ca = pipelineDesc.colorAttachments[i];
+                    ca.pixelFormat = pixelFormatToMTLPixelFormat(pf, true);
+                    if(i < desc.colorBlendDescriptors.size()){
+                        const auto & b = desc.colorBlendDescriptors[i];
+                        ca.blendingEnabled             = b.blendEnabled ? YES : NO;
+                        ca.rgbBlendOperation           = convertBlendOperationMTL(b.colorOp);
+                        ca.alphaBlendOperation         = convertBlendOperationMTL(b.alphaOp);
+                        ca.sourceRGBBlendFactor        = convertBlendFactorMTL(b.srcColorFactor);
+                        ca.destinationRGBBlendFactor   = convertBlendFactorMTL(b.destColorFactor);
+                        ca.sourceAlphaBlendFactor      = convertBlendFactorMTL(b.srcAlphaFactor);
+                        ca.destinationAlphaBlendFactor = convertBlendFactorMTL(b.destAlphaFactor);
+                        ca.writeMask                   = convertColorWriteMaskMTL(b.writeMask);
+                    }
+                    else {
+                        ca.blendingEnabled = NO;
+                        ca.writeMask = MTLColorWriteMaskAll;
+                    }
                 }
             }
 

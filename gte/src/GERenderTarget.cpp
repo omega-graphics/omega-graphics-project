@@ -8,8 +8,12 @@ GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor::ClearColor(float r,
     
 };
 
-GERenderTarget::RenderPassDesc::ColorAttachment::ColorAttachment(GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor clearColor,GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction loadAction):clearColor(clearColor.r,clearColor.g,clearColor.b,clearColor.a),loadAction(loadAction){
-    
+GERenderTarget::RenderPassDesc::ColorAttachment::ColorAttachment(GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor clearColor,GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction loadAction):clearColor(clearColor.r,clearColor.g,clearColor.b,clearColor.a),loadAction(loadAction),texture(nullptr){
+
+};
+
+GERenderTarget::RenderPassDesc::ColorAttachment::ColorAttachment(GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor clearColor,GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction loadAction,SharedHandle<GETexture> texture):clearColor(clearColor.r,clearColor.g,clearColor.b,clearColor.a),loadAction(loadAction),texture(std::move(texture)){
+
 };
 
 GERenderTarget::CommandBuffer::CommandBuffer(GERenderTarget *renderTarget,GERTType type,SharedHandle<GECommandBuffer> commandBuffer):
@@ -35,8 +39,8 @@ void GERenderTarget::CommandBuffer::startRenderPass(const GERenderTarget::Render
     else if(renderTargetTy == Texture){
         renderPassDesc.tRenderTarget = (GETextureRenderTarget *)renderTargetPtr;
     };
-    renderPassDesc.colorAttachment = desc.colorAttachment;
-    
+    renderPassDesc.colorAttachments = desc.colorAttachments;
+
     commandBuffer->startRenderPass(renderPassDesc);
 };
 

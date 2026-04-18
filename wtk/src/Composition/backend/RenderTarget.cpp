@@ -233,7 +233,7 @@ namespace OmegaWTK::Composition {
         renderPipelineDescriptor.depthAndStencilDesc = {false,false};
         renderPipelineDescriptor.triangleFillMode = OmegaGTE::TriangleFillMode::Solid;
         renderPipelineDescriptor.rasterSampleCount = 1;
-        renderPipelineDescriptor.colorPixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
+        renderPipelineDescriptor.colorPixelFormats = { OmegaGTE::PixelFormat::BGRA8Unorm };
         renderPipelineDescriptor.vertexFunc = getShader("mainVertex");
         renderPipelineDescriptor.fragmentFunc = getShader("mainFragment");
 
@@ -441,7 +441,7 @@ namespace OmegaWTK::Composition {
         desc.rasterSampleCount = 1;
         desc.vertexFunc = copyVertex;
         desc.fragmentFunc = copyFragment;
-        desc.colorPixelFormat = fmt;
+        desc.colorPixelFormats = { fmt };
         auto pipeline = gte.graphicsEngine->makeRenderPipelineState(desc);
         if(pipeline != nullptr){
             finalCopyPipelinesByFormat[fmt] = pipeline;
@@ -697,9 +697,9 @@ void BackendRenderTargetContext::clear(float r, float g, float b, float a) {
     auto cb = preEffectTarget->commandBuffer();
 
     OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
-    renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+    renderPassDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
             OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(r,g,b,a),
-            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear);
+            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
     renderPassDesc.depthStencilAttachment.disabled = true;
     cb->startRenderPass(renderPassDesc);
     cb->endRenderPass();
@@ -723,9 +723,9 @@ void BackendRenderTargetContext::beginFrame(float clearR, float clearG, float cl
     }
 
     OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
-    renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+    renderPassDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
             OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(clearR, clearG, clearB, clearA),
-            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear);
+            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
     renderPassDesc.depthStencilAttachment.disabled = true;
     frameCB_->startRenderPass(renderPassDesc);
 
@@ -861,9 +861,9 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
                     OmegaGTE::GERenderTarget::RenderPassDesc rpd {};
                     rpd.depthStencilAttachment.disabled = true;
-                    rpd.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment{
-                            {0.f,0.f,0.f,0.f},
-                            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction::Clear};
+                    rpd.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+                            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(0.f,0.f,0.f,0.f),
+                            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction::Clear));
                     cb->startRenderPass(rpd);
                     cb->setRenderPipelineState(finalPipeline);
                     OmegaGTE::GEViewport vp {};
@@ -1296,9 +1296,9 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             preEffectTarget->notifyCommandBuffer(cb, textureFence);
             // Restart the render pass with LoadPreserve to keep prior content.
             OmegaGTE::GERenderTarget::RenderPassDesc restartDesc {};
-            restartDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+            restartDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
                     OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),
-                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve);
+                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve));
             restartDesc.depthStencilAttachment.disabled = true;
             cb->startRenderPass(restartDesc);
             // Re-set viewport/scissor after restart
@@ -1326,9 +1326,9 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
         if(standaloneCB){
             OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
-            renderPassDesc.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+            renderPassDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
                     OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),
-                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve);
+                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve));
             renderPassDesc.depthStencilAttachment.disabled = true;
             OmegaGTE::GEViewport viewport {};
             viewport.nearDepth = 0.f;

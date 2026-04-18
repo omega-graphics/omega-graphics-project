@@ -1100,8 +1100,18 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         d.VS = vertexShader->shaderBytecode;
         d.PS = fragmentShader->shaderBytecode;
         d.pRootSignature = signature;
-        d.RTVFormats[0] = pixelFormatToDxgiFormat(desc.colorPixelFormat);
-        d.NumRenderTargets = 1;
+        {
+            const auto & formats = desc.colorPixelFormats;
+            const unsigned rtCount = formats.empty() ? 1u : (unsigned)std::min<size_t>(formats.size(), 8);
+            for(unsigned i = 0; i < rtCount; ++i){
+                d.RTVFormats[i] = pixelFormatToDxgiFormat(
+                    formats.empty() ? PixelFormat::RGBA8Unorm : formats[i]);
+            }
+            for(unsigned i = rtCount; i < 8; ++i){
+                d.RTVFormats[i] = DXGI_FORMAT_UNKNOWN;
+            }
+            d.NumRenderTargets = rtCount;
+        }
         d.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
 
         D3D12_CULL_MODE cullMode;
@@ -1141,7 +1151,18 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         d.RasterizerState.SlopeScaledDepthBias = desc.depthAndStencilDesc.slopeScale;
         d.RasterizerState.DepthBiasClamp = desc.depthAndStencilDesc.depthClamp;
 
-        d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        switch(desc.primitiveTopologyCategory){
+            case PrimitiveTopologyCategory::Line:
+                d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+                break;
+            case PrimitiveTopologyCategory::Point:
+                d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+                break;
+            case PrimitiveTopologyCategory::Triangle:
+            default:
+                d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+                break;
+        }
         d.DepthStencilState.StencilEnable = desc.depthAndStencilDesc.enableStencil;
         d.DepthStencilState.DepthEnable = desc.depthAndStencilDesc.enableDepth;
         d.DepthStencilState.DepthFunc = convertCompareFunc(desc.depthAndStencilDesc.depthOperation);

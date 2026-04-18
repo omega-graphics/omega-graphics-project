@@ -310,7 +310,8 @@ void GED3D12CommandBuffer::finishAccelStructPass() {
 void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
     inRenderPass = true;
     assert(!inComputePass && "Cannot start a Render Pass while in a compute pass.");
-    D3D12_RENDER_PASS_RENDER_TARGET_DESC rt_desc;
+    static constexpr unsigned kMaxRT = 8;
+    D3D12_RENDER_PASS_RENDER_TARGET_DESC rt_descs[kMaxRT] = {};
     D3D12_RENDER_PASS_DEPTH_STENCIL_DESC ds_desc;
 
     D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_PARAMETERS resolveParams;
@@ -441,50 +442,91 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
         }
         currentTarget.texture = textureRenderTarget;
     };
-    rt_desc.cpuDescriptor = cpu_handle;
+
+    const unsigned attachmentCount =
+        desc.colorAttachments.empty() ? 1u : (unsigned)std::min<size_t>(desc.colorAttachments.size(), kMaxRT);
+
+    for (unsigned i = 0; i < attachmentCount; ++i) {
+        D3D12_RENDER_PASS_RENDER_TARGET_DESC &rt_desc = rt_descs[i];
+        CD3DX12_CPU_DESCRIPTOR_HANDLE attachmentHandle;
+        const GERenderPassDescriptor::ColorAttachment *attachment =
+            desc.colorAttachments.empty() ? nullptr : &desc.colorAttachments[i];
+
+        if (i == 0 && (attachment == nullptr || attachment->texture == nullptr)) {
+            attachmentHandle = cpu_handle;
+        } else {
+            assert(attachment != nullptr && attachment->texture != nullptr &&
+                   "Color attachments beyond index 0 must supply an explicit texture.");
+            auto *attachTexture = (GED3D12Texture *)attachment->texture.get();
+            if (attachTexture->currentState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+                auto barrier = CD3DX12_RESOURCE_BARRIER::UAV(attachTexture->resource.Get());
+                commandList->ResourceBarrier(1, &barrier);
+            }
+            if (!(attachTexture->currentState & D3D12_RESOURCE_STATE_RENDER_TARGET)) {
+                auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                    attachTexture->resource.Get(), attachTexture->currentState,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET);
+                commandList->ResourceBarrier(1, &barrier);
+                attachTexture->currentState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            }
+            attachmentHandle =
+                CD3DX12_CPU_DESCRIPTOR_HANDLE(attachTexture->rtvDescHeap->GetCPUDescriptorHandleForHeapStart());
+        }
+
+        rt_desc.cpuDescriptor = attachmentHandle;
+
+        if (i == 0 && desc.multisampleResolve) {
+            rt_desc.EndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_RESOLVE;
+            rt_desc.EndingAccess.Resolve = resolveParams;
+        }
+
+        const auto loadAction = (attachment != nullptr)
+                                    ? attachment->loadAction
+                                    : GERenderPassDescriptor::ColorAttachment::Discard;
+        const bool useResolveEnd = (i == 0 && desc.multisampleResolve);
+
+        switch (loadAction) {
+            case GERenderPassDescriptor::ColorAttachment::Load: {
+                rt_desc.BeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE;
+                if (!useResolveEnd)
+                    rt_desc.EndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD;
+                break;
+            }
+            case GERenderPassDescriptor::ColorAttachment::LoadPreserve: {
+                rt_desc.BeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE;
+                if (!useResolveEnd)
+                    rt_desc.EndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE;
+                break;
+            }
+            case GERenderPassDescriptor::ColorAttachment::Discard: {
+                rt_desc.BeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_DISCARD;
+                if (!useResolveEnd)
+                    rt_desc.EndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD;
+                break;
+            }
+            case GERenderPassDescriptor::ColorAttachment::Clear: {
+                rt_desc.BeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR;
+                const FLOAT colors[] = {
+                    attachment ? attachment->clearColor.r : 0.f,
+                    attachment ? attachment->clearColor.g : 0.f,
+                    attachment ? attachment->clearColor.b : 0.f,
+                    attachment ? attachment->clearColor.a : 0.f,
+                };
+                rt_desc.BeginningAccess.Clear.ClearValue =
+                    CD3DX12_CLEAR_VALUE(DXGI_FORMAT_R8G8B8A8_UNORM, colors);
+                if (!useResolveEnd)
+                    rt_desc.EndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE;
+                break;
+            }
+        }
+    }
 
     if (!desc.depthStencilAttachment.disabled) {
         ds_desc.cpuDescriptor = ds_cpu_handle;
     }
 
-    if (desc.multisampleResolve) {
-        rt_desc.EndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_RESOLVE;
-        rt_desc.EndingAccess.Resolve = resolveParams;
-    }
-
-    switch (desc.colorAttachment->loadAction) {
-        case GERenderPassDescriptor::ColorAttachment::Load: {
-            rt_desc.BeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE;
-            if (!desc.multisampleResolve)
-                rt_desc.EndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD;
-            break;
-        }
-        case GERenderPassDescriptor::ColorAttachment::LoadPreserve: {
-            rt_desc.BeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE;
-            if (!desc.multisampleResolve)
-                rt_desc.EndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE;
-            break;
-        }
-        case GERenderPassDescriptor::ColorAttachment::Discard: {
-            rt_desc.BeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_DISCARD;
-            if (!desc.multisampleResolve)
-                rt_desc.EndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD;
-            break;
-        }
-        case GERenderPassDescriptor::ColorAttachment::Clear: {
-            rt_desc.BeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR;
-            const FLOAT colors[] = {desc.colorAttachment->clearColor.r, desc.colorAttachment->clearColor.g,
-                                    desc.colorAttachment->clearColor.b, desc.colorAttachment->clearColor.a};
-            rt_desc.BeginningAccess.Clear.ClearValue = CD3DX12_CLEAR_VALUE(DXGI_FORMAT_R8G8B8A8_UNORM, colors);
-            /// Same as StoreAction in Metal
-            if (!desc.multisampleResolve)
-                rt_desc.EndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE;
-            break;
-        }
-    }
-
     if (desc.depthStencilAttachment.disabled) {
-        commandList->BeginRenderPass(1, &rt_desc, nullptr, D3D12_RENDER_PASS_FLAG_ALLOW_UAV_WRITES);
+        commandList->BeginRenderPass(attachmentCount, rt_descs, nullptr, D3D12_RENDER_PASS_FLAG_ALLOW_UAV_WRITES);
     } else {
 
         if (desc.multisampleResolve) {
@@ -551,7 +593,7 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
             }
         }
 
-        commandList->BeginRenderPass(1, &rt_desc, &ds_desc, D3D12_RENDER_PASS_FLAG_ALLOW_UAV_WRITES);
+        commandList->BeginRenderPass(attachmentCount, rt_descs, &ds_desc, D3D12_RENDER_PASS_FLAG_ALLOW_UAV_WRITES);
     }
 
     if (firstRenderPass) {
@@ -790,6 +832,12 @@ static D3D12_PRIMITIVE_TOPOLOGY d3d12TopologyForPolygonType(GERenderTarget::Comm
             return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
         case GERenderTarget::CommandBuffer::TriangleStrip:
             return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+        case GERenderTarget::CommandBuffer::Line:
+            return D3D_PRIMITIVE_TOPOLOGY_LINELIST;
+        case GERenderTarget::CommandBuffer::LineStrip:
+            return D3D_PRIMITIVE_TOPOLOGY_LINESTRIP;
+        case GERenderTarget::CommandBuffer::Point:
+            return D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
     }
     return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 }

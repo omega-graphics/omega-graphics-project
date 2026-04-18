@@ -339,7 +339,7 @@ struct DrawIndexedIndirectCommand {
 - **Metal**: Direct support via `MTLRenderCommandEncoder` indirect draw methods. No additional setup.
 - **Vulkan**: Direct support via `vkCmdDrawIndirect` / `vkCmdDrawIndexedIndirect`. Multi-draw-indirect (multiple draws from one buffer) requires `multiDrawIndirect` feature — propose single-draw-indirect first.
 
-### 1.6 Multiple Color Attachments (MRT)
+### 1.6 Multiple Color Attachments (MRT)  ✅
 
 **Modify `GERenderPassDescriptor`:**
 
@@ -380,7 +380,7 @@ This pairs with the `colorBlendDescriptors` vector from 1.2 — one blend state 
 
 All three backends support at least 8 simultaneous color attachments.
 
-### 1.7 Additional Polygon Types
+### 1.7 Additional Polygon Types  ✅
 
 **Extend `GERenderTarget::CommandBuffer::PolygonType`:**
 
@@ -864,7 +864,7 @@ Extension 2.3 (threadgroup override) ── deferred
 - 1.4: Instanced drawing ✅
 - 4.1: Buffer-to-buffer copy
 - 4.2: Buffer ↔ texture transfers
-- 1.7: Additional polygon types
+- 1.7: Additional polygon types  ✅
 
 **Tier 2 — High Impact, Medium Risk** (implement second):
 - 1.1: Vertex input layout (touches PSO creation on all backends) ✅
@@ -874,7 +874,7 @@ Extension 2.3 (threadgroup override) ── deferred
 
 **Tier 3 — Medium Impact, Higher Complexity** (implement third):
 - 1.5: Indirect drawing
-- 1.6: Multiple color attachments
+- 1.6: Multiple color attachments  ✅
 - 3.x: Blit pipeline (requires internal shaders, render pass management)
 
 **Tier 4 — Deferred** (requires OmegaSL work):
@@ -919,7 +919,7 @@ ANSWER: Vertex Input Layout should be baked at creation.
 
 2. **Blit pipeline vs. post-process pipeline**: The proposed `BlitPipeline` is essentially a specialized render pipeline with no vertex input. Should it be a distinct pipeline type, or should the render pipeline simply support a "no vertex buffer, full-screen triangle" mode? A distinct type is cleaner for the common case; collapsing into render is more flexible but adds API surface to the render path.
 
-ANSWER: Just move blit ops into Render Pipeline. (No `BlitPipeline` type)
+ANSWER: Do the proposed BlitPipeline.
 
 3. **Mipmap generation shader**: D3D12 has no built-in mipmap generation. Should the engine ship an internal compute shader for this, or should it use the blit pipeline with a downsample fragment shader? Compute is more efficient (one dispatch per mip, no render pass overhead) but requires an internal OmegaSL compute shader compiled at build time.
 

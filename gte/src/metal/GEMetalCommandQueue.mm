@@ -222,29 +222,61 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             renderPassDesc.colorAttachments[0].resolveDepthPlane = desc.resolveDesc.depth;
             renderPassDesc.colorAttachments[0].resolveLevel = desc.resolveDesc.level;
         }
-        
-        switch (desc.colorAttachment->loadAction) {
-            case GERenderPassDescriptor::ColorAttachment::Load : {
-                renderPassDesc.colorAttachments[0].loadAction = MTLLoadActionLoad;
-                renderPassDesc.colorAttachments[0].storeAction = MTLStoreActionDontCare;
-                break;
+
+        const unsigned colorAttachmentCount = desc.colorAttachments.empty()
+                                                  ? 1u
+                                                  : (unsigned)desc.colorAttachments.size();
+
+        for(unsigned i = 0; i < colorAttachmentCount; ++i){
+            const GERenderPassDescriptor::ColorAttachment *attachment =
+                desc.colorAttachments.empty() ? nullptr : &desc.colorAttachments[i];
+
+            if(i > 0){
+                assert(attachment != nullptr && attachment->texture != nullptr &&
+                       "Color attachments beyond index 0 must supply an explicit texture.");
+                auto *attachTex = (GEMetalTexture *)attachment->texture.get();
+                renderPassDesc.colorAttachments[i].texture =
+                    NSOBJECT_OBJC_BRIDGE(id<MTLTexture>, attachTex->texture.handle());
             }
-            case GERenderPassDescriptor::ColorAttachment::LoadPreserve : {
-                renderPassDesc.colorAttachments[0].loadAction = MTLLoadActionLoad;
-                renderPassDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
-                break;
+            else if(attachment != nullptr && attachment->texture != nullptr){
+                auto *attachTex = (GEMetalTexture *)attachment->texture.get();
+                renderPassDesc.colorAttachments[0].texture =
+                    NSOBJECT_OBJC_BRIDGE(id<MTLTexture>, attachTex->texture.handle());
             }
-            case GERenderPassDescriptor::ColorAttachment::Discard : {
-                renderPassDesc.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-                renderPassDesc.colorAttachments[0].storeAction = MTLStoreActionDontCare;
-                break;
-            }
-            case GERenderPassDescriptor::ColorAttachment::Clear : {
-                renderPassDesc.colorAttachments[0].loadAction = MTLLoadActionClear;
-                renderPassDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
-                auto & clearColor = desc.colorAttachment->clearColor;
-                renderPassDesc.colorAttachments[0].clearColor = MTLClearColorMake(clearColor.r,clearColor.g,clearColor.b,clearColor.a);
-                break;
+
+            const auto loadAction = (attachment != nullptr)
+                                        ? attachment->loadAction
+                                        : GERenderPassDescriptor::ColorAttachment::Discard;
+
+            switch (loadAction) {
+                case GERenderPassDescriptor::ColorAttachment::Load : {
+                    renderPassDesc.colorAttachments[i].loadAction = MTLLoadActionLoad;
+                    renderPassDesc.colorAttachments[i].storeAction = MTLStoreActionDontCare;
+                    break;
+                }
+                case GERenderPassDescriptor::ColorAttachment::LoadPreserve : {
+                    renderPassDesc.colorAttachments[i].loadAction = MTLLoadActionLoad;
+                    renderPassDesc.colorAttachments[i].storeAction = MTLStoreActionStore;
+                    break;
+                }
+                case GERenderPassDescriptor::ColorAttachment::Discard : {
+                    renderPassDesc.colorAttachments[i].loadAction = MTLLoadActionDontCare;
+                    renderPassDesc.colorAttachments[i].storeAction = MTLStoreActionDontCare;
+                    break;
+                }
+                case GERenderPassDescriptor::ColorAttachment::Clear : {
+                    renderPassDesc.colorAttachments[i].loadAction = MTLLoadActionClear;
+                    renderPassDesc.colorAttachments[i].storeAction = MTLStoreActionStore;
+                    if(attachment != nullptr){
+                        const auto & clearColor = attachment->clearColor;
+                        renderPassDesc.colorAttachments[i].clearColor =
+                            MTLClearColorMake(clearColor.r, clearColor.g, clearColor.b, clearColor.a);
+                    }
+                    else {
+                        renderPassDesc.colorAttachments[i].clearColor = MTLClearColorMake(0,0,0,0);
+                    }
+                    break;
+                }
             }
         }
 
@@ -448,6 +480,12 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
                 return MTLPrimitiveTypeTriangle;
             case GERenderTarget::CommandBuffer::TriangleStrip:
                 return MTLPrimitiveTypeTriangleStrip;
+            case GERenderTarget::CommandBuffer::Line:
+                return MTLPrimitiveTypeLine;
+            case GERenderTarget::CommandBuffer::LineStrip:
+                return MTLPrimitiveTypeLineStrip;
+            case GERenderTarget::CommandBuffer::Point:
+                return MTLPrimitiveTypePoint;
         }
         return MTLPrimitiveTypeTriangle;
     }

@@ -554,7 +554,7 @@ allocation also switch to BGRA8Unorm for consistency.
 
 **Files:**
 - `RenderTarget.cpp` — `initGlobalRenderAssets()`: set
-  `renderPipelineDescriptor.colorPixelFormat = BGRA8Unorm` before
+  `renderPipelineDescriptor.colorPixelFormats = { BGRA8Unorm }` before
   creating `renderPipelineState` and `textureRenderPipelineState`
 - `RenderTarget.cpp` — `rebuildBackingTarget()`: change texture pool key
   and `TextureDescriptor.pixelFormat` from `RGBA8Unorm` to `BGRA8Unorm`

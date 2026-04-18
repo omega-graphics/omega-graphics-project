@@ -2,6 +2,12 @@
 
 OmegaSL is a cross-platform shading language that transpiles to HLSL (DirectX), MSL (Metal), and GLSL (Vulkan). The compiler `omegaslc` produces `.omegasllib` archives containing compiled shader bytecode and resource layout metadata.
 
+### Notes:
+
+the writer uses raw size_t directly to disk, which means a library written
+   on a 32-bit build would be unreadable by a 64-bit build and vice versa. If that ever matters, pin widths explicitly
+  (e.g. uint64_t) on both sides. Not urgent for a single-platform test.
+
 ## 1. Preprocessor
 
 OmegaSL has a lightweight preprocessor that runs before lexing.

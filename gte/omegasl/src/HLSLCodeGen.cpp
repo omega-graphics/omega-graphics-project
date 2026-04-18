@@ -626,6 +626,9 @@ public:
 
                 if (_decl->shaderType == ast::ShaderDecl::Compute) {
                     /// Write Threadgroup Size Desc.
+                    shaderDesc.threadgroupDesc.x = _decl->threadgroupDesc.x;
+                    shaderDesc.threadgroupDesc.y = _decl->threadgroupDesc.y;
+                    shaderDesc.threadgroupDesc.z = _decl->threadgroupDesc.z;
                     shaderOut << "[numthreads(" << _decl->threadgroupDesc.x << "," << _decl->threadgroupDesc.y << ","
                               << _decl->threadgroupDesc.z << ")]" << std::endl;
                 } else if (_decl->shaderType == ast::ShaderDecl::Hull) {

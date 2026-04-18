@@ -126,7 +126,7 @@ while (!window->shouldClose()) {
         GERenderTarget::RenderPassDesc::ColorAttachment::Clear
     );
     GERenderTarget::RenderPassDesc passDesc {};
-    passDesc.colorAttachment = &color;
+    passDesc.colorAttachments.push_back(color);
 
     cmdBuf->startRenderPass(passDesc);
     cmdBuf->endRenderPass();

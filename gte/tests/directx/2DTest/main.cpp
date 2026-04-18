@@ -16,13 +16,13 @@ LRESULT CALLBACK   WndProc(HWND, UINT, WPARAM, LPARAM);
 
 
 static OmegaGTE::GTE gte;
-static OmegaGTE::SharedHandle<OmegaGTE::GTEShaderLibrary> library;
-static OmegaGTE::SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget;
-static OmegaGTE::SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> tessContext;
-static OmegaGTE::SharedHandle<OmegaGTE::GERenderPipelineState> renderPipelineState;
-static OmegaGTE::SharedHandle<OmegaGTE::GEBuffer> vertexBuffer;
-static OmegaGTE::SharedHandle<OmegaGTE::GETexture> texture;
-static OmegaGTE::SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
+static SharedHandle<OmegaGTE::GTEShaderLibrary> library;
+static SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget;
+static SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> tessContext;
+static SharedHandle<OmegaGTE::GERenderPipelineState> renderPipelineState;
+static SharedHandle<OmegaGTE::GEBuffer> vertexBuffer;
+static SharedHandle<OmegaGTE::GETexture> texture;
+static SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
 
 void formatGPoint3D(std::ostream & os,OmegaGTE::GPoint3D & pt){
     os << "{ x:" << pt.x << ", y:" << pt.y << ", z:" << pt.z << "}";
@@ -237,7 +237,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc;
     using ColorAttachment = OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment;
-    renderPassDesc.colorAttachment = new ColorAttachment(ColorAttachment::ClearColor(0.f,1.f,0.f,1.f),ColorAttachment::Clear);
+    renderPassDesc.colorAttachments.push_back(ColorAttachment(ColorAttachment::ClearColor(0.f,1.f,0.f,1.f),ColorAttachment::Clear));
 
     OmegaGTE::GEViewport viewport {0,0,300,300,0,1.f};
     OmegaGTE::GEScissorRect scissorRect {0,0,300,300};
@@ -283,7 +283,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     CoUninitialize();
 
-    return msg.wParam;
+    return INT(msg.wParam);
 };
 
 

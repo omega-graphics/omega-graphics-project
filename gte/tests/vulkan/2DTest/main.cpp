@@ -109,9 +109,9 @@ static void tessellateAndRender(int viewWidth, int viewHeight){
 
     OmegaGTE::GERenderTarget::RenderPassDesc renderPass;
     using RenderPassDesc = OmegaGTE::GERenderTarget::RenderPassDesc;
-    renderPass.colorAttachment = new RenderPassDesc::ColorAttachment(
+    renderPass.colorAttachments.push_back(RenderPassDesc::ColorAttachment(
         RenderPassDesc::ColorAttachment::ClearColor(1.f, 1.f, 1.f, 1.f),
-        RenderPassDesc::ColorAttachment::Clear);
+        RenderPassDesc::ColorAttachment::Clear));
 
     OmegaGTE::GEViewport viewport{0, 0, (float)viewWidth, (float)viewHeight, 0, 1.f};
     OmegaGTE::GEScissorRect scissorRect{0, 0, (float)viewWidth, (float)viewHeight};
@@ -175,7 +175,7 @@ int main(int argc, char *argv[]){
     OmegaGTE::RenderPipelineDescriptor pipelineDesc;
     pipelineDesc.vertexFunc = funcLib->shaders[VERTEX_FUNC];
     pipelineDesc.fragmentFunc = funcLib->shaders[FRAGMENT_FUNC];
-    pipelineDesc.colorPixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
+    pipelineDesc.colorPixelFormats = { OmegaGTE::PixelFormat::BGRA8Unorm };
     pipelineDesc.depthAndStencilDesc.enableDepth = false;
     pipelineDesc.depthAndStencilDesc.enableStencil = false;
     renderPipeline = gte.graphicsEngine->makeRenderPipelineState(pipelineDesc);

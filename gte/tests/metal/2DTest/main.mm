@@ -131,7 +131,7 @@ static void render(id<MTLDevice> dev){
     NSLog(@"Command Buffer Created");
     OmegaGTE::GERenderTarget::RenderPassDesc renderPass;
     using RenderPassDesc = OmegaGTE::GERenderTarget::RenderPassDesc;
-    renderPass.colorAttachment = new RenderPassDesc::ColorAttachment(RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),RenderPassDesc::ColorAttachment::Clear);
+    renderPass.colorAttachments.push_back(RenderPassDesc::ColorAttachment(RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),RenderPassDesc::ColorAttachment::Clear));
     commandBuffer->startRenderPass(renderPass);
     commandBuffer->setRenderPipelineState(renderPipeline);
     commandBuffer->bindResourceAtVertexShader(vertexBuffer,0);

@@ -30,7 +30,7 @@ _NAMESPACE_BEGIN_
         /// Vulkan spec violations for image layout transitions.
         bool renderPassBeginDeferred = false;
         VkRenderPassBeginInfo deferredBeginInfo {};
-        VkClearValue deferredClearValue {};
+        OmegaCommon::Vector<VkClearValue> deferredClearValues;
 
         void beginRenderPassIfDeferred();
 

@@ -80,7 +80,7 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryFromInputSt
     auto lib = std::make_shared<GTEShaderLibrary>();
 
     std::string libName;
-    StrRef::size_type size = 0;
+    std::size_t size = 0;
     if(!readBinaryValue(in,size)){
         std::cerr << "OmegaSL shader library load failed: could not read library name length." << std::endl;
         return nullptr;

@@ -347,44 +347,54 @@ _NAMESPACE_BEGIN_
     }
 
     void GEVulkanCommandBuffer::startRenderPass(const GERenderPassDescriptor &desc){
-        if(desc.colorAttachment == nullptr){
+        if(desc.colorAttachments.empty()){
             return;
         }
 
         activeFramebuffer = VK_NULL_HANDLE;
         activeRenderPass = VK_NULL_HANDLE;
 
-        VkAttachmentDescription attachmentDescription {};
-        attachmentDescription.samples = VK_SAMPLE_COUNT_1_BIT;
+        const unsigned attachmentCount = (unsigned)desc.colorAttachments.size();
 
-        switch (desc.colorAttachment->loadAction) {
-            case GERenderTarget::RenderPassDesc::ColorAttachment::Clear: {
-                attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                break;
+        std::vector<VkAttachmentDescription> attachmentDescriptions(attachmentCount);
+        std::vector<VkAttachmentReference> colorRefs(attachmentCount);
+        std::vector<VkImageView> attachmentViews(attachmentCount, VK_NULL_HANDLE);
+
+        for(unsigned i = 0; i < attachmentCount; ++i){
+            VkAttachmentDescription & ad = attachmentDescriptions[i];
+            ad = {};
+            ad.samples = VK_SAMPLE_COUNT_1_BIT;
+            switch (desc.colorAttachments[i].loadAction) {
+                case GERenderTarget::RenderPassDesc::ColorAttachment::Clear: {
+                    ad.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                    ad.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                    break;
+                }
+                case GERenderTarget::RenderPassDesc::ColorAttachment::Load: {
+                    ad.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                    ad.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                    break;
+                }
+                case GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve: {
+                    ad.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                    ad.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                    break;
+                }
+                case GERenderTarget::RenderPassDesc::ColorAttachment::Discard: {
+                    ad.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                    ad.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                    break;
+                }
             }
-            case GERenderTarget::RenderPassDesc::ColorAttachment::Load: {
-                attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-                attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-                break;
-            }
-            case GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve: {
-                attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-                attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                break;
-            }
-            case GERenderTarget::RenderPassDesc::ColorAttachment::Discard: {
-                attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-                attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-                break;
-            }
+            colorRefs[i] = {i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
         }
 
-        VkAttachmentReference color_ref {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkAttachmentDescription & attachmentDescription = attachmentDescriptions[0];
+
         VkSubpassDescription subpass {};
         subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &color_ref;
+        subpass.colorAttachmentCount = attachmentCount;
+        subpass.pColorAttachments = colorRefs.data();
 
         VkSubpassDependency dependency {};
         dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -396,8 +406,8 @@ _NAMESPACE_BEGIN_
 
         VkRenderPassCreateInfo renderPassCreateInfo {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
         renderPassCreateInfo.pNext = nullptr;
-        renderPassCreateInfo.attachmentCount = 1;
-        renderPassCreateInfo.pAttachments = &attachmentDescription;
+        renderPassCreateInfo.attachmentCount = attachmentCount;
+        renderPassCreateInfo.pAttachments = attachmentDescriptions.data();
         renderPassCreateInfo.subpassCount = 1;
         renderPassCreateInfo.pSubpasses = &subpass;
         renderPassCreateInfo.dependencyCount = 1;
@@ -407,13 +417,29 @@ _NAMESPACE_BEGIN_
         framebufferInfo.pNext = nullptr;
         framebufferInfo.flags = 0;
         framebufferInfo.layers = 1;
-        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.attachmentCount = attachmentCount;
 
         VkRenderPassBeginInfo beginInfo {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         beginInfo.renderArea.offset.x = 0;
         beginInfo.renderArea.offset.y = 0;
 
         VkImageView attachmentView = VK_NULL_HANDLE;
+
+        // Populate additional attachments (index > 0) from their supplied textures.
+        for(unsigned i = 1; i < attachmentCount; ++i){
+            const auto & att = desc.colorAttachments[i];
+            assert(att.texture != nullptr && "Color attachments beyond index 0 must supply an explicit texture.");
+            auto *extraTex = (GEVulkanTexture *)att.texture.get();
+            attachmentDescriptions[i].format = extraTex->format;
+            attachmentDescriptions[i].initialLayout = extraTex->layout;
+            attachmentDescriptions[i].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+            if(attachmentDescriptions[i].loadOp == VK_ATTACHMENT_LOAD_OP_LOAD &&
+               attachmentDescriptions[i].initialLayout == VK_IMAGE_LAYOUT_UNDEFINED){
+                attachmentDescriptions[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            }
+            attachmentViews[i] = extraTex->img_view;
+            extraTex->layout = VK_IMAGE_LAYOUT_GENERAL;
+        }
         if(desc.nRenderTarget != nullptr) {
             auto *nativeTarget = reinterpret_cast<GEVulkanNativeRenderTarget *>(desc.nRenderTarget);
             if(nativeTarget == nullptr || nativeTarget->frameViews.empty()){
@@ -453,14 +479,30 @@ _NAMESPACE_BEGIN_
                 nativeTarget->currentFrameIndex = 0;
             }
 
-            attachmentDescription.format = nativeTarget->format;
-            attachmentDescription.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            attachmentDescription.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-            if(attachmentDescription.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD &&
-               attachmentDescription.initialLayout == VK_IMAGE_LAYOUT_UNDEFINED){
-                attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            // Attachment 0 falls back to native swapchain image when attachment 0's texture is null.
+            if(desc.colorAttachments[0].texture == nullptr){
+                attachmentDescription.format = nativeTarget->format;
+                attachmentDescription.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                attachmentDescription.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+                if(attachmentDescription.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD &&
+                   attachmentDescription.initialLayout == VK_IMAGE_LAYOUT_UNDEFINED){
+                    attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                }
+                attachmentView = nativeTarget->frameViews[nativeTarget->currentFrameIndex];
             }
-            attachmentView = nativeTarget->frameViews[nativeTarget->currentFrameIndex];
+            else {
+                auto *attachTex = (GEVulkanTexture *)desc.colorAttachments[0].texture.get();
+                attachmentDescription.format = attachTex->format;
+                attachmentDescription.initialLayout = attachTex->layout;
+                attachmentDescription.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+                if(attachmentDescription.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD &&
+                   attachmentDescription.initialLayout == VK_IMAGE_LAYOUT_UNDEFINED){
+                    attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                }
+                attachmentView = attachTex->img_view;
+                attachTex->layout = VK_IMAGE_LAYOUT_GENERAL;
+            }
+            attachmentViews[0] = attachmentView;
 
             auto rpRes = vkCreateRenderPass(parentQueue->engine->device,&renderPassCreateInfo,nullptr,&activeRenderPass);
             if(rpRes != VK_SUCCESS || activeRenderPass == VK_NULL_HANDLE){
@@ -469,7 +511,7 @@ _NAMESPACE_BEGIN_
             }
 
             framebufferInfo.renderPass = activeRenderPass;
-            framebufferInfo.pAttachments = &attachmentView;
+            framebufferInfo.pAttachments = attachmentViews.data();
             framebufferInfo.width = nativeTarget->extent.width > 0 ? nativeTarget->extent.width : 1;
             framebufferInfo.height = nativeTarget->extent.height > 0 ? nativeTarget->extent.height : 1;
             auto fbRes = vkCreateFramebuffer(parentQueue->engine->device,&framebufferInfo,nullptr,&activeFramebuffer);
@@ -490,14 +532,22 @@ _NAMESPACE_BEGIN_
                 return;
             }
 
-            attachmentDescription.format = textureTarget->texture->format;
-            attachmentDescription.initialLayout = textureTarget->texture->layout;
+            GEVulkanTexture *primaryTex = nullptr;
+            if(desc.colorAttachments[0].texture == nullptr){
+                primaryTex = textureTarget->texture.get();
+            }
+            else {
+                primaryTex = (GEVulkanTexture *)desc.colorAttachments[0].texture.get();
+            }
+
+            attachmentDescription.format = primaryTex->format;
+            attachmentDescription.initialLayout = primaryTex->layout;
             attachmentDescription.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
             if(attachmentDescription.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD &&
                attachmentDescription.initialLayout == VK_IMAGE_LAYOUT_UNDEFINED){
                 attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             }
-            switch (textureTarget->texture->descriptor.sampleCount) {
+            switch (primaryTex->descriptor.sampleCount) {
                 case 1: attachmentDescription.samples = VK_SAMPLE_COUNT_1_BIT; break;
                 case 2: attachmentDescription.samples = VK_SAMPLE_COUNT_2_BIT; break;
                 case 4: attachmentDescription.samples = VK_SAMPLE_COUNT_4_BIT; break;
@@ -508,7 +558,9 @@ _NAMESPACE_BEGIN_
                 default: attachmentDescription.samples = VK_SAMPLE_COUNT_1_BIT; break;
             }
 
-            attachmentView = textureTarget->texture->img_view;
+            attachmentView = primaryTex->img_view;
+            attachmentViews[0] = attachmentView;
+
             auto rpRes = vkCreateRenderPass(parentQueue->engine->device,&renderPassCreateInfo,nullptr,&activeRenderPass);
             if(rpRes != VK_SUCCESS || activeRenderPass == VK_NULL_HANDLE){
                 activeRenderPass = VK_NULL_HANDLE;
@@ -516,9 +568,9 @@ _NAMESPACE_BEGIN_
             }
 
             framebufferInfo.renderPass = activeRenderPass;
-            framebufferInfo.pAttachments = &attachmentView;
-            framebufferInfo.width = textureTarget->texture->descriptor.width > 0 ? textureTarget->texture->descriptor.width : 1;
-            framebufferInfo.height = textureTarget->texture->descriptor.height > 0 ? textureTarget->texture->descriptor.height : 1;
+            framebufferInfo.pAttachments = attachmentViews.data();
+            framebufferInfo.width = primaryTex->descriptor.width > 0 ? primaryTex->descriptor.width : 1;
+            framebufferInfo.height = primaryTex->descriptor.height > 0 ? primaryTex->descriptor.height : 1;
             auto fbRes = vkCreateFramebuffer(parentQueue->engine->device,&framebufferInfo,nullptr,&activeFramebuffer);
             if(fbRes != VK_SUCCESS || activeFramebuffer == VK_NULL_HANDLE){
                 vkDestroyRenderPass(parentQueue->engine->device,activeRenderPass,nullptr);
@@ -529,7 +581,7 @@ _NAMESPACE_BEGIN_
             ownedRenderPasses.push_back(activeRenderPass);
             ownedFramebuffers.push_back(activeFramebuffer);
 
-            textureTarget->texture->layout = VK_IMAGE_LAYOUT_GENERAL;
+            primaryTex->layout = VK_IMAGE_LAYOUT_GENERAL;
             beginInfo.renderArea.extent = {framebufferInfo.width,framebufferInfo.height};
 
             std::cerr << "[DIAG startRP-tex] format=" << attachmentDescription.format
@@ -538,16 +590,21 @@ _NAMESPACE_BEGIN_
                       << " initLayout=" << attachmentDescription.initialLayout
                       << " finalLayout=" << attachmentDescription.finalLayout
                       << " fb=" << framebufferInfo.width << "x" << framebufferInfo.height
-                      << " img=" << (void*)textureTarget->texture->img
+                      << " img=" << (void*)primaryTex->img
                       << " view=" << (void*)attachmentView
                       << std::endl;
         }
 
-        VkClearValue val {};
-        val.color.float32[0] = desc.colorAttachment->clearColor.r;
-        val.color.float32[1] = desc.colorAttachment->clearColor.g;
-        val.color.float32[2] = desc.colorAttachment->clearColor.b;
-        val.color.float32[3] = desc.colorAttachment->clearColor.a;
+        deferredClearValues.clear();
+        deferredClearValues.resize(attachmentCount);
+        for(unsigned i = 0; i < attachmentCount; ++i){
+            VkClearValue & val = deferredClearValues[i];
+            val = {};
+            val.color.float32[0] = desc.colorAttachments[i].clearColor.r;
+            val.color.float32[1] = desc.colorAttachments[i].clearColor.g;
+            val.color.float32[2] = desc.colorAttachments[i].clearColor.b;
+            val.color.float32[3] = desc.colorAttachments[i].clearColor.a;
+        }
 
         beginInfo.renderPass = activeRenderPass;
         beginInfo.framebuffer = activeFramebuffer;
@@ -556,10 +613,9 @@ _NAMESPACE_BEGIN_
         // bind* calls (e.g. image layout transitions) are recorded OUTSIDE
         // the render pass instance — Vulkan forbids image layout transitions
         // for non-attachment images inside a render pass.
-        deferredClearValue = val;
         deferredBeginInfo = beginInfo;
-        deferredBeginInfo.clearValueCount = 1;
-        deferredBeginInfo.pClearValues = &deferredClearValue;
+        deferredBeginInfo.clearValueCount = attachmentCount;
+        deferredBeginInfo.pClearValues = deferredClearValues.data();
         renderPassBeginDeferred = true;
     };
 
@@ -754,6 +810,12 @@ _NAMESPACE_BEGIN_
                 return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
             case GERenderTarget::CommandBuffer::TriangleStrip:
                 return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+            case GERenderTarget::CommandBuffer::Line:
+                return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+            case GERenderTarget::CommandBuffer::LineStrip:
+                return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+            case GERenderTarget::CommandBuffer::Point:
+                return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
         }
         return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     }

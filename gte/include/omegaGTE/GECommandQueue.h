@@ -31,7 +31,11 @@ _NAMESPACE_BEGIN_
         GETextureRenderTarget *tRenderTarget = nullptr;
         using ColorAttachment = GERenderTarget::RenderPassDesc::ColorAttachment;
         using DepthStencilAttachment = GERenderTarget::RenderPassDesc::DepthStencilAttachment;
-        ColorAttachment *colorAttachment;
+        /// Per-color-attachment load/clear state. Index 0 is the primary
+        /// color attachment (falls back to the render target's native texture
+        /// when no per-attachment texture is supplied). Indices > 0 require an
+        /// explicit texture.
+        OmegaCommon::Vector<ColorAttachment> colorAttachments;
         DepthStencilAttachment depthStencilAttachment;
         bool multisampleResolve = false;
         using MultisampleResolveDesc = GERenderTarget::RenderPassDesc::MultisampleResolveDesc;

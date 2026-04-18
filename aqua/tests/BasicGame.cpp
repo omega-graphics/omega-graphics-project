@@ -8,12 +8,10 @@ public:
         auto &rt = renderTarget();
         auto cmdBuf = rt->commandBuffer();
 
-        OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment color(
-            {0.1f, 0.1f, 0.1f, 1.0f},
-            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear);
-
         OmegaGTE::GERenderTarget::RenderPassDesc passDesc {};
-        passDesc.colorAttachment = &color;
+        passDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+            {0.1f, 0.1f, 0.1f, 1.0f},
+            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
 
         cmdBuf->startRenderPass(passDesc);
         cmdBuf->endRenderPass();

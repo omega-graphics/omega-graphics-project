@@ -122,9 +122,9 @@ static void renderAndBlit(int w, int h){
         auto cb = textureTarget->commandBuffer();
 
         OmegaGTE::GERenderTarget::RenderPassDesc rp {};
-        rp.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+        rp.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
             {0.f, 0.f, 0.f, 1.f},
-            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear);
+            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
         rp.depthStencilAttachment.disabled = true;
 
         OmegaGTE::GEViewport vp {0, 0, (float)w, (float)h, 0, 1.f};
@@ -154,9 +154,9 @@ static void renderAndBlit(int w, int h){
         auto cb = nativeTarget->commandBuffer();
 
         OmegaGTE::GERenderTarget::RenderPassDesc rp {};
-        rp.colorAttachment = new OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+        rp.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
             {1.f, 0.f, 1.f, 1.f},  // magenta clear — visible if quad doesn't draw
-            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear);
+            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
         rp.depthStencilAttachment.disabled = true;
 
         OmegaGTE::GEViewport vp {0, 0, (float)w, (float)h, 0, 1.f};
@@ -282,7 +282,7 @@ static void start_application(GtkApplication *app, gpointer){
         OmegaGTE::RenderPipelineDescriptor desc {};
         desc.vertexFunc = shaderLib->shaders["colorVertex"];
         desc.fragmentFunc = shaderLib->shaders["colorFragment"];
-        desc.colorPixelFormat = OmegaGTE::PixelFormat::RGBA8Unorm;
+        desc.colorPixelFormats = { OmegaGTE::PixelFormat::RGBA8Unorm };
         desc.depthAndStencilDesc = {false, false};
         desc.cullMode = OmegaGTE::RasterCullMode::None;
         desc.triangleFillMode = OmegaGTE::TriangleFillMode::Solid;
@@ -298,7 +298,7 @@ static void start_application(GtkApplication *app, gpointer){
         OmegaGTE::RenderPipelineDescriptor desc {};
         desc.vertexFunc = shaderLib->shaders["copyVertexFunc"];
         desc.fragmentFunc = shaderLib->shaders["copyFragFunc"];
-        desc.colorPixelFormat = nativeTarget->pixelFormat();
+        desc.colorPixelFormats = { nativeTarget->pixelFormat() };
         desc.depthAndStencilDesc = {false, false};
         desc.cullMode = OmegaGTE::RasterCullMode::None;
         desc.triangleFillMode = OmegaGTE::TriangleFillMode::Solid;
