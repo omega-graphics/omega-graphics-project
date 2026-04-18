@@ -2,7 +2,7 @@
 
 ## Goal
 
-Close every gap in OmegaGTE's three pipeline types (Render, Compute, Blit) and introduce a formal `BlitPipeline` abstraction for programmable blit operations. This document inventories what each pipeline can and cannot do today, what each backend (D3D12, Metal, Vulkan) supports natively, and proposes the minimal set of extensions to bring all three to feature parity.
+Close every gap in OmegaGTE's three pipeline types (Render, Compute). This document inventories what each pipeline can and cannot do today, what each backend (D3D12, Metal, Vulkan) supports natively, and proposes the minimal set of extensions to bring all three to feature parity.
 
 Ray tracing is covered separately in `Raytracing-Full-Implementation-Plan.md` and is not repeated here.
 
@@ -482,10 +482,10 @@ void setRenderPushConstants(const void *data, unsigned size, unsigned offset = 0
 - **Metal**: `setBytes:` is trivial and has no PSO interaction. The buffer index must not conflict with bound resources.
 - **Vulkan**: Push constants are declared in `VkPipelineLayout`. The pipeline layout must include a `VkPushConstantRange` at creation time.
 
-**OmegaSL integration**: Push constants need a way to be declared in the shader language. Propose a `pushconstant` keyword:
+**OmegaSL integration**: Push constants need a way to be declared in the shader language. Propose a `pushconst` keyword:
 
 ```
-pushconstant PerFrameData {
+pushconst PerFrameData {
     float4x4 viewProjection;
     float time;
 };
@@ -525,7 +525,7 @@ struct ComputePipelineDescriptor {
 
 ---
 
-## Extension 3: Blit Pipeline — `GEBlitPipeline`
+## Extension 3: Blits
 
 ### Design Rationale
 
@@ -915,10 +915,20 @@ Extension 2.3 (threadgroup override) ── deferred
 
 1. **Vertex input layout scope**: Should the vertex input descriptor be part of the pipeline state (baked at creation), or should vertex buffer formats be set dynamically on the command encoder? Baked is what all three APIs prefer (it's part of the PSO), but dynamic vertex input exists on Vulkan via `VK_EXT_vertex_input_dynamic_state`. Baked is the conservative, portable choice.
 
+ANSWER: Vertex Input Layout should be baked at creation.
+
 2. **Blit pipeline vs. post-process pipeline**: The proposed `BlitPipeline` is essentially a specialized render pipeline with no vertex input. Should it be a distinct pipeline type, or should the render pipeline simply support a "no vertex buffer, full-screen triangle" mode? A distinct type is cleaner for the common case; collapsing into render is more flexible but adds API surface to the render path.
+
+ANSWER: Just move blit ops into Render Pipeline. (No `BlitPipeline` type)
 
 3. **Mipmap generation shader**: D3D12 has no built-in mipmap generation. Should the engine ship an internal compute shader for this, or should it use the blit pipeline with a downsample fragment shader? Compute is more efficient (one dispatch per mip, no render pass overhead) but requires an internal OmegaSL compute shader compiled at build time.
 
+ANWSER: Sure, include a OmegaSL shader for mipmap gen on D3D12.
+
 4. **Multi-draw-indirect**: The current proposal covers single-draw-indirect. Multi-draw-indirect (multiple draws from one buffer in a single call) is a significant GPU-driven rendering feature. It requires `multiDrawIndirect` on Vulkan, `ExecuteIndirect` with count on D3D12, and `MTLIndirectCommandBuffer` on Metal. Should this be included in this plan or deferred?
 
+ANSWER: Add as a later phase in this plan.
+
 5. **Color attachment count in `RenderPassDescriptor`**: The MRT proposal changes `colorAttachment` from a single pointer to a vector. This is a breaking change for existing code that sets `desc.colorAttachment = &attachment`. What migration strategy: deprecate + new field, or break and fix all call sites?
+
+ANSWER: Break and fix call sites. We want a working API without adding zillions of unecessary deprecations everywhere.

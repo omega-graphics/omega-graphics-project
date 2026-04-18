@@ -308,12 +308,6 @@ Create a helper that takes `IDXGIAdapter1*` + a temporary `ID3D12Device`, calls 
 
 **Files:** `gte/src/d3d12/GED3D12.cpp`
 
-### Phase 5: Vulkan backend
-
-Query `VkPhysicalDeviceFeatures`, `VkPhysicalDeviceLimits`, and relevant extension feature structs via `vkGetPhysicalDeviceFeatures2`. Populate all fields.
-
-**Files:** `gte/src/vulkan/GEVulkan.cpp`
-
 Notes:
 
   1. maxBufferSize = UINT64_MAX. D3D12 has no documented per-buffer cap —       
@@ -332,6 +326,13 @@ Notes:
   read GetTimestampFrequency. Cheap, but if it ever becomes a cold-start concern
    the frequency is also retrievable by caching it on the device and querying
   lazily on first use. 
+
+### Phase 5: Vulkan backend
+
+Query `VkPhysicalDeviceFeatures`, `VkPhysicalDeviceLimits`, and relevant extension feature structs via `vkGetPhysicalDeviceFeatures2`. Populate all fields.
+
+**Files:** `gte/src/vulkan/GEVulkan.cpp`
+
 
 Notes: 
 

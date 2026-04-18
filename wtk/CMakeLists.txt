@@ -87,9 +87,18 @@ endif()
 set(THIRD_PARTY_SRC_DIR ${OMEGAWTK_SOURCE_DIR}/deps)
 set(THIRD_PARTY_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/deps)
 
-
-
+set(ICU_DEP_ROOT "${THIRD_PARTY_SRC_DIR}/icu")
+set(ICU_SOURCE_ROOT "${ICU_DEP_ROOT}/code")
 set(ICU_VERSION "78")
+set(ICU_VERSION_HEADER "${ICU_SOURCE_ROOT}/icu4c/source/common/unicode/uvernum.h")
+
+if(EXISTS "${ICU_VERSION_HEADER}")
+	file(STRINGS "${ICU_VERSION_HEADER}" ICU_VERSION_LINE
+		REGEX "^#define U_ICU_VERSION_SHORT[ \t]+\"[0-9]+\"")
+	if(ICU_VERSION_LINE)
+		string(REGEX REPLACE ".*\"([0-9]+)\".*" "\\1" ICU_VERSION "${ICU_VERSION_LINE}")
+	endif()
+endif()
 
 if(TARGET_WIN32)
 
@@ -99,14 +108,14 @@ file(MAKE_DIRECTORY  ${THIRD_PARTY_OUTPUT_DIR}/icu/lib)
 add_third_party(
 	CUSTOM_PROJECT
 	NAME icu
-	SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/allinone"
-	BINARY_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/allinone"
+	SOURCE_DIR "${ICU_SOURCE_ROOT}/icu4c/source/allinone"
+	BINARY_DIR "${ICU_SOURCE_ROOT}/icu4c/source/allinone"
 	INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/icu"
 	CONF ""
 	BUILD msbuild allinone.sln /p:Configuration=Release /p:SkipUWP=true
-	INSTALL ${CMAKE_COMMAND} -E copy_directory "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/include" "${THIRD_PARTY_OUTPUT_DIR}/icu/include"
-	&& ${CMAKE_COMMAND} -E copy "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/bin64/icuuc${ICU_VERSION}.dll" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/bin64/icudt${ICU_VERSION}.dll" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/bin64/icuin${ICU_VERSION}.dll" "${THIRD_PARTY_OUTPUT_DIR}/icu/bin"
-	&& ${CMAKE_COMMAND} -E copy "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/lib64/icuuc.lib" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/lib64/icudt.lib" "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/lib64/icuin.lib" "${THIRD_PARTY_OUTPUT_DIR}/icu/lib"
+	INSTALL ${CMAKE_COMMAND} -E copy_directory "${ICU_SOURCE_ROOT}/icu4c/include" "${THIRD_PARTY_OUTPUT_DIR}/icu/include"
+	&& ${CMAKE_COMMAND} -E copy "${ICU_SOURCE_ROOT}/icu4c/bin64/icuuc${ICU_VERSION}.dll" "${ICU_SOURCE_ROOT}/icu4c/bin64/icudt${ICU_VERSION}.dll" "${ICU_SOURCE_ROOT}/icu4c/bin64/icuin${ICU_VERSION}.dll" "${THIRD_PARTY_OUTPUT_DIR}/icu/bin"
+	&& ${CMAKE_COMMAND} -E copy "${ICU_SOURCE_ROOT}/icu4c/lib64/icuuc.lib" "${ICU_SOURCE_ROOT}/icu4c/lib64/icudt.lib" "${ICU_SOURCE_ROOT}/icu4c/lib64/icuin.lib" "${THIRD_PARTY_OUTPUT_DIR}/icu/lib"
 	EXPORT_SHARED_LIBS "icuuc:lib/icuuc.lib" "icudata:lib/icudt.lib" "icui18n:lib/icuin.lib"
 	EXPORT_INCLUDE_DIRS "include")
 
@@ -119,10 +128,10 @@ if(TARGET_IOS)
 	add_third_party(
 		CUSTOM_PROJECT
 		NAME icu_tools 
-		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}" 
+		SOURCE_DIR "${ICU_DEP_ROOT}" 
 		BINARY_DIR "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac"
 		INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac"
-		CONF cd "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac" &&  ${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu
+		CONF cd "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac" &&  ${ICU_SOURCE_ROOT}/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu
 		BUILD make all
 		INSTALL echo "ICU Cross Tools Complete")
 		
@@ -130,13 +139,13 @@ if(TARGET_IOS)
 	add_third_party(
 		CUSTOM_PROJECT
 		NAME icu
-		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}"
+		SOURCE_DIR "${ICU_DEP_ROOT}"
 		BINARY_DIR "${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_ios"
 		INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/icu"
 		CONF
 		export CFLAGS=--sysroot=${CMAKE_OSX_SYSROOT} &&
 		export CXXFLAGS=--sysroot=${CMAKE_OSX_SYSROOT} &&
-		${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu --with-cross-build=${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac
+		${ICU_SOURCE_ROOT}/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu --with-cross-build=${THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac
 		BUILD make all
 		INSTALL make install
 		EXPORT_SHARED_LIBS "icuuc:lib/libicuuc${CMAKE_SHARED_LIBRARY_SUFFIX}" "icudata:lib/libicudata${CMAKE_SHARED_LIBRARY_SUFFIX}" "icui18n:lib/libicui18n${CMAKE_SHARED_LIBRARY_SUFFIX}"
@@ -146,10 +155,10 @@ else()
 	add_third_party(
 		CUSTOM_PROJECT
 		NAME icu
-		SOURCE_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source"
-		BINARY_DIR "${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source"
+		SOURCE_DIR "${ICU_SOURCE_ROOT}/icu4c/source"
+		BINARY_DIR "${ICU_SOURCE_ROOT}/icu4c/source"
 		INSTALL_DIR "${THIRD_PARTY_OUTPUT_DIR}/icu"
-		CONF  ${THIRD_PARTY_SRC_DIR}/icu-${ICU_VERSION}/code/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu
+		CONF  ${ICU_SOURCE_ROOT}/icu4c/source/configure --prefix=${THIRD_PARTY_OUTPUT_DIR}/icu
 		BUILD make all
 		INSTALL make install
 		EXPORT_SHARED_LIBS "icuuc:lib/libicuuc${CMAKE_SHARED_LIBRARY_SUFFIX}" "icudata:lib/libicudata${CMAKE_SHARED_LIBRARY_SUFFIX}" "icui18n:lib/libicui18n${CMAKE_SHARED_LIBRARY_SUFFIX}"

@@ -1,46 +1,65 @@
 {
-    "variables":{
-       "third_party_dest":"./deps"
+    "project": "OMEGAWTK",
+    "variables": {
+        "third_party_dest": "./deps"
     },
-    "rootCommands":[
-    ],
-    "commands":[
-         {
-            "type":"git_clone",
-            "url":"https://github.com/glennrp/libpng.git",
-            "dest":"$(third_party_dest)/libpng/code",
-            "branch":"default"
+    "dependencies": [
+        {
+            "name": "libpng",
+            "type": "git",
+            "url": "https://github.com/glennrp/libpng.git",
+            "dest": "$(third_party_dest)/libpng/code"
         },
         {
-            "type":"git_clone",
-            "url":"https://github.com/libjpeg-turbo/libjpeg-turbo.git",
-            "dest":"$(third_party_dest)/libjpeg-turbo/code",
-            "branch":"2.0.x"
+            "name": "libjpeg-turbo",
+            "type": "git",
+            "url": "https://github.com/libjpeg-turbo/libjpeg-turbo.git",
+            "dest": "$(third_party_dest)/libjpeg-turbo/code",
+            "ref": "2.0.x"
         },
         {
-            "type":"git_clone",
-            "url":"https://gitlab.com/libtiff/libtiff.git",
-            "dest":"$(third_party_dest)/libtiff/code",
-            "branch":"default"
+            "name": "libtiff",
+            "type": "git",
+            "url": "https://gitlab.com/libtiff/libtiff.git",
+            "dest": "$(third_party_dest)/libtiff/code"
         },
         {
-            "type":"git_clone",
-            "url":"https://github.com/madler/zlib.git",
-            "dest":"$(third_party_dest)/zlib/code",
-            "branch":"default"
-         },
-         {
-             "type":"git_clone",
-             "url":"https://github.com/unicode-org/icu.git",
-             "dest":"$(third_party_dest)/icu-78/code",
-             "branch":"maint/maint-78"
-         },
-         {
-             "type":"git_clone",
-             "url":"https://gitlab.gnome.org/GNOME/libxml2.git",
-             "dest":"$(third_party_dest)/libxml2/code",
-             "branch":"default"
-         }
+            "name": "zlib",
+            "type": "git",
+            "url": "https://github.com/madler/zlib.git",
+            "dest": "$(third_party_dest)/zlib/code"
+        },
+        {
+            "name": "icu",
+            "type": "git",
+            "url": "https://github.com/unicode-org/icu.git",
+            "dest": "$(third_party_dest)/icu/code",
+            "version_source": {
+                "channel": "stable",
+                "strategy": "git-branch-pattern",
+                "repo": "unicode-org/icu",
+                "pattern": "maint/maint-{major}",
+                "major_source": {
+                    "type": "github-releases",
+                    "repo": "unicode-org/icu"
+                }
+            }
+        },
+        {
+            "name": "libxml2",
+            "type": "git",
+            "url": "https://gitlab.gnome.org/GNOME/libxml2.git",
+            "dest": "$(third_party_dest)/libxml2/code"
+        },
+        {
+            "name": "ffmpeg",
+            "type": "git",
+            "url": "https://github.com/FFmpeg/FFmpeg.git",
+            "dest": "$(third_party_dest)/ffmpeg/code",
+            "platforms": [
+                "linux",
+                "android"
+            ]
+        }
     ]
 }
-
