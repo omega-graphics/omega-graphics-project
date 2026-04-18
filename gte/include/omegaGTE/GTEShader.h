@@ -13,7 +13,7 @@ struct GTEShaderLibrary {
     std::map<std::string,SharedHandle<GTEShader>> shaders;
 };
 
-size_t OMEGAGTE_EXPORT omegaSLStructSize(OmegaCommon::Vector<omegasl_data_type> fields) noexcept;
+size_t OMEGAGTE_EXPORT omegaSLStructStride(OmegaCommon::Vector<omegasl_data_type> fields) noexcept;
 
 struct OMEGAGTE_EXPORT GEBufferWriter {
     OMEGACOMMON_CLASS("OmegaGTE.GEBufferWriter")

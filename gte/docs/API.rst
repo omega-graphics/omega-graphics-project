@@ -413,7 +413,7 @@ Reading data with GEBufferReader
 Struct size helper
 ~~~~~~~~~~~~~~~~~~
 
-.. cpp:function:: size_t OmegaGTE::omegaSLStructSize(OmegaCommon::Vector<omegasl_data_type> fields)
+.. cpp:function:: size_t OmegaGTE::omegaSLStructStride(OmegaCommon::Vector<omegasl_data_type> fields)
 
     Returns the byte size of an OmegaSL struct with the given field types,
     accounting for platform alignment. Use this to compute ``objectStride``
@@ -422,7 +422,7 @@ Struct size helper
 .. code-block:: cpp
 
     // Struct in OmegaSL: { float4 pos; float2 uv; }
-    size_t stride = OmegaGTE::omegaSLStructSize(
+    size_t stride = OmegaGTE::omegaSLStructStride(
         { OMEGASL_DATA_FLOAT4, OMEGASL_DATA_FLOAT2 });
 
     OmegaGTE::BufferDescriptor desc;

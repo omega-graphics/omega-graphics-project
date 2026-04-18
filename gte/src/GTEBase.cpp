@@ -11,7 +11,7 @@ _NAMESPACE_BEGIN_
 
 const long double PI = std::acos(-1);
 
-size_t omegaSLStructSize(OmegaCommon::Vector<omegasl_data_type> data) noexcept{
+size_t omegaSLStructStride(OmegaCommon::Vector<omegasl_data_type> data) noexcept{
     size_t s = 0;
     size_t biggestWord = 1;
     OmegaCommon::Vector<size_t> data_sizes;
@@ -121,6 +121,27 @@ size_t omegaSLStructSize(OmegaCommon::Vector<omegasl_data_type> data) noexcept{
         auto padding = s_after % biggestWord;
         s += padding + s_after;
     }
+
+#ifdef TARGET_VULKAN
+    // std430: SSBO struct stride = ceil(rawSize / structAlign) * structAlign,
+    // where structAlign = max(member std430 alignment). vec3/vec4/matrices = 16,
+    // vec2 = 8, scalars = 4.
+    size_t structAlign = 1;
+    for(auto d : data){
+        size_t a;
+        switch(d){
+            case OMEGASL_FLOAT: case OMEGASL_INT: case OMEGASL_UINT:
+                a = 4; break;
+            case OMEGASL_FLOAT2: case OMEGASL_INT2: case OMEGASL_UINT2:
+                a = 8; break;
+            default:
+                a = 16; break;
+        }
+        if(a > structAlign) structAlign = a;
+    }
+    size_t rem = s % structAlign;
+    if(rem != 0) s += structAlign - rem;
+#endif
 
     return s;
 }

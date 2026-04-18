@@ -16,7 +16,7 @@ alignment boundary. The struct alignment equals its largest member's alignment.
 | `{ vec4 a; vec3 b; }`                | 28       | 16           | **32**        |
 
 Today `GEVulkanBufferWriter::sendToBuffer` writes fields back-to-back (raw
-size). `omegaSLStructSize` returns the raw size. When the raw size is not a
+size). `omegaSLStructStride` returns the raw size. When the raw size is not a
 multiple of the struct alignment, the GPU reads subsequent array elements at the
 wrong offsets — producing garbage data and invisible geometry.
 
@@ -42,7 +42,7 @@ Array element stride = `ceil(struct_raw_size / struct_alignment) * struct_alignm
 
 ### 1. New helper: `std430Alignment` and `std430Stride`
 
-Add to `GTEBase.cpp` alongside `omegaSLStructSize`:
+Add to `GTEBase.cpp` alongside `omegaSLStructStride`:
 
 ```
 size_t omegaSLStd430Alignment(omegasl_data_type type);
@@ -66,7 +66,7 @@ size_t omegaSLStd430StructStride(Vector<omegasl_data_type> fields);
 
 ```
 structAlign = max(omegaSLStd430Alignment(f) for f in fields)
-rawSize     = omegaSLStructSize(fields)   // existing function, returns packed size
+rawSize     = omegaSLStructStride(fields)   // existing function, returns packed size
 stride      = ((rawSize + structAlign - 1) / structAlign) * structAlign
 return stride
 ```
@@ -196,18 +196,18 @@ void structEnd() override {
 separate layout declaration needed), and the per-struct alignment cost is
 negligible.
 
-### 4. `omegaSLStructSize` callers — buffer allocation
+### 4. `omegaSLStructStride` callers — buffer allocation
 
-All callers that use `omegaSLStructSize` to compute buffer allocation sizes for
+All callers that use `omegaSLStructStride` to compute buffer allocation sizes for
 Vulkan SSBOs must switch to `omegaSLStd430StructStride`:
 
 | File | Line(s) | Current | After |
 |------|---------|---------|-------|
-| `wtk/.../RenderTarget.cpp` | 301, 1099 | `omegaSLStructSize({F4,F2,F2})` | `omegaSLStd430StructStride({F4,F2})` |
-| `wtk/.../RenderTarget.cpp` | 1106 | `omegaSLStructSize({F4,F4})` | `omegaSLStd430StructStride({F4,F4})` — no-op (32=32) |
-| `wtk/.../RenderTarget.cpp` | 742 | `omegaSLStructSize({F})` | `omegaSLStd430StructStride({F})` — no-op (4=4) |
-| `wtk/.../RenderTarget.cpp` | 756 | `omegaSLStructSize({F,F4})` | `omegaSLStd430StructStride({F,F4})` — currently 24→32 |
-| `wtk/.../RenderTarget.cpp` | 1568, 1621 | `omegaSLStructSize({F,U,U,F})` | `omegaSLStd430StructStride({F,U,U,F})` — no-op (16=16) |
+| `wtk/.../RenderTarget.cpp` | 301, 1099 | `omegaSLStructStride({F4,F2,F2})` | `omegaSLStd430StructStride({F4,F2})` |
+| `wtk/.../RenderTarget.cpp` | 1106 | `omegaSLStructStride({F4,F4})` | `omegaSLStd430StructStride({F4,F4})` — no-op (32=32) |
+| `wtk/.../RenderTarget.cpp` | 742 | `omegaSLStructStride({F})` | `omegaSLStd430StructStride({F})` — no-op (4=4) |
+| `wtk/.../RenderTarget.cpp` | 756 | `omegaSLStructStride({F,F4})` | `omegaSLStd430StructStride({F,F4})` — currently 24→32 |
+| `wtk/.../RenderTarget.cpp` | 1568, 1621 | `omegaSLStructStride({F,U,U,F})` | `omegaSLStd430StructStride({F,U,U,F})` — no-op (16=16) |
 | `gte/.../BlitTest/main.cpp` | 237 | `{F4,F4}` | no-op |
 | `gte/.../BlitTest/main.cpp` | 252 | `{F4,F2,F2}` | `omegaSLStd430StructStride({F4,F2})` |
 | `gte/.../2DTest/main.cpp` | 80 | `{F4,F4}` | no-op |
@@ -235,12 +235,12 @@ added in the current session should be removed:
 Implementation options (pick one):
 
 - **Compile-time `#ifdef TARGET_VULKAN`** in `GTEBase.cpp` — simplest; mirrors
-  existing `#if defined(TARGET_METAL)` branches in `omegaSLStructSize`.
+  existing `#if defined(TARGET_METAL)` branches in `omegaSLStructStride`.
 - **Runtime parameter** — pass a layout enum (`PackedLayout`, `Std430Layout`).
   More flexible but currently unnecessary.
 
 Recommendation: compile-time gate. On non-Vulkan targets,
-`omegaSLStd430StructStride` returns the same value as `omegaSLStructSize`.
+`omegaSLStd430StructStride` returns the same value as `omegaSLStructStride`.
 
 ## Files Changed
 
@@ -251,7 +251,7 @@ Recommendation: compile-time gate. On non-Vulkan targets,
 | `gte/src/vulkan/GEVulkan.cpp` | `GEVulkanBufferWriter::sendToBuffer` — add stride padding. Extract `sizeForType`/`std430AlignmentForType` helpers. `GEVulkanBufferReader::structEnd` — skip padding bytes. |
 | `gte/src/BufferIO.h` | (no change needed) |
 | `wtk/.../compositor.omegasl` | Revert `_pad` field |
-| `wtk/.../RenderTarget.cpp` | Revert padding writes. Switch `omegaSLStructSize` → `omegaSLStd430StructStride` for textured vertex buffers. |
+| `wtk/.../RenderTarget.cpp` | Revert padding writes. Switch `omegaSLStructStride` → `omegaSLStd430StructStride` for textured vertex buffers. |
 | `gte/tests/vulkan/BlitTest/main.cpp` | Revert `_pad` field and padding writes. Switch to `omegaSLStd430StructStride`. |
 
 ## Testing

@@ -39,7 +39,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     auto computePipeline = gte.graphicsEngine->makeComputePipelineState(pipelineDesc);
     std::cout << "Compute pipeline created" << std::endl;
 
-    size_t structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4});
+    size_t structSize = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4});
     constexpr unsigned elementCount = 64;
 
     OmegaGTE::BufferDescriptor inputDesc{OmegaGTE::BufferDescriptor::Upload, elementCount * structSize, structSize};

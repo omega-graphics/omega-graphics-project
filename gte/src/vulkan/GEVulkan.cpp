@@ -422,6 +422,35 @@ _NAMESPACE_BEGIN_
 
     typedef unsigned char VulkanByte;
 
+    static size_t sizeForType(omegasl_data_type type){
+        switch(type){
+            case OMEGASL_FLOAT:   return sizeof(float);
+            case OMEGASL_FLOAT2:  return sizeof(glm::vec2);
+            case OMEGASL_FLOAT3:  return sizeof(glm::vec3);
+            case OMEGASL_FLOAT4:  return sizeof(glm::vec4);
+            case OMEGASL_INT:
+            case OMEGASL_UINT:    return sizeof(int);
+            case OMEGASL_INT2:
+            case OMEGASL_UINT2:   return sizeof(glm::ivec2);
+            case OMEGASL_INT3:
+            case OMEGASL_UINT3:   return sizeof(glm::ivec3);
+            case OMEGASL_INT4:
+            case OMEGASL_UINT4:   return sizeof(glm::ivec4);
+            default:              return 0;
+        }
+    }
+
+    static size_t std430AlignmentForType(omegasl_data_type type){
+        switch(type){
+            case OMEGASL_FLOAT: case OMEGASL_INT: case OMEGASL_UINT:
+                return 4;
+            case OMEGASL_FLOAT2: case OMEGASL_INT2: case OMEGASL_UINT2:
+                return 8;
+            default:
+                return 16;
+        }
+    }
+
     class GEVulkanBufferWriter : public GEBufferWriter {
         GEVulkanBuffer *_buffer = nullptr;
         VulkanByte *mem_map = nullptr;
@@ -489,51 +518,24 @@ _NAMESPACE_BEGIN_
         void sendToBuffer() override {
             assert(!inStruct && "Struct record must be finished before sending object to buffer");
             assert(mem_map != nullptr && "Output buffer must be mapped before sending data");
-            size_t biggestWord = 1;
-            bool afterBiggest = false;
+
+            size_t structAlign = 1;
             for(auto & b : blocks){
-                size_t si = 0;
-                switch (b.type) {
-                    case OMEGASL_FLOAT : {
-                        si = sizeof(float);
-                        break;
-                    }
-                    case OMEGASL_FLOAT2 : {
-                        si = sizeof(glm::vec2);
-                        break;
-                    }
-                    case OMEGASL_FLOAT3 : {
-                        si = sizeof(glm::vec3);
-                        break;
-                    }
-                    case OMEGASL_FLOAT4 : {
-                        si = sizeof(glm::vec4);
-                        break;
-                    }
-                    case OMEGASL_INT :
-                    case OMEGASL_UINT : {
-                        si = sizeof(int);
-                        break;
-                    }
-                    case OMEGASL_INT2 :
-                    case OMEGASL_UINT2 : {
-                        si = sizeof(glm::ivec2);
-                        break;
-                    }
-                    case OMEGASL_INT3 :
-                    case OMEGASL_UINT3 : {
-                        si = sizeof(glm::ivec3);
-                        break;
-                    }
-                    case OMEGASL_INT4 :
-                    case OMEGASL_UINT4 : {
-                        si = sizeof(glm::ivec4);
-                        break;
-                    }
-                    default: break;
-                }
+                size_t a = std430AlignmentForType(b.type);
+                if(a > structAlign) structAlign = a;
+            }
+
+            for(auto & b : blocks){
+                size_t si = sizeForType(b.type);
                 memcpy(mem_map + currentOffset,b.data,si);
                 currentOffset += si;
+            }
+
+            size_t rem = currentOffset % structAlign;
+            if(rem != 0){
+                size_t padding = structAlign - rem;
+                memset(mem_map + currentOffset, 0, padding);
+                currentOffset += padding;
             }
         }
 
@@ -551,6 +553,8 @@ _NAMESPACE_BEGIN_
         GEVulkanBuffer *_buffer = nullptr;
         VulkanByte *mem_map = nullptr;
         size_t currentOffset = 0;
+
+        OmegaCommon::Vector<omegasl_data_type> readTypes;
     public:
         void setInputBuffer(SharedHandle<GEBuffer> &buffer) override {
             _buffer = (GEVulkanBuffer *)buffer.get();
@@ -561,14 +565,23 @@ _NAMESPACE_BEGIN_
 
         }
         void structBegin() override {
-
+            readTypes.clear();
         }
         void structEnd() override {
-
+            size_t structAlign = 1;
+            for(auto t : readTypes){
+                size_t a = std430AlignmentForType(t);
+                if(a > structAlign) structAlign = a;
+            }
+            size_t rem = currentOffset % structAlign;
+            if(rem != 0){
+                currentOffset += structAlign - rem;
+            }
         }
         void getFloat(float &v) override {
             memcpy(&v,mem_map + currentOffset,sizeof(v));
             currentOffset += sizeof(v);
+            readTypes.push_back(OMEGASL_FLOAT);
         }
         void getFloat2(FVec<2> &v) override {
             glm::vec2 vec;
@@ -576,6 +589,7 @@ _NAMESPACE_BEGIN_
             v[0][0] = vec.x;
             v[1][0] = vec.y;
             currentOffset += sizeof(vec);
+            readTypes.push_back(OMEGASL_FLOAT2);
         }
         void getFloat3(FVec<3> &v) override {
             glm::vec3 vec;
@@ -584,6 +598,7 @@ _NAMESPACE_BEGIN_
             v[1][0] = vec.y;
             v[2][0] = vec.z;
             currentOffset += sizeof(vec);
+            readTypes.push_back(OMEGASL_FLOAT3);
         }
         void getFloat4(FVec<4> &v) override {
             glm::vec4 vec;
@@ -593,6 +608,7 @@ _NAMESPACE_BEGIN_
             v[2][0] = vec.z;
             v[3][0] = vec.w;
             currentOffset += sizeof(vec);
+            readTypes.push_back(OMEGASL_FLOAT4);
         }
         void reset() override {
             vmaUnmapMemory(_buffer->engine->memAllocator,_buffer->alloc);

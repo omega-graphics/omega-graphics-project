@@ -78,7 +78,7 @@ static void render(id<MTLDevice> dev){
 
     auto coord = OmegaGTE::makeColor(1.f,0.f,0.f,1.f);
 
-    size_t structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT4});
+    size_t structSize = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4,OMEGASL_FLOAT4});
 
     std::cout << "STRUCT SIZE:" << structSize << std::endl;
 

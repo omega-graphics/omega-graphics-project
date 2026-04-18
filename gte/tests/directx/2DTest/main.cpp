@@ -58,7 +58,7 @@ void tessalate(){
 
     std::cout << "Created Matrix GRect" << std::endl;
 
-    size_t structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT2});
+    size_t structSize = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4,OMEGASL_FLOAT2});
 
     std::cout << "StructSize:" << structSize << std::endl;
 

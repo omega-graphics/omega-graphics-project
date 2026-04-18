@@ -77,7 +77,7 @@ static void tessellateAndRender(int viewWidth, int viewHeight){
 
     auto color = OmegaGTE::makeColor(1.f, 0.f, 0.f, 1.f);
 
-    size_t structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4, OMEGASL_FLOAT4});
+    size_t structSize = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4, OMEGASL_FLOAT4});
     std::cout << "Struct size: " << structSize << std::endl;
 
     OmegaGTE::BufferDescriptor bufferDescriptor{OmegaGTE::BufferDescriptor::Upload, 6 * structSize, structSize};

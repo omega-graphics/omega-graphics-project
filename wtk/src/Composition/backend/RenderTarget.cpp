@@ -304,7 +304,7 @@ namespace OmegaWTK::Composition {
             directionalBlurPipelineState = gte.graphicsEngine->makeComputePipelineState(desc);
         }
 
-        auto struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT2,OMEGASL_FLOAT2});
+        auto struct_size = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4,OMEGASL_FLOAT2,OMEGASL_FLOAT2});
 
         auto pos = OmegaGTE::FVec<4>::Create();
         auto texCoord = OmegaGTE::FVec<2>::Create();
@@ -903,7 +903,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         }
         auto cb = renderTarget->commandBuffer();
 
-        size_t structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT});
+        size_t structSize = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT});
 
         OmegaGTE::BufferDescriptor bufferDescriptor {OmegaGTE::BufferDescriptor::Upload,structSize,structSize,OmegaGTE::Shared};
 
@@ -917,7 +917,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 //        bufferWriter->sendToBuffer();
 //        bufferWriter->flush();
 
-        structSize =  OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT,OMEGASL_FLOAT4});
+        structSize =  OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT,OMEGASL_FLOAT4});
 
         bufferDescriptor.len = structSize * gradient.stops.size();
         bufferDescriptor.objectStride = structSize;
@@ -1257,7 +1257,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 #endif
                 return;
             }
-            struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT2,OMEGASL_FLOAT2});
+            struct_size = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4,OMEGASL_FLOAT2,OMEGASL_FLOAT2});
         }
         else {
             if(renderPipelineState == nullptr){
@@ -1266,7 +1266,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 #endif
                 return;
             }
-            struct_size = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4,OMEGASL_FLOAT4});
+            struct_size = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4,OMEGASL_FLOAT4});
         }
 
         std::size_t requiredBytes = result.totalVertexCount() * struct_size;
@@ -1556,7 +1556,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                         if(radius <= 0.f){ break; }
 
                         // BlurParams: float radius, uint texWidth, uint texHeight, float angle
-                        auto structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT,OMEGASL_UINT,OMEGASL_UINT,OMEGASL_FLOAT});
+                        auto structSize = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT,OMEGASL_UINT,OMEGASL_UINT,OMEGASL_FLOAT});
                         OmegaGTE::BufferDescriptor bd {OmegaGTE::BufferDescriptor::Upload,structSize,structSize};
                         auto pb = gte.graphicsEngine->makeBuffer(bd);
                         if(pb == nullptr){ break; }
@@ -1609,7 +1609,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
                         float dirAngle = effect.directionalBlur.angle;
 
-                        auto structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT,OMEGASL_UINT,OMEGASL_UINT,OMEGASL_FLOAT});
+                        auto structSize = OmegaGTE::({OMEGASL_FLOAT,OMEGASL_UINT,OMEGASL_UINT,OMEGASL_FLOAT});
                         OmegaGTE::BufferDescriptor bd {OmegaGTE::BufferDescriptor::Upload,structSize,structSize};
                         auto pb = gte.graphicsEngine->makeBuffer(bd);
                         if(pb == nullptr){ break; }

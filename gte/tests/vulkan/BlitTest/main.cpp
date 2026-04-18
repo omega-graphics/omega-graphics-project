@@ -36,7 +36,6 @@ fragment float4 colorFragment(ColorRaster r){
 struct CopyVertex {
     float4 pos;
     float2 texCoord;
-    float2 _pad;
 };
 
 struct CopyRaster internal {
@@ -242,7 +241,7 @@ static void start_application(GtkApplication *app, gpointer){
 
     // ---- Fill triangle vertex buffer (3 verts) ----
     {
-        size_t structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4, OMEGASL_FLOAT4});
+        size_t structSize = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4, OMEGASL_FLOAT4});
         triangleBuffer = gte.graphicsEngine->makeBuffer(
             {OmegaGTE::BufferDescriptor::Upload, 3 * structSize, structSize});
         bufferWriter->setOutputBuffer(triangleBuffer);
@@ -257,7 +256,7 @@ static void start_application(GtkApplication *app, gpointer){
 
     // ---- Fill fullscreen quad buffer (6 verts, 2 triangles) ----
     {
-        size_t structSize = OmegaGTE::omegaSLStructSize({OMEGASL_FLOAT4, OMEGASL_FLOAT2, OMEGASL_FLOAT2});
+        size_t structSize = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4, OMEGASL_FLOAT2, OMEGASL_FLOAT2});
         quadBuffer = gte.graphicsEngine->makeBuffer(
             {OmegaGTE::BufferDescriptor::Upload, 6 * structSize, structSize});
         bufferWriter->setOutputBuffer(quadBuffer);
