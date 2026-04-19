@@ -129,6 +129,22 @@ _NAMESPACE_BEGIN_
         ~GED3D12Engine() override = default;
         ComPtr<ID3D12Debug1> debug_interface;
         ComPtr<ID3D12Device8> d3d12_device;
+        SharedHandle<GTEDevice> gteDevice;
+
+        // Mipmap generation pipeline (compiled from gte/src/shaders/mipmap_gen_2d.omegasl
+        // via the OmegaSL runtime compiler). Lazily created on first use.
+        SharedHandle<GEComputePipelineState> mipmapGenPipeline;
+        std::shared_ptr<omegasl_shader_lib> mipmapGenShaderLib;
+        bool ensureMipmapGenPipeline();
+
+        // Indirect command signatures. Lazily created. These are generic
+        // signatures (no root parameters) carrying a single argument type.
+        ComPtr<ID3D12CommandSignature> drawIndirectSignature;
+        ComPtr<ID3D12CommandSignature> drawIndexedIndirectSignature;
+        ComPtr<ID3D12CommandSignature> dispatchIndirectSignature;
+        ID3D12CommandSignature * getDrawIndirectSignature();
+        ID3D12CommandSignature * getDrawIndexedIndirectSignature();
+        ID3D12CommandSignature * getDispatchIndirectSignature();
         void * underlyingNativeDevice() override {
             return d3d12_device.Get();
         }

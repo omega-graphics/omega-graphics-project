@@ -103,6 +103,144 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         [bp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_dest_texture->resourceBarrier.handle())];
     }
 
+    void GEMetalCommandBuffer::copyBufferToBuffer(SharedHandle<GEBuffer> &src, SharedHandle<GEBuffer> &dest,
+                                                  size_t size, size_t srcOffset, size_t destOffset) {
+        assert(bp && "Must be in BLIT PASS");
+        auto mtl_src = (GEMetalBuffer *)src.get();
+        auto mtl_dest = (GEMetalBuffer *)dest.get();
+
+        if(mtl_src->needsBarrier){
+            [bp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_src->resourceBarrier.handle())];
+        }
+
+        id<MTLBuffer> src_buf = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,mtl_src->metalBuffer.handle());
+        id<MTLBuffer> dest_buf = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,mtl_dest->metalBuffer.handle());
+
+        NSUInteger bytes = size == 0 ? ([src_buf length] - srcOffset) : (NSUInteger)size;
+
+        [bp copyFromBuffer: src_buf
+              sourceOffset: (NSUInteger)srcOffset
+                  toBuffer: dest_buf
+         destinationOffset: (NSUInteger)destOffset
+                      size: bytes];
+
+        mtl_dest->needsBarrier = true;
+        [bp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_dest->resourceBarrier.handle())];
+    }
+
+    void GEMetalCommandBuffer::copyBufferToTexture(SharedHandle<GEBuffer> &src, SharedHandle<GETexture> &dest,
+                                                   size_t bytesPerRow, size_t bytesPerImage,
+                                                   const TextureRegion &destRegion, size_t srcBufferOffset) {
+        assert(bp && "Must be in BLIT PASS");
+        auto mtl_src = (GEMetalBuffer *)src.get();
+        auto mtl_dest = (GEMetalTexture *)dest.get();
+
+        if(mtl_src->needsBarrier){
+            [bp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_src->resourceBarrier.handle())];
+        }
+
+        id<MTLBuffer> src_buf = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,mtl_src->metalBuffer.handle());
+        id<MTLTexture> dest_tex = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,mtl_dest->texture.handle());
+
+        MTLSize   sourceSize  = MTLSizeMake(destRegion.w, destRegion.h,
+                                            destRegion.d == 0 ? 1 : destRegion.d);
+        MTLOrigin destOrigin  = MTLOriginMake(destRegion.x, destRegion.y, destRegion.z);
+
+        [bp copyFromBuffer: src_buf
+             sourceOffset: (NSUInteger)srcBufferOffset
+        sourceBytesPerRow: (NSUInteger)bytesPerRow
+      sourceBytesPerImage: (NSUInteger)bytesPerImage
+               sourceSize: sourceSize
+                toTexture: dest_tex
+         destinationSlice: 0
+         destinationLevel: 0
+        destinationOrigin: destOrigin];
+
+        mtl_dest->needsBarrier = true;
+        [bp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_dest->resourceBarrier.handle())];
+    }
+
+    void GEMetalCommandBuffer::copyTextureToBuffer(SharedHandle<GETexture> &src, SharedHandle<GEBuffer> &dest,
+                                                   size_t bytesPerRow, size_t bytesPerImage,
+                                                   const TextureRegion &srcRegion, size_t destBufferOffset) {
+        assert(bp && "Must be in BLIT PASS");
+        auto mtl_src = (GEMetalTexture *)src.get();
+        auto mtl_dest = (GEMetalBuffer *)dest.get();
+
+        if(mtl_src->needsBarrier){
+            [bp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_src->resourceBarrier.handle())];
+        }
+
+        id<MTLTexture> src_tex = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,mtl_src->texture.handle());
+        id<MTLBuffer> dest_buf = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,mtl_dest->metalBuffer.handle());
+
+        MTLOrigin srcOrigin = MTLOriginMake(srcRegion.x, srcRegion.y, srcRegion.z);
+        MTLSize   srcSize   = MTLSizeMake(srcRegion.w, srcRegion.h,
+                                          srcRegion.d == 0 ? 1 : srcRegion.d);
+
+        [bp copyFromTexture: src_tex
+                sourceSlice: 0
+                sourceLevel: 0
+               sourceOrigin: srcOrigin
+                 sourceSize: srcSize
+                   toBuffer: dest_buf
+          destinationOffset: (NSUInteger)destBufferOffset
+     destinationBytesPerRow: (NSUInteger)bytesPerRow
+   destinationBytesPerImage: (NSUInteger)bytesPerImage];
+
+        mtl_dest->needsBarrier = true;
+        [bp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_dest->resourceBarrier.handle())];
+    }
+
+    void GEMetalCommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture){
+        assert(bp && "Must be in BLIT PASS");
+        auto mtl_tex = (GEMetalTexture *)texture.get();
+
+        if(mtl_tex->needsBarrier){
+            [bp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_tex->resourceBarrier.handle())];
+        }
+
+        id<MTLTexture> tex = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,mtl_tex->texture.handle());
+        [bp generateMipmapsForTexture:tex];
+
+        mtl_tex->needsBarrier = true;
+        [bp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_tex->resourceBarrier.handle())];
+    }
+
+    void GEMetalCommandBuffer::fillBuffer(SharedHandle<GEBuffer> &buffer, uint32_t value,
+                                          size_t offset, size_t size){
+        assert(bp && "Must be in BLIT PASS");
+        auto mtl_buf = (GEMetalBuffer *)buffer.get();
+
+        if(mtl_buf->needsBarrier){
+            [bp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_buf->resourceBarrier.handle())];
+        }
+
+        id<MTLBuffer> buf = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,mtl_buf->metalBuffer.handle());
+        const NSUInteger bufLen = [buf length];
+        const NSUInteger fillSize = (size == 0) ? (bufLen - offset) : (NSUInteger)size;
+
+        const std::uint8_t b0 = static_cast<std::uint8_t>(value & 0xFF);
+        const std::uint8_t b1 = static_cast<std::uint8_t>((value >> 8) & 0xFF);
+        const std::uint8_t b2 = static_cast<std::uint8_t>((value >> 16) & 0xFF);
+        const std::uint8_t b3 = static_cast<std::uint8_t>((value >> 24) & 0xFF);
+        const bool uniform = (b0 == b1) && (b1 == b2) && (b2 == b3);
+
+        if(!uniform){
+            NSLog(@"[GEMetalCommandBuffer::fillBuffer] WARNING: Metal blit fill only supports 8-bit patterns. "
+                   "Requested 32-bit value 0x%08X is not byte-uniform; falling back to low byte 0x%02X. "
+                   "Use a compute shader for non-uniform patterns.",
+                   (unsigned)value, (unsigned)b0);
+        }
+
+        [bp fillBuffer:buf
+                  range:NSMakeRange((NSUInteger)offset, fillSize)
+                  value:b0];
+
+        mtl_buf->needsBarrier = true;
+        [bp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_buf->resourceBarrier.handle())];
+    }
+
     void GEMetalCommandBuffer::finishBlitPass(){
         [bp endEncoding];
         bp = nil;
@@ -545,6 +683,32 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
                      baseInstance:firstInstance];
     };
 
+    void GEMetalCommandBuffer::drawPolygonsIndirect(RenderPassDrawPolygonType polygonType,
+                                                    SharedHandle<GEBuffer> & argumentBuffer,
+                                                    size_t argumentBufferOffset){
+        assert((rp && (cp == nil)) && "Cannot Draw Polygons when not in render pass");
+        auto *metalArgBuffer = (GEMetalBuffer *)argumentBuffer.get();
+        id<MTLBuffer> argBuf = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>, metalArgBuffer->metalBuffer.handle());
+        [rp drawPrimitives:metalPrimitiveTypeForPolygonType(polygonType)
+            indirectBuffer:argBuf
+      indirectBufferOffset:argumentBufferOffset];
+    };
+
+    void GEMetalCommandBuffer::drawIndexedPolygonsIndirect(RenderPassDrawPolygonType polygonType,
+                                                           SharedHandle<GEBuffer> & argumentBuffer,
+                                                           size_t argumentBufferOffset){
+        assert((rp && (cp == nil)) && "Cannot Draw Polygons when not in render pass");
+        assert(pendingIndexBuffer != nil && "Index buffer must be set before drawIndexedPolygonsIndirect");
+        auto *metalArgBuffer = (GEMetalBuffer *)argumentBuffer.get();
+        id<MTLBuffer> argBuf = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>, metalArgBuffer->metalBuffer.handle());
+        [rp drawIndexedPrimitives:metalPrimitiveTypeForPolygonType(polygonType)
+                        indexType:pendingIndexType
+                      indexBuffer:pendingIndexBuffer
+                indexBufferOffset:0
+                   indirectBuffer:argBuf
+             indirectBufferOffset:argumentBufferOffset];
+    };
+
     void GEMetalCommandBuffer::finishRenderPass(){
         renderPipelineState = nullptr;
         [rp endEncoding];
@@ -620,6 +784,17 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         assert(cp != nil && "");
         auto & threadgroup_desc = computePipelineState->computeShader->internal.threadgroupDesc;
         [cp dispatchThreads:MTLSizeMake(x,y,z) threadsPerThreadgroup:MTLSizeMake(threadgroup_desc.x,threadgroup_desc.y,threadgroup_desc.z)];
+    }
+
+    void GEMetalCommandBuffer::dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
+                                                            size_t argumentBufferOffset) {
+        assert(cp != nil && "Must be in a compute pass to dispatch threadgroups");
+        auto & threadgroup_desc = computePipelineState->computeShader->internal.threadgroupDesc;
+        auto *metalArgBuffer = (GEMetalBuffer *)argumentBuffer.get();
+        id<MTLBuffer> argBuf = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>, metalArgBuffer->metalBuffer.handle());
+        [cp dispatchThreadgroupsWithIndirectBuffer:argBuf
+                              indirectBufferOffset:argumentBufferOffset
+                             threadsPerThreadgroup:MTLSizeMake(threadgroup_desc.x,threadgroup_desc.y,threadgroup_desc.z)];
     }
 
     void GEMetalCommandBuffer::finishComputePass(){

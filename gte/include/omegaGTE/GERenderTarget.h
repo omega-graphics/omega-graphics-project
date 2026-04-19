@@ -199,6 +199,23 @@ _NAMESPACE_BEGIN_
                                               size_t startIndex, int baseVertex,
                                               unsigned instanceCount, unsigned firstInstance = 0);
 
+            /// @brief Encodes a non-indexed indirect draw command.
+            /// @param polygonType The Primitive Topology.
+            /// @param argumentBuffer Buffer containing a `GEDrawIndirectCommand`.
+            /// @param argumentBufferOffset Byte offset into the argument buffer.
+            void drawPolygonsIndirect(PolygonType polygonType,
+                                       SharedHandle<GEBuffer> & argumentBuffer,
+                                       size_t argumentBufferOffset = 0);
+
+            /// @brief Encodes an indexed indirect draw command.
+            /// Requires a prior `setIndexBuffer()` call.
+            /// @param polygonType The Primitive Topology.
+            /// @param argumentBuffer Buffer containing a `GEDrawIndexedIndirectCommand`.
+            /// @param argumentBufferOffset Byte offset into the argument buffer.
+            void drawIndexedPolygonsIndirect(PolygonType polygonType,
+                                              SharedHandle<GEBuffer> & argumentBuffer,
+                                              size_t argumentBufferOffset = 0);
+
             /// @brief Finish Encoding a Render Pass.
             /// @paragraph This method must be called once a draw command has been encoded into the Render Pass.
             void endRenderPass();
@@ -217,6 +234,10 @@ _NAMESPACE_BEGIN_
 
             /// @see GECommandBuffer
             void dispatchThreads(unsigned x, unsigned y, unsigned z);
+
+            /// @see GECommandBuffer
+            void dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
+                                               size_t argumentBufferOffset = 0);
 
             /// @see GECommandBuffer
             void endComputePass();

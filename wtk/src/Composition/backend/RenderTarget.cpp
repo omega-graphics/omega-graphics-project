@@ -1609,7 +1609,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
                         float dirAngle = effect.directionalBlur.angle;
 
-                        auto structSize = OmegaGTE::({OMEGASL_FLOAT,OMEGASL_UINT,OMEGASL_UINT,OMEGASL_FLOAT});
+                        auto structSize = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT,OMEGASL_UINT,OMEGASL_UINT,OMEGASL_FLOAT});
                         OmegaGTE::BufferDescriptor bd {OmegaGTE::BufferDescriptor::Upload,structSize,structSize};
                         auto pb = gte.graphicsEngine->makeBuffer(bd);
                         if(pb == nullptr){ break; }

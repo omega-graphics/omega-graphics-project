@@ -11,9 +11,9 @@ UI Model
 Overview
 --------
 
-OmegaWTK's UI model is a layered architecture that separates application
-logic from visual presentation and GPU execution. The model has four primary
-layers, each with a distinct responsibility:
+OmegaWTK is inspired by Chromium's renderer (Blink), and View engine. (Aura)
+It complete virtualizes the view tree and renderer allowing for a uniform cross-platform result.
+(The UI looks the same on all platforms, and has the same capabilities.) 
 
 1. **Widgets** — application-facing objects that define behaviour and
    respond to user input.

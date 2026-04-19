@@ -282,7 +282,7 @@ void drawIndexedPolygonsInstanced(PolygonType polygonType, unsigned indexCount,
 
 All three backends support instancing natively. The `firstInstance` parameter is universally supported on desktop-class hardware (Vulkan guarantees it via `drawIndirectFirstInstance` on desktop).
 
-### 1.5 Indirect Drawing
+### 1.5 Indirect Drawing ✅ Implemented
 
 Indirect drawing reads draw parameters from a GPU buffer, enabling GPU-driven rendering pipelines.
 
@@ -410,7 +410,7 @@ All three backends support all primitive types natively.
 
 ## Extension 2: Compute Pipeline Completion
 
-### 2.1 Indirect Dispatch
+### 2.1 Indirect Dispatch ✅ Implemented
 
 **Add to `GECommandBuffer` (public, compute pass section):**
 
@@ -697,7 +697,7 @@ These would be OmegaSL sources compiled at build time and bundled with the engin
 
 Independent of the programmable blit pipeline, the existing fixed-function blit pass needs these additional commands:
 
-### 4.1 Buffer-to-Buffer Copy
+### 4.1 Buffer-to-Buffer Copy ✅ Implemented
 
 **Add to `GECommandBuffer` (public, blit pass section):**
 
@@ -719,7 +719,7 @@ virtual void copyBufferToBuffer(SharedHandle<GEBuffer> & src,
 |---|---|---|
 | `CopyBufferRegion()` | `copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:` | `vkCmdCopyBuffer()` |
 
-### 4.2 Buffer ↔ Texture Transfers
+### 4.2 Buffer ↔ Texture Transfers ✅ Implemented
 
 **Add to `GECommandBuffer`:**
 
@@ -761,7 +761,7 @@ virtual void copyTextureToBuffer(SharedHandle<GETexture> & src,
 - **Metal**: No alignment requirement on `bytesPerRow` (Metal handles it internally).
 - **Vulkan**: `bufferRowLength` in `VkBufferImageCopy` can be 0 (tightly packed) or a specific value. No special alignment required by spec, but optimal transfer may benefit from device-specific alignment.
 
-### 4.3 Mipmap Generation
+### 4.3 Mipmap Generation ✅ Implemented
 
 **Add to `GECommandBuffer` (public, blit pass section):**
 
@@ -785,7 +785,7 @@ virtual void generateMipmaps(SharedHandle<GETexture> & texture) = 0;
 - D3D12 and Vulkan require manual implementation. The Vulkan approach using `vkCmdBlitImage` is well-tested. D3D12 should use a similar approach with render-to-mip or compute downsampling.
 - The internal downsample shader (for D3D12) can be shared with the `BlitPipeline` infrastructure — it's the same "read one mip, write to next mip" pattern.
 
-### 4.4 Texture and Buffer Fills
+### 4.4 Texture and Buffer Fills ✅ Implemented
 
 **Add to `GECommandBuffer` (public, blit pass section):**
 
@@ -862,18 +862,19 @@ Extension 2.3 (threadgroup override) ── deferred
 - 5.1, 5.2: Bug fixes ✅
 - 1.3: Indexed drawing ✅
 - 1.4: Instanced drawing ✅
-- 4.1: Buffer-to-buffer copy
-- 4.2: Buffer ↔ texture transfers
+- 4.1: Buffer-to-buffer copy ✅
+- 4.2: Buffer ↔ texture transfers ✅
 - 1.7: Additional polygon types  ✅
 
 **Tier 2 — High Impact, Medium Risk** (implement second):
 - 1.1: Vertex input layout (touches PSO creation on all backends) ✅
 - 1.2: Blend state (touches PSO creation on all backends) ✅
-- 2.1: Indirect dispatch
-- 4.3: Mipmap generation
+- 2.1: Indirect dispatch ✅
+- 4.3: Mipmap generation ✅
+- 4.4: Buffer fill ✅
 
 **Tier 3 — Medium Impact, Higher Complexity** (implement third):
-- 1.5: Indirect drawing
+- 1.5: Indirect drawing ✅
 - 1.6: Multiple color attachments  ✅
 - 3.x: Blit pipeline (requires internal shaders, render pass management)
 
@@ -923,7 +924,9 @@ ANSWER: Do the proposed BlitPipeline.
 
 3. **Mipmap generation shader**: D3D12 has no built-in mipmap generation. Should the engine ship an internal compute shader for this, or should it use the blit pipeline with a downsample fragment shader? Compute is more efficient (one dispatch per mip, no render pass overhead) but requires an internal OmegaSL compute shader compiled at build time.
 
-ANWSER: Sure, include a OmegaSL shader for mipmap gen on D3D12.
+ANWSER: Sure, include a OmegaSL compute shader for mipmap gen on D3D12. (Please implement this before proceeding to phase 3.)
+
+RESOLUTION: Added `gte/src/shaders/mipmap_gen_2d.omegasl` (canonical OmegaSL source, box-filter 8x8 threadgroup). `GED3D12Engine::ensureMipmapGenPipeline()` embeds that source as a string literal and compiles it at runtime via `OmegaSLCompiler::Create(gteDevice)` + `compiler->compile({Source::fromString(...)})` (per `omegasl.h`), wraps the resulting `omegasl_shader` through the engine's standard `_loadShaderFromDesc(...)` path, and builds the pipeline through `makeComputePipelineState(...)`. `GED3D12CommandQueue::generateMipmaps()` lazily ensures the pipeline, builds per-mip SRV/UAV descriptors, maps OmegaSL bindings 0/1 to root parameter indices via `getRootParameterIndexOfResource(...)`, and dispatches one threadgroup per mip pair with proper subresource state transitions and UAV barriers. Transient descriptor heaps are kept alive on the queue via `retainedDescriptorHeaps` until submitted work completes. No inline HLSL is used.
 
 4. **Multi-draw-indirect**: The current proposal covers single-draw-indirect. Multi-draw-indirect (multiple draws from one buffer in a single call) is a significant GPU-driven rendering feature. It requires `multiDrawIndirect` on Vulkan, `ExecuteIndirect` with count on D3D12, and `MTLIndirectCommandBuffer` on Metal. Should this be included in this plan or deferred?
 

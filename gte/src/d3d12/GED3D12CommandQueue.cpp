@@ -202,6 +202,316 @@ void GED3D12CommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, Sh
                                    &_region);
 }
 
+void GED3D12CommandBuffer::copyBufferToBuffer(SharedHandle<GEBuffer> &src, SharedHandle<GEBuffer> &dest,
+                                              size_t size, size_t srcOffset, size_t destOffset) {
+    assert(inBlitPass && "Not in Blit Pass! Exiting...");
+    auto *srcBuf = (GED3D12Buffer *)src.get();
+    auto *destBuf = (GED3D12Buffer *)dest.get();
+
+    OmegaCommon::Vector<D3D12_RESOURCE_BARRIER> resourceBarriers;
+    if (srcBuf->currentState != D3D12_RESOURCE_STATE_COPY_SOURCE &&
+        srcBuf->currentState != D3D12_RESOURCE_STATE_GENERIC_READ) {
+        if (srcBuf->currentState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+            resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::UAV(srcBuf->buffer.Get()));
+        }
+        resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
+            srcBuf->buffer.Get(), srcBuf->currentState, D3D12_RESOURCE_STATE_COPY_SOURCE));
+        srcBuf->currentState = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    }
+
+    if (destBuf->currentState != D3D12_RESOURCE_STATE_COPY_DEST) {
+        if (destBuf->currentState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+            resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::UAV(destBuf->buffer.Get()));
+        }
+        resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
+            destBuf->buffer.Get(), destBuf->currentState, D3D12_RESOURCE_STATE_COPY_DEST));
+        destBuf->currentState = D3D12_RESOURCE_STATE_COPY_DEST;
+    }
+
+    if (!resourceBarriers.empty()) {
+        commandList->ResourceBarrier(resourceBarriers.size(), resourceBarriers.data());
+    }
+
+    UINT64 bytes = size == 0 ? srcBuf->buffer->GetDesc().Width - srcOffset : size;
+    commandList->CopyBufferRegion(destBuf->buffer.Get(), destOffset, srcBuf->buffer.Get(), srcOffset, bytes);
+}
+
+void GED3D12CommandBuffer::copyBufferToTexture(SharedHandle<GEBuffer> &src, SharedHandle<GETexture> &dest,
+                                               size_t bytesPerRow, size_t bytesPerImage,
+                                               const TextureRegion &destRegion, size_t srcBufferOffset) {
+    (void)bytesPerImage;
+    assert(inBlitPass && "Not in Blit Pass! Exiting...");
+    auto *srcBuf = (GED3D12Buffer *)src.get();
+    auto *destTex = (GED3D12Texture *)dest.get();
+
+    OmegaCommon::Vector<D3D12_RESOURCE_BARRIER> resourceBarriers;
+    if (srcBuf->currentState != D3D12_RESOURCE_STATE_COPY_SOURCE &&
+        srcBuf->currentState != D3D12_RESOURCE_STATE_GENERIC_READ) {
+        if (srcBuf->currentState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+            resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::UAV(srcBuf->buffer.Get()));
+        }
+        resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
+            srcBuf->buffer.Get(), srcBuf->currentState, D3D12_RESOURCE_STATE_COPY_SOURCE));
+        srcBuf->currentState = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    }
+
+    if (destTex->currentState != D3D12_RESOURCE_STATE_COPY_DEST) {
+        if (destTex->currentState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+            resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::UAV(destTex->resource.Get()));
+        }
+        resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
+            destTex->resource.Get(), destTex->currentState, D3D12_RESOURCE_STATE_COPY_DEST));
+        destTex->currentState = D3D12_RESOURCE_STATE_COPY_DEST;
+    }
+
+    if (!resourceBarriers.empty()) {
+        commandList->ResourceBarrier(resourceBarriers.size(), resourceBarriers.data());
+    }
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    footprint.Offset = srcBufferOffset;
+    footprint.Footprint.Format = destTex->resource->GetDesc().Format;
+    footprint.Footprint.Width = destRegion.w;
+    footprint.Footprint.Height = destRegion.h;
+    footprint.Footprint.Depth = destRegion.d == 0 ? 1 : destRegion.d;
+    footprint.Footprint.RowPitch = static_cast<UINT>(bytesPerRow);
+
+    CD3DX12_TEXTURE_COPY_LOCATION srcLoc(srcBuf->buffer.Get(), footprint);
+    CD3DX12_TEXTURE_COPY_LOCATION destLoc(destTex->resource.Get(), 0);
+
+    CD3DX12_BOX srcBox(0, 0, 0,
+                       (LONG)destRegion.w,
+                       (LONG)destRegion.h,
+                       (LONG)(destRegion.d == 0 ? 1 : destRegion.d));
+    commandList->CopyTextureRegion(&destLoc,
+                                   destRegion.x, destRegion.y, destRegion.z,
+                                   &srcLoc, &srcBox);
+}
+
+void GED3D12CommandBuffer::copyTextureToBuffer(SharedHandle<GETexture> &src, SharedHandle<GEBuffer> &dest,
+                                               size_t bytesPerRow, size_t bytesPerImage,
+                                               const TextureRegion &srcRegion, size_t destBufferOffset) {
+    (void)bytesPerImage;
+    assert(inBlitPass && "Not in Blit Pass! Exiting...");
+    auto *srcTex = (GED3D12Texture *)src.get();
+    auto *destBuf = (GED3D12Buffer *)dest.get();
+
+    OmegaCommon::Vector<D3D12_RESOURCE_BARRIER> resourceBarriers;
+    if (srcTex->currentState != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+        if (srcTex->currentState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+            resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::UAV(srcTex->resource.Get()));
+        }
+        resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
+            srcTex->resource.Get(), srcTex->currentState, D3D12_RESOURCE_STATE_COPY_SOURCE));
+        srcTex->currentState = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    }
+
+    if (destBuf->currentState != D3D12_RESOURCE_STATE_COPY_DEST) {
+        if (destBuf->currentState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+            resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::UAV(destBuf->buffer.Get()));
+        }
+        resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
+            destBuf->buffer.Get(), destBuf->currentState, D3D12_RESOURCE_STATE_COPY_DEST));
+        destBuf->currentState = D3D12_RESOURCE_STATE_COPY_DEST;
+    }
+
+    if (!resourceBarriers.empty()) {
+        commandList->ResourceBarrier(resourceBarriers.size(), resourceBarriers.data());
+    }
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    footprint.Offset = destBufferOffset;
+    footprint.Footprint.Format = srcTex->resource->GetDesc().Format;
+    footprint.Footprint.Width = srcRegion.w;
+    footprint.Footprint.Height = srcRegion.h;
+    footprint.Footprint.Depth = srcRegion.d == 0 ? 1 : srcRegion.d;
+    footprint.Footprint.RowPitch = static_cast<UINT>(bytesPerRow);
+
+    CD3DX12_TEXTURE_COPY_LOCATION srcLoc(srcTex->resource.Get(), 0);
+    CD3DX12_TEXTURE_COPY_LOCATION destLoc(destBuf->buffer.Get(), footprint);
+
+    CD3DX12_BOX srcBox((LONG)srcRegion.x,
+                       (LONG)srcRegion.y,
+                       (LONG)srcRegion.z,
+                       (LONG)(srcRegion.x + srcRegion.w),
+                       (LONG)(srcRegion.y + srcRegion.h),
+                       (LONG)(srcRegion.z + (srcRegion.d == 0 ? 1 : srcRegion.d)));
+    commandList->CopyTextureRegion(&destLoc, 0, 0, 0, &srcLoc, &srcBox);
+}
+
+void GED3D12CommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture) {
+    assert(inBlitPass && "Not in Blit Pass! Exiting...");
+    auto *tex = (GED3D12Texture *)texture.get();
+    const auto texDesc = tex->resource->GetDesc();
+    if (texDesc.MipLevels <= 1) {
+        return;
+    }
+    if (texDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        texDesc.DepthOrArraySize != 1) {
+        DEBUG_STREAM("GED3D12CommandBuffer::generateMipmaps: only 2D, single-slice "
+                     "textures are supported by the box-filter compute kernel. tex="
+                     << tex);
+        return;
+    }
+    if ((texDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0) {
+        DEBUG_STREAM("GED3D12CommandBuffer::generateMipmaps: texture was not created "
+                     "with ALLOW_UNORDERED_ACCESS; cannot bind mip levels as UAVs. tex="
+                     << tex);
+        return;
+    }
+
+    auto *engine = parentQueue->engine;
+    if (!engine->ensureMipmapGenPipeline()) {
+        DEBUG_STREAM("GED3D12CommandBuffer::generateMipmaps: pipeline init failed.");
+        return;
+    }
+
+    auto *device = engine->d3d12_device.Get();
+    auto *pipeline = (GED3D12ComputePipelineState *)engine->mipmapGenPipeline.get();
+    auto &shaderInternal = pipeline->computeShader->internal;
+
+    // OmegaSL location 0 = srcMip (in / SRV), 1 = dstMip (out / UAV).
+    unsigned srvId = 0, uavId = 1;
+    const unsigned srvRoot = getRootParameterIndexOfResource(srvId, shaderInternal);
+    const unsigned uavRoot = getRootParameterIndexOfResource(uavId, shaderInternal);
+
+    const UINT mipCount = texDesc.MipLevels;
+    const DXGI_FORMAT format = texDesc.Format;
+
+    // One SRV (mip N) + one UAV (mip N+1) per pair, contiguous in a single shader-visible heap.
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heapDesc.NumDescriptors = (mipCount - 1) * 2;
+    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    heapDesc.NodeMask = device->GetNodeCount();
+
+    ComPtr<ID3D12DescriptorHeap> descHeap;
+    HRESULT hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&descHeap));
+    if (FAILED(hr)) {
+        DEBUG_STREAM("GED3D12CommandBuffer::generateMipmaps: CreateDescriptorHeap failed hr="
+                     << std::hex << hr);
+        return;
+    }
+
+    const UINT incr = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE cpuStart(descHeap->GetCPUDescriptorHandleForHeapStart());
+
+    for (UINT i = 0; i + 1 < mipCount; ++i) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+        srvDesc.Format = format;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MostDetailedMip = i;
+        srvDesc.Texture2D.MipLevels = 1;
+        device->CreateShaderResourceView(tex->resource.Get(), &srvDesc, cpuStart);
+        cpuStart.Offset(1, incr);
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
+        uavDesc.Format = format;
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        uavDesc.Texture2D.MipSlice = i + 1;
+        device->CreateUnorderedAccessView(tex->resource.Get(), nullptr, &uavDesc, cpuStart);
+        cpuStart.Offset(1, incr);
+    }
+
+    // Move the whole resource into UAV state so per-mip subresource transitions below are valid.
+    if (tex->currentState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            tex->resource.Get(), tex->currentState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        commandList->ResourceBarrier(1, &barrier);
+        tex->currentState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
+
+    ID3D12DescriptorHeap *heaps[] = { descHeap.Get() };
+    commandList->SetDescriptorHeaps(1, heaps);
+    commandList->SetComputeRootSignature(pipeline->rootSignature.Get());
+    commandList->SetPipelineState(pipeline->pipelineState.Get());
+
+    CD3DX12_GPU_DESCRIPTOR_HANDLE gpuStart(descHeap->GetGPUDescriptorHandleForHeapStart());
+
+    for (UINT i = 0; i + 1 < mipCount; ++i) {
+        const UINT64 dstW = std::max<UINT64>(1, texDesc.Width  >> (i + 1));
+        const UINT   dstH = std::max<UINT>  (1, texDesc.Height >> (i + 1));
+
+        // Transition src mip i → NON_PIXEL_SHADER_RESOURCE; dst mip i+1 stays in UAV.
+        auto preBarrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            tex->resource.Get(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            i);
+        commandList->ResourceBarrier(1, &preBarrier);
+
+        CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(gpuStart, i * 2,     incr);
+        CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(gpuStart, i * 2 + 1, incr);
+        commandList->SetComputeRootDescriptorTable(srvRoot, srvHandle);
+        commandList->SetComputeRootDescriptorTable(uavRoot, uavHandle);
+
+        const UINT groupsX = static_cast<UINT>((dstW + 7) / 8);
+        const UINT groupsY = static_cast<UINT>((dstH + 7) / 8);
+        commandList->Dispatch(groupsX, groupsY, 1);
+
+        // UAV barrier on dst mip + transition src mip i back to UAV so we end in a uniform state.
+        D3D12_RESOURCE_BARRIER postBarriers[2];
+        postBarriers[0] = CD3DX12_RESOURCE_BARRIER::UAV(tex->resource.Get());
+        postBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(
+            tex->resource.Get(),
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            i);
+        commandList->ResourceBarrier(2, postBarriers);
+    }
+
+    // Keep the descriptor heap alive until the GPU is done with the command list.
+    parentQueue->retainedDescriptorHeaps.push_back(descHeap);
+}
+
+void GED3D12CommandBuffer::fillBuffer(SharedHandle<GEBuffer> &buffer, uint32_t value,
+                                      size_t offset, size_t size) {
+    assert(inBlitPass && "Not in Blit Pass! Exiting...");
+    auto *buf = (GED3D12Buffer *)buffer.get();
+    const auto bufDesc = buf->buffer->GetDesc();
+    const UINT64 totalSize = bufDesc.Width;
+    const UINT64 fillOffset = static_cast<UINT64>(offset);
+    const UINT64 fillSize =
+        size == 0 ? (totalSize - fillOffset) : static_cast<UINT64>(size);
+
+    if ((bufDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0) {
+        // ClearUnorderedAccessViewUint requires the buffer to have been created
+        // as a UAV. Buffers without UAV access need either a staging upload path
+        // or a compute shader fill; neither is currently wired up.
+        DEBUG_STREAM("GED3D12CommandBuffer::fillBuffer: buffer was not created "
+                     "with ALLOW_UNORDERED_ACCESS; fill skipped. Requires UAV-"
+                     "capable buffer or compute-shader path. buffer="
+                     << buf);
+        return;
+    }
+
+    OmegaCommon::Vector<D3D12_RESOURCE_BARRIER> resourceBarriers;
+    if (buf->currentState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+        resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
+            buf->buffer.Get(), buf->currentState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+        buf->currentState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
+    if (!resourceBarriers.empty()) {
+        commandList->ResourceBarrier(resourceBarriers.size(), resourceBarriers.data());
+    }
+
+    ID3D12DescriptorHeap *heap = buf->bufferDescHeap.Get();
+    if (heap == nullptr) {
+        DEBUG_STREAM("GED3D12CommandBuffer::fillBuffer: buffer has no descriptor "
+                     "heap; cannot resolve UAV handle.");
+        return;
+    }
+    const UINT values[4] = {value, value, value, value};
+    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = heap->GetGPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = heap->GetCPUDescriptorHandleForHeapStart();
+    commandList->SetDescriptorHeaps(1, &heap);
+    commandList->ClearUnorderedAccessViewUint(gpuHandle, cpuHandle,
+                                              buf->buffer.Get(), values, 0, nullptr);
+    (void)fillOffset;
+    (void)fillSize;
+}
+
 void GED3D12CommandBuffer::finishBlitPass() {
     inBlitPass = false;
 };
@@ -883,6 +1193,51 @@ void GED3D12CommandBuffer::drawIndexedPolygonsInstanced(RenderPassDrawPolygonTyp
     commandList->DrawIndexedInstanced(indexCount, instanceCount, UINT(startIndex), baseVertex, firstInstance);
 }
 
+static void transitionBufferForIndirectArgs(ID3D12GraphicsCommandList6 *commandList, GED3D12Buffer *argBuf) {
+    if (argBuf->currentState == D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT) {
+        return;
+    }
+    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(argBuf->buffer.Get(),
+                                                        argBuf->currentState,
+                                                        D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+    commandList->ResourceBarrier(1, &barrier);
+    argBuf->currentState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+}
+
+void GED3D12CommandBuffer::drawPolygonsIndirect(RenderPassDrawPolygonType polygonType,
+                                                SharedHandle<GEBuffer> & argumentBuffer,
+                                                size_t argumentBufferOffset) {
+    assert(!inComputePass && "Cannot Draw Polygons while in Compute Pass");
+    auto *argBuf = (GED3D12Buffer *)argumentBuffer.get();
+    auto *sig = parentQueue->engine->getDrawIndirectSignature();
+    if (sig == nullptr) {
+        DEBUG_STREAM("drawPolygonsIndirect: draw indirect signature unavailable");
+        return;
+    }
+    transitionBufferForIndirectArgs(commandList.Get(), argBuf);
+    commandList->IASetPrimitiveTopology(d3d12TopologyForPolygonType(polygonType));
+    commandList->ExecuteIndirect(sig, 1, argBuf->buffer.Get(),
+                                 UINT64(argumentBufferOffset),
+                                 nullptr, 0);
+}
+
+void GED3D12CommandBuffer::drawIndexedPolygonsIndirect(RenderPassDrawPolygonType polygonType,
+                                                       SharedHandle<GEBuffer> & argumentBuffer,
+                                                       size_t argumentBufferOffset) {
+    assert(!inComputePass && "Cannot Draw Polygons while in Compute Pass");
+    auto *argBuf = (GED3D12Buffer *)argumentBuffer.get();
+    auto *sig = parentQueue->engine->getDrawIndexedIndirectSignature();
+    if (sig == nullptr) {
+        DEBUG_STREAM("drawIndexedPolygonsIndirect: indexed draw indirect signature unavailable");
+        return;
+    }
+    transitionBufferForIndirectArgs(commandList.Get(), argBuf);
+    commandList->IASetPrimitiveTopology(d3d12TopologyForPolygonType(polygonType));
+    commandList->ExecuteIndirect(sig, 1, argBuf->buffer.Get(),
+                                 UINT64(argumentBufferOffset),
+                                 nullptr, 0);
+}
+
 void GED3D12CommandBuffer::finishRenderPass() {
     assert(inRenderPass && "");
     commandList->EndRenderPass();
@@ -1010,6 +1365,21 @@ void GED3D12CommandBuffer::dispatchThreads(unsigned int x, unsigned int y, unsig
     commandList->Dispatch(gx, gy, gz);
 }
 
+void GED3D12CommandBuffer::dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
+                                                        size_t argumentBufferOffset) {
+    assert(inComputePass && "Must be in a compute pass to dispatch threadgroups");
+    auto *argBuf = (GED3D12Buffer *)argumentBuffer.get();
+    auto *sig = parentQueue->engine->getDispatchIndirectSignature();
+    if (sig == nullptr) {
+        DEBUG_STREAM("dispatchThreadgroupsIndirect: dispatch indirect signature unavailable");
+        return;
+    }
+    transitionBufferForIndirectArgs(commandList.Get(), argBuf);
+    commandList->ExecuteIndirect(sig, 1, argBuf->buffer.Get(),
+                                 UINT64(argumentBufferOffset),
+                                 nullptr, 0);
+}
+
 void GED3D12CommandBuffer::finishComputePass() {
     commandList->ClearState(nullptr);
     inComputePass = false;
@@ -1090,6 +1460,7 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
         commandQueue->ExecuteCommandLists(commandLists.size(), (ID3D12CommandList *const *)commandLists.data());
         commandLists.clear();
         retainedCommandBuffers.clear();
+        retainedDescriptorHeaps.clear();
     }
 
     d3d12_buffer->commandList->Close();
@@ -1142,6 +1513,7 @@ void GED3D12CommandQueue::commitToGPU() {
         }
         commandLists.clear();
         retainedCommandBuffers.clear();
+        retainedDescriptorHeaps.clear();
     }
 };
 

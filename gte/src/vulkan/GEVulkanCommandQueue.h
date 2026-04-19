@@ -87,6 +87,13 @@ _NAMESPACE_BEGIN_
                                            int baseVertex, unsigned instanceCount,
                                            unsigned firstInstance) override;
 
+        void drawPolygonsIndirect(RenderPassDrawPolygonType polygonType,
+                                   SharedHandle<GEBuffer> & argumentBuffer,
+                                   size_t argumentBufferOffset) override;
+        void drawIndexedPolygonsIndirect(RenderPassDrawPolygonType polygonType,
+                                          SharedHandle<GEBuffer> & argumentBuffer,
+                                          size_t argumentBufferOffset) override;
+
         void finishRenderPass() override;
 
         #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
@@ -105,11 +112,24 @@ _NAMESPACE_BEGIN_
         void bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id) override;
         void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreads(unsigned int x, unsigned int y, unsigned int z) override;
+        void dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
+                                           size_t argumentBufferOffset) override;
         void finishComputePass() override;
 
         void startBlitPass() override;
         void copyTextureToTexture(SharedHandle<GETexture> &src, SharedHandle<GETexture> &dest) override;
         void copyTextureToTexture(SharedHandle<GETexture> &src, SharedHandle<GETexture> &dest, const TextureRegion &region, const GPoint3D &destCoord) override;
+        void copyBufferToBuffer(SharedHandle<GEBuffer> &src, SharedHandle<GEBuffer> &dest,
+                                size_t size, size_t srcOffset, size_t destOffset) override;
+        void copyBufferToTexture(SharedHandle<GEBuffer> &src, SharedHandle<GETexture> &dest,
+                                 size_t bytesPerRow, size_t bytesPerImage,
+                                 const TextureRegion &destRegion, size_t srcBufferOffset) override;
+        void copyTextureToBuffer(SharedHandle<GETexture> &src, SharedHandle<GEBuffer> &dest,
+                                 size_t bytesPerRow, size_t bytesPerImage,
+                                 const TextureRegion &srcRegion, size_t destBufferOffset) override;
+        void generateMipmaps(SharedHandle<GETexture> &texture) override;
+        void fillBuffer(SharedHandle<GEBuffer> &buffer, uint32_t value,
+                         size_t offset, size_t size) override;
         void finishBlitPass() override;
         void reset() override;
 

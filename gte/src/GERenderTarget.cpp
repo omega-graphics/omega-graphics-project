@@ -89,6 +89,18 @@ void GERenderTarget::CommandBuffer::drawIndexedPolygonsInstanced(PolygonType pol
     commandBuffer->drawIndexedPolygonsInstanced(polygonType,indexCount,startIndex,baseVertex,instanceCount,firstInstance);
 };
 
+void GERenderTarget::CommandBuffer::drawPolygonsIndirect(PolygonType polygonType,
+                                                         SharedHandle<GEBuffer> & argumentBuffer,
+                                                         size_t argumentBufferOffset){
+    commandBuffer->drawPolygonsIndirect(polygonType,argumentBuffer,argumentBufferOffset);
+};
+
+void GERenderTarget::CommandBuffer::drawIndexedPolygonsIndirect(PolygonType polygonType,
+                                                                SharedHandle<GEBuffer> & argumentBuffer,
+                                                                size_t argumentBufferOffset){
+    commandBuffer->drawIndexedPolygonsIndirect(polygonType,argumentBuffer,argumentBufferOffset);
+};
+
 void GERenderTarget::CommandBuffer::setViewports(std::vector<GEViewport> viewports) {
     commandBuffer->setViewports(viewports);
 }
@@ -125,6 +137,11 @@ void GERenderTarget::CommandBuffer::dispatchThreadgroups(unsigned int x, unsigne
 
 void GERenderTarget::CommandBuffer::dispatchThreads(unsigned int x, unsigned int y, unsigned int z) {
     commandBuffer->dispatchThreads(x,y,z);
+}
+
+void GERenderTarget::CommandBuffer::dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
+                                                                 size_t argumentBufferOffset){
+    commandBuffer->dispatchThreadgroupsIndirect(argumentBuffer,argumentBufferOffset);
 }
 
 void GERenderTarget::CommandBuffer::reset(){

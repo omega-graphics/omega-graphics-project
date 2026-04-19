@@ -866,6 +866,28 @@ _NAMESPACE_BEGIN_
         vkCmdDrawIndexed(commandBuffer, indexCount, instanceCount, uint32_t(startIndex), baseVertex, firstInstance);
     }
 
+    void GEVulkanCommandBuffer::drawPolygonsIndirect(RenderPassDrawPolygonType polygonType,
+                                                     SharedHandle<GEBuffer> & argumentBuffer,
+                                                     size_t argumentBufferOffset){
+        beginRenderPassIfDeferred();
+        applyTopologyIfDynamic(polygonType);
+        auto *vkBuf = (GEVulkanBuffer *)argumentBuffer.get();
+        vkCmdDrawIndirect(commandBuffer, vkBuf->buffer,
+                          VkDeviceSize(argumentBufferOffset),
+                          1, sizeof(VkDrawIndirectCommand));
+    }
+
+    void GEVulkanCommandBuffer::drawIndexedPolygonsIndirect(RenderPassDrawPolygonType polygonType,
+                                                            SharedHandle<GEBuffer> & argumentBuffer,
+                                                            size_t argumentBufferOffset){
+        beginRenderPassIfDeferred();
+        applyTopologyIfDynamic(polygonType);
+        auto *vkBuf = (GEVulkanBuffer *)argumentBuffer.get();
+        vkCmdDrawIndexedIndirect(commandBuffer, vkBuf->buffer,
+                                 VkDeviceSize(argumentBufferOffset),
+                                 1, sizeof(VkDrawIndexedIndirectCommand));
+    }
+
     void GEVulkanCommandBuffer::setStencilRef(unsigned ref){
         VkStencilFaceFlags faceflags = VK_STENCIL_FACE_FRONT_AND_BACK;
         vkCmdSetStencilReference(commandBuffer,faceflags,ref);
@@ -1271,6 +1293,13 @@ _NAMESPACE_BEGIN_
         vkCmdDispatch(commandBuffer,gx,gy,gz);
     }
 
+    void GEVulkanCommandBuffer::dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
+                                                              size_t argumentBufferOffset) {
+        auto *vkBuf = (GEVulkanBuffer *)argumentBuffer.get();
+        vkCmdDispatchIndirect(commandBuffer, vkBuf->buffer,
+                              VkDeviceSize(argumentBufferOffset));
+    }
+
     void GEVulkanCommandBuffer::finishComputePass() {
         inComputePass = false;
     }
@@ -1431,6 +1460,408 @@ _NAMESPACE_BEGIN_
         imgCopy.dstSubresource.baseArrayLayer = 0;
         imgCopy.extent = {region.w,region.h,region.d};
         vkCmdCopyImage(commandBuffer,src_img->img,src_img->layout,dest_img->img,dest_img->layout,1,&imgCopy);
+    }
+
+    namespace {
+        inline void transitionBufferForTransferSrc(GEVulkanEngine *engine, VkCommandBuffer cb, GEVulkanBuffer *buf){
+            if(buf == nullptr) return;
+            if(engine->hasSynchronization2Ext){
+                if(buf->priorAccess2 & VK_ACCESS_2_TRANSFER_READ_BIT_KHR) return;
+                VkBufferMemoryBarrier2KHR bb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2_KHR};
+                bb.srcAccessMask = buf->priorAccess2;
+                bb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT_KHR;
+                bb.srcStageMask = buf->priorPipelineAccess2 != 0
+                                  ? buf->priorPipelineAccess2
+                                  : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+                bb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT_KHR;
+                bb.srcQueueFamilyIndex = bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                bb.buffer = buf->buffer;
+                bb.offset = 0;
+                bb.size = VK_WHOLE_SIZE;
+                VkDependencyInfoKHR dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR};
+                dep.bufferMemoryBarrierCount = 1;
+                dep.pBufferMemoryBarriers = &bb;
+                engine->vkCmdPipelineBarrier2Khr(cb, &dep);
+                buf->priorAccess2 = VK_ACCESS_2_TRANSFER_READ_BIT_KHR;
+                buf->priorPipelineAccess2 = VK_PIPELINE_STAGE_2_COPY_BIT_KHR;
+            } else {
+                if(buf->priorAccess & VK_ACCESS_TRANSFER_READ_BIT) return;
+                VkBufferMemoryBarrier bb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+                bb.srcAccessMask = buf->priorAccess;
+                bb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                bb.srcQueueFamilyIndex = bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                bb.buffer = buf->buffer;
+                bb.offset = 0;
+                bb.size = VK_WHOLE_SIZE;
+                vkCmdPipelineBarrier(cb,
+                                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     0, 0, nullptr, 1, &bb, 0, nullptr);
+                buf->priorAccess = VK_ACCESS_TRANSFER_READ_BIT;
+                buf->priorPipelineAccess = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            }
+        }
+
+        inline void transitionBufferForTransferDst(GEVulkanEngine *engine, VkCommandBuffer cb, GEVulkanBuffer *buf){
+            if(buf == nullptr) return;
+            if(engine->hasSynchronization2Ext){
+                if(buf->priorAccess2 & VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR) return;
+                VkBufferMemoryBarrier2KHR bb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2_KHR};
+                bb.srcAccessMask = buf->priorAccess2;
+                bb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR;
+                bb.srcStageMask = buf->priorPipelineAccess2 != 0
+                                  ? buf->priorPipelineAccess2
+                                  : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+                bb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT_KHR;
+                bb.srcQueueFamilyIndex = bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                bb.buffer = buf->buffer;
+                bb.offset = 0;
+                bb.size = VK_WHOLE_SIZE;
+                VkDependencyInfoKHR dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR};
+                dep.bufferMemoryBarrierCount = 1;
+                dep.pBufferMemoryBarriers = &bb;
+                engine->vkCmdPipelineBarrier2Khr(cb, &dep);
+                buf->priorAccess2 = VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR;
+                buf->priorPipelineAccess2 = VK_PIPELINE_STAGE_2_COPY_BIT_KHR;
+            } else {
+                if(buf->priorAccess & VK_ACCESS_TRANSFER_WRITE_BIT) return;
+                VkBufferMemoryBarrier bb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+                bb.srcAccessMask = buf->priorAccess;
+                bb.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                bb.srcQueueFamilyIndex = bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                bb.buffer = buf->buffer;
+                bb.offset = 0;
+                bb.size = VK_WHOLE_SIZE;
+                vkCmdPipelineBarrier(cb,
+                                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     0, 0, nullptr, 1, &bb, 0, nullptr);
+                buf->priorAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
+                buf->priorPipelineAccess = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            }
+        }
+
+        inline void transitionImageForTransferSrc(GEVulkanEngine *engine, VkCommandBuffer cb, GEVulkanTexture *img){
+            if(img == nullptr) return;
+            if(engine->hasSynchronization2Ext){
+                if(img->priorShaderAccess2 & VK_ACCESS_2_TRANSFER_READ_BIT_KHR) return;
+                VkImageMemoryBarrier2KHR mb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2_KHR};
+                mb.srcAccessMask = img->priorShaderAccess2;
+                mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT_KHR;
+                mb.srcStageMask = img->priorPipelineAccess2 != 0
+                                  ? img->priorPipelineAccess2
+                                  : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+                mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT_KHR;
+                mb.srcQueueFamilyIndex = mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                mb.image = img->img;
+                mb.oldLayout = img->layout;
+                mb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                mb.subresourceRange = fullColorSubresourceRange(img);
+                VkDependencyInfoKHR dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR};
+                dep.imageMemoryBarrierCount = 1;
+                dep.pImageMemoryBarriers = &mb;
+                engine->vkCmdPipelineBarrier2Khr(cb, &dep);
+                img->priorShaderAccess2 = VK_ACCESS_2_TRANSFER_READ_BIT_KHR;
+                img->priorPipelineAccess2 = VK_PIPELINE_STAGE_2_COPY_BIT_KHR;
+                img->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            } else {
+                if(img->priorShaderAccess & VK_ACCESS_TRANSFER_READ_BIT) return;
+                VkImageMemoryBarrier mb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+                mb.srcAccessMask = img->priorShaderAccess;
+                mb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                mb.srcQueueFamilyIndex = mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                mb.image = img->img;
+                mb.oldLayout = img->layout;
+                mb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                mb.subresourceRange = fullColorSubresourceRange(img);
+                vkCmdPipelineBarrier(cb,
+                                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     0, 0, nullptr, 0, nullptr, 1, &mb);
+                img->priorShaderAccess = VK_ACCESS_TRANSFER_READ_BIT;
+                img->priorPipelineAccess = VK_PIPELINE_STAGE_TRANSFER_BIT;
+                img->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            }
+        }
+
+        inline void transitionImageForTransferDst(GEVulkanEngine *engine, VkCommandBuffer cb, GEVulkanTexture *img){
+            if(img == nullptr) return;
+            if(engine->hasSynchronization2Ext){
+                if(img->priorShaderAccess2 & VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR) return;
+                VkImageMemoryBarrier2KHR mb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2_KHR};
+                mb.srcAccessMask = img->priorShaderAccess2;
+                mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR;
+                mb.srcStageMask = img->priorPipelineAccess2 != 0
+                                  ? img->priorPipelineAccess2
+                                  : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+                mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT_KHR;
+                mb.srcQueueFamilyIndex = mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                mb.image = img->img;
+                mb.oldLayout = img->layout;
+                mb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                mb.subresourceRange = fullColorSubresourceRange(img);
+                VkDependencyInfoKHR dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR};
+                dep.imageMemoryBarrierCount = 1;
+                dep.pImageMemoryBarriers = &mb;
+                engine->vkCmdPipelineBarrier2Khr(cb, &dep);
+                img->priorShaderAccess2 = VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR;
+                img->priorPipelineAccess2 = VK_PIPELINE_STAGE_2_COPY_BIT_KHR;
+                img->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            } else {
+                if(img->priorShaderAccess & VK_ACCESS_TRANSFER_WRITE_BIT) return;
+                VkImageMemoryBarrier mb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+                mb.srcAccessMask = img->priorShaderAccess;
+                mb.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                mb.srcQueueFamilyIndex = mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                mb.image = img->img;
+                mb.oldLayout = img->layout;
+                mb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                mb.subresourceRange = fullColorSubresourceRange(img);
+                vkCmdPipelineBarrier(cb,
+                                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     0, 0, nullptr, 0, nullptr, 1, &mb);
+                img->priorShaderAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
+                img->priorPipelineAccess = VK_PIPELINE_STAGE_TRANSFER_BIT;
+                img->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            }
+        }
+    }
+
+    void GEVulkanCommandBuffer::copyBufferToBuffer(SharedHandle<GEBuffer> &src, SharedHandle<GEBuffer> &dest,
+                                                   size_t size, size_t srcOffset, size_t destOffset) {
+        assert(inBlitPass && "Must be in a blit pass");
+        auto src_buf = (GEVulkanBuffer *)src.get();
+        auto dest_buf = (GEVulkanBuffer *)dest.get();
+
+        transitionBufferForTransferSrc(parentQueue->engine, commandBuffer, src_buf);
+        transitionBufferForTransferDst(parentQueue->engine, commandBuffer, dest_buf);
+
+        VkBufferCopy region{};
+        region.srcOffset = srcOffset;
+        region.dstOffset = destOffset;
+        region.size = size == 0 ? (src_buf->alloc_info.size - srcOffset) : size;
+        vkCmdCopyBuffer(commandBuffer, src_buf->buffer, dest_buf->buffer, 1, &region);
+    }
+
+    void GEVulkanCommandBuffer::copyBufferToTexture(SharedHandle<GEBuffer> &src, SharedHandle<GETexture> &dest,
+                                                    size_t bytesPerRow, size_t bytesPerImage,
+                                                    const TextureRegion &destRegion, size_t srcBufferOffset) {
+        assert(inBlitPass && "Must be in a blit pass");
+        auto src_buf = (GEVulkanBuffer *)src.get();
+        auto dest_img = (GEVulkanTexture *)dest.get();
+
+        transitionBufferForTransferSrc(parentQueue->engine, commandBuffer, src_buf);
+        transitionImageForTransferDst(parentQueue->engine, commandBuffer, dest_img);
+
+        // Convert bytesPerRow / bytesPerImage to texel counts for VkBufferImageCopy.
+        // Vulkan expresses bufferRowLength in texels, not bytes. When 0, data is tightly packed.
+        uint32_t bufferRowLength = 0;
+        uint32_t bufferImageHeight = 0;
+        if(bytesPerRow > 0){
+            // Derive bytes-per-texel from the image format. For supported formats this table
+            // covers the PixelFormat enum; unknown formats fall back to tightly packed.
+            uint32_t bytesPerTexel = 4;
+            switch(dest_img->descriptor.pixelFormat){
+                case PixelFormat::RGBA16Unorm: bytesPerTexel = 8; break;
+                default: bytesPerTexel = 4; break;
+            }
+            if(bytesPerTexel > 0){
+                bufferRowLength = static_cast<uint32_t>(bytesPerRow / bytesPerTexel);
+            }
+            if(bytesPerImage > 0 && bytesPerRow > 0){
+                bufferImageHeight = static_cast<uint32_t>(bytesPerImage / bytesPerRow);
+            }
+        }
+
+        VkBufferImageCopy copy{};
+        copy.bufferOffset = srcBufferOffset;
+        copy.bufferRowLength = bufferRowLength;
+        copy.bufferImageHeight = bufferImageHeight;
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.mipLevel = 0;
+        copy.imageSubresource.baseArrayLayer = 0;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageOffset = {int32_t(destRegion.x), int32_t(destRegion.y), int32_t(destRegion.z)};
+        copy.imageExtent = {destRegion.w, destRegion.h, destRegion.d == 0 ? 1 : destRegion.d};
+
+        vkCmdCopyBufferToImage(commandBuffer,
+                               src_buf->buffer,
+                               dest_img->img,
+                               dest_img->layout,
+                               1, &copy);
+    }
+
+    void GEVulkanCommandBuffer::copyTextureToBuffer(SharedHandle<GETexture> &src, SharedHandle<GEBuffer> &dest,
+                                                    size_t bytesPerRow, size_t bytesPerImage,
+                                                    const TextureRegion &srcRegion, size_t destBufferOffset) {
+        assert(inBlitPass && "Must be in a blit pass");
+        auto src_img = (GEVulkanTexture *)src.get();
+        auto dest_buf = (GEVulkanBuffer *)dest.get();
+
+        transitionImageForTransferSrc(parentQueue->engine, commandBuffer, src_img);
+        transitionBufferForTransferDst(parentQueue->engine, commandBuffer, dest_buf);
+
+        uint32_t bufferRowLength = 0;
+        uint32_t bufferImageHeight = 0;
+        if(bytesPerRow > 0){
+            uint32_t bytesPerTexel = 4;
+            switch(src_img->descriptor.pixelFormat){
+                case PixelFormat::RGBA16Unorm: bytesPerTexel = 8; break;
+                default: bytesPerTexel = 4; break;
+            }
+            if(bytesPerTexel > 0){
+                bufferRowLength = static_cast<uint32_t>(bytesPerRow / bytesPerTexel);
+            }
+            if(bytesPerImage > 0 && bytesPerRow > 0){
+                bufferImageHeight = static_cast<uint32_t>(bytesPerImage / bytesPerRow);
+            }
+        }
+
+        VkBufferImageCopy copy{};
+        copy.bufferOffset = destBufferOffset;
+        copy.bufferRowLength = bufferRowLength;
+        copy.bufferImageHeight = bufferImageHeight;
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.mipLevel = 0;
+        copy.imageSubresource.baseArrayLayer = 0;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageOffset = {int32_t(srcRegion.x), int32_t(srcRegion.y), int32_t(srcRegion.z)};
+        copy.imageExtent = {srcRegion.w, srcRegion.h, srcRegion.d == 0 ? 1 : srcRegion.d};
+
+        vkCmdCopyImageToBuffer(commandBuffer,
+                               src_img->img,
+                               src_img->layout,
+                               dest_buf->buffer,
+                               1, &copy);
+    }
+
+    void GEVulkanCommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture) {
+        assert(inBlitPass && "Must be in a blit pass");
+        auto *tex = (GEVulkanTexture *)texture.get();
+        const uint32_t mipLevels = tex->descriptor.mipLevels;
+        if (mipLevels <= 1) {
+            return;
+        }
+
+        const bool hasSync2 = parentQueue->engine->hasSynchronization2Ext;
+        VkImageLayout finalLayout = tex->layout;
+        if (finalLayout == VK_IMAGE_LAYOUT_UNDEFINED ||
+            finalLayout == VK_IMAGE_LAYOUT_PREINITIALIZED) {
+            finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+
+        auto transitionLevel = [&](uint32_t level, VkImageLayout oldLayout,
+                                   VkImageLayout newLayout,
+                                   VkAccessFlags srcAccess, VkAccessFlags dstAccess,
+                                   VkPipelineStageFlags srcStage,
+                                   VkPipelineStageFlags dstStage){
+            VkImageMemoryBarrier bar {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            bar.srcAccessMask = srcAccess;
+            bar.dstAccessMask = dstAccess;
+            bar.oldLayout = oldLayout;
+            bar.newLayout = newLayout;
+            bar.srcQueueFamilyIndex = bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            bar.image = tex->img;
+            bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            bar.subresourceRange.baseMipLevel = level;
+            bar.subresourceRange.levelCount = 1;
+            bar.subresourceRange.baseArrayLayer = 0;
+            bar.subresourceRange.layerCount = 1;
+            vkCmdPipelineBarrier(commandBuffer, srcStage, dstStage, 0,
+                                 0, nullptr, 0, nullptr, 1, &bar);
+        };
+
+        // Ensure mip 0 is in TRANSFER_SRC; all remaining mips in TRANSFER_DST.
+        transitionLevel(0, tex->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT);
+        for (uint32_t i = 1; i < mipLevels; ++i) {
+            transitionLevel(i, tex->layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT);
+        }
+
+        int32_t mipWidth = static_cast<int32_t>(tex->descriptor.width);
+        int32_t mipHeight = static_cast<int32_t>(tex->descriptor.height);
+        int32_t mipDepth = static_cast<int32_t>(
+            tex->descriptor.depth == 0 ? 1 : tex->descriptor.depth);
+
+        for (uint32_t i = 1; i < mipLevels; ++i) {
+            const int32_t nextW = mipWidth > 1 ? mipWidth / 2 : 1;
+            const int32_t nextH = mipHeight > 1 ? mipHeight / 2 : 1;
+            const int32_t nextD = mipDepth > 1 ? mipDepth / 2 : 1;
+
+            VkImageBlit blit{};
+            blit.srcOffsets[0] = {0, 0, 0};
+            blit.srcOffsets[1] = {mipWidth, mipHeight, mipDepth};
+            blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit.srcSubresource.mipLevel = i - 1;
+            blit.srcSubresource.baseArrayLayer = 0;
+            blit.srcSubresource.layerCount = 1;
+            blit.dstOffsets[0] = {0, 0, 0};
+            blit.dstOffsets[1] = {nextW, nextH, nextD};
+            blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit.dstSubresource.mipLevel = i;
+            blit.dstSubresource.baseArrayLayer = 0;
+            blit.dstSubresource.layerCount = 1;
+
+            vkCmdBlitImage(commandBuffer,
+                           tex->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           tex->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1, &blit, VK_FILTER_LINEAR);
+
+            // Transition the just-written mip to SRC for the next iteration.
+            if (i + 1 < mipLevels) {
+                transitionLevel(i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                VK_ACCESS_TRANSFER_WRITE_BIT,
+                                VK_ACCESS_TRANSFER_READ_BIT,
+                                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                VK_PIPELINE_STAGE_TRANSFER_BIT);
+            }
+
+            mipWidth = nextW;
+            mipHeight = nextH;
+            mipDepth = nextD;
+        }
+
+        // Transition all levels back to the original layout. Mips 0..N-2 are in
+        // TRANSFER_SRC, mip N-1 is in TRANSFER_DST.
+        for (uint32_t i = 0; i < mipLevels; ++i) {
+            const VkImageLayout current = (i + 1 == mipLevels)
+                                              ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                                              : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            const VkAccessFlags srcAccess = (i + 1 == mipLevels)
+                                                ? VK_ACCESS_TRANSFER_WRITE_BIT
+                                                : VK_ACCESS_TRANSFER_READ_BIT;
+            transitionLevel(i, current, finalLayout, srcAccess,
+                            VK_ACCESS_SHADER_READ_BIT,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        }
+
+        tex->layout = finalLayout;
+        if (hasSync2) {
+            tex->priorShaderAccess2 = VK_ACCESS_2_SHADER_READ_BIT_KHR;
+            tex->priorPipelineAccess2 = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+        }
+        tex->priorShaderAccess = VK_ACCESS_SHADER_READ_BIT;
+        tex->priorPipelineAccess = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    }
+
+    void GEVulkanCommandBuffer::fillBuffer(SharedHandle<GEBuffer> &buffer, uint32_t value,
+                                            size_t offset, size_t size) {
+        assert(inBlitPass && "Must be in a blit pass");
+        auto *buf = (GEVulkanBuffer *)buffer.get();
+        transitionBufferForTransferDst(parentQueue->engine, commandBuffer, buf);
+
+        const VkDeviceSize vkOffset = static_cast<VkDeviceSize>(offset);
+        const VkDeviceSize vkSize = size == 0 ? VK_WHOLE_SIZE
+                                              : static_cast<VkDeviceSize>(size);
+        vkCmdFillBuffer(commandBuffer, buf->buffer, vkOffset, vkSize, value);
     }
 
     void GEVulkanCommandBuffer::finishBlitPass() {

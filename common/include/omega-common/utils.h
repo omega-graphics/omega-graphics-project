@@ -1,11 +1,11 @@
-#include <initializer_list>
+
 #ifndef __cplusplus
 #error OmegaCommon must be compiled as a C++ api
 #endif
 
 #include <string>
 #include <fstream>
-#include <assert.h>
+#include <cassert>
 #include <sstream>
 #include <type_traits>
 #include <vector>

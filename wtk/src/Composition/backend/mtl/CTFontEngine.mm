@@ -144,7 +144,7 @@ GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Fon
           CGFloat scaleFactor = currentScreenScale();
           CGPathRef textPath = CGPathCreateWithRect(CGRectMake(0.f,0.f,rect.w * scaleFactor,rect.h * scaleFactor),NULL);
           framesetterRef = CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)strData);
-          CFRange frameRange = CFRangeMake(0,strData.length);
+          CFRange frameRange = CFRangeMake(0,CFIndex(strData.length));
           if(layoutDesc.lineLimit > 0){
               CTFrameRef preliminaryFrame = CTFramesetterCreateFrame(framesetterRef,frameRange,textPath,NULL);
               if(preliminaryFrame != nullptr){

@@ -25,6 +25,36 @@ _NAMESPACE_BEGIN_
     struct GEScissorRect;
     struct GEViewport;
 
+    /// @brief Argument layout for non-indexed indirect draw calls.
+    /// Matches D3D12_DRAW_ARGUMENTS / VkDrawIndirectCommand / Metal
+    /// MTLDrawPrimitivesIndirectArguments.
+    struct OMEGAGTE_EXPORT GEDrawIndirectCommand {
+        std::uint32_t vertexCount;
+        std::uint32_t instanceCount;
+        std::uint32_t firstVertex;
+        std::uint32_t firstInstance;
+    };
+
+    /// @brief Argument layout for indexed indirect draw calls.
+    /// Matches D3D12_DRAW_INDEXED_ARGUMENTS / VkDrawIndexedIndirectCommand /
+    /// Metal MTLDrawIndexedPrimitivesIndirectArguments.
+    struct OMEGAGTE_EXPORT GEDrawIndexedIndirectCommand {
+        std::uint32_t indexCount;
+        std::uint32_t instanceCount;
+        std::uint32_t firstIndex;
+        std::int32_t  baseVertex;
+        std::uint32_t firstInstance;
+    };
+
+    /// @brief Argument layout for indirect compute dispatches.
+    /// Matches D3D12_DISPATCH_ARGUMENTS / VkDispatchIndirectCommand / Metal
+    /// MTLDispatchThreadgroupsIndirectArguments.
+    struct OMEGAGTE_EXPORT GEDispatchIndirectCommand {
+        std::uint32_t groupCountX;
+        std::uint32_t groupCountY;
+        std::uint32_t groupCountZ;
+    };
+
     /// @brief Describes a Render Pass
     struct  OMEGAGTE_EXPORT GERenderPassDescriptor {
         GENativeRenderTarget *nRenderTarget = nullptr;
@@ -95,6 +125,13 @@ _NAMESPACE_BEGIN_
                                                    int baseVertex, unsigned instanceCount,
                                                    unsigned firstInstance) = 0;
 
+        virtual void drawPolygonsIndirect(RenderPassDrawPolygonType polygonType,
+                                           SharedHandle<GEBuffer> & argumentBuffer,
+                                           size_t argumentBufferOffset) = 0;
+        virtual void drawIndexedPolygonsIndirect(RenderPassDrawPolygonType polygonType,
+                                                  SharedHandle<GEBuffer> & argumentBuffer,
+                                                  size_t argumentBufferOffset) = 0;
+
         virtual void finishRenderPass() = 0;
         /**
          Compute Pass
@@ -120,6 +157,83 @@ _NAMESPACE_BEGIN_
          @param[in] region The Region of the Source Texture to Copy
         */
         virtual void copyTextureToTexture(SharedHandle<GETexture> & src,SharedHandle<GETexture> & dest,const TextureRegion & region,const GPoint3D & destCoord) = 0;
+
+        /**
+         @brief Copy bytes between two buffers.
+         @param[in] src The source buffer.
+         @param[in] dest The destination buffer.
+         @param[in] size Number of bytes to copy. When 0, the entire source buffer is copied.
+         @param[in] srcOffset Byte offset into the source buffer.
+         @param[in] destOffset Byte offset into the destination buffer.
+         */
+        virtual void copyBufferToBuffer(SharedHandle<GEBuffer> & src,
+                                         SharedHandle<GEBuffer> & dest,
+                                         size_t size = 0,
+                                         size_t srcOffset = 0,
+                                         size_t destOffset = 0) = 0;
+
+        /**
+         @brief Copy texel data from a buffer into a texture region.
+         @param[in] src The source buffer containing tightly-arranged texel data.
+         @param[in] dest The destination texture.
+         @param[in] bytesPerRow Bytes per row of texel data in the source buffer.
+         @param[in] bytesPerImage Bytes per image slice in the source buffer (0 for 2D textures).
+         @param[in] destRegion Target region within the destination texture.
+         @param[in] srcBufferOffset Byte offset into the source buffer.
+         */
+        virtual void copyBufferToTexture(SharedHandle<GEBuffer> & src,
+                                          SharedHandle<GETexture> & dest,
+                                          size_t bytesPerRow,
+                                          size_t bytesPerImage,
+                                          const TextureRegion & destRegion,
+                                          size_t srcBufferOffset = 0) = 0;
+
+        /**
+         @brief Copy texel data from a texture region into a buffer (GPU readback).
+         @param[in] src The source texture.
+         @param[in] dest The destination buffer (should allow CPU readback).
+         @param[in] bytesPerRow Bytes per row in the destination buffer.
+         @param[in] bytesPerImage Bytes per image slice in the destination buffer (0 for 2D textures).
+         @param[in] srcRegion Source region within the texture.
+         @param[in] destBufferOffset Byte offset into the destination buffer.
+         */
+        virtual void copyTextureToBuffer(SharedHandle<GETexture> & src,
+                                          SharedHandle<GEBuffer> & dest,
+                                          size_t bytesPerRow,
+                                          size_t bytesPerImage,
+                                          const TextureRegion & srcRegion,
+                                          size_t destBufferOffset = 0) = 0;
+
+        /**
+         @brief Generate mipmaps for a texture.
+         @param[in,out] texture The texture to populate mip levels for. Must have been created
+                                with `mipLevels > 1`. Mip 0 is treated as the source; mips 1..N are filled
+                                using linear box filtering.
+         @paragraph
+         Metal uses the native `generateMipmapsForTexture:` command. Vulkan uses a chain of
+         `vkCmdBlitImage` calls with `VK_FILTER_LINEAR`, transitioning each mip level as
+         needed. D3D12 requires an internal shader chain (see Extension 3 Blit Pipeline);
+         until that infrastructure lands this call is a no-op on D3D12 and emits a warning.
+         */
+        virtual void generateMipmaps(SharedHandle<GETexture> & texture) = 0;
+
+        /**
+         @brief Fill a buffer region with a repeating 32-bit value.
+         @param[in,out] buffer The buffer to fill.
+         @param[in] value The 32-bit pattern to fill with.
+         @param[in] offset Byte offset into the buffer (must be 4-byte aligned).
+         @param[in] size Bytes to fill (must be 4-byte aligned; 0 = fill to end of buffer).
+         @paragraph
+         Vulkan maps directly to `vkCmdFillBuffer`. D3D12 uses `ClearUnorderedAccessViewUint`
+         on buffers with UAV flags; otherwise emits a warning. Metal's blit encoder only
+         supports an 8-bit fill pattern natively, so when all four bytes of `value` are
+         identical the backend uses `fillBuffer:range:value:`; otherwise it emits a warning
+         and fills with the low byte (use a compute shader for non-uniform patterns).
+         */
+        virtual void fillBuffer(SharedHandle<GEBuffer> & buffer,
+                                 uint32_t value,
+                                 size_t offset = 0,
+                                 size_t size = 0) = 0;
 
         /**
          @brief Finish a Blit Pass.
@@ -186,6 +300,14 @@ _NAMESPACE_BEGIN_
         /// @param y Total threads in the `y` direction.
         /// @param z Total threads in the `z` direction.
         virtual void dispatchThreads(unsigned x,unsigned y,unsigned z) = 0;
+
+        /// @brief Dispatches threadgroups using arguments stored in a GPU buffer.
+        /// The buffer must contain a `GEDispatchIndirectCommand` (three `uint32_t`
+        /// values: groupCountX, groupCountY, groupCountZ) at the given byte offset.
+        /// @param argumentBuffer The buffer containing dispatch arguments.
+        /// @param argumentBufferOffset Byte offset into the argument buffer.
+        virtual void dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
+                                                   size_t argumentBufferOffset) = 0;
 
         #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
 

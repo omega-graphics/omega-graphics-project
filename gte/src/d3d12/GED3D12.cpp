@@ -459,6 +459,8 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
             exit(1);
         };
 
+        gteDevice = std::static_pointer_cast<GTEDevice>(device);
+
         DEBUG_STREAM("GED3D12Engine Intialized!");
 
     };
@@ -469,6 +471,130 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         shader->shaderBytecode.pShaderBytecode = shaderDesc->data;
         shader->shaderBytecode.BytecodeLength = shaderDesc->dataSize;
         return SharedHandle<GTEShader>(shader);
+    }
+
+    // OmegaSL source for the box-filter mipmap downsample. Mirrors
+    // gte/src/shaders/mipmap_gen_2d.omegasl; embedded so the engine has no
+    // filesystem dependency at runtime.
+    static const char *kMipmapGen2DOmegaSL = R"(
+texture2d srcMip : 0;
+texture2d dstMip : 1;
+
+[in srcMip, out dstMip]
+compute(x=8, y=8, z=1)
+void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
+    int2 dstCoord = make_int2((int)tid[0], (int)tid[1]);
+    int2 srcCoord = make_int2(dstCoord[0] * 2, dstCoord[1] * 2);
+
+    float4 c0 = read(srcMip, srcCoord);
+    float4 c1 = read(srcMip, make_int2(srcCoord[0] + 1, srcCoord[1]));
+    float4 c2 = read(srcMip, make_int2(srcCoord[0],     srcCoord[1] + 1));
+    float4 c3 = read(srcMip, make_int2(srcCoord[0] + 1, srcCoord[1] + 1));
+
+    write(dstMip, dstCoord, (c0 + c1 + c2 + c3) * 0.25);
+}
+)";
+
+    bool GED3D12Engine::ensureMipmapGenPipeline() {
+        if (mipmapGenPipeline) return true;
+
+        try {
+            auto compiler = OmegaSLCompiler::Create(gteDevice);
+            if (!compiler) {
+                DEBUG_STREAM("ensureMipmapGenPipeline: OmegaSLCompiler::Create returned null");
+                return false;
+            }
+
+            OmegaCommon::String src(kMipmapGen2DOmegaSL);
+            auto source = OmegaSLCompiler::Source::fromString(src);
+
+            mipmapGenShaderLib = compiler->compile({source});
+            if (!mipmapGenShaderLib || mipmapGenShaderLib->header.entry_count == 0) {
+                DEBUG_STREAM("ensureMipmapGenPipeline: OmegaSL compile produced no shaders");
+                mipmapGenShaderLib.reset();
+                return false;
+            }
+
+            // The kernel is the only entry point in the library.
+            omegasl_shader *shaderDesc = &mipmapGenShaderLib->shaders[0];
+            auto shader = _loadShaderFromDesc(shaderDesc, true);
+            if (!shader) {
+                DEBUG_STREAM("ensureMipmapGenPipeline: _loadShaderFromDesc failed");
+                mipmapGenShaderLib.reset();
+                return false;
+            }
+
+            ComputePipelineDescriptor desc{};
+            desc.name = "OmegaGTE.Internal.MipmapGen2D";
+            desc.computeFunc = shader;
+
+            mipmapGenPipeline = makeComputePipelineState(desc);
+            if (!mipmapGenPipeline) {
+                DEBUG_STREAM("ensureMipmapGenPipeline: makeComputePipelineState returned null");
+                mipmapGenShaderLib.reset();
+                return false;
+            }
+            return true;
+        } catch (const std::exception &e) {
+            DEBUG_STREAM("ensureMipmapGenPipeline: exception: " << e.what());
+            mipmapGenPipeline.reset();
+            mipmapGenShaderLib.reset();
+            return false;
+        }
+    }
+
+    ID3D12CommandSignature * GED3D12Engine::getDrawIndirectSignature() {
+        if (drawIndirectSignature) return drawIndirectSignature.Get();
+        D3D12_INDIRECT_ARGUMENT_DESC arg{};
+        arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+        D3D12_COMMAND_SIGNATURE_DESC sigDesc{};
+        sigDesc.ByteStride = sizeof(D3D12_DRAW_ARGUMENTS);
+        sigDesc.NumArgumentDescs = 1;
+        sigDesc.pArgumentDescs = &arg;
+        sigDesc.NodeMask = 0;
+        HRESULT hr = d3d12_device->CreateCommandSignature(&sigDesc, nullptr,
+                                                          IID_PPV_ARGS(&drawIndirectSignature));
+        if (FAILED(hr)) {
+            DEBUG_STREAM("getDrawIndirectSignature: CreateCommandSignature failed hr=" << std::hex << hr);
+            return nullptr;
+        }
+        return drawIndirectSignature.Get();
+    }
+
+    ID3D12CommandSignature * GED3D12Engine::getDrawIndexedIndirectSignature() {
+        if (drawIndexedIndirectSignature) return drawIndexedIndirectSignature.Get();
+        D3D12_INDIRECT_ARGUMENT_DESC arg{};
+        arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+        D3D12_COMMAND_SIGNATURE_DESC sigDesc{};
+        sigDesc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+        sigDesc.NumArgumentDescs = 1;
+        sigDesc.pArgumentDescs = &arg;
+        sigDesc.NodeMask = 0;
+        HRESULT hr = d3d12_device->CreateCommandSignature(&sigDesc, nullptr,
+                                                          IID_PPV_ARGS(&drawIndexedIndirectSignature));
+        if (FAILED(hr)) {
+            DEBUG_STREAM("getDrawIndexedIndirectSignature: CreateCommandSignature failed hr=" << std::hex << hr);
+            return nullptr;
+        }
+        return drawIndexedIndirectSignature.Get();
+    }
+
+    ID3D12CommandSignature * GED3D12Engine::getDispatchIndirectSignature() {
+        if (dispatchIndirectSignature) return dispatchIndirectSignature.Get();
+        D3D12_INDIRECT_ARGUMENT_DESC arg{};
+        arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+        D3D12_COMMAND_SIGNATURE_DESC sigDesc{};
+        sigDesc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
+        sigDesc.NumArgumentDescs = 1;
+        sigDesc.pArgumentDescs = &arg;
+        sigDesc.NodeMask = 0;
+        HRESULT hr = d3d12_device->CreateCommandSignature(&sigDesc, nullptr,
+                                                          IID_PPV_ARGS(&dispatchIndirectSignature));
+        if (FAILED(hr)) {
+            DEBUG_STREAM("getDispatchIndirectSignature: CreateCommandSignature failed hr=" << std::hex << hr);
+            return nullptr;
+        }
+        return dispatchIndirectSignature.Get();
     }
 
     using D3DByte = unsigned char;

@@ -53,6 +53,17 @@ _NAMESPACE_BEGIN_
         void startBlitPass() override;
         void copyTextureToTexture(SharedHandle<GETexture> & src,SharedHandle<GETexture> & dest) override;
         void copyTextureToTexture(SharedHandle<GETexture> & src,SharedHandle<GETexture> & dest,const TextureRegion & region,const GPoint3D & destCoord) override;
+        void copyBufferToBuffer(SharedHandle<GEBuffer> & src,SharedHandle<GEBuffer> & dest,
+                                size_t size, size_t srcOffset, size_t destOffset) override;
+        void copyBufferToTexture(SharedHandle<GEBuffer> & src,SharedHandle<GETexture> & dest,
+                                 size_t bytesPerRow, size_t bytesPerImage,
+                                 const TextureRegion & destRegion, size_t srcBufferOffset) override;
+        void copyTextureToBuffer(SharedHandle<GETexture> & src,SharedHandle<GEBuffer> & dest,
+                                 size_t bytesPerRow, size_t bytesPerImage,
+                                 const TextureRegion & srcRegion, size_t destBufferOffset) override;
+        void generateMipmaps(SharedHandle<GETexture> & texture) override;
+        void fillBuffer(SharedHandle<GEBuffer> & buffer, uint32_t value,
+                        size_t offset, size_t size) override;
         void finishBlitPass() override;
         /// Raytracing Funcs
         void beginAccelStructPass() override;
@@ -82,6 +93,12 @@ _NAMESPACE_BEGIN_
                                            unsigned indexCount, size_t startIndex,
                                            int baseVertex, unsigned instanceCount,
                                            unsigned firstInstance) override;
+        void drawPolygonsIndirect(RenderPassDrawPolygonType polygonType,
+                                   SharedHandle<GEBuffer> & argumentBuffer,
+                                   size_t argumentBufferOffset) override;
+        void drawIndexedPolygonsIndirect(RenderPassDrawPolygonType polygonType,
+                                          SharedHandle<GEBuffer> & argumentBuffer,
+                                          size_t argumentBufferOffset) override;
         void setViewports(std::vector<GEViewport> viewports) override;
         void setScissorRects(std::vector<GEScissorRect> scissorRects) override;
         void finishRenderPass() override;
@@ -96,6 +113,8 @@ _NAMESPACE_BEGIN_
         #endif
         void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreads(unsigned int x, unsigned int y, unsigned int z) override;
+        void dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
+                                           size_t argumentBufferOffset) override;
         void finishComputePass() override;
 
         GED3D12CommandBuffer(ID3D12GraphicsCommandList6 *commandList,ID3D12CommandAllocator *commandAllocator,GED3D12CommandQueue *parentQueue);
@@ -110,6 +129,12 @@ _NAMESPACE_BEGIN_
         std::vector<ID3D12GraphicsCommandList6 *> commandLists;
         std::vector<SharedHandle<GECommandBuffer>> retainedCommandBuffers;
         ComPtr<ID3D12CommandQueue> commandQueue;
+    public:
+        // Descriptor heaps allocated transiently by command-buffer encoders
+        // (e.g. generateMipmaps) that must outlive the command list. Cleared
+        // when the queue's submitted work is known to have finished.
+        std::vector<ComPtr<ID3D12DescriptorHeap>> retainedDescriptorHeaps;
+    private:
 
         ComPtr<ID3D12Fence> fence;
 

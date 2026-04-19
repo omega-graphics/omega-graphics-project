@@ -928,7 +928,8 @@ _NAMESPACE_BEGIN_
                             VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                             VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
-                            VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
+                            VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
         if(hasBufferDeviceAddressExt){
             buffer_desc.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         }
@@ -1002,7 +1003,8 @@ _NAMESPACE_BEGIN_
                            VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                            VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
-                           VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
+                           VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                           VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         VmaAllocationCreateInfo allocInfo {};

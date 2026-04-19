@@ -27,6 +27,7 @@ if(NOT WIN32)
 	set(OMEGACOMMON_CURL_INCLUDE_DIRS "")
 	set(OMEGACOMMON_CURL_LIBRARIES "")
 	# macOS/iOS has libcurl as part of the system.
+	
 	if(NOT APPLE)
 		find_package(CURL QUIET)
 		if(TARGET CURL::libcurl)
@@ -49,6 +50,9 @@ if(NOT WIN32)
 		if(NOT OMEGACOMMON_CURL_TARGET AND NOT OMEGACOMMON_CURL_LIBRARIES)
 			message(FATAL_ERROR "OmegaCommon requires libcurl on non-Windows platforms. Install the libcurl development package so CMake or pkg-config can find it.")
 		endif()
+	else()
+		# On Apple platforms, use the system libcurl. The find_package(CURL) approach doesn't work well there because the system libcurl is a "framework" and CMake's FindCURL module doesn't handle that well.
+		set(OMEGACOMMON_CURL_LIBRARIES "-lcurl")
 	endif()
 endif()
 
