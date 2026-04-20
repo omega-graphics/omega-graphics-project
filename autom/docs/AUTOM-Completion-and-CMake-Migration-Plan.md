@@ -18,9 +18,9 @@ load-bearing CMake features that AUTOM has no equivalent for:
 
 - usage-requirement propagation (`PUBLIC`/`PRIVATE`/`INTERFACE` on includes, libs,
   defines, compile/link flags)
-- cache variables / user-facing `option(...)` knobs
-- generator expressions (`$<TARGET_FILE:...>`, `$<CONFIG:Debug>`, …)
-- imported targets for prebuilt / vendored libraries
+- user-facing build arguments
+- late-bound target/output references
+- prebuilt targets for vendored libraries
 - a testing layer (`enable_testing`, `add_test`, a CTest-like runner)
 - configurable build types (Debug/Release/RelWithDebInfo) and multi-config
   generator awareness
@@ -42,68 +42,100 @@ staged migration of every `CMakeLists.txt` in the tree to `AUTOM.build`.
 
 Mapped against actual usage in this repository.
 
-### 2.1 Usage requirement propagation
+### 2.1 Config-driven usage propagation
 
 CMake has `target_link_libraries(foo PUBLIC bar)` with automatic include/define/flag
-propagation across the DAG. AUTOM has flat `libs` and `include_dirs` properties —
-no propagation, no visibility.
+propagation across the DAG. GN leans more on `configs` and `public_deps`. AUTOM
+should move in that direction, because it already prefers simple snake_case
+properties (`deps`, `include_dirs`, `libs`) over vocabulary-heavy visibility
+prefixes.
 
-**Needed:** visibility-qualified target property APIs.
+**Needed:** a `Config(...)` builtin plus exported edges on targets.
 
 ```autom
-foo.public_libs       = ["bar"]
-foo.private_libs      = ["gte-impl"]
-foo.interface_libs    = []
-foo.public_include_dirs  = ["./include"]
-foo.private_include_dirs = ["./src/internal"]
-foo.public_defines    = ["OG_PUBLIC=1"]
-foo.private_defines   = ["OG_BUILDING_FOO"]
+var foo_public = Config(name:"foo_public")
+foo_public.include_dirs = ["./include"]
+foo_public.defines = ["OG_PUBLIC=1"]
+
+var foo_private = Config(name:"foo_private")
+foo_private.include_dirs = ["./src/internal"]
+foo_private.defines = ["OG_BUILDING_FOO"]
+
+var foo = Shared(name:"foo", sources:["./src/foo.cpp"])
+foo.deps = ["gte_impl"]
+foo.public_deps = ["bar"]
+foo.configs = ["foo_private"]
+foo.public_configs = ["foo_public"]
 ```
 
-Engine change: the target graph must walk `public_*`/`interface_*` edges during
-generation and merge them into dependents' effective compile/link lines.
+Engine change: the target graph must walk `public_deps` and merge
+`public_configs` transitively into dependents' effective compile/link lines.
+Existing target-local properties such as `include_dirs`, `defines`, `libs`,
+`lib_dirs`, `frameworks`, `framework_dirs`, `cflags`, and `ldflags` stay valid
+and remain private by default.
 
-### 2.2 Cache variables / options
+### 2.2 Build arguments
 
 Essential for `CODE_SIGNATURE`, `CROSS_COMPILE`, `BUILD_SHARED_LIBS`, and anything
 else a user sets at configure time.
 
 ```autom
-option(name:"OG_WITH_VULKAN", desc:"Build Vulkan backend", default:true)
-option(name:"CODE_SIGNATURE", desc:"Apple Developer Team ID", default:"")
-option(name:"CROSS_COMPILE",  desc:"Cross-compile mode", default:false)
+arg(name:"OG_WITH_VULKAN", type:"bool", default:true,
+    desc:"Build Vulkan backend")
+arg(name:"CODE_SIGNATURE", type:"string", default:"",
+    desc:"Apple Developer Team ID")
+arg(name:"CROSS_COMPILE", type:"bool", default:false,
+    desc:"Cross-compile mode")
 
-if(autom.options.OG_WITH_VULKAN) { ... }
+if(autom.args.OG_WITH_VULKAN) { ... }
 ```
 
 Needs:
 
-- persistent cache file in the build directory (`AUTOMCACHE` JSON)
-- `-D NAME=VALUE` CLI overrides on the `autom` driver
-- typed options (bool / string / path / enum)
-- `--show-options` introspection
+- persistent build-argument file in the build directory (`AUTOMARGS`)
+- `--arg NAME=VALUE` CLI overrides on the `autom` driver
+- `-D NAME=VALUE` as a migration-friendly alias
+- typed args (bool / string / path / enum)
+- `autom configure --list-args` introspection
 
-### 2.3 Generator expressions
+### 2.3 Late-bound target queries
 
 Required by `add_custom_command` chains, codesign pipelines, bundle staging. Today
 CMake uses `$<TARGET_FILE:foo>` to reference a target's output path without the
 build file needing to know build type or output dir.
 
-**Needed:** a small expression sublanguage evaluated at generation time:
+AUTOM should avoid a CMake-style string mini-language here. A GN-like,
+query-oriented surface fits the current language better: build files already use
+function calls and property access, and ordinary `if(...)` blocks can handle
+platform/config branching.
 
-| Form | Meaning |
+**Needed:** late-bound query helpers evaluated during generation:
+
+| Helper | Meaning |
 |------|---------|
-| `$(target:foo.output)` | absolute path of foo's primary build output |
-| `$(target:foo.output_dir)` | directory of foo's primary build output |
-| `$(target:foo.interface_includes)` | exported include dirs |
-| `$(config:Debug?-g:-O2)` | per-config ternary |
-| `$(platform:darwin?-framework Cocoa)` | per-platform selection |
+| `target_output(target:"foo")` | absolute path of foo's primary build output |
+| `target_output_dir(target:"foo")` | directory of foo's primary build output |
+| `target_outputs(target:"foo")` | all outputs produced by foo |
+| `target_public_include_dirs(target:"foo")` | exported include dirs from foo |
 
-Implementation: a string-interpolation pass in `TargetDumper` / each generator,
-expanded before emitting build rules. Unlike CMake's genexes, these stay textual
-and legible.
+```autom
+var post = Script(
+    name:"post",
+    cmd:"python3",
+    args:["tools/post.py", target_output(target:"foo")],
+    outputs:["post.stamp"]
+)
 
-### 2.4 Imported / external targets
+if(autom.target_platform == "darwin") {
+    foo.frameworks += ["Cocoa"]
+}
+```
+
+Implementation: evaluation stores symbolic target queries in the AST/runtime,
+and each generator resolves them when output paths are known. Unlike CMake
+genexes, this stays readable and does not require a second expression language.
+
+### 2.4 Prebuilt / external targets
 
 Needed for:
 
@@ -112,27 +144,37 @@ Needed for:
 - `ExternalProject` outputs treated as first-class dependencies
 
 ```autom
-var openssl = ImportedLibrary(
+var openssl_cfg = Config(name:"openssl_cfg")
+openssl_cfg.include_dirs = [AutomDepsExport(name:"openssl-src.include")]
+
+var openssl = PrebuiltLibrary(
     name:"openssl",
     kind:"shared",
-    location:AutomDepsExport(name:"openssl-src.lib"),
-    interface_include_dirs:[AutomDepsExport(name:"openssl-src.include")]
+    file:AutomDepsExport(name:"openssl-src.lib")
 )
-myExe.libs = ["openssl"]
+openssl.public_configs = ["openssl_cfg"]
+
+myExe.deps += ["openssl"]
 ```
 
-Engine change: new target kind `IMPORTED_TARGET` in `Targets.def`, ignored by
-compile steps but consulted for link flags and include propagation.
+Engine change: new target kind `PREBUILT_LIBRARY` in `Targets.def`, ignored by
+compile steps but consulted for link flags and `public_configs` propagation.
 
-### 2.5 Interface targets (header-only libs)
+### 2.5 Header-only exports
 
 ```autom
-var headers = InterfaceTarget(name:"common-headers")
-headers.interface_include_dirs = ["./include"]
-headers.interface_defines = ["OG_HEADER_ONLY"]
+var common_headers_cfg = Config(name:"common_headers_cfg")
+common_headers_cfg.include_dirs = ["./include"]
+common_headers_cfg.defines = ["OG_HEADER_ONLY"]
+
+var headers = GroupTarget(name:"common_headers", deps:[])
+headers.public_configs = ["common_headers_cfg"]
 ```
 
-Needed for the common/ include tree and the numerous ABI-only headers in gte/.
+Needed for the `common/` include tree and the numerous ABI-only headers in
+`gte/`. This keeps header-only composition on top of current AUTOM concepts
+(`GroupTarget`, simple properties) instead of introducing a separate target kind
+just for interface/header-only cases.
 
 ### 2.6 Testing
 
@@ -143,10 +185,11 @@ CMake uses `enable_testing()` + `add_test()` + `ctest`. The repo has
 **Needed:** first-class `Test` target and an `autom test` subcommand.
 
 ```autom
-var t = Test(name:"gte-basic", target:"gte-basic-test", args:["--gtest_color=yes"])
+var t = Test(name:"gte-basic", target:"gte-basic-test")
+t.args = ["--gtest_color=yes"]
 t.working_dir = "./tests/data"
 t.timeout = 60
-t.env = {"OG_DISABLE_GPU":"1"}
+t.env_vars = ["OG_DISABLE_GPU=1"]
 t.labels = ["fast", "gpu-optional"]
 ```
 
@@ -156,17 +199,29 @@ Generator side: emit a manifest (`AUTOMTESTS.json`) readable by
 ### 2.7 Build types / configurations
 
 Today `AUTOM.build` can branch on `autom.toolchain` but has no notion of
-Debug/Release. Multi-config generators (Xcode, MSBuild) require per-config flag
-arrays.
+Debug/Release. Multi-config generators (Xcode, MSBuild) require named config
+selection without inventing a new property tree syntax.
 
 ```autom
-autom.config_flags.Debug.cxx   = ["-g","-O0","-DOG_DEBUG=1"]
-autom.config_flags.Release.cxx = ["-O2","-DNDEBUG"]
-main_lib.config_defines.Debug = ["OG_ASSERTS=1"]
+var debug_cfg = Config(name:"debug_cfg")
+debug_cfg.cflags = ["-g","-O0"]
+debug_cfg.defines = ["OG_DEBUG=1"]
+
+var release_cfg = Config(name:"release_cfg")
+release_cfg.cflags = ["-O2"]
+release_cfg.defines = ["NDEBUG"]
+
+if(autom.config == "Debug") {
+    main_lib.configs += ["debug_cfg"]
+}
+elif(autom.config == "Release") {
+    main_lib.configs += ["release_cfg"]
+}
 ```
 
-Driver change: `autom gen ... --config Debug` for single-config generators;
-Xcode/VS generators already know their own multi-config matrix.
+Driver change: `autom configure ... --config Debug` for single-config
+generators; Xcode/VS generators evaluate against the built-in config set and
+attach the matching `Config(...)` objects natively.
 
 ### 2.8 Package config export / discovery
 
@@ -178,9 +233,15 @@ This is the hardest CMake replacement. Two halves:
 # Generated by autom install
 project(name:"OmegaGTE", version:"0.9")
 
-var gte = ImportedLibrary(name:"OmegaGTE", kind:"shared",
-    location:"$(prefix)/lib/libOmegaGTE.dylib",
-    interface_include_dirs:["$(prefix)/include/OmegaGTE"])
+var gte_headers = Config(name:"OmegaGTE_headers")
+gte_headers.include_dirs = [package_path(path:"include/OmegaGTE")]
+
+var gte = PrebuiltLibrary(
+    name:"OmegaGTE",
+    kind:"shared",
+    file:package_path(path:"lib/libOmegaGTE.dylib")
+)
+gte.public_configs = ["OmegaGTE_headers"]
 ```
 
 **Consumer half** — `find_package(name:"OmegaGTE", version:">=0.9")` that
@@ -189,7 +250,9 @@ imports the named targets.
 
 Also need a CMake-interop direction: `autom gen cmake-package` producing a
 `<pkg>Config.cmake` so projects that stay on CMake can still link against
-Omega libraries.
+Omega libraries. Generated package files can provide a tiny `package_path(...)`
+helper rooted at the discovered install prefix so the file stays relocatable
+without introducing general-purpose string interpolation.
 
 ### 2.9 Feature detection
 
@@ -207,7 +270,7 @@ if(check_symbol(symbol:"pthread_setname_np", header:"pthread.h")) { ... }
 ```
 
 Implementation: invoke the active toolchain's compiler, cache results under
-`AUTOMCACHE`, expose via `autom.features`.
+`AUTOMSTATE`, expose via `autom.features`.
 
 ### 2.10 Additional language enablement
 
@@ -300,13 +363,13 @@ CMake's value is partly the `cmake --build ...` abstraction. AUTOM should have:
 
 | Command | Behavior |
 |---------|----------|
-| `autom configure` | evaluate build files, write cache + chosen generator output |
+| `autom configure` | evaluate build files, write args/state + chosen generator output |
 | `autom build [target]` | drive the backing tool (ninja/msbuild/xcodebuild) |
 | `autom test` | run tests declared by `Test(...)` |
 | `autom install [--component]` | execute the `AUTOMINSTALL` manifest |
 | `autom package` | invoke `dist.autom` producers |
-| `autom clean` | wipe build tree, keep cache |
-| `autom reconfigure` | re-run configure with current cache |
+| `autom clean` | wipe build tree, keep `AUTOMARGS` / `AUTOMSTATE` |
+| `autom reconfigure` | re-run configure with current args/state |
 
 ### 2.17 Diagnostics & IDE support
 
@@ -322,10 +385,10 @@ Already have `CompileCommands.cpp`. Need:
 |------|-------|-------------|-----|
 | Targets (exe/static/shared) | ✅ | ✅ | — |
 | Usage requirements | ✅ PUBLIC/PRIVATE/INTERFACE | ❌ flat props | **§2.1** |
-| Cache / options | ✅ | ❌ | **§2.2** |
-| Generator expressions | ✅ | ❌ | **§2.3** |
-| Imported targets | ✅ | ❌ | **§2.4** |
-| Interface targets | ✅ | ❌ | **§2.5** |
+| Build arguments | ✅ cache/options | ❌ | **§2.2** |
+| Late-bound target refs | ✅ genex-like refs | ❌ | **§2.3** |
+| Prebuilt targets | ✅ | ❌ | **§2.4** |
+| Header-only exports | ✅ | ❌ | **§2.5** |
 | Testing | ✅ CTest | ❌ | **§2.6** |
 | Build types | ✅ | ⚠️ toolchain only | **§2.7** |
 | Package config | ✅ find_package | ❌ | **§2.8** |
@@ -344,28 +407,29 @@ Already have `CompileCommands.cpp`. Need:
 ## 3. Proposed Extension: **AUTOM v1.0 — Build System Generator Complete**
 
 The goal of AUTOM v1.0 is "feature parity with the CMake surface area this repo
-actually uses, plus the peer-level amenities (testing, options, package export)
+actually uses, plus the peer-level amenities (testing, build arguments, package export)
 that make a build system generator usable for other projects."
 
 ### 3.1 Layered deliverables
 
-**Layer A — Target Graph Semantics**
+**Layer A — Config Graph Semantics**
 Introduces usage requirements and target kinds required for everything else.
 
-- A1: `public_*` / `private_*` / `interface_*` target properties
-- A2: `InterfaceTarget`
-- A3: `ImportedLibrary` (static/shared/framework)
-- A4: transitive requirement propagation in `TargetDumper`
-- A5: generator-expression string resolver
+- A1: `Config(...)`, `configs`, and `public_configs`
+- A2: `public_deps`
+- A3: `PrebuiltLibrary` (static/shared/framework)
+- A4: exported requirement propagation in `TargetDumper`
+- A5: late-bound target query helpers (`target_output(...)`, ...)
+- A6: `GroupTarget` export support for header-only dependency nodes
 
-**Layer B — Configuration Surface**
+**Layer B — Arguments & Selection**
 Everything the user controls from the command line.
 
-- B1: `option(...)` builtin + `AUTOMCACHE` persistence
-- B2: `-D NAME=VALUE` driver flag
-- B3: typed options (bool / path / string / enum)
-- B4: `autom configure --show-options`
-- B5: build-type matrix (`Debug`/`Release`/…)
+- B1: `arg(...)` builtin + `AUTOMARGS` persistence
+- B2: `--arg NAME=VALUE` driver flag (`-D` alias)
+- B3: typed args (bool / path / string / enum)
+- B4: `autom configure --list-args`
+- B5: build-type matrix via `autom.config`
 - B6: toolchain-file loader (`--toolchain`)
 
 **Layer C — Testing & Packaging**
@@ -385,7 +449,7 @@ Closes the "third-party integration" gap.
 - D2: producer side: `autom install` emits `lib/autom/<pkg>/<pkg>-config.autom`
 - D3: CMake-interop: `autom gen cmake-package` emitting `<pkg>Config.cmake`
 - D4: feature detection builtins (`try_compile`, `check_include`,
-  `check_symbol`), cached in `AUTOMCACHE`
+  `check_symbol`), cached in `AUTOMSTATE`
 - D5: `autom-deps` ↔ AUTOM bridge: `AutomDepsExport(...)` builtin consuming
   `.automdeps/exports.json` (already called out in the autom-deps plan §15)
 
@@ -412,12 +476,12 @@ Developer UX parity with modern CMake.
 
 | File | Change |
 |------|--------|
-| `src/Targets.def` | add `INTERFACE_TARGET`, `IMPORTED_TARGET`, `TEST_TARGET`, per-visibility prop storage |
-| `src/Target.h` | visibility-aware property accessors; `resolveInterface()` walker |
+| `src/Targets.def` | add `CONFIG_TARGET`, `PREBUILT_LIBRARY`, `TEST_TARGET`, plus `configs` / `public_configs` / `public_deps` storage |
+| `src/Target.h` | `ConfigTarget` / prebuilt target support; propagation walker for exported configs |
 | `src/TargetDumper.{h,cpp}` | compute effective compile/link sets via walker |
-| `src/engine/AST.def`, `AST.cpp`, `Lexer.cpp` | new keywords/syntax if any (`option`, `Test`, `ImportedLibrary`, `InterfaceTarget` are builtins, no grammar change) |
-| `src/engine/Builtins.def`, `Builtins.cpp` | register `BUILTIN_OPTION`, `BUILTIN_TEST`, `BUILTIN_IMPORTED_LIBRARY`, `BUILTIN_INTERFACE_TARGET`, `BUILTIN_FIND_PACKAGE`, `BUILTIN_TRY_COMPILE`, `BUILTIN_CHECK_*`, `BUILTIN_AUTOM_DEPS_EXPORT` |
-| `src/engine/Execution.{h,cpp}` | generator-expression pass; cache file I/O; toolchain-file evaluator |
+| `src/engine/AST.def`, `AST.cpp`, `Lexer.cpp` | new keywords/syntax if any (`arg`, `Config`, `Test`, `PrebuiltLibrary` are builtins, no grammar change) |
+| `src/engine/Builtins.def`, `Builtins.cpp` | register `BUILTIN_ARG`, `BUILTIN_CONFIG`, `BUILTIN_TEST`, `BUILTIN_PREBUILT_LIBRARY`, `BUILTIN_TARGET_OUTPUT`, `BUILTIN_TARGET_OUTPUTS`, `BUILTIN_TARGET_OUTPUT_DIR`, `BUILTIN_FIND_PACKAGE`, `BUILTIN_TRY_COMPILE`, `BUILTIN_CHECK_*`, `BUILTIN_AUTOM_DEPS_EXPORT` |
+| `src/engine/Execution.{h,cpp}` | target-query node handling; `AUTOMARGS` / `AUTOMSTATE` I/O; toolchain-file evaluator |
 | `src/gen/TargetNinja.cpp` | per-config matrix, PCH, OBJCXX/ASM, response files on link, compile_commands emission, test manifest |
 | `src/gen/TargetXcode.cpp` | per-config native support, PCH, test scheme generation |
 | `src/gen/TargetVisualStudio.cpp` | per-config native support, PCH, long link line response files |
@@ -431,11 +495,12 @@ New engine files:
 
 | File | Purpose |
 |------|---------|
-| `src/Cache.{h,cpp}` | `AUTOMCACHE` persistence, typed options |
+| `src/BuildArgs.{h,cpp}` | `AUTOMARGS` persistence, typed args |
+| `src/StateCache.{h,cpp}` | `AUTOMSTATE` persistence for probes and configure state |
 | `src/Toolchain.cpp` | extended: toolchain-file evaluator |
 | `src/FeatureProbe.{h,cpp}` | `try_compile` / `check_*` driving the toolchain |
 | `src/PackageConfig.{h,cpp}` | package config reader/writer |
-| `src/GenExpr.{h,cpp}` | generator-expression lexer + evaluator |
+| `src/TargetQuery.{h,cpp}` | late-bound target output/reference helpers |
 | `src/TestManifest.{h,cpp}` | `AUTOMTESTS.json` reader/writer |
 
 ### 3.3 Module-layer additions
@@ -443,7 +508,7 @@ New engine files:
 | Module | Addition |
 |--------|----------|
 | `modules/apple.autom` | `apple_fix_install_names`, framework/app + embedded lib rewrite (replaces `OmegaGraphicsSuite.cmake` Darwin section) |
-| `modules/external_project.autom` | alignment with `autom-deps` exports so `ExternalProject` is a degenerate case; `ImportedLibrary` emitted automatically |
+| `modules/external_project.autom` | alignment with `autom-deps` exports so `ExternalProject` is a degenerate case; `PrebuiltLibrary` emitted automatically |
 | `modules/test.autom` | `GTestTarget`, `CTestCompat` helpers |
 | `modules/pkg.autom` | (distinct from `dist.autom`) `find_package` producer helpers, `autom_export_package(name, targets, headers)` |
 | `modules/autom_deps.autom` (new) | `AutomDepsExport(name)` / `AutomDepsExports()` bulk |
@@ -451,54 +516,74 @@ New engine files:
 ### 3.4 Syntax additions (with docs under `autom/docs/Syntax.rst`)
 
 ```autom
-# Options
-option(name:"OG_WITH_VULKAN", type:"bool",   default:true,  desc:"...")
-option(name:"CODE_SIGNATURE", type:"string", default:"",    desc:"...")
-option(name:"OG_SANITIZER",   type:"enum",   choices:["none","asan","ubsan"], default:"none")
+# Build args
+arg(name:"OG_WITH_VULKAN", type:"bool",   default:true,  desc:"...")
+arg(name:"CODE_SIGNATURE", type:"string", default:"",    desc:"...")
+arg(name:"OG_SANITIZER",   type:"enum",   choices:["none","asan","ubsan"], default:"none")
 
-# Interface / Imported
-var hdrs = InterfaceTarget(name:"common-headers")
-hdrs.interface_include_dirs = ["./include"]
+# Configs / header-only exports
+var hdrs_cfg = Config(name:"common_headers_cfg")
+hdrs_cfg.include_dirs = ["./include"]
 
-var ossl = ImportedLibrary(
+var hdrs = GroupTarget(name:"common_headers", deps:[])
+hdrs.public_configs = ["common_headers_cfg"]
+
+var ossl_cfg = Config(name:"openssl_cfg")
+ossl_cfg.include_dirs = [AutomDepsExport(name:"openssl-src.include")]
+
+var ossl = PrebuiltLibrary(
     name:"openssl", kind:"shared",
-    location:AutomDepsExport(name:"openssl-src.lib"),
-    interface_include_dirs:[AutomDepsExport(name:"openssl-src.include")]
+    file:AutomDepsExport(name:"openssl-src.lib")
 )
+ossl.public_configs = ["openssl_cfg"]
 
 # find_package
 var gte = find_package(name:"OmegaGTE", version:">=0.9", required:true)
 
 # Usage requirements
-main_lib.public_include_dirs  = ["./include"]
-main_lib.private_include_dirs = ["./src/internal"]
-main_lib.public_libs          = ["common-headers"]
-main_lib.private_libs         = ["openssl"]
-main_lib.public_defines       = ["OG_PUBLIC=1"]
+var public_api = Config(name:"public_api")
+public_api.include_dirs = ["./include"]
+public_api.defines = ["OG_PUBLIC=1"]
 
-# Build type / generator expressions
-main_lib.config_defines.Debug   = ["OG_DEBUG=1"]
-main_lib.config_defines.Release = ["NDEBUG"]
+var internal_build = Config(name:"internal_build")
+internal_build.include_dirs = ["./src/internal"]
+
+main_lib.configs = ["internal_build"]
+main_lib.public_configs = ["public_api"]
+main_lib.public_deps = ["common_headers"]
+main_lib.deps += ["openssl"]
+
+# Build type / target queries
+var debug_cfg = Config(name:"debug_cfg")
+debug_cfg.defines = ["OG_DEBUG=1"]
+
+if(autom.config == "Debug") {
+    main_lib.configs += ["debug_cfg"]
+}
+
 post = Script(name:"post", cmd:"python3",
-    args:["tools/post.py", "$(target:main_lib.output)"],
+    args:["tools/post.py", target_output(target:"main_lib")],
     outputs:["post.stamp"])
 
 # PCH
 main_lib.pch = "src/internal/pch.h"
 
 # Tests
-var t = Test(name:"gte-basic", target:"gte-basic-test", labels:["fast"])
+var t = Test(name:"gte-basic", target:"gte-basic-test")
+t.labels = ["fast"]
 
 # Feature probes
 if(try_compile(src:"#include <arm_neon.h>\nint main(){return 0;}")) {
-    main_lib.public_defines += ["OG_HAVE_NEON"]
+    main_lib.defines += ["OG_HAVE_NEON"]
 }
 ```
 
 ### 3.5 Backward compatibility
 
-- Existing `include_dirs`, `libs`, `deps`, `output_*` properties keep working and
-  become shorthand for `private_*`.
+- Existing `include_dirs`, `libs`, `deps`, `output_*` properties keep working.
+- Existing target-local properties remain private by default.
+- `public_*` property families are intentionally not introduced; exported edges
+  flow through `public_deps` and `public_configs`.
 - Every current `AUTOM.build` in the tree (root, `common/`, `gte/`, `wtk/`,
   `aqua/`, `autom/`, `autom/tests/*`) continues to evaluate without change.
 - New builtins are additive only; no grammar change.
@@ -507,15 +592,16 @@ if(try_compile(src:"#include <arm_neon.h>\nint main(){return 0;}")) {
 
 | Phase | Scope | Gate |
 |-------|-------|------|
-| **P1** Layer A — target graph | §2.1, §2.4, §2.5; engine walkers; generator updates | `autom/AUTOM.build` self-builds with new props; wtk builds using `public_include_dirs` |
-| **P2** Layer B — configuration | §2.2, §2.7, §2.14 | `option()` reads from `-D`, persists across runs |
+| **P1** Layer A — config graph | §2.1, §2.3, §2.4, §2.5; engine walkers; generator updates | `autom/AUTOM.build` self-builds with `Config(...)`; wtk builds using `public_deps` / `public_configs` |
+| **P2** Layer B — arguments | §2.2, §2.7, §2.14 | `arg()` reads from `--arg` / `-D`, persists across runs |
 | **P3** Layer C — test & driver polish | §2.6, §2.16 | `autom test` runs existing gtests/wtk tests |
 | **P4** Layer D — discovery & interop | §2.8, §2.9, autom-deps bridge | `find_package(OmegaGTE)` works after install; `try_compile` cached |
 | **P5** Layer E — platform depth | §2.10–§2.13, §2.15 | Darwin bundles, PCH, OBJCXX/ASM |
 | **P6** Layer F — tooling | §2.17, §3.1-F4 | `compile_commands.json`, `autom query`, `autom graph` |
 
 Phases can overlap; the critical ordering is **A → B → C/D/E in parallel → F**.
-A must land first because usage requirements underlie everything else.
+A must land first because `Config(...)` + exported dependency semantics underlie
+everything else.
 
 ---
 
@@ -566,7 +652,7 @@ but are not currently the source of truth.
 
 #### **M0 — Prerequisites** (blocks on AUTOM P1)
 
-- AUTOM P1 (Layer A: usage requirements) merged
+- AUTOM P1 (Layer A: config graph semantics) merged
 - `autom-deps v2` Phase 4 done (exports.json consumable from AUTOM)
 - CI matrix in place: macOS (Xcode + Ninja), Linux (Ninja), Windows (VS + Ninja)
   runs **both** CMake and AUTOM for every PR
@@ -582,7 +668,7 @@ Blocks on AUTOM P1 + P5.
 | `add_app_bundle` | `apple.autom::AppleApp` (+ gaps: EMBEDDED_FRAMEWORKS, EMBEDDED_LIBS, resources, PLIST) |
 | `code_sign_bundle` | `apple.autom::AppleCodesign` (already implemented) |
 | `set_library_install_name` / `add_library_rpath` / `reset_library_dependent_name` | `apple.autom::apple_fix_install_names` (**new**, §2.13) |
-| `add_third_party` (`ExternalProject_Add`) | `external_project.autom::ExternalProject` + `ImportedLibrary` wiring via autom-deps exports |
+| `add_third_party` (`ExternalProject_Add`) | `external_project.autom::ExternalProject` + `PrebuiltLibrary` wiring via autom-deps exports |
 | `add_omega_graphics_tool` | wrapper in new `omega.autom` module — `OmegaTool(name, sources, libs)` |
 | `add_omega_graphics_test` | `Test(...)` + `OmegaTest(...)` wrapper |
 | `add_omega_graphics_module` | `OmegaModule(name, sources, header_dir, static?, shared?, framework?, embedded_libs?, version, info_plist)` — composes `Archive`/`Shared`/`AppleFramework` and installs headers |
@@ -638,7 +724,7 @@ Blocks on M4 + AUTOM P5 (OBJCXX for Metal, ASM optional).
 Same template as M4. Additional work:
 
 - Metal shader compilation pipeline ported to `Script` + `GroupTarget`
-- DX/Vulkan/Metal backends gated on feature-probe `option(...)` + `try_compile`
+- DX/Vulkan/Metal backends gated on feature-probe `arg(...)` + `try_compile`
 - `omegasl` tool and tests
 
 #### **M6 — `wtk/`**
@@ -651,7 +737,7 @@ Blocks on M4, M5.
 
 #### **M7 — `aqua/`**
 
-Blocks on M4–M6. Guarded by `option(CROSS_COMPILE)` to match current behavior.
+Blocks on M4–M6. Guarded by `arg(name:"CROSS_COMPILE", ...)` to match current behavior.
 
 #### **M8 — Root cutover**
 
@@ -685,7 +771,7 @@ A module's migration PR is allowed to **delete its `CMakeLists.txt`** only when:
 | Risk | Mitigation |
 |------|------------|
 | Darwin bundle rewrite logic (`install_name_tool` chains) is order-sensitive — bugs here break shipping apps | Port via `apple_fix_install_names` helper that mirrors CMake's serialization with explicit `AFTER:` ordering; validate with `otool -L` diff |
-| Third-party CMake integration (OpenSSL, PCRE2) relies on the third-party's own CMake | Keep `ExternalProject` invoking their native CMake; only AUTOM-ify the *consumption* side via `ImportedLibrary` from autom-deps exports |
+| Third-party CMake integration (OpenSSL, PCRE2) relies on the third-party's own CMake | Keep `ExternalProject` invoking their native CMake; only AUTOM-ify the *consumption* side via `PrebuiltLibrary` from autom-deps exports |
 | No `find_package` for system libs (X11, Vulkan SDK, etc.) | Ship Find*-style helpers in `modules/find_*.autom`; for the SDK cases, combine feature probes with `autom-deps` tool exports |
 | Xcode / Visual Studio generator regressions | Lock Xcode/VS projects under the AUTOM generator by golden-file tests in `autom/tests/gen-xcode/`, `gen-sln/` |
 | Contributors trained on CMake lose muscle memory | `autom configure` flag aliases (`-S`, `-B`, `-G`) match CMake; migration guide under `autom/docs/Migrating-From-CMake.md` |
@@ -703,14 +789,14 @@ A module's migration PR is allowed to **delete its `CMakeLists.txt`** only when:
 
 ## 5. Recommended Execution Order
 
-If only one thing ships next, ship **AUTOM P1 (Layer A — target graph
-semantics)**. Nothing else in this plan is usable without usage-requirement
+If only one thing ships next, ship **AUTOM P1 (Layer A — config graph
+semantics)**. Nothing else in this plan is usable without exported dependency
 propagation, and the migration is impossible without it.
 
 Immediate next-quarter slice:
 
-1. AUTOM P1 (Layer A) — usage requirements, imported/interface targets, genexes
-2. AUTOM P2 (Layer B) — `option()` and cache, unblocks `CODE_SIGNATURE` etc.
+1. AUTOM P1 (Layer A) — `Config(...)`, `public_deps`, prebuilt targets, target queries
+2. AUTOM P2 (Layer B) — `arg()` and `AUTOMARGS`, unblocks `CODE_SIGNATURE` etc.
 3. autom-deps Phase 4 (already a separate plan) — unblocks third-party consumption
 4. Build the `omega.autom` module (M1) — compress `OmegaGraphicsSuite.cmake`
 5. Dual-build CI
@@ -722,17 +808,19 @@ Everything else unblocks from that sequence.
 
 ## 6. Open Questions
 
-These need a decision from the Omega team before work starts:
+These need a decision from the Omega Graphics team before work starts:
 
 1. **CMake co-existence deadline.** Two release cycles? One? Open-ended?
 2. **Package config format.** Is AUTOM-native `<pkg>-config.autom` enough, or is
    CMake `<pkg>Config.cmake` a required export for external consumers?
 3. **`autom test` filter/report format.** JUnit XML as the primary CI contract,
    or do we need TAP / gtest-native output too?
-4. **Generator expression syntax.** `$(target:foo.output)` (proposed here, to
-   stay lexically distinct from the shell-style `$(var)` variable substitution
-   used by `autom-deps`) vs. CMake's `$<...>` (more familiar to migrators).
-5. **Version floor of the autom binary that downstream Omega modules require
+4. **Build-argument UX.** Keep `-D NAME=VALUE` as a permanent alias to
+   `--arg NAME=VALUE`, or standardize on one form after migration?
+5. **Config graph scope.** Are `Config(...)`, `configs`, `public_configs`, and
+   `public_deps` sufficient, or do we eventually need an
+   `all_dependent_configs` analogue for edge cases?
+6. **Version floor of the autom binary that downstream Omega modules require
    after migration.** Commit to a single `autom >= 1.0` baseline repo-wide?
 
 Answers drive the Phase 1 ticket list.

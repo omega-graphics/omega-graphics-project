@@ -396,13 +396,22 @@ _NAMESPACE_BEGIN_
         subpass.colorAttachmentCount = attachmentCount;
         subpass.pColorAttachments = colorRefs.data();
 
-        VkSubpassDependency dependency {};
-        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dependency.dstSubpass = 0;
-        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependency.srcAccessMask = 0;
-        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        VkSubpassDependency dependencies[2] = {};
+        dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[0].dstSubpass = 0;
+        dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[0].srcAccessMask = 0;
+        dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        // Read-side: close the attachment-write → fragment-shader-read hazard
+        // so a subsequent sample does not need an explicit pipeline barrier.
+        dependencies[1].srcSubpass = 0;
+        dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
         VkRenderPassCreateInfo renderPassCreateInfo {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
         renderPassCreateInfo.pNext = nullptr;
@@ -410,8 +419,8 @@ _NAMESPACE_BEGIN_
         renderPassCreateInfo.pAttachments = attachmentDescriptions.data();
         renderPassCreateInfo.subpassCount = 1;
         renderPassCreateInfo.pSubpasses = &subpass;
-        renderPassCreateInfo.dependencyCount = 1;
-        renderPassCreateInfo.pDependencies = &dependency;
+        renderPassCreateInfo.dependencyCount = 2;
+        renderPassCreateInfo.pDependencies = dependencies;
 
         VkFramebufferCreateInfo framebufferInfo {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
         framebufferInfo.pNext = nullptr;
@@ -542,7 +551,7 @@ _NAMESPACE_BEGIN_
 
             attachmentDescription.format = primaryTex->format;
             attachmentDescription.initialLayout = primaryTex->layout;
-            attachmentDescription.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+            attachmentDescription.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             if(attachmentDescription.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD &&
                attachmentDescription.initialLayout == VK_IMAGE_LAYOUT_UNDEFINED){
                 attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -581,7 +590,17 @@ _NAMESPACE_BEGIN_
             ownedRenderPasses.push_back(activeRenderPass);
             ownedFramebuffers.push_back(activeFramebuffer);
 
-            primaryTex->layout = VK_IMAGE_LAYOUT_GENERAL;
+            // Render pass transitions the attachment to SHADER_READ_ONLY_OPTIMAL
+            // via finalLayout + the 0→EXTERNAL subpass dependency above, so a
+            // subsequent sample is synchronized without an extra barrier.
+            primaryTex->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            // Seed the attachment write as the prior access so a later
+            // sample-time barrier names COLOR_ATTACHMENT_OUTPUT/WRITE as the
+            // src scope instead of the ALL_COMMANDS/MEMORY_WRITE fallback.
+            primaryTex->priorPipelineAccess2 = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR;
+            primaryTex->priorShaderAccess2 = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR;
+            primaryTex->priorPipelineAccess = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            primaryTex->priorShaderAccess = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
             beginInfo.renderArea.extent = {framebufferInfo.width,framebufferInfo.height};
 
             std::cerr << "[DIAG startRP-tex] format=" << attachmentDescription.format

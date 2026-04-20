@@ -76,6 +76,8 @@ namespace autom {
 #define MODULE_EXPORT EXTERN __attribute__((visibility("default")))
 #elif defined(_WIN32)
 #define MODULE_EXPORT EXTERN __declspec(dllexport)
+#else
+#define MODULE_EXPORT EXTERN
 #endif
 
 #define AUTOM_EXT_INIT() MODULE_EXPORT Extension * nativeExtMain()

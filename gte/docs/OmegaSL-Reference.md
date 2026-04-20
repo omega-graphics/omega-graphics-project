@@ -8,6 +8,8 @@ the writer uses raw size_t directly to disk, which means a library written
    on a 32-bit build would be unreadable by a 64-bit build and vice versa. If that ever matters, pin widths explicitly
   (e.g. uint64_t) on both sides. Not urgent for a single-platform test.
 
+Implement function style casting: int() or float()
+
 ## 1. Preprocessor
 
 OmegaSL has a lightweight preprocessor that runs before lexing.

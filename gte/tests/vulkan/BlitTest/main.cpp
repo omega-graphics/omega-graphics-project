@@ -56,15 +56,10 @@ vertex CopyRaster copyVertexFunc(uint v_id : VertexID){
 
 [in copyTex, in copySampler]
 fragment float4 copyFragFunc(CopyRaster r){
-    float4 s = sample(copySampler, copyTex, r.texCoord);
-    // DIAG: yellow if sampled alpha <= 0.5, cyan if rgb all near zero
-    if(s[3] > 0.5){
-        if(s[0] > 0.01 || s[1] > 0.01 || s[2] > 0.01){
-            return s;
-        }
-        return make_float4(0.0, 1.0, 1.0, 1.0);
-    }
-    return make_float4(1.0, 1.0, 0.0, 1.0);
+    // DIAG: bypass sampler via texelFetch — isolates sampler vs image descriptor
+    int2 coord = make_int2(int(r.texCoord[0] * 400.0), int(r.texCoord[1] * 400.0));
+    float4 s = read(copyTex, coord);
+    return make_float4(r.texCoord[0], r.texCoord[1], s[3], 1.0);
 }
 
 )";
@@ -122,7 +117,7 @@ static void renderAndBlit(int w, int h){
 
         OmegaGTE::GERenderTarget::RenderPassDesc rp {};
         rp.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
-            {0.f, 0.f, 0.f, 1.f},
+            {1.f, 0.f, 1.f, 1.f},  // DIAG: magenta clear to test sample path
             OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
         rp.depthStencilAttachment.disabled = true;
 
