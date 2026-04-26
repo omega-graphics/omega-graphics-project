@@ -1,0 +1,11 @@
+struct Data {
+    float4 value;
+};
+
+buffer<Data> buf : 0;
+
+[inout buf]
+compute(x=1,y=1,z=1)
+void bad_discard(uint3 tid : GlobalThreadID){
+    discard;
+}

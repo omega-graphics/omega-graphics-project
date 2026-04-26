@@ -1,0 +1,3 @@
+header "./myHeader.h"
+
+func missingReturn()

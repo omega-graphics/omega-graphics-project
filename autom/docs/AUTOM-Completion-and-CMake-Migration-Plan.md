@@ -9,7 +9,7 @@ OmegaGraphics from CMake to AUTOM across the entire repository.
 ## 1. Why This Plan Exists
 
 AUTOM today is a serviceable generator for the common case: declare targets, glob
-sources, emit Ninja/Xcode/VS/Gradle. The module layer (`apple`, `android`, `linux`,
+sources, emit Ninja/Xcode/VS. The module layer (`apple`, `android`, `linux`,
 `windows`, `external_project`, `dist`) pushes it further into platform territory.
 
 But AUTOM is not yet a drop-in replacement for CMake in this repo. Reading
@@ -26,7 +26,8 @@ load-bearing CMake features that AUTOM has no equivalent for:
   generator awareness
 - package config export / discovery (`find_package`, CMake config files)
 - feature detection (`try_compile`, `check_symbol_exists`, compiler/feature tests)
-- Objective-C++ / ASM / Swift language enablement
+- Objective-C++ / ASM / Java / Swift language enablement
+- Java/Android-to-C++ bridge support instead of Gradle project generation
 - precompiled headers
 - `install(DIRECTORY ...)`, install components, CPack-style stages
 - RPATH and `install_name_tool` orchestration on Darwin
@@ -272,18 +273,27 @@ if(check_symbol(symbol:"pthread_setname_np", header:"pthread.h")) { ... }
 Implementation: invoke the active toolchain's compiler, cache results under
 `AUTOMSTATE`, expose via `autom.features`.
 
-### 2.10 Additional language enablement
+### 2.10 Additional language / bridge enablement
 
 Needed for this repo specifically:
 
 - **Objective-C++** — currently enabled via `enable_language(OBJCXX)` on Apple;
   wtk/gte Metal paths need it.
 - **ASM** — required for PCRE2, possibly a few gte fast paths.
+- **Java** — AUTOM already has `JarLib`, `JarExe`, and `android.autom`, but the
+  long-term target should be first-class Java compilation/orchestration inside
+  AUTOM rather than emitting Gradle projects.
+- **Java/Android native bridge** — Android-facing Java code needs a clean way to
+  consume C/C++ outputs from this repo through JNI/NDK-style shared-library
+  boundaries, ABI-aware staging, and generated/native header hand-off.
 - **Swift** — not used today, but desirable for AQUA.
 - **CUDA** — out of scope for now.
 
-Extension: `autom.languages = ["c","cxx","objcxx","asm"]` drives per-language
-rule generation in every backend.
+Extension: `autom.languages = ["c","cxx","objcxx","asm","java"]` drives
+per-language rule generation in every backend. Java/Android targets gain native
+bridge metadata such as `native_deps`, JNI include/export handling, and
+ABI-aware output staging so Java or Android entry points can bind to Omega's C++
+libraries without requiring Gradle as a generator target.
 
 ### 2.11 Precompiled headers
 
@@ -393,7 +403,7 @@ Already have `CompileCommands.cpp`. Need:
 | Build types | ✅ | ⚠️ toolchain only | **§2.7** |
 | Package config | ✅ find_package | ❌ | **§2.8** |
 | Feature detection | ✅ | ❌ | **§2.9** |
-| OBJCXX / ASM / Swift | ✅ | ⚠️ C/C++ | **§2.10** |
+| OBJCXX / ASM / Java / Swift | ✅ | ⚠️ C/C++ + early Java targets | **§2.10** |
 | PCH | ✅ | ❌ | **§2.11** |
 | Install polish | ✅ | ⚠️ | **§2.12** |
 | Darwin install_name/rpath | handwritten | ❌ | **§2.13** |
@@ -458,10 +468,12 @@ Completes language and platform coverage needed by this repo.
 
 - E1: Objective-C++ language enablement across all generators
 - E2: ASM language support
-- E3: Swift language support (deferred; AQUA future)
-- E4: PCH property and generator implementation
-- E5: `apple_fix_install_names` helper in `apple.autom`
-- E6: response files everywhere (Windows link, Xcode, MSBuild)
+- E3: Java language support across generators/toolchains
+- E4: Java/Android native bridge support (JNI/NDK shared-lib staging, ABI-aware packaging hooks)
+- E5: Swift language support (deferred; AQUA future)
+- E6: PCH property and generator implementation
+- E7: `apple_fix_install_names` helper in `apple.autom`
+- E8: response files everywhere (Windows link, Xcode, MSBuild)
 
 **Layer F — Diagnostics & Tooling**
 Developer UX parity with modern CMake.
@@ -477,15 +489,15 @@ Developer UX parity with modern CMake.
 | File | Change |
 |------|--------|
 | `src/Targets.def` | add `CONFIG_TARGET`, `PREBUILT_LIBRARY`, `TEST_TARGET`, plus `configs` / `public_configs` / `public_deps` storage |
-| `src/Target.h` | `ConfigTarget` / prebuilt target support; propagation walker for exported configs |
-| `src/TargetDumper.{h,cpp}` | compute effective compile/link sets via walker |
+| `src/Target.h` | `ConfigTarget` / prebuilt target support; propagation walker for exported configs; Java/native bridge metadata on Java targets |
+| `src/TargetDumper.{h,cpp}` | compute effective compile/link sets via walker, including native bridge dependencies exported to Java/Android targets |
 | `src/engine/AST.def`, `AST.cpp`, `Lexer.cpp` | new keywords/syntax if any (`arg`, `Config`, `Test`, `PrebuiltLibrary` are builtins, no grammar change) |
-| `src/engine/Builtins.def`, `Builtins.cpp` | register `BUILTIN_ARG`, `BUILTIN_CONFIG`, `BUILTIN_TEST`, `BUILTIN_PREBUILT_LIBRARY`, `BUILTIN_TARGET_OUTPUT`, `BUILTIN_TARGET_OUTPUTS`, `BUILTIN_TARGET_OUTPUT_DIR`, `BUILTIN_FIND_PACKAGE`, `BUILTIN_TRY_COMPILE`, `BUILTIN_CHECK_*`, `BUILTIN_AUTOM_DEPS_EXPORT` |
+| `src/engine/Builtins.def`, `Builtins.cpp` | register `BUILTIN_ARG`, `BUILTIN_CONFIG`, `BUILTIN_TEST`, `BUILTIN_PREBUILT_LIBRARY`, `BUILTIN_TARGET_OUTPUT`, `BUILTIN_TARGET_OUTPUTS`, `BUILTIN_TARGET_OUTPUT_DIR`, `BUILTIN_FIND_PACKAGE`, `BUILTIN_TRY_COMPILE`, `BUILTIN_CHECK_*`, `BUILTIN_AUTOM_DEPS_EXPORT`, and Java/native bridge builtins |
 | `src/engine/Execution.{h,cpp}` | target-query node handling; `AUTOMARGS` / `AUTOMSTATE` I/O; toolchain-file evaluator |
-| `src/gen/TargetNinja.cpp` | per-config matrix, PCH, OBJCXX/ASM, response files on link, compile_commands emission, test manifest |
+| `src/gen/TargetNinja.cpp` | per-config matrix, PCH, OBJCXX/ASM/Java support, response files on link, compile_commands emission, test manifest |
 | `src/gen/TargetXcode.cpp` | per-config native support, PCH, test scheme generation |
 | `src/gen/TargetVisualStudio.cpp` | per-config native support, PCH, long link line response files |
-| `src/gen/TargetGradle.cpp` | (deferred, low priority) |
+| `src/gen/TargetGradle.cpp` | remove/retire as a generator target once Java/Android native bridging lands |
 | `src/gen/CompileCommands.cpp` | factor out so all generators can reuse |
 | `src/driver/main.cpp` | new subcommands (`configure`/`build`/`test`/`install`/`package`/`clean`/`query`/`graph`) |
 | `src/InstallFile.{h,cpp}` | components, permissions, directories, symlinks |
@@ -508,6 +520,7 @@ New engine files:
 | Module | Addition |
 |--------|----------|
 | `modules/apple.autom` | `apple_fix_install_names`, framework/app + embedded lib rewrite (replaces `OmegaGraphicsSuite.cmake` Darwin section) |
+| `modules/android.autom` | Java/Android to native C++ bridge helpers, JNI shared-lib staging, ABI-aware packaging hooks |
 | `modules/external_project.autom` | alignment with `autom-deps` exports so `ExternalProject` is a degenerate case; `PrebuiltLibrary` emitted automatically |
 | `modules/test.autom` | `GTestTarget`, `CTestCompat` helpers |
 | `modules/pkg.autom` | (distinct from `dist.autom`) `find_package` producer helpers, `autom_export_package(name, targets, headers)` |
@@ -565,6 +578,13 @@ post = Script(name:"post", cmd:"python3",
     args:["tools/post.py", target_output(target:"main_lib")],
     outputs:["post.stamp"])
 
+# Java / Android native bridge
+var omega_native = Shared(name:"omega_native", sources:["./src/native.cpp"])
+
+var android_app = AndroidApp(name:"omega_android", source_dir:"./android")
+android_app.native_deps = ["omega_native"]
+android_app.abi_filters = ["arm64-v8a", "x86_64"]
+
 # PCH
 main_lib.pch = "src/internal/pch.h"
 
@@ -584,6 +604,8 @@ if(try_compile(src:"#include <arm_neon.h>\nint main(){return 0;}")) {
 - Existing target-local properties remain private by default.
 - `public_*` property families are intentionally not introduced; exported edges
   flow through `public_deps` and `public_configs`.
+- Existing `JarLib` / `JarExe` usage continues to work, but no longer implies
+  Gradle as a required generator target.
 - Every current `AUTOM.build` in the tree (root, `common/`, `gte/`, `wtk/`,
   `aqua/`, `autom/`, `autom/tests/*`) continues to evaluate without change.
 - New builtins are additive only; no grammar change.
@@ -596,7 +618,7 @@ if(try_compile(src:"#include <arm_neon.h>\nint main(){return 0;}")) {
 | **P2** Layer B — arguments | §2.2, §2.7, §2.14 | `arg()` reads from `--arg` / `-D`, persists across runs |
 | **P3** Layer C — test & driver polish | §2.6, §2.16 | `autom test` runs existing gtests/wtk tests |
 | **P4** Layer D — discovery & interop | §2.8, §2.9, autom-deps bridge | `find_package(OmegaGTE)` works after install; `try_compile` cached |
-| **P5** Layer E — platform depth | §2.10–§2.13, §2.15 | Darwin bundles, PCH, OBJCXX/ASM |
+| **P5** Layer E — platform depth | §2.10–§2.13, §2.15 | Darwin bundles, PCH, OBJCXX/ASM/Java bridge |
 | **P6** Layer F — tooling | §2.17, §3.1-F4 | `compile_commands.json`, `autom query`, `autom graph` |
 
 Phases can overlap; the critical ordering is **A → B → C/D/E in parallel → F**.
@@ -783,7 +805,8 @@ A module's migration PR is allowed to **delete its `CMakeLists.txt`** only when:
   CMake config file for them via §2.8 D3)
 - Bootstrap on systems without Python 3 (same constraint CMake build had)
 - A GUI (`autom-gui`) — can come later
-- Gradle generator polish (Android flow already has `android.autom` + JarLib)
+- Gradle project generation / APK-AAB backend work; Android support is focused
+  on Java/Android-to-C++ bridging instead
 
 ---
 
@@ -813,14 +836,26 @@ These need a decision from the Omega Graphics team before work starts:
 1. **CMake co-existence deadline.** Two release cycles? One? Open-ended?
 2. **Package config format.** Is AUTOM-native `<pkg>-config.autom` enough, or is
    CMake `<pkg>Config.cmake` a required export for external consumers?
+
+   ANWSER: Let's not worry about this for now.
+
 3. **`autom test` filter/report format.** JUnit XML as the primary CI contract,
    or do we need TAP / gtest-native output too?
+
+  JUnit XML is just fine.
+
 4. **Build-argument UX.** Keep `-D NAME=VALUE` as a permanent alias to
    `--arg NAME=VALUE`, or standardize on one form after migration?
+
+   Sounds good.
+
 5. **Config graph scope.** Are `Config(...)`, `configs`, `public_configs`, and
    `public_deps` sufficient, or do we eventually need an
    `all_dependent_configs` analogue for edge cases?
-6. **Version floor of the autom binary that downstream Omega modules require
+
+   For now, those mentioned above are sufficient.
+
+6. **Version floor of the autom binary that downstream Omega Graphics modules require
    after migration.** Commit to a single `autom >= 1.0` baseline repo-wide?
 
 Answers drive the Phase 1 ticket list.

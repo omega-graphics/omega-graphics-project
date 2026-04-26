@@ -1,0 +1,12 @@
+header "./myHeader.h"
+
+struct QuirkPair {
+  left:int
+  right:int
+}
+
+class QuirkConsumer {
+  func consume(left:int right:int) void
+}
+
+func add(left:int right:int) int

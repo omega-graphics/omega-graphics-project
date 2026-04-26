@@ -23,7 +23,7 @@ This document catalogues the rest.
 
 ---
 
-## 1. Fragment stage — missing basics (P0)
+## 1. Fragment stage — missing basics (P0) [COMPLETED]
 
 ### 1.1 `discard` / `clip`
 
@@ -74,6 +74,8 @@ deferred pipelines.
 **Proposal:** allow fragment shaders to return an `internal` struct whose
 fields carry `Color(0)`, `Color(1)`, ... semantics — matching the existing
 attribute syntax, extended with an index argument.
+
+Research exactly how each backend API expects this.
 
 ### 1.5 Early depth/stencil attribute
 
@@ -299,13 +301,52 @@ Grouped by how often engines reach for them.
 | Function | Reason |
 |----------|--------|
 | `sign(x)` | ubiquitous |
-| `saturate(x)` | clamp to [0,1], huge HLSL idiom; emits native instruction on all backends |
+| `saturate(x)` | clamp to [0,1]; see §5.1.1 below for backend mapping and the name-collision policy |
 | `fma(a,b,c)` / `mad(a,b,c)` | precision-guaranteed multiply-add |
 | `mod(a,b)` / `fmod` / `trunc` | common |
 | `rsqrt(x)` | 1/sqrt, single instruction |
 | `degrees(r)` / `radians(d)` | common |
 | `sinh/cosh/tanh` | needed in BRDFs |
 | `modf` / `frexp` / `ldexp` | serialization / compression |
+
+#### 5.1.1 `saturate` — backend mapping and the name-collision risk
+
+`saturate(x)` clamps `x` to `[0, 1]`. It is one of the most common BRDF /
+post-process idioms. Backend availability is asymmetric:
+
+| Backend | Built-in? | Lowering |
+|---------|-----------|----------|
+| HLSL    | yes — `saturate(x)` is a first-class intrinsic on scalars and vectors. Emits a free saturate modifier on many ops. | passthrough |
+| MSL     | yes — `metal::saturate(x)` (`<metal_common>`) on scalars/vectors. Emits the hardware saturate when free, else `clamp(x, 0, 1)`. | passthrough |
+| GLSL    | **no** — there is no `saturate`. Idiom is `clamp(x, 0.0, 1.0)`. | rewrite to `clamp(x, vec_zero, vec_one)` per type |
+
+**Proposal:** add `saturate(x)` to the OmegaSL builtin set as a 1-arg
+intrinsic over `float`/`floatN`. HLSL/MSL passthrough, GLSL rewrites to
+`clamp(x, 0.0, 1.0)` (broadcasted for vectors).
+
+**Name-collision policy (already required as of bug-1 follow-up).** Until
+`saturate` is a builtin, users define it themselves:
+
+```omegasl
+float saturate(float x){ return clamp(x, 0.0, 1.0); }
+```
+
+On Metal this collided with `metal::saturate` and produced an "ambiguous
+call" error at every call site, even though Metal's stdlib saturate has the
+same signature. MetalCodeGen now prefixes every user-defined function name
+with `osl_user_` at emit time so user helpers can never shadow the Metal
+stdlib. HLSL has the same exposure (every HLSL intrinsic is in the global
+namespace and user functions can shadow but not co-exist with same-arity
+overloads), so `HLSLCodeGen` should adopt the same prefix policy. GLSL
+allows user functions with the same name as a builtin (the user definition
+wins), so the prefix is not strictly required there, but applying it
+uniformly across all three backends keeps generated source predictable and
+removes a class of platform-dependent failures.
+
+Once `saturate` (and the other §5.1 entries) become first-class OmegaSL
+builtins, they should be reserved names — Sema rejects user redefinition
+the same way it would reject redefining `sin` — and the prefix becomes a
+defense-in-depth measure rather than a load-bearing one.
 
 ### 5.2 Vector math not yet listed
 

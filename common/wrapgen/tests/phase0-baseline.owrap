@@ -1,0 +1,22 @@
+header "./myHeader.h"
+
+namespace Baseline {
+  struct Point {
+    x:int,
+    y:int
+  }
+
+  interface Drawable {
+    func draw(point:Point) void
+  }
+
+  class Widget {
+    title:string
+    values:int[]
+    native:void*
+    func rename(title:string) void
+    func attach(drawable:Drawable*) void
+  }
+
+  func makeId(value:long) long
+}

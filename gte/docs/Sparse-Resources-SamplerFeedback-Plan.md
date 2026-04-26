@@ -359,6 +359,6 @@ This is tractable but invasive: it pushes feedback awareness into OmegaSL's samp
 | Sparse 3D textures | Partial (not Metal) | Add later, gated by `GTEDEVICE_FEATURE_SPARSE_TEXTURE_3D` |
 | Sparse buffers | Partial (not Metal) | Add later, gated by `GTEDEVICE_FEATURE_SPARSE_BUFFER` |
 | Sampler feedback (native) | No (D3D12 only) | Ship on D3D12, feature-gate, Metal/Vulkan stubs return null |
-| Sampler feedback (emulated) | Yes but expensive | Defer until a consumer needs it |
+<!-- | Sampler feedback (emulated) | Yes but expensive | Defer until a consumer needs it | -->
 
 Both features depend on the `GTEDeviceFeatures` runtime-query plan already in flight. Neither requires compile-time `#ifdef` gating — the feature-bit pattern established in that plan carries directly here.

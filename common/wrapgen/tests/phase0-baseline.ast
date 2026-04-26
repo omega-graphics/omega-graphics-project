@@ -1,0 +1,60 @@
+HeaderDecl : {
+   header:"./myHeader.h"
+}
+NamespaceDecl : {
+   name:Baseline
+   body:[
+    StructDecl : {
+       name:Point
+       fields:{
+      "x":int,
+      "y":int
+       }
+    }
+,
+    InterfaceDecl : {
+       name:Drawable
+       instMethods:[
+        FuncDecl : {
+           name:draw
+           params:{
+          "point":Point           }
+           returnType:void
+        }
+       ]
+    }
+,
+    ClassDecl : {
+       name:Widget
+       fields:{
+      "title":string,
+      "values":int[],
+      "native":void*
+       }
+       instMethods:[
+        FuncDecl : {
+           name:rename
+           params:{
+          "title":string           }
+           returnType:void
+        }
+,
+        FuncDecl : {
+           name:attach
+           params:{
+          "drawable":Drawable*           }
+           returnType:void
+        }
+       ]
+       staticMethods:[
+       ]
+    }
+,
+    FuncDecl : {
+       name:makeId
+       params:{
+      "value":long       }
+       returnType:long
+    }
+   ]
+}

@@ -80,7 +80,7 @@ void render_rounded_rect(uint3 tid : GlobalThreadID){
     float b = lerp(params[0].bgColor[2], params[0].fgColor[2], alpha);
 
     uint idx = (uint)fy * (uint)width + (uint)fx;
-    pixels[idx].color = make_float4(r, g, b, 1.0);
+    pixels[idx].color = float4(r, g, b, 1.0);
 }
 
 [in params, out pixels]
@@ -113,5 +113,5 @@ void render_scene(uint3 tid : GlobalThreadID){
     float b = lerp(params[0].bgColor[2], params[0].fgColor[2], alpha);
 
     uint idx = (uint)fy * (uint)width + (uint)fx;
-    pixels[idx].color = make_float4(r, g, b, 1.0);
+    pixels[idx].color = float4(r, g, b, 1.0);
 }

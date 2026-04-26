@@ -1,0 +1,5 @@
+header "./myHeader.h"
+
+struct MissingColon {
+  value int
+}

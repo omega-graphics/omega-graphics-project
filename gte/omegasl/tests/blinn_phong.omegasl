@@ -28,7 +28,7 @@ float lambert_diffuse(float3 N, float3 L){
 }
 
 float blinn_specular(float3 N, float3 L, float3 V, float shininess){
-    float3 H = normalize(make_float3(L[0] + V[0], L[1] + V[1], L[2] + V[2]));
+    float3 H = normalize(float3(L[0] + V[0], L[1] + V[1], L[2] + V[2]));
     float NdotH = max(dot(N, H), 0.0);
     return pow(NdotH, shininess);
 }
@@ -37,9 +37,9 @@ float blinn_specular(float3 N, float3 L, float3 V, float shininess){
 vertex PhongRaster phongVertex(uint vid : VertexID){
     Vertex v = vertices[vid];
 
-    float3 N = normalize(make_float3(v.normal[0], v.normal[1], v.normal[2]));
-    float3 L = normalize(make_float3(light[0].lightDir[0], light[0].lightDir[1], light[0].lightDir[2]));
-    float3 V = normalize(make_float3(light[0].viewConfig[0], light[0].viewConfig[1], light[0].viewConfig[2]));
+    float3 N = normalize(float3(v.normal[0], v.normal[1], v.normal[2]));
+    float3 L = normalize(float3(light[0].lightDir[0], light[0].lightDir[1], light[0].lightDir[2]));
+    float3 V = normalize(float3(light[0].viewConfig[0], light[0].viewConfig[1], light[0].viewConfig[2]));
     float shininess = light[0].viewConfig[3];
 
     float diff = lambert_diffuse(N, L);
@@ -56,7 +56,7 @@ vertex PhongRaster phongVertex(uint vid : VertexID){
 
     PhongRaster result;
     result.pos = v.position;
-    result.color = make_float4(saturate(r), saturate(g), saturate(b), 1.0);
+    result.color = float4(saturate(r), saturate(g), saturate(b), 1.0);
     return result;
 }
 

@@ -8,7 +8,26 @@ the writer uses raw size_t directly to disk, which means a library written
    on a 32-bit build would be unreadable by a 64-bit build and vice versa. If that ever matters, pin widths explicitly
   (e.g. uint64_t) on both sides. Not urgent for a single-platform test.
 
-Implement function style casting: int() or float()
+### Known failing tests (Metal backend)
+
+Snapshot of `ctest` failures as of 2026-04-23, after the `discard` / lexer-`%` / cast-parse fixes landed. All are pre-existing issues in codegen and unrelated to the recent parser work.
+
+**1. Float-literal emission stripped trailing `.0`.** ~~Affects `omegasl_compile_math_builtins`, `omegasl_compile_blinn_phong`, `omegasl_compile_sdf_shapes`, `omegasl_compile_pbr_metallic`, `omegasl_compile_post_process`.~~ Fixed.
+
+The actual root cause was not a Sema-level coercion gap — the failing tests already used `0.0` / `1.0` in source. The bug was that all three codegens (`MetalCodeGen`, `HLSLCodeGen`, `GLSLCodeGen`) emitted `f_num` via `ostream << float`, which drops a trailing `.0`. So `0.0` became `0` in the generated shader, and Metal's `max(float, int)` / `clamp(float, int, int)` overloads were flagged as ambiguous. GLSL would have rejected the same code as a hard type error; HLSL would have silently picked the int overload. The fix adds a `formatFloatLit` helper to each backend that appends `.0` when no decimal/exponent is present in the formatted output.
+
+`blinn_phong` exposed a second, independent issue at the same time: its user-defined `saturate(float)` collided with `metal::saturate`. Resolved by mangling all user-defined function names in `MetalCodeGen` with an `osl_user_` prefix so user helpers cannot shadow Metal stdlib symbols. See `OmegaSL-Feature-Gap-Survey.md` §5.1.1 for the cross-backend mapping of `saturate` and the broader name-collision policy.
+
+**2. `texture2d.read(int2(...))` mismatch.** Affects `omegasl_compile_gaussian_blur`.
+
+If the default args across all backends take a ushort2 or a uint2, change arg type to that. (And check all other texture/sampler functions for mismatches. We need the semantics of OmegaSL to be appropriate and accurate for a cross-platform GPU language.)
+
+MetalCodeGen lowers `read(tex, coord)` to `tex.read(coord)`. Metal's `texture2d<T>::read` takes `ushort2` or `uint2`, not `int2`. OmegaSL code that builds the coordinate via `int2(x, y)` produces unresolvable overloads. Fix in MetalCodeGen's `BUILTIN_READ` path: when the coordinate argument is a vector of signed ints (`int2`/`int3`), wrap it in a cast to the matching unsigned type (`uint2`/`uint3`) at emit time. Alternatively, make the reference docs require `uint2` for `read()` coords and update tests.
+
+**3. Metal hull-shader emission is structurally wrong.** Affects `omegasl_compile_tessellation`.
+
+MetalCodeGen emits `kernel HullOutput triHull(... vid [[vertex_id]])` for `hull` shaders, but Metal `kernel` functions cannot return a user struct and cannot use `[[vertex_id]]`. Metal has no direct hull-shader equivalent — the Apple recommendation is to precompute tessellation factors in a compute kernel and use a post-tessellation vertex function with `[[patch(...)]]`. Fixing this is a real codegen redesign (separate kernel for factors + a `post-tessellation vertex` entry point), not a small patch. Defer until hull/domain on Metal is scoped as its own task.
+
 
 ## 1. Preprocessor
 
@@ -160,7 +179,21 @@ float lerp(float a, float b, float t){
 }
 ```
 
-Functions must be declared before use (no forward declarations). Functions declared before a shader are emitted as helpers in the generated output.
+Functions must be declared (or forward-declared) before use. Forward declarations let a function be referenced before its body is defined — useful for mutual recursion or when a helper is defined later in the file:
+
+```omegasl
+float other(float x);            // forward declaration — no body, ends in `;`
+
+float first(float x){
+    return other(x) * 2.0;       // calling a function defined below
+}
+
+float other(float x){
+    return x + 1.0;
+}
+```
+
+A forward declaration must be matched by a later full definition with an identical return type and parameter types. Functions declared before a shader are emitted as helpers in the generated output.
 
 ### Shaders
 
@@ -249,7 +282,7 @@ Resource maps precede the shader keyword and control which GPU resources are acc
 ```omegasl
 float x = 1.0;
 int count;
-float4 color = make_float4(1.0, 0.0, 0.0, 1.0);
+float4 color = float4(1.0, 0.0, 0.0, 1.0);
 ```
 
 ### Assignment
@@ -357,7 +390,7 @@ Rules:
 - **Function call**: `func(arg1, arg2)`
 - **Member access**: `obj.field`
 - **Index access**: `buf[i]`, `vec[0]`
-- **C-style cast**: `(float)intVal`
+- **Cast**: `(float)intVal` (C-style) or `float(intVal)` (functional). Functional form is supported for the scalar types `int`, `uint`, `float`, and `bool`.
 - **Address-of / dereference**: `&val`, `*ptr`
 
 ## 7. Builtin Functions
@@ -365,23 +398,25 @@ Rules:
 ### Vector constructors
 
 ```omegasl
-float2 v2 = make_float2(1.0, 2.0);
-float3 v3 = make_float3(1.0, 2.0, 3.0);
-float3 v3b = make_float3(v2, 3.0);         // float2 + float
-float4 v4 = make_float4(1.0, 2.0, 3.0, 4.0);
-float4 v4b = make_float4(v3, 1.0);         // float3 + float
-float4 v4c = make_float4(v2, 3.0, 4.0);    // float2 + float + float
+float2 v2 = float2(1.0, 2.0);
+float3 v3 = float3(1.0, 2.0, 3.0);
+float3 v3b = float3(v2, 3.0);         // float2 + float
+float4 v4 = float4(1.0, 2.0, 3.0, 4.0);
+float4 v4b = float4(v3, 1.0);         // float3 + float
+float4 v4c = float4(v2, 3.0, 4.0);    // float2 + float + float
 ```
 
-Integer and unsigned constructors follow the same pattern: `make_int2/3/4`, `make_uint2/3/4`.
+Integer and unsigned constructors follow the same pattern: `int2/3/4`, `uint2/3/4`. The `make_*` forms (`make_float2`, `make_int3`, …) remain supported as aliases for the short names.
 
 ### Matrix constructors
 
 ```omegasl
-float2x2 m2 = make_float2x2(...);
-float3x3 m3 = make_float3x3(...);
-float4x4 m4 = make_float4x4(...);
+float2x2 m2 = float2x2(...);
+float3x3 m3 = float3x3(...);
+float4x4 m4 = float4x4(...);
 ```
+
+All `make_floatNxM` forms are also accepted as aliases.
 
 ### Vector math
 
@@ -397,7 +432,7 @@ float3 c = cross(a, b);    // cross product (float3 only)
 float4 color = sample(mySampler, myTexture, texCoord);
 
 // Read a texel directly by integer coordinate
-float4 texel = read(myTexture, make_int2(x, y));
+float4 texel = read(myTexture, int2(x, y));
 
 // Write a value to a texture at a coordinate
 write(myTexture, coord, value);
@@ -525,7 +560,7 @@ The compiler performs constant folding before code generation: binary operations
 | `int2/3/4` | `int2/3/4` | `int2/3/4` | `ivec2/3/4` |
 | `uint2/3/4` | `uint2/3/4` | `uint2/3/4` | `uvec2/3/4` |
 | `float2x2/3x3/4x4` | `float2x2/3x3/4x4` | `float2x2/3x3/4x4` | `mat2/3/4` |
-| `make_float4(...)` | `float4(...)` | `float4(...)` | `vec4(...)` |
+| `float4(...)` / `make_float4(...)` | `float4(...)` | `float4(...)` | `vec4(...)` |
 | `sample(s,t,c)` | `t.Sample(s,c)` | `t.sample(s,c)` | `texture(sampler2D(t,s),c)` |
 | `read(t,c)` | `t.Load(c)` | `t.read(c)` | `texelFetch(t,c,0)` |
 | `buffer<T>` (in) | `StructuredBuffer<T>` | `constant T*` | `layout(std430) buffer` |
@@ -564,7 +599,7 @@ A snapshot of what is implemented, what is partial, and what is intentionally ab
 - **`break` / `continue` loop-context enforcement** — the parser and codegen accept these statements anywhere. When used outside a loop the target backend (fxc / metal / glslang) is what ultimately rejects the shader. Frontend Sema does not yet produce a friendly OmegaSL-level diagnostic for this case.
 - **Shift tokens and nested templates** — the lexer eagerly tokenizes `<<` and `>>` as shift operators. `buffer<buffer<T>>` written without a space between the two `>` characters will mis-lex. Nested buffer templates are not currently supported, so this is a theoretical hazard today; if nesting is ever added, users will need to write `> >` with a space.
 - **Non-literal numeric coercion** — only literals coerce implicitly between numeric scalars. Mixing a non-literal `int` and `uint`, or assigning a non-literal across types, still requires an explicit cast. This is intentional to catch sign/width confusion bugs until a dedicated promotion pass lands.
-- **Function declarations** — must be defined before use; there are no forward declarations.
+- **Function declarations** — forward declarations are now supported (`return_ty name(params);`). A forward-declared function must still be given a full definition in the same translation unit whose signature matches exactly.
 - **Array types** — only valid in local variable declarations. Function parameters, struct fields, and return types cannot be array types.
 - **Constant folding** — only folds literal-on-literal binary ops and unary negation; folded identifiers / `#define` constants are not propagated.
 - **Static sampler properties** — only `filter`, `address_mode`, and `max_anisotropy` are recognized. No LOD bias, comparison functions, or border colors.

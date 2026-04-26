@@ -310,6 +310,20 @@ namespace omegasl {
                 /// HLSL/MSL/GLSL all reject these outside loops at compile time.
                 break;
             }
+            case DISCARD_STMT : {
+                /// `discard;` is only valid inside a fragment shader.
+                bool inFragment = false;
+                if(funcContext && funcContext->type == SHADER_DECL){
+                    inFragment = ((ast::ShaderDecl *)funcContext)->shaderType == ast::ShaderDecl::Fragment;
+                }
+                if(!inFragment){
+                    auto e = std::make_unique<InvalidAttribute>("`discard` is only valid inside a fragment shader");
+                    e->loc = decl->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+                break;
+            }
         }
         return ret;
     }
@@ -1271,22 +1285,77 @@ namespace omegasl {
                     }
                     currentContext->variableMap.insert(std::make_pair(p.name, p.typeExpr));
                 }
-                /// 2. Validate body
-                auto eval_result = performSemForBlock(*_decl->block, _decl);
-                if(eval_result == nullptr){
-                    return false;
+
+                /// 3. If a prior declaration/definition exists, check the
+                ///    signature matches. Forward decls must be followed by a
+                ///    definition whose params and return type are identical.
+                ast::FuncType *existing = resolveFuncTypeWithName(_decl->name);
+                if(existing != nullptr && !existing->builtin){
+                    bool mismatch = false;
+                    if(!existing->returnType->compare(_decl->returnType)){
+                        mismatch = true;
+                    }
+                    if(!mismatch && existing->fields.size() != _decl->params.size()){
+                        mismatch = true;
+                    }
+                    if(!mismatch){
+                        auto ex_it = existing->fields.begin();
+                        for(auto & p : _decl->params){
+                            if(!ex_it->second->compare(p.typeExpr)){
+                                mismatch = true;
+                                break;
+                            }
+                            ++ex_it;
+                        }
+                    }
+                    if(mismatch){
+                        auto e = std::make_unique<TypeError>(std::string("Function `") + _decl->name + "` signature does not match earlier forward declaration.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    /// Duplicate full definition (not a forward).
+                    if(!_decl->isForwardDecl){
+                        /// Look up whether we've already bound a body for this name.
+                        bool alreadyDefined = false;
+                        for(auto & prior : currentContext->definedFuncNames){
+                            if(prior == _decl->name){
+                                alreadyDefined = true;
+                                break;
+                            }
+                        }
+                        if(alreadyDefined){
+                            auto e = std::make_unique<DuplicateDeclaration>(_decl->name);
+                            e->loc = _decl->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                            return false;
+                        }
+                    }
                 }
-                /// 3. Build FuncType and register for call resolution
-                auto *ft = new ast::FuncType();
-                ft->name = _decl->name;
-                ft->declaredScope = ast::builtins::global_scope;
-                ft->builtin = false;
-                ft->returnType = _decl->returnType;
-                for(auto & p : _decl->params){
-                    ft->fields.insert(std::make_pair(p.name, p.typeExpr));
+
+                /// 4. Validate body (skipped for forward declarations).
+                if(!_decl->isForwardDecl){
+                    auto eval_result = performSemForBlock(*_decl->block, _decl);
+                    if(eval_result == nullptr){
+                        return false;
+                    }
+                    currentContext->definedFuncNames.push_back(_decl->name);
                 }
-                currentContext->userFuncTypes.push_back(std::unique_ptr<ast::FuncType>(ft));
-                currentContext->functionMap.push_back(ft);
+
+                /// 5. Build FuncType and register for call resolution — only
+                ///    when no prior declaration exists for this name.
+                if(existing == nullptr || existing->builtin){
+                    auto *ft = new ast::FuncType();
+                    ft->name = _decl->name;
+                    ft->declaredScope = ast::builtins::global_scope;
+                    ft->builtin = false;
+                    ft->returnType = _decl->returnType;
+                    for(auto & p : _decl->params){
+                        ft->fields.insert(std::make_pair(p.name, p.typeExpr));
+                    }
+                    currentContext->userFuncTypes.push_back(std::unique_ptr<ast::FuncType>(ft));
+                    currentContext->functionMap.push_back(ft);
+                }
                 currentContext->variableMap.clear();
                 break;
             }

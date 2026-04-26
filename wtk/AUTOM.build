@@ -7,25 +7,24 @@ project(name:"OmegaWTK",version:OMEGAWTK_VERSION)
 var third_party_dir = "$(root_out_dir)/third_party"
 var gen_third_party_dir = "$(gen_root_out_dir)/third_party"
 
-
 assert(expr:program_exists(cmd:"cmake"))
 
 var zlib_export
 
 if (is_win){
-    zlib_export = [f"{gen_third_party_dir}/zlib/bin/zlib.dll",f"{gen_third_party_dir}/zlib/lib/zlib.lib"]
+    zlib_export = ["{gen_third_party_dir}/zlib/bin/zlib.dll",f"{gen_third_party_dir}/zlib/lib/zlib.lib"]
 }
 elif (is_mac){
-    zlib_export = [f"{gen_third_party_dir}/zlib/lib/libz.dylib"]
+    zlib_export = ["{gen_third_party_dir}/zlib/lib/libz.dylib"]
 }
     
 ThirdParty(
-    name="zlib",
-    deps=[],
-    exports=zlib_export,
-    source_dir="./external-libs/zlib/code",
-    binary_dir=f"{third_party_dir}/temp/zlib",
-    install_dir=f"{third_party_dir}/zlib",
+    name:"zlib",
+    deps:[],
+    exports:zlib_export,
+    source_dir:"./external-libs/zlib/code",
+    binary_dir:"{third_party_dir}/temp/zlib",
+    install_dir:"{third_party_dir}/zlib",
     config=f"cmake -S . -B {third_party_dir}/temp/zlib -G\"Ninja\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"{third_party_dir}/zlib\"",
     build="cmake --build .",
     install="cmake --build . --target install",

@@ -22,7 +22,7 @@ void textureCopy(uint3 tid : GlobalThreadID){
         return;
     }
 
-    uint2 coord = make_uint2(x, y);
+    uint2 coord = uint2(x, y);
     float4 color = read(srcTex, coord);
     write(dstTex, coord, color);
 }

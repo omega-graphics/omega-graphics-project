@@ -54,6 +54,10 @@ namespace omegasl {
 
         OmegaCommon::Vector<OmegaCommon::String> shaders;
 
+        /// @brief Names of user functions for which a full definition (with
+        /// body) has been seen. Forward declarations do not populate this.
+        OmegaCommon::Vector<OmegaCommon::String> definedFuncNames;
+
         OmegaCommon::Map<OmegaCommon::String,ast::TypeExpr *> variableMap;
     };
 

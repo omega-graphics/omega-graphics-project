@@ -43,7 +43,7 @@ void blur_horizontal(uint3 tid : GlobalThreadID){
         float fi = (float)i;
         float w = exp(-(fi * fi) / twoSigmaSq);
 
-        float4 texel = read(srcTex, make_int2(sampleX, py));
+        float4 texel = read(srcTex, int2(sampleX, py));
         sumR = sumR + texel[0] * w;
         sumG = sumG + texel[1] * w;
         sumB = sumB + texel[2] * w;
@@ -52,8 +52,8 @@ void blur_horizontal(uint3 tid : GlobalThreadID){
     }
 
     float invWeight = 1.0 / weightSum;
-    float4 result = make_float4(sumR * invWeight, sumG * invWeight, sumB * invWeight, sumA * invWeight);
-    write(dstTex, make_int2(px, py), result);
+    float4 result = float4(sumR * invWeight, sumG * invWeight, sumB * invWeight, sumA * invWeight);
+    write(dstTex, int2(px, py), result);
 }
 
 [in params, in srcTex, out dstTex]
@@ -92,7 +92,7 @@ void blur_vertical(uint3 tid : GlobalThreadID){
         float fi = (float)i;
         float w = exp(-(fi * fi) / twoSigmaSq);
 
-        float4 texel = read(srcTex, make_int2(px, sampleY));
+        float4 texel = read(srcTex, int2(px, sampleY));
         sumR = sumR + texel[0] * w;
         sumG = sumG + texel[1] * w;
         sumB = sumB + texel[2] * w;
@@ -101,6 +101,6 @@ void blur_vertical(uint3 tid : GlobalThreadID){
     }
 
     float invWeight = 1.0 / weightSum;
-    float4 result = make_float4(sumR * invWeight, sumG * invWeight, sumB * invWeight, sumA * invWeight);
-    write(dstTex, make_int2(px, py), result);
+    float4 result = float4(sumR * invWeight, sumG * invWeight, sumB * invWeight, sumA * invWeight);
+    write(dstTex, int2(px, py), result);
 }

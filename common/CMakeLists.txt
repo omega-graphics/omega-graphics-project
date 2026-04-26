@@ -210,9 +210,10 @@ add_omega_graphics_tool("parse-test" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} 
 add_custom_target(wrapgen-tests
     COMMAND ${PYEXEC} ${CMAKE_CURRENT_SOURCE_DIR}/wrapgen/tests/run_tests.py
         --omega-wrapgen ${CMAKE_BINARY_DIR}/bin/omega-wrapgen
+        --parse-test ${CMAKE_BINARY_DIR}/bin/parse-test
         --suite-dir ${CMAKE_CURRENT_SOURCE_DIR}/wrapgen/tests
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    DEPENDS omega-wrapgen
+    DEPENDS omega-wrapgen parse-test
     COMMENT "Running omega-wrapgen integration tests")
 
 file(GLOB EBIN_SRCS "embedbin/*.cpp")

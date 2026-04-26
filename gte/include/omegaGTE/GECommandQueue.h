@@ -240,7 +240,6 @@ _NAMESPACE_BEGIN_
          */
         virtual void finishBlitPass() = 0;
 
-        #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
         /**
          @brief Accleration Pass.
         */
@@ -256,8 +255,6 @@ _NAMESPACE_BEGIN_
          @brief Accleration Pass.
         */
         virtual void finishAccelStructPass() = 0;
-
-        #endif
 
         /// @brief Starts a Compute Pass.
         /// @param desc A GEComputePassDescriptor describing the Compute Pass.
@@ -279,14 +276,11 @@ _NAMESPACE_BEGIN_
         /// @param id The OmegaSL Binding id.
         virtual void bindResourceAtComputeShader(SharedHandle<GETexture> & texture,unsigned id) = 0;
 
-        #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
 
          /// @brief Binds an Acceleration Structure Resource to a Descriptor in the scope of the Compute Shader.
         /// @param texture The Resource to bind.
         /// @param id The OmegaSL Binding id.
         virtual void bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> & accelStruct,unsigned id) = 0;
-
-        #endif
 
         /// @brief Dispatches threadgroups in a Compute Pass.
         /// @param x The number of threadgroups in the `x` direction.
@@ -329,7 +323,7 @@ _NAMESPACE_BEGIN_
 
         /// @brief Register a completion callback for this command buffer.
         /// @note Default implementation is a no-op; backends can override to provide GPU completion telemetry.
-        virtual void setCompletionHandler(GECommandBufferCompletionHandler handler){
+        virtual void setCompletionHandler(const GECommandBufferCompletionHandler & handler){
             (void)handler;
         }
 
@@ -374,7 +368,7 @@ _NAMESPACE_BEGIN_
         virtual void commitToGPUAndWait() = 0;
 
         /// @brief Signal a fence on this queue (e.g. after waitForGPU) for cross-queue sync when no command buffer is being submitted.
-        virtual void signalExternalFence(SharedHandle<GEFence> & fence) { (void)fence; }
+        virtual void signalFence(SharedHandle<GEFence> & fence) { (void)fence; }
 
         /// @brief CPU wait until the fence reaches or exceeds the given value (e.g. before using a texture from another queue).
         virtual void waitForFence(SharedHandle<GEFence> & fence, std::uint64_t value) { (void)fence; (void)value; }

@@ -86,8 +86,8 @@ void update_particles(uint3 tid : GlobalThreadID){
 
     life = life - dt;
 
-    particles[idx].position = make_float4(px, py, pz, life);
-    particles[idx].velocity = make_float4(vx, vy, vz, mass);
+    particles[idx].position = float4(px, py, pz, life);
+    particles[idx].velocity = float4(vx, vy, vz, mass);
 }
 
 [in simParams, inout particles]
@@ -110,7 +110,7 @@ void emit_particles(uint3 tid : GlobalThreadID){
         float vy = sin(angle) * speed + 2.0;
         float vz = sin(angle * 0.5) * speed * 0.3;
 
-        particles[idx].position = make_float4(0.0, 0.0, 0.0, 3.0);
-        particles[idx].velocity = make_float4(vx, vy, vz, particles[idx].velocity[3]);
+        particles[idx].position = float4(0.0, 0.0, 0.0, 3.0);
+        particles[idx].velocity = float4(vx, vy, vz, particles[idx].velocity[3]);
     }
 }

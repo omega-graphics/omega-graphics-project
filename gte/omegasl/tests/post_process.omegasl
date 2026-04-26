@@ -64,7 +64,7 @@ void tonemap_aces(uint3 tid : GlobalThreadID){
     g = gamma_encode(g, gamma);
     b = gamma_encode(b, gamma);
 
-    ldrPixels[idx].color = make_float4(r, g, b, hdr[3]);
+    ldrPixels[idx].color = float4(r, g, b, hdr[3]);
 }
 
 [in params, inout ldrPixels]
@@ -98,7 +98,7 @@ void apply_vignette(uint3 tid : GlobalThreadID){
 
     uint idx = (uint)fy * (uint)width + (uint)fx;
     float4 color = ldrPixels[idx].color;
-    ldrPixels[idx].color = make_float4(color[0] * fade, color[1] * fade, color[2] * fade, color[3]);
+    ldrPixels[idx].color = float4(color[0] * fade, color[1] * fade, color[2] * fade, color[3]);
 }
 
 [in params, in hdrPixels, out ldrPixels]
@@ -123,7 +123,7 @@ void brightness_threshold(uint3 tid : GlobalThreadID){
     float lum = luminance(color[0], color[1], color[2]);
 
     float contribution = smoothstep(threshold - 0.1, threshold + 0.1, lum);
-    ldrPixels[idx].color = make_float4(
+    ldrPixels[idx].color = float4(
         color[0] * contribution,
         color[1] * contribution,
         color[2] * contribution,

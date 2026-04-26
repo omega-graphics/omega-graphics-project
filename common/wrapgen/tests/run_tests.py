@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
+import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -8,8 +10,9 @@ from pathlib import Path
 
 
 class WrapGenTestConfig:
-    def __init__(self, omega_wrapgen: Path, suite_dir: Path, verbose: bool) -> None:
+    def __init__(self, omega_wrapgen: Path, parse_test: Path, suite_dir: Path, verbose: bool) -> None:
         self.omega_wrapgen = omega_wrapgen
+        self.parse_test = parse_test
         self.suite_dir = suite_dir
         self.verbose = verbose
 
@@ -25,6 +28,8 @@ class WrapGenIntegrationTests(unittest.TestCase):
         cls.cfg = CONFIG
         if not cls.cfg.omega_wrapgen.exists():
             raise RuntimeError(f"omega-wrapgen binary not found: {cls.cfg.omega_wrapgen}")
+        if not cls.cfg.parse_test.exists():
+            raise RuntimeError(f"parse-test binary not found: {cls.cfg.parse_test}")
 
         cls.input_file = (cls.cfg.suite_dir / "example.owrap").resolve()
         if not cls.input_file.exists():
@@ -53,6 +58,30 @@ class WrapGenIntegrationTests(unittest.TestCase):
         cls.semantic_invalid_void_file = (cls.cfg.suite_dir / "semantic-invalid-void.owrap").resolve()
         if not cls.semantic_invalid_void_file.exists():
             raise RuntimeError(f"Semantic invalid void test input file not found: {cls.semantic_invalid_void_file}")
+        cls.phase0_baseline_file = (cls.cfg.suite_dir / "phase0-baseline.owrap").resolve()
+        if not cls.phase0_baseline_file.exists():
+            raise RuntimeError(f"Phase 0 baseline fixture not found: {cls.phase0_baseline_file}")
+        cls.phase0_baseline_ast_file = (cls.cfg.suite_dir / "phase0-baseline.ast").resolve()
+        if not cls.phase0_baseline_ast_file.exists():
+            raise RuntimeError(f"Phase 0 baseline AST golden file not found: {cls.phase0_baseline_ast_file}")
+        cls.unsupported_alias_file = (cls.cfg.suite_dir / "unsupported-alias.owrap").resolve()
+        if not cls.unsupported_alias_file.exists():
+            raise RuntimeError(f"Unsupported alias fixture not found: {cls.unsupported_alias_file}")
+        cls.quirk_optional_commas_file = (cls.cfg.suite_dir / "quirk-optional-commas.owrap").resolve()
+        if not cls.quirk_optional_commas_file.exists():
+            raise RuntimeError(f"Optional comma quirk fixture not found: {cls.quirk_optional_commas_file}")
+        cls.syntax_missing_colon_field_file = (cls.cfg.suite_dir / "syntax-missing-colon-field.owrap").resolve()
+        if not cls.syntax_missing_colon_field_file.exists():
+            raise RuntimeError(f"Missing-colon syntax fixture not found: {cls.syntax_missing_colon_field_file}")
+        cls.syntax_missing_lbrace_class_file = (cls.cfg.suite_dir / "syntax-missing-lbrace-class.owrap").resolve()
+        if not cls.syntax_missing_lbrace_class_file.exists():
+            raise RuntimeError(f"Missing-lbrace syntax fixture not found: {cls.syntax_missing_lbrace_class_file}")
+        cls.syntax_missing_return_type_file = (cls.cfg.suite_dir / "syntax-missing-return-type.owrap").resolve()
+        if not cls.syntax_missing_return_type_file.exists():
+            raise RuntimeError(f"Missing-return-type syntax fixture not found: {cls.syntax_missing_return_type_file}")
+        cls.syntax_interface_field_file = (cls.cfg.suite_dir / "syntax-interface-field.owrap").resolve()
+        if not cls.syntax_interface_field_file.exists():
+            raise RuntimeError(f"Interface-field syntax fixture not found: {cls.syntax_interface_field_file}")
 
     def setUp(self) -> None:
         self._tempdir = tempfile.TemporaryDirectory(prefix="wrapgen-it-")
@@ -76,6 +105,45 @@ class WrapGenIntegrationTests(unittest.TestCase):
             print(proc.stdout)
             print(proc.stderr)
         return proc
+
+    def _run_parse_test(self, input_file: Path) -> subprocess.CompletedProcess[str]:
+        cmd = [str(self.cfg.parse_test), str(input_file)]
+        proc = subprocess.run(
+            cmd,
+            text=True,
+            capture_output=True,
+            check=False,
+            cwd=self.cfg.suite_dir,
+        )
+        if self.cfg.verbose:
+            print("\n[PARSE-TEST CMD]", " ".join(cmd))
+            print("[PARSE-TEST RC]", proc.returncode)
+            print(proc.stdout)
+            print(proc.stderr)
+        return proc
+
+    def _compile_generated_cpp(self, source_file: Path, output_file: Path) -> subprocess.CompletedProcess[str]:
+        compiler = os.environ.get("CXX") or shutil.which("c++") or shutil.which("clang++") or shutil.which("g++")
+        if compiler is None:
+            self.skipTest("No C++ compiler found for generated C++ compile smoke test")
+        cmd = [compiler, "-std=c++17", "-c", str(source_file), "-o", str(output_file)]
+        proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
+        if self.cfg.verbose:
+            print("\n[CXX CMD]", " ".join(cmd))
+            print("[CXX RC]", proc.returncode)
+            print(proc.stdout)
+            print(proc.stderr)
+        return proc
+
+    def _assert_wrapgen_parse_fails(self, input_file: Path, expected_message: str) -> None:
+        out_dir = self.work_dir / input_file.stem
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        proc = self._run_wrapgen(["--cc", "-o", str(out_dir), str(input_file)])
+        self.assertNotEqual(proc.returncode, 0, f"Expected parser fixture to fail: {input_file}")
+        combined = proc.stdout + "\n" + proc.stderr
+        self.assertIn("PARSE ERROR", combined)
+        self.assertIn(expected_message, combined)
 
     def _assert_mode_generates(self, mode_flag: str, expected_files: list[str]) -> None:
         out_dir = self.work_dir / mode_flag.lstrip("-")
@@ -139,6 +207,165 @@ class WrapGenIntegrationTests(unittest.TestCase):
         combined = header.read_text(encoding="utf-8") + "\n" + source.read_text(encoding="utf-8")
         for builtin in ("float", "long", "double"):
             self.assertIn(builtin, combined, f"Generated C wrapper output missing builtin type: {builtin}")
+
+    def test_phase0_baseline_parser_output_matches_golden(self) -> None:
+        proc = self._run_parse_test(self.phase0_baseline_file)
+        self.assertEqual(
+            proc.returncode,
+            0,
+            msg=(
+                "parse-test failed for Phase 0 baseline fixture\n"
+                f"STDOUT:\n{proc.stdout}\n"
+                f"STDERR:\n{proc.stderr}"
+            ),
+        )
+
+        expected = self.phase0_baseline_ast_file.read_text(encoding="utf-8")
+        self.assertEqual(expected, proc.stdout)
+
+    def test_phase0_baseline_supported_surface_generates_c_output(self) -> None:
+        out_dir = self.work_dir / "phase0-baseline-shape"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        proc = self._run_wrapgen(["--cc", "-o", str(out_dir), str(self.phase0_baseline_file)])
+        self.assertEqual(
+            proc.returncode,
+            0,
+            msg=(
+                "omega-wrapgen failed for Phase 0 baseline fixture\n"
+                f"STDOUT:\n{proc.stdout}\n"
+                f"STDERR:\n{proc.stderr}"
+            ),
+        )
+
+        header = out_dir / "phase0-baseline.h"
+        source = out_dir / "phase0-baseline.cpp"
+        self.assertTrue(header.exists(), f"Expected generated file does not exist: {header}")
+        self.assertTrue(source.exists(), f"Expected generated file does not exist: {source}")
+
+        header_content = header.read_text(encoding="utf-8")
+        source_content = source.read_text(encoding="utf-8")
+
+        self.assertIn("typedef struct Baseline__Point Baseline__Point;", header_content)
+        self.assertIn("typedef struct Baseline__Drawable Baseline__Drawable;", header_content)
+        self.assertIn("typedef struct Baseline__Widget * Baseline__Widget;", header_content)
+        self.assertIn("OmegaArray_int BaselineWidget__get_values(", header_content)
+        self.assertIn("void BaselineWidget__rename(", header_content)
+        self.assertIn("long Baseline__makeId(long value);", header_content)
+
+        # Current pointer handling is intentionally frozen here as Phase 0 baseline.
+        self.assertIn("void BaselineWidget__get_native(", header_content)
+        self.assertIn("void BaselineWidget__set_native(Baseline__Widget* __self,void value);", header_content)
+        self.assertIn("void BaselineWidget__attach(Baseline__Widget* __self,Drawable* drawable);", header_content)
+
+        self.assertIn("struct Baseline__Widget{Baseline::Widget obj;};", source_content)
+        self.assertIn("return Baseline::makeId(", source_content)
+
+    def test_phase0_optional_comma_quirk_is_currently_accepted(self) -> None:
+        out_dir = self.work_dir / "quirk-optional-commas"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        proc = self._run_wrapgen(["--cc", "-o", str(out_dir), str(self.quirk_optional_commas_file)])
+        self.assertEqual(
+            proc.returncode,
+            0,
+            msg=(
+                "omega-wrapgen no longer accepts the documented optional-comma quirk\n"
+                f"STDOUT:\n{proc.stdout}\n"
+                f"STDERR:\n{proc.stderr}"
+            ),
+        )
+
+        header = out_dir / "quirk-optional-commas.h"
+        self.assertTrue(header.exists(), f"Expected generated file does not exist: {header}")
+        header_content = header.read_text(encoding="utf-8")
+        self.assertIn("struct __QuirkPair{", header_content)
+        self.assertIn("QuirkConsumer__consume(", header_content)
+        self.assertIn("__add(", header_content)
+
+    def test_phase0_generated_cxx_source_compiles_for_supported_subset(self) -> None:
+        source_dir = self.work_dir / "compile-input"
+        out_dir = self.work_dir / "compile-output"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        native_header = source_dir / "CompileHeader.h"
+        native_header.write_text(
+            "\n".join(
+                [
+                    "#pragma once",
+                    "class CompileWidget {",
+                    "public:",
+                    "    int value;",
+                    "    const int id;",
+                    "    CompileWidget() : value(0), id(7) {}",
+                    "    void reset() { value = 0; }",
+                    "    int add(int v) { return value + v; }",
+                    "};",
+                    "inline int compileFree(int v) { return v + 1; }",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        fixture = source_dir / "phase0-compile.owrap"
+        fixture.write_text(
+            "\n".join(
+                [
+                    f'header "{native_header}"',
+                    "class CompileWidget {",
+                    "  value:int",
+                    "  id:const int",
+                    "  func reset() void",
+                    "  func add(v:int) int",
+                    "}",
+                    "func compileFree(v:int) int",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        proc = self._run_wrapgen(["--cc", "-o", str(out_dir), str(fixture)])
+        self.assertEqual(
+            proc.returncode,
+            0,
+            msg=(
+                "omega-wrapgen failed for generated C++ compile fixture\n"
+                f"STDOUT:\n{proc.stdout}\n"
+                f"STDERR:\n{proc.stderr}"
+            ),
+        )
+
+        generated_source = out_dir / "phase0-compile.cpp"
+        generated_header = out_dir / "phase0-compile.h"
+        self.assertTrue(generated_source.exists(), f"Expected generated source does not exist: {generated_source}")
+        self.assertTrue(generated_header.exists(), f"Expected generated header does not exist: {generated_header}")
+
+        source_compile = self._compile_generated_cpp(generated_source, out_dir / "phase0-compile.o")
+        self.assertEqual(
+            source_compile.returncode,
+            0,
+            msg=(
+                "Generated C++ source did not compile\n"
+                f"STDOUT:\n{source_compile.stdout}\n"
+                f"STDERR:\n{source_compile.stderr}"
+            ),
+        )
+
+        header_check = out_dir / "phase0-compile-header-check.cpp"
+        header_check.write_text('#include "phase0-compile.h"\n', encoding="utf-8")
+        header_compile = self._compile_generated_cpp(header_check, out_dir / "phase0-compile-header-check.o")
+        self.assertEqual(
+            header_compile.returncode,
+            0,
+            msg=(
+                "Generated C header did not compile as a standalone C++ include\n"
+                f"STDOUT:\n{header_compile.stdout}\n"
+                f"STDERR:\n{header_compile.stderr}"
+            ),
+        )
 
     def test_c_generation_emits_expected_class_wrappers(self) -> None:
         out_dir = self.work_dir / "c-wrapper-shape"
@@ -399,11 +626,26 @@ class WrapGenIntegrationTests(unittest.TestCase):
         self.assertIn("SEMANTIC ERROR", combined)
         self.assertIn("Invalid type 'void'", combined)
 
+    def test_unsupported_alias_syntax_fails_with_parse_diagnostic(self) -> None:
+        self._assert_wrapgen_parse_fails(self.unsupported_alias_file, "Expected Keyword")
+
+    def test_phase0_current_parser_syntax_failures_are_pinned(self) -> None:
+        cases = [
+            (self.syntax_missing_colon_field_file, "Expected Colon"),
+            (self.syntax_missing_lbrace_class_file, "Expected LBrace"),
+            (self.syntax_missing_return_type_file, "Expected Type Name"),
+            (self.syntax_interface_field_file, "Expected Keyword"),
+        ]
+        for input_file, expected_message in cases:
+            with self.subTest(input=input_file.name):
+                self._assert_wrapgen_parse_fails(input_file, expected_message)
+
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run omega-wrapgen integration tests")
     parser.add_argument("--omega-wrapgen", required=True, type=Path)
+    parser.add_argument("--parse-test", required=True, type=Path)
     parser.add_argument("--suite-dir", required=True, type=Path)
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
@@ -414,6 +656,7 @@ def main() -> int:
     args = parse_args()
     CONFIG = WrapGenTestConfig(
         omega_wrapgen=args.omega_wrapgen.resolve(),
+        parse_test=args.parse_test.resolve(),
         suite_dir=args.suite_dir.resolve(),
         verbose=args.verbose,
     )

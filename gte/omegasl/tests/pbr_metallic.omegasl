@@ -45,7 +45,7 @@ float3 fresnel_schlick(float cosTheta, float3 F0){
     float t = 1.0 - cosTheta;
     float t2 = t * t;
     float t5 = t2 * t2 * t;
-    return make_float3(
+    return float3(
         F0[0] + (1.0 - F0[0]) * t5,
         F0[1] + (1.0 - F0[1]) * t5,
         F0[2] + (1.0 - F0[2]) * t5
@@ -62,25 +62,25 @@ void pbr_lighting(uint3 tid : GlobalThreadID){
         return;
     }
 
-    float3 worldPos = make_float3(gbuffer[idx].position[0], gbuffer[idx].position[1], gbuffer[idx].position[2]);
-    float3 N = normalize(make_float3(gbuffer[idx].normal[0], gbuffer[idx].normal[1], gbuffer[idx].normal[2]));
-    float3 albedo = make_float3(gbuffer[idx].albedo[0], gbuffer[idx].albedo[1], gbuffer[idx].albedo[2]);
+    float3 worldPos = float3(gbuffer[idx].position[0], gbuffer[idx].position[1], gbuffer[idx].position[2]);
+    float3 N = normalize(float3(gbuffer[idx].normal[0], gbuffer[idx].normal[1], gbuffer[idx].normal[2]));
+    float3 albedo = float3(gbuffer[idx].albedo[0], gbuffer[idx].albedo[1], gbuffer[idx].albedo[2]);
     float metallic = gbuffer[idx].material[0];
     float roughness = gbuffer[idx].material[1];
 
-    float3 lightPos = make_float3(lightInfo[0].lightPos[0], lightInfo[0].lightPos[1], lightInfo[0].lightPos[2]);
-    float3 camPos = make_float3(lightInfo[0].cameraPos[0], lightInfo[0].cameraPos[1], lightInfo[0].cameraPos[2]);
+    float3 lightPos = float3(lightInfo[0].lightPos[0], lightInfo[0].lightPos[1], lightInfo[0].lightPos[2]);
+    float3 camPos = float3(lightInfo[0].cameraPos[0], lightInfo[0].cameraPos[1], lightInfo[0].cameraPos[2]);
 
-    float3 V = normalize(make_float3(camPos[0] - worldPos[0], camPos[1] - worldPos[1], camPos[2] - worldPos[2]));
-    float3 L = normalize(make_float3(lightPos[0] - worldPos[0], lightPos[1] - worldPos[1], lightPos[2] - worldPos[2]));
-    float3 H = normalize(make_float3(L[0] + V[0], L[1] + V[1], L[2] + V[2]));
+    float3 V = normalize(float3(camPos[0] - worldPos[0], camPos[1] - worldPos[1], camPos[2] - worldPos[2]));
+    float3 L = normalize(float3(lightPos[0] - worldPos[0], lightPos[1] - worldPos[1], lightPos[2] - worldPos[2]));
+    float3 H = normalize(float3(L[0] + V[0], L[1] + V[1], L[2] + V[2]));
 
     float NdotL = max(dot(N, L), 0.0);
     float NdotV = max(dot(N, V), 0.0);
     float NdotH = max(dot(N, H), 0.0);
     float HdotV = max(dot(H, V), 0.0);
 
-    float3 F0 = make_float3(
+    float3 F0 = float3(
         0.04 + (albedo[0] - 0.04) * metallic,
         0.04 + (albedo[1] - 0.04) * metallic,
         0.04 + (albedo[2] - 0.04) * metallic
@@ -114,5 +114,5 @@ void pbr_lighting(uint3 tid : GlobalThreadID){
     float g = (diffG + specG) * radG * NdotL + ambient * albedo[1];
     float b = (diffB + specB) * radB * NdotL + ambient * albedo[2];
 
-    outPixels[idx].color = make_float4(r, g, b, 1.0);
+    outPixels[idx].color = float4(r, g, b, 1.0);
 }

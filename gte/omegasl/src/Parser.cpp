@@ -18,7 +18,7 @@ namespace omegasl {
         /// means it's being used as a binary operator.
         if (t.type == TOK_AMPERSAND) return 5;
         if (t.type != TOK_OP) return -1;
-        if (t.str == OP_DIV || t.str == "*") return 10;
+        if (t.str == OP_DIV || t.str == "*" || t.str == OP_MOD) return 10;
         if (t.str == OP_PLUS || t.str == OP_MINUS) return 9;
         if (t.str == OP_LSHIFT || t.str == OP_RSHIFT) return 8;
         if (t.str == OP_LESS || t.str == OP_LESSEQUAL ||
@@ -30,7 +30,7 @@ namespace omegasl {
         if (t.str == OP_LOGAND) return 2;
         if (t.str == OP_LOGOR) return 1;
         if (t.str == OP_EQUAL || t.str == OP_PLUSEQUAL || t.str == OP_MINUSEQUAL ||
-            t.str == OP_MULEQUAL || t.str == OP_DIVEQUAL ||
+            t.str == OP_MULEQUAL || t.str == OP_DIVEQUAL || t.str == OP_MODEQUAL ||
             t.str == OP_ANDEQUAL || t.str == OP_OREQUAL || t.str == OP_XOREQUAL ||
             t.str == OP_LSHIFTEQUAL || t.str == OP_RSHIFTEQUAL) return 0;
         return -1;
@@ -658,22 +658,29 @@ namespace omegasl {
                 }
 
                 t = lexer->nextTok();
-                if (t.type != TOK_LBRACE) {
-                    auto e = std::make_unique<UnexpectedToken>("Expected `{` to begin function body");
-                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
-                    diagnostics->addError(std::move(e));
-                    /// Error. Unexpected Token.
-                    return nullptr;
+                /// A `;` at this point makes the decl a forward declaration —
+                /// only permitted for plain FuncDecl, not for ShaderDecl.
+                if (t.type == TOK_SEMICOLON && funcDecl->type == FUNC_DECL) {
+                    funcDecl->isForwardDecl = true;
+                    node = funcDecl;
+                } else {
+                    if (t.type != TOK_LBRACE) {
+                        auto e = std::make_unique<UnexpectedToken>("Expected `{` to begin function body");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
+                        /// Error. Unexpected Token.
+                        return nullptr;
+                    }
+
+                    BlockParseContext blockParseContext{ast::builtins::global_scope, true};
+
+                    funcDecl->block.reset(parseBlock(t, blockParseContext));
+
+                    if (!funcDecl->block) {
+                        return nullptr;
+                    }
+                    node = funcDecl;
                 }
-
-                BlockParseContext blockParseContext{ast::builtins::global_scope, true};
-
-                funcDecl->block.reset(parseBlock(t, blockParseContext));
-
-                if (!funcDecl->block) {
-                    return nullptr;
-                }
-                node = funcDecl;
             }
         }
         else if(t.type == TOK_COLON){
@@ -959,6 +966,15 @@ namespace omegasl {
                 _decl->expr = _e;
                 return _decl;
             }
+            /// `break` / `continue` / `discard` are statement keywords with
+            /// no payload. Route through `parseGenericDecl` so the buffered
+            /// block parser builds the proper stmt nodes instead of falling
+            /// through to `parseExpr` (which would fail or silently corrupt).
+            if(first_tok.str == KW_BREAK || first_tok.str == KW_CONTINUE ||
+               first_tok.str == KW_DISCARD){
+                ast::Decl *d = parseGenericDecl(first_tok,ctxt);
+                return d;
+            }
         }
         bool isDecl = false;
         if(first_tok.type == TOK_KW_TYPE || first_tok.type == TOK_ID){
@@ -1224,6 +1240,13 @@ namespace omegasl {
                 _stmt->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
                 node = (ast::Decl *)_stmt;
             }
+            else if(first_tok.str == KW_DISCARD){
+                auto *_stmt = new ast::DiscardStmt();
+                _stmt->type = DISCARD_STMT;
+                _stmt->scope = ctxt.parentScope;
+                _stmt->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                node = (ast::Decl *)_stmt;
+            }
         }
         else {
             /// @note Build TypeRef for VarDecl.
@@ -1296,7 +1319,13 @@ namespace omegasl {
             _e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
             *expr = _e;
         }
-        else if(first_tok.type == TOK_ID){
+        else if(first_tok.type == TOK_ID || first_tok.type == TOK_KW_TYPE){
+            /// A `TOK_KW_TYPE` in expression position is a functional-style
+            /// type constructor / cast (e.g. `float(x)`, `float2(a,b)`,
+            /// `float2x2(...)`). We represent it as an `IdExpr` carrying the
+            /// type name; `parseArgsExpr` rewrites the subsequent call into
+            /// either a `CastExpr` (scalar) or a `make_*` builtin call
+            /// (vector/matrix).
             auto _e = new ast::IdExpr();
             _e->type = ID_EXPR;
             _e->id = first_tok.str;
@@ -1394,7 +1423,63 @@ namespace omegasl {
                    }
                 }
 
-                _expr = _call_expr;
+                /// Functional-style type constructor / cast rewriting.
+                /// If the callee is a type keyword (`int`, `float2`, `float2x2`,
+                /// etc.), translate the call so later phases see a form they
+                /// already handle:
+                ///   - scalar types -> CastExpr (single-arg required)
+                ///   - vector/matrix types -> call to the matching `make_*`
+                ///     builtin, so the existing Sema/CodeGen pathway is reused.
+                if(_call_expr->callee && _call_expr->callee->type == ID_EXPR){
+                    auto *calleeId = static_cast<ast::IdExpr *>(_call_expr->callee);
+                    const auto &n = calleeId->id;
+                    bool isScalarCast = (n == KW_TY_INT || n == KW_TY_UINT ||
+                                         n == KW_TY_FLOAT || n == KW_TY_BOOL);
+                    bool isVecMatCtor =
+                        n == KW_TY_INT2 || n == KW_TY_INT3 || n == KW_TY_INT4 ||
+                        n == KW_TY_UINT2 || n == KW_TY_UINT3 || n == KW_TY_UINT4 ||
+                        n == KW_TY_FLOAT2 || n == KW_TY_FLOAT3 || n == KW_TY_FLOAT4 ||
+                        n == KW_TY_FLOAT2X2 || n == KW_TY_FLOAT2X3 || n == KW_TY_FLOAT2X4 ||
+                        n == KW_TY_FLOAT3X2 || n == KW_TY_FLOAT3X3 || n == KW_TY_FLOAT3X4 ||
+                        n == KW_TY_FLOAT4X2 || n == KW_TY_FLOAT4X3 || n == KW_TY_FLOAT4X4;
+
+                    if(isScalarCast){
+                        if(_call_expr->args.size() != 1){
+                            auto e = std::make_unique<ArgumentCountMismatch>();
+                            e->functionName = n;
+                            e->expected = 1;
+                            e->actual = (unsigned)_call_expr->args.size();
+                            e->loc = _call_expr->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                            delete _call_expr;
+                            return false;
+                        }
+                        auto *castExpr = new ast::CastExpr();
+                        castExpr->type = CAST_EXPR;
+                        castExpr->targetType = ast::TypeExpr::Create(n);
+                        castExpr->expr = _call_expr->args[0];
+                        castExpr->scope = _call_expr->scope;
+                        castExpr->loc = _call_expr->loc;
+                        _call_expr->callee = nullptr;
+                        _call_expr->args.clear();
+                        delete calleeId;
+                        delete _call_expr;
+                        _expr = castExpr;
+                    }
+                    else if(isVecMatCtor){
+                        /// Rewrite callee name to the matching builtin `make_*`
+                        /// FuncType so Sema/CodeGen don't need to know about
+                        /// the short form.
+                        calleeId->id = std::string("make_") + n;
+                        _expr = _call_expr;
+                    }
+                    else {
+                        _expr = _call_expr;
+                    }
+                }
+                else {
+                    _expr = _call_expr;
+                }
             }
             else if(first_tok.type == TOK_DOT){
                 ++tokIdx;
@@ -1465,7 +1550,13 @@ namespace omegasl {
         switch (first_tok.type) {
             case TOK_LPAREN : {
                 first_tok = getTok();
-                if((first_tok.type == TOK_KW_TYPE || first_tok.type == TOK_ID) && aheadTok().type == TOK_RPAREN){
+                /// Cast syntax `(Type)expr` is only recognized when the token
+                /// inside the parens is a built-in type keyword. A bare
+                /// identifier like `(i)` is a grouping expression, not a cast —
+                /// OmegaSL has no user-defined-type casts, and treating
+                /// `(ID)` as a cast misparses every parenthesized variable
+                /// used in an expression.
+                if(first_tok.type == TOK_KW_TYPE && aheadTok().type == TOK_RPAREN){
                     ast::TypeExpr *targetTy = buildTypeRef(first_tok,false,false,nullptr);
                     if(targetTy){
                         ++tokIdx;

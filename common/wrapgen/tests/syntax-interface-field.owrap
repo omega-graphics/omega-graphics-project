@@ -1,0 +1,5 @@
+header "./myHeader.h"
+
+interface InvalidInterface {
+  value:int
+}

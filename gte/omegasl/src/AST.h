@@ -229,6 +229,10 @@ namespace omegasl {
         /// innermost `for`/`while` loop.
         struct ContinueStmt : public Stmt {};
 
+        /// @brief `discard;` statement — kills the current fragment.
+        /// Only valid inside a `fragment` shader.
+        struct DiscardStmt : public Stmt {};
+
         /// @brief Declares a Struct.
         /// @paragraph Can be either public or for shader internal use only
         /// by marking it with the `internal` keyword)
@@ -244,6 +248,10 @@ namespace omegasl {
             OmegaCommon::Vector<AttributedFieldDecl> params;
             TypeExpr *returnType;
             std::unique_ptr<ast::Block> block;
+            /// @brief True when this is a forward declaration (prototype only,
+            /// terminated by `;` with no body). The body is supplied by a
+            /// later full definition with a matching signature.
+            bool isForwardDecl = false;
         };
 
         /// @brief Declares a Shader.

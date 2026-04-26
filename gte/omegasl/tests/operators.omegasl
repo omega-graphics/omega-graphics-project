@@ -22,7 +22,7 @@ void test_assignment(uint3 tid : GlobalThreadID){
     prod *= 2.0;
     quot /= 2.0;
 
-    dst[0].value = make_float4(sum, diff, prod, quot);
+    dst[0].value = float4(sum, diff, prod, quot);
 }
 
 [in src, out dst]
@@ -49,7 +49,7 @@ void test_comparison(uint3 tid : GlobalThreadID){
         r3 = 1.0;
     }
 
-    dst[0].value = make_float4(r0, r1, r2, r3);
+    dst[0].value = float4(r0, r1, r2, r3);
 }
 
 [in src, out dst]
@@ -67,5 +67,5 @@ void test_unary(uint3 tid : GlobalThreadID){
 
     bool flag = !false;
 
-    dst[0].value = make_float4(neg, (float)i, (float)j, 0.0);
+    dst[0].value = float4(neg, (float)i, (float)j, 0.0);
 }

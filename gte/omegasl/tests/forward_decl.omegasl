@@ -1,0 +1,32 @@
+
+struct FuncData {
+    float4 value;
+};
+
+buffer<FuncData> src : 0;
+buffer<FuncData> dst : 1;
+
+/// Forward declarations — bodies defined further below.
+float helper_b(float x);
+float helper_c(float x, float y);
+
+float helper_a(float x){
+    /// Call a function whose body has not yet been seen.
+    return helper_b(x) + helper_c(x, 1.0);
+}
+
+float helper_b(float x){
+    return x * 2.0;
+}
+
+float helper_c(float x, float y){
+    return x + y;
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_forward_decl(uint3 tid : GlobalThreadID){
+    float a = src[0].value[0];
+    float r = helper_a(a);
+    dst[0].value = float4(r, r, r, r);
+}

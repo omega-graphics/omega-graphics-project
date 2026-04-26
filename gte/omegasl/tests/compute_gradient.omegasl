@@ -57,7 +57,7 @@ void linear_gradient(uint3 tid : GlobalThreadID){
     float a = startCol[3] + (endCol[3] - startCol[3]) * t;
 
     uint pixelIdx = (uint)fy * (uint)width + (uint)fx;
-    pixels[pixelIdx].color = make_float4(r, g, b, a);
+    pixels[pixelIdx].color = float4(r, g, b, a);
 }
 
 [in params, out pixels]
@@ -101,5 +101,5 @@ void radial_gradient(uint3 tid : GlobalThreadID){
     float a = startCol[3] + (endCol[3] - startCol[3]) * t;
 
     uint pixelIdx = (uint)fy * (uint)width + (uint)fx;
-    pixels[pixelIdx].color = make_float4(r, g, b, a);
+    pixels[pixelIdx].color = float4(r, g, b, a);
 }

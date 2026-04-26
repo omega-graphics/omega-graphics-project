@@ -21,6 +21,7 @@ namespace omegasl {
         (subject == KW_WHILE) ||
         (subject == KW_BREAK) ||
         (subject == KW_CONTINUE) ||
+        (subject == KW_DISCARD) ||
         (subject == KW_STRUCT) ||
         (subject == KW_INTERNAL) ||
         (subject == KW_RETURN) ||
@@ -258,6 +259,15 @@ namespace omegasl {
                         PUSH_TOK(TOK_OP);
                     }
                     PUSH_TOK(TOK_ASTERISK);
+                }
+                case '%' : {
+                    PUSH_CHAR(c);
+                    c = AHEAD_CHAR();
+                    if(c == '='){
+                        PUSH_CHAR(c);
+                        SEEK_TO_NEXT_CHAR();
+                    }
+                    PUSH_TOK(TOK_OP);
                 }
                 case '.' : {
                     PUSH_CHAR(c);

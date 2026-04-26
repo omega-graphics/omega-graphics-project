@@ -25,7 +25,7 @@ void test_if_else(uint3 tid : GlobalThreadID){
         result = -1.0;
     }
 
-    output[0].value = make_float4(result, 0.0, 0.0, 0.0);
+    output[0].value = float4(result, 0.0, 0.0, 0.0);
 }
 
 [in input, out output]
@@ -38,7 +38,7 @@ void test_for_loop(uint3 tid : GlobalThreadID){
         sum += (float)i;
     }
 
-    output[0].value = make_float4(sum, 0.0, 0.0, 0.0);
+    output[0].value = float4(sum, 0.0, 0.0, 0.0);
 }
 
 [in input, out output]
@@ -52,7 +52,7 @@ void test_while_loop(uint3 tid : GlobalThreadID){
         iterations++;
     }
 
-    output[0].value = make_float4(val, (float)iterations, 0.0, 0.0);
+    output[0].value = float4(val, (float)iterations, 0.0, 0.0);
 }
 
 [in input, out output]
@@ -70,7 +70,7 @@ void test_nested(uint3 tid : GlobalThreadID){
         }
     }
 
-    output[0].value = make_float4(sum, 0.0, 0.0, 0.0);
+    output[0].value = float4(sum, 0.0, 0.0, 0.0);
 }
 
 [in input, out output]
@@ -97,7 +97,7 @@ void test_break_continue(uint3 tid : GlobalThreadID){
         }
     }
 
-    output[0].value = make_float4(sum, (float)j, 0.0, 0.0);
+    output[0].value = float4(sum, (float)j, 0.0, 0.0);
 }
 
 [in input, out output]
@@ -107,5 +107,5 @@ void test_bare_return(uint3 tid : GlobalThreadID){
     if(x < 0.0){
         return;
     }
-    output[0].value = make_float4(x, 0.0, 0.0, 0.0);
+    output[0].value = float4(x, 0.0, 0.0, 0.0);
 }

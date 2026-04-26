@@ -13,7 +13,7 @@ void test_trig(uint3 tid : GlobalThreadID){
     float s = sin(a);
     float c = cos(a);
     float t = tan(a);
-    dst[0].value = make_float4(s, c, t, 0.0);
+    dst[0].value = float4(s, c, t, 0.0);
 }
 
 [in src, out dst]
@@ -24,7 +24,7 @@ void test_inverse_trig(uint3 tid : GlobalThreadID){
     float ac = acos(a);
     float at = atan(a);
     float at2 = atan2(a, 1.0);
-    dst[0].value = make_float4(as, ac, at, at2);
+    dst[0].value = float4(as, ac, at, at2);
 }
 
 [in src, out dst]
@@ -35,7 +35,7 @@ void test_power_exp(uint3 tid : GlobalThreadID){
     float p = pow(a, 2.0);
     float e = exp(a);
     float l = log(a);
-    dst[0].value = make_float4(sq, p, e, l);
+    dst[0].value = float4(sq, p, e, l);
 }
 
 [in src, out dst]
@@ -46,7 +46,7 @@ void test_rounding(uint3 tid : GlobalThreadID){
     float fl = floor(a);
     float cl = ceil(a);
     float rn = round(a);
-    dst[0].value = make_float4(ab, fl, cl, rn);
+    dst[0].value = float4(ab, fl, cl, rn);
 }
 
 [in src, out dst]
@@ -59,15 +59,15 @@ void test_interpolation(uint3 tid : GlobalThreadID){
     float mx = max(a, b);
     float cl = clamp(t, 0.0, 1.0);
     float lr = lerp(a, b, t);
-    dst[0].value = make_float4(mn, mx, cl, lr);
+    dst[0].value = float4(mn, mx, cl, lr);
 }
 
 [in src, out dst]
 compute(x=1,y=1,z=1)
 void test_vector_math(uint3 tid : GlobalThreadID){
-    float3 v = make_float3(src[0].value[0], src[0].value[1], src[0].value[2]);
+    float3 v = float3(src[0].value[0], src[0].value[1], src[0].value[2]);
     float len = length(v);
     float3 n = normalize(v);
     float fr = frac(src[0].value[0]);
-    dst[0].value = make_float4(len, n[0], n[1], fr);
+    dst[0].value = float4(len, n[0], n[1], fr);
 }

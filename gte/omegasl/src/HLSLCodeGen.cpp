@@ -1,4 +1,7 @@
 #include "CodeGen.h"
+#include <iomanip>
+#include <sstream>
+#include <string>
 
 #ifdef TARGET_DIRECTX
 #    include <d3dcompiler.h>
@@ -19,6 +22,22 @@
 
 namespace omegasl {
 
+    /// Print a float literal so it cannot be misread as an integer literal.
+    /// Why: ostream << float drops a trailing `.0`, so a source `0.0` becomes
+    /// `0` in the generated shader. HLSL has integer overloads for
+    /// `max`/`min`/`clamp`/etc. — an integer-shaped argument can pick the
+    /// int overload silently or produce ambiguity warnings under stricter
+    /// FXC/DXC settings.
+    static std::string formatFloatLit(double v) {
+        std::ostringstream os;
+        os << std::setprecision(9) << v;
+        std::string s = os.str();
+        if (s.find_first_of(".eEnN") == std::string::npos) {
+            s += ".0";
+        }
+        return s;
+    }
+
 class HLSLCodeGen final : public CodeGen {
     std::ostream &shaderOut;
     std::ofstream fileOut;
@@ -29,7 +48,7 @@ class HLSLCodeGen final : public CodeGen {
 
     OmegaCommon::Vector<ast::FuncDecl *> userFuncDecls;
 
-    void emitUserFunction(ast::FuncDecl *f) {
+    void emitUserFunctionSignature(ast::FuncDecl *f) {
         writeTypeExpr(f->returnType, shaderOut);
         shaderOut << " " << f->name << "(";
         for (size_t i = 0; i < f->params.size(); i++) {
@@ -38,7 +57,17 @@ class HLSLCodeGen final : public CodeGen {
             writeTypeExpr(f->params[i].typeExpr, shaderOut);
             shaderOut << " " << f->params[i].name;
         }
-        shaderOut << ")" << std::endl;
+        shaderOut << ")";
+    }
+
+    void emitUserFunctionPrototype(ast::FuncDecl *f) {
+        emitUserFunctionSignature(f);
+        shaderOut << ";" << std::endl;
+    }
+
+    void emitUserFunction(ast::FuncDecl *f) {
+        emitUserFunctionSignature(f);
+        shaderOut << std::endl;
         generateBlock(*f->block);
         shaderOut << std::endl;
     }
@@ -61,9 +90,9 @@ public:
             case LITERAL_EXPR: {
                 auto _expr = (ast::LiteralExpr *)expr;
                 if (_expr->isFloat()) {
-                    shaderOut << _expr->f_num.value();
+                    shaderOut << formatFloatLit(_expr->f_num.value());
                 } else if (_expr->isDouble()) {
-                    shaderOut << _expr->d_num.value();
+                    shaderOut << formatFloatLit(_expr->d_num.value());
                 } else if (_expr->isInt()) {
                     shaderOut << _expr->i_num.value();
                 } else if (_expr->isUint()) {
@@ -252,7 +281,8 @@ public:
                 shaderOut << "  ";
             }
             if (s->type == VAR_DECL || s->type == RETURN_DECL || s->type == IF_STMT || s->type == FOR_STMT ||
-                s->type == WHILE_STMT || s->type == BREAK_STMT || s->type == CONTINUE_STMT) {
+                s->type == WHILE_STMT || s->type == BREAK_STMT || s->type == CONTINUE_STMT ||
+                s->type == DISCARD_STMT) {
                 generateDecl((ast::Decl *)s);
                 if (s->type != IF_STMT && s->type != FOR_STMT && s->type != WHILE_STMT)
                     shaderOut << ";";
@@ -413,6 +443,10 @@ public:
                 shaderOut << "continue";
                 break;
             }
+            case DISCARD_STMT: {
+                shaderOut << "discard";
+                break;
+            }
             case STRUCT_DECL: {
                 auto _decl = (ast::StructDecl *)decl;
                 std::ostringstream out;
@@ -449,7 +483,21 @@ public:
                     fileOut.open(OmegaCommon::FS::Path(opts.tempDir).append(_decl->name).concat(".hlsl").str());
                 }
 
+                /// Emit prototypes for all user functions first so that
+                /// forward declarations and call-before-definition work across
+                /// function bodies. Dedupe by name.
+                {
+                    OmegaCommon::Map<OmegaCommon::String, int> emittedProtos;
+                    for (auto *uf : userFuncDecls) {
+                        if (emittedProtos.find(uf->name) != emittedProtos.end())
+                            continue;
+                        emittedProtos.insert(std::make_pair(uf->name, 0));
+                        emitUserFunctionPrototype(uf);
+                    }
+                }
                 for (auto *uf : userFuncDecls) {
+                    if (uf->isForwardDecl)
+                        continue;
                     emitUserFunction(uf);
                 }
 

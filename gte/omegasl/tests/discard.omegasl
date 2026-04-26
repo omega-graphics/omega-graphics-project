@@ -1,0 +1,27 @@
+struct MyVertex {
+    float4 pos;
+    float4 color;
+};
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float4 color : Color;
+};
+
+buffer<MyVertex> v_buffer : 0;
+
+[in v_buffer]
+vertex VertexRaster cutoutVertex(uint vertex_id : VertexID){
+    MyVertex vert = v_buffer[vertex_id];
+    VertexRaster data;
+    data.pos = vert.pos;
+    data.color = vert.color;
+    return data;
+}
+
+fragment float4 cutoutFrag(VertexRaster raster){
+    if(raster.color[3] < 0.5){
+        discard;
+    }
+    return raster.color;
+}

@@ -52,6 +52,7 @@ add_omegasl_compile_test(omegasl_compile_tessellation        tessellation.omegas
 add_omegasl_compile_test(omegasl_compile_math_builtins       math_builtins.omegasl)
 add_omegasl_compile_test(omegasl_compile_matrix_ops          matrix_ops.omegasl)
 add_omegasl_compile_test(omegasl_compile_texture_write       texture_write.omegasl)
+add_omegasl_compile_test(omegasl_compile_discard             discard.omegasl)
 
 # --- Real-world shader tests (UI / game engine patterns) ---
 add_omegasl_compile_test(omegasl_compile_blinn_phong         blinn_phong.omegasl)
@@ -68,6 +69,7 @@ add_omegasl_compile_test(omegasl_compile_particle_sim        particle_sim.omegas
 add_omegasl_fail_test(omegasl_invalid_phase2_errors          invalid_phase2.omegasl)
 add_omegasl_fail_test(omegasl_invalid_type_mismatch          invalid_type_mismatch.omegasl)
 add_omegasl_fail_test(omegasl_invalid_undefined_resource     invalid_undefined_resource.omegasl)
+add_omegasl_fail_test(omegasl_invalid_discard_outside_fragment invalid_discard_outside_fragment.omegasl)
 
 # =============================================================
 # 4. Golden-file tests for HLSL codegen (DirectX only)

@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
+#include <string>
 
 #ifdef TARGET_VULKAN
 #include <shaderc/shaderc.h>
@@ -26,6 +28,21 @@
 
 
 namespace omegasl {
+
+    /// Print a float literal so it cannot be misread as an integer literal.
+    /// Why: ostream << float drops a trailing `.0`, so a source `0.0` becomes
+    /// `0` in the generated shader. GLSL is the strictest of the three
+    /// targets here — `max(float, 0)` is a hard type error, not just an
+    /// overload-ambiguity warning.
+    static std::string formatFloatLit(double v) {
+        std::ostringstream os;
+        os << std::setprecision(9) << v;
+        std::string s = os.str();
+        if (s.find_first_of(".eEnN") == std::string::npos) {
+            s += ".0";
+        }
+        return s;
+    }
 
     const char vertex_shader_stage[] = "vert";
     const char fragment_shader_stage[] = "frag";
@@ -75,7 +92,7 @@ namespace omegasl {
         ast::ShaderDecl::Type currentShaderType = ast::ShaderDecl::Compute;
         OmegaCommon::String activeReturnReplacement;
 
-        void emitUserFunction(ast::FuncDecl *f){
+        void emitUserFunctionSignature(ast::FuncDecl *f){
             writeTypeExpr(f->returnType, shaderOut);
             shaderOut << " " << f->name << "(";
             for(size_t i = 0; i < f->params.size(); i++){
@@ -83,7 +100,17 @@ namespace omegasl {
                 writeTypeExpr(f->params[i].typeExpr, shaderOut);
                 shaderOut << " " << f->params[i].name;
             }
-            shaderOut << ")" << std::endl;
+            shaderOut << ")";
+        }
+
+        void emitUserFunctionPrototype(ast::FuncDecl *f){
+            emitUserFunctionSignature(f);
+            shaderOut << ";" << std::endl;
+        }
+
+        void emitUserFunction(ast::FuncDecl *f){
+            emitUserFunctionSignature(f);
+            shaderOut << std::endl;
             generateBlock(*f->block);
             shaderOut << std::endl;
         }
@@ -246,6 +273,10 @@ namespace omegasl {
                     shaderOut << "continue";
                     break;
                 }
+                case DISCARD_STMT : {
+                    shaderOut << "discard";
+                    break;
+                }
                 case STRUCT_DECL : {
                     auto _decl = (ast::StructDecl *)decl;
 
@@ -400,7 +431,21 @@ namespace omegasl {
                     
                     shaderOut << GLSL_HEADER << std::endl;
 
+                    /// Prototypes first (dedup by name), then bodies — supports
+                    /// forward declarations and calls between user functions
+                    /// regardless of definition order.
+                    {
+                        OmegaCommon::Map<OmegaCommon::String, int> emittedProtos;
+                        for(auto *uf : userFuncDecls){
+                            if(emittedProtos.find(uf->name) != emittedProtos.end())
+                                continue;
+                            emittedProtos.insert(std::make_pair(uf->name, 0));
+                            emitUserFunctionPrototype(uf);
+                        }
+                    }
                     for(auto *uf : userFuncDecls){
+                        if(uf->isForwardDecl)
+                            continue;
                         emitUserFunction(uf);
                     }
 
@@ -791,10 +836,10 @@ namespace omegasl {
                 case LITERAL_EXPR : {
                     auto _expr = (ast::LiteralExpr *)expr;
                     if(_expr->isFloat()){
-                        shaderOut << _expr->f_num.value();
+                        shaderOut << formatFloatLit(_expr->f_num.value());
                     }
                     else if(_expr->isDouble()){
-                        shaderOut << _expr->d_num.value();
+                        shaderOut << formatFloatLit(_expr->d_num.value());
                     }
                     else if(_expr->isInt()){
                         shaderOut << _expr->i_num.value();

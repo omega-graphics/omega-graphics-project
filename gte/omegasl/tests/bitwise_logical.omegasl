@@ -18,7 +18,7 @@ void test_bitwise_binary(uint3 tid : GlobalThreadID){
     uint r_shl = a << 2;
     uint r_shr = b >> 1;
 
-    output[0].value = make_uint4(r_and, r_or, r_xor, r_shl ^ r_shr);
+    output[0].value = uint4(r_and, r_or, r_xor, r_shl ^ r_shr);
 }
 
 [in input, out output]
@@ -29,7 +29,7 @@ void test_bitwise_unary(uint3 tid : GlobalThreadID){
     uint masked = ~a & 0xFF;
     uint high = a & 0xFF00;
     uint tagged = masked | 0x80u;
-    output[0].value = make_uint4(inverted, masked, high, tagged);
+    output[0].value = uint4(inverted, masked, high, tagged);
 }
 
 [in input, out output]
@@ -50,7 +50,7 @@ void test_logical(uint3 tid : GlobalThreadID){
         result = result | 4;
     }
 
-    output[0].value = make_uint4(result, 0, 0, 0);
+    output[0].value = uint4(result, 0, 0, 0);
 }
 
 [in input, out output]
@@ -65,7 +65,7 @@ void test_compound_assign(uint3 tid : GlobalThreadID){
     acc <<= 1;
     acc >>= 2;
 
-    output[0].value = make_uint4(acc, 0, 0, 0);
+    output[0].value = uint4(acc, 0, 0, 0);
 }
 
 [in input, out output]
@@ -78,9 +78,9 @@ void test_precedence(uint3 tid : GlobalThreadID){
     /// Verifies relational > bitwise-and > logical-and ordering:
     /// parses as ((a > 0) && ((b & c) == 0)).
     if(a > 0 && (b & c) == 0){
-        output[0].value = make_uint4(1, 0, 0, 0);
+        output[0].value = uint4(1, 0, 0, 0);
     }
     else {
-        output[0].value = make_uint4(0, 0, 0, 0);
+        output[0].value = uint4(0, 0, 0, 0);
     }
 }

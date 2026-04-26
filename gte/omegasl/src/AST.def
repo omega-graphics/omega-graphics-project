@@ -20,6 +20,7 @@ typedef int ASTType;
 #define WHILE_STMT (0x00C0 | DECL)
 #define BREAK_STMT (0x00D0 | DECL)
 #define CONTINUE_STMT (0x00E0 | DECL)
+#define DISCARD_STMT (0x00F0 | DECL)
 
 #define ID_EXPR (0x0010 | EXPR)
 #define LITERAL_EXPR (0x0020 | EXPR)
