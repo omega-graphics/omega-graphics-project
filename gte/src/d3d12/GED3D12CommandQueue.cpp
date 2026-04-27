@@ -1471,7 +1471,7 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
     multiQueueSync = false;
 }
 
-void GED3D12CommandQueue::signalExternalFence(SharedHandle<GEFence> &fence) {
+void GED3D12CommandQueue::signalFence(SharedHandle<GEFence> &fence) {
     auto d3d12Fence = static_cast<GED3D12Fence *>(fence.get());
     const auto signalValue = d3d12Fence->nextSignalValue++;
     d3d12Fence->lastSignaledValue = signalValue;

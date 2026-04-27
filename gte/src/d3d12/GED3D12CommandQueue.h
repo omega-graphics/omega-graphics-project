@@ -107,10 +107,8 @@ _NAMESPACE_BEGIN_
         void setComputePipelineState(SharedHandle<GEComputePipelineState> &pipelineState) override;
         void bindResourceAtComputeShader(SharedHandle<GEBuffer> &buffer, unsigned int id) override;
         void bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id) override;
-        #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
         void bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct, unsigned int id) override;
         void dispatchRays(unsigned int x, unsigned int y, unsigned int z) override;
-        #endif
         void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreads(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
@@ -174,7 +172,7 @@ _NAMESPACE_BEGIN_
         void notifyCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &waitFence) override;
         void submitCommandBuffer(SharedHandle<GECommandBuffer> & commandBuffer) override;
         void submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &signalFence) override;
-        void signalExternalFence(SharedHandle<GEFence> & fence) override;
+        void signalFence(SharedHandle<GEFence> & fence) override;
         void waitForFence(SharedHandle<GEFence> & fence, std::uint64_t value) override;
         SharedHandle<GECommandBuffer> getAvailableBuffer() override;
         GED3D12CommandQueue(GED3D12Engine *engine,unsigned size);

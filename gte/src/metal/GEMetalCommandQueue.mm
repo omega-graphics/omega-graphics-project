@@ -247,8 +247,6 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     };
 
 
-    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
-
      void GEMetalCommandBuffer::beginAccelStructPass(){
         ap = [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) accelerationStructureCommandEncoder];
     };
@@ -281,8 +279,6 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         [ap endEncoding];
         ap = nil;
     };
-
-    #endif
 
     void GEMetalCommandBuffer::setVertexBuffer(SharedHandle<GEBuffer> &buffer) {
 
@@ -760,7 +756,6 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         }
     }
 
-    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
 
     void GEMetalCommandBuffer::bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> & accelStruct,unsigned int idx){
          assert(cp != nil && "");
@@ -771,8 +766,6 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned int z){
         dispatchThreads(x,y,z);
     }
-
-    #endif
 
     void GEMetalCommandBuffer::dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) {
         assert(cp != nil && "");

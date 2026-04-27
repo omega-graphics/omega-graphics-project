@@ -19,9 +19,7 @@ _NAMESPACE_BEGIN_
         id<MTLComputeCommandEncoder> cp = nil;
         id<MTLBlitCommandEncoder> bp = nil;
 
-         #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
         id<MTLAccelerationStructureCommandEncoder> ap = nil;
-        #endif
 
         GEMetalCommandQueue *parentQueue = nullptr;
 
@@ -72,7 +70,6 @@ _NAMESPACE_BEGIN_
                          size_t offset, size_t size) override;
         void finishBlitPass() override;
 
-        #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
 
         void beginAccelStructPass() override;
         void buildAccelerationStructure(SharedHandle<GEAccelerationStruct> &structure,const GEAccelerationStructDescriptor &desc) override;
@@ -81,8 +78,6 @@ _NAMESPACE_BEGIN_
         void finishAccelStructPass() override;
 
         void dispatchRays(unsigned int x, unsigned int y, unsigned int z) override;
-
-        #endif
         
         void startRenderPass(const GERenderPassDescriptor &desc) override;
         void setVertexBuffer(SharedHandle<GEBuffer> &buffer) override;
@@ -118,9 +113,7 @@ _NAMESPACE_BEGIN_
         void setComputePipelineState(SharedHandle<GEComputePipelineState> &pipelineState) override;
         void bindResourceAtComputeShader(SharedHandle<GEBuffer> &buffer, unsigned id) override;
         void bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned id) override;
-        #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
         void bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct, unsigned int id) override;
-        #endif
         void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreads(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,

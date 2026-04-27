@@ -303,7 +303,6 @@ _NAMESPACE_BEGIN_
         virtual void dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
                                                    size_t argumentBufferOffset) = 0;
 
-        #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
 
          /// @brief Executes a Ray Tracing Pipeline (Encodes a dispatch command in the Compute Pass).
         /// @param x The Number of ThreadGroups dispatched in the `x` direction.
@@ -311,7 +310,6 @@ _NAMESPACE_BEGIN_
         /// @param z The Number of ThreadGroups dispatched in the `z` direction.
         virtual void dispatchRays(unsigned x,unsigned y,unsigned z) = 0;
 
-        #endif
 
         /// @brief Finish encoding a Compute Pass.
         /// @paragraph This method must be invoked when a dispatch command has been encoded.

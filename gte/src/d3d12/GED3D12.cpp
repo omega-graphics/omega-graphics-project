@@ -863,8 +863,6 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
         return SharedHandle<GEHeap>(new GED3D12Heap(this, heap));
     }
 
-    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
-
     GED3D12AccelerationStruct::GED3D12AccelerationStruct(SharedHandle<GED3D12Buffer> & structBuffer,
         SharedHandle<GED3D12Buffer> & scratchBuffer):structBuffer(structBuffer),scratchBuffer(scratchBuffer){
 
@@ -946,8 +944,6 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
 
         return (SharedHandle<GEAccelerationStruct>)new GED3D12AccelerationStruct(dataBuffer,scratchBuffer);
     }
-
-    #endif
 
     inline D3D12_COMPARISON_FUNC convertCompareFunc(CompareFunc & func){
         D3D12_COMPARISON_FUNC res;

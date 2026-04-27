@@ -14,10 +14,10 @@
 #include <dxgi1_6.h>
 
 #include <sdkddkver.h>
-/// If Windows Version is Greater then Windows 10 1809 (Redstone 5)
-#if NTDDI_VERSION >= NTDDI_WIN10_RS5
-#define OMEGAGTE_RAYTRACING_SUPPORTED 1
-#endif
+// /// If Windows Version is Greater then Windows 10 1809 (Redstone 5)
+// #if NTDDI_VERSION >= NTDDI_WIN10_RS5
+// #define OMEGAGTE_RAYTRACING_SUPPORTED 1
+// #endif
 
 #define DEBUG_ENGINE_PREFIX "GED3D12Engine_Internal"
 #endif
@@ -31,15 +31,15 @@
 
 #define DEBUG_ENGINE_PREFIX "GEMetalEngine_Internal"
 
-#if defined(__MAC_OS_X_VERSION_MIN_REQUIRED)
-    #if __MAC_OS_X_VERSION_MIN_REQUIRED >= __MAC_11_0  
-        #define OMEGAGTE_RAYTRACING_SUPPORTED 1
-    #endif
-#elif defined(__IPHONE_OS_VERSION_MIN_REQUIRED)
-    #if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_14_0 
-        #define OMEGAGTE_RAYTRACING_SUPPORTED 1
-    #endif
-#endif
+// #if defined(__MAC_OS_X_VERSION_MIN_REQUIRED)
+//     #if __MAC_OS_X_VERSION_MIN_REQUIRED >= __MAC_11_0  
+//         #define OMEGAGTE_RAYTRACING_SUPPORTED 1
+//     #endif
+// #elif defined(__IPHONE_OS_VERSION_MIN_REQUIRED)
+//     #if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_14_0 
+//         #define OMEGAGTE_RAYTRACING_SUPPORTED 1
+//     #endif
+// #endif
 
 #endif
 
@@ -59,7 +59,7 @@
 
 #define DEBUG_ENGINE_PREFIX "GEVulkanEngine_Internal"
 
-#define OMEGAGTE_RAYTRACING_SUPPORTED 1
+// #define OMEGAGTE_RAYTRACING_SUPPORTED 1
 #endif
 
 #define DEBUG_STREAM(message) std::cout << "[" << DEBUG_ENGINE_PREFIX << "] - " << message << std::endl
@@ -219,7 +219,6 @@ _NAMESPACE_BEGIN_
 
     class OMEGAGTE_EXPORT GESamplerState { public: OMEGACOMMON_CLASS("OmegaGTE.GESamplerState")};
 
-    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
 
     struct GERaytracingBoundingBox {
         float minX,minY,minZ,maxX,maxY,maxZ;
@@ -263,8 +262,6 @@ _NAMESPACE_BEGIN_
         virtual ~GEAccelerationStruct() = default;
     };
 
-    #endif
-
     /**
      @brief The Omega Graphics Engine
     */
@@ -297,13 +294,11 @@ _NAMESPACE_BEGIN_
         */
         SharedHandle<GTEShaderLibrary> loadShaderLibraryRuntime(std::shared_ptr<omegasl_shader_lib> & lib);
 
-    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
         virtual SharedHandle<GEBuffer> createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes) = 0;
 
         /// @brief Allocate a Buffer to hold an Acceleration Structure.
         /// @returns SharedHandle<GEAccelerationStruct>
         virtual SharedHandle<GEAccelerationStruct> allocateAccelerationStructure(const GEAccelerationStructDescriptor & desc) = 0;
-    #endif
         /**
          @brief Creates a GEFence.
          @returns SharedHandle<GEFence>

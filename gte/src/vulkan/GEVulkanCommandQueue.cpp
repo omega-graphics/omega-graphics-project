@@ -958,8 +958,6 @@ _NAMESPACE_BEGIN_
         renderPipelineState = nullptr;
     };
 
-    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
-
     void GEVulkanCommandBuffer::beginAccelStructPass(){
     }
 
@@ -1208,8 +1206,6 @@ _NAMESPACE_BEGIN_
             vkCmdDispatch(commandBuffer, x, y, z);
         }
     }
-
-    #endif
 
     void GEVulkanCommandBuffer::startComputePass(const GEComputePassDescriptor &desc) {
         inComputePass = true;

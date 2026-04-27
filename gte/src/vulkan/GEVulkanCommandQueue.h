@@ -96,7 +96,6 @@ _NAMESPACE_BEGIN_
 
         void finishRenderPass() override;
 
-        #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
         void beginAccelStructPass() override;
         void buildAccelerationStructure(SharedHandle<GEAccelerationStruct> &src, const GEAccelerationStructDescriptor &desc) override;
         void copyAccelerationStructure(SharedHandle<GEAccelerationStruct> &src, SharedHandle<GEAccelerationStruct> &dest) override;
@@ -104,7 +103,6 @@ _NAMESPACE_BEGIN_
         void finishAccelStructPass() override;
         void bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct, unsigned int id) override;
         void dispatchRays(unsigned int x, unsigned int y, unsigned int z) override;
-        #endif
 
         void startComputePass(const GEComputePassDescriptor &desc) override;
         void setComputePipelineState(SharedHandle<GEComputePipelineState> &pipelineState) override;
