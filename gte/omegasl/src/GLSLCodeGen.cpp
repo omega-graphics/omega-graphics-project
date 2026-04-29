@@ -154,84 +154,20 @@ namespace omegasl {
         }
 
     public:
-        explicit GLSLCodeGen(CodeGenOpts &opts,GLSLCodeOpts &glslCodeOpts): CodeGen(opts), shaderOut(fileOut),glslCodeOpts(glslCodeOpts){
+        explicit GLSLCodeGen(CodeGenOpts &opts,GLSLCodeOpts &glslCodeOpts): CodeGen(opts, std::make_unique<GLSLTarget>()), shaderOut(fileOut),glslCodeOpts(glslCodeOpts){
             #ifdef TARGET_VULKAN
             compiler = shaderc_compiler_initialize();
             #endif
         }
         explicit GLSLCodeGen(CodeGenOpts &opts,GLSLCodeOpts & glslCodeOpts,std::ostringstream & stringOut):
-                CodeGen(opts),shaderOut(this->stringOut), stringOut(std::move(stringOut)),glslCodeOpts(glslCodeOpts){
+                CodeGen(opts, std::make_unique<GLSLTarget>()),shaderOut(this->stringOut), stringOut(std::move(stringOut)),glslCodeOpts(glslCodeOpts){
 #ifdef TARGET_VULKAN
             compiler = shaderc_compiler_initialize();
 #endif
         }
 
         inline void writeTypeExpr(ast::TypeExpr *typeExpr,std::ostream & out) {
-            auto t = typeResolver->resolveTypeWithExpr(typeExpr);
-            if(t == ast::builtins::void_type){
-                out << "void";
-            }
-            else if(t == ast::builtins::bool_type){
-                out << "bool";
-            }
-            else if(t == ast::builtins::float_type){
-                out << "float";
-            }
-            else if(t == ast::builtins::float2_type){
-                out << "vec2";
-            }
-            else if(t == ast::builtins::float3_type){
-                out << "vec3";
-            }
-            else if(t == ast::builtins::float4_type){
-                out << "vec4";
-            }
-            else if(t == ast::builtins::float2x2_type){
-                out << "mat2";
-            }
-            else if(t == ast::builtins::float3x3_type){
-                out << "mat3";
-            }
-            else if(t == ast::builtins::float4x4_type){
-                out << "mat4";
-            }
-            else if(t == ast::builtins::float2x3_type){ out << "mat2x3"; }
-            else if(t == ast::builtins::float2x4_type){ out << "mat2x4"; }
-            else if(t == ast::builtins::float3x2_type){ out << "mat3x2"; }
-            else if(t == ast::builtins::float3x4_type){ out << "mat3x4"; }
-            else if(t == ast::builtins::float4x2_type){ out << "mat4x2"; }
-            else if(t == ast::builtins::float4x3_type){ out << "mat4x3"; }
-            else if(t == ast::builtins::int_type){
-                out << "int";
-            }
-            else if(t == ast::builtins::int2_type){
-                out << "ivec2";
-            }
-            else if(t == ast::builtins::int3_type){
-                out << "ivec3";
-            }
-            else if(t == ast::builtins::int4_type){
-                out << "ivec4";
-            }
-            else if(t == ast::builtins::uint_type){
-                out << "uint";
-            }
-            else if(t == ast::builtins::uint2_type){
-                out << "uvec2";
-            }
-            else if(t == ast::builtins::uint3_type){
-                out << "uvec3";
-            }
-            else if(t == ast::builtins::uint4_type){
-                out << "uvec4";
-            }
-            else {
-                out << t->name;
-            }
-
-            if(typeExpr->pointer){
-                out << " * ";
-            }
+            target->writeTypeName(typeResolver->resolveTypeWithExpr(typeExpr), typeExpr->pointer, out);
         }
     private:
         unsigned indentLevel = 0;
@@ -1002,35 +938,10 @@ namespace omegasl {
                     auto _expr = (ast::CallExpr *)expr;
                     OmegaCommon::StrRef _id = ((ast::IdExpr *)_expr->callee)->id;
                     if(_id == BUILTIN_SAMPLE){
-                        /// GLSL Vulkan: combine separate texture + sampler into combined image-sampler (e.g. sampler2D(tex, samp)) for texture().
-                        auto samplerid_expr = (ast::IdExpr *)_expr->args[0];
-                        auto & sampler_res = *(resourceStore.find(samplerid_expr->id));
-                        auto t = typeResolver->resolveTypeWithExpr(sampler_res->typeExpr);
-                        OmegaCommon::String samplerType;
-                        if(t == ast::builtins::sampler1d_type){
-                            samplerType = "sampler1D";
-                        }
-                        else if(t == ast::builtins::sampler2d_type){
-                            samplerType = "sampler2D";
-                        }
-                        else if(t == ast::builtins::sampler3d_type){
-                            samplerType = "sampler3D";
-                        }
-
-                        shaderOut << "texture(" << samplerType << "(";
-                        generateExpr(_expr->args[1]);
-                        shaderOut << ",";
-                        generateExpr(_expr->args[0]);
-                        shaderOut << "),";
-                        generateExpr(_expr->args[2]);
-                        shaderOut << ")";
+                        target->emitTextureSample(*this, _expr, shaderOut);
                     }
                     else if(_id == BUILTIN_READ){
-                        shaderOut << "texelFetch(";
-                        generateExpr(_expr->args[0]);
-                        shaderOut << ",ivec2(";
-                        generateExpr(_expr->args[1]);
-                        shaderOut << "),0)";
+                        target->emitTextureRead(*this, _expr, shaderOut);
                     }
                     else if(_id == BUILTIN_MAKE_FLOAT2 || _id == BUILTIN_MAKE_FLOAT3 || _id == BUILTIN_MAKE_FLOAT4 ||
                             _id == BUILTIN_MAKE_INT2 || _id == BUILTIN_MAKE_INT3 || _id == BUILTIN_MAKE_INT4 ||
@@ -1054,20 +965,11 @@ namespace omegasl {
                         shaderOut << ")";
                     }
                     else if(_id == BUILTIN_WRITE){
-                        shaderOut << "imageStore(";
-                        generateExpr(_expr->args[0]);
-                        shaderOut << ",ivec2(";
-                        generateExpr(_expr->args[1]);
-                        shaderOut << "),";
-                        generateExpr(_expr->args[2]);
-                        shaderOut << ")";
+                        target->emitTextureWrite(*this, _expr, shaderOut);
                     }
                     else {
-                        /// Map OmegaSL names to GLSL names where they differ.
-                        if(_id == BUILTIN_LERP) shaderOut << "mix";
-                        else if(_id == BUILTIN_FRAC) shaderOut << "fract";
-                        else if(_id == BUILTIN_ATAN2) shaderOut << "atan";
-                        else shaderOut << _id;
+                        auto renamed = target->renameBuiltin(_id);
+                        shaderOut << renamed;
                         shaderOut << "(";
                         for(size_t i = 0; i < _expr->args.size(); i++){
                             if(i > 0) shaderOut << ",";

@@ -968,6 +968,8 @@ after restart.
 
 ---
 
+(Phase 2 and 3 Shouldn't matter anymore because of Direct-To-Drawable-And-SDF-Plan.md)
+
 ### Phase 2 — Geometry caching
 
 **Goal:** Eliminate redundant tessellation. Only tessellate a shape when
@@ -1114,6 +1116,7 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
 
 ---
 
+
 ### Phase 4 — Frame diffing and partial render
 
 **Goal:** Only re-render visual commands that changed since the previous
@@ -1169,7 +1172,7 @@ invalidation rects.
 
 ---
 
-### Phase 5 — SDF-based primitive rendering (future)
+### Phase 5 — SDF-based primitive rendering (Covered by Direct-To-Drawable-And-SDF-Plan.md)
 
 **Goal:** Eliminate tessellation entirely for standard shapes.
 

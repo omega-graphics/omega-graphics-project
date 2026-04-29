@@ -6,6 +6,9 @@
     Use PascalCase for file-naming conventions
     Use an object-oriented, Modular coding style that has modular rules so if a specific rule needs to be changed across the object it can be.
 
+# Dependencies
+    All dependencies in this project are pulled in via AUTOMDEPS. Whenever adding a new dependency, query an existing AUTOMDEPS file for format, and then add or remove a dependency.
+
 # Code Authoring
     All implementations will be revised through multi-phase plans before being implemented.
     (This is only for code, not for documentation, or other utilites)
@@ -22,4 +25,4 @@
 - Code Comments (Doxygen):
     Use accurate, techincal language to describe the code details fully and correctly.
 - User Guides (Sphinx docs) and README's:
-    Use simple, clear language that can understood by someone with little to no technical experience. (The guides should be easy to follow and be able to explain how the code works without getting too techincal.)
+    Use simple, clear language that can be understood by someone with little to no technical experience. (The guides should be easy to follow and be able to explain how the code works without getting too techincal.)

@@ -12,6 +12,13 @@ namespace omegasl {
             if(hasFatalErrors){
                 return true;
             }
+            /// `--emit-source-only` mode: source has already been written
+            /// to tempDir by generateDecl; skip the toolchain invocation
+            /// entirely so this works on hosts that don't have dxc / metal
+            /// / glslc available.
+            if(opts.emitSourceOnly){
+                return true;
+            }
             if(opts.runtimeCompile){
                 compileShaderOnRuntime(_decl->shaderType,_decl->name);
             }

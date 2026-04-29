@@ -63,35 +63,6 @@ using namespace metal;
             return userFuncNames.count(std::string(name)) > 0;
         }
 
-        /// Metal's `texture<T>::read` / `::write` take unsigned coords
-        /// (`uint`/`uint2`/`uint3`). OmegaSL accepts both signed and
-        /// unsigned coords at the language level — building a coord via
-        /// `int2(x, y)` after signed arithmetic is common — so we cast
-        /// to the matching unsigned type at emit time. Without this,
-        /// `tex.read(int2(...))` produces "no matching member function"
-        /// errors against the ushort2/uint2 overloads. `uint2(uint2_v)`
-        /// is a no-op, so casting unconditionally based on the texture
-        /// type is safe for shaders that already use unsigned coords.
-        /// Returns nullptr if the texture type can't be resolved (caller
-        /// emits the coord unmodified in that case).
-        const char *metalUintCoordTypeForTexture(ast::Expr *texArg){
-            using namespace ast;
-            TypeExpr *texTypeExpr = texArg->resolvedType;
-            if(!texTypeExpr && texArg->type == ID_EXPR){
-                auto *resourceId = static_cast<IdExpr *>(texArg);
-                auto it = resourceStore.find(resourceId->id);
-                if(it != resourceStore.end()){
-                    texTypeExpr = (*it)->typeExpr;
-                }
-            }
-            if(!texTypeExpr) return nullptr;
-            auto *texTy = typeResolver->resolveTypeWithExpr(texTypeExpr);
-            if(texTy == builtins::texture1d_type) return "uint";
-            if(texTy == builtins::texture2d_type) return "uint2";
-            if(texTy == builtins::texture3d_type) return "uint3";
-            return nullptr;
-        }
-
         void emitUserFunctionSignature(ast::FuncDecl *f){
             writeTypeExpr(f->returnType, shaderOut);
             shaderOut << " " << mangleUserFuncName(f->name) << "(";
@@ -119,126 +90,16 @@ using namespace metal;
 
     public:
         explicit MetalCodeGen(CodeGenOpts &opts,MetalCodeOpts & metalCodeOpts):
-        CodeGen(opts),shaderOut(fileOut),metalCodeOpts(metalCodeOpts){
+        CodeGen(opts, std::make_unique<MSLTarget>()),shaderOut(fileOut),metalCodeOpts(metalCodeOpts){
 
         }
         explicit MetalCodeGen(CodeGenOpts &opts,MetalCodeOpts & metalCodeOpts,std::ostringstream & stringOut):
-                CodeGen(opts), stringOut(std::move(stringOut)),shaderOut(this->stringOut),metalCodeOpts(metalCodeOpts){
+                CodeGen(opts, std::make_unique<MSLTarget>()), stringOut(std::move(stringOut)),shaderOut(this->stringOut),metalCodeOpts(metalCodeOpts){
 
         }
         ~MetalCodeGen() override = default;
         inline void writeTypeExpr(ast::TypeExpr *t,std::ostream & out){
-            using namespace ast;
-            auto * _t = typeResolver->resolveTypeWithExpr(t);
-
-            if(_t == builtins::void_type){
-                out << "void";
-            }
-            else if(_t == builtins::bool_type){
-                out << "bool";
-            }
-            else if(_t == builtins::int_type){
-                out << "int";
-            }
-            else if(_t == builtins::int2_type){
-                out << "int2";
-            }
-            else if(_t == builtins::int3_type){
-                out << "int3";
-            }
-            else if(_t == builtins::int4_type){
-                out << "int4";
-            }
-            else if(_t == builtins::uint_type){
-                out << "uint";
-            }
-            else if(_t == builtins::uint2_type){
-                out << "uint2";
-            }
-            else if(_t == builtins::uint3_type){
-                out << "uint3";
-            }
-            else if(_t == builtins::uint4_type){
-                out << "uint4";
-            }
-            else if(_t == builtins::float_type){
-                out << "float";
-            }
-            else if(_t == builtins::float2_type){
-                out << "float2";
-            }
-            else if(_t == builtins::float3_type){
-                out << "float3";
-            }
-            else if(_t == builtins::float4_type){
-                out << "float4";
-            }
-            else if(_t == builtins::float2x2_type){
-                out << "float2x2";
-            }
-            else if(_t == builtins::float3x3_type){
-                out << "float3x3";
-            }
-            else if(_t == builtins::float4x4_type){
-                out << "float4x4";
-            }
-            else if(_t == builtins::float2x3_type){ out << "float2x3"; }
-            else if(_t == builtins::float2x4_type){ out << "float2x4"; }
-            else if(_t == builtins::float3x2_type){ out << "float3x2"; }
-            else if(_t == builtins::float3x4_type){ out << "float3x4"; }
-            else if(_t == builtins::float4x2_type){ out << "float4x2"; }
-            else if(_t == builtins::float4x3_type){ out << "float4x3"; }
-            else if(_t == builtins::sampler1d_type || _t == builtins::sampler2d_type || _t == builtins::sampler3d_type){
-                out << "sampler";
-            }
-            else {
-                out << t->name;
-            }
-
-
-            if(t->pointer){
-                out << " *";
-            }
-        }
-        inline void writeAttributeName(OmegaCommon::StrRef attributeName,std::ostream & out,
-                                       std::optional<unsigned> attributeIndex = {}){
-            if(attributeName == ATTRIBUTE_POSITION){
-                out << "position";
-            }
-            else if(attributeName == ATTRIBUTE_VERTEX_ID){
-                out << "vertex_id";
-            }
-            else if(attributeName == ATTRIBUTE_INSTANCE_ID){
-                out << "instance_id";
-            }
-            else if(attributeName == ATTRIBUTE_COLOR){
-                /// Indexed `Color(N)` is a fragment-output target; bare `Color`
-                /// flows through MSL untagged (the field is just a varying).
-                if(attributeIndex.has_value()){
-                    out << "color(" << attributeIndex.value() << ")";
-                }
-            }
-            else if(attributeName == ATTRIBUTE_DEPTH){
-                out << "depth(any)";
-            }
-            else if(attributeName == ATTRIBUTE_FRONTFACING){
-                out << "front_facing";
-            }
-            else if(attributeName == ATTRIBUTE_SAMPLEINDEX){
-                out << "sample_id";
-            }
-            else if(attributeName == ATTRIBUTE_COVERAGE){
-                out << "sample_mask";
-            }
-            else if(attributeName == ATTRIBUTE_GLOBALTHREAD_ID){
-                out << "thread_position_in_grid";
-            }
-            else if(attributeName == ATTRIBUTE_THREADGROUP_ID){
-                out << "threadgroup_position_in_grid";
-            }
-            else if(attributeName == ATTRIBUTE_LOCALTHREAD_ID){
-                out << "thread_position_in_threadgroup";
-            }
+            target->writeTypeName(typeResolver->resolveTypeWithExpr(t), t->pointer, out);
         }
         void generateExpr(ast::Expr *expr) override {
             switch (expr->type) {
@@ -328,43 +189,15 @@ using namespace metal;
                     }
                     else if(func_name == BUILTIN_SAMPLE){
                         generated = true;
-                        generateExpr(_expr->args[1]);
-                        shaderOut << ".sample";
-                        shaderOut << "(";
-                        generateExpr(_expr->args[0]);
-                        shaderOut << ",";
-                        generateExpr(_expr->args[2]);
-                        shaderOut << ")";
+                        target->emitTextureSample(*this, _expr, shaderOut);
                     }
                     else if(func_name == BUILTIN_WRITE){
                         generated = true;
-                        const char *coordCast = metalUintCoordTypeForTexture(_expr->args[0]);
-                        generateExpr(_expr->args[0]);
-                        shaderOut << ".write(";
-                        generateExpr(_expr->args[2]);
-                        shaderOut << ",";
-                        if(coordCast){
-                            shaderOut << coordCast << "(";
-                            generateExpr(_expr->args[1]);
-                            shaderOut << ")";
-                        } else {
-                            generateExpr(_expr->args[1]);
-                        }
-                        shaderOut << ")";
+                        target->emitTextureWrite(*this, _expr, shaderOut);
                     }
                     else if(func_name == BUILTIN_READ){
                         generated = true;
-                        const char *coordCast = metalUintCoordTypeForTexture(_expr->args[0]);
-                        generateExpr(_expr->args[0]);
-                        shaderOut << ".read(";
-                        if(coordCast){
-                            shaderOut << coordCast << "(";
-                            generateExpr(_expr->args[1]);
-                            shaderOut << ")";
-                        } else {
-                            generateExpr(_expr->args[1]);
-                        }
-                        shaderOut << ")";
+                        target->emitTextureRead(*this, _expr, shaderOut);
                     }
                     else if(func_name == BUILTIN_MAKE_INT2){ shaderOut << "int2"; }
                     else if(func_name == BUILTIN_MAKE_INT3){ shaderOut << "int3"; }
@@ -382,11 +215,11 @@ using namespace metal;
                     else if(func_name == BUILTIN_MAKE_FLOAT4X2){ shaderOut << "float4x2"; }
                     else if(func_name == BUILTIN_MAKE_FLOAT4X3){ shaderOut << "float4x3"; }
                     else {
-                        /// Map OmegaSL names to MSL names where they differ.
-                        if(func_name == BUILTIN_LERP) shaderOut << "mix";
-                        else if(func_name == BUILTIN_FRAC) shaderOut << "fract";
-                        else if(isUserFunc(func_name)) shaderOut << mangleUserFuncName(func_name);
-                        else shaderOut << func_name;
+                        if(isUserFunc(func_name)) shaderOut << mangleUserFuncName(func_name);
+                        else {
+                            auto renamed = target->renameBuiltin(func_name);
+                            shaderOut << renamed;
+                        }
                     }
 
                     if(!generated){
@@ -566,7 +399,7 @@ using namespace metal;
                             bool isTexCoord  = (p.attributeName.value() == ATTRIBUTE_TEXCOORD);
                             if(!isBareColor && !isTexCoord){
                                 out << "[[";
-                                writeAttributeName(p.attributeName.value(),out,p.attributeIndex);
+                                target->writeAttribute(p.attributeName.value(),p.attributeIndex,out);
                                 out << "]]";
                             }
                         }
@@ -727,6 +560,11 @@ using namespace metal;
                                     out << "nearest";
                                     break;
                                 }
+                                case OMEGASL_SHADER_SAMPLER_MAX_ANISOTROPY_FILTER :
+                                case OMEGASL_SHADER_SAMPLER_MIN_ANISOTROPY_FILTER : {
+                                    out << "linear";
+                                    break;
+                                }
                             }
 
                             out << ",address::";
@@ -739,7 +577,16 @@ using namespace metal;
                                     break;
                                 }
                                 case OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_MIRROR : {
-                                    out << "mirror";
+                                    out << "mirrored_repeat";
+                                    break;
+                                }
+                                case OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_MIRRORWRAP : {
+                                    out << "mirrored_repeat";
+                                    break;
+                                }
+                                case OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_CLAMPTOEDGE : {
+                                    out << "clamp_to_edge";
+                                    break;
                                 }
                             }
 
@@ -893,7 +740,7 @@ using namespace metal;
                                 shadermap_entry.computeShaderParamsDesc.useThreadGroupID = true;
                             }
                             shaderOut << "[[";
-                            writeAttributeName(p.attributeName.value(),shaderOut,p.attributeIndex);
+                            target->writeAttribute(p.attributeName.value(),p.attributeIndex,shaderOut);
                             shaderOut << "]]";
                         }
                     }

@@ -7,6 +7,7 @@
 #include "FencePool.h"
 #include "MainThreadDispatch.h"
 #include "Pipeline.h"
+#include "Texture.h"
 #include "ResourceFactory.h"
 #include "omegaWTK/Composition/Canvas.h"
 #include "GeometryConvert.h"
@@ -21,240 +22,65 @@
 #include <sstream>
 #include <utility>
 
-#if defined(TARGET_MACOS)
-#include <mach-o/dyld.h>
-#elif defined(TARGET_WIN32)
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
-
 namespace OmegaWTK::Composition {
     #ifdef TARGET_MACOS
     void stopMTLCapture();
     #endif
 
     namespace {
-        constexpr float kMaxTextureDimension = 16384.f;
-#if defined(TARGET_MACOS)
-        constexpr float kRenderScaleFloor = 2.f;
-#else
-        constexpr float kRenderScaleFloor = 1.f;
-#endif
-
-        static inline float sanitizeRenderScale(float scale){
-            if(!std::isfinite(scale) || scale <= 0.f){
-                return kRenderScaleFloor;
-            }
-            return std::clamp(scale,kRenderScaleFloor,kMaxTextureDimension);
-        }
-
-        static inline float sanitizeCoordinate(float value,float fallback){
-            if(!std::isfinite(value)){
-                return fallback;
-            }
-            return value;
-        }
-
-        static inline Composition::Rect sanitizeRenderRect(const Composition::Rect & candidate,
-                                                    const Composition::Rect & fallback,
-                                                    float renderScale){
-            Composition::Rect sanitizedFallback = fallback;
-            sanitizedFallback.pos.x = sanitizeCoordinate(sanitizedFallback.pos.x,0.f);
-            sanitizedFallback.pos.y = sanitizeCoordinate(sanitizedFallback.pos.y,0.f);
-            if(!std::isfinite(sanitizedFallback.w) || sanitizedFallback.w <= 0.f){
-                sanitizedFallback.w = 1.f;
-            }
-            if(!std::isfinite(sanitizedFallback.h) || sanitizedFallback.h <= 0.f){
-                sanitizedFallback.h = 1.f;
-            }
-
-            const float scale = sanitizeRenderScale(renderScale);
-            const float maxLogicalDimension = std::max(1.f,kMaxTextureDimension / scale);
-            sanitizedFallback.w = std::clamp(sanitizedFallback.w,1.f,maxLogicalDimension);
-            sanitizedFallback.h = std::clamp(sanitizedFallback.h,1.f,maxLogicalDimension);
-
-            Composition::Rect sanitized = candidate;
-            sanitized.pos.x = sanitizeCoordinate(sanitized.pos.x,sanitizedFallback.pos.x);
-            sanitized.pos.y = sanitizeCoordinate(sanitized.pos.y,sanitizedFallback.pos.y);
-
-            if(!std::isfinite(sanitized.w) || sanitized.w <= 0.f){
-                sanitized.w = sanitizedFallback.w;
-            }
-            if(!std::isfinite(sanitized.h) || sanitized.h <= 0.f){
-                sanitized.h = sanitizedFallback.h;
-            }
-
-            sanitized.w = std::clamp(sanitized.w,1.f,maxLogicalDimension);
-            sanitized.h = std::clamp(sanitized.h,1.f,maxLogicalDimension);
-            return sanitized;
-        }
-
-        static inline unsigned toBackingDimension(float logicalDimension,float renderScale){
-            const float saneScale = sanitizeRenderScale(renderScale);
-            float saneLogical = logicalDimension;
-            if(!std::isfinite(saneLogical) || saneLogical <= 0.f){
-                saneLogical = 1.f;
-            }
-            const auto scaled = static_cast<long>(std::lround(saneLogical * saneScale));
-            const auto clamped = std::clamp<long>(scaled,1L,static_cast<long>(kMaxTextureDimension));
-            return static_cast<unsigned>(clamped);
-        }
-    }
-
-    namespace {
         inline PipelineRegistry & pipelineRegistry(){
             return BackendResourceFactory::instance().pipelines();
         }
-    }
-
-    static constexpr std::size_t kTextureHeapSize = 64u * 1024u * 1024u;
-    static constexpr std::size_t kBufferHeapSize = 8u * 1024u * 1024u;
-    static SharedHandle<OmegaGTE::GEHeap> textureHeap;
-    static SharedHandle<OmegaGTE::GEHeap> bufferHeap;
-    static std::unique_ptr<TexturePool> texturePool;
-    static std::unique_ptr<BufferPool> bufferPool;
-    static std::unique_ptr<FencePool> fencePool;
-
-    static void createResourcePools(){
-        OmegaGTE::HeapDescriptor texHeapDesc{};
-        texHeapDesc.len = kTextureHeapSize;
-        OmegaGTE::HeapDescriptor bufHeapDesc{};
-        bufHeapDesc.len = kBufferHeapSize;
-        textureHeap = gte.graphicsEngine->makeHeap(texHeapDesc);
-        bufferHeap = gte.graphicsEngine->makeHeap(bufHeapDesc);
-        texturePool = std::make_unique<TexturePool>(textureHeap);
-        bufferPool = std::make_unique<BufferPool>(bufferHeap);
-        fencePool = std::make_unique<FencePool>();
-    }
-
-    static void destroyResourcePools(){
-        if(fencePool) fencePool->drain();
-        if(bufferPool) bufferPool->drain();
-        if(texturePool) texturePool->drain();
-        fencePool.reset();
-        bufferPool.reset();
-        texturePool.reset();
-        bufferHeap.reset();
-        textureHeap.reset();
+        inline BufferPool * bufferPool(){
+            return BackendResourceFactory::instance().bufferPool();
+        }
+        inline FencePool * fencePool(){
+            return BackendResourceFactory::instance().fencePool();
+        }
     }
 
     void InitializeEngine(){
         BackendResourceFactory::instance().pipelines().initialize();
-        createResourcePools();
+        BackendResourceFactory::instance().initializePools();
     }
 
     void CleanupEngine(){
-        destroyResourcePools();
+        BackendResourceFactory::instance().shutdownPools();
         BackendResourceFactory::instance().pipelines().shutdown();
     }
 
 BackendRenderTargetContext::BackendRenderTargetContext(Composition::Rect & rect,
-        SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTarget,
+        SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTargetIn,
         float renderScaleValue):
-        fence(fencePool ? fencePool->acquire() : gte.graphicsEngine->makeFence()),
-        renderTarget(renderTarget),
-        renderTargetSize(rect),
-        renderScale(1.f)
+        fence(fencePool() ? fencePool()->acquire() : gte.graphicsEngine->makeFence()),
+        renderTarget(renderTargetIn),
+        textures_(rect, renderScaleValue, renderTargetIn),
+        frameRenderPass_(textures_, renderTarget)
         {
-    renderScale = sanitizeRenderScale(renderScaleValue);
-    renderTargetSize = sanitizeRenderRect(rect,
-                                          Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f},
-                                          renderScale);
     traceResourceId = ResourceTrace::nextResourceId();
     ResourceTrace::emit("Create",
                         "TextureTarget",
                         traceResourceId,
                         "BackendRenderTargetContext",
                         this,
-                        renderTargetSize.w,
-                        renderTargetSize.h,
-                        renderScale);
+                        textures_.renderTargetSize().w,
+                        textures_.renderTargetSize().h,
+                        textures_.renderScale());
     rebuildBackingTarget();
-    imageProcessor = BackendCanvasEffectProcessor::Create(fence);
+    imageProcessor = BackendResourceFactory::instance().createEffectProcessor(fence);
 }
 
 void BackendRenderTargetContext::rebuildBackingTarget(){
-    renderTargetSize = sanitizeRenderRect(renderTargetSize,
-                                          Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f},
-                                          renderScale);
-    backingWidth = toBackingDimension(renderTargetSize.w,renderScale);
-    backingHeight = toBackingDimension(renderTargetSize.h,renderScale);
+    textures_.recomputeBackingDimensions();
     ResourceTrace::emit("ResizeRebuild",
                         "TextureTarget",
                         traceResourceId,
                         "BackendRenderTargetContext",
                         this,
-                        static_cast<float>(backingWidth),
-                        static_cast<float>(backingHeight),
-                        renderScale);
-
-    TexturePoolKey poolKey {
-        backingWidth,
-        backingHeight,
-        OmegaGTE::TexturePixelFormat::BGRA8Unorm,
-        OmegaGTE::GETexture::RenderTarget
-    };
-
-    if(texturePool && (targetTexture || effectTexture)){
-#ifdef _WIN32
-        if(renderTarget != nullptr)
-            renderTarget->waitForGPU();
-#endif
-        if(targetTexture)
-            texturePool->release(std::move(targetTexture), poolKey);
-        if(effectTexture)
-            texturePool->release(std::move(effectTexture), poolKey);
-    }
-    targetTexture.reset();
-    effectTexture.reset();
-
-    // Texture and render-target allocation is thread-safe on Metal and
-    // D3D12.  Previously this block dispatched synchronously to the main
-    // thread, which deadlocked the compositor during live resize because
-    // the main thread was busy in NSEventTrackingRunLoopMode.
-    {
-        if(texturePool){
-            targetTexture = texturePool->acquire(poolKey);
-            effectTexture = texturePool->acquire(poolKey);
-        }
-        else {
-            OmegaGTE::TextureDescriptor textureDescriptor {};
-            textureDescriptor.usage = OmegaGTE::GETexture::RenderTarget;
-            textureDescriptor.storage_opts = OmegaGTE::Shared;
-            textureDescriptor.width = backingWidth;
-            textureDescriptor.height = backingHeight;
-            textureDescriptor.type = OmegaGTE::GETexture::Texture2D;
-            textureDescriptor.pixelFormat = OmegaGTE::TexturePixelFormat::BGRA8Unorm;
-            targetTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
-            effectTexture = gte.graphicsEngine->makeTexture(textureDescriptor);
-        }
-
-        if(targetTexture == nullptr || effectTexture == nullptr){
-#ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "Failed to allocate backing textures." << std::endl;
-#endif
-            preEffectTarget.reset();
-            effectTarget.reset();
-            tessellationEngineContext.reset();
-            return;
-        }
-        preEffectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,targetTexture});
-        effectTarget = gte.graphicsEngine->makeTextureRenderTarget({true,effectTexture});
-        if(preEffectTarget == nullptr || effectTarget == nullptr){
-#ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "Failed to allocate Vulkan texture render targets." << std::endl;
-#endif
-            tessellationEngineContext.reset();
-            return;
-        }
-        tessellationEngineContext = gte.triangulationEngine->createTEContextFromTextureRenderTarget(preEffectTarget);
-        if(tessellationEngineContext == nullptr){
-#ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "Failed to create tessellation context for backing render target." << std::endl;
-#endif
-        }
-    }
+                        static_cast<float>(textures_.backingWidth()),
+                        static_cast<float>(textures_.backingHeight()),
+                        textures_.renderScale());
+    textures_.rebuild();
 }
 
 BackendRenderTargetContext::~BackendRenderTargetContext(){
@@ -263,86 +89,47 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
                         traceResourceId,
                         "BackendRenderTargetContext",
                         this,
-                        renderTargetSize.w,
-                        renderTargetSize.h,
-                        renderScale);
-    TexturePoolKey poolKey {
-        backingWidth,
-        backingHeight,
-        OmegaGTE::TexturePixelFormat::BGRA8Unorm,
-        OmegaGTE::GETexture::RenderTarget
-    };
-    if(texturePool && (targetTexture || effectTexture)){
-#ifdef _WIN32
-        if(preEffectTarget != nullptr)
-            preEffectTarget->waitForGPU();
-        if(renderTarget != nullptr)
-            renderTarget->waitForGPU();
-#endif
-        if(targetTexture)
-            texturePool->release(std::move(targetTexture), poolKey);
-        if(effectTexture)
-            texturePool->release(std::move(effectTexture), poolKey);
-    }
+                        textures_.renderTargetSize().w,
+                        textures_.renderTargetSize().h,
+                        textures_.renderScale());
+    // textures_ destructor will release pool textures (with the Win32
+    // waitForGPU dance) once this body returns.
     imageProcessor.reset();
-    preEffectTarget.reset();
-    effectTarget.reset();
-    tessellationEngineContext.reset();
     for(auto & entry : deferredBufferReleases){
-        if(bufferPool && entry.first)
-            bufferPool->release(std::move(entry.first), entry.second);
+        if(bufferPool() && entry.first){
+            bufferPool()->release(std::move(entry.first), entry.second);
+        }
     }
     deferredBufferReleases.clear();
-    if(fencePool && fence)
-        fencePool->release(std::move(fence));
+    if(fencePool() && fence){
+        fencePool()->release(std::move(fence));
+    }
 }
 
     void BackendRenderTargetContext::setRenderTargetSize(Composition::Rect &rect) {
-        const unsigned oldW = backingWidth;
-        const unsigned oldH = backingHeight;
-
-        const auto saneRect = sanitizeRenderRect(rect,renderTargetSize,renderScale);
-        const unsigned newW = toBackingDimension(saneRect.w,renderScale);
-        const unsigned newH = toBackingDimension(saneRect.h,renderScale);
-
-        if(oldW == newW && oldH == newH){
-            renderTargetSize = saneRect;
-            return;
+        if(textures_.resizeLogical(rect)){
+            rebuildBackingTarget();
         }
-
-        renderTargetSize = saneRect;
-        rebuildBackingTarget();
     }
 
     void BackendRenderTargetContext::setViewportOverride(float offsetX,float offsetY,float width,float height){
-        viewportOverride_.active = true;
-        viewportOverride_.offsetX = offsetX;
-        viewportOverride_.offsetY = offsetY;
-        viewportOverride_.width = width;
-        viewportOverride_.height = height;
-        // Update logical size for tessellation without rebuilding backing.
-        renderTargetSize.pos.x = 0.f;
-        renderTargetSize.pos.y = 0.f;
-        renderTargetSize.w = width;
-        renderTargetSize.h = height;
-        // Grow backing surface if needed (e.g. window resize). Never shrink.
-        unsigned neededW = toBackingDimension(offsetX + width,renderScale);
-        unsigned neededH = toBackingDimension(offsetY + height,renderScale);
-        if(neededW > backingWidth || neededH > backingHeight){
-            backingWidth = std::max(backingWidth,neededW);
-            backingHeight = std::max(backingHeight,neededH);
+        frameRenderPass_.setViewportOverride(offsetX, offsetY, width, height);
+        // Update logical size for tessellation; grow backing surface if the
+        // requested viewport extent exceeds the current backing. Never
+        // shrinks.
+        if(textures_.applyViewportOverride(offsetX, offsetY, width, height)){
             rebuildBackingTarget();
         }
     }
 
     void BackendRenderTargetContext::clearViewportOverride(){
-        viewportOverride_.active = false;
+        frameRenderPass_.clearViewportOverride();
     }
 
 #ifdef _WIN32
-void BackendRenderTargetContext::resizeSwapChain(unsigned int backingWidth, unsigned int backingHeight) {
+void BackendRenderTargetContext::resizeSwapChain(unsigned int newBackingWidth, unsigned int newBackingHeight) {
     if (renderTarget != nullptr)
-        renderTarget->resizeSwapChain(backingWidth, backingHeight);
+        renderTarget->resizeSwapChain(newBackingWidth, newBackingHeight);
 }
 void BackendRenderTargetContext::waitForGPU() {
     if (renderTarget != nullptr)
@@ -351,83 +138,15 @@ void BackendRenderTargetContext::waitForGPU() {
 #endif
 
 void BackendRenderTargetContext::clear(float r, float g, float b, float a) {
-    if(preEffectTarget == nullptr){
-        return;
-    }
-    auto cb = preEffectTarget->commandBuffer();
-
-    OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
-    renderPassDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
-            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(r,g,b,a),
-            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
-    renderPassDesc.depthStencilAttachment.disabled = true;
-    cb->startRenderPass(renderPassDesc);
-    cb->endRenderPass();
-    preEffectTarget->submitCommandBuffer(cb);
+    frameRenderPass_.clearOnce(r, g, b, a);
 }
 
 void BackendRenderTargetContext::beginFrame(float clearR, float clearG, float clearB, float clearA) {
-    // Direct-to-drawable path: when we have a native render target and no
-    // effects queued, render directly to the swap chain drawable instead of
-    // the intermediate offscreen texture.  This eliminates the fullscreen-
-    // quad blit that compositeAndPresentTarget() used to perform.
-    renderingToNative_ = (renderTarget != nullptr && effectQueue.empty());
-
-    if(renderingToNative_){
-        frameCB_ = renderTarget->commandBuffer();
-    } else {
-        if(preEffectTarget == nullptr){
-            return;
-        }
-        frameCB_ = preEffectTarget->commandBuffer();
-    }
-
-    OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
-    renderPassDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
-            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(clearR, clearG, clearB, clearA),
-            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
-    renderPassDesc.depthStencilAttachment.disabled = true;
-    frameCB_->startRenderPass(renderPassDesc);
-
-    // Set viewport and scissor for the frame
-    OmegaGTE::GEViewport viewport {};
-    viewport.nearDepth = 0.f;
-    viewport.farDepth = 1.f;
-    if(viewportOverride_.active){
-        viewport.x = viewportOverride_.offsetX * renderScale;
-        viewport.y = viewportOverride_.offsetY * renderScale;
-        viewport.width = viewportOverride_.width * renderScale;
-        viewport.height = viewportOverride_.height * renderScale;
-    } else {
-        viewport.x = 0;
-        viewport.y = 0;
-        viewport.width = static_cast<float>(backingWidth);
-        viewport.height = static_cast<float>(backingHeight);
-    }
-    OmegaGTE::GEScissorRect scissorRect {
-            viewport.x,
-            viewport.y,
-            viewport.width,
-            viewport.height};
-    frameCB_->setViewports({viewport});
-    frameCB_->setScissorRects({scissorRect});
-
-    frameActive_ = true;
-    lastPipelineKind_ = PipelineKind::None;  // Reset pipeline tracking; first draw must rebind
+    frameRenderPass_.begin(clearR, clearG, clearB, clearA, !effectQueue.empty());
 }
 
 void BackendRenderTargetContext::endFrame() {
-    if(!frameActive_ || frameCB_ == nullptr){
-        return;
-    }
-    frameCB_->endRenderPass();
-    if(renderingToNative_){
-        renderTarget->submitCommandBuffer(frameCB_);
-    } else {
-        preEffectTarget->submitCommandBuffer(frameCB_);
-    }
-    frameCB_ = nullptr;
-    frameActive_ = false;
+    frameRenderPass_.end();
 }
 
 void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect) {
@@ -445,9 +164,9 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                             BackendSubmissionCompletionHandler completionHandler){
         // Direct-to-native path: rendering already went to the native
         // drawable in beginFrame/endFrame.  Just present.
-        if(renderingToNative_){
+        if(frameRenderPass_.renderingToNative()){
             renderTarget->commitAndPresent();
-            renderingToNative_ = false;
+            frameRenderPass_.clearRenderingToNative();
             if(completionHandler){
                 BackendSubmissionTelemetry telemetry {};
                 telemetry.syncLaneId = syncLaneId;
@@ -462,7 +181,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         }
 
         // Texture (effect) path — unchanged from before.
-        if(preEffectTarget == nullptr){
+        if(textures_.preEffectTarget() == nullptr){
             if(completionHandler){
                 BackendSubmissionTelemetry telemetry {};
                 telemetry.syncLaneId = syncLaneId;
@@ -475,138 +194,50 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             }
             return;
         }
-        auto _l_cb = preEffectTarget->commandBuffer();
+        auto _l_cb = textures_.preEffectTarget()->commandBuffer();
         const bool canApplyEffects = !effectQueue.empty() &&
                                      imageProcessor != nullptr &&
-                                     effectTexture != nullptr &&
-                                     effectTarget != nullptr;
+                                     textures_.effectTexture() != nullptr &&
+                                     textures_.effectTarget() != nullptr;
 #ifdef OMEGAWTK_TRACE_RENDER
         std::cout << "[WTK Diag] commit: canApplyEffects=" << canApplyEffects << std::endl;
 #endif
         if(canApplyEffects){
-            preEffectTarget->submitCommandBuffer(_l_cb);
+            textures_.preEffectTarget()->submitCommandBuffer(_l_cb);
 #ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "[WTK Diag] commit: preEffectTarget->commit()" << std::endl;
+            std::cout << "[WTK Diag] commit: textures_.preEffectTarget()->commit()" << std::endl;
 #endif
-            preEffectTarget->commit();
+            textures_.preEffectTarget()->commit();
 #ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "[WTK Diag] commit: applyEffects" << std::endl;
 #endif
-            imageProcessor->applyEffects(effectTexture,preEffectTarget,effectQueue,backingWidth,backingHeight);
-            preEffectTarget->waitForGPU();
-            preEffectTarget->signalFence(fence);
+            imageProcessor->applyEffects(textures_.effectTexture(),textures_.preEffectTarget(),effectQueue,textures_.backingWidth(),textures_.backingHeight());
+            textures_.preEffectTarget()->waitForGPU();
+            textures_.preEffectTarget()->signalFence(fence);
         } else {
-            preEffectTarget->submitCommandBuffer(_l_cb, fence);
+            textures_.preEffectTarget()->submitCommandBuffer(_l_cb, fence);
 #ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "[WTK Diag] commit: preEffectTarget->commit()" << std::endl;
+            std::cout << "[WTK Diag] commit: textures_.preEffectTarget()->commit()" << std::endl;
 #endif
-            preEffectTarget->commit();
+            textures_.preEffectTarget()->commit();
 #ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "[WTK Diag] commit: preEffectTarget->commit() done" << std::endl;
+            std::cout << "[WTK Diag] commit: textures_.preEffectTarget()->commit() done" << std::endl;
 #endif
         }
         effectQueue.clear();
 
         // Effect path: blit the result to the native drawable and present.
-        if(renderTarget != nullptr){
-            // The effect result is in preEffectTarget's underlying texture.
-            // Do a single blit to the native drawable.
-            auto tex = preEffectTarget->underlyingTexture();
-            if(tex != nullptr){
-                auto nativeFormat = renderTarget->pixelFormat();
-                auto finalPipeline = pipelineRegistry().finalCopyForFormat(nativeFormat);
-                if(finalPipeline != nullptr){
-                    auto cb = renderTarget->commandBuffer();
-                    renderTarget->notifyCommandBuffer(cb, fence);
-
-                    OmegaGTE::GERenderTarget::RenderPassDesc rpd {};
-                    rpd.depthStencilAttachment.disabled = true;
-                    rpd.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
-                            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(0.f,0.f,0.f,0.f),
-                            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction::Clear));
-                    cb->startRenderPass(rpd);
-                    cb->setRenderPipelineState(finalPipeline);
-                    OmegaGTE::GEViewport vp {};
-                    vp.x = 0.f; vp.y = 0.f;
-                    vp.nearDepth = 0.f; vp.farDepth = 1.f;
-                    vp.width = static_cast<float>(backingWidth);
-                    vp.height = static_cast<float>(backingHeight);
-                    OmegaGTE::GEScissorRect sr {0.f, 0.f, static_cast<float>(backingWidth), static_cast<float>(backingHeight)};
-                    cb->setViewports({vp});
-                    cb->setScissorRects({sr});
-                    auto quadBuffer = pipelineRegistry().fullscreenQuadBuffer();
-                    cb->bindResourceAtVertexShader(quadBuffer, 1);
-                    cb->bindResourceAtFragmentShader(tex, 2);
-                    cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
-                    cb->endRenderPass();
-                    renderTarget->submitCommandBuffer(cb);
-                    renderTarget->commitAndPresent();
-                }
-            }
-        }
+        textures_.presentBlit(fence);
     }
 
     void BackendRenderTargetContext::releaseDeferredBuffers(){
-        if(bufferPool){
+        if(bufferPool()){
             for(auto & entry : deferredBufferReleases){
                 if(entry.first)
-                    bufferPool->release(std::move(entry.first), entry.second);
+                    bufferPool()->release(std::move(entry.first), entry.second);
             }
             deferredBufferReleases.clear();
         }
-    }
-
-    void
-    BackendRenderTargetContext::createGradientTexture(bool linearOrRadial, Gradient &gradient, OmegaGTE::GRect &rect,
-                                                      SharedHandle<OmegaGTE::GETexture> &dest) {
-        auto bufferWriter = pipelineRegistry().bufferWriter();
-        auto linearGradientPipelineState = pipelineRegistry().linearGradient();
-        if(renderTarget == nullptr || dest == nullptr || bufferWriter == nullptr || linearGradientPipelineState == nullptr){
-            return;
-        }
-        auto cb = renderTarget->commandBuffer();
-
-        size_t structSize = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT});
-
-        OmegaGTE::BufferDescriptor bufferDescriptor {OmegaGTE::BufferDescriptor::Upload,structSize,structSize,OmegaGTE::Shared};
-
-        auto constBuffer = gte.graphicsEngine->makeBuffer(bufferDescriptor);
-
-
-//        bufferWriter->setOutputBuffer(constBuffer);
-//        bufferWriter->structBegin();
-//        bufferWriter->writeFloat(gradient);
-//        bufferWriter->structEnd();
-//        bufferWriter->sendToBuffer();
-//        bufferWriter->flush();
-
-        structSize =  OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT,OMEGASL_FLOAT4});
-
-        bufferDescriptor.len = structSize * gradient.stops.size();
-        bufferDescriptor.objectStride = structSize;
-
-        auto stopsBuffer = gte.graphicsEngine->makeBuffer(bufferDescriptor);
-
-        bufferWriter->setOutputBuffer(stopsBuffer);
-
-        for(auto & stop : gradient.stops){
-            bufferWriter->structBegin();
-            bufferWriter->writeFloat(stop.pos);
-            auto vec_color = OmegaGTE::makeColor(stop.color.r,stop.color.g,stop.color.b,stop.color.a);
-            bufferWriter->writeFloat4(vec_color);
-            bufferWriter->structEnd();
-            bufferWriter->sendToBuffer();
-        }
-
-        bufferWriter->flush();
-
-        cb->startComputePass(linearGradientPipelineState);
-        cb->bindResourceAtComputeShader(dest,4);
-        cb->bindResourceAtComputeShader(constBuffer,5);
-        cb->bindResourceAtComputeShader(stopsBuffer,3);
-        cb->dispatchThreads((unsigned)rect.w,(unsigned)rect.h,1);
-        cb->endComputePass();
-        renderTarget->submitCommandBuffer(cb);
     }
 
     typedef decltype(VisualCommand::params) VisualCommandParams;
@@ -616,10 +247,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         auto bufferWriter = pipelines.bufferWriter();
         auto renderPipelineState = pipelines.color();
         auto textureRenderPipelineState = pipelines.texture();
-        auto gaussianBlurHPipelineState = pipelines.gaussianBlurH();
-        auto gaussianBlurVPipelineState = pipelines.gaussianBlurV();
-        auto directionalBlurPipelineState = pipelines.directionalBlur();
-        if(bufferWriter == nullptr || preEffectTarget == nullptr || tessellationEngineContext == nullptr){
+        if(bufferWriter == nullptr || textures_.preEffectTarget() == nullptr || textures_.tessellationContext() == nullptr){
             return;
         }
         OmegaGTE::TETriangulationResult result;
@@ -627,15 +255,15 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         OmegaGTE::GEViewport viewPort {};
         viewPort.x = viewPort.y = viewPort.nearDepth = 0.f;
         viewPort.farDepth = 1.f;
-        viewPort.width = renderTargetSize.w;
-        viewPort.height = renderTargetSize.h;
+        viewPort.width = textures_.renderTargetSize().w;
+        viewPort.height = textures_.renderTargetSize().h;
 
 #ifdef OMEGAWTK_TRACE_RENDER
-        std::cout << "W:" << renderTargetSize.w
-                  << " H:" << renderTargetSize.h
-                  << " BW:" << backingWidth
-                  << " BH:" << backingHeight
-                  << " S:" << renderScale
+        std::cout << "W:" << textures_.renderTargetSize().w
+                  << " H:" << textures_.renderTargetSize().h
+                  << " BW:" << textures_.backingWidth()
+                  << " BH:" << textures_.backingHeight()
+                  << " S:" << textures_.renderScale()
                   << std::endl;
 #endif
 
@@ -674,7 +302,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(color));
                 }
 
-                result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                result = textures_.tessellationContext()->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
 
                 break;
             }
@@ -704,7 +332,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
                 te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeTexture2D(uint32_t(_params.rect.w),uint32_t(_params.rect.h)));
 
-                result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                result = textures_.tessellationContext()->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
 
                 break;
             }
@@ -729,7 +357,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                                      _params.brush->color.a);
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(color));
                 }
-                result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                result = textures_.tessellationContext()->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
 
                 break;
             }
@@ -766,7 +394,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 const float twoPi = static_cast<float>(2.0 * OmegaGTE::PI);
                 const unsigned segmentCount = std::min(4096u, std::max(
                         96u,
-                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * renderScale))));
+                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * textures_.renderScale()))));
                 auto prev = toNdcPoint(cx + rx,cy);
 
                 for(unsigned i = 1; i <= segmentCount; i++){
@@ -822,7 +450,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(fillColor));
                 }
 
-                result = tessellationEngineContext->triangulateSync(te_params,
+                result = textures_.tessellationContext()->triangulateSync(te_params,
                                                                   OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,
                                                                   &viewPort);
                 break;
@@ -864,7 +492,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     OmegaGTE::TETriangulationResult::TEMesh mesh {OmegaGTE::TETriangulationResult::TEMesh::TopologyTriangle};
                     const auto center = toNdcPoint(cx,cy);
                     const unsigned segCount = std::min(4096u,std::max(96u,
-                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * renderScale))));
+                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * textures_.renderScale()))));
                     auto prev = toNdcPoint(cx + rx,cy);
                     const float twoPi = static_cast<float>(2.0 * OmegaGTE::PI);
 
@@ -893,13 +521,13 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     auto gteRR_s = toGTE(rr);
                     auto te_params = OmegaGTE::TETriangulationParams::RoundedRect(gteRR_s);
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(shadowColor));
-                    result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                    result = textures_.tessellationContext()->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
                 }
                 else {
                     auto gteShadowRect = toGTE(shadowRect);
                     auto te_params = OmegaGTE::TETriangulationParams::Rect(gteShadowRect);
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(shadowColor));
-                    result = tessellationEngineContext->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                    result = textures_.tessellationContext()->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
                 }
                 break;
             }
@@ -941,8 +569,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
         std::size_t requiredBytes = result.totalVertexCount() * struct_size;
         SharedHandle<OmegaGTE::GEBuffer> buffer;
-        if(bufferPool){
-            buffer = bufferPool->acquire(requiredBytes, struct_size);
+        if(bufferPool()){
+            buffer = bufferPool()->acquire(requiredBytes, struct_size);
         }
         else {
             OmegaGTE::BufferDescriptor bufferDesc {OmegaGTE::BufferDescriptor::Upload,requiredBytes,struct_size};
@@ -951,74 +579,12 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
 
         bufferWriter->setOutputBuffer(buffer);
 
-        SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> cb = frameCB_;
-        if(cb == nullptr){
-            // Fallback: not inside a beginFrame/endFrame pair.
-            // This shouldn't happen in the normal render path, but
-            // keeps the standalone path working.
-            cb = preEffectTarget->commandBuffer();
-        }
-        const bool standaloneCB = (cb != frameCB_);
-
-        // Handle texture fence: must be registered outside a render pass.
-        if(textureFence != nullptr && frameActive_){
-            cb->endRenderPass();
-            preEffectTarget->notifyCommandBuffer(cb, textureFence);
-            // Restart the render pass with LoadPreserve to keep prior content.
-            OmegaGTE::GERenderTarget::RenderPassDesc restartDesc {};
-            restartDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
-                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),
-                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve));
-            restartDesc.depthStencilAttachment.disabled = true;
-            cb->startRenderPass(restartDesc);
-            // Re-set viewport/scissor after restart
-            OmegaGTE::GEViewport viewport {};
-            viewport.nearDepth = 0.f;
-            viewport.farDepth = 1.f;
-            if(viewportOverride_.active){
-                viewport.x = viewportOverride_.offsetX * renderScale;
-                viewport.y = viewportOverride_.offsetY * renderScale;
-                viewport.width = viewportOverride_.width * renderScale;
-                viewport.height = viewportOverride_.height * renderScale;
-            } else {
-                viewport.x = 0;
-                viewport.y = 0;
-                viewport.width = static_cast<float>(backingWidth);
-                viewport.height = static_cast<float>(backingHeight);
-            }
-            OmegaGTE::GEScissorRect scissorRect {viewport.x, viewport.y, viewport.width, viewport.height};
-            cb->setViewports({viewport});
-            cb->setScissorRects({scissorRect});
-            lastPipelineKind_ = PipelineKind::None; // Force rebind after restart
-        } else if(textureFence != nullptr && standaloneCB){
-            preEffectTarget->notifyCommandBuffer(cb, textureFence);
-        }
-
-        if(standaloneCB){
-            OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
-            renderPassDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
-                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),
-                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve));
-            renderPassDesc.depthStencilAttachment.disabled = true;
-            OmegaGTE::GEViewport viewport {};
-            viewport.nearDepth = 0.f;
-            viewport.farDepth = 1.f;
-            if(viewportOverride_.active){
-                viewport.x = viewportOverride_.offsetX * renderScale;
-                viewport.y = viewportOverride_.offsetY * renderScale;
-                viewport.width = viewportOverride_.width * renderScale;
-                viewport.height = viewportOverride_.height * renderScale;
-            } else {
-                viewport.x = 0;
-                viewport.y = 0;
-                viewport.width = static_cast<float>(backingWidth);
-                viewport.height = static_cast<float>(backingHeight);
-            }
-            OmegaGTE::GEScissorRect scissorRect {viewport.x, viewport.y, viewport.width, viewport.height};
-            cb->startRenderPass(renderPassDesc);
-            cb->setViewports({viewport});
-            cb->setScissorRects({scissorRect});
-        }
+        // Acquire the command buffer for this draw. When a frame is open the
+        // scope wraps the frame's CB; otherwise the scope opens a standalone
+        // render pass on the offscreen target. Texture-fence handling (mid-
+        // frame restart vs standalone notify) is bundled into beginDraw().
+        auto scope = frameRenderPass_.beginDraw(textureFence);
+        auto & cb = scope.cb;
 
         unsigned startVertexIndex = 0;
 
@@ -1115,20 +681,16 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         // Flush vertex data before draw calls
         bufferWriter->flush();
 
-        // Bind pipeline and resources (skip only if same pipeline already bound on this command buffer)
+        // Bind pipeline and resources. The frame render pass suppresses
+        // redundant pipeline binds within an open frame and forces a rebind
+        // for standalone scopes.
         if(useTextureRenderPipeline){
-            if(lastPipelineKind_ != PipelineKind::Texture || standaloneCB){
-                cb->setRenderPipelineState(textureRenderPipelineState);
-                lastPipelineKind_ = PipelineKind::Texture;
-            }
+            frameRenderPass_.bindTexturePipeline(scope);
             cb->bindResourceAtVertexShader(buffer,1);
             cb->bindResourceAtFragmentShader(texturePaint,2);
         }
         else {
-            if(lastPipelineKind_ != PipelineKind::Color || standaloneCB){
-                cb->setRenderPipelineState(renderPipelineState);
-                lastPipelineKind_ = PipelineKind::Color;
-            }
+            frameRenderPass_.bindColorPipeline(scope);
             cb->bindResourceAtVertexShader(buffer,0);
         }
 
@@ -1144,12 +706,9 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             startVertexIndex += m.vertexCount();
         }
 
-        if(standaloneCB){
-            cb->endRenderPass();
-            preEffectTarget->submitCommandBuffer(cb);
-        }
+        frameRenderPass_.endDraw(scope);
 
-        if(bufferPool && buffer){
+        if(bufferPool() && buffer){
             deferredBufferReleases.push_back({std::move(buffer), requiredBytes});
         }
     }
@@ -1192,173 +751,6 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         if(it != store.end()){
             store.erase(it);
         }
-    }
-
-    /// Unified cross-platform effect processor using OmegaSL compute shaders.
-    class GPUCanvasEffectProcessor : public BackendCanvasEffectProcessor {
-    public:
-        explicit GPUCanvasEffectProcessor(SharedHandle<OmegaGTE::GEFence> & fence):
-            BackendCanvasEffectProcessor(fence){}
-
-        void applyEffects(SharedHandle<OmegaGTE::GETexture> & dest,
-                          SharedHandle<OmegaGTE::GETextureRenderTarget> & textureTarget,
-                          OmegaCommon::Vector<CanvasEffect> & effects,
-                          unsigned width,
-                          unsigned height) override {
-            if(effects.empty()){
-                return;
-            }
-            auto src = textureTarget->underlyingTexture();
-            if(src == nullptr || dest == nullptr){
-                return;
-            }
-            if(width == 0 || height == 0){
-                return;
-            }
-            auto & pipelines = pipelineRegistry();
-            auto bufferWriter = pipelines.bufferWriter();
-            auto gaussianBlurHPipelineState = pipelines.gaussianBlurH();
-            auto gaussianBlurVPipelineState = pipelines.gaussianBlurV();
-            auto directionalBlurPipelineState = pipelines.directionalBlur();
-            if(bufferWriter == nullptr){
-                return;
-            }
-
-            for(auto & effect : effects){
-                switch(effect.type){
-                    case CanvasEffect::Type::GaussianBlur: {
-                        auto blurH = gaussianBlurHPipelineState;
-                        auto blurV = gaussianBlurVPipelineState;
-                        if(blurH == nullptr || blurV == nullptr){ break; }
-                        float radius = std::max(0.f, effect.gaussianBlur.radius);
-                        if(radius <= 0.f){ break; }
-
-                        // BlurParams: float radius, uint texWidth, uint texHeight, float angle
-                        auto structSize = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT,OMEGASL_UINT,OMEGASL_UINT,OMEGASL_FLOAT});
-                        OmegaGTE::BufferDescriptor bd {OmegaGTE::BufferDescriptor::Upload,structSize,structSize};
-                        auto pb = gte.graphicsEngine->makeBuffer(bd);
-                        if(pb == nullptr){ break; }
-                        bufferWriter->setOutputBuffer(pb);
-                        float angle = 0.f;
-                        bufferWriter->structBegin();
-                        bufferWriter->writeFloat(radius);
-                        bufferWriter->writeUint(width);
-                        bufferWriter->writeUint(height);
-                        bufferWriter->writeFloat(angle);
-                        bufferWriter->structEnd();
-                        bufferWriter->sendToBuffer();
-                        bufferWriter->flush();
-
-                        unsigned gx = (width + 7) / 8;
-                        unsigned gy = (height + 7) / 8;
-
-                        // H pass: src → dest
-                        {
-                            auto cb = textureTarget->commandBuffer();
-                            cb->startComputePass(blurH);
-                            cb->bindResourceAtComputeShader(pb, 5);
-                            cb->bindResourceAtComputeShader(src, 3);
-                            cb->bindResourceAtComputeShader(dest, 4);
-                            cb->dispatchThreadgroups(gx, gy, 1);
-                            cb->endComputePass();
-                            textureTarget->submitCommandBuffer(cb);
-                        }
-                        // V pass: dest → src (ping-pong)
-                        {
-                            auto cb = textureTarget->commandBuffer();
-                            cb->startComputePass(blurV);
-                            cb->bindResourceAtComputeShader(pb, 5);
-                            cb->bindResourceAtComputeShader(dest, 3);
-                            cb->bindResourceAtComputeShader(src, 4);
-                            cb->dispatchThreadgroups(gx, gy, 1);
-                            cb->endComputePass();
-                            textureTarget->submitCommandBuffer(cb);
-                        }
-                        // After H→dest, V→src ping-pong, result is back in src
-                        // (the preEffectTarget's underlying texture), which commit()
-                        // blits to the native drawable.
-                        break;
-                    }
-                    case CanvasEffect::Type::DirectionalBlur: {
-                        auto dirPipe = directionalBlurPipelineState;
-                        if(dirPipe == nullptr){ break; }
-                        float radius = std::max(0.f, effect.directionalBlur.radius);
-                        if(radius <= 0.f){ break; }
-
-                        float dirAngle = effect.directionalBlur.angle;
-
-                        auto structSize = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT,OMEGASL_UINT,OMEGASL_UINT,OMEGASL_FLOAT});
-                        OmegaGTE::BufferDescriptor bd {OmegaGTE::BufferDescriptor::Upload,structSize,structSize};
-                        auto pb = gte.graphicsEngine->makeBuffer(bd);
-                        if(pb == nullptr){ break; }
-                        bufferWriter->setOutputBuffer(pb);
-                        bufferWriter->structBegin();
-                        bufferWriter->writeFloat(radius);
-                        bufferWriter->writeUint(width);
-                        bufferWriter->writeUint(height);
-                        bufferWriter->writeFloat(dirAngle);
-                        bufferWriter->structEnd();
-                        bufferWriter->sendToBuffer();
-                        bufferWriter->flush();
-
-                        unsigned gx = (width + 7) / 8;
-                        unsigned gy = (height + 7) / 8;
-
-                        // Pass 1: directional blur src→dest
-                        {
-                            auto cb = textureTarget->commandBuffer();
-                            cb->startComputePass(dirPipe);
-                            cb->bindResourceAtComputeShader(pb, 5);
-                            cb->bindResourceAtComputeShader(src, 3);
-                            cb->bindResourceAtComputeShader(dest, 4);
-                            cb->dispatchThreadgroups(gx, gy, 1);
-                            cb->endComputePass();
-                            textureTarget->submitCommandBuffer(cb);
-                        }
-                        // Pass 2: copy dest→src using H blur with zero radius (identity)
-                        {
-                            auto pb2 = gte.graphicsEngine->makeBuffer(bd);
-                            if(pb2 != nullptr){
-                                float zeroRadius = 0.f;
-                                float zeroAngle = 0.f;
-                                bufferWriter->setOutputBuffer(pb2);
-                                bufferWriter->structBegin();
-                                bufferWriter->writeFloat(zeroRadius);
-                                bufferWriter->writeUint(width);
-                                bufferWriter->writeUint(height);
-                                bufferWriter->writeFloat(zeroAngle);
-                                bufferWriter->structEnd();
-                                bufferWriter->sendToBuffer();
-                                bufferWriter->flush();
-
-                                auto blurH = gaussianBlurHPipelineState;
-                                if(blurH != nullptr){
-                                    auto cb2 = textureTarget->commandBuffer();
-                                    cb2->startComputePass(blurH);
-                                    cb2->bindResourceAtComputeShader(pb2, 5);
-                                    cb2->bindResourceAtComputeShader(dest, 3);
-                                    cb2->bindResourceAtComputeShader(src, 4);
-                                    cb2->dispatchThreadgroups(gx, gy, 1);
-                                    cb2->endComputePass();
-                                    textureTarget->submitCommandBuffer(cb2);
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-
-            // Fence synchronization for the composite pass.
-            auto cb = textureTarget->commandBuffer();
-            textureTarget->submitCommandBuffer(cb, fence);
-            textureTarget->commit();
-        }
-    };
-
-    SharedHandle<BackendCanvasEffectProcessor>
-    BackendCanvasEffectProcessor::Create(SharedHandle<OmegaGTE::GEFence> & fence){
-        return SharedHandle<BackendCanvasEffectProcessor>(new GPUCanvasEffectProcessor(fence));
     }
 
 }

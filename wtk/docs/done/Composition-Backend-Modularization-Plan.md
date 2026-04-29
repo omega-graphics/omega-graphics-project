@@ -110,7 +110,7 @@ factory, and the effect processor.
 
 ---
 
-## Phase 1 — Pipeline registry extraction
+## Phase 1 — Pipeline registry extraction [COMPLETED]
 
 **Goal:** All pipeline state objects, shader library, fullscreen quad buffer,
 and `getFinalCopyPipelineForFormat` move into a `PipelineRegistry` owned by

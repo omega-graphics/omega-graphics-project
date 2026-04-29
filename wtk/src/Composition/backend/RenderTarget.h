@@ -1,6 +1,29 @@
+// Composition backend coordinator.
+//
+// Defines `BackendRenderTargetContext`, the per-Layer object that owns one
+// "render target" worth of compositor state, plus the `RenderTargetStore`
+// lookup map used by the compositor thread and the `BackendCompRenderTarget`
+// / `ViewPresentTarget` plain-data structs that wire visual trees to native
+// surfaces. The context itself only holds the pieces unique to one logical
+// surface (fence, native target handle, effect queue, transform/opacity,
+// trace id, deferred buffer-release queue) and delegates everything else to:
+//
+//   - `BackingTextureSet` (Texture.h)        — offscreen pair, present blit,
+//                                              gradient texture upload
+//   - `FrameRenderPass`   (RenderPass.h)     — frame begin/end, viewport,
+//                                              pipeline-bind tracking,
+//                                              standalone-CB fallback
+//   - `BackendCanvasEffectProcessor` (Effect.h) — per-effect compute work
+//
+// Every GPU resource (pools, pipelines, fences, effect processors) is
+// vended by the process-wide `BackendResourceFactory`.
+
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Canvas.h"
 #include "omegaWTK/Core/GTEHandle.h"
+#include "Texture.h"
+#include "RenderPass.h"
+#include "Effect.h"
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -32,54 +55,18 @@ namespace OmegaWTK::Composition {
     using BackendSubmissionCompletionHandler =
             std::function<void(const BackendSubmissionTelemetry &)>;
 
-    INTERFACE BackendCanvasEffectProcessor {
-    public:
-        explicit BackendCanvasEffectProcessor(SharedHandle<OmegaGTE::GEFence> & fence):fence(fence){
-
-        };
-        SharedHandle<OmegaGTE::GEFence> fence;
-      INTERFACE_METHOD void applyEffects(SharedHandle<OmegaGTE::GETexture> & dest,
-                                         SharedHandle<OmegaGTE::GETextureRenderTarget> & textureTarget,
-                                         OmegaCommon::Vector<CanvasEffect> & effects,
-                                         unsigned texWidth,
-                                         unsigned texHeight) ABSTRACT;
-      static SharedHandle<BackendCanvasEffectProcessor> Create(SharedHandle<OmegaGTE::GEFence> & fence);
-      virtual ~BackendCanvasEffectProcessor() = default;
-    };
-
     class BackendRenderTargetContext {
         std::uint64_t traceResourceId = 0;
-        SharedHandle<OmegaGTE::GETexture> targetTexture;
-        SharedHandle<OmegaGTE::GETexture> effectTexture;
         SharedHandle<OmegaGTE::GEFence> fence;
-        SharedHandle<OmegaGTE::GETextureRenderTarget> preEffectTarget;
-        SharedHandle<OmegaGTE::GETextureRenderTarget> effectTarget;
         SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget;
-        SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> tessellationEngineContext;
+        BackingTextureSet textures_;
+        FrameRenderPass frameRenderPass_;
         SharedHandle<BackendCanvasEffectProcessor> imageProcessor;
-        Composition::Rect renderTargetSize;
-        float renderScale = 1.0f;
-        unsigned backingWidth = 1;
-        unsigned backingHeight = 1;
         OmegaCommon::Vector<CanvasEffect> effectQueue;
         OmegaCommon::Vector<std::pair<SharedHandle<OmegaGTE::GEBuffer>,std::size_t>> deferredBufferReleases;
         OmegaGTE::FMatrix<4,4> currentTransform = OmegaGTE::FMatrix<4,4>::Identity();
         float currentOpacity = 1.f;
-        struct ViewportOverride {
-            bool active = false;
-            float offsetX = 0.f;
-            float offsetY = 0.f;
-            float width = 0.f;
-            float height = 0.f;
-        };
-        ViewportOverride viewportOverride_;
-        SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> frameCB_;
-        bool frameActive_ = false;
-        enum class PipelineKind { None, Color, Texture };
-        PipelineKind lastPipelineKind_ = PipelineKind::None;
-        bool renderingToNative_ = false;
         void rebuildBackingTarget();
-        void createGradientTexture(bool linearOrRadial,Gradient & gradient,OmegaGTE::GRect & rect,SharedHandle<OmegaGTE::GETexture> & dest);
     public:
         void clear(float r,float g,float b,float a);
         /// Open a frame-level render pass that clears to the given color.
@@ -94,8 +81,8 @@ namespace OmegaWTK::Composition {
         void clearViewportOverride();
         SharedHandle<OmegaGTE::GENativeRenderTarget> & getNativeRenderTarget(){ return renderTarget; }
         SharedHandle<OmegaGTE::GEFence> & getFence(){ return fence; }
-        unsigned getBackingWidth() const { return backingWidth; }
-        unsigned getBackingHeight() const { return backingHeight; }
+        unsigned getBackingWidth()  const { return textures_.backingWidth(); }
+        unsigned getBackingHeight() const { return textures_.backingHeight(); }
         void releaseDeferredBuffers();
 #ifdef _WIN32
         /// Resize swap chain after waiting for GPU; use instead of calling ResizeBuffers on the swap chain directly.

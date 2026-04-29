@@ -457,7 +457,7 @@ Small, frequently-updated constants (≤128 bytes) that avoid buffer allocation 
 /// @param data Pointer to the constant data.
 /// @param size Size in bytes (max 128).
 /// @param offset Byte offset into the push constant range.
-virtual void setComputePushConstants(const void *data, unsigned size, unsigned offset = 0) = 0;
+virtual void setComputeConstants(const void *data, unsigned size, unsigned offset = 0) = 0;
 ```
 
 **Add to `GERenderTarget::CommandBuffer` (public, for render pass):**
@@ -467,7 +467,7 @@ virtual void setComputePushConstants(const void *data, unsigned size, unsigned o
 /// @param data Pointer to the constant data.
 /// @param size Size in bytes (max 128).
 /// @param offset Byte offset into the push constant range.
-void setRenderPushConstants(const void *data, unsigned size, unsigned offset = 0);
+void setRenderConstants(const void *data, unsigned size, unsigned offset = 0);
 ```
 
 **Backend mapping:**
@@ -482,16 +482,16 @@ void setRenderPushConstants(const void *data, unsigned size, unsigned offset = 0
 - **Metal**: `setBytes:` is trivial and has no PSO interaction. The buffer index must not conflict with bound resources.
 - **Vulkan**: Push constants are declared in `VkPipelineLayout`. The pipeline layout must include a `VkPushConstantRange` at creation time.
 
-**OmegaSL integration**: Push constants need a way to be declared in the shader language. Propose a `pushconst` keyword:
+**OmegaSL integration**: Push constants need a way to be declared in the shader language. Propose a `constant` keyword:
 
 ```
-pushconst PerFrameData {
+constant PerFrameData {
     float4x4 viewProjection;
     float time;
 };
 ```
 
-This compiles to a root constant range (D3D12), a `setBytes` buffer index (Metal), or a push constant block (Vulkan). The compiler's layout extraction already knows about resource bindings; push constants would be a new layout category.
+This compiles to a root constant range (D3D12), a `setBytes` buffer index (Metal), or a push constant block (Vulkan). The compiler's layout extraction already knows about resource bindings; push constants would be a new layout category. The OmegaSL lib will get use the omegasl_shader_constant_desc to describe the layout.
 
 **Recommendation**: Push constants require OmegaSL changes. Propose as a paired feature with OmegaSL push constant support rather than a standalone command buffer extension.
 

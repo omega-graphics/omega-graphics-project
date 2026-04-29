@@ -1,6 +1,0 @@
-============
-Installation
-============
-
-Blah Blah Blah
-

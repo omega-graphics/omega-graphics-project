@@ -74,9 +74,9 @@ class HLSLCodeGen final : public CodeGen {
 
 public:
     explicit HLSLCodeGen(CodeGenOpts &opts, HLSLCodeOpts &hlslCodeOpts)
-        : CodeGen(opts), shaderOut(fileOut), hlslCodeOpts(hlslCodeOpts) {}
+        : CodeGen(opts, std::make_unique<HLSLTarget>()), shaderOut(fileOut), hlslCodeOpts(hlslCodeOpts) {}
     explicit HLSLCodeGen(CodeGenOpts &opts, HLSLCodeOpts &hlslCodeOpts, std::ostringstream &out)
-        : CodeGen(opts), shaderOut(stringOut), stringOut(std::move(out)), hlslCodeOpts(hlslCodeOpts) {}
+        : CodeGen(opts, std::make_unique<HLSLTarget>()), shaderOut(stringOut), stringOut(std::move(out)), hlslCodeOpts(hlslCodeOpts) {}
     ~HLSLCodeGen() override = default;
     void generateExpr(ast::Expr *expr) override {
         switch (expr->type) {
@@ -156,51 +156,13 @@ public:
                     shaderOut << "float4";
                 } else if (_id_expr == BUILTIN_SAMPLE) {
                     generatedExprBody = true;
-                    /// Texture has instance method
-                    generateExpr(_expr->args[1]);
-                    shaderOut << ".Sample(";
-                    generateExpr(_expr->args[0]);
-                    shaderOut << ",";
-                    generateExpr(_expr->args[2]);
-                    shaderOut << ")";
+                    target->emitTextureSample(*this, _expr, shaderOut);
                 } else if (_id_expr == BUILTIN_WRITE) {
-                    /// RWTexture2D write: texture[coord] = data
                     generatedExprBody = true;
-                    generateExpr(_expr->args[0]);
-                    shaderOut << "[";
-                    generateExpr(_expr->args[1]);
-                    shaderOut << "] = ";
-                    generateExpr(_expr->args[2]);
+                    target->emitTextureWrite(*this, _expr, shaderOut);
                 } else if (_id_expr == BUILTIN_READ) {
                     generatedExprBody = true;
-                    ast::TypeExpr *textureTypeExpr = _expr->args[0]->resolvedType;
-                    if (textureTypeExpr == nullptr && _expr->args[0]->type == ID_EXPR) {
-                        auto *resourceId = static_cast<ast::IdExpr *>(_expr->args[0]);
-                        auto resourceIt = resourceStore.find(resourceId->id);
-                        if (resourceIt != resourceStore.end()) {
-                            textureTypeExpr = (*resourceIt)->typeExpr;
-                        }
-                    }
-                    auto *textureTy =
-                        textureTypeExpr != nullptr ? typeResolver->resolveTypeWithExpr(textureTypeExpr) : nullptr;
-                    generateExpr(_expr->args[0]);
-                    shaderOut << ".Load(";
-                    if (textureTy == ast::builtins::texture1d_type) {
-                        shaderOut << "int2(";
-                        generateExpr(_expr->args[1]);
-                        shaderOut << ",0)";
-                    } else if (textureTy == ast::builtins::texture2d_type) {
-                        shaderOut << "int3(";
-                        generateExpr(_expr->args[1]);
-                        shaderOut << ",0)";
-                    } else if (textureTy == ast::builtins::texture3d_type) {
-                        shaderOut << "int4(";
-                        generateExpr(_expr->args[1]);
-                        shaderOut << ",0)";
-                    } else {
-                        generateExpr(_expr->args[1]);
-                    }
-                    shaderOut << ")";
+                    target->emitTextureRead(*this, _expr, shaderOut);
                 } else if (_id_expr == BUILTIN_MAKE_INT2) {
                     shaderOut << "int2";
                 } else if (_id_expr == BUILTIN_MAKE_INT3) {
@@ -232,7 +194,8 @@ public:
                 } else if (_id_expr == BUILTIN_MAKE_FLOAT4X3) {
                     shaderOut << "float4x3";
                 } else {
-                    shaderOut << _id_expr;
+                    auto renamed = target->renameBuiltin(_id_expr);
+                    shaderOut << renamed;
                 }
 
                 if (!generatedExprBody) {
@@ -295,92 +258,8 @@ public:
         level_count -= 1;
         shaderOut << "}" << std::endl;
     }
-    inline void writeAttribute(OmegaCommon::StrRef attributeName, std::ostream &out,
-                               std::optional<unsigned> attributeIndex = {}) {
-        if (attributeName == ATTRIBUTE_VERTEX_ID) {
-            out << "SV_VertexID";
-        } else if (attributeName == ATTRIBUTE_POSITION) {
-            out << "SV_Position";
-        } else if (attributeName == ATTRIBUTE_COLOR) {
-            /// Indexed `Color(N)` is a fragment-output semantic and maps to
-            /// `SV_TargetN`. Bare `Color` keeps its existing user-semantic
-            /// meaning for vertex→fragment varyings.
-            if (attributeIndex.has_value()) {
-                out << "SV_Target" << attributeIndex.value();
-            } else {
-                out << "COLOR";
-            }
-        } else if (attributeName == ATTRIBUTE_TEXCOORD) {
-            out << "TEXCOORD";
-        } else if (attributeName == ATTRIBUTE_DEPTH) {
-            out << "SV_Depth";
-        } else if (attributeName == ATTRIBUTE_FRONTFACING) {
-            out << "SV_IsFrontFace";
-        } else if (attributeName == ATTRIBUTE_SAMPLEINDEX) {
-            out << "SV_SampleIndex";
-        } else if (attributeName == ATTRIBUTE_COVERAGE) {
-            out << "SV_Coverage";
-        } else if (attributeName == ATTRIBUTE_GLOBALTHREAD_ID) {
-            out << "SV_DispatchThreadID";
-        } else if (attributeName == ATTRIBUTE_LOCALTHREAD_ID) {
-            out << "SV_GroupThreadID";
-        } else if (attributeName == ATTRIBUTE_THREADGROUP_ID) {
-            out << "SV_GroupID";
-        }
-    }
     inline void writeTypeExpr(ast::TypeExpr *typeExpr, std::ostream &out) {
-        auto _ty = typeResolver->resolveTypeWithExpr(typeExpr);
-        if (_ty == ast::builtins::bool_type) {
-            out << "bool";
-        } else if (_ty == ast::builtins::float_type) {
-            out << "float";
-        } else if (_ty == ast::builtins::float2_type) {
-            out << "float2";
-        } else if (_ty == ast::builtins::float3_type) {
-            out << "float3";
-        } else if (_ty == ast::builtins::float4_type) {
-            out << "float4";
-        } else if (_ty == ast::builtins::float2x2_type) {
-            out << "float2x2";
-        } else if (_ty == ast::builtins::float3x3_type) {
-            out << "float3x3";
-        } else if (_ty == ast::builtins::float4x4_type) {
-            out << "float4x4";
-        } else if (_ty == ast::builtins::float2x3_type) {
-            out << "float2x3";
-        } else if (_ty == ast::builtins::float2x4_type) {
-            out << "float2x4";
-        } else if (_ty == ast::builtins::float3x2_type) {
-            out << "float3x2";
-        } else if (_ty == ast::builtins::float3x4_type) {
-            out << "float3x4";
-        } else if (_ty == ast::builtins::float4x2_type) {
-            out << "float4x2";
-        } else if (_ty == ast::builtins::float4x3_type) {
-            out << "float4x3";
-        } else if (_ty == ast::builtins::int_type) {
-            out << "int";
-        } else if (_ty == ast::builtins::int2_type) {
-            out << "int2";
-        } else if (_ty == ast::builtins::int3_type) {
-            out << "int3";
-        } else if (_ty == ast::builtins::int4_type) {
-            out << "int4";
-        } else if (_ty == ast::builtins::uint_type) {
-            out << "uint";
-        } else if (_ty == ast::builtins::uint2_type) {
-            out << "uint2";
-        } else if (_ty == ast::builtins::uint3_type) {
-            out << "uint3";
-        } else if (_ty == ast::builtins::uint4_type) {
-            out << "uint4";
-        } else {
-            out << _ty->name;
-        }
-
-        if (typeExpr->pointer) {
-            out << "*";
-        }
+        target->writeTypeName(typeResolver->resolveTypeWithExpr(typeExpr), typeExpr->pointer, out);
     }
     void generateDecl(ast::Decl *decl) override {
         switch (decl->type) {
@@ -473,7 +352,7 @@ public:
                     out << " " << f.name;
                     if (f.attributeName.has_value()) {
                         out << ":";
-                        writeAttribute(f.attributeName.value(), out, f.attributeIndex);
+                        target->writeAttribute(f.attributeName.value(), f.attributeIndex, out);
                     }
                     out << ";" << std::endl;
                 }
@@ -739,7 +618,7 @@ public:
                             shaderDesc.computeShaderParamsDesc.useThreadGroupID = true;
                         }
                         shaderOut << ":";
-                        writeAttribute(p_it->attributeName.value(), shaderOut, p_it->attributeIndex);
+                        target->writeAttribute(p_it->attributeName.value(), p_it->attributeIndex, shaderOut);
                     }
                 }
                 shaderOut << ")";

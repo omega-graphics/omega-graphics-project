@@ -71,6 +71,8 @@ the rasterizer struct would conflict with vertex/fragment struct sharing.
 **Coverage** is input only for now; the output direction needs separate
 plumbing (`gl_SampleMask` write, MSL `[[sample_mask]]` on output struct).
 
+Alex: Input/Output coverage should be seperate attributes: InputCoverage/OutputCoverage
+
 ### 1.4 Multiple color attachments [COMPLETED]
 
 The current `float4` return from a fragment shader implicitly binds to
@@ -546,12 +548,12 @@ No equivalent on D3D12 / Metal. Used for efficient tile-local deferred on
 mobile. OmegaSL could add `subpass_input` + `loadSubpass()` that lowers to
 no-op / error on the other backends.
 
-### 10.2 Push constants
+### 10.2 Push constants (See Pipeline-Completion-Extension-Plan.md)
 
 Vulkan + D3D12 root constants + Metal inline `constant` under 4KB.
 
 Exposing this as a first-class concept would need a new resource keyword
-(`push<T>` or similar) with strict size limits. Very performance-relevant
+(`constant` or similar) with strict size limits. Very performance-relevant
 for per-draw constants.
 
 ### 10.3 Specialization constants
@@ -755,7 +757,7 @@ Both already match the column-major source convention.
 
 **6. Reference docs.** `OmegaSL-Reference.md` §2.3 (matrix types) gains:
 
-> Matrix indexing follows the engine's host-side `OmegaCommon::Matrix<Ty,
+> Matrix indexing follows the engine's host-side `OmegaGTE::Matrix<Ty,
 > column, row>` convention: `m[col][row]` accesses the element at column
 > `col`, row `row`. `m[col]` (single-level) returns the column at index
 > `col` as a vector. Matrices cannot be assigned a column directly — write

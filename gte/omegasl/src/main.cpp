@@ -15,12 +15,18 @@ inline void help(){
 
 Required:
     --temp-dir, -t                  --> Set the temp file output dir (For byproducts of compiling the lib)
-    --output,-o                     --> Set the output *.omegasllib.
+    --output,-o                     --> Set the output *.omegasllib (not required with --emit-source-only).
 Options:
 
     --help ,    -h                  --> Show this message.
     --tokens-only                   --> Show tokens of all input files.
     --interface-only                --> Emit interface of all input files.
+    --emit-source-only, -S          --> Transpile to the target language and stop. Writes generated
+                                        source files to --temp-dir; does not invoke dxc/metal/glslc
+                                        and does not link a .omegasllib. Lets you cross-target HLSL
+                                        or GLSL from a non-Windows / non-Linux host for source-level
+                                        debugging. Runtime correctness still has to be exercised on
+                                        the matching platform.
 
 
     --hlsl                          --> Generate HLSL code.
@@ -29,7 +35,7 @@ Options:
 
 HLSL Options:
     --dxc                           --> Path to dxc compiler
-    
+
 Metal Options:
     --target-arch=[x86_64,aarch64]  --> Select the target architecture to compile the MSL to.
 
@@ -61,6 +67,7 @@ int main(int argc,char *argv[]){
 
     bool tokenize = false;
     bool interfaceOnly = false;
+    bool emitSourceOnly = false;
 
     GenMode genMode = defaultGenModeForHost();
     const char * outputLibn = nullptr,*tempDir = nullptr;
@@ -68,6 +75,17 @@ int main(int argc,char *argv[]){
     const char *glslc_cmd = nullptr,*dxc_cmd = nullptr;
 
     OmegaCommon::StrRef inputFile = argv[argc - 1];
+
+    /// First pass: pick up `--emit-source-only` so the genMode-platform
+    /// gates know whether to allow cross-target transpilation. Keeps the
+    /// per-platform `dxc` / `metal` / `glslc` requirement intact for the
+    /// default flow, while letting `-S` (source-only) work on any host.
+    for(unsigned i = 1;i < argc;i++){
+        OmegaCommon::StrRef arg{argv[i]};
+        if(arg == "--emit-source-only" || arg == "-S"){
+            emitSourceOnly = true;
+        }
+    }
 
     for(unsigned i = 1;i < argc;i++){
         OmegaCommon::StrRef arg{argv[i]};
@@ -79,24 +97,36 @@ int main(int argc,char *argv[]){
 #ifdef TARGET_METAL
             genMode = GenMode::metal;
 #else
-            std::cerr << "Metal code can only be compiled on an Apple Device." << std::endl;
-            return 1;
+            if(!emitSourceOnly){
+                std::cerr << "Metal code can only be compiled on an Apple Device. "
+                             "Use --emit-source-only to transpile without compiling." << std::endl;
+                return 1;
+            }
+            genMode = GenMode::metal;
 #endif
         }
         else if(arg == "--hlsl"){
 #ifdef TARGET_DIRECTX
             genMode = GenMode::hlsl;
 #else
-            std::cerr << "HLSL code can only be compiled on a Windows Device." << std::endl;
-            return 1;
+            if(!emitSourceOnly){
+                std::cerr << "HLSL code can only be compiled on a Windows Device. "
+                             "Use --emit-source-only to transpile without compiling." << std::endl;
+                return 1;
+            }
+            genMode = GenMode::hlsl;
 #endif
         }
         else if(arg == "--glsl"){
 #ifdef TARGET_VULKAN
             genMode = GenMode::glsl;
 #else
-            std::cerr << "GLSL code can only be compiled on a Linux Device." << std::endl;
-            return 1;
+            if(!emitSourceOnly){
+                std::cerr << "GLSL code can only be compiled on a Linux Device. "
+                             "Use --emit-source-only to transpile without compiling." << std::endl;
+                return 1;
+            }
+            genMode = GenMode::glsl;
 #endif
         }
         else if(arg == "--tokens-only"){
@@ -104,6 +134,9 @@ int main(int argc,char *argv[]){
         }
         else if(arg == "--interface-only"){
             interfaceOnly = true;
+        }
+        else if(arg == "--emit-source-only" || arg == "-S"){
+            /// Already handled in the first pass.
         }
         else if(arg == "--output" || arg == "-o"){
             outputLibn = argv[++i];
@@ -130,23 +163,24 @@ int main(int argc,char *argv[]){
 
     if(tempDir == nullptr){
         std::cout << "Temp Directory is not set" << std::endl;
+        exit(1);
     }
 
-    if(outputLibn == nullptr){
+    /// `-o` is only required when we link a final `.omegasllib`; in
+    /// `--emit-source-only` mode there's nothing to link, so accept its
+    /// absence and pass an empty string into CodeGenOpts.
+    if(outputLibn == nullptr && !emitSourceOnly){
         std::cout << "Output Lib is not set" << std::endl;
         exit(1);
     }
 
-    if(tempDir == nullptr){
-        exit(1);
+    if(outputLibn != nullptr){
+        OmegaCommon::FS::Path outputLib(outputLibn);
+        auto outputPath = OmegaCommon::FS::Path(OmegaCommon::FS::Path(outputLib).dir());
+        if(!OmegaCommon::FS::exists(outputPath)){
+            OmegaCommon::FS::createDirectory(outputPath);
+        }
     }
-
-    OmegaCommon::FS::Path outputLib(outputLibn);
-    auto outputPath = OmegaCommon::FS::Path(OmegaCommon::FS::Path(outputLib).dir());
-
-    if(!OmegaCommon::FS::exists(outputPath)){
-        OmegaCommon::FS::createDirectory(outputPath);
-    };
 
     OmegaCommon::FS::Path tempPath(tempDir);
 
@@ -197,7 +231,13 @@ int main(int argc,char *argv[]){
 
     std::shared_ptr<omegasl::CodeGen> codeGen;
 
-    omegasl::CodeGenOpts codeGenOpts {interfaceOnly,false,outputLibn,tempDir};
+    omegasl::CodeGenOpts codeGenOpts {
+        interfaceOnly,
+        false,
+        emitSourceOnly,
+        outputLibn != nullptr ? OmegaCommon::StrRef(outputLibn) : OmegaCommon::StrRef(""),
+        tempDir
+    };
     omegasl::MetalCodeOpts metalCodeOpts {};
     omegasl::GLSLCodeOpts glslCodeOpts {};
     omegasl::HLSLCodeOpts hlslCodeOpts {};
@@ -254,9 +294,13 @@ int main(int argc,char *argv[]){
         return 1;
     }
 
-    if(!codeGen->linkShaderObjects()){
-        omegasl::ast::builtins::Cleanup();
-        return 1;
+    /// `--emit-source-only` stops after the codegen pass writes transpiled
+    /// shaders to tempDir; nothing to link.
+    if(!emitSourceOnly){
+        if(!codeGen->linkShaderObjects()){
+            omegasl::ast::builtins::Cleanup();
+            return 1;
+        }
     }
 
     omegasl::ast::builtins::Cleanup();

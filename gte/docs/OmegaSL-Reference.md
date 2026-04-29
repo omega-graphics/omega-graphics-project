@@ -104,6 +104,8 @@ OmegaSL has a lightweight preprocessor that runs before lexing.
 
 `double` is **not supported** — Metal Shading Language has no double precision, and GLSL requires extensions. Use `float` for all floating-point operations.
 
+Alex: We can add double support by adding a feature bitmask. (For OmegaSL we can feature guards via macros for certain features that are NOT 100% cross-platform. For those features, we can error or give a warning dependnig on which platform you're compiling too.)
+
 ### Vector types
 
 | Type | Components |

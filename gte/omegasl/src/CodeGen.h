@@ -1,5 +1,7 @@
 #include "AST.h"
+#include "Target.h"
 #include <omegasl.h>
+#include <cstring>
 #include <memory>
 #include <iostream>
 
@@ -13,6 +15,13 @@ namespace omegasl {
     struct CodeGenOpts {
         bool emitHeaderOnly;
         bool runtimeCompile;
+        /// When set, write transpiled shader source to `tempDir` and stop —
+        /// don't invoke the downstream toolchain (dxc / metal / glslc) and
+        /// don't link a `.omegasllib`. Lets developers cross-target HLSL or
+        /// GLSL from a non-Windows / non-Linux host for source-level
+        /// debugging. Runtime correctness still has to be exercised on the
+        /// matching platform.
+        bool emitSourceOnly;
         OmegaCommon::StrRef outputLib;
         OmegaCommon::StrRef tempDir;
     };
@@ -65,9 +74,17 @@ namespace omegasl {
         bool hasFatalErrors = false;
 
         CodeGenOpts & opts;
-        explicit CodeGen(CodeGenOpts & opts):
+    protected:
+        /// The backend-specific decision points the AST walk consults.
+        /// Phase 0: owned but not yet called — subsequent phases relocate
+        /// per-backend code into hooks on Target. See
+        /// docs/OmegaSL-CodeGen-Target-Refactor-Plan.md.
+        std::unique_ptr<Target> target;
+    public:
+        explicit CodeGen(CodeGenOpts & opts, std::unique_ptr<Target> target):
         typeResolver(nullptr),
-        opts(opts)
+        opts(opts),
+        target(std::move(target))
 //        interfaceGen(std::make_shared<InterfaceGen>(OmegaCommon::FS::Path(opts.outputLib).append(INTERFACE_FILENAME).absPath(), this))
         {
 
@@ -145,7 +162,23 @@ namespace omegasl {
                     OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutDescArr {shader_data.pLayout,shader_data.pLayout + shader_data.nLayout};
                     out.write((char *)&shader_data.nLayout,sizeof(shader_data.nLayout));
                     for(auto & layout : layoutDescArr){
-                        out.write((char *)&layout,sizeof(layout));
+                        // Zero-fill a serialization buffer so struct/union padding bytes are
+                        // deterministic on disk. The source struct may carry uninitialized
+                        // padding from heap allocation; copying it byte-wise leaks that.
+                        omegasl_shader_layout_desc serializedLayout;
+                        std::memset(&serializedLayout, 0, sizeof(serializedLayout));
+                        serializedLayout.type = layout.type;
+                        serializedLayout.gpu_relative_loc = layout.gpu_relative_loc;
+                        serializedLayout.io_mode = layout.io_mode;
+                        serializedLayout.location = layout.location;
+                        serializedLayout.offset = layout.offset;
+                        serializedLayout.sampler_desc.filter = layout.sampler_desc.filter;
+                        serializedLayout.sampler_desc.u_address_mode = layout.sampler_desc.u_address_mode;
+                        serializedLayout.sampler_desc.v_address_mode = layout.sampler_desc.v_address_mode;
+                        serializedLayout.sampler_desc.w_address_mode = layout.sampler_desc.w_address_mode;
+                        serializedLayout.sampler_desc.max_anisotropy = layout.sampler_desc.max_anisotropy;
+                        // constant_desc intentionally left zero: no codegen populates it today.
+                        out.write((char *)&serializedLayout,sizeof(serializedLayout));
                     }
                 }
                 else {

@@ -562,7 +562,7 @@ namespace omegasl {
                         }
                     }
                     else if(sampler_prop_name == SAMPLER_PROP_ADDRESS_MODE){
-                        omegasl_shader_static_sampler_address_mode addressMode;
+                        omegasl_shader_static_sampler_address_mode addressMode = samplerDesc.uAddressMode;
                         if(sampler_prop_value == SAMPLER_ADDRESS_MODE_WRAP){
                             addressMode = OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_WRAP;
                         }
@@ -571,6 +571,16 @@ namespace omegasl {
                         }
                         else if(sampler_prop_value == SAMPLER_ADDRESS_MODE_MIRRORWRAP){
                             addressMode = OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_MIRRORWRAP;
+                        }
+                        else if(sampler_prop_value == SAMPLER_ADDRESS_MODE_CLAMPTOEDGE){
+                            addressMode = OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_CLAMPTOEDGE;
+                        }
+                        else {
+                            delete res_decl;
+                            auto e = std::make_unique<UnexpectedToken>(std::string("Unknown sampler address mode `") + sampler_prop_value + "`");
+                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            diagnostics->addError(std::move(e));
+                            return nullptr;
                         }
                         samplerDesc.uAddressMode = samplerDesc.vAddressMode = samplerDesc.wAddressMode = addressMode;
                     }

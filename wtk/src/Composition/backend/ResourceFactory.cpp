@@ -1,5 +1,8 @@
 #include "ResourceFactory.h"
 #include "Pipeline.h"
+#include "TexturePool.h"
+#include "BufferPool.h"
+#include "FencePool.h"
 #include "MainThreadDispatch.h"
 #include "omegaWTK/Core/Core.h"
 
@@ -14,6 +17,44 @@ namespace OmegaWTK::Composition {
     BackendResourceFactory & BackendResourceFactory::instance(){
         static BackendResourceFactory factory;
         return factory;
+    }
+
+    bool BackendResourceFactory::initializePools(){
+        // Tear any previous pool state down first — matches the legacy
+        // createResourcePools() contract, which assumed the caller had
+        // already drained anything outstanding.
+        shutdownPools();
+
+        OmegaGTE::HeapDescriptor texHeapDesc {};
+        texHeapDesc.len = kTextureHeapSize;
+        OmegaGTE::HeapDescriptor bufHeapDesc {};
+        bufHeapDesc.len = kBufferHeapSize;
+
+        textureHeap_ = gte.graphicsEngine->makeHeap(texHeapDesc);
+        bufferHeap_  = gte.graphicsEngine->makeHeap(bufHeapDesc);
+        texturePool_ = std::make_unique<TexturePool>(textureHeap_);
+        bufferPool_  = std::make_unique<BufferPool>(bufferHeap_);
+        fencePool_   = std::make_unique<FencePool>();
+
+        return texturePool_ != nullptr
+            && bufferPool_  != nullptr
+            && fencePool_   != nullptr;
+    }
+
+    void BackendResourceFactory::shutdownPools(){
+        if(fencePool_)   fencePool_->drain();
+        if(bufferPool_)  bufferPool_->drain();
+        if(texturePool_) texturePool_->drain();
+        fencePool_.reset();
+        bufferPool_.reset();
+        texturePool_.reset();
+        bufferHeap_.reset();
+        textureHeap_.reset();
+    }
+
+    SharedHandle<BackendCanvasEffectProcessor>
+    BackendResourceFactory::createEffectProcessor(SharedHandle<OmegaGTE::GEFence> & fence){
+        return BackendCanvasEffectProcessor::Create(fence);
     }
 
     BackendResourceFactory::VisualTreeBundle

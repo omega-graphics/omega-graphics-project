@@ -1,3 +1,16 @@
+// Pipeline state cache for the composition backend.
+//
+// Owns the shader library, every render and compute pipeline state object,
+// the per-format copy-pipeline cache used by the present blit, the shared
+// `bufferWriter`, and the fullscreen quad vertex buffer used to drive that
+// blit. Construction and teardown are explicit (`initialize` / `shutdown`)
+// and driven by the engine lifecycle thunks in `RenderTarget.cpp`.
+//
+// There is exactly one `PipelineRegistry`, owned by the process-wide
+// `BackendResourceFactory`. All consumers obtain pipeline handles through
+// that singleton — there are no file-static pipeline globals anywhere in the
+// backend.
+
 #ifndef OMEGAWTK_COMPOSITION_BACKEND_PIPELINE_H
 #define OMEGAWTK_COMPOSITION_BACKEND_PIPELINE_H
 
