@@ -23,9 +23,9 @@ This document catalogues the rest.
 
 ---
 
-## 1. Fragment stage — missing basics (P0) [COMPLETED]
+## 1. Fragment stage — missing basics (P0)
 
-### 1.1 `discard` / `clip`
+### 1.1 `discard` / `clip` [COMPLETED]
 
 No mechanism to kill a fragment. Every backend supports it:
 
@@ -38,7 +38,7 @@ No mechanism to kill a fragment. Every backend supports it:
 **Proposal:** statement keyword `discard;`. Optionally `clip(expr)` as sugar
 for `if(expr < 0) discard;`.
 
-### 1.2 Fragment depth output
+### 1.2 Fragment depth output [COMPLETED]
 
 Cannot write `gl_FragDepth` / `SV_Depth` / `[[depth(any)]]`. Required for
 anything that overrides hardware depth (impostors, parallax, soft particles).
@@ -55,7 +55,7 @@ struct FragOut internal {
 Backends: `SV_Depth`, `[[depth(any)]]` (Metal requires `any`/`greater`/`less`
 qualifier — default to `any`), `gl_FragDepth`.
 
-### 1.3 Front-face, sample index, coverage
+### 1.3 Front-face, sample index, coverage [COMPLETED — input only]
 
 | OmegaSL (proposed) | HLSL | MSL | GLSL |
 |--------------------|------|-----|------|
@@ -65,7 +65,13 @@ qualifier — default to `any`), `gl_FragDepth`.
 
 Needed for two-sided shading, MSAA-aware shading, alpha-to-coverage override.
 
-### 1.4 Multiple color attachments
+Implemented as **fragment-shader parameter** attributes (not struct fields) —
+each backend models these as per-fragment scalar inputs, and putting them in
+the rasterizer struct would conflict with vertex/fragment struct sharing.
+**Coverage** is input only for now; the output direction needs separate
+plumbing (`gl_SampleMask` write, MSL `[[sample_mask]]` on output struct).
+
+### 1.4 Multiple color attachments [COMPLETED]
 
 The current `float4` return from a fragment shader implicitly binds to
 attachment 0. There is no way to write MRT output. Needed for G-buffer /
@@ -75,7 +81,11 @@ deferred pipelines.
 fields carry `Color(0)`, `Color(1)`, ... semantics — matching the existing
 attribute syntax, extended with an index argument.
 
-Research exactly how each backend API expects this.
+Bare `: Color` (no index) keeps its original meaning as a vertex→fragment
+varying (HLSL `COLOR`, MSL untagged). Indexed `: Color(N)` is a fragment
+output target (HLSL `SV_TargetN`, MSL `[[color(N)]]`, GLSL
+`layout(location=N) out vec4`). The two stay disjoint at the syntax level
+so a single struct can never be ambiguously interpreted.
 
 ### 1.5 Early depth/stencil attribute
 
@@ -571,7 +581,454 @@ targets mobile GLES.
 
 ---
 
-## 12. Summary — what to build first
+## 12. Cross-backend semantic alignment
+
+Cases where the OmegaSL surface is *uniform* at the syntax level but the
+generated code has *different runtime behavior* across backends. These are
+not feature gaps — the operation already exists in the language — but the
+lowering doesn't preserve semantic equivalence. High priority because the
+divergence is silent: the same source compiles and runs on every target,
+just with different results.
+
+### 12.1 Matrix indexing — column-major alignment with `OmegaCommon::Matrix`
+
+The engine's host-side matrix type
+(`gte/include/omegaGTE/GTEBase.h:598–757`,
+`OmegaCommon::Matrix<Ty, column, row>`) is **column-major in source**:
+`_data` is `std::array<std::array<Ty, row>, column>`, `m.at(idx)` asserts
+`idx < column`, and `m[col][row]` retrieves the element at column `col`,
+row `row`. OmegaSL should match this so a matrix written with
+`m[col][row] = …` on the CPU side reads with the same expression on the
+GPU side.
+
+**Current state.** Matrix `INDEX_EXPR` in `MetalCodeGen` / `GLSLCodeGen` /
+`HLSLCodeGen` all emit `m[idx]` literally. Per-backend `m[i]` semantics:
+
+| Backend | `m[i]` returns | `m[i][j]` is element at | Matches GTEBase.h? |
+|---------|----------------|-------------------------|--------------------|
+| GLSL    | column i       | (row=j, col=i)          | yes |
+| MSL     | column i       | (row=j, col=i)          | yes |
+| HLSL    | **row i**      | **(row=i, col=j)**      | **no** |
+
+So `t[0][1]` reads element (0, 1) on HLSL but element (1, 0) on GLSL/MSL.
+The existing `matrix_ops.omegasl` test passes today only because it asserts
+compile success, not semantic equivalence — line 42's
+`float4(t[0][0], t[0][1], t[1][0], t[1][1])` produces backend-dependent
+output.
+
+**Proposal.** Lock OmegaSL matrix indexing to the column-major source
+convention (`m[col]` is column `col`; `m[col][row]` is the element at column
+`col`, row `row`). HLSLCodeGen rewrites at emit time; GLSL and MSL stay
+unchanged.
+
+| OmegaSL | HLSL emit |
+|---------|-----------|
+| `m[a][b]` (matrix, two-level read) | `m[b][a]` — swap |
+| `m[a]` (matrix, single-level read) | `floatN(m[0][a], m[1][a], …, m[N-1][a])` — synthesized column |
+| `m[a] = v` (matrix, single-level write) | rejected by Sema — see option A below |
+| `m[a][b] = v` (matrix, two-level write) | `m[b][a] = v` — swap |
+| `v[i]`, `buf[i]`, ... | `lhs[idx]` — unchanged |
+
+#### Patch
+
+**1. `Sema.cpp` — propagate `resolvedType` on `INDEX_EXPR` subexpressions.**
+
+Mirrors what `BINARY_EXPR` already does at Sema.cpp:538–539. Currently
+`INDEX_EXPR` Sema computes types but doesn't write them back onto the AST,
+so codegen can't ask "is the lhs of this `INDEX_EXPR` itself an
+`INDEX_EXPR` whose lhs resolves to a matrix?" — a question the rewrite
+needs.
+
+```cpp
+else if(expr->type == INDEX_EXPR){
+    auto _expr = (ast::IndexExpr *)expr;
+    auto lhs_res = performSemForExpr(_expr->lhs, funcContext);
+    if(!lhs_res) return nullptr;
+    auto idx_expr_res = performSemForExpr(_expr->idx_expr, funcContext);
+    if(!idx_expr_res) return nullptr;
+
+    /// Set resolvedType on sub-expressions for type-aware codegen
+    /// (matrix-indexing rewrite on HLSL).
+    _expr->lhs->resolvedType = lhs_res;
+    _expr->idx_expr->resolvedType = idx_expr_res;
+
+    auto _t = resolveTypeWithExpr(lhs_res);
+    /// ... existing element-type return logic ...
+}
+```
+
+**2. `Sema.cpp` — reject single-level matrix write (option A).**
+
+In `performSemForExpr` `BINARY_EXPR` handling, after types resolve, detect
+the `=` family on a single-level matrix `INDEX_EXPR` lhs and reject:
+
+```cpp
+/// Single-level matrix lvalue is not portably representable across all
+/// backends (HLSL needs per-row statement expansion); require the user
+/// to write the two-level form `m[col][row] = …`.
+if(_expr->op == OP_EQUAL || _expr->op == OP_PLUSEQUAL || /* etc. */){
+    if(_expr->lhs->type == INDEX_EXPR){
+        auto *idx = (ast::IndexExpr *)_expr->lhs;
+        auto innerTy = resolveTypeWithExpr(idx->lhs->resolvedType);
+        if(innerTy && isMatrixType(innerTy)){
+            auto e = std::make_unique<TypeError>(
+                "Cannot assign to a matrix column; use two-level "
+                "indexing `m[col][row] = …`.");
+            e->loc = _expr->loc.value_or(ErrorLoc{});
+            diagnostics->addError(std::move(e));
+            return nullptr;
+        }
+    }
+}
+```
+
+**3. `HLSLCodeGen.cpp` — rewrite `INDEX_EXPR`.**
+
+Replace the literal `m[idx]` emit with three branches. Add a small helper
+`hlslColumnVectorTypeForMatrix(t)` that returns `"float2"`/`"float3"`/
+`"float4"` based on the matrix row count, paralleling `matrixRowCount`.
+
+```cpp
+case INDEX_EXPR: {
+    auto _expr = (ast::IndexExpr *)expr;
+
+    /// (a) Outer of a two-level matrix index — swap to HLSL's
+    /// row-first convention. OmegaSL `m[col][row]` -> HLSL `m[row][col]`.
+    if(_expr->lhs->type == INDEX_EXPR){
+        auto *inner = (ast::IndexExpr *)_expr->lhs;
+        auto innerLhsTy = typeResolver->resolveTypeWithExpr(inner->lhs->resolvedType);
+        if(innerLhsTy && isMatrixType(innerLhsTy)){
+            generateExpr(inner->lhs);
+            shaderOut << "[";
+            generateExpr(_expr->idx_expr);
+            shaderOut << "][";
+            generateExpr(inner->idx_expr);
+            shaderOut << "]";
+            break;
+        }
+    }
+
+    /// (b) Single-level matrix read — synthesize the column.
+    auto lhsTy = typeResolver->resolveTypeWithExpr(_expr->lhs->resolvedType);
+    if(lhsTy && isMatrixType(lhsTy)){
+        unsigned rows = matrixRowCount(lhsTy);
+        const char *colTy = hlslColumnVectorTypeForMatrix(lhsTy);
+        shaderOut << colTy << "(";
+        for(unsigned i = 0; i < rows; ++i){
+            if(i > 0) shaderOut << ", ";
+            generateExpr(_expr->lhs);
+            shaderOut << "[" << i << "][";
+            generateExpr(_expr->idx_expr);
+            shaderOut << "]";
+        }
+        shaderOut << ")";
+        break;
+    }
+
+    /// (c) Default — vector / buffer / non-matrix.
+    generateExpr(_expr->lhs);
+    shaderOut << "[";
+    generateExpr(_expr->idx_expr);
+    shaderOut << "]";
+    break;
+}
+```
+
+Side-effect concern in branch (b): synthesising a column reads `_expr->lhs`
+N times. For OmegaSL today (no impure user functions, `_expr->lhs` is
+typically an identifier or member access), this is benign. Revisit if
+pure-function tracking lands.
+
+**4. `MetalCodeGen.cpp` / `GLSLCodeGen.cpp` — no change.**
+
+Both already match the column-major source convention.
+
+**5. Tests.**
+
+- `matrix_index.omegasl` — exercises `m[col][row]` reads (square + non-square),
+  single-level reads (`float4 col0 = m[0];`), and two-level writes
+  (`m[1][2] = 3.0;`). Compile-only across all three backends.
+- `invalid_matrix_column_write.omegasl` — `m[1] = float4(...);` on a
+  matrix; expected to fail Sema with the diagnostic from step 2.
+- The existing `matrix_ops.omegasl` continues to compile but its
+  HLSL-vs-GLSL output now agrees on which elements are read.
+
+**6. Reference docs.** `OmegaSL-Reference.md` §2.3 (matrix types) gains:
+
+> Matrix indexing follows the engine's host-side `OmegaCommon::Matrix<Ty,
+> column, row>` convention: `m[col][row]` accesses the element at column
+> `col`, row `row`. `m[col]` (single-level) returns the column at index
+> `col` as a vector. Matrices cannot be assigned a column directly — write
+> per-element with `m[col][row] = …` or per-row in a loop.
+
+#### Rollout
+
+1. Sema `resolvedType` propagation on `INDEX_EXPR` (low-risk, pure metadata).
+2. HLSL codegen rewrite (branches a + b + c above) with `matrix_index.omegasl`
+   as the regression test. Any HLSL golden output that touches matrix
+   indexing will need to be re-baked.
+3. Sema rejection of single-level matrix writes (ergonomic break — emit a
+   clear diagnostic so the migration is mechanical).
+
+#### Out of scope
+
+- **Storage layout.** The host `Matrix<Ty, col, row>` lays out rows
+  contiguously inside columns. HLSL constant-buffer / SSBO matrix layout
+  obeys the `column_major` / `row_major` storage qualifier; Vulkan SPIR-V
+  matrix layout obeys the `RowMajor`/`ColMajor` decoration. Source-level
+  index alignment (this section) is independent of memory-layout alignment.
+  Tracking separately; recommend emitting `column_major` uniformly when we
+  get to it.
+- **Single-level matrix writes** (option B in earlier drafts). Statement
+  expansion of `m[a] = v` → `m[0][a] = v.x; m[1][a] = v.y; …` requires the
+  codegen to grow a "lower expression to statement sequence" pass. Defer
+  until that infrastructure exists for other reasons.
+- **Mat × Vec / Vec × Mat / `transpose` / `determinant`.** These don't
+  use indexing syntax and already produce identical results across
+  backends; no rewrite needed.
+
+### 12.2 Matrix methods on `GEBufferWriter` / `GEBufferReader` + D3D12 packing lock
+
+The host-side buffer R/W API in `gte/include/omegaGTE/GTEShader.h:18–54`
+exposes scalar / vec2 / vec3 / vec4 methods for `float`, `int`, and
+`uint` — but **no matrix methods**. The `omegasl_data_type` enum
+(`gte/include/omegasl.h:76–87`) already enumerates `OMEGASL_FLOATCxR`
+for every (C, R) ∈ {2,3,4}², but the per-backend writer/reader
+implementations don't handle them: Vulkan's `sizeForType` returns 0
+for matrix types (`GEVulkan.cpp:425–441`), and the D3D12 / Metal writers
+have no matrix branches at all. So shaders that consume a
+`buffer<Struct>` with a matrix field have no upload path today.
+
+Adding the methods is straightforward — but only safe to do once §12.1
+lands and the cross-backend storage is **explicitly locked** to a
+single layout. Today the HLSL output happens to default to column-major
+packing because `D3DCompile` is invoked with no packing flag
+(`HLSLCodeGen.cpp:823`), and `D3DCompile`'s default is column-major.
+That "happens to" is load-bearing for cross-backend correctness and
+should not stay implicit.
+
+**Goal.** Standardize on **column-major in memory** across host, GLSL,
+HLSL, and MSL — matching `OmegaCommon::Matrix<Ty, column, row>` storage
+(`GTEBase.h:688`) so a matrix `memcpy`'d into a buffer reads correctly
+from every shader stage on every backend. Add matrix methods to the
+buffer R/W API, and lock the HLSL packing explicitly.
+
+#### Memory-layout walkthrough (why "column-major" is the right pick)
+
+For a `float4x4` (4 columns × 4 rows) holding (col, row) elements
+A=(0,0), E=(0,1), …, P=(3,3):
+
+| Layout site | Default behavior | Column-major bytes? |
+|---|---|---|
+| Host `Matrix<float,4,4>` (`std::array<std::array<float,4>,4>`) | column 0's 4 floats first, then column 1's, … | ✅ yes |
+| GLSL std430 / std140 matrix field | column-major, `MatrixStride = 16` | ✅ yes |
+| MSL `float4x4` in `device`/`constant` buffer | column-major | ✅ yes |
+| HLSL `D3DCompile` no-flag default | column-major | ✅ yes (but **implicit**) |
+
+Source-level access semantics (after §12.1) will match across all four
+even when memory is column-major — that's the whole point of §12.1.
+Memory-side, three of the four are already locked by spec; HLSL is
+locked only by D3DCompile's current default flag, which §12.2 will
+make explicit.
+
+#### Patch
+
+**1. `gte/include/omegaGTE/GTEShader.h` — extend `GEBufferWriter`.**
+
+```cpp
+struct GEBufferWriter {
+    // … existing scalar / vec methods …
+
+    /// Square matrix writes.
+    virtual void writeFloat2x2(FMatrix<2,2> & m) = 0;
+    virtual void writeFloat3x3(FMatrix<3,3> & m) = 0;
+    virtual void writeFloat4x4(FMatrix<4,4> & m) = 0;
+
+    /// Rectangular matrix writes.
+    virtual void writeFloat2x3(FMatrix<2,3> & m) = 0;
+    virtual void writeFloat2x4(FMatrix<2,4> & m) = 0;
+    virtual void writeFloat3x2(FMatrix<3,2> & m) = 0;
+    virtual void writeFloat3x4(FMatrix<3,4> & m) = 0;
+    virtual void writeFloat4x2(FMatrix<4,2> & m) = 0;
+    virtual void writeFloat4x3(FMatrix<4,3> & m) = 0;
+};
+```
+
+Symmetric `getFloat<C>x<R>(FMatrix<C,R> & m)` on `GEBufferReader`. The
+`FMatrix<C,R>` template aliases to `Matrix<float,C,R>` (`GTEBase.h:941`),
+which already lays storage out column-major; the writer just `memcpy`'s
+the underlying `_data` block after the std140/std430 column padding is
+applied.
+
+**2. `Sema.cpp` / `omegasl.h` — std430/std140 stride math for matrices.**
+
+Add the matrix entries to `std430AlignmentForType` and `sizeForType` in
+each backend (or, better, factor them into the shared
+`omegaSLStructStride` helper that the docs already reference at
+`GTEShader.h:16`).
+
+```cpp
+// Matrix is C columns of R-element column vectors. Each column is
+// aligned and sized as if it were the matching column-vector type.
+// std430:
+//   colAlign = (R == 1 ? 4 : R == 2 ? 8 : 16)
+//   colSize  = R * 4 (no per-column padding for R == 1, 2, 4)
+//             but R == 3 columns are padded to 16 bytes (vec3 quirk).
+// matrix stride = aligned column size.
+size_t std430MatrixStride(unsigned R){
+    if(R == 1) return 4;
+    if(R == 2) return 8;
+    if(R == 3) return 16;  // padded
+    return 16;              // R == 4
+}
+size_t std430MatrixSize(unsigned C, unsigned R){
+    return C * std430MatrixStride(R);
+}
+```
+
+This handles the `mat3` / `float3xN` quirk where a 3-row column is
+padded to 16 bytes — the host `Matrix<float,C,3>` packs three contiguous
+floats per column with no padding, so the writer must insert four bytes
+of padding per column when targeting std430. (This is the only case
+where host bytes ≠ shader bytes; symmetry-breaking caveat documented
+below.)
+
+**3. `gte/src/vulkan/GEVulkan.cpp` — implement `writeFloat<C>x<R>`.**
+
+```cpp
+void writeFloat4x4(FMatrix<4,4> &m) override {
+    // Host already column-major: 4 columns × 4 rows = 16 contiguous floats.
+    // std430 stride for mat4 = 64 bytes (no padding). Direct memcpy works.
+    blocks.push_back(DataBlock {OMEGASL_FLOAT4x4, new FMatrix<4,4>(m)});
+}
+void writeFloat3x3(FMatrix<3,3> &m) override {
+    // Host: 3 columns × 3 rows = 9 contiguous floats (36 bytes).
+    // std430 expects each column padded to 16 bytes → 48 bytes total.
+    // Allocate 48 bytes, copy each column with padding.
+    auto *padded = new float[12]{};
+    for(unsigned c = 0; c < 3; ++c){
+        padded[c * 4 + 0] = m[c][0];
+        padded[c * 4 + 1] = m[c][1];
+        padded[c * 4 + 2] = m[c][2];
+        // padded[c * 4 + 3] stays 0
+    }
+    blocks.push_back(DataBlock {OMEGASL_FLOAT3x3, padded});
+}
+// ... and rectangular variants ...
+```
+
+The Vulkan-side reader does the inverse: read columns at the stride
+returned by `std430MatrixStride(R)`, copy `R` floats per column into
+`m._data[c]`.
+
+**4. `gte/src/metal/GEMetal.mm` — implement `writeFloat<C>x<R>`.**
+
+Metal's `metal::matrix` template stores column-major with the same
+column-padding quirk for non-multiple-of-4 row counts. Implementation
+mirrors Vulkan but uses Metal's preferred memory order (which is
+identical for `float4x4`). Reuse the std430 helpers — Metal's argument
+buffer / device pointer matrix layout matches.
+
+**5. `gte/src/d3d12/GED3D12.cpp` — implement `writeFloat<C>x<R>` AND
+explicitly lock packing.**
+
+Two D3D12 changes:
+
+a. **Implement the methods** the same way as Vulkan/Metal (column-major
+   bytes with std430-equivalent column padding for `Cx3` matrices).
+   `D3DCompile` with the default flag interprets this correctly.
+
+b. **Lock packing explicitly** so the implicit "D3DCompile default = column-major"
+   stops being load-bearing:
+
+```cpp
+// HLSLCodeGen::compileShaderOnRuntime, gte/omegasl/src/HLSLCodeGen.cpp:823
+D3DCompile(source.data(), source.size(), name.data(), nullptr,
+           D3D_COMPILE_STANDARD_FILE_INCLUDE, name.data(),
+           target.data(),
+           D3DCOMPILE_DEBUG | D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR,
+           NULL, &blob, &errorBlob);
+```
+
+And mirror the flag on the offline-compile path that uses `dxc`
+(`HLSLCodeGen.cpp:771`): add `-Zpc` to the `dxc` invocation.
+
+c. **Belt-and-suspenders: emit `column_major` qualifier** on every
+   matrix-typed field in HLSL output. In `HLSLCodeGen::writeTypeExpr`,
+   when the target type is a matrix, prefix `column_major ` to the
+   emitted type name. This ensures the storage qualifier is correct
+   even if some downstream tool ever recompiles the HLSL with `/Zpr`.
+
+If both (b) and (c) feel redundant, prefer (c) — it's robust to
+compiler-flag drift and travels with the source. (b) is cheap insurance.
+
+**6. `gte/src/common/` — backend-shared helpers.**
+
+`std430MatrixStride` / `std430MatrixSize` and a `matMemcpyToShaderStd430`
+helper land in a single shared header so all three backends call into
+the same column-padding logic. Avoids the three-copy drift that
+`sizeForType` already has between Vulkan/D3D12/Metal.
+
+#### Tests
+
+- `matrix_buffer_roundtrip.omegasl` + a host-side test that writes a
+  known `FMatrix<4,4>` via `GEBufferWriter::writeFloat4x4`, dispatches a
+  compute shader that copies the matrix to an output buffer, reads it
+  back via `GEBufferReader::getFloat4x4`, and asserts every element
+  matches. Run on all three backends.
+- `matrix_3x3_padded.omegasl` — same shape, with `float3x3`. Verifies
+  the column-padding path on each backend.
+- `matrix_indexing_after_upload.omegasl` (combined §12.1 + §12.2) —
+  upload a non-symmetric matrix, in-shader read via `m[col][row]`,
+  write the (col, row) element back, host-read it, assert it matches
+  the original `m._data[col][row]`. The test that catches both source-
+  level and memory-level divergence in one go.
+
+#### Reference docs
+
+`OmegaSL-Reference.md` §2.3 (matrix types) gains a sentence: "Matrices
+are stored column-major in GPU memory across all backends. Use
+`GEBufferWriter::writeFloat<C>x<R>` to upload and the matching
+`GEBufferReader::getFloat<C>x<R>` to download — the API handles the
+std430 column padding for `Cx3` matrices." Cross-link §12.1.
+
+#### Rollout
+
+1. Land §12.1 first (source-level alignment). Without it, `m[col][row]`
+   means different things in different backends and the buffer test
+   would fail for reasons unrelated to memory layout.
+2. Land the shared `std430Matrix*` helpers and the API additions on
+   `GTEShader.h`.
+3. Implement matrix methods in Vulkan and Metal (already-column-major
+   targets — pure additive work).
+4. Implement matrix methods in D3D12, with the packing lock
+   (`D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR`, `-Zpc`,
+   `column_major` qualifier in HLSLCodeGen) in the same change so the
+   guarantee is intact from day one.
+5. Add the round-trip tests on all three backends.
+
+#### Out of scope
+
+- **`int` / `uint` matrix types** in the buffer API. The shader language
+  only declares `float` matrices today (§2.3 of the reference). Adding
+  the integer matrix path is straightforward when needed.
+- **`double` matrix types.** OmegaSL has no `double` matrix type
+  (intentional per §4.3) so no API surface needed.
+- **Runtime transposition fallback** — the world where HLSL gets
+  compiled with row-major packing and we need to transpose at upload
+  time on D3D12. The patch above prevents that world from existing
+  rather than handling it. If a future use case needs row-major HLSL
+  (e.g. interop with a D3D9-era asset format), add a `WriteMode` enum
+  parameter to the writer and a transpose path inside D3D12's
+  `writeFloat<C>x<R>` that flips before the `memcpy`.
+- **Push constants / root constants matrix layout.** Push constants
+  follow the same column-major default but are a separate channel from
+  `GEBufferWriter` (§10.2). When push-constant support lands, the same
+  std430-equivalent helpers apply.
+
+---
+
+## 13. Summary — what to build first
 
 Recommended ordering if the goal is to close the biggest gaps:
 

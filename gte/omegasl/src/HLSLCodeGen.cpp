@@ -295,15 +295,31 @@ public:
         level_count -= 1;
         shaderOut << "}" << std::endl;
     }
-    inline void writeAttribute(OmegaCommon::StrRef attributeName, std::ostream &out) {
+    inline void writeAttribute(OmegaCommon::StrRef attributeName, std::ostream &out,
+                               std::optional<unsigned> attributeIndex = {}) {
         if (attributeName == ATTRIBUTE_VERTEX_ID) {
             out << "SV_VertexID";
         } else if (attributeName == ATTRIBUTE_POSITION) {
             out << "SV_Position";
         } else if (attributeName == ATTRIBUTE_COLOR) {
-            out << "COLOR";
+            /// Indexed `Color(N)` is a fragment-output semantic and maps to
+            /// `SV_TargetN`. Bare `Color` keeps its existing user-semantic
+            /// meaning for vertex→fragment varyings.
+            if (attributeIndex.has_value()) {
+                out << "SV_Target" << attributeIndex.value();
+            } else {
+                out << "COLOR";
+            }
         } else if (attributeName == ATTRIBUTE_TEXCOORD) {
             out << "TEXCOORD";
+        } else if (attributeName == ATTRIBUTE_DEPTH) {
+            out << "SV_Depth";
+        } else if (attributeName == ATTRIBUTE_FRONTFACING) {
+            out << "SV_IsFrontFace";
+        } else if (attributeName == ATTRIBUTE_SAMPLEINDEX) {
+            out << "SV_SampleIndex";
+        } else if (attributeName == ATTRIBUTE_COVERAGE) {
+            out << "SV_Coverage";
         } else if (attributeName == ATTRIBUTE_GLOBALTHREAD_ID) {
             out << "SV_DispatchThreadID";
         } else if (attributeName == ATTRIBUTE_LOCALTHREAD_ID) {
@@ -457,7 +473,7 @@ public:
                     out << " " << f.name;
                     if (f.attributeName.has_value()) {
                         out << ":";
-                        writeAttribute(f.attributeName.value(), out);
+                        writeAttribute(f.attributeName.value(), out, f.attributeIndex);
                     }
                     out << ";" << std::endl;
                 }
@@ -723,12 +739,19 @@ public:
                             shaderDesc.computeShaderParamsDesc.useThreadGroupID = true;
                         }
                         shaderOut << ":";
-                        writeAttribute(p_it->attributeName.value(), shaderOut);
+                        writeAttribute(p_it->attributeName.value(), shaderOut, p_it->attributeIndex);
                     }
                 }
                 shaderOut << ")";
                 if (_decl->shaderType == ast::ShaderDecl::Fragment) {
-                    shaderOut << " : SV_TARGET";
+                    /// Bare-`float4` fragment returns get `SV_TARGET` here.
+                    /// When the fragment returns a struct, per-field semantics
+                    /// (`SV_TargetN`, `SV_Depth`, ...) carry the bindings, and
+                    /// no trailing semantic on the function is needed.
+                    auto retTy = typeResolver->resolveTypeWithExpr(_decl->returnType);
+                    if (retTy == ast::builtins::float4_type) {
+                        shaderOut << " : SV_TARGET";
+                    }
                 }
                 generateBlock(*_decl->block);
 

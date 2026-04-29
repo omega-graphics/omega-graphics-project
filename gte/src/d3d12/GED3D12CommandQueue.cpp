@@ -1317,8 +1317,6 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &
         d3d12_texture->srvDescHeap->GetGPUDescriptorHandleForHeapStart());
 }
 
-#ifdef OMEGAGTE_RAYTRACING_SUPPORTED
-
 void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct,
                                                        unsigned int idx) {
     auto d3d12_buffer = std::dynamic_pointer_cast<GED3D12AccelerationStruct>(accelStruct);
@@ -1348,8 +1346,6 @@ void GED3D12CommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned
 
     commandList->DispatchRays(&rays);
 }
-
-#endif
 
 void GED3D12CommandBuffer::dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) {
     assert(inComputePass && "");

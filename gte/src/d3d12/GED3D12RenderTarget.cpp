@@ -230,7 +230,7 @@ _NAMESPACE_BEGIN_
 
     void GED3D12TextureRenderTarget::signalFence(SharedHandle<GEFence> & fence) {
         if (commandQueue != nullptr)
-            commandQueue->signalExternalFence(fence);
+            commandQueue->signalFence(fence);
     }
 
     void GED3D12TextureRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> &cb,

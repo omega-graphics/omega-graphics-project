@@ -176,6 +176,10 @@ namespace omegasl {
             TypeExpr *typeExpr;
             OmegaCommon::String name;
             std::optional<OmegaCommon::String> attributeName;
+            /// @brief Optional index for indexed attributes such as `Color(N)`.
+            /// Present only when the attribute was written with a parenthesised
+            /// integer (e.g. `: Color(1)`).
+            std::optional<unsigned> attributeIndex;
         };
 
         struct VarDecl : public Decl {

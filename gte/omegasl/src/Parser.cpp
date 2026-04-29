@@ -176,11 +176,31 @@ namespace omegasl {
                                 diagnostics->addError(std::move(e));
                                 return nullptr;
                             }
-                            _decl->fields.push_back({var_ty,var_id,t.str});
+                            auto attr_name = t.str;
+                            std::optional<unsigned> attr_index;
                             t = lexer->nextTok();
+                            if(t.type == TOK_LPAREN){
+                                t = lexer->nextTok();
+                                if(t.type != TOK_NUM_LITERAL){
+                                    auto e = std::make_unique<UnexpectedToken>("Expected numeric literal for attribute index");
+                                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                                    diagnostics->addError(std::move(e));
+                                    return nullptr;
+                                }
+                                attr_index = (unsigned)std::stoul(t.str);
+                                t = lexer->nextTok();
+                                if(t.type != TOK_RPAREN){
+                                    auto e = std::make_unique<UnexpectedToken>("Expected `)` after attribute index");
+                                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                                    diagnostics->addError(std::move(e));
+                                    return nullptr;
+                                }
+                                t = lexer->nextTok();
+                            }
+                            _decl->fields.push_back({var_ty,var_id,attr_name,attr_index});
                         }
                         else {
-                            _decl->fields.push_back({var_ty,var_id,{}});
+                            _decl->fields.push_back({var_ty,var_id,{},{}});
                         }
 
                         if(t.type != TOK_SEMICOLON){
@@ -639,10 +659,32 @@ namespace omegasl {
                             return nullptr;
                         }
 
-                        funcDecl->params.push_back({var_ty, var_id, t.str});
+                        auto attr_name = t.str;
+                        std::optional<unsigned> attr_index;
                         t = lexer->nextTok();
+                        if(t.type == TOK_LPAREN){
+                            t = lexer->nextTok();
+                            if(t.type != TOK_NUM_LITERAL){
+                                delete node;
+                                auto e = std::make_unique<UnexpectedToken>("Expected numeric literal for attribute index");
+                                e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                                diagnostics->addError(std::move(e));
+                                return nullptr;
+                            }
+                            attr_index = (unsigned)std::stoul(t.str);
+                            t = lexer->nextTok();
+                            if(t.type != TOK_RPAREN){
+                                delete node;
+                                auto e = std::make_unique<UnexpectedToken>("Expected `)` after attribute index");
+                                e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                                diagnostics->addError(std::move(e));
+                                return nullptr;
+                            }
+                            t = lexer->nextTok();
+                        }
+                        funcDecl->params.push_back({var_ty, var_id, attr_name, attr_index});
                     } else {
-                        funcDecl->params.push_back({var_ty, var_id, {}});
+                        funcDecl->params.push_back({var_ty, var_id, {}, {}});
                     }
 
                     if (t.type == TOK_COMMA) {

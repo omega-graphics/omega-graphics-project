@@ -92,6 +92,44 @@ namespace omegasl {
         ast::ShaderDecl::Type currentShaderType = ast::ShaderDecl::Compute;
         OmegaCommon::String activeReturnReplacement;
 
+        /// While generating a fragment shader, the StructDecl that the
+        /// fragment returns (when it returns an internal struct of attributed
+        /// fields rather than a bare `float4`). Members are dispatched via
+        /// writeInternalFieldRef to their backing GLSL output (`_outColorN`,
+        /// `gl_FragDepth`, ...).
+        ast::StructDecl *fragmentOutputStruct = nullptr;
+
+        /// Map a struct field reference to the GLSL identifier that backs it,
+        /// based on the field's attribute and (for indexed `Color(N)`) the
+        /// stage. Centralizes the routing so the VAR_DECL brace-init and
+        /// MEMBER_EXPR member-access paths agree.
+        void writeInternalFieldRef(const ast::AttributedFieldDecl &field,
+                                   const OmegaCommon::String &structName,
+                                   std::ostream &out){
+            if(!field.attributeName.has_value()){
+                out << structName << "_" << field.name;
+                return;
+            }
+            const auto &attr = field.attributeName.value();
+            if(attr == ATTRIBUTE_POSITION){
+                out << GLSL_POSITION;
+            }
+            else if(attr == ATTRIBUTE_COLOR && field.attributeIndex.has_value()){
+                out << "_outColor" << field.attributeIndex.value();
+            }
+            else if(attr == ATTRIBUTE_DEPTH){
+                out << "gl_FragDepth";
+            }
+            else if(attr == ATTRIBUTE_COVERAGE){
+                /// gl_SampleMask is an int[]; index 0 covers up to 32-sample MSAA.
+                out << "gl_SampleMask[0]";
+            }
+            else {
+                /// Bare Color, TexCoord, ... — interstage varying.
+                out << structName << "_" << field.name;
+            }
+        }
+
         void emitUserFunctionSignature(ast::FuncDecl *f){
             writeTypeExpr(f->returnType, shaderOut);
             shaderOut << " " << f->name << "(";
@@ -302,6 +340,12 @@ namespace omegasl {
                 case RETURN_DECL : {
                     auto _decl = (ast::ReturnDecl *)decl;
                     if(_decl->expr && currentShaderType == ast::ShaderDecl::Fragment
+                       && fragmentOutputStruct != nullptr){
+                        /// Struct-returning fragment in a nested block: per-field
+                        /// stores already happened, so just `return;`.
+                        shaderOut << "return";
+                    }
+                    else if(_decl->expr && currentShaderType == ast::ShaderDecl::Fragment
                        && !activeReturnReplacement.empty()){
                         // Fragment shader: main() is void in GLSL, so
                         // `return expr;` becomes `_outColor = expr; return;`
@@ -358,12 +402,7 @@ namespace omegasl {
                                     shaderOut << "  ";
                                 }
                                 auto &field = structDecl->fields[fi];
-                                if(field.attributeName.has_value() &&
-                                   field.attributeName.value() == ATTRIBUTE_POSITION){
-                                    shaderOut << GLSL_POSITION;
-                                } else {
-                                    shaderOut << structDecl->name << "_" << field.name;
-                                }
+                                writeInternalFieldRef(field, structDecl->name, shaderOut);
                                 shaderOut << " = ";
                                 generateExpr(initList->elm[fi]);
                                 shaderOut << ";" << std::endl;
@@ -480,6 +519,17 @@ namespace omegasl {
                     ((char *)shader_entry.name)[_decl->name.size()] = '\0';
 
 
+                    /// If the fragment shader returns an internal struct, capture
+                    /// it so the all_used_structs loop and the default
+                    /// `_outColor` declaration can branch correctly.
+                    fragmentOutputStruct = nullptr;
+                    if(_decl->shaderType == ast::ShaderDecl::Fragment){
+                        auto retIt = structDeclMap.find(_decl->returnType->name);
+                        if(retIt != structDeclMap.end() && retIt->second->internal){
+                            fragmentOutputStruct = retIt->second;
+                        }
+                    }
+
                     OmegaCommon::Vector<OmegaCommon::String> all_used_structs;
                     typeResolver->getStructsInFuncDecl(_decl,all_used_structs);
 
@@ -490,6 +540,13 @@ namespace omegasl {
                         auto it = std::find_if(internalStructs.begin(),internalStructs.end(),pred);
 
                         if(it != internalStructs.end()){
+                            auto & _struct = *it;
+                            /// The fragment output struct is emitted separately
+                            /// below; skip it here so it doesn't get treated as
+                            /// a fragment-input varying block.
+                            if(_struct == fragmentOutputStruct){
+                                continue;
+                            }
                             OmegaCommon::String mode;
                             if(_decl->shaderType == ast::ShaderDecl::Fragment){
                                 mode = "in";
@@ -497,7 +554,6 @@ namespace omegasl {
                             else {
                                 mode = "out";
                             }
-                            auto & _struct = *it;
                             unsigned idx = 0;
                             for(auto &f : _struct->fields){
                                 if(f.attributeName.value() != ATTRIBUTE_POSITION){
@@ -518,8 +574,25 @@ namespace omegasl {
                     indentLevel += 1;
 
                     if(_decl->shaderType == ast::ShaderDecl::Fragment){
-                        shaderOut << "layout(location = 0) out vec4 " << FRAGMENT_SHADER_OUTPUT_COLOR_NAME;
-                        shaderOut << ";" << std::endl;
+                        if(fragmentOutputStruct){
+                            /// MRT / depth output: one `layout(location=N) out vec4`
+                            /// per `Color(N)` field. `Depth` rides on built-in
+                            /// `gl_FragDepth`, `Coverage` on `gl_SampleMask` —
+                            /// neither needs a declaration here.
+                            for(auto &f : fragmentOutputStruct->fields){
+                                if(!f.attributeName.has_value()) continue;
+                                if(f.attributeName.value() == ATTRIBUTE_COLOR
+                                   && f.attributeIndex.has_value()){
+                                    unsigned loc = f.attributeIndex.value();
+                                    shaderOut << "layout(location=" << loc << ") out vec4 _outColor"
+                                              << loc << ";" << std::endl;
+                                }
+                            }
+                        }
+                        else {
+                            shaderOut << "layout(location = 0) out vec4 " << FRAGMENT_SHADER_OUTPUT_COLOR_NAME;
+                            shaderOut << ";" << std::endl;
+                        }
                     }
 
                     /// @brief Write Resource Decl
@@ -710,11 +783,49 @@ namespace omegasl {
                     }
                     else {
                         for (auto & arg : _decl->params) {
-                            auto pred = [&](ast::StructDecl *decl){
-                                return decl->name == arg.typeExpr->name;
-                            };
-                            auto internal_struct_it = std::find_if(internalStructs.begin(),internalStructs.end(),pred);
-                            internalStructVarMap.push_back(std::make_pair(arg.name,*internal_struct_it));
+                            if(arg.attributeName.has_value()){
+                                /// Scalar fragment input — bridge from a
+                                /// gl_* builtin into a local of the user's
+                                /// chosen name so the body code reads as if
+                                /// the value were a real parameter.
+                                const char *builtin = nullptr;
+                                bool needsUintCast = false;
+                                if(arg.attributeName.value() == ATTRIBUTE_FRONTFACING){
+                                    builtin = "gl_FrontFacing";
+                                }
+                                else if(arg.attributeName.value() == ATTRIBUTE_SAMPLEINDEX){
+                                    builtin = "gl_SampleID";
+                                    needsUintCast = true;
+                                }
+                                else if(arg.attributeName.value() == ATTRIBUTE_COVERAGE){
+                                    /// gl_SampleMaskIn is int[]; element 0
+                                    /// is enough for ≤32-sample MSAA.
+                                    builtin = "gl_SampleMaskIn[0]";
+                                    needsUintCast = true;
+                                }
+                                if(builtin){
+                                    for (unsigned i = 0; i < indentLevel; i++) {
+                                        extra_stmts << "  ";
+                                    }
+                                    writeTypeExpr(arg.typeExpr, extra_stmts);
+                                    extra_stmts << " " << arg.name << " = ";
+                                    if(needsUintCast){
+                                        extra_stmts << "uint(" << builtin << ")";
+                                    } else {
+                                        extra_stmts << builtin;
+                                    }
+                                    extra_stmts << ";" << std::endl;
+                                }
+                            }
+                            else {
+                                auto pred = [&](ast::StructDecl *decl){
+                                    return decl->name == arg.typeExpr->name;
+                                };
+                                auto internal_struct_it = std::find_if(internalStructs.begin(),internalStructs.end(),pred);
+                                if(internal_struct_it != internalStructs.end()){
+                                    internalStructVarMap.push_back(std::make_pair(arg.name,*internal_struct_it));
+                                }
+                            }
                         }
                     }
 
@@ -730,7 +841,14 @@ namespace omegasl {
                         }
                         if(stmt->type == RETURN_DECL){
                             auto _return_stmt = (ast::ReturnDecl *) stmt;
-                            if(_return_stmt->expr && _decl->shaderType == ast::ShaderDecl::Fragment) {
+                            if(_return_stmt->expr && _decl->shaderType == ast::ShaderDecl::Fragment
+                               && fragmentOutputStruct != nullptr) {
+                                /// Fragment-output-struct return: per-field
+                                /// stores happened earlier via member-expr
+                                /// routing into `_outColorN` / `gl_FragDepth`.
+                                shaderOut << "return;" << std::endl;
+                            }
+                            else if(_return_stmt->expr && _decl->shaderType == ast::ShaderDecl::Fragment) {
                                 shaderOut << return_val_replacement << " = ";
                                 generateExpr(_return_stmt->expr);
                                 shaderOut << ";" << std::endl;
@@ -815,6 +933,7 @@ namespace omegasl {
                     shaderMap.insert(std::make_pair(object_file,shader_entry));
                     internalStructVarMap.clear();
                     activeReturnReplacement.clear();
+                    fragmentOutputStruct = nullptr;
                     break;
                 }
             }
@@ -985,11 +1104,9 @@ namespace omegasl {
 
                     if (it != internalStructVarMap.end()) {
                         for(auto & f : it->second->fields){
-                            if(f.name == _expr->rhs_id && f.attributeName.value() != ATTRIBUTE_POSITION){
-                                shaderOut << it->second->name << "_" << _expr->rhs_id;
-                            }
-                            else if(f.name == _expr->rhs_id && f.attributeName.value() == ATTRIBUTE_POSITION) {
-                                shaderOut << GLSL_POSITION;
+                            if(f.name == _expr->rhs_id){
+                                writeInternalFieldRef(f, it->second->name, shaderOut);
+                                break;
                             }
                         }
 

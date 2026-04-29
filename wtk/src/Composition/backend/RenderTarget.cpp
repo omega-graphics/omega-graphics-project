@@ -6,6 +6,8 @@
 #include "BufferPool.h"
 #include "FencePool.h"
 #include "MainThreadDispatch.h"
+#include "Pipeline.h"
+#include "ResourceFactory.h"
 #include "omegaWTK/Composition/Canvas.h"
 #include "GeometryConvert.h"
 #include "ResourceTrace.h"
@@ -100,21 +102,11 @@ namespace OmegaWTK::Composition {
         }
     }
 
-    static SharedHandle<OmegaGTE::GTEShaderLibrary> shaderLibrary;
-    static SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
-    static SharedHandle<OmegaGTE::GERenderPipelineState> renderPipelineState;
-    static SharedHandle<OmegaGTE::GERenderPipelineState> textureRenderPipelineState;
-    // Copy pipeline and fullscreen quad buffer — retained for the effect path
-    // blit in commit().  Will be removed when effects use a dedicated present
-    // method (Phase B).
-    static SharedHandle<OmegaGTE::GERenderPipelineState> finalCopyRenderPipelineState;
-    static OmegaCommon::Map<OmegaGTE::PixelFormat,SharedHandle<OmegaGTE::GERenderPipelineState>> finalCopyPipelinesByFormat;
-    static SharedHandle<OmegaGTE::GEBuffer> finalTextureDrawBuffer;
-
-    static SharedHandle<OmegaGTE::GEComputePipelineState> linearGradientPipelineState;
-    static SharedHandle<OmegaGTE::GEComputePipelineState> gaussianBlurHPipelineState;
-    static SharedHandle<OmegaGTE::GEComputePipelineState> gaussianBlurVPipelineState;
-    static SharedHandle<OmegaGTE::GEComputePipelineState> directionalBlurPipelineState;
+    namespace {
+        inline PipelineRegistry & pipelineRegistry(){
+            return BackendResourceFactory::instance().pipelines();
+        }
+    }
 
     static constexpr std::size_t kTextureHeapSize = 64u * 1024u * 1024u;
     static constexpr std::size_t kBufferHeapSize = 8u * 1024u * 1024u;
@@ -123,338 +115,6 @@ namespace OmegaWTK::Composition {
     static std::unique_ptr<TexturePool> texturePool;
     static std::unique_ptr<BufferPool> bufferPool;
     static std::unique_ptr<FencePool> fencePool;
-
-    static OmegaCommon::String getCompositorShaderSourcePath() {
-#if defined(TARGET_MACOS)
-        char buf[2048];
-        uint32_t bufSize = sizeof(buf);
-        if(_NSGetExecutablePath(buf, &bufSize) == 0) {
-            std::string path(buf);
-            // exe: .../Contents/MacOS/AppName -> .../Contents/Resources/compositor.omegasl
-            auto lastSlash = path.rfind('/');
-            if(lastSlash != std::string::npos) {
-                std::string macosDir = path.substr(0, lastSlash);
-                auto parentSlash = macosDir.rfind('/');
-                if(parentSlash != std::string::npos) {
-                    return macosDir.substr(0, parentSlash) + "/Resources/compositor.omegasl";
-                }
-            }
-        }
-        return {};
-#elif defined(TARGET_WIN32)
-        char buf[MAX_PATH];
-        GetModuleFileNameA(NULL, buf, MAX_PATH);
-        std::string path(buf);
-        auto pos = path.rfind('\\');
-        if(pos != std::string::npos) {
-            return path.substr(0, pos + 1) + "compositor.omegasl";
-        }
-        return {};
-#else
-        char buf[2048];
-        ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-        if(len > 0) {
-            buf[len] = '\0';
-            std::string path(buf);
-            auto pos = path.rfind('/');
-            if(pos != std::string::npos) {
-                return path.substr(0, pos + 1) + "compositor.omegasl";
-            }
-        }
-        return {};
-#endif
-    }
-
-    void loadGlobalRenderAssets(){
-        auto resetGlobalRenderAssetsState = [](){
-            finalCopyPipelinesByFormat.clear();
-            shaderLibrary.reset();
-            renderPipelineState.reset();
-            textureRenderPipelineState.reset();
-            finalCopyRenderPipelineState.reset();
-            linearGradientPipelineState.reset();
-            gaussianBlurHPipelineState.reset();
-            gaussianBlurVPipelineState.reset();
-            directionalBlurPipelineState.reset();
-            bufferWriter.reset();
-            finalTextureDrawBuffer.reset();
-        };
-
-        resetGlobalRenderAssetsState();
-        bufferWriter = OmegaGTE::GEBufferWriter::Create();
-        if(bufferWriter == nullptr){
-            std::cout << "Failed to create compositor buffer writer." << std::endl;
-            resetGlobalRenderAssetsState();
-            return;
-        }
-
-        auto shaderSrcPath = getCompositorShaderSourcePath();
-        if(shaderSrcPath.empty()){
-            std::cout << "Failed to resolve compositor shader source path." << std::endl;
-            resetGlobalRenderAssetsState();
-            return;
-        }
-        try {
-            auto compiledLib = gte.omegaSlCompiler->compile({
-                OmegaSLCompiler::Source::fromFile(shaderSrcPath)
-            });
-            shaderLibrary = gte.graphicsEngine->loadShaderLibraryRuntime(compiledLib);
-        }
-        catch(const std::exception &ex){
-            std::cout << "Failed to compile compositor shader source `" << shaderSrcPath
-                      << "`: " << ex.what() << std::endl;
-            resetGlobalRenderAssetsState();
-            return;
-        }
-        catch(...){
-            std::cout << "Failed to compile compositor shader source `" << shaderSrcPath
-                      << "` due to an unknown exception." << std::endl;
-            resetGlobalRenderAssetsState();
-            return;
-        }
-        if(shaderLibrary == nullptr){
-            std::cout << "Failed to load compositor shader library from `" << shaderSrcPath << "`." << std::endl;
-            resetGlobalRenderAssetsState();
-            return;
-        }
-        auto getShader = [&](const char *name) -> SharedHandle<OmegaGTE::GTEShader> {
-            auto it = shaderLibrary->shaders.find(name);
-            if(it == shaderLibrary->shaders.end() || it->second == nullptr){
-                std::cout << "Missing shader function " << name << std::endl;
-                return nullptr;
-            }
-            return it->second;
-        };
-
-        OMEGAWTK_DEBUG("Phase 1");
-
-        OmegaGTE::RenderPipelineDescriptor renderPipelineDescriptor {};
-        renderPipelineDescriptor.cullMode = OmegaGTE::RasterCullMode::None;
-        renderPipelineDescriptor.depthAndStencilDesc = {false,false};
-        renderPipelineDescriptor.triangleFillMode = OmegaGTE::TriangleFillMode::Solid;
-        renderPipelineDescriptor.rasterSampleCount = 1;
-        renderPipelineDescriptor.colorPixelFormats = { OmegaGTE::PixelFormat::BGRA8Unorm };
-        renderPipelineDescriptor.vertexFunc = getShader("mainVertex");
-        renderPipelineDescriptor.fragmentFunc = getShader("mainFragment");
-
-        if(renderPipelineDescriptor.vertexFunc == nullptr || renderPipelineDescriptor.fragmentFunc == nullptr){
-            std::cout << "Failed to initialize mandatory color pipeline shaders." << std::endl;
-            resetGlobalRenderAssetsState();
-            return;
-        }
-
-        renderPipelineState = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
-        if(renderPipelineState == nullptr){
-            std::cout << "Failed to create mandatory color render pipeline state." << std::endl;
-            resetGlobalRenderAssetsState();
-            return;
-        }
-
-        OMEGAWTK_DEBUG("Phase 2");
-
-        renderPipelineDescriptor.vertexFunc = getShader("textureVertex");
-        renderPipelineDescriptor.fragmentFunc = getShader("textureFragment");
-        if(renderPipelineDescriptor.vertexFunc != nullptr && renderPipelineDescriptor.fragmentFunc != nullptr){
-            textureRenderPipelineState = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
-            if(textureRenderPipelineState == nullptr){
-                std::cout << "Texture render pipeline creation failed." << std::endl;
-            }
-        }
-        else {
-            textureRenderPipelineState.reset();
-            std::cout << "Texture render pipeline is unavailable." << std::endl;
-        }
-
-        renderPipelineDescriptor.vertexFunc = getShader("copyVertex");
-        renderPipelineDescriptor.fragmentFunc = getShader("copyFragment");
-        if(renderPipelineDescriptor.vertexFunc != nullptr && renderPipelineDescriptor.fragmentFunc != nullptr){
-            finalCopyRenderPipelineState = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
-            if(finalCopyRenderPipelineState == nullptr){
-                std::cout << "Final copy pipeline creation failed." << std::endl;
-            }
-        }
-        else {
-            finalCopyRenderPipelineState.reset();
-            std::cout << "Final copy pipeline is unavailable." << std::endl;
-        }
-
-        OMEGAWTK_DEBUG("Phase 3");
-
-//        OmegaGTE::ComputePipelineDescriptor linearGradientPipelineDesc {};
-//        linearGradientPipelineDesc.computeFunc = shaderLibrary->shaders["linearGradient"];
-//        linearGradientPipelineState = gte.graphicsEngine->makeComputePipelineState(linearGradientPipelineDesc);
-
-        // Blur compute pipelines.
-        auto blurHFunc = getShader("gaussianBlurH");
-        auto blurVFunc = getShader("gaussianBlurV");
-        auto dirBlurFunc = getShader("directionalBlur");
-        if(blurHFunc != nullptr){
-            OmegaGTE::ComputePipelineDescriptor desc {};
-            desc.computeFunc = blurHFunc;
-            gaussianBlurHPipelineState = gte.graphicsEngine->makeComputePipelineState(desc);
-        }
-        if(blurVFunc != nullptr){
-            OmegaGTE::ComputePipelineDescriptor desc {};
-            desc.computeFunc = blurVFunc;
-            gaussianBlurVPipelineState = gte.graphicsEngine->makeComputePipelineState(desc);
-        }
-        if(dirBlurFunc != nullptr){
-            OmegaGTE::ComputePipelineDescriptor desc {};
-            desc.computeFunc = dirBlurFunc;
-            directionalBlurPipelineState = gte.graphicsEngine->makeComputePipelineState(desc);
-        }
-
-        auto struct_size = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4,OMEGASL_FLOAT2,OMEGASL_FLOAT2});
-
-        auto pos = OmegaGTE::FVec<4>::Create();
-        auto texCoord = OmegaGTE::FVec<2>::Create();
-        auto pad = OmegaGTE::FVec<2>::Create();
-        pad[0][0] = 0.f; pad[1][0] = 0.f;
-        pos[0][0] = -1.f;
-        pos[1][0] = 1.f;
-        pos[2][0] = 0.f;
-        pos[3][0] = 1.f;
-
-        texCoord[0][0] = 0.f;
-        texCoord[1][0] = 0.f;
-        finalTextureDrawBuffer = gte.graphicsEngine->makeBuffer({OmegaGTE::BufferDescriptor::Upload,struct_size * 6,struct_size});
-        if(finalTextureDrawBuffer == nullptr){
-            std::cout << "Failed to create compositor fullscreen draw buffer." << std::endl;
-            resetGlobalRenderAssetsState();
-            return;
-        }
-        bufferWriter->setOutputBuffer(finalTextureDrawBuffer);
-
-        OMEGAWTK_DEBUG("Phase 4");
-        /// Triangle 1
-        bufferWriter->structBegin();
-        bufferWriter->writeFloat4(pos);
-        bufferWriter->writeFloat2(texCoord);
-        bufferWriter->writeFloat2(pad);
-        bufferWriter->structEnd();
-        bufferWriter->sendToBuffer();
-
-        texCoord[1][0] = 1.f;
-        pos[1][0] = -1.f;
-
-        bufferWriter->structBegin();
-        bufferWriter->writeFloat4(pos);
-        bufferWriter->writeFloat2(texCoord);
-        bufferWriter->writeFloat2(pad);
-        bufferWriter->structEnd();
-        bufferWriter->sendToBuffer();
-
-        texCoord[0][0] = 1.f;
-        pos[0][0] = 1.f;
-
-        bufferWriter->structBegin();
-        bufferWriter->writeFloat4(pos);
-        bufferWriter->writeFloat2(texCoord);
-        bufferWriter->writeFloat2(pad);
-        bufferWriter->structEnd();
-        bufferWriter->sendToBuffer();
-
-
-        /// Triangle 2
-
-        texCoord[0][0] = texCoord[1][0] = 0.f;
-        pos[1][0] = 1.f;
-        pos[0][0] = -1.f;
-
-        bufferWriter->structBegin();
-        bufferWriter->writeFloat4(pos);
-        bufferWriter->writeFloat2(texCoord);
-        bufferWriter->writeFloat2(pad);
-        bufferWriter->structEnd();
-        bufferWriter->sendToBuffer();
-
-        texCoord[0][0] = 1.f;
-        pos[0][0] = 1.f;
-
-        bufferWriter->structBegin();
-        bufferWriter->writeFloat4(pos);
-        bufferWriter->writeFloat2(texCoord);
-        bufferWriter->writeFloat2(pad);
-        bufferWriter->structEnd();
-        bufferWriter->sendToBuffer();
-
-        texCoord[1][0] = 1.f;
-        pos[1][0] = -1.f;
-
-        bufferWriter->structBegin();
-        bufferWriter->writeFloat4(pos);
-        bufferWriter->writeFloat2(texCoord);
-        bufferWriter->writeFloat2(pad);
-        bufferWriter->structEnd();
-        bufferWriter->sendToBuffer();
-
-        bufferWriter->flush();
-    }
-
-    void destroyGlobalRenderAssets(){
-        finalCopyPipelinesByFormat.clear();
-        finalCopyRenderPipelineState.reset();
-        finalTextureDrawBuffer.reset();
-        shaderLibrary.reset();
-        renderPipelineState.reset();
-        textureRenderPipelineState.reset();
-        linearGradientPipelineState.reset();
-        gaussianBlurHPipelineState.reset();
-        gaussianBlurVPipelineState.reset();
-        directionalBlurPipelineState.reset();
-        bufferWriter.reset();
-    }
-
-    static SharedHandle<OmegaGTE::GERenderPipelineState> getFinalCopyPipelineForFormat(OmegaGTE::PixelFormat fmt){
-        auto it = finalCopyPipelinesByFormat.find(fmt);
-        if(it != finalCopyPipelinesByFormat.end() && it->second != nullptr){
-            return it->second;
-        }
-        // The default pipeline was created with RGBA8Unorm. If that matches, reuse it.
-        if(fmt == OmegaGTE::PixelFormat::RGBA8Unorm && finalCopyRenderPipelineState != nullptr){
-            finalCopyPipelinesByFormat[fmt] = finalCopyRenderPipelineState;
-            return finalCopyRenderPipelineState;
-        }
-        // Create a new pipeline for this format using the copy shaders.
-        // Do NOT fall back to finalCopyRenderPipelineState when the requested
-        // format differs from RGBA8Unorm — the Vulkan render pass formats
-        // would be incompatible (e.g. BGRA8Unorm swapchain vs RGBA8Unorm
-        // pipeline), resulting in a validation error and blank output.
-        if(shaderLibrary == nullptr){
-#ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "[WTK Diag] getFinalCopyPipelineForFormat: shaderLibrary is null, cannot create pipeline for format " << static_cast<int>(fmt) << std::endl;
-#endif
-            return nullptr;
-        }
-        auto copyVertex = shaderLibrary->shaders.count("copyVertex") ? shaderLibrary->shaders["copyVertex"] : nullptr;
-        auto copyFragment = shaderLibrary->shaders.count("copyFragment") ? shaderLibrary->shaders["copyFragment"] : nullptr;
-        if(copyVertex == nullptr || copyFragment == nullptr){
-#ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "[WTK Diag] getFinalCopyPipelineForFormat: copy shaders missing, cannot create pipeline for format " << static_cast<int>(fmt) << std::endl;
-#endif
-            return nullptr;
-        }
-        OmegaGTE::RenderPipelineDescriptor desc {};
-        desc.cullMode = OmegaGTE::RasterCullMode::None;
-        desc.depthAndStencilDesc = {false,false};
-        desc.triangleFillMode = OmegaGTE::TriangleFillMode::Solid;
-        desc.rasterSampleCount = 1;
-        desc.vertexFunc = copyVertex;
-        desc.fragmentFunc = copyFragment;
-        desc.colorPixelFormats = { fmt };
-        auto pipeline = gte.graphicsEngine->makeRenderPipelineState(desc);
-        if(pipeline != nullptr){
-            finalCopyPipelinesByFormat[fmt] = pipeline;
-#ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "[WTK Diag] getFinalCopyPipelineForFormat: created pipeline for format " << static_cast<int>(fmt) << std::endl;
-#endif
-        } else {
-#ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "[WTK Diag] getFinalCopyPipelineForFormat: pipeline creation FAILED for format " << static_cast<int>(fmt) << std::endl;
-#endif
-        }
-        return pipeline;
-    }
 
     static void createResourcePools(){
         OmegaGTE::HeapDescriptor texHeapDesc{};
@@ -480,13 +140,13 @@ namespace OmegaWTK::Composition {
     }
 
     void InitializeEngine(){
-        loadGlobalRenderAssets();
+        BackendResourceFactory::instance().pipelines().initialize();
         createResourcePools();
     }
 
     void CleanupEngine(){
         destroyResourcePools();
-        destroyGlobalRenderAssets();
+        BackendResourceFactory::instance().pipelines().shutdown();
     }
 
 BackendRenderTargetContext::BackendRenderTargetContext(Composition::Rect & rect,
@@ -854,7 +514,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
             auto tex = preEffectTarget->underlyingTexture();
             if(tex != nullptr){
                 auto nativeFormat = renderTarget->pixelFormat();
-                auto finalPipeline = getFinalCopyPipelineForFormat(nativeFormat);
+                auto finalPipeline = pipelineRegistry().finalCopyForFormat(nativeFormat);
                 if(finalPipeline != nullptr){
                     auto cb = renderTarget->commandBuffer();
                     renderTarget->notifyCommandBuffer(cb, fence);
@@ -874,7 +534,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                     OmegaGTE::GEScissorRect sr {0.f, 0.f, static_cast<float>(backingWidth), static_cast<float>(backingHeight)};
                     cb->setViewports({vp});
                     cb->setScissorRects({sr});
-                    cb->bindResourceAtVertexShader(finalTextureDrawBuffer, 1);
+                    auto quadBuffer = pipelineRegistry().fullscreenQuadBuffer();
+                    cb->bindResourceAtVertexShader(quadBuffer, 1);
                     cb->bindResourceAtFragmentShader(tex, 2);
                     cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
                     cb->endRenderPass();
@@ -898,6 +559,8 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
     void
     BackendRenderTargetContext::createGradientTexture(bool linearOrRadial, Gradient &gradient, OmegaGTE::GRect &rect,
                                                       SharedHandle<OmegaGTE::GETexture> &dest) {
+        auto bufferWriter = pipelineRegistry().bufferWriter();
+        auto linearGradientPipelineState = pipelineRegistry().linearGradient();
         if(renderTarget == nullptr || dest == nullptr || bufferWriter == nullptr || linearGradientPipelineState == nullptr){
             return;
         }
@@ -949,6 +612,13 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
     typedef decltype(VisualCommand::params) VisualCommandParams;
 
     void BackendRenderTargetContext::renderToTarget(VisualCommand::Type type, void *params) {
+        auto & pipelines = pipelineRegistry();
+        auto bufferWriter = pipelines.bufferWriter();
+        auto renderPipelineState = pipelines.color();
+        auto textureRenderPipelineState = pipelines.texture();
+        auto gaussianBlurHPipelineState = pipelines.gaussianBlurH();
+        auto gaussianBlurVPipelineState = pipelines.gaussianBlurV();
+        auto directionalBlurPipelineState = pipelines.directionalBlur();
         if(bufferWriter == nullptr || preEffectTarget == nullptr || tessellationEngineContext == nullptr){
             return;
         }
@@ -1543,6 +1213,14 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                 return;
             }
             if(width == 0 || height == 0){
+                return;
+            }
+            auto & pipelines = pipelineRegistry();
+            auto bufferWriter = pipelines.bufferWriter();
+            auto gaussianBlurHPipelineState = pipelines.gaussianBlurH();
+            auto gaussianBlurVPipelineState = pipelines.gaussianBlurV();
+            auto directionalBlurPipelineState = pipelines.directionalBlur();
+            if(bufferWriter == nullptr){
                 return;
             }
 

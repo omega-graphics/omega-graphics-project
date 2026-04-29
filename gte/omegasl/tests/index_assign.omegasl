@@ -1,0 +1,37 @@
+struct Scratch {
+    float4 v;
+    float4x4 m;
+};
+
+buffer<Scratch> src : 0;
+buffer<Scratch> dst : 1;
+
+[in src, out dst]
+compute(x=1, y=1, z=1)
+void index_assign(uint3 tid : GlobalThreadID){
+    /// 1. Vector scalar lvalue write.
+    float4 c = src[0].v;
+    c[3] = 1.0;
+
+    /// 2. Vector compound assignment via index.
+    c[0] += 2.0;
+
+    /// 3. Postfix increment on indexed lvalue.
+    c[1]++;
+
+    /// 4. Matrix column-vector write.
+    float4x4 m = src[0].m;
+    m[1] = float4(0.0, 1.0, 0.0, 0.0);
+
+    /// 5. Matrix double-indexed single-element write.
+    m[2][3] = 5.0;
+
+    /// 6. Index on both sides of an assignment.
+    c[2] = src[0].v[0];
+
+    /// 7. Read-side: confirm m[i][j] still works as an rvalue.
+    float diag = m[0][0] + m[1][1] + m[2][2] + m[3][3];
+
+    dst[0].v = c + float4(diag, diag, diag, diag);
+    dst[0].m = m;
+}

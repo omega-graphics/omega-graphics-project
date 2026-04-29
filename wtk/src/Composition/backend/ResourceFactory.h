@@ -1,4 +1,5 @@
 #include "VisualTree.h"
+#include <memory>
 #include <mutex>
 
 #ifndef OMEGAWTK_COMPOSITION_BACKEND_RESOURCEFACTORY_H
@@ -6,13 +7,27 @@
 
 namespace OmegaWTK::Composition {
 
+    class PipelineRegistry;
+
     /// Centralizes GPU resource creation and ensures it happens on the main thread.
     /// Resources that interact with the platform display pipeline (CAMetalLayer,
     /// swap chains, native render targets, offscreen textures for the blit pass)
     /// must be created on the main thread to integrate correctly with
     /// Core Animation / DComp / the window server.
     class BackendResourceFactory {
+        std::unique_ptr<PipelineRegistry> pipelines_;
     public:
+        BackendResourceFactory();
+        ~BackendResourceFactory();
+
+        /// Process-wide factory accessor. The factory is the single owner of
+        /// the compositor's process-global GPU resources (pipelines today;
+        /// pools, fences, and gradient textures in later phases).
+        static BackendResourceFactory & instance();
+
+        /// Pipeline state objects, shader library, fullscreen quad buffer,
+        /// per-format copy pipeline cache.
+        PipelineRegistry & pipelines() { return *pipelines_; }
 
         struct VisualTreeBundle {
             SharedHandle<BackendVisualTree> visualTree;

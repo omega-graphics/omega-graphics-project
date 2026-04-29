@@ -1,0 +1,32 @@
+struct MyVertex {
+    float4 pos;
+    float4 color;
+};
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float4 color : Color;
+};
+
+struct FragOut internal {
+    float4 color : Color(0);
+    float depth : Depth;
+};
+
+buffer<MyVertex> vbuf : 0;
+
+[in vbuf]
+vertex VertexRaster depthVert(uint vid : VertexID){
+    MyVertex v = vbuf[vid];
+    VertexRaster r;
+    r.pos = v.pos;
+    r.color = v.color;
+    return r;
+}
+
+fragment FragOut depthFrag(VertexRaster raster){
+    FragOut o;
+    o.color = raster.color;
+    o.depth = raster.color[0];
+    return o;
+}

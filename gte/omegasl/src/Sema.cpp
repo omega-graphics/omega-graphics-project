@@ -1204,6 +1204,37 @@ namespace omegasl {
                             auto e = std::make_unique<InvalidAttribute>(std::string("Invalid attribute name `") + f.attributeName.value() + "`"); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                             return false;
                         }
+
+                        /// Per-attribute type / index rules.
+                        if(f.attributeName.value() == ATTRIBUTE_DEPTH){
+                            if(field_ty != ast::builtins::float_type){
+                                auto e = std::make_unique<TypeError>(std::string("Attribute `") + ATTRIBUTE_DEPTH + "` requires a `float` field, not `" + field_ty->name + "`");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            if(f.attributeIndex.has_value()){
+                                auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + ATTRIBUTE_DEPTH + "` does not take an index");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                        }
+                        else if(f.attributeName.value() == ATTRIBUTE_COLOR){
+                            if(field_ty != ast::builtins::float4_type){
+                                auto e = std::make_unique<TypeError>(std::string("Attribute `") + ATTRIBUTE_COLOR + "` requires a `float4` field, not `" + field_ty->name + "`");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                        }
+                        else if(f.attributeIndex.has_value()){
+                            /// Only `Color(N)` accepts an index today.
+                            auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + f.attributeName.value() + "` does not take an index");
+                            e->loc = _decl->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                            return false;
+                        }
                     }
 
                     field_types.insert(std::make_pair(f.name,f.typeExpr));
@@ -1453,6 +1484,28 @@ namespace omegasl {
                             diagnostics->addError(std::move(e));
                             return false;
                         }
+                        if(p.attributeIndex.has_value()){
+                            auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + p.attributeName.value() + "` does not take an index in parameter context");
+                            e->loc = _decl->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                            return false;
+                        }
+                        if(shaderType == ast::ShaderDecl::Fragment){
+                            if(p.attributeName.value() == ATTRIBUTE_FRONTFACING && p_type != ast::builtins::bool_type){
+                                auto e = std::make_unique<TypeError>(std::string("Attribute `") + ATTRIBUTE_FRONTFACING + "` requires a `bool` parameter, not `" + p_type->name + "`");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            if((p.attributeName.value() == ATTRIBUTE_SAMPLEINDEX
+                                || p.attributeName.value() == ATTRIBUTE_COVERAGE)
+                               && p_type != ast::builtins::uint_type){
+                                auto e = std::make_unique<TypeError>(std::string("Attribute `") + p.attributeName.value() + "` requires a `uint` parameter, not `" + p_type->name + "`");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                        }
                         if(shaderType == ast::ShaderDecl::Compute){
                             if(p.attributeName.value() == ATTRIBUTE_GLOBALTHREAD_ID && paramIndex != 0){
                                 auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + ATTRIBUTE_GLOBALTHREAD_ID + "` must be the first parameter in a compute shader");
@@ -1488,10 +1541,16 @@ namespace omegasl {
 
 
                 /// 4. Check return types.
-                /// (Vertex shaders can return internal struct types while, fragment shaders return float4 and compute shaders do not return any value.)
+                /// (Vertex shaders can return internal struct types. Fragment
+                /// shaders return either `float4` (single render target) or an
+                /// `internal` struct of attributed fields (`Color(N)`, `Depth`).
+                /// Compute shaders do not return any value.)
                 if(shaderType == ast::ShaderDecl::Fragment){
-                    if(!_decl->returnType->compare(ast::TypeExpr::Create(ast::builtins::float4_type))){
-                        auto e = std::make_unique<TypeError>(std::string("Fragment shader `") + _decl->name + "` must return a float4, not " + _decl->returnType->name);
+                    auto retTy = resolveTypeWithExpr(_decl->returnType);
+                    bool isFloat4 = _decl->returnType->compare(ast::TypeExpr::Create(ast::builtins::float4_type));
+                    bool isStruct = retTy != nullptr && !retTy->builtin;
+                    if(!isFloat4 && !isStruct){
+                        auto e = std::make_unique<TypeError>(std::string("Fragment shader `") + _decl->name + "` must return a float4 or an internal struct, not " + _decl->returnType->name);
                         e->loc = _decl->loc.value_or(ErrorLoc{});
                         diagnostics->addError(std::move(e));
                         return false;

@@ -26,7 +26,8 @@ namespace omegasl {
 
     inline bool isValidAttributeInContext(OmegaCommon::StrRef subject,AttributeContext context){
         if(context == AttributeContext::StructField){
-            return (subject == ATTRIBUTE_COLOR) || (subject == ATTRIBUTE_POSITION) || (subject == ATTRIBUTE_TEXCOORD);
+            return (subject == ATTRIBUTE_COLOR) || (subject == ATTRIBUTE_POSITION)
+                || (subject == ATTRIBUTE_TEXCOORD) || (subject == ATTRIBUTE_DEPTH);
         }
         else if(context == AttributeContext::VertexShaderArgument || context == AttributeContext::HullShaderArgument || context == AttributeContext::DomainShaderArgument){
             return (subject == ATTRIBUTE_VERTEX_ID);
@@ -35,7 +36,8 @@ namespace omegasl {
             return (subject == ATTRIBUTE_GLOBALTHREAD_ID) || (subject == ATTRIBUTE_THREADGROUP_ID) || (subject == ATTRIBUTE_LOCALTHREAD_ID);
         }
         else if(context == AttributeContext::FragmentShaderArgument){
-            return false;
+            return (subject == ATTRIBUTE_FRONTFACING) || (subject == ATTRIBUTE_SAMPLEINDEX)
+                || (subject == ATTRIBUTE_COVERAGE);
         }
         else {
             return false;

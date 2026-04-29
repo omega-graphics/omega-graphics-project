@@ -103,6 +103,10 @@ typedef int ASTType;
 #define ATTRIBUTE_GLOBALTHREAD_ID "GlobalThreadID"
 #define ATTRIBUTE_THREADGROUP_ID "ThreadGroupID"
 #define ATTRIBUTE_LOCALTHREAD_ID "LocalThreadID"
+#define ATTRIBUTE_DEPTH "Depth"
+#define ATTRIBUTE_FRONTFACING "FrontFacing"
+#define ATTRIBUTE_SAMPLEINDEX "SampleIndex"
+#define ATTRIBUTE_COVERAGE "Coverage"
 
 // Static Sampler Properties
 #define SAMPLER_PROP_FILTER "filter"

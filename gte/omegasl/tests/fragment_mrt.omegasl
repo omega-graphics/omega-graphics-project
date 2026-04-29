@@ -1,0 +1,36 @@
+struct MyVertex {
+    float4 pos;
+    float4 color;
+};
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float4 color : Color;
+    float2 uv : TexCoord;
+};
+
+struct GBuffer internal {
+    float4 albedo : Color(0);
+    float4 normal : Color(1);
+    float4 motion : Color(2);
+};
+
+buffer<MyVertex> vbuf : 0;
+
+[in vbuf]
+vertex VertexRaster gbufVert(uint vid : VertexID){
+    MyVertex v = vbuf[vid];
+    VertexRaster r;
+    r.pos = v.pos;
+    r.color = v.color;
+    r.uv = float2(v.pos[0], v.pos[1]);
+    return r;
+}
+
+fragment GBuffer gbufFrag(VertexRaster raster){
+    GBuffer o;
+    o.albedo = raster.color;
+    o.normal = float4(0.0, 0.0, 1.0, 0.0);
+    o.motion = float4(raster.uv, 0.0, 0.0);
+    return o;
+}

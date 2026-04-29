@@ -1,0 +1,31 @@
+struct MyVertex {
+    float4 pos;
+    float4 color;
+};
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float4 color : Color;
+};
+
+buffer<MyVertex> vbuf : 0;
+
+[in vbuf]
+vertex VertexRaster facingVert(uint vid : VertexID){
+    MyVertex v = vbuf[vid];
+    VertexRaster r;
+    r.pos = v.pos;
+    r.color = v.color;
+    return r;
+}
+
+fragment float4 facingFrag(VertexRaster raster, bool ff : FrontFacing, uint si : SampleIndex){
+    float4 c = raster.color;
+    if(!ff){
+        c = c * 0.5;
+    }
+    if(si == 0){
+        c = c + float4(0.0, 0.0, 0.0, 1.0);
+    }
+    return c;
+}

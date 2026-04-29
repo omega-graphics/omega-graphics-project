@@ -535,8 +535,13 @@ Attributes are attached to struct fields or shader parameters using `: Attribute
 | `VertexID` | Vertex/Hull/Domain shader parameter | Index of the current vertex |
 | `InstanceID` | Vertex shader parameter | Index of the current instance |
 | `Position` | Internal struct field | Vertex position output |
-| `Color` | Internal struct field | Fragment color |
+| `Color` | Internal struct field | Inter-stage color varying (vertex→fragment) |
+| `Color(N)` | Internal struct field (fragment output) | Render target N (MRT) |
 | `TexCoord` | Internal struct field | Texture coordinate |
+| `Depth` | Internal struct field (fragment output, `float`) | Per-fragment depth output |
+| `FrontFacing` | Fragment shader parameter (`bool`) | True if the fragment is part of a front-facing primitive |
+| `SampleIndex` | Fragment shader parameter (`uint`) | Sample index when running per-sample (MSAA) |
+| `Coverage` | Fragment shader parameter (`uint`) | Coverage mask for the current fragment (input only) |
 
 ### Compute pipeline attributes
 
@@ -558,6 +563,38 @@ struct Raster internal {
     float4 pos : Position;
     float2 uv : TexCoord;
 };
+```
+
+A fragment shader can return either a single `float4` (which is bound to render
+target 0) or an `internal` struct of `Color(N)` / `Depth` fields for MRT or
+depth output:
+
+```omegasl
+struct GBuffer internal {
+    float4 albedo : Color(0);
+    float4 normal : Color(1);
+    float  depth  : Depth;
+};
+
+fragment GBuffer myFrag(Raster r){
+    GBuffer o;
+    o.albedo = float4(1.0, 1.0, 1.0, 1.0);
+    o.normal = float4(0.0, 0.0, 1.0, 0.0);
+    o.depth  = 0.5;
+    return o;
+}
+```
+
+Per-fragment scalar inputs are declared as additional fragment-shader
+parameters:
+
+```omegasl
+fragment float4 myFrag(Raster r, bool ff : FrontFacing, uint si : SampleIndex){
+    if(!ff){
+        return r.color * 0.5;
+    }
+    return r.color;
+}
 ```
 
 ## 9. Compilation
@@ -624,6 +661,8 @@ A snapshot of what is implemented, what is partial, and what is intentionally ab
 - **Textures / samplers** — `texture1d/2d/3d`, `sampler1d/2d/3d`, static samplers with filter + address mode configuration.
 - **User-defined functions** — emitted as helpers ahead of shader entry points.
 - **Shader stages** — `vertex`, `fragment`, `compute`, `hull`, `domain` across all three backends.
+- **Fragment outputs** — single `float4` return (target 0) or `internal` struct return with `Color(N)` MRT outputs and an optional `Depth` field.
+- **Per-fragment scalar inputs** — `bool : FrontFacing`, `uint : SampleIndex`, `uint : Coverage` (input only) as fragment-shader parameters.
 - **Statements** — variable declaration, assignment (`=`, `+=`, `-=`, `*=`, `/=`, `&=`, `|=`, `^=`, `<<=`, `>>=`), `return` (bare and with value), `if` / `else if` / `else`, `for`, `while`, **`break`**, **`continue`**.
 - **Operators** — arithmetic (`+ - * /`), comparison (`< <= > >=`), equality (`== !=`), logical (`&& || !`), bitwise binary (`& | ^ << >>`), bitwise unary (`~`), prefix/postfix `++`/`--`, prefix `-`, C-style cast, address-of / dereference.
 - **Numeric literals** — decimal `int`, hex `int` (`0xFF`), `uint` suffix (`42u`, `0xFFu`), `float` suffix (`3.14f`), auto-promotion of oversized hex literals to `uint`, and literal coercion between numeric scalars (int/uint/float literals adapt to the target scalar type in variable initializers and binary expressions; float literals only coerce to float).

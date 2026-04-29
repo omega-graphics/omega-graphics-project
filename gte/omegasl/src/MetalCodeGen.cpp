@@ -200,7 +200,8 @@ using namespace metal;
                 out << " *";
             }
         }
-        inline void writeAttributeName(OmegaCommon::StrRef attributeName,std::ostream & out){
+        inline void writeAttributeName(OmegaCommon::StrRef attributeName,std::ostream & out,
+                                       std::optional<unsigned> attributeIndex = {}){
             if(attributeName == ATTRIBUTE_POSITION){
                 out << "position";
             }
@@ -209,6 +210,25 @@ using namespace metal;
             }
             else if(attributeName == ATTRIBUTE_INSTANCE_ID){
                 out << "instance_id";
+            }
+            else if(attributeName == ATTRIBUTE_COLOR){
+                /// Indexed `Color(N)` is a fragment-output target; bare `Color`
+                /// flows through MSL untagged (the field is just a varying).
+                if(attributeIndex.has_value()){
+                    out << "color(" << attributeIndex.value() << ")";
+                }
+            }
+            else if(attributeName == ATTRIBUTE_DEPTH){
+                out << "depth(any)";
+            }
+            else if(attributeName == ATTRIBUTE_FRONTFACING){
+                out << "front_facing";
+            }
+            else if(attributeName == ATTRIBUTE_SAMPLEINDEX){
+                out << "sample_id";
+            }
+            else if(attributeName == ATTRIBUTE_COVERAGE){
+                out << "sample_mask";
             }
             else if(attributeName == ATTRIBUTE_GLOBALTHREAD_ID){
                 out << "thread_position_in_grid";
@@ -536,9 +556,17 @@ using namespace metal;
                         writeTypeExpr(p.typeExpr,out);
                         out << " " << p.name;
                         if(p.attributeName.has_value()){
-                            if(p.attributeName != ATTRIBUTE_COLOR && p.attributeName != ATTRIBUTE_TEXCOORD){
+                            /// Plain `Color` (no index) and `TexCoord` are
+                            /// vertex→fragment varyings; MSL leaves them
+                            /// untagged on the struct. `Color(N)`, `Depth`,
+                            /// and other fragment-output / Metal-specific
+                            /// semantics get an `[[...]]` qualifier.
+                            bool isBareColor = (p.attributeName.value() == ATTRIBUTE_COLOR
+                                                && !p.attributeIndex.has_value());
+                            bool isTexCoord  = (p.attributeName.value() == ATTRIBUTE_TEXCOORD);
+                            if(!isBareColor && !isTexCoord){
                                 out << "[[";
-                                writeAttributeName(p.attributeName.value(),out);
+                                writeAttributeName(p.attributeName.value(),out,p.attributeIndex);
                                 out << "]]";
                             }
                         }
@@ -845,7 +873,12 @@ using namespace metal;
                         writeTypeExpr(p.typeExpr,shaderOut);
                         shaderOut << " " << p.name << " ";
 
-                        if(_decl->shaderType == ast::ShaderDecl::Fragment){
+                        /// On fragment, only the rasterizer-struct parameter
+                        /// gets `[[stage_in]]`. Per-fragment scalar inputs
+                        /// (`bool : FrontFacing`, `uint : SampleIndex`, ...)
+                        /// carry their own MSL attribute.
+                        if(_decl->shaderType == ast::ShaderDecl::Fragment
+                           && !p.attributeName.has_value()){
                             shaderOut << "[[stage_in]]";
                         }
 
@@ -860,7 +893,7 @@ using namespace metal;
                                 shadermap_entry.computeShaderParamsDesc.useThreadGroupID = true;
                             }
                             shaderOut << "[[";
-                            writeAttributeName(p.attributeName.value(),shaderOut);
+                            writeAttributeName(p.attributeName.value(),shaderOut,p.attributeIndex);
                             shaderOut << "]]";
                         }
                     }

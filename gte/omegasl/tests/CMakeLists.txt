@@ -61,6 +61,10 @@ add_omegasl_compile_test(omegasl_compile_math_builtins       math_builtins.omega
 add_omegasl_compile_test(omegasl_compile_matrix_ops          matrix_ops.omegasl)
 add_omegasl_compile_test(omegasl_compile_texture_write       texture_write.omegasl)
 add_omegasl_compile_test(omegasl_compile_discard             discard.omegasl)
+add_omegasl_compile_test(omegasl_compile_fragment_depth      fragment_depth.omegasl)
+add_omegasl_compile_test(omegasl_compile_fragment_mrt        fragment_mrt.omegasl)
+add_omegasl_compile_test(omegasl_compile_fragment_inputs     fragment_inputs.omegasl)
+add_omegasl_compile_test(omegasl_compile_index_assign        index_assign.omegasl)
 
 # --- Real-world shader tests (UI / game engine patterns) ---
 add_omegasl_compile_test(omegasl_compile_blinn_phong         blinn_phong.omegasl)

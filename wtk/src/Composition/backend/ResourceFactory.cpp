@@ -1,8 +1,20 @@
 #include "ResourceFactory.h"
+#include "Pipeline.h"
 #include "MainThreadDispatch.h"
 #include "omegaWTK/Core/Core.h"
 
 namespace OmegaWTK::Composition {
+
+    BackendResourceFactory::BackendResourceFactory()
+        : pipelines_(std::make_unique<PipelineRegistry>())
+    {}
+
+    BackendResourceFactory::~BackendResourceFactory() = default;
+
+    BackendResourceFactory & BackendResourceFactory::instance(){
+        static BackendResourceFactory factory;
+        return factory;
+    }
 
     BackendResourceFactory::VisualTreeBundle
     BackendResourceFactory::createVisualTreeForView(
