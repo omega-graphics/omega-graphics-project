@@ -13,6 +13,7 @@ _NAMESPACE_BEGIN_
             std::function<void(const GECommandBufferCompletionInfo &)>;
     class GEBuffer;
     class GETexture;
+    class GEMesh;
     struct GEViewport;
     struct GEScissorRect;
 
@@ -215,6 +216,27 @@ _NAMESPACE_BEGIN_
             void drawIndexedPolygonsIndirect(PolygonType polygonType,
                                               SharedHandle<GEBuffer> & argumentBuffer,
                                               size_t argumentBufferOffset = 0);
+
+            /// @brief Bind a GEMesh's vertex buffer at the given resource
+            /// register, optionally bind its index buffer, and bind every
+            /// texture in `mesh->textureBindings` to the fragment shader at
+            /// the slot key. Equivalent to a sequence of
+            /// `bindResourceAtVertexShader` + `bindResourceAtFragmentShader`
+            /// + `setIndexBuffer` calls.
+            /// @param mesh The GEMesh to bind.
+            /// @param vertexSlot OmegaSL resource register for the vertex
+            ///                   buffer (matches the `: N` annotation on
+            ///                   the `buffer<T>` declaration in the shader).
+            void bindMesh(SharedHandle<GEMesh> & mesh, unsigned vertexSlot = 0);
+
+            /// @brief Bind and draw a GEMesh in one call. Topology and
+            /// vertex/index counts come from the mesh; the call resolves to
+            /// `drawPolygons` (non-indexed) or `drawIndexedPolygons`
+            /// (indexed) based on `mesh->descriptor.indexType`.
+            /// @param mesh The GEMesh to draw.
+            /// @param vertexSlot OmegaSL resource register for the vertex
+            ///                   buffer.
+            void drawMesh(SharedHandle<GEMesh> & mesh, unsigned vertexSlot = 0);
 
             /// @brief Finish Encoding a Render Pass.
             /// @paragraph This method must be called once a draw command has been encoded into the Render Pass.

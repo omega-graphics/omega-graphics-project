@@ -119,7 +119,7 @@ _NAMESPACE_BEGIN_
         void dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
                                            size_t argumentBufferOffset) override;
         void finishComputePass() override;
-        void setCompletionHandler(GECommandBufferCompletionHandler handler) override;
+        void setCompletionHandler(const GECommandBufferCompletionHandler & handler) override;
 
         GEMetalCommandBuffer(GEMetalCommandQueue *parentQueue);
         ~GEMetalCommandBuffer();

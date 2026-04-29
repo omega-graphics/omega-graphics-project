@@ -107,7 +107,11 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
         // ── Shader stages ──────────────────────────────────────
         // GEOMETRY_SHADER: Metal has no geometry stage.
-        features.flags |= GTEDEVICE_FEATURE_TESSELLATION_SHADER;
+        // TESSELLATION_SHADER: not advertised. Metal has no D3D-style
+        // hull stage, and the Metal codegen + runtime do not yet
+        // implement the compute-kernel-for-factors + post-tessellation-
+        // vertex pipeline that Apple's tessellation model requires.
+        // See OmegaSL-Reference.md bug 3.
         if(apple7){
             features.flags |= GTEDEVICE_FEATURE_MESH_SHADER;
             features.flags |= GTEDEVICE_FEATURE_VARIABLE_RATE_SHADING;

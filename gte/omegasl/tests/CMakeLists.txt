@@ -49,6 +49,14 @@ add_omegasl_compile_test(omegasl_compile_compute_gradient    compute_gradient.om
 add_omegasl_compile_test(omegasl_compile_user_functions      user_functions.omegasl)
 add_omegasl_compile_test(omegasl_compile_const_fold          const_fold.omegasl)
 add_omegasl_compile_test(omegasl_compile_tessellation        tessellation.omegasl)
+# Metal codegen + runtime have no tessellation pipeline yet, so the Metal
+# backend rejects hull/domain stages with a clear diagnostic. The test is
+# expected to fail on Apple builds — this verifies the diagnostic fires
+# rather than that the (nonexistent) Metal pipeline works.
+# See OmegaSL-Reference.md bug 3.
+if(APPLE)
+    set_tests_properties(omegasl_compile_tessellation PROPERTIES WILL_FAIL TRUE)
+endif()
 add_omegasl_compile_test(omegasl_compile_math_builtins       math_builtins.omegasl)
 add_omegasl_compile_test(omegasl_compile_matrix_ops          matrix_ops.omegasl)
 add_omegasl_compile_test(omegasl_compile_texture_write       texture_write.omegasl)

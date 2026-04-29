@@ -245,6 +245,15 @@ int main(int argc,char *argv[]){
         return 1;
     }
 
+    /// A backend can refuse to emit a stage it doesn't support yet
+    /// (e.g. Metal hull/domain — see OmegaSL-Reference.md bug 3).
+    /// In that case the backend has already printed a diagnostic;
+    /// exit nonzero without attempting to link a partial library.
+    if(codeGen->hasFatalErrors){
+        omegasl::ast::builtins::Cleanup();
+        return 1;
+    }
+
     if(!codeGen->linkShaderObjects()){
         omegasl::ast::builtins::Cleanup();
         return 1;

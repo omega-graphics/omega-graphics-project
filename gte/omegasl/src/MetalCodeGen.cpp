@@ -63,6 +63,35 @@ using namespace metal;
             return userFuncNames.count(std::string(name)) > 0;
         }
 
+        /// Metal's `texture<T>::read` / `::write` take unsigned coords
+        /// (`uint`/`uint2`/`uint3`). OmegaSL accepts both signed and
+        /// unsigned coords at the language level — building a coord via
+        /// `int2(x, y)` after signed arithmetic is common — so we cast
+        /// to the matching unsigned type at emit time. Without this,
+        /// `tex.read(int2(...))` produces "no matching member function"
+        /// errors against the ushort2/uint2 overloads. `uint2(uint2_v)`
+        /// is a no-op, so casting unconditionally based on the texture
+        /// type is safe for shaders that already use unsigned coords.
+        /// Returns nullptr if the texture type can't be resolved (caller
+        /// emits the coord unmodified in that case).
+        const char *metalUintCoordTypeForTexture(ast::Expr *texArg){
+            using namespace ast;
+            TypeExpr *texTypeExpr = texArg->resolvedType;
+            if(!texTypeExpr && texArg->type == ID_EXPR){
+                auto *resourceId = static_cast<IdExpr *>(texArg);
+                auto it = resourceStore.find(resourceId->id);
+                if(it != resourceStore.end()){
+                    texTypeExpr = (*it)->typeExpr;
+                }
+            }
+            if(!texTypeExpr) return nullptr;
+            auto *texTy = typeResolver->resolveTypeWithExpr(texTypeExpr);
+            if(texTy == builtins::texture1d_type) return "uint";
+            if(texTy == builtins::texture2d_type) return "uint2";
+            if(texTy == builtins::texture3d_type) return "uint3";
+            return nullptr;
+        }
+
         void emitUserFunctionSignature(ast::FuncDecl *f){
             writeTypeExpr(f->returnType, shaderOut);
             shaderOut << " " << mangleUserFuncName(f->name) << "(";
@@ -289,19 +318,32 @@ using namespace metal;
                     }
                     else if(func_name == BUILTIN_WRITE){
                         generated = true;
+                        const char *coordCast = metalUintCoordTypeForTexture(_expr->args[0]);
                         generateExpr(_expr->args[0]);
                         shaderOut << ".write(";
                         generateExpr(_expr->args[2]);
                         shaderOut << ",";
-                        generateExpr(_expr->args[1]);
+                        if(coordCast){
+                            shaderOut << coordCast << "(";
+                            generateExpr(_expr->args[1]);
+                            shaderOut << ")";
+                        } else {
+                            generateExpr(_expr->args[1]);
+                        }
                         shaderOut << ")";
                     }
                     else if(func_name == BUILTIN_READ){
                         generated = true;
+                        const char *coordCast = metalUintCoordTypeForTexture(_expr->args[0]);
                         generateExpr(_expr->args[0]);
-                        shaderOut << ".read";
-                        shaderOut << "(";
-                        generateExpr(_expr->args[1]);
+                        shaderOut << ".read(";
+                        if(coordCast){
+                            shaderOut << coordCast << "(";
+                            generateExpr(_expr->args[1]);
+                            shaderOut << ")";
+                        } else {
+                            generateExpr(_expr->args[1]);
+                        }
                         shaderOut << ")";
                     }
                     else if(func_name == BUILTIN_MAKE_INT2){ shaderOut << "int2"; }
@@ -510,6 +552,26 @@ using namespace metal;
                 case SHADER_DECL : {
                     level_count = 0;
                     auto *_decl = (ast::ShaderDecl *)decl;
+
+                    /// Metal has no direct hull-shader equivalent and the
+                    /// runtime has no tessellation pipeline plumbing yet.
+                    /// Reject hull/domain stages cleanly here instead of
+                    /// emitting structurally-invalid `.metal` source that
+                    /// the metal compiler would then reject with a
+                    /// confusing error. See OmegaSL-Reference.md bug 3.
+                    if(_decl->shaderType == ast::ShaderDecl::Hull ||
+                       _decl->shaderType == ast::ShaderDecl::Domain){
+                        const char *stage = (_decl->shaderType == ast::ShaderDecl::Hull) ? "hull" : "domain";
+                        std::cerr << "error: Metal backend does not support `" << stage
+                                  << "` shaders ('" << _decl->name
+                                  << "'). Tessellation on Metal requires a compute kernel for "
+                                     "patch factors plus a post-tessellation vertex stage; "
+                                     "this is not implemented yet (see OmegaSL-Reference.md bug 3)."
+                                  << std::endl;
+                        hasFatalErrors = true;
+                        break;
+                    }
+
                     OmegaCommon::String object_file;
 
                     if(opts.runtimeCompile){

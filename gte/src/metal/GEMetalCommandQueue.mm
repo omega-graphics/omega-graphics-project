@@ -879,7 +879,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         buffer = NSObjectHandle{NSOBJECT_CPP_BRIDGE [newBuffer retain]};
     };
 
-    void GEMetalCommandBuffer::setCompletionHandler(GECommandBufferCompletionHandler handler){
+    void GEMetalCommandBuffer::setCompletionHandler(const GECommandBufferCompletionHandler & handler){
         completionHandler = std::move(handler);
     }
 

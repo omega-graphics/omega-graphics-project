@@ -18,15 +18,53 @@ The actual root cause was not a Sema-level coercion gap — the failing tests al
 
 `blinn_phong` exposed a second, independent issue at the same time: its user-defined `saturate(float)` collided with `metal::saturate`. Resolved by mangling all user-defined function names in `MetalCodeGen` with an `osl_user_` prefix so user helpers cannot shadow Metal stdlib symbols. See `OmegaSL-Feature-Gap-Survey.md` §5.1.1 for the cross-backend mapping of `saturate` and the broader name-collision policy.
 
-**2. `texture2d.read(int2(...))` mismatch.** Affects `omegasl_compile_gaussian_blur`.
+**2. `texture2d.read(int2(...))` mismatch.** ~~Affects `omegasl_compile_gaussian_blur`.~~ Fixed.
 
-If the default args across all backends take a ushort2 or a uint2, change arg type to that. (And check all other texture/sampler functions for mismatches. We need the semantics of OmegaSL to be appropriate and accurate for a cross-platform GPU language.)
+MetalCodeGen lowered `read(tex, coord)` to `tex.read(coord)` and `write(tex, coord, val)` to `tex.write(val, coord)`. Metal's `texture<T>::read` / `::write` take `ushort2`/`uint2` (or the 1d/3d equivalents), not `int2`. OmegaSL code that built the coordinate via `int2(x, y)` produced unresolvable overloads in both paths.
 
-MetalCodeGen lowers `read(tex, coord)` to `tex.read(coord)`. Metal's `texture2d<T>::read` takes `ushort2` or `uint2`, not `int2`. OmegaSL code that builds the coordinate via `int2(x, y)` produces unresolvable overloads. Fix in MetalCodeGen's `BUILTIN_READ` path: when the coordinate argument is a vector of signed ints (`int2`/`int3`), wrap it in a cast to the matching unsigned type (`uint2`/`uint3`) at emit time. Alternatively, make the reference docs require `uint2` for `read()` coords and update tests.
+Fix: a `metalUintCoordTypeForTexture` helper in `MetalCodeGen` looks up the texture argument's resolved type (or its `ResourceDecl` for a bare identifier) and returns the matching unsigned coord type — `uint`, `uint2`, or `uint3`. The `BUILTIN_READ` and `BUILTIN_WRITE` emitters wrap the coordinate argument in that cast unconditionally based on the texture's dimensionality. `uint2(uint2_v)` is a no-op, so this is safe for shaders that already use unsigned coords (e.g. `texture_write.omegasl`).
 
-**3. Metal hull-shader emission is structurally wrong.** Affects `omegasl_compile_tessellation`.
+OmegaSL semantics still allow either `intN` or `uintN` for `read`/`write` coords (Sema validates both); the cast is purely a Metal-codegen concern.
 
-MetalCodeGen emits `kernel HullOutput triHull(... vid [[vertex_id]])` for `hull` shaders, but Metal `kernel` functions cannot return a user struct and cannot use `[[vertex_id]]`. Metal has no direct hull-shader equivalent — the Apple recommendation is to precompute tessellation factors in a compute kernel and use a post-tessellation vertex function with `[[patch(...)]]`. Fixing this is a real codegen redesign (separate kernel for factors + a `post-tessellation vertex` entry point), not a small patch. Defer until hull/domain on Metal is scoped as its own task.
+**3. Metal hull/domain stages are unsupported.** ~~Affects `omegasl_compile_tessellation`.~~ Held: `MetalCodeGen` now rejects hull/domain with a clean diagnostic; the test is marked `WILL_FAIL` on Apple builds.
+
+The full picture is bigger than a codegen typo. Three layers were broken:
+1. **Codegen.** `MetalCodeGen` was emitting `kernel HullOutput triHull(... vid [[vertex_id]])` for `hull` stages — Metal kernels cannot return a user struct and cannot consume `[[vertex_id]]`. The metal compiler rejected this with a confusing error that masked the deeper problem.
+2. **Runtime.** `GEMetalPipeline.mm` has no tessellation plumbing — no `tessellationFactorBuffer`, no `tessellationOutputWindingOrder`, no compute pass for patch factors. Even if the codegen produced valid `.metal` source, the runtime had no way to drive a tessellated draw.
+3. **Apple's tessellation model is structurally different from D3D's.** OmegaSL's `hull` is one D3D-style function that runs per control point. Metal expects a **compute kernel** that writes per-patch `MTLTriangleTessellationFactorsHalf` / `MTLQuadTessellationFactorsHalf`, then a **post-tessellation vertex** function that consumes `[[patch(...)]]` / `[[patch_id]]` / `[[position_in_patch]]`. Mapping one OmegaSL hull body to two Metal entry points is a real codegen redesign, not a small patch.
+
+Holding pattern (current state):
+- `MetalCodeGen` detects `hull`/`domain` `SHADER_DECL` nodes before any file output and prints `error: Metal backend does not support \`hull\`/\`domain\` shaders ('<name>')…` to stderr.
+- A `bool hasFatalErrors` flag on `CodeGen` is set; the driver checks it after parsing and exits nonzero. `generateInterfaceAndCompileShader` short-circuits so the metal compiler isn't invoked on a missing source file.
+- `omegasl_compile_tessellation` is marked `WILL_FAIL` on `APPLE` in the tests `CMakeLists.txt` — the test now verifies the diagnostic fires rather than that the (nonexistent) Metal pipeline works. HLSL and GLSL backends still compile the same source normally.
+- `GTEDEVICE_FEATURE_TESSELLATION_SHADER` is no longer advertised by the Metal device. The runtime no longer claims a feature it cannot deliver.
+
+Future work (not done here):
+- Codegen: split a `hull` decl into (a) a compute kernel that writes patch factors and (b) a post-tessellation vertex entry point. The OmegaSL `domain` shader maps onto the patch-vertex stage; `hull` body becomes the factor-computing kernel.
+- Runtime: extend `GEMetalRenderPipelineState` to configure tessellation, and add a `dispatchTessellated*` path that runs the factor compute pass before each tessellated draw.
+- Metadata: the `omegasl_shader` map needs to expose both Metal entry points produced from one logical hull stage so the runtime can bind them. Likely the cleanest design is per-backend stage-expansion in the shader-map writer rather than leaking the split to the public API.
+
+Re-advertise `GTEDEVICE_FEATURE_TESSELLATION_SHADER` only when all three of these land.
+
+### Cross-backend texture/sampler coord audit
+
+Coord-type expectations differ by backend. OmegaSL accepts either `intN` or `uintN` at the language level; each codegen casts to the form its target API requires. Reference matrix:
+
+| OmegaSL op | HLSL | MSL | GLSL |
+|---|---|---|---|
+| `sample(s, t, c)` | `t.Sample(s, floatN c)` | `t.sample(s, floatN c)` | `texture(samplerND(t,s), floatN c)` |
+| `read(t, c)` | `t.Load(intN+1)` — signed (mip slot) | `t.read(uintN c)` — **unsigned only** | `texelFetch(samplerND, ivecN c, int lod)` — signed |
+| `write(t, c, v)` | `RWTextureND[uintN] = v` — unsigned | `t.write(v, uintN c)` — **unsigned only** | `imageStore(imageND, ivecN c, vec4 v)` — signed |
+
+`sample` is consistent (float coords) and needs no per-backend coord casting. `read` and `write` require a backend-specific cast on the coord. The fix in bug 2 covers the Metal side. The remaining gaps surfaced by the audit:
+
+**4. HLSL `BUILTIN_WRITE` emits no coord cast.** Latent — `tex[coord] = val` for a `RWTextureND` operator-`[]` takes `uintN`. fxc accepts `intN` with implicit-conversion warnings (which is why `texture_write.omegasl` passes today on signed coords), but DXC and stricter HLSL configurations can reject it. Fix: in `HLSLCodeGen` BUILTIN_WRITE, resolve the texture type the same way BUILTIN_READ already does and emit `uint`/`uint2`/`uint3` around the coord. The helper from bug 2 has a direct HLSL analogue.
+
+**5. GLSL `BUILTIN_READ` and `BUILTIN_WRITE` hardcode `ivec2`.** Real bug — `GLSLCodeGen` emits `texelFetch(tex, ivec2(coord), 0)` and `imageStore(tex, ivec2(coord), val)` regardless of texture dimensionality. For a `texture1d` this passes an `ivec2` to `texelFetch(sampler1D, int, int)` (compile error); for a `texture3d` it drops the z-axis (compile error or silently-wrong write). No current test exercises 1D/3D textures on GLSL so it ships green, but the codegen is wrong. Fix: in `GLSLCodeGen`, look up the texture dimensionality (mirroring HLSL/Metal) and emit `int` / `ivec2` / `ivec3` to match `texture1d` / `texture2d` / `texture3d`. Also revisit `imageStore` for write: for `texture3d` write, the coord must be `ivec3`.
+
+**6. Sema rejects valid `texture1d.write` / `texture3d.write` coords.** ~~Real bug in `Sema.cpp`.~~ Fixed.
+
+The `BUILTIN_WRITE` validator required the 2nd arg to be `float` for `texture1d` and `float3` for `texture3d` (only `texture2d` correctly accepted `int2`/`uint2`). This contradicted every backend's expectation and the `BUILTIN_READ` rules in the same file. Fix: the `texture1d` arm now requires `int`/`uint`, the `texture3d` arm requires `int3`/`uint3`, and the diagnostic strings match the read-side wording. With this and bug 2's fix in place, `texture1d.write` and `texture3d.write` work end-to-end on Metal for both signed and unsigned coord variants. HLSL inherits the same Sema fix and emits `tex[coord] = val` (works under fxc with implicit conversion; bug 4 still latent for stricter HLSL configs). GLSL still hits bug 5 — `imageStore(tex, ivec2(coord), val)` is hardcoded to `ivec2` regardless of texture dimensionality, so 1D/3D writes won't compile on GLSL until bug 5 lands.
 
 
 ## 1. Preprocessor

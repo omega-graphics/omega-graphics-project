@@ -1,6 +1,9 @@
 #include "omegaGTE/GERenderTarget.h"
 #include "omegaGTE/GTEBase.h"
 #include "omegaGTE/GECommandQueue.h"
+#include "omegaGTE/GEMesh.h"
+
+#include <iostream>
 
 _NAMESPACE_BEGIN_
 
@@ -99,6 +102,53 @@ void GERenderTarget::CommandBuffer::drawIndexedPolygonsIndirect(PolygonType poly
                                                                 SharedHandle<GEBuffer> & argumentBuffer,
                                                                 size_t argumentBufferOffset){
     commandBuffer->drawIndexedPolygonsIndirect(polygonType,argumentBuffer,argumentBufferOffset);
+};
+
+namespace {
+    GERenderTarget::CommandBuffer::PolygonType meshPolygonType(GEMeshTopology t){
+        switch(t){
+            case GEMeshTopology::TriangleStrip: return GERenderTarget::CommandBuffer::TriangleStrip;
+            case GEMeshTopology::Triangle:
+            default:                            return GERenderTarget::CommandBuffer::Triangle;
+        }
+    }
+}
+
+void GERenderTarget::CommandBuffer::bindMesh(SharedHandle<GEMesh> & mesh, unsigned vertexSlot){
+    if(!mesh){
+        std::cerr << "[GEMesh] bindMesh: mesh is null." << std::endl;
+        return;
+    }
+    if(mesh->vertexBuffer){
+        commandBuffer->bindResourceAtVertexShader(mesh->vertexBuffer, vertexSlot);
+    }
+    if(mesh->indexBuffer && mesh->descriptor.indexType != GEMeshIndexType::None){
+        IndexType it = (mesh->descriptor.indexType == GEMeshIndexType::UInt16)
+                           ? IndexType::UInt16
+                           : IndexType::UInt32;
+        commandBuffer->setIndexBuffer(mesh->indexBuffer, it);
+    }
+    for(auto & entry : mesh->textureBindings){
+        SharedHandle<GETexture> tex = entry.second;
+        if(tex){
+            commandBuffer->bindResourceAtFragmentShader(tex, entry.first);
+        }
+    }
+};
+
+void GERenderTarget::CommandBuffer::drawMesh(SharedHandle<GEMesh> & mesh, unsigned vertexSlot){
+    if(!mesh){
+        std::cerr << "[GEMesh] drawMesh: mesh is null." << std::endl;
+        return;
+    }
+    bindMesh(mesh, vertexSlot);
+    PolygonType pt = meshPolygonType(mesh->descriptor.topology);
+    if(mesh->indexBuffer && mesh->descriptor.indexType != GEMeshIndexType::None){
+        commandBuffer->drawIndexedPolygons(pt, mesh->indexCount, 0, 0);
+    }
+    else {
+        commandBuffer->drawPolygons(pt, mesh->vertexCount, 0);
+    }
 };
 
 void GERenderTarget::CommandBuffer::setViewports(std::vector<GEViewport> viewports) {

@@ -55,6 +55,15 @@ namespace omegasl {
 
         OmegaCommon::Map<OmegaCommon::String,omegasl_shader> shaderMap;
 
+        /// Set by a backend when it encounters a construct it cannot
+        /// emit (e.g. Metal hull/domain stages — see OmegaSL-Reference.md
+        /// bug 3). The backend prints its own diagnostic to stderr and
+        /// sets this flag; the driver checks it after parsing and exits
+        /// nonzero. Lets us reject unsupported stages cleanly without
+        /// emitting bogus target source that the downstream compiler
+        /// then rejects with a confusing error.
+        bool hasFatalErrors = false;
+
         CodeGenOpts & opts;
         explicit CodeGen(CodeGenOpts & opts):
         typeResolver(nullptr),

@@ -952,8 +952,8 @@ namespace omegasl {
                         return nullptr;
                     }
 
-                    if(_t != ast::builtins::float_type){
-                        reportTypeErr("2nd param of function " + std::string(BUILTIN_WRITE) + " must be a float");
+                    if(_t != ast::builtins::int_type && _t != ast::builtins::uint_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_WRITE) + " must be an int or uint for texture1d");
                         return nullptr;
                     }
 
@@ -975,8 +975,8 @@ namespace omegasl {
                         return nullptr;
                     }
 
-                    if(_t != ast::builtins::float3_type){
-                        reportTypeErr("2nd param of function " + std::string(BUILTIN_WRITE) + " must be a float3");
+                    if(_t != ast::builtins::int3_type && _t != ast::builtins::uint3_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_WRITE) + " must be an int3 or uint3 for texture3d");
                         return nullptr;
                     }
                 }
