@@ -71,7 +71,7 @@ the rasterizer struct would conflict with vertex/fragment struct sharing.
 **Coverage** is input only for now; the output direction needs separate
 plumbing (`gl_SampleMask` write, MSL `[[sample_mask]]` on output struct).
 
-Alex: Input/Output coverage should be seperate attributes: InputCoverage/OutputCoverage
+Alex: Input/Output coverage should be seperate attributes: InputCoverage/OutputCoverage. (Should solve in/out confusion)
 
 ### 1.4 Multiple color attachments [COMPLETED]
 
@@ -548,12 +548,12 @@ No equivalent on D3D12 / Metal. Used for efficient tile-local deferred on
 mobile. OmegaSL could add `subpass_input` + `loadSubpass()` that lowers to
 no-op / error on the other backends.
 
-### 10.2 Push constants (See Pipeline-Completion-Extension-Plan.md)
+### 10.2 Push constants 
 
 Vulkan + D3D12 root constants + Metal inline `constant` under 4KB.
 
 Exposing this as a first-class concept would need a new resource keyword
-(`constant` or similar) with strict size limits. Very performance-relevant
+(`constant<T>` or similar) with strict size limits. Very performance-relevant
 for per-draw constants.
 
 ### 10.3 Specialization constants

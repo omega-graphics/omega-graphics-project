@@ -25,4 +25,4 @@
 - Code Comments (Doxygen):
     Use accurate, techincal language to describe the code details fully and correctly.
 - User Guides (Sphinx docs) and README's:
-    Use simple, clear language that can be understood by someone with little to no technical experience. (The guides should be easy to follow and be able to explain how the code works without getting too techincal.)
+    Use long-form prose that is clear and can be understood by someone with little to no technical experience. (The guides should be easy to follow and be able to explain how the code works without getting too techincal.)

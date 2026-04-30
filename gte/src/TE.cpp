@@ -334,9 +334,14 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                  }
             }
 
+            // T1 was CW (Y-up NDC); the natural T2 vertex order would be CCW.
+            // Swap b/c (pt + attachment together) so both triangles share the
+            // pipeline's requested front-face winding instead of alternating.
+            std::swap(tri.b, tri.c);
+
             mesh.vertexPolygons.push_back(tri);
 
-            
+
             result.meshes.push_back(mesh);
 
             break;
@@ -347,28 +352,41 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             const float oy = object.pos.y;
             const float rad_x = std::fmax(0.0f,std::fmin(object.rad_x,object.w * 0.5f));
             const float rad_y = std::fmax(0.0f,std::fmin(object.rad_y,object.h * 0.5f));
-            const size_t roundedRectStartIdx = result.meshes.size();
+
             std::optional<TETriangulationResult::AttachmentData> colorAttachment;
             if(colorAttachmentPtr != nullptr){
                 colorAttachment = std::make_optional<TETriangulationResult::AttachmentData>(
                         TETriangulationResult::AttachmentData{colorAttachmentPtr->colorData.color,FVec<2>::Create(),FVec<3>::Create()});
             }
 
-            GRect middle_rect {GPoint2D{ox + rad_x, oy + rad_y},object.w - (2 * rad_x),object.h - (2 * rad_y)};
+            // The entire rounded rect — center + 4 corner arcs + 4 edge strips —
+            // is emitted as a single mesh. See gte/docs/Limitations.rst (Driver
+            // Quirks) for why multi-mesh primitives are not allowed.
+            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
 
-            auto middle_rect_params = TETriangulationParams::Rect(middle_rect);
-            if(colorAttachment){
-                middle_rect_params.addAttachment(
-                        TETriangulationParams::Attachment::makeColor(colorAttachment->color));
-            }
+            // Tessellate a sub-rect via the regular RECT path into a scratch
+            // result, then move its polygons into our shared mesh.
+            auto appendRect = [&](const GRect & sub_rect){
+                GRect rectCopy = sub_rect;
+                auto rect_params = TETriangulationParams::Rect(rectCopy);
+                if(colorAttachment){
+                    rect_params.addAttachment(
+                            TETriangulationParams::Attachment::makeColor(colorAttachment->color));
+                }
+                TETriangulationResult subResult;
+                _triangulatePriv(rect_params, frontFaceRotation, viewport, subResult);
+                for(auto & m : subResult.meshes){
+                    mesh.vertexPolygons.insert(
+                        mesh.vertexPolygons.end(),
+                        std::make_move_iterator(m.vertexPolygons.begin()),
+                        std::make_move_iterator(m.vertexPolygons.end()));
+                }
+            };
 
-            _triangulatePriv(middle_rect_params,frontFaceRotation,viewport,result);
-
-            auto tessellateArc = [&](GPoint2D start, float rad_x, float rad_y, float angle_start, float angle_end, float _arcStep){
+            auto tessellateArc = [&](GPoint2D start, float ar_x, float ar_y, float angle_start, float angle_end, float _arcStep){
                 if(std::fabs(_arcStep) < 0.0001f){
                     return;
                 }
-                TETriangulationResult::TEMesh m {TETriangulationResult::TEMesh::TopologyTriangleStrip};
                 float centerX,centerY;
                 translateCoords(start.x,start.y,0.f,viewport,&centerX,&centerY,nullptr);
                 GPoint3D pt_a {centerX,centerY,0.f};
@@ -384,8 +402,8 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                         nextAngle = angle_end;
                     }
 
-                    auto x_f = cosf(angle) * rad_x;
-                    auto y_f = sinf(angle) * rad_y;
+                    auto x_f = cosf(angle) * ar_x;
+                    auto y_f = sinf(angle) * ar_y;
 
                     x_f += start.x;
                     y_f += start.y;
@@ -395,9 +413,8 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                     translateCoords(x_f,y_f,0.f,viewport,&x_t,&y_t,nullptr);
                     p.b.pt = GPoint3D {x_t,y_t,0.f};
 
-
-                    x_f = cosf(nextAngle) * rad_x;
-                    y_f = sinf(nextAngle) * rad_y;
+                    x_f = cosf(nextAngle) * ar_x;
+                    y_f = sinf(nextAngle) * ar_y;
 
                     x_f += start.x;
                     y_f += start.y;
@@ -408,60 +425,40 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                         p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
                     }
 
-                    m.vertexPolygons.push_back(p);
+                    mesh.vertexPolygons.push_back(p);
                     angle = nextAngle;
                 }
-                result.meshes.push_back(m);
             };
+
+            /// Center
+            appendRect(GRect{GPoint2D{ox + rad_x, oy + rad_y},
+                             object.w - (2 * rad_x), object.h - (2 * rad_y)});
 
             /// Bottom Left Arc
             tessellateArc(GPoint2D {ox + rad_x, oy + rad_y}, rad_x, rad_y, float(3.f * PI) / 2.f, PI, -arcStep);
 
             /// Left Rect
-            middle_rect = GRect {GPoint2D{ox, oy + rad_y},rad_x,object.h - (2 * rad_y)};
-            middle_rect_params = TETriangulationParams::Rect(middle_rect);
-            if(colorAttachment){
-                middle_rect_params.addAttachment(
-                        TETriangulationParams::Attachment::makeColor(colorAttachment->color));
-            }
+            appendRect(GRect{GPoint2D{ox, oy + rad_y}, rad_x, object.h - (2 * rad_y)});
 
-            _triangulatePriv(middle_rect_params,frontFaceRotation,viewport,result);
             /// Top Left Arc
             tessellateArc(GPoint2D {ox + rad_x, oy + object.h - rad_y}, rad_x, rad_y, PI, float(PI) / 2.f, -arcStep);
 
             /// Top Rect
-            middle_rect = GRect {GPoint2D{ox + rad_x, oy + object.h - rad_y},object.w - (rad_x * 2),rad_y};
-            middle_rect_params = TETriangulationParams::Rect(middle_rect);
-            if(colorAttachment){
-                middle_rect_params.addAttachment(
-                        TETriangulationParams::Attachment::makeColor(colorAttachment->color));
-            }
+            appendRect(GRect{GPoint2D{ox + rad_x, oy + object.h - rad_y},
+                             object.w - (rad_x * 2), rad_y});
 
-            _triangulatePriv(middle_rect_params,frontFaceRotation,viewport,result);
             /// Top Right Arc
             tessellateArc(GPoint2D {ox + object.w - rad_x, oy + object.h - rad_y}, rad_x, rad_y, float(PI) / 2.f, 0, -arcStep);
 
             /// Right Rect
-            middle_rect = GRect {GPoint2D{ox + object.w - rad_x, oy + rad_y},rad_x,object.h - (2 * rad_y)};
-            middle_rect_params = TETriangulationParams::Rect(middle_rect);
-            if(colorAttachment){
-                middle_rect_params.addAttachment(
-                        TETriangulationParams::Attachment::makeColor(colorAttachment->color));
-            }
-
-            _triangulatePriv(middle_rect_params,frontFaceRotation,viewport,result);
+            appendRect(GRect{GPoint2D{ox + object.w - rad_x, oy + rad_y},
+                             rad_x, object.h - (2 * rad_y)});
 
             /// Bottom Right Arc
             tessellateArc(GPoint2D {ox + object.w - rad_x, oy + rad_y}, rad_x, rad_y, 0, -float(PI) / 2.f, -arcStep);
 
             /// Bottom Rect
-            middle_rect = GRect {GPoint2D{ox + rad_x, oy},object.w - (rad_x * 2),rad_y};
-            middle_rect_params = TETriangulationParams::Rect(middle_rect);
-            if(colorAttachment){
-                middle_rect_params.addAttachment(
-                        TETriangulationParams::Attachment::makeColor(colorAttachment->color));
-            }
-            _triangulatePriv(middle_rect_params,frontFaceRotation,viewport,result);
+            appendRect(GRect{GPoint2D{ox + rad_x, oy}, object.w - (rad_x * 2), rad_y});
 
             if(textureAttachment != nullptr && textureAttachment->type == TETriangulationParams::Attachment::TypeTexture2D){
                 float dx0,dy0,dx1,dy1;
@@ -470,20 +467,21 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 const float rangeX = (dx1 - dx0);
                 const float rangeY = (dy1 - dy0);
                 FVec<3> normal = makeVec3(0.f,0.f,1.f);
-                for(size_t i = roundedRectStartIdx; i < result.meshes.size(); ++i){
-                    auto & m = result.meshes[i];
-                    for(auto & poly : m.vertexPolygons){
-                        auto assign = [&](auto & vert){
-                            float u = (std::fabs(rangeX) > 1e-6f) ? ((vert.pt.x - dx0) / rangeX) : 0.f;
-                            float v = (std::fabs(rangeY) > 1e-6f) ? ((vert.pt.y - dy0) / rangeY) : 0.f;
-                            vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
-                                makeTex2DAttachment(u,v,normal));
-                        };
-                        assign(poly.a);
-                        assign(poly.b);
-                        assign(poly.c);
-                    }
+                for(auto & poly : mesh.vertexPolygons){
+                    auto assign = [&](auto & vert){
+                        float u = (std::fabs(rangeX) > 1e-6f) ? ((vert.pt.x - dx0) / rangeX) : 0.f;
+                        float v = (std::fabs(rangeY) > 1e-6f) ? ((vert.pt.y - dy0) / rangeY) : 0.f;
+                        vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                            makeTex2DAttachment(u,v,normal));
+                    };
+                    assign(poly.a);
+                    assign(poly.b);
+                    assign(poly.c);
                 }
+            }
+
+            if(!mesh.vertexPolygons.empty()){
+                result.meshes.push_back(std::move(mesh));
             }
 
             break;
@@ -725,6 +723,11 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 if(totalLen <= 0.000001f) totalLen = 1.f;
             }
 
+            // Fill polygons and stroke polygons share a single output mesh so
+            // a path always emits one draw. See gte/docs/Limitations.rst
+            // (Driver Quirks) for why multi-mesh primitives are not allowed.
+            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
+
             // --- Fill ---
             // Fan triangulation from the first vertex using the second attachment as fill color.
             if(params.graphicsPath2DFill && path.size() >= 2){
@@ -740,7 +743,6 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                     }
                 }
                 if(fillAttachment || fillHasTex2D){
-                    TETriangulationResult::TEMesh fillMesh {TETriangulationResult::TEMesh::TopologyTriangle};
                     // Collect all points from the path in both object and device space.
                     std::vector<GPoint2D> objPts;
                     std::vector<GPoint3D> pts;
@@ -774,10 +776,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                         tri.a.attachment = makeFillAttachment(0);
                         tri.b.attachment = makeFillAttachment(i);
                         tri.c.attachment = makeFillAttachment(i + 1);
-                        fillMesh.vertexPolygons.push_back(tri);
-                    }
-                    if(!fillMesh.vertexPolygons.empty()){
-                        result.meshes.push_back(fillMesh);
+                        mesh.vertexPolygons.push_back(tri);
                     }
                 }
             }
@@ -785,7 +784,6 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             // --- Stroke ---
             const float strokeWidth = params.graphicsPath2DStrokeWidth > 0.f ? params.graphicsPath2DStrokeWidth : 0.f;
             if(strokeWidth > 0.f){
-                TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
                 float strokeCursor = 0.f;
 
                 auto appendStrokeSegment = [&](const GPoint2D & start,const GPoint2D & end){
@@ -846,10 +844,10 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 if(params.graphicsPath2DContour && path.size() >= 2){
                     appendStrokeSegment(path.lastPt(),path.firstPt());
                 }
+            }
 
-                if(!mesh.vertexPolygons.empty()){
-                    result.meshes.push_back(mesh);
-                }
+            if(!mesh.vertexPolygons.empty()){
+                result.meshes.push_back(std::move(mesh));
             }
             break;
         }
