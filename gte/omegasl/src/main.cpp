@@ -249,14 +249,14 @@ int main(int argc,char *argv[]){
             hlslCodeOpts.dxc_cmd = dxc_cmd;
         }
 #endif
-        codeGen = omegasl::HLSLCodeGenMake(codeGenOpts,hlslCodeOpts);
+        codeGen = omegasl::CodeGenMake(codeGenOpts, std::make_unique<omegasl::HLSLTarget>(hlslCodeOpts));
     }
     else if(genMode == GenMode::metal){
 #ifdef TARGET_METAL
         metalCodeOpts.mtl_device = nullptr;
         metalCodeOpts.metal_cmd = "xcrun -sdk macosx metal";
 #endif
-        codeGen = omegasl::MetalCodeGenMake(codeGenOpts,metalCodeOpts);
+        codeGen = omegasl::CodeGenMake(codeGenOpts, std::make_unique<omegasl::MSLTarget>(metalCodeOpts));
     }
     else {
         #ifdef TARGET_VULKAN
@@ -269,7 +269,7 @@ int main(int argc,char *argv[]){
             glslCodeOpts.glslc_cmd = glslc_cmd;
         }
         #endif
-        codeGen = omegasl::GLSLCodeGenMake(codeGenOpts,glslCodeOpts);
+        codeGen = omegasl::CodeGenMake(codeGenOpts, std::make_unique<omegasl::GLSLTarget>(glslCodeOpts));
     }
 
 

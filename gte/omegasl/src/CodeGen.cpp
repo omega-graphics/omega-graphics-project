@@ -233,6 +233,211 @@ namespace omegasl {
         }
     }
 
+    void CodeGen::writeTypeExpr(ast::TypeExpr *typeExpr, std::ostream &out) {
+        target->writeTypeName(typeResolver->resolveTypeWithExpr(typeExpr),
+                              typeExpr->pointer, out);
+    }
+
+    void CodeGen::emitUserFunctionSignature(ast::FuncDecl *f) {
+        writeTypeExpr(f->returnType, shaderOut);
+        shaderOut << " " << spellUserFuncName(f->name) << "(";
+        for (size_t i = 0; i < f->params.size(); i++) {
+            if (i > 0) shaderOut << ", ";
+            writeTypeExpr(f->params[i].typeExpr, shaderOut);
+            shaderOut << " " << f->params[i].name;
+        }
+        shaderOut << ")";
+    }
+
+    void CodeGen::emitUserFunctionPrototype(ast::FuncDecl *f) {
+        emitUserFunctionSignature(f);
+        shaderOut << ";" << std::endl;
+    }
+
+    void CodeGen::emitUserFunction(ast::FuncDecl *f) {
+        emitUserFunctionSignature(f);
+        shaderOut << std::endl;
+        generateBlock(*f->block);
+        shaderOut << std::endl;
+    }
+
+    /// Phase 10: shared, non-virtual decl walk. Per-target divergence
+    /// for STRUCT_DECL / VAR_DECL / RETURN_DECL / SHADER_DECL flows
+    /// through `Target::*` hooks. The if/for/while/break/continue/
+    /// discard arms are byte-identical to the pre-Phase-10 backends.
+    void CodeGen::generateDecl(ast::Decl *decl) {
+        switch (decl->type) {
+            case VAR_DECL: {
+                auto _decl = (ast::VarDecl *)decl;
+                if (target->tryEmitVarDecl(*this, _decl)) {
+                    break;
+                }
+                writeTypeExpr(_decl->typeExpr, shaderOut);
+                shaderOut << " " << _decl->spec.name;
+                if (_decl->typeExpr->arraySize.has_value()) {
+                    shaderOut << "[" << _decl->typeExpr->arraySize.value() << "]";
+                }
+                if (_decl->spec.initializer.has_value()) {
+                    shaderOut << " = ";
+                    generateExpr(_decl->spec.initializer.value());
+                }
+                break;
+            }
+            case RETURN_DECL: {
+                auto _decl = (ast::ReturnDecl *)decl;
+                if (target->tryEmitReturnDecl(*this, _decl)) {
+                    break;
+                }
+                if (_decl->expr) {
+                    shaderOut << "return ";
+                    generateExpr(_decl->expr);
+                } else {
+                    shaderOut << "return";
+                }
+                break;
+            }
+            case IF_STMT: {
+                auto _stmt = (ast::IfStmt *)decl;
+                shaderOut << "if(";
+                generateExpr(_stmt->condition);
+                shaderOut << ")";
+                generateBlock(*_stmt->thenBlock);
+                for (auto &branch : _stmt->elseIfs) {
+                    shaderOut << " else if(";
+                    generateExpr(branch.condition);
+                    shaderOut << ")";
+                    generateBlock(*branch.block);
+                }
+                if (_stmt->elseBlock) {
+                    shaderOut << " else ";
+                    generateBlock(*_stmt->elseBlock);
+                }
+                break;
+            }
+            case FOR_STMT: {
+                auto _stmt = (ast::ForStmt *)decl;
+                shaderOut << "for(";
+                if (_stmt->init) { generateDecl((ast::Decl *)_stmt->init); }
+                shaderOut << ";";
+                if (_stmt->condition) { generateExpr(_stmt->condition); }
+                shaderOut << ";";
+                if (_stmt->increment) { generateExpr(_stmt->increment); }
+                shaderOut << ")";
+                generateBlock(*_stmt->body);
+                break;
+            }
+            case WHILE_STMT: {
+                auto _stmt = (ast::WhileStmt *)decl;
+                shaderOut << "while(";
+                generateExpr(_stmt->condition);
+                shaderOut << ")";
+                generateBlock(*_stmt->body);
+                break;
+            }
+            case BREAK_STMT: {
+                shaderOut << "break";
+                break;
+            }
+            case CONTINUE_STMT: {
+                shaderOut << "continue";
+                break;
+            }
+            case DISCARD_STMT: {
+                auto kw = target->discardStatement();
+                shaderOut << kw;
+                break;
+            }
+            case STRUCT_DECL: {
+                target->emitStructDecl(*this, (ast::StructDecl *)decl);
+                break;
+            }
+            case RESOURCE_DECL: {
+                resourceStore.add((ast::ResourceDecl *)decl);
+                break;
+            }
+            case FUNC_DECL: {
+                auto *_fd = (ast::FuncDecl *)decl;
+                userFuncDecls.push_back(_fd);
+                userFuncNames.insert(std::string(_fd->name));
+                break;
+            }
+            case SHADER_DECL: {
+                auto _decl = (ast::ShaderDecl *)decl;
+
+                /// Stage-support gate. Metal still refuses hull/domain
+                /// (OmegaSL-Reference.md bug 3); the diagnostic comes
+                /// back through the out parameter.
+                std::string supportDiag;
+                if (!target->supportsStage(_decl->shaderType, supportDiag)) {
+                    std::cerr << "error: " << supportDiag << " ('" << _decl->name << "')" << std::endl;
+                    hasFatalErrors = true;
+                    break;
+                }
+
+                OmegaCommon::String object_file;
+                if (opts.runtimeCompile) {
+                    object_file = _decl->name;
+                    if (runtimeStringOut) runtimeStringOut->str("");
+                } else {
+                    object_file = OmegaCommon::FS::Path(opts.tempDir).append(_decl->name)
+                                      .concat(target->shaderObjectFileExt(_decl->shaderType)).absPath();
+                    fileOut.open(OmegaCommon::FS::Path(opts.tempDir).append(_decl->name)
+                                     .concat(target->shaderFileExt(_decl->shaderType)).str(),
+                                 std::ios::out);
+                }
+
+                /// Per-target preamble (MSL `#include <metal_stdlib>`,
+                /// GLSL `#version 450`, HLSL nothing).
+                target->emitDefaultHeaders(shaderOut);
+
+                /// Prototypes first (dedup by name), then bodies — supports
+                /// forward declarations and calls between user functions
+                /// regardless of definition order.
+                {
+                    OmegaCommon::Map<OmegaCommon::String, int> emittedProtos;
+                    for (auto *uf : userFuncDecls) {
+                        if (emittedProtos.find(uf->name) != emittedProtos.end()) continue;
+                        emittedProtos.insert(std::make_pair(uf->name, 0));
+                        emitUserFunctionPrototype(uf);
+                    }
+                }
+                for (auto *uf : userFuncDecls) {
+                    if (uf->isForwardDecl) continue;
+                    emitUserFunction(uf);
+                }
+
+                /// HLSL/MSL emit cached struct text at file scope here;
+                /// GLSL emits its own struct decls inside the entry header,
+                /// so its hook is a no-op.
+                target->emitShaderUsedStructs(*this, _decl, shaderOut);
+
+                /// Shader entry: header (resources + signature), then
+                /// body (block walk + target-specific pre/post amble).
+                omegasl_shader meta{};
+                target->emitShaderEntryHeader(*this, _decl, meta, shaderOut);
+                target->emitShaderEntryBody(*this, _decl, meta, shaderOut);
+                target->emitShaderEntryFooter(*this, _decl, shaderOut);
+
+                if (!opts.runtimeCompile) {
+                    fileOut.close();
+                }
+                shaderMap.insert(std::make_pair(object_file, meta));
+                break;
+            }
+        }
+    }
+
+    /// Phase 10: factories. The caller picks the backend by constructing
+    /// the matching Target subclass.
+    std::shared_ptr<CodeGen> CodeGenMake(CodeGenOpts &opts, std::unique_ptr<Target> target) {
+        return std::make_shared<CodeGen>(opts, std::move(target));
+    }
+
+    std::shared_ptr<CodeGen> CodeGenMakeRuntime(CodeGenOpts &opts, std::unique_ptr<Target> target,
+                                                std::ostringstream &out) {
+        return std::make_shared<CodeGen>(opts, std::move(target), out);
+    }
+
     bool CodeGen::generateInterfaceAndCompileShader(ast::Decl *decl) {
         if(decl->type == SHADER_DECL){
             auto _decl = (ast::ShaderDecl *)decl;

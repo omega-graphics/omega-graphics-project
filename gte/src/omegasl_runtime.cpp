@@ -45,13 +45,13 @@ public:
         omegasl::ast::builtins::Initialize();
 #if defined(TARGET_DIRECTX)
         omegasl::HLSLCodeOpts hlslCodeOpts {""};
-        gen = omegasl::HLSLCodeGenMakeRuntime(genOpts,hlslCodeOpts,sourceBuf);
+        gen = omegasl::CodeGenMakeRuntime(genOpts, std::make_unique<omegasl::HLSLTarget>(hlslCodeOpts), sourceBuf);
 #elif defined(TARGET_METAL)
         metalCodeOpts = omegasl::MetalCodeOpts {"",const_cast<void *>(device->native())};
-        gen = omegasl::MetalCodeGenMakeRuntime(genOpts,metalCodeOpts,sourceBuf);
+        gen = omegasl::CodeGenMakeRuntime(genOpts, std::make_unique<omegasl::MSLTarget>(metalCodeOpts), sourceBuf);
 #elif defined(TARGET_VULKAN)
         glslCodeOpts.glslc_cmd = "glslc";
-        gen = omegasl::GLSLCodeGenMakeRuntime(genOpts,glslCodeOpts,sourceBuf);
+        gen = omegasl::CodeGenMakeRuntime(genOpts, std::make_unique<omegasl::GLSLTarget>(glslCodeOpts), sourceBuf);
 #endif
         if(gen == nullptr){
             throw std::runtime_error("OmegaSL runtime compiler backend is unavailable for this target.");

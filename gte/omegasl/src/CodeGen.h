@@ -2,8 +2,10 @@
 #include "Target.h"
 #include <omegasl.h>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <iostream>
 
 #ifndef OMEGASL_CODEGEN_H
@@ -29,7 +31,7 @@ namespace omegasl {
 
     class InterfaceGen;
 
-    struct CodeGen {
+    struct CodeGen final {
     public:
         struct ResourceStore {
         private:
@@ -113,20 +115,66 @@ namespace omegasl {
         /// per-backend code into hooks on Target. See
         /// docs/OmegaSL-CodeGen-Target-Refactor-Plan.md.
         std::unique_ptr<Target> target;
+
+        /// Phase 10: shader source output. Two modes:
+        ///   - Offline (`opts.runtimeCompile == false`): each SHADER_DECL
+        ///     opens `fileOut` to a per-shader file under `opts.tempDir`
+        ///     and the source is written there. `runtimeStringOut` is
+        ///     null.
+        ///   - Runtime: the caller supplies an external `std::ostringstream`
+        ///     in `CreateRuntime`; we keep a non-owning pointer in
+        ///     `runtimeStringOut` and clear/append per shader.
+        /// `shaderOut` is the active stream — a reference set in the
+        /// constructor pointing at either `fileOut` or the supplied
+        /// runtime ostringstream. `compileShaderOnRuntime` reads
+        /// `runtimeStringOut->str()` to feed the in-process compiler.
+        std::ofstream fileOut;
+        std::ostringstream *runtimeStringOut = nullptr;
+        std::ostream &shaderOut;
     public:
+        Target *getTarget() { return target.get(); }
+        std::ostream &getShaderOut() { return shaderOut; }
+
         explicit CodeGen(CodeGenOpts & opts, std::unique_ptr<Target> target):
         typeResolver(nullptr),
         opts(opts),
-        target(std::move(target))
+        target(std::move(target)),
+        shaderOut(fileOut)
 //        interfaceGen(std::make_shared<InterfaceGen>(OmegaCommon::FS::Path(opts.outputLib).append(INTERFACE_FILENAME).absPath(), this))
         {
 
         }
+        explicit CodeGen(CodeGenOpts & opts, std::unique_ptr<Target> target, std::ostringstream &out):
+        typeResolver(nullptr),
+        opts(opts),
+        target(std::move(target)),
+        runtimeStringOut(&out),
+        shaderOut(out)
+        {
 
-        virtual ~CodeGen() = default;
+        }
+
+        ~CodeGen() = default;
 
         void setTypeResolver(ast::SemFrontend *_typeResolver){ typeResolver = _typeResolver;}
-        virtual void generateDecl(ast::Decl *decl) = 0;
+
+        /// Phase 10: shared, non-virtual decl walk. Per-target divergence
+        /// flows through `Target::*` hooks (struct decls, var decls,
+        /// return decls, shader entry, resource binding, ...). The
+        /// previous per-backend `generateDecl` overrides have been
+        /// folded in here.
+        void generateDecl(ast::Decl *decl);
+
+        /// Phase 10: spell a `TypeExpr` for the active target. Replaces
+        /// the per-subclass `writeTypeExpr` helpers.
+        void writeTypeExpr(ast::TypeExpr *typeExpr, std::ostream &out);
+
+        /// Phase 10: shared user-function emission. The bodies were
+        /// identical across the three backends; promoted onto `CodeGen`
+        /// alongside `generateDecl`.
+        void emitUserFunctionSignature(ast::FuncDecl *f);
+        void emitUserFunctionPrototype(ast::FuncDecl *f);
+        void emitUserFunction(ast::FuncDecl *f);
 
         /// Concrete shared AST-walk for expression nodes. After Phase 7.5
         /// + 8a the body is identical across HLSL/MSL/GLSL modulo Target
@@ -145,10 +193,11 @@ namespace omegasl {
         /// their parent.
         void generateBlock(ast::Block &block);
 
-        /// Per-subclass output stream. Resolves to either the on-disk
-        /// `fileOut` or the in-memory `stringOut` depending on the
-        /// constructor variant the subclass was built with.
-        virtual std::ostream &shaderOutStream() = 0;
+        /// Phase 10: output stream accessor used by `generateExpr` /
+        /// `generateBlock`. Always returns the `shaderOut` reference
+        /// established in the constructor (file in offline mode, the
+        /// runtime caller's ostringstream in runtime mode).
+        std::ostream &shaderOutStream() { return shaderOut; }
 
         /// Current block-nesting depth, in indentation levels (one
         /// level == 4 spaces after Phase 7.5 unification). Each
@@ -176,15 +225,29 @@ namespace omegasl {
          * @param name The Shader Name
          * @param path The source file location.
          * @param outputPath The output file location.
+         * Phase 10: thin delegation to `target->compileShader`.
          * */
-        virtual bool compileShader(ast::ShaderDecl::Type type,const OmegaCommon::StrRef & name,const OmegaCommon::FS::Path & path,const OmegaCommon::FS::Path & outputPath) = 0;
+        bool compileShader(ast::ShaderDecl::Type type,const OmegaCommon::StrRef & name,const OmegaCommon::FS::Path & path,const OmegaCommon::FS::Path & outputPath) {
+            return target->compileShader(type, name, path, outputPath);
+        }
         /** @brief Compiles the Shader with the provided name and outputs the compiled version to the shadermap.
          * @param type The Shader Type
          * @param name The Shader Name
          * @note
          * This function is only called when compiling omegasl on runtime.
+         * Phase 10: thin delegation to `target->compileShaderRuntime`,
+         * passing the captured runtime source buffer.
          * */
-        virtual void compileShaderOnRuntime(ast::ShaderDecl::Type type,const OmegaCommon::StrRef & name) = 0;
+        void compileShaderOnRuntime(ast::ShaderDecl::Type type,const OmegaCommon::StrRef & name) {
+            OmegaCommon::String shaderName{name.begin(), name.end()};
+            auto it = shaderMap.find(shaderName);
+            if (it == shaderMap.end()) {
+                std::cerr << "Runtime compile: shader entry not found for `" << shaderName << "`" << std::endl;
+                return;
+            }
+            std::string source = runtimeStringOut ? runtimeStringOut->str() : std::string{};
+            target->compileShaderRuntime(type, name, source, it->second);
+        }
         bool linkShaderObjects(){
             auto outputPath = OmegaCommon::FS::Path(opts.outputLib);
             OmegaCommon::String libname = outputPath.filename();
@@ -377,12 +440,13 @@ namespace omegasl {
     };
 
 
-    std::shared_ptr<CodeGen> GLSLCodeGenMake(CodeGenOpts &opts,GLSLCodeOpts &glslCodeOpts);
-    std::shared_ptr<CodeGen> GLSLCodeGenMakeRuntime(CodeGenOpts &opts,GLSLCodeOpts &glslCodeOpts,std::ostringstream & out);
-    std::shared_ptr<CodeGen> HLSLCodeGenMake(CodeGenOpts &opts,HLSLCodeOpts &hlslCodeOpts);
-    std::shared_ptr<CodeGen> HLSLCodeGenMakeRuntime(CodeGenOpts &opts,HLSLCodeOpts &hlslCodeOpts,std::ostringstream & out);
-    std::shared_ptr<CodeGen> MetalCodeGenMake(CodeGenOpts &opts,MetalCodeOpts &metalCodeOpts);
-    std::shared_ptr<CodeGen> MetalCodeGenMakeRuntime(CodeGenOpts &opts,MetalCodeOpts &metalCodeOpts,std::ostringstream & out);
+    /// Phase 10: single factory per backend, replacing the three
+    /// HLSL/MSL/GLSL `*CodeGenMake[Runtime]` pairs. The caller picks the
+    /// backend by constructing the matching `Target` subclass and passing
+    /// it in.
+    std::shared_ptr<CodeGen> CodeGenMake(CodeGenOpts &opts, std::unique_ptr<Target> target);
+    std::shared_ptr<CodeGen> CodeGenMakeRuntime(CodeGenOpts &opts, std::unique_ptr<Target> target,
+                                                std::ostringstream &out);
 
 
 }

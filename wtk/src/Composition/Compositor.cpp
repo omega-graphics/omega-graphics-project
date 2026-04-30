@@ -241,7 +241,7 @@ void Compositor::renderCompositeFrame(const SharedHandle<CompositionRenderTarget
         return;
     }
 
-    BackendRenderTargetContext *targetContext = &(backendTarget->visualTree->root->renderTarget);
+    BackendRenderTargetContext *targetContext = backendTarget->visualTree->root->renderTarget.get();
 
     float clearR = 0.f;
     float clearG = 0.f;

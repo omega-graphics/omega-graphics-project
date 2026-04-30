@@ -1,6 +1,8 @@
 #include "../Compositor.h"
 #include "RenderTarget.h"
 #include "ResourceTrace.h"
+#include <memory>
+#include <utility>
 
 #ifndef OMEGAWTK_COMPOSITION_BACKEND_VISUALTREE_H
 #define OMEGAWTK_COMPOSITION_BACKEND_VISUALTREE_H
@@ -18,10 +20,14 @@ namespace OmegaWTK::Composition {
         struct Visual {
             std::uint64_t traceResourceId = 0;
             Composition::Point2D pos;
-            BackendRenderTargetContext renderTarget;
-            explicit Visual(Composition::Point2D & pos,BackendRenderTargetContext & renderTarget):
+            // Owned indirectly so the back-references inside
+            // BackendRenderTargetContext (FrameRenderPass / BackingTextureSet)
+            // remain bound to a stable address for the lifetime of the Visual.
+            std::unique_ptr<BackendRenderTargetContext> renderTarget;
+            explicit Visual(Composition::Point2D & pos,
+                            std::unique_ptr<BackendRenderTargetContext> renderTarget):
             pos(pos),
-            renderTarget(renderTarget){
+            renderTarget(std::move(renderTarget)){
                 traceResourceId = ResourceTrace::nextResourceId();
                 ResourceTrace::emit("Create",
                                     "BackendVisual",

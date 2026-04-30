@@ -57,16 +57,16 @@ namespace OmegaWTK::Composition {
     };
 
      DCVisualTree::RootVisual::RootVisual(Composition::Point2D &pos,
-                                  BackendRenderTargetContext & context,
+                                  std::unique_ptr<BackendRenderTargetContext> context,
                                   IDCompositionVisual2 * visual,
                                   float renderScale):
-     Parent::Visual(pos,context),
+     Parent::Visual(pos,std::move(context)),
      visual(visual),
      renderScale(renderScale){
      };
 
     void DCVisualTree::RootVisual::resize(Composition::Rect &newRect){
-        renderTarget.setRenderTargetSize(newRect);
+        renderTarget->setRenderTargetSize(newRect);
     }
 
     DCVisualTree::RootVisual::~RootVisual(){
@@ -77,14 +77,14 @@ namespace OmegaWTK::Composition {
     };
 
     DCVisualTree::SurfaceVisual::SurfaceVisual(Composition::Point2D &pos,
-                                  BackendRenderTargetContext & context,
+                                  std::unique_ptr<BackendRenderTargetContext> context,
                                   float renderScale):
-     Parent::Visual(pos,context),
+     Parent::Visual(pos,std::move(context)),
      renderScale(renderScale){
      };
 
     void DCVisualTree::SurfaceVisual::resize(Composition::Rect &newRect){
-        renderTarget.setRenderTargetSize(newRect);
+        renderTarget->setRenderTargetSize(newRect);
     }
 
     Core::SharedPtr<BackendVisualTree::Visual> DCVisualTree::makeRootVisual(
@@ -106,7 +106,7 @@ namespace OmegaWTK::Composition {
         outPresentTarget.backingHeight = desc.height;
 
         // Root visual renders directly to the native drawable (Phase A-1).
-        BackendRenderTargetContext context {rect,nativeTarget,renderScale};
+        auto context = std::make_unique<BackendRenderTargetContext>(rect,nativeTarget,renderScale);
 
         HRESULT hr;
         IDCompositionVisual2 *v;
@@ -122,7 +122,7 @@ namespace OmegaWTK::Composition {
             // MessageBoxA(HWND_DESKTOP,(std::string("Failed to set Content of Visual. ERROR:") + ss.str()).c_str(),NULL,MB_OK);
         };
 
-        return SharedHandle<Parent::Visual>(new DCVisualTree::RootVisual {pos,context,v,renderScale});
+        return SharedHandle<Parent::Visual>(new DCVisualTree::RootVisual {pos,std::move(context),v,renderScale});
     };
 
     Core::SharedPtr<BackendVisualTree::Visual> DCVisualTree::makeSurfaceVisual(
@@ -130,9 +130,9 @@ namespace OmegaWTK::Composition {
 
         // Surface-only: texture + texture render target, no swap chain, no DComp visual.
         SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
-        BackendRenderTargetContext context {rect,nullNative,renderScale};
+        auto context = std::make_unique<BackendRenderTargetContext>(rect,nullNative,renderScale);
 
-        return SharedHandle<Parent::Visual>(new DCVisualTree::SurfaceVisual {pos,context,renderScale});
+        return SharedHandle<Parent::Visual>(new DCVisualTree::SurfaceVisual {pos,std::move(context),renderScale});
     };
 
     void DCVisualTree::setRootVisual(Core::SharedPtr<Parent::Visual> & visual){

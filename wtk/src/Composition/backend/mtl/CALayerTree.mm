@@ -133,9 +133,9 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
 
      // Root visual renders directly to the native drawable (Phase A-1).
      Composition::Rect r {saneRect};
-     BackendRenderTargetContext compTarget (r,nativeTarget,(float)scale);
+     auto compTarget = std::make_unique<BackendRenderTargetContext>(r,nativeTarget,(float)scale);
 
-     return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::RootVisual(sanePos,compTarget,layer));
+     return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::RootVisual(sanePos,std::move(compTarget),layer));
  };
 
  Core::SharedPtr<BackendVisualTree::Visual> MTLCALayerTree::makeSurfaceVisual(
@@ -147,9 +147,9 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
      CGFloat scale = safeScale();
      SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
      Composition::Rect r {saneRect};
-     BackendRenderTargetContext compTarget (r,nullNative,(float)scale);
+     auto compTarget = std::make_unique<BackendRenderTargetContext>(r,nullNative,(float)scale);
 
-     return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::SurfaceVisual(sanePos,compTarget));
+     return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::SurfaceVisual(sanePos,std::move(compTarget)));
  };
 
  void MTLCALayerTree::setRootVisual(Core::SharedPtr<Parent::Visual> & visual){

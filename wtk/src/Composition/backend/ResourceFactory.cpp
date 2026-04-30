@@ -69,7 +69,7 @@ namespace OmegaWTK::Composition {
             result.visualTree = BackendVisualTree::Create(renderTarget);
             result.rootVisual = result.visualTree->makeRootVisual(rect, rect.pos, outPresentTarget);
             result.visualTree->setRootVisual(result.rootVisual);
-            result.rootContext = &result.rootVisual->renderTarget;
+            result.rootContext = result.rootVisual->renderTarget.get();
         });
 
         return result;

@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <memory>
+#include <utility>
 
 namespace OmegaWTK::Composition {
 
@@ -49,12 +51,12 @@ namespace OmegaWTK::Composition {
             }
 
             struct Visual : public BackendVisualTree::Visual {
-                explicit Visual(Composition::Point2D &pos, BackendRenderTargetContext &context):
-                BackendVisualTree::Visual(pos,context){
+                explicit Visual(Composition::Point2D &pos, std::unique_ptr<BackendRenderTargetContext> context):
+                BackendVisualTree::Visual(pos,std::move(context)){
                 }
 
                 void resize(Composition::Rect &newRect) override {
-                    renderTarget.setRenderTargetSize(newRect);
+                    renderTarget->setRenderTargetSize(newRect);
                 }
             };
         public:
@@ -83,15 +85,15 @@ namespace OmegaWTK::Composition {
                 }
 
                 // Root visual renders directly to the native drawable (Phase A-1).
-                BackendRenderTargetContext context {rect,outPresentTarget.nativeTarget,1.f};
-                return Core::SharedPtr<BackendVisualTree::Visual>(new Visual(pos,context));
+                auto context = std::make_unique<BackendRenderTargetContext>(rect,outPresentTarget.nativeTarget,1.f);
+                return Core::SharedPtr<BackendVisualTree::Visual>(new Visual(pos,std::move(context)));
             }
 
             Core::SharedPtr<BackendVisualTree::Visual> makeSurfaceVisual(
                     Composition::Rect &rect,Composition::Point2D &pos) override {
                 SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
-                BackendRenderTargetContext context {rect,nullNative,1.f};
-                return Core::SharedPtr<BackendVisualTree::Visual>(new Visual(pos,context));
+                auto context = std::make_unique<BackendRenderTargetContext>(rect,nullNative,1.f);
+                return Core::SharedPtr<BackendVisualTree::Visual>(new Visual(pos,std::move(context)));
             }
 
             void setRootVisual(Core::SharedPtr<BackendVisualTree::Visual> &visual) override {

@@ -4,6 +4,7 @@
 #include "omegaWTK/Core/Microsoft.h"
 
 #include <dcomp.h>
+#include <memory>
 
 #pragma comment(lib,"dcomp.lib")
 
@@ -27,7 +28,7 @@ class DCVisualTree : public BackendVisualTree {
         IDCompositionVisual2 * visual;
         float renderScale = 1.f;
         explicit RootVisual(Composition::Point2D & pos,
-                        BackendRenderTargetContext &context,
+                        std::unique_ptr<BackendRenderTargetContext> context,
                         IDCompositionVisual2 * visual,
                         float renderScale);
         void resize(Composition::Rect &newRect) override;
@@ -38,7 +39,7 @@ class DCVisualTree : public BackendVisualTree {
     struct SurfaceVisual : public Parent::Visual {
         float renderScale = 1.f;
         explicit SurfaceVisual(Composition::Point2D & pos,
-                        BackendRenderTargetContext &context,
+                        std::unique_ptr<BackendRenderTargetContext> context,
                         float renderScale);
         void resize(Composition::Rect &newRect) override;
     };

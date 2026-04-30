@@ -284,10 +284,53 @@ namespace omegasl {
         return nullptr;
     }
 
+    const char *HLSLTarget::shaderObjectFileExt(ast::ShaderDecl::Type /*stage*/) const {
+        return ".cso";
+    }
+
+    void HLSLTarget::emitStructDecl(CodeGen &cg, ast::StructDecl *_decl) {
+        std::ostringstream out;
+        out << "struct " << _decl->name << "{" << std::endl;
+        for (auto &f : _decl->fields) {
+            out << "    " << std::flush;
+            cg.writeTypeExpr(f.typeExpr, out);
+            out << " " << f.name;
+            if (f.attributeName.has_value()) {
+                out << ":";
+                writeAttribute(f.attributeName.value(), f.attributeIndex, out);
+            }
+            out << ";" << std::endl;
+        }
+        out << "};" << std::endl;
+        generatedStructs.insert(std::make_pair(_decl->name, out.str()));
+    }
+
+    void HLSLTarget::emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *_decl,
+                                           std::ostream &out) {
+        OmegaCommon::Vector<OmegaCommon::String> struct_names;
+        cg.typeResolver->getStructsInFuncDecl(_decl, struct_names);
+        for (auto &s : struct_names) {
+            out << generatedStructs[s] << std::endl;
+        }
+    }
+
     void HLSLTarget::emitShaderEntryHeader(CodeGen &cg,
                                            ast::ShaderDecl *_decl,
                                            omegasl_shader &shaderDesc,
                                            std::ostream &out) {
+        /// Set shader-map type/name + emit resources at file scope.
+        shaderDesc.type = _decl->shaderType == ast::ShaderDecl::Vertex     ? OMEGASL_SHADER_VERTEX
+                          : _decl->shaderType == ast::ShaderDecl::Fragment ? OMEGASL_SHADER_FRAGMENT
+                          : _decl->shaderType == ast::ShaderDecl::Compute  ? OMEGASL_SHADER_COMPUTE
+                          : _decl->shaderType == ast::ShaderDecl::Hull     ? OMEGASL_SHADER_HULL
+                                                                           : OMEGASL_SHADER_DOMAIN;
+        shaderDesc.name = new char[_decl->name.size() + 1];
+        std::copy(_decl->name.begin(), _decl->name.end(), (char *)shaderDesc.name);
+        ((char *)shaderDesc.name)[_decl->name.size()] = '\0';
+
+        /// Resources land at file scope ahead of the function header.
+        cg.emitResourcesAndFillLayout(_decl, shaderDesc, out);
+
         /// 3. Stage decorators.
         if (_decl->shaderType == ast::ShaderDecl::Compute) {
             shaderDesc.threadgroupDesc.x = _decl->threadgroupDesc.x;

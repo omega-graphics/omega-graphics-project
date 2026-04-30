@@ -2,6 +2,8 @@
 #include "../RenderTarget.h"
 #include <algorithm>
 #include <cmath>
+#include <memory>
+#include <utility>
 
 #ifndef OMEGAWTK_COMPOSITION_MTL_MTLBDCALAYERTREE_H
 #define OMEGAWTK_COMPOSITION_MTL_MTLBDCALAYERTREE_H
@@ -36,9 +38,9 @@ namespace OmegaWTK::Composition {
          struct RootVisual : public Parent::Visual {
              CAMetalLayer *metalLayer;
              explicit RootVisual(Composition::Point2D & pos,
-                    BackendRenderTargetContext &renderTarget,
+                    std::unique_ptr<BackendRenderTargetContext> renderTarget,
                     CAMetalLayer *metalLayer):
-                     Parent::Visual(pos,renderTarget),
+                     Parent::Visual(pos,std::move(renderTarget)),
                      metalLayer(metalLayer != nil ?
                                 (CAMetalLayer *)CFRetain((__bridge CFTypeRef)metalLayer) :
                                 nil){
@@ -47,7 +49,7 @@ namespace OmegaWTK::Composition {
                  // Native layer geometry (CAMetalLayer frame/bounds/drawableSize)
                  // is now updated on the main thread by CocoaItem::resizeNativeLayer.
                  // This method only sizes the GPU render target texture.
-                 renderTarget.setRenderTargetSize(newRect);
+                 renderTarget->setRenderTargetSize(newRect);
              }
 
              ~RootVisual() override {
@@ -61,11 +63,11 @@ namespace OmegaWTK::Composition {
          /// Surface-only visual — GPU texture, no native layer.
          struct SurfaceVisual : public Parent::Visual {
              explicit SurfaceVisual(Composition::Point2D & pos,
-                    BackendRenderTargetContext & renderTarget):
-                     Parent::Visual(pos,renderTarget){
+                    std::unique_ptr<BackendRenderTargetContext> renderTarget):
+                     Parent::Visual(pos,std::move(renderTarget)){
              };
              void resize(Composition::Rect & newRect) override {
-                 renderTarget.setRenderTargetSize(newRect);
+                 renderTarget->setRenderTargetSize(newRect);
              }
          };
 

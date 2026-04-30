@@ -28,6 +28,8 @@ namespace omegasl {
         struct ResourceDecl;
         struct ShaderDecl;
         struct StructDecl;
+        struct VarDecl;
+        struct ReturnDecl;
         struct AttributedFieldDecl;
     }
     struct CodeGen;
@@ -233,6 +235,52 @@ namespace omegasl {
                                           const std::string &source,
                                           omegasl_shader &meta) = 0;
 
+        /// Phase 10: per-target preamble emitted at the top of each
+        /// generated shader source file. MSL writes `#include
+        /// <metal_stdlib>` + `using namespace metal;`; GLSL writes
+        /// `#version 450` + the samplerless-texture extension. HLSL has
+        /// nothing to emit. Default: no-op.
+        virtual void emitDefaultHeaders(std::ostream &/*out*/) {}
+
+        /// Phase 10: build the per-struct text emitted for a STRUCT_DECL
+        /// and stash it in the target's own cache. Each backend has its
+        /// own spelling (HLSL `struct X{` no space, MSL `struct X {` with
+        /// `[[attribute]]` qualifiers, GLSL plain fields with internal-
+        /// struct routing into `internalStructs`). The cached text is
+        /// later emitted by `emitShaderUsedStructs` for HLSL/MSL — GLSL
+        /// emits its used-struct text inside `emitShaderEntryHeader`.
+        virtual void emitStructDecl(CodeGen &cg, ast::StructDecl *decl) = 0;
+
+        /// Phase 10: emit the cached struct definitions used by a shader
+        /// at file scope, ahead of the entry header. HLSL emits one
+        /// trailing newline per struct, MSL two, GLSL is a no-op (handled
+        /// inline by `emitShaderEntryHeader`).
+        virtual void emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *decl,
+                                           std::ostream &out) = 0;
+
+        /// Phase 10: optional hook for VAR_DECL emission. Returning true
+        /// means the target handled the entire declaration; the shared
+        /// path skips its default emission. Default: false (HLSL/MSL fall
+        /// through to the shared form). GLSL overrides to handle internal-
+        /// struct vars by decomposing brace initializers into per-field
+        /// stores against `gl_Position` / `_outColorN` / etc.
+        virtual bool tryEmitVarDecl(CodeGen &/*cg*/, ast::VarDecl */*decl*/) { return false; }
+
+        /// Phase 10: optional hook for RETURN_DECL emission. Returning
+        /// true means the target handled the entire return; the shared
+        /// path skips its default `return [expr]` emission. GLSL overrides
+        /// to reroute fragment-output struct returns into bare `return`
+        /// (per-field stores happened earlier via member-expr routing) and
+        /// to assign to `_outColor` / `gl_Position` for non-struct
+        /// fragment / hull / domain returns.
+        virtual bool tryEmitReturnDecl(CodeGen &/*cg*/, ast::ReturnDecl */*decl*/) { return false; }
+
+        /// Phase 10: per-stage compiled-object file extension recorded in
+        /// the shader map. HLSL `.cso`, MSL `.metallib`, GLSL `.spv`.
+        /// The shared SHADER_DECL handler uses this to build the entry's
+        /// `object_file` key.
+        virtual const char *shaderObjectFileExt(ast::ShaderDecl::Type stage) const = 0;
+
         /// Phase 9: friendly stage-support gate. Default: every stage
         /// supported. `MSLTarget` overrides to refuse hull/domain (no
         /// Metal tessellation pipeline today — see OmegaSL-Reference.md
@@ -289,11 +337,15 @@ namespace omegasl {
                                   OmegaCommon::StrRef name,
                                   const std::string &source,
                                   omegasl_shader &meta) override;
+        void emitStructDecl(CodeGen &cg, ast::StructDecl *decl) override;
+        void emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
+        const char *shaderObjectFileExt(ast::ShaderDecl::Type stage) const override;
     private:
         HLSLCodeOpts &opts;
         unsigned tResourceCount = 0;
         unsigned uResourceCount = 0;
         unsigned sResourceCount = 0;
+        OmegaCommon::Map<OmegaCommon::String, OmegaCommon::String> generatedStructs;
     };
 
     struct MSLTarget final : Target {
@@ -347,8 +399,13 @@ namespace omegasl {
                                   omegasl_shader &meta) override;
         bool supportsStage(ast::ShaderDecl::Type stage,
                            std::string &diagnosticOut) const override;
+        void emitDefaultHeaders(std::ostream &out) override;
+        void emitStructDecl(CodeGen &cg, ast::StructDecl *decl) override;
+        void emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
+        const char *shaderObjectFileExt(ast::ShaderDecl::Type stage) const override;
     private:
         MetalCodeOpts &opts;
+        std::map<std::string, std::string> generatedStructs;
         unsigned bufferCount = 0;
         unsigned textureCount = 0;
         unsigned samplerCount = 0;
@@ -412,6 +469,12 @@ namespace omegasl {
                                   OmegaCommon::StrRef name,
                                   const std::string &source,
                                   omegasl_shader &meta) override;
+        void emitDefaultHeaders(std::ostream &out) override;
+        void emitStructDecl(CodeGen &cg, ast::StructDecl *decl) override;
+        void emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
+        bool tryEmitVarDecl(CodeGen &cg, ast::VarDecl *decl) override;
+        bool tryEmitReturnDecl(CodeGen &cg, ast::ReturnDecl *decl) override;
+        const char *shaderObjectFileExt(ast::ShaderDecl::Type stage) const override;
 
         /// Map a struct field reference to the GLSL identifier that backs it.
         /// `Position` rides on `gl_Position`, indexed `Color(N)` on

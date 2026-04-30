@@ -689,7 +689,79 @@ hook owns its own context.
 
 ---
 
-## Phase 10 — Collapse the three `*CodeGen` subclasses
+## Phase 10 — Collapse the three `*CodeGen` subclasses ✅
+
+**Status: landed.** Single concrete `CodeGen final` plus three
+`*Target.cpp` files. The HLSLCodeGen / MetalCodeGen / GLSLCodeGen classes
+are gone.
+
+**What landed.**
+
+- `CodeGen` is now `struct CodeGen final` with no virtuals. The
+  `~CodeGen`, `generateDecl`, `generateExpr`, `generateBlock`,
+  `compileShader`, `compileShaderOnRuntime`, and `shaderOutStream`
+  members are all non-virtual. The only virtuals in the codegen layer
+  are on `Target`.
+- New hooks on `Target`: `emitDefaultHeaders`, `emitStructDecl`,
+  `emitShaderUsedStructs`, `tryEmitVarDecl`, `tryEmitReturnDecl`,
+  `shaderObjectFileExt`. These absorb the last per-backend
+  `generateDecl` divergences (HLSL/MSL struct text spelling, GLSL
+  internal-struct VAR_DECL decomposition + fragment-output RETURN_DECL
+  rerouting, MSL `defaultHeaders` + GLSL `#version 450` preamble,
+  per-backend object-file extension `.cso` / `.metallib` / `.spv`).
+- File/string output state moved from each `*CodeGen` onto `CodeGen`
+  itself: `std::ofstream fileOut`, `std::ostringstream *runtimeStringOut`,
+  and a `std::ostream &shaderOut` reference established in the
+  constructor. The runtime constructor takes the caller's external
+  `ostringstream` by reference (used by `omegasl_runtime.cpp`).
+- HLSL's resource-binding loop moved into
+  `HLSLTarget::emitShaderEntryHeader` (was previously emitted from
+  HLSLCodeGen.cpp ahead of the header hook). All three backends now
+  drive resources through the shared `cg.emitResourcesAndFillLayout`.
+- `emitUserFunctionSignature` / `Prototype` / `emitUserFunction` and
+  `writeTypeExpr` move from each `*CodeGen` onto `CodeGen` — the
+  bodies were identical across the three.
+- `*CodeGenMake` / `*CodeGenMakeRuntime` factory functions are gone.
+  Replaced with single `CodeGenMake(opts, std::unique_ptr<Target>)` /
+  `CodeGenMakeRuntime(opts, std::unique_ptr<Target>, ostringstream&)`
+  factories. `main.cpp` and `omegasl_runtime.cpp` each construct the
+  matching target and call the unified factory.
+- `HLSLCodeGen.cpp`, `MetalCodeGen.cpp`, `GLSLCodeGen.cpp` deleted
+  (~970 LoC removed).
+
+**State migrated to targets.** `generatedStructs` (HLSL + MSL gain it;
+GLSL already had it) lives on each Target now. `MetalCodeGen::shaderDecl`
+flag is gone (Phase 8d had already removed its body usage; Phase 10
+removes the field with the class). The Metal hull/domain reject
+diagnostic, dxc/metal/glslc invocation, in-process runtime compile, and
+file-extension switches all live on Target after Phase 9 — Phase 10
+only had to delete the now-trivial `*CodeGen` shells.
+
+**Verification:** Build green; 28/28 ctest pass; HLSL/MSL/GLSL output
+byte-identical across all 25 positive test shaders (verified via
+`diff -rq` against an archived baseline of `--emit-source-only` output
+captured before Phase 10 started).
+
+**LoC delta in `gte/omegasl/src/`:**
+
+| File | Before | After |
+|------|--------|-------|
+| `HLSLCodeGen.cpp` | 297 | _deleted_ |
+| `MetalCodeGen.cpp` | 300 | _deleted_ |
+| `GLSLCodeGen.cpp` | 327 | _deleted_ |
+| `CodeGen.cpp` | 265 | 460 |
+| `CodeGen.h` | 389 | 437 |
+| `Target.h` | 457 | 506 |
+| `HLSLTarget.cpp` | 508 | 538 |
+| `MSLTarget.cpp` | 605 | 651 |
+| `GLSLTarget.cpp` | 858 | 944 |
+
+Net delta: roughly **-540 LoC**, with the per-feature work cheaper to
+land forever after.
+
+---
+
+## Phase 10 — Collapse the three `*CodeGen` subclasses (original spec)
 
 **Goal.** Delete `HLSLCodeGen`, `MetalCodeGen`, `GLSLCodeGen` classes.
 `CodeGen` becomes concrete and final, takes a `std::unique_ptr<Target>`

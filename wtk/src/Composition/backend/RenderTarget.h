@@ -107,6 +107,14 @@ namespace OmegaWTK::Composition {
                                             SharedHandle<OmegaGTE::GENativeRenderTarget> & renderTarget,
                                             float renderScale = 1.0f);
         ~BackendRenderTargetContext();
+
+        // Non-copyable, non-movable: FrameRenderPass and the texture set hold
+        // references back into this object. Copying or moving would silently
+        // dangle those references against the source's storage.
+        BackendRenderTargetContext(const BackendRenderTargetContext &) = delete;
+        BackendRenderTargetContext & operator=(const BackendRenderTargetContext &) = delete;
+        BackendRenderTargetContext(BackendRenderTargetContext &&) = delete;
+        BackendRenderTargetContext & operator=(BackendRenderTargetContext &&) = delete;
     };
 
     class BackendVisualTree;
