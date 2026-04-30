@@ -1,0 +1,30 @@
+struct MyVertex {
+    float4 pos;
+};
+
+struct VertexRaster internal {
+    float4 pos : Position;
+};
+
+/// `OutputCoverage` requires a `uint` field — float should fail Sema.
+struct BadFragOut internal {
+    float4 color : Color(0);
+    float mask : OutputCoverage;
+};
+
+buffer<MyVertex> vbuf : 0;
+
+[in vbuf]
+vertex VertexRaster bcovVert(uint vid : VertexID){
+    MyVertex v = vbuf[vid];
+    VertexRaster r;
+    r.pos = v.pos;
+    return r;
+}
+
+fragment BadFragOut bcovFrag(VertexRaster raster){
+    BadFragOut o;
+    o.color = float4(1.0, 0.0, 0.0, 1.0);
+    o.mask = 1.0;
+    return o;
+}

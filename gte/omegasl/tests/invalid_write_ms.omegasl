@@ -1,0 +1,10 @@
+texture2d_ms msTarget : 0;
+
+[out msTarget]
+compute(x=8,y=8,z=1)
+void writeMSKernel(uint3 gid : GlobalThreadID){
+    /// Multisample storage is not writable from a shader. This should be
+    /// rejected by Sema with a "Multisample textures are not writable"
+    /// diagnostic.
+    write(msTarget, int2(gid[0], gid[1]), float4(1.0, 0.0, 0.0, 1.0));
+}

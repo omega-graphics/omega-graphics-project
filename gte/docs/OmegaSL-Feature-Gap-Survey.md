@@ -55,23 +55,27 @@ struct FragOut internal {
 Backends: `SV_Depth`, `[[depth(any)]]` (Metal requires `any`/`greater`/`less`
 qualifier — default to `any`), `gl_FragDepth`.
 
-### 1.3 Front-face, sample index, coverage [COMPLETED — input only]
+### 1.3 Front-face, sample index, coverage [COMPLETED]
 
-| OmegaSL (proposed) | HLSL | MSL | GLSL |
-|--------------------|------|-----|------|
-| `bool : FrontFacing` | `SV_IsFrontFace` | `[[front_facing]]` | `gl_FrontFacing` |
-| `uint : SampleIndex` | `SV_SampleIndex` | `[[sample_id]]` | `gl_SampleID` |
-| `uint : Coverage` (in/out) | `SV_Coverage` | `[[sample_mask]]` | `gl_SampleMaskIn` / `gl_SampleMask` |
+| OmegaSL | HLSL | MSL | GLSL |
+|---------|------|-----|------|
+| `bool : FrontFacing` (param)              | `SV_IsFrontFace` | `[[front_facing]]` | `gl_FrontFacing` |
+| `uint : SampleIndex` (param)              | `SV_SampleIndex` | `[[sample_id]]`    | `gl_SampleID` |
+| `uint : InputCoverage` (param)            | `SV_Coverage`    | `[[sample_mask]]`  | `gl_SampleMaskIn[0]` (uint-cast) |
+| `uint : OutputCoverage` (output struct field) | `SV_Coverage` | `[[sample_mask]]` | `gl_SampleMask[0]` (int-cast write-back from synthetic uint local) |
 
 Needed for two-sided shading, MSAA-aware shading, alpha-to-coverage override.
 
-Implemented as **fragment-shader parameter** attributes (not struct fields) —
-each backend models these as per-fragment scalar inputs, and putting them in
-the rasterizer struct would conflict with vertex/fragment struct sharing.
-**Coverage** is input only for now; the output direction needs separate
-plumbing (`gl_SampleMask` write, MSL `[[sample_mask]]` on output struct).
+Per-fragment scalar inputs are modelled as **fragment-shader parameter**
+attributes (not struct fields) — each backend models these as per-fragment
+scalar inputs, and putting them in the rasterizer struct would conflict with
+vertex/fragment struct sharing. The output direction is modelled as a field
+on the fragment-output internal struct, alongside `Color(N)` and `Depth`.
 
-Alex: Input/Output coverage should be seperate attributes: InputCoverage/OutputCoverage. (Should solve in/out confusion)
+Coverage is split into two distinct attribute names (per Alex's note) so
+in/out direction is unambiguous from the syntax: `InputCoverage` is only
+valid as a fragment parameter; `OutputCoverage` is only valid as a field of
+a fragment-output internal struct.
 
 ### 1.4 Multiple color attachments [COMPLETED]
 
@@ -131,20 +135,51 @@ fields of internal structs emitted from vertex/hull/domain shaders.
 
 ## 2. Resource types — missing textures and buffers (P0)
 
-### 2.1 Cube & array texture types
+### 2.1 Cube & array texture types [COMPLETED — compile path]
 
-Currently only `texture1d/2d/3d` + matching samplers. Missing:
+Six new texture types and one new sampler keyword (`samplercube`) land in
+this pass:
 
 | Type | HLSL | MSL | GLSL |
 |------|------|-----|------|
-| `texturecube`       | `TextureCube` | `texturecube<T>` | `samplerCube` |
-| `texturecube_array` | `TextureCubeArray` | `texturecube_array<T>` | `samplerCubeArray` |
-| `texture1d_array`   | `Texture1DArray` | `texture1d_array<T>` | `sampler1DArray` |
-| `texture2d_array`   | `Texture2DArray` | `texture2d_array<T>` | `sampler2DArray` |
-| `texture2d_ms`      | `Texture2DMS<T>` | `texture2d_ms<T>` | `sampler2DMS` |
-| `texture2d_ms_array`| `Texture2DMSArray<T>` | `texture2d_ms_array<T>` | `sampler2DMSArray` |
+| `texturecube`       | `TextureCube`         | `texturecube<float>`        | `samplerCube` |
+| `texturecube_array` | `TextureCubeArray`    | `texturecube_array<float>`  | `samplerCubeArray` |
+| `texture1d_array`   | `Texture1DArray`      | `texture1d_array<float>`    | `sampler1DArray` / `image1DArray` |
+| `texture2d_array`   | `Texture2DArray`      | `texture2d_array<float>`    | `sampler2DArray` / `image2DArray` |
+| `texture2d_ms`      | `Texture2DMS<float4>` | `texture2d_ms<float>`       | `sampler2DMS` |
+| `texture2d_ms_array`| `Texture2DMSArray<float4>` | `texture2d_ms_array<float>` | `sampler2DMSArray` |
+| `samplercube`       | `SamplerState`        | `sampler`                   | (combined into `samplerCube`) |
 
-Cube textures alone block environment maps, skyboxes, IBL.
+Cube textures alone block environment maps, skyboxes, IBL — that's why
+this is the first §2 item in the implementation order.
+
+**Cube `read`/`write` and MS `write` are deferred** — backend support is
+asymmetric and the practical demand is rare:
+
+| Op                       | HLSL                          | MSL                            | GLSL                          |
+|--------------------------|-------------------------------|--------------------------------|-------------------------------|
+| `texturecube` `read`     | via TextureCubeArray indexing | no `texturecube::read`         | `texelFetch` rejects samplerCube |
+| `texturecube` `write`    | RWTexture2DArray aliasing     | `texturecube<...,access::write>` (limited) | no `imageCube`     |
+| `texture2d_ms` `write`   | not supported                 | not supported                  | not supported                 |
+
+Sema rejects all three with a clear diagnostic. Revisit if a real engine
+use case shows up.
+
+**Phase A — compile path (this change)**: tokens, builtin types, Sema
+validation (sampler↔texture pairing, sample/read/write coord rules incl.
+3-arg MS `read`), three backends emit valid HLSL/MSL/GLSL source, the
+runtime layout-desc enum gains six new texture-type values plus
+`OMEGASL_SHADER_SAMPLERCUBE_DESC`/`OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC`.
+Tests: `texture_cube.omegasl`, `texture_array.omegasl`,
+`texture_ms.omegasl`, `invalid_sample_ms.omegasl`,
+`invalid_write_ms.omegasl`.
+
+**Phase B — runtime path (pending)**: `GETexture` API extension for cube /
+array-layer count / sample count, and runtime descriptor binding
+(`VkImageViewType` / D3D12 view-dimension / `MTLTextureType`). Tracked in
+`docs/Pipeline-Completion-Extension-Plan.md` "Texture View Type
+Extension". Until Phase B lands, a shader using one of the new types
+compiles but a real cube/array/MS texture cannot be bound at runtime.
 
 ### 2.2 Depth textures + comparison samplers
 
@@ -1053,3 +1088,322 @@ Steps 1–4 deliver a shading language that can express every non-compute
 feature of Vulkan 1.0 / D3D12 / Metal 2 on equal footing with hand-written
 shaders. Step 5 does the same for baseline compute. 6 closes a long tail
 of one-line fixes. 7–10 bring the language up to mainstream modern engines.
+
+**Cross-cutting prerequisite:** §14 (feature gating) should land before any
+of the asymmetric features (RT, mesh shaders, bindless, geometry shaders,
+tessellation re-enable) so each one has a clean way to declare its backend
+requirements at the source level and the runtime can per-shader-reject
+when the device can't satisfy them.
+
+---
+
+## 14. Cross-cutting: Backend feature gating
+
+Several features in this survey are **backend-asymmetric** — supported on
+some targets but not others. Examples already on the roadmap:
+
+| Feature | HLSL | MSL | GLSL/Vulkan |
+|---------|------|-----|-------------|
+| Ray tracing / RayQuery | SM 6.5+ | Metal 3.0+ | KHR_ray_tracing |
+| Mesh / amplification shaders | SM 6.5+ | Metal 3.0+ | EXT_mesh_shader |
+| Geometry shaders | yes | **no** (removed in MSL 2.x) | yes |
+| Tessellation hull/domain | yes | **emulation-only**; runtime not wired | yes |
+| `texturecube` `read` / `write` | partial (via aliasing) | **no** | **no** |
+| `texture2d_ms` `write` | **no** | **no** | **no** |
+| Subgroup / wave ops | SM 6.0+ | Metal 2.0+ | KHR_shader_subgroup |
+| Bindless / descriptor indexing | SM 6.6 / `register space` | Argument buffers | EXT_descriptor_indexing |
+| `half` / 16-bit types | SM 6.2 + `-enable-16bit-types` | native | KHR_shader_float16_int8 |
+| 64-bit integers | SM 6.0 | `long`/`ulong` | ARB_gpu_shader_int64 |
+| Variable rate shading | SM 6.4 | (limited) | KHR_fragment_shading_rate |
+| Subpass inputs | **no** | **no** (tile shading is similar) | yes |
+| Specialization constants | (use `#define`) | (use function constants) | yes |
+
+Today the only escape hatch is "compile fails on backend X with a confusing
+codegen error." That's brittle and hides the *why* of the failure. This
+section proposes a three-layer feature-gating system so authors can declare
+intent, the compiler can warn before they get burned, and the runtime can
+per-shader-reject when a library is loaded on a device that can't satisfy
+the requirements.
+
+### 14.1 Layer 1 — source-level `#requires` macro (hard fail at compile)
+
+OmegaSL already has a Preprocessor (`gte/omegasl/src/Preprocessor.cpp`).
+Add a new directive, `#requires`, that names one or more features the
+shader requires to be supported by the target backend:
+
+```omegasl
+#requires(OMEGASL_FEATURE_RAYTRACING)
+
+[in tlas, in scene]
+compute(x=8,y=8,z=1)
+void rtKernel(uint3 gid : GlobalThreadID){
+    /// ... ray-query work ...
+}
+```
+
+Behavior:
+
+- The preprocessor predefines `OMEGASL_BACKEND_<HLSL|MSL|GLSL>` for the
+  active target backend (one of the three is always defined; the other
+  two are not).
+- The preprocessor also predefines `OMEGASL_FEATURE_<NAME>` for every
+  feature the active backend supports (table in §14.5).
+- `#requires(X)` expands to a Sema-level check: if `OMEGASL_FEATURE_X` is
+  not defined, the compiler emits a hard error keyed on the file location,
+  with the form:
+
+  > error: shader 'rtKernel' in 'foo.omegasl' requires feature
+  > `OMEGASL_FEATURE_RAYTRACING`, which is not available on the GLSL/Vulkan
+  > backend (requires VK_KHR_ray_tracing_pipeline). Consider partitioning
+  > shaders that use ray-tracing into a separate library, or guard the
+  > kernel with `#if defined(OMEGASL_FEATURE_RAYTRACING)`.
+
+- `#requires(A, B, C)` is the conjunction; all three must be defined.
+- `#requires` at file scope applies to every shader in the file.
+  `#requires` immediately preceding a `vertex`/`fragment`/`compute`/`hull`/
+  `domain` declaration applies to that shader only.
+
+`#if defined(OMEGASL_FEATURE_X)` / `#else` / `#endif` already follows from
+the existing preprocessor; no new directive needed for the soft-conditional
+path.
+
+### 14.2 Layer 2 — codegen-time portability scan (warning)
+
+`#requires` is the explicit path. Most authors won't know they're using
+something that's backend-asymmetric until they compile against the
+unsupported target. Phase A of this layer:
+
+- During codegen, each backend tracks which features the *generated source*
+  actually exercised — ray-query intrinsics, subgroup ops, mesh-shader
+  attributes, cube `read`, etc.
+- After codegen completes, the compiler diff-checks the *used* feature
+  set against the *declared* set (the union of all `#requires` directives
+  that applied to that shader).
+- If a feature was used but not declared, and that feature is **not
+  universally supported across all three backends**, emit a warning:
+
+  > warning: shader 'envProbe' uses cube-texture sampling, which is
+  > universal — no action needed.
+  > warning: shader 'rtKernel' uses ray-query intrinsics, which are not
+  > supported on every backend (HLSL ✓ SM 6.5+ / MSL ✓ Metal 3 / GLSL ✓
+  > KHR_ray_tracing). Add `#requires(OMEGASL_FEATURE_RAYTRACING)` so this
+  > shader fails fast on backends without it, and consider partitioning
+  > the file so non-RT shaders aren't gated by RT.
+
+Phase B (optional): emit a *partition suggestion* when a single .omegasl
+file contains a mix of universal-feature shaders and gated-feature
+shaders. The suggestion text proposes a concrete split — moving the
+gated shaders into `<filename>_<feature>.omegasl` — so the universal
+ones still compile when the device can't satisfy the gated set.
+
+### 14.3 Layer 3 — runtime per-shader feature flags (per-shader rejection)
+
+Even with `#requires`, a `.omegasllib` produced for one backend can be
+loaded onto a device that doesn't satisfy a particular shader's
+requirements. The library load must not fail wholesale — other shaders in
+the same library may still be perfectly usable.
+
+**Add to `omegasl.h`:**
+
+```c
+/// Per-shader feature requirements. Each bit names a runtime feature that
+/// the *generated* shader requires. The library writer sets these from the
+/// `#requires` declarations + the codegen-time portability scan; the
+/// loader masks them against the device's `GTEDeviceFeatures` and rejects
+/// only the shaders whose required bits are not satisfied. Other shaders
+/// in the same library load normally.
+using omegasl_shader_feature_flags = enum : uint64_t {
+    OMEGASL_FEATURE_BIT_NONE              = 0,
+    OMEGASL_FEATURE_BIT_RAYTRACING        = 1ull << 0,
+    OMEGASL_FEATURE_BIT_MESH_SHADERS      = 1ull << 1,
+    OMEGASL_FEATURE_BIT_GEOMETRY_SHADERS  = 1ull << 2,
+    OMEGASL_FEATURE_BIT_TESSELLATION      = 1ull << 3,
+    OMEGASL_FEATURE_BIT_SUBGROUP_OPS      = 1ull << 4,
+    OMEGASL_FEATURE_BIT_BINDLESS          = 1ull << 5,
+    OMEGASL_FEATURE_BIT_FLOAT16           = 1ull << 6,
+    OMEGASL_FEATURE_BIT_INT64             = 1ull << 7,
+    OMEGASL_FEATURE_BIT_VARIABLE_RATE     = 1ull << 8,
+    OMEGASL_FEATURE_BIT_SUBPASS_INPUTS    = 1ull << 9,
+    OMEGASL_FEATURE_BIT_SPEC_CONSTANTS    = 1ull << 10,
+    OMEGASL_FEATURE_BIT_TEXTURECUBE_RW    = 1ull << 11,  // cube read/write (deferred)
+    OMEGASL_FEATURE_BIT_TEXTURE2D_MS_WRITE = 1ull << 12,
+    /// New bits append at the tail; existing bits never get reused.
+};
+
+/// Add to omegasl_shader struct:
+struct omegasl_shader {
+    /// ... existing fields ...
+    uint64_t requiredFeatures;   /// Bitfield of OMEGASL_FEATURE_BIT_*
+};
+```
+
+The library file format already encodes per-shader records; appending one
+`uint64_t` to each record is forward-compatible (older readers ignore the
+trailing bytes).
+
+**Loader semantics** (engine-side, in `OmegaSLLibrary::load` or
+equivalent):
+
+```cpp
+void load(const omegasl_lib &lib, GTEDevice &device) {
+    uint64_t deviceFeatures = device.featuresAsBitmask();
+    for (auto &shader : lib.shaders) {
+        uint64_t missing = shader.requiredFeatures & ~deviceFeatures;
+        if (missing) {
+            shader.loadStatus = OMEGASL_SHADER_LOAD_UNSUPPORTED;
+            shader.loadDiagnostic = formatMissingFeatureMessage(missing);
+            continue;  /// Other shaders in the library load normally.
+        }
+        bindShader(shader);
+    }
+}
+```
+
+Pipeline creation against an `OMEGASL_SHADER_LOAD_UNSUPPORTED` shader
+fails *at pipeline creation time* with the stored diagnostic — not at
+library load. This way a library with a mix of supported and unsupported
+shaders is still *usable*; only the specific draw/dispatch that names an
+unsupported shader errors.
+
+### 14.4 GTEDeviceFeatures bridge
+
+`GTEDeviceFeatures` already exists in `gte/include/omegaGTE/GTEBase.h` (or
+similar). Phase A of §14 adds a `featuresAsBitmask() -> uint64_t` method
+that walks the existing `GTEDeviceFeatures` flags and synthesizes the
+matching `OMEGASL_FEATURE_BIT_*` bits.
+
+Phase B (later): extend `GTEDeviceFeatures` itself with the bits that
+aren't yet tracked (cube R/W, MS write, etc.) so the bridge is total
+rather than synthesized.
+
+### 14.5 Predefined feature macros
+
+Initial mapping (which `OMEGASL_FEATURE_<NAME>` macros are predefined per
+backend):
+
+| Macro | HLSL | MSL | GLSL |
+|---|---|---|---|
+| `OMEGASL_BACKEND_HLSL` | ✓ | — | — |
+| `OMEGASL_BACKEND_MSL` | — | ✓ | — |
+| `OMEGASL_BACKEND_GLSL` | — | — | ✓ |
+| `OMEGASL_FEATURE_RAYTRACING` | ✓ (SM 6.5+) | ✓ (Metal 3+) | ✓ (KHR_ray_tracing) |
+| `OMEGASL_FEATURE_MESH_SHADERS` | ✓ (SM 6.5+) | ✓ (Metal 3+) | ✓ (EXT_mesh_shader) |
+| `OMEGASL_FEATURE_GEOMETRY_SHADERS` | ✓ | **—** | ✓ |
+| `OMEGASL_FEATURE_TESSELLATION` | ✓ | **—** (runtime gap) | ✓ |
+| `OMEGASL_FEATURE_SUBGROUP_OPS` | ✓ (SM 6.0+) | ✓ (Metal 2+) | ✓ |
+| `OMEGASL_FEATURE_BINDLESS` | ✓ (SM 6.6) | ✓ (argument buffers) | ✓ |
+| `OMEGASL_FEATURE_FLOAT16` | ✓ (SM 6.2 + flag) | ✓ | ✓ (KHR_shader_float16_int8) |
+| `OMEGASL_FEATURE_INT64` | ✓ (SM 6.0) | ✓ | ✓ |
+| `OMEGASL_FEATURE_VARIABLE_RATE` | ✓ (SM 6.4) | partial | ✓ (KHR_fragment_shading_rate) |
+| `OMEGASL_FEATURE_SUBPASS_INPUTS` | **—** | **—** | ✓ |
+| `OMEGASL_FEATURE_SPEC_CONSTANTS` | (via #define) | (function constants) | ✓ |
+| `OMEGASL_FEATURE_TEXTURECUBE_RW` | partial | **—** | **—** |
+| `OMEGASL_FEATURE_TEXTURE2D_MS_WRITE` | **—** | **—** | **—** |
+
+A backend defines the macro for a feature only when the feature is
+*reliably* supported on the lowest-common-denominator hardware that
+backend targets. The macro definition is gated behind the device-feature
+probe at runtime, but at compile time it's static — it tracks "is this
+expressible in the generated source for this backend at all," not "does
+the user's hardware support it."
+
+### 14.6 Concrete example
+
+**Source:**
+
+```omegasl
+#requires(OMEGASL_FEATURE_MESH_SHADERS)
+
+struct MeshOut internal {
+    float4 pos : Position;
+    float3 normal : TexCoord;
+};
+
+mesh(threads=64, vertices=64, primitives=128)
+void modelMesh(uint3 gid : GlobalThreadID){
+    /// ... mesh-shader body ...
+}
+
+#if defined(OMEGASL_FEATURE_RAYTRACING)
+[in tlas]
+compute(x=8,y=8,z=1)
+void shadowRay(uint3 gid : GlobalThreadID){
+    /// RT-only shadow query path
+}
+#else
+[in shadowMap]
+compute(x=8,y=8,z=1)
+void shadowMap(uint3 gid : GlobalThreadID){
+    /// fallback shadow-map sample path
+}
+#endif
+```
+
+**Compile output (HLSL backend, SM 6.5):** both shaders compile. Library
+records `modelMesh.requiredFeatures = MESH_SHADERS` and
+`shadowRay.requiredFeatures = MESH_SHADERS | RAYTRACING`.
+
+**Compile output (Metal 2 backend, no RT):** preprocessor selects the
+`shadowMap` branch instead of `shadowRay`. `modelMesh` errors at compile
+time because `#requires(MESH_SHADERS)` fires (Metal 2 doesn't define it).
+Author either bumps to Metal 3 or partitions `modelMesh` into a separate
+file.
+
+**Runtime load (D3D12, SM 6.5 device with RT):** all shaders load.
+
+**Runtime load (D3D12, SM 6.5 device *without* RT):** library loads;
+`shadowRay`'s `requiredFeatures & ~deviceFeatures = RAYTRACING`, so it's
+marked unsupported. Pipeline creation against `shadowRay` fails with the
+stored diagnostic; `modelMesh` and other shaders work normally.
+
+### 14.7 Implementation phases
+
+1. **Macro + `#requires` directive** — preprocessor + Sema integration.
+   Predefined macros only for the existing universal features; the
+   asymmetric ones get added as they land in the survey. (Self-contained,
+   ~1 day for the directive plumbing.)
+
+2. **Codegen-time portability scan** — each backend's emitter notes which
+   features were exercised; the compiler driver compares against the
+   declared set and emits warnings. (Touches all three backends; per-feature
+   instrumentation grows organically as new features land.)
+
+3. **`omegasl_shader.requiredFeatures` field + library writer/reader
+   compatibility** — additive to the file format. Bump a `lib_version`
+   minor-version byte so older loaders can still load new libraries
+   (they just won't see the requiredFeatures field, which is fine — they
+   predate the gating system anyway).
+
+4. **`GTEDeviceFeatures::featuresAsBitmask` + per-shader load rejection**
+   — engine side. The diagnostic format should be human-readable and
+   include the missing feature names.
+
+5. **Partition-suggestion warning (Phase B of layer 2)** — quality-of-life,
+   land after the system is in active use.
+
+### 14.8 Out of scope
+
+- **Per-stage requirements.** `#requires` on a single shader gates that
+  shader. Per-stage requirements (e.g., "this fragment shader requires
+  variable rate shading") fall out of placing `#requires` immediately
+  before the function declaration. No special syntax needed.
+
+- **Conditional resource declarations.** `#if defined(OMEGASL_FEATURE_X)`
+  around a `buffer<...>` or `texture2d` declaration is technically
+  expressible but produces resource-binding-table drift across backends
+  (the binding numbers shift). Recommend documenting as "supported but
+  fragile" — the partition pattern is cleaner.
+
+- **Version-numbered features.** Things like "SM 6.6 minimum" or "Metal
+  2.4+" don't appear as feature flags here — they appear as the version
+  the backend was *invoked at*. If `dxc -T cs_6_6` is used and the user
+  declares `#requires(OMEGASL_FEATURE_BINDLESS)`, the feature macro is
+  defined and the shader compiles. There's no "minimum SM" macro because
+  that's not a feature, it's a compiler invocation parameter.
+
+- **Optional feature-set negotiation.** Vulkan extensions can be requested
+  optionally — "use ray-query if available, otherwise fall back." The
+  `#if defined(...)` path covers source-level fallback. Per-shader
+  *runtime* fallback (load-time substitution of an alternate shader if
+  the primary fails) is a higher-level engine concern, not a language
+  feature.

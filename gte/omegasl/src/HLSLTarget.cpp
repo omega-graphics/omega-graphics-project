@@ -11,13 +11,23 @@
 #    pragma comment(lib, "d3dcompiler.lib")
 #endif
 
-#define HLSL_TEXTURE1D    "Texture1D"
-#define HLSL_RW_TEXTURE1D "RWTexture1D"
-#define HLSL_TEXTURE2D    "Texture2D"
-#define HLSL_RW_TEXTURE2D "RWTexture2D"
-#define HLSL_BUFFER       "StructuredBuffer"
-#define HLSL_RW_BUFFER    "RWStructuredBuffer"
-#define HLSL_SAMPLER      "SamplerState"
+#define HLSL_TEXTURE1D            "Texture1D"
+#define HLSL_RW_TEXTURE1D         "RWTexture1D"
+#define HLSL_TEXTURE2D            "Texture2D"
+#define HLSL_RW_TEXTURE2D         "RWTexture2D"
+#define HLSL_TEXTURE3D            "Texture3D"
+#define HLSL_RW_TEXTURE3D         "RWTexture3D"
+#define HLSL_TEXTURE1D_ARRAY      "Texture1DArray"
+#define HLSL_RW_TEXTURE1D_ARRAY   "RWTexture1DArray"
+#define HLSL_TEXTURE2D_ARRAY      "Texture2DArray"
+#define HLSL_RW_TEXTURE2D_ARRAY   "RWTexture2DArray"
+#define HLSL_TEXTURECUBE          "TextureCube"
+#define HLSL_TEXTURECUBE_ARRAY    "TextureCubeArray"
+#define HLSL_TEXTURE2D_MS         "Texture2DMS"
+#define HLSL_TEXTURE2D_MS_ARRAY   "Texture2DMSArray"
+#define HLSL_BUFFER               "StructuredBuffer"
+#define HLSL_RW_BUFFER            "RWStructuredBuffer"
+#define HLSL_SAMPLER              "SamplerState"
 
 namespace omegasl {
 
@@ -174,6 +184,45 @@ namespace omegasl {
                 out << HLSL_RW_TEXTURE2D;
             }
             out << "<float4>";
+        } else if (_t == ast::builtins::texture1d_array_type) {
+            layoutDesc.type = OMEGASL_SHADER_TEXTURE1D_ARRAY_DESC;
+            if (ioMode == OMEGASL_SHADER_DESC_IO_IN) {
+                isTResource = true;
+                out << HLSL_TEXTURE1D_ARRAY;
+            } else {
+                out << HLSL_RW_TEXTURE1D_ARRAY;
+            }
+            out << "<float4>";
+        } else if (_t == ast::builtins::texture2d_array_type) {
+            layoutDesc.type = OMEGASL_SHADER_TEXTURE2D_ARRAY_DESC;
+            if (ioMode == OMEGASL_SHADER_DESC_IO_IN) {
+                isTResource = true;
+                out << HLSL_TEXTURE2D_ARRAY;
+            } else {
+                out << HLSL_RW_TEXTURE2D_ARRAY;
+            }
+            out << "<float4>";
+        } else if (_t == ast::builtins::texturecube_type) {
+            /// HLSL `TextureCube` is read-only; UAV cube views are expressed
+            /// via `RWTexture2DArray` aliasing on the runtime side. Sema
+            /// already rejects `write` to cube textures, so we always emit
+            /// the read-only form here.
+            layoutDesc.type = OMEGASL_SHADER_TEXTURECUBE_DESC;
+            isTResource = true;
+            out << HLSL_TEXTURECUBE << "<float4>";
+        } else if (_t == ast::builtins::texturecube_array_type) {
+            layoutDesc.type = OMEGASL_SHADER_TEXTURECUBE_ARRAY_DESC;
+            isTResource = true;
+            out << HLSL_TEXTURECUBE_ARRAY << "<float4>";
+        } else if (_t == ast::builtins::texture2d_ms_type) {
+            /// MS textures are read-only; Sema already rejects `write`.
+            layoutDesc.type = OMEGASL_SHADER_TEXTURE2D_MS_DESC;
+            isTResource = true;
+            out << HLSL_TEXTURE2D_MS << "<float4>";
+        } else if (_t == ast::builtins::texture2d_ms_array_type) {
+            layoutDesc.type = OMEGASL_SHADER_TEXTURE2D_MS_ARRAY_DESC;
+            isTResource = true;
+            out << HLSL_TEXTURE2D_MS_ARRAY << "<float4>";
         } else if (_t == ast::builtins::sampler1d_type) {
             isSResource = true;
             layoutDesc.type = res_desc->isStatic ? OMEGASL_SHADER_STATIC_SAMPLER1D_DESC
@@ -183,6 +232,11 @@ namespace omegasl {
             isSResource = true;
             layoutDesc.type = res_desc->isStatic ? OMEGASL_SHADER_STATIC_SAMPLER2D_DESC
                                                  : OMEGASL_SHADER_SAMPLER2D_DESC;
+            out << HLSL_SAMPLER;
+        } else if (_t == ast::builtins::samplercube_type) {
+            isSResource = true;
+            layoutDesc.type = res_desc->isStatic ? OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC
+                                                 : OMEGASL_SHADER_SAMPLERCUBE_DESC;
             out << HLSL_SAMPLER;
         }
 
@@ -281,6 +335,8 @@ namespace omegasl {
         if(texTy == builtins::texture1d_type) return "uint";
         if(texTy == builtins::texture2d_type) return "uint2";
         if(texTy == builtins::texture3d_type) return "uint3";
+        if(texTy == builtins::texture1d_array_type) return "uint2";
+        if(texTy == builtins::texture2d_array_type) return "uint3";
         return nullptr;
     }
 
@@ -425,17 +481,39 @@ namespace omegasl {
         cg.generateExpr(_expr->args[0]);
         out << ".Load(";
         if (textureTy == ast::builtins::texture1d_type) {
+            /// HLSL `Texture1D.Load(int2(u, mip))` — mip slot.
             out << "int2(";
             cg.generateExpr(_expr->args[1]);
             out << ",0)";
-        } else if (textureTy == ast::builtins::texture2d_type) {
+        } else if (textureTy == ast::builtins::texture1d_array_type) {
+            /// HLSL `Texture1DArray.Load(int3(u, layer, mip))`.
             out << "int3(";
             cg.generateExpr(_expr->args[1]);
             out << ",0)";
-        } else if (textureTy == ast::builtins::texture3d_type) {
+        } else if (textureTy == ast::builtins::texture2d_type) {
+            /// HLSL `Texture2D.Load(int3(uv, mip))`.
+            out << "int3(";
+            cg.generateExpr(_expr->args[1]);
+            out << ",0)";
+        } else if (textureTy == ast::builtins::texture2d_array_type) {
+            /// HLSL `Texture2DArray.Load(int4(uv, layer, mip))`.
             out << "int4(";
             cg.generateExpr(_expr->args[1]);
             out << ",0)";
+        } else if (textureTy == ast::builtins::texture3d_type) {
+            /// HLSL `Texture3D.Load(int4(uvw, mip))`.
+            out << "int4(";
+            cg.generateExpr(_expr->args[1]);
+            out << ",0)";
+        } else if (textureTy == ast::builtins::texture2d_ms_type
+                   || textureTy == ast::builtins::texture2d_ms_array_type) {
+            /// HLSL `Texture2DMS.Load(coord, sampleIndex)` and
+            /// `Texture2DMSArray.Load(int3(uv, layer), sampleIndex)`.
+            /// MS Load takes no mip slot. Sample index is a separate
+            /// trailing argument.
+            cg.generateExpr(_expr->args[1]);
+            out << ",";
+            cg.generateExpr(_expr->args[2]);
         } else {
             cg.generateExpr(_expr->args[1]);
         }
@@ -483,7 +561,11 @@ namespace omegasl {
             out << "SV_IsFrontFace";
         } else if (attributeName == ATTRIBUTE_SAMPLEINDEX) {
             out << "SV_SampleIndex";
-        } else if (attributeName == ATTRIBUTE_COVERAGE) {
+        } else if (attributeName == ATTRIBUTE_INPUT_COVERAGE
+                   || attributeName == ATTRIBUTE_OUTPUT_COVERAGE) {
+            /// HLSL uses `SV_Coverage` for both input (fragment param) and
+            /// output (return-struct field) directions; the position of the
+            /// declaration disambiguates.
             out << "SV_Coverage";
         } else if (attributeName == ATTRIBUTE_GLOBALTHREAD_ID) {
             out << "SV_DispatchThreadID";

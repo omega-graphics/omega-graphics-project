@@ -828,6 +828,145 @@ These are bugs found during the audit that should be fixed regardless of new fea
 
 ---
 
+## Extension 6: Texture View Type Extension (OmegaSL §2.1 Phase B)
+
+### Goal
+
+Phase A of OmegaSL §2.1 (`docs/OmegaSL-Feature-Gap-Survey.md`) added six new texture types (`texture1d_array`, `texture2d_array`, `texturecube`, `texturecube_array`, `texture2d_ms`, `texture2d_ms_array`) and one new sampler type (`samplercube`) to the OmegaSL compile path. The compiler accepts shaders using these types and emits valid HLSL/MSL/GLSL source. The runtime cannot yet *bind* a real cube / array / multisample texture view, so a shader that declares one of the new types compiles but fails at pipeline-creation time.
+
+This extension closes that gap. It introduces:
+
+1. A `GETexture` creation API that names face count, array-layer count, and sample count explicitly.
+2. View-type plumbing inside D3D12 / Vulkan / Metal so the existing OmegaSL layout-desc values (`OMEGASL_SHADER_TEXTURECUBE_DESC`, `OMEGASL_SHADER_TEXTURE2D_ARRAY_DESC`, ...) drive the right native view dimension.
+3. Texture-asset pipeline support for cube faces (loader-side concern; out-of-scope here, listed in §6.5).
+
+After this extension, environment maps, shadow cascades, sprite atlases addressed by layer index, MSAA resolves driven from a shader, and IBL precomputation will all be expressible end-to-end.
+
+### 6.1 `GETexture` API extension
+
+**Add to `gte/include/omegaGTE/GETexture.h`:**
+
+```cpp
+enum class TextureKind : uint8_t {
+    Tex1D,          // existing dim::OneD
+    Tex2D,          // existing dim::TwoD
+    Tex3D,          // existing dim::ThreeD
+    Tex1DArray,     // new — N layers, 1D each
+    Tex2DArray,     // new — N layers, 2D each
+    TexCube,        // new — exactly 6 faces, treated as one texture
+    TexCubeArray,   // new — 6 * N faces
+    Tex2DMS,        // new — 2D, sample_count > 1
+    Tex2DMSArray,   // new — 2D array, sample_count > 1
+};
+
+struct OMEGAGTE_EXPORT GETextureDescriptor {
+    TextureKind kind = TextureKind::Tex2D;
+    PixelFormat format = PixelFormat::RGBA8Unorm;
+    unsigned width = 1;
+    unsigned height = 1;
+    unsigned depth = 1;          // 3D only; 1 for non-3D
+    unsigned mipLevels = 1;
+    unsigned arrayLayers = 1;    // 1 for non-array; 6 implied for cube; 6*N for cube_array
+    unsigned sampleCount = 1;    // 1 for non-MS
+    GETextureUsage usage = GETextureUsage::ShaderRead;
+};
+
+virtual SharedHandle<GETexture> makeTexture(const GETextureDescriptor &desc) = 0;
+```
+
+The existing `dim`-based constructors stay as a thin wrapper that forwards to `GETextureDescriptor` — preserves the current call sites without an API break.
+
+**Validation rules (engine-side):**
+- `kind == TexCube` ⇒ `arrayLayers == 6` (compiler-enforced default; users do not set this).
+- `kind == TexCubeArray` ⇒ `arrayLayers % 6 == 0`.
+- `kind` ∈ {`Tex2DMS`, `Tex2DMSArray`} ⇒ `sampleCount > 1` and `mipLevels == 1` (MS textures are single-mip on every backend).
+- `kind` ∈ {`Tex1DArray`, `Tex2DArray`, `TexCube`, `TexCubeArray`, `Tex2DMSArray`} ⇒ `arrayLayers >= 1`.
+
+### 6.2 Backend mapping
+
+| Backend | Cube view | 2D-array view | 1D-array view | MS view | MS-array view |
+|---|---|---|---|---|---|
+| **D3D12** | `D3D12_SRV_DIMENSION_TEXTURECUBE` (or `_TEXTURECUBEARRAY`) | `_TEXTURE2DARRAY` | `_TEXTURE1DARRAY` | `_TEXTURE2DMS` | `_TEXTURE2DMSARRAY` |
+| **Metal** | `MTLTextureTypeCube` (or `_CubeArray`) | `MTLTextureType2DArray` | `MTLTextureType1DArray` | `MTLTextureType2DMultisample` | `MTLTextureType2DMultisampleArray` |
+| **Vulkan** | `VK_IMAGE_VIEW_TYPE_CUBE` (or `_CUBE_ARRAY`) | `_2D_ARRAY` | `_1D_ARRAY` | `_2D` (with `samples > 1`) | `_2D_ARRAY` (with `samples > 1`) |
+
+Vulkan: Multisample image views use the standard 2D / 2D_ARRAY view types — the multisample-ness is in the underlying `VkImage`'s `samples` field, not the view type. The image creation path needs to pick `VK_SAMPLE_COUNT_*_BIT` from `sampleCount` instead.
+
+D3D12: Cube views are SRV-only on D3D12 hardware that doesn't support `D3D12_FEATURE_DATA_D3D12_OPTIONS3.WriteBufferImmediateSupportFlags` cube UAV. UAV cube writes alias to `RWTexture2DArray` with `arraySize=6`. OmegaSL Sema already rejects `write` to cube textures (Phase A), so the UAV-cube path is unreachable from a generated shader — this is a non-issue but worth noting.
+
+Metal: `MTLTextureType2DMultisampleArray` requires macOS 11+ / iOS 14+. Below that version the runtime should reject `Tex2DMSArray` at `makeTexture` time with a clear diagnostic rather than create a malformed texture.
+
+### 6.3 OmegaSL layout-desc → bound view
+
+The existing layout-desc switch (D3D12 `getRequiredResourceStateForResourceID`, Vulkan `case OMEGASL_SHADER_TEXTURE2D_DESC` arms, Metal argument-buffer encoding) currently buckets all six new types into the same SRV/UAV bucket as plain 2D textures. That's correct for the *resource state* and *descriptor type* but not for the *view*. Phase B adds a per-bind-call view-dimension lookup:
+
+**`gte/src/d3d12/GED3D12CommandQueue.cpp`** — when binding a texture, look up the OmegaSL layout-desc type and pick the SRV/UAV view-dimension:
+
+```cpp
+D3D12_SRV_DIMENSION dimensionFromLayoutDesc(omegasl_shader_layout_desc_type t) {
+    switch (t) {
+        case OMEGASL_SHADER_TEXTURE1D_DESC:           return D3D12_SRV_DIMENSION_TEXTURE1D;
+        case OMEGASL_SHADER_TEXTURE2D_DESC:           return D3D12_SRV_DIMENSION_TEXTURE2D;
+        case OMEGASL_SHADER_TEXTURE3D_DESC:           return D3D12_SRV_DIMENSION_TEXTURE3D;
+        case OMEGASL_SHADER_TEXTURE1D_ARRAY_DESC:     return D3D12_SRV_DIMENSION_TEXTURE1DARRAY;
+        case OMEGASL_SHADER_TEXTURE2D_ARRAY_DESC:     return D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        case OMEGASL_SHADER_TEXTURECUBE_DESC:         return D3D12_SRV_DIMENSION_TEXTURECUBE;
+        case OMEGASL_SHADER_TEXTURECUBE_ARRAY_DESC:   return D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+        case OMEGASL_SHADER_TEXTURE2D_MS_DESC:        return D3D12_SRV_DIMENSION_TEXTURE2DMS;
+        case OMEGASL_SHADER_TEXTURE2D_MS_ARRAY_DESC:  return D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+        default: return D3D12_SRV_DIMENSION_UNKNOWN;
+    }
+}
+```
+
+The bind path validates that the bound `GETexture`'s `TextureKind` matches the shader's expected dimension and rejects mismatches at bind time. This is the moment where "shader expects cube" meets "texture is 2D" — failing here, with both source-of-truth values in scope, gives a clean error message.
+
+**Vulkan** equivalent maps to `VkImageViewType`. **Metal** uses `MTLTextureType` and the argument-buffer slot's `MTLTextureReferenceType`.
+
+### 6.4 Sample-count plumbing
+
+For MS textures, the bind path additionally needs to verify the bound texture's sample count matches what the pipeline expects. The OmegaSL layout-desc doesn't currently carry sample count — Phase B adds an optional sample-count field to `omegasl_shader_layout_desc` (defaulted to 1, populated only for MS variants). This lets the runtime reject "shader compiled for `texture2d_ms` but bound texture has sample_count = 1" at bind time.
+
+For the static-sampler path, no change — samplers don't carry shape information; the texture they're paired with at `sample`-call time does.
+
+### 6.5 Texture-asset side (out of scope for this extension, listed for visibility)
+
+Cube-face composition is a separate concern from runtime view binding:
+
+- **Cube loader** — engine-side asset path needs a way to specify six face images and assemble them into a single `TexCube` upload. KTX2 / DDS already encode cube faces; the asset loader currently flattens to 2D. Suggest a `GETextureAssetDescriptor::cubeFaces` variant.
+- **Array loader** — same: an array asset is N images-of-the-same-format stacked into a single texture. Either the asset format encodes the layer count or the loader synthesizes it from a manifest.
+- **Per-face / per-layer copy** — `copyBufferToTexture` and `copyTextureToTexture` need a face/layer index parameter (already implicit in `D3D12_TEXTURE_COPY_LOCATION::SubresourceIndex`, `MTLBlitEncoder` slice arg, `VkImageCopy::srcSubresource.baseArrayLayer`).
+
+These could land alongside §6 or as a follow-up. They block end-user productivity but not the language↔runtime gap that Phase B is closing.
+
+### 6.6 Implementation order
+
+```
+6.1 (GETextureDescriptor + makeTexture overload)
+    │
+6.2 (per-backend view-dimension picker, no bind-side changes yet)
+    │
+6.3 (bind-time validation: shader type vs texture kind)
+    │
+6.4 (MS sample-count match, only relevant once 6.3 lands)
+    │
+6.5 (asset-side cube/array loader — independent track)
+```
+
+### 6.7 Tests
+
+- `gte/tests/<backend>/CubeTexTest` — create a `TexCube`, upload six face colors via `copyBufferToTexture`, sample with a small skybox shader, read pixel back, assert each face was sampled correctly.
+- `gte/tests/<backend>/Texture2DArrayTest` — same shape with N=3 layers.
+- `gte/tests/<backend>/Texture2DMSTest` — render to an MS render target with sample_count=4, then sample-resolve in a fragment shader using the existing OmegaSL `read(msTex, coord, sample_index)` Phase A path.
+
+### 6.8 Open questions
+
+1. **Format aliasing across faces.** Should every face of a cube be required to share the same `PixelFormat` and dimensions? D3D12 / Vulkan / Metal all require this. Yes — match the platform contract.
+2. **Cube `read`/`write`.** Phase A defers cube load/store. If a future use case justifies them, they slot into the same view-dimension lookup as Phase B's sample binding — no further engine work required, just lift the Sema rejection and add the `Load` / `imageStore` / `tex.read` lowerings in each backend.
+3. **MS render target.** MSAA color attachments already work via `RenderPassDescriptor.multisampleResolve`. Phase B's MS *texture-as-shader-input* is the inverse — reading an MS render target from a later pass. The render target must be created with `TextureKind::Tex2DMS` and `usage = ShaderRead | RenderTarget`. The existing `multisampleResolve` flow should keep working; this just adds a second path that doesn't resolve before sampling.
+
+---
+
 ## Implementation Order
 
 ```
@@ -881,6 +1020,9 @@ Extension 2.3 (threadgroup override) ── deferred
 **Tier 4 — Deferred** (requires OmegaSL work):
 - 2.2: Push constants
 - 2.3: Threadgroup size override
+
+**Tier 5 — Cross-cutting (paired with OmegaSL feature work):**
+- Extension 6: Texture View Type Extension (OmegaSL §2.1 Phase B). Phase A of the OmegaSL change shipped the new texture types as a compile-only path; Phase B closes the runtime gap. No dependency on Tiers 1–3 — can land in parallel.
 
 ---
 

@@ -76,3 +76,6 @@ doxygen
 # Verification pipeline working state
 .verification/
 .codex
+
+# Cmake Testing
+Testing

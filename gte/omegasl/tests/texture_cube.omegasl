@@ -1,0 +1,27 @@
+struct MyVertex {
+    float4 pos;
+    float3 dir;
+};
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float3 dir : TexCoord;
+};
+
+buffer<MyVertex> vbuf : 0;
+texturecube envCube : 1;
+samplercube envSampler : 2;
+
+[in vbuf]
+vertex VertexRaster cubeVert(uint vid : VertexID){
+    MyVertex v = vbuf[vid];
+    VertexRaster r;
+    r.pos = v.pos;
+    r.dir = v.dir;
+    return r;
+}
+
+[in envCube, in envSampler]
+fragment float4 cubeFrag(VertexRaster raster){
+    return sample(envSampler, envCube, raster.dir);
+}

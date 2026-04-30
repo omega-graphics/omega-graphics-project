@@ -61,9 +61,16 @@ namespace omegasl {
         (subject == KW_TY_TEXTURE1D) ||
         (subject == KW_TY_TEXTURE2D) ||
         (subject == KW_TY_TEXTURE3D) ||
+        (subject == KW_TY_TEXTURE1D_ARRAY) ||
+        (subject == KW_TY_TEXTURE2D_ARRAY) ||
+        (subject == KW_TY_TEXTURECUBE) ||
+        (subject == KW_TY_TEXTURECUBE_ARRAY) ||
+        (subject == KW_TY_TEXTURE2D_MS) ||
+        (subject == KW_TY_TEXTURE2D_MS_ARRAY) ||
         (subject == KW_TY_SAMPLER1D) ||
         (subject == KW_TY_SAMPLER2D) ||
-        (subject == KW_TY_SAMPLER3D);
+        (subject == KW_TY_SAMPLER3D) ||
+        (subject == KW_TY_SAMPLERCUBE);
     }
 
 

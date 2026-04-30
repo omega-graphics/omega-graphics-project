@@ -1450,13 +1450,15 @@ _NAMESPACE_BEGIN_
                     }
                     case OMEGASL_SHADER_SAMPLER1D_DESC:
                     case OMEGASL_SHADER_SAMPLER2D_DESC:
-                    case OMEGASL_SHADER_SAMPLER3D_DESC: {
+                    case OMEGASL_SHADER_SAMPLER3D_DESC:
+                    case OMEGASL_SHADER_SAMPLERCUBE_DESC: {
                         binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
                         break;
                     }
                     case OMEGASL_SHADER_STATIC_SAMPLER1D_DESC:
                     case OMEGASL_SHADER_STATIC_SAMPLER2D_DESC:
-                    case OMEGASL_SHADER_STATIC_SAMPLER3D_DESC: {
+                    case OMEGASL_SHADER_STATIC_SAMPLER3D_DESC:
+                    case OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC: {
                         // GLSL codegen emits `uniform sampler` (bare sampler),
                         // so the descriptor type must be VK_DESCRIPTOR_TYPE_SAMPLER.
                         // Create an immutable VkSampler from the static sampler
@@ -1507,7 +1509,17 @@ _NAMESPACE_BEGIN_
                     }
                     case OMEGASL_SHADER_TEXTURE1D_DESC:
                     case OMEGASL_SHADER_TEXTURE2D_DESC:
-                    case OMEGASL_SHADER_TEXTURE3D_DESC: {
+                    case OMEGASL_SHADER_TEXTURE3D_DESC:
+                    /// OmegaSL §2.1 Phase A — descriptor type bucket is the
+                    /// same SAMPLED_IMAGE/STORAGE_IMAGE; Phase B will pick the
+                    /// proper `VkImageViewType` (CUBE / 2D_ARRAY / …) when the
+                    /// texture is created and bound.
+                    case OMEGASL_SHADER_TEXTURE1D_ARRAY_DESC:
+                    case OMEGASL_SHADER_TEXTURE2D_ARRAY_DESC:
+                    case OMEGASL_SHADER_TEXTURECUBE_DESC:
+                    case OMEGASL_SHADER_TEXTURECUBE_ARRAY_DESC:
+                    case OMEGASL_SHADER_TEXTURE2D_MS_DESC:
+                    case OMEGASL_SHADER_TEXTURE2D_MS_ARRAY_DESC: {
                         binding.descriptorType = l.io_mode == OMEGASL_SHADER_DESC_IO_IN
                                                  ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
                                                  : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;

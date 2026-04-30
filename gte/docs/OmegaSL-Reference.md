@@ -132,9 +132,48 @@ Vectors support component access via `.x`, `.y`, `.z`, `.w` and swizzle patterns
 | `texture1d` | 1D texture |
 | `texture2d` | 2D texture |
 | `texture3d` | 3D texture |
-| `sampler1d` | 1D texture sampler |
-| `sampler2d` | 2D texture sampler |
+| `texture1d_array` | 1D texture array (1D coord + layer) |
+| `texture2d_array` | 2D texture array (2D coord + layer) |
+| `texturecube` | Cube texture (sampled with a `float3` direction vector) |
+| `texturecube_array` | Cube texture array (`float4` = direction + layer) |
+| `texture2d_ms` | 2D multisample texture (read-only, requires explicit sample index) |
+| `texture2d_ms_array` | 2D multisample texture array |
+| `sampler1d` | 1D / 1D-array texture sampler |
+| `sampler2d` | 2D / 2D-array texture sampler |
 | `sampler3d` | 3D texture sampler |
+| `samplercube` | Cube / cube-array texture sampler |
+
+**Sampler / texture pairing.** A given `sample(s, t, coord)` call requires `s`
+and `t` to share the same family:
+
+| Sampler | Compatible textures | `coord` type |
+|---------|---------------------|--------------|
+| `sampler1d`   | `texture1d` | `float` |
+| `sampler1d`   | `texture1d_array` | `float2` (u, layer) |
+| `sampler2d`   | `texture2d` | `float2` |
+| `sampler2d`   | `texture2d_array` | `float3` (uv, layer) |
+| `sampler3d`   | `texture3d` | `float3` |
+| `samplercube` | `texturecube` | `float3` (direction) |
+| `samplercube` | `texturecube_array` | `float4` (direction, layer) |
+
+**Multisample textures** are read-only with an explicit sample index. They go
+through a 3-argument `read(tex, coord, sample_index)` form and reject
+`sample` / `write`. Cube `read` and cube `write` are reserved (deferred —
+backend-asymmetric) and Sema rejects both with a clear diagnostic; use
+`sample(samplercube, texturecube, dir)` to read a cubemap.
+
+**Compile path vs. runtime path.** §2.1 of the gap survey landed in two
+phases:
+- *Phase A* (current) — language acceptance and codegen for the new texture
+  types. `omegaslc` compiles cube/array/MS shaders cleanly to HLSL, MSL, and
+  GLSL.
+- *Phase B* (pending — see `docs/Pipeline-Completion-Extension-Plan.md`
+  "Texture View Type Extension") — `GETexture` API and runtime descriptor
+  binding for cube, array, and multisample views.
+
+A shader that declares one of the Phase A types compiles today, but
+attempting to bind a real cube/array/MS texture to it will fail at pipeline
+creation time until Phase B lands.
 
 ### Array types
 
@@ -478,7 +517,18 @@ float4 texel = read(myTexture, int2(x, y));
 write(myTexture, coord, value);
 ```
 
-`sample` supports all sampler/texture dimension combinations: `sampler1d`+`texture1d`+`float`, `sampler2d`+`texture2d`+`float2`, `sampler3d`+`texture3d`+`float3`.
+`sample` supports all sampler/texture dimension combinations:
+`sampler1d`+`texture1d`+`float`, `sampler2d`+`texture2d`+`float2`,
+`sampler3d`+`texture3d`+`float3`, `sampler1d`+`texture1d_array`+`float2`,
+`sampler2d`+`texture2d_array`+`float3`, `samplercube`+`texturecube`+`float3`,
+`samplercube`+`texturecube_array`+`float4`.
+
+`read(tex, coord)` / `write(tex, coord, val)` extend to the array variants
+with the layer baked into the integer coord vector
+(`int2`/`uint2` for `texture1d_array`, `int3`/`uint3` for `texture2d_array`).
+`read` on multisample textures takes an additional `uint` sample index:
+`read(msTex, coord, sample_index)`. `read` and `write` on cube textures are
+deferred (backend-asymmetric — see §2.1 of the gap survey).
 
 ### Math intrinsics
 
@@ -543,7 +593,8 @@ Attributes are attached to struct fields or shader parameters using `: Attribute
 | `Depth` | Internal struct field (fragment output, `float`) | Per-fragment depth output |
 | `FrontFacing` | Fragment shader parameter (`bool`) | True if the fragment is part of a front-facing primitive |
 | `SampleIndex` | Fragment shader parameter (`uint`) | Sample index when running per-sample (MSAA) |
-| `Coverage` | Fragment shader parameter (`uint`) | Coverage mask for the current fragment (input only) |
+| `InputCoverage` | Fragment shader parameter (`uint`) | Coverage mask delivered to the fragment by the rasterizer |
+| `OutputCoverage` | Internal struct field (fragment output, `uint`) | Coverage mask written by the fragment (alpha-to-coverage override) |
 
 ### Compute pipeline attributes
 
@@ -660,11 +711,11 @@ A snapshot of what is implemented, what is partial, and what is intentionally ab
 - **Fixed-size arrays** — supported in variable declarations (`float arr[4];`).
 - **Structs** — plain data structs and `internal` structs (with attribute fields) for inter-stage data.
 - **Structured buffers** — `buffer<T>` with `in` / `out` / `inout` access.
-- **Textures / samplers** — `texture1d/2d/3d`, `sampler1d/2d/3d`, static samplers with filter + address mode configuration.
+- **Textures / samplers** — `texture1d/2d/3d`, `texture1d_array`, `texture2d_array`, `texturecube`, `texturecube_array`, `texture2d_ms`, `texture2d_ms_array`, `sampler1d/2d/3d`, `samplercube`, static samplers with filter + address mode configuration.
 - **User-defined functions** — emitted as helpers ahead of shader entry points.
 - **Shader stages** — `vertex`, `fragment`, `compute`, `hull`, `domain` across all three backends.
-- **Fragment outputs** — single `float4` return (target 0) or `internal` struct return with `Color(N)` MRT outputs and an optional `Depth` field.
-- **Per-fragment scalar inputs** — `bool : FrontFacing`, `uint : SampleIndex`, `uint : Coverage` (input only) as fragment-shader parameters.
+- **Fragment outputs** — single `float4` return (target 0) or `internal` struct return with `Color(N)` MRT outputs, an optional `Depth` field, and an optional `OutputCoverage` field (`uint` sample-mask write).
+- **Per-fragment scalar inputs** — `bool : FrontFacing`, `uint : SampleIndex`, `uint : InputCoverage` as fragment-shader parameters.
 - **Statements** — variable declaration, assignment (`=`, `+=`, `-=`, `*=`, `/=`, `&=`, `|=`, `^=`, `<<=`, `>>=`), `return` (bare and with value), `if` / `else if` / `else`, `for`, `while`, **`break`**, **`continue`**.
 - **Operators** — arithmetic (`+ - * /`), comparison (`< <= > >=`), equality (`== !=`), logical (`&& || !`), bitwise binary (`& | ^ << >>`), bitwise unary (`~`), prefix/postfix `++`/`--`, prefix `-`, C-style cast, address-of / dereference.
 - **Numeric literals** — decimal `int`, hex `int` (`0xFF`), `uint` suffix (`42u`, `0xFFu`), `float` suffix (`3.14f`), auto-promotion of oversized hex literals to `uint`, and literal coercion between numeric scalars (int/uint/float literals adapt to the target scalar type in variable initializers and binary expressions; float literals only coerce to float).

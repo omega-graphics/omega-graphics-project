@@ -186,6 +186,61 @@ namespace omegasl {
             isTexture = true;
             out << "texture3d<float,";
             layoutDescType = OMEGASL_SHADER_TEXTURE3D_DESC;
+        } else if (type_ == builtins::texture1d_array_type) {
+            isTexture = true;
+            out << "texture1d_array<float,";
+            layoutDescType = OMEGASL_SHADER_TEXTURE1D_ARRAY_DESC;
+        } else if (type_ == builtins::texture2d_array_type) {
+            isTexture = true;
+            out << "texture2d_array<float,";
+            layoutDescType = OMEGASL_SHADER_TEXTURE2D_ARRAY_DESC;
+        } else if (type_ == builtins::texturecube_type) {
+            isTexture = true;
+            out << "texturecube<float,";
+            layoutDescType = OMEGASL_SHADER_TEXTURECUBE_DESC;
+        } else if (type_ == builtins::texturecube_array_type) {
+            isTexture = true;
+            out << "texturecube_array<float,";
+            layoutDescType = OMEGASL_SHADER_TEXTURECUBE_ARRAY_DESC;
+        } else if (type_ == builtins::texture2d_ms_type) {
+            /// Multisample textures are read-only with explicit sample-index
+            /// access. Sema rejects `write`/`sample`, so the access qualifier
+            /// is forced to `read` regardless of `ioMode`. Emit the full
+            /// template form here and skip the shared access-suffix block by
+            /// keeping `isTexture` false.
+            out << "texture2d_ms<float,access::read>";
+            layoutDescType = OMEGASL_SHADER_TEXTURE2D_MS_DESC;
+            /// Mirror the bookkeeping the shared `if(isTexture)` arms below
+            /// would otherwise do.
+            out << " " << res_desc->name;
+            unsigned bindingMS = textureCount++;
+            out << " [[texture(" << bindingMS << ")]]";
+            layoutDesc.type = layoutDescType;
+            layoutDesc.gpu_relative_loc = bindingMS;
+            layoutDesc.io_mode = ioMode;
+            layoutDesc.location = res_desc->registerNumber;
+            paramIndex++;
+            return;
+        } else if (type_ == builtins::texture2d_ms_array_type) {
+            out << "texture2d_ms_array<float,access::read>";
+            layoutDescType = OMEGASL_SHADER_TEXTURE2D_MS_ARRAY_DESC;
+            out << " " << res_desc->name;
+            unsigned bindingMSA = textureCount++;
+            out << " [[texture(" << bindingMSA << ")]]";
+            layoutDesc.type = layoutDescType;
+            layoutDesc.gpu_relative_loc = bindingMSA;
+            layoutDesc.io_mode = ioMode;
+            layoutDesc.location = res_desc->registerNumber;
+            paramIndex++;
+            return;
+        } else if (type_ == builtins::samplercube_type) {
+            isSampler = true;
+            if (res_desc->isStatic) {
+                layoutDescType = OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC;
+                writeSampler();
+            } else {
+                layoutDescType = OMEGASL_SHADER_SAMPLERCUBE_DESC;
+            }
         } else if (type_ == builtins::sampler1d_type) {
             isSampler = true;
             if (res_desc->isStatic) {
@@ -495,40 +550,139 @@ using namespace metal;
         if(texTy == builtins::texture1d_type) return "uint";
         if(texTy == builtins::texture2d_type) return "uint2";
         if(texTy == builtins::texture3d_type) return "uint3";
+        if(texTy == builtins::texture1d_array_type) return "uint";   /// inner coord only — layer is separate
+        if(texTy == builtins::texture2d_array_type) return "uint2";
+        if(texTy == builtins::texture2d_ms_type) return "uint2";
+        if(texTy == builtins::texture2d_ms_array_type) return "uint2";
         return nullptr;
     }
 
+    /// Resolve the texture-type of a `tex` argument for use in emit-side
+    /// per-shape branching (cube/array/MS need explicit splitting in MSL).
+    static ast::Type *metalResolveTextureType(CodeGen &cg, ast::Expr *texArg){
+        using namespace ast;
+        TypeExpr *texTypeExpr = texArg->resolvedType;
+        if(!texTypeExpr && texArg->type == ID_EXPR){
+            auto *resourceId = static_cast<IdExpr *>(texArg);
+            auto it = cg.resourceStore.find(resourceId->id);
+            if(it != cg.resourceStore.end()){
+                texTypeExpr = (*it)->typeExpr;
+            }
+        }
+        if(!texTypeExpr) return nullptr;
+        return cg.typeResolver->resolveTypeWithExpr(texTypeExpr);
+    }
+
     void MSLTarget::emitTextureSample(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// Metal splits the OmegaSL combined coord into separate (coord,
+        /// layer) / (coord, sample_index) arguments for array / MS / cube
+        /// types. The base coord stays as the OmegaSL float vector for the
+        /// underlying shape; the trailing layer/face component is extracted
+        /// via swizzle and cast to `uint`.
+        auto *texTy = metalResolveTextureType(cg, _expr->args[1]);
         cg.generateExpr(_expr->args[1]);
-        out << ".sample";
-        out << "(";
+        out << ".sample(";
         cg.generateExpr(_expr->args[0]);
         out << ",";
-        cg.generateExpr(_expr->args[2]);
+        if(texTy == ast::builtins::texture1d_array_type){
+            /// OmegaSL coord = float2(u, layer) → MSL `(u, uint(layer))`.
+            out << "(";
+            cg.generateExpr(_expr->args[2]);
+            out << ").x,uint((";
+            cg.generateExpr(_expr->args[2]);
+            out << ").y)";
+        } else if(texTy == ast::builtins::texture2d_array_type){
+            /// OmegaSL coord = float3(uv, layer) → `((coord).xy, uint((coord).z))`.
+            out << "(";
+            cg.generateExpr(_expr->args[2]);
+            out << ").xy,uint((";
+            cg.generateExpr(_expr->args[2]);
+            out << ").z)";
+        } else if(texTy == ast::builtins::texturecube_array_type){
+            /// OmegaSL coord = float4(xyz dir, w layer) → `((coord).xyz, uint((coord).w))`.
+            out << "(";
+            cg.generateExpr(_expr->args[2]);
+            out << ").xyz,uint((";
+            cg.generateExpr(_expr->args[2]);
+            out << ").w)";
+        } else {
+            cg.generateExpr(_expr->args[2]);
+        }
         out << ")";
     }
 
     void MSLTarget::emitTextureRead(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        auto *texTy = metalResolveTextureType(cg, _expr->args[0]);
         const char *coordCast = metalUintCoordTypeForTexture(cg, _expr->args[0]);
         cg.generateExpr(_expr->args[0]);
         out << ".read(";
-        if(coordCast){
-            out << coordCast << "(";
+
+        auto emitInnerCoord = [&](const char *cast) {
+            if(cast){
+                out << cast << "(";
+                cg.generateExpr(_expr->args[1]);
+                out << ")";
+            } else {
+                cg.generateExpr(_expr->args[1]);
+            }
+        };
+
+        if(texTy == ast::builtins::texture1d_array_type){
+            /// OmegaSL coord = int2(u, layer) → `(u_uint, layer_uint)`.
+            out << "uint((";
             cg.generateExpr(_expr->args[1]);
+            out << ").x),uint((";
+            cg.generateExpr(_expr->args[1]);
+            out << ").y)";
+        } else if(texTy == ast::builtins::texture2d_array_type){
+            /// OmegaSL coord = int3(uv, layer) → `(uv_uint2, layer_uint)`.
+            out << "uint2((";
+            cg.generateExpr(_expr->args[1]);
+            out << ").xy),uint((";
+            cg.generateExpr(_expr->args[1]);
+            out << ").z)";
+        } else if(texTy == ast::builtins::texture2d_ms_type){
+            /// MS read: `(coord_uint2, sample_index_uint)`.
+            emitInnerCoord(coordCast);
+            out << ",uint(";
+            cg.generateExpr(_expr->args[2]);
+            out << ")";
+        } else if(texTy == ast::builtins::texture2d_ms_array_type){
+            /// MS-array read: OmegaSL coord = int3(uv, layer); 3rd arg = sample_index.
+            out << "uint2((";
+            cg.generateExpr(_expr->args[1]);
+            out << ").xy),uint((";
+            cg.generateExpr(_expr->args[1]);
+            out << ").z),uint(";
+            cg.generateExpr(_expr->args[2]);
             out << ")";
         } else {
-            cg.generateExpr(_expr->args[1]);
+            emitInnerCoord(coordCast);
         }
         out << ")";
     }
 
     void MSLTarget::emitTextureWrite(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        auto *texTy = metalResolveTextureType(cg, _expr->args[0]);
         const char *coordCast = metalUintCoordTypeForTexture(cg, _expr->args[0]);
         cg.generateExpr(_expr->args[0]);
         out << ".write(";
         cg.generateExpr(_expr->args[2]);
         out << ",";
-        if(coordCast){
+        if(texTy == ast::builtins::texture1d_array_type){
+            /// `tex.write(val, uint(coord.x), uint(coord.y))`.
+            out << "uint((";
+            cg.generateExpr(_expr->args[1]);
+            out << ").x),uint((";
+            cg.generateExpr(_expr->args[1]);
+            out << ").y)";
+        } else if(texTy == ast::builtins::texture2d_array_type){
+            out << "uint2((";
+            cg.generateExpr(_expr->args[1]);
+            out << ").xy),uint((";
+            cg.generateExpr(_expr->args[1]);
+            out << ").z)";
+        } else if(coordCast){
             out << coordCast << "(";
             cg.generateExpr(_expr->args[1]);
             out << ")";
@@ -566,7 +720,11 @@ using namespace metal;
         else if(attributeName == ATTRIBUTE_SAMPLEINDEX){
             out << "sample_id";
         }
-        else if(attributeName == ATTRIBUTE_COVERAGE){
+        else if(attributeName == ATTRIBUTE_INPUT_COVERAGE
+                || attributeName == ATTRIBUTE_OUTPUT_COVERAGE){
+            /// MSL uses `[[sample_mask]]` for both directions; whether it
+            /// lands on a fragment parameter (input) or a return-struct
+            /// field (output) disambiguates.
             out << "sample_mask";
         }
         else if(attributeName == ATTRIBUTE_GLOBALTHREAD_ID){
@@ -640,7 +798,7 @@ using namespace metal;
         else if(_t == builtins::float3x4_type){ out << "float3x4"; }
         else if(_t == builtins::float4x2_type){ out << "float4x2"; }
         else if(_t == builtins::float4x3_type){ out << "float4x3"; }
-        else if(_t == builtins::sampler1d_type || _t == builtins::sampler2d_type || _t == builtins::sampler3d_type){
+        else if(_t == builtins::sampler1d_type || _t == builtins::sampler2d_type || _t == builtins::sampler3d_type || _t == builtins::samplercube_type){
             out << "sampler";
         }
         else {

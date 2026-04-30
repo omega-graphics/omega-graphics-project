@@ -257,7 +257,19 @@ namespace omegasl {
         std::ostream &shaderOut = cg.getShaderOut();
         if (_decl->expr && currentShaderType == ast::ShaderDecl::Fragment
             && fragmentOutputStruct != nullptr) {
-            /// Per-field stores already happened — bare `return`.
+            /// Per-field stores already happened — bare `return`. Flush any
+            /// synthetic `OutputCoverage` uint local back into the int-typed
+            /// `gl_SampleMask[0]` builtin first; see `emitShaderEntryBody`
+            /// for the rationale.
+            for (auto &f : fragmentOutputStruct->fields) {
+                if (f.attributeName.has_value()
+                    && f.attributeName.value() == ATTRIBUTE_OUTPUT_COVERAGE) {
+                    shaderOut << "gl_SampleMask[0] = int("
+                              << fragmentOutputStruct->name << "_" << f.name
+                              << ");" << std::endl;
+                    for (unsigned i = 0; i < cg.indentLevel; i++) shaderOut << "    ";
+                }
+            }
             shaderOut << "return";
             return true;
         }
@@ -363,8 +375,13 @@ namespace omegasl {
         if (_decl->shaderType == ast::ShaderDecl::Fragment) {
             if (fragmentOutputStruct) {
                 /// MRT / depth output: one `layout(location=N) out vec4` per
-                /// `Color(N)` field. `Depth` rides on `gl_FragDepth`,
-                /// `Coverage` on `gl_SampleMask` — neither needs a decl.
+                /// `Color(N)` field. `Depth` rides on `gl_FragDepth` (no
+                /// decl). `OutputCoverage` rides on `gl_SampleMask[0]` but
+                /// the type is `int[]`, not `uint`, so we route writes to
+                /// a synthetic `uint <struct>_<field>` local declared at
+                /// the top of main(); `emitShaderEntryBody` flushes the
+                /// `int(...)` cast back into `gl_SampleMask[0]` before
+                /// each return.
                 for (auto &f : fragmentOutputStruct->fields) {
                     if (!f.attributeName.has_value()) continue;
                     if (f.attributeName.value() == ATTRIBUTE_COLOR
@@ -372,6 +389,11 @@ namespace omegasl {
                         unsigned loc = f.attributeIndex.value();
                         out << "layout(location=" << loc << ") out vec4 _outColor"
                             << loc << ";" << std::endl;
+                    }
+                    else if (f.attributeName.value() == ATTRIBUTE_OUTPUT_COVERAGE) {
+                        for (unsigned i = 0; i < cg.indentLevel; i++) extra_stmts << "    ";
+                        extra_stmts << "uint " << fragmentOutputStruct->name
+                                    << "_" << f.name << ";" << std::endl;
                     }
                 }
             } else {
@@ -452,7 +474,7 @@ namespace omegasl {
                     } else if (arg.attributeName.value() == ATTRIBUTE_SAMPLEINDEX) {
                         builtin = "gl_SampleID";
                         needsUintCast = true;
-                    } else if (arg.attributeName.value() == ATTRIBUTE_COVERAGE) {
+                    } else if (arg.attributeName.value() == ATTRIBUTE_INPUT_COVERAGE) {
                         builtin = "gl_SampleMaskIn[0]";
                         needsUintCast = true;
                     }
@@ -504,7 +526,20 @@ namespace omegasl {
                 if (_return_stmt->expr && _decl->shaderType == ast::ShaderDecl::Fragment
                     && fragmentOutputStruct != nullptr) {
                     /// Fragment-output-struct return: per-field stores
-                    /// happened earlier via member-expr routing.
+                    /// happened earlier via member-expr routing. For
+                    /// `OutputCoverage`, the per-field store wrote to a
+                    /// synthetic `uint <struct>_<field>` local; flush the
+                    /// `int(...)` cast back into `gl_SampleMask[0]` here so
+                    /// the GLSL `int = uint` mismatch never surfaces.
+                    for (auto &f : fragmentOutputStruct->fields) {
+                        if (f.attributeName.has_value()
+                            && f.attributeName.value() == ATTRIBUTE_OUTPUT_COVERAGE) {
+                            out << "gl_SampleMask[0] = int("
+                                << fragmentOutputStruct->name << "_" << f.name
+                                << ");" << std::endl;
+                            for (unsigned i = 0; i < cg.indentLevel; i++) out << "    ";
+                        }
+                    }
                     out << "return;" << std::endl;
                 } else if (_return_stmt->expr && _decl->shaderType == ast::ShaderDecl::Fragment) {
                     out << activeReturnReplacement << " = ";
@@ -597,9 +632,14 @@ namespace omegasl {
             out << "_outColor" << field.attributeIndex.value();
         } else if (attr == ATTRIBUTE_DEPTH) {
             out << "gl_FragDepth";
-        } else if (attr == ATTRIBUTE_COVERAGE) {
-            /// gl_SampleMask is an int[]; index 0 covers up to 32-sample MSAA.
-            out << "gl_SampleMask[0]";
+        } else if (attr == ATTRIBUTE_OUTPUT_COVERAGE) {
+            /// `gl_SampleMask[]` is `int[]`, but OmegaSL types this field as
+            /// `uint`. We can't cast an lvalue, so route to a synthetic uint
+            /// local of the form `<struct>_<field>`; `emitShaderEntryHeader`
+            /// declares it and `emitShaderEntryBody` flushes
+            /// `gl_SampleMask[0] = int(<struct>_<field>);` before each
+            /// fragment-output-struct return.
+            out << structName << "_" << field.name;
         } else {
             /// Bare Color, TexCoord, ... — interstage varying.
             out << structName << "_" << field.name;
@@ -682,6 +722,54 @@ namespace omegasl {
             out << " uniform ";
             out << (ioMode == OMEGASL_SHADER_DESC_IO_IN ? "texture3D" : "image3D");
             out << " "; writeGLSLIdent(res_decl->name, out); out << ";" << std::endl;
+        } else if (type_ == ast::builtins::texture1d_array_type) {
+            layoutDesc.type = OMEGASL_SHADER_TEXTURE1D_ARRAY_DESC;
+            out << "layout(set = " << set << ",binding = " << binding;
+            if (ioMode == OMEGASL_SHADER_DESC_IO_IN) {
+                out << ")";
+            } else {
+                out << ",rgba32f)";
+            }
+            out << " uniform ";
+            out << (ioMode == OMEGASL_SHADER_DESC_IO_IN ? "texture1DArray" : "image1DArray");
+            out << " "; writeGLSLIdent(res_decl->name, out); out << ";" << std::endl;
+        } else if (type_ == ast::builtins::texture2d_array_type) {
+            layoutDesc.type = OMEGASL_SHADER_TEXTURE2D_ARRAY_DESC;
+            out << "layout(set = " << set << ",binding = " << binding;
+            if (ioMode == OMEGASL_SHADER_DESC_IO_IN) {
+                out << ")";
+            } else {
+                out << ",rgba32f)";
+            }
+            out << " uniform ";
+            out << (ioMode == OMEGASL_SHADER_DESC_IO_IN ? "texture2DArray" : "image2DArray");
+            out << " "; writeGLSLIdent(res_decl->name, out); out << ";" << std::endl;
+        } else if (type_ == ast::builtins::texturecube_type) {
+            /// Cube `write` is rejected by Sema, so the storage form
+            /// (`imageCube`) is unreachable here. Emit the read-only form.
+            layoutDesc.type = OMEGASL_SHADER_TEXTURECUBE_DESC;
+            out << "layout(set = " << set << ",binding = " << binding;
+            out << ") uniform textureCube ";
+            writeGLSLIdent(res_decl->name, out); out << ";" << std::endl;
+        } else if (type_ == ast::builtins::texturecube_array_type) {
+            layoutDesc.type = OMEGASL_SHADER_TEXTURECUBE_ARRAY_DESC;
+            out << "layout(set = " << set << ",binding = " << binding;
+            out << ") uniform textureCubeArray ";
+            writeGLSLIdent(res_decl->name, out); out << ";" << std::endl;
+        } else if (type_ == ast::builtins::texture2d_ms_type) {
+            /// MS textures are read-only with explicit sample-index access.
+            /// `texture2DMS` is the separate (Vulkan-style) form; the
+            /// read-side intrinsic emit pairs it with a sampler at use time
+            /// to form `sampler2DMS`.
+            layoutDesc.type = OMEGASL_SHADER_TEXTURE2D_MS_DESC;
+            out << "layout(set = " << set << ",binding = " << binding;
+            out << ") uniform texture2DMS ";
+            writeGLSLIdent(res_decl->name, out); out << ";" << std::endl;
+        } else if (type_ == ast::builtins::texture2d_ms_array_type) {
+            layoutDesc.type = OMEGASL_SHADER_TEXTURE2D_MS_ARRAY_DESC;
+            out << "layout(set = " << set << ",binding = " << binding;
+            out << ") uniform texture2DMSArray ";
+            writeGLSLIdent(res_decl->name, out); out << ";" << std::endl;
         } else if (type_ == ast::builtins::sampler1d_type) {
             layoutDesc.type = res_decl->isStatic ? OMEGASL_SHADER_STATIC_SAMPLER1D_DESC
                                                  : OMEGASL_SHADER_SAMPLER1D_DESC;
@@ -695,6 +783,11 @@ namespace omegasl {
         } else if (type_ == ast::builtins::sampler3d_type) {
             layoutDesc.type = res_decl->isStatic ? OMEGASL_SHADER_STATIC_SAMPLER3D_DESC
                                                  : OMEGASL_SHADER_SAMPLER3D_DESC;
+            out << "layout(set = " << set << ",binding =" << binding << ") uniform sampler ";
+            writeGLSLIdent(res_decl->name, out); out << ";" << std::endl;
+        } else if (type_ == ast::builtins::samplercube_type) {
+            layoutDesc.type = res_decl->isStatic ? OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC
+                                                 : OMEGASL_SHADER_SAMPLERCUBE_DESC;
             out << "layout(set = " << set << ",binding =" << binding << ") uniform sampler ";
             writeGLSLIdent(res_decl->name, out); out << ";" << std::endl;
         }
@@ -773,24 +866,60 @@ namespace omegasl {
         if(texTy == builtins::texture1d_type) return "int";
         if(texTy == builtins::texture2d_type) return "ivec2";
         if(texTy == builtins::texture3d_type) return "ivec3";
+        if(texTy == builtins::texture1d_array_type) return "ivec2";
+        if(texTy == builtins::texture2d_array_type) return "ivec3";
+        if(texTy == builtins::texture2d_ms_type) return "ivec2";
+        if(texTy == builtins::texture2d_ms_array_type) return "ivec3";
         return nullptr;
     }
 
+    static ast::Type *glslResolveTextureType(CodeGen &cg, ast::Expr *texArg){
+        using namespace ast;
+        TypeExpr *texTypeExpr = texArg->resolvedType;
+        if(!texTypeExpr && texArg->type == ID_EXPR){
+            auto *resourceId = static_cast<IdExpr *>(texArg);
+            auto it = cg.resourceStore.find(resourceId->id);
+            if(it != cg.resourceStore.end()){
+                texTypeExpr = (*it)->typeExpr;
+            }
+        }
+        if(!texTypeExpr) return nullptr;
+        return cg.typeResolver->resolveTypeWithExpr(texTypeExpr);
+    }
+
     void GLSLTarget::emitTextureSample(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
-        /// GLSL Vulkan: combine separate texture + sampler into combined image-sampler
-        /// (e.g. sampler2D(tex, samp)) for texture().
-        auto samplerid_expr = (ast::IdExpr *)_expr->args[0];
-        auto & sampler_res = *(cg.resourceStore.find(samplerid_expr->id));
-        auto t = cg.typeResolver->resolveTypeWithExpr(sampler_res->typeExpr);
+        /// GLSL Vulkan combined-sampler synthesis. The combined-sampler type
+        /// is keyed off the *texture's* shape (cube, array, …) — the
+        /// `sampler1d`/`sampler2d`/`samplercube` keyword on the OmegaSL
+        /// sampler is just the configuration channel and doesn't carry
+        /// array/cube-array shape on its own.
+        auto *texTy = glslResolveTextureType(cg, _expr->args[1]);
         OmegaCommon::String samplerType;
-        if(t == ast::builtins::sampler1d_type){
+        if(texTy == ast::builtins::texture1d_type){
             samplerType = "sampler1D";
-        }
-        else if(t == ast::builtins::sampler2d_type){
+        } else if(texTy == ast::builtins::texture1d_array_type){
+            samplerType = "sampler1DArray";
+        } else if(texTy == ast::builtins::texture2d_type){
             samplerType = "sampler2D";
-        }
-        else if(t == ast::builtins::sampler3d_type){
+        } else if(texTy == ast::builtins::texture2d_array_type){
+            samplerType = "sampler2DArray";
+        } else if(texTy == ast::builtins::texture3d_type){
             samplerType = "sampler3D";
+        } else if(texTy == ast::builtins::texturecube_type){
+            samplerType = "samplerCube";
+        } else if(texTy == ast::builtins::texturecube_array_type){
+            samplerType = "samplerCubeArray";
+        } else {
+            /// Fallback to the original sampler-keyed path for any
+            /// unforeseen type — keeps generated source decisive even if
+            /// upstream Sema regresses.
+            auto samplerid_expr = (ast::IdExpr *)_expr->args[0];
+            auto &sampler_res = *(cg.resourceStore.find(samplerid_expr->id));
+            auto t = cg.typeResolver->resolveTypeWithExpr(sampler_res->typeExpr);
+            if(t == ast::builtins::sampler1d_type) samplerType = "sampler1D";
+            else if(t == ast::builtins::sampler2d_type) samplerType = "sampler2D";
+            else if(t == ast::builtins::sampler3d_type) samplerType = "sampler3D";
+            else if(t == ast::builtins::samplercube_type) samplerType = "samplerCube";
         }
 
         out << "texture(" << samplerType << "(";
@@ -803,7 +932,11 @@ namespace omegasl {
     }
 
     void GLSLTarget::emitTextureRead(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        auto *texTy = glslResolveTextureType(cg, _expr->args[0]);
         const char *coordCast = glslIntCoordTypeForTexture(cg, _expr->args[0]);
+        bool isMS = (texTy == ast::builtins::texture2d_ms_type
+                     || texTy == ast::builtins::texture2d_ms_array_type);
+
         out << "texelFetch(";
         cg.generateExpr(_expr->args[0]);
         out << ",";
@@ -814,7 +947,16 @@ namespace omegasl {
         } else {
             cg.generateExpr(_expr->args[1]);
         }
-        out << ",0)";
+        if(isMS){
+            /// GLSL `texelFetch(textureNDMS, coord, sample_index)` — the
+            /// trailing slot is the sample index, not a mip level. MS
+            /// textures have only one mip.
+            out << ",int(";
+            cg.generateExpr(_expr->args[2]);
+            out << "))";
+        } else {
+            out << ",0)";
+        }
     }
 
     void GLSLTarget::emitTextureWrite(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
@@ -852,13 +994,13 @@ namespace omegasl {
         else if(attributeName == ATTRIBUTE_DEPTH){
             out << "gl_FragDepth";
         }
-        else if(attributeName == ATTRIBUTE_COVERAGE){
-            /// gl_SampleMask is an int[]; index 0 covers up to 32-sample MSAA.
-            /// Output form; the input form (gl_SampleMaskIn[0]) is selected
-            /// by the SHADER_DECL fragment-input lowering, which doesn't
-            /// route through this hook.
-            out << "gl_SampleMask[0]";
-        }
+        /// `OutputCoverage` is intentionally absent here. `gl_SampleMask` is
+        /// `int[]` while the OmegaSL field is `uint`, so direct lowering
+        /// would produce a `int = uint` mismatch. Output-coverage writes
+        /// flow through `writeInternalFieldRef` to a synthetic uint local
+        /// declared at shader entry, and the int-cast write-back to
+        /// `gl_SampleMask[0]` is emitted by `emitShaderEntryBody` /
+        /// `tryEmitReturnDecl` before each return.
         else if(attributeName == ATTRIBUTE_VERTEX_ID){
             out << "gl_VertexIndex";
         }

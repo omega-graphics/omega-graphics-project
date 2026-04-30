@@ -32,7 +32,22 @@ using omegasl_shader_layout_desc_type = enum : int {
 
     OMEGASL_SHADER_STATIC_SAMPLER1D_DESC,
     OMEGASL_SHADER_STATIC_SAMPLER2D_DESC,
-    OMEGASL_SHADER_STATIC_SAMPLER3D_DESC
+    OMEGASL_SHADER_STATIC_SAMPLER3D_DESC,
+
+    /// Phase A — compile-path types (see OmegaSL §2.1). Runtime descriptor
+    /// binding of these is Phase B (see Pipeline-Completion-Extension-Plan.md
+    /// "Texture View Type Extension"). Until Phase B lands the engine cannot
+    /// create a real cube/array/MS view, so a shader using one will fail at
+    /// pipeline-bind time, not at compile time.
+    OMEGASL_SHADER_TEXTURE1D_ARRAY_DESC,
+    OMEGASL_SHADER_TEXTURE2D_ARRAY_DESC,
+    OMEGASL_SHADER_TEXTURECUBE_DESC,
+    OMEGASL_SHADER_TEXTURECUBE_ARRAY_DESC,
+    OMEGASL_SHADER_TEXTURE2D_MS_DESC,
+    OMEGASL_SHADER_TEXTURE2D_MS_ARRAY_DESC,
+
+    OMEGASL_SHADER_SAMPLERCUBE_DESC,
+    OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC
 };
 
 using omegasl_shader_static_sampler_filter = enum : int {

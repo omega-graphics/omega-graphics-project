@@ -1869,12 +1869,14 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
             ArrayRef<omegasl_shader_layout_desc> sLayout {s.pLayout,s.pLayout + s.nLayout};
             for(auto & l : sLayout){
                 CD3DX12_ROOT_PARAMETER1 parameter1;
-                if(l.type == OMEGASL_SHADER_SAMPLER2D_DESC || l.type == OMEGASL_SHADER_SAMPLER3D_DESC){
+                if(l.type == OMEGASL_SHADER_SAMPLER2D_DESC || l.type == OMEGASL_SHADER_SAMPLER3D_DESC
+                   || l.type == OMEGASL_SHADER_SAMPLERCUBE_DESC){
                     CD3DX12_DESCRIPTOR_RANGE1 desc_table;
                     desc_table.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,1,l.gpu_relative_loc);
                     parameter1.InitAsDescriptorTable(1,&desc_table);
                 }
-                else if(l.type == OMEGASL_SHADER_STATIC_SAMPLER2D_DESC || l.type == OMEGASL_SHADER_STATIC_SAMPLER3D_DESC){
+                else if(l.type == OMEGASL_SHADER_STATIC_SAMPLER2D_DESC || l.type == OMEGASL_SHADER_STATIC_SAMPLER3D_DESC
+                        || l.type == OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC){
                     D3D12_FILTER filter;
 
                     switch (l.sampler_desc.filter) {

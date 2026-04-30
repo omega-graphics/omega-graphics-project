@@ -1,0 +1,28 @@
+struct MyVertex {
+    float4 pos;
+    float3 uvLayer;
+};
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float3 uvLayer : TexCoord;
+};
+
+buffer<MyVertex> vbuf : 0;
+texture2d_array atlas : 1;
+sampler2d atlasSampler : 2;
+
+[in vbuf]
+vertex VertexRaster arrVert(uint vid : VertexID){
+    MyVertex v = vbuf[vid];
+    VertexRaster r;
+    r.pos = v.pos;
+    r.uvLayer = v.uvLayer;
+    return r;
+}
+
+[in atlas, in atlasSampler]
+fragment float4 arrFrag(VertexRaster raster){
+    /// Coord = (uv, layer) per OmegaSL §2.1 — the layer travels in .z.
+    return sample(atlasSampler, atlas, raster.uvLayer);
+}

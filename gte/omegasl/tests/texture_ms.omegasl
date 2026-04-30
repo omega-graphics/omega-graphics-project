@@ -1,0 +1,30 @@
+struct MyVertex {
+    float4 pos;
+    float2 uv;
+};
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv : TexCoord;
+};
+
+buffer<MyVertex> vbuf : 0;
+texture2d_ms msColor : 1;
+
+[in vbuf]
+vertex VertexRaster msVert(uint vid : VertexID){
+    MyVertex v = vbuf[vid];
+    VertexRaster r;
+    r.pos = v.pos;
+    r.uv = v.uv;
+    return r;
+}
+
+[in msColor]
+fragment float4 msResolveFrag(VertexRaster raster, uint si : SampleIndex){
+    /// Multisample read: coord, sample_index. Sema permits the 3-arg form
+    /// only for MS textures. This shader fans out a per-sample lookup using
+    /// the rasterizer-supplied SampleIndex.
+    int2 coord = int2(int(raster.uv.x * 1024.0), int(raster.uv.y * 1024.0));
+    return read(msColor, coord, si);
+}

@@ -121,9 +121,16 @@ namespace omegasl {
 #define KW_TY_TEXTURE1D KW_TY("texture1d")
 #define KW_TY_TEXTURE2D KW_TY("texture2d")
 #define KW_TY_TEXTURE3D KW_TY("texture3d")
+#define KW_TY_TEXTURE1D_ARRAY KW_TY("texture1d_array")
+#define KW_TY_TEXTURE2D_ARRAY KW_TY("texture2d_array")
+#define KW_TY_TEXTURECUBE KW_TY("texturecube")
+#define KW_TY_TEXTURECUBE_ARRAY KW_TY("texturecube_array")
+#define KW_TY_TEXTURE2D_MS KW_TY("texture2d_ms")
+#define KW_TY_TEXTURE2D_MS_ARRAY KW_TY("texture2d_ms_array")
 #define KW_TY_SAMPLER1D KW_TY("sampler1d")
 #define KW_TY_SAMPLER2D KW_TY("sampler2d")
 #define KW_TY_SAMPLER3D KW_TY("sampler3d")
+#define KW_TY_SAMPLERCUBE KW_TY("samplercube")
 
 
 #endif // OMEGASL_TOKS_DEF

@@ -73,10 +73,17 @@ namespace omegasl {
             DECLARE_BUILTIN_TYPE(texture1d_type);
             DECLARE_BUILTIN_TYPE(texture2d_type);
             DECLARE_BUILTIN_TYPE(texture3d_type);
+            DECLARE_BUILTIN_TYPE(texture1d_array_type);
+            DECLARE_BUILTIN_TYPE(texture2d_array_type);
+            DECLARE_BUILTIN_TYPE(texturecube_type);
+            DECLARE_BUILTIN_TYPE(texturecube_array_type);
+            DECLARE_BUILTIN_TYPE(texture2d_ms_type);
+            DECLARE_BUILTIN_TYPE(texture2d_ms_array_type);
 
             DECLARE_BUILTIN_TYPE(sampler1d_type);
             DECLARE_BUILTIN_TYPE(sampler2d_type);
             DECLARE_BUILTIN_TYPE(sampler3d_type);
+            DECLARE_BUILTIN_TYPE(samplercube_type);
 
 #undef  DECLARE_BUILTIN_TYPE
 #define DECLARE_BUILTIN_FUNC(name) extern FuncType *name;

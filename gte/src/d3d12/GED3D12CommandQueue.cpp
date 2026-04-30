@@ -111,7 +111,19 @@ GED3D12CommandBuffer::getRequiredResourceStateForResourceID(unsigned int &id, om
         if (l.location == id) {
             D3D12_RESOURCE_STATES state;
             if (l.type == OMEGASL_SHADER_TEXTURE1D_DESC || l.type == OMEGASL_SHADER_TEXTURE2D_DESC ||
-                l.type == OMEGASL_SHADER_TEXTURE3D_DESC) {
+                l.type == OMEGASL_SHADER_TEXTURE3D_DESC ||
+                /// OmegaSL §2.1 Phase A — cube/array/MS layout types are
+                /// emitted by the compiler. Phase B will pick the correct
+                /// SRV view-dimension when the texture is bound. Until then
+                /// the resource-state transition logic is identical to a
+                /// plain texture (SRV vs UAV depending on IO direction),
+                /// so they fall through to the same branch.
+                l.type == OMEGASL_SHADER_TEXTURE1D_ARRAY_DESC ||
+                l.type == OMEGASL_SHADER_TEXTURE2D_ARRAY_DESC ||
+                l.type == OMEGASL_SHADER_TEXTURECUBE_DESC ||
+                l.type == OMEGASL_SHADER_TEXTURECUBE_ARRAY_DESC ||
+                l.type == OMEGASL_SHADER_TEXTURE2D_MS_DESC ||
+                l.type == OMEGASL_SHADER_TEXTURE2D_MS_ARRAY_DESC) {
                 if (l.io_mode == OMEGASL_SHADER_DESC_IO_IN) {
                     state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
                 } else {

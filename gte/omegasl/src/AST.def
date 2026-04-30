@@ -106,7 +106,8 @@ typedef int ASTType;
 #define ATTRIBUTE_DEPTH "Depth"
 #define ATTRIBUTE_FRONTFACING "FrontFacing"
 #define ATTRIBUTE_SAMPLEINDEX "SampleIndex"
-#define ATTRIBUTE_COVERAGE "Coverage"
+#define ATTRIBUTE_INPUT_COVERAGE "InputCoverage"
+#define ATTRIBUTE_OUTPUT_COVERAGE "OutputCoverage"
 
 // Static Sampler Properties
 #define SAMPLER_PROP_FILTER "filter"

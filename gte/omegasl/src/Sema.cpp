@@ -35,9 +35,16 @@ namespace omegasl {
         ast::builtins::texture1d_type,
         ast::builtins::texture2d_type,
         ast::builtins::texture3d_type,
+        ast::builtins::texture1d_array_type,
+        ast::builtins::texture2d_array_type,
+        ast::builtins::texturecube_type,
+        ast::builtins::texturecube_array_type,
+        ast::builtins::texture2d_ms_type,
+        ast::builtins::texture2d_ms_array_type,
         ast::builtins::sampler1d_type,
         ast::builtins::sampler2d_type,
-        ast::builtins::sampler3d_type
+        ast::builtins::sampler3d_type,
+        ast::builtins::samplercube_type
         }),
         builtinFunctionMap({
 
@@ -858,7 +865,8 @@ namespace omegasl {
                     return nullptr;
                 }
 
-                if(!(_t == ast::builtins::sampler1d_type || _t == ast::builtins::sampler2d_type || _t == ast::builtins::sampler3d_type)){
+                if(!(_t == ast::builtins::sampler1d_type || _t == ast::builtins::sampler2d_type
+                     || _t == ast::builtins::sampler3d_type || _t == ast::builtins::samplercube_type)){
                     reportTypeErr("1st param of function " + std::string(BUILTIN_SAMPLE) + " must be a sampler.");
                     return nullptr;
                 }
@@ -868,11 +876,22 @@ namespace omegasl {
                 if(_t == nullptr){
                     return nullptr;
                 }
-                ///sampler1d
+                auto _tex_t = _t;
+
+                /// Multisample textures cannot be sampled — they need an
+                /// explicit sample index and go through `read`.
+                if(_tex_t == ast::builtins::texture2d_ms_type
+                   || _tex_t == ast::builtins::texture2d_ms_array_type){
+                    reportTypeErr(std::string("Multisample textures cannot be sampled; use `read(tex, coord, sample_index)` instead."));
+                    return nullptr;
+                }
+
+                ///sampler1d ↔ texture1d / texture1d_array
                 if(_first_t == ast::builtins::sampler1d_type){
 
-                    if(_t != ast::builtins::texture1d_type){
-                        reportTypeErr("2nd param of function " + std::string(BUILTIN_SAMPLE) + " must be a texture1d");
+                    if(_tex_t != ast::builtins::texture1d_type
+                       && _tex_t != ast::builtins::texture1d_array_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_SAMPLE) + " must be a texture1d or texture1d_array (paired with sampler1d)");
                         return nullptr;
                     }
 
@@ -881,17 +900,26 @@ namespace omegasl {
                         return nullptr;
                     }
 
-                    if(_t != ast::builtins::float_type){
-                        reportTypeErr("3rd param of function " + std::string(BUILTIN_SAMPLE) + " must be a float");
-                        return nullptr;
+                    if(_tex_t == ast::builtins::texture1d_type){
+                        if(_t != ast::builtins::float_type){
+                            reportTypeErr("3rd param of function " + std::string(BUILTIN_SAMPLE) + " must be a float for texture1d");
+                            return nullptr;
+                        }
+                    } else {
+                        /// texture1d_array — coord = float2 (u + layer)
+                        if(_t != ast::builtins::float2_type){
+                            reportTypeErr("3rd param of function " + std::string(BUILTIN_SAMPLE) + " must be a float2 (u, layer) for texture1d_array");
+                            return nullptr;
+                        }
                     }
 
                 }
-                ///sampler2d
+                ///sampler2d ↔ texture2d / texture2d_array
                 else if(_first_t == ast::builtins::sampler2d_type){
 
-                    if(_t != ast::builtins::texture2d_type){
-                        reportTypeErr("2nd param of function " + std::string(BUILTIN_SAMPLE) + " must be a texture2d");
+                    if(_tex_t != ast::builtins::texture2d_type
+                       && _tex_t != ast::builtins::texture2d_array_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_SAMPLE) + " must be a texture2d or texture2d_array (paired with sampler2d)");
                         return nullptr;
                     }
 
@@ -900,16 +928,23 @@ namespace omegasl {
                         return nullptr;
                     }
 
-                    if(_t != ast::builtins::float2_type){
-                        reportTypeErr("3rd param of function " + std::string(BUILTIN_SAMPLE) + " must be a float2");
-                        return nullptr;
+                    if(_tex_t == ast::builtins::texture2d_type){
+                        if(_t != ast::builtins::float2_type){
+                            reportTypeErr("3rd param of function " + std::string(BUILTIN_SAMPLE) + " must be a float2 for texture2d");
+                            return nullptr;
+                        }
+                    } else {
+                        /// texture2d_array — coord = float3 (uv + layer)
+                        if(_t != ast::builtins::float3_type){
+                            reportTypeErr("3rd param of function " + std::string(BUILTIN_SAMPLE) + " must be a float3 (uv, layer) for texture2d_array");
+                            return nullptr;
+                        }
                     }
-
                 }
-                ///sampler3d
+                ///sampler3d ↔ texture3d
                 else if(_first_t == ast::builtins::sampler3d_type) {
-                    if(_t != ast::builtins::texture3d_type){
-                        reportTypeErr("2nd param of function " + std::string(BUILTIN_SAMPLE) + " must be a texture3d");
+                    if(_tex_t != ast::builtins::texture3d_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_SAMPLE) + " must be a texture3d (paired with sampler3d)");
                         return nullptr;
                     }
 
@@ -921,6 +956,33 @@ namespace omegasl {
                     if(_t != ast::builtins::float3_type){
                         reportTypeErr("3rd param of function " + std::string(BUILTIN_SAMPLE) + " must be a float3");
                         return nullptr;
+                    }
+                }
+                ///samplercube ↔ texturecube / texturecube_array
+                else if(_first_t == ast::builtins::samplercube_type){
+                    if(_tex_t != ast::builtins::texturecube_type
+                       && _tex_t != ast::builtins::texturecube_array_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_SAMPLE) + " must be a texturecube or texturecube_array (paired with samplercube)");
+                        return nullptr;
+                    }
+
+                    _t = resolveTypeWithExpr(third_t_e);
+                    if(_t == nullptr){
+                        return nullptr;
+                    }
+
+                    if(_tex_t == ast::builtins::texturecube_type){
+                        /// texturecube — coord = float3 direction vector
+                        if(_t != ast::builtins::float3_type){
+                            reportTypeErr("3rd param of function " + std::string(BUILTIN_SAMPLE) + " must be a float3 (direction) for texturecube");
+                            return nullptr;
+                        }
+                    } else {
+                        /// texturecube_array — coord = float4 (xyz dir + w layer)
+                        if(_t != ast::builtins::float4_type){
+                            reportTypeErr("3rd param of function " + std::string(BUILTIN_SAMPLE) + " must be a float4 (direction, layer) for texturecube_array");
+                            return nullptr;
+                        }
                     }
                 }
             }
@@ -945,6 +1007,12 @@ namespace omegasl {
                     return nullptr;
                 }
 
+                if(_t == ast::builtins::texture2d_ms_type
+                   || _t == ast::builtins::texture2d_ms_array_type){
+                    reportTypeErr(std::string("Multisample textures are not writable from a shader."));
+                    return nullptr;
+                }
+
                 if(_t == ast::builtins::texture1d_type){
 
                     _t = resolveTypeWithExpr(second_t_e);
@@ -958,6 +1026,14 @@ namespace omegasl {
                     }
 
                 }
+                else if(_t == ast::builtins::texture1d_array_type){
+                    _t = resolveTypeWithExpr(second_t_e);
+                    if(_t == nullptr) return nullptr;
+                    if(_t != ast::builtins::int2_type && _t != ast::builtins::uint2_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_WRITE) + " must be an int2 or uint2 (u, layer) for texture1d_array");
+                        return nullptr;
+                    }
+                }
                 else if(_t == ast::builtins::texture2d_type){
                     _t = resolveTypeWithExpr(second_t_e);
                     if(_t == nullptr){
@@ -966,6 +1042,14 @@ namespace omegasl {
 
                     if(_t != ast::builtins::int2_type && _t != ast::builtins::uint2_type){
                         reportTypeErr("2nd param of function " + std::string(BUILTIN_WRITE) + " must be an int2 or uint2 for texture2d");
+                        return nullptr;
+                    }
+                }
+                else if(_t == ast::builtins::texture2d_array_type){
+                    _t = resolveTypeWithExpr(second_t_e);
+                    if(_t == nullptr) return nullptr;
+                    if(_t != ast::builtins::int3_type && _t != ast::builtins::uint3_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_WRITE) + " must be an int3 or uint3 (uv, layer) for texture2d_array");
                         return nullptr;
                     }
                 }
@@ -979,6 +1063,16 @@ namespace omegasl {
                         reportTypeErr("2nd param of function " + std::string(BUILTIN_WRITE) + " must be an int3 or uint3 for texture3d");
                         return nullptr;
                     }
+                }
+                else if(_t == ast::builtins::texturecube_type
+                        || _t == ast::builtins::texturecube_array_type){
+                    /// Cube write is deferred. HLSL supports it via Texture2DArray
+                    /// aliasing on the underlying resource, but Metal exposes only
+                    /// `texturecube<...,access::write>` and GLSL has no `imageCube`
+                    /// write surface that lines up cleanly with the others. Re-evaluate
+                    /// when the runtime cube path lands.
+                    reportTypeErr(std::string("`write` to cube textures is not supported yet (compile-path-only). See OmegaSL-Reference.md §2."));
+                    return nullptr;
                 }
                 else {
                     reportTypeErr(std::string(BUILTIN_WRITE) + " expects a texture-type for the first argument.");
@@ -996,10 +1090,12 @@ namespace omegasl {
                 }
 
             }
-                /// @brief read(texture texture,texcoord coord) function
+                /// @brief read(texture texture, coord [, sample_index]) function.
+                /// Plain textures take 2 args (texture + integer coord). Multisample
+                /// textures additionally take a `uint` sample index as the 3rd arg.
             else if(func_found == ast::builtins::read){
 
-                if(_expr->args.size() != 2){
+                if(_expr->args.size() < 2 || _expr->args.size() > 3){
                     auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_READ; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                     return nullptr;
                 }
@@ -1015,8 +1111,21 @@ namespace omegasl {
                 if(_t == nullptr){
                     return nullptr;
                 }
+                auto _tex_t = _t;
 
-                if(_t == ast::builtins::texture1d_type){
+                bool isMS = (_tex_t == ast::builtins::texture2d_ms_type
+                             || _tex_t == ast::builtins::texture2d_ms_array_type);
+
+                if(isMS && _expr->args.size() != 3){
+                    reportTypeErr(std::string("Multisample `read` requires 3 arguments: texture, coord, sample_index."));
+                    return nullptr;
+                }
+                if(!isMS && _expr->args.size() != 2){
+                    reportTypeErr(std::string("Non-multisample `read` takes 2 arguments: texture, coord."));
+                    return nullptr;
+                }
+
+                if(_tex_t == ast::builtins::texture1d_type){
                     _t = resolveTypeWithExpr(second_t_e);
                     if(_t == nullptr) return nullptr;
                     if(_t != ast::builtins::int_type && _t != ast::builtins::uint_type){
@@ -1024,7 +1133,15 @@ namespace omegasl {
                         return nullptr;
                     }
                 }
-                else if(_t == ast::builtins::texture2d_type){
+                else if(_tex_t == ast::builtins::texture1d_array_type){
+                    _t = resolveTypeWithExpr(second_t_e);
+                    if(_t == nullptr) return nullptr;
+                    if(_t != ast::builtins::int2_type && _t != ast::builtins::uint2_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_READ) + " must be an int2 or uint2 (u, layer) for texture1d_array");
+                        return nullptr;
+                    }
+                }
+                else if(_tex_t == ast::builtins::texture2d_type){
                     _t = resolveTypeWithExpr(second_t_e);
                     if(_t == nullptr) return nullptr;
                     if(_t != ast::builtins::int2_type && _t != ast::builtins::uint2_type){
@@ -1032,7 +1149,31 @@ namespace omegasl {
                         return nullptr;
                     }
                 }
-                else if(_t == ast::builtins::texture3d_type){
+                else if(_tex_t == ast::builtins::texture2d_array_type){
+                    _t = resolveTypeWithExpr(second_t_e);
+                    if(_t == nullptr) return nullptr;
+                    if(_t != ast::builtins::int3_type && _t != ast::builtins::uint3_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_READ) + " must be an int3 or uint3 (uv, layer) for texture2d_array");
+                        return nullptr;
+                    }
+                }
+                else if(_tex_t == ast::builtins::texture2d_ms_type){
+                    _t = resolveTypeWithExpr(second_t_e);
+                    if(_t == nullptr) return nullptr;
+                    if(_t != ast::builtins::int2_type && _t != ast::builtins::uint2_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_READ) + " must be an int2 or uint2 for texture2d_ms");
+                        return nullptr;
+                    }
+                }
+                else if(_tex_t == ast::builtins::texture2d_ms_array_type){
+                    _t = resolveTypeWithExpr(second_t_e);
+                    if(_t == nullptr) return nullptr;
+                    if(_t != ast::builtins::int3_type && _t != ast::builtins::uint3_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_READ) + " must be an int3 or uint3 (uv, layer) for texture2d_ms_array");
+                        return nullptr;
+                    }
+                }
+                else if(_tex_t == ast::builtins::texture3d_type){
                     _t = resolveTypeWithExpr(second_t_e);
                     if(_t == nullptr) return nullptr;
                     if(_t != ast::builtins::int3_type && _t != ast::builtins::uint3_type){
@@ -1040,9 +1181,31 @@ namespace omegasl {
                         return nullptr;
                     }
                 }
+                else if(_tex_t == ast::builtins::texturecube_type
+                        || _tex_t == ast::builtins::texturecube_array_type){
+                    /// Cube load is deferred. HLSL has `TextureCube::Load`-like
+                    /// behaviour via `[]` on TextureCubeArray, MSL has no direct
+                    /// `texturecube::read`, GLSL `texelFetch` doesn't accept
+                    /// samplerCube — backend-asymmetric. See §2.1 of the gap
+                    /// survey for the deferral rationale.
+                    reportTypeErr(std::string("`read` from cube textures is not supported yet (compile-path-only). See OmegaSL-Reference.md §2."));
+                    return nullptr;
+                }
                 else {
                     reportTypeErr(std::string(BUILTIN_READ) + " expects a texture-type for the first argument.");
                     return nullptr;
+                }
+
+                if(isMS){
+                    /// 3rd arg: sample index (uint)
+                    auto third_t_e = performSemForExpr(_expr->args[2],funcContext);
+                    if(third_t_e == nullptr) return nullptr;
+                    auto _sidx_t = resolveTypeWithExpr(third_t_e);
+                    if(_sidx_t == nullptr) return nullptr;
+                    if(_sidx_t != ast::builtins::uint_type && _sidx_t != ast::builtins::int_type){
+                        reportTypeErr("3rd param of function " + std::string(BUILTIN_READ) + " (sample index) must be a uint or int");
+                        return nullptr;
+                    }
                 }
 
             }
@@ -1228,6 +1391,20 @@ namespace omegasl {
                                 return false;
                             }
                         }
+                        else if(f.attributeName.value() == ATTRIBUTE_OUTPUT_COVERAGE){
+                            if(field_ty != ast::builtins::uint_type){
+                                auto e = std::make_unique<TypeError>(std::string("Attribute `") + ATTRIBUTE_OUTPUT_COVERAGE + "` requires a `uint` field, not `" + field_ty->name + "`");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            if(f.attributeIndex.has_value()){
+                                auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + ATTRIBUTE_OUTPUT_COVERAGE + "` does not take an index");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                        }
                         else if(f.attributeIndex.has_value()){
                             /// Only `Color(N)` accepts an index today.
                             auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + f.attributeName.value() + "` does not take an index");
@@ -1266,8 +1443,16 @@ namespace omegasl {
                 && ty != ast::builtins::texture1d_type
                 && ty != ast::builtins::texture2d_type
                 && ty != ast::builtins::texture3d_type
+                && ty != ast::builtins::texture1d_array_type
+                && ty != ast::builtins::texture2d_array_type
+                && ty != ast::builtins::texturecube_type
+                && ty != ast::builtins::texturecube_array_type
+                && ty != ast::builtins::texture2d_ms_type
+                && ty != ast::builtins::texture2d_ms_array_type
+                && ty != ast::builtins::sampler1d_type
                 && ty != ast::builtins::sampler2d_type
-                && ty != ast::builtins::sampler3d_type){
+                && ty != ast::builtins::sampler3d_type
+                && ty != ast::builtins::samplercube_type){
                     auto e = std::make_unique<TypeError>(std::string("Resource `") + _decl->name + "` is not a valid type. (" + _decl->typeExpr->name + ")");
                     e->loc = _decl->loc.value_or(ErrorLoc{});
                     diagnostics->addError(std::move(e));
@@ -1276,8 +1461,10 @@ namespace omegasl {
 
                 /// 3. (Applies to sampler types) Check sampler state if declared static.
 
-                if(_decl->isStatic && ty != ast::builtins::sampler2d_type
-                   && ty != ast::builtins::sampler3d_type){
+                if(_decl->isStatic && ty != ast::builtins::sampler1d_type
+                   && ty != ast::builtins::sampler2d_type
+                   && ty != ast::builtins::sampler3d_type
+                   && ty != ast::builtins::samplercube_type){
                     auto e = std::make_unique<TypeError>(std::string("Resource `") + _decl->name + "` with type `" + ty->name + "` cannot be declared static unless it is a sampler type.");
                     e->loc = _decl->loc.value_or(ErrorLoc{});
                     diagnostics->addError(std::move(e));
@@ -1431,7 +1618,10 @@ namespace omegasl {
                         if(res->name == r.name){
                             found = true;
                             auto _t = resolveTypeWithExpr(res->typeExpr);
-                            if((_t == ast::builtins::sampler2d_type || _t == ast::builtins::sampler3d_type) && r.access != ast::ShaderDecl::ResourceMapDesc::In){
+                            if((_t == ast::builtins::sampler1d_type
+                                || _t == ast::builtins::sampler2d_type
+                                || _t == ast::builtins::sampler3d_type
+                                || _t == ast::builtins::samplercube_type) && r.access != ast::ShaderDecl::ResourceMapDesc::In){
                                 auto e = std::make_unique<TypeError>(std::string("In Shader Decl `") + _decl->name + "`, resource `" + r.name + "` with type `" + _t->name + "` can only be granted input access to shader.");
                                 e->loc = _decl->loc.value_or(ErrorLoc{});
                                 diagnostics->addError(std::move(e));
@@ -1498,7 +1688,7 @@ namespace omegasl {
                                 return false;
                             }
                             if((p.attributeName.value() == ATTRIBUTE_SAMPLEINDEX
-                                || p.attributeName.value() == ATTRIBUTE_COVERAGE)
+                                || p.attributeName.value() == ATTRIBUTE_INPUT_COVERAGE)
                                && p_type != ast::builtins::uint_type){
                                 auto e = std::make_unique<TypeError>(std::string("Attribute `") + p.attributeName.value() + "` requires a `uint` parameter, not `" + p_type->name + "`");
                                 e->loc = _decl->loc.value_or(ErrorLoc{});

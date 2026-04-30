@@ -39,10 +39,17 @@ namespace omegasl::ast {
         Type *texture1d_type;
         Type *texture2d_type;
         Type *texture3d_type;
+        Type *texture1d_array_type;
+        Type *texture2d_array_type;
+        Type *texturecube_type;
+        Type *texturecube_array_type;
+        Type *texture2d_ms_type;
+        Type *texture2d_ms_array_type;
 
         Type *sampler1d_type;
         Type *sampler2d_type;
         Type *sampler3d_type;
+        Type *samplercube_type;
 
         FuncType *make_float2;
         FuncType *make_float3;
@@ -106,10 +113,17 @@ namespace omegasl::ast {
                 texture1d_type = new Type{KW_TY_TEXTURE1D,global_scope};
                 texture2d_type = new Type{KW_TY_TEXTURE2D,global_scope};
                 texture3d_type = new Type{KW_TY_TEXTURE3D,global_scope};
+                texture1d_array_type = new Type{KW_TY_TEXTURE1D_ARRAY,global_scope};
+                texture2d_array_type = new Type{KW_TY_TEXTURE2D_ARRAY,global_scope};
+                texturecube_type = new Type{KW_TY_TEXTURECUBE,global_scope};
+                texturecube_array_type = new Type{KW_TY_TEXTURECUBE_ARRAY,global_scope};
+                texture2d_ms_type = new Type{KW_TY_TEXTURE2D_MS,global_scope};
+                texture2d_ms_array_type = new Type{KW_TY_TEXTURE2D_MS_ARRAY,global_scope};
 
                 sampler1d_type = new Type{KW_TY_SAMPLER1D,global_scope};
                 sampler2d_type = new Type{KW_TY_SAMPLER2D,global_scope};
                 sampler3d_type = new Type{KW_TY_SAMPLER3D,global_scope};
+                samplercube_type = new Type{KW_TY_SAMPLERCUBE,global_scope};
 
                 make_float2 = new FuncType{BUILTIN_MAKE_FLOAT2,global_scope,true,{},{
 
@@ -199,9 +213,16 @@ namespace omegasl::ast {
                 delete texture1d_type;
                 delete texture2d_type;
                 delete texture3d_type;
+                delete texture1d_array_type;
+                delete texture2d_array_type;
+                delete texturecube_type;
+                delete texturecube_array_type;
+                delete texture2d_ms_type;
+                delete texture2d_ms_array_type;
                 delete sampler1d_type;
                 delete sampler2d_type;
                 delete sampler3d_type;
+                delete samplercube_type;
                 delete make_float2;
                 delete make_float3;
                 delete make_float4;

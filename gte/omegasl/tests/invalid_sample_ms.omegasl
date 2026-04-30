@@ -1,0 +1,22 @@
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv : TexCoord;
+};
+
+texture2d_ms msColor : 0;
+sampler2d msSampler : 1;
+
+vertex VertexRaster sampleMSVert(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv = float2(0.0, 0.0);
+    return r;
+}
+
+[in msColor, in msSampler]
+fragment float4 sampleMSFrag(VertexRaster raster){
+    /// Multisample textures cannot be sampled — this should be rejected by
+    /// Sema with the "use `read(tex, coord, sample_index)` instead"
+    /// diagnostic.
+    return sample(msSampler, msColor, raster.uv);
+}

@@ -1,0 +1,38 @@
+struct MyVertex {
+    float4 pos;
+    float4 color;
+};
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float4 color : Color;
+};
+
+struct FragOut internal {
+    float4 color : Color(0);
+    uint mask : OutputCoverage;
+};
+
+buffer<MyVertex> vbuf : 0;
+
+[in vbuf]
+vertex VertexRaster covVert(uint vid : VertexID){
+    MyVertex v = vbuf[vid];
+    VertexRaster r;
+    r.pos = v.pos;
+    r.color = v.color;
+    return r;
+}
+
+fragment FragOut covFrag(VertexRaster raster, uint inCov : InputCoverage, uint si : SampleIndex){
+    FragOut o;
+    o.color = raster.color;
+    /// Trim coverage to even-numbered samples to prove the input/output
+    /// directions are wired separately.
+    uint outMask = inCov;
+    if(si == 0){
+        outMask = outMask & 0x55555555;
+    }
+    o.mask = outMask;
+    return o;
+}
