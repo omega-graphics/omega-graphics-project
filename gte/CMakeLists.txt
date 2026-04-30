@@ -117,7 +117,7 @@ if(TARGET_VULKAN)
 endif()
 if(TARGET_METAL)
 	target_link_system_frameworks("omegaslc" Metal Foundation)
-	target_link_system_frameworks("OmegaGTE" Metal QuartzCore Cocoa)
+	target_link_system_frameworks("OmegaGTE" Metal MetalKit ModelIO QuartzCore Cocoa)
 endif()
 
  add_subdirectory(omegasl/tests)

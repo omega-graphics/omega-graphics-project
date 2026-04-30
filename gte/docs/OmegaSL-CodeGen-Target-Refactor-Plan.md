@@ -319,8 +319,24 @@ across the three codegens.
 
 ## Phase 6 — Promote `generateExpr` and `generateBlock` to `CodeGen`
 
-**Goal.** After phases 1–5, the three `generateExpr` and `generateBlock`
-methods should be byte-for-byte identical to within the
+**Status: deferred until after Phase 8.** When this phase was originally
+planned the assumption was that phases 1–5 would absorb every divergence
+between the three `generateExpr` / `generateBlock` bodies. That turned
+out to be optimistic — survey found additional divergences (BINARY_EXPR
+parens, ID_EXPR identifier escaping, `MAKE_*` constructor builtins,
+user-function mangling, ARRAY_EXPR separator, MEMBER_EXPR fragment-output
+rerouting in GLSL, generateBlock indent and stmt-suffix placement).
+Phase 7.5 (formatter unification) below addresses most of these. The
+final blocker for Phase 6 promotion is the GLSL fragment-output
+`internalStructVarMap` rerouting in MEMBER_EXPR, whose state is
+populated by ~15 sites in GLSLCodeGen during SHADER_DECL processing.
+Those populator sites move to `GLSLTarget` as part of Phase 8 (shader
+entry); after that the MEMBER_EXPR override on `GLSLTarget` can read
+that state, and Phase 6's promotion to non-virtual on `CodeGen`
+becomes unblocked.
+
+**Goal.** After phases 1–5, 7, 7.5, and 8, the three `generateExpr` and
+`generateBlock` bodies should be byte-for-byte identical to within
 `target->...` calls. Move them to non-virtual `CodeGen` methods.
 
 **Files:**
@@ -332,9 +348,7 @@ methods should be byte-for-byte identical to within the
   and `generateBlock` overrides.
 
 **Why this is its own phase.** It's the first phase that *removes* code
-rather than relocating it. It's also the first irreversible step in the
-sense that it requires phases 1–5 to all be in place first. Keeping it
-separate from the relocations makes the diff easy to read.
+rather than relocating it.
 
 **Exit criteria.**
 
@@ -343,6 +357,68 @@ separate from the relocations makes the diff easy to read.
 - The `*CodeGen` classes still own `generateDecl` (for SHADER_DECL
   divergence), the file-output state, and the per-stage compile
   invocation.
+
+---
+
+## Phase 7.5 — Formatter unification (added mid-refactor)
+
+Inserted between phases 7 and 8 to unblock Phase 6's eventual
+promotion. Goal: unify cosmetic formatting across backends so
+`generateExpr` / `generateBlock` bodies converge, with genuinely
+per-platform behavior moved to Target hooks.
+
+**What landed:**
+
+- Universal canonical form: `(lhs op rhs)` for binary expressions,
+  `, ` separators in CALL_EXPR / ARRAY_EXPR, 4-space indent in
+  `generateBlock`. HLSL adds parens; MSL/GLSL switch indent. GLSL
+  drops the dead `finishEarly` flag. HLSL drops `<< std::flush` in
+  ID_EXPR.
+- `userFuncDecls` / `userFuncNames` / `mangleUserFuncName` /
+  `isUserFunc` move from MSL-only state onto shared `CodeGen`. All
+  three backends populate `userFuncNames` in their `FUNC_DECL` arm.
+- New `Target::needsMangling(StrRef name) const` hook (default
+  `false`). Each target ships a curated stdlib collision set;
+  `CodeGen::spellUserFuncName` mangles only when the target reports
+  a real collision. Output stays clean for non-colliding user names
+  on every backend (e.g. MSL no longer prefixes `lambert_diffuse`,
+  but HLSL/MSL still prefix user `saturate` because it shadows the
+  stdlib).
+- `Target::renameBuiltin` extended to map
+  `BUILTIN_MAKE_FLOAT2/3/4`, `MAKE_INT2/3/4`, `MAKE_UINT2/3/4`,
+  `MAKE_FLOATNxN` to per-backend constructor names
+  (`floatN`/`intN`/`uintN`/`floatNxN` for HLSL/MSL,
+  `vecN`/`ivecN`/`uvecN`/`matN` for GLSL). The `~18` inline
+  constructor arms in each backend's CALL_EXPR collapse.
+- New `Target::writeIdentifier(StrRef, ostream&)` hook. Default:
+  write raw. `GLSLTarget` overrides with the existing
+  `writeGLSLIdent` reserved-word escape (`input`, `output`,
+  `shared`, ...). All three `ID_EXPR` arms call
+  `target->writeIdentifier(_expr->id, shaderOut)`.
+- New `Target::emitMemberExpr(CodeGen&, ast::MemberExpr*, ostream&)`
+  hook with a default base-class definition that emits `lhs.rhs`.
+  HLSL and MSL switch their MEMBER_EXPR arm to
+  `target->emitMemberExpr(...)`.
+
+**Deferred to Phase 8:** the GLSL `MEMBER_EXPR` override that
+consults `internalStructVarMap` for fragment-output struct
+rerouting. Its state lives in `GLSLCodeGen` and is populated by
+~15 sites during SHADER_DECL processing — those move to
+`GLSLTarget` along with the shader-entry-header emission in
+Phase 8, at which point the override naturally has the state it
+needs. GLSL's `MEMBER_EXPR` arm keeps its inline rerouting until
+then.
+
+**Exit criteria met.**
+
+- Build green; 28/28 ctest pass.
+- Output across the three backends shares 4-space indent, parens,
+  separator style, and conditional-mangle behavior.
+- `generateExpr` bodies for HLSL/MSL are byte-identical to within
+  `target->...` calls. GLSL still differs in `MEMBER_EXPR` (Phase
+  8 work) and `generateBlock` (small structural deltas — also
+  cleared up in Phase 8 along with the shader-entry brace
+  handling).
 
 ---
 
@@ -387,63 +463,229 @@ know.
 
 ## Phase 8 — Move shader-entry signature emission
 
-**Goal.** Move the per-stage entry-point header (everything from the
-stage keyword through the function open-brace) into the target.
+**Status: split into 8a / 8b / 8c / 8d.** The original plan envisioned
+this as a single hook + one diff per backend. In practice the SHADER_DECL
+flow is so different across backends that doing it as one phase means a
+multi-thousand-line diff. Splitting it lets each sub-step land green.
 
-**Files:**
+### Phase 8a — GLSL fragment-output state migration ✅
 
-- Edit: `Target.h` — `virtual void emitShaderEntryHeader(ast::ShaderDecl *decl, std::ostream &out, omegasl_shader &meta) = 0;`. This emits, for example:
-  - HLSL: `[numthreads(…)] float4 myFrag(VertexRaster raster) : SV_TARGET {`
-  - MSL: `fragment FragOut myFrag(VertexRaster raster [[stage_in]]) {`
-  - GLSL: `layout(local_size_x=…) in;\nvoid main() {`
-- Edit: `Target.h` — `virtual void emitShaderEntryFooter(ast::ShaderDecl *decl, std::ostream &out) = 0;` for any per-target post-amble (currently empty for HLSL/MSL, and the `}` closing of `main()` for GLSL).
-- Edit: each `*Target.cpp` — implement.
-- Edit: each `*CodeGen.cpp` — replace the inline header / footer
-  emission inside `SHADER_DECL` with the two `target->...` calls.
+Move `internalStructs`, `internalStructVarMap`, `structDeclMap`,
+`currentShaderType`, `activeReturnReplacement`, `fragmentOutputStruct`,
+and `writeInternalFieldRef` from `GLSLCodeGen` to `GLSLTarget`.
+`GLSLCodeGen` accesses them via a typed `glslTarget()` accessor that
+downcasts the base `target` once. Implement `GLSLTarget::emitMemberExpr`
+override that consults `internalStructVarMap` for fragment-output
+struct rerouting, then switch GLSL's MEMBER_EXPR arm to call
+`target->emitMemberExpr(...)`. After this, GLSL's `MEMBER_EXPR`
+behavior matches the abstract Target hook — closing the deferral from
+Phase 7.5.
 
-**Why this is the second-to-last per-target phase.** The shader entry is
-the most divergent part of the AST walk — it touches stage keyword,
-return-type rewriting (the `_outColor` / fragment-output-struct dance in
-GLSL), parameter attribute placement, the early-depth attribute (when it
-lands per `OmegaSL-Feature-Gap-Survey.md` §1.5), and tessellation
-descriptors. Doing it last means everything else is already encapsulated
-and the entry hook is the only place that "knows" about stage-specific
-emission.
+**Verification:** byte-identical output across all three backends;
+28/28 ctest pass.
 
-**Subtlety.** The fragment-output-struct routing in GLSL
-(`fragmentOutputStruct`, `_outColor<N>` per-field outputs, gl_FragDepth
-mapping — added in §1.2/§1.4 of the survey) lives in `GLSLTarget`. The
-shared `CodeGen` knows nothing about it.
+### Phase 8b — HLSL `emitShaderEntryHeader` hook ✅
 
-**Exit criteria.** Tests pass. The remaining `*CodeGen.cpp` files are
-under ~200 LoC each — basically just constructors, the
-`generateInterfaceAndCompileShader` shim, and the
-`compileShader`/`compileShaderOnRuntime` overrides.
+Add `Target::emitShaderEntryHeader(CodeGen&, ast::ShaderDecl*, omegasl_shader&, std::ostream&)`
+as a non-pure virtual with a no-op default. `HLSLTarget` overrides with
+the full HLSL header emission (stage decorators including
+`[numthreads]` / `[domain]` / `[partitioning]` / `[outputtopology]` /
+`[outputcontrolpoints]`, return type, name, parameter list with
+attributes, fragment `: SV_TARGET` suffix). HLSLCodeGen's SHADER_DECL
+calls `target->emitShaderEntryHeader(...)` then `generateBlock(...)`;
+its inline header emission is gone (~80 LoC removed).
+
+MSL and GLSL keep their inline SHADER_DECL header emission for now
+because:
+- MSL's header interleaves with resource binding (resources go inside
+  the function parameter list) and closes with a manual `){` that the
+  body block doesn't write — needs `shaderDecl` flag retired first
+  (Phase 8d).
+- GLSL's header has fragment-output struct decls, per-param `layout(location=N) in` lines,
+  and an attribute-bridge `extra_stmts` accumulator that gets flushed
+  inside `void main(){}`. Plus a custom RETURN_DECL body loop. Move
+  scheduled for Phase 8c.
+
+**Verification:** byte-identical output; 28/28 ctest pass.
+HLSLCodeGen.cpp shrinks from ~559 LoC to ~385.
+
+### Phase 6 partial — promote `generateExpr` to non-virtual `CodeGen` ✅
+
+Inserted between Phase 8a and 8c since 8a closed the last GLSL
+divergence in `generateExpr`. Mechanics:
+
+- `generateExpr` becomes a concrete method on `CodeGen` whose body
+  lives in `CodeGen.cpp`. Stream access is via a virtual
+  `shaderOutStream()` accessor that each subclass implements (returning
+  its own `shaderOut` reference). Stream redirection up to `CodeGen`
+  itself is deferred until Phase 10.
+- `formatFloatLit` (previously duplicated as a file-static in each
+  `*CodeGen.cpp`) moves to `CodeGen.cpp` as well.
+- Each `*CodeGen.cpp` deletes its `generateExpr` override (~115 LoC ×
+  3) and adds a one-line `shaderOutStream()` accessor.
+
+`generateBlock` is still per-backend. MSL has the `shaderDecl` flag for
+shader-entry brace handling, and GLSL has the bitmask `(stmt->type & DECL) == EXPR`
+plus a different newline placement. Both clear up in Phase 8c/8d. Until
+then the bodies aren't byte-identical.
+
+**Verification:** byte-identical output; 28/28 ctest pass.
+
+### Phase 8c — GLSL header + body migration ✅
+
+Moved GLSL's full SHADER_DECL header+body emission to
+`GLSLTarget::emitShaderEntryHeader` and `GLSLTarget::emitShaderEntryBody`
+overrides. Includes:
+
+- Stage-keyword + tessellation `layout(...)` decorators.
+- All-used-structs loop with internal-struct varying decls (skipping
+  fragment-output struct, which is emitted separately).
+- Fragment-output struct decls (`layout(location=N) out vec4 _outColorN`
+  per `Color(N)` field, or default `_outColor` for bare-float4 fragments).
+- Resource bindings via the new `cg.emitResourcesAndFillLayout` helper
+  that runs `target->emitResourceBinding` per resource, accumulates
+  the layout vector, and fills `meta.pLayout`.
+- Per-param emission: `layout(location=N) in <type>` for non-attributed
+  params; attribute-bridge locals (e.g. `vec3 N = gl_VertexIndex;`)
+  gathered into the new `extra_stmts` member of `GLSLTarget` for flush
+  at the top of the body.
+- `void main(){`.
+- Custom body loop with RETURN_DECL rerouting for fragment-output struct
+  returns (bare `return;` since per-field stores happened earlier via
+  member-expr routing) and hull/domain `gl_Position = ...` writes.
+
+Additional state migrated to `GLSLTarget`: `generatedStructs` (the
+struct-text cache populated when STRUCT_DECL is parsed), `extra_stmts`
+(the attribute-bridge accumulator). GLSLCodeGen accesses the populator
+via the typed `glslTarget()` accessor.
+
+`indentLevel` moved from each `*CodeGen` to shared `CodeGen` so the
+target's body emission can bump it for nested blocks (which still go
+through each subclass's `generateBlock`).
+
+The Phase 7.5 indent-inconsistency in the SHADER_DECL custom body loop
+(was 2 spaces while non-entry bodies had been unified to 4) is fixed in
+this phase — entry bodies now indent at 4 spaces too.
+
+**Verification:** Build green; 28/28 ctest pass. Byte-output for HLSL
+and MSL unchanged. GLSL output indentation in shader-entry bodies
+changed 2 spaces → 4 spaces (the Phase 7.5 indent-unification fix).
+GLSLCodeGen.cpp dropped from 874 LoC → 508 LoC; GLSLTarget.cpp grew
+to 728 LoC.
+
+### Phase 8d — MSL header + body migration ✅
+
+Moved MSL's full SHADER_DECL signature + body emission to
+`MSLTarget::emitShaderEntryHeader` and `MSLTarget::emitShaderEntryBody`.
+Header writes the stage decorator (`vertex` / `fragment` / `kernel` /
+`[[patch(...)]] vertex`), return type, name, and the parameter list
+with resources interleaved (resources via `cg.emitResourcesAndFillLayout`
+which calls `MSLTarget::emitResourceBinding` per binding and tracks
+`paramIndex` for the leading-comma decision). Body writes the opening
+`{`, flushes the static-sampler `constexpr sampler ... = sampler(...);`
+lines that were gathered during resource emission, walks the user
+block at indent+1, and writes `}`.
+
+`MSLTarget::emitStaticPreamble` becomes a no-op — it can't fire
+mid-parameter-list (which is where the shared
+`emitResourcesAndFillLayout` calls it), so the static-sampler flush
+moves into `emitShaderEntryBody` instead. HLSL/GLSL behavior unchanged
+(both still no-op there). The `MetalCodeGen::shaderDecl` flag — which
+suppressed `generateBlock`'s own `{` because the SHADER_DECL handler
+emitted `){` manually — is gone.
+
+`MetalCodeGen::SHADER_DECL` shrinks to: hull/domain rejection
+diagnostic, file-output setup, default headers, user-function
+prototypes + bodies, used-struct emission, then a single
+`emitShaderEntryHeader` + `emitShaderEntryBody` call pair.
+
+**Verification:** Build green; 28/28 ctest pass. Byte-output identical
+across all three backends.
+
+### Phase 6 rest — promote `generateBlock` to non-virtual `CodeGen` ✅
+
+Once 8c + 8d landed, all three backends' `generateBlock` bodies
+converged. Promoted `generateBlock` to a concrete method on `CodeGen`
+whose body lives in `CodeGen.cpp`. Stream access is via
+`shaderOutStream()` (same accessor used by `generateExpr`). Each
+`*CodeGen.cpp` deletes its `generateBlock` override.
+
+The MSL pre-Phase-8d quirk where `generateBlock` emitted a leading
+indent before the opening `{` (producing `if(...)    {`) is dropped:
+output now matches the HLSL/GLSL form `if(...){`. Same precedent as
+the Phase 7.5 / 8c indent-unification — small cosmetic byte-output
+change for MSL only, no semantic change.
+
+**Verification:** Build green; 28/28 ctest pass. HLSL/GLSL output
+byte-identical to pre-Phase-6 baseline. MSL output differs only in
+the dropped `    ` filler before nested-block `{` (e.g.
+`if((x > 10.0))    {` → `if((x > 10.0)){`).
+
+### Phase 8 exit criteria — met:
+
+`*CodeGen.cpp` LoC after Phase 6 rest:
+
+- `MetalCodeGen.cpp`: 342 LoC (was 480 pre-Phase-8d)
+- `HLSLCodeGen.cpp`: 359 LoC
+- `GLSLCodeGen.cpp`: 486 LoC
+
+Each is now: constructors, `writeTypeExpr`, `generateDecl`,
+`shaderOutStream` accessor, `compileShader` / `compileShaderOnRuntime`,
+plus the GLSL-specific `glslTarget()` accessor. Phase 10 will collapse
+all three into a single `CodeGen.cpp` (the per-backend `generateDecl`
+is the last divergent walker; the bulk of the SHADER_DECL handling
+already lives on the targets).
 
 ---
 
-## Phase 9 — Move file-extension and compile-driver invocation
+## Phase 9 — Move file-extension and compile-driver invocation ✅
 
-**Goal.** Move per-backend compile orchestration to the target.
+**What landed.** Four hooks on `Target`:
 
-**Files:**
+- `shaderFileExt(stage)` — `".hlsl"` / `".metal"` /
+  `".vert"|".frag"|".comp"|".tesc"|".tese"`. GLSL's stage→ext switch
+  was previously duplicated in `SHADER_DECL` and `compileShader`;
+  consolidated to a single source of truth on the target. The
+  `glslc -fshader-stage=` argument derives the stage tag from the
+  ext (`".vert"` → `"vert"`).
+- `compileShader(stage, name, srcDir, outDir)` — invokes `dxc` /
+  `metal` / `glslc` on the file at `<srcDir>/<name><shaderFileExt>`.
+- `compileShaderRuntime(stage, name, source, meta)` — in-process
+  compile via `D3DCompile` / `compileMTLShader` / `shaderc`. The
+  source is now passed by reference; the target updates `meta.data`
+  / `meta.dataSize` directly. No more reaching back into the
+  codegen's `stringOut`.
+- `supportsStage(stage, diagnosticOut)` — friendly stage gate. The
+  Metal hull/domain rejection (OmegaSL-Reference.md bug 3) now lives
+  on `MSLTarget::supportsStage`. Each `*CodeGen` `SHADER_DECL`
+  handler queries it before opening the source file; on refusal it
+  prints the captured diagnostic and sets `hasFatalErrors`.
 
-- Edit: `Target.h`:
-  - `virtual const char *shaderFileExt(ast::ShaderDecl::Type stage) = 0;` (`.hlsl`/`.metal`/`.vert`/`.frag`/`.comp`/etc.).
-  - `virtual bool compileShader(ast::ShaderDecl::Type stage, OmegaCommon::StrRef name, const OmegaCommon::FS::Path &src, const OmegaCommon::FS::Path &out) = 0;`
-  - `virtual void compileShaderRuntime(ast::ShaderDecl::Type stage, OmegaCommon::StrRef name, const std::string &source, omegasl_shader &meta) = 0;`
-  - `virtual bool supportsStage(ast::ShaderDecl::Type stage, OmegaCommon::String &diagnosticOut) const = 0;` — for the Metal "no hull/domain" case (`OmegaSL-Reference.md` bug 3).
-- Edit: each `*Target.cpp` — implement (copy from the existing codegens).
-- Edit: each `*CodeGen.cpp` `compileShader` / `compileShaderOnRuntime`
-  override — replace with `target->compileShader(...)`.
+**State migration.** `MSLTarget`, `HLSLTarget`, and `GLSLTarget` each
+take their respective `*CodeOpts &` at construction (storing a
+reference). The shaderc compiler handle (`shaderc_compiler_t`)
+moves from `GLSLCodeGen` onto `GLSLTarget` so the runtime-compile
+hook owns its own context.
 
-**Subtlety.** `compileShaderRuntime` previously read from the codegen's
-internal `stringOut` member; with the target taking the source string by
-reference, this becomes pure-functional. The codegen passes its
-`stringOut.str()` after the AST emission completes.
+**`*CodeGen.cpp` reductions.**
 
-**Exit criteria.** Tests pass. `compileShader` and `compileShaderOnRuntime`
-on `CodeGen` become 1-line delegations.
+- `MetalCodeGen.cpp`: 342 → **300** LoC (hull/domain rejection +
+  metal-cmd invocation + Metal-API runtime call all moved out).
+- `HLSLCodeGen.cpp`: 359 → **297** LoC (dxc invocation + D3DCompile
+  moved out).
+- `GLSLCodeGen.cpp`: 486 → **327** LoC (glslc invocation +
+  shaderc-compile moved out, plus the redundant stage→ext switch is
+  gone).
+
+**Exit criteria — met:**
+
+- Build green; 28/28 ctest pass.
+- `compileShader` / `compileShaderOnRuntime` on each `*CodeGen`
+  collapsed to 1–3-line delegations into `target->compileShader` /
+  `target->compileShaderRuntime`.
+- HLSL/GLSL output byte-identical to pre-Phase-9 baseline. MSL
+  output unchanged from post-Phase-6 (no new byte changes from
+  Phase 9 itself).
 
 ---
 

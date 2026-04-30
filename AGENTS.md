@@ -7,7 +7,7 @@
     Use an object-oriented, Modular coding style that has modular rules so if a specific rule needs to be changed across the object it can be.
 
 # Dependencies
-    All dependencies in this project are pulled in via AUTOMDEPS. Whenever adding a new dependency, query an existing AUTOMDEPS file for format, and then add or remove a dependency.
+    All dependencies in this project are pulled in via AUTOMDEPS. We often pull directly from the repos and build the source directly allowing us to control how third party deps are shipped with our APIs.
 
 # Code Authoring
     All implementations will be revised through multi-phase plans before being implemented.

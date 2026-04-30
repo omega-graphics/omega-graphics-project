@@ -3,6 +3,7 @@
 #include <omegasl.h>
 #include <cstring>
 #include <memory>
+#include <set>
 #include <iostream>
 
 #ifndef OMEGASL_CODEGEN_H
@@ -64,6 +65,38 @@ namespace omegasl {
 
         OmegaCommon::Map<OmegaCommon::String,omegasl_shader> shaderMap;
 
+        /// Names of user-defined functions encountered during parsing.
+        /// Populated by each backend's FUNC_DECL handler. Used by the
+        /// shared CALL_EXPR / FUNC_DECL emission paths together with
+        /// `Target::needsMangling` to decide whether to write the bare
+        /// name or `osl_user_<name>` at the call/definition site.
+        OmegaCommon::Vector<ast::FuncDecl *> userFuncDecls;
+        std::set<std::string> userFuncNames;
+
+        /// Prefix used when a user function name collides with a
+        /// target-specific stdlib identifier. The prefix is stable so
+        /// `osl_user_*` is reliably namespaced in generated source.
+        static OmegaCommon::String mangleUserFuncName(OmegaCommon::StrRef name) {
+            return std::string("osl_user_") + std::string(name);
+        }
+
+        bool isUserFunc(OmegaCommon::StrRef name) const {
+            return userFuncNames.count(std::string(name)) > 0;
+        }
+
+        /// Returns the spelling to write when emitting a user-defined
+        /// function name (in either its definition or a call site). Only
+        /// mangles when the target has flagged the name as colliding
+        /// with one of its own stdlib identifiers. Non-colliding user
+        /// names pass through unchanged so the generated source stays
+        /// readable.
+        OmegaCommon::String spellUserFuncName(OmegaCommon::StrRef name) const {
+            if (target->needsMangling(name)) {
+                return mangleUserFuncName(name);
+            }
+            return std::string(name);
+        }
+
         /// Set by a backend when it encounters a construct it cannot
         /// emit (e.g. Metal hull/domain stages — see OmegaSL-Reference.md
         /// bug 3). The backend prints its own diagnostic to stderr and
@@ -94,8 +127,47 @@ namespace omegasl {
 
         void setTypeResolver(ast::SemFrontend *_typeResolver){ typeResolver = _typeResolver;}
         virtual void generateDecl(ast::Decl *decl) = 0;
-        virtual void generateExpr(ast::Expr *expr) = 0;
-        virtual void generateBlock(ast::Block &block) = 0;
+
+        /// Concrete shared AST-walk for expression nodes. After Phase 7.5
+        /// + 8a the body is identical across HLSL/MSL/GLSL modulo Target
+        /// hook calls, so it lives on the shared base. The output stream
+        /// is fetched per-subclass via `shaderOutStream()` until Phase 10
+        /// folds the file/string members up here too.
+        void generateExpr(ast::Expr *expr);
+
+        /// Concrete shared AST-walk for blocks. After Phase 8c+8d the
+        /// per-backend bodies converged on the same shape: `{`, then
+        /// each stmt at indent+1 with maybe-`;` + `\n`, then `}`. The
+        /// MSL pre-Phase-8d quirk that indented `{` after `if`/`for`/
+        /// `while` (e.g. `if(...)    {`) is gone — output now matches
+        /// the HLSL/GLSL form `if(...){`. Indent level still bumps via
+        /// `indentLevel`, so nested blocks indent correctly relative to
+        /// their parent.
+        void generateBlock(ast::Block &block);
+
+        /// Per-subclass output stream. Resolves to either the on-disk
+        /// `fileOut` or the in-memory `stringOut` depending on the
+        /// constructor variant the subclass was built with.
+        virtual std::ostream &shaderOutStream() = 0;
+
+        /// Current block-nesting depth, in indentation levels (one
+        /// level == 4 spaces after Phase 7.5 unification). Each
+        /// `generateBlock` call increments at entry and decrements at
+        /// exit. `Target::emitShaderEntryBody` overrides also bump it
+        /// when emitting the entry body so nested control-flow blocks
+        /// indent relative to the entry, not relative to file scope.
+        unsigned indentLevel = 0;
+
+        /// Run the per-resource emission loop and fill `meta.pLayout`
+        /// (allocated as `new[]`) with the resulting layout descriptors.
+        /// Each backend's `emitShaderEntryHeader` calls this where
+        /// resources land in its source: HLSL/GLSL at file scope before
+        /// the function signature, MSL inline inside the entry-function
+        /// parameter list. The shared `SHADER_DECL` no longer drives the
+        /// loop directly.
+        void emitResourcesAndFillLayout(ast::ShaderDecl *decl,
+                                        omegasl_shader &meta,
+                                        std::ostream &out);
 //        virtual void writeNativeStructDecl(ast::StructDecl *decl,std::ostream & out) = 0;
         bool generateInterfaceAndCompileShader(ast::Decl *decl);
 

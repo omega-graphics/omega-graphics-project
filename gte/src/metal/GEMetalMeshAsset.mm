@@ -1,0 +1,338 @@
+#include "omegaGTE/GEMeshAsset.h"
+#include "omegaGTE/GEMesh.h"
+#include "omegaGTE/GETextureAsset.h"
+#include "omegaGTE/GTEShader.h"
+
+#import <Metal/Metal.h>
+#import <MetalKit/MetalKit.h>
+#import <ModelIO/ModelIO.h>
+#import <Foundation/Foundation.h>
+
+#include <iostream>
+#include <vector>
+#include <cstring>
+
+_NAMESPACE_BEGIN_
+
+// Phase 3.2 v1 limitations (documented for the on-call reader):
+// - The asset's meshes/submeshes are flattened into a single non-indexed
+//   GEMesh in source order. We respect the caller's GEMeshDescriptor and
+//   write zeros for attributes the source mesh does not provide.
+// - Only the base-color material texture is picked up. Normal / metallic
+//   / roughness maps land in a follow-up.
+// - Tangents, skinning weights, and animations are dropped.
+// - Topology is forced to Triangle. MTKMesh emits indexed triangles; we
+//   resolve indices into a flat vertex stream so the output matches the
+//   triangulation builder's contract (Triangle topology, indexType=None).
+
+namespace {
+
+/// Pull a single per-vertex attribute by semantic name from an MDLMesh.
+/// Returns nil if the mesh does not have that attribute.
+MDLVertexAttributeData *attrData(MDLMesh *mesh, NSString *name) {
+    return [mesh vertexAttributeDataForAttributeNamed:name];
+}
+
+/// Read N floats from `attr` at the given vertex index into `out`. Falls
+/// back to zeros for any component the source does not carry (e.g. a 2D
+/// uv read as a float3 leaves z = 0).
+void readFloats(MDLVertexAttributeData *attr, NSUInteger index, int count, float *out) {
+    for (int i = 0; i < count; ++i) out[i] = 0.f;
+    if (attr == nil || attr.dataStart == nullptr) return;
+    const uint8_t *base = (const uint8_t *)attr.dataStart;
+    const NSUInteger stride = attr.stride;
+    const uint8_t *vert = base + index * stride;
+
+    int srcCount = 0;
+    switch (attr.format) {
+        case MDLVertexFormatFloat:  srcCount = 1; break;
+        case MDLVertexFormatFloat2: srcCount = 2; break;
+        case MDLVertexFormatFloat3: srcCount = 3; break;
+        case MDLVertexFormatFloat4: srcCount = 4; break;
+        default:
+            // Other formats (half/uchar/etc.) aren't translated in v1.
+            // Caller gets zeros; we log once via the warn-flag in the
+            // outer builder.
+            return;
+    }
+    int n = std::min(srcCount, count);
+    std::memcpy(out, vert, sizeof(float) * (size_t)n);
+}
+
+/// Read one index from a submesh's index buffer. Supports the index
+/// formats Model I/O produces (UInt8 / UInt16 / UInt32).
+uint32_t readIndex(MDLSubmesh *submesh, NSUInteger i) {
+    id<MDLMeshBuffer> ibuf = submesh.indexBuffer;
+    const uint8_t *base = (const uint8_t *)[ibuf map].bytes;
+    switch (submesh.indexType) {
+        case MDLIndexBitDepthUInt8:
+            return base[i];
+        case MDLIndexBitDepthUInt16:
+            return ((const uint16_t *)base)[i];
+        case MDLIndexBitDepthUInt32:
+            return ((const uint32_t *)base)[i];
+        default:
+            // Older MDLAssets sometimes report bit depth invalid; fall
+            // back to UInt32 which is the most common.
+            return ((const uint32_t *)base)[i];
+    }
+}
+
+/// Resolve the file path of a submesh's base-color texture, or "" if no
+/// such texture is present.
+std::string baseColorTexturePath(MDLSubmesh *submesh, NSURL *assetURL) {
+    MDLMaterial *mat = submesh.material;
+    if (mat == nil) return "";
+    MDLMaterialProperty *prop = [mat propertyWithSemantic:MDLMaterialSemanticBaseColor];
+    if (prop == nil) return "";
+    if (prop.type == MDLMaterialPropertyTypeString) {
+        // Relative or absolute path string.
+        NSString *s = prop.stringValue;
+        if (s == nil) return "";
+        NSURL *resolved = [NSURL URLWithString:s relativeToURL:assetURL];
+        return resolved.path != nil ? std::string(resolved.path.UTF8String) : std::string(s.UTF8String);
+    }
+    if (prop.type == MDLMaterialPropertyTypeURL) {
+        NSURL *u = prop.URLValue;
+        return u != nil ? std::string(u.path.UTF8String) : "";
+    }
+    if (prop.type == MDLMaterialPropertyTypeTexture) {
+        // Texture is embedded; v1 doesn't support pulling out raw image
+        // bytes via TextureAsset (which is path-based). Skip — caller
+        // can attach a texture manually.
+        return "";
+    }
+    return "";
+}
+
+class GEMetalMeshAsset : public GEMeshAsset {
+    SharedHandle<OmegaGraphicsEngine> engine;
+    SharedHandle<GEMesh> loadedMesh;
+    std::vector<SharedHandle<GETextureAsset>> loadedTextures;
+
+public:
+    explicit GEMetalMeshAsset(SharedHandle<OmegaGraphicsEngine> & e) : engine(e) {}
+
+    bool load(const std::string & path, const LoadOptions & options) override {
+        if (engine == nullptr) {
+            std::cerr << "[GEMeshAsset/Metal] error: no engine bound." << std::endl;
+            return false;
+        }
+        if ((options.desiredDescriptor.attributes & GEMeshAttrPosition) == 0) {
+            std::cerr << "[GEMeshAsset/Metal] error: desired descriptor must include Position." << std::endl;
+            return false;
+        }
+        if (options.desiredDescriptor.indexType != GEMeshIndexType::None) {
+            std::cerr << "[GEMeshAsset/Metal] error: indexed output not supported in Phase 3 v1." << std::endl;
+            return false;
+        }
+
+        const uint32_t attrs = options.desiredDescriptor.attributes;
+        const size_t stride = geMeshStrideFor(attrs);
+        if (stride == 0) {
+            std::cerr << "[GEMeshAsset/Metal] error: empty vertex layout." << std::endl;
+            return false;
+        }
+
+        @autoreleasepool {
+            id<MTLDevice> device = (__bridge id<MTLDevice>)engine->underlyingNativeDevice();
+            if (device == nil) {
+                std::cerr << "[GEMeshAsset/Metal] error: native device is nil." << std::endl;
+                return false;
+            }
+
+            NSString *nsPath = [[NSString alloc] initWithUTF8String:path.c_str()];
+            NSURL *url = [NSURL fileURLWithPath:nsPath];
+            if (![[NSFileManager defaultManager] fileExistsAtPath:nsPath]) {
+                std::cerr << "[GEMeshAsset/Metal] error: file not found: "
+                          << path << std::endl;
+                return false;
+            }
+
+            // No vertex descriptor → MDLAsset preserves the source's
+            // native layout. We do our own packing afterwards so the
+            // output matches GEMeshDescriptor exactly.
+            MDLAsset *asset = [[MDLAsset alloc] initWithURL:url
+                                           vertexDescriptor:nil
+                                            bufferAllocator:nil];
+            if (asset == nil) {
+                std::cerr << "[GEMeshAsset/Metal] error: MDLAsset failed to load: "
+                          << path << std::endl;
+                return false;
+            }
+
+            // Walk every MDLMesh in the asset and accumulate its
+            // submeshes' triangles into a single CPU-side packed
+            // vertex stream.
+            std::vector<float> packed;
+            packed.reserve(1024 * (stride / sizeof(float)));
+
+            // Track first base-color texture path encountered, if any.
+            std::string baseColorPath;
+
+            bool warnedAttachment = false;
+
+            NSUInteger topCount = [asset count];
+            for (NSUInteger objIdx = 0; objIdx < topCount; ++objIdx) {
+                MDLObject *obj = [asset objectAtIndex:objIdx];
+                MDLMesh *mesh = nil;
+                if ([obj isKindOfClass:[MDLMesh class]]) {
+                    mesh = (MDLMesh *)obj;
+                } else {
+                    // Skip non-mesh objects (lights, cameras, etc.).
+                    continue;
+                }
+
+                MDLVertexAttributeData *aPos = attrData(mesh, MDLVertexAttributePosition);
+                MDLVertexAttributeData *aUV  = attrData(mesh, MDLVertexAttributeTextureCoordinate);
+                MDLVertexAttributeData *aN   = attrData(mesh, MDLVertexAttributeNormal);
+                MDLVertexAttributeData *aC   = attrData(mesh, MDLVertexAttributeColor);
+
+                if (aPos == nil) {
+                    std::cerr << "[GEMeshAsset/Metal] warning: MDLMesh has no Position; skipped." << std::endl;
+                    continue;
+                }
+                if ((attrs & (GEMeshAttrUV2 | GEMeshAttrUV3 | GEMeshAttrNormal | GEMeshAttrColor)) != 0
+                    && aUV == nil && aN == nil && aC == nil && !warnedAttachment) {
+                    std::cerr << "[GEMeshAsset/Metal] warning: source mesh missing some "
+                                 "requested attributes; missing components are written as zeros." << std::endl;
+                    warnedAttachment = true;
+                }
+
+                NSArray<MDLSubmesh *> *submeshes = mesh.submeshes;
+                for (MDLSubmesh *sub in submeshes) {
+                    if (sub.geometryType != MDLGeometryTypeTriangles) {
+                        std::cerr << "[GEMeshAsset/Metal] warning: non-triangle submesh skipped." << std::endl;
+                        continue;
+                    }
+                    if (baseColorPath.empty()) {
+                        baseColorPath = baseColorTexturePath(sub, url);
+                    }
+
+                    NSUInteger indexCount = sub.indexCount;
+                    for (NSUInteger i = 0; i < indexCount; ++i) {
+                        uint32_t idx = readIndex(sub, i);
+
+                        if (attrs & GEMeshAttrPosition) {
+                            float p[3];
+                            readFloats(aPos, idx, 3, p);
+                            packed.push_back(p[0]);
+                            packed.push_back(p[1]);
+                            packed.push_back(p[2]);
+                        }
+                        if (attrs & GEMeshAttrUV2) {
+                            float uv[2];
+                            readFloats(aUV, idx, 2, uv);
+                            packed.push_back(uv[0]);
+                            packed.push_back(uv[1]);
+                        }
+                        if (attrs & GEMeshAttrUV3) {
+                            float uv[3];
+                            readFloats(aUV, idx, 3, uv);
+                            packed.push_back(uv[0]);
+                            packed.push_back(uv[1]);
+                            packed.push_back(uv[2]);
+                        }
+                        if (attrs & GEMeshAttrNormal) {
+                            float n[3];
+                            readFloats(aN, idx, 3, n);
+                            packed.push_back(n[0]);
+                            packed.push_back(n[1]);
+                            packed.push_back(n[2]);
+                        }
+                        if (attrs & GEMeshAttrColor) {
+                            float c[4] = {1.f, 1.f, 1.f, 1.f};
+                            // If the source has color, overwrite default white.
+                            if (aC != nil) {
+                                readFloats(aC, idx, 4, c);
+                            }
+                            packed.push_back(c[0]);
+                            packed.push_back(c[1]);
+                            packed.push_back(c[2]);
+                            packed.push_back(c[3]);
+                        }
+                    }
+                }
+            }
+
+            const unsigned vertexCount = (unsigned)(packed.size() * sizeof(float) / stride);
+            if (vertexCount == 0) {
+                std::cerr << "[GEMeshAsset/Metal] error: no triangles produced from "
+                          << path << std::endl;
+                return false;
+            }
+
+            // Allocate GPU-visible buffer and copy via GEBufferWriter so
+            // we go through the project's standard upload path.
+            BufferDescriptor bdesc;
+            bdesc.usage = BufferDescriptor::Upload;
+            bdesc.len = (size_t)vertexCount * stride;
+            bdesc.objectStride = stride;
+            bdesc.opts = Shared;
+            SharedHandle<GEBuffer> vbuf = engine->makeBuffer(bdesc);
+            if (!vbuf) {
+                std::cerr << "[GEMeshAsset/Metal] error: makeBuffer failed." << std::endl;
+                return false;
+            }
+
+            // Direct memcpy via the underlying MTLBuffer contents — same
+            // path GEBufferWriter eventually takes. We have a packed
+            // float array that already matches the buffer layout, so a
+            // single copy is faster and clearer than driving the writer
+            // attribute-by-attribute.
+            id<MTLBuffer> mtlBuf = (__bridge id<MTLBuffer>)vbuf->native();
+            if (mtlBuf == nil) {
+                std::cerr << "[GEMeshAsset/Metal] error: native buffer is nil." << std::endl;
+                return false;
+            }
+            std::memcpy(mtlBuf.contents, packed.data(), packed.size() * sizeof(float));
+
+            auto m = std::make_shared<GEMesh>();
+            m->vertexBuffer = vbuf;
+            m->vertexCount = vertexCount;
+            m->vertexStride = stride;
+            m->descriptor = options.desiredDescriptor;
+
+            // Resolve material textures into TextureAsset and wire into
+            // GEMesh.textureBindings.
+            if (options.loadMaterialTextures && !baseColorPath.empty()) {
+                auto texAsset = GETextureAsset::Create(engine);
+                GETextureAsset::LoadOptions topts;
+                topts.generateMipmaps = true;
+                topts.sRGB = true;
+                if (texAsset->load(baseColorPath, topts)) {
+                    auto tex = texAsset->texture();
+                    if (tex) {
+                        m->textureBindings[options.baseColorSlot] = tex;
+                    }
+                    loadedTextures.push_back(texAsset);
+                } else {
+                    std::cerr << "[GEMeshAsset/Metal] warning: base-color texture '"
+                              << baseColorPath << "' failed to load." << std::endl;
+                }
+            }
+
+            loadedMesh = m;
+        }
+        return true;
+    }
+
+    SharedHandle<GEMesh> mesh() const override { return loadedMesh; }
+
+    std::vector<SharedHandle<GETextureAsset>> textureAssets() const override {
+        return loadedTextures;
+    }
+
+    void release() override {
+        loadedMesh.reset();
+        loadedTextures.clear();
+    }
+};
+
+}  // namespace
+
+SharedHandle<GEMeshAsset> GEMeshAsset::Create(SharedHandle<OmegaGraphicsEngine> & engine) {
+    return SharedHandle<GEMeshAsset>(new GEMetalMeshAsset(engine));
+}
+
+_NAMESPACE_END_

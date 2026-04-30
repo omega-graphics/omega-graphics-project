@@ -80,65 +80,105 @@ In addition, provide a **TextureAsset** class for high-level texture loading (fr
 
 ---
 
-## Phase 3: Asset Loading (TextureAsset and MeshAsset)
+## Phase 3: Asset Loading (TextureAsset and MeshAsset) — Apple/Metal first
 
-### 3.1 TextureAsset class
+Phase 3 lands the public asset API and a working **Metal** implementation on
+macOS/iOS. The Windows (D3D12) and Linux/Android (Vulkan) implementations are
+deferred to Phase 3.4 so the API can be exercised on the platform that is
+currently buildable, without writing two backends blind. The headers expose
+the full API; non-Metal builds compile a stub that throws "not implemented"
+until 3.4 lands.
 
-Introduce a **TextureAsset** class that handles loading textures from common image and container formats (PNG, JPEG, HDR, DDS, KTX, etc.) and uploading them into a `GETexture`. The public API is backend-agnostic; the implementation delegates to a platform-native library for decoding, mip generation, and format conversion.
+### 3.1 TextureAsset class — Metal impl
+
+Introduce a **TextureAsset** class that handles loading textures from common
+image and container formats and uploading them into a `GETexture`. The public
+API is backend-agnostic; the implementation delegates to a platform-native
+library for decoding, mip generation, and format conversion.
 
 ```
 TextureAsset
 ├── load(path)          → decode image, create GETexture, upload
-├── loadAsync(path)     → non-blocking variant
+├── loadAsync(path)     → non-blocking variant (std::future)
 ├── texture()           → SharedHandle<GETexture>
 ├── descriptor()        → TextureDescriptor (dimensions, format, mips)
 └── release()           → free GPU + CPU resources
 ```
 
-**Backend libraries:**
+**Metal backend (this phase):** **MetalKit** (`MTKTextureLoader`) loads PNG,
+JPEG, TIFF, BMP, HDR, KTX, PVR, and ASTC and returns an `MTLTexture` directly.
+The Metal `TextureAsset` wraps that texture in a `GEMetalTexture` so the rest
+of the engine sees a normal `SharedHandle<GETexture>`. Mip generation and
+sRGB handling come from `MTKTextureLoader` options.
 
-| Platform | Library | Notes |
-|----------|---------|-------|
-| **Windows (D3D12)** | **DirectXTex** | Loads DDS, WIC formats (PNG, JPEG, TIFF, BMP, HDR), generates mipmaps, handles BC compression, converts to DXGI formats. |
-| **macOS / iOS (Metal)** | **MetalKit** (`MTKTextureLoader`) | Loads common image formats plus KTX/PVR/ASTC via `MTKTextureLoader`, returns `MTLTexture` directly. Handles mip generation and sRGB. |
-| **Linux / Android (Vulkan)** | **KTX-Software** (libktx) | Loads KTX and KTX2 containers (which can wrap any Vulkan format including BC, ETC2, ASTC). For plain image formats (PNG, JPEG), a lightweight decoder (stb_image or similar) feeds raw pixels into `GETexture::copyBytes`. |
+**Files (this phase):**
+- new `gte/include/omegaGTE/GETextureAsset.h`
+- new `gte/src/metal/GEMetalTextureAsset.mm`
+- new stubs `gte/src/d3d12/GED3D12TextureAsset.cpp` and
+  `gte/src/vulkan/GEVulkanTextureAsset.cpp` that throw on `load` until 3.4.
 
-**Files**: new `gte/include/omegaGTE/GETextureAsset.h`, and per-backend implementations:
-- `gte/src/d3d12/GED3D12TextureAsset.cpp`
-- `gte/src/metal/GEMetalTextureAsset.mm`
-- `gte/src/vulkan/GEVulkanTextureAsset.cpp`
+### 3.2 MeshAsset class — Metal impl
 
-### 3.2 MeshAsset class
-
-Introduce a **MeshAsset** class that loads mesh data from standard 3D model formats and produces a **GEMesh**. Like TextureAsset, the public API is backend-agnostic.
+Introduce a **MeshAsset** class that loads mesh data from standard 3D model
+formats and produces a **GEMesh**. Like TextureAsset, the public API is
+backend-agnostic.
 
 ```
 MeshAsset
 ├── load(path)          → decode mesh, create GEMesh (vertex + index buffers)
-├── loadAsync(path)     → non-blocking variant
-├── mesh()              → GEMesh (vertex buffer, index buffer, layout)
-├── textureAssets()     → associated TextureAssets (if embedded/referenced)
+├── loadAsync(path)     → non-blocking variant (std::future)
+├── mesh()              → SharedHandle<GEMesh>
+├── textureAssets()     → vector<SharedHandle<TextureAsset>> for embedded/referenced textures
 └── release()           → free GPU + CPU resources
 ```
 
-**Backend libraries:**
+**Metal backend (this phase):** **Model I/O** (`MDLAsset`) plus **MetalKit**
+(`MTKMesh`) loads **OBJ**, **glTF 2.0**, USD, and Alembic out of the box and
+produces Metal vertex/index buffers directly. The Metal `MeshAsset` walks
+the loaded `MDLAsset`, builds a `GEMesh` whose vertex buffer follows the
+project's `GEMeshDescriptor` attribute order (Position → UV2 → Normal → Color),
+and resolves any material base-color textures to per-mesh `TextureAsset`s.
 
-| Platform | Library | Notes |
-|----------|---------|-------|
-| **Windows (D3D12)** | **DirectXMesh** | Provides mesh optimization (vertex cache, overdraw), adjacency computation, normal/tangent generation, and vertex buffer format conversion. Mesh parsing (OBJ, glTF, etc.) still needs a loader front-end (e.g. Assimp or a minimal glTF parser) that feeds geometry to DirectXMesh for processing before GPU upload. |
-| **macOS / iOS (Metal)** | **MetalKit** (`MTKMesh` / Model I/O) | `MDLAsset` + `MTKMesh` loads OBJ, USD, Alembic, and glTF. Produces Metal vertex/index buffers directly with configurable vertex descriptors. Handles submeshes and material references. |
-| **Linux / Android (Vulkan)** | **Custom code** | No single platform-native mesh library equivalent. Use a loader front-end (e.g. a minimal glTF parser or Assimp) to parse geometry, then write vertex/index data into `GEBuffer` via `GEBufferWriter`. Vertex optimization (cache reordering, etc.) can be handled by meshoptimizer or equivalent if needed. |
-
-**Files**: new `gte/include/omegaGTE/GEMeshAsset.h`, and per-backend implementations:
-- `gte/src/d3d12/GED3D12MeshAsset.cpp`
-- `gte/src/metal/GEMetalMeshAsset.mm`
-- `gte/src/vulkan/GEVulkanMeshAsset.cpp`
+**Files (this phase):**
+- new `gte/include/omegaGTE/GEMeshAsset.h`
+- new `gte/src/metal/GEMetalMeshAsset.mm`
+- new stubs `gte/src/d3d12/GED3D12MeshAsset.cpp` and
+  `gte/src/vulkan/GEVulkanMeshAsset.cpp` that throw on `load` until 3.4.
 
 ### 3.3 Asset integration with GEMesh and triangulation
 
-- **GEMesh from MeshAsset**: `MeshAsset::mesh()` returns a fully populated `GEMesh` with vertex/index buffers and layout — the same type produced by the triangulation builder in Phase 2.2. Rendering code does not need to distinguish between a triangulated mesh and a loaded mesh.
-- **TextureAsset in GEMesh bindings**: When a MeshAsset references textures (e.g. a glTF material's base color texture), the loader creates `TextureAsset` instances and stores them in the GEMesh's texture bindings map. A `TextureAsset` loaded standalone can also be attached to a triangulated GEMesh via the texture bindings API.
-- **Lifetime**: Asset objects own their GPU resources. Releasing an asset releases its textures/buffers. GEMesh texture bindings use `SharedHandle`, so a texture stays alive as long as any mesh or user code holds a reference.
+- **GEMesh from MeshAsset**: `MeshAsset::mesh()` returns a fully populated
+  `GEMesh` with vertex/index buffers and layout — the same type produced by
+  the triangulation builder in Phase 2.2. Rendering code does not distinguish
+  between a triangulated mesh and a loaded mesh.
+- **TextureAsset in GEMesh bindings**: When a MeshAsset references textures
+  (e.g. a glTF material's base color texture), the loader creates
+  `TextureAsset` instances and stores their `SharedHandle<GETexture>` in
+  `GEMesh::textureBindings` keyed by the project-standard slot ids
+  (slot 0 = base color in this phase). A `TextureAsset` loaded standalone
+  can be attached to a triangulated `GEMesh` by writing into
+  `mesh->textureBindings` directly.
+- **Lifetime**: `SharedHandle<GETexture>` keeps the texture alive as long as
+  any mesh or user code holds a reference. `release()` is provided as an
+  explicit early-free hook but is not required — destruction handles it.
+
+### 3.4 D3D12 and Vulkan implementations — deferred
+
+Land the same `TextureAsset` and `MeshAsset` public API on the remaining
+backends.
+
+| Platform | Library | Notes |
+|----------|---------|-------|
+| **Windows (D3D12)** | **DirectXTex** + **DirectXMesh** | DirectXTex loads DDS and WIC formats (PNG/JPEG/TIFF/BMP/HDR), generates mipmaps, handles BC compression. DirectXMesh provides cache/adjacency optimization and normal/tangent generation. Both are already declared in `gte/AUTOMDEPS` for the Windows platform. Mesh parsing still requires a glTF/OBJ front-end — the candidates are `cgltf` (single-header, glTF 2.0) and a small in-house OBJ parser. |
+| **Linux / Android (Vulkan)** | **KTX-Software** + **stb_image** + **cgltf** | libktx for KTX/KTX2 (any Vulkan format including BC/ETC2/ASTC), `stb_image` for PNG/JPEG into `GETexture::copyBytes`, `cgltf` for glTF 2.0 plus an OBJ parser for OBJ. These libraries need to be added to `gte/AUTOMDEPS` for the `linux` and `android` platforms when this phase is picked up. |
+
+**Files (this phase):**
+- replace stubs `gte/src/d3d12/GED3D12TextureAsset.cpp`,
+  `gte/src/d3d12/GED3D12MeshAsset.cpp`,
+  `gte/src/vulkan/GEVulkanTextureAsset.cpp`,
+  `gte/src/vulkan/GEVulkanMeshAsset.cpp` with real implementations.
+- update `gte/AUTOMDEPS` with `cgltf`, `stb_image`, and `libktx` entries
+  for Linux/Android. Windows entries are already present.
 
 ---
 
@@ -164,10 +204,11 @@ MeshAsset
 2. **Phase 1.3**: Optional normals in AttachmentData and fill for 3D primitives.
 3. **Phase 2.1–2.2**: GEMesh type, descriptor, and builder from TETriangulationResult (backend-neutral buffer creation).
 4. **Phase 2.3**: Command encoding support to draw a GEMesh and bind its textures.
-5. **Phase 3.1**: TextureAsset — D3D12 (DirectXTex), Metal (MetalKit), Vulkan (KTX-Software).
-6. **Phase 3.2**: MeshAsset — D3D12 (DirectXMesh), Metal (MetalKit/Model I/O), Vulkan (custom).
-7. **Phase 3.3**: Wire asset outputs into GEMesh bindings.
-8. **Phase 4**: Tests and documentation.
+5. **Phase 3.1**: TextureAsset — Metal (MetalKit) impl + stubs on D3D12/Vulkan.
+6. **Phase 3.2**: MeshAsset — Metal (Model I/O / MTKMesh) impl + stubs on D3D12/Vulkan.
+7. **Phase 3.3**: Wire MeshAsset outputs into GEMesh bindings.
+8. **Phase 3.4 (deferred)**: D3D12 (DirectXTex / DirectXMesh) and Vulkan (libktx / stb_image / cgltf) implementations.
+9. **Phase 4**: Tests and documentation.
 
 ---
 

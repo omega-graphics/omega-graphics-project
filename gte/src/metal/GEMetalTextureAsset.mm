@@ -1,0 +1,125 @@
+#include "omegaGTE/GETextureAsset.h"
+#include "GEMetal.h"
+#include "GEMetalTexture.h"
+
+#import <Metal/Metal.h>
+#import <MetalKit/MetalKit.h>
+#import <Foundation/Foundation.h>
+
+#include <iostream>
+
+_NAMESPACE_BEGIN_
+
+namespace {
+
+/// Map an `MTLPixelFormat` produced by `MTKTextureLoader` back to the
+/// engine-side `TexturePixelFormat`. We only enumerate the formats the
+/// engine knows about; anything else is reported as `RGBA8Unorm` and a
+/// warning is logged so the caller can see the format was lossy.
+TexturePixelFormat mapMetalPixelFormat(MTLPixelFormat fmt) {
+    switch (fmt) {
+        case MTLPixelFormatRGBA8Unorm:      return TexturePixelFormat::RGBA8Unorm;
+        case MTLPixelFormatRGBA8Unorm_sRGB: return TexturePixelFormat::RGBA8Unorm_SRGB;
+        case MTLPixelFormatBGRA8Unorm:      return TexturePixelFormat::BGRA8Unorm;
+        case MTLPixelFormatBGRA8Unorm_sRGB: return TexturePixelFormat::BGRA8Unorm_SRGB;
+        case MTLPixelFormatRGBA16Unorm:     return TexturePixelFormat::RGBA16Unorm;
+        default:
+            std::cerr << "[GETextureAsset/Metal] warning: MTLPixelFormat "
+                      << (int)fmt << " not modeled in TexturePixelFormat; "
+                         "reporting RGBA8Unorm." << std::endl;
+            return TexturePixelFormat::RGBA8Unorm;
+    }
+}
+
+class GEMetalTextureAsset : public GETextureAsset {
+    SharedHandle<OmegaGraphicsEngine> engine;
+    SharedHandle<GETexture> loadedTexture;
+    TextureDescriptor loadedDescriptor{};
+
+public:
+    explicit GEMetalTextureAsset(SharedHandle<OmegaGraphicsEngine> & e)
+        : engine(e) {}
+
+    bool load(const std::string & path, const LoadOptions & options) override {
+        if (engine == nullptr) {
+            std::cerr << "[GETextureAsset/Metal] error: no engine bound." << std::endl;
+            return false;
+        }
+        @autoreleasepool {
+            id<MTLDevice> device = (__bridge id<MTLDevice>)engine->underlyingNativeDevice();
+            if (device == nil) {
+                std::cerr << "[GETextureAsset/Metal] error: native device is nil." << std::endl;
+                return false;
+            }
+
+            MTKTextureLoader *loader = [[MTKTextureLoader alloc] initWithDevice:device];
+
+            NSString *nsPath = [[NSString alloc] initWithUTF8String:path.c_str()];
+            NSURL *url = [NSURL fileURLWithPath:nsPath];
+
+            NSMutableDictionary<MTKTextureLoaderOption, id> *opts = [NSMutableDictionary dictionary];
+            opts[MTKTextureLoaderOptionGenerateMipmaps] = @(options.generateMipmaps);
+            opts[MTKTextureLoaderOptionSRGB] = @(options.sRGB);
+            opts[MTKTextureLoaderOptionTextureUsage] = @(MTLTextureUsageShaderRead);
+            opts[MTKTextureLoaderOptionTextureStorageMode] = @(MTLStorageModePrivate);
+
+            NSError *error = nil;
+            id<MTLTexture> mtlTex = [loader newTextureWithContentsOfURL:url
+                                                                options:opts
+                                                                  error:&error];
+            if (mtlTex == nil || error != nil) {
+                std::cerr << "[GETextureAsset/Metal] error: failed to load '"
+                          << path << "': "
+                          << (error != nil ? error.localizedDescription.UTF8String : "unknown")
+                          << std::endl;
+                return false;
+            }
+
+            // Determine GETexture type from the MTLTextureType.
+            GETexture::GETextureType type = GETexture::Texture2D;
+            switch (mtlTex.textureType) {
+                case MTLTextureType1D: type = GETexture::Texture1D; break;
+                case MTLTextureType3D: type = GETexture::Texture3D; break;
+                default:               type = GETexture::Texture2D; break;
+            }
+
+            TexturePixelFormat fmt = mapMetalPixelFormat(mtlTex.pixelFormat);
+
+            NSSmartPtr texPtr = NSObjectHandle{NSOBJECT_CPP_BRIDGE mtlTex};
+            loadedTexture = SharedHandle<GETexture>(
+                new GEMetalTexture(type, GETexture::ToGPU, fmt, texPtr));
+
+            loadedDescriptor = TextureDescriptor{};
+            loadedDescriptor.type = type;
+            loadedDescriptor.usage = GETexture::ToGPU;
+            loadedDescriptor.pixelFormat = fmt;
+            loadedDescriptor.width  = static_cast<unsigned>(mtlTex.width);
+            loadedDescriptor.height = static_cast<unsigned>(mtlTex.height);
+            loadedDescriptor.depth  = static_cast<unsigned>(mtlTex.depth);
+            loadedDescriptor.mipLevels = static_cast<unsigned>(mtlTex.mipmapLevelCount);
+            loadedDescriptor.sampleCount = static_cast<unsigned>(mtlTex.sampleCount);
+        }
+        return true;
+    }
+
+    SharedHandle<GETexture> texture() const override {
+        return loadedTexture;
+    }
+
+    TextureDescriptor descriptor() const override {
+        return loadedDescriptor;
+    }
+
+    void release() override {
+        loadedTexture.reset();
+        loadedDescriptor = TextureDescriptor{};
+    }
+};
+
+}  // namespace
+
+SharedHandle<GETextureAsset> GETextureAsset::Create(SharedHandle<OmegaGraphicsEngine> & engine) {
+    return SharedHandle<GETextureAsset>(new GEMetalTextureAsset(engine));
+}
+
+_NAMESPACE_END_

@@ -1,16 +1,421 @@
 #include "Target.h"
 #include "AST.h"
 #include "CodeGen.h"
+#include <fstream>
 #include <ostream>
+#include <sstream>
+#include <unordered_set>
+#include <string>
 
 namespace omegasl {
 
-    MSLTarget::MSLTarget() : Target(Target::MSL) {}
+#ifdef TARGET_METAL
+    void compileMTLShader(void *mtl_device, unsigned length, const char *string, void **pDest);
+#endif
+
+    MSLTarget::MSLTarget(MetalCodeOpts &opts) : Target(Target::MSL), opts(opts) {}
     MSLTarget::~MSLTarget() = default;
 
+    const char *MSLTarget::shaderFileExt(ast::ShaderDecl::Type /*stage*/) const {
+        return ".metal";
+    }
+
+    bool MSLTarget::supportsStage(ast::ShaderDecl::Type stage,
+                                  std::string &diagnosticOut) const {
+        /// Metal has no direct hull-shader equivalent and the runtime has
+        /// no tessellation pipeline plumbing yet. Reject hull/domain
+        /// stages cleanly here so the shared SHADER_DECL handler aborts
+        /// before opening the source file. See OmegaSL-Reference.md bug 3.
+        if (stage == ast::ShaderDecl::Hull || stage == ast::ShaderDecl::Domain) {
+            const char *kind = (stage == ast::ShaderDecl::Hull) ? "hull" : "domain";
+            std::ostringstream ss;
+            ss << "Metal backend does not support `" << kind
+               << "` shaders. Tessellation on Metal requires a compute kernel for "
+                  "patch factors plus a post-tessellation vertex stage; this is not "
+                  "implemented yet (see OmegaSL-Reference.md bug 3).";
+            diagnosticOut = ss.str();
+            return false;
+        }
+        return true;
+    }
+
+    bool MSLTarget::compileShader(ast::ShaderDecl::Type stage,
+                                  OmegaCommon::StrRef name,
+                                  const OmegaCommon::FS::Path &srcDir,
+                                  const OmegaCommon::FS::Path &outDir) {
+        (void)stage;
+        auto object_file = OmegaCommon::FS::Path(outDir).append(name).concat(".metallib").absPath();
+
+        std::ostringstream out;
+        out << "  -o " << object_file.c_str() << " "
+            << OmegaCommon::FS::Path(srcDir).append(name).concat(shaderFileExt(stage)).absPath();
+
+        auto metal_process = OmegaCommon::ChildProcess::OpenWithStdoutPipe(opts.metal_cmd, out.str().c_str());
+        auto res = metal_process.wait();
+
+        if (res != 0) {
+            std::cerr << "error: metal compiler failed (exit " << res << ") for shader '"
+                      << name.data() << "'" << std::endl;
+            return false;
+        }
+        return true;
+    }
+
+    void MSLTarget::compileShaderRuntime(ast::ShaderDecl::Type /*stage*/,
+                                         OmegaCommon::StrRef name,
+                                         const std::string &source,
+                                         omegasl_shader &meta) {
+#ifdef TARGET_METAL
+        if (opts.mtl_device == nullptr) {
+            return;
+        }
+        OmegaCommon::String shaderName{name.begin(), name.end()};
+        {
+            std::ofstream dump("/tmp/OmegaSL-" + shaderName + ".metal", std::ios::out | std::ios::trunc);
+            if (dump.is_open()) {
+                dump << source;
+                dump.close();
+            }
+        }
+        meta.data = nullptr;
+        compileMTLShader(opts.mtl_device, source.size(), source.data(), &meta.data);
+        if (meta.data == nullptr) {
+            std::cout << "Runtime compile produced no Metal library for `" << shaderName << "`" << std::endl;
+        }
+#else
+        (void)name;
+        (void)source;
+        (void)meta;
+#endif
+    }
+
+    /// Curated set of Metal stdlib identifiers that a user function name
+    /// would shadow. Names listed here trigger `osl_user_<name>` mangling.
+    /// Metal's `metal::` namespace is large (and growing) — we list the
+    /// common shape/math/sampling functions and grow on demand.
+    bool MSLTarget::needsMangling(OmegaCommon::StrRef name) const {
+        static const std::unordered_set<std::string> mslStdlib = {
+            "abs","acos","asin","atan","atan2","ceil","clamp","clip","cos",
+            "cosh","cross","ddx","ddy","degrees","determinant","distance",
+            "dot","exp","exp2","floor","fmod","fract","frexp","fwidth",
+            "isfinite","isinf","isnan","ldexp","length","log","log10","log2",
+            "max","min","mix","modf","normalize","pow","radians","reflect",
+            "refract","round","rsqrt","saturate","sign","sin","sinh",
+            "smoothstep","sqrt","step","tan","tanh","transpose","trunc",
+            "sample","read","write"
+        };
+        return mslStdlib.count(std::string(name)) > 0;
+    }
+
+    void MSLTarget::resetForNextShader() {
+        bufferCount = 0;
+        textureCount = 0;
+        samplerCount = 0;
+        paramIndex = 0;
+        staticSamplers.clear();
+    }
+
+    void MSLTarget::emitStaticPreamble(std::ostream &/*out*/) {
+        /// Phase 8d: static samplers are now flushed inside
+        /// `emitShaderEntryBody` (after the opening `{`) so the
+        /// in-function-body location matches the pre-Phase-8d byte
+        /// output. The shared `emitResourcesAndFillLayout` still calls
+        /// this hook after the resource loop; for MSL it must be a
+        /// no-op because we are mid-parameter-list at that point.
+    }
+
+    void MSLTarget::emitResourceBinding(CodeGen &cg,
+                                        ast::ResourceDecl *res_desc,
+                                        ast::ShaderDecl */*shader*/,
+                                        omegasl_shader_layout_desc_io_mode ioMode,
+                                        std::ostream &out,
+                                        omegasl_shader_layout_desc &layoutDesc) {
+        using namespace ast;
+        auto type_ = cg.typeResolver->resolveTypeWithExpr(res_desc->typeExpr);
+
+        if (paramIndex != 0 && !res_desc->isStatic) {
+            out << ",";
+        }
+
+        if (type_ == builtins::buffer_type) {
+            if (ioMode == OMEGASL_SHADER_DESC_IO_IN) {
+                out << "constant ";
+            } else {
+                out << "device ";
+            }
+        }
+
+        omegasl_shader_layout_desc_type layoutDescType = OMEGASL_SHADER_BUFFER_DESC;
+        bool isTexture = false, isBuffer = false, isSampler = false;
+
+        auto writeSampler = [&]() {
+            std::ostringstream s;
+            s << "constexpr sampler " << res_desc->name << " = sampler(filter::";
+            switch (res_desc->staticSamplerDesc->filter) {
+                case OMEGASL_SHADER_SAMPLER_LINEAR_FILTER:                  s << "linear";  break;
+                case OMEGASL_SHADER_SAMPLER_POINT_FILTER:                   s << "nearest"; break;
+                case OMEGASL_SHADER_SAMPLER_MAX_ANISOTROPY_FILTER:
+                case OMEGASL_SHADER_SAMPLER_MIN_ANISOTROPY_FILTER:          s << "linear";  break;
+            }
+            s << ",address::";
+            switch (res_desc->staticSamplerDesc->uAddressMode) {
+                case OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_WRAP:        s << "repeat";          break;
+                case OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_MIRROR:      s << "mirrored_repeat"; break;
+                case OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_MIRRORWRAP:  s << "mirrored_repeat"; break;
+                case OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_CLAMPTOEDGE: s << "clamp_to_edge";   break;
+            }
+            s << ");" << std::endl;
+            staticSamplers.push_back(s.str());
+        };
+
+        if (type_ == builtins::buffer_type) {
+            isBuffer = true;
+            writeTypeName(cg.typeResolver->resolveTypeWithExpr(res_desc->typeExpr->args[0]),
+                          res_desc->typeExpr->args[0]->pointer, out);
+            out << " *";
+            layoutDescType = OMEGASL_SHADER_BUFFER_DESC;
+        } else if (type_ == builtins::texture1d_type) {
+            isTexture = true;
+            out << "texture1d<float,";
+            layoutDescType = OMEGASL_SHADER_TEXTURE1D_DESC;
+        } else if (type_ == builtins::texture2d_type) {
+            isTexture = true;
+            out << "texture2d<float,";
+            layoutDescType = OMEGASL_SHADER_TEXTURE2D_DESC;
+        } else if (type_ == builtins::texture3d_type) {
+            isTexture = true;
+            out << "texture3d<float,";
+            layoutDescType = OMEGASL_SHADER_TEXTURE3D_DESC;
+        } else if (type_ == builtins::sampler1d_type) {
+            isSampler = true;
+            if (res_desc->isStatic) {
+                layoutDescType = OMEGASL_SHADER_STATIC_SAMPLER1D_DESC;
+                writeSampler();
+            } else {
+                layoutDescType = OMEGASL_SHADER_SAMPLER1D_DESC;
+            }
+        } else if (type_ == builtins::sampler2d_type) {
+            isSampler = true;
+            if (res_desc->isStatic) {
+                layoutDescType = OMEGASL_SHADER_STATIC_SAMPLER2D_DESC;
+                writeSampler();
+            } else {
+                layoutDescType = OMEGASL_SHADER_SAMPLER2D_DESC;
+            }
+        } else if (type_ == builtins::sampler3d_type) {
+            isSampler = true;
+            if (res_desc->isStatic) {
+                layoutDescType = OMEGASL_SHADER_STATIC_SAMPLER3D_DESC;
+                writeSampler();
+            } else {
+                out << "sampler";
+                layoutDescType = OMEGASL_SHADER_SAMPLER3D_DESC;
+            }
+            /// Bug-compat: the original MSL code path for sampler3d
+            /// `continue`s here, skipping the `[[sampler(N)]]` attribute,
+            /// the layout fill, and the paramIndex++. Preserve verbatim
+            /// so this phase is a pure code-move; the bug is tracked
+            /// separately.
+            layoutDesc.type = layoutDescType;
+            layoutDesc.gpu_relative_loc = 0;
+            layoutDesc.io_mode = ioMode;
+            layoutDesc.location = res_desc->registerNumber;
+            return;
+        }
+
+        if (isTexture) {
+            if (ioMode == OMEGASL_SHADER_DESC_IO_IN) {
+                out << "access::sample>";
+            } else if (ioMode == OMEGASL_SHADER_DESC_IO_INOUT) {
+                out << "access::readwrite>";
+            } else {
+                out << "access::write>";
+            }
+        }
+
+        if (!res_desc->isStatic) {
+            out << " " << res_desc->name;
+        }
+
+        unsigned binding = 0;
+        if (isTexture) {
+            binding = textureCount;
+        } else if (isBuffer) {
+            binding = bufferCount;
+        } else if (isSampler) {
+            binding = samplerCount;
+        }
+
+        layoutDesc.type = layoutDescType;
+        layoutDesc.gpu_relative_loc = binding;
+        layoutDesc.io_mode = ioMode;
+        layoutDesc.location = res_desc->registerNumber;
+
+        if (isTexture) {
+            out << "[[texture(" << textureCount << ")]]";
+            ++textureCount;
+        } else if (isBuffer) {
+            out << "[[buffer(" << bufferCount << ")]]";
+            ++bufferCount;
+        } else if (isSampler && !res_desc->isStatic) {
+            out << "[[sampler(" << samplerCount << ")]]";
+            ++samplerCount;
+        }
+
+        ++paramIndex;
+    }
+
+    void MSLTarget::emitShaderEntryHeader(CodeGen &cg,
+                                          ast::ShaderDecl *_decl,
+                                          omegasl_shader &shadermap_entry,
+                                          std::ostream &out) {
+        cg.indentLevel = 0;
+
+        shadermap_entry.name = new char[_decl->name.size() + 1];
+        std::copy(_decl->name.begin(), _decl->name.end(), (char *)shadermap_entry.name);
+        ((char *)shadermap_entry.name)[_decl->name.size()] = '\0';
+
+        if (_decl->shaderType == ast::ShaderDecl::Vertex) {
+            out << "vertex";
+            shadermap_entry.type = OMEGASL_SHADER_VERTEX;
+        } else if (_decl->shaderType == ast::ShaderDecl::Fragment) {
+            out << "fragment";
+            shadermap_entry.type = OMEGASL_SHADER_FRAGMENT;
+        } else if (_decl->shaderType == ast::ShaderDecl::Compute) {
+            out << "kernel";
+            shadermap_entry.type = OMEGASL_SHADER_COMPUTE;
+            shadermap_entry.threadgroupDesc.x = _decl->threadgroupDesc.x;
+            shadermap_entry.threadgroupDesc.y = _decl->threadgroupDesc.y;
+            shadermap_entry.threadgroupDesc.z = _decl->threadgroupDesc.z;
+        } else if (_decl->shaderType == ast::ShaderDecl::Hull) {
+            out << "kernel";
+            shadermap_entry.type = OMEGASL_SHADER_HULL;
+        } else if (_decl->shaderType == ast::ShaderDecl::Domain) {
+            auto &td = _decl->tessDesc;
+            out << "[[patch(" << (td.domain == ast::ShaderDecl::TessellationDesc::Triangle ? "triangle" : "quad")
+                << ", " << td.outputControlPoints << ")]] vertex";
+            shadermap_entry.type = OMEGASL_SHADER_DOMAIN;
+        }
+
+        out << " ";
+        writeTypeName(cg.typeResolver->resolveTypeWithExpr(_decl->returnType),
+                      _decl->returnType->pointer, out);
+        out << " " << _decl->name << " ";
+        out << "(";
+
+        /// Resources interleave with params inside the parameter list. The
+        /// shared helper drives `emitResourceBinding` (which tracks
+        /// `paramIndex` so it knows when to emit a leading comma) and
+        /// fills the per-binding layout descriptors. `emitStaticPreamble`
+        /// is a no-op for MSL — static-sampler `constexpr sampler` lines
+        /// gathered during resource emission are flushed in
+        /// `emitShaderEntryBody` after the opening `{`.
+        cg.emitResourcesAndFillLayout(_decl, shadermap_entry, out);
+
+        if (!(_decl->params.empty()) && !(_decl->resourceMap.empty())) {
+            out << ",";
+        }
+
+        for (auto p_it = _decl->params.begin(); p_it != _decl->params.end(); p_it++) {
+            if (p_it != _decl->params.begin()) {
+                out << ",";
+            }
+
+            auto &p = *p_it;
+
+            writeTypeName(cg.typeResolver->resolveTypeWithExpr(p.typeExpr),
+                          p.typeExpr->pointer, out);
+            out << " " << p.name << " ";
+
+            /// Only the rasterizer-struct param of a fragment carries
+            /// `[[stage_in]]`. Per-fragment scalar inputs (FrontFacing,
+            /// SampleIndex, ...) bring their own MSL attribute.
+            if (_decl->shaderType == ast::ShaderDecl::Fragment
+                && !p.attributeName.has_value()) {
+                out << "[[stage_in]]";
+            }
+
+            if (p.attributeName.has_value()) {
+                if (p.attributeName.value() == ATTRIBUTE_VERTEX_ID) {
+                    shadermap_entry.vertexShaderInputDesc.useVertexID = true;
+                } else if (p.attributeName.value() == ATTRIBUTE_GLOBALTHREAD_ID) {
+                    shadermap_entry.computeShaderParamsDesc.useGlobalThreadID = true;
+                } else if (p.attributeName.value() == ATTRIBUTE_THREADGROUP_ID) {
+                    shadermap_entry.computeShaderParamsDesc.useThreadGroupID = true;
+                }
+                out << "[[";
+                writeAttribute(p.attributeName.value(), p.attributeIndex, out);
+                out << "]]";
+            }
+        }
+        out << ")";
+    }
+
+    void MSLTarget::emitShaderEntryBody(CodeGen &cg,
+                                        ast::ShaderDecl *_decl,
+                                        omegasl_shader &/*meta*/,
+                                        std::ostream &out) {
+        out << "{" << std::endl;
+        /// Flush the static-sampler `constexpr sampler ... = sampler(...);`
+        /// lines that were gathered into `staticSamplers` during the
+        /// resource loop. The trailing blank line matches the
+        /// pre-Phase-8d byte output.
+        for (auto &ss : staticSamplers) {
+            out << ss;
+        }
+        out << std::endl;
+
+        cg.indentLevel += 1;
+        for (auto stmt : _decl->block->body) {
+            for (unsigned l = cg.indentLevel; l != 0; l--) {
+                out << "    ";
+            }
+            if (stmt->type == VAR_DECL || stmt->type == RETURN_DECL || stmt->type == IF_STMT
+                || stmt->type == FOR_STMT || stmt->type == WHILE_STMT || stmt->type == BREAK_STMT
+                || stmt->type == CONTINUE_STMT || stmt->type == DISCARD_STMT) {
+                cg.generateDecl((ast::Decl *)stmt);
+                if (stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT) {
+                    out << ";";
+                }
+                out << std::endl;
+            } else {
+                cg.generateExpr((ast::Expr *)stmt);
+                out << ";" << std::endl;
+            }
+        }
+        cg.indentLevel -= 1;
+        out << "}" << std::endl;
+    }
+
+    OmegaCommon::StrRef MSLTarget::discardStatement() { return "discard_fragment()"; }
+
+    void MSLTarget::writeCast(CodeGen &cg, ast::TypeExpr *t, std::ostream &out) {
+        writeTypeName(cg.typeResolver->resolveTypeWithExpr(t), t->pointer, out);
+    }
+
+    bool MSLTarget::supportsPointerExpr() const { return true; }
+
     OmegaCommon::StrRef MSLTarget::renameBuiltin(OmegaCommon::StrRef name) {
-        if(name == BUILTIN_LERP) return "mix";
-        if(name == BUILTIN_FRAC) return "fract";
+        if (name == BUILTIN_LERP) return "mix";
+        if (name == BUILTIN_FRAC) return "fract";
+        if (name == BUILTIN_MAKE_FLOAT2)   return "float2";
+        if (name == BUILTIN_MAKE_FLOAT3)   return "float3";
+        if (name == BUILTIN_MAKE_FLOAT4)   return "float4";
+        if (name == BUILTIN_MAKE_INT2)     return "int2";
+        if (name == BUILTIN_MAKE_INT3)     return "int3";
+        if (name == BUILTIN_MAKE_INT4)     return "int4";
+        if (name == BUILTIN_MAKE_UINT2)    return "uint2";
+        if (name == BUILTIN_MAKE_UINT3)    return "uint3";
+        if (name == BUILTIN_MAKE_UINT4)    return "uint4";
+        if (name == BUILTIN_MAKE_FLOAT2X2) return "float2x2";
+        if (name == BUILTIN_MAKE_FLOAT3X3) return "float3x3";
+        if (name == BUILTIN_MAKE_FLOAT4X4) return "float4x4";
+        if (name == BUILTIN_MAKE_FLOAT2X3) return "float2x3";
+        if (name == BUILTIN_MAKE_FLOAT2X4) return "float2x4";
+        if (name == BUILTIN_MAKE_FLOAT3X2) return "float3x2";
+        if (name == BUILTIN_MAKE_FLOAT3X4) return "float3x4";
+        if (name == BUILTIN_MAKE_FLOAT4X2) return "float4x2";
+        if (name == BUILTIN_MAKE_FLOAT4X3) return "float4x3";
         return name;
     }
 

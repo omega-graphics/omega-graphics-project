@@ -920,7 +920,7 @@ ANSWER: Vertex Input Layout should be baked at creation.
 
 2. **Blit pipeline vs. post-process pipeline**: The proposed `BlitPipeline` is essentially a specialized render pipeline with no vertex input. Should it be a distinct pipeline type, or should the render pipeline simply support a "no vertex buffer, full-screen triangle" mode? A distinct type is cleaner for the common case; collapsing into render is more flexible but adds API surface to the render path.
 
-ANSWER: Do the proposed BlitPipeline, but also add an API to the render path. (If people want more control.)
+ANSWER: Do the proposed BlitPipeline, but also add an API to the render path. (If people want more control in special cases.)
 
 3. **Mipmap generation shader**: D3D12 has no built-in mipmap generation. Should the engine ship an internal compute shader for this, or should it use the blit pipeline with a downsample fragment shader? Compute is more efficient (one dispatch per mip, no render pass overhead) but requires an internal OmegaSL compute shader compiled at build time.
 

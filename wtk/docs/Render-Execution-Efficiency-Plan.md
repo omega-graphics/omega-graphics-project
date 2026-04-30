@@ -968,7 +968,7 @@ after restart.
 
 ---
 
-(Phase 2 and 3 Shouldn't matter anymore because of Direct-To-Drawable-And-SDF-Plan.md)
+(Phase 2 and 3 will only apply to complex shapes/paths that need tessellation because of Direct-To-Drawable-And-SDF-Plan.md)
 
 ### Phase 2 — Geometry caching
 

@@ -674,4 +674,4 @@ Phases 0 and 0A can run in parallel. Phase 0A should complete before Phase 3 so 
 - Backend rendering: `wtk/src/Composition/backend/RenderTarget.cpp`, `RenderTarget.h`
 - UIView (general UI consumer): `wtk/src/UI/UIView.cpp`
 - SVGView (vector rendering consumer): `wtk/src/UI/SVGView.cpp`
-- Shader source: inline `librarySource` string in `RenderTarget.cpp` (lines 111–200)
+- Shader source:  `wtk/src/Composition/shaders/compositor.omegasl`

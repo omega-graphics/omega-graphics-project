@@ -95,3 +95,15 @@ add_metal_cli_test(
     "QuartzCore"
     "AppKit"
 )
+
+add_metal_cli_test(
+    NAME
+    "AssetTest"
+    SOURCES
+    "AssetTest/main.mm"
+    FRAMEWORKS
+    "Metal"
+    "MetalKit"
+    "ModelIO"
+    "Foundation"
+)

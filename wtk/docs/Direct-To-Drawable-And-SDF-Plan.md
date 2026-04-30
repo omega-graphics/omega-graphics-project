@@ -393,10 +393,10 @@ The closed-form SDFs are standard:
 | `RoundedRect` | Same as Rect, with rounding params. Border emitted as a separate path via `RoundedRectFrame`. | Same quad pattern; tag = `RoundedRect`; shape params include `cornerRadius`. Border handled in the same draw call. **No separate border path.** |
 | `Ellipse` | Manually-built triangle fan with up to 4096 triangles. Border emitted as a separate path via `EllipseFrame`. | 6-vertex quad covering the ellipse bounding box; tag = `Ellipse`; shape params include `(rx, ry)`. Border handled in the same draw call. **No separate border path.** |
 | `Shadow` | Geometric expansion + tessellation, no blur | 6-vertex quad covering the shadow's expanded bounds; tag = `Shadow`; carry the underlying shape kind, its dimensions, and `blurAmount`. The fragment shader does `smoothstep(-blurAmount, 0, dist)`. |
-| `Bitmap` | Tessellated quad with `texturePaint` bound at fragment slot 2 | Unchanged. Bitmaps are pixel data; SDF doesn't apply. |
+| `Bitmap` | Tessellated quad through the GTE triangulator + texture pipeline at slot 2 | See 6.6 — hardcoded 6-vertex quad (no triangulator round-trip), high-quality sampler with mipmaps, optional tint / source-rect / nine-slice. |
 | `VectorPath` | Dual-attachment tessellation (stroke + fill) via `TETriangulationParams::GraphicsPath2D` + flat color pipeline | See 6.4 — keeps the existing dual-attachment tessellation for fill + stroke; gains edge-smoothstep AA for resolution-independent edges. |
 | `SetTransform` / `SetOpacity` | Per-context state, applied per-vertex in lambdas | Unchanged. The SDF vertex shader applies the same `currentTransform` / `currentOpacity` exactly as today's color pipeline does. |
-| `Text` | DWrite / CT / Harfbuzz | Out of scope. Text rendering is a separate, large migration (typically to SDF glyph atlases following Valve's seminal paper). Not addressed in this plan. |
+| `Text` | Per-platform CPU rasterization (DWrite / Core Text / Harfbuzz + FreeType) → upload as `GETexture` → drawn as a single textured quad via `drawGETexture` | See 6.7 — per-font MSDF glyph atlas built lazily; one quad per glyph in the run; resolution-independent. Existing CPU-bitmap path stays as a fallback for fonts whose outlines can't be extracted. |
 
 The SDF fragment shader for simple primitives evaluates the signed
 distance once per pixel, then composes both coverage bands:
@@ -474,19 +474,159 @@ simple shapes are a follow-up (the SDF fragment shader can sample a
 gradient by computing the local stroke parameter from `dist /
 strokeWidth`, but that's not a Phase 6 requirement).
 
-### 6.6 Tessellation engine context lifecycle
+### 6.6 Bitmap rendering improvements
+
+Bitmaps still use a textured quad with sampling — the data is opaque
+pixel data, not analytic geometry — but the current path has three
+avoidable problems:
+
+1. **Tessellation round-trip.** The `Bitmap` case in `renderToTarget`
+   builds a `TETriangulationParams::Rect` and runs the GTE triangulator
+   to produce two triangles for a unit quad. After Phase 6.3 the SDF
+   primitives all use a hardcoded 6-vertex quad; the bitmap path
+   should use the same quad authoring helper. No tessellation context,
+   no per-frame round-trip.
+2. **Default sampling, no mipmaps.** Whatever sampler the texture
+   render pipeline binds today is the only sampler bitmaps see.
+   Bitmaps drawn at small scale (icons under DPR=1) shimmer because
+   there is no minification filter beyond bilinear; bitmaps under 3D
+   transforms or zoom go soft because there is no anisotropic
+   filtering or mipmap LOD. Both get worse once 3D transforms become
+   routine (Phase 6 makes them crisper for shapes; bitmaps shouldn't
+   regress relatively).
+3. **No tint / sub-region / nine-slice.** Common UI patterns —
+   recoloring an SVG icon, sampling a region of a sprite atlas, or
+   stretching a button background's edges differently from its corners
+   — currently require either pre-baking the texture or issuing
+   multiple draws. The visual command grew the slot for some of these
+   already (the `BitmapParamsData` struct in
+   [`Canvas.h`][canvas-h-2]); they should land here.
+
+[canvas-h-2]: ../include/omegaWTK/Composition/Canvas.h
+
+#### 6.6.1 Quad authoring + sampler upgrade
+
+| File | Change |
+|------|--------|
+| `wtk/src/Composition/backend/RenderTarget.cpp` `VisualCommand::Bitmap` case | Replace the `TETriangulationParams::Rect(gteBmpRect)` + `tessellationContext()->triangulateSync(...)` call with the same hardcoded 6-vertex quad helper used by the SDF primitives. Vertex attributes: `(position, texCoord)` (no shape kind, no SDF params). The triangulation context is no longer touched on Bitmap draws. |
+| `wtk/src/Composition/backend/Pipeline.{h,cpp}` `texture` pipeline state | Construct with a sampler descriptor that requests linear minification, linear magnification, and (when supported) anisotropic filtering at a sane default (4×). Mipmap mode: `Linear` so trilinear sampling kicks in when the texture has mips. Wrap mode: `ClampToEdge` (the default — bitmaps draw bounded; nine-slice sub-regions specify their own UV ranges). |
+| `wtk/src/Composition/Canvas.cpp` / wherever `BitmapImage → GETexture` upload happens | At texture upload time, if the texture is larger than 64×64 (heuristic — tunable), generate a mipmap chain. The GTE engine's `GETexture` likely has a `generateMipmaps` API; if not, that's a one-method addition on the `OmegaGTE::GraphicsEngine` interface. Pre-generated mipmaps cost roughly +33% memory but pay for themselves on the first minified or 3D-transformed draw. |
+| `wtk/src/Composition/backend/Pipeline.cpp` `texture` pipeline state | When the swap chain format is sRGB-encoded (common on Win32 / Linux), the pipeline state's `colorPixelFormats` should be the sRGB variant so the GPU does linearize-on-sample / encode-on-write automatically. After Phase 1's always-direct path this is straightforward — the pipeline targets the swap chain format directly, no offscreen intermediate to break the convention. |
+
+#### 6.6.2 Color tint and source-rect sampling
+
+| File | Change |
+|------|--------|
+| `wtk/include/omegaWTK/Composition/Canvas.h` `BitmapParams` | Add optional fields: `Core::Optional<Composition::Color> tintColor;` and `Core::Optional<Composition::Rect> sourceRect;`. The source rect is in *texture pixel* coordinates (so a 256×256 atlas can be sampled with `{ 64, 0, 32, 32 }` for the second-row first icon). |
+| `wtk/src/Composition/Canvas.cpp` `drawImage` overloads | Add overloads that accept tint and source rect. Existing overloads keep current behavior (no tint, full-texture UV). |
+| `wtk/src/Composition/backend/shaders/compositor.omegasl` `textureFragment` (or a new `bitmapFragment`) | Sample the texture at the UV range derived from `sourceRect` (computed in the vertex shader from the bitmap's dimensions) and multiply by `tintColor.rgba` × `currentOpacity` before output. When `tintColor` is the identity color (`1,1,1,1`), the multiply collapses cleanly. |
+| `wtk/src/Composition/backend/RenderTarget.cpp` `VisualCommand::Bitmap` case | Pass `tintColor` and the UV range as per-vertex attributes (or as a small uniform block per draw). |
+
+#### 6.6.3 Nine-slice (resizable bitmap)
+
+Lower priority — flag for inclusion or follow-up depending on consumer
+demand.
+
+| File | Change |
+|------|--------|
+| `wtk/include/omegaWTK/Composition/Canvas.h` `BitmapParams` | Add optional `Core::Optional<NineSliceInsets>` field — `{ left, top, right, bottom }` in texture pixels. When present, the bitmap renders as 9 quads (corners, edges, center) with the corners at fixed size and the edges / center stretched to fill the destination rect. |
+| `wtk/src/Composition/Canvas.cpp` `drawImage` overload | Compute the 9 quad rects + UV ranges from the source-rect (or full texture) divided by the insets. Emit 9 `Bitmap` visuals (or one `Bitmap` visual with 9 quads worth of vertex data). |
+
+Nine-slice doesn't require any backend shader work — each slice is just
+a `Bitmap` draw with its own destination rect and source UV range,
+which 6.6.2 already handles. The work is purely in
+`Canvas::drawImage`'s rect math.
+
+### 6.7 Text rendering: MSDF glyph atlases
+
+Today text follows this path (in [`Canvas::drawText`][canvas-cpp-3]):
+
+1. `TextRect::Create(rect, layoutDesc, renderScale)` allocates a
+   per-platform `TextRect` (DWrite / Core Text / Harfbuzz).
+2. `GlyphRun::fromUStringAndFont(text, font)` shapes the unicode string.
+3. `textRect->drawRun(glyphRun, color)` rasterizes glyphs to a
+   CPU bitmap on the platform-specific backend.
+4. `textRect->toBitmap()` uploads the bitmap as a `GETexture`.
+5. `drawGETexture(bitmap.s, rect, bitmap.textureFence)` draws the
+   rasterized text as a single textured quad via the `Bitmap` path.
+
+Three problems:
+
+1. **Resolution-dependent.** The bitmap is rasterized at one DPR; under
+   zoom or 3D transform the text goes soft. After Phase 6 every other
+   primitive is resolution-independent; text becomes the visibly
+   weakest element on screen.
+2. **Re-rasterized on DPR change.** Every render scale change (window
+   moved between displays, zoom, etc.) re-rasterizes the text and
+   re-uploads a new texture.
+3. **One texture per text run.** Memory cost scales with how much
+   distinct text is on screen. A list of 100 unique labels is 100
+   textures, none of them shareable.
+
+[canvas-cpp-3]: ../src/Composition/Canvas.cpp
+
+The fix: per-font **MSDF glyph atlases**. Glyph outlines are extracted
+from the platform font (DWrite `IDWriteFontFace::GetGlyphRunOutline`,
+Core Text `CTFontCreatePathForGlyph`, FreeType `FT_Outline_*`) and
+rasterized into a multi-channel signed distance field (RGB encodes 3
+distance channels; the fragment shader takes the median for fill
+coverage, which preserves sharp corners that single-channel SDF
+rounds off — Chlumsky's msdfgen approach).
+
+#### 6.7.1 Atlas
+
+| File | Change |
+|------|--------|
+| New: `wtk/src/Composition/backend/GlyphAtlas.{h,cpp}` | Declare `class GlyphAtlas`. One atlas per `Font`. Lazy-populated: glyph IDs not yet present in the atlas trigger an MSDF rasterization on the *main thread* (atlas update has to coordinate with GPU sampling) and a sub-region update of the atlas texture. Fields: `SharedHandle<GETexture> texture`, `Map<glyphId, AtlasGlyph>` (each `AtlasGlyph` carries the UV rect and the metric offsets needed for layout). |
+| `wtk/include/omegaWTK/Composition/FontEngine.h` `Font` | Add `GlyphAtlas & atlas()`. The atlas lives on the font; the platform `FontEngine` constructs the font with an empty atlas and MSDF rasterization function pointer (per-platform). |
+| Per-platform: `wtk/src/Composition/backend/dx/DWriteFontEngine.cpp`, `mtl/CTFontEngine.mm`, `vk/HarfbuzzFontEngine.cpp` | Add a `rasterizeGlyphMSDF(glyphId, atlasCellSize, outBuffer)` implementation. The platform extracts the glyph outline, then runs msdfgen (vendored or reimplemented) on it. |
+
+Atlas size: start at 1024×1024 (room for ~1000 glyphs at 32×32 cells)
+and grow / page out via LRU when full.
+
+#### 6.7.2 Render path
+
+| File | Change |
+|------|--------|
+| `wtk/include/omegaWTK/Composition/Canvas.h` | Add a new `VisualCommand::Type::TextRun` variant whose params carry the glyph IDs, per-glyph positions, and a font handle (for atlas lookup). Keep `Text` as an alias / fallback for the bitmap path. |
+| `wtk/src/Composition/Canvas.cpp` `drawText` | Replace the `TextRect → drawRun → toBitmap → drawGETexture` chain with: shape via the existing `GlyphRun`, then for each glyph emit a positioned quad against the font's atlas. The visual command carries the glyph quads + the atlas texture handle. |
+| `wtk/src/Composition/backend/shaders/sdf.omegasl` | Add a fragment function `msdfTextFragment` that samples the MSDF, computes the median of the three channels, applies a screen-space derivative for AA width (`fwidth(median)`) and `smoothstep`s. Outputs the text color × coverage × `currentOpacity`. |
+| `wtk/src/Composition/backend/Pipeline.{h,cpp}` | Add `text_` render pipeline state. The vertex layout is `(position, atlasUV)` per glyph quad; uniform / per-draw constants carry the text color. |
+| `wtk/src/Composition/backend/RenderTarget.cpp` `VisualCommand::TextRun` case | Iterate the glyphs; emit one 6-vertex quad per glyph with the atlas UV rect from `font->atlas().lookup(glyphId)`. Bind the atlas texture once per draw (one draw per glyph run). |
+
+#### 6.7.3 Bonus: free outlines, glow, drop-shadow
+
+The MSDF shader's `dist > 0` is the band outside the glyph silhouette.
+That gives outline / stroke for free (`smoothstep` around `dist =
+outlineWidth`) and per-glyph drop-shadow at multiple offsets without
+re-rasterization. Out of scope as a *required* deliverable but the
+shader should be authored with the relevant uniforms in place so the
+API surface can light it up.
+
+#### 6.7.4 Fallback
+
+For fonts whose outlines can't be extracted (rare on modern systems —
+mostly bitmap-only fonts and color emoji fonts), the existing
+`TextRect` → `drawGETexture` path stays as a fallback. The
+`FontEngine::makeFont(...)` factory checks whether the platform face
+has extractable outlines and chooses MSDF or bitmap accordingly. The
+two paths are mutually exclusive per font; nothing else changes.
+
+### 6.8 Tessellation engine context lifecycle
 
 Once Phase 6 lands, only `VisualCommand::VectorPath` calls
 `textures_.tessellationContext()` (or whatever its post-Phase-4 home is).
-`Rect` / `RoundedRect` / `Ellipse` / `Shadow` / `Bitmap` no longer need
-the tessellation context. Audit:
+`Rect` / `RoundedRect` / `Ellipse` / `Shadow` / `Bitmap` / `TextRun` no
+longer need the tessellation context. Audit:
 
 | File | Change |
 |------|--------|
 | `wtk/src/Composition/backend/Texture.cpp` `BackingTextureSet::rebuild` (or wherever it landed after Phase 4 collapse) | The tessellation context is now created lazily on first `VectorPath` draw rather than at rebuild time. For frames that contain no vector paths (the common case), no tessellation context exists. |
 | `wtk/src/Composition/backend/RenderTarget.cpp` `renderToTarget` | The early-out `if(... textures_.tessellationContext() == nullptr) return;` becomes path-specific rather than blanket. |
 
-### 6.7 Verification
+### 6.9 Verification
+
+#### Simple primitives + paths
 
 - Visual: `EllipsePathCompositorTest` produces a *crisper* ellipse under
   zoom and 3D transform than the tessellated baseline. The pixel diff is
@@ -509,13 +649,60 @@ the tessellation context. Audit:
   should now have `tessellationContext()` null — it had triangulated
   border paths before.
 
+#### Bitmaps
+
+- Visual: `VideoViewPlaybackTest` (or any bitmap-heavy test) at DPR=1
+  with a 256×256 bitmap shrunk to 64×64 is *less shimmery* with mipmaps
+  than without. Compare with `OMEGAWTK_TRACE_RENDER=1` to confirm
+  trilinear sampling is engaged.
+- Visual: bitmap drawn under a 3D rotation no longer aliases at the
+  far edge — anisotropic filtering kicks in.
+- Memory: a frame that draws the same bitmap to 4 different positions
+  should hold *one* `GETexture`, not four. Confirm via
+  `ResourceTrace::emit("Create", "Texture", ...)` event count.
+- API: a `drawImage` with `tintColor = red` against a white sprite
+  produces a red sprite — exactly the same pixels as the white sprite
+  with the red channel masked.
+- API: a `drawImage` with `sourceRect = { 64, 0, 32, 32 }` against a
+  256×256 atlas samples that 32×32 region, scaled to the destination
+  rect.
+
+#### Text
+
+- Visual: a `drawText` call rendered at DPR=1, then the window moved to
+  a DPR=2 display, produces *crisp* text both times — no
+  re-rasterization, no soft pixels mid-transition. The atlas is
+  rasterized once at MSDF resolution and sampled at the display DPR.
+- Visual: 100 unique labels render with one atlas texture — confirm
+  via `ResourceTrace` that there is exactly one `Create / Texture`
+  for the font's atlas, not 100.
+- Visual: `TextCompositorTest` produces text whose pixel density is
+  appropriate for the surrounding shape AA (post-Phase-6.3) — text
+  should not stand out as "softer than everything else."
+- Performance: cold-start glyph rasterization (first time a glyph is
+  seen) is a one-time CPU cost. Steady-state rendering of repeated
+  text uses the cached atlas entries.
+- Fallback: a font with no extractable outlines (test with a bitmap-only
+  emoji font on macOS) falls back to the existing `TextRect` →
+  `drawGETexture` path. The fallback is logged once per font.
+
 ---
 
 ## Out of Scope
 
-- **Text rasterization.** Migrating glyph rendering to SDF atlases is a
-  separate, large project. Phase 6 leaves `VisualCommand::Text` on the
-  current platform-specific path (DWrite / Core Text / Harfbuzz).
+- **Color emoji and bitmap-only fonts.** MSDF works on vector outlines.
+  Bitmap-only fonts (some legacy Asian fonts) and emoji fonts that
+  embed pre-rendered color bitmaps (Apple Color Emoji, Google Noto
+  Color Emoji) keep the existing CPU-bitmap text path. Detected per
+  font at `Font` construction time; the choice is sticky for the
+  font's lifetime.
+- **Subpixel-RGB text rendering** (ClearType-style horizontal RGB
+  triplets). MSDF text at DPR=1 on a non-HiDPI display *will* look
+  slightly different from ClearType. Most modern UI compositors have
+  abandoned subpixel-RGB rendering in favor of grayscale AA at higher
+  DPR; we follow suit. If a downstream consumer needs ClearType
+  semantics, that's a follow-up that re-introduces a third per-glyph
+  rasterization mode.
 - **Backdrop blur.** Blurring what is *behind* a layer (CSS
   `backdrop-filter`) requires reading the swap chain back into a scratch
   texture before the layer's own draws are recorded. Different mechanism
@@ -535,6 +722,7 @@ the tessellation context. Audit:
   tessellation + offscreen path; that fallback is gated behind
   `BackendResourceFactory` runtime feature detection in a follow-up.
 
+  ALEX: This will be taken care of by SwiftShader fallback plan in OmegaGTE
 ## Risks
 
 - **Format negotiation in Phase 1.** The SDF / direct path renders into
@@ -554,6 +742,8 @@ the tessellation context. Audit:
   layer-tree traversal already orders layers; confirm the per-layer
   blur scratch's composite step lands at the correct point in the
   command stream.
+
+  ALEX: See @UIView-Render-Redesign-Plan.md. This should be resolved in that plan.
 - **SDF ellipse at extreme aspect ratios.** Newton iteration for the
   exact ellipse SDF can be unstable for aspect ratios > ~50:1. Cap the
   iteration count and fall back to a bounding-box approximation
@@ -563,6 +753,9 @@ the tessellation context. Audit:
   platform. The new `sdf.omegasl` (if separate from `compositor.omegasl`)
   needs the same resolution; mirror the existing logic. Or merge into
   the single existing file to avoid the path-resolution duplication.
+
+  ALEX: For now dup logic. We will want to use our Asset Compiler/Loader eventually.
+
 - **Trace label drift.** `ResourceTrace::emit` events for `TextureTarget`
   fire from `BackendRenderTargetContext` ctor / dtor / rebuild. After
   Phase 4 collapses `BackingTextureSet`, the trace still fires from the
@@ -588,6 +781,44 @@ the tessellation context. Audit:
   `abs(dist) < 0` is never true).
 
 [canvas-cpp-2]: ../src/Composition/Canvas.cpp
+
+- **Bitmap mipmap memory pressure.** Generating a mipmap chain for
+  every uploaded bitmap costs ~+33% texture memory per bitmap. For
+  apps with many large textures (thumbnail grids, video frames) this
+  is significant. Make mipmap generation opt-out per upload, with a
+  size threshold default (e.g., textures below 64×64 don't get mips —
+  they fit in one cache line and minification doesn't matter).
+- **sRGB pixel format selection.** When the swap chain reports an
+  sRGB-encoded format, the texture render pipeline must be created
+  with the matching sRGB `colorPixelFormats` so the GPU's
+  encode-on-write does the right thing. Mismatched configurations
+  produce washed-out colors (linear pixels written to an sRGB swap
+  chain that re-applies sRGB encoding). Validate per-platform.
+- **Premultiplied alpha for bitmaps with transparency.** Bitmap
+  decoders may produce straight-alpha or premultiplied-alpha pixels
+  depending on the codec and source format. Today's path doesn't
+  document a convention. Pick one (premultiplied is the modern
+  default), enforce it at upload, and document. Tinting math in
+  6.6.2 assumes premultiplied input.
+- **MSDF atlas thread safety.** Glyph rasterization happens on the
+  thread that calls `drawText` (potentially the compositor thread),
+  but the atlas texture's sub-region update has to coordinate with
+  GPU sampling on previous frames. Atlas updates run through
+  `BackendResourceFactory::runOnMainThread` (existing utility) so
+  the GPU isn't sampling from a region under modification. Validate
+  no race between "atlas needs new glyph" and "compositor already
+  recorded a draw that samples it."
+- **MSDF cell size vs visual quality trade-off.** Too small (16×16) and
+  fine details disappear in the median-of-three encoding; too large
+  (128×128) and the atlas runs out of room or the rasterization is
+  expensive. Empirical sweet spot is 32–48 pixels per em. Tune per
+  font on first use; allow override.
+- **Bitmap font fallback path drift.** The fallback path (existing
+  CPU-bitmap rasterization) shares almost no code with the MSDF path.
+  Bug fixes to one don't propagate. Either (a) keep the fallback
+  small and stable, ideally just for color emoji, or (b) consider
+  dropping it once MSDF coverage is wide enough and color emoji has
+  a dedicated bitmap-glyph path.
 
 ## Sequencing Notes
 
