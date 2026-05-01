@@ -18,7 +18,7 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 | 2.8 NativeDialog | Alert dialog, file filters | Not started |
 | 2.9 NativeScreen | New subsystem | Not started |
 | 2.10 NativeAccessibility | New subsystem (stub) | Not started |
-| 2.11 NativeNote / NotificationCenter | Permissions, scheduling, callbacks, removal | Not started |
+| **2.11 NativeNote / NotificationCenter** | Permissions, scheduling, callbacks, removal, categories — macOS UN, Win32 ToastNotificationManager, GTK libnotify | **Done** |
 | 2.12 NativeMenu / Menu | Shortcuts, check/radio items, contextual menus, icons, dynamic updates | Not started |
 
 ---
@@ -208,7 +208,7 @@ INTERFACE NativeWindow {
 Remove the `#ifdef TARGET_MACOS` guards around `rect` and `eventEmitter` so all platforms carry these uniformly.
 
 ---
-
+(This may not apply since the new virtual view was implemented, please double-check OmegaWTK::View)
 ### 2.3 NativeItem — Focus, Cursor, Tooltip, Hit-Test
 
 **Goal:** Items need focus management for keyboard navigation, cursor shape for hover states, and tooltip support.
@@ -792,7 +792,7 @@ The GTK backend currently only implements `NativeApp`, `NativeWindow`, `NativeIt
 | **P1** | 2.8 NativeDialog (alert dialog, file filters) | Common user-facing pattern |
 | **P2** | 2.7 NativeDragDrop | Important for content apps, less critical initially |
 | **P2** | 2.9 NativeScreen | Multi-monitor support |
-| **P1** | 2.11 NativeNote / NotificationCenter | Permissions required on macOS; scheduling and callbacks for real use |
+| ~~P1~~ **Done** | 2.11 NativeNote / NotificationCenter | Permissions required on macOS; scheduling and callbacks for real use |
 | **P1** | 2.12 NativeMenu / Menu | Keyboard shortcuts and context menus are baseline UX |
 | **P3** | 2.10 NativeAccessibility | Stub now, implement per-platform over time |
 

@@ -425,8 +425,8 @@ that make a build system generator usable for other projects."
 **Layer A — Config Graph Semantics**
 Introduces usage requirements and target kinds required for everything else.
 
-- A1: `Config(...)`, `configs`, and `public_configs`
-- A2: `public_deps`
+- A1: `Config(...)`, `configs`, and `public_configs` [DONE]
+- A2: `public_deps` [DONE]
 - A3: `PrebuiltLibrary` (static/shared/framework)
 - A4: exported requirement propagation in `TargetDumper`
 - A5: late-bound target query helpers (`target_output(...)`, ...)
@@ -470,7 +470,7 @@ Completes language and platform coverage needed by this repo.
 - E2: ASM language support
 - E3: Java language support across generators/toolchains
 - E4: Java/Android native bridge support (JNI/NDK shared-lib staging, ABI-aware packaging hooks)
-- E5: Swift language support (deferred; AQUA future)
+- E5: Swift language support (deferred; Can use for other things.)
 - E6: PCH property and generator implementation
 - E7: `apple_fix_install_names` helper in `apple.autom`
 - E8: response files everywhere (Windows link, Xcode, MSBuild)
