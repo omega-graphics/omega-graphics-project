@@ -459,10 +459,28 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
             exit(1);
         };
 
+        D3D12MA::ALLOCATOR_DESC allocatorDesc = {};
+        allocatorDesc.pDevice = d3d12_device.Get();
+        allocatorDesc.pAdapter = device->adapter.Get();
+        allocatorDesc.Flags = D3D12MA::ALLOCATOR_FLAG_DEFAULT_POOLS_NOT_ZEROED;
+        hr = D3D12MA::CreateAllocator(&allocatorDesc, &memAllocator);
+        if(FAILED(hr)){
+            DEBUG_STREAM("D3D12MA::CreateAllocator failed");
+            exit(1);
+        };
+
         gteDevice = std::static_pointer_cast<GTEDevice>(device);
+        _deviceFeatures = gteDevice->features.featuresAsBitmask();
 
         DEBUG_STREAM("GED3D12Engine Intialized!");
 
+    };
+
+    GED3D12Engine::~GED3D12Engine(){
+        if(memAllocator){
+            memAllocator->Release();
+            memAllocator = nullptr;
+        }
     };
 
     SharedHandle<GTEShader> GED3D12Engine::_loadShaderFromDesc(omegasl_shader *shaderDesc,bool runtime) {
@@ -1061,6 +1079,10 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
     }
 
     SharedHandle<GERenderPipelineState> GED3D12Engine::makeRenderPipelineState(RenderPipelineDescriptor &desc){
+        if(!_checkPipelineShader(desc.vertexFunc,"vertex",desc.name) ||
+           !_checkPipelineShader(desc.fragmentFunc,"fragment",desc.name)){
+            return nullptr;
+        }
         auto & vertexFunc = desc.vertexFunc->internal;
         auto & fragmentFunc = desc.fragmentFunc->internal;
 
@@ -1329,6 +1351,9 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
         return SharedHandle<GERenderPipelineState>(new GED3D12RenderPipelineState(desc.vertexFunc,desc.fragmentFunc,state,signature,rootSigDesc));
     };
     SharedHandle<GEComputePipelineState> GED3D12Engine::makeComputePipelineState(ComputePipelineDescriptor &desc){
+        if(!_checkPipelineShader(desc.computeFunc,"compute",desc.name)){
+            return nullptr;
+        }
         D3D12_COMPUTE_PIPELINE_STATE_DESC d {};
         HRESULT hr;
         ID3D12PipelineState *state;

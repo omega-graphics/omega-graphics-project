@@ -26,7 +26,7 @@ Additionally:
 
 ---
 
-## Phase 0: Dependency Setup
+## Phase 0: Dependency Setup [COMPLETED]
 
 ### 0.1 Vendor D3D12MA
 
@@ -357,6 +357,21 @@ Compare before/after on a workload that creates many small buffers (e.g. per-obj
 
 ## Future Work (out of scope)
 
-- **Deferred deletion queue**: Track GPU fence values and defer `Allocation::Release()` until the GPU has finished reading. D3D12MA does not handle this — it's the caller's responsibility. The `GED3D12Fence` infrastructure already exists; a ring buffer of `{fenceValue, allocation}` pairs at the command queue level would be the natural integration point.
+- **Cross-backend deferred deletion queue** (D3D12 + Vulkan): Both suballocator-based backends share the same hazard — a `D3D12MA::Allocation*` or VMA `VmaAllocation` released while the GPU is still reading from the underlying memory will corrupt or crash, because suballocators reuse freed regions immediately. The current state of each backend:
+    - **Metal**: No work needed. ARC plus `MTLCommandBuffer`'s implicit retain-until-completion semantics handle resource lifetime correctly. The Metal backend's destructors only emit tracking events; no explicit release is required.
+    - **Vulkan**: Partial — `GEVulkanCommandQueue` defers `VkRenderPass` and `VkFramebuffer` destruction via `deferredRenderPassDestroys`/`deferredFramebufferDestroys` and `flushDeferredDestroys()` (called from `commitToGPU*`), but VMA-allocated buffers and images call `vmaDestroyBuffer`/`vmaDestroyImage` directly in their destructors (`GEVulkan.h:188`, `GEVulkan.h:203`). This is a latent bug today, independent of the D3D12MA work.
+    - **D3D12**: None for resources. `retainedCommandBuffers`/`retainedDescriptorHeaps` in `GED3D12CommandQueue` are cleared immediately after submission (not fence-gated), and resource releases happen the moment a `shared_ptr` ref count hits zero. After the D3D12MA migration this becomes more dangerous because the freed allocation's memory can be reused for an unrelated resource on the next `CreateResource` call.
+
+  Recommended design — apply identically to both backends:
+
+    1. Each command queue tracks a per-submission fence value (D3D12: `GED3D12Fence`/`ID3D12Fence`; Vulkan: timeline semaphore or per-frame `VkFence`).
+    2. Resource destructors enqueue a deletion record `{fenceValue, opaqueRelease}` onto a queue owned by the engine (or device) instead of calling `Allocation::Release()` / `vmaDestroyBuffer` directly. `opaqueRelease` is a `std::function<void()>` or a small tagged union covering allocations, COM objects, descriptor handles, etc.
+    3. On every command-queue commit (and on engine shutdown after a `WaitIdle`), drain the queue: pop everything whose `fenceValue <= lastCompletedFenceValue` and run its release.
+    4. The "last submitted" fence value at the time the destructor runs is the value the resource must outlive — it was bound on or before that submission, so the GPU is done with it once that fence signals.
+    5. For the Vulkan side, this subsumes and replaces the existing render-pass/framebuffer queues — those become entries in the unified deletion queue.
+
+  Integration points: D3D12 — extend `GED3D12CommandQueue` with the queue and drain it in `commitToGPU*`. Vulkan — extend `GEVulkanCommandQueue::flushDeferredDestroys()` to also drain VMA allocations gated on the per-submission fence.
+
+  This work should land before the D3D12MA migration sees real workloads with frame-to-frame resource churn (e.g. dynamic constant buffers per draw, transient render targets).
 - **Shared descriptor heap pools**: Replace per-resource 1-element descriptor heaps with large shader-visible descriptor tables. This is orthogonal to D3D12MA but compounds the memory savings.
 - **Defragmentation**: D3D12MA supports defragmentation passes that compact placed resources within pools. Useful for long-running applications with dynamic resource churn.

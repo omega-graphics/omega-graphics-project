@@ -12,6 +12,7 @@
 #include <cstdint>
 
 #include <wrl.h>
+#include "D3D12MemAlloc.h"
 #include "../common/GEResourceTracker.h"
 
 #pragma comment(lib,"d3d12.lib")
@@ -126,9 +127,10 @@ _NAMESPACE_BEGIN_
     public:
         ComPtr<IDXGIFactory6> dxgi_factory;
         explicit GED3D12Engine(SharedHandle<GTED3D12Device> device);
-        ~GED3D12Engine() override = default;
+        ~GED3D12Engine() override;
         ComPtr<ID3D12Debug1> debug_interface;
         ComPtr<ID3D12Device8> d3d12_device;
+        D3D12MA::Allocator *memAllocator = nullptr;
         SharedHandle<GTEDevice> gteDevice;
 
         // Mipmap generation pipeline (compiled from gte/src/shaders/mipmap_gen_2d.omegasl

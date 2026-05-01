@@ -1,12 +1,8 @@
 #include "omegaGTE/GEPipeline.h"
+#include "omegaGTE/GTEShader.h"
 #include "omegasl.h"
 
 _NAMESPACE_BEGIN_
-
-struct GTEShader {
-    omegasl_shader internal;
-};
-
 
 struct __GERenderPipelineState {
     SharedHandle<GTEShader> vertexShader;

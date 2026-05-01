@@ -57,6 +57,74 @@ namespace {
     }
 }
 
+/// Names every @c OMEGASL_FEATURE_BIT_* in @p bits. Order matches the bit
+/// indices declared in @c omegasl.h. Empty input yields @c "[]".
+static std::string formatFeatureBitList(uint64_t bits) {
+    static constexpr struct {
+        unsigned long long bit;
+        const char *name;
+    } kFeatureNames[] = {
+        {OMEGASL_FEATURE_BIT_RAYTRACING,         "RAYTRACING"},
+        {OMEGASL_FEATURE_BIT_MESH_SHADERS,       "MESH_SHADERS"},
+        {OMEGASL_FEATURE_BIT_GEOMETRY_SHADERS,   "GEOMETRY_SHADERS"},
+        {OMEGASL_FEATURE_BIT_TESSELLATION,       "TESSELLATION"},
+        {OMEGASL_FEATURE_BIT_SUBGROUP_OPS,       "SUBGROUP_OPS"},
+        {OMEGASL_FEATURE_BIT_BINDLESS,           "BINDLESS"},
+        {OMEGASL_FEATURE_BIT_FLOAT16,            "FLOAT16"},
+        {OMEGASL_FEATURE_BIT_INT64,              "INT64"},
+        {OMEGASL_FEATURE_BIT_VARIABLE_RATE,      "VARIABLE_RATE"},
+        {OMEGASL_FEATURE_BIT_SUBPASS_INPUTS,     "SUBPASS_INPUTS"},
+        {OMEGASL_FEATURE_BIT_SPEC_CONSTANTS,     "SPEC_CONSTANTS"},
+        {OMEGASL_FEATURE_BIT_TEXTURECUBE_RW,     "TEXTURECUBE_RW"},
+        {OMEGASL_FEATURE_BIT_TEXTURE2D_MS_WRITE, "TEXTURE2D_MS_WRITE"},
+        {OMEGASL_FEATURE_BIT_DOUBLE,             "DOUBLE"},
+    };
+    std::string out = "[";
+    bool first = true;
+    for(auto &entry : kFeatureNames){
+        if(bits & entry.bit){
+            if(!first) out += ", ";
+            out += entry.name;
+            first = false;
+        }
+    }
+    out += "]";
+    return out;
+}
+
+std::string OmegaGraphicsEngine::_formatMissingFeatures(uint64_t requiredFeatures,
+                                                       uint64_t missingFeatures) {
+    std::string msg = "requires features ";
+    msg += formatFeatureBitList(requiredFeatures);
+    msg += "; device lacks ";
+    msg += formatFeatureBitList(missingFeatures);
+    return msg;
+}
+
+SharedHandle<GTEShader> OmegaGraphicsEngine::_makeUnsupportedShaderSentinel(std::string diagnostic) {
+    auto sentinel = std::make_shared<GTEShader>();
+    sentinel->isUnsupported = true;
+    sentinel->unsupportedDiagnostic = std::move(diagnostic);
+    return sentinel;
+}
+
+bool OmegaGraphicsEngine::_checkPipelineShader(const SharedHandle<GTEShader> &shader,
+                                               const char *role,
+                                               const OmegaCommon::String &pipelineName) {
+    if(shader == nullptr){
+        std::cerr << "Pipeline '" << pipelineName << "' creation failed: "
+                  << role << " shader handle is null." << std::endl;
+        return false;
+    }
+    if(shader->isUnsupported){
+        std::cerr << "Pipeline '" << pipelineName << "' creation failed: "
+                  << role << " shader is unsupported on this device — "
+                  << shader->unsupportedDiagnostic << "." << std::endl;
+        return false;
+    }
+    return true;
+}
+
 GEBuffer::GEBuffer(const BufferDescriptor::Usage &usage):usage(usage) {
 
 }
@@ -276,10 +344,21 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryFromInputSt
                 return nullptr;
             }
 
-            auto shader = _loadShaderFromDesc(&shaderEntry);
+            SharedHandle<GTEShader> shader = nullptr;
+            const uint64_t missing = shaderEntry.requiredFeatures & ~_deviceFeatures;
+            if(missing != 0){
+                auto diag = _formatMissingFeatures(shaderEntry.requiredFeatures,missing);
+                std::cerr << "OmegaSL shader '" << shaderEntry.name << "' rejected at load: "
+                          << diag << "." << std::endl;
+                lib->unsupportedDiagnostics.emplace(std::string(shaderEntry.name),diag);
+                shader = _makeUnsupportedShaderSentinel(std::move(diag));
+            }
+            else {
+                shader = _loadShaderFromDesc(&shaderEntry);
+            }
             lib->shaders.insert(std::make_pair(std::string(shaderEntry.name),shader));
 
-            if(shader != nullptr){
+            if(shader != nullptr && !shader->isUnsupported){
                 shaderEntry.name = shaderName.release();
                 shaderEntry.data = shaderData.release();
                 shaderEntry.pLayout = layoutDescArr.release();
@@ -308,10 +387,21 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryFromInputSt
             return nullptr;
         }
 
-        auto shader = _loadShaderFromDesc(&shaderEntry);
+        SharedHandle<GTEShader> shader = nullptr;
+        const uint64_t missing = shaderEntry.requiredFeatures & ~_deviceFeatures;
+        if(missing != 0){
+            auto diag = _formatMissingFeatures(shaderEntry.requiredFeatures,missing);
+            std::cerr << "OmegaSL shader '" << shaderEntry.name << "' rejected at load: "
+                      << diag << "." << std::endl;
+            lib->unsupportedDiagnostics.emplace(std::string(shaderEntry.name),diag);
+            shader = _makeUnsupportedShaderSentinel(std::move(diag));
+        }
+        else {
+            shader = _loadShaderFromDesc(&shaderEntry);
+        }
         lib->shaders.insert(std::make_pair(std::string(shaderEntry.name),shader));
 
-        if(shader != nullptr){
+        if(shader != nullptr && !shader->isUnsupported){
             shaderEntry.name = shaderName.release();
             shaderEntry.data = shaderData.release();
             shaderEntry.pLayout = layoutDescArr.release();
@@ -346,7 +436,19 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryRuntime(std
     OmegaCommon::ArrayRef<omegasl_shader> shaders {lib->shaders,lib->shaders + lib->header.entry_count};
     auto shaderLib = std::make_shared<GTEShaderLibrary>();
     for(const auto & s : shaders){
-        shaderLib->shaders.insert(std::make_pair(std::string(s.name), _loadShaderFromDesc((omegasl_shader *)&s,true)));
+        SharedHandle<GTEShader> shader = nullptr;
+        const uint64_t missing = s.requiredFeatures & ~_deviceFeatures;
+        if(missing != 0){
+            auto diag = _formatMissingFeatures(s.requiredFeatures,missing);
+            std::cerr << "OmegaSL shader '" << s.name << "' rejected at runtime load: "
+                      << diag << "." << std::endl;
+            shaderLib->unsupportedDiagnostics.emplace(std::string(s.name),diag);
+            shader = _makeUnsupportedShaderSentinel(std::move(diag));
+        }
+        else {
+            shader = _loadShaderFromDesc((omegasl_shader *)&s,true);
+        }
+        shaderLib->shaders.insert(std::make_pair(std::string(s.name), shader));
     }
     return shaderLib;
 }

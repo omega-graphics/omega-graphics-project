@@ -98,6 +98,43 @@ struct GTEDeviceFeatures {
     constexpr bool hasFeature(uint64_t featureMask) const {
         return (flags & featureMask) == featureMask;
     }
+
+    /**
+      @brief Synthesize the @c OMEGASL_FEATURE_BIT_* mask matching this
+      device's capabilities. Consumed by the runtime shader-library loader
+      (see OmegaSL-Feature-Gap-Survey §14.3) to mask each shader's
+      @c requiredFeatures and reject only the shaders the device can't run.
+      @paragraph Phase A — covers the bits already backed by
+      @c GTEDEVICE_FEATURE_* flags or the shader-model tier. Bits without
+      backing storage today (SUBPASS_INPUTS, SPEC_CONSTANTS, TEXTURECUBE_RW,
+      TEXTURE2D_MS_WRITE) stay zero, so a shader that requires them is
+      conservatively rejected until @c GTEDeviceFeatures gains the matching
+      flags (Phase B per §14.4).
+     */
+    constexpr uint64_t featuresAsBitmask() const {
+        uint64_t mask = OMEGASL_FEATURE_BIT_NONE;
+        if (flags & GTEDEVICE_FEATURE_RAYTRACING)
+            mask |= OMEGASL_FEATURE_BIT_RAYTRACING;
+        if (flags & GTEDEVICE_FEATURE_MESH_SHADER)
+            mask |= OMEGASL_FEATURE_BIT_MESH_SHADERS;
+        if (flags & GTEDEVICE_FEATURE_GEOMETRY_SHADER)
+            mask |= OMEGASL_FEATURE_BIT_GEOMETRY_SHADERS;
+        if (flags & GTEDEVICE_FEATURE_TESSELLATION_SHADER)
+            mask |= OMEGASL_FEATURE_BIT_TESSELLATION;
+        if (shaderModel >= ShaderModel::SM_6_0)
+            mask |= OMEGASL_FEATURE_BIT_SUBGROUP_OPS;
+        if (flags & GTEDEVICE_FEATURE_DESCRIPTOR_INDEXING)
+            mask |= OMEGASL_FEATURE_BIT_BINDLESS;
+        if (flags & GTEDEVICE_FEATURE_SHADER_FLOAT16)
+            mask |= OMEGASL_FEATURE_BIT_FLOAT16;
+        if (flags & GTEDEVICE_FEATURE_SHADER_INT64)
+            mask |= OMEGASL_FEATURE_BIT_INT64;
+        if (flags & GTEDEVICE_FEATURE_VARIABLE_RATE_SHADING)
+            mask |= OMEGASL_FEATURE_BIT_VARIABLE_RATE;
+        if (flags & GTEDEVICE_FEATURE_SHADER_FLOAT64)
+            mask |= OMEGASL_FEATURE_BIT_DOUBLE;
+        return mask;
+    }
 };
 
 /**

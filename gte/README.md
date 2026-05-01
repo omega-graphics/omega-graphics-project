@@ -41,3 +41,7 @@ For graphics-based applications, that's no exception.
 The latest update of OpenGL was released in 2017 and as Vulkan gets more mature, the Khronos Group is slowly fading out support for OpenGL and OpenGL ES. Both APIs are well implemented however OpenGL, being almost 30 years old, has a deprecated api from when graphics hardware was more primitive. Additionally, Vulkan has proper builtin support for Ray Tracing.
 
 TE only outputs one mesh per Triangulation.
+
+Notes:
+
+- Consolidating per-resource descriptor heaps into shared descriptor tables (valuable but separate work).

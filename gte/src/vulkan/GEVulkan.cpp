@@ -663,6 +663,8 @@ _NAMESPACE_BEGIN_
             std::exit(1);
         }
 
+        _deviceFeatures = device->features.featuresAsBitmask();
+
         physicalDevice = device->device;
 
         std::uint32_t count = 0;
@@ -1750,8 +1752,8 @@ _NAMESPACE_BEGIN_
 
 
     SharedHandle<GERenderPipelineState> GEVulkanEngine::makeRenderPipelineState(RenderPipelineDescriptor &desc){
-        if(desc.vertexFunc == nullptr || desc.fragmentFunc == nullptr){
-            std::cerr << "Vulkan render pipeline creation failed: missing shader functions." << std::endl;
+        if(!_checkPipelineShader(desc.vertexFunc,"vertex",desc.name) ||
+           !_checkPipelineShader(desc.fragmentFunc,"fragment",desc.name)){
             return nullptr;
         }
 
@@ -2138,6 +2140,9 @@ _NAMESPACE_BEGIN_
         return result;
     };
     SharedHandle<GEComputePipelineState> GEVulkanEngine::makeComputePipelineState(ComputePipelineDescriptor &desc){
+        if(!_checkPipelineShader(desc.computeFunc,"compute",desc.name)){
+            return nullptr;
+        }
 
         OmegaCommon::Vector<VkDescriptorSetLayout> descLayouts;
         OmegaCommon::Vector<VkDescriptorSet> descs;

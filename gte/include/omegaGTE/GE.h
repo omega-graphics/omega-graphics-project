@@ -269,6 +269,52 @@ _NAMESPACE_BEGIN_
         SharedHandle<GTEShaderLibrary> loadShaderLibraryFromInputStream(std::istream & in);
     protected:
         virtual SharedHandle<GTEShader> _loadShaderFromDesc(omegasl_shader *shaderDesc,bool runtime = false) = 0;
+
+        /**
+          @brief Bitmask of @c OMEGASL_FEATURE_BIT_* flags the active device
+          can satisfy. Each backend caches the result of
+          @c GTEDeviceFeatures::featuresAsBitmask() into this field during
+          construction. Consumed by @c loadShaderLibraryFromInputStream and
+          @c loadShaderLibraryRuntime to mask each shader's @c requiredFeatures
+          and reject only the shaders the device can't run; sibling shaders
+          continue to load. See OmegaSL-Feature-Gap-Survey §14.3 / §14.7.1
+          task B.
+         */
+        uint64_t _deviceFeatures = 0;
+
+        /**
+          @brief Format a human-readable rejection diagnostic.
+          @paragraph Names the @c OMEGASL_FEATURE_BIT_* bits set in
+          @p requiredFeatures and @p missingFeatures using the symbolic
+          spellings from @c omegasl.h. Output shape:
+          <tt>requires features [A, B]; device lacks [B]</tt>.
+         */
+        static std::string _formatMissingFeatures(uint64_t requiredFeatures,
+                                                  uint64_t missingFeatures);
+
+        /**
+          @brief Construct a Layer-3 rejection sentinel for a shader the
+          device cannot run. The sentinel is a base @c GTEShader (no
+          backend-specific subclass) carrying @c isUnsupported = true and
+          the supplied diagnostic. Pipeline builders detect the sentinel
+          via @c _checkPipelineShader and surface @p diagnostic at
+          pipeline-creation time. See OmegaSL-Feature-Gap-Survey §14.7.1
+          tasks B and C.
+         */
+        static SharedHandle<GTEShader> _makeUnsupportedShaderSentinel(std::string diagnostic);
+
+        /**
+          @brief Validate a shader handle before pipeline construction.
+          @paragraph Returns @c false and writes a precise message to
+          @c stderr when @p shader is @c nullptr or carries @c isUnsupported.
+          The @p role argument names the slot (@c "vertex", @c "fragment",
+          @c "compute") and @p pipelineName is used to attribute the error.
+          Returns @c true for ordinary shaders so pipeline builders can
+          proceed.
+         */
+        static bool _checkPipelineShader(const SharedHandle<GTEShader> &shader,
+                                         const char *role,
+                                         const OmegaCommon::String &pipelineName);
     public:
         OMEGACOMMON_CLASS("OmegaGTE.OmegaGraphicsEngine")
         /// @brief Returns the Native Device.

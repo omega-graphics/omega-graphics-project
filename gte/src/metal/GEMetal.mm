@@ -856,8 +856,9 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             // and can interfere with drawable presentation.
 
             metalDevice = NSObjectHandle {NSOBJECT_CPP_BRIDGE device};
+            _deviceFeatures = __device->features.featuresAsBitmask();
             DEBUG_STREAM("GEMetalEngine Successfully Created");
-            
+
         };
 
         SharedHandle<GEBuffer> createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes) override {
@@ -899,6 +900,9 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             return std::shared_ptr<GEBuffer>(new GEMetalBuffer(desc.usage,buffer,layoutDesc));
         };
         SharedHandle<GEComputePipelineState> makeComputePipelineState(ComputePipelineDescriptor &desc) override{
+            if(!_checkPipelineShader(desc.computeFunc,"compute",desc.name)){
+                return nullptr;
+            }
             metalDevice.assertExists();
 //
 //
@@ -1015,6 +1019,10 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         };
 
         SharedHandle<GERenderPipelineState> makeRenderPipelineState(RenderPipelineDescriptor &desc) override{
+            if(!_checkPipelineShader(desc.vertexFunc,"vertex",desc.name) ||
+               !_checkPipelineShader(desc.fragmentFunc,"fragment",desc.name)){
+                return nullptr;
+            }
             metalDevice.assertExists();
             MTLRenderPipelineDescriptor *pipelineDesc = [[MTLRenderPipelineDescriptor alloc] init];
             if(desc.name.size() > 0) {
