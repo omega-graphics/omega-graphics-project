@@ -19,7 +19,7 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 | 2.9 NativeScreen | New subsystem | Not started |
 | 2.10 NativeAccessibility | New subsystem (stub) | Not started |
 | **2.11 NativeNote / NotificationCenter** | Permissions, scheduling, callbacks, removal, categories — macOS UN, Win32 ToastNotificationManager, GTK libnotify | **Done** |
-| 2.12 NativeMenu / Menu | Shortcuts, check/radio items, contextual menus, icons, dynamic updates | Not started |
+| **2.12 NativeMenu / Menu** | Shortcuts, check/radio items, contextual menus, dynamic updates, validation delegate — macOS NSMenu, Win32 HMENU, GTK GtkMenu | **Done** (icons deferred) |
 
 ---
 
@@ -527,7 +527,7 @@ Initial implementations can be no-ops; the point is to lock the API so the UI la
 
 ---
 
-### 2.11 NativeNote / NotificationCenter — Complete Notification API
+### 2.11 NativeNote / NotificationCenter — Complete Notification API [DONE]
 
 **Goal:** Bring notification support from "fire-and-forget" to production-complete: permission management, scheduling, interaction callbacks, and notification lifecycle.
 
@@ -627,6 +627,25 @@ public:
     void setDelegate(NotificationDelegate * delegate);
 };
 ```
+
+Implementation Notes:
+
+Section 2.11 is implemented across all three platforms.
+
+**What was built:**
+
+- [NativeNote.h](wtk/include/omegaWTK/Native/NativeNote.h) — `NativeNotePermission`, extended `NativeNote` (identifier, category, delaySeconds), `NativeNoteAction`/`NativeNoteCategory`, `NativeNoteCenterDelegate`, and the extended `NativeNoteCenter` (`requestPermission`, `currentPermission`, `removeNote`, `removeAllNotes`, `registerCategories`, `setDelegate`).
+- [Notification.h](wtk/include/omegaWTK/UI/Notification.h) / [Notification.cpp](wtk/src/UI/Notification.cpp) — UI wrapper with `NotificationDelegate`, an internal bridge that adapts the native delegate, plus `requestPermission`, `isAuthorized`, `remove`, `removeAll`, `registerCategories`, `setDelegate`.
+- [CocoaNote.mm](wtk/src/Native/macos/CocoaNote.mm) — `UNUserNotificationCenter` with `requestAuthorizationWithOptions`, cached permission snapshot via `getNotificationSettings`, `UNTimeIntervalNotificationTrigger` for delays, `UNNotificationCategory`+`UNNotificationAction` for categories, an Obj-C delegate class wired to `willPresent` and `didReceiveResponse`.
+- [WinNote.cpp](wtk/src/Native/win/WinNote.cpp) — Real WinRT/ABI implementation: resolves AUMID via `GetCurrentProcessExplicitAppUserModelID`, builds toast XML (with `<actions>` from registered categories), uses `IToastNotifier::Show` (or `AddToSchedule`+`ScheduledToastNotification` for delays), tracks live toasts to keep `Activated`/`Dismissed` handlers alive, supports `RemoveGroupedTagWithId`/`ClearWithId` for removal.
+- [GTKNote.cpp](wtk/src/Native/gtk/GTKNote.cpp) — `libnotify` (conditional on `OMEGAWTK_HAS_LIBNOTIFY`): `notify_init` lazy, immediate-fire via `notify_notification_show`, scheduling via `g_timeout_add`, action buttons via `notify_notification_add_action`, cleanup via `closed` signal, falls back to no-op if libnotify is absent.
+- [CMakeLists.txt](wtk/CMakeLists.txt) — optional `pkg_check_modules(LIBNOTIFY libnotify)`, links it into `OmegaWTK_Native` on Linux when found and defines `OMEGAWTK_HAS_LIBNOTIFY`.
+- [Native-API-Completion-Proposal.md](wtk/docs/Native-API-Completion-Proposal.md) — 2.11 marked Done in both the status table and priority table.
+
+**Verified on macOS:** `OmegaWTK_Native`, `OmegaWTK_UI`, and the full `OmegaWTK` framework all built clean. **Win32 and GTK paths were not built here** — they need a Windows/Linux host. A few risks to know about for those:
+
+- **Win32:** Sending a toast requires an AUMID. For unpackaged apps you must call `SetCurrentProcessExplicitAppUserModelID` early (the implementation logs to `OutputDebugString` and bails gracefully if it isn't set). Production-quality activation also typically needs a registered `INotificationActivationCallback` shortcut so toasts can re-activate a closed app — beyond 2.11's scope, but worth noting.
+- **GTK:** If `libnotify` isn't installed, the backend is a no-op (CMake prints a warning). `delaySeconds` is implemented via `g_timeout_add`, so the scheduling clock is the GLib main loop, not the system.
 
 ---
 
@@ -757,6 +776,28 @@ public:
 
 When `onValidateItem` returns `false`, the item is greyed out for that menu display cycle. On macOS this maps directly to `validateMenuItem:`; on Win32/GTK it can be called before `TrackPopupMenu` / menu show.
 
+
+Implementation Notes:
+
+Section 2.12 is implemented across all three platforms. Full macOS framework builds clean.
+
+**What was built:**
+
+- [NativeMenu.h](wtk/include/omegaWTK/Native/NativeMenu.h) — `NativeMenuShortcut`, `NativeMenuItemType`; extended `NativeMenuItem` (`setTitle`, `setChecked`/`isChecked`, `setShortcut`, `getType`); extended `NativeMenu` (`removeMenuItem`, `removeAllItems`, `itemCount`); `onValidateItem` on `NativeMenuDelegate`; new factories `make_native_checkbox_item` / `make_native_radio_item`; `show_native_context_menu`.
+- [NativeMenu.cpp](wtk/src/Native/NativeMenu.cpp) — Cross-platform dispatcher routes to all three backends.
+- [Menu.h](wtk/include/omegaWTK/UI/Menu.h) / [Menu.cpp](wtk/src/UI/Menu.cpp) — UI layer mirrors the native surface: `MenuShortcut` struct, MenuItem `setTitle`/`setShortcut`/`setChecked`/`isChecked`/`getType`, Menu `addItem`/`insertItem`/`removeItem`/`removeAllItems`/`itemCount`, `CheckboxMenuItem`/`RadioMenuItem` factories, `ShowContextMenu` free function, `onValidateItem` default in `MenuDelegate`.
+- [CocoaMenu.mm](wtk/src/Native/macos/CocoaMenu.mm) — Shortcut translation to `keyEquivalent`+`keyEquivalentModifierMask` (handles letters, digits, F-keys, arrows, Tab/Space/Return/Backspace/Delete/Escape/Home/End/PageUp/PageDown); `NSControlStateValueOn`/`Off` for check; `NSMenuItemValidation` protocol via a per-menu validator object; context menu via `popUpMenuPositioningItem:atLocation:inView:`; full removeMenuItem/removeAllItems/itemCount with reindexing.
+- [WinMenu.cpp](wtk/src/Native/win/WinMenu.cpp) / [WinMenu.h](wtk/src/Native/win/WinMenu.h) — Shortcuts displayed via the standard `\tCtrl+Shift+X` suffix (Windows draws them right-aligned), `MFT_RADIOCHECK` for radio items (bullet glyph), `CheckMenuItem` for state, `RemoveMenu` for removal, validation called inline before `TrackPopupMenuEx` for context menus. Menu lifecycle now properly `DestroyMenu`s on teardown.
+- [GTKMenu.cpp](wtk/src/Native/gtk/GTKMenu.cpp) / [GTKMenu.h](wtk/src/Native/gtk/GTKMenu.h) — `GtkAccelGroup` per menu plus `gtk_widget_add_accelerator` (`GTK_ACCEL_VISIBLE` so GTK draws the shortcut hint); `GtkCheckMenuItem` for both checkbox and radio (radio uses `gtk_check_menu_item_set_draw_as_radio`); validation hooked to the menu's `show` signal so it runs before any popup; context via `gtk_menu_popup_at_pointer`. The same key-name vocabulary as macOS is mapped to `GDK_KEY_*`.
+- [Native-API-Completion-Proposal.md](wtk/docs/Native-API-Completion-Proposal.md) — 2.12 marked Done in both tables.
+
+**Verified on macOS:** `OmegaWTK_Native`, `OmegaWTK_UI`, and the `OmegaWTK` framework all link clean. **Win32 and GTK paths were not built here**, with these caveats:
+
+- **Win32:** Shortcuts are *displayed* in the menu, but actual key-press routing requires an accelerator table (`HACCEL` + `TranslateAccelerator` in the message loop). [WinApp.cpp](wtk/src/Native/win/WinApp.cpp) doesn't currently call `TranslateAccelerator`, so shortcuts won't fire from a key press until that's wired up — out of scope for 2.12 as the proposal specifies the menu-side surface only.
+- **Win32 / GTK:** `onValidateItem` only fires for context menus and (on GTK) any menu's "show" signal. For Win32 menu bars, hooking `WM_INITMENUPOPUP` would require touching [WinAppWindow.cpp](wtk/src/Native/win/WinAppWindow.cpp)'s wndproc — also outside this section's scope per the proposal note.
+- **Radio groups:** Mutual-exclusion across radio items is the caller's responsibility on all three platforms, as the proposal notes.
+- **Icons** are deferred ("Phase 2" in the proposal).
+
 ---
 
 ## 3. GTK Platform Parity
@@ -793,7 +834,7 @@ The GTK backend currently only implements `NativeApp`, `NativeWindow`, `NativeIt
 | **P2** | 2.7 NativeDragDrop | Important for content apps, less critical initially |
 | **P2** | 2.9 NativeScreen | Multi-monitor support |
 | ~~P1~~ **Done** | 2.11 NativeNote / NotificationCenter | Permissions required on macOS; scheduling and callbacks for real use |
-| **P1** | 2.12 NativeMenu / Menu | Keyboard shortcuts and context menus are baseline UX |
+| ~~P1~~ **Done** | 2.12 NativeMenu / Menu | Keyboard shortcuts and context menus are baseline UX |
 | **P3** | 2.10 NativeAccessibility | Stub now, implement per-platform over time |
 
 ---

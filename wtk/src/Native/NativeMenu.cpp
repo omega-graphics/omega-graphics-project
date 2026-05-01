@@ -43,6 +43,32 @@ NMI make_native_menu_seperator(){
     return nullptr;
 };
 
+NMI make_native_checkbox_item(const OmegaCommon::String & str, NM parent, bool initialChecked){
+#ifdef TARGET_MACOS
+    return Cocoa::make_cocoa_checkbox_item(str, parent, initialChecked);
+#endif
+#ifdef TARGET_WIN32
+    return Win::make_win_checkbox_item(str, parent, initialChecked);
+#endif
+#ifdef TARGET_GTK
+    return GTK::make_gtk_checkbox_item(str, parent, initialChecked);
+#endif
+    return nullptr;
+};
+
+NMI make_native_radio_item(const OmegaCommon::String & str, NM parent, bool initialChecked){
+#ifdef TARGET_MACOS
+    return Cocoa::make_cocoa_radio_item(str, parent, initialChecked);
+#endif
+#ifdef TARGET_WIN32
+    return Win::make_win_radio_item(str, parent, initialChecked);
+#endif
+#ifdef TARGET_GTK
+    return GTK::make_gtk_radio_item(str, parent, initialChecked);
+#endif
+    return nullptr;
+};
+
 NM make_native_menu(const OmegaCommon::String & name){
 #ifdef TARGET_MACOS
     return Cocoa::make_cocoa_menu(name);
@@ -56,9 +82,21 @@ NM make_native_menu(const OmegaCommon::String & name){
     return nullptr;
 };
 
+void show_native_context_menu(NM menu, Composition::Point2D screenPos){
+#ifdef TARGET_MACOS
+    Cocoa::show_cocoa_context_menu(menu, screenPos);
+#endif
+#ifdef TARGET_WIN32
+    Win::show_win_context_menu(menu, screenPos);
+#endif
+#ifdef TARGET_GTK
+    GTK::show_gtk_context_menu(menu, screenPos);
+#endif
 };
 
-#ifdef TARGET_WIN32 
+};
+
+#ifdef TARGET_WIN32
 #ifdef WINDOWS_PRIVATE
 
 #include "win/WinMenu.h"
@@ -66,5 +104,5 @@ NM make_native_menu(const OmegaCommon::String & name){
 void __select_item_on_win_menu(void * win_menu,unsigned idx){
     return OmegaWTK::Native::Win::select_item(win_menu,idx);
 };
-#endif 
+#endif
 #endif

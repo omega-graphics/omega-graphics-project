@@ -15,11 +15,14 @@ namespace OmegaWTK::Native {
             OmegaCommon::Vector<SharedHandle<WinMenuItem>> items;
             void insertMenuItem(NMI menu_item, unsigned idx) override;
             void addMenuItem(NMI menu_item) override;
+            void removeMenuItem(unsigned idx) override;
+            void removeAllItems() override;
+            unsigned itemCount() const override { return (unsigned)items.size(); }
 
         public:
-            /**
-               Returns HMENU
-           */
+            HMENU getHMenu() const { return hmenu; }
+
+            /// Returns HMENU.
             void *getNativeBinding() override {
                 return hmenu;
             };
@@ -27,19 +30,12 @@ namespace OmegaWTK::Native {
                 if(hasDelegate)
                     delegate->onSelectItem(idx);
             };
-            WinMenu(const OmegaCommon::String & name){
+            /// Run validation against the user delegate before showing.
+            /// Items whose validator returns false are greyed out.
+            void runValidation();
 
-                info.dwMenuData = (ULONG_PTR)this;
-                info.cbSize = sizeof(info);
-                info.fMask = MIM_MENUDATA | MIM_BACKGROUND | MIM_STYLE;
-                info.dwStyle = MNS_NOTIFYBYPOS;
-                info.hbrBack = (HBRUSH)COLOR_WINDOW;
-                // info.cyMax = 0;
-                hmenu = CreateMenu();
-
-                SetMenuInfo(hmenu,&info);
-            };
-            ~WinMenu() override = default;
+            WinMenu(const OmegaCommon::String & name);
+            ~WinMenu() override;
         };
 
         void select_item(void * menu,unsigned idx);
@@ -47,6 +43,9 @@ namespace OmegaWTK::Native {
         NM make_win_menu(const OmegaCommon::String & name);
         NMI make_win_menu_item(const OmegaCommon::String & str, NM parent, bool hasSubMenu, NM subMenu);
         NMI make_win_menu_seperator();
+        NMI make_win_checkbox_item(const OmegaCommon::String & str, NM parent, bool initialChecked);
+        NMI make_win_radio_item(const OmegaCommon::String & str, NM parent, bool initialChecked);
+        void show_win_context_menu(NM menu, Composition::Point2D screenPos);
     };
 };
 
