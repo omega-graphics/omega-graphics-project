@@ -114,42 +114,66 @@ namespace autom {
             for(auto & obj_src_p : t->source_object_map){
                 mainNinja << obj_src_p.second << " ";
             }
-            
-            /// Must have a seperate output string stream because
-            /// Source Group Targets' compiled objects will be added to the list of object files to link.
-            
-            std::ostringstream deps_out;
-            
-            if(!t->resolvedDeps.empty()) {
-                /// Write Order Only Dependencies
-                deps_out << " || ";
-                for(auto d : t->resolvedDeps){
-                    if(IS_COMPILED_TARGET_TYPE(d->type)){
-                        auto t = std::dynamic_pointer_cast<CompiledTarget>(d);
-                        /// For every other Compiled Target
-                        if(d->type != SOURCE_GROUP){
-                            if(!t->output_dir->empty()){
-                                deps_out << t->output_dir->value() << "/";
-                            };
-                    
-                            deps_out << t->name->value() << "." << t->output_ext->value();
-                           
-                        }
-                        /// Only For Source Group Targets
-                        else {
-                            /// Output Source Group object files to `mainNinja` output stream link input.
-                            for(auto & src_obj_pair : t->source_object_map){
-                                mainNinja << src_obj_pair.second << " ";
-                            }
-                        }
-                        deps_out << " ";
-                        
+
+            /// Static/shared library deps go into the link line as positional
+            /// inputs (full filename). This is the cross-platform way to link
+            /// against a project-internal target output: it works for ar/ld on
+            /// Unix, ld64 on Darwin, and link.exe/lld-link on Windows, and it
+            /// avoids the malformed ``-l<name>.<ext>`` that came from passing
+            /// the resolved filename through the ``-l``-prefixed LIBS list.
+            std::ostringstream order_only;
+            bool order_only_started = false;
+
+            for(auto d : t->resolvedDeps){
+                if(!IS_COMPILED_TARGET_TYPE(d->type)){
+                    continue;
+                }
+                auto _ct = std::dynamic_pointer_cast<CompiledTarget>(d);
+
+                if(d->type == SOURCE_GROUP){
+                    /// Output Source Group object files as positional inputs.
+                    for(auto & src_obj_pair : _ct->source_object_map){
+                        mainNinja << src_obj_pair.second << " ";
                     }
                 }
+                else if(d->type == SHARED_LIBRARY || d->type == STATIC_LIBRARY){
+                    std::ostringstream dep_path;
+                    if(!_ct->output_dir->empty()){
+                        dep_path << _ct->output_dir->value() << "/";
+                    }
+                    dep_path << _ct->name->value();
+                    /// On Windows, linking a DLL goes through its import library.
+                    if(outputOpts.platform == TargetPlatform::Windows
+                       && d->type == SHARED_LIBRARY
+                       && _ct->implib_ext != nullptr
+                       && !_ct->implib_ext->empty()){
+                        dep_path << "." << _ct->implib_ext->value();
+                    }
+                    else if(!_ct->output_ext->empty()){
+                        dep_path << "." << _ct->output_ext->value();
+                    }
+                    mainNinja << dep_path.str() << " ";
+                }
+                else {
+                    /// Executables and other compiled targets only need to
+                    /// finish before this link step; they aren't linker input.
+                    if(!order_only_started){
+                        order_only << " || ";
+                        order_only_started = true;
+                    }
+                    if(!_ct->output_dir->empty()){
+                        order_only << _ct->output_dir->value() << "/";
+                    }
+                    order_only << _ct->name->value();
+                    if(!_ct->output_ext->empty()){
+                        order_only << "." << _ct->output_ext->value();
+                    }
+                    order_only << " ";
+                }
             }
-            
-            mainNinja << deps_out.str();
-            
+
+            mainNinja << order_only.str();
+
             mainNinja << std::endl;
             return phony_name;
         };
@@ -206,8 +230,13 @@ namespace autom {
 
                     if(t->type == EXECUTABLE || t->type == SHARED_LIBRARY){
                         /// Only linked targets should emit linker input and search paths.
+                        /// LIBS carries user-declared system libraries only; project-
+                        /// internal static/shared dep outputs are passed as positional
+                        /// inputs in writeLinkRecipe to avoid the malformed
+                        /// ``-l<name>.<ext>`` that resulted from concatenating the
+                        /// resolved filename with the ``-l`` prefix.
                         auto libs = t->libs->toStringVector();
-                        
+
 #ifdef __APPLE__
                         auto frameworks = t->frameworks->toStringVector();
                         /// Strip .framework extension from frameworks
@@ -218,60 +247,15 @@ namespace autom {
                                 f.assign(f.substr(0,dot_end));
                             }
                         }
-                        
-                       
+
+
 #endif
-                         auto lib_dirs = t->lib_dirs->toStringVector();
-                        
-                        for(auto d : t->resolvedDeps){
-                            if(d->type == SHARED_LIBRARY || d->type == STATIC_LIBRARY){
-                                auto _ct = std::dynamic_pointer_cast<CompiledTarget>(d);
-                                std::ostringstream dep_name;
-                                
-                                if(!_ct->output_dir->empty()){
-//                                    auto found = std::find_if(lib_dirs.begin(),lib_dirs.end(),[&](std::string & str){
-//                                        return _ct->output_dir->value() == str;
-//                                    });
-//                                    /// If lib dir has not been added yet.
-//                                    if(found == lib_dirs.end()){
-//                                    lib_dirs.push_back(_ct->output_dir->value());
-//                                    }
-                                    dep_name << _ct->output_dir->value() << "/";
-                                }
-                                /// Use IMPORT LIB when linking DLL on Windows
-                                if(outputOpts.platform == TargetPlatform::Windows){
-                                    if(_ct->type == SHARED_LIBRARY){
-                                        dep_name << _ct->name->value() << "." << _ct->implib_ext->value();
-                                    }
-                                    else {
-                                        dep_name << d->name->value() << "." << _ct->output_ext->value();
-                                    }
-                                }
-                                else {
-                                    if(toolchain->stripLibPrefix){
-                                        std::string str = d->name->value();
-    //                                    if(str.substr(0,3) == "lib"){
-    //                                        dep_name << str.substr(3,str.size()-3);
-    //                                    }
-    //                                    else {
-                                        dep_name << str << "." << _ct->output_ext->value();
-//          
-                                    }
-                                    else {
-                                        dep_name << d->name->value() << "." << _ct->output_ext->value();
-                                    }
-                                }
-                               
-                                
-                                libs.push_back(dep_name.str());
-                            }
-                        }
+                        auto lib_dirs = t->lib_dirs->toStringVector();
+
                         writeBuildRuleParam("LIBS",libs,Libs);
-                        
-                    
-                        
+
                         lib_dirs.push_back(".");
-                        
+
                         writeBuildRuleParam("LIB_DIRS",lib_dirs,LibDirs);
                         
 #ifdef __APPLE__

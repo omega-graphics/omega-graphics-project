@@ -239,6 +239,10 @@ namespace omegasl {
                 layoutDescType = OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC;
                 writeSampler();
             } else {
+                /// Metal entry-function params need a type. Without `sampler`
+                /// here the parameter list emits as ` <name>[[sampler(N)]]`
+                /// — leading space, no type — which is invalid MSL.
+                out << "sampler";
                 layoutDescType = OMEGASL_SHADER_SAMPLERCUBE_DESC;
             }
         } else if (type_ == builtins::sampler1d_type) {
@@ -247,6 +251,7 @@ namespace omegasl {
                 layoutDescType = OMEGASL_SHADER_STATIC_SAMPLER1D_DESC;
                 writeSampler();
             } else {
+                out << "sampler";
                 layoutDescType = OMEGASL_SHADER_SAMPLER1D_DESC;
             }
         } else if (type_ == builtins::sampler2d_type) {
@@ -255,6 +260,7 @@ namespace omegasl {
                 layoutDescType = OMEGASL_SHADER_STATIC_SAMPLER2D_DESC;
                 writeSampler();
             } else {
+                out << "sampler";
                 layoutDescType = OMEGASL_SHADER_SAMPLER2D_DESC;
             }
         } else if (type_ == builtins::sampler3d_type) {
@@ -266,16 +272,6 @@ namespace omegasl {
                 out << "sampler";
                 layoutDescType = OMEGASL_SHADER_SAMPLER3D_DESC;
             }
-            /// Bug-compat: the original MSL code path for sampler3d
-            /// `continue`s here, skipping the `[[sampler(N)]]` attribute,
-            /// the layout fill, and the paramIndex++. Preserve verbatim
-            /// so this phase is a pure code-move; the bug is tracked
-            /// separately.
-            layoutDesc.type = layoutDescType;
-            layoutDesc.gpu_relative_loc = 0;
-            layoutDesc.io_mode = ioMode;
-            layoutDesc.location = res_desc->registerNumber;
-            return;
         }
 
         if (isTexture) {
@@ -478,9 +474,11 @@ using namespace metal;
             }
             if (stmt->type == VAR_DECL || stmt->type == RETURN_DECL || stmt->type == IF_STMT
                 || stmt->type == FOR_STMT || stmt->type == WHILE_STMT || stmt->type == BREAK_STMT
-                || stmt->type == CONTINUE_STMT || stmt->type == DISCARD_STMT) {
+                || stmt->type == CONTINUE_STMT || stmt->type == DISCARD_STMT
+                || stmt->type == SWITCH_STMT) {
                 cg.generateDecl((ast::Decl *)stmt);
-                if (stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT) {
+                if (stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT
+                    && stmt->type != SWITCH_STMT) {
                     out << ";";
                 }
                 out << std::endl;
@@ -573,6 +571,40 @@ using namespace metal;
         return cg.typeResolver->resolveTypeWithExpr(texTypeExpr);
     }
 
+    /// Emit the spatial-coord + layer-index split that Metal's `sample` /
+    /// `gather` need for array and cube-array textures. The OmegaSL coord
+    /// packs the layer into the trailing component (.y for 1D-array,
+    /// .z for 2D-array, .w for cube-array); MSL takes them as separate
+    /// arguments. For non-array textures, the coord is emitted as-is.
+    /// Shared by `emitTextureSample`, `emitTextureSampleLOD`, ..., and
+    /// `emitTextureGather`.
+    static void emitMSLSampleCoord(CodeGen &cg, ast::Expr *coordArg, ast::Type *texTy, std::ostream &out){
+        if(texTy == ast::builtins::texture1d_array_type){
+            /// OmegaSL coord = float2(u, layer) → MSL `(u, uint(layer))`.
+            out << "(";
+            cg.generateExpr(coordArg);
+            out << ").x,uint((";
+            cg.generateExpr(coordArg);
+            out << ").y)";
+        } else if(texTy == ast::builtins::texture2d_array_type){
+            /// OmegaSL coord = float3(uv, layer) → `((coord).xy, uint((coord).z))`.
+            out << "(";
+            cg.generateExpr(coordArg);
+            out << ").xy,uint((";
+            cg.generateExpr(coordArg);
+            out << ").z)";
+        } else if(texTy == ast::builtins::texturecube_array_type){
+            /// OmegaSL coord = float4(xyz dir, w layer) → `((coord).xyz, uint((coord).w))`.
+            out << "(";
+            cg.generateExpr(coordArg);
+            out << ").xyz,uint((";
+            cg.generateExpr(coordArg);
+            out << ").w)";
+        } else {
+            cg.generateExpr(coordArg);
+        }
+    }
+
     void MSLTarget::emitTextureSample(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
         /// Metal splits the OmegaSL combined coord into separate (coord,
         /// layer) / (coord, sample_index) arguments for array / MS / cube
@@ -584,29 +616,90 @@ using namespace metal;
         out << ".sample(";
         cg.generateExpr(_expr->args[0]);
         out << ",";
-        if(texTy == ast::builtins::texture1d_array_type){
-            /// OmegaSL coord = float2(u, layer) → MSL `(u, uint(layer))`.
-            out << "(";
-            cg.generateExpr(_expr->args[2]);
-            out << ").x,uint((";
-            cg.generateExpr(_expr->args[2]);
-            out << ").y)";
-        } else if(texTy == ast::builtins::texture2d_array_type){
-            /// OmegaSL coord = float3(uv, layer) → `((coord).xy, uint((coord).z))`.
-            out << "(";
-            cg.generateExpr(_expr->args[2]);
-            out << ").xy,uint((";
-            cg.generateExpr(_expr->args[2]);
-            out << ").z)";
-        } else if(texTy == ast::builtins::texturecube_array_type){
-            /// OmegaSL coord = float4(xyz dir, w layer) → `((coord).xyz, uint((coord).w))`.
-            out << "(";
-            cg.generateExpr(_expr->args[2]);
-            out << ").xyz,uint((";
-            cg.generateExpr(_expr->args[2]);
-            out << ").w)";
-        } else {
-            cg.generateExpr(_expr->args[2]);
+        emitMSLSampleCoord(cg, _expr->args[2], texTy, out);
+        out << ")";
+    }
+
+    void MSLTarget::emitTextureSampleLOD(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// `tex.sample(s, coord [, layer], level(lod))`. The `level()` LOD
+        /// argument is a Metal sample-option function call.
+        auto *texTy = metalResolveTextureType(cg, _expr->args[1]);
+        cg.generateExpr(_expr->args[1]);
+        out << ".sample(";
+        cg.generateExpr(_expr->args[0]);
+        out << ",";
+        emitMSLSampleCoord(cg, _expr->args[2], texTy, out);
+        out << ",level(";
+        cg.generateExpr(_expr->args[3]);
+        out << "))";
+    }
+
+    void MSLTarget::emitTextureSampleBias(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// `tex.sample(s, coord [, layer], bias(b))`.
+        auto *texTy = metalResolveTextureType(cg, _expr->args[1]);
+        cg.generateExpr(_expr->args[1]);
+        out << ".sample(";
+        cg.generateExpr(_expr->args[0]);
+        out << ",";
+        emitMSLSampleCoord(cg, _expr->args[2], texTy, out);
+        out << ",bias(";
+        cg.generateExpr(_expr->args[3]);
+        out << "))";
+    }
+
+    void MSLTarget::emitTextureSampleGrad(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// `tex.sample(s, coord [, layer], gradientNd(ddx, ddy))`. The MSL
+        /// gradient option function is shape-specific:
+        ///   1D     → gradient1d
+        ///   2D / 2D-array → gradient2d
+        ///   3D     → gradient3d
+        ///   Cube / cube-array → gradientcube
+        auto *texTy = metalResolveTextureType(cg, _expr->args[1]);
+        const char *gradFn = "gradient2d";
+        if(texTy == ast::builtins::texture1d_type
+           || texTy == ast::builtins::texture1d_array_type){
+            gradFn = "gradient1d";
+        } else if(texTy == ast::builtins::texture3d_type){
+            gradFn = "gradient3d";
+        } else if(texTy == ast::builtins::texturecube_type
+                  || texTy == ast::builtins::texturecube_array_type){
+            gradFn = "gradientcube";
+        }
+        cg.generateExpr(_expr->args[1]);
+        out << ".sample(";
+        cg.generateExpr(_expr->args[0]);
+        out << ",";
+        emitMSLSampleCoord(cg, _expr->args[2], texTy, out);
+        out << "," << gradFn << "(";
+        cg.generateExpr(_expr->args[3]);
+        out << ",";
+        cg.generateExpr(_expr->args[4]);
+        out << "))";
+    }
+
+    void MSLTarget::emitTextureGather(CodeGen &cg, ast::CallExpr *_expr, int channel, std::ostream &out) {
+        /// `tex.gather(s, coord [, layer] [, int2(0,0), component::C])`.
+        /// The default `gather` (channel == -1) gathers the red component;
+        /// gather{Red,Green,Blue,Alpha} use `component::x/y/z/w`. Metal's
+        /// gather signature requires the `int2(0,0)` offset slot before the
+        /// component selector — we emit `int2(0,0)` explicitly because
+        /// OmegaSL doesn't expose offsets at this layer (Phase B).
+        auto *texTy = metalResolveTextureType(cg, _expr->args[1]);
+        cg.generateExpr(_expr->args[1]);
+        out << ".gather(";
+        cg.generateExpr(_expr->args[0]);
+        out << ",";
+        emitMSLSampleCoord(cg, _expr->args[2], texTy, out);
+        if(channel >= 0){
+            const char *comp;
+            switch(channel){
+                case 0: comp = "x"; break;
+                case 1: comp = "y"; break;
+                case 2: comp = "z"; break;
+                case 3: comp = "w"; break;
+                default: comp = "x"; break;
+            }
+            out << ",int2(0,0),component::" << comp;
         }
         out << ")";
     }

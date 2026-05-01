@@ -57,7 +57,7 @@ AUTOM_NATIVE_FUNC(fs_glob){
     glob_t g;
 //    std::cout << path.data() << std::endl;
     
-    int r = glob(path.data(),GLOB_MAGCHAR,NULL,&g);
+    int r = glob(path.data(),0,NULL,&g);
 //    std::cout << r << std::endl;
     
     if(r == 0){

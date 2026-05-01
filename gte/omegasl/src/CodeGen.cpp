@@ -133,6 +133,30 @@ namespace omegasl {
                 if (_id_expr == BUILTIN_SAMPLE) {
                     generatedExprBody = true;
                     target->emitTextureSample(*this, _expr, out);
+                } else if (_id_expr == BUILTIN_SAMPLE_LOD) {
+                    generatedExprBody = true;
+                    target->emitTextureSampleLOD(*this, _expr, out);
+                } else if (_id_expr == BUILTIN_SAMPLE_BIAS) {
+                    generatedExprBody = true;
+                    target->emitTextureSampleBias(*this, _expr, out);
+                } else if (_id_expr == BUILTIN_SAMPLE_GRAD) {
+                    generatedExprBody = true;
+                    target->emitTextureSampleGrad(*this, _expr, out);
+                } else if (_id_expr == BUILTIN_GATHER) {
+                    generatedExprBody = true;
+                    target->emitTextureGather(*this, _expr, /*channel=*/-1, out);
+                } else if (_id_expr == BUILTIN_GATHER_RED) {
+                    generatedExprBody = true;
+                    target->emitTextureGather(*this, _expr, /*channel=*/0, out);
+                } else if (_id_expr == BUILTIN_GATHER_GREEN) {
+                    generatedExprBody = true;
+                    target->emitTextureGather(*this, _expr, /*channel=*/1, out);
+                } else if (_id_expr == BUILTIN_GATHER_BLUE) {
+                    generatedExprBody = true;
+                    target->emitTextureGather(*this, _expr, /*channel=*/2, out);
+                } else if (_id_expr == BUILTIN_GATHER_ALPHA) {
+                    generatedExprBody = true;
+                    target->emitTextureGather(*this, _expr, /*channel=*/3, out);
                 } else if (_id_expr == BUILTIN_WRITE) {
                     generatedExprBody = true;
                     target->emitTextureWrite(*this, _expr, out);
@@ -141,6 +165,11 @@ namespace omegasl {
                     target->emitTextureRead(*this, _expr, out);
                 } else if (isUserFunc(_id_expr)) {
                     out << spellUserFuncName(_id_expr);
+                } else if (target->tryEmitBuiltinCall(*this, _expr, _id_expr, out)) {
+                    /// GLSL handles `saturate` / `fmod` here — the call is
+                    /// fully emitted by the backend (different shape, not a
+                    /// simple rename), so skip the shared `(args)` suffix.
+                    generatedExprBody = true;
                 } else {
                     auto renamed = target->renameBuiltin(_id_expr);
                     out << renamed;
@@ -195,9 +224,11 @@ namespace omegasl {
             }
             if (stmt->type == VAR_DECL || stmt->type == RETURN_DECL || stmt->type == IF_STMT
                 || stmt->type == FOR_STMT || stmt->type == WHILE_STMT || stmt->type == BREAK_STMT
-                || stmt->type == CONTINUE_STMT || stmt->type == DISCARD_STMT) {
+                || stmt->type == CONTINUE_STMT || stmt->type == DISCARD_STMT
+                || stmt->type == SWITCH_STMT) {
                 generateDecl((ast::Decl *)stmt);
-                if (stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT) {
+                if (stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT
+                    && stmt->type != SWITCH_STMT) {
                     out << ";";
                 }
             } else {
@@ -332,6 +363,49 @@ namespace omegasl {
                 generateExpr(_stmt->condition);
                 shaderOut << ")";
                 generateBlock(*_stmt->body);
+                break;
+            }
+            case SWITCH_STMT: {
+                /// C-style switch with fall-through. HLSL/MSL/GLSL all
+                /// emit identical syntax, so this lives in shared codegen
+                /// rather than per-target hooks. `break` inside a case
+                /// flows through the existing BREAK_STMT arm.
+                auto _stmt = (ast::SwitchStmt *)decl;
+                shaderOut << "switch(";
+                generateExpr(_stmt->condition);
+                shaderOut << "){" << std::endl;
+                for (auto &sc : _stmt->cases) {
+                    for (unsigned i = 0; i < indentLevel; i++) shaderOut << "    ";
+                    if (sc.value) {
+                        shaderOut << "case ";
+                        generateExpr(sc.value);
+                        shaderOut << ":";
+                    } else {
+                        shaderOut << "default:";
+                    }
+                    shaderOut << std::endl;
+                    indentLevel += 1;
+                    for (auto *s : sc.body) {
+                        for (unsigned i = 0; i < indentLevel; i++) shaderOut << "    ";
+                        if (s->type == VAR_DECL || s->type == RETURN_DECL || s->type == IF_STMT
+                            || s->type == FOR_STMT || s->type == WHILE_STMT || s->type == BREAK_STMT
+                            || s->type == CONTINUE_STMT || s->type == DISCARD_STMT
+                            || s->type == SWITCH_STMT) {
+                            generateDecl((ast::Decl *)s);
+                            if (s->type != IF_STMT && s->type != FOR_STMT && s->type != WHILE_STMT
+                                && s->type != SWITCH_STMT) {
+                                shaderOut << ";";
+                            }
+                        } else {
+                            generateExpr((ast::Expr *)s);
+                            shaderOut << ";";
+                        }
+                        shaderOut << std::endl;
+                    }
+                    indentLevel -= 1;
+                }
+                for (unsigned i = 0; i < indentLevel; i++) shaderOut << "    ";
+                shaderOut << "}";
                 break;
             }
             case BREAK_STMT: {

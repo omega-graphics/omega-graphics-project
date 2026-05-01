@@ -22,6 +22,9 @@ namespace omegasl {
         (subject == KW_BREAK) ||
         (subject == KW_CONTINUE) ||
         (subject == KW_DISCARD) ||
+        (subject == KW_SWITCH) ||
+        (subject == KW_CASE) ||
+        (subject == KW_DEFAULT) ||
         (subject == KW_STRUCT) ||
         (subject == KW_INTERNAL) ||
         (subject == KW_RETURN) ||

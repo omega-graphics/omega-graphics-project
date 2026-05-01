@@ -39,7 +39,8 @@ namespace std {
 namespace autom {
 
     struct Target;
-    
+    struct ConfigTarget;
+
     class ExecEngine;
     class Gen;
 
@@ -109,7 +110,12 @@ namespace autom {
             bool empty();
 
             void assign(Array *other);
-            
+
+            /// Append every element of ``other`` to this array. Elements are
+            /// deep-copied with the same rules as ``assign`` so that mutating
+            /// the source after appending leaves this array untouched.
+            void extend(Array *other);
+
             ArrayRef<Object *> value()const;
             std::vector<std::string> toStringVector();
 
@@ -201,7 +207,14 @@ namespace autom {
             
             unsigned totalTargets = 0;
 
+            /// Configs registered via ``Config(name:...)``. Layer A1.
+            std::unordered_map<std::string,std::shared_ptr<::autom::ConfigTarget>> configsByName;
+
             void addTarget(Target *target);
+
+            void addConfig(::autom::ConfigTarget *config);
+
+            ::autom::ConfigTarget *findConfig(const autom::StrRef & name);
             
             void importFile(const autom::StrRef & path);
 

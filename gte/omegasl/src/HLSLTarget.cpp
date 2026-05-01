@@ -184,6 +184,15 @@ namespace omegasl {
                 out << HLSL_RW_TEXTURE2D;
             }
             out << "<float4>";
+        } else if (_t == ast::builtins::texture3d_type) {
+            layoutDesc.type = OMEGASL_SHADER_TEXTURE3D_DESC;
+            if (ioMode == OMEGASL_SHADER_DESC_IO_IN) {
+                isTResource = true;
+                out << HLSL_TEXTURE3D;
+            } else {
+                out << HLSL_RW_TEXTURE3D;
+            }
+            out << "<float4>";
         } else if (_t == ast::builtins::texture1d_array_type) {
             layoutDesc.type = OMEGASL_SHADER_TEXTURE1D_ARRAY_DESC;
             if (ioMode == OMEGASL_SHADER_DESC_IO_IN) {
@@ -232,6 +241,11 @@ namespace omegasl {
             isSResource = true;
             layoutDesc.type = res_desc->isStatic ? OMEGASL_SHADER_STATIC_SAMPLER2D_DESC
                                                  : OMEGASL_SHADER_SAMPLER2D_DESC;
+            out << HLSL_SAMPLER;
+        } else if (_t == ast::builtins::sampler3d_type) {
+            isSResource = true;
+            layoutDesc.type = res_desc->isStatic ? OMEGASL_SHADER_STATIC_SAMPLER3D_DESC
+                                                 : OMEGASL_SHADER_SAMPLER3D_DESC;
             out << HLSL_SAMPLER;
         } else if (_t == ast::builtins::samplercube_type) {
             isSResource = true;
@@ -292,6 +306,12 @@ namespace omegasl {
         /// so the math builtins pass through. The `MAKE_*` constructors
         /// translate to HLSL's vector / matrix type names which double
         /// as constructors.
+        ///
+        /// `fma` lowers to `mad` on HLSL: HLSL's `fma` is double-only on
+        /// SM 5+, while `mad` is fp32-broad. The precision contract is
+        /// looser than IEEE 754 fma, but matches what every existing HLSL
+        /// shader uses for "multiply-add".
+        if (name == BUILTIN_FMA) return "mad";
         if (name == BUILTIN_MAKE_FLOAT2)   return "float2";
         if (name == BUILTIN_MAKE_FLOAT3)   return "float3";
         if (name == BUILTIN_MAKE_FLOAT4)   return "float4";
@@ -461,6 +481,68 @@ namespace omegasl {
         /// Texture has instance method
         cg.generateExpr(_expr->args[1]);
         out << ".Sample(";
+        cg.generateExpr(_expr->args[0]);
+        out << ",";
+        cg.generateExpr(_expr->args[2]);
+        out << ")";
+    }
+
+    void HLSLTarget::emitTextureSampleLOD(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// `tex.SampleLevel(s, c, lod)` — explicit mip level. The 4th OmegaSL
+        /// arg is the LOD; HLSL takes it after the coord.
+        cg.generateExpr(_expr->args[1]);
+        out << ".SampleLevel(";
+        cg.generateExpr(_expr->args[0]);
+        out << ",";
+        cg.generateExpr(_expr->args[2]);
+        out << ",";
+        cg.generateExpr(_expr->args[3]);
+        out << ")";
+    }
+
+    void HLSLTarget::emitTextureSampleBias(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// `tex.SampleBias(s, c, bias)` — fragment-stage only on D3D
+        /// because the underlying LOD selection still uses derivatives.
+        cg.generateExpr(_expr->args[1]);
+        out << ".SampleBias(";
+        cg.generateExpr(_expr->args[0]);
+        out << ",";
+        cg.generateExpr(_expr->args[2]);
+        out << ",";
+        cg.generateExpr(_expr->args[3]);
+        out << ")";
+    }
+
+    void HLSLTarget::emitTextureSampleGrad(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// `tex.SampleGrad(s, c, ddx, ddy)`. ddx/ddy rank already validated
+        /// by Sema to match the texture's spatial domain.
+        cg.generateExpr(_expr->args[1]);
+        out << ".SampleGrad(";
+        cg.generateExpr(_expr->args[0]);
+        out << ",";
+        cg.generateExpr(_expr->args[2]);
+        out << ",";
+        cg.generateExpr(_expr->args[3]);
+        out << ",";
+        cg.generateExpr(_expr->args[4]);
+        out << ")";
+    }
+
+    void HLSLTarget::emitTextureGather(CodeGen &cg, ast::CallExpr *_expr, int channel, std::ostream &out) {
+        /// `tex.Gather(s, c)` for the default form, `tex.GatherRed/Green/
+        /// Blue/Alpha(s, c)` for the per-channel forms. D3D11.1+ exposes all
+        /// four channel selectors directly. Sema restricts the texture shape
+        /// to 2D / 2D-array / cube / cube-array.
+        const char *suffix;
+        switch(channel){
+            case 0: suffix = "GatherRed"; break;
+            case 1: suffix = "GatherGreen"; break;
+            case 2: suffix = "GatherBlue"; break;
+            case 3: suffix = "GatherAlpha"; break;
+            default: suffix = "Gather"; break;
+        }
+        cg.generateExpr(_expr->args[1]);
+        out << "." << suffix << "(";
         cg.generateExpr(_expr->args[0]);
         out << ",";
         cg.generateExpr(_expr->args[2]);

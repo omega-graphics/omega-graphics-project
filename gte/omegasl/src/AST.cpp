@@ -77,6 +77,14 @@ namespace omegasl::ast {
         FuncType *read;
 
         FuncType *sample;
+        FuncType *sampleLOD;
+        FuncType *sampleBias;
+        FuncType *sampleGrad;
+        FuncType *gather;
+        FuncType *gatherRed;
+        FuncType *gatherGreen;
+        FuncType *gatherBlue;
+        FuncType *gatherAlpha;
 
 
         void Initialize(){
@@ -175,6 +183,63 @@ namespace omegasl::ast {
                     {"coord",TypeExpr::Create("VECTOR_TYPE")}
                     },TypeExpr::Create(float4_type)};
 
+                /// `sampleLOD/Bias/Grad` and `gather*` reuse the (sampler, texture,
+                /// coord, ...) shape; the trailing args are validated per-builtin
+                /// in Sema rather than encoded in the FuncType field map (which
+                /// is just a placeholder — the real check is the per-builtin
+                /// branch in `performSemForExpr`, mirroring how `sample` works).
+                sampleLOD = new FuncType {BUILTIN_SAMPLE_LOD,global_scope,true,{},{
+                    {"sampler",TypeExpr::Create("SAMPLER_TYPE")},
+                    {"texture",TypeExpr::Create("TEXTURE_TYPE")},
+                    {"coord",TypeExpr::Create("VECTOR_TYPE")},
+                    {"lod",TypeExpr::Create(float_type)}
+                    },TypeExpr::Create(float4_type)};
+
+                sampleBias = new FuncType {BUILTIN_SAMPLE_BIAS,global_scope,true,{},{
+                    {"sampler",TypeExpr::Create("SAMPLER_TYPE")},
+                    {"texture",TypeExpr::Create("TEXTURE_TYPE")},
+                    {"coord",TypeExpr::Create("VECTOR_TYPE")},
+                    {"bias",TypeExpr::Create(float_type)}
+                    },TypeExpr::Create(float4_type)};
+
+                sampleGrad = new FuncType {BUILTIN_SAMPLE_GRAD,global_scope,true,{},{
+                    {"sampler",TypeExpr::Create("SAMPLER_TYPE")},
+                    {"texture",TypeExpr::Create("TEXTURE_TYPE")},
+                    {"coord",TypeExpr::Create("VECTOR_TYPE")},
+                    {"ddxArg",TypeExpr::Create("VECTOR_TYPE")},
+                    {"ddyArg",TypeExpr::Create("VECTOR_TYPE")}
+                    },TypeExpr::Create(float4_type)};
+
+                gather = new FuncType {BUILTIN_GATHER,global_scope,true,{},{
+                    {"sampler",TypeExpr::Create("SAMPLER_TYPE")},
+                    {"texture",TypeExpr::Create("TEXTURE_TYPE")},
+                    {"coord",TypeExpr::Create("VECTOR_TYPE")}
+                    },TypeExpr::Create(float4_type)};
+
+                gatherRed = new FuncType {BUILTIN_GATHER_RED,global_scope,true,{},{
+                    {"sampler",TypeExpr::Create("SAMPLER_TYPE")},
+                    {"texture",TypeExpr::Create("TEXTURE_TYPE")},
+                    {"coord",TypeExpr::Create("VECTOR_TYPE")}
+                    },TypeExpr::Create(float4_type)};
+
+                gatherGreen = new FuncType {BUILTIN_GATHER_GREEN,global_scope,true,{},{
+                    {"sampler",TypeExpr::Create("SAMPLER_TYPE")},
+                    {"texture",TypeExpr::Create("TEXTURE_TYPE")},
+                    {"coord",TypeExpr::Create("VECTOR_TYPE")}
+                    },TypeExpr::Create(float4_type)};
+
+                gatherBlue = new FuncType {BUILTIN_GATHER_BLUE,global_scope,true,{},{
+                    {"sampler",TypeExpr::Create("SAMPLER_TYPE")},
+                    {"texture",TypeExpr::Create("TEXTURE_TYPE")},
+                    {"coord",TypeExpr::Create("VECTOR_TYPE")}
+                    },TypeExpr::Create(float4_type)};
+
+                gatherAlpha = new FuncType {BUILTIN_GATHER_ALPHA,global_scope,true,{},{
+                    {"sampler",TypeExpr::Create("SAMPLER_TYPE")},
+                    {"texture",TypeExpr::Create("TEXTURE_TYPE")},
+                    {"coord",TypeExpr::Create("VECTOR_TYPE")}
+                    },TypeExpr::Create(float4_type)};
+
                 read = new FuncType{BUILTIN_READ,global_scope,true,{},{
                     {"texture",TypeExpr::Create("TEXTURE_TYPE")},
                     {"coord",TypeExpr::Create("VECTOR_TYPE")}
@@ -246,6 +311,14 @@ namespace omegasl::ast {
                 delete write;
                 delete read;
                 delete sample;
+                delete sampleLOD;
+                delete sampleBias;
+                delete sampleGrad;
+                delete gather;
+                delete gatherRed;
+                delete gatherGreen;
+                delete gatherBlue;
+                delete gatherAlpha;
             }
         }
 

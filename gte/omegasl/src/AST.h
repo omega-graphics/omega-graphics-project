@@ -112,6 +112,14 @@ namespace omegasl {
             DECLARE_BUILTIN_FUNC(cross);
 
             DECLARE_BUILTIN_FUNC(sample);
+            DECLARE_BUILTIN_FUNC(sampleLOD);
+            DECLARE_BUILTIN_FUNC(sampleBias);
+            DECLARE_BUILTIN_FUNC(sampleGrad);
+            DECLARE_BUILTIN_FUNC(gather);
+            DECLARE_BUILTIN_FUNC(gatherRed);
+            DECLARE_BUILTIN_FUNC(gatherGreen);
+            DECLARE_BUILTIN_FUNC(gatherBlue);
+            DECLARE_BUILTIN_FUNC(gatherAlpha);
             DECLARE_BUILTIN_FUNC(write);
             DECLARE_BUILTIN_FUNC(read);
         }
@@ -233,7 +241,27 @@ namespace omegasl {
             std::unique_ptr<Block> body;
         };
 
-        /// @brief `break;` statement — exits the innermost `for`/`while` loop.
+        /// @brief One labeled branch inside a `switch` body. `value` is the
+        /// constant case expression for `case <expr>:`, or `nullptr` for
+        /// `default:`. `body` holds every statement between this label and
+        /// the next case/default — fall-through to the next case is C-style
+        /// (terminate with `break;` to stop falling through).
+        struct SwitchCase {
+            Expr *value;
+            OmegaCommon::Vector<Stmt *> body;
+        };
+
+        /// @brief switch / case / default statement. C-style fall-through
+        /// semantics: control flows from the matched case into subsequent
+        /// cases unless `break;` appears. `default` is optional and may
+        /// appear in any position; only one `default` is allowed per switch.
+        struct SwitchStmt : public Stmt {
+            Expr *condition;
+            OmegaCommon::Vector<SwitchCase> cases;
+        };
+
+        /// @brief `break;` statement — exits the innermost enclosing
+        /// `for`/`while`/`switch` block.
         struct BreakStmt : public Stmt {};
 
         /// @brief `continue;` statement — jumps to the next iteration of the

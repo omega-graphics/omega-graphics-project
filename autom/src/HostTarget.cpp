@@ -16,7 +16,7 @@ namespace autom {
 
 
     TargetArch hostArch(){
-        TargetArch arch;
+        TargetArch arch = TargetArch::x86_64;
 #ifdef _WIN32
         
         SYSTEM_INFO systemInfo;
@@ -46,7 +46,7 @@ namespace autom {
         
         StrRef archStr {info.machine};
 
-        if(archStr == "arm64"){
+        if(archStr == "arm64" || archStr == "aarch64"){
             arch = TargetArch::AARCH64;
         }
         else if(archStr == "arm"){
@@ -68,6 +68,10 @@ namespace autom {
         return TargetOS::Windows;
 #elif defined(__APPLE__)
         return TargetOS::Darwin;
+#elif defined(__linux__)
+        return TargetOS::Linux;
+#else
+        return TargetOS::Linux;
 #endif
     }
 
@@ -76,6 +80,12 @@ namespace autom {
         return TargetPlatform::Windows;
 #elif defined(__APPLE__)
         return TargetPlatform::macOS;
+#elif defined(__ANDROID__)
+        return TargetPlatform::Android;
+#elif defined(__linux__)
+        return TargetPlatform::Linux;
+#else
+        return TargetPlatform::Linux;
 #endif
     }
 

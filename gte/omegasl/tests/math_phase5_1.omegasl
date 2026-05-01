@@ -1,0 +1,52 @@
+/// Phase 5.1 — core math intrinsics. Exercises every new builtin on
+/// scalar and vector arguments where applicable.
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv : TexCoord;
+};
+
+vertex VertexRaster math51Vert(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv = float2(0.0, 0.0);
+    return r;
+}
+
+fragment float4 math51Frag(VertexRaster raster){
+    float  s = -0.7;
+    float2 v2 = float2(0.5, -1.5);
+    float3 v3 = float3(0.25, 0.75, -0.4);
+    float  y = 1.5;
+    int    e = 3;
+
+    /// 1-arg same-type
+    float  a1 = sign(s);
+    float2 a2 = sign(v2);
+    float  b1 = saturate(s);
+    float3 b3 = saturate(v3);
+    float  c1 = trunc(y);
+    float2 c2 = trunc(v2);
+    float  d1 = rsqrt(2.0);
+    float3 d3 = rsqrt(v3);
+    float  e1 = degrees(3.14);
+    float  f1 = radians(180.0);
+    float  g1 = sinh(s);
+    float  g2 = cosh(s);
+    float  g3 = tanh(s);
+
+    /// 2-arg
+    float  h1 = fmod(s, y);
+    float3 h2 = fmod(v3, float3(0.3, 0.3, 0.3));
+    float  i1 = ldexp(s, e);
+
+    /// 3-arg
+    float  j1 = fma(s, y, 0.25);
+    float3 j2 = fma(v3, v3, v3);
+
+    /// Composition — saturate around an fma to stress GLSL's clamp rewrite
+    /// inside another builtin call.
+    float3 lit = saturate(fma(v3, float3(2.0, 2.0, 2.0), float3(-0.5, -0.5, -0.5)));
+
+    return float4(lit, 1.0);
+}

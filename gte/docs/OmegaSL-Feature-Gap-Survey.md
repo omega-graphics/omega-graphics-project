@@ -196,14 +196,151 @@ that returns a single-channel depth:
 
 Current intrinsic `sample(s,t,c)` only emits the default LOD chooser. Missing:
 
-| Intrinsic | Purpose |
-|-----------|---------|
-| `sampleLOD(s, t, c, lod)` | explicit mip level |
-| `sampleBias(s, t, c, bias)` | LOD bias |
-| `sampleGrad(s, t, c, ddx, ddy)` | gradient-based sampling (terrain, raytraced reflections) |
-| `gather(s, t, c)` / `gatherRed/Green/Blue/Alpha` | PCF, screen-space effects |
-| `getDimensions(t)` | query mip level dimensions |
-| `calculateLOD(s, t, c)` | query LOD chosen by hardware |
+| Intrinsic | Purpose | Status |
+|-----------|---------|--------|
+| `sampleLOD(s, t, c, lod)` | explicit mip level | **Phase A — completed** |
+| `sampleBias(s, t, c, bias)` | LOD bias | **Phase A — completed** |
+| `sampleGrad(s, t, c, ddx, ddy)` | gradient-based sampling (terrain, raytraced reflections) | **Phase A — completed** |
+| `gather(s, t, c)` / `gatherRed/Green/Blue/Alpha` | PCF, screen-space effects | **Phase A — completed** |
+| `getDimensions(t)` | query mip level dimensions | Phase B — pending |
+| `calculateLOD(s, t, c)` | query LOD chosen by hardware | Phase B — pending |
+
+**Phase A — sampling variants (landed)**
+
+The four composable sampling forms were straightforward to wire into the
+existing `sample`-shaped builtin pipeline:
+
+* New builtins: `sampleLOD`, `sampleBias`, `sampleGrad`, `gather`,
+  `gatherRed`, `gatherGreen`, `gatherBlue`, `gatherAlpha`. Registered in
+  `AST.def`, `AST.h`, `AST.cpp`, and the `builtinFunctionMap` in
+  `Sema.cpp`.
+* Sema factors the `(sampler, texture, coord)` pairing check into
+  `Sem::validateSampleTriple`, which the existing `sample` branch leaves
+  alone (to avoid touching its golden tests) but which all four new
+  variants reuse. Trailing-arg validation is per-builtin: lod / bias must
+  be `float`; ddx/ddy rank for `sampleGrad` follows the spatial domain
+  table (1D → float, 2D / 2D[] → float2, 3D and Cube[/Array] → float3).
+  `gather*` is restricted to 2D / 2D-array / cube / cube-array, matching
+  every backend's gather domain.
+* CodeGen dispatches via four new `Target::emit*` virtuals
+  (`emitTextureSampleLOD`, `emitTextureSampleBias`, `emitTextureSampleGrad`,
+  `emitTextureGather` — the gather variant takes a `channel` parameter:
+  `-1` for the default form, `0..3` for `gatherRed/Green/Blue/Alpha`).
+* Per-backend emission:
+  * **HLSL**: `tex.SampleLevel`, `tex.SampleBias`, `tex.SampleGrad`,
+    `tex.Gather` / `tex.GatherRed/Green/Blue/Alpha`.
+  * **MSL**: `tex.sample(s, coord, level(lod))` /
+    `tex.sample(s, coord, bias(b))` /
+    `tex.sample(s, coord, gradientNd(ddx, ddy))` (where `gradientNd` is
+    `gradient1d`/`gradient2d`/`gradient3d`/`gradientcube`); for
+    `gather`, `tex.gather(s, coord, [int2(0,0), component::C])`. The
+    array/cube layer-split that already lived inside `MSLTarget::
+    emitTextureSample` was lifted into a static helper `emitMSLSampleCoord`
+    so all five sample forms share one rule.
+  * **GLSL**: `textureLod` / `texture(...,bias)` / `textureGrad` /
+    `textureGather` against a `samplerND(t, s)` combined-sampler. The
+    samplerType selection was lifted into a static helper
+    `glslSamplerTypeForTextureArg` for the same reason as MSL.
+* Tests: `sample_variants.omegasl` covers all four sample forms across 1D,
+  2D, 2D-array, 3D, and cube textures (with the proper gradient-rank
+  table for `sampleGrad`); `texture_gather.omegasl` covers default + four
+  per-channel gather variants on 2D, 2D-array, and cube textures;
+  `invalid_sample_variants.omegasl` is a multi-error negative test
+  covering arg-count, gradient-rank, gather-on-3D, and sample-on-MS
+  rejection.
+
+**Phase B — query intrinsics (planned)**
+
+`getDimensions` and `calculateLOD` are query-style intrinsics that pose
+distinct challenges from the composable sampling variants in Phase A.
+Both are deferred until the underlying issues are resolved:
+
+* `getDimensions(t)` / `getDimensions(t, lod)` — query mip-level dimensions.
+  The three backends have radically different surface shapes:
+
+  | Backend | Surface |
+  |---------|---------|
+  | HLSL | `tex.GetDimensions(out width, out height [, out levels])` — out-params, no return value |
+  | MSL | `tex.get_width(lod)`, `tex.get_height(lod)`, `tex.get_depth(lod)`, `tex.get_num_mip_levels()` — separate accessors |
+  | GLSL | `textureSize(samplerND(t, s), int(lod))` — returns `int`/`ivec2`/`ivec3` |
+
+  Two design problems beyond the simple "pick a spelling" pattern Phase A
+  used:
+
+  1. **Return-shape inference.** The result type depends on the texture's
+     spatial rank: `uint` for 1D, `uint2` for 1D-array / 2D / cube,
+     `uint3` for 2D-array / 3D / cube-array. None of the existing builtins
+     return shape-dependent types — Sema's `func_found->returnType`
+     mechanism returns a fixed `TypeExpr`. A new dispatch path is needed,
+     either by per-call return-type synthesis (similar to how `transpose`
+     handles its NxM → MxN return on lines 719–731 of `Sema.cpp`) or by
+     introducing per-shape fan-out builtins (`getDimensions1D`,
+     `getDimensions2D`, ...).
+
+  2. **Out-param synthesis on HLSL.** `tex.GetDimensions(out w, out h)`
+     can't be expressed inline as a sub-expression. We'd need to emit a
+     temporary statement before the use site and rewrite the source-level
+     call to read from the temporary, e.g.
+
+     ```hlsl
+     uint _gd_w, _gd_h;
+     tex.GetDimensions(_gd_w, _gd_h);
+     uint2 dims = uint2(_gd_w, _gd_h);
+     ```
+
+     CodeGen currently has no statement-injection hook — every builtin
+     emitter writes inline into the expression stream. This is the
+     blocking architectural change for Phase B.
+
+  Recommended approach when Phase B is picked up:
+
+  * Add a `Target::synthesizeStatementBefore(...)` hook that backends
+    can use to inject lines before the current statement. Default no-op
+    on MSL/GLSL (they don't need it). HLSL uses it to emit the
+    `GetDimensions` temporary and rewrite the call site to a swizzle
+    constructor.
+  * Add per-shape return-type resolution for these query builtins —
+    specialize on the resolved texture type at the per-call validation
+    site, the same way `transpose` does.
+  * Decide whether `lod` is required or optional. Recommendation: make
+    it required for now (`getDimensions(tex, 0)`) — the optional form
+    requires HLSL out-param overload selection that adds another moving
+    part for marginal benefit. Mip 0 is the default everywhere if a user
+    passes `0`.
+
+* `calculateLOD(s, t, c)` — query the LOD the hardware would choose.
+  Less invasive than `getDimensions`, but introduces the first
+  "spec-says-scalar / GLSL-returns-vec2" wart in the codebase:
+
+  | Backend | Form | Return |
+  |---------|------|--------|
+  | HLSL | `tex.CalculateLevelOfDetail(s, c)` | `float` |
+  | MSL | `tex.calculate_clamped_lod(s, c)` (or `_unclamped_lod`) | `float` |
+  | GLSL | `textureQueryLod(samplerND(t, s), c)` | `vec2` (clamped, unclamped) |
+
+  Source-level signature: `calculateLOD(s, t, c) → float`. GLSL emits
+  `textureQueryLod(...).x` to discard the unclamped component. Document
+  the semantics as "implementation may return clamped or unclamped LOD;
+  treat as advisory" — every backend has a different trade-off here and
+  we shouldn't force a runtime branch to normalize them.
+
+  Stage restriction: `calculateLOD` needs derivatives on every backend,
+  so it's fragment-only in practice. `sample` already has the same
+  implicit constraint and isn't enforced today; Phase B can either
+  follow that precedent or land stage-checking as a uniform rule across
+  `sample`, `sampleBias`, `gather`, and `calculateLOD` together.
+
+**Out of scope for both phases:**
+
+* Sampler-offset arguments (e.g. HLSL `tex.Sample(s, c, offset)`,
+  GLSL `textureOffset`). These compose orthogonally with every variant
+  in §2.3 and deserve their own design pass — adding `_offset` suffixes
+  to eight builtins is the wrong shape; the right shape is probably
+  optional trailing arguments, which OmegaSL doesn't support today
+  (overloads are §3.5).
+* Depth-comparison sampling (`SampleCmp` / `sample_compare` /
+  `texture(samplerNDShadow, vec)`). Belongs to §2.2 (depth textures +
+  comparison samplers).
 
 ### 2.4 Uniform / constant buffers
 
@@ -251,10 +388,97 @@ raw<T> data : 0;
 
 ## 3. Control flow & language features (P0 → P1)
 
-### 3.1 `switch` / `case` / `default`
+### 3.1 `switch` / `case` / `default` [COMPLETED]
 
-Listed as not-implemented in the reference. Practical impact: common in
-material ID fan-outs, tile classification, and generated code.
+Practical impact: common in material ID fan-outs, tile classification,
+and generated code.
+
+**Shape**
+
+```
+switch(intExpr) {
+    case 0:
+        ...
+        break;
+    case 1:
+    case 2:
+        // case 1 falls through into case 2's body — C-style.
+        ...
+        break;
+    default:
+        ...
+        break;
+}
+```
+
+**Rules**
+
+* The switch condition must be an `int` or `uint` scalar. (HLSL/MSL/GLSL
+  accept more, but every generated dispatch table I've seen uses int —
+  tightening the rule catches obvious bugs like `switch(uvCoord.x)`.
+  Loosen if a real use case appears.)
+* Case values must be integer literals (signed or unsigned). Constant
+  expressions and named constants are deferred — `ConstFold` already
+  exists, hooking it in is straightforward when the need arises.
+* Mandatory braces on the switch body. Inner braces around case bodies
+  are optional, matching C — multiple statements per case work without
+  a wrapper block.
+* Fall-through is C-style. Terminate a case with `break;` to stop
+  falling into the next one. The compiler does not insert implicit
+  breaks. Nor does it warn on missing breaks — the existing project
+  style trusts the developer here.
+* `default:` is optional, may appear in any position, and must appear
+  at most once.
+* Empty switches (`switch(x){}`) are rejected.
+
+**Implementation**
+
+* Tokens: `switch` / `case` / `default` added to `Toks.def` and
+  `isKeyword()` in `Lexer.cpp`.
+* AST: `SWITCH_STMT` tag in `AST.def`; `SwitchStmt` (condition + vector
+  of `SwitchCase`) and `SwitchCase` (value-or-null + body-stmt-vector)
+  in `AST.h`.
+* Parser: `parseSwitchStmtFromBuffer` does a two-pass scan of the
+  buffered switch body — first pass finds every top-level `case` /
+  `default` label (skipping nested `{}` and `()`), second pass slices
+  the body for each label and feeds each slice through
+  `parseBlockBodyFromBuffer`. `findExtentOfStatement` and
+  `collectTokensUntilEndOfStatement` learned the same `(...)` + `{...}`
+  shape that `for`/`while` use, and `parseStmtFromBuffer` /
+  `parseStmt` route the keyword.
+* Sema: `SWITCH_STMT` arm checks the condition type, validates each
+  non-default case value is an integer literal, and recurses into each
+  case body via `performSemForStmt`. Duplicate-`default` and
+  empty-switch checks live in the parser (they're structural, not
+  type-driven).
+* CodeGen: `SWITCH_STMT` arm in `generateDecl` emits the C-style
+  `switch(cond) { case X: stmts ... }` directly — HLSL/MSL/GLSL accept
+  identical syntax, so this lives in the shared decl walker rather
+  than per-target hooks. The case-body emit reuses the same
+  per-statement dispatch as `generateBlock` so var decls, returns,
+  nested ifs/loops, and even nested switches work inside a case body.
+* GLSL backend: `emitShaderEntryBody`'s custom statement loop also
+  excludes `SWITCH_STMT` from the trailing-`;` rule, matching the
+  shared `generateBlock` behaviour for `if`/`for`/`while`.
+
+**Tests**
+
+* `switch_basic.omegasl` — int-conditioned switch with explicit `break`,
+  intentional fall-through (`case 1:` empty body falls into `case 2:`),
+  trailing `default:`, and a switch nested inside a `for` loop.
+* `invalid_switch.omegasl` — multi-error negative test for
+  non-int condition, non-literal case value, and duplicate `default:`.
+
+**Out of scope (follow-ups)**
+
+* Constant-expression case values (named constants, arithmetic on
+  literals). Wire `ConstFold` into the case-value validation when
+  needed.
+* `[[fallthrough]]`-style annotation. C-style fall-through is the
+  default; an explicit marker for tools / readers can come later.
+* Loop-context check for `break;` — currently any `break` is accepted
+  by Sema regardless of enclosing loop/switch. Matches the pre-3.1
+  behaviour; a uniform stage check could land alongside §3.5 / §3.6.
 
 ### 3.2 Ternary `?:`
 
@@ -333,9 +557,9 @@ probe so the engine can decline on hardware that doesn't support them.
 Needed for large hashes, 64-bit atomics, pointer arithmetic in bindless
 descriptor indexing.
 
-### 4.3 `double` — already rejected
+### 4.3 `double` — 
 
-Reference states intentional omission. No action.
+We can do this but we must feature gate it with our proposed feature gating.
 
 ---
 
@@ -343,18 +567,91 @@ Reference states intentional omission. No action.
 
 Grouped by how often engines reach for them.
 
-### 5.1 Core math not yet listed
+### 5.1 Core math not yet listed [PARTIALLY COMPLETED]
 
-| Function | Reason |
+| Function | Status |
 |----------|--------|
-| `sign(x)` | ubiquitous |
-| `saturate(x)` | clamp to [0,1]; see §5.1.1 below for backend mapping and the name-collision policy |
-| `fma(a,b,c)` / `mad(a,b,c)` | precision-guaranteed multiply-add |
-| `mod(a,b)` / `fmod` / `trunc` | common |
-| `rsqrt(x)` | 1/sqrt, single instruction |
-| `degrees(r)` / `radians(d)` | common |
-| `sinh/cosh/tanh` | needed in BRDFs |
-| `modf` / `frexp` / `ldexp` | serialization / compression |
+| `sign(x)` | **landed** — passthrough on every backend |
+| `saturate(x)` | **landed** — passthrough HLSL/MSL; GLSL rewrites to `clamp(x, 0.0, 1.0)`. See §5.1.1 |
+| `fma(a,b,c)` | **landed** — passthrough MSL/GLSL; HLSL lowers to `mad` (precision contract looser; see notes below) |
+| `mad(a,b,c)` | not added — `fma` is the canonical name in this spec; pick one |
+| `fmod(a,b)` | **landed** — truncation semantics, matching C/HLSL/MSL. GLSL rewrites to `(x - y*trunc(x/y))` because GLSL's `mod` has different (floor-based) semantics |
+| `mod(a,b)` | not added — would alias `fmod` here, picking one canonical spelling |
+| `trunc(x)` | **landed** — passthrough on every backend |
+| `rsqrt(x)` | **landed** — passthrough HLSL/MSL; GLSL renames to `inversesqrt` |
+| `degrees(r)` / `radians(d)` | **landed** — passthrough on every backend |
+| `sinh` / `cosh` / `tanh` | **landed** — passthrough on every backend |
+| `ldexp(x, e)` | **landed** — passthrough on every backend |
+| `modf(x, out integerPart)` | not added — out-param synthesis blocker (see §2.3 Phase B for the same issue with `getDimensions`) |
+| `frexp(x, out exp)` | not added — same out-param blocker |
+
+**Implementation**
+
+The new builtins reuse the existing generic math-intrinsic dispatch in
+Sema (1/2/3-arg buckets, return type follows first arg, scalar/vector
+branching handled by the backend). New names registered:
+
+* 1-arg same-type: `sign`, `saturate`, `trunc`, `rsqrt`, `degrees`,
+  `radians`, `sinh`, `cosh`, `tanh`.
+* 2-arg same-type: `fmod`, `ldexp`.
+* 3-arg same-type: `fma`.
+
+Where the name passes through unchanged on a backend, no work is needed
+beyond bucket registration. For diverging spellings, `Target::renameBuiltin`
+handles the simple cases:
+
+* HLSL: `fma` → `mad`. (HLSL's `fma` exists but is double-only on SM 5+;
+  `mad` is the broadly-supported fp32 multiply-add. The precision contract
+  is looser than IEEE 754 fma, but it matches what every existing HLSL
+  shader assumes "multiply-add" means. Strict fma can be revisited once
+  §4.3 (`double`) lands.)
+* GLSL: `rsqrt` → `inversesqrt`.
+
+For builtins that need a different *call shape* (not just a different
+name), a new `Target::tryEmitBuiltinCall` hook lets a backend take over
+emission of a single call site. GLSL overrides it for two cases:
+
+* `saturate(x)` → `clamp(x, 0.0, 1.0)`. GLSL's `clamp(genType, float,
+  float)` overload broadcasts the scalar bounds across vector x, so the
+  same emission works for scalar and vector arguments.
+* `fmod(x, y)` → `(x - y * trunc(x / y))`. Centralized expression keeps
+  the truncation semantics consistent across stages — emitted inline so
+  the backend doesn't need a new helper function.
+
+The hook follows the existing `tryEmitVarDecl` / `tryEmitReturnDecl`
+pattern: returning true means the backend fully handled emission and the
+shared dispatch skips its `<rename>(args)` fallback.
+
+**Tests**
+
+* `math_phase5_1.omegasl` — covers all 12 new builtins on scalar and
+  vector arguments. Includes a composition test (`saturate(fma(...))`)
+  to catch a regression in GLSL's `tryEmitBuiltinCall` returning false
+  when nested inside another builtin call. The test goes through every
+  positive validation path; per-arg-count argument-mismatch errors are
+  already covered by the generic Sema dispatcher's tests.
+
+#### 5.1.0 Out of scope (named follow-ups)
+
+* **`mod` / `mad` aliases**. The codebase canonicalizes on `fmod` and
+  `fma`; if alias support is desired, add a one-line rename in the
+  affected backend's `renameBuiltin`.
+* **`modf` / `frexp`**. Both have an out-parameter for the integer part /
+  exponent. HLSL exposes them with native out-params (`modf(in, out)`),
+  MSL has separate accessors, GLSL has separate forms. Inlining the
+  emission requires the same statement-injection hook proposed for
+  §2.3 Phase B's `getDimensions`. Land that hook once and these
+  builtins become a few lines each.
+* **Sema reservation of intrinsic names** (rejecting user `func sin(...)`,
+  `func saturate(...)`, etc.). Currently a user definition shadows the
+  builtin. The §5.1.1 doc proposes this; doing it together with §5.1
+  is a backwards-compat hazard for any existing shader that defines its
+  own `saturate` workaround. Land as a separate, clearly-flagged change.
+* **HLSL `osl_user_` user-function prefix**. MSL already prefixes user
+  funcs to avoid stdlib collisions; HLSL has the same exposure but
+  hasn't adopted the prefix yet. Same separate-PR rationale: it's a
+  source-shape change that the existing HLSL goldens would need to
+  re-baseline.
 
 #### 5.1.1 `saturate` — backend mapping and the name-collision risk
 
@@ -1227,6 +1524,7 @@ using omegasl_shader_feature_flags = enum : uint64_t {
     OMEGASL_FEATURE_BIT_SPEC_CONSTANTS    = 1ull << 10,
     OMEGASL_FEATURE_BIT_TEXTURECUBE_RW    = 1ull << 11,  // cube read/write (deferred)
     OMEGASL_FEATURE_BIT_TEXTURE2D_MS_WRITE = 1ull << 12,
+    OMEGASL_FEATURE_BIT_DOUBLE            = 1ull << 13
     /// New bits append at the tail; existing bits never get reused.
 };
 

@@ -859,3 +859,53 @@ These need a decision from the Omega Graphics team before work starts:
    after migration.** Commit to a single `autom >= 1.0` baseline repo-wide?
 
 Answers drive the Phase 1 ticket list.
+
+## Notes (BUGS)
+
+### Source-to-object name resolution bug in `autom`
+
+Observed while testing A1 against `common/AUTOM.build`. The generated `build.ninja`
+emits per-target object entries with an empty source filename, e.g.
+
+```
+build obj/omega-common/.o:
+build obj/omega-ebin/.o:
+build obj/owrapgen/.o:
+```
+
+All sources collapse onto one nameless object per target.
+
+Root cause is in `autom/src/ExecEngine.cpp` `checkDependencyTree`, step 1 — sources
+are stored in `source_object_map` keyed by
+
+```cpp
+auto fixed_source = std::filesystem::path(eval::castToString(*s_it)->value().data())
+                        .lexically_relative(opts.outputDir.data());
+compiledTarget->source_object_map.insert(std::make_pair(fixed_source.string(), ""));
+```
+
+When the source path and `outputDir` share no common ancestor (e.g. source under
+`/home/.../common/src/json.cpp` and `outputDir = /tmp/autom-common-test`),
+`lexically_relative` returns an empty path. Every source maps to `""`, and the map
+collapses to a single empty key. Step 3 then derives the object name from
+`src_path.filename()` — also empty — producing `obj/<target>/.o`.
+
+Fix direction: don't make sources relative to `outputDir` at this step. Either keep
+them as-is (already-resolved absolute or eval-dir-relative paths from
+`resolveSources`) and let the generator emit the relative form against `outputDir`,
+or use `proximate(outputDir)` instead of `lexically_relative`, which falls back to
+the absolute path when there is no common base.
+
+### Related: `LIBS=-l<name>.<ext>` malformed in ninja generator
+
+Same test surfaced library link lines like
+
+```
+LIBS=-lomega-common.a
+LIBS=-llib/owrapgen.so
+```
+
+The `-l` flag expects a bare library name (linker prepends `lib`, appends ext). The
+generator is concatenating the resolved output filename instead of the bare target
+name. Belongs to the ninja generator (`autom/src/gen/TargetNinja.cpp`), not the
+engine. Out of scope for A1 — recording here so it doesn't get lost.

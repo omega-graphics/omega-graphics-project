@@ -16,29 +16,42 @@ var main_srcs = [
     "./src/xml.cpp"
 ]
 
-
-
 if (is_mac){
-    main_srcs += fs_glob("./src/*.mm")
+    main_srcs += fs_glob(path:"./src/*.mm")
 }
 elif (is_win) {
     main_srcs += ["./src/fs-win.cpp"]
 }
+elif (is_linux){
+    main_srcs += ["./src/posix/net-curl.cpp"] += fs_glob(path:"./src/unix/*.cpp")
+}
 
-Config("omega-common_conf",[],["./include"],[])
+var omega_common_conf = Config(name:"omega-common_conf")
+omega_common_conf.include_dirs = ["./include"]
 
-var omega_common_lib = Static(name:"omega-common",sources:main_srcs)
+var omega_common_lib = Archive(name:"omega-common",sources:main_srcs)
 omega_common_lib.configs = ["omega-common_conf"]
-set_property("omega-common","frameworks",["Foundation.framework"])
+if (is_mac) {
+    omega_common_lib.frameworks = ["Foundation.framework"]
+}
 
-Executable("omega-ebin",["./embedbin/embedbin.cpp"],["omega-common"],"bin")
-# Executable("ebin-test",["./embedbin/tests/hello.cpp","./embedbin/tests/msg.c"],["omega-common"],"tests")
+var omega_ebin = Executable(name:"omega-ebin",sources:["./embedbin/embedbin.cpp"])
+omega_ebin.deps = ["omega-common"]
+omega_ebin.output_dir = "bin"
 
+var wrap_gen_srcs = fs_glob(path:"./wrapgen/*.cpp") + fs_glob(path:"./wrapgen/*.h")
+var owrapgen = Shared(name:"owrapgen",sources:wrap_gen_srcs)
+owrapgen.deps = ["omega-common"]
+owrapgen.output_dir = "lib"
 
-var wrap_gen_srcs = fs_glob("./wrapgen/*.cpp") + fs_glob("./wrapgen/*.h")
-Shared(name:"owrapgen",wrap_gen_srcs,sources:["omega-common"],"lib")
+var omega_wrapgen = Executable(name:"omega-wrapgen",sources:["./wrapgen/main/main.cpp"])
+omega_wrapgen.deps = ["owrapgen"]
+omega_wrapgen.output_dir = "bin"
 
-Executable(name:"omega-wrapgen",sources:["./wrapgen/main/main.cpp"],["owrapgen"],"bin")
-Executable(name:"owrap-lex-test",sources:["./wrapgen/tests/lex-test.cpp"],["owrapgen"],"tests")
-Executable(name:"owrap-parse-test",sources:["./wrapgen/tests/parse-test.cpp"],["owrapgen"],"tests")
+var owrap_lex_test = Executable(name:"owrap-lex-test",sources:["./wrapgen/tests/lex-test.cpp"])
+owrap_lex_test.deps = ["owrapgen"]
+owrap_lex_test.output_dir = "tests"
 
+var owrap_parse_test = Executable(name:"owrap-parse-test",sources:["./wrapgen/tests/parse-test.cpp"])
+owrap_parse_test.deps = ["owrapgen"]
+owrap_parse_test.output_dir = "tests"

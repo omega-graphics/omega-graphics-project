@@ -6,6 +6,10 @@
     Use PascalCase for file-naming conventions
     Use an object-oriented, Modular coding style that has modular rules so if a specific rule needs to be changed across the object it can be.
 
+# Building
+
+
+
 # Dependencies
     All dependencies in this project are pulled in via AUTOMDEPS. We often pull directly from the repos and build the source directly allowing us to control how third party deps are shipped with our APIs.
 

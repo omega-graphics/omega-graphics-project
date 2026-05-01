@@ -4,7 +4,7 @@ subdir(path:"./common")
 
 subdir(path:"./gte")
 
-subdir(path:"./wtk")
+# subdir(path:"./wtk")
 
 # subdir(path:"./aqua")
 

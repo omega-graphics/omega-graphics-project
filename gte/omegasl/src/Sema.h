@@ -99,6 +99,16 @@ namespace omegasl {
 
         ast::TypeExpr *performSemForExpr(ast::Expr * expr,ast::FuncDecl *funcContext);
 
+        /// Validate a (sampler, texture, coord) triple for `sample`-shaped
+        /// builtins. Returns true on success and writes the resolved sampler
+        /// and texture types to the out-params (either may be null to skip).
+        /// Emits diagnostics on failure.
+        bool validateSampleTriple(ast::CallExpr *_expr,
+                                  OmegaCommon::StrRef funcName,
+                                  ast::FuncDecl *funcContext,
+                                  ast::Type **outSamplerTy,
+                                  ast::Type **outTexTy);
+
         ast::TypeExpr * performSemForStmt(ast::Stmt *stmt,ast::FuncDecl *funcContext);
 
         ast::TypeExpr * evalExprForTypeExpr(ast::Expr *expr) override;

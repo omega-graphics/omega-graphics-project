@@ -326,7 +326,7 @@ var sources = ["./src/main.cpp", GENERATED_SRC]
 
 if(fs_exists(path:"./templates/generated.in") == true){
     fs_mkdir(path:"./src")
-    config_file(in:"./templates/generated.in",out:"./src/generated.cpp")
+    configure(in:"./templates/generated.in",out:"./src/generated.cpp")
 }
 
 var py = find_program(cmd:"python3")

@@ -900,6 +900,29 @@ namespace omegasl {
                 else if(t.type == TOK_RBRACE) depth--;
             }
         }
+        else if(first_tok.str == KW_SWITCH){
+            /// `switch(expr) { ... }` — same brace/paren shape as `for`/`while`.
+            Tok t = lexer->nextTok();
+            if(t.type != TOK_LPAREN){ tokenBuffer.push_back(t); return; }
+            tokenBuffer.push_back(t);
+            int depth = 1;
+            while(depth > 0){
+                t = lexer->nextTok();
+                tokenBuffer.push_back(t);
+                if(t.type == TOK_LPAREN) depth++;
+                else if(t.type == TOK_RPAREN) depth--;
+            }
+            t = lexer->nextTok();
+            if(t.type != TOK_LBRACE){ tokenBuffer.push_back(t); return; }
+            tokenBuffer.push_back(t);
+            depth = 1;
+            while(depth > 0){
+                t = lexer->nextTok();
+                tokenBuffer.push_back(t);
+                if(t.type == TOK_LBRACE) depth++;
+                else if(t.type == TOK_RBRACE) depth--;
+            }
+        }
     }
 
     unsigned Parser::findMatchingParen(unsigned startIdx) {
@@ -964,6 +987,18 @@ namespace omegasl {
                 }
             }
         }
+        if(s == KW_SWITCH){
+            /// `switch(expr) { ... }` — extent ends at the matching `}`,
+            /// same shape as `for` / `while`.
+            unsigned p = startIdx + 1;
+            if(p < tokenBuffer.size() && tokenBuffer[p].type == TOK_LPAREN){
+                unsigned closeP = findMatchingParen(p);
+                if(closeP + 1 < tokenBuffer.size() && tokenBuffer[closeP + 1].type == TOK_LBRACE){
+                    unsigned closeB = findMatchingBrace(closeP + 1);
+                    return closeB;
+                }
+            }
+        }
         for(unsigned i = startIdx; i < tokenBuffer.size(); i++){
             if(tokenBuffer[i].type == TOK_SEMICOLON) return i;
         }
@@ -999,6 +1034,7 @@ namespace omegasl {
             if(first_tok.str == KW_IF) return parseIfStmtFromBuffer(ctxt);
             if(first_tok.str == KW_FOR) return parseForStmtFromBuffer(ctxt);
             if(first_tok.str == KW_WHILE) return parseWhileStmtFromBuffer(ctxt);
+            if(first_tok.str == KW_SWITCH) return parseSwitchStmtFromBuffer(ctxt);
             if(first_tok.str == KW_RETURN){
                 ++tokIdx;
                 auto _decl = new ast::ReturnDecl();
@@ -1207,16 +1243,178 @@ namespace omegasl {
         return node;
     }
 
+    ast::Stmt *Parser::parseSwitchStmtFromBuffer(BlockParseContext & ctxt) {
+        if(tokIdx >= tokenBuffer.size() || tokenBuffer[tokIdx].str != KW_SWITCH) return nullptr;
+        ++tokIdx;
+        if(tokIdx >= tokenBuffer.size() || tokenBuffer[tokIdx].type != TOK_LPAREN) return nullptr;
+        unsigned condStart = tokIdx + 1;
+        unsigned condEnd = findMatchingParen(tokIdx) - 1;
+        if(condEnd + 1 < condStart) return nullptr;
+        ++tokIdx;
+        unsigned braceStart = condEnd + 2;
+        if(braceStart >= tokenBuffer.size() || tokenBuffer[braceStart].type != TOK_LBRACE) return nullptr;
+        unsigned blockEnd = findMatchingBrace(braceStart) - 1;
+        unsigned blockStart = braceStart + 1;
+
+        auto *node = new ast::SwitchStmt();
+        node->type = SWITCH_STMT;
+        node->scope = ctxt.parentScope;
+        node->loc = ErrorLoc{ tokenBuffer[braceStart].line, tokenBuffer[braceStart].line,
+                              tokenBuffer[braceStart].colStart, tokenBuffer[braceStart].colEnd };
+
+        std::vector<Tok> savedBuf = tokenBuffer;
+
+        /// Parse the switch condition from a slice.
+        std::vector<Tok> condSlice;
+        for(unsigned j = condStart; j <= condEnd; j++) condSlice.push_back(tokenBuffer[j]);
+        tokenBuffer = condSlice;
+        tokIdx = 0;
+        Tok condFirst = condSlice.empty() ? Tok{} : condSlice[0];
+        node->condition = parseExpr(condFirst, ctxt.parentScope);
+        tokenBuffer = savedBuf;
+        if(!node->condition){ delete node; return nullptr; }
+
+        /// First pass: collect the index of every top-level `case` / `default`
+        /// keyword inside the switch body so we know each case's extent.
+        struct LabelMark {
+            unsigned kwIdx;     /// index of the `case` or `default` keyword
+            unsigned colonIdx;  /// index of the `:` that closes the label
+            bool isDefault;
+            unsigned valueStart; /// for `case`: first idx of the value expr
+            unsigned valueEnd;   /// for `case`: last idx of the value expr (inclusive)
+        };
+        std::vector<LabelMark> marks;
+        {
+            unsigned i = blockStart;
+            int depthBrace = 0;
+            int depthParen = 0;
+            while(i <= blockEnd && i < tokenBuffer.size()){
+                const Tok &t = tokenBuffer[i];
+                if(t.type == TOK_LBRACE){ depthBrace++; i++; continue; }
+                if(t.type == TOK_RBRACE){ depthBrace--; i++; continue; }
+                if(t.type == TOK_LPAREN){ depthParen++; i++; continue; }
+                if(t.type == TOK_RPAREN){ depthParen--; i++; continue; }
+                if(depthBrace == 0 && depthParen == 0 && t.type == TOK_KW){
+                    if(t.str == KW_CASE){
+                        unsigned vs = i + 1;
+                        unsigned j = vs;
+                        while(j <= blockEnd && j < tokenBuffer.size()
+                              && tokenBuffer[j].type != TOK_COLON) j++;
+                        if(j > blockEnd){
+                            auto e = std::make_unique<UnexpectedToken>("Expected `:` after `case` value in switch body");
+                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            diagnostics->addError(std::move(e));
+                            tokenBuffer = savedBuf;
+                            delete node;
+                            return nullptr;
+                        }
+                        marks.push_back({i, j, false, vs, j - 1});
+                        i = j + 1;
+                        continue;
+                    }
+                    if(t.str == KW_DEFAULT){
+                        unsigned j = i + 1;
+                        if(j > blockEnd || tokenBuffer[j].type != TOK_COLON){
+                            auto e = std::make_unique<UnexpectedToken>("Expected `:` after `default` in switch body");
+                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            diagnostics->addError(std::move(e));
+                            tokenBuffer = savedBuf;
+                            delete node;
+                            return nullptr;
+                        }
+                        marks.push_back({i, j, true, 0, 0});
+                        i = j + 1;
+                        continue;
+                    }
+                }
+                i++;
+            }
+        }
+
+        if(marks.empty()){
+            auto e = std::make_unique<UnexpectedToken>("`switch` body must contain at least one `case` or `default`");
+            e->loc = node->loc.value_or(ErrorLoc{});
+            diagnostics->addError(std::move(e));
+            tokenBuffer = savedBuf;
+            delete node;
+            return nullptr;
+        }
+
+        /// Reject more than one `default:`.
+        bool sawDefault = false;
+        for(auto &m : marks){
+            if(m.isDefault){
+                if(sawDefault){
+                    auto e = std::make_unique<UnexpectedToken>("`switch` body has more than one `default:` label");
+                    e->loc = ErrorLoc{ tokenBuffer[m.kwIdx].line, tokenBuffer[m.kwIdx].line,
+                                       tokenBuffer[m.kwIdx].colStart, tokenBuffer[m.kwIdx].colEnd };
+                    diagnostics->addError(std::move(e));
+                    tokenBuffer = savedBuf;
+                    delete node;
+                    return nullptr;
+                }
+                sawDefault = true;
+            }
+        }
+
+        /// Second pass: for each label, parse its value (if any) and the
+        /// statements that follow until the next label (or `blockEnd`).
+        for(size_t mi = 0; mi < marks.size(); ++mi){
+            ast::SwitchCase sc;
+            sc.value = nullptr;
+
+            if(!marks[mi].isDefault){
+                /// Parse the case value as an expression. Sema will require
+                /// it to be an integer literal.
+                std::vector<Tok> valSlice;
+                for(unsigned j = marks[mi].valueStart; j <= marks[mi].valueEnd; j++)
+                    valSlice.push_back(savedBuf[j]);
+                if(valSlice.empty()){
+                    auto e = std::make_unique<UnexpectedToken>("Empty `case` value in switch body");
+                    e->loc = ErrorLoc{ savedBuf[marks[mi].kwIdx].line, savedBuf[marks[mi].kwIdx].line,
+                                       savedBuf[marks[mi].kwIdx].colStart, savedBuf[marks[mi].kwIdx].colEnd };
+                    diagnostics->addError(std::move(e));
+                    tokenBuffer = savedBuf;
+                    delete node;
+                    return nullptr;
+                }
+                tokenBuffer = valSlice;
+                tokIdx = 0;
+                Tok vf = valSlice[0];
+                sc.value = parseExpr(vf, ctxt.parentScope);
+                tokenBuffer = savedBuf;
+                if(!sc.value){ delete node; return nullptr; }
+            }
+
+            unsigned bodyStart = marks[mi].colonIdx + 1;
+            unsigned bodyEnd = (mi + 1 < marks.size()) ? (marks[mi + 1].kwIdx - 1) : blockEnd;
+            if(bodyEnd >= bodyStart){
+                /// Reuse the buffered block parser to walk the case-body
+                /// stmt list; it tolerates the absence of an enclosing `{}`
+                /// by walking statement-by-statement until `bodyEnd`.
+                auto *innerBlock = parseBlockBodyFromBuffer(bodyStart, bodyEnd, ctxt);
+                if(innerBlock){
+                    for(auto *s : innerBlock->body) sc.body.push_back(s);
+                    delete innerBlock;
+                }
+            }
+            node->cases.push_back(std::move(sc));
+        }
+
+        return node;
+    }
+
     ast::Stmt *Parser::parseStmt(Tok &first_tok,BlockParseContext & ctxt) {
 
         ast::Stmt *stmt = nullptr;
-        if(first_tok.type == TOK_KW && (first_tok.str == KW_IF || first_tok.str == KW_FOR || first_tok.str == KW_WHILE)){
+        if(first_tok.type == TOK_KW && (first_tok.str == KW_IF || first_tok.str == KW_FOR || first_tok.str == KW_WHILE || first_tok.str == KW_SWITCH)){
             collectTokensUntilEndOfStatement(first_tok);
             tokIdx = 0;
             first_tok = tokenBuffer.front();
             if(first_tok.str == KW_IF) stmt = parseIfStmtFromBuffer(ctxt);
             else if(first_tok.str == KW_FOR) stmt = parseForStmtFromBuffer(ctxt);
             else if(first_tok.str == KW_WHILE) stmt = parseWhileStmtFromBuffer(ctxt);
+            else if(first_tok.str == KW_SWITCH) stmt = parseSwitchStmtFromBuffer(ctxt);
             tokenBuffer.clear();
             return stmt;
         }

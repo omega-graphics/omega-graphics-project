@@ -276,6 +276,21 @@ namespace autom::eval {
         return new TargetWrapper(t);
     };
 
+    Object *bf_Config(MapRef<std::string,Object *> args,EvalContext & ctxt){
+        auto *name = castToString(args["name"]);
+
+        if(ctxt.eval->findConfig(name->value()) != nullptr){
+            ctxt.execEngine->printError(formatmsg("Config `@0` is already defined",name->value()));
+            ctxt.setCode(INVOKE_FAILED);
+            return nullptr;
+        }
+
+        auto t = ConfigTarget::Create(name);
+        ctxt.eval->addConfig(t);
+
+        return new TargetWrapper(t);
+    }
+
     Object *bf_GroupTarget(MapRef<std::string,Object *> args,EvalContext & ctxt){
         auto *name = castToString(args["name"]);
         auto *deps = castToArray(args["deps"]);
@@ -552,6 +567,8 @@ namespace autom::eval {
         BUILTIN_FUNC(BUILTIN_ARCHIVE,bf_Archive,{"name",Object::String},{"sources",Object::Array});
 
         BUILTIN_FUNC(BUILTIN_SHARED,bf_Shared,{"name",Object::String},{"sources",Object::Array});
+
+        BUILTIN_FUNC(BUILTIN_CONFIG,bf_Config,{"name",Object::String});
         
         BUILTIN_FUNC(BUILTIN_SOURCE_GROUP,bf_SourceGroup,{"name",Object::String},{"sources",Object::Array});
         

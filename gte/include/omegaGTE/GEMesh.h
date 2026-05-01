@@ -7,6 +7,10 @@
 #define OMEGAGTE_GEMESH_H
 
 _NAMESPACE_BEGIN_
+// Guard against: X11 None = 0L
+#ifdef None 
+#undef None
+#endif
 
     class GEBuffer;
     class GETexture;

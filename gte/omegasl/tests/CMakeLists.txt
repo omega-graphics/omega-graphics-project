@@ -68,7 +68,11 @@ add_omegasl_compile_test(omegasl_compile_fragment_coverage   fragment_coverage.o
 add_omegasl_compile_test(omegasl_compile_texture_cube        texture_cube.omegasl)
 add_omegasl_compile_test(omegasl_compile_texture_array       texture_array.omegasl)
 add_omegasl_compile_test(omegasl_compile_texture_ms          texture_ms.omegasl)
+add_omegasl_compile_test(omegasl_compile_sample_variants     sample_variants.omegasl)
+add_omegasl_compile_test(omegasl_compile_texture_gather      texture_gather.omegasl)
 add_omegasl_compile_test(omegasl_compile_index_assign        index_assign.omegasl)
+add_omegasl_compile_test(omegasl_compile_switch_basic        switch_basic.omegasl)
+add_omegasl_compile_test(omegasl_compile_math_phase5_1       math_phase5_1.omegasl)
 
 # --- Real-world shader tests (UI / game engine patterns) ---
 add_omegasl_compile_test(omegasl_compile_blinn_phong         blinn_phong.omegasl)
@@ -89,6 +93,8 @@ add_omegasl_fail_test(omegasl_invalid_discard_outside_fragment invalid_discard_o
 add_omegasl_fail_test(omegasl_invalid_output_coverage_type   invalid_output_coverage_type.omegasl)
 add_omegasl_fail_test(omegasl_invalid_sample_ms              invalid_sample_ms.omegasl)
 add_omegasl_fail_test(omegasl_invalid_write_ms               invalid_write_ms.omegasl)
+add_omegasl_fail_test(omegasl_invalid_sample_variants        invalid_sample_variants.omegasl)
+add_omegasl_fail_test(omegasl_invalid_switch                 invalid_switch.omegasl)
 
 # =============================================================
 # 4. Golden-file tests for HLSL codegen (DirectX only)

@@ -599,7 +599,8 @@ namespace omegasl {
                 }
             } else if ((stmt->type & DECL) != EXPR) {
                 cg.generateDecl((ast::Decl *)stmt);
-                if (stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT) {
+                if (stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT
+                    && stmt->type != SWITCH_STMT) {
                     out << ";";
                 }
                 out << std::endl;
@@ -824,6 +825,10 @@ namespace omegasl {
         if (name == BUILTIN_LERP)  return "mix";
         if (name == BUILTIN_FRAC)  return "fract";
         if (name == BUILTIN_ATAN2) return "atan";
+        /// §5.1: GLSL spells `rsqrt` as `inversesqrt`. `saturate` and `fmod`
+        /// have no GLSL equivalent at all — those are rewritten in
+        /// `tryEmitBuiltinCall` rather than renamed.
+        if (name == BUILTIN_RSQRT) return "inversesqrt";
         if (name == BUILTIN_MAKE_FLOAT2)   return "vec2";
         if (name == BUILTIN_MAKE_FLOAT3)   return "vec3";
         if (name == BUILTIN_MAKE_FLOAT4)   return "vec4";
@@ -929,6 +934,131 @@ namespace omegasl {
         out << "),";
         cg.generateExpr(_expr->args[2]);
         out << ")";
+    }
+
+    /// Pick the GLSL combined-sampler-type spelling for a `(sampler, texture)`
+    /// pair, mirroring the table in `emitTextureSample`. Shared by every
+    /// Phase 2.3 sample variant so the texture-shape → sampler-type mapping
+    /// is centralized.
+    static OmegaCommon::String glslSamplerTypeForTextureArg(CodeGen &cg, ast::Expr *texArg, ast::Expr *samplerArg){
+        auto *texTy = glslResolveTextureType(cg, texArg);
+        if(texTy == ast::builtins::texture1d_type) return "sampler1D";
+        if(texTy == ast::builtins::texture1d_array_type) return "sampler1DArray";
+        if(texTy == ast::builtins::texture2d_type) return "sampler2D";
+        if(texTy == ast::builtins::texture2d_array_type) return "sampler2DArray";
+        if(texTy == ast::builtins::texture3d_type) return "sampler3D";
+        if(texTy == ast::builtins::texturecube_type) return "samplerCube";
+        if(texTy == ast::builtins::texturecube_array_type) return "samplerCubeArray";
+        /// Fallback: derive from the OmegaSL sampler type, matching the
+        /// pre-Phase-2.3 behaviour of `emitTextureSample`.
+        if(samplerArg && samplerArg->type == ID_EXPR){
+            auto samplerid_expr = (ast::IdExpr *)samplerArg;
+            auto sampler_it = cg.resourceStore.find(samplerid_expr->id);
+            if(sampler_it != cg.resourceStore.end()){
+                auto t = cg.typeResolver->resolveTypeWithExpr((*sampler_it)->typeExpr);
+                if(t == ast::builtins::sampler1d_type) return "sampler1D";
+                if(t == ast::builtins::sampler2d_type) return "sampler2D";
+                if(t == ast::builtins::sampler3d_type) return "sampler3D";
+                if(t == ast::builtins::samplercube_type) return "samplerCube";
+            }
+        }
+        return "sampler2D";
+    }
+
+    void GLSLTarget::emitTextureSampleLOD(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// `textureLod(samplerND(t, s), coord, lod)`.
+        auto samplerType = glslSamplerTypeForTextureArg(cg, _expr->args[1], _expr->args[0]);
+        out << "textureLod(" << samplerType << "(";
+        cg.generateExpr(_expr->args[1]);
+        out << ",";
+        cg.generateExpr(_expr->args[0]);
+        out << "),";
+        cg.generateExpr(_expr->args[2]);
+        out << ",";
+        cg.generateExpr(_expr->args[3]);
+        out << ")";
+    }
+
+    void GLSLTarget::emitTextureSampleBias(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// `texture(samplerND(t, s), coord, bias)` — the fourth arg of GLSL
+        /// `texture()` is a LOD bias when the implementation supports it.
+        auto samplerType = glslSamplerTypeForTextureArg(cg, _expr->args[1], _expr->args[0]);
+        out << "texture(" << samplerType << "(";
+        cg.generateExpr(_expr->args[1]);
+        out << ",";
+        cg.generateExpr(_expr->args[0]);
+        out << "),";
+        cg.generateExpr(_expr->args[2]);
+        out << ",";
+        cg.generateExpr(_expr->args[3]);
+        out << ")";
+    }
+
+    void GLSLTarget::emitTextureSampleGrad(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// `textureGrad(samplerND(t, s), coord, ddx, ddy)`.
+        auto samplerType = glslSamplerTypeForTextureArg(cg, _expr->args[1], _expr->args[0]);
+        out << "textureGrad(" << samplerType << "(";
+        cg.generateExpr(_expr->args[1]);
+        out << ",";
+        cg.generateExpr(_expr->args[0]);
+        out << "),";
+        cg.generateExpr(_expr->args[2]);
+        out << ",";
+        cg.generateExpr(_expr->args[3]);
+        out << ",";
+        cg.generateExpr(_expr->args[4]);
+        out << ")";
+    }
+
+    void GLSLTarget::emitTextureGather(CodeGen &cg, ast::CallExpr *_expr, int channel, std::ostream &out) {
+        /// `textureGather(samplerND(t, s), coord [, comp])`. GLSL takes the
+        /// channel selector as a trailing int (0=R, 1=G, 2=B, 3=A); when the
+        /// 3-arg form is used, the channel defaults to 0 (R).
+        auto samplerType = glslSamplerTypeForTextureArg(cg, _expr->args[1], _expr->args[0]);
+        out << "textureGather(" << samplerType << "(";
+        cg.generateExpr(_expr->args[1]);
+        out << ",";
+        cg.generateExpr(_expr->args[0]);
+        out << "),";
+        cg.generateExpr(_expr->args[2]);
+        if(channel >= 0){
+            out << "," << channel;
+        }
+        out << ")";
+    }
+
+    bool GLSLTarget::tryEmitBuiltinCall(CodeGen &cg,
+                                        ast::CallExpr *_expr,
+                                        OmegaCommon::StrRef name,
+                                        std::ostream &out) {
+        /// §5.1: GLSL has no `saturate` — rewrite `saturate(x)` as
+        /// `clamp(x, 0.0, 1.0)`. GLSL's `clamp(genType, float, float)`
+        /// overload broadcasts the scalar bounds across vector x, so the
+        /// same emission works for scalar and vector arguments.
+        if (name == BUILTIN_SATURATE) {
+            if (_expr->args.size() != 1) return false;
+            out << "clamp(";
+            cg.generateExpr(_expr->args[0]);
+            out << ", 0.0, 1.0)";
+            return true;
+        }
+        /// §5.1: GLSL's `mod` has floor-based semantics that disagree with
+        /// C/HLSL/MSL `fmod` for negative inputs. Emit the C form directly
+        /// using `trunc`: `(x - y * trunc(x / y))`. Vectorizes per-component.
+        if (name == BUILTIN_FMOD) {
+            if (_expr->args.size() != 2) return false;
+            out << "(";
+            cg.generateExpr(_expr->args[0]);
+            out << " - ";
+            cg.generateExpr(_expr->args[1]);
+            out << " * trunc(";
+            cg.generateExpr(_expr->args[0]);
+            out << " / ";
+            cg.generateExpr(_expr->args[1]);
+            out << "))";
+            return true;
+        }
+        return false;
     }
 
     void GLSLTarget::emitTextureRead(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {

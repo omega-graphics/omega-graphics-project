@@ -1,0 +1,56 @@
+/// Phase 2.3 — sampleLOD / sampleBias / sampleGrad coverage.
+/// Exercises every (sampler, texture) pairing the new variants accept,
+/// plus the gradient-rank table for sampleGrad (1D→float, 2D→float2,
+/// 3D & cube→float3).
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv : TexCoord;
+};
+
+texture2d        diffuse2D    : 0;
+sampler2d        diffuseSamp  : 1;
+texture2d_array  atlas2DArr   : 2;
+texturecube      envCube      : 3;
+samplercube      envSamp      : 4;
+texture3d        volume3D     : 5;
+sampler3d        volSamp      : 6;
+texture1d        ramp1D       : 7;
+sampler1d        rampSamp     : 8;
+
+vertex VertexRaster sampleVariantsVert(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv = float2(0.0, 0.0);
+    return r;
+}
+
+[in diffuse2D, in diffuseSamp,
+ in atlas2DArr,
+ in envCube, in envSamp,
+ in volume3D, in volSamp,
+ in ramp1D, in rampSamp]
+fragment float4 sampleVariantsFrag(VertexRaster raster){
+    float4 a = sampleLOD(diffuseSamp, diffuse2D, raster.uv, 2.0);
+    float4 b = sampleBias(diffuseSamp, diffuse2D, raster.uv, -0.5);
+    float4 c = sampleGrad(diffuseSamp, diffuse2D, raster.uv,
+                          float2(0.001, 0.0), float2(0.0, 0.001));
+
+    /// 2D-array: coord packs the layer in .z; ddx/ddy stay float2.
+    float4 d = sampleGrad(diffuseSamp, atlas2DArr, float3(raster.uv, 0.0),
+                          float2(0.001, 0.0), float2(0.0, 0.001));
+
+    /// Cube: coord = direction; ddx/ddy are float3 surface gradients.
+    float3 dir = float3(0.0, 1.0, 0.0);
+    float4 e = sampleGrad(envSamp, envCube, dir,
+                          float3(0.01, 0.0, 0.0), float3(0.0, 0.01, 0.0));
+    float4 f = sampleLOD(envSamp, envCube, dir, 0.0);
+
+    /// 3D: float3 coord, float3 grad.
+    float4 g = sampleLOD(volSamp, volume3D, float3(raster.uv, 0.5), 0.0);
+
+    /// 1D: float coord, float grad.
+    float4 h = sampleGrad(rampSamp, ramp1D, raster.uv.x, 0.001, 0.001);
+
+    return a + b + c + d + e + f + g + h;
+}

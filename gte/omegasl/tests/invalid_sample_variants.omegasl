@@ -1,0 +1,40 @@
+/// Phase 2.3 — Sema must reject malformed sample-variant calls.
+/// This test fires several errors at once; the harness only checks that
+/// compilation fails. The first error encountered should be the
+/// arg-count mismatch on `sampleLOD`.
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv : TexCoord;
+};
+
+texture2d         diffuse2D : 0;
+sampler2d         diffuseSamp : 1;
+texture3d         volume3D : 2;
+sampler3d         volSamp : 3;
+texture2d_ms      msColor : 4;
+
+vertex VertexRaster invalidVert(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv = float2(0.0, 0.0);
+    return r;
+}
+
+[in diffuse2D, in diffuseSamp, in volume3D, in volSamp, in msColor]
+fragment float4 invalidFrag(VertexRaster raster){
+    /// sampleLOD requires 4 args (sampler, texture, coord, lod).
+    float4 a = sampleLOD(diffuseSamp, diffuse2D, raster.uv);
+
+    /// sampleGrad on a 3D texture wants float3 ddx/ddy, not float2.
+    float4 b = sampleGrad(volSamp, volume3D, float3(raster.uv, 0.5),
+                          float2(0.001, 0.0), float2(0.0, 0.001));
+
+    /// gather on a 3D texture is not supported.
+    float4 c = gather(volSamp, volume3D, float3(raster.uv, 0.5));
+
+    /// sampleLOD on a multisample texture is not supported.
+    float4 d = sampleLOD(diffuseSamp, msColor, raster.uv, 0.0);
+
+    return a + b + c + d;
+}

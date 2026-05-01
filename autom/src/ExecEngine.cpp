@@ -93,13 +93,63 @@ namespace autom {
                 if(IS_COMPILED_TARGET_TYPE(t->type)){
 
                     auto compiledTarget = std::dynamic_pointer_cast<CompiledTarget>(t);
+
+                    /// 0. Merge Configs (Layer A1)
+                    /// Walk ``configs`` (private) and ``public_configs`` (storage
+                    /// only at A1 — propagation lands in A4) and append each
+                    /// referenced config's compile/link properties onto this
+                    /// target's effective arrays.
+                    auto mergeConfig = [&](const autom::StrRef & cfg_name) -> bool {
+                        auto *cfg = exec->findConfig(cfg_name);
+                        if(cfg == nullptr){
+                            printError(formatmsg("Target `@0` references unknown Config `@1`",
+                                                 compiledTarget->name->value(),cfg_name));
+                            return false;
+                        }
+                        compiledTarget->include_dirs->extend(cfg->include_dirs);
+                        compiledTarget->defines->extend(cfg->defines);
+                        compiledTarget->cflags->extend(cfg->cflags);
+                        compiledTarget->ldflags->extend(cfg->ldflags);
+                        compiledTarget->libs->extend(cfg->libs);
+                        compiledTarget->lib_dirs->extend(cfg->lib_dirs);
+#ifdef __APPLE__
+                        compiledTarget->frameworks->extend(cfg->frameworks);
+                        compiledTarget->framework_dirs->extend(cfg->framework_dirs);
+#endif
+                        return true;
+                    };
+
+                    bool mergeOk = true;
+                    for(auto & name_obj : compiledTarget->configs->value()){
+                        if(!mergeConfig(eval::castToString(name_obj)->value())){
+                            mergeOk = false;
+                        }
+                    }
+                    for(auto & name_obj : compiledTarget->public_configs->value()){
+                        if(!mergeConfig(eval::castToString(name_obj)->value())){
+                            mergeOk = false;
+                        }
+                    }
+                    if(!mergeOk){
+                        return false;
+                    }
+
                     /// 1. Put Sources into map
                     for(auto s_it =  compiledTarget->srcs->getBeginIterator();s_it != compiledTarget->srcs->getEndIterator();s_it++){
                         /// Resolve Source so that it is relative to output dir!
-                        auto fixed_source = std::filesystem::path(eval::castToString(*s_it)->value().data()).lexically_relative(opts.outputDir.data());
-                        
+                        /// ``proximate`` falls back to the absolute path when source and
+                        /// outputDir share no common base, so each source produces a
+                        /// distinct, non-empty key. ``lexically_relative`` returned ""
+                        /// in that case, collapsing every source to one nameless object.
+                        std::filesystem::path src_path(eval::castToString(*s_it)->value().data());
+                        std::error_code ec;
+                        auto fixed_source = std::filesystem::proximate(src_path,opts.outputDir.data(),ec);
+                        if(ec || fixed_source.empty()){
+                            fixed_source = src_path;
+                        }
+
                         compiledTarget->source_object_map.insert(std::make_pair(fixed_source.string(),""));
-                        
+
                     }
                     /// 2.  Check sources count!
                     if(compiledTarget->source_object_map.empty()){
@@ -142,7 +192,7 @@ namespace autom {
                 };
                 
                 std::vector<autom::StrRef> unresolvedDepNames;
-                
+
                 /// 4. Resolve Dependencies using the Target Graph
                 auto _deps = t->deps->value();
                 for(auto dep : _deps){
@@ -153,6 +203,24 @@ namespace autom {
                     }
                     else {
                         t->resolvedDeps.push_back(dep_resolved_it->second);
+                    }
+                }
+
+                /// 4b. Resolve Public Dependencies (Layer A2). These also act
+                /// as build-order/link deps, so they go into ``resolvedDeps``
+                /// alongside private deps. They are additionally tracked in
+                /// ``resolvedPublicDeps`` for the A4 propagation walker, which
+                /// will use them to flow ``public_configs`` to dependents.
+                auto _public_deps = t->public_deps->value();
+                for(auto dep : _public_deps){
+                    auto dep_name = eval::castToString(dep)->value();
+                    auto dep_resolved_it = resolveTargetForKey(dep_name);
+                    if(dep_resolved_it == graph.end()){
+                        unresolvedDepNames.push_back(dep_name);
+                    }
+                    else {
+                        t->resolvedDeps.push_back(dep_resolved_it->second);
+                        t->resolvedPublicDeps.push_back(dep_resolved_it->second);
                     }
                 }
                 

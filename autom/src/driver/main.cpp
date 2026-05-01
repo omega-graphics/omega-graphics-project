@@ -66,7 +66,7 @@ Options:
 
 --help, -h                --> Show this message
     
---interface-path, -I      --> Add a path to the interface file (*.autom) search path list.
+--interface-path, -I      --> Add a path to the interface file (*.autom|*.aext) search path list.
     
 --toolchains              --> Sets the toolchains config file.
                               (Declares all existing toolchains and what flags to use)
@@ -101,7 +101,7 @@ Options:
     
     Xcode:
 
-    --new-build          --> Use New Build System in Xcode
+    --new-build-system          --> Use New Build System in Xcode
 )" << std::endl;
     exit(0);
 };

@@ -173,6 +173,44 @@ namespace autom {
             };
         }
 
+        void Array::extend(Array *other){
+            if(other == nullptr || other->data.empty())
+                return;
+
+            for(auto o : other->data){
+                Object *obj;
+                switch (o->type) {
+                    case Object::String: {
+                        obj = new eval::String(castToString(o));
+                        break;
+                    }
+                    case Object::Boolean : {
+                        obj = new eval::Boolean(castToBool(o));
+                        break;
+                    }
+                    case Object::Array : {
+                        obj = new eval::Array(castToArray(o));
+                        break;
+                    }
+                    case Object::Target : {
+                        obj = o;
+                        break;
+                    }
+                    case Object::Namespace: {
+                        obj = new eval::Namespace(castToNamespace(o));
+                        break;
+                    }
+                    default : {
+                        obj = nullptr;
+                        break;
+                    }
+                }
+                if(obj != nullptr){
+                    data.push_back(obj);
+                }
+            }
+        }
+
         size_t Array::length(){
             return data.size();
         }

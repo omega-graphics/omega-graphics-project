@@ -435,8 +435,8 @@ namespace autom {
         };
         ASTExpr *expr = lhs;
         
-        auto binary_expr = [&]{
-        
+        auto binary_expr = [&]() -> void {
+
             incToNextToken();
             auto *_expr = new ASTExpr();
             _expr->type = EXPR_BINARY;
@@ -446,7 +446,7 @@ namespace autom {
             first_tok = nextToken();
             auto rhs = buildExpr(first_tok,scope);
             if(!rhs){
-                return nullptr;
+                return;
             };
             _expr->rhs = rhs;
             expr = _expr;

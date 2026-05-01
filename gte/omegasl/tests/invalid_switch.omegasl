@@ -1,0 +1,39 @@
+/// Phase 3.1 — switch must reject:
+///   * non-integer condition (here a float),
+///   * non-literal case values (here an identifier),
+///   * a duplicate `default:` label.
+/// The harness only checks that compilation fails.
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv : TexCoord;
+};
+
+vertex VertexRaster invalidSwitchVert(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv = float2(0.0, 0.0);
+    return r;
+}
+
+fragment float4 invalidSwitchFrag(VertexRaster raster){
+    /// Bug 1: condition must be int or uint.
+    float dispatch = 0.5;
+    int other = 2;
+    switch(dispatch){
+        case 0:
+            break;
+
+        /// Bug 2: case value is an identifier, not an integer literal.
+        case other:
+            break;
+
+        default:
+            break;
+
+        /// Bug 3: a second `default:` is forbidden.
+        default:
+            break;
+    }
+    return float4(0.0, 0.0, 0.0, 1.0);
+}

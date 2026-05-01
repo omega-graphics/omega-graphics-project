@@ -21,6 +21,7 @@ typedef int ASTType;
 #define BREAK_STMT (0x00D0 | DECL)
 #define CONTINUE_STMT (0x00E0 | DECL)
 #define DISCARD_STMT (0x00F0 | DECL)
+#define SWITCH_STMT (0x0100 | DECL)
 
 #define ID_EXPR (0x0010 | EXPR)
 #define LITERAL_EXPR (0x0020 | EXPR)
@@ -42,6 +43,14 @@ typedef int ASTType;
 #define BUILTIN_DOT "dot"
 #define BUILTIN_CROSS "cross"
 #define BUILTIN_SAMPLE "sample"
+#define BUILTIN_SAMPLE_LOD "sampleLOD"
+#define BUILTIN_SAMPLE_BIAS "sampleBias"
+#define BUILTIN_SAMPLE_GRAD "sampleGrad"
+#define BUILTIN_GATHER "gather"
+#define BUILTIN_GATHER_RED "gatherRed"
+#define BUILTIN_GATHER_GREEN "gatherGreen"
+#define BUILTIN_GATHER_BLUE "gatherBlue"
+#define BUILTIN_GATHER_ALPHA "gatherAlpha"
 #define BUILTIN_WRITE "write"
 #define BUILTIN_READ "read"
 
@@ -82,6 +91,16 @@ typedef int ASTType;
 #define BUILTIN_EXP2 "exp2"
 #define BUILTIN_LOG "log"
 #define BUILTIN_LOG2 "log2"
+/// 1-arg: §5.1 Phase A — sign-preserving / saturation / hyperbolic math
+#define BUILTIN_SIGN "sign"
+#define BUILTIN_SATURATE "saturate"
+#define BUILTIN_TRUNC "trunc"
+#define BUILTIN_RSQRT "rsqrt"
+#define BUILTIN_DEGREES "degrees"
+#define BUILTIN_RADIANS "radians"
+#define BUILTIN_SINH "sinh"
+#define BUILTIN_COSH "cosh"
+#define BUILTIN_TANH "tanh"
 /// 2-arg: same type in, same type out
 #define BUILTIN_ATAN2 "atan2"
 #define BUILTIN_POW "pow"
@@ -89,10 +108,17 @@ typedef int ASTType;
 #define BUILTIN_MAX "max"
 #define BUILTIN_STEP "step"
 #define BUILTIN_REFLECT "reflect"
+/// 2-arg: §5.1 — truncation-style modulus (matches C/HLSL/MSL `fmod`,
+/// not GLSL's `mod`) and binary-exponent scale.
+#define BUILTIN_FMOD "fmod"
+#define BUILTIN_LDEXP "ldexp"
 /// 3-arg: same type in, same type out
 #define BUILTIN_CLAMP "clamp"
 #define BUILTIN_LERP "lerp"
 #define BUILTIN_SMOOTHSTEP "smoothstep"
+/// 3-arg: §5.1 — fused multiply-add. HLSL backend lowers to `mad`
+/// (broadly available; precision contract looser than IEEE 754 fma).
+#define BUILTIN_FMA "fma"
 
 //Internal Shader Attributes
 #define ATTRIBUTE_VERTEX_ID "VertexID"

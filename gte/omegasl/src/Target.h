@@ -83,6 +83,26 @@ namespace omegasl {
         virtual void emitTextureRead(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) = 0;
         virtual void emitTextureWrite(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) = 0;
 
+        /// Phase 2.3: explicit-LOD, LOD-bias, and gradient-based sampling.
+        /// Argument layout follows the OmegaSL source-level shape:
+        ///   `sampleLOD(sampler, texture, coord, lod)`
+        ///   `sampleBias(sampler, texture, coord, bias)`
+        ///   `sampleGrad(sampler, texture, coord, ddxArg, ddyArg)`
+        /// Sema validates the (sampler, texture, coord) pairing and the
+        /// trailing scalar / gradient shape; the target is responsible only
+        /// for spelling.
+        virtual void emitTextureSampleLOD(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) = 0;
+        virtual void emitTextureSampleBias(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) = 0;
+        virtual void emitTextureSampleGrad(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) = 0;
+
+        /// Phase 2.3: gather-style sampling. Source-level shape:
+        ///   `gather(sampler, texture, coord)`            — defaults to red
+        ///   `gather{Red,Green,Blue,Alpha}(sampler, texture, coord)`
+        /// `channel` is `-1` for the default `gather` (no explicit channel),
+        /// or `0/1/2/3` for `gather{Red,Green,Blue,Alpha}`. Sema restricts
+        /// the texture to 2D / 2D-array / cube / cube-array.
+        virtual void emitTextureGather(CodeGen &cg, ast::CallExpr *expr, int channel, std::ostream &out) = 0;
+
         /// Phase 5: small per-statement target hooks.
 
         /// The keyword that aborts a fragment shader: `"discard"` for
@@ -275,6 +295,20 @@ namespace omegasl {
         /// fragment / hull / domain returns.
         virtual bool tryEmitReturnDecl(CodeGen &/*cg*/, ast::ReturnDecl */*decl*/) { return false; }
 
+        /// Phase 5.1: optional hook for builtin-call emission. Used when a
+        /// builtin doesn't have a single-name equivalent on this backend
+        /// and must be rewritten as a different call shape. Returning true
+        /// means the target emitted the full `name(args)` form; the shared
+        /// path skips its default `<rename(name)>(args)` emission.
+        ///
+        /// Default returns false. GLSL overrides for `saturate(x)` →
+        /// `clamp(x, 0.0, 1.0)` and `fmod(x, y)` → `(x - y * trunc(x / y))`,
+        /// neither of which is a built-in GLSL function.
+        virtual bool tryEmitBuiltinCall(CodeGen &/*cg*/,
+                                        ast::CallExpr */*expr*/,
+                                        OmegaCommon::StrRef /*name*/,
+                                        std::ostream &/*out*/) { return false; }
+
         /// Phase 10: per-stage compiled-object file extension recorded in
         /// the shader map. HLSL `.cso`, MSL `.metallib`, GLSL `.spv`.
         /// The shared SHADER_DECL handler uses this to build the entry's
@@ -312,6 +346,10 @@ namespace omegasl {
         void emitTextureSample(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureRead(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureWrite(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureSampleLOD(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureSampleBias(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureSampleGrad(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureGather(CodeGen &cg, ast::CallExpr *expr, int channel, std::ostream &out) override;
         OmegaCommon::StrRef discardStatement() override;
         void writeCast(CodeGen &cg, ast::TypeExpr *target, std::ostream &out) override;
         bool supportsPointerExpr() const override;
@@ -359,6 +397,10 @@ namespace omegasl {
         void emitTextureSample(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureRead(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureWrite(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureSampleLOD(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureSampleBias(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureSampleGrad(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureGather(CodeGen &cg, ast::CallExpr *expr, int channel, std::ostream &out) override;
         OmegaCommon::StrRef discardStatement() override;
         void writeCast(CodeGen &cg, ast::TypeExpr *target, std::ostream &out) override;
         bool supportsPointerExpr() const override;
@@ -432,6 +474,10 @@ namespace omegasl {
         void emitTextureSample(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureRead(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureWrite(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureSampleLOD(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureSampleBias(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureSampleGrad(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureGather(CodeGen &cg, ast::CallExpr *expr, int channel, std::ostream &out) override;
         OmegaCommon::StrRef discardStatement() override;
         void writeCast(CodeGen &cg, ast::TypeExpr *target, std::ostream &out) override;
         bool supportsPointerExpr() const override;
@@ -446,6 +492,10 @@ namespace omegasl {
         bool needsMangling(OmegaCommon::StrRef name) const override;
         void writeIdentifier(OmegaCommon::StrRef name, std::ostream &out) const override;
         void emitMemberExpr(CodeGen &cg, ast::MemberExpr *expr, std::ostream &out) override;
+        bool tryEmitBuiltinCall(CodeGen &cg,
+                                ast::CallExpr *expr,
+                                OmegaCommon::StrRef name,
+                                std::ostream &out) override;
         /// Phase 8c: GLSL owns full shader-entry emission. Header writes
         /// stage decorators, all_used_structs (with fragment-output rerouting),
         /// fragment-output struct decls, file-scope resource bindings,

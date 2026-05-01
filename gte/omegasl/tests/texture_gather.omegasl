@@ -1,0 +1,42 @@
+/// Phase 2.3 — gather / gather{Red,Green,Blue,Alpha} on the
+/// gather-supporting texture domains (2D / 2D-array / cube).
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv : TexCoord;
+};
+
+texture2d        shadow2D    : 0;
+sampler2d        shadowSamp  : 1;
+texture2d_array  pcfArray    : 2;
+texturecube      envCube     : 3;
+samplercube      envSamp     : 4;
+
+vertex VertexRaster gatherVert(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv = float2(0.0, 0.0);
+    return r;
+}
+
+[in shadow2D, in shadowSamp,
+ in pcfArray,
+ in envCube, in envSamp]
+fragment float4 gatherFrag(VertexRaster raster){
+    /// Default gather (red).
+    float4 a = gather(shadowSamp, shadow2D, raster.uv);
+
+    /// Per-channel gather variants on the same 2D texture.
+    float4 r = gatherRed(shadowSamp,   shadow2D, raster.uv);
+    float4 g = gatherGreen(shadowSamp, shadow2D, raster.uv);
+    float4 b = gatherBlue(shadowSamp,  shadow2D, raster.uv);
+    float4 al = gatherAlpha(shadowSamp, shadow2D, raster.uv);
+
+    /// 2D-array: coord = (uv, layer).
+    float4 layered = gather(shadowSamp, pcfArray, float3(raster.uv, 0.0));
+
+    /// Cube: coord = direction.
+    float4 cube = gather(envSamp, envCube, float3(0.0, 1.0, 0.0));
+
+    return a + r + g + b + al + layered + cube;
+}

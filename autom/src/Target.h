@@ -73,8 +73,22 @@ namespace autom {
 
         /// type = string[]
         eval::Array *deps = new eval::Array();
-        
+
+        /// type = string[]
+        /// Like ``deps``, but exported to dependents — A4's propagation walker
+        /// re-uses these edges to flow ``public_configs`` transitively. At A2
+        /// the storage is wired and these targets also enter ``resolvedDeps``
+        /// so build ordering and link inputs are unaffected; the export
+        /// semantics land in A4.
+        eval::Array *public_deps = new eval::Array();
+
         std::vector<std::shared_ptr<Target>> resolvedDeps;
+
+        /// Populated alongside ``resolvedDeps`` in checkDependencyTree.
+        /// Used by the A4 walker to compute the set of public configs that
+        /// dependents inherit from this target.
+        std::vector<std::shared_ptr<Target>> resolvedPublicDeps;
+
         virtual ~Target() = default;
     };
 
@@ -139,6 +153,15 @@ namespace autom {
         /// type = string[]
         eval::Array * include_dirs;
 
+        /// type = string[]
+        /// Names of Config(...) objects whose compile/link properties are
+        /// merged into this target during dependency resolution.
+        eval::Array * configs;
+
+        /// type = string[]
+        /// Like configs, but exported to dependents (propagation lands in A4).
+        eval::Array * public_configs;
+
         CompiledTarget(){
             cflags = new eval::Array();
             libs = new eval::Array();
@@ -152,6 +175,8 @@ namespace autom {
             ldflags = new eval::Array();
             output_ext = new eval::String();
             output_dir = new eval::String();
+            configs = new eval::Array();
+            public_configs = new eval::Array();
         }
 
         static CompiledTarget * Executable(eval::String * name,eval::Array * sources){
@@ -186,6 +211,60 @@ namespace autom {
             return t;
         };
 
+    };
+
+
+    /// @brief A reusable bundle of compile/link properties (Layer A1).
+    /// Configs are looked up by name through ``configs`` / ``public_configs``
+    /// on compiled targets; their fields are merged into the consuming
+    /// target's effective compile and link sets at dependency resolution.
+    struct ConfigTarget : public Target {
+
+        /// type = string[]
+        eval::Array * cflags;
+
+        /// type = string[]
+        eval::Array * ldflags;
+
+        /// type = string[]
+        eval::Array * libs;
+
+        /// type = string[]
+        eval::Array * lib_dirs;
+
+        /// type = string[]
+        eval::Array * defines;
+
+        /// type = string[]
+        eval::Array * include_dirs;
+
+#ifdef __APPLE__
+        /// type = string[]
+        eval::Array * frameworks;
+
+        /// type = string[]
+        eval::Array * framework_dirs;
+#endif
+
+        ConfigTarget(){
+            type = CONFIG_TARGET;
+            cflags = new eval::Array();
+            ldflags = new eval::Array();
+            libs = new eval::Array();
+            lib_dirs = new eval::Array();
+            defines = new eval::Array();
+            include_dirs = new eval::Array();
+#ifdef __APPLE__
+            frameworks = new eval::Array();
+            framework_dirs = new eval::Array();
+#endif
+        }
+
+        static ConfigTarget * Create(eval::String * name){
+            auto * t = new ConfigTarget();
+            t->name = name;
+            return t;
+        }
     };
 
 

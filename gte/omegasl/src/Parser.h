@@ -58,6 +58,7 @@ namespace omegasl {
         ast::Stmt *parseIfStmtFromBuffer(BlockParseContext & ctxt);
         ast::Stmt *parseForStmtFromBuffer(BlockParseContext & ctxt);
         ast::Stmt *parseWhileStmtFromBuffer(BlockParseContext & ctxt);
+        ast::Stmt *parseSwitchStmtFromBuffer(BlockParseContext & ctxt);
 
         ast::TypeExpr *buildTypeRef(Tok &first_tok,bool isPointer,bool hasTypeArgs = false,OmegaCommon::Vector<ast::TypeExpr *> * args = nullptr);
     public:

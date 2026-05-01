@@ -299,6 +299,15 @@ namespace autom {
                         else if((std::strcmp(p_it->GetString(),"macos") == 0) && opts.platform == TargetPlatform::macOS){
                             toolchainSupported = true;
                         }
+                        else if((std::strcmp(p_it->GetString(),"linux") == 0) && opts.platform == TargetPlatform::Linux){
+                            toolchainSupported = true;
+                        }
+                        else if((std::strcmp(p_it->GetString(),"ios") == 0) && opts.platform == TargetPlatform::iOS){
+                            toolchainSupported = true;
+                        }
+                        else if((std::strcmp(p_it->GetString(),"android") == 0) && opts.platform == TargetPlatform::Android){
+                            toolchainSupported = true;
+                        }
                     }
                     
                     if(!toolchainSupported){

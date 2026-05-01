@@ -48,6 +48,19 @@ namespace autom {
             projects[*currentGenContext].emplace_back(target);
             totalTargets += 1;
         };
+
+        void Eval::addConfig(::autom::ConfigTarget *config){
+            auto shared = std::shared_ptr<::autom::ConfigTarget>(config);
+            configsByName.insert(std::make_pair(config->name->value().data(),shared));
+        };
+
+        ::autom::ConfigTarget *Eval::findConfig(const autom::StrRef & name){
+            auto it = configsByName.find(name.data());
+            if(it == configsByName.end()){
+                return nullptr;
+            }
+            return it->second.get();
+        };
     
         void Eval::setGlobalVar(autom::StrRef str,Object *object){
             vars[GLOBAL_SCOPE].body.insert(std::make_pair(str,object));
@@ -106,8 +119,8 @@ namespace autom {
                             
                             std::vector<std::pair<std::string,Object *>> evalParams;
                             
-                            auto evalArgs = [&](std::vector<std::pair<std::string,Object *>> & args){
-                                
+                            auto evalArgs = [&](std::vector<std::pair<std::string,Object *>> & args) -> void {
+
                                 for(const auto & a : node->func_args){
 
                                     bool f;
@@ -115,7 +128,7 @@ namespace autom {
                                     if(f){
                                         engine->printError(formatmsg("Failed to evaluate func arg for @0",v));
                                         *failed = true;
-                                        return nullptr;
+                                        return;
                                     };
                                 };
                             };
@@ -277,18 +290,27 @@ namespace autom {
                         if(propName == "deps"){
                             return tw->value()->deps;
                         }
+                        else if(propName == "public_deps"){
+                            return tw->value()->public_deps;
+                        }
 
                         if(IS_COMPILED_TARGET_TYPE(tw->value()->type)){
                             auto _target =  (CompiledTarget *)tw->value();
-                          
+
                             if(propName == "cflags"){
                                 return _target->cflags;
+                            }
+                            else if(propName == "ldflags"){
+                                return _target->ldflags;
                             }
                             else if(propName == "output_dir"){
                                 return _target->output_dir;
                             }
                             else if(propName == "include_dirs"){
                                 return _target->include_dirs;
+                            }
+                            else if(propName == "defines"){
+                                return _target->defines;
                             }
                             else if(propName == "output_ext"){
                                 return _target->output_ext;
@@ -299,12 +321,52 @@ namespace autom {
                             else if(propName == "lib_dirs"){
                                 return _target->lib_dirs;
                             }
+                            else if(propName == "configs"){
+                                return _target->configs;
+                            }
+                            else if(propName == "public_configs"){
+                                return _target->public_configs;
+                            }
 #ifdef __APPLE__
                             else if(propName == "frameworks"){
                                 return _target->frameworks;
                             }
                             else if(propName == "framework_dirs"){
                                 return _target->framework_dirs;
+                            }
+#else
+                            else if(propName == "frameworks" || propName == "framework_dirs"){
+                                return nullptr;
+                            }
+#endif
+                        }
+                        else if(IS_CONFIG_TARGET_TYPE(tw->value()->type)){
+                            auto _config = (ConfigTarget *)tw->value();
+
+                            if(propName == "cflags"){
+                                return _config->cflags;
+                            }
+                            else if(propName == "ldflags"){
+                                return _config->ldflags;
+                            }
+                            else if(propName == "include_dirs"){
+                                return _config->include_dirs;
+                            }
+                            else if(propName == "defines"){
+                                return _config->defines;
+                            }
+                            else if(propName == "libs"){
+                                return _config->libs;
+                            }
+                            else if(propName == "lib_dirs"){
+                                return _config->lib_dirs;
+                            }
+#ifdef __APPLE__
+                            else if(propName == "frameworks"){
+                                return _config->frameworks;
+                            }
+                            else if(propName == "framework_dirs"){
+                                return _config->framework_dirs;
                             }
 #else
                             else if(propName == "frameworks" || propName == "framework_dirs"){

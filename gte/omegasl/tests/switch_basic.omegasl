@@ -1,0 +1,60 @@
+/// Phase 3.1 — switch / case / default with C-style fall-through.
+/// Exercises:
+///   * int and uint switch conditions
+///   * explicit `break` to stop fall-through
+///   * intentional fall-through (case 1 → case 2)
+///   * `default:` in trailing position
+///   * `default:` body sharing (default + case at end of switch)
+///   * a switch nested inside a `for` loop
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv : TexCoord;
+};
+
+vertex VertexRaster switchVert(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv = float2(0.0, 0.0);
+    return r;
+}
+
+fragment float4 switchFrag(VertexRaster raster){
+    int materialId = 1;
+    float4 albedo = float4(0.0, 0.0, 0.0, 1.0);
+
+    switch(materialId){
+        case 0:
+            albedo = float4(1.0, 0.0, 0.0, 1.0);
+            break;
+        case 1:
+            /// Intentional fall-through into case 2 — both share `case 2`'s body.
+        case 2:
+            albedo = float4(0.0, 1.0, 0.0, 1.0);
+            break;
+        case 3:
+            albedo = float4(0.0, 0.0, 1.0, 1.0);
+            break;
+        default:
+            albedo = float4(0.5, 0.5, 0.5, 1.0);
+            break;
+    }
+
+    /// Switch nested inside a for-loop accumulates per-iteration values.
+    uint mask = 0;
+    for(int i = 0; i < 4; i = i + 1){
+        switch(i){
+            case 0:
+                mask = mask + 1;
+                break;
+            case 2:
+                mask = mask + 4;
+                break;
+            default:
+                mask = mask + 16;
+                break;
+        }
+    }
+
+    return albedo;
+}

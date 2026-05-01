@@ -69,6 +69,14 @@ namespace omegasl {
             ast::builtins::dot,
             ast::builtins::cross,
             ast::builtins::sample,
+            ast::builtins::sampleLOD,
+            ast::builtins::sampleBias,
+            ast::builtins::sampleGrad,
+            ast::builtins::gather,
+            ast::builtins::gatherRed,
+            ast::builtins::gatherGreen,
+            ast::builtins::gatherBlue,
+            ast::builtins::gatherAlpha,
             ast::builtins::write,
             ast::builtins::read
         }),currentContext(nullptr){
@@ -76,6 +84,113 @@ namespace omegasl {
     };
 
     void Sem::setDiagnostics(DiagnosticEngine * d) { diagnostics = d; }
+
+    namespace {
+        /// Coord shape for a `(samplerTy, texTy)` pairing — mirrors the table
+        /// used by the existing `sample` branch so the new sampling variants
+        /// don't drift. Returns nullptr if the pairing is invalid.
+        ast::Type *expectedCoordTypeForSamplerTexture(ast::Type *samplerTy, ast::Type *texTy){
+            using namespace ast::builtins;
+            if(samplerTy == sampler1d_type){
+                if(texTy == texture1d_type) return float_type;
+                if(texTy == texture1d_array_type) return float2_type;
+            } else if(samplerTy == sampler2d_type){
+                if(texTy == texture2d_type) return float2_type;
+                if(texTy == texture2d_array_type) return float3_type;
+            } else if(samplerTy == sampler3d_type){
+                if(texTy == texture3d_type) return float3_type;
+            } else if(samplerTy == samplercube_type){
+                if(texTy == texturecube_type) return float3_type;
+                if(texTy == texturecube_array_type) return float4_type;
+            }
+            return nullptr;
+        }
+
+        /// Gradient (ddx/ddy) rank for `sampleGrad`. The hardware needs a
+        /// gradient in the texture's spatial domain, so 1D textures take a
+        /// scalar, 2D textures take float2, 3D and cube textures take float3
+        /// (cube grads operate in the unrotated 3D direction space).
+        ast::Type *gradientTypeForSampler(ast::Type *samplerTy){
+            using namespace ast::builtins;
+            if(samplerTy == sampler1d_type) return float_type;
+            if(samplerTy == sampler2d_type) return float2_type;
+            if(samplerTy == sampler3d_type) return float3_type;
+            if(samplerTy == samplercube_type) return float3_type;
+            return nullptr;
+        }
+
+        bool isSamplerType(ast::Type *t){
+            using namespace ast::builtins;
+            return t == sampler1d_type || t == sampler2d_type
+                || t == sampler3d_type || t == samplercube_type;
+        }
+
+        bool isMSTextureType(ast::Type *t){
+            using namespace ast::builtins;
+            return t == texture2d_ms_type || t == texture2d_ms_array_type;
+        }
+
+        /// `gather*` is only defined on 2D and cube textures (and their array
+        /// forms) on every backend; other shapes have no `Gather` / `gather`
+        /// / `textureGather` form to lower to.
+        bool isGatherableTextureType(ast::Type *t){
+            using namespace ast::builtins;
+            return t == texture2d_type || t == texture2d_array_type
+                || t == texturecube_type || t == texturecube_array_type;
+        }
+    }
+
+    /// Validate the (sampler, texture, coord) triple shared by `sample`,
+    /// `sampleLOD`, `sampleBias`, `sampleGrad`, and `gather*`. On success,
+    /// stores the resolved sampler type in `*outSamplerTy` and the texture
+    /// type in `*outTexTy` and returns true. On failure, emits a diagnostic
+    /// and returns false. Caller is responsible for arg-count checking.
+    bool Sem::validateSampleTriple(ast::CallExpr *_expr,
+                                   OmegaCommon::StrRef funcName,
+                                   ast::FuncDecl *funcContext,
+                                   ast::Type **outSamplerTy,
+                                   ast::Type **outTexTy){
+        auto first_t_e = performSemForExpr(_expr->args[0], funcContext);
+        auto second_t_e = performSemForExpr(_expr->args[1], funcContext);
+        auto third_t_e = performSemForExpr(_expr->args[2], funcContext);
+        if(!first_t_e || !second_t_e || !third_t_e) return false;
+
+        auto reportTypeErr = [&](const std::string &msg){
+            auto e = std::make_unique<TypeError>(msg);
+            e->loc = _expr->loc.value_or(ErrorLoc{});
+            diagnostics->addError(std::move(e));
+        };
+
+        auto samplerTy = resolveTypeWithExpr(first_t_e);
+        auto texTy = resolveTypeWithExpr(second_t_e);
+        auto coordTy = resolveTypeWithExpr(third_t_e);
+        if(!samplerTy || !texTy || !coordTy) return false;
+
+        if(!isSamplerType(samplerTy)){
+            reportTypeErr("1st param of function " + std::string(funcName) + " must be a sampler.");
+            return false;
+        }
+
+        if(isMSTextureType(texTy)){
+            reportTypeErr(std::string("Multisample textures cannot be sampled with `") + std::string(funcName) + "`; use `read(tex, coord, sample_index)` instead.");
+            return false;
+        }
+
+        auto expectedCoord = expectedCoordTypeForSamplerTexture(samplerTy, texTy);
+        if(!expectedCoord){
+            reportTypeErr("2nd param of function " + std::string(funcName) + " is not a texture compatible with the given sampler.");
+            return false;
+        }
+
+        if(coordTy != expectedCoord){
+            reportTypeErr("3rd param of function " + std::string(funcName) + " (coord) does not match the expected shape for the given sampler/texture pair.");
+            return false;
+        }
+
+        if(outSamplerTy) *outSamplerTy = samplerTy;
+        if(outTexTy) *outTexTy = texTy;
+        return true;
+    }
 
     void Sem::getStructsInFuncDecl(ast::FuncDecl *funcDecl, std::vector<std::string> &out) {
         for(auto & t : currentContext->funcDeclContextTypeMap){
@@ -315,6 +430,52 @@ namespace omegasl {
                 /// `break` / `continue` carry no subexpressions and produce no type.
                 /// Loop-context enforcement is left to the target backend —
                 /// HLSL/MSL/GLSL all reject these outside loops at compile time.
+                /// `break` is also valid inside a `switch` body; that's
+                /// equally a backend concern.
+                break;
+            }
+            case SWITCH_STMT : {
+                auto _stmt = (ast::SwitchStmt *)decl;
+                if(_stmt->condition){
+                    auto condTyExpr = performSemForExpr(_stmt->condition, funcContext);
+                    if(!condTyExpr) return nullptr;
+                    auto condTy = resolveTypeWithExpr(condTyExpr);
+                    /// Restrict the switch condition to integer scalars.
+                    /// HLSL/MSL/GLSL accept more, but generated dispatch
+                    /// tables overwhelmingly use int/uint, and a tighter
+                    /// rule catches obvious bugs (`switch(uvCoord)` etc.).
+                    if(condTy != ast::builtins::int_type && condTy != ast::builtins::uint_type){
+                        auto e = std::make_unique<TypeError>("`switch` condition must be an int or uint scalar");
+                        e->loc = _stmt->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                }
+                for(auto &sc : _stmt->cases){
+                    if(sc.value){
+                        /// Case value: integer literal only for v1. The
+                        /// const-expr evaluator can be wired in as a
+                        /// follow-up — see ConstFold module.
+                        auto valTyExpr = performSemForExpr(sc.value, funcContext);
+                        if(!valTyExpr) return nullptr;
+                        if(sc.value->type != LITERAL_EXPR){
+                            auto e = std::make_unique<TypeError>("`case` value must be an integer literal");
+                            e->loc = sc.value->loc.value_or(_stmt->loc.value_or(ErrorLoc{}));
+                            diagnostics->addError(std::move(e));
+                            return nullptr;
+                        }
+                        auto *lit = (ast::LiteralExpr *)sc.value;
+                        if(!lit->isInt() && !lit->isUint()){
+                            auto e = std::make_unique<TypeError>("`case` value must be an integer literal");
+                            e->loc = sc.value->loc.value_or(_stmt->loc.value_or(ErrorLoc{}));
+                            diagnostics->addError(std::move(e));
+                            return nullptr;
+                        }
+                    }
+                    for(auto *s : sc.body){
+                        if(!performSemForStmt(s, funcContext)) return nullptr;
+                    }
+                }
                 break;
             }
             case DISCARD_STMT : {
@@ -668,7 +829,11 @@ namespace omegasl {
                    fname == BUILTIN_CEIL || fname == BUILTIN_ROUND || fname == BUILTIN_FRAC ||
                    fname == BUILTIN_NORMALIZE ||
                    fname == BUILTIN_EXP || fname == BUILTIN_EXP2 ||
-                   fname == BUILTIN_LOG || fname == BUILTIN_LOG2){
+                   fname == BUILTIN_LOG || fname == BUILTIN_LOG2 ||
+                   fname == BUILTIN_SIGN || fname == BUILTIN_SATURATE ||
+                   fname == BUILTIN_TRUNC || fname == BUILTIN_RSQRT ||
+                   fname == BUILTIN_DEGREES || fname == BUILTIN_RADIANS ||
+                   fname == BUILTIN_SINH || fname == BUILTIN_COSH || fname == BUILTIN_TANH){
                     expectedArgs = 1;
                 }
                 else if(fname == BUILTIN_LENGTH){
@@ -678,12 +843,13 @@ namespace omegasl {
                 /// 2-arg intrinsics
                 else if(fname == BUILTIN_ATAN2 || fname == BUILTIN_POW ||
                         fname == BUILTIN_MIN || fname == BUILTIN_MAX ||
-                        fname == BUILTIN_STEP || fname == BUILTIN_REFLECT){
+                        fname == BUILTIN_STEP || fname == BUILTIN_REFLECT ||
+                        fname == BUILTIN_FMOD || fname == BUILTIN_LDEXP){
                     expectedArgs = 2;
                 }
                 /// 3-arg intrinsics
                 else if(fname == BUILTIN_CLAMP || fname == BUILTIN_LERP ||
-                        fname == BUILTIN_SMOOTHSTEP){
+                        fname == BUILTIN_SMOOTHSTEP || fname == BUILTIN_FMA){
                     expectedArgs = 3;
                 }
 
@@ -984,6 +1150,96 @@ namespace omegasl {
                             return nullptr;
                         }
                     }
+                }
+            }
+            /// @brief sampleLOD(s,t,c,lod) / sampleBias(s,t,c,bias) — explicit
+            /// LOD or LOD-bias sampling. The (sampler, texture, coord) triple
+            /// follows the same pairing rules as `sample`; the trailing scalar
+            /// is always `float`.
+            else if(func_found == ast::builtins::sampleLOD
+                    || func_found == ast::builtins::sampleBias){
+                OmegaCommon::StrRef name = (func_found == ast::builtins::sampleLOD)
+                    ? OmegaCommon::StrRef(BUILTIN_SAMPLE_LOD)
+                    : OmegaCommon::StrRef(BUILTIN_SAMPLE_BIAS);
+                const char *trailingArgName = (func_found == ast::builtins::sampleLOD) ? "lod" : "bias";
+
+                if(_expr->args.size() != 4){
+                    auto e = std::make_unique<ArgumentCountMismatch>();
+                    e->functionName = name; e->expected = 4;
+                    e->actual = (unsigned)_expr->args.size();
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+
+                if(!validateSampleTriple(_expr, name, funcContext, nullptr, nullptr)) return nullptr;
+
+                auto fourth_t_e = performSemForExpr(_expr->args[3], funcContext);
+                if(!fourth_t_e) return nullptr;
+                auto trailTy = resolveTypeWithExpr(fourth_t_e);
+                if(trailTy != ast::builtins::float_type){
+                    reportTypeErr("4th param of function " + std::string(name) + " (" + trailingArgName + ") must be a float.");
+                    return nullptr;
+                }
+            }
+            /// @brief sampleGrad(s,t,c,ddxArg,ddyArg) — gradient-based sampling.
+            /// ddx/ddy rank matches the sampler's spatial domain (1D→float,
+            /// 2D→float2, 3D and Cube→float3).
+            else if(func_found == ast::builtins::sampleGrad){
+                if(_expr->args.size() != 5){
+                    auto e = std::make_unique<ArgumentCountMismatch>();
+                    e->functionName = BUILTIN_SAMPLE_GRAD; e->expected = 5;
+                    e->actual = (unsigned)_expr->args.size();
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+
+                ast::Type *samplerTy = nullptr;
+                if(!validateSampleTriple(_expr, BUILTIN_SAMPLE_GRAD, funcContext, &samplerTy, nullptr)) return nullptr;
+                auto expectedGrad = gradientTypeForSampler(samplerTy);
+                if(!expectedGrad){
+                    /// validateSampleTriple already accepted the sampler — this
+                    /// is unreachable, but bail rather than crash.
+                    return nullptr;
+                }
+
+                auto ddx_e = performSemForExpr(_expr->args[3], funcContext);
+                auto ddy_e = performSemForExpr(_expr->args[4], funcContext);
+                if(!ddx_e || !ddy_e) return nullptr;
+                if(resolveTypeWithExpr(ddx_e) != expectedGrad){
+                    reportTypeErr("4th param of function " + std::string(BUILTIN_SAMPLE_GRAD) + " (ddx) does not match the expected gradient shape for the given sampler.");
+                    return nullptr;
+                }
+                if(resolveTypeWithExpr(ddy_e) != expectedGrad){
+                    reportTypeErr("5th param of function " + std::string(BUILTIN_SAMPLE_GRAD) + " (ddy) does not match the expected gradient shape for the given sampler.");
+                    return nullptr;
+                }
+            }
+            /// @brief gather(s,t,c) and gather{Red,Green,Blue,Alpha}(s,t,c).
+            /// Only valid on 2D / 2D-array / cube / cube-array textures —
+            /// every backend's gather instruction has that domain.
+            else if(func_found == ast::builtins::gather
+                    || func_found == ast::builtins::gatherRed
+                    || func_found == ast::builtins::gatherGreen
+                    || func_found == ast::builtins::gatherBlue
+                    || func_found == ast::builtins::gatherAlpha){
+                OmegaCommon::StrRef name = func_found->name;
+
+                if(_expr->args.size() != 3){
+                    auto e = std::make_unique<ArgumentCountMismatch>();
+                    e->functionName = name; e->expected = 3;
+                    e->actual = (unsigned)_expr->args.size();
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+
+                ast::Type *texTy = nullptr;
+                if(!validateSampleTriple(_expr, name, funcContext, nullptr, &texTy)) return nullptr;
+                if(!isGatherableTextureType(texTy)){
+                    reportTypeErr(std::string(name) + " is only valid on texture2d, texture2d_array, texturecube, or texturecube_array.");
+                    return nullptr;
                 }
             }
                 /// @brief write(texture texture,texcoord coord,float4 data) function
