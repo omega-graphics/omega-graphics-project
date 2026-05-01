@@ -1396,6 +1396,20 @@ when the device can't satisfy them.
 
 ## 14. Cross-cutting: Backend feature gating
 
+> **Status (Phase 1.1 + 1.2 landed):** file-scope `#requires(...)` parses
+> and predefines `OMEGASL_BACKEND_<X>` + `OMEGASL_FEATURE_<NAME>` macros
+> for the active backend; shaders carry an `omegasl_shader.requiredFeatures`
+> bitfield through library write + read; the Sema-time portability scan
+> emits the undeclared-use + partition-suggestion warnings from §14.2;
+> features the active backend can't express produce a header-only stub
+> shader entry instead of a hard compile error (per the user's twist —
+> see §14.1 below). What still needs to land for end-to-end operation is
+> documented in §14.7 — primarily the Layer-3 *runtime per-shader
+> rejection* step in `_loadShaderFromDesc`, the
+> `GTEDeviceFeatures::featuresAsBitmask` bridge, and trigger-table
+> entries for features whose language constructs haven't shipped yet
+> (DOUBLE, FLOAT16, INT64, RT intrinsics, subgroup ops).
+
 Several features in this survey are **backend-asymmetric** — supported on
 some targets but not others. Examples already on the roadmap:
 
@@ -1422,7 +1436,25 @@ intent, the compiler can warn before they get burned, and the runtime can
 per-shader-reject when a library is loaded on a device that can't satisfy
 the requirements.
 
-### 14.1 Layer 1 — source-level `#requires` macro (hard fail at compile)
+### 14.1 Layer 1 — source-level `#requires` macro [LANDED — modified]
+
+> **Modified rule:** the original "hard fail at compile" is replaced
+> with **highest-capability + null-stub**. The active backend is
+> assumed to express every feature it *can possibly* express (RT, mesh
+> shaders, etc. always compile; the runtime decides whether the device
+> can execute them). Features the backend can't express at all (e.g.
+> `DOUBLE` on MSL, `SUBPASS_INPUTS` on HLSL/MSL) do **not** raise a
+> compile error — instead the affected shader transpiles to a header-
+> only stub: type, name, and `requiredFeatures` bitfield are recorded
+> in the library; no source file is emitted; no downstream compiler is
+> invoked. The runtime rejects pipeline creation against the stub with
+> a precise diagnostic (Layer 3, §14.3).
+>
+> Per-shader / per-function `#requires` (annotation immediately
+> preceding a decl) was considered for Phase 1.2 and dropped in favor
+> of the Sema-time portability scan (§14.2). `#requires` is currently
+> **file-scope only** — the union applies to every shader in the file.
+
 
 OmegaSL already has a Preprocessor (`gte/omegasl/src/Preprocessor.cpp`).
 Add a new directive, `#requires`, that names one or more features the
@@ -1464,7 +1496,22 @@ Behavior:
 the existing preprocessor; no new directive needed for the soft-conditional
 path.
 
-### 14.2 Layer 2 — codegen-time portability scan (warning)
+### 14.2 Layer 2 — portability scan (warning) [LANDED — modified]
+
+> **Modified mechanism:** runs at **Sema time** as an AST walker
+> (`omegasl::FeatureScanner`), not as backend codegen instrumentation.
+> Both Phase A (undeclared-use) and Phase B (partition suggestion)
+> emit advisory warnings to stderr. Compilation is not gated on the
+> scanner's output. The trigger table maps AST constructs →
+> `OMEGASL_FEATURE_BIT_*`; cube `read`/`write` and `texture2d_ms`
+> `write` are seeded today, but those constructs are still rejected
+> at Sema as compile-path-only (§2.1). New trigger entries land
+> alongside future feature implementations (DOUBLE, FLOAT16, INT64,
+> RT intrinsics, subgroup ops). The scanner folds callee
+> `usedFeatures` into callers via a fixed-point closure over the
+> user-function call graph, so a shader sees every feature its
+> transitive callees use without per-callee annotations.
+
 
 `#requires` is the explicit path. Most authors won't know they're using
 something that's backend-asymmetric until they compile against the
@@ -1493,7 +1540,27 @@ shaders. The suggestion text proposes a concrete split — moving the
 gated shaders into `<filename>_<feature>.omegasl` — so the universal
 ones still compile when the device can't satisfy the gated set.
 
-### 14.3 Layer 3 — runtime per-shader feature flags (per-shader rejection)
+### 14.3 Layer 3 — runtime per-shader feature flags (per-shader rejection) [LANDED — partial]
+
+> **Done:** the `omegasl_shader_feature_flags` enum + `requiredFeatures`
+> field on `omegasl_shader` are in `omegasl.h`; the library writer
+> (`linkShaderObjects`) appends the bitfield to every shader record
+> and emits header-only entries (`dataSize == 0`, no per-stage
+> decoration) for stub shaders; the library reader
+> (`OmegaGraphicsEngine::loadShaderLibraryFromInputStream`) accepts
+> `dataSize == 0`, skips the per-stage decoration block in that case,
+> and reads `requiredFeatures` for every entry.
+>
+> **Not done:** the loader currently *reads* `requiredFeatures` but
+> does **not** mask it against the device. `_loadShaderFromDesc`
+> proceeds as if every shader were supported. This needs the Layer-3
+> rejection step described below to land before stub shaders
+> short-circuit cleanly at pipeline-creation time. The
+> `OMEGASL_SHADER_LOAD_UNSUPPORTED` status / `loadDiagnostic` fields
+> from the spec haven't been added yet — the implementation can attach
+> the diagnostic via the existing `_loadShaderFromDesc` `nullptr`
+> sentinel plus a side-channel string until the field is formalized.
+
 
 Even with `#requires`, a `.omegasllib` produced for one backend can be
 loaded onto a device that doesn't satisfy a particular shader's
@@ -1563,7 +1630,37 @@ library load. This way a library with a mix of supported and unsupported
 shaders is still *usable*; only the specific draw/dispatch that names an
 unsupported shader errors.
 
-### 14.4 GTEDeviceFeatures bridge
+### 14.4 GTEDeviceFeatures bridge [NOT LANDED]
+
+> **Required for Layer 3 to function.** `GTEDeviceFeatures` already
+> exists in `gte/include/OmegaGTE.h` with the `flags` bitmask of
+> `GTEDEVICE_FEATURE_*` and the `ShaderModel` tier. A
+> `featuresAsBitmask() -> uint64_t` method is needed that synthesizes
+> the matching `OMEGASL_FEATURE_BIT_*` bits. Mapping (Phase A — uses
+> existing `GTEDeviceFeatures` data only):
+>
+> | OMEGASL_FEATURE_BIT_       | Source on GTEDeviceFeatures                                                                                            |
+> |---------------------------|------------------------------------------------------------------------------------------------------------------------|
+> | RAYTRACING                | `flags & GTEDEVICE_FEATURE_RAYTRACING`                                                                                  |
+> | MESH_SHADERS              | `flags & GTEDEVICE_FEATURE_MESH_SHADER`                                                                                 |
+> | GEOMETRY_SHADERS          | `flags & GTEDEVICE_FEATURE_GEOMETRY_SHADER`                                                                             |
+> | TESSELLATION              | `flags & GTEDEVICE_FEATURE_TESSELLATION_SHADER`                                                                         |
+> | SUBGROUP_OPS              | `shaderModel >= SM_6_0`                                                                                                  |
+> | BINDLESS                  | `flags & GTEDEVICE_FEATURE_DESCRIPTOR_INDEXING`                                                                         |
+> | FLOAT16                   | `flags & GTEDEVICE_FEATURE_SHADER_FLOAT16`                                                                              |
+> | INT64                     | `flags & GTEDEVICE_FEATURE_SHADER_INT64`                                                                                |
+> | VARIABLE_RATE             | `flags & GTEDEVICE_FEATURE_VARIABLE_RATE_SHADING`                                                                       |
+> | DOUBLE                    | `flags & GTEDEVICE_FEATURE_SHADER_FLOAT64`                                                                              |
+> | SUBPASS_INPUTS            | (Vulkan-only — needs new `GTEDEVICE_FEATURE_SUBPASS_INPUTS` flag, or always-true on the GLSL/Vulkan backend)             |
+> | SPEC_CONSTANTS            | (Vulkan-native; HLSL/MSL emulate via `#define` / function constants — Phase B can synthesize true on all)               |
+> | TEXTURECUBE_RW            | (no current `GTEDeviceFeatures` flag — Phase B addition)                                                                |
+> | TEXTURE2D_MS_WRITE        | (no current `GTEDeviceFeatures` flag — Phase B addition)                                                                |
+>
+> Phase A delivers the bridge against today's `GTEDeviceFeatures`
+> shape; Phase B extends the struct itself with the missing bits
+> (cube R/W, MS write, subpass inputs as a generic flag) once we need
+> them — gated behind feature implementations landing.
+
 
 `GTEDeviceFeatures` already exists in `gte/include/omegaGTE/GTEBase.h` (or
 similar). Phase A of §14 adds a `featuresAsBitmask() -> uint64_t` method
@@ -1574,7 +1671,16 @@ Phase B (later): extend `GTEDeviceFeatures` itself with the bits that
 aren't yet tracked (cube R/W, MS write, etc.) so the bridge is total
 rather than synthesized.
 
-### 14.5 Predefined feature macros
+### 14.5 Predefined feature macros [LANDED]
+
+> Implemented in `Preprocessor::setBackend(...)` via a static
+> `kFeatureTable` keyed on `(name, bit, hlslExpressible,
+> mslExpressible, glslExpressible)`. A backend defines
+> `OMEGASL_FEATURE_<NAME>` only when the feature is expressible at
+> highest capability on that backend; otherwise the macro is omitted
+> and any `#requires(NAME)` against it triggers the §14.1 stub path.
+> The table mirrors the matrix below.
+
 
 Initial mapping (which `OMEGASL_FEATURE_<NAME>` macros are predefined per
 backend):
@@ -1637,54 +1743,139 @@ void shadowMap(uint3 gid : GlobalThreadID){
 #endif
 ```
 
-**Compile output (HLSL backend, SM 6.5):** both shaders compile. Library
-records `modelMesh.requiredFeatures = MESH_SHADERS` and
-`shadowRay.requiredFeatures = MESH_SHADERS | RAYTRACING`.
+**Compile output (HLSL backend, SM 6.5):** both shaders compile.
+`OMEGASL_BACKEND_HLSL` defines `OMEGASL_FEATURE_MESH_SHADERS` and
+`OMEGASL_FEATURE_RAYTRACING`, so the preprocessor selects the
+`shadowRay` branch. Library records
+`modelMesh.requiredFeatures = MESH_SHADERS` (file-scope `#requires`)
+and `shadowRay.requiredFeatures = MESH_SHADERS` (file-scope only —
+`shadowRay` itself doesn't add bits because per-shader `#requires`
+isn't a feature in the current model; if file-scope had also
+declared `RAYTRACING` the bit would propagate to every shader).
 
-**Compile output (Metal 2 backend, no RT):** preprocessor selects the
-`shadowMap` branch instead of `shadowRay`. `modelMesh` errors at compile
-time because `#requires(MESH_SHADERS)` fires (Metal 2 doesn't define it).
-Author either bumps to Metal 3 or partitions `modelMesh` into a separate
-file.
+**Compile output (MSL backend, highest-capability assumption):** the
+preprocessor selects the `shadowRay` branch (MSL defines
+`OMEGASL_FEATURE_RAYTRACING`). Both shaders compile fully. Library
+records `modelMesh.requiredFeatures = MESH_SHADERS`,
+`shadowRay.requiredFeatures = MESH_SHADERS`. Whether the user's
+specific Metal device supports MESH_SHADERS or RT is decided at
+runtime. (Pre-§14.1 modification this would have been a hard error;
+the new "transpile as null + tag" rule defers to the runtime.)
 
-**Runtime load (D3D12, SM 6.5 device with RT):** all shaders load.
+**Compile output (any backend, hypothetical `#requires(DOUBLE)` on
+MSL):** `OMEGASL_FEATURE_DOUBLE` is *not* defined on MSL — DOUBLE is
+not expressible at all in MSL. The shader transpiles to a header-
+only stub: no `.metal` file is emitted, no `xcrun` is invoked, the
+library record carries `dataSize == 0` plus
+`requiredFeatures = OMEGASL_FEATURE_BIT_DOUBLE`. The Layer-2
+scanner emits a portability warning (when DOUBLE has a trigger
+entry) suggesting partitioning.
 
-**Runtime load (D3D12, SM 6.5 device *without* RT):** library loads;
-`shadowRay`'s `requiredFeatures & ~deviceFeatures = RAYTRACING`, so it's
-marked unsupported. Pipeline creation against `shadowRay` fails with the
-stored diagnostic; `modelMesh` and other shaders work normally.
+**Runtime load (planned, blocked on §14.7.1 tasks A–C):** the loader
+masks each shader's `requiredFeatures` against the device's
+capability bitmask synthesized by `featuresAsBitmask()`. Shaders
+with non-zero `missing` bits are inserted as a sentinel into
+`lib->shaders` with a stored diagnostic. Pipeline creation against
+the sentinel fails with the diagnostic; sibling shaders in the same
+library load and run normally.
 
-### 14.7 Implementation phases
+### 14.7 Implementation phases — current status
 
-1. **Macro + `#requires` directive** — preprocessor + Sema integration.
-   Predefined macros only for the existing universal features; the
-   asymmetric ones get added as they land in the survey. (Self-contained,
-   ~1 day for the directive plumbing.)
+1. **Macro + `#requires` directive** — preprocessor predefines
+   `OMEGASL_BACKEND_<X>` and the static `OMEGASL_FEATURE_<NAME>` set;
+   `#requires(...)` is parsed at file scope; resolved bits drive the
+   stub-emission path. `#if defined(...)` / `#elif` / `#else`
+   evaluation added so source-level fallback paths work. **[LANDED]**
 
-2. **Codegen-time portability scan** — each backend's emitter notes which
-   features were exercised; the compiler driver compares against the
-   declared set and emits warnings. (Touches all three backends; per-feature
-   instrumentation grows organically as new features land.)
+2. **Portability scan** — runs as a Sema-time AST walker
+   (`omegasl::FeatureScanner`) instead of backend codegen
+   instrumentation. Phase A undeclared-use + Phase B partition-
+   suggestion warnings both emit to stderr. The trigger table is
+   seeded with cube `read`/`write` and `texture2d_ms` `write` (both
+   currently rejected at Sema as compile-path-only — entries are
+   live-wired but inert until those compile paths land). **[LANDED;
+   trigger table grows as features land]**
 
-3. **`omegasl_shader.requiredFeatures` field + library writer/reader
-   compatibility** — additive to the file format. Bump a `lib_version`
-   minor-version byte so older loaders can still load new libraries
-   (they just won't see the requiredFeatures field, which is fine — they
-   predate the gating system anyway).
+3. **`omegasl_shader.requiredFeatures` field + library writer/reader**
+   — `omegasl.h` gained the `omegasl_shader_feature_flags` enum and
+   the `requiredFeatures` field. Writer (`linkShaderObjects`) emits
+   header-only entries for stub shaders (`dataSize == 0`, no per-stage
+   block) and appends the bitfield to every record. Reader
+   (`OmegaGraphicsEngine::loadShaderLibraryFromInputStream`) accepts
+   `dataSize == 0`, skips the per-stage block in that case, and reads
+   the trailing `requiredFeatures`. **No** `lib_version` byte was
+   added — the format change is breaking against pre-§14 readers, but
+   no shipped lib predates the gating system. **[LANDED]**
 
-4. **`GTEDeviceFeatures::featuresAsBitmask` + per-shader load rejection**
-   — engine side. The diagnostic format should be human-readable and
-   include the missing feature names.
+4. **`GTEDeviceFeatures::featuresAsBitmask` + per-shader load
+   rejection** — **[NOT LANDED]**. Two pieces:
+   - **(4a) Bridge**: add `featuresAsBitmask() -> uint64_t` per the
+     mapping in §14.4. ~50 lines, contained in `OmegaGTE.h` /
+     `GE.cpp`. Phase A targets the bits that already have backing
+     `GTEDEVICE_FEATURE_*` flags; Phase B extends `GTEDeviceFeatures`
+     with `TEXTURECUBE_RW` / `TEXTURE2D_MS_WRITE` / `SUBPASS_INPUTS`
+     when those features become reachable.
+   - **(4b) Loader rejection**: in
+     `OmegaGraphicsEngine::loadShaderLibraryFromInputStream` (or in a
+     new wrapper), compute `missing = shader.requiredFeatures &
+     ~deviceFeatures`. If non-zero, *don't* call
+     `_loadShaderFromDesc`; insert a sentinel `nullptr` into
+     `lib->shaders` and stash a human-readable diagnostic
+     ("`<shader>` requires features `[FOO, BAR]`; device lacks
+     `[BAR]`"). Pipeline creation against the sentinel must surface
+     the diagnostic — needs a small change in the pipeline builders
+     (`createComputePipeline` / `createRenderPipeline`) to detect the
+     sentinel and propagate the message.
 
-5. **Partition-suggestion warning (Phase B of layer 2)** — quality-of-life,
-   land after the system is in active use.
+5. **Partition-suggestion warning (Phase B of layer 2)** — Sema-time
+   scanner emits both undeclared-use and partition warnings;
+   stderr-formatted with file basename and recommended split filename
+   (`<file>_<lower_feature>.omegasl`). **[LANDED]**
+
+### 14.7.1 Remaining work for full operation
+
+The plumbing is in place from source through library file and back
+into the engine. To close the loop:
+
+| # | Task | Where | Effort | Blocks |
+|---|------|-------|--------|--------|
+| A | `GTEDeviceFeatures::featuresAsBitmask` (Phase A — uses existing flags) | `gte/include/OmegaGTE.h` | small | runtime rejection |
+| B | Loader-side mask + sentinel insertion | `gte/src/GE.cpp` (`loadShaderLibraryFromInputStream`) | small | runtime rejection |
+| C | Pipeline-builder sentinel handling + diagnostic surface | `createComputePipeline` / `createRenderPipeline` paths | small | clean error at draw/dispatch time |
+| D | Per-backend probe of `GTEDEVICE_FEATURE_*` flags | D3D12 / Metal / Vulkan device init | medium | accurate device feature reporting |
+| E | `GTEDeviceFeatures` extension for `TEXTURECUBE_RW`, `TEXTURE2D_MS_WRITE`, `SUBPASS_INPUTS` | `gte/include/OmegaGTE.h` | small | gating those specific features (Phase B of §14.4) |
+| F | Trigger-table entries for DOUBLE, FLOAT16, INT64, RT intrinsics, subgroup ops | `FeatureScanner.cpp` | per-feature | scanner reporting on those features |
+| G | Cube `read`/`write` + 2D-MS `write` Sema acceptance + codegen | `Sema.cpp:1330,1447`, all three Targets | medium | making the existing trigger entries fire |
+
+A and B are the smallest end-to-end gain — once they land, a stub
+shader produced by the §14.1 path is rejected at load with a precise
+diagnostic instead of silently being marked supported. C closes the
+last gap so the diagnostic actually surfaces to the caller. D is
+needed for the bridge to report truthful values — without it,
+`flags` may be zero on backends that haven't filled it in yet, so
+*every* feature appears unsupported.
+
+### 14.7.2 Format note
+
+The `.omegasllib` format changed shape in step 3:
+
+- Stub shaders write `type, name_size, name, dataSize=0, nLayout=0,
+  requiredFeatures` and skip the per-stage block.
+- Real shaders write the existing layout + per-stage block, then
+  append `requiredFeatures` (uint64_t) at the tail.
+
+The reader detects stubs by `dataSize == 0` and branches accordingly.
+This is a hard format break against any pre-§14 reader, accepted on
+the grounds that no shipping lib predates the change.
 
 ### 14.8 Out of scope
 
-- **Per-stage requirements.** `#requires` on a single shader gates that
-  shader. Per-stage requirements (e.g., "this fragment shader requires
-  variable rate shading") fall out of placing `#requires` immediately
-  before the function declaration. No special syntax needed.
+- **Per-shader / per-function `#requires`.** Per-shader annotation was
+  considered for Phase 1.2 and dropped: when a user function uses a
+  feature, the cleanest way to gate the shader that calls it is the
+  Sema-time scanner (§14.2), not by hand-decorating each shader.
+  `#requires` remains file-scope only; if mixing happens, the partition
+  suggestion warns the author to split the file.
 
 - **Conditional resource declarations.** `#if defined(OMEGASL_FEATURE_X)`
   around a `buffer<...>` or `texture2d` declaration is technically

@@ -67,6 +67,33 @@ namespace omegasl {
 
         OmegaCommon::Map<OmegaCommon::String,omegasl_shader> shaderMap;
 
+        /// Names (object_file map keys) of shaders whose required-feature
+        /// set could not be expressed by the active backend. Their
+        /// `omegasl_shader` entry holds only the header (type, name,
+        /// requiredFeatures); no source file was written, no compilation
+        /// was invoked. `linkShaderObjects` writes a `dataSize == 0`
+        /// record for each so the runtime can produce a precise rejection
+        /// diagnostic when a pipeline names the shader. See
+        /// OmegaSL-Feature-Gap-Survey §14.1 (user-requested twist:
+        /// transpile as null + tag the bitfield, no compile-time hard-fail).
+        std::set<std::string> stubShaderKeys;
+
+        /// File-scope `#requires(...)` bits the Preprocessor accumulated
+        /// for the source currently being processed. Every shader emitted
+        /// from this source carries this bitfield in its `omegasl_shader`
+        /// record so the runtime loader can reject it on devices that
+        /// don't satisfy the requirements.
+        uint64_t fileRequiredFeatures = 0;
+        /// Subset of `fileRequiredFeatures` whose `OMEGASL_FEATURE_<NAME>`
+        /// macro was not defined for the active backend. A non-zero value
+        /// triggers the stub-emission path in SHADER_DECL.
+        uint64_t fileUnsatisfiedFeatures = 0;
+
+        void setRequiredFeatures(uint64_t required, uint64_t unsatisfied) {
+            fileRequiredFeatures = required;
+            fileUnsatisfiedFeatures = unsatisfied;
+        }
+
         /// Names of user-defined functions encountered during parsing.
         /// Populated by each backend's FUNC_DECL handler. Used by the
         /// shared CALL_EXPR / FUNC_DECL emission paths together with
@@ -74,6 +101,14 @@ namespace omegasl {
         /// name or `osl_user_<name>` at the call/definition site.
         OmegaCommon::Vector<ast::FuncDecl *> userFuncDecls;
         std::set<std::string> userFuncNames;
+
+        /// AST pointers for every `ShaderDecl` the parser handed off to
+        /// `generateDecl`. Collected so the post-parse portability
+        /// scanner (Feature-Gap-Survey §14.2) can revisit them after
+        /// every user function is known — handles forward references
+        /// where a shader calls a user function defined later in the
+        /// file. Not used by codegen itself.
+        OmegaCommon::Vector<ast::ShaderDecl *> shaderDecls;
 
         /// Prefix used when a user function name collides with a
         /// target-specific stdlib identifier. The prefix is stable so
@@ -264,12 +299,22 @@ namespace omegasl {
 
             for(auto & p : shaderMap){
                 auto & shader_data = p.second;
+                /// Layer 1 stub path: the entry was recorded with no
+                /// backing object file because the active backend cannot
+                /// express one of the declared `#requires(...)` features.
+                /// Write a `dataSize == 0` record (header-only) plus the
+                /// `requiredFeatures` bitfield so the runtime can produce
+                /// a precise rejection diagnostic.
+                bool isStub = stubShaderKeys.count(std::string(p.first)) > 0;
 
-                //0.  Pre-check: verify compiled shader object is readable before writing anything
-                std::ifstream in(p.first,std::ios::in | std::ios::binary);
-                if(!in.is_open()){
-                    std::cerr << "error: cannot open compiled shader object: " << p.first << std::endl;
-                    return false;
+                std::ifstream in;
+                if(!isStub){
+                    //0.  Pre-check: verify compiled shader object is readable before writing anything
+                    in.open(p.first,std::ios::in | std::ios::binary);
+                    if(!in.is_open()){
+                        std::cerr << "error: cannot open compiled shader object: " << p.first << std::endl;
+                        return false;
+                    }
                 }
 
                 //1.  Write Shader Type
@@ -281,7 +326,11 @@ namespace omegasl {
                 out.write(shader_data.name,std::streamsize(shader_name_size));
 
                 //3.  Write Shader Data Size and Data
-                {
+                if(isStub){
+                    size_t dataSize = 0;
+                    out.write((char *)&dataSize,sizeof(dataSize));
+                }
+                else {
                     in.seekg(0,std::ios::end);
                     size_t dataSize = in.tellg();
                     in.seekg(0,std::ios::beg);
@@ -321,30 +370,42 @@ namespace omegasl {
                     out.write((char *)&len,sizeof(len));
                 }
 
-                if(shader_data.type == OMEGASL_SHADER_VERTEX) {
+                /// Stage-specific decoration only travels with shaders
+                /// that have a real body — stubs have no parameters /
+                /// threadgroup info to record.
+                if(!isStub){
+                    if(shader_data.type == OMEGASL_SHADER_VERTEX) {
 
-                    /// 5. (For Vertex Shaders) Write Shader Vertex Input Desc
-                    out.write((char *) &shader_data.vertexShaderInputDesc.useVertexID,
-                              sizeof(shader_data.vertexShaderInputDesc.useVertexID));
-                    out.write((char *) &shader_data.vertexShaderInputDesc.nParam,
-                              sizeof(shader_data.vertexShaderInputDesc.nParam));
-                    OmegaCommon::ArrayRef<omegasl_vertex_shader_param_desc> vertexShaderParamDescArr{
-                            shader_data.vertexShaderInputDesc.pParams,
-                            shader_data.vertexShaderInputDesc.pParams + shader_data.vertexShaderInputDesc.nParam};
-                    for (auto &param: vertexShaderParamDescArr) {
-                        size_t param_name_len = strlen(param.name);
-                        out.write((char *)&param_name_len,sizeof(param_name_len));
-                        out.write(param.name,std::streamsize(param_name_len));
-                        out.write((char *)&param.type,sizeof(param.type));
-                        out.write((char *)&param.offset,sizeof(param.offset));
+                        /// 5. (For Vertex Shaders) Write Shader Vertex Input Desc
+                        out.write((char *) &shader_data.vertexShaderInputDesc.useVertexID,
+                                  sizeof(shader_data.vertexShaderInputDesc.useVertexID));
+                        out.write((char *) &shader_data.vertexShaderInputDesc.nParam,
+                                  sizeof(shader_data.vertexShaderInputDesc.nParam));
+                        OmegaCommon::ArrayRef<omegasl_vertex_shader_param_desc> vertexShaderParamDescArr{
+                                shader_data.vertexShaderInputDesc.pParams,
+                                shader_data.vertexShaderInputDesc.pParams + shader_data.vertexShaderInputDesc.nParam};
+                        for (auto &param: vertexShaderParamDescArr) {
+                            size_t param_name_len = strlen(param.name);
+                            out.write((char *)&param_name_len,sizeof(param_name_len));
+                            out.write(param.name,std::streamsize(param_name_len));
+                            out.write((char *)&param.type,sizeof(param.type));
+                            out.write((char *)&param.offset,sizeof(param.offset));
+                        }
+                    }
+                    else if(shader_data.type == OMEGASL_SHADER_COMPUTE){
+                        out.write((char *)&shader_data.threadgroupDesc.x,sizeof(unsigned int));
+                        out.write((char *)&shader_data.threadgroupDesc.y,sizeof(unsigned int));
+                        out.write((char *)&shader_data.threadgroupDesc.z,sizeof(unsigned int));
                     }
                 }
-                else if(shader_data.type == OMEGASL_SHADER_COMPUTE){
-                    out.write((char *)&shader_data.threadgroupDesc.x,sizeof(unsigned int));
-                    out.write((char *)&shader_data.threadgroupDesc.y,sizeof(unsigned int));
-                    out.write((char *)&shader_data.threadgroupDesc.z,sizeof(unsigned int));
-                }
 
+                /// 6. Per-shader required feature bitfield (Layer 1 of
+                /// the Backend Feature Gating system, §14.1/§14.3). The
+                /// runtime loader masks this against the device feature
+                /// bitmask and rejects only the shaders whose required
+                /// bits are not satisfied. Always written, even when 0.
+                out.write((char *)&shader_data.requiredFeatures,
+                          sizeof(shader_data.requiredFeatures));
             }
 
             out.close();

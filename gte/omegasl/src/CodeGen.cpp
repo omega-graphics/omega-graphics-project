@@ -437,6 +437,10 @@ namespace omegasl {
             }
             case SHADER_DECL: {
                 auto _decl = (ast::ShaderDecl *)decl;
+                /// Record the AST pointer so the post-parse portability
+                /// scanner (Feature-Gap-Survey §14.2) can revisit every
+                /// shader after the full file has been parsed.
+                shaderDecls.push_back(_decl);
 
                 /// Stage-support gate. Metal still refuses hull/domain
                 /// (OmegaSL-Reference.md bug 3); the diagnostic comes
@@ -445,6 +449,40 @@ namespace omegasl {
                 if (!target->supportsStage(_decl->shaderType, supportDiag)) {
                     std::cerr << "error: " << supportDiag << " ('" << _decl->name << "')" << std::endl;
                     hasFatalErrors = true;
+                    break;
+                }
+
+                /// Layer 1 stub path (Feature-Gap-Survey §14.1, user
+                /// twist): one or more declared `#requires(...)` features
+                /// have no `OMEGASL_FEATURE_<NAME>` macro on the active
+                /// backend. Per the user request — "Emit the header with
+                /// the capabilities to the lib but the code body will be
+                /// empty." So we register an `omegasl_shader` entry with
+                /// `type`, `name`, and `requiredFeatures` set, but write
+                /// no source file and do not invoke the downstream
+                /// compiler. The library writer recognizes the
+                /// `stubShaderKeys` membership and emits a `dataSize == 0`
+                /// record. The runtime loader then reports a precise
+                /// "feature unavailable" diagnostic when a pipeline
+                /// references the shader.
+                if (fileUnsatisfiedFeatures != 0) {
+                    omegasl_shader meta{};
+                    meta.type = _decl->shaderType == ast::ShaderDecl::Vertex     ? OMEGASL_SHADER_VERTEX
+                                : _decl->shaderType == ast::ShaderDecl::Fragment ? OMEGASL_SHADER_FRAGMENT
+                                : _decl->shaderType == ast::ShaderDecl::Compute  ? OMEGASL_SHADER_COMPUTE
+                                : _decl->shaderType == ast::ShaderDecl::Hull     ? OMEGASL_SHADER_HULL
+                                                                                 : OMEGASL_SHADER_DOMAIN;
+                    auto *nameBuf = new char[_decl->name.size() + 1];
+                    std::copy(_decl->name.begin(), _decl->name.end(), nameBuf);
+                    nameBuf[_decl->name.size()] = '\0';
+                    meta.name = nameBuf;
+                    meta.requiredFeatures = fileRequiredFeatures;
+                    /// Synthetic key — not a real path; linkShaderObjects
+                    /// uses `stubShaderKeys` membership to skip the file
+                    /// read and write a header-only record.
+                    OmegaCommon::String stubKey = std::string("__stub__:") + std::string(_decl->name);
+                    stubShaderKeys.insert(std::string(stubKey));
+                    shaderMap.insert(std::make_pair(stubKey, meta));
                     break;
                 }
 
@@ -495,6 +533,12 @@ namespace omegasl {
                 if (!opts.runtimeCompile) {
                     fileOut.close();
                 }
+                /// Layer 1: tag every emitted shader with the file-scope
+                /// `#requires(...)` bitfield so the runtime loader can
+                /// reject only the shaders whose declared requirements
+                /// aren't satisfied by the device. Other shaders in the
+                /// same library load normally (Feature-Gap-Survey §14.3).
+                meta.requiredFeatures = fileRequiredFeatures;
                 shaderMap.insert(std::make_pair(object_file, meta));
                 break;
             }
@@ -515,6 +559,12 @@ namespace omegasl {
     bool CodeGen::generateInterfaceAndCompileShader(ast::Decl *decl) {
         if(decl->type == SHADER_DECL){
             auto _decl = (ast::ShaderDecl *)decl;
+            /// Layer 1 stub path: SHADER_DECL recorded a header-only
+            /// entry because the active backend can't express one of
+            /// the required features. There's no source file to compile.
+            if(stubShaderKeys.count(std::string("__stub__:") + std::string(_decl->name)) > 0){
+                return true;
+            }
             /// If the backend already refused to emit this stage (e.g.
             /// Metal hull/domain), it has set hasFatalErrors and skipped
             /// writing the source file. Don't invoke the downstream

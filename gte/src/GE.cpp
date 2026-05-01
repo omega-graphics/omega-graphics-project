@@ -144,19 +144,31 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryFromInputSt
                       << shaderEntry.name << "`." << std::endl;
             return nullptr;
         }
-        if(shaderEntry.dataSize == 0 || shaderEntry.dataSize > kMaxShaderBytecodeBytes){
+        /// `dataSize == 0` is the Layer 1 stub marker (Feature-Gap-Survey
+        /// §14.1). The shader's `#requires(...)` set named at least one
+        /// feature the active backend couldn't express, so codegen
+        /// emitted only a header (type, name, requiredFeatures). The
+        /// loader records the entry as unsupported so a precise rejection
+        /// diagnostic can fire at pipeline-creation time.
+        std::unique_ptr<ShaderByte[]> shaderData;
+        if(shaderEntry.dataSize > kMaxShaderBytecodeBytes){
             std::cerr << "OmegaSL shader library load failed: invalid shader bytecode size "
                       << shaderEntry.dataSize << " for `" << shaderEntry.name << "`." << std::endl;
             return nullptr;
         }
-
-        auto shaderData = std::make_unique<ShaderByte[]>(shaderEntry.dataSize);
-        if(!readBinaryBytes(in,shaderData.get(),shaderEntry.dataSize)){
-            std::cerr << "OmegaSL shader library load failed: could not read shader bytecode for `"
-                      << shaderEntry.name << "`." << std::endl;
-            return nullptr;
+        if(shaderEntry.dataSize > 0){
+            shaderData = std::make_unique<ShaderByte[]>(shaderEntry.dataSize);
+            if(!readBinaryBytes(in,shaderData.get(),shaderEntry.dataSize)){
+                std::cerr << "OmegaSL shader library load failed: could not read shader bytecode for `"
+                          << shaderEntry.name << "`." << std::endl;
+                return nullptr;
+            }
+            shaderEntry.data = shaderData.get();
         }
-        shaderEntry.data = shaderData.get();
+        else {
+            shaderEntry.data = nullptr;
+        }
+        const bool isStubEntry = (shaderEntry.dataSize == 0);
 
         /// 4. Read Shader Layout
         if(!readBinaryValue(in,shaderEntry.nLayout)){
@@ -187,7 +199,11 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryFromInputSt
 
         shaderEntry.pLayout = layoutDescArr.get();
 
-        if(shaderEntry.type == OMEGASL_SHADER_VERTEX) {
+        /// Stub entries carry no per-stage decoration on disk — only the
+        /// header (type, name, requiredFeatures). Skip the vertex /
+        /// compute decoration reads so the file pointer lands on the
+        /// requiredFeatures field.
+        if(shaderEntry.type == OMEGASL_SHADER_VERTEX && !isStubEntry) {
             /// 5. (For Vertex Shaders) Read Vertex Shader Input Desc
             if(!readBinaryValue(in,shaderEntry.vertexShaderInputDesc.useVertexID)){
                 std::cerr << "OmegaSL shader library load failed: could not read vertex input mode for `"
@@ -250,6 +266,16 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryFromInputSt
 
             shaderEntry.vertexShaderInputDesc.pParams = vertexShaderInputParams.get();
 
+            /// 6. Per-shader required-feature bitfield (Layer 1 of the
+            /// Backend Feature Gating system, Feature-Gap-Survey §14.3).
+            /// Read for every entry, after the per-stage block (or after
+            /// the layout block for stubs / fragment / hull / domain).
+            if(!readBinaryValue(in,shaderEntry.requiredFeatures)){
+                std::cerr << "OmegaSL shader library load failed: could not read required-feature flags for `"
+                          << shaderEntry.name << "`." << std::endl;
+                return nullptr;
+            }
+
             auto shader = _loadShaderFromDesc(&shaderEntry);
             lib->shaders.insert(std::make_pair(std::string(shaderEntry.name),shader));
 
@@ -265,7 +291,7 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryFromInputSt
             continue;
 
         }
-        else if(shaderEntry.type == OMEGASL_SHADER_COMPUTE){
+        else if(shaderEntry.type == OMEGASL_SHADER_COMPUTE && !isStubEntry){
             if(!readBinaryValue(in,shaderEntry.threadgroupDesc.x) ||
                !readBinaryValue(in,shaderEntry.threadgroupDesc.y) ||
                !readBinaryValue(in,shaderEntry.threadgroupDesc.z)){
@@ -273,6 +299,13 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryFromInputSt
                           << shaderEntry.name << "`." << std::endl;
                 return nullptr;
             }
+        }
+
+        /// Per-shader required-feature bitfield — see comment above.
+        if(!readBinaryValue(in,shaderEntry.requiredFeatures)){
+            std::cerr << "OmegaSL shader library load failed: could not read required-feature flags for `"
+                      << shaderEntry.name << "`." << std::endl;
+            return nullptr;
         }
 
         auto shader = _loadShaderFromDesc(&shaderEntry);

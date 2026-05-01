@@ -156,6 +156,31 @@ using omegasl_shader_type = enum : int {
     OMEGASL_SHADER_DOMAIN
 };
 
+/// Per-shader feature requirements. Each bit names a runtime feature that
+/// the *generated* shader requires. The library writer sets these from the
+/// `#requires` declarations + the codegen-time portability scan; the
+/// loader masks them against the device's GTEDeviceFeatures and rejects
+/// only the shaders whose required bits are not satisfied. Other shaders
+/// in the same library load normally. New bits append at the tail;
+/// existing bits never get reused. See OmegaSL-Feature-Gap-Survey §14.
+using omegasl_shader_feature_flags = enum : unsigned long long {
+    OMEGASL_FEATURE_BIT_NONE               = 0,
+    OMEGASL_FEATURE_BIT_RAYTRACING         = 1ull << 0,
+    OMEGASL_FEATURE_BIT_MESH_SHADERS       = 1ull << 1,
+    OMEGASL_FEATURE_BIT_GEOMETRY_SHADERS   = 1ull << 2,
+    OMEGASL_FEATURE_BIT_TESSELLATION       = 1ull << 3,
+    OMEGASL_FEATURE_BIT_SUBGROUP_OPS       = 1ull << 4,
+    OMEGASL_FEATURE_BIT_BINDLESS           = 1ull << 5,
+    OMEGASL_FEATURE_BIT_FLOAT16            = 1ull << 6,
+    OMEGASL_FEATURE_BIT_INT64              = 1ull << 7,
+    OMEGASL_FEATURE_BIT_VARIABLE_RATE      = 1ull << 8,
+    OMEGASL_FEATURE_BIT_SUBPASS_INPUTS     = 1ull << 9,
+    OMEGASL_FEATURE_BIT_SPEC_CONSTANTS     = 1ull << 10,
+    OMEGASL_FEATURE_BIT_TEXTURECUBE_RW     = 1ull << 11,
+    OMEGASL_FEATURE_BIT_TEXTURE2D_MS_WRITE = 1ull << 12,
+    OMEGASL_FEATURE_BIT_DOUBLE             = 1ull << 13
+};
+
 
 struct omegasl_vertex_shader_param_desc {
     CString name;
@@ -188,6 +213,15 @@ struct omegasl_shader {
     unsigned nLayout;
     void *data;
     size_t dataSize;
+    /// Bitfield of OMEGASL_FEATURE_BIT_* values declared via the source-
+    /// level `#requires(...)` directive. The loader masks these against
+    /// the device's feature bitmask and rejects only the shaders whose
+    /// required bits are not satisfied. A `dataSize == 0` shader entry
+    /// is a "stub" — the active backend cannot express one of the
+    /// required features, so the body was deliberately omitted. The
+    /// header (type, name, requiredFeatures) is still serialized so the
+    /// runtime can produce a precise rejection diagnostic.
+    unsigned long long requiredFeatures;
 };
 
 /// @}

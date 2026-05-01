@@ -291,6 +291,17 @@ namespace omegasl {
             /// terminated by `;` with no body). The body is supplied by a
             /// later full definition with a matching signature.
             bool isForwardDecl = false;
+            /// @brief Bitfield of OMEGASL_FEATURE_BIT_* values inferred from
+            /// the function body by the post-parse portability scanner
+            /// (Layer 2, Feature-Gap-Survey §14.2). For shaders, this is
+            /// the *transitive* set — own body uses unioned with every
+            /// user function transitively called. Independent of the
+            /// file-scope `#requires(...)` set: this is "what the body
+            /// actually uses," not "what the author declared." The
+            /// scanner compares the two to emit advisory warnings
+            /// (undeclared-use + partition-suggestion); compilation is
+            /// not gated on the result.
+            uint64_t usedFeatures = 0;
         };
 
         /// @brief Declares a Shader.

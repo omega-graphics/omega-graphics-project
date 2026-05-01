@@ -3,6 +3,7 @@
 #include "Parser.h"
 #include "CodeGen.h"
 #include "Error.h"
+#include "FeatureScanner.h"
 #include "Preprocessor.h"
 
 #include <iostream>
@@ -206,7 +207,20 @@ int main(int argc,char *argv[]){
     std::string sourceContent = buffer.str();
 
     omegasl::Preprocessor preprocessor;
+    /// Predefine OMEGASL_BACKEND_<X> + OMEGASL_FEATURE_<NAME> macros for
+    /// the active backend before processing so source-level
+    /// `#if defined(...)` and `#requires(...)` resolve correctly. Layer 1
+    /// of the Backend Feature Gating system (Feature-Gap-Survey §14.1).
+    omegasl::PPBackend ppBackend = omegasl::PPBackend::GLSL;
+    if (genMode == GenMode::hlsl) {
+        ppBackend = omegasl::PPBackend::HLSL;
+    } else if (genMode == GenMode::metal) {
+        ppBackend = omegasl::PPBackend::MSL;
+    }
+    preprocessor.setBackend(ppBackend);
     std::string processedSource = preprocessor.process(sourceContent, input_file_path.dir());
+    uint64_t fileRequiredFeatures = preprocessor.requiredFeatures();
+    uint64_t fileUnsatisfiedFeatures = preprocessor.unsatisfiedRequiredFeatures();
 
     omegasl::SourceFile sourceFile;
     sourceFile.setContent(processedSource);
@@ -272,6 +286,13 @@ int main(int argc,char *argv[]){
         codeGen = omegasl::CodeGenMake(codeGenOpts, std::make_unique<omegasl::GLSLTarget>(glslCodeOpts));
     }
 
+    /// Hand the file-scope `#requires` bitfield to CodeGen so each
+    /// emitted shader carries the union of declared feature requirements.
+    /// `unsatisfiedFeatures` is the subset whose macro is not defined for
+    /// the active backend; SHADER_DECL emits a header-only stub for those
+    /// per the user-requested twist (no hard fail at compile, runtime
+    /// rejection picks up the bitfield).
+    codeGen->setRequiredFeatures(fileRequiredFeatures, fileUnsatisfiedFeatures);
 
     omegasl::Parser parser(codeGen);
     omegasl::ParseContext parseCtx{ in };
@@ -292,6 +313,27 @@ int main(int argc,char *argv[]){
     if(codeGen->hasFatalErrors){
         omegasl::ast::builtins::Cleanup();
         return 1;
+    }
+
+    /// Layer 2 — post-parse portability scan (Feature-Gap-Survey §14.2).
+    /// Walks every `FuncDecl` / `ShaderDecl` body looking for backend-
+    /// asymmetric language constructs, propagates uses through the
+    /// user-function call graph, and emits two advisory warnings:
+    ///   1. "feature X is used but file scope didn't `#requires(X)`"
+    ///   2. "this file mixes shaders that use X with shaders that don't
+    ///      — consider partitioning"
+    /// Compilation is not gated on the result; this is purely advisory.
+    {
+        std::vector<omegasl::ast::FuncDecl *> userFuncs(
+            codeGen->userFuncDecls.begin(), codeGen->userFuncDecls.end());
+        std::vector<omegasl::ast::ShaderDecl *> shaderDecls(
+            codeGen->shaderDecls.begin(), codeGen->shaderDecls.end());
+        omegasl::FeatureScanner scanner(codeGen->typeResolver,
+                                        std::move(userFuncs),
+                                        std::move(shaderDecls));
+        scanner.run();
+        scanner.emitDiagnostics(std::string(inputFile.data(), inputFile.size()),
+                                fileRequiredFeatures, std::cerr);
     }
 
     /// `--emit-source-only` stops after the codegen pass writes transpiled
