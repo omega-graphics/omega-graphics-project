@@ -1466,8 +1466,8 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
 void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer,
                                               SharedHandle<GEFence> &signalFence) {
     multiQueueSync = true;
-    auto d3d12_buffer = (GED3D12CommandBuffer *)commandBuffer.get();
-    auto fence = (GED3D12Fence *)signalFence.get();
+    auto *d3d12_buffer = (GED3D12CommandBuffer *)commandBuffer.get();
+    auto *fence = dynamic_cast<GED3D12Fence *>(signalFence.get());
     d3d12_buffer->closed = true;
     submittedTraceCommandBufferIds.push_back(d3d12_buffer->traceResourceId);
     ResourceTracking::Event submitEvent{};
