@@ -57,7 +57,13 @@ namespace omegasl {
         }
         out << " -E" << name.data() << " -Fo "
             << OmegaCommon::FS::Path(outDir).append(name).concat(".cso").absPath();
-        out << " " << OmegaCommon::FS::Path(srcDir).append(name).concat(shaderFileExt(stage)).absPath() << " /Zi";
+        /// `/Zpc` locks matrix packing to column-major. OmegaSL stores
+        /// matrices column-major across host + GLSL + MSL, and the
+        /// runtime path passes `D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR` to
+        /// `D3DCompile`. This explicit flag stops the offline path from
+        /// silently disagreeing if a future dxc default ever flips. See
+        /// OmegaSL-Feature-Gap-Survey §12.2.
+        out << " " << OmegaCommon::FS::Path(srcDir).append(name).concat(shaderFileExt(stage)).absPath() << " /Zi /Zpc";
 
         auto dxc_process = OmegaCommon::ChildProcess::OpenWithStdoutPipe(opts.dxc_cmd, out.str().c_str());
         auto res = dxc_process.wait();
@@ -92,8 +98,17 @@ namespace omegasl {
 
         ID3DBlob *errorBlob = nullptr;
 
+        /// `D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR` makes HLSL's storage
+        /// layout match the host's `OmegaCommon::Matrix<Ty, col, row>`
+        /// (column-major) byte-for-byte, so a matrix `memcpy`'d into a
+        /// buffer reads correctly without a runtime transpose. Pairs
+        /// with the `column_major` qualifier emitted on every matrix-
+        /// typed field in `writeTypeName` and the offline `/Zpc` flag.
+        /// See OmegaSL-Feature-Gap-Survey §12.2.
         D3DCompile(source.data(), source.size(), name.data(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
-                   name.data(), target.data(), D3DCOMPILE_DEBUG, NULL, &blob, &errorBlob);
+                   name.data(), target.data(),
+                   D3DCOMPILE_DEBUG | D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR,
+                   NULL, &blob, &errorBlob);
 
         if (errorBlob != nullptr) {
             std::cout << "OMEGASL COMPILE ERROR: D3D ERROR:" << (char *)errorBlob->GetBufferPointer() << std::endl;
@@ -321,15 +336,20 @@ namespace omegasl {
         if (name == BUILTIN_MAKE_UINT2)    return "uint2";
         if (name == BUILTIN_MAKE_UINT3)    return "uint3";
         if (name == BUILTIN_MAKE_UINT4)    return "uint4";
+        /// OmegaSL `floatCxR` (C cols × R rows, host's `Matrix<float,C,R>`)
+        /// emits as HLSL `floatRxC` so HLSL's row-first source-level
+        /// indexing aligns with OmegaSL's column-first convention after the
+        /// `INDEX_EXPR` swap in `emitIndexExpr`. Squares are unchanged.
+        /// See OmegaSL-Feature-Gap-Survey §12.1.
         if (name == BUILTIN_MAKE_FLOAT2X2) return "float2x2";
         if (name == BUILTIN_MAKE_FLOAT3X3) return "float3x3";
         if (name == BUILTIN_MAKE_FLOAT4X4) return "float4x4";
-        if (name == BUILTIN_MAKE_FLOAT2X3) return "float2x3";
-        if (name == BUILTIN_MAKE_FLOAT2X4) return "float2x4";
-        if (name == BUILTIN_MAKE_FLOAT3X2) return "float3x2";
-        if (name == BUILTIN_MAKE_FLOAT3X4) return "float3x4";
-        if (name == BUILTIN_MAKE_FLOAT4X2) return "float4x2";
-        if (name == BUILTIN_MAKE_FLOAT4X3) return "float4x3";
+        if (name == BUILTIN_MAKE_FLOAT2X3) return "float3x2";
+        if (name == BUILTIN_MAKE_FLOAT2X4) return "float4x2";
+        if (name == BUILTIN_MAKE_FLOAT3X2) return "float2x3";
+        if (name == BUILTIN_MAKE_FLOAT3X4) return "float4x3";
+        if (name == BUILTIN_MAKE_FLOAT4X2) return "float2x4";
+        if (name == BUILTIN_MAKE_FLOAT4X3) return "float3x4";
         return name;
     }
 
@@ -675,18 +695,29 @@ namespace omegasl {
             out << "float3x3";
         } else if (_ty == ast::builtins::float4x4_type) {
             out << "float4x4";
+        /// Non-square matrices are spelled with HLSL's row-first convention:
+        /// OmegaSL `floatCxR` (C cols × R rows) → HLSL `floatRxC` (R rows ×
+        /// C cols). Pairs with the `INDEX_EXPR` swap in
+        /// `HLSLTarget::emitIndexExpr` so the source-level access aligns
+        /// across all three backends. See §12.1.
+        /// Memory layout (column-major) is locked by `compileShader*`'s
+        /// compile-flag pair (`D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR` and
+        /// `/Zpc`) — see §12.2. The `column_major` source-qualifier
+        /// (belt-and-suspenders) was deferred because emitting it from
+        /// `writeTypeName` would also leak into cast expressions where
+        /// HLSL forbids storage qualifiers.
         } else if (_ty == ast::builtins::float2x3_type) {
-            out << "float2x3";
-        } else if (_ty == ast::builtins::float2x4_type) {
-            out << "float2x4";
-        } else if (_ty == ast::builtins::float3x2_type) {
             out << "float3x2";
-        } else if (_ty == ast::builtins::float3x4_type) {
-            out << "float3x4";
-        } else if (_ty == ast::builtins::float4x2_type) {
+        } else if (_ty == ast::builtins::float2x4_type) {
             out << "float4x2";
-        } else if (_ty == ast::builtins::float4x3_type) {
+        } else if (_ty == ast::builtins::float3x2_type) {
+            out << "float2x3";
+        } else if (_ty == ast::builtins::float3x4_type) {
             out << "float4x3";
+        } else if (_ty == ast::builtins::float4x2_type) {
+            out << "float2x4";
+        } else if (_ty == ast::builtins::float4x3_type) {
+            out << "float3x4";
         } else if (_ty == ast::builtins::int_type) {
             out << "int";
         } else if (_ty == ast::builtins::int2_type) {
@@ -710,6 +741,98 @@ namespace omegasl {
         if (pointer) {
             out << "*";
         }
+    }
+
+    /// Predicate over OmegaSL builtin types — duplicated from Sema's
+    /// private helper so we can ask "is this thing being indexed a
+    /// matrix?" inside `emitIndexExpr` without leaking the Sema helper.
+    static bool isOmegaSLMatrixType(ast::Type *t) {
+        using namespace ast::builtins;
+        return t == float2x2_type || t == float3x3_type || t == float4x4_type
+            || t == float2x3_type || t == float2x4_type
+            || t == float3x2_type || t == float3x4_type
+            || t == float4x2_type || t == float4x3_type;
+    }
+
+    /// Row count of an OmegaSL matrix type. OmegaSL `floatCxR` has C
+    /// columns of R rows; the source-level `m[col]` returns a column of
+    /// R elements, so the synthesized HLSL column vector type is
+    /// `floatR`.
+    static unsigned omegaSLMatrixRowCount(ast::Type *t) {
+        using namespace ast::builtins;
+        if (t == float2x2_type || t == float3x2_type || t == float4x2_type) return 2;
+        if (t == float2x3_type || t == float3x3_type || t == float4x3_type) return 3;
+        if (t == float2x4_type || t == float3x4_type || t == float4x4_type) return 4;
+        return 0;
+    }
+
+    static const char *omegaSLMatrixColumnVectorTypeHLSL(ast::Type *t) {
+        switch (omegaSLMatrixRowCount(t)) {
+            case 2: return "float2";
+            case 3: return "float3";
+            case 4: return "float4";
+            default: return "float4";
+        }
+    }
+
+    /// Rewrite OmegaSL's column-first matrix indexing into HLSL's
+    /// row-first form so the same source produces the same element on
+    /// every backend. Three branches:
+    ///   (a) outer-of-two-level matrix index — `m[col][row]` →
+    ///       HLSL `m[row][col]` (swap).
+    ///   (b) single-level matrix read — `m[col]` →
+    ///       `floatN(m[0][col], m[1][col], …, m[N-1][col])` where N is
+    ///       the OmegaSL row count.
+    ///   (c) anything else (vector subscript, buffer subscript, struct
+    ///       array) — pass through unchanged.
+    /// Single-level matrix writes (`m[col] = …`) are rejected by Sema,
+    /// so this hook never sees that lvalue.
+    /// See OmegaSL-Feature-Gap-Survey §12.1.
+    void HLSLTarget::emitIndexExpr(CodeGen &cg, ast::IndexExpr *expr, std::ostream &out) {
+        /// (a) Two-level matrix index: outer's lhs is itself an INDEX_EXPR
+        /// whose own lhs resolves to a matrix.
+        if (expr->lhs->type == INDEX_EXPR) {
+            auto *inner = (ast::IndexExpr *)expr->lhs;
+            ast::Type *innerLhsTy = nullptr;
+            if (inner->lhs->resolvedType) {
+                innerLhsTy = cg.typeResolver->resolveTypeWithExpr(inner->lhs->resolvedType);
+            }
+            if (innerLhsTy && isOmegaSLMatrixType(innerLhsTy)) {
+                cg.generateExpr(inner->lhs);
+                out << "[";
+                cg.generateExpr(expr->idx_expr);
+                out << "][";
+                cg.generateExpr(inner->idx_expr);
+                out << "]";
+                return;
+            }
+        }
+
+        /// (b) Single-level matrix read: synthesize the column vector.
+        ast::Type *lhsTy = nullptr;
+        if (expr->lhs->resolvedType) {
+            lhsTy = cg.typeResolver->resolveTypeWithExpr(expr->lhs->resolvedType);
+        }
+        if (lhsTy && isOmegaSLMatrixType(lhsTy)) {
+            unsigned rows = omegaSLMatrixRowCount(lhsTy);
+            const char *colTy = omegaSLMatrixColumnVectorTypeHLSL(lhsTy);
+            out << colTy << "(";
+            for (unsigned i = 0; i < rows; ++i) {
+                if (i > 0) out << ", ";
+                cg.generateExpr(expr->lhs);
+                out << "[" << i << "][";
+                cg.generateExpr(expr->idx_expr);
+                out << "]";
+            }
+            out << ")";
+            return;
+        }
+
+        /// (c) Default — vector / buffer / struct-array.
+        cg.generateExpr(expr->lhs);
+        out << "[";
+        cg.generateExpr(expr->idx_expr);
+        out << "]";
     }
 
 }

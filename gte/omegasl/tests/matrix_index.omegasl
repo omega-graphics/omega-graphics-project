@@ -1,0 +1,58 @@
+/// §12.1 source-level matrix indexing — same OmegaSL source must
+/// compile (and produce identical reads) on every backend.
+///
+/// OmegaSL's `Matrix<Ty, column, row>` is column-first: `m[col]` is the
+/// column at `col`, `m[col][row]` is the element at column `col`, row
+/// `row`. GLSL/MSL match natively; HLSL gets the index swap +
+/// non-square type-spelling flip in `HLSLTarget`.
+
+struct OutData {
+    float4 value;
+};
+
+buffer<OutData> dst : 0;
+
+[out dst]
+compute(x=1,y=1,z=1)
+void test_index_square(uint3 tid : GlobalThreadID){
+    float4x4 m = float4x4(
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    );
+    /// Two-level reads.
+    float a = m[0][0];
+    float b = m[1][2];
+    float c = m[3][3];
+    /// Single-level read — column 2 as float4.
+    float4 col = m[2];
+    dst[0].value = float4(a, b, c, col.x);
+}
+
+[out dst]
+compute(x=1,y=1,z=1)
+void test_index_nonsquare(uint3 tid : GlobalThreadID){
+    /// 3 cols × 2 rows.
+    float3x2 m = float3x2(1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+    float a = m[0][0];
+    float b = m[2][1];
+    /// Single-level read — column 1 as float2.
+    float2 col = m[1];
+    dst[0].value = float4(a, b, col.x, col.y);
+}
+
+[out dst]
+compute(x=1,y=1,z=1)
+void test_two_level_write(uint3 tid : GlobalThreadID){
+    float4x4 m = float4x4(
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0
+    );
+    /// Two-level matrix writes are allowed and portable.
+    m[1][2] = 3.0;
+    m[3][0] = 7.0;
+    dst[0].value = float4(m[1][2], m[3][0], 0.0, 0.0);
+}

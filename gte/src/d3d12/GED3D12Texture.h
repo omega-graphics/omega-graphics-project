@@ -23,6 +23,13 @@ public:
     ComPtr<ID3D12DescriptorHeap> rtvDescHeap;
     ComPtr<ID3D12DescriptorHeap> dsvDescHeap;
 
+    // D3D12MA-owned suballocations. nullptr when the corresponding resource
+    // was created outside the allocator (heap-placed via GED3D12Heap, or
+    // imported swap-chain back buffer). Released exactly once in the
+    // destructor, after the COM ref to the resource has been dropped.
+    D3D12MA::Allocation *d3d12maAllocation        = nullptr;
+    D3D12MA::Allocation *d3d12maCpuSideAllocation = nullptr;
+
     D3D12_RESOURCE_STATES currentState;
 
     void downloadTextureToReadbackHeap(ID3D12GraphicsCommandList *commandList);
@@ -50,7 +57,9 @@ public:
             ID3D12DescriptorHeap *uavDescHeap,
             ID3D12DescriptorHeap *rtvDescHeap,
             ID3D12DescriptorHeap *dsvDescHeap,
-            D3D12_RESOURCE_STATES & currentState);
+            D3D12_RESOURCE_STATES & currentState,
+            D3D12MA::Allocation *d3d12maAllocation = nullptr,
+            D3D12MA::Allocation *d3d12maCpuSideAllocation = nullptr);
     ~GED3D12Texture() override;
 };
 

@@ -27,6 +27,10 @@ public:
 
     VmaMemoryUsage memoryUsage;
 
+    // Gates accumulated by encoders that bound this texture. Texture must
+    // outlive every gate before vmaDestroyImage can run.
+    OmegaCommon::Vector<Retention::FenceGate> pendingGates;
+
     /// Sync 2.0 Extension
 
     VkAccessFlags2KHR priorShaderAccess2 = 0;

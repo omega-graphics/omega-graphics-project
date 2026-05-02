@@ -28,6 +28,16 @@ namespace omegasl {
         out << "." << expr->rhs_id;
     }
 
+    /// Default index-expression emission used by GLSL/MSL: walk the LHS,
+    /// then `[idx]`. HLSLTarget overrides to swap matrix indices for
+    /// source-level alignment with OmegaSL's column-first convention.
+    void Target::emitIndexExpr(CodeGen &cg, ast::IndexExpr *expr, std::ostream &out) {
+        cg.generateExpr(expr->lhs);
+        out << "[";
+        cg.generateExpr(expr->idx_expr);
+        out << "]";
+    }
+
     /// Default shader-entry header: no-op. HLSL/GLSL override; MSL keeps
     /// its inline emission in `MetalCodeGen::SHADER_DECL` (its header
     /// interleaves with resource binding and closes with a manual `){`
@@ -99,10 +109,7 @@ namespace omegasl {
             }
             case INDEX_EXPR: {
                 auto _expr = (ast::IndexExpr *)expr;
-                generateExpr(_expr->lhs);
-                out << "[";
-                generateExpr(_expr->idx_expr);
-                out << "]";
+                target->emitIndexExpr(*this, _expr, out);
                 break;
             }
             case UNARY_EXPR: {

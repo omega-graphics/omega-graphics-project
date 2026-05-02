@@ -308,30 +308,46 @@ _NAMESPACE_BEGIN_
     };
 
     GEVulkanCommandBuffer::~GEVulkanCommandBuffer() {
+        // Render passes / framebuffers reach this point only when the buffer
+        // was never submitted (otherwise vkQueueSubmit's flush already moved
+        // them into the engine retention queue under a fence gate). Enqueue
+        // them with no gates so the next drainCompleted() releases them
+        // immediately — semantically the same as the previous "destroy on
+        // next fenced submit" behavior for buffers the GPU never touched.
         if(parentQueue != nullptr && parentQueue->engine != nullptr){
-            // Transfer render pass/framebuffer ownership to the queue for deferred
-            // destruction after the GPU has finished using them.
+            VkDevice dev = parentQueue->engine->device;
             for(auto framebuffer : ownedFramebuffers){
                 if(framebuffer != VK_NULL_HANDLE){
-                    parentQueue->deferredFramebufferDestroys.push_back(framebuffer);
+                    parentQueue->engine->retentionQueue.enqueue(
+                        {},
+                        [dev, framebuffer]{ vkDestroyFramebuffer(dev, framebuffer, nullptr); });
                 }
             }
             for(auto renderPass : ownedRenderPasses){
                 if(renderPass != VK_NULL_HANDLE){
-                    parentQueue->deferredRenderPassDestroys.push_back(renderPass);
+                    parentQueue->engine->retentionQueue.enqueue(
+                        {},
+                        [dev, renderPass]{ vkDestroyRenderPass(dev, renderPass, nullptr); });
                 }
             }
-            ownedFramebuffers.clear();
-            ownedRenderPasses.clear();
-            activeFramebuffer = VK_NULL_HANDLE;
-            activeRenderPass = VK_NULL_HANDLE;
         }
+        ownedFramebuffers.clear();
+        ownedRenderPasses.clear();
+        activeFramebuffer = VK_NULL_HANDLE;
+        activeRenderPass = VK_NULL_HANDLE;
         ResourceTracking::Tracker::instance().emit(
                 ResourceTracking::EventType::Destroy,
                 ResourceTracking::Backend::Vulkan,
                 "CommandBuffer",
                 traceResourceId,
                 reinterpret_cast<const void *>(commandBuffer));
+    }
+
+    void GEVulkanCommandBuffer::trackBuffer(const SharedHandle<GEBuffer> &b) {
+        if (b) trackedBuffers.push_back(b);
+    }
+    void GEVulkanCommandBuffer::trackTexture(const SharedHandle<GETexture> &t) {
+        if (t) trackedTextures.push_back(t);
     }
 
     void GEVulkanCommandBuffer::beginRenderPassIfDeferred(){
@@ -660,6 +676,7 @@ _NAMESPACE_BEGIN_
 
     void GEVulkanCommandBuffer::bindResourceAtVertexShader(SharedHandle<GEBuffer> &buffer, unsigned id){
         auto vk_buffer = (GEVulkanBuffer *)buffer.get();
+        trackBuffer(buffer);
 
         insertResourceBarrierIfNeeded(vk_buffer,id,renderPipelineState->vertexShader->internal);
 
@@ -692,6 +709,7 @@ _NAMESPACE_BEGIN_
 
     void GEVulkanCommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> &texture, unsigned id){
         auto vk_texture = (GEVulkanTexture *)texture.get();
+        trackTexture(texture);
         /// TODO!
 
         auto ioMode = getResourceIOModeForResourceID(id,renderPipelineState->vertexShader->internal);
@@ -735,6 +753,7 @@ _NAMESPACE_BEGIN_
 
     void GEVulkanCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> &buffer, unsigned id){
         auto vk_buffer = (GEVulkanBuffer *)buffer.get();
+        trackBuffer(buffer);
 
         insertResourceBarrierIfNeeded(vk_buffer,id,renderPipelineState->fragmentShader->internal);
 
@@ -764,6 +783,7 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned id){
 
         auto vk_texture = (GEVulkanTexture *)texture.get();
+        trackTexture(texture);
 
         auto ioMode = getResourceIOModeForResourceID(id,renderPipelineState->fragmentShader->internal);
 
@@ -855,6 +875,7 @@ _NAMESPACE_BEGIN_
 
     void GEVulkanCommandBuffer::setIndexBuffer(SharedHandle<GEBuffer> & buffer, RenderPassIndexType indexType){
         auto vkBuffer = ((GEVulkanBuffer *)buffer.get());
+        trackBuffer(buffer);
         VkIndexType vkType = (indexType == RenderPassIndexType::UInt16) ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
         vkCmdBindIndexBuffer(commandBuffer, vkBuffer->buffer, 0, vkType);
         pendingIndexType = vkType;
@@ -891,6 +912,7 @@ _NAMESPACE_BEGIN_
         beginRenderPassIfDeferred();
         applyTopologyIfDynamic(polygonType);
         auto *vkBuf = (GEVulkanBuffer *)argumentBuffer.get();
+        trackBuffer(argumentBuffer);
         vkCmdDrawIndirect(commandBuffer, vkBuf->buffer,
                           VkDeviceSize(argumentBufferOffset),
                           1, sizeof(VkDrawIndirectCommand));
@@ -902,6 +924,7 @@ _NAMESPACE_BEGIN_
         beginRenderPassIfDeferred();
         applyTopologyIfDynamic(polygonType);
         auto *vkBuf = (GEVulkanBuffer *)argumentBuffer.get();
+        trackBuffer(argumentBuffer);
         vkCmdDrawIndexedIndirect(commandBuffer, vkBuf->buffer,
                                  VkDeviceSize(argumentBufferOffset),
                                  1, sizeof(VkDrawIndexedIndirectCommand));
@@ -944,6 +967,7 @@ _NAMESPACE_BEGIN_
 
     void GEVulkanCommandBuffer::setVertexBuffer(SharedHandle<GEBuffer> &buffer) {
         auto vkBuffer = ((GEVulkanBuffer *)buffer.get());
+        trackBuffer(buffer);
         VkDeviceSize offsets[] = {0};
         vkCmdBindVertexBuffers(commandBuffer,0,1,&vkBuffer->buffer,offsets);
     }
@@ -969,6 +993,17 @@ _NAMESPACE_BEGIN_
         }
         auto vkAS = std::dynamic_pointer_cast<GEVulkanAccelerationStruct>(src);
         if(!vkAS) return;
+        if (vkAS->structBuffer)  trackedBuffers.push_back(vkAS->structBuffer);
+        if (vkAS->scratchBuffer) trackedBuffers.push_back(vkAS->scratchBuffer);
+        for (auto &g : desc.data) {
+            if (g.type == GEAccelerationStructDescriptor::Geometry::TRIANGLES) {
+                auto vb = g.getTriangleList().buffer;
+                if (vb) trackedBuffers.push_back(vb);
+            } else {
+                auto vb = g.getAabb().buffer;
+                if (vb) trackedBuffers.push_back(vb);
+            }
+        }
 
         std::vector<VkAccelerationStructureGeometryKHR> geometries;
         std::vector<VkAccelerationStructureBuildRangeInfoKHR> rangeInfos;
@@ -1058,6 +1093,8 @@ _NAMESPACE_BEGIN_
         auto srcAS = std::dynamic_pointer_cast<GEVulkanAccelerationStruct>(src);
         auto destAS = std::dynamic_pointer_cast<GEVulkanAccelerationStruct>(dest);
         if(!srcAS || !destAS) return;
+        if (srcAS->structBuffer)  trackedBuffers.push_back(srcAS->structBuffer);
+        if (destAS->structBuffer) trackedBuffers.push_back(destAS->structBuffer);
 
         VkCopyAccelerationStructureInfoKHR copyInfo {VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR};
         copyInfo.src = srcAS->accelStruct;
@@ -1085,6 +1122,18 @@ _NAMESPACE_BEGIN_
         auto srcAS = std::dynamic_pointer_cast<GEVulkanAccelerationStruct>(src);
         auto destAS = std::dynamic_pointer_cast<GEVulkanAccelerationStruct>(dest);
         if(!srcAS || !destAS) return;
+        if (srcAS->structBuffer)   trackedBuffers.push_back(srcAS->structBuffer);
+        if (destAS->structBuffer)  trackedBuffers.push_back(destAS->structBuffer);
+        if (destAS->scratchBuffer) trackedBuffers.push_back(destAS->scratchBuffer);
+        for (auto &g : desc.data) {
+            if (g.type == GEAccelerationStructDescriptor::Geometry::TRIANGLES) {
+                auto vb = g.getTriangleList().buffer;
+                if (vb) trackedBuffers.push_back(vb);
+            } else {
+                auto vb = g.getAabb().buffer;
+                if (vb) trackedBuffers.push_back(vb);
+            }
+        }
 
         std::vector<VkAccelerationStructureGeometryKHR> geometries;
         std::vector<VkAccelerationStructureBuildRangeInfoKHR> rangeInfos;
@@ -1170,6 +1219,9 @@ _NAMESPACE_BEGIN_
         assert(inComputePass && "Must be in compute pass to bind acceleration structure");
         auto vkAS = std::dynamic_pointer_cast<GEVulkanAccelerationStruct>(accelStruct);
         if(!vkAS || !parentQueue->engine->hasAccelerationStructureExt) return;
+        // Track the AS's underlying buffers so VMA destroys defer past GPU use.
+        if (vkAS->structBuffer)  trackedBuffers.push_back(vkAS->structBuffer);
+        if (vkAS->scratchBuffer) trackedBuffers.push_back(vkAS->scratchBuffer);
 
         VkWriteDescriptorSetAccelerationStructureKHR asWrite {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
         asWrite.accelerationStructureCount = 1;
@@ -1228,6 +1280,7 @@ _NAMESPACE_BEGIN_
 
     void GEVulkanCommandBuffer::bindResourceAtComputeShader(SharedHandle<GEBuffer> &buffer, unsigned int id) {
         auto vk_buffer = (GEVulkanBuffer *)buffer.get();
+        trackBuffer(buffer);
 
         insertResourceBarrierIfNeeded(vk_buffer,id,computePipelineState->computeShader->internal);
 
@@ -1259,6 +1312,7 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id) {
 
         auto vk_texture = (GEVulkanTexture *)texture.get();
+        trackTexture(texture);
 
         insertResourceBarrierIfNeeded(vk_texture,id,computePipelineState->computeShader->internal);
 
@@ -1311,6 +1365,7 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandBuffer::dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
                                                               size_t argumentBufferOffset) {
         auto *vkBuf = (GEVulkanBuffer *)argumentBuffer.get();
+        trackBuffer(argumentBuffer);
         vkCmdDispatchIndirect(commandBuffer, vkBuf->buffer,
                               VkDeviceSize(argumentBufferOffset));
     }
@@ -1438,6 +1493,8 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, SharedHandle<GETexture> &dest) {
         assert(inBlitPass && "Must be in a blit pass");
         auto src_img = (GEVulkanTexture *)src.get(),dest_img = (GEVulkanTexture *)dest.get();
+        trackTexture(src);
+        trackTexture(dest);
 
         addResourceBarrierForTextureCopy(parentQueue->engine,commandBuffer,src_img,dest_img);
 
@@ -1459,6 +1516,8 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, SharedHandle<GETexture> &dest,
                                                      const TextureRegion &region, const GPoint3D &destCoord) {
         auto src_img = (GEVulkanTexture *)src.get(),dest_img = (GEVulkanTexture *)dest.get();
+        trackTexture(src);
+        trackTexture(dest);
 
         addResourceBarrierForTextureCopy(parentQueue->engine,commandBuffer,src_img,dest_img);
 
@@ -1648,6 +1707,8 @@ _NAMESPACE_BEGIN_
         assert(inBlitPass && "Must be in a blit pass");
         auto src_buf = (GEVulkanBuffer *)src.get();
         auto dest_buf = (GEVulkanBuffer *)dest.get();
+        trackBuffer(src);
+        trackBuffer(dest);
 
         transitionBufferForTransferSrc(parentQueue->engine, commandBuffer, src_buf);
         transitionBufferForTransferDst(parentQueue->engine, commandBuffer, dest_buf);
@@ -1665,6 +1726,8 @@ _NAMESPACE_BEGIN_
         assert(inBlitPass && "Must be in a blit pass");
         auto src_buf = (GEVulkanBuffer *)src.get();
         auto dest_img = (GEVulkanTexture *)dest.get();
+        trackBuffer(src);
+        trackTexture(dest);
 
         transitionBufferForTransferSrc(parentQueue->engine, commandBuffer, src_buf);
         transitionImageForTransferDst(parentQueue->engine, commandBuffer, dest_img);
@@ -1713,6 +1776,8 @@ _NAMESPACE_BEGIN_
         assert(inBlitPass && "Must be in a blit pass");
         auto src_img = (GEVulkanTexture *)src.get();
         auto dest_buf = (GEVulkanBuffer *)dest.get();
+        trackTexture(src);
+        trackBuffer(dest);
 
         transitionImageForTransferSrc(parentQueue->engine, commandBuffer, src_img);
         transitionBufferForTransferDst(parentQueue->engine, commandBuffer, dest_buf);
@@ -1754,6 +1819,7 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture) {
         assert(inBlitPass && "Must be in a blit pass");
         auto *tex = (GEVulkanTexture *)texture.get();
+        trackTexture(texture);
         const uint32_t mipLevels = tex->descriptor.mipLevels;
         if (mipLevels <= 1) {
             return;
@@ -1871,6 +1937,7 @@ _NAMESPACE_BEGIN_
                                             size_t offset, size_t size) {
         assert(inBlitPass && "Must be in a blit pass");
         auto *buf = (GEVulkanBuffer *)buffer.get();
+        trackBuffer(buffer);
         transitionBufferForTransferDst(parentQueue->engine, commandBuffer, buf);
 
         const VkDeviceSize vkOffset = static_cast<VkDeviceSize>(offset);
@@ -1917,6 +1984,7 @@ _NAMESPACE_BEGIN_
         submitEvent.nativeHandle = reinterpret_cast<std::uint64_t>(buffer->commandBuffer);
         ResourceTracking::Tracker::instance().emit(submitEvent);
         commandQueue.push_back(buffer->commandBuffer);
+        pendingRetainedBuffers.push_back(commandBuffer);
     };
 
     void GEVulkanCommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer,SharedHandle<GEFence> & signalFence){
@@ -1936,6 +2004,7 @@ _NAMESPACE_BEGIN_
             vkCmdSetEvent(buffer->commandBuffer,fence->event,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
         }
         commandQueue.push_back(buffer->commandBuffer);
+        pendingRetainedBuffers.push_back(commandBuffer);
     }
 
    SharedHandle<GECommandBuffer> GEVulkanCommandQueue::getAvailableBuffer(){
@@ -1959,16 +2028,80 @@ _NAMESPACE_BEGIN_
         return commandQueue.back();
     }
 
-   void GEVulkanCommandQueue::flushDeferredDestroys(){
-       if(engine == nullptr) return;
-       for(auto fb : deferredFramebufferDestroys){
-           if(fb != VK_NULL_HANDLE) vkDestroyFramebuffer(engine->device, fb, nullptr);
+   Retention::FenceGate GEVulkanCommandQueue::gateForNextSubmit(){
+       const std::uint64_t v = nextSubmitValue + 1;
+       VkDevice    dev = (engine != nullptr ? engine->device : VK_NULL_HANDLE);
+       VkSemaphore sem = retentionTimeline;
+       return [dev, sem, v]() {
+           if (dev == VK_NULL_HANDLE || sem == VK_NULL_HANDLE) return true;
+           uint64_t cur = 0;
+           if (vkGetSemaphoreCounterValue(dev, sem, &cur) != VK_SUCCESS) return false;
+           return cur >= v;
+       };
+   }
+
+   void GEVulkanCommandQueue::prepareSubmitWithRetentionSignal(VkSubmitInfo &submission,
+                                                               VkTimelineSemaphoreSubmitInfo &timelineInfo,
+                                                               VkSemaphore &signalSlot,
+                                                               std::uint64_t &signalValueSlot){
+       signalSlot       = retentionTimeline;
+       signalValueSlot  = nextSubmitValue + 1;
+       timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+       timelineInfo.pNext = nullptr;
+       timelineInfo.waitSemaphoreValueCount   = 0;
+       timelineInfo.pWaitSemaphoreValues      = nullptr;
+       timelineInfo.signalSemaphoreValueCount = 1;
+       timelineInfo.pSignalSemaphoreValues    = &signalValueSlot;
+       submission.signalSemaphoreCount = 1;
+       submission.pSignalSemaphores    = &signalSlot;
+       submission.pNext                = &timelineInfo;
+   }
+
+   void GEVulkanCommandQueue::flushPendingRetentionUnder(const Retention::FenceGate &gate){
+       if (engine == nullptr) {
+           pendingRetainedBuffers.clear();
+           return;
        }
-       deferredFramebufferDestroys.clear();
-       for(auto rp : deferredRenderPassDestroys){
-           if(rp != VK_NULL_HANDLE) vkDestroyRenderPass(engine->device, rp, nullptr);
+       for (auto &handle : pendingRetainedBuffers) {
+           auto *buf = static_cast<GEVulkanCommandBuffer *>(handle.get());
+           if (buf != nullptr) {
+               // Push the gate to every resource bound on this buffer so its
+               // VMA destructor can defer until the GPU is done.
+               for (auto &b : buf->trackedBuffers) {
+                   auto *vkb = static_cast<GEVulkanBuffer *>(b.get());
+                   if (vkb != nullptr) vkb->pendingGates.push_back(gate);
+               }
+               for (auto &t : buf->trackedTextures) {
+                   auto *vkt = static_cast<GEVulkanTexture *>(t.get());
+                   if (vkt != nullptr) vkt->pendingGates.push_back(gate);
+               }
+               // Move owned framebuffer / render pass destroys to the engine
+               // retention queue under the same gate. Replaces the old
+               // deferred*Destroys / flushDeferredDestroys path.
+               VkDevice dev = engine->device;
+               for (auto fb : buf->ownedFramebuffers) {
+                   if (fb != VK_NULL_HANDLE) {
+                       engine->retentionQueue.enqueue(
+                           {gate},
+                           [dev, fb]{ vkDestroyFramebuffer(dev, fb, nullptr); });
+                   }
+               }
+               for (auto rp : buf->ownedRenderPasses) {
+                   if (rp != VK_NULL_HANDLE) {
+                       engine->retentionQueue.enqueue(
+                           {gate},
+                           [dev, rp]{ vkDestroyRenderPass(dev, rp, nullptr); });
+                   }
+               }
+               buf->ownedFramebuffers.clear();
+               buf->ownedRenderPasses.clear();
+           }
+           // Retain the wrapper itself until the gate fires so its destructor
+           // (and the SharedHandles to tracked resources it carries) runs
+           // GPU-safely.
+           engine->retentionQueue.retainShared(std::move(handle), {gate});
        }
-       deferredRenderPassDestroys.clear();
+       pendingRetainedBuffers.clear();
    }
 
    void GEVulkanCommandQueue::commitToGPU(){
@@ -2000,13 +2133,16 @@ _NAMESPACE_BEGIN_
         }
 
        VkSubmitInfo submission {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-       submission.signalSemaphoreCount = 0;
-       submission.pSignalSemaphores = nullptr;
        submission.waitSemaphoreCount = 0;
        submission.pWaitSemaphores = nullptr;
        submission.commandBufferCount = commandQueue.size();
        submission.pCommandBuffers = commandQueue.data();
-       submission.pNext = nullptr;
+
+       VkTimelineSemaphoreSubmitInfo timelineInfo {};
+       VkSemaphore signalSlot = VK_NULL_HANDLE;
+       std::uint64_t signalValueSlot = 0;
+       prepareSubmitWithRetentionSignal(submission, timelineInfo, signalSlot, signalValueSlot);
+       const auto gate = gateForNextSubmit();
 
        auto res = vkQueueSubmit(vkQueue, 1, &submission,VK_NULL_HANDLE);
        std::cerr << "[DIAG commitToGPU] submitted " << commandQueue.size()
@@ -2014,12 +2150,15 @@ _NAMESPACE_BEGIN_
        if(!VK_RESULT_SUCCEEDED(res)){
            std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
            commandQueue.clear();
+           pendingRetainedBuffers.clear();
            submittedTraceCommandBufferIds.clear();
            return;
        };
+       ++nextSubmitValue;
 
        commandQueue.clear();
-       // No fence wait here — deferred destroys flushed on next fenced submit.
+       flushPendingRetentionUnder(gate);
+       engine->retentionQueue.drainCompleted();
    };
 
    void GEVulkanCommandQueue::commitToGPUPresent(VkPresentInfoKHR *info){
@@ -2057,29 +2196,41 @@ _NAMESPACE_BEGIN_
         vkResetFences(engine->device,1,&submitFence);
 
         VkSubmitInfo submission {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        submission.signalSemaphoreCount = 0;
-        submission.pSignalSemaphores = nullptr;
         submission.waitSemaphoreCount = 0;
         submission.pWaitSemaphores = nullptr;
         submission.commandBufferCount = commandQueue.size();
         submission.pCommandBuffers = commandQueue.data();
-        submission.pNext = nullptr;
+
+        VkTimelineSemaphoreSubmitInfo timelineInfo {};
+        VkSemaphore signalSlot = VK_NULL_HANDLE;
+        std::uint64_t signalValueSlot = 0;
+        prepareSubmitWithRetentionSignal(submission, timelineInfo, signalSlot, signalValueSlot);
+        const auto gate = gateForNextSubmit();
 
         auto res = vkQueueSubmit(vkQueue, 1, &submission,submitFence);
         if(!VK_RESULT_SUCCEEDED(res)){
             std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
             commandQueue.clear();
+            pendingRetainedBuffers.clear();
             submittedTraceCommandBufferIds.clear();
             return;
         }
+        ++nextSubmitValue;
         auto waitRes = vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
         if(waitRes != VK_SUCCESS){
             std::cerr << "Failed waiting for submitted command buffers (" << waitRes << ")" << std::endl;
             commandQueue.clear();
+            // Move pending retains into retentionQueue; the signaled timeline
+            // will let drainCompleted release them once it fires.
+            flushPendingRetentionUnder(gate);
             submittedTraceCommandBufferIds.clear();
             return;
         }
-        flushDeferredDestroys();
+        // GPU finished — both submitFence and the retentionTimeline value are
+        // signaled by now. Hand pending items to the retention queue and
+        // drain them in one shot.
+        flushPendingRetentionUnder(gate);
+        engine->retentionQueue.drainCompleted();
 
         auto presentRes = vkQueuePresentKHR(vkQueue,info);
         if(presentRes != VK_SUCCESS &&
@@ -2133,30 +2284,37 @@ _NAMESPACE_BEGIN_
         vkResetFences(engine->device,1,&submitFence);
 
        VkSubmitInfo submission {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-       submission.signalSemaphoreCount = 0;
-       submission.pSignalSemaphores = nullptr;
        submission.waitSemaphoreCount = 0;
        submission.pWaitSemaphores = nullptr;
        submission.commandBufferCount = commandQueue.size();
        submission.pCommandBuffers = commandQueue.data();
-       submission.pNext = nullptr;
+
+       VkTimelineSemaphoreSubmitInfo timelineInfo {};
+       VkSemaphore signalSlot = VK_NULL_HANDLE;
+       std::uint64_t signalValueSlot = 0;
+       prepareSubmitWithRetentionSignal(submission, timelineInfo, signalSlot, signalValueSlot);
+       const auto gate = gateForNextSubmit();
 
        auto res = vkQueueSubmit(vkQueue, 1, &submission,submitFence);
        if(!VK_RESULT_SUCCEEDED(res)){
            std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
            commandQueue.clear();
+           pendingRetainedBuffers.clear();
            submittedTraceCommandBufferIds.clear();
            return;
        };
+       ++nextSubmitValue;
 
        commandQueue.clear();
        auto waitRes = vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
        if(waitRes != VK_SUCCESS){
            std::cerr << "Failed waiting for submitted command buffers (" << waitRes << ")" << std::endl;
+           flushPendingRetentionUnder(gate);
            submittedTraceCommandBufferIds.clear();
            return;
        }
-       flushDeferredDestroys();
+       flushPendingRetentionUnder(gate);
+       engine->retentionQueue.drainCompleted();
        for(const auto traceId : submittedTraceCommandBufferIds){
            ResourceTracking::Event completeEvent {};
            completeEvent.backend = ResourceTracking::Backend::Vulkan;
@@ -2184,7 +2342,18 @@ _NAMESPACE_BEGIN_
 
        vkCreateFence(engine->device,&fenceCreateInfo,nullptr,&submitFence);
 
-        
+       VkSemaphoreTypeCreateInfo timelineType {VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+       timelineType.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+       timelineType.initialValue  = 0;
+       timelineType.pNext         = nullptr;
+       VkSemaphoreCreateInfo retentionSemInfo {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+       retentionSemInfo.pNext = &timelineType;
+       retentionSemInfo.flags = 0;
+       auto semRes = vkCreateSemaphore(engine->device,&retentionSemInfo,nullptr,&retentionTimeline);
+       if(semRes != VK_SUCCESS){
+           std::cerr << "Failed to create retention timeline semaphore (" << semRes << ")" << std::endl;
+           exit(1);
+       }
 
        poolCreateInfo.queueFamilyIndex = engine->queueFamilyIndices.front();
        poolCreateInfo.pNext = nullptr;
@@ -2223,7 +2392,12 @@ _NAMESPACE_BEGIN_
    void GEVulkanCommandQueue::releaseNative(){
        if(nativeReleased_) return;
        nativeReleased_ = true;
-       flushDeferredDestroys();
+       // Pending retention entries are owned by engine->retentionQueue; the
+       // engine's drainAll() at shutdown is responsible for releasing them.
+       // Don't destroy retentionTimeline until those entries (which capture
+       // it via gates) have all drained — the timeline is owned by the
+       // semaphore still being referenced inside retentionQueue closures, so
+       // we release it via lambda capture rather than freeing here.
        if(!commandBuffers.empty()){
            vkFreeCommandBuffers(engine->device,commandPool,commandBuffers.size(),commandBuffers.data());
            commandBuffers.resize(0);
@@ -2236,6 +2410,17 @@ _NAMESPACE_BEGIN_
            vkDestroyFence(engine->device,submitFence,nullptr);
            submitFence = VK_NULL_HANDLE;
        }
+       if(retentionTimeline != VK_NULL_HANDLE && engine != nullptr){
+           VkDevice dev = engine->device;
+           VkSemaphore sem = retentionTimeline;
+           // Defer the semaphore destroy through the retention queue with no
+           // gates: it runs on the next drainCompleted() (or drainAll() at
+           // engine shutdown), strictly after every closure that captured the
+           // semaphore handle has had a chance to query it.
+           engine->retentionQueue.enqueue({},
+               [dev, sem]{ vkDestroySemaphore(dev, sem, nullptr); });
+           retentionTimeline = VK_NULL_HANDLE;
+       }
    }
 
    GEVulkanCommandQueue::~GEVulkanCommandQueue() {
@@ -2245,12 +2430,8 @@ _NAMESPACE_BEGIN_
                "CommandQueue",
                traceResourceId,
                reinterpret_cast<const void *>(commandPool));
-       flushDeferredDestroys();
        if(!nativeReleased_){
-           vkFreeCommandBuffers(engine->device,commandPool,commandBuffers.size(),commandBuffers.data());
-           commandBuffers.resize(0);
-           vkDestroyCommandPool(engine->device,commandPool,nullptr);
-           vkDestroyFence(engine->device,submitFence,nullptr);
+           releaseNative();
        }
    }
 _NAMESPACE_END_

@@ -266,14 +266,22 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
     }
 
     D3D12_RESOURCE_DESC d3d12_desc = CD3DX12_RESOURCE_DESC::Buffer(desc.len, flags);
-    auto alloc_info = engine->d3d12_device->GetResourceAllocationInfo(engine->d3d12_device->GetNodeCount(),1,&d3d12_desc);
 
-    ID3D12Resource *buffer;
-    hr = engine->d3d12_device->CreatePlacedResource(heap.Get(),currentOffset,&d3d12_desc,state,nullptr,IID_PPV_ARGS(&buffer));
+    // Suballocate within this heap's pool. D3D12MA handles alignment,
+    // offsets, and free-list reclamation; HeapType is implicit in the pool.
+    D3D12MA::ALLOCATION_DESC allocDesc {};
+    allocDesc.CustomPool = pool;
+
+    ID3D12Resource *buffer = nullptr;
+    D3D12MA::Allocation *allocation = nullptr;
+    hr = engine->memAllocator->CreateResource(
+        &allocDesc, &d3d12_desc, state, nullptr,
+        &allocation, IID_PPV_ARGS(&buffer));
     if(FAILED(hr)){
+        DEBUG_STREAM("GED3D12Heap::makeBuffer: D3D12MA CreateResource failed");
+        if (allocation) allocation->Release();
         return nullptr;
     }
-    currentOffset += alloc_info.SizeInBytes;
 
     D3D12_DESCRIPTOR_HEAP_DESC descHeapDesc {};
     descHeapDesc.NumDescriptors = 1;
@@ -308,7 +316,7 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
         engine->d3d12_device->CreateUnorderedAccessView(buffer,nullptr,&uav_desc,descHeap->GetCPUDescriptorHandleForHeapStart());
     }
 
-    return SharedHandle<GEBuffer>(new GED3D12Buffer(desc.usage,buffer,descHeap,state));
+    return SharedHandle<GEBuffer>(new GED3D12Buffer(desc.usage,buffer,descHeap,state,allocation));
 }
 
 SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
@@ -342,14 +350,19 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
     }
     d3d12_desc.Flags = resFlags;
 
-    auto allocInfo = engine->d3d12_device->GetResourceAllocationInfo(engine->d3d12_device->GetNodeCount(),1,&d3d12_desc);
+    D3D12MA::ALLOCATION_DESC allocDesc {};
+    allocDesc.CustomPool = pool;
 
-    ID3D12Resource *texture;
-    hr = engine->d3d12_device->CreatePlacedResource(heap.Get(),currentOffset,&d3d12_desc,res_states,nullptr,IID_PPV_ARGS(&texture));
+    ID3D12Resource *texture = nullptr;
+    D3D12MA::Allocation *allocation = nullptr;
+    hr = engine->memAllocator->CreateResource(
+        &allocDesc, &d3d12_desc, res_states, nullptr,
+        &allocation, IID_PPV_ARGS(&texture));
     if(FAILED(hr)){
+        DEBUG_STREAM("GED3D12Heap::makeTexture: D3D12MA CreateResource failed");
+        if (allocation) allocation->Release();
         return nullptr;
     }
-    currentOffset += allocInfo.SizeInBytes;
 
     D3D12_DESCRIPTOR_HEAP_DESC descHeapDesc {};
     descHeapDesc.NumDescriptors = 1;
@@ -403,7 +416,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         }
     }
 
-    return SharedHandle<GETexture>(new GED3D12Texture(desc.type, desc.usage, desc.pixelFormat, texture, nullptr, descHeap, nullptr, rtvDescHeap, nullptr, res_states));
+    return SharedHandle<GETexture>(new GED3D12Texture(desc.type, desc.usage, desc.pixelFormat, texture, nullptr, descHeap, nullptr, rtvDescHeap, nullptr, res_states, allocation));
 }
 
     // void GED3D12Engine::getHardwareAdapter(__in IDXGIFactory4 * dxgi_factory,
@@ -477,6 +490,23 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
     };
 
     GED3D12Engine::~GED3D12Engine(){
+        // Block on every still-live command queue so any pending GPU work
+        // finishes before we drain the retention queue. D3D12 has no
+        // device-wide wait-idle; we Signal+Wait per queue. commitToGPUAndWait
+        // both flushes any queued command lists and blocks via the queue's
+        // binary fence, which is exactly what we need.
+        for(auto & weakQ : liveCommandQueues){
+            if(auto q = weakQ.lock()){
+                q->commitToGPUAndWait();
+            }
+        }
+        liveCommandQueues.clear();
+
+        // GPU is provably idle now — every retention gate would report
+        // signaled. drainAll runs releases unconditionally, which avoids
+        // the cost of querying every gate one more time.
+        retentionQueue.drainAll();
+
         if(memAllocator){
             memAllocator->Release();
             memAllocator = nullptr;
@@ -694,6 +724,37 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
         void writeUint4(UVec<4> &v) override {
             blocks.push_back(DataBlock {OMEGASL_UINT4,new DirectX::XMUINT4{v[0][0],v[1][0],v[2][0],v[3][0]}});
         }
+        /// Matrix uploads — column-major std430-style bytes. With the
+        /// HLSL packing lock (see HLSLTarget runtime + offline), HLSL
+        /// loads these column-by-column with the Cx3 vec3 padding,
+        /// matching Vulkan/Metal layouts. See §12.2.
+        void writeFloat2x2(FMatrix<2,2> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,2>(), encodeFMatrixToStd430<2,2>(m)});
+        }
+        void writeFloat3x3(FMatrix<3,3> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,3>(), encodeFMatrixToStd430<3,3>(m)});
+        }
+        void writeFloat4x4(FMatrix<4,4> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,4>(), encodeFMatrixToStd430<4,4>(m)});
+        }
+        void writeFloat2x3(FMatrix<2,3> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,3>(), encodeFMatrixToStd430<2,3>(m)});
+        }
+        void writeFloat2x4(FMatrix<2,4> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,4>(), encodeFMatrixToStd430<2,4>(m)});
+        }
+        void writeFloat3x2(FMatrix<3,2> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,2>(), encodeFMatrixToStd430<3,2>(m)});
+        }
+        void writeFloat3x4(FMatrix<3,4> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,4>(), encodeFMatrixToStd430<3,4>(m)});
+        }
+        void writeFloat4x2(FMatrix<4,2> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,2>(), encodeFMatrixToStd430<4,2>(m)});
+        }
+        void writeFloat4x3(FMatrix<4,3> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,3>(), encodeFMatrixToStd430<4,3>(m)});
+        }
         void structEnd() override {
             inStruct = false;
         }
@@ -704,7 +765,11 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
                 return;
             for(auto & block : blocks){
                 size_t dataSize = 0;
-                if(block.type == OMEGASL_FLOAT){
+                if(isMatrixDataType(block.type)){
+                    auto [cols, rows] = matrixDims(block.type);
+                    dataSize = std430MatrixSize(cols, rows);
+                }
+                else if(block.type == OMEGASL_FLOAT){
                     dataSize = sizeof(float);
                 }
                 else if(block.type == OMEGASL_FLOAT2){
@@ -801,6 +866,23 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
             v[2][0] = _v.z;
             v[3][0] = _v.w;
         }
+        /// Matrix downloads. With the HLSL packing lock (column-major)
+        /// these bytes are laid out the same way Vulkan/Metal write
+        /// them, so the shared decoder works directly.
+        template<unsigned C, unsigned R>
+        void getMatrixImpl(FMatrix<C, R> &m){
+            decodeFMatrixFromStd430<C, R>(_data_buffer + currentOffset, m);
+            currentOffset += std430MatrixSize(C, R);
+        }
+        void getFloat2x2(FMatrix<2,2> &m) override { getMatrixImpl<2,2>(m); }
+        void getFloat3x3(FMatrix<3,3> &m) override { getMatrixImpl<3,3>(m); }
+        void getFloat4x4(FMatrix<4,4> &m) override { getMatrixImpl<4,4>(m); }
+        void getFloat2x3(FMatrix<2,3> &m) override { getMatrixImpl<2,3>(m); }
+        void getFloat2x4(FMatrix<2,4> &m) override { getMatrixImpl<2,4>(m); }
+        void getFloat3x2(FMatrix<3,2> &m) override { getMatrixImpl<3,2>(m); }
+        void getFloat3x4(FMatrix<3,4> &m) override { getMatrixImpl<3,4>(m); }
+        void getFloat4x2(FMatrix<4,2> &m) override { getMatrixImpl<4,2>(m); }
+        void getFloat4x3(FMatrix<4,3> &m) override { getMatrixImpl<4,3>(m); }
         void structEnd() override {
 
         }
@@ -864,21 +946,27 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
     }
 
     SharedHandle<GEHeap> GED3D12Engine::makeHeap(const HeapDescriptor &desc){
-        D3D12_HEAP_DESC heapDesc {};
-        heapDesc.SizeInBytes = desc.len;
-        heapDesc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
-        heapDesc.Properties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-        heapDesc.Properties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-        heapDesc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-        heapDesc.Flags = D3D12_HEAP_FLAG_ALLOW_ALL_BUFFERS_AND_TEXTURES;
+        // One pool, one block of the requested size — matches the previous
+        // CreateHeap behavior (single contiguous heap, no growth). D3D12MA
+        // takes over alignment, offset tracking, and (within the block)
+        // free-list reclamation across resource lifetimes.
+        D3D12MA::POOL_DESC poolDesc {};
+        poolDesc.HeapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+        poolDesc.HeapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        poolDesc.HeapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+        poolDesc.HeapFlags = D3D12_HEAP_FLAG_ALLOW_ALL_BUFFERS_AND_TEXTURES;
+        poolDesc.BlockSize = desc.len;
+        poolDesc.MinBlockCount = 1;
+        poolDesc.MaxBlockCount = 1;
 
-        ID3D12Heap *heap;
-        HRESULT hr = d3d12_device->CreateHeap(&heapDesc, IID_PPV_ARGS(&heap));
+        D3D12MA::Pool *pool = nullptr;
+        HRESULT hr = memAllocator->CreatePool(&poolDesc, &pool);
         if(FAILED(hr)){
-            DEBUG_STREAM("Failed to create D3D12 Heap");
+            DEBUG_STREAM("Failed to create D3D12MA Pool");
+            if (pool) pool->Release();
             return nullptr;
         }
-        return SharedHandle<GEHeap>(new GED3D12Heap(this, heap));
+        return SharedHandle<GEHeap>(new GED3D12Heap(this, pool, desc.len));
     }
 
     GED3D12AccelerationStruct::GED3D12AccelerationStruct(SharedHandle<GED3D12Buffer> & structBuffer,
@@ -1494,7 +1582,9 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
     };
 
     SharedHandle<GECommandQueue> GED3D12Engine::makeCommandQueue(unsigned int maxBufferCount){
-        return SharedHandle<GECommandQueue>(new GED3D12CommandQueue(this,maxBufferCount));
+        SharedHandle<GECommandQueue> q(new GED3D12CommandQueue(this,maxBufferCount));
+        liveCommandQueues.push_back(q);
+        return q;
     };
 
     SharedHandle<GETexture> GED3D12Engine::makeTexture(const TextureDescriptor &desc){
@@ -1666,10 +1756,23 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
 
 
         ID3D12Resource *texture,*cpuSideRes = nullptr;
+        D3D12MA::Allocation *texAllocation = nullptr;
+        D3D12MA::Allocation *cpuSideAllocation = nullptr;
 
-        hr = d3d12_device->CreateCommittedResource(&textureHeapProps, D3D12_HEAP_FLAG_SHARED,&d3d12_desc,states,nullptr,IID_PPV_ARGS(&texture));
+        D3D12MA::ALLOCATION_DESC texAllocDesc = {};
+        texAllocDesc.HeapType       = D3D12_HEAP_TYPE_DEFAULT;
+        texAllocDesc.ExtraHeapFlags = D3D12_HEAP_FLAG_SHARED;
+        hr = memAllocator->CreateResource(
+            &texAllocDesc,
+            &d3d12_desc,
+            states,
+            nullptr,
+            &texAllocation,
+            IID_PPV_ARGS(&texture));
         if(FAILED(hr)){
-            DEBUG_STREAM("Failed to make D3D12TextureResource");
+            DEBUG_STREAM("Failed to make D3D12 Texture via D3D12MA");
+            if (texAllocation) texAllocation->Release();
+            return nullptr;
         };
 
 
@@ -1677,9 +1780,20 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
         if(desc.usage != GETexture::GPUAccessOnly){
             auto size = GetRequiredIntermediateSize(texture,0,1);
             auto res = CD3DX12_RESOURCE_DESC::Buffer(size);
-            hr = d3d12_device->CreateCommittedResource(&heap_prop,D3D12_HEAP_FLAG_NONE,&res,D3D12_RESOURCE_STATE_GENERIC_READ,nullptr,IID_PPV_ARGS(&cpuSideRes));
+            D3D12MA::ALLOCATION_DESC cpuAllocDesc = {};
+            cpuAllocDesc.HeapType = heap_prop.Type; // UPLOAD or READBACK matching desc.usage
+            hr = memAllocator->CreateResource(
+                &cpuAllocDesc,
+                &res,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                &cpuSideAllocation,
+                IID_PPV_ARGS(&cpuSideRes));
             if(FAILED(hr)){
-                DEBUG_STREAM("Failed to make D3D12TextureResource Transition Heap");
+                DEBUG_STREAM("Failed to make D3D12 Texture transition heap via D3D12MA");
+                if (cpuSideAllocation) cpuSideAllocation->Release();
+                cpuSideAllocation = nullptr;
+                cpuSideRes        = nullptr;
             };
         }
 
@@ -1753,7 +1867,7 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
 
         DEBUG_STREAM("Will Return Texture");
 
-        return SharedHandle<GETexture>(new GED3D12Texture(desc.type,desc.usage,desc.pixelFormat,texture,cpuSideRes,descHeap,uavDescHeap,rtvDescHeap,dsvDescHeap,res_states));
+        return SharedHandle<GETexture>(new GED3D12Texture(desc.type,desc.usage,desc.pixelFormat,texture,cpuSideRes,descHeap,uavDescHeap,rtvDescHeap,dsvDescHeap,res_states,texAllocation,cpuSideAllocation));
     };
 
     SharedHandle<GEBuffer> GED3D12Engine::makeBuffer(const BufferDescriptor &desc){
@@ -1784,16 +1898,21 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
             }
         }
         D3D12_RESOURCE_DESC d3d12_desc = CD3DX12_RESOURCE_DESC::Buffer(desc.len,flags);
-        auto heap_prop = CD3DX12_HEAP_PROPERTIES( heap_type );
-        hr = d3d12_device->CreateCommittedResource(
-            &heap_prop,D3D12_HEAP_FLAG_NONE,
+        D3D12MA::ALLOCATION_DESC allocDesc = {};
+        allocDesc.HeapType = heap_type;
+        D3D12MA::Allocation *allocation = nullptr;
+        hr = memAllocator->CreateResource(
+            &allocDesc,
             &d3d12_desc,
             state,
-            nullptr,IID_PPV_ARGS(&buffer));
+            nullptr,
+            &allocation,
+            IID_PPV_ARGS(&buffer));
 
         if(FAILED(hr)){
-            ///
-            DEBUG_STREAM("Failed to Create D3D12 Buffer");
+            DEBUG_STREAM("Failed to Create D3D12 Buffer via D3D12MA");
+            if (allocation) allocation->Release();
+            return nullptr;
         };
 
         D3D12_DESCRIPTOR_HEAP_DESC descHeapDesc {};
@@ -1834,7 +1953,7 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
             d3d12_device->CreateUnorderedAccessView(buffer,nullptr,&uav_desc,descHeap->GetCPUDescriptorHandleForHeapStart());
         }
 
-        return SharedHandle<GEBuffer>(new GED3D12Buffer(desc.usage,buffer,descHeap,state));
+        return SharedHandle<GEBuffer>(new GED3D12Buffer(desc.usage,buffer,descHeap,state,allocation));
     }
 
     inline D3D12_TEXTURE_ADDRESS_MODE convertAddressMode(const omegasl_shader_static_sampler_address_mode & addressMode){

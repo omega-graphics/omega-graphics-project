@@ -15,3 +15,4 @@ But we also wanted to be able bind to Java code so we can build for Android with
 
     Syntax
     Interfaces
+    AutomDeps

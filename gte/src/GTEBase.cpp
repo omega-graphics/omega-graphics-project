@@ -1,5 +1,6 @@
 #include "omegaGTE/GTEBase.h"
 #include "omegaGTE/GTEShader.h"
+#include "../src/BufferIO.h"
 
 #ifdef TARGET_METAL
 // Use strict Metal simd data type alignment
@@ -17,6 +18,21 @@ size_t omegaSLStructStride(OmegaCommon::Vector<omegasl_data_type> data) noexcept
     OmegaCommon::Vector<size_t> data_sizes;
     /// 1. Find all data type sizes and find biggest word.
     for(auto d : data){
+        /// Matrix members: std430 size = C * column-stride. The column
+        /// stride takes the vec3 quirk into account (Cx3 columns are padded
+        /// to 16 bytes). Treat the matrix as one packed block — its
+        /// alignment is the column alignment, so it slots into the
+        /// biggest-word machinery naturally.
+        if(isMatrixDataType(d)){
+            auto [cols, rows] = matrixDims(d);
+            auto _s = std430MatrixSize(cols, rows);
+            auto _a = std430MatrixAlignment(rows);
+            if(biggestWord < _a){
+                biggestWord = _a;
+            }
+            data_sizes.push_back(_s);
+            continue;
+        }
         switch (d) {
             case OMEGASL_FLOAT :
             case OMEGASL_INT :
@@ -92,6 +108,8 @@ size_t omegaSLStructStride(OmegaCommon::Vector<omegasl_data_type> data) noexcept
 #endif
                 break;
             }
+            default:
+                break;
         }
     }
 

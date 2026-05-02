@@ -1,0 +1,22 @@
+/// §12.1: single-level matrix lvalue assignment is rejected. The column
+/// write `m[col] = v` is not portably representable across all
+/// backends; users must write `m[col][row] = …` per-element.
+
+struct OutData {
+    float4 value;
+};
+
+buffer<OutData> dst : 0;
+
+[out dst]
+compute(x=1,y=1,z=1)
+void bad(uint3 tid : GlobalThreadID){
+    float4x4 m = float4x4(
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0
+    );
+    m[1] = float4(1.0, 2.0, 3.0, 4.0); /// expected: TypeError "Cannot assign to a matrix column"
+    dst[0].value = m[1];
+}

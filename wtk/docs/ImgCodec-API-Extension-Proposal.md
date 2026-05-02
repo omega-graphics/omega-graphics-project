@@ -245,10 +245,6 @@ namespace OmegaWTK::Media {
         const OmegaCommon::FS::Path &path,
         const ImageDecodeOptions &options = {});
 
-    OMEGAWTK_EXPORT StatusWithObj<BitmapImage> loadImageFromAssets(
-        const OmegaCommon::FS::Path &path,
-        const ImageDecodeOptions &options = {});
-
     OMEGAWTK_EXPORT StatusWithObj<BitmapImage> loadImageFromBuffer(
         const ImgByte *bufferData,
         size_t bufferSize,
@@ -359,6 +355,19 @@ Rationale:
 - Fill TIFF stride, alpha mode, compression, and bit depth consistently.
 - Remove direct `std::cout` metadata logging from PNG and route metadata into `ImageMetadata`.
 - Add tests for valid PNG, JPEG, TIFF buffers and invalid/corrupt inputs.
+- Remove the `loadImageFromAssets(path)` single-argument overload and the `IMPORT_IMG` macro that wraps it. The overload reached into `AppInst` to find the global `AssetBundle`, which forced `OmegaWTK_Media` to link against `OmegaWTK_UI`. Callers must pass an explicit `AssetBundle &` going forward. This also eliminates the legacy `OmegaCommon::AssetLibrary::assets_res` fallback path inside the Media layer.
+
+#### Asset Bundle Loading Becomes Caller-Owned
+
+`AppInst` currently auto-loads `./assets.pak` into an internal `Optional<AssetBundle>` during construction (`wtk/src/UI/App.cpp`). This auto-load was the only reason the no-bundle `loadImageFromAssets(path)` overload existed: it pulled the implicit bundle out of the global app instance.
+
+Now that the overload is gone, the auto-load is an unfunded mandate. **`AppInst` should stop auto-loading `./assets.pak`.** Asset bundle ownership belongs with the application, not the framework. Applications that want a bundle should construct one explicitly (`OmegaCommon::AssetBundle::open(path)`) and pass it into the load APIs that need it.
+
+This change is intentionally **not implemented in Phase 1** — it is a public-API behavior change that warrants its own pass with caller updates. Tracked here so the cleanup is not forgotten:
+
+- Remove the `assetBundle` member, the `getAssetBundle()` accessors, and the auto-load block from `AppInst`.
+- Audit existing apps under `wtk/tests/` and any sample apps for implicit dependence on the auto-loaded bundle. None should be assumed safe.
+- The existing `loadImageFromAssets(bundle, path)` overload is the supported entry point for asset-backed image loading.
 
 ### Phase 2: Add RAII `BitmapImage`
 

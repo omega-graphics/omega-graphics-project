@@ -25,6 +25,16 @@ _NAMESPACE_BEGIN_
         OmegaCommon::Vector<VkRenderPass> ownedRenderPasses;
         OmegaCommon::Vector<VkFramebuffer> ownedFramebuffers;
 
+        // Resources bound by encoders during recording. Kept alive until the
+        // submitted work is gated to a queue retention value at submit time;
+        // each tracked resource then has the submit's gate appended to its
+        // pendingGates so its destructor can defer vmaDestroyBuffer/Image.
+        OmegaCommon::Vector<SharedHandle<GEBuffer>>  trackedBuffers;
+        OmegaCommon::Vector<SharedHandle<GETexture>> trackedTextures;
+        void trackBuffer(const SharedHandle<GEBuffer> &b);
+        void trackTexture(const SharedHandle<GETexture> &t);
+        friend class GEVulkanCommandQueue;
+
         /// Deferred render pass begin: barriers issued between startRenderPass
         /// and drawPolygons execute outside the render pass instance, avoiding
         /// Vulkan spec violations for image layout transitions.
@@ -149,19 +159,44 @@ _NAMESPACE_BEGIN_
 
         VkFence submitFence;
 
+        // Per-queue timeline semaphore signaled with a monotonic value at every
+        // vkQueueSubmit. Backs FenceGate via vkGetSemaphoreCounterValue. The
+        // engine retention queue dereferences this through the gate closures
+        // it stores; the semaphore itself is destroyed in releaseNative()
+        // after the engine has drained pending entries.
+        VkSemaphore   retentionTimeline = VK_NULL_HANDLE;
+        std::uint64_t nextSubmitValue   = 0;
+
         OmegaCommon::Vector<VkCommandBuffer> commandBuffers;
 
         OmegaCommon::Vector<VkCommandBuffer> commandQueue;
+        // SharedHandles to the GEVulkanCommandBuffers queued by
+        // submitCommandBuffer. At vkQueueSubmit each is moved into
+        // engine->retentionQueue under the submit's gate, along with any
+        // render passes / framebuffers / tracked resources it owns.
+        OmegaCommon::Vector<SharedHandle<GECommandBuffer>> pendingRetainedBuffers;
         OmegaCommon::Vector<std::uint64_t> submittedTraceCommandBufferIds;
-        OmegaCommon::Vector<VkRenderPass> deferredRenderPassDestroys;
-        OmegaCommon::Vector<VkFramebuffer> deferredFramebufferDestroys;
         unsigned currentBufferIndex;
+
+        Retention::FenceGate gateForNextSubmit();
+        // Build a VkTimelineSemaphoreSubmitInfo signaling ++nextSubmitValue,
+        // wire it into `submission.pNext`, and attach the timeline semaphore
+        // to `submission.signalSemaphores`. The provided storage must outlive
+        // the vkQueueSubmit call.
+        void prepareSubmitWithRetentionSignal(VkSubmitInfo &submission,
+                                              VkTimelineSemaphoreSubmitInfo &timelineInfo,
+                                              VkSemaphore &signalSlot,
+                                              std::uint64_t &signalValueSlot);
+        // Move every accumulated pending command buffer (and the resources +
+        // owned render passes / framebuffers each one carries) into the engine
+        // retention queue under `gate`, then clear the local pending vector.
+        void flushPendingRetentionUnder(const Retention::FenceGate &gate);
+
         friend class GEVulkanCommandBuffer;
     public:
         void notifyCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &waitFence) override;
         void submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer) override;
         void submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &signalFence) override;
-        void flushDeferredDestroys();
         void commitToGPU() override;
         void commitToGPUPresent(VkPresentInfoKHR * info);
         void commitToGPUAndWait() override;

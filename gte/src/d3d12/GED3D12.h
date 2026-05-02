@@ -14,6 +14,7 @@
 #include <wrl.h>
 #include "D3D12MemAlloc.h"
 #include "../common/GEResourceTracker.h"
+#include "../common/GERetentionQueue.h"
 
 #pragma comment(lib,"d3d12.lib")
 #pragma comment(lib,"dxgi.lib")
@@ -36,6 +37,12 @@ _NAMESPACE_BEGIN_
 
         D3D12_RESOURCE_STATES currentState;
 
+        // D3D12MA-owned suballocation backing `buffer`. nullptr for resources
+        // created outside the allocator (heap-placed or imported swap-chain
+        // buffers); when non-null, must be Release()d to free the underlying
+        // memory. Owned: ref-released exactly once in the destructor.
+        D3D12MA::Allocation *d3d12maAllocation = nullptr;
+
         void setName(OmegaCommon::StrRef name) override{
             ATL::CStringW wstr(name.data());
             buffer->SetName(wstr);
@@ -48,11 +55,12 @@ _NAMESPACE_BEGIN_
         size_t size() override{
             return buffer->GetDesc().Width;
         };
-        GED3D12Buffer(const BufferDescriptor::Usage & usage,ID3D12Resource *buffer,ID3D12DescriptorHeap *bufferDescHeap, D3D12_RESOURCE_STATES currentState):
+        GED3D12Buffer(const BufferDescriptor::Usage & usage,ID3D12Resource *buffer,ID3D12DescriptorHeap *bufferDescHeap, D3D12_RESOURCE_STATES currentState, D3D12MA::Allocation *d3d12maAllocation = nullptr):
         GEBuffer(usage),buffer(buffer),
         bufferDescHeap(bufferDescHeap),
-        traceResourceId(ResourceTracking::Tracker::instance().nextResourceId()), currentState(currentState){
-            
+        traceResourceId(ResourceTracking::Tracker::instance().nextResourceId()), currentState(currentState),
+        d3d12maAllocation(d3d12maAllocation){
+
             ResourceTracking::Tracker::instance().emit(
                     ResourceTracking::EventType::Create,
                     ResourceTracking::Backend::D3D12,
@@ -69,6 +77,14 @@ _NAMESPACE_BEGIN_
                     traceResourceId,
                     this->buffer.Get(),
                     static_cast<float>(this->buffer != nullptr ? this->buffer->GetDesc().Width : 0));
+            // Drop the COM ref to the resource before releasing the
+            // allocation so D3D12MA's leak validator sees the resource
+            // already destroyed when the allocation goes away.
+            buffer.Reset();
+            if (d3d12maAllocation) {
+                d3d12maAllocation->Release();
+                d3d12maAllocation = nullptr;
+            }
         }
     };
 
@@ -103,16 +119,23 @@ _NAMESPACE_BEGIN_
 
     class GED3D12Heap : public GEHeap {
         GED3D12Engine *engine;
-        ComPtr<ID3D12Heap> heap;
-        size_t currentOffset;
+        // D3D12MA pool backing this heap. One-block-per-pool with the
+        // requested size matches the previous CreateHeap behavior; suballocation
+        // and offset tracking move into D3D12MA. Released in the destructor.
+        D3D12MA::Pool *pool;
+        size_t poolSize;
     public:
-        GED3D12Heap(GED3D12Engine *engine,ID3D12Heap * heap):engine(engine),heap(heap),currentOffset(0){};
-        size_t currentSize() override{
-            return heap->GetDesc().SizeInBytes;
-        };
+        GED3D12Heap(GED3D12Engine *engine, D3D12MA::Pool *pool, size_t poolSize)
+            : engine(engine), pool(pool), poolSize(poolSize) {};
+        size_t currentSize() override { return poolSize; };
         SharedHandle<GEBuffer> makeBuffer(const BufferDescriptor &desc) override;
         SharedHandle<GETexture> makeTexture(const TextureDescriptor &desc) override;
-        ~GED3D12Heap() override = default;
+        ~GED3D12Heap() override {
+            if (pool) {
+                pool->Release();
+                pool = nullptr;
+            }
+        };
     };
     struct GED3D12AccelerationStruct : public GEAccelerationStruct {
         SharedHandle<GED3D12Buffer> structBuffer;
@@ -132,6 +155,18 @@ _NAMESPACE_BEGIN_
         ComPtr<ID3D12Device8> d3d12_device;
         D3D12MA::Allocator *memAllocator = nullptr;
         SharedHandle<GTEDevice> gteDevice;
+
+        // GPU-safe deferred-release queue. Encoders / submit paths hand
+        // resources here gated on a per-queue retention fence; the entries
+        // are released at drainCompleted() time, after the GPU is provably
+        // done with them. See gte/docs/GPU-Safe-Resource-Deletion-Plan.md.
+        Retention::Queue retentionQueue;
+
+        // Weak-ref registry of every command queue this engine has handed
+        // out. Used by ~GED3D12Engine to issue a per-queue Signal+wait so
+        // the GPU is provably idle before retentionQueue.drainAll() runs.
+        // D3D12 has no device-wide wait-idle; we have to do it per queue.
+        OmegaCommon::Vector<std::weak_ptr<GECommandQueue>> liveCommandQueues;
 
         // Mipmap generation pipeline (compiled from gte/src/shaders/mipmap_gen_2d.omegasl
         // via the OmegaSL runtime compiler). Lazily created on first use.

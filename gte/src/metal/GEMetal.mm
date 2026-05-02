@@ -330,7 +330,15 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                         delete (simd_int4 *)b.data;
                         break;
                     }
-                    default: break;
+                    default:
+                        /// Matrix blocks are heap-allocated `unsigned char[]`
+                        /// (std430-padded bytes from `encodeFMatrixToStd430`).
+                        /// Free them as arrays — the non-matrix branches above
+                        /// already covered the typed-allocation cases.
+                        if(isMatrixDataType(b.type)){
+                            delete[] (unsigned char *)b.data;
+                        }
+                        break;
                 }
             }
             blocks.clear();
@@ -388,6 +396,38 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         void writeUint4(UVec<4> &v) override {
             blocks.push_back(DataBlock {OMEGASL_UINT4,new simd_uint4(simd_make_uint4(v[0][0],v[1][0],v[2][0],v[3][0]))});
         }
+        /// Matrix uploads. Metal's `simd_floatCxR` / `matrix_floatCxR`
+        /// matches std430 byte-for-byte (column-major, vec3 columns
+        /// padded to 16 bytes), so the same encode helper used by the
+        /// Vulkan path produces bytes that Metal can consume directly
+        /// from a device buffer / argument buffer. See §12.2.
+        void writeFloat2x2(FMatrix<2,2> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,2>(), encodeFMatrixToStd430<2,2>(m)});
+        }
+        void writeFloat3x3(FMatrix<3,3> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,3>(), encodeFMatrixToStd430<3,3>(m)});
+        }
+        void writeFloat4x4(FMatrix<4,4> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,4>(), encodeFMatrixToStd430<4,4>(m)});
+        }
+        void writeFloat2x3(FMatrix<2,3> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,3>(), encodeFMatrixToStd430<2,3>(m)});
+        }
+        void writeFloat2x4(FMatrix<2,4> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,4>(), encodeFMatrixToStd430<2,4>(m)});
+        }
+        void writeFloat3x2(FMatrix<3,2> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,2>(), encodeFMatrixToStd430<3,2>(m)});
+        }
+        void writeFloat3x4(FMatrix<3,4> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,4>(), encodeFMatrixToStd430<3,4>(m)});
+        }
+        void writeFloat4x2(FMatrix<4,2> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,2>(), encodeFMatrixToStd430<4,2>(m)});
+        }
+        void writeFloat4x3(FMatrix<4,3> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,3>(), encodeFMatrixToStd430<4,3>(m)});
+        }
         void structEnd() override {
             inStruct = false;
         }
@@ -398,44 +438,50 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             OmegaCommon::Vector<size_t> sizes;
             for(auto & d : blocks){
                 size_t s = 0;
-                switch (d.type) {
-                    case OMEGASL_FLOAT : {
-                        s = sizeof(float);
-                        break;
+                if(isMatrixDataType(d.type)){
+                    auto [cols, rows] = matrixDims(d.type);
+                    s = std430MatrixSize(cols, rows);
+                }
+                else {
+                    switch (d.type) {
+                        case OMEGASL_FLOAT : {
+                            s = sizeof(float);
+                            break;
+                        }
+                        case OMEGASL_FLOAT2 : {
+                            s = sizeof(simd_float2);
+                            break;
+                        }
+                        case OMEGASL_FLOAT3 : {
+                            s = sizeof(simd_float3);
+                            break;
+                        }
+                        case OMEGASL_FLOAT4 : {
+                            s = sizeof(simd_float4);
+                            break;
+                        }
+                        case OMEGASL_INT :
+                        case OMEGASL_UINT : {
+                            s = sizeof(int);
+                            break;
+                        }
+                        case OMEGASL_INT2 :
+                        case OMEGASL_UINT2 : {
+                            s = sizeof(simd_int2);
+                            break;
+                        }
+                        case OMEGASL_INT3 :
+                        case OMEGASL_UINT3 : {
+                            s = sizeof(simd_int3);
+                            break;
+                        }
+                        case OMEGASL_INT4 :
+                        case OMEGASL_UINT4 : {
+                            s = sizeof(simd_int4);
+                            break;
+                        }
+                        default: break;
                     }
-                    case OMEGASL_FLOAT2 : {
-                        s = sizeof(simd_float2);
-                        break;
-                    }
-                    case OMEGASL_FLOAT3 : {
-                        s = sizeof(simd_float3);
-                        break;
-                    }
-                    case OMEGASL_FLOAT4 : {
-                        s = sizeof(simd_float4);
-                        break;
-                    }
-                    case OMEGASL_INT :
-                    case OMEGASL_UINT : {
-                        s = sizeof(int);
-                        break;
-                    }
-                    case OMEGASL_INT2 :
-                    case OMEGASL_UINT2 : {
-                        s = sizeof(simd_int2);
-                        break;
-                    }
-                    case OMEGASL_INT3 :
-                    case OMEGASL_UINT3 : {
-                        s = sizeof(simd_int3);
-                        break;
-                    }
-                    case OMEGASL_INT4 :
-                    case OMEGASL_UINT4 : {
-                        s = sizeof(simd_int4);
-                        break;
-                    }
-                    default: break;
                 }
                 if(s > biggestSize){
                     biggestSize = s;
@@ -561,27 +607,34 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             OmegaCommon::Vector<size_t> sizes;
             for(auto & f : fields){
                 size_t s = 0;
-                switch (f) {
-                    case OMEGASL_INT:
-                    case OMEGASL_FLOAT : {
-                        s = sizeof(float);
-                        break;
-                    }
-                    case OMEGASL_INT2 :
-                    case OMEGASL_FLOAT2 : {
-                        s = sizeof(simd_float2);
-                        break;
-                    }
-                    case OMEGASL_INT3 :
-                    case OMEGASL_FLOAT3 : {
-                        s = sizeof(simd_float3);
-                        break;
-                    }
-                    case OMEGASL_INT4 :
-                    case OMEGASL_FLOAT4 :
-                    {
-                        s = sizeof(simd_float4);
-                        break;
+                if(isMatrixDataType(f)){
+                    auto [cols, rows] = matrixDims(f);
+                    s = std430MatrixSize(cols, rows);
+                }
+                else {
+                    switch (f) {
+                        case OMEGASL_INT:
+                        case OMEGASL_FLOAT : {
+                            s = sizeof(float);
+                            break;
+                        }
+                        case OMEGASL_INT2 :
+                        case OMEGASL_FLOAT2 : {
+                            s = sizeof(simd_float2);
+                            break;
+                        }
+                        case OMEGASL_INT3 :
+                        case OMEGASL_FLOAT3 : {
+                            s = sizeof(simd_float3);
+                            break;
+                        }
+                        case OMEGASL_INT4 :
+                        case OMEGASL_FLOAT4 :
+                        {
+                            s = sizeof(simd_float4);
+                            break;
+                        }
+                        default: break;
                     }
                 }
                 if(s > biggestSize){
@@ -663,6 +716,26 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             v[3][0] = _v.w;
             readAfterPaddingIfPossible();
         }
+        /// Matrix downloads. Metal stores `matrix_floatCxR` column-major
+        /// with the same Cx3 column padding as std430, so the shared
+        /// decode helper produces the right host-side `FMatrix<C,R>`.
+        template<unsigned C, unsigned R>
+        void getMatrixImpl(FMatrix<C,R> &m, omegasl_data_type tag){
+            assert(structLayout[fieldIndex] == tag && "Field is not the expected matrix type");
+            readBeforePaddingIfPossible();
+            decodeFMatrixFromStd430<C, R>(_data_ptr + currentOffset, m);
+            offsetAndIncrement(std430MatrixSize(C, R));
+            readAfterPaddingIfPossible();
+        }
+        void getFloat2x2(FMatrix<2,2> &m) override { getMatrixImpl<2,2>(m, OMEGASL_FLOAT2x2); }
+        void getFloat3x3(FMatrix<3,3> &m) override { getMatrixImpl<3,3>(m, OMEGASL_FLOAT3x3); }
+        void getFloat4x4(FMatrix<4,4> &m) override { getMatrixImpl<4,4>(m, OMEGASL_FLOAT4x4); }
+        void getFloat2x3(FMatrix<2,3> &m) override { getMatrixImpl<2,3>(m, OMEGASL_FLOAT2x3); }
+        void getFloat2x4(FMatrix<2,4> &m) override { getMatrixImpl<2,4>(m, OMEGASL_FLOAT2x4); }
+        void getFloat3x2(FMatrix<3,2> &m) override { getMatrixImpl<3,2>(m, OMEGASL_FLOAT3x2); }
+        void getFloat3x4(FMatrix<3,4> &m) override { getMatrixImpl<3,4>(m, OMEGASL_FLOAT3x4); }
+        void getFloat4x2(FMatrix<4,2> &m) override { getMatrixImpl<4,2>(m, OMEGASL_FLOAT4x2); }
+        void getFloat4x3(FMatrix<4,3> &m) override { getMatrixImpl<4,3>(m, OMEGASL_FLOAT4x3); }
         void structEnd() override {
             inStruct = false;
         }

@@ -19,9 +19,14 @@ void index_assign(uint3 tid : GlobalThreadID){
     /// 3. Postfix increment on indexed lvalue.
     c[1]++;
 
-    /// 4. Matrix column-vector write.
+    /// 4. Matrix column write — must use two-level indexing per §12.1
+    /// (single-level `m[col] = vec` is rejected by Sema because HLSL
+    /// can't faithfully represent a one-statement column write).
     float4x4 m = src[0].m;
-    m[1] = float4(0.0, 1.0, 0.0, 0.0);
+    m[1][0] = 0.0;
+    m[1][1] = 1.0;
+    m[1][2] = 0.0;
+    m[1][3] = 0.0;
 
     /// 5. Matrix double-indexed single-element write.
     m[2][3] = 5.0;

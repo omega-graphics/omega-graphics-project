@@ -60,6 +60,20 @@ struct OMEGAGTE_EXPORT GEBufferWriter {
     virtual void writeUint2(UVec<2> & v) = 0;
     virtual void writeUint3(UVec<3> & v) = 0;
     virtual void writeUint4(UVec<4> & v) = 0;
+    /// Matrix uploads. Storage is std430 column-major across all
+    /// backends — the host's `FMatrix<C, R>` lays out columns
+    /// contiguously and each backend writes them in the same order
+    /// (with per-column padding for Cx3 matrices to match std430's
+    /// vec3 quirk). See OmegaSL-Feature-Gap-Survey §12.2.
+    virtual void writeFloat2x2(FMatrix<2,2> & m) = 0;
+    virtual void writeFloat3x3(FMatrix<3,3> & m) = 0;
+    virtual void writeFloat4x4(FMatrix<4,4> & m) = 0;
+    virtual void writeFloat2x3(FMatrix<2,3> & m) = 0;
+    virtual void writeFloat2x4(FMatrix<2,4> & m) = 0;
+    virtual void writeFloat3x2(FMatrix<3,2> & m) = 0;
+    virtual void writeFloat3x4(FMatrix<3,4> & m) = 0;
+    virtual void writeFloat4x2(FMatrix<4,2> & m) = 0;
+    virtual void writeFloat4x3(FMatrix<4,3> & m) = 0;
     virtual void structEnd() = 0;
     virtual void sendToBuffer() = 0;
     virtual void flush() = 0;
@@ -76,6 +90,18 @@ struct OMEGAGTE_EXPORT GEBufferReader {
     virtual void getFloat2(FVec<2> & v) = 0;
     virtual void getFloat3(FVec<3> & v) = 0;
     virtual void getFloat4(FVec<4> & v) = 0;
+    /// Matrix downloads — symmetric with the writer above. The reader
+    /// strips the std430 column padding when copying back into the
+    /// host's tightly-packed `FMatrix<C, R>::_data`.
+    virtual void getFloat2x2(FMatrix<2,2> & m) = 0;
+    virtual void getFloat3x3(FMatrix<3,3> & m) = 0;
+    virtual void getFloat4x4(FMatrix<4,4> & m) = 0;
+    virtual void getFloat2x3(FMatrix<2,3> & m) = 0;
+    virtual void getFloat2x4(FMatrix<2,4> & m) = 0;
+    virtual void getFloat3x2(FMatrix<3,2> & m) = 0;
+    virtual void getFloat3x4(FMatrix<3,4> & m) = 0;
+    virtual void getFloat4x2(FMatrix<4,2> & m) = 0;
+    virtual void getFloat4x3(FMatrix<4,3> & m) = 0;
     virtual void structEnd() = 0;
     virtual void reset() = 0;
     static SharedHandle<GEBufferReader> Create();

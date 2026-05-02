@@ -1331,7 +1331,7 @@ std430 column padding for `Cx3` matrices." Cross-link §12.1.
 1. Land §12.1 first (source-level alignment). Without it, `m[col][row]`
    means different things in different backends and the buffer test
    would fail for reasons unrelated to memory layout.
-2. Land the shared `std430Matrix*` helpers and the API additions on
+2. Land the the API additions on
    `GTEShader.h`.
 3. Implement matrix methods in Vulkan and Metal (already-column-major
    targets — pure additive work).
@@ -1346,8 +1346,7 @@ std430 column padding for `Cx3` matrices." Cross-link §12.1.
 - **`int` / `uint` matrix types** in the buffer API. The shader language
   only declares `float` matrices today (§2.3 of the reference). Adding
   the integer matrix path is straightforward when needed.
-- **`double` matrix types.** OmegaSL has no `double` matrix type
-  (intentional per §4.3) so no API surface needed.
+- **`double` matrix types.** OmegaSL has no double type at the moment, but will add support in the future.
 - **Runtime transposition fallback** — the world where HLSL gets
   compiled with row-major packing and we need to transpose at upload
   time on D3D12. The patch above prevents that world from existing
@@ -1359,6 +1358,126 @@ std430 column padding for `Cx3` matrices." Cross-link §12.1.
   follow the same column-major default but are a separate channel from
   `GEBufferWriter` (§10.2). When push-constant support lands, the same
   std430-equivalent helpers apply.
+
+### 12.3 Next phase — `column_major` source qualifier on HLSL struct fields
+
+§12.1 and §12.2 landed: source-level matrix indexing is locked
+column-first (with the HLSL index swap + non-square type-spelling flip),
+matrix R/W methods exist on `GEBufferWriter`/`GEBufferReader`, and the
+HLSL backend pins storage to column-major via the runtime
+`D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR` flag plus the offline `/Zpc` flag.
+Step 5c of §12.2 — the `column_major` source qualifier on every
+matrix-typed HLSL struct field — was deferred and lands here.
+
+**Why it didn't fit in §12.2.** The straightforward implementation
+("emit `column_major ` from `HLSLTarget::writeTypeName` when the type
+is a matrix") was tried and reverted at
+`gte/omegasl/src/HLSLTarget.cpp`. `writeTypeName` is shared with cast
+expressions (`writeCast`) and function param types, where HLSL forbids
+storage qualifiers — `(column_major float3x3)x` does not compile. A
+clean fix needs a struct-field-context-aware emit path, which doesn't
+exist as a `Target` hook today. The deferred-comment in `writeTypeName`
+points to this section.
+
+**Why it's still worth doing.** The compile-flag pair
+(`D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR`, `/Zpc`) covers the storage in
+the current toolchain, but a future `dxc` default flip or a downstream
+recompile with a different flag set would silently break the layout.
+The source qualifier travels with the source and survives flag drift —
+that's why the original §12.2 step 5c preferred it over the flags
+when both feel redundant.
+
+#### Patch
+
+**1. New `Target` hook.** Add in `gte/omegasl/src/Target.h`, paralleling
+the existing `emitMemberExpr`/`emitIndexExpr` hooks:
+
+```cpp
+/// Emit a struct field's type. Default delegates to
+/// `cg.writeTypeExpr` — what GLSL/MSL want. `HLSLTarget` overrides
+/// to prefix `column_major ` when the field type is a matrix, so
+/// the storage layout is locked at the source level instead of
+/// relying solely on `D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR` /
+/// `/Zpc`. The hook is called *only* from struct-field emission —
+/// not from casts or function params, where HLSL forbids storage
+/// qualifiers. See §12.3.
+virtual void emitStructFieldType(CodeGen &cg,
+                                 ast::TypeExpr *typeExpr,
+                                 std::ostream &out);
+```
+
+Default implementation in `gte/omegasl/src/CodeGen.cpp`:
+
+```cpp
+void Target::emitStructFieldType(CodeGen &cg,
+                                 ast::TypeExpr *typeExpr,
+                                 std::ostream &out) {
+    cg.writeTypeExpr(typeExpr, out);
+}
+```
+
+**2. HLSL override.** In `gte/omegasl/src/HLSLTarget.cpp`:
+
+```cpp
+void HLSLTarget::emitStructFieldType(CodeGen &cg,
+                                     ast::TypeExpr *typeExpr,
+                                     std::ostream &out) {
+    auto *t = cg.typeResolver->resolveTypeWithExpr(typeExpr);
+    if (t && isOmegaSLMatrixType(t)) {
+        out << "column_major ";
+    }
+    cg.writeTypeExpr(typeExpr, out);
+}
+```
+
+(`isOmegaSLMatrixType` already exists as a static helper next to
+`emitIndexExpr`.) Declaration goes in the `HLSLTarget` block of
+`Target.h`.
+
+**3. Single call site.** Switch `HLSLTarget::emitStructDecl` at
+`gte/omegasl/src/HLSLTarget.cpp` to call the new hook in place of
+`cg.writeTypeExpr` for the field-type emission. `writeCast` and the
+function-parameter / return-type sites in `emitShaderEntryHeader`
+keep using the unqualified path.
+
+**4. Drop the deferred-comment.** Remove the "deferred — see §12.3"
+note from the matrix branch of `HLSLTarget::writeTypeName` once this
+lands.
+
+#### Tests
+
+- Cross-emit `matrix_index.omegasl`, `matrix_buffer.omegasl`,
+  `matrix_ops.omegasl` to HLSL via `omegaslc --hlsl -S` and grep for
+  `column_major` on each matrix-typed struct field. Add a
+  `golden/matrix_buffer.hlsl` golden file under
+  `gte/omegasl/tests/golden/` and wire a `RunGoldenCodegenTest.cmake`
+  invocation in the `TARGET_DIRECTX` block of
+  `gte/omegasl/tests/CMakeLists.txt`.
+- Existing `omegasl_compile_matrix_*` and
+  `omegasl_invalid_matrix_column_write` tests must still pass — the
+  qualifier is additive at struct-field sites and shouldn't perturb any
+  other path.
+- Confirm the Vulkan `runMatrixRoundtrip` in
+  `gte/tests/vulkan/ComputeTest/main.cpp` still passes (it should be
+  unaffected — the change is HLSL-only).
+
+#### Out of scope
+
+- **`row_major` qualifier as an explicit per-field opt-out.** OmegaSL
+  has no surface for "this matrix is row-major in storage" — every
+  matrix is column-major. If a future use case needs an opt-out (e.g.
+  loading a D3D9-era asset format directly into a uniform buffer), it
+  pairs with the §12.2 "Out of scope: Runtime transposition fallback"
+  item.
+- **GLSL `layout(row_major)` / `layout(column_major)` decorations.**
+  GLSL uses storage qualifiers on the *block*, not per-field. The std430
+  default is already column-major (`mat4` columns at `MatrixStride = 16`)
+  so no extra emit is needed today. If the engine ever adds std140
+  uniform blocks with mixed layouts, the per-block qualifier can land
+  on `GLSLTarget::emitStructDecl` directly, but that's separate from
+  this section.
+- **MSL.** Metal's matrix layout is already column-major by spec, no
+  qualifier exists or is needed.
 
 ---
 

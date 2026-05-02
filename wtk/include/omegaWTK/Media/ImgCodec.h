@@ -59,11 +59,9 @@ namespace OmegaWTK {
         
         OMEGAWTK_EXPORT StatusWithObj<BitmapImage> loadImageFromFile(OmegaCommon::FS::Path path);
         OMEGAWTK_EXPORT StatusWithObj<BitmapImage> loadImageFromAssets(OmegaCommon::AssetBundle &bundle,OmegaCommon::FS::Path path);
-        OMEGAWTK_EXPORT StatusWithObj<BitmapImage> loadImageFromAssets(OmegaCommon::FS::Path path);
         OMEGAWTK_EXPORT StatusWithObj<BitmapImage> loadImageFromBuffer(ImgByte *bufferData,size_t bufferSize,BitmapImage::Format f);
         OMEGAWTK_EXPORT StatusWithObj<BitmapImage> loadImageFromURL(OmegaCommon::StrRef url,BitmapImage::Format format);
 
-    #define IMPORT_IMG(img) ::OmegaWTK::Media::loadImageFromAssets(img)
     };
 };
 

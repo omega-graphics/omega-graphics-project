@@ -69,9 +69,22 @@ GEVulkanTexture::~GEVulkanTexture(){
             reinterpret_cast<const void *>(img),
             static_cast<float>(descriptor.width),
             static_cast<float>(descriptor.height));
-    if(!nativeReleased_){
-        vmaDestroyImage(engine->memAllocator,img,alloc);
-        vkDestroyImageView(engine->device,img_view,nullptr);
+    if(nativeReleased_) return;
+    if(engine != nullptr){
+        VkImage      i   = img;
+        VkImageView  iv  = img_view;
+        VmaAllocation a  = alloc;
+        VmaAllocator alc = engine->memAllocator;
+        VkDevice     dev = engine->device;
+        std::vector<Retention::FenceGate> gates(pendingGates.begin(), pendingGates.end());
+        engine->retentionQueue.enqueue(std::move(gates),
+            [alc, dev, i, iv, a]() {
+                vmaDestroyImage(alc, i, a);
+                if (iv != VK_NULL_HANDLE) vkDestroyImageView(dev, iv, nullptr);
+            });
+        img = VK_NULL_HANDLE;
+        img_view = VK_NULL_HANDLE;
+        alloc = nullptr;
     }
 }
 

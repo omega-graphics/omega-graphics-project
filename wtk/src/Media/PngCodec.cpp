@@ -88,12 +88,7 @@ namespace OmegaWTK::Media {
                     break;
                 }
             }
-            std::cout << std::endl;
-            std::stringstream ss;
-            ss << "IHDR Chunk:{Width:" << width << ", Height:" << height << ", bitDepth:" << bitDepth << ", channels:" << channels << ", colorType:" << int(color_type) << ", filterType:" << filter_method << ", compressiomMethod:" << compression_method << ", interlaceType:" << interlace_type << ", rowBytes:" << rowBytes << "}" << std::endl;
-            std::cout << ss.str();
-            // MessageBoxA(GetForegroundWindow(),ss.str().c_str(),"NOTE",MB_OK);
-            
+
             return ImgHeader{width,height,channels,bitDepth,compression_method,interlace_type,colorFormat,alphaFormat,rowBytes};
         };
             

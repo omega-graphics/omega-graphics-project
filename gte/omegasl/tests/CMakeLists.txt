@@ -59,6 +59,8 @@ if(APPLE)
 endif()
 add_omegasl_compile_test(omegasl_compile_math_builtins       math_builtins.omegasl)
 add_omegasl_compile_test(omegasl_compile_matrix_ops          matrix_ops.omegasl)
+add_omegasl_compile_test(omegasl_compile_matrix_index        matrix_index.omegasl)
+add_omegasl_compile_test(omegasl_compile_matrix_buffer       matrix_buffer.omegasl)
 add_omegasl_compile_test(omegasl_compile_texture_write       texture_write.omegasl)
 add_omegasl_compile_test(omegasl_compile_discard             discard.omegasl)
 add_omegasl_compile_test(omegasl_compile_fragment_depth      fragment_depth.omegasl)
@@ -95,6 +97,7 @@ add_omegasl_fail_test(omegasl_invalid_sample_ms              invalid_sample_ms.o
 add_omegasl_fail_test(omegasl_invalid_write_ms               invalid_write_ms.omegasl)
 add_omegasl_fail_test(omegasl_invalid_sample_variants        invalid_sample_variants.omegasl)
 add_omegasl_fail_test(omegasl_invalid_switch                 invalid_switch.omegasl)
+add_omegasl_fail_test(omegasl_invalid_matrix_column_write    invalid_matrix_column_write.omegasl)
 
 # =============================================================
 # 4. Golden-file tests for HLSL codegen (DirectX only)

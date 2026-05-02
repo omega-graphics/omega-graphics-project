@@ -14,7 +14,9 @@ GED3D12Texture::GED3D12Texture(const GETextureType & type,
                                ID3D12DescriptorHeap *uavDescHeap,
                                ID3D12DescriptorHeap *rtvDescHeap,
                                ID3D12DescriptorHeap *dsvDescHeap,
-                               D3D12_RESOURCE_STATES & currentState):
+                               D3D12_RESOURCE_STATES & currentState,
+                               D3D12MA::Allocation *d3d12maAllocation,
+                               D3D12MA::Allocation *d3d12maCpuSideAllocation):
                                 GETexture(type,usage,pixelFormat),
                                 resource(res),
                                 cpuSideresource(cpuSideRes),
@@ -22,6 +24,8 @@ GED3D12Texture::GED3D12Texture(const GETextureType & type,
                                uavDescHeap(uavDescHeap),
                                rtvDescHeap(rtvDescHeap),
                                dsvDescHeap(dsvDescHeap),
+                               d3d12maAllocation(d3d12maAllocation),
+                               d3d12maCpuSideAllocation(d3d12maCpuSideAllocation),
                                currentState(currentState){
     if(usage == GPUAccessOnly || usage == RenderTarget){
         onGpu = true;
@@ -195,6 +199,19 @@ GED3D12Texture::~GED3D12Texture(){
             resource.Get(),
             static_cast<float>(resource->GetDesc().Width),
             static_cast<float>(resource->GetDesc().Height));
+    // Drop the COM refs before releasing the D3D12MA allocations so the
+    // allocator's leak validator sees the underlying resources already
+    // destroyed when the allocations go away.
+    resource.Reset();
+    cpuSideresource.Reset();
+    if (d3d12maAllocation) {
+        d3d12maAllocation->Release();
+        d3d12maAllocation = nullptr;
+    }
+    if (d3d12maCpuSideAllocation) {
+        d3d12maCpuSideAllocation->Release();
+        d3d12maCpuSideAllocation = nullptr;
+    }
 }
 
 _NAMESPACE_END_

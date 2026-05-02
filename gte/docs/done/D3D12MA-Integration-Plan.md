@@ -375,3 +375,17 @@ Compare before/after on a workload that creates many small buffers (e.g. per-obj
   This work should land before the D3D12MA migration sees real workloads with frame-to-frame resource churn (e.g. dynamic constant buffers per draw, transient render targets).
 - **Shared descriptor heap pools**: Replace per-resource 1-element descriptor heaps with large shader-visible descriptor tables. This is orthogonal to D3D12MA but compounds the memory savings.
 - **Defragmentation**: D3D12MA supports defragmentation passes that compact placed resources within pools. Useful for long-running applications with dynamic resource churn.
+
+
+  Lifecycle considerations                                  
+                                                                                                             
+  - D3D12MA contract: every allocation from a pool must be released before the pool itself. The previous     
+  ID3D12Heap had the same hazard (placed resources had to be released before the heap). Engine shutdown      
+  (slice 4 of the GPU-Safe plan) drains the retention queue → releases all retained GED3D12Buffer /          
+  GED3D12Texture destructors → those Release() their D3D12MA::Allocation — then the engine releases
+  memAllocator. As long as user heap handles are dropped before or alongside resource handles (the existing
+  convention), pool destruction is safe.
+  - Free-list improvement: the previous bump allocator never reclaimed offsets when individual placed
+  resources were released. After Phase 4, releasing a buffer/texture allocated from a heap returns its region
+   to D3D12MA's free list, so subsequent makeBuffer/makeTexture calls into the same heap can reuse that
+  space. This is the most user-visible behavior change.  

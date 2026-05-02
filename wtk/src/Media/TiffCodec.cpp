@@ -36,12 +36,15 @@ namespace OmegaWTK::Media {
             switch (whence) {
                 case SEEK_SET : {
                     dir = std::ios::beg;
+                    break;
                 }
                 case SEEK_CUR : {
                     dir = std::ios::cur;
+                    break;
                 }
                 case SEEK_END : {
                     dir = std::ios::end;
+                    break;
                 }
                 default : {
                     dir = std::ios::beg;
@@ -86,36 +89,45 @@ namespace OmegaWTK::Media {
         bool load_tiff_from_file(){
             TiffIStream tiffStream;
             TIFF *tiff = tiffStream.open(&in);
+            if(tiff == nullptr){
+                return false;
+            }
 
-            uint32_t width,height,bitDepth,channelCount,compression;
-            
-            ImgHeader header;
+            uint32_t width = 0,height = 0;
+            uint16_t srcBitDepth = 0,srcChannels = 0,compression = 0;
 
             TIFFGetField(tiff,TIFFTAG_IMAGEWIDTH,&width);
             TIFFGetField(tiff,TIFFTAG_IMAGELENGTH,&height);
-            TIFFGetField(tiff,TIFFTAG_BITSPERSAMPLE,&bitDepth);
-            TIFFGetField(tiff,TIFFTAG_SAMPLESPERPIXEL,&channelCount);
+            TIFFGetField(tiff,TIFFTAG_BITSPERSAMPLE,&srcBitDepth);
+            TIFFGetField(tiff,TIFFTAG_SAMPLESPERPIXEL,&srcChannels);
             TIFFGetField(tiff,TIFFTAG_COMPRESSION,&compression);
-            
-            header.color_format = BitmapImage::ColorFormat::RGBA;
-            header.bitDepth = bitDepth;
-            header.channels = channelCount;
+
+            ImgHeader header{};
             header.width = width;
             header.height = height;
-            
+            // TIFFReadRGBAImage normalizes to 8-bit RGBA regardless of source layout.
+            header.bitDepth = 8;
+            header.channels = 4;
+            header.stride = static_cast<size_t>(width) * 4;
+            header.color_format = BitmapImage::ColorFormat::RGBA;
+            header.alpha_format = BitmapImage::AlphaFormat::Straight;
+            header.compression_method = static_cast<int>(compression);
+            header.interlace_type = 0;
+
             bool rc = false;
 
-            size_t pixelCount = width * height;
+            size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
             uint32_t * buffer = (uint32_t *)_TIFFmalloc(pixelCount * sizeof(uint32_t));
             if(buffer != nullptr){
                 if(TIFFReadRGBAImage(tiff,width,height,buffer,0)){
                     storage->data = (ImgByte *)buffer;
                     storage->header = header;
-                    // storage->profile;
                     rc = true;
-                };
-    //            _TIFFfree(buffer);
-            };
+                }
+                else {
+                    _TIFFfree(buffer);
+                }
+            }
             TIFFClose(tiff);
             return rc;
         };

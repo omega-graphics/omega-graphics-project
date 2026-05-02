@@ -124,15 +124,33 @@ _NAMESPACE_BEGIN_
     class GED3D12CommandQueue : public GECommandQueue {
         GED3D12Engine *engine;
 
+        // Pending submit batch: command lists queued by submitCommandBuffer
+        // calls and not yet handed to ExecuteCommandLists, plus the
+        // SharedHandles / descriptor heaps they depend on. At flush time
+        // these are moved into the engine retention queue with a fence gate
+        // for the just-issued submit; they are NOT released inline.
         std::vector<ID3D12GraphicsCommandList6 *> commandLists;
         std::vector<SharedHandle<GECommandBuffer>> retainedCommandBuffers;
-        ComPtr<ID3D12CommandQueue> commandQueue;
-    public:
-        // Descriptor heaps allocated transiently by command-buffer encoders
-        // (e.g. generateMipmaps) that must outlive the command list. Cleared
-        // when the queue's submitted work is known to have finished.
         std::vector<ComPtr<ID3D12DescriptorHeap>> retainedDescriptorHeaps;
-    private:
+        ComPtr<ID3D12CommandQueue> commandQueue;
+
+        // Monotonic fence for retention gating. Distinct from `fence` below,
+        // which is the binary-valued fence used by commitToGPUAndWait. Each
+        // ExecuteCommandLists is paired with Signal(retentionFence,
+        // ++nextSubmitValue); the captured value drives the FenceGate handed
+        // to the engine retention queue.
+        ComPtr<ID3D12Fence> retentionFence;
+        std::uint64_t       nextSubmitValue = 0;
+
+        // Build a gate that returns true once the next submit's signal value
+        // (i.e. ++nextSubmitValue) has been reached on retentionFence. Must be
+        // called immediately before issuing the corresponding Signal().
+        Retention::FenceGate gateForNextSubmit();
+
+        // Move every accumulated retained command buffer / descriptor heap
+        // into the engine retention queue under `gate`, then clear the local
+        // pending vectors.
+        void flushPendingRetentionUnder(const Retention::FenceGate &gate);
 
         ComPtr<ID3D12Fence> fence;
 

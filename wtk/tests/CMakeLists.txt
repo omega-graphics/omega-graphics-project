@@ -3,6 +3,8 @@
 # #     add_subdirectory("SwiftImport")
 # # endif()
 
+add_subdirectory(MediaCodecTest)
+
 OmegaWTKApp(
     NAME
     BasicAppTest

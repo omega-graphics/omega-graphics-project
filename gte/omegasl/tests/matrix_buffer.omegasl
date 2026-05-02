@@ -1,0 +1,40 @@
+/// §12.2 matrix buffer layout — exercises the matrix-typed field path
+/// in `GEBufferWriter` / `GEBufferReader`. Compile-only; the host-side
+/// round-trip lives in a separate runtime test (see TODO in
+/// gte/tests/).
+///
+/// Layout: each backend writes the matrix as column-major std430 bytes
+/// (with per-column padding for `Cx3`). The HLSL backend additionally
+/// uses `D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR` / `/Zpc` to pin its
+/// storage interpretation to column-major.
+
+struct MatrixData {
+    float4x4 transform;
+    float3x3 normalMatrix;
+    float3x2 uvBasis;
+    float4 tint;
+};
+
+buffer<MatrixData> src : 0;
+buffer<MatrixData> dst : 1;
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void copy_matrices(uint3 tid : GlobalThreadID){
+    /// Element-wise copy through both source-level matrix indexing
+    /// (§12.1) and matrix-typed buffer storage (§12.2).
+    dst[0].transform[0][0] = src[0].transform[0][0];
+    dst[0].transform[3][3] = src[0].transform[3][3];
+    dst[0].normalMatrix[1][2] = src[0].normalMatrix[1][2];
+    dst[0].uvBasis[2][1] = src[0].uvBasis[2][1];
+    dst[0].tint = src[0].tint;
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void transform_position(uint3 tid : GlobalThreadID){
+    /// Mat * Vec — independent of the §12.1 indexing rewrite, exercises
+    /// the column-major storage agreement directly.
+    float4 p = src[0].transform * src[0].tint;
+    dst[0].tint = p;
+}

@@ -19,6 +19,7 @@
 
 #include "omegaGTE/GE.h"
 #include "../common/GEResourceTracker.h"
+#include "../common/GERetentionQueue.h"
 
 #include <functional>
 
@@ -67,6 +68,12 @@ _NAMESPACE_BEGIN_
 
         VmaAllocator memAllocator;
         unsigned resource_count;
+
+        // GPU-safe deferred-release queue. Encoders / submit paths hand
+        // resources here gated on per-queue timeline-semaphore values; entries
+        // are released at drainCompleted() time, after the GPU is provably
+        // done with them. See gte/docs/GPU-Safe-Resource-Deletion-Plan.md.
+        Retention::Queue retentionQueue;
     
         VkDevice device;
         VkPhysicalDevice physicalDevice;
@@ -138,6 +145,10 @@ _NAMESPACE_BEGIN_
         VmaAllocation alloc;
         VmaAllocationInfo alloc_info;
 
+        // Gates accumulated by encoders that bound this buffer. The buffer
+        // must outlive every gate before vmaDestroyBuffer can run.
+        OmegaCommon::Vector<Retention::FenceGate> pendingGates;
+
         void setName(OmegaCommon::StrRef name) override {
             VkDebugUtilsObjectNameInfoEXT nameInfoExt {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
             nameInfoExt.pNext = nullptr;
@@ -199,9 +210,29 @@ _NAMESPACE_BEGIN_
                     traceResourceId,
                     reinterpret_cast<const void *>(buffer),
                     static_cast<float>(alloc_info.size));
-            if(!nativeReleased_){
-                vmaDestroyBuffer(engine->memAllocator,buffer,alloc);
-                vkDestroyBufferView(engine->device,bufferView,nullptr);
+            if(nativeReleased_) return;
+            // Hand the VMA destroy + buffer-view destroy to the engine
+            // retention queue gated on every prior submit that touched this
+            // buffer. Encoders accumulate these gates via pendingGates. If no
+            // submission ever used the buffer, gates is empty and the release
+            // runs on the next drainCompleted (i.e. effectively immediate),
+            // matching the previous inline-destroy behavior for unused
+            // resources.
+            if(engine != nullptr){
+                VkBuffer     b   = buffer;
+                VkBufferView bv  = bufferView;
+                VmaAllocation a  = alloc;
+                VmaAllocator alc = engine->memAllocator;
+                VkDevice     dev = engine->device;
+                std::vector<Retention::FenceGate> gates(pendingGates.begin(), pendingGates.end());
+                engine->retentionQueue.enqueue(std::move(gates),
+                    [alc, dev, b, bv, a]() {
+                        vmaDestroyBuffer(alc, b, a);
+                        if (bv != VK_NULL_HANDLE) vkDestroyBufferView(dev, bv, nullptr);
+                    });
+                buffer = VK_NULL_HANDLE;
+                bufferView = VK_NULL_HANDLE;
+                alloc = nullptr;
             }
         };
     };

@@ -118,11 +118,48 @@ Vectors support component access via `.x`, `.y`, `.z`, `.w` and swizzle patterns
 
 ### Matrix types
 
-| Type | Size |
-|------|------|
-| `float2x2` | 2x2 matrix |
-| `float3x3` | 3x3 matrix |
-| `float4x4` | 4x4 matrix |
+`floatCxR` denotes a matrix with **C columns of R rows each**, matching the
+host-side `OmegaCommon::Matrix<Ty, column, row>` template
+(`gte/include/omegaGTE/GTEBase.h`). All sizes for `C, R ∈ {2, 3, 4}` are
+available.
+
+| Type | Shape (cols × rows) |
+|------|---------------------|
+| `float2x2` / `float3x3` / `float4x4` | square |
+| `float2x3` | 2 columns × 3 rows |
+| `float2x4` | 2 columns × 4 rows |
+| `float3x2` | 3 columns × 2 rows |
+| `float3x4` | 3 columns × 4 rows |
+| `float4x2` | 4 columns × 2 rows |
+| `float4x3` | 4 columns × 3 rows |
+
+**Indexing is column-first.** `m[col]` is the column at index `col` (a
+`floatR` vector); `m[col][row]` is the scalar element at column `col`, row
+`row`. This matches the host's `Matrix<Ty, column, row>::operator[]` so the
+same `[col][row]` access reads the same element on CPU and GPU. The HLSL
+backend rewrites the access at codegen time to align with HLSL's row-first
+source convention; GLSL and MSL match natively.
+
+Single-level matrix lvalue assignment (`m[col] = vec`) is **rejected** —
+write the columns per-element with `m[col][row] = …` instead. The
+restriction is portability-driven: HLSL has no one-statement form for a
+column write, and the language locks the surface to the subset that
+lowers identically across all backends.
+
+`m * v`, `v * m`, `m * m`, `transpose(m)`, and `determinant(m)` produce
+the same mathematical result on every backend regardless of the
+indexing-rewrite, since they don't reach the source-level subscript path.
+
+**Storage layout.** Matrices are stored **column-major in GPU memory**
+across all backends, matching the host's `OmegaCommon::Matrix<Ty,
+column, row>` byte layout. Use `GEBufferWriter::writeFloat<C>x<R>` to
+upload an `FMatrix<C, R>` and the matching `GEBufferReader::getFloat<C>x<R>`
+to download — the API handles the std430 column padding for `Cx3`
+matrices (each 3-row column is padded from 12 to 16 bytes; `Cx2` and
+`Cx4` columns pack tightly). The HLSL backend pins its column-major
+storage interpretation explicitly via `D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR`
+on the runtime path and `/Zpc` on the offline `dxc` path so a future
+default-flag change cannot silently break the layout.
 
 ### Resource types
 

@@ -1,6 +1,5 @@
 #include "omegaWTK/Media/ImgCodec.h"
 #include "omegaWTK/Core/Core.h"
-#include "omegaWTK/UI/App.h"
 
 #include "omega-common/net.h"
 
@@ -74,6 +73,34 @@ Core::UniquePtr<ImgCodec> obtainCodecForImageFormat(BitmapImage::Format &format,
         ImgBuffer(void *begin,void *end){
             this->setg((char *)begin,(char *)begin,(char *)end);
         };
+    protected:
+        pos_type seekoff(off_type off, std::ios_base::seekdir dir,
+                         std::ios_base::openmode which = std::ios_base::in) override {
+            if(!(which & std::ios_base::in)){
+                return pos_type(off_type(-1));
+            }
+            char *base = eback();
+            char *end = egptr();
+            char *target = nullptr;
+            if(dir == std::ios_base::beg){
+                target = base + off;
+            } else if(dir == std::ios_base::cur){
+                target = gptr() + off;
+            } else if(dir == std::ios_base::end){
+                target = end + off;
+            } else {
+                return pos_type(off_type(-1));
+            }
+            if(target < base || target > end){
+                return pos_type(off_type(-1));
+            }
+            setg(base, target, end);
+            return pos_type(target - base);
+        }
+        pos_type seekpos(pos_type pos,
+                         std::ios_base::openmode which = std::ios_base::in) override {
+            return seekoff(off_type(pos), std::ios_base::beg, which);
+        }
     };
 
     StatusWithObj<BitmapImage> loadImageFromAssets(OmegaCommon::AssetBundle &bundle,OmegaCommon::FS::Path path){
@@ -105,40 +132,6 @@ Core::UniquePtr<ImgCodec> obtainCodecForImageFormat(BitmapImage::Format &format,
         return loadImageFromBuffer(bytes.data(),bytes.size(),*format);
     };
 
-    StatusWithObj<BitmapImage> loadImageFromAssets(OmegaCommon::FS::Path path){
-        if(auto *app = AppInst::inst()){
-            if(auto *bundle = app->getAssetBundle()){
-                return loadImageFromAssets(*bundle,path);
-            }
-        }
-
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#endif
-        BitmapImage img;
-        auto format = imageFormatForExtension(path.ext());
-        if(!format.has_value()){
-            return {"Unsupported image asset format"};
-        }
-        auto it = OmegaCommon::AssetLibrary::assets_res.find(path.str());
-        if(it == OmegaCommon::AssetLibrary::assets_res.end()){
-            return {"Failed to Load Image from Assets"};
-        }
-        auto & asset = it->second;
-        ImgBuffer buffer (asset.data,(char *)asset.data + asset.filesize);
-        std::istream in(&buffer);
-        Core::UniquePtr<ImgCodec> codec = obtainCodecForImageFormat(*format,in,&img);
-        if(!codec){
-            return {"Failed to Load Image from Assets"};
-        }
-        codec->readToStorage();
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#endif
-        return std::move(img);
-    };
-    
     StatusWithObj<BitmapImage> loadImageFromFile(OmegaCommon::FS::Path path) {
         BitmapImage img;
         auto format = imageFormatForExtension(path.ext());
@@ -171,13 +164,19 @@ Core::UniquePtr<ImgCodec> obtainCodecForImageFormat(BitmapImage::Format &format,
     }
 
     StatusWithObj<BitmapImage> loadImageFromBuffer(ImgByte *bufferData,size_t bufferSize,BitmapImage::Format f){
+        if(bufferData == nullptr || bufferSize == 0){
+            return {"Empty image buffer"};
+        }
         BitmapImage img;
         ImgBuffer imgBuffer {bufferData,bufferData + bufferSize};
         std::istream in(&imgBuffer);
         Core::UniquePtr<ImgCodec> codec = obtainCodecForImageFormat(f,in,&img);
+        if(!codec){
+            return {"Unsupported image format"};
+        }
         codec->readToStorage();
         if(!img.data)
-            return {"Failed to Load Image from File"};
+            return {"Failed to decode image buffer"};
         return std::move(img);
     };
 };

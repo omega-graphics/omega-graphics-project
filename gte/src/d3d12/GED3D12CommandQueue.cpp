@@ -26,6 +26,11 @@ GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, unsigned size)
         exit(1);
     };
 
+    hr = engine->d3d12_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&retentionFence));
+    if (FAILED(hr)) {
+        exit(1);
+    };
+
     cpuEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
 
     fence->SetEventOnCompletion(1, cpuEvent);
@@ -44,6 +49,24 @@ GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, unsigned size)
     ResourceTracking::Tracker::instance().emit(ResourceTracking::EventType::Create, ResourceTracking::Backend::D3D12,
                                                "CommandQueue", traceResourceId, commandQueue.Get());
 };
+
+Retention::FenceGate GED3D12CommandQueue::gateForNextSubmit() {
+    const std::uint64_t v = nextSubmitValue + 1;
+    ComPtr<ID3D12Fence> f = retentionFence;
+    return [f, v]() { return f->GetCompletedValue() >= v; };
+}
+
+void GED3D12CommandQueue::flushPendingRetentionUnder(const Retention::FenceGate &gate) {
+    for (auto &buf : retainedCommandBuffers) {
+        engine->retentionQueue.retainShared(std::move(buf), {gate});
+    }
+    retainedCommandBuffers.clear();
+    for (auto &heap : retainedDescriptorHeaps) {
+        engine->retentionQueue.enqueue({gate},
+                                       [h = std::move(heap)]() mutable { h.Reset(); });
+    }
+    retainedDescriptorHeaps.clear();
+}
 
 GED3D12CommandBuffer::GED3D12CommandBuffer(ID3D12GraphicsCommandList6 *commandList,
                                            ID3D12CommandAllocator *commandAllocator, GED3D12CommandQueue *parentQueue)
@@ -1467,16 +1490,25 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
         }
         commandQueue->ExecuteCommandLists(commandLists.size(), (ID3D12CommandList *const *)commandLists.data());
         commandLists.clear();
-        retainedCommandBuffers.clear();
-        retainedDescriptorHeaps.clear();
+        const auto pendingGate = gateForNextSubmit();
+        ++nextSubmitValue;
+        commandQueue->Signal(retentionFence.Get(), nextSubmitValue);
+        flushPendingRetentionUnder(pendingGate);
     }
 
     d3d12_buffer->commandList->Close();
     commandQueue->ExecuteCommandLists(1, (ID3D12CommandList *const *)d3d12_buffer->commandList.GetAddressOf());
+    {
+        const auto bufGate = gateForNextSubmit();
+        ++nextSubmitValue;
+        commandQueue->Signal(retentionFence.Get(), nextSubmitValue);
+        engine->retentionQueue.retainShared(SharedHandle<GECommandBuffer>(commandBuffer), {bufGate});
+    }
     const auto signalValue = fence->nextSignalValue++;
     fence->lastSignaledValue = signalValue;
     commandQueue->Signal(fence->fence.Get(), signalValue);
     multiQueueSync = false;
+    engine->retentionQueue.drainCompleted();
 }
 
 void GED3D12CommandQueue::signalFence(SharedHandle<GEFence> &fence) {
@@ -1518,11 +1550,22 @@ void GED3D12CommandQueue::commitToGPU() {
         }
         if (!commandLists.empty()) {
             commandQueue->ExecuteCommandLists(commandLists.size(), (ID3D12CommandList *const *)commandLists.data());
+            const auto gate = gateForNextSubmit();
+            ++nextSubmitValue;
+            commandQueue->Signal(retentionFence.Get(), nextSubmitValue);
+            commandLists.clear();
+            flushPendingRetentionUnder(gate);
+        } else {
+            // Nothing to execute; any items pushed during this batch (e.g.
+            // descriptor heaps from a generateMipmaps that was followed by no
+            // submit) have no GPU work to gate against. Clearing them here
+            // matches the historical behavior — the GPU was never going to
+            // touch them anyway.
+            retainedCommandBuffers.clear();
+            retainedDescriptorHeaps.clear();
         }
-        commandLists.clear();
-        retainedCommandBuffers.clear();
-        retainedDescriptorHeaps.clear();
     }
+    engine->retentionQueue.drainCompleted();
 };
 
 void GED3D12CommandQueue::commitToGPUAndWait() {
@@ -1543,6 +1586,10 @@ void GED3D12CommandQueue::commitToGPUAndWait() {
         ResourceTracking::Tracker::instance().emit(completeEvent);
     }
     submittedTraceCommandBufferIds.clear();
+    // Wait above guarantees every prior submit's retention-fence value has
+    // been reached, so any retention entries gated on this queue are
+    // releasable now.
+    engine->retentionQueue.drainCompleted();
 }
 
 SharedHandle<GECommandBuffer> GED3D12CommandQueue::getAvailableBuffer() {

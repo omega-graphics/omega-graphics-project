@@ -223,6 +223,18 @@ namespace omegasl {
                                     ast::MemberExpr *expr,
                                     std::ostream &out);
 
+        /// Emit an index expression `lhs[idx]`. Default: walk the LHS,
+        /// then `[idx]` raw — what GLSL/MSL want, since their source-level
+        /// matrix indexing is column-first (matches OmegaSL's
+        /// `Matrix<Ty, col, row>` host convention). `HLSLTarget` overrides
+        /// to swap matrix indices (`m[col][row]` → `m[row][col]`) and to
+        /// synthesize a column vector for single-level matrix reads, so
+        /// the same OmegaSL source produces the same element on every
+        /// backend. See OmegaSL-Feature-Gap-Survey §12.1.
+        virtual void emitIndexExpr(CodeGen &cg,
+                                   ast::IndexExpr *expr,
+                                   std::ostream &out);
+
         /// Phase 9: per-stage source file extension. HLSL: `".hlsl"`.
         /// MSL: `".metal"`. GLSL: `".vert"` / `".frag"` / `".comp"` /
         /// `".tesc"` / `".tese"`. Used by the `*CodeGen` SHADER_DECL
@@ -377,6 +389,7 @@ namespace omegasl {
                                   omegasl_shader &meta) override;
         void emitStructDecl(CodeGen &cg, ast::StructDecl *decl) override;
         void emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
+        void emitIndexExpr(CodeGen &cg, ast::IndexExpr *expr, std::ostream &out) override;
         const char *shaderObjectFileExt(ast::ShaderDecl::Type stage) const override;
     private:
         HLSLCodeOpts &opts;

@@ -423,6 +423,10 @@ _NAMESPACE_BEGIN_
     typedef unsigned char VulkanByte;
 
     static size_t sizeForType(omegasl_data_type type){
+        if(isMatrixDataType(type)){
+            auto [cols, rows] = matrixDims(type);
+            return std430MatrixSize(cols, rows);
+        }
         switch(type){
             case OMEGASL_FLOAT:   return sizeof(float);
             case OMEGASL_FLOAT2:  return sizeof(glm::vec2);
@@ -441,6 +445,9 @@ _NAMESPACE_BEGIN_
     }
 
     static size_t std430AlignmentForType(omegasl_data_type type){
+        if(isMatrixDataType(type)){
+            return std430MatrixAlignment(matrixDims(type).second);
+        }
         switch(type){
             case OMEGASL_FLOAT: case OMEGASL_INT: case OMEGASL_UINT:
                 return 4;
@@ -450,6 +457,7 @@ _NAMESPACE_BEGIN_
                 return 16;
         }
     }
+
 
     class GEVulkanBufferWriter : public GEBufferWriter {
         GEVulkanBuffer *_buffer = nullptr;
@@ -513,6 +521,38 @@ _NAMESPACE_BEGIN_
         }
         void writeUint4(UVec<4> &v) override {
             blocks.push_back(DataBlock {OMEGASL_UINT4,new glm::uvec4(v[0][0],v[1][0],v[2][0],v[3][0])});
+        }
+
+        /// Matrix writers: pack the host matrix as std430 bytes (with
+        /// per-column padding for Cx3) and stash the byte block. The
+        /// `sendToBuffer` memcpy loop sees the right size via
+        /// `sizeForType`.
+        void writeFloat2x2(FMatrix<2,2> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,2>(), encodeFMatrixToStd430<2,2>(m)});
+        }
+        void writeFloat3x3(FMatrix<3,3> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,3>(), encodeFMatrixToStd430<3,3>(m)});
+        }
+        void writeFloat4x4(FMatrix<4,4> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,4>(), encodeFMatrixToStd430<4,4>(m)});
+        }
+        void writeFloat2x3(FMatrix<2,3> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,3>(), encodeFMatrixToStd430<2,3>(m)});
+        }
+        void writeFloat2x4(FMatrix<2,4> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,4>(), encodeFMatrixToStd430<2,4>(m)});
+        }
+        void writeFloat3x2(FMatrix<3,2> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,2>(), encodeFMatrixToStd430<3,2>(m)});
+        }
+        void writeFloat3x4(FMatrix<3,4> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,4>(), encodeFMatrixToStd430<3,4>(m)});
+        }
+        void writeFloat4x2(FMatrix<4,2> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,2>(), encodeFMatrixToStd430<4,2>(m)});
+        }
+        void writeFloat4x3(FMatrix<4,3> &m) override {
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,3>(), encodeFMatrixToStd430<4,3>(m)});
         }
 
         void sendToBuffer() override {
@@ -610,6 +650,26 @@ _NAMESPACE_BEGIN_
             currentOffset += sizeof(vec);
             readTypes.push_back(OMEGASL_FLOAT4);
         }
+
+        /// Matrix readers: read `cols * std430MatrixColumnStride(rows)`
+        /// bytes from the mapped buffer, dropping per-column padding when
+        /// copying back into the host's tightly-packed `FMatrix`.
+        template<unsigned C, unsigned R>
+        void getMatrixImpl(FMatrix<C, R> &m, omegasl_data_type tag){
+            decodeFMatrixFromStd430<C, R>(mem_map + currentOffset, m);
+            currentOffset += std430MatrixSize(C, R);
+            readTypes.push_back(tag);
+        }
+        void getFloat2x2(FMatrix<2,2> &m) override { getMatrixImpl<2,2>(m, OMEGASL_FLOAT2x2); }
+        void getFloat3x3(FMatrix<3,3> &m) override { getMatrixImpl<3,3>(m, OMEGASL_FLOAT3x3); }
+        void getFloat4x4(FMatrix<4,4> &m) override { getMatrixImpl<4,4>(m, OMEGASL_FLOAT4x4); }
+        void getFloat2x3(FMatrix<2,3> &m) override { getMatrixImpl<2,3>(m, OMEGASL_FLOAT2x3); }
+        void getFloat2x4(FMatrix<2,4> &m) override { getMatrixImpl<2,4>(m, OMEGASL_FLOAT2x4); }
+        void getFloat3x2(FMatrix<3,2> &m) override { getMatrixImpl<3,2>(m, OMEGASL_FLOAT3x2); }
+        void getFloat3x4(FMatrix<3,4> &m) override { getMatrixImpl<3,4>(m, OMEGASL_FLOAT3x4); }
+        void getFloat4x2(FMatrix<4,2> &m) override { getMatrixImpl<4,2>(m, OMEGASL_FLOAT4x2); }
+        void getFloat4x3(FMatrix<4,3> &m) override { getMatrixImpl<4,3>(m, OMEGASL_FLOAT4x3); }
+
         void reset() override {
             vmaUnmapMemory(_buffer->engine->memAllocator,_buffer->alloc);
             _buffer = nullptr;
@@ -768,7 +828,18 @@ _NAMESPACE_BEGIN_
         rtPipelineFeatures.rayTracingPipeline = VK_TRUE;
         rtPipelineFeatures.pNext = nullptr;
 
+        // Timeline semaphores back the engine retention queue's per-queue
+        // gate (FenceGate -> vkGetSemaphoreCounterValue >= V). Core in
+        // Vulkan 1.2 — the VMA allocator already requests
+        // VK_API_VERSION_1_2 below, so the device is required to support
+        // this feature for the engine to function.
+        VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
+        timelineFeatures.timelineSemaphore = VK_TRUE;
+        timelineFeatures.pNext = nullptr;
+
         void **pNextTail = &features2.pNext;
+        *pNextTail = &timelineFeatures;
+        pNextTail = &timelineFeatures.pNext;
         if(hasSynchronization2Ext){
             *pNextTail = &sync2Features;
             pNextTail = &sync2Features.pNext;
@@ -799,14 +870,11 @@ _NAMESPACE_BEGIN_
         info.ppEnabledLayerNames = nullptr;
         info.ppEnabledExtensionNames = extensionNames.data();
 
-        if(hasSynchronization2Ext || hasExtendedDynamicState ||
-           hasBufferDeviceAddressExt || hasAccelerationStructureExt || hasRayTracingPipelineExt){
-            info.pNext = &features2;
-            info.pEnabledFeatures = nullptr;
-        } else {
-            info.pNext = nullptr;
-            info.pEnabledFeatures = &features;
-        }
+        // timelineFeatures is always chained, so we always go through
+        // features2 (cannot mix pEnabledFeatures with VkPhysicalDeviceFeatures2
+        // in pNext).
+        info.pNext = &features2;
+        info.pEnabledFeatures = nullptr;
 
         auto deviceRes = vkCreateDevice(physicalDevice,&info,nullptr,&this->device);
         if(deviceRes != VK_SUCCESS || this->device == VK_NULL_HANDLE){
@@ -2706,8 +2774,22 @@ _NAMESPACE_BEGIN_
 
     GEVulkanEngine::~GEVulkanEngine(){
         if(device != VK_NULL_HANDLE){
+            // Wait until every queue on the device is idle. With Vulkan we
+            // get a single device-wide call instead of D3D12's per-queue
+            // Signal+Wait. After this returns every retention gate (which
+            // queries vkGetSemaphoreCounterValue on a per-queue timeline)
+            // would report signaled.
             vkDeviceWaitIdle(device);
+
+            // Run resource destructors. After slice 3 these enqueue VMA
+            // destroys onto retentionQueue rather than calling them inline.
             releaseAllTrackedResources();
+
+            // Drain unconditionally. The vkDeviceWaitIdle above is the
+            // promise that every gate is signaled; drainAll skips the
+            // gate queries that drainCompleted would do.
+            retentionQueue.drainAll();
+
             for(auto & qf : deviceQueuefamilies){
                 for(auto & q : qf){
                     if(q.first != VK_NULL_HANDLE){

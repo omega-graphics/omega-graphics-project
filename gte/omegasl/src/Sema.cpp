@@ -745,6 +745,35 @@ namespace omegasl {
                     return nullptr;
                 }
             }
+            /// Single-level matrix lvalue assignment (`m[col] = vec`) is not
+            /// portably representable across all backends — HLSL would need
+            /// per-row statement expansion that we don't have infrastructure
+            /// for yet. Require the user to write `m[col][row] = …`
+            /// per-element. See OmegaSL-Feature-Gap-Survey §12.1.
+            if(_expr->op == OP_EQUAL || _expr->op == OP_PLUSEQUAL ||
+               _expr->op == OP_MINUSEQUAL || _expr->op == OP_MULEQUAL ||
+               _expr->op == OP_DIVEQUAL || _expr->op == OP_MODEQUAL ||
+               _expr->op == OP_ANDEQUAL || _expr->op == OP_OREQUAL ||
+               _expr->op == OP_XOREQUAL || _expr->op == OP_LSHIFTEQUAL ||
+               _expr->op == OP_RSHIFTEQUAL){
+                if(_expr->lhs->type == INDEX_EXPR){
+                    auto *idx = (ast::IndexExpr *)_expr->lhs;
+                    /// idx->lhs is the matrix variable for a single-level
+                    /// write; if it's itself an INDEX_EXPR, this is the
+                    /// allowed two-level form `m[col][row] = …`.
+                    if(idx->lhs->type != INDEX_EXPR){
+                        auto innerTy = resolveTypeWithExpr(idx->lhs->resolvedType);
+                        if(innerTy && isMatrixType(innerTy)){
+                            auto e = std::make_unique<TypeError>(
+                                "Cannot assign to a matrix column; use two-level indexing `m[col][row] = …`.");
+                            e->loc = _expr->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                            return nullptr;
+                        }
+                    }
+                }
+            }
+
             /// Return type inference.
             auto lhsTy = resolveTypeWithExpr(lhs_res);
             auto rhsTy = resolveTypeWithExpr(rhs_res);
@@ -766,6 +795,13 @@ namespace omegasl {
             if(!idx_expr_res){
                 return nullptr;
             }
+
+            /// Propagate resolvedType so type-aware codegen (HLSL matrix
+            /// index swap) can ask "is the lhs of this `INDEX_EXPR` itself
+            /// an `INDEX_EXPR` whose lhs resolves to a matrix?" — the
+            /// rewrite needs to inspect the inner lhs at emit time.
+            _expr->lhs->resolvedType = lhs_res;
+            _expr->idx_expr->resolvedType = idx_expr_res;
 
             auto _t = resolveTypeWithExpr(lhs_res);
 
