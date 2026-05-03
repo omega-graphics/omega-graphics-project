@@ -55,10 +55,10 @@ namespace OmegaWTK::Composition {
     }
 
     void FrameRenderPass::clearOnce(float r, float g, float b, float a){
-        if(textures_.preEffectTarget() == nullptr){
+        if(nativeTarget_ == nullptr){
             return;
         }
-        auto cb = textures_.preEffectTarget()->commandBuffer();
+        auto cb = nativeTarget_->commandBuffer();
 
         OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
         renderPassDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
@@ -67,27 +67,14 @@ namespace OmegaWTK::Composition {
         renderPassDesc.depthStencilAttachment.disabled = true;
         cb->startRenderPass(renderPassDesc);
         cb->endRenderPass();
-        textures_.preEffectTarget()->submitCommandBuffer(cb);
+        nativeTarget_->submitCommandBuffer(cb);
     }
 
-    void FrameRenderPass::begin(float clearR, float clearG, float clearB, float clearA,
-                                bool effectsQueued){
-        // Direct-to-drawable path: when we have a native render target and no
-        // effects queued, render directly to the swap chain drawable instead
-        // of the intermediate offscreen texture. This eliminates the
-        // fullscreen-quad blit that compositeAndPresentTarget() used to
-        // perform.
-        renderingToNative_ = (nativeTarget_ != nullptr && !effectsQueued);
-
-        if(renderingToNative_){
-            frameCB_ = nativeTarget_->commandBuffer();
+    void FrameRenderPass::begin(float clearR, float clearG, float clearB, float clearA){
+        if(nativeTarget_ == nullptr){
+            return;
         }
-        else {
-            if(textures_.preEffectTarget() == nullptr){
-                return;
-            }
-            frameCB_ = textures_.preEffectTarget()->commandBuffer();
-        }
+        frameCB_ = nativeTarget_->commandBuffer();
 
         OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
         renderPassDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
@@ -107,12 +94,7 @@ namespace OmegaWTK::Composition {
             return;
         }
         frameCB_->endRenderPass();
-        if(renderingToNative_){
-            nativeTarget_->submitCommandBuffer(frameCB_);
-        }
-        else {
-            textures_.preEffectTarget()->submitCommandBuffer(frameCB_);
-        }
+        nativeTarget_->submitCommandBuffer(frameCB_);
         frameCB_ = nullptr;
         frameActive_ = false;
     }
@@ -122,10 +104,12 @@ namespace OmegaWTK::Composition {
         DrawScope scope {};
         scope.cb = frameCB_;
         if(scope.cb == nullptr){
-            // Fallback: not inside a beginFrame/endFrame pair. This shouldn't
-            // happen in the normal render path, but keeps the standalone path
-            // working.
-            scope.cb = textures_.preEffectTarget()->commandBuffer();
+            // Fallback: not inside a beginFrame/endFrame pair. Unreachable on
+            // the always-direct path; retained until Phase 4 cleanup.
+            if(nativeTarget_ == nullptr){
+                return scope;
+            }
+            scope.cb = nativeTarget_->commandBuffer();
         }
         scope.standalone = (scope.cb != frameCB_);
 
@@ -135,7 +119,7 @@ namespace OmegaWTK::Composition {
             // restart with LoadPreserve to keep prior content. Force a
             // pipeline rebind on the next bind* call.
             scope.cb->endRenderPass();
-            textures_.preEffectTarget()->notifyCommandBuffer(scope.cb, textureFence);
+            nativeTarget_->notifyCommandBuffer(scope.cb, textureFence);
             OmegaGTE::GERenderTarget::RenderPassDesc restartDesc {};
             restartDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
                     OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),
@@ -146,7 +130,7 @@ namespace OmegaWTK::Composition {
             lastPipelineKind_ = PipelineKind::None;
         }
         else if(textureFence != nullptr && scope.standalone){
-            textures_.preEffectTarget()->notifyCommandBuffer(scope.cb, textureFence);
+            nativeTarget_->notifyCommandBuffer(scope.cb, textureFence);
         }
 
         if(scope.standalone){
@@ -158,7 +142,7 @@ namespace OmegaWTK::Composition {
     void FrameRenderPass::endDraw(DrawScope & scope){
         if(scope.standalone && scope.cb != nullptr){
             scope.cb->endRenderPass();
-            textures_.preEffectTarget()->submitCommandBuffer(scope.cb);
+            nativeTarget_->submitCommandBuffer(scope.cb);
         }
     }
 

@@ -102,59 +102,15 @@ namespace OmegaWTK::Composition {
     }
 
     BackingTextureSet::~BackingTextureSet(){
-        TexturePoolKey poolKey {
-            backingWidth_,
-            backingHeight_,
-            OmegaGTE::TexturePixelFormat::BGRA8Unorm,
-            OmegaGTE::GETexture::RenderTarget
-        };
-        if(texturePool() && (targetTexture_ || effectTexture_)){
-#ifdef _WIN32
-            // The Win32 backend must drain GPU work owned by either render
-            // target before letting the textures rejoin the pool — otherwise
-            // a sibling context can pick them up while a frame is still in
-            // flight on this one.
-            if(preEffectTarget_ != nullptr){
-                preEffectTarget_->waitForGPU();
-            }
-            if(nativeTarget_ != nullptr){
-                nativeTarget_->waitForGPU();
-            }
-#endif
-            if(targetTexture_){
-                texturePool()->release(std::move(targetTexture_), poolKey);
-            }
-            if(effectTexture_){
-                texturePool()->release(std::move(effectTexture_), poolKey);
-            }
-        }
-        preEffectTarget_.reset();
-        effectTarget_.reset();
+        // Always-direct path: no offscreen texture pair to drain or release.
+        // The dead targetTexture_/effectTexture_/preEffectTarget_/effectTarget_
+        // fields are retired in Phase 4.
+        nativeTarget_.reset();
         tessellationEngineContext_.reset();
     }
 
     void BackingTextureSet::releaseTexturesToPool(){
-        TexturePoolKey poolKey {
-            backingWidth_,
-            backingHeight_,
-            OmegaGTE::TexturePixelFormat::BGRA8Unorm,
-            OmegaGTE::GETexture::RenderTarget
-        };
-        if(texturePool() && (targetTexture_ || effectTexture_)){
-#ifdef _WIN32
-            if(nativeTarget_ != nullptr){
-                nativeTarget_->waitForGPU();
-            }
-#endif
-            if(targetTexture_){
-                texturePool()->release(std::move(targetTexture_), poolKey);
-            }
-            if(effectTexture_){
-                texturePool()->release(std::move(effectTexture_), poolKey);
-            }
-        }
-        targetTexture_.reset();
-        effectTexture_.reset();
+        // No-op on the always-direct path. Retained for Phase 4 deletion.
     }
 
     void BackingTextureSet::recomputeBackingDimensions(){
@@ -168,57 +124,17 @@ namespace OmegaWTK::Composition {
     void BackingTextureSet::rebuild(){
         recomputeBackingDimensions();
 
-        TexturePoolKey poolKey {
-            backingWidth_,
-            backingHeight_,
-            OmegaGTE::TexturePixelFormat::BGRA8Unorm,
-            OmegaGTE::GETexture::RenderTarget
-        };
-
-        releaseTexturesToPool();
-
-        // Texture and render-target allocation is thread-safe on Metal and
-        // D3D12. Previously this block dispatched synchronously to the main
-        // thread, which deadlocked the compositor during live resize because
-        // the main thread was busy in NSEventTrackingRunLoopMode.
-        if(texturePool()){
-            targetTexture_ = texturePool()->acquire(poolKey);
-            effectTexture_ = texturePool()->acquire(poolKey);
-        }
-        else {
-            OmegaGTE::TextureDescriptor textureDescriptor {};
-            textureDescriptor.usage = OmegaGTE::GETexture::RenderTarget;
-            textureDescriptor.storage_opts = OmegaGTE::Shared;
-            textureDescriptor.width = backingWidth_;
-            textureDescriptor.height = backingHeight_;
-            textureDescriptor.type = OmegaGTE::GETexture::Texture2D;
-            textureDescriptor.pixelFormat = OmegaGTE::TexturePixelFormat::BGRA8Unorm;
-            targetTexture_ = gte.graphicsEngine->makeTexture(textureDescriptor);
-            effectTexture_ = gte.graphicsEngine->makeTexture(textureDescriptor);
-        }
-
-        if(targetTexture_ == nullptr || effectTexture_ == nullptr){
-#ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "Failed to allocate backing textures." << std::endl;
-#endif
-            preEffectTarget_.reset();
-            effectTarget_.reset();
+        // Always-direct path: no offscreen texture pair allocation. The
+        // tessellation context is bound to the native render target so
+        // triangulator output rasterizes straight into the swap chain.
+        if(nativeTarget_ == nullptr){
             tessellationEngineContext_.reset();
             return;
         }
-        preEffectTarget_ = gte.graphicsEngine->makeTextureRenderTarget({true,targetTexture_});
-        effectTarget_    = gte.graphicsEngine->makeTextureRenderTarget({true,effectTexture_});
-        if(preEffectTarget_ == nullptr || effectTarget_ == nullptr){
-#ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "Failed to allocate Vulkan texture render targets." << std::endl;
-#endif
-            tessellationEngineContext_.reset();
-            return;
-        }
-        tessellationEngineContext_ = gte.triangulationEngine->createTEContextFromTextureRenderTarget(preEffectTarget_);
+        tessellationEngineContext_ = gte.triangulationEngine->createTEContextFromNativeRenderTarget(nativeTarget_);
         if(tessellationEngineContext_ == nullptr){
 #ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "Failed to create tessellation context for backing render target." << std::endl;
+            std::cout << "Failed to create tessellation context for native render target." << std::endl;
 #endif
         }
     }

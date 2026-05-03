@@ -142,15 +142,16 @@ void BackendRenderTargetContext::clear(float r, float g, float b, float a) {
 }
 
 void BackendRenderTargetContext::beginFrame(float clearR, float clearG, float clearB, float clearA) {
-    frameRenderPass_.begin(clearR, clearG, clearB, clearA, !effectQueue.empty());
+    frameRenderPass_.begin(clearR, clearG, clearB, clearA);
 }
 
 void BackendRenderTargetContext::endFrame() {
     frameRenderPass_.end();
 }
 
-void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect) {
-    effectQueue.push_back(effect);
+void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effect*/) {
+    // No-op stub on the always-direct path. Phase 2 reshapes blur as a
+    // per-layer property; until then queued effects are dropped.
 }
 
 
@@ -162,72 +163,19 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
                                             std::uint64_t syncPacketId,
                                             std::chrono::steady_clock::time_point submitTimeCpu,
                                             BackendSubmissionCompletionHandler completionHandler){
-        // Direct-to-native path: rendering already went to the native
-        // drawable in beginFrame/endFrame.  Just present.
-        if(frameRenderPass_.renderingToNative()){
-            renderTarget->commitAndPresent();
-            frameRenderPass_.clearRenderingToNative();
-            if(completionHandler){
-                BackendSubmissionTelemetry telemetry {};
-                telemetry.syncLaneId = syncLaneId;
-                telemetry.syncPacketId = syncPacketId;
-                telemetry.submitTimeCpu = submitTimeCpu;
-                telemetry.completeTimeCpu = std::chrono::steady_clock::now();
-                telemetry.presentTimeCpu = telemetry.completeTimeCpu;
-                telemetry.status = BackendSubmissionStatus::Completed;
-                completionHandler(telemetry);
-            }
-            return;
+        // Always-direct path: rendering already went to the native drawable in
+        // beginFrame/endFrame. Just present.
+        renderTarget->commitAndPresent();
+        if(completionHandler){
+            BackendSubmissionTelemetry telemetry {};
+            telemetry.syncLaneId = syncLaneId;
+            telemetry.syncPacketId = syncPacketId;
+            telemetry.submitTimeCpu = submitTimeCpu;
+            telemetry.completeTimeCpu = std::chrono::steady_clock::now();
+            telemetry.presentTimeCpu = telemetry.completeTimeCpu;
+            telemetry.status = BackendSubmissionStatus::Completed;
+            completionHandler(telemetry);
         }
-
-        // Texture (effect) path — unchanged from before.
-        if(textures_.preEffectTarget() == nullptr){
-            if(completionHandler){
-                BackendSubmissionTelemetry telemetry {};
-                telemetry.syncLaneId = syncLaneId;
-                telemetry.syncPacketId = syncPacketId;
-                telemetry.submitTimeCpu = submitTimeCpu;
-                telemetry.completeTimeCpu = std::chrono::steady_clock::now();
-                telemetry.presentTimeCpu = telemetry.completeTimeCpu;
-                telemetry.status = BackendSubmissionStatus::Dropped;
-                completionHandler(telemetry);
-            }
-            return;
-        }
-        auto _l_cb = textures_.preEffectTarget()->commandBuffer();
-        const bool canApplyEffects = !effectQueue.empty() &&
-                                     imageProcessor != nullptr &&
-                                     textures_.effectTexture() != nullptr &&
-                                     textures_.effectTarget() != nullptr;
-#ifdef OMEGAWTK_TRACE_RENDER
-        std::cout << "[WTK Diag] commit: canApplyEffects=" << canApplyEffects << std::endl;
-#endif
-        if(canApplyEffects){
-            textures_.preEffectTarget()->submitCommandBuffer(_l_cb);
-#ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "[WTK Diag] commit: textures_.preEffectTarget()->commit()" << std::endl;
-#endif
-            textures_.preEffectTarget()->commit();
-#ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "[WTK Diag] commit: applyEffects" << std::endl;
-#endif
-            imageProcessor->applyEffects(textures_.effectTexture(),textures_.preEffectTarget(),effectQueue,textures_.backingWidth(),textures_.backingHeight());
-            textures_.preEffectTarget()->waitForGPU();
-            textures_.preEffectTarget()->signalFence(fence);
-        } else {
-            textures_.preEffectTarget()->submitCommandBuffer(_l_cb, fence);
-#ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "[WTK Diag] commit: textures_.preEffectTarget()->commit()" << std::endl;
-#endif
-            textures_.preEffectTarget()->commit();
-#ifdef OMEGAWTK_TRACE_RENDER
-            std::cout << "[WTK Diag] commit: textures_.preEffectTarget()->commit() done" << std::endl;
-#endif
-        }
-        effectQueue.clear();
-
-        // Effect path: blit the result to the native drawable and present.
-        textures_.presentBlit(fence);
     }
 
     void BackendRenderTargetContext::releaseDeferredBuffers(){
@@ -247,7 +195,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & effect
         auto bufferWriter = pipelines.bufferWriter();
         auto renderPipelineState = pipelines.color();
         auto textureRenderPipelineState = pipelines.texture();
-        if(bufferWriter == nullptr || textures_.preEffectTarget() == nullptr || textures_.tessellationContext() == nullptr){
+        if(bufferWriter == nullptr || textures_.nativeTarget() == nullptr || textures_.tessellationContext() == nullptr){
             return;
         }
         OmegaGTE::TETriangulationResult result;
