@@ -1,5 +1,6 @@
 #include "omegaWTK/Composition/Layer.h"
 #include "omegaWTK/Composition/CompositorClient.h"
+#include <cmath>
 #include <iostream>
 
 namespace OmegaWTK::Composition {
@@ -36,6 +37,15 @@ void Layer::setEnabled(bool state){
 void Layer::resize(Composition::Rect &newRect){
     surface_rect = newRect;
 };
+
+void Layer::setBlur(const LayerBlur & blur){
+    if(!std::isfinite(blur.radius) || blur.radius <= 0.f){
+        blurEffects_.clear();
+        return;
+    }
+    blurEffects_.clear();
+    blurEffects_.push_back(blur);
+}
 
 LayerTree * Layer::getParentTree(){
     return parentTree;

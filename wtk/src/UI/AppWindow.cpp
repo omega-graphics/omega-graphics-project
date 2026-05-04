@@ -147,8 +147,46 @@ void AppWindowManager::closeAllWindows(){
     }
 };
 
+// Phase 3 made View purely virtual — the per-View NativeItem was removed,
+// so View::resize cannot reach the platform's presentation layer
+// (CAMetalLayer / swap chain) directly. The window's root NativeItem is
+// the only surviving handle to that layer, so AppWindowDelegate is
+// responsible for keeping it in sync on every resize tick.
+//
+// The backend visual tree also needs an explicit resize: Layer::resize
+// stores the new rect on the virtual layer but does not notify observers,
+// and Compositor::layerHasResized is a no-op. So the only path that
+// touches BackendRenderTargetContext from a window resize is this one.
+// Without it, BackingTextureSet::applyViewportOverride (called per-slice
+// during frame rendering) keeps the backing dimensions strictly growing
+// and the tessellation context stays sized for the largest historical
+// window — which is why content stretches sideways on shrink: the GPU
+// still renders at the old larger logical size into the new smaller
+// drawable.
+void AppWindowDelegate::syncNativePresentLayer(const Composition::Rect & rect){
+    if(window == nullptr || window->impl_ == nullptr){
+        return;
+    }
+    auto & rootItem = window->impl_->rootNativeItem;
+    if(rootItem != nullptr){
+        float scale = 1.f;
+        if(window->impl_->rootViewRenderTarget != nullptr){
+            scale = window->impl_->rootViewRenderTarget->getRenderScale();
+        }
+        rootItem->resizeNativeLayer(rect, scale);
+    }
+
+    auto & rootVisual = window->impl_->windowVisualTreeData.bundle.rootVisual;
+    if(rootVisual != nullptr){
+        Composition::Rect mutableRect = rect;
+        mutableRect.pos = {0.f, 0.f};
+        rootVisual->resize(mutableRect);
+    }
+}
+
 void AppWindowDelegate::dispatchResizeToHosts(const Composition::Rect & rect){
     window->impl_->rect = rect;
+    syncNativePresentLayer(rect);
     if(window->impl_->widgetTreeHost != nullptr){
         window->impl_->widgetTreeHost->notifyWindowResize(rect);
     }
@@ -156,6 +194,7 @@ void AppWindowDelegate::dispatchResizeToHosts(const Composition::Rect & rect){
 
 void AppWindowDelegate::dispatchResizeBeginToHosts(const Composition::Rect & rect){
     window->impl_->rect = rect;
+    syncNativePresentLayer(rect);
     if(window->impl_->widgetTreeHost != nullptr){
         window->impl_->widgetTreeHost->notifyWindowResizeBegin(rect);
     }
@@ -163,6 +202,7 @@ void AppWindowDelegate::dispatchResizeBeginToHosts(const Composition::Rect & rec
 
 void AppWindowDelegate::dispatchResizeEndToHosts(const Composition::Rect & rect){
     window->impl_->rect = rect;
+    syncNativePresentLayer(rect);
     if(window->impl_->widgetTreeHost != nullptr){
         window->impl_->widgetTreeHost->notifyWindowResizeEnd(rect);
     }

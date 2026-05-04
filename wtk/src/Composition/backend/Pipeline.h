@@ -1,10 +1,14 @@
 // Pipeline state cache for the composition backend.
 //
-// Owns the shader library, every render and compute pipeline state object,
-// the per-format copy-pipeline cache used by the present blit, the shared
-// `bufferWriter`, and the fullscreen quad vertex buffer used to drive that
-// blit. Construction and teardown are explicit (`initialize` / `shutdown`)
-// and driven by the engine lifecycle thunks in `RenderTarget.cpp`.
+// Owns the shader library, the color and texture render pipeline state
+// objects, the blur compute pipelines, and the shared `bufferWriter`.
+// Construction and teardown are explicit (`initialize` / `shutdown`) and
+// driven by the engine lifecycle thunks in `RenderTarget.cpp`.
+//
+// Phase 4 retired the `finalCopy` pipeline (and its per-format cache) and
+// the standing fullscreen-quad vertex buffer along with the offscreen-then-
+// blit path. The per-layer blur composite path authors its own unit-NDC
+// quad inline into a buffer-pool buffer.
 //
 // There is exactly one `PipelineRegistry`, owned by the process-wide
 // `BackendResourceFactory`. All consumers obtain pipeline handles through
@@ -19,19 +23,14 @@
 
 namespace OmegaWTK::Composition {
 
-    /// Owns every pipeline state object, the shader library, the fullscreen
-    /// quad vertex buffer, and the per-format copy pipeline cache used by the
-    /// composition backend. There is exactly one PipelineRegistry, held by
-    /// the process-wide BackendResourceFactory.
+    /// Owns every pipeline state object, the shader library, and the shared
+    /// buffer writer used by the composition backend. There is exactly one
+    /// PipelineRegistry, held by the process-wide BackendResourceFactory.
     class PipelineRegistry {
         SharedHandle<OmegaGTE::GTEShaderLibrary> shaderLibrary_;
         SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter_;
         SharedHandle<OmegaGTE::GERenderPipelineState> color_;
         SharedHandle<OmegaGTE::GERenderPipelineState> texture_;
-        SharedHandle<OmegaGTE::GERenderPipelineState> finalCopy_;
-        OmegaCommon::Map<OmegaGTE::PixelFormat,
-                         SharedHandle<OmegaGTE::GERenderPipelineState>> finalCopyByFormat_;
-        SharedHandle<OmegaGTE::GEBuffer> fullscreenQuadBuffer_;
 
         SharedHandle<OmegaGTE::GEComputePipelineState> linearGradient_;
         SharedHandle<OmegaGTE::GEComputePipelineState> gaussianBlurH_;
@@ -40,9 +39,9 @@ namespace OmegaWTK::Composition {
 
         void resetState();
     public:
-        /// Compile shader library, build all pipeline state objects and the
-        /// fullscreen quad vertex buffer. Safe to call multiple times — each
-        /// invocation tears the previous state down first.
+        /// Compile shader library and build all pipeline state objects.
+        /// Safe to call multiple times — each invocation tears the previous
+        /// state down first.
         bool initialize();
 
         /// Release every resource owned by the registry.
@@ -50,16 +49,9 @@ namespace OmegaWTK::Composition {
 
         SharedHandle<OmegaGTE::GTEShaderLibrary> shaderLibrary() const { return shaderLibrary_; }
         SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter() const { return bufferWriter_; }
-        SharedHandle<OmegaGTE::GEBuffer> fullscreenQuadBuffer() const { return fullscreenQuadBuffer_; }
 
         SharedHandle<OmegaGTE::GERenderPipelineState> color() const { return color_; }
         SharedHandle<OmegaGTE::GERenderPipelineState> texture() const { return texture_; }
-        SharedHandle<OmegaGTE::GERenderPipelineState> finalCopy() const { return finalCopy_; }
-
-        /// Lazily construct (and cache) a copy pipeline whose color attachment
-        /// matches `fmt`. Returns nullptr if the shader library could not
-        /// supply the copy shaders.
-        SharedHandle<OmegaGTE::GERenderPipelineState> finalCopyForFormat(OmegaGTE::PixelFormat fmt);
 
         SharedHandle<OmegaGTE::GEComputePipelineState> linearGradient() const { return linearGradient_; }
         SharedHandle<OmegaGTE::GEComputePipelineState> gaussianBlurH() const { return gaussianBlurH_; }

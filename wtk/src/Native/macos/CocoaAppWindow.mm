@@ -49,6 +49,12 @@ CocoaAppWindow::CocoaAppWindow(Composition::Rect & rect,NativeEventEmitter *emit
     rootView = std::dynamic_pointer_cast<CocoaItem>(Native::make_native_item(rect));
 
     [windowController.window setContentViewController:((NSViewController *)rootView->getBinding())];
+    // The view controller's loadView defaults the root view to NSViewNotSizable
+    // because that policy is correct for child native items embedded in the
+    // virtual tree (OmegaWTK lays them out). When the same view is installed
+    // as the window's contentView it must follow the window so that frame
+    // change notifications fire and the live-resize pipeline sees real bounds.
+    windowController.window.contentView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [windowDelegate attachHostContentViewObservers:windowController.window.contentView];
 };
 

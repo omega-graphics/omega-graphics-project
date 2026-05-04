@@ -11,6 +11,7 @@ namespace OmegaWTK {
 
 struct AppWindow::Impl {
     Native::NWH nativeWindow;
+    Native::NativeItemPtr rootNativeItem;
     SharedHandle<Composition::ViewRenderTarget> rootViewRenderTarget;
     Composition::CompositorClientProxy proxy;
     SharedHandle<AppWindowDelegate> delegate;
@@ -22,7 +23,8 @@ struct AppWindow::Impl {
 
     Impl(AppWindow & owner,Composition::Rect rectValue,AppWindowDelegate * delegateValue):
         nativeWindow(Native::make_native_window(rectValue,&owner)),
-        rootViewRenderTarget(new Composition::ViewRenderTarget(nativeWindow->getRootView())),
+        rootNativeItem(nativeWindow->getRootView()),
+        rootViewRenderTarget(new Composition::ViewRenderTarget(rootNativeItem)),
         proxy(rootViewRenderTarget),
         delegate(delegateValue),
         rect(rectValue){
@@ -30,7 +32,7 @@ struct AppWindow::Impl {
         // that input events (mouse, keyboard) from the single root native
         // view are routed through AppWindowDelegate → WidgetTreeHost hit
         // testing (Phase 2, Native View Architecture Plan).
-        nativeWindow->getRootView()->event_emitter = &owner;
+        rootNativeItem->event_emitter = &owner;
     }
 };
 

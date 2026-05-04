@@ -127,6 +127,7 @@ INTERFACE OMEGAWTK_EXPORT  AppWindowDelegate : public Native::NativeEventProcess
         void dispatchResizeBeginToHosts(const Composition::Rect & rect);
         void dispatchResizeToHosts(const Composition::Rect & rect);
         void dispatchResizeEndToHosts(const Composition::Rect & rect);
+        void syncNativePresentLayer(const Composition::Rect & rect);
         friend class AppWindow;
         bool liveResizeActive = false;
 #if defined(TARGET_MACOS)

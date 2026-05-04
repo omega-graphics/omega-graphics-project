@@ -161,7 +161,6 @@ namespace OmegaWTK::Composition {
         slice.bounds = frame->rect;
         slice.windowOffset = frame->windowOffset;
         slice.commands = frame->currentVisuals;
-        slice.effects = frame->currentEffects;
         slice.background = {frame->background.r,
                             frame->background.g,
                             frame->background.b,

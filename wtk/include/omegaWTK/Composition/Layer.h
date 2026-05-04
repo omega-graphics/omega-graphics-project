@@ -96,6 +96,26 @@ namespace Composition {
         ~LayerTree();
     };
 
+    /**
+     * @brief Per-layer blur effect descriptor.
+     *
+     * Phase 2 of Direct-To-Drawable: blur is a property of the layer, not a
+     * per-context queue. Layers carrying blur get a scratch surface at their
+     * bounds; their primitives render into it; the compute blur runs on the
+     * scratch; a textured-quad composite places the result onto the swap
+     * chain at the layer's window position.
+     */
+    struct OMEGAWTK_EXPORT LayerBlur {
+        enum class Type : OPT_PARAM {
+            Gaussian,
+            Directional
+        };
+        Type  type   = Type::Gaussian;
+        float radius = 0.f;
+        /// Direction angle in radians. Only used when `type == Directional`.
+        float angle  = 0.f;
+    };
+
     struct LayerEffect {
         enum : OPT_PARAM {
             DropShadow,
@@ -152,6 +172,12 @@ namespace Composition {
         /// Enforces the one-Canvas-per-Layer invariant structurally.
         Canvas * boundCanvas_ = nullptr;
 
+        /// Layer-scoped blur effects. When non-empty, the compositor renders
+        /// the layer's primitives into a per-layer scratch surface, applies
+        /// these blurs as compute passes, and composites the result onto the
+        /// swap chain. Empty (default) keeps the layer on the direct path.
+        OmegaCommon::Vector<LayerBlur> blurEffects_;
+
         friend class LayerTree;
         friend class Canvas;
         friend class ::OmegaWTK::View;
@@ -160,6 +186,23 @@ namespace Composition {
     public:
         /// Returns true if a Canvas is currently bound to this Layer.
         bool hasCanvas() const { return boundCanvas_ != nullptr; }
+
+        /// Returns true when the layer carries one or more blur effects.
+        bool hasBlur() const { return !blurEffects_.empty(); }
+
+        /// Read-only access to the layer's blur stack.
+        const OmegaCommon::Vector<LayerBlur> & blurEffects() const { return blurEffects_; }
+
+        /// Append a blur effect to this layer's stack.
+        void addBlur(const LayerBlur & blur) { blurEffects_.push_back(blur); }
+
+        /// Replace the layer's blur stack with a single blur (or clear it
+        /// when the radius is zero / non-finite).
+        void setBlur(const LayerBlur & blur);
+
+        /// Remove all blur effects from this layer.
+        void clearBlur() { blurEffects_.clear(); }
+
         OMEGACOMMON_CLASS("OmegaWTK.Composition.Layer")
 
         LayerTree *getParentTree();

@@ -7,7 +7,6 @@
 #include "FencePool.h"
 #include "MainThreadDispatch.h"
 #include "Pipeline.h"
-#include "Texture.h"
 #include "ResourceFactory.h"
 #include "omegaWTK/Composition/Canvas.h"
 #include "GeometryConvert.h"
@@ -37,6 +36,76 @@ namespace OmegaWTK::Composition {
         inline FencePool * fencePool(){
             return BackendResourceFactory::instance().fencePool();
         }
+
+        // Sizing math, collapsed in from BackingTextureSet in Phase 4.2.
+        // The backing texture is always the swap chain drawable on the
+        // always-direct path; these helpers only sanitize / scale the
+        // logical rect and clamp to engine limits.
+        constexpr float kMaxTextureDimension = 16384.f;
+#if defined(TARGET_MACOS)
+        constexpr float kRenderScaleFloor = 2.f;
+#else
+        constexpr float kRenderScaleFloor = 1.f;
+#endif
+
+        inline float sanitizeRenderScale(float scale){
+            if(!std::isfinite(scale) || scale <= 0.f){
+                return kRenderScaleFloor;
+            }
+            return std::clamp(scale, kRenderScaleFloor, kMaxTextureDimension);
+        }
+
+        inline float sanitizeCoordinate(float value, float fallback){
+            if(!std::isfinite(value)){
+                return fallback;
+            }
+            return value;
+        }
+
+        inline Composition::Rect sanitizeRenderRect(const Composition::Rect & candidate,
+                                                    const Composition::Rect & fallback,
+                                                    float renderScale){
+            Composition::Rect sanitizedFallback = fallback;
+            sanitizedFallback.pos.x = sanitizeCoordinate(sanitizedFallback.pos.x, 0.f);
+            sanitizedFallback.pos.y = sanitizeCoordinate(sanitizedFallback.pos.y, 0.f);
+            if(!std::isfinite(sanitizedFallback.w) || sanitizedFallback.w <= 0.f){
+                sanitizedFallback.w = 1.f;
+            }
+            if(!std::isfinite(sanitizedFallback.h) || sanitizedFallback.h <= 0.f){
+                sanitizedFallback.h = 1.f;
+            }
+
+            const float scale = sanitizeRenderScale(renderScale);
+            const float maxLogicalDimension = std::max(1.f, kMaxTextureDimension / scale);
+            sanitizedFallback.w = std::clamp(sanitizedFallback.w, 1.f, maxLogicalDimension);
+            sanitizedFallback.h = std::clamp(sanitizedFallback.h, 1.f, maxLogicalDimension);
+
+            Composition::Rect sanitized = candidate;
+            sanitized.pos.x = sanitizeCoordinate(sanitized.pos.x, sanitizedFallback.pos.x);
+            sanitized.pos.y = sanitizeCoordinate(sanitized.pos.y, sanitizedFallback.pos.y);
+
+            if(!std::isfinite(sanitized.w) || sanitized.w <= 0.f){
+                sanitized.w = sanitizedFallback.w;
+            }
+            if(!std::isfinite(sanitized.h) || sanitized.h <= 0.f){
+                sanitized.h = sanitizedFallback.h;
+            }
+
+            sanitized.w = std::clamp(sanitized.w, 1.f, maxLogicalDimension);
+            sanitized.h = std::clamp(sanitized.h, 1.f, maxLogicalDimension);
+            return sanitized;
+        }
+
+        inline unsigned toBackingDimension(float logicalDimension, float renderScale){
+            const float saneScale = sanitizeRenderScale(renderScale);
+            float saneLogical = logicalDimension;
+            if(!std::isfinite(saneLogical) || saneLogical <= 0.f){
+                saneLogical = 1.f;
+            }
+            const auto scaled = static_cast<long>(std::lround(saneLogical * saneScale));
+            const auto clamped = std::clamp<long>(scaled, 1L, static_cast<long>(kMaxTextureDimension));
+            return static_cast<unsigned>(clamped);
+        }
     }
 
     void InitializeEngine(){
@@ -52,35 +121,63 @@ namespace OmegaWTK::Composition {
 BackendRenderTargetContext::BackendRenderTargetContext(Composition::Rect & rect,
         SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTargetIn,
         float renderScaleValue):
-        fence(fencePool() ? fencePool()->acquire() : gte.graphicsEngine->makeFence()),
+        fence(fencePool() != nullptr ? fencePool()->acquire() : gte.graphicsEngine->makeFence()),
         renderTarget(renderTargetIn),
-        textures_(rect, renderScaleValue, renderTargetIn),
-        frameRenderPass_(textures_, renderTarget)
+        renderTargetSize_(rect),
+        renderScale_(sanitizeRenderScale(renderScaleValue)),
+        frameRenderPass_(*this)
         {
+    renderTargetSize_ = sanitizeRenderRect(rect,
+                                           Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f},
+                                           renderScale_);
+    backingWidth_  = toBackingDimension(renderTargetSize_.w, renderScale_);
+    backingHeight_ = toBackingDimension(renderTargetSize_.h, renderScale_);
+
     traceResourceId = ResourceTrace::nextResourceId();
     ResourceTrace::emit("Create",
                         "TextureTarget",
                         traceResourceId,
                         "BackendRenderTargetContext",
                         this,
-                        textures_.renderTargetSize().w,
-                        textures_.renderTargetSize().h,
-                        textures_.renderScale());
+                        renderTargetSize_.w,
+                        renderTargetSize_.h,
+                        renderScale_);
     rebuildBackingTarget();
-    imageProcessor = BackendResourceFactory::instance().createEffectProcessor(fence);
+    imageProcessor = BackendResourceFactory::instance().effectProcessor();
+}
+
+void BackendRenderTargetContext::recomputeBackingDimensions(){
+    renderTargetSize_ = sanitizeRenderRect(renderTargetSize_,
+                                           Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f},
+                                           renderScale_);
+    backingWidth_  = toBackingDimension(renderTargetSize_.w, renderScale_);
+    backingHeight_ = toBackingDimension(renderTargetSize_.h, renderScale_);
 }
 
 void BackendRenderTargetContext::rebuildBackingTarget(){
-    textures_.recomputeBackingDimensions();
+    recomputeBackingDimensions();
     ResourceTrace::emit("ResizeRebuild",
                         "TextureTarget",
                         traceResourceId,
                         "BackendRenderTargetContext",
                         this,
-                        static_cast<float>(textures_.backingWidth()),
-                        static_cast<float>(textures_.backingHeight()),
-                        textures_.renderScale());
-    textures_.rebuild();
+                        static_cast<float>(backingWidth_),
+                        static_cast<float>(backingHeight_),
+                        renderScale_);
+    // Always-direct path: the only resource bound to the backing target
+    // dimensions is the tessellation context. Textures live on the swap
+    // chain (managed externally) or per-blurred-layer scratches (allocated
+    // on demand by `LayerBlurScratch`).
+    if(renderTarget == nullptr){
+        tessellationContext_.reset();
+        return;
+    }
+    tessellationContext_ = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);
+    if(tessellationContext_ == nullptr){
+#ifdef OMEGAWTK_TRACE_RENDER
+        std::cout << "Failed to create tessellation context for native render target." << std::endl;
+#endif
+    }
 }
 
 BackendRenderTargetContext::~BackendRenderTargetContext(){
@@ -89,25 +186,29 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
                         traceResourceId,
                         "BackendRenderTargetContext",
                         this,
-                        textures_.renderTargetSize().w,
-                        textures_.renderTargetSize().h,
-                        textures_.renderScale());
-    // textures_ destructor will release pool textures (with the Win32
-    // waitForGPU dance) once this body returns.
+                        renderTargetSize_.w,
+                        renderTargetSize_.h,
+                        renderScale_);
+    tessellationContext_.reset();
     imageProcessor.reset();
     for(auto & entry : deferredBufferReleases){
-        if(bufferPool() && entry.first){
+        if(bufferPool() != nullptr && entry.first){
             bufferPool()->release(std::move(entry.first), entry.second);
         }
     }
     deferredBufferReleases.clear();
-    if(fencePool() && fence){
+    if(fencePool() != nullptr && fence){
         fencePool()->release(std::move(fence));
     }
 }
 
     void BackendRenderTargetContext::setRenderTargetSize(Composition::Rect &rect) {
-        if(textures_.resizeLogical(rect)){
+        const unsigned oldW = backingWidth_;
+        const unsigned oldH = backingHeight_;
+        renderTargetSize_ = sanitizeRenderRect(rect, renderTargetSize_, renderScale_);
+        const unsigned newW = toBackingDimension(renderTargetSize_.w, renderScale_);
+        const unsigned newH = toBackingDimension(renderTargetSize_.h, renderScale_);
+        if(oldW != newW || oldH != newH){
             rebuildBackingTarget();
         }
     }
@@ -117,7 +218,15 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
         // Update logical size for tessellation; grow backing surface if the
         // requested viewport extent exceeds the current backing. Never
         // shrinks.
-        if(textures_.applyViewportOverride(offsetX, offsetY, width, height)){
+        renderTargetSize_.pos.x = 0.f;
+        renderTargetSize_.pos.y = 0.f;
+        renderTargetSize_.w = width;
+        renderTargetSize_.h = height;
+        const unsigned neededW = toBackingDimension(offsetX + width,  renderScale_);
+        const unsigned neededH = toBackingDimension(offsetY + height, renderScale_);
+        if(neededW > backingWidth_ || neededH > backingHeight_){
+            backingWidth_  = std::max(backingWidth_,  neededW);
+            backingHeight_ = std::max(backingHeight_, neededH);
             rebuildBackingTarget();
         }
     }
@@ -137,10 +246,6 @@ void BackendRenderTargetContext::waitForGPU() {
 }
 #endif
 
-void BackendRenderTargetContext::clear(float r, float g, float b, float a) {
-    frameRenderPass_.clearOnce(r, g, b, a);
-}
-
 void BackendRenderTargetContext::beginFrame(float clearR, float clearG, float clearB, float clearA) {
     frameRenderPass_.begin(clearR, clearG, clearB, clearA);
 }
@@ -149,10 +254,284 @@ void BackendRenderTargetContext::endFrame() {
     frameRenderPass_.end();
 }
 
-void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effect*/) {
-    // No-op stub on the always-direct path. Phase 2 reshapes blur as a
-    // per-layer property; until then queued effects are dropped.
+void BackendRenderTargetContext::resetElementState() {
+    currentTransform = OmegaGTE::FMatrix<4,4>::Identity();
+    currentOpacity   = 1.f;
 }
+
+    namespace {
+        OmegaCommon::Vector<CanvasEffect> layerBlursToCanvasEffects(
+                const OmegaCommon::Vector<LayerBlur> & blurs){
+            OmegaCommon::Vector<CanvasEffect> out;
+            out.reserve(blurs.size());
+            for(const auto & blur : blurs){
+                if(!std::isfinite(blur.radius) || blur.radius <= 0.f){
+                    continue;
+                }
+                CanvasEffect ce {};
+                if(blur.type == LayerBlur::Type::Directional){
+                    ce.type = CanvasEffect::Type::DirectionalBlur;
+                    ce.directionalBlur.radius = blur.radius;
+                    ce.directionalBlur.angle  = blur.angle;
+                }
+                else {
+                    ce.type = CanvasEffect::Type::GaussianBlur;
+                    ce.gaussianBlur.radius = blur.radius;
+                }
+                out.push_back(ce);
+            }
+            return out;
+        }
+
+        unsigned scaledExtent(float logical, float scale){
+            const float v = std::max(1.f, logical) * std::max(1.f, scale);
+            const long  c = std::clamp<long>(static_cast<long>(std::lround(v)),
+                                             1L, 16384L);
+            return static_cast<unsigned>(c);
+        }
+    }
+
+    namespace {
+        /// Author a 6-vertex unit NDC quad into a fresh upload buffer using
+        /// the texture pipeline's vertex layout `(float4 pos, float2 uv,
+        /// float2 tintPad)`. The buffer is positioned by GPU viewport
+        /// remap, never by recalculating vertex coordinates. Used by the
+        /// per-layer blur composite path; allocated from the buffer pool
+        /// when one is available so the bytes return after the frame
+        /// completes.
+        SharedHandle<OmegaGTE::GEBuffer>
+        authorCompositeQuadBuffer(BufferPool *pool, std::size_t & outBytes){
+            const std::size_t structSize = OmegaGTE::omegaSLStructStride(
+                    {OMEGASL_FLOAT4, OMEGASL_FLOAT2, OMEGASL_FLOAT2});
+            const std::size_t totalBytes = structSize * 6;
+            outBytes = totalBytes;
+
+            SharedHandle<OmegaGTE::GEBuffer> buffer;
+            if(pool != nullptr){
+                buffer = pool->acquire(totalBytes, structSize);
+            }
+            else {
+                OmegaGTE::BufferDescriptor desc {
+                        OmegaGTE::BufferDescriptor::Upload,
+                        totalBytes,
+                        structSize};
+                buffer = gte.graphicsEngine->makeBuffer(desc);
+            }
+            if(buffer == nullptr){
+                return nullptr;
+            }
+
+            auto bufferWriter = pipelineRegistry().bufferWriter();
+            if(bufferWriter == nullptr){
+                return nullptr;
+            }
+            bufferWriter->setOutputBuffer(buffer);
+
+            auto pos      = OmegaGTE::FVec<4>::Create();
+            auto texCoord = OmegaGTE::FVec<2>::Create();
+            auto pad      = OmegaGTE::FVec<2>::Create();
+            // tintPad.x = 1 (full opacity) carries through textureFragment's
+            // alpha multiply unchanged; tintPad.y is reserved.
+            pad[0][0] = 1.f; pad[1][0] = 0.f;
+
+            auto emit = [&](float x, float y, float u, float v){
+                pos[0][0] = x; pos[1][0] = y; pos[2][0] = 0.f; pos[3][0] = 1.f;
+                texCoord[0][0] = u; texCoord[1][0] = v;
+                bufferWriter->structBegin();
+                bufferWriter->writeFloat4(pos);
+                bufferWriter->writeFloat2(texCoord);
+                bufferWriter->writeFloat2(pad);
+                bufferWriter->structEnd();
+                bufferWriter->sendToBuffer();
+            };
+
+            // Triangle 1: (-1,1) (-1,-1) (1,-1)
+            emit(-1.f,  1.f, 0.f, 0.f);
+            emit(-1.f, -1.f, 0.f, 1.f);
+            emit( 1.f, -1.f, 1.f, 1.f);
+            // Triangle 2: (-1,1) (1,1) (1,-1)
+            emit(-1.f,  1.f, 0.f, 0.f);
+            emit( 1.f,  1.f, 1.f, 0.f);
+            emit( 1.f, -1.f, 1.f, 1.f);
+
+            bufferWriter->flush();
+            return buffer;
+        }
+    }
+
+    void BackendRenderTargetContext::compositeScratchOntoFrame(
+            LayerBlurScratch & scratch,
+            const Composition::Rect & destBounds,
+            const Composition::Point2D & windowOffset){
+        auto & pipelines = pipelineRegistry();
+        auto texturePipeline = pipelines.texture();
+        if(texturePipeline == nullptr){
+            return;
+        }
+
+        std::size_t quadBytes = 0;
+        auto quadBuffer = authorCompositeQuadBuffer(bufferPool(), quadBytes);
+        if(quadBuffer == nullptr){
+            return;
+        }
+
+        // The composite waits on the scratch's fence so the compute writes
+        // have finished before sampling. beginDraw handles the
+        // outside-render-pass notify dance.
+        auto scope = frameRenderPass_.beginDraw(scratch.fence());
+        if(scope.cb == nullptr){
+            if(bufferPool() != nullptr){
+                bufferPool()->release(std::move(quadBuffer), quadBytes);
+            }
+            return;
+        }
+        auto & cb = scope.cb;
+
+        // Position the composite quad at the slice's window position. The
+        // unit NDC quad spans [-1..1] x [-1..1]; the GPU viewport remaps it
+        // onto (windowOffset.{x,y}) -> (windowOffset + bounds).
+        const float scale = renderScale_;
+        OmegaGTE::GEViewport vp {};
+        vp.x = std::max(0.f, windowOffset.x) * scale;
+        vp.y = std::max(0.f, windowOffset.y) * scale;
+        vp.width  = std::max(1.f, destBounds.w) * scale;
+        vp.height = std::max(1.f, destBounds.h) * scale;
+        vp.nearDepth = 0.f;
+        vp.farDepth  = 1.f;
+        OmegaGTE::GEScissorRect sr {vp.x, vp.y, vp.width, vp.height};
+        cb->setViewports({vp});
+        cb->setScissorRects({sr});
+
+        frameRenderPass_.bindTexturePipeline(scope);
+        cb->bindResourceAtVertexShader(quadBuffer, 1);
+        auto sourceTex = scratch.source();
+        cb->bindResourceAtFragmentShader(sourceTex, 2);
+        cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
+
+        frameRenderPass_.endDraw(scope);
+
+        if(bufferPool() != nullptr && quadBuffer){
+            deferredBufferReleases.push_back({std::move(quadBuffer), quadBytes});
+        }
+    }
+
+    void BackendRenderTargetContext::renderBlurredSlice(
+            const CompositeFrame::WidgetSlice & slice){
+        if(slice.targetLayer == nullptr || !slice.targetLayer->hasBlur()){
+            for(auto & cmd : slice.commands){
+                renderToTarget(cmd.type, (void *)&cmd.params);
+            }
+            return;
+        }
+
+        const float w = (std::isfinite(slice.bounds.w) && slice.bounds.w > 0.f) ? slice.bounds.w : 1.f;
+        const float h = (std::isfinite(slice.bounds.h) && slice.bounds.h > 0.f) ? slice.bounds.h : 1.f;
+        const float scale = renderScale_;
+        const unsigned sw = scaledExtent(w, scale);
+        const unsigned sh = scaledExtent(h, scale);
+
+        // Acquire / resize the per-layer scratch.
+        auto & scratchSlot = layerScratches[slice.targetLayer];
+        if(scratchSlot == nullptr){
+            scratchSlot = std::make_unique<LayerBlurScratch>();
+        }
+        // Match the texture/color pipelines' BGRA8Unorm color format. Once
+        // pipeline format negotiation lands (Phase 6 / risk #1) this should
+        // pick the native target's pixel format.
+        scratchSlot->resize(sw, sh, OmegaGTE::PixelFormat::BGRA8Unorm);
+        if(!scratchSlot->valid()){
+            // Allocation failed; fall back to the direct path so the layer
+            // still draws (without blur) instead of disappearing.
+#ifdef OMEGAWTK_TRACE_RENDER
+            std::cout << "[WTK Diag] LayerBlurScratch allocation failed; rendering slice unblurred." << std::endl;
+#endif
+            for(auto & cmd : slice.commands){
+                renderToTarget(cmd.type, (void *)&cmd.params);
+            }
+            return;
+        }
+        auto & scratch = *scratchSlot;
+
+        // Suspend the frame pass and start a fresh pass on the scratch
+        // target. While the scratch pass is open, beginDraw records onto
+        // the scratch CB; the renderToTarget vertex math uses
+        // renderTargetSize_ (= slice extent thanks to
+        // setViewportOverride) to compute NDC, and the scratch's GPU
+        // viewport is (0,0,sw,sh) so the layer fills its scratch.
+        auto scratchTarget = scratch.sourceTarget();
+        frameRenderPass_.beginScratchPass(scratchTarget, sw, sh);
+        if(!frameRenderPass_.scratchActive()){
+            // Couldn't start scratch pass (no active frame). Fall back to
+            // direct render so the layer still appears.
+            for(auto & cmd : slice.commands){
+                renderToTarget(cmd.type, (void *)&cmd.params);
+            }
+            return;
+        }
+
+        // Reset transient transform/opacity inside the scratch so prior
+        // slices' SetTransform/SetOpacity don't bleed in.
+        const auto savedTransform = currentTransform;
+        const float savedOpacity  = currentOpacity;
+        currentTransform = OmegaGTE::FMatrix<4,4>::Identity();
+        currentOpacity   = 1.f;
+
+        for(auto & cmd : slice.commands){
+            renderToTarget(cmd.type, (void *)&cmd.params);
+        }
+
+        currentTransform = savedTransform;
+        currentOpacity   = savedOpacity;
+
+        frameRenderPass_.endScratchPass();
+
+        // Apply the layer's blur effects. The processor signals the
+        // scratch's own fence; the composite below waits on it.
+        bool blurApplied = false;
+        if(imageProcessor != nullptr){
+            auto blurEffects = layerBlursToCanvasEffects(slice.targetLayer->blurEffects());
+            if(!blurEffects.empty()){
+                imageProcessor->applyEffects(scratch.pingPong(),
+                                             scratchTarget,
+                                             blurEffects,
+                                             scratch.width(),
+                                             scratch.height(),
+                                             scratch.fence());
+                blurApplied = true;
+            }
+        }
+
+        // Resume the frame's render pass and composite the blurred scratch
+        // onto the swap chain at the slice's window position.
+        SharedHandle<OmegaGTE::GEFence> waitFence = blurApplied
+                ? scratch.fence()
+                : SharedHandle<OmegaGTE::GEFence>{};
+        frameRenderPass_.resumeFrameAfterScratch(waitFence);
+        compositeScratchOntoFrame(scratch, slice.bounds, slice.windowOffset);
+    }
+
+    void BackendRenderTargetContext::purgeDeadLayerScratches(
+            const OmegaCommon::Vector<Layer *> & liveLayers){
+        if(layerScratches.empty()){
+            return;
+        }
+        auto it = layerScratches.begin();
+        while(it != layerScratches.end()){
+            bool live = false;
+            for(auto *layer : liveLayers){
+                if(layer == it->first){
+                    live = true;
+                    break;
+                }
+            }
+            if(!live){
+                it = layerScratches.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+    }
 
 
     void BackendRenderTargetContext::commit(){
@@ -195,7 +574,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effe
         auto bufferWriter = pipelines.bufferWriter();
         auto renderPipelineState = pipelines.color();
         auto textureRenderPipelineState = pipelines.texture();
-        if(bufferWriter == nullptr || textures_.nativeTarget() == nullptr || textures_.tessellationContext() == nullptr){
+        if(bufferWriter == nullptr || renderTarget == nullptr || tessellationContext_ == nullptr){
             return;
         }
         OmegaGTE::TETriangulationResult result;
@@ -203,15 +582,15 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effe
         OmegaGTE::GEViewport viewPort {};
         viewPort.x = viewPort.y = viewPort.nearDepth = 0.f;
         viewPort.farDepth = 1.f;
-        viewPort.width = textures_.renderTargetSize().w;
-        viewPort.height = textures_.renderTargetSize().h;
+        viewPort.width = renderTargetSize_.w;
+        viewPort.height = renderTargetSize_.h;
 
 #ifdef OMEGAWTK_TRACE_RENDER
-        std::cout << "W:" << textures_.renderTargetSize().w
-                  << " H:" << textures_.renderTargetSize().h
-                  << " BW:" << textures_.backingWidth()
-                  << " BH:" << textures_.backingHeight()
-                  << " S:" << textures_.renderScale()
+        std::cout << "W:" << renderTargetSize_.w
+                  << " H:" << renderTargetSize_.h
+                  << " BW:" << backingWidth_
+                  << " BH:" << backingHeight_
+                  << " S:" << renderScale_
                   << std::endl;
 #endif
 
@@ -250,7 +629,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effe
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(color));
                 }
 
-                result = textures_.tessellationContext()->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                result = tessellationContext_->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
 
                 break;
             }
@@ -280,7 +659,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effe
 
                 te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeTexture2D(uint32_t(_params.rect.w),uint32_t(_params.rect.h)));
 
-                result = textures_.tessellationContext()->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                result = tessellationContext_->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
 
                 break;
             }
@@ -305,7 +684,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effe
                                                      _params.brush->color.a);
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(color));
                 }
-                result = textures_.tessellationContext()->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                result = tessellationContext_->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
 
                 break;
             }
@@ -342,7 +721,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effe
                 const float twoPi = static_cast<float>(2.0 * OmegaGTE::PI);
                 const unsigned segmentCount = std::min(4096u, std::max(
                         96u,
-                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * textures_.renderScale()))));
+                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * renderScale_))));
                 auto prev = toNdcPoint(cx + rx,cy);
 
                 for(unsigned i = 1; i <= segmentCount; i++){
@@ -398,7 +777,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effe
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(fillColor));
                 }
 
-                result = textures_.tessellationContext()->triangulateSync(te_params,
+                result = tessellationContext_->triangulateSync(te_params,
                                                                   OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,
                                                                   &viewPort);
                 break;
@@ -440,7 +819,7 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effe
                     OmegaGTE::TETriangulationResult::TEMesh mesh {OmegaGTE::TETriangulationResult::TEMesh::TopologyTriangle};
                     const auto center = toNdcPoint(cx,cy);
                     const unsigned segCount = std::min(4096u,std::max(96u,
-                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * textures_.renderScale()))));
+                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * renderScale_))));
                     auto prev = toNdcPoint(cx + rx,cy);
                     const float twoPi = static_cast<float>(2.0 * OmegaGTE::PI);
 
@@ -469,13 +848,13 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effe
                     auto gteRR_s = toGTE(rr);
                     auto te_params = OmegaGTE::TETriangulationParams::RoundedRect(gteRR_s);
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(shadowColor));
-                    result = textures_.tessellationContext()->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                    result = tessellationContext_->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
                 }
                 else {
                     auto gteShadowRect = toGTE(shadowRect);
                     auto te_params = OmegaGTE::TETriangulationParams::Rect(gteShadowRect);
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(shadowColor));
-                    result = textures_.tessellationContext()->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                    result = tessellationContext_->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
                 }
                 break;
             }
@@ -527,11 +906,20 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effe
 
         bufferWriter->setOutputBuffer(buffer);
 
-        // Acquire the command buffer for this draw. When a frame is open the
-        // scope wraps the frame's CB; otherwise the scope opens a standalone
-        // render pass on the offscreen target. Texture-fence handling (mid-
-        // frame restart vs standalone notify) is bundled into beginDraw().
+        // Acquire the command buffer for this draw. The scope wraps the
+        // frame's CB (or the per-layer scratch's CB when a scratch pass is
+        // open). Texture-fence handling (mid-pass end+notify+restart) is
+        // bundled into beginDraw(). On the always-direct path
+        // renderToTarget is only invoked inside an active frame, so a null
+        // scope CB indicates a contract violation; short-circuit to avoid
+        // recording onto an undefined target.
         auto scope = frameRenderPass_.beginDraw(textureFence);
+        if(scope.cb == nullptr){
+            if(bufferPool() != nullptr && buffer){
+                bufferPool()->release(std::move(buffer), requiredBytes);
+            }
+            return;
+        }
         auto & cb = scope.cb;
 
         unsigned startVertexIndex = 0;
@@ -582,12 +970,17 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effe
             pos[2][0] = pt.z;
             pos[3][0] = 1.f;
             applyTransform(pos);
-            auto texPad = OmegaGTE::FVec<2>::Create();
-            texPad[0][0] = 0.f; texPad[1][0] = 0.f;
+            // Trailing float2 is the high half of the shader-side
+            // `texCoordTint` float4 (Phase 3): [0] carries the per-element
+            // alpha tint (currentOpacity); [1] is reserved for future RGB
+            // tinting and held at zero today.
+            auto tintPair = OmegaGTE::FVec<2>::Create();
+            tintPair[0][0] = std::clamp(opacityMul, 0.f, 1.f);
+            tintPair[1][0] = 0.f;
             bufferWriter->structBegin();
             bufferWriter->writeFloat4(pos);
             bufferWriter->writeFloat2(normalizedCoord);
-            bufferWriter->writeFloat2(texPad);
+            bufferWriter->writeFloat2(tintPair);
             bufferWriter->structEnd();
             bufferWriter->sendToBuffer();
         };
@@ -683,6 +1076,13 @@ void BackendRenderTargetContext::applyEffectToTarget(const CanvasEffect & /*effe
                 }
                 else {
                     ++surfIt;
+                }
+            }
+            // Drop per-layer blur scratches whose layers were removed.
+            if(compTarget.visualTree != nullptr && compTarget.visualTree->root != nullptr){
+                auto *rootCtx = compTarget.visualTree->root->renderTarget.get();
+                if(rootCtx != nullptr){
+                    rootCtx->purgeDeadLayerScratches(liveLayers);
                 }
             }
         }

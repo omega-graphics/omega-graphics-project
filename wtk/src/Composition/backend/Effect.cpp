@@ -16,18 +16,18 @@ namespace OmegaWTK::Composition {
     /// Unified cross-platform effect processor using OmegaSL compute shaders.
     /// All pipeline state objects (gaussian/directional blur), the shared
     /// `bufferWriter`, and any other GPU resources are obtained from the
-    /// process-wide `PipelineRegistry`; this class owns no GPU resources of
-    /// its own beyond the fence held by the base class.
+    /// process-wide `PipelineRegistry`. The processor itself is stateless;
+    /// the per-layer scratch's fence is supplied per call.
     class GPUCanvasEffectProcessor : public BackendCanvasEffectProcessor {
     public:
-        explicit GPUCanvasEffectProcessor(SharedHandle<OmegaGTE::GEFence> & fence):
-            BackendCanvasEffectProcessor(fence){}
+        GPUCanvasEffectProcessor() = default;
 
         void applyEffects(SharedHandle<OmegaGTE::GETexture> & dest,
                           SharedHandle<OmegaGTE::GETextureRenderTarget> & textureTarget,
                           OmegaCommon::Vector<CanvasEffect> & effects,
                           unsigned width,
-                          unsigned height) override {
+                          unsigned height,
+                          SharedHandle<OmegaGTE::GEFence> & fence) override {
             if(effects.empty()){
                 return;
             }
@@ -172,7 +172,9 @@ namespace OmegaWTK::Composition {
                 }
             }
 
-            // Fence synchronization for the composite pass.
+            // Fence synchronization for the composite pass. The caller's
+            // fence (the per-layer scratch's fence) is signaled so the
+            // composite quad on the swap-chain CB waits for blur completion.
             auto cb = textureTarget->commandBuffer();
             textureTarget->submitCommandBuffer(cb, fence);
             textureTarget->commit();
@@ -180,8 +182,8 @@ namespace OmegaWTK::Composition {
     };
 
     SharedHandle<BackendCanvasEffectProcessor>
-    BackendCanvasEffectProcessor::Create(SharedHandle<OmegaGTE::GEFence> & fence){
-        return SharedHandle<BackendCanvasEffectProcessor>(new GPUCanvasEffectProcessor(fence));
+    BackendCanvasEffectProcessor::Create(){
+        return SharedHandle<BackendCanvasEffectProcessor>(new GPUCanvasEffectProcessor());
     }
 
 }

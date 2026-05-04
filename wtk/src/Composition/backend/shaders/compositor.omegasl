@@ -23,14 +23,24 @@ fragment float4 mainFragment(OmegaWTKColoredRasterData raster){
     return raster.color;
 }
 
+/// Textured-vertex layout. The second float4 packs `(u, v, tintAlpha, _)`:
+///   .xy → texture sample coordinate (0..1)
+///   .z  → multiplicative alpha tint (1.0 = opaque, used by Phase 3 to
+///         carry per-element opacity through the texture pipeline)
+///   .w  → reserved for a future RGB tint
+/// The buffer stride is the same 32-byte stride that the previous
+/// `{float4 pos, float2 texCoord, float2 _pad}` layout used; the C++ side
+/// writes the same `writeFloat4 + writeFloat2 + writeFloat2` sequence and
+/// the GPU reinterprets the trailing 8 bytes as the third/fourth components
+/// of `texCoordTint`.
 struct OmegaWTKTexturedVertex {
     float4 pos;
-    float2 texCoord;
+    float4 texCoordTint;
 };
 
 struct OmegaWTKTexturedRasterData internal {
     float4 pos : Position;
-    float2 texCoord : TexCoord;
+    float4 texCoordTint : Color;
 };
 
 buffer<OmegaWTKTexturedVertex> v_buffer_1 : 1;
@@ -38,7 +48,7 @@ buffer<OmegaWTKTexturedVertex> v_buffer_1 : 1;
 [in v_buffer_1]
 vertex OmegaWTKTexturedRasterData textureVertex(uint v_id : VertexID){
     OmegaWTKTexturedVertex v = v_buffer_1[v_id];
-    OmegaWTKTexturedRasterData rasterData = { v.pos, v.texCoord };
+    OmegaWTKTexturedRasterData rasterData = { v.pos, v.texCoordTint };
     return rasterData;
 }
 
@@ -47,24 +57,11 @@ static sampler2d mainSampler(filter=linear);
 
 [in tex,in mainSampler]
 fragment float4 textureFragment(OmegaWTKTexturedRasterData raster){
-    return sample(mainSampler,tex,raster.texCoord);
-}
-
-struct OmegaWTKCopyRasterData internal {
-    float4 pos : Position;
-    float2 texCoord : TexCoord;
-};
-
-[in v_buffer_1]
-vertex OmegaWTKCopyRasterData copyVertex(uint v_id : VertexID){
-    OmegaWTKTexturedVertex v = v_buffer_1[v_id];
-    OmegaWTKCopyRasterData rasterData = { v.pos, v.texCoord };
-    return rasterData;
-}
-
-[in tex,in mainSampler]
-fragment float4 copyFragment(OmegaWTKCopyRasterData raster){
-    return sample(mainSampler,tex,raster.texCoord);
+    float2 uv = float2(raster.texCoordTint[0], raster.texCoordTint[1]);
+    float4 c = sample(mainSampler, tex, uv);
+    float a = raster.texCoordTint[2];
+    c[3] = c[3] * a;
+    return c;
 }
 
 struct BlurParams {

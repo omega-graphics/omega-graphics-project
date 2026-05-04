@@ -21,7 +21,7 @@ namespace OmegaWTK::Composition {
             std::uint64_t traceResourceId = 0;
             Composition::Point2D pos;
             // Owned indirectly so the back-references inside
-            // BackendRenderTargetContext (FrameRenderPass / BackingTextureSet)
+            // BackendRenderTargetContext (FrameRenderPass / sizing state)
             // remain bound to a stable address for the lifetime of the Visual.
             std::unique_ptr<BackendRenderTargetContext> renderTarget;
             explicit Visual(Composition::Point2D & pos,

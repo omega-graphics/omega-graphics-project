@@ -36,6 +36,7 @@ namespace OmegaWTK::Composition {
         std::unique_ptr<TexturePool> texturePool_;
         std::unique_ptr<BufferPool> bufferPool_;
         std::unique_ptr<FencePool> fencePool_;
+        SharedHandle<BackendCanvasEffectProcessor> effectProcessor_;
 
         static constexpr std::size_t kTextureHeapSize = 64u * 1024u * 1024u;
         static constexpr std::size_t kBufferHeapSize = 8u * 1024u * 1024u;
@@ -67,13 +68,11 @@ namespace OmegaWTK::Composition {
         BufferPool *  bufferPool()  { return bufferPool_.get(); }
         FencePool *   fencePool()   { return fencePool_.get(); }
 
-        /// Construct a canvas-effect processor bound to `fence`. Routes
-        /// through `BackendCanvasEffectProcessor::Create` today; centralized
-        /// here so per-context effect processor construction becomes a
-        /// single edit site if the implementation choice ever needs to vary
-        /// (e.g. a CPU fallback when compute pipelines are unavailable).
-        SharedHandle<BackendCanvasEffectProcessor>
-            createEffectProcessor(SharedHandle<OmegaGTE::GEFence> & fence);
+        /// The process-wide canvas-effect processor. Stateless after the
+        /// Phase 4.4 fence move — every per-layer blur composite borrows
+        /// the same instance. Lazily constructed on first access; null
+        /// when the backing implementation cannot be created.
+        SharedHandle<BackendCanvasEffectProcessor> & effectProcessor();
 
         struct VisualTreeBundle {
             SharedHandle<BackendVisualTree> visualTree;

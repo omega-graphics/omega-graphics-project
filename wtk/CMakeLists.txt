@@ -504,10 +504,20 @@ if(OMEGAWTK_SKIP_THIRD_PARTY_BUILD)
 	set(OMEGAWTK_MODULE_DEPS OmegaGTE)
 endif()
 
-# Compositor shaders are compiled at runtime by OmegaSLCompiler so the shader
-# source travels with the app and is compiled for the actual GPU architecture
-# on first use. The source file is deployed alongside the executable below.
+# Compositor shaders are precompiled at build time by `omegaslc` (via the
+# `add_omegasl_lib` helper from `gte/OmegaGTE.cmake`) into a host-native
+# `.omegasllib`. The library file is deployed alongside the executable and
+# loaded once at engine init by `OmegaGraphicsEngine::loadShaderLibrary`.
+# Building the lib is gated on the `omegaslc` tool, so the dependency edge
+# `OmegaWTK_Composition -> OmegaWTKCompositorShaderLib -> omegaslc` keeps
+# the order correct on a clean configure.
 set(OMEGAWTK_COMPOSITOR_SHADER_SRC "${OMEGAWTK_SOURCE_DIR}/src/Composition/backend/shaders/compositor.omegasl" CACHE INTERNAL "")
+set(OMEGAWTK_COMPOSITOR_SHADER_LIB "${CMAKE_CURRENT_BINARY_DIR}/compositor.omegasllib" CACHE INTERNAL "")
+add_omegasl_lib(OmegaWTKCompositorShaderLib
+                "${OMEGAWTK_COMPOSITOR_SHADER_SRC}"
+                "${OMEGAWTK_COMPOSITOR_SHADER_LIB}")
+add_dependencies(OmegaWTKCompositorShaderLib omegaslc)
+add_dependencies(OmegaWTK_Composition OmegaWTKCompositorShaderLib)
 
 # Generate a stub translation unit -- all real code lives in the submodule static libs.
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/OmegaWTK_framework_stub.cpp" "// OmegaWTK framework entry point -- submodules linked as static libraries\n")

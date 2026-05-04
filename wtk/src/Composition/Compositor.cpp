@@ -261,6 +261,7 @@ void Compositor::renderCompositeFrame(const SharedHandle<CompositionRenderTarget
     }
 
     targetContext->beginFrame(clearR,clearG,clearB,clearA);
+    targetContext->resetElementState();
 
     for(auto & slice : frame->slices){
         const float w = (std::isfinite(slice.bounds.w) && slice.bounds.w > 0.f) ? slice.bounds.w : 1.f;
@@ -269,19 +270,25 @@ void Compositor::renderCompositeFrame(const SharedHandle<CompositionRenderTarget
                                            slice.windowOffset.y,
                                            w,
                                            h);
-        for(auto & cmd : slice.commands){
-            targetContext->renderToTarget(cmd.type,(void *)&cmd.params);
+        // Phase 3: reset per-element transform/opacity at every slice
+        // boundary. Without this, a `SetTransform` / `SetOpacity` left
+        // dangling at the end of one slice's command stream silently bled
+        // into the first draws of the next slice.
+        targetContext->resetElementState();
+        if(slice.targetLayer != nullptr && slice.targetLayer->hasBlur()){
+            // Phase 2: per-layer blur. Route the slice through a scratch
+            // surface and composite the blurred result onto the swap chain.
+            targetContext->renderBlurredSlice(slice);
+        }
+        else {
+            for(auto & cmd : slice.commands){
+                targetContext->renderToTarget(cmd.type,(void *)&cmd.params);
+            }
         }
     }
 
     targetContext->endFrame();
     targetContext->clearViewportOverride();
-
-    for(auto & slice : frame->slices){
-        for(auto & effect : slice.effects){
-            targetContext->applyEffectToTarget(effect);
-        }
-    }
 
     targetContext->commit();
 }

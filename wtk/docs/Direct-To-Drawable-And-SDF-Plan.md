@@ -123,7 +123,7 @@ rasterizes both. This is correct today for vector paths.
 
 ---
 
-## Phase 1 — Always direct: retire the offscreen default path
+## Phase 1 — Always direct: retire the offscreen default path [DONE]
 
 **Goal:** `FrameRenderPass::begin` always records onto the native swap
 chain. The `effectsQueued` parameter, the `renderingToNative_` flag, and
@@ -171,7 +171,7 @@ always-just-present.
 
 ---
 
-## Phase 2 — Per-layer blur scratch
+## Phase 2 — Per-layer blur scratch [DONE]
 
 **Goal:** Move blur from a per-context queue to a per-layer property.
 Layers that have a blur effect get a scratch render target sized to the
@@ -216,18 +216,20 @@ pipeline. Dynamically positioned at layer bounds; no fullscreen quad.
 
 ---
 
-## Phase 3 — Per-object effects (drop-shadow, 3D transform, opacity)
+## Phase 3 — Per-object effects (drop-shadow, 3D transform, opacity) [DONE]
 
 These are largely already correct. This phase audits them and confirms
 no leakage from the retired offscreen path remains.
 
 ### 3.1 Audit
 
-| Effect | Current site | Action |
-|--------|--------------|--------|
+| Effect | Current site | Audit finding |
+|--------|--------------|---------------|
 | 3D transform | `VisualCommand::SetTransform` → `currentTransform`, applied per-vertex in `writeColorVertexToBuffer` / `writeTexVertexToBuffer` | Already direct. No change. |
-| Opacity | `VisualCommand::SetOpacity` → `currentOpacity`, applied per-vertex (alpha multiply) | Already direct. No change. |
-| Drop-shadow (geometric) | `VisualCommand::Shadow` case in `renderToTarget`: offset+expand the shape, fill with shadow color | Already direct. Phase 6 upgrades this to true Gaussian falloff via SDF without changing the data model. |
+| Opacity | `VisualCommand::SetOpacity` → `currentOpacity`, applied per-vertex (alpha multiply) | Direct on the color path; **was silently dropped on the textured path** (gradient brushes / bitmaps ignored opacity). Phase 3 fix: the texture vertex's trailing two floats now carry `(currentOpacity, _)` — repackaged on the GPU side as the high half of a `float4 texCoordTint` varying, and the texture/copy fragment shaders multiply the sampled alpha by it. Buffer stride is unchanged. |
+| Drop-shadow (geometric) | `VisualCommand::Shadow` case in `renderToTarget`: offset+expand the shape, fill with shadow color | Already direct. Geometry tessellates through the standard color path so transform + opacity already apply. Phase 6 upgrades this to true Gaussian falloff via SDF without changing the data model. |
+| Per-slice state leakage | `currentTransform` / `currentOpacity` persisted across slice boundaries — a `SetTransform` / `SetOpacity` left dangling at the end of one slice's command stream silently bled into the next. | Phase 3 fix: `BackendRenderTargetContext::resetElementState()` is invoked at every slice boundary in `Compositor::renderCompositeFrame` (and once at frame begin), so each slice starts from identity / opaque. |
+| Dead offscreen state (`effectQueue`, `preEffectTarget`, `effectTexture`, `effectTarget`) | Declared but no readers / writers on the live path. | Confirmed inert — Phase 4 deletes. |
 
 ### 3.2 Out of scope (this phase)
 
@@ -238,7 +240,7 @@ no leakage from the retired offscreen path remains.
 
 ---
 
-## Phase 4 — Retire dead surface area
+## Phase 4 — Retire dead surface area [DONE]
 
 After Phases 1–3, large blocks of code are unreachable. Remove them.
 

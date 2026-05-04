@@ -16,7 +16,6 @@ struct CompositeFrame {
         Composition::Rect bounds;
         Composition::Point2D windowOffset {0.f, 0.f};
         OmegaCommon::Vector<VisualCommand> commands;
-        OmegaCommon::Vector<CanvasEffect> effects;
         struct {
             float r = 0.f, g = 0.f, b = 0.f, a = 0.f;
         } background;

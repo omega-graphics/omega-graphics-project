@@ -335,8 +335,16 @@ This plan can land as four PRs of decreasing risk:
 
 1. **Swizzle on writes.** `texture-swizzle-proposal.md` deferred swizzle on UAV/storage-image writes because all three APIs are restrictive. Should the OmegaSL parser actively *reject* `swizzle=` on textures bound `out` / `inout`, or accept it and let the runtime apply only the read view? Reject is the safer default — flips silently to read-only behavior would be a footgun in compute shaders.
 
+1. Reject. Follow what each of the 3 backends do.
+
 2. **Subgroup uniform-control-flow requirement.** SPIR-V's subgroup arithmetic ops must be called from uniform control flow. HLSL is more permissive; Metal sits in between. Should Sema attempt a conservative uniform-flow check (rejecting calls inside data-dependent `if`), or leave that as a runtime-validation-layer concern? The check is hard to do precisely, and false positives would block legitimate code — recommend deferring with a doc note.
+
+Look at what each one does. I recommend a stricter uniform-flow check, and then render to each target properly.
 
 3. **Subgroup-aware threadgroup sizing.** Should `compute(x=64, ...)` warn when `x` is not a multiple of `subgroup_size()`? On AMD this is a real performance cliff, but the multiplier varies by device — making it a compile-time warning requires the runtime-compiler path. Probably belongs in a separate "OmegaSL diagnostics" pass, not this one.
 
+Compile-Time warning. Depending on the algorithim if people need a kernel that requires that exact subgroup size, we will allow it but it may only run best on certain devices.
+
 4. **Naming: `subgroup_` vs `wave_`.** OmegaSL has historically biased toward HLSL terminology (`make_float4`, `lerp`). Switching to SPIR-V's `subgroup_` for these is a deliberate departure — chosen because the documentation surface area for subgroup operations is overwhelmingly Vulkan/SPIR-V. If you'd prefer consistency over searchability, the rename to `wave_*` is a single sed-pass through this plan.
+
+Subgroup might be more accurate semantically.

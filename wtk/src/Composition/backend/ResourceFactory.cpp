@@ -50,11 +50,15 @@ namespace OmegaWTK::Composition {
         texturePool_.reset();
         bufferHeap_.reset();
         textureHeap_.reset();
+        effectProcessor_.reset();
     }
 
-    SharedHandle<BackendCanvasEffectProcessor>
-    BackendResourceFactory::createEffectProcessor(SharedHandle<OmegaGTE::GEFence> & fence){
-        return BackendCanvasEffectProcessor::Create(fence);
+    SharedHandle<BackendCanvasEffectProcessor> &
+    BackendResourceFactory::effectProcessor(){
+        if(effectProcessor_ == nullptr){
+            effectProcessor_ = BackendCanvasEffectProcessor::Create();
+        }
+        return effectProcessor_;
     }
 
     BackendResourceFactory::VisualTreeBundle
