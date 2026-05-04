@@ -1,4 +1,5 @@
 {
+    "project": "OmegaGraphics",
     "subdirs":[
         "./autom",
         "./common",
@@ -6,13 +7,36 @@
         "./wtk",
         "./aqua"
     ],
-    "rootCommands":[
+    "dependencies":[
         {
-            "type":"git_clone",
-            "url":"https://github.com/yaml/pyyaml.git",
-            "branch":"default",
-            "dest":"./utils/pyyaml"
+            "name":"android-ndk-darwin",
+            "type":"archive",
+            "url":"https://dl.google.com/android/repository/android-ndk-r25c-darwin.zip",
+            "archive_name":"android-ndk-r25c-darwin.zip",
+            "dest":"./deps/android-ndk",
+            "strip_components":1,
+            "platforms":["android"],
+            "when":{"host":["macos"]}
+        },
+        {
+            "name":"android-ndk-linux",
+            "type":"archive",
+            "url":"https://dl.google.com/android/repository/android-ndk-r25c-linux.zip",
+            "archive_name":"android-ndk-r25c-linux.zip",
+            "dest":"./deps/android-ndk",
+            "strip_components":1,
+            "platforms":["android"],
+            "when":{"host":["linux"]}
+        },
+        {
+            "name":"android-ndk-windows",
+            "type":"archive",
+            "url":"https://dl.google.com/android/repository/android-ndk-r25c-windows.zip",
+            "archive_name":"android-ndk-r25c-windows.zip",
+            "dest":"./deps/android-ndk",
+            "strip_components":1,
+            "platforms":["android"],
+            "when":{"host":["windows"]}
         }
     ]
 }
-

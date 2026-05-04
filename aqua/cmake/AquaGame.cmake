@@ -21,7 +21,51 @@ set(AQUA_SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/..)
 function(add_aqua_game)
     cmake_parse_arguments("_ARG" "" "NAME;BUNDLE_ID;BUNDLE_ICON" "SOURCES;DEPS" ${ARGN})
 
-    if(APPLE)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        # --- iOS: plain executable + Info.plist (compile-only target).
+        # A real .app/codesign pipeline mirroring add_app_bundle is a follow-up.
+        set(BUNDLE_ID ${_ARG_BUNDLE_ID})
+        set(APPNAME ${_ARG_NAME})
+        configure_file(
+            ${AQUA_SOURCE_DIR}/target/ios/Info.plist.in
+            ${CMAKE_CURRENT_BINARY_DIR}/${_ARG_NAME}_Info.plist @ONLY)
+
+        add_executable(${_ARG_NAME}
+            ${_ARG_SOURCES}
+            ${AQUA_SOURCE_DIR}/target/ios/main.mm)
+
+        set_target_properties(${_ARG_NAME} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Apps")
+
+        target_link_libraries(${_ARG_NAME} PRIVATE AQUA)
+        target_include_directories(${_ARG_NAME} PRIVATE
+            ${AQUA_SOURCE_DIR}/include)
+        target_compile_definitions(${_ARG_NAME} PRIVATE TARGET_IOS TARGET_METAL)
+        target_link_system_frameworks(${_ARG_NAME} UIKit QuartzCore Metal Foundation)
+
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
+        # --- Android: shared library + AndroidManifest.xml stub.
+        # APK packaging is a follow-up; this just produces lib<NAME>.so and a
+        # manifest a downstream Gradle/AGP project can consume.
+        set(BUNDLE_ID ${_ARG_BUNDLE_ID})
+        set(APPNAME ${_ARG_NAME})
+        configure_file(
+            ${AQUA_SOURCE_DIR}/target/android/AndroidManifest.xml.in
+            ${CMAKE_CURRENT_BINARY_DIR}/${_ARG_NAME}_AndroidManifest.xml @ONLY)
+
+        add_library(${_ARG_NAME} SHARED
+            ${_ARG_SOURCES}
+            ${AQUA_SOURCE_DIR}/target/android/main.cpp)
+
+        set_target_properties(${_ARG_NAME} PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Apps")
+
+        target_link_libraries(${_ARG_NAME} PRIVATE AQUA android log)
+        target_include_directories(${_ARG_NAME} PRIVATE
+            ${AQUA_SOURCE_DIR}/include)
+        target_compile_definitions(${_ARG_NAME} PRIVATE TARGET_ANDROID TARGET_VULKAN VULKAN_TARGET_ANDROID)
+
+    elseif(APPLE)
         # --- macOS: .app bundle with embedded frameworks ---
         set(BUNDLE_ID ${_ARG_BUNDLE_ID})
         set(APPNAME ${_ARG_NAME})

@@ -66,8 +66,7 @@
             "url": "https://sdk.lunarg.com/sdk/download/latest/linux/vulkan-sdk.tar.gz",
             "dest": "$(external_lib_path)/vulkan_sdk",
             "platforms": [
-                "linux",
-                "android"
+                "linux"
             ]
         }
     ]

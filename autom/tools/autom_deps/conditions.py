@@ -18,6 +18,15 @@ def normalize_arch() -> str:
     return aliases.get(machine, machine)
 
 
+def normalize_host() -> str:
+    name = platform.system()
+    if name == "Darwin":
+        return "macos"
+    if name == "Windows":
+        return "windows"
+    return "linux"
+
+
 def _match_platforms(item: dict, default_platform: str) -> bool:
     platforms = item.get("platforms")
     if platforms and default_platform not in platforms:
@@ -35,6 +44,10 @@ def _match_when(item: dict, default_platform: str, variables: dict[str, object],
 
     current_arch = normalize_arch()
     if "arch" in when and current_arch not in [value.lower() for value in when["arch"]]:
+        return False
+
+    current_host = normalize_host()
+    if "host" in when and current_host not in [value.lower() for value in when["host"]]:
         return False
 
     for index, path_value in enumerate(when.get("exists", [])):

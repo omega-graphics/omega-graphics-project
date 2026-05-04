@@ -201,7 +201,10 @@ add_custom_command(TARGET omega-assetc POST_BUILD
 		"$<TARGET_FILE_DIR:omega-assetc>/AssetTypes.json")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assetc/AssetTypes.json" DESTINATION bin)
 
-add_subdirectory(assetc/tests)
+# Tests run target binaries; skip them when cross-compiling.
+if(NOT CMAKE_CROSSCOMPILING)
+	add_subdirectory(assetc/tests)
+endif()
 
 # add_omega_graphics_tool("lex-test" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} "wrapgen/tests/lex-test.cpp")
 

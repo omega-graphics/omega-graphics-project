@@ -27,7 +27,7 @@ SUPPORTED_COMMAND_TYPES = {
 
 COMMON_COMMAND_KEYS = {"type", "platforms", "when"}
 SUPPORTED_PLATFORMS = {"windows", "macos", "linux", "ios", "android"}
-SUPPORTED_WHEN_KEYS = {"platform", "arch", "exists", "not_exists"}
+SUPPORTED_WHEN_KEYS = {"platform", "arch", "host", "exists", "not_exists"}
 SUPPORTED_DEPENDENCY_TYPES = {"git", "archive", "file", "tool", "local"}
 COMMON_DEPENDENCY_KEYS = {"name", "type", "platforms", "when", "exports", "version_source"}
 DEPENDENCY_TYPE_KEYS = {

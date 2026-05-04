@@ -55,3 +55,89 @@ Using `autom-clone`:
 This will fetch and sync all the dependencies within the entire project.
 
 
+Cross-Compiling for Mobile
+==========================
+
+Omega Graphics ships toolchain files in ``cmake/toolchains/`` that target
+iOS and Android. They configure the right SDK/NDK, set the system name,
+and pick sensible defaults you can override on the CMake command line.
+
+When a cross-compile build needs developer tools that run on your
+machine — ``omegaslc`` for shader compilation, ``autom`` and
+``autom-install`` for the build system itself, ``omega-wrapgen``,
+``omega-assetc``, ``omega-ebin``, and ``parse-test`` — CMake
+automatically spins up a *host-tools superbuild* under
+``<build>/_host_tools/`` and copies the resulting host binaries into
+``<build>/bin/`` so the rest of the build can use them. You don't have
+to do anything manual for this. If you see a ``_host_tools`` directory
+or an ``omega-host-tools`` ExternalProject in your build output, that's
+what's happening, and it's expected.
+
+
+iOS
+---
+
+Point CMake at ``cmake/toolchains/LLVM-IOS.cmake``:
+
+.. code-block:: bash
+
+   cmake -S . -B build/ios -G Ninja \
+       -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/LLVM-IOS.cmake \
+       -DCODE_SIGNATURE=<your Apple Developer Team ID>
+   cmake --build build/ios
+
+The toolchain understands a few options:
+
+- ``IOS_PLATFORM`` — ``device`` (default) or ``simulator``. The device
+  setting builds ``arm64`` against the ``iphoneos`` SDK. The simulator
+  setting builds ``arm64;x86_64`` against ``iphonesimulator`` so the
+  binary runs on both Apple Silicon and Intel simulators.
+- ``IOS_MINIMUM_SUPPORT_VERSION`` — minimum iOS version, defaults to
+  ``13.0``. The AQUA runtime uses ``UIScene`` APIs, so going lower is
+  not recommended.
+
+``CODE_SIGNATURE`` is required on Apple targets because the build signs
+the produced ``.framework`` and ``.app`` bundles. Pass your Apple
+Developer Team ID, or ``-`` for an ad-hoc local signature suitable for
+test builds.
+
+
+Android
+-------
+
+The Android toolchain needs the NDK. The repo's root ``AUTOMDEPS`` is
+set up to download NDK r25c into ``./deps/android-ndk/`` when the
+target is ``android``, so the easiest path is:
+
+.. code-block:: bash
+
+   ./autom/tools/autom-deps --target android
+
+The fetch is host-platform-aware: running on macOS pulls the darwin
+archive, Linux pulls linux, and Windows pulls windows. ``autom-deps``
+skips the NDK entirely on any non-Android target, so this only adds
+disk usage when you actually intend to cross-compile.
+
+Then configure and build:
+
+.. code-block:: bash
+
+   cmake -S . -B build/android -G Ninja \
+       -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/LLVM-ANDROID.cmake
+   cmake --build build/android
+
+Override the toolchain's defaults if you need to:
+
+- ``CMAKE_ANDROID_NDK`` — explicit path to an NDK install. The toolchain
+  first checks the ``autom-deps`` fetch at ``<repo>/deps/android-ndk``,
+  then falls back to the ``ANDROID_NDK``, ``ANDROID_NDK_HOME``, and
+  ``ANDROID_NDK_ROOT`` environment variables.
+- ``ANDROID_API_VERSION`` — the Android API level, defaulting to ``24``.
+- ``CMAKE_ANDROID_ARCH_ABI`` — defaulting to ``arm64-v8a``.
+
+Building for Android produces a shared library (``lib<NAME>.so``) for
+each AQUA game. Wrapping that into an APK is a separate, follow-on
+concern.
+
+
+

@@ -600,16 +600,115 @@ endfunction()
 
 
 
+# Lazily configure the host-tools superbuild. Called by add_omega_graphics_tool
+# the first time it runs in a cross-compile parent build. The superbuild
+# reconfigures the source tree without our toolchain file (so it inherits the
+# host's default compilers/RHI) and with -DOMEGA_HOST_TOOLS_ONLY=ON, which
+# scopes the host build to the libraries and tools that omegaslc / autom /
+# omega-wrapgen / ... need.
+function(omega_init_host_tools)
+	if(TARGET omega-host-tools)
+		return()
+	endif()
+	include(ExternalProject)
+	set(_HOST_TOOLS_DIR "${CMAKE_BINARY_DIR}/_host_tools")
+	# Stash the path globally so add_omega_graphics_tool can resolve binaries.
+	set(OMEGA_HOST_TOOLS_DIR "${_HOST_TOOLS_DIR}" CACHE INTERNAL "Host-tools superbuild binary dir")
+
+	set(_HOST_CMAKE_ARGS
+		"-DOMEGA_HOST_TOOLS_ONLY=ON"
+		"-DCMAKE_BUILD_TYPE=Release")
+	if(DEFINED CODE_SIGNATURE)
+		list(APPEND _HOST_CMAKE_ARGS "-DCODE_SIGNATURE=${CODE_SIGNATURE}")
+	elseif(CMAKE_HOST_APPLE)
+		# Ad-hoc signature for local-host executables.
+		list(APPEND _HOST_CMAKE_ARGS "-DCODE_SIGNATURE=-")
+	endif()
+
+	ExternalProject_Add(omega-host-tools
+		SOURCE_DIR "${CMAKE_SOURCE_DIR}"
+		BINARY_DIR "${_HOST_TOOLS_DIR}"
+		INSTALL_COMMAND ""
+		CMAKE_ARGS ${_HOST_CMAKE_ARGS}
+		BUILD_ALWAYS TRUE
+	)
+endfunction()
+
+
+# add_omega_graphics_tool — declares a developer tool executable.
+#
+# Tools always run on the developer's host machine (shader compilers, asset
+# bundlers, codegen, etc.), so when the parent build is cross-compiling,
+# we don't actually want to build the tool for the device. Instead we:
+#
+#   1. Generate a tiny shim source ("int main(void){return 0;}") and build a
+#      real executable target from it for the cross target. This preserves
+#      the full target API: callers can still `target_link_libraries`,
+#      `set_target_properties`, `add_custom_command(TARGET ... POST_BUILD)`,
+#      and resolve `$<TARGET_FILE:${_NAME}>` against this target.
+#   2. Spin up a one-time host superbuild (via omega_init_host_tools) that
+#      builds the same source tree on the host with -DOMEGA_HOST_TOOLS_ONLY=ON.
+#   3. Add a POST_BUILD step that overwrites the shim binary with the host
+#      superbuild's matching output.
+#
+# Net result: $<TARGET_FILE:${_NAME}> always points at a binary that runs on
+# the developer's host, regardless of the cross-compile target. Subsequent
+# `target_link_libraries` calls on the shim are accepted (they link into the
+# unused shim, which is harmless) and `add_custom_command(TARGET ${_NAME}
+# POST_BUILD ...)` still fires after the host binary is in place.
 function(add_omega_graphics_tool _NAME)
 	cmake_parse_arguments("_ARG" "" "" "LIBS;SOURCES" ${ARGN})
+
+	if(CMAKE_CROSSCOMPILING AND NOT OMEGA_HOST_TOOLS_ONLY)
+		omega_init_host_tools()
+
+		set(_shim_dir "${CMAKE_BINARY_DIR}/_omega_tool_shims")
+		set(_shim_src "${_shim_dir}/${_NAME}.c")
+		file(MAKE_DIRECTORY "${_shim_dir}")
+		if(NOT EXISTS "${_shim_src}")
+			file(WRITE "${_shim_src}"
+				"/* Auto-generated cross-compile shim for omega graphics tool '${_NAME}'.\n"
+				" * The real binary is produced by the host-tools superbuild and copied\n"
+				" * over this file by a POST_BUILD step in add_omega_graphics_tool. */\n"
+				"int main(void) { return 0; }\n")
+		endif()
+
+		add_executable(${_NAME} "${_shim_src}")
+		# Tools are plain CLI binaries — never wrap them in a .app/.framework
+		# bundle on Apple cross-compile targets like iOS.
+		set_target_properties(${_NAME} PROPERTIES
+			RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+			MACOSX_BUNDLE FALSE)
+		install(TARGETS ${_NAME} RUNTIME DESTINATION bin)
+		add_dependencies(${_NAME} omega-host-tools)
+		foreach(dep ${_ARG_LIBS})
+			add_dependencies(${_NAME} ${dep})
+		endforeach()
+
+		if(CMAKE_HOST_WIN32)
+			set(_host_path "${OMEGA_HOST_TOOLS_DIR}/bin/${_NAME}.exe")
+		else()
+			set(_host_path "${OMEGA_HOST_TOOLS_DIR}/bin/${_NAME}")
+		endif()
+
+		add_custom_command(TARGET ${_NAME} POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different
+				"${_host_path}" "$<TARGET_FILE:${_NAME}>"
+			COMMENT "Installing host-built ${_NAME} over cross-compile shim"
+			VERBATIM)
+		return()
+	endif()
+
 	set(_SOURCES ${_ARG_SOURCES})
 	add_executable(${_NAME} ${_SOURCES})
-	set_target_properties(${_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+	set_target_properties(${_NAME} PROPERTIES
+		RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+		MACOSX_BUNDLE FALSE)
 	install(TARGETS ${_NAME} RUNTIME DESTINATION bin)
-    foreach(dep ${_ARG_LIBS})
-        add_dependencies(${_NAME} ${dep})
-    endforeach()
-    target_link_libraries(${_NAME} PRIVATE ${_ARG_LIBS})
+	foreach(dep ${_ARG_LIBS})
+		add_dependencies(${_NAME} ${dep})
+	endforeach()
+	target_link_libraries(${_NAME} PRIVATE ${_ARG_LIBS})
 endfunction()
 
 function(add_omega_graphics_test _NAME)

@@ -29,14 +29,22 @@ omega_set_compiler(CMAKE_CXX_COMPILER CXX
 )
 
 set(CMAKE_SYSTEM_NAME iOS)
-
 set(CMAKE_IOS_INSTALL_COMBINED TRUE)
 
-if(NOT IOS_MINIMUM_SUPPORT_VERSION)
-    message(FATAL_ERROR "Must specify iOS support version in order to build for it.")
+if(NOT DEFINED IOS_MINIMUM_SUPPORT_VERSION OR "${IOS_MINIMUM_SUPPORT_VERSION}" STREQUAL "")
+    set(IOS_MINIMUM_SUPPORT_VERSION "13.0" CACHE STRING "Minimum supported iOS version" FORCE)
 endif()
-
 set(CMAKE_OSX_DEPLOYMENT_TARGET ${IOS_MINIMUM_SUPPORT_VERSION})
 
-# Every iOS device uses
-set(CMAKE_OSX_ARCHITECTURES "armv7;armv7s;arm64;x86_64")
+# IOS_PLATFORM = device | simulator. Defaults to device.
+if(NOT DEFINED IOS_PLATFORM OR "${IOS_PLATFORM}" STREQUAL "")
+    set(IOS_PLATFORM "device" CACHE STRING "iOS target: device or simulator" FORCE)
+endif()
+
+if(IOS_PLATFORM STREQUAL "simulator")
+    set(CMAKE_OSX_SYSROOT "iphonesimulator")
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
+else()
+    set(CMAKE_OSX_SYSROOT "iphoneos")
+    set(CMAKE_OSX_ARCHITECTURES "arm64")
+endif()
