@@ -348,6 +348,12 @@ This is the headline correctness benefit and warrants a dedicated check.
 
 ## Phase 6 — SDF rasterization for simple primitives
 
+**Status:** Phase 6.1, 6.2, 6.3, 6.5, and 6.8 landed in the SDF spine
+commit. Remaining sub-phases — 6.4 (vector-path edge-distance AA),
+6.6 (bitmap quad / sampler / tint / source-rect / nine-slice), 6.7
+(MSDF text), and 6.9 (post-merge visual / perf verification) — are
+follow-ups.
+
 **Goal:** Rect, rounded rect, ellipse, and shadow stop tessellating. Each
 becomes a 6-vertex quad covering the primitive's expanded bounds; a
 single SDF fragment shader evaluates the signed distance and `smoothstep`s
@@ -360,7 +366,7 @@ cheaper to land *after* the always-direct refactor because there is one
 render path to retarget instead of two, and one pixel format to author
 shaders for instead of negotiating between offscreen and swap chain.
 
-### 6.1 SDF shader library
+### 6.1 SDF shader library [DONE]
 
 | File | Change |
 |------|--------|
@@ -379,7 +385,7 @@ The closed-form SDFs are standard:
   This subsumes the current geometric drop-shadow's offset+expand
   behavior and *adds* real blur without an offscreen pass.
 
-### 6.2 Pipeline registry
+### 6.2 Pipeline registry [DONE]
 
 | File | Change |
 |------|--------|
@@ -387,7 +393,7 @@ The closed-form SDFs are standard:
 | `wtk/src/Composition/backend/Pipeline.cpp` `initialize` | Compile `sdf.omegasl` alongside `compositor.omegasl` (or merge the file). Construct the SDF render pipeline state with the same `colorPixelFormats` as the swap chain (resolved per platform; on Phase 1 always-direct, this is the swap chain's native format). Vertex layout: position (`float4`), shape-local coord (`float2`), shape params (`float4` × N depending on which shape uses the most params; pad unused). |
 | `wtk/src/Composition/backend/Pipeline.cpp` `shutdown` | `sdf_.reset();`. |
 
-### 6.3 Replace the simple-primitive paths in `renderToTarget`
+### 6.3 Replace the simple-primitive paths in `renderToTarget` [DONE]
 
 | `VisualCommand::Type` | Before | After |
 |-----------------------|--------|-------|
@@ -450,7 +456,7 @@ rasterizes both. **Don't change this contract.**
 
 [rt-vp-2]: ../src/Composition/backend/RenderTarget.cpp
 
-### 6.5 Stop emitting separate border visuals from `Canvas`
+### 6.5 Stop emitting separate border visuals from `Canvas` [DONE]
 
 This is the Canvas-API-side change that pairs with the SDF stroke band.
 
@@ -614,7 +620,7 @@ mostly bitmap-only fonts and color emoji fonts), the existing
 has extractable outlines and chooses MSDF or bitmap accordingly. The
 two paths are mutually exclusive per font; nothing else changes.
 
-### 6.8 Tessellation engine context lifecycle
+### 6.8 Tessellation engine context lifecycle [DONE]
 
 Once Phase 6 lands, only `VisualCommand::VectorPath` calls
 `textures_.tessellationContext()` (or whatever its post-Phase-4 home is).

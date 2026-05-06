@@ -91,33 +91,26 @@ Layer & Canvas::getCorrespondingLayer(){
 // };
 
 void Canvas::drawRect(Composition::Rect &rect, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border){
-    current->currentVisuals.emplace_back(rect,brush,Core::Optional<Border>{});
-    if(border.has_value()){
-        auto frame = RectFrame(rect, border->width);
-        auto borderBrush = border->brush;
-        frame->setPathBrush(borderBrush);
-        drawPath(*frame);
-    }
+    // Phase 6.5: forward the optional border directly into the visual
+    // command. The SDF fragment shader emits fill coverage and stroke
+    // coverage from the same distance evaluation, so a bordered rect
+    // produces exactly one VisualCommand and one draw call. No
+    // RectFrame fall-back is emitted for borders any more — the
+    // standalone outline helper remains in `Path.h` for clients that
+    // want a stand-alone outline visual.
+    current->currentVisuals.emplace_back(rect,brush,border);
 };
 
 void Canvas::drawRoundedRect(Composition::RoundedRect &rect, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border){
-    current->currentVisuals.emplace_back(rect,brush,Core::Optional<Border>{});
-    if(border.has_value()){
-        auto frame = RoundedRectFrame(rect, border->width);
-        auto borderBrush = border->brush;
-        frame->setPathBrush(borderBrush);
-        drawPath(*frame);
-    }
+    // Phase 6.5: forward the optional border directly into the visual
+    // command. See drawRect for rationale.
+    current->currentVisuals.emplace_back(rect,brush,border);
 }
 
 void Canvas::drawEllipse(Composition::Ellipse &ellipse, Core::SharedPtr<Brush> &brush, Core::Optional<Border> border){
-    current->currentVisuals.emplace_back(ellipse,brush,Core::Optional<Border>{});
-    if(border.has_value()){
-        auto frame = EllipseFrame(ellipse, border->width);
-        auto borderBrush = border->brush;
-        frame->setPathBrush(borderBrush);
-        drawPath(*frame);
-    }
+    // Phase 6.5: forward the optional border directly into the visual
+    // command. See drawRect for rationale.
+    current->currentVisuals.emplace_back(ellipse,brush,border);
 }
 
 void Canvas::drawText(const UniString &text,

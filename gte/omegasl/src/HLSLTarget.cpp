@@ -387,13 +387,30 @@ namespace omegasl {
     void HLSLTarget::emitStructDecl(CodeGen &cg, ast::StructDecl *_decl) {
         std::ostringstream out;
         out << "struct " << _decl->name << "{" << std::endl;
+        /// HLSL semantics must be unique within a struct, so successive bare
+        /// `Color` / `TexCoord` varyings auto-index per struct: COLOR0,
+        /// COLOR1, ... and TEXCOORD0, TEXCOORD1, ... This matches MSL/GLSL,
+        /// which both already permit multiple. `Color(N)` is fragment-output
+        /// (SV_TargetN) and is unaffected. The struct text is cached in
+        /// `generatedStructs` and reused on both producer and consumer
+        /// sides, so vertex-out and fragment-in see identical indices.
+        unsigned bareColorIdx = 0;
+        unsigned bareTexCoordIdx = 0;
         for (auto &f : _decl->fields) {
             out << "    " << std::flush;
             cg.writeTypeExpr(f.typeExpr, out);
             out << " " << f.name;
             if (f.attributeName.has_value()) {
                 out << ":";
-                writeAttribute(f.attributeName.value(), f.attributeIndex, out);
+                if (f.attributeName.value() == ATTRIBUTE_COLOR
+                    && !f.attributeIndex.has_value()) {
+                    out << "COLOR" << bareColorIdx++;
+                } else if (f.attributeName.value() == ATTRIBUTE_TEXCOORD
+                           && !f.attributeIndex.has_value()) {
+                    out << "TEXCOORD" << bareTexCoordIdx++;
+                } else {
+                    writeAttribute(f.attributeName.value(), f.attributeIndex, out);
+                }
             }
             out << ";" << std::endl;
         }
@@ -648,15 +665,18 @@ namespace omegasl {
             out << "SV_Position";
         } else if (attributeName == ATTRIBUTE_COLOR) {
             /// Indexed `Color(N)` is a fragment-output semantic and maps to
-            /// `SV_TargetN`. Bare `Color` keeps its existing user-semantic
-            /// meaning for vertex→fragment varyings.
+            /// `SV_TargetN`. Bare `Color` falls through to `COLOR0` here for
+            /// the rare entry-parameter case; struct fields are auto-indexed
+            /// per struct in `emitStructDecl`.
             if (attributeIndex.has_value()) {
                 out << "SV_Target" << attributeIndex.value();
             } else {
-                out << "COLOR";
+                out << "COLOR0";
             }
         } else if (attributeName == ATTRIBUTE_TEXCOORD) {
-            out << "TEXCOORD";
+            /// Bare `TexCoord` on an entry parameter; struct fields are
+            /// auto-indexed in `emitStructDecl`.
+            out << "TEXCOORD0";
         } else if (attributeName == ATTRIBUTE_DEPTH) {
             out << "SV_Depth";
         } else if (attributeName == ATTRIBUTE_FRONTFACING) {

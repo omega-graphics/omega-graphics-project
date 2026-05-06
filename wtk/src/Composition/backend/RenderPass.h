@@ -52,7 +52,7 @@ namespace OmegaWTK::Composition {
         };
 
     private:
-        enum class PipelineKind : std::uint8_t { None, Color, Texture };
+        enum class PipelineKind : std::uint8_t { None, Color, Texture, Sdf };
 
         BackendRenderTargetContext & owner_;
 
@@ -111,6 +111,11 @@ namespace OmegaWTK::Composition {
 
         /// Same contract as `bindColorPipeline`, for the texture pipeline.
         void bindTexturePipeline(DrawScope & scope);
+
+        /// Same contract as `bindColorPipeline`, for the SDF pipeline
+        /// (Phase 6). Drives Rect / RoundedRect / Ellipse / Shadow
+        /// primitives via the closed-form distance fragment shader.
+        void bindSdfPipeline(DrawScope & scope);
 
         void setViewportOverride(float offsetX, float offsetY,
                                  float width, float height);

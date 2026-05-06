@@ -164,20 +164,29 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
                         static_cast<float>(backingWidth_),
                         static_cast<float>(backingHeight_),
                         renderScale_);
-    // Always-direct path: the only resource bound to the backing target
-    // dimensions is the tessellation context. Textures live on the swap
-    // chain (managed externally) or per-blurred-layer scratches (allocated
-    // on demand by `LayerBlurScratch`).
+    // Phase 6.8: tessellation context is now created lazily on first
+    // VectorPath / Bitmap / gradient-fallback draw. A frame that only
+    // touches SDF primitives never allocates one. On every rebuild we
+    // invalidate the existing context so the next consumer rebinds
+    // against the new backing dimensions.
+    tessellationContext_.reset();
+}
+
+bool BackendRenderTargetContext::ensureTessellationContext(){
+    if(tessellationContext_ != nullptr){
+        return true;
+    }
     if(renderTarget == nullptr){
-        tessellationContext_.reset();
-        return;
+        return false;
     }
     tessellationContext_ = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);
     if(tessellationContext_ == nullptr){
 #ifdef OMEGAWTK_TRACE_RENDER
         std::cout << "Failed to create tessellation context for native render target." << std::endl;
 #endif
+        return false;
     }
+    return true;
 }
 
 BackendRenderTargetContext::~BackendRenderTargetContext(){
@@ -415,6 +424,172 @@ void BackendRenderTargetContext::resetElementState() {
         }
     }
 
+    void BackendRenderTargetContext::emitSdfPrimitive(
+            float cx, float cy,
+            float halfW, float halfH,
+            float cornerRadius,
+            float widthOrBlur,
+            float kindCode,
+            OmegaGTE::FVec<4> fillColor,
+            OmegaGTE::FVec<4> strokeColor){
+        auto & pipelines = pipelineRegistry();
+        auto bufferWriter = pipelines.bufferWriter();
+        auto sdfPipeline  = pipelines.sdf();
+        if(bufferWriter == nullptr || sdfPipeline == nullptr || renderTarget == nullptr){
+            return;
+        }
+        if(!std::isfinite(cx) || !std::isfinite(cy) ||
+           !std::isfinite(halfW) || !std::isfinite(halfH) ||
+           halfW <= 0.f || halfH <= 0.f){
+            return;
+        }
+
+        const float viewportW = std::max(1.f, renderTargetSize_.w);
+        const float viewportH = std::max(1.f, renderTargetSize_.h);
+
+        // Quad covers the silhouette plus padding for AA + (half stroke
+        // width | blur). 2 logical pixels of AA margin is enough at any
+        // render scale because `fwidth(dist)` scales inversely with
+        // backing resolution.
+        const float pad = (kindCode >= 2.5f)
+                ? std::max(2.f, std::max(0.f, widthOrBlur) + 2.f)
+                : std::max(2.f, std::max(0.f, widthOrBlur) * 0.5f + 2.f);
+
+        const float lwHalf = halfW + pad;
+        const float lhHalf = halfH + pad;
+        const float minX = cx - lwHalf;
+        const float minY = cy - lhHalf;
+        const float maxX = cx + lwHalf;
+        const float maxY = cy + lhHalf;
+
+        // Vertex buffer: 6 vertices × (float4 pos, float4 local).
+        const std::size_t vertexStride = OmegaGTE::omegaSLStructStride(
+                {OMEGASL_FLOAT4, OMEGASL_FLOAT4});
+        const std::size_t vertexBytes  = vertexStride * 6;
+        SharedHandle<OmegaGTE::GEBuffer> vertexBuffer;
+        if(bufferPool() != nullptr){
+            vertexBuffer = bufferPool()->acquire(vertexBytes, vertexStride);
+        }
+        else {
+            OmegaGTE::BufferDescriptor desc {
+                    OmegaGTE::BufferDescriptor::Upload,
+                    vertexBytes,
+                    vertexStride};
+            vertexBuffer = gte.graphicsEngine->makeBuffer(desc);
+        }
+        if(vertexBuffer == nullptr){
+            return;
+        }
+
+        // Per-draw uniform buffer: shapeParams, fillColor, strokeColor,
+        // kindOpacity (16 bytes each). One acquisition per primitive;
+        // released to the pool after the frame completes via
+        // `deferredBufferReleases`.
+        const std::size_t paramsStride = OmegaGTE::omegaSLStructStride(
+                {OMEGASL_FLOAT4, OMEGASL_FLOAT4, OMEGASL_FLOAT4, OMEGASL_FLOAT4});
+        SharedHandle<OmegaGTE::GEBuffer> paramsBuffer;
+        if(bufferPool() != nullptr){
+            paramsBuffer = bufferPool()->acquire(paramsStride, paramsStride);
+        }
+        else {
+            OmegaGTE::BufferDescriptor desc {
+                    OmegaGTE::BufferDescriptor::Upload,
+                    paramsStride,
+                    paramsStride};
+            paramsBuffer = gte.graphicsEngine->makeBuffer(desc);
+        }
+        if(paramsBuffer == nullptr){
+            if(bufferPool() != nullptr && vertexBuffer){
+                bufferPool()->release(std::move(vertexBuffer), vertexBytes);
+            }
+            return;
+        }
+
+        const bool hasTransform = !(currentTransform == OmegaGTE::FMatrix<4,4>::Identity());
+
+        bufferWriter->setOutputBuffer(vertexBuffer);
+        auto writeVertex = [&](float x, float y, float lx, float ly){
+            auto pos = OmegaGTE::FVec<4>::Create();
+            pos[0][0] = (2.f * x) / viewportW - 1.f;
+            pos[1][0] = (2.f * y) / viewportH - 1.f;
+            pos[2][0] = 0.f;
+            pos[3][0] = 1.f;
+            if(hasTransform){
+                pos = currentTransform * pos;
+            }
+            auto local = OmegaGTE::FVec<4>::Create();
+            local[0][0] = lx;
+            local[1][0] = ly;
+            local[2][0] = 0.f;
+            local[3][0] = 0.f;
+            bufferWriter->structBegin();
+            bufferWriter->writeFloat4(pos);
+            bufferWriter->writeFloat4(local);
+            bufferWriter->structEnd();
+            bufferWriter->sendToBuffer();
+        };
+
+        // Triangle 1: (minX,minY), (maxX,minY), (minX,maxY)
+        writeVertex(minX, minY, -lwHalf, -lhHalf);
+        writeVertex(maxX, minY,  lwHalf, -lhHalf);
+        writeVertex(minX, maxY, -lwHalf,  lhHalf);
+        // Triangle 2: (maxX,minY), (maxX,maxY), (minX,maxY)
+        writeVertex(maxX, minY,  lwHalf, -lhHalf);
+        writeVertex(maxX, maxY,  lwHalf,  lhHalf);
+        writeVertex(minX, maxY, -lwHalf,  lhHalf);
+        bufferWriter->flush();
+
+        bufferWriter->setOutputBuffer(paramsBuffer);
+        auto shapeParams = OmegaGTE::FVec<4>::Create();
+        shapeParams[0][0] = halfW;
+        shapeParams[1][0] = halfH;
+        shapeParams[2][0] = std::max(0.f, cornerRadius);
+        shapeParams[3][0] = std::max(0.f, widthOrBlur);
+        auto kindOpacity = OmegaGTE::FVec<4>::Create();
+        kindOpacity[0][0] = kindCode;
+        kindOpacity[1][0] = std::clamp(currentOpacity, 0.f, 1.f);
+        kindOpacity[2][0] = 0.f;
+        kindOpacity[3][0] = 0.f;
+        bufferWriter->structBegin();
+        bufferWriter->writeFloat4(shapeParams);
+        bufferWriter->writeFloat4(fillColor);
+        bufferWriter->writeFloat4(strokeColor);
+        bufferWriter->writeFloat4(kindOpacity);
+        bufferWriter->structEnd();
+        bufferWriter->sendToBuffer();
+        bufferWriter->flush();
+
+        SharedHandle<OmegaGTE::GEFence> noFence;
+        auto scope = frameRenderPass_.beginDraw(noFence);
+        if(scope.cb == nullptr){
+            if(bufferPool() != nullptr){
+                if(vertexBuffer){
+                    bufferPool()->release(std::move(vertexBuffer), vertexBytes);
+                }
+                if(paramsBuffer){
+                    bufferPool()->release(std::move(paramsBuffer), paramsStride);
+                }
+            }
+            return;
+        }
+        auto & cb = scope.cb;
+
+        frameRenderPass_.bindSdfPipeline(scope);
+        cb->bindResourceAtVertexShader(vertexBuffer, 6);
+        cb->bindResourceAtFragmentShader(paramsBuffer, 7);
+        cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
+        frameRenderPass_.endDraw(scope);
+
+        if(bufferPool() != nullptr){
+            if(vertexBuffer){
+                deferredBufferReleases.push_back({std::move(vertexBuffer), vertexBytes});
+            }
+            if(paramsBuffer){
+                deferredBufferReleases.push_back({std::move(paramsBuffer), paramsStride});
+            }
+        }
+    }
+
     void BackendRenderTargetContext::renderBlurredSlice(
             const CompositeFrame::WidgetSlice & slice){
         if(slice.targetLayer == nullptr || !slice.targetLayer->hasBlur()){
@@ -574,7 +749,13 @@ void BackendRenderTargetContext::resetElementState() {
         auto bufferWriter = pipelines.bufferWriter();
         auto renderPipelineState = pipelines.color();
         auto textureRenderPipelineState = pipelines.texture();
-        if(bufferWriter == nullptr || renderTarget == nullptr || tessellationContext_ == nullptr){
+        // Phase 6.8: tessellationContext_ is no longer required at this
+        // gate. SDF primitives (Rect/RoundedRect/Ellipse/Shadow with
+        // color brush) and per-element state ops (SetTransform /
+        // SetOpacity) don't touch the triangulator. Cases that do
+        // (gradient fills, Bitmap, VectorPath) lazily acquire it via
+        // `ensureTessellationContext()`.
+        if(bufferWriter == nullptr || renderTarget == nullptr){
             return;
         }
         OmegaGTE::TETriangulationResult result;
@@ -611,29 +792,53 @@ void BackendRenderTargetContext::resetElementState() {
             case VisualCommand::Rect : {
                 auto & _params = ((VisualCommandParams*)params)->rectParams;
                 if (_params.brush == nullptr) return;
+                if (_params.brush->type == Brush::Type::None) return;
+
+                // Phase 6.3: color brushes go through the SDF pipeline
+                // along with their (optional) color border. Gradient
+                // brushes keep the existing tessellation+texture path.
+                if (_params.brush->type == Brush::Type::Color) {
+                    const float halfW = std::max(0.f, _params.rect.w) * 0.5f;
+                    const float halfH = std::max(0.f, _params.rect.h) * 0.5f;
+                    if (halfW <= 0.f || halfH <= 0.f) return;
+                    const float cx = _params.rect.pos.x + halfW;
+                    const float cy = _params.rect.pos.y + halfH;
+
+                    auto fillColor = OmegaGTE::makeColor(_params.brush->color.r,
+                                                         _params.brush->color.g,
+                                                         _params.brush->color.b,
+                                                         _params.brush->color.a);
+                    auto strokeColor = OmegaGTE::FVec<4>::Create();
+                    float strokeW = 0.f;
+                    if (_params.border.has_value() &&
+                        _params.border->brush != nullptr &&
+                        _params.border->brush->type == Brush::Type::Color) {
+                        strokeColor = OmegaGTE::makeColor(_params.border->brush->color.r,
+                                                          _params.border->brush->color.g,
+                                                          _params.border->brush->color.b,
+                                                          _params.border->brush->color.a);
+                        strokeW = static_cast<float>(_params.border->width);
+                    }
+                    emitSdfPrimitive(cx, cy, halfW, halfH,
+                                     0.f, strokeW, 0.f,
+                                     fillColor, strokeColor);
+                    return;
+                }
+
+                // Gradient brush — fall through to existing tessellation
+                // + texture pipeline path.
+                if (!ensureTessellationContext()) return;
                 auto gteRect = toGTE(_params.rect);
                 auto te_params = OmegaGTE::TETriangulationParams::Rect(gteRect);
-
-                switch (_params.brush->type) {
-                    case Brush::Type::Color:    useTextureRenderPipeline = false; break;
-                    case Brush::Type::Gradient: useTextureRenderPipeline = true;  break;
-                    case Brush::Type::None:     return;
-                }
+                useTextureRenderPipeline = true;
                 textureCoordDenomW = std::max(1.f,_params.rect.w);
                 textureCoordDenomH = std::max(1.f,_params.rect.h);
-                if(!useTextureRenderPipeline){
-                    auto color = OmegaGTE::makeColor(_params.brush->color.r,
-                                                     _params.brush->color.g,
-                                                     _params.brush->color.b,
-                                                     _params.brush->color.a);
-                    te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(color));
-                }
-
                 result = tessellationContext_->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
 
                 break;
             }
             case VisualCommand::Bitmap : {
+                if (!ensureTessellationContext()) return;
                 auto & _params = ((VisualCommandParams*)params)->bitmapParams;
                 auto gteBmpRect = toGTE(_params.rect);
                 auto te_params = OmegaGTE::TETriangulationParams::Rect(gteBmpRect);
@@ -666,24 +871,46 @@ void BackendRenderTargetContext::resetElementState() {
             case VisualCommand::RoundedRect : {
                 auto & _params = ((VisualCommandParams*)params)->roundedRectParams;
                 if (_params.brush == nullptr) return;
+                if (_params.brush->type == Brush::Type::None) return;
+
+                // Phase 6.3: color brushes go through SDF; gradient
+                // brushes keep the existing tessellation+texture path.
+                if (_params.brush->type == Brush::Type::Color) {
+                    const float halfW = std::max(0.f, _params.rect.w) * 0.5f;
+                    const float halfH = std::max(0.f, _params.rect.h) * 0.5f;
+                    if (halfW <= 0.f || halfH <= 0.f) return;
+                    const float cx = _params.rect.pos.x + halfW;
+                    const float cy = _params.rect.pos.y + halfH;
+                    const float cornerR = std::max(0.f, std::min(_params.rect.rad_x,
+                                                                  std::min(halfW, halfH)));
+
+                    auto fillColor = OmegaGTE::makeColor(_params.brush->color.r,
+                                                         _params.brush->color.g,
+                                                         _params.brush->color.b,
+                                                         _params.brush->color.a);
+                    auto strokeColor = OmegaGTE::FVec<4>::Create();
+                    float strokeW = 0.f;
+                    if (_params.border.has_value() &&
+                        _params.border->brush != nullptr &&
+                        _params.border->brush->type == Brush::Type::Color) {
+                        strokeColor = OmegaGTE::makeColor(_params.border->brush->color.r,
+                                                          _params.border->brush->color.g,
+                                                          _params.border->brush->color.b,
+                                                          _params.border->brush->color.a);
+                        strokeW = static_cast<float>(_params.border->width);
+                    }
+                    emitSdfPrimitive(cx, cy, halfW, halfH,
+                                     cornerR, strokeW, 1.f,
+                                     fillColor, strokeColor);
+                    return;
+                }
+
+                if (!ensureTessellationContext()) return;
                 auto gteRR = toGTE(_params.rect);
                 auto te_params = OmegaGTE::TETriangulationParams::RoundedRect(gteRR);
-
-                switch (_params.brush->type) {
-                    case Brush::Type::Color:    useTextureRenderPipeline = false; break;
-                    case Brush::Type::Gradient: useTextureRenderPipeline = true;  break;
-                    case Brush::Type::None:     return;
-                }
+                useTextureRenderPipeline = true;
                 textureCoordDenomW = std::max(1.f,_params.rect.w);
                 textureCoordDenomH = std::max(1.f,_params.rect.h);
-
-                if(!useTextureRenderPipeline){
-                    auto color = OmegaGTE::makeColor(_params.brush->color.r,
-                                                     _params.brush->color.g,
-                                                     _params.brush->color.b,
-                                                     _params.brush->color.a);
-                    te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(color));
-                }
                 result = tessellationContext_->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
 
                 break;
@@ -698,62 +925,46 @@ void BackendRenderTargetContext::resetElementState() {
                     return;
                 }
 
-                auto color = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
+                // Phase 6.3: ellipse always uses the SDF pipeline.
+                // The previous CPU triangle-fan path (up to 4096 tris)
+                // is retired for color brushes; gradient ellipses fall
+                // back to the same SDF here today (gradient sampling
+                // inside the SDF shader is a follow-up).
+                auto fillColor = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
                 if(_params.brush != nullptr && _params.brush->type == Brush::Type::Color){
-                    color = OmegaGTE::makeColor(_params.brush->color.r,
-                                                _params.brush->color.g,
-                                                _params.brush->color.b,
-                                                _params.brush->color.a);
+                    fillColor = OmegaGTE::makeColor(_params.brush->color.r,
+                                                    _params.brush->color.g,
+                                                    _params.brush->color.b,
+                                                    _params.brush->color.a);
                 }
-                if(color[0][0] == 0.f && color[1][0] == 0.f && color[2][0] == 0.f && color[3][0] == 0.f)
-                    color = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
-
-                auto toNdcPoint = [&](float px,float py){
-                    return OmegaGTE::GPoint3D{
-                            ((2.0f * px) / viewPort.width) - 1.0f,
-                            ((2.0f * py) / viewPort.height) - 1.0f,
-                            0.0f};
-                };
-
-                OmegaGTE::TETriangulationResult::TEMesh mesh {OmegaGTE::TETriangulationResult::TEMesh::TopologyTriangle};
-                const auto center = toNdcPoint(cx,cy);
-
-                const float twoPi = static_cast<float>(2.0 * OmegaGTE::PI);
-                const unsigned segmentCount = std::min(4096u, std::max(
-                        96u,
-                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * renderScale_))));
-                auto prev = toNdcPoint(cx + rx,cy);
-
-                for(unsigned i = 1; i <= segmentCount; i++){
-                    const float angle = (twoPi * static_cast<float>(i)) / static_cast<float>(segmentCount);
-                    const float px = cx + (std::cos(angle) * rx);
-                    const float py = cy + (std::sin(angle) * ry);
-                    auto next = toNdcPoint(px,py);
-
-                    OmegaGTE::TETriangulationResult::TEMesh::Polygon tri {};
-                    tri.a.pt = center;
-                    tri.b.pt = prev;
-                    tri.c.pt = next;
-                    tri.a.attachment = tri.b.attachment = tri.c.attachment =
-                            std::make_optional<OmegaGTE::TETriangulationResult::AttachmentData>(
-                                    OmegaGTE::TETriangulationResult::AttachmentData{
-                                            color,
-                                            OmegaGTE::FVec<2>::Create(),
-                                            OmegaGTE::FVec<3>::Create()});
-
-                    mesh.vertexPolygons.push_back(tri);
-                    prev = next;
+                if(fillColor[0][0] == 0.f && fillColor[1][0] == 0.f &&
+                   fillColor[2][0] == 0.f && fillColor[3][0] == 0.f){
+                    fillColor = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
                 }
 
-                result.meshes.push_back(mesh);
+                auto strokeColor = OmegaGTE::FVec<4>::Create();
+                float strokeW = 0.f;
+                if (_params.border.has_value() &&
+                    _params.border->brush != nullptr &&
+                    _params.border->brush->type == Brush::Type::Color) {
+                    strokeColor = OmegaGTE::makeColor(_params.border->brush->color.r,
+                                                      _params.border->brush->color.g,
+                                                      _params.border->brush->color.b,
+                                                      _params.border->brush->color.a);
+                    strokeW = static_cast<float>(_params.border->width);
+                }
 
-                break;
+                emitSdfPrimitive(cx, cy, rx, ry,
+                                 0.f, strokeW, 2.f,
+                                 fillColor, strokeColor);
+                return;
             }
             case VisualCommand::VectorPath : {
                 auto & _params = ((VisualCommandParams*)params)->pathParams;
                 if(_params.path == nullptr || _params.path->size() < 2){
                     return;
                 }
+                if (!ensureTessellationContext()) return;
                 auto te_params = OmegaGTE::TETriangulationParams::GraphicsPath2D(*_params.path,
                                                                                  _params.strokeWidth,
                                                                                  _params.contour,
@@ -786,77 +997,33 @@ void BackendRenderTargetContext::resetElementState() {
                 auto & _params = ((VisualCommandParams*)params)->shadowParams;
                 const auto & shadow = _params.shadow;
 
-                // Offset and expand the shape rect by blurAmount.
-                float expand = std::max(0.f,shadow.blurAmount);
-                Composition::Rect shadowRect {
-                    Composition::Point2D{
-                        _params.shapeRect.pos.x + shadow.x_offset - expand,
-                        _params.shapeRect.pos.y + shadow.y_offset - expand
-                    },
-                    std::max(1.f,_params.shapeRect.w + expand * 2.f),
-                    std::max(1.f,_params.shapeRect.h + expand * 2.f)
-                };
+                // Phase 6.3: shadow uses the SDF pipeline with a soft
+                // falloff over `[-blur, +blur]` around the silhouette of
+                // the (offset) underlying shape. Replaces the prior
+                // offset+expand+tessellate path with a single 6-vertex
+                // quad and a closed-form distance function.
+                const float halfW = std::max(0.f, _params.shapeRect.w) * 0.5f;
+                const float halfH = std::max(0.f, _params.shapeRect.h) * 0.5f;
+                if(halfW <= 0.f || halfH <= 0.f) return;
+                const float cx = _params.shapeRect.pos.x + halfW + shadow.x_offset;
+                const float cy = _params.shapeRect.pos.y + halfH + shadow.y_offset;
+                const float blur = std::max(0.f, shadow.blurAmount);
+                const float cornerR = std::max(0.f, std::min(_params.cornerRadius,
+                                                              std::min(halfW, halfH)));
 
                 auto shadowColor = OmegaGTE::makeColor(shadow.color.r,
-                                                         shadow.color.g,
-                                                         shadow.color.b,
-                                                         shadow.color.a * shadow.opacity);
+                                                       shadow.color.g,
+                                                       shadow.color.b,
+                                                       shadow.color.a * shadow.opacity);
+                auto noStroke = OmegaGTE::FVec<4>::Create();
 
-                if(_params.isEllipse){
-                    // Tessellate as ellipse.
-                    float cx = shadowRect.pos.x + shadowRect.w * 0.5f;
-                    float cy = shadowRect.pos.y + shadowRect.h * 0.5f;
-                    float rx = shadowRect.w * 0.5f;
-                    float ry = shadowRect.h * 0.5f;
-
-                    auto toNdcPoint = [&](float px,float py){
-                        return OmegaGTE::GPoint3D{
-                                ((2.0f * px) / viewPort.width) - 1.0f,
-                                ((2.0f * py) / viewPort.height) - 1.0f,
-                                0.0f};
-                    };
-
-                    OmegaGTE::TETriangulationResult::TEMesh mesh {OmegaGTE::TETriangulationResult::TEMesh::TopologyTriangle};
-                    const auto center = toNdcPoint(cx,cy);
-                    const unsigned segCount = std::min(4096u,std::max(96u,
-                        static_cast<unsigned>(std::ceil(std::max(rx,ry) * renderScale_))));
-                    auto prev = toNdcPoint(cx + rx,cy);
-                    const float twoPi = static_cast<float>(2.0 * OmegaGTE::PI);
-
-                    for(unsigned i = 1; i <= segCount; i++){
-                        const float angle = (twoPi * static_cast<float>(i)) / static_cast<float>(segCount);
-                        auto next = toNdcPoint(cx + std::cos(angle) * rx,cy + std::sin(angle) * ry);
-
-                        OmegaGTE::TETriangulationResult::TEMesh::Polygon tri {};
-                        tri.a.pt = center; tri.b.pt = prev; tri.c.pt = next;
-                        tri.a.attachment = tri.b.attachment = tri.c.attachment =
-                            std::make_optional<OmegaGTE::TETriangulationResult::AttachmentData>(
-                                OmegaGTE::TETriangulationResult::AttachmentData{
-                                    shadowColor,OmegaGTE::FVec<2>::Create(),OmegaGTE::FVec<3>::Create()});
-                        mesh.vertexPolygons.push_back(tri);
-                        prev = next;
-                    }
-                    result.meshes.push_back(mesh);
-                }
-                else if(_params.cornerRadius > 0.f){
-                    Composition::RoundedRect rr {};
-                    rr.pos = shadowRect.pos;
-                    rr.w = shadowRect.w;
-                    rr.h = shadowRect.h;
-                    rr.rad_x = std::min(_params.cornerRadius + expand,shadowRect.w * 0.5f);
-                    rr.rad_y = rr.rad_x;
-                    auto gteRR_s = toGTE(rr);
-                    auto te_params = OmegaGTE::TETriangulationParams::RoundedRect(gteRR_s);
-                    te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(shadowColor));
-                    result = tessellationContext_->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
-                }
-                else {
-                    auto gteShadowRect = toGTE(shadowRect);
-                    auto te_params = OmegaGTE::TETriangulationParams::Rect(gteShadowRect);
-                    te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(shadowColor));
-                    result = tessellationContext_->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
-                }
-                break;
+                // Kind 3 = shadow with rect / rounded-rect base
+                // (`cornerR > 0` selects rounded). Kind 4 = ellipse base.
+                const float kind = _params.isEllipse ? 4.f : 3.f;
+                emitSdfPrimitive(cx, cy, halfW, halfH,
+                                 cornerR, blur, kind,
+                                 shadowColor, noStroke);
+                return;
             }
             case VisualCommand::SetTransform: {
                 auto & _params = ((VisualCommandParams*)params)->transformMatrix;

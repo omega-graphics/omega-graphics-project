@@ -97,9 +97,35 @@ namespace OmegaWTK::Composition {
         /// inspection sees the rebuild boundary.
         void rebuildBackingTarget();
 
+        /// Lazily acquire the tessellation engine context bound to the
+        /// native target (Phase 6.8). Returns true on success, false if
+        /// creation failed or there is no native target. Frames that
+        /// only emit SDF primitives never call this and never allocate
+        /// a tessellation context.
+        bool ensureTessellationContext();
+
         void compositeScratchOntoFrame(LayerBlurScratch & scratch,
                                        const Composition::Rect & destBounds,
                                        const Composition::Point2D & windowOffset);
+
+        /// Emit a single SDF primitive draw call (Phase 6). The shape is
+        /// described in shape-local coordinates: `cx, cy` is the center
+        /// in logical (canvas) space; `halfW, halfH` are the half-extents
+        /// of the actual silhouette; `cornerRadius` is the corner radius
+        /// for `RoundedRect` / shadow-rounded base; `widthOrBlur` is the
+        /// stroke width for fills (centered band, 0 = no stroke) or the
+        /// blur extent for shadows. `kindCode` selects the SDF formula
+        /// (0=Rect, 1=RoundedRect, 2=Ellipse, 3=ShadowRect/RoundedRect,
+        /// 4=ShadowEllipse). Authors a 6-vertex unit-quad covering the
+        /// silhouette plus AA / stroke / blur padding, plus a small
+        /// per-draw uniform buffer carrying the flat shape parameters.
+        void emitSdfPrimitive(float cx, float cy,
+                              float halfW, float halfH,
+                              float cornerRadius,
+                              float widthOrBlur,
+                              float kindCode,
+                              OmegaGTE::FVec<4> fillColor,
+                              OmegaGTE::FVec<4> strokeColor);
     public:
         /// Open a frame-level render pass that clears to the given color.
         /// All subsequent renderToTarget() calls record into this pass.

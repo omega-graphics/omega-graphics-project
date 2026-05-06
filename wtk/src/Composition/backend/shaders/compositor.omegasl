@@ -175,3 +175,185 @@ void directionalBlur(uint3 tid : GlobalThreadID){
     uint2 coord = make_uint2(x, y);
     write(blurDstTex, coord, result);
 }
+
+/// =====================================================================
+/// SDF render pipeline (Phase 6).
+///
+/// Rect, RoundedRect, Ellipse, and Shadow primitives all draw a 6-vertex
+/// quad covering the primitive's expanded bounds (with padding for AA +
+/// half stroke width). The fragment shader evaluates the appropriate
+/// closed-form signed distance, computes fill / stroke coverage via
+/// `smoothstep` over the screen-space derivative `fwidth(dist)`, and
+/// outputs straight-alpha RGBA. No tessellation, no triangulator
+/// round-trip — one draw call per primitive.
+///
+/// Per-vertex data carries only the pre-transformed NDC position and the
+/// shape-local coordinate (origin at the shape's center). All flat
+/// per-primitive parameters (half-extents, corner radius, stroke width,
+/// fill / stroke color, kind tag, opacity) ride a small per-draw
+/// uniform buffer at slot 7. We keep varyings minimal because OmegaSL's
+/// HLSL output emits a single bare `: COLOR` and a single bare
+/// `: TEXCOORD` per struct — we have only one of each available for the
+/// vertex→fragment varying.
+///
+/// `kind` tag values:
+///   0 = Rect
+///   1 = RoundedRect
+///   2 = Ellipse
+///   3 = Shadow with rect / rounded-rect base (cornerRadius selects)
+///   4 = Shadow with ellipse base
+///
+/// For kinds 0..2 the `widthOrBlur` slot of `shapeParams` is the
+/// stroke width (centered band; 0 = no stroke). For kinds 3..4 it is the
+/// blur amount (Gaussian-ish falloff over [-blur, 0]).
+
+struct OmegaWTKSdfVertex {
+    float4 pos;
+    float4 local;
+};
+
+struct OmegaWTKSdfRasterData internal {
+    float4 pos : Position;
+    float4 local : Color;
+};
+
+struct OmegaWTKSdfDrawParams {
+    float4 shapeParams;
+    float4 fillColor;
+    float4 strokeColor;
+    float4 kindOpacity;
+};
+
+buffer<OmegaWTKSdfVertex> v_buffer_sdf : 6;
+buffer<OmegaWTKSdfDrawParams> sdfParams : 7;
+
+[in v_buffer_sdf]
+vertex OmegaWTKSdfRasterData sdfVertex(uint v_id : VertexID){
+    OmegaWTKSdfVertex v = v_buffer_sdf[v_id];
+    OmegaWTKSdfRasterData r;
+    r.pos = v.pos;
+    r.local = v.local;
+    return r;
+}
+
+float sdfRect(float2 p, float2 b){
+    float qx = abs(p[0]) - b[0];
+    float qy = abs(p[1]) - b[1];
+    float ox = max(qx, 0.0);
+    float oy = max(qy, 0.0);
+    float outsideDist = sqrt(ox * ox + oy * oy);
+    float insideDist = min(max(qx, qy), 0.0);
+    return outsideDist + insideDist;
+}
+
+float sdfRoundedRect(float2 p, float2 b, float r){
+    float qx = abs(p[0]) - b[0] + r;
+    float qy = abs(p[1]) - b[1] + r;
+    float ox = max(qx, 0.0);
+    float oy = max(qy, 0.0);
+    float outsideDist = sqrt(ox * ox + oy * oy);
+    float insideDist = min(max(qx, qy), 0.0);
+    return outsideDist + insideDist - r;
+}
+
+/// Cheap ellipse SDF: implicit-equation residual scaled by the smaller
+/// radius. Exact at the silhouette (where AA matters), gradient
+/// magnitude is uniform enough for AA bandwidth, and avoids the 4-step
+/// Newton iteration that the exact ellipse SDF requires. Adequate for
+/// typical UI ellipses; aspect ratios beyond ~10:1 may show slight
+/// thickness variance. The Phase 6 risks list flags this trade-off.
+float sdfEllipse(float2 p, float2 r){
+    float rx = max(r[0], 0.0001);
+    float ry = max(r[1], 0.0001);
+    float qx = p[0] / rx;
+    float qy = p[1] / ry;
+    float k = sqrt(qx * qx + qy * qy);
+    float minR = min(rx, ry);
+    return (k - 1.0) * minR;
+}
+
+[in sdfParams]
+fragment float4 sdfFragment(OmegaWTKSdfRasterData raster){
+    float lx = raster.local[0];
+    float ly = raster.local[1];
+    float2 p = float2(lx, ly);
+
+    float halfW = sdfParams[0].shapeParams[0];
+    float halfH = sdfParams[0].shapeParams[1];
+    float cornerR = sdfParams[0].shapeParams[2];
+    float widthOrBlur = sdfParams[0].shapeParams[3];
+    float2 b = float2(halfW, halfH);
+
+    float kind = sdfParams[0].kindOpacity[0];
+    float opacity = sdfParams[0].kindOpacity[1];
+
+    float dist = 0.0;
+    if(kind < 0.5){
+        dist = sdfRect(p, b);
+    }
+    else if(kind < 1.5){
+        dist = sdfRoundedRect(p, b, cornerR);
+    }
+    else if(kind < 2.5){
+        dist = sdfEllipse(p, b);
+    }
+    else if(kind < 3.5){
+        if(cornerR > 0.0){
+            dist = sdfRoundedRect(p, b, cornerR);
+        }
+        else {
+            dist = sdfRect(p, b);
+        }
+    }
+    else {
+        dist = sdfEllipse(p, b);
+    }
+
+    float aa = max(fwidth(dist), 0.0001);
+
+    float4 result = float4(0.0, 0.0, 0.0, 0.0);
+
+    if(kind >= 2.5){
+        // Shadow: centered Gaussian-ish falloff around the shape's
+        // silhouette. Alpha is full inside (`dist < -blur`), half at the
+        // silhouette (`dist = 0`), and zero beyond (`dist > +blur`). The
+        // CPU side positions the shape at `shapeRect + (offset_x,
+        // offset_y)` and pads the quad by `blur` so the falloff band is
+        // not clipped. When `blur = 0` the falloff collapses to a sharp
+        // edge with sub-pixel AA, matching the prior geometric drop
+        // shadow's behavior at its extremes.
+        float blur = max(widthOrBlur, aa);
+        float shadowCov = 1.0 - smoothstep(0.0 - blur, blur, dist);
+        result[0] = sdfParams[0].fillColor[0];
+        result[1] = sdfParams[0].fillColor[1];
+        result[2] = sdfParams[0].fillColor[2];
+        result[3] = sdfParams[0].fillColor[3] * shadowCov;
+    }
+    else {
+        float fillCov = 1.0 - smoothstep(0.0 - aa, aa, dist);
+
+        // Centered stroke: in band when |dist| < halfStroke. Matches
+        // SVG / Canvas semantics where stroke straddles the silhouette
+        // half-inside and half-outside the path.
+        float halfStroke = widthOrBlur * 0.5;
+        float strokeBand = abs(dist) - halfStroke;
+        float strokeMask = 0.0;
+        if(widthOrBlur > 0.0){
+            strokeMask = 1.0 - smoothstep(0.0 - aa, aa, strokeBand);
+        }
+
+        float r = lerp(sdfParams[0].fillColor[0], sdfParams[0].strokeColor[0], strokeMask);
+        float g = lerp(sdfParams[0].fillColor[1], sdfParams[0].strokeColor[1], strokeMask);
+        float bc = lerp(sdfParams[0].fillColor[2], sdfParams[0].strokeColor[2], strokeMask);
+        float aFill = sdfParams[0].fillColor[3] * fillCov * (1.0 - strokeMask);
+        float aStroke = sdfParams[0].strokeColor[3] * strokeMask;
+        float a = max(aFill, aStroke);
+        result[0] = r;
+        result[1] = g;
+        result[2] = bc;
+        result[3] = a;
+    }
+
+    result[3] = result[3] * opacity;
+    return result;
+}

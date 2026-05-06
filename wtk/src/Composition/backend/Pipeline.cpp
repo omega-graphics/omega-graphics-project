@@ -67,6 +67,7 @@ namespace OmegaWTK::Composition {
         shaderLibrary_.reset();
         color_.reset();
         texture_.reset();
+        sdf_.reset();
         linearGradient_.reset();
         gaussianBlurH_.reset();
         gaussianBlurV_.reset();
@@ -153,6 +154,45 @@ namespace OmegaWTK::Composition {
             texture_.reset();
             std::cout << "Texture render pipeline is unavailable." << std::endl;
         }
+
+        // SDF render pipeline (Phase 6). Drives Rect / RoundedRect /
+        // Ellipse / Shadow primitives via the closed-form distance shader
+        // in compositor.omegasl. The SDF rasterizes the primitive's full
+        // bounding quad (including AA / stroke / blur padding) and the
+        // fragment shader computes per-pixel coverage analytically; we
+        // need alpha-over blending enabled so that pixels outside the
+        // analytic silhouette (`a == 0`) preserve the destination instead
+        // of overwriting it with the unweighted fill / stroke RGB. The
+        // color and texture pipelines don't need blending because they
+        // rely on tessellation for tight geometry coverage.
+        OmegaGTE::BlendDescriptor sdfBlend {};
+        sdfBlend.blendEnabled    = true;
+        sdfBlend.srcColorFactor  = OmegaGTE::BlendFactor::SrcAlpha;
+        sdfBlend.destColorFactor = OmegaGTE::BlendFactor::InvSrcAlpha;
+        sdfBlend.colorOp         = OmegaGTE::BlendOperation::Add;
+        sdfBlend.srcAlphaFactor  = OmegaGTE::BlendFactor::One;
+        sdfBlend.destAlphaFactor = OmegaGTE::BlendFactor::InvSrcAlpha;
+        sdfBlend.alphaOp         = OmegaGTE::BlendOperation::Add;
+        sdfBlend.writeMask       = OmegaGTE::ColorWriteAll;
+        renderPipelineDescriptor.colorBlendDescriptors = { sdfBlend };
+
+        renderPipelineDescriptor.vertexFunc = getShader("sdfVertex");
+        renderPipelineDescriptor.fragmentFunc = getShader("sdfFragment");
+        if(renderPipelineDescriptor.vertexFunc != nullptr && renderPipelineDescriptor.fragmentFunc != nullptr){
+            sdf_ = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
+            if(sdf_ == nullptr){
+                std::cout << "SDF render pipeline creation failed." << std::endl;
+            }
+        }
+        else {
+            sdf_.reset();
+            std::cout << "SDF render pipeline is unavailable." << std::endl;
+        }
+
+        // Reset blend state for any subsequently-created pipelines in
+        // this initialize() pass so they keep the existing opaque-write
+        // contract.
+        renderPipelineDescriptor.colorBlendDescriptors.clear();
 
         // Blur compute pipelines.
         auto blurHFunc = getShader("gaussianBlurH");

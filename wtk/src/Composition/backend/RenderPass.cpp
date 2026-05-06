@@ -164,6 +164,14 @@ namespace OmegaWTK::Composition {
         }
     }
 
+    void FrameRenderPass::bindSdfPipeline(DrawScope & scope){
+        if(lastPipelineKind_ != PipelineKind::Sdf){
+            auto pipeline = pipelineRegistry().sdf();
+            scope.cb->setRenderPipelineState(pipeline);
+            lastPipelineKind_ = PipelineKind::Sdf;
+        }
+    }
+
     void FrameRenderPass::setViewportOverride(float offsetX, float offsetY,
                                               float width, float height){
         viewportOverride_.active   = true;

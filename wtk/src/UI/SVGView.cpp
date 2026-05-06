@@ -551,48 +551,69 @@ void SVGView::renderNow() {
 
         switch (op.type) {
         case SVGDrawOp::Type::Rect: {
-            if (hasFill) {
-                auto brush = makeFillBrush();
-                svgCanvas->drawRect(op.rectGeom, brush);
-            }
+            // Phase 6.5: route fill+stroke through a single SDF draw call
+            // by passing the stroke as a `Border`. Replaces the prior
+            // `drawRect` + `RoundedRectFrame`+`drawPath` pair, which
+            // produced rectangular stroke geometry on rounded shapes due
+            // to a triangulator quirk on arc-heavy stroked paths.
+            Core::Optional<Composition::Border> border;
             if (hasStroke) {
                 Composition::Color sc = op.strokeColor;
                 sc.a = op.strokeOpacity;
                 auto strokeBrush = Composition::ColorBrush(sc);
-                Composition::RoundedRect rr{op.rectGeom.pos, op.rectGeom.w, op.rectGeom.h, 0.f, 0.f};
-                auto frame = Composition::RoundedRectFrame(rr, static_cast<unsigned>(op.strokeWidth));
-                frame->setPathBrush(strokeBrush);
-                svgCanvas->drawPath(*frame);
+                border = Composition::Border{strokeBrush,
+                        static_cast<unsigned>(op.strokeWidth)};
+            }
+            if (hasFill) {
+                auto brush = makeFillBrush();
+                svgCanvas->drawRect(op.rectGeom, brush, border);
+            }
+            else if (hasStroke) {
+                // Stroke-only: pass a transparent fill so the SDF draw
+                // emits the stroke band but leaves the interior untouched.
+                Composition::Color transparent {0.f, 0.f, 0.f, 0.f};
+                auto fillBrush = Composition::ColorBrush(transparent);
+                svgCanvas->drawRect(op.rectGeom, fillBrush, border);
             }
             break;
         }
         case SVGDrawOp::Type::RoundedRect: {
-            if (hasFill) {
-                auto brush = makeFillBrush();
-                svgCanvas->drawRoundedRect(op.roundedRectGeom, brush);
-            }
+            Core::Optional<Composition::Border> border;
             if (hasStroke) {
                 Composition::Color sc = op.strokeColor;
                 sc.a = op.strokeOpacity;
                 auto strokeBrush = Composition::ColorBrush(sc);
-                auto frame = Composition::RoundedRectFrame(op.roundedRectGeom, static_cast<unsigned>(op.strokeWidth));
-                frame->setPathBrush(strokeBrush);
-                svgCanvas->drawPath(*frame);
+                border = Composition::Border{strokeBrush,
+                        static_cast<unsigned>(op.strokeWidth)};
+            }
+            if (hasFill) {
+                auto brush = makeFillBrush();
+                svgCanvas->drawRoundedRect(op.roundedRectGeom, brush, border);
+            }
+            else if (hasStroke) {
+                Composition::Color transparent {0.f, 0.f, 0.f, 0.f};
+                auto fillBrush = Composition::ColorBrush(transparent);
+                svgCanvas->drawRoundedRect(op.roundedRectGeom, fillBrush, border);
             }
             break;
         }
         case SVGDrawOp::Type::Ellipse: {
-            if (hasFill) {
-                auto brush = makeFillBrush();
-                svgCanvas->drawEllipse(op.ellipseGeom, brush);
-            }
+            Core::Optional<Composition::Border> border;
             if (hasStroke) {
                 Composition::Color sc = op.strokeColor;
                 sc.a = op.strokeOpacity;
                 auto strokeBrush = Composition::ColorBrush(sc);
-                auto frame = Composition::EllipseFrame(op.ellipseGeom, static_cast<unsigned>(op.strokeWidth));
-                frame->setPathBrush(strokeBrush);
-                svgCanvas->drawPath(*frame);
+                border = Composition::Border{strokeBrush,
+                        static_cast<unsigned>(op.strokeWidth)};
+            }
+            if (hasFill) {
+                auto brush = makeFillBrush();
+                svgCanvas->drawEllipse(op.ellipseGeom, brush, border);
+            }
+            else if (hasStroke) {
+                Composition::Color transparent {0.f, 0.f, 0.f, 0.f};
+                auto fillBrush = Composition::ColorBrush(transparent);
+                svgCanvas->drawEllipse(op.ellipseGeom, fillBrush, border);
             }
             break;
         }
