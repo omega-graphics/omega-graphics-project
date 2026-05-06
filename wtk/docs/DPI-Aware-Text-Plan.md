@@ -34,9 +34,13 @@ always DIPs. `Composition::Rect` handed to `TextRect::Create` is always DIPs.
 
 ```
 Native window (HWND / NSWindow / Wayland surface)
-   │  GetDpiForWindow / backingScaleFactor / wl_output scale
+   │  NativeWindow::scaleFactor()          ← uniform API (§2.2 Native API Completion Proposal)
+   │  (backed per-platform by:
+   │     Win32  → GetDpiForWindow
+   │     macOS  → NSWindow.backingScaleFactor
+   │     Linux  → wl_output scale / wp_fractional_scale_v1 / Xft.dpi)
    ▼
-DCVisualTree / MtlVisualTree / VkVisualTree  ──► view->setRenderScale(scale)
+DCVisualTree / MtlVisualTree / VkVisualTree  ──► view->setRenderScale(nativeWindow->scaleFactor())
    │
    ▼
 Composition::ViewRenderTarget::renderScale_
@@ -53,6 +57,13 @@ Backend TextRect implementation
    • sets device-context DPI
    • rasterizes with DIP-valued inputs
 ```
+
+> **Virtual view model note:** Under the virtual view model there is exactly one `NativeItem` per
+> window. `renderScale_` is therefore a per-window quantity sourced from `NativeWindow::scaleFactor()`,
+> not a per-NativeItem value. Visual tree constructors (`DCVisualTree`, `MtlVisualTree`,
+> `VkVisualTree`) call `nativeWindow->scaleFactor()` once at creation and pass the result to
+> `view->setRenderScale()`; per-monitor DPI-change events will trigger a rebuild of the render
+> target (see Non-goals).
 
 ## Backend status
 
@@ -80,8 +91,9 @@ Backend TextRect implementation
   - Apply a scale transform on the CG context (`CGContextScaleCTM(ctx, scale,
     scale)`) or equivalent so `CTFrameDraw` output matches D2D behavior.
   - Leave `CTFontCreateWithName` size in DIPs.
-- Verify `NSWindow::backingScaleFactor` is what `DCVisualTree` equivalent
-  populates into `ViewRenderTarget::renderScale_` on the Metal backend.
+- Source the scale via `NativeWindow::scaleFactor()` (§2.2) rather than calling
+  `NSWindow::backingScaleFactor` directly; the macOS `AppWindow` implementation of
+  `scaleFactor()` wraps `backingScaleFactor` internally.
 
 ### HarfBuzz / FreeType / Vulkan (Linux) — **TODO**
 
@@ -94,17 +106,21 @@ Backend TextRect implementation
     (typically `72 * scale` DPI when char size is in 1/64 points, leaving
     `FontDescriptor::size` interpreted as DIPs).
   - Apply scale when blitting the rasterized atlas into the offscreen texture.
-- Determine per-monitor scale on Wayland (`wl_output` scale, or
-  `wp_fractional_scale_v1` when available) and on X11 (`Xft.dpi` / XRandr) and
-  wire it into the Vulkan backend's visual tree at the point equivalent to
-  `DCVisualTree` calling `view->setRenderScale(scale)`.
+- Source the scale via `NativeWindow::scaleFactor()` (§2.2); the GTK/Vulkan
+  `AppWindow` implementation is responsible for reading the Wayland
+  (`wl_output` scale or `wp_fractional_scale_v1`) or X11 (`Xft.dpi` / XRandr)
+  value and returning it from `scaleFactor()`. The Vulkan visual tree calls
+  `nativeWindow->scaleFactor()` and passes the result to `view->setRenderScale()`.
 
 ## Non-goals (for now)
 
-- Per-monitor DPI updates. `WM_DPICHANGED` on Windows currently only resizes
-  the HWND — the render target's `renderScale_` is frozen at creation. A later
-  pass will rebuild / rescale the render target when the scale actually
-  changes.
+- Per-monitor DPI updates. `WM_DPICHANGED` on Windows (and equivalent signals
+  on macOS / Linux) currently only resizes the window — the render target's
+  `renderScale_` is frozen at creation. A later pass will handle the
+  `WindowDpiChanged` event, call `nativeWindow->scaleFactor()` for the new
+  value, and rebuild / rescale the render target. This is tracked as a
+  follow-on to §2.2 (`NativeWindow` event emitter) in the Native API
+  Completion Proposal.
 - Mixed-DPI multi-window applications where Views are reparented between
   windows of different scales. The render target is per-window, so this will
   Just Work for Views that are always attached to a single window.

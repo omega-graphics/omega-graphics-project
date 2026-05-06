@@ -2,70 +2,114 @@
 
 Consolidated plan for extending the Canvas, Brush, Color, and Gradient APIs in `omegaWTK/Composition`. Supersedes the separate Brush and Canvas extension proposals.
 
+**Compositor backend assumed by this plan:** the
+Direct-To-Drawable / SDF backend
+(see `Direct-To-Drawable-And-SDF-Plan.md`) is in for the simple
+primitives. Concrete implications for this plan:
+
+  - `Brush::Type::Color` fills on Rect / RoundedRect / Ellipse /
+    Shadow run through the SDF pipeline (one 6-vertex quad per
+    primitive, closed-form distance evaluation).
+  - The optional `Border` slot on Rect / RoundedRect / Ellipse is
+    consumed by the SDF fragment shader — fill + stroke are produced
+    by one draw call, no separate stroked-path emission.
+  - `Brush::Type::Gradient` still falls back to the tessellation +
+    texture pipeline (Phase 1's gradient pipeline work below). The
+    SDF shader does not yet sample a gradient texture — that's a
+    Phase 1 / Phase 2 follow-up to extend the SDF fragment with a
+    gradient sampler when the brush type is gradient.
+  - The triangulator is opened lazily (only on `VectorPath`,
+    `Bitmap`, or gradient-fallback draws).
+
+These behaviors shape the work below — Phase 1 needs a gradient
+texture, but Phase 1 also has the option to skip the texture entirely
+by extending the SDF fragment shader to compute gradient colors
+analytically. Both routes are noted where relevant.
+
 ---
 
 ## Current state snapshot
 
 ### What works
 
-- `Brush::Type` enum (`Color`, `Gradient`, `None`) exists in the header alongside legacy `isColor`/`isGradient` booleans.
+- `Brush::Type` enum (`Color`, `Gradient`, `None`) is the single dispatch source. Legacy `isColor`/`isGradient` booleans are gone (Phase 0 done).
 - `GradientBrush()` header/source signature mismatch is fixed.
 - `create32Bit` typo is fixed.
 - Canvas exposes border overloads on `drawRect`, `drawRoundedRect`, `drawEllipse`.
 - `setBackground()` and `clear()` exist on Canvas.
 - Color solid-fill rendering works for all shape primitives and paths.
 - `Path` supports `addArc`, `addLine`, `goTo`, `close`, stroke width, and a per-path brush.
+- **`Composition/Geometry.h`** owns the public 2D geometry vocabulary; `Core/Core.h` no longer includes `<OmegaGTE.h>`; `Core/GTEHandle.h` is the backend-only handle (Phase 0A done).
+- **Border consolidation:** Rect / RoundedRect / Ellipse with a color border emit one `VisualCommand` and render via one SDF draw — the prior `RectFrame` / `RoundedRectFrame` / `EllipseFrame` side-emission from `drawRect` / `drawRoundedRect` / `drawEllipse` is gone (Direct-To-Drawable-And-SDF-Plan §6.5). The frame helpers remain in `Path.h` for clients that explicitly want a stand-alone outline path.
 
 ### What doesn't work or is incomplete
 
 | Issue | Location | Impact |
 |-------|----------|--------|
-| Backend still dispatches on `brush->isColor` / `!brush->isColor`, not `brush->type` | `RenderTarget.cpp:785,832,858,919,928` | `Brush::Type::None` is never handled; adding new brush types will silently fall through |
-| Gradient compute shader is commented out | `RenderTarget.cpp:127-131` (shader), `698-702` (const buffer write) | Gradient brushes enter the texture pipeline but produce no texture — effectively broken |
+| Gradient compute shader is commented out | `compositor.omegasl` (`linearGradient`), `RenderTarget.cpp` const buffer write | Gradient brushes enter the texture pipeline but produce no texture — effectively broken. SDF fragment shader does not yet sample gradient textures either |
 | Gradient has only `float arg` (angle or radius) | `Brush.h:62` | No start/end points for linear, no center/focus for radial, no elliptical radii |
 | No spread mode on gradients | — | Out-of-range stops clamp implicitly |
-| No per-draw opacity on Canvas | — | SVGView hacks opacity into `Color.a`; won't extend to gradient fills |
+| No per-draw opacity on Canvas (top-level) | — | `setElementOpacity` exists per-VisualCommand but there is no Canvas-level `DrawOptions`. SVGView hacks opacity into `Color.a` |
 | No `drawLine` / `drawPolyline` on Canvas | — | SVGView builds `Path` objects for `<line>` and `<polyline>` as a workaround |
-| No canvas transform stack | — | No zoom, pan, or rotated content |
+| No canvas transform stack | — | `setElementTransform` exists per-element but no save/restore stack for nested zoom / pan / rotation |
 | `SharedPtr<Brush>&` parameter style | All Canvas draw methods | Can't pass temporaries; forces callers to name every brush variable |
-| `Core/Core.h` includes `<OmegaGTE.h>` | `Core.h:3`, all downstream headers | Every TU that touches any WTK header transitively compiles the entire GTE surface (3D types, matrix templates, shader pipeline, etc.) even if it only needs `Rect` |
-| Raw `OmegaGTE::` types in public API | `Path.h`, `Canvas.h`, `Animation.h` | `GPoint2D`, `GVectorPath2D`, `GETexture`, `FMatrix<4,4>` leak into public signatures; downstream modules can't avoid the GTE include |
+| Path-level fill+stroke unification at the Canvas API | `Canvas::drawPath` | Backend already supports both via `VisualCommand::Data::pathParams` (`brush` + `fillBrush`); Canvas-side overload still uses single-brush convention. Phase 3.0 below |
+| Raw `OmegaGTE::` types still appear in `Path.h` / `Canvas.h` internal fields | `Path.h` `Segment::path` (`GVectorPath2D`), `Canvas.h` `pathParams.path`, `Canvas.h` `setElementTransform(Matrix4x4)` | Public signatures partially migrated; some internal fields still expose the GTE types via forward decls |
 
 ---
 
-## Phase 0 — Foundation cleanup
+## Phase 0 — Foundation cleanup [DONE]
 
 **Goal:** Make `Brush::Type` the single source of truth. Remove ambiguity before adding anything new.
 
-### 0.1 Migrate backend to `switch(brush->type)`
+**Status:** Complete. Every callsite in `RenderTarget.cpp` dispatches
+via `_params.brush->type` (Color / Gradient / None). The legacy
+`isColor` / `isGradient` fields on `Brush` have been removed. The SDF
+spine in `Direct-To-Drawable-And-SDF-Plan.md` §6.3 was authored against
+this contract from the start.
 
-Every site in `RenderTarget.cpp` that reads `brush->isColor` or `!brush->isColor` becomes:
+### 0.1 Migrate backend to `switch(brush->type)` [DONE]
+
+Every site in `RenderTarget.cpp` that read `brush->isColor` or
+`!brush->isColor` now uses:
 
 ```cpp
-switch (brush->type) {
-    case Brush::Type::Color:    /* solid fill path */  break;
-    case Brush::Type::Gradient: /* texture path   */  break;
-    case Brush::Type::None:     /* skip draw      */  return;
-}
+if (brush->type == Brush::Type::None) return;
+if (brush->type == Brush::Type::Color) { /* SDF or solid path */ return; }
+// Gradient fall-through to tessellation + texture pipeline
 ```
 
-Affected locations: Rect (line ~785), RoundedRect (~832), Ellipse (~858), VectorPath stroke (~919) and fill (~928).
+Locations covered: Rect, RoundedRect, Ellipse, Shadow (all SDF after
+6.3), VectorPath stroke and fill.
 
-### 0.2 Remove legacy booleans
+### 0.2 Remove legacy booleans [DONE]
 
-After 0.1, remove `isColor` and `isGradient` from `Brush`. Any remaining references outside the backend (unlikely — UIView uses brushes opaquely) get `brush->type == Brush::Type::Color` instead.
+`isColor` and `isGradient` are gone from `Brush.h` / `Brush.cpp`. No
+out-of-tree consumers remained.
 
 ### Files touched
 
-- `wtk/include/omegaWTK/Composition/Brush.h` — remove `isColor`, `isGradient` fields
-- `wtk/src/Composition/Brush.cpp` — remove boolean assignments from constructors
+- `wtk/include/omegaWTK/Composition/Brush.h` — `isColor` / `isGradient` fields removed
+- `wtk/src/Composition/Brush.cpp` — constructors no longer assign the booleans
 - `wtk/src/Composition/backend/RenderTarget.cpp` — switch-based dispatch
 
 ---
 
-## Phase 0A — Geometry type isolation
+## Phase 0A — Geometry type isolation [DONE]
 
 **Goal:** Stop exposing `<OmegaGTE.h>` through Core and Composition public headers. Define standalone geometry wrapper structs in the Composition submodule (which owns the Compositor — the only part that actually talks to GTE) so that OmegaGTE can be linked to `OmegaWTK_Composition` only instead of the top-level `OmegaWTK` target. The exception is `OmegaGTEView`, which talks to GTE directly by design.
+
+**Status:** Complete. `wtk/include/omegaWTK/Composition/Geometry.h`
+owns the standalone PODs; `wtk/include/omegaWTK/Core/GTEHandle.h`
+holds the backend-only `extern OmegaGTE::GTE gte`; `Core/Core.h` no
+longer pulls in `<OmegaGTE.h>`; the ~130-file mechanical rename to
+`Composition::Rect` / `Composition::Point2D` etc. landed under 0A.3a.
+A few internal struct fields (`Path::Segment::path`,
+`VisualCommand::Data::pathParams.path`,
+`VisualCommand::Data::transformMatrix`) still hold raw GTE types
+behind forward declarations — that's working as intended for the
+implementation-detail boundary. See "What doesn't work" in the
+snapshot for the residue.
 
 ### Problem
 
@@ -241,6 +285,29 @@ Every `.cpp` file in the Composition submodule that actually constructs GTE obje
 
 **Goal:** Make `GradientBrush(...)` actually produce visible output. This is the single largest prerequisite for everything gradient-related.
 
+**Choice point — texture path vs SDF-native:** with the SDF spine in,
+there are now two viable architectures for gradient fills on simple
+primitives:
+
+  - **Texture path (the original plan).** Run a compute shader to
+    rasterize the gradient into a texture, then sample it from the
+    fragment shader. This is what 1.1–1.4 below describe. Works for
+    simple primitives, vector paths, and bitmaps with no per-shape
+    customization.
+  - **SDF-native path.** Add a gradient sampler to `sdfFragment` in
+    `compositor.omegasl`: pass start/end / center/radii in the
+    per-draw uniform, evaluate the gradient parameter `t` from the
+    interpolated local coord, look up stop colors from a small
+    constant array. Avoids the compute pass and the texture
+    allocation entirely for simple primitives. Vector paths with
+    gradient fills still need the texture path because their
+    fragment shader is `mainFragment` (color attachment-driven).
+
+For Phase 1, implement the texture path first (1.1–1.4) — it covers
+all primitives uniformly and unblocks the gradient API extensions.
+The SDF-native gradient is a Phase 2 follow-up that improves the
+common case once the API stabilizes.
+
 ### 1.1 Implement the gradient compute shader
 
 The shader source `compositor.omegasl` already defines `GradientTextureConstParams` and `LinearGradientStop`, but the `linearGradient` compute function is commented out. Implement:
@@ -275,6 +342,13 @@ bufferWriter->flush();
 ### 1.3 Connect gradient texture to shape rendering
 
 The texture pipeline path (`useTextureRenderPipeline = true` when brush is not Color) needs to actually call `createGradientTexture` to produce `texturePaint` before the draw. Currently the gradient case sets `useTextureRenderPipeline = true` but never populates the texture.
+
+After the SDF spine, the gradient-brush rect / rounded-rect cases
+explicitly fall back to the existing tessellation + texture pipeline
+(see comments in `RenderTarget.cpp` around the Rect / RoundedRect
+cases). This phase populates the texture binding for that fallback —
+the dispatch wiring is already in place; only the texture-content
+producer is missing.
 
 ### 1.4 Test
 
@@ -431,9 +505,20 @@ Internally it resolves:
 
 This preserves the current `RectFrame` / `RoundedRectFrame` / `EllipseFrame` border path used by `drawRect`/`drawRoundedRect`/`drawEllipse` without touching them.
 
-#### 3.0.4 Simplify shape draw methods (optional, follow-up)
+#### 3.0.4 Simplify shape draw methods [DONE for simple primitives, via SDF spine]
 
-With the unified `drawPath`, the border handling in `drawRect`/`drawRoundedRect`/`drawEllipse` (which currently builds a frame `Path`, sets its brush, and delegates to `drawPath`) can eventually be replaced by a single path-based implementation. Out of scope for Phase 3.0 — the existing behavior stays intact.
+The original framing — "border handling in `drawRect` /
+`drawRoundedRect` / `drawEllipse` builds a frame `Path` and delegates
+to `drawPath`" — was retired by Direct-To-Drawable-And-SDF-Plan §6.5.
+`drawRect` / `drawRoundedRect` / `drawEllipse` now forward the optional
+`Border` directly into the `VisualCommand`; the SDF fragment shader
+emits fill + stroke coverage from one distance evaluation in a single
+draw call. There is no longer a frame-`Path` step for these primitives.
+
+The `RectFrame` / `RoundedRectFrame` / `EllipseFrame` helpers stay in
+`Path.h` for clients that genuinely want a stand-alone outline path
+(unrelated to a shape's border). Those helpers still go through the
+unified `drawPath` flow as in 3.0.1–3.0.3.
 
 #### Files touched
 
@@ -480,6 +565,15 @@ void resetDrawOptions();
 When `opacity < 1.0`, multiply it into the alpha channel during vertex color write (solid fills) or into the fragment output (textured/gradient fills). `VisualCommand` gains an `opacity` field.
 
 **Not** on `Brush` — brushes are shared objects and per-draw opacity on a shared brush is confusing. Canvas owns the draw state.
+
+**Existing primitives:** `Canvas::setElementOpacity(float)` already
+emits a `VisualCommand::SetOpacity` that propagates through subsequent
+draws (color, texture, and SDF paths all multiply it into the output
+alpha — see Direct-To-Drawable-And-SDF-Plan §3.1). The Phase 3.3 work
+is to wrap that in a stack-friendly `DrawOptions` API and to ensure
+gradient brushes (Phase 1) honor the same opacity multiplier.
+Implementation should reuse the existing per-element machinery rather
+than introducing a parallel one.
 
 ### 3.4 `drawArc` (convenience)
 
@@ -568,6 +662,22 @@ Color darker(float amount = 0.2f) const;
 
 **Goal:** Support transforms and clipping for zoomed, panned, or clipped content.
 
+**Existing primitives that this builds on:**
+
+  - `Canvas::setElementTransform(const Matrix4x4 &)` already emits a
+    `VisualCommand::SetTransform` that the backend consumes per-vertex
+    on subsequent color / texture / SDF draws (see
+    Direct-To-Drawable-And-SDF-Plan §3.1).
+  - `Canvas::setElementOpacity(float)` already emits
+    `VisualCommand::SetOpacity` with the same propagation contract.
+
+What's missing is the *stack discipline*: `save` / `restore`,
+matrix concatenation (translate / scale / rotate compose with the
+current transform), and clip rects. The state-stack work below should
+push / pop into / out of the existing `currentTransform` /
+`currentOpacity` slots on `BackendRenderTargetContext`; no new GPU
+state needs to be added.
+
 ### 5.1 Save/restore
 
 ```cpp
@@ -610,11 +720,12 @@ These items are deferred. They are listed to confirm the Phase 0–5 designs are
 
 | Item | Depends on | Notes |
 |------|------------|-------|
+| SDF-native gradient sampling on simple primitives | Phase 1 (texture path), Phase 2 (geometry) | Extend `sdfFragment` to evaluate gradient `t` from local coord and look up stop colors from a small constant array; skips the compute pass and texture allocation for the common case |
 | `GradientSpace::Canvas` (gradient coords in canvas space, not shape-local) | Phase 5 transform stack | Without transforms, "canvas space" is just "shape space + offset" |
-| Pattern brush (image/texture tiling) | Phase 1 gradient pipeline | Same texture render path; needs wrap-mode sampler |
-| `BlendMode` enum on `DrawOptions` | Phase 3 DrawOptions | Extend fragment shader with blend equations |
-| Gradient text | Phase 1 gradient pipeline | Backend generates gradient texture at glyph bounds |
-| Image scale modes (aspect-fit/fill, tiling, source rect) | — | Extend UV generation in bitmap path |
+| Pattern brush (image/texture tiling) | Phase 1 gradient pipeline | Same texture render path; needs wrap-mode sampler — overlaps with `Direct-To-Drawable-And-SDF-Plan` §6.6 (bitmap improvements: tint, source rect, nine-slice) |
+| `BlendMode` enum on `DrawOptions` | Phase 3 DrawOptions | Extend fragment shader with blend equations. Note: SDF pipeline already has alpha-over blending enabled; color / texture pipelines stay opaque-write |
+| Gradient text | Phase 1 gradient pipeline + MSDF text | After Direct-To-Drawable-And-SDF-Plan §6.7 lands MSDF text, gradient fill on glyphs becomes a uniform-evaluation problem (same as SDF-native gradients above) |
+| Image scale modes (aspect-fit/fill, tiling, source rect) | — | Direct-To-Drawable-And-SDF-Plan §6.6 owns this — moves bitmap to a hardcoded quad with sampler / mipmap upgrade and adds tint / source rect / nine-slice |
 | Text draw options (maxLines, truncation, underline) | — | Text layout engine changes |
 | Effect bounds (subregion blur) | — | Compositor change |
 
@@ -623,21 +734,26 @@ These items are deferred. They are listed to confirm the Phase 0–5 designs are
 ## Dependency graph
 
 ```
-Phase 0: Foundation cleanup
-    └─→ Phase 1: Gradient pipeline (depends on type-based dispatch)
-            ├─→ Phase 2: Gradient API extensions (depends on working pipeline)
-            └─→ Future: Pattern brush, gradient text (depend on texture pipeline)
-    └─→ Phase 3: Canvas drawing extensions (independent of gradients)
-            └─→ Phase 5: Canvas state stack (builds on DrawOptions infrastructure)
+Phase 0:  Foundation cleanup           [DONE]
+Phase 0A: Geometry type isolation      [DONE]
 
-Phase 0A: Geometry type isolation (independent — can run in parallel with Phase 0)
-    └─→ Phase 3: Canvas drawing extensions (new methods use Core:: geometry types)
-    └─→ Phase 5: Canvas state stack (Transform2D replaces raw FMatrix in public API)
+Phase 1: Gradient pipeline (texture path)
+    ├─→ Phase 2: Gradient API extensions (depends on working pipeline)
+    └─→ Phase 6 future: SDF-native gradient sampling, pattern brush, gradient text
+
+Phase 3: Canvas drawing extensions (independent of gradients)
+    ├─→ Phase 3.0.4 (border consolidation in shape draw methods): DONE for simple primitives via SDF spine §6.5
+    └─→ Phase 5: Canvas state stack (builds on existing per-element SetTransform / SetOpacity)
 
 Phase 4: Color improvements (independent — can run in parallel with any phase)
 ```
 
-Phases 0 and 0A can run in parallel. Phase 0A should complete before Phase 3 so that new Canvas methods use `Composition::Point2D` / `Composition::Rect` instead of GTE types from the start. Phases 3 and 4 can proceed in parallel with Phases 1–2. Phase 5 should follow both Phase 3 (builds on `DrawOptions`) and Phase 0A (transform types).
+Phases 0 and 0A are done. Phase 1 (gradient pipeline) is the next
+high-leverage piece — it unblocks SVG gradients and the gradient-API
+extensions (Phase 2). Phases 3, 4, and 5 are independent of the
+gradient work; Phase 5 should reuse the existing per-element
+`SetTransform` / `SetOpacity` machinery (see §5 preamble) rather than
+introducing a parallel state path.
 
 ---
 
@@ -645,21 +761,23 @@ Phases 0 and 0A can run in parallel. Phase 0A should complete before Phase 3 so 
 
 | File | Phase | Changes |
 |------|-------|---------|
-| `wtk/include/omegaWTK/Composition/Geometry.h` | 0A | **New** — standalone `Point2D`, `Rect`, `RoundedRect`, `Ellipse` structs (no GTE dependency), owned by Composition submodule |
-| `wtk/src/Composition/backend/GeometryConvert.h` | 0A | **New** — WTK↔GTE conversion helpers (Composition-private) |
-| `wtk/include/omegaWTK/Core/Core.h` | 0A | Remove `#include <OmegaGTE.h>`; delete geometry typedefs and `Ellipse` struct; move GTE handle to `GTEHandle.h` |
-| `wtk/include/omegaWTK/Core/GTEHandle.h` | 0A | **New** — backend-only header for `extern OmegaGTE::GTE gte` |
-| ~130 files across all submodules | 0A | Mechanical rename: `Composition::Rect` → `Composition::Rect`, `Composition::Point2D` → `Composition::Point2D`, etc. |
-| `wtk/CMakeLists.txt` | 0A | Link OmegaGTE `PRIVATE` to `OmegaWTK_Composition`; remove `PUBLIC` GTE link from `OmegaWTK` framework |
-| `wtk/include/omegaWTK/Composition/Brush.h` | 0, 2, 4 | Remove `isColor`/`isGradient`; add `LinearDef`, `RadialDef`, `GradientSpread`, new gradient factories; add `Color` statics and helpers |
-| `wtk/src/Composition/Brush.cpp` | 0, 2, 4 | Remove boolean init; implement new gradient factories, color constants, HSL/HSV, lerp, withAlpha, lighter/darker |
-| `wtk/include/omegaWTK/Composition/Canvas.h` | 0A, 3, 5 | Forward-declare GTE types for internal fields; `drawLine`, `drawPolyline`, `drawArc`, `DrawOptions`, const-ref brush params, save/restore/transform/clip |
-| `wtk/src/Composition/Canvas.cpp` | 0A, 3, 5 | Add `GeometryConvert.h`; implement new draw methods, state stack |
-| `wtk/include/omegaWTK/Composition/Path.h` | 0A | `GPoint2D` → `Composition::Point2D`, `GRect` → `Composition::Rect` in public API; privatize `GVectorPath2D` constructor |
-| `wtk/src/Composition/Path.cpp` | 0A | Add `GeometryConvert.h`, convert at boundary |
-| `wtk/include/omegaWTK/Composition/Animation.h` | 0A | `GPoint2D` → `Core::Point2D` in public signatures |
-| `wtk/src/Composition/backend/RenderTarget.cpp` | 0, 0A, 1, 2, 3, 5 | Type-based dispatch; `GeometryConvert.h`; gradient compute shader; extended gradient params; opacity multiplier; transform application |
+| `wtk/include/omegaWTK/Composition/Geometry.h` | 0A | **DONE** — standalone `Point2D` / `Rect` / `RoundedRect` / `Ellipse` structs; owned by Composition submodule |
+| `wtk/src/Composition/backend/GeometryConvert.h` | 0A | **DONE** — WTK↔GTE conversion helpers (Composition-private) |
+| `wtk/include/omegaWTK/Core/Core.h` | 0A | **DONE** — `<OmegaGTE.h>` removed; geometry typedefs / `Ellipse` deleted |
+| `wtk/include/omegaWTK/Core/GTEHandle.h` | 0A | **DONE** — backend-only header for `extern OmegaGTE::GTE gte` |
+| ~130 files across all submodules | 0A | **DONE** — mechanical rename to `Composition::Rect` / `Composition::Point2D` / etc. |
+| `wtk/CMakeLists.txt` | 0A | **DONE** — OmegaGTE link scoped appropriately |
+| `wtk/include/omegaWTK/Composition/Brush.h` | 0, 2, 4 | **0 DONE:** `isColor` / `isGradient` removed. Remaining: `LinearDef`, `RadialDef`, `GradientSpread`, new gradient factories; `Color` statics + helpers (HSL/HSV, lerp, withAlpha, lighter/darker) |
+| `wtk/src/Composition/Brush.cpp` | 0, 2, 4 | **0 DONE:** boolean init removed. Remaining: new gradient factories, color constants/helpers |
+| `wtk/include/omegaWTK/Composition/Canvas.h` | 0A, 3, 5 | **0A DONE.** Remaining: `drawLine`, `drawPolyline`, `drawArc`, unified `drawPath`, `DrawOptions`, const-ref brush params, save/restore/transform/clip |
+| `wtk/src/Composition/Canvas.cpp` | 0A, 3, 5 | **0A DONE.** **Phase 6.5 (border consolidation) DONE:** `drawRect` / `drawRoundedRect` / `drawEllipse` forward `Border` directly; no frame-path side emission. Remaining: new draw methods, state stack |
+| `wtk/include/omegaWTK/Composition/Path.h` | 0A | **0A DONE** for public signatures. Frame helpers (`RectFrame` / `RoundedRectFrame` / `EllipseFrame`) retained for stand-alone outline use |
+| `wtk/src/Composition/Path.cpp` | 0A | **0A DONE** |
+| `wtk/include/omegaWTK/Composition/Animation.h` | 0A | **0A DONE** |
+| `wtk/src/Composition/backend/RenderTarget.cpp` | 0, 0A, 1, 2, 3, 5 | **0 + 0A DONE.** **SDF spine integration (border, transform, opacity propagation) DONE** via `Direct-To-Drawable-And-SDF-Plan` §6.3 / §6.5 / §3.1. Remaining: gradient compute pass wiring, extended gradient params, top-level `DrawOptions` plumbing, save/restore stack consumption |
 | `wtk/src/Composition/backend/RenderTarget.h` | 2 | Update `createGradientTexture` signature |
+| `wtk/src/Composition/backend/shaders/compositor.omegasl` | 1, 2 | Implement `linearGradient` / `radialGradient` compute shaders; extend `GradientTextureConstParams` with start/end / center/radii / spread mode. **SDF fragment functions already in** for color fills (Phase 6) |
+| `wtk/src/UI/SVGView.cpp` | 6.5 | **DONE (alongside SDF spine):** SVG `<rect>` / `<rect rx>` / `<circle>` / `<ellipse>` strokes route through `Border` instead of building separate stroked-path frames |
 
 ---
 

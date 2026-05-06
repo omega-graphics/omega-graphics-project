@@ -17,9 +17,18 @@ exists at three levels:
    staggered partial screen updates. The queue fills with hundreds of
    packets that drain long after the resize finishes.
 
-3. **Per-command rendering.** Within each widget's frame, every visual
+3. **Per-command rendering.** ~~Within each widget's frame, every visual
    command gets its own GPU submission, its own tessellation pass, and
-   its own render target rebuild on resize.
+   its own render target rebuild on resize.~~ **Tier 2 Phases 0 and 1
+   complete and the Direct-To-Drawable / SDF spine has landed.** All
+   commands record into a single open render pass (one GPU submission
+   per frame); Rect / RoundedRect / Ellipse / Shadow primitives bypass
+   the triangulator entirely and run as 6-vertex SDF quads with their
+   border consolidated into the same draw. The tessellation context is
+   created lazily on first VectorPath / Bitmap / gradient-fallback
+   draw — frames that contain only SDF primitives never allocate one.
+   Remaining work is geometry caching for the path / bitmap fallbacks
+   (Phase 2, narrowed scope) and frame-level diffing (Phase 4).
 
 All three levels must be fixed. The native view consolidation is the
 foundational change — it determines whether the system can ever have one
@@ -44,23 +53,29 @@ Tier 0.
 
 The following breakdown was measured from the code structure of a
 30-visual-command frame during a resize event. Each step is annotated
-with its source location and cost category.
+with its source location and cost category. The "After SDF spine"
+column reflects the state after Phase A-1, Phase 1 (batched
+submission), and the Direct-To-Drawable / SDF spine landed: simple
+primitives (Rect / RoundedRect / Ellipse / Shadow with color brushes)
+now skip tessellation entirely.
 
-| Step | Location | Cost | Category |
-|------|----------|------|----------|
-| Render target lookup | `Execution.cpp:175` | Low | Map lookup |
-| Layer surface target lookup/create | `Execution.cpp:199–232` | **High on resize** | GPU allocation |
-| `setRenderTargetSize` → `rebuildBackingTarget` | `RenderTarget.cpp:620–635 → 503–578` | **5–20ms** | Sync GPU wait + allocation |
-| Clear | `RenderTarget.cpp:648–662` | Low–Med | Separate GPU submission |
-| **Per-command tessellation** (×30) | `RenderTarget.cpp:830–1078` | **15–30ms** | `triangulateSync()` blocks CPU |
-| **Per-command vertex generation** (×30) | `RenderTarget.cpp:1164–1254` | 2–5ms | CPU matrix mul per vertex |
-| **Per-command GPU submission** (×30) | `RenderTarget.cpp:1266–1297` | **10–20ms** | 30 separate render passes |
-| `commit()` | `RenderTarget.cpp:673–722` | **5–15ms** | `waitForGPU()` on effects path |
-| Presentation blit | `RenderTarget.cpp:1345–1387` | 2–5ms | One more submission — **eliminated by Phase A-1** |
-| **Total** | | **39–95ms → 37–90ms after A-1** | **10–26 FPS during resize** |
+| Step | Location | Original | After SDF spine |
+|------|----------|----------|-----------------|
+| Render target lookup | `Execution.cpp:175` | Low | Low |
+| Layer surface target lookup/create | `Execution.cpp:199–232` | **High on resize** | Same — Phase 3 still pending for effect path |
+| `setRenderTargetSize` → `rebuildBackingTarget` | `RenderTarget.cpp` | **5–20ms** | **0ms common path** — drawable resized by platform; tessellation context created lazily; no offscreen rebuild for non-effect frames |
+| Clear | `RenderTarget.cpp` | Low–Med | Folded into `beginFrame()` render-pass clear (Phase 1) |
+| **Per-command tessellation** (×30) | `RenderTarget.cpp` | **15–30ms** | **~0ms for simple primitives** — Rect / RoundedRect / Ellipse / Shadow are 6-vertex SDF quads. Only VectorPath / Bitmap / gradient-fallback hit the triangulator |
+| **Per-command vertex generation** (×30) | `RenderTarget.cpp` | 2–5ms | <1ms — 6 vertices per SDF primitive vs. 96–4096 for the prior triangle fan |
+| **Per-command GPU submission** (×30) | `RenderTarget.cpp` | **10–20ms** | **~0ms** — Phase 1 batches every command into one render pass, one submission |
+| `commit()` | `RenderTarget.cpp` | **5–15ms** | <1ms common path — direct present, no `waitForGPU()` |
+| Presentation blit | `RenderTarget.cpp` | 2–5ms | Eliminated by Phase A-1 |
+| **Total** | | **39–95ms** | **~2–8ms** — Phase 2 / 3 / 4 still pending for path-heavy or effect-heavy frames |
 
 The same frame on a production compositor (Chromium, game engine) would
 take **under 2ms** — most of it GPU execution time, not CPU overhead.
+The SDF spine closes most of the gap; the remaining cost is in the
+path / bitmap fallbacks and effect-path resize.
 
 ---
 
@@ -101,25 +116,22 @@ allocation, driver validation, GPU context switch, barrier insertion.
   typical game frame with 200–500 draw calls produces 1–3 GPU
   submissions.
 
-### 2. Per-frame synchronous tessellation
+### 2. Per-frame synchronous tessellation [resolved for simple primitives]
 
-Every visual command is re-tessellated every frame, even if the shape
-hasn't changed. The tessellation uses `triangulateSync()` which blocks
-the CPU until the GPU (or CPU tessellation engine) produces vertices.
+**Status:** The Direct-To-Drawable / SDF spine retired the
+tessellation path for Rect / RoundedRect / Ellipse / Shadow with color
+brushes. The 4096-triangle ellipse fan is gone; each simple primitive
+is a 6-vertex SDF quad with closed-form distance evaluation in the
+fragment shader, including any color border (Phase 6.5 consolidates
+fill + stroke into one draw).
 
-Ellipses are particularly expensive: a manual CPU loop generates 96–4096
-triangle segments based on radius, with no caching:
+**What remains:** VectorPath, Bitmap, and the gradient-brush fallback
+for simple primitives still go through `triangulateSync()`. These are
+the exclusive consumers of the tessellation context, which is now
+created lazily on first such draw (Phase 6.8). Phase 2 below targets
+this narrowed surface.
 
-```cpp
-// RenderTarget.cpp:929–953 — runs every frame for every ellipse
-segmentCount = std::min(4096u, std::max(96u,
-    std::ceil(std::max(rx, ry) * renderScale)));
-for(unsigned i = 0; i < segmentCount; i++){
-    // Build triangle fan vertex by vertex
-}
-```
-
-**How production systems solve this:**
+**How production systems solve the remaining slice:**
 
 - **Chromium:** Avoids tessellation entirely for 2D compositing. Shapes
   are either pre-rasterized into tiles (cached as GPU textures) or
@@ -968,12 +980,32 @@ after restart.
 
 ---
 
-(Phase 2 and 3 will only apply to complex shapes/paths that need tessellation because of Direct-To-Drawable-And-SDF-Plan.md)
-
-### Phase 2 — Geometry caching
+### Phase 2 — Geometry caching [scope narrowed]
 
 **Goal:** Eliminate redundant tessellation. Only tessellate a shape when
 its parameters change.
+
+**Scope after the SDF spine:** Simple primitives (Rect / RoundedRect /
+Ellipse / Shadow with color brushes) no longer call the triangulator —
+they emit a 6-vertex SDF quad and a small per-draw uniform buffer
+through `BackendRenderTargetContext::emitSdfPrimitive`. This phase no
+longer applies to them. The cache only matters for the cases that
+still call `tessellationContext_->triangulateSync()`:
+
+  - `VisualCommand::VectorPath` (arbitrary user paths)
+  - `VisualCommand::Bitmap` (gets a unit-quad mesh from the
+    triangulator today; will move to a hardcoded quad in
+    Direct-To-Drawable-And-SDF-Plan §6.6)
+  - The gradient-brush fallback for Rect / RoundedRect — these still
+    produce a colored / textured tessellated mesh because gradient
+    sampling inside the SDF shader is a follow-up
+
+The `ShapeKey` design below should be revised to key only on
+`(VectorPath, GVectorPath2D::id, strokeWidth, contour, fill)`,
+`(Bitmap, w, h)`, and the gradient-rect / gradient-rrect cases. The
+expected hit rate is also lower because path content tends to vary
+with each redraw — the cache mostly helps when widget content is
+stable across frames.
 
 #### 2.1 Tessellation cache
 
@@ -1020,12 +1052,12 @@ use the cached vertex data.
 handle forever. Chromium caches rasterized tiles and only re-rasterizes
 tiles whose display items changed.
 
-#### 2.2 Ellipse and shadow vertex caching
+#### 2.2 Ellipse and shadow vertex caching [obsolete]
 
-The manual CPU triangle-fan generation for ellipses (lines 929–953) and
-shadows is a special case — it doesn't go through `triangulateSync()`.
-Apply the same cache to these: hash (center, radiusX, radiusY,
-segmentCount) → cached vertex array.
+The manual CPU triangle-fan generation for ellipses and shadows was
+retired by the SDF spine (Phase 6.3). Both now emit a 6-vertex unit
+quad and evaluate distance in the fragment shader; there is no mesh
+to cache.
 
 #### 2.3 Cached vertex buffer reuse
 
@@ -1172,9 +1204,30 @@ invalidation rects.
 
 ---
 
-### Phase 5 — SDF-based primitive rendering (Covered by Direct-To-Drawable-And-SDF-Plan.md)
+### Phase 5 — SDF-based primitive rendering [PARTIALLY COMPLETED]
 
-**Goal:** Eliminate tessellation entirely for standard shapes.
+**Owned by `Direct-To-Drawable-And-SDF-Plan.md`.** This section is
+retained as a pointer; the implementation lives in that plan.
+
+**Status:** Sub-phases 6.1 (SDF shader library), 6.2 (`sdf_` pipeline
+state + `bindSdfPipeline`), 6.3 (Rect / RoundedRect / Ellipse / Shadow
+emit 6-vertex SDF quads), 6.5 (border consolidated into the same
+draw — no separate `RectFrame` / `RoundedRectFrame` / `EllipseFrame`
+visual), and 6.8 (lazy tessellation context) have landed. The SDF
+pipeline has alpha-over blending enabled so its analytically-computed
+coverage composites correctly against destination pixels.
+
+**Remaining (deferred to Direct-To-Drawable-And-SDF-Plan):**
+
+  - 6.4 — vector-path edge-distance AA (requires a GTE tessellator
+    extension to expose per-vertex silhouette distance).
+  - 6.6 — bitmap improvements: hardcoded 6-vertex quad, sampler /
+    mipmap upgrade, tint, source rect, nine-slice.
+  - 6.7 — MSDF glyph atlas + per-platform outline extraction
+    (DWrite / Core Text / FreeType).
+  - 6.9 — visual / perf verification baselines.
+
+**Goal (original):** Eliminate tessellation entirely for standard shapes.
 
 Instead of tessellating rounded rects, ellipses, and rects into triangle
 meshes, draw a single quad (2 triangles, 6 vertices) and evaluate the
@@ -1252,10 +1305,10 @@ Tier 2 (Per-Command Rendering) — operates within Phase B's render step:
 
 Phase 0: Remove hot-path logging [COMPLETED]
     └─→ Phase 1: Batched GPU submission [COMPLETED]
-            └─→ Phase 2: Geometry caching (second highest impact)
-                    └─→ Phase 4: Frame diffing (builds on cache infrastructure)
-                            └─→ Phase 5: SDF rendering (replaces tessellation entirely)
-    └─→ Phase 3: Effect-path texture resize tolerance (independent of Phase 1)
+            └─→ Phase 5: SDF for simple primitives [PARTIALLY COMPLETED — see Direct-To-Drawable-And-SDF-Plan §6.1–6.3, 6.5, 6.8]
+                    └─→ Phase 2: Geometry caching (narrowed to VectorPath / Bitmap / gradient fallback)
+                            └─→ Phase 4: Frame diffing (builds on cache + SDF cache reuse)
+    └─→ Phase 3: Effect-path texture resize tolerance (independent)
 
 Cross-tier:
 
@@ -1280,8 +1333,10 @@ scope to effect-path textures only.
 
 **Tier 2** operates inside Phase B's render step. Phase 0 (logging removal)
 is purely local and can proceed in parallel with all other work. Phases 1
-and 3 are independent. Phase 2 builds on Phase 1. Phase 4 builds on
-Phase 2. Phase 5 replaces Phases 2 and 4.
+and 3 are independent. Phase 5 (SDF) for simple primitives is now in;
+that retired the bulk of the per-command tessellation cost and shrank
+Phase 2's surface to VectorPath / Bitmap / gradient fallback. Phase 4
+(frame diffing) still applies and is independent of the SDF migration.
 
 ---
 
@@ -1315,14 +1370,19 @@ render targets × N presents to 1 surface × 1 render target × 1 present.
 |-------|---------------------------|------------|--------|
 | Phase 0 | 1–5ms (console I/O) | ~35–90ms | **COMPLETED** |
 | Phase 1 | 10–25ms (submission overhead) | ~15–65ms | **COMPLETED** |
-| Phase 2 | 10–25ms (tessellation) | ~5–40ms | Pending |
-| Phase 3 | 0–5ms (effect-path resize only) | ~2–15ms | Pending (scope reduced by A-1) |
+| Phase 5 (simple primitives) | 12–25ms (tessellation) | ~5–15ms | **PARTIALLY COMPLETED** — SDF for Rect / RoundedRect / Ellipse / Shadow + border consolidation. Vector path / bitmap / text deferred (see Direct-To-Drawable-And-SDF-Plan) |
+| Phase 2 | 0–5ms (path / bitmap caching) | ~3–12ms | Pending — narrowed scope |
+| Phase 3 | 0–5ms (effect-path resize only) | ~2–10ms | Pending |
 | Phase 4 | 0–15ms (skip unchanged) | ~2–10ms | Pending |
 
 Note: Phase A-1 eliminates offscreen texture allocation for the common
 no-effect path, reducing Phase 3's scope to effect-path textures only.
 Phase 1's batched submission now covers ALL widgets' commands in the
-window, not just one widget's.
+window, not just one widget's. Phase 5's SDF spine eliminated the
+4096-triangle ellipse fan and the per-vertex CPU transform cost on the
+hot primitives — the dominant per-command costs in the original
+profile. Phase 2's expected savings dropped because most primitives
+no longer touch the triangulator at all.
 
 After all tiers, a 30-command frame during resize should drop from
 39–95ms to approximately 2–10ms — well within the 16.67ms budget for
@@ -1363,6 +1423,12 @@ phases (2–5 of the removal plan — deleting helper functions and telemetry)
 become part of the Tier 1 implementation: when the command queue and
 `CompositorCommand` hierarchy are replaced by the surface mailbox, all
 coalescing infrastructure is removed as dead code.
+
+**Direct-To-Drawable / SDF Plan:** Owns Tier 2 Phase 5 (and adjacent
+work that this plan no longer needs to specify in detail). Phase 6.1 /
+6.2 / 6.3 / 6.5 / 6.8 of that plan are in; the remaining sub-phases
+(vector-path edge AA, bitmap improvements, MSDF text) are what this
+plan's "Phase 5" pointer references.
 
 ---
 
@@ -1416,12 +1482,17 @@ coalescing infrastructure is removed as dead code.
 
 | File | Phase | Changes |
 |------|-------|---------|
-| `wtk/src/Composition/backend/RenderTarget.cpp` | 0, 1, 2, 3, 4 | **0+1 DONE:** Logging gated behind `OMEGAWTK_TRACE_RENDER`, debug file writes removed. `beginFrame()`/`endFrame()` implemented. `renderToTarget()` records into open `frameCB_`. Pipeline state tracking. Texture fence end/restart. Remaining: tessellation cache integration, bucketed resize, frame hash comparison |
-| `wtk/src/Composition/backend/RenderTarget.h` | 1, 2, 3, 4 | **1 DONE:** Added `beginFrame()`, `endFrame()`, `frameCB_`, `frameActive_`, `lastPipelineWasTexture_`. Remaining: `TessellationCache` member, deferred release queue, `lastRenderedHash` |
-| `wtk/src/Composition/backend/Execution.cpp` | 0, 1, 4 | **0+1 DONE:** Logging gated, debug file writes removed. Command loop wrapped with `beginFrame()`/`endFrame()`. Clear dedup statics removed. Remaining: hash passthrough |
+| `wtk/src/Composition/backend/RenderTarget.cpp` | 0, 1, 2, 3, 4, 5 | **0 + 1 + 5 (simple primitives) DONE:** Logging gated behind `OMEGAWTK_TRACE_RENDER`, debug file writes removed. `beginFrame()`/`endFrame()` implemented; pipeline tracking; texture fence end/restart. `emitSdfPrimitive()` helper authors a 6-vertex quad + per-draw uniform buffer for Rect / RoundedRect / Ellipse / Shadow with color brushes. Remaining: tessellation cache for the path/bitmap/gradient fallback, bucketed resize, frame hash comparison |
+| `wtk/src/Composition/backend/RenderTarget.h` | 1, 2, 3, 4, 5 | **1 + 5 DONE:** `beginFrame()`/`endFrame()`/`frameCB_`/`frameActive_`. `emitSdfPrimitive()` declaration. `ensureTessellationContext()` for lazy triangulator creation (Phase 6.8). Remaining: `TessellationCache` member, deferred release queue, `lastRenderedHash` |
+| `wtk/src/Composition/backend/Pipeline.{h,cpp}` | 5 | **DONE:** `sdf_` pipeline state + `sdf()` accessor. SDF pipeline has alpha-over `BlendDescriptor` enabled (color and texture pipelines stay opaque-write) |
+| `wtk/src/Composition/backend/RenderPass.{h,cpp}` | 5 | **DONE:** `bindSdfPipeline(scope)` with the same suppression contract as color / texture |
+| `wtk/src/Composition/backend/shaders/compositor.omegasl` | 5 | **DONE:** `sdfVertex` / `sdfFragment` + closed-form `sdfRect` / `sdfRoundedRect` / `sdfEllipse`. Centered stroke band; soft shadow falloff |
+| `wtk/src/Composition/Canvas.cpp` | 5 | **DONE (Phase 6.5):** `drawRect` / `drawRoundedRect` / `drawEllipse` forward the optional `Border` directly into the visual command. The `RectFrame` / `RoundedRectFrame` / `EllipseFrame` border path is gone (helpers stay in `Path.h` for stand-alone outline use) |
+| `wtk/src/UI/SVGView.cpp` | 5 | **DONE:** SVG `<rect>` / `<rect rx>` / `<circle>` / `<ellipse>` strokes route through `Border` instead of building separate stroked-path frames |
+| `wtk/src/Composition/backend/Execution.cpp` | 0, 1, 4 | **0 + 1 DONE:** Logging gated, debug file writes removed. Command loop wrapped with `beginFrame()`/`endFrame()`. Clear dedup statics removed. Remaining: hash passthrough |
 | `wtk/include/omegaWTK/Composition/Canvas.h` | 4 | `contentHash` on `CanvasFrame` |
 | `wtk/src/Composition/Canvas.cpp` | 4 | Hash update in `draw*` methods |
-| New: `wtk/src/Composition/backend/TessellationCache.h` | 2 | `ShapeKey`, `CachedTessellation`, `TessellationCache` |
+| New: `wtk/src/Composition/backend/TessellationCache.h` | 2 | `ShapeKey`, `CachedTessellation`, `TessellationCache` — keyed only on `VectorPath` / `Bitmap` / gradient fallback after the SDF spine |
 | `wtk/src/Composition/backend/BufferPool.h` | 1 | Support for pinned (non-recyclable) buffers |
 | `wtk/src/Composition/backend/TexturePool.h` | 3 | Bucket-aware acquire |
 

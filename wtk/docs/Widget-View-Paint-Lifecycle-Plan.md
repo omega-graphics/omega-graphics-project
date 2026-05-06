@@ -14,6 +14,24 @@ the Tick phase).
 (covered by the render redesign). Changing the `Compositor` backend.
 Changing `StyleSheet` authoring syntax.
 
+**Compositor backend assumed by this plan:** the
+Direct-To-Drawable / SDF backend
+(see `Direct-To-Drawable-And-SDF-Plan.md`) is in for the simple
+primitives. Concrete implications for this plan:
+
+  - A styled shape (Rect / RoundedRect / Ellipse with optional border)
+    produces **one** `VisualCommand` and **one** SDF draw call. The
+    prior fill-then-stroked-frame-path pair is gone.
+  - The triangulator is opened lazily and only on `VectorPath` /
+    `Bitmap` / gradient-fallback paint.
+  - `Canvas::drawRect` / `drawRoundedRect` / `drawEllipse` no longer
+    side-emit a `RectFrame` / `RoundedRectFrame` / `EllipseFrame`
+    visual when a border is set.
+
+These behaviors are already shipped and assumed in the migration
+sketches below. The lifecycle changes are about *who triggers paint
+and when*, not about further changes to the visual-command shape.
+
 ---
 
 ## 1. What is broken today
@@ -133,6 +151,17 @@ Widget::invalidate()
 
 No phases. No deferral. No dirty gate. No animation slot. Every
 invalidation is a full paint.
+
+The "full paint" is now significantly cheaper than the original
+analysis (Render-Execution-Efficiency-Plan §current-execution-profile
+shows ~2–8 ms after the SDF spine, down from 39–95 ms). The lifecycle
+problems still matter — undefined phase ordering, no dirty gate, and
+the "every property change runs a full paint" coupling are
+architectural issues independent of how cheap the paint itself is —
+but the *urgency* of deferring invalidation is reduced from "we're
+spending 50 ms per resize tick" to "we're rebuilding the same display
+list three times per setProps call". Treat the migration as a
+correctness / clarity refactor, not an emergency performance fix.
 
 ---
 
@@ -445,6 +474,15 @@ entirely handled by `UIViewNode::paint` from the render redesign plan.
 The widget subclass only needs to set up the element list and
 stylesheet when model state changes. The `paint(PaintContext&)` override
 is optional — the default traversal handles UIView-backed widgets.
+
+When `UIViewNode::paint` walks an element with both a fill brush and
+a stroke (border), the SDF backend renders both bands from one
+`VisualCommand` — i.e. the DisplayList op set produced for that
+element is a single `Rect` / `RoundedRect` / `Ellipse` op with the
+border field populated, not a fill op followed by a stroked-path op.
+This is the §3.2 design of the render-redesign plan made concrete by
+the SDF spine. Widget subclasses that previously authored two style
+elements (one for fill, one for stroke) can collapse them into one.
 
 ### 3.7 `Container::onPaint` no longer does layout
 
@@ -808,6 +846,18 @@ public:
   defines the data structures; this plan defines when they are used.
   Migration tiers are aligned.
 
+- **`Direct-To-Drawable-And-SDF-Plan.md`** — Owns the compositor
+  backend that this plan's Paint phase emits into. The simple-shape
+  parts of that plan (Phase 6.1–6.3, 6.5, 6.8) are already in:
+  rect / rounded-rect / ellipse / shadow render via SDF in one draw
+  per primitive, with the border consolidated into the fill draw.
+  This plan inherits that contract — `Rectangle::rebuildContent`
+  authors one element per shape (not one for fill + one for stroke),
+  and the Paint-phase walk emits one `VisualCommand` per element
+  rather than two. As that plan adds more primitives (vector-path
+  edge AA in 6.4, bitmap improvements in 6.6, MSDF text in 6.7),
+  the Paint phase picks them up without lifecycle changes.
+
 - **`Animation-API-Simplification-Plan.md`** — The new `Animator` has
   a `tick()` method. This plan places `tick()` in Phase 1 and requires
   that animation values are written to a side table during Tick, read
@@ -818,7 +868,10 @@ public:
   invalidation model (Tier A) directly fixes the "every invalidate
   triggers a full paint" problem called out in that plan. The single
   `buildFrame()` entry point produces one display list per frame per
-  window, which is what the batched compositor scheduler wants.
+  window, which is what the batched compositor scheduler wants. With
+  the SDF spine in, the per-frame paint cost dropped from 39–95 ms to
+  ~2–8 ms; deferred invalidation now buys cleanliness more than
+  emergency throughput.
 
 ---
 
@@ -843,7 +896,12 @@ public:
    compositor pipeline latency. With one-frame-per-vsync and proper
    double/triple buffering in the compositor, warmup should be
    unnecessary. Verify with the single-surface rendering path before
-   removing.
+   removing. Note: the SDF pipeline's first draw triggers shader
+   compilation on some platforms; if that produces a perceived
+   first-frame stall, the answer is to compile the SDF pipeline at
+   `PipelineRegistry::initialize()` time (already the case) and
+   pre-warm with a 1×1 dummy draw at engine init, *not* to bring back
+   warmup frames at the lifecycle level.
 
 4. **`invalidateNow()` callers.** Grep for all callers of
    `invalidateNow()` in the codebase. Each one is a potential
@@ -858,7 +916,13 @@ public:
    sets `DirtyBits::Layout | Paint`, and the next `buildFrame()`
    handles it. The question is whether resize needs to be synchronous
    (to avoid one frame of stale content during a window drag) or
-   whether the vsync-paced frame is fast enough.
+   whether the vsync-paced frame is fast enough. With the SDF spine
+   in, the simple-primitive resize cost dropped roughly an order of
+   magnitude (no per-frame triangulator round-trip, no offscreen
+   texture rebuild on the no-effect path) — vsync-paced rendering is
+   far more likely to be sufficient than under the original profile.
+   Validate empirically on a 10-widget window resize before deciding
+   whether to introduce a synchronous resize escape hatch.
 
 ---
 
@@ -915,4 +979,15 @@ deferred invalidation fails. Window resize events arrive at high
 frequency and the user expects immediate visual feedback. If
 vsync-paced rendering produces visible lag during window drag, the
 resize path may need a synchronous `buildFrame()` call, making it the
-one exception to the deferred model.
+one exception to the deferred model. With the SDF spine, the per-frame
+budget that used to be 39–95 ms is now 2–8 ms, so the bar this
+synchronous escape hatch has to clear is much higher than under the
+original analysis.
+
+I am assuming that the SDF backend's invariants (the bordered shape
+emits a single VisualCommand; the triangulator is opened lazily) hold
+for every primitive widget the migration touches. The SVGView migration
+that landed alongside the SDF spine confirmed this for the public
+`Canvas::draw*` API. Any in-tree widget that bypasses Canvas and
+manipulates VisualCommand directly is a pre-flight checklist item for
+Tier B.

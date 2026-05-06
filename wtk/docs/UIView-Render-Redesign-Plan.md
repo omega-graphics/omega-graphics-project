@@ -10,6 +10,16 @@ UI Toolkit).
 compositor surface. Changing `StyleSheet` authoring syntax. Rewriting
 the layout solver itself (`Layout.h` / `resolveClampedRect` stay).
 
+**Compositor backend assumed by this plan:** the
+Direct-To-Drawable / SDF backend
+(see `Direct-To-Drawable-And-SDF-Plan.md`) is in for the simple
+primitives — Rect / RoundedRect / Ellipse / Shadow render as
+6-vertex SDF quads with their border consolidated into the same
+draw call (no separate stroke path). VectorPath / Bitmap still
+go through the GTE triangulator. The DrawOp design in §3.2
+mirrors that consolidated reality, not the prior fill-then-frame
+pair.
+
 ---
 
 ## 1. Why the current path has to go
@@ -62,6 +72,14 @@ Reading `UIView.Update.cpp:120-391`:
 None of the dirty flags are consulted to *skip* work — they exist,
 they flip, they are cleared. The "skip" branch only fires when
 `v2Elements.empty()`.
+
+(Note: the per-element border-as-separate-stroked-path emission that
+this monolith used to do is already retired by the SDF spine
+(`Direct-To-Drawable-And-SDF-Plan` §6.5). The Border now rides on the
+shape's `VisualCommand` and the compositor backend renders fill +
+border as one draw call. The redesign here is about restructuring
+*who emits commands and when*, not about further changing what a
+single command looks like.)
 
 ### 1.4 `localBoundsFromView` caches in a file-scope `unordered_map<UIView*, …>`
 
@@ -228,11 +246,34 @@ list — rather than a thing that owns rendering infrastructure.
 
 3. **`DisplayList`** — a frame-scoped flat vector of `DrawOp` structs
    plus a transform stack. One instance per frame per window.
-   `DrawOp` is a tagged union: `FillRect`, `FillRoundedRect`,
-   `FillEllipse`, `StrokePath`, `DrawText`, `PushTransform`,
-   `PopTransform`, `PushClip`, `PopClip`, `PushOpacity`, `PopOpacity`,
-   `PushEffect` (shadow/blur), `PopEffect`. No per-op resource
-   creation. Paint appends. Composition reads.
+   `DrawOp` is a tagged union shaped to mirror the post-SDF
+   compositor backend (one draw call per primitive, fill + border
+   consolidated, vector paths still tessellated):
+
+     - `Rect`, `RoundedRect`, `Ellipse` — each carries a fill brush
+       and an optional `Border { color, width }`. The compositor
+       backend renders these via the SDF pipeline; the DisplayList
+       does **not** emit a separate stroke op for the border, in
+       line with `Direct-To-Drawable-And-SDF-Plan.md` §6.5.
+     - `Shadow` — fill brush plus blur amount; soft Gaussian-ish
+       falloff handled by the SDF pipeline.
+     - `Path` — arbitrary `GVectorPath2D` with stroke / fill / both
+       attachments. Goes through the triangulator (lazy context).
+     - `Bitmap` — texture handle + dest rect (+ tint / source-rect /
+       nine-slice once `Direct-To-Drawable-And-SDF-Plan` §6.6
+       lands).
+     - `Text` — bitmap-text fallback today, MSDF text run after
+       `Direct-To-Drawable-And-SDF-Plan` §6.7.
+     - State ops: `PushTransform` / `PopTransform`, `PushClip` /
+       `PopClip`, `PushOpacity` / `PopOpacity`, `PushEffect`
+       (per-layer blur scratch) / `PopEffect`.
+
+   No per-op resource creation. Paint appends. Composition reads.
+   The DisplayList is the implementation-detail handoff to the
+   compositor backend's `BackendRenderTargetContext::renderToTarget`,
+   so its op set should track that surface — when the SDF plan
+   adds a new primitive (e.g. MSDF text run), the DisplayList gains
+   the matching op.
 
 4. **`FrameBuilder`** — replaces `UIView::update()` and the
    per-view composition session dance. One per window. Runs the three
@@ -387,6 +428,13 @@ management, no dirty-flag juggling, no sort, no clamp-to-parent logic
 `cache_`, it reads the already-arranged element rects, it appends
 `DrawOp`s to `pc.displayList`. Estimated size: **~80 lines**, down
 from ~390 in `UIView.Update.cpp`.
+
+A bordered shape — the most common UIView element — now appends
+exactly one op (`Rect` / `RoundedRect` / `Ellipse` with the border
+field set), not the prior fill-op + frame-path-op pair. A drop
+shadow on the same shape appends a `Shadow` op before the shape
+op. The previous walk emitted 2–3 visual commands per styled
+element; the new one emits 1–2.
 
 ### 3.9 Public API delta
 
@@ -557,7 +605,18 @@ codebase should override anything in §3:
   "per-command rendering" slot and partially the §2 "scheduler
   architecture" slot. Tier 1 removes the lane fragmentation that
   blocks §2. Tier 3 produces the one-display-list-per-frame snapshot
-  the batched scheduler wants.
+  the batched scheduler wants. The Tier 2 Phase 5 (SDF) work that
+  lives in `Direct-To-Drawable-And-SDF-Plan.md` already shipped for
+  simple primitives — the DisplayList ops in §3.2 are designed to
+  pass straight through to that backend.
+- **`Direct-To-Drawable-And-SDF-Plan.md`** — owns the compositor
+  backend this plan's `DisplayList` replays into. Phase 6.1–6.3,
+  6.5, and 6.8 of that plan are in: the simple-primitive draw ops
+  this plan defines (`Rect` / `RoundedRect` / `Ellipse` / `Shadow`
+  with optional border) execute as one SDF draw call each. As that
+  plan adds new primitives (vector-path edge AA in 6.4, bitmap
+  improvements in 6.6, MSDF text in 6.7), this plan's DrawOp set
+  picks up the new types.
 - **`Composition-Extension-Plan.md`** — orthogonal. The new
   `DrawOp` types are a superset of what `Canvas` exposes and will
   naturally pick up the Brush/Gradient improvements landing there.
@@ -589,3 +648,14 @@ can be retrofitted to drive a window-level `FrameBuilder` without
 rewriting every widget. If that assumption is wrong, Tier 4 has to
 become a larger plan that includes the widget paint lifecycle. That
 is worth confirming before Tier 3 lands.
+
+I am assuming the DisplayList replay maps cleanly onto the SDF
+backend's `BackendRenderTargetContext::renderToTarget` switch — i.e.
+that `DrawOp::Rect/RoundedRect/Ellipse/Shadow` with an optional border
+field translates 1:1 into `VisualCommand` types with the matching
+border slot populated, and that no other callers of `Canvas::drawRect`
+/ `drawRoundedRect` / `drawEllipse` rely on the prior
+fill-then-stroked-path behavior. SVGView was the last in-tree caller
+that was, and was already migrated alongside the SDF spine. Any
+out-of-tree consumer relying on that behavior is a pre-flight
+checklist item for Tier 3.
