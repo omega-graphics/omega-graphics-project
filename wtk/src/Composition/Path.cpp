@@ -8,7 +8,7 @@ namespace {
 constexpr float kPi = 3.14159265358979f;
 }
 
-    Path::Path(Point2D startPoint,unsigned initialStroke):
+    Path::Path(Point2D startPoint,float initialStroke):
     impl_(std::make_unique<Impl>()){
         impl_->currentStroke = initialStroke;
         impl_->arcPrecision = 1.f/100.f;
@@ -31,7 +31,7 @@ constexpr float kPi = 3.14159265358979f;
             return;
         }
 
-        const float halfStroke = float(impl_->currentStroke) * 0.5f;
+        const float halfStroke = impl_->currentStroke * 0.5f;
         const float nx = -dy / len;
         const float ny = dx / len;
         const float delta_x = nx * halfStroke;
@@ -65,7 +65,7 @@ constexpr float kPi = 3.14159265358979f;
         auto pivot_x = bounds.pos.x + (bounds.w/2.f);
         auto pivot_y = bounds.pos.y + (bounds.h/2.f);
 
-        auto width = float(impl_->currentStroke)/2.f;
+        auto width = impl_->currentStroke / 2.f;
 
         auto rad_x = bounds.w/2.f;
         auto rad_y = bounds.h/2.f;
@@ -93,7 +93,7 @@ constexpr float kPi = 3.14159265358979f;
 
     }
 
-    Path::Path(OmegaGTE::GVectorPath2D & path,unsigned stroke):
+    Path::Path(OmegaGTE::GVectorPath2D & path,float stroke):
     impl_(std::make_unique<Impl>()){
         impl_->currentStroke = stroke;
         impl_->arcPrecision = 1.f/100.f;
@@ -108,8 +108,8 @@ constexpr float kPi = 3.14159265358979f;
         }
     }
 
-    void Path::setStroke(unsigned int newStroke) {
-        assert(newStroke > 0 && "Stroke must be greater than 0");
+    void Path::setStroke(float newStroke) {
+        assert(newStroke >= 0.f && "Stroke must be non-negative");
         impl_->currentStroke = newStroke;
     };
 
@@ -144,7 +144,7 @@ constexpr float kPi = 3.14159265358979f;
         return result;
     }
 
-    Path Path::fromControlPoints(const OmegaCommon::Vector<Point2D> & points,unsigned stroke){
+    Path Path::fromControlPoints(const OmegaCommon::Vector<Point2D> & points,float stroke){
         if(points.empty()){
             return Path(Point2D{0.f,0.f},stroke);
         }
@@ -170,7 +170,7 @@ constexpr float kPi = 3.14159265358979f;
 
     Path::~Path() = default;
 
-    Core::SharedPtr<Path> RectFrame(Composition::Rect rect, unsigned width) {
+    Core::SharedPtr<Path> RectFrame(Composition::Rect rect, float width) {
         auto path = std::make_shared<Path>(
             Point2D{rect.pos.x, rect.pos.y},
             width);
@@ -181,7 +181,7 @@ constexpr float kPi = 3.14159265358979f;
         return path;
     }
 
-    Core::SharedPtr<Path> RoundedRectFrame(Composition::RoundedRect rect, unsigned width) {
+    Core::SharedPtr<Path> RoundedRectFrame(Composition::RoundedRect rect, float width) {
         float rad_x = rect.rad_x;
         float rad_y = rect.rad_y;
         if (rad_x > rect.w * 0.5f) rad_x = rect.w * 0.5f;
@@ -230,7 +230,7 @@ constexpr float kPi = 3.14159265358979f;
         return path;
     }
 
-    Core::SharedPtr<Path> EllipseFrame(Composition::Ellipse ellipse, unsigned width) {
+    Core::SharedPtr<Path> EllipseFrame(Composition::Ellipse ellipse, float width) {
         Rect bounds{
             {ellipse.x - ellipse.rad_x, ellipse.y - ellipse.rad_y},
             ellipse.rad_x * 2.f,

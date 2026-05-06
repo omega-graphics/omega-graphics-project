@@ -16,7 +16,7 @@ struct Path::Impl {
             : path(startPoint), final_path_a(startPoint), final_path_b(startPoint) {}
     };
     OmegaCommon::Vector<Segment> segments;
-    unsigned currentStroke;
+    float currentStroke;
     float arcPrecision;
     Core::SharedPtr<Brush> pathBrush;
 };

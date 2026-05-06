@@ -285,7 +285,8 @@ struct SVGDrawOp {
         RoundedRect,
         Ellipse,
         Path,
-        Line
+        Line,
+        Polyline
     };
 
     Type type;
@@ -294,6 +295,14 @@ struct SVGDrawOp {
     Composition::RoundedRect roundedRectGeom {};
     Composition::Ellipse ellipseGeom {};
     Core::Optional<Composition::Path> pathGeom;
+
+    // Geometry for Line / Polyline ops.
+    Composition::Point2D lineFrom {};
+    Composition::Point2D lineTo {};
+    OmegaCommon::Vector<Composition::Point2D> polyPoints {};
+    /// True for `<polygon>` (last vertex connects back to the first),
+    /// false for `<polyline>`.
+    bool polyClosed = false;
 
     Composition::Color fillColor {};
     float fillOpacity = 1.f;
@@ -404,11 +413,12 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
         float y1 = parseFloatAttr(tag, "y1");
         float x2 = parseFloatAttr(tag, "x2");
         float y2 = parseFloatAttr(tag, "y2");
-        op.type = SVGDrawOp::Type::Path;
-        Composition::Path p(Composition::Point2D{x1, flipY(y1, svgH)});
-        p.addLine(Composition::Point2D{x2, flipY(y2, svgH)});
-        op.pathGeom.emplace(std::move(p));
+        op.type = SVGDrawOp::Type::Line;
+        op.lineFrom = Composition::Point2D{x1, flipY(y1, svgH)};
+        op.lineTo   = Composition::Point2D{x2, flipY(y2, svgH)};
         parseStyleAttrs(tag, op);
+        // `<line>` has no fill — only the stroke is meaningful.
+        op.fillOpacity = 0.f;
         if (op.strokeWidth == 0.f)
             op.strokeWidth = 1.f;
         ops.push_back(std::move(op));
@@ -417,14 +427,13 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
         auto pts = parsePointsList(OmegaCommon::String(tag.attribute("points")), svgH);
         if (pts.size() >= 2) {
             SVGDrawOp op {};
-            op.type = SVGDrawOp::Type::Path;
-            Composition::Path p(pts[0]);
-            for (size_t i = 1; i < pts.size(); ++i)
-                p.addLine(pts[i]);
-            if (name == "polygon")
-                p.close();
-            op.pathGeom.emplace(std::move(p));
+            op.type = SVGDrawOp::Type::Polyline;
+            op.polyPoints = std::move(pts);
+            op.polyClosed = (name == "polygon");
             parseStyleAttrs(tag, op);
+            // `<polyline>` has no implicit fill — only `<polygon>` does.
+            if (name == "polyline")
+                op.fillOpacity = 0.f;
             ops.push_back(std::move(op));
         }
     }
@@ -617,23 +626,63 @@ void SVGView::renderNow() {
             }
             break;
         }
+        case SVGDrawOp::Type::Line: {
+            if (hasStroke) {
+                Composition::Color sc = op.strokeColor;
+                sc.a = op.strokeOpacity;
+                auto strokeBrush = Composition::ColorBrush(sc);
+                svgCanvas->drawLine(op.lineFrom, op.lineTo,
+                                    strokeBrush, op.strokeWidth);
+            }
+            break;
+        }
+        case SVGDrawOp::Type::Polyline: {
+            Core::SharedPtr<Composition::Brush> strokeBrush;
+            if (hasStroke) {
+                Composition::Color sc = op.strokeColor;
+                sc.a = op.strokeOpacity;
+                strokeBrush = Composition::ColorBrush(sc);
+            }
+            Core::Optional<Core::SharedPtr<Composition::Brush>> fillBrush;
+            if (hasFill && op.polyClosed) {
+                // Only `<polygon>` has a fillable interior; `<polyline>` is
+                // stroke-only by SVG semantics (the parser zeroes its fill
+                // opacity, so this branch is naturally skipped for it).
+                fillBrush = makeFillBrush();
+            }
+            if (strokeBrush != nullptr || fillBrush.has_value()) {
+                svgCanvas->drawPolyline(op.polyPoints,
+                                        strokeBrush,
+                                        op.strokeWidth,
+                                        op.polyClosed,
+                                        fillBrush);
+            }
+            break;
+        }
         case SVGDrawOp::Type::Path: {
             if (op.pathGeom.has_value()) {
                 auto & p = op.pathGeom.value();
-                if (hasFill) {
-                    auto brush = makeFillBrush();
-                    p.setPathBrush(brush);
-                    // Fill path has to be drawn with 
-                    p.setStroke(1);
-                    svgCanvas->drawPath(p);
-                }
+                // Phase 6.5: route fill + stroke through a single SDF
+                // draw call with two color attachments, matching the
+                // rect / rounded-rect / ellipse path. The prior
+                // implementation issued two `drawPath` calls (one for
+                // fill, one for stroke), and the fill call rode the
+                // stroke pipeline with width 1, which silently turned
+                // SVG fills into 1px outlines.
+                Core::Optional<Composition::Border> border;
                 if (hasStroke) {
                     Composition::Color sc = op.strokeColor;
                     sc.a = op.strokeOpacity;
                     auto strokeBrush = Composition::ColorBrush(sc);
-                    p.setPathBrush(strokeBrush);
-                    p.setStroke(static_cast<unsigned>(op.strokeWidth));
-                    svgCanvas->drawPath(p);
+                    border = Composition::Border{strokeBrush,
+                            static_cast<unsigned>(op.strokeWidth)};
+                }
+                if (hasFill) {
+                    auto brush = makeFillBrush();
+                    p.setPathBrush(brush);
+                }
+                if (hasFill || hasStroke) {
+                    svgCanvas->drawPath(p, border);
                 }
             }
             break;

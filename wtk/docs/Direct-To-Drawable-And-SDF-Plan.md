@@ -574,12 +574,32 @@ Three problems:
 [canvas-cpp-3]: ../src/Composition/Canvas.cpp
 
 The fix: per-font **MSDF glyph atlases**. Glyph outlines are extracted
-from the platform font (DWrite `IDWriteFontFace::GetGlyphRunOutline`,
-Core Text `CTFontCreatePathForGlyph`, FreeType `FT_Outline_*`) and
-rasterized into a multi-channel signed distance field (RGB encodes 3
-distance channels; the fragment shader takes the median for fill
-coverage, which preserves sharp corners that single-channel SDF
-rounds off — Chlumsky's msdfgen approach).
+from the platform font and rasterized into a multi-channel signed
+distance field (RGB encodes 3 distance channels; the fragment shader
+takes the median for fill coverage, which preserves sharp corners that
+single-channel SDF rounds off — Chlumsky's msdfgen approach).
+
+Per-platform outline extraction:
+
+- **DX (Windows).** `IDWriteFontFace::GetGlyphRunOutline` into a custom
+  `IDWriteGeometrySink` that records the contour for msdfgen. Direct
+  path; the existing `DWriteFontEngine` already holds the font face.
+- **Metal (macOS).** `CTFontCreatePathForGlyph` returns a `CGPathRef`;
+  walk it via `CGPathApply` and translate the elements into msdfgen
+  contours. Direct path; the existing `CTFontEngine` already holds the
+  `CTFontRef`.
+- **VK (Linux).** Despite the file name, the Linux backend
+  ([`vk/HarfbuzzFontEngine.cpp`](../src/Composition/backend/vk/HarfbuzzFontEngine.cpp))
+  is actually **Pango + Cairo + FontConfig**. `HarfBuzzFont` wraps a
+  `PangoFontDescription`, not a HarfBuzz `hb_font_t`. To get to
+  outlines we descend through PangoFc to FreeType:
+  `PangoFontMap` (default Cairo font map) → `pango_context_load_font(desc)`
+  → `pango_fc_font_lock_face(PANGO_FC_FONT(...))` → `FT_Face`. Then per
+  glyph: `FT_Load_Glyph(face, glyphId, FT_LOAD_NO_BITMAP | FT_LOAD_NO_HINTING)`
+  → `FT_Outline_Decompose` with a callback set that emits msdfgen
+  contour primitives. Release with `pango_fc_font_unlock_face` after
+  the rasterization completes. The HarfBuzz/FreeType pair lives inside
+  Pango; we don't need to construct an `hb_font_t` ourselves.
 
 #### 6.7.1 Atlas
 
@@ -587,7 +607,9 @@ rounds off — Chlumsky's msdfgen approach).
 |------|--------|
 | New: `wtk/src/Composition/backend/GlyphAtlas.{h,cpp}` | Declare `class GlyphAtlas`. One atlas per `Font`. Lazy-populated: glyph IDs not yet present in the atlas trigger an MSDF rasterization on the *main thread* (atlas update has to coordinate with GPU sampling) and a sub-region update of the atlas texture. Fields: `SharedHandle<GETexture> texture`, `Map<glyphId, AtlasGlyph>` (each `AtlasGlyph` carries the UV rect and the metric offsets needed for layout). |
 | `wtk/include/omegaWTK/Composition/FontEngine.h` `Font` | Add `GlyphAtlas & atlas()`. The atlas lives on the font; the platform `FontEngine` constructs the font with an empty atlas and MSDF rasterization function pointer (per-platform). |
-| Per-platform: `wtk/src/Composition/backend/dx/DWriteFontEngine.cpp`, `mtl/CTFontEngine.mm`, `vk/HarfbuzzFontEngine.cpp` | Add a `rasterizeGlyphMSDF(glyphId, atlasCellSize, outBuffer)` implementation. The platform extracts the glyph outline, then runs msdfgen (vendored or reimplemented) on it. |
+| `wtk/src/Composition/backend/dx/DWriteFontEngine.cpp` | `DWriteFont::rasterizeGlyphMSDF`: `IDWriteFontFace::GetGlyphRunOutline` into an `IDWriteGeometrySink` adapter that emits msdfgen contour primitives; run msdfgen; copy the resulting RGB distance field into `outBuffer`. |
+| `wtk/src/Composition/backend/mtl/CTFontEngine.mm` | `CTFont::rasterizeGlyphMSDF`: `CTFontCreatePathForGlyph` → `CGPathApply` to walk path elements → msdfgen contour primitives; run msdfgen; copy into `outBuffer`. |
+| `wtk/src/Composition/backend/vk/HarfbuzzFontEngine.cpp` | `HarfBuzzFont::rasterizeGlyphMSDF`: load the `FT_Face` for this `PangoFontDescription` via the PangoFc descent above, `FT_Load_Glyph(... FT_LOAD_NO_BITMAP | FT_LOAD_NO_HINTING)`, `FT_Outline_Decompose` with a callback that emits msdfgen contour primitives; run msdfgen; `pango_fc_font_unlock_face`; copy into `outBuffer`. The `FT_Face` lock/unlock pair must wrap each rasterization; the face is shared with Pango's own rendering. |
 
 Atlas size: start at 1024×1024 (room for ~1000 glyphs at 32×32 cells)
 and grow / page out via LRU when full.
@@ -596,11 +618,49 @@ and grow / page out via LRU when full.
 
 | File | Change |
 |------|--------|
-| `wtk/include/omegaWTK/Composition/Canvas.h` | Add a new `VisualCommand::Type::TextRun` variant whose params carry the glyph IDs, per-glyph positions, and a font handle (for atlas lookup). Keep `Text` as an alias / fallback for the bitmap path. |
-| `wtk/src/Composition/Canvas.cpp` `drawText` | Replace the `TextRect → drawRun → toBitmap → drawGETexture` chain with: shape via the existing `GlyphRun`, then for each glyph emit a positioned quad against the font's atlas. The visual command carries the glyph quads + the atlas texture handle. |
+| `wtk/include/omegaWTK/Composition/Canvas.h` | Add a new `VisualCommand::Type::TextRun` variant whose params carry **a list of sub-runs**, each `{ resolvedFont, glyphIds, perGlyphPositions }`. One sub-run per resolved face after the layout engine's font fallback (see note below). Keep `Text` as an alias / fallback for the bitmap path. |
+| `wtk/src/Composition/Canvas.cpp` `drawText` | Replace the `TextRect → drawRun → toBitmap → drawGETexture` chain with: shape the run, then for each glyph emit a positioned quad against the *resolved* font's atlas. The visual command carries the per-sub-run glyph quads + the atlas texture handle for each. Shaping is per-platform — see the per-engine notes below; today's `GlyphRun` is a placeholder on macOS / Linux (it stores the string + font but doesn't produce glyph IDs), so each engine grows a `GlyphRun::shape()` that populates `(resolvedFont, glyphId, x, y, advance)` tuples before quad emission. |
+| `wtk/src/Composition/backend/dx/DWriteFontEngine.cpp` `DWriteGlyphRun::shape` | Use DWrite shaping with fallback: `IDWriteTextAnalyzer::GetGlyphs` against the requested font; for clusters that map to `.notdef` (glyph 0), invoke `IDWriteFontFallback::MapCharacters` to resolve a substitute face, then re-shape that range against the substitute. Emit one sub-run per resolved face. Each sub-run's glyph IDs are valid only against its own face's atlas. |
+| `wtk/src/Composition/backend/mtl/CTFontEngine.mm` `CTGlyphRun::shape` | Use `CTLine` / `CTRun`. Core Text already performs font fallback as part of line construction — `CTLineGetGlyphRuns` returns one `CTRun` per resolved face. Walk the array; per run, call `CTRunGetAttributes` → `kCTFontAttributeName` to recover the resolved `CTFontRef`, then `CTRunGetGlyphs` / `CTRunGetPositions` / `CTRunGetAdvances`. Emit one sub-run per `CTRun`. |
+| `wtk/src/Composition/backend/vk/HarfbuzzFontEngine.cpp` `HarfBuzzGlyphRun::shape` | Lift shaping out of `drawRun`. Build the `PangoLayout` once (font + text), call `pango_layout_get_lines_readonly`, walk each `PangoLayoutLine::runs` → `PangoLayoutRun::glyphs` (a `PangoGlyphString`). Pango/PangoFc resolves fallback at run granularity already — `PangoLayoutRun::item->analysis.font` is the resolved `PangoFont` for that run's substring (which may differ from the layout's font description). Group runs by resolved `PangoFont` and surface one sub-run per group, each with its `(glyph, geometry.x_offset, geometry.y_offset, geometry.width)` tuples. The `geometry.width` is in Pango units (`/ PANGO_SCALE` for pixels). Existing layout-time properties (alignment, wrap, line limit) still apply — the layout produces correctly positioned glyphs, we just consume the result before Cairo would have rasterized it. |
 | `wtk/src/Composition/backend/shaders/sdf.omegasl` | Add a fragment function `msdfTextFragment` that samples the MSDF, computes the median of the three channels, applies a screen-space derivative for AA width (`fwidth(median)`) and `smoothstep`s. Outputs the text color × coverage × `currentOpacity`. |
 | `wtk/src/Composition/backend/Pipeline.{h,cpp}` | Add `text_` render pipeline state. The vertex layout is `(position, atlasUV)` per glyph quad; uniform / per-draw constants carry the text color. |
-| `wtk/src/Composition/backend/RenderTarget.cpp` `VisualCommand::TextRun` case | Iterate the glyphs; emit one 6-vertex quad per glyph with the atlas UV rect from `font->atlas().lookup(glyphId)`. Bind the atlas texture once per draw (one draw per glyph run). |
+| `wtk/src/Composition/backend/RenderTarget.cpp` `VisualCommand::TextRun` case | Iterate sub-runs; for each, bind the resolved font's atlas and emit one 6-vertex quad per glyph with the atlas UV rect from `subRun.resolvedFont->atlas().lookup(glyphId)`. **One draw call per sub-run, not per text run** — a string that mixes Latin and CJK against a Latin-primary font produces (typically) two draws. |
+
+##### Font fallback and multi-atlas runs
+
+The native layout engines remain authoritative for layout — line
+breaking, BiDi, kerning, complex-script shaping, *and* font fallback.
+A glyph that is missing in the requested face (e.g. CJK text against a
+Latin-primary `Font`) is satisfied by the platform's fallback face,
+not by any new logic in WTK. The MSDF path is downstream of that
+substitution: each resolved face owns its own `GlyphAtlas`, keyed by
+the platform's font handle (DWrite `IDWriteFontFace*`, Core Text
+`CTFontRef`, Pango `PangoFont*`).
+
+Implications:
+
+- The `Font` factory must be able to materialize a WTK `Font` from a
+  *platform-resolved* face that the layout engine produced
+  internally, not just from an explicit `FontDescriptor`. Add a
+  `FontEngine::adoptResolvedFace(nativeHandle)` returning a cached
+  `SharedPtr<Font>`. The cache is keyed by native handle so repeated
+  fallback to the same substitute face shares one `Font` and one
+  atlas across the process.
+- A `TextRun` visual command holds **one atlas-texture binding per
+  sub-run**. The render path issues one draw per sub-run; sub-runs
+  are not coalesced across faces because their atlas textures differ.
+- Atlas-population is per resolved face, not per requested face.
+  Cold-start cost of a Latin+CJK string against a Latin font is
+  paid against the CJK fallback face's atlas the first time those
+  glyphs appear, independent of whether anything else in the app has
+  touched that fallback.
+- The fallback-vs-MSDF detection in §6.7.4 runs on each resolved face
+  at adoption time, not just on user-constructed fonts. A Latin-MSDF
+  primary face plus a color-emoji fallback face cleanly produces a
+  `TextRun` with one MSDF sub-run and one bitmap-fallback sub-run in
+  the same string; the render path dispatches them to the
+  appropriate pipelines.
 
 #### 6.7.3 Bonus: free outlines, glow, drop-shadow
 
@@ -616,9 +676,32 @@ API surface can light it up.
 For fonts whose outlines can't be extracted (rare on modern systems —
 mostly bitmap-only fonts and color emoji fonts), the existing
 `TextRect` → `drawGETexture` path stays as a fallback. The
-`FontEngine::makeFont(...)` factory checks whether the platform face
-has extractable outlines and chooses MSDF or bitmap accordingly. The
-two paths are mutually exclusive per font; nothing else changes.
+`FontEngine::CreateFont(...)` factory checks at construction time
+whether the platform face has extractable outlines and stamps the
+choice on the `Font` for its lifetime. Per-platform detection:
+
+- **DWrite.** `IDWriteFontFace1::IsMonochromatic` is *not* the right
+  check (it reports glyph color, not vector availability). Probe with
+  `IDWriteFontFace::GetGlyphRunOutline` against a representative glyph
+  (e.g. 'A' or `.notdef`) and an empty geometry sink; if the call
+  succeeds and the sink received any segments, outlines are
+  extractable. Color fonts (COLR/CPAL, sbix) typically still expose
+  vector outlines and thus stay on the MSDF path; bitmap-only fonts
+  (`EBDT`/`EBLC` only) flunk the probe.
+- **Core Text.** `CTFontCopyTraits` returns the symbolic traits dict;
+  bitmap-only faces are vanishingly rare on macOS, but the safe check
+  is `CTFontCreatePathForGlyph(...) != NULL` for a probe glyph. Apple
+  Color Emoji fails this and routes to the fallback.
+- **PangoFc / FreeType.** After locking the `FT_Face`, check
+  `FT_HAS_COLOR(face)` and `(face->face_flags & FT_FACE_FLAG_SCALABLE)`.
+  A face that has color tables but is also scalable (e.g. some COLRv1
+  fonts) stays on MSDF; a face that lacks `FT_FACE_FLAG_SCALABLE`
+  (bitmap-only — e.g. legacy CJK bitmap fonts, some emoji fonts on
+  older systems) routes to the fallback. Unlock the face after the
+  probe.
+
+The two paths are mutually exclusive per font; the choice is logged
+once at font construction (`MSDF` vs `BitmapFallback`).
 
 ### 6.8 Tessellation engine context lifecycle [DONE]
 
@@ -816,6 +899,21 @@ longer need the tessellation context. Audit:
   the GPU isn't sampling from a region under modification. Validate
   no race between "atlas needs new glyph" and "compositor already
   recorded a draw that samples it."
+- **PangoFc `FT_Face` lock contention.** On Linux, `pango_fc_font_lock_face`
+  serializes access to the underlying `FT_Face` against Pango's own
+  rendering. Holding the lock for the full msdfgen pass (potentially
+  milliseconds for complex glyphs) blocks any concurrent Pango
+  rasterization on the same face. Mitigation: lock only across the
+  `FT_Load_Glyph` + `FT_Outline_Decompose` window, copy the
+  decomposed contours into a heap-owned msdfgen `Shape`, unlock, then
+  run msdfgen on the copy. The lock window is then proportional to
+  outline complexity, not distance-field rasterization cost.
+- **HarfbuzzFontEngine.cpp file name is misleading.** The file
+  implements Pango + Cairo + FontConfig; raw HarfBuzz is reached only
+  transitively through Pango. Once MSDF lands, the actual HarfBuzz /
+  FreeType usage is still indirect (PangoFc → `FT_Face`). Renaming to
+  `PangoFontEngine.cpp` would reflect reality but is not part of this
+  plan; flag it as a follow-up cleanup.
 - **MSDF cell size vs visual quality trade-off.** Too small (16×16) and
   fine details disappear in the median-of-three encoding; too large
   (128×128) and the atlas runs out of room or the rasterization is

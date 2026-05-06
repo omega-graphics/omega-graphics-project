@@ -239,6 +239,17 @@ namespace OmegaWTK {
         void drawPath(Path & path);
 
         /**
+         @brief Draw a Path with a fill and an optional border in a single
+         draw call.
+         @param path The Path. Its `pathBrush` is used as the fill brush
+         (a null `pathBrush` means no fill).
+         @param border Optional border (brush + width) drawn as the stroke
+         band along the path silhouette. Routed through the same
+         dual-attachment tessellation pass as the fill.
+         */
+        void drawPath(Path & path, Core::Optional<Border> border);
+
+        /**
          @brief Draw a Rect.
          @param rect The Rect.
          @param brush The Brush to fill the Rect with.
@@ -267,6 +278,33 @@ namespace OmegaWTK {
         void drawEllipse(Composition::Ellipse & ellipse,
                          Core::SharedPtr<Brush> & brush,
                          Core::Optional<Border> border = std::nullopt);
+
+        /**
+         @brief Draw a single straight line segment.
+         @param from Start point in canvas space.
+         @param to End point in canvas space.
+         @param brush Stroke brush.
+         @param strokeWidth Stroke width in pixels (must be > 0).
+         */
+        void drawLine(Composition::Point2D from,
+                      Composition::Point2D to,
+                      Core::SharedPtr<Brush> & brush,
+                      float strokeWidth = 1.f);
+
+        /**
+         @brief Draw a connected polyline through a sequence of points.
+         @param points The vertex list. Needs at least two points.
+         @param strokeBrush Stroke brush. Pass nullptr (with no fill) to skip.
+         @param strokeWidth Stroke width in pixels.
+         @param closed If true, connect the last point back to the first.
+         @param fillBrush Optional fill brush; only meaningful when the
+         polyline is closed (or self-closing).
+         */
+        void drawPolyline(const OmegaCommon::Vector<Composition::Point2D> & points,
+                          Core::SharedPtr<Brush> & strokeBrush,
+                          float strokeWidth,
+                          bool closed = false,
+                          Core::Optional<Core::SharedPtr<Brush>> fillBrush = std::nullopt);
 
         /**
          @brief Draw text into a rectangle.

@@ -49,7 +49,45 @@ namespace OmegaWTK::Composition {
         static Color create16Bit(std::uint16_t r,std::uint16_t g,std::uint16_t b,std::uint16_t a);
         static Color create16Bit(std::uint64_t rgb,std::uint16_t alpha = 0xFFFF);
         static Color create32Bit(std::uint32_t r,std::uint32_t g,std::uint32_t b,std::uint32_t a);
+
+        /// @brief Construct a color from HSL.
+        /// @param h Hue in degrees, [0, 360). Negative values wrap.
+        /// @param s Saturation in [0, 1].
+        /// @param l Lightness in [0, 1].
+        /// @param a Alpha in [0, 1].
+        static Color fromHSL(float h,float s,float l,float a = 1.f);
+
+        /// @brief Construct a color from HSV.
+        /// @param h Hue in degrees, [0, 360). Negative values wrap.
+        /// @param s Saturation in [0, 1].
+        /// @param v Value in [0, 1].
+        /// @param a Alpha in [0, 1].
+        static Color fromHSV(float h,float s,float v,float a = 1.f);
+
+        /// @brief Per-channel linear interpolation between two colors.
+        /// @param t Blend factor in [0, 1] (clamped).
+        static Color lerp(const Color & a,const Color & b,float t);
+
+        /// @brief Return a copy with the given alpha (other channels preserved).
+        Color withAlpha(float newAlpha) const;
+
+        /// @brief Lerp this color toward white by `amount` in [0, 1].
+        Color lighter(float amount = 0.2f) const;
+
+        /// @brief Lerp this color toward black by `amount` in [0, 1].
+        Color darker(float amount = 0.2f) const;
+
+        /// Named constants — opaque RGB.
         static const Color Transparent;
+        static const Color Black;
+        static const Color White;
+        static const Color Red;
+        static const Color Green;
+        static const Color Blue;
+        static const Color Yellow;
+        static const Color Orange;
+        static const Color Purple;
+
         ~Color() = default;
     };
 

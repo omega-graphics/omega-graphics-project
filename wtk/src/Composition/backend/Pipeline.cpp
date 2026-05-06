@@ -68,6 +68,7 @@ namespace OmegaWTK::Composition {
         color_.reset();
         texture_.reset();
         sdf_.reset();
+        path_.reset();
         linearGradient_.reset();
         gaussianBlurH_.reset();
         gaussianBlurV_.reset();
@@ -187,6 +188,26 @@ namespace OmegaWTK::Composition {
         else {
             sdf_.reset();
             std::cout << "SDF render pipeline is unavailable." << std::endl;
+        }
+
+        // Path render pipeline (Phase 6.4). Drives `VisualCommand::VectorPath`
+        // draws via per-vertex (edgeDistance, attachmentTag) varyings — the
+        // fragment shader derives a 1-pixel `smoothstep` AA band from
+        // `fwidth(edgeDist)`. Same alpha-over blend setup as the SDF
+        // pipeline because the path now produces fractional coverage at
+        // the silhouette and pixels outside the silhouette must preserve
+        // the destination.
+        renderPipelineDescriptor.vertexFunc = getShader("pathVertex");
+        renderPipelineDescriptor.fragmentFunc = getShader("pathFragment");
+        if(renderPipelineDescriptor.vertexFunc != nullptr && renderPipelineDescriptor.fragmentFunc != nullptr){
+            path_ = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
+            if(path_ == nullptr){
+                std::cout << "Path render pipeline creation failed." << std::endl;
+            }
+        }
+        else {
+            path_.reset();
+            std::cout << "Path render pipeline is unavailable." << std::endl;
         }
 
         // Reset blend state for any subsequently-created pipelines in

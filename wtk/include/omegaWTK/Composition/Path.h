@@ -15,13 +15,15 @@ class OMEGAWTK_EXPORT  Path {
     std::unique_ptr<Impl> impl_;
 
     /// Construct from a raw GTE vector path (Canvas-only).
-    explicit Path(OmegaGTE::GVectorPath2D & path,unsigned stroke = 1);
+    explicit Path(OmegaGTE::GVectorPath2D & path,float stroke = 1.f);
 
 public:
     /// A New Segment is Created
     void goTo(Point2D pt);
 
-    void setStroke(unsigned newStroke);
+    /// Set the stroke width in pixels. Width 0 means "no stroke" (callers
+    /// that pass the path to `drawPath(Path&)` get a fill-only draw).
+    void setStroke(float newStroke);
 
     void setPathBrush(Core::SharedPtr<Brush> & brush);
 
@@ -40,18 +42,18 @@ public:
     OmegaCommon::Vector<Point2D> getControlPoints() const;
 
     /// Build a linear path through the given control points.
-    static Path fromControlPoints(const OmegaCommon::Vector<Point2D> & points,unsigned stroke = 1);
+    static Path fromControlPoints(const OmegaCommon::Vector<Point2D> & points,float stroke = 1.f);
 
-    explicit Path(Point2D start,unsigned initialStroke = 1);
+    explicit Path(Point2D start,float initialStroke = 1.f);
     Path(Path && other) noexcept;
     Path & operator=(Path && other) noexcept;
     Path(const Path & other);
     Path & operator=(const Path & other);
     ~Path();
 };
-Core::SharedPtr<Path> RectFrame(Composition::Rect rect,unsigned width);
-Core::SharedPtr<Path> RoundedRectFrame(Composition::RoundedRect rect,unsigned width);
-Core::SharedPtr<Path> EllipseFrame(Composition::Ellipse ellipse,unsigned width);
+Core::SharedPtr<Path> RectFrame(Composition::Rect rect,float width);
+Core::SharedPtr<Path> RoundedRectFrame(Composition::RoundedRect rect,float width);
+Core::SharedPtr<Path> EllipseFrame(Composition::Ellipse ellipse,float width);
 
 };
 

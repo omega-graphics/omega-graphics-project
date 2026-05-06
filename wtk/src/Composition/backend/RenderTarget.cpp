@@ -749,6 +749,7 @@ void BackendRenderTargetContext::resetElementState() {
         auto bufferWriter = pipelines.bufferWriter();
         auto renderPipelineState = pipelines.color();
         auto textureRenderPipelineState = pipelines.texture();
+        auto pathRenderPipelineState = pipelines.path();
         // Phase 6.8: tessellationContext_ is no longer required at this
         // gate. SDF primitives (Rect/RoundedRect/Ellipse/Shadow with
         // color brush) and per-element state ops (SetTransform /
@@ -781,8 +782,18 @@ void BackendRenderTargetContext::resetElementState() {
 
         size_t struct_size;
         bool useTextureRenderPipeline = false;
+        bool usePathRenderPipeline = false;
         float textureCoordDenomW = 1.f;
         float textureCoordDenomH = 1.f;
+        // Per-vertex attachment tagging for the path pipeline (Phase 6.4).
+        // The triangulator emits stroke triangles using attachments[0]'s
+        // color and fill triangles using attachments[1]'s color, so the
+        // tag is recovered by exact-color match against these two values
+        // in the vertex authoring lambda below.
+        OmegaGTE::FVec<4> pathStrokeColor = OmegaGTE::FVec<4>::Create();
+        OmegaGTE::FVec<4> pathFillColor   = OmegaGTE::FVec<4>::Create();
+        bool pathHasStrokeColor = false;
+        bool pathHasFillColor   = false;
 
         SharedHandle<OmegaGTE::GETexture> texturePaint;
 
@@ -971,26 +982,45 @@ void BackendRenderTargetContext::resetElementState() {
                                                                                  _params.fill);
                 // First attachment: stroke color.
                 auto strokeColor = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
+                bool hasStrokeColor = false;
                 if(_params.brush != nullptr && _params.brush->type == Brush::Type::Color){
                     strokeColor = OmegaGTE::makeColor(_params.brush->color.r,
                                                       _params.brush->color.g,
                                                       _params.brush->color.b,
                                                       _params.brush->color.a);
+                    hasStrokeColor = true;
                 }
                 te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(strokeColor));
 
                 // Second attachment: fill color.
+                auto fillColor = OmegaGTE::FVec<4>::Create();
+                bool hasFillColor = false;
                 if(_params.fill && _params.fillBrush != nullptr && _params.fillBrush->type == Brush::Type::Color){
-                    auto fillColor = OmegaGTE::makeColor(_params.fillBrush->color.r,
-                                                         _params.fillBrush->color.g,
-                                                         _params.fillBrush->color.b,
-                                                         _params.fillBrush->color.a);
+                    fillColor = OmegaGTE::makeColor(_params.fillBrush->color.r,
+                                                    _params.fillBrush->color.g,
+                                                    _params.fillBrush->color.b,
+                                                    _params.fillBrush->color.a);
+                    hasFillColor = true;
                     te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(fillColor));
                 }
 
                 result = tessellationContext_->triangulateSync(te_params,
                                                                   OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,
                                                                   &viewPort);
+
+                // Phase 6.4: route the dual-attachment mesh through the
+                // path pipeline so the fragment shader can consume the
+                // per-vertex (edgeDistance, attachmentTag) varying. Falls
+                // back to the flat color pipeline when the path pipeline
+                // failed to compile (e.g. shader not present in the
+                // library), so the visual still renders.
+                if(pathRenderPipelineState != nullptr){
+                    usePathRenderPipeline = true;
+                    pathStrokeColor   = strokeColor;
+                    pathHasStrokeColor = hasStrokeColor;
+                    pathFillColor    = fillColor;
+                    pathHasFillColor  = hasFillColor;
+                }
                 break;
             }
             case VisualCommand::Shadow: {
@@ -1050,6 +1080,10 @@ void BackendRenderTargetContext::resetElementState() {
                 return;
             }
             struct_size = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4,OMEGASL_FLOAT2,OMEGASL_FLOAT2});
+        }
+        else if(usePathRenderPipeline){
+            // Path pipeline (Phase 6.4) — vertex layout `(pos, color, edgeTag)`.
+            struct_size = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4,OMEGASL_FLOAT4,OMEGASL_FLOAT4});
         }
         else {
             if(renderPipelineState == nullptr){
@@ -1117,6 +1151,32 @@ void BackendRenderTargetContext::resetElementState() {
             bufferWriter->sendToBuffer();
         };
 
+        auto writePathVertexToBuffer = [&](OmegaGTE::GPoint3D & pt,
+                                           OmegaGTE::FVec<4> color,
+                                           float edgeDist,
+                                           float attachmentTag){
+            auto pos = OmegaGTE::FVec<4>::Create();
+            pos[0][0] = pt.x;
+            pos[1][0] = pt.y;
+            pos[2][0] = pt.z;
+            pos[3][0] = 1.f;
+            applyTransform(pos);
+            if(opacityMul < 1.f){
+                color[3][0] *= opacityMul;
+            }
+            auto edgeTag = OmegaGTE::FVec<4>::Create();
+            edgeTag[0][0] = edgeDist;
+            edgeTag[1][0] = attachmentTag;
+            edgeTag[2][0] = 0.f;
+            edgeTag[3][0] = 0.f;
+            bufferWriter->structBegin();
+            bufferWriter->writeFloat4(pos);
+            bufferWriter->writeFloat4(color);
+            bufferWriter->writeFloat4(edgeTag);
+            bufferWriter->structEnd();
+            bufferWriter->sendToBuffer();
+        };
+
          auto writeTexVertexToBuffer = [&](OmegaGTE::GPoint3D & pt,OmegaGTE::FVec<2> coord){
             auto normalizedCoord = OmegaGTE::FVec<2>::Create();
             float u = coord[0][0];
@@ -1158,6 +1218,15 @@ void BackendRenderTargetContext::resetElementState() {
         fallbackTexCoord[0][0] = 0.f;
         fallbackTexCoord[1][0] = 0.f;
 
+        // Color match for path attachment tagging. Stroke triangles wear
+        // attachments[0]'s color exactly; fill triangles wear
+        // attachments[1]'s. Bit-exact equality is fine because both came
+        // from the same `OmegaGTE::makeColor` call we made above.
+        auto colorEq = [](const OmegaGTE::FVec<4> & a, const OmegaGTE::FVec<4> & b){
+            return a[0][0] == b[0][0] && a[1][0] == b[1][0]
+                && a[2][0] == b[2][0] && a[3][0] == b[3][0];
+        };
+
         for(auto & m : result.meshes) {
             for(auto & v : m.vertexPolygons){
                 if(useTextureRenderPipeline){
@@ -1167,6 +1236,40 @@ void BackendRenderTargetContext::resetElementState() {
                     writeTexVertexToBuffer(v.a.pt,aCoord);
                     writeTexVertexToBuffer(v.b.pt,bCoord);
                     writeTexVertexToBuffer(v.c.pt,cCoord);
+                }
+                else if(usePathRenderPipeline){
+                    auto useColor = [&fallbackColor](const std::optional<OmegaGTE::TETriangulationResult::AttachmentData> &att) -> OmegaGTE::FVec<4> {
+                        if (!att) return fallbackColor;
+                        const auto &c = att->color;
+                        if (c[0][0] == 0.f && c[1][0] == 0.f && c[2][0] == 0.f && c[3][0] == 0.f)
+                            return fallbackColor;
+                        return c;
+                    };
+                    auto tagFor = [&](const OmegaGTE::FVec<4> & c){
+                        // 0.0 = stroke, 1.0 = fill. Default to stroke when
+                        // neither side was set so the tag is well-defined
+                        // even for the legacy "single brush" drawPath path.
+                        if(pathHasFillColor && colorEq(c, pathFillColor)){
+                            return 1.f;
+                        }
+                        if(pathHasStrokeColor && colorEq(c, pathStrokeColor)){
+                            return 0.f;
+                        }
+                        return pathHasStrokeColor ? 0.f : 1.f;
+                    };
+                    // Phase 6.4 placeholder: every triangulator-emitted
+                    // vertex sits exactly on a silhouette of the band or
+                    // path outline. With no skirt geometry the linear
+                    // interpolation across the triangle stays at +1 and
+                    // the fragment shader resolves to full coverage —
+                    // matching the prior flat-color pipeline output.
+                    constexpr float kInteriorEdgeDist = 1.f;
+                    OmegaGTE::FVec<4> aColor = useColor(v.a.attachment);
+                    OmegaGTE::FVec<4> bColor = useColor(v.b.attachment);
+                    OmegaGTE::FVec<4> cColor = useColor(v.c.attachment);
+                    writePathVertexToBuffer(v.a.pt, aColor, kInteriorEdgeDist, tagFor(aColor));
+                    writePathVertexToBuffer(v.b.pt, bColor, kInteriorEdgeDist, tagFor(bColor));
+                    writePathVertexToBuffer(v.c.pt, cColor, kInteriorEdgeDist, tagFor(cColor));
                 }
                 else {
                     auto useColor = [&fallbackColor](const std::optional<OmegaGTE::TETriangulationResult::AttachmentData> &att) -> OmegaGTE::FVec<4> {
@@ -1196,6 +1299,10 @@ void BackendRenderTargetContext::resetElementState() {
             frameRenderPass_.bindTexturePipeline(scope);
             cb->bindResourceAtVertexShader(buffer,1);
             cb->bindResourceAtFragmentShader(texturePaint,2);
+        }
+        else if(usePathRenderPipeline){
+            frameRenderPass_.bindPathPipeline(scope);
+            cb->bindResourceAtVertexShader(buffer,8);
         }
         else {
             frameRenderPass_.bindColorPipeline(scope);

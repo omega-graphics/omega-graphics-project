@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <utility>
 
 namespace OmegaWTK::Composition {
@@ -113,6 +114,67 @@ void Canvas::drawEllipse(Composition::Ellipse &ellipse, Core::SharedPtr<Brush> &
     current->currentVisuals.emplace_back(ellipse,brush,border);
 }
 
+void Canvas::drawLine(Composition::Point2D from,
+                      Composition::Point2D to,
+                      Core::SharedPtr<Brush> &brush,
+                      float strokeWidth){
+    if(brush == nullptr || strokeWidth <= 0.f){
+        return;
+    }
+    Path p(from, strokeWidth);
+    p.addLine(to);
+    p.setPathBrush(brush);
+    drawPath(p);
+}
+
+void Canvas::drawPolyline(const OmegaCommon::Vector<Composition::Point2D> &points,
+                          Core::SharedPtr<Brush> &strokeBrush,
+                          float strokeWidth,
+                          bool closed,
+                          Core::Optional<Core::SharedPtr<Brush>> fillBrush){
+    if(points.size() < 2){
+        return;
+    }
+    const bool wantStroke = (strokeBrush != nullptr) && (strokeWidth > 0.f);
+    const bool wantFill   = fillBrush.has_value() && (fillBrush.value() != nullptr);
+    if(!wantStroke && !wantFill){
+        return;
+    }
+
+    // Path needs a positive stroke for the parallel-band geometry it
+    // tracks even when we only want a fill — the dual-attachment pass
+    // ignores the stroke band when no stroke brush is attached.
+    const float pathStroke = wantStroke ? strokeWidth : 1.f;
+
+    Path p(points.front(), pathStroke);
+    for(std::size_t i = 1; i < points.size(); ++i){
+        p.addLine(points[i]);
+    }
+    if(closed){
+        p.close();
+    }
+
+    if(wantFill){
+        auto fb = fillBrush.value();
+        p.setPathBrush(fb);
+        if(wantStroke){
+            // Fill via pathBrush, stroke via Border — single dual-attachment pass.
+            // Border::width is currently `unsigned`; rounded for the
+            // attachment but Path geometry stays sub-pixel-accurate.
+            const unsigned borderWidth =
+                static_cast<unsigned>(std::max(1.f, std::round(strokeWidth)));
+            drawPath(p, Border(strokeBrush, borderWidth));
+        } else {
+            // Fill only.
+            drawPath(p, std::nullopt);
+        }
+    } else {
+        // Stroke only.
+        p.setPathBrush(strokeBrush);
+        drawPath(p);
+    }
+}
+
 void Canvas::drawText(const UniString &text,
                       Core::SharedPtr<Font> font,
                       const Composition::Rect &rect,
@@ -158,7 +220,7 @@ void Canvas::drawPath(Path &path){
         brush = ColorBrush(Color::create8Bit(Color::White8));
     }
 
-    const float strokeWidth = static_cast<float>(path.impl_->currentStroke);
+    const float strokeWidth = path.impl_->currentStroke;
     const bool isFill = (strokeWidth == 0.f);
     for(auto & segment : path.impl_->segments){
         if(segment.path.size() < 2){
@@ -169,6 +231,31 @@ void Canvas::drawPath(Path &path){
         Core::SharedPtr<Brush> strokeBrush = isFill ? nullptr : brush;
         Core::SharedPtr<Brush> fillBrush = isFill ? brush : nullptr;
         current->currentVisuals.emplace_back(pathData,strokeBrush,fillBrush,strokeWidth,segment.closed,isFill);
+    }
+}
+
+void Canvas::drawPath(Path &path, Core::Optional<Border> border){
+    // Fill brush is whatever the caller stored on the Path; a null
+    // pathBrush means stroke-only. Border carries the stroke brush +
+    // width and is fed in alongside the fill so the dual-attachment
+    // tessellation emits both bands in a single VectorPath visual.
+    auto fillBrush = path.impl_->pathBrush;
+    Core::SharedPtr<Brush> strokeBrush;
+    float strokeWidth = 0.f;
+    if(border.has_value()){
+        strokeBrush = border->brush;
+        strokeWidth = static_cast<float>(border->width);
+    }
+    const bool hasFill = (fillBrush != nullptr);
+    if(!hasFill && strokeBrush == nullptr){
+        return;
+    }
+    for(auto & segment : path.impl_->segments){
+        if(segment.path.size() < 2){
+            continue;
+        }
+        auto pathData = std::make_shared<OmegaGTE::GVectorPath2D>(segment.path);
+        current->currentVisuals.emplace_back(pathData,strokeBrush,fillBrush,strokeWidth,segment.closed,hasFill);
     }
 }
 

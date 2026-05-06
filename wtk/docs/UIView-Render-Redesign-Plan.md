@@ -659,3 +659,500 @@ fill-then-stroked-path behavior. SVGView was the last in-tree caller
 that was, and was already migrated alongside the SDF spine. Any
 out-of-tree consumer relying on that behavior is a pre-flight
 checklist item for Tier 3.
+
+---
+
+## 9. Non-`UIView` `View` subclasses
+
+The plan above describes how `UIView` slots into the FrameBuilder
+paint path. It does **not** address the other concrete `View`
+subclasses currently in the tree. Each of them breaks one of the new
+model's invariants in a different way, and each needs an explicit
+migration story before Tier 3 lands. This section defines that story.
+
+**Important framing.** §6 Q1 answers that **`View` *is* the
+`SceneNode`** — there is no separate node type, and there is no
+`CanvasViewNode` / `SVGViewNode` / `ScrollViewNode` shadow class.
+Every `View` subclass already participates in the scene tree as
+itself. Migration is therefore about *what each subclass's `paint()`
+does* and *what state it stops owning*, not about wrapping it in a
+new class.
+
+The subclasses are:
+
+| Class | Header | Role |
+|---|---|---|
+| `CanvasView` | [CanvasView.h](../include/omegaWTK/UI/CanvasView.h) | **Deleted** — see §9.1. Imperative draws are folded into `UIView`. |
+| `SVGView` | [SVGView.h](../include/omegaWTK/UI/SVGView.h) | Parses SVG, builds an internal `SVGDrawOpList`, paints it |
+| `ScrollView` | [ScrollView.h](../include/omegaWTK/UI/ScrollView.h) | Clips a content child, owns scroll bar overlay layers |
+| `VideoView` | [VideoView.h](../include/omegaWTK/UI/VideoView.h) | **Migrates out of the View tree** — see §9.4 and [NativeViewHost-Adoption-Plan.md](NativeViewHost-Adoption-Plan.md) |
+
+**`View::paint(PaintContext&)` is the universal contract.** Because
+`View` *is* the `SceneNode`, every subclass overrides one virtual:
+
+```cpp
+class View : public Native::NativeEventEmitter {
+public:
+    // Default: paint nothing. Subclasses override.
+    virtual void paint(PaintContext & pc) {}
+    // ...
+};
+```
+
+UIView, SVGView, ScrollView, and NativeViewHost each override
+`paint()` with the contract specified below. There is no separate
+node interface and no mixin.
+
+### 9.1 `CanvasView` — deleted
+
+**Current contract.** Owns a `rootCanvas_` on the view's root layer.
+Exposes `clear`, `drawRect`, `drawRoundedRect`, `drawImage`, `drawText`.
+Overrides `submitPaintFrame(int)`. Widgets that do imperative drawing
+inherit from CanvasView and call these methods from their `onPaint`.
+
+**Resolution.** `CanvasView` is **deleted**. Once UIView's
+`UIViewLayoutV2` covers the rect/rounded-rect/ellipse/path/text/image
+authoring surface declaratively, the only remaining reason for
+CanvasView to exist is "I want to draw imperatively." That use case
+collapses into UIView with a single declaratively-authored element.
+Custom plotting, debug overlays, and ad-hoc visualization can either
+build a `UIViewLayoutV2` programmatically or — in the rare case where
+imperative draws into the active frame are genuinely needed — use a
+`View` subclass that overrides `paint(PaintContext&)` directly and
+appends `DrawOp`s. There is no public `Canvas`-style API on the
+View base.
+
+**Migration of existing callers.** The CanvasView subclasses in tree
+(if any) move to UIView with their imperative draws translated to
+`UIElementLayoutSpec` element declarations. The
+`submitPaintFrame(int)` override is removed; the
+`rootCanvas()` accessor is removed. The header file is deleted.
+
+**Tier alignment.** Tier 2 stops emitting frames through CanvasView's
+canvas (the imperative methods become deprecated stubs that route to
+a temporary `UIViewLayoutV2` if any caller still needs them). Tier 3
+deletes the class. No callers in `wtk/src/Widgets/` or test code
+should remain by the end of Tier 3 — confirmed by the §8 grep sweep.
+
+**Tier alignment.** Tier 2 here, alongside the DisplayList introduction.
+CanvasView's `submitPaintFrame` override is removed in Tier 3 when
+sessions move to the window level. The imperative API survives
+unchanged for callers.
+
+### 9.2 `SVGView` — internal display list, already aligned
+
+**Current contract.** Parses an SVG document into an internal
+`SVGDrawOpList` ([SVGView.h:38](../include/omegaWTK/UI/SVGView.h)),
+owns its own `svgCanvas`, rebuilds on `setSourceDocument` /
+`setSourceString` / `setSourceStream`, paints to its canvas via
+`renderNow` or implicitly during the paint walk.
+
+**Breakage.** Less than the others. SVGView is structurally already
+the model this plan proposes — a node whose paint output is a pre-
+built ordered list of draw ops. It just builds the list into its own
+canvas instead of into a shared display list.
+
+**Resolution.** Replace `SVGDrawOpList` with the engine-wide
+`DisplayList`/`DrawOp` type, or keep `SVGDrawOpList` as the cached
+form and have `paint()` copy/move-append it into `pc.displayList`:
+
+```cpp
+class SVGView : public View {  // View == SceneNode
+    Optional<XMLDocument>     sourceDoc_;
+    UniquePtr<DisplayList>    cachedOps_;   // built from sourceDoc_
+    SVGViewRenderOptions      options_;
+    bool                      needsRebuild_ = true;
+
+    void rebuildDisplayList();              // sourceDoc_ → cachedOps_
+
+public:
+    void paint(PaintContext & pc) override {
+        if (needsRebuild_) rebuildDisplayList();
+        pc.displayList.append(*cachedOps_);  // bulk copy
+    }
+
+    bool setSourceDocument(XMLDocument doc); // sets DirtyBit::Content|Paint
+    void setRenderOptions(const SVGViewRenderOptions &);
+};
+```
+
+`renderNow()` is removed. `DirtyBit::Content` set by source-document
+mutators triggers a rebuild during the next FrameBuilder pass, in
+the order Style → Layout → Paint. The SVG render options
+(`scaleMode`, `antialias`, `enableAnimation`) feed into
+`rebuildDisplayList`, not into runtime paint.
+
+**Resize.** SVGView's `resize()` override stays, but instead of
+re-rendering directly it sets `DirtyBit::Layout | Content | Paint`
+so the next FrameBuilder pass handles it.
+
+**Animation.** `enableAnimation` becomes a flag the rebuild consults
+(SMIL/SVG animations expand into multiple display-list snapshots
+keyed by time, or into AnimationScheduler tracks — out of scope for
+this plan; tracked separately).
+
+**Tier alignment.** Tier 2 (DisplayList introduction). SVGView is the
+first non-trivial validation of the DisplayList model: if a
+several-hundred-op SVG document replays correctly through the new
+path, the abstraction holds.
+
+### 9.3 `ScrollView` — the layerization opt-in case
+
+**Current contract.** Owns a single content child View. Tracks a
+`scrollOffset`. Owns two scroll bar overlay layers
+(`vScrollBarLayer`, `hScrollBarLayer`) with their own canvases.
+Overrides `scrollOffsetContribution()` so descendants of the content
+child can subtract the scroll amount when computing their window
+offset (`View::computeWindowOffset`). Compositor scissor clips the
+content to the ScrollView's visible bounds.
+
+**Breakage.** Three things break:
+
+1. `View::computeWindowOffset` is deleted (§3.3 table) in favor of
+   FrameBuilder's transform accumulator. The hook
+   `scrollOffsetContribution()` no longer has a caller.
+2. The two overlay layers + their canvases are exactly the per-view
+   `LayerTree` / `Canvas` pattern this plan kills.
+3. Scissor-based clipping at the compositor level still works, but
+   the *decision* to clip moves into the DisplayList as a
+   `PushClip`/`PopClip` op pair, not a long-lived layer attribute.
+
+**Resolution.** ScrollView becomes the canonical example of §6 Q3
+("layerization opt-in"). It is the first SceneNode that requests its
+own composition layer, via:
+
+```cpp
+class ScrollView : public View {  // View == SceneNode
+    ViewPtr        contentChild_;
+    Point2D        scrollOffset_ {0.f, 0.f};
+    bool           hasV_, hasH_;
+    ScrollBarStyle vBar_, hBar_;   // resolved style for the bars
+
+    bool wantsLayer() const override { return true; }  // forceLayer()
+
+public:
+    const Point2D & scrollOffset() const { return scrollOffset_; }
+    void setScrollOffset(const Point2D & o);  // sets DirtyBit::Paint
+
+    void paint(PaintContext & pc) override {
+        // 1. Clip to ScrollView's visible bounds.
+        pc.pushClip(finalRect());
+
+        // 2. Translate by -scrollOffset for the content subtree.
+        pc.pushTransform(Transform2D::translate(-scrollOffset_));
+        // (FrameBuilder recurses to contentChild_ after this returns.)
+
+        // 3. Overlay scroll bars on top, OUTSIDE the scroll transform.
+        // The FrameBuilder pops the transform/clip after children
+        // paint; bars are emitted as a post-children overlay.
+    }
+
+    void paintOverlay(PaintContext & pc) override {
+        // Called by FrameBuilder after children paint and after
+        // pushClip/pushTransform are popped.
+        if (hasV_) appendVerticalBar(pc, vBar_, scrollOffset_, contentSize_);
+        if (hasH_) appendHorizontalBar(pc, hBar_, scrollOffset_, contentSize_);
+    }
+};
+```
+
+The `scrollOffsetContribution()` hook is replaced by the
+`pc.pushTransform(translate(-scrollOffset))` call in ScrollView's
+own `paint()`. The FrameBuilder's transform accumulator is what
+makes descendant paint correct without each descendant having to know
+about scroll. The two overlay layers and their per-canvas painting
+collapse into two `RoundedRect` DrawOps (the bars themselves) emitted
+in `paintOverlay`.
+
+**Layerization.** `wantsLayer()` returning true tells the compositor
+that this subtree's DisplayList output should be tagged for a
+separate composition layer. This is what enables future scroll
+optimizations (compositor-thread scrolling, retained content
+texture) without the ScrollView itself caring about the mechanism.
+For Tier 3 the layer tag is a no-op — content re-rasterizes every
+frame — but the surface is in place.
+
+**Input.** `DefaultScrollHandler` and the wheel event path are
+unchanged. Scroll wheel deltas mutate `scrollOffset_` and call
+`markDirty(DirtyBit::Paint)`. That's the entire input loop.
+
+**Tier alignment.** Tier 3, alongside the FrameBuilder transform
+accumulator. ScrollView's two overlay layers are removed in Tier 3;
+its `scrollOffsetContribution` is removed in Tier 4 along with the
+rest of `View::computeWindowOffset`.
+
+### 9.4 `VideoView` — migrates out of the View tree
+
+**Current contract.** A `View` subclass that also implements
+`Media::VideoFrameSink` ([VideoView.h:35](../include/omegaWTK/UI/VideoView.h)).
+Frames arrive on a media thread via `pushFrame(VideoFrame)`. Frames
+queue in `framebuffer`. `presentCurrentFrame()` (called from the
+playback dispatch queue, not the UI loop) draws the head frame to
+`videoCanvas`. The view also owns playback and capture sessions.
+
+**Breakage.** VideoView fundamentally violates the
+"paint is a pure function of model + layout + style + animation
+side table" rule. The model changes from a thread the FrameBuilder
+doesn't own, at a cadence (video frame rate) that may differ from
+vsync. There is no clean `paint()` that derives the current texture
+from authored state — the texture is *handed* to the view from
+outside.
+
+**Resolution.** This isn't a problem this plan solves directly.
+[NativeViewHost-Adoption-Plan.md](NativeViewHost-Adoption-Plan.md)
+already specifies the migration: VideoView the *View subclass* is
+**deleted**, and the public surface moves to `VideoViewWidget`
+which owns a `NativeViewHost`. The native layer
+(`AVSampleBufferDisplayLayer` on macOS, DXGI video swap chain on
+Windows, GStreamer video sink on Linux) presents the decoded frames
+directly through the platform's hardware video path — zero-copy,
+out of the FrameBuilder loop entirely.
+
+From the SceneNode/DisplayList perspective, the only thing this plan
+needs to handle is **how `NativeViewHost` participates in the scene
+tree**, which is the same question for video, GTE, and any future
+native embed. See §9.4.1.
+
+**Where the existing logic goes** (recap of the NativeViewHost plan):
+
+- `VideoView` becomes a non-`View` internal controller class that
+  manages playback/capture sessions and pushes frames into the
+  native layer. It is no longer a SceneNode.
+- `VideoFrameSink` interface is unchanged; the implementation
+  pushes to the native surface instead of a `Canvas`.
+- `framebuffer` queue, `videoCanvas`, `queueFrame`,
+  `presentCurrentFrame`, `flush` — gone (NativeViewHost plan
+  Phase V4).
+- `VideoViewDelegate` and the playback/capture API stay intact on
+  `VideoViewWidget`.
+
+**Tier alignment.** This plan does not gate on the VideoView
+migration and the VideoView migration does not gate on Tier 3 of
+this plan. They are independent. The shared dependency is §9.4.1
+below — both plans need the NativeViewHost SceneNode contract
+defined before either ships.
+
+#### 9.4.1 How `NativeViewHost` paints in the new model
+
+NativeViewHost is the umbrella case for *every* embed of native
+content into the WTK scene tree — video, OmegaGTEView, future
+WebView, OS-native form controls, etc. From the FrameBuilder's
+perspective, NativeViewHost has the same shape:
+
+- It is a `View`, therefore a `SceneNode`.
+- Its bounds participate in layout normally (Phase 3).
+- Its `paint()` does **not** emit visual `DrawOp`s. Instead it emits
+  a single **carve-out** op that tells the compositor "leave this
+  rectangle alone — a native layer is going to draw on top of it."
+- The native layer's position/clip/visibility is synced from the
+  resolved rect via the **`onLayoutResolved` signal** the
+  NativeViewHost-Adoption-Plan already specifies — not via a
+  per-node `commit()` callback. **Layout and paint are kept
+  separate**; NativeViewHost's bounds sync rides on the layout
+  signal, not on the paint phase.
+
+```cpp
+class NativeViewHost : public View {  // View == SceneNode
+    NativeItemPtr nativeItem_;
+public:
+    NativeViewHost(NativeItemPtr item) : nativeItem_(std::move(item)) {
+        // Subscribe to layout completion. Fires after Phase 3 (Arrange)
+        // resolves this node's finalRect.
+        onLayoutResolved.subscribe([this](const Rect & r){
+            nativeItem_->syncBounds(r, computeWindowOriginContribution());
+            nativeItem_->syncVisibility(isEnabled());
+        });
+    }
+
+    void paint(PaintContext & pc) override {
+        // Single op: reserve this rect; the native layer paints here.
+        pc.displayList.append(DrawOp::NativeContent{
+            .destRect = finalRect(),
+            .hostId   = nativeItem_->id(),
+        });
+    }
+};
+```
+
+`onLayoutResolved` is a per-node signal fired by the FrameBuilder at
+the end of Phase 3 (Arrange) for any node whose `finalRect` changed.
+NativeViewHost is the canonical subscriber today; future nodes that
+need "tell me when my geometry is settled" hook the same signal
+without the FrameBuilder gaining a new phase callback. Style-driven
+visibility changes fire the same signal because visibility is a
+layout-relevant input.
+
+This keeps the §3.2 invariant intact: there is no `commit()` hook
+that runs alongside paint. Paint is a pure read of resolved state;
+side-effecting work that the *native side* needs to know about
+(bounds, visibility) rides on the layout signal that already exists.
+
+`DrawOp::NativeContent` carries no pixel data. Its job at
+DisplayList replay time is purely to:
+
+1. Establish a hole in any 2D content the compositor would draw on
+   top of this rect (clear / clip / blend-mode-discard, depending
+   on backend).
+2. Carry the `hostId` so the compositor knows which native layer
+   owns this region (relevant when the platform compositor needs
+   ordering hints, e.g. Core Animation's layer ordering or
+   Direct Composition's visual tree).
+
+Whether 2D widgets can layer *on top of* a NativeViewHost is the
+**airspace** question. The NativeViewHost plan accepts the airspace
+constraint (native draws on top of virtual content within its
+rect). This plan inherits that constraint without modification —
+2D `DrawOp`s emitted by descendants of a NativeViewHost still
+append to the DisplayList, but on most platforms the native layer
+will obscure them. Designs that need 2D-over-native (subtitles,
+playback controls) handle it inside the native layer (e.g.
+AVPlayerViewController's overlay path) or by rendering 2D into a
+sibling NativeViewHost that the OS composites above the video
+layer.
+
+This is the §9.5 cross-cutting answer for *all* native embeds:
+emit `DrawOp::NativeContent`, sync bounds in commit, accept
+airspace. There is no per-subclass design for native-backed
+views — they all use this contract.
+
+### 9.5 Cross-cutting — what `View` provides and what it stops providing
+
+After all four migrations, the methods on `View` that survive at the
+public surface are:
+
+- `getRect()`, `resize(Rect)` — geometry, kept.
+- `enable()` / `disable()` / `isEnabled()` — visibility, kept.
+- `setDelegate(ViewDelegate*)` — input, kept (input plan is separate).
+- `containsPoint(Point2D)` — hit testing, kept.
+- `getResizeCoordinator()` — **deleted** (§3.3 table).
+- `makeLayer` / `makeCanvas` — **deleted** (§3.3 table).
+- `startCompositionSession` / `endCompositionSession` — **deleted**.
+- `submitPaintFrame(int)` — **deleted** (lifecycle plan §4).
+- `setFrontendRecurse` / `setSyncLaneRecurse` — **deleted** (§3.3).
+- `computeWindowOffset` / `scrollOffsetContribution` — **deleted**;
+  the FrameBuilder transform accumulator replaces both.
+- `applyLayoutDelta` — moves to AnimationScheduler.
+
+The base class shrinks from "view + render-target + canvas-factory +
+session-owner + offset-resolver" to "view + geometry + visibility +
+hit-test + delegate." Everything else is the SceneNode/FrameBuilder/
+DisplayList pipeline.
+
+### 9.6 Migration order
+
+The subclasses are not equally urgent. Recommended order, interleaved
+with the tiers in §4:
+
+| Subclass | Tier 1 | Tier 2 | Tier 3 | Tier 4 |
+|---|---|---|---|---|
+| `SVGView` | — | `SVGDrawOpList` becomes a cached `DisplayList` | per-view Canvas removed; `renderNow` deleted | dirty-bit-driven rebuild only |
+| `ScrollView` | — | `PushClip` / `PushTransform` ops added to DrawOp set | overlay scroll bar layers removed; `wantsLayer()` introduced; `scrollOffsetContribution` replaced by `pushTransform` in own paint | `computeWindowOffset` deleted |
+| `NativeViewHost` (covers `VideoView`, `OmegaGTEView`, future) | — | `DrawOp::NativeContent` added; `onLayoutResolved` signal wired | airspace contract documented | — |
+| `CanvasView` | — | imperative methods become deprecated stubs routing to a temporary `UIViewLayoutV2` | **deleted** (header + class) | — |
+| `VideoView` (the View) | — | — | **deleted**; replaced by `VideoViewWidget` per [NativeViewHost-Adoption-Plan.md](NativeViewHost-Adoption-Plan.md) | — |
+
+`SVGView` is the cheapest migration and the best early validator of
+the DisplayList model — it already produces an ordered op stream.
+Do it first in Tier 2.
+
+`ScrollView` is the validator for the transform accumulator and the
+layerization opt-in — do it in Tier 3 alongside the FrameBuilder
+appearing.
+
+`NativeViewHost` is the validator for native embeds. Its
+`DrawOp::NativeContent` op needs to land in Tier 2 so the
+NativeViewHost-Adoption-Plan migrations (VideoView, OmegaGTEView)
+can proceed in parallel. The op shape and the `onLayoutResolved`
+signal contract should be reviewed against both adoption plans
+before Tier 2 ships.
+
+`CanvasView` is **deleted**, not migrated. Tier 2 deprecates the
+imperative methods; Tier 3 deletes the class.
+
+`VideoView` the View subclass is **not** migrated by this plan —
+the NativeViewHost-Adoption-Plan deletes it. This plan only owes
+that adoption plan the `DrawOp::NativeContent` op and the §9.4.1
+contract.
+
+### 9.7 Open questions specific to this section
+
+1. **`SVGView` animation.** SVG SMIL animations are not addressed
+   here. If the WML / animation roadmap needs them, the rebuild loop
+   becomes time-keyed and the FrameBuilder Tick phase has to drive
+   it. Out of scope for this plan; flagged for the animation
+   simplification follow-up.
+
+2. **`ScrollView` overlay vs. sibling bars.** Scroll bars could be
+   emitted by ScrollView's own paint as `paintOverlay` (sketched in
+   §9.3) or modeled as sibling Views. Overlay is simpler; siblings
+   are more flexible (themable independently, animatable
+   independently). Recommendation: overlay for Tier 3, sibling
+   nodes only if the theming/animation surface area demands it.
+
+3. **`DrawOp::NativeContent` op shape.** The op shape should be
+   designed jointly with [NativeViewHost-Adoption-Plan.md](NativeViewHost-Adoption-Plan.md)
+   so a single op covers video, GTE, and future native embeds. Open
+   sub-questions: does the op need a z-order hint for platforms with
+   multiple native layer ordering modes (CA's `addSublayer` order vs.
+   DirectComposition's visual tree)? Does it need a colorspace /
+   HDR-metadata slot for video? Recommendation: minimal op for Tier
+   2 (`destRect` + `hostId`), additive fields as the adoption plans
+   need them.
+
+4. **`onLayoutResolved` signal scope.** The signal exists on every
+   `View`, but only NativeViewHost subscribes today. Open question:
+   does the signal also fire for transform changes (a parent
+   ScrollView scrolling, a parent Animator translating), or only
+   for layout-rect changes? Recommendation: fire on rect changes
+   only for Tier 2; add a separate `onTransformChanged` signal in
+   Tier 3 if and when a use case appears. Conflating the two would
+   make every animated transform invoke every native sync, which
+   is wasteful for the common case (no native embeds in the
+   subtree).
+
+5. **Airspace and 2D-over-native overlays.** §9.4.1 accepts the
+   airspace constraint (native draws on top of 2D within the host's
+   rect). Some use cases (subtitle rendering, playback controls)
+   need 2D pixels on top of video. Two paths exist: (a) render the
+   2D inside the native layer's compositing system (platform-
+   specific), (b) provide a sibling NativeViewHost that the OS
+   composites above. Both are out of scope for this plan; flagged
+   for the NativeViewHost adoption plan to decide per-platform.
+
+6. **`OmegaGTEView` direct present.** [OmegaGTEView-Proposal.md](OmegaGTEView-Proposal.md)
+   and the NativeViewHost adoption plan together specify a
+   direct-present mode where the 3D content is the *only* thing in
+   the host's rect — no compositor blit. In that mode the
+   `DrawOp::NativeContent` carve-out is still emitted, but the
+   compositor backend treats it the same way it treats VideoView's
+   carve-out: clear the rect, let the native layer draw. No special
+   case at the SceneNode level.
+
+### 9.8 What this section did not address
+
+- **Future `View` subclasses** that are not native-backed
+  (hypothetical PDFView, ChartView, etc.). These will appear and
+  will each pick from the same toolbox: cached display list like
+  `SVGView`, transform/clip like `ScrollView`, or native carve-out
+  like `NativeViewHost`. (Imperative `CanvasView`-style drawing is
+  not in the toolbox — see §9.1.) The pattern is established here;
+  new subclasses do not require revisiting the core plan.
+
+- **Native-backed Views beyond video and GTE.** WebView, MapView,
+  OS-native form controls, and the rest of the
+  NativeViewHost-Adoption-Plan's Phase 6+ candidates all use the
+  §9.4.1 contract unchanged. This plan owes them only the
+  `DrawOp::NativeContent` op and the commit-phase bounds sync.
+
+- **Widget subclasses that inherit from these views.** Most widgets
+  use `UIView` already; the few that use `CanvasView` or specialized
+  views inherit the migration path of their base. If a widget
+  reaches into `makeCanvas` or `submitPaintFrame` directly, the
+  Tier-3 grep sweep (§8) catches it. Same checklist, no new
+  machinery.
+
+- **Test coverage.** Each subclass migration should ship with a
+  before/after rendering test that captures the same pixel output
+  through the old path and the new path. This is mechanical work
+  per subclass and should be tracked alongside the migration tier
+  it belongs to.

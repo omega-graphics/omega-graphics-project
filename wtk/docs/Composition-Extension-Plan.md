@@ -526,7 +526,7 @@ unified `drawPath` flow as in 3.0.1–3.0.3.
 - `wtk/src/Composition/Canvas.cpp` — implement new overload, keep legacy single-arg as shim
 - `wtk/src/Composition/backend/RenderTarget.cpp` — ensure VectorPath dispatch handles `fill && contour` together (fill then stroke)
 
-### 3.1 `drawLine`
+### 3.1 `drawLine` [DONE]
 
 ```cpp
 void drawLine(OmegaGTE::GPoint2D from,
@@ -537,7 +537,7 @@ void drawLine(OmegaGTE::GPoint2D from,
 
 Implementation: construct a temporary `Path` from `from` to `to`, set brush and stroke, delegate to `drawPath`.
 
-### 3.2 `drawPolyline`
+### 3.2 `drawPolyline` [DONE]
 
 ```cpp
 void drawPolyline(const OmegaCommon::Vector<OmegaGTE::GPoint2D> & points,
@@ -714,9 +714,265 @@ Intersect the current clip region. Applied at submit time or during compositing.
 
 ---
 
-## Phase 6 — Future
+## Phase 6 — Text layout reuse
 
-These items are deferred. They are listed to confirm the Phase 0–5 designs are forward-compatible.
+**Goal:** Stop allocating a fresh `TextRect`, glyph layout, and GPU
+texture on every `drawText` call. Lift the layout/raster product into
+a reusable handle that callers hold across frames; `drawText` itself
+becomes a one-shot convenience that wraps an ephemeral handle.
+
+**Cross-plan dependencies:**
+
+  - `renderScale` is sourced from `NativeWindow::scaleFactor()` per
+    `Native-API-Completion-Proposal.md` §2.2 and flows through the
+    visual tree to `View::getRenderScale()` per
+    `DPI-Aware-Text-Plan.md`. Phase 6 *consumes* this — it does not
+    introduce a new scale source. See §6.3.
+  - The platform `TextRect` backends (`DWriteTextRect`, `CTTextRect`,
+    `HarfBuzzTextRect`) accept `renderScale` at construction per the
+    DPI plan. Phase 6 reuses that contract; the macOS / Linux backend
+    work in `DPI-Aware-Text-Plan.md` is a hard prerequisite for Phase
+    6 to land cleanly on those platforms (otherwise a held layout
+    will rebuild needlessly when scale changes go unnoticed).
+
+### Current state
+
+`Canvas::drawText` (`wtk/src/Composition/Canvas.cpp`) does the full
+pipeline inline on every call:
+
+1. `TextRect::Create(rect, layoutDesc, renderScale)` — allocates a
+   platform-specific offscreen surface (DWrite IDWriteTextLayout +
+   bitmap render target on Windows; CoreText CTFrame + CGBitmapContext
+   on macOS).
+2. `GlyphRun::fromUStringAndFont(text, font)` — measures and builds
+   the glyph run.
+3. `textRect->drawRun(glyphRun, color)` — rasterizes glyphs into the
+   offscreen surface.
+4. `textRect->toBitmap()` — uploads the surface to a `GETexture` (with
+   a fence).
+5. `drawGETexture(...)` — emits the `Bitmap` `VisualCommand`.
+
+For static UI text repainted every frame, steps 1–4 repeat with the
+same inputs and the same outputs. On a 60Hz redraw, that's 60
+DWrite/CoreText layout calls and 60 GPU uploads per text element per
+second, all producing identical bytes. UIView ([UIView.Update.cpp:377](wtk/src/UI/UIView.Update.cpp:377))
+hits this path on every paint.
+
+### 6.1 Reusable handle: `TextLayout` (or repurposed `TextRect`)
+
+Either lift `Composition::TextRect` itself out of `FontEngine.h` as
+the public handle, or introduce a thin `TextLayout` that wraps a
+`TextRect` plus its cached `GETexture`. The latter is less disruptive
+because `TextRect` is currently a backend-platform abstract class
+(`getNative()`, `drawRun()`, `toBitmap()` are pure virtual on
+platform subclasses); wrapping keeps the platform abstraction private.
+
+**Proposed signature:**
+
+```cpp
+class OMEGAWTK_EXPORT TextLayout {
+    friend class Canvas;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+
+public:
+    static Core::SharedPtr<TextLayout> Create(
+        const UniString & text,
+        Core::SharedPtr<Font> font,
+        const Composition::Rect & rect,
+        const Composition::Color & color,
+        const TextLayoutDescriptor & layoutDesc);
+
+    /// Mutators — invalidate the cached glyph run and bitmap.
+    void setText(const UniString & text);
+    void setFont(Core::SharedPtr<Font> font);
+    void setRect(const Composition::Rect & rect);
+    void setColor(const Composition::Color & color);
+    void setLayoutDescriptor(const TextLayoutDescriptor & layoutDesc);
+
+    /// Force a rebuild on the next draw (e.g. after font fallback).
+    void invalidate();
+
+    Composition::Rect getRect() const;
+
+    ~TextLayout();
+};
+```
+
+Note: `Create` does **not** take `renderScale`. The handle is render-
+scale-agnostic at construction; Canvas supplies the current scale on
+every `drawTextLayout` and the handle rebuilds on mismatch. See §6.3.
+
+Internally `Impl` owns:
+
+- A lazily-created `TextRect` (via `TextRect::Create(..., renderScale)`,
+  built on first resolve with the scale Canvas passes in).
+- A lazily-uploaded `TextRect::BitmapRes` (texture + fence).
+- The cached `renderScale` the `TextRect` was built against.
+- Dirty flags: `layoutDirty_` (text/font/rect/layoutDesc/renderScale
+  changed) and `bitmapDirty_` (color changed).
+
+**Resolve:** the first `Canvas::drawTextLayout` call after a mutator
+hits the dirty path:
+
+- `layoutDirty_` → tear down the `TextRect`, build a new one,
+  re-rasterize (`drawRun`), re-upload (`toBitmap`).
+- `bitmapDirty_` only → keep the `TextRect`, re-rasterize the run
+  with the new color, re-upload.
+- Neither → emit the cached `Bitmap` command directly.
+
+### 6.2 New Canvas API
+
+```cpp
+void drawTextLayout(const Core::SharedPtr<TextLayout> & layout);
+```
+
+Implementation: resolve the layout (lazy build), then emit a `Bitmap`
+`VisualCommand` from the cached `GETexture` + the layout's rect. No
+allocation, no upload, no DWrite/CoreText round-trip on the steady
+path.
+
+The existing `Canvas::drawText(text, font, rect, color, layoutDesc)`
+overload becomes a one-shot convenience:
+
+```cpp
+void Canvas::drawText(const UniString & text, ...) {
+    auto layout = TextLayout::Create(text, font, rect, color, layoutDesc);
+    drawTextLayout(layout);
+    // layout falls out of scope after the frame is sent — no caching
+}
+```
+
+`drawTextLayout` reads `renderScale` from the owner View (§6.3), so
+the shim doesn't need to thread it. Existing call sites keep working
+unchanged; new code that wants the cache opts in by holding the
+handle.
+
+### 6.3 Render scale changes
+
+`renderScale` is a **per-window** quantity, not a `TextLayout`
+property. It originates at `NativeWindow::scaleFactor()`
+(`Native-API-Completion-Proposal.md` §2.2 — backed by
+`GetDpiForWindow` / `NSWindow.backingScaleFactor` / `wl_output`
+scale per platform), flows through the visual tree into
+`Composition::ViewRenderTarget::renderScale_`, and is read by Canvas
+via `View::getRenderScale()` (`DPI-Aware-Text-Plan.md` §Plumbing).
+This is the same plumbing `Canvas::drawText` already uses today
+([Canvas.cpp:125](wtk/src/Composition/Canvas.cpp:125)).
+
+`TextLayout` does **not** read `NativeWindow::scaleFactor()` itself
+and does **not** hold a back-pointer to View. The Canvas owns the
+freshness contract: on every `drawTextLayout`, Canvas reads its owner
+View's current `renderScale` and passes it through to the handle's
+resolve. The handle compares against the cached scale and treats a
+mismatch as a layout-dirty rebuild — same code path as a `setRect` /
+`setFont` change. This keeps the handle ignorant of View and lets a
+single layout migrate between Canvases / Views with different scales
+(rare in practice but free correctness).
+
+```cpp
+// Sketch — Canvas-side:
+void Canvas::drawTextLayout(const Core::SharedPtr<TextLayout> & layout) {
+    const float scale = (ownerView_ != nullptr)
+        ? ownerView_->getRenderScale() : 1.f;
+    auto bitmap = layout->resolve(scale); // rebuilds if scale differs
+    current->currentVisuals.emplace_back(bitmap.s, bitmap.textureFence,
+                                         layout->getRect());
+}
+```
+
+The View-side scale source itself is not Phase 6's concern — it lands
+once via §2.2 of the Native API plan (uniform `NativeWindow::scaleFactor()`)
+and the platform `TextRect` backends already accept `renderScale` per
+the DPI plan. Phase 6 just re-reads the value on each draw instead
+of capturing it once at `TextRect::Create` time.
+
+**Out of scope for Phase 6:** per-monitor DPI *change events* — when
+a window crosses a Retina ↔ external boundary, the visual tree
+currently doesn't get notified to update `renderScale_`. That's
+already deferred in the DPI plan ("Non-goals" §1) pending the
+`WindowDpiChanged` follow-on to Native API §2.2. Phase 6's per-draw
+re-read means that *once* the visual tree updates `renderScale_`,
+held layouts will rebuild on the next paint without any extra
+plumbing — so Phase 6 doesn't add new work for the DPI follow-on; it
+quietly inherits the fix.
+
+### 6.4 UIView migration
+
+`UIView` currently calls `drawText` every paint. Two options:
+
+  - **Opt-in:** UIView keeps a `Core::SharedPtr<TextLayout>` per text
+    element on its `UIElementSpec`, lazily creates it on first paint,
+    invalidates on text/font/style/rect change. New API surface, but
+    the steady-state win is significant.
+  - **Implicit cache in Canvas:** Canvas keeps a per-Canvas LRU keyed
+    on (text, font, rect, color, layoutDesc) and reuses behind the
+    scenes. Smaller blast radius, but cache invalidation becomes
+    Canvas's problem and key construction is non-trivial (UniString
+    hash, Color tolerance, Rect equality across float jitter).
+
+Opt-in is cleaner — invalidation becomes the caller's explicit
+responsibility, which matches how UIView already tracks dirty state
+on its specs. The implicit cache is a Phase 7 follow-up if profiling
+later shows third-party Canvas users would benefit.
+
+UIView's `pendingTextHandles_` (or similar field) lives on
+`UIView::Impl`. The text-style invalidator already runs on
+`onSpecChanged`; extend it to call `layout->invalidate()` /
+`setText` / `setColor` on the cached handle for the matching element
+tag.
+
+### 6.5 Lifetime / GPU resources
+
+`TextLayout::Impl` owns the `TextRect` and the `GETexture`. As long
+as one `SharedPtr<TextLayout>` exists, the GPU texture stays
+resident. Frames hold the texture via the `Bitmap` `VisualCommand`'s
+`SharedPtr<GETexture>`, so frame-in-flight safety is already handled
+by the existing fence on `BitmapRes::textureFence`.
+
+Two consequences worth flagging:
+
+  - **VRAM growth:** if a UIView retains `TextLayout`s for many
+    transient strings (e.g. animated text), they pin GPU textures
+    until the View drops them. Phase 7 future: a soft size cap with
+    LRU eviction.
+  - **Dynamic text:** for text that changes every frame (frame
+    counter, timer), `setText()` per frame still pays for a layout
+    rebuild + upload. The handle is no worse than today, but the
+    benefit is zero. Document this in the API comment.
+
+### 6.6 Test
+
+Visual: render a static label across 600 frames, confirm DWrite /
+CoreText is hit only on frame 0 (logging hook in `TextRect::Create`)
+and `GETexture` upload count is 1.
+
+Functional: `setText` / `setColor` / `setRect` invalidate correctly;
+no stale glyphs persist across rebuilds.
+
+### Files touched
+
+- `wtk/include/omegaWTK/Composition/FontEngine.h` — public
+  `TextLayout` declaration (or `TextRect` lifted to public, depending
+  on the choice in 6.1).
+- `wtk/include/omegaWTK/Composition/Canvas.h` — `drawTextLayout`
+  declaration.
+- `wtk/src/Composition/Canvas.cpp` — `drawText` becomes a thin shim;
+  new `drawTextLayout` emits the cached `Bitmap` command.
+- `wtk/src/Composition/TextLayout.cpp` — new file holding the
+  cache/dirty-flag logic.
+- `wtk/src/Composition/backend/{mtl,d2d,cairo}/TextRect*.{cpp,mm}` —
+  no changes needed if `TextLayout` wraps a backend `TextRect`; minor
+  changes if `TextRect` itself moves.
+- `wtk/include/omegaWTK/UI/UIView.h` / `wtk/src/UI/UIView.*.cpp` —
+  cache `TextLayout` per text-emitting element spec; invalidate on
+  spec change.
+
+---
+
+## Phase 7 — Future
+
+These items are deferred. They are listed to confirm the Phase 0–6 designs are forward-compatible.
 
 | Item | Depends on | Notes |
 |------|------------|-------|
@@ -727,6 +983,8 @@ These items are deferred. They are listed to confirm the Phase 0–5 designs are
 | Gradient text | Phase 1 gradient pipeline + MSDF text | After Direct-To-Drawable-And-SDF-Plan §6.7 lands MSDF text, gradient fill on glyphs becomes a uniform-evaluation problem (same as SDF-native gradients above) |
 | Image scale modes (aspect-fit/fill, tiling, source rect) | — | Direct-To-Drawable-And-SDF-Plan §6.6 owns this — moves bitmap to a hardcoded quad with sampler / mipmap upgrade and adds tint / source rect / nine-slice |
 | Text draw options (maxLines, truncation, underline) | — | Text layout engine changes |
+| Implicit per-Canvas `TextLayout` cache (LRU keyed on text+font+rect+color+layoutDesc) | Phase 6 | Lets third-party Canvas users (no UIView spec wiring) get caching without holding handles. Skipped in Phase 6 because key construction is fiddly (UniString hash, Color tolerance, Rect equality) |
+| `TextLayout` VRAM cap with LRU eviction | Phase 6 | Bounds resident GPU texture memory if a UIView retains many transient layouts |
 | Effect bounds (subregion blur) | — | Compositor change |
 
 ---
@@ -739,21 +997,27 @@ Phase 0A: Geometry type isolation      [DONE]
 
 Phase 1: Gradient pipeline (texture path)
     ├─→ Phase 2: Gradient API extensions (depends on working pipeline)
-    └─→ Phase 6 future: SDF-native gradient sampling, pattern brush, gradient text
+    └─→ Phase 7 future: SDF-native gradient sampling, pattern brush, gradient text
 
 Phase 3: Canvas drawing extensions (independent of gradients)
     ├─→ Phase 3.0.4 (border consolidation in shape draw methods): DONE for simple primitives via SDF spine §6.5
     └─→ Phase 5: Canvas state stack (builds on existing per-element SetTransform / SetOpacity)
 
-Phase 4: Color improvements (independent — can run in parallel with any phase)
+Phase 4: Color improvements (independent — can run in parallel with any phase) [DONE]
+
+Phase 6: Text layout reuse (independent — can run in parallel with any phase)
+    └─→ Phase 7 future: implicit per-Canvas text cache, VRAM-cap LRU eviction
 ```
 
 Phases 0 and 0A are done. Phase 1 (gradient pipeline) is the next
 high-leverage piece — it unblocks SVG gradients and the gradient-API
-extensions (Phase 2). Phases 3, 4, and 5 are independent of the
+extensions (Phase 2). Phases 3, 4, 5, and 6 are independent of the
 gradient work; Phase 5 should reuse the existing per-element
 `SetTransform` / `SetOpacity` machinery (see §5 preamble) rather than
-introducing a parallel state path.
+introducing a parallel state path. Phase 6 (text layout reuse) is
+also independent and is the highest-leverage CPU/GPU win for steady-
+state UI repaints — every cached `TextLayout` removes a DWrite/
+CoreText layout call and a GPU upload from each frame.
 
 ---
 
@@ -767,17 +1031,20 @@ introducing a parallel state path.
 | `wtk/include/omegaWTK/Core/GTEHandle.h` | 0A | **DONE** — backend-only header for `extern OmegaGTE::GTE gte` |
 | ~130 files across all submodules | 0A | **DONE** — mechanical rename to `Composition::Rect` / `Composition::Point2D` / etc. |
 | `wtk/CMakeLists.txt` | 0A | **DONE** — OmegaGTE link scoped appropriately |
-| `wtk/include/omegaWTK/Composition/Brush.h` | 0, 2, 4 | **0 DONE:** `isColor` / `isGradient` removed. Remaining: `LinearDef`, `RadialDef`, `GradientSpread`, new gradient factories; `Color` statics + helpers (HSL/HSV, lerp, withAlpha, lighter/darker) |
-| `wtk/src/Composition/Brush.cpp` | 0, 2, 4 | **0 DONE:** boolean init removed. Remaining: new gradient factories, color constants/helpers |
+| `wtk/include/omegaWTK/Composition/Brush.h` | 0, 2, 4 | **0 DONE:** `isColor` / `isGradient` removed. **Phase 4 DONE:** named color constants (`Black`/`White`/`Red`/`Green`/`Blue`/`Yellow`/`Orange`/`Purple`), `fromHSL` / `fromHSV`, `lerp` / `withAlpha` / `lighter` / `darker`. Remaining: `LinearDef`, `RadialDef`, `GradientSpread`, new gradient factories |
+| `wtk/src/Composition/Brush.cpp` | 0, 2, 4 | **0 DONE:** boolean init removed. **Phase 4 DONE:** color constants + HSL/HSV factories + arithmetic helpers. Remaining: new gradient factories |
 | `wtk/include/omegaWTK/Composition/Canvas.h` | 0A, 3, 5 | **0A DONE.** Remaining: `drawLine`, `drawPolyline`, `drawArc`, unified `drawPath`, `DrawOptions`, const-ref brush params, save/restore/transform/clip |
-| `wtk/src/Composition/Canvas.cpp` | 0A, 3, 5 | **0A DONE.** **Phase 6.5 (border consolidation) DONE:** `drawRect` / `drawRoundedRect` / `drawEllipse` forward `Border` directly; no frame-path side emission. Remaining: new draw methods, state stack |
+| `wtk/src/Composition/Canvas.cpp` | 0A, 3, 5, 6 | **0A DONE.** **Border consolidation DONE** (via `Direct-To-Drawable-And-SDF-Plan` §6.5): `drawRect` / `drawRoundedRect` / `drawEllipse` forward `Border` directly; no frame-path side emission. **Phase 3.1 / 3.2 DONE:** `drawLine`, `drawPolyline` added. Remaining: `drawArc`, unified `drawPath`, `DrawOptions`, state stack, `drawTextLayout` (Phase 6) |
 | `wtk/include/omegaWTK/Composition/Path.h` | 0A | **0A DONE** for public signatures. Frame helpers (`RectFrame` / `RoundedRectFrame` / `EllipseFrame`) retained for stand-alone outline use |
 | `wtk/src/Composition/Path.cpp` | 0A | **0A DONE** |
 | `wtk/include/omegaWTK/Composition/Animation.h` | 0A | **0A DONE** |
 | `wtk/src/Composition/backend/RenderTarget.cpp` | 0, 0A, 1, 2, 3, 5 | **0 + 0A DONE.** **SDF spine integration (border, transform, opacity propagation) DONE** via `Direct-To-Drawable-And-SDF-Plan` §6.3 / §6.5 / §3.1. Remaining: gradient compute pass wiring, extended gradient params, top-level `DrawOptions` plumbing, save/restore stack consumption |
 | `wtk/src/Composition/backend/RenderTarget.h` | 2 | Update `createGradientTexture` signature |
-| `wtk/src/Composition/backend/shaders/compositor.omegasl` | 1, 2 | Implement `linearGradient` / `radialGradient` compute shaders; extend `GradientTextureConstParams` with start/end / center/radii / spread mode. **SDF fragment functions already in** for color fills (Phase 6) |
-| `wtk/src/UI/SVGView.cpp` | 6.5 | **DONE (alongside SDF spine):** SVG `<rect>` / `<rect rx>` / `<circle>` / `<ellipse>` strokes route through `Border` instead of building separate stroked-path frames |
+| `wtk/src/Composition/backend/shaders/compositor.omegasl` | 1, 2 | Implement `linearGradient` / `radialGradient` compute shaders; extend `GradientTextureConstParams` with start/end / center/radii / spread mode. **SDF fragment functions already in** for color fills (`Direct-To-Drawable-And-SDF-Plan` §6.3) |
+| `wtk/src/UI/SVGView.cpp` | (SDF §6.5) | **DONE (alongside SDF spine):** SVG `<rect>` / `<rect rx>` / `<circle>` / `<ellipse>` strokes route through `Border` instead of building separate stroked-path frames. **`<line>` / `<polyline>` / `<polygon>` route through `drawLine` / `drawPolyline` (Phase 3.1 / 3.2 follow-up).** |
+| `wtk/include/omegaWTK/Composition/FontEngine.h` | 6 | New `TextLayout` handle (text + font + rect + color + layoutDesc → cached glyph layout + `GETexture`) |
+| `wtk/src/Composition/TextLayout.cpp` | 6 | **New file** — handle implementation, dirty-flag resolve, lazy `TextRect` build / texture upload |
+| `wtk/include/omegaWTK/UI/UIView.h` / `wtk/src/UI/UIView.*.cpp` | 6 | Cache `Core::SharedPtr<TextLayout>` per text-emitting element spec; invalidate on spec change |
 
 ---
 

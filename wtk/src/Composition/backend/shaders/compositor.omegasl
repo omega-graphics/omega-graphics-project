@@ -272,6 +272,67 @@ float sdfEllipse(float2 p, float2 r){
     return (k - 1.0) * minR;
 }
 
+/// =====================================================================
+/// Path render pipeline (Phase 6.4).
+///
+/// Vector paths can't be rasterized via a closed-form SDF — they go through
+/// the GTE triangulator's dual-attachment GraphicsPath2D pass (stroke
+/// triangles + fill fan triangles in one mesh). The path pipeline ingests
+/// that mesh with one extra per-vertex float4: `edgeTag.x` is a signed
+/// distance-to-silhouette in object units (negative outside, 0 at the
+/// silhouette, positive inside) and `edgeTag.y` is an attachment tag
+/// (0 = stroke, 1 = fill). The fragment shader uses the screen-space
+/// derivative `fwidth(edgeDist)` to produce a 1-pixel `smoothstep` AA
+/// band along the silhouette without depending on the geometry's
+/// resolution.
+///
+/// Today the C++ side emits `edgeDist = +1` for every original triangulator
+/// vertex (a placeholder positive value that resolves to full coverage
+/// inside the silhouette). When skirt geometry is added in a follow-up,
+/// the skirt vertices receive `edgeDist = -1` and the linear
+/// interpolation across the skirt produces the AA band — no shader
+/// changes required.
+
+struct OmegaWTKPathVertex {
+    float4 pos;
+    float4 color;
+    float4 edgeTag;
+};
+
+struct OmegaWTKPathRasterData internal {
+    float4 pos : Position;
+    float4 color : Color;
+    float4 edgeTag : TexCoord;
+};
+
+buffer<OmegaWTKPathVertex> v_buffer_path : 8;
+
+[in v_buffer_path]
+vertex OmegaWTKPathRasterData pathVertex(uint v_id : VertexID){
+    OmegaWTKPathVertex v = v_buffer_path[v_id];
+    OmegaWTKPathRasterData r;
+    r.pos = v.pos;
+    r.color = v.color;
+    r.edgeTag = v.edgeTag;
+    return r;
+}
+
+fragment float4 pathFragment(OmegaWTKPathRasterData raster){
+    float edgeDist = raster.edgeTag[0];
+    float aa = max(fwidth(edgeDist), 0.0001);
+    // Coverage = 1 inside (edgeDist > +aa), 0 outside (edgeDist < -aa),
+    // smooth transition in between. With the current edgeDist = +1 stamp
+    // on every vertex this resolves to 1 across the entire mesh,
+    // matching today's flat-color pipeline output.
+    float coverage = smoothstep(0.0 - aa, aa, edgeDist);
+    float4 c;
+    c[0] = raster.color[0];
+    c[1] = raster.color[1];
+    c[2] = raster.color[2];
+    c[3] = raster.color[3] * coverage;
+    return c;
+}
+
 [in sdfParams]
 fragment float4 sdfFragment(OmegaWTKSdfRasterData raster){
     float lx = raster.local[0];

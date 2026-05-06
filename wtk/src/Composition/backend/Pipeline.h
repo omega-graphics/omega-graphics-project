@@ -39,6 +39,13 @@ namespace OmegaWTK::Composition {
         /// kind tag, and opacity. Format mirrors the color pipeline:
         /// `BGRA8Unorm` color attachment, no depth, no MSAA.
         SharedHandle<OmegaGTE::GERenderPipelineState> sdf_;
+        /// Path render pipeline (Phase 6.4). Drives `VisualCommand::VectorPath`
+        /// draws using the GTE triangulator's dual-attachment GraphicsPath2D
+        /// output (stroke + fill triangles in one mesh) plus a per-vertex
+        /// `(edgeDistance, attachmentTag, _, _)` varying. The fragment shader
+        /// derives 1-pixel `smoothstep` AA from `fwidth(edgeDist)`. Vertex
+        /// layout: `(float4 pos, float4 color, float4 edgeTag)`.
+        SharedHandle<OmegaGTE::GERenderPipelineState> path_;
 
         SharedHandle<OmegaGTE::GEComputePipelineState> linearGradient_;
         SharedHandle<OmegaGTE::GEComputePipelineState> gaussianBlurH_;
@@ -61,6 +68,7 @@ namespace OmegaWTK::Composition {
         SharedHandle<OmegaGTE::GERenderPipelineState> color() const { return color_; }
         SharedHandle<OmegaGTE::GERenderPipelineState> texture() const { return texture_; }
         SharedHandle<OmegaGTE::GERenderPipelineState> sdf() const { return sdf_; }
+        SharedHandle<OmegaGTE::GERenderPipelineState> path() const { return path_; }
 
         SharedHandle<OmegaGTE::GEComputePipelineState> linearGradient() const { return linearGradient_; }
         SharedHandle<OmegaGTE::GEComputePipelineState> gaussianBlurH() const { return gaussianBlurH_; }

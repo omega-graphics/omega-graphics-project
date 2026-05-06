@@ -52,7 +52,7 @@ namespace OmegaWTK::Composition {
         };
 
     private:
-        enum class PipelineKind : std::uint8_t { None, Color, Texture, Sdf };
+        enum class PipelineKind : std::uint8_t { None, Color, Texture, Sdf, Path };
 
         BackendRenderTargetContext & owner_;
 
@@ -116,6 +116,13 @@ namespace OmegaWTK::Composition {
         /// (Phase 6). Drives Rect / RoundedRect / Ellipse / Shadow
         /// primitives via the closed-form distance fragment shader.
         void bindSdfPipeline(DrawScope & scope);
+
+        /// Same contract as `bindColorPipeline`, for the path pipeline
+        /// (Phase 6.4). Drives `VisualCommand::VectorPath` draws — vertex
+        /// layout `(float4 pos, float4 color, float4 edgeTag)` carrying a
+        /// per-vertex signed edge distance and attachment tag for AA via
+        /// `fwidth(edgeDist)` in the fragment shader.
+        void bindPathPipeline(DrawScope & scope);
 
         void setViewportOverride(float offsetX, float offsetY,
                                  float width, float height);
