@@ -62,8 +62,8 @@ Backend TextRect implementation
 > window. `renderScale_` is therefore a per-window quantity sourced from `NativeWindow::scaleFactor()`,
 > not a per-NativeItem value. Visual tree constructors (`DCVisualTree`, `MtlVisualTree`,
 > `VkVisualTree`) call `nativeWindow->scaleFactor()` once at creation and pass the result to
-> `view->setRenderScale()`; per-monitor DPI-change events will trigger a rebuild of the render
-> target (see Non-goals).
+> `view->setRenderScale()`. Per-monitor DPI changes trigger a rebuild via the
+> `WindowScaleFactorChanged` event — see "Per-monitor DPI updates" below.
 
 ## Backend status
 
@@ -112,19 +112,86 @@ Backend TextRect implementation
   value and returning it from `scaleFactor()`. The Vulkan visual tree calls
   `nativeWindow->scaleFactor()` and passes the result to `view->setRenderScale()`.
 
+## Per-monitor DPI updates
+
+`renderScale_` was originally frozen at render-target construction. With the
+`WindowScaleFactorChanged` event landing as part of `Native-API-Completion-Proposal.md`
+§2.2, it is now a runtime-mutable quantity. The flow:
+
+```
+Platform DPI/backing-scale change
+   │  (Win32 WM_DPICHANGED, macOS windowDidChangeBackingProperties,
+   │   Wayland wp_fractional_scale_v1, GtkWindow notify::scale-factor)
+   ▼
+NativeWindow emits WindowScaleFactorChanged{oldScale, newScale, suggestedRect}
+   │
+   ▼
+AppWindow default handler (Native API §2.2)
+   │  • If suggestedRect (Win32 only): nativeWindow->setRect(*suggestedRect)
+   │  • view->setRenderScale(newScale) recurses through the View tree
+   │  • view->setNeedsDisplay() invalidates everything for repaint
+   ▼
+ViewRenderTarget::scaleChanged()  ◄── new, owned by this plan
+   │  • re-runs the constructor's backingWidth_ / backingHeight_ derivation
+   │  • reallocates the offscreen surface at rect.{w,h} * newScale
+   ▼
+Next paint
+   │  • Canvas::drawText reads ownerView_->getRenderScale()  → newScale
+   │  • TextRect::Create produces a properly-scaled offscreen surface
+   │  • (Phase 6) cached TextLayout detects scale mismatch on resolve and
+   │    rebuilds its TextRect + re-uploads its GETexture
+   ▼
+Glyphs are crisp on the new monitor
+```
+
+### What this plan owns
+
+- **`ViewRenderTarget::scaleChanged()`** — new method on
+  `wtk/src/Composition/CompositorClient.cpp`. Already-existing
+  `setRenderScale(newScale)` only updates the float; `scaleChanged()`
+  additionally re-derives `backingWidth_` / `backingHeight_` and rebuilds
+  the GPU-side surface (same code path as the constructor and the resize
+  handler at `RenderTarget.cpp:217`). Called by the AppWindow handler
+  immediately after `setRenderScale`.
+
+- **TextRect rebuild contract** — confirmed *not* a separate concern.
+  Today's `Canvas::drawText` constructs a fresh `TextRect` per call, so it
+  picks up the new scale on the next paint with zero added wiring. Phase 6's
+  `TextLayout` detects the scale change via the per-draw scale re-read in
+  `Composition-Extension-Plan.md` §6.3 — also no added wiring. This plan
+  does **not** introduce a `TextRect::setScale` mutator; rebuild is the
+  uniform answer.
+
+### What the Native API plan owns
+
+- The `WindowScaleFactorChanged` event type, params struct, and per-platform
+  emission (see `Native-API-Completion-Proposal.md` §2.2).
+- The default `AppWindow` handler that calls `view->setRenderScale` and
+  `view->setNeedsDisplay`.
+
+### Backend status (revisited)
+
+The per-monitor flow only works if the platform `TextRect` backends honor
+`renderScale` at every call. With the per-draw re-read in place, the
+**TODO** items below become the gating work — without them, a held
+`TextLayout` on macOS/Linux will rebuild but produce a same-sized bitmap on
+the new monitor:
+
+- macOS / Core Text — see "Core Text / Metal (macOS)" below. Same change as
+  before; the priority bumps because Phase 6 + per-monitor DPI both depend
+  on it.
+- Linux / HarfBuzz — see "HarfBuzz / FreeType / Vulkan (Linux)" below.
+  Same.
+
 ## Non-goals (for now)
 
-- Per-monitor DPI updates. `WM_DPICHANGED` on Windows (and equivalent signals
-  on macOS / Linux) currently only resizes the window — the render target's
-  `renderScale_` is frozen at creation. A later pass will handle the
-  `WindowDpiChanged` event, call `nativeWindow->scaleFactor()` for the new
-  value, and rebuild / rescale the render target. This is tracked as a
-  follow-on to §2.2 (`NativeWindow` event emitter) in the Native API
-  Completion Proposal.
 - Mixed-DPI multi-window applications where Views are reparented between
   windows of different scales. The render target is per-window, so this will
   Just Work for Views that are always attached to a single window.
 - Fractional scale factors below 1.0 (not a real configuration).
+- X11 `Xft.dpi` change-events. The Native API §2.2 implementation cuts the
+  first GTK pass with integer `wl_output` / `notify::scale-factor` only;
+  X11 fractional / on-the-fly DPI changes via `XSettings` are deferred.
 
 ## Testing
 

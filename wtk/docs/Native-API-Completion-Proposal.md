@@ -20,7 +20,7 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 | **2.5 NativeTheme** | ThemeAppearance, populated ThemeDesc (colors, typography), `queryCurrentTheme()` on macOS & Win32 | **Done** |
 | **2.11 NativeNote / NotificationCenter** | Permissions, scheduling, callbacks, removal, categories — macOS UN, Win32 ToastNotificationManager, GTK libnotify | **Done** |
 | **2.12 NativeMenu / Menu** | Shortcuts, check/radio items, contextual menus, dynamic updates, validation delegate — macOS NSMenu, Win32 HMENU, GTK GtkMenu | **Done** (icons deferred) |
-| 2.2 NativeWindow | Full window control (minimize/maximize/fullscreen, scaleFactor, opacity, cursor sink) | Not started |
+| 2.2 NativeWindow | Full window control (minimize/maximize/fullscreen, scaleFactor, opacity, cursor sink, DPI scale change events) | Not started |
 | ~~2.3 NativeItem~~ | **Obsolete under virtual view model — no new NativeItem APIs.** See §2.3 below. | Removed |
 | 2.3a View / Widget / TreeHost focus + cursor + tooltip | Virtual focus manager, declarative cursor shape, virtual tooltip popups | Not started |
 | 2.4 NativeApp | Delegate, command-line args, timers | Not started |
@@ -60,9 +60,11 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 
 ## 2. Proposed Extensions
 
-### 2.1 NativeEvent — Complete Event Model ✅ Done
+### 2.1 NativeEvent — Complete Event Model ✅ Done (one delta pending)
 
 Implemented. See `NativeEvent.h`: `ModifierFlags`, `MouseEventParams`, `CursorMoveParams`, `KeyCode`, `KeyDownParams`/`KeyUpParams`, all new event types (`CursorMove`, `DragBegin`/`Move`/`End`, `FocusGained`/`FocusLost`, `GesturePinch`/`Pan`/`Rotate`, `AppActivate`/`AppDeactivate`, full window resize sequence), multi-receiver `NativeEventEmitter`.
+
+**Delta — `WindowScaleFactorChanged`:** one new event type lands as part of §2.2 (DPI scale change handling). The params struct + enum case below extend `NativeEvent.h` but the dispatch wiring is platform-side and is owned by §2.2. Adding the type itself is non-breaking.
 
 ---
 
@@ -133,6 +135,76 @@ enum class CursorShape : int {
 ```
 
 `AppWindow` exposes thin pass-throughs (`setOpacity`, `isKeyWindow`, `becomeKeyWindow`) for app-level code; cursor is *not* exposed on `AppWindow` directly because the dispatcher should be the only writer.
+
+#### DPI scale change handling
+
+`scaleFactor()` returns the **current** value. It can change at runtime when:
+
+- Win32: the user drags the window between monitors of different DPIs (`WM_DPICHANGED`), or changes the system scaling.
+- macOS: the window moves between displays of different `backingScaleFactor` (`-windowDidChangeBackingProperties:`).
+- Linux/Wayland: the compositor sends a new `wp_fractional_scale_v1::preferred_scale`, or the integer `wl_output` scale changes; X11: `Xft.dpi` change via XSettings.
+
+`NativeWindow` emits `WindowScaleFactorChanged` through its `eventEmitter()` whenever this happens. The event carries enough information for the receiver to react without re-querying:
+
+```cpp
+struct OMEGAWTK_EXPORT WindowScaleFactorChangedParams {
+    float oldScale;
+    float newScale;
+    /// Win32 WM_DPICHANGED suggests a new window rect that preserves
+    /// physical size on the new monitor. macOS/Linux leave this empty
+    /// (the window does not resize on backing-scale change). Receivers
+    /// that want to honor the suggestion call setRect(suggestedRect).
+    Core::Optional<Composition::Rect> suggestedRect;
+};
+
+// NativeEvent.h:
+typedef enum : OPT_PARAM {
+    /* ...existing... */
+    WindowScaleFactorChanged
+} EventType;
+```
+
+**Default AppWindow behavior — automatic propagation.** Apps must not be required to subscribe explicitly to keep text and bitmaps crisp. The platform `AppWindow` subscribes to its own `NativeWindow`'s emitter and runs this default handler:
+
+1. Tell the visual tree the new scale: `view->setRenderScale(newScale)` recurses through the View tree, updating each `Composition::ViewRenderTarget::renderScale_`.
+2. Trigger a render-target rebuild: each `ViewRenderTarget` reallocates its backing surface at `rect.{w,h} * newScale` (the existing `setRenderScale` mutator already exists at `wtk/src/Composition/CompositorClient.cpp:175`; the missing piece is the rebuild trigger — call out to a new `ViewRenderTarget::scaleChanged()` that re-runs the same path the constructor takes for `backingWidth_` / `backingHeight_`).
+3. Invalidate every View so a full repaint occurs at the next vsync.
+4. On Win32, also call `nativeWindow->setRect(*params.suggestedRect)` if present, before step 1, so the OS-suggested physical-size-preserving rect lands.
+
+App-level code that needs to react beyond the default (e.g. a custom asset cache keyed on scale) attaches its own listener to the same emitter — `NativeEventEmitter` is multi-receiver per §2.1.
+
+#### Connection to TextRect / TextLayout
+
+The DPI plan (`DPI-Aware-Text-Plan.md`) already routes `renderScale` through `View::getRenderScale()` into the text pipeline. The change-event flow does not introduce a new path — it re-runs the existing one:
+
+- **Today's `Canvas::drawText`** (no caching): every call constructs a fresh `TextRect::Create(rect, layoutDesc, renderScale)`. After the AppWindow handler updates `renderScale_` and triggers a repaint, the next `drawText` reads the new value through `ownerView_->getRenderScale()` and the `TextRect` is built at the right physical size. **No additional wiring needed.**
+
+- **Phase 6 `TextLayout` cache** (`Composition-Extension-Plan.md` §6.3): `Canvas::drawTextLayout` reads `ownerView_->getRenderScale()` on every draw and passes it through to the handle's resolve. The handle compares to the cached scale; mismatch → layout-dirty rebuild. So when the AppWindow handler updates `renderScale_`, every held `TextLayout` rebuilds its `TextRect` and re-uploads its `GETexture` on the very next paint. **No additional wiring needed in Phase 6 either** — the per-draw re-read was designed for exactly this event.
+
+In other words, the event landing on `NativeWindow` propagates through:
+
+```
+WindowScaleFactorChanged
+   │
+   ▼
+AppWindow default handler
+   │  view->setRenderScale(newScale)  →  ViewRenderTarget::renderScale_
+   │  view->setNeedsDisplay()
+   ▼
+Next paint cycle
+   │  Canvas::drawText / drawTextLayout reads ownerView_->getRenderScale()
+   │  → mismatch detected → TextRect rebuilt at new scale
+   ▼
+Crisp glyphs on the new monitor
+```
+
+The only cross-plan work item is `ViewRenderTarget::scaleChanged()` (the rebuild trigger). That belongs in `DPI-Aware-Text-Plan.md`'s "Per-monitor DPI updates" section (no longer a non-goal once §2.2 lands).
+
+#### Per-platform implementation notes
+
+- **macOS** — `CocoaAppWindow` subscribes to `-windowDidChangeBackingProperties:`. The notification's userInfo carries `NSBackingPropertyOldScaleFactorKey`; new scale is `[window backingScaleFactor]`. `suggestedRect` is empty.
+- **Win32** — `Win32AppWindow` handles `WM_DPICHANGED` in its wndproc. `wParam` low-word is the new DPI; old is read from the cached previous value. `lParam` points to a `RECT *` with the suggested new bounds. Convert DPI to scale via `scale = dpi / 96.0f`. Build `WindowScaleFactorChangedParams{oldScale, newScale, suggestedRect}`.
+- **GTK** — `GTKAppWindow` connects to `notify::scale-factor` on the `GtkWindow` for integer scale, and to `wp_fractional_scale_v1::preferred_scale` (via `gdk_wayland_*`) where available. `suggestedRect` is empty. X11 also needs an `XSettings` listener for `Xft/DPI` changes — out of scope for the first cut; integer scale covers the common case.
 
 ---
 
@@ -497,6 +569,7 @@ The GTK backend currently implements `NativeApp`, `NativeWindow`, `NativeItem`, 
 
 ### Modified headers
 - `NativeWindow.h` — window state APIs, `scaleFactor`, `setOpacity`, `setCursorShape` sink, `isKeyWindow`/`becomeKeyWindow`, `CursorShape` enum; remove `#ifdef TARGET_MACOS` guards around `rect` and `eventEmitter`
+- `NativeEvent.h` — add `WindowScaleFactorChanged` enum case + `WindowScaleFactorChangedParams` struct (one-line delta to the otherwise-Done §2.1)
 - `NativeItem.h` — **no changes** (virtual view model removes the per-View item)
 - `NativeApp.h` — NativeAppDelegate, commandLineArgs(), launchArgs()
 - `NativeDialog.h` — NativeAlertDialog, FileFilter in FS descriptor

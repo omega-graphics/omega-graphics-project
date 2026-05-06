@@ -609,7 +609,7 @@ This lets callers write `canvas->drawRect(r, ColorBrush(Color::create8Bit(0xFF00
 
 ---
 
-## Phase 4 — Color improvements
+## Phase 4 — Color improvements [DONE]
 
 **Goal:** Ergonomic color construction and manipulation for UI code.
 
@@ -887,15 +887,18 @@ and the platform `TextRect` backends already accept `renderScale` per
 the DPI plan. Phase 6 just re-reads the value on each draw instead
 of capturing it once at `TextRect::Create` time.
 
-**Out of scope for Phase 6:** per-monitor DPI *change events* — when
-a window crosses a Retina ↔ external boundary, the visual tree
-currently doesn't get notified to update `renderScale_`. That's
-already deferred in the DPI plan ("Non-goals" §1) pending the
-`WindowDpiChanged` follow-on to Native API §2.2. Phase 6's per-draw
-re-read means that *once* the visual tree updates `renderScale_`,
-held layouts will rebuild on the next paint without any extra
-plumbing — so Phase 6 doesn't add new work for the DPI follow-on; it
-quietly inherits the fix.
+**Out of scope for Phase 6:** the platform-side machinery that
+*detects* a per-monitor DPI change and updates `renderScale_`. That
+work is owned by `Native-API-Completion-Proposal.md` §2.2 ("DPI scale
+change handling") via the `WindowScaleFactorChanged` event, and by
+`DPI-Aware-Text-Plan.md` ("Per-monitor DPI updates") for the
+`ViewRenderTarget::scaleChanged()` rebuild trigger. Phase 6's per-
+draw re-read of `ownerView_->getRenderScale()` means that *once*
+those two land, every held `TextLayout` rebuilds its `TextRect` and
+re-uploads its `GETexture` on the very next paint, with no
+additional code in this phase. The contract is symmetrical: the
+event-driven side updates the scale on the View, Phase 6 reads the
+View on every draw, and the cache invalidates itself.
 
 ### 6.4 UIView migration
 

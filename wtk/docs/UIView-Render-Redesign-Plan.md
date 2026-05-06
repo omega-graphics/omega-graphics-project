@@ -275,6 +275,22 @@ list — rather than a thing that owns rendering infrastructure.
    adds a new primitive (e.g. MSDF text run), the DisplayList gains
    the matching op.
 
+   **`DrawOp` retires `VisualCommand`.** The post-SDF `VisualCommand`
+   shape — one command per primitive, fill + border consolidated
+   into the same record, soft shadow as its own SDF command — is
+   exactly what `DrawOp` is. They are not two parallel formats with
+   a translation step between them: `DrawOp` *is* the new compositor
+   op type and `VisualCommand` is **deleted**. The two prior
+   producers of `VisualCommand` (per-view `Canvas` and `SVGView`'s
+   internal canvas) are both removed by Tier 3 / Tier 4 of this
+   plan, leaving `VisualCommand` with no upstream. The compositor
+   backend's `renderToTarget()` switch is rewritten to dispatch on
+   `DrawOp` directly. Backend rasterization code (the SDF pipeline,
+   the triangulator path, the bitmap blit, the text run) is
+   untouched — only the input type changes. `CanvasFrame` (the
+   per-view recorded list of `VisualCommand`s) is similarly retired
+   in favor of the per-window `DisplayList`.
+
 4. **`FrameBuilder`** — replaces `UIView::update()` and the
    per-view composition session dance. One per window. Runs the three
    passes:
@@ -316,6 +332,8 @@ list — rather than a thing that owns rendering infrastructure.
 | `localBoundsFromView` static map            | **Deleted.** Bounds live on the node.             |
 | `View::computeWindowOffset` parent walk     | **Deleted.** `FrameBuilder` threads a transform.  |
 | `Canvas` as a per-view paint device          | Kept **only** as the low-level API the compositor backend exposes; `DisplayList` replays into one Canvas per frame at flush time, not one per view. |
+| `VisualCommand` (per-element compositor op) | **Deleted.** `DrawOp` replaces it 1:1. Backend `renderToTarget()` switch dispatches on `DrawOp`. |
+| `CanvasFrame` (per-view list of `VisualCommand`s) | **Deleted.** `DisplayList` (one per window per frame) replaces it. |
 
 The scene-tree / display-list separation is the Chromium move. The
 pure-paint, shared-display-list move is the Slate move. The collapsed
@@ -651,14 +669,17 @@ is worth confirming before Tier 3 lands.
 
 I am assuming the DisplayList replay maps cleanly onto the SDF
 backend's `BackendRenderTargetContext::renderToTarget` switch — i.e.
-that `DrawOp::Rect/RoundedRect/Ellipse/Shadow` with an optional border
-field translates 1:1 into `VisualCommand` types with the matching
-border slot populated, and that no other callers of `Canvas::drawRect`
-/ `drawRoundedRect` / `drawEllipse` rely on the prior
-fill-then-stroked-path behavior. SVGView was the last in-tree caller
-that was, and was already migrated alongside the SDF spine. Any
-out-of-tree consumer relying on that behavior is a pre-flight
-checklist item for Tier 3.
+that the rewrite of that switch to dispatch on `DrawOp` directly
+(rather than on the now-retired `VisualCommand`) is a mechanical
+rename of the case labels and a touch-up of the field accesses,
+with no GPU-side change. The shape match is given by construction
+(`DrawOp` was designed against the post-SDF `VisualCommand` shape),
+but the mechanical rewrite still needs the same grep sweep for
+out-of-tree callers of `Canvas::drawRect` / `drawRoundedRect` /
+`drawEllipse` that relied on the prior fill-then-stroked-path
+behavior. SVGView was the last in-tree caller that did, and was
+already migrated alongside the SDF spine. Any out-of-tree consumer
+is a pre-flight checklist item for Tier 3.
 
 ---
 
