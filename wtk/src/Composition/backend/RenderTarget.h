@@ -126,6 +126,23 @@ namespace OmegaWTK::Composition {
                               float kindCode,
                               OmegaGTE::FVec<4> fillColor,
                               OmegaGTE::FVec<4> strokeColor);
+
+        /// Emit a single bitmap quad through the Phase 6.6 bitmap pipeline.
+        /// `destRect` is the canvas-space destination; `(uMin,vMin)` /
+        /// `(uMax,vMax)` are the texture sample coordinates for the dest
+        /// rect's corners (already normalized to [0..1] by the caller —
+        /// the caller computes them from an optional source-rect against
+        /// the texture's pixel dimensions). `tint` is multiplied onto the
+        /// sampled color; pass `(1,1,1,1)` for straight passthrough.
+        /// The texture is an already-uploaded `GETexture` (typically from
+        /// the process-wide `BitmapTextureCache`); `textureFence` is an
+        /// optional fence to wait on before sampling.
+        void emitBitmapPrimitive(const Composition::Rect & destRect,
+                                 float uMin, float vMin,
+                                 float uMax, float vMax,
+                                 OmegaGTE::FVec<4> tint,
+                                 SharedHandle<OmegaGTE::GETexture> texture,
+                                 SharedHandle<OmegaGTE::GEFence> textureFence);
     public:
         /// Open a frame-level render pass that clears to the given color.
         /// All subsequent renderToTarget() calls record into this pass.

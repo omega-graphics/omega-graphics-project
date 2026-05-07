@@ -236,9 +236,9 @@ namespace OmegaWTK::Native::Win {
                             (float)(prcNewWindow->bottom - prcNewWindow->top)
                         };
                     }
-                    if(hasEventEmitter()){
+                    if(NativeWindow::hasEventEmitter()){
                         auto *params = new WindowScaleFactorChangedParams{oldScale, newScale, suggested};
-                        eventEmitter()->emit(NativeEventPtr(new NativeEvent(NativeEvent::WindowScaleFactorChanged, params)));
+                        NativeWindow::eventEmitter()->emit(NativeEventPtr(new NativeEvent(NativeEvent::WindowScaleFactorChanged, params)));
                     }
                     break;
                 }

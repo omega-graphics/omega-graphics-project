@@ -7,6 +7,7 @@
 #include <wrl.h>
 #include <wrl/wrappers/corewrappers.h>
 #include <appmodel.h>
+#include <ShlObj.h>
 
 #include <atomic>
 #include <mutex>
@@ -115,7 +116,7 @@ namespace OmegaWTK::Native {
                 return false;
             }
 
-            HRESULT hr = Windows::Foundation::GetActivationFactory(
+            HRESULT hr = GetActivationFactory(
                 HStringReference(RuntimeClass_Windows_UI_Notifications_ToastNotificationManager).Get(),
                 &mgrStatics);
             if(FAILED(hr)) return false;
@@ -162,7 +163,7 @@ namespace OmegaWTK::Native {
             std::wstring xml = ss.str();
 
             ComPtr<IXmlDocument> doc;
-            HRESULT hr = Windows::Foundation::ActivateInstance(
+            HRESULT hr = ActivateInstance(
                 HStringReference(RuntimeClass_Windows_Data_Xml_Dom_XmlDocument).Get(),
                 &doc);
             if(FAILED(hr)) return nullptr;
@@ -237,7 +238,7 @@ namespace OmegaWTK::Native {
             if(!doc) return;
 
             ComPtr<IToastNotificationFactory> toastFactory;
-            HRESULT hr = Windows::Foundation::GetActivationFactory(
+            HRESULT hr = GetActivationFactory(
                 HStringReference(RuntimeClass_Windows_UI_Notifications_ToastNotification).Get(),
                 &toastFactory);
             if(FAILED(hr)) return;
@@ -275,7 +276,7 @@ namespace OmegaWTK::Native {
             if(note.delaySeconds > 0.f) {
                 // Schedule via ScheduledToastNotification.
                 ComPtr<IScheduledToastNotificationFactory> schedFactory;
-                hr = Windows::Foundation::GetActivationFactory(
+                hr = GetActivationFactory(
                     HStringReference(RuntimeClass_Windows_UI_Notifications_ScheduledToastNotification).Get(),
                     &schedFactory);
                 if(FAILED(hr)) return;

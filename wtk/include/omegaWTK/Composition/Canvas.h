@@ -32,6 +32,23 @@ namespace OmegaWTK {
             Border(Core::SharedPtr<Brush> &_brush, unsigned _width) : brush(_brush), width(_width) {};
         };
 
+        /// @brief Nine-slice insets for resizable bitmaps (Phase 6.6.3).
+        ///
+        /// Specified in *texture pixels* against the bitmap's source-rect
+        /// (or full texture when no source-rect is set). The four edges
+        /// describe the rows / columns *inside* the texture that mark the
+        /// inner stretchable region. Drawing a nine-slice bitmap emits 9
+        /// separate `Bitmap` visuals — corners at fixed size, edges and
+        /// center stretched — each carrying its own destination rect and
+        /// source-rect. Purely a Canvas-side decomposition; the backend
+        /// pipeline is unchanged from the single-quad bitmap path.
+        struct OMEGAWTK_EXPORT NineSliceInsets {
+            float left   = 0.f;
+            float top    = 0.f;
+            float right  = 0.f;
+            float bottom = 0.f;
+        };
+
         struct OMEGAWTK_EXPORT  CanvasEffect {
             enum class Type : OPT_PARAM {
                 DirectionalBlur,
@@ -102,6 +119,16 @@ namespace OmegaWTK {
                 Core::SharedPtr<OmegaGTE::GETexture> texture;
                 Core::SharedPtr<OmegaGTE::GEFence> textureFence;
                 Composition::Rect rect;
+                /// Phase 6.6.2: optional sub-rect (in texture pixels)
+                /// to sample. When unset the bitmap samples the full
+                /// texture (UV 0..1). Used for sprite atlases and as
+                /// the per-slice source-rect for nine-slice draws.
+                Core::Optional<Composition::Rect> sourceRect;
+                /// Phase 6.6.2: optional RGBA tint multiplied onto the
+                /// sampled color. Identity (1,1,1,1) is the default
+                /// passthrough. The value is supplied by the caller as
+                /// straight-alpha RGBA in `[0,1]`.
+                Core::Optional<Composition::Color> tintColor;
             } bitmapParams;
             struct ShadowParamsData {
                 LayerEffect::DropShadowParams shadow {};
@@ -129,6 +156,12 @@ namespace OmegaWTK {
             Data(Core::SharedPtr<Media::BitmapImage> img,const Composition::Rect &rect);
 
             Data(Core::SharedPtr<OmegaGTE::GETexture> texture,Core::SharedPtr<OmegaGTE::GEFence> textureFence,const Composition::Rect &rect);
+
+            /// Phase 6.6.2: bitmap with optional sub-rect and tint.
+            Data(Core::SharedPtr<Media::BitmapImage> img,
+                 const Composition::Rect & rect,
+                 Core::Optional<Composition::Rect> sourceRect,
+                 Core::Optional<Composition::Color> tintColor);
 
             Data(const LayerEffect::DropShadowParams & shadow,const Composition::Rect & shapeRect,float cornerRadius,bool isEllipse);
 
@@ -167,6 +200,14 @@ namespace OmegaWTK {
 
         template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::SharedPtr<OmegaGTE::GETexture>,Core::SharedPtr<OmegaGTE::GEFence>,Composition::Rect)>
         VisualCommand(_Args && ...args):type(Bitmap),params(args...){};
+
+        /// Phase 6.6.2: bitmap with optional sub-rect and RGBA tint.
+        VisualCommand(Core::SharedPtr<Media::BitmapImage> img,
+                      const Composition::Rect & rect,
+                      Core::Optional<Composition::Rect> sourceRect,
+                      Core::Optional<Composition::Color> tintColor):
+        type(Bitmap),
+        params(img,rect,sourceRect,tintColor){};
 
         VisualCommand(const LayerEffect::DropShadowParams & shadow,
                       const Composition::Rect & shapeRect,
@@ -338,6 +379,47 @@ namespace OmegaWTK {
             @param rect The Rect to bound the image to.
            */
         void drawImage(SharedHandle<Media::BitmapImage> & img,const Composition::Rect & rect);
+
+        /**
+         @brief Draw a sub-region of an Image with an optional RGBA tint
+         (Phase 6.6.2).
+         @param img The source bitmap.
+         @param destRect The destination rect on the canvas.
+         @param sourceRect Sub-rect of the bitmap to sample, in *texture
+         pixels* (e.g. `{ 64, 0, 32, 32 }` for the second-row first
+         icon of a 32×32 sprite atlas).
+         @param tintColor Optional RGBA tint multiplied onto the sampled
+         color. Identity `(1,1,1,1)` is straight passthrough; useful for
+         recoloring monochrome icons or applying an alpha fade.
+         */
+        void drawImage(SharedHandle<Media::BitmapImage> & img,
+                       const Composition::Rect & destRect,
+                       Core::Optional<Composition::Rect> sourceRect,
+                       Core::Optional<Composition::Color> tintColor = std::nullopt);
+
+        /**
+         @brief Draw a nine-slice (resizable) bitmap (Phase 6.6.3).
+         @param img The source bitmap.
+         @param destRect The destination rect on the canvas. Must be at
+         least as large as the sum of the corresponding insets in each
+         dimension; otherwise edges / center collapse to zero size.
+         @param insets Edge widths in *texture pixels* (against
+         `sourceRect` when provided, otherwise the full texture). The
+         four corners draw at fixed size; the four edges stretch in one
+         dimension; the center stretches in both.
+         @param sourceRect Optional sub-rect of the bitmap to slice.
+         When unset the full texture is used.
+         @param tintColor Optional RGBA tint applied uniformly to all
+         nine slices.
+
+         The implementation decomposes the request into nine `Bitmap`
+         visual commands; the backend pipeline is unchanged.
+         */
+        void drawImage(SharedHandle<Media::BitmapImage> & img,
+                       const Composition::Rect & destRect,
+                       const NineSliceInsets & insets,
+                       Core::Optional<Composition::Rect> sourceRect = std::nullopt,
+                       Core::Optional<Composition::Color> tintColor = std::nullopt);
 
         /**
            @brief Draw a GETexture to the corresponding rect.

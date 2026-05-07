@@ -127,6 +127,25 @@ unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int 
     return idx;
 }
 
+// Pipeline-Completion-Extension-Plan §6.3 — locate the layout-desc that
+// owns the given bind location and run the kind/sample-count check
+// against the bound texture. Logs a diagnostic on mismatch and returns
+// false; the caller may either skip the bind or carry on (we keep the
+// command list valid but flag the user).
+static bool checkTextureBindAgainstShader(unsigned int location,
+                                          const omegasl_shader &shader,
+                                          GETexture &tex) {
+    OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout,
+                                                                shader.pLayout + shader.nLayout};
+    for (auto &l : layoutArr) {
+        if (l.location == location) {
+            return validateTextureBindKind((int)l.type, tex.getKind(),
+                                           tex.getSampleCount(), shader.name, location);
+        }
+    }
+    return true;
+}
+
 D3D12_RESOURCE_STATES
 GED3D12CommandBuffer::getRequiredResourceStateForResourceID(unsigned int &id, omegasl_shader &shader) {
     OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout, shader.pLayout + shader.nLayout};
@@ -988,6 +1007,8 @@ void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> &t
     assert((!inComputePass && !inBlitPass) && "Cannot set Resource Const at a Vertex Func when not in render pass");
     auto *d3d12_texture = (GED3D12Texture *)texture.get();
 
+    checkTextureBindAgainstShader(index, currentRenderPipeline->vertexShader->internal, *d3d12_texture);
+
     if (d3d12_texture->needsValidation()) {
         auto buffer = std::dynamic_pointer_cast<GED3D12CommandBuffer>(parentQueue->getAvailableBuffer());
 
@@ -1060,6 +1081,9 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> &
 void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned int index) {
     assert((!inComputePass && !inBlitPass) && "Cannot set Resource Const a Fragment Func when not in render pass");
     auto *d3d12_texture = (GED3D12Texture *)texture.get();
+
+    checkTextureBindAgainstShader(index, currentRenderPipeline->fragmentShader->internal, *d3d12_texture);
+
     if (d3d12_texture->needsValidation()) {
         auto buffer = std::dynamic_pointer_cast<GED3D12CommandBuffer>(parentQueue->getAvailableBuffer());
 
@@ -1333,6 +1357,9 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEBuffer> &b
 void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id) {
     assert(inComputePass && "");
     auto *d3d12_texture = (GED3D12Texture *)texture.get();
+
+    checkTextureBindAgainstShader(id, currentComputePipeline->computeShader->internal, *d3d12_texture);
+
     if (d3d12_texture->needsValidation()) {
         d3d12_texture->updateAndValidateStatus(commandList.Get());
     }

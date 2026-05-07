@@ -14,6 +14,23 @@
 
 _NAMESPACE_BEGIN_
 
+// §6.3 — bind-time validation helper. Same shape as the D3D12 / Vulkan
+// counterparts: walk the shader's layout-desc array, find the descriptor
+// owning the bound location, and consult validateTextureBindKind().
+static bool checkTextureBindAgainstShader(unsigned int location,
+                                          const omegasl_shader &shader,
+                                          GETexture &tex) {
+    OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout,
+                                                                shader.pLayout + shader.nLayout};
+    for (auto &l : layoutArr) {
+        if (l.location == location) {
+            return validateTextureBindKind((int)l.type, tex.getKind(),
+                                           tex.getSampleCount(), shader.name, location);
+        }
+    }
+    return true;
+}
+
 GEMetalCommandBuffer::GEMetalCommandBuffer(GEMetalCommandQueue *parentQueue):parentQueue(parentQueue),
 buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQueue->commandQueue.handle()) commandBuffer] retain]}){
     traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
@@ -512,6 +529,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         assert((rp && (cp == nil)) && "Cannot Resource Const on a Vertex Func when not in render pass");
         auto *metalTexture = (GEMetalTexture *)texture.get();
 
+        checkTextureBindAgainstShader(_id, renderPipelineState->vertexShader->internal, *metalTexture);
+
         if(metalTexture->needsBarrier){
             [rp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalTexture->resourceBarrier.handle()) beforeStages:MTLRenderStageVertex];
             metalTexture->needsBarrier = false;
@@ -551,6 +570,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         assert((rp && (cp == nil)) && "Cannot Resource Const on a Fragment Func when not in render pass");
         auto *metalTexture = (GEMetalTexture *)texture.get();
 
+        checkTextureBindAgainstShader(_id, renderPipelineState->fragmentShader->internal, *metalTexture);
 
         if(metalTexture->needsBarrier){
             [rp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalTexture->resourceBarrier.handle()) beforeStages:MTLRenderStageFragment];
@@ -743,6 +763,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int _id) {
         assert(cp != nil && "");
         auto mtl_texture = (GEMetalTexture *)texture.get();
+
+        checkTextureBindAgainstShader(_id, computePipelineState->computeShader->internal, *mtl_texture);
 
         if(mtl_texture->needsBarrier){
             [cp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_texture->resourceBarrier.handle())];

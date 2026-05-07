@@ -47,7 +47,7 @@ struct OMEGAWTK_EXPORT LMouseUpParams   : MouseEventParams {};
 struct OMEGAWTK_EXPORT RMouseDownParams : MouseEventParams {};
 struct OMEGAWTK_EXPORT RMouseUpParams   : MouseEventParams {};
 
-enum class OMEGAWTK_EXPORT KeyCode : int {
+enum class KeyCode : int {
     A, B, C, D, E, F, G, H, I, J, K, L, M,
     N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
     Num0, Num1, Num2, Num3, Num4, Num5,

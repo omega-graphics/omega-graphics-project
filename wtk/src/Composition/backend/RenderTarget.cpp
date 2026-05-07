@@ -7,6 +7,7 @@
 #include "FencePool.h"
 #include "MainThreadDispatch.h"
 #include "Pipeline.h"
+#include "BitmapTextureCache.h"
 #include "ResourceFactory.h"
 #include "omegaWTK/Composition/Canvas.h"
 #include "GeometryConvert.h"
@@ -165,8 +166,9 @@ void BackendRenderTargetContext::rebuildBackingTarget(){
                         static_cast<float>(backingHeight_),
                         renderScale_);
     // Phase 6.8: tessellation context is now created lazily on first
-    // VectorPath / Bitmap / gradient-fallback draw. A frame that only
-    // touches SDF primitives never allocates one. On every rebuild we
+    // VectorPath / gradient-fallback draw (Phase 6.6 retired the
+    // bitmap-tessellation round-trip). A frame that only touches SDF
+    // primitives or bitmaps never allocates one. On every rebuild we
     // invalidate the existing context so the next consumer rebinds
     // against the new backing dimensions.
     tessellationContext_.reset();
@@ -590,6 +592,149 @@ void BackendRenderTargetContext::resetElementState() {
         }
     }
 
+    void BackendRenderTargetContext::emitBitmapPrimitive(
+            const Composition::Rect & destRect,
+            float uMin, float vMin,
+            float uMax, float vMax,
+            OmegaGTE::FVec<4> tint,
+            SharedHandle<OmegaGTE::GETexture> texture,
+            SharedHandle<OmegaGTE::GEFence> textureFence){
+        auto & pipelines = pipelineRegistry();
+        auto bufferWriter = pipelines.bufferWriter();
+        auto bitmapPipeline = pipelines.bitmap();
+        if(bufferWriter == nullptr || bitmapPipeline == nullptr || renderTarget == nullptr || texture == nullptr){
+            return;
+        }
+        if(!std::isfinite(destRect.pos.x) || !std::isfinite(destRect.pos.y) ||
+           !std::isfinite(destRect.w) || !std::isfinite(destRect.h) ||
+           destRect.w <= 0.f || destRect.h <= 0.f){
+            return;
+        }
+
+        const float viewportW = std::max(1.f, renderTargetSize_.w);
+        const float viewportH = std::max(1.f, renderTargetSize_.h);
+
+        const float minX = destRect.pos.x;
+        const float minY = destRect.pos.y;
+        const float maxX = destRect.pos.x + destRect.w;
+        const float maxY = destRect.pos.y + destRect.h;
+
+        // Vertex buffer: 6 vertices × (float4 pos, float4 uvPad).
+        const std::size_t vertexStride = OmegaGTE::omegaSLStructStride(
+                {OMEGASL_FLOAT4, OMEGASL_FLOAT4});
+        const std::size_t vertexBytes  = vertexStride * 6;
+        SharedHandle<OmegaGTE::GEBuffer> vertexBuffer;
+        if(bufferPool() != nullptr){
+            vertexBuffer = bufferPool()->acquire(vertexBytes, vertexStride);
+        }
+        else {
+            OmegaGTE::BufferDescriptor desc {
+                    OmegaGTE::BufferDescriptor::Upload,
+                    vertexBytes,
+                    vertexStride};
+            vertexBuffer = gte.graphicsEngine->makeBuffer(desc);
+        }
+        if(vertexBuffer == nullptr){
+            return;
+        }
+
+        // Per-draw uniform buffer: tintColor (16 bytes). Released after
+        // frame completes via deferredBufferReleases.
+        const std::size_t paramsStride = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4});
+        SharedHandle<OmegaGTE::GEBuffer> paramsBuffer;
+        if(bufferPool() != nullptr){
+            paramsBuffer = bufferPool()->acquire(paramsStride, paramsStride);
+        }
+        else {
+            OmegaGTE::BufferDescriptor desc {
+                    OmegaGTE::BufferDescriptor::Upload,
+                    paramsStride,
+                    paramsStride};
+            paramsBuffer = gte.graphicsEngine->makeBuffer(desc);
+        }
+        if(paramsBuffer == nullptr){
+            if(bufferPool() != nullptr && vertexBuffer){
+                bufferPool()->release(std::move(vertexBuffer), vertexBytes);
+            }
+            return;
+        }
+
+        const bool hasTransform = !(currentTransform == OmegaGTE::FMatrix<4,4>::Identity());
+        const float opacityMul = std::clamp(currentOpacity, 0.f, 1.f);
+
+        bufferWriter->setOutputBuffer(vertexBuffer);
+        auto writeVertex = [&](float x, float y, float u, float v){
+            auto pos = OmegaGTE::FVec<4>::Create();
+            pos[0][0] = (2.f * x) / viewportW - 1.f;
+            pos[1][0] = (2.f * y) / viewportH - 1.f;
+            pos[2][0] = 0.f;
+            pos[3][0] = 1.f;
+            if(hasTransform){
+                pos = currentTransform * pos;
+            }
+            auto uvPad = OmegaGTE::FVec<4>::Create();
+            uvPad[0][0] = u;
+            uvPad[1][0] = v;
+            uvPad[2][0] = 0.f;
+            uvPad[3][0] = 0.f;
+            bufferWriter->structBegin();
+            bufferWriter->writeFloat4(pos);
+            bufferWriter->writeFloat4(uvPad);
+            bufferWriter->structEnd();
+            bufferWriter->sendToBuffer();
+        };
+
+        // Triangle 1: TL, TR, BL — TL=(minX,minY,uMin,vMin),
+        // TR=(maxX,minY,uMax,vMin), BL=(minX,maxY,uMin,vMax).
+        writeVertex(minX, minY, uMin, vMin);
+        writeVertex(maxX, minY, uMax, vMin);
+        writeVertex(minX, maxY, uMin, vMax);
+        // Triangle 2: TR, BR, BL.
+        writeVertex(maxX, minY, uMax, vMin);
+        writeVertex(maxX, maxY, uMax, vMax);
+        writeVertex(minX, maxY, uMin, vMax);
+        bufferWriter->flush();
+
+        bufferWriter->setOutputBuffer(paramsBuffer);
+        auto tintWithOpacity = tint;
+        tintWithOpacity[3][0] *= opacityMul;
+        bufferWriter->structBegin();
+        bufferWriter->writeFloat4(tintWithOpacity);
+        bufferWriter->structEnd();
+        bufferWriter->sendToBuffer();
+        bufferWriter->flush();
+
+        auto scope = frameRenderPass_.beginDraw(textureFence);
+        if(scope.cb == nullptr){
+            if(bufferPool() != nullptr){
+                if(vertexBuffer){
+                    bufferPool()->release(std::move(vertexBuffer), vertexBytes);
+                }
+                if(paramsBuffer){
+                    bufferPool()->release(std::move(paramsBuffer), paramsStride);
+                }
+            }
+            return;
+        }
+        auto & cb = scope.cb;
+
+        frameRenderPass_.bindBitmapPipeline(scope);
+        cb->bindResourceAtVertexShader(vertexBuffer, 9);
+        cb->bindResourceAtFragmentShader(paramsBuffer, 10);
+        cb->bindResourceAtFragmentShader(texture, 11);
+        cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
+        frameRenderPass_.endDraw(scope);
+
+        if(bufferPool() != nullptr){
+            if(vertexBuffer){
+                deferredBufferReleases.push_back({std::move(vertexBuffer), vertexBytes});
+            }
+            if(paramsBuffer){
+                deferredBufferReleases.push_back({std::move(paramsBuffer), paramsStride});
+            }
+        }
+    }
+
     void BackendRenderTargetContext::renderBlurredSlice(
             const CompositeFrame::WidgetSlice & slice){
         if(slice.targetLayer == nullptr || !slice.targetLayer->hasBlur()){
@@ -752,9 +897,10 @@ void BackendRenderTargetContext::resetElementState() {
         auto pathRenderPipelineState = pipelines.path();
         // Phase 6.8: tessellationContext_ is no longer required at this
         // gate. SDF primitives (Rect/RoundedRect/Ellipse/Shadow with
-        // color brush) and per-element state ops (SetTransform /
+        // color brush), bitmaps (Phase 6.6 — dedicated pipeline with
+        // a hardcoded quad), and per-element state ops (SetTransform /
         // SetOpacity) don't touch the triangulator. Cases that do
-        // (gradient fills, Bitmap, VectorPath) lazily acquire it via
+        // (gradient fills, VectorPath) lazily acquire it via
         // `ensureTessellationContext()`.
         if(bufferWriter == nullptr || renderTarget == nullptr){
             return;
@@ -849,35 +995,69 @@ void BackendRenderTargetContext::resetElementState() {
                 break;
             }
             case VisualCommand::Bitmap : {
-                if (!ensureTessellationContext()) return;
+                // Phase 6.6: bitmap drawing dispatches through the dedicated
+                // bitmap pipeline — hardcoded 6-vertex quad authored inline,
+                // no triangulator round-trip, mip-chain texture sourced from
+                // the process-wide BitmapTextureCache, optional sub-rect UV
+                // and RGBA tint via per-draw uniform buffer.
                 auto & _params = ((VisualCommandParams*)params)->bitmapParams;
-                auto gteBmpRect = toGTE(_params.rect);
-                auto te_params = OmegaGTE::TETriangulationParams::Rect(gteBmpRect);
 
-                useTextureRenderPipeline = true;
-                textureCoordDenomW = std::max(1.f,_params.rect.w);
-                textureCoordDenomH = std::max(1.f,_params.rect.h);
+                SharedHandle<OmegaGTE::GETexture> tex;
+                SharedHandle<OmegaGTE::GEFence> fence;
+                unsigned texW = 1;
+                unsigned texH = 1;
+
                 if(_params.texture){
-                    texturePaint = _params.texture;
-                    textureFence = _params.textureFence;
+                    tex = _params.texture;
+                    fence = _params.textureFence;
+                    // We don't track per-pixel dimensions on a foreign
+                    // GETexture; sub-rect sampling against an externally
+                    // supplied texture is unsupported (sourceRect would
+                    // need pixel dimensions to normalize). Callers
+                    // pre-compute their own UV ranges if they want
+                    // sub-rect sampling on a GETexture.
+                    texW = 1;
+                    texH = 1;
+                }
+                else if(_params.img != nullptr){
+                    tex = BitmapTextureCache::instance().acquire(_params.img);
+                    if(tex == nullptr){
+                        return;
+                    }
+                    texW = std::max(1u, _params.img->header.width);
+                    texH = std::max(1u, _params.img->header.height);
                 }
                 else {
-                    OmegaGTE::TextureDescriptor texDesc {OmegaGTE::GETexture::Texture2D};
-                    texDesc.usage = OmegaGTE::GETexture::ToGPU;
-                    texDesc.width = _params.img->header.width;
-                    texDesc.height = _params.img->header.height;
-#ifdef OMEGAWTK_TRACE_RENDER
-                    std::cout << "TEX W:" << texDesc.width << "TEX H:" << texDesc.height << std::endl;
-#endif
-                    texturePaint = gte.graphicsEngine->makeTexture(texDesc);
-                    texturePaint->copyBytes((void *)_params.img->data,_params.img->header.stride);
+                    return;
                 }
 
-                te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeTexture2D(uint32_t(_params.rect.w),uint32_t(_params.rect.h)));
+                // Resolve UV range. When no source rect is supplied, sample
+                // the full texture (UV 0..1). Otherwise normalize the
+                // pixel-space sourceRect against the bitmap dimensions.
+                float uMin = 0.f, vMin = 0.f, uMax = 1.f, vMax = 1.f;
+                if(_params.sourceRect.has_value() && _params.img != nullptr){
+                    const auto & src = *_params.sourceRect;
+                    const float fW = static_cast<float>(texW);
+                    const float fH = static_cast<float>(texH);
+                    uMin = std::clamp(src.pos.x / fW, 0.f, 1.f);
+                    vMin = std::clamp(src.pos.y / fH, 0.f, 1.f);
+                    uMax = std::clamp((src.pos.x + src.w) / fW, 0.f, 1.f);
+                    vMax = std::clamp((src.pos.y + src.h) / fH, 0.f, 1.f);
+                }
 
-                result = tessellationContext_->triangulateSync(te_params,OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,&viewPort);
+                // Resolve tint. Identity (1,1,1,1) is the default
+                // passthrough; per-element opacity is folded in during
+                // emitBitmapPrimitive so Visual::SetOpacity composes.
+                auto tint = OmegaGTE::makeColor(1.f, 1.f, 1.f, 1.f);
+                if(_params.tintColor.has_value()){
+                    const auto & tc = *_params.tintColor;
+                    tint = OmegaGTE::makeColor(tc.r, tc.g, tc.b, tc.a);
+                }
 
-                break;
+                emitBitmapPrimitive(_params.rect,
+                                    uMin, vMin, uMax, vMax,
+                                    tint, tex, fence);
+                return;
             }
             case VisualCommand::RoundedRect : {
                 auto & _params = ((VisualCommandParams*)params)->roundedRectParams;

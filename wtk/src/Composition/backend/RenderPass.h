@@ -52,7 +52,7 @@ namespace OmegaWTK::Composition {
         };
 
     private:
-        enum class PipelineKind : std::uint8_t { None, Color, Texture, Sdf, Path };
+        enum class PipelineKind : std::uint8_t { None, Color, Texture, Sdf, Path, Bitmap };
 
         BackendRenderTargetContext & owner_;
 
@@ -123,6 +123,13 @@ namespace OmegaWTK::Composition {
         /// per-vertex signed edge distance and attachment tag for AA via
         /// `fwidth(edgeDist)` in the fragment shader.
         void bindPathPipeline(DrawScope & scope);
+
+        /// Same contract as `bindColorPipeline`, for the bitmap pipeline
+        /// (Phase 6.6). Drives `VisualCommand::Bitmap` draws — hardcoded
+        /// 6-vertex quad authored CPU-side (no triangulator), optional
+        /// sub-rect UV baked at vertex authoring time, optional RGBA tint
+        /// via a per-draw uniform buffer at fragment slot 10.
+        void bindBitmapPipeline(DrawScope & scope);
 
         void setViewportOverride(float offsetX, float offsetY,
                                  float width, float height);

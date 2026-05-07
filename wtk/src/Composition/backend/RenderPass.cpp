@@ -180,6 +180,14 @@ namespace OmegaWTK::Composition {
         }
     }
 
+    void FrameRenderPass::bindBitmapPipeline(DrawScope & scope){
+        if(lastPipelineKind_ != PipelineKind::Bitmap){
+            auto pipeline = pipelineRegistry().bitmap();
+            scope.cb->setRenderPipelineState(pipeline);
+            lastPipelineKind_ = PipelineKind::Bitmap;
+        }
+    }
+
     void FrameRenderPass::setViewportOverride(float offsetX, float offsetY,
                                               float width, float height){
         viewportOverride_.active   = true;

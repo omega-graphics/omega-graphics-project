@@ -1171,18 +1171,57 @@ _NAMESPACE_BEGIN_
         VkFormat imageFormat = pixelFormatToVkFormat(desc.pixelFormat);
         imageInfo.format = imageFormat;
 
+        // §6.2 — heap path mirrors the engine path's kind dispatch.
+        const TextureKind kind = resolveTextureKind(desc);
+        const unsigned descArrayLayers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
+        const bool isMS = (kind == TextureKind::Tex2DMS || kind == TextureKind::Tex2DMSArray);
+        const unsigned effectiveSampleCount = isMS ? (desc.sampleCount > 1 ? desc.sampleCount : 1u) : 1u;
+
         VkImageType type = VK_IMAGE_TYPE_2D;
         VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
-        switch(desc.type){
-            case GETexture::Texture1D: type = VK_IMAGE_TYPE_1D; viewType = VK_IMAGE_VIEW_TYPE_1D; break;
-            case GETexture::Texture2D: type = VK_IMAGE_TYPE_2D; viewType = VK_IMAGE_VIEW_TYPE_2D; break;
-            case GETexture::Texture3D: type = VK_IMAGE_TYPE_3D; viewType = VK_IMAGE_VIEW_TYPE_3D; break;
+        unsigned vkArrayLayers = 1;
+        switch(kind){
+            case TextureKind::Tex1D:        type = VK_IMAGE_TYPE_1D; viewType = VK_IMAGE_VIEW_TYPE_1D; break;
+            case TextureKind::Tex1DArray:
+                type = VK_IMAGE_TYPE_1D; viewType = VK_IMAGE_VIEW_TYPE_1D_ARRAY;
+                vkArrayLayers = descArrayLayers;
+                break;
+            case TextureKind::Tex2D:        type = VK_IMAGE_TYPE_2D; viewType = VK_IMAGE_VIEW_TYPE_2D; break;
+            case TextureKind::Tex2DArray:
+                type = VK_IMAGE_TYPE_2D; viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+                vkArrayLayers = descArrayLayers;
+                break;
+            case TextureKind::TexCube:
+                type = VK_IMAGE_TYPE_2D; viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+                vkArrayLayers = 6;
+                imageInfo.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+                break;
+            case TextureKind::TexCubeArray:
+                type = VK_IMAGE_TYPE_2D; viewType = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+                vkArrayLayers = descArrayLayers >= 6 ? descArrayLayers : 6;
+                imageInfo.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+                break;
+            case TextureKind::Tex2DMS:      type = VK_IMAGE_TYPE_2D; viewType = VK_IMAGE_VIEW_TYPE_2D; break;
+            case TextureKind::Tex2DMSArray:
+                type = VK_IMAGE_TYPE_2D; viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+                vkArrayLayers = descArrayLayers;
+                break;
+            case TextureKind::Tex3D:        type = VK_IMAGE_TYPE_3D; viewType = VK_IMAGE_VIEW_TYPE_3D; break;
+            case TextureKind::Auto:         break;
         }
         imageInfo.imageType = type;
         imageInfo.extent = {desc.width, desc.height, desc.depth};
-        imageInfo.mipLevels = desc.mipLevels;
-        imageInfo.arrayLayers = 1;
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.mipLevels = isMS ? 1u : desc.mipLevels;
+        imageInfo.arrayLayers = vkArrayLayers;
+        switch(effectiveSampleCount){
+            case 2:  imageInfo.samples = VK_SAMPLE_COUNT_2_BIT; break;
+            case 4:  imageInfo.samples = VK_SAMPLE_COUNT_4_BIT; break;
+            case 8:  imageInfo.samples = VK_SAMPLE_COUNT_8_BIT; break;
+            case 16: imageInfo.samples = VK_SAMPLE_COUNT_16_BIT; break;
+            case 32: imageInfo.samples = VK_SAMPLE_COUNT_32_BIT; break;
+            case 64: imageInfo.samples = VK_SAMPLE_COUNT_64_BIT; break;
+            default: imageInfo.samples = VK_SAMPLE_COUNT_1_BIT; break;
+        }
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         if(desc.usage == GETexture::FromGPU || desc.usage == GETexture::GPUAccessOnly){
@@ -1212,9 +1251,9 @@ _NAMESPACE_BEGIN_
         viewInfo.format = imageFormat;
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = desc.mipLevels;
+        viewInfo.subresourceRange.levelCount = imageInfo.mipLevels;
         viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
+        viewInfo.subresourceRange.layerCount = vkArrayLayers;
 
         VkImageView imgView = VK_NULL_HANDLE;
         vkCreateImageView(engine->device, &viewInfo, nullptr, &imgView);
@@ -1226,6 +1265,7 @@ _NAMESPACE_BEGIN_
             desc.type, desc.usage, desc.pixelFormat,
             engine, img, imgView, layout, allocationInfo, alloc, desc, memUsage));
         result->format = imageFormat;
+        result->setShape(kind, vkArrayLayers, effectiveSampleCount);
         engine->trackResource(result);
         return result;
     }
@@ -1277,46 +1317,84 @@ _NAMESPACE_BEGIN_
 
         image_desc.format = image_format;
 
-        VkImageType type;
-        VkImageViewType viewType;
-        
-        switch (desc.type) {
-            case GETexture::Texture1D : {
+        // §6.2 — pick VkImageType / VkImageViewType / arrayLayers from
+        // the resolved kind. Cube images need VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT
+        // so the view can use VIEW_TYPE_CUBE.
+        const TextureKind kind = resolveTextureKind(desc);
+        const unsigned descArrayLayers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
+        const bool isMS = (kind == TextureKind::Tex2DMS || kind == TextureKind::Tex2DMSArray);
+
+        VkImageType type = VK_IMAGE_TYPE_2D;
+        VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
+        unsigned vkArrayLayers = 1;
+        switch (kind) {
+            case TextureKind::Tex1D:
                 type = VK_IMAGE_TYPE_1D;
                 viewType = VK_IMAGE_VIEW_TYPE_1D;
                 break;
-            }
-            case GETexture::Texture2D : {
+            case TextureKind::Tex1DArray:
+                type = VK_IMAGE_TYPE_1D;
+                viewType = VK_IMAGE_VIEW_TYPE_1D_ARRAY;
+                vkArrayLayers = descArrayLayers;
+                break;
+            case TextureKind::Tex2D:
                 type = VK_IMAGE_TYPE_2D;
                 viewType = VK_IMAGE_VIEW_TYPE_2D;
                 break;
-            }
-            case GETexture::Texture3D : {
+            case TextureKind::Tex2DArray:
+                type = VK_IMAGE_TYPE_2D;
+                viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+                vkArrayLayers = descArrayLayers;
+                break;
+            case TextureKind::TexCube:
+                type = VK_IMAGE_TYPE_2D;
+                viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+                vkArrayLayers = 6;
+                image_desc.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+                break;
+            case TextureKind::TexCubeArray:
+                type = VK_IMAGE_TYPE_2D;
+                viewType = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+                vkArrayLayers = descArrayLayers >= 6 ? descArrayLayers : 6;
+                image_desc.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+                break;
+            case TextureKind::Tex2DMS:
+                // Vulkan: multisample-ness is on the underlying image's
+                // `samples` field; the view type stays VIEW_TYPE_2D.
+                type = VK_IMAGE_TYPE_2D;
+                viewType = VK_IMAGE_VIEW_TYPE_2D;
+                break;
+            case TextureKind::Tex2DMSArray:
+                type = VK_IMAGE_TYPE_2D;
+                viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+                vkArrayLayers = descArrayLayers;
+                break;
+            case TextureKind::Tex3D:
                 type = VK_IMAGE_TYPE_3D;
                 viewType = VK_IMAGE_VIEW_TYPE_3D;
                 break;
-            }
-            default: {
+            case TextureKind::Auto:
                 type = VK_IMAGE_TYPE_2D;
                 viewType = VK_IMAGE_VIEW_TYPE_2D;
                 break;
-            }
         }
 
         const unsigned width = desc.width > 0 ? desc.width : 1;
         const unsigned height = desc.height > 0 ? desc.height : 1;
         const unsigned depth = desc.depth > 0 ? desc.depth : 1;
-        const unsigned mipLevels = desc.mipLevels > 0 ? desc.mipLevels : 1;
+        const unsigned descMipLevels = desc.mipLevels > 0 ? desc.mipLevels : 1;
+        const unsigned mipLevels = isMS ? 1u : descMipLevels;
+        const unsigned effectiveSampleCount = isMS ? (desc.sampleCount > 1 ? desc.sampleCount : 1u) : 1u;
 
         image_desc.imageType = type;
         image_desc.extent.width = width;
         image_desc.extent.height = height;
         image_desc.extent.depth = depth;
         image_desc.mipLevels = mipLevels;
-        image_desc.arrayLayers = 1;
+        image_desc.arrayLayers = vkArrayLayers;
         image_desc.tiling = VK_IMAGE_TILING_OPTIMAL;
         image_desc.samples = VK_SAMPLE_COUNT_1_BIT;
-        switch (desc.sampleCount) {
+        switch (effectiveSampleCount) {
             case 1:
                 image_desc.samples = VK_SAMPLE_COUNT_1_BIT;
                 break;
@@ -1449,7 +1527,7 @@ _NAMESPACE_BEGIN_
         image_view_desc.subresourceRange.baseMipLevel = 0;
         image_view_desc.subresourceRange.levelCount = mipLevels;
         image_view_desc.subresourceRange.baseArrayLayer = 0;
-        image_view_desc.subresourceRange.layerCount = 1;
+        image_view_desc.subresourceRange.layerCount = vkArrayLayers;
 
         auto viewRes = vkCreateImageView(device,&image_view_desc,nullptr,&imageView);
         if(viewRes != VK_SUCCESS || imageView == VK_NULL_HANDLE){
@@ -1465,6 +1543,9 @@ _NAMESPACE_BEGIN_
         sanitizedDesc.height = height;
         sanitizedDesc.depth = depth;
         sanitizedDesc.mipLevels = mipLevels;
+        sanitizedDesc.kind = kind;
+        sanitizedDesc.arrayLayers = vkArrayLayers;
+        sanitizedDesc.sampleCount = effectiveSampleCount;
         auto result = std::shared_ptr<GEVulkanTexture>(new GEVulkanTexture(
                 sanitizedDesc.type,
                 sanitizedDesc.usage,
@@ -1478,6 +1559,7 @@ _NAMESPACE_BEGIN_
                 sanitizedDesc,
                 memoryUsage));
         result->format = image_format;
+        result->setShape(kind, vkArrayLayers, effectiveSampleCount);
         trackResource(result);
         return result;
     };

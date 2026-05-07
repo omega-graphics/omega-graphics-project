@@ -33,7 +33,7 @@ A full `TextureView` type (subresource ranges, format reinterpretation) is a nat
 
 ## Design
 
-### 1. Public API types
+### 1. Public API types [DONE]
 
 Add to `GTEBase.h`:
 

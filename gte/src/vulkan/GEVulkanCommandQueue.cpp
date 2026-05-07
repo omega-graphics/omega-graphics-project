@@ -22,6 +22,25 @@ _NAMESPACE_BEGIN_
             range.layerCount = 1;
             return range;
         }
+
+        // §6.3 — bind-time validation helper, shared by every Vulkan
+        // texture-bind path. Walks the shader's layout-desc array, picks
+        // the descriptor that owns the bound location, and consults
+        // validateTextureBindKind() for the kind / sample-count check.
+        inline bool checkTextureBindAgainstShader(unsigned int location,
+                                                  const omegasl_shader &shader,
+                                                  GETexture &tex){
+            OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{
+                shader.pLayout, shader.pLayout + shader.nLayout};
+            for (auto &l : layoutArr) {
+                if (l.location == location) {
+                    return validateTextureBindKind((int)l.type, tex.getKind(),
+                                                   tex.getSampleCount(),
+                                                   shader.name, location);
+                }
+            }
+            return true;
+        }
     }
 
     void GEVulkanCommandBuffer::setName(OmegaCommon::StrRef name) {
@@ -877,6 +896,8 @@ _NAMESPACE_BEGIN_
         trackTexture(texture);
         /// TODO!
 
+        checkTextureBindAgainstShader(id, renderPipelineState->vertexShader->internal, *vk_texture);
+
         auto ioMode = getResourceIOModeForResourceID(id,renderPipelineState->vertexShader->internal);
 
         insertResourceBarrierIfNeeded(vk_texture,id,renderPipelineState->vertexShader->internal);
@@ -962,6 +983,8 @@ _NAMESPACE_BEGIN_
 
         auto vk_texture = (GEVulkanTexture *)texture.get();
         trackTexture(texture);
+
+        checkTextureBindAgainstShader(id, renderPipelineState->fragmentShader->internal, *vk_texture);
 
         auto ioMode = getResourceIOModeForResourceID(id,renderPipelineState->fragmentShader->internal);
 
@@ -1478,6 +1501,8 @@ _NAMESPACE_BEGIN_
 
         auto vk_texture = (GEVulkanTexture *)texture.get();
         trackTexture(texture);
+
+        checkTextureBindAgainstShader(id, computePipelineState->computeShader->internal, *vk_texture);
 
         insertResourceBarrierIfNeeded(vk_texture,id,computePipelineState->computeShader->internal);
 

@@ -69,6 +69,7 @@ namespace OmegaWTK::Composition {
         texture_.reset();
         sdf_.reset();
         path_.reset();
+        bitmap_.reset();
         linearGradient_.reset();
         gaussianBlurH_.reset();
         gaussianBlurV_.reset();
@@ -208,6 +209,25 @@ namespace OmegaWTK::Composition {
         else {
             path_.reset();
             std::cout << "Path render pipeline is unavailable." << std::endl;
+        }
+
+        // Bitmap render pipeline (Phase 6.6). Tinted bitmaps and bitmaps
+        // with transparent regions both need alpha-over blending — the
+        // tint may carry an alpha < 1, and PNG / RGBA decodes routinely
+        // include transparent pixels that must preserve the destination.
+        // The same `sdfBlend` setup applies (premultiplied-alpha-friendly
+        // src=SrcAlpha, dst=InvSrcAlpha).
+        renderPipelineDescriptor.vertexFunc = getShader("bitmapVertex");
+        renderPipelineDescriptor.fragmentFunc = getShader("bitmapFragment");
+        if(renderPipelineDescriptor.vertexFunc != nullptr && renderPipelineDescriptor.fragmentFunc != nullptr){
+            bitmap_ = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
+            if(bitmap_ == nullptr){
+                std::cout << "Bitmap render pipeline creation failed." << std::endl;
+            }
+        }
+        else {
+            bitmap_.reset();
+            std::cout << "Bitmap render pipeline is unavailable." << std::endl;
         }
 
         // Reset blend state for any subsequently-created pipelines in

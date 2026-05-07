@@ -46,6 +46,14 @@ namespace OmegaWTK::Composition {
         /// derives 1-pixel `smoothstep` AA from `fwidth(edgeDist)`. Vertex
         /// layout: `(float4 pos, float4 color, float4 edgeTag)`.
         SharedHandle<OmegaGTE::GERenderPipelineState> path_;
+        /// Bitmap render pipeline (Phase 6.6). Drives `VisualCommand::Bitmap`
+        /// draws — hardcoded 6-vertex quad authored CPU-side, optional
+        /// sub-rect UV, optional RGBA tint via a per-draw uniform buffer.
+        /// Vertex layout: `(float4 pos, float4 uvPad)` (uvPad.xy = sample
+        /// UV; .zw reserved). Per-draw uniform at fragment slot 10 carries
+        /// the tint color. Texture bound at fragment slot 11. Sampler is
+        /// the shared `mainSampler` (anisotropic, clamp_to_edge).
+        SharedHandle<OmegaGTE::GERenderPipelineState> bitmap_;
 
         SharedHandle<OmegaGTE::GEComputePipelineState> linearGradient_;
         SharedHandle<OmegaGTE::GEComputePipelineState> gaussianBlurH_;
@@ -69,6 +77,7 @@ namespace OmegaWTK::Composition {
         SharedHandle<OmegaGTE::GERenderPipelineState> texture() const { return texture_; }
         SharedHandle<OmegaGTE::GERenderPipelineState> sdf() const { return sdf_; }
         SharedHandle<OmegaGTE::GERenderPipelineState> path() const { return path_; }
+        SharedHandle<OmegaGTE::GERenderPipelineState> bitmap() const { return bitmap_; }
 
         SharedHandle<OmegaGTE::GEComputePipelineState> linearGradient() const { return linearGradient_; }
         SharedHandle<OmegaGTE::GEComputePipelineState> gaussianBlurH() const { return gaussianBlurH_; }

@@ -28,7 +28,7 @@ namespace OmegaWTK::Native::Win {
     }
 
     class WinMenuItem : public NativeMenuItem {
-        MENUITEMINFO info{};
+        MENUITEMINFOW info{};
         WinMenu *subMenu;
         bool hasSubMenu;
         WinMenu *parent;
@@ -112,6 +112,7 @@ namespace OmegaWTK::Native::Win {
             // MFT_RADIOCHECK draws a bullet instead of a check.
             info.fType = (t == NativeMenuItemType::Radio) ? MFT_RADIOCHECK : MFT_STRING;
             info.fState = MFS_ENABLED | (initialChecked ? MFS_CHECKED : MFS_UNCHECKED);
+            // Use Win Utils wstring_to_str and str_to_wstring helpers.
             info.dwTypeData = const_cast<wchar_t *>(displayW.c_str());
             info.cch = (UINT)displayW.size();
         }

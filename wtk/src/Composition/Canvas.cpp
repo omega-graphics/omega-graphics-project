@@ -39,12 +39,20 @@ pathParams({path,brush,fillBrush,strokeWidth,contour,fill}){
 }
 
 VisualCommand::Data::Data(Core::SharedPtr<Media::BitmapImage> img,const Composition::Rect &rect) :
-bitmapParams({img,nullptr,nullptr,rect}){
+bitmapParams({img,nullptr,nullptr,rect,std::nullopt,std::nullopt}){
 
 };
 
 VisualCommand::Data::Data(Core::SharedPtr<OmegaGTE::GETexture> texture,Core::SharedPtr<OmegaGTE::GEFence> textureFence,const Composition::Rect &rect) :
-bitmapParams({nullptr,texture,textureFence,rect}){
+bitmapParams({nullptr,texture,textureFence,rect,std::nullopt,std::nullopt}){
+
+};
+
+VisualCommand::Data::Data(Core::SharedPtr<Media::BitmapImage> img,
+                          const Composition::Rect & rect,
+                          Core::Optional<Composition::Rect> sourceRect,
+                          Core::Optional<Composition::Color> tintColor) :
+bitmapParams({img,nullptr,nullptr,rect,std::move(sourceRect),std::move(tintColor)}){
 
 };
 
@@ -261,6 +269,115 @@ void Canvas::drawPath(Path &path, Core::Optional<Border> border){
 
 void Canvas::drawImage(SharedHandle<Media::BitmapImage> &img,const Composition::Rect & rect) {
     current->currentVisuals.emplace_back(img,rect);
+}
+
+void Canvas::drawImage(SharedHandle<Media::BitmapImage> &img,
+                       const Composition::Rect & destRect,
+                       Core::Optional<Composition::Rect> sourceRect,
+                       Core::Optional<Composition::Color> tintColor) {
+    current->currentVisuals.emplace_back(img,
+                                          destRect,
+                                          std::move(sourceRect),
+                                          std::move(tintColor));
+}
+
+void Canvas::drawImage(SharedHandle<Media::BitmapImage> &img,
+                       const Composition::Rect & destRect,
+                       const NineSliceInsets & insets,
+                       Core::Optional<Composition::Rect> sourceRect,
+                       Core::Optional<Composition::Color> tintColor) {
+    if(img == nullptr){
+        return;
+    }
+
+    // Resolve the texture-pixel-space source rect: explicit sourceRect
+    // when provided, otherwise the full bitmap.
+    Composition::Rect srcFull;
+    if(sourceRect.has_value()){
+        srcFull = *sourceRect;
+    }
+    else {
+        srcFull.pos.x = 0.f;
+        srcFull.pos.y = 0.f;
+        srcFull.w = static_cast<float>(img->header.width);
+        srcFull.h = static_cast<float>(img->header.height);
+    }
+
+    // Clamp insets to the source rect's extents so the inner stretch
+    // region never collapses below zero.
+    const float srcL = std::max(0.f, std::min(insets.left,   srcFull.w));
+    const float srcT = std::max(0.f, std::min(insets.top,    srcFull.h));
+    const float srcR = std::max(0.f, std::min(insets.right,  srcFull.w - srcL));
+    const float srcB = std::max(0.f, std::min(insets.bottom, srcFull.h - srcT));
+
+    // Destination corner sizes mirror the source corner sizes 1:1 (the
+    // corners do not stretch). Edges and center take what's left of
+    // the destination rect.
+    const float dstL = srcL;
+    const float dstT = srcT;
+    const float dstR = srcR;
+    const float dstB = srcB;
+
+    const float dstCx = std::max(0.f, destRect.w - dstL - dstR);
+    const float dstCy = std::max(0.f, destRect.h - dstT - dstB);
+    const float srcCx = std::max(0.f, srcFull.w - srcL - srcR);
+    const float srcCy = std::max(0.f, srcFull.h - srcT - srcB);
+
+    struct Slice {
+        float dx, dy, dw, dh;
+        float sx, sy, sw, sh;
+    };
+    const Slice slices[9] = {
+        // top-left corner
+        { 0.f,           0.f,           dstL, dstT,
+          0.f,           0.f,           srcL, srcT },
+        // top edge
+        { dstL,          0.f,           dstCx, dstT,
+          srcL,          0.f,           srcCx, srcT },
+        // top-right corner
+        { dstL + dstCx,  0.f,           dstR, dstT,
+          srcL + srcCx,  0.f,           srcR, srcT },
+        // left edge
+        { 0.f,           dstT,          dstL, dstCy,
+          0.f,           srcT,          srcL, srcCy },
+        // center
+        { dstL,          dstT,          dstCx, dstCy,
+          srcL,          srcT,          srcCx, srcCy },
+        // right edge
+        { dstL + dstCx,  dstT,          dstR, dstCy,
+          srcL + srcCx,  srcT,          srcR, srcCy },
+        // bottom-left corner
+        { 0.f,           dstT + dstCy,  dstL, dstB,
+          0.f,           srcT + srcCy,  srcL, srcB },
+        // bottom edge
+        { dstL,          dstT + dstCy,  dstCx, dstB,
+          srcL,          srcT + srcCy,  srcCx, srcB },
+        // bottom-right corner
+        { dstL + dstCx,  dstT + dstCy,  dstR, dstB,
+          srcL + srcCx,  srcT + srcCy,  srcR, srcB },
+    };
+
+    for(const auto & s : slices){
+        if(s.dw <= 0.f || s.dh <= 0.f) continue;
+        if(s.sw <= 0.f || s.sh <= 0.f) continue;
+
+        Composition::Rect dst;
+        dst.pos.x = destRect.pos.x + s.dx;
+        dst.pos.y = destRect.pos.y + s.dy;
+        dst.w = s.dw;
+        dst.h = s.dh;
+
+        Composition::Rect src;
+        src.pos.x = srcFull.pos.x + s.sx;
+        src.pos.y = srcFull.pos.y + s.sy;
+        src.w = s.sw;
+        src.h = s.sh;
+
+        current->currentVisuals.emplace_back(img,
+                                              dst,
+                                              Core::Optional<Composition::Rect>(src),
+                                              tintColor);
+    }
 }
 
 void Canvas::drawGETexture(SharedHandle<OmegaGTE::GETexture> &img,const Composition::Rect & rect,SharedHandle<OmegaGTE::GEFence> fence) {

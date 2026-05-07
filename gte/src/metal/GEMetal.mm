@@ -1049,7 +1049,6 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
                 SharedHandle<GETexture> makeTexture(const TextureDescriptor & desc) override {
                     MTLTextureDescriptor *mtlDesc = [[MTLTextureDescriptor alloc] init];
-                    MTLTextureType textureType;
                     MTLTextureUsage usage;
                     switch(desc.usage){
                         case GETexture::ToGPU: usage = MTLTextureUsageShaderRead; break;
@@ -1057,27 +1056,76 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                         case GETexture::GPUAccessOnly: usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite; break;
                         default: usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite; break;
                     }
-                    switch(desc.type){
-                        case GETexture::Texture1D: textureType = MTLTextureType1D; break;
-                        case GETexture::Texture2D:
-                            textureType = desc.sampleCount > 1 ? MTLTextureType2DMultisample : MTLTextureType2D; break;
-                        case GETexture::Texture3D: textureType = MTLTextureType3D; break;
+
+                    // §6.2 — drive MTLTextureType from the resolved kind so
+                    // cube / array / MS variants pick the right native type.
+                    const TextureKind kind = resolveTextureKind(desc);
+                    const unsigned arrayLayers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
+                    const bool isMS = (kind == TextureKind::Tex2DMS || kind == TextureKind::Tex2DMSArray);
+                    const unsigned effectiveSampleCount = isMS ? (desc.sampleCount > 1 ? desc.sampleCount : 1u) : 1u;
+                    const unsigned effectiveMips = isMS ? 1u : desc.mipLevels;
+
+                    MTLTextureType textureType = MTLTextureType2D;
+                    NSUInteger mtlArrayLength = 1;
+                    switch(kind){
+                        case TextureKind::Tex1D:        textureType = MTLTextureType1D; break;
+                        case TextureKind::Tex1DArray:
+                            textureType = MTLTextureType1DArray;
+                            mtlArrayLength = arrayLayers;
+                            break;
+                        case TextureKind::Tex2D:        textureType = MTLTextureType2D; break;
+                        case TextureKind::Tex2DArray:
+                            textureType = MTLTextureType2DArray;
+                            mtlArrayLength = arrayLayers;
+                            break;
+                        case TextureKind::TexCube:
+                            textureType = MTLTextureTypeCube;
+                            break;
+                        case TextureKind::TexCubeArray:
+                            textureType = MTLTextureTypeCubeArray;
+                            // Metal expresses cube arrays as `arrayLength` =
+                            // number of *cubes*, not number of faces.
+                            mtlArrayLength = (arrayLayers >= 6 ? arrayLayers : 6) / 6;
+                            break;
+                        case TextureKind::Tex2DMS:
+                            textureType = MTLTextureType2DMultisample;
+                            break;
+                        case TextureKind::Tex2DMSArray:
+                            // MTLTextureType2DMultisampleArray requires
+                            // macOS 11+ / iOS 14+. Below that the runtime
+                            // would reject this in newTextureWithDescriptor.
+                            if (@available(macOS 11.0, iOS 14.0, *)) {
+                                textureType = MTLTextureType2DMultisampleArray;
+                            } else {
+                                std::cerr << "[OmegaGTE] Tex2DMSArray requires macOS 11+ / iOS 14+" << std::endl;
+                                return nullptr;
+                            }
+                            mtlArrayLength = arrayLayers;
+                            break;
+                        case TextureKind::Tex3D:        textureType = MTLTextureType3D; break;
+                        case TextureKind::Auto:
+                            textureType = effectiveSampleCount > 1 ? MTLTextureType2DMultisample : MTLTextureType2D;
+                            break;
                     }
+
                     mtlDesc.usage = usage;
                     mtlDesc.textureType = textureType;
                     mtlDesc.width = desc.width;
                     mtlDesc.height = desc.height;
                     mtlDesc.depth = desc.depth;
-                    mtlDesc.sampleCount = desc.sampleCount;
+                    mtlDesc.sampleCount = effectiveSampleCount;
+                    mtlDesc.arrayLength = mtlArrayLength;
                     mtlDesc.storageMode = MTLStorageModeShared;
                     mtlDesc.pixelFormat = MTLPixelFormatRGBA8Unorm;
-                    mtlDesc.mipmapLevelCount = desc.mipLevels;
+                    mtlDesc.mipmapLevelCount = effectiveMips;
 
                     id<MTLTexture> tex = [NSOBJECT_OBJC_BRIDGE(id<MTLHeap>,metalHeap.handle()) newTextureWithDescriptor:mtlDesc];
                     if(tex == nil) return nullptr;
 
                     NSSmartPtr texPtr(NSObjectHandle{NSOBJECT_CPP_BRIDGE tex});
-                    return SharedHandle<GETexture>(new GEMetalTexture(desc.type, desc.usage, desc.pixelFormat, texPtr));
+                    auto result = SharedHandle<GETexture>(new GEMetalTexture(desc.type, desc.usage, desc.pixelFormat, texPtr));
+                    result->setShape(kind, arrayLayers, effectiveSampleCount);
+                    return result;
                 }
             };
 
@@ -1263,7 +1311,6 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             assert(desc.sampleCount >= 1 && "Can only create textures with 1 or more samples");
             metalDevice.assertExists();
             MTLTextureDescriptor *mtlDesc = [[MTLTextureDescriptor alloc] init];
-            MTLTextureType textureType;
             MTLTextureUsage usage;
             switch (desc.usage) {
                 case GETexture::ToGPU : {
@@ -1286,33 +1333,64 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                 }
             }
 
-            switch (desc.type) {
-                case GETexture::Texture1D : {
+            // §6.2 — drive MTLTextureType from the resolved kind.
+            const TextureKind kind = resolveTextureKind(desc);
+            const unsigned arrayLayers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
+            const bool isMS = (kind == TextureKind::Tex2DMS || kind == TextureKind::Tex2DMSArray);
+            const unsigned effectiveSampleCount = isMS ? (desc.sampleCount > 1 ? desc.sampleCount : 1u) : 1u;
+            const unsigned effectiveMips = isMS ? 1u : desc.mipLevels;
+
+            MTLTextureType textureType = MTLTextureType2D;
+            NSUInteger mtlArrayLength = 1;
+            switch (kind) {
+                case TextureKind::Tex1D:
                     textureType = MTLTextureType1D;
                     break;
-                }
-                case GETexture::Texture2D : {
-                    if(desc.sampleCount > 1){
-                        textureType = MTLTextureType2DMultisample;
-                    }
-                    else {
-                        textureType = MTLTextureType2D;
-                    }
+                case TextureKind::Tex1DArray:
+                    textureType = MTLTextureType1DArray;
+                    mtlArrayLength = arrayLayers;
                     break;
-                }
-                case GETexture::Texture3D : {
+                case TextureKind::Tex2D:
+                    textureType = MTLTextureType2D;
+                    break;
+                case TextureKind::Tex2DArray:
+                    textureType = MTLTextureType2DArray;
+                    mtlArrayLength = arrayLayers;
+                    break;
+                case TextureKind::TexCube:
+                    textureType = MTLTextureTypeCube;
+                    break;
+                case TextureKind::TexCubeArray:
+                    textureType = MTLTextureTypeCubeArray;
+                    mtlArrayLength = (arrayLayers >= 6 ? arrayLayers : 6) / 6;
+                    break;
+                case TextureKind::Tex2DMS:
+                    textureType = MTLTextureType2DMultisample;
+                    break;
+                case TextureKind::Tex2DMSArray:
+                    if (@available(macOS 11.0, iOS 14.0, *)) {
+                        textureType = MTLTextureType2DMultisampleArray;
+                    } else {
+                        std::cerr << "[OmegaGTE] Tex2DMSArray requires macOS 11+ / iOS 14+" << std::endl;
+                        return nullptr;
+                    }
+                    mtlArrayLength = arrayLayers;
+                    break;
+                case TextureKind::Tex3D:
                     textureType = MTLTextureType3D;
                     break;
-                }
+                case TextureKind::Auto:
+                    textureType = effectiveSampleCount > 1 ? MTLTextureType2DMultisample : MTLTextureType2D;
+                    break;
             }
 
             mtlDesc.usage = usage;
             mtlDesc.textureType = textureType;
             mtlDesc.width = desc.width;
             mtlDesc.height = desc.height;
-            mtlDesc.sampleCount = desc.sampleCount;
+            mtlDesc.sampleCount = effectiveSampleCount;
             mtlDesc.depth = desc.depth;
-            mtlDesc.arrayLength = 1;
+            mtlDesc.arrayLength = mtlArrayLength;
             switch(desc.storage_opts){
                 case StorageOpts::Shared:
                     mtlDesc.storageMode = MTLStorageModeShared;
@@ -1329,11 +1407,13 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             MTLPixelFormat pixelFormat = pixelFormatToMTLPixelFormat(desc.pixelFormat, renderTargetUsage);
 
             mtlDesc.pixelFormat = pixelFormat;
-            mtlDesc.mipmapLevelCount = desc.mipLevels;
+            mtlDesc.mipmapLevelCount = effectiveMips;
 
             NSSmartPtr texture = NSObjectHandle {NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newTextureWithDescriptor:mtlDesc]};
             texture.assertExists();
-            return std::shared_ptr<GETexture>(new GEMetalTexture(desc.type,desc.usage,desc.pixelFormat,texture));
+            auto result = std::shared_ptr<GETexture>(new GEMetalTexture(desc.type,desc.usage,desc.pixelFormat,texture));
+            result->setShape(kind, arrayLayers, effectiveSampleCount);
+            return result;
         };
 
         SharedHandle<GESamplerState> makeSamplerState(const SamplerDescriptor &desc) override {

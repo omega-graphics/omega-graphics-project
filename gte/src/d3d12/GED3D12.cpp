@@ -337,15 +337,47 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         resFlags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     }
 
-    switch(desc.type){
-        case GETexture::Texture1D:
-            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex1D(dxgiFormat,desc.width,1,desc.mipLevels);
+    // §6.2 — the heap path mirrors the engine path's kind dispatch. Cube /
+    // array / MS textures place the same way as their underlying 2D-array
+    // resource on D3D12; only the SRV view dimension differs.
+    const TextureKind kind = resolveTextureKind(desc);
+    const unsigned arrayLayers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
+    const bool isMS = (kind == TextureKind::Tex2DMS || kind == TextureKind::Tex2DMSArray);
+    const unsigned effectiveSampleCount = isMS ? (desc.sampleCount > 1 ? desc.sampleCount : 1u) : 1u;
+    const unsigned effectiveMips = isMS ? 1u : desc.mipLevels;
+
+    switch(kind){
+        case TextureKind::Tex1D:
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex1D(dxgiFormat,desc.width,1,effectiveMips);
             break;
-        case GETexture::Texture2D:
-            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,1,desc.mipLevels,desc.sampleCount);
+        case TextureKind::Tex1DArray:
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex1D(dxgiFormat,desc.width,arrayLayers,effectiveMips);
             break;
-        case GETexture::Texture3D:
-            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex3D(dxgiFormat,desc.width,desc.height,desc.depth,desc.mipLevels);
+        case TextureKind::Tex2D:
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,1,effectiveMips,1);
+            break;
+        case TextureKind::Tex2DArray:
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,arrayLayers,effectiveMips,1);
+            break;
+        case TextureKind::TexCube:
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,6,effectiveMips,1);
+            break;
+        case TextureKind::TexCubeArray: {
+            const unsigned layers = arrayLayers >= 6 ? arrayLayers : 6;
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,layers,effectiveMips,1);
+            break;
+        }
+        case TextureKind::Tex2DMS:
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,1,1,effectiveSampleCount);
+            break;
+        case TextureKind::Tex2DMSArray:
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,arrayLayers,1,effectiveSampleCount);
+            break;
+        case TextureKind::Tex3D:
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex3D(dxgiFormat,desc.width,desc.height,desc.depth,effectiveMips);
+            break;
+        case TextureKind::Auto:
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,1,effectiveMips,1);
             break;
     }
     d3d12_desc.Flags = resFlags;
@@ -378,18 +410,49 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
     D3D12_SHADER_RESOURCE_VIEW_DESC res_view_desc {};
     res_view_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     res_view_desc.Format = dxgiFormat;
-    switch(desc.type){
-        case GETexture::Texture1D:
+    switch(kind){
+        case TextureKind::Tex1D:
             res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
-            res_view_desc.Texture1D.MipLevels = desc.mipLevels;
+            res_view_desc.Texture1D.MipLevels = effectiveMips;
             break;
-        case GETexture::Texture2D:
+        case TextureKind::Tex1DArray:
+            res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1DARRAY;
+            res_view_desc.Texture1DArray.MipLevels = effectiveMips;
+            res_view_desc.Texture1DArray.ArraySize = arrayLayers;
+            break;
+        case TextureKind::Tex2D:
             res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            res_view_desc.Texture2D.MipLevels = desc.mipLevels;
+            res_view_desc.Texture2D.MipLevels = effectiveMips;
             break;
-        case GETexture::Texture3D:
+        case TextureKind::Tex2DArray:
+            res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+            res_view_desc.Texture2DArray.MipLevels = effectiveMips;
+            res_view_desc.Texture2DArray.ArraySize = arrayLayers;
+            break;
+        case TextureKind::TexCube:
+            res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+            res_view_desc.TextureCube.MipLevels = effectiveMips;
+            break;
+        case TextureKind::TexCubeArray:
+            res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+            res_view_desc.TextureCubeArray.MipLevels = effectiveMips;
+            res_view_desc.TextureCubeArray.NumCubes =
+                (arrayLayers >= 6 ? arrayLayers : 6) / 6;
+            break;
+        case TextureKind::Tex2DMS:
+            res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+            break;
+        case TextureKind::Tex2DMSArray:
+            res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+            res_view_desc.Texture2DMSArray.ArraySize = arrayLayers;
+            break;
+        case TextureKind::Tex3D:
             res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-            res_view_desc.Texture3D.MipLevels = desc.mipLevels;
+            res_view_desc.Texture3D.MipLevels = effectiveMips;
+            break;
+        case TextureKind::Auto:
+            res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            res_view_desc.Texture2D.MipLevels = effectiveMips;
             break;
     }
     engine->d3d12_device->CreateShaderResourceView(texture,&res_view_desc,descHeap->GetCPUDescriptorHandleForHeapStart());
@@ -404,11 +467,29 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         } else {
             D3D12_RENDER_TARGET_VIEW_DESC rtv_view_desc {};
             rtv_view_desc.Format = dxgiFormat;
-            switch(desc.type){
-                case GETexture::Texture2D:
+            switch(kind){
+                case TextureKind::Tex2D:
                     rtv_view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D; break;
-                case GETexture::Texture3D:
-                    rtv_view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE3D; break;
+                case TextureKind::Tex2DArray:
+                case TextureKind::TexCube:
+                case TextureKind::TexCubeArray:
+                    rtv_view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
+                    rtv_view_desc.Texture2DArray.ArraySize =
+                        kind == TextureKind::TexCube ? 6
+                            : (kind == TextureKind::TexCubeArray
+                                   ? (arrayLayers >= 6 ? arrayLayers : 6)
+                                   : arrayLayers);
+                    break;
+                case TextureKind::Tex2DMS:
+                    rtv_view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMS; break;
+                case TextureKind::Tex2DMSArray:
+                    rtv_view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY;
+                    rtv_view_desc.Texture2DMSArray.ArraySize = arrayLayers;
+                    break;
+                case TextureKind::Tex3D:
+                    rtv_view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE3D;
+                    rtv_view_desc.Texture3D.WSize = desc.depth;
+                    break;
                 default:
                     rtv_view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D; break;
             }
@@ -416,7 +497,9 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         }
     }
 
-    return SharedHandle<GETexture>(new GED3D12Texture(desc.type, desc.usage, desc.pixelFormat, texture, nullptr, descHeap, nullptr, rtvDescHeap, nullptr, res_states, allocation));
+    auto result = SharedHandle<GETexture>(new GED3D12Texture(desc.type, desc.usage, desc.pixelFormat, texture, nullptr, descHeap, nullptr, rtvDescHeap, nullptr, res_states, allocation));
+    result->setShape(kind, arrayLayers, effectiveSampleCount);
+    return result;
 }
 
     // void GED3D12Engine::getHardwareAdapter(__in IDXGIFactory4 * dxgi_factory,
@@ -464,7 +547,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         CreateDXGIFactory(IID_PPV_ARGS(&dxgi_factory));
 
         D3D12GetDebugInterface(IID_PPV_ARGS(&debug_interface));
-        debug_interface->EnableDebugLayer();
+        // debug_interface->EnableDebugLayer();
         debug_interface->SetEnableGPUBasedValidation(FALSE);
 
         hr = D3D12CreateDevice(device->adapter.Get(),D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d3d12_device));
@@ -1639,94 +1722,220 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
         }
 
         D3D12_RENDER_TARGET_VIEW_DESC view_desc {};
-        if(desc.type == GETexture::Texture1D){
-            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex1D(dxgiFormat,desc.width,1,desc.mipLevels);
+
+        // Pipeline-Completion-Extension-Plan §6.2 — drive native resource
+        // shape and SRV/UAV/RTV/DSV view dimension from the resolved
+        // TextureKind. The legacy `desc.type` field can't distinguish
+        // arrays / cubes / MS, so it goes via `resolveTextureKind`.
+        const TextureKind kind = resolveTextureKind(desc);
+        const unsigned arrayLayers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
+        const bool isMS = (kind == TextureKind::Tex2DMS || kind == TextureKind::Tex2DMSArray);
+        const unsigned effectiveSampleCount = isMS ? (desc.sampleCount > 1 ? desc.sampleCount : 1u)
+                                                   : 1u;
+        // MS textures are single-mip on every backend (D3D12 / Vulkan / Metal).
+        const unsigned effectiveMips = isMS ? 1u : desc.mipLevels;
+
+        switch(kind){
+        case TextureKind::Tex1D: {
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex1D(dxgiFormat,desc.width,1,effectiveMips);
             if(isUAV) {
                 uav_view_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1D;
-                uav_view_desc.Texture1D.MipSlice = desc.mipLevels;
+                uav_view_desc.Texture1D.MipSlice = effectiveMips;
             }
-
             if(isSRV) {
                 res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
-                res_view_desc.Texture1D.MipLevels = desc.mipLevels;
+                res_view_desc.Texture1D.MipLevels = effectiveMips;
             }
-
             if(isDSV){
                 dsv_view_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE1D;
-                dsv_view_desc.Texture1D.MipSlice = desc.mipLevels;
+                dsv_view_desc.Texture1D.MipSlice = effectiveMips;
             }
-
+            break;
         }
-        else if(desc.type == GETexture::Texture2D){
-            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,1,desc.mipLevels,desc.sampleCount);
+        case TextureKind::Tex1DArray: {
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex1D(dxgiFormat,desc.width,arrayLayers,effectiveMips);
+            if(isUAV){
+                uav_view_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1DARRAY;
+                uav_view_desc.Texture1DArray.MipSlice = effectiveMips - 1;
+                uav_view_desc.Texture1DArray.FirstArraySlice = 0;
+                uav_view_desc.Texture1DArray.ArraySize = arrayLayers;
+            }
+            if(isSRV){
+                res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1DARRAY;
+                res_view_desc.Texture1DArray.MipLevels = effectiveMips;
+                res_view_desc.Texture1DArray.MostDetailedMip = 0;
+                res_view_desc.Texture1DArray.FirstArraySlice = 0;
+                res_view_desc.Texture1DArray.ArraySize = arrayLayers;
+            }
+            break;
+        }
+        case TextureKind::Tex2D: {
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,1,effectiveMips,1);
             if(isUAV){
                 uav_view_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-                uav_view_desc.Texture2D.MipSlice = desc.mipLevels - 1;
+                uav_view_desc.Texture2D.MipSlice = effectiveMips - 1;
                 uav_view_desc.Texture2D.PlaneSlice = 0;
             }
-
             if(isSRV) {
-
-                if (desc.sampleCount > 1) {
-                    res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
-                } else {
-                    res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-                }
-
-                
-                res_view_desc.Texture2D.MipLevels = desc.mipLevels;
-                res_view_desc.Texture2D.MostDetailedMip = desc.mipLevels - 1;
+                res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                res_view_desc.Texture2D.MipLevels = effectiveMips;
+                res_view_desc.Texture2D.MostDetailedMip = effectiveMips - 1;
                 res_view_desc.Texture2D.PlaneSlice = 0;
-                res_view_desc.Texture2D.ResourceMinLODClamp = desc.mipLevels - 1;
+                res_view_desc.Texture2D.ResourceMinLODClamp = effectiveMips - 1;
             }
-
             if(isDSV){
-                if (desc.sampleCount > 1) {
-                    dsv_view_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMS;
-                } else {
-                    dsv_view_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-                }
-                dsv_view_desc.Texture2D.MipSlice = desc.mipLevels - 1;
+                dsv_view_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+                dsv_view_desc.Texture2D.MipSlice = effectiveMips - 1;
             }
-
-
-             if(desc.usage & GETexture::RenderTarget){
-                 if(desc.sampleCount > 1) {
-                     view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMS;
-                 }
-                 else {
-                     view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-                 }
-                  view_desc.Format = dxgiFormat;
-                  view_desc.Texture2D.PlaneSlice = 0;
-                  view_desc.Texture2D.MipSlice = 0;
-             }
+            if(desc.usage & GETexture::RenderTarget){
+                view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+                view_desc.Format = dxgiFormat;
+                view_desc.Texture2D.PlaneSlice = 0;
+                view_desc.Texture2D.MipSlice = 0;
+            }
+            break;
         }
-        else if(desc.type == GETexture::Texture3D){
-           d3d12_desc = CD3DX12_RESOURCE_DESC::Tex3D(dxgiFormat,desc.width,desc.height,desc.depth,desc.mipLevels);
-           d3d12_desc.SampleDesc.Count = desc.sampleCount;
-           d3d12_desc.DepthOrArraySize = 1;
-
-           if(isUAV){
+        case TextureKind::Tex2DArray: {
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,arrayLayers,effectiveMips,1);
+            if(isUAV){
+                uav_view_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                uav_view_desc.Texture2DArray.MipSlice = effectiveMips - 1;
+                uav_view_desc.Texture2DArray.FirstArraySlice = 0;
+                uav_view_desc.Texture2DArray.ArraySize = arrayLayers;
+                uav_view_desc.Texture2DArray.PlaneSlice = 0;
+            }
+            if(isSRV){
+                res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                res_view_desc.Texture2DArray.MipLevels = effectiveMips;
+                res_view_desc.Texture2DArray.MostDetailedMip = 0;
+                res_view_desc.Texture2DArray.FirstArraySlice = 0;
+                res_view_desc.Texture2DArray.ArraySize = arrayLayers;
+                res_view_desc.Texture2DArray.PlaneSlice = 0;
+                res_view_desc.Texture2DArray.ResourceMinLODClamp = 0;
+            }
+            if(isDSV){
+                dsv_view_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+                dsv_view_desc.Texture2DArray.MipSlice = effectiveMips - 1;
+                dsv_view_desc.Texture2DArray.FirstArraySlice = 0;
+                dsv_view_desc.Texture2DArray.ArraySize = arrayLayers;
+            }
+            if(desc.usage & GETexture::RenderTarget){
+                view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
+                view_desc.Format = dxgiFormat;
+                view_desc.Texture2DArray.MipSlice = 0;
+                view_desc.Texture2DArray.FirstArraySlice = 0;
+                view_desc.Texture2DArray.ArraySize = arrayLayers;
+                view_desc.Texture2DArray.PlaneSlice = 0;
+            }
+            break;
+        }
+        case TextureKind::TexCube: {
+            // D3D12 represents cubes as 2D arrays with array_size = 6.
+            // The cube-ness is purely a property of the SRV view dimension.
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,6,effectiveMips,1);
+            if(isSRV){
+                res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                res_view_desc.TextureCube.MipLevels = effectiveMips;
+                res_view_desc.TextureCube.MostDetailedMip = 0;
+                res_view_desc.TextureCube.ResourceMinLODClamp = 0;
+            }
+            // Cube UAV writes alias to RWTexture2DArray; OmegaSL §2.1 Sema
+            // rejects cube `write`, so this path is unreachable from a
+            // generated shader. Pre-fill the array form anyway in case a
+            // future call site asks for it.
+            if(isUAV){
+                uav_view_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                uav_view_desc.Texture2DArray.MipSlice = effectiveMips - 1;
+                uav_view_desc.Texture2DArray.FirstArraySlice = 0;
+                uav_view_desc.Texture2DArray.ArraySize = 6;
+                uav_view_desc.Texture2DArray.PlaneSlice = 0;
+            }
+            break;
+        }
+        case TextureKind::TexCubeArray: {
+            const unsigned cubeArrayLayers = arrayLayers >= 6 ? arrayLayers : 6;
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,cubeArrayLayers,effectiveMips,1);
+            if(isSRV){
+                res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+                res_view_desc.TextureCubeArray.MipLevels = effectiveMips;
+                res_view_desc.TextureCubeArray.MostDetailedMip = 0;
+                res_view_desc.TextureCubeArray.First2DArrayFace = 0;
+                res_view_desc.TextureCubeArray.NumCubes = cubeArrayLayers / 6;
+                res_view_desc.TextureCubeArray.ResourceMinLODClamp = 0;
+            }
+            if(isUAV){
+                uav_view_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                uav_view_desc.Texture2DArray.MipSlice = effectiveMips - 1;
+                uav_view_desc.Texture2DArray.FirstArraySlice = 0;
+                uav_view_desc.Texture2DArray.ArraySize = cubeArrayLayers;
+                uav_view_desc.Texture2DArray.PlaneSlice = 0;
+            }
+            break;
+        }
+        case TextureKind::Tex2DMS: {
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,1,1,effectiveSampleCount);
+            if(isSRV){
+                res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+                // Texture2DMS has no mip / clamp fields to populate.
+            }
+            if(isDSV){
+                dsv_view_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMS;
+            }
+            if(desc.usage & GETexture::RenderTarget){
+                view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMS;
+                view_desc.Format = dxgiFormat;
+            }
+            // MS UAVs require Tier-3 HW; skip until a use case lands.
+            break;
+        }
+        case TextureKind::Tex2DMSArray: {
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,arrayLayers,1,effectiveSampleCount);
+            if(isSRV){
+                res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+                res_view_desc.Texture2DMSArray.FirstArraySlice = 0;
+                res_view_desc.Texture2DMSArray.ArraySize = arrayLayers;
+            }
+            if(isDSV){
+                dsv_view_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY;
+                dsv_view_desc.Texture2DMSArray.FirstArraySlice = 0;
+                dsv_view_desc.Texture2DMSArray.ArraySize = arrayLayers;
+            }
+            if(desc.usage & GETexture::RenderTarget){
+                view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY;
+                view_desc.Format = dxgiFormat;
+                view_desc.Texture2DMSArray.FirstArraySlice = 0;
+                view_desc.Texture2DMSArray.ArraySize = arrayLayers;
+            }
+            break;
+        }
+        case TextureKind::Tex3D: {
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex3D(dxgiFormat,desc.width,desc.height,desc.depth,effectiveMips);
+            d3d12_desc.SampleDesc.Count = 1;
+            if(isUAV){
                 uav_view_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
-                uav_view_desc.Texture3D.MipSlice = desc.mipLevels - 1;
+                uav_view_desc.Texture3D.MipSlice = effectiveMips - 1;
                 uav_view_desc.Texture3D.FirstWSlice = 0;
                 uav_view_desc.Texture3D.WSize = desc.depth;
-           }
-
-           if(isSRV){
-               res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-               res_view_desc.Texture3D.MipLevels = desc.mipLevels;
-           }
-
-           if(desc.usage == GETexture::RenderTarget){
-                 view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE3D;
-                 view_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-                 view_desc.Texture3D.MipSlice = 0;
-                 view_desc.Texture3D.FirstWSlice = 0;
-                 view_desc.Texture3D.WSize = desc.depth;
             }
-        };
+            if(isSRV){
+                res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+                res_view_desc.Texture3D.MipLevels = effectiveMips;
+            }
+            if(desc.usage == GETexture::RenderTarget){
+                view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE3D;
+                view_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                view_desc.Texture3D.MipSlice = 0;
+                view_desc.Texture3D.FirstWSlice = 0;
+                view_desc.Texture3D.WSize = desc.depth;
+            }
+            break;
+        }
+        case TextureKind::Auto:
+            // resolveTextureKind never returns Auto; fall through to the
+            // legacy 2D path for safety.
+            d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,1,effectiveMips,1);
+            break;
+        }
         CD3DX12_HEAP_PROPERTIES heap_prop;
 
 
@@ -1854,7 +2063,10 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
 
         ID3D12DescriptorHeap *dsvDescHeap = nullptr;
 
-        if(isDSV && desc.type != GETexture::Texture3D){
+        // 3D textures cannot be depth-stencil targets on D3D12; the
+        // §6.1 validation rule already rejects DepthStencil + Tex3D, so
+        // mirror that here on the resolved kind.
+        if(isDSV && kind != TextureKind::Tex3D){
             descHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
 
             hr = d3d12_device->CreateDescriptorHeap(&descHeapDesc, IID_PPV_ARGS(&dsvDescHeap));
@@ -1867,7 +2079,12 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
 
         DEBUG_STREAM("Will Return Texture");
 
-        return SharedHandle<GETexture>(new GED3D12Texture(desc.type,desc.usage,desc.pixelFormat,texture,cpuSideRes,descHeap,uavDescHeap,rtvDescHeap,dsvDescHeap,res_states,texAllocation,cpuSideAllocation));
+        auto result = SharedHandle<GETexture>(new GED3D12Texture(desc.type,desc.usage,desc.pixelFormat,texture,cpuSideRes,descHeap,uavDescHeap,rtvDescHeap,dsvDescHeap,res_states,texAllocation,cpuSideAllocation));
+        // §6.1 — record the resolved shape on the texture so bind-time
+        // validation (§6.3) and any future per-kind queries can read
+        // it without having to re-derive from `type` + `sampleCount`.
+        result->setShape(kind, arrayLayers, effectiveSampleCount);
+        return result;
     };
 
     SharedHandle<GEBuffer> GED3D12Engine::makeBuffer(const BufferDescriptor &desc){

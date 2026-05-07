@@ -3,6 +3,7 @@
 #include "TexturePool.h"
 #include "BufferPool.h"
 #include "FencePool.h"
+#include "BitmapTextureCache.h"
 #include "MainThreadDispatch.h"
 #include "omegaWTK/Core/Core.h"
 
@@ -51,6 +52,11 @@ namespace OmegaWTK::Composition {
         bufferHeap_.reset();
         textureHeap_.reset();
         effectProcessor_.reset();
+        // Phase 6.6: drop any cached BitmapImage uploads. Their textures
+        // were allocated against the GraphicsEngine directly (not from
+        // texturePool_), so they survive the pool drain — we have to
+        // explicitly clear the cache here.
+        BitmapTextureCache::instance().clear();
     }
 
     SharedHandle<BackendCanvasEffectProcessor> &

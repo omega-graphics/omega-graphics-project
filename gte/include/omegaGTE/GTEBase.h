@@ -986,6 +986,58 @@ _NAMESPACE_BEGIN_
         unsigned w,h,d;
     };
 
+    /// @brief Individual channel source for a texture swizzle mapping.
+    enum class TextureSwizzleChannel : unsigned char {
+        Red,      ///< Source the red channel
+        Green,    ///< Source the green channel
+        Blue,     ///< Source the blue channel
+        Alpha,    ///< Source the alpha channel
+        Zero,     ///< Constant 0
+        One,      ///< Constant 1
+        Identity  ///< Passthrough (use the channel's own position)
+    };
+
+    /// @brief Describes how texture channels are routed when sampled or read.
+    struct OMEGAGTE_EXPORT TextureSwizzle {
+        TextureSwizzleChannel r = TextureSwizzleChannel::Identity;
+        TextureSwizzleChannel g = TextureSwizzleChannel::Identity;
+        TextureSwizzleChannel b = TextureSwizzleChannel::Identity;
+        TextureSwizzleChannel a = TextureSwizzleChannel::Identity;
+
+        /// Convenience: identity swizzle (no remapping).
+        static TextureSwizzle identity() { return {}; }
+
+        /// Convenience: broadcast red into all four channels.
+        static TextureSwizzle broadcastRed() {
+            return { TextureSwizzleChannel::Red,
+                     TextureSwizzleChannel::Red,
+                     TextureSwizzleChannel::Red,
+                     TextureSwizzleChannel::Red };
+        }
+
+        /// Convenience: swap R and B channels (RGBA <-> BGRA).
+        static TextureSwizzle swapRB() {
+            return { TextureSwizzleChannel::Blue,
+                     TextureSwizzleChannel::Green,
+                     TextureSwizzleChannel::Red,
+                     TextureSwizzleChannel::Alpha };
+        }
+
+        bool isIdentity() const {
+            return r == TextureSwizzleChannel::Identity
+                && g == TextureSwizzleChannel::Identity
+                && b == TextureSwizzleChannel::Identity
+                && a == TextureSwizzleChannel::Identity;
+        }
+
+        bool operator==(const TextureSwizzle & other) const {
+            return r == other.r && g == other.g && b == other.b && a == other.a;
+        }
+        bool operator!=(const TextureSwizzle & other) const {
+            return !operator==(other);
+        }
+    };
+
     /// @brief Memory allocated on a GTEDevice.
     struct OMEGAGTE_EXPORT GTEResource {
         /// @brief Set the name of the Resource

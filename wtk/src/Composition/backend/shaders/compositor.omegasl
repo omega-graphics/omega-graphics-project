@@ -53,7 +53,16 @@ vertex OmegaWTKTexturedRasterData textureVertex(uint v_id : VertexID){
 }
 
 texture2d tex : 2;
-static sampler2d mainSampler(filter=linear);
+/// Phase 6.6.1: anisotropic filtering at 4x with clamp_to_edge wrap. The
+/// pipeline samples bitmap and gradient textures whose UV ranges are
+/// always bounded by their author (no tiling). Bitmaps drawn at small
+/// scale or under 3D transform now pick up trilinear / anisotropic
+/// minification when their textures carry a mip chain (see
+/// `BitmapTextureCache`); textures without mips degrade gracefully to
+/// linear.
+static sampler2d mainSampler(filter=anisotropic,
+                              address_mode=clamp_to_edge,
+                              max_anisotropy=4);
 
 [in tex,in mainSampler]
 fragment float4 textureFragment(OmegaWTKTexturedRasterData raster){
@@ -62,6 +71,57 @@ fragment float4 textureFragment(OmegaWTKTexturedRasterData raster){
     float a = raster.texCoordTint[2];
     c[3] = c[3] * a;
     return c;
+}
+
+/// =====================================================================
+/// Bitmap render pipeline (Phase 6.6).
+///
+/// Replaces the texture pipeline's role for `VisualCommand::Bitmap`:
+/// hardcoded 6-vertex quad authored CPU-side (no triangulator round-trip)
+/// plus a per-draw uniform buffer carrying the RGBA tint. UV coordinates
+/// are baked at vertex authoring time (sub-rect sampling => the CPU
+/// already computed the four corner UVs). The fragment shader samples
+/// the texture, multiplies by the tint, and applies opacity via the
+/// tint's alpha. Identity tint (1,1,1,1) collapses to a straight
+/// passthrough × opacity.
+struct OmegaWTKBitmapVertex {
+    float4 pos;
+    float4 uvPad;
+};
+
+struct OmegaWTKBitmapRasterData internal {
+    float4 pos : Position;
+    float4 uvPad : Color;
+};
+
+struct OmegaWTKBitmapDrawParams {
+    float4 tintColor;
+};
+
+buffer<OmegaWTKBitmapVertex> v_buffer_bitmap : 9;
+buffer<OmegaWTKBitmapDrawParams> bitmapParams : 10;
+texture2d bitmapTex : 11;
+
+[in v_buffer_bitmap]
+vertex OmegaWTKBitmapRasterData bitmapVertex(uint v_id : VertexID){
+    OmegaWTKBitmapVertex v = v_buffer_bitmap[v_id];
+    OmegaWTKBitmapRasterData r;
+    r.pos = v.pos;
+    r.uvPad = v.uvPad;
+    return r;
+}
+
+[in bitmapTex, in mainSampler, in bitmapParams]
+fragment float4 bitmapFragment(OmegaWTKBitmapRasterData raster){
+    float2 uv = float2(raster.uvPad[0], raster.uvPad[1]);
+    float4 c = sample(mainSampler, bitmapTex, uv);
+    float4 tint = bitmapParams[0].tintColor;
+    float4 result;
+    result[0] = c[0] * tint[0];
+    result[1] = c[1] * tint[1];
+    result[2] = c[2] * tint[2];
+    result[3] = c[3] * tint[3];
+    return result;
 }
 
 struct BlurParams {
