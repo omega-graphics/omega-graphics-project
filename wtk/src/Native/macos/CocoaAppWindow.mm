@@ -38,8 +38,7 @@ static inline bool traceResizeFlowEnabled(){
 }
 
 
-CocoaAppWindow::CocoaAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter):NativeWindow(rect){
-    eventEmitter = emitter;
+CocoaAppWindow::CocoaAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter):NativeWindow(rect, emitter), currentNSCursor(nil){
 
     windowDelegate = [[OmegaWTKNativeCocoaAppWindowDelegate alloc] init];
     windowController = [[OmegaWTKNativeCocoaAppWindowController alloc] initWithRect:core_rect_to_cg_rect(rect) delegate:windowDelegate];
@@ -56,10 +55,11 @@ CocoaAppWindow::CocoaAppWindow(Composition::Rect & rect,NativeEventEmitter *emit
     // change notifications fire and the live-resize pipeline sees real bounds.
     windowController.window.contentView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [windowDelegate attachHostContentViewObservers:windowController.window.contentView];
+    lastKnownBackingScale = (float)[windowController.window backingScaleFactor];
 };
 
 NativeEventEmitter * CocoaAppWindow::getEmitter() {
-    return eventEmitter;
+    return eventEmitter();
 };
 
 void CocoaAppWindow::disable(){
@@ -130,6 +130,120 @@ NativeItemPtr CocoaAppWindow::getRootView() {
      return windowController.window;
  };
 
+namespace {
+NSCursor *cursorForShape(CursorShape shape){
+    switch(shape){
+        case CursorShape::Arrow:           return [NSCursor arrowCursor];
+        case CursorShape::IBeam:           return [NSCursor IBeamCursor];
+        case CursorShape::Crosshair:       return [NSCursor crosshairCursor];
+        case CursorShape::PointingHand:    return [NSCursor pointingHandCursor];
+        case CursorShape::ResizeLeftRight: return [NSCursor resizeLeftRightCursor];
+        case CursorShape::ResizeUpDown:    return [NSCursor resizeUpDownCursor];
+        case CursorShape::ResizeAll:       return [NSCursor closedHandCursor];
+        case CursorShape::NotAllowed:      return [NSCursor operationNotAllowedCursor];
+        case CursorShape::Wait:            return [NSCursor arrowCursor];
+        case CursorShape::Custom:          return [NSCursor arrowCursor];
+    }
+    return [NSCursor arrowCursor];
+}
+}
+
+void CocoaAppWindow::minimize(){
+    [windowController.window miniaturize:nil];
+}
+void CocoaAppWindow::maximize(){
+    if(![windowController.window isZoomed]){
+        [windowController.window zoom:nil];
+    }
+}
+void CocoaAppWindow::restore(){
+    if([windowController.window isMiniaturized]){
+        [windowController.window deminiaturize:nil];
+    } else if([windowController.window isZoomed]){
+        [windowController.window zoom:nil];
+    }
+}
+void CocoaAppWindow::toggleFullscreen(){
+    [windowController.window toggleFullScreen:nil];
+}
+bool CocoaAppWindow::isMinimized() const {
+    return [windowController.window isMiniaturized] == YES;
+}
+bool CocoaAppWindow::isMaximized() const {
+    return [windowController.window isZoomed] == YES;
+}
+bool CocoaAppWindow::isFullscreen() const {
+    return ([windowController.window styleMask] & NSWindowStyleMaskFullScreen) != 0;
+}
+bool CocoaAppWindow::isVisible() const {
+    return [windowController.window isVisible] == YES;
+}
+Composition::Rect CocoaAppWindow::getRect() const {
+    NSRect frame = [windowController.window frame];
+    return Composition::Rect{Composition::Point2D{(float)frame.origin.x,(float)frame.origin.y},(float)frame.size.width,(float)frame.size.height};
+}
+void CocoaAppWindow::setRect(const Composition::Rect & r){
+    NSRect frame = NSMakeRect(r.pos.x,r.pos.y,r.w,r.h);
+    [windowController.window setFrame:frame display:YES];
+    rect = r;
+}
+float CocoaAppWindow::scaleFactor() const {
+    return (float)[windowController.window backingScaleFactor];
+}
+void CocoaAppWindow::setMinSize(float w, float h){
+    [windowController.window setContentMinSize:NSMakeSize(w,h)];
+}
+void CocoaAppWindow::setMaxSize(float w, float h){
+    [windowController.window setContentMaxSize:NSMakeSize(w,h)];
+}
+void CocoaAppWindow::setResizable(bool resizable){
+    NSWindow *w = windowController.window;
+    NSWindowStyleMask mask = [w styleMask];
+    if(resizable){
+        mask |= NSWindowStyleMaskResizable;
+    } else {
+        mask &= ~NSWindowStyleMaskResizable;
+    }
+    [w setStyleMask:mask];
+}
+void CocoaAppWindow::orderFront(){
+    [windowController.window orderFront:nil];
+}
+void CocoaAppWindow::orderBack(){
+    [windowController.window orderBack:nil];
+}
+void CocoaAppWindow::setOpacity(float alpha){
+    [windowController.window setAlphaValue:alpha];
+}
+float CocoaAppWindow::getOpacity() const {
+    return (float)[windowController.window alphaValue];
+}
+void CocoaAppWindow::setCursorShape(CursorShape shape){
+    currentCursorShape = shape;
+    currentNSCursor = cursorForShape(shape);
+    if([windowController.window isKeyWindow]){
+        [currentNSCursor set];
+    }
+}
+bool CocoaAppWindow::isKeyWindow() const {
+    return [windowController.window isKeyWindow] == YES;
+}
+void CocoaAppWindow::becomeKeyWindow(){
+    [windowController.window makeKeyAndOrderFront:nil];
+}
+void CocoaAppWindow::applyCursor(){
+    if(currentNSCursor != nil){
+        [currentNSCursor set];
+    }
+}
+void CocoaAppWindow::notifyBackingScaleChanged(float oldScale, float newScale){
+    if(!hasEventEmitter()){
+        return;
+    }
+    auto *params = new WindowScaleFactorChangedParams{oldScale, newScale, {}};
+    NativeEventPtr ev(new NativeEvent(NativeEvent::WindowScaleFactorChanged, params));
+    eventEmitter()->emit(ev);
+}
 
 };
 
@@ -350,6 +464,20 @@ NativeItemPtr CocoaAppWindow::getRootView() {
     NSLog(@"Window BOUNDS: {x:%f,y:%f,w:%f,h:%f}",bounds.origin.x,bounds.origin.y,bounds.size.width,bounds.size.height);
     [self queueResizeBounds:bounds];
 };
+
+-(void)windowDidChangeBackingProperties:(NSNotification *)notification {
+    NSWindow *window = (NSWindow *)notification.object;
+    if(window == nil){
+        window = self.window;
+    }
+    if(window == nil || self.cppBinding == nullptr){
+        return;
+    }
+    NSNumber *oldKey = notification.userInfo[NSBackingPropertyOldScaleFactorKey];
+    float oldScale = oldKey != nil ? oldKey.floatValue : 1.f;
+    float newScale = (float)[window backingScaleFactor];
+    self.cppBinding->notifyBackingScaleChanged(oldScale, newScale);
+}
 
 -(void)windowDidEndLiveResize:(NSNotification *)notification
 {

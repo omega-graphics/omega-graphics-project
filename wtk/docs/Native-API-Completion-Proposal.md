@@ -523,19 +523,75 @@ Implemented across all three platforms. See `NativeMenu.h`, `Menu.h`/`.cpp`, `Co
 
 ---
 
-## 3. GTK Platform Parity
+## 3. Linux Backend Direction — Migrating off GTK
 
-The GTK backend currently implements `NativeApp`, `NativeWindow`, `NativeItem`, `NativeMenu`, `NativeNote`. The following need GTK implementations to reach parity:
+> **Important context.** The current GTK backend creates a `GtkDrawingArea`
+> with a native `GdkWindow` and binds Vulkan to that child X11 XID. The
+> swapchain is created successfully and `vkQueuePresentKHR` returns
+> `VK_SUCCESS`, but Vulkan-rendered content never becomes visible: GTK's
+> GSK/Cairo render cycle owns the X11 windows GTK created and overdraws or
+> clips them on its own schedule. **GTK does not support direct Vulkan
+> rendering into child windows.** The two officially supported integration
+> paths are (a) render Vulkan into an offscreen image and upload it to a
+> `GdkTexture` each frame (GTK 3 + GTK 4), or (b) `GdkVulkanContext`,
+> available only in GTK 4. The codebase currently builds against GTK 3.
 
-| Subsystem | macOS | Win32 | GTK | Priority |
-|-----------|-------|-------|-----|----------|
-| NativeDialog (FS + Alert) | Exists | Exists | Missing | P1 |
-| NativeTheme | Exists | Exists | Missing | P1 |
-| NativeClipboard | New | New | New | P1 |
-| NativeDragDrop | New | New | New | P2 |
-| NativeTimer | New | New | New | P1 |
-| NativeScreen | New | New | New | P2 |
-| NativeAccessibility | New | New | New | P3 |
+### 3.1 Decision
+
+Rather than ship the offscreen-readback adapter as a long-term solution,
+we will own the Linux toplevel and use **SDL** as the platform-window
+abstraction. Key reasons:
+
+- Direct Vulkan presentation, no per-frame GPU↔CPU readback.
+- Symmetric architecture across all three platforms — `NSWindow` on
+  macOS, `HWND` on Win32, `SDL_Window` on Linux — each binding a
+  Vulkan swapchain to a real, app-owned toplevel.
+- One reference implementation for X11 + Wayland + input + clipboard
+  + DnD + IME, rather than building each protocol stack from scratch.
+- `SDL_Vulkan_CreateSurface` returns a `VkSurfaceKHR` from any backing
+  platform, so the GTE Vulkan surface creation path collapses to a
+  single SDL call on Linux.
+
+The proposal already moves toward virtualizing per-View OS features
+(focus, cursor, tooltip, accessibility — §2.3a, §2.10). Owning the
+toplevel extends that posture to the window itself: menus on Linux and
+Win32 also become virtual (§2.12 already complete on the native paths;
+the Linux path will move to virtual rendering atop SDL).
+
+### 3.2 Phasing summary
+
+End-to-end plan in `SDL-Linux-Backend-Plan.md`. At a glance:
+
+- **L1** — minimal "hello window" via SDL on X11; GTE consumes
+  `SDL_Vulkan_CreateSurface`; `SVGViewRenderTest` renders visibly.
+- **L2** — full §2.2 NativeWindow parity on the SDL backend.
+- **L3** — virtualized menus on Linux (renders via `WidgetTreeHost`).
+- **L4** — clipboard, drag-and-drop, file dialogs (xdg-desktop-portal).
+- **L5** — IME (`SDL_StartTextInput` + virtual focus).
+- **L6** — Wayland support (SDL handles the protocol; GTE picks up
+  `wp_fractional_scale_v1` events through SDL display events).
+- **L7** — retire `wtk/src/Native/gtk/`, drop the `TARGET_GTK`
+  CMake flag.
+
+X11 lands first; Wayland follows once X11 is solid.
+
+### 3.3 Status of the existing GTK code
+
+The GTK backend remains in the tree but will not produce visible
+content under Vulkan. New Linux-side work targets the SDL backend per
+the migration plan; existing GTK files are deleted at L7.
+
+### 3.4 Subsystem ownership under the SDL plan
+
+| Subsystem | macOS | Win32 | Linux (SDL) | Priority |
+|-----------|-------|-------|-------------|----------|
+| NativeDialog (FS + Alert) | Exists | Exists | xdg-desktop-portal — L4 | P1 |
+| NativeTheme | Exists | Exists | XSettings / portal `Settings` — L4 | P1 |
+| NativeClipboard | New | New | `SDL_GetClipboardText` — L4 | P1 |
+| NativeDragDrop | New | New | SDL drop events + portal — L4 | P2 |
+| NativeTimer | New | New | `SDL_AddTimer` — L1 | P1 |
+| NativeScreen | New | New | `SDL_GetDisplays` — L2 | P2 |
+| NativeAccessibility | New | New | AT-SPI bridge — L5+ | P3 |
 
 ---
 
@@ -586,13 +642,17 @@ The GTK backend currently implements `NativeApp`, `NativeWindow`, `NativeItem`, 
 - `Menu.h` / `Menu.cpp` (UI) — complete ✅
 
 ### New source files per platform
-Each of the three backends (`macos/`, `win/`, `gtk/`) needs:
+Each backend needs:
 - Timer implementation
 - Clipboard implementation
 - DragDrop implementation
 - Screen enumeration
 
-GTK also needs: Dialog, Theme.
+The Linux backend is being rewritten on top of SDL — see
+`SDL-Linux-Backend-Plan.md`. New Linux work lives under
+`wtk/src/Native/sdl/` (eventually replacing `wtk/src/Native/gtk/`).
+The GTK backend remains in the tree until Phase L7 retires it but
+should not be extended with new functionality.
 
 ### Cross-platform dispatchers (`wtk/src/Native/`)
 - `NativeTimer.cpp`
@@ -608,5 +668,7 @@ GTK also needs: Dialog, Theme.
 - Current headers: `wtk/include/omegaWTK/Native/`
 - macOS backend: `wtk/src/Native/macos/`
 - Win32 backend: `wtk/src/Native/win/`
-- GTK backend: `wtk/src/Native/gtk/`
+- GTK backend (deprecated, retired in Phase L7): `wtk/src/Native/gtk/`
+- SDL backend (new — see `SDL-Linux-Backend-Plan.md`): `wtk/src/Native/sdl/`
 - UI layer consumers: `wtk/include/omegaWTK/UI/` (View.h, Widget.h, AppWindow.h, Menu.h, Notification.h)
+- SDL migration plan: `wtk/docs/SDL-Linux-Backend-Plan.md`

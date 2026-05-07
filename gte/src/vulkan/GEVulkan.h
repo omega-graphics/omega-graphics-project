@@ -122,6 +122,8 @@ _NAMESPACE_BEGIN_
 
         SharedHandle<GETextureRenderTarget> makeTextureRenderTarget(const TextureRenderTargetDescriptor &desc) override;
 
+        bool debugReadbackPixelRGBA8(SharedHandle<GETexture> tex, unsigned x, unsigned y, std::uint8_t out[4]) override;
+
         SharedHandle<GESamplerState> makeSamplerState(const SamplerDescriptor &desc) override;
 
         SharedHandle<GEBuffer> createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes) override;

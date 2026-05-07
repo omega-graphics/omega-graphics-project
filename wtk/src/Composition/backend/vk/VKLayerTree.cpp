@@ -71,16 +71,25 @@ namespace OmegaWTK::Composition {
             Core::SharedPtr<BackendVisualTree::Visual> makeRootVisual(
                     Composition::Rect &rect,Composition::Point2D &pos,
                     ViewPresentTarget & outPresentTarget) override {
-                OmegaGTE::NativeRenderTargetDescriptor desc {};
-                if(resolveNativeRenderTargetDescriptor(rect,desc)){
-                    outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
-                    outPresentTarget.backingWidth = toBackingDimension(rect.w);
-                    outPresentTarget.backingHeight = toBackingDimension(rect.h);
-                }
-                else {
-                    if(!warnedMissingNativeHandle){
-                        std::cout << "[OmegaWTK][Vulkan][GTK] Native window handle unavailable for Vulkan render target." << std::endl;
-                        warnedMissingNativeHandle = true;
+                // Only allocate a new GENativeRenderTarget when one isn't
+                // already attached. resolveDeferredNativeTarget may have
+                // resolved the surface ahead of this call, and Vulkan's
+                // vkCreateSwapchainKHR fails with VK_ERROR_NATIVE_WINDOW_IN_USE_KHR
+                // when called twice on the same X11/Wayland surface.
+                //
+                // If the GdkWindow isn't realized yet (eager call from
+                // setRootWidget before displayRootWindow), the descriptor
+                // resolve fails silently. The factory checks
+                // outPresentTarget.nativeTarget afterward and discards the
+                // partial root visual; the compositor's first-frame
+                // fallback path then re-runs this through resolveDeferredNativeTarget
+                // → createRootVisual after the window has been displayed.
+                if(outPresentTarget.nativeTarget == nullptr){
+                    OmegaGTE::NativeRenderTargetDescriptor desc {};
+                    if(resolveNativeRenderTargetDescriptor(rect,desc)){
+                        outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
+                        outPresentTarget.backingWidth = toBackingDimension(rect.w);
+                        outPresentTarget.backingHeight = toBackingDimension(rect.h);
                     }
                 }
 
@@ -110,6 +119,14 @@ namespace OmegaWTK::Composition {
                     outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
                     outPresentTarget.backingWidth = toBackingDimension(r.w);
                     outPresentTarget.backingHeight = toBackingDimension(r.h);
+                }
+                else if(!warnedMissingNativeHandle){
+                    // Deferred resolve failed too — the GdkWindow still
+                    // isn't realized at first-frame time, which means the
+                    // window was never displayed (e.g. headless run). The
+                    // compositor will skip rendering rather than crash.
+                    std::cout << "[OmegaWTK][Vulkan][GTK] Native window handle unavailable for Vulkan render target." << std::endl;
+                    warnedMissingNativeHandle = true;
                 }
             }
         };

@@ -418,6 +418,10 @@ _NAMESPACE_BEGIN_
         /// Cleaner API for GE.h
         virtual void waitForGPUIdle() {}
 
+        /// Diagnostic: read RGBA8 pixel from a texture's level-0 layer-0 at (x,y).
+        /// Returns true on success and writes 4 bytes (R,G,B,A) to out.
+        virtual bool debugReadbackPixelRGBA8(SharedHandle<GETexture>, unsigned, unsigned, std::uint8_t[4]) { return false; }
+
         virtual ~OmegaGraphicsEngine() = default;
     };
 

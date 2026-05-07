@@ -4,6 +4,7 @@
 #include "omegaWTK/Native/NativeEvent.h"
 #include "omegaWTK/Native/NativeDialog.h"
 #include "omegaWTK/Native/NativeTheme.h"
+#include "omegaWTK/Native/NativeWindow.h"
 
 #ifndef OMEGAWTK_UI_APPWINDOW_H
 #define OMEGAWTK_UI_APPWINDOW_H
@@ -53,6 +54,30 @@ class AppWindowDelegate;
 #endif
         void setTitle(OmegaCommon::StrRef title);
         void close();
+
+        // -- Window state pass-throughs (§2.2). Cursor is intentionally
+        //    NOT exposed here — the virtual hover dispatcher is the only
+        //    writer of the OS cursor sink.
+        void minimize();
+        void maximize();
+        void restore();
+        void toggleFullscreen();
+        bool isMinimized() const;
+        bool isMaximized() const;
+        bool isFullscreen() const;
+        bool isVisible() const;
+        Composition::Rect getRect() const;
+        void setRect(const Composition::Rect & rect);
+        float scaleFactor() const;
+        void setMinSize(float w, float h);
+        void setMaxSize(float w, float h);
+        void setResizable(bool resizable);
+        void orderFront();
+        void orderBack();
+        void setOpacity(float alpha);
+        float getOpacity() const;
+        bool isKeyWindow() const;
+        void becomeKeyWindow();
 
 
         #ifdef TARGET_MOBILE

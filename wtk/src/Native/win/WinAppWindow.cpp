@@ -9,7 +9,10 @@
 #pragma comment(lib,"dwmapi.lib")
 
 namespace OmegaWTK::Native::Win {
-    WinAppWindow::WinAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter):HWNDItem(rect),isReady(false){
+    WinAppWindow::WinAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter):
+        NativeWindow(rect, emitter),
+        HWNDItem(rect),
+        isReady(false){
         this->event_emitter = emitter;
         // MessageBoxA(HWND_DESKTOP,"Creating WinAppWindow!","NOTE",MB_OK);
         atom = HWNDFactory::appFactoryInst->registerAppWindow();
@@ -23,6 +26,11 @@ namespace OmegaWTK::Native::Win {
         currentDpi = GetDpiForWindow(hwnd);
         isTracking = false;
         hovered = false;
+        // WS_EX_LAYERED is set, but a layered window with no attributes is
+        // invisible until SetLayeredWindowAttributes is called at least once.
+        SetLayeredWindowAttributes(hwnd, 0, opacityByte_, LWA_ALPHA);
+        currentCursor_ = LoadCursor(nullptr, IDC_ARROW);
+        savedPlacement_.length = sizeof(WINDOWPLACEMENT);
     };
 
     NativeItemPtr WinAppWindow::getRootView() {
@@ -207,16 +215,55 @@ namespace OmegaWTK::Native::Win {
                 };
                 case WM_DPICHANGED : {
                     UINT newDpi = HIWORD(wParam);
+                    UINT oldDpi = currentDpi;
+                    float oldScale = float(oldDpi)/96.f;
+                    float newScale = float(newDpi)/96.f;
+                    currentDpi = newDpi;
 
                     RECT* const prcNewWindow = (RECT*)lParam;
-                    SetWindowPos(hwnd,
-                        nullptr,
-                        prcNewWindow ->left,
-                        prcNewWindow ->top,
-                        prcNewWindow->right - prcNewWindow->left,
-                        prcNewWindow->bottom - prcNewWindow->top,
-                        SWP_NOZORDER | SWP_NOACTIVATE);
+                    Core::Optional<Composition::Rect> suggested;
+                    if(prcNewWindow != nullptr){
+                        SetWindowPos(hwnd,
+                            nullptr,
+                            prcNewWindow ->left,
+                            prcNewWindow ->top,
+                            prcNewWindow->right - prcNewWindow->left,
+                            prcNewWindow->bottom - prcNewWindow->top,
+                            SWP_NOZORDER | SWP_NOACTIVATE);
+                        suggested = Composition::Rect{
+                            Composition::Point2D{(float)prcNewWindow->left,(float)prcNewWindow->top},
+                            (float)(prcNewWindow->right - prcNewWindow->left),
+                            (float)(prcNewWindow->bottom - prcNewWindow->top)
+                        };
+                    }
+                    if(hasEventEmitter()){
+                        auto *params = new WindowScaleFactorChangedParams{oldScale, newScale, suggested};
+                        eventEmitter()->emit(NativeEventPtr(new NativeEvent(NativeEvent::WindowScaleFactorChanged, params)));
+                    }
                     break;
+                }
+                case WM_GETMINMAXINFO : {
+                    MINMAXINFO *info = (MINMAXINFO *)lParam;
+                    if(info != nullptr){
+                        FLOAT scale = FLOAT(currentDpi)/96.f;
+                        if(minSize_.x > 0.f && minSize_.y > 0.f){
+                            info->ptMinTrackSize.x = LONG(minSize_.x * scale);
+                            info->ptMinTrackSize.y = LONG(minSize_.y * scale);
+                        }
+                        if(maxSize_.x > 0.f && maxSize_.y > 0.f){
+                            info->ptMaxTrackSize.x = LONG(maxSize_.x * scale);
+                            info->ptMaxTrackSize.y = LONG(maxSize_.y * scale);
+                        }
+                    }
+                    break;
+                }
+                case WM_SETCURSOR : {
+                    if(LOWORD(lParam) == HTCLIENT && currentCursor_ != nullptr){
+                        SetCursor(currentCursor_);
+                        *lr = TRUE;
+                        return TRUE;
+                    }
+                    return FALSE;
                 }
                 default:
                     return FALSE;
@@ -264,6 +311,137 @@ namespace OmegaWTK::Native::Win {
     WinAppWindow::~WinAppWindow(){
         close();
     };
+
+    void WinAppWindow::minimize(){
+        ShowWindow(hwnd, SW_MINIMIZE);
+    }
+    void WinAppWindow::maximize(){
+        ShowWindow(hwnd, SW_MAXIMIZE);
+    }
+    void WinAppWindow::restore(){
+        ShowWindow(hwnd, SW_RESTORE);
+    }
+    void WinAppWindow::toggleFullscreen(){
+        if(!isFullscreen_){
+            savedStyle_ = GetWindowLongPtr(hwnd, GWL_STYLE);
+            savedPlacement_.length = sizeof(WINDOWPLACEMENT);
+            GetWindowPlacement(hwnd, &savedPlacement_);
+            MONITORINFO mi { sizeof(MONITORINFO) };
+            HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+            if(GetMonitorInfo(mon, &mi)){
+                SetWindowLongPtr(hwnd, GWL_STYLE, savedStyle_ & ~WS_OVERLAPPEDWINDOW);
+                SetWindowPos(hwnd, HWND_TOP,
+                             mi.rcMonitor.left, mi.rcMonitor.top,
+                             mi.rcMonitor.right - mi.rcMonitor.left,
+                             mi.rcMonitor.bottom - mi.rcMonitor.top,
+                             SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+                isFullscreen_ = true;
+            }
+        } else {
+            SetWindowLongPtr(hwnd, GWL_STYLE, savedStyle_);
+            SetWindowPlacement(hwnd, &savedPlacement_);
+            SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                         SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+            isFullscreen_ = false;
+        }
+    }
+    bool WinAppWindow::isMinimized() const {
+        return IsIconic(hwnd) != FALSE;
+    }
+    bool WinAppWindow::isMaximized() const {
+        return IsZoomed(hwnd) != FALSE;
+    }
+    bool WinAppWindow::isFullscreen() const {
+        return isFullscreen_;
+    }
+    bool WinAppWindow::isVisible() const {
+        return IsWindowVisible(hwnd) != FALSE;
+    }
+    Composition::Rect WinAppWindow::getRect() const {
+        RECT r;
+        if(!GetWindowRect(hwnd, &r)){
+            return wndrect;
+        }
+        FLOAT scale = FLOAT(currentDpi)/96.f;
+        return Composition::Rect{
+            Composition::Point2D{(float)r.left/scale,(float)r.top/scale},
+            (float)(r.right - r.left)/scale,
+            (float)(r.bottom - r.top)/scale
+        };
+    }
+    void WinAppWindow::setRect(const Composition::Rect & r){
+        FLOAT scale = FLOAT(currentDpi)/96.f;
+        SetWindowPos(hwnd, nullptr,
+                     int(r.pos.x * scale), int(r.pos.y * scale),
+                     int(r.w * scale), int(r.h * scale),
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        wndrect = r;
+        rect = r;
+    }
+    float WinAppWindow::scaleFactor() const {
+        return float(currentDpi) / 96.f;
+    }
+    void WinAppWindow::setMinSize(float w, float h){
+        minSize_ = Composition::Point2D{w, h};
+    }
+    void WinAppWindow::setMaxSize(float w, float h){
+        maxSize_ = Composition::Point2D{w, h};
+    }
+    void WinAppWindow::setResizable(bool resizable){
+        resizable_ = resizable;
+        DWORD style = GetWindowLongPtr(hwnd, GWL_STYLE);
+        if(resizable){
+            style |= (WS_THICKFRAME | WS_MAXIMIZEBOX);
+        } else {
+            style &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+        }
+        SetWindowLongPtr(hwnd, GWL_STYLE, style);
+        SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    }
+    void WinAppWindow::orderFront(){
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    void WinAppWindow::orderBack(){
+        SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    void WinAppWindow::setOpacity(float alpha){
+        if(alpha < 0.f) alpha = 0.f;
+        if(alpha > 1.f) alpha = 1.f;
+        opacityByte_ = BYTE(alpha * 255.f);
+        SetLayeredWindowAttributes(hwnd, 0, opacityByte_, LWA_ALPHA);
+    }
+    float WinAppWindow::getOpacity() const {
+        return float(opacityByte_) / 255.f;
+    }
+    void WinAppWindow::setCursorShape(CursorShape shape){
+        currentCursorShape_ = shape;
+        LPCSTR cursorId = IDC_ARROW;
+        switch(shape){
+            case CursorShape::Arrow:           cursorId = IDC_ARROW; break;
+            case CursorShape::IBeam:           cursorId = IDC_IBEAM; break;
+            case CursorShape::Crosshair:       cursorId = IDC_CROSS; break;
+            case CursorShape::PointingHand:    cursorId = IDC_HAND;  break;
+            case CursorShape::ResizeLeftRight: cursorId = IDC_SIZEWE; break;
+            case CursorShape::ResizeUpDown:    cursorId = IDC_SIZENS; break;
+            case CursorShape::ResizeAll:       cursorId = IDC_SIZEALL; break;
+            case CursorShape::NotAllowed:      cursorId = IDC_NO;    break;
+            case CursorShape::Wait:            cursorId = IDC_WAIT;  break;
+            case CursorShape::Custom:          cursorId = IDC_ARROW; break;
+        }
+        currentCursor_ = LoadCursor(nullptr, cursorId);
+        SetCursor(currentCursor_);
+    }
+    bool WinAppWindow::isKeyWindow() const {
+        return GetForegroundWindow() == hwnd;
+    }
+    void WinAppWindow::becomeKeyWindow(){
+        SetForegroundWindow(hwnd);
+        SetFocus(hwnd);
+    }
 };
 
 namespace OmegaWTK::Native {

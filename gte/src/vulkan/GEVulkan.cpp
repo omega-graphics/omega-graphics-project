@@ -45,6 +45,21 @@ _NAMESPACE_BEGIN_
 
     VkInstance GEVulkanEngine::instance = nullptr;
 
+    static VkDebugUtilsMessengerEXT g_debugMessenger = VK_NULL_HANDLE;
+
+    static VKAPI_ATTR VkBool32 VKAPI_CALL vulkanDebugCallback(
+        VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+        VkDebugUtilsMessageTypeFlagsEXT,
+        const VkDebugUtilsMessengerCallbackDataEXT *data,
+        void *){
+        const char *sev = "INFO";
+        if(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) sev = "ERROR";
+        else if(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) sev = "WARN";
+        else if(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT) return VK_FALSE;
+        std::cerr << "[VVL " << sev << "] " << (data && data->pMessage ? data->pMessage : "(null)") << std::endl;
+        return VK_FALSE;
+    }
+
     bool vulkanInit = false;
 
     bool initVulkan(){
@@ -86,6 +101,30 @@ _NAMESPACE_BEGIN_
         requiredInstanceExtensions.push_back(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
 #endif
 
+        // Optional: debug utils extension for validation layer messages.
+        bool hasDebugUtils = extensionSet.find(VK_EXT_DEBUG_UTILS_EXTENSION_NAME) != extensionSet.end();
+        if(hasDebugUtils){
+            requiredInstanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        }
+
+        // Optional: enable Khronos validation layer if present.
+        OmegaCommon::Vector<const char *> enabledLayers;
+        {
+            uint32_t layerCount = 0;
+            vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+            OmegaCommon::Vector<VkLayerProperties> layerProps;
+            layerProps.resize(layerCount);
+            if(layerCount > 0){
+                vkEnumerateInstanceLayerProperties(&layerCount, layerProps.data());
+            }
+            for(auto & lp : layerProps){
+                if(std::strcmp(lp.layerName, "VK_LAYER_KHRONOS_validation") == 0){
+                    enabledLayers.push_back("VK_LAYER_KHRONOS_validation");
+                    break;
+                }
+            }
+        }
+
         for(const char *requiredExt : requiredInstanceExtensions){
             if(extensionSet.find(requiredExt) == extensionSet.end()){
                 std::cerr << "Vulkan init failed: missing required instance extension `" << requiredExt << "`" << std::endl;
@@ -113,8 +152,8 @@ _NAMESPACE_BEGIN_
         instanceInfo.pNext = nullptr;
         instanceInfo.flags = 0;
         instanceInfo.pApplicationInfo = &appInfo;
-        instanceInfo.enabledLayerCount = 0;
-        instanceInfo.ppEnabledLayerNames = nullptr;
+        instanceInfo.enabledLayerCount = static_cast<uint32_t>(enabledLayers.size());
+        instanceInfo.ppEnabledLayerNames = enabledLayers.empty() ? nullptr : enabledLayers.data();
         instanceInfo.enabledExtensionCount = static_cast<uint32_t>(requiredInstanceExtensions.size());
         instanceInfo.ppEnabledExtensionNames = requiredInstanceExtensions.data();
 
@@ -125,6 +164,24 @@ _NAMESPACE_BEGIN_
             return false;
         }
 
+        if(hasDebugUtils){
+            auto pfnCreate = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+                GEVulkanEngine::instance, "vkCreateDebugUtilsMessengerEXT");
+            if(pfnCreate){
+                VkDebugUtilsMessengerCreateInfoEXT dbgInfo {VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+                dbgInfo.messageSeverity =
+                    VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                    VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+                    VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
+                dbgInfo.messageType =
+                    VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                    VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                    VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+                dbgInfo.pfnUserCallback = vulkanDebugCallback;
+                pfnCreate(GEVulkanEngine::instance, &dbgInfo, nullptr, &g_debugMessenger);
+            }
+        }
+
         vulkanInit = true;
         return true;
     }
@@ -133,6 +190,14 @@ _NAMESPACE_BEGIN_
 
     void cleanupVulkan(){
         if(GEVulkanEngine::instance != VK_NULL_HANDLE){
+            if(g_debugMessenger != VK_NULL_HANDLE){
+                auto pfnDestroy = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+                    GEVulkanEngine::instance, "vkDestroyDebugUtilsMessengerEXT");
+                if(pfnDestroy){
+                    pfnDestroy(GEVulkanEngine::instance, g_debugMessenger, nullptr);
+                }
+                g_debugMessenger = VK_NULL_HANDLE;
+            }
             vkDestroyInstance(GEVulkanEngine::instance,nullptr);
             GEVulkanEngine::instance = VK_NULL_HANDLE;
         }
@@ -1621,8 +1686,12 @@ _NAMESPACE_BEGIN_
             desc_layout_info.pNext = nullptr;
             desc_layout_info.bindingCount = static_cast<std::uint32_t>(bindings.size());
             desc_layout_info.pBindings = bindings.empty() ? nullptr : bindings.data();
-            // Push descriptor only allowed on one set; use it for set 0 (vertex).
-            // Set 1+ (fragment) uses a regular descriptor pool.
+            // Vulkan permits at most one push-descriptor set per pipeline
+            // layout (VUID-VkPipelineLayoutCreateInfo-pSetLayouts-00293),
+            // so only set 0 (vertex) gets the push flag. Set 1+ (fragment)
+            // is a regular descriptor set; the recorder allocates fresh
+            // ones per draw from a FREE_DESCRIPTOR_SET-capable pool to
+            // avoid the "descriptor set updated while bound" hazard.
             if(hasPushDescriptorExt && setCount == 0){
                 desc_layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
             }
@@ -1652,41 +1721,30 @@ _NAMESPACE_BEGIN_
             return pipeline_layout;
         }
 
-        // Set 0 (vertex) uses push descriptors and doesn't need pool allocation.
-        // But sets 1+ (fragment, etc.) use regular descriptor sets and need
-        // pool allocation — especially for immutable samplers (static samplers)
-        // which are only populated when descriptor sets are allocated from a
-        // layout that contains them.
-        if(hasPushDescriptorExt){
-            if(descriptorPool != nullptr && descLayout.size() > 1 && !poolSizes.empty()){
-                VkDescriptorPoolCreateInfo pushPoolInfo {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-                pushPoolInfo.maxSets = static_cast<std::uint32_t>(descLayout.size() - 1);
-                pushPoolInfo.poolSizeCount = static_cast<std::uint32_t>(poolSizes.size());
-                pushPoolInfo.pPoolSizes = poolSizes.data();
-
-                auto pushPoolRes = vkCreateDescriptorPool(device,&pushPoolInfo,nullptr,descriptorPool);
-                if(pushPoolRes == VK_SUCCESS && *descriptorPool != VK_NULL_HANDLE){
-                    VkDescriptorSetAllocateInfo nonPushAllocInfo {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-                    nonPushAllocInfo.descriptorPool = *descriptorPool;
-                    nonPushAllocInfo.descriptorSetCount = static_cast<std::uint32_t>(descLayout.size() - 1);
-                    nonPushAllocInfo.pSetLayouts = &descLayout[1];
-                    nonPushAllocInfo.pNext = nullptr;
-
-                    descs.resize(descLayout.size() - 1);
-                    auto nonPushAllocRes = vkAllocateDescriptorSets(device,&nonPushAllocInfo,descs.data());
-                    if(nonPushAllocRes != VK_SUCCESS){
-                        std::cerr << "Vulkan descriptor set allocation for non-push sets failed (" << nonPushAllocRes << ")" << std::endl;
-                        descs.clear();
-                    }
-                }
-            }
+        // Determine which layout slots need a regular descriptor pool. In
+        // push-descriptor mode, set 0 is push and skipped. In fallback
+        // mode, every set is regular. The pool is created with
+        // FREE_DESCRIPTOR_SET_BIT and oversized so the command-buffer
+        // recorder can allocate fresh sets per draw and return them when
+        // the buffer is destroyed/reset, avoiding "descriptor set updated
+        // while bound" violations on shared in-place sets.
+        const std::size_t nonPushSetCount = hasPushDescriptorExt
+            ? (descLayout.size() > 1 ? descLayout.size() - 1 : 0)
+            : descLayout.size();
+        if(nonPushSetCount == 0){
             return pipeline_layout;
         }
 
+        constexpr std::uint32_t kFallbackPoolSlots = 256;
         VkDescriptorPoolCreateInfo poolCreateInfo {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        poolCreateInfo.maxSets = setCount > 0 ? setCount : 1;
-        poolCreateInfo.poolSizeCount = static_cast<std::uint32_t>(poolSizes.size());
-        poolCreateInfo.pPoolSizes = poolSizes.data();
+        poolCreateInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        poolCreateInfo.maxSets = kFallbackPoolSlots * static_cast<std::uint32_t>(nonPushSetCount);
+        OmegaCommon::Vector<VkDescriptorPoolSize> scaledPoolSizes = poolSizes;
+        for(auto & ps : scaledPoolSizes){
+            ps.descriptorCount *= kFallbackPoolSlots;
+        }
+        poolCreateInfo.poolSizeCount = static_cast<std::uint32_t>(scaledPoolSizes.size());
+        poolCreateInfo.pPoolSizes = scaledPoolSizes.data();
 
         auto poolRes = vkCreateDescriptorPool(device,&poolCreateInfo,nullptr,descriptorPool);
         if(poolRes != VK_SUCCESS || *descriptorPool == VK_NULL_HANDLE){
@@ -1694,13 +1752,18 @@ _NAMESPACE_BEGIN_
             return pipeline_layout;
         }
 
+        // Seed-allocate one descriptor set per non-push slot. These act
+        // as a last-resort fallback if the recorder ever fails to allocate
+        // a fresh ring slot (pool exhausted). `descs[i]` corresponds to
+        // layout slot `descLayout[i + pushOffset]`.
+        const std::size_t pushOffset = hasPushDescriptorExt ? 1u : 0u;
         VkDescriptorSetAllocateInfo descSetAllocInfo {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        descSetAllocInfo.descriptorSetCount = static_cast<std::uint32_t>(descLayout.size());
-        descSetAllocInfo.pSetLayouts = descLayout.data();
+        descSetAllocInfo.descriptorSetCount = static_cast<std::uint32_t>(nonPushSetCount);
+        descSetAllocInfo.pSetLayouts = &descLayout[pushOffset];
         descSetAllocInfo.pNext = nullptr;
         descSetAllocInfo.descriptorPool = *descriptorPool;
 
-        descs.resize(descLayout.size());
+        descs.resize(nonPushSetCount);
         auto allocRes = vkAllocateDescriptorSets(device,&descSetAllocInfo,descs.data());
         if(allocRes != VK_SUCCESS){
             std::cerr << "Vulkan descriptor set allocation failed (" << allocRes << ")" << std::endl;
@@ -2770,6 +2833,133 @@ _NAMESPACE_BEGIN_
         if(device != VK_NULL_HANDLE){
             vkDeviceWaitIdle(device);
         }
+    }
+
+    bool GEVulkanEngine::debugReadbackPixelRGBA8(SharedHandle<GETexture> tex, unsigned x, unsigned y, std::uint8_t out[4]){
+        if(device == VK_NULL_HANDLE || !tex){
+            std::cerr << "[debugReadback] no device/tex" << std::endl;
+            return false;
+        }
+        auto vkTex = (GEVulkanTexture *)tex.get();
+        if(vkTex->img == VK_NULL_HANDLE){
+            std::cerr << "[debugReadback] no image" << std::endl;
+            return false;
+        }
+
+        if(deviceQueuefamilies.empty() || deviceQueuefamilies[0].empty()){
+            std::cerr << "[debugReadback] no queue" << std::endl;
+            return false;
+        }
+        VkQueue queue = deviceQueuefamilies[0][0].second;
+        std::uint32_t qfi = queueFamilyIndices.empty() ? 0 : queueFamilyIndices[0];
+
+        VkBufferCreateInfo bufInfo {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bufInfo.size = 4;
+        bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo allocInfo {};
+        allocInfo.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
+        allocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+
+        VkBuffer stageBuf = VK_NULL_HANDLE;
+        VmaAllocation stageAlloc = nullptr;
+        VmaAllocationInfo stageAllocInfo {};
+        if(vmaCreateBuffer(memAllocator, &bufInfo, &allocInfo, &stageBuf, &stageAlloc, &stageAllocInfo) != VK_SUCCESS){
+            std::cerr << "[debugReadback] vmaCreateBuffer failed" << std::endl;
+            return false;
+        }
+
+        VkCommandPool pool = VK_NULL_HANDLE;
+        VkCommandPoolCreateInfo poolInfo {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        poolInfo.queueFamilyIndex = qfi;
+        poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        if(vkCreateCommandPool(device, &poolInfo, nullptr, &pool) != VK_SUCCESS){
+            vmaDestroyBuffer(memAllocator, stageBuf, stageAlloc);
+            return false;
+        }
+
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        VkCommandBufferAllocateInfo cbAlloc {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        cbAlloc.commandPool = pool;
+        cbAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbAlloc.commandBufferCount = 1;
+        vkAllocateCommandBuffers(device, &cbAlloc, &cb);
+
+        VkCommandBufferBeginInfo begin {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cb, &begin);
+
+        VkImageLayout origLayout = vkTex->layout;
+        VkImageMemoryBarrier toSrc {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toSrc.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        toSrc.oldLayout = origLayout;
+        toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toSrc.image = vkTex->img;
+        toSrc.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        toSrc.subresourceRange.levelCount = 1;
+        toSrc.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(cb,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &toSrc);
+
+        VkBufferImageCopy region {};
+        region.bufferOffset = 0;
+        region.bufferRowLength = 0;
+        region.bufferImageHeight = 0;
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageOffset = { (int32_t)x, (int32_t)y, 0 };
+        region.imageExtent = { 1, 1, 1 };
+        vkCmdCopyImageToBuffer(cb, vkTex->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stageBuf, 1, &region);
+
+        VkImageMemoryBarrier toOrig = toSrc;
+        toOrig.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        toOrig.dstAccessMask = 0;
+        toOrig.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toOrig.newLayout = origLayout;
+        vkCmdPipelineBarrier(cb,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &toOrig);
+
+        VkBufferMemoryBarrier toHost {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        toHost.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        toHost.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toHost.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toHost.buffer = stageBuf;
+        toHost.offset = 0;
+        toHost.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cb,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+            0, 0, nullptr, 1, &toHost, 0, nullptr);
+
+        vkEndCommandBuffer(cb);
+
+        VkSubmitInfo submit {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &cb;
+        VkResult subRes = vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
+        if(subRes != VK_SUCCESS){
+            std::cerr << "[debugReadback] submit failed: " << subRes << std::endl;
+        }
+        vkQueueWaitIdle(queue);
+
+        std::uint8_t *mapped = (std::uint8_t *)stageAllocInfo.pMappedData;
+        if(mapped != nullptr){
+            out[0] = mapped[0];
+            out[1] = mapped[1];
+            out[2] = mapped[2];
+            out[3] = mapped[3];
+        }
+
+        vkFreeCommandBuffers(device, pool, 1, &cb);
+        vkDestroyCommandPool(device, pool, nullptr);
+        vmaDestroyBuffer(memAllocator, stageBuf, stageAlloc);
+        return mapped != nullptr;
     }
 
     GEVulkanEngine::~GEVulkanEngine(){

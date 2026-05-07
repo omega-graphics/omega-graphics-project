@@ -42,7 +42,34 @@ _NAMESPACE_BEGIN_
         VkRenderPassBeginInfo deferredBeginInfo {};
         OmegaCommon::Vector<VkClearValue> deferredClearValues;
 
+        // Deferred descriptor-set bind: NVIDIA's driver snapshots descriptor
+        // contents at vkCmdBindDescriptorSets time; updating the set afterward
+        // is spec-legal but the snapshot is stale. Defer the bind to draw time
+        // so it runs after all vkUpdateDescriptorSets calls.
+        bool descriptorSetsBindPending = false;
+
+        // Fallback (no-push-descriptor) per-pipeline-state descriptor set
+        // ring. setRenderPipelineState() lazily allocates one fresh set per
+        // descriptor slot from the pipeline's pool and stages them here so
+        // bindResource* writes don't touch sets that may still be bound to
+        // an in-flight command buffer. Cleared (and freed back to the
+        // pool) when the command buffer is destroyed or reset.
+        OmegaCommon::Vector<VkDescriptorSet> fallbackDescriptorSets;
+        OmegaCommon::Vector<VkDescriptorSet> retiredFallbackSets;
+        VkDescriptorPool fallbackDescriptorPool = VK_NULL_HANDLE;
+        bool fallbackPoolExhausted = false;
+        // True once the current fallback ring slots have been bound to a
+        // draw via bindDescriptorSetsIfPending. The next bindResource*
+        // write must retire them and acquire fresh slots — updating a set
+        // that's still bound to a recorded draw violates the spec.
+        bool fallbackSetsCommitted = false;
+
+        VkDescriptorSet acquireOrUpdateFallbackSet(unsigned slotIndex);
+        void releaseFallbackDescriptorSets();
+        void resetFallbackDescriptorSetsForNewPipeline();
+
         void beginRenderPassIfDeferred();
+        void bindDescriptorSetsIfPending();
 
         friend class GEVulkanCommandQueue;
 

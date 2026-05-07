@@ -308,6 +308,10 @@ _NAMESPACE_BEGIN_
     };
 
     GEVulkanCommandBuffer::~GEVulkanCommandBuffer() {
+        // Free any per-cmd-buffer fallback descriptor sets back to their
+        // owning pipeline pool (deferred to the engine retention queue so
+        // the GPU has finished using them).
+        releaseFallbackDescriptorSets();
         // Render passes / framebuffers reach this point only when the buffer
         // was never submitted (otherwise vkQueueSubmit's flush already moved
         // them into the engine retention queue under a fence gate). Enqueue
@@ -353,11 +357,6 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandBuffer::beginRenderPassIfDeferred(){
         if(renderPassBeginDeferred){
             renderPassBeginDeferred = false;
-            std::cerr << "[DIAG beginRP] renderPass=" << (void*)deferredBeginInfo.renderPass
-                      << " framebuffer=" << (void*)deferredBeginInfo.framebuffer
-                      << " extent=" << deferredBeginInfo.renderArea.extent.width
-                      << "x" << deferredBeginInfo.renderArea.extent.height
-                      << std::endl;
             vkCmdBeginRenderPass(commandBuffer,&deferredBeginInfo,VK_SUBPASS_CONTENTS_INLINE);
         }
     }
@@ -618,16 +617,6 @@ _NAMESPACE_BEGIN_
             primaryTex->priorPipelineAccess = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
             primaryTex->priorShaderAccess = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
             beginInfo.renderArea.extent = {framebufferInfo.width,framebufferInfo.height};
-
-            std::cerr << "[DIAG startRP-tex] format=" << attachmentDescription.format
-                      << " loadOp=" << attachmentDescription.loadOp
-                      << " storeOp=" << attachmentDescription.storeOp
-                      << " initLayout=" << attachmentDescription.initialLayout
-                      << " finalLayout=" << attachmentDescription.finalLayout
-                      << " fb=" << framebufferInfo.width << "x" << framebufferInfo.height
-                      << " img=" << (void*)primaryTex->img
-                      << " view=" << (void*)attachmentView
-                      << std::endl;
         }
 
         deferredClearValues.clear();
@@ -659,20 +648,190 @@ _NAMESPACE_BEGIN_
         VkPipeline state = vulkanPipeline->pipeline;
 
         vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state);
+        // Switching pipelines retires the previous pipeline's freshly
+        // allocated fallback descriptor sets — the new pipeline's first
+        // bindResource* call will lazily allocate fresh ones.
+        resetFallbackDescriptorSetsForNewPipeline();
         renderPipelineState = vulkanPipeline;
+        // Defer the descriptor-set bind to draw time. Even in push-descriptor
+        // mode the fragment set (set 1+) is a regular descriptor set that
+        // needs vkCmdBindDescriptorSets. The recorder allocates a fresh
+        // ring slot for it on the next bindResource* call, then this flag
+        // makes drawX bind it.
         if(!vulkanPipeline->descs.empty()){
-            // When push descriptors are used, set 0 is push and descs[]
-            // contains only non-push sets (starting from set 1).
-            std::uint32_t firstSet = parentQueue->engine->hasPushDescriptorExt ? 1 : 0;
-            vkCmdBindDescriptorSets(commandBuffer,
-                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    vulkanPipeline->layout,
-                                    firstSet,
-                                    static_cast<std::uint32_t>(vulkanPipeline->descs.size()),
-                                    vulkanPipeline->descs.data(),
-                                    0,nullptr);
+            descriptorSetsBindPending = true;
         }
     };
+
+    void GEVulkanCommandBuffer::bindDescriptorSetsIfPending(){
+        if(!descriptorSetsBindPending || renderPipelineState == nullptr){
+            return;
+        }
+        descriptorSetsBindPending = false;
+
+        // The set indices we bind start at the first non-push set:
+        //   push mode  → set 1+ (set 0 is push, recorded inline).
+        //   fallback mode → set 0+.
+        // descs[i] corresponds to layout slot (firstSet + i). When the
+        // recorder allocated a fresh fallback set for slot i, prefer it;
+        // otherwise fall back to the pipeline's seed set.
+        const bool pushMode = parentQueue->engine->hasPushDescriptorExt;
+        const std::uint32_t firstSet = pushMode ? 1u : 0u;
+        const std::size_t slotCount = renderPipelineState->descs.size();
+        if(slotCount == 0){
+            return;
+        }
+
+        OmegaCommon::Vector<VkDescriptorSet> setsToBind;
+        setsToBind.reserve(slotCount);
+        for(std::size_t i = 0; i < slotCount; ++i){
+            VkDescriptorSet s = VK_NULL_HANDLE;
+            const std::size_t setIndex = firstSet + i;
+            if(setIndex < fallbackDescriptorSets.size()){
+                s = fallbackDescriptorSets[setIndex];
+            }
+            if(s == VK_NULL_HANDLE){
+                s = renderPipelineState->descs[i];
+            }
+            if(s == VK_NULL_HANDLE){
+                return;
+            }
+            setsToBind.push_back(s);
+        }
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                renderPipelineState->layout,
+                                firstSet,
+                                static_cast<std::uint32_t>(setsToBind.size()),
+                                setsToBind.data(),
+                                0,nullptr);
+        // Mark the current ring slots as committed — any subsequent
+        // bindResource* write must retire them and acquire fresh ones.
+        fallbackSetsCommitted = true;
+    }
+
+    VkDescriptorSet GEVulkanCommandBuffer::acquireOrUpdateFallbackSet(unsigned setIndex){
+        // setIndex is the absolute Vulkan descriptor set index (0 = vertex,
+        // 1 = fragment, …). In push mode set 0 is push and must never be
+        // routed here; callers gate that.
+        if(renderPipelineState == nullptr){
+            return VK_NULL_HANDLE;
+        }
+        const std::size_t totalSets = renderPipelineState->descLayouts.size();
+        if(totalSets == 0 || setIndex >= totalSets){
+            return VK_NULL_HANDLE;
+        }
+        const bool pushMode = parentQueue->engine->hasPushDescriptorExt;
+        const std::size_t pushOffset = pushMode ? 1u : 0u;
+        if(setIndex < pushOffset){
+            return VK_NULL_HANDLE;
+        }
+        const std::size_t descsIndex = setIndex - pushOffset;
+
+        // If the previous ring slots have already been bound to a draw,
+        // retire them and start a fresh cluster — writing the same set
+        // after it was bound violates "descriptor set updated while bound."
+        if(fallbackSetsCommitted){
+            for(auto s : fallbackDescriptorSets){
+                if(s != VK_NULL_HANDLE){
+                    retiredFallbackSets.push_back(s);
+                }
+            }
+            fallbackDescriptorSets.clear();
+            fallbackSetsCommitted = false;
+            // Force a re-bind of the new ring slots before the next draw.
+            descriptorSetsBindPending = true;
+        }
+
+        if(fallbackDescriptorSets.size() != totalSets){
+            fallbackDescriptorSets.assign(totalSets, VK_NULL_HANDLE);
+        }
+        if(fallbackDescriptorSets[setIndex] != VK_NULL_HANDLE){
+            return fallbackDescriptorSets[setIndex];
+        }
+        if(fallbackPoolExhausted || renderPipelineState->descriptorPool == VK_NULL_HANDLE){
+            if(descsIndex < renderPipelineState->descs.size()){
+                return renderPipelineState->descs[descsIndex];
+            }
+            return VK_NULL_HANDLE;
+        }
+
+        VkDescriptorSetLayout layouts[1] = { renderPipelineState->descLayouts[setIndex] };
+        VkDescriptorSetAllocateInfo allocInfo {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocInfo.descriptorPool = renderPipelineState->descriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = layouts;
+        allocInfo.pNext = nullptr;
+
+        VkDescriptorSet allocated = VK_NULL_HANDLE;
+        VkResult res = vkAllocateDescriptorSets(parentQueue->engine->device, &allocInfo, &allocated);
+        if(res != VK_SUCCESS || allocated == VK_NULL_HANDLE){
+            // Pool exhausted (rare). Fall back to the persistent seed set —
+            // re-introduces the original VVL noise on this frame but keeps
+            // rendering moving. The pool is sized at 256 slots per
+            // non-push set per pipeline — should be unreachable in steady
+            // state.
+            fallbackPoolExhausted = true;
+            if(descsIndex < renderPipelineState->descs.size()){
+                return renderPipelineState->descs[descsIndex];
+            }
+            return VK_NULL_HANDLE;
+        }
+
+        fallbackDescriptorSets[setIndex] = allocated;
+        fallbackDescriptorPool = renderPipelineState->descriptorPool;
+        // The new sets must be bound before the next draw consumes them.
+        descriptorSetsBindPending = true;
+        return allocated;
+    }
+
+    void GEVulkanCommandBuffer::resetFallbackDescriptorSetsForNewPipeline(){
+        for(auto s : fallbackDescriptorSets){
+            if(s != VK_NULL_HANDLE){
+                retiredFallbackSets.push_back(s);
+            }
+        }
+        fallbackDescriptorSets.clear();
+        fallbackPoolExhausted = false;
+        fallbackSetsCommitted = false;
+    }
+
+    void GEVulkanCommandBuffer::releaseFallbackDescriptorSets(){
+        if(parentQueue == nullptr || parentQueue->engine == nullptr){
+            fallbackDescriptorSets.clear();
+            retiredFallbackSets.clear();
+            fallbackDescriptorPool = VK_NULL_HANDLE;
+            return;
+        }
+        VkDevice dev = parentQueue->engine->device;
+        VkDescriptorPool pool = fallbackDescriptorPool;
+        // Defer the actual vkFreeDescriptorSets to the engine's retention
+        // queue so the GPU has finished using the sets before they're
+        // returned to the pool. The pattern mirrors the framebuffer
+        // teardown in this destructor.
+        OmegaCommon::Vector<VkDescriptorSet> toFree;
+        toFree.reserve(retiredFallbackSets.size() + fallbackDescriptorSets.size());
+        for(auto s : retiredFallbackSets){
+            if(s != VK_NULL_HANDLE){ toFree.push_back(s); }
+        }
+        for(auto s : fallbackDescriptorSets){
+            if(s != VK_NULL_HANDLE){ toFree.push_back(s); }
+        }
+        retiredFallbackSets.clear();
+        fallbackDescriptorSets.clear();
+        if(!toFree.empty() && pool != VK_NULL_HANDLE){
+            parentQueue->engine->retentionQueue.enqueue(
+                {},
+                [dev, pool, sets = std::move(toFree)]() mutable {
+                    if(!sets.empty()){
+                        vkFreeDescriptorSets(dev, pool,
+                                             static_cast<std::uint32_t>(sets.size()),
+                                             sets.data());
+                    }
+                });
+        }
+        fallbackDescriptorPool = VK_NULL_HANDLE;
+    }
 
     void GEVulkanCommandBuffer::bindResourceAtVertexShader(SharedHandle<GEBuffer> &buffer, unsigned id){
         auto vk_buffer = (GEVulkanBuffer *)buffer.get();
@@ -700,8 +859,14 @@ _NAMESPACE_BEGIN_
                                       0,1,&writeInfo);
         }
         else {
-            writeInfo.dstSet = renderPipelineState->descs.front();
-            vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
+            // Vertex set 0 in fallback mode: write to a freshly-allocated
+            // ring slot so we don't update a set that may still be bound
+            // to an in-flight command buffer.
+            VkDescriptorSet target = acquireOrUpdateFallbackSet(0);
+            if(target != VK_NULL_HANDLE){
+                writeInfo.dstSet = target;
+                vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
+            }
         }
 
 
@@ -742,11 +907,20 @@ _NAMESPACE_BEGIN_
         writeInfo.pImageInfo = &imgInfo;
 
         if(parentQueue->engine->hasPushDescriptorExt){
+            // Vertex-stage texture binds live on set 0, the same set that
+            // bindResourceAtVertexShader(buffer) targets. The previous code
+            // pushed to set 1 — that wrote into the fragment set, which
+            // either fails validation or silently misses the slot the
+            // shader was looking up.
             parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,renderPipelineState->layout,
-                                                           1,1,&writeInfo);
+                                                           0,1,&writeInfo);
         }
         else {
-            writeInfo.dstSet = renderPipelineState->descs.back();
+            // Fallback path: cycle the per-pipeline descriptor set ring so
+            // we don't update a set that's still bound to an in-flight
+            // command buffer.
+            VkDescriptorSet target = acquireOrUpdateFallbackSet(0);
+            writeInfo.dstSet = target;
             vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
         }
     };
@@ -772,10 +946,14 @@ _NAMESPACE_BEGIN_
         writeInfo.pImageInfo = nullptr;
         writeInfo.pTexelBufferView = nullptr;
 
-        // Fragment shader always uses regular descriptor sets (never push).
-        // descs.back() is the fragment descriptor set in both push and non-push modes.
-        if(!renderPipelineState->descs.empty()){
-            writeInfo.dstSet = renderPipelineState->descs.back();
+        // Fragment shader resources live in set 1. Even in push-descriptor
+        // mode this is a regular descriptor set (Vulkan permits at most
+        // one push set per pipeline layout — set 0). The recorder
+        // allocates fresh ring slots so fragment writes never touch a set
+        // still bound to an in-flight command buffer.
+        VkDescriptorSet target = acquireOrUpdateFallbackSet(1);
+        if(target != VK_NULL_HANDLE){
+            writeInfo.dstSet = target;
             vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
         }
     };
@@ -787,18 +965,7 @@ _NAMESPACE_BEGIN_
 
         auto ioMode = getResourceIOModeForResourceID(id,renderPipelineState->fragmentShader->internal);
 
-        // DIAG: trace fragment texture bind
-        std::cerr << "[DIAG bindFragTex] id=" << id
-                  << " ioMode=" << ioMode
-                  << " texture=" << (void*)vk_texture
-                  << " img=" << (void*)vk_texture->img
-                  << " view=" << (void*)vk_texture->img_view
-                  << " layoutBefore=" << vk_texture->layout
-                  << std::endl;
-
         insertResourceBarrierIfNeeded(vk_texture,id,renderPipelineState->fragmentShader->internal);
-
-        std::cerr << "[DIAG bindFragTex] layoutAfterBarrier=" << vk_texture->layout << std::endl;
 
         VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writeInfo.dstBinding = getBindingForResourceID(id,renderPipelineState->fragmentShader->internal);
@@ -824,20 +991,12 @@ _NAMESPACE_BEGIN_
         writeInfo.pBufferInfo = nullptr;
         writeInfo.pImageInfo = &imgInfo;
 
-        std::cerr << "[DIAG bindFragTex] dstBinding=" << writeInfo.dstBinding
-                  << " descType=" << writeInfo.descriptorType
-                  << " descs.size=" << renderPipelineState->descs.size()
-                  << std::endl;
-
-        // Fragment shader always uses regular descriptor sets (never push).
-        // descs.back() is the fragment descriptor set in both push and non-push modes.
-        if(!renderPipelineState->descs.empty()){
-            writeInfo.dstSet = renderPipelineState->descs.back();
+        // Fragment textures: same as fragment buffers — always go through
+        // the fallback ring at set 1 (only set 0 is allowed to be push).
+        VkDescriptorSet target = acquireOrUpdateFallbackSet(1);
+        if(target != VK_NULL_HANDLE){
+            writeInfo.dstSet = target;
             vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
-            std::cerr << "[DIAG bindFragTex] descriptor written OK" << std::endl;
-        }
-        else {
-            std::cerr << "[DIAG bindFragTex] WARNING: descs empty, texture NOT bound!" << std::endl;
         }
     };
 
@@ -869,6 +1028,7 @@ _NAMESPACE_BEGIN_
         // Begin the render pass now — any barriers from bind* calls have
         // already been recorded outside the render pass instance.
         beginRenderPassIfDeferred();
+        bindDescriptorSetsIfPending();
         applyTopologyIfDynamic(polygonType);
         vkCmdDraw(commandBuffer,vertexCount,1,startIdx,0);
     };
@@ -885,6 +1045,7 @@ _NAMESPACE_BEGIN_
                                                     unsigned indexCount, size_t startIndex,
                                                     int baseVertex){
         beginRenderPassIfDeferred();
+        bindDescriptorSetsIfPending();
         applyTopologyIfDynamic(polygonType);
         vkCmdDrawIndexed(commandBuffer, indexCount, 1, uint32_t(startIndex), baseVertex, 0);
     }
@@ -893,6 +1054,7 @@ _NAMESPACE_BEGIN_
                                                       unsigned vertexCount, size_t startIdx,
                                                       unsigned instanceCount, unsigned firstInstance){
         beginRenderPassIfDeferred();
+        bindDescriptorSetsIfPending();
         applyTopologyIfDynamic(polygonType);
         vkCmdDraw(commandBuffer, vertexCount, instanceCount, uint32_t(startIdx), firstInstance);
     }
@@ -902,6 +1064,7 @@ _NAMESPACE_BEGIN_
                                                              int baseVertex, unsigned instanceCount,
                                                              unsigned firstInstance){
         beginRenderPassIfDeferred();
+        bindDescriptorSetsIfPending();
         applyTopologyIfDynamic(polygonType);
         vkCmdDrawIndexed(commandBuffer, indexCount, instanceCount, uint32_t(startIndex), baseVertex, firstInstance);
     }
@@ -910,6 +1073,7 @@ _NAMESPACE_BEGIN_
                                                      SharedHandle<GEBuffer> & argumentBuffer,
                                                      size_t argumentBufferOffset){
         beginRenderPassIfDeferred();
+        bindDescriptorSetsIfPending();
         applyTopologyIfDynamic(polygonType);
         auto *vkBuf = (GEVulkanBuffer *)argumentBuffer.get();
         trackBuffer(argumentBuffer);
@@ -922,6 +1086,7 @@ _NAMESPACE_BEGIN_
                                                             SharedHandle<GEBuffer> & argumentBuffer,
                                                             size_t argumentBufferOffset){
         beginRenderPassIfDeferred();
+        bindDescriptorSetsIfPending();
         applyTopologyIfDynamic(polygonType);
         auto *vkBuf = (GEVulkanBuffer *)argumentBuffer.get();
         trackBuffer(argumentBuffer);
@@ -1951,6 +2116,9 @@ _NAMESPACE_BEGIN_
     }
 
     void GEVulkanCommandBuffer::reset(){
+        // Free fallback descriptor sets before resetting the command buffer
+        // — the GPU is assumed to be done with this buffer at reset time.
+        releaseFallbackDescriptorSets();
         vkResetCommandBuffer(commandBuffer,VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
     };
 
@@ -2145,8 +2313,6 @@ _NAMESPACE_BEGIN_
        const auto gate = gateForNextSubmit();
 
        auto res = vkQueueSubmit(vkQueue, 1, &submission,VK_NULL_HANDLE);
-       std::cerr << "[DIAG commitToGPU] submitted " << commandQueue.size()
-                 << " cmd bufs, result=" << res << std::endl;
        if(!VK_RESULT_SUCCEEDED(res)){
            std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
            commandQueue.clear();

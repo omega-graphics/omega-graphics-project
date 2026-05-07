@@ -390,6 +390,32 @@ older path. There is no automatic driver-update mechanism in OmegaGTE; a
 user running an out-of-date driver will see reduced functionality rather
 than a runtime crash.
 
+**NVIDIA Vulkan descriptor-set bind-time snapshotting.**
+The Vulkan specification permits ``vkUpdateDescriptorSets`` to be called
+on a non-update-after-bind set after ``vkCmdBindDescriptorSets`` has
+recorded the bind, as long as the update completes before queue
+submission. NVIDIA's Vulkan driver, however, snapshots the descriptor
+contents at the moment ``vkCmdBindDescriptorSets`` is recorded into the
+command buffer. A subsequent host-side update is silently ignored by that
+recording — the shader at draw time reads the contents that were in the
+set at bind time, which for a freshly-allocated set is uninitialised and
+typically reads as zero. The Khronos validation layer does not flag this
+because no spec rule has been violated. The symptom is a shader that
+samples or fetches from a correctly-populated image and gets back zero,
+while the descriptor write returned ``VK_SUCCESS`` and the image's
+contents (verified by readback) are intact.
+
+OmegaGTE's command-buffer encoder works around this by deferring
+``vkCmdBindDescriptorSets`` from ``setRenderPipelineState`` to the start
+of each draw, so it runs after every ``bindResourceAtFragmentShader`` /
+``bindResourceAtVertexShader`` call that updates a non-push descriptor
+set. The bind is therefore always recorded after the corresponding
+update, and NVIDIA's snapshot reflects the final contents. Application
+code does not need to do anything special; the engine guarantees the
+ordering. This workaround is harmless on drivers that do not snapshot at
+bind time (AMD, Intel, MoltenVK), so the same code path is used on all
+Vulkan implementations.
+
 ----
 
 Practical Guidance

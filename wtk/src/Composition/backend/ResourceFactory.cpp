@@ -72,8 +72,22 @@ namespace OmegaWTK::Composition {
         runOnMainThread([&]{
             result.visualTree = BackendVisualTree::Create(renderTarget);
             result.rootVisual = result.visualTree->makeRootVisual(rect, rect.pos, outPresentTarget);
-            result.visualTree->setRootVisual(result.rootVisual);
-            result.rootContext = result.rootVisual->renderTarget.get();
+            // If the platform couldn't resolve a native present surface
+            // yet (e.g. GTK/Vulkan: the GdkWindow isn't realized until the
+            // toplevel is shown), discard the partial root visual. The
+            // BackendRenderTargetContext we just built holds a null
+            // GENativeRenderTarget — committing it would crash. Compositor
+            // ::renderCompositeFrame's first-frame fallback recreates the
+            // root visual via createRootVisual() once the surface is
+            // resolvable, by which point the window has been displayed.
+            if(outPresentTarget.nativeTarget == nullptr){
+                result.rootVisual.reset();
+                result.rootContext = nullptr;
+            }
+            else {
+                result.visualTree->setRootVisual(result.rootVisual);
+                result.rootContext = result.rootVisual->renderTarget.get();
+            }
         });
 
         return result;

@@ -111,6 +111,27 @@ void AppWindow::close(){
     impl_->nativeWindow->close();
 };
 
+void AppWindow::minimize(){ impl_->nativeWindow->minimize(); }
+void AppWindow::maximize(){ impl_->nativeWindow->maximize(); }
+void AppWindow::restore(){ impl_->nativeWindow->restore(); }
+void AppWindow::toggleFullscreen(){ impl_->nativeWindow->toggleFullscreen(); }
+bool AppWindow::isMinimized() const { return impl_->nativeWindow->isMinimized(); }
+bool AppWindow::isMaximized() const { return impl_->nativeWindow->isMaximized(); }
+bool AppWindow::isFullscreen() const { return impl_->nativeWindow->isFullscreen(); }
+bool AppWindow::isVisible() const { return impl_->nativeWindow->isVisible(); }
+Composition::Rect AppWindow::getRect() const { return impl_->nativeWindow->getRect(); }
+void AppWindow::setRect(const Composition::Rect & rect){ impl_->nativeWindow->setRect(rect); }
+float AppWindow::scaleFactor() const { return impl_->nativeWindow->scaleFactor(); }
+void AppWindow::setMinSize(float w, float h){ impl_->nativeWindow->setMinSize(w, h); }
+void AppWindow::setMaxSize(float w, float h){ impl_->nativeWindow->setMaxSize(w, h); }
+void AppWindow::setResizable(bool resizable){ impl_->nativeWindow->setResizable(resizable); }
+void AppWindow::orderFront(){ impl_->nativeWindow->orderFront(); }
+void AppWindow::orderBack(){ impl_->nativeWindow->orderBack(); }
+void AppWindow::setOpacity(float alpha){ impl_->nativeWindow->setOpacity(alpha); }
+float AppWindow::getOpacity() const { return impl_->nativeWindow->getOpacity(); }
+bool AppWindow::isKeyWindow() const { return impl_->nativeWindow->isKeyWindow(); }
+void AppWindow::becomeKeyWindow(){ impl_->nativeWindow->becomeKeyWindow(); }
+
 AppWindow::~AppWindow(){
     std::cout << "Closing Window" << std::endl;
     if(impl_->rootViewRenderTarget != nullptr){

@@ -56,10 +56,7 @@ vertex CopyRaster copyVertexFunc(uint v_id : VertexID){
 
 [in copyTex, in copySampler]
 fragment float4 copyFragFunc(CopyRaster r){
-    // DIAG: bypass sampler via texelFetch — isolates sampler vs image descriptor
-    int2 coord = make_int2(int(r.texCoord[0] * 400.0), int(r.texCoord[1] * 400.0));
-    float4 s = read(copyTex, coord);
-    return make_float4(r.texCoord[0], r.texCoord[1], s[3], 1.0);
+    return sample(copySampler, copyTex, r.texCoord);
 }
 
 )";
@@ -117,7 +114,7 @@ static void renderAndBlit(int w, int h){
 
         OmegaGTE::GERenderTarget::RenderPassDesc rp {};
         rp.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
-            {1.f, 0.f, 1.f, 1.f},  // DIAG: magenta clear to test sample path
+            {0.f, 0.f, 0.f, 1.f},
             OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
         rp.depthStencilAttachment.disabled = true;
 
@@ -137,9 +134,7 @@ static void renderAndBlit(int w, int h){
         std::cout << "[BlitTest] Pass 1: committed" << std::endl;
     }
 
-    // DIAG: Force GPU idle between passes to rule out VkEvent sync issues.
     gte.graphicsEngine->waitForGPUIdle();
-    std::cout << "[BlitTest] GPU idle after pass 1" << std::endl;
 
     // ---- Pass 2: blit offscreen texture to swapchain ----
     std::cout << "[BlitTest] Pass 2: blit texture to swapchain" << std::endl;

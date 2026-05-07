@@ -50,9 +50,9 @@ void GEVulkanRenderPipelineState::releaseNative(){
         vkDestroyPipelineLayout(parentEngine->device,layout,nullptr);
         layout = VK_NULL_HANDLE;
     }
-    if(descriptorPool != VK_NULL_HANDLE && !descs.empty()){
-        vkFreeDescriptorSets(parentEngine->device,descriptorPool,descs.size(),descs.data());
-    }
+    // vkDestroyDescriptorPool implicitly frees all sets allocated from it;
+    // an explicit vkFreeDescriptorSets requires VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
+    // which we don't set on the pool.
     for(auto & d : descLayouts) {
         vkDestroyDescriptorSetLayout(parentEngine->device,d,nullptr);
     }
@@ -78,9 +78,6 @@ GEVulkanRenderPipelineState::~GEVulkanRenderPipelineState() {
         }
         if(layout != VK_NULL_HANDLE){
             vkDestroyPipelineLayout(parentEngine->device,layout,nullptr);
-        }
-        if(descriptorPool != VK_NULL_HANDLE && !descs.empty()){
-            vkFreeDescriptorSets(parentEngine->device,descriptorPool,descs.size(),descs.data());
         }
         for(auto & d : descLayouts) {
             vkDestroyDescriptorSetLayout(parentEngine->device,d,nullptr);
@@ -120,10 +117,7 @@ void GEVulkanComputePipelineState::releaseNative(){
         vkDestroyPipelineLayout(parentEngine->device,layout,nullptr);
         layout = VK_NULL_HANDLE;
     }
-    if(descriptorPool != VK_NULL_HANDLE && descSet != VK_NULL_HANDLE){
-        vkFreeDescriptorSets(parentEngine->device,descriptorPool,1,&descSet);
-        descSet = VK_NULL_HANDLE;
-    }
+    descSet = VK_NULL_HANDLE;  // implicitly freed by vkDestroyDescriptorPool below
     for(auto & d : descLayouts) {
         vkDestroyDescriptorSetLayout(parentEngine->device,d,nullptr);
     }
@@ -141,9 +135,6 @@ GEVulkanComputePipelineState::~GEVulkanComputePipelineState() {
         }
         if(layout != VK_NULL_HANDLE){
             vkDestroyPipelineLayout(parentEngine->device,layout,nullptr);
-        }
-        if(descriptorPool != VK_NULL_HANDLE && descSet != VK_NULL_HANDLE){
-            vkFreeDescriptorSets(parentEngine->device,descriptorPool,1,&descSet);
         }
         for(auto & d : descLayouts) {
             vkDestroyDescriptorSetLayout(parentEngine->device,d,nullptr);

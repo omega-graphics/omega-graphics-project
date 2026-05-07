@@ -93,6 +93,14 @@ struct OMEGAWTK_EXPORT WindowWillResize {
     WindowWillResize(Composition::Rect rect, std::uint64_t generation = 0);
 };
 
+struct OMEGAWTK_EXPORT WindowScaleFactorChangedParams {
+    float oldScale = 1.f;
+    float newScale = 1.f;
+    /// Win32 WM_DPICHANGED suggests a new window rect that preserves
+    /// physical size on the new monitor. macOS/Linux leave this empty.
+    Core::Optional<Composition::Rect> suggestedRect;
+};
+
 // --- NativeEvent ---
 
 class OMEGAWTK_EXPORT NativeEvent {
@@ -129,7 +137,8 @@ public:
         WindowWillStartResize,
         WindowWillResize,
         WindowHasResized,
-        WindowHasFinishedResize
+        WindowHasFinishedResize,
+        WindowScaleFactorChanged
     } EventType;
     EventType type;
     NativeEventParams params;
