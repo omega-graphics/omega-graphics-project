@@ -86,10 +86,7 @@ public:
  @brief A singular moduler UI component. (Consists usually of one view)
  Can be attached to a WidgetTreeHost or another Widget as a child.
 
- All OmegaWTK coordinates use top-left origin: x increases rightward,
- y increases downward. Platform-specific coordinate conversion (e.g.
- Cocoa's isFlipped) happens at the root native view boundary only.
-
+ All OmegaWTK coordinates use bottom-left origin.
  @see AppWindow
 */
 class OMEGAWTK_EXPORT  Widget : public Native::NativeThemeObserver {

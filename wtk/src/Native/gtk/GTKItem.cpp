@@ -349,20 +349,18 @@ isScrollItem(type == Native::ScrollItem){
         }
     }
     else {
-        widget = gtk_overlay_new();
-        renderWidget = gtk_drawing_area_new();
+        // Drawing area as direct child (no overlay/fixed wrapper) — matches the
+        // BlitTest topology so the GdkWindow Vulkan renders into isn't covered
+        // by a sibling GtkFixed window. Child native items are not supported
+        // in this configuration.
+        widget = gtk_drawing_area_new();
+        renderWidget = widget;
 G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-        gtk_widget_set_double_buffered(renderWidget,FALSE);
+        gtk_widget_set_double_buffered(widget,FALSE);
 G_GNUC_END_IGNORE_DEPRECATIONS
-        gtk_widget_set_app_paintable(renderWidget,TRUE);
-        gtk_container_add(GTK_CONTAINER(widget),renderWidget);
-        g_signal_connect(renderWidget,"map",G_CALLBACK(onRenderWidgetMap),nullptr);
-        gtk_widget_show(renderWidget);
-        contentWidget = gtk_fixed_new();
-        gtk_widget_set_halign(contentWidget,GTK_ALIGN_FILL);
-        gtk_widget_set_valign(contentWidget,GTK_ALIGN_FILL);
-        gtk_overlay_add_overlay(GTK_OVERLAY(widget),contentWidget);
-        gtk_widget_show(contentWidget);
+        gtk_widget_set_app_paintable(widget,TRUE);
+        g_signal_connect(widget,"map",G_CALLBACK(onRenderWidgetMap),nullptr);
+        contentWidget = nullptr;
     }
     if(widget != nullptr){
         g_object_add_weak_pointer(G_OBJECT(widget),reinterpret_cast<gpointer *>(&widget));

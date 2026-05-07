@@ -386,8 +386,9 @@ public:
             auto vp = getEffectiveViewport();
             translateCoordsDefaultImpl(x,y,z,&vp,x_result,y_result,z_result);
         }
-        // Flip Y for Vulkan NDC (Y points top-to-bottom, opposite of Metal/D3D12)
-        *y_result = -*y_result;
+        // Y flip is now handled at the viewport level (negative-height
+        // viewport in GEVulkanCommandBuffer::setViewports), matching the
+        // Metal/D3D12 NDC mapping. No per-coord flip needed here.
     }
 
     std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams &params,

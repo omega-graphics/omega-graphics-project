@@ -1138,13 +1138,20 @@ _NAMESPACE_BEGIN_
     };
 
     void GEVulkanCommandBuffer::setViewports(std::vector<GEViewport> viewports){
+        // Negative-height viewport (Vulkan 1.1+ core) flips NDC Y so the
+        // rasterizer maps NDC y=+1 to framebuffer top, matching Metal/D3D12.
+        // This lets the platform-agnostic vertex math `(2y/h)-1` (used in
+        // Composition::emitSdfPrimitive and the TE rect tessellator) render
+        // upright on Vulkan without per-path software flips. All WTK
+        // pipelines use cullMode=None, so the implicit winding reversal
+        // from the flipped viewport is harmless.
         std::vector<VkViewport> vk_viewports;
         for(auto & v : viewports){
             VkViewport viewport {};
             viewport.x = v.x;
-            viewport.y = v.y;
+            viewport.y = v.y + v.height;
             viewport.width = v.width;
-            viewport.height = v.height;
+            viewport.height = -v.height;
             viewport.minDepth = v.nearDepth;
             viewport.maxDepth = v.farDepth;
             vk_viewports.push_back(viewport);

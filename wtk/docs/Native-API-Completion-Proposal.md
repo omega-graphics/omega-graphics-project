@@ -27,7 +27,7 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 | 2.6 NativeClipboard | New subsystem | Not started |
 | 2.7 NativeDragDrop | New subsystem | Not started |
 | 2.8 NativeDialog | Alert dialog, file filters | Not started |
-| 2.9 NativeScreen | New subsystem | Not started |
+| 2.9 NativeScreen | New subsystem; owns AppWindow → screen targeting (replaces GTK's interim primary-monitor anchoring) | Not started |
 | 2.10 NativeAccessibility | New subsystem (stub) | Not started |
 
 ---
@@ -444,22 +444,79 @@ struct Descriptor {
 
 ### 2.9 NativeScreen (New)
 
-**Goal:** Enumerate connected displays and query their properties.
+**Goal:** Enumerate connected displays, query their properties, and pick which screen a new `AppWindow` opens on.
 
 New header `NativeScreen.h`:
 
 ```cpp
 struct NativeScreenDesc {
     unsigned id = 0;
-    Composition::Rect frame;
-    Composition::Rect visibleFrame;
-    float scaleFactor = 1.f;
+    Composition::Rect frame;            // Virtual-screen coordinates (DIPs)
+    Composition::Rect visibleFrame;     // frame minus menu bars / docks / panels
+    float scaleFactor = 1.f;            // Combined logical→physical (matches NativeWindow::scaleFactor())
     bool isPrimary = false;
 };
 
 OMEGAWTK_EXPORT OmegaCommon::Vector<NativeScreenDesc> enumerateScreens();
 OMEGAWTK_EXPORT NativeScreenDesc primaryScreen();
+
+// Resolve a screen by id; returns primaryScreen() when id is unknown so
+// callers always have a valid target.
+OMEGAWTK_EXPORT NativeScreenDesc screenById(unsigned id);
 ```
+
+#### Placement contract for `AppWindow` / `AppWindowManager`
+
+Without a screen contract, GTK currently lets the WM pick — which on multi-monitor setups frequently lands the window on a secondary monitor with a different `scaleFactor` than the primary. That gives the wrong DPI at construction time and forces the visual tree to rebuild on the first `WindowScaleFactorChanged` event before the user has even seen the window.
+
+`NativeScreen` fixes this by making the target screen an explicit choice:
+
+```cpp
+class AppWindowManager {
+public:
+    // ... existing ...
+
+    // Default screen for newly-created AppWindows. Defaults to primaryScreen().
+    // AppWindow constructors that don't specify a screen explicitly resolve
+    // through this.
+    void setDefaultScreen(const NativeScreenDesc & screen);
+    NativeScreenDesc defaultScreen() const;
+};
+
+class AppWindow {
+public:
+    // Existing constructor: uses AppWindowManager::defaultScreen().
+    AppWindow(Composition::Rect rect, AppWindowDelegate * delegate);
+
+    // New: opt-in screen targeting. The `rect` is interpreted as
+    // screen-local DIPs; the window is placed at
+    // `screen.frame.origin + rect.pos`, sized `rect.{w,h}`.
+    AppWindow(Composition::Rect rect,
+              const NativeScreenDesc & screen,
+              AppWindowDelegate * delegate);
+
+    NativeScreenDesc currentScreen() const;   // Screen the window is on right now
+    void moveToScreen(const NativeScreenDesc & screen);
+};
+```
+
+Behavior contract:
+
+- **Rect is screen-local at construction.** The constructor adds the chosen screen's `frame.origin` to `rect.pos` before forwarding to the native layer. `setRect` / `getRect` continue using virtual-screen absolute coordinates (no behavior change there) — the screen-local interpretation is a one-shot at construction, matching what most app developers actually want.
+- **Initial scale comes from the chosen screen.** `NativeWindow::scaleFactor()` is seeded from `screen.scaleFactor` rather than from whatever monitor the WM happens to pick. This eliminates the "first frame at wrong DPI, then jump" sequence.
+- **Cross-screen moves still emit `WindowScaleFactorChanged`** (§2.2). `currentScreen()` re-resolves on every call from the native window's current position; `moveToScreen` is a convenience wrapper that calls `setRect` with the destination screen's origin.
+
+#### Per-platform implementation notes
+
+- **macOS** — `NSScreen.screens`. Primary is `[NSScreen mainScreen]`. `frame` is `[NSScreen frame]` in points; `visibleFrame` from `visibleFrame`. `scaleFactor` from `backingScaleFactor`. AppWindow construction sets `[window setFrame:display:]` with the screen-translated rect.
+- **Win32** — `EnumDisplayMonitors` + `GetMonitorInfo`. Primary is the monitor with `MONITORINFOF_PRIMARY`. `scaleFactor` from `GetDpiForMonitor(...) / 96.0`. `visibleFrame` from `rcWork`. AppWindow construction passes the screen-translated rect to `CreateWindowEx` / `SetWindowPos`.
+- **GTK / Linux** — `gdk_display_get_monitors` (or `gdk_display_get_n_monitors` + `gdk_display_get_monitor` in GTK3). Primary is `gdk_display_get_primary_monitor`. `frame`/`visibleFrame` from `gdk_monitor_get_geometry` / `gdk_monitor_get_workarea`. `scaleFactor` is the **combined** product `gdk_screen_get_resolution()/96 × gdk_monitor_get_scale_factor()` to match `GTKAppWindow::scaleFactor()` (see `DPI-Aware-Text-Plan.md`). AppWindow construction translates `rect.pos` by the monitor's `geometry.{x,y}`.
+
+#### Status — interim primary-monitor anchoring on GTK
+
+`GTKAppWindow` currently anchors construction-time placement to `gdk_display_get_primary_monitor()` directly: query the primary monitor, add its geometry origin to the constructor's `rect.pos`, and seed `integerScale_` from the primary monitor (rather than from the unrealized `gtk_widget_get_scale_factor`, which returns 1 before `show`). This is a stop-gap to keep mixed-DPI Linux setups usable until §2.9 lands.
+
+When `NativeScreen` and the `AppWindow` screen-targeting constructor arrive, the GTK ctor's hardcoded `queryPrimaryMonitor()` call is replaced by the screen passed through (or `AppWindowManager::defaultScreen()` if unspecified), and the same logic applies uniformly to macOS and Win32.
 
 ---
 
@@ -523,79 +580,7 @@ Implemented across all three platforms. See `NativeMenu.h`, `Menu.h`/`.cpp`, `Co
 
 ---
 
-## 3. Linux Backend Direction — Migrating off GTK
-
-> **Important context.** The current GTK backend creates a `GtkDrawingArea`
-> with a native `GdkWindow` and binds Vulkan to that child X11 XID. The
-> swapchain is created successfully and `vkQueuePresentKHR` returns
-> `VK_SUCCESS`, but Vulkan-rendered content never becomes visible: GTK's
-> GSK/Cairo render cycle owns the X11 windows GTK created and overdraws or
-> clips them on its own schedule. **GTK does not support direct Vulkan
-> rendering into child windows.** The two officially supported integration
-> paths are (a) render Vulkan into an offscreen image and upload it to a
-> `GdkTexture` each frame (GTK 3 + GTK 4), or (b) `GdkVulkanContext`,
-> available only in GTK 4. The codebase currently builds against GTK 3.
-
-### 3.1 Decision
-
-Rather than ship the offscreen-readback adapter as a long-term solution,
-we will own the Linux toplevel and use **SDL** as the platform-window
-abstraction. Key reasons:
-
-- Direct Vulkan presentation, no per-frame GPU↔CPU readback.
-- Symmetric architecture across all three platforms — `NSWindow` on
-  macOS, `HWND` on Win32, `SDL_Window` on Linux — each binding a
-  Vulkan swapchain to a real, app-owned toplevel.
-- One reference implementation for X11 + Wayland + input + clipboard
-  + DnD + IME, rather than building each protocol stack from scratch.
-- `SDL_Vulkan_CreateSurface` returns a `VkSurfaceKHR` from any backing
-  platform, so the GTE Vulkan surface creation path collapses to a
-  single SDL call on Linux.
-
-The proposal already moves toward virtualizing per-View OS features
-(focus, cursor, tooltip, accessibility — §2.3a, §2.10). Owning the
-toplevel extends that posture to the window itself: menus on Linux and
-Win32 also become virtual (§2.12 already complete on the native paths;
-the Linux path will move to virtual rendering atop SDL).
-
-### 3.2 Phasing summary
-
-End-to-end plan in `SDL-Linux-Backend-Plan.md`. At a glance:
-
-- **L1** — minimal "hello window" via SDL on X11; GTE consumes
-  `SDL_Vulkan_CreateSurface`; `SVGViewRenderTest` renders visibly.
-- **L2** — full §2.2 NativeWindow parity on the SDL backend.
-- **L3** — virtualized menus on Linux (renders via `WidgetTreeHost`).
-- **L4** — clipboard, drag-and-drop, file dialogs (xdg-desktop-portal).
-- **L5** — IME (`SDL_StartTextInput` + virtual focus).
-- **L6** — Wayland support (SDL handles the protocol; GTE picks up
-  `wp_fractional_scale_v1` events through SDL display events).
-- **L7** — retire `wtk/src/Native/gtk/`, drop the `TARGET_GTK`
-  CMake flag.
-
-X11 lands first; Wayland follows once X11 is solid.
-
-### 3.3 Status of the existing GTK code
-
-The GTK backend remains in the tree but will not produce visible
-content under Vulkan. New Linux-side work targets the SDL backend per
-the migration plan; existing GTK files are deleted at L7.
-
-### 3.4 Subsystem ownership under the SDL plan
-
-| Subsystem | macOS | Win32 | Linux (SDL) | Priority |
-|-----------|-------|-------|-------------|----------|
-| NativeDialog (FS + Alert) | Exists | Exists | xdg-desktop-portal — L4 | P1 |
-| NativeTheme | Exists | Exists | XSettings / portal `Settings` — L4 | P1 |
-| NativeClipboard | New | New | `SDL_GetClipboardText` — L4 | P1 |
-| NativeDragDrop | New | New | SDL drop events + portal — L4 | P2 |
-| NativeTimer | New | New | `SDL_AddTimer` — L1 | P1 |
-| NativeScreen | New | New | `SDL_GetDisplays` — L2 | P2 |
-| NativeAccessibility | New | New | AT-SPI bridge — L5+ | P3 |
-
----
-
-## 4. Implementation Priority
+## 3. Implementation Priority
 
 | Priority | Feature | Rationale |
 |----------|---------|-----------|
@@ -607,14 +592,14 @@ the migration plan; existing GTK files are deleted at L7.
 | **P1** | 2.6 NativeClipboard | Copy/paste is fundamental UX |
 | **P1** | 2.8 NativeDialog (alert dialog, file filters) | Common user-facing pattern |
 | **P2** | 2.7 NativeDragDrop | Important for content apps, less critical initially |
-| **P2** | 2.9 NativeScreen | Multi-monitor support |
+| **P1** | 2.9 NativeScreen | Multi-monitor support — also the proper home for AppWindow screen targeting; replaces the interim GTK primary-monitor anchoring |
 | ~~P1~~ **Done** | 2.11 NativeNote / NotificationCenter | Implemented |
 | ~~P1~~ **Done** | 2.12 NativeMenu / Menu | Implemented |
 | **P3** | 2.10 NativeAccessibility | Stub now, implement per-platform over time |
 
 ---
 
-## 5. File Change Summary
+## 4. File Change Summary
 
 ### New headers (`wtk/include/omegaWTK/Native/`)
 - `NativeTimer.h`
@@ -632,6 +617,8 @@ the migration plan; existing GTK files are deleted at L7.
 - `View.h` (UI) — `setFocusable`/`isFocusable`/`isFocused`/`focus`/`blur`, `setCursorShape`/`cursorShape`
 - `Widget.h` (UI) — `setTooltip`/`clearTooltip`
 - `WidgetTreeHost` (UI, internal) — owns `FocusManager` and tooltip-hover timer; routes keyboard events to focused View; commits hovered View's cursor shape to the root NativeWindow
+- `AppWindow.h` / `AppWindow.cpp` (UI) — screen-targeting constructor overload (`AppWindow(rect, NativeScreenDesc, delegate)`), `currentScreen()`, `moveToScreen()`; existing constructor resolves through `AppWindowManager::defaultScreen()`
+- `AppWindowManager` (UI) — `setDefaultScreen` / `defaultScreen` for app-wide default targeting
 
 ### Already modified (done)
 - `NativeEvent.h` — complete ✅
@@ -648,12 +635,6 @@ Each backend needs:
 - DragDrop implementation
 - Screen enumeration
 
-The Linux backend is being rewritten on top of SDL — see
-`SDL-Linux-Backend-Plan.md`. New Linux work lives under
-`wtk/src/Native/sdl/` (eventually replacing `wtk/src/Native/gtk/`).
-The GTK backend remains in the tree until Phase L7 retires it but
-should not be extended with new functionality.
-
 ### Cross-platform dispatchers (`wtk/src/Native/`)
 - `NativeTimer.cpp`
 - `NativeClipboard.cpp`
@@ -663,12 +644,10 @@ should not be extended with new functionality.
 
 ---
 
-## 6. References
+## 5. References
 
 - Current headers: `wtk/include/omegaWTK/Native/`
 - macOS backend: `wtk/src/Native/macos/`
 - Win32 backend: `wtk/src/Native/win/`
-- GTK backend (deprecated, retired in Phase L7): `wtk/src/Native/gtk/`
-- SDL backend (new — see `SDL-Linux-Backend-Plan.md`): `wtk/src/Native/sdl/`
+- GTK backend: `wtk/src/Native/gtk/`
 - UI layer consumers: `wtk/include/omegaWTK/UI/` (View.h, Widget.h, AppWindow.h, Menu.h, Notification.h)
-- SDL migration plan: `wtk/docs/SDL-Linux-Backend-Plan.md`

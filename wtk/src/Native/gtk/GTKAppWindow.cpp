@@ -63,12 +63,104 @@ class GTKAppWindow : public NativeWindow {
     GtkWidget *windowRootBox = nullptr;
     GtkWidget *menuWidget = nullptr;
     guint resizeFinishDebounceSource = 0;
+    gulong xftDpiHandler_ = 0;
     bool isFullscreen_ = false;
     bool resizable_ = true;
     float minW_ = 0.f, minH_ = 0.f;
     float maxW_ = 0.f, maxH_ = 0.f;
+    // dpiScale_ captures the resolution component (Xft.dpi / GDK_DPI_SCALE /
+    // GNOME text-scaling-factor) — the part GTK does NOT auto-apply to window
+    // geometry. integerScale_ is the GDK device scale that GTK *does* apply
+    // internally to surface allocation. The public scaleFactor() returns the
+    // combined product so callers see the same logical→physical ratio that
+    // Win32 / macOS report. Geometry conversions at the GTK boundary use
+    // dpiScale_ alone to avoid double-applying integerScale_.
+    float dpiScale_ = 1.f;
+    int integerScale_ = 1;
     float currentScale_ = 1.f;
     CursorShape currentCursorShape_ = CursorShape::Arrow;
+
+    struct PrimaryMonitorPlacement {
+        int x = 0;
+        int y = 0;
+        int integerScale = 1;
+        bool valid = false;
+    };
+
+    static PrimaryMonitorPlacement queryPrimaryMonitor(){
+        PrimaryMonitorPlacement out;
+        GdkDisplay *display = gdk_display_get_default();
+        if(display == nullptr){
+            return out;
+        }
+        GdkMonitor *monitor = gdk_display_get_primary_monitor(display);
+        if(monitor == nullptr){
+            monitor = gdk_display_get_monitor(display, 0);
+        }
+        if(monitor == nullptr){
+            return out;
+        }
+        GdkRectangle geom{};
+        gdk_monitor_get_geometry(monitor, &geom);
+        out.x = geom.x;
+        out.y = geom.y;
+        gint s = gdk_monitor_get_scale_factor(monitor);
+        out.integerScale = (s < 1) ? 1 : (int)s;
+        out.valid = true;
+        return out;
+    }
+
+    static float computeDpiScale(){
+        GdkDisplay *display = gdk_display_get_default();
+        if(display == nullptr){
+            return 1.f;
+        }
+        GdkScreen *screen = gdk_display_get_default_screen(display);
+        if(screen == nullptr){
+            return 1.f;
+        }
+        gdouble dpi = gdk_screen_get_resolution(screen);
+        if(dpi <= 0.0 || !std::isfinite(dpi)){
+            return 1.f;
+        }
+        float scale = (float)(dpi / 96.0);
+        if(scale < 0.5f){
+            scale = 0.5f;
+        }
+        return scale;
+    }
+
+    int computeIntegerScale() const {
+        if(window == nullptr){
+            return 1;
+        }
+        gint s = gtk_widget_get_scale_factor(GTK_WIDGET(window));
+        return s < 1 ? 1 : (int)s;
+    }
+
+    float toGtkLogical(float dip) const {
+        return dip * dpiScale_;
+    }
+
+    float fromGtkLogical(float logical) const {
+        if(dpiScale_ <= 0.f){
+            return logical;
+        }
+        return logical / dpiScale_;
+    }
+
+    void recomputeScale(){
+        float oldCombined = currentScale_;
+        dpiScale_ = computeDpiScale();
+        integerScale_ = computeIntegerScale();
+        float newCombined = dpiScale_ * (float)integerScale_;
+        if(newCombined == oldCombined){
+            return;
+        }
+        currentScale_ = newCombined;
+        auto *params = new Native::WindowScaleFactorChangedParams{oldCombined, newCombined, {}};
+        emitEvent(NativeEvent::WindowScaleFactorChanged, params);
+    }
 
     void emitEvent(NativeEvent::EventType type,NativeEventParams params){
         if(!hasEventEmitter()){
@@ -117,10 +209,13 @@ class GTKAppWindow : public NativeWindow {
         if(configure == nullptr){
             return FALSE;
         }
+        // configure->width/height are in GTK logical pixels (post integer
+        // scale). Convert to DIPs so the Composition layer sees the same
+        // contract as Win32 / macOS.
         Composition::Rect resizeRect{
             Composition::Point2D{0.f,0.f},
-            static_cast<float>(configure->width),
-            static_cast<float>(configure->height)
+            self->fromGtkLogical(static_cast<float>(configure->width)),
+            self->fromGtkLogical(static_cast<float>(configure->height))
         };
         self->rect = sanitizeRect(resizeRect,self->rect);
         if(self->rootView != nullptr){
@@ -129,6 +224,13 @@ class GTKAppWindow : public NativeWindow {
         self->emitEvent(NativeEvent::WindowWillResize,new Native::WindowWillResize(self->rect));
         self->queueResizeFinishedEvent();
         return FALSE;
+    }
+
+    static void onXftDpiChanged(GObject *gobject,GParamSpec *pspec,gpointer data){
+        (void)gobject;
+        (void)pspec;
+        auto *self = static_cast<GTKAppWindow *>(data);
+        self->recomputeScale();
     }
 
     static gboolean onWindowState(GtkWidget *widget,GdkEvent *event,gpointer data){
@@ -149,14 +251,7 @@ class GTKAppWindow : public NativeWindow {
         if(self->window == nullptr){
             return;
         }
-        float oldScale = self->currentScale_;
-        float newScale = (float)gtk_widget_get_scale_factor(GTK_WIDGET(self->window));
-        if(newScale == oldScale){
-            return;
-        }
-        self->currentScale_ = newScale;
-        auto *params = new Native::WindowScaleFactorChangedParams{oldScale, newScale, {}};
-        self->emitEvent(NativeEvent::WindowScaleFactorChanged, params);
+        self->recomputeScale();
     }
 
 public:
@@ -178,15 +273,39 @@ public:
         }
         if(window != nullptr){
             g_object_add_weak_pointer(G_OBJECT(window),reinterpret_cast<gpointer *>(&window));
-            gtk_window_set_default_size(GTK_WINDOW(window),(gint)this->rect.w,(gint)this->rect.h);
-            gtk_window_move(GTK_WINDOW(window),(gint)this->rect.pos.x,(gint)this->rect.pos.y);
+            // Anchor initial placement to the primary monitor so a default
+            // rect at {0,0} doesn't land on whichever monitor the WM picks
+            // (often the secondary, which on a mixed-DPI setup carries the
+            // wrong scale at construction time). Pull the integer scale from
+            // that same monitor — gtk_widget_get_scale_factor on an
+            // unrealized window returns 1, and we'd otherwise cache a stale
+            // value until the first notify::scale-factor fires.
+            PrimaryMonitorPlacement primary = queryPrimaryMonitor();
+            dpiScale_ = computeDpiScale();
+            integerScale_ = primary.valid ? primary.integerScale : computeIntegerScale();
+            currentScale_ = dpiScale_ * (float)integerScale_;
+            gtk_window_set_default_size(GTK_WINDOW(window),
+                (gint)toGtkLogical(this->rect.w),
+                (gint)toGtkLogical(this->rect.h));
+            gtk_window_move(GTK_WINDOW(window),
+                primary.x + (gint)toGtkLogical(this->rect.pos.x),
+                primary.y + (gint)toGtkLogical(this->rect.pos.y));
             windowRootBox = gtk_box_new(GTK_ORIENTATION_VERTICAL,0);
             gtk_container_add(GTK_CONTAINER(window),windowRootBox);
             g_signal_connect(window,"delete-event",G_CALLBACK(onDeleteEvent),this);
             g_signal_connect(window,"configure-event",G_CALLBACK(onConfigureEvent),this);
             g_signal_connect(window,"window-state-event",G_CALLBACK(onWindowState),this);
             g_signal_connect(window,"notify::scale-factor",G_CALLBACK(onScaleFactorChanged),this);
-            currentScale_ = (float)gtk_widget_get_scale_factor(GTK_WIDGET(window));
+            // Catch desktop-DPI changes (Xft.dpi, GNOME text-scaling-factor)
+            // at runtime. GtkSettings holds gtk-xft-dpi globally; gdk_screen
+            // resolution is derived from it.
+            GtkSettings *settings = gtk_settings_get_default();
+            if(settings != nullptr){
+                xftDpiHandler_ = g_signal_connect(settings,
+                    "notify::gtk-xft-dpi",
+                    G_CALLBACK(onXftDpiChanged),
+                    this);
+            }
         }
 
         auto nativeRootView = Native::make_native_item(this->rect,Native::Default,nullptr);
@@ -326,21 +445,32 @@ public:
         gint x = 0, y = 0, w = 0, h = 0;
         gtk_window_get_position(GTK_WINDOW(window), &x, &y);
         gtk_window_get_size(GTK_WINDOW(window), &w, &h);
-        return Composition::Rect{Composition::Point2D{(float)x,(float)y},(float)w,(float)h};
+        // gtk_window_get_size returns GTK logical pixels; convert to DIPs.
+        return Composition::Rect{
+            Composition::Point2D{fromGtkLogical((float)x),fromGtkLogical((float)y)},
+            fromGtkLogical((float)w),
+            fromGtkLogical((float)h)
+        };
     }
     void setRect(const Composition::Rect & r) override {
         rect = r;
         if(window == nullptr){
             return;
         }
-        gtk_window_move(GTK_WINDOW(window), (gint)r.pos.x, (gint)r.pos.y);
-        gtk_window_resize(GTK_WINDOW(window), std::max(1,(gint)r.w), std::max(1,(gint)r.h));
+        gtk_window_move(GTK_WINDOW(window),
+            (gint)toGtkLogical(r.pos.x),
+            (gint)toGtkLogical(r.pos.y));
+        gtk_window_resize(GTK_WINDOW(window),
+            std::max(1,(gint)toGtkLogical(r.w)),
+            std::max(1,(gint)toGtkLogical(r.h)));
     }
     float scaleFactor() const override {
-        if(window == nullptr){
-            return currentScale_;
-        }
-        return (float)gtk_widget_get_scale_factor(GTK_WIDGET(window));
+        // Combined scale: dpiScale (Xft.dpi / 96, the part GTK does not
+        // auto-apply) × integerScale (gtk_widget_get_scale_factor, the part
+        // GTK does auto-apply to surface allocation). Mirrors the
+        // logical→physical ratio that Win32 GetDpiForWindow/96 and macOS
+        // backingScaleFactor return on their respective platforms.
+        return currentScale_;
     }
     void setMinSize(float w, float h) override {
         minW_ = w; minH_ = h;
@@ -348,11 +478,11 @@ public:
             return;
         }
         GdkGeometry g {};
-        g.min_width = (gint)w;
-        g.min_height = (gint)h;
+        g.min_width = (gint)toGtkLogical(w);
+        g.min_height = (gint)toGtkLogical(h);
         if(maxW_ > 0.f && maxH_ > 0.f){
-            g.max_width = (gint)maxW_;
-            g.max_height = (gint)maxH_;
+            g.max_width = (gint)toGtkLogical(maxW_);
+            g.max_height = (gint)toGtkLogical(maxH_);
             gtk_window_set_geometry_hints(GTK_WINDOW(window), nullptr, &g,
                 (GdkWindowHints)(GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE));
         } else {
@@ -365,11 +495,11 @@ public:
             return;
         }
         GdkGeometry g {};
-        g.max_width = (gint)w;
-        g.max_height = (gint)h;
+        g.max_width = (gint)toGtkLogical(w);
+        g.max_height = (gint)toGtkLogical(h);
         if(minW_ > 0.f && minH_ > 0.f){
-            g.min_width = (gint)minW_;
-            g.min_height = (gint)minH_;
+            g.min_width = (gint)toGtkLogical(minW_);
+            g.min_height = (gint)toGtkLogical(minH_);
             gtk_window_set_geometry_hints(GTK_WINDOW(window), nullptr, &g,
                 (GdkWindowHints)(GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE));
         } else {
@@ -439,6 +569,13 @@ public:
         if(resizeFinishDebounceSource != 0){
             g_source_remove(resizeFinishDebounceSource);
             resizeFinishDebounceSource = 0;
+        }
+        if(xftDpiHandler_ != 0){
+            GtkSettings *settings = gtk_settings_get_default();
+            if(settings != nullptr){
+                g_signal_handler_disconnect(settings, xftDpiHandler_);
+            }
+            xftDpiHandler_ = 0;
         }
         if(window != nullptr){
             g_object_remove_weak_pointer(G_OBJECT(window),reinterpret_cast<gpointer *>(&window));

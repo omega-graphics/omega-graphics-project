@@ -95,7 +95,7 @@ Backend TextRect implementation
   `NSWindow::backingScaleFactor` directly; the macOS `AppWindow` implementation of
   `scaleFactor()` wraps `backingScaleFactor` internally.
 
-### HarfBuzz / FreeType / Vulkan (Linux) — **TODO**
+### HarfBuzz / FreeType / Vulkan (Linux) — **PARTIAL**
 
 `wtk/src/Composition/backend/vk/HarfbuzzFontEngine.cpp`:
 
@@ -106,11 +106,71 @@ Backend TextRect implementation
     (typically `72 * scale` DPI when char size is in 1/64 points, leaving
     `FontDescriptor::size` interpreted as DIPs).
   - Apply scale when blitting the rasterized atlas into the offscreen texture.
-- Source the scale via `NativeWindow::scaleFactor()` (§2.2); the GTK/Vulkan
-  `AppWindow` implementation is responsible for reading the Wayland
-  (`wl_output` scale or `wp_fractional_scale_v1`) or X11 (`Xft.dpi` / XRandr)
-  value and returning it from `scaleFactor()`. The Vulkan visual tree calls
-  `nativeWindow->scaleFactor()` and passes the result to `view->setRenderScale()`.
+
+**Done so far:** `GTKAppWindow::scaleFactor()` now returns a combined value —
+`dpiScale × integerScale`, where `dpiScale = gdk_screen_get_resolution() / 96`
+and `integerScale = gtk_widget_get_scale_factor()`. `Composition::Rect` is in
+DIPs at the public boundary; `gtk_window_set_default_size`, `setRect`,
+`getRect`, configure-event width/height, and geometry hints are all converted
+through `dpiScale_` only (GTK applies `integerScale_` itself when allocating
+the surface, so multiplying it again would double-apply). Runtime DPI changes
+re-emit `WindowScaleFactorChanged` via the `gtk-xft-dpi` settings notify.
+
+`HarfbuzzFontEngine.cpp::getScreenScaleFactor()` was updated to compute the
+same combined formula so glyph rasterization matches window sizing today.
+This is a stop-gap — see "Eventual scale source" below.
+
+**Still pending:**
+
+- `HarfBuzzTextRect` honoring `renderScale` instead of calling
+  `getScreenScaleFactor()` from `drawRun`. Gated on the visual-tree wiring
+  below; switching now would silently regress to 1.0× because the
+  `renderScale` parameter is currently never populated on Linux.
+- `VKLayerTree::Create` (or the per-window setup it delegates to) needs to
+  call `view->setRenderScale(nativeWindow->scaleFactor())` — the same hook
+  `DCVisualTree.cpp:52` already performs on Win32. Without this, every Linux
+  `Canvas::drawText` reads `View::getRenderScale() == 1.0` regardless of what
+  the native window reports, and the `renderScale` parameter to
+  `TextRect::Create` is dead.
+- FreeType resolution / Pango font-size scaling and offscreen surface sizing
+  inside `HarfBuzzTextRect` need to switch from `getScreenScaleFactor()` to
+  the constructor-passed `renderScale` once the previous two items land.
+
+### Eventual scale source for Linux text (architectural note)
+
+`HarfbuzzFontEngine.cpp` should not be a *source* of scale. The single source
+of truth is `NativeWindow::scaleFactor()`, owned by the native window. The
+flow into the font engine is:
+
+```
+NativeWindow::scaleFactor()
+   │  (GTKAppWindow combined dpiScale × integerScale)
+   ▼
+Visual tree constructor (VKLayerTree / VKFallbackVisualTree)
+   │  view->setRenderScale(nativeWindow->scaleFactor())
+   ▼
+ViewRenderTarget::renderScale_   ◄── per-window, mutated on
+   │                                  WindowScaleFactorChanged
+   ▼
+View::getRenderScale()
+   │
+   ▼
+Canvas::drawText reads ownerView_->getRenderScale()
+   │
+   ▼
+TextRect::Create(rect, layoutDesc, renderScale)
+   │
+   ▼
+HarfBuzzTextRect uses the constructor-passed scale — no GDK calls, no
+static helpers, no second source of truth.
+```
+
+In other words: the **Compositor** (Canvas, ViewRenderTarget) carries the
+scale that originated at the **NativeWindow**, and the FontEngine just reads
+what it's handed. The current static `getScreenScaleFactor()` in
+HarfbuzzFontEngine is a temporary patch to keep glyph density consistent
+with `GTKAppWindow::scaleFactor()` until VKLayerTree wires the proper path
+through.
 
 ## Per-monitor DPI updates
 
@@ -189,9 +249,11 @@ the new monitor:
   windows of different scales. The render target is per-window, so this will
   Just Work for Views that are always attached to a single window.
 - Fractional scale factors below 1.0 (not a real configuration).
-- X11 `Xft.dpi` change-events. The Native API §2.2 implementation cuts the
+- ~~X11 `Xft.dpi` change-events. The Native API §2.2 implementation cuts the
   first GTK pass with integer `wl_output` / `notify::scale-factor` only;
-  X11 fractional / on-the-fly DPI changes via `XSettings` are deferred.
+  X11 fractional / on-the-fly DPI changes via `XSettings` are deferred.~~
+  Landed: `GTKAppWindow` now subscribes to `GtkSettings::notify::gtk-xft-dpi`
+  and re-emits `WindowScaleFactorChanged` when the combined value moves.
 
 ## Testing
 

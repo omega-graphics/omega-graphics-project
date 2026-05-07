@@ -8,22 +8,51 @@
 #include <cairo/cairo.h>
 #include <gdk/gdk.h>
 
+#include <cmath>
 #include <cstring>
 
 namespace OmegaWTK::Composition {
 
+    // Interim scale source — matches the formula GTKAppWindow::scaleFactor()
+    // returns: dpiScale (Xft.dpi / GNOME text-scaling-factor, derived via
+    // gdk_screen_get_resolution) × integerScale (GDK device scale).
+    //
+    // TODO: Per DPI-Aware-Text-Plan.md, this should be sourced from the
+    // Compositor (which reads it from the per-window NativeWindow::scaleFactor
+    // via View::getRenderScale → ViewRenderTarget::renderScale_). Doing so
+    // requires VKLayerTree to call view->setRenderScale(nativeWindow->
+    // scaleFactor()) at construction (mirroring DCVisualTree on Win32) and
+    // then HarfBuzzTextRect honoring the renderScale arg already passed to
+    // TextRect::Create. Until that wiring lands, we read GDK directly here so
+    // the value matches GTKAppWindow's window sizing.
     static double getScreenScaleFactor(){
         GdkDisplay *display = gdk_display_get_default();
-        if(display != nullptr){
-            GdkMonitor *monitor = gdk_display_get_primary_monitor(display);
-            if(monitor == nullptr){
-                monitor = gdk_display_get_monitor(display,0);
-            }
-            if(monitor != nullptr){
-                return (double)gdk_monitor_get_scale_factor(monitor);
+        if(display == nullptr){
+            return 1.0;
+        }
+        double dpiScale = 1.0;
+        GdkScreen *screen = gdk_display_get_default_screen(display);
+        if(screen != nullptr){
+            gdouble dpi = gdk_screen_get_resolution(screen);
+            if(dpi > 0.0 && std::isfinite(dpi)){
+                dpiScale = dpi / 96.0;
+                if(dpiScale < 0.5){
+                    dpiScale = 0.5;
+                }
             }
         }
-        return 1.0;
+        int integerScale = 1;
+        GdkMonitor *monitor = gdk_display_get_primary_monitor(display);
+        if(monitor == nullptr){
+            monitor = gdk_display_get_monitor(display,0);
+        }
+        if(monitor != nullptr){
+            integerScale = gdk_monitor_get_scale_factor(monitor);
+            if(integerScale < 1){
+                integerScale = 1;
+            }
+        }
+        return dpiScale * (double)integerScale;
     }
 
     static PangoAlignment toPangoAlignment(TextLayoutDescriptor::Alignment alignment){
