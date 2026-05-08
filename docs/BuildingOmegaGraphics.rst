@@ -54,7 +54,7 @@ Using `autom-clone`:
 
 This will fetch and sync all the dependencies within the entire project.
 
-On Linux there are a few dependencies you will need to fetch from apt-get before building.
+On Linux there are a few dependencies you will need to fetch via apt-get before building.
 GTK 3.0+
 Libnotify-dev
 

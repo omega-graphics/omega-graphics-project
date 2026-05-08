@@ -71,12 +71,9 @@ source at runtime using the ``OmegaSLCompiler`` class:
 
 .. code-block:: cpp
 
-    #include <OmegaGTE/OmegaSLCompiler.h>
+    #include <omegasl.h>
 
-    OmegaGTE::OmegaSLCompiler compiler;
-
-    // Pass the active GTEDevice so the compiler can target the right backend
-    compiler.setDevice(device);
+    auto compiler = OmegaSLCompiler::Create(device);
 
     // Compile from a string — second argument is a name used in error messages
     auto lib = compiler.compile(sourceString, "myshader.omegasl");

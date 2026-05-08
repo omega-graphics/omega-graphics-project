@@ -4,6 +4,7 @@
 #include "omegaWTK/Composition/Layer.h"
 #include "PathImpl.h"
 #include "omegaWTK/UI/View.h"
+#include "omegaWTK/Media/ImgCodec.h"
 
 #include <algorithm>
 #include <cassert>

@@ -25,3 +25,4 @@
     Use accurate, techincal language to describe the code details fully and correctly.
 - User Guides (Sphinx docs) and README's:
     Use long-form prose that is clear and can be understood by someone with little to no technical experience. (The guides should be easy to follow and be able to explain how the code works without getting too techincal.)
+    Be sure to double check actually code examples so that any written code samples are accurate to the real API.

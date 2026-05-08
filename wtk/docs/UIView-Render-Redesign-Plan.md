@@ -275,21 +275,40 @@ list — rather than a thing that owns rendering infrastructure.
    adds a new primitive (e.g. MSDF text run), the DisplayList gains
    the matching op.
 
-   **`DrawOp` retires `VisualCommand`.** The post-SDF `VisualCommand`
-   shape — one command per primitive, fill + border consolidated
-   into the same record, soft shadow as its own SDF command — is
-   exactly what `DrawOp` is. They are not two parallel formats with
-   a translation step between them: `DrawOp` *is* the new compositor
-   op type and `VisualCommand` is **deleted**. The two prior
-   producers of `VisualCommand` (per-view `Canvas` and `SVGView`'s
-   internal canvas) are both removed by Tier 3 / Tier 4 of this
-   plan, leaving `VisualCommand` with no upstream. The compositor
-   backend's `renderToTarget()` switch is rewritten to dispatch on
-   `DrawOp` directly. Backend rasterization code (the SDF pipeline,
-   the triangulator path, the bitmap blit, the text run) is
-   untouched — only the input type changes. `CanvasFrame` (the
-   per-view recorded list of `VisualCommand`s) is similarly retired
-   in favor of the per-window `DisplayList`.
+   **`DrawOp` retires `VisualCommand`, `CanvasFrame`, *and* `Canvas`.**
+   The post-SDF `VisualCommand` shape — one command per primitive,
+   fill + border consolidated into the same record, soft shadow as
+   its own SDF command — is exactly what `DrawOp` is. They are not
+   two parallel formats with a translation step between them:
+   `DrawOp` *is* the new compositor op type and `VisualCommand` is
+   **deleted**. The two prior producers of `VisualCommand` (per-view
+   `Canvas` and `SVGView`'s internal canvas) are both removed by
+   Tier 3 / Tier 4 of this plan, leaving `VisualCommand` with no
+   upstream. The compositor backend's `renderToTarget()` switch is
+   rewritten to dispatch on `DrawOp` directly. Backend rasterization
+   code (the SDF pipeline, the triangulator path, the bitmap blit,
+   the text run) is untouched — only the input type changes.
+   `CanvasFrame` (the per-view recorded list of `VisualCommand`s)
+   is similarly retired in favor of the per-window `DisplayList`.
+
+   **Canvas itself is deleted alongside them.** Reading the current
+   code (`wtk/src/Composition/Canvas.cpp`), every Canvas method —
+   `drawRect`, `drawRoundedRect`, `drawEllipse`, `drawPath`,
+   `drawImage`, `drawText`, `drawShadow`, `setElementTransform`,
+   `setElementOpacity` — is a thin
+   `current->currentVisuals.emplace_back(VisualCommand{...})`. Canvas
+   owns no GPU resources, no caches, no batching buffers; it is a
+   per-frame accumulator that resets in `nextFrame()`. The GPU
+   dispatch (`BackendRenderTargetContext::renderToTarget(VisualCommand::Type, void*)`)
+   never takes a Canvas — it reads command data directly out of
+   `CompositeFrame::WidgetSlice`. So Canvas's only role is "build
+   `VisualCommand` into `CanvasFrame`." Once both of those are
+   gone, Canvas has nothing to build. It is **deleted in Tier 4**.
+   The misleading framing in earlier drafts of this plan ("Canvas
+   survives as the low-level API the compositor backend exposes")
+   does not match the code: the backend's API surface is
+   `renderToTarget`, not Canvas. See §4 Tier 4 and §5 for the
+   sequenced deletion.
 
 4. **`FrameBuilder`** — replaces `UIView::update()` and the
    per-view composition session dance. One per window. Runs the three
@@ -331,7 +350,7 @@ list — rather than a thing that owns rendering infrastructure.
 | `ViewResizeCoordinator`                     | **Deleted.** Superseded by `LayoutManager`.       |
 | `localBoundsFromView` static map            | **Deleted.** Bounds live on the node.             |
 | `View::computeWindowOffset` parent walk     | **Deleted.** `FrameBuilder` threads a transform.  |
-| `Canvas` as a per-view paint device          | Kept **only** as the low-level API the compositor backend exposes; `DisplayList` replays into one Canvas per frame at flush time, not one per view. |
+| `Canvas` as a per-view paint device          | **Deleted in Tier 4** alongside `VisualCommand`/`CanvasFrame`. Canvas is a builder for those two types; once they go, it has nothing to build. The backend never consumed Canvas — `renderToTarget` reads command data directly. Tier 2 keeps Canvas as a transitional sink (DrawOp → `canvas->drawXxx` → VisualCommand) so the GPU path is unchanged during the transition; Tier 3 collapses N per-view canvases into one window-scoped instance; Tier 4 removes the translation layer and deletes the class. |
 | `VisualCommand` (per-element compositor op) | **Deleted.** `DrawOp` replaces it 1:1. Backend `renderToTarget()` switch dispatches on `DrawOp`. |
 | `CanvasFrame` (per-view list of `VisualCommand`s) | **Deleted.** `DisplayList` (one per window per frame) replaces it. |
 
@@ -465,8 +484,12 @@ element; the new one emits 1–2.
   force a frame, it calls `AppWindow::invalidate()`.
 - `View::startCompositionSession / endCompositionSession` — **removed**.
 - `View::makeLayer / makeCanvas` — **removed** from the public `View`
-  surface. The low-level `Canvas` still exists but only inside the
-  compositor backend as a draw-op replay target.
+  surface in Tier 3. The `Canvas` class itself is **deleted in Tier 4**
+  when `VisualCommand`/`CanvasFrame` retire. The compositor backend
+  never used Canvas as an API surface — `BackendRenderTargetContext::renderToTarget`
+  switches on the command type enum directly. Once that switch
+  dispatches on `DrawOp` instead of `VisualCommand`, Canvas's role as
+  a `VisualCommand` builder evaporates and the class goes away.
 
 Breaking? Yes. The only in-tree caller of `update()` is `UIView` tests
 and widget-tree hosts. Migration is a one-line replacement with
@@ -479,7 +502,7 @@ and widget-tree hosts. Migration is a one-line replacement with
 Four tiers, each independently shippable and each reducing surface
 area before the next.
 
-### Tier 1 — delete the per-view sync lane fragmentation
+### Tier 1 — delete the per-view sync lane fragmentation [DONE]
 
 - Remove `View::setSyncLaneRecurse` and the global atomic.
 - One sync lane per window, propagated from `AppWindow` once.
@@ -497,7 +520,10 @@ Risk: low. Files touched: `View.Core.cpp`, `AppWindow.cpp`,
 - `UIView::update()` changes internally: builds a local `DisplayList`
   instead of calling canvas directly, then replays into `rootCanvas`
   at the end. Same output, same bugs, but paint is now a pure
-  function of the model.
+  function of the model. The `DisplayList → Canvas → VisualCommand`
+  adapter is throwaway scaffolding — it exists so the GPU path
+  doesn't change in Tier 2, and disappears in Tier 4 when Canvas
+  itself is deleted.
 - Delete `localBoundsFromView` static map. Bounds come from
   `getRect()` + `LayerTree` rect directly, computed per call with no
   pointer-keyed cache. The stability logic was compensating for
@@ -511,8 +537,13 @@ new `Composition/DisplayList.{h,cpp}`.
 
 - `View::Impl::ownLayerTree` removed.
 - `AppWindow::Impl` owns one `LayerTree`.
-- `View::makeLayer` / `makeCanvas` become no-ops or route to the
-  window's layer tree. Deprecate in headers.
+- `View::makeLayer` / `makeCanvas` are removed from the public
+  `View` surface. `CanvasView` is deleted in this tier (per §9.1),
+  so there are no remaining public callers. Internally there is now
+  a single window-scoped `Canvas` instance that `FrameBuilder` uses
+  as the `DisplayList → VisualCommand` bridge. This bridge is the
+  last remaining role of `Canvas`, and it is removed in Tier 4 when
+  the class itself is deleted.
 - `FrameBuilder` appears for the first time, owned by `AppWindow`.
   It walks the `View` tree (still existing) and replays each view's
   `DisplayList` into one shared `Canvas` on the window's root layer.
@@ -536,6 +567,19 @@ resize/scroll/clip testing.
   reading `DirtyBits` at the root.
 - Animation state migrated out of `UIView::Impl` into
   `AnimationScheduler` (prereq: animation simplification plan).
+- `VisualCommand` and `CanvasFrame` deleted.
+  `BackendRenderTargetContext::renderToTarget` rewritten to dispatch on
+  `DrawOp` directly (mechanical case-label rename + field-access
+  touch-up; rasterization code unchanged).
+- **`Canvas` class deleted.** With `VisualCommand` and `CanvasFrame`
+  gone, Canvas's sole role (build `VisualCommand` into `CanvasFrame`)
+  is gone too. The window-scoped Canvas adapter from Tier 3 is
+  removed; the per-window `DisplayList` is consumed by `renderToTarget`
+  directly.
+- `CompositorClient::pushFrame(CanvasFrame, …)` deleted; replaced by a
+  `submitDisplayList(DisplayList&&, …)` (or equivalent) that goes
+  straight into `CompositeFrame::WidgetSlice` packing without the
+  Canvas-shaped intermediate.
 
 Risk: high; this is the API break. Ship after Tier 3 has been in main
 for at least two weeks of real use.
@@ -555,10 +599,14 @@ At the end of Tier 4:
 - `View.ResizeCoordinator.cpp` → gone
 - `ViewResizeCoordinator` class → gone
 - `localBoundsFromView` + static map → gone
-- `View::Impl::ownLayerTree`, per-view proxy, per-view canvas → gone
+- `View::Impl::ownLayerTree`, per-view proxy → gone
+- `Canvas` class itself (~500 LOC across `Canvas.h`/`Canvas.cpp`) → gone
+- `VisualCommand` + `VisualCommand::Data` union → gone (replaced by `DrawOp`)
+- `CanvasFrame` + `CanvasEffect` → gone (replaced by `DisplayList`)
+- `CompositorClient::pushFrame(CanvasFrame, …)` path → gone
 - Five overlapping dirty flags → one `DirtyBits`
 
-**Estimated deletion: ~1200 LOC. Estimated addition: ~600 LOC.**
+**Estimated deletion: ~1700 LOC. Estimated addition: ~700 LOC.**
 The net reduction is real because most of the current code is
 coordinating between systems that wouldn't exist in the new model.
 
@@ -588,7 +636,7 @@ codebase should override anything in §3:
    its own paint method. But this touches every widget subclass, so
    it should be its own follow-up plan, not rolled into this one.
 
-   ANSWER: Widget's are effecetively a light wrapper around View and can be removed.
+   ANSWER: Widget's are effecetively a light wrapper around View.
 
 3. **Layerization opt-in.** When does a `SceneNode` get its own
    composition layer (for scrolling, opacity animation, transforms)?
@@ -606,6 +654,8 @@ codebase should override anything in §3:
    dirty rects at the window). For slice-A this is fine — paint
    everything dirty or nothing. Region culling is a Tier-5 follow-up
    once the flat display list exists.
+
+   ANSWER: Tier 5.
 
 5. **Threading.** Chromium runs layout on one thread and compositing
    on another. OmegaWTK is currently single-threaded for paint. This
@@ -1120,6 +1170,8 @@ contract.
    2 (`destRect` + `hostId`), additive fields as the adoption plans
    need them.
 
+   NativeContent does need a z-order hint so it renders above the bottom layer.
+
 4. **`onLayoutResolved` signal scope.** The signal exists on every
    `View`, but only NativeViewHost subscribes today. Open question:
    does the signal also fire for transform changes (a parent
@@ -1131,6 +1183,8 @@ contract.
    is wasteful for the common case (no native embeds in the
    subtree).
 
+   Agreed.
+
 5. **Airspace and 2D-over-native overlays.** §9.4.1 accepts the
    airspace constraint (native draws on top of 2D within the host's
    rect). Some use cases (subtitle rendering, playback controls)
@@ -1140,6 +1194,9 @@ contract.
    composites above. Both are out of scope for this plan; flagged
    for the NativeViewHost adoption plan to decide per-platform.
 
+   Out of scope for plan, but we should provide NativeViewOverlay which can be drawn on by the compositor.
+   (We can use CALayerTree, VKLayerTree, and DCVisualTree to help layer all of this.)
+
 6. **`OmegaGTEView` direct present.** [OmegaGTEView-Proposal.md](OmegaGTEView-Proposal.md)
    and the NativeViewHost adoption plan together specify a
    direct-present mode where the 3D content is the *only* thing in
@@ -1148,6 +1205,8 @@ contract.
    compositor backend treats it the same way it treats VideoView's
    carve-out: clear the rect, let the native layer draw. No special
    case at the SceneNode level.
+
+   Yes. OmegaGTEView controls everything.
 
 ### 9.8 What this section did not address
 

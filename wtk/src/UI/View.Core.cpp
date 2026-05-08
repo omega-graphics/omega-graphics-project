@@ -2,7 +2,6 @@
 
 #include "omegaWTK/UI/Layout.h"
 
-#include <atomic>
 #include <iostream>
 #include <utility>
 
@@ -12,14 +11,6 @@
 #include "../Composition/backend/ResourceFactory.h"
 
 namespace OmegaWTK {
-
-namespace {
-
-// Per-view sync lane allocator. Each View gets its own lane so that
-// packets from independent Views don't block each other via lane admission.
-static std::atomic<uint64_t> g_viewSyncLaneSeed {1000};
-
-}
 
 Composition::CompositorClientProxy & View::compositorProxy(){
     return impl_->proxy;
@@ -263,15 +254,13 @@ void View::setFrontendRecurse(Composition::Compositor *frontend){
 }
 
 void View::setSyncLaneRecurse(uint64_t syncLaneId){
-    (void)syncLaneId;
-    // Each View gets its own sync lane so that per-view LayerTree isolation
-    // extends to the compositor's lane admission system. Packets from
-    // independent Views no longer block each other's budget/inFlight counters.
-    auto ownLaneId = g_viewSyncLaneSeed.fetch_add(1);
-    compositorProxy().setSyncLaneId(ownLaneId);
+    // Tier 1 (UIView-Render-Redesign-Plan §4): all Views in a window share
+    // one sync lane. WidgetTreeHost owns the lane; this method propagates
+    // it down the View subtree without re-allocation.
+    compositorProxy().setSyncLaneId(syncLaneId);
     for(auto *subView : impl_->subviews){
         if(subView != nullptr){
-            subView->setSyncLaneRecurse(ownLaneId);
+            subView->setSyncLaneRecurse(syncLaneId);
         }
     }
 }
