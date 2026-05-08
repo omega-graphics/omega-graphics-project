@@ -154,4 +154,13 @@ typedef int ASTType;
 
 #define SAMPLER_PROP_MAX_ANISOTROPY "max_anisotropy"
 
+// Texture Resource Properties
+//
+// `swizzle=<rgba|...>` re-routes a texture's channels at sample/read
+// time without rewriting memory. The four-character value uses
+// {r,g,b,a,0,1} (case-insensitive), validated in Sema. See
+// `gte/docs/texture-swizzle-proposal.md` and §3 of
+// `gte/docs/OmegaSL-Reference.md`.
+#define RESOURCE_PROP_SWIZZLE "swizzle"
+
 #endif

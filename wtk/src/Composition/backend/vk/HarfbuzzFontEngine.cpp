@@ -258,11 +258,19 @@ namespace OmegaWTK::Composition {
             desc.usage = OmegaGTE::GETexture::ToGPU;
             desc.storage_opts = OmegaGTE::Shared;
             desc.pixelFormat = OmegaGTE::TexturePixelFormat::BGRA8Unorm;
+            // desc.defaultSwizzle = OmegaGTE::TextureSwizzle::swapRB();
             desc.type = OmegaGTE::GETexture::Texture2D;
             desc.width = (unsigned)pixelWidth;
             desc.height = (unsigned)pixelHeight;
 
             auto texture = gte.graphicsEngine->makeTexture(desc);
+            if(texture == nullptr){
+                // Surface a recognizable failure to the caller rather than
+                // segfaulting on the upcoming `copyBytes` virtual dispatch.
+                // The underlying error has already been logged by the GTE
+                // backend; we just propagate the empty BitmapRes.
+                return res;
+            }
             texture->copyBytes(pixelData, bytesPerRow);
 
             res.s = texture;

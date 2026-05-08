@@ -190,6 +190,47 @@ size_t GED3D12Texture::getBytes(void *bytes, size_t bytesPerRow) {
         return false;
     }
 
+ID3D12DescriptorHeap *GED3D12Texture::getOrCreateSwizzledSrvHeap(ID3D12Device *device,
+                                                                  const TextureSwizzle & swizzle){
+    if(swizzle.isIdentity() || !hasPrimarySrvDesc) return srvDescHeap.Get();
+    for(auto & entry : swizzledSrvCache){
+        if(entry.first == swizzle) return entry.second.Get();
+    }
+
+    auto encodeSwizzle = [](TextureSwizzleChannel ch, unsigned positional) -> unsigned {
+        switch(ch){
+            case TextureSwizzleChannel::Identity: return positional;
+            case TextureSwizzleChannel::Red:      return D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0;
+            case TextureSwizzleChannel::Green:    return D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1;
+            case TextureSwizzleChannel::Blue:     return D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2;
+            case TextureSwizzleChannel::Alpha:    return D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3;
+            case TextureSwizzleChannel::Zero:     return D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0;
+            case TextureSwizzleChannel::One:      return D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_1;
+        }
+        return positional;
+    };
+
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heapDesc.NumDescriptors = 1;
+    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    ComPtr<ID3D12DescriptorHeap> newHeap;
+    if(FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&newHeap)))){
+        return srvDescHeap.Get();
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC swizzledDesc = primarySrvDesc;
+    swizzledDesc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(
+        encodeSwizzle(swizzle.r, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0),
+        encodeSwizzle(swizzle.g, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1),
+        encodeSwizzle(swizzle.b, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2),
+        encodeSwizzle(swizzle.a, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3));
+
+    device->CreateShaderResourceView(resource.Get(), &swizzledDesc, newHeap->GetCPUDescriptorHandleForHeapStart());
+    swizzledSrvCache.push_back({swizzle, newHeap});
+    return newHeap.Get();
+}
+
 GED3D12Texture::~GED3D12Texture(){
     ResourceTracking::Tracker::instance().emit(
             ResourceTracking::EventType::Destroy,

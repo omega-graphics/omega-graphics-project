@@ -270,6 +270,34 @@ texture2d diffuseMap : 1;
 sampler2d mySampler : 2;
 ```
 
+#### Texture swizzle (`swizzle=`)
+
+A texture resource can carry an optional channel swizzle that re-routes
+its components at sample / read time. The swizzle is applied at the
+view / descriptor level by the runtime — the shader source is unchanged
+and there is no per-call cost.
+
+```omegasl
+// Swap R and B channels — RGBA texture sampled as BGRA.
+texture2d frame : 0 (swizzle=bgra);
+
+// Broadcast a single-channel mask into all four components.
+texture2d shadow : 1 (swizzle=rrrr);
+
+// Force constants — green = 0, alpha = 1.
+texture2d normal : 2 (swizzle=r0g1);
+```
+
+The four-character value uses `r`, `g`, `b`, `a`, `0`, `1`
+(case-insensitive), in positional order. `rgba` is the identity and is
+silently normalized away. Applying `swizzle=` to a non-texture resource
+(buffer, sampler) is a compile error, as is applying it to a texture
+that the shader uses for write access — view-level swizzle is read-only
+on every backend (Vulkan, Metal, D3D12). Use a shader-side swizzle
+(`output.bgra = value.rgba;`) for write paths.
+
+See `gte/docs/texture-swizzle-proposal.md` for the runtime side.
+
 ### Static samplers
 
 Samplers can be declared with a static configuration using function-call syntax:

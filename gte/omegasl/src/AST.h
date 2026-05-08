@@ -185,6 +185,22 @@ namespace omegasl {
                 unsigned int maxAnisotropy = 16;
             };
             std::unique_ptr<StaticSamplerDesc> staticSamplerDesc;
+
+            /// Optional channel swizzle parsed from a `(swizzle=<rgba>)`
+            /// clause on a texture resource declaration. Encoding matches
+            /// `omegasl_texture_swizzle_desc` in omegasl.h:
+            /// `0 = Identity, 1 = R, 2 = G, 3 = B, 4 = A, 5 = Zero, 6 = One`.
+            /// Sema normalizes the identity swizzle (`rgba`) to `nullopt`
+            /// so the codegen path has a single "is swizzle present?"
+            /// check. Absent => the runtime treats the layout descriptor's
+            /// `swizzle_desc` as identity.
+            struct SwizzleDesc {
+                unsigned char r = 0;
+                unsigned char g = 0;
+                unsigned char b = 0;
+                unsigned char a = 0;
+            };
+            std::optional<SwizzleDesc> swizzleDesc;
         };
 
         struct AttributedFieldDecl {

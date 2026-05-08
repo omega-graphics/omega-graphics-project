@@ -2,6 +2,7 @@
 #include "omegaGTE/GETexture.h"
 #include "vulkan/vulkan_core.h"
 #include <cstdint>
+#include <utility>
 
 
 #ifndef OMEGAGTE_VULKAN_GEVULKANTEXTURE_H
@@ -21,6 +22,19 @@ public:
     TextureDescriptor descriptor;
 
     VkFormat format;
+
+    /// Lazily-created `VkImageView` instances for non-identity swizzles
+    /// requested at bind time. Keyed by the requested `TextureSwizzle`.
+    /// Linear scan is intentional — typical textures see 0–2 distinct
+    /// swizzles in their lifetime, and a vector avoids hashing
+    /// `TextureSwizzle`. All entries are destroyed alongside `img_view`
+    /// in `releaseNative()`.
+    OmegaCommon::Vector<std::pair<TextureSwizzle, VkImageView>> swizzledViewCache;
+
+    /// Resolve (or lazily create) a `VkImageView` for the given swizzle.
+    /// Identity returns `img_view` directly; any other value either hits
+    /// the per-texture cache or builds a new view with `VkComponentMapping`.
+    VkImageView getOrCreateSwizzledView(const TextureSwizzle & swizzle);
 
     VmaAllocationInfo alloc_info;
     VmaAllocation alloc;

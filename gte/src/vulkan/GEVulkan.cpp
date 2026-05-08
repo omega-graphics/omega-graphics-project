@@ -43,6 +43,41 @@ _NAMESPACE_BEGIN_
         }
     }
 
+    inline const char *vkResultToStr(VkResult r){
+        switch(r){
+            case VK_SUCCESS:                          return "VK_SUCCESS";
+            case VK_NOT_READY:                        return "VK_NOT_READY";
+            case VK_TIMEOUT:                          return "VK_TIMEOUT";
+            case VK_EVENT_SET:                        return "VK_EVENT_SET";
+            case VK_EVENT_RESET:                      return "VK_EVENT_RESET";
+            case VK_INCOMPLETE:                       return "VK_INCOMPLETE";
+            case VK_ERROR_OUT_OF_HOST_MEMORY:         return "VK_ERROR_OUT_OF_HOST_MEMORY";
+            case VK_ERROR_OUT_OF_DEVICE_MEMORY:       return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+            case VK_ERROR_INITIALIZATION_FAILED:      return "VK_ERROR_INITIALIZATION_FAILED";
+            case VK_ERROR_DEVICE_LOST:                return "VK_ERROR_DEVICE_LOST";
+            case VK_ERROR_MEMORY_MAP_FAILED:          return "VK_ERROR_MEMORY_MAP_FAILED";
+            case VK_ERROR_LAYER_NOT_PRESENT:          return "VK_ERROR_LAYER_NOT_PRESENT";
+            case VK_ERROR_EXTENSION_NOT_PRESENT:      return "VK_ERROR_EXTENSION_NOT_PRESENT";
+            case VK_ERROR_FEATURE_NOT_PRESENT:        return "VK_ERROR_FEATURE_NOT_PRESENT";
+            case VK_ERROR_INCOMPATIBLE_DRIVER:        return "VK_ERROR_INCOMPATIBLE_DRIVER";
+            case VK_ERROR_TOO_MANY_OBJECTS:           return "VK_ERROR_TOO_MANY_OBJECTS";
+            case VK_ERROR_FORMAT_NOT_SUPPORTED:       return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+            case VK_ERROR_FRAGMENTED_POOL:            return "VK_ERROR_FRAGMENTED_POOL";
+            case VK_ERROR_OUT_OF_POOL_MEMORY:         return "VK_ERROR_OUT_OF_POOL_MEMORY";
+            case VK_ERROR_INVALID_EXTERNAL_HANDLE:    return "VK_ERROR_INVALID_EXTERNAL_HANDLE";
+            case VK_ERROR_FRAGMENTATION:              return "VK_ERROR_FRAGMENTATION";
+            case VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS: return "VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS";
+            case VK_ERROR_SURFACE_LOST_KHR:           return "VK_ERROR_SURFACE_LOST_KHR";
+            case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR:   return "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR";
+            case VK_SUBOPTIMAL_KHR:                   return "VK_SUBOPTIMAL_KHR";
+            case VK_ERROR_OUT_OF_DATE_KHR:            return "VK_ERROR_OUT_OF_DATE_KHR";
+            case VK_ERROR_INCOMPATIBLE_DISPLAY_KHR:   return "VK_ERROR_INCOMPATIBLE_DISPLAY_KHR";
+            case VK_ERROR_VALIDATION_FAILED_EXT:      return "VK_ERROR_VALIDATION_FAILED_EXT";
+            case VK_ERROR_INVALID_SHADER_NV:          return "VK_ERROR_INVALID_SHADER_NV";
+            default:                                  return "VK_ERROR_<unknown>";
+        }
+    }
+
     VkInstance GEVulkanEngine::instance = nullptr;
 
     static VkDebugUtilsMessengerEXT g_debugMessenger = VK_NULL_HANDLE;
@@ -1392,6 +1427,11 @@ _NAMESPACE_BEGIN_
         image_desc.extent.depth = depth;
         image_desc.mipLevels = mipLevels;
         image_desc.arrayLayers = vkArrayLayers;
+        // Default tiling is OPTIMAL; the per-usage switch below overrides
+        // this to LINEAR for `ToGPU` / `FromGPU` so the image's allocation
+        // can be HOST_VISIBLE for direct `copyBytes` / `getBytes`. Other
+        // usages keep OPTIMAL — that's what device-local sampling /
+        // attachment / compute paths need on a discrete GPU.
         image_desc.tiling = VK_IMAGE_TILING_OPTIMAL;
         image_desc.samples = VK_SAMPLE_COUNT_1_BIT;
         switch (effectiveSampleCount) {
@@ -1428,49 +1468,99 @@ _NAMESPACE_BEGIN_
 
         switch (desc.usage) {
             case GETexture::GPUAccessOnly : {
-                usageFlags = VK_IMAGE_USAGE_TRANSFER_DST_BIT 
-                | VK_IMAGE_USAGE_TRANSFER_SRC_BIT 
-                | VK_IMAGE_USAGE_SAMPLED_BIT;
+                // GPU-only sampling + compute writes. D3D12 grants UAV
+                // here (`isUAV=true`) and Metal grants `ShaderWrite`; the
+                // missing STORAGE_BIT was a Vulkan parity bug — without it
+                // any compute-shader write through this texture would
+                // fail validation.
+                usageFlags = VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                | VK_IMAGE_USAGE_SAMPLED_BIT
+                | VK_IMAGE_USAGE_STORAGE_BIT;
                 memoryUsage = VMA_MEMORY_USAGE_GPU_ONLY;
                 layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
                 break;
             }
             case GETexture::ToGPU : {
-                usageFlags = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+                // CPU writes once at creation, GPU samples thereafter.
+                // LINEAR tiling is required so the allocation can be
+                // HOST_VISIBLE for direct vmaMapMemory in copyBytes —
+                // OPTIMAL + HOST_VISIBLE has no compatible memory type
+                // on discrete GPUs (NVIDIA / AMD), which is what causes
+                // the VK_ERROR_FEATURE_NOT_PRESENT (-8) at vmaCreateImage.
+                // Format compatibility is checked below via
+                // vkGetPhysicalDeviceFormatProperties; allocation falls
+                // through to a clear diagnostic if LINEAR doesn't support
+                // the requested format/usage. TRANSFER_DST is added so
+                // a future staging-buffer upload path can target this
+                // image without re-allocating.
+                usageFlags = VK_IMAGE_USAGE_SAMPLED_BIT
+                | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
                 memoryUsage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-        
+                image_desc.tiling = VK_IMAGE_TILING_LINEAR;
+
                 break;
             }
             case GETexture::FromGPU : {
-                usageFlags = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+                // GPU renders / samples into the image, CPU reads back.
+                // The previous flags were inverted: TRANSFER_DST writes
+                // *into* the image, but readback reads *from* it; STORAGE
+                // was overkill (no compute-write pattern uses this). Same
+                // LINEAR-tiling requirement as ToGPU so getBytes' direct
+                // mapMemory works on discrete GPUs.
+                usageFlags = VK_IMAGE_USAGE_SAMPLED_BIT
+                | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
                 memoryUsage = VMA_MEMORY_USAGE_GPU_TO_CPU;
-         
+                image_desc.tiling = VK_IMAGE_TILING_LINEAR;
+
                 break;
             }
             case GETexture::RenderTargetAndDepthStencil : {
+                // TODO(depth-formats): when `TexturePixelFormat` grows
+                // depth/stencil entries, branch the attachment usage on
+                // whether `desc.pixelFormat` is a color or depth format —
+                // a single VkImage cannot be both COLOR and
+                // DEPTH_STENCIL attachment. Until then every format
+                // resolved by `pixelFormatToVkFormat` is a color format,
+                // so DEPTH_STENCIL_ATTACHMENT_BIT was dead code that
+                // would fail validation the moment a depth format
+                // landed. Treat this case as a color render target for
+                // now; depth-target work will revisit.
                 usageFlags =
                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                 VK_IMAGE_USAGE_SAMPLED_BIT;
                 memoryUsage = VMA_MEMORY_USAGE_GPU_ONLY;
                 break;
             }
             case GETexture::RenderTarget : {
-                usageFlags = 
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | 
+                usageFlags =
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                 VK_IMAGE_USAGE_SAMPLED_BIT;
 
                 memoryUsage = VMA_MEMORY_USAGE_GPU_ONLY;
-                
+
                 break;
             }
             case GETexture::MSResolveSrc : {
-                usageFlags = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+                // A multisample-resolve source is a render target that
+                // gets resolved into a single-sample destination. The
+                // GPU rasterizes into it (COLOR_ATTACHMENT), the resolve
+                // copies out (TRANSFER_SRC), and shaders may sample the
+                // resolved image (SAMPLED). The previous flags
+                // (STORAGE | TRANSFER_SRC) didn't include
+                // COLOR_ATTACHMENT — there'd be nothing to resolve from.
+                // STORAGE is also unsupported on multisampled images by
+                // most drivers.
+                usageFlags = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                | VK_IMAGE_USAGE_SAMPLED_BIT;
                 memoryUsage = VMA_MEMORY_USAGE_GPU_ONLY;
-                
+
                 break;
             }
             default: {
@@ -1480,6 +1570,47 @@ _NAMESPACE_BEGIN_
                 memoryUsage = VMA_MEMORY_USAGE_GPU_ONLY;
                 break;
             }
+        }
+
+        // Format-support guard for the LINEAR-tiling paths. On NVIDIA
+        // discrete GPUs (and most others) only a subset of formats
+        // permit LINEAR-tiled SAMPLED images. Querying lets us refuse
+        // explicitly with a recognizable diagnostic, instead of letting
+        // VMA fail with VK_ERROR_FEATURE_NOT_PRESENT and leaving the
+        // caller guessing which (format, usage, tiling) triple was
+        // unsupported. Common color formats (RGBA8Unorm, BGRA8Unorm)
+        // pass on every desktop driver tested; future formats may need
+        // either a per-format tiling table or the staging-buffer
+        // alternative documented in the per-usage proposal.
+        if(image_desc.tiling == VK_IMAGE_TILING_LINEAR){
+            VkFormatProperties fmtProps{};
+            vkGetPhysicalDeviceFormatProperties(physicalDevice, image_format, &fmtProps);
+            const VkFormatFeatureFlags requiredFeatures =
+                ((usageFlags & VK_IMAGE_USAGE_SAMPLED_BIT) ? VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT : 0u)
+                | ((usageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ? VK_FORMAT_FEATURE_TRANSFER_SRC_BIT : 0u)
+                | ((usageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) ? VK_FORMAT_FEATURE_TRANSFER_DST_BIT : 0u);
+            if((fmtProps.linearTilingFeatures & requiredFeatures) != requiredFeatures){
+                std::cerr << "Vulkan makeTexture failed: format " << image_format
+                          << " does not support LINEAR tiling for usage 0x"
+                          << std::hex << usageFlags << std::dec
+                          << " (linearTilingFeatures=0x" << std::hex
+                          << fmtProps.linearTilingFeatures << ", required=0x"
+                          << requiredFeatures << std::dec << "). "
+                          << "ToGPU/FromGPU paths require host-mappable LINEAR images; "
+                          << "consider switching to GPUAccessOnly + a staging buffer for this format."
+                          << std::endl;
+                return nullptr;
+            }
+        }
+
+        // MSResolveSrc must actually be multi-sampled for a resolve to
+        // make sense. The legacy `effectiveSampleCount` formula above
+        // only goes >1 if `kind` is Tex2DMS / Tex2DMSArray — older
+        // callers may set `usage=MSResolveSrc` without explicitly setting
+        // `kind`, leaving samples=1 (which then fails to resolve). Force
+        // samples=4 as a sane default in that case.
+        if(desc.usage == GETexture::MSResolveSrc && image_desc.samples == VK_SAMPLE_COUNT_1_BIT){
+            image_desc.samples = VK_SAMPLE_COUNT_4_BIT;
         }
 
         image_desc.usage = usageFlags;
@@ -1507,7 +1638,12 @@ _NAMESPACE_BEGIN_
 
         auto imageRes = vmaCreateImage(memAllocator,&image_desc,&create_alloc_info,&image,&alloc,&alloc_info);
         if(imageRes != VK_SUCCESS || image == VK_NULL_HANDLE){
-            std::cerr << "Vulkan makeTexture failed: vmaCreateImage returned " << imageRes << std::endl;
+            std::cerr << "Vulkan makeTexture failed: vmaCreateImage returned "
+                      << vkResultToStr(imageRes) << " (" << imageRes << ")"
+                      << " for format=" << image_format
+                      << " usage=0x" << std::hex << usageFlags << std::dec
+                      << " " << width << "x" << height << "x" << depth
+                      << std::endl;
             return nullptr;
         }
         
@@ -1519,10 +1655,25 @@ _NAMESPACE_BEGIN_
         image_view_desc.image = image;
         image_view_desc.flags = 0;
         image_view_desc.format = image_format;
-        image_view_desc.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-        image_view_desc.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-        image_view_desc.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-        image_view_desc.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+        // Bake the descriptor's defaultSwizzle into the primary view so
+        // every bind without a runtime override pays zero per-frame cost.
+        // Texture-swizzle proposal §4 / Open Q1.
+        auto bakedSwizzle = [](TextureSwizzleChannel ch, VkComponentSwizzle pos){
+            switch(ch){
+                case TextureSwizzleChannel::Identity: return pos;
+                case TextureSwizzleChannel::Red:      return VK_COMPONENT_SWIZZLE_R;
+                case TextureSwizzleChannel::Green:    return VK_COMPONENT_SWIZZLE_G;
+                case TextureSwizzleChannel::Blue:     return VK_COMPONENT_SWIZZLE_B;
+                case TextureSwizzleChannel::Alpha:    return VK_COMPONENT_SWIZZLE_A;
+                case TextureSwizzleChannel::Zero:     return VK_COMPONENT_SWIZZLE_ZERO;
+                case TextureSwizzleChannel::One:      return VK_COMPONENT_SWIZZLE_ONE;
+            }
+            return pos;
+        };
+        image_view_desc.components.r = bakedSwizzle(desc.defaultSwizzle.r, VK_COMPONENT_SWIZZLE_IDENTITY);
+        image_view_desc.components.g = bakedSwizzle(desc.defaultSwizzle.g, VK_COMPONENT_SWIZZLE_IDENTITY);
+        image_view_desc.components.b = bakedSwizzle(desc.defaultSwizzle.b, VK_COMPONENT_SWIZZLE_IDENTITY);
+        image_view_desc.components.a = bakedSwizzle(desc.defaultSwizzle.a, VK_COMPONENT_SWIZZLE_IDENTITY);
         image_view_desc.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         image_view_desc.subresourceRange.baseMipLevel = 0;
         image_view_desc.subresourceRange.levelCount = mipLevels;

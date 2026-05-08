@@ -1712,7 +1712,27 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
         }
 
         if(isSRV){
-            res_view_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            // Bake `desc.defaultSwizzle` into the primary SRV's
+            // Shader4ComponentMapping so every bind without a runtime
+            // override gets the swizzle for free. Texture-swizzle proposal
+            // §4 / Open Q1.
+            auto encodeSwizzle = [](TextureSwizzleChannel ch, unsigned positional) -> unsigned {
+                switch(ch){
+                    case TextureSwizzleChannel::Identity: return positional;
+                    case TextureSwizzleChannel::Red:      return D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0;
+                    case TextureSwizzleChannel::Green:    return D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1;
+                    case TextureSwizzleChannel::Blue:     return D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2;
+                    case TextureSwizzleChannel::Alpha:    return D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3;
+                    case TextureSwizzleChannel::Zero:     return D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0;
+                    case TextureSwizzleChannel::One:      return D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_1;
+                }
+                return positional;
+            };
+            res_view_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(
+                encodeSwizzle(desc.defaultSwizzle.r, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0),
+                encodeSwizzle(desc.defaultSwizzle.g, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1),
+                encodeSwizzle(desc.defaultSwizzle.b, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2),
+                encodeSwizzle(desc.defaultSwizzle.a, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3));
             res_view_desc.Format = dxgiFormat;
         }
 
@@ -2084,6 +2104,14 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
         // validation (§6.3) and any future per-kind queries can read
         // it without having to re-derive from `type` + `sampleCount`.
         result->setShape(kind, arrayLayers, effectiveSampleCount);
+        if(isSRV){
+            // Capture the base SRV desc so the swizzled-SRV cache
+            // (texture-swizzle proposal §5) can clone every field except
+            // Shader4ComponentMapping.
+            auto *d3d12Tex = static_cast<GED3D12Texture *>(result.get());
+            d3d12Tex->primarySrvDesc = res_view_desc;
+            d3d12Tex->hasPrimarySrvDesc = true;
+        }
         return result;
     };
 

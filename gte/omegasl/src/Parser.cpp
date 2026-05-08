@@ -59,6 +59,76 @@ namespace omegasl {
         }
     }
 
+    bool Parser::parseResourceArgList(Tok & t, OmegaCommon::Vector<ResourceArgEntry> & out) {
+        while(true){
+            if(t.type != TOK_ID){
+                auto e = std::make_unique<UnexpectedToken>(std::string("Expected identifier for resource argument name, got `") + t.str + "`");
+                e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                diagnostics->addError(std::move(e));
+                return false;
+            }
+            ResourceArgEntry entry;
+            entry.nameTok = t;
+            entry.name = t.str;
+
+            t = lexer->nextTok();
+            if(t.type != TOK_OP || t.str != OP_EQUAL){
+                auto e = std::make_unique<UnexpectedToken>(std::string("Expected `=` after resource argument name, got `") + t.str + "`");
+                e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                diagnostics->addError(std::move(e));
+                return false;
+            }
+
+            t = lexer->nextTok();
+            entry.valueTok = t;
+            if(t.type != TOK_ID && t.type != TOK_NUM_LITERAL){
+                auto e = std::make_unique<UnexpectedToken>(std::string("Expected identifier or numeric literal, got `") + t.str + "`");
+                e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                diagnostics->addError(std::move(e));
+                return false;
+            }
+            // Concatenate adjacent ID / NUM tokens that share the same line
+            // and contiguous column range. The lexer splits `rg01` into
+            // `rg` + `01`; merging them here lets `swizzle=rg01` parse as a
+            // single value while leaving conventional `key=word` /
+            // `key=N` cases unchanged. The merge is gated on column
+            // adjacency so accidental whitespace (`filter=linear point`)
+            // still surfaces the second word as an unexpected token.
+            OmegaCommon::String concatenated = t.str;
+            bool allNumeric = (t.type == TOK_NUM_LITERAL);
+            unsigned prevColEnd = t.colEnd;
+            unsigned prevLine = t.line;
+            entry.valueTok.colEnd = t.colEnd;
+            t = lexer->nextTok();
+            while((t.type == TOK_ID || t.type == TOK_NUM_LITERAL)
+                  && t.line == prevLine && t.colStart == prevColEnd){
+                concatenated += t.str;
+                if(t.type != TOK_NUM_LITERAL) allNumeric = false;
+                prevColEnd = t.colEnd;
+                entry.valueTok.colEnd = t.colEnd;
+                t = lexer->nextTok();
+            }
+            entry.valueStr = concatenated;
+            if(allNumeric){
+                entry.valueInt = static_cast<unsigned>(std::stoul(concatenated));
+                entry.valueIsNumeric = true;
+            }
+            out.push_back(std::move(entry));
+            if(t.type == TOK_COMMA){
+                t = lexer->nextTok();
+                continue;
+            }
+            if(t.type == TOK_RPAREN){
+                t = lexer->nextTok();
+                return true;
+            }
+            auto e = std::make_unique<UnexpectedToken>(std::string("Expected `,` or `)` in resource argument list, got `") + t.str + "`");
+            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+            diagnostics->addError(std::move(e));
+            return false;
+        }
+    }
+
     ast::Decl *Parser::parseGlobalDecl() {
         ast::Decl *node = nullptr;
         bool shaderDecl;
@@ -510,103 +580,51 @@ namespace omegasl {
                 res_decl->name = id_for_decl;
                 ast::ResourceDecl::StaticSamplerDesc samplerDesc {};
                 t = lexer->nextTok();
-                while(true){
-
-                    OmegaCommon::String sampler_prop_name;
-                    OmegaCommon::String sampler_prop_value;
-                    unsigned sampler_prop_value_i = 0;
-
-                    if(t.type != TOK_ID){
-                        delete res_decl;
-                        auto e = std::make_unique<UnexpectedToken>(std::string("Expected identifier for sampler property, got `") + t.str + "`");
-                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
-                        diagnostics->addError(std::move(e));
-                        return nullptr;
-                    }
-
-                    sampler_prop_name = t.str;
-
-                    t = lexer->nextTok();
-                    if(t.type != TOK_OP && t.str != OP_EQUAL){
-                        delete res_decl;
-                        auto e = std::make_unique<UnexpectedToken>("Expected `=`");
-                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
-                        diagnostics->addError(std::move(e));
-                        return nullptr;
-                    }
-
-                    t = lexer->nextTok();
-                    if(t.type == TOK_ID){
-                        sampler_prop_value = t.str;
-                    }
-                    else if(t.type == TOK_NUM_LITERAL){
-                       sampler_prop_value_i = std::stoi(t.str);
-                    }
-                    else {
-                        delete res_decl;
-                        auto e = std::make_unique<UnexpectedToken>(std::string("Expected identifier or numeric literal, got `") + t.str + "`");
-                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
-                        diagnostics->addError(std::move(e));
-                        return nullptr;
-                    }
-
-                    if(sampler_prop_name == SAMPLER_PROP_FILTER){
-                        if(sampler_prop_value == SAMPLER_FILTER_LINEAR){
+                OmegaCommon::Vector<ResourceArgEntry> args;
+                if(!parseResourceArgList(t, args)){
+                    delete res_decl;
+                    return nullptr;
+                }
+                for(auto & arg : args){
+                    if(arg.name == SAMPLER_PROP_FILTER){
+                        if(arg.valueStr == SAMPLER_FILTER_LINEAR){
                             samplerDesc.filter = OMEGASL_SHADER_SAMPLER_LINEAR_FILTER;
                         }
-                        else if(sampler_prop_value == SAMPLER_FILTER_POINT){
+                        else if(arg.valueStr == SAMPLER_FILTER_POINT){
                             samplerDesc.filter = OMEGASL_SHADER_SAMPLER_POINT_FILTER;
                         }
-                        else if(sampler_prop_value == SAMPLER_FILTER_ANISOTROPIC){
+                        else if(arg.valueStr == SAMPLER_FILTER_ANISOTROPIC){
                             samplerDesc.filter = OMEGASL_SHADER_SAMPLER_MAX_ANISOTROPY_FILTER;
                         }
                     }
-                    else if(sampler_prop_name == SAMPLER_PROP_ADDRESS_MODE){
+                    else if(arg.name == SAMPLER_PROP_ADDRESS_MODE){
                         omegasl_shader_static_sampler_address_mode addressMode = samplerDesc.uAddressMode;
-                        if(sampler_prop_value == SAMPLER_ADDRESS_MODE_WRAP){
+                        if(arg.valueStr == SAMPLER_ADDRESS_MODE_WRAP){
                             addressMode = OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_WRAP;
                         }
-                        else if(sampler_prop_value == SAMPLER_ADDRESS_MODE_MIRROR){
+                        else if(arg.valueStr == SAMPLER_ADDRESS_MODE_MIRROR){
                             addressMode = OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_MIRROR;
                         }
-                        else if(sampler_prop_value == SAMPLER_ADDRESS_MODE_MIRRORWRAP){
+                        else if(arg.valueStr == SAMPLER_ADDRESS_MODE_MIRRORWRAP){
                             addressMode = OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_MIRRORWRAP;
                         }
-                        else if(sampler_prop_value == SAMPLER_ADDRESS_MODE_CLAMPTOEDGE){
+                        else if(arg.valueStr == SAMPLER_ADDRESS_MODE_CLAMPTOEDGE){
                             addressMode = OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_CLAMPTOEDGE;
                         }
                         else {
                             delete res_decl;
-                            auto e = std::make_unique<UnexpectedToken>(std::string("Unknown sampler address mode `") + sampler_prop_value + "`");
-                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            auto e = std::make_unique<UnexpectedToken>(std::string("Unknown sampler address mode `") + arg.valueStr + "`");
+                            e->loc = ErrorLoc{ arg.valueTok.line, arg.valueTok.line, arg.valueTok.colStart, arg.valueTok.colEnd };
                             diagnostics->addError(std::move(e));
                             return nullptr;
                         }
                         samplerDesc.uAddressMode = samplerDesc.vAddressMode = samplerDesc.wAddressMode = addressMode;
                     }
-                    else if(sampler_prop_name == SAMPLER_PROP_MAX_ANISOTROPY){
-                        samplerDesc.maxAnisotropy = sampler_prop_value_i;
+                    else if(arg.name == SAMPLER_PROP_MAX_ANISOTROPY){
+                        samplerDesc.maxAnisotropy = arg.valueInt;
                     }
-
-                    t = lexer->nextTok();
-
-                    if(t.type == TOK_COMMA){
-                        t = lexer->nextTok();
-                    }
-                    else if(t.type == TOK_RPAREN){
-                        break;
-                    }
-                    else {
-                        delete res_decl;
-                        auto e = std::make_unique<UnexpectedToken>(std::string("Unexpected token `") + t.str + "`");
-                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
-                        diagnostics->addError(std::move(e));
-                        return nullptr;
-                    }
-
                 }
 
-                t = lexer->nextTok();
                 if(t.type != TOK_SEMICOLON){
                     delete res_decl;
                     auto e = std::make_unique<UnexpectedToken>(std::string("Expected semicolon, got `") + t.str + "`");
@@ -760,6 +778,61 @@ namespace omegasl {
             }
             resourceDecl->registerNumber = std::stoul(t.str);
             t = lexer->nextTok();
+            // Optional resource-arg clause, e.g. `texture2d t : 1 (swizzle=bgra);`.
+            // The parsed entries are stored on the AST node verbatim; Sema
+            // validates the keys, value strings, and applicability per
+            // resource type (see Sema.cpp / RESOURCE_DECL).
+            if(t.type == TOK_LPAREN){
+                t = lexer->nextTok();
+                OmegaCommon::Vector<ResourceArgEntry> args;
+                if(!parseResourceArgList(t, args)){
+                    delete resourceDecl;
+                    return nullptr;
+                }
+                for(auto & arg : args){
+                    if(arg.name == RESOURCE_PROP_SWIZZLE){
+                        // Encoding 0=Identity, 1=R, 2=G, 3=B, 4=A, 5=Zero, 6=One.
+                        // Sema enforces length / charset / identity normalization;
+                        // here we just translate the four characters into the
+                        // ResourceDecl::SwizzleDesc encoding so a malformed value
+                        // still produces a populated `swizzleDesc` for Sema to
+                        // reject with a precise diagnostic.
+                        ast::ResourceDecl::SwizzleDesc sw{};
+                        const auto & v = arg.valueStr;
+                        auto encodeChar = [](char c) -> unsigned char {
+                            switch(c){
+                                case 'r': case 'R': return 1;
+                                case 'g': case 'G': return 2;
+                                case 'b': case 'B': return 3;
+                                case 'a': case 'A': return 4;
+                                case '0':           return 5;
+                                case '1':           return 6;
+                                default:            return 0; // sentinel; Sema reports
+                            }
+                        };
+                        sw.r = v.size() > 0 ? encodeChar(v[0]) : 0;
+                        sw.g = v.size() > 1 ? encodeChar(v[1]) : 0;
+                        sw.b = v.size() > 2 ? encodeChar(v[2]) : 0;
+                        sw.a = v.size() > 3 ? encodeChar(v[3]) : 0;
+                        resourceDecl->swizzleDesc = sw;
+                        // Stash the original token on the decl so Sema can
+                        // attach diagnostics to the offending column. We
+                        // reuse `loc` for this — Sema reads it before adding
+                        // its own per-resource location.
+                        resourceDecl->loc = ErrorLoc{
+                            arg.valueTok.line, arg.valueTok.line,
+                            arg.valueTok.colStart, arg.valueTok.colEnd
+                        };
+                    }
+                    else {
+                        delete resourceDecl;
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Unknown resource argument `") + arg.name + "` on texture declaration");
+                        e->loc = ErrorLoc{ arg.nameTok.line, arg.nameTok.line, arg.nameTok.colStart, arg.nameTok.colEnd };
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                }
+            }
             if(t.type != TOK_SEMICOLON){
                 delete resourceDecl;
                 auto e = std::make_unique<UnexpectedToken>("Expected semicolon after resource declaration");

@@ -37,6 +37,9 @@ _NAMESPACE_BEGIN_
 
        unsigned getRootParameterIndexOfResource(unsigned id,omegasl_shader &shader);
        D3D12_RESOURCE_STATES getRequiredResourceStateForResourceID(unsigned & id,omegasl_shader &shader);
+       /// Combine a runtime swizzle override with the shader layout's
+       /// `swizzle_desc` (texture-swizzle proposal §4 precedence rule).
+       TextureSwizzle resolveEffectiveSwizzle(const TextureSwizzle & runtime,unsigned id,omegasl_shader &shader);
     public:
 
         bool multisampleResolvePass = false;
@@ -76,9 +79,11 @@ _NAMESPACE_BEGIN_
         void setVertexBuffer(SharedHandle<GEBuffer> &buffer) override;
         void setRenderPipelineState(SharedHandle<GERenderPipelineState> &pipelineState) override;
         void bindResourceAtVertexShader(SharedHandle<GEBuffer> &buffer, unsigned int id) override;
-        void bindResourceAtVertexShader(SharedHandle<GETexture> &texture, unsigned int id) override;
+        void bindResourceAtVertexShader(SharedHandle<GETexture> &texture, unsigned int id,
+                                        const TextureSwizzle & swizzle) override;
         void bindResourceAtFragmentShader(SharedHandle<GEBuffer> &buffer, unsigned int id) override;
-        void bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned int id) override;
+        void bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned int id,
+                                          const TextureSwizzle & swizzle) override;
         void setStencilRef(unsigned int ref) override;
        
         void drawPolygons(RenderPassDrawPolygonType polygonType, unsigned int vertexCount, size_t startIdx) override;
@@ -106,7 +111,8 @@ _NAMESPACE_BEGIN_
         void startComputePass(const GEComputePassDescriptor &desc) override;
         void setComputePipelineState(SharedHandle<GEComputePipelineState> &pipelineState) override;
         void bindResourceAtComputeShader(SharedHandle<GEBuffer> &buffer, unsigned int id) override;
-        void bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id) override;
+        void bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id,
+                                         const TextureSwizzle & swizzle) override;
         void bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct, unsigned int id) override;
         void dispatchRays(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;

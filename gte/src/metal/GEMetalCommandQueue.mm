@@ -52,6 +52,38 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         return _id;
     };
 
+    TextureSwizzle GEMetalCommandBuffer::resolveEffectiveSwizzle(const TextureSwizzle & runtime,unsigned id,omegasl_shader & shader){
+        if(!runtime.isIdentity()) return runtime;
+        // Layout-desc encoding: 0=Identity, 1=R, 2=G, 3=B, 4=A, 5=Zero, 6=One.
+        auto decode = [](unsigned char b) -> TextureSwizzleChannel {
+            switch(b){
+                case 1: return TextureSwizzleChannel::Red;
+                case 2: return TextureSwizzleChannel::Green;
+                case 3: return TextureSwizzleChannel::Blue;
+                case 4: return TextureSwizzleChannel::Alpha;
+                case 5: return TextureSwizzleChannel::Zero;
+                case 6: return TextureSwizzleChannel::One;
+                default: return TextureSwizzleChannel::Identity;
+            }
+        };
+        OmegaCommon::ArrayRef<omegasl_shader_layout_desc> descArr {shader.pLayout,shader.pLayout + shader.nLayout};
+        for(auto l : descArr){
+            if(l.location == id){
+                if(l.swizzle_desc.r == 0 && l.swizzle_desc.g == 0
+                   && l.swizzle_desc.b == 0 && l.swizzle_desc.a == 0){
+                    return TextureSwizzle::identity();
+                }
+                return TextureSwizzle{
+                    decode(l.swizzle_desc.r),
+                    decode(l.swizzle_desc.g),
+                    decode(l.swizzle_desc.b),
+                    decode(l.swizzle_desc.a)
+                };
+            }
+        }
+        return TextureSwizzle::identity();
+    };
+
     bool GEMetalCommandBuffer::shaderHasWriteAccessForResource(unsigned int &_id, omegasl_shader &shader) {
         OmegaCommon::ArrayRef<omegasl_shader_layout_desc> descArr {shader.pLayout,shader.pLayout + shader.nLayout};
         for(auto l : descArr){
@@ -525,7 +557,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         }
     };
 
-    void GEMetalCommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> & texture,unsigned _id){
+    void GEMetalCommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> & texture,unsigned _id,
+                                                            const TextureSwizzle & swizzle){
         assert((rp && (cp == nil)) && "Cannot Resource Const on a Vertex Func when not in render pass");
         auto *metalTexture = (GEMetalTexture *)texture.get();
 
@@ -537,8 +570,10 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         }
 
         unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->vertexShader->internal);
-        NSLog(@"Binding GETexture at Vertex Shader: %@ At Index: %i",NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,metalTexture->texture.handle()),index);
-        [rp setVertexTexture:NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,metalTexture->texture.handle()) atIndex:index];
+        TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, _id, renderPipelineState->vertexShader->internal);
+        id<MTLTexture> view = metalTexture->getOrCreateSwizzledView(effective);
+        NSLog(@"Binding GETexture at Vertex Shader: %@ At Index: %i",view,index);
+        [rp setVertexTexture:view atIndex:index];
         if(shaderHasWriteAccessForResource(_id,renderPipelineState->vertexShader->internal)){
             metalTexture->needsBarrier = true;
             [rp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalTexture->resourceBarrier.handle()) afterStages:MTLRenderStageVertex];
@@ -566,7 +601,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         }
     };
 
-    void GEMetalCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> & texture,unsigned _id){
+    void GEMetalCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> & texture,unsigned _id,
+                                                              const TextureSwizzle & swizzle){
         assert((rp && (cp == nil)) && "Cannot Resource Const on a Fragment Func when not in render pass");
         auto *metalTexture = (GEMetalTexture *)texture.get();
 
@@ -578,9 +614,11 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         }
 
         unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->fragmentShader->internal);
-        NSLog(@"Binding GETexture at Fragment Shader: %@ At Index: %i",NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,metalTexture->texture.handle()),index);
+        TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, _id, renderPipelineState->fragmentShader->internal);
+        id<MTLTexture> view = metalTexture->getOrCreateSwizzledView(effective);
+        NSLog(@"Binding GETexture at Fragment Shader: %@ At Index: %i",view,index);
 
-        [rp setFragmentTexture:NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,metalTexture->texture.handle()) atIndex:index];
+        [rp setFragmentTexture:view atIndex:index];
         // if(shaderHasWriteAccessForResource(_id,renderPipelineState->fragmentShader->internal)){
         //     metalTexture->needsBarrier = true;
         //     [rp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalTexture->resourceBarrier.handle()) afterStages:MTLRenderStageFragment];
@@ -760,7 +798,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         }
     }
 
-    void GEMetalCommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int _id) {
+    void GEMetalCommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int _id,
+                                                            const TextureSwizzle & swizzle) {
         assert(cp != nil && "");
         auto mtl_texture = (GEMetalTexture *)texture.get();
 
@@ -771,7 +810,9 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             mtl_texture->needsBarrier = false;
         }
 
-        [cp setTexture:NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,mtl_texture->texture.handle()) atIndex:getResourceLocalIndexFromGlobalIndex(_id,computePipelineState->computeShader->internal)];
+        TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, _id, computePipelineState->computeShader->internal);
+        id<MTLTexture> view = mtl_texture->getOrCreateSwizzledView(effective);
+        [cp setTexture:view atIndex:getResourceLocalIndexFromGlobalIndex(_id,computePipelineState->computeShader->internal)];
         if(shaderHasWriteAccessForResource(_id,computePipelineState->computeShader->internal)){
             mtl_texture->needsBarrier = true;
             [cp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_texture->resourceBarrier.handle())];

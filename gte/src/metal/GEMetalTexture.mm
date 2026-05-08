@@ -51,5 +51,47 @@ size_t GEMetalTexture::getBytes(void *bytes, size_t bytesPerRow) {
     return (size_t)height* bytesPerRow;
 }
 
+static MTLTextureSwizzle metalSwizzleFor(TextureSwizzleChannel ch, MTLTextureSwizzle positionalIdentity){
+    switch(ch){
+        case TextureSwizzleChannel::Identity: return positionalIdentity;
+        case TextureSwizzleChannel::Red:      return MTLTextureSwizzleRed;
+        case TextureSwizzleChannel::Green:    return MTLTextureSwizzleGreen;
+        case TextureSwizzleChannel::Blue:     return MTLTextureSwizzleBlue;
+        case TextureSwizzleChannel::Alpha:    return MTLTextureSwizzleAlpha;
+        case TextureSwizzleChannel::Zero:     return MTLTextureSwizzleZero;
+        case TextureSwizzleChannel::One:      return MTLTextureSwizzleOne;
+    }
+    return positionalIdentity;
+}
+
+id<MTLTexture> GEMetalTexture::getOrCreateSwizzledView(const TextureSwizzle & swizzle){
+    id<MTLTexture> base = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>, texture.handle());
+    if(swizzle.isIdentity()) return base;
+    for(auto & entry : swizzledViewCache){
+        if(entry.first == swizzle){
+            return NSOBJECT_OBJC_BRIDGE(id<MTLTexture>, entry.second.handle());
+        }
+    }
+
+    if(@available(macOS 10.15, iOS 13.0, *)){
+        MTLTextureSwizzleChannels mtlSwizzle = MTLTextureSwizzleChannelsMake(
+            metalSwizzleFor(swizzle.r, MTLTextureSwizzleRed),
+            metalSwizzleFor(swizzle.g, MTLTextureSwizzleGreen),
+            metalSwizzleFor(swizzle.b, MTLTextureSwizzleBlue),
+            metalSwizzleFor(swizzle.a, MTLTextureSwizzleAlpha)
+        );
+        id<MTLTexture> view = [base newTextureViewWithPixelFormat:base.pixelFormat
+                                                       textureType:base.textureType
+                                                            levels:NSMakeRange(0, base.mipmapLevelCount)
+                                                            slices:NSMakeRange(0, base.arrayLength)
+                                                           swizzle:mtlSwizzle];
+        NSSmartPtr held = NSObjectHandle{NSOBJECT_CPP_BRIDGE view};
+        swizzledViewCache.push_back({swizzle, held});
+        return view;
+    }
+    // No-op fallback on platforms without MTLTextureSwizzleChannels.
+    return base;
+}
+
 
 _NAMESPACE_END_

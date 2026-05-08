@@ -1,0 +1,26 @@
+/// Texture-swizzle plan §A.5: constant channels (`0`, `1`) round-trip
+/// through the parser's adjacent-token concatenation rule. The lexer
+/// splits `rg01` into `rg` + `01`; the parser stitches them back
+/// together because their column ranges are contiguous on the same
+/// line. Emitted `swizzle_desc` should be {1,2,5,6} (Red, Green,
+/// Zero, One — encoding 5=Zero, 6=One).
+
+struct VOut internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+texture2d normalMap : 0 (swizzle=rg01);
+sampler2d samp      : 1;
+
+vertex VOut swizzleConstantsVert(uint vid : VertexID){
+    VOut r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv  = float2(0.0, 0.0);
+    return r;
+}
+
+[in normalMap, in samp]
+fragment float4 swizzleConstantsFrag(VOut raster){
+    return sample(samp, normalMap, raster.uv);
+}

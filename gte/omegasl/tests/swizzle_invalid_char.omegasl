@@ -1,0 +1,27 @@
+/// Texture-swizzle plan §A.5 (negative test): `z` is not a valid
+/// swizzle channel. The parser maps unknown chars to a 0 sentinel,
+/// and Sema rejects with:
+///   "`swizzle` value must be exactly 4 characters drawn from
+///    {r,g,b,a,0,1} (case-insensitive); got `bad`'s clause"
+///
+/// Test runner: this file MUST fail to compile.
+
+struct VOut internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+texture2d bad   : 0 (swizzle=rgbz);
+sampler2d samp  : 1;
+
+vertex VOut swizzleInvalidVert(uint vid : VertexID){
+    VOut r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv  = float2(0.0, 0.0);
+    return r;
+}
+
+[in bad, in samp]
+fragment float4 swizzleInvalidFrag(VOut raster){
+    return sample(samp, bad, raster.uv);
+}

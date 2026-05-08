@@ -1122,7 +1122,36 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                     id<MTLTexture> tex = [NSOBJECT_OBJC_BRIDGE(id<MTLHeap>,metalHeap.handle()) newTextureWithDescriptor:mtlDesc];
                     if(tex == nil) return nullptr;
 
-                    NSSmartPtr texPtr(NSObjectHandle{NSOBJECT_CPP_BRIDGE tex});
+                    id<MTLTexture> primary = tex;
+                    if(!desc.defaultSwizzle.isIdentity()){
+                        if(@available(macOS 10.15, iOS 13.0, *)){
+                            auto swPos = [](TextureSwizzleChannel ch, MTLTextureSwizzle pos){
+                                switch(ch){
+                                    case TextureSwizzleChannel::Identity: return pos;
+                                    case TextureSwizzleChannel::Red:      return MTLTextureSwizzleRed;
+                                    case TextureSwizzleChannel::Green:    return MTLTextureSwizzleGreen;
+                                    case TextureSwizzleChannel::Blue:     return MTLTextureSwizzleBlue;
+                                    case TextureSwizzleChannel::Alpha:    return MTLTextureSwizzleAlpha;
+                                    case TextureSwizzleChannel::Zero:     return MTLTextureSwizzleZero;
+                                    case TextureSwizzleChannel::One:      return MTLTextureSwizzleOne;
+                                }
+                                return pos;
+                            };
+                            MTLTextureSwizzleChannels sw = MTLTextureSwizzleChannelsMake(
+                                swPos(desc.defaultSwizzle.r, MTLTextureSwizzleRed),
+                                swPos(desc.defaultSwizzle.g, MTLTextureSwizzleGreen),
+                                swPos(desc.defaultSwizzle.b, MTLTextureSwizzleBlue),
+                                swPos(desc.defaultSwizzle.a, MTLTextureSwizzleAlpha)
+                            );
+                            primary = [tex newTextureViewWithPixelFormat:tex.pixelFormat
+                                                              textureType:tex.textureType
+                                                                   levels:NSMakeRange(0, tex.mipmapLevelCount)
+                                                                   slices:NSMakeRange(0, tex.arrayLength)
+                                                                  swizzle:sw];
+                        }
+                    }
+
+                    NSSmartPtr texPtr(NSObjectHandle{NSOBJECT_CPP_BRIDGE primary});
                     auto result = SharedHandle<GETexture>(new GEMetalTexture(desc.type, desc.usage, desc.pixelFormat, texPtr));
                     result->setShape(kind, arrayLayers, effectiveSampleCount);
                     return result;
@@ -1409,7 +1438,39 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             mtlDesc.pixelFormat = pixelFormat;
             mtlDesc.mipmapLevelCount = effectiveMips;
 
-            NSSmartPtr texture = NSObjectHandle {NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newTextureWithDescriptor:mtlDesc]};
+            id<MTLTexture> baseTex = [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newTextureWithDescriptor:mtlDesc];
+            // Apply the descriptor's defaultSwizzle by replacing the primary
+            // texture handle with a swizzled view. This makes every bind
+            // without a runtime override pay zero per-frame cost (proposal §4 / Open Q1).
+            id<MTLTexture> primary = baseTex;
+            if(!desc.defaultSwizzle.isIdentity()){
+                if(@available(macOS 10.15, iOS 13.0, *)){
+                    auto swPos = [](TextureSwizzleChannel ch, MTLTextureSwizzle pos){
+                        switch(ch){
+                            case TextureSwizzleChannel::Identity: return pos;
+                            case TextureSwizzleChannel::Red:      return MTLTextureSwizzleRed;
+                            case TextureSwizzleChannel::Green:    return MTLTextureSwizzleGreen;
+                            case TextureSwizzleChannel::Blue:     return MTLTextureSwizzleBlue;
+                            case TextureSwizzleChannel::Alpha:    return MTLTextureSwizzleAlpha;
+                            case TextureSwizzleChannel::Zero:     return MTLTextureSwizzleZero;
+                            case TextureSwizzleChannel::One:      return MTLTextureSwizzleOne;
+                        }
+                        return pos;
+                    };
+                    MTLTextureSwizzleChannels sw = MTLTextureSwizzleChannelsMake(
+                        swPos(desc.defaultSwizzle.r, MTLTextureSwizzleRed),
+                        swPos(desc.defaultSwizzle.g, MTLTextureSwizzleGreen),
+                        swPos(desc.defaultSwizzle.b, MTLTextureSwizzleBlue),
+                        swPos(desc.defaultSwizzle.a, MTLTextureSwizzleAlpha)
+                    );
+                    primary = [baseTex newTextureViewWithPixelFormat:baseTex.pixelFormat
+                                                          textureType:baseTex.textureType
+                                                               levels:NSMakeRange(0, baseTex.mipmapLevelCount)
+                                                               slices:NSMakeRange(0, baseTex.arrayLength)
+                                                              swizzle:sw];
+                }
+            }
+            NSSmartPtr texture = NSObjectHandle {NSOBJECT_CPP_BRIDGE primary};
             texture.assertExists();
             auto result = std::shared_ptr<GETexture>(new GEMetalTexture(desc.type,desc.usage,desc.pixelFormat,texture));
             result->setShape(kind, arrayLayers, effectiveSampleCount);

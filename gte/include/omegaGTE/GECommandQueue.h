@@ -101,10 +101,12 @@ _NAMESPACE_BEGIN_
         virtual void setVertexBuffer(SharedHandle<GEBuffer> & buffer) = 0;
         
         virtual void bindResourceAtVertexShader(SharedHandle<GEBuffer> & buffer,unsigned id) = 0;
-        virtual void bindResourceAtVertexShader(SharedHandle<GETexture> & texture,unsigned id) = 0;
-        
+        virtual void bindResourceAtVertexShader(SharedHandle<GETexture> & texture,unsigned id,
+                                                const TextureSwizzle & swizzle = TextureSwizzle::identity()) = 0;
+
         virtual void bindResourceAtFragmentShader(SharedHandle<GEBuffer> & buffer,unsigned id) = 0;
-        virtual void bindResourceAtFragmentShader(SharedHandle<GETexture> & texture,unsigned id) = 0;
+        virtual void bindResourceAtFragmentShader(SharedHandle<GETexture> & texture,unsigned id,
+                                                  const TextureSwizzle & swizzle = TextureSwizzle::identity()) = 0;
 
         virtual void setStencilRef(unsigned ref) = 0;
         
@@ -274,7 +276,9 @@ _NAMESPACE_BEGIN_
         /// @brief Binds a Texture Resource to a Descriptor in the scope of the Compute Shader.
         /// @param texture The Resource to bind.
         /// @param id The OmegaSL Binding id.
-        virtual void bindResourceAtComputeShader(SharedHandle<GETexture> & texture,unsigned id) = 0;
+        /// @param swizzle Optional channel remap applied at descriptor write time. Identity (the default) reuses the texture's primary view; non-identity routes through the per-texture swizzled-view cache.
+        virtual void bindResourceAtComputeShader(SharedHandle<GETexture> & texture,unsigned id,
+                                                 const TextureSwizzle & swizzle = TextureSwizzle::identity()) = 0;
 
 
          /// @brief Binds an Acceleration Structure Resource to a Descriptor in the scope of the Compute Shader.

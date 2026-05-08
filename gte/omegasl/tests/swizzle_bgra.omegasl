@@ -1,0 +1,23 @@
+/// Texture-swizzle plan §A.5: a BGRA swap baked into the layout
+/// descriptor. The emitted `swizzle_desc` should be {3,2,1,4}
+/// (Blue, Green, Red, Alpha — encoding 1=R, 2=G, 3=B, 4=A).
+
+struct VOut internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+texture2d frame : 0 (swizzle=bgra);
+sampler2d samp  : 1;
+
+vertex VOut swizzleBgraVert(uint vid : VertexID){
+    VOut r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv  = float2(0.0, 0.0);
+    return r;
+}
+
+[in frame, in samp]
+fragment float4 swizzleBgraFrag(VOut raster){
+    return sample(samp, frame, raster.uv);
+}

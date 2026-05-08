@@ -138,6 +138,39 @@ struct omegasl_shader_constant_desc {
     };
 };
 
+/// Default channel swizzle baked into a texture resource at the layout
+/// (shader-library) level. The encoding is *distinct* from the runtime
+/// `TextureSwizzleChannel` enum so that a zero-initialized descriptor
+/// (the default for every layout entry that is not a texture, and for
+/// every texture entry compiled before this field existed) reads as
+/// Identity, not as `Red`.
+///
+///   0 = Identity (passthrough)
+///   1 = Red
+///   2 = Green
+///   3 = Blue
+///   4 = Alpha
+///   5 = Zero
+///   6 = One
+///
+/// The runtime translates this encoding into `TextureSwizzle` at bind
+/// time. A descriptor with all four bytes == 0 is treated as identity
+/// and bypasses the per-bind swizzled-view cache.
+struct omegasl_texture_swizzle_desc {
+    unsigned char r;
+    unsigned char g;
+    unsigned char b;
+    unsigned char a;
+};
+
+/// TODO(swizzle-binary-compat): `swizzle_desc` is appended to the end of
+/// the layout descriptor. Zero-init reads as Identity per the encoding
+/// above, so callers that aggregate-initialize `omegasl_shader_layout_desc{}`
+/// keep working without source changes. Pre-existing `.omegasllib`
+/// archives serialized before this field existed will, however,
+/// deserialize with whatever bytes happened to follow the old struct in
+/// the archive — bumping the on-disk layout-desc version to gate the
+/// new field is deferred. See `gte/docs/texture-swizzle-proposal.md` §4.
 struct omegasl_shader_layout_desc {
     omegasl_shader_layout_desc_type type;
     unsigned gpu_relative_loc;
@@ -146,6 +179,7 @@ struct omegasl_shader_layout_desc {
     size_t offset;
     omegasl_shader_static_sampler_desc sampler_desc;
     omegasl_shader_constant_desc constant_desc;
+    omegasl_texture_swizzle_desc swizzle_desc;
 };
 
 using omegasl_shader_type = enum : int {

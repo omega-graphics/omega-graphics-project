@@ -73,6 +73,39 @@ _NAMESPACE_BEGIN_
         return OMEGASL_SHADER_DESC_IO_INOUT;
     }
 
+    TextureSwizzle
+    GEVulkanCommandBuffer::resolveEffectiveSwizzle(const TextureSwizzle & runtime,unsigned id,omegasl_shader & shader) {
+        if(!runtime.isIdentity()) return runtime;
+        // Layout-desc encoding: 0=Identity, 1=R, 2=G, 3=B, 4=A, 5=Zero, 6=One.
+        auto decode = [](unsigned char b) -> TextureSwizzleChannel {
+            switch(b){
+                case 1: return TextureSwizzleChannel::Red;
+                case 2: return TextureSwizzleChannel::Green;
+                case 3: return TextureSwizzleChannel::Blue;
+                case 4: return TextureSwizzleChannel::Alpha;
+                case 5: return TextureSwizzleChannel::Zero;
+                case 6: return TextureSwizzleChannel::One;
+                default: return TextureSwizzleChannel::Identity;
+            }
+        };
+        ArrayRef<omegasl_shader_layout_desc> layoutDesc {shader.pLayout,shader.pLayout + shader.nLayout};
+        for(auto & l : layoutDesc){
+            if(l.location == id){
+                if(l.swizzle_desc.r == 0 && l.swizzle_desc.g == 0
+                   && l.swizzle_desc.b == 0 && l.swizzle_desc.a == 0){
+                    return TextureSwizzle::identity();
+                }
+                return TextureSwizzle{
+                    decode(l.swizzle_desc.r),
+                    decode(l.swizzle_desc.g),
+                    decode(l.swizzle_desc.b),
+                    decode(l.swizzle_desc.a)
+                };
+            }
+        }
+        return TextureSwizzle::identity();
+    }
+
     void GEVulkanCommandBuffer::insertResourceBarrierIfNeeded(GEVulkanBuffer *buffer, unsigned int &resource_id,
                                                               omegasl_shader &shader) {
         // Temporary diagnostic fallback:
@@ -891,7 +924,8 @@ _NAMESPACE_BEGIN_
 
     };
 
-    void GEVulkanCommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> &texture, unsigned id){
+    void GEVulkanCommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> &texture, unsigned id,
+                                                            const TextureSwizzle & swizzle){
         auto vk_texture = (GEVulkanTexture *)texture.get();
         trackTexture(texture);
         /// TODO!
@@ -902,13 +936,15 @@ _NAMESPACE_BEGIN_
 
         insertResourceBarrierIfNeeded(vk_texture,id,renderPipelineState->vertexShader->internal);
 
+        TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, id, renderPipelineState->vertexShader->internal);
+
         VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writeInfo.dstBinding = getBindingForResourceID(id,renderPipelineState->vertexShader->internal);
         writeInfo.descriptorCount = 1;
 
         VkDescriptorImageInfo imgInfo {};
         imgInfo.sampler = VK_NULL_HANDLE;
-        imgInfo.imageView = vk_texture->img_view;
+        imgInfo.imageView = vk_texture->getOrCreateSwizzledView(effective);
         imgInfo.imageLayout = vk_texture->layout;
 
         VkDescriptorType t;
@@ -979,7 +1015,8 @@ _NAMESPACE_BEGIN_
         }
     };
 
-    void GEVulkanCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned id){
+    void GEVulkanCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned id,
+                                                              const TextureSwizzle & swizzle){
 
         auto vk_texture = (GEVulkanTexture *)texture.get();
         trackTexture(texture);
@@ -990,13 +1027,15 @@ _NAMESPACE_BEGIN_
 
         insertResourceBarrierIfNeeded(vk_texture,id,renderPipelineState->fragmentShader->internal);
 
+        TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, id, renderPipelineState->fragmentShader->internal);
+
         VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writeInfo.dstBinding = getBindingForResourceID(id,renderPipelineState->fragmentShader->internal);
         writeInfo.descriptorCount = 1;
 
         VkDescriptorImageInfo imgInfo {};
         imgInfo.sampler = VK_NULL_HANDLE;
-        imgInfo.imageView = vk_texture->img_view;
+        imgInfo.imageView = vk_texture->getOrCreateSwizzledView(effective);
         imgInfo.imageLayout = vk_texture->layout;
 
         VkDescriptorType t;
@@ -1504,7 +1543,8 @@ _NAMESPACE_BEGIN_
         }
     }
 
-    void GEVulkanCommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id) {
+    void GEVulkanCommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id,
+                                                             const TextureSwizzle & swizzle) {
 
         auto vk_texture = (GEVulkanTexture *)texture.get();
         trackTexture(texture);
@@ -1513,13 +1553,15 @@ _NAMESPACE_BEGIN_
 
         insertResourceBarrierIfNeeded(vk_texture,id,computePipelineState->computeShader->internal);
 
+        TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, id, computePipelineState->computeShader->internal);
+
         VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writeInfo.dstBinding = getBindingForResourceID(id,computePipelineState->computeShader->internal);
         writeInfo.descriptorCount = 1;
 
         VkDescriptorImageInfo imgInfo {};
         imgInfo.sampler = VK_NULL_HANDLE;
-        imgInfo.imageView = vk_texture->img_view;
+        imgInfo.imageView = vk_texture->getOrCreateSwizzledView(effective);
         imgInfo.imageLayout = vk_texture->layout;
 
         VkDescriptorType t;

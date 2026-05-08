@@ -61,6 +61,27 @@ namespace omegasl {
         ast::Stmt *parseSwitchStmtFromBuffer(BlockParseContext & ctxt);
 
         ast::TypeExpr *buildTypeRef(Tok &first_tok,bool isPointer,bool hasTypeArgs = false,OmegaCommon::Vector<ast::TypeExpr *> * args = nullptr);
+
+        /// One parsed entry from a `( key=value, key=value, ... )` clause
+        /// on a resource declaration (static-sampler args, texture
+        /// swizzle, future per-resource descriptor fields).
+        struct ResourceArgEntry {
+            OmegaCommon::String name;
+            /// Set when the value parsed as a `TOK_ID` (e.g. `linear`).
+            OmegaCommon::String valueStr;
+            /// Set when the value parsed as a `TOK_NUM_LITERAL`.
+            unsigned valueInt = 0;
+            bool valueIsNumeric = false;
+            Tok nameTok;
+            Tok valueTok;
+        };
+
+        /// Shared `( key=value, ... )` parser used by both the static
+        /// sampler arm and the texture-swizzle arm of `parseGlobalDecl`.
+        /// Precondition: `t` is the token *after* the opening `(`.
+        /// Postcondition (true): `t` is the token *after* the closing `)`.
+        /// Returns false on parse error (diagnostic already emitted).
+        bool parseResourceArgList(Tok & t, OmegaCommon::Vector<ResourceArgEntry> & out);
     public:
         explicit Parser(std::shared_ptr<CodeGen> &gen);
         void parseContext(const ParseContext &ctxt);

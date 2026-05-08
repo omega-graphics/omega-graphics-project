@@ -257,3 +257,15 @@ ANSWER: We have a proposed OmegaSL syntax for this in OmegaSL-Swizzle-Subgroup-P
 3. **Compute shader writes.** Swizzle on UAV/storage-image writes is not proposed here. All three APIs are more restrictive about write-side remapping. If needed, a shader-side swizzle (`output.bgra = value.rgba`) is the portable path.
 
 ANSWER: Good idea. We can try this. (Do reasearch where the backend APIs allow this and how.)
+
+#### Research addendum (2026-05) — UAV / storage-image write swizzle by backend
+
+| API | View-level write swizzle? | Notes |
+|---|---|---|
+| **Vulkan** | **No.** `VkImageView` accepts `VkComponentMapping`, but the spec explicitly states (VUID-VkImageViewCreateInfo-image-02399 / §12.5.1 "Image View Component Mapping") that for views used as `VK_DESCRIPTOR_TYPE_STORAGE_IMAGE`, the components **must** be `VK_COMPONENT_SWIZZLE_IDENTITY` (or its positional equivalent). Storage-image reads/writes ignore non-identity mappings; setting one is a validation error on most drivers. |
+| **Metal** | **Read-only.** `MTLTextureSwizzleChannels` documentation: "swizzle … applies only when reading from the texture in a shader." Writes via `write()` always go to the underlying memory in native channel order. Verified against `MTL Texture` reference (`newTextureViewWithPixelFormat:textureType:levels:slices:swizzle:`). |
+| **D3D12** | **No.** `D3D12_SHADER_RESOURCE_VIEW_DESC::Shader4ComponentMapping` exists only on SRVs. UAVs use `D3D12_UNORDERED_ACCESS_VIEW_DESC`, which has no component-mapping field. Writes via `RWTexture2D<T>` go to the natural channel order of the underlying resource. |
+
+**Conclusion.** All three APIs converge on the same rule: **view-level swizzle is a read-side feature only.** There is no portable surface for "swizzled writes" — the closest analogue is a per-shader output swizzle in HLSL/MSL/GLSL (`output.bgra = value.rgba;`), which is already expressible in OmegaSL today.
+
+Recommendation: do *not* extend `TextureSwizzle` to writable bindings. Document the constraint in the public API doc for `TextureSwizzle` ("applies to sampled / storage-image **reads** only") and rely on the shader-side swizzle path for the write case. If the layered API later wants ergonomic sugar, a codegen-level rewrite (`output.swizzle(bgra) = value;`) belongs in the OmegaSL Swizzle Subgroup Plan, not here.

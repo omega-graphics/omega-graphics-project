@@ -55,16 +55,18 @@ void GERenderTarget::CommandBuffer::bindResourceAtVertexShader(SharedHandle<GEBu
     commandBuffer->bindResourceAtVertexShader(buffer,id);
 };
 
-void GERenderTarget::CommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> & texture,unsigned id){
-    commandBuffer->bindResourceAtVertexShader(texture,id);
+void GERenderTarget::CommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> & texture,unsigned id,
+                                                                const TextureSwizzle & swizzle){
+    commandBuffer->bindResourceAtVertexShader(texture,id,swizzle);
 };
 
 void GERenderTarget::CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> & buffer,unsigned id){
     commandBuffer->bindResourceAtFragmentShader(buffer,id);
 };
 
-void GERenderTarget::CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> & texture,unsigned id){
-    commandBuffer->bindResourceAtFragmentShader(texture,id);
+void GERenderTarget::CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> & texture,unsigned id,
+                                                                  const TextureSwizzle & swizzle){
+    commandBuffer->bindResourceAtFragmentShader(texture,id,swizzle);
 };
 
 void GERenderTarget::CommandBuffer::drawPolygons(PolygonType polygonType, unsigned vertexCount, size_t start){
@@ -177,8 +179,9 @@ void GERenderTarget::CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEB
     commandBuffer->bindResourceAtComputeShader(buffer,id);
 }
 
-void GERenderTarget::CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id) {
-    commandBuffer->bindResourceAtComputeShader(texture,id);
+void GERenderTarget::CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id,
+                                                                 const TextureSwizzle & swizzle) {
+    commandBuffer->bindResourceAtComputeShader(texture,id,swizzle);
 }
 
 void GERenderTarget::CommandBuffer::dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) {

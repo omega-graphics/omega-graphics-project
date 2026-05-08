@@ -261,6 +261,32 @@ namespace omegasl {
                 : res.access == ast::ShaderDecl::ResourceMapDesc::Inout ? OMEGASL_SHADER_DESC_IO_INOUT
                                                                         : OMEGASL_SHADER_DESC_IO_OUT;
             target->emitResourceBinding(*this, res_desc, decl, ioMode, out, layoutDesc);
+
+            /// Texture-swizzle plan §A.5 / Open Q1: reject swizzle on
+            /// textures used as `out` / `inout` in this shader. All three
+            /// runtime backends apply view-level swizzle to reads only —
+            /// silently dropping it on writes would surprise compute-shader
+            /// authors. The check lives here, not in Sema, because the
+            /// read/write status is determined per-shader from `res.access`.
+            if(res_desc->swizzleDesc.has_value()
+               && ioMode != OMEGASL_SHADER_DESC_IO_IN){
+                std::cerr << "error: `swizzle` cannot be applied to texture `"
+                          << res_desc->name << "` because shader `" << decl->name
+                          << "` uses it for write access. View-level swizzle is read-only on every backend; "
+                             "use a shader-side swizzle (e.g. `output.bgra = value.rgba;`) instead." << std::endl;
+                hasFatalErrors = true;
+            }
+            else if(res_desc->swizzleDesc.has_value()){
+                /// Encoding 0=Identity, 1=R, 2=G, 3=B, 4=A, 5=Zero, 6=One.
+                /// Storage layout is identical between AST and runtime
+                /// `omegasl_texture_swizzle_desc`, so the assignment is a
+                /// straight field copy.
+                layoutDesc.swizzle_desc.r = res_desc->swizzleDesc->r;
+                layoutDesc.swizzle_desc.g = res_desc->swizzleDesc->g;
+                layoutDesc.swizzle_desc.b = res_desc->swizzleDesc->b;
+                layoutDesc.swizzle_desc.a = res_desc->swizzleDesc->a;
+            }
+
             layout.push_back(layoutDesc);
         }
         target->emitStaticPreamble(out);

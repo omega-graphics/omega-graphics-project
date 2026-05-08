@@ -187,6 +187,39 @@ GED3D12CommandBuffer::getRequiredResourceStateForResourceID(unsigned int &id, om
     return D3D12_RESOURCE_STATE_COMMON;
 }
 
+TextureSwizzle
+GED3D12CommandBuffer::resolveEffectiveSwizzle(const TextureSwizzle & runtime,unsigned id,omegasl_shader &shader){
+    if(!runtime.isIdentity()) return runtime;
+    // Layout-desc encoding: 0=Identity, 1=R, 2=G, 3=B, 4=A, 5=Zero, 6=One.
+    auto decode = [](unsigned char b) -> TextureSwizzleChannel {
+        switch(b){
+            case 1: return TextureSwizzleChannel::Red;
+            case 2: return TextureSwizzleChannel::Green;
+            case 3: return TextureSwizzleChannel::Blue;
+            case 4: return TextureSwizzleChannel::Alpha;
+            case 5: return TextureSwizzleChannel::Zero;
+            case 6: return TextureSwizzleChannel::One;
+            default: return TextureSwizzleChannel::Identity;
+        }
+    };
+    OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout, shader.pLayout + shader.nLayout};
+    for (auto & l : layoutArr) {
+        if(l.location == id){
+            if(l.swizzle_desc.r == 0 && l.swizzle_desc.g == 0
+               && l.swizzle_desc.b == 0 && l.swizzle_desc.a == 0){
+                return TextureSwizzle::identity();
+            }
+            return TextureSwizzle{
+                decode(l.swizzle_desc.r),
+                decode(l.swizzle_desc.g),
+                decode(l.swizzle_desc.b),
+                decode(l.swizzle_desc.a)
+            };
+        }
+    }
+    return TextureSwizzle::identity();
+}
+
 void GED3D12CommandBuffer::startBlitPass() {
     inBlitPass = true;
 };
@@ -1003,7 +1036,8 @@ void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GEBuffer> &bu
     }
 };
 
-void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> &texture, unsigned int index) {
+void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> &texture, unsigned int index,
+                                                       const TextureSwizzle & swizzle) {
     assert((!inComputePass && !inBlitPass) && "Cannot set Resource Const at a Vertex Func when not in render pass");
     auto *d3d12_texture = (GED3D12Texture *)texture.get();
 
@@ -1042,7 +1076,13 @@ void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> &t
         cpuDescHandle = d3d12_texture->uavDescHeap->GetGPUDescriptorHandleForHeapStart();
     }
 
-    commandList->SetDescriptorHeaps(1, d3d12_texture->srvDescHeap.GetAddressOf());
+    TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, index, currentRenderPipeline->vertexShader->internal);
+    ID3D12DescriptorHeap *heapToBind = d3d12_texture->srvDescHeap.Get();
+    if((d3d12_texture->currentState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) && !effective.isIdentity()){
+        heapToBind = d3d12_texture->getOrCreateSwizzledSrvHeap(parentQueue->engine->d3d12_device.Get(), effective);
+        cpuDescHandle = heapToBind->GetGPUDescriptorHandleForHeapStart();
+    }
+    commandList->SetDescriptorHeaps(1, &heapToBind);
     unsigned idx = getRootParameterIndexOfResource(index, currentRenderPipeline->vertexShader->internal);
     commandList->SetGraphicsRootDescriptorTable(idx, cpuDescHandle);
 };
@@ -1078,7 +1118,8 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> &
     }
 };
 
-void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned int index) {
+void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned int index,
+                                                         const TextureSwizzle & swizzle) {
     assert((!inComputePass && !inBlitPass) && "Cannot set Resource Const a Fragment Func when not in render pass");
     auto *d3d12_texture = (GED3D12Texture *)texture.get();
 
@@ -1117,7 +1158,13 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> 
         cpuDescHandle = d3d12_texture->uavDescHeap->GetGPUDescriptorHandleForHeapStart();
     }
 
-    commandList->SetDescriptorHeaps(1, d3d12_texture->srvDescHeap.GetAddressOf());
+    TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, index, currentRenderPipeline->fragmentShader->internal);
+    ID3D12DescriptorHeap *heapToBind = d3d12_texture->srvDescHeap.Get();
+    if((d3d12_texture->currentState & D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) && !effective.isIdentity()){
+        heapToBind = d3d12_texture->getOrCreateSwizzledSrvHeap(parentQueue->engine->d3d12_device.Get(), effective);
+        cpuDescHandle = heapToBind->GetGPUDescriptorHandleForHeapStart();
+    }
+    commandList->SetDescriptorHeaps(1, &heapToBind);
     unsigned rootParam = getRootParameterIndexOfResource(index, currentRenderPipeline->fragmentShader->internal);
     DEBUG_STREAM("Root Param With Texture:" << rootParam);
     commandList->SetGraphicsRootDescriptorTable(rootParam, cpuDescHandle);
@@ -1354,7 +1401,8 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEBuffer> &b
     }
 }
 
-void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id) {
+void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id,
+                                                        const TextureSwizzle & swizzle) {
     assert(inComputePass && "");
     auto *d3d12_texture = (GED3D12Texture *)texture.get();
 
@@ -1367,7 +1415,12 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &
     D3D12_HEAP_PROPERTIES heap_props;
     D3D12_HEAP_FLAGS heapFlags;
     d3d12_texture->resource->GetHeapProperties(&heap_props, &heapFlags);
-    commandList->SetDescriptorHeaps(1, d3d12_texture->srvDescHeap.GetAddressOf());
+    TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, id, currentComputePipeline->computeShader->internal);
+    ID3D12DescriptorHeap *heapToBind = d3d12_texture->srvDescHeap.Get();
+    if(!effective.isIdentity()){
+        heapToBind = d3d12_texture->getOrCreateSwizzledSrvHeap(parentQueue->engine->d3d12_device.Get(), effective);
+    }
+    commandList->SetDescriptorHeaps(1, &heapToBind);
     if (heap_props.Type == D3D12_HEAP_TYPE_READBACK) {
         auto resource_barrier = CD3DX12_RESOURCE_BARRIER::Transition(d3d12_texture->resource.Get(),
                                                                      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
@@ -1376,7 +1429,7 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &
     }
     commandList->SetComputeRootDescriptorTable(
         getRootParameterIndexOfResource(id, currentComputePipeline->computeShader->internal),
-        d3d12_texture->srvDescHeap->GetGPUDescriptorHandleForHeapStart());
+        heapToBind->GetGPUDescriptorHandleForHeapStart());
 }
 
 void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct,

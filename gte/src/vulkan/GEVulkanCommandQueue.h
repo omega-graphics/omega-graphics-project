@@ -84,6 +84,12 @@ _NAMESPACE_BEGIN_
 
         omegasl_shader_layout_desc_io_mode getResourceIOModeForResourceID(unsigned & id,omegasl_shader & shader);
 
+        /// Combine a runtime swizzle override with the shader layout's
+        /// `swizzle_desc` per the precedence rule in
+        /// `gte/docs/texture-swizzle-proposal.md` §4: runtime override
+        /// wins when non-identity, otherwise the layout default applies.
+        TextureSwizzle resolveEffectiveSwizzle(const TextureSwizzle & runtime,unsigned id,omegasl_shader & shader);
+
         void insertResourceBarrierIfNeeded(GEVulkanTexture *texture,unsigned & resource_id,omegasl_shader & shader);
         void insertResourceBarrierIfNeeded(GEVulkanBuffer *buffer,unsigned & resource_id,omegasl_shader & shader);
     public:
@@ -99,11 +105,13 @@ _NAMESPACE_BEGIN_
 
         void bindResourceAtVertexShader(SharedHandle<GEBuffer> &buffer, unsigned index) override;
 
-        void bindResourceAtVertexShader(SharedHandle<GETexture> &texture, unsigned index) override;
+        void bindResourceAtVertexShader(SharedHandle<GETexture> &texture, unsigned index,
+                                        const TextureSwizzle & swizzle) override;
 
         void bindResourceAtFragmentShader(SharedHandle<GEBuffer> &buffer, unsigned index) override;
 
-        void bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned  index) override;
+        void bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned  index,
+                                          const TextureSwizzle & swizzle) override;
 
         void setVertexBuffer(SharedHandle<GEBuffer> &buffer) override;
 
@@ -144,7 +152,8 @@ _NAMESPACE_BEGIN_
         void startComputePass(const GEComputePassDescriptor &desc) override;
         void setComputePipelineState(SharedHandle<GEComputePipelineState> &pipelineState) override;
         void bindResourceAtComputeShader(SharedHandle<GEBuffer> &buffer, unsigned int id) override;
-        void bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id) override;
+        void bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id,
+                                         const TextureSwizzle & swizzle) override;
         void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreads(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,

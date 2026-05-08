@@ -116,6 +116,13 @@ _NAMESPACE_BEGIN_
         /// for `Tex1DArray` / `Tex2DArray` / `Tex2DMSArray` it is the
         /// number of array layers. Ignored for non-array kinds.
         unsigned arrayLayers = 1;
+        /// @brief Default channel swizzle baked into the texture's primary
+        /// view at creation time. When non-identity, the backend allocates
+        /// the primary `VkImageView` / `MTLTexture` view / SRV with this
+        /// channel mapping, so every bind without a runtime override sees
+        /// the swizzled channels for free. A runtime override passed to
+        /// `bindResourceAt*` always takes precedence over this default.
+        TextureSwizzle defaultSwizzle = TextureSwizzle::identity();
     };
 
     /// @brief Resolve a descriptor's effective `TextureKind`. When the

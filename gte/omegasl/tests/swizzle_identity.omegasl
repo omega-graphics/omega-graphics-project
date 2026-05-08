@@ -1,0 +1,24 @@
+/// Texture-swizzle plan §A.5: an explicit identity swizzle (`rgba`)
+/// must be normalized away by Sema, so `swizzleDesc` is `nullopt` on
+/// the AST node and the emitted layout descriptor's `swizzle_desc`
+/// remains zero-initialized (the runtime's identity sentinel).
+
+struct VOut internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+texture2d albedo : 0 (swizzle=rgba);
+sampler2d samp   : 1;
+
+vertex VOut swizzleIdentityVert(uint vid : VertexID){
+    VOut r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv  = float2(0.0, 0.0);
+    return r;
+}
+
+[in albedo, in samp]
+fragment float4 swizzleIdentityFrag(VOut raster){
+    return sample(samp, albedo, raster.uv);
+}

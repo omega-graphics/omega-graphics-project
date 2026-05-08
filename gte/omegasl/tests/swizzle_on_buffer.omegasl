@@ -1,0 +1,18 @@
+/// Texture-swizzle plan §A.5 (negative test): `swizzle=` is only
+/// valid on texture1d/2d/3d (and their array / cube / MS variants).
+/// Applying it to a `buffer<T>` resource must produce:
+///   "`swizzle` is only valid on texture1d/2d/3d resources, got `buffer`"
+///
+/// Test runner: this file MUST fail to compile.
+
+struct Pixels {
+    float4 c;
+};
+
+buffer<Pixels> data : 0 (swizzle=bgra);
+
+[in data]
+compute(x=8,y=8,z=1)
+void swizzleOnBuffer(uint3 tid : GlobalThreadID){
+    float4 c = data[0].c;
+}

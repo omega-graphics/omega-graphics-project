@@ -121,7 +121,9 @@ _NAMESPACE_BEGIN_
             /// @brief Binds a Texture Resource to a Descriptor in the scope of the Vertex Shader.
             /// @param texture The Resource to bind.
             /// @param id The OmegaSL Binding id.
-            void bindResourceAtVertexShader(SharedHandle<GETexture> & texture,unsigned id);
+            /// @param swizzle Optional channel remap. Identity (default) keeps existing behavior; see TextureSwizzle.
+            void bindResourceAtVertexShader(SharedHandle<GETexture> & texture,unsigned id,
+                                            const TextureSwizzle & swizzle = TextureSwizzle::identity());
 
             /// @brief Binds a Buffer Resource to a Descriptor in the scope of the Fragment Shader.
             /// @param buffer The Resource to bind.
@@ -131,7 +133,9 @@ _NAMESPACE_BEGIN_
             /// @brief Binds a Texture Resource to a Descriptor in the scope of the Fragment Shader.
             /// @param texture The Resource to bind.
             /// @param id The OmegaSL Binding id.
-            void bindResourceAtFragmentShader(SharedHandle<GETexture> & texture,unsigned id);
+            /// @param swizzle Optional channel remap. Identity (default) keeps existing behavior; see TextureSwizzle.
+            void bindResourceAtFragmentShader(SharedHandle<GETexture> & texture,unsigned id,
+                                              const TextureSwizzle & swizzle = TextureSwizzle::identity());
 
             /// @brief Dynamically sets the Viewports on the Render Pipeline.
             /// @param viewports The GEViewports
@@ -249,7 +253,8 @@ _NAMESPACE_BEGIN_
             void bindResourceAtComputeShader(SharedHandle<GEBuffer> & buffer,unsigned id);
 
             /// @see GECommandBuffer
-            void bindResourceAtComputeShader(SharedHandle<GETexture> & texture,unsigned id);
+            void bindResourceAtComputeShader(SharedHandle<GETexture> & texture,unsigned id,
+                                             const TextureSwizzle & swizzle = TextureSwizzle::identity());
 
             /// @see GECommandBuffer
             void dispatchThreadgroups(unsigned x, unsigned y, unsigned z);

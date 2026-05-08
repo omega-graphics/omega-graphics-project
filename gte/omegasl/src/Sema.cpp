@@ -1767,7 +1767,50 @@ namespace omegasl {
 
                 }
 
-
+                /// 4. Validate any `(swizzle=...)` clause attached by the
+                /// parser. Encoding 0=Identity, 1=R, 2=G, 3=B, 4=A,
+                /// 5=Zero, 6=One. The parser writes a 0 byte for any
+                /// character it didn't recognize — we surface a diagnostic
+                /// here at the offending column. See
+                /// `gte/docs/OmegaSL-Swizzle-Subgroup-Plan.md` §A.5.
+                if(_decl->swizzleDesc.has_value()){
+                    bool isTexture =
+                        ty == ast::builtins::texture1d_type
+                        || ty == ast::builtins::texture2d_type
+                        || ty == ast::builtins::texture3d_type
+                        || ty == ast::builtins::texture1d_array_type
+                        || ty == ast::builtins::texture2d_array_type
+                        || ty == ast::builtins::texturecube_type
+                        || ty == ast::builtins::texturecube_array_type
+                        || ty == ast::builtins::texture2d_ms_type
+                        || ty == ast::builtins::texture2d_ms_array_type;
+                    if(!isTexture){
+                        auto e = std::make_unique<TypeError>(
+                            std::string("`swizzle` is only valid on texture1d/2d/3d resources, got `")
+                            + _decl->typeExpr->name + "`");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    auto & sw = *_decl->swizzleDesc;
+                    // 0 means "the parser saw a character it could not
+                    // map" — either a non-{r,g,b,a,0,1} char or a missing
+                    // position (length < 4).
+                    if(sw.r == 0 || sw.g == 0 || sw.b == 0 || sw.a == 0){
+                        auto e = std::make_unique<TypeError>(
+                            std::string("`swizzle` value must be exactly 4 characters drawn from {r,g,b,a,0,1} (case-insensitive); got `")
+                            + std::string(_decl->name) + "`'s clause");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    // Identity (R,G,B,A) → encoding 1,2,3,4 → normalize
+                    // to nullopt so the codegen path has a single
+                    // "is swizzle present?" check.
+                    if(sw.r == 1 && sw.g == 2 && sw.b == 3 && sw.a == 4){
+                        _decl->swizzleDesc.reset();
+                    }
+                }
 
 
                 break;
