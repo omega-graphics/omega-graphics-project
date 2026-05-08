@@ -60,6 +60,28 @@ namespace omegasl {
         (subject == KW_TY_FLOAT4X4) ||
         /// Note: double/double2/3/4 intentionally omitted.
         /// Metal has no double support; GLSL requires extensions.
+        /// §4.1 16-bit types (FLOAT16-gated).
+        (subject == KW_TY_HALF) ||
+        (subject == KW_TY_HALF2) ||
+        (subject == KW_TY_HALF3) ||
+        (subject == KW_TY_HALF4) ||
+        (subject == KW_TY_SHORT) ||
+        (subject == KW_TY_SHORT2) ||
+        (subject == KW_TY_SHORT3) ||
+        (subject == KW_TY_SHORT4) ||
+        (subject == KW_TY_USHORT) ||
+        (subject == KW_TY_USHORT2) ||
+        (subject == KW_TY_USHORT3) ||
+        (subject == KW_TY_USHORT4) ||
+        /// §4.2 64-bit ints (INT64-gated).
+        (subject == KW_TY_LONG) ||
+        (subject == KW_TY_LONG2) ||
+        (subject == KW_TY_LONG3) ||
+        (subject == KW_TY_LONG4) ||
+        (subject == KW_TY_ULONG) ||
+        (subject == KW_TY_ULONG2) ||
+        (subject == KW_TY_ULONG3) ||
+        (subject == KW_TY_ULONG4) ||
         (subject == KW_TY_BUFFER) ||
         (subject == KW_TY_TEXTURE1D) ||
         (subject == KW_TY_TEXTURE2D) ||
@@ -347,6 +369,13 @@ namespace omegasl {
                     PUSH_CHAR(c);
                     PUSH_TOK(TOK_COLON);
                 }
+                case '?' : {
+                    /// §3.2 — ternary `?:`. The matching `:` is already
+                    /// `TOK_COLON`, so the parser can spot the ternary
+                    /// shape from the `?` token alone.
+                    PUSH_CHAR(c);
+                    PUSH_TOK(TOK_QUESTION);
+                }
                 case ';' : {
                     PUSH_CHAR(c);
                     PUSH_TOK(TOK_SEMICOLON);
@@ -395,15 +424,40 @@ namespace omegasl {
                             }
                         }
                         c = AHEAD_CHAR();
-                        /// Suffixes: `f`/`F` = float, `u`/`U` = uint.
-                        /// `f` is only valid on decimal literals (never on hex).
+                        /// Suffixes:
+                        ///   `f` / `F`     = float          (decimal only)
+                        ///   `h` / `H`     = half (§4.1)    (decimal only)
+                        ///   `u` / `U`     = uint
+                        ///   `l` / `L`     = long  (§4.2)   (signed 64-bit)
+                        ///   `ul` / `UL` / `lu` / `LU` = ulong (§4.2)
+                        /// `f`/`h` are not valid on hex literals.
                         if((c == 'f' || c == 'F') && !isHex){
+                            c = NEXT_CHAR();
+                            PUSH_CHAR(c);
+                        }
+                        else if((c == 'h' || c == 'H') && !isHex){
                             c = NEXT_CHAR();
                             PUSH_CHAR(c);
                         }
                         else if(c == 'u' || c == 'U'){
                             c = NEXT_CHAR();
                             PUSH_CHAR(c);
+                            /// Optional trailing `l`/`L` to spell `ul`.
+                            c = AHEAD_CHAR();
+                            if(c == 'l' || c == 'L'){
+                                c = NEXT_CHAR();
+                                PUSH_CHAR(c);
+                            }
+                        }
+                        else if(c == 'l' || c == 'L'){
+                            c = NEXT_CHAR();
+                            PUSH_CHAR(c);
+                            /// Optional trailing `u`/`U` to spell `lu`.
+                            c = AHEAD_CHAR();
+                            if(c == 'u' || c == 'U'){
+                                c = NEXT_CHAR();
+                                PUSH_CHAR(c);
+                            }
                         }
                         PUSH_TOK(TOK_NUM_LITERAL);
                     }

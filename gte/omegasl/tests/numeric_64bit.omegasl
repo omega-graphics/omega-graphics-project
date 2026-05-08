@@ -1,0 +1,36 @@
+/// §4.2 — 64-bit integer types. Exercises `long`/`ulong` and their
+/// 2/3/4 vector forms. The `#requires(INT64)` directive trips the
+/// runtime feature-bit and (for GLSL) emits the
+/// `GL_EXT_shader_explicit_arithmetic_types_int64` extension header.
+#requires(INT64)
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+vertex VertexRaster longVert(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv  = float2(0.0, 0.0);
+    return r;
+}
+
+fragment float4 longFrag(VertexRaster raster){
+    /// Scalar long/ulong with the literal-suffix forms.
+    long  a = 1234567890123L;
+    ulong b = 9999999999UL;
+    /// Implicit coercion of an int literal into a 64-bit slot.
+    long  c = 42;
+    /// Vector long/ulong via the make_* constructors.
+    long2  v2 = make_long2(1L, 2L);
+    long3  v3 = make_long3(-1L, 0L, 1L);
+    long4  v4 = make_long4(0L, 1L, 2L, 3L);
+    ulong2 u2 = make_ulong2(10UL, 20UL);
+    ulong4 u4 = make_ulong4(0UL, 1UL, 2UL, 3UL);
+
+    /// Cast also trips the bit.
+    long c_cast = (long)c;
+
+    return float4(0.0, 0.0, 0.0, 1.0);
+}

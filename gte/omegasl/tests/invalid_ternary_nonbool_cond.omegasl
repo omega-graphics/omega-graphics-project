@@ -1,0 +1,20 @@
+/// §3.2 — the condition must resolve to `bool`. Numeric scalars are
+/// rejected (callers should write `x != 0 ? ... : ...`) so the
+/// portable surface stays uniform across HLSL/MSL/GLSL.
+
+struct VertexRaster internal {
+    float4 pos : Position;
+};
+
+vertex VertexRaster v(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    return r;
+}
+
+fragment float4 f(VertexRaster raster){
+    int x = 3;
+    /// `x` is int — should not be silently treated as a truth value.
+    float bad = x ? 1.0 : 0.0;
+    return float4(0.0, 0.0, 0.0, 1.0);
+}

@@ -55,6 +55,31 @@ namespace omegasl {
             DECLARE_BUILTIN_TYPE(uint2_type);
             DECLARE_BUILTIN_TYPE(uint3_type);
             DECLARE_BUILTIN_TYPE(uint4_type);
+            /// §4.1 16-bit float (`half`) — gated on FLOAT16.
+            DECLARE_BUILTIN_TYPE(half_type);
+            DECLARE_BUILTIN_TYPE(half2_type);
+            DECLARE_BUILTIN_TYPE(half3_type);
+            DECLARE_BUILTIN_TYPE(half4_type);
+            /// §4.1 16-bit signed/unsigned ints (`short`/`ushort`) —
+            /// share the FLOAT16 gate per Feature-Gap-Survey rationale
+            /// (every backend that ships float16 also ships int16).
+            DECLARE_BUILTIN_TYPE(short_type);
+            DECLARE_BUILTIN_TYPE(short2_type);
+            DECLARE_BUILTIN_TYPE(short3_type);
+            DECLARE_BUILTIN_TYPE(short4_type);
+            DECLARE_BUILTIN_TYPE(ushort_type);
+            DECLARE_BUILTIN_TYPE(ushort2_type);
+            DECLARE_BUILTIN_TYPE(ushort3_type);
+            DECLARE_BUILTIN_TYPE(ushort4_type);
+            /// §4.2 64-bit ints (`long`/`ulong`) — gated on INT64.
+            DECLARE_BUILTIN_TYPE(long_type);
+            DECLARE_BUILTIN_TYPE(long2_type);
+            DECLARE_BUILTIN_TYPE(long3_type);
+            DECLARE_BUILTIN_TYPE(long4_type);
+            DECLARE_BUILTIN_TYPE(ulong_type);
+            DECLARE_BUILTIN_TYPE(ulong2_type);
+            DECLARE_BUILTIN_TYPE(ulong3_type);
+            DECLARE_BUILTIN_TYPE(ulong4_type);
             DECLARE_BUILTIN_TYPE(float_type);
             DECLARE_BUILTIN_TYPE(float2_type);
             DECLARE_BUILTIN_TYPE(float3_type);
@@ -97,6 +122,23 @@ namespace omegasl {
             DECLARE_BUILTIN_FUNC(make_uint2);
             DECLARE_BUILTIN_FUNC(make_uint3);
             DECLARE_BUILTIN_FUNC(make_uint4);
+            /// §4.1 vector constructors for the 16-bit family.
+            DECLARE_BUILTIN_FUNC(make_half2);
+            DECLARE_BUILTIN_FUNC(make_half3);
+            DECLARE_BUILTIN_FUNC(make_half4);
+            DECLARE_BUILTIN_FUNC(make_short2);
+            DECLARE_BUILTIN_FUNC(make_short3);
+            DECLARE_BUILTIN_FUNC(make_short4);
+            DECLARE_BUILTIN_FUNC(make_ushort2);
+            DECLARE_BUILTIN_FUNC(make_ushort3);
+            DECLARE_BUILTIN_FUNC(make_ushort4);
+            /// §4.2 vector constructors for the 64-bit int family.
+            DECLARE_BUILTIN_FUNC(make_long2);
+            DECLARE_BUILTIN_FUNC(make_long3);
+            DECLARE_BUILTIN_FUNC(make_long4);
+            DECLARE_BUILTIN_FUNC(make_ulong2);
+            DECLARE_BUILTIN_FUNC(make_ulong3);
+            DECLARE_BUILTIN_FUNC(make_ulong4);
             DECLARE_BUILTIN_FUNC(make_float2x2);
             DECLARE_BUILTIN_FUNC(make_float3x3);
             DECLARE_BUILTIN_FUNC(make_float4x4);
@@ -381,6 +423,13 @@ namespace omegasl {
             std::optional<int> i_num;
             std::optional<unsigned int> ui_num;
             std::optional<double> d_num;
+            /// §4.2 64-bit integer literals (`123L` / `123UL`). Storing
+            /// the wide value preserves bit patterns that wouldn't fit
+            /// in i_num/ui_num. Half literals (`1.0h`) reuse f_num — the
+            /// 16-bit precision contract is enforced at type resolution
+            /// time, not at the literal level.
+            std::optional<int64_t> i64_num;
+            std::optional<uint64_t> ui64_num;
             /// Bool Literal
             std::optional<bool> b_val;
             /// Str Literal
@@ -390,6 +439,8 @@ namespace omegasl {
             bool isInt() const;
             bool isUint() const;
             bool isDouble() const;
+            bool isLong() const;
+            bool isUlong() const;
             bool isBool() const;
 
             bool isString() const;
@@ -438,6 +489,16 @@ namespace omegasl {
         struct CastExpr : public Expr {
             TypeExpr *targetType;
             Expr *expr;
+        };
+
+        /// §3.2 — `cond ? thenExpr : elseExpr`. Sema resolves the
+        /// expression's type to the common type of `thenExpr` and
+        /// `elseExpr`; codegen emits `(cond ? a : b)` straight through
+        /// (the spelling is identical on every backend).
+        struct TernaryExpr : public Expr {
+            Expr *condition;
+            Expr *thenExpr;
+            Expr *elseExpr;
         };
 
     }

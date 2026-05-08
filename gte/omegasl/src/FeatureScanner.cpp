@@ -77,6 +77,29 @@ bool isMSTexture(ast::Type *t) {
            t == ast::builtins::texture2d_ms_array_type;
 }
 
+/// §4.1 / §4.2 — feature bits implied by a *resolved* builtin Type.
+/// Returns 0 for types that don't trip a portability gate (`int`,
+/// `float`, textures, etc.). User struct types are handled by
+/// `featureBitsForStructFields` so the recursion can detect cycles.
+uint64_t featureBitsForBuiltin(ast::Type *t) {
+    using namespace ast::builtins;
+    if (t == nullptr) return 0;
+    /// 16-bit family — float16 + int16/uint16 share OMEGASL_FEATURE_BIT_FLOAT16
+    /// per the survey rationale (every modern surface ships them
+    /// together).
+    if (t == half_type   || t == half2_type   || t == half3_type   || t == half4_type   ||
+        t == short_type  || t == short2_type  || t == short3_type  || t == short4_type  ||
+        t == ushort_type || t == ushort2_type || t == ushort3_type || t == ushort4_type) {
+        return OMEGASL_FEATURE_BIT_FLOAT16;
+    }
+    /// 64-bit ints
+    if (t == long_type   || t == long2_type   || t == long3_type   || t == long4_type   ||
+        t == ulong_type  || t == ulong2_type  || t == ulong3_type  || t == ulong4_type) {
+        return OMEGASL_FEATURE_BIT_INT64;
+    }
+    return 0;
+}
+
 } // namespace
 
 FeatureScanner::FeatureScanner(ast::SemFrontend *sem,
@@ -99,8 +122,21 @@ FeatureScanner::FeatureScanner(ast::SemFrontend *sem,
 }
 
 void FeatureScanner::run() {
-    /// Pass 1: per-decl direct uses. After this `decl->usedFeatures`
-    /// reflects only what the body of `decl` itself touches.
+    /// Pass 1a: type-driven feature use. Walks the static surface of
+    /// each function — params, return type, var decl types, cast
+    /// targets — and trips FLOAT16 / INT64 when those types appear.
+    /// Done *before* the body walk so the bits are available when
+    /// fold-in propagates through the call graph.
+    for (auto *fn : userFuncs_) {
+        scanFuncTypes(fn);
+    }
+    for (auto *sd : shaderDecls_) {
+        scanFuncTypes(sd);
+    }
+
+    /// Pass 1b: per-decl direct uses (existing call-trigger path).
+    /// After this `decl->usedFeatures` reflects what the body itself
+    /// touches plus the type-driven bits from Pass 1a.
     for (auto *fn : userFuncs_) {
         scanFuncBody(fn);
     }
@@ -149,6 +185,9 @@ void FeatureScanner::scanStmt(ast::Stmt *stmt, ast::FuncDecl *enclosing) {
     switch (stmt->type) {
         case VAR_DECL: {
             auto *vd = static_cast<ast::VarDecl *>(stmt);
+            /// Local-variable type counts as a use of any feature-gated
+            /// type it names — `half x; long y;` should trip the bits.
+            inspectTypeExpr(vd->typeExpr, enclosing);
             if (vd->spec.initializer.has_value()) {
                 scanExpr(vd->spec.initializer.value(), enclosing);
             }
@@ -249,7 +288,19 @@ void FeatureScanner::scanExpr(ast::Expr *expr, ast::FuncDecl *enclosing) {
         }
         case CAST_EXPR: {
             auto *c = static_cast<ast::CastExpr *>(expr);
+            /// `(half)x` is a use of `half` even when the source isn't.
+            inspectTypeExpr(c->targetType, enclosing);
             scanExpr(c->expr, enclosing);
+            break;
+        }
+        case TERNARY_EXPR: {
+            /// §3.2 — walk all three children so a feature-tripping
+            /// construct nested in any branch (or the condition) gets
+            /// counted.
+            auto *t = static_cast<ast::TernaryExpr *>(expr);
+            scanExpr(t->condition, enclosing);
+            scanExpr(t->thenExpr, enclosing);
+            scanExpr(t->elseExpr, enclosing);
             break;
         }
         case ARRAY_EXPR: {
@@ -262,6 +313,73 @@ void FeatureScanner::scanExpr(ast::Expr *expr, ast::FuncDecl *enclosing) {
         default:
             break;
     }
+}
+
+void FeatureScanner::inspectTypeExpr(ast::TypeExpr *typeExpr, ast::FuncDecl *enclosing) {
+    if (!typeExpr || !enclosing) return;
+
+    ast::Type *resolved = sem_->resolveTypeWithExpr(typeExpr);
+    if (!resolved) return;
+
+    /// Direct hit: the TypeExpr names a builtin in the new families.
+    enclosing->usedFeatures |= featureBitsForBuiltin(resolved);
+
+    /// `buffer<T>` and similar generics carry their element type as
+    /// `typeExpr->args[0]`. Walk the args so a `buffer<half>` resource
+    /// counts as a FLOAT16 use even though the outer type is the
+    /// neutral `buffer_type`.
+    if (typeExpr->hasTypeArgs) {
+        for (auto *arg : typeExpr->args) {
+            inspectTypeExpr(arg, enclosing);
+        }
+    }
+
+    /// User struct: walk fields and union the bits. Memoize the result
+    /// per resolved struct since the same type often appears in many
+    /// places. The kStructInFlight sentinel breaks self-referential
+    /// recursion (returns 0 for the back-edge).
+    if (!resolved->builtin && !resolved->fields.empty()) {
+        auto cacheIt = structTypeFeatureCache_.find(resolved);
+        if (cacheIt != structTypeFeatureCache_.end()) {
+            uint64_t cached = cacheIt->second;
+            if (cached != kStructInFlight) {
+                enclosing->usedFeatures |= cached;
+            }
+            return;
+        }
+        structTypeFeatureCache_[resolved] = kStructInFlight;
+        uint64_t bits = 0;
+        for (auto &kv : resolved->fields) {
+            ast::TypeExpr *fieldTy = kv.second;
+            if (!fieldTy) continue;
+            ast::Type *fieldResolved = sem_->resolveTypeWithExpr(fieldTy);
+            if (!fieldResolved) continue;
+            bits |= featureBitsForBuiltin(fieldResolved);
+            /// Recurse into nested user structs and generic args.
+            if (fieldTy->hasTypeArgs) {
+                for (auto *arg : fieldTy->args) {
+                    inspectTypeExpr(arg, enclosing);
+                }
+            }
+            if (!fieldResolved->builtin) {
+                inspectTypeExpr(fieldTy, enclosing);
+            }
+        }
+        structTypeFeatureCache_[resolved] = bits;
+        enclosing->usedFeatures |= bits;
+    }
+}
+
+void FeatureScanner::scanFuncTypes(ast::FuncDecl *fn) {
+    if (!fn) return;
+    /// Function/shader signature: parameters and return type.
+    for (auto &p : fn->params) {
+        inspectTypeExpr(p.typeExpr, fn);
+    }
+    inspectTypeExpr(fn->returnType, fn);
+    /// Note: var decl + cast types are handled in the body walk so we
+    /// don't double-count them here. Same for nested struct fields,
+    /// which are visited when a struct-typed VarDecl shows up.
 }
 
 void FeatureScanner::inspectCall(ast::CallExpr *call, ast::FuncDecl *enclosing) {

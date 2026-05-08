@@ -35,6 +35,29 @@ namespace omegasl::ast {
         Type *uint3_type;
         Type *uint4_type;
 
+        /// §4.1 16-bit numerics
+        Type *half_type;
+        Type *half2_type;
+        Type *half3_type;
+        Type *half4_type;
+        Type *short_type;
+        Type *short2_type;
+        Type *short3_type;
+        Type *short4_type;
+        Type *ushort_type;
+        Type *ushort2_type;
+        Type *ushort3_type;
+        Type *ushort4_type;
+        /// §4.2 64-bit ints
+        Type *long_type;
+        Type *long2_type;
+        Type *long3_type;
+        Type *long4_type;
+        Type *ulong_type;
+        Type *ulong2_type;
+        Type *ulong3_type;
+        Type *ulong4_type;
+
         Type *buffer_type;
         Type *texture1d_type;
         Type *texture2d_type;
@@ -60,6 +83,21 @@ namespace omegasl::ast {
         FuncType *make_uint2;
         FuncType *make_uint3;
         FuncType *make_uint4;
+        FuncType *make_half2;
+        FuncType *make_half3;
+        FuncType *make_half4;
+        FuncType *make_short2;
+        FuncType *make_short3;
+        FuncType *make_short4;
+        FuncType *make_ushort2;
+        FuncType *make_ushort3;
+        FuncType *make_ushort4;
+        FuncType *make_long2;
+        FuncType *make_long3;
+        FuncType *make_long4;
+        FuncType *make_ulong2;
+        FuncType *make_ulong3;
+        FuncType *make_ulong4;
         FuncType *make_float2x2;
         FuncType *make_float3x3;
         FuncType *make_float4x4;
@@ -117,6 +155,34 @@ namespace omegasl::ast {
                 uint3_type = new Type{KW_TY_UINT3,global_scope};
                 uint4_type = new Type{KW_TY_UINT4,global_scope};
 
+                /// §4.1 16-bit numerics. The Type struct carries no
+                /// width metadata — the per-backend `writeTypeName`
+                /// switches on the pointer identity, so the only thing
+                /// that matters here is that each name resolves to a
+                /// unique builtin Type *.
+                half_type = new Type{KW_TY_HALF,global_scope};
+                half2_type = new Type{KW_TY_HALF2,global_scope};
+                half3_type = new Type{KW_TY_HALF3,global_scope};
+                half4_type = new Type{KW_TY_HALF4,global_scope};
+                short_type = new Type{KW_TY_SHORT,global_scope};
+                short2_type = new Type{KW_TY_SHORT2,global_scope};
+                short3_type = new Type{KW_TY_SHORT3,global_scope};
+                short4_type = new Type{KW_TY_SHORT4,global_scope};
+                ushort_type = new Type{KW_TY_USHORT,global_scope};
+                ushort2_type = new Type{KW_TY_USHORT2,global_scope};
+                ushort3_type = new Type{KW_TY_USHORT3,global_scope};
+                ushort4_type = new Type{KW_TY_USHORT4,global_scope};
+
+                /// §4.2 64-bit ints.
+                long_type = new Type{KW_TY_LONG,global_scope};
+                long2_type = new Type{KW_TY_LONG2,global_scope};
+                long3_type = new Type{KW_TY_LONG3,global_scope};
+                long4_type = new Type{KW_TY_LONG4,global_scope};
+                ulong_type = new Type{KW_TY_ULONG,global_scope};
+                ulong2_type = new Type{KW_TY_ULONG2,global_scope};
+                ulong3_type = new Type{KW_TY_ULONG3,global_scope};
+                ulong4_type = new Type{KW_TY_ULONG4,global_scope};
+
                 buffer_type = new Type{KW_TY_BUFFER,global_scope,true,{"type"}};
                 texture1d_type = new Type{KW_TY_TEXTURE1D,global_scope};
                 texture2d_type = new Type{KW_TY_TEXTURE2D,global_scope};
@@ -151,6 +217,21 @@ namespace omegasl::ast {
                 make_uint2 = new FuncType{BUILTIN_MAKE_UINT2,global_scope,true,{},{},TypeExpr::Create(uint2_type)};
                 make_uint3 = new FuncType{BUILTIN_MAKE_UINT3,global_scope,true,{},{},TypeExpr::Create(uint3_type)};
                 make_uint4 = new FuncType{BUILTIN_MAKE_UINT4,global_scope,true,{},{},TypeExpr::Create(uint4_type)};
+                make_half2 = new FuncType{BUILTIN_MAKE_HALF2,global_scope,true,{},{},TypeExpr::Create(half2_type)};
+                make_half3 = new FuncType{BUILTIN_MAKE_HALF3,global_scope,true,{},{},TypeExpr::Create(half3_type)};
+                make_half4 = new FuncType{BUILTIN_MAKE_HALF4,global_scope,true,{},{},TypeExpr::Create(half4_type)};
+                make_short2 = new FuncType{BUILTIN_MAKE_SHORT2,global_scope,true,{},{},TypeExpr::Create(short2_type)};
+                make_short3 = new FuncType{BUILTIN_MAKE_SHORT3,global_scope,true,{},{},TypeExpr::Create(short3_type)};
+                make_short4 = new FuncType{BUILTIN_MAKE_SHORT4,global_scope,true,{},{},TypeExpr::Create(short4_type)};
+                make_ushort2 = new FuncType{BUILTIN_MAKE_USHORT2,global_scope,true,{},{},TypeExpr::Create(ushort2_type)};
+                make_ushort3 = new FuncType{BUILTIN_MAKE_USHORT3,global_scope,true,{},{},TypeExpr::Create(ushort3_type)};
+                make_ushort4 = new FuncType{BUILTIN_MAKE_USHORT4,global_scope,true,{},{},TypeExpr::Create(ushort4_type)};
+                make_long2 = new FuncType{BUILTIN_MAKE_LONG2,global_scope,true,{},{},TypeExpr::Create(long2_type)};
+                make_long3 = new FuncType{BUILTIN_MAKE_LONG3,global_scope,true,{},{},TypeExpr::Create(long3_type)};
+                make_long4 = new FuncType{BUILTIN_MAKE_LONG4,global_scope,true,{},{},TypeExpr::Create(long4_type)};
+                make_ulong2 = new FuncType{BUILTIN_MAKE_ULONG2,global_scope,true,{},{},TypeExpr::Create(ulong2_type)};
+                make_ulong3 = new FuncType{BUILTIN_MAKE_ULONG3,global_scope,true,{},{},TypeExpr::Create(ulong3_type)};
+                make_ulong4 = new FuncType{BUILTIN_MAKE_ULONG4,global_scope,true,{},{},TypeExpr::Create(ulong4_type)};
                 make_float2x2 = new FuncType{BUILTIN_MAKE_FLOAT2X2,global_scope,true,{},{},TypeExpr::Create(float2x2_type)};
                 make_float2x3 = new FuncType{BUILTIN_MAKE_FLOAT2X3,global_scope,true,{},{},TypeExpr::Create(float2x3_type)};
                 make_float2x4 = new FuncType{BUILTIN_MAKE_FLOAT2X4,global_scope,true,{},{},TypeExpr::Create(float2x4_type)};
@@ -274,6 +355,26 @@ namespace omegasl::ast {
                 delete uint2_type;
                 delete uint3_type;
                 delete uint4_type;
+                delete half_type;
+                delete half2_type;
+                delete half3_type;
+                delete half4_type;
+                delete short_type;
+                delete short2_type;
+                delete short3_type;
+                delete short4_type;
+                delete ushort_type;
+                delete ushort2_type;
+                delete ushort3_type;
+                delete ushort4_type;
+                delete long_type;
+                delete long2_type;
+                delete long3_type;
+                delete long4_type;
+                delete ulong_type;
+                delete ulong2_type;
+                delete ulong3_type;
+                delete ulong4_type;
                 delete buffer_type;
                 delete texture1d_type;
                 delete texture2d_type;
@@ -297,6 +398,21 @@ namespace omegasl::ast {
                 delete make_uint2;
                 delete make_uint3;
                 delete make_uint4;
+                delete make_half2;
+                delete make_half3;
+                delete make_half4;
+                delete make_short2;
+                delete make_short3;
+                delete make_short4;
+                delete make_ushort2;
+                delete make_ushort3;
+                delete make_ushort4;
+                delete make_long2;
+                delete make_long3;
+                delete make_long4;
+                delete make_ulong2;
+                delete make_ulong3;
+                delete make_ulong4;
                 delete make_float2x2;
                 delete make_float2x3;
                 delete make_float2x4;
@@ -342,6 +458,14 @@ namespace omegasl::ast {
 
     bool LiteralExpr::isUint() const {
         return ui_num.has_value();
+    }
+
+    bool LiteralExpr::isLong() const {
+        return i64_num.has_value();
+    }
+
+    bool LiteralExpr::isUlong() const {
+        return ui64_num.has_value();
     }
 
     bool LiteralExpr::isBool() const {

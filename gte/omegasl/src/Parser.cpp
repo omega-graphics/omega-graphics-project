@@ -1666,25 +1666,75 @@ namespace omegasl {
             _e->type = LITERAL_EXPR;
             const auto &s = first_tok.str;
             bool isHex = s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X');
-            bool hasUintSuffix = !s.empty() && (s.back() == 'u' || s.back() == 'U');
-            bool hasFloatSuffix = !s.empty() && (s.back() == 'f' || s.back() == 'F');
+
+            /// Suffix detection. Order matters — multi-char suffixes
+            /// (`ul`/`lu`) must be checked before single-char (`u`/`l`)
+            /// so we don't shave off only one char.
+            auto endsWith = [&](OmegaCommon::StrRef suf) -> bool {
+                return s.size() >= suf.size() &&
+                       std::equal(s.end() - suf.size(), s.end(), suf.begin());
+            };
+            size_t suffixLen = 0;
+            bool hasFloatSuffix = false;
+            bool hasHalfSuffix  = false;
+            bool hasUintSuffix  = false;
+            bool hasLongSuffix  = false;
+            bool hasUlongSuffix = false;
+            if(!s.empty()){
+                if(endsWith("ul") || endsWith("uL") || endsWith("Ul") || endsWith("UL") ||
+                   endsWith("lu") || endsWith("lU") || endsWith("Lu") || endsWith("LU")){
+                    hasUlongSuffix = true; suffixLen = 2;
+                }
+                else if(s.back() == 'u' || s.back() == 'U'){
+                    hasUintSuffix = true; suffixLen = 1;
+                }
+                else if(s.back() == 'l' || s.back() == 'L'){
+                    hasLongSuffix = true; suffixLen = 1;
+                }
+                else if((s.back() == 'h' || s.back() == 'H') && !isHex){
+                    hasHalfSuffix = true; suffixLen = 1;
+                }
+                else if((s.back() == 'f' || s.back() == 'F') && !isHex){
+                    hasFloatSuffix = true; suffixLen = 1;
+                }
+            }
+
             if(isHex){
-                /// Strip `0x` prefix and optional `u` suffix, parse as unsigned.
-                OmegaCommon::String digits = s.substr(2, s.size() - 2 - (hasUintSuffix ? 1 : 0));
-                unsigned long v = std::stoul(digits, nullptr, 16);
-                if(hasUintSuffix || v > static_cast<unsigned long>(std::numeric_limits<int>::max())){
+                /// Strip `0x` prefix and any single-char unsigned/long
+                /// suffix, parse as unsigned 64-bit. Width gets demoted
+                /// based on the value range when no suffix is present;
+                /// `L`/`UL` suffixes pin the wider type.
+                OmegaCommon::String digits = s.substr(2, s.size() - 2 - suffixLen);
+                uint64_t v = std::stoull(digits, nullptr, 16);
+                if(hasUlongSuffix){
+                    _e->ui64_num = v;
+                }
+                else if(hasLongSuffix){
+                    _e->i64_num = static_cast<int64_t>(v);
+                }
+                else if(hasUintSuffix || v > static_cast<uint64_t>(std::numeric_limits<int>::max())){
                     _e->ui_num = static_cast<unsigned>(v);
                 }
                 else {
                     _e->i_num = static_cast<int>(v);
                 }
             }
-            else if(s.find('.') != std::string::npos || hasFloatSuffix){
+            else if(s.find('.') != std::string::npos || hasFloatSuffix || hasHalfSuffix){
+                /// Half literals (`1.0h`) reuse f_num — Sema's literal
+                /// coercion rules already let a float literal initialize
+                /// a `half` slot. The `h`-suffix recognition exists so
+                /// the syntax doesn't error; the underlying storage is
+                /// the same.
                 _e->f_num = std::stof(s);
             }
+            else if(hasUlongSuffix){
+                _e->ui64_num = std::stoull(s.substr(0, s.size() - suffixLen));
+            }
+            else if(hasLongSuffix){
+                _e->i64_num = static_cast<int64_t>(std::stoll(s.substr(0, s.size() - suffixLen)));
+            }
             else if(hasUintSuffix){
-                /// Strip trailing `u`/`U`.
-                _e->ui_num = static_cast<unsigned>(std::stoul(s.substr(0, s.size() - 1)));
+                _e->ui_num = static_cast<unsigned>(std::stoul(s.substr(0, s.size() - suffixLen)));
             }
             else {
                 _e->i_num = std::stoi(s);
@@ -2043,6 +2093,53 @@ namespace omegasl {
         if(!b){
             return nullptr;
         }
+
+        /// §3.2 — ternary `cond ? a : b`. Right-associative: the `else`
+        /// branch is parsed via a recursive `parseExpr` call so that
+        /// `a ? b : c ? d : e` reads as `a ? b : (c ? d : e)`. We sit
+        /// above the precedence-climber so any binary expression
+        /// (including assignment) can be the condition; both branches
+        /// can themselves be assignments / nested ternaries.
+        Tok &peek = aheadTok();
+        if(peek.type == TOK_QUESTION){
+            ++tokIdx;  /// consume `?`
+
+            Tok &thenTok = getTok();
+            ast::Expr *thenExpr = parseExpr(thenTok, parentScope);
+            if(thenExpr == nullptr){
+                delete expr;
+                return nullptr;
+            }
+
+            Tok &colonTok = aheadTok();
+            if(colonTok.type != TOK_COLON){
+                auto e = std::make_unique<UnexpectedToken>(
+                    std::string("Expected `:` to separate ternary branches, got `") + colonTok.str + "`");
+                e->loc = ErrorLoc{ colonTok.line, colonTok.line, colonTok.colStart, colonTok.colEnd };
+                diagnostics->addError(std::move(e));
+                delete expr;
+                delete thenExpr;
+                return nullptr;
+            }
+            ++tokIdx;  /// consume `:`
+
+            Tok &elseTok = getTok();
+            ast::Expr *elseExpr = parseExpr(elseTok, parentScope);
+            if(elseExpr == nullptr){
+                delete expr;
+                delete thenExpr;
+                return nullptr;
+            }
+
+            auto *t_e = new ast::TernaryExpr();
+            t_e->type = TERNARY_EXPR;
+            t_e->scope = parentScope;
+            t_e->condition = expr;
+            t_e->thenExpr = thenExpr;
+            t_e->elseExpr = elseExpr;
+            expr = t_e;
+        }
+
         return expr;
     }
 

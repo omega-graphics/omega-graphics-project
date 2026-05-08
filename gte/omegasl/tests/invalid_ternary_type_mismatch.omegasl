@@ -1,0 +1,21 @@
+/// §3.2 — branches must produce the same type. `float` vs `int2` has
+/// no literal-coercion path, so Sema should reject this.
+
+struct VertexRaster internal {
+    float4 pos : Position;
+};
+
+vertex VertexRaster v(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    return r;
+}
+
+fragment float4 f(VertexRaster raster){
+    bool flag = (raster.pos.x > 0.0);
+    int2 a = make_int2(1, 2);
+    /// Mismatched branches — neither is a literal, so coercion can't
+    /// rescue this; expect a type error.
+    float bad = flag ? 1.0 : a;
+    return float4(0.0, 0.0, 0.0, 1.0);
+}

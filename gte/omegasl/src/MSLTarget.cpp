@@ -328,7 +328,11 @@ using namespace metal;
         return ".metallib";
     }
 
-    void MSLTarget::emitDefaultHeaders(std::ostream &out) {
+    void MSLTarget::emitDefaultHeaders(CodeGen &/*cg*/, std::ostream &out) {
+        /// MSL has `half`, `short`/`ushort`, and `long`/`ulong` (MSL 2.0+)
+        /// in the standard library; no per-feature `#extension`-style
+        /// preamble is needed. Runtime gating handles devices that
+        /// can't run the resulting shader.
         out << defaultMetalHeaders;
     }
 
@@ -511,6 +515,23 @@ using namespace metal;
         if (name == BUILTIN_MAKE_UINT2)    return "uint2";
         if (name == BUILTIN_MAKE_UINT3)    return "uint3";
         if (name == BUILTIN_MAKE_UINT4)    return "uint4";
+        /// §4.1 / §4.2 — MSL spelling matches OmegaSL one-for-one
+        /// since the type names are identical in MSL.
+        if (name == BUILTIN_MAKE_HALF2)    return "half2";
+        if (name == BUILTIN_MAKE_HALF3)    return "half3";
+        if (name == BUILTIN_MAKE_HALF4)    return "half4";
+        if (name == BUILTIN_MAKE_SHORT2)   return "short2";
+        if (name == BUILTIN_MAKE_SHORT3)   return "short3";
+        if (name == BUILTIN_MAKE_SHORT4)   return "short4";
+        if (name == BUILTIN_MAKE_USHORT2)  return "ushort2";
+        if (name == BUILTIN_MAKE_USHORT3)  return "ushort3";
+        if (name == BUILTIN_MAKE_USHORT4)  return "ushort4";
+        if (name == BUILTIN_MAKE_LONG2)    return "long2";
+        if (name == BUILTIN_MAKE_LONG3)    return "long3";
+        if (name == BUILTIN_MAKE_LONG4)    return "long4";
+        if (name == BUILTIN_MAKE_ULONG2)   return "ulong2";
+        if (name == BUILTIN_MAKE_ULONG3)   return "ulong3";
+        if (name == BUILTIN_MAKE_ULONG4)   return "ulong4";
         if (name == BUILTIN_MAKE_FLOAT2X2) return "float2x2";
         if (name == BUILTIN_MAKE_FLOAT3X3) return "float3x3";
         if (name == BUILTIN_MAKE_FLOAT4X4) return "float4x4";
@@ -864,6 +885,31 @@ using namespace metal;
         else if(_t == builtins::uint4_type){
             out << "uint4";
         }
+        /// §4.1 16-bit family — Metal natively supports all of these
+        /// since MSL 1.0 (`half`) / MSL 1.0 (`short`,`ushort`).
+        else if(_t == builtins::half_type)   { out << "half"; }
+        else if(_t == builtins::half2_type)  { out << "half2"; }
+        else if(_t == builtins::half3_type)  { out << "half3"; }
+        else if(_t == builtins::half4_type)  { out << "half4"; }
+        else if(_t == builtins::short_type)  { out << "short"; }
+        else if(_t == builtins::short2_type) { out << "short2"; }
+        else if(_t == builtins::short3_type) { out << "short3"; }
+        else if(_t == builtins::short4_type) { out << "short4"; }
+        else if(_t == builtins::ushort_type) { out << "ushort"; }
+        else if(_t == builtins::ushort2_type){ out << "ushort2"; }
+        else if(_t == builtins::ushort3_type){ out << "ushort3"; }
+        else if(_t == builtins::ushort4_type){ out << "ushort4"; }
+        /// §4.2 64-bit ints — MSL 2.0+; runtime feature gate
+        /// (OMEGASL_FEATURE_BIT_INT64) declines on devices/Metal
+        /// versions that can't execute them.
+        else if(_t == builtins::long_type)   { out << "long"; }
+        else if(_t == builtins::long2_type)  { out << "long2"; }
+        else if(_t == builtins::long3_type)  { out << "long3"; }
+        else if(_t == builtins::long4_type)  { out << "long4"; }
+        else if(_t == builtins::ulong_type)  { out << "ulong"; }
+        else if(_t == builtins::ulong2_type) { out << "ulong2"; }
+        else if(_t == builtins::ulong3_type) { out << "ulong3"; }
+        else if(_t == builtins::ulong4_type) { out << "ulong4"; }
         else if(_t == builtins::float_type){
             out << "float";
         }

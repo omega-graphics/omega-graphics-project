@@ -33,6 +33,9 @@ typedef int ASTType;
 #define UNARY_EXPR (0x0080 | EXPR)
 #define INDEX_EXPR (0x0090 | EXPR)
 #define CAST_EXPR (0x00A0 | EXPR)
+/// §3.2 — ternary `cond ? a : b`. Its three child expressions live on
+/// `TernaryExpr`; the resolved type is the common type of `a` and `b`.
+#define TERNARY_EXPR (0x00B0 | EXPR)
 
 
 /// Builtins Functions
@@ -60,6 +63,24 @@ typedef int ASTType;
 #define BUILTIN_MAKE_UINT2 "make_uint2"
 #define BUILTIN_MAKE_UINT3 "make_uint3"
 #define BUILTIN_MAKE_UINT4 "make_uint4"
+/// §4.1 16-bit vector constructors. The make_* prefix matches the
+/// existing convention; sema and codegen reuse the same dispatch.
+#define BUILTIN_MAKE_HALF2 "make_half2"
+#define BUILTIN_MAKE_HALF3 "make_half3"
+#define BUILTIN_MAKE_HALF4 "make_half4"
+#define BUILTIN_MAKE_SHORT2 "make_short2"
+#define BUILTIN_MAKE_SHORT3 "make_short3"
+#define BUILTIN_MAKE_SHORT4 "make_short4"
+#define BUILTIN_MAKE_USHORT2 "make_ushort2"
+#define BUILTIN_MAKE_USHORT3 "make_ushort3"
+#define BUILTIN_MAKE_USHORT4 "make_ushort4"
+/// §4.2 64-bit vector constructors.
+#define BUILTIN_MAKE_LONG2 "make_long2"
+#define BUILTIN_MAKE_LONG3 "make_long3"
+#define BUILTIN_MAKE_LONG4 "make_long4"
+#define BUILTIN_MAKE_ULONG2 "make_ulong2"
+#define BUILTIN_MAKE_ULONG3 "make_ulong3"
+#define BUILTIN_MAKE_ULONG4 "make_ulong4"
 
 #define BUILTIN_MAKE_FLOAT2X2 "make_float2x2"
 #define BUILTIN_MAKE_FLOAT3X3 "make_float3x3"

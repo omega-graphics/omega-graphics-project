@@ -20,18 +20,7 @@ IMPLEMENTATION_EXTENSIONS = {
     ".mm",
     ".ixx",
     ".cppm",
-    ".cu",
-    ".metal",
-    ".glsl",
-    ".vert",
-    ".frag",
-    ".geom",
-    ".comp",
-    ".tesc",
-    ".tese",
-    ".hlsl",
-    ".hlsli",
-    ".wgsl",
+    ".omegasl"
 }
 
 HEADER_EXTENSIONS = {

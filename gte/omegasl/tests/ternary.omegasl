@@ -1,0 +1,46 @@
+/// §3.2 — ternary `?:`. Exercises:
+///   - scalar bool condition with matching scalar branches
+///   - typed branch + numeric literal branch (literal coerces)
+///   - chained ternary (right-associative — outer else is itself a
+///     ternary)
+///   - ternary on the RHS of `+` (operator precedence — the ternary
+///     binds looser than `+`, so `a + (cond ? b : c)` is the parse)
+///   - ternary inside a function-call argument
+///   - ternary inside a struct field initialization
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+vertex VertexRaster ternaryVert(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv  = float2(0.0, 0.0);
+    return r;
+}
+
+fragment float4 ternaryFrag(VertexRaster raster){
+    bool flag = (raster.uv.x > 0.5);
+
+    /// scalar branches, matched float types
+    float a = flag ? 1.0 : 0.5;
+
+    /// typed/literal mix — literal `0` coerces into float slot
+    float b = flag ? raster.uv.x : 0;
+
+    /// chained — right-associative
+    float channel = flag ? 1.0 : (raster.uv.y > 0.0 ? 0.75 : 0.25);
+
+    /// ternary inside a binary expression — outer `+` binds tighter
+    /// than the ternary's branch boundary, so `1.0 + (flag ? a : b)`
+    /// is the intended parse.
+    float blended = 1.0 + (flag ? a : b);
+
+    /// ternary inside a call arg
+    float3 tint = make_float3(flag ? 1.0 : 0.0,
+                              flag ? 0.0 : 1.0,
+                              flag ? 0.5 : 0.5);
+
+    return float4(tint, channel * blended);
+}

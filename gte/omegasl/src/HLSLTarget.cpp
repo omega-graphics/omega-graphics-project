@@ -336,6 +336,28 @@ namespace omegasl {
         if (name == BUILTIN_MAKE_UINT2)    return "uint2";
         if (name == BUILTIN_MAKE_UINT3)    return "uint3";
         if (name == BUILTIN_MAKE_UINT4)    return "uint4";
+        /// §4.1 16-bit families. The HLSL spellings only exist with
+        /// `-enable-16bit-types`; the runtime feature gate
+        /// (`OMEGASL_FEATURE_BIT_FLOAT16`) is what protects callers
+        /// from compiling these on devices that can't run them.
+        /// HLSL has no shorthand `int16_tN` constructor — use the
+        /// generic `vector<T,N>` form so SM 6.2 accepts the call.
+        if (name == BUILTIN_MAKE_HALF2)    return "vector<float16_t,2>";
+        if (name == BUILTIN_MAKE_HALF3)    return "vector<float16_t,3>";
+        if (name == BUILTIN_MAKE_HALF4)    return "vector<float16_t,4>";
+        if (name == BUILTIN_MAKE_SHORT2)   return "vector<int16_t,2>";
+        if (name == BUILTIN_MAKE_SHORT3)   return "vector<int16_t,3>";
+        if (name == BUILTIN_MAKE_SHORT4)   return "vector<int16_t,4>";
+        if (name == BUILTIN_MAKE_USHORT2)  return "vector<uint16_t,2>";
+        if (name == BUILTIN_MAKE_USHORT3)  return "vector<uint16_t,3>";
+        if (name == BUILTIN_MAKE_USHORT4)  return "vector<uint16_t,4>";
+        /// §4.2 64-bit ints — SM 6.0+.
+        if (name == BUILTIN_MAKE_LONG2)    return "vector<int64_t,2>";
+        if (name == BUILTIN_MAKE_LONG3)    return "vector<int64_t,3>";
+        if (name == BUILTIN_MAKE_LONG4)    return "vector<int64_t,4>";
+        if (name == BUILTIN_MAKE_ULONG2)   return "vector<uint64_t,2>";
+        if (name == BUILTIN_MAKE_ULONG3)   return "vector<uint64_t,3>";
+        if (name == BUILTIN_MAKE_ULONG4)   return "vector<uint64_t,4>";
         /// OmegaSL `floatCxR` (C cols × R rows, host's `Matrix<float,C,R>`)
         /// emits as HLSL `floatRxC` so HLSL's row-first source-level
         /// indexing aligns with OmegaSL's column-first convention after the
@@ -754,7 +776,36 @@ namespace omegasl {
             out << "uint3";
         } else if (_ty == ast::builtins::uint4_type) {
             out << "uint4";
-        } else {
+        }
+        /// §4.1 16-bit family. HLSL spells these with the explicit
+        /// arithmetic-type names from SM 6.2; vectors require the
+        /// `vector<T,N>` template since `float16_t2` etc. aren't built
+        /// into the language. The runtime gate
+        /// (OMEGASL_FEATURE_BIT_FLOAT16) keeps these from running on
+        /// devices that don't have `-enable-16bit-types` support.
+        else if (_ty == ast::builtins::half_type)   { out << "float16_t"; }
+        else if (_ty == ast::builtins::half2_type)  { out << "vector<float16_t,2>"; }
+        else if (_ty == ast::builtins::half3_type)  { out << "vector<float16_t,3>"; }
+        else if (_ty == ast::builtins::half4_type)  { out << "vector<float16_t,4>"; }
+        else if (_ty == ast::builtins::short_type)  { out << "int16_t"; }
+        else if (_ty == ast::builtins::short2_type) { out << "vector<int16_t,2>"; }
+        else if (_ty == ast::builtins::short3_type) { out << "vector<int16_t,3>"; }
+        else if (_ty == ast::builtins::short4_type) { out << "vector<int16_t,4>"; }
+        else if (_ty == ast::builtins::ushort_type) { out << "uint16_t"; }
+        else if (_ty == ast::builtins::ushort2_type){ out << "vector<uint16_t,2>"; }
+        else if (_ty == ast::builtins::ushort3_type){ out << "vector<uint16_t,3>"; }
+        else if (_ty == ast::builtins::ushort4_type){ out << "vector<uint16_t,4>"; }
+        /// §4.2 64-bit ints. SM 6.0+; the FeatureScanner trips
+        /// OMEGASL_FEATURE_BIT_INT64 when these appear.
+        else if (_ty == ast::builtins::long_type)   { out << "int64_t"; }
+        else if (_ty == ast::builtins::long2_type)  { out << "vector<int64_t,2>"; }
+        else if (_ty == ast::builtins::long3_type)  { out << "vector<int64_t,3>"; }
+        else if (_ty == ast::builtins::long4_type)  { out << "vector<int64_t,4>"; }
+        else if (_ty == ast::builtins::ulong_type)  { out << "uint64_t"; }
+        else if (_ty == ast::builtins::ulong2_type) { out << "vector<uint64_t,2>"; }
+        else if (_ty == ast::builtins::ulong3_type) { out << "vector<uint64_t,3>"; }
+        else if (_ty == ast::builtins::ulong4_type) { out << "vector<uint64_t,4>"; }
+        else {
             out << _ty->name;
         }
 

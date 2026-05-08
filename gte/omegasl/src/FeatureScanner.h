@@ -74,6 +74,29 @@ private:
     /// Records call edges (`callGraph_[enclosing]`) for user-function
     /// callees so the fixed-point pass can fold them in later.
     void inspectCall(ast::CallExpr *call, ast::FuncDecl *enclosing);
+
+    /// §4.1 / §4.2 — inspect a declared type at any of the per-decl
+    /// surfaces (function param type, function return type, var decl
+    /// type, cast target type) and OR FLOAT16 / INT64 onto the enclosing
+    /// FuncDecl when the type belongs to one of those families. Walks
+    /// into user struct fields recursively so a struct literal that
+    /// hides a `half` deep in its layout still trips the bit.
+    void inspectTypeExpr(ast::TypeExpr *typeExpr, ast::FuncDecl *enclosing);
+    /// Walk every parameter / return type / var decl type in a function
+    /// — Pass-1 entry hook for type-driven feature scanning. Body
+    /// expressions are still handled by `scanFuncBody`.
+    void scanFuncTypes(ast::FuncDecl *fn);
+
+    /// Memoization for struct-field walks. Keyed by `ast::Type *` (the
+    /// resolved struct), value is the union of feature bits implied by
+    /// the struct's fields. Avoids re-walking a struct used in multiple
+    /// places and silently terminates on cycles (a struct that
+    /// transitively references itself returns 0 the second time).
+    std::map<ast::Type *, uint64_t> structTypeFeatureCache_;
+    /// Sentinel value injected before computing a struct's feature
+    /// signature so a recursive walk sees `in-progress` and returns 0
+    /// for the back-edge instead of infinite-recursing.
+    static constexpr uint64_t kStructInFlight = static_cast<uint64_t>(-1);
 };
 
 } // namespace omegasl

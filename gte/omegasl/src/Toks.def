@@ -31,6 +31,11 @@ namespace omegasl {
 #define TOK_NUM_LITERAL 0x10
 #define TOK_STR_LITERAL 0x11
 #define TOK_COMMA 0x12
+/// §3.2 — ternary operator's `?`. Stored as its own token type so the
+/// parser can branch on it without overloading TOK_OP (which would
+/// require the precedence-climbing loop to special-case ternary's
+/// non-binary shape).
+#define TOK_QUESTION 0x13
 
 #define TOK_EOF 0xFF
 
@@ -120,6 +125,46 @@ namespace omegasl {
 #define KW_TY_UINT2 KW_TY("uint2")
 #define KW_TY_UINT3 KW_TY("uint3")
 #define KW_TY_UINT4 KW_TY("uint4")
+
+/// §4.1 16-bit numeric types. Backed by OMEGASL_FEATURE_BIT_FLOAT16
+/// (for `half`) — usage from a shader body trips the bit so the runtime
+/// can decline on devices without 16-bit support. Mappings:
+///   HLSL  → `float16_t` (SM 6.2 + `-enable-16bit-types`)
+///   MSL   → `half` (native since Metal 1.0)
+///   GLSL  → `float16_t` (`GL_EXT_shader_explicit_arithmetic_types_float16`)
+#define KW_TY_HALF KW_TY("half")
+#define KW_TY_HALF2 KW_TY("half2")
+#define KW_TY_HALF3 KW_TY("half3")
+#define KW_TY_HALF4 KW_TY("half4")
+
+/// §4.1 16-bit signed/unsigned integers. The bit gating reuses
+/// OMEGASL_FEATURE_BIT_FLOAT16 — every modern surface that ships
+/// `float16_t` also ships `int16_t`/`uint16_t` (and the GLSL extension
+/// is the same family).
+#define KW_TY_SHORT KW_TY("short")
+#define KW_TY_SHORT2 KW_TY("short2")
+#define KW_TY_SHORT3 KW_TY("short3")
+#define KW_TY_SHORT4 KW_TY("short4")
+#define KW_TY_USHORT KW_TY("ushort")
+#define KW_TY_USHORT2 KW_TY("ushort2")
+#define KW_TY_USHORT3 KW_TY("ushort3")
+#define KW_TY_USHORT4 KW_TY("ushort4")
+
+/// §4.2 64-bit integer types. Gated by OMEGASL_FEATURE_BIT_INT64.
+///   HLSL  → `int64_t`/`uint64_t` (SM 6.0)
+///   MSL   → `long`/`ulong` (MSL 2.0+; iOS support varies — runtime gate
+///            is the safety net)
+///   GLSL  → `int64_t`/`uint64_t` (`GL_EXT_shader_explicit_arithmetic_types_int64`
+///            or `GL_ARB_gpu_shader_int64`).
+#define KW_TY_LONG KW_TY("long")
+#define KW_TY_LONG2 KW_TY("long2")
+#define KW_TY_LONG3 KW_TY("long3")
+#define KW_TY_LONG4 KW_TY("long4")
+#define KW_TY_ULONG KW_TY("ulong")
+#define KW_TY_ULONG2 KW_TY("ulong2")
+#define KW_TY_ULONG3 KW_TY("ulong3")
+#define KW_TY_ULONG4 KW_TY("ulong4")
+
 #define KW_TY_BUFFER KW_TY("buffer")
 #define KW_TY_TEXTURE1D KW_TY("texture1d")
 #define KW_TY_TEXTURE2D KW_TY("texture2d")

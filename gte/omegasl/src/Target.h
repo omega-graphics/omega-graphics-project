@@ -270,9 +270,17 @@ namespace omegasl {
         /// Phase 10: per-target preamble emitted at the top of each
         /// generated shader source file. MSL writes `#include
         /// <metal_stdlib>` + `using namespace metal;`; GLSL writes
-        /// `#version 450` + the samplerless-texture extension. HLSL has
+        /// `#version 450` + the samplerless-texture extension plus
+        /// any feature-driven `#extension` directives needed by the
+        /// declared `#requires(...)` set (e.g. FLOAT16 / INT64 →
+        /// `GL_EXT_shader_explicit_arithmetic_types_*`). HLSL has
         /// nothing to emit. Default: no-op.
-        virtual void emitDefaultHeaders(std::ostream &/*out*/) {}
+        ///
+        /// `cg` is passed so the backend can consult
+        /// `cg.fileRequiredFeatures` — the file-scope `#requires` set —
+        /// without each backend having to plumb the bitfield through
+        /// its constructor.
+        virtual void emitDefaultHeaders(CodeGen &/*cg*/, std::ostream &/*out*/) {}
 
         /// Phase 10: build the per-struct text emitted for a STRUCT_DECL
         /// and stash it in the target's own cache. Each backend has its
@@ -454,7 +462,7 @@ namespace omegasl {
                                   omegasl_shader &meta) override;
         bool supportsStage(ast::ShaderDecl::Type stage,
                            std::string &diagnosticOut) const override;
-        void emitDefaultHeaders(std::ostream &out) override;
+        void emitDefaultHeaders(CodeGen &cg, std::ostream &out) override;
         void emitStructDecl(CodeGen &cg, ast::StructDecl *decl) override;
         void emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
         const char *shaderObjectFileExt(ast::ShaderDecl::Type stage) const override;
@@ -532,7 +540,7 @@ namespace omegasl {
                                   OmegaCommon::StrRef name,
                                   const std::string &source,
                                   omegasl_shader &meta) override;
-        void emitDefaultHeaders(std::ostream &out) override;
+        void emitDefaultHeaders(CodeGen &cg, std::ostream &out) override;
         void emitStructDecl(CodeGen &cg, ast::StructDecl *decl) override;
         void emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
         bool tryEmitVarDecl(CodeGen &cg, ast::VarDecl *decl) override;

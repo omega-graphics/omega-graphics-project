@@ -17,6 +17,32 @@ namespace omegasl {
         ast::builtins::uint3_type,
         ast::builtins::uint4_type,
 
+        /// §4.1 16-bit numerics. The Sema sees them like any other
+        /// scalar/vector — feature-bit gating is the FeatureScanner's
+        /// job, not Sema's, so the type just needs to resolve.
+        ast::builtins::half_type,
+        ast::builtins::half2_type,
+        ast::builtins::half3_type,
+        ast::builtins::half4_type,
+        ast::builtins::short_type,
+        ast::builtins::short2_type,
+        ast::builtins::short3_type,
+        ast::builtins::short4_type,
+        ast::builtins::ushort_type,
+        ast::builtins::ushort2_type,
+        ast::builtins::ushort3_type,
+        ast::builtins::ushort4_type,
+
+        /// §4.2 64-bit ints.
+        ast::builtins::long_type,
+        ast::builtins::long2_type,
+        ast::builtins::long3_type,
+        ast::builtins::long4_type,
+        ast::builtins::ulong_type,
+        ast::builtins::ulong2_type,
+        ast::builtins::ulong3_type,
+        ast::builtins::ulong4_type,
+
         ast::builtins::float_type,
         ast::builtins::float2_type,
         ast::builtins::float3_type,
@@ -57,6 +83,21 @@ namespace omegasl {
             ast::builtins::make_uint2,
             ast::builtins::make_uint3,
             ast::builtins::make_uint4,
+            ast::builtins::make_half2,
+            ast::builtins::make_half3,
+            ast::builtins::make_half4,
+            ast::builtins::make_short2,
+            ast::builtins::make_short3,
+            ast::builtins::make_short4,
+            ast::builtins::make_ushort2,
+            ast::builtins::make_ushort3,
+            ast::builtins::make_ushort4,
+            ast::builtins::make_long2,
+            ast::builtins::make_long3,
+            ast::builtins::make_long4,
+            ast::builtins::make_ulong2,
+            ast::builtins::make_ulong3,
+            ast::builtins::make_ulong4,
             ast::builtins::make_float2x2,
             ast::builtins::make_float2x3,
             ast::builtins::make_float2x4,
@@ -287,10 +328,18 @@ namespace omegasl {
         return nullptr;
     }
 
-    /// Check if a resolved type is a numeric scalar (float, int, uint).
+    /// Check if a resolved type is a numeric scalar.
+    /// Includes the new 16-bit (`half`/`short`/`ushort`) and 64-bit
+    /// (`long`/`ulong`) families from §4.1/§4.2 so literal coercion
+    /// applies uniformly. The runtime feature-bit gate is upstream of
+    /// this check (FeatureScanner traces type *use* through declarations
+    /// and decides whether to emit the FLOAT16/INT64 portability
+    /// warning).
     static bool isNumericScalar(ast::Type *t) {
-        return t == ast::builtins::float_type || t == ast::builtins::int_type ||
-               t == ast::builtins::uint_type;
+        using namespace ast::builtins;
+        return t == float_type  || t == int_type    || t == uint_type
+            || t == half_type   || t == short_type  || t == ushort_type
+            || t == long_type   || t == ulong_type;
     }
 
     /// Check if a resolved type is a matrix type.
@@ -310,31 +359,41 @@ namespace omegasl {
     /// literal for coercion purposes. ConstFold runs after Sema, so at
     /// this point `-5` is still a UnaryOpExpr(LITERAL_EXPR).
     static ast::LiteralExpr *asNumericLiteral(ast::Expr *e) {
+        auto isAnyNumeric = [](ast::LiteralExpr *lit) {
+            return lit->isInt() || lit->isUint() || lit->isFloat()
+                || lit->isLong() || lit->isUlong();
+        };
         if(e == nullptr) return nullptr;
         if(e->type == UNARY_EXPR){
             auto *u = static_cast<ast::UnaryOpExpr *>(e);
             if(u->isPrefix && u->op == OP_MINUS && u->expr && u->expr->type == LITERAL_EXPR){
                 auto *lit = static_cast<ast::LiteralExpr *>(u->expr);
-                if(lit->isInt() || lit->isUint() || lit->isFloat()) return lit;
+                if(isAnyNumeric(lit)) return lit;
             }
             return nullptr;
         }
         if(e->type == LITERAL_EXPR){
             auto *lit = static_cast<ast::LiteralExpr *>(e);
-            if(lit->isInt() || lit->isUint() || lit->isFloat()) return lit;
+            if(isAnyNumeric(lit)) return lit;
         }
         return nullptr;
     }
 
     /// Literal coercion rules:
-    ///   - int / uint literals coerce to any numeric scalar (int, uint, float).
-    ///   - float literals coerce only to float. Coercing `3.14` into an int
-    ///     or uint slot requires an explicit cast.
+    ///   - integer literals (int / uint / long / ulong) coerce to any
+    ///     numeric scalar slot. The shader author writes a small constant
+    ///     and gets the declared type; out-of-range values are caught by
+    ///     the backend compiler, which is honest about hardware limits.
+    ///   - float literals coerce to float and half. The `h` suffix is a
+    ///     spelling convenience — `1.0` and `1.0h` both initialize a
+    ///     `half` slot. They never coerce to ints/uints; that requires
+    ///     an explicit cast.
     static bool canCoerceLiteralTo(ast::LiteralExpr *lit, ast::Type *target) {
+        using namespace ast::builtins;
         if(lit == nullptr || target == nullptr) return false;
         if(!isNumericScalar(target)) return false;
-        if(lit->isFloat()) return target == ast::builtins::float_type;
-        if(lit->isInt() || lit->isUint()) return true;
+        if(lit->isFloat()) return target == float_type || target == half_type;
+        if(lit->isInt() || lit->isUint() || lit->isLong() || lit->isUlong()) return true;
         return false;
     }
 
@@ -525,6 +584,12 @@ namespace omegasl {
             }
             else if(_expr->isUint()){
                 return ast::TypeExpr::Create(ast::builtins::uint_type);
+            }
+            else if(_expr->isLong()){
+                return ast::TypeExpr::Create(ast::builtins::long_type);
+            }
+            else if(_expr->isUlong()){
+                return ast::TypeExpr::Create(ast::builtins::ulong_type);
             }
             else if(_expr->isFloat()){
                 return ast::TypeExpr::Create(ast::builtins::float_type);
@@ -775,6 +840,25 @@ namespace omegasl {
             }
 
             /// Return type inference.
+            ///
+            /// Relational, equality, and logical operators always
+            /// produce `bool` (matches C/HLSL/MSL/GLSL spec). Without
+            /// this, `bool flag = (x > 0)` and the ternary condition
+            /// (§3.2) both fail to type-check because the binary
+            /// expression silently inherits the operand type. Existing
+            /// `if (x > 0)` callers don't care — Sema doesn't enforce
+            /// a bool constraint on `if` conditions — so this is a
+            /// strict semantic improvement.
+            const auto &op = _expr->op;
+            bool isCompareOp =
+                op == OP_LESS || op == OP_LESSEQUAL ||
+                op == OP_GREATER || op == OP_GREATEREQUAL ||
+                op == OP_ISEQUAL || op == OP_NOTEQUAL ||
+                op == OP_LOGAND || op == OP_LOGOR;
+            if(isCompareOp){
+                return ast::TypeExpr::Create(ast::builtins::bool_type);
+            }
+
             auto lhsTy = resolveTypeWithExpr(lhs_res);
             auto rhsTy = resolveTypeWithExpr(rhs_res);
             /// matrix * vector → vector
@@ -1550,6 +1634,73 @@ namespace omegasl {
             auto targetTy = resolveTypeWithExpr(_expr->targetType);
             if(targetTy == nullptr) return nullptr;
             return _expr->targetType;
+        }
+        else if(expr->type == TERNARY_EXPR){
+            /// §3.2 — `cond ? thenExpr : elseExpr`.
+            ///
+            /// Rules:
+            ///   - condition must resolve to `bool`. HLSL/MSL/GLSL all
+            ///     accept implicit truth conversions on numeric scalars,
+            ///     but the spelling drift between backends is real
+            ///     (vector ternary on HLSL is select-style; GLSL has
+            ///     no vector ternary at all). Locking the condition to
+            ///     `bool` keeps the surface portable — callers write
+            ///     `x != 0 ? a : b` for a numeric-style truth check.
+            ///   - both branches must produce the same type. A literal
+            ///     branch coerces to the other branch's type when the
+            ///     literal-coercion rule applies (e.g. `cond ? 0 : v`
+            ///     where `v` is a `float`).
+            auto *_expr = (ast::TernaryExpr *)expr;
+            auto condTy = performSemForExpr(_expr->condition, funcContext);
+            if(condTy == nullptr) return nullptr;
+            auto condResolved = resolveTypeWithExpr(condTy);
+            if(condResolved != ast::builtins::bool_type){
+                auto e = std::make_unique<TypeError>(
+                    "Ternary condition must resolve to `bool` (got `" + condTy->name + "`)");
+                e->loc = _expr->condition->loc.value_or(_expr->loc.value_or(ErrorLoc{}));
+                diagnostics->addError(std::move(e));
+                return nullptr;
+            }
+
+            auto thenTy = performSemForExpr(_expr->thenExpr, funcContext);
+            if(thenTy == nullptr) return nullptr;
+            auto elseTy = performSemForExpr(_expr->elseExpr, funcContext);
+            if(elseTy == nullptr) return nullptr;
+
+            auto thenResolved = resolveTypeWithExpr(thenTy);
+            auto elseResolved = resolveTypeWithExpr(elseTy);
+
+            if(thenResolved == elseResolved){
+                _expr->resolvedType = thenTy;
+                return thenTy;
+            }
+
+            /// Asymmetric literal coercion: if one branch is a numeric
+            /// literal that fits the other's slot, take the typed
+            /// branch's type. Two int literals (already-equal types
+            /// hit the fast path above), so we only need the mixed
+            /// case.
+            if(isNumericScalar(thenResolved) || isNumericScalar(elseResolved)){
+                auto *thenLit = asNumericLiteral(_expr->thenExpr);
+                auto *elseLit = asNumericLiteral(_expr->elseExpr);
+                if(elseLit && canCoerceLiteralTo(elseLit, thenResolved)){
+                    _expr->elseExpr->resolvedType = thenTy;
+                    _expr->resolvedType = thenTy;
+                    return thenTy;
+                }
+                if(thenLit && canCoerceLiteralTo(thenLit, elseResolved)){
+                    _expr->thenExpr->resolvedType = elseTy;
+                    _expr->resolvedType = elseTy;
+                    return elseTy;
+                }
+            }
+
+            auto e = std::make_unique<TypeError>(
+                "Ternary branches must have the same type (`" + thenTy->name +
+                "` vs `" + elseTy->name + "`)");
+            e->loc = _expr->loc.value_or(ErrorLoc{});
+            diagnostics->addError(std::move(e));
+            return nullptr;
         }
 
         return ret;

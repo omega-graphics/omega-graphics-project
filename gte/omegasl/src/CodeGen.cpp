@@ -80,6 +80,22 @@ namespace omegasl {
                 out << ")";
                 break;
             }
+            case TERNARY_EXPR: {
+                /// §3.2 — `(cond ? then : else)`. The spelling is the
+                /// same on every backend Sema-side because we restrict
+                /// the condition to a scalar `bool`. Outer parens keep
+                /// `a + (cond ? b : c) * d` from miscoupling against
+                /// surrounding precedence.
+                auto _expr = (ast::TernaryExpr *)expr;
+                out << "(";
+                generateExpr(_expr->condition);
+                out << " ? ";
+                generateExpr(_expr->thenExpr);
+                out << " : ";
+                generateExpr(_expr->elseExpr);
+                out << ")";
+                break;
+            }
             case LITERAL_EXPR: {
                 auto _expr = (ast::LiteralExpr *)expr;
                 if (_expr->isFloat()) {
@@ -90,6 +106,13 @@ namespace omegasl {
                     out << _expr->i_num.value();
                 } else if (_expr->isUint()) {
                     out << _expr->ui_num.value();
+                } else if (_expr->isLong()) {
+                    /// §4.2 — emit a backend-portable 64-bit signed
+                    /// suffix. HLSL/GLSL with the int64 extensions and
+                    /// MSL all accept `123L`.
+                    out << _expr->i64_num.value() << "L";
+                } else if (_expr->isUlong()) {
+                    out << _expr->ui64_num.value() << "UL";
                 } else if (_expr->isBool()) {
                     out << (_expr->b_val.value() ? "true" : "false");
                 } else if (_expr->isString()) {
@@ -533,7 +556,7 @@ namespace omegasl {
 
                 /// Per-target preamble (MSL `#include <metal_stdlib>`,
                 /// GLSL `#version 450`, HLSL nothing).
-                target->emitDefaultHeaders(shaderOut);
+                target->emitDefaultHeaders(*this, shaderOut);
 
                 /// Prototypes first (dedup by name), then bodies — supports
                 /// forward declarations and calls between user functions

@@ -165,7 +165,7 @@ asymmetric and the practical demand is rare:
 Sema rejects all three with a clear diagnostic. Revisit if a real engine
 use case shows up.
 
-**Phase A — compile path (this change)**: tokens, builtin types, Sema
+**Phase A — compile path (Done)**: tokens, builtin types, Sema
 validation (sampler↔texture pairing, sample/read/write coord rules incl.
 3-arg MS `read`), three backends emit valid HLSL/MSL/GLSL source, the
 runtime layout-desc enum gains six new texture-type values plus
@@ -174,7 +174,7 @@ Tests: `texture_cube.omegasl`, `texture_array.omegasl`,
 `texture_ms.omegasl`, `invalid_sample_ms.omegasl`,
 `invalid_write_ms.omegasl`.
 
-**Phase B — runtime path (pending)**: `GETexture` API extension for cube /
+**Phase B — runtime path (Done)**: `GETexture` API extension for cube /
 array-layer count / sample count, and runtime descriptor binding
 (`VkImageViewType` / D3D12 view-dimension / `MTLTextureType`). Tracked in
 `docs/Pipeline-Completion-Extension-Plan.md` "Texture View Type
@@ -480,10 +480,38 @@ switch(intExpr) {
   by Sema regardless of enclosing loop/switch. Matches the pre-3.1
   behaviour; a uniform stage check could land alongside §3.5 / §3.6.
 
-### 3.2 Ternary `?:`
+### 3.2 Ternary `?:` [LANDED]
 
 Listed as not-implemented. Impact: verbose code for compound expressions;
 blocks inline vector selection (`a ? v1 : v2`).
+
+**Landed.** OmegaSL now parses `cond ? then : else`. Right-associative —
+`a ? b : c ? d : e` reads as `a ? b : (c ? d : e)`. The condition must
+resolve to `bool`; both branches must produce the same type, with
+asymmetric numeric-literal coercion when one side is a bare literal
+and the other has a fixed scalar slot.
+
+Per-backend mapping: identical spelling on every target — codegen
+emits `(cond ? then : else)` straight through. Restricting the
+condition to a scalar `bool` keeps the surface portable: GLSL doesn't
+have a vector ternary at all, and HLSL's "vector select" semantics
+have no MSL analogue. Callers who want lane-wise selection should use
+`select(...)` (HLSL) or `mix(a, b, bvec3(...))` (GLSL) once those land
+as builtin intrinsics in OmegaSL.
+
+Pulled in along with the ternary work: relational / equality / logical
+binary operators (`<`, `<=`, `>`, `>=`, `==`, `!=`, `&&`, `||`) now
+correctly produce `bool` instead of inheriting the operand type. This
+unblocks `bool flag = (x > 0);` and the ternary's bool-condition
+constraint without breaking existing `if (x > 0)` callers (Sema never
+enforced a bool constraint on `if` conditions).
+
+Out of scope:
+  - Vector-condition ternary (`bvecN ? vecN : vecN`). Backend asymmetry
+    is real; defer to per-backend `select`/`mix` builtins.
+  - Constant folding of ternaries with a literal `true`/`false`
+    condition. Hand-written shader code rarely benefits; downstream
+    backend compilers fold these too.
 
 ### 3.3 `do { } while`
 
@@ -530,7 +558,7 @@ Allow `out`/`inout` to be used in function params.
 
 ## 4. Numeric types (P1)
 
-### 4.1 16-bit types — `half` / `float16_t` / `int16_t` / `uint16_t`
+### 4.1 16-bit types — `half` / `float16_t` / `int16_t` / `uint16_t` [LANDED]
 
 Supported everywhere modern:
 
@@ -542,13 +570,41 @@ Supported everywhere modern:
 | SPIR-V  | `VK_KHR_shader_float16_int8` + storage extension |
 
 Drops memory bandwidth in half for mobile / AI / post-processing passes.
-Not currently reachable from OmegaSL.
 
-**Proposal:** add `half`, `half2/3/4`, `short`/`ushort` + vec, matching
-existing naming conventions. Back it by a `DeviceFeature::SixteenBitTypes`
-probe so the engine can decline on hardware that doesn't support them.
+**Landed.** OmegaSL exposes `half`, `half2/3/4`, `short`/`short2..4`,
+`ushort`/`ushort2..4` as builtin types. Per-backend mapping:
 
-### 4.2 64-bit integer types
+| Backend | Scalar | Vector |
+|---------|--------|--------|
+| HLSL    | `float16_t` / `int16_t` / `uint16_t` (SM 6.2) | `vector<T,N>` |
+| MSL     | `half` / `short` / `ushort` (native)          | `halfN` / `shortN` / `ushortN` |
+| GLSL    | `float16_t` / `int16_t` / `uint16_t`          | `f16vecN` / `i16vecN` / `u16vecN` |
+
+GLSL emission emits `#extension GL_EXT_shader_explicit_arithmetic_types_float16`
+and `int16` whenever the file declares `#requires(FLOAT16)`. Use of any
+of these types from a shader/function body trips
+`OMEGASL_FEATURE_BIT_FLOAT16` via the FeatureScanner — the scanner walks
+function param types, return types, var-decl types, cast targets, and
+recurses into user struct fields so a `half` hidden in a struct still
+flips the bit. The runtime feature gate (`#requires(FLOAT16)`) is what
+makes the runtime decline cleanly on hardware that doesn't support
+16-bit types.
+
+Literal forms: `1.0h` / `1.0H` parses as half-typed (stored as `f_num`
+since precision is enforced at type-resolution time). Integer literals
+coerce into `short`/`ushort` slots without a suffix.
+
+`make_half2/3/4`, `make_short2/3/4`, `make_ushort2/3/4` are the
+constructor builtins, mapping to `vector<T,N>` (HLSL) /
+`halfN`/`shortN`/`ushortN` (MSL) / `f16vecN`/`i16vecN`/`u16vecN` (GLSL).
+
+Out of scope for this cut: `half`-typed matrix types
+(`half2x2`/`half3x3`/`half4x4` etc.) — none of the existing OmegaSL
+matrices are gated on FLOAT16, and adding the half family of matrices
+introduces backend-specific row/column rewrite asymmetries we'd want to
+plan separately. Add them when a real workload needs them.
+
+### 4.2 64-bit integer types [LANDED]
 
 | HLSL | MSL | GLSL |
 |------|-----|------|
@@ -556,6 +612,33 @@ probe so the engine can decline on hardware that doesn't support them.
 
 Needed for large hashes, 64-bit atomics, pointer arithmetic in bindless
 descriptor indexing.
+
+**Landed.** OmegaSL exposes `long`/`long2..4`, `ulong`/`ulong2..4` as
+builtin types, gated on `OMEGASL_FEATURE_BIT_INT64`. Per-backend mapping:
+
+| Backend | Scalar | Vector |
+|---------|--------|--------|
+| HLSL    | `int64_t` / `uint64_t` (SM 6.0+)            | `vector<T,N>` |
+| MSL     | `long` / `ulong` (MSL 2.0+)                 | `longN` / `ulongN` |
+| GLSL    | `int64_t` / `uint64_t`                       | `i64vecN` / `u64vecN` |
+
+GLSL emission adds
+`#extension GL_EXT_shader_explicit_arithmetic_types_int64` whenever the
+file declares `#requires(INT64)`. The same FeatureScanner type-walk
+that handles FLOAT16 trips INT64 from any `long`/`ulong` use.
+
+Literal forms: `123L` / `123l` for signed long, `123UL` / `123ul` /
+`123Lu` / `123lU` for ulong. Integer literals (`42`) also coerce into
+64-bit slots without an explicit suffix. `make_long2/3/4` and
+`make_ulong2/3/4` are the constructor builtins.
+
+Out of scope for this cut: HLSL DXC profile bumping. The existing
+`compileShader` path targets SM 5.x; running 64-bit / 16-bit shaders
+through DXC requires SM 6.0+ (and `-enable-16bit-types` for
+`float16_t`). The runtime feature gate keeps callers on 5.x-only
+hardware safe; bumping the profile when `#requires(FLOAT16)` /
+`#requires(INT64)` is declared is a follow-up that touches the offline
+DXC invocation rather than the type system.
 
 ### 4.3 `double` — 
 

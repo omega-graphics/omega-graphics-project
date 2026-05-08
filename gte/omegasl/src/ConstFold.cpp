@@ -153,6 +153,20 @@ namespace omegasl {
                 e->expr = foldExpr(e->expr);
                 return expr;
             }
+            case TERNARY_EXPR: {
+                /// §3.2 — fold each subtree in place. We don't currently
+                /// collapse `cond ? a : b` to `a` or `b` even when
+                /// `cond` is a boolean literal — the work is small but
+                /// the gain is zero for hand-written shader sources
+                /// (constant-condition ternaries are rare; the backend
+                /// compiler folds them too). Wire that in when a real
+                /// shader benefits.
+                auto *e = static_cast<ast::TernaryExpr *>(expr);
+                e->condition = foldExpr(e->condition);
+                e->thenExpr  = foldExpr(e->thenExpr);
+                e->elseExpr  = foldExpr(e->elseExpr);
+                return expr;
+            }
             case POINTER_EXPR: {
                 auto *e = static_cast<ast::PointerExpr *>(expr);
                 e->expr = foldExpr(e->expr);

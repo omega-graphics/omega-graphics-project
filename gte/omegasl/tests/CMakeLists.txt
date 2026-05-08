@@ -75,6 +75,11 @@ add_omegasl_compile_test(omegasl_compile_texture_gather      texture_gather.omeg
 add_omegasl_compile_test(omegasl_compile_index_assign        index_assign.omegasl)
 add_omegasl_compile_test(omegasl_compile_switch_basic        switch_basic.omegasl)
 add_omegasl_compile_test(omegasl_compile_math_phase5_1       math_phase5_1.omegasl)
+# §4.1 / §4.2 — 16-bit and 64-bit numeric type families.
+add_omegasl_compile_test(omegasl_compile_numeric_16bit       numeric_16bit.omegasl)
+add_omegasl_compile_test(omegasl_compile_numeric_64bit       numeric_64bit.omegasl)
+# §3.2 — ternary `?:`.
+add_omegasl_compile_test(omegasl_compile_ternary             ternary.omegasl)
 
 # --- Real-world shader tests (UI / game engine patterns) ---
 add_omegasl_compile_test(omegasl_compile_blinn_phong         blinn_phong.omegasl)
@@ -98,6 +103,9 @@ add_omegasl_fail_test(omegasl_invalid_write_ms               invalid_write_ms.om
 add_omegasl_fail_test(omegasl_invalid_sample_variants        invalid_sample_variants.omegasl)
 add_omegasl_fail_test(omegasl_invalid_switch                 invalid_switch.omegasl)
 add_omegasl_fail_test(omegasl_invalid_matrix_column_write    invalid_matrix_column_write.omegasl)
+# §3.2 — ternary diagnostics.
+add_omegasl_fail_test(omegasl_invalid_ternary_type_mismatch  invalid_ternary_type_mismatch.omegasl)
+add_omegasl_fail_test(omegasl_invalid_ternary_nonbool_cond   invalid_ternary_nonbool_cond.omegasl)
 
 # =============================================================
 # 4. Golden-file tests for HLSL codegen (DirectX only)
