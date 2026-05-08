@@ -533,6 +533,258 @@ Risk: low. Files touched: `View.Core.cpp`, `AppWindow.cpp`,
 Risk: medium. Files touched: `UIView.Update.cpp`, `UIViewImpl.h`,
 new `Composition/DisplayList.{h,cpp}`.
 
+#### Tier 2 phasing
+
+Tier 2 is large enough that landing it as one change would be opaque
+to review and brittle to revert. It is broken into seven phases, each
+independently shippable. Phase 2.0 is the type-design validator; the
+later phases are mechanical once 2.0 holds.
+
+**Cross-cutting decisions** (apply to every Tier 2 phase):
+
+- **`DrawOp` mirrors `VisualCommand` 1:1.** Same tagged-union shape
+  (`Type` enum + anonymous-union of per-variant `params` structs +
+  sentinel constructors per variant). Same field names. Same field
+  types. The replay adapter becomes a one-line dispatch per case
+  (`canvas.drawXxx(op.params.xxxParams.…)`), and the eventual Tier 4
+  retirement of `VisualCommand` becomes a mechanical search/replace
+  rather than a semantic migration. The shape match is by
+  construction.
+- **`DisplayList.h` is a public header** at
+  `wtk/include/omegaWTK/Composition/DisplayList.h`, parallel to
+  `Canvas.h`. SVGView (Phase 2.3) and NativeViewHost (Phase 2.5)
+  are out-of-`Composition/` consumers. Implementation in
+  `wtk/src/Composition/DisplayList.cpp`.
+- **Verification harness:** `wtk/tests/RootWidget/Main.cpp`. There
+  are no pixel-regression tests in tree (the closest,
+  `tests/SVGViewRenderTest/main.cpp`, only logs parse success/error).
+  Each phase adds or modifies a RootWidget scene that exercises the
+  newly-converted code path; verification is visual-comparison
+  against the previous tier's behavior. A proper image-diff harness
+  is out of scope for Tier 2 and tracked separately.
+
+##### Phase 2.0 — type introduction + thinnest end-to-end slice
+
+The validator phase. If the round trip works for one op, it works
+for the other eight (they only differ in payload).
+
+- Add `wtk/include/omegaWTK/Composition/DisplayList.h` and
+  `wtk/src/Composition/DisplayList.cpp`.
+- `DrawOp::Type` enum covers exactly the nine `VisualCommand`
+  variants present today: `Rect`, `RoundedRect`, `Ellipse`,
+  `VectorPath`, `Text`, `Bitmap`, `Shadow`, `SetTransform`,
+  `SetOpacity`. State ops (`PushClip`, `PushTransform`,
+  `PushOpacity`, `PushEffect`, `NativeContent`) are deferred to
+  Phases 2.4 / 2.5 — they have no consumers in `UIView::update()`
+  and adding them now bloats the slice without exercising them.
+- `DisplayList` is a flat `OmegaCommon::Vector<DrawOp>` with `append`,
+  `clear`, and `size`. No transform stack at the type level (the
+  `SetTransform`/`SetOpacity` ops carry the same state model
+  `Canvas` already has).
+- `DisplayListReplay::replay(const DisplayList & list, Canvas & canvas)`
+  — switch on `op.type`, hand the matching `params` struct to the
+  matching `Canvas::drawXxx` / `setElementXxx` method.
+- Convert **one** call site in `UIView::update()`: the simple `Rect`
+  shape branch in the per-element loop (`UIView.Update.cpp:310`-ish
+  range). Build a fresh `DisplayList`, append one `DrawOp::Rect`
+  with the same brush/border/rect that the current path uses, replay
+  into `impl_->rootCanvas`. All other branches still call Canvas
+  directly. The displaylist is local to that one branch — no
+  function-scope or impl-scope storage yet.
+- Add a RootWidget scene that paints a single rect through this
+  path. Verify visually that the rect appears identically to the
+  pre-change path (toggle a build-time `#define` if useful for
+  side-by-side comparison).
+
+Files touched: new `Composition/DisplayList.{h,cpp}`,
+`UIView.Update.cpp` (one branch), `tests/RootWidget/Main.cpp`.
+
+##### Phase 2.1 — convert remaining `UIView::update()` branches
+
+Mechanical once 2.0 holds. Same DrawOp/Replay machinery, same
+contract.
+
+- Convert the remaining eight shape/state branches: `RoundedRect`,
+  `Ellipse`, `VectorPath`, `Text`, `Bitmap`, `Shadow`,
+  `setElementTransform`, `setElementOpacity`. Each becomes
+  `displayList.append(DrawOp::Xxx{...})` instead of a direct
+  `canvas->drawXxx(...)` call.
+- Promote the displaylist from "branch-local in one switch case" to
+  "function-local for the whole `update()` call." The replay into
+  `impl_->rootCanvas` happens once at the end of `update()`, just
+  before `sendFrame()`.
+- `UIView::update()` is now structurally:
+
+  ```
+  DisplayList list;
+  for(each element) {
+      switch(shape.type) {
+          case Rect:        list.append(DrawOp::Rect{...}); break;
+          case RoundedRect: list.append(DrawOp::RoundedRect{...}); break;
+          // ...
+      }
+      if(text) list.append(DrawOp::Text{...});
+  }
+  DisplayListReplay::replay(list, *impl_->rootCanvas);
+  impl_->rootCanvas->sendFrame();
+  ```
+
+  Same output, same bugs, paint is now a pure function of model +
+  layout + style + animation side-table.
+- RootWidget scene grows to exercise each variant.
+
+Files touched: `UIView.Update.cpp` (the remaining branches),
+`tests/RootWidget/Main.cpp`.
+
+##### Phase 2.2 — delete `localBoundsFromView` static map
+
+Independent cleanup, easier to land after 2.1 because the only call
+site is in `update()`.
+
+- Delete `static std::unordered_map<UIView *, StableBoundsState>
+  stableBoundsByView` at `UIView.Update.cpp:61` and the
+  `StableBoundsState` struct.
+- Replace the call site (`UIView.Update.cpp:137`,
+  `UIViewInternal::localBoundsFromView(this)`) with a per-call
+  computation from `getRect()` + `getLayerTree()->getRootLayer()`'s
+  rect. No cache.
+- Verify with the RootWidget scene under resize: the cache existed
+  to smooth transient invalid dimensions during resize; per the
+  plan §1.4 and `Render-Execution-Efficiency-Plan.md` NV-1..NV-3,
+  the single-surface refactor already removed those races. If a
+  resize regression appears, this phase reverts cleanly without
+  affecting Phases 2.0/2.1.
+
+Files touched: `UIView.Update.cpp`.
+
+##### Phase 2.3 — `SVGView` migration to `DisplayList`
+
+The first non-trivial validator: a several-hundred-op document
+round-tripped through the new types proves the abstraction holds at
+scale.
+
+- Replace `SVGDrawOpList` (currently in `SVGView.cpp`) with
+  `Composition::DisplayList`. The current `SVGDrawOp` variants
+  (Rect, RoundedRect, Ellipse, Path, Line, Polyline) all map onto
+  the existing nine `DrawOp` variants — `Line` and `Polyline`
+  collapse into `DrawOp::VectorPath` since the GPU path already
+  tessellates them through the same vector pipeline.
+- `SVGView` keeps `cachedOps_` (renamed/retyped) as a
+  `UniquePtr<DisplayList>` rebuilt from `sourceDoc_` on
+  `setSourceDocument` / `setSourceString` / `setSourceStream`.
+- `SVGView::paint()` still calls `DisplayListReplay::replay` into
+  `svgCanvas`. The §9.2 sketch ("`pc.displayList.append(*cachedOps_)`")
+  is the Tier 4 shape, not the Tier 2 shape — Tier 2 still has a
+  per-view canvas; the SVG list is replayed into it.
+- Delete `SVGView::renderNow()`.
+- Verify with `tests/SVGViewRenderTest/main.cpp`: the existing test
+  parses an SVG and triggers a render. Visual inspection that the
+  rendered output is unchanged.
+
+Files touched: `SVGView.h`, `SVGView.cpp`,
+`tests/SVGViewRenderTest/main.cpp`.
+
+##### Phase 2.4 — add `PushClip` / `PushTransform` ops
+
+No consumer in Tier 2; ScrollView migration is Tier 3. Landing the
+op shapes now keeps Tier 3 mechanical and gives `DisplayList` the
+state-stack vocabulary it will need.
+
+- Extend `DrawOp::Type` with `PushClip`, `PopClip`, `PushTransform`,
+  `PopTransform`. The plan §3.2 also lists `PushOpacity` / `PopOpacity`
+  and `PushEffect` / `PopEffect`; defer those until Tier 3 has a use
+  case for them (current `setElementOpacity` op already handles the
+  scalar opacity case).
+- `params` payloads:
+  - `PushClip` → `{ Composition::Rect rect; }`
+  - `PushTransform` → `{ Matrix4x4 transform; }`
+  - `Pop*` → no payload.
+- `DisplayListReplay` for these ops translates to `Canvas` state
+  changes — but `Canvas` today has no `pushClip` / `popClip` / scoped
+  transform API. For Tier 2 the replay either (a) accumulates the
+  clip/transform stack itself and bakes it into subsequent op
+  parameters (preferred — keeps the scaffolding self-contained and
+  lets Tier 3 swap the replay for direct backend dispatch), or (b)
+  no-ops with a warning if the stack is non-trivial (acceptable
+  since no Tier-2 producer emits them).
+- No call site changes. The ops exist; nothing emits them yet.
+
+Files touched: `Composition/DisplayList.{h,cpp}`.
+
+##### Phase 2.5 — add `DrawOp::NativeContent` + `onLayoutResolved` signal
+
+Unblocks the NativeViewHost-Adoption-Plan migrations (VideoView,
+OmegaGTEView) so they can run in parallel with the rest of Tier 2.
+
+- Extend `DrawOp::Type` with `NativeContent`. Payload (per §9.7 Q3
+  + the user's Q3 answer): `{ Composition::Rect destRect; uint64_t
+  hostId; int zOrderHint; }`. The z-order hint is required (per the
+  user's note — "NativeContent does need a z-order hint so it
+  renders above the bottom layer").
+- `DisplayListReplay` for `NativeContent` is a no-op in Tier 2 — the
+  Canvas-based GPU path has no native-carve-out concept. The op
+  exists as a shape contract for the NativeViewHost-Adoption-Plan
+  to build against; backend handling lands in Tier 3 alongside the
+  FrameBuilder.
+- Add `View::onLayoutResolved` signal (per §9.4.1 + §9.7 Q4): fires
+  on rect changes only, not on transform changes (a separate
+  `onTransformChanged` signal is deferred to Tier 3 if needed).
+  Today the only firing point is `View::resize()` — wire it there.
+  No subscribers in Tier 2; the signal exists so NativeViewHost can
+  subscribe in its own plan.
+- Coordinate the op shape and signal contract with
+  `NativeViewHost-Adoption-Plan.md` before merging.
+
+Files touched: `Composition/DisplayList.{h,cpp}`,
+`include/omegaWTK/UI/View.h`, `wtk/src/UI/View.Core.cpp`.
+
+##### Phase 2.6 — `CanvasView` imperative-method deprecation
+
+Smallest Tier-2 impact; sequenced last so the rest of Tier 2 has
+landed and any in-tree CanvasView callers can be migrated against a
+stable surface.
+
+- `CanvasView`'s imperative `drawRect` / `drawRoundedRect` /
+  `drawImage` / `drawText` / `clear` methods become deprecated stubs
+  that build a transient `UIViewLayoutV2` element and route through
+  the UIView paint path (per §9.1 "Tier alignment").
+- Mark the methods `[[deprecated]]` in the header so the §8 grep
+  sweep catches every caller before Tier 3 deletes the class.
+- `CanvasView::submitPaintFrame(int)` override stays for Tier 2 (it
+  is removed in Tier 3 alongside the session-lifetime move).
+- No header file deletion in Tier 2; the class survives until Tier 3.
+
+Files touched: `omegaWTK/UI/CanvasView.h`, `wtk/src/UI/CanvasView.cpp`.
+
+#### Phase ordering rationale
+
+- 2.0 first: validates type design on the smallest possible surface.
+  If the round-trip is broken, only one call site is affected.
+- 2.1 immediately after: same machinery, mechanical extension. Lands
+  the bulk of the `UIView::update()` refactor.
+- 2.2 right after 2.1: the static-map deletion is a cleanup the
+  Update refactor enables. Independent enough to revert alone.
+- 2.3 next: the SVG migration is the abstraction's first stress
+  test. Catches issues that single-rect Phase 2.0 could not surface
+  (op-count, deeply-nested paths, brush variety).
+- 2.4 and 2.5 in either order: both are op-set additions with no
+  Tier-2 consumers. They unblock Tier 3 (ScrollView) and the
+  NativeViewHost-Adoption-Plan respectively.
+- 2.6 last: deprecation is downstream of everything else and has no
+  in-Tier-2 consumers depending on it.
+
+#### What Tier 2 explicitly does NOT do
+
+- Does not remove `Canvas`, `VisualCommand`, or `CanvasFrame`. They
+  all survive Tier 2 unchanged (per §3.2, Canvas is the GPU-path
+  stability anchor through Tier 3).
+- Does not collapse per-view LayerTrees (Tier 3).
+- Does not introduce `SceneNode`, `LayoutManager`, `FrameBuilder`,
+  `PaintContext`, or `DirtyBits` (Tier 4).
+- Does not change `BackendRenderTargetContext::renderToTarget` (Tier 4).
+- Does not remove `View::computeWindowOffset` (Tier 3/4).
+- Does not delete `CanvasView` (Tier 3).
+
 ### Tier 3 — collapse per-view LayerTree into one per window
 
 - `View::Impl::ownLayerTree` removed.
