@@ -1,0 +1,27 @@
+/// §3.5 — duplicate definition with the SAME signature. With
+/// overloading, "duplicate" must be measured by signature, not by
+/// name; two same-name functions with different param types are a
+/// valid overload set, but two same-name functions with identical
+/// param types are still a redeclaration error.
+
+struct Pt { float4 value; };
+
+buffer<Pt> dst : 0;
+
+float dup(float a){
+    return a;
+}
+
+/// Same name AND same signature as the prior decl — this must fire
+/// `DuplicateDeclaration`. (A different-signature overload would be
+/// fine; that's the positive `function_overload_basic` test.)
+float dup(float a){
+    return a + 1.0;
+}
+
+[out dst]
+compute(x=1,y=1,z=1)
+void test_invalid_function_overload_redecl(uint3 tid : GlobalThreadID){
+    float r = dup(2.0);
+    dst[0].value = float4(r, r, r, r);
+}

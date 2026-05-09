@@ -102,6 +102,25 @@ namespace omegasl {
         OmegaCommon::Vector<ast::FuncDecl *> userFuncDecls;
         std::set<std::string> userFuncNames;
 
+        /// §3.5 — count of how many user FuncDecls share each name.
+        /// Populated lazily by `userFuncNameCount` from `userFuncDecls`.
+        /// Drives the overload-mangling decision in `spellUserFuncName`:
+        /// names that appear more than once get a parameter-type suffix
+        /// so each overload emits a unique target-language symbol.
+        mutable std::map<std::string, int> userFuncNameCounts_;
+        mutable bool userFuncNameCountsBuilt_ = false;
+
+        int userFuncNameCount(OmegaCommon::StrRef name) const {
+            if (!userFuncNameCountsBuilt_) {
+                for (auto *fd : userFuncDecls) {
+                    userFuncNameCounts_[std::string(fd->name)]++;
+                }
+                userFuncNameCountsBuilt_ = true;
+            }
+            auto it = userFuncNameCounts_.find(std::string(name));
+            return it == userFuncNameCounts_.end() ? 0 : it->second;
+        }
+
         /// AST pointers for every `ShaderDecl` the parser handed off to
         /// `generateDecl`. Collected so the post-parse portability
         /// scanner (Feature-Gap-Survey §14.2) can revisit them after
@@ -117,21 +136,67 @@ namespace omegasl {
             return std::string("osl_user_") + std::string(name);
         }
 
+        /// §3.5 — overload-aware mangling. When a user function name
+        /// has more than one declaration in the current translation
+        /// unit, every emit site must produce a unique target-language
+        /// symbol or the downstream compiler sees a redefinition. The
+        /// suffix is built from the parameter list using each type's
+        /// canonical OmegaSL spelling joined with underscores; pointer
+        /// parameters get a trailing `_p` marker. The leading double
+        /// underscore separates the function-name from the suffix so
+        /// debugging output stays readable. Example: `myLerp(float,
+        /// float, float)` → `osl_user_myLerp__float_float_float`.
+        ///
+        /// Takes the positional `Vector<TypeExpr*>` rather than the
+        /// FuncType's unordered `fields` map — order is observable in
+        /// the mangled symbol, and `MapVec` is a hash table.
+        static OmegaCommon::String mangleUserFuncName(
+            OmegaCommon::StrRef name,
+            const OmegaCommon::Vector<ast::TypeExpr *> &paramTypes) {
+            std::string out = "osl_user_";
+            out += std::string(name);
+            out += "__";
+            bool first = true;
+            for (auto *t : paramTypes) {
+                if (!first) out += "_";
+                first = false;
+                out += std::string(t->name);
+                if (t->pointer) out += "_p";
+            }
+            return out;
+        }
+
         bool isUserFunc(OmegaCommon::StrRef name) const {
             return userFuncNames.count(std::string(name)) > 0;
         }
 
         /// Returns the spelling to write when emitting a user-defined
-        /// function name (in either its definition or a call site). Only
-        /// mangles when the target has flagged the name as colliding
-        /// with one of its own stdlib identifiers. Non-colliding user
-        /// names pass through unchanged so the generated source stays
-        /// readable.
+        /// function name (in either its definition or a call site).
+        /// The single-overload form keeps the original behavior — only
+        /// mangle on a stdlib collision so unrelated user code stays
+        /// readable. The two-argument form (used by overloaded names)
+        /// always mangles with a type suffix so each overload emits a
+        /// unique symbol.
         OmegaCommon::String spellUserFuncName(OmegaCommon::StrRef name) const {
             if (target->needsMangling(name)) {
                 return mangleUserFuncName(name);
             }
             return std::string(name);
+        }
+
+        /// §3.5 — overload-aware spelling. Used at sites that know the
+        /// resolved parameter list (the FUNC_DECL emit path uses the
+        /// FuncDecl's params; the CALL_EXPR emit path uses the
+        /// CallExpr's `resolvedCallee->paramTypes`). Single-overload
+        /// names route through the simple form so the common case
+        /// stays clean and only collisions get prefixed.
+        OmegaCommon::String spellUserFuncName(
+            OmegaCommon::StrRef name,
+            const OmegaCommon::Vector<ast::TypeExpr *> &paramTypes) const {
+            if (userFuncNameCount(name) > 1) {
+                return mangleUserFuncName(name, paramTypes);
+            }
+            return spellUserFuncName(name);
         }
 
         /// Set by a backend when it encounters a construct it cannot

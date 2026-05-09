@@ -1,0 +1,23 @@
+/// §3.6 — `const` qualifier on a local variable. The compiler must
+/// accept `const` in front of a builtin scalar type and propagate the
+/// qualifier through to all three backend targets (HLSL, MSL, GLSL),
+/// each of which spell it `const` in their generated source.
+
+struct Pt {
+    float4 value;
+};
+
+buffer<Pt> src : 0;
+buffer<Pt> dst : 1;
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_const_local_basic(uint3 tid : GlobalThreadID){
+    const float scale = 2.0;
+    const int   count = 4;
+    /// The const locals are read-only inputs to the arithmetic — Sema
+    /// must accept reads here while continuing to reject any write
+    /// through `scale` or `count` (covered by the negative test).
+    float v = src[0].value[0] * scale;
+    dst[0].value = float4(v, v, v, float(count));
+}

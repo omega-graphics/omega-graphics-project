@@ -1,0 +1,35 @@
+/// §3.5 — function overloading. Two `myLerp` functions share a name
+/// but differ by parameter type. Sema picks the right overload from
+/// the argument types at each call site (exact match — no implicit
+/// conversion in this pass). Codegen mangles the names because the
+/// downstream HLSL/MSL/GLSL compilers can't otherwise tell the two
+/// definitions apart.
+
+struct Pt {
+    float4 value;
+};
+
+buffer<Pt> src : 0;
+buffer<Pt> dst : 1;
+
+/// Scalar overload. Implements `(1 - t)*a + t*b` on plain floats.
+float myLerp(float a, float b, float t){
+    return a + (b - a) * t;
+}
+
+/// Vector overload. Same shape; the per-component arithmetic
+/// broadcasts the scalar `t` across the float3.
+float3 myLerp(float3 a, float3 b, float t){
+    return a + (b - a) * t;
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_function_overload_basic(uint3 tid : GlobalThreadID){
+    /// First call resolves to `myLerp(float, float, float)`.
+    float s = myLerp(0.0, 1.0, 0.5);
+    /// Second call resolves to `myLerp(float3, float3, float)` —
+    /// arity matches but the first/second arg types steer the pick.
+    float3 v = myLerp(float3(0.0, 0.0, 0.0), float3(1.0, 1.0, 1.0), 0.25);
+    dst[0].value = float4(v, s);
+}

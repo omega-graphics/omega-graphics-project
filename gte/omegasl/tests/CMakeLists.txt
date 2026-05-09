@@ -80,6 +80,11 @@ add_omegasl_compile_test(omegasl_compile_numeric_16bit       numeric_16bit.omega
 add_omegasl_compile_test(omegasl_compile_numeric_64bit       numeric_64bit.omegasl)
 # §3.2 — ternary `?:`.
 add_omegasl_compile_test(omegasl_compile_ternary             ternary.omegasl)
+# §3.6 — `const` qualifier on a local variable.
+add_omegasl_compile_test(omegasl_compile_const_local_basic   const_local_basic.omegasl)
+# §3.5 — function overloading.
+add_omegasl_compile_test(omegasl_compile_function_overload_basic function_overload_basic.omegasl)
+add_omegasl_compile_test(omegasl_compile_function_overload_with_forward function_overload_with_forward.omegasl)
 
 # --- Real-world shader tests (UI / game engine patterns) ---
 add_omegasl_compile_test(omegasl_compile_blinn_phong         blinn_phong.omegasl)
@@ -106,6 +111,14 @@ add_omegasl_fail_test(omegasl_invalid_matrix_column_write    invalid_matrix_colu
 # §3.2 — ternary diagnostics.
 add_omegasl_fail_test(omegasl_invalid_ternary_type_mismatch  invalid_ternary_type_mismatch.omegasl)
 add_omegasl_fail_test(omegasl_invalid_ternary_nonbool_cond   invalid_ternary_nonbool_cond.omegasl)
+# §3.6 — `const` local enforcement diagnostics.
+add_omegasl_fail_test(omegasl_invalid_const_assign           invalid_const_assign.omegasl)
+add_omegasl_fail_test(omegasl_invalid_const_no_init          invalid_const_no_init.omegasl)
+add_omegasl_fail_test(omegasl_invalid_const_increment        invalid_const_increment.omegasl)
+# §3.5 — overload-resolution diagnostics.
+add_omegasl_fail_test(omegasl_invalid_function_overload_no_match     invalid_function_overload_no_match.omegasl)
+add_omegasl_fail_test(omegasl_invalid_function_overload_redecl       invalid_function_overload_redecl.omegasl)
+add_omegasl_fail_test(omegasl_invalid_function_overload_return_type  invalid_function_overload_return_type.omegasl)
 
 # =============================================================
 # 4. Golden-file tests for HLSL codegen (DirectX only)

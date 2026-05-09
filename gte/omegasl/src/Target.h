@@ -415,6 +415,16 @@ namespace omegasl {
                             std::optional<unsigned> index,
                             std::ostream &out) override;
         OmegaCommon::StrRef renameBuiltin(OmegaCommon::StrRef name) override;
+        /// MSL has no `degrees` / `radians` math builtins — they're
+        /// absent from `<metal_math>` in every spec rev. This hook
+        /// rewrites those calls inline as a multiplication by the
+        /// matching π constant; broadcasting handles scalar and vector
+        /// arguments uniformly. The texture-side hole (`gradient1d` on
+        /// `texture1d`) is handled in `emitTextureSampleGrad`.
+        bool tryEmitBuiltinCall(CodeGen &cg,
+                                ast::CallExpr *expr,
+                                OmegaCommon::StrRef name,
+                                std::ostream &out) override;
         void emitTextureSample(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureRead(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureWrite(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;

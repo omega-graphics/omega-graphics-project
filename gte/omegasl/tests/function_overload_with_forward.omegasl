@@ -1,0 +1,38 @@
+/// §3.5 — forward-decl interaction with overloading. The forward
+/// declaration of one signature must be matched to its body without
+/// affecting the registration of an unrelated overload, and the
+/// per-FuncType `hasDefinition` flag must track each overload
+/// independently (the pre-overload `Vector<String> definedFuncNames`
+/// would have false-positived as a duplicate the moment the second
+/// body landed).
+
+struct Pt { float4 value; };
+
+buffer<Pt> src : 0;
+buffer<Pt> dst : 1;
+
+/// Forward declaration for one of two overloads.
+float helper(float x);
+
+/// A second overload — different signature. Defined fully right here.
+/// Without per-overload definition tracking, the body for `helper(float)`
+/// further down would trip a false duplicate against this one because
+/// they share the name.
+float helper(float3 v){
+    return v.x + v.y + v.z;
+}
+
+/// Body matching the forward declaration. Its registration must
+/// resolve back to the forward-decl FuncType and flip `hasDefinition`,
+/// not register a third (now-conflicting) overload.
+float helper(float x){
+    return x * 2.0;
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_function_overload_with_forward(uint3 tid : GlobalThreadID){
+    float a = helper(src[0].value[0]);
+    float b = helper(src[0].value.xyz);
+    dst[0].value = float4(a + b, a, b, 0.0);
+}

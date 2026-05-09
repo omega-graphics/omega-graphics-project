@@ -1,0 +1,18 @@
+/// §3.6 — assigning to a `const` local must be a hard error. Sema
+/// catches the write at the binary `=` site by walking the LHS to its
+/// root identifier and rejecting if that binding was declared const.
+
+struct Pt {
+    float4 value;
+};
+
+buffer<Pt> dst : 0;
+
+[out dst]
+compute(x=1,y=1,z=1)
+void test_invalid_const_assign(uint3 tid : GlobalThreadID){
+    const float k = 2.0;
+    /// Expected diagnostic: "Cannot assign to `const` local `k`."
+    k = 3.0;
+    dst[0].value = float4(k, k, k, k);
+}

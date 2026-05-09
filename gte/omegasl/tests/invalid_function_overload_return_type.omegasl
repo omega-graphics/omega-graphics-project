@@ -1,0 +1,26 @@
+/// §3.5 — return-type-only differences are not a valid overload set.
+/// Two functions with identical parameter lists but different return
+/// types must be rejected because no call-site information could pick
+/// between them (return type isn't part of the resolution input).
+/// This catches the mistake at the second declaration with a clear
+/// "redeclared with a different return type" diagnostic.
+
+struct Pt { float4 value; };
+
+buffer<Pt> dst : 0;
+
+float ambiguous(float a){
+    return a;
+}
+
+/// Same name + same params, different return type — illegal.
+int ambiguous(float a){
+    return int(a);
+}
+
+[out dst]
+compute(x=1,y=1,z=1)
+void test_invalid_function_overload_return_type(uint3 tid : GlobalThreadID){
+    float r = ambiguous(1.5);
+    dst[0].value = float4(r, r, r, r);
+}

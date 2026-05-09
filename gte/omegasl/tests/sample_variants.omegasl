@@ -2,6 +2,14 @@
 /// Exercises every (sampler, texture) pairing the new variants accept,
 /// plus the gradient-rank table for sampleGrad (1D→float, 2D→float2,
 /// 3D & cube→float3).
+///
+/// The 1D-texture gradient line below trips `TEXTURE1D_MIP_SAMPLE`,
+/// which Apple GPUs don't expose (MSL has no `gradient1d` and no
+/// `level()` / `bias()` overload of `texture1d::sample`). The HLSL
+/// and GLSL backends emit the call normally; on MSL the loader writes
+/// a header-only stub for this fragment shader and rejects pipelines
+/// that bind it. See OmegaSL-Feature-Gap-Survey §14.
+#requires(TEXTURE1D_MIP_SAMPLE)
 
 struct VertexRaster internal {
     float4 pos : Position;

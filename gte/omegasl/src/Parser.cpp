@@ -1531,7 +1531,24 @@ namespace omegasl {
 
     ast::Decl *Parser::parseGenericDecl(Tok &first_tok,BlockParseContext & ctxt) {
         ast::Decl *node = nullptr;
+        /// §3.6 — optional `const` qualifier on a local declaration.
+        /// Consume it here and stamp the resulting VarDecl below; it is
+        /// only valid in front of a type-introducing token (TOK_KW_TYPE
+        /// or a struct identifier), so any other follow-up is rejected
+        /// once we know what the next token is.
+        bool isConst = false;
+        if(first_tok.type == TOK_KW && first_tok.str == KW_CONST){
+            isConst = true;
+            first_tok = getTok();
+        }
         if(first_tok.type == TOK_KW){
+            if(isConst){
+                auto e = std::make_unique<UnexpectedToken>(
+                    std::string("`const` may only qualify a variable declaration; got `") + first_tok.str + "`");
+                e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                diagnostics->addError(std::move(e));
+                return nullptr;
+            }
             if(first_tok.str == KW_RETURN){
                 auto _decl = new ast::ReturnDecl();
                 _decl->type = RETURN_DECL;
@@ -1591,6 +1608,7 @@ namespace omegasl {
             auto _decl = new ast::VarDecl();
             _decl->type = VAR_DECL;
             _decl->typeExpr = type_for_var_decl;
+            _decl->isConst = isConst;
             _decl->spec.name = first_tok.str;
             first_tok = aheadTok();
             if(first_tok.type == TOK_LBRACKET){
@@ -1623,6 +1641,16 @@ namespace omegasl {
             }
             else if(first_tok.type == TOK_OP){
                 auto e = std::make_unique<UnexpectedToken>(std::string("Unknown operator `") + first_tok.str + "`");
+                e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                diagnostics->addError(std::move(e));
+                return nullptr;
+            }
+            /// §3.6 — `const` locals are useless without a value. All three
+            /// backends require it, so reject up-front with a clear message
+            /// instead of leaning on the downstream compiler's diagnostic.
+            if(_decl->isConst && !_decl->spec.initializer.has_value()){
+                auto e = std::make_unique<UnexpectedToken>(
+                    std::string("`const` local `") + _decl->spec.name + "` must have an initializer");
                 e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
                 diagnostics->addError(std::move(e));
                 return nullptr;

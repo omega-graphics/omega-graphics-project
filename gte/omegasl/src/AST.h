@@ -37,6 +37,23 @@ namespace omegasl {
 
         struct FuncType : public Type {
             TypeExpr *returnType;
+            /// §3.5 — set once Sema has bound a body to this signature.
+            /// With overloading, `name` alone no longer identifies a
+            /// definition — two FuncTypes can share a name but differ
+            /// by parameter list. The pre-overload `definedFuncNames`
+            /// list became unsound (false-positive duplicates) the
+            /// moment a second overload was added; the per-FuncType
+            /// flag replaces it. Forward declarations leave this
+            /// false; the matching body sets it true.
+            bool hasDefinition = false;
+            /// §3.5 — parameter type list in declaration order. The
+            /// inherited `fields` map (a MapVec, which is an
+            /// unordered_map) cannot be used for order-sensitive work
+            /// like overload mangling because the iteration order is
+            /// implementation-defined. This vector is the canonical
+            /// positional list. Populated alongside `fields` by Sema's
+            /// FUNC_DECL handler.
+            OmegaCommon::Vector<TypeExpr *> paramTypes;
         };
 
         namespace builtins {
@@ -257,6 +274,11 @@ namespace omegasl {
 
         struct VarDecl : public Decl {
             TypeExpr *typeExpr;
+            /// §3.6 — `const` qualifier on a local declaration. Set by the
+            /// parser when `const` precedes the type. Sema rejects writes
+            /// through this name; CodeGen prefixes the emitted declaration
+            /// with `const`, which all three backends accept verbatim.
+            bool isConst = false;
             struct Spec {
                 OmegaCommon::String name;
                 std::optional<ast::Expr *> initializer;
@@ -458,6 +480,13 @@ namespace omegasl {
         struct CallExpr : public Expr {
             Expr *callee;
             OmegaCommon::Vector<Expr *> args;
+            /// §3.5 — set by Sema once the callee is resolved against
+            /// the user-function overload set. Codegen reads this to
+            /// pick the matching mangled spelling at the call site
+            /// (the ID_EXPR alone is ambiguous when more than one
+            /// overload shares the name). Stays null for builtin
+            /// calls and for unresolved/error cases.
+            FuncType *resolvedCallee = nullptr;
         };
 
         struct UnaryOpExpr : public Expr {

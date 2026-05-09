@@ -212,7 +212,15 @@ using omegasl_shader_feature_flags = enum : unsigned long long {
     OMEGASL_FEATURE_BIT_SPEC_CONSTANTS     = 1ull << 10,
     OMEGASL_FEATURE_BIT_TEXTURECUBE_RW     = 1ull << 11,
     OMEGASL_FEATURE_BIT_TEXTURE2D_MS_WRITE = 1ull << 12,
-    OMEGASL_FEATURE_BIT_DOUBLE             = 1ull << 13
+    OMEGASL_FEATURE_BIT_DOUBLE             = 1ull << 13,
+    /// `sampleLOD` / `sampleBias` / `sampleGrad` on `texture1d` and
+    /// `texture1d_array`. Apple GPUs do not support mipmap selection
+    /// on 1D textures, so MSL has no `level()` / `bias()` overload of
+    /// `texture1d::sample(...)` and no `gradient1d` function exists at
+    /// all. HLSL and GLSL accept the call. Shaders that need this op
+    /// must `#requires(TEXTURE1D_MIP_SAMPLE)`; on MSL the loader will
+    /// emit a header-only stub and reject pipelines that bind it.
+    OMEGASL_FEATURE_BIT_TEXTURE1D_MIP_SAMPLE = 1ull << 14
 };
 
 

@@ -96,6 +96,11 @@ namespace omegasl {
 #define KW_OUT KW("out")
 #define KW_INOUT KW("inout")
 #define KW_STATIC KW("static")
+/// §3.6 — `const` qualifier on local variable declarations. Marks the
+/// local immutable from declaration on; assignment to it is rejected by
+/// Sema and the qualifier flows through to all three backend targets,
+/// each of which spell it `const` in their generated source.
+#define KW_CONST KW("const")
 
 
 #define KW_TY_VOID KW_TY("void")

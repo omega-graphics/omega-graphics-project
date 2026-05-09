@@ -1,0 +1,18 @@
+/// §3.6 — a `const` local without an initializer is meaningless and
+/// rejected by every backend. Catch the mistake at parse time so the
+/// diagnostic points at the OmegaSL source instead of leaking out of
+/// the downstream HLSL/MSL/GLSL compiler.
+
+struct Pt {
+    float4 value;
+};
+
+buffer<Pt> dst : 0;
+
+[out dst]
+compute(x=1,y=1,z=1)
+void test_invalid_const_no_init(uint3 tid : GlobalThreadID){
+    /// Expected diagnostic: "`const` local `k` must have an initializer".
+    const float k;
+    dst[0].value = float4(0.0, 0.0, 0.0, 0.0);
+}

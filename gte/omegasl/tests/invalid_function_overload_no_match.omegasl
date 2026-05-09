@@ -1,0 +1,27 @@
+/// §3.5 — overload resolution failure. Two candidates exist, neither
+/// of which accepts the argument types at the call site. Sema must
+/// emit a "No matching overload" diagnostic instead of silently
+/// dispatching to whichever candidate happened to be registered first
+/// (the pre-overload behavior).
+
+struct Pt { float4 value; };
+
+buffer<Pt> dst : 0;
+
+float myFn(float a, float b){
+    return a + b;
+}
+
+float myFn(int a, int b){
+    return float(a + b);
+}
+
+[out dst]
+compute(x=1,y=1,z=1)
+void test_invalid_function_overload_no_match(uint3 tid : GlobalThreadID){
+    /// Neither `(float, float)` nor `(int, int)` matches `(float3, float3)`.
+    /// Expected diagnostic: "No matching overload for `myFn` with the
+    /// given argument types."
+    float r = myFn(float3(1.0, 2.0, 3.0), float3(4.0, 5.0, 6.0));
+    dst[0].value = float4(r, r, r, r);
+}

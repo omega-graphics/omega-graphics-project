@@ -57,11 +57,22 @@ namespace omegasl {
 
         OmegaCommon::Vector<OmegaCommon::String> shaders;
 
-        /// @brief Names of user functions for which a full definition (with
-        /// body) has been seen. Forward declarations do not populate this.
-        OmegaCommon::Vector<OmegaCommon::String> definedFuncNames;
+        /// §3.5 — definition tracking lives on the FuncType itself
+        /// (`hasDefinition`). Two overloads with the same name need
+        /// independent flags, which the old `Vector<String>` couldn't
+        /// give us — it would false-positive a duplicate the moment
+        /// the second overload was defined.
 
-        OmegaCommon::Map<OmegaCommon::String,ast::TypeExpr *> variableMap;
+        /// §3.6 — value side of `variableMap`. Carries the variable's
+        /// resolved type expression alongside any qualifiers that affect
+        /// later semantic checks. Today the only qualifier is `isConst`
+        /// (set when the local was declared `const T x = …`); it gates
+        /// assignment-to-LHS validation in `performSemForExpr`.
+        struct VarBinding {
+            ast::TypeExpr *type = nullptr;
+            bool isConst = false;
+        };
+        OmegaCommon::Map<OmegaCommon::String,VarBinding> variableMap;
     };
 
     /// @brief Impl of Semantics Provider.
@@ -94,6 +105,25 @@ namespace omegasl {
         ast::Type * resolveTypeWithExpr(ast::TypeExpr *expr) override;
 
         ast::FuncType *resolveFuncTypeWithName(OmegaCommon::StrRef name);
+
+        /// §3.5 — collect every FuncType registered under `name`,
+        /// across both the builtin map and the current user-function
+        /// map. Order is builtins-first, user-overloads-after, in
+        /// registration order. Used by the call-expression resolver
+        /// to drive overload selection and by the FUNC_DECL handler
+        /// to decide whether a new declaration is a redeclaration of
+        /// an existing signature or a fresh overload.
+        OmegaCommon::Vector<ast::FuncType *> resolveFuncCandidatesByName(OmegaCommon::StrRef name);
+
+        /// §3.5 — exact-match overload resolution. Walks `candidates`
+        /// (typically the output of `resolveFuncCandidatesByName`),
+        /// matches by parameter arity and per-parameter `TypeExpr::compare`,
+        /// and returns the unique match or nullptr. Implicit numeric
+        /// conversions are out of scope for this pass — exact match
+        /// only — per the design call. Builtin candidates are skipped
+        /// during matching (their dispatch is handled elsewhere).
+        ast::FuncType *resolveOverload(const OmegaCommon::Vector<ast::FuncType *> &candidates,
+                                       const OmegaCommon::Vector<ast::TypeExpr *> &argTypes);
 
         ast::TypeExpr *performSemForDecl(ast::Decl * decl,ast::FuncDecl *funcContext);
 

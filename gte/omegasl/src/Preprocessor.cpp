@@ -30,21 +30,27 @@ struct FeatureEntry {
     bool glslExpressible;
 };
 
-constexpr std::array<FeatureEntry, 14> kFeatureTable = {{
-    {"RAYTRACING",         OMEGASL_FEATURE_BIT_RAYTRACING,         true,  true,  true},
-    {"MESH_SHADERS",       OMEGASL_FEATURE_BIT_MESH_SHADERS,       true,  true,  true},
-    {"GEOMETRY_SHADERS",   OMEGASL_FEATURE_BIT_GEOMETRY_SHADERS,   true,  false, true},
-    {"TESSELLATION",       OMEGASL_FEATURE_BIT_TESSELLATION,       true,  false, true},
-    {"SUBGROUP_OPS",       OMEGASL_FEATURE_BIT_SUBGROUP_OPS,       true,  true,  true},
-    {"BINDLESS",           OMEGASL_FEATURE_BIT_BINDLESS,           true,  true,  true},
-    {"FLOAT16",            OMEGASL_FEATURE_BIT_FLOAT16,            true,  true,  true},
-    {"INT64",              OMEGASL_FEATURE_BIT_INT64,              true,  true,  true},
-    {"VARIABLE_RATE",      OMEGASL_FEATURE_BIT_VARIABLE_RATE,      true,  true,  true},
-    {"SUBPASS_INPUTS",     OMEGASL_FEATURE_BIT_SUBPASS_INPUTS,     false, false, true},
-    {"SPEC_CONSTANTS",     OMEGASL_FEATURE_BIT_SPEC_CONSTANTS,     true,  true,  true},
-    {"TEXTURECUBE_RW",     OMEGASL_FEATURE_BIT_TEXTURECUBE_RW,     true,  false, false},
-    {"TEXTURE2D_MS_WRITE", OMEGASL_FEATURE_BIT_TEXTURE2D_MS_WRITE, false, false, false},
-    {"DOUBLE",             OMEGASL_FEATURE_BIT_DOUBLE,             true,  false, true}
+constexpr std::array<FeatureEntry, 15> kFeatureTable = {{
+    {"RAYTRACING",            OMEGASL_FEATURE_BIT_RAYTRACING,            true,  true,  true},
+    {"MESH_SHADERS",          OMEGASL_FEATURE_BIT_MESH_SHADERS,          true,  true,  true},
+    {"GEOMETRY_SHADERS",      OMEGASL_FEATURE_BIT_GEOMETRY_SHADERS,      true,  false, true},
+    {"TESSELLATION",          OMEGASL_FEATURE_BIT_TESSELLATION,          true,  false, true},
+    {"SUBGROUP_OPS",          OMEGASL_FEATURE_BIT_SUBGROUP_OPS,          true,  true,  true},
+    {"BINDLESS",              OMEGASL_FEATURE_BIT_BINDLESS,              true,  true,  true},
+    {"FLOAT16",               OMEGASL_FEATURE_BIT_FLOAT16,               true,  true,  true},
+    {"INT64",                 OMEGASL_FEATURE_BIT_INT64,                 true,  true,  true},
+    {"VARIABLE_RATE",         OMEGASL_FEATURE_BIT_VARIABLE_RATE,         true,  true,  true},
+    {"SUBPASS_INPUTS",        OMEGASL_FEATURE_BIT_SUBPASS_INPUTS,        false, false, true},
+    {"SPEC_CONSTANTS",        OMEGASL_FEATURE_BIT_SPEC_CONSTANTS,        true,  true,  true},
+    {"TEXTURECUBE_RW",        OMEGASL_FEATURE_BIT_TEXTURECUBE_RW,        true,  false, false},
+    {"TEXTURE2D_MS_WRITE",    OMEGASL_FEATURE_BIT_TEXTURE2D_MS_WRITE,    false, false, false},
+    {"DOUBLE",                OMEGASL_FEATURE_BIT_DOUBLE,                true,  false, true},
+    /// `sampleLOD` / `sampleBias` / `sampleGrad` on a `texture1d` or
+    /// `texture1d_array`. Apple GPUs have no mipmap pyramid for 1D
+    /// textures, so MSL has no `level()` / `bias()` overload and no
+    /// `gradient1d` function exists at all. HLSL and GLSL both expose
+    /// the operation.
+    {"TEXTURE1D_MIP_SAMPLE",  OMEGASL_FEATURE_BIT_TEXTURE1D_MIP_SAMPLE,  true,  false, true}
 }};
 
 bool isExpressible(const FeatureEntry& f, PPBackend backend) {

@@ -194,7 +194,17 @@ namespace omegasl {
                     generatedExprBody = true;
                     target->emitTextureRead(*this, _expr, out);
                 } else if (isUserFunc(_id_expr)) {
-                    out << spellUserFuncName(_id_expr);
+                    /// §3.5 — pick the mangled spelling matching the
+                    /// resolved overload. Sema stamps `resolvedCallee`
+                    /// at CALL_EXPR resolution time; if it's missing
+                    /// we fall back to the bare name (which still
+                    /// works for the single-overload case).
+                    if (_expr->resolvedCallee != nullptr) {
+                        out << spellUserFuncName(_id_expr,
+                                                 _expr->resolvedCallee->paramTypes);
+                    } else {
+                        out << spellUserFuncName(_id_expr);
+                    }
                 } else if (target->tryEmitBuiltinCall(*this, _expr, _id_expr, out)) {
                     /// GLSL handles `saturate` / `fmod` here — the call is
                     /// fully emitted by the backend (different shape, not a
@@ -327,7 +337,14 @@ namespace omegasl {
 
     void CodeGen::emitUserFunctionSignature(ast::FuncDecl *f) {
         writeTypeExpr(f->returnType, shaderOut);
-        shaderOut << " " << spellUserFuncName(f->name) << "(";
+        /// §3.5 — overloaded names mangle with a param-type suffix so
+        /// each overload emits a distinct symbol. Build the positional
+        /// type list from the FuncDecl's params (which preserves
+        /// declaration order, unlike FuncType::fields).
+        OmegaCommon::Vector<ast::TypeExpr *> paramTypes;
+        paramTypes.reserve(f->params.size());
+        for (auto &p : f->params) paramTypes.push_back(p.typeExpr);
+        shaderOut << " " << spellUserFuncName(f->name, paramTypes) << "(";
         for (size_t i = 0; i < f->params.size(); i++) {
             if (i > 0) shaderOut << ", ";
             writeTypeExpr(f->params[i].typeExpr, shaderOut);
@@ -358,6 +375,13 @@ namespace omegasl {
                 auto _decl = (ast::VarDecl *)decl;
                 if (target->tryEmitVarDecl(*this, _decl)) {
                     break;
+                }
+                /// §3.6 — `const` qualifier prefix. All three backends
+                /// (HLSL, MSL, GLSL) accept the C-style `const T name = …;`
+                /// form on a local declaration, so a single emit point
+                /// before the type is enough — no per-target hook needed.
+                if (_decl->isConst) {
+                    shaderOut << "const ";
                 }
                 writeTypeExpr(_decl->typeExpr, shaderOut);
                 shaderOut << " " << _decl->spec.name;

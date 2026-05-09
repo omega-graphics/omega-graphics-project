@@ -249,6 +249,35 @@ existing `sample`-shaped builtin pipeline:
   covering arg-count, gradient-rank, gather-on-3D, and sample-on-MS
   rejection.
 
+**Phase A.1 — MSL 1D-texture mip-sample hole (gated by feature flag, landed)**
+
+The `sampleLOD` / `sampleBias` / `sampleGrad` table claims uniform
+support across textures, but Apple GPUs do not store a mipmap pyramid
+for 1D textures. As a result MSL has no `level()` / `bias()` overload
+of `texture1d::sample(...)` and no `gradient1d` function exists at all.
+HLSL and GLSL both expose the operation (`Texture1D::SampleGrad`,
+`textureGrad(sampler1D, …)`).
+
+Gated by `OMEGASL_FEATURE_BIT_TEXTURE1D_MIP_SAMPLE`
+(HLSL=true, MSL=false, GLSL=true). The FeatureScanner trigger fires on
+`sampleLOD` / `sampleBias` / `sampleGrad` whose texture argument
+resolves to `texture1d` or `texture1d_array`. A file with
+`#requires(TEXTURE1D_MIP_SAMPLE)` produces a header-only stub on MSL
+(loader rejects pipelines binding the shader); HLSL and GLSL emit the
+call normally. A file that uses the operation without the directive
+trips the Layer 2 portability scanner warning (matching the
+`TEXTURECUBE_RW` / `TEXTURE2D_MS_WRITE` pattern).
+
+Latent bug fixed alongside this: `Sema::performSemForExpr`'s `ID_EXPR`
+branch was returning the resolved type without stamping it onto
+`expr->resolvedType`, while every other branch routes through
+`setAndReturn`. The FeatureScanner trigger table reads
+`arg->resolvedType` to identify resource arguments — without the
+stamp, every identifier-shaped texture argument was opaque to the
+scanner. The same bug had been silently disabling the existing
+`TEXTURECUBE_RW` and `TEXTURE2D_MS_WRITE` warnings; no test had
+exercised those code paths, so the regression had been latent.
+
 **Phase B — query intrinsics (planned)**
 
 `getDimensions` and `calculateLOD` are query-style intrinsics that pose
@@ -529,20 +558,91 @@ Listed as not-implemented. Lower impact than switch/ternary.
 **Proposal:** accept `[unroll]` and `[unroll(N)]` everywhere; on backends that
 don't support it, emit nothing. Rare to need the others.
 
-### 3.5 Function overloading
+### 3.5 Function overloading [LANDED]
 
-Listed as not-implemented. Means every vector/scalar variant of a user helper
-needs a unique name. Blocks shader libraries that emulate the builtin math
-surface (`myLerp(float,float,float)` vs `myLerp(float3,float3,float)`).
+Originally: every vector/scalar variant of a user helper needed a unique
+name, which blocked shader libraries that emulate the builtin math surface.
 
-### 3.6 `const` / `let` qualifier
+**Landed.** Two same-name functions whose parameter lists differ are now a
+valid overload set. At each call site Sema collects every candidate by
+name, computes the argument types, and picks the unique exact-signature
+match. Codegen mangles overloaded names with a parameter-type suffix
+(`osl_user_myLerp__float_float_float` vs `osl_user_myLerp__float3_float3_float`)
+so each overload emits a distinct downstream symbol; single-overload
+names stay clean (`spellUserFuncName` only mangles when
+`userFuncNameCount(name) > 1` or the name collides with a backend
+stdlib identifier). Same name + same params + different return type is
+rejected — return type isn't part of resolution input, so no call-site
+information could pick between them.
 
-No way to mark a local as immutable. All three backends support it and the
-SPIR-V spec can benefit (codegen can use `OpConstant` / `OpSpecConstant`).
+Per-FuncType `hasDefinition` replaces the pre-overload
+`Vector<String> definedFuncNames`, which would have false-positived a
+duplicate the moment a second overload was bound. Forward-decl
+followed by body is detected by exact signature, not by name, so
+`f(int)` forward + `f(float)` body + `f(int)` body all coexist
+correctly.
 
-Alex Answer:
+Implementation note: the existing `FuncType::fields` is a `MapVec`
+(`std::unordered_map`), so iteration order is implementation-defined.
+The pre-overload signature check iterated it in parallel with the
+positional `params` vector and worked by accident on identical
+insertion sequences. Added `FuncType::paramTypes` as the canonical
+ordered list; every order-sensitive consumer (overload resolution,
+mangling, the prior-decl check) routes through it.
 
-Use `const`.
+Out of scope (intentional, deferred to a follow-up pass):
+  - **Implicit numeric conversion in overload resolution.** Today only
+    exact match counts. Once added, `resolveOverload` will need to
+    grow a "best match" tier and an ambiguity diagnostic when two
+    candidates tie at the same conversion cost; the framework is in
+    place but the path is unreachable until coercion lands.
+  - **Overload sets across builtins.** OmegaSL still does not let user
+    code shadow `sin`, `lerp`, etc. — builtins win first in the
+    candidate-collection order. Revisit only if real shader libraries
+    hit the wall.
+
+### 3.6 `const` / `let` qualifier [LANDED]
+
+Originally: no way to mark a local immutable. All three backends spell
+it `const` and accept the C-style `const T x = …;` form on a local
+declaration.
+
+**Landed (as `const`, per Alex).** Recognized as a keyword (`KW_CONST`),
+parsed as an optional prefix on local var-decls, stamped onto the AST
+(`VarDecl::isConst`), and enforced by Sema:
+  - Writes through the binding fail at the binary `=`/`+=`/etc. site,
+    walking the LHS through any `INDEX_EXPR` and `MEMBER_EXPR` to the
+    root identifier so `c[0] = v` and `c.f = v` are caught when `c` is
+    const (matches HLSL/MSL/GLSL semantics for `const` aggregates).
+  - `++`/`--` on a const operand fail in the unary-op branch.
+  - Missing initializer (`const float k;`) fails at parse time — every
+    backend would reject it anyway, so catch it where the diagnostic
+    points at the OmegaSL source.
+
+`SemContext::variableMap` was widened from `Map<String, TypeExpr*>` to
+`Map<String, VarBinding>` where `VarBinding = { type, isConst }`. All
+four insert sites (local var, function params, shader resources,
+shader params) populate the new struct; only the local var-decl path
+ever sets `isConst = true`.
+
+Codegen emits `const` as a prefix in the shared `VAR_DECL` path —
+single emit point covers all three backends (HLSL, MSL, GLSL accept
+the spelling verbatim) so no per-target hook was needed. Verified
+output across the matrix:
+
+| Source | HLSL | MSL | GLSL |
+|---|---|---|---|
+| `const float k = 2.0;` | `const float k = 2.0;` | `const float k = 2.0;` | `const float k = 2.0;` |
+
+Editor highlighting via `omegasl.yaml` adds `const` to
+`declaration_keywords` so it gets the `storage.modifier` scope.
+
+Out of scope (intentional, deferred):
+  - **`const` on function parameters.** Overlaps with §3.7's `in` /
+    `out` / `inout` work and is cleaner to land alongside that pass.
+  - **Postfix `T const x` form.** C-family backends accept it; OmegaSL
+    parser only recognizes the prefix form today. Add when there's
+    real demand.
 
 ### 3.7 Multiple return values
 
@@ -662,7 +762,7 @@ Grouped by how often engines reach for them.
 | `mod(a,b)` | not added — would alias `fmod` here, picking one canonical spelling |
 | `trunc(x)` | **landed** — passthrough on every backend |
 | `rsqrt(x)` | **landed** — passthrough HLSL/MSL; GLSL renames to `inversesqrt` |
-| `degrees(r)` / `radians(d)` | **landed** — passthrough on every backend |
+| `degrees(r)` / `radians(d)` | **landed** — passthrough HLSL/GLSL; MSL inlines as a multiplication by the matching π constant (Metal stdlib has no `degrees`/`radians`). See §5.1.2 |
 | `sinh` / `cosh` / `tanh` | **landed** — passthrough on every backend |
 | `ldexp(x, e)` | **landed** — passthrough on every backend |
 | `modf(x, out integerPart)` | not added — out-param synthesis blocker (see §2.3 Phase B for the same issue with `getDimensions`) |
@@ -700,6 +800,13 @@ emission of a single call site. GLSL overrides it for two cases:
 * `fmod(x, y)` → `(x - y * trunc(x / y))`. Centralized expression keeps
   the truncation semantics consistent across stages — emitted inline so
   the backend doesn't need a new helper function.
+
+MSL overrides it for the `degrees` / `radians` pair (see §5.1.2):
+
+* `degrees(x)` → `((x) * 57.29577951308232)` (180 / π).
+* `radians(x)` → `((x) * 0.017453292519943295)` (π / 180).
+* Vector arguments work without extra glue because `scalar * vec`
+  broadcasts.
 
 The hook follows the existing `tryEmitVarDecl` / `tryEmitReturnDecl`
 pattern: returning true means the backend fully handled emission and the
@@ -774,6 +881,23 @@ Once `saturate` (and the other §5.1 entries) become first-class OmegaSL
 builtins, they should be reserved names — Sema rejects user redefinition
 the same way it would reject redefining `sin` — and the prefix becomes a
 defense-in-depth measure rather than a load-bearing one.
+
+#### 5.1.2 `degrees` / `radians` — MSL inlines because the Metal stdlib doesn't have them
+
+`degrees(x)` and `radians(x)` are first-class HLSL and GLSL intrinsics
+on scalars and vectors. They are absent from the Metal Shading Language
+stdlib in every spec rev to date (verified through MSL 3.x). The MSL
+backend therefore overrides `tryEmitBuiltinCall` and inlines each call
+as a multiplication by the matching π constant — `(x) * 57.295…` for
+`degrees`, `(x) * 0.01745…` for `radians`. Vector arguments work
+without extra glue because `scalar * vec` broadcasts in MSL.
+
+The constants are written in full double precision so the float
+narrowing at use site picks the IEEE-best single-precision value. The
+`MSLTarget::needsMangling` set used to list `degrees` / `radians` as
+collidable Metal stdlib names — that was wrong (the names aren't
+defined in Metal at all) and they have been removed so a user function
+called `degrees` doesn't get spuriously mangled.
 
 ### 5.2 Vector math not yet listed
 
@@ -1924,6 +2048,8 @@ backend):
 | `OMEGASL_FEATURE_SPEC_CONSTANTS` | (via #define) | (function constants) | ✓ |
 | `OMEGASL_FEATURE_TEXTURECUBE_RW` | partial | **—** | **—** |
 | `OMEGASL_FEATURE_TEXTURE2D_MS_WRITE` | **—** | **—** | **—** |
+| `OMEGASL_FEATURE_DOUBLE` | ✓ | **—** | ✓ |
+| `OMEGASL_FEATURE_TEXTURE1D_MIP_SAMPLE` | ✓ | **—** | ✓ |
 
 A backend defines the macro for a feature only when the feature is
 *reliably* supported on the lowest-common-denominator hardware that

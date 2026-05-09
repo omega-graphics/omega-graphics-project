@@ -13,7 +13,7 @@ variables:
   builtin_core: 'sample|read|write|dot|cross'
   stage_keywords: 'vertex|fragment|compute|hull|domain'
   control_keywords: 'if|else|for|while|return'
-  declaration_keywords: 'struct|internal|static'
+  declaration_keywords: 'struct|internal|static|const'
   resource_access_keywords: 'inout|in|out'
   scalar_types: 'void|bool|int|uint|float|double'
   vector_types: '(?:int|uint|float|double)(?:2|3|4)'

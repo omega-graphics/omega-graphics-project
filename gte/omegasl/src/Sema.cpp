@@ -328,6 +328,57 @@ namespace omegasl {
         return nullptr;
     }
 
+    /// §3.5 — collect every FuncType registered under `name`. The
+    /// return order is intentional: builtins first (so dispatch in
+    /// the call-expression resolver can short-circuit on the
+    /// builtin path before doing user-overload work), then user
+    /// overloads in registration order.
+    OmegaCommon::Vector<ast::FuncType *>
+    Sem::resolveFuncCandidatesByName(OmegaCommon::StrRef name){
+        OmegaCommon::Vector<ast::FuncType *> out;
+        for(auto *f : builtinFunctionMap){
+            if(f->name == name) out.push_back(f);
+        }
+        for(auto *f : currentContext->functionMap){
+            if(f->name == name) out.push_back(f);
+        }
+        return out;
+    }
+
+    /// §3.5 — exact-signature match. Walks user-function candidates
+    /// (skipping builtins, which OmegaSL doesn't allow user code to
+    /// shadow), comparing parameter arity and per-parameter type via
+    /// `TypeExpr::compare`. Implicit numeric coercion is intentionally
+    /// not attempted in this pass — the design call was "exact match
+    /// for now; revisit when we add implicit conversion." The first
+    /// (and, by exact-match construction, only) candidate whose
+    /// signature matches is returned. nullptr means "no overload
+    /// matches" — the caller decides whether that's an error.
+    ast::FuncType *Sem::resolveOverload(
+        const OmegaCommon::Vector<ast::FuncType *> &candidates,
+        const OmegaCommon::Vector<ast::TypeExpr *> &argTypes){
+        for(auto *cand : candidates){
+            if(cand->builtin) continue;
+            if(cand->paramTypes.size() != argTypes.size()) continue;
+            bool match = true;
+            for(size_t i = 0; i < argTypes.size(); ++i){
+                /// `paramTypes[i]` is the positional TypeExpr the
+                /// FuncType stored at registration; `argTypes[i]` is
+                /// what the argument's Sema returned. compare() is
+                /// structural (name + pointerness). Positional order
+                /// is critical, so we deliberately use the ordered
+                /// `paramTypes` vector and not the unordered `fields`
+                /// map (MapVec is a hash table).
+                if(!cand->paramTypes[i]->compare(argTypes[i])){
+                    match = false;
+                    break;
+                }
+            }
+            if(match) return cand;
+        }
+        return nullptr;
+    }
+
     /// Check if a resolved type is a numeric scalar.
     /// Includes the new 16-bit (`half`/`short`/`ushort`) and 64-bit
     /// (`long`/`ulong`) families from §4.1/§4.2 so literal coercion
@@ -415,7 +466,8 @@ namespace omegasl {
                     }
                 }
 
-                currentContext->variableMap.insert(std::make_pair(_decl->spec.name,_decl->typeExpr));
+                currentContext->variableMap.insert(std::make_pair(_decl->spec.name,
+                    SemContext::VarBinding{ _decl->typeExpr, _decl->isConst }));
 
                 if(_decl->spec.initializer.has_value()){
                     auto initExpr = _decl->spec.initializer.value();
@@ -572,7 +624,15 @@ namespace omegasl {
                 return nullptr;
             }
             else {
-                return _id_found->second;
+                /// Stamp the type onto the expression node so later
+                /// passes — notably the FeatureScanner trigger table —
+                /// can read `arg->resolvedType` directly. Other branches
+                /// already do this via `setAndReturn`; the ID_EXPR path
+                /// historically didn't, which left every identifier-
+                /// shaped argument with a null `resolvedType` and made
+                /// scanner triggers like `TEXTURECUBE_RW` and the new
+                /// `TEXTURE1D_MIP_SAMPLE` silently miss.
+                return setAndReturn(_id_found->second.type);
             }
 
 
@@ -749,6 +809,22 @@ namespace omegasl {
         }
         else if(expr->type == UNARY_EXPR){
             auto _expr = (ast::UnaryOpExpr *)expr;
+            /// §3.6 — `++` / `--` mutate their operand; if the operand
+            /// is a const local, reject the same way binary assignment
+            /// does below. Other unary ops (`!`, `-`, `~`) are
+            /// non-mutating and need no check.
+            if((_expr->op == OP_PLUSPLUS || _expr->op == OP_MINUSMINUS)
+               && _expr->expr->type == ID_EXPR){
+                auto *idExpr = (ast::IdExpr *)_expr->expr;
+                auto found = currentContext->variableMap.find(idExpr->id);
+                if(found != currentContext->variableMap.end() && found->second.isConst){
+                    auto e = std::make_unique<TypeError>(
+                        std::string("Cannot modify `const` local `") + idExpr->id + "`.");
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+            }
             return performSemForExpr(_expr->expr,funcContext);
         }
         else if(expr->type == POINTER_EXPR){
@@ -821,6 +897,35 @@ namespace omegasl {
                _expr->op == OP_ANDEQUAL || _expr->op == OP_OREQUAL ||
                _expr->op == OP_XOREQUAL || _expr->op == OP_LSHIFTEQUAL ||
                _expr->op == OP_RSHIFTEQUAL){
+                /// §3.6 — reject writes to a `const` local. Walks past
+                /// any leading INDEX_EXPRs / member access on the LHS so
+                /// that `c[0] = x` and `c.field = x` are caught when `c`
+                /// itself is the const binding (the value is immutable
+                /// transitively, matching HLSL/MSL/GLSL semantics for
+                /// `const` aggregates).
+                ast::Expr *lhsRoot = _expr->lhs;
+                while(lhsRoot){
+                    if(lhsRoot->type == INDEX_EXPR){
+                        lhsRoot = ((ast::IndexExpr *)lhsRoot)->lhs;
+                    }
+                    else if(lhsRoot->type == MEMBER_EXPR){
+                        lhsRoot = ((ast::MemberExpr *)lhsRoot)->lhs;
+                    }
+                    else {
+                        break;
+                    }
+                }
+                if(lhsRoot && lhsRoot->type == ID_EXPR){
+                    auto *idExpr = (ast::IdExpr *)lhsRoot;
+                    auto found = currentContext->variableMap.find(idExpr->id);
+                    if(found != currentContext->variableMap.end() && found->second.isConst){
+                        auto e = std::make_unique<TypeError>(
+                            std::string("Cannot assign to `const` local `") + idExpr->id + "`.");
+                        e->loc = _expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                }
                 if(_expr->lhs->type == INDEX_EXPR){
                     auto *idx = (ast::IndexExpr *)_expr->lhs;
                     /// idx->lhs is the matrix variable for a single-level
@@ -935,6 +1040,49 @@ namespace omegasl {
             auto _id_expr = (ast::IdExpr *)_expr->callee;
 
             auto func_found = resolveFuncTypeWithName(_id_expr->id);
+
+            /// §3.5 — overload resolution. When the name resolves to a
+            /// non-builtin user FuncType and more than one user
+            /// function shares that name, the first-match returned by
+            /// `resolveFuncTypeWithName` is the wrong one in the
+            /// general case. Re-resolve by signature: walk every arg
+            /// to get its type, then pick the candidate whose
+            /// parameter list matches exactly. Builtins keep going
+            /// through their own dispatch chain below — OmegaSL
+            /// doesn't allow user code to overload them.
+            if(func_found != nullptr && !func_found->builtin){
+                auto candidates = resolveFuncCandidatesByName(_id_expr->id);
+                /// Skip the work if there's only one candidate — the
+                /// common case stays exactly as fast as before, and
+                /// the only behavioral difference is that we now stamp
+                /// `resolvedCallee` for codegen.
+                if(candidates.size() > 1){
+                    OmegaCommon::Vector<ast::TypeExpr *> argTypes;
+                    argTypes.reserve(_expr->args.size());
+                    bool argSemaFailed = false;
+                    for(auto *arg : _expr->args){
+                        auto t = performSemForExpr(arg, funcContext);
+                        if(!t){ argSemaFailed = true; break; }
+                        argTypes.push_back(t);
+                    }
+                    if(argSemaFailed) return nullptr;
+                    auto *resolved = resolveOverload(candidates, argTypes);
+                    if(resolved == nullptr){
+                        std::string msg = "No matching overload for `";
+                        msg += std::string(_id_expr->id);
+                        msg += "` with the given argument types.";
+                        auto e = std::make_unique<TypeError>(msg);
+                        e->loc = _expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                    func_found = resolved;
+                }
+                /// Stamp the resolved callee so codegen can pick the
+                /// right mangled spelling at the call site (the bare
+                /// ID_EXPR is ambiguous for an overloaded name).
+                _expr->resolvedCallee = func_found;
+            }
 
             if(func_found == nullptr){
                 /// Check if it's a known math intrinsic.
@@ -1987,53 +2135,62 @@ namespace omegasl {
                     if(p_ty == nullptr){
                         return false;
                     }
-                    currentContext->variableMap.insert(std::make_pair(p.name, p.typeExpr));
+                    currentContext->variableMap.insert(std::make_pair(p.name,
+                        SemContext::VarBinding{ p.typeExpr, false }));
                 }
 
-                /// 3. If a prior declaration/definition exists, check the
-                ///    signature matches. Forward decls must be followed by a
-                ///    definition whose params and return type are identical.
-                ast::FuncType *existing = resolveFuncTypeWithName(_decl->name);
-                if(existing != nullptr && !existing->builtin){
-                    bool mismatch = false;
-                    if(!existing->returnType->compare(_decl->returnType)){
-                        mismatch = true;
-                    }
-                    if(!mismatch && existing->fields.size() != _decl->params.size()){
-                        mismatch = true;
-                    }
-                    if(!mismatch){
-                        auto ex_it = existing->fields.begin();
-                        for(auto & p : _decl->params){
-                            if(!ex_it->second->compare(p.typeExpr)){
-                                mismatch = true;
+                /// 3. §3.5 — overload-aware prior-decl matching. With
+                ///    overloading enabled, "is there a function with
+                ///    this name?" is the wrong question — two functions
+                ///    can share a name when their parameter lists
+                ///    differ. The right question is "is there a function
+                ///    with this exact signature?" — if yes, this decl is
+                ///    a forward-decl-then-body or a duplicate; if no,
+                ///    this decl is a fresh overload regardless of how
+                ///    many other same-name functions exist.
+                ast::FuncType *existing = nullptr;
+                {
+                    auto candidates = resolveFuncCandidatesByName(_decl->name);
+                    for(auto *cand : candidates){
+                        if(cand->builtin) continue;
+                        if(cand->paramTypes.size() != _decl->params.size()) continue;
+                        bool match = true;
+                        for(size_t i = 0; i < _decl->params.size(); ++i){
+                            /// Positional comparison via the ordered
+                            /// `paramTypes` vector. Avoids the
+                            /// unordered_map iteration-order trap that
+                            /// the pre-overload single-fn path got
+                            /// away with by accident.
+                            if(!cand->paramTypes[i]->compare(_decl->params[i].typeExpr)){
+                                match = false;
                                 break;
                             }
-                            ++ex_it;
+                        }
+                        if(match){
+                            existing = cand;
+                            break;
                         }
                     }
-                    if(mismatch){
-                        auto e = std::make_unique<TypeError>(std::string("Function `") + _decl->name + "` signature does not match earlier forward declaration.");
+                }
+                if(existing != nullptr){
+                    /// Same signature — return type must also match,
+                    /// otherwise this is a redeclaration with a
+                    /// conflicting return type rather than a new
+                    /// overload (overload sets cannot differ only by
+                    /// return type).
+                    if(!existing->returnType->compare(_decl->returnType)){
+                        auto e = std::make_unique<TypeError>(std::string("Function `") + _decl->name + "` redeclared with a different return type than the prior declaration.");
                         e->loc = _decl->loc.value_or(ErrorLoc{});
                         diagnostics->addError(std::move(e));
                         return false;
                     }
-                    /// Duplicate full definition (not a forward).
-                    if(!_decl->isForwardDecl){
-                        /// Look up whether we've already bound a body for this name.
-                        bool alreadyDefined = false;
-                        for(auto & prior : currentContext->definedFuncNames){
-                            if(prior == _decl->name){
-                                alreadyDefined = true;
-                                break;
-                            }
-                        }
-                        if(alreadyDefined){
-                            auto e = std::make_unique<DuplicateDeclaration>(_decl->name);
-                            e->loc = _decl->loc.value_or(ErrorLoc{});
-                            diagnostics->addError(std::move(e));
-                            return false;
-                        }
+                    /// Duplicate full definition (forward-decl + body
+                    /// is fine; body + body is not).
+                    if(!_decl->isForwardDecl && existing->hasDefinition){
+                        auto e = std::make_unique<DuplicateDeclaration>(_decl->name);
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
                     }
                 }
 
@@ -2043,19 +2200,29 @@ namespace omegasl {
                     if(eval_result == nullptr){
                         return false;
                     }
-                    currentContext->definedFuncNames.push_back(_decl->name);
+                    if(existing != nullptr){
+                        existing->hasDefinition = true;
+                    }
                 }
 
-                /// 5. Build FuncType and register for call resolution — only
-                ///    when no prior declaration exists for this name.
-                if(existing == nullptr || existing->builtin){
+                /// 5. Build FuncType and register — only when no prior
+                ///    declaration with this exact signature exists.
+                ///    A new signature for an existing name is a fresh
+                ///    overload and gets its own FuncType in the map.
+                if(existing == nullptr){
                     auto *ft = new ast::FuncType();
                     ft->name = _decl->name;
                     ft->declaredScope = ast::builtins::global_scope;
                     ft->builtin = false;
                     ft->returnType = _decl->returnType;
+                    ft->hasDefinition = !_decl->isForwardDecl;
                     for(auto & p : _decl->params){
                         ft->fields.insert(std::make_pair(p.name, p.typeExpr));
+                        /// §3.5 — keep an ordered parallel list. Used
+                        /// by overload resolution and codegen mangling
+                        /// where MapVec iteration order would be
+                        /// undefined.
+                        ft->paramTypes.push_back(p.typeExpr);
                     }
                     currentContext->userFuncTypes.push_back(std::unique_ptr<ast::FuncType>(ft));
                     currentContext->functionMap.push_back(ft);
@@ -2113,7 +2280,8 @@ namespace omegasl {
                                 diagnostics->addError(std::move(e));
                                 return false;
                             }
-                            currentContext->variableMap.insert(std::make_pair(r.name,res->typeExpr));
+                            currentContext->variableMap.insert(std::make_pair(r.name,
+                                SemContext::VarBinding{ res->typeExpr, false }));
                             /// Register buffer element type for struct emission in codegen.
                             if(_t == ast::builtins::buffer_type && !res->typeExpr->args.empty()){
                                 auto elemTy = resolveTypeWithExpr(res->typeExpr->args[0]);
@@ -2203,7 +2371,8 @@ namespace omegasl {
                             }
                         }
                     }
-                    currentContext->variableMap.insert(std::make_pair(p.name,p.typeExpr));
+                    currentContext->variableMap.insert(std::make_pair(p.name,
+                        SemContext::VarBinding{ p.typeExpr, false }));
                     paramIndex += 1;
                 }
 

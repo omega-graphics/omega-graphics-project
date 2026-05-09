@@ -94,12 +94,18 @@ namespace omegasl {
     /// Metal's `metal::` namespace is large (and growing) — we list the
     /// common shape/math/sampling functions and grow on demand.
     bool MSLTarget::needsMangling(OmegaCommon::StrRef name) const {
+        /// Note on omissions: `degrees` and `radians` are present in HLSL
+        /// and GLSL but are NOT part of the Metal stdlib (they're absent
+        /// from `<metal_math>` in every spec rev to date). They reach
+        /// MSL via `tryEmitBuiltinCall` below, which inlines the
+        /// multiplication; consequently they cannot collide with a
+        /// Metal stdlib name and don't need to be listed here.
         static const std::unordered_set<std::string> mslStdlib = {
             "abs","acos","asin","atan","atan2","ceil","clamp","clip","cos",
-            "cosh","cross","ddx","ddy","degrees","determinant","distance",
+            "cosh","cross","ddx","ddy","determinant","distance",
             "dot","exp","exp2","floor","fmod","fract","frexp","fwidth",
             "isfinite","isinf","isnan","ldexp","length","log","log10","log2",
-            "max","min","mix","modf","normalize","pow","radians","reflect",
+            "max","min","mix","modf","normalize","pow","reflect",
             "refract","round","rsqrt","saturate","sign","sin","sinh",
             "smoothstep","sqrt","step","tan","tanh","transpose","trunc",
             "sample","read","write"
@@ -544,6 +550,37 @@ using namespace metal;
         return name;
     }
 
+    /// MSL has no `degrees` or `radians` math builtin (their absence
+    /// from the Metal stdlib is documented in the spec — every other
+    /// platform spells them as ordinary functions). Inline the call as
+    /// a multiplication by the matching π constant; the constants are
+    /// `M_PI / 180` for `radians(x)` and `180 / M_PI` for `degrees(x)`.
+    /// Vector arguments work without extra glue because scalar * vec
+    /// broadcasts in MSL.
+    bool MSLTarget::tryEmitBuiltinCall(CodeGen &cg,
+                                       ast::CallExpr *_expr,
+                                       OmegaCommon::StrRef name,
+                                       std::ostream &out) {
+        if (name == BUILTIN_DEGREES) {
+            if (_expr->args.size() != 1) return false;
+            out << "((";
+            cg.generateExpr(_expr->args[0]);
+            /// 180 / π — full double precision so the float-narrowing
+            /// at use site picks the IEEE-best single-precision value.
+            out << ") * 57.29577951308232)";
+            return true;
+        }
+        if (name == BUILTIN_RADIANS) {
+            if (_expr->args.size() != 1) return false;
+            out << "((";
+            cg.generateExpr(_expr->args[0]);
+            /// π / 180.
+            out << ") * 0.017453292519943295)";
+            return true;
+        }
+        return false;
+    }
+
     /// Metal's `texture<T>::read` / `::write` take unsigned coords
     /// (`uint`/`uint2`/`uint3`). OmegaSL accepts both signed and unsigned
     /// coords at the language level — building a coord via `int2(x, y)`
@@ -671,14 +708,29 @@ using namespace metal;
     void MSLTarget::emitTextureSampleGrad(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
         /// `tex.sample(s, coord [, layer], gradientNd(ddx, ddy))`. The MSL
         /// gradient option function is shape-specific:
-        ///   1D     → gradient1d
         ///   2D / 2D-array → gradient2d
         ///   3D     → gradient3d
         ///   Cube / cube-array → gradientcube
+        ///
+        /// 1D textures have no equivalent — Apple GPUs don't store a
+        /// mipmap pyramid for 1D textures, so MSL has no `gradient1d`
+        /// function. Shaders that hit this path on a `texture1d` /
+        /// `texture1d_array` trip `OMEGASL_FEATURE_BIT_TEXTURE1D_MIP_SAMPLE`
+        /// in the FeatureScanner; the file-level `#requires` directive
+        /// then routes the shader through the stub-emission path before
+        /// reaching this emitter, so we never get here for a 1D texture
+        /// when the gate is honored. If a shader reaches this path on
+        /// 1D anyway (no `#requires`), the portability scanner has
+        /// already warned and the resulting source will fail at the
+        /// downstream metal compiler — that's the loud-fail we want.
         auto *texTy = metalResolveTextureType(cg, _expr->args[1]);
         const char *gradFn = "gradient2d";
         if(texTy == ast::builtins::texture1d_type
            || texTy == ast::builtins::texture1d_array_type){
+            /// Emit the (invalid) `gradient1d` token so the downstream
+            /// metal compiler produces a precise diagnostic pointing at
+            /// the unsupported call. The portability scanner already
+            /// warned at OmegaSL-source level upstream of this.
             gradFn = "gradient1d";
         } else if(texTy == ast::builtins::texture3d_type){
             gradFn = "gradient3d";

@@ -31,6 +31,7 @@ const char *featureLower(uint64_t bit) {
         case OMEGASL_FEATURE_BIT_TEXTURECUBE_RW:     return "texturecube_rw";
         case OMEGASL_FEATURE_BIT_TEXTURE2D_MS_WRITE: return "texture2d_ms_write";
         case OMEGASL_FEATURE_BIT_DOUBLE:             return "double";
+        case OMEGASL_FEATURE_BIT_TEXTURE1D_MIP_SAMPLE: return "texture1d_mip_sample";
         default:                                     return "unknown";
     }
 }
@@ -53,6 +54,7 @@ const char *featureUpper(uint64_t bit) {
         case OMEGASL_FEATURE_BIT_TEXTURECUBE_RW:     return "TEXTURECUBE_RW";
         case OMEGASL_FEATURE_BIT_TEXTURE2D_MS_WRITE: return "TEXTURE2D_MS_WRITE";
         case OMEGASL_FEATURE_BIT_DOUBLE:             return "DOUBLE";
+        case OMEGASL_FEATURE_BIT_TEXTURE1D_MIP_SAMPLE: return "TEXTURE1D_MIP_SAMPLE";
         default:                                     return "UNKNOWN";
     }
 }
@@ -75,6 +77,11 @@ bool isCubeTexture(ast::Type *t) {
 bool isMSTexture(ast::Type *t) {
     return t == ast::builtins::texture2d_ms_type ||
            t == ast::builtins::texture2d_ms_array_type;
+}
+
+bool is1DTexture(ast::Type *t) {
+    return t == ast::builtins::texture1d_type ||
+           t == ast::builtins::texture1d_array_type;
 }
 
 /// §4.1 / §4.2 — feature bits implied by a *resolved* builtin Type.
@@ -395,6 +402,23 @@ void FeatureScanner::inspectCall(ast::CallExpr *call, ast::FuncDecl *enclosing) 
                 enclosing->usedFeatures |= OMEGASL_FEATURE_BIT_TEXTURECUBE_RW;
             } else if (name == BUILTIN_WRITE && isMSTexture(t)) {
                 enclosing->usedFeatures |= OMEGASL_FEATURE_BIT_TEXTURE2D_MS_WRITE;
+            }
+        }
+    }
+
+    /// Mip-selecting sample on a 1D texture is unavailable on MSL —
+    /// Apple GPUs don't store a mipmap pyramid for 1D textures, so
+    /// `texture1d::sample(...)` has no `level()` / `bias()` overload
+    /// and `gradient1d` is not a function. The sample-variant builtins
+    /// take the texture at args[1] (`(sampler, texture, coord, …)`).
+    /// Plain `sample` is fine — only the mip-selecting variants trip
+    /// the gate.
+    if (name == BUILTIN_SAMPLE_LOD || name == BUILTIN_SAMPLE_BIAS
+        || name == BUILTIN_SAMPLE_GRAD) {
+        if (call->args.size() >= 2) {
+            ast::Type *t = resolveArgType(sem_, call->args[1]);
+            if (is1DTexture(t)) {
+                enclosing->usedFeatures |= OMEGASL_FEATURE_BIT_TEXTURE1D_MIP_SAMPLE;
             }
         }
     }
