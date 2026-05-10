@@ -41,8 +41,13 @@ namespace omegasl {
 
     bool MSLTarget::compileShader(ast::ShaderDecl::Type stage,
                                   OmegaCommon::StrRef name,
+                                  uint64_t /*requiredFeatures*/,
                                   const OmegaCommon::FS::Path &srcDir,
                                   const OmegaCommon::FS::Path &outDir) {
+        /// Metal compiles every shader at the same MSL feature level —
+        /// `half` / `short` are native and the per-feature `#extension`
+        /// directive concept doesn't exist on this backend. The
+        /// requiredFeatures bitfield is informational here.
         (void)stage;
         auto object_file = OmegaCommon::FS::Path(outDir).append(name).concat(".metallib").absPath();
 
@@ -63,6 +68,7 @@ namespace omegasl {
 
     void MSLTarget::compileShaderRuntime(ast::ShaderDecl::Type /*stage*/,
                                          OmegaCommon::StrRef name,
+                                         uint64_t /*requiredFeatures*/,
                                          const std::string &source,
                                          omegasl_shader &meta) {
 #ifdef TARGET_METAL
@@ -527,7 +533,8 @@ using namespace metal;
         if (isByRef) {
             out << "&";
         }
-        out << " " << param.name;
+        out << " ";
+        writeIdentifier(param.name, out);
     }
 
     bool MSLTarget::supportsPointerExpr() const { return true; }

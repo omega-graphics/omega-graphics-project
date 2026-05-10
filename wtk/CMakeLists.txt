@@ -90,10 +90,12 @@ endif()
 # in Phase 1a-1b of the Common-ImgCodec-Unicode-Refactor-Plan. The imported
 # targets (icuuc, icudata, icui18n, png, turbojpeg, tiff, z) live there.
 # Image libs (png/turbojpeg/tiff/z) are now STATIC archives folded into
-# OmegaWTK_Media (and any other consumer) at link time — no separate dylib /
-# DLL ships, so wtk's framework EMBEDDED_LIBS / THIRD_PARTY_DLLS no longer
-# reference them. ICU stays SHARED and is still embedded by the WTK framework
-# via ${ICU_EXPORT} / ${ICU_DLLS} CACHE INTERNAL variables defined in common.
+# libOmegaCommon at link time — no separate dylib / DLL ships, so wtk's
+# framework EMBEDDED_LIBS no longer references them. ICU stays SHARED and
+# is still embedded by the WTK framework via ${ICU_EXPORT} / ${ICU_DLLS}
+# CACHE INTERNAL variables defined in common; on Win32 OmegaCommon also
+# stages those DLLs into ${CMAKE_BINARY_DIR}/bin/ post-build for
+# omega_stage_runtime_dlls() consumers.
 # wtk owns only libxml2 and ffmpeg now.
 
 set(THIRD_PARTY_SRC_DIR ${OMEGAWTK_SOURCE_DIR}/deps)
@@ -121,6 +123,17 @@ add_third_party(
 		set_library_install_name(${LIBXML2_EXPORT} "@rpath/libxml2.dylib" AFTER libxml2)
 	elseif(TARGET_LINUX)
 		set(LIBXML2_EXPORT "xml2")
+	endif()
+
+	# Per-platform runtime artifact for add_omega_graphics_module's
+	# EMBEDDED_LIBS handling. Mirrors ICU_RUNTIME in common/CMakeLists.txt.
+	# On Linux the EXPORT is the imported-target name "xml2", which is not
+	# a path that can be embedded — leave LIBXML2_RUNTIME unset there and
+	# rely on system or build-dir rpath resolution at run time.
+	if(TARGET_WIN32)
+		set(LIBXML2_RUNTIME "${LIBXML2_DLL}")
+	elseif(TARGET_MACOS)
+		set(LIBXML2_RUNTIME "${LIBXML2_EXPORT}")
 	endif()
 
 # For Building ThirdParty, so one can edit code through IDE with all code symbols.
@@ -236,7 +249,7 @@ target_include_directories(OmegaWTK_Core
 	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
 	PRIVATE "${OMEGAWTK_SOURCE_DIR}/tools/assetc"
 	        $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
-target_link_libraries(OmegaWTK_Core PUBLIC OmegaCommon icuuc icudata icui18n xml2)
+target_link_libraries(OmegaWTK_Core PUBLIC OmegaCommon xml2)
 
 add_library(OmegaWTK_Native STATIC ${NATIVE_SRCS})
 target_include_directories(OmegaWTK_Native
@@ -264,7 +277,7 @@ add_library(OmegaWTK_Media STATIC ${MEDIA_SRCS})
 target_include_directories(OmegaWTK_Media
 	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
 	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>)
-target_link_libraries(OmegaWTK_Media PUBLIC OmegaCommon png turbojpeg tiff)
+target_link_libraries(OmegaWTK_Media PUBLIC OmegaCommon)
 if(TARGET_LINUX)
 	target_include_directories(OmegaWTK_Media PRIVATE ${FFMPEG_INCLUDE_DIRS})
 	target_compile_options(OmegaWTK_Media PRIVATE ${FFMPEG_CFLAGS_OTHER})
@@ -340,7 +353,7 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/OmegaWTK_framework_stub.cpp" "// OmegaWT
 
 add_omega_graphics_module("OmegaWTK" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION ${OMEGAWTK_VERSION} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include"
 DEPENDS ${OMEGAWTK_MODULE_DEPS} ${OMEGAWTK_SUBMODULE_LIBS}
-EMBEDDED_LIBS ${ICU_EXPORT} ${LIBXML2_EXPORT}
+EMBEDDED_LIBS ${LIBXML2_RUNTIME}
 SOURCES "${CMAKE_CURRENT_BINARY_DIR}/OmegaWTK_framework_stub.cpp")
 if(NOT OMEGAWTK_SKIP_THIRD_PARTY_BUILD)
 	add_dependencies("OmegaWTK" ThirdParty)
@@ -370,27 +383,19 @@ if(TARGET_ANDROID)
 	target_include_directories("OmegaWTK" PRIVATE ${ANDROID_NDK}/sources/android/native_app_glue)
 endif()
 if(TARGET_MACOS)
-	# Only ICU + libxml2 ship as embedded dylibs. The image libs (png/jpeg/tiff/z)
-	# are statically linked into OmegaWTK_Media, so they don't need install-name
-	# fixups.
-	set(THIRD_PARTY_EXPORTS ${ICU_EXPORT} ${LIBXML2_EXPORT})
-		add_custom_target("OmegaWTK_ThirdPartyInstallNames")
-		foreach (lib ${THIRD_PARTY_EXPORTS})
-			get_filename_component(LIBNAME ${lib} NAME)
-			add_dependencies("OmegaWTK_ThirdPartyInstallNames" ${LIBNAME}_install_name)
-		endforeach ()
-		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicuuc.dylib_libicudata.${ICU_VERSION}.dylib_reset_dependent_name)
-		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicui18n.dylib_libicudata.${ICU_VERSION}.dylib_reset_dependent_name)
-		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicui18n.dylib_libicuuc.${ICU_VERSION}.dylib_reset_dependent_name)
-		# Ensure @loader_path rpath additions complete before framework assembly
-		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicuuc.dylib__loader_path_add_rpath)
-		add_dependencies("OmegaWTK_ThirdPartyInstallNames" libicui18n.dylib__loader_path_add_rpath)
+	# Only libxml2 ships as a WTK-owned embedded dylib. ICU's install-name
+	# fixups belong to OmegaCommon now (it embeds them into its own SHARED
+	# layout). The image libs (png/jpeg/tiff/z) are static archives folded
+	# into libOmegaCommon at link time.
+	add_custom_target("OmegaWTK_ThirdPartyInstallNames")
+	if(LIBXML2_RUNTIME)
+		get_filename_component(LIBXML2_NAME "${LIBXML2_RUNTIME}" NAME)
+		add_dependencies("OmegaWTK_ThirdPartyInstallNames" ${LIBXML2_NAME}_install_name)
+	endif()
 
 
 	add_dependencies("OmegaWTK" OmegaGTE.framework)
 	add_dependencies("OmegaWTK" "OmegaWTK_ThirdPartyInstallNames")
-elseif(TARGET_WIN32)
-	set(THIRD_PARTY_DLLS ${ICU_DLLS} ${LIBXML2_DLL})
 endif()
 target_include_directories("OmegaWTK" PUBLIC $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>)
 if(TARGET_MACOS)
@@ -399,7 +404,7 @@ if(TARGET_MACOS)
 else()
 	target_link_libraries("OmegaWTK" PRIVATE OmegaGTE)
 endif()
-target_link_libraries("OmegaWTK" PUBLIC "OmegaCommon" icuuc icudata icui18n xml2 png turbojpeg tiff)
+target_link_libraries("OmegaWTK" PUBLIC "OmegaCommon" xml2)
 
 if(TARGET_WIN32)
 	target_compile_definitions("OmegaWTK" PRIVATE WINDOWS_PRIVATE)

@@ -1,4 +1,5 @@
 #include "omegaWTK/Core/Core.h"
+#include "omega-common/unicode.h"
 #include "Brush.h"
 #include "Geometry.h"
 #include "GTEForward.h"
@@ -30,7 +31,7 @@
       @param str[in] The Unicode String.
       @returns SharedPtr<GlyphRun>
      */
-     static Core::SharedPtr<GlyphRun> fromUStringAndFont(const OmegaWTK::UniString & str,Core::SharedPtr<Font> & font);
+     static Core::SharedPtr<GlyphRun> fromUStringAndFont(const OmegaCommon::UniString & str,Core::SharedPtr<Font> & font);
      virtual ~GlyphRun() = default;
  };
 

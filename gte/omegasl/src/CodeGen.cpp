@@ -73,6 +73,13 @@ namespace omegasl {
         switch (expr->type) {
             case BINARY_EXPR: {
                 auto _expr = (ast::BinaryExpr *)expr;
+                /// HLSL needs `mul(a,b)` for matrix-matrix / matrix-vector /
+                /// vector-matrix products; `*` only does component-wise. The
+                /// shape detection lives in the target's hook so MSL/GLSL
+                /// can keep the simple infix path.
+                if (target->tryEmitBinaryExpr(*this, _expr, out)) {
+                    break;
+                }
                 out << "(";
                 generateExpr(_expr->lhs);
                 out << " " << _expr->op << " ";
@@ -386,7 +393,13 @@ namespace omegasl {
                     shaderOut << "const ";
                 }
                 writeTypeExpr(_decl->typeExpr, shaderOut);
-                shaderOut << " " << _decl->spec.name;
+                /// Route the declared name through `writeIdentifier` so
+                /// per-target reserved-word escapes (HLSL `out` → `_out`,
+                /// GLSL `input` → `_input`, ...) reach the definition
+                /// site. ID_EXPR references already go through the same
+                /// hook, so the rewrite is symmetric end-to-end.
+                shaderOut << " ";
+                target->writeIdentifier(_decl->spec.name, shaderOut);
                 if (_decl->typeExpr->arraySize.has_value()) {
                     shaderOut << "[" << _decl->typeExpr->arraySize.value() << "]";
                 }

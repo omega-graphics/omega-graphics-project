@@ -262,8 +262,15 @@ namespace omegasl {
         /// The target owns the per-toolchain command-line shape; the
         /// caller only knows source and output dirs. Returns `false` on
         /// non-zero exit; the target prints its own diagnostic.
+        ///
+        /// `requiredFeatures` is the file-scope `#requires(...)` bitfield —
+        /// targets that gate command-line flags on declared features
+        /// (HLSL bumps to SM 6.2 + `-enable-16bit-types` when FLOAT16 is
+        /// declared) read it here. MSL/GLSL ignore it; their
+        /// extension/profile decisions live in source.
         virtual bool compileShader(ast::ShaderDecl::Type stage,
                                    OmegaCommon::StrRef name,
+                                   uint64_t requiredFeatures,
                                    const OmegaCommon::FS::Path &srcDir,
                                    const OmegaCommon::FS::Path &outDir) = 0;
 
@@ -274,8 +281,13 @@ namespace omegasl {
         /// `meta.data` / `meta.dataSize` (or leaves them null on
         /// failure and prints its own diagnostic). HLSL: `D3DCompile`.
         /// Metal: `compileMTLShader`. GLSL: `shaderc_compile_into_spv`.
+        ///
+        /// `requiredFeatures` follows the same contract as the offline
+        /// path — targets that gate runtime-compiler flags on declared
+        /// features read it here.
         virtual void compileShaderRuntime(ast::ShaderDecl::Type stage,
                                           OmegaCommon::StrRef name,
+                                          uint64_t requiredFeatures,
                                           const std::string &source,
                                           omegasl_shader &meta) = 0;
 
@@ -341,6 +353,20 @@ namespace omegasl {
                                         OmegaCommon::StrRef /*name*/,
                                         std::ostream &/*out*/) { return false; }
 
+        /// Optional hook for a `(lhs op rhs)` binary expression. Returning
+        /// true means the target emitted the full sub-expression
+        /// (including any wrapping parens it wants); the shared path skips
+        /// its default `(<lhs> <op> <rhs>)` emission.
+        ///
+        /// HLSL overrides for `*` when both sides are matrix/vector — HLSL
+        /// requires `mul(a, b)` rather than `(a * b)` for matrix-matrix,
+        /// matrix-vector, and vector-matrix products; component-wise
+        /// `*` only works on equal-shape operands. MSL and GLSL keep the
+        /// infix `*`, which means matrix multiplication on every shape.
+        virtual bool tryEmitBinaryExpr(CodeGen &/*cg*/,
+                                       ast::BinaryExpr */*expr*/,
+                                       std::ostream &/*out*/) { return false; }
+
         /// Phase 10: per-stage compiled-object file extension recorded in
         /// the shader map. HLSL `.cso`, MSL `.metallib`, GLSL `.spv`.
         /// The shared SHADER_DECL handler uses this to build the entry's
@@ -388,6 +414,15 @@ namespace omegasl {
         void writeFuncParam(CodeGen &cg,
                             const ast::AttributedFieldDecl &param,
                             std::ostream &out) override;
+        /// Prefix identifiers that collide with HLSL reserved words
+        /// (`in` / `out` / `inout`, the interpolation modifiers
+        /// `linear`/`centroid`/`sample`/etc., the storage qualifiers
+        /// `static`/`shared`/`groupshared`, ...). Used both via the
+        /// public `writeIdentifier` Target hook (called from the shared
+        /// `ID_EXPR` arm and from VAR_DECL / writeFuncParam name
+        /// emission) so a definition and every reference end up with
+        /// the same `_`-prefixed spelling.
+        void writeIdentifier(OmegaCommon::StrRef name, std::ostream &out) const override;
         void emitResourceBinding(CodeGen &cg,
                                  ast::ResourceDecl *res,
                                  ast::ShaderDecl *shader,
@@ -404,15 +439,18 @@ namespace omegasl {
         const char *shaderFileExt(ast::ShaderDecl::Type stage) const override;
         bool compileShader(ast::ShaderDecl::Type stage,
                            OmegaCommon::StrRef name,
+                           uint64_t requiredFeatures,
                            const OmegaCommon::FS::Path &srcDir,
                            const OmegaCommon::FS::Path &outDir) override;
         void compileShaderRuntime(ast::ShaderDecl::Type stage,
                                   OmegaCommon::StrRef name,
+                                  uint64_t requiredFeatures,
                                   const std::string &source,
                                   omegasl_shader &meta) override;
         void emitStructDecl(CodeGen &cg, ast::StructDecl *decl) override;
         void emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
         void emitIndexExpr(CodeGen &cg, ast::IndexExpr *expr, std::ostream &out) override;
+        bool tryEmitBinaryExpr(CodeGen &cg, ast::BinaryExpr *expr, std::ostream &out) override;
         const char *shaderObjectFileExt(ast::ShaderDecl::Type stage) const override;
     private:
         HLSLCodeOpts &opts;
@@ -482,10 +520,12 @@ namespace omegasl {
         const char *shaderFileExt(ast::ShaderDecl::Type stage) const override;
         bool compileShader(ast::ShaderDecl::Type stage,
                            OmegaCommon::StrRef name,
+                           uint64_t requiredFeatures,
                            const OmegaCommon::FS::Path &srcDir,
                            const OmegaCommon::FS::Path &outDir) override;
         void compileShaderRuntime(ast::ShaderDecl::Type stage,
                                   OmegaCommon::StrRef name,
+                                  uint64_t requiredFeatures,
                                   const std::string &source,
                                   omegasl_shader &meta) override;
         bool supportsStage(ast::ShaderDecl::Type stage,
@@ -565,10 +605,12 @@ namespace omegasl {
         const char *shaderFileExt(ast::ShaderDecl::Type stage) const override;
         bool compileShader(ast::ShaderDecl::Type stage,
                            OmegaCommon::StrRef name,
+                           uint64_t requiredFeatures,
                            const OmegaCommon::FS::Path &srcDir,
                            const OmegaCommon::FS::Path &outDir) override;
         void compileShaderRuntime(ast::ShaderDecl::Type stage,
                                   OmegaCommon::StrRef name,
+                                  uint64_t requiredFeatures,
                                   const std::string &source,
                                   omegasl_shader &meta) override;
         void emitDefaultHeaders(CodeGen &cg, std::ostream &out) override;

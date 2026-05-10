@@ -152,7 +152,7 @@ protected:
             bounds.w - 48.0f,
             54.0f};
         cv.drawText(
-            OmegaWTK::UniString::fromUTF8("OmegaWTK Text Compositor"),
+            OmegaCommon::UniString::fromUTF8("OmegaWTK Text Compositor"),
             font,
             titleRect,
             OmegaWTK::Composition::Color::create8Bit(
@@ -169,7 +169,7 @@ protected:
             OmegaWTK::Composition::TextLayoutDescriptor::WrapByWord};
 
         cv.drawText(
-            OmegaWTK::UniString::fromUTF8("Centered, wrapped text rendered through the compositor."),
+            OmegaCommon::UniString::fromUTF8("Centered, wrapped text rendered through the compositor."),
             font,
             bodyRect,
             OmegaWTK::Composition::Color::create8Bit(

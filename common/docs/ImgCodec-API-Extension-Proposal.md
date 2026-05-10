@@ -1,17 +1,28 @@
 # ImgCodec API Extension Proposal
 
+> **Status: rebase pending.** This proposal predates the
+> `Common-ImgCodec-Unicode-Refactor-Plan` (in `wtk/docs/`), which moved the
+> image codec subsystem from `OmegaWTK::Media` to `OmegaCommon::Img`. Every
+> file path, type name, and AUTOMDEPS reference below describes the
+> pre-refactor state and needs updating before the design is acted on.
+> Recommended rebasing: replace `OmegaWTK::Media::*` → `OmegaCommon::Img::*`,
+> `StatusWithObj<BitmapImage>` → `Result<BitmapImage, std::string>`, and the
+> `wtk/...` paths with their `common/...` equivalents (see the refactor plan
+> §4 translation table). Until the rebase happens, treat this document as a
+> design sketch, not an actionable plan.
+
 ## Current State
 
 The current image codec layer is implemented in:
 
-- `wtk/include/omegaWTK/Media/ImgCodec.h`
-- `wtk/src/Media/ImgCodec.cpp`
-- `wtk/src/Media/ImgCodecPriv.h`
-- `wtk/src/Media/PngCodec.cpp`
-- `wtk/src/Media/JpegCodec.cpp`
-- `wtk/src/Media/TiffCodec.cpp`
+- `common/include/omega-common/img.h`
+- `common/src/img/ImgCodec.cpp`
+- `common/src/img/ImgCodecPriv.h`
+- `common/src/img/PngCodec.cpp`
+- `common/src/img/JpegCodec.cpp`
+- `common/src/img/TiffCodec.cpp`
 
-`wtk/AUTOMDEPS` already declares the required image dependencies:
+`common/AUTOMDEPS` already declares the required image dependencies:
 
 - `libpng`
 - `libjpeg-turbo`

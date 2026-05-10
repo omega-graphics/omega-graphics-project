@@ -2,7 +2,7 @@
 #include "omegaWTK/Core/GTEHandle.h"
 #include "NativePrivate/win/WinUtils.h"
 #include "omegaWTK/Core/Microsoft.h"
-#include "omegaWTK/Core/Unicode.h"
+#include "omega-common/unicode.h"
 
 #include <dwrite.h>
 #include <dwrite_1.h>
@@ -217,7 +217,7 @@ namespace OmegaWTK::Composition {
                         return std::make_shared<DWriteFont>(desc,textFormat);
             };
             Core::SharedPtr<Font> CreateFontFromFile(OmegaCommon::FS::Path path, FontDescriptor & desc)  override {
-                auto path_ustring = UniString::fromUTF8(path.str().c_str());
+                auto path_ustring = OmegaCommon::UniString::fromUTF8(path.str().c_str());
                 
                 IDWriteFontCollection *collection;
                 dwrite_factory->CreateCustomFontCollection(font_loader.get(),path_ustring.getBuffer(),path_ustring.length(),&collection);
@@ -288,7 +288,7 @@ namespace OmegaWTK::Composition {
      class DWriteGlyphRun : public GlyphRun {
      public:
          Core::UniqueComPtr<IDWriteTextLayout> textLayout;
-         explicit DWriteGlyphRun(const OmegaWTK::UniString & str, Core::SharedPtr<Font> &font){
+         explicit DWriteGlyphRun(const OmegaCommon::UniString & str, Core::SharedPtr<Font> &font){
              auto *_font = (DWriteFont *)font.get();
              auto FontEngineImpl = (DWriteFontEngineImpl *)FontEngine::inst();
             FontEngineImpl->dwrite_factory->CreateTextLayout((WCHAR *)str.getBuffer(),str.length(),_font->textFormat.get(),0,0,&textLayout);
@@ -299,7 +299,7 @@ namespace OmegaWTK::Composition {
      };
 
     Core::SharedPtr<GlyphRun>
-    GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Font> &font) {
+    GlyphRun::fromUStringAndFont(const OmegaCommon::UniString &str, Core::SharedPtr<Font> &font) {
         return Core::SharedPtr<GlyphRun>(new DWriteGlyphRun(str,font));
     }
 

@@ -4,7 +4,6 @@
 #include "omegaWTK/Composition/Layer.h"
 #include "PathImpl.h"
 #include "omegaWTK/UI/View.h"
-#include "omegaWTK/Media/ImgCodec.h"
 
 #include <algorithm>
 #include <cassert>
@@ -39,7 +38,7 @@ pathParams({path,brush,fillBrush,strokeWidth,contour,fill}){
 
 }
 
-VisualCommand::Data::Data(Core::SharedPtr<Media::BitmapImage> img,const Composition::Rect &rect) :
+VisualCommand::Data::Data(Core::SharedPtr<OmegaCommon::Img::BitmapImage> img,const Composition::Rect &rect) :
 bitmapParams({img,nullptr,nullptr,rect,std::nullopt,std::nullopt}){
 
 };
@@ -49,7 +48,7 @@ bitmapParams({nullptr,texture,textureFence,rect,std::nullopt,std::nullopt}){
 
 };
 
-VisualCommand::Data::Data(Core::SharedPtr<Media::BitmapImage> img,
+VisualCommand::Data::Data(Core::SharedPtr<OmegaCommon::Img::BitmapImage> img,
                           const Composition::Rect & rect,
                           Core::Optional<Composition::Rect> sourceRect,
                           Core::Optional<Composition::Color> tintColor) :
@@ -184,7 +183,7 @@ void Canvas::drawPolyline(const OmegaCommon::Vector<Composition::Point2D> &point
     }
 }
 
-void Canvas::drawText(const UniString &text,
+void Canvas::drawText(const OmegaCommon::UniString &text,
                       Core::SharedPtr<Font> font,
                       const Composition::Rect &rect,
                       const Color &color,
@@ -212,7 +211,7 @@ void Canvas::drawText(const UniString &text,
     drawGETexture(bitmap.s,rect,bitmap.textureFence);
 }
 
-void Canvas::drawText(const UniString &text,
+void Canvas::drawText(const OmegaCommon::UniString &text,
                       Core::SharedPtr<Font> font,
                       const Composition::Rect &rect,
                       const Color &color){
@@ -268,11 +267,11 @@ void Canvas::drawPath(Path &path, Core::Optional<Border> border){
     }
 }
 
-void Canvas::drawImage(SharedHandle<Media::BitmapImage> &img,const Composition::Rect & rect) {
+void Canvas::drawImage(SharedHandle<OmegaCommon::Img::BitmapImage> &img,const Composition::Rect & rect) {
     current->currentVisuals.emplace_back(img,rect);
 }
 
-void Canvas::drawImage(SharedHandle<Media::BitmapImage> &img,
+void Canvas::drawImage(SharedHandle<OmegaCommon::Img::BitmapImage> &img,
                        const Composition::Rect & destRect,
                        Core::Optional<Composition::Rect> sourceRect,
                        Core::Optional<Composition::Color> tintColor) {
@@ -282,7 +281,7 @@ void Canvas::drawImage(SharedHandle<Media::BitmapImage> &img,
                                           std::move(tintColor));
 }
 
-void Canvas::drawImage(SharedHandle<Media::BitmapImage> &img,
+void Canvas::drawImage(SharedHandle<OmegaCommon::Img::BitmapImage> &img,
                        const Composition::Rect & destRect,
                        const NineSliceInsets & insets,
                        Core::Optional<Composition::Rect> sourceRect,

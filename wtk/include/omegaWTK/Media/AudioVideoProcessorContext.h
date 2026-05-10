@@ -1,5 +1,5 @@
 #include "omegaWTK/Core/Core.h"
-#include "omegaWTK/Media/ImgCodec.h"
+#include "omega-common/img.h"
 #include "omegaWTK/Media/MediaIO.h"
 
 #include <chrono>
@@ -14,7 +14,7 @@ namespace OmegaWTK {
 
         /// @brief A decoded video frame with timing metadata.
         struct VideoFrame {
-            BitmapImage videoFrame;
+            OmegaCommon::Img::BitmapImage videoFrame;
             TimePoint decodeFinishTime;
             TimePoint presentTime;
         };

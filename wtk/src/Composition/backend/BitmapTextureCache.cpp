@@ -50,11 +50,11 @@ namespace OmegaWTK::Composition {
     }
 
     SharedHandle<OmegaGTE::GETexture>
-    BitmapTextureCache::acquire(Core::SharedPtr<Media::BitmapImage> image){
+    BitmapTextureCache::acquire(Core::SharedPtr<OmegaCommon::Img::BitmapImage> image){
         if(image == nullptr || image->data == nullptr){
             return nullptr;
         }
-        Media::BitmapImage *key = image.get();
+        OmegaCommon::Img::BitmapImage *key = image.get();
 
         std::lock_guard<std::mutex> guard(mutex_);
 

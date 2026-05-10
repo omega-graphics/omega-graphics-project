@@ -13,7 +13,6 @@
 #include "GeometryConvert.h"
 #include "ResourceTrace.h"
 
-#include "omegaWTK/Media/ImgCodec.h"
 #include <algorithm>
 #include <cmath>
 #include <chrono>

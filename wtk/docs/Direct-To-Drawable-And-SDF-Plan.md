@@ -482,7 +482,8 @@ simple shapes are a follow-up (the SDF fragment shader can sample a
 gradient by computing the local stroke parameter from `dist /
 strokeWidth`, but that's not a Phase 6 requirement).
 
-### 6.6 Bitmap rendering improvements
+### 6.6 Bitmap rendering improvements [DONE]
+(Please check sampler is sampling textures upside down.)
 
 Bitmaps still use a textured quad with sampling — the data is opaque
 pixel data, not analytic geometry — but the current path has three

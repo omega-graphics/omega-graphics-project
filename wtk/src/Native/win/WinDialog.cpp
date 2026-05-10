@@ -118,7 +118,7 @@ namespace OmegaWTK::Native::Win {
     #define ID_TEXT 4
 
     WinNoteDialog::WinNoteDialog(const Descriptor &desc,NWH nativeWindow):NativeNoteDialog(nativeWindow){
-        auto message_str = OmegaWTK::UniString::fromUTF8(desc.title.c_str());
+        auto message_str = OmegaCommon::UniString::fromUTF8(desc.title.c_str());
         LPDLGTEMPLATE lpdt;
         LPDLGITEMTEMPLATE lpdtItem;
         LPWORD lpw;

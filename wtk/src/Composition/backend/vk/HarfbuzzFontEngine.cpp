@@ -127,10 +127,10 @@ namespace OmegaWTK::Composition {
 
     class HarfBuzzGlyphRun : public GlyphRun {
     public:
-        OmegaWTK::UniString str;
+        OmegaCommon::UniString str;
         Core::SharedPtr<HarfBuzzFont> font;
 
-        HarfBuzzGlyphRun(const OmegaWTK::UniString &str, Core::SharedPtr<Font> &font)
+        HarfBuzzGlyphRun(const OmegaCommon::UniString &str, Core::SharedPtr<Font> &font)
             :str(str), font(std::dynamic_pointer_cast<HarfBuzzFont>(font)){
         }
 
@@ -180,7 +180,7 @@ namespace OmegaWTK::Composition {
             PangoLayout *layout = pango_cairo_create_layout(cr);
 
             // Convert UTF-16 string to UTF-8 for Pango
-            const UnicodeChar *u16Buf = gr->str.getBuffer();
+            const OmegaCommon::UnicodeChar *u16Buf = gr->str.getBuffer();
             int32_t u16Len = gr->str.length();
             if(u16Buf != nullptr && u16Len > 0){
                 GError *err = nullptr;
@@ -341,7 +341,7 @@ namespace OmegaWTK::Composition {
     }
 
     Core::SharedPtr<GlyphRun>
-    GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Font> &font) {
+    GlyphRun::fromUStringAndFont(const OmegaCommon::UniString &str, Core::SharedPtr<Font> &font) {
         return Core::SharedPtr<GlyphRun>(new HarfBuzzGlyphRun(str, font));
     }
 

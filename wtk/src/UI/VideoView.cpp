@@ -58,7 +58,7 @@ VideoView::VideoView(const Composition::Rect & rect, ViewPtr parent)
 void VideoView::queueFrame(SharedHandle<Media::VideoFrame> &frame) {
     auto &hdr = frame->videoFrame.header;
     Composition::Rect destRect = computeScaledRect(getRect(), hdr.width, hdr.height, scaleMode_);
-    SharedHandle<Media::BitmapImage> f(&frame->videoFrame);
+    SharedHandle<OmegaCommon::Img::BitmapImage> f(&frame->videoFrame);
     videoCanvas->drawImage(f, destRect);
     f.reset();
     videoCanvas->sendFrame();

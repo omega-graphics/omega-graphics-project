@@ -22,7 +22,7 @@
 namespace OmegaWTK::Media {
 
     void cpp_to_wstring(OmegaCommon::StrRef str,LPWSTR * output){
-        auto wstr = UniString::fromUTF8(str.data());
+        auto wstr = OmegaCommon::UniString::fromUTF8(str.data());
         LPWSTR temp = new WCHAR[wstr.length()];
         memcpy(temp,wstr.getBuffer(),wstr.length());
         *output = (LPWSTR)temp;

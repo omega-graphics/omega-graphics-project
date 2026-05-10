@@ -2,7 +2,7 @@
 #include "omegaWTK/Core/GTEHandle.h"
 #include "NativePrivate/macos/CocoaUtils.h"
 
-#include "omegaWTK/Core/Unicode.h"
+#include "omega-common/unicode.h"
 
 #import <CoreText/CoreText.h>
 #include <memory>
@@ -76,7 +76,7 @@ public:
 };
 
 Core::SharedPtr<GlyphRun>
-GlyphRun::fromUStringAndFont(const OmegaWTK::UniString &str, Core::SharedPtr<Font> &font) {
+GlyphRun::fromUStringAndFont(const OmegaCommon::UniString &str, Core::SharedPtr<Font> &font) {
     auto run = new CTGlyphRun();
     run->font = std::dynamic_pointer_cast<CoreTextFont>(font);
     auto text = [NSString stringWithCharacters:(const unichar *)str.getBuffer() length:str.length()];

@@ -762,14 +762,49 @@ function(add_omega_graphics_module _NAME)
 
 			add_library(${_NAME} SHARED ${_ARG_SOURCES})
 			if(WIN32)
-				set_target_properties(${_NAME} PROPERTIES 
-				ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib 
+				set_target_properties(${_NAME} PROPERTIES
+				ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
 				RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-				
+
 				install(TARGETS ${_NAME} RUNTIME DESTINATION bin ARCHIVE DESTINATION lib)
 			else()
 				set_target_properties(${_NAME} PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 				install(TARGETS ${_NAME} LIBRARY DESTINATION lib)
+			endif()
+
+			# Handle EMBEDDED_LIBS for non-FRAMEWORK SHARED modules. The
+			# semantic is: each entry is the runtime artifact path (.dll on
+			# Win32, .dylib on macOS, .so on Linux). Each artifact is copied
+			# next to ${_NAME}'s shared library output, and the appropriate
+			# rpath token is added so the dynamic linker finds them at run
+			# time without external configuration.
+			#
+			# Caller is responsible for passing platform-correct paths —
+			# see e.g. ICU_RUNTIME in common/CMakeLists.txt.
+			if(_ARG_EMBEDDED_LIBS)
+				if(WIN32)
+					# Win loader checks the binary's directory automatically;
+					# no rpath equivalent needed. RUNTIME_OUTPUT_DIRECTORY is
+					# ${CMAKE_BINARY_DIR}/bin per the block above.
+					set(_OMEGA_EMBED_DEST "${CMAKE_BINARY_DIR}/bin")
+				elseif(APPLE)
+					set(_OMEGA_EMBED_DEST "${CMAKE_BINARY_DIR}/lib")
+					set_property(TARGET ${_NAME} APPEND PROPERTY BUILD_RPATH   "@loader_path")
+					set_property(TARGET ${_NAME} APPEND PROPERTY INSTALL_RPATH "@loader_path")
+				else()
+					set(_OMEGA_EMBED_DEST "${CMAKE_BINARY_DIR}/lib")
+					set_property(TARGET ${_NAME} APPEND PROPERTY BUILD_RPATH   "$ORIGIN")
+					set_property(TARGET ${_NAME} APPEND PROPERTY INSTALL_RPATH "$ORIGIN")
+				endif()
+				foreach(_OMEGA_EMBED_LIB IN LISTS _ARG_EMBEDDED_LIBS)
+					get_filename_component(_OMEGA_EMBED_NAME "${_OMEGA_EMBED_LIB}" NAME)
+					add_custom_command(TARGET ${_NAME} POST_BUILD
+						COMMAND ${CMAKE_COMMAND} -E copy_if_different
+							"${_OMEGA_EMBED_LIB}"
+							"${_OMEGA_EMBED_DEST}/${_OMEGA_EMBED_NAME}"
+						VERBATIM
+						COMMENT "Embedding ${_OMEGA_EMBED_NAME} alongside ${_NAME}")
+				endforeach()
 			endif()
 
 			foreach(dep ${_ARG_DEPENDS})
@@ -777,7 +812,7 @@ function(add_omega_graphics_module _NAME)
 			endforeach()
 
 		endif()
-	
+
 	endif()
 
 	install(DIRECTORY ${_ARG_HEADER_DIR} DESTINATION "include")
@@ -801,8 +836,44 @@ endfunction()
 
 
 function(omega_graphics_add_subdir _PROJECT_NAME _NAME)
-	
+
 	set(${_PROJECT_NAME}_INCLUDE TRUE)
 	add_subdirectory(${_NAME})
-	
+
+endfunction()
+
+
+
+# omega_stage_runtime_dlls(<consumer_target>)
+#
+# Windows-only. Adds a POST_BUILD step that copies every *.dll from
+# ${CMAKE_BINARY_DIR}/bin into the consumer target's runtime output directory.
+#
+# The convention is that every Omega graphics module that owns a shared
+# third-party dependency stages those DLLs into ${CMAKE_BINARY_DIR}/bin as
+# part of its own build (alongside the module's own *.dll). App / test
+# builders then call this helper to fan everything out into each binary's
+# directory so the loader finds it at run time.
+#
+# Currently staged into bin by:
+#   OmegaCommon  -> ICU (icuuc, icudata, icui18n) + OmegaCommon.dll itself
+#   OmegaWTK     -> libxml2 + OmegaWTK.dll itself
+#   OmegaGTE     -> OmegaGTE.dll itself
+#   (modules)    -> their own *.dll via the SHARED branch's RUNTIME_OUTPUT_DIRECTORY
+#
+# No-op on non-Windows platforms (rpath / @loader_path handles colocation there).
+function(omega_stage_runtime_dlls _NAME)
+	if(NOT WIN32)
+		return()
+	endif()
+	if(NOT TARGET ${_NAME})
+		message(FATAL_ERROR "omega_stage_runtime_dlls: target '${_NAME}' does not exist")
+	endif()
+	add_custom_command(TARGET ${_NAME} POST_BUILD
+		COMMAND ${CMAKE_COMMAND}
+			-DSRC=${CMAKE_BINARY_DIR}/bin
+			-DDST=$<TARGET_FILE_DIR:${_NAME}>
+			-P ${CMAKE_CURRENT_LIST_DIR}/OmegaCopyDlls.cmake
+		VERBATIM
+		COMMENT "Staging runtime DLLs into output dir of ${_NAME}")
 endfunction()

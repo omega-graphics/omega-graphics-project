@@ -1,4 +1,5 @@
 #include "omegaWTK/Core/Core.h"
+#include "omega-common/unicode.h"
 #include "omegaWTK/Composition/Geometry.h"
 #include <functional>
 #include <cstdint>
@@ -64,14 +65,14 @@ enum class KeyCode : int {
 
 struct OMEGAWTK_EXPORT KeyDownParams {
     KeyCode code = KeyCode::Unknown;
-    OmegaWTK::Unicode32Char key = 0;
+    OmegaCommon::Unicode32Char key = 0;
     ModifierFlags modifiers;
     bool isRepeat = false;
 };
 
 struct OMEGAWTK_EXPORT KeyUpParams {
     KeyCode code = KeyCode::Unknown;
-    OmegaWTK::Unicode32Char key = 0;
+    OmegaCommon::Unicode32Char key = 0;
     ModifierFlags modifiers;
 };
 

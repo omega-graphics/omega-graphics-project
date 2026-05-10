@@ -1,4 +1,4 @@
-// Process-wide cache mapping `Media::BitmapImage` instances to their uploaded
+// Process-wide cache mapping `OmegaCommon::Img::BitmapImage` instances to their uploaded
 // `GETexture` (with mip chain when the source dimensions warrant it).
 //
 // Phase 6.6.1 lifted the `BitmapImage -> GETexture` upload out of
@@ -20,7 +20,7 @@
 #define OMEGAWTK_COMPOSITION_BACKEND_BITMAPTEXTURECACHE_H
 
 #include "omegaWTK/Core/GTEHandle.h"
-#include "omegaWTK/Media/ImgCodec.h"
+#include "omega-common/img.h"
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -32,7 +32,7 @@ namespace OmegaWTK::Composition {
     public:
         struct Entry {
             SharedHandle<OmegaGTE::GETexture> texture;
-            std::weak_ptr<Media::BitmapImage> sentinel;
+            std::weak_ptr<OmegaCommon::Img::BitmapImage> sentinel;
             unsigned width = 0;
             unsigned height = 0;
             bool hasMips = false;
@@ -41,7 +41,7 @@ namespace OmegaWTK::Composition {
         /// Acquire the GPU texture for `image`, uploading + generating mipmaps
         /// on first use. Subsequent calls with the same `image` return the
         /// cached texture. Returns nullptr when the upload failed.
-        SharedHandle<OmegaGTE::GETexture> acquire(Core::SharedPtr<Media::BitmapImage> image);
+        SharedHandle<OmegaGTE::GETexture> acquire(Core::SharedPtr<OmegaCommon::Img::BitmapImage> image);
 
         /// Drop every cached entry whose `BitmapImage` has been destroyed.
         /// Safe to call from any thread.
@@ -56,7 +56,7 @@ namespace OmegaWTK::Composition {
         BitmapTextureCache() = default;
 
         std::mutex mutex_;
-        std::unordered_map<Media::BitmapImage *, Entry> entries_;
+        std::unordered_map<OmegaCommon::Img::BitmapImage *, Entry> entries_;
     };
 
 }

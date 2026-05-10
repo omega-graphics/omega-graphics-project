@@ -171,8 +171,12 @@ D3D12 lands in this pass; Vulkan is the remaining open work.
 | **Windows (D3D12)** | **DirectXTex** + **DirectXMesh** + **cgltf** + inline OBJ | **Done** | DirectXTex loads DDS / HDR / TGA / WIC formats (PNG/JPEG/TIFF/BMP), generates mipmaps, handles BC compression and sRGB promotion. DirectXMesh is linked but unused in v1 (reserved for tangent / cache-optimization passes). `cgltf` parses glTF 2.0; OBJ is parsed by an inline ~120-line parser in `MeshParser.cpp`. |
 | **Linux / Android (Vulkan)** | **KTX-Software** + **stb_image** + (shared `MeshParser`) | **Deferred** | libktx for KTX/KTX2, `stb_image` for PNG/JPEG into `GETexture::copyBytes`. The mesh parser is already shared (`gte/src/common/MeshParser.{h,cpp}`) so the Vulkan backend just wires the GPU upload side. Add `libktx`, `stb_image` entries to `gte/AUTOMDEPS` for `linux` / `android` when picking this up. |
 
+For Vulkan (or any of the other platforms that can't support specifc image type), we will use our own image codec from OmegaCommon. (We can add `stb_image` to our image codec for extra format support.)
+Same goes with our mesh_parser. It should also be accessible from macOS so we can parse other meshes that are normally supported on there. (fbx)
 
 *NOTES (post-implementation):*
+
+
 
 - The mesh parser **is** shared across platforms — `gte/src/common/MeshParser.{h,cpp}` is backend-neutral and ready for Vulkan to consume directly. Metal stays on Model I/O / `MTKMesh` (its own path) because the platform library is strictly more capable.
 - **OBJ**: implemented inline in `MeshParser.cpp` (handles `v` / `vt` / `vn` / `f` / `mtllib` / `usemtl` / `map_Kd`, fan-triangulates n-gons, supports negative indices). The original plan called for `ssell/OBJParser`; we dropped the dependency to keep the build graph small and avoid a third-party API whose surface didn't pay rent for ~120 lines of trivial parsing.

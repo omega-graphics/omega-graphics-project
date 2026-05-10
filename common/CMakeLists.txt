@@ -20,7 +20,8 @@ unset(OMEGACOMMON_AUTOMDEPS_CMAKE_CANDIDATES)
 
 file(GLOB COMMON_SRCS         CONFIGURE_DEPENDS "src/*.cpp")
 file(GLOB COMMON_UNICODE_SRCS CONFIGURE_DEPENDS "src/unicode/*.cpp")
-list(APPEND COMMON_SRCS ${COMMON_UNICODE_SRCS})
+file(GLOB COMMON_IMG_SRCS     CONFIGURE_DEPENDS "src/img/*.cpp")
+list(APPEND COMMON_SRCS ${COMMON_UNICODE_SRCS} ${COMMON_IMG_SRCS})
 
 configure_file("src/Info.plist.in" "${CMAKE_CURRENT_BINARY_DIR}/Info.plist")
 
@@ -280,6 +281,16 @@ else()
 
 endif()
 
+# Per-platform runtime artifact list, used by add_omega_graphics_module's
+# EMBEDDED_LIBS handling: import libs (.lib) on Win32 are not loadable, so the
+# embed must point at the actual .dll. On macOS / Linux the dylib / .so is
+# both the link-time and load-time artifact.
+if(WIN32)
+	set(ICU_RUNTIME "${ICU_DLLS}"   CACHE INTERNAL "ICU runtime artifacts (DLLs on Win32)")
+else()
+	set(ICU_RUNTIME "${ICU_EXPORT}" CACHE INTERNAL "ICU runtime artifacts (dylib/.so on Mac/Linux)")
+endif()
+
 # --- zlib (static) ---
 # zlib's CMakeLists always builds both `zlib` (shared) and `zlibstatic` (static)
 # regardless of BUILD_SHARED_LIBS — we just consume the static archive. Static
@@ -361,7 +372,28 @@ add_dependencies(OmegaCommonThirdParty icu zlib libpng libjpeg-turbo libtiff)
 
 # === End image-codec + ICU third-party deps ===
 
-add_omega_graphics_module("OmegaCommon" SHARED SOURCES ${COMMON_SRCS} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+add_omega_graphics_module("OmegaCommon" SHARED
+	SOURCES ${COMMON_SRCS}
+	HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include"
+	EMBEDDED_LIBS ${ICU_RUNTIME})
+
+# On macOS, the ICU dylibs ship with default install names. Force the
+# install-name / rpath fixups to complete before OmegaCommon's POST_BUILD
+# embed copies them to ${CMAKE_BINARY_DIR}/lib/, otherwise the embedded
+# copies retain the original paths and consumers fail to find them at
+# load time. Mirrors the OmegaWTK_ThirdPartyInstallNames aggregator that
+# used to live in wtk/CMakeLists.txt before ICU embedding moved here.
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+	add_dependencies(OmegaCommon
+		libicuuc.dylib_install_name
+		libicudata.dylib_install_name
+		libicui18n.dylib_install_name
+		libicuuc.dylib_libicudata.${ICU_VERSION}.dylib_reset_dependent_name
+		libicui18n.dylib_libicudata.${ICU_VERSION}.dylib_reset_dependent_name
+		libicui18n.dylib_libicuuc.${ICU_VERSION}.dylib_reset_dependent_name
+		libicuuc.dylib__loader_path_add_rpath
+		libicui18n.dylib__loader_path_add_rpath)
+endif()
 if(DEFINED OMEGACOMMON_RAPIDJSON_ROOT)
 	set(OMEGACOMMON_RAPIDJSON_INCLUDE_DIR "${OMEGACOMMON_RAPIDJSON_ROOT}/include")
 else()
@@ -369,10 +401,13 @@ else()
 endif()
 target_include_directories("OmegaCommon" PRIVATE "${OMEGACOMMON_RAPIDJSON_INCLUDE_DIR}")
 
-target_link_libraries("OmegaCommon" PRIVATE pcre2-8 ssl crypto icuuc icudata icui18n)
+target_link_libraries("OmegaCommon" PRIVATE pcre2-8 ssl crypto icuuc icudata icui18n png turbojpeg tiff z)
 # UniString.cpp uses ICU's u_strFromUTF8 / u_strFromUTF32; the public unicode.h
-# only exposes std types, so ICU stays PRIVATE.
-add_dependencies("OmegaCommon" icu)
+# only exposes std types, so ICU stays PRIVATE. Same shape for the image deps:
+# img.h doesn't leak libpng/libjpeg-turbo/libtiff/zlib types — they're impl
+# detail of OmegaCommon::Img — and Phase 1b made them static archives so they
+# bake into libOmegaCommon at link time.
+add_dependencies("OmegaCommon" icu libpng libjpeg-turbo libtiff zlib)
 if(NOT WIN32)
 	if(OMEGACOMMON_CURL_TARGET)
 		target_link_libraries("OmegaCommon" PRIVATE ${OMEGACOMMON_CURL_TARGET})
@@ -386,6 +421,10 @@ if(WIN32)
 	target_sources("OmegaCommon" PRIVATE "src/win/fs-win.cpp"  "src/win/net-win.cpp" "src/win/multithread-win.cpp")
 	target_compile_definitions("OmegaCommon" PRIVATE "OMEGACOMMON__BUILD__")
 	target_link_libraries("OmegaCommon" PRIVATE ws2_32 advapi32 crypt32 user32)
+	# ICU DLLs are now staged into ${CMAKE_BINARY_DIR}/bin/ via the
+	# add_omega_graphics_module(SHARED EMBEDDED_LIBS ...) handling above.
+	# (libpng/libjpeg-turbo/libtiff/zlib are static archives folded into
+	# libOmegaCommon directly per Phase 1b — no runtime copy needed.)
 elseif(APPLE)
 	target_sources("OmegaCommon" PRIVATE "src/macos/fs-cocoa.mm" "src/posix/net-curl.cpp" "src/unix/multithread-unix.cpp")
 	target_link_system_frameworks("OmegaCommon" "Foundation")

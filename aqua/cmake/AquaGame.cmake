@@ -115,14 +115,11 @@ function(add_aqua_game)
         target_compile_definitions(${_ARG_NAME} PRIVATE TARGET_WIN32 TARGET_DIRECTX)
         target_link_options(${_ARG_NAME} PRIVATE /SUBSYSTEM:CONSOLE /ENTRY:WinMainCRTStartup /MANIFEST:NO)
 
-        # Copy AQUA and GTE DLLs next to the executable
-        add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy
-                $<TARGET_FILE:AQUA> "${CMAKE_BINARY_DIR}/Apps/$<TARGET_FILE_NAME:AQUA>"
-            COMMAND ${CMAKE_COMMAND} -E copy
-                $<TARGET_FILE:OmegaGTE> "${CMAKE_BINARY_DIR}/Apps/$<TARGET_FILE_NAME:OmegaGTE>"
-            COMMAND ${CMAKE_COMMAND} -E copy
-                $<TARGET_FILE:OmegaCommon> "${CMAKE_BINARY_DIR}/Apps/$<TARGET_FILE_NAME:OmegaCommon>")
+        # AQUA, OmegaGTE, and OmegaCommon land in ${CMAKE_BINARY_DIR}/bin/
+        # as their own RUNTIME_OUTPUT_DIRECTORY. OmegaCommon also stages
+        # its shared third-party DLLs (ICU) into bin/ post-build. Fan all
+        # of them out into Apps/ in one go:
+        omega_stage_runtime_dlls(${_ARG_NAME})
 
     else()
         # --- Linux: plain executable ---

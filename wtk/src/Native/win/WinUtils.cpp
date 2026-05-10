@@ -1,7 +1,5 @@
 #include "NativePrivate/win/WinUtils.h"
 
-#include "omegaWTK/Core/Unicode.h"
-
 #include <Windows.h>
 #include <atlstr.h>
 

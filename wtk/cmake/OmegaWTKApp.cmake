@@ -36,24 +36,19 @@ function(OmegaWTKApp)
         target_sources(${_ARG_NAME} PRIVATE ${OMEGAWTK_SOURCE_DIR}/target/win32/mmain.cpp ${CMAKE_CURRENT_BINARY_DIR}/res.rc)
         target_link_options(${_ARG_NAME} PRIVATE /SUBSYSTEM:CONSOLE /ENTRY:WinMainCRTStartup /MANIFEST:NO)
 
-        set(THIRD_PARTY_COPY "")
-        foreach(lib ${THIRD_PARTY_DLLS})
-            get_filename_component(FNAME ${lib} NAME)
-            set(THIRD_PARTY_COPY ${THIRD_PARTY_COPY} ${CMAKE_COMMAND} -E copy ${lib} ${CMAKE_CURRENT_BINARY_DIR}/${FNAME} &&)
-        endforeach()
+        # OmegaCommon, OmegaWTK, OmegaGTE land in ${CMAKE_BINARY_DIR}/bin/
+        # as their own RUNTIME_OUTPUT_DIRECTORY. Their shared third-party
+        # DLLs (ICU via OmegaCommon, libxml2 via OmegaWTK) are staged into
+        # the same dir as POST_BUILD steps on each module. Fan all of them
+        # out into the app's output dir in one go:
+        omega_stage_runtime_dlls(${_ARG_NAME})
 
-
-        add_custom_command(TARGET
-                            ${_ARG_NAME}
-                            POST_BUILD
-                            COMMAND
-                            ${THIRD_PARTY_COPY} ${CMAKE_COMMAND} -E copy $<TARGET_FILE:OmegaCommon> ${CMAKE_CURRENT_BINARY_DIR}/$<TARGET_FILE_NAME:OmegaCommon>
-                            COMMAND
-                            ${CMAKE_COMMAND} -E copy $<TARGET_FILE:OmegaGTE> ${CMAKE_CURRENT_BINARY_DIR}/$<TARGET_FILE_NAME:OmegaGTE>
-                            COMMAND
-                            ${CMAKE_COMMAND} -E copy $<TARGET_FILE:OmegaWTK> ${CMAKE_CURRENT_BINARY_DIR}/$<TARGET_FILE_NAME:OmegaWTK>
-                            COMMAND
-                            ${CMAKE_COMMAND} -E copy ${OMEGAWTK_COMPOSITOR_SHADER_LIB} ${CMAKE_CURRENT_BINARY_DIR}/compositor.omegasllib)
+        # The compositor shader lib is a build-time artifact (not a DLL),
+        # ship it next to the exe.
+        add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy
+                ${OMEGAWTK_COMPOSITOR_SHADER_LIB}
+                $<TARGET_FILE_DIR:${_ARG_NAME}>/compositor.omegasllib)
     elseif(TARGET_LINUX)
         target_include_directories(${_ARG_NAME} PRIVATE "include" "gte/include" "gte/common/include" "${CMAKE_BINARY_DIR}/deps/icu/include")
         target_compile_definitions(${_ARG_NAME} PRIVATE OMEGAWTK_APP TARGET_GTK TARGET_VULKAN)

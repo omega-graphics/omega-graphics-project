@@ -2,7 +2,7 @@
 #include "omegaWTK/UI/UIView.h"
 #include "omegaWTK/Composition/Brush.h"
 #include "omegaWTK/Composition/FontEngine.h"
-#include "omegaWTK/Media/ImgCodec.h"
+#include "omega-common/img.h"
 #include "omegaWTK/Widgets/WidgetTypes.h"
 
 #ifndef OMEGAWTK_WIDGETS_PRIMATIVES_H
@@ -165,7 +165,7 @@ enum class ImageFitMode : uint8_t {
 };
 
 struct OMEGAWTK_EXPORT ImageProps {
-    SharedHandle<Media::BitmapImage> source = nullptr;
+    SharedHandle<OmegaCommon::Img::BitmapImage> source = nullptr;
     ImageFitMode fitMode = ImageFitMode::Contain;
 };
 

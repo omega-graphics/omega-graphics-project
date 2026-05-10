@@ -28,13 +28,13 @@ public:
     void clear(const Composition::Color & color);
     void drawRect(const Composition::Rect & rect,const SharedHandle<Composition::Brush> & brush);
     void drawRoundedRect(const Composition::RoundedRect & rect,const SharedHandle<Composition::Brush> & brush);
-    void drawImage(const SharedHandle<Media::BitmapImage> & img,const Composition::Rect & rect);
-    void drawText(const UniString & text,
+    void drawImage(const SharedHandle<OmegaCommon::Img::BitmapImage> & img,const Composition::Rect & rect);
+    void drawText(const OmegaCommon::UniString & text,
                   const SharedHandle<Composition::Font> & font,
                   const Composition::Rect & rect,
                   const Composition::Color & color,
                   const Composition::TextLayoutDescriptor & layoutDesc);
-    void drawText(const UniString & text,
+    void drawText(const OmegaCommon::UniString & text,
                   const SharedHandle<Composition::Font> & font,
                   const Composition::Rect & rect,
                   const Composition::Color & color);

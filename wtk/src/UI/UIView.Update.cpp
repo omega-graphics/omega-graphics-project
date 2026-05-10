@@ -369,8 +369,8 @@ void UIView::update(){
             if(font != nullptr){
                 auto textRect = spec.textRect.value_or(localBounds);
                 textRect = ViewResizeCoordinator::clampRectToParent(textRect,localBounds,layoutClamp);
-                auto unicodeText = UniString::fromUTF32(
-                    reinterpret_cast<const Unicode32Char *>(spec.text->data()),
+                auto unicodeText = OmegaCommon::UniString::fromUTF32(
+                    reinterpret_cast<const OmegaCommon::Unicode32Char *>(spec.text->data()),
                     static_cast<int32_t>(spec.text->size()));
                 auto textLayout = textStyle.layout;
                 textLayout.lineLimit = textStyle.lineLimit;

@@ -328,7 +328,10 @@ namespace omegasl {
          * Phase 10: thin delegation to `target->compileShader`.
          * */
         bool compileShader(ast::ShaderDecl::Type type,const OmegaCommon::StrRef & name,const OmegaCommon::FS::Path & path,const OmegaCommon::FS::Path & outputPath) {
-            return target->compileShader(type, name, path, outputPath);
+            /// `fileRequiredFeatures` is the file-scope `#requires(...)`
+            /// bitfield; HLSL reads it to bump the dxc target profile to
+            /// SM 6.2 + `-enable-16bit-types` when FLOAT16 is declared.
+            return target->compileShader(type, name, fileRequiredFeatures, path, outputPath);
         }
         /** @brief Compiles the Shader with the provided name and outputs the compiled version to the shadermap.
          * @param type The Shader Type
@@ -346,7 +349,10 @@ namespace omegasl {
                 return;
             }
             std::string source = runtimeStringOut ? runtimeStringOut->str() : std::string{};
-            target->compileShaderRuntime(type, name, source, it->second);
+            /// Read the per-shader requirements bit off the meta record
+            /// the SHADER_DECL handler stamped earlier — same source of
+            /// truth as the offline path's `fileRequiredFeatures`.
+            target->compileShaderRuntime(type, name, it->second.requiredFeatures, source, it->second);
         }
         bool linkShaderObjects(){
             auto outputPath = OmegaCommon::FS::Path(opts.outputLib);

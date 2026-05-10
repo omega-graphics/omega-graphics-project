@@ -36,8 +36,12 @@ namespace omegasl {
 
     bool GLSLTarget::compileShader(ast::ShaderDecl::Type stage,
                                    OmegaCommon::StrRef name,
+                                   uint64_t /*requiredFeatures*/,
                                    const OmegaCommon::FS::Path &srcDir,
                                    const OmegaCommon::FS::Path &outDir) {
+        /// GLSL gates 16-bit / 64-bit / etc. via `#extension` directives
+        /// the source already carries (emitted by `emitDefaultHeaders`),
+        /// so the requiredFeatures bitfield is not consulted here.
         /// glslc takes a stage tag without the dot — derive it from
         /// `shaderFileExt(stage)` so the source-of-truth stays single.
         const char *ext = shaderFileExt(stage);
@@ -61,6 +65,7 @@ namespace omegasl {
 
     void GLSLTarget::compileShaderRuntime(ast::ShaderDecl::Type stage,
                                           OmegaCommon::StrRef name,
+                                          uint64_t /*requiredFeatures*/,
                                           const std::string &source,
                                           omegasl_shader &meta) {
 #ifdef TARGET_VULKAN
@@ -845,7 +850,8 @@ namespace omegasl {
         }
         writeTypeName(cg.typeResolver->resolveTypeWithExpr(param.typeExpr),
                       param.typeExpr->pointer, out);
-        out << " " << param.name;
+        out << " ";
+        writeIdentifier(param.name, out);
     }
 
     /// GLSL has no raw pointer types — `&expr` and `*expr` are not valid

@@ -12,5 +12,9 @@ FetchContent_MakeAvailable(googletest)
 add_executable(MediaCodecTest MediaCodecTest.cpp)
 target_link_libraries(MediaCodecTest PRIVATE OmegaWTK_Media GTest::gtest GTest::gtest_main)
 
+# Win32: the test exe needs OmegaCommon.dll + ICU + libxml2 next to itself
+# to load. On Linux/macOS the rpath baked in at link time finds them.
+omega_stage_runtime_dlls(MediaCodecTest)
+
 include(GoogleTest)
 gtest_discover_tests(MediaCodecTest)

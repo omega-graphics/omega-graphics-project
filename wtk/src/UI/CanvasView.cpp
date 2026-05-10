@@ -34,13 +34,13 @@ namespace OmegaWTK {
         rootCanvas_->drawRoundedRect(_rect,_brush);
     }
 
-    void CanvasView::drawImage(const SharedHandle<Media::BitmapImage> & img,const Composition::Rect & rect){
+    void CanvasView::drawImage(const SharedHandle<OmegaCommon::Img::BitmapImage> & img,const Composition::Rect & rect){
         auto _rect = rect;
         auto _img = img;
         rootCanvas_->drawImage(_img,_rect);
     }
 
-    void CanvasView::drawText(const UniString & text,
+    void CanvasView::drawText(const OmegaCommon::UniString & text,
                             const SharedHandle<Composition::Font> & font,
                             const Composition::Rect & rect,
                             const Composition::Color & color,
@@ -50,7 +50,7 @@ namespace OmegaWTK {
         rootCanvas_->drawText(text,_font,_rect,color,layoutDesc);
     }
 
-    void CanvasView::drawText(const UniString & text,
+    void CanvasView::drawText(const OmegaCommon::UniString & text,
                             const SharedHandle<Composition::Font> & font,
                             const Composition::Rect & rect,
                             const Composition::Color & color){

@@ -729,6 +729,18 @@ flips the bit. The runtime feature gate (`#requires(FLOAT16)`) is what
 makes the runtime decline cleanly on hardware that doesn't support
 16-bit types.
 
+HLSL invocation: when the file's required-features bitfield includes
+`FLOAT16`, the offline `compileShader` path bumps the dxc target
+profile from `<stage>_5_0` to `<stage>_6_2` and appends
+`-enable-16bit-types`. SM 6.2 is the lowest profile that accepts the
+16-bit family; older shaders without `#requires(FLOAT16)` continue to
+build at SM 5.0. The runtime path uses `D3DCompile` (FXC), which tops
+out at SM 5.1 — `compileShaderRuntime` refuses FLOAT16-gated shaders
+loud rather than silently emitting garbage. Migrating the runtime
+compile to dxc is the long-term unblock; tracked separately. The
+`Target::compileShader{,Runtime}` API takes the feature bitfield as
+an explicit parameter so the dispatch decision stays per-shader.
+
 Literal forms: `1.0h` / `1.0H` parses as half-typed (stored as `f_num`
 since precision is enforced at type-resolution time). Integer literals
 coerce into `short`/`ushort` slots without a suffix.

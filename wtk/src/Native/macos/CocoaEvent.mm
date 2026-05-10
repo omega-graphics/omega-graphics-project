@@ -244,7 +244,7 @@ NativeEventPtr ns_event_to_omega_wtk_native_event(NSEvent *event, NSView *inView
             NSString *chars = event.characters;
             if (chars != nil && chars.length > 0) {
                 unichar u = [chars characterAtIndex:0];
-                p->key = static_cast<OmegaWTK::Unicode32Char>(u);
+                p->key = static_cast<OmegaCommon::Unicode32Char>(u);
             } else {
                 p->key = 0;
             }
@@ -260,7 +260,7 @@ NativeEventPtr ns_event_to_omega_wtk_native_event(NSEvent *event, NSView *inView
             NSString *chars = event.characters;
             if (chars != nil && chars.length > 0) {
                 unichar u = [chars characterAtIndex:0];
-                p->key = static_cast<OmegaWTK::Unicode32Char>(u);
+                p->key = static_cast<OmegaCommon::Unicode32Char>(u);
             } else {
                 p->key = 0;
             }

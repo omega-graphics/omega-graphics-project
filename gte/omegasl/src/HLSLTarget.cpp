@@ -40,20 +40,33 @@ namespace omegasl {
 
     bool HLSLTarget::compileShader(ast::ShaderDecl::Type stage,
                                    OmegaCommon::StrRef name,
+                                   uint64_t requiredFeatures,
                                    const OmegaCommon::FS::Path &srcDir,
                                    const OmegaCommon::FS::Path &outDir) {
+        /// §4.1 — `float16_t` / `int16_t` / `uint16_t` are gated behind
+        /// SM 6.2 + `-enable-16bit-types`. When the file declares
+        /// `#requires(FLOAT16)` we bump the target profile and pass the
+        /// flag; otherwise we stay on the SM 5.0 default that historic
+        /// shaders compile against. SM 6.2 is the lowest profile that
+        /// accepts the 16-bit family, and dxc happily downgrades to
+        /// older feature levels at runtime if the actual device cap is
+        /// lower — the runtime gate (`OMEGASL_FEATURE_BIT_FLOAT16`) is
+        /// what protects callers on hardware that doesn't support it.
+        const bool needs16Bit = (requiredFeatures & OMEGASL_FEATURE_BIT_FLOAT16) != 0;
+
         std::ostringstream out;
         out << " -nologo -T";
+        const char *profileTag = needs16Bit ? "_6_2" : "_5_0";
         if (stage == ast::ShaderDecl::Vertex) {
-            out << "vs_5_0";
+            out << "vs" << profileTag;
         } else if (stage == ast::ShaderDecl::Fragment) {
-            out << "ps_5_0";
+            out << "ps" << profileTag;
         } else if (stage == ast::ShaderDecl::Compute) {
-            out << "cs_5_0";
+            out << "cs" << profileTag;
         } else if (stage == ast::ShaderDecl::Hull) {
-            out << "hs_5_0";
+            out << "hs" << profileTag;
         } else if (stage == ast::ShaderDecl::Domain) {
-            out << "ds_5_0";
+            out << "ds" << profileTag;
         }
         out << " -E" << name.data() << " -Fo "
             << OmegaCommon::FS::Path(outDir).append(name).concat(".cso").absPath();
@@ -64,6 +77,9 @@ namespace omegasl {
         /// silently disagreeing if a future dxc default ever flips. See
         /// OmegaSL-Feature-Gap-Survey §12.2.
         out << " " << OmegaCommon::FS::Path(srcDir).append(name).concat(shaderFileExt(stage)).absPath() << " /Zi /Zpc";
+        if (needs16Bit) {
+            out << " -enable-16bit-types";
+        }
 
         auto dxc_process = OmegaCommon::ChildProcess::OpenWithStdoutPipe(opts.dxc_cmd, out.str().c_str());
         auto res = dxc_process.wait();
@@ -77,8 +93,21 @@ namespace omegasl {
 
     void HLSLTarget::compileShaderRuntime(ast::ShaderDecl::Type stage,
                                           OmegaCommon::StrRef name,
+                                          uint64_t requiredFeatures,
                                           const std::string &source,
                                           omegasl_shader &meta) {
+        /// §4.1 — `D3DCompile` is the legacy FXC interface and tops out at
+        /// SM 5.1; the 16-bit type family needs SM 6.2 + dxcompiler. If a
+        /// shader gated on FLOAT16 reaches this path, fail loud rather
+        /// than silently compile and emit garbage. Migrating the runtime
+        /// to dxc is the long-term fix.
+        if ((requiredFeatures & OMEGASL_FEATURE_BIT_FLOAT16) != 0) {
+            std::cerr << "error: runtime D3DCompile path cannot compile '" << name.data()
+                      << "' — `#requires(FLOAT16)` needs SM 6.2 (dxc), but the runtime "
+                         "uses D3DCompile (SM 5.1 max). Use the offline pipeline or "
+                         "switch the runtime to dxc." << std::endl;
+            return;
+        }
 #ifdef TARGET_DIRECTX
         std::cout << "[OmegaSL HLSL] Compiling shader '" << name.data() << "' target="
                   << (stage == ast::ShaderDecl::Vertex     ? "vs"
@@ -328,7 +357,84 @@ namespace omegasl {
         }
         writeTypeName(cg.typeResolver->resolveTypeWithExpr(param.typeExpr),
                       param.typeExpr->pointer, out);
-        out << " " << param.name;
+        out << " ";
+        writeIdentifier(param.name, out);
+    }
+
+    /// HLSL reserves a wider keyword set than the C-family backends —
+    /// the interpolation modifiers (`linear`, `centroid`, `sample`,
+    /// `nointerpolation`, `noperspective`), the storage qualifiers
+    /// (`static`, `shared`, `groupshared`, `precise`), and the param
+    /// access modifiers (`in`, `out`, `inout`) all collide with names
+    /// that are perfectly legal OmegaSL identifiers. When a user shader
+    /// names a variable or parameter `out`, dxc would otherwise refuse
+    /// the source. Mirror what GLSL does for its own reserved set:
+    /// prefix with `_` at every emit site that goes through the hook
+    /// (`ID_EXPR`, `VAR_DECL` name, `writeFuncParam` name).
+    /// HLSL's `*` is component-wise and only accepts equal-shape operands.
+    /// Matrix×matrix, matrix×vector, and vector×matrix products require
+    /// `mul(a, b)`. MSL/GLSL keep `*` for all three shapes (it's defined
+    /// as matrix multiplication on those backends), so the rewrite stays
+    /// HLSL-local. Scalar cases — scalar×matrix, scalar×vector,
+    /// component-wise vector×vector — pass through with infix `*`.
+    ///
+    /// We read `resolvedType` (stamped by Sema during BINARY_EXPR
+    /// evaluation) rather than calling `evalExprForTypeExpr` here —
+    /// `evalExprForTypeExpr` re-runs Sema, but at codegen time the
+    /// per-function `variableMap` has been cleared, so any ID_EXPR
+    /// inside `expr->lhs` / `expr->rhs` would emit a spurious
+    /// "undeclared identifier" diagnostic. `resolveTypeWithExpr` is a
+    /// pure name lookup against the static type table and safe to call.
+    bool HLSLTarget::tryEmitBinaryExpr(CodeGen &cg, ast::BinaryExpr *expr, std::ostream &out) {
+        if (expr->op != "*") return false;
+        auto *lhsTyExpr = expr->lhs->resolvedType;
+        auto *rhsTyExpr = expr->rhs->resolvedType;
+        if (lhsTyExpr == nullptr || rhsTyExpr == nullptr) return false;
+        auto *lhsT = cg.typeResolver->resolveTypeWithExpr(lhsTyExpr);
+        auto *rhsT = cg.typeResolver->resolveTypeWithExpr(rhsTyExpr);
+        auto isMatrix = [](ast::Type *t) {
+            return t == ast::builtins::float2x2_type
+                || t == ast::builtins::float3x3_type
+                || t == ast::builtins::float4x4_type
+                || t == ast::builtins::float2x3_type
+                || t == ast::builtins::float2x4_type
+                || t == ast::builtins::float3x2_type
+                || t == ast::builtins::float3x4_type
+                || t == ast::builtins::float4x2_type
+                || t == ast::builtins::float4x3_type;
+        };
+        auto isFloatVec = [](ast::Type *t) {
+            return t == ast::builtins::float2_type
+                || t == ast::builtins::float3_type
+                || t == ast::builtins::float4_type;
+        };
+        const bool needsMul =
+            (isMatrix(lhsT) && isMatrix(rhsT))
+            || (isMatrix(lhsT) && isFloatVec(rhsT))
+            || (isFloatVec(lhsT) && isMatrix(rhsT));
+        if (!needsMul) return false;
+        out << "mul(";
+        cg.generateExpr(expr->lhs);
+        out << ", ";
+        cg.generateExpr(expr->rhs);
+        out << ")";
+        return true;
+    }
+
+    void HLSLTarget::writeIdentifier(OmegaCommon::StrRef name, std::ostream &out) const {
+        static const std::unordered_set<std::string> reserved = {
+            "in", "out", "inout",
+            "linear", "centroid", "sample",
+            "nointerpolation", "noperspective",
+            "static", "shared", "groupshared", "precise",
+            "uniform", "register", "extern", "volatile",
+            "column_major", "row_major",
+            "string", "snorm", "unorm"
+        };
+        if (reserved.count(std::string(name)) > 0) {
+            out << "_";
+        }
+        out.write(name.data(), name.size());
     }
 
     bool HLSLTarget::supportsPointerExpr() const { return true; }
@@ -525,7 +631,8 @@ namespace omegasl {
 
             writeTypeName(cg.typeResolver->resolveTypeWithExpr(p_it->typeExpr),
                           p_it->typeExpr->pointer, out);
-            out << " " << p_it->name;
+            out << " ";
+            writeIdentifier(p_it->name, out);
             if (p_it->attributeName.has_value()) {
                 if (p_it->attributeName.value() == ATTRIBUTE_VERTEX_ID) {
                     shaderDesc.vertexShaderInputDesc.useVertexID = true;

@@ -1,4 +1,6 @@
 #include "omegaWTK/Core/Core.h"
+#include "omega-common/img.h"
+#include "omega-common/unicode.h"
 #include "Geometry.h"
 #include "GTEForward.h"
 #include "Path.h"
@@ -115,7 +117,7 @@ namespace OmegaWTK {
                 bool fill;
             } pathParams;
             struct {
-                Core::SharedPtr<Media::BitmapImage> img;
+                Core::SharedPtr<OmegaCommon::Img::BitmapImage> img;
                 Core::SharedPtr<OmegaGTE::GETexture> texture;
                 Core::SharedPtr<OmegaGTE::GEFence> textureFence;
                 Composition::Rect rect;
@@ -153,12 +155,12 @@ namespace OmegaWTK {
                  bool contour,
                  bool fill);
 
-            Data(Core::SharedPtr<Media::BitmapImage> img,const Composition::Rect &rect);
+            Data(Core::SharedPtr<OmegaCommon::Img::BitmapImage> img,const Composition::Rect &rect);
 
             Data(Core::SharedPtr<OmegaGTE::GETexture> texture,Core::SharedPtr<OmegaGTE::GEFence> textureFence,const Composition::Rect &rect);
 
             /// Phase 6.6.2: bitmap with optional sub-rect and tint.
-            Data(Core::SharedPtr<Media::BitmapImage> img,
+            Data(Core::SharedPtr<OmegaCommon::Img::BitmapImage> img,
                  const Composition::Rect & rect,
                  Core::Optional<Composition::Rect> sourceRect,
                  Core::Optional<Composition::Color> tintColor);
@@ -195,14 +197,14 @@ namespace OmegaWTK {
         type(VectorPath),
         params(path,brush,fillBrush,strokeWidth,contour,fill){};
 
-        template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::SharedPtr<Media::BitmapImage>,Composition::Rect)>
+        template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::SharedPtr<OmegaCommon::Img::BitmapImage>,Composition::Rect)>
         VisualCommand(_Args && ...args):type(Bitmap),params(args...){};
 
         template<class ..._Args,VISUAL_COMMAND_ARGS_CHECK(_Args,Core::SharedPtr<OmegaGTE::GETexture>,Core::SharedPtr<OmegaGTE::GEFence>,Composition::Rect)>
         VisualCommand(_Args && ...args):type(Bitmap),params(args...){};
 
         /// Phase 6.6.2: bitmap with optional sub-rect and RGBA tint.
-        VisualCommand(Core::SharedPtr<Media::BitmapImage> img,
+        VisualCommand(Core::SharedPtr<OmegaCommon::Img::BitmapImage> img,
                       const Composition::Rect & rect,
                       Core::Optional<Composition::Rect> sourceRect,
                       Core::Optional<Composition::Color> tintColor):
@@ -355,7 +357,7 @@ namespace OmegaWTK {
          @param color The text color.
          @param layoutDesc Text alignment/wrapping settings.
          */
-        void drawText(const UniString & text,
+        void drawText(const OmegaCommon::UniString & text,
                       Core::SharedPtr<Font> font,
                       const Composition::Rect & rect,
                       const Color & color,
@@ -368,7 +370,7 @@ namespace OmegaWTK {
          @param rect The text bounds in canvas space.
          @param color The text color.
          */
-        void drawText(const UniString & text,
+        void drawText(const OmegaCommon::UniString & text,
                       Core::SharedPtr<Font> font,
                       const Composition::Rect & rect,
                       const Color & color);
@@ -378,7 +380,7 @@ namespace OmegaWTK {
             @param img The Image.
             @param rect The Rect to bound the image to.
            */
-        void drawImage(SharedHandle<Media::BitmapImage> & img,const Composition::Rect & rect);
+        void drawImage(SharedHandle<OmegaCommon::Img::BitmapImage> & img,const Composition::Rect & rect);
 
         /**
          @brief Draw a sub-region of an Image with an optional RGBA tint
@@ -392,7 +394,7 @@ namespace OmegaWTK {
          color. Identity `(1,1,1,1)` is straight passthrough; useful for
          recoloring monochrome icons or applying an alpha fade.
          */
-        void drawImage(SharedHandle<Media::BitmapImage> & img,
+        void drawImage(SharedHandle<OmegaCommon::Img::BitmapImage> & img,
                        const Composition::Rect & destRect,
                        Core::Optional<Composition::Rect> sourceRect,
                        Core::Optional<Composition::Color> tintColor = std::nullopt);
@@ -415,7 +417,7 @@ namespace OmegaWTK {
          The implementation decomposes the request into nine `Bitmap`
          visual commands; the backend pipeline is unchanged.
          */
-        void drawImage(SharedHandle<Media::BitmapImage> & img,
+        void drawImage(SharedHandle<OmegaCommon::Img::BitmapImage> & img,
                        const Composition::Rect & destRect,
                        const NineSliceInsets & insets,
                        Core::Optional<Composition::Rect> sourceRect = std::nullopt,
