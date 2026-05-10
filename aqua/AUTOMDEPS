@@ -2,7 +2,8 @@
     "variables":{
         "third_party_dest":"./deps"
     },
-    "commands":[
-      
+    "dependencies":[
+        // PhysX
+        // SDL
     ]
 }
