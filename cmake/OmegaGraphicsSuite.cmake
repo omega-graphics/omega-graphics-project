@@ -503,7 +503,7 @@ function(add_third_party)
     endforeach()
 
     if(NOT ${_ARG_CUSTOM_PROJECT})
-        message("CMAKE PROJECT:${_ARG_NAME}")
+        message("Adding ThirdParty: CMAKE PROJECT:${_ARG_NAME}")
         ExternalProject_Add(
             ${_ARG_NAME}
             SOURCE_DIR "${_ARG_SOURCE_DIR}"
@@ -516,7 +516,7 @@ function(add_third_party)
             DEPENDS ${_ARG_DEPS}
         )
     else()
-        message("CUSTOM PROJECT:${_ARG_NAME}")
+        message("Adding ThirdParty: CUSTOM PROJECT:${_ARG_NAME}")
         ExternalProject_Add(
             ${_ARG_NAME}
             SOURCE_DIR "${_ARG_SOURCE_DIR}"

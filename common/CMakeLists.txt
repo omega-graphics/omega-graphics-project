@@ -18,7 +18,9 @@ endforeach()
 unset(OMEGACOMMON_AUTOMDEPS_CMAKE)
 unset(OMEGACOMMON_AUTOMDEPS_CMAKE_CANDIDATES)
 
-file(GLOB COMMON_SRCS CONFIGURE_DEPENDS "src/*.cpp")
+file(GLOB COMMON_SRCS         CONFIGURE_DEPENDS "src/*.cpp")
+file(GLOB COMMON_UNICODE_SRCS CONFIGURE_DEPENDS "src/unicode/*.cpp")
+list(APPEND COMMON_SRCS ${COMMON_UNICODE_SRCS})
 
 configure_file("src/Info.plist.in" "${CMAKE_CURRENT_BINARY_DIR}/Info.plist")
 
@@ -159,6 +161,206 @@ else()
 		EXPORT_INCLUDE_DIRS "include")
 endif()
 
+# === Image-codec + ICU third-party deps ===
+# Migrated from wtk/CMakeLists.txt in Phase 1a of the
+# Common-ImgCodec-Unicode-Refactor-Plan. wtk/CMakeLists.txt and any other
+# subdirectory still references the imported targets (icuuc, icudata,
+# icui18n, png, turbojpeg, tiff, z) and the *_EXPORT / *_DLL CACHE INTERNAL
+# variables defined below. Image deps (libpng, libjpeg-turbo, libtiff, zlib)
+# remain SHARED in Phase 1a and switch to STATIC in Phase 1b.
+set(OMEGACOMMON_THIRD_PARTY_SRC_DIR    "${CMAKE_CURRENT_SOURCE_DIR}/deps")
+set(OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps" CACHE INTERNAL "Common-owned third-party install root (consumed by wtk libxml2 build)" FORCE)
+
+# --- ICU ---
+set(ICU_DEP_ROOT    "${OMEGACOMMON_THIRD_PARTY_SRC_DIR}/icu")
+set(ICU_SOURCE_ROOT "${ICU_DEP_ROOT}/code")
+set(_OMEGACOMMON_ICU_VERSION "78")
+set(ICU_VERSION_HEADER "${ICU_SOURCE_ROOT}/icu4c/source/common/unicode/uvernum.h")
+if(EXISTS "${ICU_VERSION_HEADER}")
+	file(STRINGS "${ICU_VERSION_HEADER}" ICU_VERSION_LINE
+		REGEX "^#define U_ICU_VERSION_SHORT[ \t]+\"[0-9]+\"")
+	if(ICU_VERSION_LINE)
+		string(REGEX REPLACE ".*\"([0-9]+)\".*" "\\1" _OMEGACOMMON_ICU_VERSION "${ICU_VERSION_LINE}")
+	endif()
+endif()
+set(ICU_VERSION "${_OMEGACOMMON_ICU_VERSION}" CACHE INTERNAL "ICU short version (e.g. 78); consumed by wtk's framework install-name fixups")
+
+if(WIN32)
+	file(MAKE_DIRECTORY "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/bin")
+	file(MAKE_DIRECTORY "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib")
+
+	add_third_party(
+		CUSTOM_PROJECT
+		NAME icu
+		SOURCE_DIR "${ICU_SOURCE_ROOT}/icu4c/source/allinone"
+		BINARY_DIR "${ICU_SOURCE_ROOT}/icu4c/source/allinone"
+		INSTALL_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu"
+		CONF ""
+		BUILD msbuild allinone.sln /p:Configuration=Release /p:SkipUWP=true
+		INSTALL ${CMAKE_COMMAND} -E copy_directory "${ICU_SOURCE_ROOT}/icu4c/include" "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/include"
+		&& ${CMAKE_COMMAND} -E copy "${ICU_SOURCE_ROOT}/icu4c/bin64/icuuc${ICU_VERSION}.dll" "${ICU_SOURCE_ROOT}/icu4c/bin64/icudt${ICU_VERSION}.dll" "${ICU_SOURCE_ROOT}/icu4c/bin64/icuin${ICU_VERSION}.dll" "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/bin"
+		&& ${CMAKE_COMMAND} -E copy "${ICU_SOURCE_ROOT}/icu4c/lib64/icuuc.lib" "${ICU_SOURCE_ROOT}/icu4c/lib64/icudt.lib" "${ICU_SOURCE_ROOT}/icu4c/lib64/icuin.lib" "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib"
+		EXPORT_SHARED_LIBS "icuuc:lib/icuuc.lib" "icudata:lib/icudt.lib" "icui18n:lib/icuin.lib"
+		EXPORT_INCLUDE_DIRS "include")
+
+	set(ICU_EXPORT
+		"${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/icuuc.lib"
+		"${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/icudt.lib"
+		"${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/icuin.lib"
+		CACHE INTERNAL "ICU import libraries (consumed by OmegaWTK framework EMBEDDED_LIBS)")
+	set(ICU_DLLS
+		"${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/bin/icuuc${ICU_VERSION}.dll"
+		"${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/bin/icudt${ICU_VERSION}.dll"
+		"${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/bin/icuin${ICU_VERSION}.dll"
+		CACHE INTERNAL "ICU runtime DLLs (consumed by OmegaWTK on Win32)")
+else()
+
+	if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+		add_third_party(
+			CUSTOM_PROJECT
+			NAME icu_tools
+			SOURCE_DIR "${ICU_DEP_ROOT}"
+			BINARY_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac"
+			INSTALL_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac"
+			CONF cd "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac" &&  ${ICU_SOURCE_ROOT}/icu4c/source/configure --prefix=${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu
+			BUILD make all
+			INSTALL echo "ICU Cross Tools Complete")
+
+		add_third_party(
+			CUSTOM_PROJECT
+			NAME icu
+			SOURCE_DIR "${ICU_DEP_ROOT}"
+			BINARY_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/intermed/icu_ios"
+			INSTALL_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu"
+			CONF
+			export CFLAGS=--sysroot=${CMAKE_OSX_SYSROOT} &&
+			export CXXFLAGS=--sysroot=${CMAKE_OSX_SYSROOT} &&
+			${ICU_SOURCE_ROOT}/icu4c/source/configure --prefix=${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu --with-cross-build=${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/intermed/icu_mac
+			BUILD make all
+			INSTALL make install
+			EXPORT_SHARED_LIBS "icuuc:lib/libicuuc${CMAKE_SHARED_LIBRARY_SUFFIX}" "icudata:lib/libicudata${CMAKE_SHARED_LIBRARY_SUFFIX}" "icui18n:lib/libicui18n${CMAKE_SHARED_LIBRARY_SUFFIX}"
+			EXPORT_INCLUDE_DIRS "include"
+			DEPS icu_tools)
+	else()
+		add_third_party(
+			CUSTOM_PROJECT
+			NAME icu
+			SOURCE_DIR "${ICU_SOURCE_ROOT}/icu4c/source"
+			BINARY_DIR "${ICU_SOURCE_ROOT}/icu4c/source"
+			INSTALL_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu"
+			CONF  ${ICU_SOURCE_ROOT}/icu4c/source/configure --prefix=${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu
+			BUILD make all
+			INSTALL make install
+			EXPORT_SHARED_LIBS "icuuc:lib/libicuuc${CMAKE_SHARED_LIBRARY_SUFFIX}" "icudata:lib/libicudata${CMAKE_SHARED_LIBRARY_SUFFIX}" "icui18n:lib/libicui18n${CMAKE_SHARED_LIBRARY_SUFFIX}"
+			EXPORT_INCLUDE_DIRS "include")
+	endif()
+
+	if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+		set(ICU_EXPORT
+			${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicuuc.dylib
+			${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicudata.dylib
+			${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib
+			CACHE INTERNAL "ICU dylib paths")
+		set_library_install_name("${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicuuc.dylib"   "@rpath/libicuuc.dylib"   AFTER icu)
+		set_library_install_name("${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicudata.dylib" "@rpath/libicudata.dylib" AFTER icu)
+		set_library_install_name("${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib" "@rpath/libicui18n.dylib" AFTER icu)
+		reset_library_dependent_name("${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicuuc.dylib"   "libicudata.${ICU_VERSION}.dylib" "@rpath/libicudata.dylib" AFTER icu)
+		reset_library_dependent_name("${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib" "libicudata.${ICU_VERSION}.dylib" "@rpath/libicudata.dylib" AFTER icu)
+		reset_library_dependent_name("${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib" "libicuuc.${ICU_VERSION}.dylib"   "@rpath/libicuuc.dylib"   AFTER icu)
+		# Add @loader_path rpath so co-located dylibs can find each other at runtime
+		add_library_rpath("${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicuuc.dylib"   "@loader_path" AFTER icu)
+		add_library_rpath("${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.dylib" "@loader_path" AFTER icu)
+	elseif(UNIX AND NOT APPLE AND NOT ANDROID)
+		set(ICU_EXPORT
+			"${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicuuc.so"
+			"${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicudata.so"
+			"${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib/libicui18n.so"
+			CACHE INTERNAL "ICU shared library paths")
+	endif()
+
+endif()
+
+# --- zlib (static) ---
+# zlib's CMakeLists always builds both `zlib` (shared) and `zlibstatic` (static)
+# regardless of BUILD_SHARED_LIBS — we just consume the static archive. Static
+# install paths: lib/libz.a on UNIX (OUTPUT_NAME=z, prefix=lib), lib/zlibstatic.lib
+# on Windows (target name `zlibstatic`).
+add_third_party(
+	NAME zlib
+	SOURCE_DIR "${OMEGACOMMON_THIRD_PARTY_SRC_DIR}/zlib/code"
+	BINARY_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/temp/zlib"
+	INSTALL_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/zlib"
+	CMAKE_BUILD_ARGS -DBUILD_SHARED_LIBS=OFF
+	EXPORT_STATIC_LIBS "z:lib/libz.a:lib/zlibstatic.lib"
+	EXPORT_INCLUDE_DIRS "include")
+
+get_target_property(_OMEGACOMMON_ZLIB_INCLUDE_DIRS z INTERFACE_INCLUDE_DIRECTORIES)
+
+# --- libpng (static) ---
+# libpng has its own PNG_SHARED / PNG_STATIC options (both default ON); pass
+# PNG_SHARED=OFF to skip the shared build entirely. Static install paths: on
+# UNIX, libpng creates a `libpng.a` symlink to `libpng16.a` (libpng's CMakeLists
+# line ~1075). On Windows the static archive is `libpng16_static.lib`.
+add_third_party(
+	NAME libpng
+	SOURCE_DIR "${OMEGACOMMON_THIRD_PARTY_SRC_DIR}/libpng/code"
+	BINARY_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/temp/libpng"
+	INSTALL_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/libpng"
+	CMAKE_BUILD_ARGS -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME} -DCMAKE_PREFIX_PATH=${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/zlib -DPNG_SHARED=OFF -DPNG_STATIC=ON  -DCMAKE_C_FLAGS:LIST=-DPNG_ARM_NEON_OPT=0;-DPNG_ARM_NEON_IMPLEMENTATION=0
+	EXPORT_STATIC_LIBS "png:lib/libpng.a:lib/libpng16_static.lib"
+	EXPORT_INCLUDE_DIRS "include"
+	DEPS zlib)
+
+set_property(TARGET png APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES "${_OMEGACOMMON_ZLIB_INCLUDE_DIRS}")
+
+# --- libjpeg-turbo (static) ---
+# libjpeg-turbo's static target is `turbojpeg-static`. On non-MSVC its
+# OUTPUT_NAME is overridden to `turbojpeg`, so the file lands at
+# lib/libturbojpeg.a. On MSVC there is no rename, so the file lands at
+# lib/turbojpeg-static.lib. ENABLE_SHARED=OFF skips the shared build.
+add_third_party(
+	NAME libjpeg-turbo
+	SOURCE_DIR "${OMEGACOMMON_THIRD_PARTY_SRC_DIR}/libjpeg-turbo/code"
+	BINARY_DIR ${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/temp/libjpeg-turbo
+	INSTALL_DIR ${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/libjpeg-turbo
+	CMAKE_BUILD_ARGS -DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR} -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME} -DCMAKE_PREFIX_PATH=${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/zlib -DENABLE_SHARED=OFF -DENABLE_STATIC=ON
+	EXPORT_STATIC_LIBS "turbojpeg:lib/libturbojpeg.a:lib/turbojpeg-static.lib"
+	EXPORT_INCLUDE_DIRS "include"
+	DEPS zlib)
+
+# --- libtiff (static) ---
+# libtiff respects BUILD_SHARED_LIBS=OFF natively. Static install path is
+# lib/libtiff.a on UNIX, lib/tiff.lib on Windows.
+add_third_party(
+	NAME libtiff
+	SOURCE_DIR ${OMEGACOMMON_THIRD_PARTY_SRC_DIR}/libtiff/code
+	BINARY_DIR ${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/temp/libtiff
+	INSTALL_DIR ${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/libtiff
+	CMAKE_BUILD_ARGS
+	-DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
+	-DCMAKE_PREFIX_PATH=${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/zlib;${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/libjpeg-turbo
+	-DBUILD_SHARED_LIBS=OFF
+	-Djpeg=OFF
+	-Dold-jpeg=OFF
+	-Dwebp=OFF
+	-Dtiff-tools=OFF
+	-Dtiff-tests=OFF
+	-Dtiff-contrib=OFF
+	-Dtiff-docs=OFF
+	EXPORT_STATIC_LIBS "tiff:lib/libtiff.a:lib/tiff.lib"
+	EXPORT_INCLUDE_DIRS "include"
+	DEPS zlib libjpeg-turbo)
+
+set_property(TARGET tiff APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES "${_OMEGACOMMON_ZLIB_INCLUDE_DIRS}")
+
+# Aggregator so IDEs can build all common-owned third-party deps in one shot.
+# wtk's "OmegaWTK" framework target add_dependencies on this so a fresh
+# wtk configure still builds icu/zlib/libpng/libjpeg-turbo/libtiff.
+add_custom_target(OmegaCommonThirdParty)
+add_dependencies(OmegaCommonThirdParty icu zlib libpng libjpeg-turbo libtiff)
+
+# === End image-codec + ICU third-party deps ===
+
 add_omega_graphics_module("OmegaCommon" SHARED SOURCES ${COMMON_SRCS} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 if(DEFINED OMEGACOMMON_RAPIDJSON_ROOT)
 	set(OMEGACOMMON_RAPIDJSON_INCLUDE_DIR "${OMEGACOMMON_RAPIDJSON_ROOT}/include")
@@ -167,7 +369,10 @@ else()
 endif()
 target_include_directories("OmegaCommon" PRIVATE "${OMEGACOMMON_RAPIDJSON_INCLUDE_DIR}")
 
-target_link_libraries("OmegaCommon" PRIVATE pcre2-8 ssl crypto)
+target_link_libraries("OmegaCommon" PRIVATE pcre2-8 ssl crypto icuuc icudata icui18n)
+# UniString.cpp uses ICU's u_strFromUTF8 / u_strFromUTF32; the public unicode.h
+# only exposes std types, so ICU stays PRIVATE.
+add_dependencies("OmegaCommon" icu)
 if(NOT WIN32)
 	if(OMEGACOMMON_CURL_TARGET)
 		target_link_libraries("OmegaCommon" PRIVATE ${OMEGACOMMON_CURL_TARGET})

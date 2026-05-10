@@ -1,15 +1,15 @@
-#include "omegaWTK/Core/Unicode.h"
+#include "omega-common/unicode.h"
 
 #include <unicode/ustring.h>
 
 #include <cstring>
 #include <vector>
 
-namespace OmegaWTK {
+namespace OmegaCommon {
 
 namespace {
 
-std::u16string utf16FromUChars(const UChar * buffer,std::int32_t length){
+std::u16string utf16FromUChars(const UChar * buffer, std::int32_t length){
     if(buffer == nullptr || length <= 0){
         return {};
     }
@@ -92,4 +92,4 @@ const UnicodeChar * UniString::getBuffer() const {
     return data_.c_str();
 }
 
-};
+}

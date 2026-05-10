@@ -1,35 +1,19 @@
 #ifndef OMEGAWTK_CORE_UNICODE_H
 #define OMEGAWTK_CORE_UNICODE_H
 
-#include <cstdint>
-#include <string>
+// This header has moved to <omega-common/unicode.h>. The OmegaWTK aliases
+// below remain for source compatibility while WTK callers migrate. Per the
+// Common-ImgCodec-Unicode-Refactor-Plan (Phase 2), the implementation now
+// lives in OmegaCommon; only the namespace alias stays here.
 
+#include "omega-common/unicode.h"
 #include "OmegaWTKExport.h"
 
 namespace OmegaWTK {
 
-    using UnicodeChar = char16_t;
-    using Unicode32Char = char32_t;
-
-    /**
-     * A lightweight UTF-16 string wrapper used by the public OmegaWTK API.
-     * ICU is kept in the implementation so including this header stays cheap.
-     */
-    class OMEGAWTK_EXPORT UniString {
-        std::u16string data_;
-
-        explicit UniString(std::u16string data);
-
-    public:
-        UniString() = default;
-        explicit UniString(const char * utf8);
-
-        static UniString fromUTF8(const char * utf8);
-        static UniString fromUTF32(const Unicode32Char * utf32, std::int32_t length);
-
-        std::int32_t length() const;
-        const UnicodeChar * getBuffer() const;
-    };
+    using UnicodeChar   = OmegaCommon::UnicodeChar;
+    using Unicode32Char = OmegaCommon::Unicode32Char;
+    using UniString     = OmegaCommon::UniString;
 
 }
 

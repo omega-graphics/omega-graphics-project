@@ -85,6 +85,8 @@ add_omegasl_compile_test(omegasl_compile_const_local_basic   const_local_basic.o
 # §3.5 — function overloading.
 add_omegasl_compile_test(omegasl_compile_function_overload_basic function_overload_basic.omegasl)
 add_omegasl_compile_test(omegasl_compile_function_overload_with_forward function_overload_with_forward.omegasl)
+# §3.7 — `out` / `inout` function parameters.
+add_omegasl_compile_test(omegasl_compile_out_inout_params    out_inout_params.omegasl)
 
 # --- Real-world shader tests (UI / game engine patterns) ---
 add_omegasl_compile_test(omegasl_compile_blinn_phong         blinn_phong.omegasl)

@@ -653,6 +653,24 @@ namespace omegasl {
                 t = lexer->nextTok();
 
                 while (t.type != TOK_RPAREN) {
+                    /// §3.7 — `in` / `out` / `inout` access qualifier. The
+                    /// keywords are contextual (lexed as TOK_ID since they
+                    /// are also valid identifiers), so we peek at the
+                    /// string and consume the token only when it precedes
+                    /// what would otherwise be a type token. `in` is the
+                    /// default; the qualifier exists so HLSL `out`-style
+                    /// multi-return patterns (e.g. `sincos(x, s, c)`)
+                    /// have a source-level shape.
+                    ast::AttributedFieldDecl::ParamAccess paramAccess =
+                        ast::AttributedFieldDecl::In;
+                    if (t.type == TOK_ID
+                        && (t.str == KW_IN || t.str == KW_OUT || t.str == KW_INOUT)) {
+                        if (t.str == KW_IN)         paramAccess = ast::AttributedFieldDecl::In;
+                        else if (t.str == KW_OUT)   paramAccess = ast::AttributedFieldDecl::Out;
+                        else                        paramAccess = ast::AttributedFieldDecl::Inout;
+                        t = lexer->nextTok();
+                    }
+
                     auto _tok = t;
                     t = lexer->nextTok();
                     bool type_is_pointer = false;
@@ -710,9 +728,9 @@ namespace omegasl {
                             }
                             t = lexer->nextTok();
                         }
-                        funcDecl->params.push_back({var_ty, var_id, attr_name, attr_index});
+                        funcDecl->params.push_back({var_ty, var_id, attr_name, attr_index, paramAccess});
                     } else {
-                        funcDecl->params.push_back({var_ty, var_id, {}, {}});
+                        funcDecl->params.push_back({var_ty, var_id, {}, {}, paramAccess});
                     }
 
                     if (t.type == TOK_COMMA) {

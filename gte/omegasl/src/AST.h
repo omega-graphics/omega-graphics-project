@@ -270,6 +270,18 @@ namespace omegasl {
             /// Present only when the attribute was written with a parenthesised
             /// integer (e.g. `: Color(1)`).
             std::optional<unsigned> attributeIndex;
+
+            /// §3.7 — `in` / `out` / `inout` qualifier on a function parameter.
+            /// Only meaningful for `FuncDecl::params`; struct fields and shader
+            /// params leave this at `In`. `in` is the default (the param is
+            /// read-only from the caller's perspective). `out` writes back the
+            /// callee's final value; `inout` does both. Spelling per backend:
+            ///   HLSL  → `out T name` / `inout T name`
+            ///   MSL   → `thread T& name` (covers both — Metal has no
+            ///            write-only reference qualifier)
+            ///   GLSL  → `out T name` / `inout T name`
+            enum ParamAccess { In, Out, Inout };
+            ParamAccess access = In;
         };
 
         struct VarDecl : public Decl {

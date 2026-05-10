@@ -43,6 +43,47 @@
             "type":"git",
             "url":"https://github.com/Tencent/rapidjson.git",
             "dest":"$(third_party_dest)/rapidjson"
+         },
+         {
+            "name":"libpng",
+            "type":"git",
+            "url":"https://github.com/glennrp/libpng.git",
+            "dest":"$(third_party_dest)/libpng/code"
+         },
+         {
+            "name":"libjpeg-turbo",
+            "type":"git",
+            "url":"https://github.com/libjpeg-turbo/libjpeg-turbo.git",
+            "dest":"$(third_party_dest)/libjpeg-turbo/code",
+            "ref":"2.0.x"
+         },
+         {
+            "name":"libtiff",
+            "type":"git",
+            "url":"https://gitlab.com/libtiff/libtiff.git",
+            "dest":"$(third_party_dest)/libtiff/code"
+         },
+         {
+            "name":"zlib",
+            "type":"git",
+            "url":"https://github.com/madler/zlib.git",
+            "dest":"$(third_party_dest)/zlib/code"
+         },
+         {
+            "name":"icu",
+            "type":"git",
+            "url":"https://github.com/unicode-org/icu.git",
+            "dest":"$(third_party_dest)/icu/code",
+            "version_source":{
+                "channel":"stable",
+                "strategy":"git-branch-pattern",
+                "repo":"unicode-org/icu",
+                "pattern":"maint/maint-{major}",
+                "major_source":{
+                    "type":"github-releases",
+                    "repo":"unicode-org/icu"
+                }
+            }
         }
     ]
 }

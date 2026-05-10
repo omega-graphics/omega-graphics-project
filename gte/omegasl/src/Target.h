@@ -117,6 +117,18 @@ namespace omegasl {
         /// so the target can resolve the source `TypeExpr`.
         virtual void writeCast(CodeGen &cg, ast::TypeExpr *target, std::ostream &out) = 0;
 
+        /// §3.7 — emit a user-function parameter, including any
+        /// `out`/`inout` qualifier. HLSL/GLSL spell this as a prefix
+        /// (`out T name` / `inout T name`); MSL has no `out`/`inout`
+        /// keyword and instead requires reference spelling
+        /// (`thread T& name`), which the default implementation cannot
+        /// produce. Each target implements its own spelling; `param.access`
+        /// is the source-level qualifier (`In` is the default and emits
+        /// the unqualified type for all three backends).
+        virtual void writeFuncParam(CodeGen &cg,
+                                    const ast::AttributedFieldDecl &param,
+                                    std::ostream &out) = 0;
+
         /// Whether this backend can faithfully emit `&expr` /
         /// `*expr` source-level pointer expressions. HLSL and MSL: yes.
         /// GLSL: no — it has no raw pointer types, so any `&`/`*` is
@@ -373,6 +385,9 @@ namespace omegasl {
         OmegaCommon::StrRef discardStatement() override;
         void writeCast(CodeGen &cg, ast::TypeExpr *target, std::ostream &out) override;
         bool supportsPointerExpr() const override;
+        void writeFuncParam(CodeGen &cg,
+                            const ast::AttributedFieldDecl &param,
+                            std::ostream &out) override;
         void emitResourceBinding(CodeGen &cg,
                                  ast::ResourceDecl *res,
                                  ast::ShaderDecl *shader,
@@ -435,6 +450,9 @@ namespace omegasl {
         OmegaCommon::StrRef discardStatement() override;
         void writeCast(CodeGen &cg, ast::TypeExpr *target, std::ostream &out) override;
         bool supportsPointerExpr() const override;
+        void writeFuncParam(CodeGen &cg,
+                            const ast::AttributedFieldDecl &param,
+                            std::ostream &out) override;
         void emitResourceBinding(CodeGen &cg,
                                  ast::ResourceDecl *res,
                                  ast::ShaderDecl *shader,
@@ -512,6 +530,9 @@ namespace omegasl {
         OmegaCommon::StrRef discardStatement() override;
         void writeCast(CodeGen &cg, ast::TypeExpr *target, std::ostream &out) override;
         bool supportsPointerExpr() const override;
+        void writeFuncParam(CodeGen &cg,
+                            const ast::AttributedFieldDecl &param,
+                            std::ostream &out) override;
         void emitResourceBinding(CodeGen &cg,
                                  ast::ResourceDecl *res,
                                  ast::ShaderDecl *shader,

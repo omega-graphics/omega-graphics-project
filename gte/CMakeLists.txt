@@ -163,6 +163,29 @@ if(TARGET_DIRECTX)
 
 	target_include_directories("OmegaGTE" PRIVATE ${D3D12MA_INCLUDE_DIRECTORY})
 	target_sources("OmegaGTE" PRIVATE ${D3D12MA_SOURCE})
+
+	# DirectXTex / DirectXMesh — Phase 3.4 asset loaders. Sub-projects
+	# expose `option()`s for samples / DX11 / etc.; we force them off
+	# before add_subdirectory so DirectXTex_Desktop_2026.slnx-style
+	# extras (DDSView, fxc dependency) don't enter the build graph.
+	set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+	set(BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
+	set(BUILD_DX11 OFF CACHE BOOL "" FORCE)
+	set(BUILD_DX12 ON CACHE BOOL "" FORCE)
+	set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+	set(BC_USE_OPENMP OFF CACHE BOOL "" FORCE)
+
+	add_subdirectory("${THIRD_PARTY_DIR}/DirectXTex" EXCLUDE_FROM_ALL)
+	add_subdirectory("${THIRD_PARTY_DIR}/DirectXMesh" EXCLUDE_FROM_ALL)
+	target_link_libraries("OmegaGTE" PRIVATE DirectXTex DirectXMesh)
+	target_include_directories("OmegaGTE" PRIVATE
+		"${THIRD_PARTY_DIR}/DirectXTex/DirectXTex"
+		"${THIRD_PARTY_DIR}/DirectXMesh/DirectXMesh")
+
+	# cgltf is single-header; the implementation TU lives in
+	# src/common/MeshParser.cpp behind a CGLTF_IMPLEMENTATION define.
+	# OBJ is parsed inline in MeshParser.cpp (no external dep).
+	target_include_directories("OmegaGTE" PRIVATE "${THIRD_PARTY_DIR}/cgltf")
 endif()
 if(TARGET_METAL)
 	target_link_system_frameworks("OmegaGTE" Metal MetalKit ModelIO QuartzCore Cocoa)

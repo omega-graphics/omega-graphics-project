@@ -934,7 +934,7 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
         }
 
         switch (desc.depthStencilAttachment.depthloadAction) {
-            case GERenderTarget::RenderPassDesc::DepthStencilAttachment::Discard : {
+            case GERenderPassDescriptor::DepthStencilAttachment::Discard : {
                    ds_desc.DepthBeginningAccess.Type = ds_desc.StencilBeginningAccess.Type =
                     D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_DISCARD;
                 if (!desc.multisampleResolve)

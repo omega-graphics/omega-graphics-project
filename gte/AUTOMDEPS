@@ -51,6 +51,15 @@
             ]
         },
         {
+            "name": "cgltf",
+            "type": "git",
+            "url": "https://github.com/jkuhlmann/cgltf.git",
+            "dest": "$(external_lib_path)/cgltf",
+            "platforms": [
+                "windows"
+            ]
+        },
+        {
             "name": "glm",
             "type": "git",
             "url": "https://github.com/g-truc/glm.git",

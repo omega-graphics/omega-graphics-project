@@ -1,0 +1,60 @@
+/// §3.7 — `out` / `inout` qualifiers on function parameters. Lets a
+/// helper return multiple values via reference-style params, the
+/// canonical use case being `sincos(x, s, c)`. The qualifier is a
+/// contextual keyword (parsed as TOK_ID), so `in` / `out` / `inout`
+/// remain valid identifiers everywhere except immediately in front of
+/// a parameter type.
+///
+/// Per-backend spelling:
+///   HLSL / GLSL  — `out T name` / `inout T name` prefix.
+///   MSL          — `thread T& name` (Metal has no `out` keyword; the
+///                  reference covers both `out` and `inout`).
+///
+/// `in` is the default; the test exercises all three forms to make
+/// sure the parser accepts the explicit-`in` spelling without
+/// emitting it on the wire (it would collide with the implicit
+/// default if it leaked through).
+
+struct Pt {
+    float4 value;
+};
+
+buffer<Pt> src : 0;
+buffer<Pt> dst : 1;
+
+/// `out` parameter — caller's storage is written by the callee.
+/// Models HLSL's `sincos(x, s, c)`.
+void sincos_user(float x, out float s, out float c){
+    s = sin(x);
+    c = cos(x);
+}
+
+/// `inout` parameter — read then written. The callee both observes
+/// and mutates the caller's storage.
+void scale_inout(inout float v, float k){
+    v = v * k;
+}
+
+/// Explicit `in` — same shape as the default, exercises the parser
+/// path. No qualifier should appear in the emitted source for either
+/// of these params.
+float add_in(in float a, in float b){
+    return a + b;
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_out_inout_params(uint3 tid : GlobalThreadID){
+    float a = src[0].value[0];
+
+    float s;
+    float c;
+    sincos_user(a, s, c);
+
+    float v = src[0].value[1];
+    scale_inout(v, 2.0);
+
+    float sum = add_in(a, v);
+
+    dst[0].value = float4(s, c, v, sum);
+}

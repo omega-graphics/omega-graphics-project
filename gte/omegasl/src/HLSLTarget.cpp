@@ -314,6 +314,23 @@ namespace omegasl {
         writeTypeName(cg.typeResolver->resolveTypeWithExpr(t), t->pointer, out);
     }
 
+    /// §3.7 — HLSL spells `out` / `inout` as a prefix keyword on the
+    /// parameter. `in` is the default and is left implicit so the
+    /// generated source stays byte-identical to the pre-3.7 output for
+    /// unqualified params.
+    void HLSLTarget::writeFuncParam(CodeGen &cg,
+                                    const ast::AttributedFieldDecl &param,
+                                    std::ostream &out) {
+        if (param.access == ast::AttributedFieldDecl::Out) {
+            out << "out ";
+        } else if (param.access == ast::AttributedFieldDecl::Inout) {
+            out << "inout ";
+        }
+        writeTypeName(cg.typeResolver->resolveTypeWithExpr(param.typeExpr),
+                      param.typeExpr->pointer, out);
+        out << " " << param.name;
+    }
+
     bool HLSLTarget::supportsPointerExpr() const { return true; }
 
     OmegaCommon::StrRef HLSLTarget::renameBuiltin(OmegaCommon::StrRef name) {

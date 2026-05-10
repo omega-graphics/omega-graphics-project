@@ -3,7 +3,17 @@
         "third_party_dest":"./deps"
     },
     "dependencies":[
-        // PhysX
-        // SDL
+         {
+            "name": "sdl",
+            "type": "git",
+            "url": "https://github.com/libsdl-org/SDL.git",
+            "dest": "$(third_party_dest)/sdl"
+        },
+        {
+            "name": "physx",
+            "type": "git",
+            "url": "https://github.com/NVIDIA-Omniverse/PhysX.git",
+            "dest": "$(third_party_dest)/physx"
+        }
     ]
 }

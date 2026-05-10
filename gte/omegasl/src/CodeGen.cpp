@@ -347,8 +347,10 @@ namespace omegasl {
         shaderOut << " " << spellUserFuncName(f->name, paramTypes) << "(";
         for (size_t i = 0; i < f->params.size(); i++) {
             if (i > 0) shaderOut << ", ";
-            writeTypeExpr(f->params[i].typeExpr, shaderOut);
-            shaderOut << " " << f->params[i].name;
+            /// §3.7 — per-target spelling. HLSL/GLSL prefix the type with
+            /// `out` / `inout`; MSL has no such keywords and rewrites the
+            /// parameter as a `thread T&` reference.
+            target->writeFuncParam(*this, f->params[i], shaderOut);
         }
         shaderOut << ")";
     }

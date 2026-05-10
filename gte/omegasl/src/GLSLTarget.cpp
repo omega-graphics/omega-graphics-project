@@ -832,6 +832,22 @@ namespace omegasl {
         writeTypeName(cg.typeResolver->resolveTypeWithExpr(t), t->pointer, out);
     }
 
+    /// §3.7 — GLSL spells `out` / `inout` as a prefix keyword (same shape
+    /// as HLSL). `in` is the default and is omitted to keep generated
+    /// source byte-identical for unqualified params.
+    void GLSLTarget::writeFuncParam(CodeGen &cg,
+                                    const ast::AttributedFieldDecl &param,
+                                    std::ostream &out) {
+        if (param.access == ast::AttributedFieldDecl::Out) {
+            out << "out ";
+        } else if (param.access == ast::AttributedFieldDecl::Inout) {
+            out << "inout ";
+        }
+        writeTypeName(cg.typeResolver->resolveTypeWithExpr(param.typeExpr),
+                      param.typeExpr->pointer, out);
+        out << " " << param.name;
+    }
+
     /// GLSL has no raw pointer types — `&expr` and `*expr` are not valid
     /// source-level constructs. The current GLSLCodeGen still emits them
     /// at the source level if it sees a POINTER_EXPR, producing invalid

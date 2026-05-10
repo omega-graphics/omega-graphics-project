@@ -7,18 +7,6 @@
 
 _NAMESPACE_BEGIN_
 
-GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor::ClearColor(float r,float g,float b,float a):r(r),g(g),b(b),a(a){
-
-};
-
-GERenderTarget::RenderPassDesc::ColorAttachment::ColorAttachment(GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor clearColor,GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction loadAction):clearColor(clearColor.r,clearColor.g,clearColor.b,clearColor.a),loadAction(loadAction),texture(nullptr){
-
-};
-
-GERenderTarget::RenderPassDesc::ColorAttachment::ColorAttachment(GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor clearColor,GERenderTarget::RenderPassDesc::ColorAttachment::LoadAction loadAction,SharedHandle<GETexture> texture):clearColor(clearColor.r,clearColor.g,clearColor.b,clearColor.a),loadAction(loadAction),texture(std::move(texture)){
-
-};
-
 namespace {
     GECommandBuffer::PolygonType meshPolygonType(GEMeshTopology t){
         switch(t){

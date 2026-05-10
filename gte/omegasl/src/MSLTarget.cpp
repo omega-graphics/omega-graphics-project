@@ -507,6 +507,29 @@ using namespace metal;
         writeTypeName(cg.typeResolver->resolveTypeWithExpr(t), t->pointer, out);
     }
 
+    /// §3.7 — Metal has no `out` / `inout` keyword. Both kinds are
+    /// spelled as a `thread` address-space reference, which gives the
+    /// callee a writable binding to the caller's storage. There is no
+    /// write-only reference qualifier in MSL, so `out` and `inout`
+    /// generate identical source — the difference exists only in the
+    /// OmegaSL source for the author's intent. `in` (the default) uses
+    /// pass-by-value, leaving the pre-3.7 spelling unchanged.
+    void MSLTarget::writeFuncParam(CodeGen &cg,
+                                   const ast::AttributedFieldDecl &param,
+                                   std::ostream &out) {
+        bool isByRef = (param.access == ast::AttributedFieldDecl::Out
+                        || param.access == ast::AttributedFieldDecl::Inout);
+        if (isByRef) {
+            out << "thread ";
+        }
+        writeTypeName(cg.typeResolver->resolveTypeWithExpr(param.typeExpr),
+                      param.typeExpr->pointer, out);
+        if (isByRef) {
+            out << "&";
+        }
+        out << " " << param.name;
+    }
+
     bool MSLTarget::supportsPointerExpr() const { return true; }
 
     OmegaCommon::StrRef MSLTarget::renameBuiltin(OmegaCommon::StrRef name) {

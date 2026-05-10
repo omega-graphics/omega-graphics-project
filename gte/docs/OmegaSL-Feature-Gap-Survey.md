@@ -644,7 +644,7 @@ Out of scope (intentional, deferred):
     parser only recognizes the prefix form today. Add when there's
     real demand.
 
-### 3.7 Multiple return values
+### 3.7 Multiple return values [LANDED]
 
 HLSL supports `out` parameters; MSL and GLSL both support them. OmegaSL's
 reference does not document `out`/`inout` on function parameters (only on
@@ -653,6 +653,45 @@ resource-map keywords). Needed for `sincos(x, s, c)` and similar.
 Alex Answer:
 
 Allow `out`/`inout` to be used in function params.
+
+**Landed.** `in` / `out` / `inout` are now accepted as a prefix qualifier
+on a function parameter declaration. The keywords stay contextual (lexed
+as `TOK_ID`, same treatment they got in the resource map), so plain
+identifiers named `in` / `out` / `inout` continue to parse. `in` is the
+implicit default and the parser accepts it as a no-op for symmetry with
+the resource-map spelling. The qualifier rides on `AttributedFieldDecl`
+as a new `ParamAccess` enum; only the function-parameter parse path
+sets it — struct fields and shader-decl params leave it at `In`.
+
+Per-backend spelling routes through a new `Target::writeFuncParam` hook:
+
+| Backend | `in` (default) | `out`             | `inout`            |
+|---------|----------------|-------------------|--------------------|
+| HLSL    | `T name`       | `out T name`      | `inout T name`     |
+| GLSL    | `T name`       | `out T name`      | `inout T name`     |
+| MSL     | `T name`       | `thread T& name`  | `thread T& name`   |
+
+MSL has no `out` keyword and no write-only reference qualifier — both
+`out` and `inout` lower to a `thread T&` reference. The semantic
+difference (caller's value may be undefined on entry for `out`) is
+preserved only in the OmegaSL source.
+
+The default-`In` spelling is byte-identical to the pre-3.7 output, so
+no golden snapshots needed updating.
+
+Out of scope (intentional, deferred):
+  - **`out` / `inout` as part of the overload signature.** Today a
+    function whose parameters differ only by access qualifier
+    (`f(out int)` vs `f(int)`) is treated as a redeclaration. HLSL
+    distinguishes the two; revisit once a real shader runs into the
+    wall.
+  - **`out` + pointer combinations.** The parser does not reject
+    `out T*`, but the emitted MSL spelling (`thread T*&`) is
+    untested. Add coverage when a workload needs it.
+  - **`const T` parameters.** §3.6 noted this as 3.7-adjacent. Still
+    unimplemented; the parser does not yet accept `const` in front
+    of a parameter type. Add when a shader actually wants it — every
+    backend already accepts the spelling, so the patch is small.
 
 ---
 

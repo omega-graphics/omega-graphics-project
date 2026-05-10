@@ -162,30 +162,31 @@ and resolves any material base-color textures to per-mesh `TextureAsset`s.
   any mesh or user code holds a reference. `release()` is provided as an
   explicit early-free hook but is not required — destruction handles it.
 
-### 3.4 D3D12 and Vulkan implementations — deferred
+### 3.4 D3D12 implementation ✅ — Vulkan deferred
 
-Land the same `TextureAsset` and `MeshAsset` public API on the remaining
-backends.
+D3D12 lands in this pass; Vulkan is the remaining open work.
 
-| Platform | Library | Notes |
-|----------|---------|-------|
-| **Windows (D3D12)** | **DirectXTex** + **DirectXMesh** | DirectXTex loads DDS and WIC formats (PNG/JPEG/TIFF/BMP/HDR), generates mipmaps, handles BC compression. DirectXMesh provides cache/adjacency optimization and normal/tangent generation. Both are already declared in `gte/AUTOMDEPS` for the Windows platform. Mesh parsing still requires a glTF/OBJ front-end — the candidates are `cgltf` (single-header, glTF 2.0) and a small in-house OBJ parser. |
-| **Linux / Android (Vulkan)** | **KTX-Software** + **stb_image** + **cgltf** | libktx for KTX/KTX2 (any Vulkan format including BC/ETC2/ASTC), `stb_image` for PNG/JPEG into `GETexture::copyBytes`, `cgltf` for glTF 2.0 plus an OBJ parser for OBJ. These libraries need to be added to `gte/AUTOMDEPS` for the `linux` and `android` platforms when this phase is picked up. |
+| Platform | Library | Status | Notes |
+|----------|---------|--------|-------|
+| **Windows (D3D12)** | **DirectXTex** + **DirectXMesh** + **cgltf** + inline OBJ | **Done** | DirectXTex loads DDS / HDR / TGA / WIC formats (PNG/JPEG/TIFF/BMP), generates mipmaps, handles BC compression and sRGB promotion. DirectXMesh is linked but unused in v1 (reserved for tangent / cache-optimization passes). `cgltf` parses glTF 2.0; OBJ is parsed by an inline ~120-line parser in `MeshParser.cpp`. |
+| **Linux / Android (Vulkan)** | **KTX-Software** + **stb_image** + (shared `MeshParser`) | **Deferred** | libktx for KTX/KTX2, `stb_image` for PNG/JPEG into `GETexture::copyBytes`. The mesh parser is already shared (`gte/src/common/MeshParser.{h,cpp}`) so the Vulkan backend just wires the GPU upload side. Add `libktx`, `stb_image` entries to `gte/AUTOMDEPS` for `linux` / `android` when picking this up. |
 
-Mesh Parser can be shared amongst platforms. (Even on platforms where these formats aren't supported.) We need more supported formats. 
 
-obj - `ssell/OBJParser`, fbx - `ufbx`
+*NOTES (post-implementation):*
 
-Later, we'll move ImgCodec out of OmegaWTK/Media to Common. (Can be shared amongst AQUA and WTK)
-Video, we'll move to a seperate video lib. (OmegaVideo)
+- The mesh parser **is** shared across platforms — `gte/src/common/MeshParser.{h,cpp}` is backend-neutral and ready for Vulkan to consume directly. Metal stays on Model I/O / `MTKMesh` (its own path) because the platform library is strictly more capable.
+- **OBJ**: implemented inline in `MeshParser.cpp` (handles `v` / `vt` / `vn` / `f` / `mtllib` / `usemtl` / `map_Kd`, fan-triangulates n-gons, supports negative indices). The original plan called for `ssell/OBJParser`; we dropped the dependency to keep the build graph small and avoid a third-party API whose surface didn't pay rent for ~120 lines of trivial parsing.
+- **FBX (`ufbx`)** still listed in the original NOTES as a wish: deferred. FBX has skinning, non-PBR material naming, and binary/ASCII variants — too much surface for a single phase. Lands in a follow-up.
+- **BC / HDR pixel formats**: `TexturePixelFormat` only models 5 formats today. `GED3D12TextureAsset` reports a best-effort `descriptor()` (warns once on unmapped DXGI formats) and constructs the SRV directly from the source DXGI format, so BC1–BC7 / HDR / 16F textures bind correctly even though `descriptor().pixelFormat` is lossy. Extending the engine-level enum is future work.
+- **Texture upload**: a transient `D3D12_COMMAND_LIST_TYPE_DIRECT` queue + fence is created per `load()`. Avoids interleaving with the engine's main render queue and keeps the loader self-contained at the cost of a queue allocation per file. Acceptable for asset-load workloads.
 
 **Files (this phase):**
-- replace stubs `gte/src/d3d12/GED3D12TextureAsset.cpp`,
-  `gte/src/d3d12/GED3D12MeshAsset.cpp`,
-  `gte/src/vulkan/GEVulkanTextureAsset.cpp`,
-  `gte/src/vulkan/GEVulkanMeshAsset.cpp` with real implementations.
-- update `gte/AUTOMDEPS` with `cgltf`, `stb_image`, and `libktx` entries
-  for Linux/Android. Windows entries are already present.
+- replaced `gte/src/d3d12/GED3D12TextureAsset.cpp` with a DirectXTex-backed implementation
+- replaced `gte/src/d3d12/GED3D12MeshAsset.cpp` with a `MeshParser`-driven implementation
+- new `gte/src/common/MeshParser.h` / `gte/src/common/MeshParser.cpp` (shared, backend-neutral)
+- `gte/AUTOMDEPS`: added `cgltf` for the Windows platform; DirectXTex / DirectXMesh entries already present
+- `gte/CMakeLists.txt`: under `TARGET_DIRECTX`, `add_subdirectory` + link `DirectXTex` + `DirectXMesh`, include `cgltf`
+- Vulkan stubs (`gte/src/vulkan/GEVulkanTextureAsset.cpp`, `GEVulkanMeshAsset.cpp`) still throw "not implemented"; they remain part of Phase 3.4 and are tracked separately.
 
 ---
 
@@ -214,7 +215,7 @@ Video, we'll move to a seperate video lib. (OmegaVideo)
 5. **Phase 3.1**: TextureAsset — Metal (MetalKit) impl + stubs on D3D12/Vulkan.
 6. **Phase 3.2**: MeshAsset — Metal (Model I/O / MTKMesh) impl + stubs on D3D12/Vulkan.
 7. **Phase 3.3**: Wire MeshAsset outputs into GEMesh bindings.
-8. **Phase 3.4 (deferred)**: D3D12 (DirectXTex / DirectXMesh) and Vulkan (libktx / stb_image / cgltf) implementations.
+8. **Phase 3.4 (D3D12 ✅, Vulkan deferred)**: D3D12 (DirectXTex / DirectXMesh + cgltf + inline OBJ) is complete. Vulkan (libktx / stb_image, reusing shared `MeshParser`) is the remaining open piece.
 9. **Phase 4**: Tests and documentation.
 
 ---
@@ -226,6 +227,6 @@ Video, we'll move to a seperate video lib. (OmegaVideo)
 | **Triangulation params** | Texture attachments can carry optional `SharedHandle<GETexture>`; dimensions remain in existing union. |
 | **Triangulation result** | All primitives emit texture2D/texture3D coords (and optional normals) when a texture attachment is set. |
 | **GEMesh** | New type: vertex (+ optional index) buffer, layout, and texture bindings; buildable from TETriangulationResult or MeshAsset. |
-| **TextureAsset** | High-level texture loading via DirectXTex (D3D12), MetalKit (Metal), KTX-Software (Vulkan). |
-| **MeshAsset** | High-level mesh loading via DirectXMesh (D3D12), MetalKit/Model I/O (Metal), custom loader (Vulkan). |
+| **TextureAsset** | High-level texture loading via DirectXTex (D3D12 ✅), MetalKit (Metal ✅), KTX-Software (Vulkan — deferred). |
+| **MeshAsset** | High-level mesh loading via shared `MeshParser` (cgltf + inline OBJ) on D3D12 ✅, MetalKit / Model I/O on Metal ✅, Vulkan deferred (will reuse the shared parser). |
 | **Command encoding** | Draw GEMesh (set vertex/index buffer, bind mesh textures). |

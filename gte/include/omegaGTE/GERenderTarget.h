@@ -13,7 +13,7 @@ _NAMESPACE_BEGIN_
     class GETexture;
     class GEMesh;
     class GEFence;
-    class GEAccelerationStruct;
+    struct GEAccelerationStruct;
     struct GEAccelerationStructDescriptor;
     struct GEViewport;
     struct GEScissorRect;

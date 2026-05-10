@@ -9,6 +9,8 @@ _NAMESPACE_BEGIN_
     class GED3D12CommandQueue;
     class GED3D12RenderPipelineState;
     class GED3D12ComputePipelineState;
+    class GED3D12TextureRenderTarget;
+    class GED3D12NativeRenderTarget;
 
     class GED3D12CommandBuffer : public GECommandBuffer {
         ComPtr<ID3D12GraphicsCommandList6> commandList;
