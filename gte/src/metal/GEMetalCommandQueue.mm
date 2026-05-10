@@ -666,17 +666,17 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         [rp setStencilReferenceValue:ref];
     }
     
-    static MTLPrimitiveType metalPrimitiveTypeForPolygonType(GERenderTarget::CommandBuffer::PolygonType polygonType){
+    static MTLPrimitiveType metalPrimitiveTypeForPolygonType(GECommandBuffer::PolygonType polygonType){
         switch(polygonType){
-            case GERenderTarget::CommandBuffer::Triangle:
+            case GECommandBuffer::Triangle:
                 return MTLPrimitiveTypeTriangle;
-            case GERenderTarget::CommandBuffer::TriangleStrip:
+            case GECommandBuffer::TriangleStrip:
                 return MTLPrimitiveTypeTriangleStrip;
-            case GERenderTarget::CommandBuffer::Line:
+            case GECommandBuffer::Line:
                 return MTLPrimitiveTypeLine;
-            case GERenderTarget::CommandBuffer::LineStrip:
+            case GECommandBuffer::LineStrip:
                 return MTLPrimitiveTypeLineStrip;
-            case GERenderTarget::CommandBuffer::Point:
+            case GECommandBuffer::Point:
                 return MTLPrimitiveTypePoint;
         }
         return MTLPrimitiveTypeTriangle;

@@ -121,8 +121,10 @@ namespace OmegaWTK::Composition {
 
 BackendRenderTargetContext::BackendRenderTargetContext(Composition::Rect & rect,
         SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTargetIn,
+        SharedHandle<OmegaGTE::GECommandQueue> commandQueueIn,
         float renderScaleValue):
         fence(fencePool() != nullptr ? fencePool()->acquire() : gte.graphicsEngine->makeFence()),
+        commandQueue_(std::move(commandQueueIn)),
         renderTarget(renderTargetIn),
         renderTargetSize_(rect),
         renderScale_(sanitizeRenderScale(renderScaleValue)),
@@ -417,7 +419,7 @@ void BackendRenderTargetContext::resetElementState() {
         cb->bindResourceAtVertexShader(quadBuffer, 1);
         auto sourceTex = scratch.source();
         cb->bindResourceAtFragmentShader(sourceTex, 2);
-        cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
+        cb->drawPolygons(OmegaGTE::GECommandBuffer::Triangle, 6, 0);
 
         frameRenderPass_.endDraw(scope);
 
@@ -579,7 +581,7 @@ void BackendRenderTargetContext::resetElementState() {
         frameRenderPass_.bindSdfPipeline(scope);
         cb->bindResourceAtVertexShader(vertexBuffer, 6);
         cb->bindResourceAtFragmentShader(paramsBuffer, 7);
-        cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
+        cb->drawPolygons(OmegaGTE::GECommandBuffer::Triangle, 6, 0);
         frameRenderPass_.endDraw(scope);
 
         if(bufferPool() != nullptr){
@@ -722,7 +724,7 @@ void BackendRenderTargetContext::resetElementState() {
         cb->bindResourceAtVertexShader(vertexBuffer, 9);
         cb->bindResourceAtFragmentShader(paramsBuffer, 10);
         cb->bindResourceAtFragmentShader(texture, 11);
-        cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
+        cb->drawPolygons(OmegaGTE::GECommandBuffer::Triangle, 6, 0);
         frameRenderPass_.endDraw(scope);
 
         if(bufferPool() != nullptr){
@@ -813,6 +815,7 @@ void BackendRenderTargetContext::resetElementState() {
             if(!blurEffects.empty()){
                 imageProcessor->applyEffects(scratch.pingPong(),
                                              scratchTarget,
+                                             commandQueue_,
                                              blurEffects,
                                              scratch.width(),
                                              scratch.height(),
@@ -863,8 +866,11 @@ void BackendRenderTargetContext::resetElementState() {
                                             std::chrono::steady_clock::time_point submitTimeCpu,
                                             BackendSubmissionCompletionHandler completionHandler){
         // Always-direct path: rendering already went to the native drawable in
-        // beginFrame/endFrame. Just present.
-        renderTarget->commitAndPresent();
+        // beginFrame/endFrame. Commit the queue, then present the swap chain.
+        if(commandQueue_ != nullptr){
+            commandQueue_->commitToGPU();
+        }
+        renderTarget->present();
         if(completionHandler){
             BackendSubmissionTelemetry telemetry {};
             telemetry.syncLaneId = syncLaneId;
@@ -1490,12 +1496,12 @@ void BackendRenderTargetContext::resetElementState() {
         }
 
         for(auto & m : result.meshes){
-            OmegaGTE::GERenderTarget::CommandBuffer::PolygonType topology;
+            OmegaGTE::GECommandBuffer::PolygonType topology;
             if(m.topology == OmegaGTE::TETriangulationResult::TEMesh::TopologyTriangleStrip){
-                topology = OmegaGTE::GERenderTarget::CommandBuffer::TriangleStrip;
+                topology = OmegaGTE::GECommandBuffer::TriangleStrip;
             }
             else {
-                topology = OmegaGTE::GERenderTarget::CommandBuffer::Triangle;
+                topology = OmegaGTE::GECommandBuffer::Triangle;
             }
             cb->drawPolygons(topology, m.vertexCount(), startVertexIndex);
             startVertexIndex += m.vertexCount();

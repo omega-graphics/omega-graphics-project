@@ -497,6 +497,8 @@ This compiles to a root constant range (D3D12), a `setBytes` buffer index (Metal
 
 ### 2.3 `ComputePipelineDescriptor` — Threadgroup Size Override
 
+Add a Device Feature bit, supports threadgroup size override.
+
 Currently the threadgroup size is defined in the OmegaSL shader via `numthreads` attributes. Some use cases need to override the compiled threadgroup size at pipeline creation time (e.g., tuning for different GPU architectures).
 
 **Add to `ComputePipelineDescriptor`:**
@@ -540,6 +542,8 @@ However, several common GPU operations require a *programmable* blit — a full-
 - **Post-process resolve** (custom MSAA resolve with temporal weighting)
 
 These operations are traditionally implemented by creating a render pipeline with a full-screen triangle and a fragment shader. The `BlitPipeline` formalizes this pattern: it's a lightweight pipeline descriptor that pairs a fragment shader with source/destination formats, avoiding the boilerplate of setting up render targets, viewports, vertex buffers, and pipeline state for what is conceptually a blit.
+
+Read my comment under Open Questions: 2. (Fold it into the render path.)
 
 ### 3.1 Public API
 
@@ -679,6 +683,7 @@ struct GEVulkanBlitPipelineState : public GEBlitPipelineState {
 
 ### 3.4 Built-In Blit Shaders
 
+Keep this. This will be very helpful to people.
 The engine should ship a small set of pre-compiled blit fragment shaders for common operations, so users don't have to write OmegaSL for standard blits:
 
 | Shader | Purpose |
@@ -1062,7 +1067,7 @@ ANSWER: Vertex Input Layout should be baked at creation.
 
 2. **Blit pipeline vs. post-process pipeline**: The proposed `BlitPipeline` is essentially a specialized render pipeline with no vertex input. Should it be a distinct pipeline type, or should the render pipeline simply support a "no vertex buffer, full-screen triangle" mode? A distinct type is cleaner for the common case; collapsing into render is more flexible but adds API surface to the render path.
 
-ANSWER: Do the proposed BlitPipeline, but also add an API to the render path. (If people want more control in special cases.)
+ANSWER: Render pipeline should support a full-screen triangle, no vertex buffer.
 
 3. **Mipmap generation shader**: D3D12 has no built-in mipmap generation. Should the engine ship an internal compute shader for this, or should it use the blit pipeline with a downsample fragment shader? Compute is more efficient (one dispatch per mip, no render pass overhead) but requires an internal OmegaSL compute shader compiled at build time.
 

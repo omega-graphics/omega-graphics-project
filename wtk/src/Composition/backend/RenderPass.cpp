@@ -4,6 +4,8 @@
 #include "RenderTarget.h"
 #include "ResourceFactory.h"
 
+#include "omegaGTE/GECommandQueue.h"
+
 namespace OmegaWTK::Composition {
 
     namespace {
@@ -16,7 +18,7 @@ namespace OmegaWTK::Composition {
         owner_(owner)
     {}
 
-    void FrameRenderPass::applyScratchViewportAndScissor(SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> & cb){
+    void FrameRenderPass::applyScratchViewportAndScissor(SharedHandle<OmegaGTE::GECommandBuffer> & cb){
         OmegaGTE::GEViewport viewport {};
         viewport.x = 0;
         viewport.y = 0;
@@ -33,7 +35,7 @@ namespace OmegaWTK::Composition {
         cb->setScissorRects({scissorRect});
     }
 
-    void FrameRenderPass::applyViewportAndScissor(SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> & cb){
+    void FrameRenderPass::applyViewportAndScissor(SharedHandle<OmegaGTE::GECommandBuffer> & cb){
         OmegaGTE::GEViewport viewport {};
         viewport.nearDepth = 0.f;
         viewport.farDepth  = 1.f;
@@ -61,15 +63,17 @@ namespace OmegaWTK::Composition {
 
     void FrameRenderPass::begin(float clearR, float clearG, float clearB, float clearA){
         auto & nativeTarget = owner_.getNativeRenderTarget();
-        if(nativeTarget == nullptr){
+        auto & queue = owner_.commandQueue();
+        if(nativeTarget == nullptr || queue == nullptr){
             return;
         }
-        frameCB_ = nativeTarget->commandBuffer();
+        frameCB_ = queue->getAvailableBuffer();
 
-        OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc {};
-        renderPassDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
-                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(clearR, clearG, clearB, clearA),
-                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
+        OmegaGTE::GERenderPassDescriptor renderPassDesc {};
+        renderPassDesc.nRenderTarget = nativeTarget.get();
+        renderPassDesc.colorAttachments.push_back(OmegaGTE::GERenderPassDescriptor::ColorAttachment(
+                OmegaGTE::GERenderPassDescriptor::ColorAttachment::ClearColor(clearR, clearG, clearB, clearA),
+                OmegaGTE::GERenderPassDescriptor::ColorAttachment::Clear));
         renderPassDesc.depthStencilAttachment.disabled = true;
         frameCB_->startRenderPass(renderPassDesc);
 
@@ -83,9 +87,11 @@ namespace OmegaWTK::Composition {
         if(!frameActive_ || frameCB_ == nullptr){
             return;
         }
-        auto & nativeTarget = owner_.getNativeRenderTarget();
-        frameCB_->endRenderPass();
-        nativeTarget->submitCommandBuffer(frameCB_);
+        auto & queue = owner_.commandQueue();
+        frameCB_->finishRenderPass();
+        if(queue != nullptr){
+            queue->submitCommandBuffer(frameCB_);
+        }
         frameCB_ = nullptr;
         frameActive_ = false;
     }
@@ -93,19 +99,21 @@ namespace OmegaWTK::Composition {
     FrameRenderPass::DrawScope
     FrameRenderPass::beginDraw(SharedHandle<OmegaGTE::GEFence> & textureFence){
         DrawScope scope {};
+        auto & queue = owner_.commandQueue();
 
         // Scratch redirect: while a scratch pass is open, every draw goes to
         // the scratch CB. Texture-fence handling on the scratch CB matches
         // the in-frame mid-pass restart contract — but on the scratch target.
         if(scratchActive_ && scratchCB_ != nullptr){
             scope.cb = scratchCB_;
-            if(textureFence != nullptr && scratchTarget_ != nullptr){
-                scope.cb->endRenderPass();
-                scratchTarget_->notifyCommandBuffer(scope.cb, textureFence);
-                OmegaGTE::GERenderTarget::RenderPassDesc restartDesc {};
-                restartDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
-                        OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(0.f,0.f,0.f,0.f),
-                        OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve));
+            if(textureFence != nullptr && scratchTarget_ != nullptr && queue != nullptr){
+                scope.cb->finishRenderPass();
+                queue->notifyCommandBuffer(scope.cb, textureFence);
+                OmegaGTE::GERenderPassDescriptor restartDesc {};
+                restartDesc.tRenderTarget = std::dynamic_pointer_cast<OmegaGTE::GETextureRenderTarget>(scratchTarget_).get();
+                restartDesc.colorAttachments.push_back(OmegaGTE::GERenderPassDescriptor::ColorAttachment(
+                        OmegaGTE::GERenderPassDescriptor::ColorAttachment::ClearColor(0.f,0.f,0.f,0.f),
+                        OmegaGTE::GERenderPassDescriptor::ColorAttachment::LoadPreserve));
                 restartDesc.depthStencilAttachment.disabled = true;
                 scope.cb->startRenderPass(restartDesc);
                 applyScratchViewportAndScissor(scope.cb);
@@ -123,17 +131,18 @@ namespace OmegaWTK::Composition {
         }
 
         // Texture fence: must be registered outside a render pass.
-        if(textureFence != nullptr && frameActive_){
+        if(textureFence != nullptr && frameActive_ && queue != nullptr){
             // Mid-frame restart: end the active pass, register the wait, then
             // restart with LoadPreserve to keep prior content. Force a
             // pipeline rebind on the next bind* call.
             auto & nativeTarget = owner_.getNativeRenderTarget();
-            scope.cb->endRenderPass();
-            nativeTarget->notifyCommandBuffer(scope.cb, textureFence);
-            OmegaGTE::GERenderTarget::RenderPassDesc restartDesc {};
-            restartDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
-                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),
-                    OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve));
+            scope.cb->finishRenderPass();
+            queue->notifyCommandBuffer(scope.cb, textureFence);
+            OmegaGTE::GERenderPassDescriptor restartDesc {};
+            restartDesc.nRenderTarget = nativeTarget.get();
+            restartDesc.colorAttachments.push_back(OmegaGTE::GERenderPassDescriptor::ColorAttachment(
+                    OmegaGTE::GERenderPassDescriptor::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),
+                    OmegaGTE::GERenderPassDescriptor::ColorAttachment::LoadPreserve));
             restartDesc.depthStencilAttachment.disabled = true;
             scope.cb->startRenderPass(restartDesc);
             applyViewportAndScissor(scope.cb);
@@ -215,24 +224,28 @@ namespace OmegaWTK::Composition {
         if(!frameActive_ || frameCB_ == nullptr){
             return;
         }
+        auto & queue = owner_.commandQueue();
+        if(queue == nullptr){
+            return;
+        }
 
         // Suspend the frame's render pass on the native target. The CB is
         // submitted now; `resumeFrameAfterScratch()` acquires a fresh one
         // and restarts the pass with `LoadPreserve` so prior draws survive.
-        auto & nativeTarget = owner_.getNativeRenderTarget();
-        frameCB_->endRenderPass();
-        nativeTarget->submitCommandBuffer(frameCB_);
+        frameCB_->finishRenderPass();
+        queue->submitCommandBuffer(frameCB_);
         frameCB_ = nullptr;
 
         scratchTarget_ = scratchTarget;
         scratchWidth_  = width;
         scratchHeight_ = height;
-        scratchCB_     = scratchTarget_->commandBuffer();
+        scratchCB_     = queue->getAvailableBuffer();
 
-        OmegaGTE::GERenderTarget::RenderPassDesc desc {};
-        desc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
-                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(0.f,0.f,0.f,0.f),
-                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
+        OmegaGTE::GERenderPassDescriptor desc {};
+        desc.tRenderTarget = scratchTarget.get();
+        desc.colorAttachments.push_back(OmegaGTE::GERenderPassDescriptor::ColorAttachment(
+                OmegaGTE::GERenderPassDescriptor::ColorAttachment::ClearColor(0.f,0.f,0.f,0.f),
+                OmegaGTE::GERenderPassDescriptor::ColorAttachment::Clear));
         desc.depthStencilAttachment.disabled = true;
         scratchCB_->startRenderPass(desc);
         applyScratchViewportAndScissor(scratchCB_);
@@ -246,8 +259,11 @@ namespace OmegaWTK::Composition {
         if(!scratchActive_ || scratchCB_ == nullptr || scratchTarget_ == nullptr){
             return;
         }
-        scratchCB_->endRenderPass();
-        scratchTarget_->submitCommandBuffer(scratchCB_);
+        scratchCB_->finishRenderPass();
+        auto & queue = owner_.commandQueue();
+        if(queue != nullptr){
+            queue->submitCommandBuffer(scratchCB_);
+        }
         scratchCB_.reset();
         scratchTarget_.reset();
         scratchWidth_  = 0;
@@ -260,23 +276,25 @@ namespace OmegaWTK::Composition {
 
     void FrameRenderPass::resumeFrameAfterScratch(SharedHandle<OmegaGTE::GEFence> & textureFence){
         auto & nativeTarget = owner_.getNativeRenderTarget();
-        if(!frameActive_ || nativeTarget == nullptr){
+        auto & queue = owner_.commandQueue();
+        if(!frameActive_ || nativeTarget == nullptr || queue == nullptr){
             return;
         }
         if(frameCB_ != nullptr){
             // Defensive: a caller already restarted the pass.
             return;
         }
-        frameCB_ = nativeTarget->commandBuffer();
+        frameCB_ = queue->getAvailableBuffer();
         if(textureFence != nullptr){
             // Wait must be registered outside a render pass.
-            nativeTarget->notifyCommandBuffer(frameCB_, textureFence);
+            queue->notifyCommandBuffer(frameCB_, textureFence);
         }
 
-        OmegaGTE::GERenderTarget::RenderPassDesc desc {};
-        desc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
-                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::ClearColor(0.f,0.f,0.f,0.f),
-                OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve));
+        OmegaGTE::GERenderPassDescriptor desc {};
+        desc.nRenderTarget = nativeTarget.get();
+        desc.colorAttachments.push_back(OmegaGTE::GERenderPassDescriptor::ColorAttachment(
+                OmegaGTE::GERenderPassDescriptor::ColorAttachment::ClearColor(0.f,0.f,0.f,0.f),
+                OmegaGTE::GERenderPassDescriptor::ColorAttachment::LoadPreserve));
         desc.depthStencilAttachment.disabled = true;
         frameCB_->startRenderPass(desc);
         applyViewportAndScissor(frameCB_);

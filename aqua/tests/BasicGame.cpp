@@ -6,18 +6,21 @@ public:
 
     void onFrame() override {
         auto &rt = renderTarget();
-        auto cmdBuf = rt->commandBuffer();
+        auto &queue = commandQueue();
+        auto cmdBuf = queue->getAvailableBuffer();
 
-        OmegaGTE::GERenderTarget::RenderPassDesc passDesc {};
-        passDesc.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+        OmegaGTE::GERenderPassDescriptor passDesc {};
+        passDesc.nRenderTarget = rt.get();
+        passDesc.colorAttachments.push_back(OmegaGTE::GERenderPassDescriptor::ColorAttachment(
             {0.1f, 0.1f, 0.1f, 1.0f},
-            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
+            OmegaGTE::GERenderPassDescriptor::ColorAttachment::Clear));
 
         cmdBuf->startRenderPass(passDesc);
-        cmdBuf->endRenderPass();
+        cmdBuf->finishRenderPass();
 
-        rt->submitCommandBuffer(cmdBuf);
-        rt->commitAndPresent();
+        queue->submitCommandBuffer(cmdBuf);
+        queue->commitToGPU();
+        rt->present();
     }
 };
 

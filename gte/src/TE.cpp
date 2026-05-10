@@ -1333,14 +1333,16 @@ void OmegaTriangulationEngineContext::extractGPUTriangulationParams(const TETria
 }
 
 SharedHandle<OmegaTriangulationEngineContext> CreateNativeRenderTargetTEContext(SharedHandle<GENativeRenderTarget> & renderTarget);
-SharedHandle<OmegaTriangulationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> & renderTarget);
+SharedHandle<OmegaTriangulationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> & renderTarget,
+                                                                                  SharedHandle<GECommandQueue> & queue);
 
 SharedHandle<OmegaTriangulationEngineContext> OmegaTriangulationEngine::createTEContextFromNativeRenderTarget(SharedHandle<GENativeRenderTarget> & renderTarget){
     return CreateNativeRenderTargetTEContext(renderTarget);
 };
 
-SharedHandle<OmegaTriangulationEngineContext> OmegaTriangulationEngine::createTEContextFromTextureRenderTarget(SharedHandle<GETextureRenderTarget> & renderTarget){
-    return CreateTextureRenderTargetTEContext(renderTarget);
+SharedHandle<OmegaTriangulationEngineContext> OmegaTriangulationEngine::createTEContextFromTextureRenderTarget(SharedHandle<GETextureRenderTarget> & renderTarget,
+                                                                                                                SharedHandle<GECommandQueue> & queue){
+    return CreateTextureRenderTargetTEContext(renderTarget, queue);
 };
 
 std::future<TETriangulationResult> OmegaTriangulationEngineContext::triangulateAsync(const TETriangulationParams &params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport){

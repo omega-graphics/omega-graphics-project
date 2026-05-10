@@ -265,18 +265,23 @@ public:
   */
   static SharedHandle<OmegaTriangulationEngine> Create();
     /**
-        Create a Triangulation Context from a GENativeRenderTarget
+        Create a Triangulation Context from a GENativeRenderTarget. Internally
+        the context binds to the render target's `presentQueue()`.
         @param[in] renderTarget
         @returns SharedHandle<OmegaTriangulationEngineContext>
     */
     SharedHandle<OmegaTriangulationEngineContext> createTEContextFromNativeRenderTarget(SharedHandle<GENativeRenderTarget> & renderTarget);
 
     /**
-        Create a Triangulation Context from a GETextureRenderTarget
+        Create a Triangulation Context from a GETextureRenderTarget.
+        Because texture render targets are queue-free, the caller must supply
+        the command queue the tessellation work should be submitted on.
         @param[in] renderTarget
+        @param[in] queue The command queue tessellation work runs on.
         @returns SharedHandle<OmegaTriangulationEngineContext>
     */
-    SharedHandle<OmegaTriangulationEngineContext> createTEContextFromTextureRenderTarget(SharedHandle<GETextureRenderTarget> & renderTarget);
+    SharedHandle<OmegaTriangulationEngineContext> createTEContextFromTextureRenderTarget(SharedHandle<GETextureRenderTarget> & renderTarget,
+                                                                                          SharedHandle<GECommandQueue> & queue);
 };
 
 _NAMESPACE_END_

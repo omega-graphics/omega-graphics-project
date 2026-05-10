@@ -1064,17 +1064,17 @@ _NAMESPACE_BEGIN_
 
 
 
-    static VkPrimitiveTopology vulkanTopologyForPolygonType(GERenderTarget::CommandBuffer::PolygonType polygonType){
+    static VkPrimitiveTopology vulkanTopologyForPolygonType(GECommandBuffer::PolygonType polygonType){
         switch(polygonType){
-            case GERenderTarget::CommandBuffer::Triangle:
+            case GECommandBuffer::Triangle:
                 return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-            case GERenderTarget::CommandBuffer::TriangleStrip:
+            case GECommandBuffer::TriangleStrip:
                 return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-            case GERenderTarget::CommandBuffer::Line:
+            case GECommandBuffer::Line:
                 return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-            case GERenderTarget::CommandBuffer::LineStrip:
+            case GECommandBuffer::LineStrip:
                 return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
-            case GERenderTarget::CommandBuffer::Point:
+            case GECommandBuffer::Point:
                 return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
         }
         return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;

@@ -42,6 +42,7 @@ static SharedHandle<OmegaGTE::GTEShaderLibrary> funcLib;
 static SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
 static SharedHandle<OmegaGTE::GERenderPipelineState> renderPipeline;
 static SharedHandle<OmegaGTE::GENativeRenderTarget> nativeRenderTarget = nullptr;
+static SharedHandle<OmegaGTE::GECommandQueue> commandQueue = nullptr;
 static SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> tessContext;
 //static OmegaGTE::SharedHandle<OmegaGTE::GETexture> texture;
 
@@ -126,22 +127,24 @@ static void render(id<MTLDevice> dev){
 
         
 
-    auto commandBuffer = nativeRenderTarget->commandBuffer();
-    
+    auto commandBuffer = commandQueue->getAvailableBuffer();
+
     NSLog(@"Command Buffer Created");
-    OmegaGTE::GERenderTarget::RenderPassDesc renderPass;
-    using RenderPassDesc = OmegaGTE::GERenderTarget::RenderPassDesc;
-    renderPass.colorAttachments.push_back(RenderPassDesc::ColorAttachment(RenderPassDesc::ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),RenderPassDesc::ColorAttachment::Clear));
+    OmegaGTE::GERenderPassDescriptor renderPass;
+    renderPass.nRenderTarget = nativeRenderTarget.get();
+    using ColorAttachment = OmegaGTE::GERenderPassDescriptor::ColorAttachment;
+    renderPass.colorAttachments.push_back(ColorAttachment(ColorAttachment::ClearColor(1.f,1.f,1.f,1.f),ColorAttachment::Clear));
     commandBuffer->startRenderPass(renderPass);
     commandBuffer->setRenderPipelineState(renderPipeline);
     commandBuffer->bindResourceAtVertexShader(vertexBuffer,0);
-    commandBuffer->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle,6,0);
-    commandBuffer->endRenderPass();
+    commandBuffer->drawPolygons(OmegaGTE::GECommandBuffer::Triangle,6,0);
+    commandBuffer->finishRenderPass();
     NSLog(@"Ended Render Pass");
-    nativeRenderTarget->submitCommandBuffer(commandBuffer);
+    commandQueue->submitCommandBuffer(commandBuffer);
     NSLog(@"Command Buffer Scheduled for Execution");
 
-    nativeRenderTarget->commitAndPresent();
+    commandQueue->commitToGPU();
+    nativeRenderTarget->present();
     NSLog(@"Presenting Frame"); 
 
 
@@ -172,7 +175,8 @@ static void render(id<MTLDevice> dev){
         OmegaGTE::NativeRenderTargetDescriptor desc{};
         desc.metalLayer = metalLayer;
 
-        nativeRenderTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
+        commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+        nativeRenderTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, commandQueue);
 
         tessContext = gte.triangulationEngine->createTEContextFromNativeRenderTarget(nativeRenderTarget);
         

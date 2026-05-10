@@ -74,6 +74,7 @@ static SharedHandle<OmegaGTE::GEBuffer> triangleBuffer;
 // Pass 2 state
 static SharedHandle<OmegaGTE::GERenderPipelineState> copyPipeline;
 static SharedHandle<OmegaGTE::GENativeRenderTarget> nativeTarget;
+static SharedHandle<OmegaGTE::GECommandQueue> commandQueue;
 static SharedHandle<OmegaGTE::GEBuffer> quadBuffer;
 
 // Sync
@@ -107,15 +108,18 @@ static void writeCopyVertex(float x, float y, float u, float v){
 }
 
 static void renderAndBlit(int w, int h){
+    using ColorAttachment = OmegaGTE::GERenderPassDescriptor::ColorAttachment;
+
     // ---- Pass 1: render colored triangle to offscreen texture ----
     std::cout << "[BlitTest] Pass 1: render triangle to offscreen texture" << std::endl;
     {
-        auto cb = textureTarget->commandBuffer();
+        auto cb = commandQueue->getAvailableBuffer();
 
-        OmegaGTE::GERenderTarget::RenderPassDesc rp {};
-        rp.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+        OmegaGTE::GERenderPassDescriptor rp {};
+        rp.tRenderTarget = textureTarget.get();
+        rp.colorAttachments.push_back(ColorAttachment(
             {0.f, 0.f, 0.f, 1.f},
-            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
+            ColorAttachment::Clear));
         rp.depthStencilAttachment.disabled = true;
 
         OmegaGTE::GEViewport vp {0, 0, (float)w, (float)h, 0, 1.f};
@@ -126,11 +130,11 @@ static void renderAndBlit(int w, int h){
         cb->setViewports({vp});
         cb->setScissorRects({sr});
         cb->bindResourceAtVertexShader(triangleBuffer, 0);
-        cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 3, 0);
-        cb->endRenderPass();
+        cb->drawPolygons(OmegaGTE::GECommandBuffer::Triangle, 3, 0);
+        cb->finishRenderPass();
 
-        textureTarget->submitCommandBuffer(cb, fence);
-        textureTarget->commit();
+        commandQueue->submitCommandBuffer(cb, fence);
+        commandQueue->commitToGPU();
         std::cout << "[BlitTest] Pass 1: committed" << std::endl;
     }
 
@@ -140,12 +144,13 @@ static void renderAndBlit(int w, int h){
     std::cout << "[BlitTest] Pass 2: blit texture to swapchain" << std::endl;
     {
 
-        auto cb = nativeTarget->commandBuffer();
+        auto cb = commandQueue->getAvailableBuffer();
 
-        OmegaGTE::GERenderTarget::RenderPassDesc rp {};
-        rp.colorAttachments.push_back(OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment(
+        OmegaGTE::GERenderPassDescriptor rp {};
+        rp.nRenderTarget = nativeTarget.get();
+        rp.colorAttachments.push_back(ColorAttachment(
             {1.f, 0.f, 1.f, 1.f},  // magenta clear — visible if quad doesn't draw
-            OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment::Clear));
+            ColorAttachment::Clear));
         rp.depthStencilAttachment.disabled = true;
 
         OmegaGTE::GEViewport vp {0, 0, (float)w, (float)h, 0, 1.f};
@@ -160,11 +165,12 @@ static void renderAndBlit(int w, int h){
         cb->setScissorRects({sr});
         cb->bindResourceAtVertexShader(quadBuffer, 1);
         cb->bindResourceAtFragmentShader(tex, 2);
-        cb->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
-        cb->endRenderPass();
+        cb->drawPolygons(OmegaGTE::GECommandBuffer::Triangle, 6, 0);
+        cb->finishRenderPass();
 
-        nativeTarget->submitCommandBuffer(cb);
-        nativeTarget->commitAndPresent();
+        commandQueue->submitCommandBuffer(cb);
+        commandQueue->commitToGPU();
+        nativeTarget->present();
         std::cout << "[BlitTest] Pass 2: presented" << std::endl;
     }
 }
@@ -194,7 +200,8 @@ static void start_application(GtkApplication *app, gpointer){
     OmegaGTE::NativeRenderTargetDescriptor nDesc {};
     nDesc.x_display = x_display;
     nDesc.x_window = x_window;
-    nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(nDesc);
+    commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+    nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(nDesc, commandQueue);
     if(!nativeTarget){
         std::cerr << "[BlitTest] FAILED to create native render target" << std::endl;
         return;

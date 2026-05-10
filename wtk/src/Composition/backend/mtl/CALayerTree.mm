@@ -118,8 +118,12 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
              std::clamp(saneRect.h * layer.contentsScale,static_cast<CGFloat>(1.f),kMaxDrawableDimension));
 
      // Create the native render target — owned by ViewPresentTarget, not the Visual's context.
+     // The compositor owns one command queue per window; the swap chain is
+     // bound to it as the present queue, and the same queue is reused for
+     // any per-layer scratch texture targets the compositor allocates.
+     auto presentQueue = gte.graphicsEngine->makeCommandQueue(64);
      OmegaGTE::NativeRenderTargetDescriptor nativeRenderTargetDescriptor {false,layer};
-     auto nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(nativeRenderTargetDescriptor);
+     auto nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(nativeRenderTargetDescriptor, presentQueue);
 
      CGFloat scale = layer.contentsScale;
      if(scale <= 0.f || !std::isfinite(static_cast<double>(scale))){
@@ -133,7 +137,7 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
 
      // Root visual renders directly to the native drawable (Phase A-1).
      Composition::Rect r {saneRect};
-     auto compTarget = std::make_unique<BackendRenderTargetContext>(r,nativeTarget,(float)scale);
+     auto compTarget = std::make_unique<BackendRenderTargetContext>(r,nativeTarget,std::move(presentQueue),(float)scale);
 
      return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::RootVisual(sanePos,std::move(compTarget),layer));
  };
@@ -146,8 +150,9 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
 
      CGFloat scale = safeScale();
      SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
+     SharedHandle<OmegaGTE::GECommandQueue> nullQueue = nullptr;
      Composition::Rect r {saneRect};
-     auto compTarget = std::make_unique<BackendRenderTargetContext>(r,nullNative,(float)scale);
+     auto compTarget = std::make_unique<BackendRenderTargetContext>(r,nullNative,nullQueue,(float)scale);
 
      return std::shared_ptr<BackendVisualTree::Visual>(new MTLCALayerTree::SurfaceVisual(sanePos,std::move(compTarget)));
  };

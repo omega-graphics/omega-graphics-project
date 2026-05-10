@@ -841,7 +841,7 @@ shared dispatch skips its `<rename>(args)` fallback.
   funcs to avoid stdlib collisions; HLSL has the same exposure but
   hasn't adopted the prefix yet. Same separate-PR rationale: it's a
   source-shape change that the existing HLSL goldens would need to
-  re-baseline.
+  re-baseline. (This should apply to all backends.)
 
 #### 5.1.1 `saturate` — backend mapping and the name-collision risk
 

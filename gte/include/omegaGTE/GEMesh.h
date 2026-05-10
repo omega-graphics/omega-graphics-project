@@ -32,7 +32,7 @@ _NAMESPACE_BEGIN_
     };
 
     /// @brief Primitive topology for a GEMesh. Maps to
-    /// `GERenderTarget::CommandBuffer::PolygonType` at draw time.
+    /// `GECommandBuffer::PolygonType` at draw time.
     enum class GEMeshTopology : uint8_t {
         Triangle,
         TriangleStrip,

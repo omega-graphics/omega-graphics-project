@@ -1161,11 +1161,11 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             NSSmartPtr heapPtr(NSObjectHandle{NSOBJECT_CPP_BRIDGE mtlHeap});
             return SharedHandle<GEHeap>(new GEMetalHeap(metalDevice, heapPtr));
         };
-        SharedHandle<GENativeRenderTarget> makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc) override{
+        SharedHandle<GENativeRenderTarget> makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc,
+                                                                   SharedHandle<GECommandQueue> presentQueue) override{
             metalDevice.assertExists();
             desc.metalLayer.device = NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle());
-            auto commandQueue = makeCommandQueue(64);
-            return std::shared_ptr<GENativeRenderTarget>(new GEMetalNativeRenderTarget(commandQueue,desc.metalLayer));
+            return std::shared_ptr<GENativeRenderTarget>(new GEMetalNativeRenderTarget(std::move(presentQueue),desc.metalLayer));
         };
 
         SharedHandle<GERenderPipelineState> makeRenderPipelineState(RenderPipelineDescriptor &desc) override{
@@ -1333,8 +1333,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
                 texture = makeTexture(textureDescriptor);
             }
-            auto commandQueue = makeCommandQueue(64);
-            return SharedHandle<GETextureRenderTarget>(new GEMetalTextureRenderTarget(texture,commandQueue));
+            return SharedHandle<GETextureRenderTarget>(new GEMetalTextureRenderTarget(texture));
         };
         SharedHandle<GETexture> makeTexture(const TextureDescriptor &desc) override{
             assert(desc.sampleCount >= 1 && "Can only create textures with 1 or more samples");

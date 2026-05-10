@@ -226,17 +226,19 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     renderPipelineState = gte.graphicsEngine->makeRenderPipelineState(pipelineDesc);
        
-    renderTarget = gte.graphicsEngine->makeNativeRenderTarget(renderTargetDesc);
+    auto commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+    renderTarget = gte.graphicsEngine->makeNativeRenderTarget(renderTargetDesc, commandQueue);
 
     tessContext = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);
 
     tessalate();
 
 
-    auto commandBuffer = renderTarget->commandBuffer();
+    auto commandBuffer = commandQueue->getAvailableBuffer();
 
-    OmegaGTE::GERenderTarget::RenderPassDesc renderPassDesc;
-    using ColorAttachment = OmegaGTE::GERenderTarget::RenderPassDesc::ColorAttachment;
+    OmegaGTE::GERenderPassDescriptor renderPassDesc;
+    renderPassDesc.nRenderTarget = renderTarget.get();
+    using ColorAttachment = OmegaGTE::GERenderPassDescriptor::ColorAttachment;
     renderPassDesc.colorAttachments.push_back(ColorAttachment(ColorAttachment::ClearColor(0.f,1.f,0.f,1.f),ColorAttachment::Clear));
 
     OmegaGTE::GEViewport viewport {0,0,300,300,0,1.f};
@@ -248,12 +250,13 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     commandBuffer->bindResourceAtFragmentShader(texture,1);
     commandBuffer->setScissorRects({scissorRect});
     commandBuffer->setViewports({viewport});
-    commandBuffer->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle,6,0);
-    commandBuffer->endRenderPass();
+    commandBuffer->drawPolygons(OmegaGTE::GECommandBuffer::Triangle,6,0);
+    commandBuffer->finishRenderPass();
 
-    renderTarget->submitCommandBuffer(commandBuffer);
+    commandQueue->submitCommandBuffer(commandBuffer);
 
-    renderTarget->commitAndPresent();
+    commandQueue->commitToGPU();
+    renderTarget->present();
 
     ShowWindow(hwnd,nShowCmd);
 

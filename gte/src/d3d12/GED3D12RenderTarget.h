@@ -11,7 +11,7 @@ _NAMESPACE_BEGIN_
     class GED3D12NativeRenderTarget : public GENativeRenderTarget {
         GED3D12Engine *engine;
         ComPtr<IDXGISwapChain3> swapChain;
-        SharedHandle<GECommandQueue> commandQueue;
+        SharedHandle<GECommandQueue> presentQueue_;
         std::uint64_t traceResourceId = 0;
     public:
         HWND hwnd;
@@ -19,22 +19,16 @@ _NAMESPACE_BEGIN_
         void resizeSwapChain(unsigned int width, unsigned int height) override;
         void waitForGPU() override;
         void waitForFence(SharedHandle<GEFence> & fence) override;
-        SharedHandle<CommandBuffer> commandBuffer() override;
-        void commitAndPresent() override;
-        void notifyCommandBuffer(SharedHandle<CommandBuffer> & cb,SharedHandle<GEFence> & waitFence) override;
-        void submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer) override;
-        void submitCommandBuffer(SharedHandle<CommandBuffer> & cb,SharedHandle<GEFence> & signalFence) override;
-         ComPtr<ID3D12DescriptorHeap> rtvDescHeap;
-         ComPtr<ID3D12DescriptorHeap> dsvDescHeap;
-          unsigned frameIndex;
+        SharedHandle<GECommandQueue> presentQueue() const override { return presentQueue_; }
+        void present() override;
+        ComPtr<ID3D12DescriptorHeap> rtvDescHeap;
+        ComPtr<ID3D12DescriptorHeap> dsvDescHeap;
+        unsigned frameIndex;
         std::vector<ID3D12Resource *> renderTargets;
-        void *nativeCommandQueue() override{
-            return commandQueue->native();
-        }
         GED3D12NativeRenderTarget(IDXGISwapChain3 * swapChain,
                                  ID3D12DescriptorHeap * descriptorHeapForRenderTarget,
                                  ID3D12DescriptorHeap * dsvDescHeap,
-                                 SharedHandle<GECommandQueue> commandQueue,
+                                 SharedHandle<GECommandQueue> presentQueue,
                                  unsigned frameIndex,
                                  ID3D12Resource *const *renderTargets,
                                  size_t renderTargetViewCount,HWND hwnd);
@@ -43,26 +37,14 @@ _NAMESPACE_BEGIN_
 
     class GED3D12TextureRenderTarget : public GETextureRenderTarget {
         GED3D12Engine *engine;
-        SharedHandle<GED3D12CommandQueue> commandQueue;
         std::uint64_t traceResourceId = 0;
     public:
         SharedHandle<GED3D12Texture> texture;
-        explicit GED3D12TextureRenderTarget(
-                SharedHandle<GED3D12Texture> texture,
-                SharedHandle<GECommandQueue> & commandQueue);
+        explicit GED3D12TextureRenderTarget(SharedHandle<GED3D12Texture> texture);
 
         ~GED3D12TextureRenderTarget() override;
 
-        void commit() override;
-        SharedHandle<CommandBuffer> commandBuffer() override;
-        void *nativeCommandQueue() override;
-        void notifyCommandBuffer(SharedHandle<CommandBuffer> & cb,SharedHandle<GEFence> & waitFence) override;
-        void submitCommandBuffer(SharedHandle<CommandBuffer> & cb) override;
-        void submitCommandBuffer(SharedHandle<CommandBuffer> & cb,SharedHandle<GEFence> & signalFence) override;
         SharedHandle<GETexture> underlyingTexture() override;
-        void waitForGPU() override;
-        void signalFence(SharedHandle<GEFence> & fence) override;
-
     };
 _NAMESPACE_END_
 

@@ -360,11 +360,14 @@ public:
 
     std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams &params,
             GTEPolygonFrontFaceRotation direction, GEViewport *viewport) override {
-        if (!pip.ready) {
-            auto *queue = (ID3D12CommandQueue *)target->nativeCommandQueue();
-            ComPtr<ID3D12Device> dev;
-            queue->GetDevice(IID_PPV_ARGS(&dev));
-            pip.init(dev.Get(), queue);
+        if (!pip.ready && target) {
+            auto presentQueue = target->presentQueue();
+            if(presentQueue){
+                auto *queue = (ID3D12CommandQueue *)presentQueue->native();
+                ComPtr<ID3D12Device> dev;
+                queue->GetDevice(IID_PPV_ARGS(&dev));
+                pip.init(dev.Get(), queue);
+            }
         }
         GPUTriangulationExtractedParams ep;
         extractGPUTriangulationParams(params, ep);
@@ -379,6 +382,7 @@ public:
 
 class D3D12TextureRenderTargetTEContext : public OmegaTriangulationEngineContext {
     SharedHandle<GED3D12TextureRenderTarget> target;
+    SharedHandle<GECommandQueue> queue;
     D3D12TessPipelines pip;
 public:
     GEViewport getEffectiveViewport() override {
@@ -398,11 +402,11 @@ public:
 
     std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams &params,
             GTEPolygonFrontFaceRotation direction, GEViewport *viewport) override {
-        if (!pip.ready) {
-            auto *queue = (ID3D12CommandQueue *)target->nativeCommandQueue();
+        if (!pip.ready && queue) {
+            auto *q = (ID3D12CommandQueue *)queue->native();
             ComPtr<ID3D12Device> dev;
-            queue->GetDevice(IID_PPV_ARGS(&dev));
-            pip.init(dev.Get(), queue);
+            q->GetDevice(IID_PPV_ARGS(&dev));
+            pip.init(dev.Get(), q);
         }
         GPUTriangulationExtractedParams ep;
         extractGPUTriangulationParams(params, ep);
@@ -410,8 +414,9 @@ public:
         return d3d12GpuDispatch(ep, vp, arcStep, pip, this, params, direction, viewport);
     }
 
-    explicit D3D12TextureRenderTargetTEContext(const SharedHandle<GED3D12TextureRenderTarget> &target)
-        : target(target) {}
+    explicit D3D12TextureRenderTargetTEContext(const SharedHandle<GED3D12TextureRenderTarget> &target,
+                                                SharedHandle<GECommandQueue> queue)
+        : target(target), queue(std::move(queue)) {}
     ~D3D12TextureRenderTargetTEContext() override = default;
 };
 
@@ -419,8 +424,9 @@ SharedHandle<OmegaTriangulationEngineContext> CreateNativeRenderTargetTEContext(
     return std::make_shared<D3D12NativeRenderTargetTEContext>(std::dynamic_pointer_cast<GED3D12NativeRenderTarget>(renderTarget));
 }
 
-SharedHandle<OmegaTriangulationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> &renderTarget) {
-    return std::make_shared<D3D12TextureRenderTargetTEContext>(std::dynamic_pointer_cast<GED3D12TextureRenderTarget>(renderTarget));
+SharedHandle<OmegaTriangulationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> &renderTarget,
+                                                                                  SharedHandle<GECommandQueue> &queue) {
+    return std::make_shared<D3D12TextureRenderTargetTEContext>(std::dynamic_pointer_cast<GED3D12TextureRenderTarget>(renderTarget), queue);
 }
 
 _NAMESPACE_END_

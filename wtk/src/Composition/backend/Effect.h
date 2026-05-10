@@ -28,6 +28,7 @@ namespace OmegaWTK::Composition {
     public:
       INTERFACE_METHOD void applyEffects(SharedHandle<OmegaGTE::GETexture> & dest,
                                          SharedHandle<OmegaGTE::GETextureRenderTarget> & textureTarget,
+                                         SharedHandle<OmegaGTE::GECommandQueue> & queue,
                                          OmegaCommon::Vector<CanvasEffect> & effects,
                                          unsigned texWidth,
                                          unsigned texHeight,

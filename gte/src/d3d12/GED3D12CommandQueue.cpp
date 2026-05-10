@@ -1242,17 +1242,17 @@ void GED3D12CommandBuffer::setVertexBuffer(SharedHandle<GEBuffer> &buffer) {
     commandList->IASetVertexBuffers(0, 1, &view);
 };
 
-static D3D12_PRIMITIVE_TOPOLOGY d3d12TopologyForPolygonType(GERenderTarget::CommandBuffer::PolygonType polygonType) {
+static D3D12_PRIMITIVE_TOPOLOGY d3d12TopologyForPolygonType(GECommandBuffer::PolygonType polygonType) {
     switch (polygonType) {
-        case GERenderTarget::CommandBuffer::Triangle:
+        case GECommandBuffer::Triangle:
             return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-        case GERenderTarget::CommandBuffer::TriangleStrip:
+        case GECommandBuffer::TriangleStrip:
             return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
-        case GERenderTarget::CommandBuffer::Line:
+        case GECommandBuffer::Line:
             return D3D_PRIMITIVE_TOPOLOGY_LINELIST;
-        case GERenderTarget::CommandBuffer::LineStrip:
+        case GECommandBuffer::LineStrip:
             return D3D_PRIMITIVE_TOPOLOGY_LINESTRIP;
-        case GERenderTarget::CommandBuffer::Point:
+        case GECommandBuffer::Point:
             return D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
     }
     return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;

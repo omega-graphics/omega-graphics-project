@@ -220,9 +220,12 @@ class MetalNativeRenderTargetTEContext : public OmegaTriangulationEngineContext 
 public:
     std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams &params,
             GTEPolygonFrontFaceRotation ff, GEViewport *viewport) override {
-        if (!pip.ready) {
-            id<MTLCommandQueue> q = (id<MTLCommandQueue>)target->nativeCommandQueue();
-            pip.init(q.device, q);
+        if (!pip.ready && target) {
+            auto presentQueue = target->presentQueue();
+            if(presentQueue){
+                id<MTLCommandQueue> q = (id<MTLCommandQueue>)presentQueue->native();
+                pip.init(q.device, q);
+            }
         }
         GPUTriangulationExtractedParams ep; extractGPUTriangulationParams(params, ep);
         GEViewport vp = viewport ? *viewport : GEViewport{0,0,1,1,0,1};
@@ -250,12 +253,13 @@ public:
 
 class MetalTextureRenderTargetTEContext : public OmegaTriangulationEngineContext {
     SharedHandle<GEMetalTextureRenderTarget> target;
+    SharedHandle<GECommandQueue> queue;
     Pipelines pip;
 public:
     std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams &params,
             GTEPolygonFrontFaceRotation ff, GEViewport *viewport) override {
-        if (!pip.ready) {
-            id<MTLCommandQueue> q = (id<MTLCommandQueue>)target->nativeCommandQueue();
+        if (!pip.ready && queue) {
+            id<MTLCommandQueue> q = (id<MTLCommandQueue>)queue->native();
             pip.init(q.device, q);
         }
         GPUTriangulationExtractedParams ep; extractGPUTriangulationParams(params, ep);
@@ -280,7 +284,8 @@ public:
         auto vp = getEffectiveViewport();
         translateCoordsDefaultImpl(x,y,z,&vp,xr,yr,zr);
     }
-    MetalTextureRenderTargetTEContext(SharedHandle<GEMetalTextureRenderTarget> t) : target(t) {}
+    MetalTextureRenderTargetTEContext(SharedHandle<GEMetalTextureRenderTarget> t,
+                                       SharedHandle<GECommandQueue> q) : target(std::move(t)), queue(std::move(q)) {}
 };
 
 
@@ -289,9 +294,10 @@ SharedHandle<OmegaTriangulationEngineContext> CreateNativeRenderTargetTEContext(
         std::dynamic_pointer_cast<GEMetalNativeRenderTarget>(renderTarget));
 }
 
-SharedHandle<OmegaTriangulationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> &renderTarget) {
+SharedHandle<OmegaTriangulationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> &renderTarget,
+                                                                                  SharedHandle<GECommandQueue> &queue) {
     return (SharedHandle<OmegaTriangulationEngineContext>) new MetalTextureRenderTargetTEContext(
-        std::dynamic_pointer_cast<GEMetalTextureRenderTarget>(renderTarget));
+        std::dynamic_pointer_cast<GEMetalTextureRenderTarget>(renderTarget), queue);
 }
 
 _NAMESPACE_END_

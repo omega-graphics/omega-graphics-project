@@ -26,7 +26,8 @@ int main(int argc, const char * argv[]) {
 
         OmegaGTE::NativeRenderTargetDescriptor rtDesc;
         rtDesc.metalLayer = layer;
-        auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc);
+        auto commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+        auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc, commandQueue);
 
         auto teCtx = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);
         assert(teCtx && "Failed to create TE context");

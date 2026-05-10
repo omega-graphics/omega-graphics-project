@@ -43,6 +43,7 @@ static SharedHandle<OmegaGTE::GTEShaderLibrary> funcLib;
 static SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
 static SharedHandle<OmegaGTE::GERenderPipelineState> renderPipeline;
 static SharedHandle<OmegaGTE::GENativeRenderTarget> nativeRenderTarget = nullptr;
+static SharedHandle<OmegaGTE::GECommandQueue> commandQueue = nullptr;
 static SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> tessContext;
 
 static void formatGPoint3D(std::ostream &os, OmegaGTE::GPoint3D &pt){
@@ -105,13 +106,14 @@ static void tessellateAndRender(int viewWidth, int viewHeight){
 
     bufferWriter->flush();
 
-    auto commandBuffer = nativeRenderTarget->commandBuffer();
+    auto commandBuffer = commandQueue->getAvailableBuffer();
 
-    OmegaGTE::GERenderTarget::RenderPassDesc renderPass;
-    using RenderPassDesc = OmegaGTE::GERenderTarget::RenderPassDesc;
-    renderPass.colorAttachments.push_back(RenderPassDesc::ColorAttachment(
-        RenderPassDesc::ColorAttachment::ClearColor(1.f, 1.f, 1.f, 1.f),
-        RenderPassDesc::ColorAttachment::Clear));
+    OmegaGTE::GERenderPassDescriptor renderPass;
+    renderPass.nRenderTarget = nativeRenderTarget.get();
+    using ColorAttachment = OmegaGTE::GERenderPassDescriptor::ColorAttachment;
+    renderPass.colorAttachments.push_back(ColorAttachment(
+        ColorAttachment::ClearColor(1.f, 1.f, 1.f, 1.f),
+        ColorAttachment::Clear));
 
     OmegaGTE::GEViewport viewport{0, 0, (float)viewWidth, (float)viewHeight, 0, 1.f};
     OmegaGTE::GEScissorRect scissorRect{0, 0, (float)viewWidth, (float)viewHeight};
@@ -121,11 +123,12 @@ static void tessellateAndRender(int viewWidth, int viewHeight){
     commandBuffer->bindResourceAtVertexShader(vertexBuffer, 0);
     commandBuffer->setViewports({viewport});
     commandBuffer->setScissorRects({scissorRect});
-    commandBuffer->drawPolygons(OmegaGTE::GERenderTarget::CommandBuffer::Triangle, 6, 0);
-    commandBuffer->endRenderPass();
+    commandBuffer->drawPolygons(OmegaGTE::GECommandBuffer::Triangle, 6, 0);
+    commandBuffer->finishRenderPass();
 
-    nativeRenderTarget->submitCommandBuffer(commandBuffer);
-    nativeRenderTarget->commitAndPresent();
+    commandQueue->submitCommandBuffer(commandBuffer);
+    commandQueue->commitToGPU();
+    nativeRenderTarget->present();
 
     std::cout << "Frame presented" << std::endl;
 }
@@ -155,7 +158,8 @@ static void start_application(GtkApplication *app, gpointer user_data){
     desc.x_display = x_display;
     desc.x_window = x_window;
 
-    nativeRenderTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
+    commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+    nativeRenderTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, commandQueue);
     tessContext = gte.triangulationEngine->createTEContextFromNativeRenderTarget(nativeRenderTarget);
 
     tessellateAndRender(pixel_width, pixel_height);

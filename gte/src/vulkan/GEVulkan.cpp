@@ -2680,7 +2680,8 @@ _NAMESPACE_BEGIN_
         return result;
     }
 
-    SharedHandle<GENativeRenderTarget> GEVulkanEngine::makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc){
+    SharedHandle<GENativeRenderTarget> GEVulkanEngine::makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc,
+                                                                               SharedHandle<GECommandQueue> presentQueue){
         if(instance == VK_NULL_HANDLE || device == VK_NULL_HANDLE || queueFamilyIndices.empty()){
             std::cerr << "Vulkan native render target creation failed: Vulkan engine is not initialized." << std::endl;
             return nullptr;
@@ -2866,6 +2867,7 @@ _NAMESPACE_BEGIN_
 
         auto result = std::shared_ptr<GEVulkanNativeRenderTarget>(new GEVulkanNativeRenderTarget(
                 this,
+                std::move(presentQueue),
                 surfaceKhr,
                 swapchainKhr,
                 selectedSurfaceFormat.format,

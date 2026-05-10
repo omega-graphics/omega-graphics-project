@@ -397,12 +397,21 @@ _NAMESPACE_BEGIN_
         /**
           @brief Creates a GENativeRenderTarget from a NativeRenderTargetDescriptor.
           @param[in] desc The Native Render Target Descriptor
+          @param[in] presentQueue The command queue the swap chain will be created
+                     against and that `present()` will submit on. On D3D12 / Vulkan
+                     the swap chain is bound to this queue at creation time and
+                     cannot be re-targeted. On Metal the queue is recorded so the
+                     engine can encode the `presentDrawable:` call.
           @returns SharedHandle<GENativeRenderTarget>
          */
-        virtual SharedHandle<GENativeRenderTarget> makeNativeRenderTarget(const NativeRenderTargetDescriptor & desc) = 0;
+        virtual SharedHandle<GENativeRenderTarget>
+            makeNativeRenderTarget(const NativeRenderTargetDescriptor & desc,
+                                    SharedHandle<GECommandQueue> presentQueue) = 0;
 
         /**
           @brief Creates a GETextureRenderTarget from a TextureRenderTargetDescriptor.
+          Texture render targets do not own a queue — whichever queue the user
+          submits draw/blit work on is responsible for the underlying texture.
           @param[in] desc The Texture Render Target Descriptor
           @returns SharedHandle<GETextureRenderTarget>
          */

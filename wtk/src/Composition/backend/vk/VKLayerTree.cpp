@@ -84,24 +84,27 @@ namespace OmegaWTK::Composition {
                 // partial root visual; the compositor's first-frame
                 // fallback path then re-runs this through resolveDeferredNativeTarget
                 // → createRootVisual after the window has been displayed.
+                SharedHandle<OmegaGTE::GECommandQueue> presentQueue;
                 if(outPresentTarget.nativeTarget == nullptr){
                     OmegaGTE::NativeRenderTargetDescriptor desc {};
                     if(resolveNativeRenderTargetDescriptor(rect,desc)){
-                        outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
+                        presentQueue = gte.graphicsEngine->makeCommandQueue(64);
+                        outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, presentQueue);
                         outPresentTarget.backingWidth = toBackingDimension(rect.w);
                         outPresentTarget.backingHeight = toBackingDimension(rect.h);
                     }
                 }
 
                 // Root visual renders directly to the native drawable (Phase A-1).
-                auto context = std::make_unique<BackendRenderTargetContext>(rect,outPresentTarget.nativeTarget,1.f);
+                auto context = std::make_unique<BackendRenderTargetContext>(rect,outPresentTarget.nativeTarget,std::move(presentQueue),1.f);
                 return Core::SharedPtr<BackendVisualTree::Visual>(new Visual(pos,std::move(context)));
             }
 
             Core::SharedPtr<BackendVisualTree::Visual> makeSurfaceVisual(
                     Composition::Rect &rect,Composition::Point2D &pos) override {
                 SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
-                auto context = std::make_unique<BackendRenderTargetContext>(rect,nullNative,1.f);
+                SharedHandle<OmegaGTE::GECommandQueue> nullQueue = nullptr;
+                auto context = std::make_unique<BackendRenderTargetContext>(rect,nullNative,nullQueue,1.f);
                 return Core::SharedPtr<BackendVisualTree::Visual>(new Visual(pos,std::move(context)));
             }
 
@@ -116,9 +119,12 @@ namespace OmegaWTK::Composition {
                 Composition::Rect r = view->getRect();
                 OmegaGTE::NativeRenderTargetDescriptor desc {};
                 if(resolveNativeRenderTargetDescriptor(r,desc)){
-                    outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
+                    auto presentQueue = gte.graphicsEngine->makeCommandQueue(64);
+                    outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, presentQueue);
                     outPresentTarget.backingWidth = toBackingDimension(r.w);
                     outPresentTarget.backingHeight = toBackingDimension(r.h);
+                    // Note: deferred resolve doesn't update the BackendRenderTargetContext;
+                    // see VKLayerTree's first-frame fallback for where the queue is wired.
                 }
                 else if(!warnedMissingNativeHandle){
                     // Deferred resolve failed too — the GdkWindow still

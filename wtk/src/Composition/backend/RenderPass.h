@@ -48,7 +48,7 @@ namespace OmegaWTK::Composition {
         /// CB or the per-layer scratch CB), so the scope is just a
         /// command-buffer handle for the caller's draw recording.
         struct DrawScope {
-            SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> cb;
+            SharedHandle<OmegaGTE::GECommandBuffer> cb;
         };
 
     private:
@@ -56,7 +56,7 @@ namespace OmegaWTK::Composition {
 
         BackendRenderTargetContext & owner_;
 
-        SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> frameCB_;
+        SharedHandle<OmegaGTE::GECommandBuffer> frameCB_;
         bool frameActive_       = false;
         PipelineKind lastPipelineKind_ = PipelineKind::None;
         ViewportOverride viewportOverride_;
@@ -69,7 +69,7 @@ namespace OmegaWTK::Composition {
         /// render pass is resumed in `endScratchPass()` with `LoadPreserve`
         /// so primitives drawn before the scratch interlude survive.
         SharedHandle<OmegaGTE::GERenderTarget> scratchTarget_;
-        SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> scratchCB_;
+        SharedHandle<OmegaGTE::GECommandBuffer> scratchCB_;
         unsigned scratchWidth_  = 0;
         unsigned scratchHeight_ = 0;
         bool scratchActive_ = false;
@@ -77,8 +77,8 @@ namespace OmegaWTK::Composition {
         /// Apply the current viewport-override (or the default backing-sized
         /// viewport) and matching scissor to `cb`. Used at every
         /// startRenderPass site in this class.
-        void applyViewportAndScissor(SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> & cb);
-        void applyScratchViewportAndScissor(SharedHandle<OmegaGTE::GERenderTarget::CommandBuffer> & cb);
+        void applyViewportAndScissor(SharedHandle<OmegaGTE::GECommandBuffer> & cb);
+        void applyScratchViewportAndScissor(SharedHandle<OmegaGTE::GECommandBuffer> & cb);
     public:
         explicit FrameRenderPass(BackendRenderTargetContext & owner);
 

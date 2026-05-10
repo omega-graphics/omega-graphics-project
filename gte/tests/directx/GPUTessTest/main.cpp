@@ -31,7 +31,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     OmegaGTE::NativeRenderTargetDescriptor rtDesc{};
     rtDesc.isHwnd = true;
     rtDesc.hwnd = hwnd;
-    auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc);
+    auto commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+    auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc, commandQueue);
 
     auto teCtx = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);
     assert(teCtx && "Failed to create TE context");

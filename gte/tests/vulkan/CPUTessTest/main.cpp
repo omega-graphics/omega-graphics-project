@@ -114,7 +114,8 @@ static void activate(GtkApplication *app, gpointer user_data){
     OmegaGTE::NativeRenderTargetDescriptor rtDesc{};
     rtDesc.x_display = x_display;
     rtDesc.x_window = x_window;
-    auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc);
+    auto commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+    auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc, commandQueue);
 
     auto teCtx = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);
     assert(teCtx && "Failed to create TE context");

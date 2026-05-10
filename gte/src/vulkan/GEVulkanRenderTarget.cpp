@@ -5,6 +5,7 @@
 _NAMESPACE_BEGIN_
 
 GEVulkanNativeRenderTarget::GEVulkanNativeRenderTarget(GEVulkanEngine *parentEngine,
+                                                       SharedHandle<GECommandQueue> presentQueue,
                                                        VkSurfaceKHR &surface,
                                                        VkSwapchainKHR &swapchainKHR,
                                                        VkFormat & surfaceFormat,
@@ -57,7 +58,7 @@ GEVulkanNativeRenderTarget::GEVulkanNativeRenderTarget(GEVulkanEngine *parentEng
         frameViews.push_back(view);
     }
 
-    commandQueue = std::dynamic_pointer_cast<GEVulkanCommandQueue>(this->parentEngine->makeCommandQueue(100));
+    commandQueue = std::dynamic_pointer_cast<GEVulkanCommandQueue>(presentQueue);
 
     VkSemaphoreCreateInfo semaphoreCreateInfo {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     semaphoreCreateInfo.pNext = nullptr;
@@ -99,26 +100,11 @@ PixelFormat GEVulkanNativeRenderTarget::pixelFormat() {
     }
 }
 
-SharedHandle<GERenderTarget::CommandBuffer> GEVulkanNativeRenderTarget::commandBuffer() {
-    return SharedHandle<GERenderTarget::CommandBuffer>(new GERenderTarget::CommandBuffer(this,
-                                                                                         GERenderTarget::CommandBuffer::GERTType::Native,
-                                                                                         commandQueue->getAvailableBuffer()));
+SharedHandle<GECommandQueue> GEVulkanNativeRenderTarget::presentQueue() const {
+    return std::static_pointer_cast<GECommandQueue>(commandQueue);
 }
 
-void GEVulkanNativeRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> &commandBuffer) {
-    if(commandBuffer->commandBuffer)
-        commandQueue->submitCommandBuffer(commandBuffer->commandBuffer);
-}
-
-void GEVulkanNativeRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence){
-    commandQueue->submitCommandBuffer(commandBuffer->commandBuffer,fence);
-}
-
-void GEVulkanNativeRenderTarget::notifyCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence){
-    commandQueue->notifyCommandBuffer(commandBuffer->commandBuffer,fence);
-}
-
-void GEVulkanNativeRenderTarget::commitAndPresent() {
+void GEVulkanNativeRenderTarget::present() {
     if(parentEngine == nullptr || parentEngine->device == VK_NULL_HANDLE || commandQueue == nullptr || swapchainKHR == VK_NULL_HANDLE){
         return;
     }
@@ -132,7 +118,7 @@ void GEVulkanNativeRenderTarget::commitAndPresent() {
     presentInfoKhr.pSwapchains = &swapchainKHR;
     presentInfoKhr.waitSemaphoreCount = 0;
     presentInfoKhr.pWaitSemaphores = nullptr;
-   
+
 
     commandQueue->commitToGPUPresent(&presentInfoKhr);
     ResourceTracking::Event presentEvent {};
@@ -224,7 +210,6 @@ GEVulkanTextureRenderTarget::GEVulkanTextureRenderTarget(GEVulkanEngine * engine
                                 VkFramebuffer & framebuffer):parentEngine(engine),
                                                              texture(texture),
                                                              frameBuffer(framebuffer){
-    commandQueue = std::dynamic_pointer_cast<GEVulkanCommandQueue>(parentEngine->makeCommandQueue(100));
     traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
     ResourceTracking::Tracker::instance().emit(
             ResourceTracking::EventType::Create,
@@ -236,37 +221,13 @@ GEVulkanTextureRenderTarget::GEVulkanTextureRenderTarget(GEVulkanEngine * engine
             texture != nullptr ? static_cast<float>(texture->descriptor.height) : -1.f);
 }
 
-SharedHandle<GERenderTarget::CommandBuffer> GEVulkanTextureRenderTarget::commandBuffer(){
-    return SharedHandle<GERenderTarget::CommandBuffer>(new GERenderTarget::CommandBuffer(this,
-        GERenderTarget::CommandBuffer::GERTType::Texture,
-        commandQueue->getAvailableBuffer()));
-}
-
 SharedHandle<GETexture> GEVulkanTextureRenderTarget::underlyingTexture(){
     return texture;
-}
-
-void GEVulkanTextureRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> &commandBuffer){
-    commandQueue->submitCommandBuffer(commandBuffer->commandBuffer);
-}
-
-void GEVulkanTextureRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence){
-    commandQueue->submitCommandBuffer(commandBuffer->commandBuffer,fence);
-}
-
-void GEVulkanTextureRenderTarget::notifyCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence){
-    commandQueue->notifyCommandBuffer(commandBuffer->commandBuffer,fence);
-}
-
-void GEVulkanTextureRenderTarget::commit(){
-    commandQueue->commitToGPU();
-    commandQueue->clearSubmittedTraceCommandBufferIds();
 }
 
 void GEVulkanTextureRenderTarget::releaseNative(){
     if(nativeReleased_) return;
     nativeReleased_ = true;
-    commandQueue.reset();
     texture.reset();
     if(frameBuffer != VK_NULL_HANDLE){
         vkDestroyFramebuffer(parentEngine->device,frameBuffer,nullptr);

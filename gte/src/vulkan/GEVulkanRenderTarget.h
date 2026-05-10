@@ -35,6 +35,7 @@ public:
     OmegaCommon::Vector<VkImageView> frameViews;
 
     GEVulkanNativeRenderTarget(GEVulkanEngine *parentEngine,
+                               SharedHandle<GECommandQueue> presentQueue,
                                VkSurfaceKHR & surface,
                                VkSwapchainKHR & swapchainKHR,
                                VkFormat & surfaceFormat,
@@ -43,15 +44,8 @@ public:
 
     PixelFormat pixelFormat() override;
 
-    SharedHandle<CommandBuffer> commandBuffer() override;
-    void submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer) override;
-    void notifyCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence) override;
-    void submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence) override;
-
-    void commitAndPresent() override;
-    void *nativeCommandQueue() override {
-        return commandQueue->native();
-    };
+    SharedHandle<GECommandQueue> presentQueue() const override;
+    void present() override;
 
     void releaseNative();
     ~GEVulkanNativeRenderTarget();
@@ -63,9 +57,6 @@ class GEVulkanTextureRenderTarget : public GETextureRenderTarget {
     bool nativeReleased_ = false;
 public:
 
-    SharedHandle<GEVulkanCommandQueue> commandQueue;
-
-
     SharedHandle<GEVulkanTexture> texture;
     VkFramebuffer frameBuffer;
     VkFence fence;
@@ -74,15 +65,7 @@ public:
                                 SharedHandle<GEVulkanTexture> & texture,
                                 VkFramebuffer & framebuffer);
 
-    SharedHandle<CommandBuffer> commandBuffer() override;
-    void submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer) override;
-    void notifyCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence) override;
-    void submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer,SharedHandle<GEFence> & fence) override;
     SharedHandle<GETexture> underlyingTexture() override;
-     void *nativeCommandQueue() override {
-        return commandQueue->native();
-    };
-    void commit() override;
 
     void releaseNative();
     ~GEVulkanTextureRenderTarget();

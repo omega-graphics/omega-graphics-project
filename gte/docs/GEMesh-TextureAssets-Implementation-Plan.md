@@ -169,7 +169,7 @@ backends.
 
 | Platform | Library | Notes |
 |----------|---------|-------|
-| **Windows (D3D12)** | **DirectXTex** + **DirectXMesh** | DirectXTex loads DDS and WIC formats (PNG/JPEG/TIFF/BMP/HDR), generates mipmaps, handles BC compression. DirectXMesh provides cache/adjacency optimization and normal/tangent generation. Both are already declared in `gte/AUTOMDEPS` for the Windows platform. Mesh parsing still requires a glTF/OBJ front-end — the candidates are `cgltf` (single-header, glTF 2.0) and a small in-house OBJ parser. |
+| **Windows (D3D12)** | **DirectXTex** + **DirectXMesh** | DirectXTex loads DDS and WIC formats (PNG/JPEG/TIFF/BMP/HDR), generates mipmaps, handles BC compression. DirectXMesh provides cache/adjacency optimization and normal/tangent generation. Both are already declared in `gte/AUTOMDEPS` for the Windows platform. Mesh parsing still requires a glTF/OBJ front-end — the candidates are `cgltf` (single-header, glTF 2.0) and a small in-house OBJ parser. `cgltf` it is. |
 | **Linux / Android (Vulkan)** | **KTX-Software** + **stb_image** + **cgltf** | libktx for KTX/KTX2 (any Vulkan format including BC/ETC2/ASTC), `stb_image` for PNG/JPEG into `GETexture::copyBytes`, `cgltf` for glTF 2.0 plus an OBJ parser for OBJ. These libraries need to be added to `gte/AUTOMDEPS` for the `linux` and `android` platforms when this phase is picked up. |
 
 **Files (this phase):**

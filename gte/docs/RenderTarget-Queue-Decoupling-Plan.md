@@ -284,6 +284,8 @@ Option 2 is the cleaner end state and matches the rest of this refactor.
    vs `presentDrawable:`); polymorphic dispatch on `rt` is cleaner than
    on `queue`. **Recommendation: keep `present()` on the render target.**
 
+   ANWSER: YES
+
 2. **How does the user know which queue a swap chain demands?**
    On D3D12 the swap chain is bound at creation, so passing the queue
    into `makeNativeRenderTarget` is unambiguous. On Vulkan the queue
@@ -292,11 +294,15 @@ Option 2 is the cleaner end state and matches the rest of this refactor.
    in `makeNativeRenderTarget`: if `presentQueue`'s family doesn't
    match the surface's present-capable family, return `nullptr` and log.
 
+   ANSWER: YES
+
 3. **Texture render target → fence handoff between queues.**
    When the user renders to a texture target on queue A and samples it
    on queue B, the user is responsible for the fence today (we already
    expose `signalFence` / `notifyCommandBuffer` on the queue). Keep that
    contract — the texture render target doesn't need to know about queues.
+
+   ANWSER: keep signalFence, remove notifyCommandBuffer.
 
 4. **`GERenderTarget::RenderPassDesc` vs `GERenderPassDescriptor`.**
    These two structs duplicate each other today
@@ -307,6 +313,8 @@ Option 2 is the cleaner end state and matches the rest of this refactor.
    wrapper goes away there's only `GERenderPassDescriptor`. **Recommendation:
    delete `GERenderTarget::RenderPassDesc` outright; keep
    `GERenderPassDescriptor`**
+
+   YES
 
 ## Migration cost estimate
 
@@ -330,3 +338,6 @@ deprecation window in Phase 1 lets WTK update on its own schedule.
   pool. A future change can split `GraphicsQueue` / `ComputeQueue` /
   `TransferQueue` if needed.
 - Per-frame command-buffer pooling beyond what the queue already does.
+
+For these non goals I was thinking of making a GECommandQueueDesc containing
+queue type, priority, maxCommandBuffer count. 

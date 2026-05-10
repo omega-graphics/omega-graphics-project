@@ -1558,7 +1558,8 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
         return SharedHandle<GEComputePipelineState>(new GED3D12ComputePipelineState(desc.computeFunc,state,signature,rootSignatureDesc1));
     };
 
-    SharedHandle<GENativeRenderTarget> GED3D12Engine::makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc){
+    SharedHandle<GENativeRenderTarget> GED3D12Engine::makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc,
+                                                                              SharedHandle<GECommandQueue> presentQueue){
         HRESULT hr;
         /// Swap Chain must have 2 Frames
         auto rtv_desc_size = d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
@@ -1611,13 +1612,12 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
         swapChaindesc.SampleDesc.Count = 1;
          swapChaindesc.SampleDesc.Quality = 0;
 
-        auto commandQueue = makeCommandQueue(64);
         IDXGISwapChain3 *swapChain;
         if(desc.isHwnd) {
-            swapChain = createSwapChainFromHWND(desc.hwnd, &swapChaindesc, commandQueue);
+            swapChain = createSwapChainFromHWND(desc.hwnd, &swapChaindesc, presentQueue);
         }
         else {
-            swapChain = createSwapChainForComposition(&swapChaindesc,commandQueue);
+            swapChain = createSwapChainForComposition(&swapChaindesc,presentQueue);
         }
        
 
@@ -1644,7 +1644,7 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
 
         
 
-        return SharedHandle<GENativeRenderTarget>(new GED3D12NativeRenderTarget(swapChain,renderTargetHeap,dsvDescHeap,std::move(commandQueue),swapChain->GetCurrentBackBufferIndex(),rtvs.data(),rtvs.size(),desc.hwnd));
+        return SharedHandle<GENativeRenderTarget>(new GED3D12NativeRenderTarget(swapChain,renderTargetHeap,dsvDescHeap,std::move(presentQueue),swapChain->GetCurrentBackBufferIndex(),rtvs.data(),rtvs.size(),desc.hwnd));
     };
 
     SharedHandle<GETextureRenderTarget> GED3D12Engine::makeTextureRenderTarget(const TextureRenderTargetDescriptor &desc){
@@ -1660,8 +1660,7 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
             targetDesc.height = desc.region.h;
             texture = makeTexture(targetDesc);
         }
-        auto commandQueue = makeCommandQueue(64);
-        return SharedHandle<GETextureRenderTarget>(new GED3D12TextureRenderTarget(std::dynamic_pointer_cast<GED3D12Texture>(texture),commandQueue));
+        return SharedHandle<GETextureRenderTarget>(new GED3D12TextureRenderTarget(std::dynamic_pointer_cast<GED3D12Texture>(texture)));
     };
 
     SharedHandle<GECommandQueue> GED3D12Engine::makeCommandQueue(unsigned int maxBufferCount){

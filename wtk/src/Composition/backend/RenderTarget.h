@@ -64,6 +64,7 @@ namespace OmegaWTK::Composition {
     class BackendRenderTargetContext {
         std::uint64_t traceResourceId = 0;
         SharedHandle<OmegaGTE::GEFence> fence;
+        SharedHandle<OmegaGTE::GECommandQueue> commandQueue_;
         SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget;
 
         // Native-target sizing (collapsed in from BackingTextureSet in
@@ -170,6 +171,7 @@ namespace OmegaWTK::Composition {
         void setViewportOverride(float offsetX, float offsetY, float width, float height);
         void clearViewportOverride();
         SharedHandle<OmegaGTE::GENativeRenderTarget> & getNativeRenderTarget(){ return renderTarget; }
+        SharedHandle<OmegaGTE::GECommandQueue> & commandQueue(){ return commandQueue_; }
         SharedHandle<OmegaGTE::GEFence> & getFence(){ return fence; }
         unsigned getBackingWidth()  const { return backingWidth_; }
         unsigned getBackingHeight() const { return backingHeight_; }
@@ -198,6 +200,7 @@ namespace OmegaWTK::Composition {
         */
         explicit BackendRenderTargetContext(Composition::Rect & rect,
                                             SharedHandle<OmegaGTE::GENativeRenderTarget> & renderTarget,
+                                            SharedHandle<OmegaGTE::GECommandQueue> commandQueue,
                                             float renderScale = 1.0f);
         ~BackendRenderTargetContext();
 

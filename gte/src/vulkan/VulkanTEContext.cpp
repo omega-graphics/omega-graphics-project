@@ -417,6 +417,7 @@ public:
 class VulkanTextureRenderTargetTEContext : public OmegaTriangulationEngineContext {
 public:
     SharedHandle<GEVulkanTextureRenderTarget> renderTarget;
+    SharedHandle<GEVulkanCommandQueue> commandQueue;
     VulkanTessPipelines pip;
 
     GEViewport getEffectiveViewport() override {
@@ -442,8 +443,8 @@ public:
 
     std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams &params,
             GTEPolygonFrontFaceRotation direction, GEViewport *viewport) override {
-        if (!pip.ready && renderTarget && renderTarget->commandQueue) {
-            auto *engine = renderTarget->commandQueue->getEngine();
+        if (!pip.ready && commandQueue) {
+            auto *engine = commandQueue->getEngine();
             if (engine) pip.init(engine);
         }
         if (!pip.ready || !pip.gpuReady) {
@@ -460,8 +461,9 @@ public:
         return vulkanGpuDispatch(ep, vp, arcStep, pip, this, params, direction, viewport);
     }
 
-    explicit VulkanTextureRenderTargetTEContext(SharedHandle<GEVulkanTextureRenderTarget> renderTarget):
-    renderTarget(renderTarget){};
+    explicit VulkanTextureRenderTargetTEContext(SharedHandle<GEVulkanTextureRenderTarget> renderTarget,
+                                                 SharedHandle<GEVulkanCommandQueue> commandQueue):
+    renderTarget(std::move(renderTarget)), commandQueue(std::move(commandQueue)) {};
 };
 
 
@@ -473,12 +475,14 @@ SharedHandle<OmegaTriangulationEngineContext> CreateNativeRenderTargetTEContext(
     return SharedHandle<OmegaTriangulationEngineContext>(new VulkanNativeRenderTargetTEContext(vulkanRenderTarget));
 };
 
-SharedHandle<OmegaTriangulationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> & renderTarget){
+SharedHandle<OmegaTriangulationEngineContext> CreateTextureRenderTargetTEContext(SharedHandle<GETextureRenderTarget> & renderTarget,
+                                                                                  SharedHandle<GECommandQueue> & queue){
     auto vulkanRenderTarget = std::dynamic_pointer_cast<GEVulkanTextureRenderTarget>(renderTarget);
     if(vulkanRenderTarget == nullptr){
         return nullptr;
     }
-    return SharedHandle<OmegaTriangulationEngineContext>(new VulkanTextureRenderTargetTEContext(vulkanRenderTarget));
+    auto vulkanQueue = std::dynamic_pointer_cast<GEVulkanCommandQueue>(queue);
+    return SharedHandle<OmegaTriangulationEngineContext>(new VulkanTextureRenderTargetTEContext(vulkanRenderTarget, vulkanQueue));
 };
 
 _NAMESPACE_END_

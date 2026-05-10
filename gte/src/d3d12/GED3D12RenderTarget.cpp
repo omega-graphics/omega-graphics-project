@@ -8,12 +8,12 @@ _NAMESPACE_BEGIN_
         IDXGISwapChain3 * swapChain,
         ID3D12DescriptorHeap * descriptorHeapForRenderTarget,
         ID3D12DescriptorHeap * dsvDescHeap,
-        SharedHandle<GECommandQueue> commandQueue,
+        SharedHandle<GECommandQueue> presentQueue,
         unsigned frameIndex,
         ID3D12Resource *const *renderTargets,
         size_t renderTargetViewCount,HWND hwnd): swapChain(swapChain),
 
-                                                 commandQueue(commandQueue),                                                 
+                                                 presentQueue_(std::move(presentQueue)),
                                                  hwnd(hwnd),
                                                    rtvDescHeap(descriptorHeapForRenderTarget),
                                                  dsvDescHeap(dsvDescHeap),
@@ -55,7 +55,7 @@ _NAMESPACE_BEGIN_
                 return;
         } else
             return;
-        auto queue = (GED3D12CommandQueue *)commandQueue.get();
+        auto queue = (GED3D12CommandQueue *)presentQueue_.get();
         if (queue != nullptr)
             queue->commitToGPUAndWait();
         for (auto *r : renderTargets)
@@ -77,56 +77,37 @@ _NAMESPACE_BEGIN_
     }
 
     void GED3D12NativeRenderTarget::waitForGPU() {
-        auto queue = (GED3D12CommandQueue *)commandQueue.get();
+        auto queue = (GED3D12CommandQueue *)presentQueue_.get();
         if (queue != nullptr)
             queue->commitToGPUAndWait();
     }
 
     void GED3D12NativeRenderTarget::waitForFence(SharedHandle<GEFence> & fence) {
-        auto *q = static_cast<GED3D12CommandQueue *>(commandQueue.get());
+        auto *q = static_cast<GED3D12CommandQueue *>(presentQueue_.get());
         if (q == nullptr) return;
         std::uint64_t value = fence->getLastSignaledValue();
         if (value > 0)
             q->waitForFence(fence, value);
     }
 
-    void
-    GED3D12NativeRenderTarget::notifyCommandBuffer(SharedHandle<CommandBuffer> &cb, SharedHandle<GEFence> &waitFence) {
-        commandQueue->notifyCommandBuffer(cb->commandBuffer,waitFence);
-    }
-
-    void GED3D12NativeRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> & commandBuffer){
-        commandQueue->submitCommandBuffer(commandBuffer->commandBuffer);
-    };
-
-    void GED3D12NativeRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> &cb,
-                                                        SharedHandle<GEFence> &signalFence) {
-        commandQueue->submitCommandBuffer(cb->commandBuffer,signalFence);
-    }
-
-    SharedHandle<GERenderTarget::CommandBuffer> GED3D12NativeRenderTarget::commandBuffer(){
-//         std::ostringstream ss;
-// //        ss << "About to Get Buffer" << commandQueue << std::endl;
-//         //  MessageBoxA(GetForegroundWindow(),ss.str().c_str(),"NOTE",MB_OK);
-
-//         auto commandBuffer = commandQueue->getAvailableBuffer();
-//         //  MessageBoxA(GetForegroundWindow(),"Got Buffer","NOTE",MB_OK);
-        return std::shared_ptr<GERenderTarget::CommandBuffer>(new GERenderTarget::CommandBuffer((GERenderTarget *)this,CommandBuffer::GERTType::Native,commandQueue->getAvailableBuffer()));
-    };
-
-    void GED3D12NativeRenderTarget::commitAndPresent(){
+    void GED3D12NativeRenderTarget::present(){
         HRESULT hr;
-        auto queue = (GED3D12CommandQueue *)commandQueue.get();
+        auto queue = (GED3D12CommandQueue *)presentQueue_.get();
         const auto presentedCommandBufferId = queue != nullptr ? queue->lastSubmittedCommandBufferTraceId() : 0;
 
+        // The caller is expected to have left the back-buffer in
+        // RENDER_TARGET state on this queue. Emit the transition to PRESENT
+        // on the last command list and commit before calling Present1.
+        if(queue == nullptr){
+            return;
+        }
+
         auto commandList = queue->getLastCommandList();
-
-        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex],D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PRESENT);
-
-        commandList->ResourceBarrier(1,&barrier);
-        /// Close all Command Lists and Commit.
-        commandQueue->commitToGPU();
-        /// NOTE: Maybe a Fence here to prevent gpu timing problems.
+        if(commandList != nullptr){
+            auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex],D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PRESENT);
+            commandList->ResourceBarrier(1,&barrier);
+        }
+        queue->commitToGPU();
         DXGI_PRESENT_PARAMETERS params {};
         params.DirtyRectsCount = NULL;
         params.pDirtyRects = NULL;
@@ -140,7 +121,7 @@ _NAMESPACE_BEGIN_
             if(hr == DXGI_STATUS_OCCLUDED){
                 std::cout << " (DXGI_STATUS_OCCLUDED)";
             }
-            else {
+            else if(commandList != nullptr) {
                 ComPtr<ID3D12Device> device;
                 HRESULT devHr = commandList->GetDevice(IID_PPV_ARGS(&device));
                 if(SUCCEEDED(devHr) && device != nullptr){
@@ -183,26 +164,23 @@ _NAMESPACE_BEGIN_
         presentEvent.eventType = ResourceTracking::EventType::Present;
         presentEvent.resourceType = "NativeRenderTarget";
         presentEvent.resourceId = traceResourceId;
-        presentEvent.queueId = queue != nullptr ? queue->traceId() : 0;
+        presentEvent.queueId = queue->traceId();
         presentEvent.commandBufferId = presentedCommandBufferId;
         presentEvent.nativeHandle = reinterpret_cast<std::uint64_t>(swapChain.Get());
         ResourceTracking::Tracker::instance().emit(presentEvent);
-        if(queue != nullptr){
-            queue->clearSubmittedTraceCommandBufferIds();
-        }
+        queue->clearSubmittedTraceCommandBufferIds();
     };
 
-    GED3D12TextureRenderTarget::GED3D12TextureRenderTarget(SharedHandle<GED3D12Texture> texture,
-                                                           SharedHandle<GECommandQueue> & commandQueue)
+    GED3D12TextureRenderTarget::GED3D12TextureRenderTarget(SharedHandle<GED3D12Texture> texture)
                                                            : engine(nullptr),
-                                                           commandQueue(std::dynamic_pointer_cast<GED3D12CommandQueue>(commandQueue)),texture(texture) {
+                                                           texture(std::move(texture)) {
         traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
         ResourceTracking::Tracker::instance().emit(
                 ResourceTracking::EventType::Create,
                 ResourceTracking::Backend::D3D12,
                 "TextureRenderTarget",
                 traceResourceId,
-                texture != nullptr ? texture->resource.Get() : nullptr);
+                this->texture != nullptr ? this->texture->resource.Get() : nullptr);
 
     }
 
@@ -213,45 +191,6 @@ _NAMESPACE_BEGIN_
                 "TextureRenderTarget",
                 traceResourceId,
                 texture != nullptr ? texture->resource.Get() : nullptr);
-    }
-
-    SharedHandle<GERenderTarget::CommandBuffer> GED3D12TextureRenderTarget::commandBuffer(){
-        return SharedHandle<GERenderTarget::CommandBuffer>(new GERenderTarget::CommandBuffer(this,CommandBuffer::GERTType::Texture,commandQueue->getAvailableBuffer()));
-    };
-
-    void GED3D12TextureRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> &cb) {
-        commandQueue->submitCommandBuffer(cb->commandBuffer);
-    }
-
-    void GED3D12TextureRenderTarget::waitForGPU() {
-        if (commandQueue != nullptr)
-            commandQueue->commitToGPUAndWait();
-    }
-
-    void GED3D12TextureRenderTarget::signalFence(SharedHandle<GEFence> & fence) {
-        if (commandQueue != nullptr)
-            commandQueue->signalFence(fence);
-    }
-
-    void GED3D12TextureRenderTarget::submitCommandBuffer(SharedHandle<CommandBuffer> &cb,
-                                                         SharedHandle<GEFence> &signalFence) {
-        commandQueue->submitCommandBuffer(cb->commandBuffer,signalFence);
-    }
-
-    void
-    GED3D12TextureRenderTarget::notifyCommandBuffer(SharedHandle<CommandBuffer> &cb, SharedHandle<GEFence> &waitFence) {
-        commandQueue->notifyCommandBuffer(cb->commandBuffer,waitFence);
-    }
-
-    void GED3D12TextureRenderTarget::commit(){
-        // HRESULT hr;
-        commandQueue->commitToGPU();
-        commandQueue->clearSubmittedTraceCommandBufferIds();
-        /// TODO: Fence.
-    };
-
-    void *GED3D12TextureRenderTarget::nativeCommandQueue() {
-        return commandQueue->native();
     }
 
     SharedHandle<GETexture> GED3D12TextureRenderTarget::underlyingTexture() {

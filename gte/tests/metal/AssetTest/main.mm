@@ -129,7 +129,8 @@ int main(int /*argc*/, const char * /*argv*/[]) {
     auto rt = gte.graphicsEngine->makeTextureRenderTarget(rtDesc);
     EXPECT(rt != nullptr, "texture render target created");
 
-    auto tessContext = gte.triangulationEngine->createTEContextFromTextureRenderTarget(rt);
+    auto tessQueue = gte.graphicsEngine->makeCommandQueue(64);
+    auto tessContext = gte.triangulationEngine->createTEContextFromTextureRenderTarget(rt, tessQueue);
     EXPECT(tessContext != nullptr, "triangulation context created");
     auto result = tessContext->triangulateSync(params);
     EXPECT(result.totalVertexCount() == 6, "rect triangulation produces 6 vertices");

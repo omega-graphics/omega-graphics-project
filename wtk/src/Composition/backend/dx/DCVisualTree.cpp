@@ -98,7 +98,10 @@ namespace OmegaWTK::Composition {
         desc.width = toBackingDimension(rect.w,renderScale);
 
         // Create the native render target — owned by ViewPresentTarget.
-        auto nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc);
+        // The compositor owns one command queue per window; the swap chain is
+        // bound to it as the present queue.
+        auto presentQueue = gte.graphicsEngine->makeCommandQueue(64);
+        auto nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, presentQueue);
         auto swapChain = (IDXGISwapChain3 *)nativeTarget->getSwapChain();
 
         outPresentTarget.nativeTarget = nativeTarget;
@@ -106,7 +109,7 @@ namespace OmegaWTK::Composition {
         outPresentTarget.backingHeight = desc.height;
 
         // Root visual renders directly to the native drawable (Phase A-1).
-        auto context = std::make_unique<BackendRenderTargetContext>(rect,nativeTarget,renderScale);
+        auto context = std::make_unique<BackendRenderTargetContext>(rect,nativeTarget,std::move(presentQueue),renderScale);
 
         HRESULT hr;
         IDCompositionVisual2 *v;
@@ -130,7 +133,8 @@ namespace OmegaWTK::Composition {
 
         // Surface-only: texture + texture render target, no swap chain, no DComp visual.
         SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
-        auto context = std::make_unique<BackendRenderTargetContext>(rect,nullNative,renderScale);
+        SharedHandle<OmegaGTE::GECommandQueue> nullQueue = nullptr;
+        auto context = std::make_unique<BackendRenderTargetContext>(rect,nullNative,nullQueue,renderScale);
 
         return SharedHandle<Parent::Visual>(new DCVisualTree::SurfaceVisual {pos,std::move(context),renderScale});
     };

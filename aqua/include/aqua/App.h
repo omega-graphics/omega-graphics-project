@@ -18,6 +18,7 @@ public:
     Window &window();
     OmegaGTE::GTE &gte();
     SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTarget();
+    SharedHandle<OmegaGTE::GECommandQueue> &commandQueue();
 
     /// Called once after GTE and the render target are ready.
     virtual void onInit() {}

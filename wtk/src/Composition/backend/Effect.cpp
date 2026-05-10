@@ -24,6 +24,7 @@ namespace OmegaWTK::Composition {
 
         void applyEffects(SharedHandle<OmegaGTE::GETexture> & dest,
                           SharedHandle<OmegaGTE::GETextureRenderTarget> & textureTarget,
+                          SharedHandle<OmegaGTE::GECommandQueue> & queue,
                           OmegaCommon::Vector<CanvasEffect> & effects,
                           unsigned width,
                           unsigned height,
@@ -32,7 +33,7 @@ namespace OmegaWTK::Composition {
                 return;
             }
             auto src = textureTarget->underlyingTexture();
-            if(src == nullptr || dest == nullptr){
+            if(src == nullptr || dest == nullptr || queue == nullptr){
                 return;
             }
             if(width == 0 || height == 0){
@@ -75,27 +76,30 @@ namespace OmegaWTK::Composition {
                         unsigned gx = (width + 7) / 8;
                         unsigned gy = (height + 7) / 8;
 
+                        OmegaGTE::GEComputePassDescriptor computeDesc {};
                         // H pass: src → dest
                         {
-                            auto cb = textureTarget->commandBuffer();
-                            cb->startComputePass(blurH);
+                            auto cb = queue->getAvailableBuffer();
+                            cb->startComputePass(computeDesc);
+                            cb->setComputePipelineState(blurH);
                             cb->bindResourceAtComputeShader(pb, 5);
                             cb->bindResourceAtComputeShader(src, 3);
                             cb->bindResourceAtComputeShader(dest, 4);
                             cb->dispatchThreadgroups(gx, gy, 1);
-                            cb->endComputePass();
-                            textureTarget->submitCommandBuffer(cb);
+                            cb->finishComputePass();
+                            queue->submitCommandBuffer(cb);
                         }
                         // V pass: dest → src (ping-pong)
                         {
-                            auto cb = textureTarget->commandBuffer();
-                            cb->startComputePass(blurV);
+                            auto cb = queue->getAvailableBuffer();
+                            cb->startComputePass(computeDesc);
+                            cb->setComputePipelineState(blurV);
                             cb->bindResourceAtComputeShader(pb, 5);
                             cb->bindResourceAtComputeShader(dest, 3);
                             cb->bindResourceAtComputeShader(src, 4);
                             cb->dispatchThreadgroups(gx, gy, 1);
-                            cb->endComputePass();
-                            textureTarget->submitCommandBuffer(cb);
+                            cb->finishComputePass();
+                            queue->submitCommandBuffer(cb);
                         }
                         // After H→dest, V→src ping-pong, result is back in src
                         // (the offscreen target's underlying texture), which
@@ -127,16 +131,18 @@ namespace OmegaWTK::Composition {
                         unsigned gx = (width + 7) / 8;
                         unsigned gy = (height + 7) / 8;
 
+                        OmegaGTE::GEComputePassDescriptor computeDesc {};
                         // Pass 1: directional blur src→dest
                         {
-                            auto cb = textureTarget->commandBuffer();
-                            cb->startComputePass(dirPipe);
+                            auto cb = queue->getAvailableBuffer();
+                            cb->startComputePass(computeDesc);
+                            cb->setComputePipelineState(dirPipe);
                             cb->bindResourceAtComputeShader(pb, 5);
                             cb->bindResourceAtComputeShader(src, 3);
                             cb->bindResourceAtComputeShader(dest, 4);
                             cb->dispatchThreadgroups(gx, gy, 1);
-                            cb->endComputePass();
-                            textureTarget->submitCommandBuffer(cb);
+                            cb->finishComputePass();
+                            queue->submitCommandBuffer(cb);
                         }
                         // Pass 2: copy dest→src using H blur with zero radius (identity)
                         {
@@ -156,14 +162,15 @@ namespace OmegaWTK::Composition {
 
                                 auto blurH = gaussianBlurHPipelineState;
                                 if(blurH != nullptr){
-                                    auto cb2 = textureTarget->commandBuffer();
-                                    cb2->startComputePass(blurH);
+                                    auto cb2 = queue->getAvailableBuffer();
+                                    cb2->startComputePass(computeDesc);
+                                    cb2->setComputePipelineState(blurH);
                                     cb2->bindResourceAtComputeShader(pb2, 5);
                                     cb2->bindResourceAtComputeShader(dest, 3);
                                     cb2->bindResourceAtComputeShader(src, 4);
                                     cb2->dispatchThreadgroups(gx, gy, 1);
-                                    cb2->endComputePass();
-                                    textureTarget->submitCommandBuffer(cb2);
+                                    cb2->finishComputePass();
+                                    queue->submitCommandBuffer(cb2);
                                 }
                             }
                         }
@@ -175,9 +182,9 @@ namespace OmegaWTK::Composition {
             // Fence synchronization for the composite pass. The caller's
             // fence (the per-layer scratch's fence) is signaled so the
             // composite quad on the swap-chain CB waits for blur completion.
-            auto cb = textureTarget->commandBuffer();
-            textureTarget->submitCommandBuffer(cb, fence);
-            textureTarget->commit();
+            auto cb = queue->getAvailableBuffer();
+            queue->submitCommandBuffer(cb, fence);
+            queue->commitToGPU();
         }
     };
 
