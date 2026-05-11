@@ -7,7 +7,6 @@
 
 
 #include "OmegaWTKExport.h"
-#include "Unicode.h"
 
 
 #ifndef OMEGAWTK_CORE_CORE_H

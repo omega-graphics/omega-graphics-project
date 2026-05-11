@@ -1695,6 +1695,13 @@ SharedHandle<GECommandBuffer> GED3D12CommandQueue::getAvailableBuffer() {
 };
 
 ID3D12GraphicsCommandList6 *GED3D12CommandQueue::getLastCommandList() {
+    // Returns nullptr when no command list is pending submission.
+    // Callers (notably `GED3D12NativeRenderTarget::present`) treat null
+    // as "queue already committed" and allocate a fresh barrier CB.
+    // Pre queue-decoupling this never returned null because the render
+    // target itself owned a queue and kept lists alive; post-decoupling
+    // a caller can commitToGPU before present and leave the queue empty.
+    if(commandLists.empty()) return nullptr;
     return commandLists.back();
 }
 

@@ -30,6 +30,13 @@ endif()
 
 set(CODESIGN_SCRIPT ${CMAKE_CURRENT_LIST_DIR}/codesign.py)
 
+# Captured at file-load time so functions defined here can reference the
+# script regardless of which caller's `CMAKE_CURRENT_LIST_DIR` is in
+# effect when the function body executes (function bodies expand
+# `CMAKE_CURRENT_LIST_DIR` against the call-site listfile, not the
+# definition site).
+set(OMEGA_COPY_DLLS_SCRIPT ${CMAKE_CURRENT_LIST_DIR}/OmegaCopyDlls.cmake)
+
 
 
 macro(add_script_target _NAME SCRIPT)
@@ -873,7 +880,7 @@ function(omega_stage_runtime_dlls _NAME)
 		COMMAND ${CMAKE_COMMAND}
 			-DSRC=${CMAKE_BINARY_DIR}/bin
 			-DDST=$<TARGET_FILE_DIR:${_NAME}>
-			-P ${CMAKE_CURRENT_LIST_DIR}/OmegaCopyDlls.cmake
+			-P ${OMEGA_COPY_DLLS_SCRIPT}
 		VERBATIM
 		COMMENT "Staging runtime DLLs into output dir of ${_NAME}")
 endfunction()

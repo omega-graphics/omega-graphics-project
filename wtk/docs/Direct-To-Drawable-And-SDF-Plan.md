@@ -483,7 +483,17 @@ gradient by computing the local stroke parameter from `dist /
 strokeWidth`, but that's not a Phase 6 requirement).
 
 ### 6.6 Bitmap rendering improvements [DONE]
-(Please check sampler is sampling textures upside down.)
+Sampler / orientation: investigated. Bitmaps rendered upside-down on all
+three backends because OmegaCommon's PNG / JPEG / TIFF decoders deliver
+pixel rows bottom-up (legacy GL convention) while GTE samplers treat
+texture row 0 as the top. SDF rects and tessellated paths weren't
+affected because their geometry doesn't carry a vertical orientation
+signal. Fixed in `BitmapTextureCache::acquire` by row-flipping during
+upload through the new GTE §4.5 region-aware `copyBytes` overload
+(`gte/docs/Pipeline-Completion-Extension-Plan.md` §4.5): each source row
+at `h - 1 - row` writes into destination row `row`. The codec
+convention stays bottom-up so non-WTK consumers are unaffected; GTE
+texture buffers end up correctly oriented for sampling.
 
 Bitmaps still use a textured quad with sampling — the data is opaque
 pixel data, not analytic geometry — but the current path has three

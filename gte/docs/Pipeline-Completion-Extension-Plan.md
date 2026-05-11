@@ -543,8 +543,6 @@ However, several common GPU operations require a *programmable* blit — a full-
 
 These operations are traditionally implemented by creating a render pipeline with a full-screen triangle and a fragment shader. The `BlitPipeline` formalizes this pattern: it's a lightweight pipeline descriptor that pairs a fragment shader with source/destination formats, avoiding the boilerplate of setting up render targets, viewports, vertex buffers, and pipeline state for what is conceptually a blit.
 
-Read my comment under Open Questions: 2. (Fold it into the render path.)
-
 ### 3.1 Public API
 
 **Add to `GEPipeline.h`:**
@@ -817,6 +815,67 @@ virtual void fillBuffer(SharedHandle<GEBuffer> & buffer,
 
 **Recommendation**: Expose a 32-bit fill. Metal implementation uses a small compute shader (4 lines of MSL) to fill with a 32-bit pattern. This is the same approach MoltenVK uses internally.
 
+### 4.5 CPU Texture Upload by Region (`GETexture::copyBytes` overload)
+
+The existing `GETexture::copyBytes(bytes, bytesPerRow)` overwrites the entire mip 0 with a tightly-packed source buffer. There is no way for a CPU caller to update a sub-rect of an existing texture without re-uploading the whole thing, and no way to pick a different area of a source bitmap to read from — `copyBytes` always reads `width × height` contiguous rows starting at `bytes`.
+
+Both gaps surface in real consumers:
+
+- **WTK** routes decoded image data (`BitmapImage`) through `BitmapTextureCache`. The decoders deliver rows bottom-up (legacy GL convention) while every GTE sampler treats row 0 as the top, so naive upload renders upside-down. With a region-aware overload WTK can row-flip in N upload calls (one per source row) without staging a flipped copy of the whole image.
+- **Sprite atlas / nine-slice rendering** (planned for WTK Phase 6.6.3) needs to update a sub-rect of a baked atlas as new glyphs / icons get rasterized, without rebuilding the whole atlas.
+- **Future blit extension (§3)** introduces programmable blits, but its compatriot — uploading a CPU-side source rect into a sub-rect of a GPU texture — has no command yet. This sub-section covers that gap so the blit landing can stay focused on programmable passes.
+
+The chosen shape adds a destination region; the caller advances its own source pointer to pick which slice of the bitmap to read. This matches `MTLTexture replaceRegion:withBytes:bytesPerRow:`, `D3D12 CopyTextureRegion` (with a staged source), and `vkCmdCopyBufferToImage` semantics directly.
+
+**Add to `gte/include/omegaGTE/GETexture.h`:**
+
+```cpp
+/// @brief Upload data to a sub-region of the texture from a CPU buffer.
+/// @param bytes Pointer to the source buffer. Must point to at least
+///        `bytesPerRow × destRegion.h × max(destRegion.d, 1)` bytes
+///        starting at the top-left of the region's source data
+///        (caller-side offset is the caller's responsibility — to read
+///        from a sub-area of a larger source bitmap, advance the
+///        pointer to the desired row/column before calling).
+/// @param bytesPerRow Bytes per row in the source buffer (source row
+///        pitch, may exceed `destRegion.w × bytesPerPixel` if the
+///        caller is passing a non-tight stride).
+/// @param destRegion Sub-region of the texture to overwrite. `{x, y, z}`
+///        is the destination origin in texel coordinates within mip 0;
+///        `{w, h, d}` is the extent. For 2D textures `z = 0` and
+///        `d = 1`.
+/// @paragraph
+/// Only valid for textures created with `ToGPU` usage. The single-arg
+/// `copyBytes(bytes, bytesPerRow)` overload remains as a convenience
+/// that targets the full mip 0 extent.
+virtual void copyBytes(void *bytes,
+                       size_t bytesPerRow,
+                       const TextureRegion &destRegion) = 0;
+```
+
+`TextureRegion` already exists in `GTEBase.h` with `{x, y, z, w, h, d}` fields.
+
+**Backend mapping:**
+
+| OmegaGTE | D3D12 | Metal | Vulkan |
+|---|---|---|---|
+| `copyBytes(..., region)` | One-shot upload buffer + `CopyTextureRegion` with `D3D12_BOX` matching `region` | `[id<MTLTexture> replaceRegion:MTLRegionMake3D(x,y,z,w,h,d) mipmapLevel:0 withBytes:bytes bytesPerRow:bytesPerRow]` | Temp host-visible staging `VkBuffer` + `vkCmdCopyBufferToImage` with `VkBufferImageCopy.imageOffset / imageExtent` matching `region` |
+
+**Compatibility notes:**
+
+- **D3D12**: The existing `copyBytes(bytes, bytesPerRow)` writes to the per-texture `cpuSideresource` upload heap and defers the GPU copy to `updateAndValidateStatus`. The region overload does not share that path — it allocates a temp upload buffer sized to `bytesPerRow × destRegion.h × destRegion.d`, memcpys the source rows in, issues a one-shot command list that transitions the destination to `COPY_DEST`, calls `CopyTextureRegion` with a source `D3D12_BOX` covering `(0..w, 0..h, 0..d)` and a destination origin of `(x, y, z)`, transitions back, and waits. Independent of the deferred-upload state machine; safe to call after the texture is already on-GPU. Row pitch in the temp buffer follows the `D3D12_TEXTURE_DATA_PITCH_ALIGNMENT` (256-byte) rule — pad as needed.
+
+- **Metal**: One native call. `replaceRegion` performs the upload synchronously from the perspective of subsequent encoded commands; no manual staging buffer required. For array / cube textures the existing single-arg `copyBytes` writes slice 0; this overload preserves that — slice indexing requires a future `TextureRegion` extension (mip + arrayLayer fields).
+
+- **Vulkan**: The current single-arg path memcpys directly into a host-visible linear-tiled `VkImage`. The region overload instead allocates a temp `VkBuffer` (host-visible, `TRANSFER_SRC`), memcpys source rows in tightly packed (no padding — Vulkan's `bufferRowLength = 0` semantics), then issues `vkCmdCopyBufferToImage` on a one-shot command buffer with `VkBufferImageCopy.imageOffset = {x, y, z}` and `imageExtent = {w, h, d}`. Transitions the image layout to `TRANSFER_DST_OPTIMAL`, copies, transitions back to `SHADER_READ_ONLY_OPTIMAL` (or whatever the texture's tracked layout is). Sync via `vkQueueWaitIdle` on the transfer queue.
+
+**WTK consumer — `BitmapTextureCache::acquire`:** loops `h` times, advancing `image->data + (h - 1 - row) × stride` and writing row-by-row into `{x: 0, y: row, w: width, h: 1, ...}`. Functionally correct; `h` driver calls per upload is acceptable for image-decode-time uploads (one-shot, not in the per-frame path).
+
+**Out of scope for this sub-section** (deferred, see Extension 7):
+
+- Mip-level / array-layer indexing on the destination — folded into §7.1's `TextureRegion` extension.
+- Source-rect parameter (separate `SourceRect` for sub-region reads). Callers advance the source pointer instead; if a future consumer wants the engine to do source-rect math (e.g. when source `bytesPerRow` ≠ destination row width), revisit.
+
 ---
 
 ## Extension 5: Fix Existing Bugs ✅ Implemented
@@ -1031,6 +1090,248 @@ Extension 2.3 (threadgroup override) ── deferred
 
 ---
 
+## Extension 7: GETexture API Completion (Proposed)
+
+`GETexture` today supports full-mip-0 upload/readback and (after §4.5) sub-region upload. Real consumers — WTK's bitmap path, future asset-streaming systems, BC-compressed game textures, sRGB tone-mapping passes — need a small set of additional capabilities the existing API can't express. This extension proposes them as a unit. None are blocked on OmegaSL changes; all can land independently of Tier 1–4 work.
+
+### 7.1 `TextureRegion` extension — mip level + array layer
+
+`TextureRegion` is `{x, y, z, w, h, d}` today: a 3D box with no awareness of the mip pyramid or array slices. Consequences:
+
+- §4.5's `copyBytes(region)` can only target mip 0 of layer 0.
+- §4.2's `copyBufferToTexture(region)` has the same limitation.
+- Cube-face uploads (proposed in §6.5 as part of asset-side work) can't address individual faces through the existing region APIs.
+- Sub-mip readback for streaming systems and mipmap-cache rebuilds (§4.3 mipmap generation only writes derived mips; explicit overwrites need addressing).
+
+**Proposal:** Add two fields, defaulted so existing call sites stay correct:
+
+```cpp
+struct TextureRegion {
+    unsigned x, y, z;
+    unsigned w, h, d;
+    unsigned mipLevel = 0;       // new — mip pyramid level to address
+    unsigned arrayLayer = 0;     // new — array slice / cube face index
+};
+```
+
+Backend mapping (all three already have the primitive):
+
+| OmegaGTE | D3D12 | Metal | Vulkan |
+|---|---|---|---|
+| `mipLevel`, `arrayLayer` | `D3D12CalcSubresource(mip, arrayLayer, planeSlice, mipLevels, arraySize)` for the destination subresource index in `CopyTextureRegion` | `replaceRegion:mipmapLevel:slice:withBytes:bytesPerRow:bytesPerImage:` (slice = arrayLayer) | `VkImageSubresourceLayers.{mipLevel, baseArrayLayer, layerCount = 1}` in `VkBufferImageCopy` |
+
+**Compatibility:** Additive — purely default-constructed call sites keep their current semantics. The §4.5 D3D12 path's `GetCopyableFootprints(...)` already takes a subresource index; current code hardcodes 0, the new field picks the right one. Vulkan's existing `copyBufferToTexture` already passes a `VkImageSubresourceLayers`; current code hardcodes `mipLevel = 0` and `baseArrayLayer = 0`. Metal's existing `replaceRegion` overload that we use for §4.5 already exists with the slice + mipmap parameters; we currently pass 0/0.
+
+### 7.2 `getBytes(bytes, bytesPerRow, srcRegion)` — sub-region readback
+
+Symmetric to §4.5. Current `getBytes(bytes, bytesPerRow)` reads the full mip 0 only — to read one pixel for hit-testing or a 64×64 tile for an editor preview, the caller has to allocate a whole-texture buffer and discard most of it. The cost compounds for high-resolution render targets.
+
+```cpp
+virtual size_t getBytes(void *bytes,
+                        size_t bytesPerRow,
+                        const TextureRegion &srcRegion) = 0;
+```
+
+Returns bytes written (same convention as the single-arg `getBytes`).
+
+| OmegaGTE | D3D12 | Metal | Vulkan |
+|---|---|---|---|
+| `getBytes(bytes, bpr, srcRegion)` | One-shot `CopyTextureRegion` from texture sub-rect into a temp readback heap (`D3D12_HEAP_TYPE_READBACK`), Map, memcpy out, Unmap | `getBytes:bytesPerRow:fromRegion:mipmapLevel:` (native) | Temp host-visible `VkBuffer` + `vkCmdCopyImageToBuffer` with `VkBufferImageCopy.imageOffset/imageExtent`, then map + memcpy |
+
+**Use cases unblocked:**
+- WTK debug overlays / picking
+- Editor "save selection as image" flows
+- CPU-side validation tests (gte/tests/* already do whole-texture readback; per-region would tighten the test surface)
+
+### 7.3 Texture metadata accessors
+
+The base `GETexture` exposes `getKind()`, `getArrayLayers()`, `getSampleCount()`, but consumers wanting width/height/depth/mipLevels/pixelFormat have to cast to the backend type (`(GED3D12Texture *)tex->resource->GetDesc().Width`, `(__bridge id<MTLTexture>)tex->native().width`, `((GEVulkanTexture *)tex)->descriptor.width`). That leaks backend types through the otherwise platform-neutral consumer code.
+
+**Proposal:** Promote dimensions into `GETexture` and set them at construction time alongside the existing `kind`/`arrayLayers`/`sampleCount` fields:
+
+```cpp
+class GETexture : public GTEResource {
+protected:
+    unsigned width_ = 0;
+    unsigned height_ = 0;
+    unsigned depth_ = 1;
+    unsigned mipLevels_ = 1;
+    // (existing) TexturePixelFormat pixelFormat;
+public:
+    unsigned getWidth()      const { return width_; }
+    unsigned getHeight()     const { return height_; }
+    unsigned getDepth()      const { return depth_; }
+    unsigned getMipLevels()  const { return mipLevels_; }
+    TexturePixelFormat getPixelFormat() const { return pixelFormat; }
+    // existing: getKind / getArrayLayers / getSampleCount
+};
+```
+
+Backend `makeTexture` paths already know these values at construction time (they come from `TextureDescriptor`); just call a new `setDimensions(w, h, d, mipLevels)` helper alongside the existing `setShape(...)`. Zero per-frame cost; existing call sites untouched.
+
+**Migration win:** §6.5 cube/array asset loaders and §4.3 mipmap generation both currently reach into backend types to query dimensions. Both become backend-neutral with this.
+
+### 7.4 Compressed pixel formats
+
+`TexturePixelFormat` today covers uncompressed formats (RGBA8Unorm, RGBA16Unorm, BGRA8Unorm and sRGB variants). Real-world UI assets typically run 4–8× larger uncompressed; a 4K texture atlas at RGBA8 is 64 MiB, at BC7 it's 16 MiB. Modern game/UI engines won't budget around uncompressed-only.
+
+**Proposal:** Extend `TexturePixelFormat` (in `GTEBase.h`) with the block-compressed families:
+
+| OmegaGTE addition | Block | Use case | D3D12 | Metal | Vulkan |
+|---|---|---|---|---|---|
+| `BC1_RGB_Unorm`, `BC1_RGBA_Unorm`, `BC1_RGBA_SRGB` | 4×4, 8 bytes | Diffuse / albedo, low alpha | `DXGI_FORMAT_BC1_UNORM*` | `MTLPixelFormatBC1_RGBA*` | `VK_FORMAT_BC1_RGB_*` / `BC1_RGBA_*` |
+| `BC3_Unorm`, `BC3_SRGB` | 4×4, 16 bytes | Diffuse + alpha (legacy DXT5 successor) | `BC3_*` | `BC3_RGBA*` | `BC3_*` |
+| `BC4_Unorm`, `BC4_Snorm` | 4×4, 8 bytes | Single-channel (height, mask) | `BC4_*` | `BC4_R*` | `BC4_*` |
+| `BC5_Unorm`, `BC5_Snorm` | 4×4, 16 bytes | Normal maps (RG) | `BC5_*` | `BC5_RG*` | `BC5_*` |
+| `BC7_Unorm`, `BC7_SRGB` | 4×4, 16 bytes | High-quality RGBA (modern default) | `BC7_*` | `BC7_RGBA*` | `BC7_*` |
+| `ASTC_<n>x<m>_Unorm`, `..._SRGB` (block sizes 4×4 through 12×12) | variable | Apple Silicon / mobile high-quality | (driver-emulated only) | `MTLPixelFormatASTC_*` | `VK_FORMAT_ASTC_*` (gated) |
+| `ETC2_RGB8_Unorm`, `ETC2_RGBA8_Unorm`, sRGB variants | 4×4 | Linux / mobile / Vulkan defaults | (driver-emulated only) | (Apple Silicon supports) | `VK_FORMAT_ETC2_*` (gated) |
+
+**Compatibility notes:**
+
+- **D3D12:** BC1–BC5, BC7 are universally supported on every desktop GPU since SM5. ASTC and ETC2 are *not* supported on D3D12 — these formats land only when the consumer is willing to gate on `GTEDeviceFeatures::astcSupported` / `etc2Supported` (new bits) and accept that they're effectively Metal/Vulkan-only.
+- **Metal:** Apple Silicon Macs support BC1–BC7, ASTC, ETC2 natively. Intel Macs support BC formats only. Gate ASTC/ETC2 on the device feature query.
+- **Vulkan:** All three families exist in the spec, gated by `VkPhysicalDeviceFeatures.textureCompressionBC` / `textureCompressionASTC_LDR` / `textureCompressionETC2`. Desktop drivers expose BC; mobile drivers expose ASTC/ETC2; nothing exposes all three. Standard `GTEDeviceFeatures` gating.
+
+**API impact on the new region copy:**
+- `bytesPerRow` for compressed formats is bytes per row *of blocks*, not pixels. A 256-pixel-wide BC7 texture has `bytesPerRow = (256 / 4) * 16 = 1024`, not `256 * bytesPerPixel`.
+- `TextureRegion.{x, y}` and `.{w, h}` must be block-aligned (multiple of the format's block dimension). Validation: debug-build assert; release-build truncate to nearest block boundary.
+- §7.3's metadata accessors should expose a `getBlockSize()` (returning `{blockW, blockH, bytesPerBlock}`) so consumers can do alignment math without backend introspection.
+
+### 7.5 Texture clear / fill
+
+§4.4 covers buffer fill but textures don't have a fill command on the blit pass. `RenderPassDescriptor.ColorAttachment.loadAction = Clear` only handles render-target clears at pass-begin time; non-render-target textures (compute outputs allocated `GPUAccessOnly`, streaming staging textures, debug fill-with-magenta states) need an explicit clear command.
+
+**Proposal:**
+
+```cpp
+// On GECommandBuffer (blit pass section):
+
+/// @brief Clear a texture region to a constant color.
+/// @param texture Texture to clear. Must have a usage permitting the
+///        backend's clear path (UAV on D3D12, render target or compute
+///        output on Metal, any image on Vulkan).
+virtual void clearTexture(SharedHandle<GETexture> &texture,
+                          float r, float g, float b, float a,
+                          const TextureRegion &region) = 0;
+```
+
+| OmegaGTE | D3D12 | Metal | Vulkan |
+|---|---|---|---|
+| `clearTexture(...)` | `ClearUnorderedAccessViewFloat` if UAV available, else `ClearRenderTargetView` if RTV available, else compute-shader fallback | `vkCmdClearColorImage`-equivalent does not exist; one-shot render pass with `loadAction = Clear`, OR a small `fillKernel` compute shader (similar to the §4.4 Metal buffer-fill compute fallback) | `vkCmdClearColorImage` (native, requires `TRANSFER_DST` layout) |
+
+**Compatibility concern:** D3D12 requires the texture be UAV-or-RTV-usable to clear without a shader; Metal has no fixed-function image clear; only Vulkan has a universal primitive. Two implementation paths:
+
+1. **Per-backend native where possible, compute fallback elsewhere.** Ship a tiny `clearTextureFill.omegasl` compute kernel (4 lines, write a float4 to a `[[texture(0)]]` UAV per dispatched thread) for Metal and as a D3D12 fallback when the texture lacks UAV/RTV. Vulkan uses `vkCmdClearColorImage` directly.
+2. **Validate texture usage at call time.** Reject `clearTexture` on a texture that doesn't permit the chosen path, with a clear diagnostic. Forces consumers to ask for clear-capable textures upfront. Cleaner but less ergonomic.
+
+**Recommendation:** Path 1 (compute fallback). Compute shader is trivial; the alternative is forcing every texture that *might* want clearing to take the UAV-usage overhead.
+
+### 7.6 Async upload with fence completion
+
+Today `copyBytes` is "fire and forget" — synchronous on Metal/Vulkan, deferred-until-first-bind on D3D12 (§4.5 inherits this). For asset-streaming systems and background-loading flows the caller needs to *know* when the upload is GPU-visible without binding the texture.
+
+**Proposal:** Add a fence-returning overload:
+
+```cpp
+/// @brief Upload data and signal `fence` when the GPU side is complete.
+/// @param fence Fence to signal. Caller waits on it (or chains it into a
+///        command buffer's `waitForFence`) before binding the texture.
+/// @returns true if the upload was scheduled, false on failure.
+virtual bool copyBytesAsync(void *bytes,
+                            size_t bytesPerRow,
+                            const TextureRegion &destRegion,
+                            SharedHandle<GEFence> &fence) = 0;
+```
+
+| OmegaGTE | D3D12 | Metal | Vulkan |
+|---|---|---|---|
+| `copyBytesAsync` | One-shot copy command list submitted to a transient upload queue, `ID3D12CommandQueue::Signal(fence)` after `CopyTextureRegion` | `[MTLCommandBuffer encodeSignalEvent:value:]` on a one-shot blit command buffer | One-shot `VkCommandBuffer` + `vkQueueSubmit` with `signalSemaphores` (or `VkFence`) |
+
+**Compatibility note:** D3D12 currently keeps `GED3D12Texture` decoupled from the engine (no back-pointer). Async upload forces that refactor — `copyBytesAsync` needs to allocate a command list and command queue, which only the engine can provide. The §4.5 deferred-upload-via-`cpuSideresource` path doesn't compose with fence signalling; async needs its own one-shot upload path.
+
+**Recommendation:** Pair with the texture-back-pointer refactor noted in §4.5 D3D12 compatibility. Once the texture holds a `GED3D12Engine *engine_;`, both §7.6 and a (potential) future D3D12 immediate-mode `copyBytes` overload become straightforward.
+
+### 7.7 Format-cast / aliased texture views
+
+Common need: take an `RGBA8Unorm` render target and bind it as `RGBA8Unorm_SRGB` for a tone-mapping pass without re-uploading or copying. The base texture stays; a second view interprets the same memory differently.
+
+**Proposal:**
+
+```cpp
+/// @brief Create a lightweight view of this texture with a different
+/// pixel format. The view shares the underlying resource memory; the
+/// view's lifetime is bounded by the parent texture's.
+/// Requires the parent's TextureDescriptor.allowFormatCast = true.
+/// @returns A new GETexture handle aliasing the same storage. Returns
+///          null if the cast is not compatible (different channel
+///          layout, different bit depth) or the parent wasn't marked
+///          cast-eligible.
+virtual SharedHandle<GETexture> createFormatCastView(PixelFormat newFormat) = 0;
+```
+
+| OmegaGTE | D3D12 | Metal | Vulkan |
+|---|---|---|---|
+| `createFormatCastView(f)` | Separate SRV with the cast `DXGI_FORMAT`; parent resource must have been created with a typeless format (`R8G8B8A8_TYPELESS` etc.) | `[id<MTLTexture> newTextureViewWithPixelFormat:]` | `VkImageView` with `VkImageViewCreateInfo.format = ...` on an image created with `VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT` |
+
+**Add to `TextureDescriptor`:**
+
+```cpp
+/// When true, the underlying resource is allocated with format-mutable
+/// flags so `createFormatCastView` can produce compatible aliases.
+/// Allocation overhead is small; opt in only on textures expected to
+/// be sampled with multiple format interpretations (e.g. linear-vs-sRGB
+/// render targets, structured-buffer-style texture views).
+bool allowFormatCast = false;
+```
+
+**Compatibility constraints:**
+
+- D3D12: typeless resource → fully-typed views. Only formats sharing channel layout + bit depth are compatible (R8G8B8A8_TYPELESS ↔ {UNORM, UNORM_SRGB, SNORM, UINT, SINT}; R32_TYPELESS ↔ {FLOAT, UINT, SINT}).
+- Metal: aliasing compatibility table follows `MTLPixelFormat`'s family rules. Apple documents which pairs work; the implementation should call `[device supportsTextureSampleCount:]`-style validation (or maintain a static table) and return null for unsupported casts.
+- Vulkan: `VK_KHR_image_format_list` (core in 1.2) lets the implementation pre-declare the cast set at image creation time, which avoids runtime validation cost. Use it when available; fall back to creating views eagerly and trusting the validation layer otherwise.
+
+**Use cases unblocked:**
+
+- sRGB ⇄ linear render target alias (common for tone-mapping passes)
+- "Read as integer" for shader-side bit manipulation of texel data
+- WTK Phase 6.6.1's "swap chain format is sRGB" path could allocate one render target and bind it as either linear or sRGB per pass, instead of two separate textures.
+
+### 7.8 Implementation order
+
+```
+7.1 (TextureRegion mip/layer)         ─── enables 7.2, unblocks §6.5 cube/array
+    │
+7.2 (getBytes by region)              ─── depends on 7.1 for parity
+    │
+7.3 (metadata accessors)              ─── independent; pure additive
+    │
+7.5 (texture clear)                   ─── independent; needs §4.4-style compute fallback shader
+    │
+7.4 (compressed pixel formats)        ─── independent; large body of work, gated by GTEDeviceFeatures additions
+    │
+7.6 (async upload)                    ─── requires texture-back-pointer refactor in D3D12
+    │
+7.7 (format-cast views)               ─── requires TextureDescriptor.allowFormatCast opt-in flag
+```
+
+### 7.9 Priority assignment
+
+**Tier 1 candidates** (low risk, additive, immediate value):
+- §7.1 TextureRegion mip/layer
+- §7.2 getBytes region overload
+- §7.3 metadata accessors
+
+**Tier 2 candidates** (medium risk, requires new infrastructure):
+- §7.5 texture clear (needs a compute fallback shader, similar to §4.4)
+- §7.4 compressed pixel formats (needs `GTEDeviceFeatures` extension + decoder-side asset support)
+
+**Tier 3 candidates** (deeper structural changes):
+- §7.6 async upload (D3D12 engine back-pointer refactor)
+- §7.7 format-cast views (allocation-time flag, descriptor migration)
+
+---
+
 ## File Change Summary
 
 | File | Extensions |
@@ -1067,7 +1368,7 @@ ANSWER: Vertex Input Layout should be baked at creation.
 
 2. **Blit pipeline vs. post-process pipeline**: The proposed `BlitPipeline` is essentially a specialized render pipeline with no vertex input. Should it be a distinct pipeline type, or should the render pipeline simply support a "no vertex buffer, full-screen triangle" mode? A distinct type is cleaner for the common case; collapsing into render is more flexible but adds API surface to the render path.
 
-ANSWER: Render pipeline should support a full-screen triangle, no vertex buffer.
+ANSWER: Do proposed BlitPipeline
 
 3. **Mipmap generation shader**: D3D12 has no built-in mipmap generation. Should the engine ship an internal compute shader for this, or should it use the blit pipeline with a downsample fragment shader? Compute is more efficient (one dispatch per mip, no render pass overhead) but requires an internal OmegaSL compute shader compiled at build time.
 

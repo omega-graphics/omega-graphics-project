@@ -281,6 +281,8 @@ _NAMESPACE_BEGIN_
         virtual void *getSwapChain() = 0;
         /// Wait for GPU to finish, resize swap chain, and recreate RTVs. Call instead of IDXGISwapChain::ResizeBuffers.
         virtual void resizeSwapChain(unsigned int width, unsigned int height) {}
+
+        //TODO: Remove these methods as GECommandQueue should have these methods.
         /// Wait for the present queue to finish. Use to serialize cross-context texture pool use.
         virtual void waitForGPU() {}
         /// CPU wait until the given fence has been signaled (e.g. before using a texture produced on another queue).

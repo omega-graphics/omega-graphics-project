@@ -84,6 +84,25 @@ _NAMESPACE_BEGIN_
         */
         virtual void copyBytes(void *bytes,size_t bytesPerRow) = 0;
 
+        /** @brief Upload data to a sub-region of the texture from a CPU buffer.
+         * @param[in] bytes Pointer to the source buffer. Must point to at least
+         *        `bytesPerRow * destRegion.h * max(destRegion.d, 1)` bytes
+         *        starting at the top-left of the region's source data. To read
+         *        from a sub-area of a larger source bitmap, the caller advances
+         *        the pointer to the desired row/column before calling.
+         * @param[in] bytesPerRow Bytes per row in the source buffer.
+         * @param[in] destRegion Sub-region of the texture (mip 0) to overwrite.
+         *        `{x, y, z}` is the destination origin; `{w, h, d}` is the
+         *        extent. For 2D textures `z = 0` and `d = 1`.
+         * @paragraph
+         * Pipeline-Completion-Extension-Plan §4.5. Only valid for textures
+         * created with `ToGPU` usage. The single-arg `copyBytes` overload
+         * remains as a convenience that targets the full mip 0 extent.
+        */
+        virtual void copyBytes(void *bytes,
+                               size_t bytesPerRow,
+                               const TextureRegion &destRegion) = 0;
+
         /** @brief Download data from the texture stored on the device to the CPU.
          * @param[in,out] bytes A pointer to the buffer to receive the data. (Can be nullptr when querying data size)
          * @param[out] bytesPerRow The bytes per row in the data.

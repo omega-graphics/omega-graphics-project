@@ -133,6 +133,70 @@ void GED3D12Texture::copyBytes(void *bytes,size_t bytesPerRow){
 
 }
 
+void GED3D12Texture::copyBytes(void *bytes, size_t bytesPerRow, const TextureRegion &destRegion){
+    assert(usage != GPUAccessOnly && "");
+    if(bytes == nullptr || bytesPerRow == 0 || destRegion.w == 0 || destRegion.h == 0){
+        return;
+    }
+
+    // Pipeline-Completion-Extension-Plan §4.5. Writes the supplied bytes into
+    // the sub-region of `cpuSideresource` (the upload heap) that corresponds
+    // to `destRegion`. The deferred-upload path (`uploadTextureFromUploadHeap`,
+    // triggered by `updateAndValidateStatus` at first bind) then copies the
+    // whole subresource to the GPU. Consumers calling the region overload
+    // must populate every pixel they care about before the first bind —
+    // bytes outside the written region come from the upload heap's current
+    // contents (uninitialised on a fresh texture).
+    UINT bytesPerTexel = 4;
+    switch(pixelFormat){
+        case PixelFormat::RGBA16Unorm: bytesPerTexel = 8; break;
+        default: bytesPerTexel = 4; break;
+    }
+
+    void *mem_ptr = nullptr;
+    HRESULT hr = cpuSideresource->Map(0,nullptr,&mem_ptr);
+    if(FAILED(hr)){
+        DEBUG_STREAM("Failed to Map Memory Ptr to Texture");
+        return;
+    }
+
+    auto desc = resource->GetDesc();
+    ID3D12Device *dev = nullptr;
+    cpuSideresource->GetDevice(__uuidof(*dev),(void **)&dev);
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};
+    UINT rows = 0;
+    UINT64 rowSize = 0;
+    dev->GetCopyableFootprints(&desc,0,1,0,&footprint,&rows,&rowSize,nullptr);
+
+    const UINT depth = destRegion.d == 0 ? 1u : destRegion.d;
+    const UINT slicePitch = footprint.Footprint.RowPitch * rows;
+    const size_t rowBytes = static_cast<size_t>(destRegion.w) * bytesPerTexel;
+    auto *base = static_cast<PBYTE>(mem_ptr) + footprint.Offset;
+    const auto *src = static_cast<const BYTE *>(bytes);
+
+    for(UINT z = 0; z < depth; ++z){
+        for(UINT y = 0; y < destRegion.h; ++y){
+            PBYTE dst = base
+                + static_cast<size_t>(destRegion.z + z) * slicePitch
+                + static_cast<size_t>(destRegion.y + y) * footprint.Footprint.RowPitch
+                + static_cast<size_t>(destRegion.x) * bytesPerTexel;
+            const BYTE *srow = src
+                + static_cast<size_t>(z) * bytesPerRow * destRegion.h
+                + static_cast<size_t>(y) * bytesPerRow;
+            std::memcpy(dst, srow, rowBytes);
+        }
+    }
+
+    cpuSideresource->Unmap(0,nullptr);
+    dev->Release();
+
+    // Force the next bind through updateAndValidateStatus to re-upload the
+    // (now partially-modified) upload heap. Matches the existing behaviour
+    // for first-upload textures; for textures already on GPU this triggers
+    // a full subresource re-upload that includes the modified region.
+    onGpu = false;
+}
+
 size_t GED3D12Texture::getBytes(void *bytes, size_t bytesPerRow) {
     assert(usage == FromGPU && "");
     void *mem_ptr = nullptr;

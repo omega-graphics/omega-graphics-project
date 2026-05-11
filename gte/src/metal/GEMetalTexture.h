@@ -34,6 +34,7 @@ public:
         return const_cast<void *>(texture.handle());
     }
     void copyBytes(void *bytes,size_t bytesPerRow) override;
+    void copyBytes(void *bytes,size_t bytesPerRow,const TextureRegion &destRegion) override;
     size_t getBytes(void *bytes, size_t bytesPerRow) override;
 
     /// Resolve (or lazily create) a Metal texture view for the given

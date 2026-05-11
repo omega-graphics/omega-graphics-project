@@ -14,10 +14,20 @@ else()
     list(APPEND PLATFORM_SRCS src/platform/linux/X11Window.cpp)
 endif()
 
-# AQUA shared library
+# AQUA shared library — glob per component so adding a new file inside
+# src/<component>/ doesn't require touching this file. Platform sources
+# stay explicit because the picker above selects exactly one.
+file(GLOB AQUA_SRCS_TOPLEVEL CONFIGURE_DEPENDS src/*.cpp)
+file(GLOB AQUA_SRCS_PIPELINE CONFIGURE_DEPENDS src/pipeline/*.cpp)
+file(GLOB AQUA_SRCS_RENDERER CONFIGURE_DEPENDS src/renderer/*.cpp)
+
 add_omega_graphics_module(AQUA SHARED
     HEADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include
-    SOURCES src/App.cpp ${PLATFORM_SRCS}
+    SOURCES
+        ${AQUA_SRCS_TOPLEVEL}
+        ${AQUA_SRCS_PIPELINE}
+        ${AQUA_SRCS_RENDERER}
+        ${PLATFORM_SRCS}
     DEPENDS OmegaGTE
 )
 target_compile_definitions(AQUA PRIVATE AQUA__BUILD__)

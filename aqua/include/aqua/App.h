@@ -2,9 +2,14 @@
 #define AQUA_APP_H
 
 #include "Window.h"
-#include <OmegaGTE.h>
+#include "Pipeline.h"
+#include <memory>
+#include <string>
 
 namespace Aqua {
+
+class Scene;
+class Renderer; // internal — defined in src/renderer/Renderer.h
 
 struct AQUA_EXPORT AppDesc {
     WindowDesc window;
@@ -16,9 +21,15 @@ public:
     virtual ~App();
 
     Window &window();
-    OmegaGTE::GTE &gte();
-    SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTarget();
-    SharedHandle<OmegaGTE::GECommandQueue> &commandQueue();
+
+    /// Compiles `omegaslPath` at runtime and builds a render pipeline.
+    /// Returns nullptr on compile / shader-resolution failure.
+    std::shared_ptr<Pipeline> createPipeline(const std::string &omegaslPath,
+                                              const PipelineDesc &desc);
+
+    /// Loads a pre-compiled `.omegasllib` and builds a render pipeline.
+    std::shared_ptr<Pipeline> createPipelineFromLibrary(const std::string &libPath,
+                                                         const PipelineDesc &desc);
 
     /// Called once after GTE and the render target are ready.
     virtual void onInit() {}
@@ -30,6 +41,11 @@ public:
     void run();
 
 private:
+    friend class Scene;
+    /// Internal accessor for Scene::render to encode through this app's
+    /// Renderer. Not part of the public surface.
+    Renderer &internalRenderer();
+
     struct Impl;
     std::unique_ptr<Impl> impl;
 };

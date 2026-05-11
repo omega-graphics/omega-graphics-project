@@ -51,6 +51,56 @@ void GEVulkanTexture::copyBytes(void *bytes, size_t bytesPerRow){
     vmaUnmapMemory(engine->memAllocator,alloc);
 }
 
+void GEVulkanTexture::copyBytes(void *bytes, size_t bytesPerRow, const TextureRegion &destRegion){
+    if(bytes == nullptr || bytesPerRow == 0 || destRegion.w == 0 || destRegion.h == 0){
+        return;
+    }
+
+    // Pipeline-Completion-Extension-Plan §4.5. Mirrors the single-arg path:
+    // map the host-visible image directly and memcpy row-by-row into the
+    // destination sub-region. The image's actual row pitch comes from
+    // `vkGetImageSubresourceLayout` so packing/alignment is honoured even
+    // when the linear-tiled image has a wider stride than the requested
+    // region width × bytesPerTexel.
+    std::uint32_t bytesPerTexel = 4;
+    switch(descriptor.pixelFormat){
+        case PixelFormat::RGBA16Unorm: bytesPerTexel = 8; break;
+        default: bytesPerTexel = 4; break;
+    }
+
+    VkImageSubresource subresource{};
+    subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    subresource.mipLevel = 0;
+    subresource.arrayLayer = 0;
+    VkSubresourceLayout subresourceLayout{};
+    vkGetImageSubresourceLayout(engine->device, img, &subresource, &subresourceLayout);
+
+    void *ptr = nullptr;
+    if(vmaMapMemory(engine->memAllocator, alloc, &ptr) != VK_SUCCESS || ptr == nullptr){
+        return;
+    }
+
+    auto *base = static_cast<std::uint8_t *>(ptr) + subresourceLayout.offset;
+    const auto *src = static_cast<const std::uint8_t *>(bytes);
+    const std::size_t rowBytes = static_cast<std::size_t>(destRegion.w) * bytesPerTexel;
+    const std::uint32_t depth = destRegion.d == 0 ? 1u : destRegion.d;
+
+    for(std::uint32_t z = 0; z < depth; ++z){
+        for(std::uint32_t y = 0; y < destRegion.h; ++y){
+            std::uint8_t *dst = base
+                + static_cast<std::size_t>(destRegion.z + z) * subresourceLayout.depthPitch
+                + static_cast<std::size_t>(destRegion.y + y) * subresourceLayout.rowPitch
+                + static_cast<std::size_t>(destRegion.x) * bytesPerTexel;
+            const std::uint8_t *srow = src
+                + static_cast<std::size_t>(z) * bytesPerRow * destRegion.h
+                + static_cast<std::size_t>(y) * bytesPerRow;
+            std::memcpy(dst, srow, rowBytes);
+        }
+    }
+
+    vmaUnmapMemory(engine->memAllocator, alloc);
+}
+
 static VkComponentSwizzle vulkanComponentSwizzleFor(TextureSwizzleChannel ch,
                                                     VkComponentSwizzle positionalIdentity){
     switch(ch){

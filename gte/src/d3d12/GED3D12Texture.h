@@ -12,6 +12,7 @@ class GED3D12Texture : public GETexture {
 public:
     std::uint64_t traceResourceId = 0;
     void copyBytes(void *bytes, size_t len) override;
+    void copyBytes(void *bytes, size_t bytesPerRow, const TextureRegion &destRegion) override;
     size_t getBytes(void *bytes, size_t bytesPerRow) override;
 
     bool onGpu;

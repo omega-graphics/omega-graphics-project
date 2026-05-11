@@ -41,7 +41,7 @@ namespace OmegaWTK::Composition {
         /// Acquire the GPU texture for `image`, uploading + generating mipmaps
         /// on first use. Subsequent calls with the same `image` return the
         /// cached texture. Returns nullptr when the upload failed.
-        SharedHandle<OmegaGTE::GETexture> acquire(Core::SharedPtr<OmegaCommon::Img::BitmapImage> image);
+        SharedHandle<OmegaGTE::GETexture> acquire(SharedHandle<OmegaCommon::Img::BitmapImage> image);
 
         /// Drop every cached entry whose `BitmapImage` has been destroyed.
         /// Safe to call from any thread.

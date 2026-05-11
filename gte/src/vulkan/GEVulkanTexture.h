@@ -71,6 +71,7 @@ public:
     size_t getBytes(void *bytes, size_t bytesPerRow) override;
 
     void copyBytes(void *bytes, size_t bytesPerRow) override;
+    void copyBytes(void *bytes, size_t bytesPerRow, const TextureRegion &destRegion) override;
 
 
     explicit GEVulkanTexture(

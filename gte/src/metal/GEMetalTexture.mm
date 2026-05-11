@@ -41,6 +41,20 @@ void GEMetalTexture::copyBytes(void *bytes, size_t bytesPerRow){
     }
 };
 
+void GEMetalTexture::copyBytes(void *bytes, size_t bytesPerRow, const TextureRegion &destRegion){
+    if(bytes == nullptr || bytesPerRow == 0 || destRegion.w == 0 || destRegion.h == 0){
+        return;
+    }
+    const NSUInteger depth = destRegion.d == 0 ? 1u : destRegion.d;
+    MTLRegion region = MTLRegionMake3D(destRegion.x, destRegion.y, destRegion.z,
+                                       destRegion.w, destRegion.h, depth);
+    const NSUInteger mipmapLevel = 0;
+    [NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,texture.handle()) replaceRegion:region
+                                                             mipmapLevel:mipmapLevel
+                                                               withBytes:bytes
+                                                             bytesPerRow:bytesPerRow];
+}
+
 size_t GEMetalTexture::getBytes(void *bytes, size_t bytesPerRow) {
     auto width = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,texture.handle()).width;
     auto height = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,texture.handle()).height;

@@ -50,7 +50,7 @@ namespace OmegaWTK::Composition {
     }
 
     SharedHandle<OmegaGTE::GETexture>
-    BitmapTextureCache::acquire(Core::SharedPtr<OmegaCommon::Img::BitmapImage> image){
+    BitmapTextureCache::acquire(SharedHandle<OmegaCommon::Img::BitmapImage> image){
         if(image == nullptr || image->data == nullptr){
             return nullptr;
         }

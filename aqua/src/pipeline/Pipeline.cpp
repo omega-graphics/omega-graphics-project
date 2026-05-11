@@ -1,0 +1,115 @@
+#include <aqua/Pipeline.h>
+#include <OmegaGTE.h>
+#include <fstream>
+#include <sstream>
+#include <iostream>
+
+namespace Aqua {
+
+struct Pipeline::Impl {
+    SharedHandle<OmegaGTE::GTEShaderLibrary> shaderLib;
+    SharedHandle<OmegaGTE::GERenderPipelineState> state;
+};
+
+Pipeline::Pipeline() : impl(std::make_unique<Impl>()) {}
+Pipeline::~Pipeline() = default;
+
+namespace {
+
+OmegaGTE::RasterCullMode mapCull(CullMode m) {
+    switch (m) {
+        case CullMode::None:  return OmegaGTE::RasterCullMode::None;
+        case CullMode::Front: return OmegaGTE::RasterCullMode::Front;
+        case CullMode::Back:  return OmegaGTE::RasterCullMode::Back;
+    }
+    return OmegaGTE::RasterCullMode::None;
+}
+
+OmegaGTE::TriangleFillMode mapFill(FillMode m) {
+    switch (m) {
+        case FillMode::Solid:     return OmegaGTE::TriangleFillMode::Solid;
+        case FillMode::Wireframe: return OmegaGTE::TriangleFillMode::Wireframe;
+    }
+    return OmegaGTE::TriangleFillMode::Solid;
+}
+
+std::shared_ptr<Pipeline> buildFromLibrary(
+    OmegaGTE::GTE &gte,
+    SharedHandle<OmegaGTE::GTEShaderLibrary> shaderLib,
+    const PipelineDesc &desc) {
+    if (!shaderLib) {
+        std::cerr << "Aqua::Pipeline: shader library load failed\n";
+        return nullptr;
+    }
+
+    auto vIt = shaderLib->shaders.find(desc.vertexFunction);
+    auto fIt = shaderLib->shaders.find(desc.fragmentFunction);
+    if (vIt == shaderLib->shaders.end()) {
+        std::cerr << "Aqua::Pipeline: vertex function '"
+                  << desc.vertexFunction << "' not in shader library\n";
+        return nullptr;
+    }
+    if (fIt == shaderLib->shaders.end()) {
+        std::cerr << "Aqua::Pipeline: fragment function '"
+                  << desc.fragmentFunction << "' not in shader library\n";
+        return nullptr;
+    }
+
+    OmegaGTE::RenderPipelineDescriptor pdesc{};
+    pdesc.vertexFunc = vIt->second;
+    pdesc.fragmentFunc = fIt->second;
+    pdesc.cullMode = mapCull(desc.cullMode);
+    pdesc.triangleFillMode = mapFill(desc.fillMode);
+    pdesc.depthAndStencilDesc.enableDepth = desc.enableDepth;
+
+    auto state = gte.graphicsEngine->makeRenderPipelineState(pdesc);
+    if (!state) {
+        std::cerr << "Aqua::Pipeline: makeRenderPipelineState returned null\n";
+        return nullptr;
+    }
+
+    // Pipeline has a private ctor; std::make_shared can't reach it. Use new
+    // through a friend factory struct declared in Pipeline.h.
+    struct Ctor : Pipeline { Ctor() : Pipeline() {} };
+    auto p = std::shared_ptr<Pipeline>(new Ctor());
+    p->impl->shaderLib = std::move(shaderLib);
+    p->impl->state = std::move(state);
+    return p;
+}
+
+} // namespace
+
+struct PipelineFactory {
+    static std::shared_ptr<Pipeline> create(OmegaGTE::GTE &gte,
+                                            const std::string &omegaslPath,
+                                            const PipelineDesc &desc) {
+        std::ifstream in(omegaslPath);
+        if (!in) {
+            std::cerr << "Aqua::Pipeline: cannot open " << omegaslPath << "\n";
+            return nullptr;
+        }
+        std::stringstream ss;
+        ss << in.rdbuf();
+        OmegaCommon::String src = ss.str();
+
+        auto compiled = gte.omegaSlCompiler->compile({
+            OmegaGTE::OmegaSLCompiler::Source::fromString(src)
+        });
+        if (!compiled) {
+            std::cerr << "Aqua::Pipeline: shader compile failed\n";
+            return nullptr;
+        }
+        auto lib = gte.graphicsEngine->loadShaderLibraryRuntime(compiled);
+        return buildFromLibrary(gte, lib, desc);
+    }
+
+    static std::shared_ptr<Pipeline> createFromLibrary(
+        OmegaGTE::GTE &gte,
+        const std::string &libPath,
+        const PipelineDesc &desc) {
+        auto lib = gte.graphicsEngine->loadShaderLibrary(OmegaCommon::FS::Path(libPath));
+        return buildFromLibrary(gte, lib, desc);
+    }
+};
+
+} // namespace Aqua

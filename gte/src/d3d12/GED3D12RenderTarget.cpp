@@ -96,16 +96,33 @@ _NAMESPACE_BEGIN_
         const auto presentedCommandBufferId = queue != nullptr ? queue->lastSubmittedCommandBufferTraceId() : 0;
 
         // The caller is expected to have left the back-buffer in
-        // RENDER_TARGET state on this queue. Emit the transition to PRESENT
-        // on the last command list and commit before calling Present1.
+        // RENDER_TARGET state on this queue. The PRESENT barrier rides
+        // on whatever command list is convenient:
+        //   - If the queue still has pending (un-committed) lists, append
+        //     to the last one — cheap, no extra CB allocation.
+        //   - If the caller already called `commitToGPU` before `present()`
+        //     (the post queue-decoupling pattern in
+        //     `BackendRenderTargetContext::commit`), `commandLists` is
+        //     empty; allocate a fresh CB so the transition still runs on
+        //     this queue ahead of Present1.
         if(queue == nullptr){
             return;
         }
 
         auto commandList = queue->getLastCommandList();
+        SharedHandle<GECommandBuffer> barrierCb;
+        if(commandList == nullptr){
+            barrierCb = queue->getAvailableBuffer();
+            if(barrierCb != nullptr){
+                commandList = static_cast<ID3D12GraphicsCommandList6 *>(barrierCb->native());
+            }
+        }
         if(commandList != nullptr){
             auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex],D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PRESENT);
             commandList->ResourceBarrier(1,&barrier);
+        }
+        if(barrierCb != nullptr){
+            queue->submitCommandBuffer(barrierCb);
         }
         queue->commitToGPU();
         DXGI_PRESENT_PARAMETERS params {};
