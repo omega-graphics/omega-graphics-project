@@ -3,9 +3,9 @@
 
 _NAMESPACE_BEGIN_
 
-GEMetalTexture::GEMetalTexture(const GETexture::GETextureType &type,
+GEMetalTexture::GEMetalTexture(const TextureKind & kind,
                                const GETexture::GETextureUsage & usage,
-                               const TexturePixelFormat & pixelFormat,NSSmartPtr texture): GETexture(type,usage,pixelFormat),texture(texture){
+                               const TexturePixelFormat & pixelFormat,NSSmartPtr texture): GETexture(kind,usage,pixelFormat),texture(texture){
     id<MTLDevice> device = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,texture.handle()).device;
     resourceBarrier = NSObjectHandle {NSOBJECT_CPP_BRIDGE [device newFence]};
     auto mtlTexture = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,texture.handle());

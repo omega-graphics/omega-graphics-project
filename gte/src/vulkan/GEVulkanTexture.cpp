@@ -5,7 +5,7 @@
 _NAMESPACE_BEGIN_
 
 GEVulkanTexture::GEVulkanTexture(
-    const GETexture::GETextureType & type,
+    const TextureKind & kind,
     const GETexture::GETextureUsage & usage,
     const TexturePixelFormat & format,
     GEVulkanEngine *engine,
@@ -15,7 +15,7 @@ GEVulkanTexture::GEVulkanTexture(
     VmaAllocationInfo alloc_info,
     VmaAllocation alloc,const TextureDescriptor & descriptor,VmaMemoryUsage memoryUsage):
 
-GETexture(type,usage,format),
+GETexture(kind,usage,format),
 engine(engine),
 img(std::move(img)),
 img_view(std::move(img_view)),
@@ -140,11 +140,8 @@ VkImageView GEVulkanTexture::getOrCreateSwizzledView(const TextureSwizzle & swiz
     VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     info.image = img;
     // Match the viewType chosen at primary-view creation: this drives off
-    // the resolved `TextureKind` (set on the texture by `setShape()` in
-    // makeTexture) so cube/array/MS textures get a viewType that matches
-    // the underlying VkImage. The earlier version switched on the legacy
-    // `descriptor.type` which only knows 1D/2D/3D and gave cubes a 2D
-    // view — Vulkan validation rejects that mismatch.
+    // the texture's `TextureKind` so cube/array/MS textures get a viewType
+    // that matches the underlying VkImage.
     info.viewType = vulkanViewTypeForKind(getKind());
     info.format = format;
     info.components.r = vulkanComponentSwizzleFor(swizzle.r, VK_COMPONENT_SWIZZLE_R);

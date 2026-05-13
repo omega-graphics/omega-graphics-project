@@ -70,7 +70,7 @@ public:
     }
 
     explicit GED3D12Texture(
-            const GETextureType & type,
+            const TextureKind & kind,
             const GETextureUsage & usage,
             const TexturePixelFormat & pixelFormat,
             ID3D12Resource *res,

@@ -154,6 +154,15 @@ if(TARGET_VULKAN)
 		target_include_directories("OmegaGTE" PRIVATE ${VULKAN_INCLUDE_DIRECTORY} ${VMA_INCLUDE_DIRECTORY} ${GLM_INCLUDE_DIRECTORY})
 		target_link_libraries("OmegaGTE" PRIVATE libvulkan.so.1 libshaderc_shared.so)
 	endif()
+
+	# cgltf is single-header; the implementation TU lives in
+	# src/common/MeshParser.cpp behind a CGLTF_IMPLEMENTATION define.
+	# OBJ is parsed inline in MeshParser.cpp (no external dep).
+	# Vulkan asset loaders consume the shared parser; image decoding
+	# for GEVulkanTextureAsset goes through OmegaCommon::Img (libpng /
+	# turbojpeg / libtiff already linked transitively via OmegaCommon),
+	# so no extra image-codec deps are required here.
+	target_include_directories("OmegaGTE" PRIVATE "${THIRD_PARTY_DIR}/cgltf")
 endif()
 if(TARGET_DIRECTX)
 	set(THIRD_PARTY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps)

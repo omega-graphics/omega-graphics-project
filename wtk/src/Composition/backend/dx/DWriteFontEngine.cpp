@@ -466,7 +466,7 @@ namespace OmegaWTK::Composition {
                 }
              }
 
-             OmegaGTE::TextureDescriptor textureDesc {OmegaGTE::GETexture::Texture2D};
+             OmegaGTE::TextureDescriptor textureDesc {};
              textureDesc.usage = OmegaGTE::GETexture::RenderTarget;
              textureDesc.pixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
              textureDesc.height = (unsigned)(rect.h * this->renderScale);

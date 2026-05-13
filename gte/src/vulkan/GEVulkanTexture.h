@@ -75,7 +75,7 @@ public:
 
 
     explicit GEVulkanTexture(
-        const GETexture::GETextureType & type,
+        const TextureKind & kind,
         const GETexture::GETextureUsage & usage,
         const TexturePixelFormat & format,
         GEVulkanEngine *engine,

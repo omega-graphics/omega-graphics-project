@@ -139,7 +139,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     OmegaGTE::TextureDescriptor textureDescriptor {};
     textureDescriptor.usage = OmegaGTE::GETexture::ToGPU;
-    textureDescriptor.type = OmegaGTE::GETexture::Texture2D;
+    textureDescriptor.kind = OmegaGTE::TextureKind::Tex2D;
     textureDescriptor.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm_SRGB;
     textureDescriptor.width = w;
     textureDescriptor.height = h;

@@ -211,7 +211,7 @@ static void start_application(GtkApplication *app, gpointer){
 
     // ---- Create offscreen texture + texture render target ----
     OmegaGTE::TextureDescriptor texDesc {};
-    texDesc.type = OmegaGTE::GETexture::Texture2D;
+    texDesc.kind = OmegaGTE::TextureKind::Tex2D;
     texDesc.usage = OmegaGTE::GETexture::RenderTarget;
     texDesc.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm;
     texDesc.width = pw;

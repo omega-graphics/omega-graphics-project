@@ -80,7 +80,7 @@ namespace OmegaWTK::Composition {
                                h >= kMipmapDimensionThreshold);
         const unsigned mipLevels = wantMips ? computeMipLevels(w, h) : 1u;
 
-        OmegaGTE::TextureDescriptor desc {OmegaGTE::GETexture::Texture2D};
+        OmegaGTE::TextureDescriptor desc {};
         desc.usage     = OmegaGTE::GETexture::ToGPU;
         desc.width     = w;
         desc.height    = h;

@@ -1207,7 +1207,7 @@ _NAMESPACE_BEGIN_
         imageInfo.format = imageFormat;
 
         // §6.2 — heap path mirrors the engine path's kind dispatch.
-        const TextureKind kind = resolveTextureKind(desc);
+        const TextureKind kind = desc.kind == TextureKind::Auto ? TextureKind::Tex2D : desc.kind;
         const unsigned descArrayLayers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
         const bool isMS = (kind == TextureKind::Tex2DMS || kind == TextureKind::Tex2DMSArray);
         const unsigned effectiveSampleCount = isMS ? (desc.sampleCount > 1 ? desc.sampleCount : 1u) : 1u;
@@ -1297,7 +1297,7 @@ _NAMESPACE_BEGIN_
         VmaMemoryUsage memUsage = VMA_MEMORY_USAGE_GPU_ONLY;
 
         auto result = std::shared_ptr<GEVulkanTexture>(new GEVulkanTexture(
-            desc.type, desc.usage, desc.pixelFormat,
+            kind, desc.usage, desc.pixelFormat,
             engine, img, imgView, layout, allocationInfo, alloc, desc, memUsage));
         result->format = imageFormat;
         result->setShape(kind, vkArrayLayers, effectiveSampleCount);
@@ -1353,9 +1353,10 @@ _NAMESPACE_BEGIN_
         image_desc.format = image_format;
 
         // §6.2 — pick VkImageType / VkImageViewType / arrayLayers from
-        // the resolved kind. Cube images need VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT
-        // so the view can use VIEW_TYPE_CUBE.
-        const TextureKind kind = resolveTextureKind(desc);
+        // the descriptor's kind. Cube images need VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT
+        // so the view can use VIEW_TYPE_CUBE. `Auto` is treated as Tex2D for
+        // back-compat with descriptors that never set kind explicitly.
+        const TextureKind kind = desc.kind == TextureKind::Auto ? TextureKind::Tex2D : desc.kind;
         const unsigned descArrayLayers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
         const bool isMS = (kind == TextureKind::Tex2DMS || kind == TextureKind::Tex2DMSArray);
 
@@ -1698,7 +1699,7 @@ _NAMESPACE_BEGIN_
         sanitizedDesc.arrayLayers = vkArrayLayers;
         sanitizedDesc.sampleCount = effectiveSampleCount;
         auto result = std::shared_ptr<GEVulkanTexture>(new GEVulkanTexture(
-                sanitizedDesc.type,
+                kind,
                 sanitizedDesc.usage,
                 sanitizedDesc.pixelFormat,
                 this,
@@ -2880,7 +2881,10 @@ _NAMESPACE_BEGIN_
     SharedHandle<GETextureRenderTarget> GEVulkanEngine::makeTextureRenderTarget(const TextureRenderTargetDescriptor &desc){
         SharedHandle<GETexture> tex;
         if(!desc.renderToExistingTexture){
-            TextureDescriptor texDesc {GETexture::Texture2D,OmegaGTE::Shared,GETexture::GPUAccessOnly};
+            TextureDescriptor texDesc{};
+            texDesc.storage_opts = OmegaGTE::Shared;
+            texDesc.usage = GETexture::GPUAccessOnly;
+            texDesc.kind = TextureKind::Tex2D;
             tex = makeTexture(texDesc);
         }
         else {

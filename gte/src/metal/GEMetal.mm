@@ -1057,9 +1057,9 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                         default: usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite; break;
                     }
 
-                    // §6.2 — drive MTLTextureType from the resolved kind so
+                    // §6.2 — drive MTLTextureType from the descriptor's kind so
                     // cube / array / MS variants pick the right native type.
-                    const TextureKind kind = resolveTextureKind(desc);
+                    const TextureKind kind = desc.kind == TextureKind::Auto ? TextureKind::Tex2D : desc.kind;
                     const unsigned arrayLayers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
                     const bool isMS = (kind == TextureKind::Tex2DMS || kind == TextureKind::Tex2DMSArray);
                     const unsigned effectiveSampleCount = isMS ? (desc.sampleCount > 1 ? desc.sampleCount : 1u) : 1u;
@@ -1152,7 +1152,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                     }
 
                     NSSmartPtr texPtr(NSObjectHandle{NSOBJECT_CPP_BRIDGE primary});
-                    auto result = SharedHandle<GETexture>(new GEMetalTexture(desc.type, desc.usage, desc.pixelFormat, texPtr));
+                    auto result = SharedHandle<GETexture>(new GEMetalTexture(kind, desc.usage, desc.pixelFormat, texPtr));
                     result->setShape(kind, arrayLayers, effectiveSampleCount);
                     return result;
                 }
@@ -1322,14 +1322,14 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                 texture = desc.texture;
             }
             else {
-                TextureDescriptor textureDescriptor {
-                    GETexture::Texture2D,
-                    GPUOnly,
-                    GETexture::RenderTarget,
-                    TexturePixelFormat::RGBA8Unorm,
-                    desc.region.w,
-                    desc.region.h,
-                    desc.region.d};
+                TextureDescriptor textureDescriptor{};
+                textureDescriptor.storage_opts = GPUOnly;
+                textureDescriptor.usage = GETexture::RenderTarget;
+                textureDescriptor.pixelFormat = TexturePixelFormat::RGBA8Unorm;
+                textureDescriptor.width = desc.region.w;
+                textureDescriptor.height = desc.region.h;
+                textureDescriptor.depth = desc.region.d;
+                textureDescriptor.kind = TextureKind::Tex2D;
 
                 texture = makeTexture(textureDescriptor);
             }
@@ -1361,8 +1361,8 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                 }
             }
 
-            // §6.2 — drive MTLTextureType from the resolved kind.
-            const TextureKind kind = resolveTextureKind(desc);
+            // §6.2 — drive MTLTextureType from the descriptor's kind.
+            const TextureKind kind = desc.kind == TextureKind::Auto ? TextureKind::Tex2D : desc.kind;
             const unsigned arrayLayers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
             const bool isMS = (kind == TextureKind::Tex2DMS || kind == TextureKind::Tex2DMSArray);
             const unsigned effectiveSampleCount = isMS ? (desc.sampleCount > 1 ? desc.sampleCount : 1u) : 1u;
@@ -1471,7 +1471,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             }
             NSSmartPtr texture = NSObjectHandle {NSOBJECT_CPP_BRIDGE primary};
             texture.assertExists();
-            auto result = std::shared_ptr<GETexture>(new GEMetalTexture(desc.type,desc.usage,desc.pixelFormat,texture));
+            auto result = std::shared_ptr<GETexture>(new GEMetalTexture(kind,desc.usage,desc.pixelFormat,texture));
             result->setShape(kind, arrayLayers, effectiveSampleCount);
             return result;
         };

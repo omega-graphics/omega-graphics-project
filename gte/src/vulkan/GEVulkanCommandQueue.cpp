@@ -432,22 +432,22 @@ _NAMESPACE_BEGIN_
             ad = {};
             ad.samples = VK_SAMPLE_COUNT_1_BIT;
             switch (desc.colorAttachments[i].loadAction) {
-                case GERenderTarget::RenderPassDesc::ColorAttachment::Clear: {
+                case OmegaGTE::GERenderPassDescriptor::ColorAttachment::Clear: {
                     ad.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
                     ad.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                     break;
                 }
-                case GERenderTarget::RenderPassDesc::ColorAttachment::Load: {
+                case OmegaGTE::GERenderPassDescriptor::ColorAttachment::Load: {
                     ad.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
                     ad.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
                     break;
                 }
-                case GERenderTarget::RenderPassDesc::ColorAttachment::LoadPreserve: {
+                case OmegaGTE::GERenderPassDescriptor::ColorAttachment::LoadPreserve: {
                     ad.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
                     ad.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                     break;
                 }
-                case GERenderTarget::RenderPassDesc::ColorAttachment::Discard: {
+                case OmegaGTE::GERenderPassDescriptor::ColorAttachment::Discard: {
                     ad.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
                     ad.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
                     break;

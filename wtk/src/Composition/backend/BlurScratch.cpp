@@ -77,7 +77,7 @@ namespace OmegaWTK::Composition {
             source_ = texturePool()->acquire(key);
         }
         else {
-            OmegaGTE::TextureDescriptor desc {OmegaGTE::GETexture::Texture2D};
+            OmegaGTE::TextureDescriptor desc {};
             desc.usage = OmegaGTE::GETexture::RenderTarget;
             desc.storage_opts = OmegaGTE::Shared;
             desc.width = w;
@@ -95,7 +95,7 @@ namespace OmegaWTK::Composition {
             pingPong_ = texturePool()->acquire(key);
         }
         else {
-            OmegaGTE::TextureDescriptor desc {OmegaGTE::GETexture::Texture2D};
+            OmegaGTE::TextureDescriptor desc {};
             desc.usage = OmegaGTE::GETexture::RenderTarget;
             desc.storage_opts = OmegaGTE::Shared;
             desc.width = w;

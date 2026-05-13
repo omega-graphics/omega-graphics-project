@@ -5,7 +5,7 @@
 
 _NAMESPACE_BEGIN_
 
-GED3D12Texture::GED3D12Texture(const GETextureType & type,
+GED3D12Texture::GED3D12Texture(const TextureKind & kind,
                                const GETextureUsage & usage,
                                const TexturePixelFormat & pixelFormat,
                                ID3D12Resource *res,
@@ -17,7 +17,7 @@ GED3D12Texture::GED3D12Texture(const GETextureType & type,
                                D3D12_RESOURCE_STATES & currentState,
                                D3D12MA::Allocation *d3d12maAllocation,
                                D3D12MA::Allocation *d3d12maCpuSideAllocation):
-                                GETexture(type,usage,pixelFormat),
+                                GETexture(kind,usage,pixelFormat),
                                 resource(res),
                                 cpuSideresource(cpuSideRes),
                                srvDescHeap(descHeap),

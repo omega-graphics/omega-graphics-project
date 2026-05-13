@@ -227,7 +227,7 @@ GlyphRun::fromUStringAndFont(const OmegaCommon::UniString &str, Core::SharedPtr<
          desc.usage = OmegaGTE::GETexture::ToGPU;
          desc.storage_opts = OmegaGTE::Shared;
          desc.pixelFormat = OmegaGTE::TexturePixelFormat::BGRA8Unorm;
-         desc.type = OmegaGTE::GETexture::Texture2D;
+         desc.kind = OmegaGTE::TextureKind::Tex2D;
          desc.width = (unsigned)pixelWidth;
          desc.height = (unsigned)pixelHeight;
          

@@ -162,14 +162,12 @@ and resolves any material base-color textures to per-mesh `TextureAsset`s.
   any mesh or user code holds a reference. `release()` is provided as an
   explicit early-free hook but is not required — destruction handles it.
 
-### 3.4 D3D12 implementation ✅ — Vulkan deferred
-
-D3D12 lands in this pass; Vulkan is the remaining open work.
+### 3.4 D3D12 ✅ — Vulkan ✅
 
 | Platform | Library | Status | Notes |
 |----------|---------|--------|-------|
 | **Windows (D3D12)** | **DirectXTex** + **DirectXMesh** + **cgltf** + inline OBJ | **Done** | DirectXTex loads DDS / HDR / TGA / WIC formats (PNG/JPEG/TIFF/BMP), generates mipmaps, handles BC compression and sRGB promotion. DirectXMesh is linked but unused in v1 (reserved for tangent / cache-optimization passes). `cgltf` parses glTF 2.0; OBJ is parsed by an inline ~120-line parser in `MeshParser.cpp`. |
-| **Linux / Android (Vulkan)** | **KTX-Software** + **stb_image** + (shared `MeshParser`) | **Deferred** | libktx for KTX/KTX2, `stb_image` for PNG/JPEG into `GETexture::copyBytes`. The mesh parser is already shared (`gte/src/common/MeshParser.{h,cpp}`) so the Vulkan backend just wires the GPU upload side. Add `libktx`, `stb_image` entries to `gte/AUTOMDEPS` for `linux` / `android` when picking this up. |
+| **Linux / Android (Vulkan)** | **OmegaCommon::Img** (libpng / turbojpeg / libtiff) + shared `MeshParser` (cgltf + inline OBJ) | **Done** | Image decoding goes through the in-tree `OmegaCommon::Img` codec stack already linked transitively via OmegaCommon — no `libktx` / `stb_image` fetch was needed for the v1 surface. Decoded PNG/JPEG/TIFF is normalized to 8-bit RGBA and uploaded into a `ToGPU` (LINEAR-tiled, host-visible) `GETexture` via `copyBytes`. Mesh loading reuses the shared `MeshParser` exactly like the D3D12 backend; the vertex buffer is a `BufferDescriptor::Upload` allocation mapped through VMA. |
 
 For Vulkan (or any of the other platforms that can't support specifc image type), we will use our own image codec from OmegaCommon. (We can add `stb_image` to our image codec for extra format support.)
 Same goes with our mesh_parser. It should also be accessible from macOS so we can parse other meshes that are normally supported on there. (fbx)
@@ -184,13 +182,22 @@ Same goes with our mesh_parser. It should also be accessible from macOS so we ca
 - **BC / HDR pixel formats**: `TexturePixelFormat` only models 5 formats today. `GED3D12TextureAsset` reports a best-effort `descriptor()` (warns once on unmapped DXGI formats) and constructs the SRV directly from the source DXGI format, so BC1–BC7 / HDR / 16F textures bind correctly even though `descriptor().pixelFormat` is lossy. Extending the engine-level enum is future work.
 - **Texture upload**: a transient `D3D12_COMMAND_LIST_TYPE_DIRECT` queue + fence is created per `load()`. Avoids interleaving with the engine's main render queue and keeps the loader self-contained at the cost of a queue allocation per file. Acceptable for asset-load workloads.
 
+*Vulkan-specific post-implementation notes:*
+
+- **Image codec choice**: per the directive in the original notes ("we will use our own image codec from OmegaCommon"), the Vulkan backend skips the `libktx` / `stb_image` fetch and decodes through `OmegaCommon::Img::loadFromFile`. PNG / JPEG / TIFF are the v1 surface. Folding `stb_image` into `OmegaCommon::Img` to cover BMP / HDR / KTX is a clean follow-up — `GEVulkanTextureAsset` would not need to change.
+- **Pixel format normalization**: the decoded `BitmapImage` is forced to 8-bit RGBA before upload. RGB sources get an alpha pad of `0xFF`; 16-bit PNGs are already stripped to 8-bit by the codec. `RGBA8Unorm_SRGB` vs `RGBA8Unorm` follows `LoadOptions::sRGB`.
+- **Mip generation**: `generateMipmaps` is honored as a best-effort hint only — runtime mip generation on Vulkan requires a graphics queue + `vkCmdBlitImage` chain, which lives in the upcoming upload-queue helper. v1 uploads mip 0 and logs a one-shot notice. The D3D12 path's transient-queue trick doesn't translate directly because Vulkan needs the chain to live on a real graphics queue for SRGB blit support.
+- **Texture upload**: `GETexture::ToGPU` allocates a `LINEAR`-tiled, `HOST_VISIBLE` `VkImage`, so `copyBytes` does a direct memcpy through `vmaMapMemory`. No staging buffer, no transfer-queue plumbing — same as how `getBytes` works in reverse. Compressed and HDR formats would need the staging path; not in scope here.
+- **Mesh vertex buffer**: `engine->makeBuffer({ Upload, ... })` returns a `CPU_TO_GPU` VMA buffer that the loader maps once and memcpys into. Mirrors the D3D12 backend exactly.
+
 **Files (this phase):**
 - replaced `gte/src/d3d12/GED3D12TextureAsset.cpp` with a DirectXTex-backed implementation
 - replaced `gte/src/d3d12/GED3D12MeshAsset.cpp` with a `MeshParser`-driven implementation
+- replaced `gte/src/vulkan/GEVulkanTextureAsset.cpp` with an `OmegaCommon::Img`-backed implementation
+- replaced `gte/src/vulkan/GEVulkanMeshAsset.cpp` with a `MeshParser`-driven implementation
 - new `gte/src/common/MeshParser.h` / `gte/src/common/MeshParser.cpp` (shared, backend-neutral)
-- `gte/AUTOMDEPS`: added `cgltf` for the Windows platform; DirectXTex / DirectXMesh entries already present
-- `gte/CMakeLists.txt`: under `TARGET_DIRECTX`, `add_subdirectory` + link `DirectXTex` + `DirectXMesh`, include `cgltf`
-- Vulkan stubs (`gte/src/vulkan/GEVulkanTextureAsset.cpp`, `GEVulkanMeshAsset.cpp`) still throw "not implemented"; they remain part of Phase 3.4 and are tracked separately.
+- `gte/AUTOMDEPS`: `cgltf` now declared for `windows`, `linux`, and `android` platforms (Vulkan picks it up via the shared parser)
+- `gte/CMakeLists.txt`: under `TARGET_DIRECTX`, `add_subdirectory` + link `DirectXTex` + `DirectXMesh`, include `cgltf`. Under `TARGET_VULKAN`, also includes `cgltf` so `MeshParser.cpp` compiles. No extra link entries needed for image decoding — `libpng` / `turbojpeg` / `libtiff` are already pulled in transitively via OmegaCommon.
 
 ---
 
@@ -219,7 +226,7 @@ Same goes with our mesh_parser. It should also be accessible from macOS so we ca
 5. **Phase 3.1**: TextureAsset — Metal (MetalKit) impl + stubs on D3D12/Vulkan.
 6. **Phase 3.2**: MeshAsset — Metal (Model I/O / MTKMesh) impl + stubs on D3D12/Vulkan.
 7. **Phase 3.3**: Wire MeshAsset outputs into GEMesh bindings.
-8. **Phase 3.4 (D3D12 ✅, Vulkan deferred)**: D3D12 (DirectXTex / DirectXMesh + cgltf + inline OBJ) is complete. Vulkan (libktx / stb_image, reusing shared `MeshParser`) is the remaining open piece.
+8. **Phase 3.4 (D3D12 ✅, Vulkan ✅)**: D3D12 (DirectXTex / DirectXMesh + cgltf + inline OBJ) and Vulkan (`OmegaCommon::Img` + shared `MeshParser`) are both complete.
 9. **Phase 4**: Tests and documentation.
 
 ---
@@ -231,6 +238,6 @@ Same goes with our mesh_parser. It should also be accessible from macOS so we ca
 | **Triangulation params** | Texture attachments can carry optional `SharedHandle<GETexture>`; dimensions remain in existing union. |
 | **Triangulation result** | All primitives emit texture2D/texture3D coords (and optional normals) when a texture attachment is set. |
 | **GEMesh** | New type: vertex (+ optional index) buffer, layout, and texture bindings; buildable from TETriangulationResult or MeshAsset. |
-| **TextureAsset** | High-level texture loading via DirectXTex (D3D12 ✅), MetalKit (Metal ✅), KTX-Software (Vulkan — deferred). |
-| **MeshAsset** | High-level mesh loading via shared `MeshParser` (cgltf + inline OBJ) on D3D12 ✅, MetalKit / Model I/O on Metal ✅, Vulkan deferred (will reuse the shared parser). |
+| **TextureAsset** | High-level texture loading via DirectXTex (D3D12 ✅), MetalKit (Metal ✅), `OmegaCommon::Img` (Vulkan ✅). |
+| **MeshAsset** | High-level mesh loading via shared `MeshParser` (cgltf + inline OBJ) on D3D12 ✅ and Vulkan ✅; MetalKit / Model I/O on Metal ✅. |
 | **Command encoding** | Draw GEMesh (set vertex/index buffer, bind mesh textures). |

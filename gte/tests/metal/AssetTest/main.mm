@@ -114,7 +114,7 @@ int main(int /*argc*/, const char * /*argv*/[]) {
     // Headless test: build a small offscreen texture and route the
     // triangulation context through it.
     OmegaGTE::TextureDescriptor rtTexDesc;
-    rtTexDesc.type = OmegaGTE::GETexture::Texture2D;
+    rtTexDesc.kind = OmegaGTE::TextureKind::Tex2D;
     rtTexDesc.usage = OmegaGTE::GETexture::RenderTarget;
     rtTexDesc.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm;
     rtTexDesc.width = 256;

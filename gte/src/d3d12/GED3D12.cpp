@@ -340,7 +340,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
     // §6.2 — the heap path mirrors the engine path's kind dispatch. Cube /
     // array / MS textures place the same way as their underlying 2D-array
     // resource on D3D12; only the SRV view dimension differs.
-    const TextureKind kind = resolveTextureKind(desc);
+    const TextureKind kind = desc.kind == TextureKind::Auto ? TextureKind::Tex2D : desc.kind;
     const unsigned arrayLayers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
     const bool isMS = (kind == TextureKind::Tex2DMS || kind == TextureKind::Tex2DMSArray);
     const unsigned effectiveSampleCount = isMS ? (desc.sampleCount > 1 ? desc.sampleCount : 1u) : 1u;
@@ -497,7 +497,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         }
     }
 
-    auto result = SharedHandle<GETexture>(new GED3D12Texture(desc.type, desc.usage, desc.pixelFormat, texture, nullptr, descHeap, nullptr, rtvDescHeap, nullptr, res_states, allocation));
+    auto result = SharedHandle<GETexture>(new GED3D12Texture(kind, desc.usage, desc.pixelFormat, texture, nullptr, descHeap, nullptr, rtvDescHeap, nullptr, res_states, allocation));
     result->setShape(kind, arrayLayers, effectiveSampleCount);
     return result;
 }
@@ -1655,7 +1655,7 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
         else {
             TextureDescriptor targetDesc {};
             targetDesc.usage = GETexture::RenderTarget;
-            targetDesc.type = GETexture::Texture2D;
+            targetDesc.kind = TextureKind::Tex2D;
             targetDesc.width = desc.region.w;
             targetDesc.height = desc.region.h;
             texture = makeTexture(targetDesc);
@@ -1683,7 +1683,7 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
         bool isSRV = bool(desc.usage == GETexture::ToGPU || desc.usage == GETexture::GPUAccessOnly || desc.usage == GETexture::RenderTarget);
         bool isDSV =  bool(desc.usage == GETexture::RenderTargetAndDepthStencil || desc.usage == GETexture::GPUAccessOnly);
 
-        if(desc.usage == GETexture::RenderTargetAndDepthStencil && desc.type == GETexture::Texture3D){
+        if(desc.usage == GETexture::RenderTargetAndDepthStencil && desc.kind == TextureKind::Tex3D){
             DEBUG_STREAM("Cannot create a 3D Texture with Depth Stencil Properties");
             return nullptr;
         }
@@ -1743,10 +1743,10 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
         D3D12_RENDER_TARGET_VIEW_DESC view_desc {};
 
         // Pipeline-Completion-Extension-Plan §6.2 — drive native resource
-        // shape and SRV/UAV/RTV/DSV view dimension from the resolved
-        // TextureKind. The legacy `desc.type` field can't distinguish
-        // arrays / cubes / MS, so it goes via `resolveTextureKind`.
-        const TextureKind kind = resolveTextureKind(desc);
+        // shape and SRV/UAV/RTV/DSV view dimension from the descriptor's
+        // TextureKind. `Auto` is treated as `Tex2D` for back-compat with
+        // descriptors that never set kind explicitly.
+        const TextureKind kind = desc.kind == TextureKind::Auto ? TextureKind::Tex2D : desc.kind;
         const unsigned arrayLayers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
         const bool isMS = (kind == TextureKind::Tex2DMS || kind == TextureKind::Tex2DMSArray);
         const unsigned effectiveSampleCount = isMS ? (desc.sampleCount > 1 ? desc.sampleCount : 1u)
@@ -1950,8 +1950,9 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
             break;
         }
         case TextureKind::Auto:
-            // resolveTextureKind never returns Auto; fall through to the
-            // legacy 2D path for safety.
+            // The Auto-→-Tex2D collapse above guarantees this branch is
+            // dead; keep the case for switch exhaustiveness with the legacy
+            // 2D placement as a safety net.
             d3d12_desc = CD3DX12_RESOURCE_DESC::Tex2D(dxgiFormat,desc.width,desc.height,1,effectiveMips,1);
             break;
         }
@@ -2098,7 +2099,7 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
 
         DEBUG_STREAM("Will Return Texture");
 
-        auto result = SharedHandle<GETexture>(new GED3D12Texture(desc.type,desc.usage,desc.pixelFormat,texture,cpuSideRes,descHeap,uavDescHeap,rtvDescHeap,dsvDescHeap,res_states,texAllocation,cpuSideAllocation));
+        auto result = SharedHandle<GETexture>(new GED3D12Texture(kind,desc.usage,desc.pixelFormat,texture,cpuSideRes,descHeap,uavDescHeap,rtvDescHeap,dsvDescHeap,res_states,texAllocation,cpuSideAllocation));
         // §6.1 — record the resolved shape on the texture so bind-time
         // validation (§6.3) and any future per-kind queries can read
         // it without having to re-derive from `type` + `sampleCount`.

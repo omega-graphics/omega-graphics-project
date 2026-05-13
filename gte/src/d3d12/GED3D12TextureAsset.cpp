@@ -103,14 +103,6 @@ void fillSrvDesc(const DirectX::TexMetadata &md,
     }
 }
 
-GETexture::GETextureType engineTypeFor(const DirectX::TexMetadata &md) {
-    switch (md.dimension) {
-        case DirectX::TEX_DIMENSION_TEXTURE1D: return GETexture::Texture1D;
-        case DirectX::TEX_DIMENSION_TEXTURE3D: return GETexture::Texture3D;
-        default:                               return GETexture::Texture2D;
-    }
-}
-
 TextureKind engineKindFor(const DirectX::TexMetadata &md) {
     if (md.IsCubemap()) {
         return md.arraySize > 6 ? TextureKind::TexCubeArray : TextureKind::TexCube;
@@ -342,14 +334,14 @@ public:
         // Wrap as a GED3D12Texture. The resource is already on the GPU
         // and in PIXEL_SHADER_RESOURCE state; pass that as currentState.
         const TexturePixelFormat enginePF = mapDxgiToEngineFormat(md.format);
-        const GETexture::GETextureType etype = engineTypeFor(md);
+        const TextureKind ekind = engineKindFor(md);
 
         D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         ID3D12Resource *raw = resource.Get();
         raw->AddRef();  // GED3D12Texture holds via ComPtr; ScratchImage path
                         // didn't go through D3D12MA so allocations are null.
 
-        auto *tex = new GED3D12Texture(etype, GETexture::ToGPU, enginePF,
+        auto *tex = new GED3D12Texture(ekind, GETexture::ToGPU, enginePF,
                                        raw, /*cpuSideRes*/ nullptr,
                                        srvHeap, /*uavDescHeap*/ nullptr,
                                        /*rtvDescHeap*/ nullptr, /*dsvDescHeap*/ nullptr,
@@ -361,14 +353,13 @@ public:
         tex->onGpu = true;
         tex->primarySrvDesc = srvDesc;
         tex->hasPrimarySrvDesc = true;
-        tex->setShape(engineKindFor(md),
+        tex->setShape(ekind,
                       (unsigned)md.arraySize,
                       /*samples=*/1u);
 
         loadedTexture = SharedHandle<GETexture>(tex);
 
         loadedDescriptor = TextureDescriptor{};
-        loadedDescriptor.type        = etype;
         loadedDescriptor.usage       = GETexture::ToGPU;
         loadedDescriptor.pixelFormat = enginePF;
         loadedDescriptor.width       = (unsigned)md.width;
@@ -376,7 +367,7 @@ public:
         loadedDescriptor.depth       = (unsigned)md.depth;
         loadedDescriptor.mipLevels   = (unsigned)md.mipLevels;
         loadedDescriptor.sampleCount = 1;
-        loadedDescriptor.kind        = engineKindFor(md);
+        loadedDescriptor.kind        = ekind;
         loadedDescriptor.arrayLayers = (unsigned)md.arraySize;
 
         return true;

@@ -75,22 +75,30 @@ public:
                 return false;
             }
 
-            // Determine GETexture type from the MTLTextureType.
-            GETexture::GETextureType type = GETexture::Texture2D;
+            // Determine TextureKind from the MTLTextureType.
+            TextureKind kind = TextureKind::Tex2D;
             switch (mtlTex.textureType) {
-                case MTLTextureType1D: type = GETexture::Texture1D; break;
-                case MTLTextureType3D: type = GETexture::Texture3D; break;
-                default:               type = GETexture::Texture2D; break;
+                case MTLTextureType1D:                kind = TextureKind::Tex1D; break;
+                case MTLTextureType1DArray:           kind = TextureKind::Tex1DArray; break;
+                case MTLTextureType2D:                kind = TextureKind::Tex2D; break;
+                case MTLTextureType2DArray:           kind = TextureKind::Tex2DArray; break;
+                case MTLTextureType2DMultisample:     kind = TextureKind::Tex2DMS; break;
+                case MTLTextureTypeCube:              kind = TextureKind::TexCube; break;
+                case MTLTextureTypeCubeArray:         kind = TextureKind::TexCubeArray; break;
+                case MTLTextureType3D:                kind = TextureKind::Tex3D; break;
+                default:                              kind = TextureKind::Tex2D; break;
             }
 
             TexturePixelFormat fmt = mapMetalPixelFormat(mtlTex.pixelFormat);
 
             NSSmartPtr texPtr = NSObjectHandle{NSOBJECT_CPP_BRIDGE mtlTex};
             loadedTexture = SharedHandle<GETexture>(
-                new GEMetalTexture(type, GETexture::ToGPU, fmt, texPtr));
+                new GEMetalTexture(kind, GETexture::ToGPU, fmt, texPtr));
+            loadedTexture->setShape(kind,
+                                    static_cast<unsigned>(mtlTex.arrayLength),
+                                    static_cast<unsigned>(mtlTex.sampleCount));
 
             loadedDescriptor = TextureDescriptor{};
-            loadedDescriptor.type = type;
             loadedDescriptor.usage = GETexture::ToGPU;
             loadedDescriptor.pixelFormat = fmt;
             loadedDescriptor.width  = static_cast<unsigned>(mtlTex.width);
@@ -98,6 +106,8 @@ public:
             loadedDescriptor.depth  = static_cast<unsigned>(mtlTex.depth);
             loadedDescriptor.mipLevels = static_cast<unsigned>(mtlTex.mipmapLevelCount);
             loadedDescriptor.sampleCount = static_cast<unsigned>(mtlTex.sampleCount);
+            loadedDescriptor.kind = kind;
+            loadedDescriptor.arrayLayers = static_cast<unsigned>(mtlTex.arrayLength);
         }
         return true;
     }

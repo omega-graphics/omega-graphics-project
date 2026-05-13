@@ -118,7 +118,7 @@ public:
                             static_cast<float>(key.height));
 
         OmegaGTE::TextureDescriptor desc {};
-        desc.type = OmegaGTE::GETexture::Texture2D;
+        desc.kind = OmegaGTE::TextureKind::Tex2D;
         desc.storage_opts = OmegaGTE::Shared;
         desc.width = key.width;
         desc.height = key.height;

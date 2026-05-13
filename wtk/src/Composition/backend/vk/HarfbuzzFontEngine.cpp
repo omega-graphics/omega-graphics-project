@@ -259,7 +259,7 @@ namespace OmegaWTK::Composition {
             desc.storage_opts = OmegaGTE::Shared;
             desc.pixelFormat = OmegaGTE::TexturePixelFormat::BGRA8Unorm;
             // desc.defaultSwizzle = OmegaGTE::TextureSwizzle::swapRB();
-            desc.type = OmegaGTE::GETexture::Texture2D;
+            desc.kind = OmegaGTE::TextureKind::Tex2D;
             desc.width = (unsigned)pixelWidth;
             desc.height = (unsigned)pixelHeight;
 

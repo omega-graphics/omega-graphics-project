@@ -34,11 +34,6 @@ _NAMESPACE_BEGIN_
     class  OMEGAGTE_EXPORT GETexture : public GTEResource {
     public:
         OMEGACOMMON_CLASS("OmegaGTE.GETexture")
-        using GETextureType = enum : unsigned char {
-            Texture1D,
-            Texture2D,
-            Texture3D,
-        };
         using GETextureUsage = enum : unsigned char {
             ToGPU = 0x00,
             FromGPU = 0x01,
@@ -48,21 +43,20 @@ _NAMESPACE_BEGIN_
             RenderTargetAndDepthStencil = 0x05
         };
     protected:
-        GETextureType type;
         GETextureUsage usage;
         TexturePixelFormat pixelFormat;
-        TextureKind kind = TextureKind::Auto;
+        TextureKind kind = TextureKind::Tex2D;
         unsigned arrayLayers = 1;
         unsigned sampleCount = 1;
         bool checkIfCanWrite();
         explicit GETexture(
-                const GETextureType & type,
+                  const TextureKind & kind,
                   const GETextureUsage & usage,
                   const TexturePixelFormat & pixelFormat);
     public:
         /// @brief Effective shape of this texture. Phase B view-dimension
-        /// pickers and bind-time validators consult this; never the raw
-        /// `type` field, which can't distinguish array / cube / MS.
+        /// pickers and bind-time validators consult this so cube / array
+        /// / MS textures bind with the right view dimension.
         TextureKind getKind() const { return kind; }
         unsigned getArrayLayers() const { return arrayLayers; }
         unsigned getSampleCount() const { return sampleCount; }
@@ -116,7 +110,6 @@ _NAMESPACE_BEGIN_
 
 
     struct  OMEGAGTE_EXPORT TextureDescriptor {
-        GETexture::GETextureType type;
         StorageOpts storage_opts = Shared;
         GETexture::GETextureUsage usage = GETexture::ToGPU;
         TexturePixelFormat pixelFormat = TexturePixelFormat::RGBA8Unorm;
@@ -125,11 +118,11 @@ _NAMESPACE_BEGIN_
         unsigned depth = 1;
         unsigned mipLevels = 1;
         unsigned sampleCount = 1;
-        /// @brief Pipeline-Completion-Extension-Plan §6.1. When left at
-        /// `Auto`, backends derive kind from `type` + `sampleCount` so the
-        /// pre-Phase-B call sites keep working unchanged. New code should
-        /// set `kind` explicitly when allocating cube / array / MS textures.
-        TextureKind kind = TextureKind::Auto;
+        /// @brief Texture shape. Drives view-dimension picks (1D/2D/3D,
+        /// arrays, cubes, MS) in every backend's `makeTexture`. `Auto` is
+        /// not a valid descriptor input — backends treat it as `Tex2D`
+        /// for safety, but new code should always set this explicitly.
+        TextureKind kind = TextureKind::Tex2D;
         /// @brief Layer count for array kinds. For `TexCube` the engine
         /// fixes this at 6; for `TexCubeArray` it must be a multiple of 6;
         /// for `Tex1DArray` / `Tex2DArray` / `Tex2DMSArray` it is the
@@ -143,25 +136,6 @@ _NAMESPACE_BEGIN_
         /// `bindResourceAt*` always takes precedence over this default.
         TextureSwizzle defaultSwizzle = TextureSwizzle::identity();
     };
-
-    /// @brief Resolve a descriptor's effective `TextureKind`. When the
-    /// caller left `kind` at `Auto` (the back-compat path), derive the
-    /// kind from the legacy `type` + `sampleCount` fields. Otherwise
-    /// return the explicitly-requested kind. Used by every backend
-    /// `makeTexture` implementation so the legacy 1D/2D/2DMS/3D call
-    /// sites and the new explicit-kind call sites converge on the same
-    /// dispatch.
-    inline TextureKind resolveTextureKind(const TextureDescriptor &desc){
-        if(desc.kind != TextureKind::Auto) return desc.kind;
-        switch(desc.type){
-            case GETexture::Texture1D: return TextureKind::Tex1D;
-            case GETexture::Texture2D:
-                return desc.sampleCount > 1 ? TextureKind::Tex2DMS
-                                            : TextureKind::Tex2D;
-            case GETexture::Texture3D: return TextureKind::Tex3D;
-        }
-        return TextureKind::Tex2D;
-    }
 
     /// @brief Map an OmegaSL layout-desc texture type to the `TextureKind`
     /// the shader expects to be bound. Returns `TextureKind::Auto` for any

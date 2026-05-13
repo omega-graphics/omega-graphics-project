@@ -2,9 +2,9 @@
 
 _NAMESPACE_BEGIN_
 
-GETexture::GETexture(const GETextureType & type,
+GETexture::GETexture(const TextureKind & kind,
                      const GETextureUsage & usage,
-                     const TexturePixelFormat & pixelFormat):type(type),usage(usage),pixelFormat(pixelFormat){
+                     const TexturePixelFormat & pixelFormat):usage(usage),pixelFormat(pixelFormat),kind(kind){
 
 }
 

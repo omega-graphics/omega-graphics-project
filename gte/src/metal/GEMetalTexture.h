@@ -44,7 +44,7 @@ public:
     id<MTLTexture> getOrCreateSwizzledView(const TextureSwizzle & swizzle);
 
     ~GEMetalTexture() override;
-    explicit GEMetalTexture(const GETexture::GETextureType &type,
+    explicit GEMetalTexture(const TextureKind & kind,
                    const GETexture::GETextureUsage & usage,
                    const TexturePixelFormat & pixelFormat,
                    NSSmartPtr texture);

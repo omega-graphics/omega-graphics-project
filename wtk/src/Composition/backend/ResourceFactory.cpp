@@ -112,7 +112,7 @@ namespace OmegaWTK::Composition {
             desc.storage_opts = OmegaGTE::Shared;
             desc.width = width;
             desc.height = height;
-            desc.type = OmegaGTE::GETexture::Texture2D;
+            desc.kind = OmegaGTE::TextureKind::Tex2D;
             desc.pixelFormat = format;
 
             result.texture = gte.graphicsEngine->makeTexture(desc);
