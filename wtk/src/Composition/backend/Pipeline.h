@@ -54,6 +54,18 @@ namespace OmegaWTK::Composition {
         /// the tint color. Texture bound at fragment slot 11. Sampler is
         /// the shared `mainSampler` (anisotropic, clamp_to_edge).
         SharedHandle<OmegaGTE::GERenderPipelineState> bitmap_;
+        /// MSDF text render pipeline (Phase 6.7.2). Drives
+        /// `VisualCommand::TextRun` draws — one quad per glyph,
+        /// authored CPU-side from the per-font `GlyphAtlas` UV rect
+        /// and the layout engine's per-glyph position. Vertex layout
+        /// `(float4 pos, float4 uvPad)`. Per-draw uniform at fragment
+        /// slot 13 carries the text color and a reserved
+        /// outline-params float4 (Phase 6.7.3 surface). Atlas texture
+        /// at fragment slot 14, sampled via `mainSampler`. Chunk 1
+        /// builds the pipeline against a magenta-stub fragment shader;
+        /// chunk 3 swaps in the real median-of-three / fwidth /
+        /// smoothstep math.
+        SharedHandle<OmegaGTE::GERenderPipelineState> text_;
 
         SharedHandle<OmegaGTE::GEComputePipelineState> linearGradient_;
         SharedHandle<OmegaGTE::GEComputePipelineState> gaussianBlurH_;
@@ -78,6 +90,7 @@ namespace OmegaWTK::Composition {
         SharedHandle<OmegaGTE::GERenderPipelineState> sdf() const { return sdf_; }
         SharedHandle<OmegaGTE::GERenderPipelineState> path() const { return path_; }
         SharedHandle<OmegaGTE::GERenderPipelineState> bitmap() const { return bitmap_; }
+        SharedHandle<OmegaGTE::GERenderPipelineState> text() const { return text_; }
 
         SharedHandle<OmegaGTE::GEComputePipelineState> linearGradient() const { return linearGradient_; }
         SharedHandle<OmegaGTE::GEComputePipelineState> gaussianBlurH() const { return gaussianBlurH_; }

@@ -18,6 +18,12 @@
             "platforms": [
                 "linux"
             ]
+        },
+        {
+            "name": "msdfgen",
+            "type": "git",
+            "url": "https://github.com/Chlumsky/msdfgen.git",
+            "dest": "$(third_party_dest)/msdfgen/code"
         }
     ]
 }

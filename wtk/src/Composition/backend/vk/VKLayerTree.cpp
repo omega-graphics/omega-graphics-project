@@ -11,17 +11,24 @@
 namespace OmegaWTK::Composition {
 
     namespace {
-        [[maybe_unused]] static unsigned toBackingDimension(float logical){
+        [[maybe_unused]] static unsigned toBackingDimension(float logical, float renderScale){
             if(!std::isfinite(logical) || logical <= 0.f){
                 logical = 1.f;
             }
+            if(!std::isfinite(renderScale) || renderScale <= 0.f){
+                renderScale = 1.f;
+            }
             return static_cast<unsigned>(std::max<long>(
                     1L,
-                    static_cast<long>(std::lround(logical))));
+                    static_cast<long>(std::lround(logical * renderScale))));
         }
 
         class VKFallbackVisualTree : public BackendVisualTree {
             SharedHandle<Native::GTK::GTKItem> view;
+            // Logical->physical pixel scale, sourced from the native window
+            // via ViewRenderTarget::getRenderScale(). All backing-dimension
+            // math and BackendRenderTargetContext construction use this.
+            float renderScale_ = 1.f;
             bool warnedMissingNativeHandle = false;
             bool warnedNativeTargetInitFailure = false;
 
@@ -34,8 +41,8 @@ namespace OmegaWTK::Composition {
 #if defined(VULKAN_TARGET_WAYLAND)
                 desc.wl_surface = view->getSurface();
                 desc.wl_display = view->getDisplay();
-                desc.width = toBackingDimension(rect.w);
-                desc.height = toBackingDimension(rect.h);
+                desc.width = toBackingDimension(rect.w, renderScale_);
+                desc.height = toBackingDimension(rect.h, renderScale_);
                 if(desc.wl_surface != nullptr && desc.wl_display != nullptr){
                     return true;
                 }
@@ -62,6 +69,7 @@ namespace OmegaWTK::Composition {
         public:
             explicit VKFallbackVisualTree(SharedHandle<ViewRenderTarget> &renderTarget){
                 view = std::dynamic_pointer_cast<Native::GTK::GTKItem>(renderTarget->getNativePtr());
+                renderScale_ = renderTarget->getRenderScale();
             }
 
             void addVisual(Core::SharedPtr<BackendVisualTree::Visual> &visual) override {
@@ -90,13 +98,26 @@ namespace OmegaWTK::Composition {
                     if(resolveNativeRenderTargetDescriptor(rect,desc)){
                         presentQueue = gte.graphicsEngine->makeCommandQueue(64);
                         outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, presentQueue);
-                        outPresentTarget.backingWidth = toBackingDimension(rect.w);
-                        outPresentTarget.backingHeight = toBackingDimension(rect.h);
+                        outPresentTarget.backingWidth = toBackingDimension(rect.w, renderScale_);
+                        outPresentTarget.backingHeight = toBackingDimension(rect.h, renderScale_);
                     }
+                }
+                else {
+                    // The native target was created earlier by
+                    // resolveDeferredNativeTarget (the GdkWindow wasn't
+                    // realized at construction time). That path created the
+                    // present queue and bound it to the swap chain, but
+                    // didn't surface the queue back to us. Retrieve it from
+                    // the native target so the BackendRenderTargetContext
+                    // can submit and present on the same queue the swap
+                    // chain expects — otherwise begin()/end() bail on a
+                    // null queue and present() runs without ever calling
+                    // vkAcquireNextImageKHR.
+                    presentQueue = outPresentTarget.nativeTarget->presentQueue();
                 }
 
                 // Root visual renders directly to the native drawable (Phase A-1).
-                auto context = std::make_unique<BackendRenderTargetContext>(rect,outPresentTarget.nativeTarget,std::move(presentQueue),1.f);
+                auto context = std::make_unique<BackendRenderTargetContext>(rect,outPresentTarget.nativeTarget,std::move(presentQueue),renderScale_);
                 return Core::SharedPtr<BackendVisualTree::Visual>(new Visual(pos,std::move(context)));
             }
 
@@ -104,7 +125,7 @@ namespace OmegaWTK::Composition {
                     Composition::Rect &rect,Composition::Point2D &pos) override {
                 SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
                 SharedHandle<OmegaGTE::GECommandQueue> nullQueue = nullptr;
-                auto context = std::make_unique<BackendRenderTargetContext>(rect,nullNative,nullQueue,1.f);
+                auto context = std::make_unique<BackendRenderTargetContext>(rect,nullNative,nullQueue,renderScale_);
                 return Core::SharedPtr<BackendVisualTree::Visual>(new Visual(pos,std::move(context)));
             }
 
@@ -121,8 +142,8 @@ namespace OmegaWTK::Composition {
                 if(resolveNativeRenderTargetDescriptor(r,desc)){
                     auto presentQueue = gte.graphicsEngine->makeCommandQueue(64);
                     outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, presentQueue);
-                    outPresentTarget.backingWidth = toBackingDimension(r.w);
-                    outPresentTarget.backingHeight = toBackingDimension(r.h);
+                    outPresentTarget.backingWidth = toBackingDimension(r.w, renderScale_);
+                    outPresentTarget.backingHeight = toBackingDimension(r.h, renderScale_);
                     // Note: deferred resolve doesn't update the BackendRenderTargetContext;
                     // see VKLayerTree's first-frame fallback for where the queue is wired.
                 }

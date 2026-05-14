@@ -42,14 +42,10 @@ namespace OmegaWTK::Composition {
             comp_device_desktop = dev;
         }
 
+        // Logical->physical pixel scale is sourced from the native window
+        // and seeded onto the ViewRenderTarget by AppWindow::setRootWidget.
+        renderScale = view->getRenderScale();
         auto hwndItem = std::dynamic_pointer_cast<Native::Win::HWNDItem>(view->getNativePtr());
-        if(hwndItem != nullptr && hwndItem->hwnd != nullptr){
-            const auto dpi = GetDpiForWindow(hwndItem->hwnd);
-            if(dpi > 0){
-                renderScale = static_cast<float>(dpi) / 96.f;
-            }
-        }
-        view->setRenderScale(renderScale);
         HRESULT res = comp_device_desktop->CreateTargetForHwnd(hwndItem->hwnd,FALSE,&hwndTarget.comPtr);
         if(FAILED(res)){
             OMEGAWTK_DEBUG("Failed to Create Render Target for HWND");

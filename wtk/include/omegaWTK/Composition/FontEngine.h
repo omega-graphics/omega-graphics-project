@@ -4,6 +4,9 @@
 #include "Geometry.h"
 #include "GTEForward.h"
 
+#include <cstdint>
+#include <memory>
+
 
 #ifndef OMEGAWTK_COMPOSITION_FONTENGINE_H
 #define OMEGAWTK_COMPOSITION_FONTENGINE_H
@@ -15,34 +18,15 @@
  namespace OmegaWTK::Composition {
 
  class Font;
+ /// Backend-private MSDF glyph atlas (Phase 6.7.1). Forward-declared
+ /// here so `Font::atlas()` can return a reference without dragging the
+ /// implementation into public WTK headers. The full type lives in
+ /// `wtk/src/Composition/backend/GlyphAtlas.h`.
+ class GlyphAtlas;
 
  /**
-  @brief A continious run of Glyphs (without line wrapping)
-  @paragraph
-  Create from an Unicode String.
+  @brief A struct that describes how text is laid out within a TextRect.
  */
- class OMEGAWTK_EXPORT GlyphRun {
- public:
-
-     virtual Composition::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) = 0;
-
-     /**
-      @brief Creates a Glyph Run from a Unicode String.
-      @param str[in] The Unicode String.
-      @returns SharedPtr<GlyphRun>
-     */
-     static Core::SharedPtr<GlyphRun> fromUStringAndFont(const OmegaCommon::UniString & str,Core::SharedPtr<Font> & font);
-     virtual ~GlyphRun() = default;
- };
-
- /**
-  @brief A rectangular container that holds text drawn with a Font created by the FontEngine.
-  @paragraph Description
-  When creating an instance of this class, invoke the static method `Create` method,
-  which will return an instance of the appropriate platform specific subclass implementing the platform specific
-  features and bindings.
- */
-
  struct OMEGAWTK_EXPORT TextLayoutDescriptor {
       using Alignment = enum : OPT_PARAM {
          LeftUpper,
@@ -64,6 +48,63 @@
      Wrapping wrapping;
      unsigned lineLimit = 0;
  };
+
+ /**
+  @brief A continious run of Glyphs (without line wrapping)
+  @paragraph
+  Create from an Unicode String.
+ */
+ class OMEGAWTK_EXPORT GlyphRun {
+ public:
+
+     /// Result of shaping a `GlyphRun` for the MSDF render path
+     /// (Phase 6.7-c3). `glyphIds` and `positions` run in parallel:
+     /// `positions[i]` is the pen-origin (baseline) position the
+     /// layout engine assigned to `glyphIds[i]`, in logical pixels
+     /// relative to the owning text rect's origin. Glyph IDs are
+     /// valid against the requested `Font`'s atlas.
+     ///
+     /// `requiresFallback` is set when the layout engine substituted a
+     /// face that does not match the requested font (e.g. CJK text in
+     /// a Latin-only font). Chunk 3 ships a single sub-run per run, so
+     /// any fallback routes the whole string back to the bitmap path;
+     /// chunk 4 lights up multi-atlas sub-runs.
+     struct ShapedTextRun {
+         bool requiresFallback = false;
+         OmegaCommon::Vector<std::uint32_t> glyphIds;
+         OmegaCommon::Vector<Composition::Point2D> positions;
+     };
+
+     virtual Composition::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) = 0;
+
+     /**
+      @brief Shapes the run against its font and produces positioned
+      glyph IDs for the MSDF render path (Phase 6.7-c3).
+      @param rect[in] The destination rect (logical pixels). Drives
+             wrap width and vertical alignment.
+      @param layoutDesc[in] Alignment / wrapping / line-limit.
+      @returns A `ShapedTextRun`. When `requiresFallback` is true the
+               caller should render via the legacy bitmap path.
+     */
+     virtual ShapedTextRun shape(const Composition::Rect & rect,
+                                 const TextLayoutDescriptor & layoutDesc) = 0;
+
+     /**
+      @brief Creates a Glyph Run from a Unicode String.
+      @param str[in] The Unicode String.
+      @returns SharedPtr<GlyphRun>
+     */
+     static Core::SharedPtr<GlyphRun> fromUStringAndFont(const OmegaCommon::UniString & str,Core::SharedPtr<Font> & font);
+     virtual ~GlyphRun() = default;
+ };
+
+ /**
+  @brief A rectangular container that holds text drawn with a Font created by the FontEngine.
+  @paragraph Description
+  When creating an instance of this class, invoke the static method `Create` method,
+  which will return an instance of the appropriate platform specific subclass implementing the platform specific
+  features and bindings.
+ */
 
  class OMEGAWTK_EXPORT  TextRect {
  public:
@@ -122,9 +163,50 @@
  */
  class OMEGAWTK_EXPORT  Font {
  public:
+     /// Per-font glyph rasterization mode (Phase 6.7.4). Selected once
+     /// at construction by the platform `FontEngine` based on whether
+     /// the underlying face exposes vector outlines msdfgen can walk.
+     /// `MSDF` routes draws through the per-font `GlyphAtlas`;
+     /// `BitmapFallback` keeps the existing `TextRect` →
+     /// `drawGETexture` path. Sticky for the font's lifetime.
+     enum class Mode {
+         MSDF,
+         BitmapFallback
+     };
+
      FontDescriptor desc;
-     Font(FontDescriptor & desc):desc(desc){};
+     /// Constructed with `BitmapFallback` mode and an empty atlas. The
+     /// concrete `FontEngine` implementation flips the mode to `MSDF`
+     /// once the per-platform outline-extraction probe (Phase 6.7.4)
+     /// confirms the face is rasterizable; chunk 1 leaves all fonts on
+     /// `BitmapFallback`.
+     Font(FontDescriptor & desc);
+     /// Out-of-line so the `unique_ptr<GlyphAtlas>` member can hold an
+     /// incomplete type at the public include site.
+     virtual ~Font();
      virtual void *getNativeFont() = 0;
+     /// Returns the per-font glyph atlas (Phase 6.7.1). Always
+     /// constructed alongside the `Font`; carries no GPU texture until
+     /// `ensureGlyph` is first called.
+     GlyphAtlas & atlas();
+     /// Cached MSDF/BitmapFallback choice from construction time.
+     Mode mode() const;
+     /// Ensure every glyph in `glyphIds` is resident in the atlas
+     /// (Phase 6.7-c3). Called from the paint-recording thread when a
+     /// `TextRun` is emitted so the MSDF tile uploads happen outside the
+     /// compositor's frame render pass. Glyphs that fail to rasterize or
+     /// pack are left absent — the render path skips them. Out-of-line
+     /// because it touches the incomplete `GlyphAtlas` type.
+     void ensureGlyphsResident(const OmegaCommon::Vector<std::uint32_t> & glyphIds);
+
+ protected:
+     /// Backend subclasses set this from their own ctor once the
+     /// per-platform outline probe runs.
+     void setMode(Mode m);
+
+ private:
+     Mode mode_;
+     std::unique_ptr<GlyphAtlas> atlas_;
  };
  /**
   @brief Font creation engine for Application

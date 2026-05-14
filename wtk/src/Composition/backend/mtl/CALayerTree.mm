@@ -84,7 +84,8 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
 }
 
  MTLCALayerTree::MTLCALayerTree(SharedHandle<ViewRenderTarget> & renderTarget):
-         view(std::dynamic_pointer_cast<Native::Cocoa::CocoaItem>(renderTarget->getNativePtr()))
+         view(std::dynamic_pointer_cast<Native::Cocoa::CocoaItem>(renderTarget->getNativePtr())),
+         renderScale_(renderTarget->getRenderScale())
  {
 
  };
@@ -101,7 +102,7 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
      layer.opaque = NO;
      layer.autoresizingMask = kCALayerNotSizable;
      layer.layoutManager = nil;
-     layer.contentsScale = safeScale();
+     layer.contentsScale = renderScale_;
      layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
      layer.framebufferOnly = NO;
      layer.presentsWithTransaction = NO;
@@ -125,11 +126,10 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
      OmegaGTE::NativeRenderTargetDescriptor nativeRenderTargetDescriptor {false,layer};
      auto nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(nativeRenderTargetDescriptor, presentQueue);
 
-     CGFloat scale = layer.contentsScale;
+     CGFloat scale = renderScale_;
      if(scale <= 0.f || !std::isfinite(static_cast<double>(scale))){
-         scale = 2.f;
+         scale = 1.f;
      }
-     scale = std::max(scale,static_cast<CGFloat>(2.f));
 
      outPresentTarget.nativeTarget = nativeTarget;
      outPresentTarget.backingWidth = static_cast<unsigned>(std::clamp(saneRect.w * scale,static_cast<CGFloat>(1.f),kMaxDrawableDimension));
@@ -148,7 +148,10 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
      auto saneRect = sanitizeVisualRect(rect);
      auto sanePos = saneRect.pos;
 
-     CGFloat scale = safeScale();
+     CGFloat scale = renderScale_;
+     if(scale <= 0.f || !std::isfinite(static_cast<double>(scale))){
+         scale = 1.f;
+     }
      SharedHandle<OmegaGTE::GENativeRenderTarget> nullNative = nullptr;
      SharedHandle<OmegaGTE::GECommandQueue> nullQueue = nullptr;
      Composition::Rect r {saneRect};

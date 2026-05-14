@@ -61,6 +61,13 @@ shadowParams({shadow,shapeRect,cornerRadius,isEllipse}){
 
 };
 
+VisualCommand::Data::Data(OmegaCommon::Vector<TextSubRun> subRuns,
+                          const Composition::Rect & rect,
+                          const Composition::Color & color) :
+textRunParams({std::move(subRuns),rect,color}){
+
+};
+
 VisualCommand::Data::Data(const Matrix4x4 & matrix) :
 transformMatrix(matrix){
 
@@ -190,6 +197,40 @@ void Canvas::drawText(const OmegaCommon::UniString &text,
                       const TextLayoutDescriptor &layoutDesc){
     if(font == nullptr || text.length() == 0 || rect.w <= 0.F || rect.h <= 0.f){
         return;
+    }
+
+    // Phase 6.7-c3: MSDF-mode fonts shape the run and emit a
+    // resolution-independent TextRun visual command — one quad per
+    // glyph against the font's MSDF atlas. BitmapFallback fonts, and
+    // MSDF fonts whose layout required a substitute face (chunk 3 ships
+    // a single sub-run), keep the legacy TextRect → drawGETexture path.
+    if(font->mode() == Font::Mode::MSDF){
+        auto glyphRun = GlyphRun::fromUStringAndFont(text,font);
+        if(glyphRun != nullptr){
+            auto shaped = glyphRun->shape(rect,layoutDesc);
+            if(!shaped.requiresFallback){
+                if(shaped.glyphIds.empty()){
+                    // Whitespace-only / empty layout — nothing to draw.
+                    return;
+                }
+                // Populate the atlas here, on the paint-recording thread
+                // — `GlyphAtlas::ensureGlyph` uploads MSDF tiles via a
+                // texture transfer, which must not run inside the
+                // compositor's frame render pass. The render path
+                // (`emitTextSubRun`) only `lookup`s; glyphs that fail to
+                // rasterize / pack are simply absent and skipped there.
+                font->ensureGlyphsResident(shaped.glyphIds);
+                TextSubRun subRun;
+                subRun.resolvedFont = font;
+                subRun.glyphIds = std::move(shaped.glyphIds);
+                subRun.positions = std::move(shaped.positions);
+                OmegaCommon::Vector<TextSubRun> subRuns;
+                subRuns.push_back(std::move(subRun));
+                current->currentVisuals.emplace_back(std::move(subRuns),rect,color);
+                return;
+            }
+            // requiresFallback: fall through to the bitmap path below.
+        }
     }
 
     const float renderScale = (ownerView_ != nullptr) ? ownerView_->getRenderScale() : 1.f;

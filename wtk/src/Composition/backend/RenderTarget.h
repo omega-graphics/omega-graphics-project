@@ -144,6 +144,21 @@ namespace OmegaWTK::Composition {
                                  OmegaGTE::FVec<4> tint,
                                  SharedHandle<OmegaGTE::GETexture> texture,
                                  SharedHandle<OmegaGTE::GEFence> textureFence);
+
+        /// Emit one MSDF text sub-run through the Phase 6.7.2 text
+        /// pipeline (Phase 6.7-c3). Authors a 6-vertex quad per resident
+        /// glyph against `subRun.resolvedFont`'s glyph atlas — glyphs
+        /// not yet resident are rasterized on demand via
+        /// `GlyphAtlas::ensureGlyph`; glyphs that fail to rasterize or
+        /// pack are silently skipped (chunk-2 append-only atlas
+        /// contract). All glyphs of the sub-run share one vertex buffer
+        /// and one draw call. `rect.pos` offsets the layout-relative
+        /// glyph positions into canvas space; `color` (× current
+        /// opacity) rides a per-draw uniform buffer at fragment slot 13;
+        /// the atlas texture binds at fragment slot 14.
+        void emitTextSubRun(const Composition::TextSubRun & subRun,
+                            const Composition::Rect & rect,
+                            const Composition::Color & color);
     public:
         /// Open a frame-level render pass that clears to the given color.
         /// All subsequent renderToTarget() calls record into this pass.

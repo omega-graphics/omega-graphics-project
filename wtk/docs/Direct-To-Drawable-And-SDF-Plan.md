@@ -558,6 +558,73 @@ which 6.6.2 already handles. The work is purely in
 
 ### 6.7 Text rendering: MSDF glyph atlases
 
+**Implementation chunks (Linux-first vertical slice).** Section 6.7 is
+landing in four chunks against the Pango/FT (Linux) backend. DWrite
+and Core Text get stub `rasterizeGlyphMSDF` callbacks that return false
+so those `Font`s stay on `BitmapFallback` (today's bitmap text path
+keeps working unchanged on macOS / Windows) — they get their own
+chunks once the Linux path is verified.
+
+| Chunk | Status | What it lands |
+|-------|--------|---------------|
+| **6.7-c1** Plumbing | DONE | `Font::Mode` (`MSDF` / `BitmapFallback`) + forward-declared `GlyphAtlas` + out-of-line `Font` ctor/dtor with `unique_ptr<GlyphAtlas>` member; new `wtk/src/Composition/backend/GlyphAtlas.{h,cpp}` (skeleton: `lookup`, `ensureGlyph` stub returning false, `RasterizeFn` typedef); new `wtk/src/Composition/Font.cpp` for the out-of-line definitions; `VisualCommand::TextRun` enum value + `TextSubRun` struct + `textRunParams` Data field + ctors; `text_` render pipeline state in `PipelineRegistry` (alpha-over blend) + `bindTextPipeline` + `PipelineKind::Text`; magenta-stub `textVertex` / `msdfTextFragment` shader pair in `compositor.omegasl` (slots 12/13/14); no-op `TextRun` case in `renderToTarget`'s switch. **No behavior change** — `drawText` still uses today's bitmap path; nothing emits `TextRun`; the new pipeline is built but never bound. |
+| **6.7-c2** Linux atlas | DONE | msdfgen added as an `AUTOMDEPS` git dep + `add_subdirectory` with `MSDFGEN_CORE_ONLY=ON`, linked privately into `OmegaWTK_Composition`; pangoft2 + freetype2 added to the Linux `pkg_check_modules` set; `GlyphAtlas` lazy-allocates a 1024×1024 `RGBA8Unorm` texture, runs a naive shelf packer, sub-rect-uploads via `GETexture::copyBytes(bytes, bpr, region)`; `HarfBuzzFont` holds a ref-counted resolved `PangoFont*` and exposes `setMode`; `HarfBuzzFontEngine::CreateFont` resolves the description via `pango_cairo_font_map_get_default()` + `pango_font_map_load_font`, locks the FT face for an `FT_FACE_FLAG_SCALABLE` probe, installs a `RasterizeFn` lambda (PangoFc lock → `FT_Set_Pixel_Sizes(0, descSize)` → `FT_Load_Glyph(NO_BITMAP \| NO_HINTING)` → `FT_Outline_Decompose` into a msdfgen `Shape` → `edgeColoringSimple(shape, 3.0)` → `generateMSDF` into `Bitmap<float,3>` → quantize-and-Y-flip into 8-bit RGB → unlock); flips to `Mode::MSDF` on success; `OMEGAWTK_TRACE_TEXT=1` env-gates trace logs at probe + `ensureGlyph` first-touch; smoke `ensureGlyph` for the `'A'` glyph runs at construction so any FT/msdfgen breakage surfaces at startup. **Verified live** (Helvetica/28 in `TextCompositorTest` traces `MSDF mode` + 32×32 tile at (0,0), advance≈20.2 px). Still no behavior change — no caller emits `TextRun` yet. |
+| **6.7-c3** Render path | DONE | `GlyphRun` grew a `shape(rect, layoutDesc)` virtual returning a `ShapedTextRun` (`requiresFallback` + parallel `glyphIds` / `positions`); `HarfBuzzGlyphRun::shape()` builds a `PangoLayout` at the *unscaled* design size (DPR is applied downstream by the render viewport), walks `pango_layout_get_iter` → `pango_layout_iter_get_run_readonly` runs, family-compares each run's resolved face against the requested face (mismatch ⇒ `requiresFallback`, whole string to bitmap path — the chunk-3 single-sub-run contract), and emits `(glyphId, baseline-pen-position)` per visible glyph with the bitmap path's vertical-alignment offset folded in; `AtlasGlyph` gained `tileOriginX/tileOriginY/tileScale` (the padded `shape.bound` origin + tile-px-per-font-px) and the chunk-2 rasterize lambda now stores them; `Canvas::drawText` switches on `font->mode()` — `MSDF` shapes, pre-warms the atlas via the new out-of-line `Font::ensureGlyphsResident` (atlas uploads must run on the paint-recording thread, **not** inside the compositor frame render pass — doing it in the render path tripped a `vkCmdPipelineBarrier2` validation error), and emits a `TextRun` visual command; `RenderTarget::emitTextSubRun` authors one 6-vertex quad per *resident* glyph (lookup-only, silent-skip for absent glyphs) into a single shared vertex buffer + one draw call against `pipelines.text()` (`v_buffer_text` 12, `textParams` 13, `textAtlasTex` 14); `msdfTextFragment` swapped the magenta stub for `median(s.r,s.g,s.b)` → `fwidth` → `smoothstep(0.5±aa)` → `textColor × coverage` (per-element opacity pre-folded into `textColor.a`). **Verified live** (`TextCompositorTest`: `Helvetica/28` probes to MSDF, `shape()` traces 24/52-glyph runs with no fallback, all glyphs rasterize into the atlas, no Vulkan validation errors). Pixel-level crispness + DPR=2 no-re-rasterize still want a human visual check. |
+| **6.7-c4** Fallback faces | TODO | `FontEngine::adoptResolvedFace(nativeHandle)` cache keyed by raw `PangoFont*` (DWrite `IDWriteFontFace*`, Core Text `CTFontRef` once those backends light up) so repeated fallback to the same substitute face shares one `Font` and one atlas across the process. `HarfBuzzGlyphRun::shape()` walks `PangoLayoutRun::item->analysis.font` per run, groups by resolved `PangoFont*`, surfaces one sub-run per group; the rasterize lambda installed by `adoptResolvedFace` runs the same FT-probe-and-MSDF path against the substitute face. `RenderTarget::TextRun` case iterates sub-runs and issues one draw per resolved atlas (no coalescing across faces). Fallback-vs-MSDF probe runs at adoption time too, so a Latin-MSDF primary face plus a color-emoji fallback face cleanly produces a `TextRun` with one MSDF sub-run plus one bitmap-fallback sub-run in the same string (the latter routes the per-sub-run draw through the existing `TextRect`/`drawGETexture` path against a per-glyph cached bitmap). |
+
+After 6.7-c4 the Linux path matches §6.7.2 in full. The DWrite and
+Core Text backends then each become their own chunk (replicating
+6.7-c2 + 6.7-c3 surface area against `IDWriteFontFace::GetGlyphRunOutline`
+and `CTFontCreatePathForGlyph` respectively); these are deliberately
+sequenced after the Linux path is shown to behave under the visual
+checks in §6.9 because the macOS / Windows builds can only be
+verified outside the day-to-day Linux dev loop.
+
+#### Chunk-2 lessons + open gotchas
+
+These came out of landing 6.7-c2 and apply to chunks 3+:
+
+- **Tile origin vs FT layout metrics.** `AtlasGlyph::bearingX/bearingY`
+  in 6.7-c2 are the FT pen-bearing values (correct for *layout* — i.e.,
+  where the glyph sits relative to the text baseline). They are *not*
+  the offset from the tile's top-left into the glyph's silhouette inside
+  the MSDF tile, which is what the chunk-3 quad authoring needs to
+  position the tile correctly. Chunk 3 must extend `AtlasGlyph` to
+  capture the `(l, b)` bound-box origin from `shape.bound(...)` (or
+  switch to baking-in a fixed padding offset and restoring it at draw
+  time) so quad authoring can compute `quadXY = penXY + tileOffset`
+  cleanly.
+- **Y-flip direction is unverified.** The chunk-2 quantizer reads
+  `msdf(x, kMsdfTileSize - 1 - y)` so atlas-row-0 is the top of the
+  glyph. This matches the standard image convention but has not been
+  visually confirmed — chunk-3 verify is the first frame where the
+  atlas is sampled, so an upside-down glyph there means the flip was
+  reversed. Cheap to fix; flag if it bites.
+- **Pango lock/unlock deprecation.** `pango_fc_font_lock_face` and
+  `pango_fc_font_unlock_face` are deprecated as of Pango 1.44 in
+  favor of `pango_font_get_hb_font`. The plan's per-platform notes
+  call for the lock/unlock pair, and they still function on the
+  reference Pango version, so chunk-2 keeps them and accepts the
+  warning. A follow-up may switch to the HarfBuzz-fronted accessor
+  once the Pango baseline allows it across all supported distros.
+- **Scope of font fallback in chunk 3.** The original 6.7.2
+  description treats multi-sub-run fallback as native to the chunk-3
+  render path. The chunked breakdown defers per-face `adoptResolvedFace`
+  to chunk 4, so chunk 3 ships a *single* sub-run per `TextRun` and
+  routes any string whose layout requires fallback to the bitmap
+  path entirely. This trades some chunk-3 visual richness for a
+  smaller blast radius; chunk 4 then lights up the multi-atlas case
+  end-to-end, including atlas adoption keyed by the platform handle.
+- **Atlas eviction is out of scope.** The chunk-2 shelf packer is
+  append-only — when a 1024×1024 atlas fills, `ensureGlyph` returns
+  false and the affected draw silently skips the glyph. LRU paging
+  is a Phase-6.7 follow-up the original plan acknowledges. Chunks
+  3 and 4 should keep this contract (silent skip, no resize, no
+  panic) so the eviction work can drop in without reshaping the
+  draw path.
+
+
+
 Today text follows this path (in [`Canvas::drawText`][canvas-cpp-3]):
 
 1. `TextRect::Create(rect, layoutDesc, renderScale)` allocates a

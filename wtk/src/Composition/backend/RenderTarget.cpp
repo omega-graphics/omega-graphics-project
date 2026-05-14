@@ -8,6 +8,7 @@
 #include "MainThreadDispatch.h"
 #include "Pipeline.h"
 #include "BitmapTextureCache.h"
+#include "GlyphAtlas.h"
 #include "ResourceFactory.h"
 #include "omegaWTK/Composition/Canvas.h"
 #include "GeometryConvert.h"
@@ -43,7 +44,7 @@ namespace OmegaWTK::Composition {
         // logical rect and clamp to engine limits.
         constexpr float kMaxTextureDimension = 16384.f;
 #if defined(TARGET_MACOS)
-        constexpr float kRenderScaleFloor = 2.f;
+        constexpr float kRenderScaleFloor = 1.f;
 #else
         constexpr float kRenderScaleFloor = 1.f;
 #endif
@@ -736,6 +737,210 @@ void BackendRenderTargetContext::resetElementState() {
         }
     }
 
+    void BackendRenderTargetContext::emitTextSubRun(
+            const Composition::TextSubRun & subRun,
+            const Composition::Rect & rect,
+            const Composition::Color & color){
+        if(subRun.resolvedFont == nullptr){
+            return;
+        }
+        if(subRun.glyphIds.empty() ||
+           subRun.glyphIds.size() != subRun.positions.size()){
+            return;
+        }
+
+        auto & pipelines = pipelineRegistry();
+        auto bufferWriter = pipelines.bufferWriter();
+        auto textPipeline = pipelines.text();
+        if(bufferWriter == nullptr || textPipeline == nullptr || renderTarget == nullptr){
+            return;
+        }
+
+        GlyphAtlas & atlas = subRun.resolvedFont->atlas();
+
+        // Author one quad (6 vertices) per resident glyph. Atlas
+        // population already happened on the paint-recording thread
+        // (`Font::ensureGlyphsResident`), so the render path only
+        // `lookup`s — a glyph that failed to rasterize / pack is simply
+        // absent and skipped (chunk-2 append-only atlas contract — no
+        // eviction, no panic). `ensureGlyph` must not run here: it
+        // uploads a texture tile, which is illegal inside the frame
+        // render pass.
+        struct QuadVertex { float x, y, u, v; };
+        OmegaCommon::Vector<QuadVertex> verts;
+        verts.reserve(subRun.glyphIds.size() * 6);
+
+        for(std::size_t i = 0; i < subRun.glyphIds.size(); ++i){
+            const std::uint32_t gid = subRun.glyphIds[i];
+            const AtlasGlyph * g = atlas.lookup(gid);
+            if(g == nullptr){
+                continue;
+            }
+            if(g->tileScale <= 0.f || g->pxW == 0){
+                continue;
+            }
+
+            // Reconstruct the glyph quad in canvas space. `tileOrigin*`
+            // is the tile's lower-left corner relative to the pen origin
+            // (Y up); canvas Y is down, so the baseline maps as
+            // `canvasY = penY - glyphY`.
+            const float extent = static_cast<float>(g->pxW) / g->tileScale;
+            const float penX = rect.pos.x + subRun.positions[i].x;
+            const float penY = rect.pos.y + subRun.positions[i].y;
+            const float minX = penX + g->tileOriginX;
+            const float maxX = minX + extent;
+            const float maxY = penY - g->tileOriginY;
+            const float minY = maxY - extent;
+
+            if(std::getenv("OMEGAWTK_TRACE_TEXT") != nullptr){
+                std::cout << "[wtk-text] QUAD gid=" << gid
+                          << " pos=(" << subRun.positions[i].x << "," << subRun.positions[i].y << ")"
+                          << " penY=" << penY
+                          << " tileOriginY=" << g->tileOriginY
+                          << " extent=" << extent
+                          << " uv.v=[" << g->v0 << "," << g->v1 << "]"
+                          << " canvasY=[" << minY << "," << maxY << "]" << std::endl;
+            }
+
+            // The MSDF tile stores atlas row 0 = glyph bottom (shape
+            // yMin); the glyph is anchored at that end of the square
+            // tile. Map the bottom of the tile (v0) to the bottom of
+            // the quad (maxY) so the glyph sits on the baseline
+            // regardless of how much empty margin the square tile has
+            // above it (`extent - glyphHeight`, which varies per
+            // glyph — getting this backwards floats non-square glyphs
+            // and makes the run "bounce").
+            verts.push_back({minX, minY, g->u0, g->v1});
+            verts.push_back({maxX, minY, g->u1, g->v1});
+            verts.push_back({minX, maxY, g->u0, g->v0});
+            verts.push_back({maxX, minY, g->u1, g->v1});
+            verts.push_back({maxX, maxY, g->u1, g->v0});
+            verts.push_back({minX, maxY, g->u0, g->v0});
+        }
+
+        if(verts.empty()){
+            return;
+        }
+
+        auto atlasTexture = atlas.texture();
+        if(atlasTexture == nullptr){
+            return;
+        }
+
+        const float viewportW = std::max(1.f, renderTargetSize_.w);
+        const float viewportH = std::max(1.f, renderTargetSize_.h);
+        const bool hasTransform = !(currentTransform == OmegaGTE::FMatrix<4,4>::Identity());
+        const float opacityMul = std::clamp(currentOpacity, 0.f, 1.f);
+
+        // Vertex buffer: verts × (float4 pos, float4 uvPad) — same
+        // layout as the bitmap pipeline.
+        const std::size_t vertexStride = OmegaGTE::omegaSLStructStride(
+                {OMEGASL_FLOAT4, OMEGASL_FLOAT4});
+        const std::size_t vertexBytes  = vertexStride * verts.size();
+        SharedHandle<OmegaGTE::GEBuffer> vertexBuffer;
+        if(bufferPool() != nullptr){
+            vertexBuffer = bufferPool()->acquire(vertexBytes, vertexStride);
+        }
+        else {
+            OmegaGTE::BufferDescriptor desc {
+                    OmegaGTE::BufferDescriptor::Upload,
+                    vertexBytes,
+                    vertexStride};
+            vertexBuffer = gte.graphicsEngine->makeBuffer(desc);
+        }
+        if(vertexBuffer == nullptr){
+            return;
+        }
+
+        // Per-draw uniform buffer: textColor + reserved outline params
+        // (Phase 6.7.3 surface).
+        const std::size_t paramsStride = OmegaGTE::omegaSLStructStride(
+                {OMEGASL_FLOAT4, OMEGASL_FLOAT4});
+        SharedHandle<OmegaGTE::GEBuffer> paramsBuffer;
+        if(bufferPool() != nullptr){
+            paramsBuffer = bufferPool()->acquire(paramsStride, paramsStride);
+        }
+        else {
+            OmegaGTE::BufferDescriptor desc {
+                    OmegaGTE::BufferDescriptor::Upload,
+                    paramsStride,
+                    paramsStride};
+            paramsBuffer = gte.graphicsEngine->makeBuffer(desc);
+        }
+        if(paramsBuffer == nullptr){
+            if(bufferPool() != nullptr && vertexBuffer){
+                bufferPool()->release(std::move(vertexBuffer), vertexBytes);
+            }
+            return;
+        }
+
+        bufferWriter->setOutputBuffer(vertexBuffer);
+        for(const auto & vtx : verts){
+            auto pos = OmegaGTE::FVec<4>::Create();
+            pos[0][0] = (2.f * vtx.x) / viewportW - 1.f;
+            pos[1][0] = (2.f * vtx.y) / viewportH - 1.f;
+            pos[2][0] = 0.f;
+            pos[3][0] = 1.f;
+            if(hasTransform){
+                pos = currentTransform * pos;
+            }
+            auto uvPad = OmegaGTE::FVec<4>::Create();
+            uvPad[0][0] = vtx.u;
+            uvPad[1][0] = vtx.v;
+            uvPad[2][0] = 0.f;
+            uvPad[3][0] = 0.f;
+            bufferWriter->structBegin();
+            bufferWriter->writeFloat4(pos);
+            bufferWriter->writeFloat4(uvPad);
+            bufferWriter->structEnd();
+            bufferWriter->sendToBuffer();
+        }
+        bufferWriter->flush();
+
+        bufferWriter->setOutputBuffer(paramsBuffer);
+        auto textColor = OmegaGTE::makeColor(color.r, color.g, color.b,
+                                             color.a * opacityMul);
+        auto outlineReserved = OmegaGTE::FVec<4>::Create();
+        bufferWriter->structBegin();
+        bufferWriter->writeFloat4(textColor);
+        bufferWriter->writeFloat4(outlineReserved);
+        bufferWriter->structEnd();
+        bufferWriter->sendToBuffer();
+        bufferWriter->flush();
+
+        SharedHandle<OmegaGTE::GEFence> noFence;
+        auto scope = frameRenderPass_.beginDraw(noFence);
+        if(scope.cb == nullptr){
+            if(bufferPool() != nullptr){
+                if(vertexBuffer){
+                    bufferPool()->release(std::move(vertexBuffer), vertexBytes);
+                }
+                if(paramsBuffer){
+                    bufferPool()->release(std::move(paramsBuffer), paramsStride);
+                }
+            }
+            return;
+        }
+        auto & cb = scope.cb;
+
+        frameRenderPass_.bindTextPipeline(scope);
+        cb->bindResourceAtVertexShader(vertexBuffer, 12);
+        cb->bindResourceAtFragmentShader(paramsBuffer, 13);
+        cb->bindResourceAtFragmentShader(atlasTexture, 14);
+        cb->drawPolygons(OmegaGTE::GECommandBuffer::Triangle,
+                         (unsigned)verts.size(), 0);
+        frameRenderPass_.endDraw(scope);
+
+        if(bufferPool() != nullptr){
+            if(vertexBuffer){
+                deferredBufferReleases.push_back({std::move(vertexBuffer), vertexBytes});
+            }
+            if(paramsBuffer){
+                deferredBufferReleases.push_back({std::move(paramsBuffer), paramsStride});
+            }
+        }
+    }
+
     void BackendRenderTargetContext::renderBlurredSlice(
             const CompositeFrame::WidgetSlice & slice){
         if(slice.targetLayer == nullptr || !slice.targetLayer->hasBlur()){
@@ -1247,6 +1452,17 @@ void BackendRenderTargetContext::resetElementState() {
             }
             case VisualCommand::SetOpacity: {
                 currentOpacity = ((VisualCommandParams*)params)->opacityValue;
+                return;
+            }
+            case VisualCommand::TextRun: {
+                // Phase 6.7-c3: iterate the sub-runs (chunk 3 emits a
+                // single sub-run; chunk 4 lights up multi-atlas runs)
+                // and issue one draw call per sub-run against its
+                // resolved font's MSDF glyph atlas.
+                auto & _params = ((VisualCommandParams*)params)->textRunParams;
+                for(const auto & subRun : _params.subRuns){
+                    emitTextSubRun(subRun, _params.rect, _params.color);
+                }
                 return;
             }
             case VisualCommand::Text:

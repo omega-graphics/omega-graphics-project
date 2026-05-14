@@ -74,6 +74,11 @@ void AppWindow::setRootWidget(WidgetPtr widget){
         Composition::BackendResourceFactory factory;
         Composition::Rect rootRect = impl_->rect;
         rootRect.pos = {0.f, 0.f};
+        // Single source of truth for the window's logical->physical pixel
+        // scale: the native window. Seed it onto the render target before
+        // the backend visual tree is built so every backend reads it via
+        // ViewRenderTarget::getRenderScale() rather than recomputing it.
+        impl_->rootViewRenderTarget->setRenderScale(impl_->nativeWindow->scaleFactor());
         impl_->windowVisualTreeData.bundle = factory.createVisualTreeForView(
             impl_->rootViewRenderTarget,
             rootRect,

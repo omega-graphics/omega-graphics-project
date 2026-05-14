@@ -888,7 +888,7 @@ codebase should override anything in §3:
    its own paint method. But this touches every widget subclass, so
    it should be its own follow-up plan, not rolled into this one.
 
-   ANSWER: Widget's are effecetively a light wrapper around View.
+   ANSWER: Widget's are effectively a light wrapper around View.
 
 3. **Layerization opt-in.** When does a `SceneNode` get its own
    composition layer (for scrolling, opacity animation, transforms)?
@@ -914,6 +914,8 @@ codebase should override anything in §3:
    plan keeps it single-threaded. The `DisplayList` snapshot is the
    hand-off point where a future compositor thread *could* take over,
    but nothing here forces that decision.
+
+   ANWSER: There is a current Compositor Worker Thread seperate from the main UI thread that executes all the GPU commands. Check the Animation-Scheduler-Plan.md. about threading in Animation context.
 
    
 
@@ -1405,12 +1407,16 @@ contract.
    it. Out of scope for this plan; flagged for the animation
    simplification follow-up.
 
+   This should be addressed in a follow up after the Animation-Scheduler-Plan.
+
 2. **`ScrollView` overlay vs. sibling bars.** Scroll bars could be
    emitted by ScrollView's own paint as `paintOverlay` (sketched in
    §9.3) or modeled as sibling Views. Overlay is simpler; siblings
    are more flexible (themable independently, animatable
    independently). Recommendation: overlay for Tier 3, sibling
    nodes only if the theming/animation surface area demands it.
+   
+   Yes.
 
 3. **`DrawOp::NativeContent` op shape.** The op shape should be
    designed jointly with [NativeViewHost-Adoption-Plan.md](NativeViewHost-Adoption-Plan.md)

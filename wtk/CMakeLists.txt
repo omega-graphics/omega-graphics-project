@@ -44,6 +44,11 @@ elseif(UNIX AND NOT APPLE)
 
 	pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
 	pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
+	# Phase 6.7: outline extraction goes through PangoFc → FT_Face. The
+	# pangoft2 module exposes the PangoFcFont APIs and pulls freetype as
+	# an Imported transitive dep so we don't need a separate find call.
+	pkg_check_modules(PANGOFT2 REQUIRED pangoft2)
+	pkg_check_modules(FREETYPE2 REQUIRED freetype2)
 	pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
 	pkg_check_modules(FFMPEG REQUIRED libavcodec libavutil libavdevice)
 	# libnotify is optional: GTKNote falls back to no-op if not present.
@@ -292,16 +297,54 @@ target_include_directories(OmegaWTK_Composition
 	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>
 	        ${NATIVE_PRIVATE_INCLUDE_DIR})
 target_link_libraries(OmegaWTK_Composition PUBLIC OmegaCommon PRIVATE OmegaGTE)
+
+# msdfgen — Phase 6.7 MSDF glyph atlas. Core-only build (no SVG / PNG /
+# OpenMP / vcpkg / standalone exe / freetype-via-msdfgen-ext). We feed
+# msdfgen pre-built `Shape` objects from the per-platform outline
+# extractor (PangoFc → FT_Outline_Decompose on Linux), so the
+# msdfgen-ext dependency on freetype-inside-msdfgen is unnecessary.
+# Linux-only for now; DWrite / Core Text backends switch in their own
+# chunks.
+if(TARGET_LINUX)
+	set(MSDFGEN_DIR "${OMEGAWTK_SOURCE_DIR}/deps/msdfgen/code")
+	if(EXISTS "${MSDFGEN_DIR}/CMakeLists.txt")
+		set(MSDFGEN_CORE_ONLY        ON  CACHE BOOL "" FORCE)
+		set(MSDFGEN_BUILD_STANDALONE OFF CACHE BOOL "" FORCE)
+		set(MSDFGEN_USE_VCPKG        OFF CACHE BOOL "" FORCE)
+		set(MSDFGEN_USE_OPENMP       OFF CACHE BOOL "" FORCE)
+		set(MSDFGEN_USE_SKIA         OFF CACHE BOOL "" FORCE)
+		set(MSDFGEN_DISABLE_SVG      ON  CACHE BOOL "" FORCE)
+		set(MSDFGEN_DISABLE_PNG      ON  CACHE BOOL "" FORCE)
+		set(MSDFGEN_INSTALL          OFF CACHE BOOL "" FORCE)
+		set(MSDFGEN_DYNAMIC_RUNTIME  OFF CACHE BOOL "" FORCE)
+		add_subdirectory("${MSDFGEN_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/deps/msdfgen" EXCLUDE_FROM_ALL)
+		# Whole-archive into the OmegaWTK shared lib means msdfgen has
+		# to be PIC too.
+		if(TARGET msdfgen-core)
+			set_target_properties(msdfgen-core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+		endif()
+		target_link_libraries(OmegaWTK_Composition PRIVATE msdfgen::msdfgen)
+		target_compile_definitions(OmegaWTK_Composition PRIVATE OMEGAWTK_HAVE_MSDFGEN=1)
+	else()
+		message(STATUS "OmegaWTK: msdfgen not present at ${MSDFGEN_DIR}; MSDF text disabled (will fall back to bitmap path).")
+	endif()
+endif()
 if(TARGET_LINUX)
 	# vk backend pulls in GTKItem.h (GTK) plus pangocairo/fontconfig for text layout.
+	# Phase 6.7 adds pangoft2 + freetype2 for the PangoFc→FT_Face descent
+	# used by the MSDF outline extractor.
 	target_include_directories(OmegaWTK_Composition
-		PRIVATE ${GTK3_INCLUDE_DIRS} ${PANGOCAIRO_INCLUDE_DIRS} ${FONTCONFIG_INCLUDE_DIRS})
+		PRIVATE ${GTK3_INCLUDE_DIRS} ${PANGOCAIRO_INCLUDE_DIRS} ${PANGOFT2_INCLUDE_DIRS}
+		        ${FREETYPE2_INCLUDE_DIRS} ${FONTCONFIG_INCLUDE_DIRS})
 	target_compile_options(OmegaWTK_Composition
-		PRIVATE ${GTK3_CFLAGS_OTHER} ${PANGOCAIRO_CFLAGS_OTHER} ${FONTCONFIG_CFLAGS_OTHER})
+		PRIVATE ${GTK3_CFLAGS_OTHER} ${PANGOCAIRO_CFLAGS_OTHER} ${PANGOFT2_CFLAGS_OTHER}
+		        ${FREETYPE2_CFLAGS_OTHER} ${FONTCONFIG_CFLAGS_OTHER})
 	target_link_directories(OmegaWTK_Composition
-		PUBLIC ${GTK3_LIBRARY_DIRS} ${PANGOCAIRO_LIBRARY_DIRS} ${FONTCONFIG_LIBRARY_DIRS})
+		PUBLIC ${GTK3_LIBRARY_DIRS} ${PANGOCAIRO_LIBRARY_DIRS} ${PANGOFT2_LIBRARY_DIRS}
+		       ${FREETYPE2_LIBRARY_DIRS} ${FONTCONFIG_LIBRARY_DIRS})
 	target_link_libraries(OmegaWTK_Composition
-		PUBLIC ${GTK3_LIBRARIES} ${PANGOCAIRO_LIBRARIES} ${FONTCONFIG_LIBRARIES})
+		PUBLIC ${GTK3_LIBRARIES} ${PANGOCAIRO_LIBRARIES} ${PANGOFT2_LIBRARIES}
+		       ${FREETYPE2_LIBRARIES} ${FONTCONFIG_LIBRARIES})
 endif()
 
 add_library(OmegaWTK_UI STATIC ${UI_SRCS})

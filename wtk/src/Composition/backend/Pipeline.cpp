@@ -70,6 +70,7 @@ namespace OmegaWTK::Composition {
         sdf_.reset();
         path_.reset();
         bitmap_.reset();
+        text_.reset();
         linearGradient_.reset();
         gaussianBlurH_.reset();
         gaussianBlurV_.reset();
@@ -228,6 +229,26 @@ namespace OmegaWTK::Composition {
         else {
             bitmap_.reset();
             std::cout << "Bitmap render pipeline is unavailable." << std::endl;
+        }
+
+        // MSDF text render pipeline (Phase 6.7.2). Same alpha-over
+        // blend setup as bitmap/SDF — text glyphs produce fractional
+        // coverage at the silhouette and pixels outside the glyph
+        // contour must preserve the destination. Chunk 1 attaches a
+        // magenta-stub fragment shader so the pipeline state object
+        // is exercised by `initialize()`; chunk 3 swaps in the real
+        // median-of-three / fwidth / smoothstep math.
+        renderPipelineDescriptor.vertexFunc = getShader("textVertex");
+        renderPipelineDescriptor.fragmentFunc = getShader("msdfTextFragment");
+        if(renderPipelineDescriptor.vertexFunc != nullptr && renderPipelineDescriptor.fragmentFunc != nullptr){
+            text_ = gte.graphicsEngine->makeRenderPipelineState(renderPipelineDescriptor);
+            if(text_ == nullptr){
+                std::cout << "MSDF text render pipeline creation failed." << std::endl;
+            }
+        }
+        else {
+            text_.reset();
+            std::cout << "MSDF text render pipeline is unavailable." << std::endl;
         }
 
         // Reset blend state for any subsequently-created pipelines in

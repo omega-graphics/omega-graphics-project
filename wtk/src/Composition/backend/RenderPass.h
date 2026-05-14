@@ -52,7 +52,7 @@ namespace OmegaWTK::Composition {
         };
 
     private:
-        enum class PipelineKind : std::uint8_t { None, Color, Texture, Sdf, Path, Bitmap };
+        enum class PipelineKind : std::uint8_t { None, Color, Texture, Sdf, Path, Bitmap, Text };
 
         BackendRenderTargetContext & owner_;
 
@@ -130,6 +130,14 @@ namespace OmegaWTK::Composition {
         /// sub-rect UV baked at vertex authoring time, optional RGBA tint
         /// via a per-draw uniform buffer at fragment slot 10.
         void bindBitmapPipeline(DrawScope & scope);
+
+        /// Same contract as `bindColorPipeline`, for the MSDF text
+        /// pipeline (Phase 6.7.2). Drives `VisualCommand::TextRun`
+        /// draws — one quad per glyph against a per-font atlas at
+        /// fragment slot 14, sampled via `mainSampler`. Per-draw text
+        /// color uniform at fragment slot 13. Chunk 1: pipeline is
+        /// built but not yet bound by any draw path.
+        void bindTextPipeline(DrawScope & scope);
 
         void setViewportOverride(float offsetX, float offsetY,
                                  float width, float height);

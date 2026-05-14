@@ -10,6 +10,7 @@
 #include "CompositorClient.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <type_traits>
 
 #ifndef OMEGAWTK_COMPOSITION_CANVAS_H
@@ -76,6 +77,20 @@ namespace OmegaWTK {
 
 
     
+    /// Per-sub-run payload for a `TextRun` visual command (Phase 6.7.2).
+    /// One sub-run per resolved face after the layout engine's font
+    /// fallback splits a string across multiple atlases — typically
+    /// one for Latin against the requested face, one (or more) for
+    /// CJK / emoji against fallback faces. `glyphIds` and `positions`
+    /// run in parallel; `positions[i]` is the pen position the layout
+    /// engine assigned to glyph `glyphIds[i]`, in canvas-space pixels
+    /// relative to the owning text rect's origin.
+    struct OMEGAWTK_EXPORT TextSubRun {
+        Core::SharedPtr<Font> resolvedFont;
+        OmegaCommon::Vector<std::uint32_t> glyphIds;
+        OmegaCommon::Vector<Composition::Point2D> positions;
+    };
+
     /// An object drawn by a Compositor.
     struct  OMEGAWTK_EXPORT VisualCommand {
         typedef enum : OPT_PARAM {
@@ -84,6 +99,7 @@ namespace OmegaWTK {
             Ellipse,
             VectorPath,
             Text,
+            TextRun,
             Bitmap,
             Shadow,
             SetTransform,
@@ -138,6 +154,17 @@ namespace OmegaWTK {
                 float cornerRadius = 0.f;
                 bool isEllipse = false;
             } shadowParams {};
+            /// Phase 6.7.2: per-glyph quads + atlas binding(s) for an
+            /// MSDF text run. `subRuns` is one entry per resolved face
+            /// after layout-engine fallback. The render path issues
+            /// one draw call per sub-run because each sub-run's atlas
+            /// texture differs. Empty in chunk 1 — no caller emits
+            /// `TextRun` yet.
+            struct {
+                OmegaCommon::Vector<TextSubRun> subRuns;
+                Composition::Rect rect;
+                Composition::Color color;
+            } textRunParams {};
             Matrix4x4 transformMatrix = Matrix4x4::Identity();
             float opacityValue = 1.f;
 
@@ -166,6 +193,12 @@ namespace OmegaWTK {
                  Core::Optional<Composition::Color> tintColor);
 
             Data(const LayerEffect::DropShadowParams & shadow,const Composition::Rect & shapeRect,float cornerRadius,bool isEllipse);
+
+            /// Phase 6.7.2: TextRun ctor. Takes ownership of the
+            /// sub-run vector via move.
+            Data(OmegaCommon::Vector<TextSubRun> subRuns,
+                 const Composition::Rect & rect,
+                 const Composition::Color & color);
 
             explicit Data(const Matrix4x4 & matrix);
 
@@ -217,6 +250,13 @@ namespace OmegaWTK {
                       bool isEllipse):
         type(Shadow),
         params(shadow,shapeRect,cornerRadius,isEllipse){};
+
+        /// Phase 6.7.2: TextRun visual command.
+        VisualCommand(OmegaCommon::Vector<TextSubRun> subRuns,
+                      const Composition::Rect & rect,
+                      const Composition::Color & color):
+        type(TextRun),
+        params(std::move(subRuns),rect,color){};
 
         explicit VisualCommand(const Matrix4x4 & matrix):
         type(SetTransform),

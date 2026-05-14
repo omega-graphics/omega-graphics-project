@@ -124,6 +124,77 @@ fragment float4 bitmapFragment(OmegaWTKBitmapRasterData raster){
     return result;
 }
 
+/// =====================================================================
+/// MSDF text render pipeline (Phase 6.7.2 — chunk 1 stub).
+///
+/// Vertex layout `(float4 pos, float4 uvPad)` — same shape as the bitmap
+/// pipeline so the C++ side can share its quad-authoring helper. `uv` is
+/// the per-glyph atlas-normalized sample coordinate; `.zw` reserved for
+/// future per-vertex outline / glow params (Phase 6.7.3).
+///
+/// Per-draw uniform buffer at slot 13: `textColor` and a reserved
+/// outline-params float4 so the pipeline state object's binding layout
+/// is fixed once and chunk 3 just rewrites the param data.
+///
+/// Atlas texture bound at fragment slot 14.
+///
+/// Chunk 3: the fragment samples the MSDF atlas, takes the median of
+/// the three distance channels (preserves sharp corners that a
+/// single-channel SDF rounds off), derives a screen-space AA width via
+/// `fwidth`, and `smoothstep`s a coverage value around the 0.5 edge
+/// threshold (the chunk-2 quantizer maps signed distance 0 → 0.5).
+/// Output is `textColor × coverage`, with the per-element opacity
+/// already folded into `textColor.a` by the C++ side.
+struct OmegaWTKTextVertex {
+    float4 pos;
+    float4 uvPad;
+};
+
+struct OmegaWTKTextRasterData internal {
+    float4 pos : Position;
+    float4 uvPad : Color;
+};
+
+struct OmegaWTKTextDrawParams {
+    float4 textColor;
+    float4 outlineParamsReserved;
+};
+
+buffer<OmegaWTKTextVertex> v_buffer_text : 12;
+buffer<OmegaWTKTextDrawParams> textParams : 13;
+texture2d textAtlasTex : 14;
+
+[in v_buffer_text]
+vertex OmegaWTKTextRasterData textVertex(uint v_id : VertexID){
+    OmegaWTKTextVertex v = v_buffer_text[v_id];
+    OmegaWTKTextRasterData r;
+    r.pos = v.pos;
+    r.uvPad = v.uvPad;
+    return r;
+}
+
+[in textAtlasTex, in mainSampler, in textParams]
+fragment float4 msdfTextFragment(OmegaWTKTextRasterData raster){
+    float2 uv = float2(raster.uvPad[0], raster.uvPad[1]);
+    float4 s = sample(mainSampler, textAtlasTex, uv);
+
+    // Median of the three MSDF distance channels. The median preserves
+    // sharp corners that a single-channel SDF would round.
+    float median = max(min(s[0], s[1]), min(max(s[0], s[1]), s[2]));
+
+    // Screen-space AA band around the 0.5 edge threshold.
+    float aa = max(fwidth(median), 0.0001);
+    float coverage = smoothstep(0.5 - aa, 0.5 + aa, median);
+
+    float4 color = textParams[0].textColor;
+    float4 result;
+    result[0] = color[0];
+    result[1] = color[1];
+    result[2] = color[2];
+    result[3] = color[3] * coverage;
+    return result;
+}
+
 struct BlurParams {
     float radius;
     uint texWidth;

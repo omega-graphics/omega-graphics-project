@@ -30,6 +30,9 @@ namespace OmegaWTK::Composition {
      class MTLCALayerTree : public BackendVisualTree {
          typedef BackendVisualTree Parent;
          SharedHandle<Native::Cocoa::CocoaItem> view;
+         // Logical->physical pixel scale, sourced from the native window
+         // via ViewRenderTarget::getRenderScale().
+         float renderScale_ = 1.f;
      public:
          using Parent::body;
          using Parent::root;

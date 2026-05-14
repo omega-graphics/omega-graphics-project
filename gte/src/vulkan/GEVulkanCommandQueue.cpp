@@ -2406,19 +2406,6 @@ _NAMESPACE_BEGIN_
             submittedTraceCommandBufferIds.clear();
             return;
         }
-        if(commandQueue.empty()){
-            submittedTraceCommandBufferIds.clear();
-            return;
-        }
-        for(auto cb : commandQueue){
-            auto endRes = vkEndCommandBuffer(cb);
-            if(endRes != VK_SUCCESS){
-                std::cerr << "Vulkan end command buffer failed (" << endRes << ")" << std::endl;
-                commandQueue.clear();
-                submittedTraceCommandBufferIds.clear();
-                return;
-            }
-        }
         if(engine == nullptr || engine->deviceQueuefamilies.empty() || engine->deviceQueuefamilies.front().empty()){
             commandQueue.clear();
             submittedTraceCommandBufferIds.clear();
@@ -2433,44 +2420,69 @@ _NAMESPACE_BEGIN_
             return;
         }
 
-        vkResetFences(engine->device,1,&submitFence);
+        // Two flows reach here after the queue-decoupling refactor:
+        //   (a) Caller submitted CBs but has not yet committed — flush them
+        //       through submitFence so they finish before present.
+        //   (b) Caller already called commitToGPU() and the internal queue
+        //       is empty — just sync the present queue so prior submissions
+        //       are drained, then present.
+        if(!commandQueue.empty()){
+            for(auto cb : commandQueue){
+                auto endRes = vkEndCommandBuffer(cb);
+                if(endRes != VK_SUCCESS){
+                    std::cerr << "Vulkan end command buffer failed (" << endRes << ")" << std::endl;
+                    commandQueue.clear();
+                    submittedTraceCommandBufferIds.clear();
+                    return;
+                }
+            }
 
-        VkSubmitInfo submission {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        submission.waitSemaphoreCount = 0;
-        submission.pWaitSemaphores = nullptr;
-        submission.commandBufferCount = commandQueue.size();
-        submission.pCommandBuffers = commandQueue.data();
+            vkResetFences(engine->device,1,&submitFence);
 
-        VkTimelineSemaphoreSubmitInfo timelineInfo {};
-        VkSemaphore signalSlot = VK_NULL_HANDLE;
-        std::uint64_t signalValueSlot = 0;
-        prepareSubmitWithRetentionSignal(submission, timelineInfo, signalSlot, signalValueSlot);
-        const auto gate = gateForNextSubmit();
+            VkSubmitInfo submission {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            submission.waitSemaphoreCount = 0;
+            submission.pWaitSemaphores = nullptr;
+            submission.commandBufferCount = commandQueue.size();
+            submission.pCommandBuffers = commandQueue.data();
 
-        auto res = vkQueueSubmit(vkQueue, 1, &submission,submitFence);
-        if(!VK_RESULT_SUCCEEDED(res)){
-            std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
-            commandQueue.clear();
-            pendingRetainedBuffers.clear();
-            submittedTraceCommandBufferIds.clear();
-            return;
-        }
-        ++nextSubmitValue;
-        auto waitRes = vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
-        if(waitRes != VK_SUCCESS){
-            std::cerr << "Failed waiting for submitted command buffers (" << waitRes << ")" << std::endl;
-            commandQueue.clear();
-            // Move pending retains into retentionQueue; the signaled timeline
-            // will let drainCompleted release them once it fires.
+            VkTimelineSemaphoreSubmitInfo timelineInfo {};
+            VkSemaphore signalSlot = VK_NULL_HANDLE;
+            std::uint64_t signalValueSlot = 0;
+            prepareSubmitWithRetentionSignal(submission, timelineInfo, signalSlot, signalValueSlot);
+            const auto gate = gateForNextSubmit();
+
+            auto res = vkQueueSubmit(vkQueue, 1, &submission,submitFence);
+            if(!VK_RESULT_SUCCEEDED(res)){
+                std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
+                commandQueue.clear();
+                pendingRetainedBuffers.clear();
+                submittedTraceCommandBufferIds.clear();
+                return;
+            }
+            ++nextSubmitValue;
+            auto waitRes = vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
+            if(waitRes != VK_SUCCESS){
+                std::cerr << "Failed waiting for submitted command buffers (" << waitRes << ")" << std::endl;
+                commandQueue.clear();
+                flushPendingRetentionUnder(gate);
+                submittedTraceCommandBufferIds.clear();
+                return;
+            }
             flushPendingRetentionUnder(gate);
-            submittedTraceCommandBufferIds.clear();
-            return;
+            engine->retentionQueue.drainCompleted();
         }
-        // GPU finished — both submitFence and the retentionTimeline value are
-        // signaled by now. Hand pending items to the retention queue and
-        // drain them in one shot.
-        flushPendingRetentionUnder(gate);
-        engine->retentionQueue.drainCompleted();
+        else {
+            // Decoupled flow: commitToGPU() already submitted the draw work.
+            // We need the swapchain image's RENDER_TARGET → PRESENT_SRC_KHR
+            // transition (done as the render-pass finalLayout) to have
+            // completed before vkQueuePresentKHR. waitSemaphoreCount on
+            // the present info is 0, so synchronize on the queue itself.
+            auto idleRes = vkQueueWaitIdle(vkQueue);
+            if(idleRes != VK_SUCCESS){
+                std::cerr << "vkQueueWaitIdle before present failed (" << idleRes << ")" << std::endl;
+            }
+            engine->retentionQueue.drainCompleted();
+        }
 
         auto presentRes = vkQueuePresentKHR(vkQueue,info);
         if(presentRes != VK_SUCCESS &&

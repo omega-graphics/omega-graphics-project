@@ -197,6 +197,14 @@ namespace OmegaWTK::Composition {
         }
     }
 
+    void FrameRenderPass::bindTextPipeline(DrawScope & scope){
+        if(lastPipelineKind_ != PipelineKind::Text){
+            auto pipeline = pipelineRegistry().text();
+            scope.cb->setRenderPipelineState(pipeline);
+            lastPipelineKind_ = PipelineKind::Text;
+        }
+    }
+
     void FrameRenderPass::setViewportOverride(float offsetX, float offsetY,
                                               float width, float height){
         viewportOverride_.active   = true;

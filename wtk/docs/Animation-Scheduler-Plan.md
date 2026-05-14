@@ -773,6 +773,8 @@ focused tests for "interrupt mid-transition with a new target."
    case forces a string. String keys cost a hash on every Paint read,
    which is the hot path.
 
+   Agreed.
+
 2. **`FillBrush` / `BrushPtr` interpolation.** The variant includes
    `BrushPtr`, but `KeyframeLerp<BrushPtr>` is not a meaningful
    specialization in general (you can't lerp arbitrary brushes). The Style
@@ -780,6 +782,8 @@ focused tests for "interrupt mid-transition with a new target."
    solid-color brushes (lerp the color underneath), and reject other
    brush kinds with a `Failed` state on the handle. WML's gradient-stop
    animation is then a per-stop scalar animation, not a "brush" animation.
+
+   This is a logcial approach. Each of the components of color brush should be animatable. For Gradient brushes, each stop would be animatble. For bitmap brushes, probably,
 
 3. **Re-targeting outside transitions.** §3.7 specifies that a
    `transition()` call on an active `(node, key)` retargets in place.
@@ -810,11 +814,15 @@ focused tests for "interrupt mid-transition with a new target."
    profiling animation-heavy windows, cheap to collect. Recommendation:
    yes, add `tickElapsedNs` to `Stats`.
 
+   Yes.
+
 7. **`PropertyKey::UserDefined`.** Reserved for app-allocated keys.
    Should the scheduler track which user keys are in use, or trust the
    app? Recommendation: trust the app. The scheduler doesn't need to
    know what a user key means — it just needs to interpolate and store
    the typed value.
+
+   Yes.
 
 ---
 

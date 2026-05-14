@@ -100,7 +100,7 @@ Done when:
 ### Slice 2: Instance-Owned Parser State
 
 Goal: make `Parser` reentrant and safe to instantiate more than once.
-
+NOTE: There's a now Sema {h,cpp} file, so we canmove semantics related routines to that file to help keep it organized.
 Tasks:
 
 - move `TreeBuilder` and `TreeSemantics` ownership into `Parser`
