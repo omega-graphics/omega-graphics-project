@@ -1,5 +1,6 @@
 #include <aqua/Pipeline.h>
 #include <OmegaGTE.h>
+#include <omegasl.h>
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -33,7 +34,25 @@ OmegaGTE::TriangleFillMode mapFill(FillMode m) {
     return OmegaGTE::TriangleFillMode::Solid;
 }
 
-std::shared_ptr<Pipeline> buildFromLibrary(
+} // namespace
+
+struct PipelineFactory {
+    static std::shared_ptr<Pipeline> buildFromLibrary(
+        OmegaGTE::GTE &gte,
+        SharedHandle<OmegaGTE::GTEShaderLibrary> shaderLib,
+        const PipelineDesc &desc);
+
+    static std::shared_ptr<Pipeline> create(OmegaGTE::GTE &gte,
+                                            const std::string &omegaslPath,
+                                            const PipelineDesc &desc);
+
+    static std::shared_ptr<Pipeline> createFromLibrary(
+        OmegaGTE::GTE &gte,
+        const std::string &libPath,
+        const PipelineDesc &desc);
+};
+
+std::shared_ptr<Pipeline> PipelineFactory::buildFromLibrary(
     OmegaGTE::GTE &gte,
     SharedHandle<OmegaGTE::GTEShaderLibrary> shaderLib,
     const PipelineDesc &desc) {
@@ -68,48 +87,41 @@ std::shared_ptr<Pipeline> buildFromLibrary(
         return nullptr;
     }
 
-    // Pipeline has a private ctor; std::make_shared can't reach it. Use new
-    // through a friend factory struct declared in Pipeline.h.
-    struct Ctor : Pipeline { Ctor() : Pipeline() {} };
-    auto p = std::shared_ptr<Pipeline>(new Ctor());
+    auto p = std::shared_ptr<Pipeline>(new Pipeline());
     p->impl->shaderLib = std::move(shaderLib);
     p->impl->state = std::move(state);
     return p;
 }
 
-} // namespace
-
-struct PipelineFactory {
-    static std::shared_ptr<Pipeline> create(OmegaGTE::GTE &gte,
-                                            const std::string &omegaslPath,
-                                            const PipelineDesc &desc) {
-        std::ifstream in(omegaslPath);
-        if (!in) {
-            std::cerr << "Aqua::Pipeline: cannot open " << omegaslPath << "\n";
-            return nullptr;
-        }
-        std::stringstream ss;
-        ss << in.rdbuf();
-        OmegaCommon::String src = ss.str();
-
-        auto compiled = gte.omegaSlCompiler->compile({
-            OmegaGTE::OmegaSLCompiler::Source::fromString(src)
-        });
-        if (!compiled) {
-            std::cerr << "Aqua::Pipeline: shader compile failed\n";
-            return nullptr;
-        }
-        auto lib = gte.graphicsEngine->loadShaderLibraryRuntime(compiled);
-        return buildFromLibrary(gte, lib, desc);
+std::shared_ptr<Pipeline> PipelineFactory::create(OmegaGTE::GTE &gte,
+                                                  const std::string &omegaslPath,
+                                                  const PipelineDesc &desc) {
+    std::ifstream in(omegaslPath);
+    if (!in) {
+        std::cerr << "Aqua::Pipeline: cannot open " << omegaslPath << "\n";
+        return nullptr;
     }
+    std::stringstream ss;
+    ss << in.rdbuf();
+    OmegaCommon::String src = ss.str();
 
-    static std::shared_ptr<Pipeline> createFromLibrary(
-        OmegaGTE::GTE &gte,
-        const std::string &libPath,
-        const PipelineDesc &desc) {
-        auto lib = gte.graphicsEngine->loadShaderLibrary(OmegaCommon::FS::Path(libPath));
-        return buildFromLibrary(gte, lib, desc);
+    auto compiled = gte.omegaSlCompiler->compile({
+        OmegaSLCompiler::Source::fromString(src)
+    });
+    if (!compiled) {
+        std::cerr << "Aqua::Pipeline: shader compile failed\n";
+        return nullptr;
     }
-};
+    auto lib = gte.graphicsEngine->loadShaderLibraryRuntime(compiled);
+    return buildFromLibrary(gte, lib, desc);
+}
+
+std::shared_ptr<Pipeline> PipelineFactory::createFromLibrary(
+    OmegaGTE::GTE &gte,
+    const std::string &libPath,
+    const PipelineDesc &desc) {
+    auto lib = gte.graphicsEngine->loadShaderLibrary(OmegaCommon::FS::Path(libPath));
+    return buildFromLibrary(gte, lib, desc);
+}
 
 } // namespace Aqua

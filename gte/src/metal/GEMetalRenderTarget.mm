@@ -15,8 +15,8 @@ presentQueue_(presentQueue),drawableSize([metalLayer drawableSize]),currentDrawa
             "NativeRenderTarget",
             traceResourceId,
             metalLayer,
-            drawableSize.width,
-            drawableSize.height,
+            float(drawableSize.width),
+            float(drawableSize.height),
             static_cast<float>(metalLayer.contentsScale));
 };
 
@@ -53,15 +53,36 @@ void GEMetalNativeRenderTarget::acquireDrawable(){
 
 void GEMetalNativeRenderTarget::present(){
     auto mtlqueue = (GEMetalCommandQueue *)presentQueue_.get();
-    if(currentDrawable.handle() != nullptr && !mtlqueue->commandBuffers.empty()){
+    if(currentDrawable.handle() != nullptr){
         id<CAMetalDrawable> drawable = NSOBJECT_OBJC_BRIDGE(id<CAMetalDrawable>,currentDrawable.handle());
 
-        auto & lastCB = mtlqueue->commandBuffers.back();
-        auto *metalCB = (GEMetalCommandBuffer *)lastCB.get();
-        id<MTLCommandBuffer> mtlCB = NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,metalCB->buffer.handle());
-        [mtlCB presentDrawable:drawable];
+        // Prefer riding on the last pending command buffer. If WTK already
+        // drained the queue (commit() pattern: commitToGPU → present), the
+        // pending list is empty — allocate a present-only CB. Metal tracks
+        // the drawable hazard, so the present waits for the render CBs that
+        // wrote to the drawable's texture to complete first.
+        if(mtlqueue->commandBuffers.empty()){
+            auto presentCB = mtlqueue->getAvailableBuffer();
+            auto *metalCB = (GEMetalCommandBuffer *)presentCB.get();
+            id<MTLCommandBuffer> mtlCB = NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,metalCB->buffer.handle());
+            [mtlCB presentDrawable:drawable];
+            mtlqueue->submitCommandBuffer(presentCB);
+        }
+        else {
+            auto & lastCB = mtlqueue->commandBuffers.back();
+            auto *metalCB = (GEMetalCommandBuffer *)lastCB.get();
+            id<MTLCommandBuffer> mtlCB = NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,metalCB->buffer.handle());
+            [mtlCB presentDrawable:drawable];
+        }
     }
     mtlqueue->commitToGPU();
+    // Drop our retain — the command buffer keeps the drawable alive until
+    // it has presented. Clearing currentDrawable lets the next frame's
+    // startRenderPass acquire a fresh one via [layer nextDrawable].
+    if(currentDrawable.handle() != nullptr){
+        [NSOBJECT_OBJC_BRIDGE(id,currentDrawable.handle()) release];
+        currentDrawable = NSObjectHandle{nullptr};
+    }
 }
 
 GEMetalTextureRenderTarget::GEMetalTextureRenderTarget(SharedHandle<GETexture> & texture):texturePtr(std::dynamic_pointer_cast<GEMetalTexture>(texture)){

@@ -22,17 +22,20 @@ AppInst *AppInst::inst() {
 AppInst::AppInst(void *data):ptr(Native::make_native_app(data)),windowManager(std::make_unique<AppWindowManager>()){
     instance = this;
     gte = OmegaGTE::InitWithDefaultDevice();
-    Composition::InitializeEngine();
-    OMEGAWTK_DEBUG("Application Startup")
-    Composition::FontEngine::Create();
+
     /// Load your app's assets here. 
-    OmegaCommon::FS::Path assets_path("./assets.pak");
+    OmegaCommon::FS::Path assets_path("./default.pak");
     if(assets_path.exists()){
         auto bundleResult = OmegaCommon::AssetBundle::open(assets_path);
         if(bundleResult.isOk()){
             assetBundle = std::move(bundleResult.value());
         }
     }
+
+    Composition::InitializeEngine();
+    OMEGAWTK_DEBUG("Application Startup")
+    Composition::FontEngine::Create();
+    
 };
 
 int AppInst::start(){

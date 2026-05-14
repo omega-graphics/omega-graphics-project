@@ -10,6 +10,13 @@ include(./OmegaGTE.cmake)
 file(GLOB MAIN_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 file(GLOB COMMON_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/common/*.cpp")
 
+# MeshParser only handles formats Metal already covers via Model I/O / MTKMesh
+# (OBJ, glTF). Drop it from the Metal build until it grows a parser for a
+# format Metal can't load (e.g. FBX).
+if(APPLE)
+	list(REMOVE_ITEM COMMON_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/common/MeshParser.cpp")
+endif()
+
 set(PUBLIC_DEFS)
 
 if(WIN32)

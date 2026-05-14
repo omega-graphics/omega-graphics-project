@@ -2,6 +2,8 @@
 #include "omegaWTK/Media/Video.h"
 #include "omegaWTK/Media/MediaPlaybackSession.h"
 
+#include <omega-common/img.h>
+
 #import <AVFoundation/AVFoundation.h>
 #import <AVFAudio/AVFAudio.h>
 
@@ -104,7 +106,7 @@ namespace OmegaWTK::Media {
             clients[idx].skipPlease = true;
         }
         void removeClient(size_t idx){
-            clients.erase(clients.cbegin() + idx);
+            clients.erase(clients.cbegin() + decltype(clients)::difference_type(idx));
         }
         explicit PlaybackDispatchQueue():mutex(),t([&]{
 
@@ -133,7 +135,7 @@ namespace OmegaWTK::Media {
                                 auto frame = std::make_shared<VideoFrame>();
                                 CMBlockBufferRef blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
                                 size_t offsetOut,length;
-                                ImgByte *data;
+                                OmegaCommon::Img::Byte *data;
                                 CMBlockBufferGetDataPointer(blockBuffer,0,&offsetOut,&length,(char **)&data);
                                 frame->videoFrame.data = data;
                                 CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);

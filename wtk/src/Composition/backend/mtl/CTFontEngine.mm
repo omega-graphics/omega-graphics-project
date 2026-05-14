@@ -233,7 +233,19 @@ GlyphRun::fromUStringAndFont(const OmegaCommon::UniString &str, Core::SharedPtr<
          
          auto texture = gte.graphicsEngine->makeTexture(desc);
          NSLog(@"CGBitmapContextData: %p",data);
-         texture->copyBytes(data,bytesPerRow);
+         // CGBitmapContext writes rows bottom-up (CG default coord system);
+         // GTE samplers treat row 0 as the top, so an unflipped upload
+         // shows text upside down. Mirror BitmapTextureCache's §4.5
+         // region-aware row-flip on upload — dest row `r` consumes source
+         // row `pixelHeight - 1 - r`.
+         {
+             auto *base = static_cast<unsigned char *>(data);
+             for(unsigned r = 0; r < (unsigned)pixelHeight; ++r){
+                 OmegaGTE::TextureRegion region {0, r, 0, (unsigned)pixelWidth, 1, 1};
+                 texture->copyBytes(base + (pixelHeight - 1 - r) * bytesPerRow,
+                                    bytesPerRow, region);
+             }
+         }
 
         CGContextRelease(context);
 

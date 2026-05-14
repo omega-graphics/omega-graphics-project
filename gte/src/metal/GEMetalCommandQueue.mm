@@ -345,6 +345,12 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 
         if(desc.nRenderTarget != nullptr){
             auto *n_rt = (GEMetalNativeRenderTarget *)desc.nRenderTarget;
+            // First render pass of the frame: pull a fresh CAMetalDrawable.
+            // Subsequent in-frame restarts (texture-fence handling) keep the
+            // same drawable — only acquire when none is currently held.
+            if(n_rt->getDrawable().handle() == nullptr){
+                n_rt->acquireDrawable();
+            }
             auto metalDrawable = n_rt->getDrawable();
             metalDrawable.assertExists();
             id<CAMetalDrawable> drawable = NSOBJECT_OBJC_BRIDGE(id<CAMetalDrawable>,metalDrawable.handle());

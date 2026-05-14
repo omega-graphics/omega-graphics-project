@@ -211,12 +211,21 @@ function(add_framework_bundle)
 	message("Framework Output Dir:${FRAMEWORK_OUTPUT_DIR}")
 	file(MAKE_DIRECTORY ${FRAMEWORK_OUTPUT_DIR}/${_ARG_NAME}.framework)
 	
-    set_target_properties(${_ARG_NAME} 
+    set_target_properties(${_ARG_NAME}
     PROPERTIES
 	SUFFIX ""
 	PREFIX ""
 	MACOSX_RPATH TRUE
     LIBRARY_OUTPUT_DIRECTORY "${FRAMEWORK_OUTPUT_DIR}/${_ARG_NAME}.framework/Versions/${_ARG_VERSION}"
+    # Stamp the framework's install_name at link time so downstream consumers
+    # (e.g. libAQUA.dylib) record `@rpath/Foo.framework/Versions/X/Foo` in
+    # their LC_LOAD_DYLIB. Without this, CMake defaults the install_name to
+    # `@rpath/Foo` (MACOSX_RPATH + OUTPUT_NAME), and the codesign script's
+    # post-hoc `install_name_tool -id` runs too late — consumers have already
+    # been linked. INSTALL_NAME_DIR applies at install time; the BUILD_WITH_
+    # variant pulls it into the build-tree binary too.
+    INSTALL_NAME_DIR "@rpath/${_ARG_NAME}.framework/Versions/${_ARG_VERSION}"
+    BUILD_WITH_INSTALL_NAME_DIR TRUE
     )
 
     # if(TARGET ${_NAME})
@@ -339,6 +348,17 @@ function(add_app_bundle)
 			SUFFIX ""
 			PREFIX ""
     RUNTIME_OUTPUT_DIRECTORY "${APP_BUNDLE_OUTPUT_DIR}/${_ARG_NAME}.app/Contents/MacOS")
+
+	# Bundle-relative rpaths for embedded artifacts. Without these, the
+	# binary loads via @rpath but can't find the frameworks/libs that
+	# add_custom_command staged into Contents/Frameworks and Contents/Libraries.
+	# @executable_path resolves to .../Contents/MacOS at runtime.
+	set_property(TARGET ${_ARG_NAME} APPEND PROPERTY BUILD_RPATH
+		"@executable_path/../Frameworks"
+		"@executable_path/../Libraries")
+	set_property(TARGET ${_ARG_NAME} APPEND PROPERTY INSTALL_RPATH
+		"@executable_path/../Frameworks"
+		"@executable_path/../Libraries")
 
 	set(UNSIGNED_TARGET "${_NAME}${UNSIGNED_TARGET_SUFFIX}")
 	add_custom_target(${UNSIGNED_TARGET})
