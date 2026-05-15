@@ -24,6 +24,11 @@
  /// `wtk/src/Composition/backend/GlyphAtlas.h`.
  class GlyphAtlas;
 
+ /// Forward-declared so `FontEngine::shaper()` can return a reference
+ /// without dragging the layout-engine header into this public header.
+ /// The full type lives in `omegaWTK/Composition/TextLayoutEngine.h`.
+ class ITextShaper;
+
  /**
   @brief A struct that describes how text is laid out within a TextRect.
  */
@@ -54,25 +59,56 @@
   @paragraph
   Create from an Unicode String.
  */
+ /// One resolved face's contribution to a shaped text run (Phase
+ /// 6.7-c4). The layout engine produces one of these per resolved
+ /// face after its font-fallback pass: typically one for Latin
+ /// against the requested face plus one per fallback face (CJK,
+ /// emoji, etc.). `glyphIds` and `positions` run in parallel —
+ /// `positions[i]` is the pen-origin (baseline) position the layout
+ /// engine assigned to `glyphIds[i]`, in canvas-space pixels relative
+ /// to the owning text rect's origin. Glyph IDs are valid only
+ /// against the matching `resolvedFont`'s atlas; that's why the
+ /// render path emits one draw call per sub-run.
+ struct OMEGAWTK_EXPORT TextSubRun {
+     Core::SharedPtr<Font> resolvedFont;
+     OmegaCommon::Vector<std::uint32_t> glyphIds;
+     OmegaCommon::Vector<Composition::Point2D> positions;
+ };
+
+ /// Per-font metrics the text layout engine needs to compose lines
+ /// without going back to a platform API. Phase 2 sources these from
+ /// `Font::getMetrics()`; backends read them from FreeType / CTFont /
+ /// IDWriteFontFace as appropriate. All values are in pixels at the
+ /// font's current point size.
+ struct OMEGAWTK_EXPORT FontMetrics {
+     float ascent  = 0.f;  ///< Pixels above the baseline (positive).
+     float descent = 0.f;  ///< Pixels below the baseline (positive).
+     float lineGap = 0.f;  ///< Extra leading between consecutive lines.
+
+     /// Default per-line height = ascent + descent + lineGap. Phase
+     /// 2's layout engine stacks lines on this stride.
+     float lineHeight() const { return ascent + descent + lineGap; }
+ };
+
  class OMEGAWTK_EXPORT GlyphRun {
  public:
 
-     /// Result of shaping a `GlyphRun` for the MSDF render path
-     /// (Phase 6.7-c3). `glyphIds` and `positions` run in parallel:
-     /// `positions[i]` is the pen-origin (baseline) position the
-     /// layout engine assigned to `glyphIds[i]`, in logical pixels
-     /// relative to the owning text rect's origin. Glyph IDs are
-     /// valid against the requested `Font`'s atlas.
+     /// Result of shaping a `GlyphRun` for the MSDF render path.
+     /// Phase 6.7-c4: one entry per resolved face after the layout
+     /// engine's font-fallback pass — `subRuns[0]` is typically the
+     /// requested face; subsequent entries are fallback faces adopted
+     /// via `FontEngine::adoptResolvedFace`.
      ///
-     /// `requiresFallback` is set when the layout engine substituted a
-     /// face that does not match the requested font (e.g. CJK text in
-     /// a Latin-only font). Chunk 3 ships a single sub-run per run, so
-     /// any fallback routes the whole string back to the bitmap path;
-     /// chunk 4 lights up multi-atlas sub-runs.
+     /// `requiresFallback` is set when the run can't be serviced by
+     /// the MSDF path end-to-end. The current 6.7-c4 contract:
+     /// whenever any resolved face is in `BitmapFallback` mode (e.g.
+     /// a non-scalable color-emoji face), the whole string is routed
+     /// to the legacy `TextRect` bitmap path. Per-glyph bitmap caching
+     /// for fallback-mode sub-runs is a Phase-6.7 follow-up. When
+     /// `requiresFallback` is true, `subRuns` is empty.
      struct ShapedTextRun {
          bool requiresFallback = false;
-         OmegaCommon::Vector<std::uint32_t> glyphIds;
-         OmegaCommon::Vector<Composition::Point2D> positions;
+         OmegaCommon::Vector<TextSubRun> subRuns;
      };
 
      virtual Composition::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) = 0;
@@ -185,6 +221,14 @@
      /// incomplete type at the public include site.
      virtual ~Font();
      virtual void *getNativeFont() = 0;
+     /// Per-font metrics in pixels at the descriptor's size (Phase 2
+     /// of the text-layout-engine plan). Default impl returns zero
+     /// metrics — backends override to read FreeType/CTFont/DWrite.
+     /// The layout engine uses these for line stride + baseline
+     /// placement; zero metrics collapse multi-line text onto one
+     /// stripe, which is the correct degenerate behavior while a
+     /// backend's MSDF path isn't yet wired through.
+     virtual FontMetrics getMetrics() const { return {}; }
      /// Returns the per-font glyph atlas (Phase 6.7.1). Always
      /// constructed alongside the `Font`; carries no GPU texture until
      /// `ensureGlyph` is first called.
@@ -227,6 +271,30 @@
      */
      INTERFACE_METHOD Core::SharedPtr<Font> CreateFont(FontDescriptor & desc) ABSTRACT;
      INTERFACE_METHOD Core::SharedPtr<Font> CreateFontFromFile(OmegaCommon::FS::Path path,FontDescriptor & desc) ABSTRACT;
+     /// Adopt a layout-engine-resolved native face into a WTK `Font`
+     /// (Phase 6.7-c4). Called by the shaping path when the layout
+     /// engine substitutes a fallback face: each platform keys its
+     /// adoption cache by the native handle (Linux: `PangoFont *`;
+     /// DWrite: `IDWriteFontFace *`; Core Text: `CTFontRef`) so
+     /// repeated fallback to the same face across the process shares
+     /// one `Font` and one `GlyphAtlas`. The returned `Font` has the
+     /// MSDF probe already run against its underlying face, so it may
+     /// be in either `Mode::MSDF` or `Mode::BitmapFallback`; callers
+     /// dispatch per-sub-run based on `Font::mode()`. The base
+     /// implementation returns `nullptr` — only the Linux backend
+     /// ships an adopter in 6.7-c4; DWrite / Core Text get theirs when
+     /// those backends light up MSDF.
+     virtual Core::SharedPtr<Font> adoptResolvedFace(void *nativeHandle) {
+         (void)nativeHandle;
+         return nullptr;
+     }
+     /// Per-platform text shaper used by `TextLayoutEngine`
+     /// (Text-Layout-Engine-Plan.md Phase 2). The Linux engine
+     /// returns a HarfBuzz shaper; macOS / Windows backends return
+     /// their per-run shapers once those phases light up. The base
+     /// implementation returns `nullptr` — callers must check before
+     /// invoking the layout engine.
+     virtual ITextShaper * shaper() { return nullptr; }
      static FontEngine *inst();
      virtual ~FontEngine() = default;
  private:

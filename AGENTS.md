@@ -7,7 +7,7 @@
     Use an object-oriented, Modular coding style that has modular rules so if a specific rule needs to be changed across the object it can be.
 
 # Dependencies
-    All dependencies in this project are pulled in via AUTOMDEPS. (under autom/tools/autom-deps) We often pull directly from the repos and build the source directly allowing us to control how third party deps are shipped with our APIs. However AUTOMDEPS is used to get external tools (Strawberry Perl on Windows) or Archives (VulkanSDK on Linux). If a dependency is missing from a repo tree, rerun autom-deps. (autom/tools/autom-deps), and it will automatically fetch or sync any missing/outdated deps.
+    All dependencies in this project are pulled in via AUTOMDEPS. (under autom/tools/autom-deps) We often pull the source repos directly and build them allowing us to control how third party deps are shipped with our APIs. However AUTOMDEPS is used to get external tools (Strawberry Perl on Windows) or Archives (VulkanSDK on Linux). If a dependency is missing from a repo tree, rerun autom-deps. (autom/tools/autom-deps), and it will automatically fetch or sync any missing/outdated deps.
 # Code Authoring
     All implementations will be revised through multi-phase plans before being implemented.
     (This is only for code, not for documentation, or other utilites)

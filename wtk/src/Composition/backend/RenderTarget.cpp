@@ -514,8 +514,11 @@ void BackendRenderTargetContext::resetElementState() {
         bufferWriter->setOutputBuffer(vertexBuffer);
         auto writeVertex = [&](float x, float y, float lx, float ly){
             auto pos = OmegaGTE::FVec<4>::Create();
+            // Phase 7: WTK pos.y is top-edge (Y-down). NDC Y is up on
+            // Metal/D3D12 and flipped via negative-height viewport on
+            // Vulkan native, so map y=0 → NDC +1.
             pos[0][0] = (2.f * x) / viewportW - 1.f;
-            pos[1][0] = (2.f * y) / viewportH - 1.f;
+            pos[1][0] = 1.f - (2.f * y) / viewportH;
             pos[2][0] = 0.f;
             pos[3][0] = 1.f;
             if(hasTransform){
@@ -667,8 +670,9 @@ void BackendRenderTargetContext::resetElementState() {
         bufferWriter->setOutputBuffer(vertexBuffer);
         auto writeVertex = [&](float x, float y, float u, float v){
             auto pos = OmegaGTE::FVec<4>::Create();
+            // Phase 7: WTK Y-down → NDC Y-up (mirrors emitSdfPrimitive).
             pos[0][0] = (2.f * x) / viewportW - 1.f;
-            pos[1][0] = (2.f * y) / viewportH - 1.f;
+            pos[1][0] = 1.f - (2.f * y) / viewportH;
             pos[2][0] = 0.f;
             pos[3][0] = 1.f;
             if(hasTransform){
@@ -776,47 +780,47 @@ void BackendRenderTargetContext::resetElementState() {
             if(g == nullptr){
                 continue;
             }
-            if(g->tileScale <= 0.f || g->pxW == 0 || g->pxH == 0){
+            if(g->fWidth <= 0.f || g->fHeight <= 0.f){
                 continue;
             }
 
-            // Reconstruct the glyph quad in canvas space. The quad
-            // covers the *whole tile* — `pxW/pxH / tileScale`
-            // font-pixels — exactly the font-space region msdfgen
-            // rendered into and the UV addresses. `tileOrigin*` is the
-            // tile's lower-left corner relative to the pen origin (Y
-            // up); canvas Y is down, so `canvasY = penY - glyphY`.
-            const float inkW = static_cast<float>(g->pxW) / g->tileScale;
-            const float inkH = static_cast<float>(g->pxH) / g->tileScale;
+            // Phase-2.5 Skia-style top-anchored quad authoring. The
+            // glyph metrics carry the bbox top-left corner relative to
+            // the pen (`fLeft, fTop`) and the bbox dimensions in canvas
+            // pixels (`fWidth, fHeight`); no `tileScale` round-trip.
+            // Pen positions are pixel-snapped via `std::round` so the
+            // quad lands on the pixel grid — the Skia-style fix for
+            // the per-glyph vertical jitter the chunk-c3/c4 path
+            // surfaced.
             const float penX = rect.pos.x + subRun.positions[i].x;
             const float penY = rect.pos.y + subRun.positions[i].y;
-            const float minX = penX + g->tileOriginX;
-            const float maxX = minX + inkW;
-            const float maxY = penY - g->tileOriginY;
-            const float minY = maxY - inkH;
+            const float minX = std::round(penX + g->fLeft);
+            const float minY = std::round(penY - g->fTop);
+            const float maxX = minX + g->fWidth;
+            const float maxY = minY + g->fHeight;
 
             if(std::getenv("OMEGAWTK_TRACE_TEXT") != nullptr){
                 std::cout << "[wtk-text] QUAD gid=" << gid
                           << " pos=(" << subRun.positions[i].x << "," << subRun.positions[i].y << ")"
                           << " penY=" << penY
-                          << " tileOriginY=" << g->tileOriginY
-                          << " inkWH=(" << inkW << "," << inkH << ")"
+                          << " fTop=" << g->fTop
+                          << " fHeight=" << g->fHeight
                           << " uv.v=[" << g->v0 << "," << g->v1 << "]"
                           << " canvasY=[" << minY << "," << maxY << "]" << std::endl;
             }
 
-            // UV mapping. Atlas upload flip handles orientation; this
-            // mapping is the position-correct pairing (font-bottom →
-            // baseline). The current text layout still has a
-            // y-up/y-down mismatch that produces per-glyph offset; the
-            // long-term fix is a WTK-owned layout engine (see
-            // Text-Layout-Engine-Plan.md).
-            verts.push_back({minX, minY, g->u0, g->v1});
-            verts.push_back({maxX, minY, g->u1, g->v1});
-            verts.push_back({minX, maxY, g->u0, g->v0});
-            verts.push_back({maxX, minY, g->u1, g->v1});
-            verts.push_back({maxX, maxY, g->u1, g->v0});
-            verts.push_back({minX, maxY, g->u0, g->v0});
+            // UV pairing (Phase 2.5): canvas-top ↔ `v0` (smaller V =
+            // top of the atlas tile), canvas-bottom ↔ `v1`. The
+            // rasterize callback writes the tile top-row-first, the
+            // atlas upload is a straight `copyBytes` (no per-row
+            // flip), and this pairing carries canvas-top through to
+            // top-of-glyph end-to-end. Zero implicit flips.
+            verts.push_back({minX, minY, g->u0, g->v0});
+            verts.push_back({maxX, minY, g->u1, g->v0});
+            verts.push_back({minX, maxY, g->u0, g->v1});
+            verts.push_back({maxX, minY, g->u1, g->v0});
+            verts.push_back({maxX, maxY, g->u1, g->v1});
+            verts.push_back({minX, maxY, g->u0, g->v1});
         }
 
         if(verts.empty()){
@@ -878,8 +882,9 @@ void BackendRenderTargetContext::resetElementState() {
         bufferWriter->setOutputBuffer(vertexBuffer);
         for(const auto & vtx : verts){
             auto pos = OmegaGTE::FVec<4>::Create();
+            // Phase 7: WTK Y-down → NDC Y-up (mirrors emitSdfPrimitive).
             pos[0][0] = (2.f * vtx.x) / viewportW - 1.f;
-            pos[1][0] = (2.f * vtx.y) / viewportH - 1.f;
+            pos[1][0] = 1.f - (2.f * vtx.y) / viewportH;
             pos[2][0] = 0.f;
             pos[3][0] = 1.f;
             if(hasTransform){

@@ -215,8 +215,12 @@ GEViewport OmegaTriangulationEngineContext::getEffectiveViewport(){
 }
 
 void OmegaTriangulationEngineContext::translateCoordsDefaultImpl(float x, float y, float z, GEViewport * viewport, float *x_result, float *y_result, float *z_result){
+    // GEViewport adopts the top-left / Y-down convention: y=0 is the top
+    // edge of the viewport, y=height is the bottom edge. The mapping to
+    // Y-up NDC (Metal / D3D12 native; Vulkan via negative-height viewport)
+    // therefore inverts the Y term so y=0 lands at NDC +1.
     *x_result = (2.f * x / viewport->width) - 1.f;
-    *y_result = (2.f * y / viewport->height) - 1.f;
+    *y_result = 1.f - (2.f * y / viewport->height);
     if(z_result != nullptr){
         if(z > 0.0){
             *z_result = (2.f * z / viewport->farDepth) - 1.f;

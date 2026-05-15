@@ -6,6 +6,7 @@
 
 using namespace OmegaCommon::Img;
 using namespace OmegaWTKTests;
+using OmegaCommon::Result;
 
 namespace {
 

@@ -233,10 +233,12 @@ public:
     }
     GEViewport getEffectiveViewport() override {
         if(target != nullptr){
-            CGFloat s = [NSScreen mainScreen].backingScaleFactor;
+            // Phase 7: return raw drawable pixels (matches D3D12 / Vulkan).
+            // The legacy `/ backingScaleFactor` divide reported logical
+            // points and silently disagreed with the other backends.
             return GEViewport{0.f, 0.f,
-                static_cast<float>(target->drawableSize.width / s),
-                static_cast<float>(target->drawableSize.height / s),
+                static_cast<float>(target->drawableSize.width),
+                static_cast<float>(target->drawableSize.height),
                 0.f, 1.f};
         }
         return GEViewport{0.f, 0.f, 1.f, 1.f, 0.f, 1.f};
@@ -268,11 +270,11 @@ public:
     }
     GEViewport getEffectiveViewport() override {
         if(target != nullptr){
-            CGFloat s = [NSScreen mainScreen].backingScaleFactor;
+            // Phase 7: raw pixels, matching the native-RT path and D3D12 / Vulkan.
             id<MTLTexture> tex = (id<MTLTexture>)target->texturePtr->native();
             return GEViewport{0.f, 0.f,
-                static_cast<float>(tex.width / s),
-                static_cast<float>(tex.height / s),
+                static_cast<float>(tex.width),
+                static_cast<float>(tex.height),
                 0.f, 1.f};
         }
         return GEViewport{0.f, 0.f, 1.f, 1.f, 0.f, 1.f};

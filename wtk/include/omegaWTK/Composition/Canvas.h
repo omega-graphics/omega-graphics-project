@@ -77,19 +77,10 @@ namespace OmegaWTK {
 
 
     
-    /// Per-sub-run payload for a `TextRun` visual command (Phase 6.7.2).
-    /// One sub-run per resolved face after the layout engine's font
-    /// fallback splits a string across multiple atlases — typically
-    /// one for Latin against the requested face, one (or more) for
-    /// CJK / emoji against fallback faces. `glyphIds` and `positions`
-    /// run in parallel; `positions[i]` is the pen position the layout
-    /// engine assigned to glyph `glyphIds[i]`, in canvas-space pixels
-    /// relative to the owning text rect's origin.
-    struct OMEGAWTK_EXPORT TextSubRun {
-        Core::SharedPtr<Font> resolvedFont;
-        OmegaCommon::Vector<std::uint32_t> glyphIds;
-        OmegaCommon::Vector<Composition::Point2D> positions;
-    };
+    /// `TextSubRun` lives in `FontEngine.h` (Phase 6.7-c4) so the
+    /// shaping API `GlyphRun::ShapedTextRun` can carry it without a
+    /// Canvas → FontEngine include cycle. It's still visible here
+    /// through `FontEngine.h`'s inclusion above.
 
     /// An object drawn by a Compositor.
     struct  OMEGAWTK_EXPORT VisualCommand {

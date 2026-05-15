@@ -28,53 +28,51 @@
 namespace OmegaWTK::Composition {
 
     /// Per-glyph cache entry. UV rect is normalized against the atlas
-    /// texture dimensions; metric offsets are in design-units the
-    /// layout pass already produced (advance / bearing reproduced here
-    /// so the render path can author quads without re-querying the
-    /// platform face).
+    /// texture dimensions. Quad-placement metrics follow Skia's
+    /// `SkGlyph` convention (Text-Layout-Engine-Plan §Phase 2.5):
+    /// top-anchored, integer pen-relative offsets, no scale round-trip.
+    /// Drawing one glyph:
+    /// ```
+    /// minX = round(penX + fLeft);
+    /// minY = round(penY - fTop);
+    /// maxX = minX + fWidth;
+    /// maxY = minY + fHeight;
+    /// ```
+    /// All `f*` fields are in canvas pixels at 1× DPR (which equals
+    /// the font's current FT_Set_Pixel_Sizes value).
     struct AtlasGlyph {
         float u0 = 0.f;
         float v0 = 0.f;
         float u1 = 0.f;
         float v1 = 0.f;
         /// Pixel size of the rasterized MSDF tile (square or near-square).
+        /// Kept for UV / atlas-packing diagnostics; the render path
+        /// uses `fWidth` / `fHeight` for the canvas quad.
         std::uint16_t pxW = 0;
         std::uint16_t pxH = 0;
-        /// Horizontal advance (font units → already converted to pixels
-        /// at the font's current size by the rasterizer).
+        /// Horizontal advance in canvas pixels at the font's current
+        /// size — what the pen moves by after this glyph is laid out.
         float advance = 0.f;
-        /// Bearing from the pen origin to the upper-left of the tile,
-        /// in pixels. `bearingY` is positive upward (i.e. distance from
-        /// the baseline up to the top of the glyph). FT *layout*
-        /// metrics — kept for completeness, but quad authoring uses the
-        /// `tileOrigin*` / `tileScale` fields below instead.
-        float bearingX = 0.f;
-        float bearingY = 0.f;
-        /// MSDF tile placement (Phase 6.7-c3). The rasterized tile
-        /// covers, in the font's pixel space (FT_Set_Pixel_Sizes at the
-        /// design size), the square box whose lower-left corner is
-        /// `(tileOriginX, tileOriginY)` relative to the glyph pen
-        /// origin / baseline (Y positive upward). `tileScale` is
-        /// tile-pixels per font-pixel; the box edge length in
-        /// font-pixels is `pxW / tileScale`. Quad authoring (canvas
-        /// space, Y down): `minX = penX + tileOriginX`,
-        /// `maxY = penY - tileOriginY`, edge = `pxW / tileScale`.
-        /// The MSDF tile is sized to the glyph's padded bounding box.
-        /// `pxW × pxH` is the *allocated* tile — `ceil` of the content
-        /// size — while `inkPxW × inkPxH` is the *exact* content size
-        /// in tile pixels (un-rounded `(r-l)*scale` / `(t-b)*scale`).
-        /// The `ceil` rounding leaves a sub-pixel sliver of empty
-        /// distance field at one tile edge; addressing `inkPx*` instead
-        /// of `pxW/pxH` excludes that sliver, so it can't shove glyphs
-        /// off the baseline. `(tileOriginX, tileOriginY)` is the padded
-        /// bbox's lower-left corner relative to the pen origin (Y up,
-        /// font pixels); `tileScale` is tile-pixels per font-pixel, so
-        /// the render quad is `inkPx* / tileScale` font-pixels.
-        float tileOriginX = 0.f;
-        float tileOriginY = 0.f;
-        float tileScale   = 1.f;
-        float inkPxW = 0.f;
-        float inkPxH = 0.f;
+        /// Pen-relative offset, in canvas pixels, from the pen origin
+        /// (baseline × pen X) to the glyph quad's *top-left* corner.
+        /// - `fLeft` is positive when the glyph silhouette is right of
+        ///   the pen (most glyphs); negative for the small left-bearing
+        ///   that some italic / kerning glyphs use.
+        /// - `fTop` is positive when the top of the glyph is *above*
+        ///   the baseline (which is the common case). For glyphs that
+        ///   sit entirely below the baseline (rare — diacritic combining
+        ///   marks below), `fTop` can be negative.
+        ///
+        /// Top-anchored math avoids the `inkH = pxH / tileScale`
+        /// round-trip that produced sub-pixel jitter (Phase-2.5
+        /// notes). The bitmap's actual canvas footprint is
+        /// `fWidth × fHeight`, independent of the tile's `pxW × pxH`
+        /// pixel count; the tile-vs-canvas ratio implicitly handles
+        /// the SDF base-scale projection.
+        float fLeft   = 0.f;
+        float fTop    = 0.f;
+        float fWidth  = 0.f;
+        float fHeight = 0.f;
     };
 
     /// Per-font glyph atlas. Owns the GPU texture and the glyph map.

@@ -198,31 +198,31 @@ constexpr float kPi = 3.14159265358979f;
             Point2D{x + rad_x, y},
             width);
 
-        // Bottom edge
+        // Top edge (pos.y is top in Phase 7+)
         path->addLine(Point2D{x + w - rad_x, y});
 
-        // Bottom-right arc
+        // Top-right arc
         path->addArc(Rect{{x + w - rad_x * 2.f, y}, rad_x * 2.f, rad_y * 2.f},
                      kPi * 1.5f, kPi * 2.f);
 
         // Right edge
         path->addLine(Point2D{x + w, y + h - rad_y});
 
-        // Top-right arc
+        // Bottom-right arc
         path->addArc(Rect{{x + w - rad_x * 2.f, y + h - rad_y * 2.f}, rad_x * 2.f, rad_y * 2.f},
                      0.f, kPi * 0.5f);
 
-        // Top edge
+        // Bottom edge
         path->addLine(Point2D{x + rad_x, y + h});
 
-        // Top-left arc
+        // Bottom-left arc
         path->addArc(Rect{{x, y + h - rad_y * 2.f}, rad_x * 2.f, rad_y * 2.f},
                      kPi * 0.5f, kPi);
 
         // Left edge
         path->addLine(Point2D{x, y + rad_y});
 
-        // Bottom-left arc
+        // Top-left arc
         path->addArc(Rect{{x, y}, rad_x * 2.f, rad_y * 2.f},
                      kPi, kPi * 1.5f);
 

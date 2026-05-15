@@ -1,4 +1,5 @@
 #include "omegaWTK/Composition/FontEngine.h"
+#include "omegaWTK/Composition/TextLayoutEngine.h"
 #include "omegaWTK/Core/GTEHandle.h"
 #include "../GlyphAtlas.h"
 
@@ -13,6 +14,18 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_OUTLINE_H
+#include FT_SIZES_H
+
+// Text-Layout-Engine-Plan.md Phase 2: HarfBuzz directly (no Pango
+// shaping). We use the hb-ft bridge so the same FT_Face drives both
+// MSDF outline extraction and HB shaping at one fixed pixel size.
+#include <hb.h>
+#include <hb-ft.h>
+
+// Phase 3: `ShaperInput::script` carries an ICU `UScriptCode` value.
+// `uscript_getShortName` converts it to a 4-char ISO 15924 tag
+// HarfBuzz can map via `hb_script_from_iso15924_tag`.
+#include <unicode/uscript.h>
 
 #ifdef OMEGAWTK_HAVE_MSDFGEN
 #include <msdfgen.h>
@@ -25,6 +38,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 namespace OmegaWTK::Composition {
@@ -204,6 +218,17 @@ namespace OmegaWTK::Composition {
         /// rasterize lambda can re-lock the FT_Face on demand without
         /// reloading the description through Pango each time.
         PangoFont *resolvedFont = nullptr;
+
+        // Text-Layout-Engine-Plan.md Phase 2: FreeType face + HarfBuzz
+        // font opened directly via FontConfig (no PangoFc descent).
+        // Owned per-font; sized once to `desc.size` and never resized
+        // afterward, so callers can share the FT_Face without worrying
+        // about cross-talk between MSDF rasterization and HB shaping.
+        // Null when the engine couldn't materialize the face — the
+        // font then falls back to the legacy Pango/Cairo bitmap path
+        // (which still works through `resolvedFont`).
+        FT_Face ftFace_ = nullptr;
+        hb_font_t *hbFont_ = nullptr;
     public:
         explicit HarfBuzzFont(FontDescriptor &desc, PangoFontDescription *fontDesc, PangoFont *resolved)
             :Font(desc), fontDesc(fontDesc), resolvedFont(resolved){
@@ -218,11 +243,44 @@ namespace OmegaWTK::Composition {
 
         PangoFont * getResolvedPangoFont() const { return resolvedFont; }
 
+        // Direct FT/HB accessors (Phase 2). MSDF rasterization uses
+        // `ftFace`; HB shaping uses `hbFont`. May return null if
+        // FontConfig / FreeType couldn't open the face; callers stay
+        // on the bitmap path.
+        FT_Face ftFace() const { return ftFace_; }
+        hb_font_t * hbFont() const { return hbFont_; }
+        void setFTHandles(FT_Face face, hb_font_t *hb){
+            ftFace_ = face;
+            hbFont_ = hb;
+        }
+
+        FontMetrics getMetrics() const override {
+            FontMetrics m;
+            if(ftFace_ != nullptr && ftFace_->size != nullptr){
+                // FreeType returns metrics in 26.6 fixed-point pixels
+                // after `FT_Set_Pixel_Sizes`. ascender is positive,
+                // descender is *negative* in FT's convention; flip
+                // to match WTK's positive-descent contract.
+                const auto &m26 = ftFace_->size->metrics;
+                m.ascent  = static_cast<float>(m26.ascender)  / 64.f;
+                m.descent = static_cast<float>(-m26.descender) / 64.f;
+                m.lineGap = static_cast<float>(m26.height - m26.ascender + m26.descender) / 64.f;
+                if(m.lineGap < 0.f) m.lineGap = 0.f;
+            }
+            return m;
+        }
+
         // Expose the protected mode setter to the engine factory so it
         // can promote a font to MSDF after running the outline probe.
         using Font::setMode;
 
         ~HarfBuzzFont() override {
+            if(hbFont_ != nullptr){
+                hb_font_destroy(hbFont_);
+            }
+            if(ftFace_ != nullptr){
+                FT_Done_Face(ftFace_);
+            }
             if(resolvedFont != nullptr){
                 g_object_unref(resolvedFont);
             }
@@ -246,15 +304,19 @@ namespace OmegaWTK::Composition {
             return {};
         }
 
-        // Phase 6.7-c3: lift shaping out of `drawRun`. Builds a
+        // Phase 6.7-c4: lift shaping out of `drawRun`. Builds a
         // PangoLayout at the font's *unscaled* design size (DPR is
         // applied downstream by the render viewport, keeping the MSDF
         // atlas resolution-independent), walks the layout's runs, and
-        // emits one positioned glyph per visible glyph. Pango/PangoFc
-        // resolves font fallback at run granularity; this chunk ships a
-        // single sub-run, so any run whose resolved face does not match
-        // the requested face flips `requiresFallback` and the caller
-        // routes the whole string to the bitmap path.
+        // groups them by resolved `PangoFont *` — one `TextSubRun` per
+        // resolved face. The requested face occupies sub-run 0 when it
+        // appears; fallback faces are adopted via
+        // `FontEngine::adoptResolvedFace` so they share one `Font` and
+        // one `GlyphAtlas` per native handle across the process. If
+        // any resolved face ends up in `BitmapFallback` mode (e.g.
+        // a non-scalable color-emoji face), the whole string is
+        // routed to the legacy bitmap path — per-glyph bitmap caching
+        // for fallback sub-runs is a Phase-6.7 follow-up.
         GlyphRun::ShapedTextRun shape(const Composition::Rect &rect,
                                       const TextLayoutDescriptor &layoutDesc) override {
             GlyphRun::ShapedTextRun result;
@@ -340,15 +402,61 @@ namespace OmegaWTK::Composition {
                 if(yOffset < 0.0) yOffset = 0.0;
             }
 
-            // Resolved family of the requested face. Runs whose resolved
-            // face reports a different family were substituted by Pango
-            // fallback — chunk 3 bails to the bitmap path for those.
+            // Resolved family of the requested face — used as the
+            // identity fallback when `runFont` pointer-compares differ
+            // (Pango may resolve the *same* logical face through a
+            // different `PangoFont *` than the engine factory loaded
+            // — e.g. when fontset iteration picks the first matching
+            // entry rather than the cached singleton).
             PangoFontDescription *ourResolvedDesc = pango_font_describe(ourFont);
             const char *ourFamily = (ourResolvedDesc != nullptr)
                 ? pango_font_description_get_family(ourResolvedDesc)
                 : nullptr;
 
+            // Group runs by resolved PangoFont*. The first entry is
+            // always the requested face when it appears (we seed it
+            // lazily on the first matching run). `subRunIndex` maps
+            // resolved pointer → index in `result.subRuns`.
+            std::unordered_map<PangoFont *, std::size_t> subRunIndex;
             bool fallback = false;
+
+            auto getOrCreateSubRun =
+                [&](PangoFont *runFont) -> std::size_t {
+                    auto it = subRunIndex.find(runFont);
+                    if(it != subRunIndex.end()) return it->second;
+
+                    Core::SharedPtr<Font> resolvedFontPtr;
+                    bool isPrimary = (runFont == ourFont);
+                    if(!isPrimary && ourFamily != nullptr){
+                        // Family-name fallback (same logical face,
+                        // different Pango pointer). Treat as primary.
+                        PangoFontDescription *runDesc = pango_font_describe(runFont);
+                        if(runDesc != nullptr){
+                            const char *runFamily = pango_font_description_get_family(runDesc);
+                            if(runFamily != nullptr &&
+                               g_ascii_strcasecmp(ourFamily, runFamily) == 0){
+                                isPrimary = true;
+                            }
+                            pango_font_description_free(runDesc);
+                        }
+                    }
+
+                    if(isPrimary){
+                        resolvedFontPtr = std::static_pointer_cast<Font>(font);
+                    } else if(FontEngine::inst() != nullptr){
+                        resolvedFontPtr = FontEngine::inst()->adoptResolvedFace(runFont);
+                    }
+                    if(resolvedFontPtr == nullptr){
+                        return SIZE_MAX;
+                    }
+                    TextSubRun sr;
+                    sr.resolvedFont = resolvedFontPtr;
+                    result.subRuns.push_back(std::move(sr));
+                    std::size_t idx = result.subRuns.size() - 1;
+                    subRunIndex[runFont] = idx;
+                    return idx;
+                };
+
             PangoLayoutIter *iter = pango_layout_get_iter(layout);
             if(iter != nullptr){
                 do {
@@ -358,19 +466,13 @@ namespace OmegaWTK::Composition {
                         continue;
                     }
                     PangoFont *runFont = run->item->analysis.font;
-                    bool matches = false;
-                    if(runFont != nullptr){
-                        PangoFontDescription *runDesc = pango_font_describe(runFont);
-                        if(runDesc != nullptr){
-                            const char *runFamily = pango_font_description_get_family(runDesc);
-                            if(ourFamily != nullptr && runFamily != nullptr &&
-                               g_ascii_strcasecmp(ourFamily, runFamily) == 0){
-                                matches = true;
-                            }
-                            pango_font_description_free(runDesc);
-                        }
+                    if(runFont == nullptr){
+                        fallback = true;
+                        break;
                     }
-                    if(!matches){
+
+                    std::size_t srIdx = getOrCreateSubRun(runFont);
+                    if(srIdx == SIZE_MAX){
                         fallback = true;
                         break;
                     }
@@ -381,6 +483,7 @@ namespace OmegaWTK::Composition {
                     double penX = (double)logical.x;
                     const double baseY = (double)baseline;
 
+                    TextSubRun &sr = result.subRuns[srIdx];
                     PangoGlyphString *glyphs = run->glyphs;
                     for(int i = 0; i < glyphs->num_glyphs; ++i){
                         const PangoGlyphInfo &gi = glyphs->glyphs[i];
@@ -389,8 +492,8 @@ namespace OmegaWTK::Composition {
                            !(glyph & PANGO_GLYPH_UNKNOWN_FLAG)){
                             const double gx = penX + (double)gi.geometry.x_offset;
                             const double gy = baseY + (double)gi.geometry.y_offset;
-                            result.glyphIds.push_back((std::uint32_t)glyph);
-                            result.positions.push_back(Composition::Point2D{
+                            sr.glyphIds.push_back((std::uint32_t)glyph);
+                            sr.positions.push_back(Composition::Point2D{
                                 (float)(gx / (double)PANGO_SCALE),
                                 (float)(gy / (double)PANGO_SCALE + yOffset)});
                         }
@@ -406,20 +509,45 @@ namespace OmegaWTK::Composition {
             g_object_unref(layout);
             g_object_unref(ctx);
 
+            // Whole-string bitmap-fallback gate: if any resolved face
+            // ended up in `BitmapFallback` mode the MSDF render path
+            // can't service the string end-to-end. Per the chunk-4
+            // decision (per-glyph bitmap caching deferred), bail to
+            // the legacy `TextRect` path for the whole string.
+            if(!fallback){
+                for(const auto &sr : result.subRuns){
+                    if(sr.resolvedFont == nullptr ||
+                       sr.resolvedFont->mode() != Font::Mode::MSDF){
+                        fallback = true;
+                        break;
+                    }
+                }
+            }
+
             if(fallback){
                 result.requiresFallback = true;
-                result.glyphIds.clear();
-                result.positions.clear();
+                result.subRuns.clear();
             }
 
             if(textTraceEnabled()){
+                std::size_t totalGlyphs = 0;
+                for(const auto &sr : result.subRuns){
+                    totalGlyphs += sr.glyphIds.size();
+                }
                 std::cout << "[wtk-text] HarfBuzzGlyphRun::shape -> "
                           << (result.requiresFallback ? "FALLBACK" : "MSDF")
-                          << ", glyphs=" << result.glyphIds.size() << std::endl;
-                for(std::size_t k = 0; k < result.glyphIds.size() && k < 10; ++k){
-                    std::cout << "[wtk-text]   shaped gid=" << result.glyphIds[k]
-                              << " pos=(" << result.positions[k].x << ","
-                              << result.positions[k].y << ")" << std::endl;
+                          << ", subRuns=" << result.subRuns.size()
+                          << ", glyphs=" << totalGlyphs << std::endl;
+                for(std::size_t s = 0; s < result.subRuns.size(); ++s){
+                    const auto &sr = result.subRuns[s];
+                    std::cout << "[wtk-text]   subRun[" << s << "] family='"
+                              << (sr.resolvedFont ? sr.resolvedFont->desc.family : std::string("<null>"))
+                              << "' glyphs=" << sr.glyphIds.size() << std::endl;
+                    for(std::size_t k = 0; k < sr.glyphIds.size() && k < 6; ++k){
+                        std::cout << "[wtk-text]     gid=" << sr.glyphIds[k]
+                                  << " pos=(" << sr.positions[k].x << ","
+                                  << sr.positions[k].y << ")" << std::endl;
+                    }
                 }
             }
             return result;
@@ -574,10 +702,203 @@ namespace OmegaWTK::Composition {
 
     FontEngine *FontEngine::instance = nullptr;
 
-    class HarfBuzzFontEngine : public FontEngine {
+    // Phase-2 HarfBuzz-backed shaper. Stateless modulo the
+    // hb_buffer_t it reuses across calls; the per-shape font handle
+    // is pulled from the `ShaperInput`'s `Font` via its concrete
+    // `HarfBuzzFont` subclass.
+    class HarfBuzzShaper : public ITextShaper {
+        hb_buffer_t *buffer_ = nullptr;
     public:
-        HarfBuzzFontEngine() = default;
-        ~HarfBuzzFontEngine() override = default;
+        HarfBuzzShaper(){
+            buffer_ = hb_buffer_create();
+        }
+        ~HarfBuzzShaper() override {
+            if(buffer_ != nullptr){
+                hb_buffer_destroy(buffer_);
+            }
+        }
+        HarfBuzzShaper(const HarfBuzzShaper &) = delete;
+        HarfBuzzShaper & operator=(const HarfBuzzShaper &) = delete;
+
+        OmegaCommon::Vector<ShaperGlyph> shapeRun(const ShaperInput & input) override {
+            OmegaCommon::Vector<ShaperGlyph> out;
+            if(buffer_ == nullptr || input.font == nullptr || input.text.length() == 0){
+                return out;
+            }
+            auto fontHb = std::dynamic_pointer_cast<HarfBuzzFont>(input.font);
+            if(fontHb == nullptr || fontHb->hbFont() == nullptr){
+                return out;
+            }
+
+            hb_buffer_reset(buffer_);
+            hb_buffer_add_utf16(buffer_,
+                reinterpret_cast<const uint16_t *>(input.text.getBuffer()),
+                input.text.length(),
+                0, input.text.length());
+            hb_buffer_set_direction(buffer_,
+                input.rightToLeft ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
+
+            // Phase 3: set the HB script explicitly when the layout
+            // engine pre-segmented by script. Falls back to HB's
+            // content-based guess when `script == USCRIPT_COMMON`
+            // (Phase 1 / 2 callers that don't segment).
+            if(input.script != USCRIPT_COMMON){
+                const char *iso15924 = uscript_getShortName(
+                    static_cast<UScriptCode>(input.script));
+                if(iso15924 != nullptr){
+                    hb_buffer_set_script(buffer_,
+                        hb_script_from_iso15924_tag(
+                            hb_tag_from_string(iso15924, -1)));
+                }
+            } else {
+                hb_buffer_guess_segment_properties(buffer_);
+            }
+
+            hb_shape(fontHb->hbFont(), buffer_, nullptr, 0);
+
+            unsigned int n = 0;
+            const hb_glyph_info_t *infos = hb_buffer_get_glyph_infos(buffer_, &n);
+            const hb_glyph_position_t *positions = hb_buffer_get_glyph_positions(buffer_, &n);
+            if(infos == nullptr || positions == nullptr){
+                return out;
+            }
+
+            out.reserve(static_cast<std::size_t>(n));
+            // HarfBuzz returns advances/offsets in 26.6 fixed-point
+            // units after `hb_ft_font_create` (matches FT's pixel
+            // units, since the FT_Face was sized via
+            // FT_Set_Pixel_Sizes). Convert with /64.f.
+            for(unsigned int i = 0; i < n; ++i){
+                ShaperGlyph g;
+                g.glyphId  = static_cast<std::uint32_t>(infos[i].codepoint);
+                g.advance  = static_cast<float>(positions[i].x_advance) / 64.f;
+                g.xOffset  = static_cast<float>(positions[i].x_offset)  / 64.f;
+                // HarfBuzz's y_offset is positive-up (toward the
+                // ascender). The layout engine convention is Y-down
+                // baseline distance; flip sign so a positive HB
+                // offset moves the glyph upward on the canvas (i.e.
+                // toward smaller Y).
+                g.yOffset  = -static_cast<float>(positions[i].y_offset) / 64.f;
+                out.push_back(g);
+            }
+            return out;
+        }
+    };
+
+    class HarfBuzzFontEngine : public FontEngine {
+        /// Process-lifetime cache of fonts adopted from layout-engine
+        /// resolved faces (Phase 6.7-c4). Keyed by raw `PangoFont *`
+        /// — the cache holds a `g_object_ref` on the key via the
+        /// adopted `HarfBuzzFont`'s ctor, so the pointer stays valid
+        /// for the lifetime of the cache entry. Repeated fallback to
+        /// the same substitute face returns the same `Font`, sharing
+        /// its `GlyphAtlas` across the process.
+        std::unordered_map<PangoFont *, Core::SharedPtr<Font>> adoptedCache_;
+
+        // Phase-2 direct FreeType / HarfBuzz handles. One FT_Library
+        // shared across all fonts; FT_Faces are owned per-Font and
+        // closed by `~HarfBuzzFont` before this engine is torn down,
+        // so we can safely destroy the library in the engine dtor.
+        FT_Library ftLibrary_ = nullptr;
+        // One reusable shaper instance — `HarfBuzzShaper` carries an
+        // internal `hb_buffer_t` for shaping reuse.
+        HarfBuzzShaper shaper_;
+    public:
+        HarfBuzzFontEngine() {
+            if(FT_Init_FreeType(&ftLibrary_) != 0){
+                ftLibrary_ = nullptr;
+                if(textTraceEnabled()){
+                    std::cout << "[wtk-text] HarfBuzzFontEngine: FT_Init_FreeType failed; "
+                              << "all fonts will use BitmapFallback." << std::endl;
+                }
+            }
+            // Ensure FontConfig has been initialized before our first
+            // pattern match. `FcInit()` is idempotent and returns
+            // true if already initialized — cheap to call.
+            FcInit();
+        }
+        ~HarfBuzzFontEngine() override {
+            if(ftLibrary_ != nullptr){
+                FT_Done_FreeType(ftLibrary_);
+            }
+        }
+
+        ITextShaper * shaper() override { return &shaper_; }
+
+        // Phase-2 helper. Open an FT_Face + hb_font_t for `desc` via
+        // FontConfig + FreeType directly (no Pango lock dance). Sets
+        // the face's pixel size to `desc.size` once; both MSDF
+        // rasterization and HarfBuzz shaping share that state.
+        // Returns true on success and writes the handles to `outFace`
+        // / `outHB`; on failure leaves them null and the font stays
+        // on the legacy Pango/Cairo bitmap path.
+        bool openFTAndHB(const FontDescriptor &desc,
+                         FT_Face &outFace,
+                         hb_font_t *&outHB){
+            outFace = nullptr;
+            outHB = nullptr;
+            if(ftLibrary_ == nullptr){
+                return false;
+            }
+            FcPattern *pattern = FcPatternBuild(nullptr,
+                FC_FAMILY, FcTypeString, desc.family.c_str(),
+                FC_PIXEL_SIZE, FcTypeDouble, (double)desc.size,
+                nullptr);
+            if(pattern == nullptr){
+                return false;
+            }
+            // Style: weight + slant.
+            const int fcWeight = (desc.style == FontDescriptor::Bold ||
+                                  desc.style == FontDescriptor::BoldAndItalic)
+                                 ? FC_WEIGHT_BOLD : FC_WEIGHT_REGULAR;
+            const int fcSlant  = (desc.style == FontDescriptor::Italic ||
+                                  desc.style == FontDescriptor::BoldAndItalic)
+                                 ? FC_SLANT_ITALIC : FC_SLANT_ROMAN;
+            FcPatternAddInteger(pattern, FC_WEIGHT, fcWeight);
+            FcPatternAddInteger(pattern, FC_SLANT,  fcSlant);
+
+            FcConfigSubstitute(nullptr, pattern, FcMatchPattern);
+            FcDefaultSubstitute(pattern);
+
+            FcResult fcResult;
+            FcPattern *matched = FcFontMatch(nullptr, pattern, &fcResult);
+            FcPatternDestroy(pattern);
+            if(matched == nullptr){
+                return false;
+            }
+
+            FcChar8 *filePath = nullptr;
+            int faceIndex = 0;
+            if(FcPatternGetString(matched, FC_FILE, 0, &filePath) != FcResultMatch ||
+               filePath == nullptr){
+                FcPatternDestroy(matched);
+                return false;
+            }
+            FcPatternGetInteger(matched, FC_INDEX, 0, &faceIndex);
+
+            FT_Face face = nullptr;
+            const FT_Error err = FT_New_Face(ftLibrary_,
+                reinterpret_cast<const char *>(filePath),
+                faceIndex, &face);
+            FcPatternDestroy(matched);
+            if(err != 0 || face == nullptr){
+                return false;
+            }
+            if(FT_Set_Pixel_Sizes(face, 0, desc.size) != 0){
+                FT_Done_Face(face);
+                return false;
+            }
+
+            hb_font_t *hb = hb_ft_font_create_referenced(face);
+            if(hb == nullptr){
+                FT_Done_Face(face);
+                return false;
+            }
+
+            outFace = face;
+            outHB = hb;
+            return true;
+        }
 
         Core::SharedPtr<Font> CreateFont(FontDescriptor &desc) override {
             PangoFontDescription *fontDesc = pango_font_description_new();
@@ -615,6 +936,18 @@ namespace OmegaWTK::Composition {
 
             auto font = Core::SharedPtr<HarfBuzzFont>(new HarfBuzzFont(desc, fontDesc, resolved));
 
+            // Phase 2: open an FT_Face + hb_font_t directly via
+            // FontConfig — independent of the Pango lock path that
+            // the legacy MSDF probe still uses as a fallback. The
+            // new layout engine drives shaping through `hb_font_t`,
+            // and the rasterize lambda below prefers `Font::ftFace()`
+            // when present.
+            FT_Face ftFace = nullptr;
+            hb_font_t *hbFont = nullptr;
+            if(openFTAndHB(desc, ftFace, hbFont)){
+                font->setFTHandles(ftFace, hbFont);
+            }
+
             // Probe + install MSDF rasterize callback. Failure of any
             // step leaves the font on Mode::BitmapFallback (the default
             // installed by Font's base ctor).
@@ -634,33 +967,49 @@ namespace OmegaWTK::Composition {
         /// extraction; if so, install a RasterizeFn on its atlas and
         /// flip its mode. Otherwise log once (when traced) and leave on
         /// BitmapFallback.
+        ///
+        /// Phase 2: prefers the directly-opened `Font::ftFace()` (via
+        /// FontConfig + FreeType) and skips the Pango lock dance
+        /// entirely when it's present. The Pango lock path stays as a
+        /// fallback for `adoptResolvedFace` callers (which only have
+        /// a `PangoFont *`).
         static void probeAndInstallMsdf(HarfBuzzFont &font) {
 #ifdef OMEGAWTK_HAVE_MSDFGEN
-            PangoFont *resolved = font.getResolvedPangoFont();
-            if(resolved == nullptr || !PANGO_IS_FC_FONT(resolved)){
-                if(textTraceEnabled()){
-                    std::cout << "[wtk-text] HarfBuzzFont: '"
-                              << font.desc.family << "' size=" << font.desc.size
-                              << " could not resolve PangoFcFont; using BitmapFallback"
-                              << std::endl;
-                }
-                return;
-            }
+            FT_Face directFace = font.ftFace();
+            bool scalable = false;
+            bool hasColor = false;
 
-            PangoFcFont *fcFont = PANGO_FC_FONT(resolved);
-            FT_Face probeFace = pango_fc_font_lock_face(fcFont);
-            if(probeFace == nullptr){
-                if(textTraceEnabled()){
-                    std::cout << "[wtk-text] HarfBuzzFont: '"
-                              << font.desc.family << "' size=" << font.desc.size
-                              << " pango_fc_font_lock_face returned null; using BitmapFallback"
-                              << std::endl;
+            if(directFace != nullptr){
+                scalable = (directFace->face_flags & FT_FACE_FLAG_SCALABLE) != 0;
+                hasColor = FT_HAS_COLOR(directFace);
+            } else {
+                // Adopted-face path (Phase 6.7-c4): no direct FT_Face,
+                // descend through PangoFc.
+                PangoFont *resolved = font.getResolvedPangoFont();
+                if(resolved == nullptr || !PANGO_IS_FC_FONT(resolved)){
+                    if(textTraceEnabled()){
+                        std::cout << "[wtk-text] HarfBuzzFont: '"
+                                  << font.desc.family << "' size=" << font.desc.size
+                                  << " no FT face (direct or Pango); using BitmapFallback"
+                                  << std::endl;
+                    }
+                    return;
                 }
-                return;
+                PangoFcFont *fcFont = PANGO_FC_FONT(resolved);
+                FT_Face probeFace = pango_fc_font_lock_face(fcFont);
+                if(probeFace == nullptr){
+                    if(textTraceEnabled()){
+                        std::cout << "[wtk-text] HarfBuzzFont: '"
+                                  << font.desc.family << "' size=" << font.desc.size
+                                  << " pango_fc_font_lock_face returned null; using BitmapFallback"
+                                  << std::endl;
+                    }
+                    return;
+                }
+                scalable = (probeFace->face_flags & FT_FACE_FLAG_SCALABLE) != 0;
+                hasColor = FT_HAS_COLOR(probeFace);
+                pango_fc_font_unlock_face(fcFont);
             }
-            const bool scalable  = (probeFace->face_flags & FT_FACE_FLAG_SCALABLE) != 0;
-            const bool hasColor  = FT_HAS_COLOR(probeFace);
-            pango_fc_font_unlock_face(fcFont);
 
             // Bitmap-only faces flunk MSDF outright. Color faces with
             // scalable outlines (COLR/CPAL, COLRv1) keep the MSDF path
@@ -676,33 +1025,47 @@ namespace OmegaWTK::Composition {
                 return;
             }
 
-            // The lambda captures the WTK Font's resolved PangoFont
-            // pointer (lifetime tied to the Font). Each call locks the
-            // FT_Face, walks the outline, runs msdfgen, unlocks.
-            PangoFont *capturedResolved = resolved;
+            // The lambda captures both the directly-opened FT_Face
+            // (Phase 2 path) and the resolved PangoFont (Phase 6.7-c4
+            // adoption path). At call time it prefers the direct
+            // face — sized once at Font construction, no lock needed
+            // — and falls back to the Pango lock dance for adopted
+            // faces that never opened a direct handle.
+            FT_Face capturedDirect = directFace;
+            PangoFont *capturedResolved = font.getResolvedPangoFont();
             const unsigned descSize = font.desc.size;
             font.atlas().setRasterizeFn(
-                    [capturedResolved, descSize](std::uint32_t glyphId,
-                                                 GlyphAtlas::RasterizedGlyph &out) -> bool {
-                if(capturedResolved == nullptr || !PANGO_IS_FC_FONT(capturedResolved)){
-                    return false;
+                    [capturedDirect, capturedResolved, descSize](std::uint32_t glyphId,
+                                                                 GlyphAtlas::RasterizedGlyph &out) -> bool {
+                FT_Face face = nullptr;
+                PangoFcFont *fc = nullptr;
+                if(capturedDirect != nullptr){
+                    face = capturedDirect;
+                } else {
+                    if(capturedResolved == nullptr || !PANGO_IS_FC_FONT(capturedResolved)){
+                        return false;
+                    }
+                    fc = PANGO_FC_FONT(capturedResolved);
+                    face = pango_fc_font_lock_face(fc);
+                    if(face == nullptr){
+                        return false;
+                    }
                 }
-                PangoFcFont *fc = PANGO_FC_FONT(capturedResolved);
-                FT_Face face = pango_fc_font_lock_face(fc);
-                if(face == nullptr){
-                    return false;
-                }
+                auto unlock = [&](){ if(fc != nullptr) pango_fc_font_unlock_face(fc); };
 
                 // Set the face to the requested point size so the
                 // outline metrics map to pixel-space at the same DPI
-                // chunk-3 will use to author quads.
+                // chunk-3 will use to author quads. (Direct faces
+                // are already sized at construction; this re-set is
+                // idempotent and keeps the adopted-face path
+                // correct.)
                 if(FT_Set_Pixel_Sizes(face, 0, descSize) != 0){
-                    pango_fc_font_unlock_face(fc);
+                    unlock();
                     return false;
                 }
                 if(FT_Load_Glyph(face, glyphId,
                                  FT_LOAD_NO_BITMAP | FT_LOAD_NO_HINTING) != 0){
-                    pango_fc_font_unlock_face(fc);
+                    unlock();
                     return false;
                 }
 
@@ -718,7 +1081,7 @@ namespace OmegaWTK::Composition {
                 callbacks.shift    = 0;
                 callbacks.delta    = 0;
                 if(FT_Outline_Decompose(&face->glyph->outline, &callbacks, &fc_ctx) != 0){
-                    pango_fc_font_unlock_face(fc);
+                    unlock();
                     return false;
                 }
 
@@ -747,7 +1110,7 @@ namespace OmegaWTK::Composition {
                 const msdfgen::Shape::Bounds bounds = shape.getBounds();
                 double l = bounds.l, b = bounds.b, r = bounds.r, t = bounds.t;
                 if(r <= l || t <= b){
-                    pango_fc_font_unlock_face(fc);
+                    unlock();
                     return false;
                 }
                 // The tile is sized to the glyph's padded bbox, NOT a
@@ -775,18 +1138,29 @@ namespace OmegaWTK::Composition {
                                       msdfgen::Range(kMsdfRange / scale),
                                       scaleV, translate);
 
-                // Quantize float → uint8, straight through. msdfgen
-                // emits a Y-up tile; the upload flip in `GlyphAtlas`
-                // reconciles that with the GTE sampler's row-0-is-top
-                // convention. (No extra +0.5 bias — `generateMSDF`
-                // already maps the signed distance to [0,1] with the
-                // glyph edge at 0.5.)
+                // Reorient the msdfgen tile to Y-downward. msdfgen's
+                // default `Y_UPWARD` stores row 0 at the bottom of the
+                // glyph; `BitmapSection::reorient(Y_DOWNWARD)` flips
+                // the section view (pixel pointer to last row,
+                // negated `rowStride`) so straight `section(x, y)`
+                // reads now run top-to-bottom. Phase-2.5: collapse the
+                // three-stage flip chain to a single canonical
+                // orientation — `GlyphAtlas` then uploads straight,
+                // and the canvas-top ↔ `v0` UV pairing in
+                // `emitTextSubRun` carries the orientation through to
+                // the fragment with zero implicit flips.
+                msdfgen::BitmapSection<float, 3> section = msdf;
+                section.reorient(msdfgen::Y_DOWNWARD);
+
+                // Quantize float → uint8, straight through. No extra
+                // +0.5 bias — `generateMSDF` already maps signed
+                // distance to [0, 1] with the glyph edge at 0.5.
                 out.pxW = tileW;
                 out.pxH = tileH;
                 out.rgb.resize(static_cast<std::size_t>(tileW) * tileH * 3);
                 for(unsigned y = 0; y < tileH; ++y){
                     for(unsigned x = 0; x < tileW; ++x){
-                        const float *px = msdf((int)x, (int)y);
+                        const float *px = section((int)x, (int)y);
                         const auto quant = [](float v) {
                             const float scaled = std::clamp(v * 255.f + 0.5f, 0.f, 255.f);
                             return static_cast<std::uint8_t>(scaled);
@@ -798,25 +1172,27 @@ namespace OmegaWTK::Composition {
                     }
                 }
 
-                // Metrics in pixel space (after FT_Set_Pixel_Sizes): the
-                // bearing maps from the pen baseline up to the glyph
-                // top, and `advance.x` is in 26.6 fixed-point.
-                out.metrics.advance  = static_cast<float>(face->glyph->advance.x) / 64.f;
-                out.metrics.bearingX = static_cast<float>(face->glyph->metrics.horiBearingX) / 64.f;
-                out.metrics.bearingY = static_cast<float>(face->glyph->metrics.horiBearingY) / 64.f;
+                // Phase-2.5 Skia-style top-anchored metrics. `advance.x`
+                // is 26.6 fixed-point pixels after `FT_Set_Pixel_Sizes`.
+                out.metrics.advance = static_cast<float>(face->glyph->advance.x) / 64.f;
 
-                // MSDF tile placement (Phase 6.7-c3). `l`/`b` are the
-                // padded bbox origin in font-pixel space; `scale` is
-                // tile-pixels per font-pixel. `inkPx*` is the *exact*
-                // (un-ceiled) content size in tile pixels — the render
-                // path and atlas address this rather than the ceil'd
-                // `tileW/tileH` so the ceil sliver can't displace the
-                // glyph.
-                out.metrics.tileOriginX = static_cast<float>(l);
-                out.metrics.tileOriginY = static_cast<float>(b);
-                out.metrics.tileScale   = static_cast<float>(scale);
-                out.metrics.inkPxW      = static_cast<float>((r - l) * scale);
-                out.metrics.inkPxH      = static_cast<float>((t - b) * scale);
+                // Pen-relative quad placement. `l, b, r, t` are the
+                // padded bbox extents in shape coords (Y-up, pen origin
+                // at 0). Convert to top-anchored canvas-space metrics:
+                //   fLeft   = bbox left = l (positive → right of pen).
+                //   fTop    = distance from baseline up to bbox top = t.
+                //   fWidth  = bbox width  in font-pixels = r - l.
+                //   fHeight = bbox height in font-pixels = t - b.
+                // No `scale` round-trip — `fWidth/fHeight` are the exact
+                // canvas-pixel dimensions of the quad. The tile-vs-quad
+                // ratio (`pxW / fWidth`) is the SDF base-scale factor;
+                // it falls out of the UV mapping implicitly when the
+                // fragment shader samples the (pxW × pxH) tile across
+                // the (fWidth × fHeight) quad.
+                out.metrics.fLeft   = static_cast<float>(l);
+                out.metrics.fTop    = static_cast<float>(t);
+                out.metrics.fWidth  = static_cast<float>(r - l);
+                out.metrics.fHeight = static_cast<float>(t - b);
 
                 if(textTraceEnabled()){
                     std::cout << "[wtk-text] DUMP gid=" << glyphId
@@ -835,7 +1211,7 @@ namespace OmegaWTK::Composition {
                     }
                 }
 
-                pango_fc_font_unlock_face(fc);
+                unlock();
                 return true;
             });
             font.setMode(Font::Mode::MSDF);
@@ -850,12 +1226,23 @@ namespace OmegaWTK::Composition {
 
             // Smoke-probe: rasterize the glyph for 'A' so any breakage
             // in the FT/msdfgen pipeline surfaces at Font construction
-            // time, not on the first drawText call. Index lookup uses
-            // FT_Get_Char_Index against a freshly locked face.
-            FT_Face smokeFace = pango_fc_font_lock_face(fcFont);
+            // time, not on the first drawText call. Phase 2: prefer
+            // the direct face for the char-index lookup; only descend
+            // through Pango if no direct face is open.
+            FT_Face smokeFace = font.ftFace();
+            PangoFcFont *smokeFc = nullptr;
+            if(smokeFace == nullptr){
+                PangoFont *resolved2 = font.getResolvedPangoFont();
+                if(resolved2 != nullptr && PANGO_IS_FC_FONT(resolved2)){
+                    smokeFc = PANGO_FC_FONT(resolved2);
+                    smokeFace = pango_fc_font_lock_face(smokeFc);
+                }
+            }
             if(smokeFace != nullptr){
                 FT_UInt gid = FT_Get_Char_Index(smokeFace, 'A');
-                pango_fc_font_unlock_face(fcFont);
+                if(smokeFc != nullptr){
+                    pango_fc_font_unlock_face(smokeFc);
+                }
                 if(gid != 0){
                     const bool ok = font.atlas().ensureGlyph(gid);
                     if(textTraceEnabled()){
@@ -878,6 +1265,84 @@ namespace OmegaWTK::Composition {
                 (const FcChar8 *)path.str().c_str());
 
             return CreateFont(desc);
+        }
+
+        // Phase 6.7-c4. The shaping pass calls this when the layout
+        // engine substituted a fallback face for a run whose resolved
+        // `PangoFont *` differs from the requested face. The cache is
+        // process-lifetime keyed by raw pointer: two calls with the
+        // same resolved face return the same `Font` (and therefore
+        // the same `GlyphAtlas`).
+        Core::SharedPtr<Font> adoptResolvedFace(void *nativeHandle) override {
+            if(nativeHandle == nullptr){
+                return nullptr;
+            }
+            auto *resolved = static_cast<PangoFont *>(nativeHandle);
+            auto it = adoptedCache_.find(resolved);
+            if(it != adoptedCache_.end()){
+                return it->second;
+            }
+
+            // Derive a FontDescriptor from the resolved face's own
+            // description. Sizes returned by `pango_font_describe` are
+            // in PANGO_SCALE units; for faces resolved at absolute
+            // pixel size this is pixels*PANGO_SCALE, which is exactly
+            // what the rasterize lambda's `descSize` arg
+            // (FT_Set_Pixel_Sizes) expects after dividing out
+            // PANGO_SCALE.
+            PangoFontDescription *resolvedDesc = pango_font_describe(resolved);
+            if(resolvedDesc == nullptr){
+                return nullptr;
+            }
+            const char *family = pango_font_description_get_family(resolvedDesc);
+            OmegaCommon::String familyStr = (family != nullptr) ? family : "";
+            int pgSize = pango_font_description_get_size(resolvedDesc);
+            unsigned size = (pgSize > 0) ? (unsigned)(pgSize / PANGO_SCALE) : 0;
+            if(size == 0){
+                // No usable size: bail. The shape pass will flip
+                // `requiresFallback` because `adoptResolvedFace`
+                // returned null and route the string to the bitmap
+                // path.
+                pango_font_description_free(resolvedDesc);
+                return nullptr;
+            }
+            PangoStyle pgStyle = pango_font_description_get_style(resolvedDesc);
+            PangoWeight pgWeight = pango_font_description_get_weight(resolvedDesc);
+            const bool italic = (pgStyle == PANGO_STYLE_ITALIC ||
+                                 pgStyle == PANGO_STYLE_OBLIQUE);
+            const bool bold = (pgWeight >= PANGO_WEIGHT_BOLD);
+            FontDescriptor::FontStyle style = FontDescriptor::Regular;
+            if(bold && italic)      style = FontDescriptor::BoldAndItalic;
+            else if(bold)           style = FontDescriptor::Bold;
+            else if(italic)         style = FontDescriptor::Italic;
+
+            FontDescriptor desc(familyStr, size, style);
+
+            // `HarfBuzzFont` takes ownership of the description it's
+            // handed; give it its own copy so destruction lines up.
+            PangoFontDescription *ownedDesc = pango_font_description_copy(resolvedDesc);
+            pango_font_description_free(resolvedDesc);
+
+            auto adopted = Core::SharedPtr<HarfBuzzFont>(
+                new HarfBuzzFont(desc, ownedDesc, resolved));
+
+            // Same MSDF probe as `CreateFont`. May leave the adopted
+            // font in `Mode::BitmapFallback` (e.g. non-scalable color
+            // emoji fonts). Callers check `Font::mode()` and dispatch
+            // per sub-run.
+            probeAndInstallMsdf(*adopted);
+
+            Core::SharedPtr<Font> base = adopted;
+            adoptedCache_[resolved] = base;
+
+            if(textTraceEnabled()){
+                std::cout << "[wtk-text] adoptResolvedFace: '"
+                          << familyStr << "' size=" << size
+                          << " -> "
+                          << (base->mode() == Font::Mode::MSDF ? "MSDF" : "BitmapFallback")
+                          << std::endl;
+            }
+            return base;
         }
     };
 

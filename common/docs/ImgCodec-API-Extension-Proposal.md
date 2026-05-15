@@ -1,15 +1,14 @@
 # ImgCodec API Extension Proposal
 
-> **Status: rebase pending.** This proposal predates the
-> `Common-ImgCodec-Unicode-Refactor-Plan` (in `wtk/docs/`), which moved the
-> image codec subsystem from `OmegaWTK::Media` to `OmegaCommon::Img`. Every
-> file path, type name, and AUTOMDEPS reference below describes the
-> pre-refactor state and needs updating before the design is acted on.
-> Recommended rebasing: replace `OmegaWTK::Media::*` → `OmegaCommon::Img::*`,
-> `StatusWithObj<BitmapImage>` → `Result<BitmapImage, std::string>`, and the
-> `wtk/...` paths with their `common/...` equivalents (see the refactor plan
-> §4 translation table). Until the rebase happens, treat this document as a
-> design sketch, not an actionable plan.
+> **Status: rebase landed (namespace/types/paths only).** The
+> `Common-ImgCodec-Unicode-Refactor-Plan` move from `OmegaWTK::Media` to
+> `OmegaCommon::Img` is in tree: namespace is `OmegaCommon::Img::*`, the
+> result type is `Result<BitmapImage, std::string>`, and headers live under
+> `common/`. The phased design below (RAII storage, probe, decode options,
+> encode, capability registry) has **not** been applied — only the mechanical
+> rebase. Type names in the code examples below still read
+> `OmegaWTK::Media::*`/`StatusWithObj<...>` and need translating when each
+> phase is actually implemented.
 
 ## Current State
 
@@ -358,15 +357,15 @@ Rationale:
 
 ## Implementation Plan
 
-### Phase 1: Stabilize Current Decoding
+### Phase 1: Stabilize Current Decoding — **Complete**
 
-- Add null checks in `loadImageFromBuffer()` and other codec creation paths.
-- Fix JPEG to read the encoded stream into `dataBuf` before calling `tjDecompressHeader3()`.
-- Fill JPEG `ImageInfo`/legacy `header` fields: width, height, stride, channels, bit depth, RGBA pixel format, straight alpha or opaque alpha.
-- Fill TIFF stride, alpha mode, compression, and bit depth consistently.
-- Remove direct `std::cout` metadata logging from PNG and route metadata into `ImageMetadata`.
-- Add tests for valid PNG, JPEG, TIFF buffers and invalid/corrupt inputs.
-- Remove the `loadImageFromAssets(path)` single-argument overload and the `IMPORT_IMG` macro that wraps it. The overload reached into `AppInst` to find the global `AssetBundle`, which forced `OmegaWTK_Media` to link against `OmegaWTK_UI`. Callers must pass an explicit `AssetBundle &` going forward. This also eliminates the legacy `OmegaCommon::AssetLibrary::assets_res` fallback path inside the Media layer.
+- [x] Add null checks in `loadImageFromBuffer()` and other codec creation paths. *(`loadFromBuffer` rejects null/empty buffers; `loadFromFile`/`loadFromBuffer` both null-check the codec before `readToStorage()`.)*
+- [x] Fix JPEG to read the encoded stream into `dataBuf` before calling `tjDecompressHeader3()`. *(`JpegCodec.cpp:11-25` sizes the stream, allocates, and reads before header parsing.)*
+- [x] Fill JPEG `ImageInfo`/legacy `header` fields: width, height, stride, channels, bit depth, RGBA pixel format, straight alpha or opaque alpha. *(All filled. `alpha_format` is `AlphaFormat::Ignore` — matches the PNG-RGB-without-tRNS precedent in the same module. The legacy `AlphaFormat` enum has no `Opaque` value; that semantic move lands with the Phase 2 `ImageAlphaMode` introduction.)*
+- [x] Fill TIFF stride, alpha mode, compression, and bit depth consistently. *(`TiffCodec.cpp:102-112` populates all four.)*
+- [x] Remove direct `std::cout` metadata logging from PNG and route metadata into `ImageMetadata`. *(All `std::cout`/`std::cerr` chunk dumps removed from `PngCodec.cpp`. The data that has a home in the legacy `BitmapImage` — gamma, sRGB, ICC profile — is still populated. Chunks with no destination today (bKGD/sCAL/cHRM/pCAL/sBIT/pHYs/tIME) are no longer logged and will be re-surfaced through `ImageMetadata` in Phase 2.)*
+- [x] Add tests for valid PNG, JPEG, TIFF buffers and invalid/corrupt inputs. *(`wtk/tests/MediaCodecTest/MediaCodecTest.cpp` — 8 gtest cases covering 2x2 PNG/JPEG/TIFF buffers, null pointer, zero size, and a corrupt buffer per format. All 8 pass against the post-rebase `OmegaCommon::Img` API.)*
+- [x] Remove the `loadImageFromAssets(path)` single-argument overload and the `IMPORT_IMG` macro that wraps it. *(Only `loadFromAssets(AssetBundle &, FS::Path)` exists; `IMPORT_IMG` and the `AssetLibrary::assets_res` fallback are gone from the codec layer.)*
 
 #### Asset Bundle Loading Becomes Caller-Owned
 
@@ -382,40 +381,50 @@ This change is intentionally **not implemented in Phase 1** — it is a public-A
 
 ### Phase 2: Add RAII `BitmapImage`
 
-- Introduce owned pixel storage and move semantics.
-- Update Composition/UI call sites to use `image.data()` and `image.info`.
-- Keep old fields populated during the transition.
-- Add a destructor or storage wrapper that handles all backend allocations consistently.
-- Stop returning images with backend-specific allocations such as `_TIFFmalloc` unless the storage wrapper owns the matching deleter.
+**Not started.** `BitmapImage` still owns a raw `Byte * data` with no destructor, deleter, or move policy; TIFF returns memory allocated by `_TIFFmalloc` that no owner ever frees. Typoed enum names `Pallete` and `Premultipled` remain in the public API (`Ingore` has been fixed to `Ignore`).
+
+- [ ] Introduce owned pixel storage and move semantics.
+- [ ] Update Composition/UI call sites to use `image.data()` and `image.info`.
+- [ ] Keep old fields populated during the transition.
+- [ ] Add a destructor or storage wrapper that handles all backend allocations consistently.
+- [ ] Stop returning images with backend-specific allocations such as `_TIFFmalloc` unless the storage wrapper owns the matching deleter.
 
 ### Phase 3: Add Format Detection And Probe
 
-- Implement magic-byte detection for PNG, JPEG, and TIFF.
-- Make file/asset loading sniff bytes before falling back to extension.
-- Add `probeImageFromFile()` and `probeImageFromBuffer()`.
-- Add clear error messages for unsupported format, truncated input, and corrupt metadata.
+**Not started.** Format selection is still extension-based (`imageFormatForExtension` in `ImgCodec.cpp`), buffer loads still require a caller-supplied `Format`, and there is no probe path.
+
+- [ ] Implement magic-byte detection for PNG, JPEG, and TIFF.
+- [ ] Make file/asset loading sniff bytes before falling back to extension.
+- [ ] Add `probeImageFromFile()` and `probeImageFromBuffer()`.
+- [ ] Add clear error messages for unsupported format, truncated input, and corrupt metadata.
 
 ### Phase 4: Add Decode Options
 
-- Implement `ImageDecodeOptions` for PNG, JPEG, and TIFF.
-- Normalize the default decode path to `RGBA8`.
-- Add RGB-only decode for JPEG and PNG when requested.
-- Document top-left row order as the normalized output contract.
-- Add size guard support through `maxWidth` and `maxHeight`.
+**Not started.** No `ImageDecodeOptions` type exists; PNG/JPEG/TIFF each pick their own normalization with no caller control.
+
+- [ ] Implement `ImageDecodeOptions` for PNG, JPEG, and TIFF.
+- [ ] Normalize the default decode path to `RGBA8`.
+- [ ] Add RGB-only decode for JPEG and PNG when requested.
+- [ ] Document top-left row order as the normalized output contract.
+- [ ] Add size guard support through `maxWidth` and `maxHeight`.
 
 ### Phase 5: Add Encoding
 
-- Add `saveImageToFile()` and `encodeImageToBuffer()`.
-- Implement PNG encoding first because it is the best lossless asset target.
-- Implement JPEG encoding through TurboJPEG quality options.
-- Implement TIFF encoding through libtiff for RGBA/RGB.
-- Add round-trip tests: decode -> encode -> decode -> validate dimensions and pixel format.
+**Not started.** The public API is still decode-only.
+
+- [ ] Add `saveImageToFile()` and `encodeImageToBuffer()`.
+- [ ] Implement PNG encoding first because it is the best lossless asset target.
+- [ ] Implement JPEG encoding through TurboJPEG quality options.
+- [ ] Implement TIFF encoding through libtiff for RGBA/RGB.
+- [ ] Add round-trip tests: decode -> encode -> decode -> validate dimensions and pixel format.
 
 ### Phase 6: Add Capability Registry
 
-- Add `availableImageCodecs()` and `isImageFormatSupported()`.
-- Keep the registry static because all codecs are compiled in by `AUTOMDEPS` and CMake today.
-- If optional codecs are added later, convert the registry to build-flag-aware entries.
+**Not started.**
+
+- [ ] Add `availableImageCodecs()` and `isImageFormatSupported()`.
+- [ ] Keep the registry static because all codecs are compiled in by `AUTOMDEPS` and CMake today.
+- [ ] If optional codecs are added later, convert the registry to build-flag-aware entries.
 
 ## Dependency Plan
 

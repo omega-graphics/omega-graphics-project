@@ -1,6 +1,5 @@
 #include "ImgCodecPriv.h"
 
-#include <iostream>
 #include <memory>
 
 #include <png.h>
@@ -101,14 +100,12 @@ namespace OmegaCommon::Img {
             png_uint_32 length;
 
             if (png_get_iCCP(png_ptr, info_ptr, &name, &compression_ty, &profile, &length) == PNG_INFO_iCCP) {
-                std::cout << "iCCP Chunk:{" << "name:" << name << ", compression:" << compression_ty << ", length:" << length << "}" << std::endl;
                 storage->sRGB = false;
                 return Profile({name, compression_ty});
             }
             /// Else use SRGB!
             int srgb_intent;
             if (png_get_sRGB(png_ptr, info_ptr, &srgb_intent) == PNG_INFO_sRGB) {
-                std::cout << "SRGB Chunk:{" << "srgbIntent:" << srgb_intent << "}" << std::endl;
                 storage->sRGB = true;
                 this->srgb_intent = srgb_intent;
             }
@@ -120,13 +117,11 @@ namespace OmegaCommon::Img {
             if (validate_signature()) {
                 png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
                 if (!png_ptr) {
-                    std::cerr << "Failed to Create Read Struct!" << std::endl;
                     return false;
                 }
 
                 png_infop info_ptr = png_create_info_struct(png_ptr);
                 if (!info_ptr) {
-                    std::cerr << "Failed to Create Info Struct" << std::endl;
                     png_destroy_read_struct(&png_ptr, 0, 0);
                     return false;
                 }
@@ -148,33 +143,14 @@ namespace OmegaCommon::Img {
                 png_set_sig_bytes(png_ptr, SIG_SIZE);
 
                 png_read_info(png_ptr, info_ptr);
-                auto log_png_color_16p = [&](png_color_16p color) {
-                    std::cout << "{" << "r:" << color->red << ", g:" << color->green << ", b:" << color->blue << ", index:" << color->index << "}" << std::endl;
-                };
                 /// Set Info!
                 auto header = read_header(png_ptr, info_ptr);
                 auto profile = read_profile(png_ptr, info_ptr);
-                /// Background Chunk!
-                png_color_16p background_color;
-                if (png_get_bKGD(png_ptr, info_ptr, &background_color) == PNG_INFO_bKGD) {
-                    /// Log Background Chunk!
-                    std::cout << "bKGD Chunk:{" << "backgroundColor:" << std::flush;
-                    log_png_color_16p(background_color);
-                    std::cout << std::endl;
-                }
-                int unit;
-                double phys_width;
-                double phys_height;
-                /// SCAL Chunk!
-                if (png_get_sCAL(png_ptr, info_ptr, &unit, &phys_width, &phys_height) == PNG_INFO_sCAL) {
-                    std::cout << "sCAL Chunk:{" << "unit:" << unit << ", width:" << phys_width << ", height:" << phys_height << " }" << std::endl;
-                }
                 /// Gamma Chunk!
                 double file_gamma;
                 if (png_get_gAMA(png_ptr, info_ptr, &file_gamma) == PNG_INFO_gAMA) {
                     storage->hasGamma = true;
                     storage->gamma = file_gamma;
-                    std::cout << "gAMA Chunk:{" << "fileGamma:" << file_gamma << " }" << std::endl;
                     if (!storage->sRGB) {
                         png_set_gamma(png_ptr, DEFAULT_SCREEN_GAMMA, file_gamma);
                     }
@@ -184,20 +160,8 @@ namespace OmegaCommon::Img {
                 png_bytep trans_alpha;
                 int num_trans;
                 png_color_16p trans_color;
-                if (png_get_tRNS(png_ptr, info_ptr, &trans_alpha, &num_trans, &trans_color) == PNG_INFO_tRNS) {
-                    std::cout << "tRNS Chunk:{" << "transAlpha:" << trans_alpha << ", numTrans:" << num_trans << ", transColor:" << std::flush;
-                    log_png_color_16p(trans_color);
-                    std::cout << " }" << std::endl;
-                }
+                png_get_tRNS(png_ptr, info_ptr, &trans_alpha, &num_trans, &trans_color);
 
-                /// Chroma Chunk!
-                double chrm_white_x, chrm_white_y;
-                double chrm_red_x, chrm_red_y;
-                double chrm_green_x, chrm_green_y;
-                double chrm_blue_x, chrm_blue_y;
-                if (png_get_cHRM(png_ptr, info_ptr, &chrm_white_x, &chrm_white_y, &chrm_red_x, &chrm_red_y, &chrm_green_x, &chrm_green_y, &chrm_blue_x, &chrm_blue_y) == PNG_INFO_cHRM) {
-                    std::cout << "cHRM Chunk:{" << "whiteX:" << chrm_white_x << ", whiteY:" << chrm_white_y << ", redX:" << chrm_red_x << ", redY:" << chrm_red_y << ", greenX:" << chrm_green_x << ", greenY:" << chrm_green_y << ", blueX:" << chrm_blue_x << ", blueY:" << chrm_blue_y << " }" << std::endl;
-                }
                 /// If SRGB colorspace is used!
                 if (storage->sRGB) {
                     if (png_get_valid(png_ptr, info_ptr, PNG_INFO_cHRM) && png_get_valid(png_ptr, info_ptr, PNG_INFO_gAMA)) {
@@ -207,37 +171,6 @@ namespace OmegaCommon::Img {
                         png_set_sRGB(png_ptr, info_ptr, srgb_intent);
                     }
                     storage->sRGB = false;
-                }
-                png_charp purpose;
-                png_int_32 X0;
-                png_int_32 X1;
-                int type;
-                int nparams;
-                png_charp units;
-                png_charpp params;
-                if (png_get_pCAL(png_ptr, info_ptr, &purpose, &X0, &X1, &type, &nparams, &units, &params) == PNG_INFO_pCAL) {
-                    std::cout << "pCAL Chunk:{" << "purpose:" << purpose << ", x0:" << X0 << ", x1:" << X1 << ", type:" << type << ", nParams:" << nparams << ", units:" << units << ", params:" << params << " }" << std::endl;
-                }
-                auto log_png_color_8p = [&](png_color_8p color) {
-                    std::cout << "{" << "r:" << color->red << ", g:" << color->green << ", b:" << color->blue << ", a:" << color->alpha << "}" << std::flush;
-                };
-                png_color_8p sig_bit;
-                if (png_get_sBIT(png_ptr, info_ptr, &sig_bit) == PNG_INFO_sBIT) {
-                    std::cout << "sBIT Chunk:{sigBit:" << std::flush;
-                    log_png_color_8p(sig_bit);
-                    std::cout << " }" << std::endl;
-                }
-                png_uint_32 res_x;
-                png_uint_32 res_y;
-                int unit_type;
-                if (png_get_pHYs(png_ptr, info_ptr, &res_x, &res_y, &unit_type) == PNG_INFO_pHYs) {
-                    std::cout << "pHYS Chunk:{" << "resX:" << res_x << ", resY:" << res_y << ", unitType:" << unit_type << " }" << std::endl;
-                }
-
-                png_timep time;
-
-                if (png_get_tIME(png_ptr, info_ptr, &time) == PNG_INFO_tIME) {
-                    std::cout << "tIME Chunk:{" << "time:" << std::endl;
                 }
 
                 rowPtrs = new png_bytep[header.height];

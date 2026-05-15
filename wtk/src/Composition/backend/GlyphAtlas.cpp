@@ -137,16 +137,17 @@ namespace OmegaWTK::Composition {
             rgba[i * 4 + 3] = 0xFF;
         }
 
-        // Vertically flip the tile on upload — region-aware per-row
-        // `copyBytes`, dest row `r` consumes source row `tileH-1-r`.
-        // One of the three orientation flips (atlas upload, quad UV
-        // mapping, fragment-shader V mirror).
+        // Upload the tile straight — no per-row Y-flip. Phase-2.5
+        // (Text-Layout-Engine-Plan §Phase 2.5) consolidates the
+        // orientation handling: the rasterize callback emits the
+        // tile top-row-first (reads msdfgen's Y-up bitmap in reverse
+        // Y inside the quantize loop), and the canvas-top ↔ `v0`
+        // UV pairing in `emitTextSubRun` carries that orientation
+        // through to the fragment. One contiguous sub-rect upload
+        // instead of `tileH` single-row uploads.
         const std::size_t srcBpr = static_cast<std::size_t>(tileW) * 4;
-        for(unsigned r = 0; r < tileH; ++r){
-            OmegaGTE::TextureRegion region {cursorX_, cursorY_ + r, 0, tileW, 1, 1};
-            texture_->copyBytes(rgba.data() + static_cast<std::size_t>(tileH - 1 - r) * srcBpr,
-                                srcBpr, region);
-        }
+        OmegaGTE::TextureRegion region {cursorX_, cursorY_, 0, tileW, tileH, 1};
+        texture_->copyBytes(rgba.data(), srcBpr, region);
 
         // Patch metrics with the assigned UV rect (normalized). The UV
         // addresses the *whole* integer tile — the same `tileW × tileH`

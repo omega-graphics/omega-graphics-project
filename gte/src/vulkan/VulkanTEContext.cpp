@@ -437,8 +437,12 @@ public:
             auto vp = getEffectiveViewport();
             translateCoordsDefaultImpl(x,y,z,&vp,x_result,y_result,z_result);
         }
-        // Flip Y for Vulkan NDC (Y points top-to-bottom, opposite of Metal/D3D12)
-        *y_result = -*y_result;
+        // Y handling matches the native render target: both Vulkan paths go
+        // through GEVulkanCommandBuffer::setViewports, which emits a
+        // negative-height VkViewport to flip NDC Y so y=+1 lands at the
+        // framebuffer top. The previous per-coord `-y_result` here stacked
+        // with that viewport flip and rendered offscreen textures upside
+        // down (Phase 7 fix).
     }
 
     std::future<TETriangulationResult> triangulateOnGPU(const TETriangulationParams &params,

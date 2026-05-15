@@ -1073,27 +1073,36 @@ namespace OmegaWTK::Composition {
              // (Y-down) baseline to push the glyph up. Atlas tile
              // placement on the render side uses `tileOrigin*` /
              // `tileScale` from the rasterize step.
+             //
+             // Chunk 4: accumulate into a single sub-run (DWriteFont as
+             // primary). When this backend lights up multi-atlas
+             // fallback, drive `IDWriteFontFallback::MapCharacters` and
+             // group by resolved IDWriteFontFace, calling
+             // `FontEngine::adoptResolvedFace` per substitute face.
+             TextSubRun primarySubRun;
+             primarySubRun.resolvedFont = std::static_pointer_cast<Font>(dwFont);
              double penX = startX;
-             result.glyphIds.reserve(shaped.size());
-             result.positions.reserve(shaped.size());
+             primarySubRun.glyphIds.reserve(shaped.size());
+             primarySubRun.positions.reserve(shaped.size());
              for(const auto &g : shaped){
                  const double gx = penX + (double)g.offsetX;
                  const double gy = baselineY - (double)g.offsetY;
-                 result.glyphIds.push_back(g.glyphId);
-                 result.positions.push_back(
+                 primarySubRun.glyphIds.push_back(g.glyphId);
+                 primarySubRun.positions.push_back(
                      Composition::Point2D{(float)gx, (float)gy});
                  penX += (double)g.advance;
              }
+             if(!primarySubRun.glyphIds.empty()){
+                 result.subRuns.push_back(std::move(primarySubRun));
+             }
 
              if(textTraceEnabled()){
+                 std::size_t totalGlyphs = 0;
+                 for(const auto &sr : result.subRuns) totalGlyphs += sr.glyphIds.size();
                  std::cout << "[wtk-text] DWriteGlyphRun::shape -> "
                            << (result.requiresFallback ? "FALLBACK" : "MSDF")
-                           << ", glyphs=" << result.glyphIds.size() << std::endl;
-                 for(std::size_t k = 0; k < result.glyphIds.size() && k < 10; ++k){
-                     std::cout << "[wtk-text]   shaped gid=" << result.glyphIds[k]
-                               << " pos=(" << result.positions[k].x << ","
-                               << result.positions[k].y << ")" << std::endl;
-                 }
+                           << ", subRuns=" << result.subRuns.size()
+                           << ", glyphs=" << totalGlyphs << std::endl;
              }
              return result;
          }

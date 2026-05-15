@@ -180,10 +180,18 @@ bool CocoaAppWindow::isVisible() const {
 }
 Composition::Rect CocoaAppWindow::getRect() const {
     NSRect frame = [windowController.window frame];
-    return Composition::Rect{Composition::Point2D{(float)frame.origin.x,(float)frame.origin.y},(float)frame.size.width,(float)frame.size.height};
+    NSScreen *screen = [windowController.window screen] ?: [NSScreen mainScreen];
+    CGFloat screenH = screen ? screen.frame.size.height : 0.0;
+    // NSScreen origin is bottom-left; WTK pos.y is the top edge in top-left
+    // screen space, so map frame's bottom-edge to a top-edge.
+    float topLeftY = (float)(screenH - frame.origin.y - frame.size.height);
+    return Composition::Rect{Composition::Point2D{(float)frame.origin.x, topLeftY},(float)frame.size.width,(float)frame.size.height};
 }
 void CocoaAppWindow::setRect(const Composition::Rect & r){
-    NSRect frame = NSMakeRect(r.pos.x,r.pos.y,r.w,r.h);
+    NSScreen *screen = [windowController.window screen] ?: [NSScreen mainScreen];
+    CGFloat screenH = screen ? screen.frame.size.height : 0.0;
+    CGFloat bottomLeftY = screenH - (CGFloat)r.pos.y - (CGFloat)r.h;
+    NSRect frame = NSMakeRect(r.pos.x, bottomLeftY, r.w, r.h);
     [windowController.window setFrame:frame display:YES];
     rect = r;
 }

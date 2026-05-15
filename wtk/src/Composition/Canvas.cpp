@@ -2,12 +2,14 @@
 #include "omegaWTK/Composition/Brush.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Layer.h"
+#include "omegaWTK/Composition/TextLayoutEngine.h"
 #include "PathImpl.h"
 #include "omegaWTK/UI/View.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <unordered_map>
 #include <utility>
 
 namespace OmegaWTK::Composition {
@@ -199,37 +201,66 @@ void Canvas::drawText(const OmegaCommon::UniString &text,
         return;
     }
 
-    // Phase 6.7-c3: MSDF-mode fonts shape the run and emit a
-    // resolution-independent TextRun visual command — one quad per
-    // glyph against the font's MSDF atlas. BitmapFallback fonts, and
-    // MSDF fonts whose layout required a substitute face (chunk 3 ships
-    // a single sub-run), keep the legacy TextRect → drawGETexture path.
+    // Text-Layout-Engine-Plan.md Phase 2: MSDF-mode fonts go through
+    // the WTK-owned `TextLayoutEngine` (which drives HarfBuzz
+    // directly on Linux via `FontEngine::shaper()`). The legacy
+    // `GlyphRun::shape()` per-platform path stays in the tree for
+    // BitmapFallback-routed strings until Phase 7 retires it.
     if(font->mode() == Font::Mode::MSDF){
-        auto glyphRun = GlyphRun::fromUStringAndFont(text,font);
-        if(glyphRun != nullptr){
-            auto shaped = glyphRun->shape(rect,layoutDesc);
-            if(!shaped.requiresFallback){
-                if(shaped.glyphIds.empty()){
-                    // Whitespace-only / empty layout — nothing to draw.
-                    return;
-                }
-                // Populate the atlas here, on the paint-recording thread
-                // — `GlyphAtlas::ensureGlyph` uploads MSDF tiles via a
-                // texture transfer, which must not run inside the
-                // compositor's frame render pass. The render path
-                // (`emitTextSubRun`) only `lookup`s; glyphs that fail to
-                // rasterize / pack are simply absent and skipped there.
-                font->ensureGlyphsResident(shaped.glyphIds);
-                TextSubRun subRun;
-                subRun.resolvedFont = font;
-                subRun.glyphIds = std::move(shaped.glyphIds);
-                subRun.positions = std::move(shaped.positions);
+        auto * engine = FontEngine::inst();
+        auto * shaper = (engine != nullptr) ? engine->shaper() : nullptr;
+        if(shaper != nullptr){
+            const FontMetrics metrics = font->getMetrics();
+            auto layoutResult = TextLayoutEngine::layout(
+                text, font, metrics, rect, layoutDesc, *shaper);
+
+            if(!layoutResult.glyphs.empty()){
+                // Group laid-out glyphs by resolved font into sub-runs
+                // for the existing `TextRun` visual command. Phase 2's
+                // single-font contract means there's only ever one
+                // sub-run, but the grouping is written generically so
+                // Phase 4's fallback faces drop in without reshaping
+                // the draw path.
+                std::unordered_map<Font *, std::size_t> subRunIndex;
                 OmegaCommon::Vector<TextSubRun> subRuns;
-                subRuns.push_back(std::move(subRun));
-                current->currentVisuals.emplace_back(std::move(subRuns),rect,color);
+                for(const auto & g : layoutResult.glyphs){
+                    if(g.resolvedFont == nullptr) continue;
+                    auto it = subRunIndex.find(g.resolvedFont.get());
+                    if(it == subRunIndex.end()){
+                        TextSubRun sr;
+                        sr.resolvedFont = g.resolvedFont;
+                        subRuns.push_back(std::move(sr));
+                        it = subRunIndex.emplace(g.resolvedFont.get(),
+                                                 subRuns.size() - 1).first;
+                    }
+                    auto & sr = subRuns[it->second];
+                    sr.glyphIds.push_back(g.glyphId);
+                    sr.positions.push_back(Composition::Point2D{g.canvasX, g.canvasY});
+                }
+
+                // Populate each sub-run's atlas here, on the
+                // paint-recording thread — `GlyphAtlas::ensureGlyph`
+                // uploads MSDF tiles via a texture transfer, which
+                // must not run inside the compositor's frame render
+                // pass.
+                bool anyGlyphs = false;
+                for(auto & sr : subRuns){
+                    if(sr.resolvedFont != nullptr && !sr.glyphIds.empty()){
+                        sr.resolvedFont->ensureGlyphsResident(sr.glyphIds);
+                        anyGlyphs = true;
+                    }
+                }
+                if(anyGlyphs){
+                    current->currentVisuals.emplace_back(
+                        std::move(subRuns), rect, color);
+                }
                 return;
             }
-            // requiresFallback: fall through to the bitmap path below.
+            // Layout produced no glyphs: empty input or shaper had
+            // nothing to say. Fall through to the bitmap path below
+            // — it'll either render nothing for empty input or surface
+            // any platform-side fallback the new engine doesn't cover
+            // yet (Phase 4 closes that gap).
         }
     }
 

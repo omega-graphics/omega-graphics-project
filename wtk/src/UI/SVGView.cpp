@@ -69,8 +69,9 @@ float parseFloatAttr(Core::XMLDocument::Tag & tag, const char * name, float fall
     return std::strtof(OmegaCommon::String(val).c_str(), nullptr);
 }
 
-/// Flip a Y coordinate from SVG top-down to OmegaWTK bottom-up.
-float flipY(float y, float svgHeight) { return svgHeight - y; }
+// Phase 7: OmegaWTK pos.y is top-edge (Y-down) — same as SVG — so no
+// flip is needed. The previous `flipY(y, svgHeight) = svgHeight - y`
+// helper compensated for the legacy Y-up widget convention.
 
 // ---------------------------------------------------------------------------
 // SVG path `d` tokenizer & parser  (M/m L/l H/h V/v Z/z, C/c as polyline)
@@ -131,8 +132,9 @@ Composition::Path parseSVGPathData(const OmegaCommon::String & d, float svgH) {
     bool started = false;
     Composition::Path path(Composition::Point2D{0.f, 0.f});
 
+    (void)svgH;
     auto emit = [&](float ax, float ay) -> Composition::Point2D {
-        return {ax, flipY(ay, svgH)};
+        return {ax, ay};
     };
 
     auto ensureStarted = [&](float x, float y) {
@@ -268,7 +270,7 @@ OmegaCommon::Vector<Composition::Point2D> parsePointsList(const OmegaCommon::Str
         float y = std::strtof(p, &after);
         if (after == p) break;
         p = after;
-        result.push_back(Composition::Point2D{x, flipY(y, svgH)});
+        result.push_back(Composition::Point2D{x, y});
     }
     return result;
 }
@@ -372,16 +374,15 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
         float h  = parseFloatAttr(tag, "height");
         float rx = parseFloatAttr(tag, "rx");
         float ry = parseFloatAttr(tag, "ry");
-        // SVG y is top edge; OmegaWTK pos.y is bottom edge (Y-up).
-        float fy = flipY(y + h, svgH);
+        // SVG y is top edge; OmegaWTK pos.y is also top edge (Y-down).
         if (rx > 0.f || ry > 0.f) {
             if (rx == 0.f) rx = ry;
             if (ry == 0.f) ry = rx;
             op.type = SVGDrawOp::Type::RoundedRect;
-            op.roundedRectGeom = Composition::RoundedRect{Composition::Point2D{x, fy}, w, h, rx, ry};
+            op.roundedRectGeom = Composition::RoundedRect{Composition::Point2D{x, y}, w, h, rx, ry};
         } else {
             op.type = SVGDrawOp::Type::Rect;
-            op.rectGeom = Composition::Rect{Composition::Point2D{x, fy}, w, h};
+            op.rectGeom = Composition::Rect{Composition::Point2D{x, y}, w, h};
         }
         parseStyleAttrs(tag, op);
         ops.push_back(std::move(op));
@@ -392,7 +393,7 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
         float cy = parseFloatAttr(tag, "cy");
         float r  = parseFloatAttr(tag, "r");
         op.type = SVGDrawOp::Type::Ellipse;
-        op.ellipseGeom = Composition::Ellipse{cx, flipY(cy, svgH), r, r};
+        op.ellipseGeom = Composition::Ellipse{cx, cy, r, r};
         parseStyleAttrs(tag, op);
         ops.push_back(std::move(op));
     }
@@ -403,7 +404,7 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
         float rx = parseFloatAttr(tag, "rx");
         float ry = parseFloatAttr(tag, "ry");
         op.type = SVGDrawOp::Type::Ellipse;
-        op.ellipseGeom = Composition::Ellipse{cx, flipY(cy, svgH), rx, ry};
+        op.ellipseGeom = Composition::Ellipse{cx, cy, rx, ry};
         parseStyleAttrs(tag, op);
         ops.push_back(std::move(op));
     }
@@ -414,8 +415,8 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
         float x2 = parseFloatAttr(tag, "x2");
         float y2 = parseFloatAttr(tag, "y2");
         op.type = SVGDrawOp::Type::Line;
-        op.lineFrom = Composition::Point2D{x1, flipY(y1, svgH)};
-        op.lineTo   = Composition::Point2D{x2, flipY(y2, svgH)};
+        op.lineFrom = Composition::Point2D{x1, y1};
+        op.lineTo   = Composition::Point2D{x2, y2};
         parseStyleAttrs(tag, op);
         // `<line>` has no fill — only the stroke is meaningful.
         op.fillOpacity = 0.f;
@@ -486,8 +487,9 @@ void SVGView::rebuildDisplayList() {
     if (!sourceDoc_.has_value())
         return;
     auto root = sourceDoc_->root();
-    // Read SVG document height for Y-axis flip (SVG Y-down → OmegaWTK Y-up).
-    // Fall back to the view's own height if the attribute is missing.
+    // Document height is no longer used for Y-axis flipping (both SVG and
+    // OmegaWTK pos.y are Y-down / top-edge in Phase 7+). Kept as a parsed
+    // value in case future viewBox handling needs it.
     float svgH = parseFloatAttr(root, "height", getRect().h);
     auto children = root.children();
     for (auto & child : children)

@@ -191,10 +191,13 @@ public:
     // Phase 6.7-c3 (macOS): shape the run against its font at the
     // *unscaled* design size and produce positioned glyph IDs for the
     // MSDF render path. Core Text performs font fallback as part of
-    // line construction; this chunk ships a single sub-run, so any run
-    // whose resolved face does not match the requested face flips
-    // `requiresFallback` and the caller routes the whole string to the
-    // bitmap path.
+    // line construction. The MSDF path on macOS isn't lit up yet
+    // (CoreTextFont stays on `BitmapFallback` in chunk 2/3), so this
+    // function is currently dead code — it stays in shape only so the
+    // backend keeps compiling against the chunk-4 ShapedTextRun API.
+    // When CTFontEngine adopts the c2/c3 surface it will also need an
+    // `adoptResolvedFace` like `HarfBuzzFontEngine` to group runs by
+    // resolved CTFontRef.
     GlyphRun::ShapedTextRun shape(const Composition::Rect &rect,
                                   const TextLayoutDescriptor &layoutDesc) override {
         GlyphRun::ShapedTextRun result;
@@ -270,6 +273,12 @@ public:
             CTFrameGetLineOrigins(frame,CFRangeMake(0,lineCount),lineOrigins.data());
         }
 
+        // Chunk 4: accumulate into a single sub-run (CoreTextFont as
+        // primary). When this backend lights up multi-atlas fallback,
+        // group by resolved CTFontRef like `HarfBuzzGlyphRun::shape`.
+        TextSubRun primarySubRun;
+        primarySubRun.resolvedFont = std::static_pointer_cast<Font>(font);
+
         bool fallback = false;
         for(CFIndex li = 0; li < lineCount && !fallback; ++li){
             CTLineRef line = (CTLineRef)CFArrayGetValueAtIndex(lines,li);
@@ -316,8 +325,8 @@ public:
                     const double penX = (double)lineOrigin.x + (double)positions[(size_t)gi].x;
                     const double penYUp = (double)lineOrigin.y + (double)positions[(size_t)gi].y;
                     const double baselineFromTop = (double)rect.h - penYUp;
-                    result.glyphIds.push_back((std::uint32_t)glyph);
-                    result.positions.push_back(Composition::Point2D{
+                    primarySubRun.glyphIds.push_back((std::uint32_t)glyph);
+                    primarySubRun.positions.push_back(Composition::Point2D{
                         (float)penX,
                         (float)baselineFromTop});
                 }
@@ -331,14 +340,18 @@ public:
 
         if(fallback){
             result.requiresFallback = true;
-            result.glyphIds.clear();
-            result.positions.clear();
+            result.subRuns.clear();
+        } else if(!primarySubRun.glyphIds.empty()){
+            result.subRuns.push_back(std::move(primarySubRun));
         }
 
         if(textTraceEnabled()){
+            std::size_t totalGlyphs = 0;
+            for(const auto &sr : result.subRuns) totalGlyphs += sr.glyphIds.size();
             std::cout << "[wtk-text] CTGlyphRun::shape -> "
                       << (result.requiresFallback ? "FALLBACK" : "MSDF")
-                      << ", glyphs=" << result.glyphIds.size() << std::endl;
+                      << ", subRuns=" << result.subRuns.size()
+                      << ", glyphs=" << totalGlyphs << std::endl;
         }
         return result;
     }

@@ -52,6 +52,19 @@ OmegaWTKApp(
     SOURCES
     ContainerClampAnimationTest/main.cpp)
 
+# Phase-1 text-layout-engine unit test (Text-Layout-Engine-Plan.md).
+# Plain executable — no GTK / DX / Cocoa main, so it runs headless on
+# CI as well as locally. Links the composition static lib for the
+# layout engine itself + OmegaWTK_Core for the `OmegaWTK::gte` global
+# that `GlyphAtlas` (transitively pulled in by `Font`'s ctor) refers
+# to. The test never touches `gte` at runtime — it just needs to
+# satisfy the linker.
+add_executable(TextLayoutEngineTest TextLayoutEngineTest/main.cpp)
+target_link_libraries(TextLayoutEngineTest PRIVATE
+    OmegaWTK_Composition
+    OmegaWTK_Core
+    OmegaCommon)
+
 OmegaWTKApp(
     NAME
     LayoutUnitTest
