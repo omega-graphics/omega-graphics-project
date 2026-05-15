@@ -59,9 +59,22 @@ namespace OmegaWTK::Composition {
         /// font-pixels is `pxW / tileScale`. Quad authoring (canvas
         /// space, Y down): `minX = penX + tileOriginX`,
         /// `maxY = penY - tileOriginY`, edge = `pxW / tileScale`.
+        /// The MSDF tile is sized to the glyph's padded bounding box.
+        /// `pxW × pxH` is the *allocated* tile — `ceil` of the content
+        /// size — while `inkPxW × inkPxH` is the *exact* content size
+        /// in tile pixels (un-rounded `(r-l)*scale` / `(t-b)*scale`).
+        /// The `ceil` rounding leaves a sub-pixel sliver of empty
+        /// distance field at one tile edge; addressing `inkPx*` instead
+        /// of `pxW/pxH` excludes that sliver, so it can't shove glyphs
+        /// off the baseline. `(tileOriginX, tileOriginY)` is the padded
+        /// bbox's lower-left corner relative to the pen origin (Y up,
+        /// font pixels); `tileScale` is tile-pixels per font-pixel, so
+        /// the render quad is `inkPx* / tileScale` font-pixels.
         float tileOriginX = 0.f;
         float tileOriginY = 0.f;
         float tileScale   = 1.f;
+        float inkPxW = 0.f;
+        float inkPxH = 0.f;
     };
 
     /// Per-font glyph atlas. Owns the GPU texture and the glyph map.

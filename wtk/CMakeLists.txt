@@ -301,11 +301,11 @@ target_link_libraries(OmegaWTK_Composition PUBLIC OmegaCommon PRIVATE OmegaGTE)
 # msdfgen — Phase 6.7 MSDF glyph atlas. Core-only build (no SVG / PNG /
 # OpenMP / vcpkg / standalone exe / freetype-via-msdfgen-ext). We feed
 # msdfgen pre-built `Shape` objects from the per-platform outline
-# extractor (PangoFc → FT_Outline_Decompose on Linux), so the
-# msdfgen-ext dependency on freetype-inside-msdfgen is unnecessary.
-# Linux-only for now; DWrite / Core Text backends switch in their own
-# chunks.
-if(TARGET_LINUX)
+# extractor (PangoFc → FT_Outline_Decompose on Linux, Core Text →
+# CGPathApply on macOS), so the msdfgen-ext dependency on
+# freetype-inside-msdfgen is unnecessary. DWrite backend switches in
+# its own chunk.
+if(TARGET_LINUX OR TARGET_MACOS)
 	set(MSDFGEN_DIR "${OMEGAWTK_SOURCE_DIR}/deps/msdfgen/code")
 	if(EXISTS "${MSDFGEN_DIR}/CMakeLists.txt")
 		set(MSDFGEN_CORE_ONLY        ON  CACHE BOOL "" FORCE)
@@ -410,6 +410,13 @@ if(APPLE)
 	foreach(_submod ${OMEGAWTK_SUBMODULE_LIBS})
 		target_link_libraries("OmegaWTK" PRIVATE "-Wl,-force_load,$<TARGET_FILE:${_submod}>")
 	endforeach()
+	# The submodules are force-loaded by raw path ($<TARGET_FILE:>), which
+	# bypasses CMake's transitive link-interface propagation — so
+	# OmegaWTK_Composition's PRIVATE msdfgen dependency (Phase 6.7 MSDF
+	# text) must be linked into the framework explicitly here.
+	if(TARGET msdfgen::msdfgen)
+		target_link_libraries("OmegaWTK" PRIVATE msdfgen::msdfgen)
+	endif()
 elseif(WIN32)
 	foreach(_submod ${OMEGAWTK_SUBMODULE_LIBS})
 		target_link_options("OmegaWTK" PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:${_submod}>")

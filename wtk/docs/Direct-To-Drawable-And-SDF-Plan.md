@@ -580,6 +580,8 @@ sequenced after the Linux path is shown to behave under the visual
 checks in §6.9 because the macOS / Windows builds can only be
 verified outside the day-to-day Linux dev loop.
 
+Please review important note in the following section!!
+
 #### Chunk-2 lessons + open gotchas
 
 These came out of landing 6.7-c2 and apply to chunks 3+:
@@ -600,6 +602,9 @@ These came out of landing 6.7-c2 and apply to chunks 3+:
   visually confirmed — chunk-3 verify is the first frame where the
   atlas is sampled, so an upside-down glyph there means the flip was
   reversed. Cheap to fix; flag if it bites.
+
+  IMPORTANT NOTE: GTE sampler treats top as 0, so make sure to apply y-flip to all text engine backends. (Unless using existing bitmap cache which now automatically flips texture uploads, assuming they are bottom up acording to the GL standard)
+
 - **Pango lock/unlock deprecation.** `pango_fc_font_lock_face` and
   `pango_fc_font_unlock_face` are deprecated as of Pango 1.44 in
   favor of `pango_font_get_hb_font`. The plan's per-platform notes

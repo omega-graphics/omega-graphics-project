@@ -776,40 +776,41 @@ void BackendRenderTargetContext::resetElementState() {
             if(g == nullptr){
                 continue;
             }
-            if(g->tileScale <= 0.f || g->pxW == 0){
+            if(g->tileScale <= 0.f || g->pxW == 0 || g->pxH == 0){
                 continue;
             }
 
-            // Reconstruct the glyph quad in canvas space. `tileOrigin*`
-            // is the tile's lower-left corner relative to the pen origin
-            // (Y up); canvas Y is down, so the baseline maps as
-            // `canvasY = penY - glyphY`.
-            const float extent = static_cast<float>(g->pxW) / g->tileScale;
+            // Reconstruct the glyph quad in canvas space. The quad
+            // covers the *whole tile* — `pxW/pxH / tileScale`
+            // font-pixels — exactly the font-space region msdfgen
+            // rendered into and the UV addresses. `tileOrigin*` is the
+            // tile's lower-left corner relative to the pen origin (Y
+            // up); canvas Y is down, so `canvasY = penY - glyphY`.
+            const float inkW = static_cast<float>(g->pxW) / g->tileScale;
+            const float inkH = static_cast<float>(g->pxH) / g->tileScale;
             const float penX = rect.pos.x + subRun.positions[i].x;
             const float penY = rect.pos.y + subRun.positions[i].y;
             const float minX = penX + g->tileOriginX;
-            const float maxX = minX + extent;
+            const float maxX = minX + inkW;
             const float maxY = penY - g->tileOriginY;
-            const float minY = maxY - extent;
+            const float minY = maxY - inkH;
 
             if(std::getenv("OMEGAWTK_TRACE_TEXT") != nullptr){
                 std::cout << "[wtk-text] QUAD gid=" << gid
                           << " pos=(" << subRun.positions[i].x << "," << subRun.positions[i].y << ")"
                           << " penY=" << penY
                           << " tileOriginY=" << g->tileOriginY
-                          << " extent=" << extent
+                          << " inkWH=(" << inkW << "," << inkH << ")"
                           << " uv.v=[" << g->v0 << "," << g->v1 << "]"
                           << " canvasY=[" << minY << "," << maxY << "]" << std::endl;
             }
 
-            // The MSDF tile stores atlas row 0 = glyph bottom (shape
-            // yMin); the glyph is anchored at that end of the square
-            // tile. Map the bottom of the tile (v0) to the bottom of
-            // the quad (maxY) so the glyph sits on the baseline
-            // regardless of how much empty margin the square tile has
-            // above it (`extent - glyphHeight`, which varies per
-            // glyph — getting this backwards floats non-square glyphs
-            // and makes the run "bounce").
+            // UV mapping. Atlas upload flip handles orientation; this
+            // mapping is the position-correct pairing (font-bottom →
+            // baseline). The current text layout still has a
+            // y-up/y-down mismatch that produces per-glyph offset; the
+            // long-term fix is a WTK-owned layout engine (see
+            // Text-Layout-Engine-Plan.md).
             verts.push_back({minX, minY, g->u0, g->v1});
             verts.push_back({maxX, minY, g->u1, g->v1});
             verts.push_back({minX, maxY, g->u0, g->v0});

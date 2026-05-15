@@ -1,6 +1,7 @@
 #include "GlyphAtlas.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <cstdlib>
 #include <iostream>
@@ -136,16 +137,24 @@ namespace OmegaWTK::Composition {
             rgba[i * 4 + 3] = 0xFF;
         }
 
-        OmegaGTE::TextureRegion region {};
-        region.x = cursorX_;
-        region.y = cursorY_;
-        region.z = 0;
-        region.w = tileW;
-        region.h = tileH;
-        region.d = 1;
-        texture_->copyBytes(rgba.data(), static_cast<std::size_t>(tileW) * 4, region);
+        // Vertically flip the tile on upload — region-aware per-row
+        // `copyBytes`, dest row `r` consumes source row `tileH-1-r`.
+        // One of the three orientation flips (atlas upload, quad UV
+        // mapping, fragment-shader V mirror).
+        const std::size_t srcBpr = static_cast<std::size_t>(tileW) * 4;
+        for(unsigned r = 0; r < tileH; ++r){
+            OmegaGTE::TextureRegion region {cursorX_, cursorY_ + r, 0, tileW, 1, 1};
+            texture_->copyBytes(rgba.data() + static_cast<std::size_t>(tileH - 1 - r) * srcBpr,
+                                srcBpr, region);
+        }
 
-        // Patch metrics with the assigned UV rect (normalized).
+        // Patch metrics with the assigned UV rect (normalized). The UV
+        // addresses the *whole* integer tile — the same `tileW × tileH`
+        // the upload flip reverses and the render quad covers. The
+        // `ceil` row/column is transparent distance field that is part
+        // of the tile uniformly, so it never displaces the glyph.
+        // Mixing a fractional content sub-rect with the integer flip is
+        // what produced the per-glyph mis-positioning.
         const float invDim = 1.f / static_cast<float>(kAtlasDim);
         AtlasGlyph entry = out.metrics;
         entry.pxW = static_cast<std::uint16_t>(tileW);
@@ -161,6 +170,27 @@ namespace OmegaWTK::Composition {
                       << " into " << tileW << "x" << tileH << " tile at ("
                       << cursorX_ << "," << cursorY_ << "), advance="
                       << entry.advance << std::endl;
+
+            // Read the whole atlas texture back and write it to a PPM so
+            // the packed tiles can be inspected directly — orientation
+            // of stored glyphs, whether tiles abut with no gutter, and
+            // whether the shelf packing matches what the UVs assume.
+            // Overwrites each call; the final write has the most glyphs.
+            std::vector<std::uint8_t> px(
+                static_cast<std::size_t>(kAtlasDim) * kAtlasDim * 4);
+            texture_->getBytes(px.data(), static_cast<std::size_t>(kAtlasDim) * 4);
+            if(FILE *f = std::fopen("/tmp/wtk_glyph_atlas.ppm", "wb")){
+                std::fprintf(f, "P6\n%u %u\n255\n", kAtlasDim, kAtlasDim);
+                for(std::size_t i = 0;
+                    i < static_cast<std::size_t>(kAtlasDim) * kAtlasDim; ++i){
+                    std::fputc(px[i * 4 + 0], f);
+                    std::fputc(px[i * 4 + 1], f);
+                    std::fputc(px[i * 4 + 2], f);
+                }
+                std::fclose(f);
+                std::cout << "[wtk-text] GlyphAtlas: dumped atlas to "
+                             "/tmp/wtk_glyph_atlas.ppm" << std::endl;
+            }
         }
 
         cursorX_ += tileW;

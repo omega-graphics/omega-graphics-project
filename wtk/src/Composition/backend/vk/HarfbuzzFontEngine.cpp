@@ -738,51 +738,60 @@ namespace OmegaWTK::Composition {
 
                 // Compute a tight bounding box of the shape and fit
                 // the 32×32 tile around it with a small padding so the
-                // distance band stays inside the tile.
-                double l = 0, b = 0, r = 0, t = 0;
-                shape.bound(l, b, r, t);
+                // distance band stays inside the tile. `Shape::bound`
+                // *expands* the passed-in box — it never initializes it
+                // — so seeding with zeros would force every glyph's
+                // bbox to include the origin (0,0), inflating the box
+                // for any glyph with a left bearing or whose ink does
+                // not touch the baseline. `getBounds()` seeds correctly.
+                const msdfgen::Shape::Bounds bounds = shape.getBounds();
+                double l = bounds.l, b = bounds.b, r = bounds.r, t = bounds.t;
                 if(r <= l || t <= b){
                     pango_fc_font_unlock_face(fc);
                     return false;
                 }
+                // The tile is sized to the glyph's padded bbox, NOT a
+                // fixed square. A fixed square tile + uniform-scale fit
+                // leaves a per-glyph empty margin, and every scheme to
+                // address that margin (sub-rect UV, etc.) just relocates
+                // the seam. With a glyph-sized tile there is no margin:
+                // the tile *is* the glyph, the render path's quad is the
+                // tile, UV is the whole packed rect. `scale` keeps the
+                // larger dimension at `kMsdfTileSize` so atlas density
+                // is unchanged.
                 const double padding = 2.0;
                 l -= padding; b -= padding; r += padding; t += padding;
-                const double sx = static_cast<double>(kMsdfTileSize) / (r - l);
-                const double sy = static_cast<double>(kMsdfTileSize) / (t - b);
-                const double scale = std::min(sx, sy);
+                const double scale = static_cast<double>(kMsdfTileSize) /
+                                     std::max(r - l, t - b);
+                const unsigned tileW = std::max(1u,
+                    static_cast<unsigned>(std::ceil((r - l) * scale)));
+                const unsigned tileH = std::max(1u,
+                    static_cast<unsigned>(std::ceil((t - b) * scale)));
                 const msdfgen::Vector2 scaleV(scale, scale);
                 const msdfgen::Vector2 translate(-l, -b);
 
-                msdfgen::Bitmap<float, 3> msdf(kMsdfTileSize, kMsdfTileSize);
+                msdfgen::Bitmap<float, 3> msdf((int)tileW, (int)tileH);
                 msdfgen::generateMSDF(msdf, shape,
                                       msdfgen::Range(kMsdfRange / scale),
                                       scaleV, translate);
 
-                // Quantize float → uint8. Two corrections over the
-                // chunk-2 draft, both confirmed by the chunk-3 visual
-                // verify:
-                //   * No Y-flip. msdfgen's `Bitmap` is Y-up (row 0 =
-                //     glyph bottom); reading `msdf(x, tileSize-1-y)`
-                //     rendered the glyphs upside down, so we read
-                //     straight through and let the render quad's UV
-                //     mapping place the tile.
-                //   * No extra +0.5 bias. `generateMSDF` already maps
-                //     the signed distance to [0,1] with the glyph edge
-                //     at 0.5 (`distance/range + 0.5`); the chunk-2
-                //     `(v + 0.5)` double-offset saturated coverage to
-                //     ~1 everywhere, producing opaque tiles.
-                out.pxW = static_cast<std::uint32_t>(kMsdfTileSize);
-                out.pxH = static_cast<std::uint32_t>(kMsdfTileSize);
-                out.rgb.resize(static_cast<std::size_t>(kMsdfTileSize) * kMsdfTileSize * 3);
-                for(int y = 0; y < kMsdfTileSize; ++y){
-                    const int srcY = y;
-                    for(int x = 0; x < kMsdfTileSize; ++x){
-                        const float *px = msdf(x, srcY);
+                // Quantize float → uint8, straight through. msdfgen
+                // emits a Y-up tile; the upload flip in `GlyphAtlas`
+                // reconciles that with the GTE sampler's row-0-is-top
+                // convention. (No extra +0.5 bias — `generateMSDF`
+                // already maps the signed distance to [0,1] with the
+                // glyph edge at 0.5.)
+                out.pxW = tileW;
+                out.pxH = tileH;
+                out.rgb.resize(static_cast<std::size_t>(tileW) * tileH * 3);
+                for(unsigned y = 0; y < tileH; ++y){
+                    for(unsigned x = 0; x < tileW; ++x){
+                        const float *px = msdf((int)x, (int)y);
                         const auto quant = [](float v) {
                             const float scaled = std::clamp(v * 255.f + 0.5f, 0.f, 255.f);
                             return static_cast<std::uint8_t>(scaled);
                         };
-                        const std::size_t i = (static_cast<std::size_t>(y) * kMsdfTileSize + x) * 3;
+                        const std::size_t i = (static_cast<std::size_t>(y) * tileW + x) * 3;
                         out.rgb[i + 0] = quant(px[0]);
                         out.rgb[i + 1] = quant(px[1]);
                         out.rgb[i + 2] = quant(px[2]);
@@ -797,24 +806,27 @@ namespace OmegaWTK::Composition {
                 out.metrics.bearingY = static_cast<float>(face->glyph->metrics.horiBearingY) / 64.f;
 
                 // MSDF tile placement (Phase 6.7-c3). `l`/`b` are the
-                // padded bound-box origin in font-pixel space; `scale`
-                // is tile-pixels per font-pixel. The render path
-                // reconstructs the quad from these — `(l, b)` is the
-                // tile's lower-left corner relative to the pen origin
-                // (Y up), and `scale` recovers the tile's font-pixel
-                // edge length as `kMsdfTileSize / scale`.
+                // padded bbox origin in font-pixel space; `scale` is
+                // tile-pixels per font-pixel. `inkPx*` is the *exact*
+                // (un-ceiled) content size in tile pixels — the render
+                // path and atlas address this rather than the ceil'd
+                // `tileW/tileH` so the ceil sliver can't displace the
+                // glyph.
                 out.metrics.tileOriginX = static_cast<float>(l);
                 out.metrics.tileOriginY = static_cast<float>(b);
                 out.metrics.tileScale   = static_cast<float>(scale);
+                out.metrics.inkPxW      = static_cast<float>((r - l) * scale);
+                out.metrics.inkPxH      = static_cast<float>((t - b) * scale);
 
                 if(textTraceEnabled()){
                     std::cout << "[wtk-text] DUMP gid=" << glyphId
                               << " l=" << l << " b=" << b << " r=" << r << " t=" << t
-                              << " scale=" << scale << std::endl;
-                    for(int yy = 0; yy < kMsdfTileSize; ++yy){
+                              << " scale=" << scale
+                              << " tile=" << tileW << "x" << tileH << std::endl;
+                    for(unsigned yy = 0; yy < tileH; ++yy){
                         std::string row;
-                        for(int xx = 0; xx < kMsdfTileSize; ++xx){
-                            const std::size_t idx = (static_cast<std::size_t>(yy) * kMsdfTileSize + xx) * 3;
+                        for(unsigned xx = 0; xx < tileW; ++xx){
+                            const std::size_t idx = (static_cast<std::size_t>(yy) * tileW + xx) * 3;
                             const int med = std::max(std::min((int)out.rgb[idx+0], (int)out.rgb[idx+1]),
                                                      std::min(std::max((int)out.rgb[idx+0], (int)out.rgb[idx+1]), (int)out.rgb[idx+2]));
                             row += (med > 153 ? '#' : (med > 102 ? '.' : ' '));
