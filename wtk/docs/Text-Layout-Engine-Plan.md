@@ -55,6 +55,8 @@ calculus, our canvas-space output — belongs to WTK.
   Y-down, top-left origin, baseline expressed as a canvas-space Y for
   each line. No frame-relative Y-up math, no scale-dependent unit
   conversions hidden inside platform calls.
+
+  ALEX: OmegaWTK's coordinate system is actually bottom left origin.
 - **Shaping is per-script-run, not per-text-block.** The layout engine
   segments the input into bidi/script runs, calls the platform shaper
   for each (which is where complex-script intelligence lives), and

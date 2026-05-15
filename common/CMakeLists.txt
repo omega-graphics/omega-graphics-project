@@ -191,6 +191,44 @@ if(WIN32)
 	file(MAKE_DIRECTORY "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/bin")
 	file(MAKE_DIRECTORY "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib")
 
+	# Map CMake target arch -> ICU msbuild Platform + bin/lib subdir.
+	# Prefer the VS-generator value when set; otherwise fall back to pointer
+	# width / CMAKE_SYSTEM_PROCESSOR. ICU's bin/lib directory names mirror
+	# msbuild Platform: Win32->bin/lib, x64->bin64/lib64, ARM->binARM/libARM,
+	# ARM64->binARM64/libARM64 (see source/data/makedata.mak and the
+	# allinone Build.Windows.ProjectConfiguration.props).
+	if(CMAKE_GENERATOR_PLATFORM)
+		set(_ICU_MSBUILD_PLATFORM "${CMAKE_GENERATOR_PLATFORM}")
+	elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|aarch64)$")
+		set(_ICU_MSBUILD_PLATFORM "ARM64")
+	elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM|arm)$")
+		set(_ICU_MSBUILD_PLATFORM "ARM")
+	elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+		set(_ICU_MSBUILD_PLATFORM "x64")
+	else()
+		set(_ICU_MSBUILD_PLATFORM "Win32")
+	endif()
+
+	if(_ICU_MSBUILD_PLATFORM STREQUAL "x64")
+		set(_ICU_BIN_SUBDIR "bin64")
+		set(_ICU_LIB_SUBDIR "lib64")
+	elseif(_ICU_MSBUILD_PLATFORM STREQUAL "ARM64")
+		set(_ICU_BIN_SUBDIR "binARM64")
+		set(_ICU_LIB_SUBDIR "libARM64")
+	elseif(_ICU_MSBUILD_PLATFORM STREQUAL "ARM")
+		set(_ICU_BIN_SUBDIR "binARM")
+		set(_ICU_LIB_SUBDIR "libARM")
+	else()
+		set(_ICU_BIN_SUBDIR "bin")
+		set(_ICU_LIB_SUBDIR "lib")
+	endif()
+
+	# Size guard for the data DLL. The stubdata.vcxproj DLL is ~3.5 KB; a
+	# real makedata-built icudt78.dll is ~28 MB. Anything under 1 MiB means
+	# pkgdata didn't run (commonly: msbuild was invoked without an explicit
+	# /p:Platform, or `py -3` is not on PATH -- see makedata.mak:36).
+	set(_ICU_DATA_DLL_MIN_BYTES 1048576)
+
 	add_third_party(
 		CUSTOM_PROJECT
 		NAME icu
@@ -198,10 +236,11 @@ if(WIN32)
 		BINARY_DIR "${ICU_SOURCE_ROOT}/icu4c/source/allinone"
 		INSTALL_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu"
 		CONF ""
-		BUILD msbuild allinone.sln /p:Configuration=Release /p:SkipUWP=true
+		BUILD msbuild allinone.sln /p:Configuration=Release /p:Platform=${_ICU_MSBUILD_PLATFORM} /p:SkipUWP=true
 		INSTALL ${CMAKE_COMMAND} -E copy_directory "${ICU_SOURCE_ROOT}/icu4c/include" "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/include"
-		&& ${CMAKE_COMMAND} -E copy "${ICU_SOURCE_ROOT}/icu4c/bin64/icuuc${ICU_VERSION}.dll" "${ICU_SOURCE_ROOT}/icu4c/bin64/icudt${ICU_VERSION}.dll" "${ICU_SOURCE_ROOT}/icu4c/bin64/icuin${ICU_VERSION}.dll" "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/bin"
-		&& ${CMAKE_COMMAND} -E copy "${ICU_SOURCE_ROOT}/icu4c/lib64/icuuc.lib" "${ICU_SOURCE_ROOT}/icu4c/lib64/icudt.lib" "${ICU_SOURCE_ROOT}/icu4c/lib64/icuin.lib" "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib"
+		&& ${CMAKE_COMMAND} -E copy "${ICU_SOURCE_ROOT}/icu4c/${_ICU_BIN_SUBDIR}/icuuc${ICU_VERSION}.dll" "${ICU_SOURCE_ROOT}/icu4c/${_ICU_BIN_SUBDIR}/icudt${ICU_VERSION}.dll" "${ICU_SOURCE_ROOT}/icu4c/${_ICU_BIN_SUBDIR}/icuin${ICU_VERSION}.dll" "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/bin"
+		&& ${CMAKE_COMMAND} -E copy "${ICU_SOURCE_ROOT}/icu4c/${_ICU_LIB_SUBDIR}/icuuc.lib" "${ICU_SOURCE_ROOT}/icu4c/${_ICU_LIB_SUBDIR}/icudt.lib" "${ICU_SOURCE_ROOT}/icu4c/${_ICU_LIB_SUBDIR}/icuin.lib" "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib"
+		&& ${CMAKE_COMMAND} -DFILE=${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/bin/icudt${ICU_VERSION}.dll -DMIN_SIZE=${_ICU_DATA_DLL_MIN_BYTES} -DLABEL=icudt${ICU_VERSION}.dll -P ${CMAKE_SOURCE_DIR}/cmake/CheckMinFileSize.cmake
 		EXPORT_SHARED_LIBS "icuuc:lib/icuuc.lib" "icudata:lib/icudt.lib" "icui18n:lib/icuin.lib"
 		EXPORT_INCLUDE_DIRS "include")
 

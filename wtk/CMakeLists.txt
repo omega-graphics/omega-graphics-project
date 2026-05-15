@@ -302,10 +302,10 @@ target_link_libraries(OmegaWTK_Composition PUBLIC OmegaCommon PRIVATE OmegaGTE)
 # OpenMP / vcpkg / standalone exe / freetype-via-msdfgen-ext). We feed
 # msdfgen pre-built `Shape` objects from the per-platform outline
 # extractor (PangoFc → FT_Outline_Decompose on Linux, Core Text →
-# CGPathApply on macOS), so the msdfgen-ext dependency on
-# freetype-inside-msdfgen is unnecessary. DWrite backend switches in
-# its own chunk.
-if(TARGET_LINUX OR TARGET_MACOS)
+# CGPathApply on macOS, IDWriteFontFace::GetGlyphRunOutline +
+# IDWriteGeometrySink on Windows), so the msdfgen-ext dependency on
+# freetype-inside-msdfgen is unnecessary on every platform.
+if(TARGET_LINUX OR TARGET_MACOS OR TARGET_WIN32)
 	set(MSDFGEN_DIR "${OMEGAWTK_SOURCE_DIR}/deps/msdfgen/code")
 	if(EXISTS "${MSDFGEN_DIR}/CMakeLists.txt")
 		set(MSDFGEN_CORE_ONLY        ON  CACHE BOOL "" FORCE)
@@ -421,6 +421,13 @@ elseif(WIN32)
 	foreach(_submod ${OMEGAWTK_SUBMODULE_LIBS})
 		target_link_options("OmegaWTK" PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:${_submod}>")
 	endforeach()
+	# /WHOLEARCHIVE bypasses transitive link-interface propagation the same
+	# way Apple's -force_load does — so OmegaWTK_Composition's PRIVATE
+	# msdfgen dependency (Phase 6.7 MSDF text) has to be linked into the
+	# framework explicitly here.
+	if(TARGET msdfgen::msdfgen)
+		target_link_libraries("OmegaWTK" PRIVATE msdfgen::msdfgen)
+	endif()
 else()
 	target_link_libraries("OmegaWTK" PRIVATE
 		"-Wl,--whole-archive" ${OMEGAWTK_SUBMODULE_LIBS} "-Wl,--no-whole-archive")

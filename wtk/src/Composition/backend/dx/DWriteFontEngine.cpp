@@ -3,6 +3,7 @@
 #include "NativePrivate/win/WinUtils.h"
 #include "omegaWTK/Core/Microsoft.h"
 #include "omega-common/unicode.h"
+#include "../GlyphAtlas.h"
 
 #include <dwrite.h>
 #include <dwrite_1.h>
@@ -24,7 +25,340 @@
 #pragma comment(lib,"dxguid.lib")
 #pragma comment(lib,"d2d1.lib")
 
+#ifdef OMEGAWTK_HAVE_MSDFGEN
+#include <msdfgen.h>
+#include <core/edge-coloring.h>
+#endif
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+
 namespace OmegaWTK::Composition {
+
+    namespace {
+        /// OMEGAWTK_TRACE_TEXT=1 turns on the Phase-6.7 text-pipeline
+        /// trace logs (probe results, MSDF tile dumps). Mirrors the
+        /// Linux backend so the same env var lights up both sides.
+        bool textTraceEnabled() {
+            static const bool enabled = []() {
+                const char *e = std::getenv("OMEGAWTK_TRACE_TEXT");
+                return e != nullptr && e[0] != '\0' && e[0] != '0';
+            }();
+            return enabled;
+        }
+
+        /// 0 = upper, 1 = center, 2 = lower. Mirrors the Linux helper.
+        int verticalAlignmentCategory(TextLayoutDescriptor::Alignment alignment){
+            switch(alignment){
+                case TextLayoutDescriptor::LeftUpper:
+                case TextLayoutDescriptor::MiddleUpper:
+                case TextLayoutDescriptor::RightUpper:
+                    return 0;
+                case TextLayoutDescriptor::LeftCenter:
+                case TextLayoutDescriptor::MiddleCenter:
+                case TextLayoutDescriptor::RightCenter:
+                    return 1;
+                case TextLayoutDescriptor::LeftLower:
+                case TextLayoutDescriptor::MiddleLower:
+                case TextLayoutDescriptor::RightLower:
+                    return 2;
+                default:
+                    return 0;
+            }
+        }
+
+#ifdef OMEGAWTK_HAVE_MSDFGEN
+        /// Square 32×32 MSDF tile size + 4-px distance range. Same
+        /// constants as the Linux backend (HarfbuzzFontEngine.cpp).
+        constexpr int    kMsdfTileSize = 32;
+        constexpr double kMsdfRange    = 4.0;
+
+        /// IDWriteGeometrySink that records the DWrite outline into a
+        /// `msdfgen::Shape`. DWrite emits outlines in design-space at the
+        /// emSize passed to `GetGlyphRunOutline` with Y growing *down*;
+        /// msdfgen expects Y growing *up* (its `orientContours()` is
+        /// calibrated against TrueType's CW-outer convention measured in
+        /// Y-up space). We flip the sign at point-build time so the
+        /// rest of the msdfgen pipeline is identical to the Linux path.
+        class MsdfGeometrySink final : public IDWriteGeometrySink {
+            ULONG refCount_ = 1;
+            msdfgen::Shape *shape_ = nullptr;
+            msdfgen::Contour *contour_ = nullptr;
+            msdfgen::Point2 lastPoint_ {0.0, 0.0};
+            UINT32 segmentCount_ = 0;
+        public:
+            explicit MsdfGeometrySink(msdfgen::Shape *shape) : shape_(shape) {}
+
+            /// Diagnostic: how many edges landed in the shape. The probe
+            /// path uses this to distinguish "outline exists but is
+            /// empty" (bitmap-only face) from a successful walk.
+            UINT32 segmentCount() const { return segmentCount_; }
+
+            // ID2D1SimplifiedGeometrySink methods (all void except Close).
+            STDMETHOD_(void, SetFillMode)(D2D1_FILL_MODE) override {}
+            STDMETHOD_(void, SetSegmentFlags)(D2D1_PATH_SEGMENT) override {}
+            STDMETHOD_(void, BeginFigure)(D2D1_POINT_2F startPoint,
+                                          D2D1_FIGURE_BEGIN) override {
+                if(shape_ == nullptr) return;
+                contour_ = &shape_->addContour();
+                lastPoint_ = msdfgen::Point2(startPoint.x, -startPoint.y);
+            }
+            STDMETHOD_(void, AddLines)(const D2D1_POINT_2F *points,
+                                       UINT32 pointsCount) override {
+                if(contour_ == nullptr) return;
+                for(UINT32 i = 0; i < pointsCount; ++i){
+                    msdfgen::Point2 endpoint(points[i].x, -points[i].y);
+                    if(endpoint != lastPoint_){
+                        contour_->addEdge(msdfgen::EdgeHolder(lastPoint_, endpoint));
+                        lastPoint_ = endpoint;
+                        ++segmentCount_;
+                    }
+                }
+            }
+            STDMETHOD_(void, AddBeziers)(const D2D1_BEZIER_SEGMENT *beziers,
+                                         UINT32 beziersCount) override {
+                if(contour_ == nullptr) return;
+                for(UINT32 i = 0; i < beziersCount; ++i){
+                    msdfgen::Point2 c1(beziers[i].point1.x, -beziers[i].point1.y);
+                    msdfgen::Point2 c2(beziers[i].point2.x, -beziers[i].point2.y);
+                    msdfgen::Point2 endpoint(beziers[i].point3.x, -beziers[i].point3.y);
+                    contour_->addEdge(
+                        msdfgen::EdgeHolder(lastPoint_, c1, c2, endpoint));
+                    lastPoint_ = endpoint;
+                    ++segmentCount_;
+                }
+            }
+            STDMETHOD_(void, EndFigure)(D2D1_FIGURE_END) override {
+                contour_ = nullptr;
+            }
+            STDMETHOD(Close)() override { return S_OK; }
+
+            // IUnknown.
+            STDMETHOD(QueryInterface)(REFIID iid, void **ppv) override {
+                if(iid == IID_IUnknown ||
+                   iid == __uuidof(ID2D1SimplifiedGeometrySink) ||
+                   iid == __uuidof(IDWriteGeometrySink)){
+                    AddRef();
+                    *ppv = this;
+                    return S_OK;
+                }
+                *ppv = nullptr;
+                return E_NOINTERFACE;
+            }
+            STDMETHOD_(ULONG, AddRef)() override {
+                return InterlockedIncrement(&refCount_);
+            }
+            STDMETHOD_(ULONG, Release)() override {
+                ULONG n = InterlockedDecrement(&refCount_);
+                if(n == 0){ delete this; }
+                return n;
+            }
+        };
+#endif // OMEGAWTK_HAVE_MSDFGEN
+
+        /// Minimal IDWriteTextAnalysisSource. We feed the analyzer one
+        /// contiguous UTF-16 buffer with a single locale and LTR reading
+        /// direction; the Phase-6.7-c3 shape path doesn't try to honor
+        /// per-character locale or number substitution (that arrives
+        /// with the layout-engine plan).
+        class DWriteAnalysisSource final : public IDWriteTextAnalysisSource {
+            ULONG refCount_ = 1;
+            const WCHAR *text_ = nullptr;
+            UINT32 length_ = 0;
+            const WCHAR *locale_ = L"en-us";
+        public:
+            DWriteAnalysisSource(const WCHAR *text, UINT32 length, const WCHAR *locale)
+                : text_(text), length_(length), locale_(locale) {}
+
+            STDMETHOD(GetTextAtPosition)(UINT32 pos,
+                                         WCHAR const **outText,
+                                         UINT32 *outLen) override {
+                if(pos >= length_){
+                    *outText = nullptr;
+                    *outLen = 0;
+                    return S_OK;
+                }
+                *outText = text_ + pos;
+                *outLen = length_ - pos;
+                return S_OK;
+            }
+            STDMETHOD(GetTextBeforePosition)(UINT32 pos,
+                                             WCHAR const **outText,
+                                             UINT32 *outLen) override {
+                if(pos == 0 || pos > length_){
+                    *outText = nullptr;
+                    *outLen = 0;
+                    return S_OK;
+                }
+                *outText = text_;
+                *outLen = pos;
+                return S_OK;
+            }
+            STDMETHOD_(DWRITE_READING_DIRECTION, GetParagraphReadingDirection)() override {
+                return DWRITE_READING_DIRECTION_LEFT_TO_RIGHT;
+            }
+            STDMETHOD(GetLocaleName)(UINT32 pos,
+                                     UINT32 *outLen,
+                                     WCHAR const **localeName) override {
+                *outLen = (pos < length_) ? (length_ - pos) : 0;
+                *localeName = locale_;
+                return S_OK;
+            }
+            STDMETHOD(GetNumberSubstitution)(UINT32 pos,
+                                             UINT32 *outLen,
+                                             IDWriteNumberSubstitution **sub) override {
+                *outLen = (pos < length_) ? (length_ - pos) : 0;
+                *sub = nullptr;
+                return S_OK;
+            }
+
+            STDMETHOD(QueryInterface)(REFIID iid, void **ppv) override {
+                if(iid == IID_IUnknown ||
+                   iid == __uuidof(IDWriteTextAnalysisSource)){
+                    AddRef();
+                    *ppv = this;
+                    return S_OK;
+                }
+                *ppv = nullptr;
+                return E_NOINTERFACE;
+            }
+            STDMETHOD_(ULONG, AddRef)() override {
+                return InterlockedIncrement(&refCount_);
+            }
+            STDMETHOD_(ULONG, Release)() override {
+                ULONG n = InterlockedDecrement(&refCount_);
+                if(n == 0){ delete this; }
+                return n;
+            }
+        };
+
+        /// IDWriteTextAnalysisSink that just records every
+        /// `SetScriptAnalysis` callback verbatim. We don't ask for line
+        /// breakpoints, BiDi, or number substitution in shape() — we
+        /// only run `AnalyzeScript` — so the other sink methods are
+        /// no-ops that return S_OK.
+        struct DWriteScriptRange {
+            UINT32 textPosition = 0;
+            UINT32 textLength = 0;
+            DWRITE_SCRIPT_ANALYSIS analysis {};
+        };
+        class DWriteAnalysisSink final : public IDWriteTextAnalysisSink {
+            ULONG refCount_ = 1;
+        public:
+            std::vector<DWriteScriptRange> scriptRanges;
+
+            STDMETHOD(SetScriptAnalysis)(UINT32 pos, UINT32 len,
+                                         const DWRITE_SCRIPT_ANALYSIS *sa) override {
+                DWriteScriptRange r;
+                r.textPosition = pos;
+                r.textLength = len;
+                r.analysis = *sa;
+                scriptRanges.push_back(r);
+                return S_OK;
+            }
+            STDMETHOD(SetLineBreakpoints)(UINT32, UINT32,
+                                          const DWRITE_LINE_BREAKPOINT *) override {
+                return S_OK;
+            }
+            STDMETHOD(SetBidiLevel)(UINT32, UINT32, UINT8, UINT8) override {
+                return S_OK;
+            }
+            STDMETHOD(SetNumberSubstitution)(UINT32, UINT32,
+                                             IDWriteNumberSubstitution *) override {
+                return S_OK;
+            }
+
+            STDMETHOD(QueryInterface)(REFIID iid, void **ppv) override {
+                if(iid == IID_IUnknown ||
+                   iid == __uuidof(IDWriteTextAnalysisSink)){
+                    AddRef();
+                    *ppv = this;
+                    return S_OK;
+                }
+                *ppv = nullptr;
+                return E_NOINTERFACE;
+            }
+            STDMETHOD_(ULONG, AddRef)() override {
+                return InterlockedIncrement(&refCount_);
+            }
+            STDMETHOD_(ULONG, Release)() override {
+                ULONG n = InterlockedDecrement(&refCount_);
+                if(n == 0){ delete this; }
+                return n;
+            }
+        };
+
+        /// Translate FontDescriptor → DWrite weight/style. Used by
+        /// font construction AND face resolution; keeping it as a
+        /// helper avoids drift between the two switches that previously
+        /// inlined the mapping.
+        void descToDWriteStyle(const FontDescriptor &desc,
+                               DWRITE_FONT_WEIGHT &weight,
+                               DWRITE_FONT_STYLE &style) {
+            switch(desc.style){
+                case FontDescriptor::BoldAndItalic:
+                    weight = DWRITE_FONT_WEIGHT_BOLD;
+                    style  = DWRITE_FONT_STYLE_ITALIC;
+                    break;
+                case FontDescriptor::Bold:
+                    weight = DWRITE_FONT_WEIGHT_BOLD;
+                    style  = DWRITE_FONT_STYLE_NORMAL;
+                    break;
+                case FontDescriptor::Italic:
+                    weight = DWRITE_FONT_WEIGHT_NORMAL;
+                    style  = DWRITE_FONT_STYLE_ITALIC;
+                    break;
+                case FontDescriptor::Regular:
+                default:
+                    weight = DWRITE_FONT_WEIGHT_NORMAL;
+                    style  = DWRITE_FONT_STYLE_NORMAL;
+                    break;
+            }
+        }
+
+        /// Resolve a DWrite `IDWriteFontFace` for the requested family
+        /// + weight + style from the given collection. Returns nullptr
+        /// when the family isn't present in the collection. Caller owns
+        /// the returned reference.
+        IDWriteFontFace * resolveFontFace(IDWriteFontCollection *collection,
+                                          const FontDescriptor &desc) {
+            if(collection == nullptr){ return nullptr; }
+            DWRITE_FONT_WEIGHT weight;
+            DWRITE_FONT_STYLE style;
+            descToDWriteStyle(desc, weight, style);
+
+            std::wstring family;
+            Native::cpp_str_to_cpp_wstr(desc.family, family);
+
+            UINT32 idx = 0;
+            BOOL exists = FALSE;
+            if(FAILED(collection->FindFamilyName(family.c_str(), &idx, &exists)) || !exists){
+                return nullptr;
+            }
+            IDWriteFontFamily *fam = nullptr;
+            if(FAILED(collection->GetFontFamily(idx, &fam)) || fam == nullptr){
+                return nullptr;
+            }
+            IDWriteFont *font = nullptr;
+            HRESULT hr = fam->GetFirstMatchingFont(weight, DWRITE_FONT_STRETCH_NORMAL,
+                                                   style, &font);
+            Core::SafeRelease(&fam);
+            if(FAILED(hr) || font == nullptr){
+                return nullptr;
+            }
+            IDWriteFontFace *face = nullptr;
+            hr = font->CreateFontFace(&face);
+            Core::SafeRelease(&font);
+            if(FAILED(hr)){
+                return nullptr;
+            }
+            return face;
+        }
+    } // anonymous namespace
 
     class FontEnumerator : public IDWriteFontFileEnumerator {
         IDWriteFactory * dwrite_factory;
@@ -103,12 +437,30 @@ namespace OmegaWTK::Composition {
     class DWriteFont : public Font {
      public:
          Core::UniqueComPtr<IDWriteTextFormat> textFormat;
-         DWriteFont(FontDescriptor & desc,IDWriteTextFormat *textFormat):Font(desc),textFormat(textFormat){};
+         /// Resolved IDWriteFontFace for `desc`. Held alongside the
+         /// IDWriteTextFormat so the Phase-6.7 MSDF path can call
+         /// `GetGlyphRunOutline` / `GetDesignGlyphMetrics` directly,
+         /// and so `shape()` can compare the GetGlyphs face to the
+         /// requested face to detect fallback. May be null on faces
+         /// that failed to resolve (e.g. family not installed).
+         Core::UniqueComPtr<IDWriteFontFace> fontFace;
+         DWriteFont(FontDescriptor & desc, IDWriteTextFormat *textFormat,
+                    IDWriteFontFace *face)
+             :Font(desc), textFormat(textFormat), fontFace(face){};
          void * getNativeFont(){
              return (void *)textFormat.get();
          };
+         /// Phase-6.7 accessor used by `shape()` for the face-identity
+         /// fallback check and by the MSDF rasterize lambda for outline
+         /// extraction.
+         IDWriteFontFace * getFontFace() const { return fontFace.comPtr.Get(); }
+
+         /// Expose the protected mode setter so the engine factory can
+         /// flip the font to MSDF once the outline probe succeeds.
+         using Font::setMode;
          ~DWriteFont(){
              Core::SafeRelease(&textFormat);
+             // fontFace is released by UniqueComPtr's dtor.
          };
      };
 
@@ -180,29 +532,7 @@ namespace OmegaWTK::Composition {
 
                         DWRITE_FONT_WEIGHT weight;
                         DWRITE_FONT_STYLE style;
-
-                        switch (desc.style) {
-                            case FontDescriptor::BoldAndItalic : {
-                                style = DWRITE_FONT_STYLE_ITALIC;
-                                weight = DWRITE_FONT_WEIGHT_BOLD;
-                                break;
-                            }
-                            case FontDescriptor::Bold : {
-                                weight = DWRITE_FONT_WEIGHT_BOLD;
-                                style = DWRITE_FONT_STYLE_NORMAL;
-                                break;
-                            }
-                            case FontDescriptor::Italic : {
-                                weight = DWRITE_FONT_WEIGHT_NORMAL;
-                                style = DWRITE_FONT_STYLE_ITALIC;
-                                break;
-                            }
-                            case FontDescriptor::Regular : {
-                                weight = DWRITE_FONT_WEIGHT_NORMAL;
-                                style = DWRITE_FONT_STYLE_NORMAL;
-                                break;
-                            };
-                        }
+                        descToDWriteStyle(desc, weight, style);
 
                         // Font size stays in DIPs. Physical pixel scaling is
                         // applied by the D2D device context via SetDpi() in
@@ -213,12 +543,30 @@ namespace OmegaWTK::Composition {
 
                         };
 
+                        // Resolve the system-collection face for the same
+                        // family + weight + style so the MSDF path has a
+                        // concrete IDWriteFontFace to walk outlines on.
+                        // Failure (font not installed) is non-fatal: the
+                        // DWriteFont is built faceless and stays on
+                        // BitmapFallback.
+                        IDWriteFontCollection *systemColl = nullptr;
+                        dwrite_factory->GetSystemFontCollection(&systemColl, FALSE);
+                        IDWriteFontFace *face = resolveFontFace(systemColl, desc);
+                        Core::SafeRelease(&systemColl);
 
-                        return std::make_shared<DWriteFont>(desc,textFormat);
+                        auto font = Core::SharedPtr<DWriteFont>(
+                            new DWriteFont(desc, textFormat, face));
+
+                        // Probe + install MSDF rasterize callback. Failure
+                        // of any step leaves the font on BitmapFallback (the
+                        // default installed by Font's base ctor).
+                        probeAndInstallMsdf(*font);
+
+                        return font;
             };
             Core::SharedPtr<Font> CreateFontFromFile(OmegaCommon::FS::Path path, FontDescriptor & desc)  override {
                 auto path_ustring = OmegaCommon::UniString::fromUTF8(path.str().c_str());
-                
+
                 IDWriteFontCollection *collection;
                 dwrite_factory->CreateCustomFontCollection(font_loader.get(),path_ustring.getBuffer(),path_ustring.length(),&collection);
 
@@ -230,29 +578,7 @@ namespace OmegaWTK::Composition {
 
                 DWRITE_FONT_WEIGHT weight;
                 DWRITE_FONT_STYLE style;
-
-                switch (desc.style) {
-                    case FontDescriptor::BoldAndItalic : {
-                        style = DWRITE_FONT_STYLE_ITALIC;
-                        weight = DWRITE_FONT_WEIGHT_BOLD;
-                        break;
-                    }
-                    case FontDescriptor::Bold : {
-                        weight = DWRITE_FONT_WEIGHT_BOLD;
-                        style = DWRITE_FONT_STYLE_NORMAL;
-                        break;
-                    }
-                    case FontDescriptor::Italic : {
-                        weight = DWRITE_FONT_WEIGHT_NORMAL;
-                        style = DWRITE_FONT_STYLE_ITALIC;
-                        break;
-                    }
-                    case FontDescriptor::Regular : {
-                        weight = DWRITE_FONT_WEIGHT_NORMAL;
-                        style = DWRITE_FONT_STYLE_NORMAL;
-                        break;
-                    };
-                }
+                descToDWriteStyle(desc, weight, style);
 
                 // Font size stays in DIPs. See CreateFont() above.
                 /// TODO: Use Custom Fonts with custom font Collection!
@@ -261,8 +587,235 @@ namespace OmegaWTK::Composition {
 
                 };
 
+                // Resolve face against the custom collection — falling
+                // back to the system collection if the family isn't in
+                // the loaded file, which matches the way DWrite itself
+                // selects faces when an IDWriteTextLayout draws.
+                IDWriteFontFace *face = resolveFontFace(collection, desc);
+                if(face == nullptr){
+                    IDWriteFontCollection *systemColl = nullptr;
+                    dwrite_factory->GetSystemFontCollection(&systemColl, FALSE);
+                    face = resolveFontFace(systemColl, desc);
+                    Core::SafeRelease(&systemColl);
+                }
+                Core::SafeRelease(&collection);
 
-                return std::make_shared<DWriteFont>(desc,textFormat);
+                auto font = Core::SharedPtr<DWriteFont>(
+                    new DWriteFont(desc, textFormat, face));
+                probeAndInstallMsdf(*font);
+                return font;
+            };
+
+            /// Phase 6.7-c2: decide whether `font`'s resolved face
+            /// exposes vector outlines that msdfgen can walk; if so,
+            /// install a `RasterizeFn` on its atlas and promote it to
+            /// `Mode::MSDF`. Otherwise log once (when traced) and leave
+            /// it on `BitmapFallback`. Mirrors HarfBuzzFontEngine's
+            /// `probeAndInstallMsdf` against DWrite.
+            void probeAndInstallMsdf(DWriteFont &font) {
+#ifdef OMEGAWTK_HAVE_MSDFGEN
+                IDWriteFontFace *face = font.getFontFace();
+                if(face == nullptr){
+                    if(textTraceEnabled()){
+                        std::cout << "[wtk-text] DWriteFont: '"
+                                  << font.desc.family << "' size=" << font.desc.size
+                                  << " could not resolve IDWriteFontFace; using BitmapFallback"
+                                  << std::endl;
+                    }
+                    return;
+                }
+
+                // Probe outline extractability against the 'A' glyph,
+                // falling back to .notdef (glyph 0) if 'A' isn't mapped.
+                // A face whose GetGlyphRunOutline succeeds but emits zero
+                // segments is bitmap-only (`EBDT`/`EBLC` only) and must
+                // stay on the BitmapFallback path.
+                UINT32 probeCh = (UINT32)L'A';
+                UINT16 probeGid = 0;
+                face->GetGlyphIndices(&probeCh, 1, &probeGid);
+                const UINT16 gidForProbe = probeGid; // 0 == .notdef is fine
+                msdfgen::Shape probeShape;
+                MsdfGeometrySink *probeSink = new MsdfGeometrySink(&probeShape);
+                HRESULT probeHr = face->GetGlyphRunOutline(
+                    FLOAT(font.desc.size),
+                    &gidForProbe, nullptr, nullptr,
+                    1,
+                    FALSE, FALSE,
+                    probeSink);
+                const UINT32 probedSegments = probeSink->segmentCount();
+                probeSink->Release();
+
+                if(FAILED(probeHr) || probedSegments == 0){
+                    if(textTraceEnabled()){
+                        std::cout << "[wtk-text] DWriteFont: '"
+                                  << font.desc.family << "' size=" << font.desc.size
+                                  << " outline probe hr=0x" << std::hex << probeHr
+                                  << std::dec << " segments=" << probedSegments
+                                  << "; using BitmapFallback" << std::endl;
+                    }
+                    return;
+                }
+
+                // Capture an extra ref on the face for the lambda. The
+                // lambda is owned by the GlyphAtlas, whose lifetime is
+                // tied to the WTK Font; DWriteFont's UniqueComPtr<Face>
+                // is what holds the *other* ref. AddRef now, matched by
+                // a Release in the shared-state destructor.
+                struct LambdaState {
+                    IDWriteFontFace *face;
+                    unsigned size;
+                    LambdaState(IDWriteFontFace *f, unsigned s) : face(f), size(s) {
+                        if(face) face->AddRef();
+                    }
+                    ~LambdaState() { Core::SafeRelease(&face); }
+                };
+                auto state = std::make_shared<LambdaState>(face, font.desc.size);
+
+                font.atlas().setRasterizeFn(
+                    [state](std::uint32_t glyphId,
+                            GlyphAtlas::RasterizedGlyph &out) -> bool {
+                    if(state->face == nullptr){ return false; }
+
+                    msdfgen::Shape shape;
+                    MsdfGeometrySink *sink = new MsdfGeometrySink(&shape);
+                    UINT16 gid = (UINT16)glyphId;
+                    HRESULT hr = state->face->GetGlyphRunOutline(
+                        FLOAT(state->size),
+                        &gid, nullptr, nullptr,
+                        1,
+                        FALSE, FALSE,
+                        sink);
+                    sink->Release();
+                    if(FAILED(hr)){
+                        return false;
+                    }
+
+                    // msdfgen pipeline: normalize → orient contours →
+                    // edge coloring → generate. `orientContours()`
+                    // resolves the CW/CCW outer-contour-winding
+                    // ambiguity between font formats and is essential
+                    // for the signed-distance sign to come out right;
+                    // skipping it inverts the fill on one whole family
+                    // of fonts.
+                    shape.normalize();
+                    shape.orientContours();
+                    msdfgen::edgeColoringSimple(shape, 3.0);
+
+                    // Tight bbox + small padding, fit `kMsdfTileSize` to
+                    // the larger dimension so atlas density matches the
+                    // Linux path. Seed with `getBounds()` — `Shape::bound`
+                    // *expands* the box, so a zero-seed would force the
+                    // origin (0,0) into every bbox.
+                    const msdfgen::Shape::Bounds bounds = shape.getBounds();
+                    double l = bounds.l, b = bounds.b, r = bounds.r, t = bounds.t;
+                    if(r <= l || t <= b){
+                        return false;
+                    }
+                    const double padding = 2.0;
+                    l -= padding; b -= padding; r += padding; t += padding;
+                    const double scale = static_cast<double>(kMsdfTileSize) /
+                                         std::max(r - l, t - b);
+                    const unsigned tileW = std::max(1u,
+                        static_cast<unsigned>(std::ceil((r - l) * scale)));
+                    const unsigned tileH = std::max(1u,
+                        static_cast<unsigned>(std::ceil((t - b) * scale)));
+                    const msdfgen::Vector2 scaleV(scale, scale);
+                    const msdfgen::Vector2 translate(-l, -b);
+
+                    msdfgen::Bitmap<float, 3> msdf((int)tileW, (int)tileH);
+                    msdfgen::generateMSDF(msdf, shape,
+                                          msdfgen::Range(kMsdfRange / scale),
+                                          scaleV, translate);
+
+                    // Quantize float → uint8. `generateMSDF` already maps
+                    // the signed distance to [0,1] with the glyph edge
+                    // at 0.5, so no extra bias. The atlas upload applies
+                    // a row-flip to reconcile msdfgen's Y-up tile with
+                    // the GTE sampler's row-0-is-top convention.
+                    out.pxW = tileW;
+                    out.pxH = tileH;
+                    out.rgb.resize(static_cast<std::size_t>(tileW) * tileH * 3);
+                    for(unsigned y = 0; y < tileH; ++y){
+                        for(unsigned x = 0; x < tileW; ++x){
+                            const float *px = msdf((int)x, (int)y);
+                            const auto quant = [](float v) {
+                                const float s = std::clamp(v * 255.f + 0.5f, 0.f, 255.f);
+                                return static_cast<std::uint8_t>(s);
+                            };
+                            const std::size_t i = (static_cast<std::size_t>(y) * tileW + x) * 3;
+                            out.rgb[i + 0] = quant(px[0]);
+                            out.rgb[i + 1] = quant(px[1]);
+                            out.rgb[i + 2] = quant(px[2]);
+                        }
+                    }
+
+                    // Layout metrics. `GetDesignGlyphMetrics` reports
+                    // values in design units; convert to pixels at the
+                    // font's emSize by `(units * emSize) / unitsPerEm`,
+                    // matching what `GetGlyphRunOutline(emSize, ...)`
+                    // emitted into the outline above.
+                    DWRITE_FONT_METRICS fontMetrics {};
+                    state->face->GetMetrics(&fontMetrics);
+                    DWRITE_GLYPH_METRICS gm {};
+                    state->face->GetDesignGlyphMetrics(&gid, 1, &gm, FALSE);
+                    const double upem = static_cast<double>(fontMetrics.designUnitsPerEm);
+                    const double emSize = static_cast<double>(state->size);
+                    const double duToPx = emSize / upem;
+                    out.metrics.advance  = static_cast<float>(gm.advanceWidth * duToPx);
+                    out.metrics.bearingX = static_cast<float>(gm.leftSideBearing * duToPx);
+                    out.metrics.bearingY = static_cast<float>(gm.verticalOriginY * duToPx);
+
+                    // MSDF tile placement (Phase 6.7-c3). `l`/`b` are the
+                    // padded bbox origin in font-pixel space (Y-up,
+                    // because MsdfGeometrySink flipped the sign coming
+                    // out of DWrite's Y-down design space). `scale` is
+                    // tile-pixels per font-pixel; `inkPx*` is the exact
+                    // (un-ceiled) content size in tile pixels — the
+                    // render path addresses this rather than the ceil'd
+                    // `tileW/tileH` so the ceil sliver can't displace
+                    // the glyph. Same contract as the Linux backend.
+                    out.metrics.tileOriginX = static_cast<float>(l);
+                    out.metrics.tileOriginY = static_cast<float>(b);
+                    out.metrics.tileScale   = static_cast<float>(scale);
+                    out.metrics.inkPxW      = static_cast<float>((r - l) * scale);
+                    out.metrics.inkPxH      = static_cast<float>((t - b) * scale);
+
+                    if(textTraceEnabled()){
+                        std::cout << "[wtk-text] DUMP gid=" << glyphId
+                                  << " l=" << l << " b=" << b
+                                  << " r=" << r << " t=" << t
+                                  << " scale=" << scale
+                                  << " tile=" << tileW << "x" << tileH << std::endl;
+                    }
+                    return true;
+                });
+                font.setMode(Font::Mode::MSDF);
+
+                if(textTraceEnabled()){
+                    std::cout << "[wtk-text] DWriteFont: '"
+                              << font.desc.family << "' size=" << font.desc.size
+                              << " (probedSegments=" << probedSegments
+                              << ") -> MSDF mode" << std::endl;
+                }
+
+                // Smoke-rasterize the probe glyph so any breakage in the
+                // outline → msdfgen pipeline surfaces at Font
+                // construction time, not on the first drawText call.
+                if(gidForProbe != 0){
+                    const bool ok = font.atlas().ensureGlyph(gidForProbe);
+                    if(textTraceEnabled()){
+                        std::cout << "[wtk-text] DWriteFont: smoke ensureGlyph(gid="
+                                  << gidForProbe << ") -> "
+                                  << (ok ? "ok" : "FAILED") << std::endl;
+                    }
+                }
+#else
+                (void)font;
+                if(textTraceEnabled()){
+                    std::cout << "[wtk-text] DWriteFont: built without OMEGAWTK_HAVE_MSDFGEN; using BitmapFallback"
+                              << std::endl;
+                }
+#endif // OMEGAWTK_HAVE_MSDFGEN
             };
             ~DWriteFontEngineImpl(){
                 dwrite_factory->UnregisterFontCollectionLoader(font_loader.get());
@@ -288,13 +841,261 @@ namespace OmegaWTK::Composition {
      class DWriteGlyphRun : public GlyphRun {
      public:
          Core::UniqueComPtr<IDWriteTextLayout> textLayout;
-         explicit DWriteGlyphRun(const OmegaCommon::UniString & str, Core::SharedPtr<Font> &font){
+         /// Hold onto the original string + font so `shape()` can drive
+         /// `IDWriteTextAnalyzer` directly. The textLayout above stays
+         /// for the BitmapFallback path (DWriteTextRect::drawRun).
+         OmegaCommon::UniString str;
+         Core::SharedPtr<DWriteFont> dwFont;
+
+         explicit DWriteGlyphRun(const OmegaCommon::UniString & str, Core::SharedPtr<Font> &font)
+             :str(str), dwFont(std::dynamic_pointer_cast<DWriteFont>(font)){
              auto *_font = (DWriteFont *)font.get();
              auto FontEngineImpl = (DWriteFontEngineImpl *)FontEngine::inst();
             FontEngineImpl->dwrite_factory->CreateTextLayout((WCHAR *)str.getBuffer(),str.length(),_font->textFormat.get(),0,0,&textLayout);
          }
          Composition::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) override {
             return Composition::Rect {{0.f,0.f},0,0};
+         }
+
+         // Phase 6.7-c3: shape via IDWriteTextAnalyzer::GetGlyphs +
+         // GetGlyphPlacements. Single-line, no wrap, no line limit:
+         // multi-line / wrap belongs to the upcoming text-layout-engine
+         // plan. Fallback detection: any cluster mapping to glyph 0
+         // (.notdef) flips `requiresFallback` and the caller routes the
+         // whole string to the bitmap path, matching the c3 contract on
+         // Linux (one sub-run per TextRun until c4 lands multi-atlas
+         // adoption). DPR is applied downstream by the render viewport.
+         GlyphRun::ShapedTextRun shape(const Composition::Rect &rect,
+                                       const TextLayoutDescriptor &layoutDesc) override {
+             GlyphRun::ShapedTextRun result;
+             if(dwFont == nullptr){
+                 result.requiresFallback = true;
+                 return result;
+             }
+             IDWriteFontFace *face = dwFont->getFontFace();
+             if(face == nullptr){
+                 result.requiresFallback = true;
+                 return result;
+             }
+             const WCHAR *text = reinterpret_cast<const WCHAR *>(str.getBuffer());
+             const UINT32 textLen = (UINT32)str.length();
+             if(text == nullptr || textLen == 0){
+                 return result;
+             }
+
+             auto *FontEngineImpl = (DWriteFontEngineImpl *)FontEngine::inst();
+             IDWriteTextAnalyzer *analyzer = nullptr;
+             if(FAILED(FontEngineImpl->dwrite_factory->CreateTextAnalyzer(&analyzer)) ||
+                analyzer == nullptr){
+                 result.requiresFallback = true;
+                 return result;
+             }
+
+             auto *source = new DWriteAnalysisSource(text, textLen, L"en-us");
+             auto *sink = new DWriteAnalysisSink();
+             // AnalyzeScript partitions the text into script ranges.
+             // For pure Latin we expect a single range; mixed-script
+             // strings (e.g. Latin + CJK) produce multiple ranges, and
+             // any range whose glyphs resolve to .notdef against the
+             // requested face will trip the fallback path below.
+             HRESULT hr = analyzer->AnalyzeScript(source, 0, textLen, sink);
+             if(FAILED(hr)){
+                 sink->Release();
+                 source->Release();
+                 Core::SafeRelease(&analyzer);
+                 result.requiresFallback = true;
+                 return result;
+             }
+
+             // Font metric pixels — used for baseline placement and the
+             // vertical-alignment offset. emSize = desc.size DIPs;
+             // ascent/descent/lineGap in design units → pixels.
+             DWRITE_FONT_METRICS fontMetrics {};
+             face->GetMetrics(&fontMetrics);
+             const double upem = static_cast<double>(fontMetrics.designUnitsPerEm);
+             const double emSize = static_cast<double>(dwFont->desc.size);
+             const double ascentPx  = fontMetrics.ascent  * emSize / upem;
+             const double descentPx = fontMetrics.descent * emSize / upem;
+             const double lineGapPx = fontMetrics.lineGap * emSize / upem;
+             const double lineHeightPx = ascentPx + descentPx + lineGapPx;
+
+             // Total width we'll measure as we shape (single line — see
+             // function-doc comment); needed for horizontal alignment.
+             // We assemble glyphs in two passes: first shape every
+             // script range and stash glyph IDs / advances / offsets,
+             // then position them along a single baseline.
+             struct ShapedGlyph {
+                 std::uint32_t glyphId;
+                 float advance;
+                 float offsetX;
+                 float offsetY;
+             };
+             std::vector<ShapedGlyph> shaped;
+             shaped.reserve(textLen + 16);
+
+             bool fallback = false;
+
+             for(const auto &range : sink->scriptRanges){
+                 if(range.textLength == 0){ continue; }
+                 const WCHAR *rangeText = text + range.textPosition;
+                 const UINT32 rangeLen = range.textLength;
+
+                 // Spec-recommended sizing: maxGlyphCount = 3 * len/2 +
+                 // 16. If GetGlyphs returns E_NOT_SUFFICIENT_BUFFER we
+                 // double and retry, capping at a sane upper bound.
+                 UINT32 maxGlyphCount = 3 * rangeLen / 2 + 16;
+                 std::vector<UINT16> clusterMap(rangeLen);
+                 std::vector<DWRITE_SHAPING_TEXT_PROPERTIES> textProps(rangeLen);
+                 std::vector<UINT16> glyphIndices(maxGlyphCount);
+                 std::vector<DWRITE_SHAPING_GLYPH_PROPERTIES> glyphProps(maxGlyphCount);
+                 UINT32 actualGlyphCount = 0;
+
+                 hr = E_NOT_SUFFICIENT_BUFFER;
+                 for(int attempt = 0; attempt < 4 && hr == E_NOT_SUFFICIENT_BUFFER; ++attempt){
+                     hr = analyzer->GetGlyphs(
+                         rangeText, rangeLen,
+                         face, FALSE /*isSideways*/, FALSE /*isRightToLeft*/,
+                         &range.analysis,
+                         L"en-us",
+                         nullptr /*numberSubstitution*/,
+                         nullptr /*features*/,
+                         nullptr /*featureRangeLengths*/,
+                         0 /*featureRanges*/,
+                         maxGlyphCount,
+                         clusterMap.data(),
+                         textProps.data(),
+                         glyphIndices.data(),
+                         glyphProps.data(),
+                         &actualGlyphCount);
+                     if(hr == E_NOT_SUFFICIENT_BUFFER){
+                         maxGlyphCount *= 2;
+                         glyphIndices.assign(maxGlyphCount, 0);
+                         glyphProps.assign(maxGlyphCount, DWRITE_SHAPING_GLYPH_PROPERTIES{});
+                     }
+                 }
+                 if(FAILED(hr)){
+                     fallback = true;
+                     break;
+                 }
+
+                 std::vector<FLOAT> glyphAdvances(actualGlyphCount);
+                 std::vector<DWRITE_GLYPH_OFFSET> glyphOffsets(actualGlyphCount);
+                 hr = analyzer->GetGlyphPlacements(
+                     rangeText, clusterMap.data(), textProps.data(), rangeLen,
+                     glyphIndices.data(), glyphProps.data(), actualGlyphCount,
+                     face, FLOAT(emSize),
+                     FALSE, FALSE,
+                     &range.analysis,
+                     L"en-us",
+                     nullptr, nullptr, 0,
+                     glyphAdvances.data(), glyphOffsets.data());
+                 if(FAILED(hr)){
+                     fallback = true;
+                     break;
+                 }
+
+                 for(UINT32 i = 0; i < actualGlyphCount; ++i){
+                     if(glyphIndices[i] == 0){
+                         // Any .notdef cluster means the requested face
+                         // doesn't cover this character — c3 bails to
+                         // the bitmap path for the whole string.
+                         fallback = true;
+                         break;
+                     }
+                     ShapedGlyph g;
+                     g.glyphId = (std::uint32_t)glyphIndices[i];
+                     g.advance = glyphAdvances[i];
+                     g.offsetX = glyphOffsets[i].advanceOffset;
+                     g.offsetY = glyphOffsets[i].ascenderOffset;
+                     shaped.push_back(g);
+                 }
+                 if(fallback){ break; }
+             }
+
+             sink->Release();
+             source->Release();
+             Core::SafeRelease(&analyzer);
+
+             if(fallback){
+                 result.requiresFallback = true;
+                 return result;
+             }
+
+             // Total advance for horizontal alignment.
+             double totalAdvance = 0.0;
+             for(const auto &g : shaped){
+                 totalAdvance += g.advance;
+             }
+
+             // Horizontal start X based on layoutDesc.alignment.
+             double startX = 0.0;
+             switch(layoutDesc.alignment){
+                 case TextLayoutDescriptor::MiddleUpper:
+                 case TextLayoutDescriptor::MiddleCenter:
+                 case TextLayoutDescriptor::MiddleLower:
+                     startX = (rect.w - totalAdvance) / 2.0;
+                     break;
+                 case TextLayoutDescriptor::RightUpper:
+                 case TextLayoutDescriptor::RightCenter:
+                 case TextLayoutDescriptor::RightLower:
+                     startX = rect.w - totalAdvance;
+                     break;
+                 default:
+                     startX = 0.0;
+                     break;
+             }
+             if(startX < 0.0) startX = 0.0;
+
+             // Vertical baseline placement. Upper: baseline = ascent
+             // (top of glyph aligns to top of rect). Center: shift by
+             // (rect.h - lineHeight)/2. Lower: baseline = rect.h -
+             // descent. Mirrors the offset math the Linux backend
+             // applied via pango_layout_get_pixel_size, but computed
+             // from font metrics rather than a laid-out line because
+             // we're shaping directly without a layout.
+             double baselineY = ascentPx;
+             const int vAlign = verticalAlignmentCategory(layoutDesc.alignment);
+             if(vAlign == 1){
+                 const double extra = (double)rect.h - lineHeightPx;
+                 if(extra > 0.0){
+                     baselineY = ascentPx + extra / 2.0;
+                 }
+             } else if(vAlign == 2){
+                 const double extra = (double)rect.h - lineHeightPx;
+                 if(extra > 0.0){
+                     baselineY = ascentPx + extra;
+                 }
+             }
+
+             // Emit positioned glyph pen origins. DWrite's glyph offset
+             // `ascenderOffset` is positive *toward the ascender* (i.e.
+             // up in DIP-space), so we subtract it from the canvas-space
+             // (Y-down) baseline to push the glyph up. Atlas tile
+             // placement on the render side uses `tileOrigin*` /
+             // `tileScale` from the rasterize step.
+             double penX = startX;
+             result.glyphIds.reserve(shaped.size());
+             result.positions.reserve(shaped.size());
+             for(const auto &g : shaped){
+                 const double gx = penX + (double)g.offsetX;
+                 const double gy = baselineY - (double)g.offsetY;
+                 result.glyphIds.push_back(g.glyphId);
+                 result.positions.push_back(
+                     Composition::Point2D{(float)gx, (float)gy});
+                 penX += (double)g.advance;
+             }
+
+             if(textTraceEnabled()){
+                 std::cout << "[wtk-text] DWriteGlyphRun::shape -> "
+                           << (result.requiresFallback ? "FALLBACK" : "MSDF")
+                           << ", glyphs=" << result.glyphIds.size() << std::endl;
+                 for(std::size_t k = 0; k < result.glyphIds.size() && k < 10; ++k){
+                     std::cout << "[wtk-text]   shaped gid=" << result.glyphIds[k]
+                               << " pos=(" << result.positions[k].x << ","
+                               << result.positions[k].y << ")" << std::endl;
+                 }
+             }
+             return result;
          }
      };
 
@@ -524,7 +1325,11 @@ namespace OmegaWTK::Composition {
              // the bitmap defaults to 96 DPI, so its logical size becomes
              // rect.w*scale × rect.h*scale DIPs and DrawTextLayout with
              // MaxWidth=rect.w only fills the top-left corner.
-            hr = context->CreateBitmapFromDxgiSurface(surface,D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET,D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),96.f * this->renderScale,96.f * this->renderScale),&bitmap);
+            hr = context->CreateBitmapFromDxgiSurface(surface,
+                D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET,
+                    D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                        D2D1_ALPHA_MODE_PREMULTIPLIED),
+                        96.f * this->renderScale,96.f * this->renderScale),&bitmap);
              
             if(FAILED(hr)){
                   OMEGAWTK_DEBUG("Failed to create Bitmap from DXGISurface ERR:" << std::hex << hr << std::dec);

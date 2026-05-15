@@ -34,6 +34,9 @@ engine. It fully virtualizes the view tree and rendering pipeline, so
 that a single layout, style, and paint description produces the same
 visual result on every platform.
 
+There are some differences however.
+OmegaWTK uses a bottom-left coordinate space.
+
 The architecture is built on a strict separation between the **scene
 tree** (the retained virtual UI) and the **platform surface** (a
 single OS-owned drawing target per window).

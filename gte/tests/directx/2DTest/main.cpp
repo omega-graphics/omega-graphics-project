@@ -52,10 +52,6 @@ void tessalate(){
     auto rect_mesh = tessContext->triangulateSync(OmegaGTE::TETriangulationParams::Rect(rect));
 
     std::cout << "Tessalated GRect" << std::endl;
-    auto coord = OmegaGTE::FVec<2>::Create();
-    coord[0][0] = 0.f;
-    coord[1][0] = 0.f;
-
     std::cout << "Created Matrix GRect" << std::endl;
 
     size_t structSize = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4,OMEGASL_FLOAT2});
@@ -68,8 +64,15 @@ void tessalate(){
 
     bufferWriter->setOutputBuffer(vertexBuffer);
 
-    bool otherSide = true;
+    // The Rect triangulator emits T1 with corners {a=BL, b=TL, c=BR} and T2
+    // with corners {a=TR, b=BR, c=TL}. NDC Y=-1 is the bottom of the screen
+    // (translateCoords maps world y=0 to NDC y=-1), and DX texture V=0 is the
+    // top of the image — so the bottom screen edge must sample V=1.
+    auto uvA = OmegaGTE::FVec<2>::Create();
+    auto uvB = OmegaGTE::FVec<2>::Create();
+    auto uvC = OmegaGTE::FVec<2>::Create();
 
+    int triIdx = 0;
     for(auto & mesh : rect_mesh.meshes){
         std::cout << "Mesh 1:" << std::endl;
         for(auto &tri : mesh.vertexPolygons){
@@ -84,22 +87,21 @@ void tessalate(){
             std::cout << ss.str() << std::endl;
             std::cout << "Create Vertex" << std::endl;
 
-            writeVertex(tri.a.pt,coord);
+            if(triIdx == 0){
+                uvA[0][0] = 0.f; uvA[1][0] = 1.f; // BL
+                uvB[0][0] = 0.f; uvB[1][0] = 0.f; // TL
+                uvC[0][0] = 1.f; uvC[1][0] = 1.f; // BR
+            } else {
+                uvA[0][0] = 1.f; uvA[1][0] = 0.f; // TR
+                uvB[0][0] = 1.f; uvB[1][0] = 1.f; // BR
+                uvC[0][0] = 0.f; uvC[1][0] = 0.f; // TL
+            }
 
-            coord[0][0] = 0.f;
-            coord[1][0] = 1.f;
+            writeVertex(tri.a.pt,uvA);
+            writeVertex(tri.b.pt,uvB);
+            writeVertex(tri.c.pt,uvC);
 
-            writeVertex(tri.b.pt,coord);
-
-            coord[0][0] = 1.f;
-            coord[1][0] = 0.f;
-
-
-            writeVertex(tri.c.pt,coord);
-
-            coord[0][0] = 1.f;
-            coord[1][0] = 1.f;
-            otherSide = true;
+            ++triIdx;
         };
     };
 
@@ -132,6 +134,18 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     IWICBitmapFrameDecode *decoded;
     decoder->GetFrame(0,&decoded);
 
+    // WIC's native frame format for a typical PNG is 32bppBGRA. Our texture is
+    // RGBA8Unorm_SRGB, so we run the frame through a format converter to swap
+    // channels before upload — otherwise R and B come out swapped on screen.
+    Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
+    imageFactory->CreateFormatConverter(&converter);
+    converter->Initialize(decoded,
+                          GUID_WICPixelFormat32bppRGBA,
+                          WICBitmapDitherTypeNone,
+                          NULL,
+                          0.f,
+                          WICBitmapPaletteTypeCustom);
+
     gte = OmegaGTE::InitWithDefaultDevice();
 
     UINT w,h;
@@ -151,7 +165,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     auto buffer = new BYTE[bitmapSize];
 
-    decoded->CopyPixels(NULL,w * 4,bitmapSize,buffer);
+    converter->CopyPixels(NULL,w * 4,bitmapSize,buffer);
 
     texture->copyBytes((void *)buffer,w * 4);
 

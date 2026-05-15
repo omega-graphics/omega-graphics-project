@@ -33,6 +33,19 @@ OmegaWTKApp(
 
 OmegaWTKApp(
     NAME
+    ImageRenderTest
+    BUNDLE_ID
+    "org.omegagraphics.ImageRenderTest"
+    SOURCES
+    ImageRenderTest/main.cpp)
+# Bake the source-tree path to the test PNG into the binary so it works
+# regardless of where the EXE / app is launched from. Forward slashes
+# are fine on every platform's stdio.
+target_compile_definitions(ImageRenderTest PRIVATE
+    "IMAGE_RENDER_TEST_PNG_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/ImageRenderTest/test.png\"")
+
+OmegaWTKApp(
+    NAME
     ContainerClampAnimationTest
     BUNDLE_ID
     "org.omegagraphics.ContainerClampAnimationTest"
