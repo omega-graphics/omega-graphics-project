@@ -58,11 +58,23 @@ namespace OmegaWTK::Composition {
     /// these per output glyph (not per cluster — kerning / ligatures
     /// already applied). `xOffset / yOffset` are mark-positioning
     /// deltas off the cluster's pen origin in pixels.
+    ///
+    /// `cluster` (Phase 3.5) is the UTF-16 offset of the source
+    /// cluster's start *within `ShaperInput::text`*. Multiple glyphs
+    /// from one cluster (e.g. a base + combining mark) share the
+    /// same `cluster` value; a ligature collapses several source
+    /// code units into one glyph that reports the cluster of its
+    /// first code unit. For LTR runs `cluster` increases (non-strict-
+    /// monotonic) across the returned glyphs; for RTL runs it
+    /// decreases — both match the visual-order layout convention.
+    /// The wrap pass uses this field to map break opportunities
+    /// (text offsets) to cumulative advance.
     struct OMEGAWTK_EXPORT ShaperGlyph {
         std::uint32_t glyphId = 0;
         float advance = 0.f;
         float xOffset = 0.f;
         float yOffset = 0.f;
+        std::int32_t cluster = 0;
     };
 
     /// Single-shaper-call input. Phase 3: carries an explicit script
@@ -120,12 +132,19 @@ namespace OmegaWTK::Composition {
     /// - Baseline placement in canvas-space Y-down from the rect top.
     class OMEGAWTK_EXPORT TextLayoutEngine {
     public:
+        /// `fallback` (Phase 4) is consulted per cluster that shapes
+        /// to `.notdef` against the requested font. Pass `nullptr` to
+        /// disable fallback — every unsupported cluster will then
+        /// render as the requested face's missing-glyph box. The
+        /// fallback driver lives on the per-platform `FontEngine`;
+        /// `Canvas::drawText` wires it through automatically.
         static LayoutResult layout(const OmegaCommon::UniString & text,
                                    Core::SharedPtr<Font> font,
                                    const FontMetrics & metrics,
                                    const Composition::Rect & rect,
                                    const TextLayoutDescriptor & desc,
-                                   ITextShaper & shaper);
+                                   ITextShaper & shaper,
+                                   IFontFallback * fallback = nullptr);
     };
 
 }

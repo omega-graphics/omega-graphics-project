@@ -127,7 +127,7 @@ Result<BitmapImage, std::string> loadFromFile(FS::Path path) {
         return Result<BitmapImage, std::string>::err(std::string("Failed to Load Image from File"));
     }
     codec->readToStorage();
-    if (img.data == nullptr) {
+    if (img.empty()) {
         return Result<BitmapImage, std::string>::err(std::string("Failed to Load Image from File"));
     }
     return Result<BitmapImage, std::string>::ok(std::move(img));
@@ -153,7 +153,7 @@ Result<BitmapImage, std::string> loadFromBuffer(Byte * bufferData, std::size_t b
         return Result<BitmapImage, std::string>::err(std::string("Unsupported image format"));
     }
     codec->readToStorage();
-    if (!img.data) {
+    if (img.empty()) {
         return Result<BitmapImage, std::string>::err(std::string("Failed to decode image buffer"));
     }
     return Result<BitmapImage, std::string>::ok(std::move(img));

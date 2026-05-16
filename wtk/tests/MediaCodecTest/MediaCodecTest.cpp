@@ -29,7 +29,8 @@ TEST(LoadImageFromBuffer, DecodesPng2x2RGBA){
     EXPECT_EQ(img->header.color_format, ColorFormat::RGBA);
     EXPECT_EQ(img->header.alpha_format, AlphaFormat::Straight);
     EXPECT_EQ(img->header.stride, 8u);
-    EXPECT_NE(img->data, nullptr);
+    EXPECT_NE(img->data(), nullptr);
+    EXPECT_FALSE(img->empty());
 }
 
 TEST(LoadImageFromBuffer, DecodesJpeg2x2){
@@ -43,7 +44,8 @@ TEST(LoadImageFromBuffer, DecodesJpeg2x2){
     EXPECT_EQ(img->header.channels, 4);
     EXPECT_EQ(img->header.color_format, ColorFormat::RGBA);
     EXPECT_EQ(img->header.stride, 8u);
-    EXPECT_NE(img->data, nullptr);
+    EXPECT_NE(img->data(), nullptr);
+    EXPECT_FALSE(img->empty());
 }
 
 TEST(LoadImageFromBuffer, DecodesTiff2x2RGBA){
@@ -58,7 +60,8 @@ TEST(LoadImageFromBuffer, DecodesTiff2x2RGBA){
     EXPECT_EQ(img->header.color_format, ColorFormat::RGBA);
     EXPECT_EQ(img->header.alpha_format, AlphaFormat::Straight);
     EXPECT_EQ(img->header.stride, 8u);
-    EXPECT_NE(img->data, nullptr);
+    EXPECT_NE(img->data(), nullptr);
+    EXPECT_FALSE(img->empty());
 }
 
 TEST(LoadImageFromBuffer, RejectsNullPointer){

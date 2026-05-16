@@ -60,6 +60,11 @@ namespace {
                 ShaperGlyph g;
                 g.glyphId = (std::uint32_t)buf[i];
                 g.advance = advance;
+                // Phase 3.5: shaper-relative cluster offset. One glyph
+                // per UTF-16 code unit, so `cluster = i` is exact and
+                // matches the contract HarfBuzz / CoreText fulfil for
+                // simple scripts.
+                g.cluster = i;
                 out.push_back(g);
             }
             if(mimicRtlReorder && input.rightToLeft){
@@ -80,6 +85,75 @@ namespace {
 
     Core::SharedPtr<Font> makeFont(unsigned size = 16){
         static FontDescriptor desc("test", size, FontDescriptor::Regular);
+        return std::make_shared<TestFont>(desc);
+    }
+
+    // Phase 4: shaper that emits gid=0 (`.notdef`) for every code unit
+    // outside the requested font's "coverage". The fallback test fonts
+    // each carry a single-char coverage hint (used only here in the
+    // mock; the real `Font` API doesn't expose coverage).
+    class CoverageAwareShaper : public ITextShaper {
+    public:
+        float advance = 10.f;
+        int callCount = 0;
+        // Glyph id 0 (notdef) emitted whenever a code unit falls
+        // outside [coverLow, coverHigh]. Per-call coverage is read
+        // from the input font's family name: "ascii" = [0..127],
+        // "fallback" = [0x80..0xFFFF].
+        OmegaCommon::Vector<ShaperGlyph> shapeRun(const ShaperInput & input) override {
+            ++callCount;
+            OmegaCommon::Vector<ShaperGlyph> out;
+            const auto * buf = input.text.getBuffer();
+            const auto len = input.text.length();
+            const std::string family = input.font ? input.font->desc.family : "";
+            const bool isAscii = (family == "ascii");
+            const bool isFallback = (family == "fallback");
+            for(std::int32_t i = 0; i < len; ++i){
+                ShaperGlyph g;
+                const auto c = buf[i];
+                bool inRange =
+                    (isAscii    && c < 0x80) ||
+                    (isFallback && c >= 0x80) ||
+                    (!isAscii && !isFallback); // any face covers all
+                g.glyphId = inRange ? (std::uint32_t)c : 0u;
+                g.advance = advance;
+                g.cluster = i;
+                out.push_back(g);
+            }
+            return out;
+        }
+    };
+
+    // Phase 4: mock fallback that returns a `fallback` font for any
+    // codepoint outside ASCII. Tracks call count so tests can assert
+    // both caching and miss behaviour.
+    class MockFallback : public IFontFallback {
+    public:
+        int callCount = 0;
+        Core::SharedPtr<Font> substitute;
+        // When true, return `substitute` only for the *first* call to
+        // simulate a one-off fallback that should then get cached.
+        bool returnNull = false;
+
+        Core::SharedPtr<Font> fallbackForCodepoint(
+            Core::SharedPtr<Font> requested,
+            std::uint32_t codepoint) override {
+            (void)requested;
+            ++callCount;
+            if(returnNull || codepoint < 0x80){
+                return nullptr;
+            }
+            return substitute;
+        }
+    };
+
+    Core::SharedPtr<Font> makeAsciiFont(){
+        static FontDescriptor desc("ascii", 16, FontDescriptor::Regular);
+        return std::make_shared<TestFont>(desc);
+    }
+
+    Core::SharedPtr<Font> makeFallbackFont(){
+        static FontDescriptor desc("fallback", 16, FontDescriptor::Regular);
         return std::make_shared<TestFont>(desc);
     }
 
@@ -508,6 +582,269 @@ namespace {
         std::printf("  [PASS] Pure Latin unchanged through bidi+script pipeline\n");
     }
 
+    // ─── Phase 3.5: wrap + lineLimit ──────────────────────────────────
+
+    void testWrapByWordSplitsOnSoftBreak(){
+        // "hello world" with advance=10 → "hello " ≈ 60, "world" ≈ 50.
+        // Rect width 75 fits "hello " (trailing-WS exempt) but adding
+        // "world" overflows; wrap should split between the words.
+        auto font    = makeFont();
+        auto metrics = defaultMetrics();
+        Composition::Rect rect{{0.f, 0.f}, 75.f, 100.f};
+        TextLayoutDescriptor d{TextLayoutDescriptor::LeftUpper,
+                               TextLayoutDescriptor::WrapByWord};
+        MockShaper shaper;
+
+        OmegaCommon::UniString text("hello world");
+        auto r = TextLayoutEngine::layout(text, font, metrics, rect, d, shaper);
+        // Two wrap-lines.
+        assert(r.lineBaselines.size() == 2);
+        // First line: "hello " (6 glyphs, advance 10 each, trailing
+        // space stays on line 1 per the CSS / Pango convention).
+        // Second line: "world" (5 glyphs).
+        assert(r.glyphs.size() == 11);
+        // First-line glyphs land between baselines[0]; second-line on
+        // baselines[1]. The wrap split puts 'w' (glyph index 6) on
+        // line 2.
+        assert(approx(r.glyphs[5].canvasY, r.lineBaselines[0]));
+        assert(approx(r.glyphs[6].canvasY, r.lineBaselines[1]));
+        // 'w' starts at x = 0 on the new line (left alignment).
+        assert(approx(r.glyphs[6].canvasX, 0.f));
+        std::printf("  [PASS] WrapByWord splits at a soft break\n");
+    }
+
+    void testWrapByCharacterForcesMidWord(){
+        // "abcdefghij" advance=10 → 100 total. Rect width 35 →
+        // ~3 chars/line, so we expect 4 wrap-lines (3+3+3+1).
+        auto font    = makeFont();
+        auto metrics = defaultMetrics();
+        Composition::Rect rect{{0.f, 0.f}, 35.f, 200.f};
+        TextLayoutDescriptor d{TextLayoutDescriptor::LeftUpper,
+                               TextLayoutDescriptor::WrapByCharacter};
+        MockShaper shaper;
+
+        OmegaCommon::UniString text("abcdefghij");
+        auto r = TextLayoutEngine::layout(text, font, metrics, rect, d, shaper);
+        assert(r.lineBaselines.size() == 4);
+        // All 10 glyphs present, distributed across the four lines.
+        assert(r.glyphs.size() == 10);
+        std::printf("  [PASS] WrapByCharacter forces mid-word break\n");
+    }
+
+    void testLineLimitTruncates(){
+        // "alpha beta gamma" forces three wrap-lines at width 35;
+        // lineLimit=2 truncates the third.
+        auto font    = makeFont();
+        auto metrics = defaultMetrics();
+        Composition::Rect rect{{0.f, 0.f}, 35.f, 200.f};
+        TextLayoutDescriptor d{TextLayoutDescriptor::LeftUpper,
+                               TextLayoutDescriptor::WrapByWord};
+        d.lineLimit = 2;
+        MockShaper shaper;
+
+        OmegaCommon::UniString text("alpha beta gamma");
+        auto r = TextLayoutEngine::layout(text, font, metrics, rect, d, shaper);
+        assert(r.lineBaselines.size() == 2);
+        // Glyphs from the dropped third line are absent.
+        for(const auto & g : r.glyphs){
+            // "gamma" glyphs (gid >= 'a' && first char is 'g') won't
+            // all be present; assert specifically that none of them
+            // sit on a third baseline (which doesn't exist).
+            assert(g.canvasY == r.lineBaselines[0] ||
+                   g.canvasY == r.lineBaselines[1]);
+        }
+        std::printf("  [PASS] lineLimit truncates wrapped output\n");
+    }
+
+    void testTrailingWhitespaceExempt(){
+        // Width 60 exactly fits "hello " (6 × 10) including the
+        // trailing space — but the trailing space is *exempt* from
+        // the fit check, so a wider word after should still split off
+        // even when the previous "hello " width equals rect.w.
+        auto font    = makeFont();
+        auto metrics = defaultMetrics();
+        Composition::Rect rect{{0.f, 0.f}, 60.f, 100.f};
+        TextLayoutDescriptor d{TextLayoutDescriptor::LeftUpper,
+                               TextLayoutDescriptor::WrapByWord};
+        MockShaper shaper;
+
+        OmegaCommon::UniString text("hello world");
+        auto r = TextLayoutEngine::layout(text, font, metrics, rect, d, shaper);
+        // Two wrap-lines: "hello " and "world".
+        assert(r.lineBaselines.size() == 2);
+        assert(approx(r.glyphs[6].canvasY, r.lineBaselines[1]));
+        std::printf("  [PASS] Trailing whitespace exempt from fit check\n");
+    }
+
+    void testNoWrapWhenWrappingNone(){
+        // Wrapping::None must keep the long string on one line even
+        // when it overflows the rect — Phase 2 contract preserved.
+        auto font    = makeFont();
+        auto metrics = defaultMetrics();
+        Composition::Rect rect{{0.f, 0.f}, 30.f, 100.f};
+        TextLayoutDescriptor d{TextLayoutDescriptor::LeftUpper,
+                               TextLayoutDescriptor::None};
+        MockShaper shaper;
+
+        OmegaCommon::UniString text("hello world");
+        auto r = TextLayoutEngine::layout(text, font, metrics, rect, d, shaper);
+        assert(r.lineBaselines.size() == 1);
+        assert(r.glyphs.size() == 11);
+        std::printf("  [PASS] Wrapping::None disables wrap pass\n");
+    }
+
+    void testWrapDoesNotApplyToShortLine(){
+        // Even with WrapByWord enabled, a string that already fits
+        // should produce exactly one wrap-line (no spurious split).
+        auto font    = makeFont();
+        auto metrics = defaultMetrics();
+        Composition::Rect rect{{0.f, 0.f}, 200.f, 100.f};
+        TextLayoutDescriptor d{TextLayoutDescriptor::LeftUpper,
+                               TextLayoutDescriptor::WrapByWord};
+        MockShaper shaper;
+
+        OmegaCommon::UniString text("short");
+        auto r = TextLayoutEngine::layout(text, font, metrics, rect, d, shaper);
+        assert(r.lineBaselines.size() == 1);
+        assert(r.glyphs.size() == 5);
+        std::printf("  [PASS] Short line stays on one wrap-line\n");
+    }
+
+    // ─── Phase 4: font fallback ───────────────────────────────────────
+
+    void testFallbackSubstitutesNotdefClusters(){
+        // Mixed Latin + non-ASCII. The coverage-aware shaper emits
+        // .notdef (gid=0) for non-ASCII codepoints against the
+        // ascii-only font. The fallback driver returns a substitute
+        // face for the .notdef clusters; after orchestration the
+        // resolved glyphs land at the right pen position with the
+        // substitute font set as `resolvedFont`.
+        auto ascii    = makeAsciiFont();
+        auto fallback = makeFallbackFont();
+        auto metrics  = defaultMetrics();
+        Composition::Rect rect{{0.f, 0.f}, 500.f, 100.f};
+        TextLayoutDescriptor d{TextLayoutDescriptor::LeftUpper,
+                               TextLayoutDescriptor::None};
+        CoverageAwareShaper shaper;
+        MockFallback fb;
+        fb.substitute = fallback;
+
+        // "abécd" — `é` (U+00E9) is non-ASCII, triggers fallback.
+        const char16_t buf[] = { 'a', 'b', 0x00E9, 'c', 'd' };
+        auto text = OmegaCommon::UniString::fromUTF32(
+            (const OmegaCommon::Unicode32Char *)buf, 0); // unused
+        // Build via UTF-8 path so the test stays portable.
+        OmegaCommon::UniString text2 = OmegaCommon::UniString::fromUTF8("ab\xC3\xA9" "cd");
+
+        auto r = TextLayoutEngine::layout(text2, ascii, metrics, rect, d, shaper, &fb);
+        assert(r.glyphs.size() == 5);
+        // Glyphs in visual order: a, b, é, c, d.
+        assert(r.glyphs[0].resolvedFont == ascii);
+        assert(r.glyphs[1].resolvedFont == ascii);
+        assert(r.glyphs[2].resolvedFont == fallback); // é routed
+        assert(r.glyphs[2].glyphId == 0x00E9);        // fallback shape produced it
+        assert(r.glyphs[3].resolvedFont == ascii);
+        assert(r.glyphs[4].resolvedFont == ascii);
+        // Pen advances are uniform (advance=10), so X is monotonic.
+        assert(approx(r.glyphs[0].canvasX, 0.f));
+        assert(approx(r.glyphs[1].canvasX, 10.f));
+        assert(approx(r.glyphs[2].canvasX, 20.f));
+        assert(approx(r.glyphs[3].canvasX, 30.f));
+        assert(approx(r.glyphs[4].canvasX, 40.f));
+        std::printf("  [PASS] Fallback substitutes .notdef clusters\n");
+    }
+
+    void testFallbackNullKeepsNotdef(){
+        // When the fallback driver declines (returns nullptr), the
+        // original .notdef glyph stays in place with the requested
+        // font — no infinite re-shape loop, no missing glyphs.
+        auto ascii   = makeAsciiFont();
+        auto metrics = defaultMetrics();
+        Composition::Rect rect{{0.f, 0.f}, 500.f, 100.f};
+        TextLayoutDescriptor d{TextLayoutDescriptor::LeftUpper,
+                               TextLayoutDescriptor::None};
+        CoverageAwareShaper shaper;
+        MockFallback fb;
+        fb.substitute = nullptr;
+        fb.returnNull = true;
+
+        OmegaCommon::UniString text = OmegaCommon::UniString::fromUTF8("a\xC3\xA9");
+        auto r = TextLayoutEngine::layout(text, ascii, metrics, rect, d, shaper, &fb);
+        assert(r.glyphs.size() == 2);
+        assert(r.glyphs[0].glyphId == 'a');
+        assert(r.glyphs[0].resolvedFont == ascii);
+        // The .notdef glyph survives with id 0 and resolvedFont = ascii.
+        assert(r.glyphs[1].glyphId == 0);
+        assert(r.glyphs[1].resolvedFont == ascii);
+        std::printf("  [PASS] Fallback returning null keeps .notdef\n");
+    }
+
+    void testFallbackNotInvokedWithoutDriver(){
+        // Pass nullptr for the fallback driver — .notdef glyphs flow
+        // through unchanged. Regression for the default-argument path
+        // existing callers take.
+        auto ascii   = makeAsciiFont();
+        auto metrics = defaultMetrics();
+        Composition::Rect rect{{0.f, 0.f}, 500.f, 100.f};
+        TextLayoutDescriptor d{TextLayoutDescriptor::LeftUpper,
+                               TextLayoutDescriptor::None};
+        CoverageAwareShaper shaper;
+
+        OmegaCommon::UniString text = OmegaCommon::UniString::fromUTF8("\xC3\xA9");
+        auto r = TextLayoutEngine::layout(text, ascii, metrics, rect, d, shaper);
+        assert(r.glyphs.size() == 1);
+        assert(r.glyphs[0].glyphId == 0);
+        assert(r.glyphs[0].resolvedFont == ascii);
+        std::printf("  [PASS] Fallback skipped when driver is null\n");
+    }
+
+    void testFallbackHandlesAllNotdef(){
+        // String entirely outside requested coverage — every glyph
+        // routes through the fallback face.
+        auto ascii    = makeAsciiFont();
+        auto fallback = makeFallbackFont();
+        auto metrics  = defaultMetrics();
+        Composition::Rect rect{{0.f, 0.f}, 500.f, 100.f};
+        TextLayoutDescriptor d{TextLayoutDescriptor::LeftUpper,
+                               TextLayoutDescriptor::None};
+        CoverageAwareShaper shaper;
+        MockFallback fb;
+        fb.substitute = fallback;
+
+        // "中文" — both glyphs outside ASCII.
+        OmegaCommon::UniString text = OmegaCommon::UniString::fromUTF8("\xE4\xB8\xAD\xE6\x96\x87");
+        auto r = TextLayoutEngine::layout(text, ascii, metrics, rect, d, shaper, &fb);
+        assert(r.glyphs.size() == 2);
+        assert(r.glyphs[0].resolvedFont == fallback);
+        assert(r.glyphs[1].resolvedFont == fallback);
+        assert(r.glyphs[0].glyphId == 0x4E2D); // 中
+        assert(r.glyphs[1].glyphId == 0x6587); // 文
+        std::printf("  [PASS] Fallback handles all-notdef string\n");
+    }
+
+    void testWrapPreservesSubpixelAdvance(){
+        // Wrap math feeds the same `advance` value through to the
+        // emitted glyphs — assert that fractional advances survive
+        // the wrap pass intact (no Phase-2.5 std::round leak).
+        auto font    = makeFont();
+        auto metrics = defaultMetrics();
+        Composition::Rect rect{{0.f, 0.f}, 23.f, 100.f};
+        TextLayoutDescriptor d{TextLayoutDescriptor::LeftUpper,
+                               TextLayoutDescriptor::WrapByWord};
+        MockShaper shaper;
+        shaper.advance = 7.3f;
+
+        OmegaCommon::UniString text("ab cd");
+        auto r = TextLayoutEngine::layout(text, font, metrics, rect, d, shaper);
+        // "ab " = 21.9 fits in 23; "cd" = 14.6 needs its own line.
+        assert(r.lineBaselines.size() == 2);
+        // 'c' on line 2 lands at penX 0 + xOffset 0.
+        assert(approx(r.glyphs[3].canvasX, 0.f));
+        // 'd' lands at advance 7.3 (sub-pixel preserved).
+        assert(approx(r.glyphs[4].canvasX, 7.3f));
+        std::printf("  [PASS] Wrap preserves sub-pixel advance\n");
+    }
+
 }
 
 int main(){
@@ -530,6 +867,17 @@ int main(){
     testPureRTLOneRun();
     testMixedLatinHebrew();
     testMixedScriptSameDirection();
+    testWrapByWordSplitsOnSoftBreak();
+    testWrapByCharacterForcesMidWord();
+    testLineLimitTruncates();
+    testTrailingWhitespaceExempt();
+    testNoWrapWhenWrappingNone();
+    testWrapDoesNotApplyToShortLine();
+    testWrapPreservesSubpixelAdvance();
+    testFallbackSubstitutesNotdefClusters();
+    testFallbackNullKeepsNotdef();
+    testFallbackNotInvokedWithoutDriver();
+    testFallbackHandlesAllNotdef();
     std::printf("All tests passed.\n");
     return 0;
 }

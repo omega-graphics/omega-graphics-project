@@ -127,13 +127,13 @@ namespace OmegaCommon::Img {
                 }
 
                 png_bytep * rowPtrs = NULL;
-                char * data = NULL;
+                PixelStorage pixels;
 
                 if (setjmp(png_jmpbuf(png_ptr))) {
 
                     png_destroy_read_struct(&png_ptr, &info_ptr, 0);
                     if (rowPtrs != NULL) delete[] rowPtrs;
-                    if (data != NULL) delete[] data;
+                    // `pixels` frees its buffer (if any) on scope exit.
 
                     return false;
                 }
@@ -173,8 +173,12 @@ namespace OmegaCommon::Img {
                     storage->sRGB = false;
                 }
 
+                const std::size_t totalBytes =
+                    (static_cast<std::size_t>(header.width) * header.height *
+                     header.bitDepth * header.channels) / 8;
                 rowPtrs = new png_bytep[header.height];
-                data = new char[(header.width * header.height * header.bitDepth * header.channels) / 8];
+                pixels = PixelStorage::allocate(totalBytes);
+                Byte * data = pixels.data();
                 unsigned int stride = (header.width * header.bitDepth * header.channels) / 8;
 
                 for (std::size_t i = 0; i < header.height; i++) {
@@ -190,7 +194,7 @@ namespace OmegaCommon::Img {
                 delete[] rowPtrs;
                 png_destroy_read_struct(&png_ptr, &info_ptr, (png_infopp)0);
 
-                storage->data = (Byte *)data;
+                storage->pixels = std::move(pixels);
                 storage->header = header;
                 storage->profile = profile;
 
@@ -203,7 +207,7 @@ namespace OmegaCommon::Img {
     public:
         void readToStorage() override {
             if (!load_png_from_file()) {
-                storage->data = nullptr;
+                storage->pixels.reset();
             }
         }
         PNGCodec(std::istream & stream, BitmapImage * res) : ImgCodec(stream, res) {}

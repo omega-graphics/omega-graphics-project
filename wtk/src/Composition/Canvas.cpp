@@ -211,8 +211,13 @@ void Canvas::drawText(const OmegaCommon::UniString &text,
         auto * shaper = (engine != nullptr) ? engine->shaper() : nullptr;
         if(shaper != nullptr){
             const FontMetrics metrics = font->getMetrics();
+            // Phase 4: hand the engine's fallback driver to the layout
+            // pipeline. `nullptr` is a valid value — the layout engine
+            // then leaves `.notdef` clusters as the requested face's
+            // missing-glyph box.
+            auto * fallback = engine->fallback();
             auto layoutResult = TextLayoutEngine::layout(
-                text, font, metrics, rect, layoutDesc, *shaper);
+                text, font, metrics, rect, layoutDesc, *shaper, fallback);
 
             if(!layoutResult.glyphs.empty()){
                 // Group laid-out glyphs by resolved font into sub-runs

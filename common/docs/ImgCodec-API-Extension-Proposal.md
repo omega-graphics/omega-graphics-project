@@ -1,14 +1,13 @@
 # ImgCodec API Extension Proposal
 
-> **Status: rebase landed (namespace/types/paths only).** The
-> `Common-ImgCodec-Unicode-Refactor-Plan` move from `OmegaWTK::Media` to
-> `OmegaCommon::Img` is in tree: namespace is `OmegaCommon::Img::*`, the
-> result type is `Result<BitmapImage, std::string>`, and headers live under
-> `common/`. The phased design below (RAII storage, probe, decode options,
-> encode, capability registry) has **not** been applied — only the mechanical
-> rebase. Type names in the code examples below still read
-> `OmegaWTK::Media::*`/`StatusWithObj<...>` and need translating when each
-> phase is actually implemented.
+> **Status: Phases 1 + 2 landed.** Namespace is `OmegaCommon::Img::*`,
+> result type is `Result<BitmapImage, std::string>`, and `BitmapImage`
+> now owns its pixel buffer through a move-only `PixelStorage` wrapper
+> with a type-erased deleter (PNG/JPEG use `delete[]`; TIFF uses
+> `_TIFFfree`). Probe, decode options, encode, and the capability
+> registry remain unstarted. Type names in the code examples below
+> still read `OmegaWTK::Media::*`/`StatusWithObj<...>` and need
+> translating when each remaining phase is actually implemented.
 
 ## Current State
 
@@ -379,15 +378,61 @@ This change is intentionally **not implemented in Phase 1** — it is a public-A
 - Audit existing apps under `wtk/tests/` and any sample apps for implicit dependence on the auto-loaded bundle. None should be assumed safe.
 - The existing `loadImageFromAssets(bundle, path)` overload is the supported entry point for asset-backed image loading.
 
-### Phase 2: Add RAII `BitmapImage`
+### Phase 2: Add RAII `BitmapImage` — **Complete (storage wrapper)**
 
-**Not started.** `BitmapImage` still owns a raw `Byte * data` with no destructor, deleter, or move policy; TIFF returns memory allocated by `_TIFFmalloc` that no owner ever frees. Typoed enum names `Pallete` and `Premultipled` remain in the public API (`Ingore` has been fixed to `Ignore`).
+The pixel buffer is owned by a new move-only `OmegaCommon::Img::PixelStorage`
+wrapper (`common/include/omega-common/img.h`) with a type-erased deleter, so
+each codec hands ownership over with whatever allocator the underlying
+library requires. The proposal's final `OmegaCommon::Vector<Byte> pixels`
+shape and the broader `ImageInfo`/`ImageMetadata` split are deferred to a
+later phase — Phase 2 here is just the ownership fix, per the
+"std::vector or a small custom storage wrapper" alternative in §2.
 
-- [ ] Introduce owned pixel storage and move semantics.
-- [ ] Update Composition/UI call sites to use `image.data()` and `image.info`.
-- [ ] Keep old fields populated during the transition.
-- [ ] Add a destructor or storage wrapper that handles all backend allocations consistently.
-- [ ] Stop returning images with backend-specific allocations such as `_TIFFmalloc` unless the storage wrapper owns the matching deleter.
+- [x] Introduce owned pixel storage and move semantics. *(`PixelStorage` is
+      move-only with a custom-deleter `adopt()`, a `new[]`-based
+      `allocate()`, and a non-owning `view()`. `BitmapImage` is move-only;
+      copy is deleted, move is defaulted, default destructor releases via
+      `PixelStorage::~PixelStorage`.)*
+- [x] Update Composition/UI call sites to use `image.data()`. *(GTE
+      `GEVulkanTextureAsset.cpp` now reads `img.data()` and drops the
+      `BitmapImageOwner` wrapper that did `delete[] img.data` on every
+      backend — UB for TIFF buffers. `BitmapTextureCache.cpp` uses
+      `image->data()` / `image->empty()`. `MediaCodecTest` asserts use
+      `img->data()` and the new `img->empty()` accessor. The proposed
+      `image.info` move is still pending; `header` is the current source
+      of truth.)*
+- [x] Keep old fields populated during the transition. *N/A — the raw
+      `Byte * data` field was removed outright in favor of the
+      `pixels` storage member and the `data()` accessor. There were
+      ~8 call sites and a single sweep was less risky than maintaining a
+      shadow field that could drift out of sync with the owned buffer.*
+- [x] Add a destructor or storage wrapper that handles all backend
+      allocations consistently. *(`PixelStorage::reset()` runs the
+      installed deleter; PNG/JPEG use `delete[]` via
+      `PixelStorage::allocate`, TIFF uses `_TIFFfree` via
+      `PixelStorage::adopt`.)*
+- [x] Stop returning images with backend-specific allocations such as
+      `_TIFFmalloc` unless the storage wrapper owns the matching deleter.
+      *(`TiffCodec.cpp` adopts the `_TIFFmalloc` allocation with a
+      `_TIFFfree` deleter; the buffer is freed correctly on
+      `BitmapImage` destruction regardless of the consumer.)*
+
+Typoed enum names `Pallete` and `Premultipled` remain in the public API;
+those are slated for the Phase 2 enum-stabilization pass (§1) rather than
+the RAII work tracked here.
+
+#### Capture-path adapters (out-of-scope side note)
+
+`OmegaWTK::Media::VideoFrame` reuses `BitmapImage` to carry decoded video
+frames. The WMF (`WMFAudioVideoCapture.cpp`) and AVFoundation
+(`AVFAudioVideoCapture.mm`) capture sinks used to write the platform
+sample buffer pointer into the now-removed `BitmapImage::data` field —
+relying on `BitmapImage` having no destructor. Both call sites now
+install a non-owning `PixelStorage::view(...)` so the destructor leaves
+the externally-owned sample buffer alone. The wider question — whether
+video frames should keep piggy-backing on `BitmapImage` or move to a
+dedicated `VideoFrameBuffer` type — is its own design decision and isn't
+blocking Phase 2.
 
 ### Phase 3: Add Format Detection And Probe
 

@@ -137,7 +137,11 @@ namespace OmegaWTK::Media {
                                 size_t offsetOut,length;
                                 OmegaCommon::Img::Byte *data;
                                 CMBlockBufferGetDataPointer(blockBuffer,0,&offsetOut,&length,(char **)&data);
-                                frame->videoFrame.data = data;
+                                // Non-owning view onto the CMBlockBuffer's memory.
+                                // The block buffer owns the lifetime; PixelStorage
+                                // with a null deleter will not free it.
+                                frame->videoFrame.pixels =
+                                    OmegaCommon::Img::PixelStorage::view(data, length);
                                 CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
                                 auto size = CVImageBufferGetDisplaySize(imageBuffer);
                                 frame->videoFrame.header.width = (unsigned)size.width;

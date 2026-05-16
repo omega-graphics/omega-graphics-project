@@ -1,4 +1,5 @@
 #include "omegaWTK/Composition/FontEngine.h"
+#include "omegaWTK/Composition/TextLayoutEngine.h"
 #include "omegaWTK/Core/GTEHandle.h"
 #include "NativePrivate/macos/CocoaUtils.h"
 #include "../GlyphAtlas.h"
@@ -169,6 +170,26 @@ namespace {
      // Expose the protected mode setter to the engine factory so it can
      // promote the font to MSDF after the outline probe.
      using Font::setMode;
+
+     // Text-Layout-Engine-Plan.md Phase 5: per-font metrics for the
+     // WTK-owned layout engine. Sourced from the *unscaled* CTFontRef
+     // so the values land in the same logical-pixel space the MSDF
+     // atlas uses (the rasterize lambda walks outlines from the same
+     // unscaled face). Core Text returns ascent/descent as *positive*
+     // values in points, which equal pixels at 1× DPR — matching the
+     // FontMetrics contract on the Linux side.
+     FontMetrics getMetrics() const override {
+         FontMetrics m;
+         CTFontRef src = (unscaled != nullptr) ? unscaled : native;
+         if(src == nullptr){
+             return m;
+         }
+         m.ascent  = static_cast<float>(CTFontGetAscent(src));
+         m.descent = static_cast<float>(CTFontGetDescent(src));
+         m.lineGap = static_cast<float>(CTFontGetLeading(src));
+         if(m.lineGap < 0.f) m.lineGap = 0.f;
+         return m;
+     }
      ~CoreTextFont() override {
          if(native != nullptr){
              CFRelease(native);
@@ -558,8 +579,190 @@ GlyphRun::fromUStringAndFont(const OmegaCommon::UniString &str, Core::SharedPtr<
  };
 
   FontEngine * FontEngine::instance;
-class CTFontEngine : public FontEngine {
+
+// Text-Layout-Engine-Plan.md Phase 5 — Core Text-backed `ITextShaper`.
+//
+// Shapes one logical run at a time using a one-line `CTLine` built from a
+// per-run attributed string. Crucially we do *not* drive `CTFramesetter`
+// (which would impose its own layout / wrap / vertical-alignment
+// decisions, the very thing Phase 5 is moving out of platform hands).
+// Core Text's shaper still produces kerning + ligatures + mark
+// positioning; the layout engine owns line composition, baseline
+// placement, and alignment.
+//
+// Output contract: one `ShaperGlyph` per output glyph (already
+// post-kerning / -ligature), in *visual* order. `advance` is the per-
+// glyph advance from `CTRunGetAdvances`; `xOffset / yOffset` are mark-
+// positioning deltas computed from `CTRunGetPositions` — the difference
+// between Core Text's chosen position and the position the layout
+// engine would derive from cumulative advances alone. This matches
+// HarfBuzz's `x_offset / y_offset` semantics so the WTK layout engine
+// applies them the same way on both platforms.
+class CoreTextShaper : public ITextShaper {
 public:
+    OmegaCommon::Vector<ShaperGlyph> shapeRun(const ShaperInput & input) override {
+        OmegaCommon::Vector<ShaperGlyph> out;
+        if(input.font == nullptr || input.text.length() == 0){
+            return out;
+        }
+        auto font = std::dynamic_pointer_cast<CoreTextFont>(input.font);
+        if(font == nullptr){
+            return out;
+        }
+        CTFontRef ctFont = font->getUnscaledFont();
+        if(ctFont == nullptr){
+            return out;
+        }
+
+        // Build a CFAttributedString carrying just the run text + font.
+        // We pass UTF-16 directly via `CFStringCreateWithCharacters` —
+        // UniString's internal buffer is already UTF-16, no conversion.
+        CFStringRef text = CFStringCreateWithCharacters(
+            kCFAllocatorDefault,
+            reinterpret_cast<const UniChar *>(input.text.getBuffer()),
+            static_cast<CFIndex>(input.text.length()));
+        if(text == nullptr){
+            return out;
+        }
+        CFMutableAttributedStringRef attr =
+            CFAttributedStringCreateMutable(kCFAllocatorDefault, 0);
+        if(attr == nullptr){
+            CFRelease(text);
+            return out;
+        }
+        CFAttributedStringReplaceString(attr, CFRangeMake(0, 0), text);
+        const CFRange fullRange = CFRangeMake(0, CFAttributedStringGetLength(attr));
+        CFAttributedStringSetAttribute(attr, fullRange, kCTFontAttributeName, ctFont);
+
+        // Direction: build the typesetter with a *forced* embedding
+        // level so Core Text doesn't second-guess the bidi pass the
+        // layout engine already ran. Even-level = LTR (0), odd-level =
+        // RTL (1). Without this option Core Text would re-derive the
+        // direction from the run content, which mis-fires on an
+        // RTL run that contains a single neutral character (e.g. a
+        // trailing punctuation).
+        CFDictionaryRef typesetterOpts = nullptr;
+        SInt8 level = input.rightToLeft ? 1 : 0;
+        CFNumberRef levelNum = CFNumberCreate(kCFAllocatorDefault,
+                                              kCFNumberSInt8Type, &level);
+        if(levelNum != nullptr){
+            const void *keys[1]   = { kCTTypesetterOptionForcedEmbeddingLevel };
+            const void *values[1] = { levelNum };
+            typesetterOpts = CFDictionaryCreate(
+                kCFAllocatorDefault, keys, values, 1,
+                &kCFTypeDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks);
+        }
+
+        CTTypesetterRef ts = CTTypesetterCreateWithAttributedStringAndOptions(
+            (CFAttributedStringRef)attr, typesetterOpts);
+        if(typesetterOpts != nullptr) CFRelease(typesetterOpts);
+        if(levelNum != nullptr) CFRelease(levelNum);
+        if(ts == nullptr){
+            CFRelease(attr);
+            CFRelease(text);
+            return out;
+        }
+
+        CTLineRef line = CTTypesetterCreateLine(
+            ts, CFRangeMake(0, CFAttributedStringGetLength(attr)));
+        CFRelease(ts);
+
+        if(line != nullptr){
+            CFArrayRef runs = CTLineGetGlyphRuns(line);
+            const CFIndex runCount = (runs != nullptr) ? CFArrayGetCount(runs) : 0;
+            for(CFIndex ri = 0; ri < runCount; ++ri){
+                CTRunRef run = (CTRunRef)CFArrayGetValueAtIndex(runs, ri);
+                const CFIndex gc = CTRunGetGlyphCount(run);
+                if(gc <= 0) continue;
+
+                std::vector<CGGlyph>  glyphs((size_t)gc);
+                std::vector<CGPoint>  positions((size_t)gc);
+                std::vector<CGSize>   advances((size_t)gc);
+                std::vector<CFIndex>  indices((size_t)gc);
+                CTRunGetGlyphs(run, CFRangeMake(0, gc), glyphs.data());
+                CTRunGetPositions(run, CFRangeMake(0, gc), positions.data());
+                CTRunGetAdvances(run, CFRangeMake(0, gc), advances.data());
+                // Phase 3.5: source string offsets for each glyph,
+                // matching HarfBuzz's `cluster` field. Core Text reports
+                // these as UTF-16 indices into the attributed string we
+                // built from the run input — exactly what the wrap pass
+                // expects (no offset adjustment needed).
+                CTRunGetStringIndices(run, CFRangeMake(0, gc), indices.data());
+
+                // Translate Core Text's absolute per-glyph positions
+                // into HarfBuzz-style (advance, xOffset, yOffset)
+                // tuples. Core Text gives us where it wants each glyph
+                // drawn relative to the line origin; the layout engine
+                // tracks its own pen and applies `xOffset/yOffset`
+                // on top. So we derive the deltas:
+                //   - cumulativeX tracks where the pen *would* be by
+                //     advance accumulation alone.
+                //   - xOffset = chosen - cumulativeX (zero for plain
+                //     text; nonzero for mark positioning).
+                //   - yOffset = -(chosen.y - baseline.y) because Core
+                //     Text Y is Y-up from the baseline, and our
+                //     convention is yOffset added to a Y-down canvasY.
+                const double runOriginX = positions[0].x;
+                const double baselineY  = positions[0].y;
+                double cumulativeX = runOriginX;
+                for(CFIndex gi = 0; gi < gc; ++gi){
+                    ShaperGlyph g;
+                    g.glyphId = (std::uint32_t)glyphs[(size_t)gi];
+                    g.advance = (float)advances[(size_t)gi].width;
+                    g.xOffset = (float)(positions[(size_t)gi].x - cumulativeX);
+                    g.yOffset = -(float)(positions[(size_t)gi].y - baselineY);
+                    g.cluster = (std::int32_t)indices[(size_t)gi];
+                    out.push_back(g);
+                    cumulativeX += advances[(size_t)gi].width;
+                }
+            }
+            CFRelease(line);
+        }
+
+        CFRelease(attr);
+        CFRelease(text);
+        return out;
+    }
+};
+
+class CTFontEngine;
+
+// Text-Layout-Engine-Plan.md Phase 4 — Core Text-backed `IFontFallback`.
+//
+// Uses `CTFontCreateForString` to ask Core Text "what face will render
+// this codepoint?" — Apple's documented public API for accessing the
+// system fallback chain. The substitute is materialized through the
+// engine's normal `CreateFont` path so it goes through the MSDF probe
+// and gets a real `CoreTextFont` with both `native` and `unscaled`
+// CTFontRefs; the layout engine then groups substituted glyphs into
+// their own `TextSubRun` and renders them through the substitute
+// font's `GlyphAtlas`.
+//
+// Cache key is the substitute face's family name — repeated fallback
+// for codepoints serviced by the same face (e.g. every CJK ideograph
+// in a string falls back to PingFang SC) returns one shared `Font`
+// and one shared atlas.
+class CoreTextFontFallback : public IFontFallback {
+    CTFontEngine *engine_ = nullptr;
+    std::unordered_map<std::string, Core::SharedPtr<Font>> byFamily_;
+public:
+    explicit CoreTextFontFallback(CTFontEngine *engine)
+        : engine_(engine) {}
+
+    Core::SharedPtr<Font> fallbackForCodepoint(
+        Core::SharedPtr<Font> requested,
+        std::uint32_t codepoint) override;
+};
+
+class CTFontEngine : public FontEngine {
+    CoreTextShaper shaper_;
+    CoreTextFontFallback fallback_{this};
+public:
+    ITextShaper *   shaper()   override { return &shaper_;   }
+    IFontFallback * fallback() override { return &fallback_; }
+
+
     Core::SharedPtr<Font> CreateFont(FontDescriptor & desc) override{
      CTFontRef ref = CTFontCreateWithNameAndOptions((__bridge CFStringRef)[NSString stringWithUTF8String:desc.family.c_str()],CGFloat(desc.size),NULL,kCTFontOptionsPreferSystemFont);
      CTFontSymbolicTraits fontTraits;
@@ -701,15 +904,28 @@ public:
                                   msdfgen::Range(kMsdfRange / scale),
                                   scaleV, translate);
 
-            // Quantize float → uint8, straight through. msdfgen emits a
-            // Y-up tile; the upload flip in `GlyphAtlas` reconciles that
-            // with the GTE sampler's row-0-is-top convention.
+            // Reorient the msdfgen tile to Y-downward. msdfgen's
+            // default `Y_UPWARD` stores row 0 at the bottom of the
+            // glyph; `BitmapSection::reorient(Y_DOWNWARD)` flips the
+            // section view (pixel pointer to last row, negated
+            // `rowStride`) so straight `section(x, y)` reads now run
+            // top-to-bottom. Phase-2.5: collapse the three-stage flip
+            // chain to a single canonical orientation — `GlyphAtlas`
+            // then uploads straight, and the canvas-top ↔ `v0` UV
+            // pairing in `emitTextSubRun` carries the orientation
+            // through to the fragment with zero implicit flips.
+            msdfgen::BitmapSection<float, 3> section = msdf;
+            section.reorient(msdfgen::Y_DOWNWARD);
+
+            // Quantize float → uint8, straight through. No extra +0.5
+            // bias — `generateMSDF` already maps signed distance to
+            // [0, 1] with the glyph edge at 0.5.
             out.pxW = tileW;
             out.pxH = tileH;
             out.rgb.resize(static_cast<std::size_t>(tileW) * tileH * 3);
             for(unsigned y = 0; y < tileH; ++y){
                 for(unsigned x = 0; x < tileW; ++x){
-                    const float *px = msdf((int)x, (int)y);
+                    const float *px = section((int)x, (int)y);
                     const auto quant = [](float v) {
                         const float scaled = std::clamp(v * 255.f + 0.5f, 0.f, 255.f);
                         return static_cast<std::uint8_t>(scaled);
@@ -721,23 +937,26 @@ public:
                 }
             }
 
-            // Metrics in pixel space (the unscaled CTFontRef is sized in
-            // points == logical pixels). `advance.x` from Core Text.
+            // Phase-2.5 Skia-style top-anchored metrics. `advance.width`
+            // is in font-pixel space (the unscaled CTFontRef is sized in
+            // points == logical pixels).
             CGSize advance {};
             CTFontGetAdvancesForGlyphs(capturedFont,kCTFontOrientationHorizontal,&glyph,&advance,1);
             out.metrics.advance = static_cast<float>(advance.width);
 
-            // MSDF tile placement (Phase 6.7-c3). `l`/`b` are the padded
-            // bbox origin in font-pixel space; `scale` is tile-pixels
-            // per font-pixel. `inkPx*` is the *exact* (un-ceiled)
-            // content size in tile pixels — the render path and atlas
-            // address this rather than the ceil'd `tileW/tileH` so the
-            // ceil sliver can't displace the glyph.
-            out.metrics.tileOriginX = static_cast<float>(l);
-            out.metrics.tileOriginY = static_cast<float>(b);
-            out.metrics.tileScale   = static_cast<float>(scale);
-            out.metrics.inkPxW      = static_cast<float>((r - l) * scale);
-            out.metrics.inkPxH      = static_cast<float>((t - b) * scale);
+            // Pen-relative quad placement. `l, b, r, t` are the padded
+            // bbox extents in shape coords (Y-up, pen origin at 0).
+            // Convert to top-anchored canvas-space metrics:
+            //   fLeft   = bbox left = l (positive → right of pen).
+            //   fTop    = distance from baseline up to bbox top = t.
+            //   fWidth  = bbox width  in font-pixels = r - l.
+            //   fHeight = bbox height in font-pixels = t - b.
+            // No `scale` round-trip — `fWidth/fHeight` are the exact
+            // canvas-pixel dimensions of the quad.
+            out.metrics.fLeft   = static_cast<float>(l);
+            out.metrics.fTop    = static_cast<float>(t);
+            out.metrics.fWidth  = static_cast<float>(r - l);
+            out.metrics.fHeight = static_cast<float>(t - b);
 
             // ASCII dump of the rasterized tile (median of the 3 MSDF
             // channels) — mirrors the Linux backend. Row 0 first, so
@@ -829,6 +1048,116 @@ public:
      return std::make_shared<CoreTextFont>(desc,f,fUnscaled);
  };
 };
+
+// Phase 4. Out-of-line because the cache miss path delegates to
+// `CTFontEngine::CreateFont` — defining it inside the class would
+// force the lookup helper to be visible before `CTFontEngine` is
+// complete, which is awkward with the existing single-pass file
+// layout.
+Core::SharedPtr<Font> CoreTextFontFallback::fallbackForCodepoint(
+        Core::SharedPtr<Font> requested,
+        std::uint32_t codepoint){
+    if(engine_ == nullptr || requested == nullptr){
+        return nullptr;
+    }
+    auto reqCT = std::dynamic_pointer_cast<CoreTextFont>(requested);
+    if(reqCT == nullptr){
+        return nullptr;
+    }
+    // Drive the lookup from the *unscaled* face: the layout engine
+    // and the MSDF probe both work in logical-pixel space, so we ask
+    // Core Text for a substitute at the same size class.
+    CTFontRef baseFont = reqCT->getUnscaledFont();
+    if(baseFont == nullptr){
+        return nullptr;
+    }
+
+    // Build a CFString carrying just this codepoint (surrogate pair
+    // for supplementary plane).
+    UniChar buf[2];
+    CFIndex bufLen = 0;
+    if(codepoint < 0x10000u){
+        buf[0] = (UniChar)codepoint;
+        bufLen = 1;
+    } else if(codepoint <= 0x10FFFFu){
+        const std::uint32_t v = codepoint - 0x10000u;
+        buf[0] = (UniChar)(0xD800u + (v >> 10));
+        buf[1] = (UniChar)(0xDC00u + (v & 0x3FFu));
+        bufLen = 2;
+    } else {
+        return nullptr;
+    }
+    CFStringRef probe = CFStringCreateWithCharacters(
+        kCFAllocatorDefault, buf, bufLen);
+    if(probe == nullptr){
+        return nullptr;
+    }
+    CTFontRef sub = CTFontCreateForString(baseFont, probe,
+                                          CFRangeMake(0, bufLen));
+    CFRelease(probe);
+    if(sub == nullptr){
+        return nullptr;
+    }
+
+    // Equal-to-requested → Core Text declined to substitute, which
+    // means the requested face actually does cover the codepoint
+    // (the shaper still produced .notdef for some other reason —
+    // a malformed glyph table, say). Don't loop.
+    CFStringRef subName = CTFontCopyPostScriptName(sub);
+    CFStringRef reqName = CTFontCopyPostScriptName(baseFont);
+    const bool sameAsRequested = (subName != nullptr && reqName != nullptr
+        && CFStringCompare(subName, reqName, 0) == kCFCompareEqualTo);
+    if(reqName != nullptr) CFRelease(reqName);
+    if(sameAsRequested){
+        if(subName != nullptr) CFRelease(subName);
+        CFRelease(sub);
+        return nullptr;
+    }
+
+    // Substitute's family name keys the cache and feeds the
+    // FontDescriptor we hand to CreateFont. PostScript name (used
+    // for the equality check above) sometimes diverges from family
+    // name for subfamilies — for our cache it's the family name we
+    // actually want, since CTFontCreateWithNameAndOptions matches
+    // on family.
+    CFStringRef familyCF = CTFontCopyFamilyName(sub);
+    if(subName != nullptr) CFRelease(subName);
+    CFRelease(sub);
+    if(familyCF == nullptr){
+        return nullptr;
+    }
+    char familyBuf[256] = {};
+    const bool gotFamily = CFStringGetCString(
+        familyCF, familyBuf, sizeof(familyBuf), kCFStringEncodingUTF8);
+    CFRelease(familyCF);
+    if(!gotFamily || familyBuf[0] == '\0'){
+        return nullptr;
+    }
+
+    auto it = byFamily_.find(familyBuf);
+    if(it != byFamily_.end()){
+        return it->second;
+    }
+
+    // Materialize a real `CoreTextFont` for the substitute family at
+    // the requested font's size + style. CreateFont handles the MSDF
+    // probe, so the returned Font is ready to feed the layout engine
+    // / atlas path with no further setup.
+    FontDescriptor fbDesc(familyBuf, requested->desc.size,
+                          requested->desc.style);
+    Core::SharedPtr<Font> resolved = engine_->CreateFont(fbDesc);
+    byFamily_[familyBuf] = resolved;
+
+    if(textTraceEnabled()){
+        std::cout << "[wtk-text] CoreTextFontFallback: cp=U+"
+                  << std::hex << codepoint << std::dec
+                  << " -> '" << familyBuf << "' mode="
+                  << (resolved != nullptr
+                      && resolved->mode() == Font::Mode::MSDF
+                      ? "MSDF" : "BitmapFallback") << std::endl;
+    }
+    return resolved;
+}
 
 FontEngine * FontEngine::inst(){
     return instance;

@@ -784,18 +784,20 @@ void BackendRenderTargetContext::resetElementState() {
                 continue;
             }
 
-            // Phase-2.5 Skia-style top-anchored quad authoring. The
-            // glyph metrics carry the bbox top-left corner relative to
-            // the pen (`fLeft, fTop`) and the bbox dimensions in canvas
-            // pixels (`fWidth, fHeight`); no `tileScale` round-trip.
-            // Pen positions are pixel-snapped via `std::round` so the
-            // quad lands on the pixel grid — the Skia-style fix for
-            // the per-glyph vertical jitter the chunk-c3/c4 path
-            // surfaced.
+            // Phase-3.5 sub-pixel quad authoring. The glyph metrics
+            // carry the bbox top-left corner relative to the pen
+            // (`fLeft, fTop`) and the bbox dimensions in canvas pixels
+            // (`fWidth, fHeight`). Phase 2.5 rounded pen positions to
+            // the integer pixel grid; Phase 3.5 drops the round so
+            // accumulated `penX + fLeft` deviations don't surface as
+            // uneven inter-glyph spacing on long runs. The MSDF
+            // fragment shader's smoothstep + the atlas's bilinear
+            // sampling produce correct fractional coverage along the
+            // glyph edge at sub-pixel quad positions.
             const float penX = rect.pos.x + subRun.positions[i].x;
             const float penY = rect.pos.y + subRun.positions[i].y;
-            const float minX = std::round(penX + g->fLeft);
-            const float minY = std::round(penY - g->fTop);
+            const float minX = penX + g->fLeft;
+            const float minY = penY - g->fTop;
             const float maxX = minX + g->fWidth;
             const float maxY = minY + g->fHeight;
 

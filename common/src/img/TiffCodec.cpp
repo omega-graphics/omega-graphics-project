@@ -113,11 +113,18 @@ namespace OmegaCommon::Img {
 
             bool rc = false;
 
-            std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-            std::uint32_t * buffer = (std::uint32_t *)_TIFFmalloc(pixelCount * sizeof(std::uint32_t));
+            const std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+            const std::size_t bufferBytes = pixelCount * sizeof(std::uint32_t);
+            std::uint32_t * buffer = (std::uint32_t *)_TIFFmalloc(bufferBytes);
             if (buffer != nullptr) {
                 if (TIFFReadRGBAImage(tiff, width, height, buffer, 0)) {
-                    storage->data = (Byte *)buffer;
+                    // Adopt the libtiff allocation with its matching free
+                    // function so the destructor frees it correctly. Before
+                    // this, GTE's BitmapImageOwner used `delete[]` on TIFF
+                    // buffers — undefined behaviour that PixelStorage now
+                    // prevents at the source.
+                    storage->pixels = PixelStorage::adopt(
+                        reinterpret_cast<Byte *>(buffer), bufferBytes, &tiffFree);
                     storage->header = header;
                     rc = true;
                 } else {
@@ -127,10 +134,11 @@ namespace OmegaCommon::Img {
             TIFFClose(tiff);
             return rc;
         }
+        static void tiffFree(Byte * p) { _TIFFfree(p); }
     public:
         void readToStorage() override {
             if (!load_tiff_from_file()) {
-                storage->data = nullptr;
+                storage->pixels.reset();
             }
         }
         TiffCodec(std::istream & stream, BitmapImage * res) : ImgCodec(stream, res) {}

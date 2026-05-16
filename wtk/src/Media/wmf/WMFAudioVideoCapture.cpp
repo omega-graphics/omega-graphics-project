@@ -227,7 +227,14 @@ namespace OmegaWTK::Media {
 
             frame->decodeFinishTime = TimePoint(std::chrono::nanoseconds(time * 100));
             frame->presentTime = TimePoint(std::chrono::nanoseconds(llSampleTime * 100));
-            frame->videoFrame.data = (OmegaCommon::Img::Byte *)pSampleBuffer;
+            // Borrow the Media Foundation sample buffer as a non-owning
+            // view — the WMF callback owns the lifetime, and PixelStorage
+            // with a null deleter (`view`) will not try to free it on
+            // BitmapImage destruction.
+            frame->videoFrame.pixels = OmegaCommon::Img::PixelStorage::view(
+                const_cast<OmegaCommon::Img::Byte *>(
+                    reinterpret_cast<const OmegaCommon::Img::Byte *>(pSampleBuffer)),
+                static_cast<std::size_t>(dwSampleSize));
             frame->videoFrame.header.height = (uint32_t)frameRect.h;
             frame->videoFrame.header.width = (uint32_t)frameRect.w;
             frame->videoFrame.header.color_format = OmegaCommon::Img::ColorFormat::RGBA;

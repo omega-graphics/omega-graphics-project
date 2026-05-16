@@ -779,10 +779,47 @@ namespace OmegaWTK::Composition {
                 // offset moves the glyph upward on the canvas (i.e.
                 // toward smaller Y).
                 g.yOffset  = -static_cast<float>(positions[i].y_offset) / 64.f;
+                // Phase 3.5: HarfBuzz's `cluster` is the source UTF-16
+                // offset of the cluster start within the shape input
+                // (we call `hb_buffer_add_utf16` with a single source
+                // range covering the whole input). The wrap pass maps
+                // this back to break-iterator boundaries.
+                g.cluster  = static_cast<std::int32_t>(infos[i].cluster);
                 out.push_back(g);
             }
             return out;
         }
+    };
+
+    class HarfBuzzFontEngine;
+
+    // Text-Layout-Engine-Plan.md Phase 4 — FontConfig-backed
+    // `IFontFallback`.
+    //
+    // Asks FontConfig "what installed font covers this codepoint?"
+    // by building an `FcCharSet` with the codepoint and running the
+    // standard substitute → match pipeline. The matched family name
+    // is then handed to `HarfBuzzFontEngine::CreateFont`, which
+    // already knows how to open an FT_Face / hb_font_t and run the
+    // MSDF probe. The returned `Font` flows back through the layout
+    // engine with its own `GlyphAtlas`, so e.g. every CJK ideograph
+    // in a Latin-primary string shares one substitute face and one
+    // shared atlas across the process.
+    class FontConfigFontFallback : public IFontFallback {
+        HarfBuzzFontEngine *engine_ = nullptr;
+        // Cache keyed by (resolved family name + size + style). The
+        // family-name string is the lookup-stable identifier for a
+        // FontConfig match — repeated lookups for the same codepoint
+        // returning the same face name hit this map and reuse one
+        // `Font` instance.
+        std::unordered_map<std::string, Core::SharedPtr<Font>> byKey_;
+    public:
+        explicit FontConfigFontFallback(HarfBuzzFontEngine *engine)
+            : engine_(engine) {}
+
+        Core::SharedPtr<Font> fallbackForCodepoint(
+            Core::SharedPtr<Font> requested,
+            std::uint32_t codepoint) override;
     };
 
     class HarfBuzzFontEngine : public FontEngine {
@@ -803,6 +840,8 @@ namespace OmegaWTK::Composition {
         // One reusable shaper instance — `HarfBuzzShaper` carries an
         // internal `hb_buffer_t` for shaping reuse.
         HarfBuzzShaper shaper_;
+        // Phase 4: FontConfig-driven fallback driver.
+        FontConfigFontFallback fallback_{this};
     public:
         HarfBuzzFontEngine() {
             if(FT_Init_FreeType(&ftLibrary_) != 0){
@@ -823,7 +862,8 @@ namespace OmegaWTK::Composition {
             }
         }
 
-        ITextShaper * shaper() override { return &shaper_; }
+        ITextShaper *   shaper()   override { return &shaper_;   }
+        IFontFallback * fallback() override { return &fallback_; }
 
         // Phase-2 helper. Open an FT_Face + hb_font_t for `desc` via
         // FontConfig + FreeType directly (no Pango lock dance). Sets
@@ -1345,6 +1385,94 @@ namespace OmegaWTK::Composition {
             return base;
         }
     };
+
+    // Phase 4. Out-of-line because the cache-miss path delegates back
+    // to `HarfBuzzFontEngine::CreateFont`, which has to be complete
+    // before we can call it — defining this inside the class would
+    // require a forward-resolution dance.
+    Core::SharedPtr<Font> FontConfigFontFallback::fallbackForCodepoint(
+            Core::SharedPtr<Font> requested,
+            std::uint32_t codepoint){
+        if(engine_ == nullptr || requested == nullptr){
+            return nullptr;
+        }
+
+        // Build a pattern carrying just the codepoint (in a charset)
+        // and the requested size/style. FontConfig's standard
+        // substitute pipeline will rank installed faces by how well
+        // they cover the charset; FcFontMatch returns the best match.
+        FcCharSet *charset = FcCharSetCreate();
+        if(charset == nullptr) return nullptr;
+        FcCharSetAddChar(charset, (FcChar32)codepoint);
+
+        FcPattern *pattern = FcPatternBuild(nullptr,
+            FC_CHARSET, FcTypeCharSet, charset,
+            FC_PIXEL_SIZE, FcTypeDouble, (double)requested->desc.size,
+            FC_SCALABLE, FcTypeBool, FcTrue,
+            nullptr);
+        FcCharSetDestroy(charset);
+        if(pattern == nullptr) return nullptr;
+
+        const int fcWeight =
+            (requested->desc.style == FontDescriptor::Bold ||
+             requested->desc.style == FontDescriptor::BoldAndItalic)
+            ? FC_WEIGHT_BOLD : FC_WEIGHT_REGULAR;
+        const int fcSlant  =
+            (requested->desc.style == FontDescriptor::Italic ||
+             requested->desc.style == FontDescriptor::BoldAndItalic)
+            ? FC_SLANT_ITALIC : FC_SLANT_ROMAN;
+        FcPatternAddInteger(pattern, FC_WEIGHT, fcWeight);
+        FcPatternAddInteger(pattern, FC_SLANT,  fcSlant);
+
+        FcConfigSubstitute(nullptr, pattern, FcMatchPattern);
+        FcDefaultSubstitute(pattern);
+
+        FcResult fcResult;
+        FcPattern *matched = FcFontMatch(nullptr, pattern, &fcResult);
+        FcPatternDestroy(pattern);
+        if(matched == nullptr) return nullptr;
+
+        FcChar8 *familyStr = nullptr;
+        if(FcPatternGetString(matched, FC_FAMILY, 0, &familyStr)
+                != FcResultMatch || familyStr == nullptr){
+            FcPatternDestroy(matched);
+            return nullptr;
+        }
+        std::string family(reinterpret_cast<const char *>(familyStr));
+        FcPatternDestroy(matched);
+        if(family.empty()){
+            return nullptr;
+        }
+
+        // Same-as-requested → FontConfig declined to substitute; the
+        // requested face already covers the codepoint. Don't loop.
+        if(family == requested->desc.family){
+            return nullptr;
+        }
+
+        auto it = byKey_.find(family);
+        if(it != byKey_.end()){
+            return it->second;
+        }
+
+        // Build the substitute face through the engine's normal
+        // CreateFont path so it goes through FT/HB opening + the
+        // MSDF probe + atlas hookup.
+        FontDescriptor fbDesc(family, requested->desc.size,
+                              requested->desc.style);
+        Core::SharedPtr<Font> resolved = engine_->CreateFont(fbDesc);
+        byKey_[family] = resolved;
+
+        if(textTraceEnabled()){
+            std::cout << "[wtk-text] FontConfigFontFallback: cp=U+"
+                      << std::hex << codepoint << std::dec
+                      << " -> '" << family << "' mode="
+                      << (resolved != nullptr
+                          && resolved->mode() == Font::Mode::MSDF
+                          ? "MSDF" : "BitmapFallback") << std::endl;
+        }
+        return resolved;
+    }
 
     FontEngine *FontEngine::inst(){
         return instance;

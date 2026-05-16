@@ -58,9 +58,15 @@ VideoView::VideoView(const Composition::Rect & rect, ViewPtr parent)
 void VideoView::queueFrame(SharedHandle<Media::VideoFrame> &frame) {
     auto &hdr = frame->videoFrame.header;
     Composition::Rect destRect = computeScaledRect(getRect(), hdr.width, hdr.height, scaleMode_);
-    SharedHandle<OmegaCommon::Img::BitmapImage> f(&frame->videoFrame);
+    // Aliasing-constructor share: `f` carries the same refcount as `frame`
+    // but exposes `&frame->videoFrame`. The inner BitmapImage member is
+    // not freed independently — the outer VideoFrame is the heap owner —
+    // and the frame stays alive for as long as `f` does. The previous
+    // `SharedHandle<BitmapImage> f(&frame->videoFrame)` was UB: it tried
+    // to `delete` a struct-member pointer on reset, which became
+    // dangerous once BitmapImage acquired a real destructor in Phase 2.
+    SharedHandle<OmegaCommon::Img::BitmapImage> f(frame, &frame->videoFrame);
     videoCanvas->drawImage(f, destRect);
-    f.reset();
     videoCanvas->sendFrame();
 }
 

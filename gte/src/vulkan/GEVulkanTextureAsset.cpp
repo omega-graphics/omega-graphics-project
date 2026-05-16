@@ -36,21 +36,6 @@ namespace {
 //   PNG/JPEG/TIFF code path anyway, so this is a documentation rather
 //   than a functional limitation.
 
-class BitmapImageOwner {
-public:
-    explicit BitmapImageOwner(OmegaCommon::Img::BitmapImage && img) : img_(img) {}
-    ~BitmapImageOwner() {
-        // OmegaCommon::Img::BitmapImage::data is owned by the codec
-        // (PNGCodec/JpegCodec/TiffCodec) and was allocated with `new[]`
-        // — the type has no destructor, so the consumer has to free it.
-        delete[] img_.data;
-        img_.data = nullptr;
-    }
-    OmegaCommon::Img::BitmapImage &get() { return img_; }
-private:
-    OmegaCommon::Img::BitmapImage img_;
-};
-
 /// Map the BitmapImage onto a 4-channel 8-bit-per-channel RGBA buffer.
 /// Returns the new pixel buffer (always width*height*4 bytes) plus the
 /// row stride. The OmegaCommon codecs already strip 16-bit PNGs to 8-bit
@@ -67,7 +52,7 @@ struct NormalizedPixels {
 NormalizedPixels normalizeToRGBA8(const OmegaCommon::Img::BitmapImage &img) {
     using OmegaCommon::Img::ColorFormat;
     NormalizedPixels out;
-    if (img.data == nullptr || img.header.width == 0 || img.header.height == 0) {
+    if (img.empty() || img.header.width == 0 || img.header.height == 0) {
         return out;
     }
     if (img.header.bitDepth != 8) {
@@ -81,7 +66,7 @@ NormalizedPixels normalizeToRGBA8(const OmegaCommon::Img::BitmapImage &img) {
     out.rowBytes = out.width * 4u;
     out.rgba.resize(static_cast<size_t>(out.rowBytes) * out.height);
 
-    const std::uint8_t *src = img.data;
+    const std::uint8_t *src = img.data();
     const size_t srcStride = img.header.stride > 0
         ? img.header.stride
         : static_cast<size_t>(out.width) * static_cast<size_t>(img.header.channels);
@@ -143,8 +128,11 @@ public:
                       << "': " << decodeRes.error() << std::endl;
             return false;
         }
-        BitmapImageOwner ownerGuard(std::move(decodeRes.value()));
-        OmegaCommon::Img::BitmapImage &img = ownerGuard.get();
+        // BitmapImage owns its pixel buffer through PixelStorage (Phase 2
+        // of the ImgCodec extension proposal) — it cleans up the codec's
+        // allocation in its destructor, including TIFF's `_TIFFmalloc`.
+        // No external owner wrapper required.
+        OmegaCommon::Img::BitmapImage img = std::move(decodeRes.value());
 
         NormalizedPixels px = normalizeToRGBA8(img);
         if (!px.ok) {

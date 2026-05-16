@@ -96,22 +96,25 @@ namespace OmegaWTK::Composition {
 
         // Reserve the tile *before* allocating the texture: otherwise
         // a single failing rasterize would still pay the 4 MiB upload
-        // cost. Naive shelf packer:
-        //   - if the tile fits on the current row, place it at
-        //     (cursorX_, cursorY_) and advance cursorX_ by tile width
-        //   - else wrap to a new row at cursorY_ + rowH_
-        //   - else (won't fit vertically) fail
+        // cost. Naive shelf packer with a 1-px right + bottom gutter
+        // (`kAtlasGutter`) between tiles — see header for rationale.
+        //   - if the tile fits on the current row (tile + gutter),
+        //     place it at (cursorX_, cursorY_) and advance cursorX_
+        //     by tile width + gutter.
+        //   - else wrap to a new row at cursorY_ + rowH_ (rowH_
+        //     already includes the gutter for tiles in this row).
+        //   - else (won't fit vertically) fail.
         unsigned tileW = out.pxW;
         unsigned tileH = out.pxH;
         if(tileW > kAtlasDim || tileH > kAtlasDim){
             return false;
         }
-        if(cursorX_ + tileW > kAtlasDim){
+        if(cursorX_ + tileW + kAtlasGutter > kAtlasDim){
             cursorX_  = 0;
             cursorY_ += rowH_;
             rowH_     = 0;
         }
-        if(cursorY_ + tileH > kAtlasDim){
+        if(cursorY_ + tileH + kAtlasGutter > kAtlasDim){
             // Atlas full. Phase-6.7 follow-up: LRU paging.
             if(textTraceEnabled()){
                 std::cout << "[wtk-text] GlyphAtlas: atlas full at glyph " << glyphId
@@ -194,8 +197,11 @@ namespace OmegaWTK::Composition {
             }
         }
 
-        cursorX_ += tileW;
-        rowH_     = std::max(rowH_, tileH);
+        // Advance past the tile *and* its gutter so the next tile in
+        // this shelf — and the next shelf below — never share a
+        // texel edge with the one we just wrote.
+        cursorX_ += tileW + kAtlasGutter;
+        rowH_     = std::max(rowH_, tileH + kAtlasGutter);
         return true;
     }
 

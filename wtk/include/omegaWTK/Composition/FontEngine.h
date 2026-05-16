@@ -29,6 +29,33 @@
  /// The full type lives in `omegaWTK/Composition/TextLayoutEngine.h`.
  class ITextShaper;
 
+ /// Per-platform font-fallback interface (Text-Layout-Engine-Plan
+ /// §Phase 4). Owned by `FontEngine` and handed to the layout engine
+ /// alongside the shaper. The layout engine drives the loop: after
+ /// shaping a run with the requested face, any cluster that produced
+ /// `.notdef` glyphs triggers a `fallbackForCodepoint` call; the
+ /// returned face is re-shaped against the cluster's source text and
+ /// spliced into the line with `ShapedGlyph::resolvedFont` set so
+ /// the draw path groups it into its own atlas.
+ ///
+ /// Implementations are expected to **cache** the substitute `Font`
+ /// they construct (typically keyed by the resolved native face's
+ /// family name) so repeated fallback for the same codepoint returns
+ /// the same `Font` and shares its `GlyphAtlas` across the process.
+ class OMEGAWTK_EXPORT IFontFallback {
+ public:
+     virtual ~IFontFallback() = default;
+     /// Find a `Font` capable of rendering `codepoint`, styled and
+     /// sized to match `requested`. Returns `nullptr` when no
+     /// substitute is needed (the requested face already covers the
+     /// codepoint) or available (no platform substitute found); the
+     /// layout engine then keeps the requested face's `.notdef`
+     /// glyph for that cluster.
+     virtual Core::SharedPtr<Font> fallbackForCodepoint(
+         Core::SharedPtr<Font> requested,
+         std::uint32_t codepoint) = 0;
+ };
+
  /**
   @brief A struct that describes how text is laid out within a TextRect.
  */
@@ -295,6 +322,13 @@
      /// implementation returns `nullptr` — callers must check before
      /// invoking the layout engine.
      virtual ITextShaper * shaper() { return nullptr; }
+     /// Per-platform font-fallback driver (Phase 4). Linux uses
+     /// FontConfig's substitute chain; macOS uses
+     /// `CTFontCreateForString`. Base implementation returns
+     /// `nullptr` — callers may invoke the layout engine without a
+     /// fallback driver (every `.notdef` cluster then renders as
+     /// the requested face's missing-glyph box).
+     virtual IFontFallback * fallback() { return nullptr; }
      static FontEngine *inst();
      virtual ~FontEngine() = default;
  private:

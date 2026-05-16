@@ -603,8 +603,6 @@ These came out of landing 6.7-c2 and apply to chunks 3+:
   atlas is sampled, so an upside-down glyph there means the flip was
   reversed. Cheap to fix; flag if it bites.
 
-  IMPORTANT NOTE: GTE sampler treats top as 0, so make sure to apply y-flip to all text engine backends. (Unless using existing bitmap cache which now automatically flips texture uploads, assuming they are bottom up acording to the GL standard)
-
 - **Pango lock/unlock deprecation.** `pango_fc_font_lock_face` and
   `pango_fc_font_unlock_face` are deprecated as of Pango 1.44 in
   favor of `pango_font_get_hb_font`. The plan's per-platform notes

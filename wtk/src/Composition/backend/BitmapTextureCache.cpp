@@ -51,7 +51,7 @@ namespace OmegaWTK::Composition {
 
     SharedHandle<OmegaGTE::GETexture>
     BitmapTextureCache::acquire(SharedHandle<OmegaCommon::Img::BitmapImage> image){
-        if(image == nullptr || image->data == nullptr){
+        if(image == nullptr || image->empty()){
             return nullptr;
         }
         OmegaCommon::Img::BitmapImage *key = image.get();
@@ -97,17 +97,9 @@ namespace OmegaWTK::Composition {
         if(texture == nullptr){
             return nullptr;
         }
-        // OmegaCommon's PNG/JPEG/TIFF decoders deliver rows bottom-up
-        // (legacy GL convention); GTE samplers treat row 0 as the top.
-        // Flip on upload via the §4.5 region-aware copyBytes overload —
-        // dest row `r` consumes source row `h - 1 - r`. The codec
-        // convention stays bottom-up; only the texture sees the flip.
-        const size_t stride = image->header.stride;
-        auto *base = static_cast<unsigned char *>(image->data);
-        for(unsigned r = 0; r < h; ++r){
-            OmegaGTE::TextureRegion region {0, r, 0, w, 1, 1};
-            texture->copyBytes(base + ((h - 1 - r) * stride), stride, region);
-        }
+        // WTK and GTE share a top-left / y-down convention, so the
+        // decoded bitmap rows can be uploaded directly. No per-row Y flip.
+        texture->copyBytes(image->data(), image->header.stride);
 
         if(wantMips){
             if(!runGenerateMipmaps(texture)){

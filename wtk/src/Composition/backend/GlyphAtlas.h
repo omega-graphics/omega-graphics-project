@@ -86,6 +86,25 @@ namespace OmegaWTK::Composition {
         /// allocated on first successful `ensureGlyph`.
         static constexpr unsigned kAtlasDim = 1024;
 
+        /// One-pixel zero gutter between packed tiles (Phase 3.5
+        /// follow-up). Adjacent tiles' MSDF distance fields differ at
+        /// their boundaries — usually well below the smoothstep
+        /// threshold, but the GPU's bilinear sampler at the tile-edge
+        /// UV will pull from the neighbor's first texel column / row
+        /// regardless. With integer pen-snapping (Phase 2.5) the bias
+        /// was deterministic per glyph and invisible; sub-pixel
+        /// positioning (Phase 3.5) shifts the sampling footprint
+        /// per quad and surfaces it as a thin vertical streak on
+        /// the right side of glyphs whose neighbor in the atlas has
+        /// silhouette ink near its left edge. The atlas is zero-
+        /// initialized, so this gutter is free — we just advance the
+        /// shelf packer's cursor by `tileW + 1` / `tileH + 1` and
+        /// leave the in-between texel column / row at its initial
+        /// zero value. Bilinear at a tile boundary then averages
+        /// the tile's last column with a zero gutter column, which
+        /// smoothsteps cleanly to "outside the glyph" (transparent).
+        static constexpr unsigned kAtlasGutter = 1;
+
         /// Output of one glyph rasterization. The callback fills
         /// `rgb` with `pxW * pxH * 3` bytes (R, G, B distance channels)
         /// and populates `metrics` (which the atlas will later patch
