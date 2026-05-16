@@ -152,6 +152,10 @@ _NAMESPACE_BEGIN_
         explicit GED3D12Engine(SharedHandle<GTED3D12Device> device);
         ~GED3D12Engine() override;
         ComPtr<ID3D12Debug1> debug_interface;
+#ifdef __ID3D12InfoQueue1_INTERFACE_DEFINED__
+        ComPtr<ID3D12InfoQueue1> debug_info_queue;
+#endif
+        DWORD debug_message_cookie = 0;
         ComPtr<ID3D12Device8> d3d12_device;
         D3D12MA::Allocator *memAllocator = nullptr;
         SharedHandle<GTEDevice> gteDevice;

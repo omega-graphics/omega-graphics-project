@@ -190,10 +190,43 @@ struct OMEGAGTE_EXPORT GTE {
     SharedHandle<OmegaSLCompiler> omegaSlCompiler;
 };
 
+/**
+  @brief Init-time options for the Graphics and Triangulation Engine.
+  Resolved once at @c Init() and frozen for the process lifetime. See
+  gte/docs/Debug-Layer-Plan.md for the cross-backend rollout plan.
+ */
+struct OMEGAGTE_EXPORT GTEInitOptions {
+    /// Tri-state toggle for the backend's debug/validation layer plus
+    /// the @c DEBUG_STREAM logging macro.
+    enum class DebugLayer : uint8_t {
+        Default,   ///< Follow the @c OMEGAGTE_DEBUG compile flag.
+        Enabled,   ///< Force on — backend validation + verbose logging.
+        Disabled,  ///< Force off — release perf, silent logs.
+    };
+    DebugLayer debugLayer = DebugLayer::Default;
 
-OMEGAGTE_EXPORT GTE Init(SharedHandle<GTEDevice> & device);
+    /// Enable GPU-Based Validation (D3D12 GBV / Vulkan GPU-assisted).
+    /// Heavy — 5–10x draw-call cost. Ignored if debugLayer resolves off.
+    bool gpuBasedValidation = false;
+};
 
-OMEGAGTE_EXPORT GTE InitWithDefaultDevice();
+/**
+  @brief Whether the debug layer is active for this process.
+  @paragraph Resolved once at @c Init() from @c GTEInitOptions::debugLayer
+  and the @c OMEGAGTE_DEBUG compile flag. Backends consult this to decide
+  whether to enable native validation; the @c DEBUG_STREAM macro consults
+  this to gate log output. Defaults to the compile-time default before
+  @c Init() runs.
+ */
+OMEGAGTE_EXPORT bool isDebugLayerEnabled();
+
+/// @brief Whether GPU-Based Validation was requested at @c Init() time.
+/// Always false if @c isDebugLayerEnabled() is false.
+OMEGAGTE_EXPORT bool isGpuBasedValidationEnabled();
+
+OMEGAGTE_EXPORT GTE Init(SharedHandle<GTEDevice> & device, GTEInitOptions opts = {});
+
+OMEGAGTE_EXPORT GTE InitWithDefaultDevice(GTEInitOptions opts = {});
 
 OMEGAGTE_EXPORT void Close(GTE &gte);
 

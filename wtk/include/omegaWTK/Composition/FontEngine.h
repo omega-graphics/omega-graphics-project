@@ -121,92 +121,22 @@
      float lineHeight() const { return ascent + descent + lineGap; }
  };
 
- class OMEGAWTK_EXPORT GlyphRun {
- public:
-
-     /// Result of shaping a `GlyphRun` for the MSDF render path.
-     /// Phase 6.7-c4: one entry per resolved face after the layout
-     /// engine's font-fallback pass — `subRuns[0]` is typically the
-     /// requested face; subsequent entries are fallback faces adopted
-     /// via `FontEngine::adoptResolvedFace`.
-     ///
-     /// `requiresFallback` is set when the run can't be serviced by
-     /// the MSDF path end-to-end. The current 6.7-c4 contract:
-     /// whenever any resolved face is in `BitmapFallback` mode (e.g.
-     /// a non-scalable color-emoji face), the whole string is routed
-     /// to the legacy `TextRect` bitmap path. Per-glyph bitmap caching
-     /// for fallback-mode sub-runs is a Phase-6.7 follow-up. When
-     /// `requiresFallback` is true, `subRuns` is empty.
-     struct ShapedTextRun {
-         bool requiresFallback = false;
-         OmegaCommon::Vector<TextSubRun> subRuns;
-     };
-
-     virtual Composition::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) = 0;
-
-     /**
-      @brief Shapes the run against its font and produces positioned
-      glyph IDs for the MSDF render path (Phase 6.7-c3).
-      @param rect[in] The destination rect (logical pixels). Drives
-             wrap width and vertical alignment.
-      @param layoutDesc[in] Alignment / wrapping / line-limit.
-      @returns A `ShapedTextRun`. When `requiresFallback` is true the
-               caller should render via the legacy bitmap path.
-     */
-     virtual ShapedTextRun shape(const Composition::Rect & rect,
-                                 const TextLayoutDescriptor & layoutDesc) = 0;
-
-     /**
-      @brief Creates a Glyph Run from a Unicode String.
-      @param str[in] The Unicode String.
-      @returns SharedPtr<GlyphRun>
-     */
-     static Core::SharedPtr<GlyphRun> fromUStringAndFont(const OmegaCommon::UniString & str,Core::SharedPtr<Font> & font);
-     virtual ~GlyphRun() = default;
+ /// Phase 7: result of rasterizing one BitmapFallback sub-run to a
+ /// CPU bitmap and uploading it as a GETexture. The per-platform
+ /// `FontEngine::rasterizeSubRunToTexture` returns this; the canvas
+ /// hands the texture to `drawGETexture` as a normal blit.
+ ///
+ /// When the engine can't (or won't) rasterize — typically because
+ /// the backend doesn't ship a CPU rasterizer yet — `texture` is
+ /// `nullptr` and the caller skips the draw. Glyphs that should have
+ /// been emitted simply disappear; this is the same degenerate
+ /// behaviour the pre-Phase-7 bitmap path had when it couldn't load
+ /// the requested face.
+ struct OMEGAWTK_EXPORT BitmapTextResult {
+     SharedHandle<OmegaGTE::GETexture> texture;
+     Core::SharedPtr<OmegaGTE::GEFence> fence;
  };
 
- /**
-  @brief A rectangular container that holds text drawn with a Font created by the FontEngine.
-  @paragraph Description
-  When creating an instance of this class, invoke the static method `Create` method,
-  which will return an instance of the appropriate platform specific subclass implementing the platform specific
-  features and bindings.
- */
-
- class OMEGAWTK_EXPORT  TextRect {
- public:
-    struct BitmapRes {
-        SharedHandle<OmegaGTE::GETexture> s;
-        Core::SharedPtr<OmegaGTE::GEFence> textureFence;
-        };
-     virtual BitmapRes toBitmap() = 0;
-
-     Composition::Rect rect;
-
-     virtual void *getNative() = 0;
-
-     /**
-      @brief Draws a Glyph Run to the Rect.
-      @param glyphRun[in]
-      @paragraph Starts the next glyph at the prior ending position of the last run.
-     */
-     virtual void drawRun(Core::SharedPtr<GlyphRun> &glyphRun,const Composition::Color &color) = 0;
-
-     /**
-      @brief Creates an empty TextRect from a Rect and a TextLayoutDescriptor.
-      @param rect[in] The Rect to draw the text in (logical pixels / DIPs).
-      @param layoutDesc[in]
-      @param renderScale[in] Logical-to-physical pixel scale factor (1.0 = 96 DPI).
-             The backend allocates a physical-sized offscreen surface and
-             configures the device context so font sizes stay in DIPs.
-      @returns SharedPtr<TextRect>
-     */
-     static Core::SharedPtr<TextRect> Create(Composition::Rect rect,const TextLayoutDescriptor & layoutDesc, float renderScale = 1.f);
-     virtual ~TextRect() = default;
- protected:
-     float renderScale = 1.f;
-     TextRect(Composition::Rect & rect):rect(rect){};
- };
  /**
   @brief A struct that describes a Font that can be created by the FontEngine.
  */
@@ -234,8 +164,9 @@
      /// at construction by the platform `FontEngine` based on whether
      /// the underlying face exposes vector outlines msdfgen can walk.
      /// `MSDF` routes draws through the per-font `GlyphAtlas`;
-     /// `BitmapFallback` keeps the existing `TextRect` →
-     /// `drawGETexture` path. Sticky for the font's lifetime.
+     /// `BitmapFallback` routes the resolved sub-run through
+     /// `FontEngine::rasterizeSubRunToTexture` and a `drawGETexture`
+     /// blit (Phase 7). Sticky for the font's lifetime.
      enum class Mode {
          MSDF,
          BitmapFallback
@@ -327,23 +258,6 @@
          (void)bundle; (void)assetName; (void)desc;
          return nullptr;
      }
-     /// Adopt a layout-engine-resolved native face into a WTK `Font`
-     /// (Phase 6.7-c4). Called by the shaping path when the layout
-     /// engine substitutes a fallback face: each platform keys its
-     /// adoption cache by the native handle (Linux: `PangoFont *`;
-     /// DWrite: `IDWriteFontFace *`; Core Text: `CTFontRef`) so
-     /// repeated fallback to the same face across the process shares
-     /// one `Font` and one `GlyphAtlas`. The returned `Font` has the
-     /// MSDF probe already run against its underlying face, so it may
-     /// be in either `Mode::MSDF` or `Mode::BitmapFallback`; callers
-     /// dispatch per-sub-run based on `Font::mode()`. The base
-     /// implementation returns `nullptr` — only the Linux backend
-     /// ships an adopter in 6.7-c4; DWrite / Core Text get theirs when
-     /// those backends light up MSDF.
-     virtual Core::SharedPtr<Font> adoptResolvedFace(void *nativeHandle) {
-         (void)nativeHandle;
-         return nullptr;
-     }
      /// Per-platform text shaper used by `TextLayoutEngine`
      /// (Text-Layout-Engine-Plan.md Phase 2). The Linux engine
      /// returns a HarfBuzz shaper; macOS / Windows backends return
@@ -358,6 +272,27 @@
      /// fallback driver (every `.notdef` cluster then renders as
      /// the requested face's missing-glyph box).
      virtual IFontFallback * fallback() { return nullptr; }
+     /// Phase 7. Rasterize one BitmapFallback sub-run to a CPU
+     /// bitmap and upload as a GETexture. The layout engine has
+     /// already done all line composition / fallback resolution /
+     /// glyph positioning — `subRun.glyphIds` and `subRun.positions`
+     /// are in canvas-space pixels relative to `rect`. Each backend
+     /// drives its native glyph-drawing API (Core Text:
+     /// `CTFontDrawGlyphs`; Linux: cairo + FreeType; DWrite: D2D
+     /// `DrawGlyphRun`). `renderScale` scales the offscreen surface
+     /// for high-DPI output. Base implementation returns an empty
+     /// result — backends without a rasterizer skip BitmapFallback
+     /// draws (those glyphs disappear, same as the pre-Phase-7
+     /// behaviour when the legacy `TextRect` couldn't open the
+     /// requested face).
+     virtual BitmapTextResult rasterizeSubRunToTexture(
+             const TextSubRun & subRun,
+             const Composition::Rect & rect,
+             const Composition::Color & color,
+             float renderScale) {
+         (void)subRun; (void)rect; (void)color; (void)renderScale;
+         return {};
+     }
      static FontEngine *inst();
      virtual ~FontEngine() = default;
  private:

@@ -134,6 +134,20 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Info.plist.in" "${CMAKE_CURRENT_
 add_omega_graphics_module("OmegaGTE" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION "0.5" HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include" DEPENDS "OmegaCommon" SOURCES ${MAIN_SRCS})
 target_compile_definitions("OmegaGTE" PRIVATE OMEGAGTE__BUILD__)
 target_compile_definitions("OmegaGTE" PUBLIC ${PUBLIC_DEFS})
+
+# OMEGAGTE_DEBUG: build-default for GTEInitOptions::DebugLayer::Default.
+# Debug / RelWithDebInfo configs default the debug layer ON (D3D12 debug
+# layer + Vulkan validation + verbose DEBUG_STREAM logging); Release /
+# MinSizeRel default it OFF. Callers can still override per-Init via
+# GTEInitOptions::debugLayer = Enabled | Disabled.
+set(OMEGAGTE_DEBUG_DEFAULT OFF)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR NOT CMAKE_BUILD_TYPE)
+    set(OMEGAGTE_DEBUG_DEFAULT ON)
+endif()
+option(OMEGAGTE_DEBUG "Enable the OmegaGTE debug layer by default" ${OMEGAGTE_DEBUG_DEFAULT})
+if(OMEGAGTE_DEBUG)
+    target_compile_definitions("OmegaGTE" PUBLIC OMEGAGTE_DEBUG)
+endif()
 target_link_libraries("OmegaGTE" PUBLIC "OmegaCommon")
 
 # OmegaGTE embeds the OmegaSL parser/codegen sources for runtime shader

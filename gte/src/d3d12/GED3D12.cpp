@@ -544,16 +544,61 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
     GED3D12Engine::GED3D12Engine(SharedHandle<GTED3D12Device> device){
         HRESULT hr;
 
-        CreateDXGIFactory(IID_PPV_ARGS(&dxgi_factory));
-        
-        D3D12GetDebugInterface(IID_PPV_ARGS(&debug_interface));
-        debug_interface->EnableDebugLayer();
-        debug_interface->SetEnableGPUBasedValidation(FALSE);
+        const bool debugLayer = isDebugLayerEnabled();
+
+        UINT dxgiFactoryFlags = 0;
+        if(debugLayer){
+            dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+        }
+        CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&dxgi_factory));
+
+        if(debugLayer){
+            if(SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug_interface)))){
+                debug_interface->EnableDebugLayer();
+                debug_interface->SetEnableGPUBasedValidation(
+                    isGpuBasedValidationEnabled() ? TRUE : FALSE);
+            }
+        }
 
         hr = D3D12CreateDevice(device->adapter.Get(),D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d3d12_device));
         if(FAILED(hr)){
             exit(1);
         };
+
+        // Funnel D3D12 validation messages into DEBUG_STREAM. Requires
+        // ID3D12InfoQueue1 (Windows 10 21H1+ SDK); older runtimes silently
+        // skip — messages still go to the debugger output stream via the
+        // debug layer's default sink.
+        if(debugLayer){
+#ifdef __ID3D12InfoQueue1_INTERFACE_DEFINED__
+            ComPtr<ID3D12InfoQueue1> infoQueue;
+            if(SUCCEEDED(d3d12_device.As(&infoQueue))){
+                DWORD cookie = 0;
+                infoQueue->RegisterMessageCallback(
+                    [](D3D12_MESSAGE_CATEGORY,
+                       D3D12_MESSAGE_SEVERITY severity,
+                       D3D12_MESSAGE_ID id,
+                       LPCSTR description,
+                       void *){
+                        const char *sev = "INFO";
+                        switch(severity){
+                            case D3D12_MESSAGE_SEVERITY_CORRUPTION: sev = "CORRUPTION"; break;
+                            case D3D12_MESSAGE_SEVERITY_ERROR:      sev = "ERROR";      break;
+                            case D3D12_MESSAGE_SEVERITY_WARNING:    sev = "WARN";       break;
+                            case D3D12_MESSAGE_SEVERITY_INFO:       sev = "INFO";       break;
+                            case D3D12_MESSAGE_SEVERITY_MESSAGE:    sev = "MSG";        break;
+                        }
+                        DEBUG_STREAM("D3D12 [" << sev << " id=" << static_cast<int>(id)
+                                     << "] " << (description ? description : "(null)"));
+                    },
+                    D3D12_MESSAGE_CALLBACK_FLAG_NONE,
+                    nullptr,
+                    &cookie);
+                debug_message_cookie = cookie;
+                debug_info_queue = infoQueue;
+            }
+#endif
+        }
 
         D3D12MA::ALLOCATOR_DESC allocatorDesc = {};
         allocatorDesc.pDevice = d3d12_device.Get();
@@ -594,6 +639,14 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
             memAllocator->Release();
             memAllocator = nullptr;
         }
+
+#ifdef __ID3D12InfoQueue1_INTERFACE_DEFINED__
+        if(debug_info_queue && debug_message_cookie != 0){
+            debug_info_queue->UnregisterMessageCallback(debug_message_cookie);
+            debug_message_cookie = 0;
+            debug_info_queue.Reset();
+        }
+#endif
     };
 
     SharedHandle<GTEShader> GED3D12Engine::_loadShaderFromDesc(omegasl_shader *shaderDesc,bool runtime) {

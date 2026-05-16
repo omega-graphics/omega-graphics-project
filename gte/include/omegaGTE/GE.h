@@ -62,12 +62,27 @@
 // #define OMEGAGTE_RAYTRACING_SUPPORTED 1
 #endif
 
-#define DEBUG_STREAM(message) std::cout << "[" << DEBUG_ENGINE_PREFIX << "] - " << message << std::endl
-
 #include "GTEBase.h"
 
 #ifndef OMEGAGTE_GE_H
 #define OMEGAGTE_GE_H
+
+_NAMESPACE_BEGIN_
+
+/// Whether the debug layer is active. Defined in OmegaGTE.cpp and
+/// re-declared here so DEBUG_STREAM can gate without pulling OmegaGTE.h.
+/// Resolved at @c Init() time from @c GTEInitOptions::debugLayer.
+OMEGAGTE_EXPORT bool isDebugLayerEnabled();
+
+_NAMESPACE_END_
+
+#define DEBUG_STREAM(message)                                                  \
+    do {                                                                       \
+        if (::OmegaGTE::isDebugLayerEnabled()) {                               \
+            std::cout << "[" << DEBUG_ENGINE_PREFIX << "] - " << message       \
+                      << std::endl;                                            \
+        }                                                                      \
+    } while (0)
 
 _NAMESPACE_BEGIN_
 

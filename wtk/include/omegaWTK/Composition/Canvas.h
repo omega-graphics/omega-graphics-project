@@ -77,10 +77,9 @@ namespace OmegaWTK {
 
 
     
-    /// `TextSubRun` lives in `FontEngine.h` (Phase 6.7-c4) so the
-    /// shaping API `GlyphRun::ShapedTextRun` can carry it without a
-    /// Canvas → FontEngine include cycle. It's still visible here
-    /// through `FontEngine.h`'s inclusion above.
+    /// `TextSubRun` lives in `FontEngine.h` (Phase 6.7-c4) and is the
+    /// resolved-font-grouped output of the WTK text layout engine.
+    /// Visible here through `FontEngine.h`'s inclusion above.
 
     /// An object drawn by a Compositor.
     struct  OMEGAWTK_EXPORT VisualCommand {

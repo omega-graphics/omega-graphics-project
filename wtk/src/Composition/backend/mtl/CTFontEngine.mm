@@ -35,37 +35,6 @@ static CGFloat currentScreenScale(){
     return scale;
 }
 
-static NSTextAlignment toNSTextAlignment(TextLayoutDescriptor::Alignment alignment){
-    switch(alignment){
-        case TextLayoutDescriptor::LeftUpper:
-        case TextLayoutDescriptor::LeftCenter:
-        case TextLayoutDescriptor::LeftLower:
-            return NSTextAlignmentLeft;
-        case TextLayoutDescriptor::MiddleUpper:
-        case TextLayoutDescriptor::MiddleCenter:
-        case TextLayoutDescriptor::MiddleLower:
-            return NSTextAlignmentCenter;
-        case TextLayoutDescriptor::RightUpper:
-        case TextLayoutDescriptor::RightCenter:
-        case TextLayoutDescriptor::RightLower:
-            return NSTextAlignmentRight;
-        default:
-            return NSTextAlignmentLeft;
-    }
-}
-
-static NSLineBreakMode toNSLineBreakMode(TextLayoutDescriptor::Wrapping wrapping){
-    switch(wrapping){
-        case TextLayoutDescriptor::WrapByWord:
-            return NSLineBreakByWordWrapping;
-        case TextLayoutDescriptor::WrapByCharacter:
-            return NSLineBreakByCharWrapping;
-        case TextLayoutDescriptor::None:
-        default:
-            return NSLineBreakByClipping;
-    }
-}
-
 namespace {
     bool textTraceEnabled() {
         static const bool enabled = []() {
@@ -201,383 +170,6 @@ namespace {
      };
  };
 
-class CTGlyphRun : public GlyphRun {
-public:
-    NSAttributedString *str;
-    Core::SharedPtr<CoreTextFont> font;
-
-    Composition::Rect getBoundingRectOfGlyphAtIndex(size_t glyphIdx) override {
-        return {};
-    }
-
-    // Phase 6.7-c3 (macOS): shape the run against its font at the
-    // *unscaled* design size and produce positioned glyph IDs for the
-    // MSDF render path. Core Text performs font fallback as part of
-    // line construction. The MSDF path on macOS isn't lit up yet
-    // (CoreTextFont stays on `BitmapFallback` in chunk 2/3), so this
-    // function is currently dead code — it stays in shape only so the
-    // backend keeps compiling against the chunk-4 ShapedTextRun API.
-    // When CTFontEngine adopts the c2/c3 surface it will also need an
-    // `adoptResolvedFace` like `HarfBuzzFontEngine` to group runs by
-    // resolved CTFontRef.
-    GlyphRun::ShapedTextRun shape(const Composition::Rect &rect,
-                                  const TextLayoutDescriptor &layoutDesc) override {
-        GlyphRun::ShapedTextRun result;
-        if(font == nullptr || str == nil){
-            result.requiresFallback = true;
-            return result;
-        }
-        CTFontRef unscaledFont = font->getUnscaledFont();
-        if(unscaledFont == nullptr){
-            result.requiresFallback = true;
-            return result;
-        }
-
-        // Rebuild the attributed string at the unscaled design size.
-        // `str` was authored with the scaled `native` font for the
-        // bitmap path; the MSDF atlas is resolution-independent, so we
-        // lay out in logical pixels here and let the render viewport
-        // apply DPR downstream.
-        NSString *text = [str string];
-        if(text == nil || text.length == 0){
-            return result;
-        }
-        auto attributed = [[NSMutableAttributedString alloc] initWithString:text];
-        auto range = NSMakeRange(0,attributed.length);
-        auto paragraphStyle = [[NSMutableParagraphStyle alloc] init];
-        [paragraphStyle setAlignment:toNSTextAlignment(layoutDesc.alignment)];
-        [paragraphStyle setLineBreakMode:toNSLineBreakMode(layoutDesc.wrapping)];
-        [attributed addAttribute:NSFontAttributeName value:(__bridge id)unscaledFont range:range];
-        [attributed addAttribute:NSParagraphStyleAttributeName value:paragraphStyle range:range];
-
-        CGPathRef textPath = CGPathCreateWithRect(CGRectMake(0.f,0.f,rect.w,rect.h),NULL);
-        CTFramesetterRef framesetter =
-            CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)attributed);
-        CFRange frameRange = CFRangeMake(0,CFIndex(attributed.length));
-        if(layoutDesc.lineLimit > 0){
-            CTFrameRef preliminaryFrame = CTFramesetterCreateFrame(framesetter,frameRange,textPath,NULL);
-            if(preliminaryFrame != nullptr){
-                CFArrayRef lines = CTFrameGetLines(preliminaryFrame);
-                CFIndex lineCount = lines != nullptr ? CFArrayGetCount(lines) : 0;
-                if(lineCount > static_cast<CFIndex>(layoutDesc.lineLimit)){
-                    CTLineRef lastAllowedLine = (CTLineRef)CFArrayGetValueAtIndex(
-                            lines,
-                            static_cast<CFIndex>(layoutDesc.lineLimit) - 1);
-                    if(lastAllowedLine != nullptr){
-                        CFRange visibleRange = CTLineGetStringRange(lastAllowedLine);
-                        CFIndex endIndex = visibleRange.location + visibleRange.length;
-                        if(endIndex > 0 && endIndex < frameRange.length){
-                            frameRange.length = endIndex;
-                        }
-                    }
-                }
-                CFRelease(preliminaryFrame);
-            }
-        }
-        CTFrameRef frame = CTFramesetterCreateFrame(framesetter,frameRange,textPath,NULL);
-        CGPathRelease(textPath);
-        CFRelease(framesetter);
-        if(frame == nullptr){
-            result.requiresFallback = true;
-            return result;
-        }
-
-        // Requested face's PostScript name. A CTRun whose resolved font
-        // reports a different name was substituted by Core Text's
-        // fallback — chunk 3 bails the whole string to the bitmap path
-        // for those.
-        CFStringRef ourName = CTFontCopyPostScriptName(unscaledFont);
-
-        CFArrayRef lines = CTFrameGetLines(frame);
-        CFIndex lineCount = lines != nullptr ? CFArrayGetCount(lines) : 0;
-        std::vector<CGPoint> lineOrigins(lineCount > 0 ? (size_t)lineCount : 1);
-        if(lineCount > 0){
-            CTFrameGetLineOrigins(frame,CFRangeMake(0,lineCount),lineOrigins.data());
-        }
-
-        // Chunk 4: accumulate into a single sub-run (CoreTextFont as
-        // primary). When this backend lights up multi-atlas fallback,
-        // group by resolved CTFontRef like `HarfBuzzGlyphRun::shape`.
-        TextSubRun primarySubRun;
-        primarySubRun.resolvedFont = std::static_pointer_cast<Font>(font);
-
-        bool fallback = false;
-        for(CFIndex li = 0; li < lineCount && !fallback; ++li){
-            CTLineRef line = (CTLineRef)CFArrayGetValueAtIndex(lines,li);
-            // Core Text frame coordinates are Y-up with origin at the
-            // bottom-left of the path rect; the render path wants Y-down
-            // baseline positions relative to the rect's top-left.
-            CGPoint lineOrigin = lineOrigins[(size_t)li];
-            CFArrayRef runs = CTLineGetGlyphRuns(line);
-            CFIndex runCount = runs != nullptr ? CFArrayGetCount(runs) : 0;
-            for(CFIndex ri = 0; ri < runCount; ++ri){
-                CTRunRef run = (CTRunRef)CFArrayGetValueAtIndex(runs,ri);
-                CFDictionaryRef attrs = CTRunGetAttributes(run);
-                CTFontRef runFont = attrs != nullptr
-                    ? (CTFontRef)CFDictionaryGetValue(attrs,kCTFontAttributeName)
-                    : nullptr;
-                bool matches = false;
-                if(runFont != nullptr && ourName != nullptr){
-                    CFStringRef runName = CTFontCopyPostScriptName(runFont);
-                    if(runName != nullptr){
-                        matches = (CFStringCompare(ourName,runName,0) == kCFCompareEqualTo);
-                        CFRelease(runName);
-                    }
-                }
-                if(!matches){
-                    fallback = true;
-                    break;
-                }
-
-                CFIndex glyphCount = CTRunGetGlyphCount(run);
-                if(glyphCount <= 0){
-                    continue;
-                }
-                std::vector<CGGlyph> glyphs((size_t)glyphCount);
-                std::vector<CGPoint> positions((size_t)glyphCount);
-                CTRunGetGlyphs(run,CFRangeMake(0,glyphCount),glyphs.data());
-                CTRunGetPositions(run,CFRangeMake(0,glyphCount),positions.data());
-                for(CFIndex gi = 0; gi < glyphCount; ++gi){
-                    CGGlyph glyph = glyphs[(size_t)gi];
-                    if(glyph == 0){
-                        // .notdef — should have triggered fallback above,
-                        // but skip defensively.
-                        continue;
-                    }
-                    const double penX = (double)lineOrigin.x + (double)positions[(size_t)gi].x;
-                    const double penYUp = (double)lineOrigin.y + (double)positions[(size_t)gi].y;
-                    const double baselineFromTop = (double)rect.h - penYUp;
-                    primarySubRun.glyphIds.push_back((std::uint32_t)glyph);
-                    primarySubRun.positions.push_back(Composition::Point2D{
-                        (float)penX,
-                        (float)baselineFromTop});
-                }
-            }
-        }
-
-        if(ourName != nullptr){
-            CFRelease(ourName);
-        }
-        CFRelease(frame);
-
-        if(fallback){
-            result.requiresFallback = true;
-            result.subRuns.clear();
-        } else if(!primarySubRun.glyphIds.empty()){
-            result.subRuns.push_back(std::move(primarySubRun));
-        }
-
-        if(textTraceEnabled()){
-            std::size_t totalGlyphs = 0;
-            for(const auto &sr : result.subRuns) totalGlyphs += sr.glyphIds.size();
-            std::cout << "[wtk-text] CTGlyphRun::shape -> "
-                      << (result.requiresFallback ? "FALLBACK" : "MSDF")
-                      << ", subRuns=" << result.subRuns.size()
-                      << ", glyphs=" << totalGlyphs << std::endl;
-        }
-        return result;
-    }
-
-};
-
-Core::SharedPtr<GlyphRun>
-GlyphRun::fromUStringAndFont(const OmegaCommon::UniString &str, Core::SharedPtr<Font> &font) {
-    auto run = new CTGlyphRun();
-    run->font = std::dynamic_pointer_cast<CoreTextFont>(font);
-    auto text = [NSString stringWithCharacters:(const unichar *)str.getBuffer() length:str.length()];
-    auto nativeFont = (run->font != nullptr) ? (CTFontRef)run->font->getNativeFont() : nullptr;
-    if(nativeFont != nullptr){
-        run->str = [[NSAttributedString alloc] initWithString:text
-                                                    attributes:@{NSFontAttributeName:(__bridge id)nativeFont}];
-    }
-    else {
-        run->str = [[NSAttributedString alloc] initWithString:text];
-    }
-    return (Core::SharedPtr<GlyphRun>)run;
-}
-
- class CTTextRect : public TextRect {
-     CTFramesetterRef framesetterRef;
-     CTFrameRef frame;
-     NSAttributedString *strData;
-     TextLayoutDescriptor layoutDesc;
-     void _updateStrInternal(){
-
-     };
- public:
-     CTTextRect(Composition::Rect & rect,const TextLayoutDescriptor &layoutDesc):
-     TextRect(rect),
-     framesetterRef(nullptr),
-     frame(nullptr),
-     strData(nil),
-     layoutDesc(layoutDesc){
-         NSLog(@"CTTextRect Create With W: %f H: %f",rect.w,rect.h);
-     };
-     void drawRun(Core::SharedPtr<GlyphRun> &glyphRun, const Composition::Color &color) override {
-          auto gr = std::dynamic_pointer_cast<CTGlyphRun>(glyphRun);
-          if(gr == nullptr || gr->str == nil){
-              return;
-          }
-          if(frame != nullptr){
-              CFRelease(frame);
-              frame = nullptr;
-          }
-          if(framesetterRef != nullptr){
-              CFRelease(framesetterRef);
-              framesetterRef = nullptr;
-          }
-
-          auto attributed = [[NSMutableAttributedString alloc] initWithAttributedString:gr->str];
-          auto range = NSMakeRange(0,attributed.length);
-          auto textColor = [NSColor colorWithSRGBRed:color.r green:color.g blue:color.b alpha:color.a];
-          auto paragraphStyle = [[NSMutableParagraphStyle alloc] init];
-          [paragraphStyle setAlignment:toNSTextAlignment(layoutDesc.alignment)];
-          [paragraphStyle setLineBreakMode:toNSLineBreakMode(layoutDesc.wrapping)];
-
-          if(range.length > 0){
-              [attributed addAttribute:NSForegroundColorAttributeName value:textColor range:range];
-              [attributed addAttribute:NSParagraphStyleAttributeName value:paragraphStyle range:range];
-          }
-
-          auto nativeFont = (gr->font != nullptr) ? (CTFontRef)gr->font->getNativeFont() : nullptr;
-          if(range.length > 0 && nativeFont != nullptr){
-              [attributed addAttribute:NSFontAttributeName value:(__bridge id)nativeFont range:range];
-          }
-
-          strData = attributed;
-
-          CGFloat scaleFactor = currentScreenScale();
-          CGPathRef textPath = CGPathCreateWithRect(CGRectMake(0.f,0.f,rect.w * scaleFactor,rect.h * scaleFactor),NULL);
-          framesetterRef = CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)strData);
-          CFRange frameRange = CFRangeMake(0,CFIndex(strData.length));
-          if(layoutDesc.lineLimit > 0){
-              CTFrameRef preliminaryFrame = CTFramesetterCreateFrame(framesetterRef,frameRange,textPath,NULL);
-              if(preliminaryFrame != nullptr){
-                  CFArrayRef lines = CTFrameGetLines(preliminaryFrame);
-                  CFIndex lineCount = lines != nullptr ? CFArrayGetCount(lines) : 0;
-                  if(lineCount > static_cast<CFIndex>(layoutDesc.lineLimit)){
-                      CTLineRef lastAllowedLine = (CTLineRef)CFArrayGetValueAtIndex(
-                              lines,
-                              static_cast<CFIndex>(layoutDesc.lineLimit) - 1);
-                      if(lastAllowedLine != nullptr){
-                          CFRange visibleRange = CTLineGetStringRange(lastAllowedLine);
-                          CFIndex endIndex = visibleRange.location + visibleRange.length;
-                          if(endIndex > 0 && endIndex < frameRange.length){
-                              frameRange.length = endIndex;
-                          }
-                      }
-                  }
-                  CFRelease(preliminaryFrame);
-              }
-          }
-          frame = CTFramesetterCreateFrame(framesetterRef,frameRange,textPath,NULL);
-          CGPathRelease(textPath);
-     }
-     void * getNative() override{
-         return (void *)frame;
-     };
-     void getGlyphBoundingBoxes(Composition::Rect **rects, unsigned * count){
-         *count = 0;
-         CoreTextFont *fontRef = nullptr;
-         CFArrayRef lines = CTFrameGetLines(frame);
-         for(unsigned idx = 0;idx < CFArrayGetCount(lines);idx++){
-             CTLineRef line = (CTLineRef)CFArrayGetValueAtIndex(lines,idx);
-             CFArrayRef runs =  CTLineGetGlyphRuns(line);
-             for(unsigned j = 0;j < CFArrayGetCount(runs);j++){
-                 CTRunRef run = (CTRunRef)CFArrayGetValueAtIndex(runs,j);
-                 const CGGlyph *ptr = CTRunGetGlyphsPtr(run);
-                 CFIndex count = CTRunGetGlyphCount(run);
-                 CGRect *rect = new CGRect[count];
-                 CTFontGetBoundingRectsForGlyphs(fontRef->native,kCTFontOrientationDefault,ptr,rect,count);
-             };
-         }
-     };
-     // void reload() {
-
-     // };
-     BitmapRes toBitmap() override{
-        BitmapRes res;
-         CGFloat scaleFactor = currentScreenScale();
-         const size_t pixelWidth = size_t(rect.w * scaleFactor);
-         const size_t pixelHeight = size_t(rect.h * scaleFactor);
-         const size_t bytesPerRow = pixelWidth * 4;
-         const size_t byteCount = bytesPerRow * pixelHeight;
-         auto *data = new unsigned char[byteCount];
-         std::memset(data,0,byteCount);
-
-         CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-         CGContextRef context = CGBitmapContextCreateWithData(data,pixelWidth,pixelHeight,8,bytesPerRow,colorSpace,kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little,NULL,NULL);
-         CGColorSpaceRelease(colorSpace);
-         if(context == nullptr){
-             delete [](unsigned char *) data;
-             return res;
-         }
-         CGContextSetAllowsAntialiasing(context,true);
-         CGContextSetShouldAntialias(context,true);
-         CGContextSetInterpolationQuality(context,kCGInterpolationHigh);
-         CGContextSetShouldSmoothFonts(context,true);
-         CGContextSetAllowsFontSmoothing(context,true);
-         CGContextSetShouldSubpixelPositionFonts(context,true);
-         CGContextSetAllowsFontSubpixelPositioning(context,true);
-         CGContextSetShouldSubpixelQuantizeFonts(context,true);
-         CGContextSetAllowsFontSubpixelQuantization(context,true);
-         CGContextSetTextMatrix(context,CGAffineTransformIdentity);
-         if(frame != nullptr){
-             CTFrameDraw(frame,context);
-         }
-         CGContextFlush(context);
-
-
-         OmegaGTE::TextureDescriptor desc {};
-         desc.usage = OmegaGTE::GETexture::ToGPU;
-         desc.storage_opts = OmegaGTE::Shared;
-         desc.pixelFormat = OmegaGTE::TexturePixelFormat::BGRA8Unorm;
-         desc.kind = OmegaGTE::TextureKind::Tex2D;
-         desc.width = (unsigned)pixelWidth;
-         desc.height = (unsigned)pixelHeight;
-
-         auto texture = gte.graphicsEngine->makeTexture(desc);
-         NSLog(@"CGBitmapContextData: %p",data);
-         // CGBitmapContext writes rows bottom-up (CG default coord system);
-         // GTE samplers treat row 0 as the top, so an unflipped upload
-         // shows text upside down. Mirror BitmapTextureCache's §4.5
-         // region-aware row-flip on upload — dest row `r` consumes source
-         // row `pixelHeight - 1 - r`.
-         {
-             auto *base = static_cast<unsigned char *>(data);
-             for(unsigned r = 0; r < (unsigned)pixelHeight; ++r){
-                 OmegaGTE::TextureRegion region {0, r, 0, (unsigned)pixelWidth, 1, 1};
-                 texture->copyBytes(base + (pixelHeight - 1 - r) * bytesPerRow,
-                                    bytesPerRow, region);
-             }
-         }
-
-        CGContextRelease(context);
-
-
-         delete [](unsigned char *) data;
-        res.s = texture;
-         return res;
-     };
-     ~CTTextRect(){
-         if(frame != nullptr){
-             CFRelease(frame);
-             frame = nullptr;
-         }
-         if(framesetterRef != nullptr){
-             CFRelease(framesetterRef);
-             framesetterRef = nullptr;
-         }
-     };
- };
-
- Core::SharedPtr<TextRect> TextRect::Create(Composition::Rect rect,const TextLayoutDescriptor & layoutDesc, float renderScale){
-     // TODO: DPI plumbing — see wtk/docs/DPI-Aware-Text-Plan.md. Currently
-     // ignores renderScale; CoreText path needs an offscreen bitmap sized to
-     // physical pixels plus a backingScaleFactor on the CGContext.
-     (void)renderScale;
-     return Core::SharedPtr<TextRect>(new CTTextRect(rect,layoutDesc));
- };
 
   FontEngine * FontEngine::instance;
 
@@ -763,6 +355,100 @@ public:
     ITextShaper *   shaper()   override { return &shaper_;   }
     IFontFallback * fallback() override { return &fallback_; }
 
+    // Phase 7. Replaces the legacy `CTTextRect::drawRun` /
+    // `CTFramesetter` path. The layout engine has already positioned
+    // every glyph; this only needs to lower the per-glyph (gid,
+    // canvasX, canvasY) tuples onto a CGBitmapContext via
+    // `CTFontDrawGlyphs` and upload the result as a GETexture. Same
+    // texture lifecycle as a `drawImage` call.
+    BitmapTextResult rasterizeSubRunToTexture(
+            const TextSubRun & subRun,
+            const Composition::Rect & rect,
+            const Composition::Color & color,
+            float renderScale) override {
+        BitmapTextResult res;
+        if(subRun.resolvedFont == nullptr || subRun.glyphIds.empty()
+                || subRun.glyphIds.size() != subRun.positions.size()){
+            return res;
+        }
+        auto ctF = std::dynamic_pointer_cast<CoreTextFont>(subRun.resolvedFont);
+        if(ctF == nullptr){
+            return res;
+        }
+        // Rasterize against the *unscaled* CTFontRef — the layout
+        // engine works in logical pixels and so does this face. The
+        // `renderScale` factor lives only on the surface transform.
+        CTFontRef ctFont = ctF->getUnscaledFont();
+        if(ctFont == nullptr){
+            return res;
+        }
+        const float scale = (renderScale > 0.f) ? renderScale : 1.f;
+        const std::size_t pixW =
+            std::max<std::size_t>(1, (std::size_t)std::ceil(rect.w * scale));
+        const std::size_t pixH =
+            std::max<std::size_t>(1, (std::size_t)std::ceil(rect.h * scale));
+        const std::size_t bpr = pixW * 4;
+        std::vector<std::uint8_t> data(bpr * pixH, 0);
+
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGContextRef ctx = CGBitmapContextCreateWithData(
+            data.data(), pixW, pixH, 8, bpr, cs,
+            kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little,
+            NULL, NULL);
+        CGColorSpaceRelease(cs);
+        if(ctx == nullptr){
+            return res;
+        }
+
+        // Flip the user space to Y-down so the layout engine's
+        // canvas-space positions map straight in (origin = top-left,
+        // y increases downward), and counter-flip the text matrix so
+        // glyph ink renders right-side up in screen space.
+        CGContextTranslateCTM(ctx, 0.f, (CGFloat)pixH);
+        CGContextScaleCTM(ctx, (CGFloat)scale, -(CGFloat)scale);
+        CGContextSetTextMatrix(ctx, CGAffineTransformMakeScale(1, -1));
+
+        CGContextSetShouldAntialias(ctx, true);
+        CGContextSetAllowsAntialiasing(ctx, true);
+        CGContextSetShouldSmoothFonts(ctx, true);
+        CGContextSetAllowsFontSmoothing(ctx, true);
+        CGContextSetShouldSubpixelPositionFonts(ctx, true);
+        CGContextSetAllowsFontSubpixelPositioning(ctx, true);
+        CGContextSetRGBFillColor(ctx, color.r, color.g, color.b, color.a);
+
+        std::vector<CGGlyph> glyphs;
+        std::vector<CGPoint> positions;
+        glyphs.reserve(subRun.glyphIds.size());
+        positions.reserve(subRun.positions.size());
+        for(std::size_t i = 0; i < subRun.glyphIds.size(); ++i){
+            glyphs.push_back(static_cast<CGGlyph>(subRun.glyphIds[i]));
+            positions.push_back(CGPointMake(
+                (CGFloat)subRun.positions[i].x,
+                (CGFloat)subRun.positions[i].y));
+        }
+        CTFontDrawGlyphs(ctFont, glyphs.data(), positions.data(),
+                         glyphs.size(), ctx);
+        CGContextFlush(ctx);
+        CGContextRelease(ctx);
+
+        OmegaGTE::TextureDescriptor desc {};
+        desc.usage         = OmegaGTE::GETexture::ToGPU;
+        desc.storage_opts  = OmegaGTE::Shared;
+        desc.pixelFormat   = OmegaGTE::TexturePixelFormat::BGRA8Unorm;
+        desc.kind          = OmegaGTE::TextureKind::Tex2D;
+        desc.width         = (unsigned)pixW;
+        desc.height        = (unsigned)pixH;
+        auto texture = gte.graphicsEngine->makeTexture(desc);
+        if(texture == nullptr){
+            return res;
+        }
+        // The Y-flip transform above lays pixels out top-row-first
+        // already, matching the GTE sampler convention — single
+        // contiguous copyBytes, no per-row mirroring.
+        texture->copyBytes(data.data(), bpr);
+        res.texture = texture;
+        return res;
+    }
 
     Core::SharedPtr<Font> CreateFont(FontDescriptor & desc) override{
      CTFontRef ref = CTFontCreateWithNameAndOptions((__bridge CFStringRef)[NSString stringWithUTF8String:desc.family.c_str()],CGFloat(desc.size),NULL,kCTFontOptionsPreferSystemFont);
