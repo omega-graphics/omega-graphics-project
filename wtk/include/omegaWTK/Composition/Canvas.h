@@ -76,10 +76,49 @@ namespace OmegaWTK {
     class Canvas;
 
 
-    
+
     /// `TextSubRun` lives in `FontEngine.h` (Phase 6.7-c4) and is the
     /// resolved-font-grouped output of the WTK text layout engine.
     /// Visible here through `FontEngine.h`'s inclusion above.
+
+    /// Result of running `Canvas::drawText`'s shaping pipeline without
+    /// dispatching anything. Splits the layout output into the two
+    /// channels the renderer needs:
+    ///
+    ///  - `msdfSubRuns` — MSDF runs (one per resolved face). Each can
+    ///    be packaged into a `DrawOp::TextRun` (or fed to
+    ///    `Canvas::drawTextRun`) and rides the atlas pipeline.
+    ///  - `bitmapBlits` — per-sub-run pre-rasterized textures for
+    ///    fonts in `BitmapFallback` mode. Each becomes a
+    ///    `DrawOp::Bitmap` (or feeds `Canvas::drawGETexture`).
+    ///
+    /// Used by the legacy `Canvas::drawText` entry point and by the
+    /// new DisplayList-emitting paint paths (UIView-Render-Redesign-
+    /// Plan Tier 2 Phase 2.1) so they share the same shaping +
+    /// fallback semantics. Pure function; no Canvas / GPU state
+    /// touched.
+    struct OMEGAWTK_EXPORT ShapedTextRun {
+        struct BitmapBlit {
+            Core::SharedPtr<OmegaGTE::GETexture> texture;
+            Core::SharedPtr<OmegaGTE::GEFence> fence;
+        };
+        OmegaCommon::Vector<TextSubRun> msdfSubRuns;
+        OmegaCommon::Vector<BitmapBlit> bitmapBlits;
+    };
+
+    /// Layout, group, partition, and ensure-residency for an MSDF + bitmap
+    /// text run, without emitting any draw call. The MSDF path calls
+    /// `Font::ensureGlyphsResident` *here* because atlas uploads are
+    /// illegal inside the compositor's frame render pass; the bitmap
+    /// path rasterizes through the engine's CPU rasterizer.
+    /// `renderScale` is the owning view's render scale (DPI factor).
+    OMEGAWTK_EXPORT ShapedTextRun shapeTextForDisplayList(
+        const OmegaCommon::UniString & text,
+        const Core::SharedPtr<Font> & font,
+        const Composition::Rect & rect,
+        const Composition::Color & color,
+        const TextLayoutDescriptor & layoutDesc,
+        float renderScale);
 
     /// An object drawn by a Compositor.
     struct  OMEGAWTK_EXPORT VisualCommand {
@@ -492,6 +531,23 @@ namespace OmegaWTK {
          */
         void drawShadow(Composition::Ellipse & ellipse,
                         const LayerEffect::DropShadowParams & shadow);
+
+        /**
+         @brief Emit a pre-shaped MSDF `TextRun` visual command.
+         @param subRuns One entry per resolved face after layout-engine
+         fallback. Shaping is the caller's responsibility — this
+         method does no layout, no fallback, and no atlas residency
+         work. Used by `DisplayListReplay` to dispatch a
+         `DrawOp::TextRun` without re-running shaping; the high-level
+         `drawText` path remains the right entry for unshaped UTF
+         input.
+         @param rect Bounds rect for the run (used by the backend as
+         the draw region for atlas-textured quad batches).
+         @param color Foreground color.
+         */
+        void drawTextRun(OmegaCommon::Vector<TextSubRun> subRuns,
+                         const Composition::Rect & rect,
+                         const Composition::Color & color);
 
         /**
          @brief Set the per-element transform matrix for subsequent draw calls.

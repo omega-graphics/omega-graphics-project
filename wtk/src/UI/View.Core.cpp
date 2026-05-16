@@ -121,6 +121,10 @@ void View::resize(Composition::Rect newRect){
     if(impl_->ownLayerTree != nullptr && impl_->ownLayerTree->getRootLayer() != nullptr){
         impl_->ownLayerTree->getRootLayer()->resize(impl_->rect);
     }
+    // Phase 2.5: emit on the new rect *after* it's been committed and
+    // the layer tree caught up, so subscribers (NativeViewHost et al)
+    // observe a consistent post-resize state.
+    onLayoutResolved.emit(impl_->rect);
 }
 
 

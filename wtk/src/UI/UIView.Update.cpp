@@ -1,6 +1,5 @@
 #include "UIViewImpl.h"
-
-#include <unordered_map>
+#include "omegaWTK/Composition/DisplayList.h"
 
 namespace OmegaWTK {
 
@@ -45,6 +44,16 @@ bool isSuspiciousDimensionPair(float w,float h){
 }
 
 Composition::Rect localBoundsFromView(UIView *view){
+    // UIView-Render-Redesign-Plan Tier 2 Phase 2.2: per-call
+    // computation, no cache. The previous static
+    // `unordered_map<UIView*, StableBoundsState>` smoothed transient
+    // invalid dimensions during resize by returning the last
+    // known-good rect; per plan §1.4 + Render-Execution-Efficiency-
+    // Plan NV-1..NV-3, the single-surface refactor already removed
+    // the resize races that produced those transient invalid
+    // dimensions, so the cache no longer earns its lifetime hazard
+    // (pointer-keyed, never erased on UIView destruction, not
+    // thread-safe).
     constexpr Composition::Rect kFallbackRect{
             Composition::Point2D{0.f,0.f},
             1.f,
@@ -53,12 +62,6 @@ Composition::Rect localBoundsFromView(UIView *view){
     if(view == nullptr){
         return kFallbackRect;
     }
-
-    struct StableBoundsState {
-        bool hasStable = false;
-        Composition::Rect bounds {Composition::Point2D{0.f,0.f},1.f,1.f};
-    };
-    static std::unordered_map<UIView *,StableBoundsState> stableBoundsByView {};
 
     const auto & viewRect = view->getRect();
     float viewWidth = viewRect.w;
@@ -82,37 +85,23 @@ Composition::Rect localBoundsFromView(UIView *view){
 
     float width = 0.f;
     float height = 0.f;
-    bool candidateValid = false;
     if(viewValid){
         width = viewWidth;
         height = viewHeight;
-        candidateValid = true;
     }
     else if(limbValid){
         width = limbWidth;
         height = limbHeight;
-        candidateValid = true;
     }
-
-    auto & stable = stableBoundsByView[view];
-    if(!candidateValid){
-        if(stable.hasStable){
-            return stable.bounds;
-        }
+    else {
         return kFallbackRect;
     }
 
-    width = clampDrawableDimension(width);
-    height = clampDrawableDimension(height);
-
-    Composition::Rect resolved {
+    return Composition::Rect{
             Composition::Point2D{0.f,0.f},
-            width,
-            height
+            clampDrawableDimension(width),
+            clampDrawableDimension(height)
     };
-    stable.hasStable = true;
-    stable.bounds = resolved;
-    return resolved;
 }
 
 }
@@ -216,9 +205,17 @@ void UIView::update(){
     rootBackground.b = backgroundColor.b;
     rootBackground.a = backgroundColor.a;
 
+    // UIView-Render-Redesign-Plan Tier 2 Phase 2.1: paint is now a
+    // pure function of model + layout + style + animation. Every
+    // would-be-Canvas call below appends to this function-local
+    // `DisplayList`; the single `DisplayListReplay::replay` at the
+    // end of `update()` drives the same GPU path the per-call
+    // `Canvas` API used to. Background rect is the first op.
+    Composition::DisplayList displayList;
+
     auto rootBgBrush = Composition::ColorBrush(backgroundColor);
     auto rootBgRect = localBounds;
-    impl_->rootCanvas->drawRect(rootBgRect,rootBgBrush);
+    displayList.append(Composition::DrawOp{rootBgRect, rootBgBrush});
 
     ChildResizeSpec layoutClamp {};
     layoutClamp.resizable = true;
@@ -270,7 +267,8 @@ void UIView::update(){
                     case Shape::Type::Rect: {
                         auto rect = shapeToDraw.rect;
                         rect = ViewResizeCoordinator::clampRectToParent(rect,localBounds,layoutClamp);
-                        impl_->rootCanvas->drawShadow(rect,shadowParams);
+                        displayList.append(Composition::DrawOp{
+                            shadowParams, rect, 0.f, false});
                         break;
                     }
                     case Shape::Type::RoundedRect: {
@@ -282,7 +280,10 @@ void UIView::update(){
                         rr.h = clampedRect.h;
                         rr.rad_x = std::min(rr.rad_x,rr.w * 0.5f);
                         rr.rad_y = std::min(rr.rad_y,rr.h * 0.5f);
-                        impl_->rootCanvas->drawShadow(rr,shadowParams);
+                        Composition::Rect shapeRect {rr.pos, rr.w, rr.h};
+                        const float radius = std::min(rr.rad_x, rr.rad_y);
+                        displayList.append(Composition::DrawOp{
+                            shadowParams, shapeRect, radius, false});
                         break;
                     }
                     case Shape::Type::Ellipse: {
@@ -293,13 +294,8 @@ void UIView::update(){
                             std::max(1.f,srcEllipse.rad_y * 2.f)
                         };
                         ellipseRect = ViewResizeCoordinator::clampRectToParent(ellipseRect,localBounds,layoutClamp);
-                        Composition::Ellipse ellipse {
-                            ellipseRect.pos.x + (ellipseRect.w * 0.5f),
-                            ellipseRect.pos.y + (ellipseRect.h * 0.5f),
-                            ellipseRect.w * 0.5f,
-                            ellipseRect.h * 0.5f
-                        };
-                        impl_->rootCanvas->drawShadow(ellipse,shadowParams);
+                        displayList.append(Composition::DrawOp{
+                            shadowParams, ellipseRect, 0.f, true});
                         break;
                     }
                     default:
@@ -311,7 +307,7 @@ void UIView::update(){
                 case Shape::Type::Rect: {
                     auto rect = shapeToDraw.rect;
                     rect = ViewResizeCoordinator::clampRectToParent(rect,localBounds,layoutClamp);
-                    impl_->rootCanvas->drawRect(rect,brush);
+                    displayList.append(Composition::DrawOp{rect, brush});
                     break;
                 }
                 case Shape::Type::RoundedRect: {
@@ -323,7 +319,7 @@ void UIView::update(){
                     rect.h = clampedRect.h;
                     rect.rad_x = std::min(rect.rad_x,rect.w * 0.5f);
                     rect.rad_y = std::min(rect.rad_y,rect.h * 0.5f);
-                    impl_->rootCanvas->drawRoundedRect(rect,brush);
+                    displayList.append(Composition::DrawOp{rect, brush});
                     break;
                 }
                 case Shape::Type::Ellipse: {
@@ -343,7 +339,7 @@ void UIView::update(){
                         ellipseRect.w * 0.5f,
                         ellipseRect.h * 0.5f
                     };
-                    impl_->rootCanvas->drawEllipse(ellipse,brush);
+                    displayList.append(Composition::DrawOp{ellipse, brush});
                     break;
                 }
                 case Shape::Type::Path: {
@@ -354,7 +350,7 @@ void UIView::update(){
                             path.close();
                         }
                         path.setPathBrush(brush);
-                        impl_->rootCanvas->drawPath(path);
+                        displayList.append(Composition::DrawOp{shapeToDraw.path});
                     }
                     break;
                 }
@@ -374,11 +370,25 @@ void UIView::update(){
                     static_cast<int32_t>(spec.text->size()));
                 auto textLayout = textStyle.layout;
                 textLayout.lineLimit = textStyle.lineLimit;
-                impl_->rootCanvas->drawText(unicodeText,font,textRect,textStyle.color,textLayout);
+                // Shape upstream of DrawOp emission so paint stays a
+                // pure function. Bitmap-fallback sub-runs ride
+                // `DrawOp::Bitmap`; MSDF sub-runs ride `DrawOp::TextRun`.
+                auto shaped = Composition::shapeTextForDisplayList(
+                    unicodeText, font, textRect, textStyle.color,
+                    textLayout, getRenderScale());
+                for(auto & blit : shaped.bitmapBlits){
+                    displayList.append(Composition::DrawOp{
+                        blit.texture, blit.fence, textRect});
+                }
+                if(!shaped.msdfSubRuns.empty()){
+                    displayList.append(Composition::DrawOp{
+                        std::move(shaped.msdfSubRuns), textRect, textStyle.color});
+                }
             }
         }
     }
 
+    Composition::DisplayListReplay::replay(displayList, *impl_->rootCanvas);
     impl_->rootCanvas->sendFrame();
 
     endCompositionSession();

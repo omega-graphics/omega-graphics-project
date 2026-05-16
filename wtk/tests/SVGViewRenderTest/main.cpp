@@ -59,7 +59,7 @@ protected:
 
     void onPaint(OmegaWTK::PaintReason reason) override {
         (void)reason;
-        svgView().renderNow();
+        svgView().paint();
     }
 
     bool isLayoutResizable() const override { return false; }

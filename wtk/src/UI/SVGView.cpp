@@ -3,6 +3,7 @@
 #include "omegaWTK/Composition/Path.h"
 #include "omegaWTK/Composition/Brush.h"
 #include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Composition/DisplayList.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -70,8 +71,7 @@ float parseFloatAttr(Core::XMLDocument::Tag & tag, const char * name, float fall
 }
 
 // Phase 7: OmegaWTK pos.y is top-edge (Y-down) — same as SVG — so no
-// flip is needed. The previous `flipY(y, svgHeight) = svgHeight - y`
-// helper compensated for the legacy Y-up widget convention.
+// flip is needed.
 
 // ---------------------------------------------------------------------------
 // SVG path `d` tokenizer & parser  (M/m L/l H/h V/v Z/z, C/c as polyline)
@@ -121,25 +121,17 @@ struct PathTokenizer {
     }
 };
 
-Composition::Path parseSVGPathData(const OmegaCommon::String & d, float svgH) {
+Composition::Path parseSVGPathData(const OmegaCommon::String & d) {
     PathTokenizer tok(d);
 
-    // curX/curY track the current point in SVG (Y-down) space.
-    // All absolute Y values are flipped when emitted to the Path.
-    // Relative deltas invert only their Y component.
     float curX = 0.f, curY = 0.f;
     float startX = 0.f, startY = 0.f;
     bool started = false;
     Composition::Path path(Composition::Point2D{0.f, 0.f});
 
-    (void)svgH;
-    auto emit = [&](float ax, float ay) -> Composition::Point2D {
-        return {ax, ay};
-    };
-
     auto ensureStarted = [&](float x, float y) {
         if (!started) {
-            path.goTo(emit(x, y));
+            path.goTo(Composition::Point2D{x, y});
             startX = x;
             startY = y;
             curX = x;
@@ -161,7 +153,7 @@ Composition::Path parseSVGPathData(const OmegaCommon::String & d, float svgH) {
         switch (cmd) {
         case 'M':
             if (!tok.readNumber(x) || !tok.readNumber(y)) goto done;
-            if (started) path.goTo(emit(x, y));
+            if (started) path.goTo(Composition::Point2D{x, y});
             ensureStarted(x, y);
             curX = x; curY = y;
             startX = x; startY = y;
@@ -170,7 +162,7 @@ Composition::Path parseSVGPathData(const OmegaCommon::String & d, float svgH) {
         case 'm':
             if (!tok.readNumber(x) || !tok.readNumber(y)) goto done;
             x += curX; y += curY;
-            if (started) path.goTo(emit(x, y));
+            if (started) path.goTo(Composition::Point2D{x, y});
             ensureStarted(x, y);
             curX = x; curY = y;
             startX = x; startY = y;
@@ -179,40 +171,40 @@ Composition::Path parseSVGPathData(const OmegaCommon::String & d, float svgH) {
         case 'L':
             if (!tok.readNumber(x) || !tok.readNumber(y)) goto done;
             ensureStarted(x, y);
-            path.addLine(emit(x, y));
+            path.addLine(Composition::Point2D{x, y});
             curX = x; curY = y;
             break;
         case 'l':
             if (!tok.readNumber(x) || !tok.readNumber(y)) goto done;
             x += curX; y += curY;
             ensureStarted(x, y);
-            path.addLine(emit(x, y));
+            path.addLine(Composition::Point2D{x, y});
             curX = x; curY = y;
             break;
         case 'H':
             if (!tok.readNumber(x)) goto done;
             ensureStarted(x, curY);
-            path.addLine(emit(x, curY));
+            path.addLine(Composition::Point2D{x, curY});
             curX = x;
             break;
         case 'h':
             if (!tok.readNumber(x)) goto done;
             x += curX;
             ensureStarted(x, curY);
-            path.addLine(emit(x, curY));
+            path.addLine(Composition::Point2D{x, curY});
             curX = x;
             break;
         case 'V':
             if (!tok.readNumber(y)) goto done;
             ensureStarted(curX, y);
-            path.addLine(emit(curX, y));
+            path.addLine(Composition::Point2D{curX, y});
             curY = y;
             break;
         case 'v':
             if (!tok.readNumber(y)) goto done;
             y += curY;
             ensureStarted(curX, y);
-            path.addLine(emit(curX, y));
+            path.addLine(Composition::Point2D{curX, y});
             curY = y;
             break;
         case 'C': {
@@ -221,7 +213,7 @@ Composition::Path parseSVGPathData(const OmegaCommon::String & d, float svgH) {
                 !tok.readNumber(x2) || !tok.readNumber(y2) ||
                 !tok.readNumber(x3) || !tok.readNumber(y3)) goto done;
             ensureStarted(curX, curY);
-            path.addLine(emit(x3, y3));
+            path.addLine(Composition::Point2D{x3, y3});
             curX = x3; curY = y3;
             break;
         }
@@ -232,7 +224,7 @@ Composition::Path parseSVGPathData(const OmegaCommon::String & d, float svgH) {
                 !tok.readNumber(dx3) || !tok.readNumber(dy3)) goto done;
             ensureStarted(curX, curY);
             float ex = curX + dx3, ey = curY + dy3;
-            path.addLine(emit(ex, ey));
+            path.addLine(Composition::Point2D{ex, ey});
             curX = ex; curY = ey;
             break;
         }
@@ -253,7 +245,7 @@ done:
 // Parse SVG `points` attribute  (polyline / polygon)
 // ---------------------------------------------------------------------------
 
-OmegaCommon::Vector<Composition::Point2D> parsePointsList(const OmegaCommon::String & pts, float svgH) {
+OmegaCommon::Vector<Composition::Point2D> parsePointsList(const OmegaCommon::String & pts) {
     OmegaCommon::Vector<Composition::Point2D> result;
     const char * p = pts.c_str();
     const char * end = p + pts.size();
@@ -275,183 +267,184 @@ OmegaCommon::Vector<Composition::Point2D> parsePointsList(const OmegaCommon::Str
     return result;
 }
 
-} // anonymous namespace
-
 // ---------------------------------------------------------------------------
-// SVGDrawOp  -- the display-list entry
+// Style attribute decoding — produced once per shape at parse time and
+// folded directly into the DrawOp.
 // ---------------------------------------------------------------------------
 
-struct SVGDrawOp {
-    enum class Type : int {
-        Rect,
-        RoundedRect,
-        Ellipse,
-        Path,
-        Line,
-        Polyline
-    };
-
-    Type type;
-
-    Composition::Rect rectGeom {};
-    Composition::RoundedRect roundedRectGeom {};
-    Composition::Ellipse ellipseGeom {};
-    Core::Optional<Composition::Path> pathGeom;
-
-    // Geometry for Line / Polyline ops.
-    Composition::Point2D lineFrom {};
-    Composition::Point2D lineTo {};
-    OmegaCommon::Vector<Composition::Point2D> polyPoints {};
-    /// True for `<polygon>` (last vertex connects back to the first),
-    /// false for `<polyline>`.
-    bool polyClosed = false;
-
-    Composition::Color fillColor {};
-    float fillOpacity = 1.f;
+struct ResolvedStyle {
+    Composition::Color fillColor   = Composition::Color::create8Bit(Composition::Color::Black8);
+    float              fillOpacity = 1.f;
     Composition::Color strokeColor {};
-    float strokeWidth = 0.f;
-    float strokeOpacity = 1.f;
+    float              strokeWidth = 0.f;
+    float              strokeOpacity = 1.f;
+
+    bool hasFill()   const { return fillOpacity   > 0.f; }
+    bool hasStroke() const { return strokeWidth   > 0.f && strokeOpacity > 0.f; }
+
+    Core::SharedPtr<Composition::Brush> fillBrush() const {
+        auto c = fillColor; c.a = fillOpacity;
+        return Composition::ColorBrush(c);
+    }
+    Core::SharedPtr<Composition::Brush> strokeBrush() const {
+        auto c = strokeColor; c.a = strokeOpacity;
+        return Composition::ColorBrush(c);
+    }
+    Core::Optional<Composition::Border> border() const {
+        if (!hasStroke()) return std::nullopt;
+        auto brush = strokeBrush();
+        return Composition::Border{brush, static_cast<unsigned>(strokeWidth)};
+    }
 };
 
-struct SVGDrawOpList {
-    OmegaCommon::Vector<SVGDrawOp> ops;
-};
-
-// ---------------------------------------------------------------------------
-// Style attribute helpers
-// ---------------------------------------------------------------------------
-
-namespace {
-
-void parseStyleAttrs(Core::XMLDocument::Tag & tag, SVGDrawOp & op) {
+ResolvedStyle parseStyleAttrs(Core::XMLDocument::Tag & tag) {
+    ResolvedStyle s {};
     auto fill = tag.attribute("fill");
     if (fill.size() != 0) {
         OmegaCommon::String fs(fill);
         if (fs == "none")
-            op.fillOpacity = 0.f;
+            s.fillOpacity = 0.f;
         else
-            op.fillColor = parseColor(fs);
-    } else {
-        op.fillColor = Composition::Color::create8Bit(Composition::Color::Black8);
+            s.fillColor = parseColor(fs);
     }
-
     auto fo = tag.attribute("fill-opacity");
     if (fo.size() != 0)
-        op.fillOpacity = std::strtof(OmegaCommon::String(fo).c_str(), nullptr);
+        s.fillOpacity = std::strtof(OmegaCommon::String(fo).c_str(), nullptr);
 
     auto stroke = tag.attribute("stroke");
     if (stroke.size() != 0) {
         OmegaCommon::String ss(stroke);
         if (ss == "none")
-            op.strokeWidth = 0.f;
+            s.strokeWidth = 0.f;
         else
-            op.strokeColor = parseColor(ss);
+            s.strokeColor = parseColor(ss);
     }
-
     auto sw = tag.attribute("stroke-width");
     if (sw.size() != 0)
-        op.strokeWidth = std::strtof(OmegaCommon::String(sw).c_str(), nullptr);
-
+        s.strokeWidth = std::strtof(OmegaCommon::String(sw).c_str(), nullptr);
     auto so = tag.attribute("stroke-opacity");
     if (so.size() != 0)
-        op.strokeOpacity = std::strtof(OmegaCommon::String(so).c_str(), nullptr);
+        s.strokeOpacity = std::strtof(OmegaCommon::String(so).c_str(), nullptr);
+    return s;
 }
 
 // ---------------------------------------------------------------------------
-// Recursive element walker
+// Helpers: pack a Path with the fill brush + stroke width and wrap it
+// in a `DrawOp::VectorPath`. Mirrors the `Canvas::drawPath` shape: the
+// Path carries the fill via `pathBrush`; the Border carries the stroke.
 // ---------------------------------------------------------------------------
 
-void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & ops, float svgH) {
+void emitPath(Composition::DisplayList & list,
+              Composition::Path && rawPath,
+              const ResolvedStyle & s,
+              bool closePath) {
+    if (closePath) rawPath.close();
+    auto path = std::make_shared<Composition::Path>(std::move(rawPath));
+
+    // SDF/triangulator pipeline reads stroke width off the Path itself
+    // for vector ops; setting it here keeps the Canvas::drawPath
+    // contract intact during replay.
+    if (s.hasStroke()) path->setStroke(s.strokeWidth);
+    if (s.hasFill()) {
+        auto fill = s.fillBrush();
+        path->setPathBrush(fill);
+    }
+    if (!s.hasFill() && !s.hasStroke()) return;
+    list.append(Composition::DrawOp{std::move(path), s.border()});
+}
+
+// Stroke-only shapes (e.g. `<rect>` with `fill="none"`) need a
+// transparent fill brush so the single-pass SDF draw emits just the
+// stroke band. Matches the prior fill-then-frame substitution.
+Core::SharedPtr<Composition::Brush> transparentFill() {
+    return Composition::ColorBrush(Composition::Color{0.f, 0.f, 0.f, 0.f});
+}
+
+// ---------------------------------------------------------------------------
+// Recursive element walker — appends one DrawOp per SVG shape.
+// ---------------------------------------------------------------------------
+
+void walkElement(Core::XMLDocument::Tag & tag, Composition::DisplayList & list) {
     auto name = tag.name();
     if (!tag.isElement())
         return;
 
     if (name == "rect") {
-        SVGDrawOp op {};
         float x  = parseFloatAttr(tag, "x");
         float y  = parseFloatAttr(tag, "y");
         float w  = parseFloatAttr(tag, "width");
         float h  = parseFloatAttr(tag, "height");
         float rx = parseFloatAttr(tag, "rx");
         float ry = parseFloatAttr(tag, "ry");
-        // SVG y is top edge; OmegaWTK pos.y is also top edge (Y-down).
+        auto s = parseStyleAttrs(tag);
+        if (!s.hasFill() && !s.hasStroke()) return;
+        auto brush = s.hasFill() ? s.fillBrush() : transparentFill();
         if (rx > 0.f || ry > 0.f) {
             if (rx == 0.f) rx = ry;
             if (ry == 0.f) ry = rx;
-            op.type = SVGDrawOp::Type::RoundedRect;
-            op.roundedRectGeom = Composition::RoundedRect{Composition::Point2D{x, y}, w, h, rx, ry};
+            Composition::RoundedRect rr{Composition::Point2D{x, y}, w, h, rx, ry};
+            list.append(Composition::DrawOp{rr, std::move(brush), s.border()});
         } else {
-            op.type = SVGDrawOp::Type::Rect;
-            op.rectGeom = Composition::Rect{Composition::Point2D{x, y}, w, h};
+            Composition::Rect r{Composition::Point2D{x, y}, w, h};
+            list.append(Composition::DrawOp{r, std::move(brush), s.border()});
         }
-        parseStyleAttrs(tag, op);
-        ops.push_back(std::move(op));
     }
-    else if (name == "circle") {
-        SVGDrawOp op {};
+    else if (name == "circle" || name == "ellipse") {
         float cx = parseFloatAttr(tag, "cx");
         float cy = parseFloatAttr(tag, "cy");
-        float r  = parseFloatAttr(tag, "r");
-        op.type = SVGDrawOp::Type::Ellipse;
-        op.ellipseGeom = Composition::Ellipse{cx, cy, r, r};
-        parseStyleAttrs(tag, op);
-        ops.push_back(std::move(op));
-    }
-    else if (name == "ellipse") {
-        SVGDrawOp op {};
-        float cx = parseFloatAttr(tag, "cx");
-        float cy = parseFloatAttr(tag, "cy");
-        float rx = parseFloatAttr(tag, "rx");
-        float ry = parseFloatAttr(tag, "ry");
-        op.type = SVGDrawOp::Type::Ellipse;
-        op.ellipseGeom = Composition::Ellipse{cx, cy, rx, ry};
-        parseStyleAttrs(tag, op);
-        ops.push_back(std::move(op));
+        float rx, ry;
+        if (name == "circle") {
+            rx = ry = parseFloatAttr(tag, "r");
+        } else {
+            rx = parseFloatAttr(tag, "rx");
+            ry = parseFloatAttr(tag, "ry");
+        }
+        auto s = parseStyleAttrs(tag);
+        if (!s.hasFill() && !s.hasStroke()) return;
+        auto brush = s.hasFill() ? s.fillBrush() : transparentFill();
+        Composition::Ellipse e{cx, cy, rx, ry};
+        list.append(Composition::DrawOp{e, std::move(brush), s.border()});
     }
     else if (name == "line") {
-        SVGDrawOp op {};
         float x1 = parseFloatAttr(tag, "x1");
         float y1 = parseFloatAttr(tag, "y1");
         float x2 = parseFloatAttr(tag, "x2");
         float y2 = parseFloatAttr(tag, "y2");
-        op.type = SVGDrawOp::Type::Line;
-        op.lineFrom = Composition::Point2D{x1, y1};
-        op.lineTo   = Composition::Point2D{x2, y2};
-        parseStyleAttrs(tag, op);
-        // `<line>` has no fill — only the stroke is meaningful.
-        op.fillOpacity = 0.f;
-        if (op.strokeWidth == 0.f)
-            op.strokeWidth = 1.f;
-        ops.push_back(std::move(op));
+        auto s = parseStyleAttrs(tag);
+        // `<line>` is stroke-only by SVG semantics; force the fill off
+        // and ensure a default stroke width so the line is visible.
+        s.fillOpacity = 0.f;
+        if (s.strokeWidth == 0.f) s.strokeWidth = 1.f;
+        if (!s.hasStroke()) return;
+        Composition::Path p(Composition::Point2D{x1, y1});
+        p.addLine(Composition::Point2D{x2, y2});
+        emitPath(list, std::move(p), s, /*closePath=*/false);
     }
     else if (name == "polyline" || name == "polygon") {
-        auto pts = parsePointsList(OmegaCommon::String(tag.attribute("points")), svgH);
-        if (pts.size() >= 2) {
-            SVGDrawOp op {};
-            op.type = SVGDrawOp::Type::Polyline;
-            op.polyPoints = std::move(pts);
-            op.polyClosed = (name == "polygon");
-            parseStyleAttrs(tag, op);
-            // `<polyline>` has no implicit fill — only `<polygon>` does.
-            if (name == "polyline")
-                op.fillOpacity = 0.f;
-            ops.push_back(std::move(op));
-        }
+        auto pts = parsePointsList(OmegaCommon::String(tag.attribute("points")));
+        if (pts.size() < 2) return;
+        auto s = parseStyleAttrs(tag);
+        const bool closed = (name == "polygon");
+        // `<polyline>` has no implicit fill — only `<polygon>` does.
+        if (!closed) s.fillOpacity = 0.f;
+        if (!s.hasFill() && !s.hasStroke()) return;
+        Composition::Path p(pts[0]);
+        for (std::size_t i = 1; i < pts.size(); ++i)
+            p.addLine(pts[i]);
+        emitPath(list, std::move(p), s, closed);
     }
     else if (name == "path") {
         auto d = tag.attribute("d");
-        if (d.size() != 0) {
-            SVGDrawOp op {};
-            op.type = SVGDrawOp::Type::Path;
-            op.pathGeom.emplace(parseSVGPathData(OmegaCommon::String(d), svgH));
-            parseStyleAttrs(tag, op);
-            ops.push_back(std::move(op));
-        }
+        if (d.size() == 0) return;
+        auto s = parseStyleAttrs(tag);
+        if (!s.hasFill() && !s.hasStroke()) return;
+        auto p = parseSVGPathData(OmegaCommon::String(d));
+        emitPath(list, std::move(p), s, /*closePath=*/false);
     }
     else if (name == "g" || name == "svg") {
         auto children = tag.children();
         for (auto & child : children)
-            walkElement(child, ops, svgH);
+            walkElement(child, list);
     }
 }
 
@@ -463,7 +456,7 @@ void walkElement(Core::XMLDocument::Tag & tag, OmegaCommon::Vector<SVGDrawOp> & 
 
 SVGView::SVGView(const Composition::Rect & rect, ViewPtr parent)
     : View(rect, parent),
-      drawOps_(std::make_unique<SVGDrawOpList>()) {
+      cachedOps_(std::make_unique<Composition::DisplayList>()) {
     svgCanvas = makeCanvas(getLayerTree()->getRootLayer());
 }
 
@@ -483,17 +476,13 @@ const SVGViewRenderOptions & SVGView::renderOptions() const {
 }
 
 void SVGView::rebuildDisplayList() {
-    drawOps_->ops.clear();
+    cachedOps_->clear();
     if (!sourceDoc_.has_value())
         return;
     auto root = sourceDoc_->root();
-    // Document height is no longer used for Y-axis flipping (both SVG and
-    // OmegaWTK pos.y are Y-down / top-edge in Phase 7+). Kept as a parsed
-    // value in case future viewBox handling needs it.
-    float svgH = parseFloatAttr(root, "height", getRect().h);
     auto children = root.children();
     for (auto & child : children)
-        walkElement(child, drawOps_->ops, svgH);
+        walkElement(child, *cachedOps_);
     needsRebuild_ = false;
 }
 
@@ -534,165 +523,27 @@ bool SVGView::setSourceStream(std::istream & stream) {
 }
 
 // ---------------------------------------------------------------------------
-// Rendering pipeline
+// Rendering pipeline (Phase 2.3)
 // ---------------------------------------------------------------------------
 
-void SVGView::renderNow() {
+void SVGView::paint() {
     if (needsRebuild_)
         rebuildDisplayList();
 
     startCompositionSession();
 
-    // White background (SVG default, matching browser behaviour).
+    // White background (SVG default, matching browser behaviour). Kept
+    // as a frame-property write rather than a `DrawOp::Rect` because
+    // the rect fields are zero-init at frame construction and the
+    // canvas treats the background channel separately from the
+    // visual-command list.
     {
         auto & bg = svgCanvas->getCurrentFrame()->background;
         auto white = Composition::Color::create8Bit(Composition::Color::White8);
         bg.r = white.r; bg.g = white.g; bg.b = white.b; bg.a = white.a;
     }
 
-    for (auto & op : drawOps_->ops) {
-        bool hasFill   = op.fillOpacity > 0.f;
-        bool hasStroke = op.strokeWidth > 0.f && op.strokeOpacity > 0.f;
-
-        auto makeFillBrush = [&]() -> Core::SharedPtr<Composition::Brush> {
-            Composition::Color c = op.fillColor;
-            c.a = op.fillOpacity;
-            return Composition::ColorBrush(c);
-        };
-
-        switch (op.type) {
-        case SVGDrawOp::Type::Rect: {
-            // Phase 6.5: route fill+stroke through a single SDF draw call
-            // by passing the stroke as a `Border`. Replaces the prior
-            // `drawRect` + `RoundedRectFrame`+`drawPath` pair, which
-            // produced rectangular stroke geometry on rounded shapes due
-            // to a triangulator quirk on arc-heavy stroked paths.
-            Core::Optional<Composition::Border> border;
-            if (hasStroke) {
-                Composition::Color sc = op.strokeColor;
-                sc.a = op.strokeOpacity;
-                auto strokeBrush = Composition::ColorBrush(sc);
-                border = Composition::Border{strokeBrush,
-                        static_cast<unsigned>(op.strokeWidth)};
-            }
-            if (hasFill) {
-                auto brush = makeFillBrush();
-                svgCanvas->drawRect(op.rectGeom, brush, border);
-            }
-            else if (hasStroke) {
-                // Stroke-only: pass a transparent fill so the SDF draw
-                // emits the stroke band but leaves the interior untouched.
-                Composition::Color transparent {0.f, 0.f, 0.f, 0.f};
-                auto fillBrush = Composition::ColorBrush(transparent);
-                svgCanvas->drawRect(op.rectGeom, fillBrush, border);
-            }
-            break;
-        }
-        case SVGDrawOp::Type::RoundedRect: {
-            Core::Optional<Composition::Border> border;
-            if (hasStroke) {
-                Composition::Color sc = op.strokeColor;
-                sc.a = op.strokeOpacity;
-                auto strokeBrush = Composition::ColorBrush(sc);
-                border = Composition::Border{strokeBrush,
-                        static_cast<unsigned>(op.strokeWidth)};
-            }
-            if (hasFill) {
-                auto brush = makeFillBrush();
-                svgCanvas->drawRoundedRect(op.roundedRectGeom, brush, border);
-            }
-            else if (hasStroke) {
-                Composition::Color transparent {0.f, 0.f, 0.f, 0.f};
-                auto fillBrush = Composition::ColorBrush(transparent);
-                svgCanvas->drawRoundedRect(op.roundedRectGeom, fillBrush, border);
-            }
-            break;
-        }
-        case SVGDrawOp::Type::Ellipse: {
-            Core::Optional<Composition::Border> border;
-            if (hasStroke) {
-                Composition::Color sc = op.strokeColor;
-                sc.a = op.strokeOpacity;
-                auto strokeBrush = Composition::ColorBrush(sc);
-                border = Composition::Border{strokeBrush,
-                        static_cast<unsigned>(op.strokeWidth)};
-            }
-            if (hasFill) {
-                auto brush = makeFillBrush();
-                svgCanvas->drawEllipse(op.ellipseGeom, brush, border);
-            }
-            else if (hasStroke) {
-                Composition::Color transparent {0.f, 0.f, 0.f, 0.f};
-                auto fillBrush = Composition::ColorBrush(transparent);
-                svgCanvas->drawEllipse(op.ellipseGeom, fillBrush, border);
-            }
-            break;
-        }
-        case SVGDrawOp::Type::Line: {
-            if (hasStroke) {
-                Composition::Color sc = op.strokeColor;
-                sc.a = op.strokeOpacity;
-                auto strokeBrush = Composition::ColorBrush(sc);
-                svgCanvas->drawLine(op.lineFrom, op.lineTo,
-                                    strokeBrush, op.strokeWidth);
-            }
-            break;
-        }
-        case SVGDrawOp::Type::Polyline: {
-            Core::SharedPtr<Composition::Brush> strokeBrush;
-            if (hasStroke) {
-                Composition::Color sc = op.strokeColor;
-                sc.a = op.strokeOpacity;
-                strokeBrush = Composition::ColorBrush(sc);
-            }
-            Core::Optional<Core::SharedPtr<Composition::Brush>> fillBrush;
-            if (hasFill && op.polyClosed) {
-                // Only `<polygon>` has a fillable interior; `<polyline>` is
-                // stroke-only by SVG semantics (the parser zeroes its fill
-                // opacity, so this branch is naturally skipped for it).
-                fillBrush = makeFillBrush();
-            }
-            if (strokeBrush != nullptr || fillBrush.has_value()) {
-                svgCanvas->drawPolyline(op.polyPoints,
-                                        strokeBrush,
-                                        op.strokeWidth,
-                                        op.polyClosed,
-                                        fillBrush);
-            }
-            break;
-        }
-        case SVGDrawOp::Type::Path: {
-            if (op.pathGeom.has_value()) {
-                auto & p = op.pathGeom.value();
-                // Phase 6.5: route fill + stroke through a single SDF
-                // draw call with two color attachments, matching the
-                // rect / rounded-rect / ellipse path. The prior
-                // implementation issued two `drawPath` calls (one for
-                // fill, one for stroke), and the fill call rode the
-                // stroke pipeline with width 1, which silently turned
-                // SVG fills into 1px outlines.
-                Core::Optional<Composition::Border> border;
-                if (hasStroke) {
-                    Composition::Color sc = op.strokeColor;
-                    sc.a = op.strokeOpacity;
-                    auto strokeBrush = Composition::ColorBrush(sc);
-                    border = Composition::Border{strokeBrush,
-                            static_cast<unsigned>(op.strokeWidth)};
-                }
-                if (hasFill) {
-                    auto brush = makeFillBrush();
-                    p.setPathBrush(brush);
-                }
-                if (hasFill || hasStroke) {
-                    svgCanvas->drawPath(p, border);
-                }
-            }
-            break;
-        }
-        default:
-            break;
-        }
-    }
+    Composition::DisplayListReplay::replay(*cachedOps_, *svgCanvas);
 
     svgCanvas->sendFrame();
     endCompositionSession();
@@ -701,7 +552,7 @@ void SVGView::renderNow() {
 void SVGView::resize(Composition::Rect newRect) {
     View::resize(newRect);
     needsRebuild_ = true;
-    renderNow();
+    paint();
 }
 
 } // namespace OmegaWTK

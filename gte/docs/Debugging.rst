@@ -305,5 +305,5 @@ the platform-native debugger for visual frame inspection and the
 mechanisms documented above for everything else. The architecture
 choices we are making now — the structured resource tracker, the
 unified debug-layer toggle, the planned level/domain log
-classification — are deliberately shaped so that OmegaCapture can
+classification — are deliberately shaped so that OmegaGPUCapture can
 consume them when the time comes.

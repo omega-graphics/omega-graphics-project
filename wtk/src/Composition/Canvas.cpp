@@ -192,13 +192,16 @@ void Canvas::drawPolyline(const OmegaCommon::Vector<Composition::Point2D> &point
     }
 }
 
-void Canvas::drawText(const OmegaCommon::UniString &text,
-                      Core::SharedPtr<Font> font,
-                      const Composition::Rect &rect,
-                      const Color &color,
-                      const TextLayoutDescriptor &layoutDesc){
-    if(font == nullptr || text.length() == 0 || rect.w <= 0.F || rect.h <= 0.f){
-        return;
+ShapedTextRun shapeTextForDisplayList(
+    const OmegaCommon::UniString & text,
+    const Core::SharedPtr<Font> & font,
+    const Composition::Rect & rect,
+    const Composition::Color & color,
+    const TextLayoutDescriptor & layoutDesc,
+    float renderScale){
+    ShapedTextRun out {};
+    if(font == nullptr || text.length() == 0 || rect.w <= 0.f || rect.h <= 0.f){
+        return out;
     }
 
     // Text-Layout-Engine-Plan.md Phase 7: the WTK-owned
@@ -211,14 +214,14 @@ void Canvas::drawText(const OmegaCommon::UniString &text,
     auto * engine = FontEngine::inst();
     auto * shaper = (engine != nullptr) ? engine->shaper() : nullptr;
     if(engine == nullptr || shaper == nullptr){
-        return;
+        return out;
     }
     const FontMetrics metrics = font->getMetrics();
     auto * fallback = engine->fallback();
     auto layoutResult = TextLayoutEngine::layout(
         text, font, metrics, rect, layoutDesc, *shaper, fallback);
     if(layoutResult.glyphs.empty()){
-        return;
+        return out;
     }
 
     // Group laid-out glyphs by resolved font into sub-runs. Mixed
@@ -242,15 +245,11 @@ void Canvas::drawText(const OmegaCommon::UniString &text,
         sr.positions.push_back(Composition::Point2D{g.canvasX, g.canvasY});
     }
 
-    // Partition by mode: MSDF sub-runs share one `TextRun` visual
-    // command (the render pass walks its `subRuns` and emits one
-    // atlas-textured quad batch per font). BitmapFallback sub-runs
-    // each rasterize to their own offscreen texture via the
-    // engine's CPU rasterizer and ride the standard
-    // `drawGETexture` path.
-    const float renderScale = (ownerView_ != nullptr)
-        ? ownerView_->getRenderScale() : 1.f;
-    OmegaCommon::Vector<TextSubRun> msdfSubRuns;
+    // Partition by mode: MSDF sub-runs are collected into one batch
+    // (the renderer emits one atlas-textured quad batch per font).
+    // BitmapFallback sub-runs each rasterize to their own offscreen
+    // texture via the engine's CPU rasterizer and ride the standard
+    // bitmap-blit path.
     for(auto & sr : subRuns){
         if(sr.resolvedFont == nullptr || sr.glyphIds.empty()) continue;
         if(sr.resolvedFont->mode() == Font::Mode::MSDF){
@@ -259,18 +258,33 @@ void Canvas::drawText(const OmegaCommon::UniString &text,
             // tiles via a texture transfer, which is illegal inside
             // the compositor's frame render pass.
             sr.resolvedFont->ensureGlyphsResident(sr.glyphIds);
-            msdfSubRuns.push_back(std::move(sr));
+            out.msdfSubRuns.push_back(std::move(sr));
         } else {
             auto bmp = engine->rasterizeSubRunToTexture(
                 sr, rect, color, renderScale);
             if(bmp.texture != nullptr){
-                drawGETexture(bmp.texture, rect, bmp.fence);
+                out.bitmapBlits.push_back({std::move(bmp.texture),
+                                           std::move(bmp.fence)});
             }
         }
     }
-    if(!msdfSubRuns.empty()){
-        current->currentVisuals.emplace_back(
-            std::move(msdfSubRuns), rect, color);
+    return out;
+}
+
+void Canvas::drawText(const OmegaCommon::UniString &text,
+                      Core::SharedPtr<Font> font,
+                      const Composition::Rect &rect,
+                      const Color &color,
+                      const TextLayoutDescriptor &layoutDesc){
+    const float renderScale = (ownerView_ != nullptr)
+        ? ownerView_->getRenderScale() : 1.f;
+    auto shaped = shapeTextForDisplayList(
+        text, font, rect, color, layoutDesc, renderScale);
+    for(auto & blit : shaped.bitmapBlits){
+        drawGETexture(blit.texture, rect, blit.fence);
+    }
+    if(!shaped.msdfSubRuns.empty()){
+        drawTextRun(std::move(shaped.msdfSubRuns), rect, color);
     }
 }
 
@@ -510,6 +524,15 @@ void Canvas::drawShadow(Composition::Ellipse & ellipse,
         ellipse.rad_y * 2.f
     };
     current->currentVisuals.emplace_back(shadow,shapeRect,0.f,true);
+}
+
+void Canvas::drawTextRun(OmegaCommon::Vector<TextSubRun> subRuns,
+                         const Composition::Rect & rect,
+                         const Composition::Color & color){
+    if(subRuns.empty()){
+        return;
+    }
+    current->currentVisuals.emplace_back(std::move(subRuns), rect, color);
 }
 
 void Canvas::setElementTransform(const Matrix4x4 & matrix){

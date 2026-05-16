@@ -232,10 +232,16 @@ list — rather than a thing that owns rendering infrastructure.
 ### 3.2 The five collaborators (and nothing else)
 
 1. **`SceneNode`** — replaces most of `View::Impl`. Retained tree node.
-   Holds parent-relative bounds, a `Transform2D`, a `Style` handle, a
-   `LayoutManager*` (optional, used to arrange *its own* children),
-   and a `DirtyBits` field. Has children. Has a virtual `paint()`.
-   Does **not** own a LayerTree, Canvas, sync lane, or animation state.
+   Holds parent-relative bounds (`Composition::Rect`), an *optional*
+   3D-effect transform (`Matrix4x4`, for perspective / full 3D
+   rotation, etc.), a `Style` handle, a `LayoutManager*` (optional,
+   used to arrange *its own* children), and a `DirtyBits` field. Has
+   children. Has a virtual `paint()`. Does **not** own a LayerTree,
+   Canvas, sync lane, or animation state. **2D positional moves
+   update the rect's `pos` directly** — they do not push a transform.
+   The transform slot is for 3D effects that need the perspective /
+   rotation matrix; the SceneNode-era `pushTransform` op (Tier 3)
+   carries the same `Matrix4x4` shape.
 
 2. **`LayoutManager`** — replaces the `ViewResizeCoordinator` / per-view
    ad-hoc layout. A parent-owned strategy object. Has two methods:
@@ -262,11 +268,24 @@ list — rather than a thing that owns rendering infrastructure.
      - `Bitmap` — texture handle + dest rect (+ tint / source-rect /
        nine-slice once `Direct-To-Drawable-And-SDF-Plan` §6.6
        lands).
-     - `Text` — bitmap-text fallback today, MSDF text run after
-       `Direct-To-Drawable-And-SDF-Plan` §6.7.
-     - State ops: `PushTransform` / `PopTransform`, `PushClip` /
+     - `TextRun` — post-shaping MSDF text run (one or more
+       `TextSubRun`s, each carrying glyph IDs + positions + an atlas
+       binding) plus rect and color. Mirrors `VisualCommand::TextRun`
+       (`Direct-To-Drawable-And-SDF-Plan` §6.7). Shaping happens
+       upstream in the WTK text layout engine; the bitmap-fallback
+       sub-runs from the same `drawText` call ride the `Bitmap` op
+       instead of being multiplexed into this variant.
+     - State ops: `PushTransform` / `PopTransform` (3D-effect
+       `Matrix4x4` — perspective / 3D rotation; not the path for 2D
+       positional moves, which update rects directly), `PushClip` /
        `PopClip`, `PushOpacity` / `PopOpacity`, `PushEffect`
        (per-layer blur scratch) / `PopEffect`.
+     - `NativeContent` — Phase 2.5. Reserves a `destRect` for a
+       platform native layer to draw into (video, GPU view, future
+       web view); carries a `hostId` plus a `zOrderHint` so the
+       platform compositor can order the carve-out against other
+       native layers. No pixel data; the compositor translates the
+       op into a platform-specific carve-out at replay time.
 
    No per-op resource creation. Paint appends. Composition reads.
    The DisplayList is the implementation-detail handoff to the
@@ -570,13 +589,25 @@ for the other eight (they only differ in payload).
 
 - Add `wtk/include/omegaWTK/Composition/DisplayList.h` and
   `wtk/src/Composition/DisplayList.cpp`.
-- `DrawOp::Type` enum covers exactly the nine `VisualCommand`
+- `DrawOp::Type` enum covers exactly the nine active `VisualCommand`
   variants present today: `Rect`, `RoundedRect`, `Ellipse`,
-  `VectorPath`, `Text`, `Bitmap`, `Shadow`, `SetTransform`,
-  `SetOpacity`. State ops (`PushClip`, `PushTransform`,
-  `PushOpacity`, `PushEffect`, `NativeContent`) are deferred to
-  Phases 2.4 / 2.5 — they have no consumers in `UIView::update()`
-  and adding them now bloats the slice without exercising them.
+  `VectorPath`, `TextRun`, `Bitmap`, `Shadow`, `SetTransform`,
+  `SetOpacity`. `SetTransform` carries a `Matrix4x4` **3D-effect
+  transform** (perspective, full 3D rotation, scale); 2D positional
+  changes update `Composition::Rect::pos` directly and never push a
+  transform op. The text variant is the *post-shaping* `TextRun`
+  (matching `VisualCommand::textRunParams` — a `Vector<TextSubRun>`
+  plus rect and color), not the high-level `drawText` call shape;
+  shaping stays in `Canvas::drawText`, which now ends in a public
+  `Canvas::drawTextRun` helper that the replay path also targets.
+  Phase 2.1's text branch shapes via `drawText` first, then emits a
+  `TextRun` op. `VisualCommand` also declares a `Text` enum value
+  with no payload and no constructor — it is dead code today and is
+  intentionally omitted from `DrawOp`. State ops (`PushClip`,
+  `PushTransform`, `PushOpacity`, `PushEffect`) and `NativeContent`
+  are deferred to Phases 2.4 / 2.5 — they have no consumers in
+  `UIView::update()` and adding them now bloats the slice without
+  exercising them.
 - `DisplayList` is a flat `OmegaCommon::Vector<DrawOp>` with `append`,
   `clear`, and `size`. No transform stack at the type level (the
   `SetTransform`/`SetOpacity` ops carry the same state model
@@ -605,10 +636,17 @@ Mechanical once 2.0 holds. Same DrawOp/Replay machinery, same
 contract.
 
 - Convert the remaining eight shape/state branches: `RoundedRect`,
-  `Ellipse`, `VectorPath`, `Text`, `Bitmap`, `Shadow`,
+  `Ellipse`, `VectorPath`, `TextRun`, `Bitmap`, `Shadow`,
   `setElementTransform`, `setElementOpacity`. Each becomes
   `displayList.append(DrawOp::Xxx{...})` instead of a direct
-  `canvas->drawXxx(...)` call.
+  `canvas->drawXxx(...)` call. The text branch is the one
+  non-symmetric case: `DrawOp::TextRun` carries post-shaping data,
+  so the conversion calls into the WTK text layout engine (the same
+  pipeline `Canvas::drawText` runs internally) to produce a
+  `Vector<TextSubRun>`, then appends one `DrawOp::TextRun` per
+  resolved sub-run group. Bitmap-fallback sub-runs continue to ride
+  the `drawGETexture` path as a `DrawOp::Bitmap` carrying the
+  rasterized texture.
 - Promote the displaylist from "branch-local in one switch case" to
   "function-local for the whole `update()` call." The replay into
   `impl_->rootCanvas` happens once at the end of `update()`, just
@@ -623,7 +661,10 @@ contract.
           case RoundedRect: list.append(DrawOp::RoundedRect{...}); break;
           // ...
       }
-      if(text) list.append(DrawOp::Text{...});
+      if(text) {
+          auto subRuns = shapeText(...);                // WTK layout engine
+          list.append(DrawOp::TextRun{subRuns,rect,color});
+      }
   }
   DisplayListReplay::replay(list, *impl_->rootCanvas);
   impl_->rootCanvas->sendFrame();
@@ -642,18 +683,24 @@ Independent cleanup, easier to land after 2.1 because the only call
 site is in `update()`.
 
 - Delete `static std::unordered_map<UIView *, StableBoundsState>
-  stableBoundsByView` at `UIView.Update.cpp:61` and the
-  `StableBoundsState` struct.
-- Replace the call site (`UIView.Update.cpp:137`,
-  `UIViewInternal::localBoundsFromView(this)`) with a per-call
-  computation from `getRect()` + `getLayerTree()->getRootLayer()`'s
-  rect. No cache.
-- Verify with the RootWidget scene under resize: the cache existed
-  to smooth transient invalid dimensions during resize; per the
-  plan §1.4 and `Render-Execution-Efficiency-Plan.md` NV-1..NV-3,
-  the single-surface refactor already removed those races. If a
-  resize regression appears, this phase reverts cleanly without
-  affecting Phases 2.0/2.1.
+  stableBoundsByView` and the `StableBoundsState` struct.
+- Drop the now-unused `<unordered_map>` include from
+  `UIView.Update.cpp`.
+- Reshape `UIViewInternal::localBoundsFromView` to a pure per-call
+  computation: pick `getRect()` if valid, fall back to
+  `getLayerTree()->getRootLayer()`'s rect if valid, otherwise return
+  the 1×1 fallback. The existing `isValidDimension` /
+  `isSuspiciousDimensionPair` / `clampDrawableDimension` helpers
+  stay — they're the per-call sanitization that doesn't depend on
+  cache state. The pre-cache "if neither candidate is valid, return
+  the last cached rect" branch is gone; it was the only behavior the
+  cache provided, and per plan §1.4 + Render-Execution-Efficiency-
+  Plan NV-1..NV-3 the resize races that produced transient
+  simultaneously-invalid candidates are already gone.
+- Helper signature and call site (single, in `update()`) unchanged.
+- Verified by building + running the RootWidget scene (Phase 2.1
+  validator). If a resize regression appears, this phase reverts
+  cleanly without affecting Phases 2.0 / 2.1 / 2.3-2.6.
 
 Files touched: `UIView.Update.cpp`.
 
@@ -696,17 +743,40 @@ state-stack vocabulary it will need.
   case for them (current `setElementOpacity` op already handles the
   scalar opacity case).
 - `params` payloads:
-  - `PushClip` → `{ Composition::Rect rect; }`
-  - `PushTransform` → `{ Matrix4x4 transform; }`
-  - `Pop*` → no payload.
-- `DisplayListReplay` for these ops translates to `Canvas` state
-  changes — but `Canvas` today has no `pushClip` / `popClip` / scoped
-  transform API. For Tier 2 the replay either (a) accumulates the
-  clip/transform stack itself and bakes it into subsequent op
-  parameters (preferred — keeps the scaffolding self-contained and
-  lets Tier 3 swap the replay for direct backend dispatch), or (b)
-  no-ops with a warning if the stack is non-trivial (acceptable
-  since no Tier-2 producer emits them).
+  - `PushClip` → dedicated `pushClipParams { Composition::Rect rect; }`
+    field. The clip rect is in the *current* drawing space
+    (post-`PushTransform`, if one is active above).
+  - `PushTransform` → reuses the existing `transformMatrix`
+    `Matrix4x4` slot (same field `SetTransform` writes). The 4×4
+    matrix is a **3D-effect transform** (perspective, full 3D
+    rotation, scale). 2D positional moves do not go through this op
+    — they update the node's rect directly. ScrollView is the first
+    planned producer (Tier 3), but its scroll-offset application is
+    a 2D position update on the descendants' visible region via
+    `contentOffset()`, not a pushed transform — see §9.3 for the
+    revised ScrollView shape.
+  - `Pop*` → no payload (`type` is the only state the op carries).
+  - Distinct `Push*` and `Set*` variants share the `transformMatrix`
+    field but differ in semantics — pushed onto a scope stack vs.
+    set as the persistent canvas state.
+- Construction: static factories `DrawOp::makePushClip(rect)`,
+  `DrawOp::makePopClip()`, `DrawOp::makePushTransform(matrix)`,
+  `DrawOp::makePopTransform()`. Same enum-vs-method-name reason as
+  `makeNativeContent` (§2.5); additionally, a `(Matrix4x4)` ctor
+  would shadow the existing `SetTransform` ctor.
+- `DisplayListReplay` translates these ops as **option (b) — no-op
+  in Tier 2**. The Canvas API surface has no `pushClip` / `popClip`
+  / scoped-transform hook, and there is no Tier-2 producer
+  (UIView::update emits only shape ops; SVGView's parsed display
+  list also emits only shape ops). The four cases fall into one
+  no-op arm with a comment pointing forward to Tier 3, where
+  ScrollView starts emitting `PushClip` and either the replay
+  becomes a stack accumulator or the backend dispatch takes over.
+  The "preferred (a)" path noted in earlier drafts was rejected
+  because both stacks need composition semantics that touch the
+  shape-op payloads, and faking those at the replay layer would
+  encode the wrong contract before Tier 3 has the FrameBuilder to
+  apply them correctly.
 - No call site changes. The ops exist; nothing emits them yet.
 
 Files touched: `Composition/DisplayList.{h,cpp}`.
@@ -720,7 +790,12 @@ OmegaGTEView) so they can run in parallel with the rest of Tier 2.
   + the user's Q3 answer): `{ Composition::Rect destRect; uint64_t
   hostId; int zOrderHint; }`. The z-order hint is required (per the
   user's note — "NativeContent does need a z-order hint so it
-  renders above the bottom layer").
+  renders above the bottom layer"). The op is constructed through
+  the `DrawOp::makeNativeContent(destRect, hostId, zOrderHint)`
+  static factory rather than a ctor — C++ enums and member
+  functions share scope, so a method literally named `NativeContent`
+  would collide with `DrawOp::Type::NativeContent`, and the
+  `(Rect, ...)` ctor shape would shadow `DrawOp::Rect`.
 - `DisplayListReplay` for `NativeContent` is a no-op in Tier 2 — the
   Canvas-based GPU path has no native-carve-out concept. The op
   exists as a shape contract for the NativeViewHost-Adoption-Plan
@@ -729,9 +804,17 @@ OmegaGTEView) so they can run in parallel with the rest of Tier 2.
 - Add `View::onLayoutResolved` signal (per §9.4.1 + §9.7 Q4): fires
   on rect changes only, not on transform changes (a separate
   `onTransformChanged` signal is deferred to Tier 3 if needed).
-  Today the only firing point is `View::resize()` — wire it there.
-  No subscribers in Tier 2; the signal exists so NativeViewHost can
-  subscribe in its own plan.
+  *Why rect-only:* `DrawOp::SetTransform` carries a 3D-effect
+  `Matrix4x4` and is applied during paint, never as a 2D positional
+  move; 2D position changes show up as rect updates, which already
+  flow through `View::resize()`. Today the only firing point is
+  `View::resize()` — wire it there. The signal is implemented as a
+  thin `LayoutResolvedSignal` value type with `subscribe(callback)`
+  and an `emit(rect)` invoked from `resize()` immediately after the
+  sanitized rect commits and the layer tree catches up. No
+  unsubscribe API in Tier 2 (only NativeViewHost subscribes today,
+  with a View-matching lifetime); a token-based unsubscribe lands
+  with Tier 3 if a use case appears.
 - Coordinate the op shape and signal contract with
   `NativeViewHost-Adoption-Plan.md` before merging.
 
@@ -745,14 +828,34 @@ landed and any in-tree CanvasView callers can be migrated against a
 stable surface.
 
 - `CanvasView`'s imperative `drawRect` / `drawRoundedRect` /
-  `drawImage` / `drawText` / `clear` methods become deprecated stubs
-  that build a transient `UIViewLayoutV2` element and route through
-  the UIView paint path (per §9.1 "Tier alignment").
-- Mark the methods `[[deprecated]]` in the header so the §8 grep
-  sweep catches every caller before Tier 3 deletes the class.
+  `drawImage` / `drawText` methods are marked `[[deprecated]]` and
+  re-expressed in the Phase 2.1 `DrawOp` vocabulary: each call
+  builds a one-op `Composition::DisplayList` and replays it through
+  `Composition::DisplayListReplay::replay` into `rootCanvas_`.
+  Same GPU path, same output — but the imperative methods no
+  longer reach the Canvas API directly, so the §8 grep sweep at
+  the deprecation marker catches every remaining caller before
+  Tier 3 deletes the class. The plan's earlier "transient
+  `UIViewLayoutV2` element" framing was rejected because
+  `CanvasView` has no `UIView` instance to feed a layout into; the
+  spirit of "route through the UIView paint path" is satisfied by
+  going through the same `DisplayList` + `Replay` pair that
+  `UIView::update` itself now uses.
+- The `drawText` body uses `Composition::shapeTextForDisplayList`
+  (Phase 2.1's text-shaping helper) so MSDF + bitmap-fallback
+  branches behave identically to `UIView::update`'s text path.
+- `clear()` is **not** deprecated. It writes the frame-channel
+  background color (`CanvasFrame::background`), not a draw op;
+  Tier 3's session-lifetime move will reassess.
 - `CanvasView::submitPaintFrame(int)` override stays for Tier 2 (it
   is removed in Tier 3 alongside the session-lifetime move).
 - No header file deletion in Tier 2; the class survives until Tier 3.
+- In-tree callers (Phase 2.6 grep sweep): `wtk/src/Widgets/Primatives.cpp`
+  (drawImage) and the test bundles `TextCompositorTest`,
+  `EllipsePathCompositorTest`, `ContainerClampAnimationTest`,
+  `VideoViewPlaybackTest` all keep building with deprecation
+  warnings active; they migrate to `UIView` + `UIViewLayoutV2`
+  before Tier 3 deletes the class.
 
 Files touched: `omegaWTK/UI/CanvasView.h`, `wtk/src/UI/CanvasView.cpp`.
 
@@ -1163,29 +1266,42 @@ public:
         // 1. Clip to ScrollView's visible bounds.
         pc.pushClip(finalRect());
 
-        // 2. Translate by -scrollOffset for the content subtree.
-        pc.pushTransform(Transform2D::translate(-scrollOffset_));
+        // 2. Apply the scroll offset by *updating the descendants'
+        //    rects* (a 2D position change), not by pushing a
+        //    transform. The DisplayList's `PushTransform` op carries
+        //    a `Matrix4x4` 3D-effect transform and is not the
+        //    correct mechanism for 2D translation. FrameBuilder
+        //    consults `contentOffset()` when arranging the content
+        //    subtree, so descendants observe scroll-shifted rects
+        //    natively.
         // (FrameBuilder recurses to contentChild_ after this returns.)
 
-        // 3. Overlay scroll bars on top, OUTSIDE the scroll transform.
-        // The FrameBuilder pops the transform/clip after children
-        // paint; bars are emitted as a post-children overlay.
+        // 3. Overlay scroll bars on top, OUTSIDE the scroll clip.
+        // The FrameBuilder pops the clip after children paint; bars
+        // are emitted as a post-children overlay.
     }
+
+    /// FrameBuilder reads this when arranging contentChild_ so that
+    /// descendant `finalRect`s are offset by -scrollOffset_. Replaces
+    /// the pre-Tier-2 `scrollOffsetContribution()` + `computeWindowOffset`
+    /// walk and the (rejected) `pushTransform`-as-translation approach.
+    Point2D contentOffset() const override { return -scrollOffset_; }
 
     void paintOverlay(PaintContext & pc) override {
         // Called by FrameBuilder after children paint and after
-        // pushClip/pushTransform are popped.
+        // pushClip is popped.
         if (hasV_) appendVerticalBar(pc, vBar_, scrollOffset_, contentSize_);
         if (hasH_) appendHorizontalBar(pc, hBar_, scrollOffset_, contentSize_);
     }
 };
 ```
 
-The `scrollOffsetContribution()` hook is replaced by the
-`pc.pushTransform(translate(-scrollOffset))` call in ScrollView's
-own `paint()`. The FrameBuilder's transform accumulator is what
-makes descendant paint correct without each descendant having to know
-about scroll. The two overlay layers and their per-canvas painting
+The `scrollOffsetContribution()` hook is replaced by ScrollView's
+`contentOffset()` override, which FrameBuilder folds into the arrange
+pass — descendants get scroll-shifted rects in the layout pipeline,
+not at paint time. The 2D translation never becomes a transform op;
+the `DisplayList`'s `PushTransform` is reserved for 3D effects only
+(see §3.2). The two overlay layers and their per-canvas painting
 collapse into two `RoundedRect` DrawOps (the bars themselves) emitted
 in `paintOverlay`.
 
@@ -1281,9 +1397,12 @@ class NativeViewHost : public View {  // View == SceneNode
     NativeItemPtr nativeItem_;
 public:
     NativeViewHost(NativeItemPtr item) : nativeItem_(std::move(item)) {
-        // Subscribe to layout completion. Fires after Phase 3 (Arrange)
-        // resolves this node's finalRect.
-        onLayoutResolved.subscribe([this](const Rect & r){
+        // Subscribe to layout completion. The Tier-2 firing point is
+        // `View::resize()` on rect changes; Tier 3's FrameBuilder
+        // will fire it from the end of Arrange instead. The shape of
+        // the subscriber is the same in both eras: receive the new
+        // rect, sync the native item's bounds.
+        onLayoutResolved.subscribe([this](const Composition::Rect & r){
             nativeItem_->syncBounds(r, computeWindowOriginContribution());
             nativeItem_->syncVisibility(isEnabled());
         });
@@ -1291,10 +1410,12 @@ public:
 
     void paint(PaintContext & pc) override {
         // Single op: reserve this rect; the native layer paints here.
-        pc.displayList.append(DrawOp::NativeContent{
-            .destRect = finalRect(),
-            .hostId   = nativeItem_->id(),
-        });
+        // Constructed through the static factory because `NativeContent`
+        // is also the enum value (see §2.5).
+        pc.displayList.append(DrawOp::makeNativeContent(
+            finalRect(),
+            nativeItem_->id(),
+            /*zOrderHint=*/0));
     }
 };
 ```
@@ -1371,7 +1492,7 @@ with the tiers in §4:
 | Subclass | Tier 1 | Tier 2 | Tier 3 | Tier 4 |
 |---|---|---|---|---|
 | `SVGView` | — | `SVGDrawOpList` becomes a cached `DisplayList` | per-view Canvas removed; `renderNow` deleted | dirty-bit-driven rebuild only |
-| `ScrollView` | — | `PushClip` / `PushTransform` ops added to DrawOp set | overlay scroll bar layers removed; `wantsLayer()` introduced; `scrollOffsetContribution` replaced by `pushTransform` in own paint | `computeWindowOffset` deleted |
+| `ScrollView` | — | `PushClip` op added to DrawOp set (`PushTransform` also lands but is for 3D effects, not for scroll translation) | overlay scroll bar layers removed; `wantsLayer()` introduced; `scrollOffsetContribution` replaced by ScrollView's `contentOffset()` override that the FrameBuilder folds into Arrange (no transform pushed) | `computeWindowOffset` deleted |
 | `NativeViewHost` (covers `VideoView`, `OmegaGTEView`, future) | — | `DrawOp::NativeContent` added; `onLayoutResolved` signal wired | airspace contract documented | — |
 | `CanvasView` | — | imperative methods become deprecated stubs routing to a temporary `UIViewLayoutV2` | **deleted** (header + class) | — |
 | `VideoView` (the View) | — | — | **deleted**; replaced by `VideoViewWidget` per [NativeViewHost-Adoption-Plan.md](NativeViewHost-Adoption-Plan.md) | — |

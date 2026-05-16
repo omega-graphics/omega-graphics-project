@@ -4,8 +4,10 @@
  */
 
 #include "omegaWTK/Native/NativeEvent.h"
+#include "omegaWTK/Composition/Geometry.h"
 
 #include <cstdint>
+#include <functional>
 #include <limits>
 
 #ifndef OMEGAWTK_UI_VIEW_H
@@ -27,13 +29,34 @@ namespace OmegaWTK {
         typedef SharedHandle<NativeEvent> NativeEventPtr;
     }
 
-    
+
     class Container;
     class Widget;
     class ViewDelegate;
     class ScrollView;
     class View;
     OMEGACOMMON_SHARED_CLASS(View);
+
+    /// UIView-Render-Redesign-Plan Tier 2 Phase 2.5: per-view signal
+    /// that fires when the view's layout rect resolves to a new
+    /// value. Subscribers get the new rect in parent-relative
+    /// coordinates. Fires on rect changes only — 3D-effect transform
+    /// pushes (see `DrawOp::SetTransform`) do not trigger this signal
+    /// (a separate `onTransformChanged` is deferred to Tier 3 if a
+    /// use case appears). The canonical subscriber is
+    /// `NativeViewHost`, which uses the signal to sync its embedded
+    /// native item's bounds without the FrameBuilder gaining a
+    /// per-node commit callback.
+    class OMEGAWTK_EXPORT LayoutResolvedSignal {
+    public:
+        using Callback = std::function<void(const Composition::Rect &)>;
+        void subscribe(Callback cb) { callbacks_.push_back(std::move(cb)); }
+        void emit(const Composition::Rect & rect) const {
+            for (const auto & cb : callbacks_) cb(rect);
+        }
+    private:
+        OmegaCommon::Vector<Callback> callbacks_;
+    };
 
     struct OMEGAWTK_EXPORT ResizeClamp {
         float minWidth = 1.f;
@@ -156,7 +179,17 @@ namespace OmegaWTK {
 
         /// @brief Resize the view synchronously.
         /// @note If you wish to animate the View resize, please use the ViewAnimator to perform that action.
+        /// @note Fires `onLayoutResolved` when the sanitized rect
+        /// actually differs from the prior rect; same-rect calls are
+        /// no-ops (no signal).
         virtual void resize(Composition::Rect newRect);
+
+        /// Per-view layout-rect-resolved signal (Phase 2.5). Fires
+        /// from `resize()` only on actual rect changes. Subscribers
+        /// (today: `NativeViewHost`) get the new parent-relative
+        /// rect. Public so external code can attach without the
+        /// FrameBuilder owning a per-node commit hook.
+        LayoutResolvedSignal onLayoutResolved;
 
         /// @brief Starts a Composition Session for this View.
         /// @paragraph Upon invocation, this will allow Canvases to render to child Layers in the View's LayerTree
