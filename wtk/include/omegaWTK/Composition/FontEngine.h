@@ -11,6 +11,10 @@
 #ifndef OMEGAWTK_COMPOSITION_FONTENGINE_H
 #define OMEGAWTK_COMPOSITION_FONTENGINE_H
 
+ namespace OmegaCommon {
+    class AssetBundle;
+ };
+
  namespace OmegaWTK {
     class AppInst;
  };
@@ -298,6 +302,31 @@
      */
      INTERFACE_METHOD Core::SharedPtr<Font> CreateFont(FontDescriptor & desc) ABSTRACT;
      INTERFACE_METHOD Core::SharedPtr<Font> CreateFontFromFile(OmegaCommon::FS::Path path,FontDescriptor & desc) ABSTRACT;
+     /**
+      @brief Create a Font from a named entry in an AssetBundle.
+      @param bundle[in] The bundle to read from. Must be non-null.
+      @param assetName[in] The bundle entry name (e.g. "fonts/Inter-Regular.ttf").
+      @param desc[in] The Font Descriptor. `desc.family` is used to resolve
+             a specific face *within* the loaded font file when the file
+             carries multiple faces (TTC); for single-face files it is
+             ignored for face selection but still drives weight + style
+             matching against the file's own family metadata.
+      @returns SharedPtr<Font>, or nullptr if the bundle is null, the
+               asset is missing, the bytes don't parse as a font, or the
+               descriptor can't be matched against the loaded face(s).
+
+      Default implementation returns nullptr. Each backend overrides
+      against its in-memory font loader (DWrite custom IDWriteFontFileLoader,
+      Core Text CTFontManagerCreateFontDescriptorsFromData, FreeType
+      FT_New_Memory_Face + hb_ft_font_create_referenced).
+     */
+     virtual Core::SharedPtr<Font> CreateFontFromAsset(
+             OmegaCommon::AssetBundle *bundle,
+             const OmegaCommon::String &assetName,
+             FontDescriptor &desc) {
+         (void)bundle; (void)assetName; (void)desc;
+         return nullptr;
+     }
      /// Adopt a layout-engine-resolved native face into a WTK `Font`
      /// (Phase 6.7-c4). Called by the shaping path when the layout
      /// engine substitutes a fallback face: each platform keys its

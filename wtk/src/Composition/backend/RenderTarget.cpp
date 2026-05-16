@@ -17,7 +17,9 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
 #include <exception>
+#include <iostream>
 #include <memory>
 #include <sstream>
 #include <utility>
@@ -36,6 +38,20 @@ namespace OmegaWTK::Composition {
         }
         inline FencePool * fencePool(){
             return BackendResourceFactory::instance().fencePool();
+        }
+
+        // OMEGAWTK_TRACE_TEXT=1 turns on the text-render-path trace
+        // lines. `emitTextSubRun` has many silent early-exits (null
+        // font, empty subrun, pipeline missing, every-glyph-lookup-miss,
+        // null atlas texture, null buffers, null CB); without this trace
+        // a stalled text path is invisible — the screen just shows
+        // nothing. Same env var the font engines use.
+        bool textTraceEnabled() {
+            static const bool enabled = []() {
+                const char *e = std::getenv("OMEGAWTK_TRACE_TEXT");
+                return e != nullptr && e[0] != '\0' && e[0] != '0';
+            }();
+            return enabled;
         }
 
         // Sizing math, collapsed in from BackingTextureSet in Phase 4.2.
@@ -745,11 +761,31 @@ void BackendRenderTargetContext::resetElementState() {
             const Composition::TextSubRun & subRun,
             const Composition::Rect & rect,
             const Composition::Color & color){
+        if(textTraceEnabled()){
+            std::cout << "[wtk-text] emitTextSubRun ENTER"
+                      << " font=" << (void *)subRun.resolvedFont.get()
+                      << " glyphs=" << subRun.glyphIds.size()
+                      << " rect=(" << rect.pos.x << "," << rect.pos.y
+                      << " " << rect.w << "x" << rect.h << ")"
+                      << " color=(" << color.r << "," << color.g
+                      << "," << color.b << "," << color.a << ")"
+                      << std::endl;
+        }
         if(subRun.resolvedFont == nullptr){
+            if(textTraceEnabled()){
+                std::cout << "[wtk-text] emitTextSubRun SKIP: resolvedFont == nullptr"
+                          << std::endl;
+            }
             return;
         }
         if(subRun.glyphIds.empty() ||
            subRun.glyphIds.size() != subRun.positions.size()){
+            if(textTraceEnabled()){
+                std::cout << "[wtk-text] emitTextSubRun SKIP: glyphIds.size="
+                          << subRun.glyphIds.size()
+                          << " positions.size=" << subRun.positions.size()
+                          << " (empty or mismatched)" << std::endl;
+            }
             return;
         }
 
@@ -757,10 +793,24 @@ void BackendRenderTargetContext::resetElementState() {
         auto bufferWriter = pipelines.bufferWriter();
         auto textPipeline = pipelines.text();
         if(bufferWriter == nullptr || textPipeline == nullptr || renderTarget == nullptr){
+            if(textTraceEnabled()){
+                std::cout << "[wtk-text] emitTextSubRun SKIP: pipeline-missing"
+                          << " bufferWriter=" << (bufferWriter == nullptr ? "NULL" : "ok")
+                          << " textPipeline=" << (textPipeline == nullptr ? "NULL" : "ok")
+                          << " renderTarget=" << (renderTarget == nullptr ? "NULL" : "ok")
+                          << std::endl;
+            }
             return;
         }
 
         GlyphAtlas & atlas = subRun.resolvedFont->atlas();
+        if(textTraceEnabled()){
+            std::cout << "[wtk-text] emitTextSubRun atlas=" << (void *)&atlas
+                      << " atlasTexture=" << (atlas.texture() == nullptr ? "NULL" : "ok")
+                      << " fontMode="
+                      << (subRun.resolvedFont->mode() == Font::Mode::MSDF ? "MSDF" : "BitmapFallback")
+                      << std::endl;
+        }
 
         // Author one quad (6 vertices) per resident glyph. Atlas
         // population already happened on the paint-recording thread
@@ -774,13 +824,27 @@ void BackendRenderTargetContext::resetElementState() {
         OmegaCommon::Vector<QuadVertex> verts;
         verts.reserve(subRun.glyphIds.size() * 6);
 
+        std::size_t lookupMisses = 0;
+        std::size_t zeroSizeSkips = 0;
         for(std::size_t i = 0; i < subRun.glyphIds.size(); ++i){
             const std::uint32_t gid = subRun.glyphIds[i];
             const AtlasGlyph * g = atlas.lookup(gid);
             if(g == nullptr){
+                ++lookupMisses;
+                if(textTraceEnabled()){
+                    std::cout << "[wtk-text]   atlas.lookup MISS gid=" << gid
+                              << " (glyph not resident — ensureGlyphsResident likely failed)"
+                              << std::endl;
+                }
                 continue;
             }
             if(g->fWidth <= 0.f || g->fHeight <= 0.f){
+                ++zeroSizeSkips;
+                if(textTraceEnabled()){
+                    std::cout << "[wtk-text]   skip zero-sized glyph gid=" << gid
+                              << " fW=" << g->fWidth << " fH=" << g->fHeight
+                              << std::endl;
+                }
                 continue;
             }
 
@@ -801,7 +865,7 @@ void BackendRenderTargetContext::resetElementState() {
             const float maxX = minX + g->fWidth;
             const float maxY = minY + g->fHeight;
 
-            if(std::getenv("OMEGAWTK_TRACE_TEXT") != nullptr){
+            if(textTraceEnabled()){
                 std::cout << "[wtk-text] QUAD gid=" << gid
                           << " pos=(" << subRun.positions[i].x << "," << subRun.positions[i].y << ")"
                           << " penY=" << penY
@@ -826,12 +890,31 @@ void BackendRenderTargetContext::resetElementState() {
         }
 
         if(verts.empty()){
+            if(textTraceEnabled()){
+                std::cout << "[wtk-text] emitTextSubRun SKIP: verts.empty()"
+                          << " — every glyph lookup failed or was zero-sized."
+                          << " misses=" << lookupMisses
+                          << " zeroSized=" << zeroSizeSkips
+                          << " (of " << subRun.glyphIds.size() << " glyphIds)"
+                          << std::endl;
+            }
             return;
         }
 
         auto atlasTexture = atlas.texture();
         if(atlasTexture == nullptr){
+            if(textTraceEnabled()){
+                std::cout << "[wtk-text] emitTextSubRun SKIP: atlas.texture() == nullptr"
+                          << " (atlas never allocated its GPU texture — first ensureGlyph likely failed)"
+                          << std::endl;
+            }
             return;
+        }
+        if(textTraceEnabled()){
+            std::cout << "[wtk-text] emitTextSubRun authoring "
+                      << verts.size() << " verts (" << (verts.size() / 6)
+                      << " quads); atlasTex=" << (void *)atlasTexture.get()
+                      << std::endl;
         }
 
         const float viewportW = std::max(1.f, renderTargetSize_.w);
@@ -856,6 +939,12 @@ void BackendRenderTargetContext::resetElementState() {
             vertexBuffer = gte.graphicsEngine->makeBuffer(desc);
         }
         if(vertexBuffer == nullptr){
+            if(textTraceEnabled()){
+                std::cout << "[wtk-text] emitTextSubRun SKIP: vertexBuffer alloc failed"
+                          << " bytes=" << vertexBytes
+                          << " (bufferPool=" << (bufferPool() != nullptr ? "ok" : "NULL") << ")"
+                          << std::endl;
+            }
             return;
         }
 
@@ -875,6 +964,10 @@ void BackendRenderTargetContext::resetElementState() {
             paramsBuffer = gte.graphicsEngine->makeBuffer(desc);
         }
         if(paramsBuffer == nullptr){
+            if(textTraceEnabled()){
+                std::cout << "[wtk-text] emitTextSubRun SKIP: paramsBuffer alloc failed"
+                          << std::endl;
+            }
             if(bufferPool() != nullptr && vertexBuffer){
                 bufferPool()->release(std::move(vertexBuffer), vertexBytes);
             }
@@ -919,6 +1012,12 @@ void BackendRenderTargetContext::resetElementState() {
         SharedHandle<OmegaGTE::GEFence> noFence;
         auto scope = frameRenderPass_.beginDraw(noFence);
         if(scope.cb == nullptr){
+            if(textTraceEnabled()){
+                std::cout << "[wtk-text] emitTextSubRun SKIP: beginDraw returned null CB"
+                          << " — most likely the frame's render pass is not active"
+                          << " (frameRenderPass_.begin() not called, or already ended)."
+                          << std::endl;
+            }
             if(bufferPool() != nullptr){
                 if(vertexBuffer){
                     bufferPool()->release(std::move(vertexBuffer), vertexBytes);
@@ -938,6 +1037,12 @@ void BackendRenderTargetContext::resetElementState() {
         cb->drawPolygons(OmegaGTE::GECommandBuffer::Triangle,
                          (unsigned)verts.size(), 0);
         frameRenderPass_.endDraw(scope);
+
+        if(textTraceEnabled()){
+            std::cout << "[wtk-text] emitTextSubRun DRAW issued: "
+                      << verts.size() << " verts (" << (verts.size() / 6)
+                      << " quads)" << std::endl;
+        }
 
         if(bufferPool() != nullptr){
             if(vertexBuffer){
@@ -1468,12 +1573,24 @@ void BackendRenderTargetContext::resetElementState() {
                 // and issue one draw call per sub-run against its
                 // resolved font's MSDF glyph atlas.
                 auto & _params = ((VisualCommandParams*)params)->textRunParams;
+                if(textTraceEnabled()){
+                    std::cout << "[wtk-text] renderToTarget TextRun: "
+                              << _params.subRuns.size() << " sub-runs, rect=("
+                              << _params.rect.pos.x << "," << _params.rect.pos.y
+                              << " " << _params.rect.w << "x" << _params.rect.h << ")"
+                              << std::endl;
+                }
                 for(const auto & subRun : _params.subRuns){
                     emitTextSubRun(subRun, _params.rect, _params.color);
                 }
                 return;
             }
             case VisualCommand::Text:
+                if(textTraceEnabled()){
+                    std::cout << "[wtk-text] renderToTarget Text (legacy bitmap "
+                              << "TextRect path) — not the MSDF path." << std::endl;
+                }
+                return;
             default:
                 return;
         }

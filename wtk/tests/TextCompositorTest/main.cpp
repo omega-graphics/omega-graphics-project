@@ -57,8 +57,14 @@ class TextCompositorWidget final : public OmegaWTK::Widget {
         if(fontEngine == nullptr){
             return;
         }
+        // Arial resolves on all three platforms: bundled on Windows
+        // and macOS; FontConfig substitutes it to Liberation Sans /
+        // DejaVu Sans on Linux. Helvetica doesn't ship with Windows
+        // — DWrite's `FindFamilyName` returns false and the font is
+        // routed to BitmapFallback (the MSDF path then renders nothing).
+        // RootWidget/Main.cpp uses the same family for the same reason.
         OmegaWTK::Composition::FontDescriptor descriptor(
-            "Helvetica",
+            "Arial",
             28,
             OmegaWTK::Composition::FontDescriptor::Bold);
         font = fontEngine->CreateFont(descriptor);

@@ -105,7 +105,17 @@
         while(it != tokens.rend()){
             auto & tok = *it;
             if(tok.type == Token::ID && it == tokens.rbegin()){
+                // Walk backwards from the trailing ID. Each `++it` here
+                // can step past `rend()` for bare-filename inputs like
+                // "test.png" (3 tokens: ID, Dot, ID) — the inner branch
+                // consumes all of them and the outer `++it` at loop
+                // bottom would then decrement the underlying iterator
+                // past begin(), which MSVC's _ITERATOR_DEBUG_LEVEL
+                // traps. Bound-check every step and `break` cleanly so
+                // the outer increment never runs against an exhausted
+                // iterator.
                 ++it;
+                if(it == tokens.rend()) break; // input was just "png"
                 auto & tok2 = *it;
                 if(tok2.type == Token::Dot){
                     _ext = tok.str;
@@ -116,12 +126,13 @@
                     continue;
                 };
                 ++it;
+                if(it == tokens.rend()) break; // input was ".png"
                 tok2 = *it;
                 if(tok2.type == Token::ID){
                     _fname = tok2.str;
                 }
                 ++it;
-                
+                if(it == tokens.rend()) break; // input was "test.png" — no dir
             }
             else {
                 _dir = tok.str + _dir;
@@ -129,9 +140,30 @@
             ++it;
         };
 
-        isRelative = tokens.front().type == Token::Dot || tokens.front().type == Token::ID;
+        // Empty path: nothing to classify, leave isRelative at its
+        // default. Without this guard, `tokens.front()` on an empty
+        // vector is UB.
+        isRelative = !tokens.empty() &&
+                     (tokens.front().type == Token::Dot ||
+                      tokens.front().type == Token::ID);
            
         
+    };
+
+    String Path::nativePath(){
+#if defined(_WIN32)
+        // Walk a copy of the stored path string and rewrite forward
+        // slashes to backslashes. Cheap (single pass, no allocations
+        // beyond the copy) and the only Windows-vs-Unix divergence:
+        // every other platform accepts '/' directly.
+        String out = _str;
+        for(auto & c : out){
+            if(c == '/') c = '\\';
+        }
+        return out;
+#else
+        return _str;
+#endif
     };
 
     String & Path::dir(){

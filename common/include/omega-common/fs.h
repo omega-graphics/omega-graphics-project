@@ -118,6 +118,21 @@ namespace OmegaCommon::FS {
              @returns String
             */
             OmegaCommon::String absPath();
+
+            /**
+             @brief Returns the path string with platform-native separators.
+
+             On Windows, every '/' in the stored path string is replaced
+             with '\\'. On Unix-likes, the path is returned unchanged
+             (forward slashes are native). Useful when handing a path
+             string to APIs that do not accept the cross-platform
+             forward-slash form (some Win32 / DWrite calls, error
+             messages quoted to the user, …). Equivalent to `str()`
+             on Unix; differs only on Windows.
+
+             @returns String
+            */
+            OmegaCommon::String nativePath();
             bool exists();
 
             bool isFile();

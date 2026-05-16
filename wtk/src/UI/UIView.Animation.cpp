@@ -525,7 +525,7 @@ SharedHandle<Composition::Font> UIView::Impl::resolveFallbackTextFont(){
         return nullptr;
     }
 
-    Composition::FontDescriptor descriptor("Helvetica",18,Composition::FontDescriptor::Regular);
+    Composition::FontDescriptor descriptor("Arial",18,Composition::FontDescriptor::Regular);
     fallbackTextFont = fontEngine->CreateFont(descriptor);
     if(fallbackTextFont == nullptr){
         Composition::FontDescriptor secondaryDescriptor("Arial",18,Composition::FontDescriptor::Regular);

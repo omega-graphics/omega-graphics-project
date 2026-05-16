@@ -174,12 +174,19 @@ namespace OmegaWTK::Composition {
                       << " into " << tileW << "x" << tileH << " tile at ("
                       << cursorX_ << "," << cursorY_ << "), advance="
                       << entry.advance << std::endl;
+        }
 
-            // Read the whole atlas texture back and write it to a PPM so
-            // the packed tiles can be inspected directly — orientation
-            // of stored glyphs, whether tiles abut with no gutter, and
-            // whether the shelf packing matches what the UVs assume.
-            // Overwrites each call; the final write has the most glyphs.
+        // Optional: read the whole atlas texture back and write it to a
+        // PPM so the packed tiles can be inspected directly — orientation
+        // of stored glyphs, whether tiles abut with no gutter, and
+        // whether the shelf packing matches what the UVs assume.
+        // Gated behind its own env var (OMEGAWTK_DUMP_ATLAS_PPM) because
+        // `getBytes` is a GPU→CPU readback: on backends that allocate
+        // the atlas texture as upload-only (D3D12 uses
+        // `usage = ToGPU` → no FromGPU flag), the readback asserts.
+        // Folding this into OMEGAWTK_TRACE_TEXT would make the trace
+        // env var crash the process on Windows.
+        if(std::getenv("OMEGAWTK_DUMP_ATLAS_PPM") != nullptr){
             std::vector<std::uint8_t> px(
                 static_cast<std::size_t>(kAtlasDim) * kAtlasDim * 4);
             texture_->getBytes(px.data(), static_cast<std::size_t>(kAtlasDim) * 4);
@@ -192,8 +199,10 @@ namespace OmegaWTK::Composition {
                     std::fputc(px[i * 4 + 2], f);
                 }
                 std::fclose(f);
-                std::cout << "[wtk-text] GlyphAtlas: dumped atlas to "
-                             "/tmp/wtk_glyph_atlas.ppm" << std::endl;
+                if(textTraceEnabled()){
+                    std::cout << "[wtk-text] GlyphAtlas: dumped atlas to "
+                                 "/tmp/wtk_glyph_atlas.ppm" << std::endl;
+                }
             }
         }
 

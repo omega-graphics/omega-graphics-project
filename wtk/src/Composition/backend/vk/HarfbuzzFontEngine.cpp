@@ -4,6 +4,7 @@
 #include "../GlyphAtlas.h"
 
 #include "omega-common/fs.h"
+#include "omega-common/assets.h"
 
 #include <pango/pangocairo.h>
 #include <pango/pangofc-font.h>
@@ -38,6 +39,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -229,12 +231,30 @@ namespace OmegaWTK::Composition {
         // (which still works through `resolvedFont`).
         FT_Face ftFace_ = nullptr;
         hb_font_t *hbFont_ = nullptr;
+
+        // Asset-bundle font path: when an FT_Face is opened via
+        // `FT_New_Memory_Face`, FreeType does NOT copy the bytes — it
+        // reads from the caller-owned buffer for the face's whole
+        // lifetime. The HarfBuzzFont takes shared ownership of the
+        // blob here so it stays alive at least until the FT_Face is
+        // closed in this Font's dtor. Null when the font was loaded
+        // from a real file path or FontConfig-resolved.
+        std::shared_ptr<std::vector<std::uint8_t>> memoryBlob_;
     public:
         explicit HarfBuzzFont(FontDescriptor &desc, PangoFontDescription *fontDesc, PangoFont *resolved)
             :Font(desc), fontDesc(fontDesc), resolvedFont(resolved){
             if(resolvedFont != nullptr){
                 g_object_ref(resolvedFont);
             }
+        }
+
+        /// Tie the lifetime of an in-memory font blob to this Font.
+        /// Required when the FT_Face was opened via FT_New_Memory_Face,
+        /// because FreeType reads from the caller-owned buffer
+        /// continuously. The blob is released in this Font's dtor —
+        /// strictly after `FT_Done_Face` runs.
+        void retainMemoryBlob(std::shared_ptr<std::vector<std::uint8_t>> blob){
+            memoryBlob_ = std::move(blob);
         }
 
         void * getNativeFont() override {
@@ -1305,6 +1325,86 @@ namespace OmegaWTK::Composition {
                 (const FcChar8 *)path.str().c_str());
 
             return CreateFont(desc);
+        }
+
+        // Asset-bundle font loading. Opens the FT_Face directly via
+        // FT_New_Memory_Face against the bundle's bytes — no temp file,
+        // no FontConfig dance (FontConfig works on filesystem paths).
+        // The MSDF path lights up via the directly-opened face; the
+        // legacy Pango/Cairo BitmapFallback path is NOT supported for
+        // asset-loaded fonts (no PangoFontDescription resolves to this
+        // face). MSDF mode is the practical contract here.
+        Core::SharedPtr<Font> CreateFontFromAsset(
+                OmegaCommon::AssetBundle *bundle,
+                const OmegaCommon::String &assetName,
+                FontDescriptor &desc) override {
+            if(bundle == nullptr || ftLibrary_ == nullptr){
+                return nullptr;
+            }
+            auto loadResult = bundle->load(assetName);
+            if(!loadResult.isOk()){
+                if(textTraceEnabled()){
+                    std::cout << "[wtk-text] CreateFontFromAsset: '" << assetName
+                              << "' bundle->load failed: " << loadResult.error()
+                              << std::endl;
+                }
+                return nullptr;
+            }
+            auto blob = std::make_shared<std::vector<std::uint8_t>>(
+                std::move(loadResult.value()));
+            if(blob->empty()){
+                if(textTraceEnabled()){
+                    std::cout << "[wtk-text] CreateFontFromAsset: '" << assetName
+                              << "' bundle entry is empty" << std::endl;
+                }
+                return nullptr;
+            }
+
+            // FT_New_Memory_Face does NOT copy the buffer — FreeType
+            // reads from it for the FT_Face's whole lifetime. The blob
+            // is anchored on the HarfBuzzFont via retainMemoryBlob
+            // below so it outlives FT_Done_Face in the dtor.
+            FT_Face face = nullptr;
+            const FT_Error err = FT_New_Memory_Face(
+                ftLibrary_,
+                reinterpret_cast<const FT_Byte *>(blob->data()),
+                static_cast<FT_Long>(blob->size()),
+                0 /*face_index*/, &face);
+            if(err != 0 || face == nullptr){
+                if(textTraceEnabled()){
+                    std::cout << "[wtk-text] CreateFontFromAsset: FT_New_Memory_Face failed err="
+                              << err << std::endl;
+                }
+                return nullptr;
+            }
+            if(FT_Set_Pixel_Sizes(face, 0, desc.size) != 0){
+                FT_Done_Face(face);
+                return nullptr;
+            }
+            hb_font_t *hb = hb_ft_font_create_referenced(face);
+            if(hb == nullptr){
+                FT_Done_Face(face);
+                return nullptr;
+            }
+
+            // No Pango description / resolved font: the BitmapFallback
+            // path can't render this face. The MSDF path is driven
+            // entirely off `ftFace()` so it works.
+            auto font = Core::SharedPtr<HarfBuzzFont>(
+                new HarfBuzzFont(desc, /*fontDesc*/ nullptr, /*resolved*/ nullptr));
+            font->setFTHandles(face, hb);
+            font->retainMemoryBlob(blob);
+
+            probeAndInstallMsdf(*font);
+            if(textTraceEnabled()){
+                std::cout << "[wtk-text] CreateFontFromAsset: '" << desc.family
+                          << "' size=" << desc.size
+                          << " loaded from bundle asset '" << assetName
+                          << "' (" << blob->size() << " bytes) -> "
+                          << (font->mode() == Font::Mode::MSDF ? "MSDF" : "BitmapFallback")
+                          << std::endl;
+            }
+            return font;
         }
 
         // Phase 6.7-c4. The shaping pass calls this when the layout

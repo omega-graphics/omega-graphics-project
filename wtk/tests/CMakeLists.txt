@@ -38,11 +38,18 @@ OmegaWTKApp(
     "org.omegagraphics.ImageRenderTest"
     SOURCES
     ImageRenderTest/main.cpp)
-# Bake the source-tree path to the test PNG into the binary so it works
-# regardless of where the EXE / app is launched from. Forward slashes
-# are fine on every platform's stdio.
-target_compile_definitions(ImageRenderTest PRIVATE
-    "IMAGE_RENDER_TEST_PNG_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/ImageRenderTest/test.png\"")
+# Stage the test PNG next to the built binary so the test loads it via
+# the relative `"test.png"` fallback in main.cpp regardless of which
+# source tree (or none) is reachable from the run host. The previous
+# CMake compile-def baked an absolute source-tree path into the EXE,
+# which breaks Linux + Windows CI runs that build out-of-tree or ship
+# the binary somewhere the source doesn't follow. copy_if_different
+# avoids re-stamping the build timestamp on no-op rebuilds.
+add_custom_command(TARGET ImageRenderTest POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/ImageRenderTest/test.png"
+        "$<TARGET_FILE_DIR:ImageRenderTest>/test.png"
+    COMMENT "Staging ImageRenderTest/test.png next to ImageRenderTest binary")
 
 OmegaWTKApp(
     NAME

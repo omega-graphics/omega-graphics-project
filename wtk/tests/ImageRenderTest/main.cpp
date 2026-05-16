@@ -18,9 +18,10 @@
 
 #include <iostream>
 
-// Source-tree path to the test PNG. Baked in by CMake via
-// target_compile_definitions so the binary works regardless of the
-// current working directory at launch.
+// Asset filename, expected to live next to the binary (staged by the
+// POST_BUILD copy in wtk/tests/CMakeLists.txt). Joined at runtime
+// against `AppInst::executableDir()` so the test works regardless of
+// the launch CWD.
 #ifndef IMAGE_RENDER_TEST_PNG_PATH
 #define IMAGE_RENDER_TEST_PNG_PATH "test.png"
 #endif
@@ -41,21 +42,27 @@ int omegaWTKMain(AppInst *app) {
     auto window = make<AppWindow>(windowRect, new TestWindowDelegate());
     window->setTitle("ImageRenderTest");
 
+    // Resolve "test.png" against the EXE's directory rather than CWD.
+    // The POST_BUILD copy in CMakeLists.txt stages the file alongside
+    // the binary; this lookup matches that staging regardless of the
+    // launch CWD. `append` uses the platform separator internally.
+    OmegaCommon::FS::Path imgPath = AppInst::executableDir();
+    imgPath.append(IMAGE_RENDER_TEST_PNG_PATH);
+
     // Load the PNG. Failure is a fatal diagnostic — bail with a clear
     // message so the user notices it in the console instead of seeing
     // an empty window and assuming the bitmap path is broken when it's
     // really just an unresolved asset path.
-    OmegaCommon::FS::Path imgPath(IMAGE_RENDER_TEST_PNG_PATH);
     auto loadResult = OmegaCommon::Img::loadFromFile(imgPath);
     if(!loadResult.isOk()){
         std::cerr << "ImageRenderTest: failed to load "
-                  << IMAGE_RENDER_TEST_PNG_PATH << ": "
+                  << imgPath.nativePath() << ": "
                   << loadResult.error() << std::endl;
         return 1;
     }
     auto bitmap = std::make_shared<OmegaCommon::Img::BitmapImage>(
         std::move(loadResult.value()));
-    std::cout << "ImageRenderTest: loaded " << IMAGE_RENDER_TEST_PNG_PATH
+    std::cout << "ImageRenderTest: loaded " << imgPath.nativePath()
               << " (" << bitmap->header.width << "x" << bitmap->header.height
               << ", channels=" << bitmap->header.channels << ")" << std::endl;
 

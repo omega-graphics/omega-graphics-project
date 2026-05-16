@@ -545,9 +545,9 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         HRESULT hr;
 
         CreateDXGIFactory(IID_PPV_ARGS(&dxgi_factory));
-
+        
         D3D12GetDebugInterface(IID_PPV_ARGS(&debug_interface));
-        // debug_interface->EnableDebugLayer();
+        debug_interface->EnableDebugLayer();
         debug_interface->SetEnableGPUBasedValidation(FALSE);
 
         hr = D3D12CreateDevice(device->adapter.Get(),D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d3d12_device));
@@ -1798,9 +1798,26 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
             if(isSRV) {
                 res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                 res_view_desc.Texture2D.MipLevels = effectiveMips;
-                res_view_desc.Texture2D.MostDetailedMip = effectiveMips - 1;
+                // MostDetailedMip is the highest-resolution mip the
+                // view starts at — must be 0 to address mip 0 (the
+                // full-res image). Previously set to `effectiveMips
+                // - 1`, which together with `MipLevels = effectiveMips`
+                // asks the view to span mips [N-1 .. 2N-2] against a
+                // texture that has [0 .. N-1]. For N == 1 the bug was
+                // invisible (1-1=0); it surfaced as soon as any caller
+                // requested mips — e.g. BitmapTextureCache for images
+                // >= 64x64 — with D3D12 debug-layer error
+                // CREATESHADERRESOURCEVIEW_INVALIDDIMENSIONS and
+                // immediate device removal.
+                // ResourceMinLODClamp likewise must be 0.f; clamping
+                // to the smallest mip would force every sampler to
+                // read the 1x1 mip regardless of derivatives.
+                // Every other view dimension in this file already
+                // uses MostDetailedMip = 0 (Tex1DArray, Tex2DArray,
+                // TextureCube, TextureCubeArray).
+                res_view_desc.Texture2D.MostDetailedMip = 0;
                 res_view_desc.Texture2D.PlaneSlice = 0;
-                res_view_desc.Texture2D.ResourceMinLODClamp = effectiveMips - 1;
+                res_view_desc.Texture2D.ResourceMinLODClamp = 0.f;
             }
             if(isDSV){
                 dsv_view_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
@@ -1969,7 +1986,22 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
         }
         else if(desc.usage == GETexture::ToGPU) {
             heap_prop = CD3DX12_HEAP_PROPERTIES( D3D12_HEAP_TYPE_UPLOAD );
-            d3d12_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+            // Grant UAV access when the descriptor asks for multiple
+            // mips. The compute-shader mipmap generator
+            // (GED3D12CommandBuffer::generateMipmaps) needs to bind
+            // each destination mip as a UAV; without this flag the
+            // generator's UAV-capability check fails and mips 1..N-1
+            // are left at upload-heap zeros, producing undefined
+            // samples on minification. Single-mip textures keep the
+            // narrower flag set to preserve D3D12's optimization
+            // hints for read-only resources. The texture *resource*
+            // is on D3D12_HEAP_TYPE_DEFAULT (line ~1992 below), so
+            // UAV is legal here; `heap_prop` above describes the
+            // separate UPLOAD-heap staging buffer (`cpuSideRes`),
+            // which does not need or get a UAV flag.
+            d3d12_desc.Flags = (desc.mipLevels > 1)
+                ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+                : D3D12_RESOURCE_FLAG_NONE;
         }
         else if(desc.usage == GETexture::RenderTarget){
             heap_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
@@ -2315,7 +2347,26 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
                         rangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
                     }
 
-                    range->Init(rangeType,1,l.gpu_relative_loc,registerSpace);
+                    // DATA_VOLATILE rather than the root-sig-1.1
+                    // default of DATA_STATIC_WHILE_SET_AT_EXECUTE.
+                    // The default forbids the bound resource from
+                    // transitioning into a writable state between
+                    // SetGraphicsRootDescriptorTable and the next
+                    // Draw / Dispatch — which is exactly what the
+                    // mipmap generator does as it cycles mip 0 through
+                    // UAV → NON_PIXEL_SHADER_RESOURCE → UAV per pair.
+                    // DATA_VOLATILE permits the transition at small
+                    // optimization cost (driver loses a hoisting hint
+                    // that is rarely load-bearing for our UI render
+                    // workload). DESCRIPTORS_VOLATILE is also enabled
+                    // so the descriptor heap contents themselves can
+                    // be updated between bind and execute, which
+                    // matches how the runtime authors per-frame
+                    // descriptors today.
+                    range->Init(rangeType, 1,
+                                l.gpu_relative_loc, registerSpace,
+                                D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE |
+                                D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE);
                     parameter1.InitAsDescriptorTable(1,range);
                 }
                 params.push_back(parameter1);

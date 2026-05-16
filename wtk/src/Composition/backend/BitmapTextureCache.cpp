@@ -103,14 +103,30 @@ namespace OmegaWTK::Composition {
 
         if(wantMips){
             if(!runGenerateMipmaps(texture)){
-                // Mip generation failed — keep the base level only. The
-                // sampler still produces correct (linear) results without
-                // the chain; callers just lose minification quality.
+                // Mip generation failed — re-allocate as single-mip so
+                // the SRV's view range matches the actually-populated
+                // mips. Keeping the multi-mip texture would leave mips
+                // 1..N-1 at upload-heap zeros (D3D12) or undefined
+                // contents (Vulkan / Metal), and the sampler would
+                // read those when minified, producing visible black
+                // halos on shrunken images. One re-allocation per
+                // failure is acceptable: the failure path is rare
+                // (pipeline init failure / OOM / unsupported usage).
 #ifdef OMEGAWTK_TRACE_RENDER
                 std::cout << "BitmapTextureCache: generateMipmaps failed for "
-                          << w << "x" << h << " texture; falling back to base level only."
+                          << w << "x" << h << " texture; falling back to single-mip allocation."
                           << std::endl;
 #endif
+                desc.mipLevels = 1;
+                auto fallbackTexture = gte.graphicsEngine->makeTexture(desc);
+                if(fallbackTexture != nullptr){
+                    fallbackTexture->copyBytes(image->data(), image->header.stride);
+                    texture = std::move(fallbackTexture);
+                }
+                // If even the single-mip allocation failed, keep the
+                // original multi-mip texture and accept the visual
+                // glitch — better than returning a null texture and
+                // dropping the image entirely.
             }
         }
 

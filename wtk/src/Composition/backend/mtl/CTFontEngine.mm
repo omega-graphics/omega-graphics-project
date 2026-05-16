@@ -5,6 +5,7 @@
 #include "../GlyphAtlas.h"
 
 #include "omega-common/unicode.h"
+#include "omega-common/assets.h"
 
 #import <CoreText/CoreText.h>
 #include <memory>
@@ -1047,6 +1048,130 @@ public:
      // font stays on BitmapFallback for now.
      return std::make_shared<CoreTextFont>(desc,f,fUnscaled);
  };
+
+ // Asset-bundle font loading. Builds CTFontDescriptors directly off the
+ // bundle's in-memory bytes via CTFontManagerCreateFontDescriptorsFromData,
+ // then materializes a scaled + unscaled CTFontRef for the descriptor
+ // matching the requested family + style. No temp file, no font-manager
+ // registration. The MSDF probe runs against the unscaled face so an
+ // asset-loaded font lights up the same MSDF path as system-loaded ones.
+ Core::SharedPtr<Font> CreateFontFromAsset(
+         OmegaCommon::AssetBundle *bundle,
+         const OmegaCommon::String &assetName,
+         FontDescriptor &desc) override {
+     if(bundle == nullptr){
+         return nullptr;
+     }
+     auto loadResult = bundle->load(assetName);
+     if(!loadResult.isOk()){
+         if(textTraceEnabled()){
+             std::cout << "[wtk-text] CreateFontFromAsset: '" << assetName
+                       << "' bundle->load failed: " << loadResult.error()
+                       << std::endl;
+         }
+         return nullptr;
+     }
+     auto blob = std::move(loadResult.value());
+     if(blob.empty()){
+         if(textTraceEnabled()){
+             std::cout << "[wtk-text] CreateFontFromAsset: '" << assetName
+                       << "' bundle entry is empty" << std::endl;
+         }
+         return nullptr;
+     }
+
+     // CTFontManagerCreateFontDescriptorsFromData copies the bytes into
+     // its own backing store, so the blob can be a local that goes out
+     // of scope after this call. No lifetime anchoring needed on the
+     // CoreTextFont (contrast with FreeType's FT_New_Memory_Face).
+     CFDataRef cfData = CFDataCreate(kCFAllocatorDefault,
+                                     blob.data(),
+                                     (CFIndex)blob.size());
+     if(cfData == nullptr){
+         return nullptr;
+     }
+     CFArrayRef descriptors = CTFontManagerCreateFontDescriptorsFromData(cfData);
+     CFRelease(cfData);
+     if(descriptors == nullptr || CFArrayGetCount(descriptors) == 0){
+         if(textTraceEnabled()){
+             std::cout << "[wtk-text] CreateFontFromAsset: '" << assetName
+                       << "' did not parse as a font" << std::endl;
+         }
+         if(descriptors != nullptr) CFRelease(descriptors);
+         return nullptr;
+     }
+
+     // Required symbolic traits derived from desc.style.
+     CTFontSymbolicTraits requiredTraits = 0;
+     switch(desc.style){
+         case FontDescriptor::Bold:
+             requiredTraits = kCTFontTraitBold; break;
+         case FontDescriptor::Italic:
+             requiredTraits = kCTFontTraitItalic; break;
+         case FontDescriptor::BoldAndItalic:
+             requiredTraits = kCTFontTraitBold | kCTFontTraitItalic; break;
+         case FontDescriptor::Regular:
+         default:
+             requiredTraits = 0; break;
+     }
+
+     // Walk the descriptors and pick the one matching desc.family +
+     // requiredTraits. Fall back to descriptor[0] if no exact match —
+     // single-face TTFs typically carry one descriptor with the
+     // canonical family name, which matches the request only when the
+     // caller already knows what's in the file.
+     CTFontDescriptorRef chosen = nullptr;
+     const CFIndex n = CFArrayGetCount(descriptors);
+     for(CFIndex i = 0; i < n; ++i){
+         CTFontDescriptorRef fd = (CTFontDescriptorRef)CFArrayGetValueAtIndex(descriptors, i);
+         CFStringRef family = (CFStringRef)CTFontDescriptorCopyAttribute(fd, kCTFontFamilyNameAttribute);
+         CFNumberRef traitsNum = (CFNumberRef)CTFontDescriptorCopyAttribute(fd, kCTFontSymbolicTrait);
+         int traitsVal = 0;
+         if(traitsNum != nullptr){
+             CFNumberGetValue(traitsNum, kCFNumberIntType, &traitsVal);
+             CFRelease(traitsNum);
+         }
+         bool familyMatches = false;
+         if(family != nullptr){
+             NSString *familyStr = (__bridge id)family;
+             familyMatches = (desc.family == familyStr.UTF8String);
+             CFRelease(family);
+         }
+         if(familyMatches &&
+            (static_cast<CTFontSymbolicTraits>(traitsVal) & requiredTraits) == requiredTraits){
+             chosen = fd;
+             break;
+         }
+     }
+     if(chosen == nullptr){
+         chosen = (CTFontDescriptorRef)CFArrayGetValueAtIndex(descriptors, 0);
+     }
+
+     const auto scaleFactor = currentScreenScale();
+     CTFontRef scaledFont   = CTFontCreateWithFontDescriptor(chosen,
+         CGFloat(desc.size) * scaleFactor, NULL);
+     CTFontRef unscaledFont = CTFontCreateWithFontDescriptor(chosen,
+         CGFloat(desc.size), NULL);
+     CFRelease(descriptors);
+     if(scaledFont == nullptr || unscaledFont == nullptr){
+         if(scaledFont != nullptr) CFRelease(scaledFont);
+         if(unscaledFont != nullptr) CFRelease(unscaledFont);
+         return nullptr;
+     }
+
+     auto font = SharedHandle<CoreTextFont>(
+         new CoreTextFont(desc, scaledFont, unscaledFont));
+     probeAndInstallMsdf(*font);
+     if(textTraceEnabled()){
+         std::cout << "[wtk-text] CreateFontFromAsset: '" << desc.family
+                   << "' size=" << desc.size
+                   << " loaded from bundle asset '" << assetName
+                   << "' (" << blob.size() << " bytes) -> "
+                   << (font->mode() == Font::Mode::MSDF ? "MSDF" : "BitmapFallback")
+                   << std::endl;
+     }
+     return font;
+ }
 };
 
 // Phase 4. Out-of-line because the cache miss path delegates to

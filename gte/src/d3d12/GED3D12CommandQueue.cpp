@@ -118,8 +118,25 @@ unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int 
                 break;
             }
         } else if (param.ParameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE && isDescriptorTable) {
+            // Descriptor-table match must include the range *type*.
+            // The mipmap-gen pipeline (srcMip = SRV at t0, dstMip = UAV
+            // at u0) lays out two descriptor tables whose first range
+            // shares BaseShaderRegister=0 — they differ only by range
+            // type (SRV vs UAV). Without the type check, the UAV
+            // lookup matched the SRV table at parameter 0 and the
+            // dispatch loop double-bound the same root parameter with
+            // mismatched-type handles — D3D12 debug-layer error
+            // INVALID_DESCRIPTOR_HANDLE.
             auto &range = param.DescriptorTable.pDescriptorRanges[0];
-            if (range.BaseShaderRegister == relative_index && range.RegisterSpace == regSpace) {
+            const bool typeMatches =
+                (isSRV && range.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV) ||
+                (isUAV && range.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV) ||
+                // Sampler / CBV lookups don't set isSRV/isUAV; fall
+                // through to a register-only match for them.
+                (!isSRV && !isUAV);
+            if (typeMatches &&
+                range.BaseShaderRegister == relative_index &&
+                range.RegisterSpace == regSpace) {
                 break;
             }
         }
@@ -456,6 +473,21 @@ void GED3D12CommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture) {
     auto *device = engine->d3d12_device.Get();
     auto *pipeline = (GED3D12ComputePipelineState *)engine->mipmapGenPipeline.get();
     auto &shaderInternal = pipeline->computeShader->internal;
+
+    // Point `currentRootSignature` at the mipmap-gen pipeline's root
+    // signature *before* asking `getRootParameterIndexOfResource` to
+    // walk it. `currentRootSignature` is normally assigned by
+    // `setComputePipelineState`, but this function bypasses that path
+    // (the per-mip loop drives the dispatch directly). Without this
+    // assignment the lookup walks a null/stale root-signature pointer
+    // and access-violates on `currentRootSignature->NumParameters`.
+    // We assign here rather than calling `setComputePipelineState`
+    // because the dispatch loop below issues its own
+    // `SetPipelineState` / `SetComputeRootSignature` interleaved with
+    // per-mip barriers, and routing through `setComputePipelineState`
+    // would also flip the `inComputePass` guard which doesn't apply
+    // inside a blit pass.
+    currentRootSignature = &pipeline->rootSignatureDesc;
 
     // OmegaSL location 0 = srcMip (in / SRV), 1 = dstMip (out / UAV).
     unsigned srvId = 0, uavId = 1;
