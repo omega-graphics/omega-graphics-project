@@ -1095,7 +1095,7 @@ and replays them into `windowCanvas_` in tree order at `endFrame()`.
 Files touched: `wtk/src/UI/UIView.Update.cpp`, new
 `wtk/src/UI/FrameBuilder.cpp` methods, RootWidget scene additions.
 
-##### Phase 3.3 — `SVGView` opt-in 
+##### Phase 3.3 — `SVGView` opt-in [DONE]
 
 Same opt-in as Phase 3.2, applied to `SVGView::paint()`. SVG's
 cached `DisplayList` was always the right shape for this; Phase 3.3
@@ -1114,7 +1114,7 @@ is mostly a one-line rewire.
 
 Files touched: `wtk/src/UI/SVGView.cpp`.
 
-##### Phase 3.4 — `FrameBuilder` transform accumulator + `computeWindowOffset` rewire
+##### Phase 3.4 — `FrameBuilder` transform accumulator + `computeWindowOffset` rewire [DONE]
 
 Replaces `View::computeWindowOffset`'s parent-walk with a
 `FrameBuilder`-owned accumulator threaded through the paint walk.
@@ -1147,7 +1147,7 @@ scoped path is active, or falls back to the legacy walk when not).
 Files touched: `wtk/src/UI/FrameBuilder.{h,cpp}`, `wtk/src/UI/View.Core.cpp`,
 RootWidget scene additions.
 
-##### Phase 3.5 — `DisplayListReplay` real implementation for `PushClip` / `PopClip`
+##### Phase 3.5 — `DisplayListReplay` real implementation for `PushClip` / `PopClip` [DONE]
 
 The Phase 2.4 no-op cases get real implementations now that the
 window canvas has a known target. `PushTransform` / `PopTransform`

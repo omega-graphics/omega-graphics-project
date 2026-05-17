@@ -159,6 +159,16 @@ namespace OmegaWTK::Composition {
         void emitTextSubRun(const Composition::TextSubRun & subRun,
                             const Composition::Rect & rect,
                             const Composition::Color & color);
+
+        /// Tier 3 Phase 3.5: apply or clear the GPU scissor for the
+        /// current draw scope, given the effective clip rect already
+        /// resolved by `Canvas::pushClip`'s intersection stack.
+        /// Translates the rect from canvas-local (= slice-window-
+        /// local for the current slice) into target pixel space
+        /// using the current viewport override and renderScale, then
+        /// intersects with the slice's natural scissor. Empty Optional
+        /// reinstates the natural scissor.
+        void applySetClip(const Core::Optional<Composition::Rect> & clipRect);
     public:
         /// Open a frame-level render pass that clears to the given color.
         /// All subsequent renderToTarget() calls record into this pass.

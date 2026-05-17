@@ -30,6 +30,8 @@
 
 #pragma comment(lib,"dxguid.lib")
 #pragma comment(lib,"d2d1.lib")
+#pragma comment(lib,"d3d11.lib")
+#pragma comment(lib,"d3d12.lib")
 
 #ifdef OMEGAWTK_HAVE_MSDFGEN
 #include <msdfgen.h>

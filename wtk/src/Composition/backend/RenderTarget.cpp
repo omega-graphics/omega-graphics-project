@@ -242,6 +242,65 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
         }
     }
 
+    void BackendRenderTargetContext::applySetClip(const Core::Optional<Composition::Rect> & clipRect){
+        // Tier 3 Phase 3.5: translate the resolved canvas-local clip
+        // rect into target pixel coordinates and apply via the GTE
+        // scissor. Empty Optional restores the slice's natural
+        // scissor (the viewport override, or the full backing when
+        // no override is active). Issued as a tiny draw scope so the
+        // call lands on the active frame / scratch command buffer.
+        SharedHandle<OmegaGTE::GEFence> noFence;
+        auto scope = frameRenderPass_.beginDraw(noFence);
+        if(scope.cb == nullptr){
+            return;
+        }
+
+        const float scale = renderScale_;
+        const auto & vp = frameRenderPass_.viewportOverride();
+
+        float sliceX, sliceY, sliceW, sliceH;
+        if(vp.active){
+            sliceX = vp.offsetX * scale;
+            sliceY = vp.offsetY * scale;
+            sliceW = vp.width   * scale;
+            sliceH = vp.height  * scale;
+        } else {
+            sliceX = 0.f;
+            sliceY = 0.f;
+            sliceW = static_cast<float>(backingWidth_);
+            sliceH = static_cast<float>(backingHeight_);
+        }
+
+        OmegaGTE::GEScissorRect sr {};
+        if(clipRect.has_value()){
+            // Clip is canvas-local; canvas origin maps to (vp.offsetX,
+            // vp.offsetY) on the window — add the slice's window
+            // offset to lift the clip into window-pixel space.
+            const float clipX = (clipRect->pos.x + vp.offsetX) * scale;
+            const float clipY = (clipRect->pos.y + vp.offsetY) * scale;
+            const float clipW = clipRect->w * scale;
+            const float clipH = clipRect->h * scale;
+
+            // Intersect with the slice's natural scissor so a clip
+            // overflowing the slice cannot enlarge what gets drawn.
+            const float ix = std::max(sliceX, clipX);
+            const float iy = std::max(sliceY, clipY);
+            const float irRight  = std::min(sliceX + sliceW, clipX + clipW);
+            const float irBottom = std::min(sliceY + sliceH, clipY + clipH);
+            if(irRight <= ix || irBottom <= iy){
+                // Empty intersection — degenerate scissor culls all
+                // subsequent draws, which is the correct visual.
+                sr = {ix, iy, 0.f, 0.f};
+            } else {
+                sr = {ix, iy, irRight - ix, irBottom - iy};
+            }
+        } else {
+            sr = {sliceX, sliceY, sliceW, sliceH};
+        }
+        scope.cb->setScissorRects({sr});
+        frameRenderPass_.endDraw(scope);
+    }
+
     void BackendRenderTargetContext::setViewportOverride(float offsetX,float offsetY,float width,float height){
         frameRenderPass_.setViewportOverride(offsetX, offsetY, width, height);
         // Update logical size for tessellation; grow backing surface if the
@@ -1565,6 +1624,17 @@ void BackendRenderTargetContext::resetElementState() {
             }
             case VisualCommand::SetOpacity: {
                 currentOpacity = ((VisualCommandParams*)params)->opacityValue;
+                return;
+            }
+            case VisualCommand::SetClip: {
+                // Tier 3 Phase 3.5: apply / clear the GPU scissor.
+                // Canvas already resolved the intersected effective
+                // rect; here we translate it from canvas-local
+                // (which equals slice-window-local for the current
+                // slice) into target pixel coordinates and intersect
+                // with the slice's natural scissor.
+                auto & _params = ((VisualCommandParams*)params)->clipRect;
+                applySetClip(_params);
                 return;
             }
             case VisualCommand::TextRun: {

@@ -96,6 +96,35 @@ OmegaWTKApp(
     SOURCES
     SVGViewRenderTest/main.cpp)
 
+# Tier 3 Phase 3.3: mirror the OmegaWTK_UI build flag onto the test
+# binary so the same -DOMEGAWTK_WINDOW_SCOPED_PAINT=ON cmake option
+# both (a) flips AppWindow::Impl::windowScopedPaint_'s default to
+# true inside OmegaWTK_UI (which is what makes SVGView::paint() take
+# the FrameBuilder route) and (b) lets this test's main.cpp report
+# at startup which paint route the build is configured for.
+if(OMEGAWTK_WINDOW_SCOPED_PAINT)
+    target_compile_definitions(SVGViewRenderTest PRIVATE OMEGAWTK_WINDOW_SCOPED_PAINT=1)
+endif()
+
+# Tier 3 Phase 3.5 validator: drives a fabricated DisplayList with
+# PushClip / draw-overflow / PopClip / draw-outside through
+# DisplayListReplay into a real Canvas and visually verifies clip
+# semantics. Mirrors the OMEGAWTK_WINDOW_SCOPED_PAINT flag onto the
+# binary only so the startup log line can report which paint route
+# is active; the test itself works in both modes (Canvas's SetClip
+# emission is the same regardless of which canvas it lands on).
+OmegaWTKApp(
+    NAME
+    DisplayListClipTest
+    BUNDLE_ID
+    "org.omegagraphics.DisplayListClipTest"
+    SOURCES
+    DisplayListClipTest/main.cpp)
+
+if(OMEGAWTK_WINDOW_SCOPED_PAINT)
+    target_compile_definitions(DisplayListClipTest PRIVATE OMEGAWTK_WINDOW_SCOPED_PAINT=1)
+endif()
+
 OmegaWTKApp(
     NAME
     VideoViewPlaybackTest

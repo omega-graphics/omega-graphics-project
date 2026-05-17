@@ -1,9 +1,12 @@
 #include "omegaWTK/UI/SVGView.h"
+#include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/Composition/Animation.h"
 #include "omegaWTK/Composition/Path.h"
 #include "omegaWTK/Composition/Brush.h"
 #include "omegaWTK/Composition/Canvas.h"
 #include "omegaWTK/Composition/DisplayList.h"
+
+#include "FrameBuilder.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -532,20 +535,52 @@ void SVGView::paint() {
 
     startCompositionSession();
 
-    // White background (SVG default, matching browser behaviour). Kept
-    // as a frame-property write rather than a `DrawOp::Rect` because
-    // the rect fields are zero-init at frame construction and the
-    // canvas treats the background channel separately from the
-    // visual-command list.
-    {
+    auto white = Composition::Color::create8Bit(Composition::Color::White8);
+
+    // Tier 3 Phase 3.4: push this SVGView's absolute window offset
+    // onto the FrameBuilder accumulator for the lifetime of paint().
+    // Both branches resolve `View::computeWindowOffset` for this
+    // view (the on-flag branch via submitView, the off-flag branch
+    // via Canvas::nextFrame's `ownerView_->computeWindowOffset` at
+    // sendFrame time); the wrapper returns `fb->currentOffset()`
+    // whenever a FrameBuilder is active, so both paths need this
+    // view on top of the stack for the stamped offset to be right.
+    FrameBuilder::ScopedViewOffset offsetScope(
+        AppWindow::activeFrameBuilder(), this);
+
+    // Tier 3 Phase 3.3: when the window-scoped paint route is active,
+    // hand the cached DisplayList to the FrameBuilder instead of
+    // replaying into the per-view svgCanvas. The window canvas's
+    // frame.background is shared across all submissions for the
+    // frame (other views may set it for their own backgrounds), so
+    // the SVG white background is prepended as an explicit Rect op
+    // in local coordinates — the off-flag path writes it to
+    // svgCanvas->frame->background where there is no cross-view
+    // contention, but the on-flag path needs the rect for parity.
+    if (auto * fb = AppWindow::activeFrameBuilder();
+        fb != nullptr && fb->windowScopedPaint()) {
+        Composition::DisplayList list;
+        const auto & viewRect = getRect();
+        Composition::Rect localBg{
+            Composition::Point2D{0.f, 0.f}, viewRect.w, viewRect.h};
+        list.append(Composition::DrawOp{localBg, Composition::ColorBrush(white)});
+        for (const auto & op : cachedOps_->ops())
+            list.append(op);
+        fb->submitView(this, std::move(list));
+    }
+    else {
+        // White background (SVG default, matching browser behaviour).
+        // Kept as a frame-property write rather than a `DrawOp::Rect`
+        // because the rect fields are zero-init at frame construction
+        // and the canvas treats the background channel separately
+        // from the visual-command list.
         auto & bg = svgCanvas->getCurrentFrame()->background;
-        auto white = Composition::Color::create8Bit(Composition::Color::White8);
         bg.r = white.r; bg.g = white.g; bg.b = white.b; bg.a = white.a;
+
+        Composition::DisplayListReplay::replay(*cachedOps_, *svgCanvas);
+        svgCanvas->sendFrame();
     }
 
-    Composition::DisplayListReplay::replay(*cachedOps_, *svgCanvas);
-
-    svgCanvas->sendFrame();
     endCompositionSession();
 }
 

@@ -2,6 +2,7 @@
 #include "../Composition/Compositor.h"
 
 #include "AppWindowImpl.h"
+#include "FrameBuilder.h"
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/UI/View.h"
@@ -232,6 +233,21 @@ namespace OmegaWTK {
     };
 
     void WidgetTreeHost::initWidgetRecurse(Widget *parent){
+        if(parent == nullptr){
+            return;
+        }
+        // Tier 3 Phase 3.4: push this widget's absolute window offset
+        // onto the FrameBuilder accumulator before painting it and
+        // descending into children. Per-leaf-view paint code
+        // (UIView::update / SVGView::paint) stacks one more entry
+        // when it actually submits, so the accumulator top during
+        // submitView is the leaf view's window offset rather than
+        // the enclosing widget's. Null-safe when no FrameBuilder is
+        // active (off-flag tests, solo invalidates not bracketed by
+        // dispatchResize*ToHosts / displayRootWindow).
+        FrameBuilder::ScopedViewOffset offsetScope(
+            AppWindow::activeFrameBuilder(),
+            parent->view.get());
         parent->init();
         for(const auto & child : parent->childWidgets()){
             initWidgetRecurse(child.get());
@@ -270,6 +286,15 @@ namespace OmegaWTK {
         if(parent == nullptr){
             return;
         }
+        // Tier 3 Phase 3.4: mirror initWidgetRecurse — the
+        // invalidation-driven paint walk also needs the offset
+        // accumulator threaded through it. The
+        // dispatchResize*ToHosts entry points wrap the call in a
+        // FrameBuilder ScopedFrame, so the activeFrameBuilder() is
+        // non-null here during a windowed resize.
+        FrameBuilder::ScopedViewOffset offsetScope(
+            AppWindow::activeFrameBuilder(),
+            parent->view.get());
         if(parent->paintMode() == PaintMode::Automatic){
             if(immediate){
                 parent->invalidateNow(reason);
@@ -302,6 +327,31 @@ namespace OmegaWTK {
         }
         for(const auto & child : parent->childWidgets()){
             if(detectAnimatedTreeRecurse(child.get())){
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // PaintOptions::invalidateOnResize defaults to false (widgets
+    // opt in to resize-driven repaint). Walk the tree once per
+    // resize event; if no widget opted in, every notifyWindowResize*
+    // entry point skips the per-widget handleHostResize walk
+    // entirely. The AppWindow's syncNativePresentLayer is the
+    // load-bearing path for native item + render target + window
+    // LayerTree root layer geometry now — it runs upstream of this
+    // method, unconditionally, so the present surface keeps
+    // tracking the window dimensions even when the widget walk is
+    // short-circuited.
+    bool WidgetTreeHost::anyWidgetOptsIntoResize(Widget *parent){
+        if(parent == nullptr){
+            return false;
+        }
+        if(parent->paintOptions().invalidateOnResize){
+            return true;
+        }
+        for(const auto & child : parent->childWidgets()){
+            if(anyWidgetOptsIntoResize(child.get())){
                 return true;
             }
         }
@@ -397,7 +447,7 @@ namespace OmegaWTK {
     }
 
     void WidgetTreeHost::notifyWindowResize(const Composition::Rect &rect){
-        if(root != nullptr){
+        if(root != nullptr && anyWidgetOptsIntoResize(root.get())){
             if(windowSurface_ != nullptr){
                 pendingFrame_ = std::make_shared<Composition::CompositeFrame>();
                 setActiveCompositeFrameRecurse(root.get(),pendingFrame_.get());
@@ -429,7 +479,7 @@ namespace OmegaWTK {
         lastResizeSessionState.animatedTree = detectAnimatedTreeRecurse(root.get());
         resizeCoordinatorGeneration += 1;
         beginResizeCoordinatorSessionRecurse(root.get(),lastResizeSessionState.sessionId);
-        if(root != nullptr){
+        if(root != nullptr && anyWidgetOptsIntoResize(root.get())){
             if(windowSurface_ != nullptr){
                 pendingFrame_ = std::make_shared<Composition::CompositeFrame>();
                 setActiveCompositeFrameRecurse(root.get(),pendingFrame_.get());
@@ -454,7 +504,7 @@ namespace OmegaWTK {
     }
 
     void WidgetTreeHost::notifyWindowResizeEnd(const Composition::Rect &rect){
-        if(root != nullptr){
+        if(root != nullptr && anyWidgetOptsIntoResize(root.get())){
             if(windowSurface_ != nullptr){
                 pendingFrame_ = std::make_shared<Composition::CompositeFrame>();
                 setActiveCompositeFrameRecurse(root.get(),pendingFrame_.get());

@@ -222,11 +222,25 @@ namespace OmegaWTK {
         float getRenderScale() const;
 
         /// @brief Compute this View's position relative to the window
-        /// origin by walking the parent chain. Used by Canvas to stamp
-        /// CanvasFrame::windowOffset at paint time. If any ancestor is a
-        /// scrolling container, its scroll offset is subtracted so content
-        /// appears translated by the scroll amount.
+        /// origin. Used by Canvas to stamp CanvasFrame::windowOffset at
+        /// paint time. Tier 3 Phase 3.4: this is a thin wrapper —
+        /// while an AppWindow-driven paint pass is in flight (i.e.
+        /// `AppWindow::activeFrameBuilder() != nullptr`), it returns
+        /// the FrameBuilder's accumulator top (pushed by the widget
+        /// tree walker and the leaf paint code). Otherwise it falls
+        /// back to `legacyComputeWindowOffset` which walks the parent
+        /// chain summing positions and subtracting any ancestor
+        /// scroll contributions.
         Composition::Point2D computeWindowOffset() const;
+
+        /// Tier 3 Phase 3.4 scaffolding. The pre-Phase-3.4
+        /// implementation of `computeWindowOffset`, exposed for
+        /// callers that explicitly want the parent-chain walk
+        /// (today: the `computeWindowOffset` wrapper itself when no
+        /// FrameBuilder is in flight, and `FrameBuilder::ScopedViewOffset`
+        /// computing the absolute to push). Disappears in Tier 4 once
+        /// the accumulator is the only path.
+        Composition::Point2D legacyComputeWindowOffset() const;
 
         /// Returns the scroll offset that this View contributes to
         /// child content positioning. Non-scrolling Views return {0,0}.

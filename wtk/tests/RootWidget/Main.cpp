@@ -137,18 +137,33 @@ protected:
     }
 };
 
-// UIView-Render-Redesign-Plan Tier 3 Phase 3.2 validator scene.
-// Two non-overlapping UIViews on one window, each with a different
-// background color. With OMEGAWTK_WINDOW_SCOPED_PAINT off (legacy
-// path), both UIViews composite via their own rootCanvas. With it
-// on, both UIViews submit their DisplayList to the window-level
-// FrameBuilder; the FrameBuilder replays both into the window
-// canvas and deposits a single CompositeFrame. Expected: visually
-// identical between the two paths — a green rectangle on the left
-// and a red rectangle on the right, each filling half the window.
+// UIView-Render-Redesign-Plan Tier 3 Phase 3.2 / 3.4 validator scene.
+// Two non-overlapping UIViews on one window, plus a *nested* child
+// UIView (Phase 3.4 addition) parked at a non-trivial offset inside
+// the left view. With OMEGAWTK_WINDOW_SCOPED_PAINT off (legacy path),
+// every UIView composites via its own rootCanvas and the inner view's
+// window offset comes from View::legacyComputeWindowOffset's parent
+// chain walk. With it on, every UIView submits its DisplayList to the
+// window-level FrameBuilder; submitView reads the offset from the
+// accumulator (pushed by the widget walker for the root widget and
+// by UIView::update for each leaf submission). Expected, identical
+// between paths: green rectangle filling the left half, red filling
+// the right, and a blue rectangle at {40, 80}-relative inside the
+// green half (i.e. absolute {40, 80}). Any miss in the accumulator's
+// nested offset composition shows up as the inner blue rect landing
+// at {0,0} (or worse) instead of inside the green half.
 class Phase32Widget : public Widget {
     UIViewPtr leftView_;
     UIViewPtr rightView_;
+    UIViewPtr innerView_;
+
+    // Inner rect is expressed in leftView_-local coordinates so that
+    // the accumulator's per-step composition is what positions it on
+    // screen, not the outer scene re-doing the math.
+    static constexpr float kInnerOffsetX = 40.f;
+    static constexpr float kInnerOffsetY = 80.f;
+    static constexpr float kInnerW       = 120.f;
+    static constexpr float kInnerH       = 100.f;
 
     void ensureViews(const Composition::Rect & bounds){
         const float halfW = bounds.w * 0.5f;
@@ -165,6 +180,20 @@ class Phase32Widget : public Widget {
         }
         else {
             rightView_->resize(rightRect);
+        }
+        // Phase 3.4 nested UIView: child of leftView_ at a non-trivial
+        // offset. Constructed directly (not via makeSubView, which
+        // hard-codes the widget's root view as parent) so its
+        // parent_ptr chain is innerView_ -> leftView_ -> widget.view
+        // -> nullptr — three steps for the accumulator to compose.
+        Composition::Rect innerRect {
+            Composition::Point2D{kInnerOffsetX, kInnerOffsetY},
+            kInnerW, kInnerH};
+        if(innerView_ == nullptr){
+            innerView_ = UIViewPtr(new UIView(innerRect, leftView_, "phase32_inner"));
+        }
+        else {
+            innerView_->resize(innerRect);
         }
     }
 
@@ -183,15 +212,17 @@ protected:
         const auto bounds = localBounds(rect());
         ensureViews(bounds);
 
-        // Two empty layouts — the only thing each UIView paints is
-        // its background. That's enough to verify the two
-        // submissions land in tree order with the right window
-        // offsets: any off-by-one in FrameBuilder's offset stamping
-        // produces a single-color window instead of the side-by-side
-        // split.
+        // Empty layouts — every UIView paints only its background.
+        // That's enough to verify submissions land in tree order
+        // with the right window offsets: any off-by-one in
+        // FrameBuilder's offset stamping (Phase 3.2) or in the
+        // nested accumulator composition (Phase 3.4) produces a
+        // single-color window or a misplaced inner rect instead of
+        // the expected three-color layout.
         UIViewLayout emptyLayout {};
         leftView_->setLayout(emptyLayout);
         rightView_->setLayout(emptyLayout);
+        innerView_->setLayout(emptyLayout);
 
         auto leftStyle = StyleSheet::Create();
         leftStyle = leftStyle->backgroundColor("phase32_left",
@@ -204,6 +235,17 @@ protected:
             Composition::Color::create8Bit(Composition::Color::Red8));
         rightView_->setStyleSheet(rightStyle);
         rightView_->update();
+
+        // Inner blue rect — its absolute position must be
+        // {kInnerOffsetX, kInnerOffsetY} since leftView_ is at
+        // {0,0}. Under windowScopedPaint, this proves the
+        // FrameBuilder accumulator composes per-level deltas
+        // correctly across leftView_ -> innerView_.
+        auto innerStyle = StyleSheet::Create();
+        innerStyle = innerStyle->backgroundColor("phase32_inner",
+            Composition::Color::create8Bit(Composition::Color::Blue8));
+        innerView_->setStyleSheet(innerStyle);
+        innerView_->update();
     }
 };
 

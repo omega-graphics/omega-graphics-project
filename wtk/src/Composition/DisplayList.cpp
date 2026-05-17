@@ -1,7 +1,30 @@
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/Canvas.h"
 
+#include <iostream>
+
 namespace OmegaWTK::Composition {
+
+namespace {
+
+// Tier 3 Phase 3.5: `PushTransform` / `PopTransform` stay no-op for
+// now (no in-tree producer emits them; the only matrices a Tier-2
+// path would carry would be 3D-effect transforms, and the producers
+// don't exist yet). Emit one warning per replay so the absence is
+// visible to anyone wiring up a transform producer ahead of the
+// Tier-3 implementation. Static-once guard so the warning doesn't
+// spam every replay tick.
+void warnTransformOpUnsupported(const char * which){
+    static bool warned = false;
+    if(!warned){
+        std::cerr << "[WTK] DisplayListReplay: " << which
+                  << " is no-op until a Tier-3 producer wires up "
+                  << "a per-canvas transform stack." << std::endl;
+        warned = true;
+    }
+}
+
+} // namespace
 
 void DisplayListReplay::replay(const DisplayList & list, Canvas & canvas){
     for(const auto & op : list.ops()){
@@ -102,20 +125,28 @@ void DisplayListReplay::replay(const DisplayList & list, Canvas & canvas){
                 // FrameBuilder owns the session.
                 break;
             }
-            case DrawOp::PushClip:
-            case DrawOp::PopClip:
-            case DrawOp::PushTransform:
+            case DrawOp::PushClip: {
+                // Tier 3 Phase 3.5: route to `Canvas::pushClip`,
+                // which owns the clip stack and the intersection
+                // math. The Canvas emits a `VisualCommand::SetClip`
+                // with the effective (intersected) rect, which the
+                // backend turns into a GPU scissor.
+                canvas.pushClip(op.params.pushClipParams.rect);
+                break;
+            }
+            case DrawOp::PopClip: {
+                canvas.popClip();
+                break;
+            }
+            case DrawOp::PushTransform: {
+                // No in-tree producer yet (see warnTransformOpUnsupported).
+                // Phase 3.5 keeps this as a logged no-op so a future
+                // producer surfaces immediately when it shows up.
+                warnTransformOpUnsupported("PushTransform");
+                break;
+            }
             case DrawOp::PopTransform: {
-                // Phase 2.4: state ops exist in the type so Tier 3's
-                // FrameBuilder + ScrollView migration is mechanical,
-                // but Canvas has no clip / scoped-transform surface
-                // for the replay to drive. No Tier-2 producer emits
-                // these (UIView::update doesn't push state; SVGView's
-                // parsed display list only emits shape ops). Option
-                // (b) in plan §2.4: no-op replay. When ScrollView
-                // starts emitting `PushClip` in Tier 3, replay
-                // becomes a stack accumulator OR the backend
-                // dispatch takes over directly.
+                warnTransformOpUnsupported("PopTransform");
                 break;
             }
         }

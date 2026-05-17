@@ -1,6 +1,7 @@
 #include "ViewImpl.h"
 
 #include "omegaWTK/UI/Layout.h"
+#include "omegaWTK/UI/AppWindow.h"
 
 #include <iostream>
 #include <utility>
@@ -9,6 +10,7 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "../Composition/Compositor.h"
 #include "../Composition/backend/ResourceFactory.h"
+#include "FrameBuilder.h"
 
 namespace OmegaWTK {
 
@@ -209,7 +211,7 @@ float View::getRenderScale() const {
     return 1.f;
 }
 
-Composition::Point2D View::computeWindowOffset() const{
+Composition::Point2D View::legacyComputeWindowOffset() const{
     Composition::Point2D offset {0.f, 0.f};
     const View *v = this;
     while(v != nullptr){
@@ -225,6 +227,23 @@ Composition::Point2D View::computeWindowOffset() const{
         v = v->impl_->parent_ptr;
     }
     return offset;
+}
+
+Composition::Point2D View::computeWindowOffset() const{
+    // Tier 3 Phase 3.4: while an AppWindow-driven paint pass is in
+    // flight AND the offset accumulator has a value pushed for this
+    // view, the FrameBuilder's accumulator is the source of truth.
+    // The widget tree walker pushes the widget's view; UIView::update
+    // / SVGView::paint push the leaf view. Callers that resolve a
+    // view's offset inside a ScopedFrame but outside any walker push
+    // scope (e.g. NativeViewHost::syncBounds firing from
+    // onLayoutResolved during handleHostResize) get the legacy
+    // parent-chain walk so the answer matches the off-flag path.
+    if(auto * fb = AppWindow::activeFrameBuilder();
+       fb != nullptr && fb->hasOffsetOnStack()){
+        return fb->currentOffset();
+    }
+    return legacyComputeWindowOffset();
 }
 
 Composition::Point2D View::scrollOffsetContribution() const{

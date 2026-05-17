@@ -390,6 +390,20 @@ void UIView::update(){
         }
     }
 
+    // Tier 3 Phase 3.4: push this UIView's absolute window offset
+    // onto the FrameBuilder accumulator for the remainder of
+    // update() — both branches below resolve `View::computeWindowOffset`
+    // for this view (the on-flag branch via submitView, the off-flag
+    // branch via Canvas::nextFrame's `ownerView_->computeWindowOffset`
+    // stamp at sendFrame time). The wrapper returns
+    // `fb->currentOffset()` whenever a FrameBuilder is active, so
+    // both branches need this view on top of the stack for the
+    // stamped offset to be right. The push is null-safe if no
+    // FrameBuilder is active (solo invalidates outside an
+    // AppWindow-driven paint pass).
+    FrameBuilder::ScopedViewOffset offsetScope(
+        AppWindow::activeFrameBuilder(), this);
+
     // Tier 3 Phase 3.2: when the window-scoped paint route is active
     // (an AppWindow-driven paint pass is in flight and the
     // `windowScopedPaint` flag is on for this window), hand the

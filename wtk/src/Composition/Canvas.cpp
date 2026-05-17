@@ -80,6 +80,11 @@ opacityValue(opacityVal){
 
 };
 
+VisualCommand::Data::Data(Core::Optional<Composition::Rect> clip) :
+clipRect(clip){
+
+};
+
 
 
 void VisualCommand::Data::_destroy(Type t){
@@ -543,6 +548,70 @@ void Canvas::setElementOpacity(float opacity){
     current->currentVisuals.emplace_back(opacity);
 }
 
+namespace {
+
+// Intersect two rectangles. Returns nullopt if the intersection is
+// empty. Used by Canvas::pushClip to compose nested clips and by the
+// backend's scissor application to clip against the slice bounds.
+Core::Optional<Composition::Rect> intersectRects(const Composition::Rect & a,
+                                                 const Composition::Rect & b){
+    const float left   = std::max(a.pos.x, b.pos.x);
+    const float top    = std::max(a.pos.y, b.pos.y);
+    const float right  = std::min(a.pos.x + a.w, b.pos.x + b.w);
+    const float bottom = std::min(a.pos.y + a.h, b.pos.y + b.h);
+    if(right <= left || bottom <= top){
+        return std::nullopt;
+    }
+    return Composition::Rect{
+        Composition::Point2D{left, top},
+        right - left,
+        bottom - top
+    };
+}
+
+} // namespace
+
+void Canvas::pushClip(const Composition::Rect & rectIn){
+    // Intersect with the current top of stack (when non-empty);
+    // when the stack is empty, the new clip stands on its own. The
+    // backend receives the *intersected* effective rect — Canvas
+    // owns the nesting math so the backend stays stateless.
+    Composition::Rect effective = rectIn;
+    if(!clipStack_.empty()){
+        auto intersected = intersectRects(clipStack_.back(), rectIn);
+        if(intersected.has_value()){
+            effective = *intersected;
+        }
+        else {
+            // Empty intersection — push a zero-area rect at the
+            // current top's origin so a matching popClip restores
+            // the prior clip correctly. Backend gets a degenerate
+            // scissor (all draws culled while this clip is active),
+            // which is the correct visual answer.
+            effective = Composition::Rect{
+                clipStack_.back().pos, 0.f, 0.f};
+        }
+    }
+    clipStack_.push_back(effective);
+    current->currentVisuals.emplace_back(
+        Core::Optional<Composition::Rect>{effective});
+}
+
+void Canvas::popClip(){
+    if(clipStack_.empty()){
+        // Imbalanced pop — `FrameBuilder::submitView` asserts in
+        // debug. Treat as a no-op in release to avoid corrupting
+        // the backend's scissor state.
+        return;
+    }
+    clipStack_.pop_back();
+    Core::Optional<Composition::Rect> next =
+        clipStack_.empty()
+            ? Core::Optional<Composition::Rect>{}
+            : Core::Optional<Composition::Rect>{clipStack_.back()};
+    current->currentVisuals.emplace_back(next);
+}
+
 void Canvas::setBackground(const Color & color){
     current->background = {color.r, color.g, color.b, color.a};
 }
@@ -575,6 +644,12 @@ SharedHandle<CanvasFrame> Canvas::nextFrame() {
         frame->windowOffset = ownerView_->computeWindowOffset();
     }
     current.reset(new CanvasFrame {&layer,rect});
+    // Tier 3 Phase 3.5: defensively clear the clip stack at frame
+    // boundaries. If a producer's display list ended with an
+    // unbalanced push, this prevents the leaked clip from being
+    // intersected into the next frame's first pushClip. The
+    // FrameBuilder's debug balance assert is the upstream catch.
+    clipStack_.clear();
     return frame;
 }
 

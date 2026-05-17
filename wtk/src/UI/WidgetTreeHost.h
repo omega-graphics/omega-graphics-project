@@ -139,6 +139,16 @@ namespace OmegaWTK {
         void applyResizeGovernorMetadata(const Composition::ResizeGovernorMetadata & metadata);
         void setActiveCompositeFrameRecurse(Widget *parent,Composition::CompositeFrame *frame);
         bool detectAnimatedTreeRecurse(Widget *parent) const;
+        // True iff any widget in the subtree has
+        // PaintOptions::invalidateOnResize == true. Drives the
+        // short-circuit in notifyWindowResize / Begin / End: when
+        // false, the per-widget handleHostResize walk is skipped
+        // entirely and the AppWindow's syncNativePresentLayer
+        // (which runs upstream, unconditionally) carries the entire
+        // resize on its own. O(tree size) per resize event today;
+        // could be cached on a Widget::setPaintOptions hook if it
+        // shows up in profiles.
+        static bool anyWidgetOptsIntoResize(Widget *parent);
         View * hitTestWidget(Widget *widget,const Composition::Point2D &point) const;
         void initWidgetTree();
         Composition::Compositor *compPtr(){return compositor;};

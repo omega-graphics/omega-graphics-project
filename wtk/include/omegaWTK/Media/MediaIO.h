@@ -11,19 +11,13 @@ namespace OmegaWTK::Media {
     };
 
     struct MediaInputStream {
-        bool bufferOrFile;
         OmegaCommon::String file;
-        MediaBuffer buffer;
-        static MediaInputStream fromFile(const OmegaCommon::FS::Path & path);
-        static MediaInputStream fromBuffer(void *data,size_t length);
+        static MediaInputStream fromFile(OmegaCommon::FS::Path path);
     };
 
     struct MediaOutputStream {
-        bool bufferOrFile;
         OmegaCommon::String file;
-        MediaBuffer buffer;
-        static MediaOutputStream toFile(const OmegaCommon::FS::Path & path);
-        static MediaOutputStream toBuffer(void *data,size_t length);
+        static MediaOutputStream toFile(OmegaCommon::FS::Path path);
     };
 
     // ──────────────────────────────────────────────

@@ -1,33 +1,41 @@
 # Media API Completion Plan
 
+> **Status snapshot (2026-05-17)** — macOS backend essentially complete. WMF backend now: audio playback complete; video playback (start/pause/reset + topology), processor (MFT-driven encode/decode), and capture sample sink (OnSample → VideoFrame) all wired today. Half-built D3D11 decoder removed in favor of an MFT-only path. FFmpeg backend untouched. Phase 1b also landed today.
+
 ## Current State Assessment
 
 ### What exists and works
 - **Image codecs** (PNG, JPEG, TIFF): Fully implemented cross-platform via libpng, turbojpeg, libtiff.
-- **MediaIO.h**: Struct declarations for `MediaBuffer`, `MediaInputStream`, `MediaOutputStream`, plus Phase 0 type additions (`AudioSampleFormat`, `AudioStreamDesc`, `PixelFormat`, `MediaCodecID`, `VideoStreamDesc`, `ContainerFormat`, `MediaSourceDesc`). `AudioSample` added to `AudioVideoProcessorContext.h`.
+- **MediaIO.h**: Struct declarations for `MediaBuffer`, `MediaInputStream`, `MediaOutputStream`, plus Phase 0 type additions (`AudioSampleFormat`, `AudioStreamDesc`, `PixelFormat`, `MediaCodecID`, `VideoStreamDesc`, `ContainerFormat`, `MediaSourceDesc`). `AudioSample` lives in `AudioVideoProcessorContext.h`. ✅ **Phase 0 complete** (note: enum members landed as `PlanarS16` / `PlanarFloat32` / `FlacContainer` rather than the underscored forms originally drafted).
 - **Interface headers**: `Audio.h`, `Video.h`, `AudioVideoProcessorContext.h`, `MediaPlaybackSession.h` define the public API surface for capture, playback, and processing.
+- **macOS (AVFoundation)**: Device enumeration, audio + video capture sessions (incl. start/stop/preview/record), audio + video playback sessions, `AudioVideoProcessor` (video encode/decode via VideoToolbox), and `PlaybackDispatchQueue` are all implemented.
+- **Windows (WMF)**: Device enumeration, audio + video capture sessions, and **audio** playback session (full IMFMediaSession topology with start/pause/reset) are implemented.
 
 ### What is stubbed (no implementation file)
-- **`MediaInputStream` / `MediaOutputStream` factory methods** — `fromFile()` and `toFile()` are declared in `MediaIO.h` but **no `MediaIO.cpp` exists** to define them. Any call site (e.g., `VideoViewPlaybackTest/main.cpp` line 46: `MediaInputStream::fromFile(filePath)`) will fail at link time. Every platform backend that consumes these structs (`AVFAudioVideoCapture.mm`, `WMFAudioVideoCapture.cpp`) reads their `file` field directly, assuming someone else constructed them — but there is currently no way to construct them correctly.
+- ~~`MediaInputStream` / `MediaOutputStream` factory methods~~ — ✅ Resolved. `wtk/src/Media/MediaIO.cpp` now defines `fromFile` / `toFile`; the buffer-path fields and factories were removed from `MediaIO.h`; AVF + WMF backends collapsed to file-only.
 
 ### What is incomplete
 
 | Area | macOS (AVFoundation) | Windows (WMF) | Linux (FFmpeg) |
 |---|---|---|---|
-| **Device Enumeration** | Audio + Video done | Audio + Video done | 100% stubbed |
-| **Audio Capture** | Session implemented | Session implemented | 100% stubbed |
-| **Video Capture** | Session shell (start/stop/record empty) | Session implemented | 100% stubbed |
-| **AudioVideoProcessor** | Empty class, no encode/decode | Constructor + codec selection partial, `encodeFrame`/`decodeFrame` bodies empty | Empty stub constructor |
-| **Audio Playback** | Session implemented | Session implemented | Returns `nullptr` |
-| **Video Playback** | Returns `nullptr` | Session setup done, `start`/`pause`/`reset` empty | Returns `nullptr` |
-| **PlaybackDispatchQueue** | Threaded loop implemented | MF work queue wrapper done | Returns `nullptr` |
+| **Device Enumeration** | ✅ Done | ✅ Done | ❌ 100% stubbed |
+| **Audio Capture** | ✅ Session implemented | ✅ Session implemented | ❌ 100% stubbed |
+| **Video Capture** | ✅ Session implemented (start/stop/preview/record filled) | ✅ Session implemented; `WMFVideoCaptureSampleSink::OnSample` extracts buffer → `VideoFrame` → sink; `setVideoFrameSinkForPreview` now calls `AddStream` so the callback actually fires | ❌ 100% stubbed |
+| **AudioVideoProcessor** | ✅ Video encode/decode via VideoToolbox (audio path still TBD) | ✅ MFT-driven encode/decode (HW hint via `MFT_ENUM_FLAG_HARDWARE` when `useHardwareAccel`); lazy activation on `setEncodeCodec` / `setDecodeCodec`; D3D11/D3D12 cruft removed | ❌ Empty stub constructor; no encode/decode methods exist |
+| **Audio Playback** | ✅ Session implemented | ✅ Session implemented (full topology, start/pause/reset) | ❌ Returns `nullptr` |
+| **Video Playback** | ✅ `Create` returns real session; start/pause/reset implemented | ✅ Constructor builds source + video-output nodes connected; `setVideoSource` picks first video stream; `setAudioPlaybackDevice` lazily builds audio branch; `start`/`pause`/`reset` wired to `IMFMediaSession` | ❌ Returns `nullptr` |
+| **PlaybackDispatchQueue** | ✅ Threaded loop implemented (note: `useProcessor` branch is an empty block) | ⚠ MF work queue wrapper allocated but never consumed | ❌ Returns `nullptr` |
+| **MediaIO factories** | ✅ `MediaIO.cpp` defines `fromFile` / `toFile`; AVF backend file-only | ✅ Same; WMF backend file-only | ❌ No helpers yet (Phase 2.5) |
 
 ### Critical bugs
-- **`MediaPlaybackSession.h:39`** — Missing semicolon after `setVideoFrameSink()` declaration. Must be fixed before any compilation.
+- ~~**`MediaPlaybackSession.h:39`** — Missing semicolon after `setVideoFrameSink()` declaration.~~ ✅ **Fixed.**
+- ~~**`MediaIO.cpp` missing** — `fromFile` / `toFile` declared but undefined.~~ ✅ **Fixed 2026-05-17.**
 
 ---
 
-## Phase 0: MediaIO.h Type Expansion
+## Phase 0: MediaIO.h Type Expansion — ✅ COMPLETE
+
+> Landed. `MediaIO.h` now defines `AudioSampleFormat`, `AudioStreamDesc`, `PixelFormat`, `MediaCodecID`, `VideoStreamDesc`, `ContainerFormat`, and `MediaSourceDesc`. `AudioSample` lives in `AudioVideoProcessorContext.h` next to `VideoFrame`. Naming differences from the original draft: `Planar_S16` → `PlanarS16`, `Planar_Float32` → `PlanarFloat32`, `FLAC_Container` → `FlacContainer`, and an `Unknown` member was added to each enum. The `VideoStreamDesc::pixelFormat` field uses the new `PixelFormat` enum (not `BitmapImage::ColorFormat`).
 
 The existing `MediaIO.h` types cover raw byte-level I/O but lack the structured metadata that all three platform backends need for codec negotiation, sample format description, and pipeline configuration. These types are consumed by `AudioVideoProcessor`, `AudioPlaybackSession`, and `VideoCaptureSession` across all platforms.
 
@@ -121,7 +129,9 @@ namespace OmegaWTK::Media {
 
 ---
 
-## Phase 1: Fix the Build Break
+## Phase 1: Fix the Build Break — ✅ COMPLETE
+
+> Semicolon added at `MediaPlaybackSession.h:39`. Header now compiles.
 
 **File**: `wtk/include/omegaWTK/Media/MediaPlaybackSession.h`
 
@@ -136,7 +146,9 @@ INTERFACE_METHOD void setVideoFrameSink(VideoFrameSink & sink) ABSTRACT;
 
 ---
 
-## Phase 1b: MediaInputStream / MediaOutputStream — Simplify to File-Only & Implement
+## Phase 1b: MediaInputStream / MediaOutputStream — Simplify to File-Only & Implement — ✅ COMPLETE
+
+> Landed 2026-05-17. `MediaIO.h` structs now only carry `file` + the static factory. `wtk/src/Media/MediaIO.cpp` (auto-picked-up by the existing `file(GLOB MEDIA_SRCS …)`) defines `MediaInputStream::fromFile` and `MediaOutputStream::toFile`. AVF helpers `createURLFromMediaInputStream` / `createURLFromMediaOutputStream` collapsed to a single `fileURLWithFileSystemRepresentation` call. WMF helpers `createMFByteStreamMediaInputStream` / `createMFByteStreamMediaOutputStream` collapsed to a single `MFCreateFile` call; `setAudioOutputStream` / `setVideoOutputStream` on both AVF and WMF now drop the buffer branch entirely.
 
 ### Problem
 
@@ -213,7 +225,9 @@ namespace OmegaWTK::Media {
 
 ---
 
-## Phase 2: Linux (FFmpeg + VA-API) — Full Implementation
+## Phase 2: Linux (FFmpeg + VA-API) — Full Implementation — ❌ NOT STARTED
+
+> No progress. `FFmpegAudioVideoProcessor` is still an empty class with no encode/decode methods. `FFmpegAudioVideoCapture.cpp` has no device-enumeration implementations. `FFmpegMediaPlaybackStubs.cpp` still returns `nullptr` from `AudioPlaybackSession::Create`, `VideoPlaybackSession::Create`, and `createPlaybackDispatchQueue`. Entire phase below remains the to-do list.
 
 This is the largest body of work. Every function currently returns `nullptr` or is an empty stub.
 
@@ -416,9 +430,13 @@ endif()
 
 ---
 
-## Phase 3: macOS (AVFoundation) — Complete the Gaps
+## Phase 3: macOS (AVFoundation) — Complete the Gaps — ✅ MOSTLY COMPLETE
 
-### 3.1 `AudioVideoProcessor`
+> All four sub-phases plus AVF audio playback wiring have landed. `AVFAudioPlaybackSession::setAudioSource` now picks the asset's first audio track explicitly, populates the full `PlaybackDispatchQueue::Client` struct (`generator` / `sampleBufferRequest` / `cursor` / `audioRenderer`) — previously left nil, so the queue's audio branch crashed on first iteration — and `start` / `pause` / `reset` drive the `AVSampleBufferRenderSynchronizer` rate (without which the renderer just buffered samples instead of producing output). Destructor also unregisters the client.
+>
+> Only audio encode/decode on the AVF processor is still unaddressed — current `AVFAudioVideoProcessor` is video-only (VideoToolbox `VTCompressionSession` / `VTDecompressionSession`). Audio path through the processor remains a future addition; audio playback is now end-to-end functional via the dispatch queue.
+
+### 3.1 `AudioVideoProcessor` — ✅ Implemented (video only)
 
 The class is currently empty. Implement using VideoToolbox for hardware encode/decode:
 
@@ -458,7 +476,7 @@ public:
 - `VTDecompressionSessionDecodeFrame` -> callback delivers `CVPixelBufferRef`.
 - Lock the pixel buffer, copy to `VideoFrame.videoFrame.data`, set header fields.
 
-### 3.2 `VideoPlaybackSession::Create`
+### 3.2 `VideoPlaybackSession::Create` — ✅ Done
 
 Currently returns `nullptr`. Wire it to `AVFVideoPlaybackSession` (which already exists but is disconnected):
 
@@ -470,14 +488,14 @@ SharedHandle<VideoPlaybackSession> VideoPlaybackSession::Create(
 }
 ```
 
-### 3.3 `AVFVideoCaptureSession` — Fill Empty Methods
+### 3.3 `AVFVideoCaptureSession` — Fill Empty Methods — ✅ Done
 
 The `start/stop/record/preview` methods are empty shells. Implement:
 - `startPreview`: `[captureSession startRunning]`, set preview flag.
 - `startRecord`: Start the `AVAssetWriter` with the file output already configured.
 - `stopRecord` / `stopPreview`: Mirror the pattern from `AVFAudioCaptureSession`.
 
-### 3.4 `AVFAudioCaptureDevice::createCaptureSession`
+### 3.4 `AVFAudioCaptureDevice::createCaptureSession` — ✅ Done
 
 Currently returns nothing (missing return statement). Fix:
 ```objc
@@ -491,9 +509,15 @@ This will require `AVFAudioCaptureDevice` to be made compatible with `shared_fro
 
 ---
 
-## Phase 4: Windows (WMF) — Finish the Stubs
+## Phase 4: Windows (WMF) — Finish the Stubs — ✅ MOSTLY COMPLETE
 
-### 4.1 `AudioVideoProcessor::encodeFrame` / `decodeFrame`
+> Landed 2026-05-17 via the **MFT-only with HW hint** architectural cut (Phase 4.1 + 4.4 collapsed into a single path; the half-built D3D11 video-decoder code in the constructor was deleted, not finished). Capture sample sink (4.3) and video playback start/pause/reset + topology (4.2) also wired today. Two open gaps documented below: color-format negotiation in 4.3, and the codec-pair API in 4.1 doesn't carry width/height/framerate.
+
+### 4.1 `AudioVideoProcessor::encodeFrame` / `decodeFrame` — ✅ MFT-driven
+
+> Done. `WMFAudioVideoProcessor.cpp` rewrite: shared `activateMFTForCodecPair` helper calls `MFTEnumEx` with `MFT_ENUM_FLAG_HARDWARE` (when `useHardwareAccel`) or `MFT_ENUM_FLAG_SYNCMFT`, plus `MFT_ENUM_FLAG_SORTANDFILTER`. First match is `ActivateObject`-ed into `encodeMFT` / `decodeMFT`, and the input/output media types are configured from the codec subtype pair. `encodeFrame` / `decodeFrame` drive `ProcessInput` then a single `ProcessOutput` with `MFT_OUTPUT_DATA_BUFFER::pSample = nullptr` so the MFT allocates the output sample. `MF_E_TRANSFORM_NEED_MORE_INPUT` is handled by returning `*output = nullptr`.
+>
+> **Open gap:** the public `setEncodeCodec(from, to)` / `setDecodeCodec(from, to)` API only carries codec subtypes. Width / height / framerate aren't part of the negotiation — the MFT's defaults are used. A richer API (taking `VideoStreamDesc`) is part of Phase 5.
 
 The bodies are empty. Implement:
 
@@ -509,7 +533,9 @@ The bodies are empty. Implement:
 
 **`decodeFrame`**: Same pattern, using `cpuDecodeTransform` / decode command queue.
 
-### 4.2 `WMFVideoPlaybackSession::start` / `pause` / `reset`
+### 4.2 `WMFVideoPlaybackSession::start` / `pause` / `reset` — ✅ Done
+
+> Constructor now creates `sourceNode` + `videoOutputNode`, adds them to the topology, and connects `source[0] → video[0]`. `setAudioPlaybackDevice` lazily builds a second source-stream + audio-output node pair the first time it's called, finds the first audio stream descriptor on the presentation descriptor, and wires it through. `setVideoSource` picks the first video stream (falling back to stream 0) instead of blindly using index 0. `start` calls `SetTopology` once (gated by a `topologyDirty` flag) then `IMFMediaSession::Start`; `pause` calls `Pause`; `reset` clears the position propvariant and calls `Stop` + `ClearTopologies`.
 
 ```cpp
 void start() override {
@@ -525,7 +551,15 @@ void reset() override {
 }
 ```
 
-### 4.3 `WMFVideoCaptureSampleSink::OnSample`
+### 4.3 `WMFVideoCaptureSampleSink::OnSample` — ✅ Done (with one open gap)
+
+> `OnSample` now: `ConvertToContiguousBuffer` → `Lock` → wrap bytes as a non-owning `PixelStorage::view` on a `VideoFrame` → push to the sink → `Unlock` + `Release`. Sample timestamp is plumbed into `presentTime`. Sink constructor takes width/height; `QueryInterface` correctly returns the callback interface.
+>
+> `setVideoFrameSinkForPreview` was also fixed to actually wire the preview path: it now queries `IMFCaptureSource::GetCurrentDeviceMediaType(0, ...)` for the frame size, calls `IMFCapturePreviewSink::AddStream` (without which `SetSampleCallback`'s callback never fires), then `SetSampleCallback` on the returned sink-stream index.
+>
+> **Open gap (flagged in code):** the frame's `color_format` is hardcoded to RGBA. Devices producing NV12 / YUY2 / RGB32 will deliver bytes whose actual layout disagrees with the label. Proper handling needs either (a) MFT-based conversion in the preview pipeline or (b) reading the source subtype and translating to `OmegaCommon::Img::ColorFormat`. Tracked as future work.
+
+(Original sketch retained below for reference.)
 
 Currently returns `S_OK` without processing. Needs to:
 1. Get the buffer from the sample via `pSample->GetBufferByIndex`.
@@ -533,7 +567,9 @@ Currently returns `S_OK` without processing. Needs to:
 3. Wrap in `VideoFrame` with dimensions from the capture format.
 4. Push to the `VideoFrameSink`.
 
-### 4.4 Complete the D3D11 decoder setup
+### 4.4 Complete the D3D11 decoder setup — ✅ Resolved (deleted, not completed)
+
+> Per the **MFT-only with HW hint** architectural decision, the D3D11on12 device, `ID3D12CommandQueue` decode/encode queues, `D3D11_VIDEO_DECODER_DESC`, and related fields were removed from `WMFAudioVideoProcessor.h` and `WMFAudioVideoProcessor.cpp`. The MFT path delegates HW selection to Media Foundation's transform enumeration, so the half-built D3D11 video-decoder code is no longer needed. (Original sketch retained below for reference.)
 
 The constructor creates the D3D11On12 device and queries the video device, but never finishes creating the decoder. After the `D3D11_VIDEO_DECODER_DESC`:
 ```cpp
@@ -546,7 +582,9 @@ video_dev->CreateVideoDecoder(&desc, &config, &decoder);
 
 ---
 
-## Phase 5: AudioVideoProcessor Public API Alignment
+## Phase 5: AudioVideoProcessor Public API Alignment — ❌ NOT STARTED
+
+> Deliberately deferred until all three backends exist. AVF currently exposes `SetEncodeMode` / `SetDecodeMode` / `Encode` / `Decode` taking native CM types; WMF and FFmpeg have no real methods yet. Unification still pending.
 
 Currently each platform defines `AudioVideoProcessor` differently (WMF uses GUIDs, AVF uses `CMVideoCodecType`, FFmpeg will use `AVCodecID`). Unify the public factory:
 
@@ -571,15 +609,18 @@ Each platform's `AudioVideoProcessor` becomes a concrete subclass. The existing 
 
 ## Implementation Order
 
-1. **Phase 0**: Add types to `MediaIO.h`. No functional change, just new declarations.
-2. **Phase 1**: Fix the semicolon. One character.
-3. **Phase 1b**: Create `MediaIO.cpp` with factory method bodies. Unblocks linking for any code that constructs streams.
-4. **Phase 2**: Linux/FFmpeg — the largest piece, no existing code to break.
-5. **Phase 3**: macOS — filling gaps in existing code. Higher risk of regressions.
-6. **Phase 4**: Windows — finishing partially-written code.
-7. **Phase 5**: API unification — refactor after all three backends work.
+1. ~~**Phase 0**: Add types to `MediaIO.h`.~~ ✅ Done.
+2. ~~**Phase 1**: Fix the semicolon.~~ ✅ Done.
+3. ~~**Phase 1b**: Create `MediaIO.cpp` with factory method bodies.~~ ✅ Done 2026-05-17.
+4. **Phase 2**: Linux/FFmpeg — the largest piece, no existing code to break. ❌ Not started.
+5. ~~**Phase 3**: macOS — filling gaps in existing code.~~ ✅ Done (audio-through-processor path is the only remaining piece, see Phase 3 note).
+6. ~~**Phase 4**: Windows — finishing partially-written code.~~ ✅ Done 2026-05-17 (4.1 + 4.4 collapsed via MFT-only cut; 4.2 + 4.3 wired). Two open gaps documented: capture color-format negotiation and codec-pair API width/height/framerate.
+7. **Phase 5**: API unification — refactor after all three backends work. ❌ Deferred until Phase 2 lands.
 
-Phases 0, 1, and 1b are prerequisites — they must land first. Phases 2, 3, and 4 are independent and can be developed in parallel on separate platform branches.
+### Remaining critical path
+1. **Phase 2** (FFmpeg backend — largest remaining piece).
+2. **Phase 5** once Phase 2 ships.
+3. Address WMF open gaps (color format, richer codec API) opportunistically as part of Phase 5.
 
 ---
 
@@ -590,3 +631,165 @@ Phases 0, 1, and 1b are prerequisites — they must land first. Phases 2, 3, and
 | Linux | libavcodec, libavformat, libavutil, libswscale, libswresample, libavdevice, libva, libva-drm, libpulse-simple (or ALSA) |
 | macOS | AVFoundation, AVFAudio, CoreVideo, VideoToolbox, CoreMedia (all system frameworks, already imported) |
 | Windows | Media Foundation, D3D11, D3D12 (already linked via pragma comments) |
+
+---
+
+## Phase 6: Extract Media → OmegaVA (`<repo>/va`)
+
+> **Scope:** lift the entire Media subsystem out of `wtk/` and stand it up as a sibling top-level module called **OmegaVA** (audio/video), so the dependency graph becomes `OmegaVA → OmegaCommon` and `OmegaWTK → OmegaVA` instead of `OmegaWTK_Media` being an internal WTK library. Goal: Media can be consumed by non-UI code (CLI tools, server-side transcoding, AUTOM build artifacts) without pulling in WTK's Composition / Native / Widgets stacks.
+>
+> **Non-goals:** changing the public API surface, rewriting any backend, or absorbing Composition/Native code into OmegaVA. The extraction is purely a relocation + decoupling exercise.
+
+### 6.0 Coupling audit (today, pre-extraction)
+
+`grep` across `wtk/src`, `wtk/include`, `wtk/tests` identifies every WTK ↔ Media touch point:
+
+| Direction | File | What it pulls |
+|---|---|---|
+| WTK → Media (legitimate consumer) | `wtk/include/omegaWTK/UI/VideoView.h` | Includes `omegaWTK/Media/MediaIO.h`, `MediaPlaybackSession.h`; `VideoView` implements `VideoFrameSink` |
+| WTK → Media (legitimate consumer) | `wtk/src/UI/VideoView.cpp` | Takes `MediaInputStream &` / `MediaOutputStream &`, owns playback session |
+| WTK → Media (test) | `wtk/tests/VideoViewPlaybackTest/main.cpp` | `MediaInputStream::fromFile` |
+| ⚠ **Media → WTK (layering violation)** | `wtk/src/Media/wmf/WMFAudioVideoCapture.cpp:160,163,628,736` | Uses `OmegaWTK::Composition::Rect` / `Composition::Point2D` to carry frame dimensions through `WMFVideoSampleGrabber` and `WMFVideoPlaybackSession::frameRect` |
+| Cross-module shared | `Media/AudioVideoProcessorContext.h` | `VideoFrameSink` interface — used by Media internally, implemented by WTK |
+| Mobile path | `wtk/src/Mobile/Media/android/AndroidAudioVideoCapture.cpp` | Android backend, currently nested under WTK Mobile |
+
+The Composition::Rect leak is the only blocker to a clean extraction. Everything else is either a one-way `WTK depends on Media` arrow (which inverts cleanly once OmegaVA exists) or shared infrastructure (`OmegaCommon`, `OmegaCommon::Img::BitmapImage`) that both modules can keep depending on.
+
+### 6.1 Module graph
+
+**Before:**
+```
+OmegaCommon ───┬─→ OmegaWTK_Core ─→ OmegaWTK_Native ─→ OmegaWTK_Composition ─→ OmegaWTK_UI ─→ OmegaWTK_Widgets
+               └─→ OmegaWTK_Media (internal to wtk/)            ▲
+                                                                │ (Composition::Rect leak — to be removed)
+                                                                │
+OmegaGTE ─────────────────────────────────────────────→ OmegaWTK_Composition
+```
+
+**After:**
+```
+OmegaCommon ─→ OmegaVA  (new top-level module under va/)
+                  │
+                  ▼
+OmegaCommon ─→ OmegaWTK_Core ─→ ... ─→ OmegaWTK_UI ─→ OmegaWTK_Widgets
+                                          │
+                                          └─→ links OmegaVA (consumes MediaInputStream / VideoPlaybackSession)
+```
+
+### 6.2 Open architectural decisions (defer to user before executing)
+
+These shape downstream work — flag for explicit confirmation before any file is moved:
+
+1. **Namespace.** Three plausible options:
+   - **`OmegaVA::*`** (parallel to `OmegaWTK`, `OmegaGTE`, `OmegaCommon` — strongest "this is its own product" signal).
+   - **`OmegaWTK::Media::*` retained** as the public surface, with OmegaVA being only the *build-system* module name (zero source churn outside CMakeLists; weakest decoupling signal).
+   - **`OmegaMedia::*`** (matches the descriptive product name but breaks the `OmegaVA` naming the user picked).
+2. **Public include path.** `va/include/omegaVA/Audio.h`, `va/include/omegaVA/Media/Audio.h`, or keep `omegaWTK/Media/Audio.h` paths intact via symlink/install rules?
+3. **VideoFrameSink ownership.** Stays in OmegaVA as a pure-virtual interface that WTK implements (clean), or moves to WTK and OmegaVA references it via a forward decl (looser, but then OmegaVA's `VideoPlaybackSession` has no in-tree sink consumer)?
+4. **Composition::Rect leak.** Replace WMF backend's use with a plain `OmegaVA::FrameSize {uint32_t w, h}` struct (Phase 6.3 below assumes this), or pull `Composition::Rect`/`Point2D` out into `OmegaCommon::Geometry` so both modules share a common type?
+5. **Android mobile backend.** Move `wtk/src/Mobile/Media/android/` under `va/src/android/`, or leave the Android shim inside `wtk/Mobile/` and have it link OmegaVA? (Mobile glue arguably belongs with the rest of WTK Mobile, but the codec backend belongs with OmegaVA.)
+6. **Two build systems.** CMake + AUTOM both need to be updated. Land both in lockstep, or stage CMake first and let AUTOM catch up?
+
+Phase 6.3 onwards assumes a baseline of: **namespace `OmegaVA`, include path `omegaVA/Media/...`, VideoFrameSink stays in OmegaVA, Composition::Rect leak removed in favor of `OmegaVA::FrameSize`, Android stays under WTK Mobile but links OmegaVA, CMake + AUTOM updated together.** Any of those can be re-cut without changing the file moves.
+
+### 6.3 Decoupling preflight (must land before any file moves)
+
+- **Composition::Rect → OmegaVA::FrameSize.** Add a `struct FrameSize { uint32_t width; uint32_t height; };` to `Media/AudioVideoProcessorContext.h` (which already carries `VideoFrame` and `VideoFrameSink`). Replace all four use sites in `WMFAudioVideoCapture.cpp` (`WMFVideoSampleGrabber::frameRect`, `WMFVideoPlaybackSession::frameRect`, the assignment after `MFGetAttributeSize`, and the constructor parameter). This is a self-contained PR that should be verifiable on its own — no Media public surface changes.
+- **Search for any other `OmegaWTK::*` references inside `wtk/src/Media/` and `wtk/include/omegaWTK/Media/`.** As of 2026-05-17 the only hits are `Composition::Rect` / `Point2D`; if Phase 2 / 4 follow-up work adds more, list them here and resolve before extraction.
+
+### 6.4 Target directory layout
+
+```
+<repo>/
+  va/
+    AUTOM.build                  (mirrors common/AUTOM.build / wtk/AUTOM.build)
+    AUTOMDEPS
+    CMakeLists.txt
+    README.md
+    include/
+      omegaVA/
+        Media/                   (matches existing relative path inside the headers)
+          Audio.h
+          Video.h
+          MediaIO.h
+          MediaPlaybackSession.h
+          AudioVideoProcessorContext.h
+    src/
+      Media/
+        MediaIO.cpp
+        avf/    AVFAudioVideoCapture.mm, AVFAudioVideoProcessor.{h,mm}
+        wmf/    WMFAudioVideoCapture.cpp, WMFAudioVideoProcessor.{h,cpp}
+        ffmpeg/ FFmpegAudioVideoCapture.cpp, FFmpegAudioVideoProcessor.{h,cpp}, FFmpegMediaPlaybackStubs.cpp
+    docs/
+      Media-API-Completion-Plan.md     (this file, moved out of wtk/docs/)
+    tests/
+      (TBD — split VideoViewPlaybackTest into a headless OmegaVA test
+       that doesn't need VideoView, plus the existing WTK-side integration test)
+```
+
+### 6.5 File move table
+
+| Current path | New path |
+|---|---|
+| `wtk/include/omegaWTK/Media/Audio.h` | `va/include/omegaVA/Media/Audio.h` |
+| `wtk/include/omegaWTK/Media/Video.h` | `va/include/omegaVA/Media/Video.h` |
+| `wtk/include/omegaWTK/Media/MediaIO.h` | `va/include/omegaVA/Media/MediaIO.h` |
+| `wtk/include/omegaWTK/Media/MediaPlaybackSession.h` | `va/include/omegaVA/Media/MediaPlaybackSession.h` |
+| `wtk/include/omegaWTK/Media/AudioVideoProcessorContext.h` | `va/include/omegaVA/Media/AudioVideoProcessorContext.h` |
+| `wtk/src/Media/MediaIO.cpp` | `va/src/Media/MediaIO.cpp` |
+| `wtk/src/Media/avf/*` | `va/src/Media/avf/*` |
+| `wtk/src/Media/wmf/*` | `va/src/Media/wmf/*` |
+| `wtk/src/Media/ffmpeg/*` | `va/src/Media/ffmpeg/*` |
+| `wtk/docs/Media-API-Completion-Plan.md` | `va/docs/Media-API-Completion-Plan.md` |
+| `wtk/src/Mobile/Media/android/AndroidAudioVideoCapture.cpp` | **Stays under WTK Mobile** (per 6.2 decision); links OmegaVA |
+
+### 6.6 Namespace migration
+
+- `namespace OmegaWTK::Media { ... }` → `namespace OmegaVA::Media { ... }` across all five headers and every backend `.cpp` / `.mm`.
+- `#include "omegaWTK/Media/X.h"` → `#include "omegaVA/Media/X.h"` everywhere.
+- WTK consumers (`UI/VideoView.h`, `UI/VideoView.cpp`, `tests/VideoViewPlaybackTest/main.cpp`) update both the include and the namespace qualifier.
+- Optionally add `wtk/include/omegaWTK/Media/*.h` back-compat shims that `#include "omegaVA/Media/*.h"` and `using namespace OmegaVA::Media;` for one release cycle to give out-of-tree consumers a soft migration window. Default: skip the shims — the migration is internal.
+
+### 6.7 CMake changes
+
+1. **New file `va/CMakeLists.txt`** — modeled on the existing `wtk/CMakeLists.txt` Media section (lines ~186–296):
+   - `omega_graphics_project(OmegaVA VERSION 0.1 LANGUAGES C CXX)` (define an OmegaVA version independent of OmegaWTK).
+   - `file(GLOB MEDIA_SRCS "${OMEGAVA_SOURCE_DIR}/src/Media/*.cpp")` plus the per-platform globs (`avf/*.mm`, `wmf/*.cpp`, `ffmpeg/*.cpp`).
+   - `add_library(OmegaVA STATIC ${MEDIA_SRCS})` — note: drops the `_Media` suffix; this is now the module's primary library.
+   - `target_include_directories(OmegaVA PUBLIC ${OMEGAVA_PUBLIC_INCLUDE_DIR} $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>)`.
+   - `target_link_libraries(OmegaVA PUBLIC OmegaCommon)`. No link against OmegaWTK_* anything.
+   - FFmpeg `pkg_check_modules` block moves here; AVFoundation/VideoToolbox frameworks linked via `target_link_libraries` on Apple; WMF link inputs stay as `#pragma comment(lib,...)` inside the backend `.cpp` files (already the case post Phase 4).
+2. **Top-level `CMakeLists.txt`** — add `add_subdirectory(va)` *before* `add_subdirectory(wtk)` so WTK can reference the target.
+3. **`wtk/CMakeLists.txt`** — remove the `OmegaWTK_Media` `add_library`, `target_include_directories`, and FFmpeg block (lines ~186–296 today). Drop `OmegaWTK_Media` from `OMEGAWTK_SUBMODULE_LIBS`. Add `target_link_libraries(OmegaWTK_UI PUBLIC OmegaVA)` (or wherever VideoView is built) so the WTK framework gets OmegaVA pulled into its `WHOLEARCHIVE` set.
+4. **`cmake/OmegaGraphicsSuite.cmake`** — `omega_graphics_project()` already handles per-module setup; no changes needed unless it hardcodes a list of known module names.
+
+### 6.8 AUTOM build changes
+
+The repo also ships AUTOM (`AUTOM.build` / `AUTOMDEPS` at the top level plus per-module). Mirror the CMake changes:
+- New `va/AUTOM.build` + `va/AUTOMDEPS` modeled on `common/`.
+- Top-level `AUTOM.build` declares the new module dependency before `wtk`.
+- `wtk/AUTOM.build` drops the Media-related build targets and adds a dep on `OmegaVA`.
+- `OmegaGraphics.autom` (top-level metadata) lists `va/` alongside `common/`, `gte/`, `wtk/`, `autom/`.
+
+If CMake-first staging is chosen (per 6.2 #6), keep `wtk/src/Media/` populated in the AUTOM build until the AUTOM follow-up lands.
+
+### 6.9 Test split
+
+`wtk/tests/VideoViewPlaybackTest` couples Media + WTK UI. After extraction, ideally split into:
+- `va/tests/MediaIOSmokeTest` — headless, exercises `MediaInputStream::fromFile`, opens an asset, drives one decoded frame, no UI. Verifies OmegaVA is consumable standalone.
+- `wtk/tests/VideoViewPlaybackTest` — stays in WTK, now imports OmegaVA. Same coverage as today.
+
+### 6.10 Migration order
+
+1. **Decoupling preflight** (6.3) — land Composition::Rect → OmegaVA::FrameSize first, verifiable on the current `OmegaWTK_Media` target before any move. Single PR.
+2. **Open-decision confirmation** (6.2) — user signs off on namespace / include path / VideoFrameSink / mobile / single-vs-staged build-system.
+3. **CMake + source move** — single mechanical PR: move files, rewrite namespace, add `va/CMakeLists.txt`, edit top-level CMakeLists, drop OmegaWTK_Media. Verify all three platform builds (build verification per user preference, before merging).
+4. **AUTOM mirror** — if staged, follow up here.
+5. **Documentation move** — relocate this plan to `va/docs/`, leave a one-line forwarder in `wtk/docs/` for one release.
+6. **Test split** — opportunistic; can ship before or after the move.
+
+### 6.11 Risk & rollback
+
+- **Risk:** the `#pragma comment(lib, ...)` directives inside `WMFAudioVideoCapture.cpp` and `WMFAudioVideoProcessor.cpp` are static-library-local. Once they're inside `OmegaVA.lib`, the linker pulls them when OmegaWTK's framework DLL pass consumes `OmegaVA.lib` via `WHOLEARCHIVE`. The Phase 4 link error (`D3D11On12CreateDevice` undefined, root-caused to a use site free-riding on a pragma in a sibling file) is the cautionary tale: after the move, **scan every TU under WTK for free-riding pragma deps on Media** before declaring the migration done.
+- **Rollback:** the entire move is recoverable via `git revert` of the single mechanical PR if integration breaks. The Phase 6.3 preflight is independently useful (it's a real layering fix) and should not be reverted.
+- **Out-of-tree consumers:** none known. If discovered, the 6.6 back-compat shim option becomes mandatory rather than optional.

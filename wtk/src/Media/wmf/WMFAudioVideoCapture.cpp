@@ -33,29 +33,17 @@ namespace OmegaWTK::Media {
 
     IMFByteStream *createMFByteStreamMediaInputStream(MediaInputStream &inputStream){
         IMFByteStream *byteStream;
-        if(inputStream.bufferOrFile){
-            IStream *str = SHCreateMemStream((BYTE *)inputStream.buffer.data,inputStream.buffer.length);
-            MFCreateMFByteStreamOnStream(str,&byteStream);
-        }
-        else {
-            LPWSTR str = nullptr;
-            cpp_to_wstring(inputStream.file,&str);
-            MFCreateFile(MF_ACCESSMODE_READ,MF_OPENMODE_FAIL_IF_NOT_EXIST,MF_FILEFLAGS_NOBUFFERING,str,&byteStream);
-        }
+        LPWSTR str = nullptr;
+        cpp_to_wstring(inputStream.file,&str);
+        MFCreateFile(MF_ACCESSMODE_READ,MF_OPENMODE_FAIL_IF_NOT_EXIST,MF_FILEFLAGS_NOBUFFERING,str,&byteStream);
         return byteStream;
     }
 
     IMFByteStream *createMFByteStreamMediaOutputStream(MediaOutputStream &outputStream){
         IMFByteStream *byteStream;
-        if(outputStream.bufferOrFile){
-            IStream *str = SHCreateMemStream((BYTE *)outputStream.buffer.data,outputStream.buffer.length);
-            MFCreateMFByteStreamOnStream(str,&byteStream);
-        }
-        else {
-            LPWSTR str = nullptr;
-            cpp_to_wstring(outputStream.file,&str);
-            MFCreateFile(MF_ACCESSMODE_WRITE,MF_OPENMODE_DELETE_IF_EXIST,MF_FILEFLAGS_NOBUFFERING,str,&byteStream);
-        }
+        LPWSTR str = nullptr;
+        cpp_to_wstring(outputStream.file,&str);
+        MFCreateFile(MF_ACCESSMODE_WRITE,MF_OPENMODE_DELETE_IF_EXIST,MF_FILEFLAGS_NOBUFFERING,str,&byteStream);
         return byteStream;
     }
 
@@ -354,14 +342,9 @@ namespace OmegaWTK::Media {
         void setAudioOutputStream(MediaOutputStream &outputStream) override {
             IMFCaptureRecordSink *sink;
             engine->GetSink(MF_CAPTURE_ENGINE_SINK_TYPE_RECORD, reinterpret_cast<IMFCaptureSink **>(&sink));
-            if(outputStream.bufferOrFile){
-                sink->SetOutputByteStream(createMFByteStreamMediaOutputStream(outputStream),MFTranscodeContainerType_MP3);
-            }
-            else {
-                LPWSTR wstr;
-                cpp_to_wstring(outputStream.file,&wstr);
-                sink->SetOutputFileName(wstr);
-            }
+            LPWSTR wstr;
+            cpp_to_wstring(outputStream.file,&wstr);
+            sink->SetOutputFileName(wstr);
         }
         void setAudioPlaybackDeviceForPreview(SharedHandle<AudioPlaybackDevice> &device) override {
             IMFCapturePreviewSink *sink;
@@ -389,17 +372,61 @@ namespace OmegaWTK::Media {
     class WMFVideoCaptureSampleSink : public IMFCaptureEngineOnSampleCallback {
         unsigned refCount = 1;
         VideoFrameSink *sink;
+        UINT32 frameWidth = 0;
+        UINT32 frameHeight = 0;
     public:
-        explicit WMFVideoCaptureSampleSink(VideoFrameSink *sink):sink(sink){
-
-        }
+        explicit WMFVideoCaptureSampleSink(VideoFrameSink *sink, UINT32 width, UINT32 height)
+            : sink(sink), frameWidth(width), frameHeight(height) {}
         ULONG AddRef() override{
             return InterlockedIncrement(&refCount);
         }
         HRESULT QueryInterface(const GUID &iid,void **pData) override{
-            return S_OK;
+            if (iid == IID_IUnknown || iid == __uuidof(IMFCaptureEngineOnSampleCallback)) {
+                *pData = static_cast<IMFCaptureEngineOnSampleCallback *>(this);
+                AddRef();
+                return S_OK;
+            }
+            *pData = nullptr;
+            return E_NOINTERFACE;
         }
         HRESULT OnSample(IMFSample *pSample) override {
+            if (!pSample || !sink) return S_OK;
+
+            IMFMediaBuffer *buffer = nullptr;
+            if (FAILED(pSample->ConvertToContiguousBuffer(&buffer)) || !buffer) return S_OK;
+
+            BYTE *bytes = nullptr;
+            DWORD length = 0;
+            if (FAILED(buffer->Lock(&bytes, nullptr, &length))) {
+                buffer->Release();
+                return S_OK;
+            }
+
+            LONGLONG sampleTime = 0;
+            pSample->GetSampleTime(&sampleTime);
+
+            auto frame = std::make_shared<VideoFrame>();
+            frame->presentTime       = TimePoint(std::chrono::nanoseconds(sampleTime * 100));
+            frame->decodeFinishTime  = std::chrono::high_resolution_clock::now();
+            // Borrow the locked MF buffer as a non-owning view. We unlock + release the
+            // buffer below, so the borrow is only valid until pushFrame returns; the sink
+            // must copy or consume synchronously. This matches WMFVideoSampleGrabber.
+            frame->videoFrame.pixels = OmegaCommon::Img::PixelStorage::view(
+                reinterpret_cast<OmegaCommon::Img::Byte *>(bytes),
+                static_cast<std::size_t>(length));
+            frame->videoFrame.header.width        = frameWidth;
+            frame->videoFrame.header.height       = frameHeight;
+            // NOTE: actual subtype may be NV12/YUY2/RGB32 depending on the capture
+            // device — see Phase 4.3 in Media-API-Completion-Plan.md for the open
+            // color-format negotiation gap.
+            frame->videoFrame.header.color_format = OmegaCommon::Img::ColorFormat::RGBA;
+            frame->videoFrame.header.bitDepth     = 8;
+            frame->videoFrame.header.channels     = 4;
+            frame->videoFrame.header.alpha_format = OmegaCommon::Img::AlphaFormat::Straight;
+            sink->pushFrame(frame);
+
+            buffer->Unlock();
+            buffer->Release();
             return S_OK;
         }
         ULONG Release() override{
@@ -430,27 +457,44 @@ namespace OmegaWTK::Media {
             sink->SetCustomSink(device->sink);
         }
         void setVideoFrameSinkForPreview(VideoFrameSink &frameSink) override {
+            // Discover the source's stream 0 native media type so we can configure
+            // the preview sink stream and tell the sample sink the frame dimensions.
+            IMFCaptureSource *source = nullptr;
+            engine->GetSource(&source);
+            IMFMediaType *srcType = nullptr;
+            UINT32 width = 0, height = 0;
+            if (source) {
+                if (SUCCEEDED(source->GetCurrentDeviceMediaType(0, &srcType)) && srcType) {
+                    MFGetAttributeSize(srcType, MF_MT_FRAME_SIZE, &width, &height);
+                }
+            }
 
-            auto ptr = new WMFVideoCaptureSampleSink(&frameSink);
+            auto ptr = new WMFVideoCaptureSampleSink(&frameSink, width, height);
             if(videoPreviewSink.get() != nullptr){
                 videoPreviewSink->Release();
             }
             videoPreviewSink = ptr;
-            IMFCapturePreviewSink *sink;
+
+            IMFCapturePreviewSink *sink = nullptr;
             engine->GetSink(MF_CAPTURE_ENGINE_SINK_TYPE_PREVIEW,reinterpret_cast<IMFCaptureSink **>(&sink));
-            sink->SetSampleCallback(0,videoPreviewSink.get());
+            // AddStream is what actually wires the sink to the source stream; without
+            // it SetSampleCallback's callback never fires.
+            DWORD sinkStreamIdx = 0;
+            if (sink && srcType) {
+                sink->AddStream(0, srcType, nullptr, &sinkStreamIdx);
+            }
+            if (sink) {
+                sink->SetSampleCallback(sinkStreamIdx, videoPreviewSink.get());
+            }
+            if (srcType) srcType->Release();
+            if (source)  source->Release();
         }
         void setVideoOutputStream(MediaOutputStream &outputStream) override {
             IMFCaptureRecordSink *sink;
             engine->GetSink(MF_CAPTURE_ENGINE_SINK_TYPE_RECORD,reinterpret_cast<IMFCaptureSink **>(&sink));
-            if(outputStream.bufferOrFile){
-                sink->SetOutputByteStream(createMFByteStreamMediaOutputStream(outputStream),MFTranscodeContainerType_MPEG4);
-            }
-            else {
-                LPWSTR wstr;
-                cpp_to_wstring(outputStream.file,&wstr);
-                sink->SetOutputFileName(wstr);
-            }
+            LPWSTR wstr;
+            cpp_to_wstring(outputStream.file,&wstr);
+            sink->SetOutputFileName(wstr);
         }
         void startPreview() override {
             engine->StartPreview();
@@ -569,15 +613,20 @@ namespace OmegaWTK::Media {
     }
 
     class WMFVideoPlaybackSession : public VideoPlaybackSession {
-        IMFMediaSession *session;
-        IMFTopology *topology;
-        IMFTopologyNode *sourceNode,*videoOutputNode,*audioOutputNode;
+        IMFMediaSession *session = nullptr;
+        IMFTopology *topology = nullptr;
+        IMFTopologyNode *sourceNode = nullptr;
+        IMFTopologyNode *videoOutputNode = nullptr;
+        IMFTopologyNode *audioSourceNode = nullptr;
+        IMFTopologyNode *audioOutputNode = nullptr;
         SharedHandle<WMFVideoSampleGrabber> videoSink;
-        IMFActivate *videoSampleGrabber;
-        IMFSourceResolver *sourceResolver;
-        PROPVARIANT p;
-        IMFMediaSource *mediaSource;
+        IMFActivate *videoSampleGrabber = nullptr;
+        IMFSourceResolver *sourceResolver = nullptr;
+        PROPVARIANT p {};
+        IMFMediaSource *mediaSource = nullptr;
+        IMFPresentationDescriptor *presentDesc = nullptr;
         Composition::Rect frameRect;
+        bool topologyDirty = true;
     public:
         explicit WMFVideoPlaybackSession(UniqueHandle<AudioVideoProcessor> & processor) : VideoPlaybackSession(processor){
             IMFAttributes *attrs;
@@ -587,24 +636,64 @@ namespace OmegaWTK::Media {
             MFCreateSourceResolver(&sourceResolver);
             PropVariantInit(&p);
 
-            MFCreateTopologyNode(MF_TOPOLOGY_OUTPUT_NODE,&videoOutputNode);
-
+            // Always-present nodes: video source + video output, connected source[0]->video[0].
+            MFCreateTopologyNode(MF_TOPOLOGY_SOURCESTREAM_NODE, &sourceNode);
+            MFCreateTopologyNode(MF_TOPOLOGY_OUTPUT_NODE,       &videoOutputNode);
+            topology->AddNode(sourceNode);
+            topology->AddNode(videoOutputNode);
+            sourceNode->ConnectOutput(0, videoOutputNode, 0);
 
             Core::SafeRelease(&attrs);
         }
         void setAudioPlaybackDevice(SharedHandle<AudioPlaybackDevice> &device) override {
+            // Lazily build the audio output branch the first time an audio device is
+            // supplied. Requires mediaSource to have been set already (setVideoSource).
+            if (!audioOutputNode) {
+                MFCreateTopologyNode(MF_TOPOLOGY_SOURCESTREAM_NODE, &audioSourceNode);
+                MFCreateTopologyNode(MF_TOPOLOGY_OUTPUT_NODE,       &audioOutputNode);
+                topology->AddNode(audioSourceNode);
+                topology->AddNode(audioOutputNode);
+                audioSourceNode->ConnectOutput(0, audioOutputNode, 0);
+
+                // Wire stream descriptor for the audio stream if we already know the
+                // presentation descriptor. We pick the first non-video stream as audio.
+                if (mediaSource && presentDesc) {
+                    audioSourceNode->SetUnknown(MF_TOPONODE_SOURCE, mediaSource);
+                    audioSourceNode->SetUnknown(MF_TOPONODE_PRESENTATION_DESCRIPTOR, presentDesc);
+                    DWORD streamCount = 0;
+                    presentDesc->GetStreamDescriptorCount(&streamCount);
+                    for (DWORD i = 0; i < streamCount; ++i) {
+                        IMFStreamDescriptor *sd = nullptr;
+                        BOOL selected = FALSE;
+                        if (FAILED(presentDesc->GetStreamDescriptorByIndex(i, &selected, &sd)) || !sd) continue;
+                        IMFMediaTypeHandler *h = nullptr;
+                        GUID major = {};
+                        if (SUCCEEDED(sd->GetMediaTypeHandler(&h)) && h) {
+                            h->GetMajorType(&major);
+                            h->Release();
+                        }
+                        if (major == MFMediaType_Audio) {
+                            audioSourceNode->SetUnknown(MF_TOPONODE_STREAM_DESCRIPTOR, sd);
+                            sd->Release();
+                            break;
+                        }
+                        sd->Release();
+                    }
+                }
+            }
             audioOutputNode->SetObject(device->sink);
+            topologyDirty = true;
         }
         void setVideoFrameSink(VideoFrameSink &sink) override {
             videoSink = std::make_shared<WMFVideoSampleGrabber>(&sink,frameRect);
-            IMFPresentationDescriptor *presentDesc;
-            mediaSource->CreatePresentationDescriptor(&presentDesc);
             IMFMediaType *type;
             MFCreateMediaType(&type);
             type->SetGUID(MF_MT_MAJOR_TYPE,MFMediaType_Video);
             type->SetGUID(MF_MT_SUBTYPE,MFVideoFormat_v410);
             MFCreateSampleGrabberSinkActivate(type,videoSink.get(),&videoSampleGrabber);
             videoOutputNode->SetObject(videoSampleGrabber);
+            type->Release();
+            topologyDirty = true;
         }
         void setVideoSource(MediaInputStream &inputStream) override {
             MF_OBJECT_TYPE t;
@@ -612,29 +701,74 @@ namespace OmegaWTK::Media {
             sourceResolver->CreateObjectFromByteStream(createMFByteStreamMediaInputStream(inputStream),NULL,0,NULL,&t,&obj);
             obj->QueryInterface(IID_PPV_ARGS(&mediaSource));
             sourceNode->SetUnknown(MF_TOPONODE_SOURCE,mediaSource);
-            IMFPresentationDescriptor *presentDesc;
+            if (presentDesc) { presentDesc->Release(); presentDesc = nullptr; }
             mediaSource->CreatePresentationDescriptor(&presentDesc);
             sourceNode->SetUnknown(MF_TOPONODE_PRESENTATION_DESCRIPTOR,presentDesc);
-            IMFStreamDescriptor *streamDesc;
-            BOOL selected;
-            presentDesc->GetStreamDescriptorByIndex(0,&selected,&streamDesc);
-            sourceNode->SetUnknown(MF_TOPONODE_STREAM_DESCRIPTOR,streamDesc);
-            IMFMediaTypeHandler *handler;
-            streamDesc->GetMediaTypeHandler(&handler);
-            IMFMediaType *type;
-            handler->GetCurrentMediaType(&type);
-            UINT32 w,h;
-            MFGetAttributeSize(type,MF_MT_FRAME_SIZE,&w,&h);
-            frameRect = Composition::Rect {Composition::Point2D {0,0},(float)w,(float)h};
+
+            // Pick the first video stream as the source-node feed; fall back to stream 0.
+            IMFStreamDescriptor *streamDesc = nullptr;
+            BOOL selected = FALSE;
+            DWORD streamCount = 0;
+            presentDesc->GetStreamDescriptorCount(&streamCount);
+            for (DWORD i = 0; i < streamCount; ++i) {
+                IMFStreamDescriptor *sd = nullptr;
+                if (FAILED(presentDesc->GetStreamDescriptorByIndex(i, &selected, &sd)) || !sd) continue;
+                IMFMediaTypeHandler *h = nullptr;
+                GUID major = {};
+                if (SUCCEEDED(sd->GetMediaTypeHandler(&h)) && h) {
+                    h->GetMajorType(&major);
+                    h->Release();
+                }
+                if (major == MFMediaType_Video) { streamDesc = sd; break; }
+                sd->Release();
+            }
+            if (!streamDesc) {
+                presentDesc->GetStreamDescriptorByIndex(0,&selected,&streamDesc);
+            }
+            if (streamDesc) {
+                sourceNode->SetUnknown(MF_TOPONODE_STREAM_DESCRIPTOR,streamDesc);
+                IMFMediaTypeHandler *handler = nullptr;
+                if (SUCCEEDED(streamDesc->GetMediaTypeHandler(&handler)) && handler) {
+                    IMFMediaType *type = nullptr;
+                    if (SUCCEEDED(handler->GetCurrentMediaType(&type)) && type) {
+                        UINT32 w = 0, h = 0;
+                        MFGetAttributeSize(type, MF_MT_FRAME_SIZE, &w, &h);
+                        frameRect = Composition::Rect {Composition::Point2D {0,0},(float)w,(float)h};
+                        type->Release();
+                    }
+                    handler->Release();
+                }
+                streamDesc->Release();
+            }
+            topologyDirty = true;
         }
         void start() override {
-
+            if (topologyDirty) {
+                session->SetTopology(0, topology);
+                topologyDirty = false;
+            }
+            session->Start(nullptr, &p);
         }
         void pause() override {
-
+            session->Pause();
         }
         void reset() override {
-
+            PropVariantClear(&p);
+            PropVariantInit(&p);
+            session->Stop();
+            session->ClearTopologies();
+            topologyDirty = true;
+        }
+        ~WMFVideoPlaybackSession() override {
+            if (session) {
+                session->Shutdown();
+                Core::SafeRelease(&session);
+            }
+            if (presentDesc)     presentDesc->Release();
+            if (mediaSource)     mediaSource->Release();
+            if (videoSampleGrabber) videoSampleGrabber->Release();
+            if (sourceResolver)  sourceResolver->Release();
+            if (topology)        topology->Release();
         }
     };
 

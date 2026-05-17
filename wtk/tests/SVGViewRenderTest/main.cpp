@@ -80,6 +80,20 @@ public:
 int omegaWTKMain(OmegaWTK::AppInst * app) {
     const OmegaWTK::Composition::Rect windowRect{{0, 0}, 500, 500};
 
+    // Tier 3 Phase 3.3 validator: this binary exercises the
+    // window-scoped paint route when built with
+    // `-DOMEGAWTK_WINDOW_SCOPED_PAINT=ON`. The flag flips
+    // AppWindow::Impl::windowScopedPaint_'s default to true inside
+    // OmegaWTK_UI, so every AppWindow constructed here (including
+    // the one below) routes through FrameBuilder. The CMake glue
+    // mirrors the build option onto this target purely so the log
+    // line below can report which path is active.
+#ifdef OMEGAWTK_WINDOW_SCOPED_PAINT
+    std::cerr << "[SVGViewRenderTest] Phase 3.3 window-scoped paint route" << std::endl;
+#else
+    std::cerr << "[SVGViewRenderTest] Phase 2.3 per-view svgCanvas route" << std::endl;
+#endif
+
     auto window = make<OmegaWTK::AppWindow>(
         windowRect,
         new MyWindowDelegate());

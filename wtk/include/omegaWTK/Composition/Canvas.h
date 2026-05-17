@@ -133,7 +133,16 @@ namespace OmegaWTK {
             Bitmap,
             Shadow,
             SetTransform,
-            SetOpacity
+            SetOpacity,
+            // Tier 3 Phase 3.5: rectangular clip state. Carries an
+            // Optional<Rect> in `clipRect`; engaged when present, the
+            // backend sets a GPU scissor to its absolute pixel rect
+            // (canvas-local + slice window offset, scaled by render
+            // scale). Empty (`nullopt`) restores the slice's natural
+            // scissor. Canvas owns the push/pop stack and resolves
+            // the *intersected* clip rect for each `SetClip` it
+            // emits, so the backend just applies what it's told.
+            SetClip
         } Type;
         Type type;
         struct OMEGAWTK_EXPORT Data {
@@ -197,6 +206,14 @@ namespace OmegaWTK {
             } textRunParams {};
             Matrix4x4 transformMatrix = Matrix4x4::Identity();
             float opacityValue = 1.f;
+            /// Tier 3 Phase 3.5: per-`SetClip` payload. Engaged when
+            /// present (the backend applies a GPU scissor for the
+            /// intersected rect); empty resets the slice's natural
+            /// scissor. Resolved by `Canvas::pushClip` / `popClip`'s
+            /// internal stack — by the time it reaches the backend
+            /// it is already the effective rect for the current
+            /// stack depth.
+            Core::Optional<Composition::Rect> clipRect {};
 
 
             Data(const Composition::Rect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border);
@@ -233,6 +250,12 @@ namespace OmegaWTK {
             explicit Data(const Matrix4x4 & matrix);
 
             explicit Data(float opacityVal);
+
+            /// Tier 3 Phase 3.5: SetClip ctor. Optional<Rect> is
+            /// distinct from every other ctor arg type, so it
+            /// disambiguates the `VisualCommand(Optional<Rect>)`
+            /// constructor without a tag.
+            explicit Data(Core::Optional<Composition::Rect> clip);
 
             void _destroy(Type t);
 
@@ -296,6 +319,12 @@ namespace OmegaWTK {
         type(SetOpacity),
         params(opacity){};
 
+        /// Tier 3 Phase 3.5: `SetClip` ctor. `Optional<Rect>` is the
+        /// disambiguating type — distinct from every other ctor arg.
+        explicit VisualCommand(Core::Optional<Composition::Rect> clip):
+        type(SetClip),
+        params(clip){};
+
         ~VisualCommand();
 
         #undef VISUAL_COMMAND_ARGS_CHECK
@@ -337,6 +366,16 @@ namespace OmegaWTK {
         /// Non-owning back-pointer to the View that created this Canvas.
         /// Used to compute windowOffset at paint time (Phase 3).
         ::OmegaWTK::View *ownerView_;
+
+        /// Tier 3 Phase 3.5: rectangular clip stack. Each
+        /// `pushClip(r)` intersects `r` with the current top (or the
+        /// canvas rect when empty), pushes the intersected rect, and
+        /// emits a `VisualCommand::SetClip(top)` so the backend
+        /// applies a GPU scissor. `popClip()` pops and emits
+        /// `SetClip(new top OR nullopt)` so the backend either
+        /// reinstates the outer clip or clears the scissor. Cleared
+        /// at `nextFrame()` along with the rest of the canvas frame.
+        OmegaCommon::Vector<Composition::Rect> clipStack_;
 
         friend class ::OmegaWTK::View;
         friend class ::OmegaWTK::AppWindow;
@@ -562,6 +601,30 @@ namespace OmegaWTK {
          @param opacity Opacity scalar [0..1]. Use 1.0 to reset.
          */
         void setElementOpacity(float opacity);
+
+        /**
+         @brief Tier 3 Phase 3.5: push a rectangular clip onto the
+         canvas's clip stack. The pushed rect is intersected with the
+         current top of stack (or the canvas rect when empty); the
+         intersection becomes the effective clip and is emitted as a
+         `VisualCommand::SetClip` so the backend installs a matching
+         GPU scissor. Subsequent draws are clipped to the intersection
+         until a matching `popClip()`. Nesting is supported (each push
+         intersects further).
+         @param rect Clip rect in canvas-local coordinates.
+         */
+        void pushClip(const Composition::Rect & rect);
+
+        /**
+         @brief Tier 3 Phase 3.5: pop the topmost clip pushed by
+         `pushClip`. Emits `SetClip(top)` if the stack is non-empty
+         after the pop (re-installing the outer clip), or
+         `SetClip(nullopt)` (clearing the scissor) when the stack
+         empties. Imbalanced `popClip` calls on an empty stack are
+         no-ops (debug builds assert via the FrameBuilder's per-
+         submission balance check).
+         */
+        void popClip();
 
         /**
          @brief Set the background color for the current frame.

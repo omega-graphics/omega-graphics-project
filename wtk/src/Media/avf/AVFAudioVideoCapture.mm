@@ -44,25 +44,11 @@ namespace OmegaWTK::Media {
     }
 
     NSURL *createURLFromMediaInputStream(MediaInputStream & inputStream){
-        NSURL *res;
-        if(inputStream.bufferOrFile){
-            res = [[NSURL alloc] initWithDataRepresentation:[NSData dataWithBytesNoCopy:inputStream.buffer.data length:inputStream.buffer.length] relativeToURL:nil];
-        }
-        else {
-            res = [NSURL fileURLWithFileSystemRepresentation:inputStream.file.data() isDirectory:NO relativeToURL:nil];
-        }
-        return res;
+        return [NSURL fileURLWithFileSystemRepresentation:inputStream.file.data() isDirectory:NO relativeToURL:nil];
     }
 
     NSURL *createURLFromMediaOutputStream(MediaOutputStream & outputStream){
-        NSURL *res;
-        if(outputStream.bufferOrFile){
-            res = [[NSURL alloc] initWithDataRepresentation:[NSData dataWithBytesNoCopy:outputStream.buffer.data length:outputStream.buffer.length] relativeToURL:nil];
-        }
-        else {
-            res = [NSURL fileURLWithFileSystemRepresentation:outputStream.file.data() isDirectory:NO relativeToURL:nil];
-        }
-        return res;
+        return [NSURL fileURLWithFileSystemRepresentation:outputStream.file.data() isDirectory:NO relativeToURL:nil];
     }
 
 
@@ -297,25 +283,12 @@ namespace OmegaWTK::Media {
             [audioRenderer setAudioOutputDeviceUniqueID:(__bridge id)uid];
         }
         void setAudioOutputStream(MediaOutputStream &outputStream) override {
-            if(outputStream.bufferOrFile){
-                AVCaptureAudioDataOutput *dataOutput = [[AVCaptureAudioDataOutput alloc] init];
-                [dataOutput setSampleBufferDelegate:audioCaptureDelegate queue:dispatch_get_main_queue()];
-                [captureSession addOutput:dataOutput];
-                isBufferOutput = true;
-                audioOut = dataOutput;
-                NSError *error;
-                bufferWriter = [AVAssetWriter assetWriterWithURL:createURLFromMediaOutputStream(outputStream) fileType:(AVFileTypeAppleM4A) error:&error];
-                bufferWriterInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio outputSettings:@{}];
-                [bufferWriter addInput:bufferWriterInput];
-            }
-            else {
-                AVCaptureAudioFileOutput *fileOutput = [[AVCaptureAudioFileOutput alloc] init];
-                [captureSession addOutput:fileOutput];
-                NSURL *fileUrl = createURLFromMediaOutputStream(outputStream);
-                [fileOutput startRecordingToOutputFileURL:fileUrl recordingDelegate:nil];
-                isBufferOutput = false;
-                audioOut = fileOutput;
-            }
+            AVCaptureAudioFileOutput *fileOutput = [[AVCaptureAudioFileOutput alloc] init];
+            [captureSession addOutput:fileOutput];
+            NSURL *fileUrl = createURLFromMediaOutputStream(outputStream);
+            [fileOutput startRecordingToOutputFileURL:fileUrl recordingDelegate:nil];
+            isBufferOutput = false;
+            audioOut = fileOutput;
         }
         void startPreview() override {
             [captureSession startRunning];
@@ -403,26 +376,11 @@ namespace OmegaWTK::Media {
             sink = &frameSink;
         }
         void setVideoOutputStream(MediaOutputStream &outputStream) override {
-            if(outputStream.bufferOrFile){
-                AVCaptureVideoDataOutput *dataOutput = [[AVCaptureVideoDataOutput alloc] init];
-                [dataOutput setSampleBufferDelegate:videoCaptureDelegate queue:dispatch_get_main_queue()];
-                [captureSession addOutput:dataOutput];
-                NSError* error;
-                bufferWriter = [AVAssetWriter assetWriterWithURL:createURLFromMediaOutputStream(outputStream) fileType:AVFileTypeMPEG4 error:&error];
-                bufferWriterVideoInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:@{}];
-                bufferWriterAudioInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio outputSettings:@{}];
-
-                bufferWriterInputGroup = [AVAssetWriterInputGroup assetWriterInputGroupWithInputs:@[bufferWriterAudioInput,bufferWriterVideoInput] defaultInput:nil];
-                [bufferWriter addInputGroup:bufferWriterInputGroup];
-            }
-            else {
-                AVCaptureMovieFileOutput *fileOutput = [[AVCaptureMovieFileOutput alloc] init];
-                NSURL *url = createURLFromMediaOutputStream(outputStream);
-                [captureSession addOutput:fileOutput];
-                [fileOutput startRecordingToOutputFileURL:url recordingDelegate:nil];
-                mainOut = fileOutput;
-            }
-
+            AVCaptureMovieFileOutput *fileOutput = [[AVCaptureMovieFileOutput alloc] init];
+            NSURL *url = createURLFromMediaOutputStream(outputStream);
+            [captureSession addOutput:fileOutput];
+            [fileOutput startRecordingToOutputFileURL:url recordingDelegate:nil];
+            mainOut = fileOutput;
         }
         void setAudioPlaybackDeviceForPreview(SharedHandle<AudioPlaybackDevice> &device) override {
             CFStringRef uid;
@@ -481,10 +439,11 @@ namespace OmegaWTK::Media {
         AVSampleBufferAudioRenderer *renderer;
         AVSampleBufferRequest *request = nil;
         AVSampleBufferGenerator *generator = nil;
-        AVSampleCursor *cursor;
+        AVSampleCursor *cursor = nil;
         AVSampleBufferRenderSynchronizer *synchronizer;
         PlaybackDispatchQueueRef  playbackDispatchQueue;
-        size_t playbackClientIndex;
+        size_t playbackClientIndex = 0;
+        bool clientRegistered = false;
     public:
         explicit AVFAudioPlaybackSession(AudioVideoProcessorRef processor,PlaybackDispatchQueueRef dispatchQueue) : AudioPlaybackSession(processor),playbackDispatchQueue(dispatchQueue){
             synchronizer = [[AVSampleBufferRenderSynchronizer alloc] init];
@@ -499,29 +458,60 @@ namespace OmegaWTK::Media {
         }
         void setAudioSource(MediaInputStream &inputStream) override {
             AVAsset *asset = [AVAsset assetWithURL:createURLFromMediaInputStream(inputStream)];
-            NSError *error;
             if(generator != nil){
                 [generator release];
+                generator = nil;
+            }
+            // Pick the asset's first audio track explicitly — falling back to
+            // [asset tracks].firstObject was wrong for any asset whose first track
+            // happens to be video / subtitle.
+            AVAssetTrack *audioTrack = [asset tracksWithMediaType:AVMediaTypeAudio].firstObject;
+            if(audioTrack == nil){
+                return;
             }
             generator = [[AVSampleBufferGenerator alloc] initWithAsset:asset timebase:NULL];
-            cursor = [[asset tracks].firstObject makeSampleCursorAtFirstSampleInDecodeOrder];
+            cursor = [audioTrack makeSampleCursorAtFirstSampleInDecodeOrder];
             request = [[AVSampleBufferRequest alloc] initWithStartCursor:cursor];
             request.preferredMinSampleCount = 1;
             request.maxSampleCount = 1;
             request.direction = AVSampleBufferRequestDirectionForward;
-            playbackClientIndex = playbackDispatchQueue->addClient({true,true});
+
+            PlaybackDispatchQueue::Client c {};
+            c.audioOrVideo = true;
+            c.skipPlease = true;
+            c.cursor = cursor;
+            c.generator = generator;
+            c.sampleBufferRequest = request;
+            c.audioRenderer = renderer;
+            c.useProcessor = false;
+            c.processor = this->processor;
+            playbackClientIndex = playbackDispatchQueue->addClient(c);
+            clientRegistered = true;
         }
         void start() override {
+            if(!clientRegistered) return;
             playbackDispatchQueue->startPlaybackForClient(playbackClientIndex);
+            // The dispatch queue thread enqueues sample buffers, but the synchronizer's
+            // rate gates actual audio output. Without this the renderer just buffers.
+            [synchronizer setRate:1.0];
         }
         void pause() override {
+            if(!clientRegistered) return;
             playbackDispatchQueue->stopPlaybackForClient(playbackClientIndex);
+            [synchronizer setRate:0.0];
         }
         void reset() override {
-            playbackDispatchQueue->removeClient(playbackClientIndex);
+            if(clientRegistered){
+                playbackDispatchQueue->removeClient(playbackClientIndex);
+                clientRegistered = false;
+            }
+            [synchronizer setRate:0.0];
+            [renderer flush];
         }
         ~AVFAudioPlaybackSession() override {
-
+            if(clientRegistered){
+                playbackDispatchQueue->removeClient(playbackClientIndex);
+            }
         };
     };
 

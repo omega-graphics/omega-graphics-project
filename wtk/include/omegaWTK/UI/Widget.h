@@ -60,7 +60,15 @@ struct PaintOptions {
     bool autoWarmupOnInitialPaint = true;
     uint8_t warmupFrameCount = 2;
     bool coalesceInvalidates = true;
-    bool invalidateOnResize = true;
+    // Default is opt-out: widgets do NOT re-paint when the window
+    // resizes. The AppWindow's native item + render target still
+    // resize unconditionally (AppWindowDelegate::syncNativePresentLayer
+    // runs on every resize dispatch), so the present surface tracks
+    // the window dimensions on its own. Widgets that actually depend
+    // on logical-size-driven repaint (text reflow, responsive layout,
+    // content-rect-dependent paint output) set this to true
+    // explicitly via setPaintOptions / their PaintOptions ctor.
+    bool invalidateOnResize = false;
 };
 
 class OMEGAWTK_EXPORT WidgetGeometryDelegate {
