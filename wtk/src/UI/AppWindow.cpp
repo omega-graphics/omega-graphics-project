@@ -6,6 +6,8 @@
 #include "omegaWTK/Native/NativeDialog.h"
 #include "WidgetTreeHost.h"
 
+#include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Composition/Layer.h"
 #include "omegaWTK/UI/Menu.h"
 #include "omegaWTK/UI/View.h"
 
@@ -33,7 +35,33 @@ static inline bool resizeRectChanged(const Composition::Rect &lhs,const Composit
             setReciever(impl_->delegate.get());
             impl_->delegate->window = this;
         }
+        // Tier 3 Phase 3.0: bind the window Canvas to the window
+        // LayerTree's root layer. Canvas's constructor is private to
+        // View; AppWindow is friended in Canvas.h for this exact site.
+        // No owning View (nullptr) — `nextFrame`/`drawText` already
+        // null-check `ownerView_`; FrameBuilder (Phase 3.4) supplies
+        // the window-relative offset via the transform accumulator.
+        impl_->windowCanvas_ = std::shared_ptr<Composition::Canvas>(
+            new Composition::Canvas(impl_->proxy,
+                                    *impl_->windowLayerTree_->getRootLayer(),
+                                    nullptr));
     };
+
+Composition::LayerTree * AppWindow::windowLayerTree() const {
+    return impl_->windowLayerTree_.get();
+}
+
+Composition::Canvas * AppWindow::windowCanvas() const {
+    return impl_->windowCanvas_.get();
+}
+
+bool AppWindow::windowScopedPaint() const {
+    return impl_->windowScopedPaint_;
+}
+
+void AppWindow::setWindowScopedPaint(bool enabled){
+    impl_->windowScopedPaint_ = enabled;
+}
 
 void AppWindow::setMenu(SharedHandle<Menu> & menu){
     impl_->menu = menu;
@@ -207,6 +235,18 @@ void AppWindowDelegate::syncNativePresentLayer(const Composition::Rect & rect){
         Composition::Rect mutableRect = rect;
         mutableRect.pos = {0.f, 0.f};
         rootVisual->resize(mutableRect);
+    }
+
+    // Tier 3 Phase 3.0: keep the window-scoped LayerTree's root layer
+    // sized in lockstep with the native present layer. Mirrors the
+    // per-view tree resize path that View::resize runs today; without
+    // this, the window Canvas would emit frames against a stale rect
+    // once FrameBuilder (Phase 3.1) starts consuming it.
+    auto & windowLayerTree = window->impl_->windowLayerTree_;
+    if(windowLayerTree != nullptr && windowLayerTree->getRootLayer() != nullptr){
+        Composition::Rect layerRect = rect;
+        layerRect.pos = {0.f, 0.f};
+        windowLayerTree->getRootLayer()->resize(layerRect);
     }
 }
 

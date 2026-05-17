@@ -18,6 +18,7 @@
 
 namespace OmegaWTK {
     class View;
+    class AppWindow;
 
     namespace Media {
         struct BitmapImage;
@@ -338,6 +339,7 @@ namespace OmegaWTK {
         ::OmegaWTK::View *ownerView_;
 
         friend class ::OmegaWTK::View;
+        friend class ::OmegaWTK::AppWindow;
 
         Canvas(CompositorClientProxy &proxy,Layer &layer,::OmegaWTK::View *owner);
 

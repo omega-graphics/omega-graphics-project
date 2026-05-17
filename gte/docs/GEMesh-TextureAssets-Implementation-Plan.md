@@ -185,6 +185,9 @@ Same goes with our mesh_parser. It should also be accessible from macOS so we ca
 *Vulkan-specific post-implementation notes:*
 
 - **Image codec choice**: per the directive in the original notes ("we will use our own image codec from OmegaCommon"), the Vulkan backend skips the `libktx` / `stb_image` fetch and decodes through `OmegaCommon::Img::loadFromFile`. PNG / JPEG / TIFF are the v1 surface. Folding `stb_image` into `OmegaCommon::Img` to cover BMP / HDR / KTX is a clean follow-up — `GEVulkanTextureAsset` would not need to change.
+
+The real question: should KTX loading be a part of OmegaCommon::Img or TextureAsset??
+
 - **Pixel format normalization**: the decoded `BitmapImage` is forced to 8-bit RGBA before upload. RGB sources get an alpha pad of `0xFF`; 16-bit PNGs are already stripped to 8-bit by the codec. `RGBA8Unorm_SRGB` vs `RGBA8Unorm` follows `LoadOptions::sRGB`.
 - **Mip generation**: `generateMipmaps` is honored as a best-effort hint only — runtime mip generation on Vulkan requires a graphics queue + `vkCmdBlitImage` chain, which lives in the upcoming upload-queue helper. v1 uploads mip 0 and logs a one-shot notice. The D3D12 path's transient-queue trick doesn't translate directly because Vulkan needs the chain to live on a real graphics queue for SRGB blit support.
 - **Texture upload**: `GETexture::ToGPU` allocates a `LINEAR`-tiled, `HOST_VISIBLE` `VkImage`, so `copyBytes` does a direct memcpy through `vmaMapMemory`. No staging buffer, no transfer-queue plumbing — same as how `getBytes` works in reverse. Compressed and HDR formats would need the staging path; not in scope here.

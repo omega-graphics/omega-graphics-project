@@ -2,6 +2,12 @@
 
 set(OMEGAWTK_VERSION "0.8")
 option(OMEGAWTK_SKIP_THIRD_PARTY_BUILD "Use prebuilt third-party artifacts and skip building ExternalProject dependencies." OFF)
+# Tier 3 Phase 3.0 (UIView-Render-Redesign-Plan): scaffolding flag for the
+# window-scoped paint path. OFF keeps every test on the per-view Canvas
+# path the framework has shipped since Tier 2. ON makes the runtime knob
+# AppWindow::setWindowScopedPaint() default to true. Phase 3.8 deletes the
+# flag once the per-view path is gone.
+option(OMEGAWTK_WINDOW_SCOPED_PAINT "Default the AppWindow window-scoped paint runtime knob to ON (Tier 3)." OFF)
 
 set(OMEGAWTK_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -353,6 +359,9 @@ target_include_directories(OmegaWTK_UI
 	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
 	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
 target_link_libraries(OmegaWTK_UI PUBLIC OmegaCommon)
+if(OMEGAWTK_WINDOW_SCOPED_PAINT)
+	target_compile_definitions(OmegaWTK_UI PRIVATE OMEGAWTK_WINDOW_SCOPED_PAINT=1)
+endif()
 
 add_library(OmegaWTK_Widgets STATIC ${WIDGETS_SRCS})
 target_include_directories(OmegaWTK_Widgets

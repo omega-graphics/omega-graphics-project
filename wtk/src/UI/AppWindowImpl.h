@@ -5,9 +5,19 @@
 #include "omegaWTK/Native/NativeWindow.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/CompositorSurface.h"
+#include "omegaWTK/Composition/Layer.h"
 #include "../Composition/backend/ResourceFactory.h"
 
 namespace OmegaWTK {
+
+// Tier 3 Phase 3.0: default for AppWindow::Impl::windowScopedPaint_.
+// Off unless the build flips OMEGAWTK_WINDOW_SCOPED_PAINT; per-scene
+// callers can flip the runtime knob via setWindowScopedPaint().
+#ifdef OMEGAWTK_WINDOW_SCOPED_PAINT
+inline constexpr bool kDefaultWindowScopedPaint = true;
+#else
+inline constexpr bool kDefaultWindowScopedPaint = false;
+#endif
 
 struct AppWindow::Impl {
     Native::NWH nativeWindow;
@@ -21,13 +31,27 @@ struct AppWindow::Impl {
     SharedHandle<Composition::CompositorSurface> windowSurface;
     Composition::PreCreatedVisualTreeData windowVisualTreeData;
 
+    // Tier 3 Phase 3.0: window-scoped composition target. Owned by the
+    // window for its full lifetime; resized in lockstep with
+    // syncNativePresentLayer. Dormant until FrameBuilder (Phase 3.1)
+    // routes per-view DrawOps through `windowCanvas_`.
+    SharedHandle<Composition::LayerTree> windowLayerTree_;
+    SharedHandle<Composition::Canvas>    windowCanvas_;
+    bool windowScopedPaint_ = kDefaultWindowScopedPaint;
+
     Impl(AppWindow & owner,Composition::Rect rectValue,AppWindowDelegate * delegateValue):
         nativeWindow(Native::make_native_window(rectValue,&owner)),
         rootNativeItem(nativeWindow->getRootView()),
         rootViewRenderTarget(new Composition::ViewRenderTarget(rootNativeItem)),
         proxy(rootViewRenderTarget),
         delegate(delegateValue),
-        rect(rectValue){
+        rect(rectValue),
+        // Local-origin rect: per-view trees also place their root layer at
+        // (0,0); the window's window-offset stays the responsibility of the
+        // compositor's native present layer.
+        windowLayerTree_(std::make_shared<Composition::LayerTree>(
+            Composition::Rect{Composition::Point2D{0.f, 0.f},
+                              rectValue.w, rectValue.h})){
         // Wire the root native view's event emitter to the AppWindow so
         // that input events (mouse, keyboard) from the single root native
         // view are routed through AppWindowDelegate → WidgetTreeHost hit

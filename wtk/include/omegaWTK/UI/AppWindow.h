@@ -12,7 +12,7 @@
 namespace OmegaWTK {
 
 class Menu;
-   
+
 class AppWindow;
 OMEGACOMMON_SHARED_CLASS(AppWindow);
 class AppWindowManager;
@@ -20,6 +20,12 @@ class WidgetTreeHost;
 class Widget;
 OMEGACOMMON_SHARED_CLASS(Widget);
 class View;
+class FrameBuilder;
+
+namespace Composition {
+    class LayerTree;
+    class Canvas;
+}
 
 class AppWindowDelegate;
 /**
@@ -36,8 +42,22 @@ class AppWindowDelegate;
         friend class AppWindowDelegate;
         friend class AppWindowManager;
         friend class WidgetTreeHost;
+        friend class FrameBuilder;
 
         void onThemeSet(Native::ThemeDesc &desc) override;
+
+        // --- Tier 3 Phase 3.0: window-scoped paint scaffolding ---
+        // Dormant infrastructure for the FrameBuilder that lands in
+        // Phase 3.1. Not on the public surface: FrameBuilder is the only
+        // consumer (granted via friendship above) and the methods will
+        // disappear when the per-view paint path is deleted in Tier 4.
+        Composition::LayerTree * windowLayerTree() const;
+        Composition::Canvas    * windowCanvas() const;
+        /// Runtime knob mirroring the OMEGAWTK_WINDOW_SCOPED_PAINT build
+        /// flag. Off by default; Phase 3.2 onward flips this on per scene
+        /// to route DrawOps through FrameBuilder.
+        bool windowScopedPaint() const;
+        void setWindowScopedPaint(bool enabled);
     public:
         OMEGACOMMON_CLASS("OmegaWTK.AppWindow")
 

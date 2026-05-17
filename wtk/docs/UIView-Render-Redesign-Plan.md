@@ -912,6 +912,504 @@ Risk: high. This is the move that actually fixes the rendering path.
 It must land behind a feature flag or on a branch with thorough
 resize/scroll/clip testing.
 
+#### Tier 3 phasing
+
+Tier 3 is larger than Tier 2 in surface area *and* in risk — it is
+the only tier that fundamentally changes how frames reach the
+compositor, not just how they're recorded. It is broken into eleven
+phases. The first four (3.0–3.3) are pure scaffolding: a window-
+scoped infrastructure is added, an opt-in flag chooses the new path
+per view, and nothing existing breaks. Phases 3.4–3.7 light up
+capabilities that the new path needs (transform accumulator, scoped
+clip, native carve-out). Phases 3.8–3.10 are the destructive ones:
+the flag goes away, per-view state is deleted, and the doomed
+classes (`CanvasView`, the `VideoView` View subclass) are removed.
+Each phase is independently shippable. The destructive ones revert
+cleanly only as long as the prior additive phases stay landed.
+
+**Cross-cutting decisions** (apply to every Tier 3 phase):
+
+- **Feature flag: `OMEGAWTK_WINDOW_SCOPED_PAINT`.** A build-time
+  define plus an `AppWindow`-level boolean. When off, the per-view
+  Canvas path from Tier 2 stays live (and every test keeps
+  producing identical pixels). When on, `FrameBuilder` collects
+  `DisplayList`s from opted-in views and replays them into the
+  window `Canvas`. Each phase that adds a window-scoped consumer
+  flips the flag on for *just that consumer* in the test scenes;
+  Phase 3.8 deletes the flag entirely. The flag exists because
+  Tier 3 is high-risk and a per-phase revert needs to be a config
+  change rather than a code rollback.
+- **`FrameBuilder` is internal to `AppWindow` until Tier 4.** Lives
+  at `wtk/src/UI/FrameBuilder.{h,cpp}`, with the header private to
+  the UI library. No public surface; views interact with it only
+  via the `DisplayList` they hand to the window. Tier 4 promotes it
+  to the public SceneNode pipeline.
+- **`Canvas` survives Tier 3 unchanged as a class.** The window-
+  scoped `Canvas` instance is exactly the same type the per-view
+  Canvases were. The plumbing change is *which* `Canvas` the views'
+  `DrawOp`s flow into, not what `Canvas` does. `Canvas`'s deletion
+  is Tier 4 territory (§3.3 table, §4 Tier 4).
+- **No new `DrawOp` variants.** Phase 2.4 (`PushClip` / `PopClip` /
+  `PushTransform` / `PopTransform`) and Phase 2.5
+  (`NativeContent`) landed the type-level vocabulary Tier 3 needs.
+  Phases 3.5 and 3.7 add the *replay-side* handling for those ops;
+  no enum extensions, no payload changes.
+- **Verification harness:** `wtk/tests/RootWidget/Main.cpp` grows a
+  multi-`UIView` scene that exercises window-scoped composition
+  (multiple views on one window, each emitting `DrawOp`s into a
+  shared `Canvas`). `SVGViewRenderTest` validates SVGView under the
+  window-scoped path. A new `ScrollViewClipTest` exercises Phase
+  3.6's `PushClip`-driven scroll. NativeViewHost-Adoption-Plan
+  tests (`VideoViewPlaybackTest` once its pre-existing link break
+  is fixed; future `GTEViewTest`) validate Phase 3.7's carve-out.
+  Still no image-diff harness; verification is visual comparison
+  with the flag off vs. on per phase.
+
+##### Pre-flight: grep sweep + open-question resolution
+
+Before Phase 3.0, settle the items §8 already flagged so the phasing
+doesn't trip on them mid-tier:
+
+- `grep` for `View::makeLayer`, `View::makeCanvas`,
+  `View::startCompositionSession`, `View::endCompositionSession`
+  across `src/Widgets/`, `tests/`, and any client trees that depend
+  on this repo. Any caller outside `src/UI/` and the in-tree tests
+  is a Phase 3.0 blocker — fold it into the phasing as a "migrate
+  X before Phase 3.8" item, or rule out the use case explicitly.
+- Confirm `WidgetTreeHost` and `Widget::executePaint` can be
+  retrofitted to drive a window-level `FrameBuilder` without
+  rewriting every Widget subclass (§8 honest-uncertainty note). If
+  not, Tier 3 grows to include the Widget paint-lifecycle redesign,
+  which is its own follow-up plan.
+- Coordinate the `DrawOp::NativeContent` carve-out semantics with
+  `NativeViewHost-Adoption-Plan.md` *before* Phase 3.7. Per-platform
+  carve-out implementations (CA layer reordering, DirectComposition
+  visual tree, Wayland subsurface) need their backend touchpoints
+  named.
+
+##### Phase 3.0 — `AppWindow` window-scoped `LayerTree` + `Canvas` infrastructure [DONE]
+
+The scaffolding phase. Nothing changes user-visibly; everything that
+was per-view stays per-view. The window simply *also* owns a layer
+tree and a canvas, ready for FrameBuilder to use them in Phase 3.1.
+
+**Status:** Complete. `AppWindow::Impl` owns
+`windowLayerTree_` (origin-at-zero rect mirroring the window's
+local size) and `windowCanvas_` (bound to the tree's root layer
+via a `friend class AppWindow` declaration in `Canvas.h`, since
+Canvas's ctor is private to the View construction path). The
+layer tree resizes inside `AppWindowDelegate::syncNativePresentLayer`
+alongside the existing backend visual tree resize, so window resize
+ticks keep both in sync. `OMEGAWTK_WINDOW_SCOPED_PAINT` is wired
+as a CMake `option()` that compiles the macro into `OmegaWTK_UI`,
+which seeds the `Impl::windowScopedPaint_` runtime knob; that knob
+is reachable via `AppWindow::windowScopedPaint()` /
+`setWindowScopedPaint()`. The window Canvas is **not** yet
+registered with the compositor frontend (`observeLayerTree`) —
+that wiring lands in Phase 3.1 alongside the first window-level
+composition session.
+
+- Add `AppWindow::Impl::windowLayerTree_` (`SharedHandle<Composition::LayerTree>`)
+  constructed at `AppWindow` construction against the window's
+  initial rect.
+- Add `AppWindow::Impl::windowCanvas_` (`SharedHandle<Composition::Canvas>`)
+  bound to the window layer tree's root layer.
+- `AppWindow::Impl::windowLayerTree_` resizes when the window
+  resizes (mirror the rect change the existing per-view trees
+  receive today via `setWindowRenderTarget`).
+- Add private accessors `AppWindow::windowLayerTree()` and
+  `AppWindow::windowCanvas()` for internal use by Phase 3.1's
+  `FrameBuilder`. Not in the public header.
+- Define `OMEGAWTK_WINDOW_SCOPED_PAINT` as a build-time macro
+  (default off) and as an `AppWindow::Impl::windowScopedPaint_`
+  runtime boolean (default reads the macro).
+- Validator: every existing test still builds and runs, with no
+  visible change. The window canvas exists but no draws flow into
+  it yet.
+
+Files touched: `wtk/include/omegaWTK/UI/AppWindow.h` (new
+private accessors), `wtk/src/UI/AppWindow.cpp`, `wtk/src/UI/AppWindowImpl.h`.
+
+##### Phase 3.1 — `FrameBuilder` skeleton + window-level composition session
+
+`FrameBuilder` appears, owned by `AppWindow`. In this phase it just
+*centralizes the composition session* — opens/closes it once per
+frame at the window level — but per-view paint paths still call
+their own canvases. This proves the session-lifetime move in
+isolation, before any DisplayList collection.
+
+- New `FrameBuilder` class at `wtk/src/UI/FrameBuilder.{h,cpp}`.
+  Constructor takes `AppWindow &`; lifetime matches the window's.
+- `FrameBuilder::beginFrame()` calls
+  `windowCanvas_->getCorrespondingLayer()`'s session entry on the
+  window's compositor proxy. `FrameBuilder::endFrame()` calls the
+  matching session exit + `windowCanvas_->sendFrame()` if any draws
+  landed in the window canvas this frame.
+- `AppWindow` calls `frameBuilder_->beginFrame()` before driving
+  the widget tree's paint pass and `endFrame()` after.
+- `UIView::update()` and `SVGView::paint()` continue to call
+  `startCompositionSession` / `endCompositionSession` on their
+  *own* views. The window-level session and the per-view sessions
+  coexist — both no-op if a session is already open on the same
+  proxy (verify this with the compositor frontend's session
+  reentrancy model; if it doesn't allow nesting, this phase grows
+  to add a "is the window session already open?" gate).
+- Validator: existing scenes render unchanged. Time-domain
+  verification: log `FrameBuilder::beginFrame` / `endFrame` and
+  confirm they bracket the per-view sessions on every frame.
+
+Files touched: new `wtk/src/UI/FrameBuilder.{h,cpp}`,
+`wtk/src/UI/AppWindow.cpp`.
+
+##### Phase 3.2 — `UIView` opt-in: hand its `DisplayList` to `FrameBuilder`
+
+The first real window-scoped paint. Behind the flag, `UIView::update()`
+builds its `DisplayList` (Phase 2.1 already does this) but
+*hands it to `FrameBuilder` instead of replaying into `rootCanvas`*.
+`FrameBuilder` accumulates `DisplayList`s from all opted-in views
+and replays them into `windowCanvas_` in tree order at `endFrame()`.
+
+- `FrameBuilder::submitView(View *, DisplayList)` — records a
+  pending replay. The submission carries the view's window-offset
+  (computed via the existing `View::computeWindowOffset` for now,
+  per §3.3 table; Phase 3.4 replaces with the transform accumulator).
+- `UIView::update()` checks `AppWindow::windowScopedPaint()`. When
+  on, the function builds the `DisplayList` as today, then calls
+  `frameBuilder->submitView(this, std::move(list))` *instead of*
+  `DisplayListReplay::replay(displayList, *impl_->rootCanvas)` +
+  `sendFrame`. When off, the Phase 2.1 path runs unchanged.
+- At `endFrame()`, `FrameBuilder` walks pending submissions in
+  insertion order (== tree order, since the widget paint pass is
+  pre-order today). For each submission it stamps the window-offset
+  into the window canvas frame, then `DisplayListReplay::replay`s
+  the view's list into `windowCanvas_`. Single
+  `windowCanvas_->sendFrame()` at the end.
+- The flag is flipped on for *only the multi-`UIView` RootWidget
+  scene* added in this phase. Single-UIView tests stay on the off
+  path so any regression is isolated to the new scene.
+- Validator: new RootWidget scene puts two non-overlapping UIViews
+  on one window, each with a different background color. Off-flag
+  baseline: two views composite normally. On-flag: two views
+  composite through the window canvas. Pixel-identical output.
+
+Files touched: `wtk/src/UI/UIView.Update.cpp`, new
+`wtk/src/UI/FrameBuilder.cpp` methods, RootWidget scene additions.
+
+##### Phase 3.3 — `SVGView` opt-in
+
+Same opt-in as Phase 3.2, applied to `SVGView::paint()`. SVG's
+cached `DisplayList` was always the right shape for this; Phase 3.3
+is mostly a one-line rewire.
+
+- `SVGView::paint()` (Phase 2.3) checks the flag. When on, it
+  hands its cached `DisplayList` to `FrameBuilder` instead of
+  replaying into `svgCanvas`. When off, current behavior.
+- The flag is flipped on for `SVGViewRenderTest`. The existing
+  multi-shape SVG document is the validator surface — several
+  hundred ops round-tripping through the window canvas.
+- `SVGView` still owns `svgCanvas` until Phase 3.8; it just stops
+  using it when the flag is on.
+- Validator: `SVGViewRenderTest` produces identical output with the
+  flag on vs. off.
+
+Files touched: `wtk/src/UI/SVGView.cpp`.
+
+##### Phase 3.4 — `FrameBuilder` transform accumulator + `computeWindowOffset` rewire
+
+Replaces `View::computeWindowOffset`'s parent-walk with a
+`FrameBuilder`-owned accumulator threaded through the paint walk.
+The public `View::computeWindowOffset` method stays as a thin
+wrapper (returns `FrameBuilder::currentOffset()` when the window-
+scoped path is active, or falls back to the legacy walk when not).
+
+- `FrameBuilder` gains an explicit `Composition::Point2D
+  currentOffset_` updated as the widget paint pass enters / exits
+  each subtree. Push on enter, pop on exit (a simple
+  `std::vector<Point2D>` stack).
+- `View::scrollOffsetContribution` callers (today: descendant
+  window-offset computation inside a ScrollView subtree) route
+  through `FrameBuilder::currentOffset()` so scroll-shifted rects
+  arrive at submit time without a parent-walk.
+- `View::computeWindowOffset` becomes a one-line wrapper:
+  ```cpp
+  Point2D View::computeWindowOffset() const {
+      auto * fb = AppWindow::activeFrameBuilder();
+      return fb ? fb->currentOffset() : legacyComputeWindowOffset();
+  }
+  ```
+  where `legacyComputeWindowOffset()` is the prior implementation
+  renamed. Both paths produce the same offset; the wrapper just
+  picks the right one based on whether a frame is in flight.
+- Validator: nested-UIView RootWidget scene from Phase 3.2 grows to
+  include a child UIView placed at a non-trivial offset inside a
+  parent UIView. Off-flag and on-flag produce identical positions.
+
+Files touched: `wtk/src/UI/FrameBuilder.{h,cpp}`, `wtk/src/UI/View.Core.cpp`,
+RootWidget scene additions.
+
+##### Phase 3.5 — `DisplayListReplay` real implementation for `PushClip` / `PopClip`
+
+The Phase 2.4 no-op cases get real implementations now that the
+window canvas has a known target. `PushTransform` / `PopTransform`
+stay no-op (they carry 3D-effect matrices and the in-tree producers
+are still nonexistent; revisit when a producer appears).
+
+- `Canvas` gains `pushClip(Rect)` / `popClip()` methods. The
+  backend impl uses the existing scissor / stencil path from the
+  SDF pipeline (already in `Direct-To-Drawable-And-SDF-Plan` §6).
+  If the SDF backend doesn't expose a public scissor surface yet,
+  add the minimal one — set / clear a `currentClipRect_` on the
+  per-frame state that the SDF draw consults.
+- `DisplayListReplay`'s `PushClip` arm calls
+  `canvas.pushClip(op.params.pushClipParams.rect)`; `PopClip` arm
+  calls `canvas.popClip()`.
+- Stack semantics: nested `PushClip`s intersect; `PopClip` restores
+  the previous clip. `FrameBuilder` enforces matched push/pop pairs
+  per submission (asserts in debug if a view's display list ends
+  with an unbalanced stack).
+- No Tier-3 producer for `PushTransform` / `PopTransform` — the
+  ScrollView migration (Phase 3.6) uses `PushClip` only; the
+  scroll translation flows through `contentOffset()` per §9.3.
+  `DisplayListReplay`'s transform-op arms log a warning if hit and
+  otherwise no-op.
+- Validator: a fabricated `DisplayList` in a unit test that pushes
+  a clip, emits a shape that extends beyond the clip, pops, and
+  emits a second shape outside the original clip. Replay produces
+  the expected clipped + unclipped output.
+
+Files touched: `wtk/include/omegaWTK/Composition/Canvas.h`,
+`wtk/src/Composition/Canvas.cpp`, `wtk/src/Composition/DisplayList.cpp`,
+backend-specific clip plumbing in `wtk/src/Composition/backend/`.
+
+##### Phase 3.6 — `ScrollView` migration
+
+ScrollView becomes the first `PushClip` producer and the first
+consumer of `FrameBuilder::contentOffset` (the Arrange-time hook
+§9.3 specifies). The two overlay scroll-bar layers + their canvases
+go away.
+
+- `ScrollView::paint()` (added in this phase — ScrollView currently
+  drives painting through subview composition, not a paint method)
+  emits `DrawOp::makePushClip(finalRect())` at the start, then
+  relies on `FrameBuilder` to recurse into the content child, then
+  emits `DrawOp::makePopClip()` at the end. Overlay scroll bars
+  emit after the pop as two `DrawOp::RoundedRect`s.
+- `ScrollView::contentOffset() const override` returns
+  `-scrollOffset_`. `FrameBuilder` reads it when entering the
+  ScrollView's subtree and folds the offset into the accumulator
+  (Phase 3.4 stack).
+- `ScrollView::scrollOffsetContribution` deleted (it was the
+  pre-FrameBuilder hook; the accumulator does the job now).
+- `vScrollBarLayer` / `hScrollBarLayer` / `vScrollBarCanvas` /
+  `hScrollBarCanvas` members deleted from `ScrollView::Impl`. The
+  scroll-bar styling fields (`vBar_`, `hBar_`) stay; the bars are
+  authored declaratively and emitted as DrawOps in paint.
+- `ScrollView::wantsLayer() const override { return true; }`
+  introduced (`bool View::wantsLayer() const { return false; }`
+  becomes a virtual on View). The boolean is a *layer tag* — Tier 3
+  doesn't yet act on it, but a future compositor-thread scrolling
+  pass reads it.
+- The window-scoped flag is flipped on for a new
+  `ScrollViewClipTest` exercising vertical and horizontal scroll
+  with content larger than the viewport. Off-flag baseline matches
+  on-flag output.
+
+Files touched: `wtk/include/omegaWTK/UI/ScrollView.h`,
+`wtk/src/UI/ScrollView.cpp`, `wtk/src/UI/FrameBuilder.{h,cpp}`,
+`wtk/include/omegaWTK/UI/View.h` (the new virtual), new
+`wtk/tests/ScrollViewClipTest/`.
+
+##### Phase 3.7 — `DisplayListReplay` real implementation for `NativeContent` (carve-out)
+
+The Phase 2.5 no-op gets real backend handling. Each platform
+compositor turns the carve-out into the right local primitive (CA
+sublayer ordering on macOS, DirectComposition visual on Windows,
+subsurface on Wayland). The `hostId` plumbs through so the platform
+side knows which native layer the rect belongs to.
+
+- `Canvas` gains `markNativeContentRegion(Rect, uint64_t hostId,
+  int zOrderHint)`. Records the carve-out in the per-frame state;
+  the backend `renderToTarget` switch translates it to the platform
+  primitive on flush.
+- Backend impls: `wtk/src/Composition/backend/mtl/` (CA layer
+  ordering against a `CALayer` keyed by `hostId`),
+  `wtk/src/Composition/backend/dx/` (DirectComposition visual
+  insertion), `wtk/src/Composition/backend/vk/` (Wayland subsurface
+  or X11 child window).
+- `DisplayListReplay`'s `NativeContent` arm calls
+  `canvas.markNativeContentRegion(...)`.
+- Coordinated with `NativeViewHost-Adoption-Plan.md` Phases V2 / G2
+  (frame sink → native surface). Validator surface: VideoView's
+  hardware video path (once `VideoViewPlaybackTest`'s pre-existing
+  link break is fixed) and the future GTEView direct-present.
+- Z-order hint: in this tier, ascending `zOrderHint` means later /
+  on-top. Tier-4-or-later may extend (multiple z-order buckets per
+  view, per-platform mapping refinements).
+- Validator: `VideoViewPlaybackTest` (once buildable) plays a video
+  through a `NativeViewHost`, and the carve-out leaves the video
+  surface visible through the 2D compositor.
+
+Files touched: `wtk/include/omegaWTK/Composition/Canvas.h`,
+`wtk/src/Composition/Canvas.cpp`, `wtk/src/Composition/DisplayList.cpp`,
+all three backend dirs under `wtk/src/Composition/backend/`.
+
+##### Phase 3.8 — delete per-view `LayerTree` + per-view `Canvas`; remove the flag
+
+The destructive phase. Every opt-in consumer from 3.2 / 3.3 / 3.6
+now runs unconditionally; the per-view path is removed; the flag is
+deleted. Tier 3's payoff lands here.
+
+- Remove `View::Impl::ownLayerTree`. `View::getLayerTree()` either
+  returns the window's `LayerTree` (preserving the API surface for
+  the few internal callers that need it) or is itself removed —
+  decide during the phase based on the §8 grep sweep result.
+- Remove `View::makeLayer`, `View::makeCanvas` from the public
+  `View` surface. `CanvasView` is the only public caller (deleted
+  in Phase 3.9, so it must be sequenced first — see ordering
+  rationale below).
+- Remove `UIView::Impl::rootCanvas`. The Phase 3.2 opt-in becomes
+  the only path through `UIView::update()`.
+- Remove `SVGView::svgCanvas`. The Phase 3.3 opt-in becomes the
+  only path through `SVGView::paint()`.
+- Remove `ScrollView::vScrollBarLayer` / `hScrollBarLayer` (already
+  done in 3.6, but the per-view ownership scaffolding around them
+  in `View::Impl` goes away here).
+- Remove the `OMEGAWTK_WINDOW_SCOPED_PAINT` build-time macro and
+  the `AppWindow::Impl::windowScopedPaint_` runtime boolean. Every
+  call site that read either becomes unconditional.
+- Remove `View::startCompositionSession` / `endCompositionSession`
+  from the public surface. Internal callers (Phase 2.x left a few
+  for backward compat during the transition) are gone after this
+  phase.
+- Validator: full test sweep — RootWidget multi-view scene,
+  SVGViewRenderTest, ScrollViewClipTest, EllipsePathCompositorTest,
+  TextCompositorTest, ContainerClampAnimationTest. Every existing
+  scene that worked under the flag must work without it.
+
+Files touched: `wtk/include/omegaWTK/UI/View.h`,
+`wtk/src/UI/View.Core.cpp`, `wtk/src/UI/ViewImpl.h`,
+`wtk/src/UI/UIView.Update.cpp`, `wtk/src/UI/UIView.Core.cpp`,
+`wtk/src/UI/UIViewImpl.h`, `wtk/src/UI/SVGView.cpp`,
+`wtk/include/omegaWTK/UI/SVGView.h`, `wtk/src/UI/ScrollView.cpp`,
+`wtk/include/omegaWTK/UI/ScrollView.h`, `wtk/src/UI/AppWindow.cpp`,
+`wtk/src/UI/AppWindowImpl.h`, `wtk/CMakeLists.txt` (macro
+defaulting).
+
+##### Phase 3.9 — `CanvasView` deletion
+
+The Phase 2.6 `[[deprecated]]` markers gave the grep handle. Now
+the in-tree callers migrate and the class is removed.
+
+- Migrate `wtk/src/Widgets/Primatives.cpp:502`'s `drawImage`
+  caller to a `UIView` + `UIViewLayoutV2` element. The widget
+  becomes a small UIView host; its `onPaint` builds a layout with
+  one image element instead of an imperative `drawImage` call.
+- Migrate the four test bundles (`TextCompositorTest`,
+  `EllipsePathCompositorTest`, `ContainerClampAnimationTest`,
+  `VideoViewPlaybackTest`) similarly. Each had a `viewAs<CanvasView>()`
+  call sequence; replace with a `UIView` whose layout is rebuilt
+  per `onPaint`.
+- Delete `wtk/include/omegaWTK/UI/CanvasView.h` and
+  `wtk/src/UI/CanvasView.cpp`.
+- Delete the `CanvasView` forward declaration in
+  `wtk/include/omegaWTK/UI/Widget.h:17`.
+- Update the `CanvasView` references in
+  `wtk/include/omegaWTK/Composition/FontEngine.h` and
+  `wtk/include/omegaWTK/UI/View.h` doc comments.
+- `Widget::Create(rect)` constructor at
+  `wtk/src/UI/Widget.Core.cpp:13` (`view(CanvasView::Create(rect))`)
+  reroutes to a plain `View::Create(rect)` — the imperative
+  draw API is gone, so the default view doesn't need a Canvas
+  anymore.
+- Validator: all four test bundles + Primatives.cpp still produce
+  visually identical output through the new `UIView`-based paths.
+
+Files touched: `wtk/include/omegaWTK/UI/CanvasView.h` (deleted),
+`wtk/src/UI/CanvasView.cpp` (deleted),
+`wtk/include/omegaWTK/UI/Widget.h`, `wtk/src/UI/Widget.Core.cpp`,
+`wtk/src/Widgets/Primatives.cpp`, the four test bundles,
+`wtk/include/omegaWTK/Composition/FontEngine.h` (doc),
+`wtk/include/omegaWTK/UI/View.h` (doc).
+
+##### Phase 3.10 — `VideoView` (the `View` subclass) deletion
+
+Owned by `NativeViewHost-Adoption-Plan.md`. This plan's role is
+purely to confirm the carve-out + `onLayoutResolved` contract held
+through the migration and to remove the residual `View` subclass.
+
+- `VideoView` the View subclass deleted (per
+  [NativeViewHost-Adoption-Plan.md](NativeViewHost-Adoption-Plan.md)
+  Part 1 / V4). The public API moves to `VideoViewWidget` per that
+  plan.
+- `VideoFrameSink` implementation moves out of the `View` hierarchy
+  into a non-`View` internal controller.
+- `framebuffer` queue, `videoCanvas`, `queueFrame`,
+  `presentCurrentFrame`, `flush` — gone.
+- Coordinate the cut with the NativeViewHost adoption plan's
+  Phase V4 timing — this plan's Phase 3.10 should land *after* V4,
+  not concurrently.
+- Validator: video playback works through the native path with the
+  `DrawOp::NativeContent` carve-out from Phase 3.7.
+
+Files touched: `wtk/include/omegaWTK/UI/VideoView.h` (deleted),
+`wtk/src/UI/VideoView.cpp` (deleted), plus whatever
+`NativeViewHost-Adoption-Plan.md` Phase V4 specifies.
+
+#### Phase ordering rationale
+
+- 3.0 first: pure scaffolding. The window-scoped infra has to
+  exist before anything can consume it. Independent of every later
+  phase; reverts to a no-op delete.
+- 3.1 immediately after: the session-lifetime move is the lowest-
+  risk centralization. Surfaces compositor-frontend reentrancy
+  questions early (some frontends may not allow nested sessions).
+- 3.2 then 3.3: the UIView opt-in is the larger and more
+  representative validator (every shape variant, the text shaping
+  helper, the brush resolution). SVGView's much-larger op count
+  per scene becomes the second validator at scale.
+- 3.4 after 3.3: the transform accumulator can't be validated
+  without at least two views feeding it. With both UIView and
+  SVGView on the window path, the offset story has real consumers.
+- 3.5 before 3.6: `PushClip` replay needs to work before
+  ScrollView can produce it.
+- 3.7 in parallel with 3.5 / 3.6: the `NativeContent` backend
+  hookup is independent of the clip / scroll work and lives in
+  different backend files. Sequencing is "land before 3.8" so the
+  flag deletion doesn't break native-embed test paths.
+- 3.8 only after 3.2, 3.3, 3.6, 3.7 have landed: every consumer
+  must be on the new path before the old path is removed.
+- 3.9 after 3.8: `CanvasView`'s deletion is independent of the
+  per-view Canvas removal (it's its own class), but sequencing it
+  after 3.8 means there's only one Canvas instance left to think
+  about (the window canvas) when the migration touches each test
+  bundle.
+- 3.10 last and externally-paced: gated on
+  `NativeViewHost-Adoption-Plan.md` Phase V4. Could in principle
+  land before 3.8 if V4 happens first, but the carve-out backend
+  in 3.7 is its real prerequisite from this plan.
+
+#### What Tier 3 explicitly does NOT do
+
+- Does not introduce `SceneNode`, `LayoutManager`, or `PaintContext`
+  (Tier 4).
+- Does not introduce `DirtyBits` (Tier 4).
+- Does not change `BackendRenderTargetContext::renderToTarget`'s
+  switch dispatch (Tier 4 — still dispatches on `VisualCommand`).
+- Does not delete the `Canvas` class itself (Tier 4 — Tier 3
+  collapses *N* per-view Canvases into *one* per-window Canvas,
+  but the class survives as the `DisplayList → VisualCommand`
+  adapter until Tier 4).
+- Does not delete `VisualCommand` or `CanvasFrame` (Tier 4).
+- Does not remove `UIView::update()` (Tier 4 — Tier 3 keeps the
+  method but routes its output through `FrameBuilder`).
+- Does not migrate animation state out of `UIView::Impl` (Tier 4 +
+  Animation-API-Simplification-Plan prereq).
+- Does not introduce `PushOpacity` / `PopOpacity` or
+  `PushEffect` / `PopEffect` ops (deferred to Tier 4+ when a
+  producer appears).
+- Does not remove `View::computeWindowOffset` (kept as a thin
+  wrapper in 3.4; final deletion is Tier 4).
+
 ### Tier 4 — introduce `SceneNode` + `LayoutManager`, retire `UIView::update`
 
 - `UIView` becomes `UIViewNode : SceneNode`.
@@ -1537,7 +2035,7 @@ contract.
    independently). Recommendation: overlay for Tier 3, sibling
    nodes only if the theming/animation surface area demands it.
    
-   Yes.
+   Yes. (Eventually we would want to customize them.)
 
 3. **`DrawOp::NativeContent` op shape.** The op shape should be
    designed jointly with [NativeViewHost-Adoption-Plan.md](NativeViewHost-Adoption-Plan.md)
