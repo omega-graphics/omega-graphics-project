@@ -137,6 +137,76 @@ protected:
     }
 };
 
+// UIView-Render-Redesign-Plan Tier 3 Phase 3.2 validator scene.
+// Two non-overlapping UIViews on one window, each with a different
+// background color. With OMEGAWTK_WINDOW_SCOPED_PAINT off (legacy
+// path), both UIViews composite via their own rootCanvas. With it
+// on, both UIViews submit their DisplayList to the window-level
+// FrameBuilder; the FrameBuilder replays both into the window
+// canvas and deposits a single CompositeFrame. Expected: visually
+// identical between the two paths — a green rectangle on the left
+// and a red rectangle on the right, each filling half the window.
+class Phase32Widget : public Widget {
+    UIViewPtr leftView_;
+    UIViewPtr rightView_;
+
+    void ensureViews(const Composition::Rect & bounds){
+        const float halfW = bounds.w * 0.5f;
+        Composition::Rect leftRect  {Composition::Point2D{0.f,    0.f}, halfW, bounds.h};
+        Composition::Rect rightRect {Composition::Point2D{halfW,  0.f}, halfW, bounds.h};
+        if(leftView_ == nullptr){
+            leftView_ = makeSubView<UIView>(leftRect, "phase32_left");
+        }
+        else {
+            leftView_->resize(leftRect);
+        }
+        if(rightView_ == nullptr){
+            rightView_ = makeSubView<UIView>(rightRect, "phase32_right");
+        }
+        else {
+            rightView_->resize(rightRect);
+        }
+    }
+
+public:
+    explicit Phase32Widget(Composition::Rect rect) : Widget(rect) {}
+
+protected:
+    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
+
+    void onMount() override {
+        ensureViews(localBounds(rect()));
+    }
+
+    void onPaint(PaintReason reason) override {
+        (void)reason;
+        const auto bounds = localBounds(rect());
+        ensureViews(bounds);
+
+        // Two empty layouts — the only thing each UIView paints is
+        // its background. That's enough to verify the two
+        // submissions land in tree order with the right window
+        // offsets: any off-by-one in FrameBuilder's offset stamping
+        // produces a single-color window instead of the side-by-side
+        // split.
+        UIViewLayout emptyLayout {};
+        leftView_->setLayout(emptyLayout);
+        rightView_->setLayout(emptyLayout);
+
+        auto leftStyle = StyleSheet::Create();
+        leftStyle = leftStyle->backgroundColor("phase32_left",
+            Composition::Color::create8Bit(Composition::Color::Green8));
+        leftView_->setStyleSheet(leftStyle);
+        leftView_->update();
+
+        auto rightStyle = StyleSheet::Create();
+        rightStyle = rightStyle->backgroundColor("phase32_right",
+            Composition::Color::create8Bit(Composition::Color::Red8));
+        rightView_->setStyleSheet(rightStyle);
+        rightView_->update();
+    }
+};
+
 class MyWindowDelegate : public AppWindowDelegate {
 public:
     void windowWillClose(Native::NativeEventPtr event) override {
@@ -146,12 +216,23 @@ public:
 };
 
 int omegaWTKMain(AppInst *app){
+#ifdef OMEGAWTK_WINDOW_SCOPED_PAINT
+    std::cout << "RootWidgetTest: Phase 3.2 multi-UIView window-scoped scene" << std::endl;
+#else
     std::cout << "RootWidgetTest: Phase 2.1 DisplayList full-variant scene" << std::endl;
+#endif
 
     const Composition::Rect windowRect{{0,0}, 420, 420};
 
     auto window = make<AppWindow>(windowRect, new MyWindowDelegate());
+#ifdef OMEGAWTK_WINDOW_SCOPED_PAINT
+    // Per Tier 3 Phase 3.2: flip the flag on only for the
+    // multi-UIView scene so single-UIView regressions stay
+    // isolated to the legacy path.
+    auto widget = make<Phase32Widget>(windowRect);
+#else
     auto widget = make<Phase21Widget>(windowRect);
+#endif
     window->setRootWidget(widget);
 
     app->windowManager->setRootWindow(window);

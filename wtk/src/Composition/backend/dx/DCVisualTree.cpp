@@ -92,6 +92,10 @@ namespace OmegaWTK::Composition {
         desc.hwnd = nullptr;
         desc.height = toBackingDimension(rect.h,renderScale);
         desc.width = toBackingDimension(rect.w,renderScale);
+        // BGRA8Unorm is the format the compositor's pipelines, glyph atlas,
+        // and DComp content expect. Set it explicitly so the swap chain
+        // format isn't tied to whatever GTE's default happens to be.
+        desc.pixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
 
         // Create the native render target — owned by ViewPresentTarget.
         // The compositor owns one command queue per window; the swap chain is

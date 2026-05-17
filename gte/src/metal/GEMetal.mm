@@ -1163,9 +1163,23 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         };
         SharedHandle<GENativeRenderTarget> makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc,
                                                                    SharedHandle<GECommandQueue> presentQueue) override{
+            // Gate the requested color format against the portable
+            // swap-chain/drawable intersection so a backend mismatch is
+            // surfaced rather than silently substituted.
+            if(!isPortableNativeRenderTargetFormat(desc.pixelFormat)){
+                std::cerr << "[GEMetalEngine_Internal] makeNativeRenderTarget: requested pixelFormat is not in the portable drawable set; rejecting." << std::endl;
+                return nullptr;
+            }
+            if(desc.metalLayer == nil){
+                std::cerr << "[GEMetalEngine_Internal] makeNativeRenderTarget: descriptor.metalLayer is nil" << std::endl;
+                return nullptr;
+            }
             metalDevice.assertExists();
             desc.metalLayer.device = NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle());
-            return std::shared_ptr<GENativeRenderTarget>(new GEMetalNativeRenderTarget(std::move(presentQueue),desc.metalLayer));
+            // Apply the requested format to the layer so the drawable's
+            // texture is created in that format.
+            desc.metalLayer.pixelFormat = pixelFormatToMTLPixelFormat(desc.pixelFormat, /*renderTargetUsage=*/true);
+            return std::shared_ptr<GENativeRenderTarget>(new GEMetalNativeRenderTarget(std::move(presentQueue),desc.metalLayer,desc.pixelFormat));
         };
 
         SharedHandle<GERenderPipelineState> makeRenderPipelineState(RenderPipelineDescriptor &desc) override{

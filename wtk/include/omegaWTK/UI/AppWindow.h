@@ -58,8 +58,24 @@ class AppWindowDelegate;
         /// to route DrawOps through FrameBuilder.
         bool windowScopedPaint() const;
         void setWindowScopedPaint(bool enabled);
+        /// Tier 3 Phase 3.1: the window's frame driver. Lifetime matches
+        /// AppWindow's; constructed after windowCanvas() is wired.
+        /// AppWindow-driven paint chokepoints (initWidgetTree,
+        /// dispatchResize*ToHosts) bracket their tree walks with
+        /// frameBuilder()->beginFrame()/endFrame() so the window-level
+        /// composition session has a single owner.
+        FrameBuilder * frameBuilder() const;
     public:
         OMEGACOMMON_CLASS("OmegaWTK.AppWindow")
+
+        /// Tier 3 Phase 3.2: returns the FrameBuilder currently
+        /// bracketing an AppWindow-driven paint pass, or nullptr if
+        /// none is active. UIView::update / SVGView::paint read this
+        /// (alongside the windowScopedPaint flag) to decide whether
+        /// to submit their DisplayList to the window route or fall
+        /// back to the legacy per-view canvas. Single-threaded UI
+        /// thread; not safe to call from background threads.
+        static FrameBuilder * activeFrameBuilder();
 
         void setRootWidget(WidgetPtr widget);
 

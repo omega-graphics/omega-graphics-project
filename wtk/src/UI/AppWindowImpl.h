@@ -7,6 +7,9 @@
 #include "omegaWTK/Composition/CompositorSurface.h"
 #include "omegaWTK/Composition/Layer.h"
 #include "../Composition/backend/ResourceFactory.h"
+#include "FrameBuilder.h"
+
+#include <memory>
 
 namespace OmegaWTK {
 
@@ -38,6 +41,11 @@ struct AppWindow::Impl {
     SharedHandle<Composition::LayerTree> windowLayerTree_;
     SharedHandle<Composition::Canvas>    windowCanvas_;
     bool windowScopedPaint_ = kDefaultWindowScopedPaint;
+
+    // Tier 3 Phase 3.1: window-level frame driver. Constructed after
+    // windowCanvas_ in AppWindow's ctor body so beginFrame/endFrame
+    // can probe the canvas state. Owned for the AppWindow's lifetime.
+    std::unique_ptr<FrameBuilder> frameBuilder_;
 
     Impl(AppWindow & owner,Composition::Rect rectValue,AppWindowDelegate * delegateValue):
         nativeWindow(Native::make_native_window(rectValue,&owner)),

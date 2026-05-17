@@ -43,6 +43,16 @@ GTE Init(SharedHandle<GTEDevice> & device, GTEInitOptions opts){
 };
 
 GTE InitWithDefaultDevice(GTEInitOptions opts){
+    // Resolve before enumeration. The Vulkan backend creates its
+    // `VkInstance` lazily inside `enumerateDevices()`, and the gating of
+    // `VK_LAYER_KHRONOS_validation` / `VK_EXT_debug_utils` / GPU-AV
+    // happens at instance-create time — by the point `Init()` would call
+    // `resolveDebugFlags()` the instance is already locked. For the
+    // explicit `Init(device, opts)` path, the user enumerates devices
+    // first and the same window applies; the only fully-portable runtime
+    // override is via this entry point, otherwise the compile-time
+    // `OMEGAGTE_DEBUG` default governs the instance.
+    resolveDebugFlags(opts);
     auto devices = enumerateDevices();
     if(devices.empty()){
         std::cerr << "OmegaGTE InitWithDefaultDevice failed: no graphics devices were discovered." << std::endl;

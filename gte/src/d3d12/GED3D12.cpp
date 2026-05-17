@@ -1038,37 +1038,46 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
 
     IDXGISwapChain3 *GED3D12Engine::createSwapChainForComposition(DXGI_SWAP_CHAIN_DESC1 *desc,SharedHandle<GECommandQueue> & commandQueue){
         auto *d3d12_queue = (GED3D12CommandQueue *)commandQueue.get();
-        IDXGISwapChain1 *swapChain;
-        HRESULT hr = dxgi_factory->CreateSwapChainForComposition(d3d12_queue->commandQueue.Get(),desc,nullptr,&swapChain);
+        ComPtr<IDXGISwapChain1> swapChain1;
+        HRESULT hr = dxgi_factory->CreateSwapChainForComposition(d3d12_queue->commandQueue.Get(),desc,nullptr,&swapChain1);
         if(FAILED(hr)){
-            exit(1);
-        };
-        IDXGISwapChain3 *lswapChain;
-        hr = swapChain->QueryInterface(&lswapChain);
+            DEBUG_STREAM("CreateSwapChainForComposition failed hr=0x"
+                         << std::hex << static_cast<unsigned long>(hr) << std::dec);
+            return nullptr;
+        }
+        ComPtr<IDXGISwapChain3> swapChain3;
+        hr = swapChain1.As(&swapChain3);
         if(FAILED(hr)){
-            exit(1);
-        };
-        return lswapChain;
+            DEBUG_STREAM("QueryInterface(IDXGISwapChain3) failed hr=0x"
+                         << std::hex << static_cast<unsigned long>(hr) << std::dec);
+            return nullptr;
+        }
+        return swapChain3.Detach();
     }
 
     IDXGISwapChain3 *GED3D12Engine::createSwapChainFromHWND(HWND hwnd,DXGI_SWAP_CHAIN_DESC1 *desc,SharedHandle<GECommandQueue> & commandQueue){
         auto *d3d12_queue = (GED3D12CommandQueue *)commandQueue.get();
-        IDXGISwapChain1 *swapChain;
-        HRESULT hr = dxgi_factory->CreateSwapChainForHwnd(d3d12_queue->commandQueue.Get(),hwnd,desc,NULL,NULL,&swapChain);
+        ComPtr<IDXGISwapChain1> swapChain1;
+        HRESULT hr = dxgi_factory->CreateSwapChainForHwnd(d3d12_queue->commandQueue.Get(),hwnd,desc,nullptr,nullptr,&swapChain1);
         if(FAILED(hr)){
-            // TODO
-            // Proper GTE logging.
-            //  MessageBoxA(GetForegroundWindow(),"Failed to Create SwapChain.","NOTE",MB_OK);
-            exit(1);
-        };
-        IDXGISwapChain3 *lswapChain;
-        hr = swapChain->QueryInterface(&lswapChain);
+            DEBUG_STREAM("CreateSwapChainForHwnd failed hr=0x"
+                         << std::hex << static_cast<unsigned long>(hr) << std::dec);
+            return nullptr;
+        }
+
+        // Block DXGI's Alt+Enter borderless-fullscreen hijack on the parent
+        // window. The application owns its presentation surface; we never
+        // want DXGI silently switching modes behind the toolkit's back.
+        dxgi_factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
+
+        ComPtr<IDXGISwapChain3> swapChain3;
+        hr = swapChain1.As(&swapChain3);
         if(FAILED(hr)){
-            // MessageBoxA(GetForegroundWindow(),"Failed to Query SwapChain.","NOTE",MB_OK);
-            // Proper GTE logging.
-            exit(1);
-        };
-        return lswapChain;
+            DEBUG_STREAM("QueryInterface(IDXGISwapChain3) failed hr=0x"
+                         << std::hex << static_cast<unsigned long>(hr) << std::dec);
+            return nullptr;
+        }
+        return swapChain3.Detach();
     }
 
     SharedHandle<OmegaGraphicsEngine> GED3D12Engine::Create(SharedHandle<GTEDevice> & device){
@@ -1613,91 +1622,169 @@ void mipmap_gen_2d_kernel(uint3 tid : GlobalThreadID){
 
     SharedHandle<GENativeRenderTarget> GED3D12Engine::makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc,
                                                                               SharedHandle<GECommandQueue> presentQueue){
+        // Gate the requested color format against the portable
+        // swap-chain/drawable intersection. Anything else is rejected at
+        // the API boundary rather than silently substituted, so the caller
+        // sees the misconfiguration instead of an unexpected color buffer.
+        if(!isPortableNativeRenderTargetFormat(desc.pixelFormat)){
+            DEBUG_STREAM("makeNativeRenderTarget: requested pixelFormat is not in the portable swap-chain set; rejecting.");
+            return nullptr;
+        }
+
+        if(presentQueue == nullptr){
+            DEBUG_STREAM("makeNativeRenderTarget: null presentQueue");
+            return nullptr;
+        }
+
         HRESULT hr;
-        /// Swap Chain must have 2 Frames
+        constexpr UINT kBackBufferCount = 2;
+
+        // FLIP-model swap chains require a non-typeless, non-SRGB storage
+        // format on the buffer itself. For SRGB color, store as UNORM and
+        // expose the sRGB view via the RTV format.
+        const DXGI_FORMAT rtvDxgiFormat = pixelFormatToDxgiFormat(desc.pixelFormat);
+        DXGI_FORMAT bufferDxgiFormat = rtvDxgiFormat;
+        if(rtvDxgiFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB){
+            bufferDxgiFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+        }
+        else if(rtvDxgiFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB){
+            // Defensive: the portable gate above already excludes RGBA8
+            // variants, but keep the mapping correct if the gate widens.
+            bufferDxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+        }
+
         auto rtv_desc_size = d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        auto dsv_desc_Size = d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-        
-        D3D12_DESCRIPTOR_HEAP_DESC heap_desc;
+
+        D3D12_DESCRIPTOR_HEAP_DESC heap_desc{};
         heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-        heap_desc.NodeMask = d3d12_device->GetNodeCount();
+        // NodeMask is a bitmask of GPU nodes (0 == single-GPU default), not
+        // a count.
+        heap_desc.NodeMask = 0;
         heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        heap_desc.NumDescriptors = 2;
-        ID3D12DescriptorHeap *renderTargetHeap;
+        heap_desc.NumDescriptors = kBackBufferCount;
+        ComPtr<ID3D12DescriptorHeap> renderTargetHeap;
         hr = d3d12_device->CreateDescriptorHeap(&heap_desc,IID_PPV_ARGS(&renderTargetHeap));
         if(FAILED(hr)){
-             DEBUG_STREAM("Failed to Create RTV Desc Heap");
-            exit(1);
-        };
+            DEBUG_STREAM("Failed to create RTV descriptor heap hr=0x"
+                         << std::hex << static_cast<unsigned long>(hr) << std::dec);
+            return nullptr;
+        }
 
-        ID3D12DescriptorHeap *dsvDescHeap = nullptr;
-
+        ComPtr<ID3D12DescriptorHeap> dsvDescHeap;
         if(desc.allowDepthStencilTesting){
-            heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-            hr = d3d12_device->CreateDescriptorHeap(&heap_desc,IID_PPV_ARGS(&dsvDescHeap));
-
+            D3D12_DESCRIPTOR_HEAP_DESC dsv_heap_desc{};
+            dsv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+            dsv_heap_desc.NodeMask = 0;
+            dsv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+            dsv_heap_desc.NumDescriptors = kBackBufferCount;
+            hr = d3d12_device->CreateDescriptorHeap(&dsv_heap_desc,IID_PPV_ARGS(&dsvDescHeap));
             if(FAILED(hr)){
-                DEBUG_STREAM("Failed to Create DSV Desc Heap");
-                exit(1);
-            };
+                DEBUG_STREAM("Failed to create DSV descriptor heap hr=0x"
+                             << std::hex << static_cast<unsigned long>(hr) << std::dec);
+                return nullptr;
+            }
+            // TODO: allocate companion depth-stencil resources sized to the
+            // swap chain and populate this heap with real DSVs (the old
+            // implementation created DSVs that aliased the color back
+            // buffer, which is invalid). Until that lands, the heap exists
+            // so downstream code that already indexes into it does not
+            // crash, but the descriptors themselves are null. Callers that
+            // actually need depth on a native RT should fall back to a
+            // texture render target.
         }
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtv_cpu_handle (renderTargetHeap->GetCPUDescriptorHandleForHeapStart());
-        
-        RECT rc;
-        if(desc.isHwnd) {
-            GetClientRect(desc.hwnd, &rc);
+        RECT rc{};
+        if(desc.isHwnd){
+            if(desc.hwnd == nullptr || !GetClientRect(desc.hwnd, &rc)){
+                DEBUG_STREAM("makeNativeRenderTarget: GetClientRect failed for hwnd=" << desc.hwnd);
+                return nullptr;
+            }
         }
         else {
-            rc = RECT {0,0,(LONG)desc.width,(LONG)desc.height};
+            rc = RECT{0,0,(LONG)desc.width,(LONG)desc.height};
         }
-        DXGI_SWAP_CHAIN_DESC1 swapChaindesc {};
+        const LONG widthLong = rc.right - rc.left;
+        const LONG heightLong = rc.bottom - rc.top;
+        if(widthLong <= 0 || heightLong <= 0){
+            DEBUG_STREAM("makeNativeRenderTarget: non-positive client rect "
+                         << widthLong << "x" << heightLong);
+            return nullptr;
+        }
+
+        DXGI_SWAP_CHAIN_DESC1 swapChaindesc{};
         swapChaindesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        // swapChaindesc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
-        swapChaindesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        swapChaindesc.BufferCount = 2;
+        swapChaindesc.Format = bufferDxgiFormat;
+        swapChaindesc.BufferCount = kBackBufferCount;
         swapChaindesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        // swapChaindesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-        swapChaindesc.Height = rc.bottom - rc.top;
-        swapChaindesc.Width = rc.right - rc.left;
-        // swapChaindesc.Scaling = DXGI_SCALING_NONE;
-        // swapChaindesc.Stereo = TRUE;
+        swapChaindesc.Width = static_cast<UINT>(widthLong);
+        swapChaindesc.Height = static_cast<UINT>(heightLong);
         swapChaindesc.SampleDesc.Count = 1;
-         swapChaindesc.SampleDesc.Quality = 0;
+        swapChaindesc.SampleDesc.Quality = 0;
+        swapChaindesc.AlphaMode = desc.isHwnd ? DXGI_ALPHA_MODE_IGNORE
+                                              : DXGI_ALPHA_MODE_PREMULTIPLIED;
+        swapChaindesc.Scaling = DXGI_SCALING_STRETCH;
 
-        IDXGISwapChain3 *swapChain;
-        if(desc.isHwnd) {
-            swapChain = createSwapChainFromHWND(desc.hwnd, &swapChaindesc, presentQueue);
+        IDXGISwapChain3 *rawSwapChain = nullptr;
+        if(desc.isHwnd){
+            rawSwapChain = createSwapChainFromHWND(desc.hwnd, &swapChaindesc, presentQueue);
         }
         else {
-            swapChain = createSwapChainForComposition(&swapChaindesc,presentQueue);
+            rawSwapChain = createSwapChainForComposition(&swapChaindesc, presentQueue);
         }
-       
+        if(rawSwapChain == nullptr){
+            DEBUG_STREAM("makeNativeRenderTarget: swap chain creation returned null");
+            return nullptr;
+        }
+        // Adopt ownership in a ComPtr so any failure below releases it.
+        ComPtr<IDXGISwapChain3> swapChain;
+        swapChain.Attach(rawSwapChain);
 
         std::vector<ID3D12Resource *> rtvs;
+        rtvs.reserve(kBackBufferCount);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtv_cpu_handle(renderTargetHeap->GetCPUDescriptorHandleForHeapStart());
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE dsv_cpu_handle{};
-        if(desc.allowDepthStencilTesting) {
-            dsv_cpu_handle = dsvDescHeap->GetCPUDescriptorHandleForHeapStart();
+        D3D12_RENDER_TARGET_VIEW_DESC rtvViewDesc{};
+        rtvViewDesc.Format = rtvDxgiFormat;
+        rtvViewDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+        rtvViewDesc.Texture2D.MipSlice = 0;
+        rtvViewDesc.Texture2D.PlaneSlice = 0;
+        const bool needsExplicitRtvDesc = bufferDxgiFormat != rtvDxgiFormat;
+
+        for(unsigned i = 0;i < kBackBufferCount;i++){
+            ID3D12Resource *backBuffer = nullptr;
+            hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffer));
+            if(FAILED(hr) || backBuffer == nullptr){
+                DEBUG_STREAM("makeNativeRenderTarget: GetBuffer(" << i
+                             << ") failed hr=0x"
+                             << std::hex << static_cast<unsigned long>(hr) << std::dec);
+                for(auto *r : rtvs) if(r) r->Release();
+                return nullptr;
+            }
+            d3d12_device->CreateRenderTargetView(backBuffer,
+                                                 needsExplicitRtvDesc ? &rtvViewDesc : nullptr,
+                                                 rtv_cpu_handle);
+            rtv_cpu_handle.Offset(1, rtv_desc_size);
+            rtvs.push_back(backBuffer);
         }
 
-        for(unsigned i = 0;i < 2;i++){
-            rtvs.resize(i + 1);
-            hr = swapChain->GetBuffer(i,IID_PPV_ARGS(&rtvs[i]));
-            if(FAILED(hr)){
-                exit(1);
-            };
-            d3d12_device->CreateRenderTargetView(rtvs[i],nullptr,rtv_cpu_handle);
-            rtv_cpu_handle.Offset(1,rtv_desc_size);
-            if(desc.allowDepthStencilTesting){
-                d3d12_device->CreateDepthStencilView(rtvs[i],nullptr,dsv_cpu_handle);
-                dsv_cpu_handle.Offset(1,dsv_desc_Size);
-            }
-        };
-
-        
-
-        return SharedHandle<GENativeRenderTarget>(new GED3D12NativeRenderTarget(swapChain,renderTargetHeap,dsvDescHeap,std::move(presentQueue),swapChain->GetCurrentBackBufferIndex(),rtvs.data(),rtvs.size(),desc.hwnd));
+        // Hand the COM objects to the render target via `.Get()`. The
+        // constructor's ComPtr members AddRef internally; our local
+        // ComPtrs Release on scope exit, leaving refcount 1 owned by the
+        // render target. The raw `ID3D12Resource*` back-buffer pointers
+        // are transferred at their existing +1 refcount and Released by
+        // `~GED3D12NativeRenderTarget` / `resizeSwapChain`.
+        return SharedHandle<GENativeRenderTarget>(new GED3D12NativeRenderTarget(
+            swapChain.Get(),
+            renderTargetHeap.Get(),
+            dsvDescHeap.Get(),
+            std::move(presentQueue),
+            0,
+            rtvs.data(),
+            rtvs.size(),
+            desc.isHwnd ? desc.hwnd : nullptr,
+            desc.pixelFormat,
+            bufferDxgiFormat,
+            rtvDxgiFormat));
     };
 
     SharedHandle<GETextureRenderTarget> GED3D12Engine::makeTextureRenderTarget(const TextureRenderTargetDescriptor &desc){

@@ -1,5 +1,7 @@
 #include "UIViewImpl.h"
 #include "omegaWTK/Composition/DisplayList.h"
+#include "omegaWTK/UI/AppWindow.h"
+#include "FrameBuilder.h"
 
 namespace OmegaWTK {
 
@@ -388,8 +390,25 @@ void UIView::update(){
         }
     }
 
-    Composition::DisplayListReplay::replay(displayList, *impl_->rootCanvas);
-    impl_->rootCanvas->sendFrame();
+    // Tier 3 Phase 3.2: when the window-scoped paint route is active
+    // (an AppWindow-driven paint pass is in flight and the
+    // `windowScopedPaint` flag is on for this window), hand the
+    // freshly-built DisplayList to the FrameBuilder instead of
+    // replaying into the per-view rootCanvas. FrameBuilder accumulates
+    // submissions in tree order and replays them all into the window
+    // canvas at endFrame, stamping each view's window-offset onto the
+    // window canvas's current frame.
+    //
+    // When the flag is off (or there is no active FrameBuilder), the
+    // Phase 2.1 path runs unchanged: replay into rootCanvas + sendFrame.
+    if(auto * fb = AppWindow::activeFrameBuilder();
+       fb != nullptr && fb->windowScopedPaint()){
+        fb->submitView(this, std::move(displayList));
+    }
+    else {
+        Composition::DisplayListReplay::replay(displayList, *impl_->rootCanvas);
+        impl_->rootCanvas->sendFrame();
+    }
 
     endCompositionSession();
     impl_->layoutDirty = false;

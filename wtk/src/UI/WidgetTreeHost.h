@@ -29,6 +29,7 @@ namespace OmegaWTK {
     OMEGACOMMON_SHARED_CLASS(Widget);
     class View;
     class NativeViewHost;
+    class FrameBuilder;
     enum class PaintReason : std::uint8_t;
 
     struct OMEGAWTK_EXPORT ResizeDynamicsSample {
@@ -124,6 +125,10 @@ namespace OmegaWTK {
         friend class AppWindow;
         friend class Widget;
         friend class NativeViewHost;
+        // Tier 3 Phase 3.1: FrameBuilder reads compPtr()/laneId() to
+        // wire the window-level proxy at beginFrame, same access
+        // pattern Widget::executePaint already uses.
+        friend class FrameBuilder;
 
         void initWidgetRecurse(Widget *parent);
         void propagateWindowRenderTargetRecurse(Widget *parent);

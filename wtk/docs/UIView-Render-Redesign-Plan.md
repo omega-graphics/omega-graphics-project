@@ -1030,7 +1030,7 @@ composition session.
 Files touched: `wtk/include/omegaWTK/UI/AppWindow.h` (new
 private accessors), `wtk/src/UI/AppWindow.cpp`, `wtk/src/UI/AppWindowImpl.h`.
 
-##### Phase 3.1 — `FrameBuilder` skeleton + window-level composition session
+##### Phase 3.1 — `FrameBuilder` skeleton + window-level composition session [DONE]
 
 `FrameBuilder` appears, owned by `AppWindow`. In this phase it just
 *centralizes the composition session* — opens/closes it once per
@@ -1061,7 +1061,7 @@ isolation, before any DisplayList collection.
 Files touched: new `wtk/src/UI/FrameBuilder.{h,cpp}`,
 `wtk/src/UI/AppWindow.cpp`.
 
-##### Phase 3.2 — `UIView` opt-in: hand its `DisplayList` to `FrameBuilder`
+##### Phase 3.2 — `UIView` opt-in: hand its `DisplayList` to `FrameBuilder` [DONE]
 
 The first real window-scoped paint. Behind the flag, `UIView::update()`
 builds its `DisplayList` (Phase 2.1 already does this) but
@@ -1095,7 +1095,7 @@ and replays them into `windowCanvas_` in tree order at `endFrame()`.
 Files touched: `wtk/src/UI/UIView.Update.cpp`, new
 `wtk/src/UI/FrameBuilder.cpp` methods, RootWidget scene additions.
 
-##### Phase 3.3 — `SVGView` opt-in
+##### Phase 3.3 — `SVGView` opt-in 
 
 Same opt-in as Phase 3.2, applied to `SVGView::paint()`. SVG's
 cached `DisplayList` was always the right shape for this; Phase 3.3

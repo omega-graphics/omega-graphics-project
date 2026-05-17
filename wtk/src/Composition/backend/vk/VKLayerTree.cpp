@@ -37,6 +37,13 @@ namespace OmegaWTK::Composition {
                 if(view == nullptr){
                     return false;
                 }
+                // BGRA8Unorm is the format the compositor's pipelines and
+                // glyph atlas expect. Set it explicitly so the surface
+                // format isn't tied to whatever GTE's default happens to
+                // be — GEVulkanEngine::makeNativeRenderTarget will now
+                // reject the descriptor if the surface doesn't advertise
+                // it (vs. silently picking RGBA8 like the old code).
+                desc.pixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
 
 #if defined(VULKAN_TARGET_WAYLAND)
                 desc.wl_surface = view->getSurface();

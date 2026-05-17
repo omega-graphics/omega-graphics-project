@@ -13,6 +13,13 @@ _NAMESPACE_BEGIN_
         ComPtr<IDXGISwapChain3> swapChain;
         SharedHandle<GECommandQueue> presentQueue_;
         std::uint64_t traceResourceId = 0;
+        PixelFormat colorFormat_;
+        // DXGI format used for the swap-chain buffer storage. For SRGB
+        // pixel formats on a FLIP-model swap chain this is the non-SRGB
+        // typeless-compatible variant; the SRGB form is only used for the
+        // RTV view.
+        DXGI_FORMAT bufferDxgiFormat_;
+        DXGI_FORMAT rtvDxgiFormat_;
     public:
         HWND hwnd;
         void *getSwapChain() override;
@@ -21,6 +28,7 @@ _NAMESPACE_BEGIN_
         void waitForFence(SharedHandle<GEFence> & fence) override;
         SharedHandle<GECommandQueue> presentQueue() const override { return presentQueue_; }
         void present() override;
+        PixelFormat pixelFormat() override { return colorFormat_; }
         ComPtr<ID3D12DescriptorHeap> rtvDescHeap;
         ComPtr<ID3D12DescriptorHeap> dsvDescHeap;
         unsigned frameIndex;
@@ -31,7 +39,11 @@ _NAMESPACE_BEGIN_
                                  SharedHandle<GECommandQueue> presentQueue,
                                  unsigned frameIndex,
                                  ID3D12Resource *const *renderTargets,
-                                 size_t renderTargetViewCount,HWND hwnd);
+                                 size_t renderTargetViewCount,
+                                 HWND hwnd,
+                                 PixelFormat colorFormat,
+                                 DXGI_FORMAT bufferDxgiFormat,
+                                 DXGI_FORMAT rtvDxgiFormat);
         ~GED3D12NativeRenderTarget() override;
     };
 

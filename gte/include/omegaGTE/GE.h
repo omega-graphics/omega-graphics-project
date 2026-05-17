@@ -454,6 +454,15 @@ _NAMESPACE_BEGIN_
 
     struct OMEGAGTE_EXPORT NativeRenderTargetDescriptor {
         bool allowDepthStencilTesting = false;
+        /// Color format for the swap chain / drawable. Only the portable
+        /// intersection of D3D12, Metal, and Vulkan swap-chain formats is
+        /// guaranteed to succeed across backends — see
+        /// `isPortableNativeRenderTargetFormat`. Default `BGRA8Unorm` is the
+        /// only format universally supported by all three (Metal's
+        /// `CAMetalLayer` rejects RGBA8, D3D12 FLIP-model swap chains accept
+        /// it, and it is the most commonly advertised surface format on
+        /// Vulkan/Win32, Wayland, and X11).
+        PixelFormat pixelFormat = PixelFormat::BGRA8Unorm;
 #ifdef TARGET_DIRECTX
         bool isHwnd;
         HWND hwnd;
@@ -481,6 +490,17 @@ _NAMESPACE_BEGIN_
 #endif
 #endif
     };
+
+    /// @brief Returns true for `PixelFormat` values that are valid swap-chain
+    /// / drawable formats on every backend OmegaGTE supports (D3D12, Metal,
+    /// Vulkan). Use this to validate `NativeRenderTargetDescriptor::pixelFormat`
+    /// at the public API boundary before handing off to a backend.
+    ///
+    /// The portable set is currently: `BGRA8Unorm`, `BGRA8Unorm_SRGB`.
+    /// `RGBA8Unorm`/`RGBA8Unorm_SRGB` are excluded because `CAMetalLayer`
+    /// does not accept them; `RGBA16Unorm` is excluded because no backend
+    /// exposes a 16-bit-per-channel UNORM swap-chain format.
+    OMEGAGTE_EXPORT bool isPortableNativeRenderTargetFormat(PixelFormat fmt);
 
 
 _NAMESPACE_END_

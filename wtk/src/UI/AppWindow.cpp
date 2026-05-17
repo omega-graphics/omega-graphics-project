@@ -45,7 +45,16 @@ static inline bool resizeRectChanged(const Composition::Rect &lhs,const Composit
             new Composition::Canvas(impl_->proxy,
                                     *impl_->windowLayerTree_->getRootLayer(),
                                     nullptr));
+        // Tier 3 Phase 3.1: stand up the FrameBuilder once the window
+        // Canvas exists. It does not start bracketing paint passes
+        // until AppWindow-driven entry points (displayRootWindow,
+        // dispatchResize*ToHosts) call into it below.
+        impl_->frameBuilder_ = std::make_unique<FrameBuilder>(*this);
     };
+
+FrameBuilder * AppWindow::frameBuilder() const {
+    return impl_->frameBuilder_.get();
+}
 
 Composition::LayerTree * AppWindow::windowLayerTree() const {
     return impl_->windowLayerTree_.get();
@@ -120,6 +129,17 @@ void AppWindow::setRootWidget(WidgetPtr widget){
     // embed real native views as children of the window's root view.
     impl_->widgetTreeHost->setRootNativeItem(impl_->nativeWindow->getRootView());
     impl_->proxy.setFrontendPtr(impl_->widgetTreeHost->compositor);
+    // Tier 3 Phase 3.1/3.2: register the window-scoped layer tree
+    // with the compositor frontend on the WidgetTreeHost's sync
+    // lane. Without this, the slices FrameBuilder deposits into
+    // the window CompositeFrame reference a layer tree the
+    // compositor doesn't know about and never get rendered.
+    impl_->proxy.setSyncLaneId(impl_->widgetTreeHost->laneId());
+    if(impl_->windowLayerTree_ != nullptr){
+        impl_->widgetTreeHost->compositor->observeLayerTree(
+            impl_->windowLayerTree_.get(),
+            impl_->widgetTreeHost->laneId());
+    }
     // Phase A: create the per-window compositor surface mailbox and
     // wire it to both the WidgetTreeHost (deposit side) and the
     // Compositor (consumption side).
@@ -190,6 +210,10 @@ AppWindowPtr AppWindowManager::getRootWindow(){
 void AppWindowManager::displayRootWindow(){
     rootWindow->impl_->nativeWindow->initialDisplay();
     if(rootWindow->impl_->widgetTreeHost != nullptr){
+        // Tier 3 Phase 3.1: bracket the initial widget-tree paint pass
+        // with the window-level FrameBuilder session. Per-view sessions
+        // opened inside Widget::executePaint nest inside this one.
+        FrameBuilder::ScopedFrame frame(rootWindow->frameBuilder());
         rootWindow->impl_->widgetTreeHost->initWidgetTree();
     }
 };
@@ -254,6 +278,9 @@ void AppWindowDelegate::dispatchResizeToHosts(const Composition::Rect & rect){
     window->impl_->rect = rect;
     syncNativePresentLayer(rect);
     if(window->impl_->widgetTreeHost != nullptr){
+        // Tier 3 Phase 3.1: resize-driven repaints are AppWindow-owned
+        // paint passes too — bracket them with the window FrameBuilder.
+        FrameBuilder::ScopedFrame frame(window->frameBuilder());
         window->impl_->widgetTreeHost->notifyWindowResize(rect);
     }
 }
@@ -262,6 +289,7 @@ void AppWindowDelegate::dispatchResizeBeginToHosts(const Composition::Rect & rec
     window->impl_->rect = rect;
     syncNativePresentLayer(rect);
     if(window->impl_->widgetTreeHost != nullptr){
+        FrameBuilder::ScopedFrame frame(window->frameBuilder());
         window->impl_->widgetTreeHost->notifyWindowResizeBegin(rect);
     }
 }
@@ -270,6 +298,7 @@ void AppWindowDelegate::dispatchResizeEndToHosts(const Composition::Rect & rect)
     window->impl_->rect = rect;
     syncNativePresentLayer(rect);
     if(window->impl_->widgetTreeHost != nullptr){
+        FrameBuilder::ScopedFrame frame(window->frameBuilder());
         window->impl_->widgetTreeHost->notifyWindowResizeEnd(rect);
     }
 }

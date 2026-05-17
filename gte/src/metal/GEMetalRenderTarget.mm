@@ -6,8 +6,8 @@
 
 _NAMESPACE_BEGIN_
 
-GEMetalNativeRenderTarget::GEMetalNativeRenderTarget(SharedHandle<GECommandQueue> presentQueue,CAMetalLayer *metalLayer):metalLayer(metalLayer),
-presentQueue_(presentQueue),drawableSize([metalLayer drawableSize]),currentDrawable({nullptr}){
+GEMetalNativeRenderTarget::GEMetalNativeRenderTarget(SharedHandle<GECommandQueue> presentQueue,CAMetalLayer *metalLayer,PixelFormat colorFormat):metalLayer(metalLayer),
+presentQueue_(presentQueue),colorFormat_(colorFormat),drawableSize([metalLayer drawableSize]),currentDrawable({nullptr}){
     traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
     ResourceTracking::Tracker::instance().emit(
             ResourceTracking::EventType::Create,

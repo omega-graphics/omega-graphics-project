@@ -18,8 +18,11 @@ class GEMetalNativeRenderTarget : public GENativeRenderTarget {
     CAMetalLayer *metalLayer;
     NSSmartPtr currentDrawable;
     std::uint64_t traceResourceId = 0;
+    PixelFormat colorFormat_;
 public:
-    GEMetalNativeRenderTarget(SharedHandle<GECommandQueue> presentQueue,CAMetalLayer *metalLayer);
+    GEMetalNativeRenderTarget(SharedHandle<GECommandQueue> presentQueue,
+                              CAMetalLayer *metalLayer,
+                              PixelFormat colorFormat);
     ~GEMetalNativeRenderTarget();
     CGSize drawableSize;
     NSSmartPtr & getDrawable();
@@ -27,9 +30,7 @@ public:
     /// drawable size. Callers should invoke this once per frame before
     /// recording a render pass that targets the drawable.
     void acquireDrawable();
-    PixelFormat pixelFormat() override {
-        return PixelFormat::BGRA8Unorm;
-    };
+    PixelFormat pixelFormat() override { return colorFormat_; }
     SharedHandle<GECommandQueue> presentQueue() const override { return presentQueue_; }
     void present() override;
 };

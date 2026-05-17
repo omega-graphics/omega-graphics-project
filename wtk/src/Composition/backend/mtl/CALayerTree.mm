@@ -123,7 +123,15 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
      // bound to it as the present queue, and the same queue is reused for
      // any per-layer scratch texture targets the compositor allocates.
      auto presentQueue = gte.graphicsEngine->makeCommandQueue(64);
-     OmegaGTE::NativeRenderTargetDescriptor nativeRenderTargetDescriptor {false,layer};
+     // Field-by-name init (C++17, no designated initializers) so adding
+     // fields to NativeRenderTargetDescriptor doesn't silently rebind
+     // positional values to the wrong members. BGRA8Unorm matches the
+     // CAMetalLayer.pixelFormat set above and is the universally-supported
+     // drawable format.
+     OmegaGTE::NativeRenderTargetDescriptor nativeRenderTargetDescriptor {};
+     nativeRenderTargetDescriptor.allowDepthStencilTesting = false;
+     nativeRenderTargetDescriptor.pixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
+     nativeRenderTargetDescriptor.metalLayer = layer;
      auto nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(nativeRenderTargetDescriptor, presentQueue);
 
      CGFloat scale = renderScale_;

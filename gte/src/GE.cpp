@@ -453,6 +453,19 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryRuntime(std
     return shaderLib;
 }
 
+bool isPortableNativeRenderTargetFormat(PixelFormat fmt){
+    // Intersection of swap-chain / drawable formats supported by D3D12 FLIP
+    // model, CAMetalLayer, and Vulkan WSI. See the declaration in GE.h for
+    // why RGBA8 and RGBA16 are excluded.
+    switch(fmt){
+        case PixelFormat::BGRA8Unorm:
+        case PixelFormat::BGRA8Unorm_SRGB:
+            return true;
+        default:
+            return false;
+    }
+}
+
 SharedHandle<OmegaGraphicsEngine> OmegaGraphicsEngine::Create(SharedHandle<GTEDevice> & device){
     #ifdef TARGET_METAL
         return CreateMetalEngine(device);

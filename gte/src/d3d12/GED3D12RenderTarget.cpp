@@ -11,9 +11,15 @@ _NAMESPACE_BEGIN_
         SharedHandle<GECommandQueue> presentQueue,
         unsigned frameIndex,
         ID3D12Resource *const *renderTargets,
-        size_t renderTargetViewCount,HWND hwnd): swapChain(swapChain),
+        size_t renderTargetViewCount,HWND hwnd,
+        PixelFormat colorFormat,
+        DXGI_FORMAT bufferDxgiFormat,
+        DXGI_FORMAT rtvDxgiFormat): swapChain(swapChain),
 
                                                  presentQueue_(std::move(presentQueue)),
+                                                 colorFormat_(colorFormat),
+                                                 bufferDxgiFormat_(bufferDxgiFormat),
+                                                 rtvDxgiFormat_(rtvDxgiFormat),
                                                  hwnd(hwnd),
                                                    rtvDescHeap(descriptorHeapForRenderTarget),
                                                  dsvDescHeap(dsvDescHeap),
@@ -35,6 +41,11 @@ _NAMESPACE_BEGIN_
                 "NativeRenderTarget",
                 traceResourceId,
                 swapChain.Get());
+        // Back-buffer pointers arrive at +1 from `IDXGISwapChain3::GetBuffer`
+        // and were never wrapped in ComPtrs — release them here so the swap
+        // chain can actually be torn down.
+        for(auto *r : renderTargets) if(r) r->Release();
+        renderTargets.clear();
     }
 
     void *GED3D12NativeRenderTarget::getSwapChain(){
@@ -61,15 +72,23 @@ _NAMESPACE_BEGIN_
         for (auto *r : renderTargets)
             if (r != nullptr) r->Release();
         renderTargets.clear();
-        HRESULT hr = swapChain->ResizeBuffers(2, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0);
+        HRESULT hr = swapChain->ResizeBuffers(2, width, height, bufferDxgiFormat_, 0);
         if (FAILED(hr)) return;
         const UINT rtvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtvCpuHandle(rtvDescHeap->GetCPUDescriptorHandleForHeapStart());
+        D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
+        rtvDesc.Format = rtvDxgiFormat_;
+        rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+        rtvDesc.Texture2D.MipSlice = 0;
+        rtvDesc.Texture2D.PlaneSlice = 0;
+        const bool needsExplicitRtvDesc = bufferDxgiFormat_ != rtvDxgiFormat_;
         for (unsigned i = 0; i < 2; i++) {
             ComPtr<ID3D12Resource> backBuffer;
             hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffer));
             if (FAILED(hr)) return;
-            device->CreateRenderTargetView(backBuffer.Get(), nullptr, rtvCpuHandle);
+            device->CreateRenderTargetView(backBuffer.Get(),
+                                           needsExplicitRtvDesc ? &rtvDesc : nullptr,
+                                           rtvCpuHandle);
             rtvCpuHandle.Offset(1, rtvDescSize);
             renderTargets.push_back(backBuffer.Detach());
         }

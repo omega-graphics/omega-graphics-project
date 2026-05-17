@@ -82,6 +82,14 @@ _NAMESPACE_BEGIN_
 
     static VkDebugUtilsMessengerEXT g_debugMessenger = VK_NULL_HANDLE;
 
+    // Cached at `initVulkan()` time. Non-null only when the debug layer is
+    // active AND `VK_EXT_debug_utils` was successfully enabled on the
+    // instance — see §2.4 of `gte/docs/Debug-Layer-Plan.md`. The
+    // dispatcher in `VulkanExtStubs.cpp` reads this and either calls
+    // through or returns `VK_SUCCESS` (so naming becomes a no-op when the
+    // layer is off, instead of crashing on a null proc address).
+    PFN_vkSetDebugUtilsObjectNameEXT g_pfnSetDebugUtilsObjectNameEXT = nullptr;
+
     static VKAPI_ATTR VkBool32 VKAPI_CALL vulkanDebugCallback(
         VkDebugUtilsMessageSeverityFlagBitsEXT severity,
         VkDebugUtilsMessageTypeFlagsEXT,
@@ -91,7 +99,12 @@ _NAMESPACE_BEGIN_
         if(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) sev = "ERROR";
         else if(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) sev = "WARN";
         else if(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT) return VK_FALSE;
-        std::cerr << "[VVL " << sev << "] " << (data && data->pMessage ? data->pMessage : "(null)") << std::endl;
+        // Funnel through `DEBUG_STREAM` so one toggle silences both
+        // backend and engine output. The messenger is only created when
+        // `isDebugLayerEnabled()` is already true, so the gate inside
+        // `DEBUG_STREAM` never fires negatively here — keeping it for
+        // consistency with the rest of the engine.
+        DEBUG_STREAM("[VVL " << sev << "] " << (data && data->pMessage ? data->pMessage : "(null)"));
         return VK_FALSE;
     }
 
@@ -103,6 +116,13 @@ _NAMESPACE_BEGIN_
         }
 
         GEVulkanEngine::instance = VK_NULL_HANDLE;
+
+        // Snapshot the debug-layer state once. The flag is meant to be
+        // frozen for the process lifetime; reading it once here keeps the
+        // instance configuration internally consistent even if a future
+        // change makes the atomic mutable.
+        const bool debugLayerEnabled = isDebugLayerEnabled();
+        const bool wantGpuAssisted = debugLayerEnabled && isGpuBasedValidationEnabled();
 
         uint32_t extensionCount = 0;
         auto extRes = vkEnumerateInstanceExtensionProperties(nullptr,&extensionCount,nullptr);
@@ -136,15 +156,20 @@ _NAMESPACE_BEGIN_
         requiredInstanceExtensions.push_back(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
 #endif
 
-        // Optional: debug utils extension for validation layer messages.
-        bool hasDebugUtils = extensionSet.find(VK_EXT_DEBUG_UTILS_EXTENSION_NAME) != extensionSet.end();
-        if(hasDebugUtils){
+        // `VK_EXT_debug_utils` is only pushed when the debug layer is on.
+        // Querying availability unconditionally lets us log the fact that
+        // the runtime supports it but we declined to use it — useful when
+        // diagnosing why no `[VVL …]` lines appear in a release build.
+        const bool hasDebugUtils = extensionSet.find(VK_EXT_DEBUG_UTILS_EXTENSION_NAME) != extensionSet.end();
+        const bool enableDebugUtils = debugLayerEnabled && hasDebugUtils;
+        if(enableDebugUtils){
             requiredInstanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         }
 
-        // Optional: enable Khronos validation layer if present.
         OmegaCommon::Vector<const char *> enabledLayers;
-        {
+        bool validationLayerEnabled = false;
+        bool validationLayerHasValidationFeatures = false;
+        if(debugLayerEnabled){
             uint32_t layerCount = 0;
             vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
             OmegaCommon::Vector<VkLayerProperties> layerProps;
@@ -155,7 +180,29 @@ _NAMESPACE_BEGIN_
             for(auto & lp : layerProps){
                 if(std::strcmp(lp.layerName, "VK_LAYER_KHRONOS_validation") == 0){
                     enabledLayers.push_back("VK_LAYER_KHRONOS_validation");
+                    validationLayerEnabled = true;
                     break;
+                }
+            }
+
+            // Only meaningful when GBV was requested — the cost of
+            // enumerating the layer's extensions is negligible but skip
+            // it if there's nothing to gate.
+            if(validationLayerEnabled && wantGpuAssisted){
+                uint32_t layerExtCount = 0;
+                if(vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation",
+                                                          &layerExtCount, nullptr) == VK_SUCCESS && layerExtCount > 0){
+                    OmegaCommon::Vector<VkExtensionProperties> layerExts;
+                    layerExts.resize(layerExtCount);
+                    if(vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation",
+                                                              &layerExtCount, layerExts.data()) == VK_SUCCESS){
+                        for(auto &le : layerExts){
+                            if(std::strcmp(le.extensionName, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME) == 0){
+                                validationLayerHasValidationFeatures = true;
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -192,6 +239,29 @@ _NAMESPACE_BEGIN_
         instanceInfo.enabledExtensionCount = static_cast<uint32_t>(requiredInstanceExtensions.size());
         instanceInfo.ppEnabledExtensionNames = requiredInstanceExtensions.data();
 
+        // §2.3 GPU-assisted validation. Storage outside the if-block so
+        // the address chained into `pNext` stays valid until
+        // `vkCreateInstance` returns.
+        VkValidationFeatureEnableEXT enabledValidationFeatures[] = {
+            VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT,
+        };
+        VkValidationFeaturesEXT validationFeaturesInfo {VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
+        if(wantGpuAssisted){
+            if(validationLayerHasValidationFeatures){
+                validationFeaturesInfo.pNext = nullptr;
+                validationFeaturesInfo.enabledValidationFeatureCount =
+                    static_cast<uint32_t>(sizeof(enabledValidationFeatures) / sizeof(enabledValidationFeatures[0]));
+                validationFeaturesInfo.pEnabledValidationFeatures = enabledValidationFeatures;
+                validationFeaturesInfo.disabledValidationFeatureCount = 0;
+                validationFeaturesInfo.pDisabledValidationFeatures = nullptr;
+                instanceInfo.pNext = &validationFeaturesInfo;
+            } else {
+                std::cerr << "[GEVulkanEngine_Internal] GPU-assisted validation requested but "
+                             "`VK_EXT_validation_features` is not advertised by `VK_LAYER_KHRONOS_validation`; "
+                             "downgrading to plain validation." << std::endl;
+            }
+        }
+
         auto createRes = vkCreateInstance(&instanceInfo,nullptr,&GEVulkanEngine::instance);
         if(createRes != VK_SUCCESS || GEVulkanEngine::instance == VK_NULL_HANDLE){
             std::cerr << "Vulkan init failed: vkCreateInstance returned " << createRes << std::endl;
@@ -199,7 +269,7 @@ _NAMESPACE_BEGIN_
             return false;
         }
 
-        if(hasDebugUtils){
+        if(enableDebugUtils){
             auto pfnCreate = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
                 GEVulkanEngine::instance, "vkCreateDebugUtilsMessengerEXT");
             if(pfnCreate){
@@ -215,6 +285,17 @@ _NAMESPACE_BEGIN_
                 dbgInfo.pfnUserCallback = vulkanDebugCallback;
                 pfnCreate(GEVulkanEngine::instance, &dbgInfo, nullptr, &g_debugMessenger);
             }
+
+            // §2.4 — cache the device-level object-naming function pointer
+            // so the dispatcher in `VulkanExtStubs.cpp` can call through
+            // (debug layer on) or no-op (debug layer off / extension not
+            // enabled). Loaded via the instance because the extension is
+            // an instance-promoted utils extension; valid for any device
+            // created from this instance.
+            g_pfnSetDebugUtilsObjectNameEXT = (PFN_vkSetDebugUtilsObjectNameEXT)vkGetInstanceProcAddr(
+                GEVulkanEngine::instance, "vkSetDebugUtilsObjectNameEXT");
+        } else {
+            g_pfnSetDebugUtilsObjectNameEXT = nullptr;
         }
 
         vulkanInit = true;
@@ -2687,6 +2768,13 @@ _NAMESPACE_BEGIN_
             std::cerr << "Vulkan native render target creation failed: Vulkan engine is not initialized." << std::endl;
             return nullptr;
         }
+        // Gate the requested color format against the portable
+        // swap-chain/drawable intersection so a backend mismatch is
+        // surfaced rather than silently substituted.
+        if(!isPortableNativeRenderTargetFormat(desc.pixelFormat)){
+            std::cerr << "Vulkan native render target creation failed: requested pixelFormat is not in the portable swap-chain set." << std::endl;
+            return nullptr;
+        }
 
         VkSurfaceKHR surfaceKhr = VK_NULL_HANDLE;
 
@@ -2771,24 +2859,26 @@ _NAMESPACE_BEGIN_
             return nullptr;
         }
 
-        // Prefer RGBA8 (matches offscreen texture format), then BGRA8
-        // (common on X11/Wayland).  Accept SRGB variants as fallback.
-        VkSurfaceFormatKHR selectedSurfaceFormat = surfaceFormats[0];
-        int bestRank = 99;
+        // Honor `desc.pixelFormat`: pick the surface entry whose VkFormat
+        // matches the requested portable format. If the surface does not
+        // advertise the requested format, fail loudly rather than silently
+        // substituting one — the caller asked for a specific format and
+        // accepting any other would break shaders/blit assumptions.
+        const VkFormat requestedVkFormat = pixelFormatToVkFormat(desc.pixelFormat);
+        VkSurfaceFormatKHR selectedSurfaceFormat{};
+        bool foundRequestedFormat = false;
         for(auto &formatCandidate : surfaceFormats){
-            int rank = 99;
-            switch(formatCandidate.format){
-                case VK_FORMAT_R8G8B8A8_UNORM: rank = 0; break;
-                case VK_FORMAT_B8G8R8A8_UNORM: rank = 1; break;
-                case VK_FORMAT_R8G8B8A8_SRGB:  rank = 2; break;
-                case VK_FORMAT_B8G8R8A8_SRGB:  rank = 3; break;
-                default: break;
-            }
-            if(rank < bestRank){
-                bestRank = rank;
+            if(formatCandidate.format == requestedVkFormat){
                 selectedSurfaceFormat = formatCandidate;
-                if(rank == 0) break;
+                foundRequestedFormat = true;
+                break;
             }
+        }
+        if(!foundRequestedFormat){
+            std::cerr << "Vulkan native render target creation failed: surface does not advertise requested VkFormat "
+                      << requestedVkFormat << std::endl;
+            vkDestroySurfaceKHR(instance,surfaceKhr,nullptr);
+            return nullptr;
         }
         DEBUG_STREAM("Selected swapchain format: " << selectedSurfaceFormat.format);
 
