@@ -79,7 +79,36 @@ Checks: >
 
   # Thread safety: platform threading models differ
   bugprone-posix-return,
-  concurrency-mt-unsafe
+  concurrency-mt-unsafe,
+
+  # -- GCC / MSVC cross-compiler compat (added 2026-05) --
+  #
+  # Clang-tidy runs on the Clang frontend, so it CANNOT reproduce every
+  # GCC- or MSVC-specific diagnostic. Notably, GCC's `-Wsubobject-linkage`
+  # (unnamed types used in named struct/function declarations — e.g.
+  # `using NAME = enum : T { ... };` as a virtual-function parameter type)
+  # has no clang-tidy equivalent. The only reliable way to catch those is
+  # to run an actual GCC build. The checks below cover the GCC/MSVC compat
+  # issues that ARE expressible in Clang's AST.
+
+  # Catches unions / classes with user-defined dtor but no user-defined
+  # default ctor — GCC implicitly deletes the default ctor when the union
+  # has a non-trivial member, then errors on `new Type{}`. MSVC behaves
+  # the same way under /permissive-. Clang is lenient by default.
+  cppcoreguidelines-special-member-functions,
+
+  # Anonymous enum types aliased via `using`/`typedef` give the underlying
+  # type no linkage; using one as a virtual-function parameter trips GCC's
+  # -Wsubobject-linkage and MSVC's C4099. clang-tidy has no direct check
+  # for this pattern — `cppcoreguidelines-use-enum-class` (already enabled
+  # via cppcoreguidelines-*) is the nearest signal: it nudges toward
+  # `enum class NAME : T {...}` which always has linkage. The only
+  # full-coverage fix is to also run a GCC build in CI.
+
+  # Note: every check listed in this GCC/MSVC block is already enabled via
+  # the broader `cppcoreguidelines-*` / `bugprone-*` globs above. They are
+  # re-stated here so the rationale comments survive, and so the WarningsAsErrors
+  # section below can refer to them by name without it being non-obvious.
 
 WarningsAsErrors: >
   bugprone-narrowing-conversions,
@@ -88,7 +117,14 @@ WarningsAsErrors: >
   portability-*,
   bugprone-signed-char-misuse,
   hicpp-signed-bitwise,
-  misc-definitions-in-headers
+  misc-definitions-in-headers,
+
+  # -- GCC / MSVC compat: promote the one new compat check we added above
+  #    to error. `cppcoreguidelines-pro-type-member-init` is already a
+  #    project-wide rule (see Checks: above) and is NOT promoted to error
+  #    here because the existing codebase has many violations; treat it
+  #    as a graduated cleanup rather than a hard gate. --
+  cppcoreguidelines-special-member-functions
 
 HeaderFilterRegex: '.*'
 

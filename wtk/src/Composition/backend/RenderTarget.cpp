@@ -336,6 +336,12 @@ void BackendRenderTargetContext::waitForGPU() {
 
 void BackendRenderTargetContext::beginFrame(float clearR, float clearG, float clearB, float clearA) {
     frameRenderPass_.begin(clearR, clearG, clearB, clearA);
+    // Tier 3 Phase 3.7: each frame starts with an empty carve-out
+    // list. The platform tree is expected to drain via
+    // `pendingNativeContent()` at flush time; we clear here too so a
+    // dropped frame (or a headless validator that elides the drain)
+    // cannot leak entries forward.
+    pendingNativeContent_.clear();
 }
 
 void BackendRenderTargetContext::endFrame() {
@@ -1635,6 +1641,41 @@ void BackendRenderTargetContext::resetElementState() {
                 // with the slice's natural scissor.
                 auto & _params = ((VisualCommandParams*)params)->clipRect;
                 applySetClip(_params);
+                return;
+            }
+            case VisualCommand::NativeContent: {
+                // Tier 3 Phase 3.7: record the carve-out into the
+                // per-frame pending list for the platform tree to
+                // translate at flush time. The destRect is converted
+                // from canvas-local into backing pixel coords using
+                // the same viewport-override + renderScale path as
+                // `applySetClip`, so the platform tree can hand the
+                // rect straight to the native layer's geometry
+                // setter (CALayer.frame on macOS, IDCompositionVisual
+                // SetOffsetX/Y + transform on Windows,
+                // wl_subsurface_set_position on Wayland) without
+                // redoing the transform.
+                auto & _params = ((VisualCommandParams*)params)->nativeContentParams;
+                const float scale = renderScale_;
+                const auto & vp = frameRenderPass_.viewportOverride();
+                const float baseX = vp.active ? vp.offsetX : 0.f;
+                const float baseY = vp.active ? vp.offsetY : 0.f;
+                BackendNativeContentRegion rec{};
+                rec.destRectPixels.pos.x = (_params.destRect.pos.x + baseX) * scale;
+                rec.destRectPixels.pos.y = (_params.destRect.pos.y + baseY) * scale;
+                rec.destRectPixels.w     = _params.destRect.w * scale;
+                rec.destRectPixels.h     = _params.destRect.h * scale;
+                rec.hostId      = _params.hostId;
+                rec.zOrderHint  = _params.zOrderHint;
+                pendingNativeContent_.push_back(rec);
+#ifdef OMEGAWTK_TRACE_RENDER
+                std::cout << "[WTK] NativeContent carve-out: hostId="
+                          << rec.hostId << " z=" << rec.zOrderHint
+                          << " px=(" << rec.destRectPixels.pos.x
+                          << "," << rec.destRectPixels.pos.y << " "
+                          << rec.destRectPixels.w << "x"
+                          << rec.destRectPixels.h << ")" << std::endl;
+#endif
                 return;
             }
             case VisualCommand::TextRun: {

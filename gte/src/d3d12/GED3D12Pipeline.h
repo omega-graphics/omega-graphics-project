@@ -20,12 +20,21 @@ public:
 };
 
 class GED3D12ComputePipelineState : public __GEComputePipelineState {
-public: 
+public:
     ComPtr<ID3D12PipelineState> pipelineState;
     ComPtr<ID3D12RootSignature> rootSignature;
     D3D12_ROOT_SIGNATURE_DESC1 rootSignatureDesc;
     ~GED3D12ComputePipelineState();
     GED3D12ComputePipelineState(SharedHandle<GTEShader> & _shader,ID3D12PipelineState *state,ID3D12RootSignature *signature,D3D12_ROOT_SIGNATURE_DESC1 & rootSignatureDesc);
+};
+
+// Blit pipeline (Extension 3): a wrapper over a regular render pipeline whose
+// vertex shader is the engine-supplied full-screen triangle.
+class GED3D12BlitPipelineState : public __GEBlitPipelineState {
+public:
+    SharedHandle<GERenderPipelineState> renderPipeline;
+    explicit GED3D12BlitPipelineState(SharedHandle<GERenderPipelineState> & rp)
+        : renderPipeline(rp) {}
 };
 
 _NAMESPACE_END_

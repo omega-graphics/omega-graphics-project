@@ -178,6 +178,34 @@ SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRende
      }
  };
 
+ void MTLCALayerTree::applyNativeContentCarveouts(BackendRenderTargetContext & ctx){
+     // Tier 3 Phase 3.7: per-frame drain hook. Pulls the carve-outs
+     // the renderToTarget switch accumulated (translated to backing
+     // pixel coords by the context) and prepares to translate each
+     // record into CA-layer sublayer ordering against this tree's
+     // root CALayer. The hostId → CALayer mapping is owned by
+     // CocoaItem (registered there by NativeViewHost-Adoption-Plan
+     // Phases V2 / G2); until that registry exists, this method
+     // logs the records and clears the list so the next frame
+     // starts clean.
+     const auto & regions = ctx.pendingNativeContent();
+     if(!regions.empty()){
+#ifdef OMEGAWTK_TRACE_RENDER
+         for(const auto & r : regions){
+             std::cerr << "[MTLCALayerTree] carve-out hostId=" << r.hostId
+                       << " z=" << r.zOrderHint
+                       << " px=(" << r.destRectPixels.pos.x
+                       << "," << r.destRectPixels.pos.y << " "
+                       << r.destRectPixels.w << "x"
+                       << r.destRectPixels.h << ")  [no producer wired"
+                       << " — awaiting NativeViewHost V2/G2]"
+                       << std::endl;
+         }
+#endif
+     }
+     ctx.clearPendingNativeContent();
+ }
+
  void MTLCALayerTree::addVisual(Core::SharedPtr<Parent::Visual> & visual){
      body.push_back(visual);
      auto r = std::dynamic_pointer_cast<Visual>(root);

@@ -100,6 +100,7 @@ _NAMESPACE_BEGIN_
     class GETexture;
     typedef struct __GEComputePipelineState GEComputePipelineState;
     typedef struct __GERenderPipelineState  GERenderPipelineState;
+    typedef struct __GEBlitPipelineState    GEBlitPipelineState;
     class GENativeRenderTarget;
     class GETextureRenderTarget;
     class GECommandQueue;
@@ -108,6 +109,7 @@ _NAMESPACE_BEGIN_
     struct TextureRenderTargetDescriptor;
     struct RenderPipelineDescriptor;
     struct ComputePipelineDescriptor;
+    struct BlitPipelineDescriptor;
 
     struct NativeRenderTargetDescriptor;
 
@@ -402,12 +404,22 @@ _NAMESPACE_BEGIN_
         */
         virtual SharedHandle<GERenderPipelineState> makeRenderPipelineState(RenderPipelineDescriptor & desc) = 0;
 
-        /** 
+        /**
          @brief Creates a GEComputePipelineState from a ComputePipelineDescriptor.
          @param[in] desc The Compute Pipeline State
          @returns SharedHandle<GEComputePipelineState>
         */
         virtual SharedHandle<GEComputePipelineState> makeComputePipelineState(ComputePipelineDescriptor & desc) = 0;
+
+        /**
+         @brief Creates a GEBlitPipelineState from a BlitPipelineDescriptor.
+         @paragraph Builds a programmable blit pipeline: a render pipeline with
+         an engine-supplied full-screen-triangle vertex shader paired with the
+         caller's fragment shader. Used with @c GECommandBuffer::blitWithPipeline.
+         @param[in] desc The Blit Pipeline Descriptor
+         @returns SharedHandle<GEBlitPipelineState>, or @c nullptr on failure.
+         */
+        virtual SharedHandle<GEBlitPipelineState> makeBlitPipelineState(BlitPipelineDescriptor & desc) = 0;
 
         /**
           @brief Creates a GENativeRenderTarget from a NativeRenderTargetDescriptor.

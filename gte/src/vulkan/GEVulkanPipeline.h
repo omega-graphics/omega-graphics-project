@@ -47,6 +47,15 @@ public:
     ~GEVulkanRenderPipelineState();
 };
 
+// Extension 3: wraps a regular Vulkan render pipeline whose vertex stage is
+// the engine-supplied full-screen-triangle shader.
+class GEVulkanBlitPipelineState : public __GEBlitPipelineState {
+public:
+    SharedHandle<GERenderPipelineState> renderPipeline;
+    explicit GEVulkanBlitPipelineState(SharedHandle<GERenderPipelineState> & rp)
+        : renderPipeline(rp) {}
+};
+
 class GEVulkanComputePipelineState : public __GEComputePipelineState {
     GEVulkanEngine *parentEngine;
     bool nativeReleased_ = false;

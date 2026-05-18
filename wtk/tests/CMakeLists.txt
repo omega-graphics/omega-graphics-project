@@ -125,6 +125,49 @@ if(OMEGAWTK_WINDOW_SCOPED_PAINT)
     target_compile_definitions(DisplayListClipTest PRIVATE OMEGAWTK_WINDOW_SCOPED_PAINT=1)
 endif()
 
+# Tier 3 Phase 3.6 validator: drives ScrollView::paint() /
+# paintOverlay() output through DisplayListReplay into a real Canvas
+# and visually verifies that the PushClip / content / PopClip / bars
+# composition produces a properly-scissored viewport with overlay
+# scroll bars rendered after the clip is popped. Mirrors
+# OMEGAWTK_WINDOW_SCOPED_PAINT onto the binary only so the startup
+# log can report which paint route is active; the test itself works
+# in both modes (the ScrollView ops + replay path is the same).
+OmegaWTKApp(
+    NAME
+    ScrollViewClipTest
+    BUNDLE_ID
+    "org.omegagraphics.ScrollViewClipTest"
+    SOURCES
+    ScrollViewClipTest/main.cpp)
+
+if(OMEGAWTK_WINDOW_SCOPED_PAINT)
+    target_compile_definitions(ScrollViewClipTest PRIVATE OMEGAWTK_WINDOW_SCOPED_PAINT=1)
+endif()
+
+# Tier 3 Phase 3.7 validator: drives a fabricated DisplayList with
+# DrawOp::NativeContent carve-outs through DisplayListReplay and
+# asserts that each op round-trips onto the per-frame VisualCommand
+# stream as a NativeContent visual with destRect / hostId /
+# zOrderHint preserved. Stand-in for VideoViewPlaybackTest (which is
+# the end-to-end validator the plan names but is currently
+# unbuildable). Mirrors OMEGAWTK_WINDOW_SCOPED_PAINT onto the binary
+# only so the startup log can report which paint route is active;
+# the test itself works in both modes (it never touches a per-view
+# canvas vs. window-scoped distinction — replay → markNativeContentRegion
+# is the same call either way).
+OmegaWTKApp(
+    NAME
+    NativeContentCarveoutTest
+    BUNDLE_ID
+    "org.omegagraphics.NativeContentCarveoutTest"
+    SOURCES
+    NativeContentCarveoutTest/main.cpp)
+
+if(OMEGAWTK_WINDOW_SCOPED_PAINT)
+    target_compile_definitions(NativeContentCarveoutTest PRIVATE OMEGAWTK_WINDOW_SCOPED_PAINT=1)
+endif()
+
 OmegaWTKApp(
     NAME
     VideoViewPlaybackTest

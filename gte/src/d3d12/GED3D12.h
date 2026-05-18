@@ -178,6 +178,12 @@ _NAMESPACE_BEGIN_
         std::shared_ptr<omegasl_shader_lib> mipmapGenShaderLib;
         bool ensureMipmapGenPipeline();
 
+        // Built-in full-screen-triangle vertex shader used by every blit
+        // pipeline (Extension 3). Compiled lazily on first makeBlitPipelineState.
+        SharedHandle<GTEShader> blitFullscreenVs;
+        std::shared_ptr<omegasl_shader_lib> blitFullscreenVsLib;
+        bool ensureBlitFullscreenVs();
+
         // Indirect command signatures. Lazily created. These are generic
         // signatures (no root parameters) carrying a single argument type.
         ComPtr<ID3D12CommandSignature> drawIndirectSignature;
@@ -206,6 +212,7 @@ _NAMESPACE_BEGIN_
         SharedHandle<GETexture> makeTexture(const TextureDescriptor &desc)  override;
         SharedHandle<GERenderPipelineState> makeRenderPipelineState(RenderPipelineDescriptor &desc)  override;
         SharedHandle<GEComputePipelineState> makeComputePipelineState(ComputePipelineDescriptor &desc)  override;
+        SharedHandle<GEBlitPipelineState> makeBlitPipelineState(BlitPipelineDescriptor &desc) override;
         SharedHandle<GENativeRenderTarget> makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc,
                                                                    SharedHandle<GECommandQueue> presentQueue)  override;
         SharedHandle<GETextureRenderTarget> makeTextureRenderTarget(const TextureRenderTargetDescriptor &desc)  override;

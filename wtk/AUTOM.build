@@ -237,11 +237,9 @@ OmegaWTKModule(name="Native",sources=native_srcs + other_srcs,deps=["OmegaWTKCor
 append_property("OmegaWTKNative","include_dirs",["./src/Native/private_include"])
 append_property("OmegaWTKNative","defines",priv_defines)
 
-media_srcs = glob("./src/Media/*.cpp")
-
-OmegaWTKModule(name="Media",sources=media_srcs,deps=["OmegaWTKCore","libpng","libtiff"])
-append_property("OmegaWTKMedia","configs",["zlib__conf","libpng__conf","libjpeg-turbo__conf","libtiff__conf"])
-append_property("OmegaWTKMedia","defines",priv_defines)
+# Media moved to top-level OmegaVA module (see va/AUTOM.build,
+# Phase 6 of Media-API-Completion-Plan). UI links omega-va below to
+# pick up VideoView's playback / capture session dependencies.
 
 composition_srcs = glob("./src/Composition/*.cpp") + glob("./src/Composition/backend/*.cpp")
 if is_mac:
@@ -249,16 +247,16 @@ if is_mac:
 elif is_win:
     composition_srcs += glob("./src/Composition/backend/dx/*.cpp")
 
-OmegaWTKModule(name="Composition",sources=composition_srcs,deps=["OmegaWTKCore","OmegaWTKNative","OmegaWTKMedia"])
+OmegaWTKModule(name="Composition",sources=composition_srcs,deps=["OmegaWTKCore","OmegaWTKNative"])
 append_property("OmegaWTKComposition","include_dirs",["./src/Native/private_include"])
 append_property("OmegaWTKComposition","defines",priv_defines)
 ui_srcs = glob("./src/UI/*.cpp")
 
-OmegaWTKModule(name="UI",sources=ui_srcs,deps=["OmegaWTKCore","OmegaWTKComposition","OmegaWTKNative","OmegaWTKMedia"])
+OmegaWTKModule(name="UI",sources=ui_srcs,deps=["OmegaWTKCore","OmegaWTKComposition","OmegaWTKNative","omega-va"])
 append_property("OmegaWTKUI","defines",priv_defines)
 
 widgets_srcs = glob("./src/Widgets/*.cpp")
-OmegaWTKModule(name="Widgets",sources=widgets_srcs,deps=["OmegaWTKCore","OmegaWTKComposition","OmegaWTKNative","OmegaWTKMedia","OmegaWTKUI"])
+OmegaWTKModule(name="Widgets",sources=widgets_srcs,deps=["OmegaWTKCore","OmegaWTKComposition","OmegaWTKNative","OmegaWTKUI"])
 
 conf_out = f"./conf_out"
 
@@ -274,7 +272,6 @@ if is_mac:
     ["OmegaWTKCore",
     "OmegaWTKComposition",
     "OmegaWTKNative",
-    "OmegaWTKMedia",
     "OmegaWTKUI",
     "OmegaWTKWidgets"],
     "Frameworks",OMEGAWTK_VERSION)
@@ -285,13 +282,13 @@ if is_mac:
     set_property("OmegaWTK","embedded_libs",zlib_export + libpng_export + libjpeg_turbo_export + libtiff_export + icu_lib_exports)
 
 elif is_win:
-    SharedLibrary("OmegaWTK",["./src/OmegaWTK.cpp"], 
+    SharedLibrary("OmegaWTK",["./src/OmegaWTK.cpp"],
     ["OmegaWTKCore",
     "OmegaWTKComposition",
     "OmegaWTKNative",
-    "OmegaWTKMedia",
     "OmegaWTKUI",
     "OmegaGTE",
+    "OmegaVA",
     "OmegaWTKWidgets",
     "omega-common"],"lib")
 

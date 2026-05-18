@@ -1,0 +1,28 @@
+{
+    "project": "OMEGAVA",
+    "variables": {
+        "third_party_dest": "./deps"
+    },
+    "dependencies": [
+        {
+            "name": "ffmpeg",
+            "type": "git",
+            "url": "https://github.com/FFmpeg/FFmpeg.git",
+            "ref": "n7.1.1",
+            "dest": "$(third_party_dest)/ffmpeg/code",
+            "platforms": [
+                "linux"
+            ]
+        },
+        {
+            "name": "alsa-lib",
+            "type": "git",
+            "url": "https://git.alsa-project.org/http/alsa-lib.git",
+            "ref": "v1.2.14",
+            "dest": "$(third_party_dest)/alsa-lib/code",
+            "platforms": [
+                "linux"
+            ]
+        }
+    ]
+}

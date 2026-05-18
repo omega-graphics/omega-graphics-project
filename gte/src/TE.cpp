@@ -36,6 +36,13 @@ union TETriangulationParams::Data {
 
     GraphicsPath3DParams path3D;
 
+    // Union members include types whose default ctor is non-trivial
+    // (e.g. GPoint3D has `float x,y,z = 0;`). C++ implicitly deletes the
+    // union's default ctor in that case, which GCC and MSVC `/permissive-`
+    // enforce strictly — `new Data{}` would refuse to compile. An empty
+    // user-provided default ctor opts out of member initialization; callers
+    // always assign a member immediately after construction.
+    Data(){}
     ~Data(){
         if(type == TRIANGULATE_RECT){
 

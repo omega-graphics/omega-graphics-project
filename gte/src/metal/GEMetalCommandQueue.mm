@@ -256,6 +256,60 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         [bp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_tex->resourceBarrier.handle())];
     }
 
+    void GEMetalCommandBuffer::blitWithPipeline(SharedHandle<GEBlitPipelineState> &pipelineState,
+                                                SharedHandle<GETexture> &src,
+                                                SharedHandle<GETexture> &dest){
+        auto *mtl_dst = (GEMetalTexture *)dest.get();
+        id<MTLTexture> tex = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,mtl_dst->texture.handle());
+        TextureRegion srcRegion{0,0,0,(unsigned)tex.width,(unsigned)tex.height,1};
+        TextureRegion destRegion{0,0,0,(unsigned)tex.width,(unsigned)tex.height,1};
+        blitWithPipeline(pipelineState, src, dest, srcRegion, destRegion);
+    }
+
+    void GEMetalCommandBuffer::blitWithPipeline(SharedHandle<GEBlitPipelineState> &pipelineState,
+                                                SharedHandle<GETexture> &src,
+                                                SharedHandle<GETexture> &dest,
+                                                const TextureRegion &srcRegion,
+                                                const TextureRegion &destRegion){
+        (void)srcRegion;
+        assert(rp == nil && cp == nil && bp == nil && ap == nil &&
+               "blitWithPipeline must not be called inside an existing pass scope");
+        if(!pipelineState){
+            DEBUG_STREAM("blitWithPipeline: pipelineState is null");
+            return;
+        }
+        auto *blitPipe = (GEMetalBlitPipelineState *)pipelineState.get();
+        if(!blitPipe->renderPipeline){
+            DEBUG_STREAM("blitWithPipeline: underlying render pipeline is null");
+            return;
+        }
+
+        // One-shot texture render target wrapping `dest`. Built directly
+        // (no engine handle reachable from the command buffer) — the
+        // GEMetalTextureRenderTarget ctor only needs the SharedHandle<GETexture>.
+        SharedHandle<GETextureRenderTarget> trtSh(new GEMetalTextureRenderTarget(dest));
+
+        GERenderPassDescriptor rpDesc{};
+        rpDesc.tRenderTarget = trtSh.get();
+        rpDesc.colorAttachments.emplace_back(
+            GERenderPassDescriptor::ColorAttachment::ClearColor(0.f, 0.f, 0.f, 0.f),
+            GERenderPassDescriptor::ColorAttachment::Discard);
+        rpDesc.depthStencilAttachment.disabled = true;
+
+        startRenderPass(rpDesc);
+        setRenderPipelineState(blitPipe->renderPipeline);
+        bindResourceAtFragmentShader(src, 0, TextureSwizzle::identity());
+        GEViewport vp{(float)destRegion.x, (float)destRegion.y,
+                      (float)destRegion.w, (float)destRegion.h,
+                      0.f, 1.f};
+        setViewports({vp});
+        GEScissorRect sr{(float)destRegion.x, (float)destRegion.y,
+                         (float)destRegion.w, (float)destRegion.h};
+        setScissorRects({sr});
+        drawPolygons(GECommandBuffer::Triangle, 3, 0);
+        finishRenderPass();
+    }
+
     void GEMetalCommandBuffer::fillBuffer(SharedHandle<GEBuffer> &buffer, uint32_t value,
                                           size_t offset, size_t size){
         assert(bp && "Must be in BLIT PASS");

@@ -40,6 +40,15 @@ public:
                                 NSSmartPtr & computePipelineState);
 };
 
+// Extension 3: wraps a regular render pipeline whose vertex stage is the
+// engine-supplied full-screen-triangle shader.
+class GEMetalBlitPipelineState : public __GEBlitPipelineState {
+public:
+    SharedHandle<GERenderPipelineState> renderPipeline;
+    explicit GEMetalBlitPipelineState(SharedHandle<GERenderPipelineState> & rp)
+        : renderPipeline(rp) {}
+};
+
 _NAMESPACE_END_
 
 #endif

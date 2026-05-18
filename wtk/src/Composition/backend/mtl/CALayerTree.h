@@ -78,6 +78,18 @@ namespace OmegaWTK::Composition {
          explicit MTLCALayerTree(SharedHandle<ViewRenderTarget> & renderTarget);
          ~MTLCALayerTree() override = default;
          void addVisual(Core::SharedPtr<Parent::Visual> & visual) override;
+
+         /// Tier 3 Phase 3.7: drain the per-frame native-content
+         /// carve-outs recorded by `BackendRenderTargetContext::
+         /// renderToTarget` and translate each record into CA-level
+         /// sublayer ordering against this tree's `view`'s root
+         /// `CALayer`. The actual hostId → CALayer lookup table is
+         /// owned by `NativeViewHost-Adoption-Plan.md` Phases V2 /
+         /// G2 (`CocoaItem` registers each embedded native item with
+         /// the tree); until that registry lands, this drain logs
+         /// the records and clears them. Called by the compositor
+         /// frame worker after the slice loop completes.
+         void applyNativeContentCarveouts(BackendRenderTargetContext & ctx) override;
          Core::SharedPtr<Parent::Visual> makeRootVisual(Composition::Rect & rect,
                                                          Composition::Point2D & pos,
                                                          ViewPresentTarget & outPresentTarget) override;

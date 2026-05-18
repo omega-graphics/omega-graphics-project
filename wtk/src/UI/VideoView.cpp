@@ -2,15 +2,11 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Canvas.h"
 
-#ifdef TARGET_WIN32
-#include "../Media/wmf/WMFAudioVideoProcessor.h"
-#endif
-#ifdef TARGET_MACOS
-#include "../Media/avf/AVFAudioVideoProcessor.h"
-#endif
-#ifdef TARGET_GTK
-#include "../Media/ffmpeg/FFmpegAudioVideoProcessor.h"
-#endif
+// Backend AudioVideoProcessor headers live in OmegaVA's private src tree
+// (see va/CMakeLists.txt — va/src is exposed as a PRIVATE include dir on
+// OmegaWTK_UI so VideoView's destruction of SharedHandle<AudioVideoProcessor>
+// has the full type at hand).
+
 
 namespace OmegaWTK {
 
@@ -55,7 +51,7 @@ VideoView::VideoView(const Composition::Rect & rect, ViewPtr parent)
     videoCanvas = makeCanvas(getLayerTree()->getRootLayer());
 }
 
-void VideoView::queueFrame(SharedHandle<Media::VideoFrame> &frame) {
+void VideoView::queueFrame(SharedHandle<OmegaVA::VideoFrame> &frame) {
     auto &hdr = frame->videoFrame.header;
     Composition::Rect destRect = computeScaledRect(getRect(), hdr.width, hdr.height, scaleMode_);
     // Aliasing-constructor share: `f` carries the same refcount as `frame`
@@ -70,7 +66,7 @@ void VideoView::queueFrame(SharedHandle<Media::VideoFrame> &frame) {
     videoCanvas->sendFrame();
 }
 
-void VideoView::pushFrame(SharedHandle<Media::VideoFrame> frame) {
+void VideoView::pushFrame(SharedHandle<OmegaVA::VideoFrame> frame) {
     if (!framebuffer.full())
         framebuffer.push(frame);
 }
@@ -113,19 +109,19 @@ VideoSourceMode VideoView::sourceMode() const {
 
 // -- Playback binding --
 
-bool VideoView::bindPlaybackSource(Media::MediaInputStream & input,
+bool VideoView::bindPlaybackSource(OmegaVA::MediaInputStream & input,
                                    const VideoViewPlaybackOptions & opts) {
     clear();
 
-    auto processor = Media::createAudioVideoProcessor(opts.useHardwareAccel, nullptr);
+    auto processor = OmegaVA::createAudioVideoProcessor(opts.useHardwareAccel, nullptr);
     if (!processor) {
         if (delegate_)
             delegate_->onVideoError("Failed to create audio/video processor");
         return false;
     }
 
-    dispatchQueue_ = Media::createPlaybackDispatchQueue();
-    playbackSession_ = Media::VideoPlaybackSession::Create(processor, dispatchQueue_);
+    dispatchQueue_ = OmegaVA::createPlaybackDispatchQueue();
+    playbackSession_ = OmegaVA::VideoPlaybackSession::Create(processor, dispatchQueue_);
     if (!playbackSession_) {
         if (delegate_)
             delegate_->onVideoError("Failed to create playback session");
@@ -149,8 +145,8 @@ bool VideoView::bindPlaybackSource(Media::MediaInputStream & input,
 
 // -- Capture bindings --
 
-bool VideoView::bindCapturePreview(SharedHandle<Media::VideoDevice> & videoDevice,
-                                   SharedHandle<Media::AudioCaptureDevice> audioDevice,
+bool VideoView::bindCapturePreview(SharedHandle<OmegaVA::VideoDevice> & videoDevice,
+                                   SharedHandle<OmegaVA::AudioCaptureDevice> audioDevice,
                                    const VideoViewCaptureOptions & opts) {
     clear();
 
@@ -170,9 +166,9 @@ bool VideoView::bindCapturePreview(SharedHandle<Media::VideoDevice> & videoDevic
     return true;
 }
 
-bool VideoView::bindCaptureRecord(SharedHandle<Media::VideoDevice> & videoDevice,
-                                  Media::MediaOutputStream & output,
-                                  SharedHandle<Media::AudioCaptureDevice> audioDevice,
+bool VideoView::bindCaptureRecord(SharedHandle<OmegaVA::VideoDevice> & videoDevice,
+                                  OmegaVA::MediaOutputStream & output,
+                                  SharedHandle<OmegaVA::AudioCaptureDevice> audioDevice,
                                   const VideoViewCaptureOptions & opts) {
     clear();
 

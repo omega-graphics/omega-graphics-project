@@ -881,6 +881,11 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
     class GEMetalEngine : public OmegaGraphicsEngine {
         NSSmartPtr metalDevice;
+        SharedHandle<GTEDevice> gteDevice;
+        // Extension 3: cached built-in full-screen-triangle vertex shader.
+        SharedHandle<GTEShader> blitFullscreenVs;
+        std::shared_ptr<omegasl_shader_lib> blitFullscreenVsLib;
+        bool ensureBlitFullscreenVs();
         SharedHandle<GTEShader> _loadShaderFromDesc(omegasl_shader *shaderDesc,bool runtime) override {
             NSSmartPtr library;
             NSString *str = [[NSString alloc] initWithUTF8String:shaderDesc->name];
@@ -929,6 +934,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             // and can interfere with drawable presentation.
 
             metalDevice = NSObjectHandle {NSOBJECT_CPP_BRIDGE device};
+            gteDevice = __device;
             _deviceFeatures = __device->features.featuresAsBitmask();
             DEBUG_STREAM("GEMetalEngine Successfully Created");
 
@@ -1329,6 +1335,31 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             return std::shared_ptr<GERenderPipelineState>(new GEMetalRenderPipelineState(desc.vertexFunc,desc.fragmentFunc,pipelineState,hasDepthStencilState,depthStencilState,rasterizerState));
         };
 
+        SharedHandle<GEBlitPipelineState> makeBlitPipelineState(BlitPipelineDescriptor &desc) override {
+            if (!_checkPipelineShader(desc.fragmentFunc, "fragment", desc.name)) {
+                return nullptr;
+            }
+            if (!ensureBlitFullscreenVs()) {
+                DEBUG_STREAM("makeBlitPipelineState: ensureBlitFullscreenVs failed");
+                return nullptr;
+            }
+            RenderPipelineDescriptor rpDesc{};
+            rpDesc.name = desc.name.empty() ? OmegaCommon::String("OmegaGTE.Internal.BlitPipeline") : desc.name;
+            rpDesc.vertexFunc = blitFullscreenVs;
+            rpDesc.fragmentFunc = desc.fragmentFunc;
+            rpDesc.colorPixelFormats = { desc.destPixelFormat };
+            rpDesc.primitiveTopologyCategory = PrimitiveTopologyCategory::Triangle;
+            rpDesc.rasterSampleCount = 1;
+            rpDesc.cullMode = RasterCullMode::None;
+            rpDesc.triangleFillMode = TriangleFillMode::Solid;
+            auto rp = makeRenderPipelineState(rpDesc);
+            if (!rp) {
+                DEBUG_STREAM("makeBlitPipelineState: underlying makeRenderPipelineState failed");
+                return nullptr;
+            }
+            return SharedHandle<GEBlitPipelineState>(new GEMetalBlitPipelineState(rp));
+        };
+
         SharedHandle<GETextureRenderTarget> makeTextureRenderTarget(const TextureRenderTargetDescriptor &desc) override {
             metalDevice.assertExists();
             SharedHandle<GETexture> texture;
@@ -1571,6 +1602,58 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             return SharedHandle<GESamplerState>(new GEMetalSamplerState {samplerState});
         }
     };
+
+    // Extension 3: OmegaSL source for the engine-supplied full-screen-triangle
+    // vertex shader paired with every blit pipeline. See BlitPipelineDescriptor
+    // doxygen for the rasterizer-output struct contract.
+    static const char *kBlitFullscreenVsOmegaSL_Metal = R"(
+struct OmegaGTEBlitVertexData internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
+    OmegaGTEBlitVertexData r;
+    float u = (float)((vid << 1) & 2);
+    float v = (float)(vid & 2);
+    r.pos = make_float4(u * 2.0 - 1.0, 1.0 - v * 2.0, 0.0, 1.0);
+    r.uv  = make_float2(u, v);
+    return r;
+}
+)";
+
+    bool GEMetalEngine::ensureBlitFullscreenVs() {
+        if (blitFullscreenVs) return true;
+        try {
+            auto compiler = OmegaSLCompiler::Create(gteDevice);
+            if (!compiler) {
+                DEBUG_STREAM("ensureBlitFullscreenVs: OmegaSLCompiler::Create returned null");
+                return false;
+            }
+            OmegaCommon::String src(kBlitFullscreenVsOmegaSL_Metal);
+            auto source = OmegaSLCompiler::Source::fromString(src);
+            blitFullscreenVsLib = compiler->compile({source});
+            if (!blitFullscreenVsLib || blitFullscreenVsLib->header.entry_count == 0) {
+                DEBUG_STREAM("ensureBlitFullscreenVs: OmegaSL compile produced no shaders");
+                blitFullscreenVsLib.reset();
+                return false;
+            }
+            omegasl_shader *shaderDesc = &blitFullscreenVsLib->shaders[0];
+            auto shader = _loadShaderFromDesc(shaderDesc, true);
+            if (!shader) {
+                DEBUG_STREAM("ensureBlitFullscreenVs: _loadShaderFromDesc failed");
+                blitFullscreenVsLib.reset();
+                return false;
+            }
+            blitFullscreenVs = shader;
+            return true;
+        } catch (const std::exception &e) {
+            DEBUG_STREAM("ensureBlitFullscreenVs: exception: " << e.what());
+            blitFullscreenVs.reset();
+            blitFullscreenVsLib.reset();
+            return false;
+        }
+    }
 
 
     SharedHandle<OmegaGraphicsEngine> CreateMetalEngine(SharedHandle<GTEDevice> & device){

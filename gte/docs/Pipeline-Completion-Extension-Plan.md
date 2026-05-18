@@ -527,7 +527,23 @@ struct ComputePipelineDescriptor {
 
 ---
 
-## Extension 3: Blits
+## Extension 3: Blits ✅ Implemented
+
+**Status:** API surface and all three backends (D3D12, Metal, Vulkan) implemented. The blit pipeline reuses the existing render-pipeline machinery: each backend's `make*BlitPipelineState` builds a `RenderPipelineDescriptor` pairing the engine's built-in full-screen-triangle vertex shader (compiled lazily from an embedded OmegaSL snippet via `OmegaSLCompiler`, mirroring the mipmap-gen-2D precedent) with the caller's fragment shader, then routes through `makeRenderPipelineState`. `blitWithPipeline` opens a transient one-shot render pass on `dest`, binds `src` at fragment-shader slot 0, sets viewport/scissor from `destRegion`, draws 3 vertices, and ends the pass.
+
+**Public API** lives in `gte/include/omegaGTE/GEPipeline.h` (`BlitPipelineDescriptor`, `GEBlitPipelineState`), `gte/include/omegaGTE/GE.h` (`OmegaGraphicsEngine::makeBlitPipelineState`), and `gte/include/omegaGTE/GERenderTarget.h` (two `GECommandBuffer::blitWithPipeline` overloads — full extent and subregion).
+
+**Fragment-shader contract:** the user-supplied FS must consume an `OmegaGTEBlitVertexData`-shaped struct (`float4 pos : Position; float2 uv : TexCoord;`) and declare its own `static sampler2d` for sampling the source. This matches the existing OmegaSL convention (samplers are baked into shader sources; there is no runtime sampler binding API today).
+
+**Pass scoping:** `blitWithPipeline` must NOT be called inside an existing `startRenderPass` / `startBlitPass` / `startComputePass` scope — it owns its own pass for the duration of the call. Asserted on every backend.
+
+### Deferred for follow-up
+
+- **§3.4 built-in fragment shader library** (`blit_copy`, `blit_linear`, `blit_srgb_encode`, `blit_srgb_decode`, `blit_tonemap_reinhard`). The pipeline machinery is in place and testable with a user-supplied OmegaSL fragment shader; shipping the built-ins is now a self-contained follow-up that depends on color-space decisions (sRGB transfer-function precision, Reinhard variant).
+- **`srcSampleCount`** on `BlitPipelineDescriptor` is plumbed through the descriptor but is not consumed by pipeline creation today. MSAA-source blits will need extra wiring (Metal: the FS must declare `texture2d_ms`; D3D12/Vulkan: the SRV / image view must be multisampled).
+- **`srcRegion`** on the subregion `blitWithPipeline` overload is currently advisory (sampled UVs cover the whole source texture). Honouring it requires either a per-blit constant buffer carrying the source UV rect, or shipping the source extent + region as a push constant. Defer until §2.2 push constants land or built-in shaders need it.
+- **Render pass / framebuffer caching across `blitWithPipeline` calls.** Today each call constructs a fresh `GETextureRenderTarget`; revisit if profiling shows it matters.
+- **Vulkan note** in §3.3 — routing `copyTextureToTexture` to `vkCmdBlitImage` for scaled exact-format copies — is independent of the programmable blit pipeline and stays a separate `copyTextureToTexture` optimization task.
 
 ### Design Rationale
 
@@ -1329,6 +1345,168 @@ bool allowFormatCast = false;
 **Tier 3 candidates** (deeper structural changes):
 - §7.6 async upload (D3D12 engine back-pointer refactor)
 - §7.7 format-cast views (allocation-time flag, descriptor migration)
+
+---
+
+## Extension 8: Dynamic Sampler State Binding (Proposed)
+
+### Goal
+
+Make `GESamplerState` bindable at runtime, completing the OmegaSL non-static
+sampler resource path (`sampler2d samp : N;`). Today samplers can only be
+declared `static` and baked into shader source via OmegaSL — `GESamplerState`
+exists and `makeSamplerState` works on every backend, but there is no
+`GECommandBuffer` method to bind one at draw / dispatch time. Extension 3
+(programmable blits) hit this directly: the `BlitPipelineDescriptor` originally
+proposed a `BlitSamplerKind` enum, but engine-controlled sampler choice
+required runtime binding the engine doesn't yet expose, so the enum was
+dropped and the user FS owns its `static sampler2d` declaration.
+
+### 8.1 Public API additions
+
+Add overloads on `GECommandBuffer` mirroring the existing buffer / texture
+binding shape:
+
+```cpp
+virtual void bindResourceAtVertexShader(SharedHandle<GESamplerState> & sampler,
+                                         unsigned id) = 0;
+virtual void bindResourceAtFragmentShader(SharedHandle<GESamplerState> & sampler,
+                                           unsigned id) = 0;
+virtual void bindResourceAtComputeShader(SharedHandle<GESamplerState> & sampler,
+                                          unsigned id) = 0;
+```
+
+`id` is the OmegaSL resource slot (matches the `: N` annotation on the
+`sampler*d` declaration). Calls outside the appropriate pass scope assert and
+return.
+
+### 8.2 Current state per backend
+
+| Concern | D3D12 | Metal | Vulkan |
+|---|---|---|---|
+| `makeSamplerState`                                  | ✅ | ✅ | ✅ |
+| Non-static sampler-desc handled in pipeline build   | ✅ (`createRootSignatureFromOmegaSLShaders` adds `D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER`) | ❌ no sampler-desc dispatch at all | ✅ (`createPipelineLayoutFromShaderDescs` adds `VK_DESCRIPTOR_TYPE_SAMPLER`) |
+| Runtime sampler bind on `GECommandBuffer`           | ❌ | ❌ | ❌ |
+
+### 8.3 Backend tasks
+
+**D3D12** — pipeline layout already provisions a sampler descriptor table per
+non-static sampler binding. Runtime bind:
+1. Resolve the root-parameter index for `id` via the same mechanism
+   `bindResourceAtFragmentShader(texture)` uses
+   (`getRootParameterIndexOfResource`).
+2. Stage the sampler's CPU descriptor handle into a per-command-buffer
+   sampler descriptor heap (samplers live in a separate heap type —
+   `D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER` — and the heap must be set on the
+   command list).
+3. Call `SetGraphicsRootDescriptorTable` / `SetComputeRootDescriptorTable`
+   with the GPU handle.
+4. Ensure `SetDescriptorHeaps` covers BOTH the CBV/SRV/UAV heap and the
+   sampler heap — D3D12 allows at most one of each type bound at a time.
+
+**Metal** — most work. Two pieces:
+1. Teach `createPipelineLayoutFromShaderDescs` (or the equivalent OmegaSL
+   layout-walk inside `makeRenderPipelineState` / `makeComputePipelineState`)
+   to accept `OMEGASL_SHADER_SAMPLER*_DESC` (currently only the static
+   variants are honoured). On Metal, this is mostly metadata — there is no
+   descriptor-set layout to build; the OmegaSL slot just maps to an MTL
+   resource index.
+2. Add command-buffer bind paths:
+   ```objc
+   [rp setVertexSamplerState:samplerState atIndex:resolvedSlot];
+   [rp setFragmentSamplerState:samplerState atIndex:resolvedSlot];
+   [cp setSamplerState:samplerState atIndex:resolvedSlot];
+   ```
+   Slot resolution uses the same `getResourceLocalIndexFromGlobalIndex`
+   helper that texture binds use today.
+
+**Vulkan** — descriptor-set layout already correctly emits
+`VK_DESCRIPTOR_TYPE_SAMPLER`. Runtime bind:
+1. Resolve the descriptor-set binding for `id` (existing
+   `getBindingForResourceID`).
+2. Write the sampler into the active descriptor set via the same
+   deferred-bind / fallback-ring path texture / buffer binds use:
+   ```cpp
+   VkDescriptorImageInfo info {};
+   info.sampler = ((GEVulkanSamplerState *)sampler.get())->sampler;
+   VkWriteDescriptorSet w {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+   w.dstSet = descSet;
+   w.dstBinding = binding;
+   w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+   w.descriptorCount = 1;
+   w.pImageInfo = &info;
+   vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
+   ```
+   The same fallback-ring "fresh set per pipeline state" logic that
+   `bindResourceAtFragmentShader(texture)` uses applies — sampler writes
+   must land on a set not yet bound to a recorded draw.
+
+### 8.4 Interaction with static samplers
+
+A single shader may mix static and runtime-bound samplers. Pipeline-layout
+code already distinguishes the two on D3D12 and Vulkan (the static path bakes
+an immutable sampler; the runtime path leaves the slot empty for later
+binding). The bind methods only touch non-static slots — passing a sampler to
+a slot a shader declared `static` is a programmer error that should assert in
+debug builds (the slot resolves to a baked sampler index that the runtime
+path will refuse to overwrite).
+
+### 8.5 Validation
+
+At bind time, validate that the resolved layout-desc at `id` is one of
+`OMEGASL_SHADER_SAMPLER1D_DESC` … `OMEGASL_SHADER_SAMPLERCUBE_DESC`, not a
+`SHADER_STATIC_SAMPLER*_DESC` and not a non-sampler type. Mirror the
+diagnostic shape used by `validateTextureBindKind` in `GETexture.h` so a
+mismatch produces a single-line stderr message naming the shader, the
+binding slot, and what was expected vs. what was bound.
+
+### 8.6 Tests
+
+- Unit: build a render pipeline with `sampler2d s : N` and a
+  `texture2d t : M` (no static samplers anywhere); bind both and draw a
+  textured quad; read back the rendered pixels and assert correct sampling.
+- Mixed pipeline: shader with one `static sampler2d` and one runtime
+  `sampler2d`; verify the static slot keeps its baked behavior and the
+  runtime slot picks up the user-supplied `GESamplerState`.
+- Negative: bind a sampler to a slot the shader declared `static` — expect
+  a debug-build assertion and a stderr diagnostic.
+- Per-backend: confirm sampler descriptor heap (D3D12) / sampler descriptor
+  write (Vulkan) / sampler-index call (Metal) all execute without
+  validation-layer errors.
+
+### 8.7 Implementation order
+
+1. Public API addition (`GECommandBuffer` three pure virtuals).
+2. Vulkan — least new code (descriptor write path already exists for textures).
+3. D3D12 — sampler descriptor heap management is the only genuinely new bit.
+4. Metal — sampler-desc dispatch in pipeline build + three bind methods.
+5. Validation + diagnostics.
+6. Tests.
+
+### 8.8 Open questions
+
+- **Per-stage vs. unified bind.** Some APIs (Metal) make sampler binding
+  per-shader-stage; others (Vulkan, D3D12) put samplers in descriptor sets
+  / root signatures that are visible to whichever stages the pipeline
+  layout names. Three overloads (`*AtVertexShader` / `*AtFragmentShader` /
+  `*AtComputeShader`) mirror today's texture-bind API and translate cleanly
+  to Metal; D3D12 and Vulkan would route all three to the same underlying
+  bind. Keep three overloads for API symmetry, or collapse to one
+  `bindSampler(sampler, stageMask, id)` call?
+
+- **Sampler descriptor heap lifetime on D3D12.** D3D12 allows only one
+  sampler heap bound at a time, so the heap must be sized to hold every
+  sampler bound across the lifetime of a single command list. Either
+  pre-allocate a fixed-size ring per command buffer (simple, fixed budget)
+  or grow on demand (more code, no cap). Sampler binds are typically far
+  fewer than texture binds, so a small fixed ring is likely sufficient —
+  but the budget needs to be picked.
+
+- **Sampler reuse across pipelines.** `GESamplerState` is engine-scoped
+  and trivially shareable. No additional reference-counting work expected
+  — the existing `SharedHandle` carries the lifetime — but worth
+  confirming nothing in the backend bind paths holds a non-owning pointer
+  past the sampler's lifetime.
 
 ---
 

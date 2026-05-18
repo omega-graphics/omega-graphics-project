@@ -44,6 +44,8 @@ omega_graphics_add_subdir(OmegaCommon common)
 omega_graphics_add_subdir(OmegaGTE gte)
 
 if(NOT OMEGA_HOST_TOOLS_ONLY)
+    omega_graphics_add_subdir(OmegaVA va)
+
     omega_graphics_add_subdir(OmegaWTK wtk)
 
     # Add Game engine module. AQUA cross-compiles for iOS and Android via

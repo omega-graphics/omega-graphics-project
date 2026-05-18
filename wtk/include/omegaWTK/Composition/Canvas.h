@@ -142,7 +142,24 @@ namespace OmegaWTK {
             // scissor. Canvas owns the push/pop stack and resolves
             // the *intersected* clip rect for each `SetClip` it
             // emits, so the backend just applies what it's told.
-            SetClip
+            SetClip,
+            // Tier 3 Phase 3.7: native-content carve-out — reserves a
+            // rectangular region for a platform-native surface to draw
+            // through (video, GPU view, web view, NativeViewHost'd
+            // sub-tree). Carries the destination rect, a `hostId`
+            // identifying the native layer (assigned by the
+            // NativeViewHost-Adoption pipeline; opaque to the
+            // compositor), and a `zOrderHint` (ascending = later /
+            // on-top). The backend records the carve-out into a
+            // per-context pending list at `renderToTarget`-time so the
+            // platform tree (CALayer on macOS, DComp visual on
+            // Windows, Wayland subsurface / X11 child on Linux) can
+            // translate it into the right native-layer ordering
+            // primitive when it walks the frame's slices. Mirrors
+            // `DrawOp::NativeContent` 1:1 — `DisplayListReplay`'s
+            // NativeContent arm calls `Canvas::markNativeContentRegion`
+            // which appends one of these to the per-frame visuals.
+            NativeContent
         } Type;
         Type type;
         struct OMEGAWTK_EXPORT Data {
@@ -215,6 +232,22 @@ namespace OmegaWTK {
             /// stack depth.
             Core::Optional<Composition::Rect> clipRect {};
 
+            /// Tier 3 Phase 3.7: per-`NativeContent` carve-out
+            /// payload. `destRect` is canvas-local (the backend
+            /// translates to absolute pixel coords using the slice
+            /// window offset + render scale, same as every other
+            /// rect). `hostId` is the opaque identifier assigned by
+            /// the NativeViewHost-Adoption pipeline that the platform
+            /// tree uses to look up the corresponding native layer.
+            /// `zOrderHint`: ascending means later / on-top. Tier-4+
+            /// may extend (multiple z-order buckets per view, per-
+            /// platform mapping refinements).
+            struct {
+                Composition::Rect destRect {};
+                std::uint64_t hostId = 0;
+                int zOrderHint = 0;
+            } nativeContentParams {};
+
 
             Data(const Composition::Rect & rect,Core::SharedPtr<Brush> brush,Core::Optional<Border> border);
 
@@ -256,6 +289,14 @@ namespace OmegaWTK {
             /// disambiguates the `VisualCommand(Optional<Rect>)`
             /// constructor without a tag.
             explicit Data(Core::Optional<Composition::Rect> clip);
+
+            /// Tier 3 Phase 3.7: NativeContent ctor. Disambiguated
+            /// from the `Rect` ctor by the trailing `(hostId,
+            /// zOrderHint)` pair — there is no other 3-arg ctor with
+            /// `(Rect, uint64_t, int)`.
+            Data(const Composition::Rect & destRect,
+                 std::uint64_t hostId,
+                 int zOrderHint);
 
             void _destroy(Type t);
 
@@ -324,6 +365,15 @@ namespace OmegaWTK {
         explicit VisualCommand(Core::Optional<Composition::Rect> clip):
         type(SetClip),
         params(clip){};
+
+        /// Tier 3 Phase 3.7: `NativeContent` ctor — disambiguated by
+        /// the trailing `(uint64_t, int)` pair, no other ctor takes
+        /// that signature against a leading `Rect`.
+        VisualCommand(const Composition::Rect & destRect,
+                      std::uint64_t hostId,
+                      int zOrderHint):
+        type(NativeContent),
+        params(destRect, hostId, zOrderHint){};
 
         ~VisualCommand();
 
@@ -625,6 +675,29 @@ namespace OmegaWTK {
          submission balance check).
          */
         void popClip();
+
+        /**
+         @brief Tier 3 Phase 3.7: record a native-content carve-out
+         for the current frame. The compositor turns the carve-out
+         into the platform-specific native-layer ordering primitive
+         (CALayer sublayer on macOS, DirectComposition visual on
+         Windows, Wayland subsurface / X11 child on Linux). Records
+         a `VisualCommand::NativeContent` on the per-frame visuals;
+         the backend `renderToTarget` switch picks it up and threads
+         it into the platform tree's pending carve-out list at flush
+         time. Producer side (today: planned for
+         `NativeViewHost-Adoption-Plan.md` Phases V2 / G2) emits the
+         op via `DisplayList::makeNativeContent`; `DisplayListReplay`
+         routes it here.
+         @param destRect Canvas-local rect that the native layer
+                         should occupy.
+         @param hostId   Opaque identifier of the platform native
+                         layer that owns the region.
+         @param zOrderHint Ascending = later / on-top. Default 0.
+         */
+        void markNativeContentRegion(const Composition::Rect & destRect,
+                                     std::uint64_t hostId,
+                                     int zOrderHint = 0);
 
         /**
          @brief Set the background color for the current frame.

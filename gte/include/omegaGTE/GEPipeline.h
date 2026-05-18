@@ -200,8 +200,53 @@ _NAMESPACE_BEGIN_
         SharedHandle<GTEShader> computeFunc;
 
     };
+
+    /// @brief Describes a programmable blit pipeline (Extension 3).
+    ///
+    /// A blit pipeline is a thin wrapper over a render pipeline whose vertex
+    /// stage is supplied by the engine (a built-in full-screen-triangle
+    /// vertex shader). The caller provides only the fragment stage and the
+    /// source/destination pixel formats. At draw time, `blitWithPipeline()`
+    /// reads from a source texture, runs the supplied fragment shader, and
+    /// writes to a destination texture covering the full destination extent
+    /// (or a user-specified subregion).
+    ///
+    /// **Fragment shader contract** — the user-supplied @c fragmentFunc must
+    /// declare its input parameter as a struct matching the engine's
+    /// rasterizer output:
+    /// @code
+    ///   struct OmegaGTEBlitVertexData internal {
+    ///       float4 pos : Position;
+    ///       float2 uv  : TexCoord;
+    ///   };
+    /// @endcode
+    /// Any name is fine — the contract is the member layout and semantics.
+    /// The fragment shader is also responsible for declaring its own
+    /// @c static sampler2d for sampling the source texture; OmegaSL bakes
+    /// samplers into shader sources (there is no runtime sampler binding
+    /// API today). The source texture is bound at fragment-shader resource
+    /// slot @c 0.
+    struct OMEGAGTE_EXPORT BlitPipelineDescriptor {
+        OmegaCommon::String name;
+        /// @brief Fragment shader that transforms the sampled source texel.
+        /// Must consume an `OmegaGTEBlitVertexData`-shaped struct (see above)
+        /// and write to a single color output (`fragment float4 ...`).
+        SharedHandle<GTEShader> fragmentFunc;
+        /// @brief Pixel format of the source texture. Used only for
+        /// validation / documentation today; not consumed by pipeline
+        /// creation (textures advertise their own format).
+        PixelFormat srcPixelFormat = PixelFormat::RGBA8Unorm;
+        /// @brief Pixel format of the destination texture. Drives the
+        /// underlying render pipeline's color-attachment format.
+        PixelFormat destPixelFormat = PixelFormat::RGBA8Unorm;
+        /// @brief Multisample count of the source (for MSAA-resolve blits).
+        /// Defaults to 1; not consumed by pipeline creation today.
+        unsigned srcSampleCount = 1;
+    };
+
     using GERenderPipelineState = struct __GERenderPipelineState;
     using GEComputePipelineState = struct __GEComputePipelineState;
+    using GEBlitPipelineState = struct __GEBlitPipelineState;
 
 
 _NAMESPACE_END_

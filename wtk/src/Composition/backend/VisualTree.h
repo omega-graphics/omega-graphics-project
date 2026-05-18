@@ -62,6 +62,24 @@ namespace OmegaWTK::Composition {
         /// Called lazily on first render when the native present target was unavailable at
         /// construction time (e.g. GTK widget not yet anchored to a toplevel).
         virtual void resolveDeferredNativeTarget(ViewPresentTarget &) {}
+
+        /// Tier 3 Phase 3.7: drain the per-frame native-content
+        /// carve-outs that `BackendRenderTargetContext::renderToTarget`
+        /// recorded into `ctx.pendingNativeContent()` and translate
+        /// each record into the platform-specific native-layer
+        /// ordering primitive (CALayer sublayer on macOS, DComp
+        /// visual on Windows, Wayland subsurface or X11 child on
+        /// Linux). The compositor's frame worker calls this after
+        /// it walks the frame's slices but before present. The
+        /// default impl just clears the list — platforms with a
+        /// hostId → native-layer registry (lit by `NativeViewHost-
+        /// Adoption-Plan.md` Phases V2 / G2) override and perform
+        /// the actual primitive insertion. Safe to call when the
+        /// registry is empty; safe to call with zero pending
+        /// carve-outs (no-op).
+        virtual void applyNativeContentCarveouts(BackendRenderTargetContext & ctx){
+            ctx.clearPendingNativeContent();
+        }
         INTERFACE_METHOD ~BackendVisualTree() = default;
     };
 

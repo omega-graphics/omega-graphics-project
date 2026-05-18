@@ -245,7 +245,34 @@ namespace OmegaWTK {
         /// Returns the scroll offset that this View contributes to
         /// child content positioning. Non-scrolling Views return {0,0}.
         /// ScrollView overrides this to return its scrollOffset.
+        ///
+        /// Tier 3 Phase 3.6: superseded by `contentOffset()` for the
+        /// FrameBuilder accumulator path. Kept as a public method for
+        /// callers outside the engine; the engine's offset walk now
+        /// reads `contentOffset()`. Removed entirely in Tier 4.
         virtual Composition::Point2D scrollOffsetContribution() const;
+
+        /// Tier 3 Phase 3.6: the offset this View applies to *its
+        /// children's* positions when arranging them. Sign convention:
+        /// `contentOffset` is added during the offset walk, whereas
+        /// `scrollOffsetContribution` was subtracted, so ScrollView
+        /// returns `-scrollOffset_`. Non-scrolling Views return {0,0}.
+        /// `View::legacyComputeWindowOffset` and (via it) the
+        /// FrameBuilder offset accumulator (Phase 3.4 stack) read this
+        /// when entering a subtree so descendant `finalRect`s are
+        /// observed scroll-shifted in the layout pipeline rather than
+        /// at paint time.
+        virtual Composition::Point2D contentOffset() const;
+
+        /// Tier 3 Phase 3.6: subtree-layerization tag. Returning true
+        /// hints to the compositor that this subtree's DisplayList
+        /// output should be tagged for a separate composition layer
+        /// (future compositor-thread scrolling / retained content
+        /// texture). Tier 3 does NOT yet act on the tag — content
+        /// re-rasterizes every frame — but the surface is in place
+        /// for a later compositor pass. ScrollView is the canonical
+        /// `true` returner.
+        virtual bool wantsLayer() const;
 
         void applyLayoutDelta(const struct LayoutDelta & delta,
                               const struct LayoutTransitionSpec & spec);

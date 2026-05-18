@@ -1145,7 +1145,50 @@ _NAMESPACE_BEGIN_
       
 
         resource_count = 0;
-       
+
+        // Vulkan-Texture-Memory-Plan Phase 1. Persistent infrastructure
+        // for the synchronous staging-buffer upload path used by
+        // GEVulkanTexture::copyBytes / getBytes (ToGPU / FromGPU).
+        // Pick the first graphics/compute queue as the upload queue —
+        // matches what debugReadbackPixelRGBA8 already does. A dedicated
+        // transfer-only family would be slightly faster on discrete
+        // GPUs, but enumerating one requires fixing the queue-family
+        // enumeration loop above (the `else { continue; }` arm skips
+        // the `++id` so transfer-only family indices are wrong); that's
+        // an independent change. Falling back to the graphics queue is
+        // always safe because graphics-capable queues implicitly
+        // support transfer.
+        if(!queueFamilyIndices.empty() && !deviceQueuefamilies.empty()
+           && !deviceQueuefamilies[0].empty()){
+            uploadQueueFamily = queueFamilyIndices[0];
+            uploadQueue       = deviceQueuefamilies[0][0].second;
+
+            VkCommandPoolCreateInfo poolInfo {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+            poolInfo.queueFamilyIndex = uploadQueueFamily;
+            // RESET_COMMAND_BUFFER so each upload can reset its
+            // command buffer individually rather than tearing down the
+            // pool. TRANSIENT advertises the one-shot lifetime hint.
+            poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT
+                           | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+            auto poolRes = vkCreateCommandPool(this->device, &poolInfo, nullptr, &uploadCommandPool);
+            if(poolRes != VK_SUCCESS){
+                std::cerr << "GEVulkanEngine: failed to create upload command pool ("
+                          << poolRes << "). copyBytes on ToGPU textures will fail." << std::endl;
+                uploadCommandPool = VK_NULL_HANDLE;
+            }
+
+            VkFenceCreateInfo fenceInfo {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+            // Default unsignaled — the first wait will block until the
+            // first submit completes.
+            fenceInfo.flags = 0;
+            auto fenceRes = vkCreateFence(this->device, &fenceInfo, nullptr, &uploadFence);
+            if(fenceRes != VK_SUCCESS){
+                std::cerr << "GEVulkanEngine: failed to create upload fence ("
+                          << fenceRes << ")." << std::endl;
+                uploadFence = VK_NULL_HANDLE;
+            }
+        }
+
         DEBUG_STREAM("Successfully Created GEVulkanEngine");
     };
 
@@ -1154,7 +1197,11 @@ _NAMESPACE_BEGIN_
     }
 
     SharedHandle<OmegaGraphicsEngine> GEVulkanEngine::Create(SharedHandle<GTEDevice> & device){
-        return SharedHandle<OmegaGraphicsEngine>(new GEVulkanEngine(std::dynamic_pointer_cast<GTEVulkanDevice>(device)));
+        auto engine = SharedHandle<OmegaGraphicsEngine>(new GEVulkanEngine(std::dynamic_pointer_cast<GTEVulkanDevice>(device)));
+        // Retain the GTEDevice handle so OmegaSL runtime compilation can be
+        // initialized lazily (Extension 3 — blit fullscreen VS).
+        static_cast<GEVulkanEngine *>(engine.get())->gteDevice = device;
+        return engine;
     };
 
     SharedHandle<GECommandQueue> GEVulkanEngine::makeCommandQueue(unsigned int maxBufferCount){
@@ -1565,38 +1612,45 @@ _NAMESPACE_BEGIN_
                 break;
             }
             case GETexture::ToGPU : {
-                // CPU writes once at creation, GPU samples thereafter.
-                // LINEAR tiling is required so the allocation can be
-                // HOST_VISIBLE for direct vmaMapMemory in copyBytes —
-                // OPTIMAL + HOST_VISIBLE has no compatible memory type
-                // on discrete GPUs (NVIDIA / AMD), which is what causes
-                // the VK_ERROR_FEATURE_NOT_PRESENT (-8) at vmaCreateImage.
-                // Format compatibility is checked below via
-                // vkGetPhysicalDeviceFormatProperties; allocation falls
-                // through to a clear diagnostic if LINEAR doesn't support
-                // the requested format/usage. TRANSFER_DST is added so
-                // a future staging-buffer upload path can target this
-                // image without re-allocating.
+                // Vulkan-Texture-Memory-Plan §"Design". The image is
+                // device-local OPTIMAL — a companion HOST_VISIBLE
+                // staging VkBuffer (allocated further down once we
+                // have the descriptor's mip chain in hand) carries
+                // the CPU writes. The buffer→image copy is issued
+                // synchronously from GEVulkanTexture::copyBytes via
+                // GEVulkanEngine::submitImmediateUploadFromStaging.
+                //
+                // This mirrors D3D12 (`GED3D12.cpp:1986` ToGPU arm —
+                // device-local resource + UPLOAD-heap cpuSideresource)
+                // and unlocks every (format × mip-chain × MSAA)
+                // combination that LINEAR tiling can't host. The
+                // earlier LINEAR-direct-map path failed
+                // `vkCreateImage` with `mipLevels > 1` because
+                // virtually all desktop drivers report
+                // `linearTilingFeatures.maxMipLevels == 1` for color
+                // formats (the bug that surfaced via WTK's
+                // ImageRenderTest at 900x987x10 mips).
                 usageFlags = VK_IMAGE_USAGE_SAMPLED_BIT
                 | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
                 | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-                memoryUsage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-                image_desc.tiling = VK_IMAGE_TILING_LINEAR;
+                memoryUsage = VMA_MEMORY_USAGE_GPU_ONLY;
 
                 break;
             }
             case GETexture::FromGPU : {
                 // GPU renders / samples into the image, CPU reads back.
-                // The previous flags were inverted: TRANSFER_DST writes
-                // *into* the image, but readback reads *from* it; STORAGE
-                // was overkill (no compute-write pattern uses this). Same
-                // LINEAR-tiling requirement as ToGPU so getBytes' direct
-                // mapMemory works on discrete GPUs.
+                // Mirror of ToGPU's reasoning: image stays
+                // device-local OPTIMAL, a staging buffer in
+                // HOST_VISIBLE memory receives the readback via
+                // submitImmediateReadbackToStaging. STORAGE_BIT stays
+                // off — no current FromGPU caller writes through
+                // compute; render-targets that need readback already
+                // include TRANSFER_SRC_BIT through their RenderTarget
+                // arm.
                 usageFlags = VK_IMAGE_USAGE_SAMPLED_BIT
                 | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
                 | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-                memoryUsage = VMA_MEMORY_USAGE_GPU_TO_CPU;
-                image_desc.tiling = VK_IMAGE_TILING_LINEAR;
+                memoryUsage = VMA_MEMORY_USAGE_GPU_ONLY;
 
                 break;
             }
@@ -1654,32 +1708,31 @@ _NAMESPACE_BEGIN_
             }
         }
 
-        // Format-support guard for the LINEAR-tiling paths. On NVIDIA
-        // discrete GPUs (and most others) only a subset of formats
-        // permit LINEAR-tiled SAMPLED images. Querying lets us refuse
-        // explicitly with a recognizable diagnostic, instead of letting
-        // VMA fail with VK_ERROR_FEATURE_NOT_PRESENT and leaving the
-        // caller guessing which (format, usage, tiling) triple was
-        // unsupported. Common color formats (RGBA8Unorm, BGRA8Unorm)
-        // pass on every desktop driver tested; future formats may need
-        // either a per-format tiling table or the staging-buffer
-        // alternative documented in the per-usage proposal.
-        if(image_desc.tiling == VK_IMAGE_TILING_LINEAR){
+        // Format-support guard. After the staging-buffer move
+        // (Vulkan-Texture-Memory-Plan Phase 3) the only tiling we
+        // emit is OPTIMAL, so the check moved over to
+        // `optimalTilingFeatures`. Color formats (RGBA8/16, BGRA8,
+        // their SRGB siblings) all support SAMPLED + TRANSFER on
+        // every desktop driver — the guard exists so future
+        // additions (depth/stencil, BC/ASTC compressed) get a clean
+        // diagnostic instead of a generic VMA failure when an
+        // unsupported (format, usage) combination lands.
+        {
             VkFormatProperties fmtProps{};
             vkGetPhysicalDeviceFormatProperties(physicalDevice, image_format, &fmtProps);
             const VkFormatFeatureFlags requiredFeatures =
                 ((usageFlags & VK_IMAGE_USAGE_SAMPLED_BIT) ? VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT : 0u)
                 | ((usageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ? VK_FORMAT_FEATURE_TRANSFER_SRC_BIT : 0u)
-                | ((usageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) ? VK_FORMAT_FEATURE_TRANSFER_DST_BIT : 0u);
-            if((fmtProps.linearTilingFeatures & requiredFeatures) != requiredFeatures){
+                | ((usageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) ? VK_FORMAT_FEATURE_TRANSFER_DST_BIT : 0u)
+                | ((usageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) ? VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT : 0u)
+                | ((usageFlags & VK_IMAGE_USAGE_STORAGE_BIT) ? VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT : 0u);
+            if((fmtProps.optimalTilingFeatures & requiredFeatures) != requiredFeatures){
                 std::cerr << "Vulkan makeTexture failed: format " << image_format
-                          << " does not support LINEAR tiling for usage 0x"
+                          << " does not support OPTIMAL tiling for usage 0x"
                           << std::hex << usageFlags << std::dec
-                          << " (linearTilingFeatures=0x" << std::hex
-                          << fmtProps.linearTilingFeatures << ", required=0x"
-                          << requiredFeatures << std::dec << "). "
-                          << "ToGPU/FromGPU paths require host-mappable LINEAR images; "
-                          << "consider switching to GPUAccessOnly + a staging buffer for this format."
+                          << " (optimalTilingFeatures=0x" << std::hex
+                          << fmtProps.optimalTilingFeatures << ", required=0x"
+                          << requiredFeatures << std::dec << ")."
                           << std::endl;
                 return nullptr;
             }
@@ -1769,7 +1822,102 @@ _NAMESPACE_BEGIN_
             return nullptr;
         }
 
-        
+        // Vulkan-Texture-Memory-Plan Phase 2/3 — allocate the staging
+        // companion buffer for `ToGPU` / `FromGPU` and compute the
+        // per-mip / per-layer copy regions. Other usages (GPU-only,
+        // render targets, MSAA-resolve) don't need staging — they
+        // never see CPU writes through `copyBytes`.
+        VkBuffer       stagingBuffer    = VK_NULL_HANDLE;
+        VmaAllocation  stagingAlloc     = nullptr;
+        VkDeviceSize   stagingSize      = 0;
+        OmegaCommon::Vector<VkBufferImageCopy> stagingRegions;
+        if(desc.usage == GETexture::ToGPU || desc.usage == GETexture::FromGPU){
+            // Bytes per texel for the formats `pixelFormatToVkFormat`
+            // currently emits. Block-compressed formats land here
+            // later (plan Open Q4) and will need a different
+            // `bytesPerBlock` × `blocksPerRow` formula; flag in case
+            // a new format slips into pixelFormatToVkFormat without
+            // updating this switch.
+            std::uint32_t bytesPerTexel = 0;
+            switch(desc.pixelFormat){
+                case PixelFormat::RGBA8Unorm:
+                case PixelFormat::RGBA8Unorm_SRGB:
+                case PixelFormat::BGRA8Unorm:
+                case PixelFormat::BGRA8Unorm_SRGB:
+                    bytesPerTexel = 4;
+                    break;
+                case PixelFormat::RGBA16Unorm:
+                    bytesPerTexel = 8;
+                    break;
+            }
+            if(bytesPerTexel == 0){
+                std::cerr << "Vulkan makeTexture: ToGPU/FromGPU staging path has no "
+                          << "bytes-per-texel mapping for pixelFormat=" << int(desc.pixelFormat)
+                          << ". Add the format to the switch in GEVulkan.cpp." << std::endl;
+                vkDestroyImageView(device, imageView, nullptr);
+                vmaDestroyImage(memAllocator, image, alloc);
+                return nullptr;
+            }
+
+            // Tightly-packed mip chain on the buffer side: each
+            // mip's rows are contiguous, mips are concatenated,
+            // layers are appended after the full chain. `extent`
+            // halves on each level, floor-clamped to 1.
+            stagingRegions.reserve(static_cast<std::size_t>(mipLevels) * vkArrayLayers);
+            VkDeviceSize offset = 0;
+            for(unsigned layer = 0; layer < vkArrayLayers; ++layer){
+                unsigned mipW = width, mipH = height, mipD = depth;
+                for(unsigned level = 0; level < mipLevels; ++level){
+                    VkBufferImageCopy region{};
+                    region.bufferOffset = offset;
+                    region.bufferRowLength = 0;  // tightly packed → infer from imageExtent
+                    region.bufferImageHeight = 0;
+                    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    region.imageSubresource.mipLevel = level;
+                    region.imageSubresource.baseArrayLayer = layer;
+                    region.imageSubresource.layerCount = 1;
+                    region.imageOffset = {0, 0, 0};
+                    region.imageExtent = {mipW, mipH, mipD};
+                    stagingRegions.push_back(region);
+
+                    offset += static_cast<VkDeviceSize>(mipW) * mipH * mipD * bytesPerTexel;
+                    mipW = mipW > 1 ? mipW >> 1u : 1;
+                    mipH = mipH > 1 ? mipH >> 1u : 1;
+                    mipD = mipD > 1 ? mipD >> 1u : 1;
+                }
+            }
+            stagingSize = offset;
+
+            VkBufferCreateInfo bufInfo {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+            bufInfo.size  = stagingSize;
+            // Both src (ToGPU upload) and dst (FromGPU readback) —
+            // allocating both flags up-front lets the same buffer
+            // serve either direction without re-creating, even
+            // though a given texture only ever uses one.
+            bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+                          | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+            VmaAllocationCreateInfo bufAllocInfo {};
+            bufAllocInfo.usage = (desc.usage == GETexture::ToGPU)
+                ? VMA_MEMORY_USAGE_CPU_TO_GPU
+                : VMA_MEMORY_USAGE_GPU_TO_CPU;
+            bufAllocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT
+                               | ((desc.usage == GETexture::ToGPU)
+                                    ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                                    : VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+
+            VmaAllocationInfo bufAllocResult {};
+            auto bufRes = vmaCreateBuffer(memAllocator, &bufInfo, &bufAllocInfo,
+                                          &stagingBuffer, &stagingAlloc, &bufAllocResult);
+            if(bufRes != VK_SUCCESS || stagingBuffer == VK_NULL_HANDLE){
+                std::cerr << "Vulkan makeTexture: failed to allocate staging buffer ("
+                          << vkResultToStr(bufRes) << ", size=" << stagingSize << ")." << std::endl;
+                vkDestroyImageView(device, imageView, nullptr);
+                vmaDestroyImage(memAllocator, image, alloc);
+                return nullptr;
+            }
+        }
 
         TextureDescriptor sanitizedDesc = desc;
         sanitizedDesc.width = width;
@@ -1792,10 +1940,242 @@ _NAMESPACE_BEGIN_
                 sanitizedDesc,
                 memoryUsage));
         result->format = image_format;
+        result->stagingBuffer  = stagingBuffer;
+        result->stagingAlloc   = stagingAlloc;
+        result->stagingSize    = stagingSize;
+        result->stagingRegions = std::move(stagingRegions);
         result->setShape(kind, vkArrayLayers, effectiveSampleCount);
         trackResource(result);
         return result;
     };
+
+    // Vulkan-Texture-Memory-Plan Phase 1. Synchronous one-shot upload of
+    // `tex.stagingBuffer` -> `tex.img`. Records a TRANSFER_DST barrier,
+    // a vkCmdCopyBufferToImage covering every region in
+    // `tex.stagingRegions` (mip0/layer0 in the current single-mip
+    // copyBytes path; the regions vector is sized for the whole chain
+    // so future per-mip overloads land here unchanged), transitions to
+    // SHADER_READ_ONLY_OPTIMAL, and waits on the engine fence. Returns
+    // false on any submission failure; the caller logs and leaves the
+    // texture in an undefined-contents state (the same visible-glitch
+    // contract D3D12's copyBytes failure path established in 5243ead).
+    bool GEVulkanEngine::submitImmediateUploadFromStaging(GEVulkanTexture &tex){
+        if(uploadCommandPool == VK_NULL_HANDLE || uploadFence == VK_NULL_HANDLE
+           || uploadQueue == VK_NULL_HANDLE){
+            DEBUG_STREAM("submitImmediateUploadFromStaging: upload infra unavailable");
+            return false;
+        }
+        if(tex.stagingBuffer == VK_NULL_HANDLE || tex.stagingRegions.empty()){
+            DEBUG_STREAM("submitImmediateUploadFromStaging: no staging buffer / regions");
+            return false;
+        }
+
+        std::lock_guard<std::mutex> guard(uploadMutex);
+
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        VkCommandBufferAllocateInfo cbAlloc {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        cbAlloc.commandPool = uploadCommandPool;
+        cbAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbAlloc.commandBufferCount = 1;
+        if(vkAllocateCommandBuffers(device, &cbAlloc, &cb) != VK_SUCCESS || cb == VK_NULL_HANDLE){
+            DEBUG_STREAM("submitImmediateUploadFromStaging: vkAllocateCommandBuffers failed");
+            return false;
+        }
+
+        VkCommandBufferBeginInfo begin {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if(vkBeginCommandBuffer(cb, &begin) != VK_SUCCESS){
+            vkFreeCommandBuffers(device, uploadCommandPool, 1, &cb);
+            return false;
+        }
+
+        const VkImageLayout oldLayout = tex.stagingCurrentLayout;
+        const std::uint32_t mipLevels  = tex.descriptor.mipLevels > 0 ? tex.descriptor.mipLevels : 1;
+        const std::uint32_t layerCount = tex.descriptor.arrayLayers > 0 ? tex.descriptor.arrayLayers : 1;
+
+        // oldLayout -> TRANSFER_DST_OPTIMAL. From UNDEFINED on the
+        // first upload (image was created with initialLayout =
+        // UNDEFINED) or from SHADER_READ_ONLY_OPTIMAL on subsequent
+        // uploads (the readback path leaves it in the prior layout).
+        VkImageMemoryBarrier toDst {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toDst.srcAccessMask = (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) ? 0 : VK_ACCESS_SHADER_READ_BIT;
+        toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toDst.oldLayout = oldLayout;
+        toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toDst.image = tex.img;
+        toDst.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        toDst.subresourceRange.baseMipLevel = 0;
+        toDst.subresourceRange.levelCount = mipLevels;
+        toDst.subresourceRange.baseArrayLayer = 0;
+        toDst.subresourceRange.layerCount = layerCount;
+        vkCmdPipelineBarrier(cb,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &toDst);
+
+        vkCmdCopyBufferToImage(cb, tex.stagingBuffer, tex.img,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            static_cast<std::uint32_t>(tex.stagingRegions.size()),
+            tex.stagingRegions.data());
+
+        // TRANSFER_DST -> SHADER_READ_ONLY_OPTIMAL. That's the layout
+        // the renderer's sampling-bind path expects (matches the
+        // `layout` field GEVulkanTexture was constructed with on the
+        // ToGPU path).
+        VkImageMemoryBarrier toRead = toDst;
+        toRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        toRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        vkCmdPipelineBarrier(cb,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &toRead);
+
+        if(vkEndCommandBuffer(cb) != VK_SUCCESS){
+            vkFreeCommandBuffers(device, uploadCommandPool, 1, &cb);
+            return false;
+        }
+
+        // Fence is reused across calls; reset before submit.
+        vkResetFences(device, 1, &uploadFence);
+
+        VkSubmitInfo submit {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &cb;
+        if(vkQueueSubmit(uploadQueue, 1, &submit, uploadFence) != VK_SUCCESS){
+            vkFreeCommandBuffers(device, uploadCommandPool, 1, &cb);
+            return false;
+        }
+
+        // Synchronous wait — matches D3D12's copyBytes contract and
+        // the Non-Goals §1 explicit choice (async upload is a separate
+        // plan). 5-second timeout is a safety net so a wedged GPU
+        // doesn't hang the test runner forever; UINT64_MAX would be
+        // strictly correct under VkResult semantics but in practice an
+        // upload that takes >5s means something has gone fatally wrong
+        // upstream and we want to surface it.
+        constexpr std::uint64_t kTimeoutNs = 5ull * 1000ull * 1000ull * 1000ull;
+        VkResult waitRes = vkWaitForFences(device, 1, &uploadFence, VK_TRUE, kTimeoutNs);
+        vkFreeCommandBuffers(device, uploadCommandPool, 1, &cb);
+
+        if(waitRes != VK_SUCCESS){
+            DEBUG_STREAM("submitImmediateUploadFromStaging: vkWaitForFences failed " << waitRes);
+            return false;
+        }
+        tex.stagingCurrentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // The engine encoder layout-tracking field. Subsequent renderer
+        // binds read this when emitting barriers, so it must agree with
+        // the layout the staging path left the image in.
+        tex.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        return true;
+    }
+
+    // FromGPU mirror — transitions image -> TRANSFER_SRC_OPTIMAL, copies
+    // into staging, restores prior layout, waits. Currently only
+    // exercised by `getBytes`; `debugReadbackPixelRGBA8` keeps its own
+    // self-contained one-shot for now (it predates this infra and
+    // doesn't have a GEVulkanTexture-side staging buffer to point at).
+    bool GEVulkanEngine::submitImmediateReadbackToStaging(GEVulkanTexture &tex){
+        if(uploadCommandPool == VK_NULL_HANDLE || uploadFence == VK_NULL_HANDLE
+           || uploadQueue == VK_NULL_HANDLE){
+            return false;
+        }
+        if(tex.stagingBuffer == VK_NULL_HANDLE || tex.stagingRegions.empty()){
+            return false;
+        }
+
+        std::lock_guard<std::mutex> guard(uploadMutex);
+
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        VkCommandBufferAllocateInfo cbAlloc {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        cbAlloc.commandPool = uploadCommandPool;
+        cbAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbAlloc.commandBufferCount = 1;
+        if(vkAllocateCommandBuffers(device, &cbAlloc, &cb) != VK_SUCCESS || cb == VK_NULL_HANDLE){
+            return false;
+        }
+
+        VkCommandBufferBeginInfo begin {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cb, &begin);
+
+        const VkImageLayout priorLayout = tex.stagingCurrentLayout == VK_IMAGE_LAYOUT_UNDEFINED
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL  // best-guess if we never tracked it
+            : tex.stagingCurrentLayout;
+        const std::uint32_t mipLevels  = tex.descriptor.mipLevels > 0 ? tex.descriptor.mipLevels : 1;
+        const std::uint32_t layerCount = tex.descriptor.arrayLayers > 0 ? tex.descriptor.arrayLayers : 1;
+
+        VkImageMemoryBarrier toSrc {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toSrc.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        toSrc.oldLayout = priorLayout;
+        toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toSrc.image = tex.img;
+        toSrc.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        toSrc.subresourceRange.baseMipLevel = 0;
+        toSrc.subresourceRange.levelCount = mipLevels;
+        toSrc.subresourceRange.baseArrayLayer = 0;
+        toSrc.subresourceRange.layerCount = layerCount;
+        vkCmdPipelineBarrier(cb,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &toSrc);
+
+        vkCmdCopyImageToBuffer(cb, tex.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            tex.stagingBuffer,
+            static_cast<std::uint32_t>(tex.stagingRegions.size()),
+            tex.stagingRegions.data());
+
+        VkBufferMemoryBarrier toHost {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        toHost.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        toHost.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toHost.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toHost.buffer = tex.stagingBuffer;
+        toHost.offset = 0;
+        toHost.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cb,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+            0, 0, nullptr, 1, &toHost, 0, nullptr);
+
+        // Restore the prior layout so subsequent draws / samples find
+        // the image in the layout they expect.
+        VkImageMemoryBarrier toPrior = toSrc;
+        toPrior.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        toPrior.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        toPrior.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toPrior.newLayout = priorLayout;
+        vkCmdPipelineBarrier(cb,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &toPrior);
+
+        if(vkEndCommandBuffer(cb) != VK_SUCCESS){
+            vkFreeCommandBuffers(device, uploadCommandPool, 1, &cb);
+            return false;
+        }
+
+        vkResetFences(device, 1, &uploadFence);
+
+        VkSubmitInfo submit {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &cb;
+        if(vkQueueSubmit(uploadQueue, 1, &submit, uploadFence) != VK_SUCCESS){
+            vkFreeCommandBuffers(device, uploadCommandPool, 1, &cb);
+            return false;
+        }
+
+        constexpr std::uint64_t kTimeoutNs = 5ull * 1000ull * 1000ull * 1000ull;
+        VkResult waitRes = vkWaitForFences(device, 1, &uploadFence, VK_TRUE, kTimeoutNs);
+        vkFreeCommandBuffers(device, uploadCommandPool, 1, &cb);
+        if(waitRes != VK_SUCCESS){
+            return false;
+        }
+        tex.stagingCurrentLayout = priorLayout;
+        tex.layout = priorLayout;
+        return true;
+    }
 
 
     inline VkSamplerAddressMode convertAddressMode(const omegasl_shader_static_sampler_address_mode & addressMode){
@@ -2643,6 +3023,86 @@ _NAMESPACE_BEGIN_
         return tracked;
     };
 
+    // Extension 3: embedded OmegaSL source for the full-screen-triangle vertex
+    // shader used by every blit pipeline. Mirrors the version embedded in the
+    // D3D12 / Metal backends; the rasterizer-output struct is the contract the
+    // user-supplied fragment shader must consume (see BlitPipelineDescriptor
+    // doxygen in GEPipeline.h).
+    static const char *kBlitFullscreenVsOmegaSL_Vulkan = R"(
+struct OmegaGTEBlitVertexData internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
+    OmegaGTEBlitVertexData r;
+    float u = (float)((vid << 1) & 2);
+    float v = (float)(vid & 2);
+    r.pos = make_float4(u * 2.0 - 1.0, 1.0 - v * 2.0, 0.0, 1.0);
+    r.uv  = make_float2(u, v);
+    return r;
+}
+)";
+
+    bool GEVulkanEngine::ensureBlitFullscreenVs(){
+        if(blitFullscreenVs) return true;
+        try {
+            auto compiler = OmegaSLCompiler::Create(gteDevice);
+            if(!compiler){
+                DEBUG_STREAM("ensureBlitFullscreenVs: OmegaSLCompiler::Create returned null");
+                return false;
+            }
+            OmegaCommon::String src(kBlitFullscreenVsOmegaSL_Vulkan);
+            auto source = OmegaSLCompiler::Source::fromString(src);
+            blitFullscreenVsLib = compiler->compile({source});
+            if(!blitFullscreenVsLib || blitFullscreenVsLib->header.entry_count == 0){
+                DEBUG_STREAM("ensureBlitFullscreenVs: OmegaSL compile produced no shaders");
+                blitFullscreenVsLib.reset();
+                return false;
+            }
+            omegasl_shader *shaderDesc = &blitFullscreenVsLib->shaders[0];
+            auto shader = _loadShaderFromDesc(shaderDesc, true);
+            if(!shader){
+                DEBUG_STREAM("ensureBlitFullscreenVs: _loadShaderFromDesc failed");
+                blitFullscreenVsLib.reset();
+                return false;
+            }
+            blitFullscreenVs = shader;
+            return true;
+        } catch(const std::exception &e) {
+            DEBUG_STREAM("ensureBlitFullscreenVs: exception: " << e.what());
+            blitFullscreenVs.reset();
+            blitFullscreenVsLib.reset();
+            return false;
+        }
+    }
+
+    SharedHandle<GEBlitPipelineState> GEVulkanEngine::makeBlitPipelineState(BlitPipelineDescriptor &desc){
+        if(!_checkPipelineShader(desc.fragmentFunc, "fragment", desc.name)){
+            return nullptr;
+        }
+        if(!ensureBlitFullscreenVs()){
+            DEBUG_STREAM("makeBlitPipelineState: ensureBlitFullscreenVs failed");
+            return nullptr;
+        }
+        RenderPipelineDescriptor rpDesc{};
+        rpDesc.name = desc.name.empty() ? OmegaCommon::String("OmegaGTE.Internal.BlitPipeline") : desc.name;
+        rpDesc.vertexFunc = blitFullscreenVs;
+        rpDesc.fragmentFunc = desc.fragmentFunc;
+        rpDesc.colorPixelFormats = { desc.destPixelFormat };
+        rpDesc.primitiveTopologyCategory = PrimitiveTopologyCategory::Triangle;
+        rpDesc.rasterSampleCount = 1;
+        rpDesc.cullMode = RasterCullMode::None;
+        rpDesc.triangleFillMode = TriangleFillMode::Solid;
+        auto rp = makeRenderPipelineState(rpDesc);
+        if(!rp){
+            DEBUG_STREAM("makeBlitPipelineState: underlying makeRenderPipelineState failed");
+            return nullptr;
+        }
+        auto result = std::shared_ptr<GEVulkanBlitPipelineState>(new GEVulkanBlitPipelineState(rp));
+        return result;
+    };
+
     SharedHandle<GEFence> GEVulkanEngine::makeFence(){
         
         VkFenceCreateInfo fenceCreateInfo {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -3308,6 +3768,20 @@ _NAMESPACE_BEGIN_
             // promise that every gate is signaled; drainAll skips the
             // gate queries that drainCompleted would do.
             retentionQueue.drainAll();
+
+            // Vulkan-Texture-Memory-Plan Phase 1 teardown. Must run
+            // after releaseAllTrackedResources — texture destructors
+            // can still invoke the staging upload path during release
+            // (though current callers only upload at creation, defensive
+            // ordering matches D3D12).
+            if(uploadFence != VK_NULL_HANDLE){
+                vkDestroyFence(device, uploadFence, nullptr);
+                uploadFence = VK_NULL_HANDLE;
+            }
+            if(uploadCommandPool != VK_NULL_HANDLE){
+                vkDestroyCommandPool(device, uploadCommandPool, nullptr);
+                uploadCommandPool = VK_NULL_HANDLE;
+            }
 
             for(auto & qf : deviceQueuefamilies){
                 for(auto & q : qf){

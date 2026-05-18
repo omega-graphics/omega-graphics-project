@@ -21,4 +21,10 @@ struct __GEComputePipelineState {
     }
 };
 
+// Extension 3: opaque base for backend-specific blit pipeline states.
+// Concrete subclasses wrap a SharedHandle<GERenderPipelineState>.
+struct __GEBlitPipelineState {
+    virtual ~__GEBlitPipelineState() = default;
+};
+
 _NAMESPACE_END_

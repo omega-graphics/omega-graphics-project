@@ -117,12 +117,24 @@ void DisplayListReplay::replay(const DisplayList & list, Canvas & canvas){
                 break;
             }
             case DrawOp::NativeContent: {
-                // Phase 2.5: the Canvas-based GPU path has no
-                // native-carve-out concept. The op exists so the
-                // NativeViewHost-Adoption-Plan migrations have a
-                // shape to emit against; the platform compositor
-                // gets a real implementation in Tier 3 when
-                // FrameBuilder owns the session.
+                // Tier 3 Phase 3.7: route the carve-out through the
+                // Canvas onto the per-frame visuals as a
+                // `VisualCommand::NativeContent`. The backend's
+                // `renderToTarget` switch translates it into the
+                // platform tree's pending-carve-out list at flush
+                // (CALayer sublayer ordering on macOS,
+                // DirectComposition visual on Windows, Wayland
+                // subsurface / X11 child window on Linux). The
+                // producer side (DrawOp::makeNativeContent emitters)
+                // is being adopted in tandem with
+                // `NativeViewHost-Adoption-Plan.md` Phases V2 / G2;
+                // until then, the replay path is exercised by
+                // fabricated DisplayLists in the
+                // `NativeContentCarveoutTest` validator.
+                const auto & ncp = op.params.nativeContentParams;
+                canvas.markNativeContentRegion(ncp.destRect,
+                                               ncp.hostId,
+                                               ncp.zOrderHint);
                 break;
             }
             case DrawOp::PushClip: {

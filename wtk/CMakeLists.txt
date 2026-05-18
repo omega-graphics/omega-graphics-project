@@ -56,7 +56,9 @@ elseif(UNIX AND NOT APPLE)
 	pkg_check_modules(PANGOFT2 REQUIRED pangoft2)
 	pkg_check_modules(FREETYPE2 REQUIRED freetype2)
 	pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
-	pkg_check_modules(FFMPEG REQUIRED libavcodec libavutil libavdevice)
+	# FFmpeg + alsa-lib options moved to va/CMakeLists.txt as part of the
+	# OmegaVA extraction (Phase 6 of Media-API-Completion-Plan).
+
 	# libnotify is optional: GTKNote falls back to no-op if not present.
 	pkg_check_modules(LIBNOTIFY libnotify)
 
@@ -155,6 +157,12 @@ add_third_party(
 
 add_custom_target(ThirdParty)
 add_dependencies(ThirdParty libxml2)
+
+# NOTE: FFmpeg + alsa-lib vendored-build blocks moved to va/CMakeLists.txt
+# as part of the OmegaVA extraction (Phase 6 of Media-API-Completion-Plan).
+# WTK no longer compiles any Media TUs — it consumes OmegaVA via the
+# target_link_libraries on OmegaWTK_UI below.
+
 # ─── Gather submodule sources ───
 
 #OmegaWTK Core SubModule
@@ -183,21 +191,8 @@ endif()
 source_group(OmegaWTKNative ${NATIVE_SRCS})
 set(NATIVE_PRIVATE_INCLUDE_DIR "${OMEGAWTK_SOURCE_DIR}/src/Native/private_include")
 
-#OmegaWTK Media SubModule
+# Media sources moved to OmegaVA (va/) — see Phase 6 of Media-API-Completion-Plan.
 
-file(GLOB MEDIA_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Media/*.cpp")
-source_group(OmegaWTKMedia ${MEDIA_SRCS})
-if(TARGET_WIN32)
-	file(GLOB WIN_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Media/wmf/*.cpp")
-	set(MEDIA_SRCS ${MEDIA_SRCS} ${WIN_SRCS})
-
-elseif(TARGET_MACOS)
-	file(GLOB MACOS_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Media/avf/*.mm")
-	set(MEDIA_SRCS ${MEDIA_SRCS} ${MACOS_SRCS})
-else()
-	file(GLOB FFMPEG_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Media/ffmpeg/*.cpp")
-	set(MEDIA_SRCS ${MEDIA_SRCS} ${FFMPEG_SRCS})
-endif()
 # Mobile Sources
 else()
 
@@ -212,17 +207,6 @@ else()
 	source_group(OmegaWTKNative ${NATIVE_SRCS})
 	set(NATIVE_PRIVATE_INCLUDE_DIR "${OMEGAWTK_SOURCE_DIR}/src/Mobile/Native/private_include")
 
-	#OmegaWTK Media SubModule
-
-	file(GLOB MEDIA_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Media/*.cpp")
-	source_group(OmegaWTKMedia ${MEDIA_SRCS})
-	if(TARGET_ANDROID)
-		file(GLOB ANDROID_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Mobile/Media/android/*.cpp")
-		set(MEDIA_SRCS ${MEDIA_SRCS} ${ANDROID_SRCS})
-	else()
-		file(GLOB IOS_SRCS "${OMEGAWTK_SOURCE_DIR}/src/Mobile/Media/ios/*.mm")
-		set(MEDIA_SRCS ${MEDIA_SRCS} ${IOS_SRCS})
-	endif()
 endif()
 
 #OmegaWTK Composition SubModule
@@ -284,17 +268,9 @@ if(TARGET_LINUX)
 	endif()
 endif()
 
-add_library(OmegaWTK_Media STATIC ${MEDIA_SRCS})
-target_include_directories(OmegaWTK_Media
-	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
-	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>)
-target_link_libraries(OmegaWTK_Media PUBLIC OmegaCommon)
-if(TARGET_LINUX)
-	target_include_directories(OmegaWTK_Media PRIVATE ${FFMPEG_INCLUDE_DIRS})
-	target_compile_options(OmegaWTK_Media PRIVATE ${FFMPEG_CFLAGS_OTHER})
-	target_link_directories(OmegaWTK_Media PUBLIC ${FFMPEG_LIBRARY_DIRS})
-	target_link_libraries(OmegaWTK_Media PUBLIC ${FFMPEG_LIBRARIES})
-endif()
+# OmegaWTK_Media moved to top-level OmegaVA module (see va/CMakeLists.txt
+# and Phase 6 of Media-API-Completion-Plan). OmegaWTK_UI now links OmegaVA
+# below to pick up VideoView's playback / capture session dependencies.
 
 add_library(OmegaWTK_Composition STATIC ${COMPOSITION_SRCS})
 target_include_directories(OmegaWTK_Composition
@@ -357,8 +333,14 @@ add_library(OmegaWTK_UI STATIC ${UI_SRCS})
 target_include_directories(OmegaWTK_UI
 	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
 	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
-	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
-target_link_libraries(OmegaWTK_UI PUBLIC OmegaCommon)
+	       $<TARGET_PROPERTY:OmegaVA,INCLUDE_DIRECTORIES>
+	# VideoView.cpp dtor of SharedHandle<AudioVideoProcessor> needs the
+	# backend AudioVideoProcessor full type; va/src is the private home
+	# for the per-backend headers (wmf/avf/ffmpeg). PRIVATE because no
+	# WTK public header pulls them.
+	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>
+	        $<TARGET_PROPERTY:OmegaVA,SOURCE_DIR>/src)
+target_link_libraries(OmegaWTK_UI PUBLIC OmegaCommon OmegaVA)
 if(OMEGAWTK_WINDOW_SCOPED_PAINT)
 	target_compile_definitions(OmegaWTK_UI PRIVATE OMEGAWTK_WINDOW_SCOPED_PAINT=1)
 endif()
@@ -370,7 +352,7 @@ target_include_directories(OmegaWTK_Widgets
 	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
 target_link_libraries(OmegaWTK_Widgets PUBLIC OmegaCommon)
 
-set(OMEGAWTK_SUBMODULE_LIBS OmegaWTK_Core OmegaWTK_Native OmegaWTK_Media OmegaWTK_Composition OmegaWTK_UI OmegaWTK_Widgets)
+set(OMEGAWTK_SUBMODULE_LIBS OmegaWTK_Core OmegaWTK_Native OmegaWTK_Composition OmegaWTK_UI OmegaWTK_Widgets)
 
 # Submodule archives get whole-archive'd into the OmegaWTK shared library, so
 # every object file must be position-independent.
@@ -380,9 +362,9 @@ set_target_properties(${OMEGAWTK_SUBMODULE_LIBS} PROPERTIES POSITION_INDEPENDENT
 
 configure_file("${OMEGAWTK_SOURCE_DIR}/src/Info.plist.in" ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
 
-set(OMEGAWTK_MODULE_DEPS OmegaGTE icu zlib libpng libjpeg-turbo libtiff libxml2)
+set(OMEGAWTK_MODULE_DEPS OmegaGTE OmegaVA icu zlib libpng libjpeg-turbo libtiff libxml2)
 if(OMEGAWTK_SKIP_THIRD_PARTY_BUILD)
-	set(OMEGAWTK_MODULE_DEPS OmegaGTE)
+	set(OMEGAWTK_MODULE_DEPS OmegaGTE OmegaVA)
 endif()
 
 # Compositor shaders are precompiled at build time by `omegaslc` (via the
@@ -463,14 +445,16 @@ if(TARGET_MACOS)
 	add_dependencies("OmegaWTK" OmegaGTE.framework)
 	add_dependencies("OmegaWTK" "OmegaWTK_ThirdPartyInstallNames")
 endif()
-target_include_directories("OmegaWTK" PUBLIC $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>)
+target_include_directories("OmegaWTK" PUBLIC
+	$<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	$<TARGET_PROPERTY:OmegaVA,INCLUDE_DIRECTORIES>)
 if(TARGET_MACOS)
 	target_link_system_frameworks("OmegaWTK" Metal Cocoa QuartzCore AVFoundation VideoToolbox AudioToolbox CoreMedia CoreAudio UserNotifications)
 	target_link_frameworks("OmegaWTK" OmegaGTE)
 else()
 	target_link_libraries("OmegaWTK" PRIVATE OmegaGTE)
 endif()
-target_link_libraries("OmegaWTK" PUBLIC "OmegaCommon" xml2)
+target_link_libraries("OmegaWTK" PUBLIC "OmegaCommon" "OmegaVA" xml2)
 
 if(TARGET_WIN32)
 	target_compile_definitions("OmegaWTK" PRIVATE WINDOWS_PRIVATE)
@@ -479,6 +463,70 @@ if(TARGET_LINUX)
 	# GTK/FFmpeg/Pango/Fontconfig flags are bound directly to the submodule
 	# static libraries (Native, Media, Composition) above; the framework
 	# inherits them transitively via PUBLIC linkage against those submodules.
+
+	# Project convention: every runtime shared library lands in
+	# ${CMAKE_BINARY_DIR}/lib. libOmegaWTK.so itself already gets
+	# placed there by add_omega_graphics_module's SHARED branch, but
+	# its FFmpeg + alsa-lib dependencies install into their own
+	# ExternalProject `lib` dirs and would otherwise require the user
+	# to set LD_LIBRARY_PATH. Stage them into ${CMAKE_BINARY_DIR}/lib
+	# so the loader resolves them via libOmegaWTK.so's $ORIGIN rpath.
+	#
+	# On macOS / Windows the framework bundle / DLL-side-by-side
+	# mechanisms handle this — see add_app_bundle and
+	# omega_stage_runtime_dlls respectively — so this block is
+	# Linux-only.
+	#
+	# $ORIGIN rpath on libOmegaWTK: the EMBEDDED_LIBS branch in
+	# add_omega_graphics_module appends $ORIGIN only when the
+	# EMBEDDED_LIBS list is non-empty; on Linux LIBXML2_RUNTIME is
+	# unset (libxml2 is the system / vendored xml2 imported target),
+	# so EMBEDDED_LIBS is empty and the rpath wasn't appended.
+	# Append it explicitly here so libavcodec.so.61 / libasound.so.2
+	# resolve from the staged ${CMAKE_BINARY_DIR}/lib alongside
+	# libOmegaWTK.so itself.
+	set_property(TARGET "OmegaWTK" APPEND PROPERTY BUILD_RPATH   "$ORIGIN")
+	set_property(TARGET "OmegaWTK" APPEND PROPERTY INSTALL_RPATH "$ORIGIN")
+
+	# Use DT_RPATH (old-style dynamic tag) instead of DT_RUNPATH on
+	# libOmegaWTK.so. The FFmpeg shared libs (libavdevice, libavfilter,
+	# ...) are installed with no rpath of their own and reference each
+	# other by SONAME. When loaded as a dependency of libOmegaWTK, they
+	# need a search path for *their* DT_NEEDED resolutions —
+	# specifically `libavdevice.so.61` → `libavfilter.so.10`. DT_RUNPATH
+	# (the modern default emitted by --enable-new-dtags) applies only
+	# to the object that carries it, so libOmegaWTK's RUNPATH does NOT
+	# get consulted when libavdevice looks up libavfilter; the load
+	# fails even though libavfilter.so.10 is staged in
+	# ${CMAKE_BINARY_DIR}/lib alongside libOmegaWTK.so. DT_RPATH IS
+	# transitive across the dependency chain — set it explicitly via
+	# --disable-new-dtags so libOmegaWTK's rpath covers every dynamic
+	# object loaded through it (the staged FFmpeg + alsa-lib chain
+	# included). This is the same pattern Linux Qt / Chromium / Firefox
+	# use when shipping co-located third-party shared libs.
+	target_link_options("OmegaWTK" PRIVATE "-Wl,--disable-new-dtags")
+
+	if(OMEGAWTK_USE_VENDORED_FFMPEG)
+		add_custom_command(TARGET "OmegaWTK" POST_BUILD
+			COMMAND "${CMAKE_COMMAND}"
+				"-DSRC_DIR=${FFMPEG_INSTALL_DIR}/lib"
+				"-DDST_DIR=${CMAKE_BINARY_DIR}/lib"
+				-P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/StageRuntimeSharedLibs.cmake"
+			COMMENT "Staging FFmpeg shared libs into ${CMAKE_BINARY_DIR}/lib"
+			VERBATIM)
+		add_dependencies("OmegaWTK" ffmpeg)
+	endif()
+
+	if(OMEGAWTK_USE_VENDORED_ALSA)
+		add_custom_command(TARGET "OmegaWTK" POST_BUILD
+			COMMAND "${CMAKE_COMMAND}"
+				"-DSRC_DIR=${ALSA_INSTALL_DIR}/lib"
+				"-DDST_DIR=${CMAKE_BINARY_DIR}/lib"
+				-P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/StageRuntimeSharedLibs.cmake"
+			COMMENT "Staging alsa-lib shared libs into ${CMAKE_BINARY_DIR}/lib"
+			VERBATIM)
+		add_dependencies("OmegaWTK" alsa-lib)
+	endif()
 endif()
 
 include(cmake/OmegaWTKApp.cmake)

@@ -1,0 +1,31 @@
+import "fs"
+
+var is_mac = autom.target_platform == "macos"
+var is_win = autom.target_platform == "windows"
+var is_linux = autom.target_platform == "linux"
+var is_ios = autom.target_platform == "ios"
+var is_android = autom.target_platform == "android"
+
+project(name:"OmegaVA",version:"0.1")
+
+var main_srcs = fs_glob(path:"./src/*.cpp")
+
+if (is_mac || is_ios){
+    main_srcs += fs_glob(path:"./src/avf/*.mm")
+}
+elif (is_win) {
+    main_srcs += fs_glob(path:"./src/wmf/*.cpp")
+}
+elif (is_linux){
+    main_srcs += fs_glob(path:"./src/ffmpeg/*.cpp")
+}
+elif (is_android){
+    main_srcs += fs_glob(path:"./src/android/*.cpp")
+}
+
+var omega_va_conf = Config(name:"omega-va_conf")
+omega_va_conf.include_dirs = ["./include"]
+
+var omega_va_lib = Archive(name:"omega-va",sources:main_srcs)
+omega_va_lib.configs = ["omega-va_conf"]
+omega_va_lib.deps = ["omega-common","omega-gte"]

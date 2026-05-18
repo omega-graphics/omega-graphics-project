@@ -181,6 +181,41 @@ _NAMESPACE_BEGIN_
         virtual void generateMipmaps(SharedHandle<GETexture> & texture) = 0;
 
         /**
+         @brief Execute a programmable blit using a BlitPipelineState (Extension 3).
+         @paragraph Internally opens a transient render pass on @p dest, binds
+         the pipeline and @p src (at fragment-shader resource slot 0), and
+         issues a 3-vertex draw covering the entire destination extent. Must
+         NOT be called inside an existing @c startRenderPass /
+         @c startBlitPass / @c startComputePass scope; the blit owns its own
+         pass for the duration of the call.
+         @param[in] pipelineState The blit pipeline to use.
+         @param[in] src           Source texture (sampled by the fragment shader).
+         @param[in] dest          Destination texture (color attachment 0).
+         */
+        virtual void blitWithPipeline(SharedHandle<GEBlitPipelineState> & pipelineState,
+                                      SharedHandle<GETexture> & src,
+                                      SharedHandle<GETexture> & dest) = 0;
+
+        /**
+         @brief Execute a programmable blit to a subregion of @p dest, reading
+         from @p srcRegion of @p src (Extension 3).
+         @paragraph Same scope rules as the full-extent overload. The viewport
+         and scissor are derived from @p destRegion; the source region is
+         currently advisory (sampled UVs cover the whole source texture) — a
+         future revision may bake @p srcRegion into per-blit constants.
+         @param[in] pipelineState The blit pipeline to use.
+         @param[in] src           Source texture.
+         @param[in] dest          Destination texture.
+         @param[in] srcRegion     Region of the source to sample from.
+         @param[in] destRegion    Region of the destination to write to.
+         */
+        virtual void blitWithPipeline(SharedHandle<GEBlitPipelineState> & pipelineState,
+                                      SharedHandle<GETexture> & src,
+                                      SharedHandle<GETexture> & dest,
+                                      const TextureRegion & srcRegion,
+                                      const TextureRegion & destRegion) = 0;
+
+        /**
          @brief Fill a buffer region with a repeating 32-bit value.
          */
         virtual void fillBuffer(SharedHandle<GEBuffer> & buffer,

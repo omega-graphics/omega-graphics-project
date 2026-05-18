@@ -2192,6 +2192,63 @@ _NAMESPACE_BEGIN_
         inBlitPass = false;
     }
 
+    void GEVulkanCommandBuffer::blitWithPipeline(SharedHandle<GEBlitPipelineState> &pipelineState,
+                                                 SharedHandle<GETexture> &src,
+                                                 SharedHandle<GETexture> &dest) {
+        auto *vk_dst = (GEVulkanTexture *)dest.get();
+        TextureRegion srcRegion{0,0,0,vk_dst->descriptor.width,vk_dst->descriptor.height,1};
+        TextureRegion destRegion = srcRegion;
+        blitWithPipeline(pipelineState, src, dest, srcRegion, destRegion);
+    }
+
+    void GEVulkanCommandBuffer::blitWithPipeline(SharedHandle<GEBlitPipelineState> &pipelineState,
+                                                 SharedHandle<GETexture> &src,
+                                                 SharedHandle<GETexture> &dest,
+                                                 const TextureRegion &srcRegion,
+                                                 const TextureRegion &destRegion) {
+        (void)srcRegion;
+        assert(activeRenderPass == VK_NULL_HANDLE && !inBlitPass && !inComputePass &&
+               "blitWithPipeline must not be called inside an existing pass scope");
+        if(!pipelineState){
+            DEBUG_STREAM("blitWithPipeline: pipelineState is null");
+            return;
+        }
+        auto *blitPipe = (GEVulkanBlitPipelineState *)pipelineState.get();
+        if(!blitPipe->renderPipeline){
+            DEBUG_STREAM("blitWithPipeline: underlying render pipeline is null");
+            return;
+        }
+
+        TextureRenderTargetDescriptor trtDesc{};
+        trtDesc.renderToExistingTexture = true;
+        trtDesc.texture = dest;
+        auto trtSh = parentQueue->engine->makeTextureRenderTarget(trtDesc);
+        if(!trtSh){
+            DEBUG_STREAM("blitWithPipeline: makeTextureRenderTarget failed");
+            return;
+        }
+
+        GERenderPassDescriptor rpDesc{};
+        rpDesc.tRenderTarget = trtSh.get();
+        rpDesc.colorAttachments.emplace_back(
+            GERenderPassDescriptor::ColorAttachment::ClearColor(0.f, 0.f, 0.f, 0.f),
+            GERenderPassDescriptor::ColorAttachment::Discard);
+        rpDesc.depthStencilAttachment.disabled = true;
+
+        startRenderPass(rpDesc);
+        setRenderPipelineState(blitPipe->renderPipeline);
+        bindResourceAtFragmentShader(src, 0, TextureSwizzle::identity());
+        GEViewport vp{(float)destRegion.x, (float)destRegion.y,
+                      (float)destRegion.w, (float)destRegion.h,
+                      0.f, 1.f};
+        setViewports({vp});
+        GEScissorRect sr{(float)destRegion.x, (float)destRegion.y,
+                         (float)destRegion.w, (float)destRegion.h};
+        setScissorRects({sr});
+        drawPolygons(GECommandBuffer::Triangle, 3, 0);
+        finishRenderPass();
+    }
+
     void GEVulkanCommandBuffer::reset(){
         // Free fallback descriptor sets before resetting the command buffer
         // — the GPU is assumed to be done with this buffer at reset time.

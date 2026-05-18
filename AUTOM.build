@@ -4,6 +4,8 @@ subdir(path:"./common")
 
 subdir(path:"./gte")
 
+subdir(path:"./va")
+
 # subdir(path:"./wtk")
 
 # subdir(path:"./aqua")

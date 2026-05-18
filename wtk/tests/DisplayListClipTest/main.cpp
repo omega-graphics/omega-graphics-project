@@ -22,11 +22,13 @@
 // is the same handler in both routes.
 
 #include <omegaWTK/UI/Widget.h>
+#include <omegaWTK/UI/View.h>
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
 #include <omegaWTK/Composition/Canvas.h>
 #include <omegaWTK/Composition/Brush.h>
 #include <omegaWTK/Composition/DisplayList.h>
+#include <omegaWTK/Composition/Layer.h>
 #include <omegaWTK/Main.h>
 #include <iostream>
 

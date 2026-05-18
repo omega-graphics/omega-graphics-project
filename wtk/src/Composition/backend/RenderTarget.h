@@ -40,6 +40,23 @@
 
 namespace OmegaWTK::Composition {
 
+    /// Tier 3 Phase 3.7: a single native-content carve-out recorded
+    /// by `BackendRenderTargetContext::renderToTarget` for the
+    /// platform tree to consume at flush time. `destRect` is in
+    /// *backing pixel* coordinates (canvas-local origin + slice
+    /// window offset, scaled by `renderScale`) so the platform tree
+    /// can hand it straight to the native layer's geometry setter
+    /// without re-doing the transform. `hostId` is the opaque
+    /// identifier the NativeViewHost-Adoption pipeline assigns to
+    /// each embedded native item; the platform tree uses it to look
+    /// up the CALayer / DComp visual / Wayland subsurface that owns
+    /// the region. `zOrderHint` is ascending = later / on-top.
+    struct BackendNativeContentRegion {
+        Composition::Rect destRectPixels {};
+        std::uint64_t hostId = 0;
+        int zOrderHint = 0;
+    };
+
     enum class BackendSubmissionStatus : std::uint8_t {
         Completed,
         Error,
@@ -169,6 +186,17 @@ namespace OmegaWTK::Composition {
         /// intersects with the slice's natural scissor. Empty Optional
         /// reinstates the natural scissor.
         void applySetClip(const Core::Optional<Composition::Rect> & clipRect);
+
+        /// Tier 3 Phase 3.7: pending native-content carve-outs for
+        /// the current frame. `renderToTarget`'s `NativeContent`
+        /// case pushes one record per op (pre-translated to backing
+        /// pixel coords); cleared at `beginFrame` so each frame
+        /// starts with an empty list. The platform tree drains it
+        /// at `endFrame` time via `pendingNativeContent()` /
+        /// `clearPendingNativeContent()` and turns each record into
+        /// the right native primitive (CALayer sublayer ordering,
+        /// DirectComposition visual insertion, Wayland subsurface).
+        OmegaCommon::Vector<BackendNativeContentRegion> pendingNativeContent_;
     public:
         /// Open a frame-level render pass that clears to the given color.
         /// All subsequent renderToTarget() calls record into this pass.
@@ -204,6 +232,23 @@ namespace OmegaWTK::Composition {
         const Composition::Rect & renderTargetSize() const { return renderTargetSize_; }
         SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> & tessellationContext(){ return tessellationContext_; }
         void releaseDeferredBuffers();
+
+        /// Tier 3 Phase 3.7: read / drain the pending native-content
+        /// carve-outs recorded by `renderToTarget`'s `NativeContent`
+        /// case during the current frame. The platform tree calls
+        /// `pendingNativeContent()` at flush time (typically inside
+        /// its `commit` / `presentFrame` path), iterates the records,
+        /// and translates each into the right native primitive
+        /// (CALayer sublayer ordering on macOS, DirectComposition
+        /// visual insertion on Windows, Wayland subsurface or X11
+        /// child window on Linux). `clearPendingNativeContent()`
+        /// resets the list before the next frame; the platform tree
+        /// is responsible for the call (the context auto-clears at
+        /// `beginFrame` for the case where the platform tree elides
+        /// the drain — e.g. headless validators).
+        const OmegaCommon::Vector<BackendNativeContentRegion> &
+            pendingNativeContent() const { return pendingNativeContent_; }
+        void clearPendingNativeContent(){ pendingNativeContent_.clear(); }
 #ifdef _WIN32
         /// Resize swap chain after waiting for GPU; use instead of calling ResizeBuffers on the swap chain directly.
         void resizeSwapChain(unsigned int backingWidth, unsigned int backingHeight);

@@ -85,6 +85,13 @@ clipRect(clip){
 
 };
 
+VisualCommand::Data::Data(const Composition::Rect & destRect,
+                          std::uint64_t hostId,
+                          int zOrderHint) :
+nativeContentParams({destRect, hostId, zOrderHint}){
+
+};
+
 
 
 void VisualCommand::Data::_destroy(Type t){
@@ -610,6 +617,18 @@ void Canvas::popClip(){
             ? Core::Optional<Composition::Rect>{}
             : Core::Optional<Composition::Rect>{clipStack_.back()};
     current->currentVisuals.emplace_back(next);
+}
+
+void Canvas::markNativeContentRegion(const Composition::Rect & destRect,
+                                     std::uint64_t hostId,
+                                     int zOrderHint){
+    // Phase 3.7: append a NativeContent visual command so the backend
+    // `renderToTarget` switch picks the carve-out up alongside the
+    // slice's draw commands. The Canvas does no per-platform work
+    // here — the platform tree owns hostId-to-native-layer lookup
+    // (CALayer / DComp visual / Wayland subsurface) and pulls the
+    // carve-out list off the backend context at flush time.
+    current->currentVisuals.emplace_back(destRect, hostId, zOrderHint);
 }
 
 void Canvas::setBackground(const Color & color){

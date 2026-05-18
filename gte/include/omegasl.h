@@ -13,13 +13,13 @@ struct omegasl_lib_header {
     unsigned entry_count;
 };
 
-using omegasl_shader_layout_desc_io_mode = enum : int {
+enum omegasl_shader_layout_desc_io_mode : int {
     OMEGASL_SHADER_DESC_IO_IN,
     OMEGASL_SHADER_DESC_IO_OUT,
     OMEGASL_SHADER_DESC_IO_INOUT
 };
 
-using omegasl_shader_layout_desc_type = enum : int {
+enum omegasl_shader_layout_desc_type : int {
     OMEGASL_SHADER_CONSTANT_DESC,
     OMEGASL_SHADER_BUFFER_DESC,
     OMEGASL_SHADER_TEXTURE1D_DESC,
@@ -50,14 +50,14 @@ using omegasl_shader_layout_desc_type = enum : int {
     OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC
 };
 
-using omegasl_shader_static_sampler_filter = enum : int {
+enum omegasl_shader_static_sampler_filter : int {
     OMEGASL_SHADER_SAMPLER_LINEAR_FILTER,
     OMEGASL_SHADER_SAMPLER_POINT_FILTER,
     OMEGASL_SHADER_SAMPLER_MAX_ANISOTROPY_FILTER,
     OMEGASL_SHADER_SAMPLER_MIN_ANISOTROPY_FILTER
 };
 
-using omegasl_shader_static_sampler_address_mode = enum : int {
+enum omegasl_shader_static_sampler_address_mode : int {
     OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_CLAMPTOEDGE,
     OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_WRAP,
     OMEGASL_SHADER_SAMPLER_ADDRESS_MODE_MIRROR,
@@ -70,7 +70,7 @@ struct omegasl_shader_static_sampler_desc {
     unsigned int max_anisotropy;
 };
 
-using omegasl_data_type = enum : int {
+enum omegasl_data_type : int {
     //Int Types
     OMEGASL_INT,
     OMEGASL_INT2,
@@ -182,7 +182,7 @@ struct omegasl_shader_layout_desc {
     omegasl_texture_swizzle_desc swizzle_desc;
 };
 
-using omegasl_shader_type = enum : int {
+enum omegasl_shader_type : int {
     OMEGASL_SHADER_VERTEX,
     OMEGASL_SHADER_FRAGMENT,
     OMEGASL_SHADER_COMPUTE,
@@ -197,7 +197,7 @@ using omegasl_shader_type = enum : int {
 /// only the shaders whose required bits are not satisfied. Other shaders
 /// in the same library load normally. New bits append at the tail;
 /// existing bits never get reused. See OmegaSL-Feature-Gap-Survey §14.
-using omegasl_shader_feature_flags = enum : unsigned long long {
+enum omegasl_shader_feature_flags : unsigned long long {
     OMEGASL_FEATURE_BIT_NONE               = 0,
     OMEGASL_FEATURE_BIT_RAYTRACING         = 1ull << 0,
     OMEGASL_FEATURE_BIT_MESH_SHADERS       = 1ull << 1,

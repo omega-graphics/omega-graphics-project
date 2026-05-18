@@ -1,3 +1,4 @@
+#include "omegaWTK/Main.h"
 #include "omegaWTK/UI/Layout.h"
 
 #include <cassert>
@@ -274,9 +275,7 @@ static void testAbsolutePositioning(){
     std::printf("  [PASS] testAbsolutePositioning\n");
 }
 
-int main(int argc,char **argv){
-    (void)argc;
-    (void)argv;
+int omegaWTKMain(OmegaWTK::AppInst *app){
     std::printf("LayoutResizeStressTest\n");
     std::printf("======================\n");
 

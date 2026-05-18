@@ -2,8 +2,8 @@
 #define OMEGAWTK_UI_VIDEOVIEW_H
 
 #include "View.h"
-#include "omegaWTK/Media/MediaPlaybackSession.h"
-#include "omegaWTK/Media/Video.h"
+#include "omegaVA/MediaPlaybackSession.h"
+#include "omegaVA/Video.h"
 
 namespace OmegaWTK {
 
@@ -33,24 +33,24 @@ public:
  @brief The visual display output of a VideoPlaybackSession or a capture preview output of a VideoCaptureSession.
 */
 class OMEGAWTK_EXPORT VideoView : public View,
-                                  public Media::VideoFrameSink {
-    OmegaCommon::QueueHeap<SharedHandle<Media::VideoFrame>> framebuffer;
+                                  public OmegaVA::VideoFrameSink {
+    OmegaCommon::QueueHeap<SharedHandle<OmegaVA::VideoFrame>> framebuffer;
     SharedHandle<Composition::Canvas> videoCanvas;
     VideoViewDelegate *delegate_ = nullptr;
     VideoScaleMode scaleMode_ = VideoScaleMode::AspectFit;
     VideoSourceMode sourceMode_ = VideoSourceMode::None;
-    SharedHandle<Media::VideoPlaybackSession> playbackSession_;
-    UniqueHandle<Media::VideoCaptureSession> captureSession_;
-    SharedHandle<Media::PlaybackDispatchQueue> dispatchQueue_;
+    SharedHandle<OmegaVA::VideoPlaybackSession> playbackSession_;
+    UniqueHandle<OmegaVA::VideoCaptureSession> captureSession_;
+    SharedHandle<OmegaVA::PlaybackDispatchQueue> dispatchQueue_;
     bool loop_ = false;
 
-    void queueFrame(SharedHandle<Media::VideoFrame> &frame);
+    void queueFrame(SharedHandle<OmegaVA::VideoFrame> &frame);
 
     bool framebuffered() const override {
         return true;
     }
     void flush() override;
-    void pushFrame(SharedHandle<Media::VideoFrame> frame) override;
+    void pushFrame(SharedHandle<OmegaVA::VideoFrame> frame) override;
     void presentCurrentFrame() override;
 public:
     OMEGACOMMON_CLASS("OmegaWTK.VideoView")
@@ -63,14 +63,14 @@ public:
     VideoScaleMode scaleMode() const;
     VideoSourceMode sourceMode() const;
 
-    bool bindPlaybackSource(Media::MediaInputStream & input,
+    bool bindPlaybackSource(OmegaVA::MediaInputStream & input,
                             const VideoViewPlaybackOptions & opts = {});
-    bool bindCapturePreview(SharedHandle<Media::VideoDevice> & videoDevice,
-                            SharedHandle<Media::AudioCaptureDevice> audioDevice = nullptr,
+    bool bindCapturePreview(SharedHandle<OmegaVA::VideoDevice> & videoDevice,
+                            SharedHandle<OmegaVA::AudioCaptureDevice> audioDevice = nullptr,
                             const VideoViewCaptureOptions & opts = {});
-    bool bindCaptureRecord(SharedHandle<Media::VideoDevice> & videoDevice,
-                           Media::MediaOutputStream & output,
-                           SharedHandle<Media::AudioCaptureDevice> audioDevice = nullptr,
+    bool bindCaptureRecord(SharedHandle<OmegaVA::VideoDevice> & videoDevice,
+                           OmegaVA::MediaOutputStream & output,
+                           SharedHandle<OmegaVA::AudioCaptureDevice> audioDevice = nullptr,
                            const VideoViewCaptureOptions & opts = {});
 
     void play();

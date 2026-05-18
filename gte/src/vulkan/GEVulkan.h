@@ -22,6 +22,7 @@
 #include "../common/GERetentionQueue.h"
 
 #include <functional>
+#include <mutex>
 
 #ifndef OMEGAGTE_VULKAN_GEVULKAN_H
 #define OMEGAGTE_VULKAN_GEVULKAN_H
@@ -30,6 +31,7 @@
 
 _NAMESPACE_BEGIN_
     struct GTEVulkanDevice;
+    class GEVulkanTexture;
     #define VK_RESULT_SUCCEEDED(val) (val == VK_SUCCESS)
     class GEVulkanEngine : public OmegaGraphicsEngine {
 
@@ -86,6 +88,43 @@ _NAMESPACE_BEGIN_
 
         OmegaCommon::Vector<std::uint32_t> queueFamilyIndices;
 
+        // Vulkan-Texture-Memory-Plan Phase 1. Persistent command pool +
+        // fence used by GEVulkanTexture::copyBytes / getBytes to drive
+        // the synchronous staging-buffer upload/readback path. The pool
+        // is TRANSIENT (every command buffer is one-shot) and is bound
+        // to the queue family of `uploadQueue` so vkBeginCommandBuffer
+        // doesn't have to look up a fresh pool per call (as
+        // debugReadbackPixelRGBA8 still does — that path predates this
+        // infra and could be migrated in a follow-up).
+        //
+        // The plan called for a ring of pools/buffers; since the API
+        // contract is synchronous (Non-Goals §1), there is never more
+        // than one upload in flight, so a single pool + single fence
+        // are sufficient. A mutex serializes concurrent copyBytes
+        // calls from different threads against the shared pool/fence —
+        // expected contention is near-zero for current callers (texture
+        // cache populates synchronously during recording).
+        VkCommandPool uploadCommandPool = VK_NULL_HANDLE;
+        VkFence       uploadFence       = VK_NULL_HANDLE;
+        VkQueue       uploadQueue       = VK_NULL_HANDLE;
+        std::uint32_t uploadQueueFamily = 0;
+        std::mutex    uploadMutex;
+
+        /// Submit a one-shot transfer that copies `tex.stagingBuffer` ->
+        /// `tex.img`, transitions the image to `SHADER_READ_ONLY_OPTIMAL`,
+        /// and waits for the submission to complete. Used by
+        /// GEVulkanTexture::copyBytes for `ToGPU` textures. Returns
+        /// false on submission failure (caller falls back to reporting
+        /// the failure via DEBUG_STREAM; the texture is left
+        /// undefined-contents but allocated).
+        bool submitImmediateUploadFromStaging(GEVulkanTexture &tex);
+
+        /// Mirror of submitImmediateUploadFromStaging for `FromGPU`:
+        /// transitions `tex.img` -> `TRANSFER_SRC_OPTIMAL`, copies into
+        /// `tex.stagingBuffer`, restores the prior layout, and waits.
+        /// Used by GEVulkanTexture::getBytes.
+        bool submitImmediateReadbackToStaging(GEVulkanTexture &tex);
+
         struct TrackedResource {
             std::weak_ptr<void> ref;
             void *rawPtr;
@@ -117,6 +156,16 @@ _NAMESPACE_BEGIN_
         SharedHandle<GERenderPipelineState> makeRenderPipelineState(RenderPipelineDescriptor &desc) override;
 
         SharedHandle<GEComputePipelineState> makeComputePipelineState(ComputePipelineDescriptor &desc) override;
+
+        SharedHandle<GEBlitPipelineState> makeBlitPipelineState(BlitPipelineDescriptor &desc) override;
+
+        // Extension 3: cached built-in full-screen-triangle vertex shader,
+        // shared by every blit pipeline created on this engine. Lazily
+        // compiled on the first makeBlitPipelineState call.
+        SharedHandle<GTEDevice> gteDevice;
+        SharedHandle<GTEShader> blitFullscreenVs;
+        std::shared_ptr<omegasl_shader_lib> blitFullscreenVsLib;
+        bool ensureBlitFullscreenVs();
 
         SharedHandle<GENativeRenderTarget> makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc,
                                                                    SharedHandle<GECommandQueue> presentQueue) override;

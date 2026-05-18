@@ -51,6 +51,18 @@ class DCVisualTree : public BackendVisualTree {
     Core::SharedPtr<Parent::Visual> makeSurfaceVisual(Composition::Rect & rect,Composition::Point2D & pos) override;
     void setRootVisual(Core::SharedPtr<Parent::Visual> & visual) override;
 
+    /// Tier 3 Phase 3.7: drain the per-frame native-content carve-outs
+    /// recorded by `BackendRenderTargetContext::renderToTarget` and
+    /// translate each record into DirectComposition visual insertion
+    /// against this tree's root `IDCompositionVisual2`. The hostId →
+    /// `IDCompositionVisual2` registry is owned by `HWNDItem`
+    /// (registered there by `NativeViewHost-Adoption-Plan.md` Phases
+    /// V2 / G2); until that registry exists, this drain logs the
+    /// records and clears the list so the next frame starts clean.
+    /// Called by the compositor frame worker after the slice loop
+    /// completes.
+    void applyNativeContentCarveouts(BackendRenderTargetContext & ctx) override;
+
 };
 
 };

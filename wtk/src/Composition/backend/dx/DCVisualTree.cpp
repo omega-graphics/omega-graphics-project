@@ -169,6 +169,34 @@ namespace OmegaWTK::Composition {
         // Their content is composited via viewport override into the root surface.
     };
 
+    void DCVisualTree::applyNativeContentCarveouts(BackendRenderTargetContext & ctx){
+        // Tier 3 Phase 3.7: per-frame drain hook. Pulls the carve-outs
+        // the renderToTarget switch accumulated (translated to backing
+        // pixel coords by the context) and prepares to translate each
+        // record into DirectComposition visual insertion against this
+        // tree's root IDCompositionVisual2 (SetOffsetX/Y +
+        // SetTransform). The hostId → IDCompositionVisual2 mapping is
+        // owned by HWNDItem (registered there by
+        // NativeViewHost-Adoption-Plan Phases V2 / G2); until that
+        // registry exists, this method logs the records and clears
+        // the list so the next frame starts clean.
+        const auto & regions = ctx.pendingNativeContent();
+        if(!regions.empty()){
+#ifdef OMEGAWTK_TRACE_RENDER
+            for(const auto & r : regions){
+                std::cerr << "[DCVisualTree] carve-out hostId=" << r.hostId
+                          << " z=" << r.zOrderHint
+                          << " px=(" << r.destRectPixels.pos.x
+                          << "," << r.destRectPixels.pos.y << " "
+                          << r.destRectPixels.w << "x"
+                          << r.destRectPixels.h << ")  [no producer wired"
+                          << " — awaiting NativeViewHost V2/G2]"
+                          << std::endl;
+            }
+#endif
+        }
+        ctx.clearPendingNativeContent();
+    }
 
 
 };

@@ -67,6 +67,14 @@ _NAMESPACE_BEGIN_
                                  size_t bytesPerRow, size_t bytesPerImage,
                                  const TextureRegion & srcRegion, size_t destBufferOffset) override;
         void generateMipmaps(SharedHandle<GETexture> & texture) override;
+        void blitWithPipeline(SharedHandle<GEBlitPipelineState> & pipelineState,
+                              SharedHandle<GETexture> & src,
+                              SharedHandle<GETexture> & dest) override;
+        void blitWithPipeline(SharedHandle<GEBlitPipelineState> & pipelineState,
+                              SharedHandle<GETexture> & src,
+                              SharedHandle<GETexture> & dest,
+                              const TextureRegion & srcRegion,
+                              const TextureRegion & destRegion) override;
         void fillBuffer(SharedHandle<GEBuffer> & buffer, uint32_t value,
                         size_t offset, size_t size) override;
         void finishBlitPass() override;

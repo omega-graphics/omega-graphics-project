@@ -1181,7 +1181,7 @@ Files touched: `wtk/include/omegaWTK/Composition/Canvas.h`,
 `wtk/src/Composition/Canvas.cpp`, `wtk/src/Composition/DisplayList.cpp`,
 backend-specific clip plumbing in `wtk/src/Composition/backend/`.
 
-##### Phase 3.6 — `ScrollView` migration
+##### Phase 3.6 — `ScrollView` migration [DONE]
 
 ScrollView becomes the first `PushClip` producer and the first
 consumer of `FrameBuilder::contentOffset` (the Arrange-time hook
@@ -1219,7 +1219,7 @@ Files touched: `wtk/include/omegaWTK/UI/ScrollView.h`,
 `wtk/include/omegaWTK/UI/View.h` (the new virtual), new
 `wtk/tests/ScrollViewClipTest/`.
 
-##### Phase 3.7 — `DisplayListReplay` real implementation for `NativeContent` (carve-out)
+##### Phase 3.7 — `DisplayListReplay` real implementation for `NativeContent` (carve-out) [DONE]
 
 The Phase 2.5 no-op gets real backend handling. Each platform
 compositor turns the carve-out into the right local primitive (CA

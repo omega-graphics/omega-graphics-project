@@ -635,6 +635,66 @@ void GED3D12CommandBuffer::finishBlitPass() {
     inBlitPass = false;
 };
 
+void GED3D12CommandBuffer::blitWithPipeline(SharedHandle<GEBlitPipelineState> &pipelineState,
+                                            SharedHandle<GETexture> &src,
+                                            SharedHandle<GETexture> &dest) {
+    auto *dst = (GED3D12Texture *)dest.get();
+    auto descD = dst->resource->GetDesc();
+    TextureRegion srcRegion{0, 0, 0, (unsigned)descD.Width, descD.Height, 1};
+    TextureRegion destRegion{0, 0, 0, (unsigned)descD.Width, descD.Height, 1};
+    blitWithPipeline(pipelineState, src, dest, srcRegion, destRegion);
+}
+
+void GED3D12CommandBuffer::blitWithPipeline(SharedHandle<GEBlitPipelineState> &pipelineState,
+                                            SharedHandle<GETexture> &src,
+                                            SharedHandle<GETexture> &dest,
+                                            const TextureRegion &srcRegion,
+                                            const TextureRegion &destRegion) {
+    (void)srcRegion;
+    assert(!inRenderPass && !inBlitPass && !inComputePass &&
+           "blitWithPipeline must not be called inside an existing pass scope");
+    if (!pipelineState) {
+        DEBUG_STREAM("blitWithPipeline: pipelineState is null");
+        return;
+    }
+    auto *blitPipe = (GED3D12BlitPipelineState *)pipelineState.get();
+    if (!blitPipe->renderPipeline) {
+        DEBUG_STREAM("blitWithPipeline: underlying render pipeline is null");
+        return;
+    }
+
+    // One-shot texture render target wrapping `dest`. The SharedHandle is
+    // kept on the stack so the underlying object outlives the pass.
+    TextureRenderTargetDescriptor trtDesc{};
+    trtDesc.renderToExistingTexture = true;
+    trtDesc.texture = dest;
+    auto trtSh = parentQueue->engine->makeTextureRenderTarget(trtDesc);
+    if (!trtSh) {
+        DEBUG_STREAM("blitWithPipeline: makeTextureRenderTarget failed");
+        return;
+    }
+
+    GERenderPassDescriptor rpDesc{};
+    rpDesc.tRenderTarget = trtSh.get();
+    rpDesc.colorAttachments.emplace_back(
+        GERenderPassDescriptor::ColorAttachment::ClearColor(0.f, 0.f, 0.f, 0.f),
+        GERenderPassDescriptor::ColorAttachment::Discard);
+    rpDesc.depthStencilAttachment.disabled = true;
+
+    startRenderPass(rpDesc);
+    setRenderPipelineState(blitPipe->renderPipeline);
+    bindResourceAtFragmentShader(src, 0, TextureSwizzle::identity());
+    GEViewport vp{(float)destRegion.x, (float)destRegion.y,
+                  (float)destRegion.w, (float)destRegion.h,
+                  0.f, 1.f};
+    setViewports({vp});
+    GEScissorRect sr{(float)destRegion.x, (float)destRegion.y,
+                     (float)destRegion.w, (float)destRegion.h};
+    setScissorRects({sr});
+    drawPolygons(GECommandBuffer::Triangle, 3, 0);
+    finishRenderPass();
+}
+
 void GED3D12CommandBuffer::beginAccelStructPass() {}
 
 static void fillGeometryDescsFromGE(const GEAccelerationStructDescriptor &desc,

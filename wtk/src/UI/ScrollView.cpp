@@ -1,6 +1,5 @@
 #include "omegaWTK/UI/ScrollView.h"
-#include "omegaWTK/Composition/Canvas.h"
-#include "omegaWTK/Composition/Layer.h"
+#include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/Brush.h"
 
 #include <algorithm>
@@ -12,6 +11,12 @@ namespace OmegaWTK {
         constexpr float kScrollBarMargin = 2.f;
         constexpr float kScrollBarRadius = 3.f;
         constexpr float kMinThumbLength = 20.f;
+        // Tier 3 Phase 3.6: bar fill is no longer mediated by a brush
+        // applied per-canvas — it is a per-op color carried directly on
+        // the `RoundedRect` DrawOp. The pre-3.6 grey (0.5, 0.5, 0.5,
+        // 0.6) is preserved for visual parity with the deleted
+        // overlay-layer path.
+        constexpr Composition::Color kScrollBarColor {0.5f, 0.5f, 0.5f, 0.6f};
     }
 
     void ScrollView::DefaultScrollHandler::onRecieveEvent(Native::NativeEventPtr event){
@@ -45,100 +50,11 @@ namespace OmegaWTK {
         if(child != nullptr){
             addSubView(child.get());
         }
-        // Create scroll bar overlay layers.
-        if(hasVerticalScrollBar){
-            Composition::Rect vBarRect {
-                Composition::Point2D{rect.w - kScrollBarThickness - kScrollBarMargin, kScrollBarMargin},
-                kScrollBarThickness,
-                rect.h - 2.f * kScrollBarMargin
-            };
-            vScrollBarLayer = makeLayer(vBarRect);
-            vScrollBarCanvas = makeCanvas(vScrollBarLayer);
-        }
-        if(hasHorizontalScrollBar){
-            Composition::Rect hBarRect {
-                Composition::Point2D{kScrollBarMargin, rect.h - kScrollBarThickness - kScrollBarMargin},
-                rect.w - 2.f * kScrollBarMargin,
-                kScrollBarThickness
-            };
-            hScrollBarLayer = makeLayer(hBarRect);
-            hScrollBarCanvas = makeCanvas(hScrollBarLayer);
-        }
-    };
-
-    void ScrollView::paintScrollBars(){
-        auto & viewRect = getRect();
-        if(child == nullptr){
-            return;
-        }
-        auto & contentRect = child->getRect();
-
-        if(hasVerticalScrollBar && vScrollBarCanvas != nullptr){
-            float trackH = viewRect.h - 2.f * kScrollBarMargin;
-            float contentH = contentRect.h;
-            if(contentH <= viewRect.h){
-                contentH = viewRect.h + 1.f;
-            }
-            float thumbRatio = viewRect.h / contentH;
-            float thumbH = std::max(kMinThumbLength, trackH * thumbRatio);
-            float scrollRatio = scrollOffset.y / (contentH - viewRect.h);
-            scrollRatio = std::clamp(scrollRatio, 0.f, 1.f);
-            float thumbY = scrollRatio * (trackH - thumbH);
-
-            // Update layer rect.
-            Composition::Rect vBarRect {
-                Composition::Point2D{viewRect.w - kScrollBarThickness - kScrollBarMargin, kScrollBarMargin},
-                kScrollBarThickness,
-                trackH
-            };
-            vScrollBarLayer->resize(vBarRect);
-
-            startCompositionSession();
-            vScrollBarCanvas->clear();
-            Composition::RoundedRect thumbRect {
-                {0.f, thumbY},
-                kScrollBarThickness, thumbH,
-                kScrollBarRadius, kScrollBarRadius
-            };
-            auto brush = Composition::ColorBrush(
-                Composition::Color{0.5f, 0.5f, 0.5f, 0.6f});
-            vScrollBarCanvas->drawRoundedRect(thumbRect, brush);
-            vScrollBarCanvas->sendFrame();
-            endCompositionSession();
-        }
-
-        if(hasHorizontalScrollBar && hScrollBarCanvas != nullptr){
-            float trackW = viewRect.w - 2.f * kScrollBarMargin;
-            float contentW = contentRect.w;
-            if(contentW <= viewRect.w){
-                contentW = viewRect.w + 1.f;
-            }
-            float thumbRatio = viewRect.w / contentW;
-            float thumbW = std::max(kMinThumbLength, trackW * thumbRatio);
-            float scrollRatio = scrollOffset.x / (contentW - viewRect.w);
-            scrollRatio = std::clamp(scrollRatio, 0.f, 1.f);
-            float thumbX = scrollRatio * (trackW - thumbW);
-
-            Composition::Rect hBarRect {
-                Composition::Point2D{kScrollBarMargin, viewRect.h - kScrollBarThickness - kScrollBarMargin},
-                trackW,
-                kScrollBarThickness
-            };
-            hScrollBarLayer->resize(hBarRect);
-
-            startCompositionSession();
-            hScrollBarCanvas->clear();
-            Composition::RoundedRect thumbRect {
-                {thumbX, 0.f},
-                thumbW, kScrollBarThickness,
-                kScrollBarRadius, kScrollBarRadius
-            };
-            auto brush = Composition::ColorBrush(
-                Composition::Color{0.5f, 0.5f, 0.5f, 0.6f});
-            hScrollBarCanvas->drawRoundedRect(thumbRect, brush);
-            hScrollBarCanvas->sendFrame();
-            endCompositionSession();
-        }
+        // Tier 3 Phase 3.6: the prior per-view overlay layers and
+        // canvases (vScrollBarLayer / hScrollBarLayer /
+        // vScrollBarCanvas / hScrollBarCanvas) are gone — bars are
+        // authored declaratively and emitted as `RoundedRect` DrawOps
+        // from `paintOverlay()` into the shared window canvas.
     }
 
     bool ScrollView::hasDelegate(){
@@ -158,11 +74,96 @@ namespace OmegaWTK {
 
     void ScrollView::setScrollOffset(const Composition::Point2D & offset){
         scrollOffset = offset;
-        paintScrollBars();
+        // Tier 3 Phase 3.6: previously called `paintScrollBars()`
+        // which immediately re-rendered the overlay-layer canvases.
+        // Those layers are gone — the next paint pass picks up the
+        // new offset through `paint()` / `paintOverlay()` (descendants
+        // see the shift via `contentOffset()` folded into the
+        // FrameBuilder accumulator). The compositor invalidation that
+        // schedules the next paint is the caller's responsibility
+        // (typically the input handler triggers a widget invalidate).
     }
 
-    Composition::Point2D ScrollView::scrollOffsetContribution() const{
-        return scrollOffset;
+    Composition::Point2D ScrollView::contentOffset() const{
+        // Sign: descendant `legacyComputeWindowOffset()` adds this
+        // (Phase 3.6 walk), so returning `-scrollOffset` shifts the
+        // content up/left by `scrollOffset` — same observable effect
+        // as the pre-3.6 `scrollOffsetContribution() = +scrollOffset`
+        // path, which was *subtracted*.
+        return {-scrollOffset.x, -scrollOffset.y};
+    }
+
+    bool ScrollView::wantsLayer() const{
+        return true;
+    }
+
+    void ScrollView::paint(Composition::DisplayList & list) const{
+        // The clip rect is the ScrollView's own bounds expressed in
+        // its local coordinate space (origin {0,0} relative to itself).
+        // FrameBuilder's per-view replay translates by the view's
+        // window-offset at sendFrame time, so `PushClip` lands at the
+        // ScrollView's absolute window rect on the shared canvas.
+        const auto & r = const_cast<ScrollView *>(this)->getRect();
+        Composition::Rect localClip{
+            Composition::Point2D{0.f, 0.f}, r.w, r.h};
+        list.append(Composition::DrawOp::makePushClip(localClip));
+    }
+
+    void ScrollView::paintOverlay(Composition::DisplayList & list) const{
+        list.append(Composition::DrawOp::makePopClip());
+
+        const auto & viewRect = const_cast<ScrollView *>(this)->getRect();
+        if(child == nullptr){
+            return;
+        }
+        const auto & contentRect = child->getRect();
+
+        if(hasVerticalScrollBar){
+            float trackH = viewRect.h - 2.f * kScrollBarMargin;
+            float contentH = contentRect.h;
+            // Avoid divide-by-zero / negative ratios when content is
+            // smaller than the viewport. We still draw the thumb
+            // (full-track) in that case so the bar is visible.
+            if(contentH <= viewRect.h){
+                contentH = viewRect.h + 1.f;
+            }
+            float thumbRatio = viewRect.h / contentH;
+            float thumbH = std::max(kMinThumbLength, trackH * thumbRatio);
+            float scrollRatio = scrollOffset.y / (contentH - viewRect.h);
+            scrollRatio = std::clamp(scrollRatio, 0.f, 1.f);
+            float thumbY = scrollRatio * (trackH - thumbH);
+
+            Composition::RoundedRect thumb {
+                {viewRect.w - kScrollBarThickness - kScrollBarMargin,
+                 kScrollBarMargin + thumbY},
+                kScrollBarThickness, thumbH,
+                kScrollBarRadius, kScrollBarRadius
+            };
+            list.append(Composition::DrawOp{
+                thumb, Composition::ColorBrush(kScrollBarColor)});
+        }
+
+        if(hasHorizontalScrollBar){
+            float trackW = viewRect.w - 2.f * kScrollBarMargin;
+            float contentW = contentRect.w;
+            if(contentW <= viewRect.w){
+                contentW = viewRect.w + 1.f;
+            }
+            float thumbRatio = viewRect.w / contentW;
+            float thumbW = std::max(kMinThumbLength, trackW * thumbRatio);
+            float scrollRatio = scrollOffset.x / (contentW - viewRect.w);
+            scrollRatio = std::clamp(scrollRatio, 0.f, 1.f);
+            float thumbX = scrollRatio * (trackW - thumbW);
+
+            Composition::RoundedRect thumb {
+                {kScrollBarMargin + thumbX,
+                 viewRect.h - kScrollBarThickness - kScrollBarMargin},
+                thumbW, kScrollBarThickness,
+                kScrollBarRadius, kScrollBarRadius
+            };
+            list.append(Composition::DrawOp{
+                thumb, Composition::ColorBrush(kScrollBarColor)});
+        }
     }
 
     void ScrollViewDelegate::onRecieveEvent(Native::NativeEventPtr event){

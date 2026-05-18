@@ -217,12 +217,21 @@ Composition::Point2D View::legacyComputeWindowOffset() const{
     while(v != nullptr){
         offset.x += v->impl_->rect.pos.x;
         offset.y += v->impl_->rect.pos.y;
-        // If this View's parent is a scrolling container, subtract
-        // the scroll offset so content appears translated.
+        // Tier 3 Phase 3.6: fold in the parent's `contentOffset()`
+        // (defaults to {0,0}; ScrollView overrides to -scrollOffset_).
+        // Sign convention flipped from the pre-3.6 path —
+        // `contentOffset` is *added*, whereas the old
+        // `scrollOffsetContribution` was subtracted, but the net effect
+        // for ScrollView is identical (its contentOffset is the
+        // negation of its prior scrollOffsetContribution). Both the
+        // off-flag direct callers of `legacyComputeWindowOffset` and
+        // the on-flag accumulator (which seeds itself from this walk
+        // via `FrameBuilder::ScopedViewOffset`) get scroll-shifted
+        // descendant offsets through this one site.
         if(v->impl_->parent_ptr != nullptr){
-            auto scroll = v->impl_->parent_ptr->scrollOffsetContribution();
-            offset.x -= scroll.x;
-            offset.y -= scroll.y;
+            auto co = v->impl_->parent_ptr->contentOffset();
+            offset.x += co.x;
+            offset.y += co.y;
         }
         v = v->impl_->parent_ptr;
     }
@@ -248,6 +257,14 @@ Composition::Point2D View::computeWindowOffset() const{
 
 Composition::Point2D View::scrollOffsetContribution() const{
     return {0.f, 0.f};
+}
+
+Composition::Point2D View::contentOffset() const{
+    return {0.f, 0.f};
+}
+
+bool View::wantsLayer() const{
+    return false;
 }
 
 bool View::isEnabled() const{

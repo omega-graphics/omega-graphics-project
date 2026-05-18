@@ -41,6 +41,36 @@ public:
 
     VmaMemoryUsage memoryUsage;
 
+    // Vulkan-Texture-Memory-Plan Phase 2. Companion HOST_VISIBLE
+    // buffer used to stage CPU↔GPU copies for `ToGPU` / `FromGPU`
+    // textures. The image itself is OPTIMAL + GPU_ONLY (matching
+    // D3D12's DEFAULT-heap image + UPLOAD/READBACK companion buffer);
+    // this buffer is what `copyBytes` / `getBytes` map. For any other
+    // usage (`GPUAccessOnly`, render targets, MSAA) these stay null.
+    //
+    // `stagingRegions` covers every mip × layer the image holds, with
+    // tightly-packed rows on the buffer side (`bufferRowLength = 0`
+    // tells Vulkan to infer pitch from imageExtent). copyBytes today
+    // writes mip 0 only — higher mips are populated by
+    // `generateMipmaps` (compute-blit pass) — but the regions are
+    // pre-computed for the whole chain so future per-mip uploads can
+    // index into them without re-deriving offsets.
+    VkBuffer       stagingBuffer = VK_NULL_HANDLE;
+    VmaAllocation  stagingAlloc  = nullptr;
+    VkDeviceSize   stagingSize   = 0;
+    OmegaCommon::Vector<VkBufferImageCopy> stagingRegions;
+
+    // Layout the image was left in by the most recent upload / readback
+    // (or VK_IMAGE_LAYOUT_UNDEFINED at allocation time). The
+    // immediate-upload path transitions UNDEFINED → TRANSFER_DST →
+    // SHADER_READ_ONLY_OPTIMAL on first copyBytes; subsequent calls
+    // must transition from the cached layout instead of UNDEFINED
+    // (which would discard the prior contents and silently produce a
+    // black texture). The encoder-side `layout` field above is the
+    // *expected initial* layout for the first bind; this field tracks
+    // what the staging path actually left behind.
+    VkImageLayout  stagingCurrentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
     // Gates accumulated by encoders that bound this texture. Texture must
     // outlive every gate before vmaDestroyImage can run.
     OmegaCommon::Vector<Retention::FenceGate> pendingGates;
