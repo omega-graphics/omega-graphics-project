@@ -146,6 +146,7 @@ class ModuleStats:
 MODULES: Sequence[ModuleConfig] = (
     ModuleConfig(name="OmegaCommon", root_dir="common", dependency_dirs=("deps",)),
     ModuleConfig(name="OmegaGTE", root_dir="gte", dependency_dirs=("deps",)),
+    ModuleConfig(name="OmegaVA", root_dir="va", src_dir="src", include_dir="include", dependency_dirs=("deps",)),
     ModuleConfig(name="OmegaWTK", root_dir="wtk", dependency_dirs=("deps",)),
     ModuleConfig(name="AUTOM", root_dir="autom", dependency_dirs=("deps",)),
     ModuleConfig(name="AQUA", root_dir="aqua", src_dir="src", include_dir="include", dependency_dirs=("deps",)),
