@@ -4,7 +4,7 @@
 #include <omegaWTK/UI/App.h>
 #include <omegaWTK/UI/VideoView.h>
 #include <omegaWTK/Composition/Canvas.h>
-#include <omegaWTK/Media/MediaIO.h>
+#include <omegaVA/MediaIO.h>
 #include <omegaWTK/Main.h>
 #include <iostream>
 
@@ -43,7 +43,7 @@ protected:
             return;
         }
 
-        auto input = OmegaWTK::Media::MediaInputStream::fromFile(filePath);
+        auto input = OmegaVA::MediaInputStream::fromFile(filePath);
         if(!videoView->bindPlaybackSource(input)){
             std::cerr << "[VideoViewPlaybackTest] Failed to bind playback source." << std::endl;
             return;

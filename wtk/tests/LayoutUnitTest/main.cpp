@@ -1,3 +1,4 @@
+#include "omegaWTK/Main.h"
 #include "omegaWTK/UI/Layout.h"
 
 #include <cassert>
@@ -167,7 +168,8 @@ static void testMultiDpiResolveLength(){
     std::printf("  [PASS] Multi-DPI resolveLength\n");
 }
 
-int main(){
+int omegaWTKMain(OmegaWTK::AppInst *app){
+    
     std::printf("LayoutUnitTest\n");
 
     testLayoutLengthFactories();
