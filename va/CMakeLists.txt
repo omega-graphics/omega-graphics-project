@@ -137,9 +137,12 @@ elseif(TARGET_ANDROID)
 	list(APPEND MEDIA_SRCS ${ANDROID_SRCS})
 endif()
 
-source_group(OmegaVA ${MEDIA_SRCS})
 
-add_library(OmegaVA STATIC ${MEDIA_SRCS})
+add_omega_graphics_module("OmegaVA" SHARED
+	SOURCES ${MEDIA_SRCS}
+	HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+
 set_target_properties(OmegaVA PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(OmegaVA
@@ -148,8 +151,16 @@ target_include_directories(OmegaVA
 	       $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
 
 target_link_libraries(OmegaVA PUBLIC OmegaCommon OmegaGTE)
-
-if(TARGET_LINUX)
+if(TARGET_MACOS)
+	target_link_system_frameworks(OmegaVA
+		Foundation
+		AVFoundation
+		CoreMedia
+		CoreVideo
+		VideoToolbox
+		AudioToolbox
+		CoreAudio)
+elseif(TARGET_LINUX)
 	if(OMEGAVA_USE_VENDORED_FFMPEG)
 		# IMPORTED SHARED targets created by add_third_party above. The
 		# target's INTERFACE_INCLUDE_DIRECTORIES already points at

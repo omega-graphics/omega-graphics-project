@@ -194,12 +194,44 @@ else()
     
 endif()
 
+# Resolve an EMBEDDED_LIBS entry. Accepts either a CMake target name (whose
+# on-disk shared-lib filename is computed from TYPE/OUTPUT_NAME + the platform
+# shared-lib suffix) or a path the caller already has. Writes three outputs in
+# the parent scope: src_var = source argument for `cmake -E copy` (a path or
+# $<TARGET_FILE:tgt> genex), name_var = basename of the staged copy,
+# dep_var = what to put in DEPENDS (target name or path).
+#
+# Filename has to be computed at configure time because CMake's add_custom_command
+# OUTPUT slot did not learn generator-expression support until 3.20 and this
+# project's floor is 3.13.
+function(_omega_resolve_embedded_lib lib src_var name_var dep_var)
+    if(TARGET ${lib})
+        get_target_property(_type ${lib} TYPE)
+        get_target_property(_oname ${lib} OUTPUT_NAME)
+        if(NOT _oname)
+            set(_oname ${lib})
+        endif()
+        if(_type STREQUAL "MODULE_LIBRARY")
+            set(_pfx "${CMAKE_SHARED_MODULE_PREFIX}")
+            set(_sfx "${CMAKE_SHARED_MODULE_SUFFIX}")
+        else()
+            set(_pfx "${CMAKE_SHARED_LIBRARY_PREFIX}")
+            set(_sfx "${CMAKE_SHARED_LIBRARY_SUFFIX}")
+        endif()
+        set(${src_var}  "$<TARGET_FILE:${lib}>" PARENT_SCOPE)
+        set(${name_var} "${_pfx}${_oname}${_sfx}" PARENT_SCOPE)
+        set(${dep_var}  ${lib} PARENT_SCOPE)
+    else()
+        get_filename_component(_n ${lib} NAME)
+        set(${src_var}  "${lib}" PARENT_SCOPE)
+        set(${name_var} "${_n}" PARENT_SCOPE)
+        set(${dep_var}  "${lib}" PARENT_SCOPE)
+    endif()
+endfunction()
+
 function(add_framework_bundle)
     cmake_parse_arguments("_ARG" "" "NAME;PLIST;VERSION" "SOURCES;RESOURCES;DEPS;LIBS;FRAMEWORKS;EMBEDDED_FRAMEWORKS;EMBEDDED_LIBS" ${ARGN})
 	
-	message("UNPARSED_ARGS:${_ARG_UNPARSED_ARGUMENTS}")
-
-    message("EMBEDDED_FRAMEWORKS:${_ARG_EMBEDDED_FRAMEWORKS}")
 	set(_NAME ${_ARG_NAME})
 	
 	
@@ -286,30 +318,19 @@ function(add_framework_bundle)
 		
 		if(_ARG_EMBEDDED_LIBS)
 			set(EMBED_LIBS TRUE)
-			file(MAKE_DIRECTORY ${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Libraries)
-			set(NEED_ZLIB_COMPAT_SYMLINK FALSE)
-			
+			set(_EMBED_DEST "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Libraries")
+			file(MAKE_DIRECTORY ${_EMBED_DEST})
+
 			foreach(l ${_ARG_EMBEDDED_LIBS})
-				get_filename_component(LIBNAME ${l} NAME)
-				if("${LIBNAME}" STREQUAL "libz.dylib")
-					set(NEED_ZLIB_COMPAT_SYMLINK TRUE)
-				endif()
-				set(__outputted_libraries ${__outputted_libraries} "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Libraries/${LIBNAME}")
+				_omega_resolve_embedded_lib(${l} _SRC _LIBNAME _DEP)
+				set(_OUT "${_EMBED_DEST}/${_LIBNAME}")
+				set(__outputted_libraries ${__outputted_libraries} "${_OUT}")
 				add_custom_command(
-						OUTPUT "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Libraries/${LIBNAME}"
-						COMMAND ${CMAKE_COMMAND} -E copy "${l}"  "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Libraries/${LIBNAME}"
-						DEPENDS ${l}
-						COMMENT "Embedding Library ${LIBNAME} in Framework Bundle ${_NAME}")
+						OUTPUT "${_OUT}"
+						COMMAND ${CMAKE_COMMAND} -E copy "${_SRC}" "${_OUT}"
+						DEPENDS ${_DEP}
+						COMMENT "Embedding Library ${_LIBNAME} in Framework Bundle ${_NAME}")
 			endforeach()
-			if(NEED_ZLIB_COMPAT_SYMLINK)
-				set(ZLIB_COMPAT_LINK "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Libraries/libz.1.dylib")
-				set(__outputted_libraries ${__outputted_libraries} "${ZLIB_COMPAT_LINK}")
-				add_custom_command(
-						OUTPUT "${ZLIB_COMPAT_LINK}"
-						COMMAND ${CMAKE_COMMAND} -E create_symlink "libz.dylib" "${ZLIB_COMPAT_LINK}"
-						DEPENDS "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${_ARG_VERSION}/Libraries/libz.dylib"
-						COMMENT "Creating zlib compatibility symlink in Framework Bundle ${_NAME}")
-			endif()
 			add_custom_target("${_NAME}__lib_embed" DEPENDS ${__outputted_libraries})
 			add_dependencies(${UNSIGNED_TARGET} "${_NAME}__lib_embed")
 		endif()
@@ -414,16 +435,18 @@ function(add_app_bundle)
 		
 		if(_ARG_EMBEDDED_LIBS)
 			set(EMBED_LIBS TRUE)
-			file(MAKE_DIRECTORY ${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents/Libraries)
-			
+			set(_EMBED_DEST "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents/Libraries")
+			file(MAKE_DIRECTORY ${_EMBED_DEST})
+
 			foreach(l ${_ARG_EMBEDDED_LIBS})
-				get_filename_component(LIBNAME ${l} NAME)
-				set(__outputted_libraries ${__outputted_libraries} "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents/Libraries/${LIBNAME}")
+				_omega_resolve_embedded_lib(${l} _SRC _LIBNAME _DEP)
+				set(_OUT "${_EMBED_DEST}/${_LIBNAME}")
+				set(__outputted_libraries ${__outputted_libraries} "${_OUT}")
 				add_custom_command(
-						OUTPUT "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents/Libraries/${LIBNAME}"
-						COMMAND ${CMAKE_COMMAND} -E copy "${l}"  "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents/Libraries/${LIBNAME}"
-						DEPENDS ${l}
-						COMMENT "Embedding Library ${LIBNAME} in App Bundle ${_NAME}")
+						OUTPUT "${_OUT}"
+						COMMAND ${CMAKE_COMMAND} -E copy "${_SRC}" "${_OUT}"
+						DEPENDS ${_DEP}
+						COMMENT "Embedding Library ${_LIBNAME} in App Bundle ${_NAME}")
 			endforeach()
 			add_custom_target("${_NAME}__lib_embed" DEPENDS ${__outputted_libraries})
 			add_dependencies(${UNSIGNED_TARGET} "${_NAME}__lib_embed")

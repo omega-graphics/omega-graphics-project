@@ -15,10 +15,12 @@ function(OmegaWTKApp)
             RESOURCES ${OMEGAWTK_SOURCE_DIR}/target/macos/MainMenu.nib ${_ARG_BUNDLE_ICON} ${OMEGAWTK_COMPOSITOR_SHADER_LIB}
             DEPS OmegaWTK.framework OmegaGTE.framework ${_ARG_DEPS}
             EMBEDDED_FRAMEWORKS OmegaWTK OmegaGTE
+            EMBEDDED_LIBS OmegaVA
             SOURCES ${_ARG_SOURCES})
         add_dependencies(${_ARG_NAME} OmegaWTK.framework OmegaWTKCompositorShaderLib)
         target_link_frameworks(${_ARG_NAME} OmegaGTE OmegaWTK)
         target_link_options(${_ARG_NAME} PRIVATE -rpath @loader_path/../Frameworks/OmegaWTK.framework/Libraries)
+        target_link_libraries(${_ARG_NAME} PRIVATE OmegaVA)
     else()
         add_executable(${_ARG_NAME} ${_ARG_SOURCES})
         add_dependencies(${_ARG_NAME} "OmegaWTK" OmegaWTKCompositorShaderLib)

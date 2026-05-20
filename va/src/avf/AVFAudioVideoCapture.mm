@@ -69,7 +69,7 @@ namespace OmegaVA {
             AVSampleBufferAudioRenderer *audioRenderer;
             AVSampleCursor *cursor;
             bool useProcessor;
-            AudioVideoProcessor *processor;
+            SharedHandle<AudioVideoProcessor> processor;
             VideoFrameSink *videoSink;
         };
     private:

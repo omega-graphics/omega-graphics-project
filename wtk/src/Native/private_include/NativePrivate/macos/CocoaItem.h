@@ -96,7 +96,13 @@ public:
             hostBounds.size.height = MIN(MAX(hostBounds.size.height,1.f),maxPointDimension);
 
             layer.actions = noActions;
-            layer.autoresizingMask = kCALayerNotSizable;
+            // The root present layer is the sole sublayer of the
+            // contentView's backing layer. Let Core Animation track
+            // the host bounds via the autoresize mask so resize-time
+            // work only has to refresh drawableSize / contentsScale.
+            // The virtual View/Widget tree is unaffected — this mask
+            // only governs this single CAMetalLayer.
+            layer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
             layer.masksToBounds = NO;
             layer.contentsScale = scale;
             layer.hidden = NO;
@@ -138,6 +144,10 @@ public:
         if(metalLayer_ == nil){
             return;
         }
+        // Frame/bounds/position tracking is owned by Cocoa via the
+        // autoresize mask set in setRootLayer. The only resize-time
+        // work that remains is drawableSize (which Cocoa does not
+        // touch) and contentsScale (Retina transitions).
         constexpr CGFloat kMaxDrawableDimension = 16384.f;
         CGFloat scale = [NSScreen mainScreen].backingScaleFactor;
         if(scale <= 0.f || !std::isfinite(static_cast<double>(scale))){
@@ -153,23 +163,27 @@ public:
                 std::isfinite(newRect.h) ? static_cast<CGFloat>(newRect.h) : 1.f,
                 static_cast<CGFloat>(1.f),
                 maxPointDimension);
+        const CGSize targetDrawable = CGSizeMake(
+                std::clamp(w * scale,static_cast<CGFloat>(1.f),kMaxDrawableDimension),
+                std::clamp(h * scale,static_cast<CGFloat>(1.f),kMaxDrawableDimension));
+        const CGSize currentDrawable = metalLayer_.drawableSize;
+        const CGFloat currentScale = metalLayer_.contentsScale;
+        constexpr CGFloat kDrawableEpsilon = 0.5f;
+        constexpr CGFloat kScaleEpsilon = 1.f / 1024.f;
+        if(std::fabs(currentDrawable.width  - targetDrawable.width)  <= kDrawableEpsilon &&
+           std::fabs(currentDrawable.height - targetDrawable.height) <= kDrawableEpsilon &&
+           std::fabs(currentScale - scale) <= kScaleEpsilon){
+            return;
+        }
         NSDictionary *noActions = @{
-            @"bounds":[NSNull null],
-            @"position":[NSNull null],
-            @"frame":[NSNull null],
             @"contents":[NSNull null],
-            @"transform":[NSNull null]
+            @"contentsScale":[NSNull null]
         };
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
         metalLayer_.actions = noActions;
-        metalLayer_.frame = CGRectMake(0.f,0.f,w,h);
-        metalLayer_.bounds = CGRectMake(0.f,0.f,w,h);
-        metalLayer_.position = CGPointMake(0.f,0.f);
         metalLayer_.contentsScale = scale;
-        metalLayer_.drawableSize = CGSizeMake(
-                std::clamp(w * scale,static_cast<CGFloat>(1.f),kMaxDrawableDimension),
-                std::clamp(h * scale,static_cast<CGFloat>(1.f),kMaxDrawableDimension));
+        metalLayer_.drawableSize = targetDrawable;
         [CATransaction commit];
     }
     void setNeedsDisplay();
