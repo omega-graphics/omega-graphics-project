@@ -2,18 +2,30 @@
 #define AQUA_INTERNAL_RENDERER_H
 
 #include <aqua/Math.h>
+#include <aqua/Window.h>
 #include <OmegaGTE.h>
+#include <memory>
 
 namespace Aqua {
 
-/// Internal renderer. Owns command-buffer encoding for one window's native
-/// render target. Created by `App::Impl` during init; not exposed in
-/// public AQUA headers. Scene reaches it through friendship on App::Impl.
+/// Internal renderer. Owns the OmegaGTE device stack for one window: the GTE
+/// instance, its command queue, and the native render target backing the
+/// window. Created by `App::Impl` during init via `Renderer::create`; not
+/// exposed in public AQUA headers. Scene reaches it through friendship on
+/// App::Impl, and the pipeline subsystem borrows its GTE via `gte()`.
 class Renderer {
 public:
-    Renderer(SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget,
-             SharedHandle<OmegaGTE::GECommandQueue> queue);
+    /// Initializes OmegaGTE with the default device, builds the command queue,
+    /// and creates the native render target backing `window`. This is the sole
+    /// owner of the GTE lifecycle — `App` no longer touches OmegaGTE directly.
+    static std::unique_ptr<Renderer> create(Window &window);
+
     ~Renderer();
+
+    /// The GTE instance owned by this renderer. The pipeline subsystem uses it
+    /// to compile shaders and build pipeline state. Borrowed, not owned, by
+    /// the caller — the renderer outlives every pipeline built from it.
+    OmegaGTE::GTE &gte();
 
     /// Begins a render pass against the native target. Subsequent draws go
     /// into the open command buffer until `endFrameAndPresent` is called.
@@ -27,6 +39,11 @@ public:
     // Activates once GEMesh lands (see gte/docs/GEMesh-TextureAssets-Implementation-Plan.md).
 
 private:
+    Renderer(OmegaGTE::GTE gte,
+             SharedHandle<OmegaGTE::GECommandQueue> queue,
+             SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget);
+
+    OmegaGTE::GTE gte_;
     SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget_;
     SharedHandle<OmegaGTE::GECommandQueue> queue_;
     SharedHandle<OmegaGTE::GECommandBuffer> currentBuffer_;

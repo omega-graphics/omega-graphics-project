@@ -247,7 +247,7 @@ public:
 // Style rule helpers
 // ---------------------------------------------------------------------------
 
-struct StyleRule {
+struct OMEGAWTK_EXPORT StyleRule {
     enum class Property : std::uint8_t {
         LayoutWidth,
         LayoutHeight,
@@ -299,7 +299,8 @@ struct StyleRule {
     Core::Optional<Composition::LayerEffect::DropShadowParams> dropShadowValue {};
     Core::Optional<Composition::CanvasEffect::GaussianBlurParams> gaussianBlurValue {};
     Core::Optional<Composition::CanvasEffect::DirectionalBlurParams> directionalBlurValue {};
-
+    StyleRule() = default;
+    ~StyleRule() = default;
     bool beats(const StyleRule & other) const;
 };
 

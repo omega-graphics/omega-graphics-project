@@ -1,3 +1,4 @@
+#include "OmegaVAExport.h"
 #include "omegaVA/Core.h"
 
 #ifndef OMEGAVA_MEDIAIO_H
@@ -5,17 +6,17 @@
 
 namespace OmegaVA {
 
-    struct MediaBuffer {
+    struct OMEGAVA_EXPORT MediaBuffer {
         void *data;
         size_t length;
     };
 
-    struct MediaInputStream {
+    struct OMEGAVA_EXPORT MediaInputStream {
         OmegaCommon::String file;
         static MediaInputStream fromFile(OmegaCommon::FS::Path path);
     };
 
-    struct MediaOutputStream {
+    struct OMEGAVA_EXPORT MediaOutputStream {
         OmegaCommon::String file;
         static MediaOutputStream toFile(OmegaCommon::FS::Path path);
     };
@@ -36,7 +37,7 @@ namespace OmegaVA {
     };
 
     /// @brief Describes the format of an audio stream.
-    struct AudioStreamDesc {
+    struct OMEGAVA_EXPORT AudioStreamDesc {
         unsigned int sampleRate;       ///< e.g. 44100, 48000
         unsigned int channels;         ///< e.g. 1 (mono), 2 (stereo), 6 (5.1)
         unsigned int bitsPerSample;    ///< e.g. 16, 24, 32
@@ -75,7 +76,7 @@ namespace OmegaVA {
     };
 
     /// @brief Describes the format of a video stream.
-    struct VideoStreamDesc {
+    struct OMEGAVA_EXPORT VideoStreamDesc {
         unsigned int width;
         unsigned int height;
         unsigned int frameRateNum;      ///< Numerator   (e.g. 30000)
@@ -98,7 +99,7 @@ namespace OmegaVA {
     };
 
     /// @brief Extended source descriptor combining a stream with format metadata.
-    struct MediaSourceDesc {
+    struct OMEGAVA_EXPORT MediaSourceDesc {
         MediaInputStream stream;
         ContainerFormat  container;
         OmegaCommon::Vector<AudioStreamDesc> audioStreams;

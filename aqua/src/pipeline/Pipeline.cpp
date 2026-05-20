@@ -1,4 +1,5 @@
 #include <aqua/Pipeline.h>
+#include "PipelineFactory.h"
 #include <OmegaGTE.h>
 #include <omegasl.h>
 #include <fstream>
@@ -35,22 +36,6 @@ OmegaGTE::TriangleFillMode mapFill(FillMode m) {
 }
 
 } // namespace
-
-struct PipelineFactory {
-    static std::shared_ptr<Pipeline> buildFromLibrary(
-        OmegaGTE::GTE &gte,
-        SharedHandle<OmegaGTE::GTEShaderLibrary> shaderLib,
-        const PipelineDesc &desc);
-
-    static std::shared_ptr<Pipeline> create(OmegaGTE::GTE &gte,
-                                            const std::string &omegaslPath,
-                                            const PipelineDesc &desc);
-
-    static std::shared_ptr<Pipeline> createFromLibrary(
-        OmegaGTE::GTE &gte,
-        const std::string &libPath,
-        const PipelineDesc &desc);
-};
 
 std::shared_ptr<Pipeline> PipelineFactory::buildFromLibrary(
     OmegaGTE::GTE &gte,
