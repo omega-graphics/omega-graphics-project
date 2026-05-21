@@ -91,6 +91,12 @@ struct Widget::Impl {
     bool paintInProgress = false;
     bool hasPendingInvalidate = false;
     PaintReason pendingPaintReason = PaintReason::StateChanged;
+    /// Widget-View-Paint-Lifecycle-Plan Tier A: the reason carried by
+    /// the most recent deferred invalidate(), replayed when the window
+    /// frame flush calls flushPendingPaint(). Separate from
+    /// pendingPaintReason (which belongs to executePaint's in-paint
+    /// coalesce loop) so deferral and in-paint coalescing don't alias.
+    PaintReason deferredReason = PaintReason::StateChanged;
     PaintMode mode = PaintMode::Automatic;
     PaintOptions options {};
 

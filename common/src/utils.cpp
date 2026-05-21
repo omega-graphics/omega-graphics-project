@@ -1,4 +1,5 @@
-#include "omega-common/common.h"
+#include "omega-common/utils.h"
+#include "omega-common/fs.h"
 #include <cctype>
 
 namespace OmegaCommon {

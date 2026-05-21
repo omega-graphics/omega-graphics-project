@@ -48,13 +48,13 @@ namespace OmegaCommon {
       static Result<AssetBundle, String> open(FS::Path path);
       static Result<AssetBundle, String> open(FS::Path path, ArrayRef<std::uint8_t> key);
 
-      size_t entryCount() const;
-      Optional<AssetInfo> info(StrRef name) const;
-      bool contains(StrRef name) const;
-      Vector<AssetInfo> entries() const;
+      OMEGACOMMON_NODISCARD size_t entryCount() const;
+      OMEGACOMMON_NODISCARD Optional<AssetInfo> info(StrRef name) const;
+      OMEGACOMMON_NODISCARD bool contains(StrRef name) const;
+      OMEGACOMMON_NODISCARD Vector<AssetInfo> entries() const;
 
-      Result<Vector<std::uint8_t>, String> load(StrRef name) const;
-      Result<String, String> loadText(StrRef name) const;
+      OMEGACOMMON_NODISCARD Result<Vector<std::uint8_t>, String> load(StrRef name) const;
+      OMEGACOMMON_NODISCARD Result<String, String> loadText(StrRef name) const;
   };
   
   class [[deprecated("Use AssetBundle instead")]] OMEGACOMMON_EXPORT AssetLibrary {

@@ -212,13 +212,15 @@ protected:
         const auto bounds = localBounds(rect());
         ensureViews(bounds);
 
-        // Empty layouts — every UIView paints only its background.
-        // That's enough to verify submissions land in tree order
-        // with the right window offsets: any off-by-one in
-        // FrameBuilder's offset stamping (Phase 3.2) or in the
-        // nested accumulator composition (Phase 3.4) produces a
-        // single-color window or a misplaced inner rect instead of
-        // the expected three-color layout.
+        // Empty layouts — every UIView paints only its background via
+        // UIView's default layout (no elements => full-bounds fill of
+        // the resolved backgroundColor). This is the regression test
+        // for that default-layout behavior, and it verifies submissions
+        // land in tree order with the right window offsets: any
+        // off-by-one in FrameBuilder's offset stamping (Phase 3.2) or
+        // in the nested accumulator composition (Phase 3.4) produces a
+        // single-color window or a misplaced inner rect instead of the
+        // expected three-color layout.
         UIViewLayout emptyLayout {};
         leftView_->setLayout(emptyLayout);
         rightView_->setLayout(emptyLayout);
@@ -238,9 +240,8 @@ protected:
 
         // Inner blue rect — its absolute position must be
         // {kInnerOffsetX, kInnerOffsetY} since leftView_ is at
-        // {0,0}. Under windowScopedPaint, this proves the
-        // FrameBuilder accumulator composes per-level deltas
-        // correctly across leftView_ -> innerView_.
+        // {0,0}. Proves the FrameBuilder accumulator composes per-level
+        // deltas correctly across leftView_ -> innerView_.
         auto innerStyle = StyleSheet::Create();
         innerStyle = innerStyle->backgroundColor("phase32_inner",
             Composition::Color::create8Bit(Composition::Color::Blue8));
@@ -258,23 +259,14 @@ public:
 };
 
 int omegaWTKMain(AppInst *app){
-#ifdef OMEGAWTK_WINDOW_SCOPED_PAINT
-    std::cout << "RootWidgetTest: Phase 3.2 multi-UIView window-scoped scene" << std::endl;
-#else
-    std::cout << "RootWidgetTest: Phase 2.1 DisplayList full-variant scene" << std::endl;
-#endif
+    // Tier 3 Phase 3.8: window-scoped paint is the only route, so the
+    // multi-UIView scene is unconditional.
+    std::cout << "RootWidgetTest: Phase 3.8 multi-UIView window-scoped scene" << std::endl;
 
     const Composition::Rect windowRect{{0,0}, 420, 420};
 
     auto window = make<AppWindow>(windowRect, new MyWindowDelegate());
-#ifdef OMEGAWTK_WINDOW_SCOPED_PAINT
-    // Per Tier 3 Phase 3.2: flip the flag on only for the
-    // multi-UIView scene so single-UIView regressions stay
-    // isolated to the legacy path.
     auto widget = make<Phase32Widget>(windowRect);
-#else
-    auto widget = make<Phase21Widget>(windowRect);
-#endif
     window->setRootWidget(widget);
 
     app->windowManager->setRootWindow(window);

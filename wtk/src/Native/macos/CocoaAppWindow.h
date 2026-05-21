@@ -16,7 +16,12 @@ class CocoaAppWindow : public NativeWindow {
     NSCursor *currentNSCursor;
     CursorShape currentCursorShape = CursorShape::Arrow;
     float lastKnownBackingScale = 1.f;
+    /// Widget-View-Paint-Lifecycle-Plan Tier A: guards a single
+    /// pending CFRunLoopPerformBlock so a burst of requestFrameFlush
+    /// calls collapses into one frame flush per run-loop turn.
+    bool frameFlushQueued_ = false;
 public:
+    void requestFrameFlush() override;
     NativeEventEmitter *getEmitter();
     NativeItemPtr getRootView() override;
     void disable() override;

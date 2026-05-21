@@ -9,6 +9,7 @@
 #include <sstream>
 #include <unordered_set>
 #include <string>
+#include <omega-common/multithread.h>
 
 namespace omegasl {
 

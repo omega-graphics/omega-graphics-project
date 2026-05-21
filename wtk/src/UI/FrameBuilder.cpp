@@ -36,7 +36,6 @@ void FrameBuilder::beginFrame(){
 
     auto * impl = window_.impl_.get();
     if(impl == nullptr){
-        baselineVisualCount_ = 0;
         return;
     }
     auto * treeHost = impl->widgetTreeHost.get();
@@ -50,11 +49,6 @@ void FrameBuilder::beginFrame(){
         }
     }
 
-    // Capture the windowScopedPaint flag once per frame so a flip
-    // mid-paint cannot leave a CompositeFrame attached to the proxy
-    // with no owner reading it.
-    windowScopedPaintActive_ = impl->windowScopedPaint_;
-
     pending_.clear();
     // Phase 3.4: defensive — the accumulator should be empty at this
     // point (every ScopedViewOffset push is RAII-paired with a pop),
@@ -63,22 +57,13 @@ void FrameBuilder::beginFrame(){
     // to legacy" contract starts fresh.
     offsetStack_.clear();
 
-    if(windowScopedPaintActive_){
-        // Phase 3.2: allocate a window-level CompositeFrame and
-        // attach it to the AppWindow's proxy. windowCanvas's
-        // pushFrame (during endFrame's replay loop) deposits slices
-        // here; endFrame hands the frame off to the window surface.
-        compositeFrame_ = std::make_shared<Composition::CompositeFrame>();
-        impl->proxy.setActiveCompositeFrame(compositeFrame_.get());
-    }
-
-    baselineVisualCount_ = 0;
-    if(impl->windowCanvas_ != nullptr){
-        auto frame = impl->windowCanvas_->getCurrentFrame();
-        if(frame != nullptr){
-            baselineVisualCount_ = frame->currentVisuals.size();
-        }
-    }
+    // Phase 3.8: window-scoped paint is the only path. Allocate the
+    // window-level CompositeFrame and attach it to the AppWindow's
+    // proxy. windowCanvas's pushFrame (during endFrame's replay loop)
+    // deposits slices here; endFrame hands the frame off to the
+    // window surface.
+    compositeFrame_ = std::make_shared<Composition::CompositeFrame>();
+    impl->proxy.setActiveCompositeFrame(compositeFrame_.get());
 
     g_activeFrameBuilder = this;
 }
@@ -98,7 +83,7 @@ void FrameBuilder::endFrame(){
         return;
     }
 
-    if(windowScopedPaintActive_ && impl->windowCanvas_ != nullptr){
+    if(impl->windowCanvas_ != nullptr){
         // Phase 3.2: drain pending submissions in tree order. Each
         // submission stamps its captured window-offset onto the
         // window canvas's current frame (the window canvas has no
@@ -115,34 +100,19 @@ void FrameBuilder::endFrame(){
             impl->windowCanvas_->sendFrame();
         }
     }
-    else {
-        // Flag off: fall back to the Phase 3.1 baseline-grew check.
-        // No submissions queued; only the direct-draw path matters,
-        // and the existing scenes do not exercise it.
-        if(impl->windowCanvas_ != nullptr){
-            auto frame = impl->windowCanvas_->getCurrentFrame();
-            if(frame != nullptr &&
-               frame->currentVisuals.size() > baselineVisualCount_){
-                impl->windowCanvas_->sendFrame();
-            }
-        }
-    }
 
     pending_.clear();
 
-    if(windowScopedPaintActive_){
-        // Detach the CompositeFrame from the proxy before depositing
-        // so any post-endFrame draws (there shouldn't be any) do
-        // not silently re-enter this frame.
-        impl->proxy.setActiveCompositeFrame(nullptr);
-        if(compositeFrame_ != nullptr &&
-           !compositeFrame_->slices.empty() &&
-           impl->windowSurface != nullptr){
-            impl->windowSurface->deposit(compositeFrame_);
-        }
-        compositeFrame_.reset();
-        windowScopedPaintActive_ = false;
+    // Detach the CompositeFrame from the proxy before depositing
+    // so any post-endFrame draws (there shouldn't be any) do
+    // not silently re-enter this frame.
+    impl->proxy.setActiveCompositeFrame(nullptr);
+    if(compositeFrame_ != nullptr &&
+       !compositeFrame_->slices.empty() &&
+       impl->windowSurface != nullptr){
+        impl->windowSurface->deposit(compositeFrame_);
     }
+    compositeFrame_.reset();
 
     g_activeFrameBuilder = nullptr;
 }

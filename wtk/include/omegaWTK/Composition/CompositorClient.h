@@ -48,9 +48,10 @@ namespace OmegaWTK::Composition {
     /** @brief Compositor Client Proxy class for interaction with a Compositor.
 
         Frame submission goes through the per-window CompositeFrame mailbox
-        path (see WidgetTreeHost::paintAndDeposit). Layer/View geometry
-        mutations are applied synchronously on the calling thread — the
-        old asynchronous command queue was removed in Tier 1 Phase B.
+        path (see FrameBuilder, which owns the one CompositeFrame per
+        frame). Layer/View geometry mutations are applied synchronously on
+        the calling thread — the old asynchronous command queue was
+        removed in Tier 1 Phase B.
     */
     class OMEGAWTK_EXPORT CompositorClientProxy {
         friend class CompositorClient;

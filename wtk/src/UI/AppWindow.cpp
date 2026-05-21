@@ -64,14 +64,6 @@ Composition::Canvas * AppWindow::windowCanvas() const {
     return impl_->windowCanvas_.get();
 }
 
-bool AppWindow::windowScopedPaint() const {
-    return impl_->windowScopedPaint_;
-}
-
-void AppWindow::setWindowScopedPaint(bool enabled){
-    impl_->windowScopedPaint_ = enabled;
-}
-
 void AppWindow::setMenu(SharedHandle<Menu> & menu){
     impl_->menu = menu;
     impl_->nativeWindow->setMenu(impl_->menu->getNativeMenu());
@@ -99,9 +91,37 @@ void AppWindow::onThemeSet(Native::ThemeDesc &desc){
     }
 }
 
+void AppWindow::requestFrame(){
+    // Tier A: coalesced schedule of flushFrame() on the next run-loop
+    // turn. The native window dedups bursts into one callback.
+    if(impl_->nativeWindow != nullptr){
+        impl_->nativeWindow->requestFrameFlush();
+    }
+}
+
+void AppWindow::flushFrame(){
+    // Tier A: one frame for all pending invalidations. Open a single
+    // FrameBuilder ScopedFrame and repaint every dirty widget into it.
+    if(impl_->widgetTreeHost == nullptr){
+        return;
+    }
+    FrameBuilder::ScopedFrame frame(impl_->frameBuilder_.get());
+    impl_->widgetTreeHost->paintDirty();
+}
+
 void AppWindow::setRootWidget(WidgetPtr widget){
     impl_->widgetTreeHost = WidgetTreeHost::Create();
     impl_->widgetTreeHost->setRoot(widget);
+    // Tier 3 Phase 3.8: hand the WidgetTreeHost the window frame
+    // driver so Widget::executePaint can bracket each paint with a
+    // FrameBuilder::ScopedFrame (all invalidate/init repaints route
+    // through the one window-scoped frame).
+    impl_->widgetTreeHost->setFrameBuilder(impl_->frameBuilder_.get());
+    // Tier A (Widget-View-Paint-Lifecycle): wire deferred invalidation.
+    // The tree host routes requestFrame() back here; the native window
+    // invokes flushFrame() once per coalesced run-loop turn.
+    impl_->widgetTreeHost->setOwnerWindow(this);
+    impl_->nativeWindow->setFrameFlushCallback([this]{ flushFrame(); });
     // Phase 3: propagate the window's single render target to the
     // WidgetTreeHost so it can be distributed to all Views during
     // initWidgetTree(). All Views in this window share this target.

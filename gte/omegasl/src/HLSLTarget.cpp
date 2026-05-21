@@ -5,6 +5,7 @@
 #include <sstream>
 #include <unordered_set>
 #include <string>
+#include <omega-common/multithread.h>
 
 #ifdef TARGET_DIRECTX
 #    include <d3dcompiler.h>

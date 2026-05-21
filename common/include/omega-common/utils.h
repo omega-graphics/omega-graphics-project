@@ -43,6 +43,8 @@
 
 #define OMEGACOMMON_CLASS(id) static constexpr char OMEGACOMMON_CLASS_ID[] = id;
 
+#define OMEGACOMMON_NODISCARD [[nodiscard]]
+
 
 namespace OmegaCommon {
     template<class T,unsigned N_start>

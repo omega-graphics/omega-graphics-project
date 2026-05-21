@@ -121,7 +121,6 @@ struct UIView::Impl {
     bool firstFrameCoherentSubmit = true;
     bool styleDirtyGlobal = false;
     bool styleChangeRequiresCoherentFrame = false;
-    SharedHandle<Composition::Canvas> rootCanvas;
     SharedHandle<Composition::ViewAnimator> animationViewAnimator = nullptr;
     OmegaCommon::Map<UIElementTag,SharedHandle<Composition::LayerAnimator>> animationLayerAnimators;
     OmegaCommon::Map<UIElementTag,ElementDirtyState> elementDirtyState;

@@ -1,5 +1,5 @@
 #include <omegaWTK/UI/Widget.h>
-#include <omegaWTK/UI/CanvasView.h>
+#include <omegaWTK/UI/UIView.h>
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
 #include <omegaWTK/UI/VideoView.h>
@@ -54,8 +54,21 @@ protected:
 
     void onPaint(OmegaWTK::PaintReason reason) override {
         (void)reason;
-        viewAs<OmegaWTK::CanvasView>().clear(OmegaWTK::Composition::Color::create8Bit(
-            OmegaWTK::Composition::Color::Black8));
+        // Tier 3 Phase 3.9: black backdrop via the hosted UIView
+        // (a full-bounds rect element) instead of CanvasView::clear.
+        // The VideoView subview composites on top.
+        auto & uv = viewAs<OmegaWTK::UIView>();
+        auto r = rect();
+        OmegaWTK::UIViewLayout layout {};
+        layout.shape("video_bg",OmegaWTK::Shape::Rect(
+            OmegaWTK::Composition::Rect{OmegaWTK::Composition::Point2D{0.f,0.f},r.w,r.h}));
+        uv.setLayout(layout);
+        auto style = OmegaWTK::StyleSheet::Create();
+        style = style->elementBrush("video_bg",OmegaWTK::Composition::ColorBrush(
+            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Black8)),
+            false,0.f);
+        uv.setStyleSheet(style);
+        uv.update();
     }
 
     bool isLayoutResizable() const override { return false; }
@@ -63,7 +76,9 @@ protected:
 public:
     explicit VideoWidget(OmegaWTK::Composition::Rect rect,
                          const OmegaCommon::String & path)
-        : OmegaWTK::Widget(rect), filePath(path) {}
+        : OmegaWTK::Widget(OmegaWTK::ViewPtr(
+              new OmegaWTK::UIView(rect, nullptr, "video_root_view"))),
+          filePath(path) {}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {

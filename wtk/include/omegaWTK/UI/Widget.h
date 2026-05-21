@@ -14,8 +14,6 @@ class AppWindowManager;
 
 class View;
 OMEGACOMMON_SHARED_CLASS(View);
-class CanvasView;
-OMEGACOMMON_SHARED_CLASS(CanvasView);
 class ScrollView;
 OMEGACOMMON_SHARED_CLASS(ScrollView);
 class VideoView;
@@ -109,6 +107,12 @@ private:
 
     void onThemeSetRecurse(Native::ThemeDesc &desc);
     void executePaint(PaintReason reason,bool immediate);
+    /// Widget-View-Paint-Lifecycle-Plan Tier A: run the deferred paint
+    /// scheduled by `invalidate()`. Called by WidgetTreeHost::paintDirty
+    /// during the window frame flush. Clears the view's dirty bits
+    /// before painting (Chromium model: needs_paint_ cleared at entry)
+    /// so a re-invalidation during onPaint survives for the next frame.
+    void flushPendingPaint();
     void handleHostResize(const Composition::Rect & rect);
 
     using Native::NativeThemeObserver::onThemeSet;
@@ -195,7 +199,17 @@ public:
     PaintMode paintMode() const;
     void setPaintOptions(const PaintOptions & options);
     const PaintOptions & paintOptions() const;
+    /// Widget-View-Paint-Lifecycle-Plan Tier A: deferred. Sets the
+    /// view's dirty bits and requests a frame; the actual paint runs
+    /// at the next frame boundary (coalescing a burst of invalidates
+    /// into one frame).
     void invalidate(PaintReason reason = PaintReason::StateChanged);
+    /// Forces a synchronous paint instead of deferring to the next
+    /// frame. Escape hatch only — prefer invalidate().
+    [[deprecated("Synchronous paint bypasses the deferred frame "
+                 "lifecycle (Widget-View-Paint-Lifecycle-Plan Tier A). "
+                 "Use invalidate() unless you truly need paint to "
+                 "complete before this call returns.")]]
     void invalidateNow(PaintReason reason = PaintReason::StateChanged);
     // bool & isResizable();
     virtual void resize(Composition::Rect & newRect){

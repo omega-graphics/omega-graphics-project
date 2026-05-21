@@ -6,7 +6,7 @@
 #include <map>
 #include <string>
 
-#include <omega-common/common.h>
+#include <omega-common/utils.h>
 #include <omegasl.h>
 #include "AST.h"
 

@@ -1,4 +1,4 @@
-header "common/include/omega-common/common.h"
+header "common/include/omega-common/utils.h"
 header "common/include/omega-common/net.h"
 
 // OmegaCommon test surface for the current omega-wrapgen implementation.

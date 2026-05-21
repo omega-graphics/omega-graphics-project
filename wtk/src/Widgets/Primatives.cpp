@@ -1,5 +1,4 @@
 #include "omegaWTK/Widgets/Primatives.h"
-#include "omegaWTK/UI/CanvasView.h"
 
 #include <algorithm>
 #include <cmath>
@@ -496,17 +495,25 @@ static Composition::Rect computeFitRect(const Composition::Rect & bounds,
 } // anonymous namespace
 
 Image::Image(Composition::Rect rect, const ImageProps & props)
-    : Widget(rect), props_(props) {}
+    : Widget(ViewPtr(new UIView(rect, nullptr, "image"))), props_(props) {}
 
 void Image::onPaint(PaintReason reason) {
-    auto & cv = viewAs<CanvasView>();
-    cv.clear(Composition::Color::Transparent);
-    if (!props_.source) return;
+    (void)reason;
+    auto & uv = viewAs<UIView>();
+    auto & lv2 = uv.layoutV2();
+    lv2.clear();
 
-    float imgW = static_cast<float>(props_.source->header.width);
-    float imgH = static_cast<float>(props_.source->header.height);
-    Composition::Rect dest = computeFitRect(rect(), imgW, imgH, props_.fitMode);
-    cv.drawImage(props_.source, dest);
+    if (props_.source) {
+        float imgW = static_cast<float>(props_.source->header.width);
+        float imgH = static_cast<float>(props_.source->header.height);
+        Composition::Rect dest = computeFitRect(rect(), imgW, imgH, props_.fitMode);
+        UIElementLayoutSpec spec;
+        spec.tag = "img";
+        spec.image = props_.source;
+        spec.imageRect = dest;
+        lv2.element(spec);
+    }
+    uv.update();
 }
 
 void Image::resize(Composition::Rect & newRect) {

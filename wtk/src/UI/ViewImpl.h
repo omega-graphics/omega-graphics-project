@@ -113,6 +113,8 @@ struct View::Impl {
     Composition::Rect rect {Composition::Point2D{0.f,0.f},1.f,1.f};
     ViewDelegate * delegate = nullptr;
     bool enabled_ = true;
+    /// Widget-View-Paint-Lifecycle-Plan Tier A: deferred-paint dirty mask.
+    uint8_t dirtyBits_ = 0;
 
     /// Construct a purely virtual View (Phase 3). No NativeItem, no
     /// per-View render target. The render target is propagated from the

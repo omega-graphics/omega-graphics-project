@@ -1,4 +1,4 @@
-#include "omega-common/common.h"
+#include "omega-common/utils.h"
 #include <deque>
 
 #ifndef OMEGA_WRAPGEN_DIAGNOSTICS_H

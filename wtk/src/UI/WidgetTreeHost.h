@@ -113,8 +113,15 @@ namespace OmegaWTK {
 
         /// Per-window surface mailbox (Phase A). Created by AppWindow.
         SharedHandle<Composition::CompositorSurface> windowSurface_;
-        /// Composite frame being built during a paint pass.
-        SharedHandle<Composition::CompositeFrame> pendingFrame_;
+        /// Tier 3 Phase 3.8: the window's frame driver, set by AppWindow
+        /// after construction. Widget::executePaint brackets each paint
+        /// with a FrameBuilder::ScopedFrame so every UIView::update /
+        /// SVGView::paint submits into the one window-scoped frame.
+        FrameBuilder * frameBuilder_ = nullptr;
+        /// Widget-View-Paint-Lifecycle-Plan Tier A: owning window, set
+        /// by AppWindow alongside the frame builder. requestFrame()
+        /// routes through it to the native run-loop coalescing hook.
+        AppWindow * ownerWindow_ = nullptr;
 
         bool attachedToWindow;
         View * hoveredView_ = nullptr;
@@ -135,9 +142,11 @@ namespace OmegaWTK {
         void observeWidgetLayerTreesRecurse(Widget *parent);
         void unobserveWidgetLayerTreesRecurse(Widget *parent);
         void invalidateWidgetRecurse(Widget *parent,PaintReason reason,bool immediate);
+        /// Widget-View-Paint-Lifecycle-Plan Tier A: pre-order walk that
+        /// repaints widgets whose view has the Paint dirty bit set.
+        void paintDirtyRecurse(Widget *parent);
         void beginResizeCoordinatorSessionRecurse(Widget *parent,std::uint64_t sessionId);
         void applyResizeGovernorMetadata(const Composition::ResizeGovernorMetadata & metadata);
-        void setActiveCompositeFrameRecurse(Widget *parent,Composition::CompositeFrame *frame);
         bool detectAnimatedTreeRecurse(Widget *parent) const;
         // True iff any widget in the subtree has
         // PaintOptions::invalidateOnResize == true. Drives the
@@ -183,14 +192,21 @@ namespace OmegaWTK {
         /// Called by AppWindow during creation.
         void setWindowSurface(SharedHandle<Composition::CompositorSurface> surface);
 
-        /// Paint all widgets and deposit the composite frame into the
-        /// window's surface mailbox (Phase A).
-        void paintAndDeposit(PaintReason reason,bool immediate = false);
+        /// Tier 3 Phase 3.8: set / read the window's frame driver.
+        /// Called by AppWindow after the FrameBuilder is constructed.
+        void setFrameBuilder(FrameBuilder * fb){ frameBuilder_ = fb; }
+        FrameBuilder * frameBuilder() const { return frameBuilder_; }
 
-        /// Deposit a per-paint composite frame into the window's surface
-        /// mailbox. Called by Widget::executePaint after the slice has
-        /// been pushed via Canvas::sendFrame -> pushFrame.
-        void depositFrame(SharedHandle<Composition::CompositeFrame> frame);
+        /// Widget-View-Paint-Lifecycle-Plan Tier A: owning window, set
+        /// by AppWindow. Used by requestFrame().
+        void setOwnerWindow(AppWindow * window){ ownerWindow_ = window; }
+        /// Ask the owning window to flush a frame on the next run-loop
+        /// turn (coalesced). Called by the deferred Widget::invalidate.
+        void requestFrame();
+        /// Repaint every widget whose view has the Paint dirty bit set.
+        /// Invoked by AppWindow::flushFrame inside one FrameBuilder
+        /// ScopedFrame.
+        void paintDirty();
 
         /// Set the root native item for this window (Phase 5).
         /// Called by AppWindow during setRootWidget().

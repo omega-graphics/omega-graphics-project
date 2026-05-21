@@ -62,6 +62,26 @@ NativeEventEmitter * CocoaAppWindow::getEmitter() {
     return eventEmitter();
 };
 
+void CocoaAppWindow::requestFrameFlush(){
+    // Widget-View-Paint-Lifecycle-Plan Tier A: coalesce a burst of
+    // frame requests into one flush on the next run-loop turn. Mirrors
+    // the resize-coalescing block in the window delegate.
+    // kCFRunLoopCommonModes so the flush fires during live resize
+    // (NSEventTrackingRunLoopMode), not only NSDefaultRunLoopMode.
+    if(frameFlushQueued_){
+        return;
+    }
+    frameFlushQueued_ = true;
+    CocoaAppWindow *self = this;
+    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
+        self->frameFlushQueued_ = false;
+        if(self->frameFlushCallback_){
+            self->frameFlushCallback_();
+        }
+    });
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+}
+
 void CocoaAppWindow::disable(){
     if([windowController.window isVisible] == YES){
         [windowController.window orderOut:nil];

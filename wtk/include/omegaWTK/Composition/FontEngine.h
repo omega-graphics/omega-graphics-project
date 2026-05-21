@@ -228,7 +228,7 @@
       @param desc[in] The Font Descriptor describing a Font.
       @paragraph Description
       Creates a shared instance of the font based on the FontDescriptor provided,
-      which can be used global context or local context such as a within the context of a CanvasView.
+      which can be used in a global context or a local context such as within the context of a View.
       @returns SharedPtr<Font>
      */
      INTERFACE_METHOD Core::SharedPtr<Font> CreateFont(FontDescriptor & desc) ABSTRACT;

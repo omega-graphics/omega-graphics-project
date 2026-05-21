@@ -31,12 +31,11 @@ public:
 
  UIView-Render-Redesign-Plan Tier 2 Phase 2.3: the parsed document is
  cached as a `Composition::DisplayList` rebuilt from `sourceDoc_` on
- each `setSource*` call. `paint()` replays the list into `svgCanvas`
- through `Composition::DisplayListReplay`. Brushes and borders are
- resolved at parse time, not at paint time.
+ each `setSource*` call. Tier 3 Phase 3.8: `paint()` submits the list
+ to the window-scoped `FrameBuilder` bracketing the paint pass.
+ Brushes and borders are resolved at parse time, not at paint time.
 */
 class OMEGAWTK_EXPORT SVGView : public View {
-    SharedHandle<Composition::Canvas> svgCanvas;
     SVGViewDelegate *delegate_ = nullptr;
     SVGViewRenderOptions options_ {};
     Core::Optional<Core::XMLDocument> sourceDoc_;

@@ -109,21 +109,15 @@ Composition::Rect localBoundsFromView(UIView *view){
 }
 
 void UIView::update(){
-    if(impl_->rootCanvas == nullptr){
-        impl_->rootCanvas = makeCanvas(getLayerTree()->getRootLayer());
-        impl_->firstFrameCoherentSubmit = true;
-    }
-
+    // A UIView with no explicit layout (or an empty one) still paints a
+    // default layout: a single full-bounds fill of its resolved
+    // background color. The element-resolution loop below is a no-op
+    // when the element list is empty, and the background rect (appended
+    // unconditionally further down) is the default layout's only op.
+    // This is why a bare setStyleSheet(backgroundColor) with no
+    // elements renders — previously update() early-returned here and
+    // submitted nothing.
     const auto & v2Elements = impl_->currentLayoutV2_.elements();
-    if(v2Elements.empty()){
-        impl_->layoutDirty = false;
-        impl_->styleDirty = false;
-        impl_->styleDirtyGlobal = false;
-        impl_->styleChangeRequiresCoherentFrame = false;
-        impl_->firstFrameCoherentSubmit = false;
-        ++impl_->lastUpdateDiagnostics.revision;
-        return;
-    }
 
     const auto localBounds = UIViewInternal::localBoundsFromView(this);
     const float dpiScale = 1.f;
@@ -200,12 +194,6 @@ void UIView::update(){
 
     auto viewStyle = UIViewInternal::resolveViewStyle(impl_->currentStyle,impl_->tag);
     auto backgroundColor = viewStyle.backgroundColor.value_or(Composition::Color::Transparent);
-
-    auto & rootBackground = impl_->rootCanvas->getCurrentFrame()->background;
-    rootBackground.r = backgroundColor.r;
-    rootBackground.g = backgroundColor.g;
-    rootBackground.b = backgroundColor.b;
-    rootBackground.a = backgroundColor.a;
 
     // UIView-Render-Redesign-Plan Tier 2 Phase 2.1: paint is now a
     // pure function of model + layout + style + animation. Every
@@ -388,6 +376,11 @@ void UIView::update(){
                 }
             }
         }
+        else if(spec.image && *spec.image != nullptr){
+            auto imageRect = spec.imageRect.value_or(localBounds);
+            imageRect = ViewResizeCoordinator::clampRectToParent(imageRect,localBounds,layoutClamp);
+            displayList.append(Composition::DrawOp{*spec.image, imageRect});
+        }
     }
 
     // Tier 3 Phase 3.4: push this UIView's absolute window offset
@@ -404,24 +397,18 @@ void UIView::update(){
     FrameBuilder::ScopedViewOffset offsetScope(
         AppWindow::activeFrameBuilder(), this);
 
-    // Tier 3 Phase 3.2: when the window-scoped paint route is active
-    // (an AppWindow-driven paint pass is in flight and the
-    // `windowScopedPaint` flag is on for this window), hand the
-    // freshly-built DisplayList to the FrameBuilder instead of
-    // replaying into the per-view rootCanvas. FrameBuilder accumulates
-    // submissions in tree order and replays them all into the window
-    // canvas at endFrame, stamping each view's window-offset onto the
-    // window canvas's current frame.
-    //
-    // When the flag is off (or there is no active FrameBuilder), the
-    // Phase 2.1 path runs unchanged: replay into rootCanvas + sendFrame.
-    if(auto * fb = AppWindow::activeFrameBuilder();
-       fb != nullptr && fb->windowScopedPaint()){
+    // Tier 3 Phase 3.8: window-scoped paint is the only route. Hand the
+    // freshly-built DisplayList to the FrameBuilder bracketing this
+    // paint pass (Widget::executePaint opens one for every invalidate /
+    // init repaint; AppWindow opens one for display / resize).
+    // FrameBuilder accumulates submissions in tree order and replays
+    // them all into the window canvas at endFrame, stamping each view's
+    // window-offset onto the window canvas's current frame. If no frame
+    // is active (a stray update() outside any paint pass), the
+    // DisplayList is dropped — paint only produces output inside a
+    // frame.
+    if(auto * fb = AppWindow::activeFrameBuilder(); fb != nullptr){
         fb->submitView(this, std::move(displayList));
-    }
-    else {
-        Composition::DisplayListReplay::replay(displayList, *impl_->rootCanvas);
-        impl_->rootCanvas->sendFrame();
     }
 
     endCompositionSession();

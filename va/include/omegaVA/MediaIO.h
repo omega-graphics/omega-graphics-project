@@ -1,6 +1,8 @@
 #include "OmegaVAExport.h"
 #include "omegaVA/Core.h"
 
+#include <omega-common/fs.h>
+
 #ifndef OMEGAVA_MEDIAIO_H
 #define OMEGAVA_MEDIAIO_H
 

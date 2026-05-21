@@ -1,6 +1,6 @@
 #include "omega-common/assets.h"
 
-#include "omega-common/common.h"
+#include "omega-common/utils.h"
 #include "omega-common/crypto.h"
 
 #include "../assetc/assetc.h"

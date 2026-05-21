@@ -21,6 +21,12 @@ void UIView::Impl::convertLegacyLayoutToV2(){
         if(element.textStyleTag){
             spec.textStyleTag = element.textStyleTag;
         }
+        if(element.image){
+            spec.image = element.image;
+        }
+        if(element.imageRect){
+            spec.imageRect = element.imageRect;
+        }
         v2.element(spec);
     }
     currentLayoutV2_ = std::move(v2);

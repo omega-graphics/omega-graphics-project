@@ -23,7 +23,7 @@
 
 #include "OmegaGTE.h"
 
-#include "omega-common/common.h"
+#include "omega-common/utils.h"
 
 #include <glm/glm.hpp>
 

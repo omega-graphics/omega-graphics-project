@@ -460,7 +460,6 @@ void walkElement(Core::XMLDocument::Tag & tag, Composition::DisplayList & list) 
 SVGView::SVGView(const Composition::Rect & rect, ViewPtr parent)
     : View(rect, parent),
       cachedOps_(std::make_unique<Composition::DisplayList>()) {
-    svgCanvas = makeCanvas(getLayerTree()->getRootLayer());
 }
 
 SVGView::~SVGView() = default;
@@ -548,17 +547,13 @@ void SVGView::paint() {
     FrameBuilder::ScopedViewOffset offsetScope(
         AppWindow::activeFrameBuilder(), this);
 
-    // Tier 3 Phase 3.3: when the window-scoped paint route is active,
-    // hand the cached DisplayList to the FrameBuilder instead of
-    // replaying into the per-view svgCanvas. The window canvas's
-    // frame.background is shared across all submissions for the
-    // frame (other views may set it for their own backgrounds), so
-    // the SVG white background is prepended as an explicit Rect op
-    // in local coordinates — the off-flag path writes it to
-    // svgCanvas->frame->background where there is no cross-view
-    // contention, but the on-flag path needs the rect for parity.
-    if (auto * fb = AppWindow::activeFrameBuilder();
-        fb != nullptr && fb->windowScopedPaint()) {
+    // Tier 3 Phase 3.8: window-scoped paint is the only route. Hand the
+    // cached DisplayList to the FrameBuilder bracketing this paint pass.
+    // The window canvas's frame.background is shared across all
+    // submissions for the frame (other views may set it for their own
+    // backgrounds), so the SVG white background is prepended as an
+    // explicit Rect op in local coordinates.
+    if (auto * fb = AppWindow::activeFrameBuilder(); fb != nullptr) {
         Composition::DisplayList list;
         const auto & viewRect = getRect();
         Composition::Rect localBg{
@@ -567,18 +562,6 @@ void SVGView::paint() {
         for (const auto & op : cachedOps_->ops())
             list.append(op);
         fb->submitView(this, std::move(list));
-    }
-    else {
-        // White background (SVG default, matching browser behaviour).
-        // Kept as a frame-property write rather than a `DrawOp::Rect`
-        // because the rect fields are zero-init at frame construction
-        // and the canvas treats the background channel separately
-        // from the visual-command list.
-        auto & bg = svgCanvas->getCurrentFrame()->background;
-        bg.r = white.r; bg.g = white.g; bg.b = white.b; bg.a = white.a;
-
-        Composition::DisplayListReplay::replay(*cachedOps_, *svgCanvas);
-        svgCanvas->sendFrame();
     }
 
     endCompositionSession();

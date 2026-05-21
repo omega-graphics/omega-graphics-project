@@ -1,5 +1,4 @@
 #include <omegaWTK/UI/Widget.h>
-#include <omegaWTK/UI/CanvasView.h>
 #include <omegaWTK/UI/UIView.h>
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
@@ -86,106 +85,62 @@ protected:
     void onPaint(OmegaWTK::PaintReason reason) override {
         (void)reason;
         ensureFontLoaded();
-
-        auto & cv = viewAs<OmegaWTK::CanvasView>();
-        auto & r = rect();
-
-        cv.clear(OmegaWTK::Composition::Color::create8Bit(
-            OmegaWTK::Composition::Color::White8));
-
-        OmegaWTK::Composition::Rect bounds{OmegaWTK::Composition::Point2D{0.f,0.f},r.w,r.h};
-        // ensureAccentView(bounds);
-
-        // if(accentView != nullptr){
-        //     constexpr float kRectSize = 56.0f;
-        //     constexpr float kLayerSize = 120.0f;
-        //     OmegaWTK::Composition::Rect redRect{
-        //         OmegaWTK::Composition::Point2D{
-        //             (kLayerSize - kRectSize) * 0.5f,
-        //             (kLayerSize - kRectSize) * 0.5f},
-        //         kRectSize,
-        //         kRectSize};
-
-        //     OmegaWTK::UIViewLayout layout {};
-        //     layout.shape("accent_rect",OmegaWTK::Shape::Rect(redRect));
-        //     layout.text(
-        //         "accent_label",
-        //         U"UI",
-        //         OmegaWTK::Composition::Rect{
-        //             OmegaWTK::Composition::Point2D{0.f,6.f},
-        //             kLayerSize,
-        //             22.f});
-        //     accentView->setLayout(layout);
-
-        //     auto style = OmegaWTK::StyleSheet::Create();
-        //     style = style->backgroundColor("text_accent_view",OmegaWTK::Composition::Color::Transparent);
-        //     style = style->elementBrush("accent_rect",OmegaWTK::Composition::ColorBrush(
-        //         OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)),
-        //         true,
-        //         0.30f);
-        //     style = style->elementDropShadow("accent_rect",makeShadow(0.f,6.f,3.f,12.f,0.60f),true,0.30f);
-        //     style = style->textColor(
-        //         "accent_label",
-        //         OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::White8),
-        //         true,
-        //         0.30f);
-        //     style = style->textAlignment(
-        //         "accent_label",
-        //         OmegaWTK::Composition::TextLayoutDescriptor::MiddleUpper);
-        //     style = style->textWrapping(
-        //         "accent_label",
-        //         OmegaWTK::Composition::TextLayoutDescriptor::None);
-        //     style = style->textLineLimit("accent_label",1);
-        //     style = style->dropShadow("text_accent_view",makeShadow(0.f,8.f,3.f,14.f,0.50f),true,0.30f);
-        //     if(font != nullptr){
-        //         style = style->textFont("accent_label",font);
-        //     }
-        //     accentView->setStyleSheet(style);
-        //     accentView->update();
-
-        //     if(!loggedUIViewValidation){
-        //         std::cout << "[TextCompositorTest] Accent layer rendered through UIView." << std::endl;
-        //         loggedUIViewValidation = true;
-        //     }
-        // }
-
         if(font == nullptr){
             return;
         }
+
+        // Tier 3 Phase 3.9: migrated off CanvasView's imperative
+        // clear()/drawText() to a declarative UIView layout. A
+        // full-bounds rect supplies the white backdrop; two text
+        // elements replace the two drawText calls (the body element
+        // carries the centered + word-wrapped layout the second
+        // drawText used via its TextLayoutDescriptor).
+        auto & uv = viewAs<OmegaWTK::UIView>();
+        auto & r = rect();
+        OmegaWTK::Composition::Rect bounds{OmegaWTK::Composition::Point2D{0.f,0.f},r.w,r.h};
 
         OmegaWTK::Composition::Rect titleRect{
             OmegaWTK::Composition::Point2D{24.0f,24.0f},
             bounds.w - 48.0f,
             54.0f};
-        cv.drawText(
-            OmegaCommon::UniString::fromUTF8("OmegaWTK Text Compositor"),
-            font,
-            titleRect,
-            OmegaWTK::Composition::Color::create8Bit(
-                OmegaWTK::Composition::Color::Black8));
-
         OmegaWTK::Composition::Rect bodyRect{
             OmegaWTK::Composition::Point2D{
                 bounds.w * 0.17f,
                 bounds.h * 0.64f},
             bounds.w * 0.66f,
             bounds.h * 0.22f};
-        OmegaWTK::Composition::TextLayoutDescriptor centeredWrap{
-            OmegaWTK::Composition::TextLayoutDescriptor::MiddleCenter,
-            OmegaWTK::Composition::TextLayoutDescriptor::WrapByWord};
 
-        cv.drawText(
-            OmegaCommon::UniString::fromUTF8("Centered, wrapped text rendered through the compositor."),
-            font,
-            bodyRect,
-            OmegaWTK::Composition::Color::create8Bit(
-                OmegaWTK::Composition::Color::Black8),
-            centeredWrap);
+        OmegaWTK::UIViewLayout layout {};
+        layout.shape("text_bg",OmegaWTK::Shape::Rect(bounds));
+        layout.text("title",
+            OmegaCommon::UString(U"OmegaWTK Text Compositor"),titleRect);
+        layout.text("body",
+            OmegaCommon::UString(U"Centered, wrapped text rendered through the compositor."),
+            bodyRect);
+        uv.setLayout(layout);
+
+        auto black = OmegaWTK::Composition::Color::create8Bit(
+            OmegaWTK::Composition::Color::Black8);
+        auto style = OmegaWTK::StyleSheet::Create();
+        style = style->elementBrush("text_bg",OmegaWTK::Composition::ColorBrush(
+            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::White8)),
+            false,0.f);
+        style = style->textFont("title",font);
+        style = style->textColor("title",black);
+        style = style->textFont("body",font);
+        style = style->textColor("body",black);
+        style = style->textAlignment("body",
+            OmegaWTK::Composition::TextLayoutDescriptor::MiddleCenter);
+        style = style->textWrapping("body",
+            OmegaWTK::Composition::TextLayoutDescriptor::WrapByWord);
+        uv.setStyleSheet(style);
+        uv.update();
     }
 
 public:
     explicit TextCompositorWidget(OmegaWTK::Composition::Rect rect):
-        OmegaWTK::Widget(rect){}
+        OmegaWTK::Widget(OmegaWTK::ViewPtr(
+            new OmegaWTK::UIView(rect, nullptr, "text_root_view"))){}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {

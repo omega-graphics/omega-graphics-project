@@ -10,9 +10,7 @@
 #include "omega-common/fs.h"
 #include "omega-common/assets.h"
 
-namespace OmegaCommon {
-
-namespace Img {
+namespace OmegaCommon::Img {
 
     struct Profile {
         String name;
@@ -172,17 +170,15 @@ namespace Img {
         BitmapImage & operator=(BitmapImage &&) noexcept = default;
 
         Byte * data() noexcept { return pixels.data(); }
-        const Byte * data() const noexcept { return pixels.data(); }
-        std::size_t byteSize() const noexcept { return pixels.size(); }
-        bool empty() const noexcept { return pixels.empty(); }
+        OMEGACOMMON_NODISCARD const Byte * data() const noexcept { return pixels.data(); }
+        OMEGACOMMON_NODISCARD std::size_t byteSize() const noexcept { return pixels.size(); }
+        OMEGACOMMON_NODISCARD bool empty() const noexcept { return pixels.empty(); }
     };
 
     OMEGACOMMON_EXPORT Result<BitmapImage, std::string> loadFromFile(FS::Path path);
     OMEGACOMMON_EXPORT Result<BitmapImage, std::string> loadFromAssets(AssetBundle & bundle, FS::Path path);
     OMEGACOMMON_EXPORT Result<BitmapImage, std::string> loadFromBuffer(Byte * bufferData, std::size_t bufferSize, Format f);
     OMEGACOMMON_EXPORT Result<BitmapImage, std::string> loadFromURL(StrRef url, Format format);
-
-}
 
 }
 

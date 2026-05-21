@@ -2,7 +2,7 @@
 #include <vector>
 #include <string>
 
-#include "omega-common/common.h"
+#include "omega-common/utils.h"
 
 #ifndef OMEGA_WRAPGEN_AST_H
 #define OMEGA_WRAPGEN_AST_H

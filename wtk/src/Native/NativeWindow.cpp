@@ -14,4 +14,16 @@ namespace OmegaWTK::Native {
         return windowEventEmitter;
     }
 
+    void NativeWindow::setFrameFlushCallback(std::function<void()> cb) {
+        frameFlushCallback_ = std::move(cb);
+    }
+
+    void NativeWindow::requestFrameFlush() {
+        // Base: no run loop to coalesce onto, so invoke synchronously.
+        // Platforms with a run loop (macOS) override to defer + coalesce.
+        if(frameFlushCallback_) {
+            frameFlushCallback_();
+        }
+    }
+
 };

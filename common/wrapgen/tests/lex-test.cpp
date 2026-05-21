@@ -1,7 +1,7 @@
 #include "../lexer.h"
 #include <iostream>
 
-#include <omega-common/common.h>
+#include <omega-common/utils.h>
 
 using namespace OmegaWrapGen;
 

@@ -37,6 +37,7 @@
 
 #include <omegaWTK/UI/Widget.h>
 #include <omegaWTK/UI/View.h>
+#include <omegaWTK/UI/UIView.h>
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
 #include <omegaWTK/UI/ScrollView.h>
@@ -174,8 +175,10 @@ protected:
     bool isLayoutResizable() const override { return false; }
 
 public:
+    // Tier 3 Phase 3.9: host a UIView (no longer pre-binds a Canvas)
+    // so the manual makeCanvas() in onMount doesn't double-bind.
     explicit ScrollViewClipValidatorWidget(Composition::Rect rect)
-        : Widget(rect) {}
+        : Widget(ViewPtr(new UIView(rect, nullptr, "scrollclip_validator_view"))) {}
 };
 
 class MyWindowDelegate final : public AppWindowDelegate {

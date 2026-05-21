@@ -884,12 +884,16 @@ public:
    on Windows) that calls `buildFrame()`. If the pacer doesn't exist
    yet, Tier A can use a simple flag + manual trigger.
 
+   Yes. Add to the AppWindow.
+
 2. **Manual-mode widgets.** `PaintMode::Manual` widgets currently skip
    `executePaint` entirely. In the new lifecycle, manual widgets skip
    the `paint()` call in Phase 4 but still participate in Tick, Style,
    and Layout phases (since those affect their children). The manual
    widget can call `FrameBuilder::forcePaintNode(node)` to paint
    on demand.
+
+   Sure.
 
 3. **Warmup frames.** The current `PaintOptions::autoWarmupOnInitialPaint`
    submits the initial frame multiple times. This was a workaround for
@@ -903,11 +907,16 @@ public:
    pre-warm with a 1×1 dummy draw at engine init, *not* to bring back
    warmup frames at the lifecycle level.
 
+   We have switched to loading pre-compiled shaders, so shader complilation time shouldn't be any issue.
+   We can remve the Warmup frames.
+
 4. **`invalidateNow()` callers.** Grep for all callers of
    `invalidateNow()` in the codebase. Each one is a potential
    assumption that paint completes synchronously. These must be audited
    and either converted to deferred `invalidate()` or justified as
    legitimate synchronous paint needs (e.g., screenshot capture).
+
+   Yes.
 
 5. **Resize path.** `WidgetTreeHost::notifyWindowResize*()` currently
    creates a `CompositeFrame`, sets it on all widgets, calls
@@ -923,6 +932,8 @@ public:
    far more likely to be sufficient than under the original profile.
    Validate empirically on a 10-widget window resize before deciding
    whether to introduce a synchronous resize escape hatch.
+
+   Yes.
 
 ---
 

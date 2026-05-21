@@ -17,39 +17,31 @@ namespace Composition {
     struct CompositeFrame;
 }
 
-// Tier 3 Phase 3.1/3.2: window-level frame driver.
+// Tier 3: window-level frame driver.
 //
-// Phase 3.1 established the bracket: FrameBuilder owns the lifetime
-// of the window-scoped composition session (open at beginFrame,
-// close at endFrame). Per-view sessions opened by UIView::update /
-// SVGView::paint / ScrollView still run as they do today and
-// coexist with the window-level session.
+// FrameBuilder owns the lifetime of the window-scoped composition
+// session (open at beginFrame, close at endFrame) and the single
+// per-frame CompositeFrame. Every paint pass — display, resize, and
+// each Widget::executePaint invalidate/init repaint — brackets its
+// work with a ScopedFrame, so nested passes share one frame via the
+// depth counter.
 //
-// Phase 3.2 wires the first real window-scoped paint route: when
-// `AppWindow::windowScopedPaint()` is on, `UIView::update` hands
-// its DisplayList to `submitView(...)` instead of replaying into
-// its per-view canvas. `endFrame()` walks the pending submissions
-// in insertion order (tree order), stamps each view's window-offset
+// `UIView::update` / `SVGView::paint` hand their DisplayList to
+// `submitView(...)`. `endFrame()` walks the pending submissions in
+// insertion order (tree order), stamps each view's window-offset
 // onto the window canvas's current frame, replays the DisplayList
-// into the window canvas, and sendFrame()s once per submission.
-// The aggregated CompositeFrame is then deposited into the window
+// into the window canvas, and sendFrame()s once per submission. The
+// aggregated CompositeFrame is then deposited into the window
 // surface.
 //
-// Per-view paint paths continue to deposit their own CompositeFrames
-// in parallel during the transition; the flag is flipped on per
-// scene so any regression is isolated. Phase 3.8 deletes the
-// per-view canvases and removes the flag.
+// Phase 3.8 made this the only paint route: the per-view canvases and
+// the OMEGAWTK_WINDOW_SCOPED_PAINT flag are gone.
 class FrameBuilder {
     AppWindow & window_;
     // Nesting depth. Defensive: an AppWindow-driven paint pass
     // (initWidgetTree, dispatchResize*ToHosts) may transitively run
     // another. Only the outermost pair does the session work.
     int depth_ = 0;
-    // Visuals count on the window Canvas at the start of the
-    // outermost beginFrame, used by endFrame to decide whether any
-    // draws landed via the direct path (Phase 3.1) when no
-    // submissions were queued via submitView.
-    std::size_t baselineVisualCount_ = 0;
 
     // Phase 3.2: pending UIView submissions for this frame. Captured
     // by submitView() during the widget paint walk; drained by
@@ -74,16 +66,12 @@ class FrameBuilder {
     // the new View::computeWindowOffset wrapper. Empty stack ⇒ {0,0}.
     std::vector<Composition::Point2D> offsetStack_;
 
-    // Phase 3.2: window-level CompositeFrame allocated at beginFrame
-    // when the windowScopedPaint flag is on, attached to the
-    // AppWindow's compositor proxy so the windowCanvas's pushFrame
-    // has somewhere to deposit slices. Deposited into the window
+    // Phase 3.2: window-level CompositeFrame allocated at beginFrame,
+    // attached to the AppWindow's compositor proxy so the
+    // windowCanvas's pushFrame has somewhere to deposit slices.
+    // Deposited into the window
     // surface at endFrame.
     SharedHandle<Composition::CompositeFrame> compositeFrame_;
-    // True iff the windowScopedPaint flag was on at this frame's
-    // beginFrame. Captured once so a mid-frame flag flip cannot
-    // strand the CompositeFrame attached to the proxy.
-    bool windowScopedPaintActive_ = false;
 
 public:
     explicit FrameBuilder(AppWindow & window);
@@ -139,11 +127,6 @@ public:
         ScopedViewOffset(const ScopedViewOffset &) = delete;
         ScopedViewOffset & operator=(const ScopedViewOffset &) = delete;
     };
-
-    // Phase 3.2: mirrors AppWindow::windowScopedPaint() but reads
-    // the value captured at beginFrame, so callers inside the paint
-    // walk see a stable answer for the whole frame.
-    bool windowScopedPaint() const { return windowScopedPaintActive_; }
 
     // RAII wrapper for the typical bracket-an-AppWindow-paint-pass
     // call site. Null-safe so callers can guard on the FrameBuilder

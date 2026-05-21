@@ -208,13 +208,4 @@ namespace OmegaCommon::FS {
         };
 };
 
-// inline OmegaCommon::FS::Path operator "" _FS_PATH(const char *path,size_t len){
-//     OmegaCommon::StrRef str(const_cast<char *>(path),len);
-//     return {str};
-// };
-
-// inline void f(){
-//     auto s = "Hello"_P;
-// }
-
 #endif

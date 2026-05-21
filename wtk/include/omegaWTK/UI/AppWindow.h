@@ -53,11 +53,6 @@ class AppWindowDelegate;
         // disappear when the per-view paint path is deleted in Tier 4.
         Composition::LayerTree * windowLayerTree() const;
         Composition::Canvas    * windowCanvas() const;
-        /// Runtime knob mirroring the OMEGAWTK_WINDOW_SCOPED_PAINT build
-        /// flag. Off by default; Phase 3.2 onward flips this on per scene
-        /// to route DrawOps through FrameBuilder.
-        bool windowScopedPaint() const;
-        void setWindowScopedPaint(bool enabled);
         /// Tier 3 Phase 3.1: the window's frame driver. Lifetime matches
         /// AppWindow's; constructed after windowCanvas() is wired.
         /// AppWindow-driven paint chokepoints (initWidgetTree,
@@ -71,11 +66,20 @@ class AppWindowDelegate;
         /// Tier 3 Phase 3.2: returns the FrameBuilder currently
         /// bracketing an AppWindow-driven paint pass, or nullptr if
         /// none is active. UIView::update / SVGView::paint read this
-        /// (alongside the windowScopedPaint flag) to decide whether
-        /// to submit their DisplayList to the window route or fall
-        /// back to the legacy per-view canvas. Single-threaded UI
-        /// thread; not safe to call from background threads.
+        /// to submit their DisplayList to the window-scoped frame.
+        /// Single-threaded UI thread; not safe to call from
+        /// background threads.
         static FrameBuilder * activeFrameBuilder();
+
+        /// Widget-View-Paint-Lifecycle-Plan Tier A: request a coalesced
+        /// frame flush. Schedules flushFrame() on the next run-loop turn
+        /// via the native window; a burst of requests collapses to one
+        /// frame. Called by the deferred Widget::invalidate path.
+        void requestFrame();
+        /// Build one frame: opens a single FrameBuilder ScopedFrame and
+        /// repaints all dirty widgets. Invoked by the native run-loop
+        /// callback registered in setRootWidget().
+        void flushFrame();
 
         void setRootWidget(WidgetPtr widget);
 

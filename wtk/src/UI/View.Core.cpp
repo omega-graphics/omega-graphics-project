@@ -38,6 +38,18 @@ Composition::LayerTree * View::getLayerTree(){
     return impl_->ownLayerTree.get();
 }
 
+void View::markDirty(uint8_t bits){
+    impl_->dirtyBits_ |= bits;
+}
+
+uint8_t View::dirtyBits() const{
+    return impl_->dirtyBits_;
+}
+
+void View::clearDirtyBits(){
+    impl_->dirtyBits_ = 0;
+}
+
 bool View::isRootView(){
     return impl_->parent_ptr == nullptr;
 }

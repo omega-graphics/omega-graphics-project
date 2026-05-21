@@ -108,9 +108,8 @@ namespace OmegaWTK {
 
     /**
         @brief Controls all the basic functionality of a Widget!
-        Sometimes referred to as the CanvasView.
         @relates Widget
-     */ 
+     */
     class OMEGAWTK_EXPORT View : public Native::NativeEventEmitter {
     protected:
         Composition::CompositorClientProxy & compositorProxy();
@@ -164,6 +163,24 @@ namespace OmegaWTK {
         Composition::Rect & getRect();
         /// @brief Retrieves the View's own LayerTree.
         Composition::LayerTree * getLayerTree();
+
+        /// Widget-View-Paint-Lifecycle-Plan Tier A: per-node dirty
+        /// state. `invalidate()` sets these bits and defers the actual
+        /// paint to the next frame boundary instead of painting inline.
+        /// The bits are an unscoped enum so callers can OR them
+        /// (`View::Paint | View::Layout`) per the plan's §3.3.
+        enum DirtyBit : uint8_t {
+            Style   = 1 << 0,
+            Layout  = 1 << 1,
+            Content = 1 << 2,
+            Paint   = 1 << 3,
+        };
+        /// OR `bits` into this view's dirty mask.
+        void markDirty(uint8_t bits);
+        /// Current dirty mask (combination of DirtyBit values).
+        uint8_t dirtyBits() const;
+        /// Reset the dirty mask to zero.
+        void clearDirtyBits();
         /// @brief Checks to see if this View is the root View of a Widget.
         bool isRootView();
         /// @brief Returns the resize coordinator associated with this view.
@@ -277,9 +294,10 @@ namespace OmegaWTK {
         void applyLayoutDelta(const struct LayoutDelta & delta,
                               const struct LayoutTransitionSpec & spec);
 
-        /// Called by Widget::executePaint after onPaint. CanvasView sends its
-        /// root canvas frame. Specialized views do nothing (they already sent
-        /// their frames in their own rendering methods).
+        /// Called by Widget::executePaint after onPaint. A no-op since
+        /// Phase 3.8 collapsed per-view canvases: UIView / SVGView submit
+        /// their DisplayList through the window-level FrameBuilder during
+        /// paint, so there is no per-view frame left to send here.
         virtual void submitPaintFrame(int submissions) { (void)submissions; }
 
         virtual ~View();

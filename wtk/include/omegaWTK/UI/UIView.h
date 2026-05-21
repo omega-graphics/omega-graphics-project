@@ -217,7 +217,8 @@ public:
     struct Element {
         enum class Type : uint8_t {
             Text,
-            Shape
+            Shape,
+            Image
         };
 
         Type type = Type::Text;
@@ -226,6 +227,8 @@ public:
         Core::Optional<Shape> shape;
         Core::Optional<Composition::Rect> textRect;
         Core::Optional<UIElementTag> textStyleTag;
+        Core::Optional<SharedHandle<OmegaCommon::Img::BitmapImage>> image;
+        Core::Optional<Composition::Rect> imageRect;
     };
 
 private:
@@ -235,6 +238,7 @@ public:
     void text(UIElementTag tag,OmegaCommon::UString content,const Composition::Rect & rect);
     void text(UIElementTag tag,OmegaCommon::UString content,const Composition::Rect & rect,UIElementTag styleTag);
     void shape(UIElementTag tag,const Shape & shape);
+    void image(UIElementTag tag,const SharedHandle<OmegaCommon::Img::BitmapImage> & img,const Composition::Rect & rect);
     bool remove(UIElementTag tag);
     void clear();
     const OmegaCommon::Vector<Element> & elements() const;
@@ -247,6 +251,8 @@ struct OMEGAWTK_EXPORT UIElementLayoutSpec {
     Core::Optional<OmegaCommon::UString> text {};
     Core::Optional<Composition::Rect> textRect {};
     Core::Optional<UIElementTag> textStyleTag {};
+    Core::Optional<SharedHandle<OmegaCommon::Img::BitmapImage>> image {};
+    Core::Optional<Composition::Rect> imageRect {};
     int zIndex = 0;
 };
 

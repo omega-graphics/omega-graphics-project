@@ -28,6 +28,66 @@ analytically. Both routes are noted where relevant.
 
 ---
 
+## Compositor op model: the `Canvas` → `DrawOp` / `DisplayList` shift
+
+This plan was written against the **`Canvas` / `VisualCommand` /
+`CanvasFrame`** recording model. That model is being retired by
+[UIView-Render-Redesign-Plan.md](UIView-Render-Redesign-Plan.md):
+
+- Tier 3 (Phases 3.8 / 3.9, both **DONE** as of 2026-05-21) collapsed
+  the *N* per-view `Canvas` instances into a single window-scoped one
+  and deleted `CanvasView`. There is no longer a per-view paint
+  device; every view appends to one per-window `DisplayList<DrawOp>`
+  via the `FrameBuilder`.
+- Tier 4 deletes `Canvas`, `VisualCommand`, `CanvasFrame`, and
+  `CanvasEffect` outright. `DrawOp` *is* the new compositor op type
+  (one record per primitive, fill + border consolidated, soft shadow
+  as its own SDF op), and `DisplayList` (one per window per frame)
+  replaces `CanvasFrame`. The backend `BackendRenderTargetContext::renderToTarget`
+  switch is rewritten to dispatch on `DrawOp` instead of
+  `VisualCommand`.
+
+**What this means for the work below.** The two are decoupled along a
+clean seam:
+
+- **Backend rasterization is op-type-agnostic.** The SDF pipeline, the
+  tessellation + texture pipeline, the gradient compute pass, the
+  bitmap blit, and the MSDF text path all read *payload structs*
+  (brush, rect, border, gradient params, texture handle). `DrawOp`
+  mirrors `VisualCommand` field-for-field (Render-Redesign §2 Tier 2
+  cross-cutting decision), so the gradient and bitmap-brush work in
+  this plan — which lives in the brush model, the shader source, and
+  `RenderTarget.cpp`'s rasterization — is **unchanged** by the op-type
+  swap. Author it against the payload, not against `Canvas`.
+- **Imperative `Canvas` method phases are superseded.** Phase 3
+  (`drawLine` / `drawPolyline` / `drawArc` / unified `drawPath` /
+  `DrawOptions`) and Phase 5 (Canvas save/restore/transform/clip
+  state stack) added *imperative methods to the `Canvas` class*. With
+  `Canvas` deleted, those capabilities are expressed as **`DrawOp`
+  variants and `PaintContext` state** instead:
+    - The state stack already exists at the type level —
+      `DisplayList` carries `PushClip` / `PopClip` / `PushTransform` /
+      `PopTransform` (Render-Redesign Phase 2.4) and `SetTransform` /
+      `SetOpacity` ops. Phase 5's "reuse the per-element transform /
+      opacity machinery" guidance lands here directly.
+    - `drawLine` / `drawPolyline` collapse into `DrawOp::VectorPath`
+      (they already did at the SVGView level); `drawArc` and unified
+      fill+stroke `drawPath` are `DrawOp::VectorPath` payload shapes.
+    - `DrawOptions` (per-draw opacity / blend mode) becomes fields on
+      the relevant `DrawOp` variants or a `PushOpacity` / `PushEffect`
+      scope, not a `Canvas`-level argument.
+  Treat Phases 3 and 5 as **design notes for the capabilities**, not
+  as a `Canvas`-API surface to build. Where they are already marked
+  DONE (border consolidation, `drawLine` / `drawPolyline`), that work
+  shipped through the SDF spine and survives the op swap untouched.
+
+The phases that matter going forward and are genuinely independent of
+the op-type change are the **brush / pipeline** ones: gradients
+(Phase 1 / 2, consolidated by Phase 9 below) and the new **bitmap
+brushes** (Phase 8 below).
+
+---
+
 ## Current state snapshot
 
 ### What works
@@ -973,15 +1033,173 @@ no stale glyphs persist across rebuilds.
 
 ---
 
+## Phase 8 — Bitmap brushes
+
+**Goal:** Add `Brush::Type::Bitmap` — a fill brush that paints any
+shape (Rect / RoundedRect / Ellipse / Path) by sampling a bitmap,
+with a wrap mode and a brush-space transform. This promotes the
+"Pattern brush" item from Phase 7 Future into a first-class brush.
+
+**Why a brush, not just `DrawOp::Bitmap`.** The compositor already
+has a `DrawOp::Bitmap` op that *blits a standalone image into a dest
+rect* (used by `UIView`'s image element from Render-Redesign Phase
+3.9, and by text bitmap-fallback). A bitmap **brush** is different:
+it is a *fill* dispatched through the same `brush->type` switch as
+`Color` and `Gradient`, so it composes with shape geometry (rounded
+corners, ellipses, arbitrary vector paths, borders) and with the
+state stack. The two are complementary — `DrawOp::Bitmap` for "show
+this picture here," a bitmap brush for "fill this shape with this
+texture."
+
+**Key consequence:** a bitmap brush needs **no new `DrawOp` variant**.
+The shape ops (`Rect` / `RoundedRect` / `Ellipse` / `VectorPath`)
+already carry a `Core::SharedPtr<Brush>`; a bitmap brush rides that
+existing slot and the backend dispatches on `brush->type`. This phase
+is therefore entirely in the brush model + backend rasterization +
+shader source — squarely on the op-type-agnostic side of the
+[Canvas → DrawOp shift](#compositor-op-model-the-canvas--drawop--displaylist-shift).
+
+### 8.1 Brush model
+
+Add to `Brush` (`Brush.h` / `Brush.cpp`):
+
+- `Brush::Type::Bitmap` enum value.
+- A `BitmapBrush(...)` factory carrying:
+  - the image source — a `Core::SharedPtr<OmegaCommon::Img::BitmapImage>`
+    (CPU bitmap, uploaded + cached on first use) or an already-resident
+    `OmegaGTE::GETexture` handle (wrapped, per the Phase 0A geometry
+    isolation rules — no raw GTE in the public signature);
+  - a `WrapMode { Clamp, Tile, Mirror }`;
+  - an optional brush-space transform (origin offset + scale) so the
+    same texture can tile at different densities.
+
+### 8.2 Backend rasterization
+
+In `RenderTarget.cpp`'s brush dispatch, add the `Brush::Type::Bitmap`
+arm. Two routes, mirroring the gradient pipeline split:
+
+- **Texture pipeline (vector paths, the general case).** Upload /
+  cache the bitmap to a `GETexture`, bind it with a sampler
+  configured for the brush's wrap mode, and sample it from the
+  tessellated shape's fragment shader using the interpolated
+  shape-local coordinate transformed by the brush transform. Reuses
+  the existing tessellation + texture fallback that gradients use.
+- **SDF-native (simple primitives).** For Rect / RoundedRect /
+  Ellipse, sample the bound texture directly in `sdfFragment` using
+  the local coordinate, so the bitmap fill composes with the
+  closed-form border + corner radius in one draw call (no separate
+  tessellation). This is the same shape of change as the SDF-native
+  gradient sampler in Phase 9.3.
+
+Reuse the `Direct-To-Drawable-And-SDF-Plan` §6.6 bitmap improvements
+(sampler / mipmap upgrade, source rect, nine-slice) — the bitmap
+brush and `DrawOp::Bitmap` share that backend sampling code.
+
+### 8.3 Authoring surface
+
+No `StyleSheet` change is required: `elementBrush(tag, brush)`
+already accepts a `SharedHandle<Composition::Brush>`, so a bitmap
+brush flows through `UIView`'s element styling unchanged. Later
+consumers: SVG `<pattern>` fills and CSS `background-image` map onto
+this brush.
+
+### 8.4 Test
+
+A RootWidget / `ImageRenderTest` scene that fills a `RoundedRect`
+element with a tiled bitmap brush (wrap = Tile) and a second shape
+with wrap = Clamp, validated through the window-scoped `DisplayList`
+path. Confirm the fill respects corner radius and border.
+
+### Files touched
+
+- `wtk/include/omegaWTK/Composition/Brush.h` — `Type::Bitmap`,
+  `WrapMode`, `BitmapBrush` factory + fields.
+- `wtk/src/Composition/Brush.cpp` — factory implementation.
+- `wtk/src/Composition/backend/RenderTarget.cpp` — `Bitmap` brush
+  dispatch (texture upload/cache, sampler, SDF + tessellation routes).
+- `wtk/src/Composition/backend/shaders/compositor.omegasl` — texture
+  sampling in `sdfFragment` for the bitmap-brush case; wrap-mode
+  sampler.
+
+---
+
+## Phase 9 — Finish gradients
+
+**Goal:** Close out the gradient pipeline so `GradientBrush(...)`
+renders correctly on every primitive. This is the consolidated
+"definition of done" for gradients — it sequences the remaining
+Phase 1 (texture path) and Phase 2 (geometry) work plus the
+SDF-native sampler (was a Phase 7 Future item) into one shippable
+closeout, framed for the post-`Canvas` `DrawOp` / SDF reality.
+
+Like Phase 8, this is **op-type-agnostic** — it lives in the brush
+model, `RenderTarget.cpp`, and the shader source, all of which read
+brush payloads, not `Canvas`.
+
+### 9.1 Land the texture path (closes Phase 1)
+
+Complete Phase 1.1–1.4 as written: implement the `linearGradient` /
+`radialGradient` compute shaders, finish the `createGradientTexture`
+const-buffer write, and populate the texture binding on the
+gradient-brush fallback so a gradient fill produces a visible
+texture on Rect / RoundedRect / Ellipse / vector-path fills.
+
+### 9.2 Land the geometry (closes Phase 2)
+
+Replace the single `float arg` with `LinearDef` (start/end points),
+`RadialDef` (center / focus / elliptical radii), and a
+`GradientSpread { Pad, Repeat, Reflect }`. The texture producer in
+9.1 reads these instead of just an angle.
+
+### 9.3 SDF-native gradient sampler (simple primitives)
+
+For Rect / RoundedRect / Ellipse, extend `sdfFragment` to evaluate
+the gradient parameter `t` analytically from the interpolated local
+coordinate (using the 9.2 geometry), look up stop colors from a
+small constant-array uniform, and skip the compute pass + texture
+allocation entirely. Vector-path gradient fills keep the 9.1 texture
+path (their fragment shader is `mainFragment`, color-attachment
+driven). This is the common-case win and shares its shape with the
+Phase 8.2 SDF-native bitmap sampler.
+
+### 9.4 SVG gradient import
+
+Wire SVG `<linearGradient>` / `<radialGradient>` (with `gradientUnits`,
+stops, and spread) onto the finished gradient API in `SVGView`,
+replacing today's opacity-into-`Color.a` workaround for gradient
+fills.
+
+### 9.5 Test
+
+Gradient fills on Rect / RoundedRect / Ellipse / vector path, both
+spread modes (Repeat / Reflect), linear and radial, validated through
+the window-scoped `DisplayList` path. A RootWidget scene plus an SVG
+document with native gradients (`SVGViewRenderTest`).
+
+### Files touched
+
+- `wtk/src/Composition/backend/RenderTarget.cpp` — gradient compute
+  pass wiring, extended gradient params, texture binding.
+- `wtk/src/Composition/backend/RenderTarget.h` — `createGradientTexture`
+  signature.
+- `wtk/src/Composition/backend/shaders/compositor.omegasl` —
+  `linearGradient` / `radialGradient` compute functions; SDF-native
+  gradient sampler in `sdfFragment`; extended `GradientTextureConstParams`.
+- `wtk/include/omegaWTK/Composition/Brush.h` / `wtk/src/Composition/Brush.cpp`
+  — `LinearDef` / `RadialDef` / `GradientSpread`, new gradient factories.
+- `wtk/src/UI/SVGView.cpp` — native gradient import.
+
+---
+
 ## Phase 7 — Future
 
 These items are deferred. They are listed to confirm the Phase 0–6 designs are forward-compatible.
 
 | Item | Depends on | Notes |
 |------|------------|-------|
-| SDF-native gradient sampling on simple primitives | Phase 1 (texture path), Phase 2 (geometry) | Extend `sdfFragment` to evaluate gradient `t` from local coord and look up stop colors from a small constant array; skips the compute pass and texture allocation for the common case |
+| SDF-native gradient sampling on simple primitives | — | **Promoted to Phase 9.3.** |
 | `GradientSpace::Canvas` (gradient coords in canvas space, not shape-local) | Phase 5 transform stack | Without transforms, "canvas space" is just "shape space + offset" |
-| Pattern brush (image/texture tiling) | Phase 1 gradient pipeline | Same texture render path; needs wrap-mode sampler — overlaps with `Direct-To-Drawable-And-SDF-Plan` §6.6 (bitmap improvements: tint, source rect, nine-slice) |
+| Pattern brush (image/texture tiling) | — | **Promoted to Phase 8 (bitmap brushes).** |
 | `BlendMode` enum on `DrawOptions` | Phase 3 DrawOptions | Extend fragment shader with blend equations. Note: SDF pipeline already has alpha-over blending enabled; color / texture pipelines stay opaque-write |
 | Gradient text | Phase 1 gradient pipeline + MSDF text | After Direct-To-Drawable-And-SDF-Plan §6.7 lands MSDF text, gradient fill on glyphs becomes a uniform-evaluation problem (same as SDF-native gradients above) |
 | Image scale modes (aspect-fit/fill, tiling, source rect) | — | Direct-To-Drawable-And-SDF-Plan §6.6 owns this — moves bitmap to a hardcoded quad with sampler / mipmap upgrade and adds tint / source rect / nine-slice |
@@ -998,13 +1216,19 @@ These items are deferred. They are listed to confirm the Phase 0–6 designs are
 Phase 0:  Foundation cleanup           [DONE]
 Phase 0A: Geometry type isolation      [DONE]
 
-Phase 1: Gradient pipeline (texture path)
-    ├─→ Phase 2: Gradient API extensions (depends on working pipeline)
-    └─→ Phase 7 future: SDF-native gradient sampling, pattern brush, gradient text
+Phase 9: Finish gradients (consolidates the old Phase 1 + Phase 2)
+    9.1 texture path → 9.2 geometry → 9.3 SDF-native sampler → 9.4 SVG import
+    (op-type-agnostic: brush model + RenderTarget.cpp + shaders)
 
-Phase 3: Canvas drawing extensions (independent of gradients)
-    ├─→ Phase 3.0.4 (border consolidation in shape draw methods): DONE for simple primitives via SDF spine §6.5
-    └─→ Phase 5: Canvas state stack (builds on existing per-element SetTransform / SetOpacity)
+Phase 8: Bitmap brushes (Brush::Type::Bitmap; no new DrawOp variant)
+    └─→ shares SDF-native texture sampling with Phase 9.3; reuses §6.6 bitmap sampling
+
+Phase 3: Canvas drawing extensions — SUPERSEDED by the Canvas → DrawOp shift
+    ├─→ border consolidation + drawLine/drawPolyline: DONE via SDF spine §6.5
+    └─→ remaining capabilities expressed as DrawOp::VectorPath payloads / DrawOptions fields
+
+Phase 5: Canvas state stack — SUPERSEDED by the Canvas → DrawOp shift
+    └─→ realized as DisplayList PushClip/PushTransform/PushOpacity + SetTransform/SetOpacity ops
 
 Phase 4: Color improvements (independent — can run in parallel with any phase) [DONE]
 
@@ -1012,15 +1236,21 @@ Phase 6: Text layout reuse (independent — can run in parallel with any phase)
     └─→ Phase 7 future: implicit per-Canvas text cache, VRAM-cap LRU eviction
 ```
 
-Phases 0 and 0A are done. Phase 1 (gradient pipeline) is the next
-high-leverage piece — it unblocks SVG gradients and the gradient-API
-extensions (Phase 2). Phases 3, 4, 5, and 6 are independent of the
-gradient work; Phase 5 should reuse the existing per-element
-`SetTransform` / `SetOpacity` machinery (see §5 preamble) rather than
-introducing a parallel state path. Phase 6 (text layout reuse) is
-also independent and is the highest-leverage CPU/GPU win for steady-
-state UI repaints — every cached `TextLayout` removes a DWrite/
-CoreText layout call and a GPU upload from each frame.
+Phases 0, 0A, and 4 are done. With `Canvas` being retired (see the
+[Canvas → DrawOp shift](#compositor-op-model-the-canvas--drawop--displaylist-shift)),
+the remaining high-leverage work is the brush / pipeline pair:
+**Phase 9 (finish gradients)** — the largest unblocker, completing the
+old Phase 1 + 2 and adding the SDF-native sampler — and **Phase 8
+(bitmap brushes)**, which shares the SDF-native texture-sampling shape
+with Phase 9.3 and reuses the §6.6 bitmap sampling code. Both are
+op-type-agnostic: they live in the brush model, `RenderTarget.cpp`, and
+the shader source, so they are unaffected by the `VisualCommand` →
+`DrawOp` swap. Phases 3 and 5 are superseded — their capabilities now
+ride `DrawOp` variants and the `DisplayList` state stack rather than a
+`Canvas` API. Phase 6 (text layout reuse) is independent and is the
+highest-leverage CPU/GPU win for steady-state UI repaints — every
+cached `TextLayout` removes a DWrite/CoreText layout call and a GPU
+upload from each frame.
 
 ---
 
@@ -1036,8 +1266,8 @@ CoreText layout call and a GPU upload from each frame.
 | `wtk/CMakeLists.txt` | 0A | **DONE** — OmegaGTE link scoped appropriately |
 | `wtk/include/omegaWTK/Composition/Brush.h` | 0, 2, 4 | **0 DONE:** `isColor` / `isGradient` removed. **Phase 4 DONE:** named color constants (`Black`/`White`/`Red`/`Green`/`Blue`/`Yellow`/`Orange`/`Purple`), `fromHSL` / `fromHSV`, `lerp` / `withAlpha` / `lighter` / `darker`. Remaining: `LinearDef`, `RadialDef`, `GradientSpread`, new gradient factories |
 | `wtk/src/Composition/Brush.cpp` | 0, 2, 4 | **0 DONE:** boolean init removed. **Phase 4 DONE:** color constants + HSL/HSV factories + arithmetic helpers. Remaining: new gradient factories |
-| `wtk/include/omegaWTK/Composition/Canvas.h` | 0A, 3, 5 | **0A DONE.** Remaining: `drawLine`, `drawPolyline`, `drawArc`, unified `drawPath`, `DrawOptions`, const-ref brush params, save/restore/transform/clip |
-| `wtk/src/Composition/Canvas.cpp` | 0A, 3, 5, 6 | **0A DONE.** **Border consolidation DONE** (via `Direct-To-Drawable-And-SDF-Plan` §6.5): `drawRect` / `drawRoundedRect` / `drawEllipse` forward `Border` directly; no frame-path side emission. **Phase 3.1 / 3.2 DONE:** `drawLine`, `drawPolyline` added. Remaining: `drawArc`, unified `drawPath`, `DrawOptions`, state stack, `drawTextLayout` (Phase 6) |
+| `wtk/include/omegaWTK/Composition/Canvas.h` | 0A, 3, 5 | **0A DONE.** **Class scheduled for deletion** (Render-Redesign Tier 4). Phase 3 / 5 remaining items (`drawArc`, unified `drawPath`, `DrawOptions`, save/restore/transform/clip) are **superseded** — realized as `DrawOp` variants / `DisplayList` state ops, not new `Canvas` methods. See the Canvas → DrawOp shift section. |
+| `wtk/src/Composition/Canvas.cpp` | 0A, 3, 5, 6 | **0A DONE.** **Border consolidation DONE** (via `Direct-To-Drawable-And-SDF-Plan` §6.5). **Phase 3.1 / 3.2 DONE:** `drawLine`, `drawPolyline` added. **Class scheduled for deletion** (Render-Redesign Tier 4); remaining Phase 3 / 5 capabilities move to `DrawOp` / `DisplayList`, not this file. |
 | `wtk/include/omegaWTK/Composition/Path.h` | 0A | **0A DONE** for public signatures. Frame helpers (`RectFrame` / `RoundedRectFrame` / `EllipseFrame`) retained for stand-alone outline use |
 | `wtk/src/Composition/Path.cpp` | 0A | **0A DONE** |
 | `wtk/include/omegaWTK/Composition/Animation.h` | 0A | **0A DONE** |

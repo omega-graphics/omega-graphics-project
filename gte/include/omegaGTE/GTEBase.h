@@ -6,7 +6,8 @@
 #include <algorithm>
 #include <iostream>
 
-#include <omega-common/common.h>
+#include <omega-common/utils.h>
+#include <omega-common/format.h>
 
 
 #ifndef OMEGAGTE_GTEBASE_H

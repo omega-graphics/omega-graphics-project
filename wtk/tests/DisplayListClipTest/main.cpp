@@ -23,6 +23,7 @@
 
 #include <omegaWTK/UI/Widget.h>
 #include <omegaWTK/UI/View.h>
+#include <omegaWTK/UI/UIView.h>
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
 #include <omegaWTK/Composition/Canvas.h>
@@ -103,8 +104,11 @@ protected:
     bool isLayoutResizable() const override { return false; }
 
 public:
+    // Tier 3 Phase 3.9: host a UIView (which no longer pre-binds a
+    // Canvas) instead of the default CanvasView, so the manual
+    // makeCanvas() in onMount doesn't double-bind the root layer.
     explicit ClipValidatorWidget(Composition::Rect rect)
-        : Widget(rect) {}
+        : Widget(ViewPtr(new UIView(rect, nullptr, "clip_validator_view"))) {}
 };
 
 class MyWindowDelegate final : public AppWindowDelegate {

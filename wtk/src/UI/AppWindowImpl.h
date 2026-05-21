@@ -13,15 +13,6 @@
 
 namespace OmegaWTK {
 
-// Tier 3 Phase 3.0: default for AppWindow::Impl::windowScopedPaint_.
-// Off unless the build flips OMEGAWTK_WINDOW_SCOPED_PAINT; per-scene
-// callers can flip the runtime knob via setWindowScopedPaint().
-#ifdef OMEGAWTK_WINDOW_SCOPED_PAINT
-inline constexpr bool kDefaultWindowScopedPaint = true;
-#else
-inline constexpr bool kDefaultWindowScopedPaint = false;
-#endif
-
 struct AppWindow::Impl {
     Native::NWH nativeWindow;
     Native::NativeItemPtr rootNativeItem;
@@ -40,7 +31,6 @@ struct AppWindow::Impl {
     // routes per-view DrawOps through `windowCanvas_`.
     SharedHandle<Composition::LayerTree> windowLayerTree_;
     SharedHandle<Composition::Canvas>    windowCanvas_;
-    bool windowScopedPaint_ = kDefaultWindowScopedPaint;
 
     // Tier 3 Phase 3.1: window-level frame driver. Constructed after
     // windowCanvas_ in AppWindow's ctor body so beginFrame/endFrame

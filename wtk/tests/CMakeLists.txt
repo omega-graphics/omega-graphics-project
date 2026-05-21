@@ -96,23 +96,10 @@ OmegaWTKApp(
     SOURCES
     SVGViewRenderTest/main.cpp)
 
-# Tier 3 Phase 3.3: mirror the OmegaWTK_UI build flag onto the test
-# binary so the same -DOMEGAWTK_WINDOW_SCOPED_PAINT=ON cmake option
-# both (a) flips AppWindow::Impl::windowScopedPaint_'s default to
-# true inside OmegaWTK_UI (which is what makes SVGView::paint() take
-# the FrameBuilder route) and (b) lets this test's main.cpp report
-# at startup which paint route the build is configured for.
-if(OMEGAWTK_WINDOW_SCOPED_PAINT)
-    target_compile_definitions(SVGViewRenderTest PRIVATE OMEGAWTK_WINDOW_SCOPED_PAINT=1)
-endif()
-
 # Tier 3 Phase 3.5 validator: drives a fabricated DisplayList with
 # PushClip / draw-overflow / PopClip / draw-outside through
 # DisplayListReplay into a real Canvas and visually verifies clip
-# semantics. Mirrors the OMEGAWTK_WINDOW_SCOPED_PAINT flag onto the
-# binary only so the startup log line can report which paint route
-# is active; the test itself works in both modes (Canvas's SetClip
-# emission is the same regardless of which canvas it lands on).
+# semantics.
 OmegaWTKApp(
     NAME
     DisplayListClipTest
@@ -121,18 +108,11 @@ OmegaWTKApp(
     SOURCES
     DisplayListClipTest/main.cpp)
 
-if(OMEGAWTK_WINDOW_SCOPED_PAINT)
-    target_compile_definitions(DisplayListClipTest PRIVATE OMEGAWTK_WINDOW_SCOPED_PAINT=1)
-endif()
-
 # Tier 3 Phase 3.6 validator: drives ScrollView::paint() /
 # paintOverlay() output through DisplayListReplay into a real Canvas
 # and visually verifies that the PushClip / content / PopClip / bars
 # composition produces a properly-scissored viewport with overlay
-# scroll bars rendered after the clip is popped. Mirrors
-# OMEGAWTK_WINDOW_SCOPED_PAINT onto the binary only so the startup
-# log can report which paint route is active; the test itself works
-# in both modes (the ScrollView ops + replay path is the same).
+# scroll bars rendered after the clip is popped.
 OmegaWTKApp(
     NAME
     ScrollViewClipTest
@@ -141,21 +121,13 @@ OmegaWTKApp(
     SOURCES
     ScrollViewClipTest/main.cpp)
 
-if(OMEGAWTK_WINDOW_SCOPED_PAINT)
-    target_compile_definitions(ScrollViewClipTest PRIVATE OMEGAWTK_WINDOW_SCOPED_PAINT=1)
-endif()
-
 # Tier 3 Phase 3.7 validator: drives a fabricated DisplayList with
 # DrawOp::NativeContent carve-outs through DisplayListReplay and
 # asserts that each op round-trips onto the per-frame VisualCommand
 # stream as a NativeContent visual with destRect / hostId /
 # zOrderHint preserved. Stand-in for VideoViewPlaybackTest (which is
 # the end-to-end validator the plan names but is currently
-# unbuildable). Mirrors OMEGAWTK_WINDOW_SCOPED_PAINT onto the binary
-# only so the startup log can report which paint route is active;
-# the test itself works in both modes (it never touches a per-view
-# canvas vs. window-scoped distinction — replay → markNativeContentRegion
-# is the same call either way).
+# unbuildable).
 OmegaWTKApp(
     NAME
     NativeContentCarveoutTest
@@ -163,10 +135,6 @@ OmegaWTKApp(
     "org.omegagraphics.NativeContentCarveoutTest"
     SOURCES
     NativeContentCarveoutTest/main.cpp)
-
-if(OMEGAWTK_WINDOW_SCOPED_PAINT)
-    target_compile_definitions(NativeContentCarveoutTest PRIVATE OMEGAWTK_WINDOW_SCOPED_PAINT=1)
-endif()
 
 OmegaWTKApp(
     NAME

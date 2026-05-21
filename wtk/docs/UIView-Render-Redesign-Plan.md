@@ -1253,7 +1253,7 @@ Files touched: `wtk/include/omegaWTK/Composition/Canvas.h`,
 `wtk/src/Composition/Canvas.cpp`, `wtk/src/Composition/DisplayList.cpp`,
 all three backend dirs under `wtk/src/Composition/backend/`.
 
-##### Phase 3.8 — delete per-view `LayerTree` + per-view `Canvas`; remove the flag
+##### Phase 3.8 — delete per-view `LayerTree` + per-view `Canvas`; remove the flag [DONE]
 
 The destructive phase. Every opt-in consumer from 3.2 / 3.3 / 3.6
 now runs unconditionally; the per-view path is removed; the flag is
@@ -1295,10 +1295,36 @@ Files touched: `wtk/include/omegaWTK/UI/View.h`,
 `wtk/src/UI/AppWindowImpl.h`, `wtk/CMakeLists.txt` (macro
 defaulting).
 
-##### Phase 3.9 — `CanvasView` deletion
+##### Phase 3.9 — `CanvasView` deletion [DONE]
 
 The Phase 2.6 `[[deprecated]]` markers gave the grep handle. Now
 the in-tree callers migrate and the class is removed.
+
+**Status:** Complete (2026-05-21). The four test bundles and the
+three validator tests (`DisplayListClipTest`, `ScrollViewClipTest`,
+`NativeContentCarveoutTest`) had already moved to `UIView` hosts.
+This phase closed out the remaining functional callers:
+
+- `UIView` gained a first-class **image element** (a third
+  `Element::Type` alongside `Text` and `Shape`). `UIViewLayout`
+  (and the V2 spec) carry an optional `BitmapImage` handle + dest
+  rect; `UIView::update()`'s paint loop emits a `DrawOp::Bitmap`
+  for it. This is what made the `Image` migration a declarative
+  element rather than an imperative `drawImage`.
+- The `Image` widget (`Primatives.cpp`) now hosts a `UIView` and
+  builds a one-image-element layout in `onPaint`, matching every
+  other primitive widget.
+- The default `Widget(rect)` constructor reroutes from
+  `CanvasView::Create` to `View::Create` (a plain, canvas-free
+  `View`). Widgets that draw host a `UIView`; widgets that don't
+  (containers) get a bare node.
+- `CanvasView.h` / `CanvasView.cpp` deleted; forward decls, the
+  `View::submitPaintFrame` doc (now a no-op base), and the
+  `FontEngine.h` / `Widget.Paint.cpp` references cleaned up.
+- Validated: `ImageRenderTest` samples the real PNG texture
+  (900×987) through the new element path; `EllipsePathCompositorTest`,
+  `RootWidgetTest`, `TextCompositorTest`, `ContainerClampAnimationTest`,
+  and `SVGViewRenderTest` build and run without regression.
 
 - Migrate `wtk/src/Widgets/Primatives.cpp:502`'s `drawImage`
   caller to a `UIView` + `UIViewLayoutV2` element. The widget
@@ -1410,20 +1436,37 @@ Files touched: `wtk/include/omegaWTK/UI/VideoView.h` (deleted),
 - Does not remove `View::computeWindowOffset` (kept as a thin
   wrapper in 3.4; final deletion is Tier 4).
 
-### Tier 4 — introduce `SceneNode` + `LayoutManager`, retire `UIView::update`
+### Tier 4 — collapse the compositor op type, make `View` the scene node, retire `UIView::update`
 
-- `UIView` becomes `UIViewNode : SceneNode`.
-- `View::Impl::subviews` becomes `SceneNode::children_`.
-- `ViewResizeCoordinator` deleted; replaced by
-  `SceneNode::layoutManager_`.
-- `UIView::update()` removed; frames are produced by the window pacer
-  reading `DirtyBits` at the root.
-- Animation state migrated out of `UIView::Impl` into
-  `AnimationScheduler` (prereq: animation simplification plan).
+- `View` becomes the scene node *in place* (§6 Q1: "View is a scene
+  node"). It gains a parent-owned `LayoutManager*`, a virtual
+  `paint(PaintContext&)`, and load-bearing `DirtyBits`. There is **no
+  new `SceneNode` type and no `UIViewNode` rename** — `UIView` stays a
+  `View` subclass with a real `paint()`, and `Widget` stays a light
+  wrapper around `View` (§6 Q2). `View::Impl::subviews` stays as the
+  node's child list.
+- **All child-node layout collapses onto a parent-owned
+  `LayoutManager*`.** This retires *three* parallel systems (§1.5):
+  `ViewResizeCoordinator` (resize policies), `Container::layoutChildren`
+  (clamp policy), and `StackWidget::layoutChildren` (flexbox). The
+  built-ins are `FillLayout` / `StackLayout` / `AbsoluteLayout` /
+  `ContainerLayout` / `FlexLayout` (the last is required, not "later" —
+  `StackWidget` consumes it). `LayoutManager` is the child-*node* axis
+  only; intra-`UIView` element layout stays in `UIViewLayoutV2`.
+- `UIView::update()` removed; frames are produced by `FrameBuilder`
+  reading `DirtyBits` at the root and running Measure → Arrange →
+  Paint.
+- Animation state migrated out of `UIView::Impl` into a new per-window
+  `AnimationScheduler`. **This tier folds the scheduler build in**
+  (Phases 4.3–4.4, 4.8) rather than gating on a separate workstream;
+  the scheduler's *internal* design stays owned by
+  [Animation-Scheduler-Plan.md](Animation-Scheduler-Plan.md) and Tier 4
+  only sequences and integrates it.
 - `VisualCommand` and `CanvasFrame` deleted.
   `BackendRenderTargetContext::renderToTarget` rewritten to dispatch on
   `DrawOp` directly (mechanical case-label rename + field-access
-  touch-up; rasterization code unchanged).
+  touch-up; rasterization code unchanged — `DrawOp` already mirrors
+  `VisualCommand::Type` 1:1 from Tier 2).
 - **`Canvas` class deleted.** With `VisualCommand` and `CanvasFrame`
   gone, Canvas's sole role (build `VisualCommand` into `CanvasFrame`)
   is gone too. The window-scoped Canvas adapter from Tier 3 is
@@ -1437,13 +1480,545 @@ Files touched: `wtk/include/omegaWTK/UI/VideoView.h` (deleted),
 Risk: high; this is the API break. Ship after Tier 3 has been in main
 for at least two weeks of real use.
 
+#### Tier 4 phasing
+
+Tier 4 is the API break and the largest deletion of the project, but
+its risk is concentrated differently from Tier 3. Tier 3 ran two paint
+paths concurrently behind a flag; Tier 4 is mostly **mechanical type
+swaps** (the `Canvas`/`VisualCommand` → `DrawOp` collapse) and
+**one-time migrations** (animation onto the scheduler, layout onto
+`LayoutManager`, the `update()` monolith into `paint()`). It is broken
+into nine phases in two blocks, ordered per the developer's decision
+to do the **backend collapse first and the scene reshape last**:
+
+- **Block 1 — backend / `Canvas` collapse (Phases 4.0–4.2).** Gated
+  only on closing Tier 3 (Phases 3.9 + 3.10). Independent of the
+  animation work. Deletes `Canvas`, `VisualCommand`, `CanvasFrame`,
+  `CanvasEffect`, `DisplayListReplay`, and the `VisualCommand`
+  backend switch.
+- **Block 2 — scene reshape + animation migration (Phases 4.3–4.8).**
+  Folds in the `AnimationScheduler`, collapses all child-node layout
+  (the resize coordinator, `Container` clamp, and `StackWidget` flex)
+  onto `LayoutManager`, introduces `PaintContext`, makes `DirtyBits`
+  drive the frame loop, retires `UIView::update()`, and finally deletes
+  the per-view `LayerTree` and the old `ViewAnimator`/`LayerAnimator`
+  surface.
+
+Each phase is independently shippable. As in Tier 3, the additive
+phases (the parallel `DrawOp` switch in 4.0, the side-by-side
+`AnimationScheduler` in 4.3) land and bake before their destructive
+counterparts, so a per-phase revert is a small delete rather than a
+rollback.
+
+**Cross-cutting decisions** (apply to every Tier 4 phase):
+
+- **No feature flag this tier.** Tier 3 needed
+  `OMEGAWTK_WINDOW_SCOPED_PAINT` because it ran the old and new paint
+  paths concurrently. Tier 4's changes don't: a parallel backend
+  switch (4.0) and a side-by-side scheduler (4.3) give the same
+  per-phase revert safety through additive scaffolding, without a
+  runtime knob. The flag was deleted in Phase 3.8 and does not return.
+- **The API break is expected and accepted (§6 Q1).** `UIView::update`,
+  `startCompositionSession`/`endCompositionSession`, `makeLayer` /
+  `makeCanvas` / `getLayerTree`, `computeWindowOffset`, and
+  `scrollOffsetContribution` all leave the public surface across this
+  tier. Ship only after Tier 3 (including 3.9/3.10) has been in main
+  ~2 weeks.
+- **`View` is the scene node; no new type, no rename (§6 Q1).** `View`
+  gains the scene-node responsibilities in place (`LayoutManager*`,
+  `paint(PaintContext&)`, load-bearing `DirtyBits`); `UIView` stays a
+  `View` subclass; `Widget` stays a light `View` wrapper (§6 Q2). The
+  §3 prose's `SceneNode` / `UIViewNode` names are superseded by these
+  answers.
+- **The `AnimationScheduler` is folded into this tier (4.3–4.4, 4.8)
+  but its internals are owned by
+  [Animation-Scheduler-Plan.md](Animation-Scheduler-Plan.md).** Tier 4
+  sequences and integrates the scheduler (Tiers A/B/C/E of that plan
+  become Phases 4.3/4.4/4.8 here); it does **not** re-specify the
+  scheduler's API. Keep the two docs in sync as the work lands.
+- **`LayoutManager` owns child-*node* layout; `UIViewLayoutV2` owns
+  intra-`UIView` *element* layout.** These are two different axes (§3.3)
+  and Tier 4 keeps them separate — `LayoutManager` arranges a node's
+  child `View`s / `Widget`s (4.5/4.6); the elements inside one `UIView`
+  stay resolved inside `UIView`. Conflating them is part of the §1.5
+  "union of three layout systems" this tier dismantles.
+- **`LayoutManager`s are reusable built-ins, one per container *kind* —
+  not private to any widget.** Only `Container` widgets have children
+  (the only widgets that do), so the `LayoutManager` family mirrors the
+  container-widget family: `StackWidget` ↔ `FlexLayout` now; future
+  `Grid` ↔ `GridLayout`, `Table` ↔ `TableLayout`, `Tree` ↔ `TreeLayout`.
+  A container holds a `LayoutManager*` and composes the matching
+  strategy rather than reimplementing layout, so a new container kind is
+  "add a `LayoutManager`," not "write another `layoutChildren()`." A
+  leaf node carries the trivial default (`AbsoluteLayout`); it has no
+  children to arrange.
+- **Tier 4 needs a Style *pass*, not the Style *refactor*.** Pure paint
+  (4.7) means style is resolved before paint, not during it. Tier 4
+  hoists the existing inline resolution into a pre-paint Style pass; the
+  global `StyleSheet` / `StyleResolver` / `ComputedStyle` work in
+  `Style-StyleSheet-Refactor-Plan.md` is a separate, parallel
+  workstream that later swaps that pass's internals (see §7).
+- **The `DisplayList` snapshot is the UI-thread → compositor-worker
+  hand-off (§6 Q5).** Measure / Arrange / Paint and the scheduler tick
+  all run on the UI thread; `submitDisplayList` (4.1) is the boundary
+  the existing compositor worker thread consumes. Tier 4 moves none of
+  those passes off the UI thread.
+- **Zero layerization (§6 Q3).** `wantsLayer()` (Tier 3.6) stays a tag
+  only; Tier 4 does not act on it. `ScrollView` remains the sole
+  `true` returner.
+- **`DirtyBits` already exists** as a `View` enum + `View::Impl::dirtyBits_`
+  field (landed in Tier 3 as the Widget-View-Paint-Lifecycle Tier A
+  skeleton). Phase 4.7 makes it *load-bearing* — upward propagation to
+  the root + `FrameBuilder` gating on it — rather than re-introducing
+  it.
+
+##### Pre-flight: close Tier 3 + settle the scheduler design
+
+Before Phase 4.0, resolve the items this tier trips on mid-flight:
+
+- **Close Tier 3 Phases 3.9 (`CanvasView` deletion) and 3.10
+  (`VideoView` deletion).** These remove the last `makeCanvas` /
+  per-view-`Canvas`-frame consumers; until they land, `Canvas` cannot
+  be deleted in 4.2. Confirm by grep that the only remaining
+  `makeCanvas` callers (`CanvasView`, `VideoView`, and the
+  `ScrollViewClipTest` / `NativeContentCarveoutTest` /
+  `DisplayListClipTest` harnesses) are gone or migrated, and the only
+  remaining `Canvas` instance is `AppWindow::Impl::windowCanvas_`.
+- **Confirm the Animation-Scheduler-Plan Tier A design is settled**
+  (it is currently "Proposal. Nothing implemented yet"), since 4.3–4.4
+  fold it in. If it is still in flux, Block 1 (4.0–4.2) can proceed
+  independently while it settles — the two blocks share no code.
+- **Grep sweep for external/client callers** of every about-to-be-
+  deleted public method: `makeLayer`, `getLayerTree`,
+  `startCompositionSession`, `endCompositionSession`,
+  `computeWindowOffset`, `scrollOffsetContribution`, `UIView::update`.
+  Any caller outside `wtk/src/` and the in-tree tests is a
+  migrate-first item folded into the relevant phase.
+- **Confirm whether anything still calls `View::makeLayer`** after
+  3.9/3.10. The animation system reaches `getLayerTree()->getRootLayer()`,
+  not `makeLayer`; if no non-animation consumer of `makeLayer` remains,
+  it can be deleted in 4.2 alongside `makeCanvas`. Otherwise it carries
+  to 4.8 with `getLayerTree`.
+
+##### Phase 4.0 — backend `renderToTarget` gains a `DrawOp` switch (additive)
+
+The backend's GPU dispatch is taught to consume `DrawOp` directly, as
+a sibling to the existing `VisualCommand` path. Because `DrawOp`'s
+variant set already mirrors `VisualCommand::Type` 1:1 (Tier 2 designed
+it that way), the new switch is a mechanical clone: each arm reads the
+matching `DrawOp::Params` field instead of `VisualCommand::Data` and
+calls the same rasterization helper. No rasterization code changes.
+
+- Factor the per-primitive rasterization bodies inside
+  `BackendRenderTargetContext::renderToTarget(VisualCommand::Type, void *)`
+  (`wtk/src/Composition/backend/RenderTarget.cpp`) into private helpers
+  keyed by primitive, so both switches share them — no SDF /
+  tessellation / bitmap / text code is duplicated.
+- Add `BackendRenderTargetContext::renderToTarget(DrawOp::Type, void *)`
+  whose arms call those shared helpers.
+- `PushClip` / `PopClip` map to the scissor path Phase 3.5 added;
+  `NativeContent` to the Phase 3.7 carve-out; `PushTransform` /
+  `PopTransform` / `PushOpacity` / `PopOpacity` stay no-op (no
+  producer yet — same as Tier 3).
+- Nothing calls the `DrawOp` overload yet; the `VisualCommand` path is
+  still the only one exercised.
+- Validator: full build on all three backends; every existing scene
+  renders unchanged. A backend unit test feeds a hand-built
+  `DisplayList` straight to the `DrawOp` switch and confirms identical
+  output to the equivalent `VisualCommand` frame.
+
+Files touched: `wtk/src/Composition/backend/RenderTarget.cpp`,
+`wtk/include/omegaWTK/Composition/DisplayList.h` (if a `DrawOp::Type`
+accessor is needed).
+
+##### Phase 4.1 — `FrameBuilder` packs the `DisplayList` into the frame directly; `submitDisplayList` replaces the Canvas bridge
+
+The window `Canvas` was the `DisplayList → VisualCommand` adapter
+(Tier 3). This phase routes paint output past it: `FrameBuilder` packs
+each submission's `DisplayList` straight into the
+`CompositeFrame::WidgetSlice`, and the backend flush reads it via the
+Phase 4.0 `DrawOp` switch.
+
+- `CompositeFrame::WidgetSlice` gains a `Composition::DisplayList ops`
+  field, alongside its existing `Vector<VisualCommand> commands`
+  (kept live this phase).
+- Add `CompositorClient::submitDisplayList(DisplayList &&, Point2D
+  windowOffset, …)` (or a proxy method) that appends a slice carrying
+  the `DrawOp`s + offset without going through `Canvas` / `CanvasFrame`.
+- `FrameBuilder::endFrame()` replaces the
+  `DisplayListReplay::replay(sub.list, *windowCanvas_)` +
+  `windowCanvas_->sendFrame()` pair with
+  `submitDisplayList(std::move(sub.list), sub.windowOffset)`.
+- The window backend flush walks slices and dispatches their `DrawOp`s
+  via the 4.0 switch instead of their `VisualCommand`s.
+- `windowCanvas_` is now bypassed but not yet deleted (4.2).
+- Validator: full sweep — RootWidget multi-view, SVGViewRenderTest,
+  ScrollViewClipTest, EllipsePathCompositorTest, TextCompositorTest,
+  ContainerClampAnimationTest — pixel-identical to the `VisualCommand`
+  path.
+
+Files touched: `wtk/include/omegaWTK/Composition/CompositeFrame.h`,
+`wtk/include/omegaWTK/Composition/CompositorClient.h`,
+`wtk/src/Composition/CompositorClient.cpp`,
+`wtk/src/UI/FrameBuilder.cpp`,
+`wtk/src/Composition/backend/RenderTarget.cpp` (slice flush).
+
+##### Phase 4.2 — delete `Canvas`, `VisualCommand`, `CanvasFrame`, `CanvasEffect`, `DisplayListReplay`, and the `VisualCommand` switch
+
+The destructive end of Block 1. Every producer of `VisualCommand` is
+gone (per-view Canvas removed in 3.8; CanvasView/VideoView in 3.9/3.10),
+and the window Canvas is bypassed (4.1).
+
+- Delete `wtk/include/omegaWTK/Composition/Canvas.h` and
+  `wtk/src/Composition/Canvas.cpp` (~1500 LOC). The `Canvas` class,
+  `VisualCommand`, `VisualCommand::Data`, `CanvasFrame`, and
+  `CanvasEffect` all live in that header.
+- Delete `DisplayListReplay` from `wtk/src/Composition/DisplayList.cpp`
+  (the `DrawOp → Canvas` bridge); keep `DisplayList.h` / `DrawOp`.
+- Delete the `VisualCommand::Type` switch in `RenderTarget.cpp`; the
+  `DrawOp` switch (4.0) becomes the only one.
+- Remove `CompositorClient::pushFrame(CanvasFrame &, …)` and the
+  `Vector<VisualCommand> commands` field on `WidgetSlice`.
+- Remove `windowCanvas_` from `AppWindow::Impl`. The window keeps
+  `windowLayerTree_` (still the present-layer host until 4.8).
+- Remove `View::makeCanvas` from the public surface and the `Canvas`
+  forward declaration. `makeLayer` / `getLayerTree` survive (the
+  animation / layer host, removed in 4.8) unless the pre-flight grep
+  cleared `makeLayer`.
+- Migrate `UIViewImpl.h`'s `ResolvedEffectStyle` references to
+  `CanvasEffect::GaussianBlurParams` / `DirectionalBlurParams` onto the
+  equivalent `DrawOp` / `DisplayList` blur params (or a small local
+  struct).
+- Validator: full sweep; grep confirms no `Canvas` / `VisualCommand` /
+  `CanvasFrame` symbol remains; clean build on all three backends.
+
+Files touched: `wtk/include/omegaWTK/Composition/Canvas.h` (deleted),
+`wtk/src/Composition/Canvas.cpp` (deleted),
+`wtk/src/Composition/DisplayList.cpp`,
+`wtk/src/Composition/backend/RenderTarget.cpp`,
+`wtk/include/omegaWTK/Composition/CompositorClient.h`,
+`wtk/src/Composition/CompositorClient.cpp`,
+`wtk/include/omegaWTK/Composition/CompositeFrame.h`,
+`wtk/src/UI/AppWindowImpl.h`, `wtk/src/UI/AppWindow.cpp`,
+`wtk/include/omegaWTK/UI/View.h`, `wtk/src/UI/UIViewImpl.h`.
+
+##### Phase 4.3 — `AnimationScheduler` lands alongside the old animator (folds Animation-Scheduler-Plan Tier A)
+
+A per-window `AnimationScheduler`, owned by `AppWindow` next to
+`FrameBuilder`, ticks active animation tracks once per frame and writes
+resolved values into a side table keyed by `(NodeId, PropertyKey)`. The
+old `ViewAnimator` / `LayerAnimator` path stays live; nothing reads the
+side table yet. Implements Animation-Scheduler-Plan **Tier A** — see
+that doc for the scheduler's internal design; this phase only covers
+its integration into the window / frame pipeline.
+
+- New `wtk/src/UI/AnimationScheduler.{h,cpp}` (header private to the
+  UI library, like `FrameBuilder`), per Animation-Scheduler-Plan §3.
+- `AppWindow::Impl` owns one `AnimationScheduler`. `FrameBuilder` (or
+  the pacer) calls `scheduler.tick(frameTime)` before the paint walk.
+- The scheduler runs on the UI / FrameBuilder thread (single-threaded
+  per Animation-Scheduler-Plan §2); the `DisplayList` snapshot stays
+  the hand-off to the compositor worker thread.
+- Validator: scheduler ticks each frame (logged); existing animations
+  (ContainerClampAnimationTest) unchanged because nothing reads the
+  side table yet.
+
+Files touched: new `wtk/src/UI/AnimationScheduler.{h,cpp}`,
+`wtk/src/UI/AppWindowImpl.h`, `wtk/src/UI/AppWindow.cpp`,
+`wtk/src/UI/FrameBuilder.{h,cpp}`.
+
+##### Phase 4.4 — migrate UIView animation onto the scheduler; paint reads the side table (folds Anim Tiers B + C)
+
+UIView's per-element tween engine and View's layout-delta animations
+move onto the scheduler. Paint becomes a pure *reader* of the side
+table; animation no longer writes during the paint walk. Implements
+Animation-Scheduler-Plan **Tiers B and C**.
+
+- `View::applyLayoutDelta`'s layout tweens (Anim Tier B) call
+  `scheduler.tweenProperty<…>` instead of `ViewAnimator::resizeTransition`.
+- `UIView::Impl::startOrUpdateAnimation` / `advanceAnimations` (Anim
+  Tier C) route to the scheduler; `applyAnimatedColor` /
+  `applyAnimatedShape` / `animatedValue` read `scheduler.value(…)`.
+- `UIView::update()` reads the side table when building its
+  `DisplayList`; it no longer ticks or advances animations inline.
+- The `ViewAnimator` / `LayerAnimator` instances on `UIView::Impl`
+  (`animationViewAnimator`, `animationLayerAnimators`,
+  `elementAnimations`, `pathNodeAnimations`) are now unused but not yet
+  deleted (4.8).
+- Validator: ContainerClampAnimationTest and every animated scene
+  produce identical motion; the paint walk no longer mutates animation
+  state (assert in debug).
+
+Files touched: `wtk/src/UI/UIView.Animation.cpp`,
+`wtk/src/UI/UIView.Update.cpp`, `wtk/src/UI/View.Core.cpp`,
+`wtk/src/UI/UIViewImpl.h`, `wtk/src/UI/AnimationScheduler.{h,cpp}`.
+
+##### Phase 4.5 — `LayoutManager`: replace `ViewResizeCoordinator` *and* `Container` child layout
+
+The parent-owned layout strategy from §3.2 / §3.5 takes over **all
+child-node layout**. Today that job is split across three half-built
+systems (the §1.5 problem this redesign exists to kill):
+
+1. `ViewResizeCoordinator` — per-`View` `ChildResizeSpec` policies
+   (Fill / Proportional / Fixed / FitContent + clamp + `growWeight*`),
+   passive, driven on resize via `runWidgetLayout` →
+   `coordinator.resolve()` and registered in `View::addSubView`.
+2. `Container::layoutChildren()` — eager clamp-to-content-rect via
+   `ContainerClampPolicy` (insets, min/max), called inline, then
+   `child->setRect()`.
+3. `StackWidget::layoutChildren()` — a full flexbox pass. **That one is
+   Phase 4.6** (it needs Measure; see below). This phase collapses (1)
+   and (2).
+
+**Boundary (important).** `LayoutManager` arranges a node's **child
+nodes** (child `View`s / `Widget`s) — it does **not** touch the
+*intra-`UIView` element* layout. The sub-elements inside a single
+`UIView` (authored via `UIViewLayoutV2` / `UIElementLayoutSpec`) stay
+resolved inside `UIView` itself, in its own `arrange` / `paint` (§3.3).
+The two were never the same surface; conflating "lay out my child
+widgets" with "lay out the elements inside one UIView" is part of why
+child layout became a union of systems. `LayoutManager` is the
+child-node axis only.
+
+- New `LayoutManager` interface (`measure(node, avail) -> Size`,
+  `arrange(node, finalRectLocal)`) with `FillLayout`, `StackLayout`
+  (H/V), `AbsoluteLayout`, and `ContainerLayout`. Built on the existing
+  `LayoutStyle` / `resolveClampedRect`, plus
+  `ViewResizeCoordinator::clampRectToParent` lifted to a free clamp
+  helper (it is already used as a static utility, including by
+  `StackWidget`). `FlexLayout` is Phase 4.6.
+- `View` gains an optional `LayoutManager*` field; the parent arranges
+  its children. The default is `AbsoluteLayout` — a child positioned by
+  its own rect — which is the current no-explicit-layout back-compat
+  behavior.
+- `ViewResizeCoordinator`'s `ChildResizePolicy` + `ResizeClamp` +
+  `growWeight*` become parameters of `StackLayout` / `FillLayout` /
+  `AbsoluteLayout`. The `registerChild` / `resolve` / `resolveChildRect`
+  call sites (`View::addSubView`, `runWidgetLayout`, `WidgetTreeHost`'s
+  resize session) route through the parent's `LayoutManager` instead.
+  `ViewResizeCoordinator` and `View.ResizeCoordinator.cpp` are deleted.
+- `Container`'s clamp-to-content layout becomes a `ContainerLayout`
+  (the `ContainerClampPolicy` — insets, min/max — becomes its params).
+  `Container::layoutChildren()` / `clampChildRect()` are deleted; the
+  container sets `ContainerLayout` as its backing `View`'s
+  `LayoutManager`, and the arrange pass does the clamping.
+  `Container::relayout()` / `onChildRectCommitted()` become a
+  `DirtyBit::Layout` mark + frame request rather than an eager relayout.
+- **Invocation is unchanged this phase.** `LayoutManager::arrange` runs
+  from the *existing* layout entry points (the resize handler,
+  `relayout`, `runWidgetLayout`). Phase 4.7 centralizes invocation into
+  `FrameBuilder`'s Measure / Arrange passes; 4.5 only swaps the layout
+  *math* behind those entry points, additive-then-centralize.
+- Validator: resize / clamp scenes (ContainerClampAnimationTest,
+  RootWidget resize, any `Container`-based widget scene) produce layout
+  identical to the pre-migration paths.
+
+Files touched: new `wtk/src/UI/LayoutManager.{h,cpp}` (+ public
+header), `wtk/include/omegaWTK/UI/View.h`, `wtk/src/UI/View.Core.cpp`,
+`wtk/src/UI/ViewImpl.h`, `wtk/src/UI/View.ResizeCoordinator.cpp`
+(deleted), `wtk/src/UI/Layout.cpp` (`runWidgetLayout` rewire),
+`wtk/include/omegaWTK/Widgets/BasicWidgets.h`,
+`wtk/src/Widgets/BasicWidgets.cpp` (`Container`).
+
+##### Phase 4.6 — `FlexLayout`: migrate `StackWidget`; the Measure pass earns its keep
+
+`StackWidget` (and any `Container` subclass like it) is a real,
+existing flexbox container — `flexGrow` / `flexShrink` / `flexBasis`,
+main-axis distribution, cross-axis alignment — whose `layoutChildren()`
+is the third of the §1.5 layout systems. It cannot stay a bespoke
+parallel path once `LayoutManager` owns child layout, so `FlexLayout`
+is a **Tier 4 deliverable, not the "later" item §3.5 implies**: there
+is a consumer in the tree today.
+
+This is also the phase where the **two-pass Measure → Arrange split
+becomes load-bearing**. `Container` / `ViewResizeCoordinator` (4.5)
+only needed Arrange — they clamp an already-known rect. Flex needs
+Measure first: `StackWidget` collects each child's preferred size
+before it can distribute free space across the main axis.
+
+- New `FlexLayout : LayoutManager`, a **reusable public built-in** (in
+  the public `LayoutManager` header, not private to `StackWidget`).
+  `measure(node, avail)` collects children's desired sizes (bottom-up);
+  `arrange(node, finalRect)` runs the flex distribution + alignment that
+  `StackWidget::layoutChildren()` computes today and assigns each child
+  its final rect. It is reusable because flex is a *container policy*,
+  not a widget — any container kind can adopt it.
+- `StackWidget` configures a `FlexLayout` from its `StackSlot` / flex
+  properties and sets it as its backing `View`'s `LayoutManager`;
+  `StackWidget::layoutChildren()` is deleted. The algorithm now lives
+  once, behind the `LayoutManager` interface, and stops being a
+  parallel path.
+- `measure` results are cached on the node and invalidated by
+  `DirtyBit::Layout`, so a Paint-only frame skips re-measuring.
+- Update §3.5 (which lists `FlexLayout` as "later") to note that
+  `StackWidget` forces it into Tier 4.
+- Validator: existing `StackWidget` / stack-based scenes lay out
+  identically; horizontal and vertical stacks with mixed fixed / flex
+  children match their pre-migration rects.
+
+Files touched: `wtk/src/UI/LayoutManager.{h,cpp}` (FlexLayout),
+`wtk/include/omegaWTK/Widgets/Containers.h`,
+`wtk/src/Widgets/Containers.cpp` (`StackWidget`),
+`wtk/src/UI/View.Core.cpp`.
+
+##### Phase 4.7 — `PaintContext` + `View::paint(PaintContext&)`; DirtyBits-driven `FrameBuilder` loop; retire `UIView::update()`
+
+The capstone. `FrameBuilder` becomes the §3.7 four-pass loop driven by
+`DirtyBits`; `View` gets a virtual `paint(PaintContext&)`; the
+`UIView::update()` monolith becomes `UIView::paint`. Realizes
+Widget-View-Paint-Lifecycle-Plan Tier D for the (kept) Widget/View
+model.
+
+- `PaintContext` (§3.5): carries the window `DisplayList &`, the
+  current transform, clip, opacity, and effect stack, plus the
+  resolved style for the node. Threaded through the paint walk;
+  replaces the `FrameBuilder` offset accumulator + `submitView` dance.
+- `View` gains `virtual void paint(PaintContext &)`. `UIView::paint` is
+  the old `update()` body minus session management, canvas, dirty-flag
+  juggling, sort, and clamp-to-parent — it reads the resolved style,
+  the arranged element rects, and the animation side table, and appends
+  `DrawOp`s to `pc.displayList` (~80 lines, down from ~390 in
+  `UIView.Update.cpp`).
+- `DirtyBits` become load-bearing: each bit propagates to the root on
+  set; `FrameBuilder::buildFrame()` reads the root bits and runs
+  Style / Layout (Measure + Arrange) / Paint passes conditionally,
+  pruning at every subtree whose bit is clear.
+- The Layout pass is where the `LayoutManager`s from 4.5 / 4.6 finally
+  run *centrally*: `FrameBuilder` calls `measure` bottom-up then
+  `arrange` top-down across the dirty subtree, instead of each
+  container invoking its own layout from a paint/resize entry point.
+  This is the "centralize invocation" half of 4.5's
+  additive-then-centralize move.
+- The Style pass needs to exist, but **not** the full Style refactor.
+  Paint can't resolve style inline anymore (it must be pure), so the
+  existing inline `resolveViewStyle` resolution is hoisted into a
+  pre-paint Style pass (§3.7 `resolveStylesSubtree`) that caches the
+  resolved style the node's `paint` reads. The global
+  `StyleSheet` / `StyleResolver` / `ComputedStyle` machinery from
+  `Style-StyleSheet-Refactor-Plan.md` is a *separate* workstream that
+  later replaces the internals of this same pass — Tier 4 only needs
+  the pass, not that plan (see §7).
+- `Widget::executePaint` (kept — Widgets are light `View` wrappers per
+  §6 Q2) becomes a thin "mark my subtree dirty + request a frame" call
+  rather than a paint driver.
+- `UIView::update()` is removed from the public surface;
+  `AppWindow::invalidate()` requests a frame.
+  `View::computeWindowOffset` / `legacyComputeWindowOffset` /
+  `scrollOffsetContribution` are deleted (PaintContext carries the
+  transform; `contentOffset()` folds into Arrange).
+- `ScrollView` re-expresses its `PushClip` + content offset against
+  `PaintContext` instead of the accumulator.
+- Validator: full sweep through the pure Measure / Arrange / Paint
+  pipeline; DirtyBits gating verified (a Paint-only animation tick does
+  not re-run layout).
+
+Files touched: new `wtk/src/UI/PaintContext.h`,
+`wtk/include/omegaWTK/UI/View.h`, `wtk/src/UI/View.Core.cpp`,
+`wtk/src/UI/ViewImpl.h`, `wtk/src/UI/UIView.Update.cpp` (→
+`UIView.Paint.cpp`), `wtk/src/UI/UIView.Core.cpp`,
+`wtk/src/UI/FrameBuilder.{h,cpp}`, `wtk/src/UI/ScrollView.cpp`,
+`wtk/src/UI/Widget.Paint.cpp`, `wtk/src/UI/WidgetTreeHost.cpp`,
+`wtk/src/UI/AppWindow.cpp`.
+
+##### Phase 4.8 — delete the old animation surface + per-view `LayerTree`
+
+Destructive cleanup. Folds Animation-Scheduler-Plan **Tier E**. Nothing
+animates against `getLayerTree()->getRootLayer()` anymore (4.4) and
+paint is pure (4.7), so the per-view layer infrastructure and the old
+animator classes are dead weight.
+
+- Delete `Composition::ViewAnimator` / `LayerAnimator` (+ any
+  `LayerClip` / `ViewClip` / runtime registry) from `Animation.{h,cpp}`;
+  remove `friend class ViewAnimator` / `LayerAnimator` from `View`.
+- Delete `View::Impl::ownLayerTree`, `View::getLayerTree`,
+  `View::makeLayer`, `View::startCompositionSession` /
+  `endCompositionSession`, and the per-view role of `View::Impl::proxy`.
+  Compositor-frontend observation moves entirely to the one
+  `windowLayerTree_`.
+- Move `WidgetTreeHost`'s `observe/unobserveWidgetLayerTreesRecurse`
+  to a single window-level observe / unobserve.
+- Delete the now-unused UIView animation fields (`animationViewAnimator`,
+  `animationLayerAnimators`, `elementAnimations`, `pathNodeAnimations`)
+  and the legacy `UIView.Animation.cpp` paths.
+- Validator: full sweep; grep confirms no `ownLayerTree` /
+  `getLayerTree` / `ViewAnimator` / `LayerAnimator` references remain;
+  all three backends clean.
+
+Files touched: `wtk/include/omegaWTK/Composition/Animation.h`,
+`wtk/src/Composition/Animation.cpp`,
+`wtk/include/omegaWTK/UI/View.h`, `wtk/src/UI/View.Core.cpp`,
+`wtk/src/UI/ViewImpl.h`, `wtk/src/UI/WidgetTreeHost.cpp`,
+`wtk/src/UI/UIView.Animation.cpp`, `wtk/src/UI/UIViewImpl.h`.
+
+#### Phase ordering rationale
+
+- **Block 1 before Block 2** (developer decision): the `Canvas` /
+  backend collapse is gated only on closing Tier 3 and shares no code
+  with the animation work, so it lands first and de-risks the largest
+  mechanical deletion before the scene reshape begins.
+- **4.0 before 4.1 before 4.2:** the parallel `DrawOp` switch must
+  exist before `FrameBuilder` can target it (4.1), and both must be
+  live before the `VisualCommand` path and `Canvas` are deleted (4.2).
+  Classic additive-then-destructive.
+- **4.3 before 4.4:** the scheduler must exist (and bake) before
+  UIView's animation state is rerouted onto it. The side table has to
+  be populated before paint can read it.
+- **4.4 before 4.7:** paint can only become a pure function once
+  animation no longer writes during the walk. `UIView::paint` reads
+  the side table that 4.4 establishes.
+- **4.5 before 4.6:** `Container` / coordinator layout (Arrange-only)
+  is the simpler migration and lets `LayoutManager` + the clamp helper
+  bed in before `StackWidget`'s flex (which adds the Measure pass)
+  builds on top.
+- **4.5 and 4.6 before 4.7:** the Measure / Arrange passes 4.7 wires
+  into the frame loop need every `LayoutManager` (coordinator,
+  `Container`, flex) to exist and to be the only child-layout path;
+  otherwise centralizing invocation would strand a bespoke
+  `layoutChildren()`.
+- **4.8 last:** deleting `ownLayerTree` and the old animators is safe
+  only after nothing animates against the per-view tree (4.4) and paint
+  no longer touches `getLayerTree` (4.7). It is pure cleanup and
+  reverts cleanly as long as 4.3–4.7 stay landed.
+
+#### What Tier 4 explicitly does NOT do
+
+- Does not add **region-based dirty culling** — paint-everything-dirty
+  -or-nothing stays; the union-of-dirty-rects pass is Tier 5 (§6 Q4).
+- Does not move **Measure / Arrange / Paint or the scheduler off the UI
+  thread** — the `DisplayList` snapshot stays the only thread boundary
+  (§6 Q5).
+- Does not add **layout managers beyond today's container kinds** —
+  `FillLayout` / `StackLayout` / `AbsoluteLayout` / `ContainerLayout` /
+  `FlexLayout` cover the current widgets (4.5/4.6). `GridLayout` /
+  `TableLayout` / `TreeLayout` arrive as reusable built-ins *with* their
+  `Grid` / `Table` / `Tree` container widgets in later work, not in
+  Tier 4. (`FlexLayout` *is* in Tier 4 — `StackWidget` requires it.)
+- Does not fold in the **Style/StyleSheet refactor** — Tier 4 adds only
+  the pre-paint Style *pass* (hoisting today's inline resolution);
+  the global selector-matched `StyleSheet` engine stays its own plan
+  (§7).
+- Does not change the **intra-`UIView` element layout surface** —
+  `UIViewLayoutV2` / `UIElementLayoutSpec` stay as the element
+  authoring surface inside a `UIView`; only child-*node* layout moves
+  to `LayoutManager`.
+- Does not act on **`wantsLayer()`** — no compositor-thread retained
+  scroll-layer texture yet (§6 Q3).
+- Does not add **`PushOpacity` / `PopOpacity` or `PushEffect` /
+  `PopEffect`** replay handling beyond what a producer needs (deferred
+  until a producer appears, as in Tier 3).
+- Does not **re-specify the `AnimationScheduler` internals** — those
+  are owned by Animation-Scheduler-Plan.md; Tier 4 only sequences and
+  integrates them.
+- Does not **rename or delete `Widget` / `UIView`** — Widgets stay as
+  light `View` wrappers and the existing type names are kept (§6 Q1/Q2).
+
 ---
 
 ## 5. What gets deleted
 
 At the end of Tier 4:
 
-- `UIView.Update.cpp` (391 lines) → `UIViewNode::paint` (~80 lines)
+- `UIView.Update.cpp` (391 lines) → `UIView::paint` (~80 lines)
 - `UIView.Core.cpp` session/dirty plumbing (~200 lines) → gone
 - `UIView.Animation.cpp` (537 lines) → ~150 lines against
   `AnimationScheduler`
@@ -1451,6 +2026,9 @@ At the end of Tier 4:
   (~60 lines) → gone
 - `View.ResizeCoordinator.cpp` → gone
 - `ViewResizeCoordinator` class → gone
+- `Container::layoutChildren()` / `clampChildRect()` and
+  `StackWidget::layoutChildren()` → gone; the layout math moves behind
+  `ContainerLayout` / `FlexLayout` `LayoutManager`s
 - `localBoundsFromView` + static map → gone
 - `View::Impl::ownLayerTree`, per-view proxy → gone
 - `Canvas` class itself (~500 LOC across `Canvas.h`/`Canvas.cpp`) → gone
@@ -1489,7 +2067,7 @@ codebase should override anything in §3:
    its own paint method. But this touches every widget subclass, so
    it should be its own follow-up plan, not rolled into this one.
 
-   ANSWER: Widget's are effectively a light wrapper around View.
+   ANSWER: Widget's are effectively a light wrapper around View. (KEEP THEM)
 
 3. **Layerization opt-in.** When does a `SceneNode` get its own
    composition layer (for scrolling, opacity animation, transforms)?
@@ -1545,6 +2123,30 @@ codebase should override anything in §3:
   naturally pick up the Brush/Gradient improvements landing there.
 - **`Animation-API-Simplification-Plan.md`** — prerequisite for
   Tier 4. Without it, `AnimationScheduler` has nowhere clean to sit.
+- **`Style-StyleSheet-Refactor-Plan.md`** — **kept separate, not
+  folded into Tier 4.** That plan's *engine* tiers align with the
+  *earlier* render tiers (its Tier 1 / 2 / 3 ↔ render Tiers 1 / 2 / 3),
+  and its Tier 4 is the WML compiler that ships *after* this plan's
+  Tier 4 as a purely additive separate library. The only contact
+  point with this Tier 4 is the per-node resolved-style cache: that
+  plan's `ComputedStyle` is exactly the §3.6 `ResolvedStyleCache` that
+  this tier's Style pass writes and `paint` reads. So Tier 4 only
+  needs a Style *pass* (it hoists today's inline `resolveViewStyle`
+  into pre-paint, §4 Phase 4.7 + cross-cutting); when the Style plan
+  lands it swaps that pass's internals (cascade, selectors, themes)
+  without changing Tier 4's paint contract. The shared
+  `UIViewLayoutV2` boundary is already consistent: both plans keep it
+  as the element authoring surface (that plan's §6 Q6/Q7, this plan's
+  §3.3). Folding the full selector/cascade/theme engine into Tier 4
+  would couple two independent refactors and balloon an already-large
+  tier for no gain — paint works with the inline-resolved cache today.
+- **`Widget-View-Paint-Lifecycle-Plan.md`** — its Tier A (the
+  `DirtyBits` field) and Tier C (one `FrameBuilder` per window) were
+  already absorbed under render-redesign Phases 3.1 / 3.8. This tier
+  realizes its Tier D — `View::paint(PaintContext&)` + the
+  `DirtyBits`-driven loop (Phase 4.7) — but, per §6 Q2, keeps `Widget`
+  as a light `View` wrapper rather than deleting `Widget::executePaint`
+  (it becomes a thin invalidate-and-request-frame call).
 - **`NativeViewHost-Adoption-Plan.md`** — unaffected. Native view
   hosts become leaf `SceneNode`s that emit a single
   `DrawOp::NativeHost` op, which the compositor turns into whatever

@@ -296,15 +296,47 @@ namespace OmegaWTK {
             AppWindow::activeFrameBuilder(),
             parent->view.get());
         if(parent->paintMode() == PaintMode::Automatic){
-            if(immediate){
-                parent->invalidateNow(reason);
-            }
-            else {
-                parent->invalidate(reason);
-            }
+            // Tier A (Widget-View-Paint-Lifecycle): the resize walk
+            // paints synchronously inside the caller's FrameBuilder
+            // ScopedFrame (dispatchResize*ToHosts). Deferring here
+            // would push the repaint to a later frame, after this
+            // resize pass's frame already closed. Calls executePaint
+            // directly (friend access) rather than the now-deferred
+            // public invalidate().
+            parent->executePaint(reason,immediate);
         }
         for(const auto & child : parent->childWidgets()){
             invalidateWidgetRecurse(child.get(),reason,immediate);
+        }
+    }
+
+    void WidgetTreeHost::requestFrame(){
+        if(ownerWindow_ != nullptr){
+            ownerWindow_->requestFrame();
+        }
+    }
+
+    void WidgetTreeHost::paintDirty(){
+        paintDirtyRecurse(root.get());
+    }
+
+    void WidgetTreeHost::paintDirtyRecurse(Widget *parent){
+        if(parent == nullptr){
+            return;
+        }
+        // Tier 3 Phase 3.4: thread the offset accumulator like
+        // init/invalidateWidgetRecurse so flushPendingPaint's submitView
+        // reads the correct window offset.
+        FrameBuilder::ScopedViewOffset offsetScope(
+            AppWindow::activeFrameBuilder(),
+            parent->view.get());
+        if(parent->paintMode() == PaintMode::Automatic &&
+           parent->view != nullptr &&
+           (parent->view->dirtyBits() & View::Paint)){
+            parent->flushPendingPaint();
+        }
+        for(const auto & child : parent->childWidgets()){
+            paintDirtyRecurse(child.get());
         }
     }
 
@@ -380,39 +412,6 @@ namespace OmegaWTK {
         windowSurface_ = std::move(surface);
     }
 
-    void WidgetTreeHost::setActiveCompositeFrameRecurse(Widget *parent,Composition::CompositeFrame *frame){
-        if(parent == nullptr){
-            return;
-        }
-        if(parent->view != nullptr){
-            parent->view->compositorProxy().setActiveCompositeFrame(frame);
-        }
-        for(const auto & child : parent->childWidgets()){
-            setActiveCompositeFrameRecurse(child.get(),frame);
-        }
-    }
-
-    void WidgetTreeHost::depositFrame(SharedHandle<Composition::CompositeFrame> frame){
-        if(windowSurface_ == nullptr || frame == nullptr || frame->slices.empty()){
-            return;
-        }
-        windowSurface_->deposit(std::move(frame));
-    }
-
-    void WidgetTreeHost::paintAndDeposit(PaintReason reason,bool immediate){
-        if(root == nullptr){
-            return;
-        }
-        pendingFrame_ = std::make_shared<Composition::CompositeFrame>();
-        setActiveCompositeFrameRecurse(root.get(),pendingFrame_.get());
-        invalidateWidgetRecurse(root.get(),reason,immediate);
-        setActiveCompositeFrameRecurse(root.get(),nullptr);
-        if(windowSurface_ != nullptr && !pendingFrame_->slices.empty()){
-            windowSurface_->deposit(pendingFrame_);
-        }
-        pendingFrame_ = nullptr;
-    }
-
     void WidgetTreeHost::setRootNativeItem(Native::NativeItemPtr item){
         rootNativeItem_ = std::move(item);
     }
@@ -448,18 +447,12 @@ namespace OmegaWTK {
 
     void WidgetTreeHost::notifyWindowResize(const Composition::Rect &rect){
         if(root != nullptr && anyWidgetOptsIntoResize(root.get())){
-            if(windowSurface_ != nullptr){
-                pendingFrame_ = std::make_shared<Composition::CompositeFrame>();
-                setActiveCompositeFrameRecurse(root.get(),pendingFrame_.get());
-            }
+            // Tier 3 Phase 3.8: the caller (dispatchResizeToHosts)
+            // brackets this in a FrameBuilder::ScopedFrame, which owns
+            // the window CompositeFrame. handleHostResize drives the
+            // opted-in widgets' executePaint, each of which submits
+            // into that one frame via FrameBuilder.
             root->handleHostResize(rect);
-            if(windowSurface_ != nullptr){
-                setActiveCompositeFrameRecurse(root.get(),nullptr);
-                if(!pendingFrame_->slices.empty()){
-                    windowSurface_->deposit(pendingFrame_);
-                }
-                pendingFrame_ = nullptr;
-            }
         }
         lastResizeSessionState = resizeTracker.update(rect.w,rect.h,nowMs());
         lastResizeSessionState.animatedTree = detectAnimatedTreeRecurse(root.get());
@@ -480,18 +473,9 @@ namespace OmegaWTK {
         resizeCoordinatorGeneration += 1;
         beginResizeCoordinatorSessionRecurse(root.get(),lastResizeSessionState.sessionId);
         if(root != nullptr && anyWidgetOptsIntoResize(root.get())){
-            if(windowSurface_ != nullptr){
-                pendingFrame_ = std::make_shared<Composition::CompositeFrame>();
-                setActiveCompositeFrameRecurse(root.get(),pendingFrame_.get());
-            }
+            // Tier 3 Phase 3.8: framed by the caller's
+            // FrameBuilder::ScopedFrame (dispatchResizeBeginToHosts).
             root->handleHostResize(rect);
-            if(windowSurface_ != nullptr){
-                setActiveCompositeFrameRecurse(root.get(),nullptr);
-                if(!pendingFrame_->slices.empty()){
-                    windowSurface_->deposit(pendingFrame_);
-                }
-                pendingFrame_ = nullptr;
-            }
         }
         std::ostringstream stream;
         stream << "ResizeSession lane=" << syncLaneId
@@ -505,18 +489,9 @@ namespace OmegaWTK {
 
     void WidgetTreeHost::notifyWindowResizeEnd(const Composition::Rect &rect){
         if(root != nullptr && anyWidgetOptsIntoResize(root.get())){
-            if(windowSurface_ != nullptr){
-                pendingFrame_ = std::make_shared<Composition::CompositeFrame>();
-                setActiveCompositeFrameRecurse(root.get(),pendingFrame_.get());
-            }
+            // Tier 3 Phase 3.8: framed by the caller's
+            // FrameBuilder::ScopedFrame (dispatchResizeEndToHosts).
             root->handleHostResize(rect);
-            if(windowSurface_ != nullptr){
-                setActiveCompositeFrameRecurse(root.get(),nullptr);
-                if(!pendingFrame_->slices.empty()){
-                    windowSurface_->deposit(pendingFrame_);
-                }
-                pendingFrame_ = nullptr;
-            }
         }
         lastResizeSessionState = resizeTracker.end(rect.w,rect.h,nowMs());
         lastResizeSessionState.animatedTree = detectAnimatedTreeRecurse(root.get());

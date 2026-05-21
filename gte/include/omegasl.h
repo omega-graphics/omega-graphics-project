@@ -270,7 +270,7 @@ struct omegasl_shader {
 
 
 /// Build Library
-#include <omega-common/common.h>
+#include <omega-common/fs.h>
 
 #include "omegaGTE/GTEBase.h"
 

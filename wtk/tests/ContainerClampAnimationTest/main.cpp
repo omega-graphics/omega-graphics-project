@@ -1,5 +1,4 @@
 #include <omegaWTK/UI/Widget.h>
-#include <omegaWTK/UI/CanvasView.h>
 #include <omegaWTK/UI/UIView.h>
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
@@ -150,13 +149,26 @@ protected:
     }
 
     void onPaint(OmegaWTK::PaintReason reason) override {
-        viewAs<OmegaWTK::CanvasView>().clear(OmegaWTK::Composition::Color::create8Bit(
-            OmegaWTK::Composition::Color::White8));
+        // Tier 3 Phase 3.9: white backdrop via the hosted UIView
+        // (a full-bounds rect element) instead of CanvasView::clear.
+        auto & uv = viewAs<OmegaWTK::UIView>();
+        auto r = rect();
+        OmegaWTK::UIViewLayout layout {};
+        layout.shape("clamp_bg",OmegaWTK::Shape::Rect(
+            OmegaWTK::Composition::Rect{OmegaWTK::Composition::Point2D{0.f,0.f},r.w,r.h}));
+        uv.setLayout(layout);
+        auto style = OmegaWTK::StyleSheet::Create();
+        style = style->elementBrush("clamp_bg",OmegaWTK::Composition::ColorBrush(
+            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::White8)),
+            false,0.f);
+        uv.setStyleSheet(style);
+        uv.update();
         OmegaWTK::Container::onPaint(reason);
     }
 public:
     explicit ClampRootContainer(OmegaWTK::Composition::Rect rect):
-            OmegaWTK::Container(rect){}
+            OmegaWTK::Container(OmegaWTK::ViewPtr(
+                new OmegaWTK::UIView(rect,nullptr,"clamp_root_view"))){}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {

@@ -3,6 +3,8 @@
 #include "NativeItem.h"
 #include "NativeMenu.h"
 
+#include <functional>
+
 #ifndef OMEGAWTK_NATIVE_NATIVEWINDOW_H
 #define OMEGAWTK_NATIVE_NATIVEWINDOW_H
 
@@ -43,11 +45,25 @@ namespace OmegaWTK::Native {
         NM menu = nullptr;
         Composition::Rect rect;
         NativeEventEmitter *windowEventEmitter = nullptr;
+        /// Widget-View-Paint-Lifecycle-Plan Tier A: invoked once per
+        /// coalesced frame request (see requestFrameFlush). Set by
+        /// AppWindow to its flushFrame().
+        std::function<void()> frameFlushCallback_;
     public:
         NativeWindow(Composition::Rect rect, NativeEventEmitter *emitter);
 
         bool hasEventEmitter() const;
         NativeEventEmitter *eventEmitter() const;
+
+        /// Register the coalesced frame-flush callback (AppWindow's
+        /// flushFrame). Invoked from requestFrameFlush.
+        void setFrameFlushCallback(std::function<void()> cb);
+        /// Request that the frame-flush callback run once on the next
+        /// run-loop turn, coalescing a burst of requests into a single
+        /// invocation. Base implementation invokes synchronously
+        /// (no deferral); platforms with a run loop override to
+        /// schedule + coalesce (macOS: CFRunLoopPerformBlock).
+        virtual void requestFrameFlush();
 
         virtual void enable() = 0;
         virtual void disable() = 0;

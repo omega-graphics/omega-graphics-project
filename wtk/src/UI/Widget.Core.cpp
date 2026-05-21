@@ -1,6 +1,6 @@
 #include "WidgetImpl.h"
 
-#include "omegaWTK/UI/CanvasView.h"
+#include "omegaWTK/UI/View.h"
 #include "WidgetTreeHost.h"
 
 #include <algorithm>
@@ -10,7 +10,7 @@ namespace OmegaWTK {
 
 Widget::Widget(Composition::Rect rect):
     impl_(std::make_unique<Impl>()),
-    view(CanvasView::Create(rect)){
+    view(View::Create(rect)){
 }
 
 Widget::Widget(ViewPtr view):

@@ -1,4 +1,6 @@
-#include <omega-common/common.h>
+#include <omega-common/utils.h>
+#include <omega-common/fs.h>
+#include <omega-common/multithread.h>
 
 #include <cassert>
 #include <iomanip>

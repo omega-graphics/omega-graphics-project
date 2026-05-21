@@ -142,6 +142,32 @@ void UIViewLayout::shape(UIElementTag tag,const Shape &shape){
     _content.push_back(element);
 }
 
+void UIViewLayout::image(UIElementTag tag,const SharedHandle<OmegaCommon::Img::BitmapImage> & img,const Composition::Rect & rect){
+    auto taggedElementIt = std::find_if(_content.begin(),_content.end(),[&](const Element & element){
+        return element.tag == tag;
+    });
+
+    if(taggedElementIt != _content.end()){
+        if(taggedElementIt->type != Element::Type::Image){
+            return;
+        }
+        taggedElementIt->image = img;
+        taggedElementIt->imageRect = rect;
+        taggedElementIt->shape = {};
+        taggedElementIt->str = {};
+        taggedElementIt->textRect = {};
+        taggedElementIt->textStyleTag = {};
+        return;
+    }
+
+    Element element {};
+    element.type = Element::Type::Image;
+    element.tag = tag;
+    element.image = img;
+    element.imageRect = rect;
+    _content.push_back(element);
+}
+
 bool UIViewLayout::remove(UIElementTag tag){
     auto taggedElementIt = std::find_if(_content.begin(),_content.end(),[&](const Element & element){
         return element.tag == tag;
@@ -540,7 +566,6 @@ bool UIViewLayoutV2::hasElement(UIElementTag tag) const{
 UIView::UIView(const Composition::Rect &rect,ViewPtr parent,UIViewTag tag)
     : View(rect,parent),
       impl_(std::make_unique<Impl>(*this,std::move(tag))){
-    impl_->rootCanvas = makeCanvas(getLayerTree()->getRootLayer());
     enable();
 }
 
