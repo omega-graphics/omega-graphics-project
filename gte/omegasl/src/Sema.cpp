@@ -58,6 +58,7 @@ namespace omegasl {
         ast::builtins::float4x4_type,
 
         ast::builtins::buffer_type,
+        ast::builtins::uniform_type,
         ast::builtins::texture1d_type,
         ast::builtins::texture2d_type,
         ast::builtins::texture3d_type,
@@ -1027,6 +1028,15 @@ namespace omegasl {
             _t = resolveTypeWithExpr(idx_expr_res);
             if(_t != ast::builtins::uint_type && _t != ast::builtins::int_type){
                 auto e = std::make_unique<TypeError>("Index of buffer must be an int or uint type."); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
+            }
+
+            /// Defense in depth: a well-formed buffer always carries its
+            /// element type in `args[0]` (RESOURCE_DECL enforces arity), but
+            /// guard the dereference so a malformed buffer can never crash
+            /// here — diagnose instead.
+            if(lhs_res->args.empty()){
+                auto e = std::make_unique<TypeError>("Cannot index buffer with no element type."); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
+                return nullptr;
             }
 
             return lhs_res->args[0];
@@ -2031,6 +2041,7 @@ namespace omegasl {
                 auto ty = resolveTypeWithExpr(_decl->typeExpr);
 
                 if(ty != ast::builtins::buffer_type
+                && ty != ast::builtins::uniform_type
                 && ty != ast::builtins::texture1d_type
                 && ty != ast::builtins::texture2d_type
                 && ty != ast::builtins::texture3d_type
@@ -2048,6 +2059,44 @@ namespace omegasl {
                     e->loc = _decl->loc.value_or(ErrorLoc{});
                     diagnostics->addError(std::move(e));
                     return false;
+                }
+
+                /// `buffer<T>` requires exactly one element type. Without this
+                /// check a `buffer` with no type args (or an empty `buffer<>`)
+                /// reached the INDEX_EXPR path and dereferenced `args[0]` out
+                /// of bounds — a hard crash. Catch it here with a clear
+                /// diagnostic instead. Builtin element types (`buffer<float4>`,
+                /// `buffer<uint>`) are valid and need no further restriction.
+                if(ty == ast::builtins::buffer_type && _decl->typeExpr->args.size() != 1){
+                    auto e = std::make_unique<TypeError>(std::string("Buffer resource `") + _decl->name + "` must name exactly one element type, e.g. `buffer<float4>`.");
+                    e->loc = _decl->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return false;
+                }
+
+                /// §2.4 — `uniform<T>` (constant buffer) requires exactly one
+                /// type arg, and T must be a user-defined struct. HLSL's
+                /// `ConstantBuffer<T>` rejects non-UDT element types, and real
+                /// per-frame/per-view constants are always structs — so we
+                /// hold all three backends to the portable subset rather than
+                /// emitting backend-asymmetric scalar fallbacks.
+                if(ty == ast::builtins::uniform_type){
+                    if(_decl->typeExpr->args.size() != 1){
+                        auto e = std::make_unique<TypeError>(std::string("Uniform resource `") + _decl->name + "` must name exactly one element type, e.g. `uniform<PerFrame>`.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    auto elemTy = resolveTypeWithExpr(_decl->typeExpr->args[0]);
+                    if(elemTy == nullptr){
+                        return false;
+                    }
+                    if(elemTy->builtin){
+                        auto e = std::make_unique<TypeError>(std::string("Uniform resource `") + _decl->name + "` must wrap a user-defined struct, got builtin type `" + elemTy->name + "`. Wrap the value in a struct.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
                 }
 
                 /// 3. (Applies to sampler types) Check sampler state if declared static.
@@ -2280,10 +2329,31 @@ namespace omegasl {
                                 diagnostics->addError(std::move(e));
                                 return false;
                             }
-                            currentContext->variableMap.insert(std::make_pair(r.name,
-                                SemContext::VarBinding{ res->typeExpr, false }));
-                            /// Register buffer element type for struct emission in codegen.
-                            if(_t == ast::builtins::buffer_type && !res->typeExpr->args.empty()){
+                            /// §2.4 — constant buffers are read-only on every
+                            /// backend; reject `out` / `inout` access.
+                            if(_t == ast::builtins::uniform_type && r.access != ast::ShaderDecl::ResourceMapDesc::In){
+                                auto e = std::make_unique<TypeError>(std::string("In Shader Decl `") + _decl->name + "`, uniform `" + r.name + "` is read-only and can only be granted input access.");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            /// §2.4 — a uniform's name binds directly to its
+                            /// element type T (not the handle type), so member
+                            /// access `u.field` resolves through the normal
+                            /// struct path and indexing `u[i]` fails with the
+                            /// existing "indexing only on buffer/vector/matrix"
+                            /// diagnostic. `buffer` keeps binding the handle and
+                            /// only resolves T on indexing.
+                            if(_t == ast::builtins::uniform_type && !res->typeExpr->args.empty()){
+                                currentContext->variableMap.insert(std::make_pair(r.name,
+                                    SemContext::VarBinding{ res->typeExpr->args[0], false }));
+                            } else {
+                                currentContext->variableMap.insert(std::make_pair(r.name,
+                                    SemContext::VarBinding{ res->typeExpr, false }));
+                            }
+                            /// Register element struct type for emission in codegen.
+                            if((_t == ast::builtins::buffer_type || _t == ast::builtins::uniform_type)
+                               && !res->typeExpr->args.empty()){
                                 auto elemTy = resolveTypeWithExpr(res->typeExpr->args[0]);
                                 if(elemTy && !elemTy->builtin){
                                     if(!hasTypeNameInFuncDeclContext(elemTy->name,_decl)){

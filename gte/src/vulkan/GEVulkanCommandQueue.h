@@ -84,6 +84,12 @@ _NAMESPACE_BEGIN_
 
         omegasl_shader_layout_desc_io_mode getResourceIOModeForResourceID(unsigned & id,omegasl_shader & shader);
 
+        /// §2.4 — pick the buffer descriptor type for a resource slot from the
+        /// shader layout: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER for a `uniform<T>`
+        /// slot (OMEGASL_SHADER_UNIFORM_DESC), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+        /// otherwise. The shader layout is authoritative for binding type.
+        VkDescriptorType getBufferDescriptorTypeForResourceID(unsigned & id,omegasl_shader & shader);
+
         /// Combine a runtime swizzle override with the shader layout's
         /// `swizzle_desc` per the precedence rule in
         /// `gte/docs/texture-swizzle-proposal.md` §4: runtime override

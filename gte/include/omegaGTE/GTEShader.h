@@ -42,7 +42,17 @@ struct GTEShaderLibrary {
     std::map<std::string,std::string> unsupportedDiagnostics;
 };
 
-size_t OMEGAGTE_EXPORT omegaSLStructStride(OmegaCommon::Vector<omegasl_data_type> fields) noexcept;
+/// @brief Byte stride of one struct in a GPU buffer, for the given binding
+/// role's memory-layout standard.
+/// @paragraph `Storage` (the default) is std430 / Metal-natural — the layout
+/// for `buffer<T>`. `Uniform` is std140 (GLSL `uniform` / HLSL `cbuffer`,
+/// column-major) on Vulkan and D3D12, where matrix columns round up to 16
+/// bytes and the struct rounds to a 16-byte multiple. On Metal a constant
+/// buffer is read with the natural layout, so `Uniform` returns the same
+/// size as `Storage` there. Pass the same role you give the buffer's
+/// `BufferDescriptor` so the allocation size matches what the writer packs.
+size_t OMEGAGTE_EXPORT omegaSLStructStride(OmegaCommon::Vector<omegasl_data_type> fields,
+                                           BufferDescriptor::Role role = BufferDescriptor::Storage) noexcept;
 
 struct OMEGAGTE_EXPORT GEBufferWriter {
     OMEGACOMMON_CLASS("OmegaGTE.GEBufferWriter")

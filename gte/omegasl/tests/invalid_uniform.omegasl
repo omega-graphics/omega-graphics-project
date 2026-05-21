@@ -1,0 +1,32 @@
+/// §2.4 uniform / constant buffer — negative test (multi-error).
+/// Each construct below is independently rejected by Sema:
+///   1. Indexing a uniform (`u[i]`) — constant buffers are value-access only.
+///   2. `out` / `inout` access on a uniform — they are read-only everywhere.
+///   3. `uniform<float4>` — T must be a user-defined struct (a builtin scalar
+///      / vector is not a valid constant-buffer element type).
+
+struct PerFrame {
+    float4x4 mvp;
+};
+
+uniform<PerFrame> u : 0;
+buffer<PerFrame>  b : 1;
+
+/// (1) indexing a uniform.
+[in u, out b]
+compute(x=1,y=1,z=1)
+void indexUniform(uint3 tid : GlobalThreadID){
+    b[0].mvp = u[0].mvp;
+}
+
+/// (2) out access on a uniform.
+[out u]
+compute(x=1,y=1,z=1)
+void writeUniform(uint3 tid : GlobalThreadID){ }
+
+/// (3) uniform of a non-struct (builtin) type.
+uniform<float4> badScalar : 0;
+
+[in badScalar]
+compute(x=1,y=1,z=1)
+void scalarUniform(uint3 tid : GlobalThreadID){ }

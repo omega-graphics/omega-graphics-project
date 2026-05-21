@@ -112,6 +112,8 @@ namespace omegasl {
             DECLARE_BUILTIN_TYPE(float4x3_type);
 
             DECLARE_BUILTIN_TYPE(buffer_type);
+            /// §2.4 constant / uniform buffer (read-only, value-access).
+            DECLARE_BUILTIN_TYPE(uniform_type);
             DECLARE_BUILTIN_TYPE(texture1d_type);
             DECLARE_BUILTIN_TYPE(texture2d_type);
             DECLARE_BUILTIN_TYPE(texture3d_type);

@@ -265,7 +265,13 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
             break;
     }
 
-    D3D12_RESOURCE_DESC d3d12_desc = CD3DX12_RESOURCE_DESC::Buffer(desc.len, flags);
+    // §2.4 — round constant buffers up to the 256-byte CBV placement
+    // requirement (see GED3D12Engine::makeBuffer).
+    UINT64 bufferLen = desc.len;
+    if(desc.role == BufferDescriptor::Uniform){
+        bufferLen = (bufferLen + 255ull) & ~255ull;
+    }
+    D3D12_RESOURCE_DESC d3d12_desc = CD3DX12_RESOURCE_DESC::Buffer(bufferLen, flags);
 
     // Suballocate within this heap's pool. D3D12MA handles alignment,
     // offsets, and free-list reclamation; HeapType is implicit in the pool.
@@ -294,7 +300,9 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
         return nullptr;
     }
 
-    if(desc.usage == BufferDescriptor::Upload && desc.objectStride > 0){
+    if(desc.role == BufferDescriptor::Uniform){
+        // §2.4 — uniform buffers bind via a root CBV; no SRV/UAV needed.
+    } else if(desc.usage == BufferDescriptor::Upload && desc.objectStride > 0){
         D3D12_SHADER_RESOURCE_VIEW_DESC res_view_desc {};
         res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         res_view_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -316,7 +324,9 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
         engine->d3d12_device->CreateUnorderedAccessView(buffer,nullptr,&uav_desc,descHeap->GetCPUDescriptorHandleForHeapStart());
     }
 
-    return SharedHandle<GEBuffer>(new GED3D12Buffer(desc.usage,buffer,descHeap,state,allocation));
+    auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,descHeap,state,allocation);
+    d3d12_buffer->role = desc.role;
+    return SharedHandle<GEBuffer>(d3d12_buffer);
 }
 
 SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
@@ -843,9 +853,14 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         bool inStruct=false;
         OmegaCommon::Vector<DataBlock> blocks;
         size_t currentOffset = 0;
+        /// §2.4 — std140 (HLSL `cbuffer`, column-major) when the bound buffer
+        /// is a uniform/constant buffer; derived from its role.
+        BufferLayoutStd layoutStd = BufferLayoutStd::Std430;
     public:
         void setOutputBuffer(SharedHandle<GEBuffer> &buffer) override {
             _buffer = (GED3D12Buffer *)buffer.get();
+            layoutStd = (_buffer->role == BufferDescriptor::Uniform)
+                            ? BufferLayoutStd::Std140 : BufferLayoutStd::Std430;
             HRESULT hr = _buffer->buffer->Map(0, nullptr, (void **)&_data_buffer);
             {
                 char msg[256];
@@ -918,31 +933,31 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         /// loads these column-by-column with the Cx3 vec3 padding,
         /// matching Vulkan/Metal layouts. See §12.2.
         void writeFloat2x2(FMatrix<2,2> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<2,2>(), encodeFMatrixToStd430<2,2>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,2>(), encodeFMatrix<2,2>(m, layoutStd)});
         }
         void writeFloat3x3(FMatrix<3,3> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<3,3>(), encodeFMatrixToStd430<3,3>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,3>(), encodeFMatrix<3,3>(m, layoutStd)});
         }
         void writeFloat4x4(FMatrix<4,4> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<4,4>(), encodeFMatrixToStd430<4,4>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,4>(), encodeFMatrix<4,4>(m, layoutStd)});
         }
         void writeFloat2x3(FMatrix<2,3> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<2,3>(), encodeFMatrixToStd430<2,3>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,3>(), encodeFMatrix<2,3>(m, layoutStd)});
         }
         void writeFloat2x4(FMatrix<2,4> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<2,4>(), encodeFMatrixToStd430<2,4>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,4>(), encodeFMatrix<2,4>(m, layoutStd)});
         }
         void writeFloat3x2(FMatrix<3,2> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<3,2>(), encodeFMatrixToStd430<3,2>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,2>(), encodeFMatrix<3,2>(m, layoutStd)});
         }
         void writeFloat3x4(FMatrix<3,4> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<3,4>(), encodeFMatrixToStd430<3,4>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,4>(), encodeFMatrix<3,4>(m, layoutStd)});
         }
         void writeFloat4x2(FMatrix<4,2> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<4,2>(), encodeFMatrixToStd430<4,2>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,2>(), encodeFMatrix<4,2>(m, layoutStd)});
         }
         void writeFloat4x3(FMatrix<4,3> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<4,3>(), encodeFMatrixToStd430<4,3>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,3>(), encodeFMatrix<4,3>(m, layoutStd)});
         }
         void structEnd() override {
             inStruct = false;
@@ -956,7 +971,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                 size_t dataSize = 0;
                 if(isMatrixDataType(block.type)){
                     auto [cols, rows] = matrixDims(block.type);
-                    dataSize = std430MatrixSize(cols, rows);
+                    dataSize = matrixSize(cols, rows, layoutStd);
                 }
                 else if(block.type == OMEGASL_FLOAT){
                     dataSize = sizeof(float);
@@ -1013,10 +1028,14 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         GED3D12Buffer * _buffer = nullptr;
         D3DByte *_data_buffer = nullptr;
         size_t currentOffset = 0;
+        /// §2.4 — matches the writer: std140 for uniform buffers.
+        BufferLayoutStd layoutStd = BufferLayoutStd::Std430;
     public:
         void setInputBuffer(SharedHandle<GEBuffer> &buffer) override {
             currentOffset = 0;
             _buffer = (GED3D12Buffer *)buffer.get();
+            layoutStd = (_buffer->role == BufferDescriptor::Uniform)
+                            ? BufferLayoutStd::Std140 : BufferLayoutStd::Std430;
             CD3DX12_RANGE range(0,0);
 
             _buffer->buffer->Map(0,&range,(void **)&_data_buffer);
@@ -1060,8 +1079,8 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         /// them, so the shared decoder works directly.
         template<unsigned C, unsigned R>
         void getMatrixImpl(FMatrix<C, R> &m){
-            decodeFMatrixFromStd430<C, R>(_data_buffer + currentOffset, m);
-            currentOffset += std430MatrixSize(C, R);
+            decodeFMatrix<C, R>(_data_buffer + currentOffset, m, layoutStd);
+            currentOffset += matrixSize(C, R, layoutStd);
         }
         void getFloat2x2(FMatrix<2,2> &m) override { getMatrixImpl<2,2>(m); }
         void getFloat3x3(FMatrix<3,3> &m) override { getMatrixImpl<3,3>(m); }
@@ -2395,7 +2414,15 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                 state = D3D12_RESOURCE_STATE_COPY_DEST;
             }
         }
-        D3D12_RESOURCE_DESC d3d12_desc = CD3DX12_RESOURCE_DESC::Buffer(desc.len,flags);
+        // §2.4 — a constant buffer bound via a root CBV must be 256-byte
+        // sized/aligned (D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT).
+        // D3D12MA places buffers at >=256-aligned addresses, so rounding the
+        // size up is sufficient for SetGraphicsRootConstantBufferView.
+        UINT64 bufferLen = desc.len;
+        if(desc.role == BufferDescriptor::Uniform){
+            bufferLen = (bufferLen + 255ull) & ~255ull;
+        }
+        D3D12_RESOURCE_DESC d3d12_desc = CD3DX12_RESOURCE_DESC::Buffer(bufferLen,flags);
         D3D12MA::ALLOCATION_DESC allocDesc = {};
         allocDesc.HeapType = heap_type;
         D3D12MA::Allocation *allocation = nullptr;
@@ -2424,7 +2451,11 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
         };
 
-        if(desc.usage == BufferDescriptor::Upload) {
+        if(desc.role == BufferDescriptor::Uniform){
+            // §2.4 — uniform buffers bind via a root CBV (GPU virtual
+            // address), so no per-buffer SRV/UAV descriptor is created here.
+        }
+        else if(desc.usage == BufferDescriptor::Upload) {
 
             D3D12_SHADER_RESOURCE_VIEW_DESC res_view_desc{};
             res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -2451,7 +2482,9 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             d3d12_device->CreateUnorderedAccessView(buffer,nullptr,&uav_desc,descHeap->GetCPUDescriptorHandleForHeapStart());
         }
 
-        return SharedHandle<GEBuffer>(new GED3D12Buffer(desc.usage,buffer,descHeap,state,allocation));
+        auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,descHeap,state,allocation);
+        d3d12_buffer->role = desc.role;
+        return SharedHandle<GEBuffer>(d3d12_buffer);
     }
 
     inline D3D12_TEXTURE_ADDRESS_MODE convertAddressMode(const omegasl_shader_static_sampler_address_mode & addressMode){
@@ -2555,6 +2588,13 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                     else {
                         parameter1.InitAsUnorderedAccessView(l.gpu_relative_loc,registerSpace);
                     }
+                }
+                else if(l.type == OMEGASL_SHADER_UNIFORM_DESC) {
+                    /// §2.4 constant buffer — root CBV at register `b`
+                    /// (`gpu_relative_loc` is the `b` register index from
+                    /// HLSL codegen). Bound with SetGraphics/ComputeRoot-
+                    /// ConstantBufferView from the buffer's GPU virtual address.
+                    parameter1.InitAsConstantBufferView(l.gpu_relative_loc,registerSpace);
                 }
                 /// Create Descriptor Table for Textures
                 else {

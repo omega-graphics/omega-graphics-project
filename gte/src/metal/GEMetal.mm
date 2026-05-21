@@ -349,6 +349,12 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             buffer_= (GEMetalBuffer *)buffer.get();
             currentOffset = 0;
             _data_ptr = (MTLByte *)[NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,buffer_->metalBuffer.handle()) contents];;
+            /// §2.4 — Metal reads both `device T*` (storage) and `constant T&`
+            /// (uniform) buffers with its natural simd/C++ layout, which equals
+            /// std430 for our types. So this writer always packs std430 and
+            /// intentionally ignores `buffer_->role`. Do NOT switch uniform
+            /// buffers to std140 here — that's a Vulkan/D3D12-only layout and
+            /// would mismatch what MSL `constant T&` reads.
         }
         void structBegin() override {
             if(!blocks.empty()){
@@ -976,7 +982,13 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
             NSSmartPtr buffer ({NSOBJECT_CPP_BRIDGE mtlBuffer}),
             layoutDesc(NSObjectHandle {NSOBJECT_CPP_BRIDGE descriptor});
-            return std::shared_ptr<GEBuffer>(new GEMetalBuffer(desc.usage,buffer,layoutDesc));
+            auto *mtl_buffer = new GEMetalBuffer(desc.usage,buffer,layoutDesc);
+            /// Metal binds `constant T&` (uniform) and `device T*` (storage)
+            /// identically via setBuffer:atIndex:, and MTLBuffer creation is
+            /// the same for both — so the role is recorded only so bind-time
+            /// validation can confirm a uniform slot receives a Uniform buffer.
+            mtl_buffer->role = desc.role;
+            return std::shared_ptr<GEBuffer>(mtl_buffer);
         };
         SharedHandle<GEComputePipelineState> makeComputePipelineState(ComputePipelineDescriptor &desc) override{
             if(!_checkPipelineShader(desc.computeFunc,"compute",desc.name)){
@@ -1050,7 +1062,9 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
                     NSSmartPtr bufPtr(NSObjectHandle{NSOBJECT_CPP_BRIDGE buf});
                     NSSmartPtr layoutPtr(NSObjectHandle{NSOBJECT_CPP_BRIDGE layoutDesc});
-                    return SharedHandle<GEBuffer>(new GEMetalBuffer(desc.usage, bufPtr, layoutPtr));
+                    auto *mtl_buffer = new GEMetalBuffer(desc.usage, bufPtr, layoutPtr);
+                    mtl_buffer->role = desc.role;
+                    return SharedHandle<GEBuffer>(mtl_buffer);
                 }
 
                 SharedHandle<GETexture> makeTexture(const TextureDescriptor & desc) override {

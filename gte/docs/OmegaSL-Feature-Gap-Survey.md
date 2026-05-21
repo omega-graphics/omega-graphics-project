@@ -371,7 +371,7 @@ Both are deferred until the underlying issues are resolved:
   `texture(samplerNDShadow, vec)`). Belongs to §2.2 (depth textures +
   comparison samplers).
 
-### 2.4 Uniform / constant buffers
+### 2.4 Uniform / constant buffers [COMPLETED — Metal verified; D3D12/Vulkan written]
 
 OmegaSL only exposes `buffer<T>` which maps to `StructuredBuffer` / SSBO. A
 true constant buffer is distinct:
@@ -392,6 +392,135 @@ uniform<T> perFrame : 0;
 ```
 
 With a distinct `std140`-style layout contract and no indexing operator.
+
+**Phase A — compile path (done)**
+
+`uniform<T>` is a new resource form parallel to `buffer<T>`. It is a
+read-only, value-access constant buffer: `T` must be a user-defined
+struct, the resource is referenced as a value (`perFrame.field`), and it
+cannot be indexed.
+
+* **Token / type**: `uniform` is a `KW_TY` (`Toks.def`, `Lexer.cpp`
+  `isKeywordType`); `builtins::uniform_type` is a one-type-arg builtin
+  (`AST.h`, `AST.cpp`) registered in Sema's `builtinsTypeMap`. The
+  generic resource-decl parser handles `uniform<T> name : N;` without
+  change.
+* **Sema**: `uniform_type` joins the valid-resource-type set. A uniform
+  must have exactly one type arg and `T` must be a user struct (the
+  arity check runs before any `args[0]` access). The same arity guard
+  was added to `buffer<T>`, and the type-arg parser now also collects
+  builtin type names (`TOK_KW_TYPE`) — together these fixed a
+  pre-existing crash where `buffer<float4>` / a bare `buffer` produced an
+  empty arg list and the INDEX_EXPR path dereferenced `args[0]` out of
+  bounds. In the per-shader resource
+  map, a uniform is restricted to `In` access (read-only on every
+  backend) and its name binds directly to `T` (not the handle type), so
+  member access resolves through the normal struct path and `u[i]` fails
+  with the existing "indexing only on buffer/vector/matrix" diagnostic.
+  The element struct is registered for codegen emission.
+* **Runtime layout-desc**: new `OMEGASL_SHADER_UNIFORM_DESC` appended at
+  the tail of `omegasl_shader_layout_desc_type` (distinct from
+  `OMEGASL_SHADER_CONSTANT_DESC`, the inline single-scalar push constant,
+  and `OMEGASL_SHADER_BUFFER_DESC`).
+* **Per-backend emission**:
+  * **HLSL**: `ConstantBuffer<T> u : register(bN, spaceM);` — a new `b`
+    register class with its own `bResourceCount` (resets per shader).
+  * **MSL**: `constant T& u [[buffer(N)]]` — a reference (vs the `*` a
+    structured buffer uses) in the always-`constant` address space;
+    shares the `[[buffer(N)]]` slot space.
+  * **GLSL**: `layout(std140,set=S,binding=B) uniform u_Layout { T u; };`
+    — a std140 block whose single member is named after the resource (vs
+    the std430 buffer block's unsized-array member).
+* **Tests**: `uniform_buffer.omegasl` (vertex shader reading a
+  `uniform<PerFrame>` alongside a `buffer<VertexIn>`; fragment shader
+  reading a `uniform<Light>`), `invalid_uniform.omegasl` (multi-error:
+  indexing a uniform, `out` access, non-struct element type).
+
+**Phase B — runtime binding (done)**
+
+A `uniform<T>` shader can now be bound at runtime. The contract has two
+sides: the **shader layout** (`OMEGASL_SHADER_UNIFORM_DESC`) is
+authoritative for the *binding* (descriptor / root-param type, register
+class), and a new **buffer-descriptor specifier** drives *creation*.
+
+* **Buffer specifier**: `BufferDescriptor::Role { Storage, Uniform }`
+  (defaults to `Storage`; declared at the struct tail so existing
+  positional aggregate initializers are unaffected). Distinct from
+  `BufferDescriptor::Usage` (memory residency). `makeBuffer` stamps it
+  onto `GEBuffer::role`. A `Storage` buffer is the existing `buffer<T>`
+  resource; a `Uniform` buffer is for `uniform<T>`.
+* **Metal**: `constant T&` and `device T*` bind identically via
+  `setBuffer:offset:atIndex:`, and `newBufferWithLength:` is the same for
+  both, so creation/binding are unchanged. The role is recorded only for
+  a bind-time assert (`checkBufferRoleAgainstShader`) that a uniform slot
+  receives a `Uniform` buffer — surfacing on Metal a mismatch that would
+  otherwise fail only on Vulkan/D3D12. **Built and verified.**
+* **Vulkan**: `makeBuffer` adds `VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT` for
+  `Uniform` buffers; the descriptor-set-layout switch maps
+  `OMEGASL_SHADER_UNIFORM_DESC → VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER` (pool
+  sizes auto-aggregate); the three descriptor-write sites now choose the
+  descriptor type from the shader layout via
+  `getBufferDescriptorTypeForResourceID`. *Written from the source map;
+  not compiled on this macOS host.*
+* **D3D12**: root signature uses `InitAsConstantBufferView` for
+  `OMEGASL_SHADER_UNIFORM_DESC` (register `b`); the root-param lookup
+  matches `D3D12_ROOT_PARAMETER_TYPE_CBV`; bind sites call
+  `SetGraphics/ComputeRootConstantBufferView`; `makeBuffer` rounds
+  `Uniform` buffers up to the 256-byte CBV placement requirement and
+  skips the SRV/UAV view (which also avoids the `len / objectStride`
+  divide-by-zero for a single-struct uniform). State transitions use
+  `D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER`. *Written from the
+  source map; not compiled on this macOS host.*
+
+**CPU-side std140 packing (done).** `GEBufferWriter` / `GEBufferReader` and
+`omegaSLStructStride` now pack a `Uniform` buffer in std140 instead of
+std430, so the bytes a caller writes match what the shader reads. The
+layout standard is *derived from the bound buffer's `role`* — no API
+change beyond the optional `role` argument to `omegaSLStructStride`
+(default `Storage`, so existing callers are byte-identical). The rule
+lives in `BufferIO.h` (`BufferLayoutStd`, `matrixColumnStride/Size`,
+`encode/decodeFMatrix`, `std140StructStride`): std140 shares std430's
+scalar/vector alignment and diverges only by 16-strided matrix columns
+and a 16-byte struct round-up.
+
+Per backend: **Vulkan** and **D3D12** writers/readers select std140 when
+`role == Uniform`; **Metal** always packs std430 (its `constant T&` reads
+the natural layout — switching it to std140 would be wrong). Verified by
+a pure-CPU unit test (`gte/tests/std140_layout_test.cpp`, run via ctest as
+`omegagte_std140_layout`) that asserts the std140 matrix strides and
+struct strides on any host — the Metal build itself never exercises the
+std140 path. Vulkan/D3D12 packing is written but compiles only on those
+platforms.
+
+**Follow-up — per-member alignment in the buffer writers (open).**
+
+The per-backend `GEBufferWriter` / `GEBufferReader` pack members
+*sequentially* and do not insert sub-16 inter-member padding. This is a
+pre-existing discipline shared with the std430 path (the Vulkan/D3D12/Metal
+writers all advance the cursor by each member's raw size and only pad the
+struct total, if at all). As a result:
+
+* **Correct today** for the common uniform payload — matrices and
+  `float4`s, which are all 16-aligned, so sequential packing already lands
+  every member on its required offset.
+* **Not yet correct** for a field order that interleaves sub-16
+  scalars/vectors with larger members (e.g. `float` then `float4`, or
+  `float2` then `float4x4`). std140 requires the larger member to start at
+  its 16-byte alignment; the sequential writers would place it too early,
+  so the bytes would not match what `std140StructStride` computes (the
+  stride helper *does* align per-member) nor what the shader reads.
+
+Scope when picked up: give the writers/readers a per-member align-then-place
+cursor (the same align rule `std140StructStride` already encodes — reuse
+`std140ScalarVec` / `matrixAlignment`) instead of the raw-size advance.
+This also fixes the analogous std430 inter-member gap, so it should land as
+one change across both standards. Until then, author uniform structs with
+16-aligned members (matrices / `float4`) — or order smaller members so they
+pack without straddling.
+
+| # | Task | Where | Effort | Blocks | Status |
+|---|------|-------|--------|--------|--------|
+| §2.4-1 | Per-member align-then-place in the buffer writers/readers (fixes std140 *and* std430 inter-member offsets for mixed sub-16 field orders) | `GEVulkan.cpp`, `GED3D12.cpp`, `GEMetal.mm` `GE*BufferWriter`/`Reader`; reuse `BufferIO.h` `std140ScalarVec` / `matrixAlignment` | medium | correct std140 packing for non-16-aligned uniform field orders | open |
 
 ### 2.5 Raw / byte-address buffers
 

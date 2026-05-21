@@ -28,6 +28,7 @@
 #define HLSL_TEXTURE2D_MS_ARRAY   "Texture2DMSArray"
 #define HLSL_BUFFER               "StructuredBuffer"
 #define HLSL_RW_BUFFER            "RWStructuredBuffer"
+#define HLSL_CONSTANT_BUFFER      "ConstantBuffer"
 #define HLSL_SAMPLER              "SamplerState"
 
 namespace omegasl {
@@ -179,6 +180,7 @@ namespace omegasl {
         tResourceCount = 0;
         uResourceCount = 0;
         sResourceCount = 0;
+        bResourceCount = 0;
     }
 
     void HLSLTarget::emitStaticPreamble(std::ostream &/*out*/) {
@@ -197,7 +199,7 @@ namespace omegasl {
 
         auto _t = cg.typeResolver->resolveTypeWithExpr(res_desc->typeExpr);
 
-        bool isTResource = false, isSResource = false;
+        bool isTResource = false, isSResource = false, isBResource = false;
 
         if (_t == ast::builtins::buffer_type) {
             layoutDesc.type = OMEGASL_SHADER_BUFFER_DESC;
@@ -208,6 +210,16 @@ namespace omegasl {
                 out << HLSL_RW_BUFFER;
             }
             out << "<";
+            writeTypeName(cg.typeResolver->resolveTypeWithExpr(res_desc->typeExpr->args[0]),
+                          res_desc->typeExpr->args[0]->pointer, out);
+            out << ">";
+        } else if (_t == ast::builtins::uniform_type) {
+            /// §2.4 constant buffer. Read-only (Sema enforces `In` access),
+            /// accessed as `name.field`. `ConstantBuffer<T>` binds to a `b`
+            /// register and requires T to be a struct (Sema enforces).
+            layoutDesc.type = OMEGASL_SHADER_UNIFORM_DESC;
+            isBResource = true;
+            out << HLSL_CONSTANT_BUFFER << "<";
             writeTypeName(cg.typeResolver->resolveTypeWithExpr(res_desc->typeExpr->args[0]),
                           res_desc->typeExpr->args[0]->pointer, out);
             out << ">";
@@ -329,6 +341,10 @@ namespace omegasl {
                 out << "s" << sResourceCount;
                 layoutDesc.gpu_relative_loc = sResourceCount;
                 ++sResourceCount;
+            } else if (isBResource) {
+                out << "b" << bResourceCount;
+                layoutDesc.gpu_relative_loc = bResourceCount;
+                ++bResourceCount;
             } else {
                 out << "u" << uResourceCount;
                 layoutDesc.gpu_relative_loc = uResourceCount;

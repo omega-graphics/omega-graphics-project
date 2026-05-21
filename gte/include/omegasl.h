@@ -47,7 +47,18 @@ enum omegasl_shader_layout_desc_type : int {
     OMEGASL_SHADER_TEXTURE2D_MS_ARRAY_DESC,
 
     OMEGASL_SHADER_SAMPLERCUBE_DESC,
-    OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC
+    OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC,
+
+    /// §2.4 constant / uniform buffer (HLSL `ConstantBuffer<T>` at register
+    /// `b`, MSL `constant T&`, GLSL `layout(std140) uniform`). Distinct from
+    /// OMEGASL_SHADER_CONSTANT_DESC (an inline single-scalar push constant)
+    /// and from OMEGASL_SHADER_BUFFER_DESC (a structured/storage buffer).
+    /// Appended at the tail so existing descriptor-type integer slots are
+    /// preserved. Phase A (compile path) emits this in the layout; runtime
+    /// binding of it (D3D12 CBV / Vulkan UNIFORM_BUFFER) is Phase B and is
+    /// not yet wired — a shader using `uniform<T>` compiles but cannot be
+    /// bound until that lands.
+    OMEGASL_SHADER_UNIFORM_DESC
 };
 
 enum omegasl_shader_static_sampler_filter : int {

@@ -31,6 +31,34 @@ static bool checkTextureBindAgainstShader(unsigned int location,
     return true;
 }
 
+// A GEBuffer bound to a `uniform<T>` slot must have been created with
+// BufferDescriptor::Uniform, and a `buffer<T>` slot with Storage. Metal binds
+// both kinds the same way (setBuffer:offset:atIndex:), so a mismatch is
+// harmless here — but it *would* fail on Vulkan (wrong descriptor type /
+// missing usage bit) and D3D12 (CBV alignment). Assert early so the bug
+// surfaces on Metal during development rather than only on another backend.
+static void checkBufferRoleAgainstShader(unsigned location,
+                                         const omegasl_shader &shader,
+                                         const GEMetalBuffer &buf) {
+    OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout,
+                                                                shader.pLayout + shader.nLayout};
+    for (auto &l : layoutArr) {
+        if (l.location == location) {
+            bool slotIsUniform = (l.type == OMEGASL_SHADER_UNIFORM_DESC);
+            bool bufIsUniform = (buf.role == BufferDescriptor::Uniform);
+            if (slotIsUniform != bufIsUniform) {
+                NSLog(@"OmegaGTE: buffer role mismatch binding to shader `%s` at slot %u: "
+                       "shader expects %s but the GEBuffer was created as %s.",
+                      shader.name, location,
+                      slotIsUniform ? "uniform<T>" : "buffer<T>",
+                      bufIsUniform ? "Uniform" : "Storage");
+                assert(false && "GEBuffer role does not match shader resource kind (uniform<T> vs buffer<T>)");
+            }
+            return;
+        }
+    }
+}
+
 GEMetalCommandBuffer::GEMetalCommandBuffer(GEMetalCommandQueue *parentQueue):parentQueue(parentQueue),
 buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQueue->commandQueue.handle()) commandBuffer] retain]}){
     traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
@@ -601,6 +629,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         auto *metalBuffer = (GEMetalBuffer *)buffer.get();
         metalBuffer->metalBuffer.assertExists();
 
+        checkBufferRoleAgainstShader(_id, renderPipelineState->vertexShader->internal, *metalBuffer);
 
         if(metalBuffer->needsBarrier){
             [rp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalBuffer->resourceBarrier.handle()) beforeStages:MTLRenderStageVertex];
@@ -645,6 +674,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         auto *metalBuffer = (GEMetalBuffer *)buffer.get();
         metalBuffer->metalBuffer.assertExists();
 
+        checkBufferRoleAgainstShader(_id, renderPipelineState->fragmentShader->internal, *metalBuffer);
 
         if(metalBuffer->needsBarrier){
             [rp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalBuffer->resourceBarrier.handle()) beforeStages:MTLRenderStageFragment];
@@ -845,6 +875,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::bindResourceAtComputeShader(SharedHandle<GEBuffer> &buffer, unsigned int _id) {
         assert(cp != nil && "");
         auto mtl_buffer = (GEMetalBuffer *)buffer.get();
+
+        checkBufferRoleAgainstShader(_id, computePipelineState->computeShader->internal, *mtl_buffer);
 
         if(mtl_buffer->needsBarrier){
             [cp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_buffer->resourceBarrier.handle())];

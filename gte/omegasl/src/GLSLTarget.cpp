@@ -714,6 +714,19 @@ namespace omegasl {
                           res_decl->typeExpr->args[0]->pointer, out);
             out << " "; writeGLSLIdent(res_decl->name, out); out << "[];" << std::endl;
             out << "};" << std::endl;
+        } else if (type_ == ast::builtins::uniform_type) {
+            /// §2.4 constant buffer — std140-laid-out `uniform` block with a
+            /// single struct member named after the resource, so `name.field`
+            /// resolves and there is no indexing (vs the std430 `buffer` block
+            /// above, whose member is an unsized array).
+            layoutDesc.type = OMEGASL_SHADER_UNIFORM_DESC;
+            out << "layout(std140,set = " << set << ",binding = " << binding << ") ";
+            out << "uniform "; writeGLSLIdent(res_decl->name, out); out << "_Layout" << std::endl;
+            out << "{" << std::endl;
+            writeTypeName(cg.typeResolver->resolveTypeWithExpr(res_decl->typeExpr->args[0]),
+                          res_decl->typeExpr->args[0]->pointer, out);
+            out << " "; writeGLSLIdent(res_decl->name, out); out << ";" << std::endl;
+            out << "};" << std::endl;
         } else if (type_ == ast::builtins::texture1d_type) {
             layoutDesc.type = OMEGASL_SHADER_TEXTURE1D_DESC;
             out << "layout(set = " << set << ",binding = " << binding;

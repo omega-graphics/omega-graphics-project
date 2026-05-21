@@ -171,6 +171,11 @@ namespace omegasl {
 #define KW_TY_ULONG4 KW_TY("ulong4")
 
 #define KW_TY_BUFFER KW_TY("buffer")
+/// §2.4 constant / uniform buffer. Distinct from `buffer` (StructuredBuffer
+/// / SSBO): smaller, std140-aligned, read-only, accessed as a value (no
+/// indexing). Maps to ConstantBuffer<T> (HLSL) / `constant T&` (MSL) /
+/// `layout(std140) uniform` (GLSL).
+#define KW_TY_UNIFORM KW_TY("uniform")
 #define KW_TY_TEXTURE1D KW_TY("texture1d")
 #define KW_TY_TEXTURE2D KW_TY("texture2d")
 #define KW_TY_TEXTURE3D KW_TY("texture3d")

@@ -457,6 +457,8 @@ namespace omegasl {
         unsigned tResourceCount = 0;
         unsigned uResourceCount = 0;
         unsigned sResourceCount = 0;
+        /// §2.4 constant-buffer (`b`) register class for `ConstantBuffer<T>`.
+        unsigned bResourceCount = 0;
         OmegaCommon::Map<OmegaCommon::String, OmegaCommon::String> generatedStructs;
     };
 

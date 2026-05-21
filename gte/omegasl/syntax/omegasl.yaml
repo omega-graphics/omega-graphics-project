@@ -18,7 +18,7 @@ variables:
   scalar_types: 'void|bool|int|uint|float|double'
   vector_types: '(?:int|uint|float|double)(?:2|3|4)'
   matrix_types: 'float(?:2x2|2x3|2x4|3x2|3x3|3x4|4x2|4x3|4x4)'
-  resource_types: 'buffer|texture1d|texture2d|texture3d|sampler1d|sampler2d|sampler3d'
+  resource_types: 'buffer|uniform|texture1d|texture2d|texture3d|sampler1d|sampler2d|sampler3d'
   attribute_names: 'VertexID|InstanceID|Position|Color|TexCoord|GlobalThreadID|LocalThreadID|ThreadGroupID'
   decorator_values: 'linear|point|anisotropic|wrap|clamp_to_edge|mirror|mirror_wrap|tri|quad|integer|fractional_even|fractional_odd|triangle_cw|triangle_ccw|line'
 patterns:
@@ -102,7 +102,7 @@ repository:
   resource-declarations:
     patterns:
       - name: meta.resource.buffer.omegasl
-        match: '\b(buffer)\s*(<)\s*({{ident}})\s*(>)\s+({{ident}})\s*(:)\s*(\d+)\b'
+        match: '\b(buffer|uniform)\s*(<)\s*({{ident}})\s*(>)\s+({{ident}})\s*(:)\s*(\d+)\b'
         captures:
           "1":
             name: storage.type.resource.omegasl

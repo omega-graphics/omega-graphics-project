@@ -603,10 +603,15 @@ _NAMESPACE_BEGIN_
 
     typedef unsigned char VulkanByte;
 
-    static size_t sizeForType(omegasl_data_type type){
+    /// §2.4 — sizes/alignments are parameterized by the layout standard.
+    /// Scalars and vectors are identical between std430 and std140; only
+    /// matrices diverge (std140 columns are 16-strided), so `std` only
+    /// affects the matrix branch.
+    static size_t sizeForType(omegasl_data_type type,
+                              BufferLayoutStd std = BufferLayoutStd::Std430){
         if(isMatrixDataType(type)){
             auto [cols, rows] = matrixDims(type);
-            return std430MatrixSize(cols, rows);
+            return matrixSize(cols, rows, std);
         }
         switch(type){
             case OMEGASL_FLOAT:   return sizeof(float);
@@ -625,9 +630,10 @@ _NAMESPACE_BEGIN_
         }
     }
 
-    static size_t std430AlignmentForType(omegasl_data_type type){
+    static size_t alignmentForType(omegasl_data_type type,
+                                   BufferLayoutStd std = BufferLayoutStd::Std430){
         if(isMatrixDataType(type)){
-            return std430MatrixAlignment(matrixDims(type).second);
+            return matrixAlignment(matrixDims(type).second, std);
         }
         switch(type){
             case OMEGASL_FLOAT: case OMEGASL_INT: case OMEGASL_UINT:
@@ -646,11 +652,16 @@ _NAMESPACE_BEGIN_
         size_t currentOffset = 0;
 
         bool inStruct = false;
+        /// §2.4 — std140 layout when the bound buffer is a uniform/constant
+        /// buffer (GLSL `uniform` block). Derived from the buffer's role.
+        BufferLayoutStd layoutStd = BufferLayoutStd::Std430;
 
         OmegaCommon::Vector<DataBlock> blocks;
     public:
         void setOutputBuffer(SharedHandle<GEBuffer> &buffer) override {
             _buffer = (GEVulkanBuffer *)buffer.get();
+            layoutStd = (_buffer->role == BufferDescriptor::Uniform)
+                            ? BufferLayoutStd::Std140 : BufferLayoutStd::Std430;
             vmaMapMemory(_buffer->engine->memAllocator,_buffer->alloc,(void **)&mem_map);
             currentOffset = 0;
         }
@@ -704,50 +715,52 @@ _NAMESPACE_BEGIN_
             blocks.push_back(DataBlock {OMEGASL_UINT4,new glm::uvec4(v[0][0],v[1][0],v[2][0],v[3][0])});
         }
 
-        /// Matrix writers: pack the host matrix as std430 bytes (with
-        /// per-column padding for Cx3) and stash the byte block. The
-        /// `sendToBuffer` memcpy loop sees the right size via
-        /// `sizeForType`.
+        /// Matrix writers: pack the host matrix for the active standard (Cx3
+        /// columns padded to 16 under std430; every column 16-strided under
+        /// std140) and stash the byte block. `sendToBuffer` recovers the size
+        /// via `sizeForType(type, layoutStd)`.
         void writeFloat2x2(FMatrix<2,2> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<2,2>(), encodeFMatrixToStd430<2,2>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,2>(), encodeFMatrix<2,2>(m, layoutStd)});
         }
         void writeFloat3x3(FMatrix<3,3> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<3,3>(), encodeFMatrixToStd430<3,3>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,3>(), encodeFMatrix<3,3>(m, layoutStd)});
         }
         void writeFloat4x4(FMatrix<4,4> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<4,4>(), encodeFMatrixToStd430<4,4>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,4>(), encodeFMatrix<4,4>(m, layoutStd)});
         }
         void writeFloat2x3(FMatrix<2,3> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<2,3>(), encodeFMatrixToStd430<2,3>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,3>(), encodeFMatrix<2,3>(m, layoutStd)});
         }
         void writeFloat2x4(FMatrix<2,4> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<2,4>(), encodeFMatrixToStd430<2,4>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<2,4>(), encodeFMatrix<2,4>(m, layoutStd)});
         }
         void writeFloat3x2(FMatrix<3,2> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<3,2>(), encodeFMatrixToStd430<3,2>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,2>(), encodeFMatrix<3,2>(m, layoutStd)});
         }
         void writeFloat3x4(FMatrix<3,4> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<3,4>(), encodeFMatrixToStd430<3,4>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<3,4>(), encodeFMatrix<3,4>(m, layoutStd)});
         }
         void writeFloat4x2(FMatrix<4,2> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<4,2>(), encodeFMatrixToStd430<4,2>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,2>(), encodeFMatrix<4,2>(m, layoutStd)});
         }
         void writeFloat4x3(FMatrix<4,3> &m) override {
-            blocks.push_back(DataBlock {matrixDataTypeFor<4,3>(), encodeFMatrixToStd430<4,3>(m)});
+            blocks.push_back(DataBlock {matrixDataTypeFor<4,3>(), encodeFMatrix<4,3>(m, layoutStd)});
         }
 
         void sendToBuffer() override {
             assert(!inStruct && "Struct record must be finished before sending object to buffer");
             assert(mem_map != nullptr && "Output buffer must be mapped before sending data");
 
-            size_t structAlign = 1;
+            /// std140 struct base alignment is always >= 16; std430 uses the
+            /// largest member alignment.
+            size_t structAlign = (layoutStd == BufferLayoutStd::Std140) ? 16 : 1;
             for(auto & b : blocks){
-                size_t a = std430AlignmentForType(b.type);
+                size_t a = alignmentForType(b.type, layoutStd);
                 if(a > structAlign) structAlign = a;
             }
 
             for(auto & b : blocks){
-                size_t si = sizeForType(b.type);
+                size_t si = sizeForType(b.type, layoutStd);
                 memcpy(mem_map + currentOffset,b.data,si);
                 currentOffset += si;
             }
@@ -774,11 +787,15 @@ _NAMESPACE_BEGIN_
         GEVulkanBuffer *_buffer = nullptr;
         VulkanByte *mem_map = nullptr;
         size_t currentOffset = 0;
+        /// §2.4 — matches the writer: std140 for uniform buffers.
+        BufferLayoutStd layoutStd = BufferLayoutStd::Std430;
 
         OmegaCommon::Vector<omegasl_data_type> readTypes;
     public:
         void setInputBuffer(SharedHandle<GEBuffer> &buffer) override {
             _buffer = (GEVulkanBuffer *)buffer.get();
+            layoutStd = (_buffer->role == BufferDescriptor::Uniform)
+                            ? BufferLayoutStd::Std140 : BufferLayoutStd::Std430;
             vmaMapMemory(_buffer->engine->memAllocator,_buffer->alloc,(void **)&mem_map);
             currentOffset = 0;
         }
@@ -789,9 +806,9 @@ _NAMESPACE_BEGIN_
             readTypes.clear();
         }
         void structEnd() override {
-            size_t structAlign = 1;
+            size_t structAlign = (layoutStd == BufferLayoutStd::Std140) ? 16 : 1;
             for(auto t : readTypes){
-                size_t a = std430AlignmentForType(t);
+                size_t a = alignmentForType(t, layoutStd);
                 if(a > structAlign) structAlign = a;
             }
             size_t rem = currentOffset % structAlign;
@@ -832,13 +849,13 @@ _NAMESPACE_BEGIN_
             readTypes.push_back(OMEGASL_FLOAT4);
         }
 
-        /// Matrix readers: read `cols * std430MatrixColumnStride(rows)`
+        /// Matrix readers: read `cols * matrixColumnStride(rows, layoutStd)`
         /// bytes from the mapped buffer, dropping per-column padding when
         /// copying back into the host's tightly-packed `FMatrix`.
         template<unsigned C, unsigned R>
         void getMatrixImpl(FMatrix<C, R> &m, omegasl_data_type tag){
-            decodeFMatrixFromStd430<C, R>(mem_map + currentOffset, m);
-            currentOffset += std430MatrixSize(C, R);
+            decodeFMatrix<C, R>(mem_map + currentOffset, m, layoutStd);
+            currentOffset += matrixSize(C, R, layoutStd);
             readTypes.push_back(tag);
         }
         void getFloat2x2(FMatrix<2,2> &m) override { getMatrixImpl<2,2>(m, OMEGASL_FLOAT2x2); }
@@ -1234,6 +1251,13 @@ _NAMESPACE_BEGIN_
         if(hasAccelerationStructureExt){
             buffer_desc.usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
         }
+        /// §2.4 — a buffer bound to a `uniform<T>` slot is written into a
+        /// VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER descriptor, which requires the
+        /// VkBuffer to carry this usage bit. Added only for Uniform-role
+        /// buffers; storage buffers keep the original mask.
+        if(desc.role == BufferDescriptor::Uniform){
+            buffer_desc.usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        }
         buffer_desc.sharingMode = queueFamilyIndices.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
         buffer_desc.queueFamilyIndexCount = buffer_desc.sharingMode == VK_SHARING_MODE_CONCURRENT
                                                 ? static_cast<std::uint32_t>(queueFamilyIndices.size())
@@ -1273,6 +1297,7 @@ _NAMESPACE_BEGIN_
         VkBufferView bufferView = VK_NULL_HANDLE;
 
         auto result = std::shared_ptr<GEVulkanBuffer>(new GEVulkanBuffer(desc.usage,this,buffer,bufferView,allocation,allocationInfo));
+        result->role = desc.role;
         trackResource(result);
         return result;
     };
@@ -1303,6 +1328,11 @@ _NAMESPACE_BEGIN_
                            VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
                            VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
                            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        /// §2.4 — see GEVulkanEngine::makeBuffer; Uniform-role buffers need
+        /// the uniform-buffer usage bit to be writable into a UBO descriptor.
+        if(desc.role == BufferDescriptor::Uniform){
+            bufferInfo.usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        }
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         VmaAllocationCreateInfo allocInfo {};
@@ -1323,6 +1353,7 @@ _NAMESPACE_BEGIN_
 
         VkBufferView bufferView = VK_NULL_HANDLE;
         auto result = std::shared_ptr<GEVulkanBuffer>(new GEVulkanBuffer(desc.usage, engine, buffer, bufferView, alloc, allocationInfo));
+        result->role = desc.role;
         engine->trackResource(result);
         return result;
     }
@@ -2276,6 +2307,11 @@ _NAMESPACE_BEGIN_
                 switch (l.type) {
                     case OMEGASL_SHADER_BUFFER_DESC: {
                         binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                        break;
+                    }
+                    case OMEGASL_SHADER_UNIFORM_DESC: {
+                        /// §2.4 constant buffer — `layout(std140) uniform`.
+                        binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
                         break;
                     }
                     case OMEGASL_SHADER_SAMPLER1D_DESC:

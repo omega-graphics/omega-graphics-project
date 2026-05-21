@@ -156,6 +156,9 @@ namespace omegasl {
             } else {
                 out << "device ";
             }
+        } else if (type_ == builtins::uniform_type) {
+            /// §2.4 constant buffer — always read-only `constant` address space.
+            out << "constant ";
         }
 
         omegasl_shader_layout_desc_type layoutDescType = OMEGASL_SHADER_BUFFER_DESC;
@@ -187,6 +190,15 @@ namespace omegasl {
                           res_desc->typeExpr->args[0]->pointer, out);
             out << " *";
             layoutDescType = OMEGASL_SHADER_BUFFER_DESC;
+        } else if (type_ == builtins::uniform_type) {
+            /// §2.4 — `constant T& name [[buffer(N)]]`. The reference (vs the
+            /// `*` a structured buffer uses) gives value-access `name.field`
+            /// and no indexing. Shares the `[[buffer(N)]]` binding slot.
+            isBuffer = true;
+            writeTypeName(cg.typeResolver->resolveTypeWithExpr(res_desc->typeExpr->args[0]),
+                          res_desc->typeExpr->args[0]->pointer, out);
+            out << " &";
+            layoutDescType = OMEGASL_SHADER_UNIFORM_DESC;
         } else if (type_ == builtins::texture1d_type) {
             isTexture = true;
             out << "texture1d<float,";

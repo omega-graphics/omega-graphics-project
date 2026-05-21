@@ -61,6 +61,8 @@ add_omegasl_compile_test(omegasl_compile_math_builtins       math_builtins.omega
 add_omegasl_compile_test(omegasl_compile_matrix_ops          matrix_ops.omegasl)
 add_omegasl_compile_test(omegasl_compile_matrix_index        matrix_index.omegasl)
 add_omegasl_compile_test(omegasl_compile_matrix_buffer       matrix_buffer.omegasl)
+# Regression: builtin (scalar/vector) buffer element types.
+add_omegasl_compile_test(omegasl_compile_buffer_scalar_elem  buffer_scalar_elem.omegasl)
 add_omegasl_compile_test(omegasl_compile_texture_write       texture_write.omegasl)
 add_omegasl_compile_test(omegasl_compile_discard             discard.omegasl)
 add_omegasl_compile_test(omegasl_compile_fragment_depth      fragment_depth.omegasl)
@@ -87,6 +89,8 @@ add_omegasl_compile_test(omegasl_compile_function_overload_basic function_overlo
 add_omegasl_compile_test(omegasl_compile_function_overload_with_forward function_overload_with_forward.omegasl)
 # §3.7 — `out` / `inout` function parameters.
 add_omegasl_compile_test(omegasl_compile_out_inout_params    out_inout_params.omegasl)
+# §2.4 — uniform / constant buffers.
+add_omegasl_compile_test(omegasl_compile_uniform_buffer      uniform_buffer.omegasl)
 
 # --- Real-world shader tests (UI / game engine patterns) ---
 add_omegasl_compile_test(omegasl_compile_blinn_phong         blinn_phong.omegasl)
@@ -121,6 +125,10 @@ add_omegasl_fail_test(omegasl_invalid_const_increment        invalid_const_incre
 add_omegasl_fail_test(omegasl_invalid_function_overload_no_match     invalid_function_overload_no_match.omegasl)
 add_omegasl_fail_test(omegasl_invalid_function_overload_redecl       invalid_function_overload_redecl.omegasl)
 add_omegasl_fail_test(omegasl_invalid_function_overload_return_type  invalid_function_overload_return_type.omegasl)
+# §2.4 — uniform diagnostics (indexing / out-access / non-struct element).
+add_omegasl_fail_test(omegasl_invalid_uniform                invalid_uniform.omegasl)
+# Regression: `buffer` with no element type must diagnose, not crash.
+add_omegasl_fail_test(omegasl_invalid_buffer_no_args         invalid_buffer_no_args.omegasl)
 
 # =============================================================
 # 4. Golden-file tests for HLSL codegen (DirectX only)

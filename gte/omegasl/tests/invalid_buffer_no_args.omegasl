@@ -1,0 +1,9 @@
+/// Regression (negative): `buffer` declared without an element type.
+/// This used to crash (out-of-bounds `args[0]` when the buffer was indexed);
+/// it must now produce a clear diagnostic at the resource declaration.
+
+buffer noElement : 0;
+
+[out noElement]
+compute(x=1,y=1,z=1)
+void f(uint3 tid : GlobalThreadID){ }

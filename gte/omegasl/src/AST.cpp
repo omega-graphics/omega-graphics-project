@@ -59,6 +59,7 @@ namespace omegasl::ast {
         Type *ulong4_type;
 
         Type *buffer_type;
+        Type *uniform_type;
         Type *texture1d_type;
         Type *texture2d_type;
         Type *texture3d_type;
@@ -184,6 +185,7 @@ namespace omegasl::ast {
                 ulong4_type = new Type{KW_TY_ULONG4,global_scope};
 
                 buffer_type = new Type{KW_TY_BUFFER,global_scope,true,{"type"}};
+                uniform_type = new Type{KW_TY_UNIFORM,global_scope,true,{"type"}};
                 texture1d_type = new Type{KW_TY_TEXTURE1D,global_scope};
                 texture2d_type = new Type{KW_TY_TEXTURE2D,global_scope};
                 texture3d_type = new Type{KW_TY_TEXTURE3D,global_scope};
@@ -376,6 +378,7 @@ namespace omegasl::ast {
                 delete ulong3_type;
                 delete ulong4_type;
                 delete buffer_type;
+                delete uniform_type;
                 delete texture1d_type;
                 delete texture2d_type;
                 delete texture3d_type;

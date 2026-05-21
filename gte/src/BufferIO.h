@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstring>
 #include <utility>
+#include <initializer_list>
 
 #ifndef OMEGAGTE_BUFFERIO_H_PRIV
 #define OMEGAGTE_BUFFERIO_H_PRIV
@@ -22,26 +23,52 @@ namespace OmegaGTE {
         void *data;
     };
 
-    /// std430 column stride for an OmegaSL `floatCxR` matrix. OmegaSL
-    /// matrices are stored as C column vectors, each of which gets its
-    /// base alignment rounded up to vec4 when the column is vec3 (the
-    /// std430 vec3 quirk). vec1/vec2/vec4 columns pack tightly.
-    /// See OmegaSL-Feature-Gap-Survey §12.2.
-    inline constexpr std::size_t std430MatrixColumnStride(unsigned rows) noexcept {
+    /// §2.4 — buffer memory-layout standard. `Std430` is the storage-buffer
+    /// (StructuredBuffer / SSBO / Metal-natural) layout used everywhere
+    /// before constant buffers existed. `Std140` is the stricter uniform-
+    /// buffer layout used by GLSL `uniform` blocks and HLSL `cbuffer`
+    /// (column-major); its only divergence from std430 *for the flat
+    /// GEBufferWriter API* (no arrays / nested structs) is that every matrix
+    /// column is rounded up to a 16-byte stride and the struct is padded to
+    /// a 16-byte multiple. Metal reads constant buffers with its natural
+    /// (std430-equivalent) layout, so the Metal backend always passes
+    /// `Std430` regardless of buffer role.
+    enum class BufferLayoutStd { Std430, Std140 };
+
+    /// Column stride for an OmegaSL `floatCxR` matrix under the given
+    /// standard. OmegaSL matrices are stored as C column vectors.
+    ///   std430: the column's base alignment is rounded up to vec4 only when
+    ///           the column is vec3 (the vec3 quirk); vec1/vec2/vec4 columns
+    ///           pack tightly (4 / 8 / 16).
+    ///   std140: every column is rounded up to 16 bytes.
+    /// See OmegaSL-Feature-Gap-Survey §2.4 / §12.2.
+    inline constexpr std::size_t matrixColumnStride(unsigned rows, BufferLayoutStd std) noexcept {
+        if (std == BufferLayoutStd::Std140) return 16;
         if (rows == 1) return 4;
         if (rows == 2) return 8;
         return 16; // 3 (padded) or 4
     }
 
-    /// Total std430 size of an OmegaSL `floatCxR` matrix.
-    inline constexpr std::size_t std430MatrixSize(unsigned cols, unsigned rows) noexcept {
-        return static_cast<std::size_t>(cols) * std430MatrixColumnStride(rows);
+    /// Total size of an OmegaSL `floatCxR` matrix under the given standard.
+    inline constexpr std::size_t matrixSize(unsigned cols, unsigned rows, BufferLayoutStd std) noexcept {
+        return static_cast<std::size_t>(cols) * matrixColumnStride(rows, std);
     }
 
-    /// std430 base alignment for a matrix is the column alignment — same
-    /// rule as the column stride.
+    /// A matrix's base alignment is its column alignment — same rule as the
+    /// column stride.
+    inline constexpr std::size_t matrixAlignment(unsigned rows, BufferLayoutStd std) noexcept {
+        return matrixColumnStride(rows, std);
+    }
+
+    /// std430 wrappers — preserve the pre-§2.4 call sites verbatim.
+    inline constexpr std::size_t std430MatrixColumnStride(unsigned rows) noexcept {
+        return matrixColumnStride(rows, BufferLayoutStd::Std430);
+    }
+    inline constexpr std::size_t std430MatrixSize(unsigned cols, unsigned rows) noexcept {
+        return matrixSize(cols, rows, BufferLayoutStd::Std430);
+    }
     inline constexpr std::size_t std430MatrixAlignment(unsigned rows) noexcept {
-        return std430MatrixColumnStride(rows);
+        return matrixAlignment(rows, BufferLayoutStd::Std430);
     }
 
     /// Decompose an `omegasl_data_type` into (cols, rows). Returns
@@ -102,16 +129,15 @@ namespace OmegaGTE {
         }
     }
 
-    /// Pack an `FMatrix<C, R>` into a freshly heap-allocated std430 byte
-    /// block (column-major, with per-column padding for `Cx3`). Caller
-    /// owns the returned pointer and must `delete[]` it after the
-    /// `sendToBuffer` memcpy. Backends share this so the std430 column
-    /// padding rule lives in one place.
+    /// Pack an `FMatrix<C, R>` into a freshly heap-allocated byte block
+    /// (column-major) for the given standard. Caller owns the returned
+    /// pointer and must `delete[]` it after the `sendToBuffer` memcpy.
+    /// Backends share this so the column-padding rule lives in one place.
     template<unsigned C, unsigned R>
-    unsigned char *encodeFMatrixToStd430(FMatrix<C, R> &m) {
-        const std::size_t sz = std430MatrixSize(C, R);
+    unsigned char *encodeFMatrix(FMatrix<C, R> &m, BufferLayoutStd std) {
+        const std::size_t sz = matrixSize(C, R, std);
         auto *bytes = new unsigned char[sz]{};
-        const std::size_t colStride = std430MatrixColumnStride(R);
+        const std::size_t colStride = matrixColumnStride(R, std);
         for (unsigned c = 0; c < C; ++c) {
             auto *col = bytes + c * colStride;
             for (unsigned r = 0; r < R; ++r) {
@@ -122,12 +148,12 @@ namespace OmegaGTE {
         return bytes;
     }
 
-    /// Inverse — read `std430MatrixSize(C, R)` bytes from `src` and copy
-    /// back into the host's tightly-packed `FMatrix`, dropping the per-
-    /// column std430 padding when present.
+    /// Inverse — read `matrixSize(C, R, std)` bytes from `src` and copy back
+    /// into the host's tightly-packed `FMatrix`, dropping the per-column
+    /// padding when present.
     template<unsigned C, unsigned R>
-    void decodeFMatrixFromStd430(const unsigned char *src, FMatrix<C, R> &m) {
-        const std::size_t colStride = std430MatrixColumnStride(R);
+    void decodeFMatrix(const unsigned char *src, FMatrix<C, R> &m, BufferLayoutStd std) {
+        const std::size_t colStride = matrixColumnStride(R, std);
         for (unsigned c = 0; c < C; ++c) {
             const auto *col = src + c * colStride;
             for (unsigned r = 0; r < R; ++r) {
@@ -136,6 +162,69 @@ namespace OmegaGTE {
                 m[c][r] = f;
             }
         }
+    }
+
+    /// std430 wrappers — preserve the pre-§2.4 call sites verbatim.
+    template<unsigned C, unsigned R>
+    unsigned char *encodeFMatrixToStd430(FMatrix<C, R> &m) {
+        return encodeFMatrix<C, R>(m, BufferLayoutStd::Std430);
+    }
+    template<unsigned C, unsigned R>
+    void decodeFMatrixFromStd430(const unsigned char *src, FMatrix<C, R> &m) {
+        decodeFMatrix<C, R>(src, m, BufferLayoutStd::Std430);
+    }
+
+    /// Non-matrix std140 base alignment / size for a scalar or vector type.
+    /// std140 shares std430's scalar/vector rules: float/int/uint → (4,4),
+    /// vec2 → (8,8), vec3 → (16,12), vec4 → (16,16). Returns {align, size}.
+    inline std::pair<std::size_t, std::size_t> std140ScalarVec(omegasl_data_type d) noexcept {
+        switch (d) {
+            case OMEGASL_FLOAT: case OMEGASL_INT: case OMEGASL_UINT:   return {4, 4};
+            case OMEGASL_FLOAT2: case OMEGASL_INT2: case OMEGASL_UINT2: return {8, 8};
+            case OMEGASL_FLOAT3: case OMEGASL_INT3: case OMEGASL_UINT3: return {16, 12};
+            case OMEGASL_FLOAT4: case OMEGASL_INT4: case OMEGASL_UINT4: return {16, 16};
+            default: return {4, 4};
+        }
+    }
+
+    /// std140 byte stride of a flat struct (the GEBufferWriter API exposes no
+    /// arrays / nested structs). Standard align-then-place: each member is
+    /// aligned to its std140 base alignment, then the whole struct rounds up
+    /// to a 16-byte multiple (std140 struct base alignment is always >= 16).
+    /// Matrices are treated as C columns of 16-byte stride. `Iterable` is any
+    /// range of `omegasl_data_type` (an `OmegaCommon::Vector` from the engine
+    /// or a brace list from a test). Header-side and backend-independent so it
+    /// is unit-testable on any platform — including Metal builds, where
+    /// `omegaSLStructStride` itself never takes the std140 path.
+    template<class Iterable>
+    inline std::size_t std140StructStride(const Iterable &fields) noexcept {
+        std::size_t off = 0;
+        for (auto d : fields) {
+            std::size_t align, size;
+            if (isMatrixDataType(d)) {
+                auto dims = matrixDims(d);
+                align = matrixAlignment(dims.second, BufferLayoutStd::Std140); // 16
+                size  = matrixSize(dims.first, dims.second, BufferLayoutStd::Std140); // C * 16
+            } else {
+                auto av = std140ScalarVec(d);
+                align = av.first;
+                size  = av.second;
+            }
+            if (off % align != 0) {
+                off += align - (off % align);
+            }
+            off += size;
+        }
+        if (off % 16 != 0) {
+            off += 16 - (off % 16);
+        }
+        return off;
+    }
+
+    /// Brace-list overload: `std140StructStride({OMEGASL_FLOAT4, ...})`.
+    /// (Template argument deduction can't bind a braced literal to `Iterable`.)
+    inline std::size_t std140StructStride(std::initializer_list<omegasl_data_type> fields) noexcept {
+        return std140StructStride<std::initializer_list<omegasl_data_type>>(fields);
     }
 
     /// Map a (C, R) shape to the matching `omegasl_data_type`

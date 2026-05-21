@@ -73,6 +73,19 @@ _NAMESPACE_BEGIN_
         return OMEGASL_SHADER_DESC_IO_INOUT;
     }
 
+    VkDescriptorType
+    GEVulkanCommandBuffer::getBufferDescriptorTypeForResourceID(unsigned int &id, omegasl_shader &shader) {
+        ArrayRef<omegasl_shader_layout_desc> layoutDesc {shader.pLayout,shader.pLayout + shader.nLayout};
+        for(auto & l : layoutDesc){
+            if(l.location == id){
+                return l.type == OMEGASL_SHADER_UNIFORM_DESC
+                           ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                           : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            }
+        }
+        return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    }
+
     TextureSwizzle
     GEVulkanCommandBuffer::resolveEffectiveSwizzle(const TextureSwizzle & runtime,unsigned id,omegasl_shader & shader) {
         if(!runtime.isIdentity()) return runtime;
@@ -899,7 +912,7 @@ _NAMESPACE_BEGIN_
         VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writeInfo.dstBinding = getBindingForResourceID(id,renderPipelineState->vertexShader->internal);
         writeInfo.descriptorCount = 1;
-        writeInfo.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writeInfo.descriptorType = getBufferDescriptorTypeForResourceID(id,renderPipelineState->vertexShader->internal);
         writeInfo.pNext = nullptr;
         writeInfo.dstArrayElement = 0;
         writeInfo.pBufferInfo = &bufferInfo;
@@ -996,7 +1009,7 @@ _NAMESPACE_BEGIN_
         VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writeInfo.dstBinding = getBindingForResourceID(id,renderPipelineState->fragmentShader->internal);
         writeInfo.descriptorCount = 1;
-        writeInfo.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writeInfo.descriptorType = getBufferDescriptorTypeForResourceID(id,renderPipelineState->fragmentShader->internal);
         writeInfo.pNext = nullptr;
         writeInfo.dstArrayElement = 0;
         writeInfo.pBufferInfo = &bufferInfo;
@@ -1529,7 +1542,7 @@ _NAMESPACE_BEGIN_
         VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writeInfo.dstBinding = getBindingForResourceID(id,computePipelineState->computeShader->internal);
         writeInfo.descriptorCount = 1;
-        writeInfo.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writeInfo.descriptorType = getBufferDescriptorTypeForResourceID(id,computePipelineState->computeShader->internal);
         writeInfo.pNext = nullptr;
         writeInfo.dstArrayElement = 0;
         writeInfo.pBufferInfo = &bufferInfo;

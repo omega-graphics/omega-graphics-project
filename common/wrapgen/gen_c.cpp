@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <cctype>
 
+#include <omega-common/format.h>
+
 namespace OmegaWrapGen {
 #define SELF_REFERENCE_VAR "__self"
 #define DEFINE_C_CLASS_TEMPLATE "typedef struct @{0} * @{1};"

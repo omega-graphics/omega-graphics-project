@@ -1,0 +1,20 @@
+/// Regression: `buffer<T>` with a builtin (scalar / vector) element type.
+///
+/// The type-arg parser used to collect only `TOK_ID` (user) type names and
+/// drop builtin type names (`TOK_KW_TYPE`), leaving the buffer's arg list
+/// empty. Indexing such a buffer then dereferenced `args[0]` out of bounds
+/// and crashed. Builtin element types are valid (cf. §2.5's `buffer<uint>`)
+/// and must round-trip through all three backends.
+
+buffer<float4> colors  : 0;
+buffer<uint>   counters : 1;
+buffer<int>    deltas  : 2;
+
+[in colors, in counters, out deltas]
+compute(x=64,y=1,z=1)
+void scalarBuffers(uint3 tid : GlobalThreadID){
+    uint  i = tid[0];
+    float4 c = colors[i];
+    uint   n = counters[i];
+    deltas[i] = int(c[0]) + int(n);
+}

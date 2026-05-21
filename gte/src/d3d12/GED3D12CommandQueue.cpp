@@ -78,7 +78,7 @@ GED3D12CommandBuffer::GED3D12CommandBuffer(ID3D12GraphicsCommandList6 *commandLi
 };
 
 unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int id, omegasl_shader &shader) {
-    bool isSRV = false, isUAV = false, isDescriptorTable = false;
+    bool isSRV = false, isUAV = false, isCBV = false, isDescriptorTable = false;
     OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout, shader.pLayout + shader.nLayout};
 
     unsigned relative_index = 0;
@@ -91,6 +91,9 @@ unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int 
                 } else {
                     isUAV = true;
                 }
+            } else if (l.type == OMEGASL_SHADER_UNIFORM_DESC) {
+                // §2.4 constant buffer — bound as a root CBV.
+                isCBV = true;
             } else {
                 isDescriptorTable = true;
             }
@@ -114,6 +117,10 @@ unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int 
                 break;
             }
         } else if (param.ParameterType == D3D12_ROOT_PARAMETER_TYPE_UAV && isUAV) {
+            if (param.Descriptor.ShaderRegister == relative_index && param.Descriptor.RegisterSpace == regSpace) {
+                break;
+            }
+        } else if (param.ParameterType == D3D12_ROOT_PARAMETER_TYPE_CBV && isCBV) {
             if (param.Descriptor.ShaderRegister == relative_index && param.Descriptor.RegisterSpace == regSpace) {
                 break;
             }
@@ -194,6 +201,9 @@ GED3D12CommandBuffer::getRequiredResourceStateForResourceID(unsigned int &id, om
                 } else {
                     state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
                 }
+            } else if (l.type == OMEGASL_SHADER_UNIFORM_DESC) {
+                // §2.4 constant buffer — read-only on the GPU.
+                state = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
             } else {
                 DEBUG_STREAM("This resource cannot be transitioned");
                 exit(1);
@@ -1121,7 +1131,11 @@ void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GEBuffer> &bu
 
     const auto rootParam = getRootParameterIndexOfResource(index, currentRenderPipeline->vertexShader->internal);
 
-    if (d3d12_buffer->currentState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) {
+    if (d3d12_buffer->role == BufferDescriptor::Uniform) {
+        // §2.4 constant buffer — root CBV (the root-param lookup already
+        // resolved the matching CBV parameter from the shader layout).
+        commandList->SetGraphicsRootConstantBufferView(rootParam, d3d12_buffer->buffer->GetGPUVirtualAddress());
+    } else if (d3d12_buffer->currentState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) {
         commandList->SetGraphicsRootShaderResourceView(rootParam, d3d12_buffer->buffer->GetGPUVirtualAddress());
     } else {
         commandList->SetGraphicsRootUnorderedAccessView(rootParam, d3d12_buffer->buffer->GetGPUVirtualAddress());
@@ -1199,7 +1213,11 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> &
 
     commandList->SetDescriptorHeaps(1, d3d12_buffer->bufferDescHeap.GetAddressOf());
 
-    if (d3d12_buffer->currentState & D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
+    if (d3d12_buffer->role == BufferDescriptor::Uniform) {
+        commandList->SetGraphicsRootConstantBufferView(
+            getRootParameterIndexOfResource(index, currentRenderPipeline->fragmentShader->internal),
+            d3d12_buffer->buffer->GetGPUVirtualAddress());
+    } else if (d3d12_buffer->currentState & D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
         commandList->SetGraphicsRootShaderResourceView(
             getRootParameterIndexOfResource(index, currentRenderPipeline->fragmentShader->internal),
             d3d12_buffer->buffer->GetGPUVirtualAddress());
@@ -1478,7 +1496,12 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEBuffer> &b
     D3D12_HEAP_FLAGS heapFlags;
     d3d12_buffer->buffer->GetHeapProperties(&heap_props, &heapFlags);
     commandList->SetDescriptorHeaps(1, d3d12_buffer->bufferDescHeap.GetAddressOf());
-    if (heap_props.Type == D3D12_HEAP_TYPE_UPLOAD) {
+    if (d3d12_buffer->role == BufferDescriptor::Uniform) {
+        // §2.4 constant buffer — root CBV.
+        commandList->SetComputeRootConstantBufferView(
+            getRootParameterIndexOfResource(id, currentComputePipeline->computeShader->internal),
+            d3d12_buffer->buffer->GetGPUVirtualAddress());
+    } else if (heap_props.Type == D3D12_HEAP_TYPE_UPLOAD) {
         commandList->SetComputeRootShaderResourceView(
             getRootParameterIndexOfResource(id, currentComputePipeline->computeShader->internal),
             d3d12_buffer->buffer->GetGPUVirtualAddress());

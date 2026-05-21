@@ -150,6 +150,24 @@ _NAMESPACE_BEGIN_
         size_t objectStride = 0;
         /// The storage options of the resource.
         StorageOpts opts = Shared;
+        /// @brief Binding role of the buffer — how it is bound to a shader.
+        /// @paragraph Distinct from @ref Usage (which is memory residency /
+        /// CPU access). A `Storage` buffer maps to the shader's `buffer<T>`
+        /// form (StructuredBuffer / SSBO / `device T*`); a `Uniform` buffer
+        /// maps to the `uniform<T>` form (ConstantBuffer / UBO / `constant
+        /// T&`). This must match the shader resource the buffer is bound to.
+        /// It drives creation-time allocation — Vulkan adds
+        /// `VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT`, D3D12 aligns/pads to the
+        /// 256-byte constant-buffer requirement — so the binding (chosen
+        /// from the shader's layout descriptor) finds a compatible resource.
+        /// Declared last so existing positional aggregate initializers
+        /// (`{usage, len, stride}`) keep compiling and default to `Storage`.
+        typedef enum : int {
+            Storage,
+            Uniform
+        } Role;
+        /// @enum Role
+        Role role = Storage;
     };
     /// @brief A GPU Buffer Resource
     class  OMEGAGTE_EXPORT GEBuffer : public GTEResource {
@@ -160,6 +178,10 @@ _NAMESPACE_BEGIN_
         explicit GEBuffer(const BufferDescriptor::Usage & usage);
     public:
         OMEGACOMMON_CLASS("OmegaGTE.GEBuffer");
+        /// @brief Binding role this buffer was created with (see
+        /// @ref BufferDescriptor::Role). Set by `makeBuffer`; consulted at
+        /// bind time to verify a buffer reaches a slot of the matching kind.
+        BufferDescriptor::Role role = BufferDescriptor::Storage;
         virtual size_t size() = 0;
         virtual ~GEBuffer() = default;
     };

@@ -84,6 +84,7 @@ namespace omegasl {
         (subject == KW_TY_ULONG3) ||
         (subject == KW_TY_ULONG4) ||
         (subject == KW_TY_BUFFER) ||
+        (subject == KW_TY_UNIFORM) ||
         (subject == KW_TY_TEXTURE1D) ||
         (subject == KW_TY_TEXTURE2D) ||
         (subject == KW_TY_TEXTURE3D) ||

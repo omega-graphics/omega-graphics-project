@@ -12,7 +12,21 @@ _NAMESPACE_BEGIN_
 
 const long double PI = std::acos(-1);
 
-size_t omegaSLStructStride(OmegaCommon::Vector<omegasl_data_type> data) noexcept{
+size_t omegaSLStructStride(OmegaCommon::Vector<omegasl_data_type> data,
+                           BufferDescriptor::Role role) noexcept{
+#if !defined(TARGET_METAL)
+    /// §2.4 std140 path (GLSL `uniform` / HLSL `cbuffer`, column-major).
+    /// Only Vulkan and D3D12 use std140 for uniforms; Metal reads constant
+    /// buffers with its natural (std430-equivalent) layout, so this branch
+    /// is compiled out there and `role` falls through to the std430 body
+    /// below. The std140 rule lives in a shared header helper so it can be
+    /// unit-tested on any platform (see BufferIO.h `std140StructStride`).
+    if(role == BufferDescriptor::Uniform){
+        return std140StructStride(data);
+    }
+#else
+    (void)role;
+#endif
     size_t s = 0;
     size_t biggestWord = 1;
     OmegaCommon::Vector<size_t> data_sizes;

@@ -544,7 +544,12 @@ namespace omegasl {
             has_type_args = true;
             t = lexer->nextTok();
             while(t.type != TOK_OP && t.str != OP_GREATER){
-                if(t.type == TOK_ID){
+                /// A type arg may be a user type (`TOK_ID`) or a builtin type
+                /// name (`TOK_KW_TYPE`, e.g. `buffer<float4>` / `buffer<uint>`).
+                /// Dropping the builtin case left the arg list empty, which
+                /// later crashed when indexing the buffer dereferenced
+                /// `args[0]` out of bounds (see Sema INDEX_EXPR).
+                if(t.type == TOK_ID || t.type == TOK_KW_TYPE){
                     type_args.push_back(ast::TypeExpr::Create(t.str));
                 }
                 t = lexer->nextTok();

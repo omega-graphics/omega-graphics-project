@@ -1,0 +1,50 @@
+/// §2.4 uniform / constant buffer — compile path.
+///
+/// `uniform<T>` is a read-only constant buffer, distinct from `buffer<T>`
+/// (StructuredBuffer / SSBO). It is accessed as a value (`u.field`), never
+/// indexed, and T must be a user-defined struct. Per-backend emission:
+///   HLSL  → `ConstantBuffer<T> u : register(bN, spaceM);`
+///   MSL   → `constant T& u [[buffer(N)]]`
+///   GLSL  → `layout(std140,set,binding) uniform u_Layout { T u; };`
+
+struct PerFrame {
+    float4x4 mvp;
+    float4    cameraPos;
+    float     time;
+};
+
+struct Light {
+    float4 direction;
+    float4 color;
+};
+
+struct VertexIn {
+    float4 pos;
+    float2 uv;
+};
+
+struct Raster internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+uniform<PerFrame> perFrame : 0;
+buffer<VertexIn>  verts    : 1;
+
+[in perFrame, in verts]
+vertex Raster transformVert(uint vid : VertexID){
+    VertexIn v = verts[vid];
+    Raster out;
+    /// Constant-buffer value access through `u.field`.
+    out.pos = perFrame.mvp * v.pos;
+    out.uv  = v.uv;
+    return out;
+}
+
+uniform<Light> light : 0;
+
+[in light]
+fragment float4 lightFrag(Raster input){
+    float ndl = dot(light.direction, input.pos);
+    return light.color * ndl;
+}
