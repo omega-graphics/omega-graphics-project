@@ -702,7 +702,7 @@ The engine should ship a small set of pre-compiled blit fragment shaders for com
 
 | Shader | Purpose |
 |---|---|
-| `blit_copy` | Passthrough (same as hardware copy, but allows format conversion) |
+| `blit_copy` | Passthrough (same as hardware copy, but allows format conversion) [DONE]  | 
 | `blit_linear` | Bilinear filtered downsample/upsample |
 | `blit_srgb_encode` | Linear → sRGB conversion |
 | `blit_srgb_decode` | sRGB → Linear conversion |
