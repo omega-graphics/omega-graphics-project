@@ -78,7 +78,7 @@ GED3D12CommandBuffer::GED3D12CommandBuffer(ID3D12GraphicsCommandList6 *commandLi
 };
 
 unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int id, omegasl_shader &shader) {
-    bool isSRV = false, isUAV = false, isCBV = false, isDescriptorTable = false;
+    bool isSRV = false, isUAV = false, isCBV = false, isDescriptorTable = false, isSampler = false;
     OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout, shader.pLayout + shader.nLayout};
 
     unsigned relative_index = 0;
@@ -94,6 +94,16 @@ unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int 
             } else if (l.type == OMEGASL_SHADER_UNIFORM_DESC) {
                 // §2.4 constant buffer — bound as a root CBV.
                 isCBV = true;
+            } else if (l.type == OMEGASL_SHADER_SAMPLER1D_DESC || l.type == OMEGASL_SHADER_SAMPLER2D_DESC
+                       || l.type == OMEGASL_SHADER_SAMPLER3D_DESC || l.type == OMEGASL_SHADER_SAMPLERCUBE_DESC) {
+                // Extension 8 — runtime sampler. A sampler is a descriptor
+                // table, but its range type is SAMPLER, so it must not match a
+                // texture's SRV/UAV table that happens to share the same
+                // register number (HLSL `t#` and `s#` are independent register
+                // classes — `texture2d t0` + `sampler s0` both have
+                // gpu_relative_loc 0).
+                isDescriptorTable = true;
+                isSampler = true;
             } else {
                 isDescriptorTable = true;
             }
@@ -138,9 +148,13 @@ unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int 
             const bool typeMatches =
                 (isSRV && range.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV) ||
                 (isUAV && range.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV) ||
-                // Sampler / CBV lookups don't set isSRV/isUAV; fall
-                // through to a register-only match for them.
-                (!isSRV && !isUAV);
+                // Extension 8 — a runtime sampler must match only a SAMPLER
+                // range, never a texture's SRV/UAV table that shares the
+                // register number (independent HLSL register classes).
+                (isSampler && range.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER) ||
+                // CBV / other descriptor-table lookups don't set
+                // isSRV/isUAV/isSampler; fall through to a register-only match.
+                (!isSRV && !isUAV && !isSampler);
             if (typeMatches &&
                 range.BaseShaderRegister == relative_index &&
                 range.RegisterSpace == regSpace) {
@@ -168,6 +182,28 @@ static bool checkTextureBindAgainstShader(unsigned int location,
         }
     }
     return true;
+}
+
+// Extension 8 §8.5 — sampler-bind validation. Rejects static-sampler and
+// non-sampler slots via validateSamplerBindKind().
+static bool checkSamplerBindAgainstShader(unsigned int location,
+                                          const omegasl_shader &shader) {
+    OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout,
+                                                                shader.pLayout + shader.nLayout};
+    for (auto &l : layoutArr) {
+        if (l.location == location) {
+            return validateSamplerBindKind((int)l.type, shader.name, location);
+        }
+    }
+    return true;
+}
+
+void GED3D12CommandBuffer::rebindDescriptorHeaps() {
+    ID3D12DescriptorHeap *heaps[2];
+    unsigned n = 0;
+    if (currentResourceDescHeap) heaps[n++] = currentResourceDescHeap;
+    if (currentSamplerDescHeap)  heaps[n++] = currentSamplerDescHeap;
+    if (n) commandList->SetDescriptorHeaps(n, heaps);
 }
 
 D3D12_RESOURCE_STATES
@@ -1188,9 +1224,25 @@ void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> &t
         heapToBind = d3d12_texture->getOrCreateSwizzledSrvHeap(parentQueue->engine->d3d12_device.Get(), effective);
         cpuDescHandle = heapToBind->GetGPUDescriptorHandleForHeapStart();
     }
-    commandList->SetDescriptorHeaps(1, &heapToBind);
+    currentResourceDescHeap = heapToBind;
+    rebindDescriptorHeaps();
     unsigned idx = getRootParameterIndexOfResource(index, currentRenderPipeline->vertexShader->internal);
     commandList->SetGraphicsRootDescriptorTable(idx, cpuDescHandle);
+};
+
+void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GESamplerState> &sampler, unsigned int id) {
+    assert((!inComputePass && !inBlitPass) && "Cannot bind sampler at a Vertex Func when not in render pass");
+    auto *d3d12_sampler = (GED3D12SamplerState *)sampler.get();
+    bool ok = checkSamplerBindAgainstShader(id, currentRenderPipeline->vertexShader->internal);
+    assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
+    if (!ok) return;
+    // Each GED3D12SamplerState owns a shader-visible single-entry SAMPLER
+    // heap. Bind it alongside the current CBV/SRV/UAV heap (Option A: one
+    // runtime sampler per draw, matching the texture path's heap model).
+    currentSamplerDescHeap = d3d12_sampler->descHeap.Get();
+    rebindDescriptorHeaps();
+    unsigned rootParam = getRootParameterIndexOfResource(id, currentRenderPipeline->vertexShader->internal);
+    commandList->SetGraphicsRootDescriptorTable(rootParam, d3d12_sampler->descHeap->GetGPUDescriptorHandleForHeapStart());
 };
 
 void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> &buffer, unsigned int index) {
@@ -1274,10 +1326,23 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> 
         heapToBind = d3d12_texture->getOrCreateSwizzledSrvHeap(parentQueue->engine->d3d12_device.Get(), effective);
         cpuDescHandle = heapToBind->GetGPUDescriptorHandleForHeapStart();
     }
-    commandList->SetDescriptorHeaps(1, &heapToBind);
+    currentResourceDescHeap = heapToBind;
+    rebindDescriptorHeaps();
     unsigned rootParam = getRootParameterIndexOfResource(index, currentRenderPipeline->fragmentShader->internal);
     DEBUG_STREAM("Root Param With Texture:" << rootParam);
     commandList->SetGraphicsRootDescriptorTable(rootParam, cpuDescHandle);
+};
+
+void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GESamplerState> &sampler, unsigned int id) {
+    assert((!inComputePass && !inBlitPass) && "Cannot bind sampler at a Fragment Func when not in render pass");
+    auto *d3d12_sampler = (GED3D12SamplerState *)sampler.get();
+    bool ok = checkSamplerBindAgainstShader(id, currentRenderPipeline->fragmentShader->internal);
+    assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
+    if (!ok) return;
+    currentSamplerDescHeap = d3d12_sampler->descHeap.Get();
+    rebindDescriptorHeaps();
+    unsigned rootParam = getRootParameterIndexOfResource(id, currentRenderPipeline->fragmentShader->internal);
+    commandList->SetGraphicsRootDescriptorTable(rootParam, d3d12_sampler->descHeap->GetGPUDescriptorHandleForHeapStart());
 };
 
 void GED3D12CommandBuffer::setStencilRef(unsigned int ref) {
@@ -1475,6 +1540,8 @@ void GED3D12CommandBuffer::finishRenderPass() {
     currentTarget.native = nullptr;
     currentRenderPipeline = nullptr;
     currentRootSignature = nullptr;
+    currentResourceDescHeap = nullptr;
+    currentSamplerDescHeap = nullptr;
 };
 
 void GED3D12CommandBuffer::startComputePass(const GEComputePassDescriptor &desc) {
@@ -1535,7 +1602,8 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &
     if(!effective.isIdentity()){
         heapToBind = d3d12_texture->getOrCreateSwizzledSrvHeap(parentQueue->engine->d3d12_device.Get(), effective);
     }
-    commandList->SetDescriptorHeaps(1, &heapToBind);
+    currentResourceDescHeap = heapToBind;
+    rebindDescriptorHeaps();
     if (heap_props.Type == D3D12_HEAP_TYPE_READBACK) {
         auto resource_barrier = CD3DX12_RESOURCE_BARRIER::Transition(d3d12_texture->resource.Get(),
                                                                      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
@@ -1545,6 +1613,19 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &
     commandList->SetComputeRootDescriptorTable(
         getRootParameterIndexOfResource(id, currentComputePipeline->computeShader->internal),
         heapToBind->GetGPUDescriptorHandleForHeapStart());
+}
+
+void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GESamplerState> &sampler, unsigned int id) {
+    assert(inComputePass && "Cannot bind sampler at a Compute Func when not in compute pass");
+    auto *d3d12_sampler = (GED3D12SamplerState *)sampler.get();
+    bool ok = checkSamplerBindAgainstShader(id, currentComputePipeline->computeShader->internal);
+    assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
+    if (!ok) return;
+    currentSamplerDescHeap = d3d12_sampler->descHeap.Get();
+    rebindDescriptorHeaps();
+    commandList->SetComputeRootDescriptorTable(
+        getRootParameterIndexOfResource(id, currentComputePipeline->computeShader->internal),
+        d3d12_sampler->descHeap->GetGPUDescriptorHandleForHeapStart());
 }
 
 void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct,
@@ -1611,6 +1692,8 @@ void GED3D12CommandBuffer::finishComputePass() {
     inComputePass = false;
     currentComputePipeline = nullptr;
     currentRootSignature = nullptr;
+    currentResourceDescHeap = nullptr;
+    currentSamplerDescHeap = nullptr;
 };
 
 //    void GED3D12CommandBuffer::waitForFence(SharedHandle<GEFence> &fence,unsigned val) {
@@ -1732,6 +1815,8 @@ void GED3D12CommandQueue::waitForFence(SharedHandle<GEFence> &fence, std::uint64
 void GED3D12CommandBuffer::reset() {
     closed = false;
     firstRenderPass = true;
+    currentResourceDescHeap = nullptr;
+    currentSamplerDescHeap = nullptr;
     commandList->Reset(commandAllocator.Get(), nullptr);
     commandAllocator->Reset();
 };

@@ -41,6 +41,20 @@ _NAMESPACE_BEGIN_
             }
             return true;
         }
+
+        // Extension 8 §8.5 — sampler-bind validation. Rejects static-sampler
+        // and non-sampler slots via validateSamplerBindKind().
+        inline bool checkSamplerBindAgainstShader(unsigned int location,
+                                                  const omegasl_shader &shader){
+            OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{
+                shader.pLayout, shader.pLayout + shader.nLayout};
+            for (auto &l : layoutArr) {
+                if (l.location == location) {
+                    return validateSamplerBindKind((int)l.type, shader.name, location);
+                }
+            }
+            return true;
+        }
     }
 
     void GEVulkanCommandBuffer::setName(OmegaCommon::StrRef name) {
@@ -995,6 +1009,41 @@ _NAMESPACE_BEGIN_
         }
     };
 
+    void GEVulkanCommandBuffer::bindResourceAtVertexShader(SharedHandle<GESamplerState> &sampler, unsigned id){
+        auto *vk_sampler = (GEVulkanSamplerState *)sampler.get();
+        bool ok = checkSamplerBindAgainstShader(id, renderPipelineState->vertexShader->internal);
+        assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
+        if(!ok) return;
+
+        VkDescriptorImageInfo imgInfo {};
+        imgInfo.sampler = vk_sampler->sampler;
+        imgInfo.imageView = VK_NULL_HANDLE;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writeInfo.dstBinding = getBindingForResourceID(id,renderPipelineState->vertexShader->internal);
+        writeInfo.descriptorCount = 1;
+        writeInfo.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+        writeInfo.pNext = nullptr;
+        writeInfo.dstArrayElement = 0;
+        writeInfo.pBufferInfo = nullptr;
+        writeInfo.pImageInfo = &imgInfo;
+        writeInfo.pTexelBufferView = nullptr;
+
+        // Vertex-stage resources live on set 0 (the push set when available).
+        if(parentQueue->engine->hasPushDescriptorExt){
+            parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,renderPipelineState->layout,
+                                                           0,1,&writeInfo);
+        }
+        else {
+            VkDescriptorSet target = acquireOrUpdateFallbackSet(0);
+            if(target != VK_NULL_HANDLE){
+                writeInfo.dstSet = target;
+                vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
+            }
+        }
+    };
+
     void GEVulkanCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> &buffer, unsigned id){
         auto vk_buffer = (GEVulkanBuffer *)buffer.get();
         trackBuffer(buffer);
@@ -1068,6 +1117,36 @@ _NAMESPACE_BEGIN_
 
         // Fragment textures: same as fragment buffers — always go through
         // the fallback ring at set 1 (only set 0 is allowed to be push).
+        VkDescriptorSet target = acquireOrUpdateFallbackSet(1);
+        if(target != VK_NULL_HANDLE){
+            writeInfo.dstSet = target;
+            vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
+        }
+    };
+
+    void GEVulkanCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GESamplerState> &sampler, unsigned id){
+        auto *vk_sampler = (GEVulkanSamplerState *)sampler.get();
+        bool ok = checkSamplerBindAgainstShader(id, renderPipelineState->fragmentShader->internal);
+        assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
+        if(!ok) return;
+
+        VkDescriptorImageInfo imgInfo {};
+        imgInfo.sampler = vk_sampler->sampler;
+        imgInfo.imageView = VK_NULL_HANDLE;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writeInfo.dstBinding = getBindingForResourceID(id,renderPipelineState->fragmentShader->internal);
+        writeInfo.descriptorCount = 1;
+        writeInfo.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+        writeInfo.pNext = nullptr;
+        writeInfo.dstArrayElement = 0;
+        writeInfo.pBufferInfo = nullptr;
+        writeInfo.pImageInfo = &imgInfo;
+        writeInfo.pTexelBufferView = nullptr;
+
+        // Fragment resources live in set 1 — always the fallback ring (only
+        // set 0 may be a push set).
         VkDescriptorSet target = acquireOrUpdateFallbackSet(1);
         if(target != VK_NULL_HANDLE){
             writeInfo.dstSet = target;
@@ -1594,6 +1673,37 @@ _NAMESPACE_BEGIN_
         writeInfo.dstArrayElement = 0;
         writeInfo.pBufferInfo = nullptr;
         writeInfo.pImageInfo = &imgInfo;
+
+        if(parentQueue->engine->hasPushDescriptorExt){
+            parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,computePipelineState->layout,
+                                                           0,1,&writeInfo);
+        }
+        else {
+            writeInfo.dstSet = computePipelineState->descSet;
+            vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
+        }
+    }
+
+    void GEVulkanCommandBuffer::bindResourceAtComputeShader(SharedHandle<GESamplerState> &sampler, unsigned int id) {
+        auto *vk_sampler = (GEVulkanSamplerState *)sampler.get();
+        bool ok = checkSamplerBindAgainstShader(id, computePipelineState->computeShader->internal);
+        assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
+        if(!ok) return;
+
+        VkDescriptorImageInfo imgInfo {};
+        imgInfo.sampler = vk_sampler->sampler;
+        imgInfo.imageView = VK_NULL_HANDLE;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writeInfo.dstBinding = getBindingForResourceID(id,computePipelineState->computeShader->internal);
+        writeInfo.descriptorCount = 1;
+        writeInfo.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+        writeInfo.pNext = nullptr;
+        writeInfo.dstArrayElement = 0;
+        writeInfo.pBufferInfo = nullptr;
+        writeInfo.pImageInfo = &imgInfo;
+        writeInfo.pTexelBufferView = nullptr;
 
         if(parentQueue->engine->hasPushDescriptorExt){
             parentQueue->engine->vkCmdPushDescriptorSetKhr(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,computePipelineState->layout,

@@ -220,6 +220,45 @@ _NAMESPACE_BEGIN_
         return true;
     }
 
+    /// @brief Extension 8 §8.5 — at sampler-bind time, verify the resolved
+    /// layout-desc at @p bindingLocation is a runtime (non-static) sampler
+    /// slot. The integer codes mirror `omegasl_shader_layout_desc_type`
+    /// (a static_assert in the backend translation units pins the contract):
+    /// runtime samplers are SAMPLER1D/2D/3D (5/6/7) and SAMPLERCUBE (17);
+    /// static samplers are STATIC_SAMPLER1D/2D/3D (8/9/10) and
+    /// STATIC_SAMPLERCUBE (18). Writes a diagnostic to @c stderr and returns
+    /// @c false on mismatch so the caller can skip the bind.
+    inline bool validateSamplerBindKind(int layoutDescType,
+                                        const char *shaderName,
+                                        unsigned bindingLocation){
+        switch(layoutDescType){
+            case 5:  // OMEGASL_SHADER_SAMPLER1D_DESC
+            case 6:  // OMEGASL_SHADER_SAMPLER2D_DESC
+            case 7:  // OMEGASL_SHADER_SAMPLER3D_DESC
+            case 17: // OMEGASL_SHADER_SAMPLERCUBE_DESC
+                return true;
+            case 8:  // OMEGASL_SHADER_STATIC_SAMPLER1D_DESC
+            case 9:  // OMEGASL_SHADER_STATIC_SAMPLER2D_DESC
+            case 10: // OMEGASL_SHADER_STATIC_SAMPLER3D_DESC
+            case 18: // OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC
+                std::cerr << "[OmegaGTE] Sampler bind to static slot: shader '"
+                          << (shaderName ? shaderName : "<anon>")
+                          << "' binding " << bindingLocation
+                          << " was declared `static`; its sampler is baked into "
+                             "the pipeline and cannot be bound at runtime"
+                          << std::endl;
+                return false;
+            default:
+                std::cerr << "[OmegaGTE] Sampler bind kind mismatch: shader '"
+                          << (shaderName ? shaderName : "<anon>")
+                          << "' binding " << bindingLocation
+                          << " is not a sampler slot (layout-desc type "
+                          << layoutDescType << ")"
+                          << std::endl;
+                return false;
+        }
+    }
+
 _NAMESPACE_END_
 
 #endif

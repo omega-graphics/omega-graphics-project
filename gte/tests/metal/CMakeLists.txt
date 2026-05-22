@@ -107,3 +107,30 @@ add_metal_cli_test(
     "ModelIO"
     "Foundation"
 )
+
+# Extension 8 §8.6 — runtime sampler-state binding integration test (shared,
+# backend-independent source under gte/tests/).
+add_metal_cli_test(
+    NAME
+    "SamplerBindTest"
+    SOURCES
+    "../sampler_bind_test.cpp"
+    FRAMEWORKS
+    "Metal"
+    "Foundation"
+)
+# The framework's install name is `@rpath/OmegaGTE.framework/Versions/0.5/...`,
+# so an rpath must point at the directory CONTAINING the framework for the bare
+# executable (run by ctest, no app bundle) to load it. add_metal_cli_test only
+# adds an rpath that points inside the framework, which works for the embedded
+# bundle case but not here.
+target_link_options("SamplerBindTest" PRIVATE
+    "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
+
+add_test(NAME omegagte_sampler_bind COMMAND SamplerBindTest)
+# The negative case relies on a debug-build assertion firing; only register it
+# (as a WILL_FAIL test) where asserts are active.
+if(NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_test(NAME omegagte_sampler_bind_negative COMMAND SamplerBindTest negative)
+    set_tests_properties(omegagte_sampler_bind_negative PROPERTIES WILL_FAIL TRUE)
+endif()

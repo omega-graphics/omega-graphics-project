@@ -114,10 +114,14 @@ _NAMESPACE_BEGIN_
         void bindResourceAtVertexShader(SharedHandle<GETexture> &texture, unsigned index,
                                         const TextureSwizzle & swizzle) override;
 
+        void bindResourceAtVertexShader(SharedHandle<GESamplerState> &sampler, unsigned index) override;
+
         void bindResourceAtFragmentShader(SharedHandle<GEBuffer> &buffer, unsigned index) override;
 
         void bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned  index,
                                           const TextureSwizzle & swizzle) override;
+
+        void bindResourceAtFragmentShader(SharedHandle<GESamplerState> &sampler, unsigned index) override;
 
         void setVertexBuffer(SharedHandle<GEBuffer> &buffer) override;
 
@@ -160,6 +164,7 @@ _NAMESPACE_BEGIN_
         void bindResourceAtComputeShader(SharedHandle<GEBuffer> &buffer, unsigned int id) override;
         void bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id,
                                          const TextureSwizzle & swizzle) override;
+        void bindResourceAtComputeShader(SharedHandle<GESamplerState> &sampler, unsigned int id) override;
         void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreads(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,

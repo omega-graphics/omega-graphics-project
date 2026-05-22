@@ -11,6 +11,7 @@
 _NAMESPACE_BEGIN_
     class GEBuffer;
     class GETexture;
+    class GESamplerState;
     class GEMesh;
     class GEFence;
     struct GEAccelerationStruct;
@@ -73,10 +74,18 @@ _NAMESPACE_BEGIN_
         virtual void bindResourceAtVertexShader(SharedHandle<GEBuffer> & buffer,unsigned id) = 0;
         virtual void bindResourceAtVertexShader(SharedHandle<GETexture> & texture,unsigned id,
                                                 const TextureSwizzle & swizzle = TextureSwizzle::identity()) = 0;
+        /// @brief Bind a runtime sampler state to a non-static `sampler*d : N`
+        /// slot in the vertex shader (Extension 8). @p id is the OmegaSL
+        /// resource slot. Binding to a slot the shader declared `static` is a
+        /// programmer error and asserts in debug builds.
+        virtual void bindResourceAtVertexShader(SharedHandle<GESamplerState> & sampler,unsigned id) = 0;
 
         virtual void bindResourceAtFragmentShader(SharedHandle<GEBuffer> & buffer,unsigned id) = 0;
         virtual void bindResourceAtFragmentShader(SharedHandle<GETexture> & texture,unsigned id,
                                                   const TextureSwizzle & swizzle = TextureSwizzle::identity()) = 0;
+        /// @brief Bind a runtime sampler state to a non-static `sampler*d : N`
+        /// slot in the fragment shader (Extension 8).
+        virtual void bindResourceAtFragmentShader(SharedHandle<GESamplerState> & sampler,unsigned id) = 0;
 
         virtual void setStencilRef(unsigned ref) = 0;
 
@@ -256,6 +265,10 @@ _NAMESPACE_BEGIN_
         /// @brief Binds a Texture Resource to a Descriptor in the scope of the Compute Shader.
         virtual void bindResourceAtComputeShader(SharedHandle<GETexture> & texture,unsigned id,
                                                  const TextureSwizzle & swizzle = TextureSwizzle::identity()) = 0;
+
+        /// @brief Bind a runtime sampler state to a non-static `sampler*d : N`
+        /// slot in the scope of the Compute Shader (Extension 8).
+        virtual void bindResourceAtComputeShader(SharedHandle<GESamplerState> & sampler,unsigned id) = 0;
 
 
          /// @brief Binds an Acceleration Structure Resource to a Descriptor in the scope of the Compute Shader.

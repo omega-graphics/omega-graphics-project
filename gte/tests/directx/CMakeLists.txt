@@ -64,3 +64,19 @@ add_d3d12_test(
     SOURCES
     "GPUTessTest/main.cpp"
 )
+
+# Extension 8 §8.6 — runtime sampler-state binding integration test (shared,
+# backend-independent source under gte/tests/).
+add_d3d12_test(
+    NAME
+    "SamplerBindTest"
+    SOURCES
+    "../sampler_bind_test.cpp"
+)
+add_test(NAME omegagte_sampler_bind COMMAND SamplerBindTest)
+# The negative case relies on a debug-build assertion firing; only register it
+# (as a WILL_FAIL test) where asserts are active.
+if(NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_test(NAME omegagte_sampler_bind_negative COMMAND SamplerBindTest negative)
+    set_tests_properties(omegagte_sampler_bind_negative PROPERTIES WILL_FAIL TRUE)
+endif()

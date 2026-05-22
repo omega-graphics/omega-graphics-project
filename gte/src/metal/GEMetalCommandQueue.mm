@@ -59,6 +59,21 @@ static void checkBufferRoleAgainstShader(unsigned location,
     }
 }
 
+// Extension 8 §8.5 — sampler-bind validation. Walk the shader's layout-desc
+// array, find the descriptor owning the bound location, and consult
+// validateSamplerBindKind() (rejects static-sampler and non-sampler slots).
+static bool checkSamplerBindAgainstShader(unsigned int location,
+                                          const omegasl_shader &shader) {
+    OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout,
+                                                                shader.pLayout + shader.nLayout};
+    for (auto &l : layoutArr) {
+        if (l.location == location) {
+            return validateSamplerBindKind((int)l.type, shader.name, location);
+        }
+    }
+    return true;
+}
+
 GEMetalCommandBuffer::GEMetalCommandBuffer(GEMetalCommandQueue *parentQueue):parentQueue(parentQueue),
 buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQueue->commandQueue.handle()) commandBuffer] retain]}){
     traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
@@ -669,6 +684,16 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         }
     };
 
+    void GEMetalCommandBuffer::bindResourceAtVertexShader(SharedHandle<GESamplerState> & sampler,unsigned _id){
+        assert((rp && (cp == nil)) && "Cannot bind sampler at a Vertex Func when not in render pass");
+        auto *metalSampler = (GEMetalSamplerState *)sampler.get();
+        bool ok = checkSamplerBindAgainstShader(_id, renderPipelineState->vertexShader->internal);
+        assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
+        if(!ok) return;
+        unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->vertexShader->internal);
+        [rp setVertexSamplerState:NSOBJECT_OBJC_BRIDGE(id<MTLSamplerState>,metalSampler->samplerState.handle()) atIndex:index];
+    };
+
     void GEMetalCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> & buffer,unsigned _id){
         assert((rp && (cp == nil)) && "Cannot Resource Const on a Fragment Func when not in render pass");
         auto *metalBuffer = (GEMetalBuffer *)buffer.get();
@@ -713,6 +738,16 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         //     metalTexture->needsBarrier = true;
         //     [rp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalTexture->resourceBarrier.handle()) afterStages:MTLRenderStageFragment];
         // }
+    };
+
+    void GEMetalCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GESamplerState> & sampler,unsigned _id){
+        assert((rp && (cp == nil)) && "Cannot bind sampler at a Fragment Func when not in render pass");
+        auto *metalSampler = (GEMetalSamplerState *)sampler.get();
+        bool ok = checkSamplerBindAgainstShader(_id, renderPipelineState->fragmentShader->internal);
+        assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
+        if(!ok) return;
+        unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->fragmentShader->internal);
+        [rp setFragmentSamplerState:NSOBJECT_OBJC_BRIDGE(id<MTLSamplerState>,metalSampler->samplerState.handle()) atIndex:index];
     };
 
     void GEMetalCommandBuffer::setViewports(std::vector<GEViewport> viewports){
@@ -909,6 +944,16 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             mtl_texture->needsBarrier = true;
             [cp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,mtl_texture->resourceBarrier.handle())];
         }
+    }
+
+    void GEMetalCommandBuffer::bindResourceAtComputeShader(SharedHandle<GESamplerState> &sampler, unsigned int _id) {
+        assert(cp != nil && "Cannot bind sampler at a Compute Func when not in compute pass");
+        auto *metalSampler = (GEMetalSamplerState *)sampler.get();
+        bool ok = checkSamplerBindAgainstShader(_id, computePipelineState->computeShader->internal);
+        assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
+        if(!ok) return;
+        [cp setSamplerState:NSOBJECT_OBJC_BRIDGE(id<MTLSamplerState>,metalSampler->samplerState.handle())
+                    atIndex:getResourceLocalIndexFromGlobalIndex(_id,computePipelineState->computeShader->internal)];
     }
 
 

@@ -97,9 +97,11 @@ _NAMESPACE_BEGIN_
         void bindResourceAtVertexShader(SharedHandle<GEBuffer> &buffer, unsigned id) override;
         void bindResourceAtVertexShader(SharedHandle<GETexture> &texture, unsigned id,
                                         const TextureSwizzle & swizzle) override;
+        void bindResourceAtVertexShader(SharedHandle<GESamplerState> &sampler, unsigned id) override;
         void bindResourceAtFragmentShader(SharedHandle<GEBuffer> &buffer, unsigned id) override;
         void bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned id,
                                           const TextureSwizzle & swizzle) override;
+        void bindResourceAtFragmentShader(SharedHandle<GESamplerState> &sampler, unsigned id) override;
         void setViewports(std::vector<GEViewport> viewports) override;
         void setScissorRects(std::vector<GEScissorRect> scissorRects) override;
         void setStencilRef(unsigned ref) override;
@@ -128,6 +130,7 @@ _NAMESPACE_BEGIN_
         void bindResourceAtComputeShader(SharedHandle<GEBuffer> &buffer, unsigned id) override;
         void bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned id,
                                          const TextureSwizzle & swizzle) override;
+        void bindResourceAtComputeShader(SharedHandle<GESamplerState> &sampler, unsigned id) override;
         void bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct, unsigned int id) override;
         void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreads(unsigned int x, unsigned int y, unsigned int z) override;

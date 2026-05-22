@@ -35,9 +35,20 @@ _NAMESPACE_BEGIN_
 
         D3D12_ROOT_SIGNATURE_DESC1 * currentRootSignature = nullptr;
 
+        // Extension 8 — D3D12 allows at most one CBV/SRV/UAV heap and one
+        // SAMPLER heap bound at a time. Track the last-bound heap of each
+        // type so a sampler bind can keep the resource heap live (and vice
+        // versa); `rebindDescriptorHeaps` sets both in one SetDescriptorHeaps
+        // call. nullptr means "none bound yet".
+        ID3D12DescriptorHeap *currentResourceDescHeap = nullptr;  // CBV/SRV/UAV
+        ID3D12DescriptorHeap *currentSamplerDescHeap = nullptr;   // SAMPLER
+
        friend class GED3D12CommandQueue;
 
        unsigned getRootParameterIndexOfResource(unsigned id,omegasl_shader &shader);
+       /// Extension 8 — (re)bind whichever of the resource / sampler heaps are
+       /// set, so both types can be visible to a single draw / dispatch.
+       void rebindDescriptorHeaps();
        D3D12_RESOURCE_STATES getRequiredResourceStateForResourceID(unsigned & id,omegasl_shader &shader);
        /// Combine a runtime swizzle override with the shader layout's
        /// `swizzle_desc` (texture-swizzle proposal §4 precedence rule).
@@ -91,9 +102,11 @@ _NAMESPACE_BEGIN_
         void bindResourceAtVertexShader(SharedHandle<GEBuffer> &buffer, unsigned int id) override;
         void bindResourceAtVertexShader(SharedHandle<GETexture> &texture, unsigned int id,
                                         const TextureSwizzle & swizzle) override;
+        void bindResourceAtVertexShader(SharedHandle<GESamplerState> &sampler, unsigned int id) override;
         void bindResourceAtFragmentShader(SharedHandle<GEBuffer> &buffer, unsigned int id) override;
         void bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned int id,
                                           const TextureSwizzle & swizzle) override;
+        void bindResourceAtFragmentShader(SharedHandle<GESamplerState> &sampler, unsigned int id) override;
         void setStencilRef(unsigned int ref) override;
        
         void drawPolygons(RenderPassDrawPolygonType polygonType, unsigned int vertexCount, size_t startIdx) override;

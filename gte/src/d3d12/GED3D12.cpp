@@ -2544,11 +2544,19 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             ArrayRef<omegasl_shader_layout_desc> sLayout {s.pLayout,s.pLayout + s.nLayout};
             for(auto & l : sLayout){
                 CD3DX12_ROOT_PARAMETER1 parameter1;
-                if(l.type == OMEGASL_SHADER_SAMPLER2D_DESC || l.type == OMEGASL_SHADER_SAMPLER3D_DESC
-                   || l.type == OMEGASL_SHADER_SAMPLERCUBE_DESC){
-                    CD3DX12_DESCRIPTOR_RANGE1 desc_table;
-                    desc_table.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,1,l.gpu_relative_loc);
-                    parameter1.InitAsDescriptorTable(1,&desc_table);
+                if(l.type == OMEGASL_SHADER_SAMPLER1D_DESC || l.type == OMEGASL_SHADER_SAMPLER2D_DESC
+                   || l.type == OMEGASL_SHADER_SAMPLER3D_DESC || l.type == OMEGASL_SHADER_SAMPLERCUBE_DESC){
+                    // Heap-allocate the range: InitAsDescriptorTable stores the
+                    // pointer, which must outlive this loop until the root
+                    // signature is serialized below (the texture path does the
+                    // same `new`). A stack-local range would dangle — and with
+                    // more than one sampler every param would alias the last.
+                    // Carry the stage's `registerSpace` so a fragment-stage
+                    // sampler (space1) resolves at bind time via
+                    // getRootParameterIndexOfResource (Extension 8).
+                    auto sampler_range = new CD3DX12_DESCRIPTOR_RANGE1();
+                    sampler_range->Init(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,1,l.gpu_relative_loc,registerSpace);
+                    parameter1.InitAsDescriptorTable(1,sampler_range);
                 }
                 else if(l.type == OMEGASL_SHADER_STATIC_SAMPLER2D_DESC || l.type == OMEGASL_SHADER_STATIC_SAMPLER3D_DESC
                         || l.type == OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC){

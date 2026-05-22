@@ -535,12 +535,6 @@ engines must define a dummy `buffer<uint>` and do the arithmetic by hand —
 workable, but the alignment model is different and the D3D12 side has
 dedicated `Load2/Load4` paths that OmegaSL can't express. (This can be semantically resolved.)
 
-Alex Answer:
-
-How about this?
-```
-raw<T> data : 0;
-```
 
 ---
 

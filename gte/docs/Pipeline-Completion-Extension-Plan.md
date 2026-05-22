@@ -1494,6 +1494,8 @@ binding slot, and what was expected vs. what was bound.
   bind. Keep three overloads for API symmetry, or collapse to one
   `bindSampler(sampler, stageMask, id)` call?
 
+  Per-stage.
+
 - **Sampler descriptor heap lifetime on D3D12.** D3D12 allows only one
   sampler heap bound at a time, so the heap must be sized to hold every
   sampler bound across the lifetime of a single command list. Either
@@ -1502,11 +1504,15 @@ binding slot, and what was expected vs. what was bound.
   fewer than texture binds, so a small fixed ring is likely sufficient —
   but the budget needs to be picked.
 
+  Agreed.
+
 - **Sampler reuse across pipelines.** `GESamplerState` is engine-scoped
   and trivially shareable. No additional reference-counting work expected
   — the existing `SharedHandle` carries the lifetime — but worth
   confirming nothing in the backend bind paths holds a non-owning pointer
   past the sampler's lifetime.
+
+  Audit properly.
 
 ---
 
