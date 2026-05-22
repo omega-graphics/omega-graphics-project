@@ -85,7 +85,8 @@ static void tessellateAndRender(int viewWidth, int viewHeight){
     vertexBuffer = gte.graphicsEngine->makeBuffer(bufferDescriptor);
     bufferWriter->setOutputBuffer(vertexBuffer);
 
-    for(auto &mesh : rect_mesh.meshes){
+    {
+        auto &mesh = rect_mesh.mesh;
         std::cout << "Mesh:" << std::endl;
         for(auto &tri : mesh.vertexPolygons){
             std::ostringstream ss;

@@ -46,12 +46,12 @@ int main(int argc, const char * argv[]) {
 
         auto cpuResult = teCtx->triangulateSync(tessParams, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
         std::cout << "CPU tessellation: " << cpuResult.totalVertexCount() << " vertices, "
-                  << cpuResult.meshes.size() << " meshes" << std::endl;
+                  << cpuResult.mesh.vertexPolygons.size() << " polygons" << std::endl;
 
         auto gpuFuture = teCtx->triangulateOnGPU(tessParams, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
         auto gpuResult = gpuFuture.get();
         std::cout << "GPU tessellation: " << gpuResult.totalVertexCount() << " vertices, "
-                  << gpuResult.meshes.size() << " meshes" << std::endl;
+                  << gpuResult.mesh.vertexPolygons.size() << " polygons" << std::endl;
 
         bool pass = true;
 
@@ -61,30 +61,27 @@ int main(int argc, const char * argv[]) {
             pass = false;
         }
 
-        if (pass && cpuResult.meshes.size() == gpuResult.meshes.size()) {
-            for (size_t m = 0; m < cpuResult.meshes.size() && pass; m++) {
-                auto &cpuMesh = cpuResult.meshes[m];
-                auto &gpuMesh = gpuResult.meshes[m];
-                if (cpuMesh.vertexPolygons.size() != gpuMesh.vertexPolygons.size()) {
-                    std::cerr << "FAIL: polygon count mismatch in mesh " << m << std::endl;
+        if (pass) {
+            auto &cpuMesh = cpuResult.mesh;
+            auto &gpuMesh = gpuResult.mesh;
+            if (cpuMesh.vertexPolygons.size() != gpuMesh.vertexPolygons.size()) {
+                std::cerr << "FAIL: polygon count mismatch" << std::endl;
+                pass = false;
+            }
+            for (size_t p = 0; p < cpuMesh.vertexPolygons.size() && pass; p++) {
+                auto &cp = cpuMesh.vertexPolygons[p];
+                auto &gp = gpuMesh.vertexPolygons[p];
+                if (!comparePt(cp.a.pt, gp.a.pt) ||
+                    !comparePt(cp.b.pt, gp.b.pt) ||
+                    !comparePt(cp.c.pt, gp.c.pt)) {
+                    std::cerr << "FAIL: vertex mismatch in polygon " << p << std::endl;
+                    std::cerr << "  CPU: a=(" << cp.a.pt.x << "," << cp.a.pt.y << ") "
+                              << "b=(" << cp.b.pt.x << "," << cp.b.pt.y << ") "
+                              << "c=(" << cp.c.pt.x << "," << cp.c.pt.y << ")" << std::endl;
+                    std::cerr << "  GPU: a=(" << gp.a.pt.x << "," << gp.a.pt.y << ") "
+                              << "b=(" << gp.b.pt.x << "," << gp.b.pt.y << ") "
+                              << "c=(" << gp.c.pt.x << "," << gp.c.pt.y << ")" << std::endl;
                     pass = false;
-                    break;
-                }
-                for (size_t p = 0; p < cpuMesh.vertexPolygons.size() && pass; p++) {
-                    auto &cp = cpuMesh.vertexPolygons[p];
-                    auto &gp = gpuMesh.vertexPolygons[p];
-                    if (!comparePt(cp.a.pt, gp.a.pt) ||
-                        !comparePt(cp.b.pt, gp.b.pt) ||
-                        !comparePt(cp.c.pt, gp.c.pt)) {
-                        std::cerr << "FAIL: vertex mismatch in mesh " << m << " polygon " << p << std::endl;
-                        std::cerr << "  CPU: a=(" << cp.a.pt.x << "," << cp.a.pt.y << ") "
-                                  << "b=(" << cp.b.pt.x << "," << cp.b.pt.y << ") "
-                                  << "c=(" << cp.c.pt.x << "," << cp.c.pt.y << ")" << std::endl;
-                        std::cerr << "  GPU: a=(" << gp.a.pt.x << "," << gp.a.pt.y << ") "
-                                  << "b=(" << gp.b.pt.x << "," << gp.b.pt.y << ") "
-                                  << "c=(" << gp.c.pt.x << "," << gp.c.pt.y << ")" << std::endl;
-                        pass = false;
-                    }
                 }
             }
         }

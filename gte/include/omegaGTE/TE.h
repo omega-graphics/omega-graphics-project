@@ -12,6 +12,21 @@
 #define OMEGAGTE_TE_H
 
 _NAMESPACE_BEGIN_
+
+/// @brief How consecutive stroke segments are connected at a path vertex.
+enum class StrokeJoin : int {
+    Miter,  ///< Extend outer edges until they meet; falls back to Bevel past the miter limit.
+    Round,  ///< Arc of triangles between the two segment normals.
+    Bevel   ///< Single triangle bridging the outer endpoints.
+};
+
+/// @brief How an open path's stroke is terminated at its endpoints.
+enum class StrokeCap : int {
+    Butt,    ///< No extension beyond the endpoint.
+    Round,   ///< Semicircle fan, radius = strokeWidth/2.
+    Square   ///< Extends the stroke by strokeWidth/2 as a rectangle.
+};
+
 /**
  *
  Defines the arguments for the triangulation operations.
@@ -48,6 +63,8 @@ struct OMEGAGTE_EXPORT TETriangulationParams {
     bool graphicsPath2DContour = false;
     bool graphicsPath2DFill = false;
     float graphicsPath2DStrokeWidth = 1.f;
+    StrokeJoin graphicsPath2DJoin = StrokeJoin::Miter;
+    StrokeCap graphicsPath2DCap = StrokeCap::Butt;
 
     friend class OmegaTriangulationEngineContext;
 public:
@@ -161,25 +178,31 @@ public:
     static TETriangulationParams Capsule(GCapsule &capsule);
 
     /**
-      Triangulate 2D vector paths
-      @param[in] vectorPaths A small array with *only* 2 GVectorPath2D objects.
+      Triangulate a 2D vector path.
+      @param[in] path The path to stroke and/or fill.
+      @param[in] strokeWidth Stroke width in path units (0 disables the stroke).
+      @param[in] contour If true, the stroke closes back to the first point.
+      @param[in] fill If true, the interior is filled (uses the second attachment).
+      @param[in] join Join style applied at interior vertices.
+      @param[in] cap Cap style applied at the endpoints of an open path.
       @returns TETriangulationParams
     */
-    static TETriangulationParams GraphicsPath2D(GVectorPath2D & path,float strokeWidth = 1.f,bool contour = false,bool fill = false);
+    static TETriangulationParams GraphicsPath2D(GVectorPath2D & path,float strokeWidth = 1.f,bool contour = false,bool fill = false,StrokeJoin join = StrokeJoin::Miter,StrokeCap cap = StrokeCap::Butt);
     /**
       Triangulate 3D vector paths
       @param[in] vectorPathCount The number of vectorPathes to triangulate
       @param[in] vectorPaths An array of GVectorPath3D objects. (Ensure that it has the same length as the `vectorPathCount`)
+      @param[in] strokeWidth Stroke width in path units.
       @returns TETriangulationParams
     */
-    static TETriangulationParams GraphicsPath3D(unsigned vectorPathCount,GVectorPath3D * const vectorPaths);
+    static TETriangulationParams GraphicsPath3D(unsigned vectorPathCount,GVectorPath3D * const vectorPaths,float strokeWidth = 1.f);
 
     ~TETriangulationParams();
 };
 
 /**
- A small struct for holding one (or more) 
- meshes that result from a triangulation operation.
+ Holds the single mesh that results from a triangulation operation.
+ Every triangulation path produces exactly one TEMesh.
 */
 struct OMEGAGTE_EXPORT TETriangulationResult {
     struct OMEGAGTE_EXPORT AttachmentData {
@@ -192,7 +215,7 @@ struct OMEGAGTE_EXPORT TETriangulationResult {
         enum : int {
             TopologyTriangle,
             TopologyTriangleStrip
-        } topology;
+        } topology = TopologyTriangle;
         struct OMEGAGTE_EXPORT Polygon {
             struct {
                 GPoint3D pt;
@@ -205,7 +228,7 @@ struct OMEGAGTE_EXPORT TETriangulationResult {
         void scale(float w,float h,float l);
         unsigned vertexCount();
     };
-    std::vector<TEMesh> meshes;
+    TEMesh mesh;
     unsigned totalVertexCount();
     void translate(float x,float y,float z,const GEViewport & viewport);
     void rotate(float pitch,float yaw,float roll);

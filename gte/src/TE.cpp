@@ -14,6 +14,7 @@ _NAMESPACE_BEGIN_
 struct TETriangulationParams::GraphicsPath3DParams {
     GVectorPath3D * pathes;
     unsigned pathCount;
+    float strokeWidth;
 };
 
 union TETriangulationParams::Data {
@@ -208,21 +209,23 @@ TETriangulationParams TETriangulationParams::Capsule(GCapsule &capsule){
     return params;
 };
 
-TETriangulationParams TETriangulationParams::GraphicsPath2D(GVectorPath2D & path,float strokeWidth,bool contour,bool fill){
+TETriangulationParams TETriangulationParams::GraphicsPath2D(GVectorPath2D & path,float strokeWidth,bool contour,bool fill,StrokeJoin join,StrokeCap cap){
     TETriangulationParams params;
     params.params.reset(new Data{});
     params.graphicsPath2D = std::make_shared<GVectorPath2D>(path);
     params.graphicsPath2DContour = contour;
     params.graphicsPath2DFill = fill;
     params.graphicsPath2DStrokeWidth = strokeWidth;
+    params.graphicsPath2DJoin = join;
+    params.graphicsPath2DCap = cap;
     params.type = params.params->type = TRIANGULATE_GRAPHICSPATH2D;
     return params;
 };
 
-TETriangulationParams TETriangulationParams::GraphicsPath3D(unsigned int vectorPathCount, GVectorPath3D *const vectorPaths){
+TETriangulationParams TETriangulationParams::GraphicsPath3D(unsigned int vectorPathCount, GVectorPath3D *const vectorPaths,float strokeWidth){
     TETriangulationParams params;
     params.params.reset(new Data{});
-    params.params->path3D = {vectorPaths,vectorPathCount};
+    params.params->path3D = {vectorPaths,vectorPathCount,strokeWidth};
     params.type = params.params->type =  TRIANGULATE_GRAPHICSPATH3D;
     return params;
 };
@@ -233,11 +236,7 @@ unsigned int TETriangulationResult::TEMesh::vertexCount() {
 }
 
 unsigned int TETriangulationResult::totalVertexCount() {
-    unsigned vertexCount = 0;
-    for(auto & m : meshes){
-        vertexCount += m.vertexCount();
-    }
-    return vertexCount;
+    return mesh.vertexCount();
 }
 
 TETriangulationParams::~TETriangulationParams() = default;
@@ -305,6 +304,42 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
     };
     (void)makeTex2DAttachment;
     (void)makeTex3DAttachment;
+
+    // Each triangulation case builds one local mesh and finalizes it through one
+    // of the helpers below, which (a) orients triangles per the requested winding
+    // mode and (b) stores the single result mesh.
+    //
+    // Back-face culling is currently off in every consumer, so the winding mode has
+    // no visible effect today; it makes the output correct for when culling is on.
+    const bool wantCCWWinding = (frontFaceRotation == GTEPolygonFrontFaceRotation::CounterClockwise);
+    auto deviceSignedArea = [](const TETriangulationResult::TEMesh::Polygon & p){
+        return (p.b.pt.x - p.a.pt.x) * (p.c.pt.y - p.a.pt.y)
+             - (p.b.pt.y - p.a.pt.y) * (p.c.pt.x - p.a.pt.x);
+    };
+    // Flat, single-sided geometry (coplanar, +Z facing): normalize every triangle
+    // to the requested winding so all of them survive back-face culling. Used for
+    // shapes whose triangles may be authored with mixed orientation (fans, mixed
+    // fill+stroke), where a per-triangle decision is required.
+    auto finalizeFlat = [&](TETriangulationResult::TEMesh & m){
+        for(auto & p : m.vertexPolygons){
+            if((deviceSignedArea(p) > 0.f) != wantCCWWinding){
+                std::swap(p.b, p.c);
+            }
+        }
+        result.mesh = std::move(m);
+    };
+    // Closed/solid geometry: preserve each face's outward orientation (so back-face
+    // culling keeps distinguishing front from back) and only reverse the convention
+    // when the non-default mode is requested. Calibrated so Clockwise (the default)
+    // keeps the authored winding untouched.
+    auto finalizeSolid = [&](TETriangulationResult::TEMesh & m){
+        if(wantCCWWinding){
+            for(auto & p : m.vertexPolygons){
+                std::swap(p.b, p.c);
+            }
+        }
+        result.mesh = std::move(m);
+    };
 
     switch(params.type){
         case TETriangulationParams::TRIANGULATE_RECT : {
@@ -383,7 +418,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             mesh.vertexPolygons.push_back(tri);
 
 
-            result.meshes.push_back(mesh);
+            finalizeFlat(mesh);
 
             break;
         }
@@ -416,12 +451,10 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 }
                 TETriangulationResult subResult;
                 _triangulatePriv(rect_params, frontFaceRotation, viewport, subResult);
-                for(auto & m : subResult.meshes){
-                    mesh.vertexPolygons.insert(
-                        mesh.vertexPolygons.end(),
-                        std::make_move_iterator(m.vertexPolygons.begin()),
-                        std::make_move_iterator(m.vertexPolygons.end()));
-                }
+                mesh.vertexPolygons.insert(
+                    mesh.vertexPolygons.end(),
+                    std::make_move_iterator(subResult.mesh.vertexPolygons.begin()),
+                    std::make_move_iterator(subResult.mesh.vertexPolygons.end()));
             };
 
             auto tessellateArc = [&](GPoint2D start, float ar_x, float ar_y, float angle_start, float angle_end, float _arcStep){
@@ -522,7 +555,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             }
 
             if(!mesh.vertexPolygons.empty()){
-                result.meshes.push_back(std::move(mesh));
+                finalizeFlat(mesh);
             }
 
             break;
@@ -604,7 +637,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 angle = nextAngle;
             }
 
-            result.meshes.push_back(mesh);
+            finalizeFlat(mesh);
             break;
         }
         case TETriangulationParams::TRIANGULATE_RECTANGULAR_PRISM : {
@@ -720,7 +753,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 emitFace(c, makeVec3(0.f,1.f,0.f));
             }
 
-            result.meshes.push_back(mesh);
+            finalizeSolid(mesh);
 
             break;
         }
@@ -768,6 +801,10 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             // a path always emits one draw. See gte/docs/Limitations.rst
             // (Driver Quirks) for why multi-mesh primitives are not allowed.
             TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
+
+            // Fill (a fan) and stroke (quads + joins + caps) are authored with
+            // independent winding, so this mesh is finalized through finalizeFlat,
+            // which normalizes every triangle to the requested winding mode.
 
             // --- Fill ---
             // Fan triangulation from the first vertex using the second attachment as fill color.
@@ -825,70 +862,190 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             // --- Stroke ---
             const float strokeWidth = params.graphicsPath2DStrokeWidth > 0.f ? params.graphicsPath2DStrokeWidth : 0.f;
             if(strokeWidth > 0.f){
-                float strokeCursor = 0.f;
+                const float halfStroke = strokeWidth * 0.5f;
+                const StrokeJoin joinStyle = params.graphicsPath2DJoin;
+                const StrokeCap capStyle = params.graphicsPath2DCap;
+                const bool closed = params.graphicsPath2DContour;
+                const float joinStep = arcStep > 0.f ? arcStep : 0.01f;
+                const float miterLimit = 4.f;
 
-                auto appendStrokeSegment = [&](const GPoint2D & start,const GPoint2D & end){
-                    const float dx = end.x - start.x;
-                    const float dy = end.y - start.y;
-                    const float len = std::sqrt((dx * dx) + (dy * dy));
-                    if(len <= 0.000001f){
-                        return;
+                auto strokeAttachment = [&](float u, float v) -> std::optional<TETriangulationResult::AttachmentData> {
+                    if(hasTex2D){
+                        return std::make_optional<TETriangulationResult::AttachmentData>(
+                            makeTex2DAttachment(u, v, pathNormal));
                     }
-
-                    const float halfStroke = strokeWidth * 0.5f;
-                    const float nx = -dy / len;
-                    const float ny = dx / len;
-
-                    const GPoint2D a{start.x + nx * halfStroke,start.y + ny * halfStroke};
-                    const GPoint2D b{start.x - nx * halfStroke,start.y - ny * halfStroke};
-                    const GPoint2D c{end.x + nx * halfStroke,end.y + ny * halfStroke};
-                    const GPoint2D d{end.x - nx * halfStroke,end.y - ny * halfStroke};
-
-                    const float uStart = hasTex2D ? (strokeCursor / totalLen) : 0.f;
-                    const float uEnd = hasTex2D ? ((strokeCursor + len) / totalLen) : 0.f;
-                    strokeCursor += len;
-
-                    auto strokeAttachment = [&](float u, float v) -> std::optional<TETriangulationResult::AttachmentData> {
-                        if(hasTex2D){
-                            return std::make_optional<TETriangulationResult::AttachmentData>(
-                                makeTex2DAttachment(u, v, pathNormal));
-                        }
-                        return colorAttachment;
-                    };
-
+                    return colorAttachment;
+                };
+                auto emitTriObj = [&](const GPoint2D & A, float uA, float vA,
+                                      const GPoint2D & B, float uB, float vB,
+                                      const GPoint2D & C, float uC, float vC){
                     TETriangulationResult::TEMesh::Polygon p {};
-                    p.a.pt = toDevicePoint(a);
-                    p.b.pt = toDevicePoint(b);
-                    p.c.pt = toDevicePoint(c);
-                    p.a.attachment = strokeAttachment(uStart, 0.f);
-                    p.b.attachment = strokeAttachment(uStart, 1.f);
-                    p.c.attachment = strokeAttachment(uEnd, 0.f);
-                    mesh.vertexPolygons.push_back(p);
-
-                    p.a.pt = toDevicePoint(c);
-                    p.b.pt = toDevicePoint(b);
-                    p.c.pt = toDevicePoint(d);
-                    p.a.attachment = strokeAttachment(uEnd, 0.f);
-                    p.b.attachment = strokeAttachment(uStart, 1.f);
-                    p.c.attachment = strokeAttachment(uEnd, 1.f);
+                    p.a.pt = toDevicePoint(A); p.a.attachment = strokeAttachment(uA, vA);
+                    p.b.pt = toDevicePoint(B); p.b.attachment = strokeAttachment(uB, vB);
+                    p.c.pt = toDevicePoint(C); p.c.attachment = strokeAttachment(uC, vC);
                     mesh.vertexPolygons.push_back(p);
                 };
 
-                for(auto path_it = path.begin();path_it != path.end();path_it.operator++()){
-                    auto segment = *path_it;
-                    if(segment.pt_A == nullptr || segment.pt_B == nullptr){
-                        break;
+                // Collect the ordered polyline points.
+                std::vector<GPoint2D> sp;
+                sp.push_back(path.firstPt());
+                for(auto it = path.begin(); it != path.end(); it.operator++()){
+                    auto seg = *it;
+                    if(seg.pt_B == nullptr) break;
+                    sp.push_back(*seg.pt_B);
+                }
+                // A closed contour whose last point repeats the first is de-duplicated;
+                // the wrap-around segment closes the loop instead.
+                if(closed && sp.size() >= 2){
+                    const auto & f = sp.front();
+                    const auto & l = sp.back();
+                    if(std::fabs(f.x - l.x) < 1e-6f && std::fabs(f.y - l.y) < 1e-6f){
+                        sp.pop_back();
                     }
-                    appendStrokeSegment(*segment.pt_A,*segment.pt_B);
                 }
 
-                if(params.graphicsPath2DContour && path.size() >= 2){
-                    appendStrokeSegment(path.lastPt(),path.firstPt());
+                const size_t ptCount = sp.size();
+                if(ptCount >= 2){
+                    const size_t segCount = closed ? ptCount : ptCount - 1;
+
+                    struct SegGeom { GPoint2D dir; GPoint2D nrm; float len; float cursor0; };
+                    std::vector<SegGeom> segs(segCount);
+                    float cursor = 0.f;
+                    for(size_t i = 0; i < segCount; ++i){
+                        const GPoint2D & A = sp[i];
+                        const GPoint2D & B = sp[(i + 1) % ptCount];
+                        const float dx = B.x - A.x, dy = B.y - A.y;
+                        const float len = std::sqrt(dx*dx + dy*dy);
+                        GPoint2D dir{0.f,0.f}, nrm{0.f,0.f};
+                        if(len > 1e-6f){
+                            dir = {dx/len, dy/len};
+                            nrm = {-dir.y, dir.x};
+                        }
+                        segs[i] = {dir, nrm, len, cursor};
+                        cursor += len;
+                    }
+
+                    auto uAt = [&](float c){ return hasTex2D ? (c / totalLen) : 0.f; };
+
+                    // Segment quads (same winding / UVs as the un-joined stroke).
+                    for(size_t i = 0; i < segCount; ++i){
+                        const SegGeom & s = segs[i];
+                        if(s.len <= 1e-6f) continue;
+                        const GPoint2D & A = sp[i];
+                        const GPoint2D & B = sp[(i + 1) % ptCount];
+                        const float hx = s.nrm.x * halfStroke, hy = s.nrm.y * halfStroke;
+                        const GPoint2D a{A.x + hx, A.y + hy};
+                        const GPoint2D b{A.x - hx, A.y - hy};
+                        const GPoint2D c{B.x + hx, B.y + hy};
+                        const GPoint2D d{B.x - hx, B.y - hy};
+                        const float u0 = uAt(s.cursor0), u1 = uAt(s.cursor0 + s.len);
+                        emitTriObj(a, u0, 0.f, b, u0, 1.f, c, u1, 0.f);
+                        emitTriObj(c, u1, 0.f, b, u0, 1.f, d, u1, 1.f);
+                    }
+
+                    // Fill the outer wedge between two consecutive segments at vertex V.
+                    auto emitJoin = [&](const GPoint2D & V, const SegGeom & s0, const SegGeom & s1, float uVertex){
+                        if(s0.len <= 1e-6f || s1.len <= 1e-6f) return;
+                        const float cross = s0.dir.x * s1.dir.y - s0.dir.y * s1.dir.x;
+                        if(std::fabs(cross) < 1e-6f) return; // collinear: no gap to fill
+                        const float side = (cross > 0.f) ? -1.f : 1.f; // outer side faces away from the turn
+                        const GPoint2D o0{V.x + side * s0.nrm.x * halfStroke, V.y + side * s0.nrm.y * halfStroke};
+                        const GPoint2D o1{V.x + side * s1.nrm.x * halfStroke, V.y + side * s1.nrm.y * halfStroke};
+                        const float vOuter = (side > 0.f) ? 0.f : 1.f;
+
+                        StrokeJoin js = joinStyle;
+                        GPoint2D miterPt{0.f,0.f};
+                        if(js == StrokeJoin::Miter){
+                            const float denom = s0.dir.x * s1.dir.y - s0.dir.y * s1.dir.x;
+                            bool ok = false;
+                            if(std::fabs(denom) > 1e-7f){
+                                const float t = ((o1.x - o0.x) * s1.dir.y - (o1.y - o0.y) * s1.dir.x) / denom;
+                                miterPt = {o0.x + s0.dir.x * t, o0.y + s0.dir.y * t};
+                                const float mdx = miterPt.x - V.x, mdy = miterPt.y - V.y;
+                                ok = (std::sqrt(mdx*mdx + mdy*mdy) <= miterLimit * halfStroke);
+                            }
+                            if(!ok) js = StrokeJoin::Bevel; // clamp past the miter limit
+                        }
+
+                        if(js == StrokeJoin::Bevel){
+                            emitTriObj(V, uVertex, 0.5f, o0, uVertex, vOuter, o1, uVertex, vOuter);
+                        } else if(js == StrokeJoin::Miter){
+                            emitTriObj(V, uVertex, 0.5f, o0, uVertex, vOuter, miterPt, uVertex, vOuter);
+                            emitTriObj(V, uVertex, 0.5f, miterPt, uVertex, vOuter, o1, uVertex, vOuter);
+                        } else { // Round
+                            const float a0 = std::atan2(o0.y - V.y, o0.x - V.x);
+                            const float a1 = std::atan2(o1.y - V.y, o1.x - V.x);
+                            float sweep = a1 - a0;
+                            while(sweep > float(PI)) sweep -= 2.f * float(PI);
+                            while(sweep < -float(PI)) sweep += 2.f * float(PI);
+                            const int steps = std::max(1, (int)std::ceil(std::fabs(sweep) / joinStep));
+                            const float da = sweep / float(steps);
+                            float ang = a0;
+                            GPoint2D prev = o0;
+                            for(int k = 0; k < steps; ++k){
+                                const float ang2 = ang + da;
+                                const GPoint2D cur{V.x + std::cos(ang2) * halfStroke, V.y + std::sin(ang2) * halfStroke};
+                                emitTriObj(V, uVertex, 0.5f, prev, uVertex, vOuter, cur, uVertex, vOuter);
+                                prev = cur; ang = ang2;
+                            }
+                        }
+                    };
+
+                    if(closed){
+                        for(size_t i = 0; i < segCount; ++i){
+                            const SegGeom & s0 = segs[(i + segCount - 1) % segCount];
+                            const SegGeom & s1 = segs[i];
+                            emitJoin(sp[i], s0, s1, uAt(s1.cursor0));
+                        }
+                    } else {
+                        for(size_t i = 1; i < segCount; ++i){
+                            emitJoin(sp[i], segs[i-1], segs[i], uAt(segs[i].cursor0));
+                        }
+                    }
+
+                    // Caps at the endpoints of an open path.
+                    if(!closed && capStyle != StrokeCap::Butt){
+                        auto emitCap = [&](const GPoint2D & end, const GPoint2D & nrm, const GPoint2D & outward, float uEnd){
+                            const GPoint2D pPlus{end.x + nrm.x * halfStroke, end.y + nrm.y * halfStroke};
+                            const GPoint2D pMinus{end.x - nrm.x * halfStroke, end.y - nrm.y * halfStroke};
+                            if(capStyle == StrokeCap::Square){
+                                const GPoint2D qPlus{pPlus.x + outward.x * halfStroke, pPlus.y + outward.y * halfStroke};
+                                const GPoint2D qMinus{pMinus.x + outward.x * halfStroke, pMinus.y + outward.y * halfStroke};
+                                emitTriObj(pPlus, uEnd, 0.f, qPlus, uEnd, 0.f, pMinus, uEnd, 1.f);
+                                emitTriObj(pMinus, uEnd, 1.f, qPlus, uEnd, 0.f, qMinus, uEnd, 1.f);
+                            } else { // Round: half-circle fan bulging toward `outward`
+                                const float a0 = std::atan2(pPlus.y - end.y, pPlus.x - end.x);
+                                float sweep = float(PI);
+                                const float testMid = a0 + sweep * 0.5f;
+                                if(std::cos(testMid) * outward.x + std::sin(testMid) * outward.y < 0.f){
+                                    sweep = -float(PI);
+                                }
+                                const int steps = std::max(1, (int)std::ceil(std::fabs(sweep) / joinStep));
+                                const float da = sweep / float(steps);
+                                float ang = a0;
+                                GPoint2D prev = pPlus;
+                                for(int k = 0; k < steps; ++k){
+                                    const float ang2 = ang + da;
+                                    const GPoint2D cur{end.x + std::cos(ang2) * halfStroke, end.y + std::sin(ang2) * halfStroke};
+                                    emitTriObj(end, uEnd, 0.5f, prev, uEnd, 0.f, cur, uEnd, 1.f);
+                                    prev = cur; ang = ang2;
+                                }
+                            }
+                        };
+                        const SegGeom & firstSeg = segs.front();
+                        if(firstSeg.len > 1e-6f){
+                            emitCap(sp.front(), firstSeg.nrm, GPoint2D{-firstSeg.dir.x, -firstSeg.dir.y}, uAt(0.f));
+                        }
+                        const SegGeom & lastSeg = segs.back();
+                        if(lastSeg.len > 1e-6f){
+                            emitCap(sp.back(), lastSeg.nrm, GPoint2D{lastSeg.dir.x, lastSeg.dir.y}, uAt(cursor));
+                        }
+                    }
                 }
             }
 
             if(!mesh.vertexPolygons.empty()){
-                result.meshes.push_back(std::move(mesh));
+                finalizeFlat(mesh);
             }
             break;
         }
@@ -1000,7 +1157,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 mesh.vertexPolygons.push_back(p);
             }
 
-            result.meshes.push_back(mesh);
+            finalizeSolid(mesh);
             break;
         }
         case TETriangulationParams::TRIANGULATE_CYLINDER : {
@@ -1092,7 +1249,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 angle = nextAngle;
             }
 
-            result.meshes.push_back(mesh);
+            finalizeSolid(mesh);
             break;
         }
         case TETriangulationParams::TRIANGULATE_CONE : {
@@ -1173,7 +1330,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 angle = nextAngle;
             }
 
-            result.meshes.push_back(mesh);
+            finalizeSolid(mesh);
             break;
         }
         case TETriangulationParams::TRIANGULATE_TORUS : {
@@ -1262,7 +1419,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 theta = thetaNext;
             }
 
-            result.meshes.push_back(mesh);
+            finalizeSolid(mesh);
             break;
         }
         case TETriangulationParams::TRIANGULATE_SPHERE : {
@@ -1360,7 +1517,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 theta = thetaNext;
             }
 
-            result.meshes.push_back(mesh);
+            finalizeSolid(mesh);
             break;
         }
         case TETriangulationParams::TRIANGULATE_CAPSULE : {
@@ -1512,7 +1669,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 phi = phiNext;
             }
 
-            result.meshes.push_back(mesh);
+            finalizeSolid(mesh);
             break;
         }
         case TETriangulationParams::TRIANGULATE_GRAPHICSPATH3D : {
@@ -1548,7 +1705,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 }
             }
 
-            const float strokeWidth = 1.f;
+            const float strokeWidth = path3DParams.strokeWidth > 0.f ? path3DParams.strokeWidth : 1.f;
             const float halfStroke = strokeWidth * 0.5f;
 
             auto toDevice3D = [&](const GPoint3D & point) -> GPoint3D {
@@ -1633,7 +1790,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             }
 
             if(!mesh.vertexPolygons.empty()){
-                result.meshes.push_back(mesh);
+                finalizeSolid(mesh);
             }
             break;
         }
@@ -1774,21 +1931,15 @@ OmegaTriangulationEngineContext::~OmegaTriangulationEngineContext(){
 };
 
 void TETriangulationResult::translate(float x,float y,float z,const GEViewport & viewport){
-    for(auto & m : meshes){
-        m.translate(x,y,z,viewport);
-    }
+    mesh.translate(x,y,z,viewport);
 };
 
 void TETriangulationResult::rotate(float pitch,float yaw,float roll){
-    for(auto & m : meshes){
-        m.rotate(pitch,yaw,roll);
-    }
+    mesh.rotate(pitch,yaw,roll);
 };
 
 void TETriangulationResult::scale(float w,float h,float l){
-    for(auto & m : meshes){
-        m.scale(w,h,l);
-    }
+    mesh.scale(w,h,l);
 };
 
 void TETriangulationResult::TEMesh::translate(float x, float y, float z,const GEViewport & viewport) {

@@ -18,6 +18,16 @@ Checks: >
 
   modernize-*,
   -modernize-use-trailing-return-type,
+  -modernize-use-constraints,
+  -modernize-use-designated-initializers,
+  -modernize-use-integer-sign-comparison,
+  -modernize-use-ranges,
+  -modernize-use-starts-ends-with,
+  -modernize-use-std-bit,
+  -modernize-use-std-format,
+  -modernize-use-std-numbers,
+  -modernize-use-std-print,
+  -modernize-use-using,
 
   performance-*,
 
@@ -31,6 +41,7 @@ Checks: >
   -misc-non-private-member-variables-in-classes,
 
   portability-*,
+  -portability-simd-intrinsics,
 
   concurrency-*,
 
@@ -109,6 +120,41 @@ Checks: >
   # the broader `cppcoreguidelines-*` / `bugprone-*` globs above. They are
   # re-stated here so the rationale comments survive, and so the WarningsAsErrors
   # section below can refer to them by name without it being non-obvious.
+
+  # -- C++17 standard lock / typedef convention (added 2026-05) --
+  #
+  # The `-modernize-use-*` disables in the modernize block above keep this
+  # config from ever rewriting code into a feature newer than C++17. They
+  # are listed there (not here) and with NO adjacent comments on purpose:
+  # the Checks string is a YAML folded scalar that clang-tidy splits ONLY on
+  # commas, and not all clang-tidy versions strip `#` comments before doing
+  # so (see llvm-project#64343). A comment sharing a comma-cell with a check
+  # gets folded into the glob, so the disable silently no-ops. Functional
+  # tokens must therefore sit alone in their cell — keep it that way.
+  #
+  # What each disabled check would otherwise introduce (none compile under
+  # -std=c++17 on MSVC or GCC; clang-tidy also language-gates most of them,
+  # so these disables are belt-and-suspenders):
+  #   modernize-use-constraints             -> C++20 requires-clauses / concepts
+  #   modernize-use-designated-initializers -> C++20 designated initializers
+  #   modernize-use-integer-sign-comparison -> C++20 std::cmp_* (<utility>)
+  #   modernize-use-ranges                  -> C++20 std::ranges
+  #   modernize-use-starts-ends-with        -> C++20 std::string::starts_with/ends_with
+  #   modernize-use-std-bit                 -> C++20 <bit> (bit_cast, popcount, ...)
+  #   modernize-use-std-format              -> C++20 std::format
+  #   modernize-use-std-numbers             -> C++20 std::numbers
+  #   modernize-use-std-print               -> C++23 std::print
+  #
+  # modernize-use-using (typedef -> `using NAME = ...`) is disabled for two
+  # reasons that are specific to this project, NOT because alias declarations
+  # are unportable (they are valid C++11 and fine on all three toolchains):
+  #   1. The check has a long-standing bug that mangles function-pointer
+  #      typedefs (llvm-project#65055), and this codebase carries many
+  #      GPU/loader function-pointer typedefs that it would corrupt.
+  #   2. It can synthesize `using NAME = enum : T {...}` aliases over
+  #      anonymous enums, exactly the no-linkage pattern that trips GCC's
+  #      -Wsubobject-linkage and MSVC C4099 (see the GCC/MSVC block above).
+  # Project convention is therefore to keep `typedef`.
 
 WarningsAsErrors: >
   bugprone-narrowing-conversions,

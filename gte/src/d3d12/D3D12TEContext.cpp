@@ -108,7 +108,7 @@ TETriangulationResult readbackD3D12(ID3D12Resource *buf, unsigned vc,
         mesh.vertexPolygons.push_back(p);
     }
     buf->Unmap(0, nullptr);
-    res.meshes.push_back(mesh);
+    res.mesh = std::move(mesh);
     return res;
 }
 

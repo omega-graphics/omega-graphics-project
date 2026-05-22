@@ -30,7 +30,7 @@ What will still be missing or incomplete:
 
 ---
 
-## Phase 1: New Primitives
+## Phase 1: New Primitives [DONE]
 
 ### 1.1 Torus
 
@@ -95,7 +95,7 @@ Add `TRIANGULATE_CAPSULE` and factory method.
 
 ---
 
-## Phase 2: Path Curves and Stroke Refinement
+## Phase 2: Path Curves and Stroke Refinement [DONE]
 
 ### 2.1 Bezier and arc path segments
 
@@ -360,7 +360,9 @@ When set, the triangulation adjusts `arcStep` upward (coarser) until the estimat
 
 ## Phase 7: Result Transforms and Utilities
 
-### 7.1 Normals in TEMesh::rotate
+### 7.1 Normals in TEMesh::rotate 
+
+NOTE: This rotation method will have to be updated to use our Quaternion type.
 
 `TEMesh::rotate()` currently transforms vertex positions but does not transform normals. After the GEMesh plan adds normals to `AttachmentData`, the rotate method must also apply the rotation matrix to normals (and re-normalize):
 

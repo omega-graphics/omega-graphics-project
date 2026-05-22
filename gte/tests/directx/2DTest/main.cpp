@@ -73,7 +73,8 @@ void tessalate(){
     auto uvC = OmegaGTE::FVec<2>::Create();
 
     int triIdx = 0;
-    for(auto & mesh : rect_mesh.meshes){
+    {
+        auto & mesh = rect_mesh.mesh;
         std::cout << "Mesh 1:" << std::endl;
         for(auto &tri : mesh.vertexPolygons){
             std::ostringstream ss;

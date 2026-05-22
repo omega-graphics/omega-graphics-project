@@ -1864,8 +1864,7 @@ void BackendRenderTargetContext::resetElementState() {
                 && a[2][0] == b[2][0] && a[3][0] == b[3][0];
         };
 
-        for(auto & m : result.meshes) {
-            for(auto & v : m.vertexPolygons){
+        for(auto & v : result.mesh.vertexPolygons){
                 if(useTextureRenderPipeline){
                     auto & aCoord = v.a.attachment ? v.a.attachment->texture2Dcoord : fallbackTexCoord;
                     auto & bCoord = v.b.attachment ? v.b.attachment->texture2Dcoord : fallbackTexCoord;
@@ -1923,7 +1922,6 @@ void BackendRenderTargetContext::resetElementState() {
                     writeColorVertexToBuffer(v.b.pt, bColor);
                     writeColorVertexToBuffer(v.c.pt, cColor);
                 }
-            }
         }
 
         // Flush vertex data before draw calls
@@ -1946,7 +1944,8 @@ void BackendRenderTargetContext::resetElementState() {
             cb->bindResourceAtVertexShader(buffer,0);
         }
 
-        for(auto & m : result.meshes){
+        {
+            auto & m = result.mesh;
             OmegaGTE::GECommandBuffer::PolygonType topology;
             if(m.topology == OmegaGTE::TETriangulationResult::TEMesh::TopologyTriangleStrip){
                 topology = OmegaGTE::GECommandBuffer::TriangleStrip;

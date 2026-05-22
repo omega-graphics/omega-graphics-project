@@ -22,7 +22,7 @@ static void runTests(SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> &te
         pyramid.w = 100; pyramid.d = 100; pyramid.h = 150;
         auto params = OmegaGTE::TETriangulationParams::Pyramid(pyramid);
         auto result = teCtx->triangulateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
-        std::cout << "  Meshes: " << result.meshes.size()
+        std::cout << "  Polygons: " << result.mesh.vertexPolygons.size()
                   << ", Vertices: " << result.totalVertexCount() << std::endl;
         if(result.totalVertexCount() == 0){
             std::cerr << "  FAIL: Pyramid produced 0 vertices" << std::endl;
@@ -40,7 +40,7 @@ static void runTests(SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> &te
         cylinder.h = 200;
         auto params = OmegaGTE::TETriangulationParams::Cylinder(cylinder);
         auto result = teCtx->triangulateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
-        std::cout << "  Meshes: " << result.meshes.size()
+        std::cout << "  Polygons: " << result.mesh.vertexPolygons.size()
                   << ", Vertices: " << result.totalVertexCount() << std::endl;
         if(result.totalVertexCount() == 0){
             std::cerr << "  FAIL: Cylinder produced 0 vertices" << std::endl;
@@ -58,7 +58,7 @@ static void runTests(SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> &te
         cone.h = 150;
         auto params = OmegaGTE::TETriangulationParams::Cone(cone);
         auto result = teCtx->triangulateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
-        std::cout << "  Meshes: " << result.meshes.size()
+        std::cout << "  Polygons: " << result.mesh.vertexPolygons.size()
                   << ", Vertices: " << result.totalVertexCount() << std::endl;
         if(result.totalVertexCount() == 0){
             std::cerr << "  FAIL: Cone produced 0 vertices" << std::endl;
@@ -77,7 +77,7 @@ static void runTests(SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> &te
         path3d.append(OmegaGTE::GPoint3D{0, 0, 0});
         auto params = OmegaGTE::TETriangulationParams::GraphicsPath3D(1, &path3d);
         auto result = teCtx->triangulateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
-        std::cout << "  Meshes: " << result.meshes.size()
+        std::cout << "  Polygons: " << result.mesh.vertexPolygons.size()
                   << ", Vertices: " << result.totalVertexCount() << std::endl;
         if(result.totalVertexCount() == 0){
             std::cerr << "  FAIL: GraphicsPath3D produced 0 vertices" << std::endl;

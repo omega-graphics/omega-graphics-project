@@ -99,7 +99,7 @@ TETriangulationResult readback(id<MTLBuffer> buf, unsigned vc,
         if (att) p.a.attachment = p.b.attachment = p.c.attachment = att;
         mesh.vertexPolygons.push_back(p);
     }
-    res.meshes.push_back(mesh);
+    res.mesh = std::move(mesh);
     return res;
 }
 

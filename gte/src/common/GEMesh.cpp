@@ -103,12 +103,10 @@ SharedHandle<GEMesh> buildMeshFromTriangulation(
                      "Triangle topology." << std::endl;
         return nullptr;
     }
-    for (auto &m : result.meshes) {
-        if (m.topology != TETriangulationResult::TEMesh::TopologyTriangle) {
-            std::cerr << "[GEMesh] error: source TEMesh uses TriangleStrip; "
-                         "Phase 2 builder only consumes Triangle topology." << std::endl;
-            return nullptr;
-        }
+    if (result.mesh.topology != TETriangulationResult::TEMesh::TopologyTriangle) {
+        std::cerr << "[GEMesh] error: source TEMesh uses TriangleStrip; "
+                     "Phase 2 builder only consumes Triangle topology." << std::endl;
+        return nullptr;
     }
 
     const size_t stride = geMeshStrideFor(desc.attributes);
@@ -117,10 +115,7 @@ SharedHandle<GEMesh> buildMeshFromTriangulation(
         return nullptr;
     }
 
-    unsigned totalVerts = 0;
-    for (auto &m : result.meshes) {
-        totalVerts += static_cast<unsigned>(m.vertexPolygons.size()) * 3u;
-    }
+    unsigned totalVerts = static_cast<unsigned>(result.mesh.vertexPolygons.size()) * 3u;
     if (totalVerts == 0) {
         std::cerr << "[GEMesh] warning: triangulation result has no polygons." << std::endl;
     }
@@ -141,12 +136,10 @@ SharedHandle<GEMesh> buildMeshFromTriangulation(
     writer->setOutputBuffer(vbuf);
 
     bool warnedMissingAttachment = false;
-    for (auto &mesh : result.meshes) {
-        for (auto &poly : mesh.vertexPolygons) {
-            writeOneVertex(*writer, desc.attributes, poly.a.pt, poly.a.attachment, warnedMissingAttachment);
-            writeOneVertex(*writer, desc.attributes, poly.b.pt, poly.b.attachment, warnedMissingAttachment);
-            writeOneVertex(*writer, desc.attributes, poly.c.pt, poly.c.attachment, warnedMissingAttachment);
-        }
+    for (auto &poly : result.mesh.vertexPolygons) {
+        writeOneVertex(*writer, desc.attributes, poly.a.pt, poly.a.attachment, warnedMissingAttachment);
+        writeOneVertex(*writer, desc.attributes, poly.b.pt, poly.b.attachment, warnedMissingAttachment);
+        writeOneVertex(*writer, desc.attributes, poly.c.pt, poly.c.attachment, warnedMissingAttachment);
     }
     writer->flush();
 

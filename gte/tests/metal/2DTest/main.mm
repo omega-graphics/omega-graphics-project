@@ -90,9 +90,9 @@ static void render(id<MTLDevice> dev){
 
     bool otherSide = false;
 
-    for(auto & mesh : rect_mesh.meshes){
+    {
         std::cout << "Mesh 1:" << std::endl;
-        for(auto &tri : mesh.vertexPolygons){
+        for(auto &tri : rect_mesh.mesh.vertexPolygons){
             std::ostringstream ss;
             ss << "Triangle: {\n  A:";
             formatGPoint3D(ss,tri.a.pt);

@@ -49,7 +49,7 @@ TETriangulationResult readbackVulkan(VmaAllocator allocator, VkBuffer buf, VmaAl
     }
     vmaUnmapMemory(allocator, alloc);
 
-    res.meshes.push_back(mesh);
+    res.mesh = std::move(mesh);
     return res;
 }
 
