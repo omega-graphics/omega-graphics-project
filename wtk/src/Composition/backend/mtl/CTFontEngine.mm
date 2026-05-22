@@ -38,8 +38,8 @@ static CGFloat currentScreenScale(){
 namespace {
     bool textTraceEnabled() {
         static const bool enabled = []() {
-            const char *e = std::getenv("OMEGAWTK_TRACE_TEXT");
-            return e != nullptr && e[0] != '\0' && e[0] != '0';
+            auto e = OmegaCommon::getEnvVar("OMEGAWTK_TRACE_TEXT");
+            return e.has_value() && !e->empty() && (*e)[0] != '0';
         }();
         return enabled;
     }

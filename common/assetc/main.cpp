@@ -444,9 +444,9 @@ Result<fs::path, String> resolveAssetTypesConfigPath(const CompilerOptions &opti
     return Result<fs::path, String>::ok(fs::path(options.assetTypesFile));
   }
 
-  if (const char *envPath = std::getenv(AssetTypesConfigEnvVar)) {
-    if (*envPath != '\0') {
-      return Result<fs::path, String>::ok(fs::path(envPath));
+  if (auto envPath = OmegaCommon::getEnvVar(AssetTypesConfigEnvVar)) {
+    if (!envPath->empty()) {
+      return Result<fs::path, String>::ok(fs::path(*envPath));
     }
   }
 

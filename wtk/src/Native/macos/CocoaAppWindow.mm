@@ -30,8 +30,8 @@ namespace {
 static inline bool traceResizeFlowEnabled(){
     static int enabled = -1;
     if(enabled == -1){
-        const char *value = std::getenv("OMEGAWTK_TRACE_RESIZE_FLOW");
-        enabled = (value != nullptr && value[0] != '\0' && value[0] != '0') ? 1 : 0;
+        auto value = OmegaCommon::getEnvVar("OMEGAWTK_TRACE_RESIZE_FLOW");
+        enabled = (value.has_value() && !value->empty() && (*value)[0] != '0') ? 1 : 0;
     }
     return enabled == 1;
 }

@@ -22,6 +22,7 @@
 
 #include <OmegaGTE.h>
 #include <omegaGTE/GTEShader.h>
+#include "GTETestEntryPoint.h"
 
 #include <csignal>
 #include <cstdint>
@@ -356,7 +357,7 @@ extern "C" void onAbortExit(int) { std::_Exit(70); }
 
 }  // namespace
 
-int main(int argc, const char *argv[]) {
+GTE_TEST_ENTRY_POINT {
     auto gte = OmegaGTE::InitWithDefaultDevice();
 
     auto compiled = gte.omegaSlCompiler->compile({OmegaSLCompiler::Source::fromString(kShaders)});

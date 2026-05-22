@@ -806,9 +806,9 @@ namespace OmegaWrapGen {
 
 
     Parser::Parser(TreeConsumer *consumer):
-    consumer(consumer),
     errStream(std::make_unique<DiagnosticBuffer>()),
-    lexer(std::make_unique<Lexer>(*errStream)){
+    lexer(std::make_unique<Lexer>(*errStream)),
+    consumer(consumer){
 
         builder = std::make_unique<TreeBuilder>(lexer.get(),*errStream);
         semantics = std::make_unique<TreeSemantics>(*errStream);

@@ -1,4 +1,5 @@
 #include "GEResourceTracker.h"
+#include <omega-common/utils.h>
 
 #include <algorithm>
 #include <atomic>
@@ -87,8 +88,8 @@ namespace {
         static constexpr std::size_t kMaxRecentEvents = 4096;
 
         TrackerState() : traceEnabled([]{
-            const char *raw = std::getenv("OMEGAGTE_RESOURCE_TRACE");
-            return raw != nullptr && raw[0] != '\0' && raw[0] != '0';
+            auto raw = OmegaCommon::getEnvVar("OMEGAGTE_RESOURCE_TRACE");
+            return raw.has_value() && !raw->empty() && (*raw)[0] != '0';
         }()) {
             resetMetrics();
         }

@@ -31,11 +31,12 @@ inline bool geometryTraceEnvEnabled(){
     if(cached >= 0){
         return cached == 1;
     }
-    const auto * envValue = std::getenv("OMEGAWTK_GEOMETRY_TRACE");
-    if(envValue == nullptr){
+    auto envVar = OmegaCommon::getEnvVar("OMEGAWTK_GEOMETRY_TRACE");
+    if(!envVar.has_value()){
         cached = 0;
         return false;
     }
+    const char * envValue = envVar->c_str();
     const auto equalsIgnoreCase = [](const char *lhs,const char *rhs) -> bool {
         if(lhs == nullptr || rhs == nullptr){
             return false;

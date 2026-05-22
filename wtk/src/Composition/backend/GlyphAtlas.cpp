@@ -19,8 +19,8 @@ namespace OmegaWTK::Composition {
             // want to leave the call sites in but cheap enough that
             // a single getenv at startup is fine).
             static const bool enabled = []() {
-                const char *e = std::getenv("OMEGAWTK_TRACE_TEXT");
-                return e != nullptr && e[0] != '\0' && e[0] != '0';
+                auto e = OmegaCommon::getEnvVar("OMEGAWTK_TRACE_TEXT");
+                return e.has_value() && !e->empty() && (*e)[0] != '0';
             }();
             return enabled;
         }
@@ -186,7 +186,7 @@ namespace OmegaWTK::Composition {
         // `usage = ToGPU` → no FromGPU flag), the readback asserts.
         // Folding this into OMEGAWTK_TRACE_TEXT would make the trace
         // env var crash the process on Windows.
-        if(std::getenv("OMEGAWTK_DUMP_ATLAS_PPM") != nullptr){
+        if(OmegaCommon::getEnvVar("OMEGAWTK_DUMP_ATLAS_PPM").has_value()){
             std::vector<std::uint8_t> px(
                 static_cast<std::size_t>(kAtlasDim) * kAtlasDim * 4);
             texture_->getBytes(px.data(), static_cast<std::size_t>(kAtlasDim) * 4);

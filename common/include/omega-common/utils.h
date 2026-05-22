@@ -47,6 +47,7 @@
 
 
 namespace OmegaCommon {
+
     template<class T,unsigned N_start>
     class HeapAllocator {
         T *_data;
@@ -809,6 +810,13 @@ namespace OmegaCommon {
     OMEGACOMMON_EXPORT bool startsWith(StrRef s, StrRef prefix);
     OMEGACOMMON_EXPORT bool endsWith(StrRef s, StrRef suffix);
     OMEGACOMMON_EXPORT String concat(ArrayRef<StrRef> parts);
+
+    // ----- Environment helpers -----
+    /// @brief Cross-platform environment-variable lookup. Returns the value of
+    /// `name`, or std::nullopt when the variable is unset (an empty-but-set
+    /// variable yields an empty String). Use this instead of std::getenv,
+    /// which MSVC deprecates (C4996); on Windows this routes through getenv_s.
+    OMEGACOMMON_EXPORT Optional<String> getEnvVar(StrRef name);
 
     // ----- Algorithm helpers -----
     template<class T, class Compare = std::less<T>>

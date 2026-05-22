@@ -6,7 +6,7 @@
 
 namespace OmegaWTK::Native {
 
-enum class OMEGAWTK_EXPORT ThemeAppearance : int {
+enum class ThemeAppearance : int {
     Light,
     Dark
 };

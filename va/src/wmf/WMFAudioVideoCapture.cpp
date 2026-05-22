@@ -4,6 +4,7 @@
 
 #include <omega-common/unicode.h>
 #include <omega-common/img.h>
+#include <thread>
 
 #include <mfidl.h>
 #include <ShlObj.h>

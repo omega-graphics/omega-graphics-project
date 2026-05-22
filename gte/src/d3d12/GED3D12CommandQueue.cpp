@@ -1105,6 +1105,12 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
         }
 
         switch (desc.depthStencilAttachment.stencilLoadAction) {
+            case GERenderPassDescriptor::DepthStencilAttachment::LoadAction::Discard: {
+                ds_desc.StencilBeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_DISCARD;
+                if (!desc.multisampleResolve)
+                    ds_desc.StencilEndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD;
+                break;
+            }
             case GERenderPassDescriptor::DepthStencilAttachment::LoadAction::Load: {
                 ds_desc.StencilBeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE;
                 if (!desc.multisampleResolve)

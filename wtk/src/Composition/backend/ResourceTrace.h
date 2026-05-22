@@ -7,13 +7,14 @@
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
+#include <omega-common/utils.h>
 
 namespace OmegaWTK::Composition::ResourceTrace {
 
 inline bool enabled(){
     static const bool traceEnabled = []{
-        const char *raw = std::getenv("OMEGAWTK_GPU_RESOURCE_TRACE");
-        return raw != nullptr && raw[0] != '\0' && raw[0] != '0';
+        auto raw = OmegaCommon::getEnvVar("OMEGAWTK_GPU_RESOURCE_TRACE");
+        return raw.has_value() && !raw->empty() && (*raw)[0] != '0';
     }();
     return traceEnabled;
 }

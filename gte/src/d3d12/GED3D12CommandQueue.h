@@ -136,6 +136,7 @@ _NAMESPACE_BEGIN_
         void bindResourceAtComputeShader(SharedHandle<GEBuffer> &buffer, unsigned int id) override;
         void bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id,
                                          const TextureSwizzle & swizzle) override;
+        void bindResourceAtComputeShader(SharedHandle<GESamplerState> &sampler, unsigned int id) override;
         void bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct, unsigned int id) override;
         void dispatchRays(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;

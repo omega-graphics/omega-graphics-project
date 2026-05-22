@@ -44,10 +44,11 @@ namespace OmegaWTK {
         };
 
         static double readEnvDoubleClamp(const char *name,double fallback,double minValue,double maxValue){
-            const char *raw = std::getenv(name);
-            if(raw == nullptr || raw[0] == '\0'){
+            auto rawVar = OmegaCommon::getEnvVar(name);
+            if(!rawVar.has_value() || rawVar->empty()){
                 return fallback;
             }
+            const char *raw = rawVar->c_str();
             char *endPtr = nullptr;
             const auto parsed = std::strtod(raw,&endPtr);
             if(endPtr == raw || !std::isfinite(parsed)){
@@ -61,18 +62,19 @@ namespace OmegaWTK {
         }
 
         static bool readEnvBool(const char *name,bool fallback){
-            const char *raw = std::getenv(name);
-            if(raw == nullptr || raw[0] == '\0'){
+            auto raw = OmegaCommon::getEnvVar(name);
+            if(!raw.has_value() || raw->empty()){
                 return fallback;
             }
-            return raw[0] != '0';
+            return (*raw)[0] != '0';
         }
 
         static std::uint64_t readEnvU64Clamp(const char *name,std::uint64_t fallback,std::uint64_t minValue,std::uint64_t maxValue){
-            const char *raw = std::getenv(name);
-            if(raw == nullptr || raw[0] == '\0'){
+            auto rawVar = OmegaCommon::getEnvVar(name);
+            if(!rawVar.has_value() || rawVar->empty()){
                 return fallback;
             }
+            const char *raw = rawVar->c_str();
             char *endPtr = nullptr;
             const auto parsed = std::strtoull(raw,&endPtr,10);
             if(endPtr == raw){

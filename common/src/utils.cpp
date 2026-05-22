@@ -1,6 +1,7 @@
 #include "omega-common/utils.h"
 #include "omega-common/fs.h"
 #include <cctype>
+#include <cstdlib>
 
 namespace OmegaCommon {
 
@@ -70,6 +71,29 @@ namespace OmegaCommon {
         return out;
     }
 
+    Optional<String> getEnvVar(StrRef name) {
+        // StrRef is not guaranteed null-terminated; copy to get a c_str().
+        String key(name.data(), name.size());
+#ifdef _WIN32
+        // std::getenv is deprecated on MSVC (C4996); use the bounded getenv_s.
+        // First call sizes the buffer (including the null terminator); a
+        // returned size of 0 means the variable is unset.
+        size_t required = 0;
+        if (::getenv_s(&required, nullptr, 0, key.c_str()) != 0 || required == 0)
+            return std::nullopt;
+        String value(required, '\0');
+        if (::getenv_s(&required, value.data(), required, key.c_str()) != 0)
+            return std::nullopt;
+        value.resize(required - 1); // drop the trailing null terminator
+        return value;
+#else
+        const char *raw = std::getenv(key.c_str());
+        if (raw == nullptr)
+            return std::nullopt;
+        return String(raw);
+#endif
+    }
+
     size_t hashValue(StrRef s) {
         size_t h = 0;
         for (StrRef::size_type i = 0; i < s.size(); ++i)
@@ -127,14 +151,15 @@ namespace OmegaCommon {
     }
     bool findProgramInPath(const StrRef & prog,String & out) {
 
-        const char *path;
 #ifdef _WIN32
-        path = std::getenv("Path");
+        auto pathVar = getEnvVar("Path");
 #else
-        path = std::getenv("PATH");
+        auto pathVar = getEnvVar("PATH");
 #endif
+        if(!pathVar.has_value())
+            return false;
 
-        std::istringstream in(path);
+        std::istringstream in(*pathVar);
 
         OmegaCommon::String str;
         while(!in.eof()) {
