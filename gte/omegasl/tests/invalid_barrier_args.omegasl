@@ -1,0 +1,15 @@
+
+// §6.2 — barriers take no arguments; passing one is an arg-count error.
+
+struct Data {
+    float4 v;
+};
+
+buffer<Data> data : 0;
+
+[inout data]
+compute(x=8,y=1,z=1)
+void bad_barrier(uint3 tid : GlobalThreadID){
+    threadgroupBarrier(5);
+    data[tid[0]].v[0] = 1.0;
+}

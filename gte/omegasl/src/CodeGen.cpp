@@ -266,6 +266,15 @@ namespace omegasl {
         out << "{" << std::endl;
         indentLevel += 1;
         for (auto stmt : block.body) {
+            /// §6.1 — `threadgroup` decls are hoisted to file scope by the
+            /// backend that needs it (HLSL `groupshared` / GLSL `shared`),
+            /// so skip them in the body walk. MSL uses its own entry-body
+            /// loop and emits them inline; this shared walker is the HLSL
+            /// entry path (and nested/user-function bodies, where a
+            /// threadgroup decl can never appear).
+            if (stmt->type == VAR_DECL && ((ast::VarDecl *)stmt)->isThreadgroup) {
+                continue;
+            }
             for (unsigned i = 0; i < indentLevel; i++) {
                 out << "    ";
             }
@@ -400,8 +409,8 @@ namespace omegasl {
                 /// hook, so the rewrite is symmetric end-to-end.
                 shaderOut << " ";
                 target->writeIdentifier(_decl->spec.name, shaderOut);
-                if (_decl->typeExpr->arraySize.has_value()) {
-                    shaderOut << "[" << _decl->typeExpr->arraySize.value() << "]";
+                for (unsigned dim : _decl->typeExpr->arrayDims) {
+                    shaderOut << "[" << dim << "]";
                 }
                 if (_decl->spec.initializer.has_value()) {
                     shaderOut << " = ";
@@ -617,6 +626,13 @@ namespace omegasl {
                 /// GLSL emits its own struct decls inside the entry header,
                 /// so its hook is a no-op.
                 target->emitShaderUsedStructs(*this, _decl, shaderOut);
+
+                /// §6.1 — file-scope thread-group-shared declarations.
+                /// HLSL `groupshared` and GLSL `shared` are global-scope
+                /// only, so the backend hoists each compute-shader
+                /// `threadgroup` local here. MSL inherits the no-op default
+                /// (it emits them inline inside the kernel body instead).
+                target->emitThreadgroupGlobals(*this, _decl, shaderOut);
 
                 /// Shader entry: header (resources + signature), then
                 /// body (block walk + target-specific pre/post amble).

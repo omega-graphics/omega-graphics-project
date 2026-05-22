@@ -5,14 +5,6 @@
 #include <iostream>
 #include <string>
 
-#if defined(TARGET_MACOS)
-#include <mach-o/dyld.h>
-#elif defined(TARGET_WIN32)
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
-
 namespace OmegaWTK::Composition {
 
     namespace {
@@ -21,44 +13,29 @@ namespace OmegaWTK::Composition {
         /// build time by `add_omegasl_lib(OmegaWTKCompositorShaderLib ...)`
         /// and copied into the bundle / output directory by
         /// `OmegaWTKApp.cmake`.
+        ///
+        /// Finding the running binary is delegated to
+        /// OmegaCommon::FS::getExecutableDir(); only the bundle-relative
+        /// layout of the library differs per platform. On macOS the exe
+        /// lives in `.../Contents/MacOS` and the library is a sibling under
+        /// `.../Contents/Resources`; elsewhere the library sits next to the
+        /// executable.
         OmegaCommon::String getCompositorShaderLibPath() {
+            OmegaCommon::String exeDir = OmegaCommon::FS::getExecutableDir().str();
+            if(exeDir.empty()) {
+                return {};
+            }
 #if defined(TARGET_MACOS)
-            char buf[2048];
-            uint32_t bufSize = sizeof(buf);
-            if(_NSGetExecutablePath(buf, &bufSize) == 0) {
-                std::string path(buf);
-                // exe: .../Contents/MacOS/AppName -> .../Contents/Resources/compositor.omegasllib
-                auto lastSlash = path.rfind('/');
-                if(lastSlash != std::string::npos) {
-                    std::string macosDir = path.substr(0, lastSlash);
-                    auto parentSlash = macosDir.rfind('/');
-                    if(parentSlash != std::string::npos) {
-                        return macosDir.substr(0, parentSlash) + "/Resources/compositor.omegasllib";
-                    }
-                }
+            // .../Contents/MacOS -> .../Contents/Resources/compositor.omegasllib
+            auto parentSlash = exeDir.rfind('/');
+            if(parentSlash == std::string::npos) {
+                return {};
             }
-            return {};
+            return exeDir.substr(0, parentSlash) + "/Resources/compositor.omegasllib";
 #elif defined(TARGET_WIN32)
-            char buf[MAX_PATH];
-            GetModuleFileNameA(NULL, buf, MAX_PATH);
-            std::string path(buf);
-            auto pos = path.rfind('\\');
-            if(pos != std::string::npos) {
-                return path.substr(0, pos + 1) + "compositor.omegasllib";
-            }
-            return {};
+            return exeDir + "\\compositor.omegasllib";
 #else
-            char buf[2048];
-            ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-            if(len > 0) {
-                buf[len] = '\0';
-                std::string path(buf);
-                auto pos = path.rfind('/');
-                if(pos != std::string::npos) {
-                    return path.substr(0, pos + 1) + "compositor.omegasllib";
-                }
-            }
-            return {};
+            return exeDir + "/compositor.omegasllib";
 #endif
         }
     }

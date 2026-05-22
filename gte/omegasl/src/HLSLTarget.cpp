@@ -467,6 +467,11 @@ namespace omegasl {
         /// looser than IEEE 754 fma, but matches what every existing HLSL
         /// shader uses for "multiply-add".
         if (name == BUILTIN_FMA) return "mad";
+        /// §6.2 — compute barriers. `threadgroupBarrier` is the execution +
+        /// group-memory sync; `deviceBarrier` is the device-memory-only
+        /// barrier (no group sync, per the portable contract).
+        if (name == BUILTIN_THREADGROUP_BARRIER) return "GroupMemoryBarrierWithGroupSync";
+        if (name == BUILTIN_DEVICE_BARRIER)      return "DeviceMemoryBarrier";
         if (name == BUILTIN_MAKE_FLOAT2)   return "float2";
         if (name == BUILTIN_MAKE_FLOAT3)   return "float3";
         if (name == BUILTIN_MAKE_FLOAT4)   return "float4";
@@ -586,6 +591,29 @@ namespace omegasl {
         cg.typeResolver->getStructsInFuncDecl(_decl, struct_names);
         for (auto &s : struct_names) {
             out << generatedStructs[s] << std::endl;
+        }
+    }
+
+    /// §6.1 — HLSL `groupshared` must be declared at global scope, so each
+    /// top-level `threadgroup` local in the compute body is hoisted here as
+    /// `groupshared T name[dims];`. The body walk skips the original decl.
+    void HLSLTarget::emitThreadgroupGlobals(CodeGen &cg, ast::ShaderDecl *_decl,
+                                            std::ostream &out) {
+        if (_decl->shaderType != ast::ShaderDecl::Compute || !_decl->block) {
+            return;
+        }
+        for (auto *stmt : _decl->block->body) {
+            if (stmt->type != VAR_DECL) continue;
+            auto *_var = (ast::VarDecl *)stmt;
+            if (!_var->isThreadgroup) continue;
+            out << "groupshared ";
+            cg.writeTypeExpr(_var->typeExpr, out);
+            out << " ";
+            writeIdentifier(_var->spec.name, out);
+            for (unsigned dim : _var->typeExpr->arrayDims) {
+                out << "[" << dim << "]";
+            }
+            out << ";" << std::endl;
         }
     }
 

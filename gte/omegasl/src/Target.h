@@ -330,6 +330,14 @@ namespace omegasl {
         /// stores against `gl_Position` / `_outColorN` / etc.
         virtual bool tryEmitVarDecl(CodeGen &/*cg*/, ast::VarDecl */*decl*/) { return false; }
 
+        /// §6.1: emit file-scope thread-group-shared declarations for the
+        /// given compute shader. HLSL (`groupshared`) and GLSL (`shared`)
+        /// require shared memory at global scope, so they hoist each
+        /// top-level `threadgroup` local out of the kernel body here.
+        /// Default: no-op — MSL declares them inline inside the kernel.
+        virtual void emitThreadgroupGlobals(CodeGen &/*cg*/, ast::ShaderDecl */*decl*/,
+                                            std::ostream &/*out*/) {}
+
         /// Phase 10: optional hook for RETURN_DECL emission. Returning
         /// true means the target handled the entire return; the shared
         /// path skips its default `return [expr]` emission. GLSL overrides
@@ -451,6 +459,11 @@ namespace omegasl {
         void emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
         void emitIndexExpr(CodeGen &cg, ast::IndexExpr *expr, std::ostream &out) override;
         bool tryEmitBinaryExpr(CodeGen &cg, ast::BinaryExpr *expr, std::ostream &out) override;
+        /// §6.1: hoist each compute-shader `threadgroup` local to file
+        /// scope as a `groupshared`-qualified global (HLSL forbids
+        /// `groupshared` in function bodies). The body walk skips the
+        /// original decl, so no inline `tryEmitVarDecl` hook is needed.
+        void emitThreadgroupGlobals(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
         const char *shaderObjectFileExt(ast::ShaderDecl::Type stage) const override;
     private:
         HLSLCodeOpts &opts;
@@ -535,6 +548,10 @@ namespace omegasl {
         void emitDefaultHeaders(CodeGen &cg, std::ostream &out) override;
         void emitStructDecl(CodeGen &cg, ast::StructDecl *decl) override;
         void emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
+        /// §6.1: emit a `threadgroup`-qualified local inline at kernel
+        /// scope (MSL declares shared memory inside the kernel, not at
+        /// file scope). Returns true to suppress the shared emission.
+        bool tryEmitVarDecl(CodeGen &cg, ast::VarDecl *decl) override;
         const char *shaderObjectFileExt(ast::ShaderDecl::Type stage) const override;
     private:
         MetalCodeOpts &opts;
@@ -620,6 +637,10 @@ namespace omegasl {
         void emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
         bool tryEmitVarDecl(CodeGen &cg, ast::VarDecl *decl) override;
         bool tryEmitReturnDecl(CodeGen &cg, ast::ReturnDecl *decl) override;
+        /// §6.1: hoist each compute-shader `threadgroup` local to file
+        /// scope as a `shared`-qualified global (GLSL forbids `shared` in
+        /// function bodies).
+        void emitThreadgroupGlobals(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
         const char *shaderObjectFileExt(ast::ShaderDecl::Type stage) const override;
 
         /// Map a struct field reference to the GLSL identifier that backs it.

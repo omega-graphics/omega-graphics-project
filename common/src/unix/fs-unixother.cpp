@@ -67,6 +67,18 @@ namespace OmegaCommon::FS {
 		return Ok;
 	}
 
+	Path getExecutablePath(){
+		// /proc/self/exe is a symlink to the running binary on Linux.
+		// readlink does not null-terminate, so terminate manually.
+		char buf[PATH_MAX];
+		ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+		if(len <= 0){
+			return Path("");
+		}
+		buf[len] = '\0';
+		return Path(OmegaCommon::String(buf, static_cast<size_t>(len)));
+	}
+
 	bool Path::isSymLink(){
 		struct stat st = {0};
 		auto p = absPath();

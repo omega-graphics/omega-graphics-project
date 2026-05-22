@@ -459,6 +459,24 @@ namespace omegasl {
                     return nullptr;
                 }
 
+                /// §6.1 — `threadgroup` storage is only meaningful inside a
+                /// compute shader (every backend's shared-memory class is
+                /// compute-only). Reject it anywhere else with a clear
+                /// diagnostic rather than emitting source the downstream
+                /// compiler would reject opaquely. The parser already keeps
+                /// it at the function-body top level (like `const`).
+                if(_decl->isThreadgroup){
+                    bool inCompute = funcContext && funcContext->type == SHADER_DECL
+                        && ((ast::ShaderDecl *)funcContext)->shaderType == ast::ShaderDecl::Compute;
+                    if(!inCompute){
+                        auto e = std::make_unique<InvalidAttribute>(
+                            "`threadgroup` variables are only valid inside a compute shader");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                }
+
                 OmegaCommon::StrRef t_name = type_res->name;
 
                 if(!type_res->builtin) {
@@ -995,6 +1013,27 @@ namespace omegasl {
 
             auto _t = resolveTypeWithExpr(lhs_res);
 
+            /// Array-local indexing: peel one (outermost) dimension.
+            /// `float4 tile[16][16]` indexed once is `float4[16]`, twice is
+            /// a plain `float4` (which a third `[i]` then component-indexes).
+            /// This must precede the vector/matrix checks below: the base
+            /// type of an array of vectors is still a vector, but a single
+            /// `[i]` selects an array element, not a component.
+            if(!lhs_res->arrayDims.empty()){
+                auto idxT = resolveTypeWithExpr(idx_expr_res);
+                if(idxT != ast::builtins::uint_type && idxT != ast::builtins::int_type){
+                    auto e = std::make_unique<TypeError>("Array index must be an int or uint type.");
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+                auto *elemT = ast::TypeExpr::Create(lhs_res->name, lhs_res->pointer);
+                for(size_t i = 1; i < lhs_res->arrayDims.size(); i++){
+                    elemT->arrayDims.push_back(lhs_res->arrayDims[i]);
+                }
+                return elemT;
+            }
+
             /// Vector component access: float2/3/4[i] -> float, int2/3/4[i] -> int, uint2/3/4[i] -> uint
             if(_t == ast::builtins::float2_type || _t == ast::builtins::float3_type || _t == ast::builtins::float4_type){
                 return ast::TypeExpr::Create(ast::builtins::float_type);
@@ -1138,7 +1177,24 @@ namespace omegasl {
                     expectedArgs = 1;
                 }
 
-                if(expectedArgs > 0 && (int)_expr->args.size() != expectedArgs){
+                /// §6.2 — compute barriers: 0-arg, void return, compute-only.
+                bool isBarrier = (fname == BUILTIN_THREADGROUP_BARRIER || fname == BUILTIN_DEVICE_BARRIER);
+                if(isBarrier){
+                    expectedArgs = 0;
+                    bool inCompute = funcContext && funcContext->type == SHADER_DECL
+                        && ((ast::ShaderDecl *)funcContext)->shaderType == ast::ShaderDecl::Compute;
+                    if(!inCompute){
+                        auto e = std::make_unique<InvalidAttribute>(
+                            std::string("`") + std::string(fname) + "` is only valid inside a compute shader");
+                        e->loc = _expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                }
+
+                /// `>= 0` (not `> 0`) so the 0-arg barriers get their arg
+                /// count enforced too; -1 (unknown function) still skips.
+                if(expectedArgs >= 0 && (int)_expr->args.size() != expectedArgs){
                     auto e = std::make_unique<ArgumentCountMismatch>();
                     e->functionName = fname;
                     e->expected = (unsigned)expectedArgs;

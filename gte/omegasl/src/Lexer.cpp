@@ -29,7 +29,8 @@ namespace omegasl {
         (subject == KW_INTERNAL) ||
         (subject == KW_RETURN) ||
         (subject == KW_STATIC) ||
-        (subject == KW_CONST);
+        (subject == KW_CONST) ||
+        (subject == KW_THREADGROUP);
         /// Note: KW_IN, KW_OUT, KW_INOUT are contextual keywords —
         /// only treated as keywords inside resource maps ([in x, out y]).
         /// Everywhere else they are valid identifiers (e.g. local variable names).

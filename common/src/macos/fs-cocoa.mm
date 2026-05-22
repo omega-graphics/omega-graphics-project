@@ -1,8 +1,10 @@
 #include "omega-common/fs.h"
 
 #include <cstdio>
+#include <cstdint>
 #include <unistd.h>
 #include <dirent.h>
+#include <mach-o/dyld.h>
 
 #import <Foundation/Foundation.h>
 
@@ -81,6 +83,26 @@ namespace OmegaCommon::FS {
     StatusCode changeCWD(Path newPath){
         chdir(newPath.str().c_str());
         return Ok;
+    };
+
+    Path getExecutablePath(){
+        // First call with a null buffer sizes the request; _NSGetExecutablePath
+        // writes the required length (including the null terminator) into size
+        // and returns -1. The second call fills the buffer.
+        uint32_t size = 0;
+        _NSGetExecutablePath(nullptr, &size);
+        if(size == 0){
+            return Path("");
+        }
+        OmegaCommon::Vector<char> buf(size);
+        if(_NSGetExecutablePath(buf.data(), &size) != 0){
+            return Path("");
+        }
+        // buf is null-terminated; constructing from the c-string drops the
+        // trailing slack. _NSGetExecutablePath may hand back a path with
+        // symlinks / `.` / `..`, but the original WTK loader used the raw
+        // path so we preserve that.
+        return Path(OmegaCommon::String(buf.data()));
     };
 
     StatusCode createSymLink(Path file, Path symlinkDest){

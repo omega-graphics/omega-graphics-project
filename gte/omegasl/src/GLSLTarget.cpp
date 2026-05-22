@@ -241,6 +241,30 @@ namespace omegasl {
     void GLSLTarget::emitShaderUsedStructs(CodeGen &/*cg*/, ast::ShaderDecl */*decl*/,
                                            std::ostream &/*out*/) {}
 
+    /// §6.1 — GLSL `shared` is only valid at global scope, so each top-level
+    /// `threadgroup` local in the compute body is hoisted here as
+    /// `shared T name[dims];`. The custom entry-body loop skips the
+    /// original decl.
+    void GLSLTarget::emitThreadgroupGlobals(CodeGen &cg, ast::ShaderDecl *_decl,
+                                            std::ostream &out) {
+        if (_decl->shaderType != ast::ShaderDecl::Compute || !_decl->block) {
+            return;
+        }
+        for (auto *stmt : _decl->block->body) {
+            if (stmt->type != VAR_DECL) continue;
+            auto *_var = (ast::VarDecl *)stmt;
+            if (!_var->isThreadgroup) continue;
+            out << "shared ";
+            cg.writeTypeExpr(_var->typeExpr, out);
+            out << " ";
+            writeIdentifier(_var->spec.name, out);
+            for (unsigned dim : _var->typeExpr->arrayDims) {
+                out << "[" << dim << "]";
+            }
+            out << ";" << std::endl;
+        }
+    }
+
     bool GLSLTarget::tryEmitVarDecl(CodeGen &cg, ast::VarDecl *_decl) {
         std::ostream &shaderOut = cg.getShaderOut();
         auto pred = [&](ast::StructDecl *d) -> bool {
@@ -542,6 +566,11 @@ namespace omegasl {
         /// struct returns and hull/domain `gl_Position` writes.
         for (auto stmt_it = _decl->block->body.begin(); stmt_it != _decl->block->body.end(); stmt_it++) {
             auto stmt = *stmt_it;
+            /// §6.1 — `threadgroup` decls are hoisted to file scope by
+            /// `emitThreadgroupGlobals` as `shared`; skip them in the body.
+            if (stmt->type == VAR_DECL && ((ast::VarDecl *)stmt)->isThreadgroup) {
+                continue;
+            }
             for (unsigned i = 0; i < cg.indentLevel; i++) {
                 out << "    ";
             }
@@ -883,6 +912,11 @@ namespace omegasl {
         /// have no GLSL equivalent at all — those are rewritten in
         /// `tryEmitBuiltinCall` rather than renamed.
         if (name == BUILTIN_RSQRT) return "inversesqrt";
+        /// §6.2 — compute barriers. `barrier()` is the execution +
+        /// shared-memory control barrier; `memoryBarrier()` is the
+        /// device-memory-only ordering barrier (no execution sync).
+        if (name == BUILTIN_THREADGROUP_BARRIER) return "barrier";
+        if (name == BUILTIN_DEVICE_BARRIER)      return "memoryBarrier";
         if (name == BUILTIN_MAKE_FLOAT2)   return "vec2";
         if (name == BUILTIN_MAKE_FLOAT3)   return "vec3";
         if (name == BUILTIN_MAKE_FLOAT4)   return "vec4";

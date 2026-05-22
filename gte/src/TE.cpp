@@ -34,6 +34,12 @@ union TETriangulationParams::Data {
 
     GCylinder cylinder;
 
+    GTorus torus;
+
+    GSphere sphere;
+
+    GCapsule capsule;
+
     GraphicsPath3DParams path3D;
 
     // Union members include types whose default ctor is non-trivial
@@ -175,6 +181,30 @@ TETriangulationParams TETriangulationParams::Cone(GCone &cone){
     params.params.reset(new Data{});
     params.params->cone = cone;
     params.type = params.params->type =  TRIANGULATE_CONE;
+    return params;
+};
+
+TETriangulationParams TETriangulationParams::Torus(GTorus &torus){
+    TETriangulationParams params;
+    params.params.reset(new Data{});
+    params.params->torus = torus;
+    params.type = params.params->type =  TRIANGULATE_TORUS;
+    return params;
+};
+
+TETriangulationParams TETriangulationParams::Sphere(GSphere &sphere){
+    TETriangulationParams params;
+    params.params.reset(new Data{});
+    params.params->sphere = sphere;
+    params.type = params.params->type =  TRIANGULATE_SPHERE;
+    return params;
+};
+
+TETriangulationParams TETriangulationParams::Capsule(GCapsule &capsule){
+    TETriangulationParams params;
+    params.params.reset(new Data{});
+    params.params->capsule = capsule;
+    params.type = params.params->type =  TRIANGULATE_CAPSULE;
     return params;
 };
 
@@ -1141,6 +1171,345 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 mesh.vertexPolygons.push_back(p);
 
                 angle = nextAngle;
+            }
+
+            result.meshes.push_back(mesh);
+            break;
+        }
+        case TETriangulationParams::TRIANGULATE_TORUS : {
+            auto & object = params.params->torus;
+
+            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
+            std::optional<TETriangulationResult::AttachmentData> colorAttachment;
+            if(colorAttachmentPtr != nullptr){
+                colorAttachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        TETriangulationResult::AttachmentData{colorAttachmentPtr->colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+            }
+            const bool hasTex2D = textureAttachment != nullptr && textureAttachment->type == TETriangulationParams::Attachment::TypeTexture2D;
+            const bool hasTex3D = textureAttachment != nullptr && textureAttachment->type == TETriangulationParams::Attachment::TypeTexture3D;
+
+            const float R = object.majorRadius;
+            const float r = object.minorRadius;
+            const float step = arcStep > 0.f ? arcStep : 0.01f;
+            const float twoPi = 2.f * float(PI);
+
+            // Y-up: symmetry axis is Y, major circle lies in the XZ plane
+            // (matching cylinder/cone), tube cross-section bulges along Y.
+            // theta sweeps the major circle, phi sweeps the tube cross-section.
+            auto makePoint = [&](float theta, float phi) -> GPoint3D {
+                float ringR = R + r * std::cos(phi);
+                float wx = object.center.x + ringR * std::cos(theta);
+                float wy = object.center.y + r * std::sin(phi);
+                float wz = object.center.z + ringR * std::sin(theta);
+                float tx,ty,tz;
+                translateCoords(wx,wy,wz,viewport,&tx,&ty,&tz);
+                return GPoint3D{tx,ty,tz};
+            };
+            auto makeNormal = [&](float theta, float phi) -> FVec<3> {
+                return makeVec3(std::cos(phi)*std::cos(theta), std::sin(phi), std::cos(phi)*std::sin(theta));
+            };
+            auto setVert = [&](auto & vert, const GPoint3D & pt, float u, float v, const FVec<3> & normal){
+                vert.pt = pt;
+                if(hasTex2D){
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        makeTex2DAttachment(u, v, normal));
+                } else if(hasTex3D){
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        makeTex3DAttachment(0.5f + 0.5f*normal[0][0], 0.5f + 0.5f*normal[1][0], 0.5f + 0.5f*normal[2][0], normal));
+                } else if(colorAttachment){
+                    auto d = *colorAttachment;
+                    d.normal = normal;
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(d);
+                }
+            };
+
+            float theta = 0.f;
+            while(theta < twoPi){
+                float thetaNext = theta + step;
+                if(thetaNext > twoPi) thetaNext = twoPi;
+                const float u0 = theta / twoPi, u1 = thetaNext / twoPi;
+
+                float phi = 0.f;
+                while(phi < twoPi){
+                    float phiNext = phi + step;
+                    if(phiNext > twoPi) phiNext = twoPi;
+                    const float v0 = phi / twoPi, v1 = phiNext / twoPi;
+
+                    GPoint3D p00 = makePoint(theta, phi);
+                    GPoint3D p01 = makePoint(theta, phiNext);
+                    GPoint3D p10 = makePoint(thetaNext, phi);
+                    GPoint3D p11 = makePoint(thetaNext, phiNext);
+                    FVec<3> n00 = makeNormal(theta, phi);
+                    FVec<3> n01 = makeNormal(theta, phiNext);
+                    FVec<3> n10 = makeNormal(thetaNext, phi);
+                    FVec<3> n11 = makeNormal(thetaNext, phiNext);
+
+                    // Winding flipped vs. the plan's Z-axis form: the Y<->Z
+                    // swap reflects the parametrization, so emit (a,c,b) order
+                    // to keep front faces outward like the other primitives.
+                    TETriangulationResult::TEMesh::Polygon p {};
+                    setVert(p.a, p00, u0, v0, n00);
+                    setVert(p.b, p11, u1, v1, n11);
+                    setVert(p.c, p10, u1, v0, n10);
+                    mesh.vertexPolygons.push_back(p);
+                    setVert(p.a, p00, u0, v0, n00);
+                    setVert(p.b, p01, u0, v1, n01);
+                    setVert(p.c, p11, u1, v1, n11);
+                    mesh.vertexPolygons.push_back(p);
+
+                    phi = phiNext;
+                }
+                theta = thetaNext;
+            }
+
+            result.meshes.push_back(mesh);
+            break;
+        }
+        case TETriangulationParams::TRIANGULATE_SPHERE : {
+            auto & object = params.params->sphere;
+
+            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
+            std::optional<TETriangulationResult::AttachmentData> colorAttachment;
+            if(colorAttachmentPtr != nullptr){
+                colorAttachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        TETriangulationResult::AttachmentData{colorAttachmentPtr->colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+            }
+            const bool hasTex2D = textureAttachment != nullptr && textureAttachment->type == TETriangulationParams::Attachment::TypeTexture2D;
+            const bool hasTex3D = textureAttachment != nullptr && textureAttachment->type == TETriangulationParams::Attachment::TypeTexture3D;
+
+            const float rad = object.radius;
+            const float step = arcStep > 0.f ? arcStep : 0.01f;
+            const float twoPi = 2.f * float(PI);
+            const float onePi = float(PI);
+
+            // theta = latitude (0 at +Y north pole .. PI at -Y south pole), phi = longitude.
+            auto makePoint = [&](float thetaA, float phiA) -> GPoint3D {
+                float ringR = rad * std::sin(thetaA);
+                float wx = object.center.x + ringR * std::cos(phiA);
+                float wy = object.center.y + rad * std::cos(thetaA);
+                float wz = object.center.z + ringR * std::sin(phiA);
+                float tx,ty,tz;
+                translateCoords(wx,wy,wz,viewport,&tx,&ty,&tz);
+                return GPoint3D{tx,ty,tz};
+            };
+            auto makeNormal = [&](float thetaA, float phiA) -> FVec<3> {
+                return makeVec3(std::sin(thetaA)*std::cos(phiA), std::cos(thetaA), std::sin(thetaA)*std::sin(phiA));
+            };
+            auto setVert = [&](auto & vert, const GPoint3D & pt, float u, float v, const FVec<3> & normal){
+                vert.pt = pt;
+                if(hasTex2D){
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        makeTex2DAttachment(u, v, normal));
+                } else if(hasTex3D){
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        makeTex3DAttachment(0.5f + 0.5f*normal[0][0], 0.5f + 0.5f*normal[1][0], 0.5f + 0.5f*normal[2][0], normal));
+                } else if(colorAttachment){
+                    auto d = *colorAttachment;
+                    d.normal = normal;
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(d);
+                }
+            };
+
+            float theta = 0.f;
+            while(theta < onePi){
+                float thetaNext = theta + step;
+                if(thetaNext > onePi) thetaNext = onePi;
+                const bool northPole = (theta <= 1e-6f);
+                const bool southPole = (thetaNext >= onePi - 1e-6f);
+                const float v0 = theta / onePi, v1 = thetaNext / onePi;
+
+                float phi = 0.f;
+                while(phi < twoPi){
+                    float phiNext = phi + step;
+                    if(phiNext > twoPi) phiNext = twoPi;
+                    const float u0 = phi / twoPi, u1 = phiNext / twoPi;
+                    const float uMid = 0.5f * (phi + phiNext) / twoPi;
+                    const float phiMid = 0.5f * (phi + phiNext);
+
+                    TETriangulationResult::TEMesh::Polygon p {};
+                    if(northPole){
+                        setVert(p.a, makePoint(theta, phiMid), uMid, v0, makeNormal(theta, phiMid));
+                        setVert(p.b, makePoint(thetaNext, phi), u0, v1, makeNormal(thetaNext, phi));
+                        setVert(p.c, makePoint(thetaNext, phiNext), u1, v1, makeNormal(thetaNext, phiNext));
+                        mesh.vertexPolygons.push_back(p);
+                    } else if(southPole){
+                        setVert(p.a, makePoint(theta, phi), u0, v0, makeNormal(theta, phi));
+                        setVert(p.b, makePoint(thetaNext, phiMid), uMid, v1, makeNormal(thetaNext, phiMid));
+                        setVert(p.c, makePoint(theta, phiNext), u1, v0, makeNormal(theta, phiNext));
+                        mesh.vertexPolygons.push_back(p);
+                    } else {
+                        GPoint3D p00 = makePoint(theta, phi);
+                        GPoint3D p01 = makePoint(theta, phiNext);
+                        GPoint3D p10 = makePoint(thetaNext, phi);
+                        GPoint3D p11 = makePoint(thetaNext, phiNext);
+                        FVec<3> n00 = makeNormal(theta, phi);
+                        FVec<3> n01 = makeNormal(theta, phiNext);
+                        FVec<3> n10 = makeNormal(thetaNext, phi);
+                        FVec<3> n11 = makeNormal(thetaNext, phiNext);
+                        setVert(p.a, p00, u0, v0, n00);
+                        setVert(p.b, p10, u0, v1, n10);
+                        setVert(p.c, p11, u1, v1, n11);
+                        mesh.vertexPolygons.push_back(p);
+                        setVert(p.a, p00, u0, v0, n00);
+                        setVert(p.b, p11, u1, v1, n11);
+                        setVert(p.c, p01, u1, v0, n01);
+                        mesh.vertexPolygons.push_back(p);
+                    }
+                    phi = phiNext;
+                }
+                theta = thetaNext;
+            }
+
+            result.meshes.push_back(mesh);
+            break;
+        }
+        case TETriangulationParams::TRIANGULATE_CAPSULE : {
+            auto & object = params.params->capsule;
+
+            TETriangulationResult::TEMesh mesh {TETriangulationResult::TEMesh::TopologyTriangle};
+            std::optional<TETriangulationResult::AttachmentData> colorAttachment;
+            if(colorAttachmentPtr != nullptr){
+                colorAttachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        TETriangulationResult::AttachmentData{colorAttachmentPtr->colorData.color,FVec<2>::Create(),FVec<3>::Create()});
+            }
+            const bool hasTex2D = textureAttachment != nullptr && textureAttachment->type == TETriangulationParams::Attachment::TypeTexture2D;
+            const bool hasTex3D = textureAttachment != nullptr && textureAttachment->type == TETriangulationParams::Attachment::TypeTexture3D;
+
+            const float r = object.radius;
+            const float step = arcStep > 0.f ? arcStep : 0.01f;
+            const float twoPi = 2.f * float(PI);
+            const float onePi = float(PI);
+            const float halfPi = 0.5f * float(PI);
+            const float bottomY = object.pos.y;            // bottom hemisphere center
+            const float topY = object.pos.y + object.height; // top hemisphere center
+            const float totalH = object.height + 2.f * r;   // south pole .. north pole
+            const float vBase = object.pos.y - r;           // world Y of south pole
+
+            auto makeNormal = [&](float thetaA, float phiA) -> FVec<3> {
+                return makeVec3(std::sin(thetaA)*std::cos(phiA), std::cos(thetaA), std::sin(thetaA)*std::sin(phiA));
+            };
+            auto setVert = [&](auto & vert, const GPoint3D & pt, float u, float v, const FVec<3> & normal){
+                vert.pt = pt;
+                if(hasTex2D){
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        makeTex2DAttachment(u, v, normal));
+                } else if(hasTex3D){
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        makeTex3DAttachment(0.5f + 0.5f*normal[0][0], 0.5f + 0.5f*normal[1][0], 0.5f + 0.5f*normal[2][0], normal));
+                } else if(colorAttachment){
+                    auto d = *colorAttachment;
+                    d.normal = normal;
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(d);
+                }
+            };
+            auto vForY = [&](float wy){ return totalH > 1e-6f ? (wy - vBase) / totalH : 0.f; };
+
+            // Hemisphere centered at centerY, sweeping theta in [thetaLo, thetaHi].
+            auto makeHemiPoint = [&](float centerY, float thetaA, float phiA) -> GPoint3D {
+                float ringR = r * std::sin(thetaA);
+                float wx = object.pos.x + ringR * std::cos(phiA);
+                float wy = centerY + r * std::cos(thetaA);
+                float wz = object.pos.z + ringR * std::sin(phiA);
+                float tx,ty,tz;
+                translateCoords(wx,wy,wz,viewport,&tx,&ty,&tz);
+                return GPoint3D{tx,ty,tz};
+            };
+            auto hemiV = [&](float centerY, float thetaA){ return vForY(centerY + r * std::cos(thetaA)); };
+
+            auto emitHemisphere = [&](float centerY, float thetaLo, float thetaHi){
+                float theta = thetaLo;
+                while(theta < thetaHi){
+                    float thetaNext = theta + step;
+                    if(thetaNext > thetaHi) thetaNext = thetaHi;
+                    const bool northPole = (theta <= 1e-6f);
+                    const bool southPole = (thetaNext >= onePi - 1e-6f);
+                    const float vCur = hemiV(centerY, theta);
+                    const float vNext = hemiV(centerY, thetaNext);
+
+                    float phi = 0.f;
+                    while(phi < twoPi){
+                        float phiNext = phi + step;
+                        if(phiNext > twoPi) phiNext = twoPi;
+                        const float u0 = phi / twoPi, u1 = phiNext / twoPi;
+                        const float uMid = 0.5f * (phi + phiNext) / twoPi;
+                        const float phiMid = 0.5f * (phi + phiNext);
+
+                        TETriangulationResult::TEMesh::Polygon p {};
+                        if(northPole){
+                            setVert(p.a, makeHemiPoint(centerY, theta, phiMid), uMid, vCur, makeNormal(theta, phiMid));
+                            setVert(p.b, makeHemiPoint(centerY, thetaNext, phi), u0, vNext, makeNormal(thetaNext, phi));
+                            setVert(p.c, makeHemiPoint(centerY, thetaNext, phiNext), u1, vNext, makeNormal(thetaNext, phiNext));
+                            mesh.vertexPolygons.push_back(p);
+                        } else if(southPole){
+                            setVert(p.a, makeHemiPoint(centerY, theta, phi), u0, vCur, makeNormal(theta, phi));
+                            setVert(p.b, makeHemiPoint(centerY, thetaNext, phiMid), uMid, vNext, makeNormal(thetaNext, phiMid));
+                            setVert(p.c, makeHemiPoint(centerY, theta, phiNext), u1, vCur, makeNormal(theta, phiNext));
+                            mesh.vertexPolygons.push_back(p);
+                        } else {
+                            GPoint3D p00 = makeHemiPoint(centerY, theta, phi);
+                            GPoint3D p01 = makeHemiPoint(centerY, theta, phiNext);
+                            GPoint3D p10 = makeHemiPoint(centerY, thetaNext, phi);
+                            GPoint3D p11 = makeHemiPoint(centerY, thetaNext, phiNext);
+                            FVec<3> n00 = makeNormal(theta, phi);
+                            FVec<3> n01 = makeNormal(theta, phiNext);
+                            FVec<3> n10 = makeNormal(thetaNext, phi);
+                            FVec<3> n11 = makeNormal(thetaNext, phiNext);
+                            setVert(p.a, p00, u0, vCur, n00);
+                            setVert(p.b, p10, u0, vNext, n10);
+                            setVert(p.c, p11, u1, vNext, n11);
+                            mesh.vertexPolygons.push_back(p);
+                            setVert(p.a, p00, u0, vCur, n00);
+                            setVert(p.b, p11, u1, vNext, n11);
+                            setVert(p.c, p01, u1, vCur, n01);
+                            mesh.vertexPolygons.push_back(p);
+                        }
+                        phi = phiNext;
+                    }
+                    theta = thetaNext;
+                }
+            };
+
+            // Top hemisphere: north pole (+Y) down to equator.
+            emitHemisphere(topY, 0.f, halfPi);
+            // Bottom hemisphere: equator down to south pole (-Y).
+            emitHemisphere(bottomY, halfPi, onePi);
+
+            // Barrel between the two equators (radius r, axis along Y).
+            auto makeBarrelPoint = [&](float phiA, float wy) -> GPoint3D {
+                float wx = object.pos.x + r * std::cos(phiA);
+                float wz = object.pos.z + r * std::sin(phiA);
+                float tx,ty,tz;
+                translateCoords(wx,wy,wz,viewport,&tx,&ty,&tz);
+                return GPoint3D{tx,ty,tz};
+            };
+            const float vBottom = vForY(bottomY);
+            const float vTop = vForY(topY);
+            float phi = 0.f;
+            while(phi < twoPi){
+                float phiNext = phi + step;
+                if(phiNext > twoPi) phiNext = twoPi;
+                const float cosA = std::cos(phi), sinA = std::sin(phi);
+                const float cosN = std::cos(phiNext), sinN = std::sin(phiNext);
+                const float u0 = phi / twoPi, u1 = phiNext / twoPi;
+
+                GPoint3D bCur = makeBarrelPoint(phi, bottomY);
+                GPoint3D bNext = makeBarrelPoint(phiNext, bottomY);
+                GPoint3D tCur = makeBarrelPoint(phi, topY);
+                GPoint3D tNext = makeBarrelPoint(phiNext, topY);
+                FVec<3> nCur = makeVec3(cosA, 0.f, sinA);
+                FVec<3> nNext = makeVec3(cosN, 0.f, sinN);
+
+                TETriangulationResult::TEMesh::Polygon p {};
+                setVert(p.a, bCur, u0, vBottom, nCur);
+                setVert(p.b, tCur, u0, vTop, nCur);
+                setVert(p.c, tNext, u1, vTop, nNext);
+                mesh.vertexPolygons.push_back(p);
+                setVert(p.a, bCur, u0, vBottom, nCur);
+                setVert(p.b, tNext, u1, vTop, nNext);
+                setVert(p.c, bNext, u1, vBottom, nNext);
+                mesh.vertexPolygons.push_back(p);
+
+                phi = phiNext;
             }
 
             result.meshes.push_back(mesh);

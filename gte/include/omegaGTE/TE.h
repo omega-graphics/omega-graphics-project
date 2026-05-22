@@ -27,6 +27,9 @@ struct OMEGAGTE_EXPORT TETriangulationParams {
         TRIANGULATE_ELLIPSOID,
         TRIANGULATE_CYLINDER,
         TRIANGULATE_CONE,
+        TRIANGULATE_TORUS,
+        TRIANGULATE_SPHERE,
+        TRIANGULATE_CAPSULE,
         TRIANGULATE_GRAPHICSPATH2D,
         TRIANGULATE_GRAPHICSPATH3D
     } TriangulationType;
@@ -135,6 +138,27 @@ public:
       @returns TETriangulationParams
     */
     static TETriangulationParams Cone(GCone &cone);
+
+    /**
+      Triangulate a GTorus
+      @param[in] torus
+      @returns TETriangulationParams
+    */
+    static TETriangulationParams Torus(GTorus &torus);
+
+    /**
+      Triangulate a GSphere
+      @param[in] sphere
+      @returns TETriangulationParams
+    */
+    static TETriangulationParams Sphere(GSphere &sphere);
+
+    /**
+      Triangulate a GCapsule
+      @param[in] capsule
+      @returns TETriangulationParams
+    */
+    static TETriangulationParams Capsule(GCapsule &capsule);
 
     /**
       Triangulate 2D vector paths

@@ -191,7 +191,10 @@ namespace omegasl {
             bool pointer;
             bool hasTypeArgs;
             OmegaCommon::Vector<TypeExpr *> args;
-            std::optional<unsigned> arraySize;
+            /// Array dimensions, outermost first. Empty for a non-array
+            /// type; `[16][16]` yields `{16, 16}`. Backends emit one
+            /// `[d]` suffix per entry in order.
+            OmegaCommon::Vector<unsigned> arrayDims;
 
             static TypeExpr *Create(OmegaCommon::StrRef name, bool pointer = false,bool hasTypeArgs = false,OmegaCommon::Vector<TypeExpr *> * args = nullptr);
             static TypeExpr *Create(Type * type, bool pointer = false);
@@ -293,6 +296,12 @@ namespace omegasl {
             /// through this name; CodeGen prefixes the emitted declaration
             /// with `const`, which all three backends accept verbatim.
             bool isConst = false;
+            /// §6.1 — `threadgroup` storage qualifier. Set by the parser
+            /// when `threadgroup` precedes the type. Sema requires the
+            /// enclosing function to be a compute shader. CodeGen emits it
+            /// inline on MSL (`threadgroup T name`) and hoists it to file
+            /// scope on HLSL (`groupshared`) / GLSL (`shared`).
+            bool isThreadgroup = false;
             struct Spec {
                 OmegaCommon::String name;
                 std::optional<ast::Expr *> initializer;

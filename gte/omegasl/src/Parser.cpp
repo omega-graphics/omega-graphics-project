@@ -1554,20 +1554,32 @@ namespace omegasl {
 
     ast::Decl *Parser::parseGenericDecl(Tok &first_tok,BlockParseContext & ctxt) {
         ast::Decl *node = nullptr;
-        /// §3.6 — optional `const` qualifier on a local declaration.
-        /// Consume it here and stamp the resulting VarDecl below; it is
-        /// only valid in front of a type-introducing token (TOK_KW_TYPE
-        /// or a struct identifier), so any other follow-up is rejected
-        /// once we know what the next token is.
+        /// §3.6 / §6.1 — optional storage qualifier prefix on a local
+        /// declaration (`const` or `threadgroup`). Consume it here and
+        /// stamp the resulting VarDecl below; it is only valid in front of
+        /// a type-introducing token (TOK_KW_TYPE or a struct identifier),
+        /// so any other follow-up is rejected once we know the next token.
+        /// The two qualifiers are mutually exclusive — `const threadgroup`
+        /// is contradictory (immutable vs. mutable shared storage).
         bool isConst = false;
-        if(first_tok.type == TOK_KW && first_tok.str == KW_CONST){
-            isConst = true;
+        bool isThreadgroup = false;
+        if(first_tok.type == TOK_KW && (first_tok.str == KW_CONST || first_tok.str == KW_THREADGROUP)){
+            isConst = (first_tok.str == KW_CONST);
+            isThreadgroup = (first_tok.str == KW_THREADGROUP);
             first_tok = getTok();
+            if(first_tok.type == TOK_KW && (first_tok.str == KW_CONST || first_tok.str == KW_THREADGROUP)){
+                auto e = std::make_unique<UnexpectedToken>(
+                    "`const` and `threadgroup` cannot be combined on a declaration");
+                e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                diagnostics->addError(std::move(e));
+                return nullptr;
+            }
         }
         if(first_tok.type == TOK_KW){
-            if(isConst){
+            if(isConst || isThreadgroup){
                 auto e = std::make_unique<UnexpectedToken>(
-                    std::string("`const` may only qualify a variable declaration; got `") + first_tok.str + "`");
+                    std::string("`") + (isConst ? "const" : "threadgroup")
+                    + "` may only qualify a variable declaration; got `" + first_tok.str + "`");
                 e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
                 diagnostics->addError(std::move(e));
                 return nullptr;
@@ -1632,9 +1644,13 @@ namespace omegasl {
             _decl->type = VAR_DECL;
             _decl->typeExpr = type_for_var_decl;
             _decl->isConst = isConst;
+            _decl->isThreadgroup = isThreadgroup;
             _decl->spec.name = first_tok.str;
             first_tok = aheadTok();
-            if(first_tok.type == TOK_LBRACKET){
+            /// One `[N]` per array dimension, outermost first. A bare
+            /// `tile[16][16]` collects `{16, 16}`; backends emit the
+            /// suffixes in the same order.
+            while(first_tok.type == TOK_LBRACKET){
                 ++tokIdx;
                 first_tok = getTok();
                 if(first_tok.type != TOK_NUM_LITERAL){
@@ -1643,7 +1659,7 @@ namespace omegasl {
                     diagnostics->addError(std::move(e));
                     return nullptr;
                 }
-                _decl->typeExpr->arraySize = static_cast<unsigned>(std::stoul(first_tok.str));
+                _decl->typeExpr->arrayDims.push_back(static_cast<unsigned>(std::stoul(first_tok.str)));
                 first_tok = getTok();
                 if(first_tok.type != TOK_RBRACKET){
                     auto e = std::make_unique<UnexpectedToken>("Expected `]`");
@@ -1674,6 +1690,16 @@ namespace omegasl {
             if(_decl->isConst && !_decl->spec.initializer.has_value()){
                 auto e = std::make_unique<UnexpectedToken>(
                     std::string("`const` local `") + _decl->spec.name + "` must have an initializer");
+                e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                diagnostics->addError(std::move(e));
+                return nullptr;
+            }
+            /// §6.1 — thread-group-shared memory is uninitialized storage on
+            /// every backend; an initializer has no meaning. Reject it where
+            /// the diagnostic points at the OmegaSL source.
+            if(_decl->isThreadgroup && _decl->spec.initializer.has_value()){
+                auto e = std::make_unique<UnexpectedToken>(
+                    std::string("`threadgroup` local `") + _decl->spec.name + "` cannot have an initializer");
                 e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
                 diagnostics->addError(std::move(e));
                 return nullptr;

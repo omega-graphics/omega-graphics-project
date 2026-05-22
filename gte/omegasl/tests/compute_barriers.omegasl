@@ -1,0 +1,28 @@
+
+// §6.2 — compute barriers used with §6.1 threadgroup shared memory:
+// a partial-reduction pattern that writes shared memory, syncs the group,
+// reads it back, then orders the device-memory writeback.
+
+struct Data {
+    float4 v;
+};
+
+buffer<Data> data : 0;
+
+[inout data]
+compute(x=64,y=1,z=1)
+void reduce(uint3 tid : GlobalThreadID, uint3 lid : LocalThreadID){
+    threadgroup float scratch[64];
+
+    uint i = lid[0];
+    scratch[i] = data[tid[0]].v[0];
+
+    threadgroupBarrier();
+
+    if(i == 0){
+        float sum = scratch[0] + scratch[1];
+        data[tid[0]].v[0] = sum;
+    }
+
+    deviceBarrier();
+}

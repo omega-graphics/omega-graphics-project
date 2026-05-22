@@ -249,6 +249,25 @@
         return _end;
     };
 
+    // -- Process / executable location --
+    // getExecutablePath() is platform-specific (see fs-win.cpp /
+    // fs-cocoa.mm / fs-unixother.cpp). The directory derivation is shared.
+
+    Path getExecutableDir(){
+        String exe = getExecutablePath().str();
+        if(exe.empty()){
+            return Path("");
+        }
+        // Strip the trailing component. Accept either separator so the
+        // result is correct regardless of which slash the platform query
+        // produced. No trailing separator is kept.
+        auto pos = exe.find_last_of("/\\");
+        if(pos == String::npos){
+            return Path("");
+        }
+        return Path(exe.substr(0, pos));
+    }
+
     // -- File I/O helpers (cross-platform via std::fstream) --
 
     Result<String, StatusCode> readFile(Path path){

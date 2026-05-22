@@ -520,6 +520,25 @@ using namespace metal;
         out << "}" << std::endl;
     }
 
+    /// §6.1 — MSL declares thread-group-shared memory inline at kernel
+    /// scope (`threadgroup float tile[16][16]`), unlike HLSL/GLSL which
+    /// hoist it to file scope. Return true to suppress the shared
+    /// `generateDecl` emission; the caller appends the trailing `;`.
+    bool MSLTarget::tryEmitVarDecl(CodeGen &cg, ast::VarDecl *_decl) {
+        if (!_decl->isThreadgroup) {
+            return false;
+        }
+        std::ostream &out = cg.getShaderOut();
+        out << "threadgroup ";
+        cg.writeTypeExpr(_decl->typeExpr, out);
+        out << " ";
+        writeIdentifier(_decl->spec.name, out);
+        for (unsigned dim : _decl->typeExpr->arrayDims) {
+            out << "[" << dim << "]";
+        }
+        return true;
+    }
+
     OmegaCommon::StrRef MSLTarget::discardStatement() { return "discard_fragment()"; }
 
     void MSLTarget::writeCast(CodeGen &cg, ast::TypeExpr *t, std::ostream &out) {
@@ -619,6 +638,19 @@ using namespace metal;
             cg.generateExpr(_expr->args[0]);
             /// π / 180.
             out << ") * 0.017453292519943295)";
+            return true;
+        }
+        /// §6.2 — MSL spells both barriers as `threadgroup_barrier(<flag>)`;
+        /// the memory-scope flag is injected (OmegaSL's barrier calls take
+        /// no args). `mem_threadgroup` syncs execution + group memory;
+        /// `mem_device` orders device memory (and, on MSL only, also syncs
+        /// execution — see the portable-contract note in AST.def).
+        if (name == BUILTIN_THREADGROUP_BARRIER) {
+            out << "threadgroup_barrier(mem_flags::mem_threadgroup)";
+            return true;
+        }
+        if (name == BUILTIN_DEVICE_BARRIER) {
+            out << "threadgroup_barrier(mem_flags::mem_device)";
             return true;
         }
         return false;

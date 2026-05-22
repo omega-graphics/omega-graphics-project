@@ -523,3 +523,7 @@ endif()
 include(cmake/OmegaWTKApp.cmake)
 
  add_subdirectory(tests)
+
+if(OMEGAWTK_BUILD_COMPONENTS)
+	
+endif()

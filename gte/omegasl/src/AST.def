@@ -141,6 +141,20 @@ typedef int ASTType;
 /// (broadly available; precision contract looser than IEEE 754 fma).
 #define BUILTIN_FMA "fma"
 
+/// §6.2 — compute-shader barriers. Both are 0-arg, void-returning, and
+/// only valid inside a compute shader. `threadgroupBarrier` is an
+/// execution + threadgroup-memory barrier (all threads in the group sync);
+/// `deviceBarrier` is a device-memory ordering barrier. Per backend:
+///   threadgroupBarrier → GroupMemoryBarrierWithGroupSync() (HLSL) /
+///     threadgroup_barrier(mem_flags::mem_threadgroup) (MSL) / barrier() (GLSL)
+///   deviceBarrier → DeviceMemoryBarrier() (HLSL) /
+///     threadgroup_barrier(mem_flags::mem_device) (MSL) / memoryBarrier() (GLSL)
+/// Note: HLSL/GLSL `deviceBarrier` is memory-only; MSL additionally syncs
+/// execution. The portable contract is "memory ordering only" — pair with
+/// `threadgroupBarrier` when threads must wait.
+#define BUILTIN_THREADGROUP_BARRIER "threadgroupBarrier"
+#define BUILTIN_DEVICE_BARRIER "deviceBarrier"
+
 //Internal Shader Attributes
 #define ATTRIBUTE_VERTEX_ID "VertexID"
 #define ATTRIBUTE_INSTANCE_ID "InstanceID"

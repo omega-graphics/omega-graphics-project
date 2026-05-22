@@ -101,6 +101,14 @@ namespace omegasl {
 /// Sema and the qualifier flows through to all three backend targets,
 /// each of which spell it `const` in their generated source.
 #define KW_CONST KW("const")
+/// §6.1 — `threadgroup` storage qualifier on a local variable declared at
+/// the top level of a compute shader body. Declares thread-group-shared
+/// memory. Per backend: `groupshared` (HLSL), `threadgroup` (MSL),
+/// `shared` (GLSL). HLSL `groupshared` and GLSL `shared` are global-scope
+/// only, so those backends hoist the declaration to file scope; MSL keeps
+/// it inline at kernel scope. Shared memory is uninitialized — no
+/// initializer is permitted.
+#define KW_THREADGROUP KW("threadgroup")
 
 
 #define KW_TY_VOID KW_TY("void")

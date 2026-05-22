@@ -1110,6 +1110,8 @@ Extension 2.3 (threadgroup override) ── deferred
 
 `GETexture` today supports full-mip-0 upload/readback and (after §4.5) sub-region upload. Real consumers — WTK's bitmap path, future asset-streaming systems, BC-compressed game textures, sRGB tone-mapping passes — need a small set of additional capabilities the existing API can't express. This extension proposes them as a unit. None are blocked on OmegaSL changes; all can land independently of Tier 1–4 work.
 
+**This extension is the prerequisite layer for `KTX-Texture-Codec-Plan.md`.** A full-fidelity KTX/KTX2 loader uploads a complete mip × array-layer × cube-face pyramid in a compressed or HDR pixel format — it cannot be built until `GETexture` can (a) name those formats (§7.4), (b) address an arbitrary subresource (§7.1), and (c) upload every subresource of every shape (§7.8). The KTX plan depends on §7.1, §7.3, §7.4, §7.8, and §7.9 (and optionally §7.10) rather than re-deriving them.
+
 ### 7.1 `TextureRegion` extension — mip level + array layer
 
 `TextureRegion` is `{x, y, z, w, h, d}` today: a 3D box with no awareness of the mip pyramid or array slices. Consequences:
@@ -1313,34 +1315,135 @@ bool allowFormatCast = false;
 - "Read as integer" for shader-side bit manipulation of texel data
 - WTK Phase 6.6.1's "swap chain format is sRGB" path could allocate one render target and bind it as either linear or sRGB per pass, instead of two separate textures.
 
-### 7.8 Implementation order
+### 7.8 Full subresource upload (mip / array layer / cube face)
+
+§7.1 makes `TextureRegion` mip- and layer-aware, so the existing region overloads (`copyBytes(bytes, bytesPerRow, region)` §4.5/§7.1 and `copyBufferToTexture(region)` §4.2) can already target an arbitrary `{mipLevel, arrayLayer}`. That is the *mechanism*; this section closes the gaps a container loader — KTX/KTX2 (`KTX-Texture-Codec-Plan.md`), DDS, future streamed atlases — hits when it walks a full mip × layer × face pyramid in one go.
+
+**1. Cube-face addressing.** All three backends model cube faces as array slices: Metal `slice`, D3D12 `arraySlice`, Vulkan `baseArrayLayer`. The flattened native slice is `arrayLayer * facesPerLayer + face`, where `facesPerLayer = 6` for `TexCube` / `TexCubeArray`, else 1. Rather than make every caller open-code that, add an explicit `face` field plus a flatten helper:
+
+```cpp
+struct TextureRegion {
+    unsigned x, y, z;
+    unsigned w, h, d;
+    unsigned mipLevel = 0;     // §7.1
+    unsigned arrayLayer = 0;   // §7.1 — array slice index
+    unsigned face = 0;         // new — cube face 0..5 (+X,-X,+Y,-Y,+Z,-Z); 0 otherwise
+};
+
+// On GETexture — flattens (arrayLayer, face) to the native slice index
+// using this texture's kind. Non-cube kinds return arrayLayer unchanged.
+unsigned flattenSlice(unsigned arrayLayer, unsigned face) const;
+```
+
+**2. Slice pitch for 3D / array CPU uploads (`bytesPerImage`).** The §4.5/§7.1 CPU-upload overload carries only `bytesPerRow`; a depth slice of a 3D texture (or one image of an array) also needs a slice stride. Add a `bytesPerImage` overload mirroring §4.2's buffer→texture signature:
+
+```cpp
+virtual void copyBytes(void *bytes,
+                       size_t bytesPerRow,
+                       size_t bytesPerImage,
+                       const TextureRegion &destRegion) = 0;
+```
+
+For 2D non-array uploads `bytesPerImage = 0` (ignored). For compressed formats `bytesPerRow` is the block-row pitch and `bytesPerImage` the full 2D-slice block size (see §7.4).
+
+**3. Bulk all-subresource upload (optional convenience).** A KTX/DDS payload is one contiguous blob with per-`(level, layer, face)` offsets. A convenience that uploads every subresource from a base pointer plus a layout table saves the loader from N hand-rolled calls. Specify as a thin wrapper over the per-region path; not load-bearing, can land after the core overload. (Shares the `SubresourceLayout` shape introduced in §7.10.)
+
+**Backend mapping:**
+
+| OmegaGTE | D3D12 | Metal | Vulkan |
+|---|---|---|---|
+| `face` → native slice | `D3D12CalcSubresource(mip, arrayLayer*6+face, 0, mipLevels, arraySize)` | `replaceRegion:...slice:(arrayLayer*6+face)...` | `VkImageSubresourceLayers.baseArrayLayer = arrayLayer*6+face` |
+| `bytesPerImage` | `D3D12_SUBRESOURCE_FOOTPRINT` slice pitch | `bytesPerImage:` arg on `replaceRegion` | `VkBufferImageCopy.bufferImageHeight` |
+
+**Compatibility / backend notes:**
+
+- **Vulkan tiling is the real work here.** (There was a Vulkan-Texture-Memory plan that might have already addressed this. PLEASE DOUBLE CHECK) The current `copyBytes` lands on a `LINEAR`-tiled `HOST_VISIBLE` image and `memcpy`s directly — that path *cannot* host mipped, compressed, or cube/array textures. Any texture created with `mipLevels > 1`, an array/cube kind, or a compressed `pixelFormat` must be allocated `OPTIMAL`-tiled and uploaded through a **staging buffer + `vkCmdCopyBufferToImage`** (one `VkBufferImageCopy` per subresource) with the matching layout transitions. This is the same staging path §4.2 `copyBufferToTexture` already needs; the subresource `copyBytes` overload routes through it. The LINEAR fast path stays only for single-mip 2D uncompressed uploads. §7.10 (initial-data-at-create) is the cleanest place to make the LINEAR-vs-OPTIMAL decision.
+- **D3D12.** Row-pitch alignment (`D3D12_TEXTURE_DATA_PITCH_ALIGNMENT`, 256 B) applies per subresource; the staged source is padded as in §4.2.
+- **Metal.** `replaceRegion` handles all kinds natively; no staging required.
+
+### 7.9 Per-mip dimension accessor
+
+§7.3 promotes base (mip-0) `width/height/depth` onto `GETexture`. Subresource upload/readback loops also need each *mip's* dimensions (a 256×256 texture's mip 3 is 32×32; compressed mips clamp at the block size). Rather than make every caller recompute `max(1, base >> level)` and apply block clamping, expose it:
+
+```cpp
+struct Extent3D { unsigned w, h, d; };
+
+/// Dimensions of `mipLevel`, clamped to ≥1 and (for compressed formats)
+/// rounded up to the format's block size. Out-of-range levels return {0,0,0}.
+Extent3D getMipDimensions(unsigned mipLevel) const;
+```
+
+Pure CPU math over the §7.3 base dimensions and §7.4 block size; no backend call. Used by the KTX loader to size each `copyBytes` region and by §4.3 mipmap generation to bound its blit chain.
+
+### 7.10 Initial texture data at creation
+
+Asset loads (KTX, DDS, streamed atlases) almost always create a texture and immediately fill every subresource. Splitting that into `makeTexture` + N `copyBytes` calls forces backends into a worst-case allocation — notably Vulkan, which can't know at create time whether to pick `LINEAR` or `OPTIMAL` tiling, currently guesses `LINEAR` for `ToGPU`, and then cannot host compressed data. Letting the descriptor carry initial data lets each backend choose optimal storage and do a single staged upload.
+
+```cpp
+struct SubresourceLayout {
+    unsigned mipLevel = 0, arrayLayer = 0, face = 0;
+    size_t offset = 0;        // byte offset into initialData
+    size_t bytesPerRow = 0;   // block-row pitch for compressed formats
+    size_t bytesPerImage = 0; // 2D-slice pitch (3D / array)
+};
+
+struct TextureDescriptor {
+    // ... existing fields ...
+    /// Optional initial contents. When non-null, makeTexture uploads all
+    /// subresources at creation time and the backend is free to pick the
+    /// most efficient tiling/layout. Layout follows the packed
+    /// (level → layer → face) order libktx / DDS produce.
+    const void *initialData = nullptr;
+    size_t initialDataSize = 0;
+    /// Per-subresource offsets/pitches into initialData. Empty ⇒ a single
+    /// tightly-packed mip-0 image (today's implicit behavior).
+    OmegaCommon::Vector<SubresourceLayout> initialDataLayout;
+};
+```
+
+| OmegaGTE | D3D12 | Metal | Vulkan |
+|---|---|---|---|
+| `initialData` upload | `GetCopyableFootprints` + `UpdateSubresources` over one upload heap | `replaceRegion` per subresource | `OPTIMAL` image + one staging buffer + batched `vkCmdCopyBufferToImage` |
+
+**Compatibility note:** Optional and additive — `initialData = nullptr` preserves today's create-then-upload flow exactly. This is the natural home for the Vulkan tiling decision flagged in §7.8: with the full subresource layout in hand at create time, `makeTexture` picks `OPTIMAL` vs `LINEAR` up front instead of the current `ToGPU ⇒ LINEAR` heuristic.
+
+### 7.11 Implementation order
 
 ```
-7.1 (TextureRegion mip/layer)         ─── enables 7.2, unblocks §6.5 cube/array
+7.1 (TextureRegion mip/layer)         ─── enables 7.2 / 7.8; unblocks §6.5 cube/array
     │
 7.2 (getBytes by region)              ─── depends on 7.1 for parity
     │
-7.3 (metadata accessors)              ─── independent; pure additive
+7.3 (metadata accessors)              ─── independent; enables 7.9
+    │
+7.4 (compressed pixel formats)        ─── independent; large body of work, gated by GTEDeviceFeatures additions; KTX pre-req
+    │
+7.8 (full subresource upload)         ─── builds on 7.1; adds Vulkan OPTIMAL+staging path; KTX pre-req
+    │
+7.9 (per-mip dimensions)              ─── builds on 7.3 + 7.4; pure CPU math; KTX pre-req
     │
 7.5 (texture clear)                   ─── independent; needs §4.4-style compute fallback shader
     │
-7.4 (compressed pixel formats)        ─── independent; large body of work, gated by GTEDeviceFeatures additions
+7.10 (initial data at create)         ─── builds on 7.8; folds in the Vulkan tiling decision
     │
 7.6 (async upload)                    ─── requires texture-back-pointer refactor in D3D12
     │
 7.7 (format-cast views)               ─── requires TextureDescriptor.allowFormatCast opt-in flag
 ```
 
-### 7.9 Priority assignment
+### 7.12 Priority assignment
 
 **Tier 1 candidates** (low risk, additive, immediate value):
 - §7.1 TextureRegion mip/layer
 - §7.2 getBytes region overload
 - §7.3 metadata accessors
+- §7.9 per-mip dimensions (pure CPU math over §7.3 + §7.4)
 
 **Tier 2 candidates** (medium risk, requires new infrastructure):
 - §7.5 texture clear (needs a compute fallback shader, similar to §4.4)
 - §7.4 compressed pixel formats (needs `GTEDeviceFeatures` extension + decoder-side asset support)
+- §7.8 full subresource upload (needs the Vulkan OPTIMAL-tiling + staging-buffer path)
+- §7.10 initial data at create (additive descriptor field; rides on the §7.8 staging path)
 
 **Tier 3 candidates** (deeper structural changes):
 - §7.6 async upload (D3D12 engine back-pointer refactor)

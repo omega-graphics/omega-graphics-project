@@ -1,0 +1,12 @@
+
+// §6.2 — barriers are only valid inside a compute shader. Calling one in a
+// fragment shader must be rejected by Sema.
+
+struct Raster internal {
+    float4 pos : Position;
+};
+
+fragment float4 main_frag(Raster in){
+    threadgroupBarrier();
+    return float4(1.0, 0.0, 0.0, 1.0);
+}

@@ -91,6 +91,10 @@ add_omegasl_compile_test(omegasl_compile_function_overload_with_forward function
 add_omegasl_compile_test(omegasl_compile_out_inout_params    out_inout_params.omegasl)
 # §2.4 — uniform / constant buffers.
 add_omegasl_compile_test(omegasl_compile_uniform_buffer      uniform_buffer.omegasl)
+# §6.1 — threadgroup / shared memory (incl. 2D shared-array indexing).
+add_omegasl_compile_test(omegasl_compile_threadgroup_shared  threadgroup_shared.omegasl)
+# §6.2 — compute barriers (threadgroupBarrier / deviceBarrier).
+add_omegasl_compile_test(omegasl_compile_compute_barriers    compute_barriers.omegasl)
 
 # --- Real-world shader tests (UI / game engine patterns) ---
 add_omegasl_compile_test(omegasl_compile_blinn_phong         blinn_phong.omegasl)
@@ -129,6 +133,12 @@ add_omegasl_fail_test(omegasl_invalid_function_overload_return_type  invalid_fun
 add_omegasl_fail_test(omegasl_invalid_uniform                invalid_uniform.omegasl)
 # Regression: `buffer` with no element type must diagnose, not crash.
 add_omegasl_fail_test(omegasl_invalid_buffer_no_args         invalid_buffer_no_args.omegasl)
+# §6.1 — threadgroup diagnostics (outside compute / initializer).
+add_omegasl_fail_test(omegasl_invalid_threadgroup_outside_compute invalid_threadgroup_outside_compute.omegasl)
+add_omegasl_fail_test(omegasl_invalid_threadgroup_init       invalid_threadgroup_init.omegasl)
+# §6.2 — barrier diagnostics (outside compute / arg-count).
+add_omegasl_fail_test(omegasl_invalid_barrier_outside_compute invalid_barrier_outside_compute.omegasl)
+add_omegasl_fail_test(omegasl_invalid_barrier_args           invalid_barrier_args.omegasl)
 
 # =============================================================
 # 4. Golden-file tests for HLSL codegen (DirectX only)

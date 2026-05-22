@@ -1130,28 +1130,160 @@ All three backends have native support; Vulkan additionally has
 
 ## 6. Compute-shader features (P0 → P1)
 
-### 6.1 Threadgroup / shared memory
+### 6.1 Threadgroup / shared memory [COMPLETED]
 
-Already on the "not implemented" list. Critical for any real compute work.
-
-**Proposal:** storage-class keyword `threadgroup` applied to a variable
-declared inside a compute shader:
+Storage-class keyword `threadgroup` applied to a variable declared at the
+top level of a compute shader body:
 
 ```
-threadgroup float tile[16][16];
+threadgroup float4 tile[16][16];
+threadgroup float  scratch[256];
 ```
 
 Maps to `groupshared` (HLSL), `threadgroup` (MSL), `shared` (GLSL).
 
-### 6.2 Barriers
+**Landed.** `threadgroup` is a storage qualifier modelled on the §3.6
+`const` prefix: a lexer keyword (`KW_THREADGROUP`) → a `VarDecl::isThreadgroup`
+flag → a parser prefix → a Sema rule → backend emission. It and `const`
+are mutually exclusive (immutable vs. mutable shared storage).
 
-Already on the "not implemented" list. Needs at minimum:
+**The backend scoping split.** The three backends disagree on where the
+declaration may live, which drove the design:
+
+| Backend | Spelling | Where it must be declared | OmegaSL emission |
+|---------|----------|---------------------------|------------------|
+| MSL  | `threadgroup T name` | inside the kernel body | inline at kernel scope |
+| HLSL | `groupshared T name`  | global scope only | hoisted to file scope |
+| GLSL | `shared T name`       | global scope only | hoisted to file scope |
+
+A function-local `groupshared` / `shared` is a hard compile error on
+HLSL / GLSL, so those backends hoist each top-level `threadgroup` local
+out of the kernel body to file scope (`Target::emitThreadgroupGlobals`,
+called from the per-shader emission before the entry function) and the
+body walk skips the original declaration. Because each shader is its own
+translation unit, the hoist is collision-free. MSL keeps the inline
+spelling via `MSLTarget::tryEmitVarDecl`.
+
+**Scope / validation:**
+
+* **Compute-only** — Sema rejects `threadgroup` anywhere but a compute
+  shader (the discard-stage-check pattern: `funcContext->type ==
+  SHADER_DECL && shaderType == Compute`).
+* **Top-level only** — inherited for free from the parser structure: the
+  function-body path (`parseStmt`) routes a leading `TOK_KW` to
+  `parseGenericDecl`, but the nested-block path (`parseStmtFromBuffer`,
+  used inside `if`/`for`/`while`/`switch`) does not. So a `threadgroup`
+  (or `const`) decl is only parseable at the function-body top level —
+  exactly where MSL needs it for kernel scope and where HLSL/GLSL hoisting
+  reads from. No extra enforcement code.
+* **No initializer** — shared memory is uninitialized storage on every
+  backend; a `threadgroup` decl with `= …` is rejected at parse time.
+
+**N-dimensional arrays (pulled in).** The doc's `tile[16][16]` example
+required multi-dimensional arrays, which OmegaSL did not have:
+`TypeExpr::arraySize` was a single `std::optional<unsigned>`. Replaced
+with `OmegaCommon::Vector<unsigned> arrayDims` (outermost first); the
+parser collects one `[N]` per dimension and every backend emits one `[d]`
+suffix per entry.
+
+This also exposed and fixed a latent gap: array-typed *locals* could be
+**declared** but not **indexed** — the `INDEX_EXPR` Sema arm only knew
+buffer / vector / matrix. It now peels one (outermost) dimension per
+index *before* the vector/matrix checks (the base type of `float4
+tile[16][16]` is still `float4`, but a single `[i]` selects an array
+element, not a `.xyzw` component): `tile[lx]` → `float4[16]`,
+`tile[lx][ly]` → `float4`, `tile[lx][ly][0]` → `float`.
+
+**Verification.** All three backends verified on the macOS host: MSL via
+the normal compile path (`box_blur.metal` + `metallib`), HLSL and GLSL via
+`omegaslc --hlsl -S` / `--glsl -S` (source-only emission instantiates the
+HLSL/GLSL `Target` without needing dxc/glslc). Sample outputs:
+
+```hlsl
+groupshared float4 tile[16][16];          // file scope
+groupshared float scratch[256];
+[numthreads(16,16,1)] void box_blur(...) { tile[lx][ly] = ...; }
+```
+```glsl
+shared vec4 tile[16][16];                 // global scope
+shared float scratch[256];
+layout(local_size_x=16,...) in; void main() { tile[lx][ly] = ...; }
+```
+```metal
+kernel void box_blur(...) {
+    threadgroup float4 tile[16][16];      // kernel scope
+    threadgroup float scratch[256];
+}
+```
+
+Tests: `threadgroup_shared.omegasl` (2D `float4` tile + 1D `float`
+scratch, indexed read/write through both), `invalid_threadgroup_outside_
+compute.omegasl`, `invalid_threadgroup_init.omegasl`.
+
+**Out of scope (named follow-ups):**
+
+* **Barriers** — declaring shared memory is only half the story; a real
+  reduction needs `threadgroupBarrier()` to sync writes before reads.
+  That's §6.2, deliberately separate.
+* **Array-of-matrix indexing on HLSL.** `threadgroup float4x4 m[8];`
+  then `m[i]` is ambiguous against HLSL's matrix-column-synthesis path in
+  `emitIndexExpr` (which keys off the base type being a matrix). Scalar /
+  vector / struct shared arrays — the common case — are unaffected.
+  Disambiguating would require `emitIndexExpr` to consult `arrayDims`.
+* **Per-member std140-style alignment** does not apply (shared memory has
+  no host-visible layout contract); a `threadgroup` struct array uses the
+  backend's natural layout.
+
+### 6.2 Barriers [COMPLETED]
+
+Two zero-arg, void-returning, compute-only intrinsics:
 
 - `threadgroupBarrier()` — sync all threads in the group, include memory.
 - `deviceBarrier()` — memory barrier across the device.
 
-Extended variants (`acquire`/`release`, scoped to memory type) can come
-later.
+**Landed.** Both are name-recognized in the same Sema math-intrinsic
+dispatch the §5.1 builtins use — no AST `FuncType` registration needed
+(that path keys off the name). They take the dispatch's first new 0-arg
+shape: `expectedArgs = 0`, void return. The arg-count guard was widened
+from `expectedArgs > 0` to `>= 0` so the 0-arg count is enforced (`-1`
+still means "unknown function" and skips). Sema rejects either barrier
+outside a compute shader (the same `funcContext->shaderType == Compute`
+check §6.1 uses).
+
+Per-backend emission:
+
+| OmegaSL | HLSL | MSL | GLSL |
+|---------|------|-----|------|
+| `threadgroupBarrier()` | `GroupMemoryBarrierWithGroupSync()` | `threadgroup_barrier(mem_flags::mem_threadgroup)` | `barrier()` |
+| `deviceBarrier()`      | `DeviceMemoryBarrier()`             | `threadgroup_barrier(mem_flags::mem_device)`      | `memoryBarrier()` |
+
+HLSL/GLSL are simple `renameBuiltin` entries (0-arg → `name()` via the
+shared `(args)` suffix). MSL needs `tryEmitBuiltinCall` because the
+memory-scope flag is an *injected* argument (OmegaSL's call has none).
+
+**`deviceBarrier` semantics — the one asymmetry.** HLSL `DeviceMemoryBarrier`
+and GLSL `memoryBarrier` are **memory-only** (order device/UAV memory, no
+thread execution sync). MSL's `threadgroup_barrier(mem_device)` additionally
+syncs execution. The portable contract is therefore **"device-memory
+ordering only — `deviceBarrier` does not make threads wait for each other"**:
+that holds exactly on HLSL/GLSL, and MSL is merely stricter (extra
+synchronization never breaks correctness, only costs a little perf). A
+shader that needs threads to wait must use `threadgroupBarrier()`. Matching
+the execution semantics precisely across backends would need the scoped /
+acquire-release variants below.
+
+**Verification.** MSL via the normal compile path, HLSL/GLSL via
+`omegaslc --hlsl -S` / `--glsl -S`. Tests: `compute_barriers.omegasl` (a
+reduction pattern: shared write → `threadgroupBarrier()` → shared read →
+`deviceBarrier()`), `invalid_barrier_outside_compute.omegasl`,
+`invalid_barrier_args.omegasl`.
+
+**Out of scope (named follow-ups):** the extended variants —
+`acquire`/`release` ordering and per-memory-type scoping (texture vs.
+device vs. threadgroup). HLSL has the six-way `*MemoryBarrier[WithGroupSync]`
+matrix, MSL has the `mem_flags` bitfield + `memory_order`, GLSL has the
+`memoryBarrier{Shared,Buffer,Image}` family; exposing the cross product is
+a separate design pass and there's no workload that needs it yet.
 
 ### 6.3 Wave / subgroup ops
 

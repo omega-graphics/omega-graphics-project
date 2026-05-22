@@ -183,6 +183,23 @@ namespace OmegaCommon::FS {
 
         OMEGACOMMON_EXPORT StatusCode changeCWD(Path newPath);
 
+        // -- Process / executable location --
+
+        /// @brief Absolute path to the currently-running executable,
+        /// including the binary's own filename. Implemented per-platform
+        /// (Win32 GetModuleFileNameA, macOS _NSGetExecutablePath, Linux
+        /// readlink("/proc/self/exe")). Returns an empty Path if the
+        /// platform query fails.
+        OMEGACOMMON_EXPORT Path getExecutablePath();
+
+        /// @brief Absolute path to the directory that contains the
+        /// currently-running executable, with no trailing separator (so
+        /// it composes cleanly with Path::append / operator+). Thin
+        /// wrapper over getExecutablePath(); returns an empty Path on
+        /// failure. Useful for locating resources shipped alongside the
+        /// binary in a cross-platform way.
+        OMEGACOMMON_EXPORT Path getExecutableDir();
+
         OMEGACOMMON_EXPORT StatusCode createSymLink(Path  file,Path symlinkDest);
 
         OMEGACOMMON_EXPORT StatusCode createDirectory(Path path);

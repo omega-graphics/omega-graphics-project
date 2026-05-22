@@ -114,6 +114,28 @@ namespace OmegaCommon::FS {
         };
     };
 
+    Path getExecutablePath(){
+        // GetModuleFileNameA returns the number of chars copied (excluding the
+        // null terminator) and, when the path doesn't fit, returns the buffer
+        // capacity with ERROR_INSUFFICIENT_BUFFER. Grow until it fits so long
+        // paths aren't silently truncated.
+        DWORD cap = MAX_PATH;
+        for(;;){
+            OmegaCommon::Vector<char> buf(cap);
+            DWORD len = GetModuleFileNameA(NULL, buf.data(), cap);
+            if(len == 0){
+                return Path("");
+            }
+            if(len < cap){
+                return Path(OmegaCommon::String(buf.data(), len));
+            }
+            cap *= 2;
+            if(cap > 65536){ // sanity bound; no real exe path is this long
+                return Path("");
+            }
+        }
+    };
+
 
     DirectoryIterator::DirectoryIterator(Path path):path(path),result_path(""),_end(false){
         data = new WIN32_FIND_DATAA;

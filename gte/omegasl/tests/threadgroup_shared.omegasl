@@ -1,0 +1,24 @@
+
+struct Pixel {
+    float4 color;
+};
+
+buffer<Pixel> pixels : 0;
+
+[out pixels]
+compute(x=16,y=16,z=1)
+void box_blur(uint3 tid : GlobalThreadID, uint3 lid : LocalThreadID){
+    threadgroup float4 tile[16][16];
+    threadgroup float scratch[256];
+
+    uint lx = lid[0];
+    uint ly = lid[1];
+
+    tile[lx][ly] = pixels[tid[0]].color;
+    scratch[lx + ly * 16] = tile[lx][ly][0];
+
+    float4 acc = tile[lx][ly];
+    acc[3] = scratch[lx + ly * 16];
+
+    pixels[tid[0]].color = acc;
+}

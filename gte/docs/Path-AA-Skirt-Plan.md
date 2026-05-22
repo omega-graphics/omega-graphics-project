@@ -247,11 +247,15 @@ revert WTK without touching GTE.
    time, which is not available CPU-side. Recommendation: object
    units, default 1.0.
 
+   Object units.
+
 2. **Default-on or default-off in the WTK path.** Default-on is the
    right end state; for the initial WTK-flip commit it might be worth
    gating behind a Canvas-level setting until visual diffs are
    reviewed. Recommendation: default-on, no gate. The cost is
    measurable but small and the visual win is the entire point.
+
+   Default-on
 
 3. **Sharing skirt vertices between adjacent segments.** Today's stroke
    band already duplicates `c == a_next` between segments and the

@@ -363,6 +363,23 @@ _NAMESPACE_BEGIN_
         float x,y,z,rad_x,rad_y,rad_z;
     };
 
+    struct  OMEGAGTE_EXPORT GTorus {
+        GPoint3D center;
+        float majorRadius;  // R — center of torus to center of tube
+        float minorRadius;  // r — tube radius
+    };
+
+    struct  OMEGAGTE_EXPORT GSphere {
+        GPoint3D center;
+        float radius;
+    };
+
+    struct  OMEGAGTE_EXPORT GCapsule {
+        GPoint3D pos;    // center of the bottom hemisphere
+        float radius;
+        float height;    // distance between hemisphere centers (total height = height + 2*radius)
+    };
+
 
     template<class Pt_Ty>
     class  GVectorPath_Base {
