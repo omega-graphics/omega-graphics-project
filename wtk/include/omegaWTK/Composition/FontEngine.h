@@ -190,7 +190,7 @@
      /// placement; zero metrics collapse multi-line text onto one
      /// stripe, which is the correct degenerate behavior while a
      /// backend's MSDF path isn't yet wired through.
-     virtual FontMetrics getMetrics() const { return {}; }
+     OMEGAWTK_NODISCARD virtual FontMetrics getMetrics() const { return {}; }
      /// Returns the per-font glyph atlas (Phase 6.7.1). Always
      /// constructed alongside the `Font`; carries no GPU texture until
      /// `ensureGlyph` is first called.

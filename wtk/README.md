@@ -1,6 +1,6 @@
 # OmegaWTK (Omega Widget ToolKit)
 
-![Logo](public/omega-wtk-1.png)
+![Logo](public/wtk-2.png)
 
 A cross-platform UI written in c++
 

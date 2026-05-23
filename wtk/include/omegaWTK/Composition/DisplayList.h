@@ -310,11 +310,11 @@ namespace OmegaWTK::Composition {
             ops_.clear();
         }
 
-        std::size_t size() const {
+        OMEGAWTK_NODISCARD std::size_t size() const {
             return ops_.size();
         }
 
-        const OmegaCommon::Vector<DrawOp> & ops() const {
+        OMEGAWTK_NODISCARD const OmegaCommon::Vector<DrawOp> & ops() const {
             return ops_;
         }
     };

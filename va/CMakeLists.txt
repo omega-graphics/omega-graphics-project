@@ -77,10 +77,18 @@ if(TARGET_LINUX AND OMEGAVA_USE_VENDORED_ALSA)
 		SOURCE_DIR "${ALSA_SOURCE_DIR}"
 		BINARY_DIR "${ALSA_SOURCE_DIR}"
 		INSTALL_DIR "${ALSA_INSTALL_DIR}"
-		CONF bash -c "cd ${ALSA_SOURCE_DIR} && GITCOMPILE_NO_MAKE=1 ./gitcompile --prefix=${ALSA_INSTALL_DIR} --disable-python --disable-static --enable-shared --with-pic"
+		# Built as a PIC static archive: the .a is absorbed into the shared
+		# libOmegaVA at link time, so its objects must be position-independent.
+		# alsa-lib's configure rejects libtool's --with-pic for a static-only
+		# build (configure.ac guards static+--with-pic), so PIC is injected via
+		# CFLAGS instead. gitcompile forwards trailing args to ./configure, and
+		# a command-line CFLAGS= overrides the value gitcompile exports. It
+		# must stay a single token: gitcompile re-expands its args unquoted, so
+		# a multi-flag value (e.g. "-fPIC -O2") would word-split and break.
+		CONF bash -c "cd ${ALSA_SOURCE_DIR} && GITCOMPILE_NO_MAKE=1 ./gitcompile --prefix=${ALSA_INSTALL_DIR} --disable-python --enable-static --disable-shared CFLAGS=-fPIC"
 		BUILD make
 		INSTALL make install
-		EXPORT_SHARED_LIBS "asound:lib/libasound${CMAKE_SHARED_LIBRARY_SUFFIX}"
+		EXPORT_STATIC_LIBS "asound:lib/libasound${CMAKE_STATIC_LIBRARY_SUFFIX}"
 		EXPORT_INCLUDE_DIRS "include")
 	add_dependencies(OmegaVAThirdParty alsa-lib)
 endif()
@@ -94,27 +102,40 @@ if(TARGET_LINUX AND OMEGAVA_USE_VENDORED_FFMPEG)
 			"the FFmpeg source first, or set OMEGAVA_USE_VENDORED_FFMPEG=OFF.")
 	endif()
 	set(_FFMPEG_EXTRA_FLAGS "")
+	set(_FFMPEG_PKGCONFIG_PATH "")
 	set(_FFMPEG_DEPS "")
 	if(OMEGAVA_USE_VENDORED_ALSA)
-		set(_FFMPEG_EXTRA_FLAGS "--enable-alsa --extra-cflags=-I${ALSA_INSTALL_DIR}/include --extra-ldflags=-L${ALSA_INSTALL_DIR}/lib")
+		# Discover the vendored static alsa through its installed .pc file.
+		# Combined with --pkg-config-flags=--static on the configure line,
+		# FFmpeg pulls alsa's Libs.private (-lrt -lm -lpthread) into its
+		# --enable-alsa link probe so the static check links cleanly.
+		set(_FFMPEG_EXTRA_FLAGS "--enable-alsa")
+		set(_FFMPEG_PKGCONFIG_PATH "PKG_CONFIG_PATH=${ALSA_INSTALL_DIR}/lib/pkgconfig")
 		set(_FFMPEG_DEPS alsa-lib)
 	endif()
+	# Static PIC archives, absorbed into libOmegaVA. The --disable-* flags
+	# strip FFmpeg's autodetected X11/xcb/drm/lzma features — OmegaVA's
+	# capture backend only uses the alsa + v4l2 indevs, so these would
+	# otherwise force libOmegaVA to link (and every host to ship) libX11,
+	# libxcb*, libdrm and liblzma for code that never runs. Dropping them
+	# keeps the static link surface to a minimal, host-independent set:
+	# -lm -lpthread -lz -latomic (see the link block below).
 	add_third_party(
 		CUSTOM_PROJECT
 		NAME ffmpeg
 		SOURCE_DIR "${FFMPEG_SOURCE_DIR}"
 		BINARY_DIR "${FFMPEG_SOURCE_DIR}"
 		INSTALL_DIR "${FFMPEG_INSTALL_DIR}"
-		CONF bash -c "cd ${FFMPEG_SOURCE_DIR} && ./configure --prefix=${FFMPEG_INSTALL_DIR} --disable-programs --disable-doc --disable-static --enable-shared --enable-pic ${_FFMPEG_EXTRA_FLAGS}"
+		CONF bash -c "cd ${FFMPEG_SOURCE_DIR} && ${_FFMPEG_PKGCONFIG_PATH} ./configure --prefix=${FFMPEG_INSTALL_DIR} --pkg-config-flags=--static --disable-programs --disable-doc --enable-static --disable-shared --enable-pic --disable-xlib --disable-libxcb --disable-libdrm --disable-lzma ${_FFMPEG_EXTRA_FLAGS}"
 		BUILD make
 		INSTALL make install
-		EXPORT_SHARED_LIBS
-			"avcodec:lib/libavcodec${CMAKE_SHARED_LIBRARY_SUFFIX}"
-			"avformat:lib/libavformat${CMAKE_SHARED_LIBRARY_SUFFIX}"
-			"avutil:lib/libavutil${CMAKE_SHARED_LIBRARY_SUFFIX}"
-			"avdevice:lib/libavdevice${CMAKE_SHARED_LIBRARY_SUFFIX}"
-			"swscale:lib/libswscale${CMAKE_SHARED_LIBRARY_SUFFIX}"
-			"swresample:lib/libswresample${CMAKE_SHARED_LIBRARY_SUFFIX}"
+		EXPORT_STATIC_LIBS
+			"avcodec:lib/libavcodec${CMAKE_STATIC_LIBRARY_SUFFIX}"
+			"avformat:lib/libavformat${CMAKE_STATIC_LIBRARY_SUFFIX}"
+			"avutil:lib/libavutil${CMAKE_STATIC_LIBRARY_SUFFIX}"
+			"avdevice:lib/libavdevice${CMAKE_STATIC_LIBRARY_SUFFIX}"
+			"swscale:lib/libswscale${CMAKE_STATIC_LIBRARY_SUFFIX}"
+			"swresample:lib/libswresample${CMAKE_STATIC_LIBRARY_SUFFIX}"
 		EXPORT_INCLUDE_DIRS "include"
 		DEPS ${_FFMPEG_DEPS})
 	add_dependencies(OmegaVAThirdParty ffmpeg)
@@ -162,17 +183,35 @@ if(TARGET_MACOS)
 		CoreAudio)
 elseif(TARGET_LINUX)
 	if(OMEGAVA_USE_VENDORED_FFMPEG)
-		# IMPORTED SHARED targets created by add_third_party above. The
-		# target's INTERFACE_INCLUDE_DIRECTORIES already points at
-		# ${FFMPEG_INSTALL_DIR}/include so we don't need a separate
-		# target_include_directories call.
-		target_link_libraries(OmegaVA PUBLIC
-			avcodec
-			avformat
-			avutil
-			avdevice
-			swscale
-			swresample)
+		# IMPORTED STATIC archives created by add_third_party above. They are
+		# absorbed into libOmegaVA.so, so they link PRIVATE — consumers get
+		# OmegaVA's API, not FFmpeg's symbols — and their
+		# INTERFACE_INCLUDE_DIRECTORIES (${FFMPEG_INSTALL_DIR}/include)
+		# propagate as private include paths for OmegaVA's own sources.
+		#
+		# The archives reference each other (avdevice -> avformat -> avcodec
+		# -> swresample -> avutil; swscale -> avutil), so wrap them in a
+		# linker group; a flat archive list won't satisfy the back-references
+		# in a single pass. The trailing system libraries are the minimal
+		# surface left after --disable-xlib/libxcb/libdrm/lzma (the union of
+		# the archives' .pc Libs.private fields).
+		set(_OMEGAVA_STATIC_GROUP avcodec avformat avutil avdevice swscale swresample)
+		set(_OMEGAVA_STATIC_SYSLIBS m pthread z atomic)
+		if(OMEGAVA_USE_VENDORED_ALSA)
+			# libasound is itself a vendored static archive; avdevice's alsa
+			# indev and OmegaVA's own snd_* calls both resolve into it. It is
+			# a leaf (depends only on system libs), so it joins the group
+			# alongside the FFmpeg archives; -lrt covers its clock helpers.
+			list(APPEND _OMEGAVA_STATIC_GROUP asound)
+			list(APPEND _OMEGAVA_STATIC_SYSLIBS rt)
+		endif()
+		target_link_libraries(OmegaVA PRIVATE
+			-Wl,--start-group ${_OMEGAVA_STATIC_GROUP} -Wl,--end-group
+			${_OMEGAVA_STATIC_SYSLIBS})
+		# Keep the absorbed archives' symbols local to libOmegaVA so they
+		# don't leak into its dynamic symbol table (and clash with a system
+		# FFmpeg an application might load alongside it).
+		target_link_options(OmegaVA PRIVATE -Wl,--exclude-libs,ALL)
 	else()
 		target_include_directories(OmegaVA PRIVATE ${FFMPEG_INCLUDE_DIRS})
 		target_compile_options(OmegaVA PRIVATE ${FFMPEG_CFLAGS_OTHER})
@@ -181,7 +220,12 @@ elseif(TARGET_LINUX)
 	endif()
 
 	if(OMEGAVA_USE_VENDORED_ALSA)
-		target_link_libraries(OmegaVA PUBLIC asound)
+		if(NOT OMEGAVA_USE_VENDORED_FFMPEG)
+			# No FFmpeg static group above to carry asound; link the vendored
+			# static archive directly for OmegaVA's own snd_* calls.
+			target_link_libraries(OmegaVA PRIVATE asound rt)
+			target_link_options(OmegaVA PRIVATE -Wl,--exclude-libs,ALL)
+		endif()
 		target_compile_definitions(OmegaVA PRIVATE OMEGA_AUDIO_ALSA=1)
 	elseif(ALSA_FOUND)
 		target_include_directories(OmegaVA PRIVATE ${ALSA_INCLUDE_DIRS})

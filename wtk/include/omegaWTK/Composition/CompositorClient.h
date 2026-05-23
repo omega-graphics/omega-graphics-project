@@ -106,7 +106,7 @@ namespace OmegaWTK::Composition {
 
 
     /**
-     The Compositor's interface for composing to a widget's view.
+     The Compositor's interface for composing a NativeView. (One per AppWindow)
      */
     class OMEGAWTK_EXPORT ViewRenderTarget : public CompositionRenderTarget {
         Native::NativeItemPtr native;
@@ -116,7 +116,7 @@ namespace OmegaWTK::Composition {
         float renderScale_ = 1.f;
     public:
         Native::NativeItemPtr getNativePtr();
-        float getRenderScale() const;
+        OMEGAWTK_NODISCARD float getRenderScale() const;
         void setRenderScale(float scale);
         explicit ViewRenderTarget(Native::NativeItemPtr _native);
         ~ViewRenderTarget() override;

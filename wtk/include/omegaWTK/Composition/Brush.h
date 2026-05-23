@@ -5,6 +5,7 @@
 
 namespace OmegaWTK::Composition {
 
+
     /// @brief Represents a generic RGBA Color with a channel size from 8 to 32 bits.
     struct OMEGAWTK_EXPORT Color {
         float r,g,b,a;

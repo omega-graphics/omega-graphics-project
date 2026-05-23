@@ -14,9 +14,21 @@
 #ifndef OMEGAWTK_CORE_CORE_H
 #define OMEGAWTK_CORE_CORE_H
 
+#if __cplusplus >= 2017
+#define OMEGAWTK_NODISCARD [[nodiscard]]
+#else
+#define OMEGAWTK_NODISCARD 
+#endif
+
 /// @brief OmegaWTK
 /// A cross platform user interface api.
 namespace OmegaWTK {
+
+    #ifdef None
+    #undef None 
+    #endif
+
+
     
 
     #ifdef INTERFACE
@@ -31,21 +43,6 @@ namespace OmegaWTK {
     #define FALLTHROUGH = default;
 
     #define DEFAULT {};
-//
-//    #define DELEGATE INTERFACE
-//
-//    #define DELEGATE_METHOD INTERFACE_METHOD
-
-    // inline const char *time_stamp(){
-    //     time_t tt;
-    //     tt = std::time(nullptr);
-    //     tm *ti = std::localtime(&tt);
-
-    //     return std::asctime(ti);
-
-        
-    // };
-        
 
     #define OMEGAWTK_DEBUG(msg) ::std::cout << "[OmegaWTKDebug " << " ] - " << msg << ::std::endl;
     
