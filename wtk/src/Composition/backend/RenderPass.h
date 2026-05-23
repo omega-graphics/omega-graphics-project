@@ -13,6 +13,8 @@
 #define OMEGAWTK_COMPOSITION_BACKEND_RENDERPASS_H
 
 #include "omegaWTK/Core/GTEHandle.h"
+#include "omegaGTE/GECommandQueue.h"
+#include "omegaGTE/GERenderTarget.h"
 #include <cstdint>
 
 namespace OmegaWTK::Composition {

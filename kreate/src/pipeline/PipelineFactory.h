@@ -2,7 +2,7 @@
 #define KREATE_INTERNAL_PIPELINE_FACTORY_H
 
 #include <kreate/Pipeline.h>
-#include <OmegaGTE.h>
+#include <omegaGTE/GTEDevice.h>
 #include <memory>
 #include <string>
 

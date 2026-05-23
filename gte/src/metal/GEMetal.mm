@@ -10,7 +10,11 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "OmegaGTE.h"
+#include "omegaGTE/GTEDevice.h"
+#include "omegaGTE/GECommandQueue.h"
+#include "omegaGTE/GEPipeline.h"
+#include "omegaGTE/GERenderTarget.h"
+#include "omegaGTE/GTEMath.h"
 #include "../common/GEResourceTracker.h"
 
 #include "../BufferIO.h"

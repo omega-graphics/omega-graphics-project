@@ -1,5 +1,4 @@
 #include <kreate/Math.h>
-#include <OmegaGTE.h>
 #include <omegaGTE/GTEMath.h>
 #include <cmath>
 #include <cstring>

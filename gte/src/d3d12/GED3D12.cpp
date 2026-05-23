@@ -15,7 +15,11 @@
 
 #include <Windows.h>
 
-#include "OmegaGTE.h"
+#include "omegaGTE/GTEDevice.h"
+#include "omegaGTE/GECommandQueue.h"
+#include "omegaGTE/GEPipeline.h"
+#include "omegaGTE/GERenderTarget.h"
+#include "omegaGTE/GTEMath.h"
 
 
 _NAMESPACE_BEGIN_

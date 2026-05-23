@@ -1,9 +1,7 @@
-#ifndef AQUA_MATH_H
-#define AQUA_MATH_H
+#ifndef AQUA_AQMATH_H
+#define AQUA_AQMATH_H
 
-#include "Base.h"
-
-namespace Aqua {
+#include "AQBase.h"
 
 /// Minimal 3-vector for the physics public surface. Deliberately independent of
 /// any graphics-engine math type so AQUA carries no link-time dependency on a
@@ -19,6 +17,4 @@ struct AQUA_EXPORT Vec3 {
     Vec3 &operator+=(const Vec3 &o) { x += o.x; y += o.y; z += o.z; return *this; }
 };
 
-} // namespace Aqua
-
-#endif // AQUA_MATH_H
+#endif // AQUA_AQMATH_H

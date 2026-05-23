@@ -2,7 +2,7 @@
 #include "../omegasl/src/CodeGen.h"
 #include "../omegasl/src/Parser.h"
 
-#include "OmegaGTE.h"
+#include "omegaGTE/GTEDevice.h"
 #include <iostream>
 #include <stdexcept>
 

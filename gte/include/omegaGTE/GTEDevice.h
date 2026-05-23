@@ -1,18 +1,12 @@
-#include "omegaGTE/GTEBase.h"
+#ifndef OMEGAGTE_GTEDEVICE_H
+#define OMEGAGTE_GTEDEVICE_H
 
-#include "omegaGTE/GE.h"
-#include "omegaGTE/GECommandQueue.h"
-#include "omegaGTE/GEPipeline.h"
-#include "omegaGTE/GERenderTarget.h"
-#include "omegaGTE/GETexture.h"
-
-#include "omegaGTE/TE.h"
+#include "GTEBase.h"
+#include "GE.h"
+#include "TE.h"
+#include "omegasl.h"
 
 #include <cstdint>
-
-
-#ifndef _OMEGAGTE_H
-#define _OMEGAGTE_H
 
 _NAMESPACE_BEGIN_
 
@@ -232,5 +226,4 @@ OMEGAGTE_EXPORT void Close(GTE &gte);
 
 _NAMESPACE_END_
 
-
-#endif
+#endif // OMEGAGTE_GTEDEVICE_H

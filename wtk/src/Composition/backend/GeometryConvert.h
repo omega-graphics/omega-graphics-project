@@ -2,7 +2,7 @@
 #define OMEGAWTK_COMPOSITION_GEOMETRYCONVERT_H
 
 #include "omegaWTK/Composition/Geometry.h"
-#include <OmegaGTE.h>
+#include <omegaGTE/GTEMath.h>
 
 namespace OmegaWTK::Composition {
 

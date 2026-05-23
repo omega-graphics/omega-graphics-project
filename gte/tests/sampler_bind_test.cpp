@@ -20,7 +20,11 @@
 /// (The deterministic, build-type-independent validation coverage lives in
 /// sampler_validation_test.cpp.)
 
-#include <OmegaGTE.h>
+#include <omegaGTE/GTEDevice.h>
+#include <omegaGTE/GECommandQueue.h>
+#include <omegaGTE/GEPipeline.h>
+#include <omegaGTE/GERenderTarget.h>
+#include <omegaGTE/GTEMath.h>
 #include <omegaGTE/GTEShader.h>
 #include "GTETestEntryPoint.h"
 

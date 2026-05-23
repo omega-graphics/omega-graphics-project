@@ -4,6 +4,7 @@
     LLVM/Clang and Ninja for building on all platforms
         Use clang-format, clang-tidy to help cleanup and tidy the project files.
     Use PascalCase for file-naming conventions.
+        -Static methods use PascalCase.
     C++ 17 is the default cpp standard of this entire repo
     Use an object-oriented, Modular coding style that has modular rules so if a specific rule needs to be changed across the object it can be.
 

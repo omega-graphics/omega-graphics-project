@@ -11,3 +11,5 @@ by Omega kREATE.
 .. toctree::
   :caption: Table of Contents
   :maxdepth: 3
+
+  About

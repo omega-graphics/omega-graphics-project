@@ -1,4 +1,8 @@
-#include <OmegaGTE.h>
+#include <omegaGTE/GTEDevice.h>
+#include <omegaGTE/GECommandQueue.h>
+#include <omegaGTE/GEPipeline.h>
+#include <omegaGTE/GERenderTarget.h>
+#include <omegaGTE/GTEMath.h>
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
 

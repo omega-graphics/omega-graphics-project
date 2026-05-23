@@ -19,6 +19,7 @@
 #define OMEGAWTK_COMPOSITION_BACKEND_PIPELINE_H
 
 #include "omegaWTK/Core/GTEHandle.h"
+#include <omegaGTE/GERenderTarget.h>
 #include <omega-common/utils.h>
 
 namespace OmegaWTK::Composition {

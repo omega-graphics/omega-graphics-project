@@ -210,6 +210,12 @@ CheckOptions:
     value: CamelCase
   - key: readability-identifier-naming.FunctionCase
     value: camelBack
+  # Static methods are PascalCase, matching the Create() factory convention
+  # (AQContext::Create, Scene::Create, ...). NOTE: clang-tidy spells PascalCase
+  # as "CamelCase"; "camelBack" above is camelCase. Instance methods have no
+  # MethodCase override, so they keep FunctionCase (camelBack).
+  - key: readability-identifier-naming.ClassMethodCase
+    value: CamelCase
   - key: readability-identifier-naming.VariableCase
     value: camelBack
   - key: readability-identifier-naming.MemberCase

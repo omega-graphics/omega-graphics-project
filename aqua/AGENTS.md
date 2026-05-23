@@ -2,7 +2,9 @@
 
 ## Constraints
 
-In this repo all code is under the namespace: Aqua
+This repo uses no namespace. All public objects carry the `AQ` prefix instead
+(e.g. `AQSpace`, `AQRigidBody`, `AQBodyDesc`, `AQBodyType`). The math type `Vec3`
+is the deliberate exception and stays unprefixed.
 
 AQUA is the physics / simulation engine — the simulation counterpart to OmegaGTE
 (graphics). It is consumed by Omega kREATE (the 3D game engine).

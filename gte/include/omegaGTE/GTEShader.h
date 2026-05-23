@@ -1,4 +1,5 @@
 #include "GE.h"
+#include "GTEMath.h"
 
 #include "omegasl.h"
 

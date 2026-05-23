@@ -14,7 +14,11 @@
 //
 // Exits 0 on success, non-zero on first failure.
 
-#include <OmegaGTE.h>
+#include <omegaGTE/GTEDevice.h>
+#include <omegaGTE/GECommandQueue.h>
+#include <omegaGTE/GEPipeline.h>
+#include <omegaGTE/GERenderTarget.h>
+#include <omegaGTE/GTEMath.h>
 #include <omegaGTE/GETextureAsset.h>
 #include <omegaGTE/GEMeshAsset.h>
 #include <omegaGTE/GEMesh.h>

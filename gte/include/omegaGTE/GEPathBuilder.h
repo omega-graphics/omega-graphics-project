@@ -1,4 +1,5 @@
 #include "GTEBase.h"
+#include "GTEMath.h"
 #include <vector>
 #include <cmath>
 

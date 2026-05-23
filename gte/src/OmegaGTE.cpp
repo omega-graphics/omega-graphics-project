@@ -1,4 +1,4 @@
-#include "OmegaGTE.h"
+#include "omegaGTE/GTEDevice.h"
 #include <atomic>
 #include <iostream>
 #include <cstdlib>

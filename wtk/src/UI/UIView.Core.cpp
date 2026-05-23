@@ -1,5 +1,5 @@
 #include "UIViewImpl.h"
-#include <OmegaGTE.h>
+#include <omegaGTE/GTEBase.h>
 
 namespace OmegaWTK {
 

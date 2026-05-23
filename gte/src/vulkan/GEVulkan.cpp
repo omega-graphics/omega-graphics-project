@@ -21,7 +21,11 @@
 #include <cstdlib>
 #include <string>
 
-#include "OmegaGTE.h"
+#include "omegaGTE/GTEDevice.h"
+#include "omegaGTE/GECommandQueue.h"
+#include "omegaGTE/GEPipeline.h"
+#include "omegaGTE/GERenderTarget.h"
+#include "omegaGTE/GTEMath.h"
 
 #include "omega-common/utils.h"
 

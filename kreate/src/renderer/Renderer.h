@@ -3,7 +3,9 @@
 
 #include <kreate/Math.h>
 #include <kreate/Window.h>
-#include <OmegaGTE.h>
+#include <omegaGTE/GTEDevice.h>
+#include <omegaGTE/GECommandQueue.h>
+#include <omegaGTE/GERenderTarget.h>
 #include <memory>
 
 namespace Kreate {

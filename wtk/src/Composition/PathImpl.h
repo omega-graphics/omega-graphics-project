@@ -2,7 +2,7 @@
 #define OMEGAWTK_COMPOSITION_PATHIMPL_H
 
 #include "omegaWTK/Composition/Path.h"
-#include <OmegaGTE.h>
+#include <omegaGTE/GTEBase.h>
 
 namespace OmegaWTK::Composition {
 

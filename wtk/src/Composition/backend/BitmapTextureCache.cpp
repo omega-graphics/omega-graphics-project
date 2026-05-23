@@ -1,4 +1,5 @@
 #include "BitmapTextureCache.h"
+#include <omegaGTE/GECommandQueue.h>
 
 #include <algorithm>
 #include <cmath>

@@ -3,8 +3,568 @@
 
 #include "GTEBase.h"
 #include <cmath>
+#include <array>
 
 _NAMESPACE_BEGIN_
+
+    OMEGAGTE_EXPORT extern const long double PI;
+
+
+    template<class Num_Ty,typename Angle_Ty = float>
+    class  Vector2D_Base {
+        Num_Ty i;
+        Num_Ty j;
+    public:
+        Vector2D_Base(Num_Ty _i,Num_Ty _j):i(_i),j(_j){
+
+        };
+        static Vector2D_Base FromMagnitudeAndAngle(Num_Ty mag,Angle_Ty angle){
+            Vector2D_Base v(cos(angle) * mag,sin(angle) * mag);
+            return v;
+        };
+        Num_Ty & getI(){
+            return i;
+        };
+        Num_Ty & getJ(){
+            return j;
+        };
+        /// Get magnitude
+        virtual Num_Ty mag(){
+            return sqrt(pow(i,2) + pow(j,2));
+        };
+        /// Get angle relative to `i` !
+        Angle_Ty angle(){
+            return atan(j/i);
+        };
+        protected:
+        void add_to_s(const Vector2D_Base<Num_Ty,Angle_Ty> & vector2d){
+            i += vector2d.i;
+            j += vector2d.j;
+        };
+        void subtract_to_s(const Vector2D_Base<Num_Ty,Angle_Ty> & vector2d){
+            i -= vector2d.i;
+            j -= vector2d.j;
+        };
+
+        Vector2D_Base<Num_Ty,Angle_Ty> add(const Vector2D_Base<Num_Ty,Angle_Ty> & vector2d){
+            auto _i = i + vector2d.i;
+            auto _j = j + vector2d.j;
+            return Vector2D_Base(_i,_j);
+        };
+
+        Vector2D_Base<Num_Ty,Angle_Ty> subtract(const Vector2D_Base<Num_Ty,Angle_Ty> & vector2d){
+            auto _i = i - vector2d.i;
+            auto _j = j - vector2d.j;
+            return Vector2D_Base(_i,_j);
+        };
+        public:
+        virtual Vector2D_Base<Num_Ty,Angle_Ty> operator+(const Vector2D_Base<Num_Ty,Angle_Ty> & vec){
+            return add(std::move(vec));
+        };
+        virtual Vector2D_Base<Num_Ty,Angle_Ty> operator-(const Vector2D_Base<Num_Ty,Angle_Ty> & vec){
+            return subtract(std::move(vec));
+        };
+        void operator+=(const Vector2D_Base<Num_Ty,Angle_Ty> & vec){
+            add_to_s(std::move(vec));
+        };
+        void operator-=(const Vector2D_Base<Num_Ty,Angle_Ty> & vec){
+            subtract_to_s(std::move(vec));
+        };
+        Num_Ty dot(const Vector2D_Base<Num_Ty,Angle_Ty> & vec){
+            return (i * vec.i) + (j * vec.j);
+        };
+    };
+
+    typedef Vector2D_Base<float,float> FVector2D;
+    typedef Vector2D_Base<int,float> IVector2D;
+
+
+    template<class Num_Ty,typename Angle_Ty = float>
+    class  Vector3D_Base : protected Vector2D_Base<Num_Ty,Angle_Ty> {
+        typedef Vector2D_Base<Num_Ty,Angle_Ty> parent;
+        Num_Ty k;
+        public:
+        Vector3D_Base(Num_Ty _i,Num_Ty _j,Num_Ty _k):parent(_i,_j),k(_k){};
+        Vector3D_Base(const parent & vec):parent(vec),k(0){
+
+        }
+        static Vector3D_Base FromMagnitudeAndAngles(Num_Ty mag,Angle_Ty angle_v,Angle_Ty angle_h){
+            Vector3D_Base v(parent::FromMagnitudeAndAngle(mag,angle_v));
+            v.k = sin(angle_h) * mag;
+            return v;
+        };
+
+        using parent::getI;
+
+        using parent::getJ;
+
+        Num_Ty & getK(){
+            return k;
+        };
+        /// Get magnitude
+        virtual Num_Ty mag() override{
+            return std::sqrt((this->getI() * this->getI()) + (this->getJ() * this->getJ()) + (k * k));
+        }
+        /// Get the angle on the horizontal plane (Measured from `i`);
+        Angle_Ty angle_h(){
+            return parent::angle();
+        }
+        /// Get the angle on the vertical plane (Measured from `i + k`)
+        Angle_Ty angle_v(){
+            return atan(this->getJ()/sqrt(this->getI() * this->getI() + (k * k)));
+        };
+        protected:
+
+        void add_to_s(const Vector3D_Base<Num_Ty,Angle_Ty> & vector3d){
+            parent::add_to_s(vector3d);
+            k += vector3d.k;
+        };
+
+        void subtract_to_s(const Vector3D_Base<Num_Ty,Angle_Ty> & vector3d){
+            parent::subtract_to_s(vector3d);
+            k -= vector3d.k;
+        };
+
+        void add_to_s_vec2(const Vector2D_Base<Num_Ty,Angle_Ty> & vector2d){
+            parent::subtract_to_s(vector2d);
+        };
+
+        void sub_to_s_vec2(const Vector2D_Base<Num_Ty,Angle_Ty> & vector2d){
+            parent::subtract_to_s(vector2d);
+        };
+
+        Vector3D_Base<Num_Ty,Angle_Ty> add(const Vector3D_Base<Num_Ty,Angle_Ty> & vector3d){
+            Vector3D_Base v(this->getI(),this->getJ(),k);
+            v.add_to_s(vector3d);
+            return v;
+        };
+
+        Vector3D_Base<Num_Ty,Angle_Ty> subtract(const Vector3D_Base<Num_Ty,Angle_Ty> & vector3d){
+            Vector3D_Base v(this->getI(),this->getJ(),k);
+            v.subtract_to_s(vector3d);
+            return v;
+        };
+
+
+        public:
+
+        /// Operators
+        /// @{
+//        Vector3D_Base<Num_Ty,Angle_Ty> operator+(const Vector2D_Base<Num_Ty,Angle_Ty> & vec){
+//            return add(std::move(vec));
+//        };
+
+        Vector3D_Base<Num_Ty,Angle_Ty> operator+(const Vector3D_Base<Num_Ty,Angle_Ty> & vec){
+            return add(std::move(vec));
+        };
+
+//        Vector3D_Base<Num_Ty,Angle_Ty> operator-(const Vector2D_Base<Num_Ty,Angle_Ty> & vec){
+//            return subtract(std::move(vec));
+//        };
+
+        Vector3D_Base<Num_Ty,Angle_Ty> operator-(const Vector3D_Base<Num_Ty,Angle_Ty> & vec){
+            return subtract(std::move(vec));
+        };
+
+
+        void operator+=(const Vector3D_Base<Num_Ty,Angle_Ty> & vec){
+            add_to_s(std::move(vec));
+        };;
+
+        void operator-=(const Vector3D_Base<Num_Ty,Angle_Ty> & vec){
+            subtract_to_s(std::move(vec));
+        };
+        /// @}
+
+        /// Vector Transformations
+        /// @{
+        Num_Ty dot(const Vector3D_Base<Num_Ty,Angle_Ty> & vec){
+            return parent::dot(vec) + (k * vec.k);
+        };
+
+        Vector3D_Base<Num_Ty,Angle_Ty> cross(Vector3D_Base<Num_Ty,Angle_Ty> & vec){
+            Num_Ty i_res = ((this->getI() * vec.k) - (k * vec.getI()));
+            Num_Ty j_res = -((this->getI() * vec.k) - (k * vec.getI()));
+            Num_Ty k_res = ((this->getI() * vec.getJ()) - (this->getJ() * vec.getI()));
+            return Vector3D_Base(i_res,j_res,k_res);
+        };
+        /// @}
+    };
+
+    typedef Vector3D_Base<int,float>  IVector3D;
+    typedef Vector3D_Base<float,float> FVector3D;
+
+
+    template<class Ty,unsigned column,unsigned row>
+   class Matrix {
+   public:
+       typedef typename std::array<Ty,row>::iterator row_pointer;
+       typedef typename std::array<Ty,row>::const_iterator const_row_pointer;
+       typedef typename std::array<std::array<Ty,row>,column>::iterator column_pointer;
+       typedef unsigned size_type;
+
+       class row_pointer_wrapper {
+            row_pointer pt;
+       public:
+           explicit row_pointer_wrapper(row_pointer _pt):pt(_pt){}
+
+//            row_pointer_wrapper(const row_pointer_wrapper &) = delete;
+
+            typedef row_pointer iterator;
+            typedef Ty & reference;
+
+            inline iterator begin(){
+                return pt;
+            }
+            inline iterator end(){
+                return pt + row;
+            }
+
+            inline Ty & at(size_type idx){
+                assert(idx < row && "Cannot index row value at index");
+                return pt[idx];
+            }
+            inline Ty & at(size_type idx) const{
+                assert(idx < row && "Cannot index row value at index");
+                return pt[idx];
+            }
+            inline Ty & operator[](size_type idx){
+                return at(idx);
+            }
+            inline Ty & operator[](size_type idx) const{
+                return at(idx);
+            }
+       };
+
+       class const_row_pointer_wrapper {
+            const_row_pointer pt;
+       public:
+           explicit const_row_pointer_wrapper(const_row_pointer _pt):pt(_pt){}
+
+            typedef const_row_pointer iterator;
+            typedef const Ty & reference;
+
+            inline iterator begin(){
+                return pt;
+            }
+            inline iterator end(){
+                return pt + row;
+            }
+
+            inline const Ty & at(size_type idx) const{
+                assert(idx < row && "Cannot index row value at index");
+                return pt[idx];
+            }
+            inline const Ty & operator[](size_type idx) const{
+                return at(idx);
+            }
+       };
+
+
+
+       class row_pointer_wrapper_iterator {
+           column_pointer pt;
+       public:
+           explicit row_pointer_wrapper_iterator(column_pointer _pt):pt(_pt){
+
+           }
+           void operator +=(size_type n){
+               pt += n;
+           }
+           void operator ++(){
+               operator+=(1);
+           }
+           bool operator !=(const row_pointer_wrapper_iterator &other){
+               return other.pt != pt;
+           }
+           row_pointer_wrapper operator *(){
+               return {*pt};
+           }
+
+       };
+
+       typedef row_pointer_wrapper_iterator iterator;
+    private:
+        std::array<std::array<Ty,row>,column> _data;
+
+        inline void alloc_matrix_mem(Ty * dest){
+//            dest = new row_pointer [column];
+//            column_pointer _data_it = dest;
+//            unsigned _c = column;
+//            while(_c > 0){
+//                *_data_it = 0;
+//                ++_data_it;
+//                --_c;
+//            }
+        }
+
+        Matrix(){
+            /// Alloc Matrix Mem
+            alloc_matrix_mem(nullptr);
+
+            /// Set all Matrix vals to 0
+
+            for(unsigned i = 0;i < column;i++){
+                for(unsigned j = 0;j < row;j++){
+                    _data[i][j] = 0;
+                }
+            }
+        };
+
+        template<unsigned _column,unsigned _row>
+        static void copy_data_to(column_pointer from,column_pointer dest){
+            column_pointer _data_it = dest;
+            column_pointer _data_it_f = from;
+            unsigned _c = _column;
+            while(_c > 0){
+                row_pointer _row_it = _data_it->begin();
+                row_pointer _row_it_f = _data_it_f->begin();
+                unsigned _r = _row;
+                while(_r > 0){
+                    *_row_it = *_row_it_f;
+                    --_r;
+                    ++_row_it;
+                    ++_row_it_f;
+                }
+
+                ++_data_it;
+                ++_data_it_f;
+                --_c;
+            }
+        }
+   public:
+       inline iterator begin(){
+            return {_data.begin()};
+        }
+        inline iterator end(){
+            return {_data.end()};
+        }
+       inline row_pointer_wrapper at(size_type idx){
+           assert(idx < column && "Cannot index column pointer at index");
+           return row_pointer_wrapper(_data[idx].begin());
+       }
+       inline const_row_pointer_wrapper at(size_type idx) const{
+           assert(idx < column && "Cannot index column pointer at index");
+           return const_row_pointer_wrapper(_data[idx].begin());
+       }
+
+       inline row_pointer_wrapper operator[](size_type idx){
+            return at(idx);
+       };
+
+       inline const_row_pointer_wrapper operator[](size_type idx) const{
+           return at(idx);
+       };
+
+       template<unsigned n_column,unsigned n_row>
+       Matrix<Ty,n_column,n_row> resize(){
+           Matrix<Ty,n_column,n_row> n;
+           unsigned col_to_cpy,row_to_cpy;
+           /// Downsizing Matrix Column Count
+           if(n_column > column){
+             col_to_cpy = column;
+           }
+           else {
+               col_to_cpy = n_column;
+           }
+           /// Downsizing Matrix Row Count
+           if(n_row > row){
+               row_to_cpy = row;
+           }
+           else {
+               row_to_cpy = n_row;
+           }
+           copy_data_to<col_to_cpy,row_to_cpy>(_data.begin(),n._data.begin());
+           return n;
+       }
+
+       template<unsigned o_column,unsigned o_row>
+        explicit Matrix(const Matrix<Ty,o_column,o_row> & other){
+            alloc_matrix_mem(nullptr);
+            unsigned col_to_cpy,row_to_cpy;
+            /// Downsizing Matrix Column Count
+            if(o_column > column){
+                col_to_cpy = column;
+            }
+            else {
+                col_to_cpy = o_column;
+            }
+
+            /// Downsizing Matrix Row Count
+            if(o_row > row){
+                row_to_cpy = row;
+            }
+            else {
+                row_to_cpy = o_row;
+            }
+            copy_data_to<col_to_cpy,row_to_cpy>(other._data.begin(),_data.begin());
+        };
+    //    template<unsigned o_column,unsigned o_row>
+    //    explicit Matrix(Matrix<Ty,o_column,o_row> && other){
+    //         // alloc_matrix_mem(nullptr);
+    //         // unsigned col_to_cpy,row_to_cpy;
+
+    //         // copy_data_to<o_column,o_row>(other._data.begin(),_data.begin());
+    //     };
+
+        /// Construct a Matrix from a Vector2D
+        explicit Matrix(Vector2D_Base<Ty> & vec){
+            static_assert(row == 1 && column == 2 && "Cannot construct Matrix of size from Vector2D");
+//            alloc_matrix_mem(_data.data());
+            this->operator[](0).operator[](0) = vec.getI();
+            this->operator[](1).operator[](0) = vec.getJ();
+        }
+        /// Construct a Matrix from a Vector3D
+        explicit Matrix(Vector3D_Base<Ty> & vec){
+            static_assert(row == 1 && column == 3 && "Cannot construct Matrix of size from Vector2D");
+//            alloc_matrix_mem(_data.data());
+            this->operator[](0).operator[](0) = vec.getI();
+            this->operator[](1).operator[](0) = vec.getJ();
+            this->operator[](2).operator[](0) = vec.getK();
+        }
+
+       /** @brief Create an empty Matrix with the specified width and height.
+           @param[in] h Height
+           @param[in] w Width
+           @returns Matrix
+       */
+       static Matrix Create(){
+           return Matrix();
+       };
+       static Matrix Identity(){
+           static_assert(column == row && "Cannot construct an Identity Matrix");
+           auto m = Create();
+
+           for(unsigned _c = 0;_c < column;_c++){
+                m[_c][_c] = 1;
+           }
+           return m;
+       };
+       ~Matrix() = default;
+
+       // ---- Arithmetic operators ----
+
+       template<class, unsigned, unsigned> friend class Matrix;
+
+       Matrix operator+(const Matrix& other) const {
+           auto r = Create();
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   r._data[i][j] = _data[i][j] + other._data[i][j];
+           return r;
+       }
+       Matrix operator-(const Matrix& other) const {
+           auto r = Create();
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   r._data[i][j] = _data[i][j] - other._data[i][j];
+           return r;
+       }
+       Matrix operator-() const {
+           auto r = Create();
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   r._data[i][j] = -_data[i][j];
+           return r;
+       }
+       Matrix operator*(Ty scalar) const {
+           auto r = Create();
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   r._data[i][j] = _data[i][j] * scalar;
+           return r;
+       }
+       friend Matrix operator*(Ty scalar, const Matrix& m) { return m * scalar; }
+
+       /// Matrix * Matrix: (CxR) * (RxP) = (CxP)
+       template<unsigned P>
+       Matrix<Ty, column, P> operator*(const Matrix<Ty, row, P>& other) const {
+           auto r = Matrix<Ty, column, P>::Create();
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < P; j++){
+                   Ty sum = 0;
+                   for(unsigned k = 0; k < row; k++)
+                       sum += _data[i][k] * other._data[k][j];
+                   r._data[i][j] = sum;
+               }
+           return r;
+       }
+
+       Matrix& operator+=(const Matrix& other){
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   _data[i][j] += other._data[i][j];
+           return *this;
+       }
+       Matrix& operator-=(const Matrix& other){
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   _data[i][j] -= other._data[i][j];
+           return *this;
+       }
+       Matrix& operator*=(Ty scalar){
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   _data[i][j] *= scalar;
+           return *this;
+       }
+
+       bool operator==(const Matrix& other) const {
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   if(_data[i][j] != other._data[i][j]) return false;
+           return true;
+       }
+       bool operator!=(const Matrix& other) const { return !(*this == other); }
+
+       // ---- Utility ----
+
+       Matrix<Ty, row, column> transposed() const {
+           auto r = Matrix<Ty, row, column>::Create();
+           for(unsigned i = 0; i < column; i++)
+               for(unsigned j = 0; j < row; j++)
+                   r._data[j][i] = _data[i][j];
+           return r;
+       }
+
+       const Ty* data() const { return &_data[0][0]; }
+       Ty* data() { return &_data[0][0]; }
+   };
+
+    template<unsigned c,unsigned r>
+    using IMatrix = Matrix<int,c,r>;
+
+    template<unsigned c,unsigned r>
+    using UMatrix = Matrix<unsigned int,c,r>;
+
+    template<unsigned c,unsigned r>
+    using FMatrix = Matrix<float,c,r>;
+
+    template<unsigned c,unsigned r>
+    using DMatrix = Matrix<double,c,r>;
+
+    /// Single Row Matrices
+
+    template<unsigned n>
+    using IVec = IMatrix<n,1>;
+
+    template<unsigned n>
+    using UVec = UMatrix<n,1>;
+
+    template<unsigned n>
+    using FVec = FMatrix<n,1>;
+
+    template<unsigned n>
+    using DVec = DMatrix<n,1>;
+
+    inline FVec<4> makeColor(float r,float g,float b,float a){
+        auto m = FVec<4>::Create();
+        m[0][0] = r;
+        m[1][0] = g;
+        m[2][0] = b;
+        m[3][0] = a;
+        return m;
+    }
 
     // ==================================================================
     // Constants
@@ -515,5 +1075,43 @@ _NAMESPACE_BEGIN_
     }
 
 _NAMESPACE_END_
+
+namespace OmegaCommon {
+    /// @brief Formatter of FVector2D
+    template<>
+    struct FormatProvider<OmegaGTE::FVector2D> {
+        static void format(std::ostream & out,OmegaGTE::FVector2D & object){
+            out << "OmegaGTE.FVector2D {" << object.getI() << "i, " << object.getJ() << "j}" << std::flush;
+        }
+    };
+
+    template<>
+    struct FormatProvider<OmegaGTE::FVector3D> {
+        static void format(std::ostream & out,OmegaGTE::FVector3D & object){
+            out << "OmegaGTE.FVector3D {" << object.getI() << "i, " << object.getJ() << "j, " << object.getK() << "k}" << std::flush;
+        }
+    };
+
+    template<>
+    struct FormatProvider<OmegaGTE::FVec<2>>{
+        static void format(std::ostream & out,OmegaGTE::FVec<2> & object){
+            out << "OmegaGTE.FVec<2> [" << object[0][0] << "," << object[1][0] << "]";
+        }
+    };
+
+    template<>
+    struct FormatProvider<OmegaGTE::FVec<3>>{
+        static void format(std::ostream & out,OmegaGTE::FVec<3> & object){
+            out << "OmegaGTE.FVec<3> [" << object[0][0] << "," << object[1][0] << "," << object[2][0] <<  "]";
+        }
+    };
+
+    template<>
+    struct FormatProvider<OmegaGTE::FVec<4>>{
+        static void format(std::ostream & out,OmegaGTE::FVec<4> & object){
+            out << "OmegaGTE.FVec<4> [" << object[0][0] << "," << object[1][0] << "," << object[2][0] << "," << object[3][0] << "]";
+        }
+    };
+}
 
 #endif

@@ -1,6 +1,7 @@
 #include <kreate/Pipeline.h>
 #include "PipelineFactory.h"
-#include <OmegaGTE.h>
+#include <omegaGTE/GTEDevice.h>
+#include <omegaGTE/GEPipeline.h>
 #include <omegasl.h>
 #include <fstream>
 #include <sstream>
