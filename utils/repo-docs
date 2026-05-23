@@ -19,6 +19,7 @@ MODULE_ORDER: Tuple[str, ...] = (
     "OmegaWTK",
     "AUTOM",
     "AQUA",
+    "kREATE",
 )
 
 REPO_SPHINX_SITE_KEY = "OmegaGraphicsProject"
@@ -75,8 +76,14 @@ MODULES: Sequence[ModuleConfig] = (
         name="AQUA",
         root_dir="aqua",
         input_dirs=("src", "include"),
+        project_brief="AQUA physics / simulation engine for the Omega Graphics Project.",
+    ),
+    ModuleConfig(
+        name="kREATE",
+        root_dir="kreate",
+        input_dirs=("src", "include"),
         dependencies=("OmegaGTE",),
-        project_brief="AQUA engine module built on top of OmegaGTE.",
+        project_brief="kREATE engine module built on top of OmegaGTE.",
     ),
 )
 

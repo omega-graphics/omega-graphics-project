@@ -1,0 +1,5 @@
+
+
+project("KREATE","0.0.1pre-alpha")
+
+subdir("./engine")

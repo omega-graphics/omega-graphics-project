@@ -100,7 +100,7 @@ The toolchain understands a few options:
   setting builds ``arm64;x86_64`` against ``iphonesimulator`` so the
   binary runs on both Apple Silicon and Intel simulators.
 - ``IOS_MINIMUM_SUPPORT_VERSION`` — minimum iOS version, defaults to
-  ``13.0``. The AQUA runtime uses ``UIScene`` APIs, so going lower is
+  ``13.0``. The kREATE runtime uses ``UIScene`` APIs, so going lower is
   not recommended.
 
 ``CODE_SIGNATURE`` is required on Apple targets because the build signs
@@ -143,7 +143,7 @@ Override the toolchain's defaults if you need to:
 - ``CMAKE_ANDROID_ARCH_ABI`` — defaulting to ``arm64-v8a``.
 
 Building for Android produces a shared library (``lib<NAME>.so``) for
-each AQUA game. Wrapping that into an APK is a separate, follow-on
+each kREATE game. Wrapping that into an APK is a separate, follow-on
 concern.
 
 

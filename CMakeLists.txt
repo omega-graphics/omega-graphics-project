@@ -77,7 +77,7 @@ endif()
 #     add_omega_graphics_tool (autom, autom-install, omegaslc, omega-wrapgen,
 #     omega-assetc, omega-ebin, parse-test). These produce host binaries that
 #     the cross-compile parent copies into its own bin/ via a POST_BUILD step.
-#   - Skips OmegaWTK and AQUA — they are runtime libraries with no host-tool
+#   - Skips OmegaWTK and kREATE — they are runtime libraries with no host-tool
 #     contribution.
 #   - Skips OmegaGTE's library/framework build (only its omegaslc tool path
 #     is needed).
@@ -102,12 +102,17 @@ if(NOT OMEGA_HOST_TOOLS_ONLY)
 
     omega_graphics_add_subdir(OmegaWTK wtk)
 
-    # Add Game engine module. AQUA cross-compiles for iOS and Android via
+    # Physics engine module (AQUA). Standalone C++ — no platform or graphics
+    # dependency yet — so it builds on every target, including cross-compiles.
+    # Added before kREATE because the game engine consumes it.
+    omega_graphics_add_subdir(AQUA aqua)
+
+    # Add Game engine module. kREATE cross-compiles for iOS and Android via
     # the platform stubs in src/platform/{ios,android}; other cross-compile
     # targets are still excluded until they grow platform code.
     if(NOT CROSS_COMPILE
        OR CMAKE_SYSTEM_NAME STREQUAL "iOS"
        OR CMAKE_SYSTEM_NAME STREQUAL "Android")
-        omega_graphics_add_subdir(AQUA aqua)
+        omega_graphics_add_subdir(KREATE kreate)
     endif()
 endif()

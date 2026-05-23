@@ -1,19 +1,7 @@
 {
-    "variables":{
-        "third_party_dest":"./deps"
+    "project": "AQUA",
+    "variables": {
+        "third_party_dest": "./deps"
     },
-    "dependencies":[
-         {
-            "name": "sdl",
-            "type": "git",
-            "url": "https://github.com/libsdl-org/SDL.git",
-            "dest": "$(third_party_dest)/sdl"
-        },
-        {
-            "name": "physx",
-            "type": "git",
-            "url": "https://github.com/NVIDIA-Omniverse/PhysX.git",
-            "dest": "$(third_party_dest)/physx"
-        }
-    ]
+    "dependencies": []
 }

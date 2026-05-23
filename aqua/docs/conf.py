@@ -14,7 +14,7 @@ project = "AQUA"
 author = "Omega Graphics"
 
 copyright = "2026," + author
-version = "0.3"
+version = "0.1"
 
 extensions = ["sphinx.ext.viewcode"]
 

@@ -86,43 +86,7 @@ OmegaCommon::FS::Path AppInst::executableDir(){
     // ctest / different shell dir all leave it elsewhere than the EXE
     // dir); these APIs report the binary's own absolute path so callers
     // can locate adjacent assets unconditionally.
-#if defined(_WIN32)
-    char buf[MAX_PATH] = {};
-    DWORD n = GetModuleFileNameA(NULL, buf, MAX_PATH);
-    if(n == 0 || n == MAX_PATH){
-        return OmegaCommon::FS::Path("");
-    }
-    std::string path(buf, n);
-    const auto slash = path.find_last_of("\\/");
-    if(slash == std::string::npos){
-        return OmegaCommon::FS::Path("");
-    }
-    return OmegaCommon::FS::Path(path.substr(0, slash));
-#elif defined(__APPLE__)
-    char buf[PATH_MAX] = {};
-    uint32_t size = sizeof(buf);
-    if(_NSGetExecutablePath(buf, &size) != 0){
-        return OmegaCommon::FS::Path("");
-    }
-    std::string path(buf);
-    const auto slash = path.find_last_of('/');
-    if(slash == std::string::npos){
-        return OmegaCommon::FS::Path("");
-    }
-    return OmegaCommon::FS::Path(path.substr(0, slash));
-#else
-    char buf[PATH_MAX] = {};
-    ssize_t n = readlink("/proc/self/exe", buf, PATH_MAX - 1);
-    if(n <= 0){
-        return OmegaCommon::FS::Path("");
-    }
-    std::string path(buf, (size_t)n);
-    const auto slash = path.find_last_of('/');
-    if(slash == std::string::npos){
-        return OmegaCommon::FS::Path("");
-    }
-    return OmegaCommon::FS::Path(path.substr(0, slash));
-#endif
+    return std::move(OmegaCommon::FS::getExecutableDir());
 }
 
 Native::NAP & AppInst::getNAP(){

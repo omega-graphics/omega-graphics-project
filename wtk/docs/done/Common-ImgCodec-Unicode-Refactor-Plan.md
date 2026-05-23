@@ -1,7 +1,7 @@
 # Refactor Plan — Move `ImgCodec` and `Unicode.h` from OmegaWTK to OmegaCommon
 
 Status: Phase 0 complete — decisions recorded in §11, Phase 1 unblocked.
-Scope: `wtk/include/omegaWTK/Media/ImgCodec.h`, `wtk/src/Media/{ImgCodec,JpegCodec,PngCodec,TiffCodec,ImgCodecPriv}.{cpp,h}`, `wtk/include/omegaWTK/Core/Unicode.h`, `wtk/src/Core/Unicode.cpp` — and the consumers in OmegaWTK (Composition, UI, Native), with the goal of making both APIs reusable from AQUA without taking a dependency on OmegaWTK.
+Scope: `wtk/include/omegaWTK/Media/ImgCodec.h`, `wtk/src/Media/{ImgCodec,JpegCodec,PngCodec,TiffCodec,ImgCodecPriv}.{cpp,h}`, `wtk/include/omegaWTK/Core/Unicode.h`, `wtk/src/Core/Unicode.cpp` — and the consumers in OmegaWTK (Composition, UI, Native), with the goal of making both APIs reusable from kREATE without taking a dependency on OmegaWTK.
 
 ---
 
@@ -11,15 +11,15 @@ Scope: `wtk/include/omegaWTK/Media/ImgCodec.h`, `wtk/src/Media/{ImgCodec,JpegCod
 
 - `ImgCodec` only depends on `OmegaCommon::AssetBundle`, `OmegaCommon::FS::Path`, `OmegaCommon::HttpClientContext`, and the libpng / libjpeg-turbo / libtiff trio.
 - `UniString` only depends on ICU's `ustring.h`.
-- AQUA currently has no image-loading or unicode-string primitive of its own. As soon as AQUA's editor or asset pipeline needs either, it would either re-implement them, link OmegaWTK (a cross-direction dependency), or fork the code. None of those are acceptable.
+- kREATE currently has no image-loading or unicode-string primitive of its own. As soon as kREATE's editor or asset pipeline needs either, it would either re-implement them, link OmegaWTK (a cross-direction dependency), or fork the code. None of those are acceptable.
 
-Goal: have a single home for these utilities under the `common/` tree, consumable from both OmegaWTK and AQUA.
+Goal: have a single home for these utilities under the `common/` tree, consumable from both OmegaWTK and kREATE.
 
 ## 2. Constraints to respect
 
 These are the things the existing codebase already commits to. The plan must not regress them.
 
-1. **OmegaCommon is currently lightweight.** Its third-party surface today is pcre2 + openssl + libcurl. Folding ICU + libpng + libjpeg-turbo + libtiff into the *same* `OmegaCommon` shared library would force every OmegaCommon consumer (e.g. `omega-wrapgen`, `omega-assetc`, `omega-ebin`, AQUA's BasicGame, all of WTK's submodule libs) to link those four libraries even when they don't need them. That is a real cost — ICU alone is ~30 MB of data tables, and the WTK build already manages it carefully (`OmegaWTK_ThirdPartyInstallNames` rpath fixups on macOS, DLL copying on Windows).
+1. **OmegaCommon is currently lightweight.** Its third-party surface today is pcre2 + openssl + libcurl. Folding ICU + libpng + libjpeg-turbo + libtiff into the *same* `OmegaCommon` shared library would force every OmegaCommon consumer (e.g. `omega-wrapgen`, `omega-assetc`, `omega-ebin`, kREATE's BasicGame, all of WTK's submodule libs) to link those four libraries even when they don't need them. That is a real cost — ICU alone is ~30 MB of data tables, and the WTK build already manages it carefully (`OmegaWTK_ThirdPartyInstallNames` rpath fixups on macOS, DLL copying on Windows).
 2. **The third-party `add_third_party()` blocks for ICU / libpng / libjpeg-turbo / libtiff currently live in `wtk/CMakeLists.txt`** and contribute to the `OmegaWTK` framework's `EMBEDDED_LIBS`. Moving the source code without moving the build wiring will leave OmegaCommon unable to link.
 3. **`OmegaWTK::Media::BitmapImage` is part of OmegaWTK's *public* API surface.** It appears in `Canvas::drawImage`, `CanvasView::drawImage`, `Media::AudioVideoProcessorContext`, the `API.rst` reference, and the `Widget-Stub-Implementation-Plan` / `Canvas-Layer-Exclusivity-Plan` documents. A naïve rename will cascade through everything that uses `Media::BitmapImage` or `UniString` — both directly and through documentation.
 4. **`StatusWithObj<T>` is OmegaWTK-only.** Replacing it on the new public surface means picking a Common-side equivalent. `OmegaCommon::Result<T, E>` already exists (`common/include/omega-common/utils.h:780`) and is the natural fit.
@@ -235,7 +235,7 @@ namespace OmegaWTK { namespace Media {
 
 Mark both with a `[[deprecated]]` `#pragma message` so consumers get a warning at compile time.
 
-Shim lifetime is **not** tied to a specific OmegaWTK version (the version numbers in `wtk/CMakeLists.txt:3` and `common/CMakeLists.txt:3` are stale per Phase 0). Concrete sequencing: keep the shims through Phase 4 (WTK internal flip); decide whether to remove or keep them in Phase 6 once the WTK + AQUA call sites have all moved over. Removal can be its own commit, separate from this refactor.
+Shim lifetime is **not** tied to a specific OmegaWTK version (the version numbers in `wtk/CMakeLists.txt:3` and `common/CMakeLists.txt:3` are stale per Phase 0). Concrete sequencing: keep the shims through Phase 4 (WTK internal flip); decide whether to remove or keep them in Phase 6 once the WTK + kREATE call sites have all moved over. Removal can be its own commit, separate from this refactor.
 
 ## 10. Phased plan
 
@@ -249,7 +249,7 @@ The change is mechanical but wide. Phasing it lets the build stay green at each 
 
 **Phase 2 — Unicode in Common. ✅ Complete.** Added `common/include/omega-common/unicode.h` (public API: `OmegaCommon::UniString`, `UnicodeChar`, `Unicode32Char` — exports via `OMEGACOMMON_EXPORT`, no ICU types in the public surface) and `common/src/unicode/UniString.cpp` (verbatim port of the WTK impl into the `OmegaCommon` namespace; uses ICU's `u_strFromUTF8` / `u_strFromUTF32` internally). Extended `common/CMakeLists.txt` `COMMON_SRCS` to glob `src/unicode/*.cpp`. `OmegaCommon` now `PRIVATE`-links `icuuc icudata icui18n` and has `add_dependencies("OmegaCommon" icu)` so ICU builds before OmegaCommon. `wtk/include/omegaWTK/Core/Unicode.h` reduced to a shim — `#include <omega-common/unicode.h>` plus `using UniString = OmegaCommon::UniString;` (etc.) in namespace `OmegaWTK`. `wtk/src/Core/Unicode.cpp` deleted. Every existing wtk caller (Composition backends, FontEngine, NativeEvent, CanvasView, Canvas.cpp) keeps compiling unchanged through the alias.
 
-**ICU embedding deferred.** `add_omega_graphics_module(SHARED ...)` does not consume `EMBEDDED_LIBS` (only the FRAMEWORK path does — see `cmake/OmegaGraphicsSuite.cmake:752-754`). WTK continues to own ICU embedding via its framework's `EMBEDDED_LIBS ${ICU_EXPORT}`. When AQUA-only deployment of OmegaCommon becomes a concern (Phase 5+), either extend the helper to support `EMBEDDED_LIBS` for non-FRAMEWORK SHARED on Apple/Win, or hand-roll the dylib/DLL copy alongside `libOmegaCommon`. Tracked as a Phase 5 prerequisite.
+**ICU embedding deferred.** `add_omega_graphics_module(SHARED ...)` does not consume `EMBEDDED_LIBS` (only the FRAMEWORK path does — see `cmake/OmegaGraphicsSuite.cmake:752-754`). WTK continues to own ICU embedding via its framework's `EMBEDDED_LIBS ${ICU_EXPORT}`. When kREATE-only deployment of OmegaCommon becomes a concern (Phase 5+), either extend the helper to support `EMBEDDED_LIBS` for non-FRAMEWORK SHARED on Apple/Win, or hand-roll the dylib/DLL copy alongside `libOmegaCommon`. Tracked as a Phase 5 prerequisite.
 
 **Phase 3 — Img in Common. ✅ Complete.** Added `common/include/omega-common/img.h` (public API: `OmegaCommon::Img::BitmapImage`, `Profile`, `Byte`, `Header`, `ColorFormat`, `AlphaFormat`, `Format` — all namespace-level per Phase 0 decision, with `OMEGACOMMON_EXPORT`). Added `common/src/img/{ImgCodecPriv.h, ImgCodec.cpp, PngCodec.cpp, JpegCodec.cpp, TiffCodec.cpp}` as ports of the wtk impl into `OmegaCommon::Img` namespace, with `Core::IStream` → `std::istream`, `Core::UniquePtr<T>` → `std::unique_ptr<T>`, `OPT_PARAM` → `std::uint8_t`, and `StatusWithObj<BitmapImage>` → `Result<BitmapImage, std::string>`. The pre-existing typo `AlphaFormat::Ingore` is preserved deliberately (renaming it is a stealth API change; track separately if you want to fix). Extended `common/CMakeLists.txt` `COMMON_SRCS` to glob `src/img/*.cpp`. `OmegaCommon` now `PRIVATE`-links `png turbojpeg tiff z` (static archives bake into `libOmegaCommon` at link time per Phase 1b) plus `add_dependencies("OmegaCommon" libpng libjpeg-turbo libtiff zlib)`. `wtk/include/omegaWTK/Media/ImgCodec.h` reduced to a shim — type aliases for `BitmapImage`, `ImgProfile`, `ImgByte`, `ImgHeader`, plus `ColorFormat` / `AlphaFormat` / `Format` (the latter three are now hoisted from `BitmapImage::` to `Media::` in the shim and `OmegaCommon::Img::` in the new home) — and inline `loadImageFrom*` forwarders that adapt `Result<BitmapImage, std::string>` back to `StatusWithObj<BitmapImage>` for unmigrated callers. Deleted `wtk/src/Media/{ImgCodec, JpegCodec, PngCodec, TiffCodec}.cpp` and `wtk/src/Media/ImgCodecPriv.h` — OmegaCommon owns the symbols.
 
@@ -268,7 +268,7 @@ ICU `EMBEDDED_LIBS` stays in WTK's framework for now — deployment-ownership sh
 
 The `Media::Audio*`, `Media::Video*`, `MediaInputStream`, `MediaOutputStream`, `MediaPlaybackSession`, `VideoFrame`, `AudioCaptureDevice`, `VideoDevice`, etc. references in WTK source were intentionally **not** touched — those types stay in `OmegaWTK::Media` until the OmegaVA migration (out of scope, §12).
 
-**Phase 5 — first AQUA consumer.** Skipped: AQUA has no image / unicode call sites yet. The Phase 1a build did exercise OmegaCommon-only linkage transitively (BasicGame links AQUA, which links OmegaGTE/OmegaCommon — no OmegaWTK), so the "AQUA can consume OmegaCommon without dragging WTK in" property is already validated. Re-check this once AQUA actually uses `OmegaCommon::Img` or `OmegaCommon::UniString`.
+**Phase 5 — first kREATE consumer.** Skipped: kREATE has no image / unicode call sites yet. The Phase 1a build did exercise OmegaCommon-only linkage transitively (BasicGame links kREATE, which links OmegaGTE/OmegaCommon — no OmegaWTK), so the "kREATE can consume OmegaCommon without dragging WTK in" property is already validated. Re-check this once kREATE actually uses `OmegaCommon::Img` or `OmegaCommon::UniString`.
 
 **Phase 6 — shim removal. ✅ Complete.** Deleted `wtk/include/omegaWTK/Media/ImgCodec.h` and `wtk/include/omegaWTK/Core/Unicode.h` (the type aliases + `StatusWithObj` ↔ `Result` adapters). Seven `#include` sites updated:
 - `wtk/include/omegaWTK/Widgets/Primatives.h` → `<omega-common/img.h>`.

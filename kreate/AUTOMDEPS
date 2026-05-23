@@ -1,0 +1,13 @@
+{
+    "variables":{
+        "third_party_dest":"./deps"
+    },
+    "dependencies":[
+         {
+            "name": "sdl",
+            "type": "git",
+            "url": "https://github.com/libsdl-org/SDL.git",
+            "dest": "$(third_party_dest)/sdl"
+        }
+    ]
+}

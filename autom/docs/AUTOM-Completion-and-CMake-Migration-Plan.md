@@ -286,7 +286,7 @@ Needed for this repo specifically:
 - **Java/Android native bridge** — Android-facing Java code needs a clean way to
   consume C/C++ outputs from this repo through JNI/NDK-style shared-library
   boundaries, ABI-aware staging, and generated/native header hand-off.
-- **Swift** — not used today, but desirable for AQUA.
+- **Swift** — not used today, but desirable for kREATE.
 - **CUDA** — out of scope for now.
 
 Extension: `autom.languages = ["c","cxx","objcxx","asm","java"]` drives
@@ -607,7 +607,7 @@ if(try_compile(src:"#include <arm_neon.h>\nint main(){return 0;}")) {
 - Existing `JarLib` / `JarExe` usage continues to work, but no longer implies
   Gradle as a required generator target.
 - Every current `AUTOM.build` in the tree (root, `common/`, `gte/`, `wtk/`,
-  `aqua/`, `autom/`, `autom/tests/*`) continues to evaluate without change.
+  `kreate/`, `autom/`, `autom/tests/*`) continues to evaluate without change.
 - New builtins are additive only; no grammar change.
 
 ### 3.6 Implementation phases (AUTOM side)
@@ -647,12 +647,12 @@ gte/omegasl/tests/CMakeLists.txt
 wtk/CMakeLists.txt
 wtk/tests/CMakeLists.txt
 wtk/tests/RootWidget/CMakeLists.txt
-aqua/CMakeLists.txt
+kreate/CMakeLists.txt
 cmake/OmegaGraphicsSuite.cmake              — shared macros (the hard part)
 ```
 
 And matching `AUTOM.build` already exists at: root, `autom/`, `autom/Fileformats/`,
-`autom/tests/*`, `wtk/`, `common/`, `aqua/`, `gte/`. The AUTOM build files exist
+`autom/tests/*`, `wtk/`, `common/`, `kreate/`, `gte/`. The AUTOM build files exist
 but are not currently the source of truth.
 
 ### 4.2 Guiding principles
@@ -660,7 +660,7 @@ but are not currently the source of truth.
 1. **Two build systems coexist during migration.** Every commit must leave the
    CMake build green until the final cutover for that module. No "big bang".
 2. **Leaf-first.** Migrate deepest directories first (test subfolders, omegasl),
-   then mid-tier (`common/`, `gte/`, `wtk/`), then `aqua/`, then root.
+   then mid-tier (`common/`, `gte/`, `wtk/`), then `kreate/`, then root.
 3. **Parity tests at each step.** A migrated module is done when:
    - `autom configure && autom build` succeeds on macOS, Linux, Windows
    - outputs binary-compare to the CMake build for the same target (or a written
@@ -757,7 +757,7 @@ Blocks on M4, M5.
 - Windows DLL + manifest via `windows.autom::WindowsDll`
 - Linux .so via plain `Shared`
 
-#### **M7 — `aqua/`**
+#### **M7 — `kreate/`**
 
 Blocks on M4–M6. Guarded by `arg(name:"CROSS_COMPILE", ...)` to match current behavior.
 

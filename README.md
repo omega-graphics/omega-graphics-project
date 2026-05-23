@@ -1,6 +1,6 @@
 # Omega Graphics Project
 
-Omega Graphics Project is a multi-module C++ codebase for graphics, UI, build tooling, and engine work. The root build currently wires together five primary modules: `AUTOM`, `OmegaCommon`, `OmegaGTE`, `OmegaWTK`, and `AQUA`.
+Omega Graphics Project is a multi-module C++ codebase for graphics, UI, build tooling, and engine work. The root build currently wires together six primary modules: `AUTOM`, `OmegaCommon`, `OmegaGTE`, `OmegaWTK`, `AQUA`, and `Omega kREATE`.
 
 ## Modules
 
@@ -22,9 +22,11 @@ Omega Graphics Project is a multi-module C++ codebase for graphics, UI, build to
 
 ### [AQUA](./aqua/README.md)
 
-`AQUA` is an early-stage game engine module that already builds as a separate library in this repo. It currently contains engine and editor scaffolding, including core and scene code, an editor entry point, and design/implementation planning documents for a larger engine intended to build on `OmegaGTE` and `OmegaWTK`.
+`AQUA` is the physics / simulation engine for the suite — the simulation counterpart to `OmegaGTE`. It is consumed by `Omega kREATE` for collision and dynamics, and keeps its simulation backend hidden behind its public API. Early-stage scaffold: a rigid-body `World` with a placeholder integrator; collision, constraints, and the real solver are upcoming.
 
-Related subprojects inside the main modules include `OmegaSL` under `gte/omegasl` and `omega-wrapgen` under `common/wrapgen`.
+### [Omega kREATE](./kreate/README.md)
+
+`Omega kREATE` is an early-stage game engine module that already builds as a separate library in this repo. It currently contains engine and editor scaffolding, including core and scene code, an editor entry point, and design/implementation planning documents for a larger engine intended to build on `OmegaGTE` and `OmegaWTK`.
 
 ## Want To Contribute?
 

@@ -2,15 +2,12 @@
 AQUA
 ====
 
-AQUA Game Engine 
+AQUA Physics Engine
 
-AQUA is our 3D game engine built using OmegaGTE, and OmegaSL.
+AQUA is the physics / simulation engine for the Omega Graphics suite, consumed
+by Omega kREATE.
 
 
 .. toctree::
   :caption: Table of Contents
   :maxdepth: 3
-
-
-
-

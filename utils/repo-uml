@@ -46,7 +46,8 @@ MODULE_DEPENDENCIES = {
     "OmegaGTE": ["OmegaCommon"],
     "OmegaWTK": ["OmegaCommon", "OmegaGTE"],
     "AUTOM": [],
-    "AQUA": ["OmegaGTE"],
+    "AQUA": [],
+    "kREATE": ["OmegaGTE"],
 }
 
 
@@ -137,14 +138,24 @@ MODULES: Sequence[ModuleConfig] = (
         name="AQUA",
         root_dir="aqua",
         scan_dirs=("include", "src"),
-        primary_namespace="AQUA",
+        primary_namespace="Aqua",
+        class_fill_color="#0e7490",
+        struct_fill_color="#155e75",
+        stroke_color="#0e7490",
+        font_color="#ecfeff",
+    ),
+    ModuleConfig(
+        name="kREATE",
+        root_dir="kreate",
+        scan_dirs=("include", "src"),
+        primary_namespace="Kreate",
         class_fill_color="#6d28d9",
         struct_fill_color="#4c1d95",
         stroke_color="#5b21b6",
         font_color="#faf5ff",
         namespace_macros={
-            "AQUA_NAMESPACE_BEGIN": "namespace AQUA {",
-            "AQUA_NAMESPACE_END": "}",
+            "KREATE_NAMESPACE_BEGIN": "namespace Kreate {",
+            "KREATE_NAMESPACE_END": "}",
         },
     ),
 )
@@ -539,6 +550,8 @@ def infer_include_dependencies(module_name: str, include_targets: Iterable[str])
             dependencies.add("OmegaGTE")
         elif include_target.startswith("omegaWTK/") or include_target.startswith("OmegaWTK"):
             dependencies.add("OmegaWTK")
+        elif include_target.startswith("kreate/") or include_target.startswith("KREATE"):
+            dependencies.add("kREATE")
         elif include_target.startswith("aqua/") or include_target.startswith("AQUA"):
             dependencies.add("AQUA")
 
@@ -846,7 +859,8 @@ def build_overview_page(
         "OmegaGTE": (460, 220),
         "OmegaWTK": (840, 220),
         "AUTOM": (80, 520),
-        "AQUA": (460, 520),
+        "kREATE": (460, 520),
+        "AQUA": (840, 520),
     }
     objects: Dict[str, object] = {}
 

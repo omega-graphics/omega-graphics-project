@@ -270,7 +270,7 @@ scroll views, windows — all rendered via OmegaGTE on whichever GPU API the
 platform provides, without WTK containing any platform-specific rendering
 code.
 
-**AQUA** (the game engine) uses OmegaGTE for its scene renderer, providing
+**kREATE** (the game engine) uses OmegaGTE for its scene renderer, providing
 a 3D rendering pipeline, compute-based physics and particle systems, and
 ray-traced lighting on hardware that supports it.
 

@@ -1,5 +1,11 @@
+import "fs"
 
+project(name:"AQUA",version:"0.1")
 
-project("AQUA","0.0.1pre-alpha")
+var main_srcs = fs_glob(path:"./src/*.cpp")
 
-subdir("./engine")
+var aqua_conf = Config(name:"aqua_conf")
+aqua_conf.include_dirs = ["./include"]
+
+var aqua_lib = Archive(name:"aqua",sources:main_srcs)
+aqua_lib.configs = ["aqua_conf"]

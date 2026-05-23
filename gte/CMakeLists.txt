@@ -25,6 +25,10 @@ if(WIN32)
 
 	set(PUBLIC_DEFS "TARGET_DIRECTX")
 
+	# Suppress the windows.h min/max macros so they don't clobber std::min/std::max
+	# (GE.h pulls in <windows.h> on this target). PUBLIC so consumers inherit it too.
+	list(APPEND PUBLIC_DEFS "NOMINMAX")
+
 	file(GLOB RHI_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/d3d12/*.cpp")
 
 elseif(APPLE)

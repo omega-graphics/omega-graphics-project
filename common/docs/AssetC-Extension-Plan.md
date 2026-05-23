@@ -36,7 +36,7 @@
 - **Compile-time processing** where the tool can validate, compress, and optionally encrypt assets before they ship.
 - **Runtime loading** that is safe (RAII, typed access), efficient (lazy/streaming), and thread-safe.
 - **Encryption and integrity** using OmegaCommon's crypto module (Phase 5 / 5b) rather than raw OpenSSL calls.
-- **Build integration** so WTK and AQUA apps automatically compile their asset directories into bundles.
+- **Build integration** so WTK and kREATE apps automatically compile their asset directories into bundles.
 - **Single supported runtime format** centered on the v2 `.pak` layout.
 
 ---

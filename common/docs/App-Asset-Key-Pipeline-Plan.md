@@ -4,7 +4,7 @@
 
 Move the asset-bundle decryption key out of the shipped sidecar `.pak.key` file and into the application build pipeline, so the app becomes the key carrier and `assets.pak` can ship by itself.
 
-This plan uses a new `add_omega_graphics_app(...)` macro in `cmake/OmegaGraphicsSuite.cmake` as the canonical integration point, then layers `OmegaWTKApp(...)` and `add_aqua_game(...)` on top of it.
+This plan uses a new `add_omega_graphics_app(...)` macro in `cmake/OmegaGraphicsSuite.cmake` as the canonical integration point, then layers `OmegaWTKApp(...)` and `add_kreate_game(...)` on top of it.
 
 ## Current State
 
@@ -162,7 +162,7 @@ For WTK:
   - `AssetBundle::open(assets_path, MyApp::Assets::bundleKey())`
 - keep the sidecar fallback only for local/dev compatibility if explicitly enabled
 
-For AQUA:
+For kREATE:
 
 - do the same in its app startup path once asset bundles are integrated there
 
@@ -171,7 +171,7 @@ For AQUA:
 Once `add_omega_graphics_app(...)` exists, migrate wrappers:
 
 - `OmegaWTKApp(...)` becomes a thin adapter over `add_omega_graphics_app(...)`
-- `add_aqua_game(...)` becomes a thin adapter over `add_omega_graphics_app(...)`
+- `add_kreate_game(...)` becomes a thin adapter over `add_omega_graphics_app(...)`
 
 That keeps asset/key behavior consistent across app types.
 
@@ -179,7 +179,7 @@ Suggested layering:
 
 1. `add_omega_graphics_app(...)`
 2. `OmegaWTKApp(...)` forwards framework/runtime specifics
-3. `add_aqua_game(...)` forwards AQUA-specific entry points and platform assets
+3. `add_kreate_game(...)` forwards kREATE-specific entry points and platform assets
 
 ## Phase 6: Dev vs Shipping Modes
 
@@ -434,12 +434,12 @@ The runtime path should fail loudly and specifically:
 ### Wrapper Migration
 
 - `wtk/cmake/OmegaWTKApp.cmake`
-- `aqua/cmake/AquaGame.cmake`
+- `kreate/cmake/KreateGame.cmake`
 
 ### Runtime Wiring
 
 - `wtk/src/UI/App.cpp`
-- later AQUA app startup path(s)
+- later kREATE app startup path(s)
 - DRM verification / license acquisition runtime path
 
 ### Optional Generator Script
@@ -464,7 +464,7 @@ That is preferable to embedding large codegen logic directly in CMake.
 3. Migrate `OmegaWTKApp(...)` to use it.
 4. Update `wtk/src/UI/App.cpp` to open with the embedded key API.
 5. Keep sidecar-key fallback behind a dev toggle.
-6. Migrate `add_aqua_game(...)`.
+6. Migrate `add_kreate_game(...)`.
 7. Remove sidecar-key staging from shipping app flows.
 8. Add publisher-signed manifest support to `omega-assetc`.
 9. Add DRM profile support to `add_omega_graphics_app(...)`.
@@ -503,7 +503,7 @@ The first patch should stop here:
 - migrate `OmegaWTKApp(...)`
 - update `wtk/src/UI/App.cpp`
 
-That gives us a full vertical slice without forcing AQUA migration in the same change.
+That gives us a full vertical slice without forcing kREATE migration in the same change.
 
 The first DRM patch after that should stop here:
 

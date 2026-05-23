@@ -250,7 +250,7 @@ function(add_framework_bundle)
 	MACOSX_RPATH TRUE
     LIBRARY_OUTPUT_DIRECTORY "${FRAMEWORK_OUTPUT_DIR}/${_ARG_NAME}.framework/Versions/${_ARG_VERSION}"
     # Stamp the framework's install_name at link time so downstream consumers
-    # (e.g. libAQUA.dylib) record `@rpath/Foo.framework/Versions/X/Foo` in
+    # (e.g. libKREATE.dylib) record `@rpath/Foo.framework/Versions/X/Foo` in
     # their LC_LOAD_DYLIB. Without this, CMake defaults the install_name to
     # `@rpath/Foo` (MACOSX_RPATH + OUTPUT_NAME), and the codesign script's
     # post-hoc `install_name_tool -id` runs too late — consumers have already
