@@ -1112,7 +1112,20 @@ Extension 2.3 (threadgroup override) ── deferred
 
 **This extension is the prerequisite layer for `KTX-Texture-Codec-Plan.md`.** A full-fidelity KTX/KTX2 loader uploads a complete mip × array-layer × cube-face pyramid in a compressed or HDR pixel format — it cannot be built until `GETexture` can (a) name those formats (§7.4), (b) address an arbitrary subresource (§7.1), and (c) upload every subresource of every shape (§7.8). The KTX plan depends on §7.1, §7.3, §7.4, §7.8, and §7.9 (and optionally §7.10) rather than re-deriving them.
 
-### 7.1 `TextureRegion` extension — mip level + array layer
+### 7.1 `TextureRegion` extension — mip level + array layer ✅ Implemented
+
+**Status:** Landed across all three backends at full scope — both the command-queue copy paths *and* the CPU `copyBytes(region)` path honor `mipLevel`/`arrayLayer`. Threading the fields into the command-queue `copyBufferToTexture` / `copyTextureToBuffer` was the clean tier (Vulkan `imageSubresource.mipLevel/baseArrayLayer`; D3D12 `D3D12CalcSubresource` for the `CD3DX12_TEXTURE_COPY_LOCATION` index; Metal `destinationSlice/Level` + `sourceSlice/Level`). The CPU `copyBytes(region)` path pulled in the per-subresource pieces §7.8 anticipated:
+
+- **Vulkan** — `GEVulkanTexture::copyBytes(region)` now indexes the pre-computed `stagingRegions[arrayLayer*mips + mipLevel]` (built by the done `Vulkan-Texture-Memory-Plan`), stamps the sub-rect at *that mip's* row pitch into the subresource's `bufferOffset`, and uploads only that one region via a new `submitImmediateUploadFromStaging(tex, regions, count)` overload — so a single-subresource write doesn't clobber siblings still sitting in staging. Out-of-range subresource and over-large region are rejected loudly.
+- **D3D12** — the deferred upload-heap (`cpuSideresource`) is now sized for every subresource (`GetRequiredIntermediateSize(tex, 0, numSubresources)` for ToGPU/FromGPU), `copyBytes(region)` writes into the addressed subresource's footprint and records it in a new `dirtySubresources` list, and `uploadTextureFromUploadHeap` re-uploads each dirty subresource (falling back to subresource 0 for the legacy whole-mip-0 path).
+- **Metal** — `copyBytes(region)` switched to the `replaceRegion:mipmapLevel:slice:withBytes:bytesPerRow:bytesPerImage:` overload.
+
+> [!WARNING]
+> **Verification caveat — D3D12 and Metal are UNVERIFIED.** This change was built + linked only on Linux with the Vulkan backend (`libOmegaGTE.so`). The D3D12 and Metal edits follow each backend's existing subresource idioms but are **not compilable on this platform** (Windows/macOS SDK headers absent) and have had **no compile or runtime verification**. They must be built — and ideally exercised — on their native OS before being trusted.
+>
+> **Highest-risk unverified path: D3D12 `copyBytes(region)` + deferred upload heap.** It is the only backend whose change is structural rather than a one-line subresource-index swap: the `cpuSideresource` heap was resized from one subresource to all of them, and `uploadTextureFromUploadHeap` now walks a new `dirtySubresources` list. The `dirtySubresources.empty() ⇒ {0}` fallback is what preserves the legacy whole-mip-0 `copyBytes(bytes, bytesPerRow)` upload — **exercise that fallback first** on a Windows build (a plain single-mip texture upload-then-bind) to confirm no regression, then test a non-zero mip/layer region write. Also unconfirmed on D3D12: the `planeCount == 1` assumption (true for today's all-color formats) and `GetRequiredIntermediateSize` behavior for the resized heap.
+>
+> `bytesPerImage` for 3D/array slice pitch on the CPU path remains §7.8's overload; this change carries subresource *selection* only.
 
 `TextureRegion` is `{x, y, z, w, h, d}` today: a 3D box with no awareness of the mip pyramid or array slices. Consequences:
 
@@ -1434,7 +1447,7 @@ struct TextureDescriptor {
 ### 7.12 Priority assignment
 
 **Tier 1 candidates** (low risk, additive, immediate value):
-- §7.1 TextureRegion mip/layer
+- §7.1 TextureRegion mip/layer ✅ Implemented (full scope — incl. Vulkan/D3D12 CPU `copyBytes` per-subresource upload)
 - §7.2 getBytes region overload
 - §7.3 metadata accessors
 - §7.9 per-mip dimensions (pure CPU math over §7.3 + §7.4)

@@ -202,6 +202,21 @@ struct OMEGAGTE_EXPORT GTEInitOptions {
     /// Enable GPU-Based Validation (D3D12 GBV / Vulkan GPU-assisted).
     /// Heavy — 5–10x draw-call cost. Ignored if debugLayer resolves off.
     bool gpuBasedValidation = false;
+
+    /// Metal only: when true AND @c debugLayer resolves on, start a
+    /// programmatic GPU frame capture at @c Init() and stop it at
+    /// @c Close(), writing a @c .gputrace document. No-op on other
+    /// backends. Gated behind its own flag (not just @c debugLayer)
+    /// because traces grow fast. Requires the embedding app to set
+    /// @c MetalCaptureEnabled=YES in its Info.plist (or
+    /// @c MTL_CAPTURE_ENABLED=1); otherwise capture is unsupported and
+    /// silently skipped. See gte/docs/Metal-Debug.md.
+    bool captureOnInit = false;
+
+    /// Optional output path for the capture document. When null/empty a
+    /// default @c omegagte-<pid>-<timestamp>.gputrace is written to the
+    /// working directory. Ignored unless @c captureOnInit is set.
+    const char *captureFilePath = nullptr;
 };
 
 /**
@@ -217,6 +232,14 @@ OMEGAGTE_EXPORT bool isDebugLayerEnabled();
 /// @brief Whether GPU-Based Validation was requested at @c Init() time.
 /// Always false if @c isDebugLayerEnabled() is false.
 OMEGAGTE_EXPORT bool isGpuBasedValidationEnabled();
+
+/// @brief Whether programmatic GPU capture was requested at @c Init() time.
+/// Metal only; always false if @c isDebugLayerEnabled() is false.
+OMEGAGTE_EXPORT bool isCaptureOnInitEnabled();
+
+/// @brief Resolved capture output path. Empty string means "use the
+/// default name". Valid for the process lifetime; never null.
+OMEGAGTE_EXPORT const char *captureOutputPath();
 
 OMEGAGTE_EXPORT GTE Init(SharedHandle<GTEDevice> & device, GTEInitOptions opts = {});
 

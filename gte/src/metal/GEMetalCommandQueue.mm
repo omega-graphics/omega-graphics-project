@@ -244,8 +244,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
       sourceBytesPerImage: (NSUInteger)bytesPerImage
                sourceSize: sourceSize
                 toTexture: dest_tex
-         destinationSlice: 0
-         destinationLevel: 0
+         destinationSlice: (NSUInteger)destRegion.arrayLayer   // §7.1
+         destinationLevel: (NSUInteger)destRegion.mipLevel     // §7.1
         destinationOrigin: destOrigin];
 
         mtl_dest->needsBarrier = true;
@@ -271,8 +271,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
                                           srcRegion.d == 0 ? 1 : srcRegion.d);
 
         [bp copyFromTexture: src_tex
-                sourceSlice: 0
-                sourceLevel: 0
+                sourceSlice: (NSUInteger)srcRegion.arrayLayer   // §7.1
+                sourceLevel: (NSUInteger)srcRegion.mipLevel     // §7.1
                sourceOrigin: srcOrigin
                  sourceSize: srcSize
                    toBuffer: dest_buf

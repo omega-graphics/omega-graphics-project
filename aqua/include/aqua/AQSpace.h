@@ -2,7 +2,7 @@
 #define AQUA_AQSPACE_H
 
 #include "AQBase.h"
-#include "AQMath.h"
+#include <omegaGTE/GTEMath.h>
 #include <memory>
 
 /// How a body participates in the simulation.
@@ -14,7 +14,7 @@ enum class AQBodyType {
 /// Parameters for creating an AQRigidBody.
 struct AQUA_EXPORT AQBodyDesc {
     AQBodyType type = AQBodyType::Dynamic;
-    Vec3 position{};
+    OmegaGTE::FVec<3> position;
     float mass = 1.f;  ///< Ignored for Static bodies.
 };
 
@@ -24,11 +24,11 @@ class AQUA_EXPORT AQRigidBody {
 public:
     ~AQRigidBody();
 
-    AQUA_NODISCARD Vec3 position() const;
-    void setPosition(const Vec3 &p);
+    AQUA_NODISCARD OmegaGTE::FVec<3> position() const;
+    void setPosition(const OmegaGTE::FVec<3> &p);
 
-    AQUA_NODISCARD Vec3 velocity() const;
-    void setVelocity(const Vec3 &v);
+    AQUA_NODISCARD OmegaGTE::FVec<3> velocity() const;
+    void setVelocity(const OmegaGTE::FVec<3> &v);
 
     AQUA_NODISCARD AQBodyType type() const;
 
@@ -52,8 +52,8 @@ class AQUA_EXPORT AQSpace {
 public:
     ~AQSpace();
 
-    void setGravity(const Vec3 &g);
-    AQUA_NODISCARD Vec3 gravity() const;
+    void setGravity(const OmegaGTE::FVec<3> &g);
+    AQUA_NODISCARD OmegaGTE::FVec<3> gravity() const;
 
     /// Adds a body and returns a handle owned by this space.
     std::shared_ptr<AQRigidBody> addBody(const AQBodyDesc &desc);

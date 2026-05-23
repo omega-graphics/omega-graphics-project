@@ -426,8 +426,13 @@ void GED3D12CommandBuffer::copyBufferToTexture(SharedHandle<GEBuffer> &src, Shar
     footprint.Footprint.Depth = destRegion.d == 0 ? 1 : destRegion.d;
     footprint.Footprint.RowPitch = static_cast<UINT>(bytesPerRow);
 
+    // §7.1: address the (mipLevel, arrayLayer) subresource rather than 0.
+    const auto destDesc = destTex->resource->GetDesc();
+    const UINT destSubresource = D3D12CalcSubresource(destRegion.mipLevel, destRegion.arrayLayer,
+                                                      0, destDesc.MipLevels, destDesc.DepthOrArraySize);
+
     CD3DX12_TEXTURE_COPY_LOCATION srcLoc(srcBuf->buffer.Get(), footprint);
-    CD3DX12_TEXTURE_COPY_LOCATION destLoc(destTex->resource.Get(), 0);
+    CD3DX12_TEXTURE_COPY_LOCATION destLoc(destTex->resource.Get(), destSubresource);
 
     CD3DX12_BOX srcBox(0, 0, 0,
                        (LONG)destRegion.w,
@@ -477,7 +482,12 @@ void GED3D12CommandBuffer::copyTextureToBuffer(SharedHandle<GETexture> &src, Sha
     footprint.Footprint.Depth = srcRegion.d == 0 ? 1 : srcRegion.d;
     footprint.Footprint.RowPitch = static_cast<UINT>(bytesPerRow);
 
-    CD3DX12_TEXTURE_COPY_LOCATION srcLoc(srcTex->resource.Get(), 0);
+    // §7.1: read from the (mipLevel, arrayLayer) subresource rather than 0.
+    const auto srcDesc = srcTex->resource->GetDesc();
+    const UINT srcSubresource = D3D12CalcSubresource(srcRegion.mipLevel, srcRegion.arrayLayer,
+                                                     0, srcDesc.MipLevels, srcDesc.DepthOrArraySize);
+
+    CD3DX12_TEXTURE_COPY_LOCATION srcLoc(srcTex->resource.Get(), srcSubresource);
     CD3DX12_TEXTURE_COPY_LOCATION destLoc(destBuf->buffer.Get(), footprint);
 
     CD3DX12_BOX srcBox((LONG)srcRegion.x,

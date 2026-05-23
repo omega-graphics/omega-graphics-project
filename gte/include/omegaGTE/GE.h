@@ -14,10 +14,6 @@
 #include <dxgi1_6.h>
 
 #include <sdkddkver.h>
-// /// If Windows Version is Greater then Windows 10 1809 (Redstone 5)
-// #if NTDDI_VERSION >= NTDDI_WIN10_RS5
-// #define OMEGAGTE_RAYTRACING_SUPPORTED 1
-// #endif
 
 #define DEBUG_ENGINE_PREFIX "GED3D12Engine_Internal"
 #endif
@@ -30,16 +26,6 @@
 #endif
 
 #define DEBUG_ENGINE_PREFIX "GEMetalEngine_Internal"
-
-// #if defined(__MAC_OS_X_VERSION_MIN_REQUIRED)
-//     #if __MAC_OS_X_VERSION_MIN_REQUIRED >= __MAC_11_0  
-//         #define OMEGAGTE_RAYTRACING_SUPPORTED 1
-//     #endif
-// #elif defined(__IPHONE_OS_VERSION_MIN_REQUIRED)
-//     #if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_14_0 
-//         #define OMEGAGTE_RAYTRACING_SUPPORTED 1
-//     #endif
-// #endif
 
 #endif
 
@@ -59,7 +45,6 @@
 
 #define DEBUG_ENGINE_PREFIX "GEVulkanEngine_Internal"
 
-// #define OMEGAGTE_RAYTRACING_SUPPORTED 1
 #endif
 
 #include "GTEBase.h"

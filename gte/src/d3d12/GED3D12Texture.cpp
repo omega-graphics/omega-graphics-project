@@ -1,5 +1,6 @@
 #include "GED3D12Texture.h"
 #include <cstring>
+#include <algorithm>
 #include "../common/GEResourceTracker.h"
 
 
@@ -65,23 +66,40 @@ void GED3D12Texture::uploadTextureFromUploadHeap(ID3D12GraphicsCommandList *comm
 
     commandList->ResourceBarrier(1,&barrier);
 
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
-
     ID3D12Device *dev;
     auto desc = resource->GetDesc();
     cpuSideresource->GetDevice(__uuidof(*dev),(void **)&dev);
-    dev->GetCopyableFootprints(&desc,0,1,0,&footprint,nullptr,nullptr,nullptr);
 
+    // §7.1: compute footprints for the whole resource so each subresource's
+    // heap offset is correct, then copy only the subresources that were
+    // written. The footprints' BaseOffset of 0 makes Footprint[s].Offset the
+    // cumulative byte offset matching the copyBytes(region) write below.
+    const UINT arraySz = (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+                         ? 1u : desc.DepthOrArraySize;
+    const UINT numSubresources = UINT(desc.MipLevels) * arraySz; // planeCount 1 (color)
+    OmegaCommon::Vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(numSubresources);
+    dev->GetCopyableFootprints(&desc,0,numSubresources,0,footprints.data(),nullptr,nullptr,nullptr);
 
-    CD3DX12_TEXTURE_COPY_LOCATION destLoc(resource.Get(),0),srcLoc(cpuSideresource.Get(),footprint);
-
-    commandList->CopyTextureRegion(&destLoc,0,0,0,&srcLoc,nullptr);
+    // No region-targeted writes recorded ⇒ legacy whole-mip-0 path.
+    OmegaCommon::Vector<UINT> subs = dirtySubresources;
+    if(subs.empty()){
+        subs.push_back(0);
+    }
+    for(UINT s : subs){
+        if(s >= numSubresources){
+            continue;
+        }
+        CD3DX12_TEXTURE_COPY_LOCATION destLoc(resource.Get(),s);
+        CD3DX12_TEXTURE_COPY_LOCATION srcLoc(cpuSideresource.Get(),footprints[s]);
+        commandList->CopyTextureRegion(&destLoc,0,0,0,&srcLoc,nullptr);
+    }
 
     barrier = CD3DX12_RESOURCE_BARRIER::Transition(resource.Get(),D3D12_RESOURCE_STATE_COPY_DEST,currentState);
 
     commandList->ResourceBarrier(1,&barrier);
     dev->Release();
     onGpu = true;
+    dirtySubresources.clear();
 }
 
 void GED3D12Texture::downloadTextureToReadbackHeap(ID3D12GraphicsCommandList *commandList) {
@@ -200,11 +218,28 @@ void GED3D12Texture::copyBytes(void *bytes, size_t bytesPerRow, const TextureReg
     auto desc = resource->GetDesc();
     ID3D12Device *dev = nullptr;
     cpuSideresource->GetDevice(__uuidof(*dev),(void **)&dev);
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};
-    UINT rows = 0;
-    UINT64 rowSize = 0;
-    dev->GetCopyableFootprints(&desc,0,1,0,&footprint,&rows,&rowSize,nullptr);
 
+    // §7.1: resolve the (mipLevel, arrayLayer) subresource and grab the
+    // footprint table for the whole resource so we write at the right
+    // cumulative heap offset (matching uploadTextureFromUploadHeap).
+    const UINT arraySz = (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+                         ? 1u : desc.DepthOrArraySize;
+    const UINT numSubresources = UINT(desc.MipLevels) * arraySz; // planeCount 1 (color)
+    const UINT subresource = D3D12CalcSubresource(destRegion.mipLevel, destRegion.arrayLayer,
+                                                  0, desc.MipLevels, arraySz);
+    if(subresource >= numSubresources){
+        DEBUG_STREAM("GED3D12Texture::copyBytes(region): subresource out of range");
+        cpuSideresource->Unmap(0,nullptr);
+        dev->Release();
+        return;
+    }
+
+    OmegaCommon::Vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(numSubresources);
+    OmegaCommon::Vector<UINT> rowsArr(numSubresources);
+    dev->GetCopyableFootprints(&desc,0,numSubresources,0,footprints.data(),rowsArr.data(),nullptr,nullptr);
+
+    const auto &footprint = footprints[subresource];
+    const UINT rows = rowsArr[subresource];
     const UINT depth = destRegion.d == 0 ? 1u : destRegion.d;
     const UINT slicePitch = footprint.Footprint.RowPitch * rows;
     const size_t rowBytes = static_cast<size_t>(destRegion.w) * bytesPerTexel;
@@ -226,6 +261,14 @@ void GED3D12Texture::copyBytes(void *bytes, size_t bytesPerRow, const TextureReg
 
     cpuSideresource->Unmap(0,nullptr);
     dev->Release();
+
+    // Record the subresource so uploadTextureFromUploadHeap re-uploads it
+    // (and only it). Dedup so repeated writes to the same subresource don't
+    // queue duplicate copies.
+    if(std::find(dirtySubresources.begin(), dirtySubresources.end(), subresource)
+       == dirtySubresources.end()){
+        dirtySubresources.push_back(subresource);
+    }
 
     // Force the next bind through updateAndValidateStatus to re-upload the
     // (now partially-modified) upload heap. Matches the existing behaviour

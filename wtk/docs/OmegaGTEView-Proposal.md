@@ -418,12 +418,14 @@ The `GERenderTarget::CommandBuffer` already exposes:
 
 These are all available through `GTEViewContext::commandBuffer()`. No additional API needed — the delegate can encode compute passes between or after render passes in `onFrame`.
 
-#### 4B. Raytracing (Conditional)
+#### 4B. Raytracing (Runtime-gated)
 
-When `OMEGAGTE_RAYTRACING_SUPPORTED` is defined:
-- `GTEViewContext` exposes `supportsRaytracing()` → bool.
-- The delegate can use `engine().allocateAccelerationStructure()` in `onSetup`.
+The raytracing API is always present; support is checked at runtime via
+`GTEDevice::features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)`:
+- `GTEViewContext` exposes `supportsRaytracing()` → bool, backed by that feature check.
+- When `supportsRaytracing()` is true, the delegate can use `engine().allocateAccelerationStructure()` in `onSetup`.
 - In `onFrame`, encode accel struct build passes and `dispatchRays()` through the command buffer.
+- On an unsupported device the factory methods return `nullptr`, so the delegate should gate raytracing work behind `supportsRaytracing()`.
 
 #### Verification
 

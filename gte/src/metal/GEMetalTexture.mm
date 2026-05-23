@@ -48,11 +48,15 @@ void GEMetalTexture::copyBytes(void *bytes, size_t bytesPerRow, const TextureReg
     const NSUInteger depth = destRegion.d == 0 ? 1u : destRegion.d;
     MTLRegion region = MTLRegionMake3D(destRegion.x, destRegion.y, destRegion.z,
                                        destRegion.w, destRegion.h, depth);
-    const NSUInteger mipmapLevel = 0;
+    // §7.1: address (mipLevel, arrayLayer) via the slice-aware overload.
+    // bytesPerImage = 0 is correct for 2D / single-slice uploads; a 3D or
+    // array slice stride lands with §7.8's bytesPerImage overload.
     [NSOBJECT_OBJC_BRIDGE(id<MTLTexture>,texture.handle()) replaceRegion:region
-                                                             mipmapLevel:mipmapLevel
+                                                             mipmapLevel:(NSUInteger)destRegion.mipLevel
+                                                                   slice:(NSUInteger)destRegion.arrayLayer
                                                                withBytes:bytes
-                                                             bytesPerRow:bytesPerRow];
+                                                             bytesPerRow:bytesPerRow
+                                                           bytesPerImage:0];
 }
 
 size_t GEMetalTexture::getBytes(void *bytes, size_t bytesPerRow) {

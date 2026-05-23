@@ -17,6 +17,12 @@ public:
 
     bool onGpu;
 
+    /// §7.1: subresource indices written via copyBytes(region) since the
+    /// last upload. uploadTextureFromUploadHeap copies each of these; when
+    /// empty it falls back to subresource 0, preserving the legacy
+    /// whole-mip-0 copyBytes(bytes,bytesPerRow) path. Cleared after upload.
+    OmegaCommon::Vector<UINT> dirtySubresources;
+
     ComPtr<ID3D12Resource> resource;
 
     ComPtr<ID3D12Resource> cpuSideresource;

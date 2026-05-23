@@ -154,35 +154,63 @@ void GEVulkanTexture::copyBytes(void *bytes, size_t bytesPerRow, const TextureRe
         return;
     }
 
-    // Pipeline-Completion-Extension-Plan §4.5, re-routed onto the
+    // Pipeline-Completion-Extension-Plan §4.5 + §7.1, re-routed onto the
     // staging buffer instead of vmaMapMemory'ing the image directly.
-    // We map the staging allocation, lay the source bytes into the
-    // mip-0 region of the buffer at (x,y,z), then submit. Note: the
-    // full mip-0 region is uploaded — partial-region uploads would
-    // need a custom VkBufferImageCopy with non-zero imageOffset /
-    // imageExtent matched to the sub-region, which the current
-    // makeTexture region table doesn't model. Simplest correct
-    // behaviour for the partial-overlay case is "stamp the sub-rect
-    // into the staging buffer, upload the whole mip 0" — the GPU
-    // copy cost is bounded by mip 0 size, and there's no current
-    // caller that needs the optimised per-region copy.
-    const std::size_t mip0Width  = descriptor.width > 0 ? descriptor.width : 1;
+    // `stagingRegions` was pre-computed at create time for the whole
+    // mip × layer chain (ordered layer-major: index = arrayLayer*mips +
+    // mipLevel), each entry carrying its subresource's tightly-packed
+    // bufferOffset and full-mip imageExtent. We pick the entry for
+    // (mipLevel, arrayLayer), stamp the sub-rect into that subresource's
+    // slot at the mip's own row pitch, and upload only that one region so
+    // we don't clobber sibling subresources still sitting in staging.
+    const std::uint32_t mipLevels  = descriptor.mipLevels  > 0 ? descriptor.mipLevels  : 1;
+    const std::uint32_t arrayLayers = descriptor.arrayLayers > 0 ? descriptor.arrayLayers : 1;
+    if(destRegion.mipLevel >= mipLevels || destRegion.arrayLayer >= arrayLayers){
+        std::cerr << "GEVulkanTexture::copyBytes(region): subresource out of range (mip "
+                  << destRegion.mipLevel << "/" << mipLevels << ", layer "
+                  << destRegion.arrayLayer << "/" << arrayLayers << ")." << std::endl;
+        return;
+    }
+    const std::size_t regionIdx = static_cast<std::size_t>(destRegion.arrayLayer) * mipLevels
+                                + destRegion.mipLevel;
+    if(regionIdx >= stagingRegions.size()){
+        std::cerr << "GEVulkanTexture::copyBytes(region): no staging region for subresource."
+                  << std::endl;
+        return;
+    }
+    const VkBufferImageCopy &sub = stagingRegions[regionIdx];
+    const std::uint32_t mipW = sub.imageExtent.width;
+    const std::uint32_t mipH = sub.imageExtent.height;
+    const std::uint32_t mipD = sub.imageExtent.depth;
+    const std::uint32_t depth = destRegion.d == 0 ? 1u : destRegion.d;
+
+    // Fail loud rather than silently overrun into the next subresource's
+    // staging slot if the caller hands us a region larger than the mip.
+    if(destRegion.x + destRegion.w > mipW ||
+       destRegion.y + destRegion.h > mipH ||
+       destRegion.z + depth        > mipD){
+        std::cerr << "GEVulkanTexture::copyBytes(region): region exceeds mip "
+                  << destRegion.mipLevel << " extent (" << mipW << "x" << mipH << "x" << mipD
+                  << ")." << std::endl;
+        return;
+    }
+
     const std::uint32_t bpt = bytesPerTexelFor(descriptor.pixelFormat);
-    const std::size_t dstRow = mip0Width * bpt;
+    const std::size_t dstRow   = static_cast<std::size_t>(mipW) * bpt;          // mip's own pitch
+    const std::size_t dstSlice = dstRow * mipH;                                 // one depth slice
 
     void *ptr = nullptr;
     if(vmaMapMemory(engine->memAllocator, stagingAlloc, &ptr) != VK_SUCCESS || ptr == nullptr){
         return;
     }
-    auto *base = static_cast<std::uint8_t *>(ptr);
+    auto *base = static_cast<std::uint8_t *>(ptr) + sub.bufferOffset;
     const auto *src = static_cast<const std::uint8_t *>(bytes);
     const std::size_t rowBytes = static_cast<std::size_t>(destRegion.w) * bpt;
-    const std::uint32_t depth = destRegion.d == 0 ? 1u : destRegion.d;
 
     for(std::uint32_t z = 0; z < depth; ++z){
         for(std::uint32_t y = 0; y < destRegion.h; ++y){
             std::uint8_t *dst = base
-                + static_cast<std::size_t>(destRegion.z + z) * dstRow * descriptor.height
+                + static_cast<std::size_t>(destRegion.z + z) * dstSlice
                 + static_cast<std::size_t>(destRegion.y + y) * dstRow
                 + static_cast<std::size_t>(destRegion.x) * bpt;
             const std::uint8_t *srow = src
@@ -194,7 +222,7 @@ void GEVulkanTexture::copyBytes(void *bytes, size_t bytesPerRow, const TextureRe
 
     vmaUnmapMemory(engine->memAllocator, stagingAlloc);
 
-    if(!engine->submitImmediateUploadFromStaging(*this)){
+    if(!engine->submitImmediateUploadFromStaging(*this, &sub, 1)){
         std::cerr << "GEVulkanTexture::copyBytes(region): staging upload submit failed." << std::endl;
     }
 }

@@ -2122,8 +2122,8 @@ _NAMESPACE_BEGIN_
         copy.bufferRowLength = bufferRowLength;
         copy.bufferImageHeight = bufferImageHeight;
         copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copy.imageSubresource.mipLevel = 0;
-        copy.imageSubresource.baseArrayLayer = 0;
+        copy.imageSubresource.mipLevel = destRegion.mipLevel;       // §7.1
+        copy.imageSubresource.baseArrayLayer = destRegion.arrayLayer; // §7.1
         copy.imageSubresource.layerCount = 1;
         copy.imageOffset = {int32_t(destRegion.x), int32_t(destRegion.y), int32_t(destRegion.z)};
         copy.imageExtent = {destRegion.w, destRegion.h, destRegion.d == 0 ? 1 : destRegion.d};
@@ -2168,8 +2168,8 @@ _NAMESPACE_BEGIN_
         copy.bufferRowLength = bufferRowLength;
         copy.bufferImageHeight = bufferImageHeight;
         copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copy.imageSubresource.mipLevel = 0;
-        copy.imageSubresource.baseArrayLayer = 0;
+        copy.imageSubresource.mipLevel = srcRegion.mipLevel;       // §7.1
+        copy.imageSubresource.baseArrayLayer = srcRegion.arrayLayer; // §7.1
         copy.imageSubresource.layerCount = 1;
         copy.imageOffset = {int32_t(srcRegion.x), int32_t(srcRegion.y), int32_t(srcRegion.z)};
         copy.imageExtent = {srcRegion.w, srcRegion.h, srcRegion.d == 0 ? 1 : srcRegion.d};

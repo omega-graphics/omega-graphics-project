@@ -1995,12 +1995,20 @@ _NAMESPACE_BEGIN_
     // texture in an undefined-contents state (the same visible-glitch
     // contract D3D12's copyBytes failure path established in 5243ead).
     bool GEVulkanEngine::submitImmediateUploadFromStaging(GEVulkanTexture &tex){
+        // Default: upload the whole pre-computed mip × layer chain.
+        return submitImmediateUploadFromStaging(tex, tex.stagingRegions.data(),
+            static_cast<std::uint32_t>(tex.stagingRegions.size()));
+    }
+
+    bool GEVulkanEngine::submitImmediateUploadFromStaging(GEVulkanTexture &tex,
+                                                          const VkBufferImageCopy *regions,
+                                                          std::uint32_t regionCount){
         if(uploadCommandPool == VK_NULL_HANDLE || uploadFence == VK_NULL_HANDLE
            || uploadQueue == VK_NULL_HANDLE){
             DEBUG_STREAM("submitImmediateUploadFromStaging: upload infra unavailable");
             return false;
         }
-        if(tex.stagingBuffer == VK_NULL_HANDLE || tex.stagingRegions.empty()){
+        if(tex.stagingBuffer == VK_NULL_HANDLE || regions == nullptr || regionCount == 0){
             DEBUG_STREAM("submitImmediateUploadFromStaging: no staging buffer / regions");
             return false;
         }
@@ -2051,8 +2059,7 @@ _NAMESPACE_BEGIN_
 
         vkCmdCopyBufferToImage(cb, tex.stagingBuffer, tex.img,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            static_cast<std::uint32_t>(tex.stagingRegions.size()),
-            tex.stagingRegions.data());
+            regionCount, regions);
 
         // TRANSFER_DST -> SHADER_READ_ONLY_OPTIMAL. That's the layout
         // the renderer's sampling-bind path expects (matches the
@@ -3491,6 +3498,10 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
     };
 
     SharedHandle<GEBuffer> GEVulkanEngine::createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes){
+        if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)){
+            DEBUG_STREAM("Raytracing not supported on this device");
+            return nullptr;
+        }
         struct VkAABB { float minX,minY,minZ,maxX,maxY,maxZ; };
         size_t totalSize = sizeof(VkAABB) * boxes.size();
         auto buffer = std::dynamic_pointer_cast<GEVulkanBuffer>(
@@ -3513,6 +3524,10 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
     }
 
     SharedHandle<GEAccelerationStruct> GEVulkanEngine::allocateAccelerationStructure(const GEAccelerationStructDescriptor &desc){
+        if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)){
+            DEBUG_STREAM("Raytracing not supported on this device");
+            return nullptr;
+        }
         if(!hasAccelerationStructureExt || vkCreateAccelerationStructureKhr == nullptr ||
            vkGetAccelerationStructureBuildSizesKhr == nullptr){
             std::cerr << "Vulkan acceleration structure extension not available." << std::endl;

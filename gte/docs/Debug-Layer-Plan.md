@@ -5,16 +5,16 @@
 | Backend | Slice landed | Plan section |
 |---------|--------------|--------------|
 | D3D12   | Yes — see `src/d3d12/GED3D12.cpp` constructor + `~GED3D12Engine` | — |
-| Vulkan  | No  | §2 |
-| Metal   | No  | §3 |
+| Vulkan  | Yes — see `initVulkan()` in `src/vulkan/GEVulkan.cpp` + `src/vulkan/VulkanExtStubs.cpp` | §2 |
+| Metal   | Yes (v1) — capture + env-var docs + comment fix; API-validation toggle dropped (no Metal API) | §3 |
 
 The cross-cutting pieces (`GTEInitOptions`, `isDebugLayerEnabled()`,
 `isGpuBasedValidationEnabled()`, the runtime-gated `DEBUG_STREAM` macro,
 the `OMEGAGTE_DEBUG` CMake flag) shipped with the D3D12 slice and are
-already consumed by every backend's `DEBUG_STREAM` calls — turning the
-layer off silences logging on Vulkan and Metal today even though their
-backend validation is still hard-wired on. Sections 2 and 3 close that
-gap.
+already consumed by every backend's `DEBUG_STREAM` calls. §2 (Vulkan)
+has since landed, so turning the layer off now also gates Vulkan's
+backend validation (layer + messenger + GPU-AV). Metal's backend
+validation is still hard-wired on; §3 closes that remaining gap.
 
 ## Design recap
 
@@ -31,17 +31,29 @@ gap.
 
 ## 2. Vulkan plan
 
-### Where the wiring lives today
+**Status: landed.** All four items below shipped in
+`src/vulkan/GEVulkan.cpp::initVulkan()` and `src/vulkan/VulkanExtStubs.cpp`.
+Line numbers below reflect the as-built code, not the original
+pre-change wiring.
 
-All in `src/vulkan/GEVulkan.cpp::initVulkan()`:
+### Where the wiring lives
 
-- L140–143: pushes `VK_EXT_debug_utils` unconditionally if present.
-- L145–161: scans for and enables `VK_LAYER_KHRONOS_validation`
-  unconditionally if present.
-- L202–218: creates `g_debugMessenger` with WARNING+ERROR+INFO severities
-  and a custom callback that writes to `std::cerr`.
+All in `src/vulkan/GEVulkan.cpp::initVulkan()` unless noted:
 
-### Changes
+- L128–129: snapshots `isDebugLayerEnabled()` and
+  `isGpuBasedValidationEnabled()` once at function entry.
+- L167–171: queries `VK_EXT_debug_utils` and pushes it into
+  `requiredInstanceExtensions` *only* when the debug layer is on.
+- L173–190: scans for and enables `VK_LAYER_KHRONOS_validation` *only*
+  when the debug layer is on; L195–211 probes the layer for
+  `VK_EXT_validation_features` (only when GBV is also requested).
+- L246–291: chains `VkValidationFeaturesEXT` onto
+  `VkInstanceCreateInfo.pNext` (when GBV is available) and creates
+  `g_debugMessenger` with WARNING+ERROR+INFO severities. The callback
+  at L97–113 writes through `DEBUG_STREAM`, not `std::cerr`.
+  `cleanupVulkan()` (L311–325) destroys the messenger.
+
+### What landed
 
 1. **Gate extension + layer selection on `isDebugLayerEnabled()`.**
    When off: do not push `VK_EXT_debug_utils` into
@@ -50,7 +62,7 @@ All in `src/vulkan/GEVulkan.cpp::initVulkan()`:
    debug messenger. Keep `hasDebugUtils` as a local query result — but
    only act on it when the flag is on.
 
-2. **Re-route the existing `vulkanDebugCallback` (L85–96) into
+2. **Re-route the existing `vulkanDebugCallback` (L97–113) into
    `DEBUG_STREAM`.** Drop the `std::cerr` write; instead format the same
    severity-prefixed line through `DEBUG_STREAM`. This unifies output
    with the rest of the engine — and since the messenger only exists
@@ -66,14 +78,20 @@ All in `src/vulkan/GEVulkan.cpp::initVulkan()`:
    …)` for `VK_EXT_validation_features` before requesting it; silently
    downgrade to plain validation if missing.
 
-4. **`vkSetDebugUtilsObjectNameEXT` calls** (currently scattered at
-   2486, 2541, 2671) should remain compiled in but become no-ops when
-   the layer is off. The cleanest way: cache the
-   `PFN_vkSetDebugUtilsObjectNameEXT` function pointer to `nullptr`
-   when `VK_EXT_debug_utils` wasn't enabled, and have every callsite
-   null-check before invoking. (They already implicitly require the
-   extension; today they'd crash if the loader returned null for the
-   function pointer with the extension disabled.)
+4. **`vkSetDebugUtilsObjectNameEXT` calls** (scattered at 2992, 3047,
+   3257) remain compiled in but become no-ops when the layer is off.
+   Implemented via a *centralized interposer* rather than the
+   per-callsite null-checks this section originally proposed:
+   `src/vulkan/VulkanExtStubs.cpp` defines `vkSetDebugUtilsObjectNameEXT`
+   itself. It reads the cached `OmegaGTE::g_pfnSetDebugUtilsObjectNameEXT`
+   (set at `GEVulkan.cpp:299–302`, non-null *only* when the debug layer
+   is on AND `VK_EXT_debug_utils` was actually enabled) and returns
+   `VK_SUCCESS` when the pointer is null. The three callsites stay clean
+   and unconditional — the no-op behavior lives in exactly one place
+   instead of being scattered across every backend object, and the
+   pre-existing crash-on-null-proc-address bug is closed at the same
+   point. (Previous draft of this item proposed null-checking at every
+   callsite; superseded by the interposer.)
 
 ### Edge cases
 
@@ -102,7 +120,7 @@ All in `src/vulkan/GEVulkan.cpp::initVulkan()`:
 ### Constraints
 
 There is exactly one real OS-level constraint, and one stale source
-comment that should be corrected as we land this work.
+comment — both addressed as we landed this work.
 
 **Real constraint — process-env validation.** Metal API validation is
 set via the `METAL_DEVICE_WRAPPER_TYPE=1` environment variable, read by
@@ -110,70 +128,73 @@ set via the `METAL_DEVICE_WRAPPER_TYPE=1` environment variable, read by
 own that call site for users who pass us an existing `id<MTLDevice>` —
 and even for `InitWithDefaultDevice`, the process env is already locked
 in by the time `Init()` runs in practice (child-process spawn aside).
-On macOS 11+ this can be flipped at runtime with
-`MTLCaptureManager.setShouldEnableValidation:` *before* creating the
-first command queue, but that has its own per-process one-shot caveat.
 
-**Stale source comment.** The comment at `src/metal/GEMetal.mm:928`
-attributes a past drawable-presentation regression to
-`MTLCaptureManager`-based GPU capture. That attribution is wrong — the
-presentation bug was a separate issue that has since been fixed. (The drawable was never the issue. The WTK compositor used to render to a texture then blit to the drawable. It wasn't showing becasue Metal forbids MTLTexture creation on multiple threads.)
-`MTLCaptureManager` is *not* on the list of things that broke
-presentation, and there is no known reason it can't be used here. The
-comment should be rewritten or deleted as part of landing §3 — flag as
-a small follow-up to this PR. Until then, future Metal work below
-treats `MTLCaptureManager` as a viable tool, not a forbidden one.
+There is **no public runtime API** to flip Metal API validation on after
+launch. A previous draft of this plan claimed
+`MTLCaptureManager.setShouldEnableValidation:` could do this on macOS 11+
+— that was wrong; no such property/method exists on `MTLCaptureManager`
+(verified against the SDK headers and Apple docs, May 2026). Metal API
+validation is therefore env-var / Xcode-scheme only. `debugLayer` gates
+`DEBUG_STREAM` and programmatic capture, but **not** native API
+validation. See `gte/docs/Metal-Debug.md` for the env-var path.
+
+**Stale source comment (fixed).** The comment formerly at
+`src/metal/GEMetal.mm:943–944` (a two-line prose note inside the
+`GEMetalEngine` constructor — *not* a commented-out `MTLCaptureManager`
+block; there was never any capture code) attributed a past
+drawable-presentation regression to GPU capture intercepting Metal calls
+via `CaptureMTLDevice`. That attribution was wrong — the drawable was
+never the issue. The WTK compositor used to render to a texture then blit
+to the drawable, and it wasn't showing because Metal forbids `MTLTexture`
+creation on multiple threads. That bug is fixed and unrelated to capture.
+The comment was replaced by the live, flag-gated capture path (item 3).
 
 ### Scope for v1
 
-Two axes, both small:
+1. **`DEBUG_STREAM` already gates Metal logging** — done by the
+   cross-cutting slice. No backend change required for that axis. ✅
 
-1. **`DEBUG_STREAM` already gates Metal logging** — that's done by the
-   cross-cutting slice. No backend change required for that axis.
+2. **Programmatic API-validation toggle — dropped (not possible).**
+   The Metal API has no runtime validation toggle (see Constraints), so
+   this cannot mirror D3D12's `EnableDebugLayer`. Native API validation
+   is driven by `METAL_DEVICE_WRAPPER_TYPE=1` / the Xcode scheme,
+   documented in `gte/docs/Metal-Debug.md` (item 4). No code change.
 
-2. **Programmatic API-validation toggle.** When
-   `isDebugLayerEnabled()` is true at `Init()` time, call
-   `MTLCaptureManager.sharedCaptureManager.shouldEnableValidation = YES`
-   *before* the first `[device newCommandQueue:]`. Wrapped in a
-   macOS-11+ availability check; older targets fall through to the
-   env-var path. This gives us a runtime toggle that mirrors D3D12's
-   `EnableDebugLayer` ergonomically, without depending on the user's
-   scheme/env setup.
+3. **Programmatic GPU capture.** ✅ New `GTEInitOptions::captureOnInit`
+   bool (+ `captureFilePath`). When set together with `debugLayer`
+   resolving on, `GEMetalEngine`'s constructor starts an
+   `MTLCaptureManager` capture session (via `startCaptureWithDescriptor:`
+   to a `MTLCaptureDestinationGPUTraceDocument`) and `~GEMetalEngine`
+   stops it at `Close()`. Path is taken from `captureFilePath`, else
+   defaulted to `omegagte-<pid>-<ts>.gputrace` in the working directory.
+   Gated behind its own flag, not just `debugLayer`, because traces grow
+   to multi-GB quickly. **Requires the embedding app to enable capture**
+   via `MetalCaptureEnabled=YES` in its Info.plist (or
+   `MTL_CAPTURE_ENABLED=1`) — a library can't grant this. When it isn't
+   set, `supportsDestination:` returns NO and OmegaGTE logs + skips
+   (no crash). Reached via the `isCaptureOnInitEnabled()` /
+   `captureOutputPath()` accessors, resolved in `resolveDebugFlags`
+   alongside the other debug flags (since `OmegaGraphicsEngine::Create`
+   doesn't receive `GTEInitOptions`).
 
-3. **Programmatic GPU capture.** New
-   `GTEInitOptions::captureOnInit` bool. When set together with
-   `debugLayer = Enabled`, start an `MTLCaptureManager` capture
-   session at `Init()` and stop it at `Close()`. Destination is a
-   `.gputrace` file (via `MTLCaptureDestinationGPUTraceDocument`)
-   — path either taken from a second option field
-   (`GTEInitOptions::captureFilePath`, default
-   `omegagte-<pid>-<ts>.gputrace` in the working directory) or
-   defaulted entirely. Gated behind its own flag, not just
-   `debugLayer`, because traces can grow to multi-GB quickly — no
-   stability concern, just a footprint concern. Now that the
-   misattribution above is corrected, there's no reason to defer
-   this; it lands in v1 next to the validation toggle since both
-   are `MTLCaptureManager` calls.
-
-4. **Document the env-var path as a fallback.** New section in
-   `gte/docs/About.rst` (or a new `Metal-Debug.md`) explaining:
+4. **Document the env-var path.** ✅ New `gte/docs/Metal-Debug.md`
+   explaining:
    - `METAL_DEVICE_WRAPPER_TYPE=1` — Metal API validation. Required
      when targeting macOS <11 or when the user constructed the
      `id<MTLDevice>` themselves.
    - `MTL_DEBUG_LAYER=1` — extended API validation (Xcode-style).
    - `MTL_SHADER_VALIDATION=1` — shader bounds checking (macOS 14+).
    - `METAL_ERROR_MODE=5` / `METAL_ERROR_MODE=3` — abort modes.
+   - `MTL_CAPTURE_ENABLED=1` — alternative to the Info.plist capture key.
    - How to set them in an Xcode scheme vs. on the command line.
-   - Note that `GTEInitOptions::debugLayer = Enabled` handles the
-     common case automatically on macOS 11+; env vars are for
-     cross-version coverage and the user-supplied-device path.
+   - Note that `GTEInitOptions::debugLayer = Enabled` handles engine
+     logging + capture automatically; env vars are for native API/shader
+     validation, cross-version coverage, and the user-supplied-device path.
 
-5. **Fix the stale comment** at `src/metal/GEMetal.mm:928`. With
-   capture promoted to v1 (item 3), the cleanest fix is to delete
-   the comment outright and replace the commented-out
-   `MTLCaptureManager` setup with the live, flag-gated capture
-   path. Leave a one-liner pointer to `GTEInitOptions::captureOnInit`
-   in its place so future readers know where the toggle lives.
+5. **Fix the stale comment** at `src/metal/GEMetal.mm:943–944`. ✅
+   Replaced the two-line prose comment with the live, flag-gated capture
+   path (item 3), leaving a pointer to `GTEInitOptions::captureOnInit` so
+   future readers know where the toggle lives.
 
 ### 3.1. Future Metal work (not v1)
 
@@ -194,15 +215,14 @@ by need.
 ### Verification (v1)
 
 - Build with `-DOMEGAGTE_DEBUG=OFF`, run macOS sample, confirm zero
-  `[GEMetalEngine_Internal]` lines on stdout and that the Metal
-  validation banner does *not* appear in the system log.
-- Build with `-DOMEGAGTE_DEBUG=ON` on macOS 11+, confirm the
-  validation banner appears without setting `METAL_DEVICE_WRAPPER_TYPE`
-  in the environment — i.e. the programmatic toggle worked.
-- On macOS <11 (or with a user-supplied device), confirm the docs
-  call out that `METAL_DEVICE_WRAPPER_TYPE=1` is still required.
-- Deliberately trigger an API misuse (e.g. resource use after free)
-  with the layer on, confirm Metal raises the expected diagnostic.
+  `[GEMetalEngine_Internal]` lines on stdout.
+- Build with `-DOMEGAGTE_DEBUG=ON`, confirm `[GEMetalEngine_Internal]`
+  lines *do* appear (engine logging gated by the debug layer).
+- Confirm native Metal API validation is driven by the environment, not
+  the debug layer: with `METAL_DEVICE_WRAPPER_TYPE=1` set, deliberately
+  trigger an API misuse (e.g. resource use after free) and confirm Metal
+  raises the expected diagnostic; without it, no diagnostic — regardless
+  of `OMEGAGTE_DEBUG`. (There is no programmatic toggle; see Constraints.)
 - Run a sample with `captureOnInit = true`, confirm a `.gputrace`
   file is written next to the binary, the trace opens in Xcode, and
   it contains the expected frame range (Init → Close). Confirm the
@@ -212,15 +232,17 @@ by need.
 ## Rollout order
 
 1. ✅ Slice landed: cross-cutting flags + macro + D3D12.
-2. Vulkan §2.1, §2.2 (gate + log re-route). Smallest blast radius;
+2. ✅ Vulkan §2.1, §2.2 (gate + log re-route). Smallest blast radius;
    exercises the same flag from a second backend.
-3. Vulkan §2.3 (GPU-AV). Independent; can ship same PR or follow-on.
-4. Vulkan §2.4 (object-name null-check). Pre-existing latent bug —
-   ride along since we're in the file.
-5. Metal §3 v1 items: validation toggle + programmatic capture +
-   docs + stale-comment removal. Land together — they all live in
-   `src/metal/GEMetal.mm` around the existing commented-out
-   `MTLCaptureManager` block, so one PR keeps the diff coherent.
+3. ✅ Vulkan §2.3 (GPU-AV). Independent; shipped alongside §2.1/§2.2.
+4. ✅ Vulkan §2.4 (object-name no-op). Landed as a centralized
+   interposer in `VulkanExtStubs.cpp`, not per-callsite null-checks;
+   pre-existing latent crash-on-null bug closed in the process.
+5. ✅ Metal §3 v1 items: programmatic capture + env-var docs +
+   stale-comment fix. The validation toggle was dropped (no Metal API).
+   Landed together in `src/metal/GEMetal.mm` (constructor + new
+   destructor), `OmegaGTE.cpp`/`GTEDevice.h` (the `captureOnInit` /
+   `captureFilePath` plumbing), and `gte/docs/Metal-Debug.md`.
 6. Future: Metal §3.1 items, in any order driven by need.
 7. §4 engine-side resource logging — independent of §2/§3 and can
    interleave with them. Order within §4:

@@ -1399,10 +1399,12 @@ Raytracing
 
 .. note::
 
-   Raytracing support is conditional. On Windows it requires Windows 10 1809
-   or later. On Metal it requires macOS 11 / iOS 14. On Vulkan it is always
-   available. The ``OMEGAGTE_RAYTRACING_SUPPORTED`` macro is defined when
-   the feature is available.
+   Raytracing support is detected at runtime, not compile time. The raytracing
+   API (acceleration structures, ``dispatchRays``) is always present in the
+   build; query ``GTEDevice::features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)``
+   before using it. On a device without raytracing support the engine's
+   raytracing factory methods (``allocateAccelerationStructure``,
+   ``createBoundingBoxesBuffer``) return ``nullptr`` rather than crashing.
 
 Acceleration Structures
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -1436,7 +1438,8 @@ efficiently find ray–geometry intersections.
 
 .. code-block:: cpp
 
-    #ifdef OMEGAGTE_RAYTRACING_SUPPORTED
+    // Guard raytracing usage with a runtime device-feature check.
+    if (device->features.hasFeature(OmegaGTE::GTEDEVICE_FEATURE_RAYTRACING)) {
 
     // Build a bottom-level acceleration structure from a triangle mesh
     OmegaGTE::GEAccelerationStructDescriptor asDesc;
@@ -1463,7 +1466,7 @@ efficiently find ray–geometry intersections.
     rtBuf->dispatchRays(width, height, 1);
     rtBuf->finishComputePass();
 
-    #endif
+    } // end raytracing feature check
 
 ----
 

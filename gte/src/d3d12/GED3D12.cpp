@@ -1196,6 +1196,10 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
     }
 
     SharedHandle<GEBuffer> GED3D12Engine::createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes){
+        if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)){
+            DEBUG_STREAM("Raytracing not supported on this device");
+            return nullptr;
+        }
         std::vector<D3D12_RAYTRACING_AABB> aabbs;
         auto d3d12_buffer = std::dynamic_pointer_cast<GED3D12Buffer>(makeBuffer({BufferDescriptor::Upload,sizeof(D3D12_RAYTRACING_AABB) * boxes.size(),sizeof(D3D12_RAYTRACING_AABB)}));
         for(auto & b : boxes){
@@ -1218,6 +1222,10 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
     }
 
     SharedHandle<GEAccelerationStruct> GED3D12Engine::allocateAccelerationStructure(const GEAccelerationStructDescriptor &desc){
+        if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)){
+            DEBUG_STREAM("Raytracing not supported on this device");
+            return nullptr;
+        }
         std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometryDescs;
         for(auto & g : desc.data){
             D3D12_RAYTRACING_GEOMETRY_DESC gd {};
@@ -2283,7 +2291,20 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
         /// Create GPU/CPU Transition Heap
         if(desc.usage != GETexture::GPUAccessOnly){
-            auto size = GetRequiredIntermediateSize(texture,0,1);
+            // §7.1/§7.8: size the upload/readback companion for every
+            // subresource so copyBytes/getBytes can address an arbitrary
+            // (mipLevel, arrayLayer). Only ToGPU/FromGPU heaps are actually
+            // CPU-mapped; the others keep the single-subresource size so
+            // their (DEFAULT-heap) companion is untouched. planeCount is 1
+            // for every pixel format we support today (all color).
+            UINT numSubresources = 1;
+            if(desc.usage == GETexture::ToGPU || desc.usage == GETexture::FromGPU){
+                const auto texDesc = texture->GetDesc();
+                const UINT arraySz = (texDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+                                     ? 1u : texDesc.DepthOrArraySize;
+                numSubresources = UINT(texDesc.MipLevels) * arraySz;
+            }
+            auto size = GetRequiredIntermediateSize(texture,0,numSubresources);
             auto res = CD3DX12_RESOURCE_DESC::Buffer(size);
             D3D12MA::ALLOCATION_DESC cpuAllocDesc = {};
             cpuAllocDesc.HeapType = heap_prop.Type; // UPLOAD or READBACK matching desc.usage

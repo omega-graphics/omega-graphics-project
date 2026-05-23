@@ -439,6 +439,12 @@ _NAMESPACE_BEGIN_
     struct OMEGAGTE_EXPORT TextureRegion {
         unsigned x,y,z;
         unsigned w,h,d;
+        /// Mip pyramid level this region addresses. Defaults to 0 so existing
+        /// six-field aggregate initializers keep targeting the base level.
+        /// (Pipeline-Completion-Extension-Plan §7.1.)
+        unsigned mipLevel = 0;
+        /// Array slice / cube-face index this region addresses. Defaults to 0.
+        unsigned arrayLayer = 0;
     };
 
     /// @brief Individual channel source for a texture swizzle mapping.

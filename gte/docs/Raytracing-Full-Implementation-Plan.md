@@ -2,7 +2,7 @@
 
 ## Goal
 
-Bring raytracing from its current partial state to a fully functional, cross-platform feature across all three backends (D3D12, Vulkan, Metal) and the OmegaSL shader language. Additionally, remove the compile-time `OMEGAGTE_RAYTRACING_SUPPORTED` macro and replace it with runtime device feature checks via `GTEDeviceFeatures.raytracing`.
+Bring raytracing from its current partial state to a fully functional, cross-platform feature across all three backends (D3D12, Vulkan, Metal) and the OmegaSL shader language. Additionally, remove the compile-time `OMEGAGTE_RAYTRACING_SUPPORTED` macro and replace it with runtime device feature checks via `GTEDeviceFeatures::hasFeature(GTEDEVICE_FEATURE_RAYTRACING)`. **(Phase 0 — done, 2026-05-23.)**
 
 ## Current State
 
@@ -28,9 +28,13 @@ Raytracing exists in a half-built state across the codebase. What works and what
 3. **OmegaSL ray tracing shader types** — The shader language only knows `vertex`, `fragment`, `compute`, `hull`, `domain`. No ray generation, closest hit, any hit, miss, or intersection shaders.
 4. **Public API for RT pipelines** — `GEPipeline.h` has `RenderPipelineDescriptor` and `ComputePipelineDescriptor` but no `RayTracingPipelineDescriptor`.
 
-### The Macro Problem
+### The Macro Problem — RESOLVED (Phase 0, 2026-05-23)
 
-`OMEGAGTE_RAYTRACING_SUPPORTED` is a compile-time gate defined in `GE.h` based on SDK version/platform:
+> Resolved: the macro is gone and replaced by runtime
+> `features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)` checks. The description
+> below is the original problem statement, kept for context.
+
+`OMEGAGTE_RAYTRACING_SUPPORTED` was a compile-time gate defined in `GE.h` based on SDK version/platform:
 - **D3D12**: `NTDDI_VERSION >= NTDDI_WIN10_RS5` (Windows 10 1809+)
 - **Metal**: `__MAC_11_0` / `__IPHONE_14_0`
 - **Vulkan**: Always defined
@@ -39,16 +43,59 @@ This gates the **public API** (`GEAccelerationStruct`, `GEAccelerationStructDesc
 
 The macro appears in **17 files** across public headers, all three backend headers and implementations, and downstream docs.
 
+## Approach: inline-first (decided 2026-05-23)
+
+OmegaSL models ray tracing on the **inline ray-query** model — the common
+denominator across DXR 1.1 `RayQuery`, Vulkan `GL_EXT_ray_query`, and Metal's
+`intersector`. Ray tracing is a **capability of compute shaders**, not a new
+family of shader stages: a compute shader instantiates a ray query, runs
+traversal, and shades the hit inline. There is no ray-tracing pipeline and no
+shader binding table in this model.
+
+The original plan was written around the DXR/Vulkan **pipeline + SBT** model
+(separate raygen/closesthit/miss/… stages, a ray-tracing PSO, an SBT the GPU
+walks during traversal). That model maps 1:1 to DXR and Vulkan but has no Metal
+equivalent (it's faked with visible/intersection function tables), so it does
+not transpile universally. It is preserved here as the **Advanced Track**
+(former Phases 3–5) for a future path-tracing use case.
+
 ## Non-Goals
 
-- Inline ray tracing (DXR 1.1 `DispatchRays` from graphics command lists). We support ray tracing from compute/ray pass only.
-- Ray queries in non-RT shaders (Vulkan `GL_EXT_ray_query` / HLSL `RayQuery`). This is a follow-up.
+- **Ray-tracing pipeline objects + shader binding tables.** Deferred to the
+  Advanced Track. The inline model covers shadows, AO, reflections, and
+  single-bounce GI without them.
+- **Hardware ray recursion, callable shaders, and GPU-driven per-geometry
+  shader dispatch.** These exist only in the pipeline/SBT model (Advanced Track).
+  With inline, you branch on instance/primitive index and select materials in
+  shader code.
 - GPU work graphs or shader execution reordering (SER).
 - Changes to the triangulation engine (TE).
 
 ---
 
 ## Phase 0: Remove `OMEGAGTE_RAYTRACING_SUPPORTED` Compile-Time Gate
+
+> **Status: COMPLETE (2026-05-23).** Reality differed from this plan's original
+> assumptions — recorded here so the rest of the plan can be read accurately:
+> - **0.1 (remove `#ifdef` gates):** was already done in commit `ef3b7bd
+>   "Remove Raytracing Macro"`. The RT API is unconditionally present.
+> - **0.2 (delete macro `#define`s):** the defines were left commented-out in
+>   `GE.h`; those dead comment blocks are now deleted.
+> - **"Thread `GTEDeviceFeatures` into the engine" (0.3):** unnecessary. All
+>   three engines already store `SharedHandle<GTEDevice> gteDevice`, and
+>   `GTEDevice::features` is a public `const` member — features are already
+>   reachable from every engine method.
+> - **There is no `bool raytracing` field.** `GTEDeviceFeatures` exposes a
+>   `uint64_t flags` bitmask; the runtime guard is
+>   `gteDevice->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)`.
+> - **Runtime guards added (factory-only scope):** `createBoundingBoxesBuffer`
+>   and `allocateAccelerationStructure` in all three backends return `nullptr` +
+>   `DEBUG_STREAM` when RT is unsupported. Command-buffer methods are not
+>   guarded — they cannot receive a valid accel-struct handle without the
+>   factory succeeding first.
+> - **Docs updated:** `gte/docs/API.rst`, `wtk/docs/OmegaGTEView-Proposal.md`.
+>
+> The subsections below are the *original* plan, preserved for reference.
 
 ### 0.1 Make all raytracing types and methods unconditionally present
 
@@ -83,7 +130,7 @@ Each backend method that touches hardware RT APIs must check at runtime:
 ```cpp
 // D3D12 example:
 SharedHandle<GEAccelerationStruct> GED3D12Engine::allocateAccelerationStructure(const GEAccelerationStructDescriptor &desc) {
-    if (!deviceFeatures.raytracing) {
+    if (!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)) {
         DEBUG_STREAM("Raytracing not supported on this device");
         return nullptr;
     }
@@ -91,7 +138,7 @@ SharedHandle<GEAccelerationStruct> GED3D12Engine::allocateAccelerationStructure(
 }
 ```
 
-The `GTEDeviceFeatures` struct already has `bool raytracing` and it's already populated on all three backends during `enumerateDevices()`. The engine needs access to the features of the device it was created with — thread the `GTEDeviceFeatures` from the `GTEDevice` into the engine at construction time.
+`GTEDeviceFeatures` exposes a `uint64_t flags` bitmask (queried with `hasFeature(GTEDEVICE_FEATURE_RAYTRACING)`), populated on all three backends during `enumerateDevices()`. **Correction:** there is no `bool raytracing` field. The engine already has access to its device's features — all three engines store `SharedHandle<GTEDevice> gteDevice` and `GTEDevice::features` is a public `const` member, so no additional threading is required.
 
 ### 0.4 Update downstream references
 
@@ -102,251 +149,222 @@ The `GTEDeviceFeatures` struct already has `bool raytracing` and it's already po
 
 ---
 
-## Phase 1: OmegaSL Ray Tracing Shader Types
+## Phase 1: OmegaSL Inline Ray Tracing (Ray Query)
 
-This is the prerequisite for everything else — without shader support, there's nothing to put in a pipeline or SBT.
+This is the prerequisite for everything else. Ray tracing is exposed as a
+**capability of `compute` shaders** via the inline ray-query model — no new
+shader stages, no pipeline, no SBT. A compute shader builds a ray, runs a
+query against an acceleration structure, and shades the result inline.
 
-### 1.1 Add ray tracing shader type keywords
+### 1.1 No new shader-type keywords
 
-In `gte/omegasl/src/Toks.def`, add:
+**Do not** add `raygen`/`closesthit`/`anyhit`/`miss`/`intersection`/`callable`
+to `Toks.def`, `Lexer.cpp`, `ShaderDecl::Type`, or `omegasl_shader_type`.
+Inline ray tracing reuses the existing `Compute` shader type. (Those stage
+keywords belong to the Advanced Track only.) This deletes the bulk of the
+original Phase 1.
 
-```cpp
-#define KW_RAYGEN KW("raygen")
-#define KW_CLOSESTHIT KW("closesthit")
-#define KW_ANYHIT KW("anyhit")
-#define KW_MISS KW("miss")
-#define KW_INTERSECTION KW("intersection")
-#define KW_CALLABLE KW("callable")
-```
+### 1.2 Built-in types
 
-In `gte/omegasl/src/Lexer.cpp`, add these to `isKeyword()`.
-
-### 1.2 Extend `ShaderDecl::Type` and `omegasl_shader_type`
-
-In `gte/omegasl/src/AST.h`, extend the enum:
+In `gte/omegasl/src/AST.h` builtins, `AST.def`, and `AST.cpp`:
 
 ```cpp
-struct ShaderDecl : public FuncDecl {
-    typedef enum : int {
-        Vertex, Fragment, Compute, Hull, Domain,
-        RayGeneration, ClosestHit, AnyHit, Miss, Intersection, Callable
-    } Type;
-    // ...
-};
+DECLARE_BUILTIN_TYPE(Ray);                   // { float3 origin; float3 direction; float tmin; float tmax; }
+DECLARE_BUILTIN_TYPE(RayHit);                // intersection result (fields below)
+DECLARE_BUILTIN_TYPE(AccelerationStructure); // TLAS handle, bound as a compute resource
+DECLARE_BUILTIN_TYPE(RayQuery);              // opaque query object — low-level path (§1.5)
 ```
 
-In `gte/include/omegasl.h`, extend the public enum:
+`Ray` fields: `origin` (float3), `direction` (float3), `tmin` (float), `tmax` (float).
 
-```cpp
-typedef enum : int {
-    OMEGASL_SHADER_VERTEX,
-    OMEGASL_SHADER_FRAGMENT,
-    OMEGASL_SHADER_COMPUTE,
-    OMEGASL_SHADER_HULL,
-    OMEGASL_SHADER_DOMAIN,
-    OMEGASL_SHADER_RAYGEN,
-    OMEGASL_SHADER_CLOSESTHIT,
-    OMEGASL_SHADER_ANYHIT,
-    OMEGASL_SHADER_MISS,
-    OMEGASL_SHADER_INTERSECTION,
-    OMEGASL_SHADER_CALLABLE
-} omegasl_shader_type;
+`RayHit` fields — the universal subset all three backends expose:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `committed` | `bool` | ray hit committed geometry |
+| `t` | `float` | hit distance along the ray |
+| `primitiveIndex` | `uint` | primitive index within its geometry |
+| `instanceIndex` | `uint` | instance index in the TLAS |
+| `barycentrics` | `float2` | triangle hit barycentric coords |
+
+### 1.3 Intrinsics
+
+**High-level one-shot (Phase 1 core)** — opaque triangle geometry, the common case:
+
+```glsl
+RayHit intersect(AccelerationStructure as, Ray ray);
+RayHit intersect(AccelerationStructure as, Ray ray, uint instanceMask);
+RayHit intersect(AccelerationStructure as, Ray ray, uint instanceMask, uint rayFlags);
 ```
 
-### 1.3 Add RT shader parameters descriptor
+**Ray flags** — a small backend-neutral enum OR'd into `rayFlags`:
+`RAY_FLAG_NONE`, `RAY_FLAG_OPAQUE`, `RAY_FLAG_TERMINATE_ON_FIRST_HIT` (shadow
+rays), `RAY_FLAG_CULL_BACK_FACING`, `RAY_FLAG_CULL_FRONT_FACING`. Maps to
+`RAY_FLAG_*` (HLSL), `gl_RayFlags*EXT` (GLSL), and intersector params (Metal).
 
-Ray tracing shaders receive built-in payloads and attributes, not vertex inputs. Add to `omegasl.h`:
+**Low-level query (deferred sub-phase 1.5, NOT Phase 1 core)** — required for
+non-opaque (any-hit equivalent) and procedural/AABB geometry, where the
+traversal loop must be visible to shader code:
 
-```cpp
-struct omegasl_raygen_shader_desc {
-    // No special inputs beyond resource bindings
-};
-
-struct omegasl_hit_shader_desc {
-    // Payload and attribute types will be described here
-    // once OmegaSL supports payload declarations
-};
+```glsl
+RayQuery q;
+ray_query_init(q, as, ray, rayFlags, mask);
+while (ray_query_proceed(q)) {
+    // candidate handling: alpha test, custom AABB intersection,
+    // ray_query_candidate_*(q), ray_query_commit(q) / ray_query_abandon(q)
+}
+if (ray_query_committed(q)) { /* ray_query_t(q), ray_query_primitive(q), ... */ }
 ```
 
-And extend `omegasl_shader` with a union or additional fields for RT shader metadata.
+### 1.4 Resource binding
 
-### 1.4 Parser support
+The acceleration structure binds through the **existing compute resource map** —
+`bindResourceAtComputeShader(GEAccelerationStruct, index)` already exists in the
+public API. No SBT, no hit-group plumbing.
 
-In `gte/omegasl/src/Parser.cpp`, add parsing branches for the new keywords following the existing pattern (lines 212-281). RT shaders don't have threadgroup descriptors or vertex inputs; they have resource maps (already supported via `resourceMap`).
+### 1.5 Sema validation (`Sema.cpp`)
 
-Ray tracing shaders use the same resource binding model as compute shaders (buffers, textures, acceleration structures bound by index).
+- `intersect()` / `ray_query_*` are callable only from `Compute` shaders in
+  Phase 1 (fragment-stage ray query is a later option).
+- An `AccelerationStructure`-typed argument must resolve to a bound resource in
+  the shader's `resourceMap`.
+- Validate `Ray` / `RayHit` field access against the built-in field sets.
+- **No** recursion-depth, hit-group, payload, or attribute validation — none of
+  those concepts exist in the inline model.
 
-### 1.5 Add RT-specific built-in types and functions
+### 1.6 Feature gating
 
-In `AST.h` builtins and `AST.cpp`:
+A shader that calls `intersect()` / `ray_query_*` sets
+`requiredFeatures |= OMEGASL_FEATURE_BIT_RAYTRACING` (bit already exists). The
+runtime loader masks this against the device's `featuresAsBitmask()` and rejects
+the shader on unsupported hardware (already wired — OmegaSL-Feature-Gap-Survey §14.3).
 
-```cpp
-// Types
-DECLARE_BUILTIN_TYPE(ray_type);                  // Ray description
-DECLARE_BUILTIN_TYPE(raypayload_type);           // User-defined ray payload
-DECLARE_BUILTIN_TYPE(acceleration_structure_type); // TLAS/BLAS handle
-DECLARE_BUILTIN_TYPE(intersection_attributes_type);
+> **Open item — feature bit granularity.** Inline `RayQuery` requires D3D12
+> **Tier 1.1** / SM 6.5, a higher bar than pipeline RT (Tier 1.0). Consider a
+> distinct `GTEDEVICE_FEATURE_RAY_QUERY` flag + `OMEGASL_FEATURE_BIT_RAY_QUERY`
+> bit rather than overloading `GTEDEVICE_FEATURE_RAYTRACING`. Verify HW/driver
+> tier boundaries before finalizing. (Medium confidence on the exact boundary.)
 
-// Intrinsics
-DECLARE_BUILTIN_FUNC(trace_ray);        // TraceRay / traceRayEXT / intersect
-DECLARE_BUILTIN_FUNC(report_hit);       // ReportHit / reportIntersectionEXT
-DECLARE_BUILTIN_FUNC(ignore_hit);       // IgnoreHit
-DECLARE_BUILTIN_FUNC(accept_hit);       // AcceptHitAndEndSearch
-DECLARE_BUILTIN_FUNC(ray_origin);       // WorldRayOrigin()
-DECLARE_BUILTIN_FUNC(ray_direction);    // WorldRayDirection()
-DECLARE_BUILTIN_FUNC(ray_tmin);         // RayTMin()
-DECLARE_BUILTIN_FUNC(ray_tcurrent);     // RayTCurrent()
-DECLARE_BUILTIN_FUNC(instance_index);   // InstanceIndex()
-DECLARE_BUILTIN_FUNC(primitive_index);  // PrimitiveIndex()
-DECLARE_BUILTIN_FUNC(hit_kind);         // HitKind()
-```
-
-In `Toks.def`, add corresponding attribute keywords:
-
-```cpp
-#define ATTRIBUTE_DISPATCH_RAYS_INDEX "DispatchRaysIndex"
-#define ATTRIBUTE_DISPATCH_RAYS_DIMENSIONS "DispatchRaysDimensions"
-#define ATTRIBUTE_WORLD_RAY_ORIGIN "WorldRayOrigin"
-#define ATTRIBUTE_WORLD_RAY_DIRECTION "WorldRayDirection"
-#define ATTRIBUTE_RAY_TMIN "RayTMin"
-#define ATTRIBUTE_RAY_TCURRENT "RayTCurrent"
-#define ATTRIBUTE_INSTANCE_INDEX "InstanceIndex"
-#define ATTRIBUTE_PRIMITIVE_INDEX "PrimitiveIndex"
-#define ATTRIBUTE_HIT_KIND "HitKind"
-```
-
-### 1.6 Sema validation
-
-In `gte/omegasl/src/Sema.cpp`, extend shader validation (around line 1248) to handle RT shader types:
-
-- `RayGeneration`: May use `DispatchRaysIndex`, `DispatchRaysDimensions`. Must not have vertex inputs.
-- `ClosestHit` / `AnyHit`: May access hit attributes, ray intrinsics. Must not call `trace_ray` recursively (enforce max recursion depth).
-- `Miss`: May use ray intrinsics, must not access hit attributes.
-- `Intersection`: Must call `report_hit`. Must not call `trace_ray`.
-- `Callable`: Free-form, similar to a compute helper.
-
-Add `AttributeContext` entries for each RT shader type in the attribute validation code (around line 1308).
-
-**Files**: `Toks.def`, `Lexer.cpp`, `AST.h`, `AST.def`, `AST.cpp`, `Parser.cpp`, `Sema.cpp`, `omegasl.h`
+**Files**: `AST.h`, `AST.def`, `AST.cpp`, `Parser.cpp` (builtin recognition
+only — no new statement grammar), `Sema.cpp`, `omegasl.h` (RT metadata flag).
+**Not touched**: shader-stage keywords in `Toks.def` / `Lexer.cpp`, the
+`omegasl_shader_type` / `ShaderDecl::Type` stage enums.
 
 ---
 
-## Phase 2: OmegaSL Ray Tracing Code Generation
+## Phase 2: OmegaSL Inline Ray Tracing Code Generation
+
+Every backend emits a **regular compute shader** that uses the backend's inline
+ray-query API. No DXIL libraries, no RT pipeline stages, no SBT — the generated
+shape is the same control flow on all three. The examples below show the
+high-level one-shot `intersect()` lowering for opaque triangle geometry.
 
 ### 2.1 HLSL code generation (D3D12 / DXC)
 
-In `gte/omegasl/src/HLSLCodeGen.cpp`:
+In `gte/omegasl/src/HLSLCodeGen.cpp`. `intersect(as, ray)` lowers to:
 
-**Shader entry point generation:**
-- `RayGeneration` → `[shader("raygeneration")] void Name() { ... }`
-- `ClosestHit` → `[shader("closesthit")] void Name(inout Payload p, in Attributes a) { ... }`
-- `AnyHit` → `[shader("anyhit")] void Name(inout Payload p, in Attributes a) { ... }`
-- `Miss` → `[shader("miss")] void Name(inout Payload p) { ... }`
-- `Intersection` → `[shader("intersection")] void Name() { ... }`
-- `Callable` → `[shader("callable")] void Name(inout Params p) { ... }`
-
-**Intrinsic mapping:**
-- `trace_ray(accel, flags, mask, sbtOffset, sbtStride, missIndex, ray, payload)` → `TraceRay(accel, flags, mask, sbtOffset, sbtStride, missIndex, ray, payload)`
-- `report_hit(t, kind, attrs)` → `ReportHit(t, kind, attrs)`
-- `ray_origin()` → `WorldRayOrigin()`
-- `ray_direction()` → `WorldRayDirection()`
-- etc.
-
-**Compilation target:**
-- Currently uses `vs_5_0` / `ps_5_0` etc. (line 713-730)
-- DXR requires compiling to a **DXIL library** rather than individual shader objects: target `lib_6_3` (or higher)
-- All RT shaders in a single OmegaSL library should be compiled into **one DXIL library blob** that DXR loads via `D3D12_DXIL_LIBRARY_DESC`
-
-Update `compileShader()` and `compileShaderOnRuntime()`:
-```cpp
-else if(type == ast::ShaderDecl::RayGeneration ||
-        type == ast::ShaderDecl::ClosestHit ||
-        type == ast::ShaderDecl::AnyHit ||
-        type == ast::ShaderDecl::Miss ||
-        type == ast::ShaderDecl::Intersection ||
-        type == ast::ShaderDecl::Callable) {
-    out << "lib_6_3";
-}
+```hlsl
+RayQuery<RAY_FLAG_NONE> q;
+RayDesc rd; rd.Origin = ray.origin; rd.Direction = ray.direction;
+rd.TMin = ray.tmin; rd.TMax = ray.tmax;
+q.TraceRayInline(as, RAY_FLAG_NONE, mask, rd);
+q.Proceed();                       // opaque triangles: terminates in one step
+RayHit hit;
+hit.committed      = (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT);
+hit.t              = q.CommittedRayT();
+hit.primitiveIndex = q.CommittedPrimitiveIndex();
+hit.instanceIndex  = q.CommittedInstanceIndex();
+hit.barycentrics   = q.CommittedTriangleBarycentrics();
 ```
 
-**Note**: This requires **DXC** (the modern HLSL compiler), not the legacy `fxc.exe`. The existing code already uses DXC via `hlslCodeOpts.dxc_cmd`. The SM 5.0 targets for raster shaders should eventually be upgraded to 6.x as well, but that's separate work.
+- `AccelerationStructure` → `RaytracingAccelerationStructure`.
+- **Compile target:** the shader stays `compute` → `cs_6_5` (RayQuery requires
+  SM 6.5). *Not* `lib_6_3` — there is no DXIL library or state object.
+- Requires **DXC** (already used via `hlslCodeOpts.dxc_cmd`).
 
 ### 2.2 GLSL/SPIR-V code generation (Vulkan / glslc)
 
-In `gte/omegasl/src/GLSLCodeGen.cpp`:
+In `gte/omegasl/src/GLSLCodeGen.cpp`. Emit `#extension GL_EXT_ray_query : require`.
+`intersect(as, ray)` lowers to:
 
-**Shader entry point generation:**
-- `RayGeneration` → `#extension GL_EXT_ray_tracing : require` + `layout(...) in; void main() { ... }`
-- `ClosestHit` → `layout(location = N) rayPayloadInEXT Payload p;` + `hitAttributeEXT Attributes a;`
-- `AnyHit` → Same structure with `rayPayloadInEXT`
-- `Miss` → `layout(location = N) rayPayloadInEXT Payload p;`
-- `Intersection` → `hitAttributeEXT Attributes a;` + `reportIntersectionEXT()`
-- `Callable` → `layout(location = N) callableDataInEXT Params p;`
+```glsl
+rayQueryEXT q;
+rayQueryInitializeEXT(q, as, gl_RayFlagsOpaqueEXT, mask,
+                      ray.origin, ray.tmin, ray.direction, ray.tmax);
+while (rayQueryProceedEXT(q)) {}
+RayHit hit;
+hit.committed = (rayQueryGetIntersectionTypeEXT(q, true)
+                 == gl_RayQueryCommittedIntersectionTriangleEXT);
+hit.t              = rayQueryGetIntersectionTEXT(q, true);
+hit.primitiveIndex = rayQueryGetIntersectionPrimitiveIndexEXT(q, true);
+hit.instanceIndex  = rayQueryGetIntersectionInstanceIdEXT(q, true);
+hit.barycentrics   = rayQueryGetIntersectionBarycentricsEXT(q, true);
+```
 
-**Intrinsic mapping:**
-- `trace_ray(...)` → `traceRayEXT(...)`
-- `report_hit(...)` → `reportIntersectionEXT(...)`
-- `ignore_hit()` → `ignoreIntersectionEXT()`
-- `accept_hit()` → `terminateRayEXT()`
-- `ray_origin()` → `gl_WorldRayOriginEXT`
-- `ray_direction()` → `gl_WorldRayDirectionEXT`
-- `ray_tmin()` → `gl_RayTminEXT`
-- `ray_tcurrent()` → `gl_RayTmaxEXT`
-- `instance_index()` → `gl_InstanceCustomIndexEXT`
-- `primitive_index()` → `gl_PrimitiveID`
-
-**Compilation:**
-- glslc target: `--target-env=vulkan1.2` with `-fshader-stage=rgen` / `rchit` / `rahit` / `rmiss` / `rint` / `rcall`
+- `AccelerationStructure` → `accelerationStructureEXT`.
+- **Compile:** `glslc --target-env=vulkan1.2 -fshader-stage=comp`. No
+  `rgen`/`rchit`/`rmiss` stages.
 
 ### 2.3 Metal Shading Language code generation
 
-In `gte/omegasl/src/MetalCodeGen.cpp`:
-
-Metal's ray tracing model differs fundamentally from DXR/Vulkan. Metal uses **intersection functions** and **visible function tables** rather than SBT-based dispatching. Ray tracing shaders in Metal are effectively compute kernels that call `intersect()` on an `intersection_function_table`.
-
-**Approach**: OmegaSL ray generation shaders compile to Metal compute kernels that use Metal's `ray_tracing` header:
+In `gte/omegasl/src/MetalCodeGen.cpp`. Emit `#include <metal_raytracing>` /
+`using namespace metal::raytracing`. `intersect(as, ray)` lowers to:
 
 ```metal
-#include <metal_raytracing>
-using namespace metal::raytracing;
-
-kernel void rayGenShader(
-    instance_acceleration_structure accelStruct [[buffer(0)]],
-    texture2d<float, access::write> output [[texture(0)]],
-    uint2 tid [[thread_position_in_grid]]
-) {
-    intersector<triangle_data> inter;
-    ray r = { origin, direction, tmin, tmax };
-    auto result = inter.intersect(r, accelStruct);
-    // ...
-}
+intersector<triangle_data, instancing> isect;
+ray r{ ray.origin, ray.direction, ray.tmin, ray.tmax };
+intersection_result<triangle_data, instancing> res = isect.intersect(r, as, mask);
+RayHit hit;
+hit.committed      = (res.type != intersection_type::none);
+hit.t              = res.distance;
+hit.primitiveIndex = res.primitive_id;
+hit.instanceIndex  = res.instance_id;
+hit.barycentrics   = res.triangle_barycentric_coord;
 ```
 
-For hit/miss/intersection logic, Metal uses **visible function tables** and **intersection function tables** rather than separate shader stages. The OmegaSL codegen should:
-- Compile `closesthit` / `anyhit` / `intersection` as Metal **visible functions** (`[[visible]]`)
-- Compile `raygen` as a compute kernel
-- Compile `miss` as a visible function
-- Generate intersection function table setup code
+- `AccelerationStructure` → `instance_acceleration_structure` (or
+  `acceleration_structure<instancing>`).
+- Stays a compute kernel. **No** `MTLVisibleFunctionTable` /
+  `MTLIntersectionFunctionTable` for the common case — those are Advanced Track.
 
 ### 2.4 Shader library serialization
 
-In `CodeGen.h` `linkShaderObjects()` (line 100-172), extend the binary format to serialize RT shader metadata:
+In `CodeGen.h` `linkShaderObjects()`, RT metadata collapses to a single flag plus
+the feature requirement — no hit groups, payload/attribute sizes, or recursion depth:
 
 ```cpp
-else if(shader_data.type == OMEGASL_SHADER_RAYGEN ||
-        shader_data.type == OMEGASL_SHADER_CLOSESTHIT || /* etc */) {
-    // Write hit group association info (which closesthit + anyhit + intersection form a group)
-    // Write max payload size
-    // Write max attribute size
-    // Write max recursion depth
-}
+// per-shader: bool usesRayQuery; requiredFeatures already carries
+// OMEGASL_FEATURE_BIT_RAYTRACING (or _RAY_QUERY, per Phase 1.6 open item).
 ```
 
 **Files**: `HLSLCodeGen.cpp`, `GLSLCodeGen.cpp`, `MetalCodeGen.cpp`, `CodeGen.h`
 
 ---
 
-## Phase 3: Ray Tracing Pipeline State Objects
+# Advanced Track: Pipeline + Shader Binding Table model
+
+> **TODO — planned, deferred (not abandoned).** Full ray-tracing capability for
+> the engine still includes this track; it is sequenced *after* the inline
+> ray-query model (Phases 1–2–6) lands, not dropped. **Status: Not Started.**
+>
+> The phases below (3–5) implement the DXR/Vulkan *ray-tracing pipeline* model —
+> separate raygen/closesthit/anyhit/miss/intersection/callable stages,
+> ray-tracing PSOs, and shader binding tables. This is what inline ray query
+> *cannot* provide: hardware ray recursion, callable shaders, and GPU-driven
+> per-geometry shader dispatch. It is **not required** for the inline model and
+> does not transpile to Metal without `MTLVisibleFunctionTable` /
+> `MTLIntersectionFunctionTable` reconstruction.
+>
+> When this track is taken up, the original Phase 1/2 stage-keyword and
+> stage-codegen work (removed from the inline plan above) is resurrected here —
+> see git history of this doc for that material.
+>
+> **Trigger to start:** inline track (Phases 1, 2, 6, 7) complete *and* a
+> concrete use case appears that needs recursion, callables, or per-geometry
+> shaders (e.g. a multi-material path tracer). Per-backend order: D3D12 →
+> Vulkan → Metal.
+
+## Phase 3 (Advanced Track): Ray Tracing Pipeline State Objects
 
 ### 3.1 Public API — `RayTracingPipelineDescriptor`
 
@@ -491,7 +509,7 @@ struct GEMetalRayTracingPipelineState : public GERayTracingPipelineState {
 
 ---
 
-## Phase 4: Shader Binding Tables
+## Phase 4 (Advanced Track): Shader Binding Tables
 
 The SBT is the data structure that connects geometry instances to their shader programs during ray traversal.
 
@@ -525,7 +543,13 @@ Metal uses function tables instead of an explicit SBT buffer:
 
 ---
 
-## Phase 5: Complete `dispatchRays()` on All Backends
+## Phase 5 (Advanced Track): Complete `dispatchRays()` on All Backends
+
+> **Inline model note:** inline ray tracing does **not** use `dispatchRays()` —
+> a ray-query compute shader is launched with the existing
+> `dispatchThreadgroups()` / `dispatchThreads()` in a normal compute pass.
+> `dispatchRays()` remains a stub until this Advanced Track is implemented; it
+> should assert/guard rather than silently misbehave.
 
 ### 5.1 D3D12
 
@@ -613,6 +637,12 @@ void GEMetalCommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned
 
 ## Phase 6: Top-Level Acceleration Structures (TLAS) and Instance Descriptors
 
+> **Required for the inline model — this is the real next step after Phases 1–2,
+> not part of the deferred Advanced Track.** Inline `intersect()` traces against
+> a TLAS; `RayHit.instanceIndex` is only meaningful when instances exist. With
+> the inline-first plan, the dependency order is **Phase 1 → 2 → 6 → 7**, and
+> Phases 3–5 are skipped unless the Advanced Track is taken up.
+
 The current API only supports bottom-level acceleration structures (BLAS). For real-world ray tracing, we need TLAS that reference instances of BLAS with per-instance transforms.
 
 ### 6.1 Extend public API
@@ -658,92 +688,89 @@ struct GEAccelerationStructDescriptor {
 
 ### 7.1 OmegaSL compiler tests
 
-Add test `.omegasl` files under `gte/omegasl/tests/` with ray tracing shaders:
-- A simple raygen shader that writes a solid color
-- A closesthit/miss pair
-- Verify compilation to HLSL, GLSL, and MSL
+Add test `.omegasl` files under `gte/omegasl/tests/` with an inline ray-query
+compute shader:
+- A compute shader that builds a `Ray`, calls `intersect(as, ray)`, and writes
+  hit/miss as a solid color to an output texture
+- Verify compilation to HLSL (`cs_6_5` + `RayQuery`), GLSL (`GL_EXT_ray_query`),
+  and MSL (`intersector`)
 
 ### 7.2 Integration tests
 
 Add a new test app under `gte/tests/directx/` (and equivalent for Vulkan):
 - Create a triangle BLAS
 - Build a TLAS with one instance
-- Create a simple raygen + closesthit + miss pipeline
-- Dispatch rays to a 2D output texture
-- Read back and verify non-zero output
+- Bind the TLAS to a compute shader via `bindResourceAtComputeShader`
+- Run the inline ray-query shader with `dispatchThreadgroups` to a 2D output texture
+- Read back and verify non-zero output (no RT pipeline / SBT involved)
 
 ### 7.3 Feature check test
 
 Verify that on hardware without RT support:
-- `features.raytracing` returns `false`
+- `device->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)` returns `false`
 - `allocateAccelerationStructure()` returns `nullptr`
-- `makeRayTracingPipelineState()` returns `nullptr`
+- Shaders requiring the RT feature bit are rejected by the runtime loader
 - No crash, no undefined behavior
 
 ---
 
 ## File Change Summary
 
+Inline-first scope. Rows tagged **[Adv]** belong to the deferred Advanced Track
+(Phases 3–5) and are not touched by the inline plan. Phase 0 rows are **[done]**.
+
 | File | Changes |
 |---|---|
-| **Public API** | |
-| `gte/include/omegaGTE/GE.h` | Remove `#ifdef` gates; add TLAS instance types; add `makeRayTracingPipelineState` |
-| `gte/include/omegaGTE/GEPipeline.h` | Add `RayTracingPipelineDescriptor`, `GERayTracingPipelineState` |
-| `gte/include/omegaGTE/GECommandQueue.h` | Remove `#ifdef` gates; add `setRayTracingPipelineState` |
-| `gte/include/OmegaGTE.h` | Thread device features into engine |
-| `gte/include/omegasl.h` | Add RT shader types to enum; add RT shader metadata structs |
-| **OmegaSL Compiler** | |
-| `gte/omegasl/src/Toks.def` | Add `KW_RAYGEN` through `KW_CALLABLE`; RT attribute names |
-| `gte/omegasl/src/Lexer.cpp` | Register new keywords |
-| `gte/omegasl/src/AST.h` | Extend `ShaderDecl::Type`; add RT builtin types/functions |
-| `gte/omegasl/src/AST.def` | Add RT builtin macro names |
-| `gte/omegasl/src/AST.cpp` | Initialize RT builtins |
-| `gte/omegasl/src/Parser.cpp` | Parse RT shader declarations |
-| `gte/omegasl/src/Sema.cpp` | Validate RT shader semantics |
-| `gte/omegasl/src/HLSLCodeGen.cpp` | HLSL RT codegen; `lib_6_3` compilation target |
-| `gte/omegasl/src/GLSLCodeGen.cpp` | GLSL RT codegen with `GL_EXT_ray_tracing` |
-| `gte/omegasl/src/MetalCodeGen.cpp` | Metal RT codegen (compute + visible functions) |
-| `gte/omegasl/src/CodeGen.h` | RT shader metadata in library serialization |
-| **D3D12 Backend** | |
-| `gte/src/d3d12/GED3D12.h` | Remove `#ifdef`; store device features |
-| `gte/src/d3d12/GED3D12.cpp` | Remove `#ifdef`; add runtime guards; add `makeRayTracingPipelineState`; TLAS support |
-| `gte/src/d3d12/GED3D12CommandQueue.h` | Remove `#ifdef`; add `setRayTracingPipelineState` |
-| `gte/src/d3d12/GED3D12CommandQueue.cpp` | Remove `#ifdef`; implement `dispatchRays` with populated SBT |
-| `gte/src/d3d12/GED3D12Pipeline.cpp` | `ID3D12StateObject` creation and SBT building |
-| **Vulkan Backend** | |
-| `gte/src/vulkan/GEVulkan.h` | Remove `#ifdef`; add RT pipeline function pointers |
-| `gte/src/vulkan/GEVulkan.cpp` | Remove `#ifdef`; load new fn ptrs; add `makeRayTracingPipelineState`; TLAS support |
-| `gte/src/vulkan/GEVulkanCommandQueue.h` | Remove `#ifdef`; add `setRayTracingPipelineState` |
-| `gte/src/vulkan/GEVulkanCommandQueue.cpp` | Remove `#ifdef`; implement `dispatchRays` with populated SBT |
-| **Metal Backend** | |
-| `gte/src/metal/GEMetal.h` | Remove `#ifdef` |
-| `gte/src/metal/GEMetal.mm` | Remove `#ifdef`; add runtime guards; add `makeRayTracingPipelineState`; TLAS support |
-| `gte/src/metal/GEMetalCommandQueue.h` | Remove `#ifdef`; add `setRayTracingPipelineState` |
-| `gte/src/metal/GEMetalCommandQueue.mm` | Remove `#ifdef`; implement `dispatchRays` with function tables |
+| **Phase 0 — done** | |
+| `gte/include/omegaGTE/GE.h` | [done] `#ifdef` gates already gone; dead macro comments deleted |
+| `gte/include/omegaGTE/GECommandQueue.h` | [done] no `#ifdef` gates remain |
+| backend `*.h/.cpp/.mm` | [done] runtime feature guards added to RT factory methods |
+| **OmegaSL Compiler (Phase 1–2, inline)** | |
+| `gte/include/omegasl.h` | Add inline-RT metadata flag (`usesRayQuery` / feature bit). No new `omegasl_shader_type` stages. |
+| `gte/omegasl/src/AST.h` | Add builtin types `Ray`, `RayHit`, `AccelerationStructure`, `RayQuery`; intrinsics `intersect`, `ray_query_*` |
+| `gte/omegasl/src/AST.def` | Add inline-RT builtin macro names |
+| `gte/omegasl/src/AST.cpp` | Initialize inline-RT builtins |
+| `gte/omegasl/src/Parser.cpp` | Recognize new builtins (no new statement grammar, no stage keywords) |
+| `gte/omegasl/src/Sema.cpp` | Validate `intersect`/`ray_query_*` in compute shaders; AS binding |
+| `gte/omegasl/src/HLSLCodeGen.cpp` | `RayQuery` lowering; `cs_6_5` target (not `lib_6_3`) |
+| `gte/omegasl/src/GLSLCodeGen.cpp` | `GL_EXT_ray_query` lowering; `comp` stage |
+| `gte/omegasl/src/MetalCodeGen.cpp` | `intersector` lowering (compute kernel; no function tables) |
+| `gte/omegasl/src/CodeGen.h` | Single inline-RT metadata flag in serialization |
+| `gte/omegasl/src/Toks.def`, `Lexer.cpp` | **[Adv]** stage keywords `KW_RAYGEN`…`KW_CALLABLE` only if Advanced Track |
+| **Acceleration Structures (Phase 6, inline)** | |
+| `gte/include/omegaGTE/GE.h` | Add `GEAccelerationStructInstance`; extend descriptor for TLAS |
+| `gte/src/{d3d12,vulkan,metal}/*` | TLAS build + instance descriptors in each backend engine/queue |
+| **Advanced Track (Phases 3–5)** | |
+| `gte/include/omegaGTE/GEPipeline.h` | **[Adv]** `RayTracingPipelineDescriptor`, `GERayTracingPipelineState` |
+| `gte/include/omegaGTE/GE.h` / `GECommandQueue.h` | **[Adv]** `makeRayTracingPipelineState`, `setRayTracingPipelineState` |
+| `gte/src/{d3d12,vulkan,metal}/*Pipeline*`, `*CommandQueue*` | **[Adv]** PSO/SBT creation; `dispatchRays` with populated tables |
 | **Docs** | |
-| `gte/docs/API.rst` | Update RT section, remove `#ifdef` examples |
-| `wtk/docs/OmegaGTEView-Proposal.md` | Replace macro with runtime check |
+| `gte/docs/API.rst` | [done] runtime feature-check pattern documented |
+| `wtk/docs/OmegaGTEView-Proposal.md` | [done] macro replaced with runtime check |
 
 ## Implementation Order
 
-The phases have dependencies:
+The inline-first plan has this dependency chain:
 
 ```
-Phase 0 (remove macro) ─── can be done independently, first
+Phase 0 (remove macro) ─── DONE (2026-05-23)
     │
-Phase 1 (OmegaSL types) ─── prerequisite for everything below
+Phase 1 (OmegaSL inline ray-query types + intrinsics) ─── prerequisite
     │
-Phase 2 (OmegaSL codegen) ─── prerequisite for pipeline creation
+Phase 2 (OmegaSL inline codegen: RayQuery / ray_query / intersector)
     │
+Phase 6 (TLAS / instances) ─── inline intersect() traces a TLAS
+    │
+Phase 7 (testing) ─── validates the inline path end-to-end
+
+  ── Deferred Advanced Track (only if path-tracing needs arise) ──
 Phase 3 (RT pipeline objects) ──┐
-    │                            │
-Phase 4 (SBT construction) ─────┤── these three are tightly coupled
-    │                            │   and should be done per-backend
-Phase 5 (dispatchRays) ─────────┘
-    │
-Phase 6 (TLAS / instances) ─── builds on working BLAS + dispatch
-    │
-Phase 7 (testing) ─── validates everything
+Phase 4 (SBT construction) ─────┤── pipeline/SBT model; per-backend
+Phase 5 (dispatchRays) ─────────┘   (D3D12 first, then Vulkan, then Metal)
 ```
 
-Phase 0 is safe to land independently. Phases 1-2 are OmegaSL-only changes. Phases 3-5 should be implemented one backend at a time (D3D12 first, since DXR is the most mature, then Vulkan, then Metal).
+Phases 1, 2, 6 are the inline critical path. Phases 1–2 are OmegaSL-only;
+Phase 6 touches all three backend engines/queues. The Advanced Track (3–5) is a
+**planned follow-on TODO** (Status: Not Started) — full RT capability includes
+it — sequenced after the inline path lands and a recursion/callable/per-geometry
+use case is in hand.

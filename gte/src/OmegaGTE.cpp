@@ -2,6 +2,7 @@
 #include <atomic>
 #include <iostream>
 #include <cstdlib>
+#include <string>
 
 _NAMESPACE_BEGIN_
 
@@ -14,6 +15,13 @@ namespace {
 
     std::atomic<bool> g_debugLayerEnabled{kDebugLayerDefault};
     std::atomic<bool> g_gpuBasedValidation{false};
+    std::atomic<bool> g_captureOnInit{false};
+
+    // Written once in resolveDebugFlags() and only read afterward (by the
+    // Metal engine constructor on the same Init() thread). The flags are
+    // frozen for the process lifetime, so a plain string is sufficient —
+    // no concurrent access in normal use.
+    std::string g_captureOutputPath;
 
     void resolveDebugFlags(const GTEInitOptions &opts){
         bool enabled = kDebugLayerDefault;
@@ -25,6 +33,10 @@ namespace {
         g_debugLayerEnabled.store(enabled, std::memory_order_release);
         g_gpuBasedValidation.store(enabled && opts.gpuBasedValidation,
                                    std::memory_order_release);
+        g_captureOnInit.store(enabled && opts.captureOnInit,
+                              std::memory_order_release);
+        g_captureOutputPath = (opts.captureFilePath != nullptr)
+                                  ? opts.captureFilePath : "";
     }
 }
 
@@ -34,6 +46,14 @@ bool isDebugLayerEnabled(){
 
 bool isGpuBasedValidationEnabled(){
     return g_gpuBasedValidation.load(std::memory_order_acquire);
+}
+
+bool isCaptureOnInitEnabled(){
+    return g_captureOnInit.load(std::memory_order_acquire);
+}
+
+const char *captureOutputPath(){
+    return g_captureOutputPath.c_str();
 }
 
 GTE Init(SharedHandle<GTEDevice> & device, GTEInitOptions opts){

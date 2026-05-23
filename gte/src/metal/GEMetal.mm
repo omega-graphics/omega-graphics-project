@@ -9,6 +9,8 @@
 #include <fstream>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <unistd.h>
 
 #include "omegaGTE/GTEDevice.h"
 #include "omegaGTE/GECommandQueue.h"
@@ -896,6 +898,54 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         SharedHandle<GTEShader> blitFullscreenVs;
         std::shared_ptr<omegasl_shader_lib> blitFullscreenVsLib;
         bool ensureBlitFullscreenVs();
+        // Set true only when a programmatic GPU capture was actually
+        // started in the constructor, so the destructor knows to stop it.
+        bool gpuCaptureActive = false;
+        // §3 of gte/docs/Debug-Layer-Plan.md. Starts a .gputrace capture
+        // when GTEInitOptions::captureOnInit was set (and the debug layer
+        // is on). No-op unless the embedding app enabled capture via its
+        // Info.plist (MetalCaptureEnabled=YES) / MTL_CAPTURE_ENABLED=1.
+        void maybeStartGpuCapture(id<MTLDevice> device){
+            if(!isDebugLayerEnabled() || !isCaptureOnInitEnabled()){
+                return;
+            }
+            if(@available(macOS 10.15, iOS 13.0, *)){
+                MTLCaptureManager *mgr = [MTLCaptureManager sharedCaptureManager];
+                if(![mgr supportsDestination:MTLCaptureDestinationGPUTraceDocument]){
+                    DEBUG_STREAM("GPU capture requested but the GPUTraceDocument "
+                                 "destination is unsupported. Set MetalCaptureEnabled=YES "
+                                 "in the app Info.plist (or MTL_CAPTURE_ENABLED=1). Skipping.");
+                    return;
+                }
+                // Resolve the output path: explicit override, else a default
+                // omegagte-<pid>-<ts>.gputrace in the working directory. Both
+                // branches yield autoreleased NSStrings (no manual release).
+                const char *configured = captureOutputPath();
+                NSString *path;
+                if(configured != nullptr && configured[0] != '\0'){
+                    path = [NSString stringWithUTF8String:configured];
+                } else {
+                    path = [NSString stringWithFormat:@"omegagte-%d-%ld.gputrace",
+                                                      (int)getpid(), (long)time(nullptr)];
+                }
+                MTLCaptureDescriptor *desc = [[MTLCaptureDescriptor alloc] init];
+                desc.captureObject = device;
+                desc.destination = MTLCaptureDestinationGPUTraceDocument;
+                desc.outputURL = [NSURL fileURLWithPath:path];
+                NSError *error = nil;
+                if([mgr startCaptureWithDescriptor:desc error:&error]){
+                    gpuCaptureActive = true;
+                    DEBUG_STREAM("GEMetalEngine GPU capture started -> " << [path UTF8String]);
+                } else {
+                    DEBUG_STREAM("GEMetalEngine GPU capture failed to start: "
+                                 << (error ? [[error localizedDescription] UTF8String]
+                                           : "(unknown error)"));
+                }
+                [desc release];
+            } else {
+                DEBUG_STREAM("GPU capture requested but requires macOS 10.15+/iOS 13+. Skipping.");
+            }
+        }
         SharedHandle<GTEShader> _loadShaderFromDesc(omegasl_shader *shaderDesc,bool runtime) override {
             NSSmartPtr library;
             NSString *str = [[NSString alloc] initWithUTF8String:shaderDesc->name];
@@ -940,17 +990,36 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                 NSLog(@"Metal is not supported on this device! Exiting...");
                 exit(1);
             }
-            // GPU capture disabled — it intercepts Metal calls via CaptureMTLDevice
-            // and can interfere with drawable presentation.
 
             metalDevice = NSObjectHandle {NSOBJECT_CPP_BRIDGE device};
             gteDevice = __device;
             _deviceFeatures = __device->features.featuresAsBitmask();
+
+            // Programmatic GPU frame capture, opt-in via
+            // GTEInitOptions::captureOnInit. Started here (before the first
+            // command queue) and stopped in ~GEMetalEngine. See
+            // GTEInitOptions::captureOnInit for the toggle.
+            maybeStartGpuCapture(device);
+
             DEBUG_STREAM("GEMetalEngine Successfully Created");
 
         };
 
+        ~GEMetalEngine() override {
+            if(gpuCaptureActive){
+                if(@available(macOS 10.15, iOS 13.0, *)){
+                    [[MTLCaptureManager sharedCaptureManager] stopCapture];
+                }
+                gpuCaptureActive = false;
+                DEBUG_STREAM("GEMetalEngine GPU capture stopped");
+            }
+        }
+
         SharedHandle<GEBuffer> createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes) override {
+            if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)){
+                DEBUG_STREAM("Raytracing not supported on this device");
+                return nullptr;
+            }
             auto buffer = std::dynamic_pointer_cast<GEMetalBuffer>(makeBuffer({BufferDescriptor::Upload,sizeof(MTLAxisAlignedBoundingBox) * boxes.size(),sizeof(MTLAxisAlignedBoundingBox)}));
             std::vector<MTLAxisAlignedBoundingBox> bb;
             for(auto & box : boxes){
@@ -965,6 +1034,10 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         }
 
         SharedHandle<GEAccelerationStruct> allocateAccelerationStructure(const GEAccelerationStructDescriptor &desc) override {
+            if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)){
+                DEBUG_STREAM("Raytracing not supported on this device");
+                return nullptr;
+            }
             MTLPrimitiveAccelerationStructureDescriptor *d = [[MTLPrimitiveAccelerationStructureDescriptor alloc]init];
             auto sizes = [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) accelerationStructureSizesWithDescriptor:d];
             NSSmartPtr handle = NSObjectHandle{NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newAccelerationStructureWithSize:sizes.accelerationStructureSize]};

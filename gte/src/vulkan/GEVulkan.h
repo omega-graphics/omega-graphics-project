@@ -119,6 +119,17 @@ _NAMESPACE_BEGIN_
         /// undefined-contents but allocated).
         bool submitImmediateUploadFromStaging(GEVulkanTexture &tex);
 
+        /// §7.1 variant: upload only the supplied subresource copy regions
+        /// instead of the whole pre-computed chain. The region copyBytes
+        /// overload uses this so a single-subresource upload doesn't clobber
+        /// the other (still-unwritten) subresources sitting in the staging
+        /// buffer. The image-layout barrier still spans the whole image,
+        /// which is safe — untouched subresources transition SHADER_READ ->
+        /// TRANSFER_DST -> SHADER_READ without losing their contents.
+        bool submitImmediateUploadFromStaging(GEVulkanTexture &tex,
+                                              const VkBufferImageCopy *regions,
+                                              std::uint32_t regionCount);
+
         /// Mirror of submitImmediateUploadFromStaging for `FromGPU`:
         /// transitions `tex.img` -> `TRANSFER_SRC_OPTIMAL`, copies into
         /// `tex.stagingBuffer`, restores the prior layout, and waits.
