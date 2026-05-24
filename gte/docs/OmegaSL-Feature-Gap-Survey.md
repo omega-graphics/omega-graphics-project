@@ -993,7 +993,7 @@ We can do this but we must feature gate it with our proposed feature gating.
 
 Grouped by how often engines reach for them.
 
-### 5.1 Core math not yet listed [PARTIALLY COMPLETED]
+### 5.1 Core math not yet listed [COMPLETED]
 
 | Function | Status |
 |----------|--------|
@@ -1068,13 +1068,13 @@ shared dispatch skips its `<rename>(args)` fallback.
 
 * **`mod` / `mad` aliases**. The codebase canonicalizes on `fmod` and
   `fma`; if alias support is desired, add a one-line rename in the
-  affected backend's `renameBuiltin`.
+  affected backend's `renameBuiltin`. (DONE)
 * **`modf` / `frexp`**. Both have an out-parameter for the integer part /
   exponent. HLSL exposes them with native out-params (`modf(in, out)`),
   MSL has separate accessors, GLSL has separate forms. Inlining the
   emission requires the same statement-injection hook proposed for
   §2.3 Phase B's `getDimensions`. Land that hook once and these
-  builtins become a few lines each.
+  builtins become a few lines each. (DONE)
 * **Sema reservation of intrinsic names** (rejecting user `func sin(...)`,
   `func saturate(...)`, etc.). Currently a user definition shadows the
   builtin. The §5.1.1 doc proposes this; doing it together with §5.1

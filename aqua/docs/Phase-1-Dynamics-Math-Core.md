@@ -22,6 +22,11 @@ over thousands of sub-steps — plus a body under constant torque that precesses
 correctly. This is the scene that proves the integrator; it lives in `tests/`
 next to this brief.
 
+**Included clean-up.** Phase 1 also hardens the Phase 0 scaffold's GTE-math interop
+so it actually compiles — the committed scaffold currently does not (see the
+folded-in fix in §10). This lands first, before the integrator, since everything
+else builds on it.
+
 **Out of scope here, by design:** collision shapes/broadphase (Phase 2), contact
 solving (Phase 3), the OmegaSL compute port (Phase 5). We design the data and the
 math so those are drop-in, not rewrites.
@@ -210,52 +215,128 @@ than the implicit-gyroscopic solve. Kept as the fallback and as an open decision
 
 ---
 
-## 7. New math AQUA must add (API sketch, real GTE types)
+## 7. New math AQUA must add — `include/aqua/AQMath.h` (draft)
 
-All `Ty`-generic, all built on the borrowed `Matrix`/`Quaternion`; AQUA-owned,
-living in AQUA's math headers (not GTE):
+All `Ty`-generic, all built on the borrowed `OmegaGTE::Matrix`/`Quaternion`,
+AQUA-owned. Proposed home: a new header `include/aqua/AQMath.h` that includes
+`<omegaGTE/GTEMath.h>` (the deliberate math exception to the backend-hiding rule).
+The public AQUA surface (§10) consumes the **`float`** instantiations
+(`OmegaGTE::FVec<3>`, `OmegaGTE::FQuaternion`, `aqua::Transform<float>`); the solver
+instantiates `double` too, as the parity oracle.
+
+> **Namespace decision (minor, §11.6).** AQUA's existing public types are global and
+> `AQ`-prefixed (`AQContext`, `AQSpace`, …). Free math templates read poorly with that
+> prefix (`AQskew`), so this draft puts the owned math in `namespace aqua`. If the team
+> prefers the global convention, these become `AQ`-prefixed free functions — mechanical
+> to flip, flagged here rather than decided unilaterally.
 
 ```cpp
-// skew / cross-product matrix:  skew(a)·b == cross(a, b)
-template<class Ty>
-Matrix<Ty,3,3> skew(const Matrix<Ty,3,1>& a);
+#ifndef AQUA_AQMATH_H
+#define AQUA_AQMATH_H
 
-// quaternion exponential / logarithm maps, small-angle-Taylor stable
-template<class Ty>
-Quaternion<Ty> quatExp(const Matrix<Ty,3,1>& halfAngleVec);   // shared sinc poly
-template<class Ty>
-Matrix<Ty,3,1> quatLog(const Quaternion<Ty>& q);
+#include <omegaGTE/GTEMath.h>
+#include <cmath>
 
-// integrate orientation by body-frame angular velocity over dt
+namespace aqua {
+
+using OmegaGTE::Matrix;
+using OmegaGTE::Quaternion;
+
+// Convenience aliases (a "Vec3" in this engine *is* a GTE column vector).
+template<class Ty> using Vec3 = Matrix<Ty,3,1>;
+template<class Ty> using Mat3 = Matrix<Ty,3,3>;
+
+// Ergonomic construction. GTE's Matrix has a *private* default ctor and no
+// component constructor (named-ctor idiom — Create()/Identity()), so `{x,y,z}`
+// init doesn't work; this gives it back without modifying GTE. Zero ⇒ Create().
 template<class Ty>
-Quaternion<Ty> integrate(const Quaternion<Ty>& q,
-                         const Matrix<Ty,3,1>& omegaBody, Ty dt);
+Vec3<Ty> vec3(Ty x, Ty y, Ty z) {
+    auto v = Vec3<Ty>::Create();
+    v[0][0] = x; v[1][0] = y; v[2][0] = z;
+    return v;
+}
 
-// rotate a free vector (FVec<3>) — GTE only ships rotatePoint(GPoint3D)
+// --- cross-product (skew-symmetric) matrix:  skew(a) * b == cross(a, b) ---
+// GTE indexes m[row][col]; FVec component i is v[i][0].
 template<class Ty>
-Matrix<Ty,3,1> rotate(const Quaternion<Ty>& q, const Matrix<Ty,3,1>& v);
+Mat3<Ty> skew(const Vec3<Ty>& a) {
+    const Ty x = a[0][0], y = a[1][0], z = a[2][0];
+    auto m = Mat3<Ty>::Create();        // Matrix() default ctor is private — use Create()
+    m[0][1] = -z; m[0][2] =  y;
+    m[1][0] =  z; m[1][2] = -x;
+    m[2][0] = -y; m[2][1] =  x;
+    return m;
+}
 
-// inertia: principal moments for primitive shapes (diagonal Ib)
-template<class Ty> Matrix<Ty,3,1> inertiaSolidBox(Ty mass, Ty hx, Ty hy, Ty hz);
-template<class Ty> Matrix<Ty,3,1> inertiaSolidSphere(Ty mass, Ty r);
-template<class Ty> Matrix<Ty,3,1> inertiaCapsule(Ty mass, Ty r, Ty h);
-// arbitrary tensor -> principal moments + axis (Jacobi eigen), for cooked meshes
-template<class Ty> void diagonalizeInertia(const Matrix<Ty,3,3>& I,
-                                           Matrix<Ty,3,1>& moments,
-                                           Quaternion<Ty>& principalAxis);
-
-// world-space inverse inertia from body diagonal + orientation
+// --- exponential map: quaternion from a half-angle rotation vector (½·φ) ---
+// Uses the sinc Taylor series near 0 so it is finite at zero rotation and the
+// C++ and OmegaSL paths agree (no raw libm sin/cos divergence). Unit to O(t^4).
 template<class Ty>
-Matrix<Ty,3,3> worldInvInertia(const Quaternion<Ty>& q,
-                               const Matrix<Ty,3,1>& invMomentsBody);
+Quaternion<Ty> quatExp(const Vec3<Ty>& halfAngle) {
+    const Ty x = halfAngle[0][0], y = halfAngle[1][0], z = halfAngle[2][0];
+    const Ty t2 = x*x + y*y + z*z;          // |½·φ|^2
+    const Ty t  = std::sqrt(t2);
+    const Ty s  = (t < Ty(1e-4)) ? (Ty(1) - t2 / Ty(6)) : (std::sin(t) / t);  // sinc
+    const Ty w  = (t < Ty(1e-4)) ? (Ty(1) - t2 / Ty(2)) :  std::cos(t);
+    return { x*s, y*s, z*s, w };
+}
 
-// position + orientation; toMatrix()/inverse() via GTE FMatrix<4,4>
-template<class Ty> struct Transform { Matrix<Ty,3,1> p; Quaternion<Ty> q; /* ... */ };
+// --- inverse map: half-angle rotation vector from a (unit) quaternion ---
+template<class Ty> Vec3<Ty> quatLog(const Quaternion<Ty>& q);  // small-angle stable
+
+// --- integrate orientation by BODY-frame angular velocity over dt (step 4 of §6) ---
+template<class Ty>
+Quaternion<Ty> integrate(const Quaternion<Ty>& q, const Vec3<Ty>& omegaBody, Ty dt) {
+    return (q * quatExp(omegaBody * (dt * Ty(0.5)))).normalized();  // right-multiply
+}
+
+// --- rotate a FREE vector (GTE only ships rotatePoint() for GPoint3D) ---
+template<class Ty>
+Vec3<Ty> rotate(const Quaternion<Ty>& q, const Vec3<Ty>& v) {
+    auto u = Vec3<Ty>::Create();
+    u[0][0] = q.x; u[1][0] = q.y; u[2][0] = q.z;
+    const auto t = Ty(2) * OmegaGTE::cross(u, v);
+    return v + q.w * t + OmegaGTE::cross(u, t);     // no quaternion inverse needed
+}
+
+// --- inertia: diagonal principal moments (Ib) for primitive shapes ---
+template<class Ty> Vec3<Ty> inertiaSolidBox(Ty mass, Ty hx, Ty hy, Ty hz);  // half-extents
+template<class Ty> Vec3<Ty> inertiaSolidSphere(Ty mass, Ty r);               // (2/5) m r^2
+template<class Ty> Vec3<Ty> inertiaCapsule(Ty mass, Ty r, Ty h);
+
+// Arbitrary symmetric tensor -> principal moments + principal-axis rotation
+// (Jacobi eigendecomposition), folded into body orientation PhysX/Chaos-style.
+template<class Ty>
+void diagonalizeInertia(const Mat3<Ty>& I, Vec3<Ty>& outMoments,
+                        Quaternion<Ty>& outPrincipalAxis);
+
+// --- world-space inverse inertia:  R · diag(invMomentsBody) · Rᵀ ---
+template<class Ty>
+Mat3<Ty> worldInvInertia(const Quaternion<Ty>& q, const Vec3<Ty>& invMomentsBody);
+
+// --- rigid transform (position + orientation) ---
+template<class Ty>
+struct Transform {
+    Vec3<Ty>       p = Vec3<Ty>::Create();         // translation
+    Quaternion<Ty> q = Quaternion<Ty>::Identity(); // rotation
+
+    Matrix<Ty,4,4> toMatrix() const;               // q.toMatrix() with p in last column
+    Transform      inverse() const;
+    Transform      operator*(const Transform& child) const;  // compose: this ∘ child
+    Vec3<Ty>       transformPoint(const Vec3<Ty>& v) const;   // rotate + translate
+    Vec3<Ty>       transformVector(const Vec3<Ty>& v) const;  // rotate only
+};
+
+} // namespace aqua
+#endif // AQUA_AQMATH_H
 ```
 
-The **small-angle Taylor** branch in `quatExp`/`quatLog` (use the `sinc` series as
-`|φ|→0`) is the determinism-critical bit: it avoids the `0/0` at zero rotation and
-keeps the CPU and GPU paths bit-closer than a raw `sin`/`cos` would.
+The inline bodies above (`skew`, `quatExp`, `integrate`, `rotate`) are the small,
+determinism-critical pieces shown in full; the rest are declarations whose bodies
+land with the integrator. The `quatExp` **small-angle Taylor** branch is the bit
+that matters most for §6 parity — it removes the `0/0` at zero rotation and keeps
+the CPU and GPU paths bit-closer than raw `sin`/`cos` (which is also why we do not
+reuse `Quaternion::fromAxisAngle`, GTEMath.h:870).
 
 ---
 
@@ -302,23 +383,127 @@ engineer"): momentum drift, energy drift, ‖q‖−1, CPU↔GPU max divergence.
 
 ## 10. Public API additions
 
-Extends the existing surface (`AQRigidBody`, `AQBodyDesc`) without breaking the
-pimpl discipline:
+Extends the existing surface (`AQRigidBody`, `AQBodyDesc` in `include/aqua/AQSpace.h`)
+without breaking the pimpl discipline. New members marked `// new`.
 
-- `AQBodyDesc`: add `orientation` (`FQuaternion`), `angularVelocity` (`FVec<3>`),
-  and inertia input — either explicit principal moments or a shape handle
-  (the shape handle is *defined* in Phase 2; Phase 1 accepts explicit moments or a
-  primitive helper from §7).
-- `AQRigidBody`: `orientation()/setOrientation()`,
-  `angularVelocity()/setAngularVelocity()`, and the force/torque/impulse API the
-  roadmap names — `applyForce(F)`, `applyForceAtPoint(F, p)`,
-  `applyTorque(τ)`, `applyImpulse(J)`, `applyAngularImpulse(L)` — accumulated and
-  consumed each sub-step.
-- `AQBodyDesc`: also reserve `restitution`/`friction` material params (used in
-  Phase 3) so the descriptor doesn't churn again.
+**`AQBodyDesc`:**
+
+```cpp
+struct AQUA_EXPORT AQBodyDesc {
+    AQBodyType type = AQBodyType::Dynamic;
+
+    // --- pose & motion ---
+    OmegaGTE::FVec<3>     position        = OmegaGTE::FVec<3>::Create();
+    OmegaGTE::FQuaternion orientation     = OmegaGTE::FQuaternion::Identity(); // new
+    OmegaGTE::FVec<3>     linearVelocity  = OmegaGTE::FVec<3>::Create();        // new
+    OmegaGTE::FVec<3>     angularVelocity = OmegaGTE::FVec<3>::Create();        // new
+
+    // --- mass properties ---
+    float mass = 1.f;                                              // ignored for Static
+    // Diagonal principal moments of inertia, body frame. Zero ⇒ derive from the
+    // body's collision shape (Phase 2); until shapes exist, fill via the AQMath.h
+    // helpers (e.g. aqua::inertiaSolidBox).
+    OmegaGTE::FVec<3> inertiaPrincipalMoments = OmegaGTE::FVec<3>::Create();    // new
+
+    // --- material (consumed in Phase 3; reserved now to avoid descriptor churn) ---
+    float restitution = 0.f;   // new
+    float friction    = 0.5f;  // new
+};
+```
+
+**`AQRigidBody`:**
+
+```cpp
+class AQUA_EXPORT AQRigidBody {
+public:
+    ~AQRigidBody();
+
+    // --- linear state (existing) ---
+    AQUA_NODISCARD OmegaGTE::FVec<3> position() const;
+    void setPosition(const OmegaGTE::FVec<3> &p);
+    AQUA_NODISCARD OmegaGTE::FVec<3> velocity() const;
+    void setVelocity(const OmegaGTE::FVec<3> &v);
+
+    // --- angular state (new) ---
+    AQUA_NODISCARD OmegaGTE::FQuaternion orientation() const;
+    void setOrientation(const OmegaGTE::FQuaternion &q);
+    AQUA_NODISCARD OmegaGTE::FVec<3> angularVelocity() const;   // world frame
+    void setAngularVelocity(const OmegaGTE::FVec<3> &w);
+
+    // --- mass properties (new) ---
+    AQUA_NODISCARD float mass() const;                          // 0 ⇒ static
+    AQUA_NODISCARD OmegaGTE::FVec<3> inertiaPrincipalMoments() const;
+
+    // --- force / torque / impulse API (new) ---
+    // Accumulated in world space, consumed at the start of each sub-step.
+    void applyForce(const OmegaGTE::FVec<3> &force);
+    void applyForceAtPoint(const OmegaGTE::FVec<3> &force,
+                           const OmegaGTE::FVec<3> &worldPoint);   // + torque (r × F)
+    void applyTorque(const OmegaGTE::FVec<3> &torque);
+    void applyImpulse(const OmegaGTE::FVec<3> &impulse);           // instantaneous Δp
+    void applyImpulseAtPoint(const OmegaGTE::FVec<3> &impulse,
+                             const OmegaGTE::FVec<3> &worldPoint);  // + angular impulse
+    void applyAngularImpulse(const OmegaGTE::FVec<3> &angularImpulse);
+
+    AQUA_NODISCARD AQBodyType type() const;
+
+private:
+    AQRigidBody();
+    friend class AQSpace;
+    struct Impl;
+    std::unique_ptr<Impl> impl;
+};
+```
+
+**Hidden state (illustrative, `src/AQSpace.cpp` — not public):**
+
+```cpp
+struct AQRigidBody::Impl {
+    AQBodyType type = AQBodyType::Dynamic;
+    // pose
+    OmegaGTE::FVec<3>     position       = OmegaGTE::FVec<3>::Create();
+    OmegaGTE::FQuaternion orientation    = OmegaGTE::FQuaternion::Identity();
+    // velocities — angular velocity stored in the BODY frame (§6); the public
+    // angularVelocity() getter returns aqua::rotate(orientation, angularVelBody).
+    OmegaGTE::FVec<3>     velocity       = OmegaGTE::FVec<3>::Create();
+    OmegaGTE::FVec<3>     angularVelBody = OmegaGTE::FVec<3>::Create();
+    // mass properties
+    float                invMass         = 1.f;                          // 0 ⇒ static
+    OmegaGTE::FVec<3>     invInertiaBody  = OmegaGTE::FVec<3>::Create();  // 1 / moments
+    // per-sub-step accumulators (world frame), cleared each step
+    OmegaGTE::FVec<3>     forceAccum      = OmegaGTE::FVec<3>::Create();
+    OmegaGTE::FVec<3>     torqueAccum     = OmegaGTE::FVec<3>::Create();
+};
+```
+
+> **Folded-in fix — Phase 0 math interop (lands first in Phase 1).** Drafting this
+> surface turned up that the **committed Phase 0 scaffold does not compile** against
+> GTE's math types, for three related reasons:
+>
+> 1. **Undefined type.** `AQSpace.cpp` uses a bare `Vec3` that is defined *nowhere*
+>    in the repo or build (no alias; `CMakeLists.txt` defines only `AQUA__BUILD__`),
+>    while `AQSpace.h` declares the same members as `OmegaGTE::FVec<3>` — a
+>    header/impl signature mismatch.
+> 2. **Private default ctor.** `OmegaGTE::Matrix`'s default constructor is private
+>    (GTEMath.h:301; the named-ctor idiom routes through `Create()`/`Identity()`),
+>    so `Vec3 position{};` (AQSpace.cpp:7-8) cannot default-construct.
+> 3. **No component ctor.** `Matrix` has no `{x,y,z}` constructor, so
+>    `Vec3 gravity{0.f,-9.81f,0.f};` (AQSpace.cpp:23) does not compile.
+>
+> **Decision (lean): fix entirely on the AQUA side; do not modify GTE.** GTE is a
+> shared dependency and the private default ctor is a deliberate idiom, not an
+> oversight — exposing it has broad blast radius for no real gain. Phase 1, before
+> the integrator:
+> - replaces the undefined bare `Vec3` in `AQSpace.cpp` with `OmegaGTE::FVec<3>` to
+>   match the header. (Note: AQMath.h's `aqua::Vec3<Ty>` is *templated*, so a
+>   non-template `Vec3` alias is intentionally **not** introduced — it would clash.)
+> - defaults every vector member with `::Create()` and every quaternion with
+>   `::Identity()` (as the §10 drafts already show);
+> - rewrites the scaffold initializers: `Vec3 position{}` → `…FVec<3>::Create()`,
+>   `Vec3 gravity{0.f,-9.81f,0.f}` → `aqua::vec3(0.f, -9.81f, 0.f)` (§7 factory).
 
 No OmegaSL or backend types cross into `include/aqua/*`; only AQUA types and the
-borrowed `FVec`/`Quaternion` appear, per the roadmap's boundary rule.
+borrowed `FVec`/`FQuaternion` appear, per the roadmap's boundary rule.
 
 ---
 
@@ -339,6 +524,10 @@ borrowed `FVec`/`Quaternion` appear, per the roadmap's boundary rule.
    §7 decision #4, determinism guarantee.)
 5. **Symplectic ordering & sub-step count** inside `AQContext`'s fixed step — adopt
    the small-steps posture (more sub-steps, one solve) from Müller 2020.
+6. **Math placement & namespace.** New owned math in `namespace aqua`
+   (`include/aqua/AQMath.h`) vs. global `AQ`-prefixed free functions, matching the
+   existing public types. *Lean: `namespace aqua`* — but mechanical to flip; the
+   team's house style decides. (See the note in §7.)
 
 ---
 
