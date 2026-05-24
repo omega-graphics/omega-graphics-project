@@ -1,0 +1,34 @@
+// §5.2 — negative cases for the vector / matrix math intrinsics. All live in
+// one shader body: Sema recovers past each failed statement, so every case
+// surfaces its own diagnostic in a single compile.
+//   (1) distance     — wrong arg count (takes exactly 2)
+//   (2) faceforward  — wrong arg count (takes exactly 3)
+//   (3) refract      — wrong arg count (takes exactly 3)
+//   (4) inverse      — non-square matrix argument (float3x2)
+//   (5) inverse      — non-matrix argument (float3)
+//   (6) inverse      — wrong arg count (takes exactly 1)
+
+struct Data {
+    float4 value;
+};
+
+buffer<Data> src : 0;
+buffer<Data> dst : 1;
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void bad(uint3 tid : GlobalThreadID){
+    float3 a = src[0].value.xyz;
+    float3 b = src[1].value.xyz;
+    float3x2 nonSquare = float3x2(1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+    float2x2 sq = float2x2(1.0, 2.0, 3.0, 4.0);
+
+    float d  = distance(a);                 // (1) arg count
+    float3 f = faceforward(a, b);           // (2) arg count
+    float3 r = refract(a, b);               // (3) arg count
+    float3x2 i1 = inverse(nonSquare);       // (4) non-square matrix
+    float3 i2 = inverse(a);                 // (5) non-matrix
+    float2x2 i3 = inverse(sq, sq);          // (6) arg count
+
+    dst[0].value = float4(d, f.x + r.x + i2.x, i1[0][0], i3[0][0]);
+}

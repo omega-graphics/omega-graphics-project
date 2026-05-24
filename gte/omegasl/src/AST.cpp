@@ -590,6 +590,8 @@ namespace omegasl::ast {
             BUILTIN_CLAMP, BUILTIN_LERP, BUILTIN_SMOOTHSTEP, BUILTIN_FMA,
             /// Aliases + out-param math.
             BUILTIN_MOD, BUILTIN_MAD, BUILTIN_MODF, BUILTIN_FREXP,
+            /// §5.2 vector / matrix math.
+            BUILTIN_DISTANCE, BUILTIN_FACEFORWARD, BUILTIN_REFRACT, BUILTIN_INVERSE,
             /// Matrix intrinsics (string-matched in Sema).
             "transpose", "determinant",
             /// Compute barriers.

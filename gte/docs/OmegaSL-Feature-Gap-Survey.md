@@ -529,6 +529,20 @@ pack without straddling.
 |---|------|-------|--------|--------|--------|
 | §2.4-1 | Per-member align-then-place in the buffer writers/readers (fixes std140 *and* std430 inter-member offsets for mixed sub-16 field orders) | `GEVulkan.cpp`, `GED3D12.cpp`, `GEMetal.mm` `GE*BufferWriter`/`Reader`; reuse `BufferIO.h` `std140ScalarVec` / `matrixAlignment` | medium | correct std140 packing for non-16-aligned uniform field orders | open |
 
+**Follow-up — Metal `GEBufferWriter`/`GEBufferReader` trailing-padding bug (FIXED).**
+Distinct from §2.4-1 (which is about *sub-16 inter-member* under-padding). The
+Metal writer/reader used a heuristic that padded to the biggest member *size*
+rather than the struct *alignment*, and the reader applied that padding one
+field early (its `fieldIndex` is pre-incremented in `offsetAndIncrement`). For a
+struct whose tail is smaller than its biggest member — e.g. several `float4x4`s
+followed by a `float4` — the writer wrote trailing padding *past* the correctly
+sized buffer, and the reader read the final field from the wrong (over-padded)
+offset, returning zeros. The Vulkan/D3D12 readers were already correct (plain
+sequential walk + round-to-struct-alignment at `structEnd`); the Metal
+`GE*BufferReader`/`Writer` now match that model. Surfaced by the §5.2 matrix-op
+GPU runtime test (`gte/tests/matrix_ops_test.cpp`), which previously read
+`determinant` results of 0 even though the GPU computed them correctly.
+
 ### 2.5 Raw / byte-address buffers
 
 Byte-indexed scratch memory:
@@ -1173,15 +1187,124 @@ collidable Metal stdlib names — that was wrong (the names aren't
 defined in Metal at all) and they have been removed so a user function
 called `degrees` doesn't get spuriously mangled.
 
-### 5.2 Vector math not yet listed
+### 5.2 Vector math not yet listed [LANDED — distance / faceforward / refract / inverse; any/all deferred]
 
-| Function | Purpose |
-|----------|---------|
-| `distance(a,b)` | length of difference |
-| `faceforward(n,i,ng)` | flip normal toward viewer |
-| `refract(i,n,eta)` | refraction vector |
-| `any(v)` / `all(v)` | boolean reduce |
-| `transpose(m)` / `determinant(m)` / `inverse(m)` | matrix ops — `inverse` is the notable one; HLSL doesn't have it and must be emulated per-size, but GLSL/MSL do |
+| Function | Purpose | Status |
+|----------|---------|--------|
+| `distance(a,b)` | length of difference | **landed** — 2-arg, returns scalar `float`; native on all three backends |
+| `faceforward(n,i,ng)` | flip normal toward viewer | **landed** — 3-arg, returns `n`'s type; native on all three |
+| `refract(i,n,eta)` | refraction vector | **landed** — 3-arg (`eta` scalar), returns `i`'s type; native on all three |
+| `any(v)` / `all(v)` | boolean reduce | **deferred** — blocked on bool-vector types; see below |
+| `transpose(m)` / `determinant(m)` | matrix ops | already shipped (string-matched in Sema) |
+| `inverse(m)` | matrix inverse | **landed** — GLSL native; HLSL **and** MSL emulated (neither has it) |
+
+**Landed — distance / faceforward / refract**
+
+These three are first-class intrinsics on HLSL, MSL, and GLSL with identical
+spelling, so they pass straight through codegen with no rename or special
+emit. They slot into the existing string-matched math dispatch in
+`Sema::performSemForExpr`:
+
+* `distance` is the 2-arg analogue of `length` — it gets the same
+  `returnsScalar` treatment (return type `float`) with `expectedArgs = 2`.
+* `faceforward` and `refract` join the 3-arg bucket and return the first
+  argument's (vector) type. `refract`'s third argument `eta` is a scalar;
+  the per-argument validation is loose (it only requires each argument to
+  type-check, not to match the first), so the scalar `eta` is accepted with
+  no special case — the same way the pre-existing 3-arg `clamp`/`lerp` bucket
+  already tolerates mixed argument shapes.
+
+Registered as `BUILTIN_DISTANCE` / `BUILTIN_FACEFORWARD` / `BUILTIN_REFRACT`
+in `AST.def`, added to `ast::isReservedBuiltinName` (so a user `func refract`
+is rejected), and matched by name in the math dispatch. No `Target` hook is
+needed.
+
+**Landed — inverse (the doc was wrong about MSL)**
+
+The original note claimed "GLSL/MSL do [have `inverse`]." That is false for
+MSL — `metal::inverse` is an undeclared identifier (verified by compiling a
+probe with `xcrun metal`). HLSL has never had a matrix `inverse` intrinsic
+either. So **both HLSL and MSL** must emulate it; only GLSL is native
+(`inverse(mat2/3/4)`, core since GLSL 1.40).
+
+* **GLSL**: passes through as `inverse(m)` (no hook).
+* **HLSL / MSL**: `inverse(m)` is rewritten by each backend's
+  `tryEmitBuiltinCall` to call the shared `CodeGen::emitInverseCall`, which
+  injects an **adjugate expansion** via the existing statement-injection
+  hook (`queuePendingStatement`, the same machinery HLSL's `frexp` /
+  `getDimensions` use). For a call `inverse(m)` it queues three lines ahead
+  of the statement:
+
+  ```
+  floatNxN _invK_m = <arg>;                      // capture once — single eval
+  float    _invK_id = 1.0 / (<det expansion>);   // inverse determinant
+  floatNxN _invK    = floatNxN(<adjugate entries> * _invK_id);
+  ```
+
+  and emits `_invK` at the call site. The determinant and the adjugate
+  entries are generated programmatically by Laplace expansion (`entry(i,j)
+  = (-1)^(i+j) * minor(remove row j, col i) / det`), so the 2×2 / 3×3 / 4×4
+  cases share one code path. The formula was verified numerically on the
+  host (`inverse(M) * M == I` for 60k random matrices) before transcription.
+
+* **Why the generated text is identical for HLSL and MSL.** OmegaSL stores
+  matrices column-major. HLSL emits matrix multiply as `mul(a,b)` and swaps
+  index subscripts; MSL uses native `a * b` and column-major indexing. These
+  two differences *cancel* for a pure scalar formula: in both backends the
+  flat constructor scalar at position `N*i+j` maps to the native element
+  `m[i][j]`, and the row-major-vs-column-major transpose duality cancels with
+  the `mul`-vs-`*` matmul-convention difference (because `M·M⁻¹ = M⁻¹·M = I`).
+  So `emitInverseCall` lives on `CodeGen` and both backends call it with no
+  per-backend divergence. Confirmed by compiling the emitted HLSL (`dxc
+  -T cs_6_0`), MSL (`xcrun metal`), and the native GLSL (`glslc`).
+
+* **Square matrices only** (`float2x2` / `float3x3` / `float4x4`) — inverse
+  is undefined otherwise. Sema rejects a non-square or non-matrix argument
+  with a `TypeError`.
+
+**Latent bug fixed alongside — MSL entry-body statement injection.** The
+statement-injection hook drains queued lines in `CodeGen::emitStatementLine`,
+which `generateBlock` (HLSL entry bodies, all user-function bodies, nested
+blocks) routes through. But `MSLTarget::emitShaderEntryBody` had its own
+hand-rolled statement loop that called `generateDecl` / `generateExpr`
+directly and never drained `pendingStatements` — so any injected builtin used
+at the *top level of a Metal entry body* (not inside a nested block or helper)
+silently dropped its queued temporaries and emitted a dangling reference. This
+had been latent because the only prior injectors (`frexp`, `getDimensions`)
+are HLSL-only, and HLSL uses the base `generateBlock` path. `inverse` injects
+on MSL too, which surfaced it. Fixed by routing the MSL entry-body loop
+through `emitStatementLine` (byte-identical when nothing is queued; GLSL's own
+entry-body loop has the same shape but needs no fix because its only lowerings
+— `inverse` is native there, `saturate`/`fmod` emit inline — never queue).
+
+**Deferred — any / all.** `any(v)` / `all(v)` reduce a *bool vector* to a
+scalar bool. OmegaSL has no bool-vector types (only scalar `bool`, AST.h
+`bool_type`) and no component-wise relational operator to produce one — §3.2
+made `<`, `==`, `&&`, etc. yield a *scalar* `bool`. So there is no
+well-typed argument to feed `any`/`all`, and GLSL is strict here (its
+`any`/`all` reject anything but a `bvec`, unlike HLSL's any-numeric form), so
+the gap cannot be papered over with a numeric-vector input. These land once
+bool-vector types (`bool2/3/4`) and component-wise comparisons exist; that is
+a separate, larger surface than §5.2.
+
+**Tests:** `math_phase5_2.omegasl` (distance on float2/3/4; faceforward +
+refract on float3 and float2; inverse on 2×2/3×3/4×4 and on a binary-expr
+argument `inverse(a * a)` to exercise single-eval capture). Metal-compiled
+end-to-end; HLSL via `dxc -T cs_6_0` and GLSL via `glslc` verified manually.
+`invalid_math_phase5_2.omegasl` (multi-error negative: arg counts for
+distance / faceforward / refract; inverse on a non-square `float3x2`, on a
+non-matrix `float3`, and with the wrong arg count).
+
+**GPU runtime check.** `gte/tests/matrix_ops_test.cpp` is a backend-independent
+(Metal / Vulkan / D3D12) compute test that dispatches `inverse` / matrix-multiply
+/ matrix×vector / `transpose` / `determinant` on the GPU and reads the results
+back, asserting convention-free identities — `inverse(A)*A == I` and
+`A*inverse(A) == I` on 2×2/3×3/4×4, `A*I == A`, `transpose(transpose(A)) == A`,
+`transpose(A)[c][r] == A[r][c]`, `inverse(A)*(A*v) == v` — plus host-computed
+determinants. Registered as `omegagte_matrix_ops` in each backend's test
+`CMakeLists.txt`. Verified passing on Metal here; run on D3D12 / Vulkan to
+confirm those backends. Writing this test surfaced and fixed the Metal
+buffer-IO trailing-padding bug noted under §2.4.
 
 ### 5.3 Integer / bitfield ops
 

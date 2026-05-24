@@ -1235,6 +1235,12 @@ namespace omegasl {
                     expectedArgs = 1;
                     returnsScalar = true;
                 }
+                /// §5.2 — `distance(a,b)` is the 2-arg analogue of `length`:
+                /// it returns the scalar length of `a - b`.
+                else if(fname == BUILTIN_DISTANCE){
+                    expectedArgs = 2;
+                    returnsScalar = true;
+                }
                 /// 2-arg intrinsics
                 else if(fname == BUILTIN_ATAN2 || fname == BUILTIN_POW ||
                         fname == BUILTIN_MIN || fname == BUILTIN_MAX ||
@@ -1242,9 +1248,13 @@ namespace omegasl {
                         fname == BUILTIN_FMOD || fname == BUILTIN_LDEXP){
                     expectedArgs = 2;
                 }
-                /// 3-arg intrinsics
+                /// 3-arg intrinsics. §5.2 adds `faceforward(n,i,ng)` and
+                /// `refract(i,n,eta)` — both return the first argument's
+                /// (vector) type; `refract`'s `eta` is a scalar, which the
+                /// loose per-arg validation below already tolerates.
                 else if(fname == BUILTIN_CLAMP || fname == BUILTIN_LERP ||
-                        fname == BUILTIN_SMOOTHSTEP || fname == BUILTIN_FMA){
+                        fname == BUILTIN_SMOOTHSTEP || fname == BUILTIN_FMA ||
+                        fname == BUILTIN_FACEFORWARD || fname == BUILTIN_REFRACT){
                     expectedArgs = 3;
                 }
 
@@ -1252,6 +1262,12 @@ namespace omegasl {
                 bool isTranspose = (fname == "transpose");
                 bool isDeterminant = (fname == "determinant");
                 if(isTranspose || isDeterminant){
+                    expectedArgs = 1;
+                }
+                /// §5.2 — `inverse(m)` returns the same square-matrix type.
+                /// Non-square / non-matrix arguments are rejected below.
+                bool isInverse = (fname == BUILTIN_INVERSE);
+                if(isInverse){
                     expectedArgs = 1;
                 }
 
@@ -1307,6 +1323,27 @@ namespace omegasl {
                     if(argTy == ast::builtins::float4x2_type) return ast::TypeExpr::Create(ast::builtins::float2x4_type);
                     if(argTy == ast::builtins::float4x3_type) return ast::TypeExpr::Create(ast::builtins::float3x4_type);
                     return firstArgType; // fallback
+                }
+                if(isInverse && firstArgType){
+                    /// Stamp the resolved arg type so codegen can read the
+                    /// matrix size at the call site (the generic bucket below
+                    /// doesn't, and `performSemForExpr` only stamps some expr
+                    /// kinds — an `inverse(a * b)` binary-expr arg would
+                    /// otherwise reach the HLSL/MSL lowering with a null
+                    /// `resolvedType`). Mirrors the modf / frexp path.
+                    _expr->args[0]->resolvedType = firstArgType;
+                    /// Square matrices only — inverse is undefined otherwise.
+                    auto argTy = resolveTypeWithExpr(firstArgType);
+                    if(argTy == ast::builtins::float2x2_type ||
+                       argTy == ast::builtins::float3x3_type ||
+                       argTy == ast::builtins::float4x4_type){
+                        return firstArgType;
+                    }
+                    auto e = std::make_unique<TypeError>(
+                        "`inverse` requires a square matrix argument (float2x2, float3x3, or float4x4)");
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
                 }
                 if(returnsScalar && firstArgType){
                     return ast::TypeExpr::Create(ast::builtins::float_type);

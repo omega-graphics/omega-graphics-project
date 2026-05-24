@@ -1,0 +1,81 @@
+// §5.2 — vector / matrix math intrinsics.
+//   distance(a,b)        — scalar length of (a - b)
+//   faceforward(n,i,ng)  — flip n toward the viewer
+//   refract(i,n,eta)     — refraction vector (eta is a scalar)
+//   inverse(m)           — square-matrix inverse (HLSL/MSL lower to an
+//                          injected adjugate expansion; GLSL is native)
+
+struct Data {
+    float4 value;
+};
+
+buffer<Data> src : 0;
+buffer<Data> dst : 1;
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_distance(uint3 tid : GlobalThreadID){
+    float2 a2 = src[0].value.xy;
+    float2 b2 = src[1].value.xy;
+    float3 a3 = src[0].value.xyz;
+    float3 b3 = src[1].value.xyz;
+    float4 a4 = src[0].value;
+    float4 b4 = src[1].value;
+    float d2 = distance(a2, b2);
+    float d3 = distance(a3, b3);
+    float d4 = distance(a4, b4);
+    dst[0].value = float4(d2, d3, d4, 0.0);
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_faceforward_refract(uint3 tid : GlobalThreadID){
+    float3 n = src[0].value.xyz;
+    float3 i = src[1].value.xyz;
+    float3 ng = src[2].value.xyz;
+    float3 ff = faceforward(n, i, ng);
+    float3 rr = refract(i, n, 0.5);
+    // 2-component refract / faceforward as well, to exercise the rank
+    // independence of the 3-arg bucket.
+    float2 i2 = src[1].value.xy;
+    float2 n2 = src[0].value.xy;
+    float2 rr2 = refract(i2, n2, 0.75);
+    dst[0].value = float4(ff + rr, rr2.x);
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_inverse(uint3 tid : GlobalThreadID){
+    float2x2 m2 = float2x2(
+        src[0].value.x, src[0].value.y,
+        src[0].value.z, src[0].value.w);
+    float2x2 i2 = inverse(m2);
+
+    float3x3 m3 = float3x3(
+        1.0, 2.0, 3.0,
+        0.0, 1.0, 4.0,
+        5.0, 6.0, 0.0);
+    float3x3 i3 = inverse(m3);
+
+    float4x4 m4 = float4x4(
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 2.0, 0.0, 0.0,
+        0.0, 0.0, 3.0, 0.0,
+        1.0, 0.0, 0.0, 4.0);
+    float4x4 i4 = inverse(m4);
+
+    dst[0].value = float4(i2[0][0], i3[1][2], i4[3][3], i4[0][0]);
+}
+
+// inverse() of a more complex argument expression — verifies the argument
+// is captured once (single eval) into the injected temp on HLSL/MSL.
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_inverse_expr(uint3 tid : GlobalThreadID){
+    float3x3 a = float3x3(
+        2.0, 0.0, 0.0,
+        0.0, 2.0, 0.0,
+        0.0, 0.0, 2.0);
+    float3x3 inv = inverse(a * a);
+    dst[0].value = float4(inv[0][0], inv[1][1], inv[2][2], 1.0);
+}

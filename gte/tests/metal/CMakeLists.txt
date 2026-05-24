@@ -134,3 +134,18 @@ if(NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_test(NAME omegagte_sampler_bind_negative COMMAND SamplerBindTest negative)
     set_tests_properties(omegagte_sampler_bind_negative PROPERTIES WILL_FAIL TRUE)
 endif()
+
+# OmegaSL §5.2 / §12 — matrix-op GPU integration test (shared, backend-
+# independent source under gte/tests/).
+add_metal_cli_test(
+    NAME
+    "MatrixOpsTest"
+    SOURCES
+    "../matrix_ops_test.cpp"
+    FRAMEWORKS
+    "Metal"
+    "Foundation"
+)
+target_link_options("MatrixOpsTest" PRIVATE
+    "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
+add_test(NAME omegagte_matrix_ops COMMAND MatrixOpsTest)

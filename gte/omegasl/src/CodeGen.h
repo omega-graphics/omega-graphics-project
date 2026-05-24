@@ -352,6 +352,19 @@ namespace omegasl {
             return tmp.str();
         }
 
+        /// §5.2 — `inverse(m)` lowering for the HLSL and MSL backends (GLSL
+        /// has a native `inverse`). Neither HLSL nor MSL exposes a matrix
+        /// inverse, so the call is rewritten to an injected adjugate
+        /// expansion: a temp captures the argument (single eval), the inverse
+        /// determinant is precomputed, and the result matrix is built from a
+        /// scalar cofactor formula over the temp's elements. The generated
+        /// text is identical on both backends — OmegaSL's row-major (HLSL,
+        /// via `mul`) vs column-major (MSL, via `*`) duality cancels for a
+        /// pure scalar formula (see AST.def §5.2). Square matrices only;
+        /// returns false (caller falls through) for any other arg, which
+        /// Sema already rejects.
+        bool emitInverseCall(ast::CallExpr *call, std::ostream &out);
+
         /// Current block-nesting depth, in indentation levels (one
         /// level == 4 spaces after Phase 7.5 unification). Each
         /// `generateBlock` call increments at entry and decrements at

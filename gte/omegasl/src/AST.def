@@ -143,6 +143,20 @@ typedef int ASTType;
 /// (broadly available; precision contract looser than IEEE 754 fma).
 #define BUILTIN_FMA "fma"
 
+/// §5.2 — vector / matrix math.
+///   distance(a,b)        — 2-arg, returns a scalar `float` (length of a-b).
+///   faceforward(n,i,ng)  — 3-arg, returns same type as `n` (flip toward viewer).
+///   refract(i,n,eta)     — 3-arg (i,n vectors, eta scalar), returns `i`'s type.
+/// All three are native on HLSL/MSL/GLSL and pass through unchanged.
+///   inverse(m)           — 1-arg, square matrix in, same type out. GLSL has a
+/// native `inverse`; HLSL and MSL do NOT (verified — `metal::inverse` is
+/// undeclared), so both lower the call to an injected scalar adjugate
+/// expansion (see CodeGen::tryEmitInverse).
+#define BUILTIN_DISTANCE "distance"
+#define BUILTIN_FACEFORWARD "faceforward"
+#define BUILTIN_REFRACT "refract"
+#define BUILTIN_INVERSE "inverse"
+
 /// §5.1.0 — `mod` / `mad` are accepted as aliases of the canonical
 /// `fmod` / `fma` spellings (see `ast::canonicalBuiltinAlias`). They
 /// carry no separate semantics: `mod` is truncation-modulus like `fmod`

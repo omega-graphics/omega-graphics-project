@@ -445,122 +445,49 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         }
         void sendToBuffer() override {
             assert(!inStruct && "Struct must be finished be written to before sending data");
-            size_t biggestSize = 1;
-
-            OmegaCommon::Vector<size_t> sizes;
-            for(auto & d : blocks){
-                size_t s = 0;
-                if(isMatrixDataType(d.type)){
-                    auto [cols, rows] = matrixDims(d.type);
+            /// Sequential std430 / Metal-native placement: each member is
+            /// written at the running offset and the cursor advances by the
+            /// member's size; the struct is rounded up to its alignment (max
+            /// member alignment — scalar 4, vec2 8, vec3/vec4/matrix 16) so a
+            /// contiguous array of structs stays aligned. Symmetric with
+            /// GEMetalBufferReader. This replaces a heuristic that padded to
+            /// the biggest member *size* (e.g. 64 for a float4x4) and applied
+            /// the padding around the first biggest-size member, which both
+            /// mis-aligned structs whose biggest member wasn't first and wrote
+            /// trailing padding past the end of the (correctly sized) buffer.
+            size_t structAlign = 1;
+            size_t local = 0;
+            for(auto & block : blocks){
+                size_t s = 0, a = 16;
+                if(isMatrixDataType(block.type)){
+                    auto [cols, rows] = matrixDims(block.type);
                     s = std430MatrixSize(cols, rows);
+                    a = std430MatrixAlignment(rows);
                 }
                 else {
-                    switch (d.type) {
-                        case OMEGASL_FLOAT : {
-                            s = sizeof(float);
-                            break;
-                        }
-                        case OMEGASL_FLOAT2 : {
-                            s = sizeof(simd_float2);
-                            break;
-                        }
-                        case OMEGASL_FLOAT3 : {
-                            s = sizeof(simd_float3);
-                            break;
-                        }
-                        case OMEGASL_FLOAT4 : {
-                            s = sizeof(simd_float4);
-                            break;
-                        }
+                    switch (block.type) {
+                        case OMEGASL_FLOAT :
                         case OMEGASL_INT :
-                        case OMEGASL_UINT : {
-                            s = sizeof(int);
-                            break;
-                        }
+                        case OMEGASL_UINT :  s = sizeof(float);       a = 4;  break;
+                        case OMEGASL_FLOAT2 :
                         case OMEGASL_INT2 :
-                        case OMEGASL_UINT2 : {
-                            s = sizeof(simd_int2);
-                            break;
-                        }
+                        case OMEGASL_UINT2 : s = sizeof(simd_float2); a = 8;  break;
+                        case OMEGASL_FLOAT3 :
                         case OMEGASL_INT3 :
-                        case OMEGASL_UINT3 : {
-                            s = sizeof(simd_int3);
-                            break;
-                        }
+                        case OMEGASL_UINT3 : s = sizeof(simd_float3); a = 16; break;
+                        case OMEGASL_FLOAT4 :
                         case OMEGASL_INT4 :
-                        case OMEGASL_UINT4 : {
-                            s = sizeof(simd_int4);
-                            break;
-                        }
+                        case OMEGASL_UINT4 : s = sizeof(simd_float4); a = 16; break;
                         default: break;
                     }
                 }
-                if(s > biggestSize){
-                    biggestSize = s;
-                }
-                sizes.push_back(s);
+                memcpy(_data_ptr + currentOffset + local, block.data, s);
+                local += s;
+                if(a > structAlign) structAlign = a;
             }
-
-            size_t offsetBefore = 0;
-            size_t offsetAfter = 0;
-
-            bool afterBiggestWord = false;
-            for(unsigned i = 0;i < blocks.size();i++){
-                auto & s = sizes[i];
-                auto & block = blocks[i];
-                if(afterBiggestWord){
-                    memcpy(_data_ptr + currentOffset + offsetAfter,block.data,s);
-                    offsetAfter += s;
-                }
-                else {
-                    if (s == biggestSize) {
-                        auto padding = offsetBefore % biggestSize;
-
-                        if(padding > 0) {
-                            auto *pad = new MTLByte[padding];
-
-                            size_t paddingLen = padding;
-                            auto *pad_it = pad;
-                            while (paddingLen > 0) {
-                                *pad_it = 0;
-                                ++pad_it;
-                                --paddingLen;
-                            }
-                            memcpy(_data_ptr + currentOffset + offsetBefore,pad,padding);
-                            offsetBefore += padding;
-                            delete [] pad;
-                        }
-
-                        memcpy(_data_ptr + currentOffset + offsetBefore,block.data,s);
-                        afterBiggestWord = true;
-                        currentOffset += (offsetBefore + s);
-                    }
-                    else {
-                        memcpy(_data_ptr + currentOffset + offsetBefore,block.data,s);
-                        offsetBefore += s;
-                    }
-                }
-            }
-
-            if(offsetAfter > 0){
-                auto padding = offsetAfter % biggestSize;
-
-                if(padding > 0) {
-                    auto *pad = new MTLByte[padding];
-
-                    size_t paddingLen = padding;
-                    auto *pad_it = pad;
-                    while (paddingLen > 0) {
-                        *pad_it = 0;
-                        ++pad_it;
-                        --paddingLen;
-                    }
-                    memcpy(_data_ptr + currentOffset + offsetAfter,pad,padding);
-                    offsetAfter += padding;
-                    delete [] pad;
-                }
-                currentOffset += offsetAfter;
-            }
+            size_t rem = local % structAlign;
+            if(rem != 0) local += structAlign - rem;
+            currentOffset += local;
         }
         void flush() override {
             currentOffset = 0;
@@ -590,18 +517,18 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         bool inStruct = false;
 
         OmegaCommon::Vector<omegasl_data_type> structLayout;
-        inline void readBeforePaddingIfPossible(){
-            if(structRelativeOffset == biggestSizeOffset){
-                currentOffset += paddingBefore;
-                structRelativeOffset += paddingBefore;
-            }
-        }
-        inline void readAfterPaddingIfPossible(){
-            if(structLayout.size() == (fieldIndex + 1)){
-                currentOffset += paddingAfter;
-                structRelativeOffset += paddingAfter;
-            }
-        }
+        /// No-ops. The reader walks fields sequentially at `currentOffset`
+        /// (each get* advances by the field's std430/Metal-native size) and
+        /// rounds to the struct alignment in `structEnd` — the same model as
+        /// the Vulkan / D3D12 readers. The previous heuristic computed trailing
+        /// padding from the biggest member *size* (e.g. 64 for a float4x4)
+        /// rather than the struct *alignment* (16), and applied it one field
+        /// early because `fieldIndex` is pre-incremented in `offsetAndIncrement`
+        /// — so the last field of a struct whose tail is smaller than its
+        /// biggest member (matrices followed by a float4) was read past its
+        /// real offset, returning garbage / zeros.
+        inline void readBeforePaddingIfPossible(){}
+        inline void readAfterPaddingIfPossible(){}
         inline void offsetAndIncrement(size_t n){
             structRelativeOffset += n;
             currentOffset += n;
@@ -615,65 +542,11 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             _data_ptr = (MTLByte *)[NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,buffer_->metalBuffer.handle()) contents];
         }
         void setStructLayout(OmegaCommon::Vector<omegasl_data_type> fields) override {
+            /// Store the layout for the per-field type asserts. Offsets are
+            /// tracked sequentially by the get* methods (and rounded to the
+            /// struct alignment in `structEnd`); no padding heuristic — see
+            /// `readBeforePaddingIfPossible`.
             structLayout = fields;
-            OmegaCommon::Vector<size_t> sizes;
-            for(auto & f : fields){
-                size_t s = 0;
-                if(isMatrixDataType(f)){
-                    auto [cols, rows] = matrixDims(f);
-                    s = std430MatrixSize(cols, rows);
-                }
-                else {
-                    switch (f) {
-                        case OMEGASL_INT:
-                        case OMEGASL_FLOAT : {
-                            s = sizeof(float);
-                            break;
-                        }
-                        case OMEGASL_INT2 :
-                        case OMEGASL_FLOAT2 : {
-                            s = sizeof(simd_float2);
-                            break;
-                        }
-                        case OMEGASL_INT3 :
-                        case OMEGASL_FLOAT3 : {
-                            s = sizeof(simd_float3);
-                            break;
-                        }
-                        case OMEGASL_INT4 :
-                        case OMEGASL_FLOAT4 :
-                        {
-                            s = sizeof(simd_float4);
-                            break;
-                        }
-                        default: break;
-                    }
-                }
-                if(s > biggestSize){
-                    biggestSize = s;
-                }
-                sizes.push_back(s);
-            }
-
-            bool afterBiggest = false;
-
-            size_t relOffsetBeg = 0,relOffsetEnd = 0;
-
-            for(auto & s : sizes){
-                if(afterBiggest){
-                    relOffsetEnd += s;
-                }
-                else {
-                    if (s == biggestSize) {
-                        paddingBefore = relOffsetBeg % biggestSize;
-                        biggestSizeOffset = relOffsetBeg;
-                       afterBiggest = true;
-                    } else {
-                        relOffsetBeg += s;
-                    }
-                }
-            }
-            paddingAfter = relOffsetEnd % biggestSize;
         }
         void structBegin() override {
             inStruct = true;
@@ -750,6 +623,20 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         void getFloat4x3(FMatrix<4,3> &m) override { getMatrixImpl<4,3>(m, OMEGASL_FLOAT4x3); }
         void structEnd() override {
             inStruct = false;
+            /// std430 struct alignment = max member alignment (scalar 4,
+            /// vec2 8, vec3/vec4/matrix 16). Round the cursor up so the next
+            /// struct in a contiguous array starts on the struct's alignment.
+            size_t structAlign = 1;
+            for(auto f : structLayout){
+                size_t a = isMatrixDataType(f)
+                    ? std430MatrixAlignment(matrixDims(f).second)
+                    : (f == OMEGASL_FLOAT || f == OMEGASL_INT || f == OMEGASL_UINT) ? 4
+                    : (f == OMEGASL_FLOAT2 || f == OMEGASL_INT2 || f == OMEGASL_UINT2) ? 8
+                    : 16;
+                if(a > structAlign) structAlign = a;
+            }
+            size_t rem = currentOffset % structAlign;
+            if(rem != 0) currentOffset += structAlign - rem;
         }
         void reset() override {
             _data_ptr = nullptr;

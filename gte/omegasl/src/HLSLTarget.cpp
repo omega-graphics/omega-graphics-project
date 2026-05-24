@@ -557,6 +557,11 @@ namespace omegasl {
             out << fm;
             return true;
         }
+        /// §5.2 — HLSL has no matrix `inverse`; lower to an injected
+        /// adjugate expansion (shared with MSL).
+        if (name == BUILTIN_INVERSE) {
+            return cg.emitInverseCall(_expr, out);
+        }
         return false;
     }
 

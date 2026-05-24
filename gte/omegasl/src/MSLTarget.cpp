@@ -472,25 +472,20 @@ using namespace metal;
         }
         out << std::endl;
 
+        /// §2.3 Phase B / §5.2 — route each statement through
+        /// `emitStatementLine` so a backend that queues pre-statements (the
+        /// HLSL `getDimensions`/`frexp` injection, and the `inverse` adjugate
+        /// expansion shared with HLSL) flushes them ahead of the statement.
+        /// The hand-rolled loop this replaces called `generateDecl`/
+        /// `generateExpr` directly and silently dropped any queued lines, so
+        /// an injected builtin used at entry-body top level (not inside a
+        /// nested block / user function) emitted a dangling temp reference.
+        /// `emitStatementLine` owns indentation, the trailing `;`, and the
+        /// block-statement check, so the output is byte-identical when nothing
+        /// is queued.
         cg.indentLevel += 1;
         for (auto stmt : _decl->block->body) {
-            for (unsigned l = cg.indentLevel; l != 0; l--) {
-                out << "    ";
-            }
-            if (stmt->type == VAR_DECL || stmt->type == RETURN_DECL || stmt->type == IF_STMT
-                || stmt->type == FOR_STMT || stmt->type == WHILE_STMT || stmt->type == BREAK_STMT
-                || stmt->type == CONTINUE_STMT || stmt->type == DISCARD_STMT
-                || stmt->type == SWITCH_STMT) {
-                cg.generateDecl((ast::Decl *)stmt);
-                if (stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT
-                    && stmt->type != SWITCH_STMT) {
-                    out << ";";
-                }
-                out << std::endl;
-            } else {
-                cg.generateExpr((ast::Expr *)stmt);
-                out << ";" << std::endl;
-            }
+            cg.emitStatementLine(stmt);
         }
         cg.indentLevel -= 1;
         out << "}" << std::endl;
@@ -634,6 +629,11 @@ using namespace metal;
         if (name == BUILTIN_DEVICE_BARRIER) {
             out << "threadgroup_barrier(mem_flags::mem_device)";
             return true;
+        }
+        /// §5.2 — Metal has no matrix `inverse`; lower to an injected
+        /// adjugate expansion (shared with HLSL).
+        if (name == BUILTIN_INVERSE) {
+            return cg.emitInverseCall(_expr, out);
         }
         return false;
     }

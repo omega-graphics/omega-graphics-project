@@ -1,6 +1,8 @@
 #include "CodeGen.h"
 #include <iomanip>
 #include <sstream>
+#include <functional>
+#include <vector>
 
 namespace omegasl {
 
@@ -399,6 +401,76 @@ namespace omegasl {
     void CodeGen::writeTypeExpr(ast::TypeExpr *typeExpr, std::ostream &out) {
         target->writeTypeName(typeResolver->resolveTypeWithExpr(typeExpr),
                               typeExpr->pointer, out);
+    }
+
+    bool CodeGen::emitInverseCall(ast::CallExpr *call, std::ostream &out) {
+        if (call->args.size() != 1) return false;
+        if (call->args[0]->resolvedType == nullptr) return false;
+        using namespace ast::builtins;
+        auto *ty = typeResolver->resolveTypeWithExpr(call->args[0]->resolvedType);
+        int N = 0;
+        const char *matTy = nullptr;
+        if (ty == float2x2_type)      { N = 2; matTy = "float2x2"; }
+        else if (ty == float3x3_type) { N = 3; matTy = "float3x3"; }
+        else if (ty == float4x4_type) { N = 4; matTy = "float4x4"; }
+        else return false; // Sema rejects non-square; defensive fall-through.
+
+        std::string argStr = renderExprToString(call->args[0]);
+        unsigned id = getDimensionsTempId++;
+        std::string in = "_inv" + std::to_string(id) + "_m";
+        std::string idet = "_inv" + std::to_string(id) + "_id";
+        std::string res = "_inv" + std::to_string(id);
+
+        auto elem = [&](int r, int c) {
+            return in + "[" + std::to_string(r) + "][" + std::to_string(c) + "]";
+        };
+        /// Determinant of the submatrix indexed by `rows` × `cols`, by
+        /// Laplace expansion along the first remaining row. Mirrors the
+        /// host-verified reference in inv_verify.cpp.
+        std::function<std::string(std::vector<int>, std::vector<int>)> detExpr =
+            [&](std::vector<int> rows, std::vector<int> cols) -> std::string {
+            int n = (int)rows.size();
+            if (n == 1) return elem(rows[0], cols[0]);
+            if (n == 2)
+                return "(" + elem(rows[0], cols[0]) + "*" + elem(rows[1], cols[1])
+                     + " - " + elem(rows[0], cols[1]) + "*" + elem(rows[1], cols[0]) + ")";
+            std::string acc = "(";
+            for (int k = 0; k < n; ++k) {
+                std::vector<int> subRows(rows.begin() + 1, rows.end());
+                std::vector<int> subCols;
+                for (int c = 0; c < n; ++c) if (c != k) subCols.push_back(cols[c]);
+                std::string term = elem(rows[0], cols[k]) + "*" + detExpr(subRows, subCols);
+                if (k == 0) acc += term;
+                else acc += (k % 2 == 0 ? " + " : " - ") + term;
+            }
+            return acc + ")";
+        };
+        auto fullDet = [&]() {
+            std::vector<int> all;
+            for (int i = 0; i < N; ++i) all.push_back(i);
+            return detExpr(all, all);
+        };
+        /// Adjugate entry [i][j] = (-1)^(i+j) * minor(remove row j, col i).
+        auto adj = [&](int i, int j) {
+            std::vector<int> rows, cols;
+            for (int r = 0; r < N; ++r) if (r != j) rows.push_back(r);
+            for (int c = 0; c < N; ++c) if (c != i) cols.push_back(c);
+            std::string m = detExpr(rows, cols);
+            return ((i + j) % 2 == 0) ? m : ("-" + m);
+        };
+
+        queuePendingStatement(std::string(matTy) + " " + in + " = " + argStr + ";");
+        queuePendingStatement("float " + idet + " = 1.0 / (" + fullDet() + ");");
+        std::string ctor = std::string(matTy) + "(";
+        for (int i = 0; i < N; ++i)
+            for (int j = 0; j < N; ++j) {
+                if (i || j) ctor += ", ";
+                ctor += "(" + adj(i, j) + ") * " + idet;
+            }
+        ctor += ")";
+        queuePendingStatement(std::string(matTy) + " " + res + " = " + ctor + ";");
+        out << res;
+        return true;
     }
 
     void CodeGen::emitUserFunctionSignature(ast::FuncDecl *f) {
