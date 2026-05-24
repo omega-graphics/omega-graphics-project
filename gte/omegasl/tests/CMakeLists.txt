@@ -61,6 +61,7 @@ add_omegasl_compile_test(omegasl_compile_math_builtins       math_builtins.omega
 add_omegasl_compile_test(omegasl_compile_matrix_ops          matrix_ops.omegasl)
 add_omegasl_compile_test(omegasl_compile_matrix_index        matrix_index.omegasl)
 add_omegasl_compile_test(omegasl_compile_matrix_buffer       matrix_buffer.omegasl)
+add_omegasl_compile_test(omegasl_compile_int_matrix          int_matrix.omegasl)
 # Regression: builtin (scalar/vector) buffer element types.
 add_omegasl_compile_test(omegasl_compile_buffer_scalar_elem  buffer_scalar_elem.omegasl)
 add_omegasl_compile_test(omegasl_compile_texture_write       texture_write.omegasl)
@@ -137,6 +138,9 @@ add_omegasl_fail_test(omegasl_invalid_switch                 invalid_switch.omeg
 add_omegasl_fail_test(omegasl_invalid_matrix_column_write    invalid_matrix_column_write.omegasl)
 # Matrix index-type rule (column + two-level row index must be int/uint).
 add_omegasl_fail_test(omegasl_invalid_matrix_index           invalid_matrix_index.omegasl)
+# §12.2 follow-up — integer matrices reject whole-matrix ops and inline ctors.
+add_omegasl_fail_test(omegasl_invalid_int_matrix_op          invalid_int_matrix_op.omegasl)
+add_omegasl_fail_test(omegasl_invalid_int_matrix_ctor        invalid_int_matrix_ctor.omegasl)
 # §3.2 — ternary diagnostics.
 add_omegasl_fail_test(omegasl_invalid_ternary_type_mismatch  invalid_ternary_type_mismatch.omegasl)
 add_omegasl_fail_test(omegasl_invalid_ternary_nonbool_cond   invalid_ternary_nonbool_cond.omegasl)

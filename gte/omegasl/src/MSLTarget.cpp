@@ -344,6 +344,7 @@ using namespace metal;
             out << "    ";
             cg.writeTypeExpr(p.typeExpr, out);
             out << " " << p.name;
+            cg.writeDeclTypeSuffix(p.typeExpr, out);
             if (p.attributeName.has_value()) {
                 /// Bare `Color` and `TexCoord` are vertex→fragment varyings;
                 /// MSL leaves them untagged on the struct. `Color(N)`,
@@ -504,9 +505,7 @@ using namespace metal;
         cg.writeTypeExpr(_decl->typeExpr, out);
         out << " ";
         writeIdentifier(_decl->spec.name, out);
-        for (unsigned dim : _decl->typeExpr->arrayDims) {
-            out << "[" << dim << "]";
-        }
+        cg.writeDeclTypeSuffix(_decl->typeExpr, out);
         return true;
     }
 
@@ -1019,6 +1018,16 @@ using namespace metal;
     void MSLTarget::writeTypeName(ast::Type *_t, bool pointer, std::ostream &out) {
         using namespace ast;
 
+        /// §12.2 follow-up — Metal has no integer matrix type; lower to an
+        /// array of column vectors (`int4 m[C]`). The declarator site appends
+        /// the `[C]` array dimension via `CodeGen::writeDeclTypeSuffix`.
+        {
+            bool isSigned; unsigned cols, rows;
+            if(CodeGen::integerMatrixShape(_t, isSigned, cols, rows)){
+                out << (isSigned ? "int" : "uint") << rows;
+                return;
+            }
+        }
         if(_t == builtins::void_type){
             out << "void";
         }

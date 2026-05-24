@@ -209,7 +209,9 @@ namespace omegasl {
             for (auto &f : _decl->fields) {
                 out << "  ";
                 cg.writeTypeExpr(f.typeExpr, out);
-                out << " " << f.name << ";" << std::endl;
+                out << " " << f.name;
+                cg.writeDeclTypeSuffix(f.typeExpr, out);
+                out << ";" << std::endl;
             }
             out << "};";
         }
@@ -240,9 +242,7 @@ namespace omegasl {
             cg.writeTypeExpr(_var->typeExpr, out);
             out << " ";
             writeIdentifier(_var->spec.name, out);
-            for (unsigned dim : _var->typeExpr->arrayDims) {
-                out << "[" << dim << "]";
-            }
+            cg.writeDeclTypeSuffix(_var->typeExpr, out);
             out << ";" << std::endl;
         }
     }
@@ -1344,6 +1344,16 @@ namespace omegasl {
     }
 
     void GLSLTarget::writeTypeName(ast::Type *t, bool pointer, std::ostream &out) {
+        /// §12.2 follow-up — integer matrices have no GLSL matrix type; spell
+        /// the column vector (`ivecR`/`uvecR`). The declarator site appends
+        /// the `[C]` array dimension via `CodeGen::writeDeclTypeSuffix`.
+        {
+            bool isSigned; unsigned cols, rows;
+            if(CodeGen::integerMatrixShape(t, isSigned, cols, rows)){
+                out << (isSigned ? "ivec" : "uvec") << rows;
+                return;
+            }
+        }
         if(t == ast::builtins::void_type){
             out << "void";
         }

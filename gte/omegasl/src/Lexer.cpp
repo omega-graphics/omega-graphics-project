@@ -47,10 +47,29 @@ namespace omegasl {
         (subject == KW_TY_INT2) ||
         (subject == KW_TY_INT3) ||
         (subject == KW_TY_INT4) ||
+        /// §12.2 follow-up — integer matrices (array-lowered per backend).
+        (subject == KW_TY_INT2X2) ||
+        (subject == KW_TY_INT2X3) ||
+        (subject == KW_TY_INT2X4) ||
+        (subject == KW_TY_INT3X2) ||
+        (subject == KW_TY_INT3X3) ||
+        (subject == KW_TY_INT3X4) ||
+        (subject == KW_TY_INT4X2) ||
+        (subject == KW_TY_INT4X3) ||
+        (subject == KW_TY_INT4X4) ||
         (subject == KW_TY_UINT) ||
         (subject == KW_TY_UINT2) ||
         (subject == KW_TY_UINT3) ||
         (subject == KW_TY_UINT4) ||
+        (subject == KW_TY_UINT2X2) ||
+        (subject == KW_TY_UINT2X3) ||
+        (subject == KW_TY_UINT2X4) ||
+        (subject == KW_TY_UINT3X2) ||
+        (subject == KW_TY_UINT3X3) ||
+        (subject == KW_TY_UINT3X4) ||
+        (subject == KW_TY_UINT4X2) ||
+        (subject == KW_TY_UINT4X3) ||
+        (subject == KW_TY_UINT4X4) ||
         (subject == KW_TY_FLOAT) ||
         (subject == KW_TY_FLOAT2) ||
         (subject == KW_TY_FLOAT3) ||

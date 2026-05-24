@@ -115,7 +115,34 @@ enum omegasl_data_type : int {
     OMEGASL_DOUBLE,
     OMEGASL_DOUBLE2,
     OMEGASL_DOUBLE3,
-    OMEGASL_DOUBLE4
+    OMEGASL_DOUBLE4,
+
+    /// §12.2 follow-up — integer matrix types for the host-side buffer R/W
+    /// API (`GEBufferWriter::writeInt4x4`, etc.). Appended at the tail rather
+    /// than grouped with the integer scalars/vectors above so the numeric
+    /// value of every pre-existing enumerator is preserved — these values are
+    /// never serialized into `.omegasllib` archives (codegen does not emit
+    /// matrix data types), so only the in-memory C++ ABI matters. An int/uint
+    /// matrix's std430/std140 byte layout is identical to the same-shape
+    /// `OMEGASL_FLOATCxR` (int/uint/float are all 4-byte scalars).
+    OMEGASL_INT2x2,
+    OMEGASL_INT2x3,
+    OMEGASL_INT2x4,
+    OMEGASL_INT3x2,
+    OMEGASL_INT3x3,
+    OMEGASL_INT3x4,
+    OMEGASL_INT4x2,
+    OMEGASL_INT4x3,
+    OMEGASL_INT4x4,
+    OMEGASL_UINT2x2,
+    OMEGASL_UINT2x3,
+    OMEGASL_UINT2x4,
+    OMEGASL_UINT3x2,
+    OMEGASL_UINT3x3,
+    OMEGASL_UINT3x4,
+    OMEGASL_UINT4x2,
+    OMEGASL_UINT4x3,
+    OMEGASL_UINT4x4
 
 };
 

@@ -11,6 +11,7 @@ This site features all the documentation for using OmegaGTE
   About
   API
   OmegaSL
+  Emulation
   Debugging
   Limitations
 

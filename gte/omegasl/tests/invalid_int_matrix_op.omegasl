@@ -1,0 +1,19 @@
+/// §12.2 follow-up: no operator is defined on a *whole* integer matrix.
+/// Integer matrices lower to an array of column vectors, so algebra
+/// (`*`, `+`, …), equality, and whole-matrix assignment are rejected —
+/// the user must index a column / element first. Backends have no integer
+/// matrix algebra anyway.
+
+struct S {
+    int4x4 m;
+    int4 v;
+};
+
+buffer<S> b : 0;
+
+[in b, out b]
+compute(x=1,y=1,z=1)
+void bad(uint3 tid : GlobalThreadID){
+    /// expected: TypeError "no operator is defined on a whole integer matrix"
+    b[0].v = b[0].m * b[0].v;
+}

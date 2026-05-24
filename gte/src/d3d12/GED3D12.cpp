@@ -963,6 +963,27 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         void writeFloat4x3(FMatrix<4,3> &m) override {
             blocks.push_back(DataBlock {matrixDataTypeFor<4,3>(), encodeFMatrix<4,3>(m, layoutStd)});
         }
+        /// §12.2 follow-up — integer / unsigned matrix writers. Same
+        /// column-major std430/std140 packing as the float writers; the HLSL
+        /// shader consumes them as `int4 m[C]` arrays (column-major natural).
+        void writeInt2x2(IMatrix<2,2> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<2,2>(), encodeMatrix<int,2,2>(m, layoutStd)}); }
+        void writeInt3x3(IMatrix<3,3> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<3,3>(), encodeMatrix<int,3,3>(m, layoutStd)}); }
+        void writeInt4x4(IMatrix<4,4> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<4,4>(), encodeMatrix<int,4,4>(m, layoutStd)}); }
+        void writeInt2x3(IMatrix<2,3> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<2,3>(), encodeMatrix<int,2,3>(m, layoutStd)}); }
+        void writeInt2x4(IMatrix<2,4> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<2,4>(), encodeMatrix<int,2,4>(m, layoutStd)}); }
+        void writeInt3x2(IMatrix<3,2> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<3,2>(), encodeMatrix<int,3,2>(m, layoutStd)}); }
+        void writeInt3x4(IMatrix<3,4> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<3,4>(), encodeMatrix<int,3,4>(m, layoutStd)}); }
+        void writeInt4x2(IMatrix<4,2> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<4,2>(), encodeMatrix<int,4,2>(m, layoutStd)}); }
+        void writeInt4x3(IMatrix<4,3> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<4,3>(), encodeMatrix<int,4,3>(m, layoutStd)}); }
+        void writeUint2x2(UMatrix<2,2> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<2,2>(), encodeMatrix<unsigned,2,2>(m, layoutStd)}); }
+        void writeUint3x3(UMatrix<3,3> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<3,3>(), encodeMatrix<unsigned,3,3>(m, layoutStd)}); }
+        void writeUint4x4(UMatrix<4,4> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<4,4>(), encodeMatrix<unsigned,4,4>(m, layoutStd)}); }
+        void writeUint2x3(UMatrix<2,3> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<2,3>(), encodeMatrix<unsigned,2,3>(m, layoutStd)}); }
+        void writeUint2x4(UMatrix<2,4> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<2,4>(), encodeMatrix<unsigned,2,4>(m, layoutStd)}); }
+        void writeUint3x2(UMatrix<3,2> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<3,2>(), encodeMatrix<unsigned,3,2>(m, layoutStd)}); }
+        void writeUint3x4(UMatrix<3,4> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<3,4>(), encodeMatrix<unsigned,3,4>(m, layoutStd)}); }
+        void writeUint4x2(UMatrix<4,2> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<4,2>(), encodeMatrix<unsigned,4,2>(m, layoutStd)}); }
+        void writeUint4x3(UMatrix<4,3> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<4,3>(), encodeMatrix<unsigned,4,3>(m, layoutStd)}); }
         void structEnd() override {
             inStruct = false;
         }
@@ -1081,20 +1102,39 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         /// Matrix downloads. With the HLSL packing lock (column-major)
         /// these bytes are laid out the same way Vulkan/Metal write
         /// them, so the shared decoder works directly.
-        template<unsigned C, unsigned R>
-        void getMatrixImpl(FMatrix<C, R> &m){
-            decodeFMatrix<C, R>(_data_buffer + currentOffset, m, layoutStd);
+        template<class T, unsigned C, unsigned R>
+        void getMatrixImpl(Matrix<T, C, R> &m){
+            decodeMatrix<T, C, R>(_data_buffer + currentOffset, m, layoutStd);
             currentOffset += matrixSize(C, R, layoutStd);
         }
-        void getFloat2x2(FMatrix<2,2> &m) override { getMatrixImpl<2,2>(m); }
-        void getFloat3x3(FMatrix<3,3> &m) override { getMatrixImpl<3,3>(m); }
-        void getFloat4x4(FMatrix<4,4> &m) override { getMatrixImpl<4,4>(m); }
-        void getFloat2x3(FMatrix<2,3> &m) override { getMatrixImpl<2,3>(m); }
-        void getFloat2x4(FMatrix<2,4> &m) override { getMatrixImpl<2,4>(m); }
-        void getFloat3x2(FMatrix<3,2> &m) override { getMatrixImpl<3,2>(m); }
-        void getFloat3x4(FMatrix<3,4> &m) override { getMatrixImpl<3,4>(m); }
-        void getFloat4x2(FMatrix<4,2> &m) override { getMatrixImpl<4,2>(m); }
-        void getFloat4x3(FMatrix<4,3> &m) override { getMatrixImpl<4,3>(m); }
+        void getFloat2x2(FMatrix<2,2> &m) override { getMatrixImpl<float,2,2>(m); }
+        void getFloat3x3(FMatrix<3,3> &m) override { getMatrixImpl<float,3,3>(m); }
+        void getFloat4x4(FMatrix<4,4> &m) override { getMatrixImpl<float,4,4>(m); }
+        void getFloat2x3(FMatrix<2,3> &m) override { getMatrixImpl<float,2,3>(m); }
+        void getFloat2x4(FMatrix<2,4> &m) override { getMatrixImpl<float,2,4>(m); }
+        void getFloat3x2(FMatrix<3,2> &m) override { getMatrixImpl<float,3,2>(m); }
+        void getFloat3x4(FMatrix<3,4> &m) override { getMatrixImpl<float,3,4>(m); }
+        void getFloat4x2(FMatrix<4,2> &m) override { getMatrixImpl<float,4,2>(m); }
+        void getFloat4x3(FMatrix<4,3> &m) override { getMatrixImpl<float,4,3>(m); }
+        /// §12.2 follow-up — integer / unsigned matrix readers.
+        void getInt2x2(IMatrix<2,2> &m) override { getMatrixImpl<int,2,2>(m); }
+        void getInt3x3(IMatrix<3,3> &m) override { getMatrixImpl<int,3,3>(m); }
+        void getInt4x4(IMatrix<4,4> &m) override { getMatrixImpl<int,4,4>(m); }
+        void getInt2x3(IMatrix<2,3> &m) override { getMatrixImpl<int,2,3>(m); }
+        void getInt2x4(IMatrix<2,4> &m) override { getMatrixImpl<int,2,4>(m); }
+        void getInt3x2(IMatrix<3,2> &m) override { getMatrixImpl<int,3,2>(m); }
+        void getInt3x4(IMatrix<3,4> &m) override { getMatrixImpl<int,3,4>(m); }
+        void getInt4x2(IMatrix<4,2> &m) override { getMatrixImpl<int,4,2>(m); }
+        void getInt4x3(IMatrix<4,3> &m) override { getMatrixImpl<int,4,3>(m); }
+        void getUint2x2(UMatrix<2,2> &m) override { getMatrixImpl<unsigned,2,2>(m); }
+        void getUint3x3(UMatrix<3,3> &m) override { getMatrixImpl<unsigned,3,3>(m); }
+        void getUint4x4(UMatrix<4,4> &m) override { getMatrixImpl<unsigned,4,4>(m); }
+        void getUint2x3(UMatrix<2,3> &m) override { getMatrixImpl<unsigned,2,3>(m); }
+        void getUint2x4(UMatrix<2,4> &m) override { getMatrixImpl<unsigned,2,4>(m); }
+        void getUint3x2(UMatrix<3,2> &m) override { getMatrixImpl<unsigned,3,2>(m); }
+        void getUint3x4(UMatrix<3,4> &m) override { getMatrixImpl<unsigned,3,4>(m); }
+        void getUint4x2(UMatrix<4,2> &m) override { getMatrixImpl<unsigned,4,2>(m); }
+        void getUint4x3(UMatrix<4,3> &m) override { getMatrixImpl<unsigned,4,3>(m); }
         void structEnd() override {
 
         }

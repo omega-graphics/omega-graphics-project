@@ -2142,9 +2142,8 @@ std430 column padding for `Cx3` matrices." Cross-link §12.1.
 
 #### Out of scope
 
-- **`int` / `uint` matrix types** in the buffer API. The shader language
-  only declares `float` matrices today (§2.3 of the reference). Adding
-  the integer matrix path is straightforward when needed.
+- **`int` / `uint` matrix types** in the buffer API. **LANDED** — see
+  §12.2.1 below. (Both the shader-language types and the buffer R/W API.)
 - **`double` matrix types.** OmegaSL has no double type at the moment, but will add support in the future.
 - **Runtime transposition fallback** — the world where HLSL gets
   compiled with row-major packing and we need to transpose at upload
@@ -2157,6 +2156,88 @@ std430 column padding for `Cx3` matrices." Cross-link §12.1.
   follow the same column-major default but are a separate channel from
   `GEBufferWriter` (§10.2). When push-constant support lands, the same
   std430-equivalent helpers apply.
+
+### 12.2.1 Integer / unsigned-integer matrix types [LANDED — GLSL verified; HLSL/MSL + D3D12/Metal written]
+
+The §12.2 "out of scope" item. Adds `intCxR` / `uintCxR` (C, R ∈ {2,3,4} —
+18 types, mirroring the 9 float matrix shapes) to both the OmegaSL shader
+language and the host buffer R/W API.
+
+**The wall, and the decision.** Unlike `float` matrices (which map 1:1 to
+`mat4` / `float4x4` / `int4x4`), there is *no native integer matrix type* on
+GLSL (`mat`/`dmat` only) or MSL (`metal::matrix` is float/half only) — only
+HLSL has `int4x4`. Per the front-end-uniformity rule, a construct that can't
+be expressed uniformly across all three backends must not silently diverge.
+**Decision (Alex):** lower `intCxR` to an **array of C integer column
+vectors** — `int4 m[C]` (HLSL/MSL) / `ivec4 m[C]` (GLSL) — *identically on
+all three backends, including HLSL* (we deliberately skip native `int4x4`).
+This keeps one codegen shape and makes column-major indexing `m[col][row]`
+natural array indexing everywhere, so integer matrices never hit the HLSL
+§12.1 row-major index swap.
+
+**Shader language (front-end).**
+
+* Tokens (`Toks.def`) + `isKeywordType` (`Lexer.cpp`); 18 builtin `Type`s
+  (`AST.h`/`AST.cpp`); registered in Sema's `builtinsTypeMap`.
+* Codegen: each backend's `writeTypeName` spells the column vector
+  (`int4`/`uint4` on HLSL/MSL, `ivecR`/`uvecR` on GLSL); a shared
+  `CodeGen::writeDeclTypeSuffix` appends the `[C]` array dimension at every
+  declarator site (struct field / local / threadgroup), reusing the existing
+  `arrayDims` emission. `CodeGen::integerMatrixShape` is the single
+  (signed, C, R) decomposition both consume.
+* Sema: integer-matrix `m[col]` indexing returns the `intR`/`uintR` column
+  vector; `isIntegerMatrixType` is kept *out* of `isMatrixType` so the
+  float-only algebra / §12.1-swap paths never fire on integer matrices.
+* **Supported:** declaration (struct fields, locals, threadgroup), indexing
+  (column / element read, column / element write), buffer round-trip.
+* **Rejected (clear Sema/parser diagnostics):** any operator on a *whole*
+  integer matrix (algebra / equality / whole-matrix assignment — not
+  portable across the array lowering, and no backend has integer matrix
+  algebra) and inline construction `int4x4(...)` (no portable array-rvalue
+  form — the message points at per-column assignment).
+
+**Buffer R/W API (host).**
+
+* `omegasl_data_type` gains `OMEGASL_INT*x*` / `OMEGASL_UINT*x*`, **appended
+  at the enum tail** so every pre-existing value is preserved (matrix data
+  types are never serialized into `.omegasllib` — codegen does not emit them
+  — so only the in-memory C++ ABI matters).
+* `BufferIO.h`: `encodeFMatrix`/`decodeFMatrix` generalized to
+  `encodeMatrix<T,C,R>`/`decodeMatrix<T,C,R>` over any 4-byte scalar (the
+  float-named wrappers delegate, so existing call sites are byte-identical);
+  `matrixDims` / `isMatrixDataType` / a new `intMatrixDataTypeFor` /
+  `uintMatrixDataTypeFor` cover the new enumerators. An int/uint matrix's
+  std430/std140 byte layout is *identical* to the same-shape float matrix
+  (int/uint/float are all 4-byte), so all the column-padding math is reused
+  unchanged.
+* `GEBufferWriter` / `GEBufferReader` gain `writeInt<C>x<R>` /
+  `writeUint<C>x<R>` / `getInt<C>x<R>` / `getUint<C>x<R>` (`IMatrix<C,R>` /
+  `UMatrix<C,R>` from GTEMath.h). Implemented on all three backends' writers
+  / readers (the per-backend `getMatrixImpl` was generalized on the element
+  type).
+
+**Verification (this Linux/Vulkan host).**
+
+* **GLSL: fully verified** — `int_matrix.omegasl` compiles and `glslc`
+  validates the generated GLSL into SPIR-V; the emitted struct fields are
+  `ivec4 m[4]` / `uvec3 m[3]` / `ivec2 m[3]` with natural `m[c][r]` access.
+* **HLSL / MSL codegen: C++-compile-checked** (all three `*Target.cpp`
+  always compile into `omegaslc`) but their *source emission* is unverified
+  here — the `--hlsl`/`--msl` flags are `TARGET_*`-gated off on Linux.
+* **D3D12 / Metal buffer writers/readers: written, compile-unverified**
+  (`GED3D12.cpp` / `GEMetal.mm` do not build off-platform). The Vulkan
+  writer/reader compiles and links.
+* Layout parity is asserted on any host by `gte/tests/std140_layout_test.cpp`
+  (int/uint matrix `matrixDims` + std140 struct strides equal the same-shape
+  float). Tests: `int_matrix.omegasl`, `invalid_int_matrix_op.omegasl`,
+  `invalid_int_matrix_ctor.omegasl`.
+
+**Follow-up (open):** a GPU round-trip test for integers (`writeInt4x4` →
+compute shader → `getInt4x4`), mirroring the float `matrix_ops_test`. Not
+blocking — the byte layout is provably identical to the float path (asserted
+by the std140 parity test) and the float GPU round-trip already exercises the
+binding path — but a dedicated integer round-trip would confirm in-shader
+`ivec4 m[C]` indexing semantics on real hardware.
 
 ### 12.3 Next phase — `column_major` source qualifier on HLSL struct fields
 

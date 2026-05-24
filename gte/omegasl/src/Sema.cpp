@@ -60,6 +60,25 @@ namespace omegasl {
         ast::builtins::float4x2_type,
         ast::builtins::float4x3_type,
         ast::builtins::float4x4_type,
+        /// §12.2 follow-up — integer matrices (array-lowered per backend).
+        ast::builtins::int2x2_type,
+        ast::builtins::int2x3_type,
+        ast::builtins::int2x4_type,
+        ast::builtins::int3x2_type,
+        ast::builtins::int3x3_type,
+        ast::builtins::int3x4_type,
+        ast::builtins::int4x2_type,
+        ast::builtins::int4x3_type,
+        ast::builtins::int4x4_type,
+        ast::builtins::uint2x2_type,
+        ast::builtins::uint2x3_type,
+        ast::builtins::uint2x4_type,
+        ast::builtins::uint3x2_type,
+        ast::builtins::uint3x3_type,
+        ast::builtins::uint3x4_type,
+        ast::builtins::uint4x2_type,
+        ast::builtins::uint4x3_type,
+        ast::builtins::uint4x4_type,
 
         ast::builtins::buffer_type,
         ast::builtins::uniform_type,
@@ -487,6 +506,35 @@ namespace omegasl {
         return t == ast::builtins::float2_type || t == ast::builtins::float3_type || t == ast::builtins::float4_type;
     }
 
+    /// §12.2 follow-up — integer matrix types. These are deliberately kept
+    /// *out* of `isMatrixType` (which gates the float-only matrix algebra and
+    /// the HLSL §12.1 column-major index swap): integer matrices lower to an
+    /// array of column-vectors and use natural array indexing on every
+    /// backend, so they must never hit the float-matrix rewrite paths.
+    static bool isIntegerMatrixType(ast::Type *t) {
+        using namespace ast::builtins;
+        return t == int2x2_type || t == int2x3_type || t == int2x4_type ||
+               t == int3x2_type || t == int3x3_type || t == int3x4_type ||
+               t == int4x2_type || t == int4x3_type || t == int4x4_type ||
+               t == uint2x2_type || t == uint2x3_type || t == uint2x4_type ||
+               t == uint3x2_type || t == uint3x3_type || t == uint3x4_type ||
+               t == uint4x2_type || t == uint4x3_type || t == uint4x4_type;
+    }
+
+    /// Column vector returned by `m[col]` on an integer matrix: an `intR` /
+    /// `uintR` vector where R is the matrix's row count. Returns nullptr for
+    /// non-integer-matrix types.
+    static ast::Type *integerMatrixColumnVector(ast::Type *t) {
+        using namespace ast::builtins;
+        if(t == int2x2_type || t == int3x2_type || t == int4x2_type) return int2_type;
+        if(t == int2x3_type || t == int3x3_type || t == int4x3_type) return int3_type;
+        if(t == int2x4_type || t == int3x4_type || t == int4x4_type) return int4_type;
+        if(t == uint2x2_type || t == uint3x2_type || t == uint4x2_type) return uint2_type;
+        if(t == uint2x3_type || t == uint3x3_type || t == uint4x3_type) return uint3_type;
+        if(t == uint2x4_type || t == uint3x4_type || t == uint4x4_type) return uint4_type;
+        return nullptr;
+    }
+
     /// Unwrap a prefix `-` on a numeric literal so `-5` is treated as a
     /// literal for coercion purposes. ConstFold runs after Sema, so at
     /// this point `-5` is still a UnaryOpExpr(LITERAL_EXPR).
@@ -872,6 +920,27 @@ namespace omegasl {
             _expr->lhs->resolvedType = lhs_res;
             _expr->rhs->resolvedType = rhs_res;
 
+            /// §12.2 follow-up — no operation is defined on a *whole* integer
+            /// matrix. Algebra (`*`, `+`, …) has no backend support; equality
+            /// and whole-matrix assignment would require array ops that the
+            /// C-array lowering can't express portably (MSL/HLSL don't assign
+            /// raw arrays). Indexing first (`m[col]`, `m[col][row]`) yields a
+            /// vector / scalar that flows through normally, so only operands
+            /// that are still matrix-typed reach here.
+            {
+                auto lTy = resolveTypeWithExpr(lhs_res);
+                auto rTy = resolveTypeWithExpr(rhs_res);
+                if((lTy && isIntegerMatrixType(lTy)) || (rTy && isIntegerMatrixType(rTy))){
+                    auto e = std::make_unique<TypeError>(
+                        "Integer matrices support indexing and storage only; no "
+                        "operator is defined on a whole integer matrix. Index a "
+                        "column or element first (e.g. `m[col]`, `m[col][row]`).");
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+            }
+
             if(!rhs_res->compare(lhs_res)){
                 auto lhsTy = resolveTypeWithExpr(lhs_res);
                 auto rhsTy = resolveTypeWithExpr(rhs_res);
@@ -1090,6 +1159,21 @@ namespace omegasl {
                 if(_t == ast::builtins::float3x2_type || _t == ast::builtins::float4x2_type) return ast::TypeExpr::Create(ast::builtins::float2_type);
                 if(_t == ast::builtins::float4x3_type) return ast::TypeExpr::Create(ast::builtins::float3_type);
                 return ast::TypeExpr::Create(ast::builtins::float4_type); // fallback
+            }
+
+            /// §12.2 follow-up — integer matrix column access. The lowering
+            /// is an array of column vectors, so `m[col]` is a plain array
+            /// index that yields the `intR` / `uintR` column. Same int/uint
+            /// index-type rule as the float-matrix path above.
+            if(isIntegerMatrixType(_t)){
+                auto idxT = resolveTypeWithExpr(idx_expr_res);
+                if(idxT != ast::builtins::uint_type && idxT != ast::builtins::int_type){
+                    auto e = std::make_unique<TypeError>("Matrix index must be an int or uint type.");
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+                return ast::TypeExpr::Create(integerMatrixColumnVector(_t));
             }
 
             if(_t != ast::builtins::buffer_type){

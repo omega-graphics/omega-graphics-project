@@ -32,6 +32,25 @@ namespace omegasl::ast {
         Type *float3x4_type;
         Type *float4x2_type;
         Type *float4x3_type;
+        /// §12.2 follow-up — integer matrices (array-lowered per backend).
+        Type *int2x2_type;
+        Type *int3x3_type;
+        Type *int4x4_type;
+        Type *int2x3_type;
+        Type *int2x4_type;
+        Type *int3x2_type;
+        Type *int3x4_type;
+        Type *int4x2_type;
+        Type *int4x3_type;
+        Type *uint2x2_type;
+        Type *uint3x3_type;
+        Type *uint4x4_type;
+        Type *uint2x3_type;
+        Type *uint2x4_type;
+        Type *uint3x2_type;
+        Type *uint3x4_type;
+        Type *uint4x2_type;
+        Type *uint4x3_type;
 
         Type *uint_type;
         Type *uint2_type;
@@ -161,6 +180,25 @@ namespace omegasl::ast {
                 float4x2_type = new Type{KW_TY_FLOAT4X2,global_scope};
                 float4x3_type = new Type{KW_TY_FLOAT4X3,global_scope};
                 float4x4_type = new Type{KW_TY_FLOAT4X4,global_scope};
+                /// §12.2 follow-up — integer matrices (array-lowered).
+                int2x2_type = new Type{KW_TY_INT2X2,global_scope};
+                int2x3_type = new Type{KW_TY_INT2X3,global_scope};
+                int2x4_type = new Type{KW_TY_INT2X4,global_scope};
+                int3x2_type = new Type{KW_TY_INT3X2,global_scope};
+                int3x3_type = new Type{KW_TY_INT3X3,global_scope};
+                int3x4_type = new Type{KW_TY_INT3X4,global_scope};
+                int4x2_type = new Type{KW_TY_INT4X2,global_scope};
+                int4x3_type = new Type{KW_TY_INT4X3,global_scope};
+                int4x4_type = new Type{KW_TY_INT4X4,global_scope};
+                uint2x2_type = new Type{KW_TY_UINT2X2,global_scope};
+                uint2x3_type = new Type{KW_TY_UINT2X3,global_scope};
+                uint2x4_type = new Type{KW_TY_UINT2X4,global_scope};
+                uint3x2_type = new Type{KW_TY_UINT3X2,global_scope};
+                uint3x3_type = new Type{KW_TY_UINT3X3,global_scope};
+                uint3x4_type = new Type{KW_TY_UINT3X4,global_scope};
+                uint4x2_type = new Type{KW_TY_UINT4X2,global_scope};
+                uint4x3_type = new Type{KW_TY_UINT4X3,global_scope};
+                uint4x4_type = new Type{KW_TY_UINT4X4,global_scope};
 
                 uint_type = new Type{KW_TY_UINT,global_scope};
                 uint2_type = new Type{KW_TY_UINT2,global_scope};
@@ -392,6 +430,25 @@ namespace omegasl::ast {
                 delete float4x2_type;
                 delete float4x3_type;
                 delete float4x4_type;
+                /// §12.2 follow-up — integer matrices.
+                delete int2x2_type;
+                delete int2x3_type;
+                delete int2x4_type;
+                delete int3x2_type;
+                delete int3x3_type;
+                delete int3x4_type;
+                delete int4x2_type;
+                delete int4x3_type;
+                delete int4x4_type;
+                delete uint2x2_type;
+                delete uint2x3_type;
+                delete uint2x4_type;
+                delete uint3x2_type;
+                delete uint3x3_type;
+                delete uint3x4_type;
+                delete uint4x2_type;
+                delete uint4x3_type;
+                delete uint4x4_type;
                 delete uint_type;
                 delete uint2_type;
                 delete uint3_type;

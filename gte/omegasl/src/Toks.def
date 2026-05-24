@@ -124,6 +124,19 @@ namespace omegasl {
 #define KW_TY_INT2 KW_TY("int2")
 #define KW_TY_INT3 KW_TY("int3")
 #define KW_TY_INT4 KW_TY("int4")
+/// §12.2 follow-up — integer matrix types. No backend has a native integer
+/// matrix (GLSL `mat`/`dmat` and MSL `metal::matrix` are float/half only;
+/// only HLSL has `int4x4`), so OmegaSL lowers `intCxR` uniformly to an array
+/// of C integer column-vectors (`int4 m[C]` / `ivec4 m[C]`) on every backend.
+#define KW_TY_INT2X2 KW_TY("int2x2")
+#define KW_TY_INT3X3 KW_TY("int3x3")
+#define KW_TY_INT4X4 KW_TY("int4x4")
+#define KW_TY_INT2X3 KW_TY("int2x3")
+#define KW_TY_INT2X4 KW_TY("int2x4")
+#define KW_TY_INT3X2 KW_TY("int3x2")
+#define KW_TY_INT3X4 KW_TY("int3x4")
+#define KW_TY_INT4X2 KW_TY("int4x2")
+#define KW_TY_INT4X3 KW_TY("int4x3")
 #define KW_TY_FLOAT KW_TY("float")
 #define KW_TY_FLOAT2 KW_TY("float2")
 #define KW_TY_FLOAT3 KW_TY("float3")
@@ -145,6 +158,17 @@ namespace omegasl {
 #define KW_TY_UINT2 KW_TY("uint2")
 #define KW_TY_UINT3 KW_TY("uint3")
 #define KW_TY_UINT4 KW_TY("uint4")
+/// §12.2 follow-up — unsigned-integer matrix types. Same uniform
+/// array-of-column-vectors lowering as the signed `intCxR` family above.
+#define KW_TY_UINT2X2 KW_TY("uint2x2")
+#define KW_TY_UINT3X3 KW_TY("uint3x3")
+#define KW_TY_UINT4X4 KW_TY("uint4x4")
+#define KW_TY_UINT2X3 KW_TY("uint2x3")
+#define KW_TY_UINT2X4 KW_TY("uint2x4")
+#define KW_TY_UINT3X2 KW_TY("uint3x2")
+#define KW_TY_UINT3X4 KW_TY("uint3x4")
+#define KW_TY_UINT4X2 KW_TY("uint4x2")
+#define KW_TY_UINT4X3 KW_TY("uint4x3")
 
 /// §4.1 16-bit numeric types. Backed by OMEGASL_FEATURE_BIT_FLOAT16
 /// (for `half`) — usage from a shader body trips the bit so the runtime

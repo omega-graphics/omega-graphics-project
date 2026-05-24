@@ -751,6 +751,29 @@ _NAMESPACE_BEGIN_
             blocks.push_back(DataBlock {matrixDataTypeFor<4,3>(), encodeFMatrix<4,3>(m, layoutStd)});
         }
 
+        /// §12.2 follow-up — integer / unsigned matrix writers. Same
+        /// column-padding path as the float writers (`encodeMatrix` is
+        /// element-type-generic); the byte block is tagged with the int/uint
+        /// matrix enum so `sendToBuffer` recovers the right stride.
+        void writeInt2x2(IMatrix<2,2> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<2,2>(), encodeMatrix<int,2,2>(m, layoutStd)}); }
+        void writeInt3x3(IMatrix<3,3> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<3,3>(), encodeMatrix<int,3,3>(m, layoutStd)}); }
+        void writeInt4x4(IMatrix<4,4> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<4,4>(), encodeMatrix<int,4,4>(m, layoutStd)}); }
+        void writeInt2x3(IMatrix<2,3> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<2,3>(), encodeMatrix<int,2,3>(m, layoutStd)}); }
+        void writeInt2x4(IMatrix<2,4> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<2,4>(), encodeMatrix<int,2,4>(m, layoutStd)}); }
+        void writeInt3x2(IMatrix<3,2> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<3,2>(), encodeMatrix<int,3,2>(m, layoutStd)}); }
+        void writeInt3x4(IMatrix<3,4> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<3,4>(), encodeMatrix<int,3,4>(m, layoutStd)}); }
+        void writeInt4x2(IMatrix<4,2> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<4,2>(), encodeMatrix<int,4,2>(m, layoutStd)}); }
+        void writeInt4x3(IMatrix<4,3> &m) override { blocks.push_back(DataBlock {intMatrixDataTypeFor<4,3>(), encodeMatrix<int,4,3>(m, layoutStd)}); }
+        void writeUint2x2(UMatrix<2,2> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<2,2>(), encodeMatrix<unsigned,2,2>(m, layoutStd)}); }
+        void writeUint3x3(UMatrix<3,3> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<3,3>(), encodeMatrix<unsigned,3,3>(m, layoutStd)}); }
+        void writeUint4x4(UMatrix<4,4> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<4,4>(), encodeMatrix<unsigned,4,4>(m, layoutStd)}); }
+        void writeUint2x3(UMatrix<2,3> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<2,3>(), encodeMatrix<unsigned,2,3>(m, layoutStd)}); }
+        void writeUint2x4(UMatrix<2,4> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<2,4>(), encodeMatrix<unsigned,2,4>(m, layoutStd)}); }
+        void writeUint3x2(UMatrix<3,2> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<3,2>(), encodeMatrix<unsigned,3,2>(m, layoutStd)}); }
+        void writeUint3x4(UMatrix<3,4> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<3,4>(), encodeMatrix<unsigned,3,4>(m, layoutStd)}); }
+        void writeUint4x2(UMatrix<4,2> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<4,2>(), encodeMatrix<unsigned,4,2>(m, layoutStd)}); }
+        void writeUint4x3(UMatrix<4,3> &m) override { blocks.push_back(DataBlock {uintMatrixDataTypeFor<4,3>(), encodeMatrix<unsigned,4,3>(m, layoutStd)}); }
+
         void sendToBuffer() override {
             assert(!inStruct && "Struct record must be finished before sending object to buffer");
             assert(mem_map != nullptr && "Output buffer must be mapped before sending data");
@@ -856,21 +879,40 @@ _NAMESPACE_BEGIN_
         /// Matrix readers: read `cols * matrixColumnStride(rows, layoutStd)`
         /// bytes from the mapped buffer, dropping per-column padding when
         /// copying back into the host's tightly-packed `FMatrix`.
-        template<unsigned C, unsigned R>
-        void getMatrixImpl(FMatrix<C, R> &m, omegasl_data_type tag){
-            decodeFMatrix<C, R>(mem_map + currentOffset, m, layoutStd);
+        template<class T, unsigned C, unsigned R>
+        void getMatrixImpl(Matrix<T, C, R> &m, omegasl_data_type tag){
+            decodeMatrix<T, C, R>(mem_map + currentOffset, m, layoutStd);
             currentOffset += matrixSize(C, R, layoutStd);
             readTypes.push_back(tag);
         }
-        void getFloat2x2(FMatrix<2,2> &m) override { getMatrixImpl<2,2>(m, OMEGASL_FLOAT2x2); }
-        void getFloat3x3(FMatrix<3,3> &m) override { getMatrixImpl<3,3>(m, OMEGASL_FLOAT3x3); }
-        void getFloat4x4(FMatrix<4,4> &m) override { getMatrixImpl<4,4>(m, OMEGASL_FLOAT4x4); }
-        void getFloat2x3(FMatrix<2,3> &m) override { getMatrixImpl<2,3>(m, OMEGASL_FLOAT2x3); }
-        void getFloat2x4(FMatrix<2,4> &m) override { getMatrixImpl<2,4>(m, OMEGASL_FLOAT2x4); }
-        void getFloat3x2(FMatrix<3,2> &m) override { getMatrixImpl<3,2>(m, OMEGASL_FLOAT3x2); }
-        void getFloat3x4(FMatrix<3,4> &m) override { getMatrixImpl<3,4>(m, OMEGASL_FLOAT3x4); }
-        void getFloat4x2(FMatrix<4,2> &m) override { getMatrixImpl<4,2>(m, OMEGASL_FLOAT4x2); }
-        void getFloat4x3(FMatrix<4,3> &m) override { getMatrixImpl<4,3>(m, OMEGASL_FLOAT4x3); }
+        void getFloat2x2(FMatrix<2,2> &m) override { getMatrixImpl<float,2,2>(m, OMEGASL_FLOAT2x2); }
+        void getFloat3x3(FMatrix<3,3> &m) override { getMatrixImpl<float,3,3>(m, OMEGASL_FLOAT3x3); }
+        void getFloat4x4(FMatrix<4,4> &m) override { getMatrixImpl<float,4,4>(m, OMEGASL_FLOAT4x4); }
+        void getFloat2x3(FMatrix<2,3> &m) override { getMatrixImpl<float,2,3>(m, OMEGASL_FLOAT2x3); }
+        void getFloat2x4(FMatrix<2,4> &m) override { getMatrixImpl<float,2,4>(m, OMEGASL_FLOAT2x4); }
+        void getFloat3x2(FMatrix<3,2> &m) override { getMatrixImpl<float,3,2>(m, OMEGASL_FLOAT3x2); }
+        void getFloat3x4(FMatrix<3,4> &m) override { getMatrixImpl<float,3,4>(m, OMEGASL_FLOAT3x4); }
+        void getFloat4x2(FMatrix<4,2> &m) override { getMatrixImpl<float,4,2>(m, OMEGASL_FLOAT4x2); }
+        void getFloat4x3(FMatrix<4,3> &m) override { getMatrixImpl<float,4,3>(m, OMEGASL_FLOAT4x3); }
+        /// §12.2 follow-up — integer / unsigned matrix readers.
+        void getInt2x2(IMatrix<2,2> &m) override { getMatrixImpl<int,2,2>(m, OMEGASL_INT2x2); }
+        void getInt3x3(IMatrix<3,3> &m) override { getMatrixImpl<int,3,3>(m, OMEGASL_INT3x3); }
+        void getInt4x4(IMatrix<4,4> &m) override { getMatrixImpl<int,4,4>(m, OMEGASL_INT4x4); }
+        void getInt2x3(IMatrix<2,3> &m) override { getMatrixImpl<int,2,3>(m, OMEGASL_INT2x3); }
+        void getInt2x4(IMatrix<2,4> &m) override { getMatrixImpl<int,2,4>(m, OMEGASL_INT2x4); }
+        void getInt3x2(IMatrix<3,2> &m) override { getMatrixImpl<int,3,2>(m, OMEGASL_INT3x2); }
+        void getInt3x4(IMatrix<3,4> &m) override { getMatrixImpl<int,3,4>(m, OMEGASL_INT3x4); }
+        void getInt4x2(IMatrix<4,2> &m) override { getMatrixImpl<int,4,2>(m, OMEGASL_INT4x2); }
+        void getInt4x3(IMatrix<4,3> &m) override { getMatrixImpl<int,4,3>(m, OMEGASL_INT4x3); }
+        void getUint2x2(UMatrix<2,2> &m) override { getMatrixImpl<unsigned,2,2>(m, OMEGASL_UINT2x2); }
+        void getUint3x3(UMatrix<3,3> &m) override { getMatrixImpl<unsigned,3,3>(m, OMEGASL_UINT3x3); }
+        void getUint4x4(UMatrix<4,4> &m) override { getMatrixImpl<unsigned,4,4>(m, OMEGASL_UINT4x4); }
+        void getUint2x3(UMatrix<2,3> &m) override { getMatrixImpl<unsigned,2,3>(m, OMEGASL_UINT2x3); }
+        void getUint2x4(UMatrix<2,4> &m) override { getMatrixImpl<unsigned,2,4>(m, OMEGASL_UINT2x4); }
+        void getUint3x2(UMatrix<3,2> &m) override { getMatrixImpl<unsigned,3,2>(m, OMEGASL_UINT3x2); }
+        void getUint3x4(UMatrix<3,4> &m) override { getMatrixImpl<unsigned,3,4>(m, OMEGASL_UINT3x4); }
+        void getUint4x2(UMatrix<4,2> &m) override { getMatrixImpl<unsigned,4,2>(m, OMEGASL_UINT4x2); }
+        void getUint4x3(UMatrix<4,3> &m) override { getMatrixImpl<unsigned,4,3>(m, OMEGASL_UINT4x3); }
 
         void reset() override {
             vmaUnmapMemory(_buffer->engine->memAllocator,_buffer->alloc);

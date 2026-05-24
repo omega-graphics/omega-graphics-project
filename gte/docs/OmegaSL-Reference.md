@@ -161,6 +161,35 @@ storage interpretation explicitly via `D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR`
 on the runtime path and `/Zpc` on the offline `dxc` path so a future
 default-flag change cannot silently break the layout.
 
+#### Integer matrix types (`intCxR` / `uintCxR`)
+
+`intCxR` and `uintCxR` exist for the same `C, R ∈ {2, 3, 4}` shapes as the
+float family. They are **not** native matrices: no backend has an integer
+matrix type (GLSL `mat`/`dmat` and MSL `metal::matrix` are float/half only;
+HLSL's `int4x4` is deliberately not used), so OmegaSL lowers an `intCxR` to
+an **array of C integer column vectors** — `int4 m[C]` / `ivec4 m[C]` —
+identically on every backend. Column-first indexing is unchanged:
+`m[col]` is the `intR`/`uintR` column, `m[col][row]` the scalar element.
+
+Integer matrices support **declaration, indexing (column / element read and
+write), and buffer upload/download only**:
+
+* `int4x4 m; m[0] = int4(...); m[1][2] = 7;` — column and element writes are
+  allowed (the single-level column write that float matrices reject *is*
+  permitted here, since the array lowering makes it a plain array
+  assignment).
+* No operator acts on a *whole* integer matrix — `m * v`, `m + m`, `m == m`,
+  and whole-matrix assignment `a = b` are **rejected** (no backend has
+  integer matrix algebra, and array ops aren't portable). Index a column or
+  element first.
+* Inline construction `int4x4(...)` is **rejected** — declare the variable
+  and assign each column.
+
+Upload with `GEBufferWriter::writeInt<C>x<R>` / `writeUint<C>x<R>` and read
+back with the matching `getInt<C>x<R>` / `getUint<C>x<R>`. The byte layout
+is identical to the same-shape float matrix (the same std430 `Cx3` column
+padding applies).
+
 ### Resource types
 
 | Type | Description |
@@ -771,7 +800,7 @@ A snapshot of what is implemented, what is partial, and what is intentionally ab
 ### Working
 
 - **Preprocessor** — `#define`, `#ifdef`, `#ifndef`, `#endif`, `#include` (depth 10).
-- **Scalar / vector / matrix types** — `bool`, `int`, `uint`, `float`; `int2/3/4`, `uint2/3/4`, `float2/3/4`; `float2x2/3x3/4x4`.
+- **Scalar / vector / matrix types** — `bool`, `int`, `uint`, `float`; `int2/3/4`, `uint2/3/4`, `float2/3/4`; `floatCxR` and `intCxR` / `uintCxR` (`C,R ∈ {2,3,4}`; integer matrices are storage/indexing-only, lowered to column-vector arrays — see Matrix types).
 - **Swizzles and index access** — `.x/.y/.z/.w`, `.xy`, `.xyz`, `.xyzw`, `v[i]`.
 - **Fixed-size arrays** — supported in variable declarations (`float arr[4];`).
 - **Structs** — plain data structs and `internal` structs (with attribute fields) for inter-stage data.

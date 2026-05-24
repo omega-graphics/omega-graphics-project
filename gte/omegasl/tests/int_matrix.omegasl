@@ -1,0 +1,38 @@
+/// §12.2 follow-up — integer / unsigned-integer matrix types.
+///
+/// No backend has a native integer matrix (GLSL `mat`/`dmat` and MSL
+/// `metal::matrix` are float/half only; HLSL has `int4x4` but we do not use
+/// it), so OmegaSL lowers `intCxR` / `uintCxR` uniformly to an array of C
+/// integer column vectors (`int4 m[C]` / `ivec4 m[C]`) on every backend.
+/// Column-major indexing `m[col][row]` is natural array indexing — no HLSL
+/// §12.1 row-major swap. Supports declaration, indexing (read + element /
+/// column write) and buffer round-trip only; matrix algebra and inline
+/// construction are rejected (see invalid_int_matrix.omegasl).
+
+struct IMatrixData {
+    int4x4 transform;   // 4 columns × 4 rows -> ivec4 m[4]
+    uint3x3 mask;       // 3 columns × 3 rows -> uvec3 m[3]
+    int3x2 basis;       // 3 columns × 2 rows -> ivec2 m[3]
+    int4 tint;
+};
+
+buffer<IMatrixData> src : 0;
+buffer<IMatrixData> dst : 1;
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void copy_imatrices(uint3 tid : GlobalThreadID){
+    /// Local integer matrix declaration.
+    int4x4 tmp;
+
+    /// Single-level column read + write (natural array indexing).
+    tmp[0] = src[0].transform[0];
+    dst[0].transform[1] = tmp[0];
+
+    /// Two-level element reads / writes across square and non-square shapes.
+    dst[0].transform[3][3] = src[0].transform[3][3];
+    dst[0].mask[1][2] = src[0].mask[1][2];
+    dst[0].basis[2][1] = src[0].basis[2][1];
+
+    dst[0].tint = src[0].tint;
+}

@@ -49,6 +49,22 @@ int main() {
     // sub-16 tail is involved — proves the two standards actually diverge.
     assert(matrixSize(2, 2, Std::Std140) > matrixSize(2, 2, Std::Std430));
 
+    // --- §12.2 follow-up: integer / unsigned matrices share the float layout
+    //     (int/uint/float are all 4-byte scalars), so matrixDims and every
+    //     stride must match the same-shape float matrix exactly. ---
+    assert(matrixDims(OMEGASL_INT4x4) == std::make_pair(4u, 4u));
+    assert(matrixDims(OMEGASL_UINT3x2) == std::make_pair(3u, 2u));
+    assert(matrixDims(OMEGASL_INT2x3) == std::make_pair(2u, 3u));
+    assert(isMatrixDataType(OMEGASL_INT4x4) && isMatrixDataType(OMEGASL_UINT2x2));
+
+    assert(std140StructStride({OMEGASL_INT4x4}) == std140StructStride({OMEGASL_FLOAT4x4}));
+    assert(std140StructStride({OMEGASL_UINT3x2}) == std140StructStride({OMEGASL_FLOAT3x2}));
+    assert(std140StructStride({OMEGASL_INT, OMEGASL_INT2x2})
+           == std140StructStride({OMEGASL_FLOAT, OMEGASL_FLOAT2x2}));
+    // Mixed int/float struct stride matches an all-float struct of the same shapes.
+    assert(std140StructStride({OMEGASL_INT4x4, OMEGASL_UINT4, OMEGASL_INT})
+           == std140StructStride({OMEGASL_FLOAT4x4, OMEGASL_FLOAT4, OMEGASL_FLOAT}));
+
     std::printf("std140 layout test passed\n");
     return 0;
 }

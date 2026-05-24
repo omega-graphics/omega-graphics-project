@@ -17,6 +17,13 @@ namespace OmegaGTE {
     template<class, unsigned, unsigned> class Matrix;
     template<unsigned c, unsigned r>
     using FMatrix = Matrix<float, c, r>;
+    /// §12.2 follow-up — integer matrix aliases, mirroring GTEMath.h. Their
+    /// byte layout is identical to the same-shape `FMatrix` (all three scalar
+    /// families are 4 bytes), so they share the encode/decode helpers below.
+    template<unsigned c, unsigned r>
+    using IMatrix = Matrix<int, c, r>;
+    template<unsigned c, unsigned r>
+    using UMatrix = Matrix<unsigned int, c, r>;
 
     struct DataBlock {
         omegasl_data_type type;
@@ -88,6 +95,16 @@ namespace OmegaGTE {
             case OMEGASL_FLOAT4x2: return {4u, 2u};
             case OMEGASL_FLOAT4x3: return {4u, 3u};
             case OMEGASL_FLOAT4x4: return {4u, 4u};
+            /// §12.2 follow-up — integer matrices share the float layout.
+            case OMEGASL_INT2x2: case OMEGASL_UINT2x2: return {2u, 2u};
+            case OMEGASL_INT2x3: case OMEGASL_UINT2x3: return {2u, 3u};
+            case OMEGASL_INT2x4: case OMEGASL_UINT2x4: return {2u, 4u};
+            case OMEGASL_INT3x2: case OMEGASL_UINT3x2: return {3u, 2u};
+            case OMEGASL_INT3x3: case OMEGASL_UINT3x3: return {3u, 3u};
+            case OMEGASL_INT3x4: case OMEGASL_UINT3x4: return {3u, 4u};
+            case OMEGASL_INT4x2: case OMEGASL_UINT4x2: return {4u, 2u};
+            case OMEGASL_INT4x3: case OMEGASL_UINT4x3: return {4u, 3u};
+            case OMEGASL_INT4x4: case OMEGASL_UINT4x4: return {4u, 4u};
             default: return {0u, 0u};
         }
     }
@@ -129,49 +146,65 @@ namespace OmegaGTE {
         }
     }
 
-    /// Pack an `FMatrix<C, R>` into a freshly heap-allocated byte block
-    /// (column-major) for the given standard. Caller owns the returned
-    /// pointer and must `delete[]` it after the `sendToBuffer` memcpy.
-    /// Backends share this so the column-padding rule lives in one place.
-    template<unsigned C, unsigned R>
-    unsigned char *encodeFMatrix(FMatrix<C, R> &m, BufferLayoutStd std) {
+    /// Pack a `Matrix<T, C, R>` into a freshly heap-allocated byte block
+    /// (column-major) for the given standard. `T` must be a 4-byte scalar
+    /// (`float` / `int` / `unsigned`) — the column stride / size helpers all
+    /// assume a 4-byte element, which is what makes the int/uint matrix bytes
+    /// identical to the same-shape float matrix (§12.2 follow-up). Caller owns
+    /// the returned pointer and must `delete[]` it after the `sendToBuffer`
+    /// memcpy. Backends share this so the column-padding rule lives in one
+    /// place.
+    template<class T, unsigned C, unsigned R>
+    unsigned char *encodeMatrix(Matrix<T, C, R> &m, BufferLayoutStd std) {
+        static_assert(sizeof(T) == 4, "matrix element must be a 4-byte scalar");
         const std::size_t sz = matrixSize(C, R, std);
         auto *bytes = new unsigned char[sz]{};
         const std::size_t colStride = matrixColumnStride(R, std);
         for (unsigned c = 0; c < C; ++c) {
             auto *col = bytes + c * colStride;
             for (unsigned r = 0; r < R; ++r) {
-                float f = m[c][r];
-                std::memcpy(col + r * sizeof(float), &f, sizeof(float));
+                T v = m[c][r];
+                std::memcpy(col + r * sizeof(T), &v, sizeof(T));
             }
         }
         return bytes;
     }
 
     /// Inverse — read `matrixSize(C, R, std)` bytes from `src` and copy back
-    /// into the host's tightly-packed `FMatrix`, dropping the per-column
-    /// padding when present.
-    template<unsigned C, unsigned R>
-    void decodeFMatrix(const unsigned char *src, FMatrix<C, R> &m, BufferLayoutStd std) {
+    /// into the host's tightly-packed `Matrix<T, C, R>`, dropping the
+    /// per-column padding when present.
+    template<class T, unsigned C, unsigned R>
+    void decodeMatrix(const unsigned char *src, Matrix<T, C, R> &m, BufferLayoutStd std) {
+        static_assert(sizeof(T) == 4, "matrix element must be a 4-byte scalar");
         const std::size_t colStride = matrixColumnStride(R, std);
         for (unsigned c = 0; c < C; ++c) {
             const auto *col = src + c * colStride;
             for (unsigned r = 0; r < R; ++r) {
-                float f;
-                std::memcpy(&f, col + r * sizeof(float), sizeof(float));
-                m[c][r] = f;
+                T v;
+                std::memcpy(&v, col + r * sizeof(T), sizeof(T));
+                m[c][r] = v;
             }
         }
+    }
+
+    /// Float-named wrappers — preserve the pre-§12.2 float call sites verbatim.
+    template<unsigned C, unsigned R>
+    unsigned char *encodeFMatrix(FMatrix<C, R> &m, BufferLayoutStd std) {
+        return encodeMatrix<float, C, R>(m, std);
+    }
+    template<unsigned C, unsigned R>
+    void decodeFMatrix(const unsigned char *src, FMatrix<C, R> &m, BufferLayoutStd std) {
+        decodeMatrix<float, C, R>(src, m, std);
     }
 
     /// std430 wrappers — preserve the pre-§2.4 call sites verbatim.
     template<unsigned C, unsigned R>
     unsigned char *encodeFMatrixToStd430(FMatrix<C, R> &m) {
-        return encodeFMatrix<C, R>(m, BufferLayoutStd::Std430);
+        return encodeMatrix<float, C, R>(m, BufferLayoutStd::Std430);
     }
     template<unsigned C, unsigned R>
     void decodeFMatrixFromStd430(const unsigned char *src, FMatrix<C, R> &m) {
-        decodeFMatrix<C, R>(src, m, BufferLayoutStd::Std430);
+        decodeMatrix<float, C, R>(src, m, BufferLayoutStd::Std430);
     }
 
     /// Non-matrix std140 base alignment / size for a scalar or vector type.
@@ -242,6 +275,36 @@ namespace OmegaGTE {
         else if constexpr (C == 4 && R == 3) return OMEGASL_FLOAT4x3;
         else if constexpr (C == 4 && R == 4) return OMEGASL_FLOAT4x4;
         else return OMEGASL_FLOAT;
+    }
+
+    /// §12.2 follow-up — (C, R) → integer matrix enumerator, mirroring the
+    /// float helper above for the int/uint buffer writers.
+    template<unsigned C, unsigned R>
+    constexpr omegasl_data_type intMatrixDataTypeFor() {
+        if constexpr (C == 2 && R == 2) return OMEGASL_INT2x2;
+        else if constexpr (C == 2 && R == 3) return OMEGASL_INT2x3;
+        else if constexpr (C == 2 && R == 4) return OMEGASL_INT2x4;
+        else if constexpr (C == 3 && R == 2) return OMEGASL_INT3x2;
+        else if constexpr (C == 3 && R == 3) return OMEGASL_INT3x3;
+        else if constexpr (C == 3 && R == 4) return OMEGASL_INT3x4;
+        else if constexpr (C == 4 && R == 2) return OMEGASL_INT4x2;
+        else if constexpr (C == 4 && R == 3) return OMEGASL_INT4x3;
+        else if constexpr (C == 4 && R == 4) return OMEGASL_INT4x4;
+        else return OMEGASL_INT;
+    }
+
+    template<unsigned C, unsigned R>
+    constexpr omegasl_data_type uintMatrixDataTypeFor() {
+        if constexpr (C == 2 && R == 2) return OMEGASL_UINT2x2;
+        else if constexpr (C == 2 && R == 3) return OMEGASL_UINT2x3;
+        else if constexpr (C == 2 && R == 4) return OMEGASL_UINT2x4;
+        else if constexpr (C == 3 && R == 2) return OMEGASL_UINT3x2;
+        else if constexpr (C == 3 && R == 3) return OMEGASL_UINT3x3;
+        else if constexpr (C == 3 && R == 4) return OMEGASL_UINT3x4;
+        else if constexpr (C == 4 && R == 2) return OMEGASL_UINT4x2;
+        else if constexpr (C == 4 && R == 3) return OMEGASL_UINT4x3;
+        else if constexpr (C == 4 && R == 4) return OMEGASL_UINT4x4;
+        else return OMEGASL_UINT;
     }
 }
 

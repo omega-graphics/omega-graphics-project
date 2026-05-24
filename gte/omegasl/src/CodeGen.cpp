@@ -414,6 +414,36 @@ namespace omegasl {
                               typeExpr->pointer, out);
     }
 
+    bool CodeGen::integerMatrixShape(ast::Type *t, bool &isSigned,
+                                     unsigned &cols, unsigned &rows) {
+        using namespace ast::builtins;
+        struct Entry { ast::Type *t; bool s; unsigned c, r; };
+        const Entry table[] = {
+            {int2x2_type, true, 2, 2}, {int2x3_type, true, 2, 3}, {int2x4_type, true, 2, 4},
+            {int3x2_type, true, 3, 2}, {int3x3_type, true, 3, 3}, {int3x4_type, true, 3, 4},
+            {int4x2_type, true, 4, 2}, {int4x3_type, true, 4, 3}, {int4x4_type, true, 4, 4},
+            {uint2x2_type, false, 2, 2}, {uint2x3_type, false, 2, 3}, {uint2x4_type, false, 2, 4},
+            {uint3x2_type, false, 3, 2}, {uint3x3_type, false, 3, 3}, {uint3x4_type, false, 3, 4},
+            {uint4x2_type, false, 4, 2}, {uint4x3_type, false, 4, 3}, {uint4x4_type, false, 4, 4},
+        };
+        for (auto &e : table) {
+            if (t == e.t) { isSigned = e.s; cols = e.c; rows = e.r; return true; }
+        }
+        return false;
+    }
+
+    void CodeGen::writeDeclTypeSuffix(ast::TypeExpr *typeExpr, std::ostream &out) {
+        for (unsigned dim : typeExpr->arrayDims) {
+            out << "[" << dim << "]";
+        }
+        bool isSigned; unsigned cols, rows;
+        if (integerMatrixShape(typeResolver->resolveTypeWithExpr(typeExpr),
+                               isSigned, cols, rows)) {
+            /// `intCxR` is lowered to an array of C column vectors.
+            out << "[" << cols << "]";
+        }
+    }
+
     bool CodeGen::emitInverseCall(ast::CallExpr *call, std::ostream &out) {
         if (call->args.size() != 1) return false;
         if (call->args[0]->resolvedType == nullptr) return false;
@@ -567,9 +597,7 @@ namespace omegasl {
                 /// hook, so the rewrite is symmetric end-to-end.
                 out << " ";
                 target->writeIdentifier(_decl->spec.name, out);
-                for (unsigned dim : _decl->typeExpr->arrayDims) {
-                    out << "[" << dim << "]";
-                }
+                writeDeclTypeSuffix(_decl->typeExpr, out);
                 if (_decl->spec.initializer.has_value()) {
                     out << " = ";
                     generateExpr(_decl->spec.initializer.value());

@@ -1,0 +1,18 @@
+/// §12.2 follow-up: integer matrices have no inline constructor. Their
+/// array-of-column-vectors lowering has no portable rvalue form (HLSL/MSL
+/// cannot construct a raw array as an expression), so `int4x4(...)` is
+/// rejected — declare the variable and assign each column instead.
+
+struct S {
+    int4 v;
+};
+
+buffer<S> b : 0;
+
+[in b, out b]
+compute(x=1,y=1,z=1)
+void bad(uint3 tid : GlobalThreadID){
+    /// expected: TypeError "Integer matrices cannot be constructed inline"
+    int4x4 m = int4x4(b[0].v, b[0].v, b[0].v, b[0].v);
+    b[0].v = m[0];
+}

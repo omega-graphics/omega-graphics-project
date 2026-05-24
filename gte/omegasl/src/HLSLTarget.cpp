@@ -637,6 +637,7 @@ namespace omegasl {
             out << "    " << std::flush;
             cg.writeTypeExpr(f.typeExpr, out);
             out << " " << f.name;
+            cg.writeDeclTypeSuffix(f.typeExpr, out);
             if (f.attributeName.has_value()) {
                 out << ":";
                 if (f.attributeName.value() == ATTRIBUTE_COLOR
@@ -680,9 +681,7 @@ namespace omegasl {
             cg.writeTypeExpr(_var->typeExpr, out);
             out << " ";
             writeIdentifier(_var->spec.name, out);
-            for (unsigned dim : _var->typeExpr->arrayDims) {
-                out << "[" << dim << "]";
-            }
+            cg.writeDeclTypeSuffix(_var->typeExpr, out);
             out << ";" << std::endl;
         }
     }
@@ -1034,6 +1033,18 @@ namespace omegasl {
     }
 
     void HLSLTarget::writeTypeName(ast::Type *_ty, bool pointer, std::ostream &out) {
+        /// §12.2 follow-up — integer matrices lower to an array of column
+        /// vectors (`int4 m[C]`) rather than HLSL's native `int4x4`, so they
+        /// take the same column-major natural indexing as GLSL/MSL and never
+        /// hit the §12.1 row-major swap. Spell the column vector here; the
+        /// declarator site appends `[C]` via `CodeGen::writeDeclTypeSuffix`.
+        {
+            bool isSigned; unsigned cols, rows;
+            if (CodeGen::integerMatrixShape(_ty, isSigned, cols, rows)) {
+                out << (isSigned ? "int" : "uint") << rows;
+                return;
+            }
+        }
         if (_ty == ast::builtins::bool_type) {
             out << "bool";
         } else if (_ty == ast::builtins::bool2_type) {

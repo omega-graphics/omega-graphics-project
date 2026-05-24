@@ -283,6 +283,22 @@ namespace omegasl {
         /// the per-subclass `writeTypeExpr` helpers.
         void writeTypeExpr(ast::TypeExpr *typeExpr, std::ostream &out);
 
+        /// §12.2 follow-up — decompose an integer matrix `Type` into its
+        /// (signedness, columns, rows). Returns false for any non-integer-
+        /// matrix type. Shared so each backend's `writeTypeName` spells the
+        /// column vector (`int4`/`ivec4`/`uint4`/`uvec4`) and the declarator
+        /// suffix below agrees on the column count.
+        static bool integerMatrixShape(ast::Type *t, bool &isSigned,
+                                       unsigned &cols, unsigned &rows);
+
+        /// §12.2 follow-up — emit the trailing declarator brackets for a
+        /// declaration: first any explicit `arrayDims`, then the integer-
+        /// matrix column count (`int4x4` lowers to `int4 name[4]`). Float
+        /// matrices and scalars/vectors emit nothing extra, so existing
+        /// output is byte-identical. Call right after the declared name at
+        /// every declarator site (struct field, local, threadgroup).
+        void writeDeclTypeSuffix(ast::TypeExpr *typeExpr, std::ostream &out);
+
         /// Phase 10: shared user-function emission. The bodies were
         /// identical across the three backends; promoted onto `CodeGen`
         /// alongside `generateDecl`.

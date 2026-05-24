@@ -85,6 +85,29 @@ struct OMEGAGTE_EXPORT GEBufferWriter {
     virtual void writeFloat3x4(FMatrix<3,4> & m) = 0;
     virtual void writeFloat4x2(FMatrix<4,2> & m) = 0;
     virtual void writeFloat4x3(FMatrix<4,3> & m) = 0;
+    /// §12.2 follow-up — integer / unsigned-integer matrix uploads. The byte
+    /// layout is identical to the same-shape `writeFloat<C>x<R>` (int / uint /
+    /// float are all 4-byte scalars), so the column-padding rule is shared.
+    /// In a shader these bind to `intCxR` / `uintCxR`, which lower to an array
+    /// of column vectors (`int4 m[C]`) on every backend.
+    virtual void writeInt2x2(IMatrix<2,2> & m) = 0;
+    virtual void writeInt3x3(IMatrix<3,3> & m) = 0;
+    virtual void writeInt4x4(IMatrix<4,4> & m) = 0;
+    virtual void writeInt2x3(IMatrix<2,3> & m) = 0;
+    virtual void writeInt2x4(IMatrix<2,4> & m) = 0;
+    virtual void writeInt3x2(IMatrix<3,2> & m) = 0;
+    virtual void writeInt3x4(IMatrix<3,4> & m) = 0;
+    virtual void writeInt4x2(IMatrix<4,2> & m) = 0;
+    virtual void writeInt4x3(IMatrix<4,3> & m) = 0;
+    virtual void writeUint2x2(UMatrix<2,2> & m) = 0;
+    virtual void writeUint3x3(UMatrix<3,3> & m) = 0;
+    virtual void writeUint4x4(UMatrix<4,4> & m) = 0;
+    virtual void writeUint2x3(UMatrix<2,3> & m) = 0;
+    virtual void writeUint2x4(UMatrix<2,4> & m) = 0;
+    virtual void writeUint3x2(UMatrix<3,2> & m) = 0;
+    virtual void writeUint3x4(UMatrix<3,4> & m) = 0;
+    virtual void writeUint4x2(UMatrix<4,2> & m) = 0;
+    virtual void writeUint4x3(UMatrix<4,3> & m) = 0;
     virtual void structEnd() = 0;
     virtual void sendToBuffer() = 0;
     virtual void flush() = 0;
@@ -113,6 +136,26 @@ struct OMEGAGTE_EXPORT GEBufferReader {
     virtual void getFloat3x4(FMatrix<3,4> & m) = 0;
     virtual void getFloat4x2(FMatrix<4,2> & m) = 0;
     virtual void getFloat4x3(FMatrix<4,3> & m) = 0;
+    /// §12.2 follow-up — integer / unsigned-integer matrix downloads,
+    /// symmetric with the writer above.
+    virtual void getInt2x2(IMatrix<2,2> & m) = 0;
+    virtual void getInt3x3(IMatrix<3,3> & m) = 0;
+    virtual void getInt4x4(IMatrix<4,4> & m) = 0;
+    virtual void getInt2x3(IMatrix<2,3> & m) = 0;
+    virtual void getInt2x4(IMatrix<2,4> & m) = 0;
+    virtual void getInt3x2(IMatrix<3,2> & m) = 0;
+    virtual void getInt3x4(IMatrix<3,4> & m) = 0;
+    virtual void getInt4x2(IMatrix<4,2> & m) = 0;
+    virtual void getInt4x3(IMatrix<4,3> & m) = 0;
+    virtual void getUint2x2(UMatrix<2,2> & m) = 0;
+    virtual void getUint3x3(UMatrix<3,3> & m) = 0;
+    virtual void getUint4x4(UMatrix<4,4> & m) = 0;
+    virtual void getUint2x3(UMatrix<2,3> & m) = 0;
+    virtual void getUint2x4(UMatrix<2,4> & m) = 0;
+    virtual void getUint3x2(UMatrix<3,2> & m) = 0;
+    virtual void getUint3x4(UMatrix<3,4> & m) = 0;
+    virtual void getUint4x2(UMatrix<4,2> & m) = 0;
+    virtual void getUint4x3(UMatrix<4,3> & m) = 0;
     virtual void structEnd() = 0;
     virtual void reset() = 0;
     static SharedHandle<GEBufferReader> Create();

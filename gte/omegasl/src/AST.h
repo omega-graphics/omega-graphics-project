@@ -115,6 +115,29 @@ namespace omegasl {
             DECLARE_BUILTIN_TYPE(float3x4_type);
             DECLARE_BUILTIN_TYPE(float4x2_type);
             DECLARE_BUILTIN_TYPE(float4x3_type);
+            /// §12.2 follow-up — integer matrix types. Lowered to an array of
+            /// C integer column-vectors (`int4 m[C]` / `ivec4 m[C]`) on every
+            /// backend; no native integer matrix exists on GLSL/MSL. Support
+            /// declaration / indexing / buffer round-trip only — matrix
+            /// algebra and inline construction are rejected in Sema.
+            DECLARE_BUILTIN_TYPE(int2x2_type);
+            DECLARE_BUILTIN_TYPE(int3x3_type);
+            DECLARE_BUILTIN_TYPE(int4x4_type);
+            DECLARE_BUILTIN_TYPE(int2x3_type);
+            DECLARE_BUILTIN_TYPE(int2x4_type);
+            DECLARE_BUILTIN_TYPE(int3x2_type);
+            DECLARE_BUILTIN_TYPE(int3x4_type);
+            DECLARE_BUILTIN_TYPE(int4x2_type);
+            DECLARE_BUILTIN_TYPE(int4x3_type);
+            DECLARE_BUILTIN_TYPE(uint2x2_type);
+            DECLARE_BUILTIN_TYPE(uint3x3_type);
+            DECLARE_BUILTIN_TYPE(uint4x4_type);
+            DECLARE_BUILTIN_TYPE(uint2x3_type);
+            DECLARE_BUILTIN_TYPE(uint2x4_type);
+            DECLARE_BUILTIN_TYPE(uint3x2_type);
+            DECLARE_BUILTIN_TYPE(uint3x4_type);
+            DECLARE_BUILTIN_TYPE(uint4x2_type);
+            DECLARE_BUILTIN_TYPE(uint4x3_type);
 
             DECLARE_BUILTIN_TYPE(buffer_type);
             /// §2.4 constant / uniform buffer (read-only, value-access).

@@ -1974,6 +1974,29 @@ namespace omegasl {
                         n == KW_TY_FLOAT2X2 || n == KW_TY_FLOAT2X3 || n == KW_TY_FLOAT2X4 ||
                         n == KW_TY_FLOAT3X2 || n == KW_TY_FLOAT3X3 || n == KW_TY_FLOAT3X4 ||
                         n == KW_TY_FLOAT4X2 || n == KW_TY_FLOAT4X3 || n == KW_TY_FLOAT4X4;
+                    /// §12.2 follow-up — integer matrices have no inline
+                    /// constructor: their array-of-column-vectors lowering
+                    /// has no portable rvalue form (HLSL/MSL can't construct a
+                    /// raw array as an expression). Reject with a precise
+                    /// diagnostic pointing at the per-column build path.
+                    bool isIntMatrixCtor =
+                        n == KW_TY_INT2X2 || n == KW_TY_INT2X3 || n == KW_TY_INT2X4 ||
+                        n == KW_TY_INT3X2 || n == KW_TY_INT3X3 || n == KW_TY_INT3X4 ||
+                        n == KW_TY_INT4X2 || n == KW_TY_INT4X3 || n == KW_TY_INT4X4 ||
+                        n == KW_TY_UINT2X2 || n == KW_TY_UINT2X3 || n == KW_TY_UINT2X4 ||
+                        n == KW_TY_UINT3X2 || n == KW_TY_UINT3X3 || n == KW_TY_UINT3X4 ||
+                        n == KW_TY_UINT4X2 || n == KW_TY_UINT4X3 || n == KW_TY_UINT4X4;
+
+                    if(isIntMatrixCtor){
+                        auto e = std::make_unique<TypeError>(
+                            "Integer matrices cannot be constructed inline. "
+                            "Declare the variable and assign each column "
+                            "(e.g. `int4x4 m; m[0] = int4(...);`).");
+                        e->loc = _call_expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        delete _call_expr;
+                        return false;
+                    }
 
                     if(isScalarCast){
                         if(_call_expr->args.size() != 1){
