@@ -241,6 +241,26 @@ _NAMESPACE_BEGIN_
         }
     }
 
+    void GEVulkanCommandBuffer::reportBarrierInsideRenderPass(GEVulkanTexture *texture,
+                                                              VkImageLayout oldLayout,
+                                                              VkImageLayout newLayout,
+                                                              const omegasl_shader &shader) const {
+        // Always-on: this is a frontend contract violation, not a tunable. A
+        // texture bound for sampling/storage inside a live render pass needed a
+        // layout transition (oldLayout -> newLayout) that cannot be recorded
+        // there. The fix belongs in the caller: split the render pass (finish +
+        // restart with LoadPreserve) so the transition lands outside it, exactly
+        // as the compositor already does around freshly-written scratch targets.
+        std::cerr << "[GEVulkanCommandBuffer] resource barrier requested inside an active "
+                     "render pass instance — skipping (would violate "
+                     "VUID-vkCmdPipelineBarrier2-pDependencies-02285). image="
+                  << texture->img << " oldLayout=" << oldLayout << " newLayout=" << newLayout
+                  << " shaderType=" << shader.type
+                  << ". The frontend must split the pass before this transition." << std::endl;
+        assert(false && "Texture layout transition requested inside an active render pass; "
+                        "split the render pass before binding this resource.");
+    }
+
     void GEVulkanCommandBuffer::insertResourceBarrierIfNeeded(GEVulkanTexture *texture, unsigned int &resource_id,
                                                               omegasl_shader &shader) {
 
@@ -273,11 +293,26 @@ _NAMESPACE_BEGIN_
                 shaderAccess = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT_KHR;
                 layout = VK_IMAGE_LAYOUT_GENERAL;
             }
-            /// Insert barrier when layout transition is needed or prior shader access exists.
-            /// The layout may differ even without prior shader access — e.g. when the
-            /// texture was used as a render target attachment (GENERAL/COLOR_ATTACHMENT)
-            /// and is now being read as a shader resource (SHADER_READ_ONLY_OPTIMAL).
-            if ((texture->priorShaderAccess2 != 0 && hasPipelineAccess) || texture->layout != layout) {
+            /// Emit a barrier only for a real hazard: a layout transition, or a
+            /// write on either side of the access (RAW / WAR / WAW). A read-after-read
+            /// in the same layout — e.g. the same glyph atlas sampled by several draws
+            /// in one render pass — needs no synchronization, and emitting one here
+            /// would also be illegal: bind-time barriers for draws after the first land
+            /// inside the active render pass instance, which forbids them
+            /// (VUID-vkCmdPipelineBarrier2-pDependencies-02285).
+            /// The layout still differs without prior shader access when the texture was
+            /// a render-target attachment (GENERAL/COLOR_ATTACHMENT) and is now sampled.
+            const bool layoutChanges  = texture->layout != layout;
+            const bool priorWasWrite  = (texture->priorShaderAccess2 & VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT_KHR) != 0;
+            const bool currentIsWrite = ioMode != OMEGASL_SHADER_DESC_IO_IN;
+            if (layoutChanges || ((priorWasWrite || currentIsWrite) && hasPipelineAccess)) {
+                if (isInsideRenderPassInstance()) {
+                    // Contract violation: a real transition cannot be recorded
+                    // inside a live render pass. Scream and skip — leave the
+                    // tracked state truthful (the transition did not happen).
+                    reportBarrierInsideRenderPass(texture, texture->layout, layout, shader);
+                    return;
+                }
                 VkImageMemoryBarrier2KHR imageMemoryBarrier2Khr{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2_KHR};
                 imageMemoryBarrier2Khr.pNext = nullptr;
                 imageMemoryBarrier2Khr.srcAccessMask = texture->priorShaderAccess2 != 0
@@ -333,8 +368,17 @@ _NAMESPACE_BEGIN_
                 shaderAccess = VK_ACCESS_SHADER_WRITE_BIT;
                 layout = VK_IMAGE_LAYOUT_GENERAL;
             }
-            /// Insert barrier when layout transition is needed or prior shader access exists.
-            if ((texture->priorShaderAccess != 0 && hasPipelineAccess) || texture->layout != layout) {
+            /// Read-after-read in the same layout needs no barrier (see the
+            /// Synchronization2 branch above); only a layout transition or a write on
+            /// either side is a real hazard.
+            const bool layoutChanges  = texture->layout != layout;
+            const bool priorWasWrite  = (texture->priorShaderAccess & VK_ACCESS_SHADER_WRITE_BIT) != 0;
+            const bool currentIsWrite = ioMode != OMEGASL_SHADER_DESC_IO_IN;
+            if (layoutChanges || ((priorWasWrite || currentIsWrite) && hasPipelineAccess)) {
+                if (isInsideRenderPassInstance()) {
+                    reportBarrierInsideRenderPass(texture, texture->layout, layout, shader);
+                    return;
+                }
                 VkImageMemoryBarrier imageMemoryBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
                 imageMemoryBarrier.pNext = nullptr;
                 imageMemoryBarrier.srcAccessMask = texture->priorShaderAccess != 0

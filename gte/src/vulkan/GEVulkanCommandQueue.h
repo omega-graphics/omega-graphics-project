@@ -71,6 +71,27 @@ _NAMESPACE_BEGIN_
         void beginRenderPassIfDeferred();
         void bindDescriptorSetsIfPending();
 
+        /// True when a command recorded right now would land INSIDE an active
+        /// render pass instance: the deferred begin has been flushed (first draw
+        /// happened) and the pass has not yet been ended. Resource barriers are
+        /// illegal here (VUID-vkCmdPipelineBarrier2-pDependencies-02285) — the
+        /// frontend must split the pass (finishRenderPass + restart with
+        /// LoadPreserve) before any texture layout transition. Note that a pass
+        /// whose begin is still deferred reports false: barriers issued then are
+        /// recorded before vkCmdBeginRenderPass and are legal.
+        bool isInsideRenderPassInstance() const {
+            return activeRenderPass != VK_NULL_HANDLE && !renderPassBeginDeferred;
+        }
+        /// Loud (always-on) diagnostic + debug assert for the contract violation
+        /// above: a real layout transition was requested for `texture` while a
+        /// render pass instance is live. The barrier is then skipped rather than
+        /// recorded, so we never emit invalid Vulkan; the log points at the
+        /// frontend bug (a pass that should have been split).
+        void reportBarrierInsideRenderPass(GEVulkanTexture *texture,
+                                           VkImageLayout oldLayout,
+                                           VkImageLayout newLayout,
+                                           const omegasl_shader &shader) const;
+
         friend class GEVulkanCommandQueue;
 
         bool inBlitPass = false;

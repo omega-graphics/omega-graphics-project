@@ -1161,6 +1161,18 @@ void GED3D12CommandBuffer::setRenderPipelineState(SharedHandle<GERenderPipelineS
     currentRootSignature = &d3d12_pipeline_state->rootSignatureDesc;
 };
 
+void GED3D12CommandBuffer::reportTransitionInsideRenderPass(const char *resourceKind,
+                                                            D3D12_RESOURCE_STATES fromState,
+                                                            D3D12_RESOURCE_STATES toState) const {
+    std::cerr << "[GED3D12CommandBuffer] " << resourceKind
+              << " state transition requested inside an active render pass scope — skipping "
+                 "(D3D12 forbids transition barriers between BeginRenderPass/EndRenderPass). from=0x"
+              << std::hex << (unsigned)fromState << " to=0x" << (unsigned)toState << std::dec
+              << ". The frontend must reach the required state before the pass begins." << std::endl;
+    assert(false && "D3D12 resource transition requested inside an active render pass; "
+                    "reach the required state before binding this resource in the pass.");
+}
+
 void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GEBuffer> &buffer, unsigned int index) {
     assert((!inComputePass && !inBlitPass) && "Cannot set Resource Const at a Vertex Func when not in render pass");
     auto *d3d12_buffer = (GED3D12Buffer *)buffer.get();
@@ -1173,10 +1185,14 @@ void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GEBuffer> &bu
     }
 
     if (!(d3d12_buffer->currentState & required_state)) {
-        D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            d3d12_buffer->buffer.Get(), d3d12_buffer->currentState, required_state);
-        commandList->ResourceBarrier(1, &barrier);
-        d3d12_buffer->currentState = required_state;
+        if (inRenderPass) {
+            reportTransitionInsideRenderPass("buffer", d3d12_buffer->currentState, required_state);
+        } else {
+            D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                d3d12_buffer->buffer.Get(), d3d12_buffer->currentState, required_state);
+            commandList->ResourceBarrier(1, &barrier);
+            d3d12_buffer->currentState = required_state;
+        }
     }
 
     commandList->SetDescriptorHeaps(1, d3d12_buffer->bufferDescHeap.GetAddressOf());
@@ -1218,10 +1234,14 @@ void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> &t
     }
 
     if (!(d3d12_texture->currentState & required_state)) {
-        D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            d3d12_texture->resource.Get(), d3d12_texture->currentState, required_state);
-        commandList->ResourceBarrier(1, &barrier);
-        d3d12_texture->currentState = required_state;
+        if (inRenderPass) {
+            reportTransitionInsideRenderPass("texture", d3d12_texture->currentState, required_state);
+        } else {
+            D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                d3d12_texture->resource.Get(), d3d12_texture->currentState, required_state);
+            commandList->ResourceBarrier(1, &barrier);
+            d3d12_texture->currentState = required_state;
+        }
     }
 
     D3D12_GPU_DESCRIPTOR_HANDLE cpuDescHandle;
@@ -1273,10 +1293,14 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> &
     }
 
     if (!(d3d12_buffer->currentState & required_state)) {
-        D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            d3d12_buffer->buffer.Get(), d3d12_buffer->currentState, required_state);
-        commandList->ResourceBarrier(1, &barrier);
-        d3d12_buffer->currentState = required_state;
+        if (inRenderPass) {
+            reportTransitionInsideRenderPass("buffer", d3d12_buffer->currentState, required_state);
+        } else {
+            D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                d3d12_buffer->buffer.Get(), d3d12_buffer->currentState, required_state);
+            commandList->ResourceBarrier(1, &barrier);
+            d3d12_buffer->currentState = required_state;
+        }
     }
 
     commandList->SetDescriptorHeaps(1, d3d12_buffer->bufferDescHeap.GetAddressOf());
@@ -1320,10 +1344,14 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> 
     }
 
     if (!(d3d12_texture->currentState & required_state)) {
-        D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            d3d12_texture->resource.Get(), d3d12_texture->currentState, required_state);
-        commandList->ResourceBarrier(1, &barrier);
-        d3d12_texture->currentState = required_state;
+        if (inRenderPass) {
+            reportTransitionInsideRenderPass("texture", d3d12_texture->currentState, required_state);
+        } else {
+            D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                d3d12_texture->resource.Get(), d3d12_texture->currentState, required_state);
+            commandList->ResourceBarrier(1, &barrier);
+            d3d12_texture->currentState = required_state;
+        }
     }
 
     D3D12_GPU_DESCRIPTOR_HANDLE cpuDescHandle{};

@@ -50,6 +50,16 @@ _NAMESPACE_BEGIN_
        /// set, so both types can be visible to a single draw / dispatch.
        void rebindDescriptorHeaps();
        D3D12_RESOURCE_STATES getRequiredResourceStateForResourceID(unsigned & id,omegasl_shader &shader);
+       /// Loud (always-on) diagnostic + debug assert: a resource bound for use
+       /// inside a live render pass needed a state transition that D3D12 forbids
+       /// between BeginRenderPass/EndRenderPass (mirrors the Vulkan backend's
+       /// VUID-vkCmdPipelineBarrier2-pDependencies-02285 guard). The transition
+       /// is then skipped rather than recorded; the log points at the frontend
+       /// bug — a resource sampled in a pass must reach its required state
+       /// before the pass begins.
+       void reportTransitionInsideRenderPass(const char *resourceKind,
+                                             D3D12_RESOURCE_STATES fromState,
+                                             D3D12_RESOURCE_STATES toState) const;
        /// Combine a runtime swizzle override with the shader layout's
        /// `swizzle_desc` (texture-swizzle proposal §4 precedence rule).
        TextureSwizzle resolveEffectiveSwizzle(const TextureSwizzle & runtime,unsigned id,omegasl_shader &shader);
