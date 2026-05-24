@@ -2326,6 +2326,22 @@ namespace omegasl {
                         return false;
                     }
 
+                    /// Internal structs are shader I/O: their fields are
+                    /// interstage varyings or fragment-output targets, so each
+                    /// must carry a semantic. HLSL matches stages by semantic
+                    /// and Metal by `[[stage_in]]` attribute — neither can
+                    /// express a field with no semantic, so an unattributed
+                    /// field would compile only on the GLSL/Vulkan backend
+                    /// (which auto-assigns `layout(location)` positionally) and
+                    /// be rejected by DirectX/Metal. Require the attribute up
+                    /// front so the rule is uniform across all three backends.
+                    if(isInternal && !f.attributeName.has_value()){
+                        auto e = std::make_unique<InvalidAttribute>(std::string("Field `") + f.name + "` in internal struct `" + _decl->name + "` must have a semantic attribute (e.g. `: Position`, `: Color`, `: TexCoord`). Internal structs are shader I/O; HLSL and Metal require a semantic on every field.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+
                     if(f.attributeName.has_value()){
                         if(!isInternal){
                             auto e = std::make_unique<InvalidAttribute>("Cannot use attributes on fields in public structs"); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));

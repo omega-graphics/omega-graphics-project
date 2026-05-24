@@ -164,6 +164,10 @@ add_omegasl_fail_test(omegasl_invalid_barrier_outside_compute invalid_barrier_ou
 add_omegasl_fail_test(omegasl_invalid_barrier_args           invalid_barrier_args.omegasl)
 # §5.1.0 follow-up — reserved builtin intrinsic name as a user function.
 add_omegasl_fail_test(omegasl_invalid_reserved_name          invalid_reserved_name.omegasl)
+# Internal (shader-I/O) struct fields must carry a semantic attribute — an
+# unattributed field is expressible only on GLSL, so Sema rejects it for all
+# backends.
+add_omegasl_fail_test(omegasl_invalid_internal_unattributed_field invalid_internal_unattributed_field.omegasl)
 
 # =============================================================
 # 4. Golden-file tests for HLSL codegen (DirectX only)

@@ -1,0 +1,35 @@
+/// Negative: a field of an `internal` struct must carry a semantic
+/// attribute. Internal structs are shader I/O — interstage varyings or
+/// fragment-output targets — and HLSL (semantic-based stage matching) and
+/// Metal (`[[stage_in]]` attributes) cannot express a field with no
+/// semantic. Only the GLSL/Vulkan backend, which auto-assigns
+/// `layout(location)` positionally, could compile it, so Sema rejects the
+/// unattributed field up front to keep the rule uniform across all three
+/// backends. `extra` below has no `:` semantic, so this must fail to compile.
+
+struct VertexIn {
+    float4 pos;
+    float4 extra;
+};
+
+struct Raster internal {
+    float4 pos   : Position;
+    float4 color : Color;
+    float4 extra;
+};
+
+buffer<VertexIn> verts : 0;
+
+[in verts]
+vertex Raster passVert(uint vid : VertexID){
+    VertexIn v = verts[vid];
+    Raster r;
+    r.pos   = v.pos;
+    r.color = v.extra;
+    r.extra = v.extra;
+    return r;
+}
+
+fragment float4 passFrag(Raster raster){
+    return raster.color + raster.extra;
+}

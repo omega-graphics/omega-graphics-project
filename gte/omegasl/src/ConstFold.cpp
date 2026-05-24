@@ -115,6 +115,19 @@ namespace omegasl {
     // Recursive expression fold
     // ------------------------------------------------------------------
 
+    /// When a fold collapses `original` into a fresh `folded` literal, carry
+    /// the Sema-stamped `resolvedType` across. Sema runs before const-folding
+    /// (see Parser::run), so the destination-slot type lives on the original
+    /// node; without this, type-aware codegen — e.g. GLSL's 16-bit narrowing
+    /// wrap for `short i = -1;` — loses the slot type and emits an
+    /// unconvertible literal. No-op when nothing folded.
+    static ast::Expr *carryResolvedType(ast::Expr *original, ast::Expr *folded) {
+        if (folded != original && folded->resolvedType == nullptr) {
+            folded->resolvedType = original->resolvedType;
+        }
+        return folded;
+    }
+
     static ast::Expr *foldExpr(ast::Expr *expr) {
         if (!expr) return expr;
 
@@ -123,12 +136,12 @@ namespace omegasl {
                 auto *e = static_cast<ast::BinaryExpr *>(expr);
                 e->lhs = foldExpr(e->lhs);
                 e->rhs = foldExpr(e->rhs);
-                return tryFoldBinary(e);
+                return carryResolvedType(e, tryFoldBinary(e));
             }
             case UNARY_EXPR: {
                 auto *e = static_cast<ast::UnaryOpExpr *>(expr);
                 e->expr = foldExpr(e->expr);
-                return tryFoldUnary(e);
+                return carryResolvedType(e, tryFoldUnary(e));
             }
             case CALL_EXPR: {
                 auto *e = static_cast<ast::CallExpr *>(expr);

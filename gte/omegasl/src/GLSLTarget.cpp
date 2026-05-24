@@ -384,7 +384,16 @@ namespace omegasl {
                     (_decl->shaderType == ast::ShaderDecl::Fragment) ? "in" : "out";
                 unsigned idx = 0;
                 for (auto &f : _struct->fields) {
-                    if (f.attributeName.value() != ATTRIBUTE_POSITION) {
+                    /// Only a `Position`-semantic field rides a builtin
+                    /// (gl_Position / gl_FragCoord) and gets no varying. Every
+                    /// other field — including an unattributed one, which Sema
+                    /// permits on internal structs — is a location-based
+                    /// varying. Guard `has_value()` first: `.value()` on an
+                    /// unattributed field would throw. This matches
+                    /// `writeInternalFieldRef`, which routes the same field to
+                    /// the `<struct>_<field>` varying identifier.
+                    if (!f.attributeName.has_value()
+                        || f.attributeName.value() != ATTRIBUTE_POSITION) {
                         out << "layout(location =" << idx << ") " << mode << " ";
                         writeTypeName(cg.typeResolver->resolveTypeWithExpr(f.typeExpr),
                                       f.typeExpr->pointer, out);
@@ -663,7 +672,16 @@ namespace omegasl {
         }
         const auto &attr = field.attributeName.value();
         if (attr == ATTRIBUTE_POSITION) {
-            out << "gl_Position";
+            /// A `Position`-semantic field maps to the stage's position
+            /// builtin. Vertex/Hull/Domain *write* it through `gl_Position`
+            /// (clip space). A fragment shader *reads* it as the
+            /// interpolated window-space coordinate, which in GLSL is the
+            /// read-only `gl_FragCoord` builtin — `gl_Position` does not
+            /// exist in the fragment stage. This mirrors HLSL `SV_Position`
+            /// and Metal `[[position]]`, where the same semantic is
+            /// reinterpreted per stage by the downstream compiler.
+            out << (currentShaderType == ast::ShaderDecl::Fragment ? "gl_FragCoord"
+                                                                   : "gl_Position");
         } else if (attr == ATTRIBUTE_COLOR && field.attributeIndex.has_value()) {
             out << "_outColor" << field.attributeIndex.value();
         } else if (attr == ATTRIBUTE_DEPTH) {
@@ -705,6 +723,37 @@ namespace omegasl {
         /// Default emission: same as the abstract Target default.
         cg.generateExpr(expr->lhs);
         out << "." << expr->rhs_id;
+    }
+
+    /// True for the 16-bit scalar builtins whose GLSL spellings
+    /// (`float16_t` / `int16_t` / `uint16_t`) the explicit-arithmetic-types
+    /// extension will not implicitly construct from a default-typed literal.
+    static bool isNarrowScalarType(ast::Type *t) {
+        return t == ast::builtins::half_type
+            || t == ast::builtins::short_type
+            || t == ast::builtins::ushort_type;
+    }
+
+    bool GLSLTarget::tryEmitLiteralExpr(CodeGen &cg, ast::LiteralExpr *expr, std::ostream &out) {
+        /// Sema stamps `resolvedType` to the destination slot's type when a
+        /// numeric literal is coerced into it (var-decl initializer §3.6,
+        /// assignment RHS §3.2). Vector forms reach a 16-bit slot through a
+        /// `make_*N` constructor, which converts; a bare scalar literal does
+        /// not, and GLSL has no implicit float→float16_t / int→int16_t cast.
+        /// Wrap it in the target-type constructor so `half s = 0.5;` emits
+        /// `float16_t s = float16_t(0.5);`.
+        if (expr->resolvedType == nullptr) {
+            return false;
+        }
+        auto *ty = cg.typeResolver->resolveTypeWithExpr(expr->resolvedType);
+        if (ty == nullptr || !isNarrowScalarType(ty)) {
+            return false;
+        }
+        writeTypeName(ty, false, out);
+        out << "(";
+        cg.emitLiteralValue(expr, out);
+        out << ")";
+        return true;
     }
 
     void GLSLTarget::emitResourceBinding(CodeGen &cg,

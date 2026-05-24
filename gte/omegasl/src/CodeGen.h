@@ -297,6 +297,14 @@ namespace omegasl {
         /// folds the file/string members up here too.
         void generateExpr(ast::Expr *expr);
 
+        /// Emit the raw value of a numeric/bool/string literal (no type
+        /// wrapping). Split out of the `LITERAL_EXPR` case so a target hook
+        /// (`Target::tryEmitLiteralExpr`) can wrap the value in a conversion
+        /// constructor — e.g. GLSL's explicit-arithmetic-types extension
+        /// needs `float16_t(0.5)` where the source coerces a float literal
+        /// into a 16-bit `half` slot.
+        void emitLiteralValue(ast::LiteralExpr *expr, std::ostream &out);
+
         /// Concrete shared AST-walk for blocks. After Phase 8c+8d the
         /// per-backend bodies converged on the same shape: `{`, then
         /// each stmt at indent+1 with maybe-`;` + `\n`, then `}`. The

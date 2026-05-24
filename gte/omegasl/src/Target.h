@@ -390,6 +390,20 @@ namespace omegasl {
                                        ast::BinaryExpr */*expr*/,
                                        std::ostream &/*out*/) { return false; }
 
+        /// Optional hook for a literal expression. Returning true means the
+        /// target emitted the full literal (it may wrap the value in a
+        /// conversion constructor); the shared path then skips its default
+        /// `CodeGen::emitLiteralValue` emission.
+        ///
+        /// GLSL overrides this: its `GL_EXT_shader_explicit_arithmetic_types`
+        /// extension performs no implicit conversion from a default-typed
+        /// (float/int) literal into a 16-bit scalar, so a literal whose
+        /// Sema-stamped `resolvedType` is `half` / `short` / `ushort` is
+        /// wrapped as `float16_t(0.5)` / `int16_t(...)` / `uint16_t(...)`.
+        virtual bool tryEmitLiteralExpr(CodeGen &/*cg*/,
+                                        ast::LiteralExpr */*expr*/,
+                                        std::ostream &/*out*/) { return false; }
+
         /// Phase 10: per-stage compiled-object file extension recorded in
         /// the shader map. HLSL `.cso`, MSL `.metallib`, GLSL `.spv`.
         /// The shared SHADER_DECL handler uses this to build the entry's
@@ -662,6 +676,10 @@ namespace omegasl {
         void emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
         bool tryEmitVarDecl(CodeGen &cg, ast::VarDecl *decl) override;
         bool tryEmitReturnDecl(CodeGen &cg, ast::ReturnDecl *decl) override;
+        /// §4.1: wrap a literal coerced into a 16-bit scalar slot in the
+        /// target-type constructor — GLSL's explicit-arithmetic-types
+        /// extension does no implicit float→float16_t / int→int16_t cast.
+        bool tryEmitLiteralExpr(CodeGen &cg, ast::LiteralExpr *expr, std::ostream &out) override;
         /// §6.1: hoist each compute-shader `threadgroup` local to file
         /// scope as a `shared`-qualified global (GLSL forbids `shared` in
         /// function bodies).

@@ -67,6 +67,30 @@ namespace omegasl {
                                        std::ostream &/*out*/) {
     }
 
+    /// Emit the bare value of a literal. Shared by the `LITERAL_EXPR` walk
+    /// and by target hooks that need to wrap the value (see header).
+    void CodeGen::emitLiteralValue(ast::LiteralExpr *expr, std::ostream &out) {
+        if (expr->isFloat()) {
+            out << formatFloatLit(expr->f_num.value());
+        } else if (expr->isDouble()) {
+            out << formatFloatLit(expr->d_num.value());
+        } else if (expr->isInt()) {
+            out << expr->i_num.value();
+        } else if (expr->isUint()) {
+            out << expr->ui_num.value();
+        } else if (expr->isLong()) {
+            /// §4.2 — emit a backend-portable 64-bit signed suffix.
+            /// HLSL/GLSL with the int64 extensions and MSL all accept `123L`.
+            out << expr->i64_num.value() << "L";
+        } else if (expr->isUlong()) {
+            out << expr->ui64_num.value() << "UL";
+        } else if (expr->isBool()) {
+            out << (expr->b_val.value() ? "true" : "false");
+        } else if (expr->isString()) {
+            out << expr->str.value();
+        }
+    }
+
     /// Shared expression-AST walk. Promoted to non-virtual on `CodeGen`
     /// after Phase 7.5 + 8a unified the per-backend bodies. Per-target
     /// divergence flows through `Target::*` hooks.
@@ -107,26 +131,13 @@ namespace omegasl {
             }
             case LITERAL_EXPR: {
                 auto _expr = (ast::LiteralExpr *)expr;
-                if (_expr->isFloat()) {
-                    out << formatFloatLit(_expr->f_num.value());
-                } else if (_expr->isDouble()) {
-                    out << formatFloatLit(_expr->d_num.value());
-                } else if (_expr->isInt()) {
-                    out << _expr->i_num.value();
-                } else if (_expr->isUint()) {
-                    out << _expr->ui_num.value();
-                } else if (_expr->isLong()) {
-                    /// §4.2 — emit a backend-portable 64-bit signed
-                    /// suffix. HLSL/GLSL with the int64 extensions and
-                    /// MSL all accept `123L`.
-                    out << _expr->i64_num.value() << "L";
-                } else if (_expr->isUlong()) {
-                    out << _expr->ui64_num.value() << "UL";
-                } else if (_expr->isBool()) {
-                    out << (_expr->b_val.value() ? "true" : "false");
-                } else if (_expr->isString()) {
-                    out << _expr->str.value();
+                /// A target may wrap the value in a conversion constructor
+                /// (e.g. GLSL `float16_t(0.5)` for a literal coerced into a
+                /// 16-bit slot). If it handles emission, we're done.
+                if (target->tryEmitLiteralExpr(*this, _expr, out)) {
+                    break;
                 }
+                emitLiteralValue(_expr, out);
                 break;
             }
             case ID_EXPR: {
