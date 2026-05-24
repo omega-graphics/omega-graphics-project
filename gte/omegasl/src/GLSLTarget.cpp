@@ -907,6 +907,9 @@ namespace omegasl {
         if (name == BUILTIN_MAKE_FLOAT2)   return "vec2";
         if (name == BUILTIN_MAKE_FLOAT3)   return "vec3";
         if (name == BUILTIN_MAKE_FLOAT4)   return "vec4";
+        if (name == BUILTIN_MAKE_BOOL2)    return "bvec2";
+        if (name == BUILTIN_MAKE_BOOL3)    return "bvec3";
+        if (name == BUILTIN_MAKE_BOOL4)    return "bvec4";
         if (name == BUILTIN_MAKE_INT2)     return "ivec2";
         if (name == BUILTIN_MAKE_INT3)     return "ivec3";
         if (name == BUILTIN_MAKE_INT4)     return "ivec4";
@@ -1298,6 +1301,9 @@ namespace omegasl {
         else if(t == ast::builtins::bool_type){
             out << "bool";
         }
+        else if(t == ast::builtins::bool2_type){ out << "bvec2"; }
+        else if(t == ast::builtins::bool3_type){ out << "bvec3"; }
+        else if(t == ast::builtins::bool4_type){ out << "bvec4"; }
         else if(t == ast::builtins::float_type){
             out << "float";
         }

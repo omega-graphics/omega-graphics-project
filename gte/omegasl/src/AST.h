@@ -64,6 +64,11 @@ namespace omegasl {
 
             DECLARE_BUILTIN_TYPE(void_type);
             DECLARE_BUILTIN_TYPE(bool_type);
+            /// §5.2 bool vectors — produced by component-wise compare,
+            /// consumed by any/all. Native everywhere; no feature gate.
+            DECLARE_BUILTIN_TYPE(bool2_type);
+            DECLARE_BUILTIN_TYPE(bool3_type);
+            DECLARE_BUILTIN_TYPE(bool4_type);
             DECLARE_BUILTIN_TYPE(int_type);
             DECLARE_BUILTIN_TYPE(int2_type);
             DECLARE_BUILTIN_TYPE(int3_type);
@@ -135,6 +140,10 @@ namespace omegasl {
             DECLARE_BUILTIN_FUNC(make_float2);
             DECLARE_BUILTIN_FUNC(make_float3);
             DECLARE_BUILTIN_FUNC(make_float4);
+            /// §5.2 bool-vector constructors.
+            DECLARE_BUILTIN_FUNC(make_bool2);
+            DECLARE_BUILTIN_FUNC(make_bool3);
+            DECLARE_BUILTIN_FUNC(make_bool4);
             DECLARE_BUILTIN_FUNC(make_int2);
             DECLARE_BUILTIN_FUNC(make_int3);
             DECLARE_BUILTIN_FUNC(make_int4);

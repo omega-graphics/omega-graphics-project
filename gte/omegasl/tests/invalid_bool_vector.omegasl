@@ -1,0 +1,41 @@
+// §5.2 — negative test for bool vectors / any-all / component-wise compare.
+// Each statement below is independently ill-formed; the compiler should
+// report a diagnostic for every one (function-body statement recovery).
+
+struct Data {
+    float4 value;
+};
+
+buffer<Data> src : 0;
+buffer<Data> dst : 1;
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_bool_errors(uint3 tid : GlobalThreadID){
+    float2 a2 = src[0].value.xy;
+    float2 b2 = src[1].value.xy;
+    float3 a3 = src[0].value.xyz;
+    float  s  = src[0].value.x;
+    bool   bs = true;
+
+    // 1. any/all require a bool VECTOR, not a scalar bool.
+    bool e1 = any(bs);
+
+    // 2. any/all reject a numeric vector (GLSL accepts only bvec).
+    bool e2 = all(a3);
+
+    // 3. comparison needs exactly two arguments.
+    bool2 e3 = lessThan(a2);
+
+    // 4. comparison operands must be the SAME vector type (float2 vs float3).
+    bool2 e4 = greaterThan(a2, a3);
+
+    // 5. comparison operands must be vectors, not scalars.
+    bool e5 = equal(s, s);
+
+    // 6. a vector component index must be an int/uint, not a float. (General
+    //    vector-index rule, made uniform by the index-asymmetry fix.)
+    float e6 = a2[s];
+
+    dst[0].value = float4(0.0, 0.0, 0.0, 1.0);
+}

@@ -39,6 +39,10 @@ namespace omegasl {
     inline bool isKeywordType(OmegaCommon::StrRef subject){
         return (subject == KW_TY_VOID) ||
         (subject == KW_TY_BOOL) ||
+        /// §5.2 bool vectors.
+        (subject == KW_TY_BOOL2) ||
+        (subject == KW_TY_BOOL3) ||
+        (subject == KW_TY_BOOL4) ||
         (subject == KW_TY_INT) ||
         (subject == KW_TY_INT2) ||
         (subject == KW_TY_INT3) ||

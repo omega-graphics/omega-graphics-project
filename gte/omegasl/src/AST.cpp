@@ -11,6 +11,9 @@ namespace omegasl::ast {
         Scope *global_scope;
         Type *void_type;
         Type *bool_type;
+        Type *bool2_type;
+        Type *bool3_type;
+        Type *bool4_type;
         Type *int_type;
         Type *int2_type;
         Type *int3_type;
@@ -76,6 +79,9 @@ namespace omegasl::ast {
         Type *samplercube_type;
 
         FuncType *make_float2;
+        FuncType *make_bool2;
+        FuncType *make_bool3;
+        FuncType *make_bool4;
         FuncType *make_float3;
         FuncType *make_float4;
         FuncType *make_int2;
@@ -134,6 +140,9 @@ namespace omegasl::ast {
                 global_scope = Scope::Create("global",nullptr);
                 void_type = new Type{KW_TY_VOID,global_scope};
                 bool_type = new Type{KW_TY_BOOL,global_scope};
+                bool2_type = new Type{KW_TY_BOOL2,global_scope};
+                bool3_type = new Type{KW_TY_BOOL3,global_scope};
+                bool4_type = new Type{KW_TY_BOOL4,global_scope};
                 int_type = new Type{KW_TY_INT,global_scope};
                 int2_type = new Type{KW_TY_INT2,global_scope};
                 int3_type = new Type{KW_TY_INT3,global_scope};
@@ -214,6 +223,10 @@ namespace omegasl::ast {
                 make_float4 = new FuncType{BUILTIN_MAKE_FLOAT4,global_scope,true,{},{
 
                     },TypeExpr::Create(float4_type)};
+
+                make_bool2 = new FuncType{BUILTIN_MAKE_BOOL2,global_scope,true,{},{},TypeExpr::Create(bool2_type)};
+                make_bool3 = new FuncType{BUILTIN_MAKE_BOOL3,global_scope,true,{},{},TypeExpr::Create(bool3_type)};
+                make_bool4 = new FuncType{BUILTIN_MAKE_BOOL4,global_scope,true,{},{},TypeExpr::Create(bool4_type)};
 
                 make_int2 = new FuncType{BUILTIN_MAKE_INT2,global_scope,true,{},{},TypeExpr::Create(int2_type)};
                 make_int3 = new FuncType{BUILTIN_MAKE_INT3,global_scope,true,{},{},TypeExpr::Create(int3_type)};
@@ -359,6 +372,9 @@ namespace omegasl::ast {
                 delete global_scope;
                 delete void_type;
                 delete bool_type;
+                delete bool2_type;
+                delete bool3_type;
+                delete bool4_type;
                 delete int_type;
                 delete int2_type;
                 delete int3_type;
@@ -418,6 +434,9 @@ namespace omegasl::ast {
                 delete make_float2;
                 delete make_float3;
                 delete make_float4;
+                delete make_bool2;
+                delete make_bool3;
+                delete make_bool4;
                 delete make_int2;
                 delete make_int3;
                 delete make_int4;
@@ -558,6 +577,7 @@ namespace omegasl::ast {
         static const std::set<std::string> reserved = {
             /// Vector / matrix constructors.
             BUILTIN_MAKE_FLOAT2, BUILTIN_MAKE_FLOAT3, BUILTIN_MAKE_FLOAT4,
+            BUILTIN_MAKE_BOOL2, BUILTIN_MAKE_BOOL3, BUILTIN_MAKE_BOOL4,
             BUILTIN_MAKE_INT2, BUILTIN_MAKE_INT3, BUILTIN_MAKE_INT4,
             BUILTIN_MAKE_UINT2, BUILTIN_MAKE_UINT3, BUILTIN_MAKE_UINT4,
             BUILTIN_MAKE_HALF2, BUILTIN_MAKE_HALF3, BUILTIN_MAKE_HALF4,
@@ -592,6 +612,11 @@ namespace omegasl::ast {
             BUILTIN_MOD, BUILTIN_MAD, BUILTIN_MODF, BUILTIN_FREXP,
             /// §5.2 vector / matrix math.
             BUILTIN_DISTANCE, BUILTIN_FACEFORWARD, BUILTIN_REFRACT, BUILTIN_INVERSE,
+            /// §5.2 bool reduce + component-wise compare.
+            BUILTIN_ANY, BUILTIN_ALL,
+            BUILTIN_LESSTHAN, BUILTIN_LESSTHANEQUAL,
+            BUILTIN_GREATERTHAN, BUILTIN_GREATERTHANEQUAL,
+            BUILTIN_EQUAL, BUILTIN_NOTEQUAL,
             /// Matrix intrinsics (string-matched in Sema).
             "transpose", "determinant",
             /// Compute barriers.

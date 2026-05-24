@@ -1187,14 +1187,16 @@ collidable Metal stdlib names — that was wrong (the names aren't
 defined in Metal at all) and they have been removed so a user function
 called `degrees` doesn't get spuriously mangled.
 
-### 5.2 Vector math not yet listed [LANDED — distance / faceforward / refract / inverse; any/all deferred]
+### 5.2 Vector math not yet listed [LANDED — distance / faceforward / refract / inverse / any / all + bool vectors]
 
 | Function | Purpose | Status |
 |----------|---------|--------|
 | `distance(a,b)` | length of difference | **landed** — 2-arg, returns scalar `float`; native on all three backends |
 | `faceforward(n,i,ng)` | flip normal toward viewer | **landed** — 3-arg, returns `n`'s type; native on all three |
 | `refract(i,n,eta)` | refraction vector | **landed** — 3-arg (`eta` scalar), returns `i`'s type; native on all three |
-| `any(v)` / `all(v)` | boolean reduce | **deferred** — blocked on bool-vector types; see below |
+| `any(v)` / `all(v)` | boolean reduce | **landed** — 1-arg, `boolN` → scalar `bool`; native everywhere. Unblocked by bool-vector types + comparison builtins; see below |
+| `lessThan` / `lessThanEqual` / `greaterThan` / `greaterThanEqual` / `equal` / `notEqual` | component-wise compare | **landed** — 2-arg `(vecN, vecN)` → `boolN`; GLSL native, HLSL/MSL lower to the operator form. See below |
+| `bool2` / `bool3` / `bool4` | bool-vector types | **landed** — `bool2/3/4` (HLSL/MSL) / `bvec2/3/4` (GLSL); `make_boolN` constructors; universally supported (no feature gate) |
 | `transpose(m)` / `determinant(m)` | matrix ops | already shipped (string-matched in Sema) |
 | `inverse(m)` | matrix inverse | **landed** — GLSL native; HLSL **and** MSL emulated (neither has it) |
 
@@ -1277,15 +1279,76 @@ through `emitStatementLine` (byte-identical when nothing is queued; GLSL's own
 entry-body loop has the same shape but needs no fix because its only lowerings
 — `inverse` is native there, `saturate`/`fmod` emit inline — never queue).
 
-**Deferred — any / all.** `any(v)` / `all(v)` reduce a *bool vector* to a
-scalar bool. OmegaSL has no bool-vector types (only scalar `bool`, AST.h
-`bool_type`) and no component-wise relational operator to produce one — §3.2
-made `<`, `==`, `&&`, etc. yield a *scalar* `bool`. So there is no
-well-typed argument to feed `any`/`all`, and GLSL is strict here (its
-`any`/`all` reject anything but a `bvec`, unlike HLSL's any-numeric form), so
-the gap cannot be papered over with a numeric-vector input. These land once
-bool-vector types (`bool2/3/4`) and component-wise comparisons exist; that is
-a separate, larger surface than §5.2.
+**Landed — any / all + bool vectors + component-wise comparison.**
+
+`any(v)` / `all(v)` reduce a *bool vector* to a scalar bool. The original
+blocker was that OmegaSL had no bool-vector types and no way to produce one
+(§3.2 deliberately made `<`, `==`, `&&` yield a *scalar* `bool`, and GLSL is
+strict — its `any`/`all` reject anything but a `bvec`). This pass adds the
+whole surface: bool-vector types, constructors, GLSL-shaped comparison
+builtins, and the two reducers. The relational *operators* still yield scalar
+bool (§3.2 unchanged); component-wise comparison is a named builtin so the
+two never collide and the surface stays portable to GLSL (which has no vector
+`<`).
+
+* **Types.** `bool2` / `bool3` / `bool4` are builtin types
+  (`KW_TY_BOOL2/3/4`, `bool{2,3,4}_type`). They map to native `bool2/3/4`
+  on HLSL and MSL, and `bvec2/3/4` on GLSL. Universally supported, so —
+  unlike the §4.1/§4.2 numeric families — they are **not** feature-gated.
+  Registered in `vectorComponentInfo` / `vectorTypeForScalarArity`, so
+  swizzles work (`bv.xy` → `bool2`).
+
+  *Latent index-asymmetry fixed alongside.* The `INDEX_EXPR` Sema arm
+  hardcoded float/int/uint vectors, so `long2.x` (swizzle, generalized by
+  the §2.3 fix) worked but `long2[0]` (index) errored — and the same held
+  for every half / short / ushort / long / ulong family, now bool too. The
+  arm now routes through `vectorComponentInfo`, so index and swizzle stay in
+  lockstep across all vector families. Codegen needed no change (the default
+  `emitIndexExpr` path already emits a generic `lhs[idx]`; the matrix-column
+  rewrites key off `isOmegaSLMatrixType`, which vectors never match).
+
+  *Index-type validation made uniform alongside.* Indexing now enforces an
+  `int`/`uint` index everywhere it was previously skipped — both the vector
+  path (the old float/int/uint vector code never checked) and the matrix
+  column path. The two-level `m[col][row]` form is covered for free: `m[col]`
+  resolves to a column vector, so the outer `[row]` is validated by the vector
+  rule. (Array and buffer indices were already checked.) Covered by index
+  lines added to `bool_vector.omegasl`, `numeric_16bit.omegasl`, and
+  `numeric_64bit.omegasl`; non-int index diagnostics in
+  `invalid_bool_vector.omegasl` (vector) and `invalid_matrix_index.omegasl`
+  (matrix column + two-level row).
+
+* **Constructors.** `make_bool2/3/4` join the existing `make_*` FuncType
+  family (`bool2/3/4` on HLSL/MSL, `bvec2/3/4` on GLSL via `renameBuiltin`).
+  Argument validation is loose — the same generic path `make_int2` uses.
+
+* **Comparison builtins.** `lessThan` / `lessThanEqual` / `greaterThan` /
+  `greaterThanEqual` / `equal` / `notEqual` are string-matched in the
+  `Sema::performSemForExpr` math dispatch (no FuncType registration, like
+  `length` / `inverse`). Each takes two operands of the *same* numeric
+  vector type (floatN / intN / uintN / the 16-/64-bit families) and returns
+  the bool vector of matching arity. Bool-vector operands are rejected (one
+  uniform rule — ordered compares are nonsensical on bools, and keeping
+  `equal`/`notEqual` numeric-only avoids a second arity table). Per backend:
+  * **GLSL**: native functions — pass through `renameBuiltin` unchanged.
+  * **HLSL / MSL**: neither has these functions, but `a < b` on vectors
+    yields a bool vector on both. The call lowers to `(arg0 OP arg1)` via
+    the shared `CodeGen::emitVectorCompare` (the same shared-helper pattern
+    as `emitInverseCall`), invoked from each backend's `tryEmitBuiltinCall`.
+    The emitted text is identical on both backends.
+
+* **any / all.** 1-arg, `boolN` → scalar `bool`. Identical spelling on every
+  backend (HLSL/MSL/GLSL all have `any`/`all`), so they pass straight through
+  `renameBuiltin` with no hook. Sema requires a `bool2/3/4` argument (a
+  scalar `bool` or a numeric vector is rejected, matching GLSL's strictness).
+
+**Tests:** `bool_vector.omegasl` (all six comparisons on float2/3/4 reduced
+with any/all; int/uint comparisons; `make_bool2/3/4` incl. a nested compare
+result; bool-vector swizzle `mk4.xy` / `mk3.yz`). Metal-compiled end-to-end;
+HLSL verified via `--hlsl -S` (operator form + `any`/`all`), GLSL via
+`--glsl -S` (`lessThan`/… + `bvec` + `any`/`all`). `invalid_bool_vector.omegasl`
+(multi-error negative: any/all on a scalar bool and on a numeric vector;
+comparison arg-count; mismatched operand types; non-vector operands).
 
 **Tests:** `math_phase5_2.omegasl` (distance on float2/3/4; faceforward +
 refract on float3 and float2; inverse on 2×2/3×3/4×4 and on a binary-expr

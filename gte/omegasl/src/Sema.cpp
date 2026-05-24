@@ -8,6 +8,10 @@ namespace omegasl {
 
         ast::builtins::void_type,
         ast::builtins::bool_type,
+        /// §5.2 bool vectors.
+        ast::builtins::bool2_type,
+        ast::builtins::bool3_type,
+        ast::builtins::bool4_type,
         ast::builtins::int_type,
         ast::builtins::int2_type,
         ast::builtins::int3_type,
@@ -78,6 +82,9 @@ namespace omegasl {
             ast::builtins::make_float2,
             ast::builtins::make_float3,
             ast::builtins::make_float4,
+            ast::builtins::make_bool2,
+            ast::builtins::make_bool3,
+            ast::builtins::make_bool4,
             ast::builtins::make_int2,
             ast::builtins::make_int3,
             ast::builtins::make_int4,
@@ -217,6 +224,9 @@ namespace omegasl {
             if(t == ulong2_type) return {ulong_type, 2};
             if(t == ulong3_type) return {ulong_type, 3};
             if(t == ulong4_type) return {ulong_type, 4};
+            if(t == bool2_type) return {bool_type, 2};
+            if(t == bool3_type) return {bool_type, 3};
+            if(t == bool4_type) return {bool_type, 4};
             return {nullptr, 0};
         }
 
@@ -233,6 +243,7 @@ namespace omegasl {
             if(scalar == ushort_type) return n==2?ushort2_type : n==3?ushort3_type : ushort4_type;
             if(scalar == long_type) return n==2?long2_type : n==3?long3_type : long4_type;
             if(scalar == ulong_type) return n==2?ulong2_type : n==3?ulong3_type : ulong4_type;
+            if(scalar == bool_type) return n==2?bool2_type : n==3?bool3_type : bool4_type;
             return nullptr;
         }
 
@@ -1029,19 +1040,46 @@ namespace omegasl {
                 return elemT;
             }
 
-            /// Vector component access: float2/3/4[i] -> float, int2/3/4[i] -> int, uint2/3/4[i] -> uint
-            if(_t == ast::builtins::float2_type || _t == ast::builtins::float3_type || _t == ast::builtins::float4_type){
-                return ast::TypeExpr::Create(ast::builtins::float_type);
-            }
-            if(_t == ast::builtins::int2_type || _t == ast::builtins::int3_type || _t == ast::builtins::int4_type){
-                return ast::TypeExpr::Create(ast::builtins::int_type);
-            }
-            if(_t == ast::builtins::uint2_type || _t == ast::builtins::uint3_type || _t == ast::builtins::uint4_type){
-                return ast::TypeExpr::Create(ast::builtins::uint_type);
+            /// Vector component access: vecN[i] -> scalar, for every vector
+            /// family (float / int / uint / half / short / ushort / long /
+            /// ulong / bool). Generalized via `vectorComponentInfo` so index
+            /// and swizzle stay in lockstep — previously only float/int/uint
+            /// were indexable while the MEMBER_EXPR swizzle path already
+            /// resolved all families, so e.g. `long2.x` worked but `long2[0]`
+            /// errored. (Matrices return `{nullptr,0}` here and fall through
+            /// to the matrix-column path below.)
+            {
+                auto vecInfo = vectorComponentInfo(_t);
+                if(vecInfo.scalar){
+                    /// The component index must be an integer, matching the
+                    /// array- and buffer-index rules above/below. (The
+                    /// pre-generalization float/int/uint vector path skipped
+                    /// this check; it's added now that indexing is uniform.)
+                    auto idxT = resolveTypeWithExpr(idx_expr_res);
+                    if(idxT != ast::builtins::uint_type && idxT != ast::builtins::int_type){
+                        auto e = std::make_unique<TypeError>("Vector component index must be an int or uint type.");
+                        e->loc = _expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                    return ast::TypeExpr::Create(vecInfo.scalar);
+                }
             }
 
             /// Matrix column access: matNxM[i] -> floatM (column vector)
             if(isMatrixType(_t)){
+                /// The column index must be an integer (same rule as array /
+                /// buffer / vector indices). The *row* index of the two-level
+                /// `m[col][row]` form needs no check here: `m[col]` resolves
+                /// to a column vector, so the outer `[row]` is validated by
+                /// the vector path above.
+                auto idxT = resolveTypeWithExpr(idx_expr_res);
+                if(idxT != ast::builtins::uint_type && idxT != ast::builtins::int_type){
+                    auto e = std::make_unique<TypeError>("Matrix index must be an int or uint type.");
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
                 /// For NxM matrices, indexing returns a column of M elements.
                 /// Square matrices return the matching vector size.
                 if(_t == ast::builtins::float2x2_type) return ast::TypeExpr::Create(ast::builtins::float2_type);
@@ -1271,6 +1309,22 @@ namespace omegasl {
                     expectedArgs = 1;
                 }
 
+                /// §5.2 — `any(v)` / `all(v)` reduce a bool vector to a
+                /// scalar bool (custom return type, handled below).
+                bool isBoolReduce = (fname == BUILTIN_ANY || fname == BUILTIN_ALL);
+                if(isBoolReduce){
+                    expectedArgs = 1;
+                }
+                /// §5.2 — component-wise comparison of two same-type numeric
+                /// vectors, producing the matching bool vector.
+                bool isVecCompare =
+                    fname == BUILTIN_LESSTHAN || fname == BUILTIN_LESSTHANEQUAL ||
+                    fname == BUILTIN_GREATERTHAN || fname == BUILTIN_GREATERTHANEQUAL ||
+                    fname == BUILTIN_EQUAL || fname == BUILTIN_NOTEQUAL;
+                if(isVecCompare){
+                    expectedArgs = 2;
+                }
+
                 /// §6.2 — compute barriers: 0-arg, void return, compute-only.
                 bool isBarrier = (fname == BUILTIN_THREADGROUP_BARRIER || fname == BUILTIN_DEVICE_BARRIER);
                 if(isBarrier){
@@ -1300,10 +1354,12 @@ namespace omegasl {
 
                 /// Validate all arguments.
                 ast::TypeExpr *firstArgType = nullptr;
+                ast::TypeExpr *secondArgType = nullptr;
                 for(unsigned i = 0; i < _expr->args.size(); i++){
                     auto argType = performSemForExpr(_expr->args[i],funcContext);
                     if(!argType) return nullptr;
                     if(i == 0) firstArgType = argType;
+                    else if(i == 1) secondArgType = argType;
                 }
 
                 /// Return type: special cases first.
@@ -1344,6 +1400,49 @@ namespace omegasl {
                     e->loc = _expr->loc.value_or(ErrorLoc{});
                     diagnostics->addError(std::move(e));
                     return nullptr;
+                }
+                /// §5.2 — any/all + component-wise compare have custom
+                /// return types and reject malformed operands. (The shared
+                /// `reportTypeErr` lambda is declared further down in this
+                /// function, after the math-dispatch block, so use a local.)
+                auto reportBoolErr = [&](const std::string &msg){
+                    auto e = std::make_unique<TypeError>(msg);
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                };
+                /// `any`/`all`: the argument must be a bool vector
+                /// (bool2/3/4). A scalar `bool` or a numeric vector is
+                /// rejected — GLSL's `any`/`all` accept only `bvec`, so
+                /// the strict rule keeps the surface portable.
+                if(isBoolReduce && firstArgType){
+                    auto argTy = resolveTypeWithExpr(firstArgType);
+                    if(argTy != ast::builtins::bool2_type &&
+                       argTy != ast::builtins::bool3_type &&
+                       argTy != ast::builtins::bool4_type){
+                        reportBoolErr("`" + std::string(fname) + "` requires a bool-vector argument (bool2, bool3, or bool4). Build one with a component-wise comparison (lessThan, equal, …) or make_boolN.");
+                        return nullptr;
+                    }
+                    return ast::TypeExpr::Create(ast::builtins::bool_type);
+                }
+                /// component-wise comparison: both operands must be the
+                /// *same* numeric vector type; the result is the bool
+                /// vector of matching arity. Bool-vector operands are
+                /// rejected (ordered compares are nonsensical on bools, and
+                /// the OmegaSL surface keeps `equal`/`notEqual` numeric-only
+                /// for one uniform rule).
+                if(isVecCompare && firstArgType && secondArgType){
+                    auto a0 = resolveTypeWithExpr(firstArgType);
+                    auto a1 = resolveTypeWithExpr(secondArgType);
+                    auto info = vectorComponentInfo(a0);
+                    if(!info.scalar || info.scalar == ast::builtins::bool_type){
+                        reportBoolErr("`" + std::string(fname) + "` requires numeric-vector operands (floatN / intN / uintN / …).");
+                        return nullptr;
+                    }
+                    if(a0 != a1){
+                        reportBoolErr("`" + std::string(fname) + "` requires both operands to be the same vector type.");
+                        return nullptr;
+                    }
+                    return ast::TypeExpr::Create(vectorTypeForScalarArity(ast::builtins::bool_type, info.arity));
                 }
                 if(returnsScalar && firstArgType){
                     return ast::TypeExpr::Create(ast::builtins::float_type);

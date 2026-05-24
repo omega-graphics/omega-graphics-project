@@ -32,5 +32,10 @@ fragment float4 longFrag(VertexRaster raster){
     /// Cast also trips the bit.
     long c_cast = (long)c;
 
+    /// §5.2 fix — 64-bit vector families are indexable (`v[i]`), not just
+    /// swizzlable (`v.x`). Previously only float/int/uint vectors indexed.
+    long  e0 = v4[0];
+    ulong e1 = u2[1];
+
     return float4(0.0, 0.0, 0.0, 1.0);
 }

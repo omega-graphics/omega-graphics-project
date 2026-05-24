@@ -59,6 +59,11 @@ typedef int ASTType;
 #define BUILTIN_CALCULATE_LOD "calculateLOD"
 #define BUILTIN_GET_DIMENSIONS "getDimensions"
 
+/// §5.2 bool-vector constructors. Same make_* convention; map to
+/// `bool2/3/4` (HLSL/MSL) / `bvec2/3/4` (GLSL).
+#define BUILTIN_MAKE_BOOL2 "make_bool2"
+#define BUILTIN_MAKE_BOOL3 "make_bool3"
+#define BUILTIN_MAKE_BOOL4 "make_bool4"
 #define BUILTIN_MAKE_INT2 "make_int2"
 #define BUILTIN_MAKE_INT3 "make_int3"
 #define BUILTIN_MAKE_INT4 "make_int4"
@@ -156,6 +161,29 @@ typedef int ASTType;
 #define BUILTIN_FACEFORWARD "faceforward"
 #define BUILTIN_REFRACT "refract"
 #define BUILTIN_INVERSE "inverse"
+
+/// §5.2 — boolean reduction + component-wise comparison.
+///   any(v) / all(v)  — 1-arg, reduce a bool vector (bool2/3/4) to a
+///     scalar `bool`. Native + identically spelled on all three backends
+///     (HLSL/MSL/GLSL `any`/`all`), so they pass through `renameBuiltin`.
+///   lessThan / lessThanEqual / greaterThan / greaterThanEqual / equal /
+///     notEqual — 2-arg, component-wise compare of two same-type numeric
+///     vectors (floatN/intN/uintN/…) producing the matching bool vector.
+///     GLSL has these as native functions; HLSL and MSL have no such
+///     function — they spell component-wise compare with the operators
+///     (`a < b` on vectors yields a bool vector on both), so those two
+///     backends rewrite the call to `(a OP b)` in `tryEmitBuiltinCall`.
+///     The OmegaSL surface stays GLSL-shaped because §3.2 deliberately
+///     made the scalar relational operators yield a *scalar* bool — a
+///     named builtin is how component-wise compare stays unambiguous.
+#define BUILTIN_ANY "any"
+#define BUILTIN_ALL "all"
+#define BUILTIN_LESSTHAN "lessThan"
+#define BUILTIN_LESSTHANEQUAL "lessThanEqual"
+#define BUILTIN_GREATERTHAN "greaterThan"
+#define BUILTIN_GREATERTHANEQUAL "greaterThanEqual"
+#define BUILTIN_EQUAL "equal"
+#define BUILTIN_NOTEQUAL "notEqual"
 
 /// §5.1.0 — `mod` / `mad` are accepted as aliases of the canonical
 /// `fmod` / `fma` spellings (see `ast::canonicalBuiltinAlias`). They

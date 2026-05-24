@@ -473,6 +473,24 @@ namespace omegasl {
         return true;
     }
 
+    bool CodeGen::emitVectorCompare(ast::CallExpr *call, OmegaCommon::StrRef name, std::ostream &out) {
+        const char *op = nullptr;
+        if (name == BUILTIN_LESSTHAN)              op = "<";
+        else if (name == BUILTIN_LESSTHANEQUAL)    op = "<=";
+        else if (name == BUILTIN_GREATERTHAN)      op = ">";
+        else if (name == BUILTIN_GREATERTHANEQUAL) op = ">=";
+        else if (name == BUILTIN_EQUAL)            op = "==";
+        else if (name == BUILTIN_NOTEQUAL)         op = "!=";
+        else return false;
+        if (call->args.size() != 2) return false; // Sema enforces; defensive.
+        out << "(";
+        generateExpr(call->args[0]);
+        out << " " << op << " ";
+        generateExpr(call->args[1]);
+        out << ")";
+        return true;
+    }
+
     void CodeGen::emitUserFunctionSignature(ast::FuncDecl *f) {
         writeTypeExpr(f->returnType, shaderOut);
         /// §3.5 — overloaded names mangle with a param-type suffix so

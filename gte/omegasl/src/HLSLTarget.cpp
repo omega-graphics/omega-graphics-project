@@ -462,6 +462,9 @@ namespace omegasl {
         if (name == BUILTIN_MAKE_FLOAT2)   return "float2";
         if (name == BUILTIN_MAKE_FLOAT3)   return "float3";
         if (name == BUILTIN_MAKE_FLOAT4)   return "float4";
+        if (name == BUILTIN_MAKE_BOOL2)    return "bool2";
+        if (name == BUILTIN_MAKE_BOOL3)    return "bool3";
+        if (name == BUILTIN_MAKE_BOOL4)    return "bool4";
         if (name == BUILTIN_MAKE_INT2)     return "int2";
         if (name == BUILTIN_MAKE_INT3)     return "int3";
         if (name == BUILTIN_MAKE_INT4)     return "int4";
@@ -561,6 +564,11 @@ namespace omegasl {
         /// adjugate expansion (shared with MSL).
         if (name == BUILTIN_INVERSE) {
             return cg.emitInverseCall(_expr, out);
+        }
+        /// §5.2 — HLSL has no `lessThan`/`equal`/… functions; component-wise
+        /// compare is the `(a OP b)` operator form (shared with MSL).
+        if (cg.emitVectorCompare(_expr, name, out)) {
+            return true;
         }
         return false;
     }
@@ -1028,6 +1036,12 @@ namespace omegasl {
     void HLSLTarget::writeTypeName(ast::Type *_ty, bool pointer, std::ostream &out) {
         if (_ty == ast::builtins::bool_type) {
             out << "bool";
+        } else if (_ty == ast::builtins::bool2_type) {
+            out << "bool2";
+        } else if (_ty == ast::builtins::bool3_type) {
+            out << "bool3";
+        } else if (_ty == ast::builtins::bool4_type) {
+            out << "bool4";
         } else if (_ty == ast::builtins::float_type) {
             out << "float";
         } else if (_ty == ast::builtins::float2_type) {

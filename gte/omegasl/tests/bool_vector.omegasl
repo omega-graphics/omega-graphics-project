@@ -1,0 +1,73 @@
+// §5.2 — bool vectors + component-wise comparison + any/all.
+//   bool2/3/4                 — bool-vector types (HLSL/MSL native; GLSL bvec)
+//   make_bool2/3/4            — constructors
+//   lessThan / lessThanEqual / greaterThan / greaterThanEqual / equal /
+//     notEqual                — (vecN, vecN) -> boolN (GLSL native; HLSL/MSL
+//                               lower to the `(a OP b)` operator form)
+//   any(v) / all(v)           — boolN -> scalar bool (native everywhere)
+
+struct Data {
+    float4 value;
+};
+
+buffer<Data> src : 0;
+buffer<Data> dst : 1;
+
+// All six comparisons on float vectors, reduced with any/all.
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_compare_float(uint3 tid : GlobalThreadID){
+    float2 a2 = src[0].value.xy;
+    float2 b2 = src[1].value.xy;
+    float3 a3 = src[0].value.xyz;
+    float3 b3 = src[1].value.xyz;
+    float4 a4 = src[0].value;
+    float4 b4 = src[1].value;
+
+    bool2 lt = lessThan(a2, b2);
+    bool2 le = lessThanEqual(a2, b2);
+    bool3 gt = greaterThan(a3, b3);
+    bool3 ge = greaterThanEqual(a3, b3);
+    bool4 eq = equal(a4, b4);
+    bool4 ne = notEqual(a4, b4);
+
+    bool anyLt  = any(lt);
+    bool allLe  = all(le);
+    bool anyGt  = any(gt);
+    bool allGe  = all(ge);
+    bool anyEq  = any(eq);
+    bool allNe  = all(ne);
+
+    float r = (anyLt && allLe && anyGt && allGe && anyEq && allNe) ? 1.0 : 0.0;
+    dst[0].value = float4(r, 0.0, 0.0, 1.0);
+}
+
+// Comparison on integer / unsigned vectors + make_boolN constructors +
+// bool-vector swizzle.
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_compare_int_and_make(uint3 tid : GlobalThreadID){
+    int3 ai = make_int3(1, 2, 3);
+    int3 bi = make_int3(3, 2, 1);
+    uint2 au = make_uint2(4, 5);
+    uint2 bu = make_uint2(5, 4);
+
+    bool3 ilt = lessThan(ai, bi);
+    bool2 ueq = equal(au, bu);
+
+    // make_boolN constructors, including a nested compare result.
+    bool2 mk2 = make_bool2(true, false);
+    bool3 mk3 = make_bool3(any(ilt), all(ueq), false);
+    bool4 mk4 = make_bool4(true, false, true, false);
+
+    // bool-vector swizzle: select a sub-vector and reduce it.
+    bool reduced = any(mk4.xy) && all(mk3.yz) && mk2.x;
+
+    // bool-vector index: `bv[i]` is now valid (matches swizzle), not just
+    // for float/int/uint vectors. Component select returns scalar bool.
+    bool first = mk4[0];
+    bool mid   = ilt[1];
+
+    float r = (reduced || first || mid || any(ilt) || all(mk4)) ? 1.0 : 0.0;
+    dst[0].value = float4(r, 0.0, 0.0, 1.0);
+}

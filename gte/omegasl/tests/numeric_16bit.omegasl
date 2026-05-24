@@ -39,6 +39,12 @@ fragment float4 halfFrag(VertexRaster raster){
     ushort4 u4 = make_ushort4(0, 1, 2, 3);
     short  i_cast = (short)42;
 
+    /// §5.2 fix — 16-bit vector families are indexable (`v[i]`), not just
+    /// swizzlable (`v.x`). Previously only float/int/uint vectors indexed.
+    half   hc = v3[1];
+    short  ic = i2[0];
+    ushort uc = u4[2];
+
     /// Struct that contains a half — exercises the FeatureScanner's
     /// struct-field walk (FLOAT16 should still trip from a VarDecl
     /// of HalfBundle even though the visible TypeExpr is `HalfBundle`).

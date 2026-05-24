@@ -1,0 +1,30 @@
+// Matrix index-type diagnostics. Both the column index (`m[col]`) and the
+// row index of the two-level form (`m[col][row]`) must be int/uint. Each
+// statement is independently ill-formed; both should be reported.
+
+struct Data {
+    float4 value;
+};
+
+buffer<Data> src : 0;
+buffer<Data> dst : 1;
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_matrix_index_errors(uint3 tid : GlobalThreadID){
+    float s = src[0].value.x;
+    float3x3 m = float3x3(
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0);
+
+    // 1. column index must be int/uint, not float -> "Matrix index ...".
+    float3 col = m[s];
+
+    // 2. row index (second level) must be int/uint, not float. m[0] is a
+    //    column vector, so this is caught by the vector-index rule
+    //    ("Vector component index ...").
+    float elem = m[0][s];
+
+    dst[0].value = float4(0.0, 0.0, 0.0, 1.0);
+}

@@ -365,6 +365,16 @@ namespace omegasl {
         /// Sema already rejects.
         bool emitInverseCall(ast::CallExpr *call, std::ostream &out);
 
+        /// §5.2 — component-wise comparison (`lessThan`, `lessThanEqual`,
+        /// `greaterThan`, `greaterThanEqual`, `equal`, `notEqual`) for the
+        /// HLSL and MSL backends. GLSL has these as native functions, but
+        /// HLSL/MSL have no such function — both spell component-wise
+        /// compare with the operators (`a < b` on vectors yields a bool
+        /// vector on each), so the call lowers to `(arg0 OP arg1)`. The
+        /// emitted text is identical on both backends. Returns false
+        /// (caller falls through) if `name` is not one of the six compares.
+        bool emitVectorCompare(ast::CallExpr *call, OmegaCommon::StrRef name, std::ostream &out);
+
         /// Current block-nesting depth, in indentation levels (one
         /// level == 4 spaces after Phase 7.5 unification). Each
         /// `generateBlock` call increments at entry and decrements at

@@ -113,6 +113,13 @@ namespace omegasl {
 
 #define KW_TY_VOID KW_TY("void")
 #define KW_TY_BOOL KW_TY("bool")
+/// §5.2 — bool vectors. Native on HLSL/MSL (`bool2/3/4`); GLSL spells
+/// them `bvec2/3/4`. Universally supported, so no feature-bit gate.
+/// Produced by the component-wise comparison builtins (lessThan, …) and
+/// consumed by `any`/`all`.
+#define KW_TY_BOOL2 KW_TY("bool2")
+#define KW_TY_BOOL3 KW_TY("bool3")
+#define KW_TY_BOOL4 KW_TY("bool4")
 #define KW_TY_INT KW_TY("int")
 #define KW_TY_INT2 KW_TY("int2")
 #define KW_TY_INT3 KW_TY("int3")

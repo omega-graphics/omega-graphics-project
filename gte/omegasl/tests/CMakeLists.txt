@@ -80,6 +80,8 @@ add_omegasl_compile_test(omegasl_compile_switch_basic        switch_basic.omegas
 add_omegasl_compile_test(omegasl_compile_math_phase5_1       math_phase5_1.omegasl)
 # §5.2 — vector / matrix math (distance / faceforward / refract / inverse).
 add_omegasl_compile_test(omegasl_compile_math_phase5_2       math_phase5_2.omegasl)
+# §5.2 — bool vectors + component-wise compare + any/all.
+add_omegasl_compile_test(omegasl_compile_bool_vector         bool_vector.omegasl)
 # §5.1.0 — modf / frexp out-param intrinsics + mod / mad aliases.
 add_omegasl_compile_test(omegasl_compile_math_modf_frexp     math_modf_frexp.omegasl)
 # §4.1 / §4.2 — 16-bit and 64-bit numeric type families.
@@ -129,8 +131,12 @@ add_omegasl_fail_test(omegasl_invalid_texture_query          invalid_texture_que
 add_omegasl_fail_test(omegasl_invalid_modf_frexp             invalid_modf_frexp.omegasl)
 # §5.2 — vector / matrix math diagnostics (arg counts; inverse non-square / non-matrix).
 add_omegasl_fail_test(omegasl_invalid_math_phase5_2          invalid_math_phase5_2.omegasl)
+# §5.2 — bool-vector diagnostics (any/all on non-bvec; compare arg count / mismatch / non-vector).
+add_omegasl_fail_test(omegasl_invalid_bool_vector            invalid_bool_vector.omegasl)
 add_omegasl_fail_test(omegasl_invalid_switch                 invalid_switch.omegasl)
 add_omegasl_fail_test(omegasl_invalid_matrix_column_write    invalid_matrix_column_write.omegasl)
+# Matrix index-type rule (column + two-level row index must be int/uint).
+add_omegasl_fail_test(omegasl_invalid_matrix_index           invalid_matrix_index.omegasl)
 # §3.2 — ternary diagnostics.
 add_omegasl_fail_test(omegasl_invalid_ternary_type_mismatch  invalid_ternary_type_mismatch.omegasl)
 add_omegasl_fail_test(omegasl_invalid_ternary_nonbool_cond   invalid_ternary_nonbool_cond.omegasl)
