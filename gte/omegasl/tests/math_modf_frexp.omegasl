@@ -1,0 +1,56 @@
+/// §5.1.0 — modf / frexp out-param intrinsics and the mod / mad aliases.
+///
+/// modf(x, out ip)  — returns the fractional part (same type as x) and
+///                    writes the integer part through the out-param. Maps
+///                    to each backend's native modf directly.
+/// frexp(x, out e)  — returns the mantissa (same type as x) and writes the
+///                    exponent as int / intN. MSL/GLSL emit the native call;
+///                    HLSL captures its float exponent in a temp and casts
+///                    back to the int out-param (statement injection).
+/// mod / mad        — accepted as aliases of fmod / fma (truncation modulus
+///                    and multiply-add); they carry no separate semantics.
+
+struct VOut internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+vertex VOut mfVert(uint vid : VertexID){
+    VOut o;
+    o.pos = float4(0.0, 0.0, 0.0, 1.0);
+    o.uv  = float2(0.0, 0.0);
+    return o;
+}
+
+fragment float4 mfFrag(VOut r){
+    float  x = r.uv.x * 10.0;
+    float3 v = float3(r.uv, 0.5) * 8.0;
+
+    /// modf — scalar + vector. Out-param is a writable local.
+    float  ip;
+    float  fr  = modf(x, ip);
+    float3 ipv;
+    float3 frv = modf(v, ipv);
+
+    /// frexp — scalar + vector. Exponent out-param is int / intN.
+    int  e;
+    float  m  = frexp(x, e);
+    int3 ev;
+    float3 mv = frexp(v, ev);
+
+    /// Out-param through an index lvalue is allowed.
+    float scratch[2];
+    float pf = modf(x, scratch[0]);
+
+    /// mod / mad aliases — scalar + vector.
+    float  md  = mod(x, 3.0);
+    float3 mdv = mod(v, float3(3.0, 3.0, 3.0));
+    float  ma  = mad(x, 2.0, 1.0);
+    float3 mav = mad(v, float3(2.0, 2.0, 2.0), float3(1.0, 1.0, 1.0));
+
+    float s = fr + ip + frv.x + ipv.x
+            + m + float(e) + mv.x + float(ev.x)
+            + pf + scratch[0]
+            + md + mdv.x + ma + mav.x;
+    return float4(s, s, s, 1.0);
+}

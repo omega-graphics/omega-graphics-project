@@ -1,0 +1,77 @@
+/// §2.3 Phase B — texture query intrinsics: getDimensions / calculateLOD.
+///
+/// getDimensions(texture, lod) returns the mip-level dimensions, with a
+/// per-rank result shape: uint (1D), uint2 (1D-array / 2D / cube), uint3
+/// (2D-array / 3D / cube-array). On HLSL this lowers through GetDimensions'
+/// out-params via statement injection (a temp declaration + GetDimensions
+/// call hoisted before the use site); MSL uses get_width/height/depth /
+/// get_array_size accessors; GLSL uses uvecN(textureSize(t, int(lod))).
+///
+/// calculateLOD(sampler, texture, coord) returns the float LOD the hardware
+/// would select. Every backend's query takes only the spatial coord, so the
+/// array layer / cube-array face is dropped. 1D textures are rejected (no mip
+/// pyramid; Metal exposes no LOD query for texture1d).
+///
+/// This also exercises integer-vector swizzle (`.x` on the uint2 / uint3
+/// results), which the generalized MEMBER_EXPR swizzle resolver supports.
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv : TexCoord;
+};
+
+texture1d         ramp1D     : 0;
+texture1d_array   ramp1DArr  : 1;
+texture2d         diffuse2D  : 2;
+sampler2d         diffuseSamp: 3;
+texture2d_array   atlas2DArr : 4;
+texture3d         volume3D   : 5;
+sampler3d         volSamp    : 6;
+texturecube       envCube    : 7;
+samplercube       envSamp    : 8;
+texturecube_array envCubeArr : 9;
+
+vertex VertexRaster texQueryVert(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv = float2(0.0, 0.0);
+    return r;
+}
+
+[in ramp1D, in ramp1DArr,
+ in diffuse2D, in diffuseSamp,
+ in atlas2DArr,
+ in volume3D, in volSamp,
+ in envCube, in envSamp,
+ in envCubeArr]
+fragment float4 texQueryFrag(VertexRaster raster){
+    /// getDimensions across every supported rank.
+    uint  d1   = getDimensions(ramp1D, 0);
+    uint2 d1a  = getDimensions(ramp1DArr, 0);
+    uint2 d2   = getDimensions(diffuse2D, 0);
+    uint3 d2a  = getDimensions(atlas2DArr, 1);
+    uint3 d3   = getDimensions(volume3D, 0);
+    uint2 dc   = getDimensions(envCube, 0);
+    uint3 dca  = getDimensions(envCubeArr, 0);
+
+    /// calculateLOD across supported ranks (1D is rejected). Array / cube-
+    /// array coords carry a layer that the LOD query drops.
+    float l2  = calculateLOD(diffuseSamp, diffuse2D, raster.uv);
+    float l2a = calculateLOD(diffuseSamp, atlas2DArr, float3(raster.uv, 0.0));
+    float l3  = calculateLOD(volSamp, volume3D, float3(raster.uv, 0.5));
+    float lc  = calculateLOD(envSamp, envCube, float3(0.0, 1.0, 0.0));
+    float lca = calculateLOD(envSamp, envCubeArr, float4(0.0, 1.0, 0.0, 0.0));
+
+    /// Statement-injection edge case: getDimensions inside an if-condition.
+    /// On HLSL the GetDimensions temp must be hoisted before the `if`, not
+    /// inlined into the condition.
+    float bonus = 0.0;
+    if (getDimensions(diffuse2D, 0).x > 4u) {
+        bonus = 1.0;
+    }
+
+    /// Integer-vector swizzle on the uint2 / uint3 results.
+    float s = float(d1 + d1a.x + d2.x + d2a.x + d3.x + dc.x + dca.x)
+            + l2 + l2a + l3 + lc + lca + bonus;
+    return float4(s, s, s, 1.0);
+}

@@ -557,6 +557,12 @@ using namespace metal;
                                    std::ostream &out) {
         bool isByRef = (param.access == ast::AttributedFieldDecl::Out
                         || param.access == ast::AttributedFieldDecl::Inout);
+        /// §3.6 — `const` param. Sema guarantees it never co-occurs with
+        /// `out` / `inout`, so this only ever qualifies the by-value form
+        /// (`const T name`) and never the `thread T&` reference.
+        if (param.isConst) {
+            out << "const ";
+        }
         if (isByRef) {
             out << "thread ";
         }
@@ -901,6 +907,53 @@ using namespace metal;
             emitInnerCoord(coordCast);
         }
         out << ")";
+    }
+
+    void MSLTarget::emitTextureCalculateLOD(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// `tex.calculate_clamped_lod(s, spatialCoord)`. Metal's LOD query
+        /// takes only the spatial coord; the array layer / cube-array face is
+        /// dropped (`.xy` for 2D-array, `.xyz` for cube-array). 1D is rejected
+        /// in Sema (Metal has no `calculate_*_lod` for `texture1d`). We use
+        /// the clamped variant to match the advisory-LOD contract.
+        auto *texTy = metalResolveTextureType(cg, _expr->args[1]);
+        cg.generateExpr(_expr->args[1]);
+        out << ".calculate_clamped_lod(";
+        cg.generateExpr(_expr->args[0]);
+        out << ",";
+        if(texTy == ast::builtins::texture2d_array_type){
+            out << "("; cg.generateExpr(_expr->args[2]); out << ").xy";
+        } else if(texTy == ast::builtins::texturecube_array_type){
+            out << "("; cg.generateExpr(_expr->args[2]); out << ").xyz";
+        } else {
+            cg.generateExpr(_expr->args[2]);
+        }
+        out << ")";
+    }
+
+    void MSLTarget::emitTextureGetDimensions(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// Metal exposes per-axis accessors emitted inline (no statement
+        /// injection needed). `get_width/height/depth(lod)` take a mip level;
+        /// `get_array_size()` does not. 1D textures have no mip pyramid, so
+        /// their `get_width()` takes no lod — we drop it (the width is
+        /// well-defined for a mip-less 1D texture regardless of lod).
+        auto *texTy = metalResolveTextureType(cg, _expr->args[0]);
+        std::string tex = cg.renderExprToString(_expr->args[0]);
+        std::string lod = cg.renderExprToString(_expr->args[1]);
+        if(texTy == ast::builtins::texture1d_type){
+            out << "uint(" << tex << ".get_width())";
+        } else if(texTy == ast::builtins::texture1d_array_type){
+            out << "uint2(" << tex << ".get_width()," << tex << ".get_array_size())";
+        } else if(texTy == ast::builtins::texture2d_type
+                  || texTy == ast::builtins::texturecube_type){
+            out << "uint2(" << tex << ".get_width(" << lod << ")," << tex << ".get_height(" << lod << "))";
+        } else if(texTy == ast::builtins::texture2d_array_type
+                  || texTy == ast::builtins::texturecube_array_type){
+            out << "uint3(" << tex << ".get_width(" << lod << ")," << tex << ".get_height(" << lod << ")," << tex << ".get_array_size())";
+        } else if(texTy == ast::builtins::texture3d_type){
+            out << "uint3(" << tex << ".get_width(" << lod << ")," << tex << ".get_height(" << lod << ")," << tex << ".get_depth(" << lod << "))";
+        } else {
+            out << "uint(" << tex << ".get_width())";
+        }
     }
 
     void MSLTarget::emitTextureWrite(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {

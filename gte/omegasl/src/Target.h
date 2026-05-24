@@ -103,6 +103,29 @@ namespace omegasl {
         /// the texture to 2D / 2D-array / cube / cube-array.
         virtual void emitTextureGather(CodeGen &cg, ast::CallExpr *expr, int channel, std::ostream &out) = 0;
 
+        /// §2.3 Phase B — texture query intrinsics.
+        ///
+        /// `calculateLOD(sampler, texture, coord)` returns the LOD the
+        /// hardware would select. Emitted inline as a scalar `float`
+        /// expression: HLSL `tex.CalculateLevelOfDetail(s, c)`, MSL
+        /// `tex.calculate_clamped_lod(s, c)`, GLSL
+        /// `textureQueryLod(samplerND(t, s), c).x` (GLSL returns a vec2; the
+        /// `.x` discards the unclamped component — the LOD is documented as
+        /// advisory, so the clamped value is fine).
+        virtual void emitTextureCalculateLOD(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) = 0;
+
+        /// `getDimensions(texture, lod)` queries mip-level dimensions. Sema
+        /// synthesizes the per-rank return shape (`uint` / `uint2` /
+        /// `uint3`). MSL and GLSL emit inline (`get_width(...)` etc.
+        /// accessors / `uvecN(textureSize(t, int(lod)))`). HLSL's
+        /// `GetDimensions` uses out-params and cannot appear as a
+        /// sub-expression, so the HLSL backend queues the temp declaration
+        /// and the `GetDimensions(...)` call through
+        /// `cg.queuePendingStatement(...)` (flushed before the current
+        /// statement by `generateBlock`) and emits a `uintN(...)`
+        /// constructor over the temporaries inline.
+        virtual void emitTextureGetDimensions(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) = 0;
+
         /// Phase 5: small per-statement target hooks.
 
         /// The keyword that aborts a fragment shader: `"discard"` for
@@ -409,6 +432,13 @@ namespace omegasl {
                             std::optional<unsigned> index,
                             std::ostream &out) override;
         OmegaCommon::StrRef renameBuiltin(OmegaCommon::StrRef name) override;
+        /// §5.1.0 — takes over `frexp` emission: HLSL's `frexp` writes a
+        /// float exponent, but OmegaSL types the exponent out-param as
+        /// int/intN, so the float exponent is captured in a temp and cast
+        /// back. Statement injection (see `emitTextureGetDimensions`). All
+        /// other builtins fall through to `renameBuiltin`.
+        bool tryEmitBuiltinCall(CodeGen &cg, ast::CallExpr *expr,
+                                OmegaCommon::StrRef name, std::ostream &out) override;
         void emitTextureSample(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureRead(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureWrite(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
@@ -416,6 +446,8 @@ namespace omegasl {
         void emitTextureSampleBias(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureSampleGrad(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureGather(CodeGen &cg, ast::CallExpr *expr, int channel, std::ostream &out) override;
+        void emitTextureCalculateLOD(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureGetDimensions(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         OmegaCommon::StrRef discardStatement() override;
         void writeCast(CodeGen &cg, ast::TypeExpr *target, std::ostream &out) override;
         bool supportsPointerExpr() const override;
@@ -500,6 +532,8 @@ namespace omegasl {
         void emitTextureSampleBias(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureSampleGrad(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureGather(CodeGen &cg, ast::CallExpr *expr, int channel, std::ostream &out) override;
+        void emitTextureCalculateLOD(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureGetDimensions(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         OmegaCommon::StrRef discardStatement() override;
         void writeCast(CodeGen &cg, ast::TypeExpr *target, std::ostream &out) override;
         bool supportsPointerExpr() const override;
@@ -586,6 +620,8 @@ namespace omegasl {
         void emitTextureSampleBias(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureSampleGrad(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureGather(CodeGen &cg, ast::CallExpr *expr, int channel, std::ostream &out) override;
+        void emitTextureCalculateLOD(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitTextureGetDimensions(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         OmegaCommon::StrRef discardStatement() override;
         void writeCast(CodeGen &cg, ast::TypeExpr *target, std::ostream &out) override;
         bool supportsPointerExpr() const override;

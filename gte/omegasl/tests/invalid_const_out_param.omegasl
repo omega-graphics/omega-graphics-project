@@ -1,0 +1,24 @@
+/// §3.6 — `const` cannot combine with `out` / `inout`. Those qualifiers
+/// write the caller's storage back through the binding, which an
+/// immutable binding can't do. Sema must reject the combination.
+/// The harness only checks that compilation fails.
+
+struct Pt {
+    float4 value;
+};
+
+buffer<Pt> dst : 0;
+
+/// Expected diagnostic: "`const` cannot be combined with `out`/`inout`
+/// on parameter `s`."
+void writeback(const out float s){
+    s = 1.0;
+}
+
+[out dst]
+compute(x=1,y=1,z=1)
+void test_invalid_const_out_param(uint3 tid : GlobalThreadID){
+    float s;
+    writeback(s);
+    dst[0].value = float4(s, s, s, s);
+}

@@ -56,6 +56,8 @@ typedef int ASTType;
 #define BUILTIN_GATHER_ALPHA "gatherAlpha"
 #define BUILTIN_WRITE "write"
 #define BUILTIN_READ "read"
+#define BUILTIN_CALCULATE_LOD "calculateLOD"
+#define BUILTIN_GET_DIMENSIONS "getDimensions"
 
 #define BUILTIN_MAKE_INT2 "make_int2"
 #define BUILTIN_MAKE_INT3 "make_int3"
@@ -140,6 +142,22 @@ typedef int ASTType;
 /// 3-arg: §5.1 — fused multiply-add. HLSL backend lowers to `mad`
 /// (broadly available; precision contract looser than IEEE 754 fma).
 #define BUILTIN_FMA "fma"
+
+/// §5.1.0 — `mod` / `mad` are accepted as aliases of the canonical
+/// `fmod` / `fma` spellings (see `ast::canonicalBuiltinAlias`). They
+/// carry no separate semantics: `mod` is truncation-modulus like `fmod`
+/// (not GLSL's floor-based `mod`), and `mad` is `fma`'s multiply-add.
+#define BUILTIN_MOD "mod"
+#define BUILTIN_MAD "mad"
+
+/// §5.1.0 — `modf(x, out ip)` returns the fractional part (same type as
+/// `x`) and writes the integer part through the out-param. `frexp(x, out
+/// e)` returns the mantissa (same type as `x`) and writes the exponent as
+/// int/intN. Both rely on §3.7 out-params; modf maps to each backend's
+/// native call directly, while HLSL's `frexp` writes a float exponent and
+/// the backend casts it back to the int out-param (see HLSLTarget).
+#define BUILTIN_MODF "modf"
+#define BUILTIN_FREXP "frexp"
 
 /// §6.2 — compute-shader barriers. Both are 0-arg, void-returning, and
 /// only valid inside a compute shader. `threadgroupBarrier` is an

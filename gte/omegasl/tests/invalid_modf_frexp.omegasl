@@ -1,0 +1,37 @@
+/// §5.1.0 — negative cases for modf / frexp. All five live in one shader
+/// body: `performSemForBlock` recovers past each failed statement, so every
+/// case surfaces its own diagnostic in a single compile (it does not stop at
+/// the first).
+///   (1) wrong arg count (modf takes exactly 2),
+///   (2) out-param is not a writable lvalue (a literal),
+///   (3) out-param is a `const` local,
+///   (4) frexp exponent out-param typed float instead of int,
+///   (5) first argument is not float / float-vector.
+
+struct VOut internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+vertex VOut badVert(uint vid : VertexID){
+    VOut o;
+    o.pos = float4(0.0, 0.0, 0.0, 1.0);
+    o.uv  = float2(0.0, 0.0);
+    return o;
+}
+
+fragment float4 badFrag(VOut r){
+    float x = r.uv.x;
+    const float c = 0.0;
+    float badFloatE;
+    int   badIntE;
+    int   i = 3;
+
+    float a = modf(x);            // (1) arg count
+    float b = modf(x, 1.0);       // (2) non-lvalue out-param
+    float d = modf(x, c);         // (3) const out-param
+    float e = frexp(x, badFloatE);// (4) float exponent
+    int   g = modf(i, badIntE);   // (5) non-float first arg
+
+    return float4(a + b + d + e + float(g), 0.0, 0.0, 1.0);
+}

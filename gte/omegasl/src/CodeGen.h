@@ -231,6 +231,17 @@ namespace omegasl {
         std::ofstream fileOut;
         std::ostringstream *runtimeStringOut = nullptr;
         std::ostream &shaderOut;
+
+        /// §2.3 Phase B — statement-injection redirect. When non-null,
+        /// `shaderOutStream()` returns this stream instead of `shaderOut`.
+        /// `generateBlock` points it at a per-statement scratch buffer while
+        /// rendering each statement, so a backend whose expression emission
+        /// needs preceding statements (HLSL `GetDimensions`, which uses
+        /// out-params and cannot be a sub-expression) can queue those lines
+        /// via `queuePendingStatement`. When null — the common case — output
+        /// is byte-identical to the pre-Phase-B walk. `renderExprToString`
+        /// also borrows it to spell a sub-expression off-stream.
+        std::ostream *outputRedirect_ = nullptr;
     public:
         Target *getTarget() { return target.get(); }
         std::ostream &getShaderOut() { return shaderOut; }
@@ -293,11 +304,50 @@ namespace omegasl {
         /// their parent.
         void generateBlock(ast::Block &block);
 
+        /// §2.3 Phase B — emit one statement at the current indent level,
+        /// honoring statement injection. The statement is rendered into a
+        /// scratch buffer (with the per-statement redirect active) so a
+        /// backend can queue lines to be emitted *before* it; queued lines
+        /// are flushed (indented) ahead of the statement, then the statement
+        /// itself with its trailing `;` (non-block statements only).
+        /// `pendingStatements` is swapped out for the render so lines from an
+        /// enclosing statement survive. Shared by `generateBlock` and the
+        /// `switch`-case-body loop in `generateDecl`. Byte-identical to the
+        /// pre-Phase-B per-statement emission when nothing is queued.
+        void emitStatementLine(ast::Stmt *stmt);
+
         /// Phase 10: output stream accessor used by `generateExpr` /
         /// `generateBlock`. Always returns the `shaderOut` reference
         /// established in the constructor (file in offline mode, the
         /// runtime caller's ostringstream in runtime mode).
-        std::ostream &shaderOutStream() { return shaderOut; }
+        std::ostream &shaderOutStream() { return outputRedirect_ ? *outputRedirect_ : shaderOut; }
+
+        /// §2.3 Phase B — lines a Target queued during expression emission,
+        /// to be written (indented to the current level) immediately before
+        /// the statement being rendered. Drained per-statement by
+        /// `generateBlock`. Empty in the common case.
+        std::vector<std::string> pendingStatements;
+
+        /// §2.3 Phase B — monotonic id for HLSL `GetDimensions` temporaries
+        /// (`_gd<N>_w`, ...) so multiple queries in one shader don't collide.
+        unsigned getDimensionsTempId = 0;
+
+        void queuePendingStatement(std::string stmt) {
+            pendingStatements.push_back(std::move(stmt));
+        }
+
+        /// Spell `expr` to a string using the active target, without writing
+        /// to the live output stream. Used by a backend that needs the
+        /// spelled form of a sub-expression to build an injected statement
+        /// (HLSL `GetDimensions` — see `emitTextureGetDimensions`).
+        std::string renderExprToString(ast::Expr *expr) {
+            std::ostringstream tmp;
+            std::ostream *saved = outputRedirect_;
+            outputRedirect_ = &tmp;
+            generateExpr(expr);
+            outputRedirect_ = saved;
+            return tmp.str();
+        }
 
         /// Current block-nesting depth, in indentation levels (one
         /// level == 4 spaces after Phase 7.5 unification). Each

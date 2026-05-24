@@ -166,6 +166,11 @@ namespace omegasl {
             case CALL_EXPR: {
                 auto _expr = (ast::CallExpr *)expr;
                 OmegaCommon::StrRef _id_expr = ((ast::IdExpr *)_expr->callee)->id;
+                /// §5.1.0 — resolve `mod`/`mad` to their canonical `fmod`/`fma`
+                /// spelling for the builtin-emission branches below. A
+                /// user-defined function of the same name still wins (the
+                /// `isUserFunc` check runs first), matching builtin-shadowing.
+                OmegaCommon::StrRef _canon_id = ast::canonicalBuiltinAlias(_id_expr);
                 bool generatedExprBody = false;
                 if (_id_expr == BUILTIN_SAMPLE) {
                     generatedExprBody = true;
@@ -200,6 +205,12 @@ namespace omegasl {
                 } else if (_id_expr == BUILTIN_READ) {
                     generatedExprBody = true;
                     target->emitTextureRead(*this, _expr, out);
+                } else if (_id_expr == BUILTIN_CALCULATE_LOD) {
+                    generatedExprBody = true;
+                    target->emitTextureCalculateLOD(*this, _expr, out);
+                } else if (_id_expr == BUILTIN_GET_DIMENSIONS) {
+                    generatedExprBody = true;
+                    target->emitTextureGetDimensions(*this, _expr, out);
                 } else if (isUserFunc(_id_expr)) {
                     /// §3.5 — pick the mangled spelling matching the
                     /// resolved overload. Sema stamps `resolvedCallee`
@@ -212,13 +223,14 @@ namespace omegasl {
                     } else {
                         out << spellUserFuncName(_id_expr);
                     }
-                } else if (target->tryEmitBuiltinCall(*this, _expr, _id_expr, out)) {
-                    /// GLSL handles `saturate` / `fmod` here — the call is
-                    /// fully emitted by the backend (different shape, not a
-                    /// simple rename), so skip the shared `(args)` suffix.
+                } else if (target->tryEmitBuiltinCall(*this, _expr, _canon_id, out)) {
+                    /// GLSL handles `saturate` / `fmod` here, HLSL handles
+                    /// `frexp` — the call is fully emitted by the backend
+                    /// (different shape, not a simple rename), so skip the
+                    /// shared `(args)` suffix.
                     generatedExprBody = true;
                 } else {
-                    auto renamed = target->renameBuiltin(_id_expr);
+                    auto renamed = target->renameBuiltin(_canon_id);
                     out << renamed;
                 }
 
@@ -261,6 +273,60 @@ namespace omegasl {
     /// after Phase 8c+8d unified the per-backend bodies. Output stream
     /// is fetched via `shaderOutStream()` until Phase 10 folds the
     /// file/string members up here too.
+    void CodeGen::emitStatementLine(ast::Stmt *stmt) {
+        /// `out` is the destination for this statement — the enclosing
+        /// redirect (a parent statement's scratch buffer) or, at top level,
+        /// the real `shaderOut`. Captured before we install the per-statement
+        /// redirect below.
+        std::ostream &out = shaderOutStream();
+
+        /// Render the statement into a scratch buffer so a backend can queue
+        /// lines to be emitted *before* it (HLSL `GetDimensions`, whose
+        /// out-params can't be a sub-expression). `pendingStatements` is
+        /// swapped empty for the render so lines belonging to an *enclosing*
+        /// statement (e.g. an `if` whose condition queued them while this
+        /// nested block is being walked) are untouched and get flushed by the
+        /// enclosing level. When no backend queues anything — every case but
+        /// HLSL `getDimensions` — `stmtBuf` holds exactly what the pre-Phase-B
+        /// walk wrote and the output is byte-identical.
+        std::ostringstream stmtBuf;
+        std::vector<std::string> savedPending;
+        savedPending.swap(pendingStatements);
+        std::ostream *savedRedirect = outputRedirect_;
+        outputRedirect_ = &stmtBuf;
+
+        bool isBlockStmt = (stmt->type == IF_STMT || stmt->type == FOR_STMT
+            || stmt->type == WHILE_STMT || stmt->type == SWITCH_STMT);
+        if (stmt->type == VAR_DECL || stmt->type == RETURN_DECL || isBlockStmt
+            || stmt->type == BREAK_STMT || stmt->type == CONTINUE_STMT
+            || stmt->type == DISCARD_STMT) {
+            generateDecl((ast::Decl *)stmt);
+        } else {
+            generateExpr((ast::Expr *)stmt);
+        }
+
+        outputRedirect_ = savedRedirect;
+
+        /// Flush this statement's queued pre-statements (indented to the
+        /// current level), then restore the enclosing statement's pending.
+        for (auto &pre : pendingStatements) {
+            for (unsigned i = 0; i < indentLevel; i++) {
+                out << "    ";
+            }
+            out << pre << std::endl;
+        }
+        pendingStatements.swap(savedPending);
+
+        for (unsigned i = 0; i < indentLevel; i++) {
+            out << "    ";
+        }
+        out << stmtBuf.str();
+        if (!isBlockStmt) {
+            out << ";";
+        }
+        out << std::endl;
+    }
+
     void CodeGen::generateBlock(ast::Block &block) {
         std::ostream &out = shaderOutStream();
         out << "{" << std::endl;
@@ -275,23 +341,7 @@ namespace omegasl {
             if (stmt->type == VAR_DECL && ((ast::VarDecl *)stmt)->isThreadgroup) {
                 continue;
             }
-            for (unsigned i = 0; i < indentLevel; i++) {
-                out << "    ";
-            }
-            if (stmt->type == VAR_DECL || stmt->type == RETURN_DECL || stmt->type == IF_STMT
-                || stmt->type == FOR_STMT || stmt->type == WHILE_STMT || stmt->type == BREAK_STMT
-                || stmt->type == CONTINUE_STMT || stmt->type == DISCARD_STMT
-                || stmt->type == SWITCH_STMT) {
-                generateDecl((ast::Decl *)stmt);
-                if (stmt->type != IF_STMT && stmt->type != FOR_STMT && stmt->type != WHILE_STMT
-                    && stmt->type != SWITCH_STMT) {
-                    out << ";";
-                }
-            } else {
-                generateExpr((ast::Expr *)stmt);
-                out << ";";
-            }
-            out << std::endl;
+            emitStatementLine(stmt);
         }
         indentLevel -= 1;
         out << "}" << std::endl;
@@ -388,6 +438,13 @@ namespace omegasl {
     /// through `Target::*` hooks. The if/for/while/break/continue/
     /// discard arms are byte-identical to the pre-Phase-10 backends.
     void CodeGen::generateDecl(ast::Decl *decl) {
+        /// §2.3 Phase B — statement arms write through `shaderOutStream()`
+        /// (the active redirect), not `shaderOut` directly, so that when
+        /// `emitStatementLine` renders a statement into a scratch buffer the
+        /// whole statement — declaration prefix included — is captured and a
+        /// queued pre-statement lands *before* it. At top level the redirect
+        /// is null, so `out` is `shaderOut` and output is byte-identical.
+        std::ostream &out = shaderOutStream();
         switch (decl->type) {
             case VAR_DECL: {
                 auto _decl = (ast::VarDecl *)decl;
@@ -399,21 +456,21 @@ namespace omegasl {
                 /// form on a local declaration, so a single emit point
                 /// before the type is enough — no per-target hook needed.
                 if (_decl->isConst) {
-                    shaderOut << "const ";
+                    out << "const ";
                 }
-                writeTypeExpr(_decl->typeExpr, shaderOut);
+                writeTypeExpr(_decl->typeExpr, out);
                 /// Route the declared name through `writeIdentifier` so
                 /// per-target reserved-word escapes (HLSL `out` → `_out`,
                 /// GLSL `input` → `_input`, ...) reach the definition
                 /// site. ID_EXPR references already go through the same
                 /// hook, so the rewrite is symmetric end-to-end.
-                shaderOut << " ";
-                target->writeIdentifier(_decl->spec.name, shaderOut);
+                out << " ";
+                target->writeIdentifier(_decl->spec.name, out);
                 for (unsigned dim : _decl->typeExpr->arrayDims) {
-                    shaderOut << "[" << dim << "]";
+                    out << "[" << dim << "]";
                 }
                 if (_decl->spec.initializer.has_value()) {
-                    shaderOut << " = ";
+                    out << " = ";
                     generateExpr(_decl->spec.initializer.value());
                 }
                 break;
@@ -424,48 +481,48 @@ namespace omegasl {
                     break;
                 }
                 if (_decl->expr) {
-                    shaderOut << "return ";
+                    out << "return ";
                     generateExpr(_decl->expr);
                 } else {
-                    shaderOut << "return";
+                    out << "return";
                 }
                 break;
             }
             case IF_STMT: {
                 auto _stmt = (ast::IfStmt *)decl;
-                shaderOut << "if(";
+                out << "if(";
                 generateExpr(_stmt->condition);
-                shaderOut << ")";
+                out << ")";
                 generateBlock(*_stmt->thenBlock);
                 for (auto &branch : _stmt->elseIfs) {
-                    shaderOut << " else if(";
+                    out << " else if(";
                     generateExpr(branch.condition);
-                    shaderOut << ")";
+                    out << ")";
                     generateBlock(*branch.block);
                 }
                 if (_stmt->elseBlock) {
-                    shaderOut << " else ";
+                    out << " else ";
                     generateBlock(*_stmt->elseBlock);
                 }
                 break;
             }
             case FOR_STMT: {
                 auto _stmt = (ast::ForStmt *)decl;
-                shaderOut << "for(";
+                out << "for(";
                 if (_stmt->init) { generateDecl((ast::Decl *)_stmt->init); }
-                shaderOut << ";";
+                out << ";";
                 if (_stmt->condition) { generateExpr(_stmt->condition); }
-                shaderOut << ";";
+                out << ";";
                 if (_stmt->increment) { generateExpr(_stmt->increment); }
-                shaderOut << ")";
+                out << ")";
                 generateBlock(*_stmt->body);
                 break;
             }
             case WHILE_STMT: {
                 auto _stmt = (ast::WhileStmt *)decl;
-                shaderOut << "while(";
+                out << "while(";
                 generateExpr(_stmt->condition);
-                shaderOut << ")";
+                out << ")";
                 generateBlock(*_stmt->body);
                 break;
             }
@@ -475,54 +532,43 @@ namespace omegasl {
                 /// rather than per-target hooks. `break` inside a case
                 /// flows through the existing BREAK_STMT arm.
                 auto _stmt = (ast::SwitchStmt *)decl;
-                shaderOut << "switch(";
+                out << "switch(";
                 generateExpr(_stmt->condition);
-                shaderOut << "){" << std::endl;
+                out << "){" << std::endl;
                 for (auto &sc : _stmt->cases) {
-                    for (unsigned i = 0; i < indentLevel; i++) shaderOut << "    ";
+                    for (unsigned i = 0; i < indentLevel; i++) out << "    ";
                     if (sc.value) {
-                        shaderOut << "case ";
+                        out << "case ";
                         generateExpr(sc.value);
-                        shaderOut << ":";
+                        out << ":";
                     } else {
-                        shaderOut << "default:";
+                        out << "default:";
                     }
-                    shaderOut << std::endl;
+                    out << std::endl;
                     indentLevel += 1;
                     for (auto *s : sc.body) {
-                        for (unsigned i = 0; i < indentLevel; i++) shaderOut << "    ";
-                        if (s->type == VAR_DECL || s->type == RETURN_DECL || s->type == IF_STMT
-                            || s->type == FOR_STMT || s->type == WHILE_STMT || s->type == BREAK_STMT
-                            || s->type == CONTINUE_STMT || s->type == DISCARD_STMT
-                            || s->type == SWITCH_STMT) {
-                            generateDecl((ast::Decl *)s);
-                            if (s->type != IF_STMT && s->type != FOR_STMT && s->type != WHILE_STMT
-                                && s->type != SWITCH_STMT) {
-                                shaderOut << ";";
-                            }
-                        } else {
-                            generateExpr((ast::Expr *)s);
-                            shaderOut << ";";
-                        }
-                        shaderOut << std::endl;
+                        /// Route case-body statements through the shared
+                        /// per-statement emitter so HLSL `getDimensions`
+                        /// injection works inside a `case` too.
+                        emitStatementLine(s);
                     }
                     indentLevel -= 1;
                 }
-                for (unsigned i = 0; i < indentLevel; i++) shaderOut << "    ";
-                shaderOut << "}";
+                for (unsigned i = 0; i < indentLevel; i++) out << "    ";
+                out << "}";
                 break;
             }
             case BREAK_STMT: {
-                shaderOut << "break";
+                out << "break";
                 break;
             }
             case CONTINUE_STMT: {
-                shaderOut << "continue";
+                out << "continue";
                 break;
             }
             case DISCARD_STMT: {
                 auto kw = target->discardStatement();
-                shaderOut << kw;
+                out << kw;
                 break;
             }
             case STRUCT_DECL: {

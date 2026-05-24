@@ -668,12 +668,33 @@ namespace omegasl {
                     /// have a source-level shape.
                     ast::AttributedFieldDecl::ParamAccess paramAccess =
                         ast::AttributedFieldDecl::In;
-                    if (t.type == TOK_ID
-                        && (t.str == KW_IN || t.str == KW_OUT || t.str == KW_INOUT)) {
-                        if (t.str == KW_IN)         paramAccess = ast::AttributedFieldDecl::In;
-                        else if (t.str == KW_OUT)   paramAccess = ast::AttributedFieldDecl::Out;
-                        else                        paramAccess = ast::AttributedFieldDecl::Inout;
-                        t = lexer->nextTok();
+                    /// §3.6 — `const` parameter qualifier. `const` is a real
+                    /// keyword (TOK_KW) while the access qualifiers are
+                    /// contextual (TOK_ID), so collect both in one loop: the
+                    /// two may appear in either order in front of the type
+                    /// (`const in T`, `in const T`). A repeated `const` is a
+                    /// duplicate error.
+                    bool paramConst = false;
+                    for (;;) {
+                        if (t.type == TOK_KW && t.str == KW_CONST) {
+                            if (paramConst) {
+                                delete node;
+                                auto e = std::make_unique<UnexpectedToken>("Duplicate `const` on parameter");
+                                e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                                diagnostics->addError(std::move(e));
+                                return nullptr;
+                            }
+                            paramConst = true;
+                            t = lexer->nextTok();
+                        } else if (t.type == TOK_ID
+                                   && (t.str == KW_IN || t.str == KW_OUT || t.str == KW_INOUT)) {
+                            if (t.str == KW_IN)         paramAccess = ast::AttributedFieldDecl::In;
+                            else if (t.str == KW_OUT)   paramAccess = ast::AttributedFieldDecl::Out;
+                            else                        paramAccess = ast::AttributedFieldDecl::Inout;
+                            t = lexer->nextTok();
+                        } else {
+                            break;
+                        }
                     }
 
                     auto _tok = t;
@@ -686,6 +707,23 @@ namespace omegasl {
                     }
 
                     auto var_ty = buildTypeRef(_tok, type_is_pointer);
+
+                    /// §3.6 — postfix `T const name` spelling. The C-family
+                    /// backends accept it; we set the same flag the prefix
+                    /// form does. `const T const name` trips the duplicate
+                    /// check above only for the prefix repeat — guard the
+                    /// postfix repeat here too.
+                    if (t.type == TOK_KW && t.str == KW_CONST) {
+                        if (paramConst) {
+                            delete node;
+                            auto e = std::make_unique<UnexpectedToken>("Duplicate `const` on parameter");
+                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            diagnostics->addError(std::move(e));
+                            return nullptr;
+                        }
+                        paramConst = true;
+                        t = lexer->nextTok();
+                    }
 
                     if (t.type != TOK_ID) {
                         /// ERROR!
@@ -733,9 +771,9 @@ namespace omegasl {
                             }
                             t = lexer->nextTok();
                         }
-                        funcDecl->params.push_back({var_ty, var_id, attr_name, attr_index, paramAccess});
+                        funcDecl->params.push_back({var_ty, var_id, attr_name, attr_index, paramAccess, paramConst});
                     } else {
-                        funcDecl->params.push_back({var_ty, var_id, {}, {}, paramAccess});
+                        funcDecl->params.push_back({var_ty, var_id, {}, {}, paramAccess, paramConst});
                     }
 
                     if (t.type == TOK_COMMA) {
@@ -1159,11 +1197,28 @@ namespace omegasl {
                 ast::Decl *d = parseGenericDecl(first_tok,ctxt);
                 return d;
             }
+            /// §3.6 / §6.1 — a leading `const` / `threadgroup` qualifier
+            /// introduces a var-decl. `parseGenericDecl` owns the prefix-
+            /// qualifier var-decl form, so route there directly. Without
+            /// this the keyword falls through both the switch above and the
+            /// type-token disambiguator below (which only fires on
+            /// TOK_KW_TYPE / TOK_ID), reaching neither a decl parse nor a
+            /// clean error — the whole enclosing block body was then
+            /// silently dropped from the generated source. Mirrors the
+            /// `else if (TOK_KW) isDecl = true` branch in `parseStmt`.
+            if(first_tok.str == KW_CONST || first_tok.str == KW_THREADGROUP){
+                ast::Decl *d = parseGenericDecl(first_tok,ctxt);
+                return d;
+            }
         }
         bool isDecl = false;
         if(first_tok.type == TOK_KW_TYPE || first_tok.type == TOK_ID){
             auto ahead = (tokIdx + 1 < tokenBuffer.size()) ? tokenBuffer[tokIdx + 1] : Tok{};
-            if(ahead.type == TOK_ASTERISK || ahead.type == TOK_ID) isDecl = true;
+            /// §3.6 — postfix `Type const name` is a declaration; recognize
+            /// the trailing `const` the same way `parseStmt` does so it
+            /// reaches `parseGenericDecl` rather than `parseExpr`.
+            if(ahead.type == TOK_ASTERISK || ahead.type == TOK_ID
+               || (ahead.type == TOK_KW && ahead.str == KW_CONST)) isDecl = true;
         }
         if(isDecl){
             ast::Decl *d = parseGenericDecl(first_tok,ctxt);
@@ -1533,7 +1588,12 @@ namespace omegasl {
         if(first_tok.type == TOK_KW_TYPE || first_tok.type == TOK_ID){
             auto & ahead_tok = aheadTok();
 
-            if(ahead_tok.type == TOK_ASTERISK || ahead_tok.type == TOK_ID){
+            /// §3.6 — `Type const name` (postfix const) is a declaration,
+            /// not an expression. Without the `const`-keyword case the
+            /// disambiguator would route it to `parseExpr` and the type
+            /// keyword would be misread as an undeclared identifier.
+            if(ahead_tok.type == TOK_ASTERISK || ahead_tok.type == TOK_ID
+               || (ahead_tok.type == TOK_KW && ahead_tok.str == KW_CONST)){
                 isDecl = true;
             }
         }
@@ -1634,6 +1694,28 @@ namespace omegasl {
             }
             auto type_for_var_decl = buildTypeRef(_tok,type_is_pointer);
             first_tok = getTok();
+            /// §3.6 — postfix `T const name` spelling for locals. Sets the
+            /// same `isConst` flag the prefix form does. A repeat
+            /// (`const T const name`) or a `threadgroup T const name` combo
+            /// is contradictory, mirroring the prefix-side checks above.
+            if(first_tok.type == TOK_KW && first_tok.str == KW_CONST){
+                if(isConst){
+                    auto e = std::make_unique<UnexpectedToken>(
+                        "Duplicate `const` on declaration");
+                    e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+                if(isThreadgroup){
+                    auto e = std::make_unique<UnexpectedToken>(
+                        "`const` and `threadgroup` cannot be combined on a declaration");
+                    e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+                isConst = true;
+                first_tok = getTok();
+            }
             if(first_tok.type != TOK_ID){
                 auto e = std::make_unique<UnexpectedToken>("Expected identifier for variable name");
                 e->loc = ErrorLoc{ first_tok.line, first_tok.line, first_tok.colStart, first_tok.colEnd };
@@ -2269,6 +2351,16 @@ namespace omegasl {
                 }
             }
             else {
+                /// Stop at the first failed global decl. Unlike statements in
+                /// a function body (where `performSemForBlock` recovers and
+                /// surfaces every independent error), a global decl registers
+                /// shared state — resources, struct types — that later decls
+                /// read. Continuing past a half-registered resource/struct
+                /// would let a dependent decl dereference the missing piece
+                /// and crash (see invalid_buffer_no_args: the empty-element
+                /// buffer leaves `args[0]` out of bounds for the shader that
+                /// binds it). Cross-decl error recovery would need dependency
+                /// tracking; deferred.
                 auto e = std::make_unique<UnexpectedToken>("Failed to evaluate statement");
                 diagnostics->addError(std::move(e));
                 break;

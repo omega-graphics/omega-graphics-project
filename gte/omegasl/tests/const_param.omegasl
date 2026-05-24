@@ -1,0 +1,49 @@
+/// §3.6 — `const` on function parameters, plus the postfix `T const x`
+/// spelling for both parameters and locals. The compiler must accept
+/// `const` in front of (or behind) a parameter type, treat the binding
+/// as immutable inside the body, and emit `const T name` on all three
+/// backends (HLSL, MSL, GLSL all spell it identically).
+///
+/// `const` is only meaningful with the implicit `in` access — combining
+/// it with `out` / `inout` is rejected by Sema (see the negative test).
+/// It may appear in either order relative to `in`.
+
+struct Pt {
+    float4 value;
+};
+
+buffer<Pt> src : 0;
+buffer<Pt> dst : 1;
+
+/// Prefix `const` parameter — read-only inside the body.
+float scale_by(const float v, float k){
+    return v * k;
+}
+
+/// Postfix `const` parameter (`T const name`) combined with an explicit
+/// `in` qualifier. Exercises both the postfix parse path and the
+/// const+in ordering.
+float add_postfix(in float const a, float b){
+    return a + b;
+}
+
+/// `const` plus the explicit `in` keyword in prefix position.
+float negate_const(const in float x){
+    return -x;
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_const_param(uint3 tid : GlobalThreadID){
+    float a = src[0].value[0];
+    float b = src[0].value[1];
+
+    /// Postfix `const` local (`T const name`) — same flag as the prefix form.
+    float const scale = 2.0;
+
+    float s = scale_by(a, scale);
+    float t = add_postfix(a, b);
+    float n = negate_const(b);
+
+    dst[0].value = float4(s, t, n, scale);
+}

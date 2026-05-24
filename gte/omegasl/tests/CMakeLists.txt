@@ -74,9 +74,12 @@ add_omegasl_compile_test(omegasl_compile_texture_array       texture_array.omega
 add_omegasl_compile_test(omegasl_compile_texture_ms          texture_ms.omegasl)
 add_omegasl_compile_test(omegasl_compile_sample_variants     sample_variants.omegasl)
 add_omegasl_compile_test(omegasl_compile_texture_gather      texture_gather.omegasl)
+add_omegasl_compile_test(omegasl_compile_texture_query       texture_query.omegasl)
 add_omegasl_compile_test(omegasl_compile_index_assign        index_assign.omegasl)
 add_omegasl_compile_test(omegasl_compile_switch_basic        switch_basic.omegasl)
 add_omegasl_compile_test(omegasl_compile_math_phase5_1       math_phase5_1.omegasl)
+# §5.1.0 — modf / frexp out-param intrinsics + mod / mad aliases.
+add_omegasl_compile_test(omegasl_compile_math_modf_frexp     math_modf_frexp.omegasl)
 # §4.1 / §4.2 — 16-bit and 64-bit numeric type families.
 add_omegasl_compile_test(omegasl_compile_numeric_16bit       numeric_16bit.omegasl)
 add_omegasl_compile_test(omegasl_compile_numeric_64bit       numeric_64bit.omegasl)
@@ -89,6 +92,10 @@ add_omegasl_compile_test(omegasl_compile_function_overload_basic function_overlo
 add_omegasl_compile_test(omegasl_compile_function_overload_with_forward function_overload_with_forward.omegasl)
 # §3.7 — `out` / `inout` function parameters.
 add_omegasl_compile_test(omegasl_compile_out_inout_params    out_inout_params.omegasl)
+# §3.6 — `const` on function parameters + postfix `T const x` form.
+add_omegasl_compile_test(omegasl_compile_const_param         const_param.omegasl)
+# §3.6 — `const` local inside a nested (for/if/while/switch) block body.
+add_omegasl_compile_test(omegasl_compile_nested_const        nested_const.omegasl)
 # §2.4 — uniform / constant buffers.
 add_omegasl_compile_test(omegasl_compile_uniform_buffer      uniform_buffer.omegasl)
 # §6.1 — threadgroup / shared memory (incl. 2D shared-array indexing).
@@ -116,6 +123,8 @@ add_omegasl_fail_test(omegasl_invalid_output_coverage_type   invalid_output_cove
 add_omegasl_fail_test(omegasl_invalid_sample_ms              invalid_sample_ms.omegasl)
 add_omegasl_fail_test(omegasl_invalid_write_ms               invalid_write_ms.omegasl)
 add_omegasl_fail_test(omegasl_invalid_sample_variants        invalid_sample_variants.omegasl)
+add_omegasl_fail_test(omegasl_invalid_texture_query          invalid_texture_query.omegasl)
+add_omegasl_fail_test(omegasl_invalid_modf_frexp             invalid_modf_frexp.omegasl)
 add_omegasl_fail_test(omegasl_invalid_switch                 invalid_switch.omegasl)
 add_omegasl_fail_test(omegasl_invalid_matrix_column_write    invalid_matrix_column_write.omegasl)
 # §3.2 — ternary diagnostics.
@@ -125,6 +134,10 @@ add_omegasl_fail_test(omegasl_invalid_ternary_nonbool_cond   invalid_ternary_non
 add_omegasl_fail_test(omegasl_invalid_const_assign           invalid_const_assign.omegasl)
 add_omegasl_fail_test(omegasl_invalid_const_no_init          invalid_const_no_init.omegasl)
 add_omegasl_fail_test(omegasl_invalid_const_increment        invalid_const_increment.omegasl)
+# §3.6 — `const` parameter diagnostics (const+out/inout, write-through, dup const).
+add_omegasl_fail_test(omegasl_invalid_const_out_param        invalid_const_out_param.omegasl)
+add_omegasl_fail_test(omegasl_invalid_const_param_assign     invalid_const_param_assign.omegasl)
+add_omegasl_fail_test(omegasl_invalid_dup_const              invalid_dup_const.omegasl)
 # §3.5 — overload-resolution diagnostics.
 add_omegasl_fail_test(omegasl_invalid_function_overload_no_match     invalid_function_overload_no_match.omegasl)
 add_omegasl_fail_test(omegasl_invalid_function_overload_redecl       invalid_function_overload_redecl.omegasl)

@@ -202,8 +202,8 @@ Current intrinsic `sample(s,t,c)` only emits the default LOD chooser. Missing:
 | `sampleBias(s, t, c, bias)` | LOD bias | **Phase A — completed** |
 | `sampleGrad(s, t, c, ddx, ddy)` | gradient-based sampling (terrain, raytraced reflections) | **Phase A — completed** |
 | `gather(s, t, c)` / `gatherRed/Green/Blue/Alpha` | PCF, screen-space effects | **Phase A — completed** |
-| `getDimensions(t)` | query mip level dimensions | Phase B — pending |
-| `calculateLOD(s, t, c)` | query LOD chosen by hardware | Phase B — pending |
+| `getDimensions(t, lod)` | query mip level dimensions | **Phase B — completed** |
+| `calculateLOD(s, t, c)` | query LOD chosen by hardware | **Phase B — completed** |
 
 **Phase A — sampling variants (landed)**
 
@@ -278,86 +278,93 @@ scanner. The same bug had been silently disabling the existing
 `TEXTURECUBE_RW` and `TEXTURE2D_MS_WRITE` warnings; no test had
 exercised those code paths, so the regression had been latent.
 
-**Phase B — query intrinsics (planned)**
+**Phase B — query intrinsics (landed)**
 
-`getDimensions` and `calculateLOD` are query-style intrinsics that pose
-distinct challenges from the composable sampling variants in Phase A.
-Both are deferred until the underlying issues are resolved:
+Both query intrinsics landed together, along with the statement-injection
+infrastructure HLSL's `GetDimensions` needed (which `modf`/`frexp` in §5.1
+can now reuse).
 
-* `getDimensions(t)` / `getDimensions(t, lod)` — query mip-level dimensions.
-  The three backends have radically different surface shapes:
+*Statement injection.* `CodeGen` gained a per-statement redirect:
+`emitStatementLine` (shared by `generateBlock` and the `switch`-case-body
+loop) renders each statement into a scratch buffer with `outputRedirect_`
+pointed at it, then flushes any lines a backend queued via
+`queuePendingStatement` — indented to the current level — *before* the
+statement. `pendingStatements` is swapped out for each render so lines
+belonging to an enclosing statement (e.g. an `if` whose condition queued
+them) survive a nested block walk and flush at the right level. To make
+this work, `generateDecl` now writes through `shaderOutStream()` (the
+active redirect) rather than `shaderOut` directly, matching `generateExpr`;
+when no redirect is set the output is byte-identical to the pre-Phase-B
+walk (verified by the unchanged HLSL golden tests). `renderExprToString`
+borrows the same redirect to spell a sub-expression off-stream.
 
-  | Backend | Surface |
-  |---------|---------|
-  | HLSL | `tex.GetDimensions(out width, out height [, out levels])` — out-params, no return value |
-  | MSL | `tex.get_width(lod)`, `tex.get_height(lod)`, `tex.get_depth(lod)`, `tex.get_num_mip_levels()` — separate accessors |
-  | GLSL | `textureSize(samplerND(t, s), int(lod))` — returns `int`/`ivec2`/`ivec3` |
+* `getDimensions(texture, lod)` — `lod` is **required** (pass `0` for the
+  base level), avoiding HLSL's optional-overload selection. The return
+  shape is synthesized per-call in Sema (like `transpose`): `uint` for 1D,
+  `uint2` for 1D-array / 2D / cube, `uint3` for 2D-array / 3D / cube-array.
+  Multisample textures are rejected (the per-backend MS dimension query is
+  asymmetric; deferred).
 
-  Two design problems beyond the simple "pick a spelling" pattern Phase A
-  used:
+  | Backend | Emission |
+  |---------|----------|
+  | HLSL | Statement injection: a `uint _gd<N>_…;` temp declaration + `tex.GetDimensions(lod, …, _gd<N>_levels)` are queued before the use site (the mip-taking overload always appends an `out NumberOfLevels`, declared into a discarded temp), and the inline expression is a `uintN(…)` constructor over the dimension temps. A monotonic `getDimensionsTempId` keeps multiple queries in one shader distinct. |
+  | MSL | Inline `get_width(lod)` / `get_height(lod)` / `get_depth(lod)` / `get_array_size()` accessors. 1D drops the `lod` (Apple GPUs store no 1D mip pyramid; `get_width()` takes no lod, and the width is well-defined regardless). |
+  | GLSL | Inline `uvecN(textureSize(t, int(lod)))` against the bare texture object via `GL_EXT_samplerless_texture_functions` (already in the preamble) — no combined sampler needed; the `uvecN` constructor casts the `int`/`ivec2`/`ivec3` result. |
 
-  1. **Return-shape inference.** The result type depends on the texture's
-     spatial rank: `uint` for 1D, `uint2` for 1D-array / 2D / cube,
-     `uint3` for 2D-array / 3D / cube-array. None of the existing builtins
-     return shape-dependent types — Sema's `func_found->returnType`
-     mechanism returns a fixed `TypeExpr`. A new dispatch path is needed,
-     either by per-call return-type synthesis (similar to how `transpose`
-     handles its NxM → MxN return on lines 719–731 of `Sema.cpp`) or by
-     introducing per-shape fan-out builtins (`getDimensions1D`,
-     `getDimensions2D`, ...).
-
-  2. **Out-param synthesis on HLSL.** `tex.GetDimensions(out w, out h)`
-     can't be expressed inline as a sub-expression. We'd need to emit a
-     temporary statement before the use site and rewrite the source-level
-     call to read from the temporary, e.g.
-
-     ```hlsl
-     uint _gd_w, _gd_h;
-     tex.GetDimensions(_gd_w, _gd_h);
-     uint2 dims = uint2(_gd_w, _gd_h);
-     ```
-
-     CodeGen currently has no statement-injection hook — every builtin
-     emitter writes inline into the expression stream. This is the
-     blocking architectural change for Phase B.
-
-  Recommended approach when Phase B is picked up:
-
-  * Add a `Target::synthesizeStatementBefore(...)` hook that backends
-    can use to inject lines before the current statement. Default no-op
-    on MSL/GLSL (they don't need it). HLSL uses it to emit the
-    `GetDimensions` temporary and rewrite the call site to a swizzle
-    constructor.
-  * Add per-shape return-type resolution for these query builtins —
-    specialize on the resolved texture type at the per-call validation
-    site, the same way `transpose` does.
-  * Decide whether `lod` is required or optional. Recommendation: make
-    it required for now (`getDimensions(tex, 0)`) — the optional form
-    requires HLSL out-param overload selection that adds another moving
-    part for marginal benefit. Mip 0 is the default everywhere if a user
-    passes `0`.
-
-* `calculateLOD(s, t, c)` — query the LOD the hardware would choose.
-  Less invasive than `getDimensions`, but introduces the first
-  "spec-says-scalar / GLSL-returns-vec2" wart in the codebase:
+* `calculateLOD(sampler, texture, coord) → float` — every backend's query
+  takes only the *spatial* coord, so the array layer / cube-array face is
+  dropped (`.xy` for 2D-array, `.xyz` for cube-array). 1D textures are
+  rejected (no mip pyramid; Metal has no `calculate_*_lod` for `texture1d`
+  — the query is degenerate anyway). Stage restriction follows the existing
+  `sample` precedent (fragment-only in practice, not enforced).
 
   | Backend | Form | Return |
   |---------|------|--------|
-  | HLSL | `tex.CalculateLevelOfDetail(s, c)` | `float` |
-  | MSL | `tex.calculate_clamped_lod(s, c)` (or `_unclamped_lod`) | `float` |
-  | GLSL | `textureQueryLod(samplerND(t, s), c)` | `vec2` (clamped, unclamped) |
+  | HLSL | `tex.CalculateLevelOfDetail(s, spatialCoord)` | `float` |
+  | MSL | `tex.calculate_clamped_lod(s, spatialCoord)` | `float` |
+  | GLSL | `textureQueryLod(samplerND(t, s), spatialCoord).x` | `vec2` → `.x` |
 
-  Source-level signature: `calculateLOD(s, t, c) → float`. GLSL emits
-  `textureQueryLod(...).x` to discard the unclamped component. Document
-  the semantics as "implementation may return clamped or unclamped LOD;
-  treat as advisory" — every backend has a different trade-off here and
-  we shouldn't force a runtime branch to normalize them.
+  GLSL emits `.x` to take the clamped LOD (the unclamped component is
+  discarded). The semantics are advisory: an implementation may return a
+  clamped or unclamped LOD, and we don't force a runtime branch to
+  normalize them. `textureQueryLod` is *not* in the samplerless extension,
+  so it uses the real combined sampler `samplerND(t, s)`.
 
-  Stage restriction: `calculateLOD` needs derivatives on every backend,
-  so it's fragment-only in practice. `sample` already has the same
-  implicit constraint and isn't enforced today; Phase B can either
-  follow that precedent or land stage-checking as a uniform rule across
-  `sample`, `sampleBias`, `gather`, and `calculateLOD` together.
+*Latent swizzle bug fixed alongside.* `getDimensions`' `uint2`/`uint3`
+returns are usually consumed component-wise (`.x` = width, `.y` = height),
+which exposed a pre-existing bug: the `MEMBER_EXPR` swizzle resolver in
+`Sema.cpp` handled only `float2/3/4`, and an always-true `else
+if(ast::builtins::float4_type)` (a non-null pointer test, not
+`type_res == float4_type`) routed *every other* vector type through the
+float4 path — so `uint2.x` resolved to `float`. The resolver is now
+generalized: `vectorComponentInfo` / `vectorTypeForScalarArity` map any
+numeric vector family (float / int / uint / half / short / ushort / long /
+ulong) to its scalar + arity and back, swizzle chars are validated against
+the arity, and the result is the scalar (1 char) or matching N-component
+vector. This also fixes integer-vector swizzle everywhere, not just for
+`getDimensions`.
+
+Tests: `texture_query.omegasl` (getDimensions on every rank + calculateLOD
+on 2D/2D-array/3D/cube/cube-array + the HLSL `if`-condition injection edge
+case + `.x` swizzle on the uint results), `invalid_texture_query.omegasl`
+(getDimensions on MS, non-int lod; calculateLOD on 1D, wrong arg count).
+The Metal build compiles the generated MSL end-to-end on the macOS host;
+HLSL/GLSL source emission is verified via `-S`.
+
+**Out of scope (follow-ups):**
+
+* **Optional `lod` for `getDimensions`** (`getDimensions(t)` defaulting to
+  mip 0). Requires HLSL out-param overload selection; marginal benefit.
+* **`calculateLOD` / `getDimensions` on 1D textures.** Both deferred for
+  the Metal 1D-mip hole (same rationale as Phase A.1's
+  `TEXTURE1D_MIP_SAMPLE`); could be gated behind that feature bit later.
+* **`getDimensions` on multisample textures**, including a sample-count
+  query — asymmetric across backends.
+* **Uniform stage-checking** for `calculateLOD` (fragment-only). Land as a
+  shared rule across `sample` / `sampleBias` / `gather` / `calculateLOD`
+  when stage enforcement is tackled generally.
+* **Color-channel (`rgba`) component swizzles.** The generalized resolver
+  accepts positional `xyzw` only, matching prior behavior.
 
 **Out of scope for both phases:**
 
@@ -760,12 +767,74 @@ output across the matrix:
 Editor highlighting via `omegasl.yaml` adds `const` to
 `declaration_keywords` so it gets the `storage.modifier` scope.
 
-Out of scope (intentional, deferred):
-  - **`const` on function parameters.** Overlaps with §3.7's `in` /
-    `out` / `inout` work and is cleaner to land alongside that pass.
-  - **Postfix `T const x` form.** C-family backends accept it; OmegaSL
-    parser only recognizes the prefix form today. Add when there's
-    real demand.
+**Follow-up — `const` parameters + postfix form (LANDED).**
+
+Both items originally deferred here have landed now that §3.7's
+parameter-access work is in place:
+
+  - **`const` on function parameters.** A parameter may carry a `const`
+    qualifier (`const float v`). It rides on `AttributedFieldDecl` as a
+    new `isConst` flag (parallel to `VarDecl::isConst`); only the
+    function-parameter parse path sets it. The flag flows into Sema's
+    variable map at both param-insert sites (FuncDecl and ShaderDecl),
+    so the *existing* const-write checks (assignment, `++`/`--`, member
+    / index write-through) fire on a const param with no new machinery.
+    `const` is rejected in combination with `out` / `inout` — those
+    write the caller's storage back through the binding, which an
+    immutable binding can't do — with a clear Sema diagnostic. `const`
+    may appear in either order relative to the access qualifier
+    (`const in T`, `in const T`).
+  - **Postfix `T const x` form.** Recognized for both locals and
+    parameters (`float const k = …;`, `f(float const a)`), setting the
+    same `isConst` flag the prefix form does. The two statement-level
+    disambiguators (`parseStmt`, `parseStmtFromBuffer`) had to learn
+    that a `const` keyword following a type token introduces a
+    declaration — without that, `T const name` was misparsed as an
+    expression and the type keyword read as an undeclared identifier.
+    A repeated `const` (`const T const x`) and `threadgroup T const x`
+    are both rejected, mirroring the prefix-side contradiction checks.
+
+Per-backend spelling routes through the existing `Target::writeFuncParam`
+hook (a `const ` prefix on HLSL / GLSL / MSL — all three accept it
+verbatim, and Sema guarantees it never co-occurs with the MSL
+`thread T&` reference). Local `const` continues to emit through the
+shared `VAR_DECL` path. Output across the matrix:
+
+| Source | HLSL | MSL | GLSL |
+|---|---|---|---|
+| `f(const float v)` | `const float v` | `const float v` | `const float v` |
+| `float const k = 2.0;` | `const float k = 2.0;` | `const float k = 2.0;` | `const float k = 2.0;` |
+
+Tests: `const_param.omegasl` (prefix + postfix const params, postfix
+const local, const+explicit-`in` in both orders; Metal-compiled
+end-to-end, HLSL/GLSL verified via `-S`), `invalid_const_out_param.omegasl`
+(const+out rejected), `invalid_const_param_assign.omegasl` (write through
+a const param rejected), `invalid_dup_const.omegasl` (duplicate const
+rejected).
+
+Out of scope (still deferred):
+  - **`const` as part of the overload signature.** Const and access
+    qualifiers don't distinguish overloads (inherited from §3.5 / §3.7).
+    Revisit when a real shader hits it.
+  - **Trailing `T name const` (const after the declarator).** Not valid
+    C either; only the C-style `T const name` postfix is accepted.
+**Follow-up — prefix `const` / `threadgroup` inside a nested block
+(FIXED).** A pre-existing silent miscompile, surfaced while wiring the
+postfix disambiguator: `parseStmtFromBuffer` (the if / for / while /
+switch body parser) recognized the *postfix* `T const x` form but a
+*leading* `const` / `threadgroup` keyword fell through both its TOK_KW
+keyword switch and its type-token disambiguator (which only fires on
+TOK_KW_TYPE / TOK_ID), reaching neither a declaration parse nor a clean
+error. The symptom was severe — the *entire enclosing block body* was
+silently dropped from the generated source with no diagnostic (a `for`
+body containing a `const` local emitted an empty, unterminated loop).
+Fixed by routing a leading `const` / `threadgroup` to `parseGenericDecl`
+(which owns the prefix-qualifier var-decl form), mirroring the
+`break` / `continue` / `discard` handling already in that function and
+the `else if (TOK_KW) isDecl = true` branch in `parseStmt`. Test:
+`nested_const.omegasl` (prefix `const` in a `for` body and an `if` body,
+plus a postfix `const` in the nested block; Metal-compiled end-to-end,
+HLSL/GLSL verified via `-S`).
 
 ### 3.7 Multiple return values [LANDED]
 
@@ -811,10 +880,10 @@ Out of scope (intentional, deferred):
   - **`out` + pointer combinations.** The parser does not reject
     `out T*`, but the emitted MSL spelling (`thread T*&`) is
     untested. Add coverage when a workload needs it.
-  - **`const T` parameters.** §3.6 noted this as 3.7-adjacent. Still
-    unimplemented; the parser does not yet accept `const` in front
-    of a parameter type. Add when a shader actually wants it — every
-    backend already accepts the spelling, so the patch is small.
+  - **`const T` parameters.** §3.6 noted this as 3.7-adjacent. **Now
+    landed** — see §3.6's "`const` parameters + postfix form (LANDED)"
+    follow-up. `const` rides on `AttributedFieldDecl::isConst` and is
+    rejected in combination with `out` / `inout`.
 
 ---
 
@@ -931,16 +1000,16 @@ Grouped by how often engines reach for them.
 | `sign(x)` | **landed** — passthrough on every backend |
 | `saturate(x)` | **landed** — passthrough HLSL/MSL; GLSL rewrites to `clamp(x, 0.0, 1.0)`. See §5.1.1 |
 | `fma(a,b,c)` | **landed** — passthrough MSL/GLSL; HLSL lowers to `mad` (precision contract looser; see notes below) |
-| `mad(a,b,c)` | not added — `fma` is the canonical name in this spec; pick one |
+| `mad(a,b,c)` | **landed** — alias of `fma` (§5.1.0). Canonicalized to `fma` at both dispatch and emit; HLSL keeps the native `mad` spelling, MSL/GLSL emit `fma` |
 | `fmod(a,b)` | **landed** — truncation semantics, matching C/HLSL/MSL. GLSL rewrites to `(x - y*trunc(x/y))` because GLSL's `mod` has different (floor-based) semantics |
-| `mod(a,b)` | not added — would alias `fmod` here, picking one canonical spelling |
+| `mod(a,b)` | **landed** — alias of `fmod` (§5.1.0). Truncation modulus, *not* GLSL's floor-based `mod`; canonicalized to `fmod` so it reuses fmod's GLSL trunc-rewrite |
 | `trunc(x)` | **landed** — passthrough on every backend |
 | `rsqrt(x)` | **landed** — passthrough HLSL/MSL; GLSL renames to `inversesqrt` |
 | `degrees(r)` / `radians(d)` | **landed** — passthrough HLSL/GLSL; MSL inlines as a multiplication by the matching π constant (Metal stdlib has no `degrees`/`radians`). See §5.1.2 |
 | `sinh` / `cosh` / `tanh` | **landed** — passthrough on every backend |
 | `ldexp(x, e)` | **landed** — passthrough on every backend |
-| `modf(x, out integerPart)` | not added — out-param synthesis blocker (see §2.3 Phase B for the same issue with `getDimensions`) |
-| `frexp(x, out exp)` | not added — same out-param blocker |
+| `modf(x, out integerPart)` | **landed** (§5.1.0) — native passthrough on every backend; the out-param uses §3.7's `out` params, so no statement injection is needed |
+| `frexp(x, out exp)` | **landed** (§5.1.0) — native on MSL/GLSL; HLSL writes a float exponent and the backend casts back to the int out-param via statement injection |
 
 **Implementation**
 
@@ -1015,7 +1084,7 @@ shared dispatch skips its `<rename>(args)` fallback.
   funcs to avoid stdlib collisions; HLSL has the same exposure but
   hasn't adopted the prefix yet. Same separate-PR rationale: it's a
   source-shape change that the existing HLSL goldens would need to
-  re-baseline. (This should apply to all backends.)
+  re-baseline. (This should apply to all backends for any function names that might collide with any backend like on Metal add_const.)
 
 #### 5.1.1 `saturate` — backend mapping and the name-collision risk
 
@@ -2559,3 +2628,65 @@ the grounds that no shipping lib predates the change.
   *runtime* fallback (load-time substitution of an alternate shader if
   the primary fails) is a higher-level engine concern, not a language
   feature.
+
+---
+
+## 15. Cross-cutting: Diagnostics & multi-error recovery
+
+The compiler is already wired to report *multiple* errors per compile:
+`DiagnosticEngine` accumulates up to `kMaxErrorsBeforeStop` (50) errors
+(`Error.h` / `Error.cpp`), and the driver reports the whole set and exits
+non-zero at end of run (`main.cpp` `if(diagnostics.hasErrors())`). The
+limiting factor is not the diagnostics store — it is *how far the semantic
+walk recovers* before giving up.
+
+### 15.1 Function-body statement recovery [LANDED]
+
+`Sem::performSemForBlock` recovers past a failed statement instead of
+returning on the first one: it records the failure, keeps checking the
+remaining statements in the body, and signals failure to the caller only
+after the whole block has been walked (skipping the return-type
+consistency check, which would be spurious once statements were
+abandoned). A "fail loud" guard still fires — if a failing statement
+somehow recorded no diagnostic of its own, a generic one is added — so a
+sem failure can never slip through as a silent success that emits a broken
+library. The walk also stops at the 50-error cap.
+
+Effect: a single shader/function body with several independent errors now
+surfaces all of them in one compile. The pre-existing "multi-error"
+negative tests that live in one body (`invalid_sample_variants`,
+`invalid_texture_query`, `invalid_modf_frexp`, …) previously only ever
+exercised their *first* case — a regression in cases 2..N would have left
+the test passing on case 1. They now report every case.
+
+### 15.2 Cross-declaration recovery [DEFERRED — gap]
+
+The top-level driver loop (`Parser::parseContext`) deliberately **stops at
+the first failed global declaration** rather than continuing to the next
+one. This is the known limitation:
+
+- A file whose independent errors are spread across *separate* decls
+  (e.g. `invalid_uniform`'s three compute shaders, or a resource decl plus
+  the shader that binds it) still reports only the first.
+
+The reason it is not simply "remove the `break`": unlike a statement in a
+function body, a global decl registers **shared state** — resource maps,
+struct/type registrations — that *later* decls read. A decl that fails
+sem partway can leave that state half-registered, and a subsequent decl
+that depends on it then dereferences the missing piece and **crashes**.
+The concrete case is `invalid_buffer_no_args`: `buffer noElement : 0;`
+(no element type) fails sem, but the shader that binds `[out noElement]`
+reaches an out-of-bounds `args[0]` for the element type — the exact crash
+that decl's test comment documents. Naively continuing the decl loop
+re-introduces that segfault on `invalid_uniform` and `invalid_buffer_no_args`.
+
+**Scope when picked up.** Either (a) give the driver dependency tracking so
+it skips decls that reference a failed decl while still semming
+independent ones, or (b) harden every global-decl partial-registration
+path so a failed decl leaves no half-state for dependents to trip on (and
+register failed resources/structs as error-typed placeholders so
+references resolve to a clean "depends on an invalid declaration"
+diagnostic instead of a crash). Both are larger than the §15.1 change and
+carry cascade-noise risk; deferred until a real need appears. Until then,
+author multi-error negative tests *within a single shader body* (§15.1
+recovers those) rather than across multiple decls.

@@ -886,6 +886,11 @@ namespace omegasl {
     void GLSLTarget::writeFuncParam(CodeGen &cg,
                                     const ast::AttributedFieldDecl &param,
                                     std::ostream &out) {
+        /// §3.6 — `const` param (`const T name`, with `in` implicit). Sema
+        /// guarantees it never co-occurs with `out` / `inout`.
+        if (param.isConst) {
+            out << "const ";
+        }
         if (param.access == ast::AttributedFieldDecl::Out) {
             out << "out ";
         } else if (param.access == ast::AttributedFieldDecl::Inout) {
@@ -1192,6 +1197,54 @@ namespace omegasl {
         } else {
             out << ",0)";
         }
+    }
+
+    void GLSLTarget::emitTextureCalculateLOD(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// `textureQueryLod(samplerND(t, s), spatialCoord).x`. GLSL returns a
+        /// vec2 (clamped, unclamped); `.x` is the clamped LOD, matching the
+        /// advisory-LOD contract. `textureQueryLod` needs a real combined
+        /// sampler (it is not in GL_EXT_samplerless_texture_functions). The
+        /// array layer / cube-array face is dropped from the coord (`.xy` for
+        /// 2D-array, `.xyz` for cube-array). 1D is rejected in Sema.
+        auto samplerType = glslSamplerTypeForTextureArg(cg, _expr->args[1], _expr->args[0]);
+        auto *texTy = glslResolveTextureType(cg, _expr->args[1]);
+        out << "textureQueryLod(" << samplerType << "(";
+        cg.generateExpr(_expr->args[1]);
+        out << ",";
+        cg.generateExpr(_expr->args[0]);
+        out << "),";
+        if(texTy == ast::builtins::texture2d_array_type){
+            out << "("; cg.generateExpr(_expr->args[2]); out << ").xy";
+        } else if(texTy == ast::builtins::texturecube_array_type){
+            out << "("; cg.generateExpr(_expr->args[2]); out << ").xyz";
+        } else {
+            cg.generateExpr(_expr->args[2]);
+        }
+        out << ").x";
+    }
+
+    void GLSLTarget::emitTextureGetDimensions(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// `uvecN(textureSize(t, int(lod)))`, emitted inline. The bare texture
+        /// object works via GL_EXT_samplerless_texture_functions (enabled in
+        /// the preamble), so no combined sampler is needed. `textureSize`
+        /// returns int / ivec2 / ivec3; the `uvecN` constructor casts to the
+        /// uint shape Sema assigned.
+        auto *texTy = glslResolveTextureType(cg, _expr->args[0]);
+        const char *ctor = "uint";
+        if(texTy == ast::builtins::texture1d_array_type
+           || texTy == ast::builtins::texture2d_type
+           || texTy == ast::builtins::texturecube_type){
+            ctor = "uvec2";
+        } else if(texTy == ast::builtins::texture2d_array_type
+                  || texTy == ast::builtins::texture3d_type
+                  || texTy == ast::builtins::texturecube_array_type){
+            ctor = "uvec3";
+        }
+        out << ctor << "(textureSize(";
+        cg.generateExpr(_expr->args[0]);
+        out << ",int(";
+        cg.generateExpr(_expr->args[1]);
+        out << ")))";
     }
 
     void GLSLTarget::emitTextureWrite(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {

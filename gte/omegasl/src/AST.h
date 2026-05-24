@@ -183,7 +183,15 @@ namespace omegasl {
             DECLARE_BUILTIN_FUNC(gatherAlpha);
             DECLARE_BUILTIN_FUNC(write);
             DECLARE_BUILTIN_FUNC(read);
+            DECLARE_BUILTIN_FUNC(calculateLOD);
+            DECLARE_BUILTIN_FUNC(getDimensions);
         }
+
+        /// §5.1.0 — map a builtin alias spelling to its canonical name
+        /// (`mod`→`fmod`, `mad`→`fma`). Any other name is returned
+        /// unchanged. Used by Sema (dispatch) and CodeGen (emission) so
+        /// the alias is resolved at every point that recognizes a builtin.
+        OmegaCommon::StrRef canonicalBuiltinAlias(OmegaCommon::StrRef name);
 
         /// @brief Refers to a type that already exists.
         struct TypeExpr {
@@ -287,6 +295,16 @@ namespace omegasl {
             ///   GLSL  → `out T name` / `inout T name`
             enum ParamAccess { In, Out, Inout };
             ParamAccess access = In;
+
+            /// §3.6 — `const` qualifier on a function parameter. Set by the
+            /// parser for either the prefix (`const T x`) or postfix
+            /// (`T const x`) spelling. Only meaningful for `FuncDecl::params`;
+            /// struct fields leave it at false. Sema rejects writes through
+            /// the binding (reusing the const-local machinery) and rejects
+            /// combining it with `out` / `inout`, which would be
+            /// contradictory. CodeGen prefixes the emitted parameter with
+            /// `const`, which all three backends accept verbatim.
+            bool isConst = false;
         };
 
         struct VarDecl : public Decl {

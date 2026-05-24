@@ -1191,6 +1191,159 @@ document with native gradients (`SVGViewRenderTest`).
 
 ---
 
+## Phase 10 — MSDF scalable bitmaps (supersedes nine-slice for shape assets)
+
+**Goal:** Retire nine-slice (`BitmapParams::NineSliceInsets`,
+`Direct-To-Drawable-And-SDF-Plan.md` §6.6.3) as the *primary* resize
+strategy for **shape-class** UI assets by storing them as MSDF tiles and
+reconstructing them at draw time with the same median → `smoothstep`
+coverage path that §6.7 already ships for text. Nine-slice and the
+textured-quad path (§6.6.1 / §6.6.2) stay as the fallback for raster
+content that isn't a distance-field-expressible shape.
+
+Like Phases 8 and 9 this is **op-type-agnostic** — it lives in the
+asset / brush model, `RenderTarget.cpp`, and the shader source, all
+reading payloads, so it is unaffected by the `VisualCommand` → `DrawOp`
+swap.
+
+**Scope boundary (deliberate).** MSDF encodes distance to a shape edge
+and reconstructs as a resolution-independent *coverage mask* that you
+tint — a 2-region (inside / outside) + color model. That is strictly
+better than nine-slice for the *shape / chrome* class of resizable
+bitmaps (rounded-rect buttons, panels, speech bubbles, icons,
+single-silhouette art), which is the dominant use of nine-slice. It
+**cannot** represent continuous-tone, multi-color raster content (a
+photo, a gradient-baked texture, a logo with interior detail) — there is
+no single edge to take a distance to. This phase therefore targets shape
+assets only; arbitrary raster content stays on §6.6, and nine-slice
+survives as the explicit fallback for raster chrome that can't be
+vectorized.
+
+### 10.0 Why this supersedes nine-slice
+
+Nine-slice exists because a raster button background distorts its corners
+when stretched. It pays for that with: authored slice guides per asset, a
+full raster at one resolution (blurry when upscaled past native), and 9
+sub-quads per draw. An MSDF of the same shape:
+
+- scales to **any** destination rect with crisp corners and edges — no
+  insets to author, no native-resolution ceiling;
+- is a small tile (a 64–128px MSDF covers a button rendered at any
+  size), not a full-res raster;
+- composes for free with tint, outline, soft shadow, and glow (the
+  `dist > 0` band, `Direct-To-Drawable-And-SDF-Plan.md` §6.7.3);
+- because it rides the SDF primitive path, it composes with a shape's
+  **corner radius and border** in one draw (same shape of change as the
+  Phase 8.2 / 9.3 SDF-native samplers).
+
+It is **not** a replacement for sampling arbitrary color pixels.
+
+### 10.1 Generalize the MSDF tile producer
+
+§6.7's `GlyphAtlas` (`wtk/src/Composition/backend/GlyphAtlas.{h,cpp}`) is
+a per-font MSDF cache: a `RasterizeFn(glyphId) → MSDF tile` callback, a
+shelf packer, and an `AtlasGlyph` (`tileOriginX/Y`, `tileScale`, UV
+rect). The MSDF machinery in it is not glyph-specific — only the
+`RasterizeFn` is. Lift the cache into a reusable `MSDFAtlas` keyed on an
+opaque asset id, with two `RasterizeFn` flavors:
+
+- **Vector source (the clean win).** The asset is already a contour set
+  — an SVG `<path>` / `GVectorPath2D`, a `Path`, or a built-in shape.
+  Feed contours straight into msdfgen (`edgeColoringSimple(shape, 3.0)`
+  → `generateMSDF` into `Bitmap<float,3>`), the exact path §6.7-c2 runs
+  for glyph outlines. Sharp corners preserved, no raster ever involved.
+- **Raster mask source.** The asset is a bitmap silhouette (e.g. a
+  1-bit / alpha icon). Threshold the alpha, trace contours
+  (marching-squares), then run the same msdfgen path. Lower fidelity
+  than a true vector source — authored vector input is preferred.
+
+`AtlasGlyph` generalizes to `AtlasTile` (UV rect + `tileOrigin` /
+`tileScale`); `ensureGlyph` becomes `ensureTile(assetId)`. The glyph
+atlas becomes a typed instantiation of the generalized atlas so §6.7 is
+unchanged behaviorally.
+
+### 10.2 Asset / API surface
+
+Two integration points. Land the standalone-op path first — that is where
+nine-slice lives today, so it is the direct supersession:
+
+- **Standalone image op (direct nine-slice replacement).** Add an MSDF
+  flavor to the standalone bitmap path that `NineSliceInsets` rides
+  today (`BitmapParams` / `DrawOp::Bitmap`). A `ScalableImage` source
+  carries an `MSDFAtlas` tile handle + a base tint; `drawImage` of a
+  `ScalableImage` into any dest rect samples the tile — no insets, no
+  slice math. The existing `drawImage(..., NineSliceInsets, ...)`
+  overload stays for raster assets.
+- **Bitmap brush (Phase 8 extension).** A `Brush::Type::Bitmap` whose
+  source is a `ScalableImage` dispatches to the MSDF arm instead of the
+  texture-sample arm, so a rounded-rect / ellipse / path **fill** gets a
+  resolution-independent shape mask that composes with corner radius and
+  border. Natural once Phase 8 lands; shares 10.3's shader arm.
+
+### 10.3 Shader
+
+Reuse `msdfTextFragment`'s reconstruction verbatim —
+`median(s.r,s.g,s.b)` → `aa = fwidth(median)` →
+`smoothstep(0.5±aa, median)` → `tint × coverage × currentOpacity`. Add it
+as an arm in the relevant fragment paths rather than a new shader:
+
+- In `sdfFragment` (`compositor.omegasl`), when the primitive carries an
+  MSDF-image payload, sample the bound MSDF tile at the interpolated
+  local coord, take coverage, and **intersect** it with the existing
+  shape coverage (corner radius / border distance). This is the one-draw
+  compose-with-shape route.
+- For the standalone-op path, an MSDF arm in `bitmapFragment` sampling
+  the tile and emitting `tint × coverage`.
+
+Sampler: linear filtering on the MSDF tile (the §6.6.1 sampler upgrade
+already gives this); the distance field interpolates correctly under
+magnification, which is the whole point — no mipmaps needed for the field
+itself.
+
+### 10.4 Migration
+
+1. Land 10.1 (generalized atlas) with the glyph atlas re-expressed on top
+   of it — no behavior change to text.
+2. Land the vector-source `RasterizeFn` and the standalone `ScalableImage`
+   op + 10.3 `bitmapFragment` arm.
+3. Convert the engine's own shape-class chrome assets (and SVG-sourced
+   icons, which are *already vector* — they skip raster entirely) from
+   nine-slice to `ScalableImage`.
+4. Mark `NineSliceInsets` / the nine-slice `drawImage` overload
+   **legacy / fallback** in the API docs: "for raster chrome that can't
+   be expressed as a distance field; prefer `ScalableImage` for shape
+   assets." Do not delete it — it's the honest fallback for raster
+   content.
+5. (Follow-up) Raster-mask `RasterizeFn` + contour tracing for icon
+   bitmaps with no vector original.
+
+### 10.5 Test
+
+A RootWidget scene rendering one shape-class asset (a rounded button
+background) at three wildly different sizes from a single MSDF tile —
+confirm crisp corners at all scales with one upload, vs. the nine-slice
+version's native-resolution blur on upscale. A second case fills a
+`RoundedRect` element with a `ScalableImage` bitmap brush (Phase 8) and
+confirms the MSDF coverage intersects the corner radius + border in one
+draw. Validated through the window-scoped `DisplayList` path.
+
+### Files touched
+
+- `wtk/src/Composition/backend/GlyphAtlas.{h,cpp}` — generalize to
+  `MSDFAtlas` / `AtlasTile`; glyph atlas becomes a typed instantiation.
+- `wtk/include/omegaWTK/Composition/Brush.h` / `wtk/src/Composition/Brush.cpp`
+  — `ScalableImage` source; `Brush::Type::Bitmap` MSDF dispatch (Phase 8
+  extension).
+- `wtk/include/omegaWTK/Composition/Canvas.h` — `ScalableImage`
+  standalone-image entry; `NineSliceInsets` docs marked legacy / fallback.
+- `wtk/src/Composition/backend/RenderTarget.cpp` — MSDF-image dispatch arm
+  (tile bind + payload).
+- `wtk/src/Composition/backend/shaders/compositor.omegasl` — MSDF arm in
+  `sdfFragment` (compose-with-shape) and `bitmapFragment` (standalone),
+  reusing the `msdfTextFragment` reconstruction.
+
+---
+
 ## Phase 7 — Future
 
 These items are deferred. They are listed to confirm the Phase 0–6 designs are forward-compatible.
@@ -1222,6 +1375,11 @@ Phase 9: Finish gradients (consolidates the old Phase 1 + Phase 2)
 
 Phase 8: Bitmap brushes (Brush::Type::Bitmap; no new DrawOp variant)
     └─→ shares SDF-native texture sampling with Phase 9.3; reuses §6.6 bitmap sampling
+
+Phase 10: MSDF scalable bitmaps (supersedes nine-slice for shape assets)
+    └─→ generalizes §6.7 GlyphAtlas → MSDFAtlas; reuses msdfTextFragment
+        reconstruction; composes with Phase 8 bitmap brushes (shape assets only;
+        nine-slice / §6.6 stay as the raster fallback)
 
 Phase 3: Canvas drawing extensions — SUPERSEDED by the Canvas → DrawOp shift
     ├─→ border consolidation + drawLine/drawPolyline: DONE via SDF spine §6.5
@@ -1278,6 +1436,10 @@ upload from each frame.
 | `wtk/include/omegaWTK/Composition/FontEngine.h` | 6 | New `TextLayout` handle (text + font + rect + color + layoutDesc → cached glyph layout + `GETexture`) |
 | `wtk/src/Composition/TextLayout.cpp` | 6 | **New file** — handle implementation, dirty-flag resolve, lazy `TextRect` build / texture upload |
 | `wtk/include/omegaWTK/UI/UIView.h` / `wtk/src/UI/UIView.*.cpp` | 6 | Cache `Core::SharedPtr<TextLayout>` per text-emitting element spec; invalidate on spec change |
+| `wtk/src/Composition/backend/GlyphAtlas.{h,cpp}` | 10 | Generalize the §6.7 per-font MSDF cache to a reusable `MSDFAtlas` / `AtlasTile`; glyph atlas becomes a typed instantiation (no text behavior change). Backs MSDF scalable-bitmap tiles |
+| `wtk/include/omegaWTK/Composition/Brush.h` / `Brush.cpp` | 8, 10 | **Phase 10:** `ScalableImage` source; `Brush::Type::Bitmap` MSDF dispatch arm (shape assets only) |
+| `wtk/include/omegaWTK/Composition/Canvas.h` (Phase 10) | 10 | `ScalableImage` standalone-image entry (direct nine-slice replacement); `NineSliceInsets` / nine-slice `drawImage` overload marked legacy / raster fallback |
+| `wtk/src/Composition/backend/shaders/compositor.omegasl` (Phase 10) | 10 | MSDF arm in `sdfFragment` (compose-with-shape: intersect MSDF coverage with corner radius / border) and `bitmapFragment` (standalone), reusing the `msdfTextFragment` median → `smoothstep` reconstruction |
 
 ---
 

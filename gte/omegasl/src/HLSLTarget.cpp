@@ -5,6 +5,7 @@
 #include <sstream>
 #include <unordered_set>
 #include <string>
+#include <vector>
 #include <omega-common/multithread.h>
 
 #ifdef TARGET_DIRECTX
@@ -367,6 +368,11 @@ namespace omegasl {
     void HLSLTarget::writeFuncParam(CodeGen &cg,
                                     const ast::AttributedFieldDecl &param,
                                     std::ostream &out) {
+        /// §3.6 — `const` param. Sema guarantees it only co-occurs with the
+        /// implicit `in` access, so it always leads the declaration.
+        if (param.isConst) {
+            out << "const ";
+        }
         if (param.access == ast::AttributedFieldDecl::Out) {
             out << "out ";
         } else if (param.access == ast::AttributedFieldDecl::Inout) {
@@ -520,6 +526,59 @@ namespace omegasl {
         return name;
     }
 
+    /// Arity (1..4) of a float scalar/vector type, 0 otherwise. Used by
+    /// the §5.1.0 `frexp` lowering to spell its float/int temporaries.
+    static unsigned omegaSLFloatVectorArity(ast::Type *t){
+        using namespace ast::builtins;
+        if(t == float_type)  return 1;
+        if(t == float2_type) return 2;
+        if(t == float3_type) return 3;
+        if(t == float4_type) return 4;
+        return 0;
+    }
+
+    static const char *hlslFloatTypeForArity(unsigned a){
+        switch(a){ case 2: return "float2"; case 3: return "float3";
+                   case 4: return "float4"; default: return "float"; }
+    }
+
+    static const char *hlslIntTypeForArity(unsigned a){
+        switch(a){ case 2: return "int2"; case 3: return "int3";
+                   case 4: return "int4"; default: return "int"; }
+    }
+
+    bool HLSLTarget::tryEmitBuiltinCall(CodeGen &cg, ast::CallExpr *_expr,
+                                        OmegaCommon::StrRef name, std::ostream &out) {
+        /// §5.1.0 — frexp. HLSL's `frexp(x, out exp)` writes a *float*
+        /// exponent, but OmegaSL types the exponent out-param as int/intN.
+        /// Capture the mantissa and the float exponent in temporaries, cast
+        /// the exponent back into the user's int lvalue, and leave the
+        /// mantissa temp as the call's value. All three lines are queued
+        /// before the current statement (see `CodeGen::emitStatementLine`),
+        /// so they run in order: declare temps → frexp fills them → cast.
+        /// `modf` needs none of this (its out-param is float on every
+        /// backend), so it passes through `renameBuiltin` unchanged.
+        if (name == BUILTIN_FREXP) {
+            if (_expr->args.size() != 2) return false;
+            auto *xTy = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+            unsigned arity = omegaSLFloatVectorArity(xTy);
+            const char *fTy = hlslFloatTypeForArity(arity);
+            const char *iTy = hlslIntTypeForArity(arity);
+            std::string xStr = cg.renderExprToString(_expr->args[0]);
+            std::string eStr = cg.renderExprToString(_expr->args[1]);
+            unsigned id = cg.getDimensionsTempId++;
+            std::string fe = "_fx" + std::to_string(id) + "_e";
+            std::string fm = "_fx" + std::to_string(id) + "_m";
+            cg.queuePendingStatement(std::string(fTy) + " " + fe + ";");
+            cg.queuePendingStatement(std::string(fTy) + " " + fm
+                                     + " = frexp(" + xStr + ", " + fe + ");");
+            cg.queuePendingStatement(eStr + " = (" + iTy + ")" + fe + ";");
+            out << fm;
+            return true;
+        }
+        return false;
+    }
+
     /// HLSL `RWTexture<N>D<T>::operator[]` indexes by `uint`/`uint2`/`uint3`.
     /// OmegaSL allows signed coord arithmetic (e.g. `int2(x, y)`), and HLSL
     /// 5.1 accepts the implicit conversion, but stricter SM 6.x DXC settings
@@ -545,6 +604,23 @@ namespace omegasl {
         if(texTy == builtins::texture1d_array_type) return "uint2";
         if(texTy == builtins::texture2d_array_type) return "uint3";
         return nullptr;
+    }
+
+    /// Resolve the OmegaSL texture type backing a texture argument, mirroring
+    /// `glslResolveTextureType` / `metalResolveTextureType`: prefer the
+    /// stamped `resolvedType`, else look the resource up by name.
+    static ast::Type *hlslResolveTextureType(CodeGen &cg, ast::Expr *texArg){
+        using namespace ast;
+        TypeExpr *texTypeExpr = texArg->resolvedType;
+        if(!texTypeExpr && texArg->type == ID_EXPR){
+            auto *resourceId = static_cast<IdExpr *>(texArg);
+            auto it = cg.resourceStore.find(resourceId->id);
+            if(it != cg.resourceStore.end()){
+                texTypeExpr = (*it)->typeExpr;
+            }
+        }
+        if(!texTypeExpr) return nullptr;
+        return cg.typeResolver->resolveTypeWithExpr(texTypeExpr);
     }
 
     const char *HLSLTarget::shaderObjectFileExt(ast::ShaderDecl::Type /*stage*/) const {
@@ -828,6 +904,80 @@ namespace omegasl {
             cg.generateExpr(_expr->args[1]);
         }
         out << ")";
+    }
+
+    void HLSLTarget::emitTextureCalculateLOD(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// `tex.CalculateLevelOfDetail(s, spatialCoord)` — returns the float
+        /// LOD the hardware would select. HLSL's query takes only the spatial
+        /// coord, so the array layer / cube-array face is dropped (`.xy` for
+        /// 2D-array, `.xyz` for cube-array). 1D is rejected in Sema.
+        auto *texTy = hlslResolveTextureType(cg, _expr->args[1]);
+        cg.generateExpr(_expr->args[1]);
+        out << ".CalculateLevelOfDetail(";
+        cg.generateExpr(_expr->args[0]);
+        out << ",";
+        if(texTy == ast::builtins::texture2d_array_type){
+            out << "("; cg.generateExpr(_expr->args[2]); out << ").xy";
+        } else if(texTy == ast::builtins::texturecube_array_type){
+            out << "("; cg.generateExpr(_expr->args[2]); out << ").xyz";
+        } else {
+            cg.generateExpr(_expr->args[2]);
+        }
+        out << ")";
+    }
+
+    void HLSLTarget::emitTextureGetDimensions(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// HLSL `Texture::GetDimensions` is out-param based and cannot appear
+        /// as a sub-expression. Queue the temp declaration and the
+        /// `GetDimensions(...)` call as preceding statements (flushed before
+        /// the current statement by `generateBlock`), then emit a `uintN(...)`
+        /// constructor over the dimension temporaries inline. The mip-taking
+        /// overload always appends an `out NumberOfLevels` parameter, which we
+        /// declare into a discarded temporary.
+        auto *texTy = hlslResolveTextureType(cg, _expr->args[0]);
+        std::string texStr = cg.renderExprToString(_expr->args[0]);
+        std::string lodStr = cg.renderExprToString(_expr->args[1]);
+        unsigned id = cg.getDimensionsTempId++;
+        std::string pfx = "_gd" + std::to_string(id) + "_";
+        std::string w = pfx + "w", h = pfx + "h", d = pfx + "depth", e = pfx + "elements",
+                    lv = pfx + "levels";
+
+        std::vector<std::string> dimTemps;
+        std::string resultExpr;
+        if(texTy == ast::builtins::texture1d_type){
+            dimTemps = {w};
+            resultExpr = w;
+        } else if(texTy == ast::builtins::texture1d_array_type){
+            dimTemps = {w, e};
+            resultExpr = "uint2(" + w + "," + e + ")";
+        } else if(texTy == ast::builtins::texture2d_type
+                  || texTy == ast::builtins::texturecube_type){
+            dimTemps = {w, h};
+            resultExpr = "uint2(" + w + "," + h + ")";
+        } else if(texTy == ast::builtins::texture2d_array_type
+                  || texTy == ast::builtins::texturecube_array_type){
+            dimTemps = {w, h, e};
+            resultExpr = "uint3(" + w + "," + h + "," + e + ")";
+        } else if(texTy == ast::builtins::texture3d_type){
+            dimTemps = {w, h, d};
+            resultExpr = "uint3(" + w + "," + h + "," + d + ")";
+        } else {
+            /// Sema rejects other shapes (incl. multisample); stay decisive.
+            dimTemps = {w};
+            resultExpr = w;
+        }
+
+        std::string decl = "uint ";
+        for(auto &t : dimTemps) decl += t + ", ";
+        decl += lv + ";";
+        cg.queuePendingStatement(decl);
+
+        std::string call = texStr + ".GetDimensions(" + lodStr;
+        for(auto &t : dimTemps) call += ", " + t;
+        call += ", " + lv + ");";
+        cg.queuePendingStatement(call);
+
+        out << resultExpr;
     }
 
     void HLSLTarget::emitTextureWrite(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {

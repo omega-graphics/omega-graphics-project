@@ -1,0 +1,36 @@
+/// §3.6 — a `const` local declared inside a buffered block body (the
+/// body of a for / if / while / switch statement) must parse as a
+/// declaration and survive into the generated source. Regression test
+/// for a silent miscompile where `parseStmtFromBuffer` routed a leading
+/// `const` keyword to neither the declaration parser nor a clean error,
+/// dropping the entire enclosing block body from the output.
+///
+/// Covers the prefix form inside a `for` body and an `if` body, plus the
+/// postfix `T const x` form inside a nested block for good measure.
+
+struct Pt {
+    float4 value;
+};
+
+buffer<Pt> dst : 0;
+
+[out dst]
+compute(x=1,y=1,z=1)
+void test_nested_const(uint3 tid : GlobalThreadID){
+    float acc = 0.0;
+
+    /// Prefix `const` inside a `for` body.
+    for(int i = 0; i < 4; i = i + 1){
+        const float w = 0.5;
+        acc = acc + w;
+    }
+
+    /// Prefix `const` inside an `if` body, postfix `const` alongside it.
+    if(acc > 1.0){
+        const float bias = 0.25;
+        float const gain = 2.0;
+        acc = (acc - bias) * gain;
+    }
+
+    dst[0].value = float4(acc, acc, acc, acc);
+}

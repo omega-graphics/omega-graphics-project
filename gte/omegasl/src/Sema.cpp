@@ -119,6 +119,8 @@ namespace omegasl {
             ast::builtins::gatherGreen,
             ast::builtins::gatherBlue,
             ast::builtins::gatherAlpha,
+            ast::builtins::calculateLOD,
+            ast::builtins::getDimensions,
             ast::builtins::write,
             ast::builtins::read
         }),currentContext(nullptr){
@@ -179,6 +181,73 @@ namespace omegasl {
             using namespace ast::builtins;
             return t == texture2d_type || t == texture2d_array_type
                 || t == texturecube_type || t == texturecube_array_type;
+        }
+
+        /// Swizzle component resolution for builtin vector types. Maps a
+        /// vector `Type` to its scalar component type and arity (2/3/4);
+        /// returns `scalar == nullptr` for non-vector types. Covers every
+        /// landed numeric vector family. The previous MEMBER_EXPR code
+        /// hardcoded only float2/3/4 and — via an always-true `float4_type`
+        /// test — routed every other vector through the float4 path, so e.g.
+        /// `uint2.x` resolved to `float`.
+        struct VecComponentInfo { ast::Type *scalar; int arity; };
+        VecComponentInfo vectorComponentInfo(ast::Type *t){
+            using namespace ast::builtins;
+            if(t == float2_type) return {float_type, 2};
+            if(t == float3_type) return {float_type, 3};
+            if(t == float4_type) return {float_type, 4};
+            if(t == int2_type) return {int_type, 2};
+            if(t == int3_type) return {int_type, 3};
+            if(t == int4_type) return {int_type, 4};
+            if(t == uint2_type) return {uint_type, 2};
+            if(t == uint3_type) return {uint_type, 3};
+            if(t == uint4_type) return {uint_type, 4};
+            if(t == half2_type) return {half_type, 2};
+            if(t == half3_type) return {half_type, 3};
+            if(t == half4_type) return {half_type, 4};
+            if(t == short2_type) return {short_type, 2};
+            if(t == short3_type) return {short_type, 3};
+            if(t == short4_type) return {short_type, 4};
+            if(t == ushort2_type) return {ushort_type, 2};
+            if(t == ushort3_type) return {ushort_type, 3};
+            if(t == ushort4_type) return {ushort_type, 4};
+            if(t == long2_type) return {long_type, 2};
+            if(t == long3_type) return {long_type, 3};
+            if(t == long4_type) return {long_type, 4};
+            if(t == ulong2_type) return {ulong_type, 2};
+            if(t == ulong3_type) return {ulong_type, 3};
+            if(t == ulong4_type) return {ulong_type, 4};
+            return {nullptr, 0};
+        }
+
+        /// Inverse of vectorComponentInfo: the N-component vector type for a
+        /// scalar (N == 1 returns the scalar itself). nullptr if unavailable.
+        ast::Type *vectorTypeForScalarArity(ast::Type *scalar, int n){
+            using namespace ast::builtins;
+            if(n == 1) return scalar;
+            if(scalar == float_type) return n==2?float2_type : n==3?float3_type : float4_type;
+            if(scalar == int_type) return n==2?int2_type : n==3?int3_type : int4_type;
+            if(scalar == uint_type) return n==2?uint2_type : n==3?uint3_type : uint4_type;
+            if(scalar == half_type) return n==2?half2_type : n==3?half3_type : half4_type;
+            if(scalar == short_type) return n==2?short2_type : n==3?short3_type : short4_type;
+            if(scalar == ushort_type) return n==2?ushort2_type : n==3?ushort3_type : ushort4_type;
+            if(scalar == long_type) return n==2?long2_type : n==3?long3_type : long4_type;
+            if(scalar == ulong_type) return n==2?ulong2_type : n==3?ulong3_type : ulong4_type;
+            return nullptr;
+        }
+
+        /// Positional swizzle index for a component char (x/y/z/w → 0/1/2/3),
+        /// or -1 for any other char. Color-channel `rgba` swizzles are a
+        /// separate, not-yet-supported feature; positional `xyzw` is what the
+        /// prior float-only code accepted, and what is preserved here.
+        int swizzleComponentIndex(char c){
+            switch(c){
+                case 'x': return 0;
+                case 'y': return 1;
+                case 'z': return 2;
+                case 'w': return 3;
+                default: return -1;
+            }
         }
     }
 
@@ -708,122 +777,48 @@ namespace omegasl {
                 }
             }
             else {
-#define MATCH_CASE(subject,str) if(subject == str){
-#define MATCH_CASE_END() }
-                OmegaCommon::StrRef subject = _expr->rhs_id;
-
-                if(type_res == ast::builtins::float2_type){
-
-                    MATCH_CASE(subject,"x")
-                        return ast::TypeExpr::Create(ast::builtins::float_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"y")
-                        return ast::TypeExpr::Create(ast::builtins::float_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"xy")
-                        return ast::TypeExpr::Create(type_res);
-                    MATCH_CASE_END()
-
-                    {
-                        auto e = std::make_unique<TypeError>(std::string(subject) + " does not exist on type `float2`");
-                        e->loc = _expr->loc.value_or(ErrorLoc{});
-                        diagnostics->addError(std::move(e));
-                    }
+                /// Builtin vector swizzle. Generalized across every numeric
+                /// vector family (float / int / uint / half / short / ushort
+                /// / long / ulong): the component scalar type and arity come
+                /// from `vectorComponentInfo`, each swizzle char is validated
+                /// against the arity, and the result is the scalar (1 char) or
+                /// the matching N-component vector. Replaces the float-only
+                /// hardcoded blocks — and fixes the always-true `float4_type`
+                /// test that made `uint2.x` (etc.) resolve to `float`.
+                std::string subject(_expr->rhs_id.data(), _expr->rhs_id.size());
+                auto info = vectorComponentInfo(type_res);
+                if(!info.scalar){
+                    auto e = std::make_unique<TypeError>("There are no members available with this type.");
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
-                else if(type_res == ast::builtins::float3_type){
-                    MATCH_CASE(subject,"x")
-                    return ast::TypeExpr::Create(ast::builtins::float_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"y")
-                    return ast::TypeExpr::Create(ast::builtins::float_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"z")
-                    return ast::TypeExpr::Create(ast::builtins::float_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"xy")
-                    return ast::TypeExpr::Create(ast::builtins::float2_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"yz")
-                    return ast::TypeExpr::Create(ast::builtins::float2_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"xyz")
-                    return ast::TypeExpr::Create(type_res);
-                    MATCH_CASE_END()
-
-                    {
-                        auto e = std::make_unique<TypeError>(std::string(subject) + " does not exist on type `float3`");
-                        e->loc = _expr->loc.value_or(ErrorLoc{});
-                        diagnostics->addError(std::move(e));
-                    }
+                if(subject.empty() || subject.size() > 4){
+                    auto e = std::make_unique<TypeError>(
+                        "`" + subject + "` is not a valid swizzle (1-4 components of x/y/z/w) on type `" + type_res->name + "`");
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
-                else if(ast::builtins::float4_type){
-                    MATCH_CASE(subject,"x")
-                    return ast::TypeExpr::Create(ast::builtins::float_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"y")
-                    return ast::TypeExpr::Create(ast::builtins::float_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"z")
-                    return ast::TypeExpr::Create(ast::builtins::float_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"w")
-                    return ast::TypeExpr::Create(ast::builtins::float_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"xy")
-                    return ast::TypeExpr::Create(ast::builtins::float2_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"yz")
-                    return ast::TypeExpr::Create(ast::builtins::float2_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"zw")
-                    return ast::TypeExpr::Create(ast::builtins::float2_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"xyz")
-                    return ast::TypeExpr::Create(ast::builtins::float3_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"yzw")
-                    return ast::TypeExpr::Create(ast::builtins::float3_type);
-                    MATCH_CASE_END()
-
-                    MATCH_CASE(subject,"xyzw")
-                    return ast::TypeExpr::Create(type_res);
-                    MATCH_CASE_END()
-
-                    {
-                        auto e = std::make_unique<TypeError>(std::string(subject) + " does not exist on type `float4`");
+                for(char c : subject){
+                    int comp = swizzleComponentIndex(c);
+                    if(comp < 0 || comp >= info.arity){
+                        auto e = std::make_unique<TypeError>(
+                            std::string("`") + c + "` is not a valid component of type `" + type_res->name + "`");
                         e->loc = _expr->loc.value_or(ErrorLoc{});
                         diagnostics->addError(std::move(e));
+                        return nullptr;
                     }
+                }
+                auto *resultTy = vectorTypeForScalarArity(info.scalar, (int)subject.size());
+                if(!resultTy){
+                    auto e = std::make_unique<TypeError>(
+                        "`" + subject + "` swizzle width is unavailable for type `" + type_res->name + "`");
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
                     return nullptr;
                 }
-                else {
-                    {
-                        auto e = std::make_unique<TypeError>("There are no members available with this type.");
-                        e->loc = _expr->loc.value_or(ErrorLoc{});
-                        diagnostics->addError(std::move(e));
-                    }
-                    return nullptr;
-                }
-
-#undef MATCH_CASE
-#undef MATCH_CASE_END
+                return ast::TypeExpr::Create(resultTy);
             }
         }
         else if(expr->type == UNARY_EXPR){
@@ -1134,8 +1129,91 @@ namespace omegasl {
             }
 
             if(func_found == nullptr){
-                /// Check if it's a known math intrinsic.
-                OmegaCommon::StrRef fname = _id_expr->id;
+                /// Check if it's a known math intrinsic. Canonicalize the
+                /// `mod`/`mad` aliases up front so the dispatch and the
+                /// arg-count diagnostics speak the same name the backends
+                /// emit (§5.1.0).
+                OmegaCommon::StrRef fname = ast::canonicalBuiltinAlias(_id_expr->id);
+
+                /// §5.1.0 — `modf(x, out ip)` / `frexp(x, out e)`. Both
+                /// return the fractional part / mantissa (same type as `x`)
+                /// and write a second result through an out-param. Validated
+                /// here rather than via the generic math buckets because the
+                /// out-param's type rule is special:
+                ///   modf  — `ip` has the same float type as `x`.
+                ///   frexp — `e` is the int vector matching `x`'s arity. (HLSL
+                ///           writes a float exponent; the backend casts back to
+                ///           the int out-param — see HLSLTarget.)
+                if(fname == BUILTIN_MODF || fname == BUILTIN_FREXP){
+                    if(_expr->args.size() != 2){
+                        auto e = std::make_unique<ArgumentCountMismatch>();
+                        e->functionName = fname; e->expected = 2;
+                        e->actual = (unsigned)_expr->args.size();
+                        e->loc = _expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                    auto reportErr = [&](const std::string& msg){
+                        auto e = std::make_unique<TypeError>(msg);
+                        e->loc = _expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                    };
+                    auto x_e = performSemForExpr(_expr->args[0], funcContext);
+                    auto o_e = performSemForExpr(_expr->args[1], funcContext);
+                    if(!x_e || !o_e) return nullptr;
+                    /// Stamp the resolved arg types so HLSL codegen can read
+                    /// `x`'s arity at the call site (mirrors INDEX_EXPR).
+                    _expr->args[0]->resolvedType = x_e;
+                    _expr->args[1]->resolvedType = o_e;
+                    auto xTy = resolveTypeWithExpr(x_e);
+                    auto oTy = resolveTypeWithExpr(o_e);
+                    if(!xTy || !oTy) return nullptr;
+
+                    using namespace ast::builtins;
+                    unsigned arity = (xTy == float_type) ? 1 : (xTy == float2_type) ? 2
+                                   : (xTy == float3_type) ? 3 : (xTy == float4_type) ? 4 : 0;
+                    if(arity == 0){
+                        reportErr("`" + std::string(fname) + "` requires a float / float-vector first argument.");
+                        return nullptr;
+                    }
+
+                    /// The out-param must be a writable (non-const) lvalue:
+                    /// walk past index / member access to the root binding,
+                    /// the same shape the §3.6 const-write check uses.
+                    ast::Expr *root = _expr->args[1];
+                    while(root){
+                        if(root->type == INDEX_EXPR) root = ((ast::IndexExpr *)root)->lhs;
+                        else if(root->type == MEMBER_EXPR) root = ((ast::MemberExpr *)root)->lhs;
+                        else break;
+                    }
+                    bool writable = root && root->type == ID_EXPR;
+                    if(writable){
+                        auto found = currentContext->variableMap.find(((ast::IdExpr *)root)->id);
+                        if(found != currentContext->variableMap.end() && found->second.isConst)
+                            writable = false;
+                    }
+                    if(!writable){
+                        reportErr("2nd argument of `" + std::string(fname) + "` must be a writable (non-const) variable (out-param).");
+                        return nullptr;
+                    }
+
+                    if(fname == BUILTIN_MODF){
+                        if(oTy != xTy){
+                            reportErr("`modf` integer-part out-param must have the same type as the first argument.");
+                            return nullptr;
+                        }
+                    } else {
+                        ast::Type *wantInt = (arity == 1) ? int_type : (arity == 2) ? int2_type
+                                           : (arity == 3) ? int3_type : int4_type;
+                        if(oTy != wantInt){
+                            reportErr("`frexp` exponent out-param must be int / intN matching the first argument's arity.");
+                            return nullptr;
+                        }
+                    }
+                    /// Return type = the fractional part / mantissa, same type as `x`.
+                    return ast::TypeExpr::Create(xTy);
+                }
+
                 int expectedArgs = -1; // -1 = unknown function
                 bool returnsScalar = false; // true for length() which returns scalar from vector
 
@@ -1576,6 +1654,87 @@ namespace omegasl {
                     return nullptr;
                 }
             }
+            /// @brief calculateLOD(sampler, texture, coord) — query the LOD
+            /// the hardware would select for `coord`. Returns a scalar
+            /// `float`. The (sampler, texture, coord) triple follows the same
+            /// pairing rules as `sample`; multisample textures are rejected by
+            /// validateSampleTriple. Like `sample`/`sampleBias`, this relies on
+            /// fragment-stage derivatives in practice, but stage enforcement is
+            /// deferred to match the existing `sample` precedent.
+            else if(func_found == ast::builtins::calculateLOD){
+                if(_expr->args.size() != 3){
+                    auto e = std::make_unique<ArgumentCountMismatch>();
+                    e->functionName = BUILTIN_CALCULATE_LOD; e->expected = 3;
+                    e->actual = (unsigned)_expr->args.size();
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+                ast::Type *texTy = nullptr;
+                if(!validateSampleTriple(_expr, BUILTIN_CALCULATE_LOD, funcContext, nullptr, &texTy)) return nullptr;
+                /// 1D textures have no mip pyramid; Metal exposes no
+                /// `calculate_*_lod` for `texture1d`, so reject 1D here for
+                /// portability (HLSL/GLSL do have it, but the query is
+                /// degenerate — LOD is always 0). Revisit behind
+                /// TEXTURE1D_MIP_SAMPLE if a real workload needs it.
+                if(texTy == ast::builtins::texture1d_type
+                   || texTy == ast::builtins::texture1d_array_type){
+                    reportTypeErr("`calculateLOD` is not supported on 1D textures (no mip pyramid; Metal has no LOD query for `texture1d`).");
+                    return nullptr;
+                }
+                /// returns float — falls through to func_found->returnType.
+            }
+            /// @brief getDimensions(texture, lod) — query the mip-level
+            /// dimensions. `lod` is required (pass `0` for the base level).
+            /// The return shape depends on the texture's spatial rank:
+            /// `uint` (1D), `uint2` (1D-array / 2D / cube), `uint3` (2D-array
+            /// / 3D / cube-array). Synthesized per-call (like `transpose`)
+            /// rather than read from the FuncType's placeholder return type.
+            /// Multisample textures are rejected — the per-backend dimension
+            /// query for MS is asymmetric and deferred.
+            else if(func_found == ast::builtins::getDimensions){
+                if(_expr->args.size() != 2){
+                    auto e = std::make_unique<ArgumentCountMismatch>();
+                    e->functionName = BUILTIN_GET_DIMENSIONS; e->expected = 2;
+                    e->actual = (unsigned)_expr->args.size();
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+
+                auto tex_e = performSemForExpr(_expr->args[0], funcContext);
+                auto lod_e = performSemForExpr(_expr->args[1], funcContext);
+                if(!tex_e || !lod_e) return nullptr;
+                auto texTy = resolveTypeWithExpr(tex_e);
+                auto lodTy = resolveTypeWithExpr(lod_e);
+                if(!texTy || !lodTy) return nullptr;
+
+                if(isMSTextureType(texTy)){
+                    reportTypeErr("`getDimensions` on multisample textures is not supported yet (the per-backend dimension query for multisample textures is asymmetric).");
+                    return nullptr;
+                }
+                if(lodTy != ast::builtins::int_type && lodTy != ast::builtins::uint_type){
+                    reportTypeErr("2nd param of function " + std::string(BUILTIN_GET_DIMENSIONS) + " (lod) must be an int or uint.");
+                    return nullptr;
+                }
+
+                ast::Type *retTy = nullptr;
+                if(texTy == ast::builtins::texture1d_type){
+                    retTy = ast::builtins::uint_type;
+                } else if(texTy == ast::builtins::texture1d_array_type
+                          || texTy == ast::builtins::texture2d_type
+                          || texTy == ast::builtins::texturecube_type){
+                    retTy = ast::builtins::uint2_type;
+                } else if(texTy == ast::builtins::texture2d_array_type
+                          || texTy == ast::builtins::texture3d_type
+                          || texTy == ast::builtins::texturecube_array_type){
+                    retTy = ast::builtins::uint3_type;
+                } else {
+                    reportTypeErr("1st param of function " + std::string(BUILTIN_GET_DIMENSIONS) + " must be a (non-multisample) texture type.");
+                    return nullptr;
+                }
+                return ast::TypeExpr::Create(retTy);
+            }
                 /// @brief write(texture texture,texcoord coord,float4 data) function
             else if(func_found == ast::builtins::write){
 
@@ -1948,12 +2107,24 @@ namespace omegasl {
         }
         else {
             bool hasReturn = false;
+            bool blockFailed = false;
             for(auto s : block.body){
+                auto errBefore = diagnostics->getErrorCount();
                 auto res = performSemForStmt(s,funcContext);
                 if(!res){
-                    auto e = std::make_unique<TypeError>("Failed to perform sem on block statement");
-                    diagnostics->addError(std::move(e));
-                    return nullptr;
+                    /// Keep checking the remaining statements so independent
+                    /// errors in one function body all surface in a single
+                    /// compile. The failing statement normally added its own
+                    /// precise diagnostic; only fall back to a generic one if
+                    /// it somehow didn't, so the compile still fails loudly
+                    /// (a silent sem failure would emit a broken library).
+                    blockFailed = true;
+                    if(diagnostics->getErrorCount() == errBefore){
+                        auto e = std::make_unique<TypeError>("Failed to perform sem on block statement");
+                        diagnostics->addError(std::move(e));
+                    }
+                    if(diagnostics->getErrorCount() >= DiagnosticEngine::kMaxErrorsBeforeStop) break;
+                    continue;
                 }
 
                 if(s->type == RETURN_DECL){
@@ -1961,6 +2132,11 @@ namespace omegasl {
                     hasReturn = true;
                 }
             }
+
+            /// Signal failure to the caller only after every statement has
+            /// been checked. Skip the return-type consistency check below —
+            /// some statements were abandoned, so it would be spurious.
+            if(blockFailed) return nullptr;
 
             if(!hasReturn){
                  allTypes.push_back(ast::TypeExpr::Create(KW_TY_VOID));
@@ -2240,8 +2416,19 @@ namespace omegasl {
                     if(p_ty == nullptr){
                         return false;
                     }
+                    /// §3.6 — `const` cannot combine with `out` / `inout`.
+                    /// Those qualifiers write the caller's storage back
+                    /// through the binding; an immutable binding can't be
+                    /// written. `const` is only meaningful on an `in` param.
+                    if(p.isConst && p.access != ast::AttributedFieldDecl::In){
+                        auto e = std::make_unique<TypeError>(
+                            std::string("`const` cannot be combined with `out`/`inout` on parameter `") + p.name + "`.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
                     currentContext->variableMap.insert(std::make_pair(p.name,
-                        SemContext::VarBinding{ p.typeExpr, false }));
+                        SemContext::VarBinding{ p.typeExpr, p.isConst }));
                 }
 
                 /// 3. §3.5 — overload-aware prior-decl matching. With
@@ -2497,8 +2684,18 @@ namespace omegasl {
                             }
                         }
                     }
+                    /// §3.6 — same const+out/inout contradiction guard as the
+                    /// FuncDecl path. A shader param is realistically only
+                    /// ever `in`, but enforce it uniformly.
+                    if(p.isConst && p.access != ast::AttributedFieldDecl::In){
+                        auto e = std::make_unique<TypeError>(
+                            std::string("`const` cannot be combined with `out`/`inout` on parameter `") + p.name + "`.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
                     currentContext->variableMap.insert(std::make_pair(p.name,
-                        SemContext::VarBinding{ p.typeExpr, false }));
+                        SemContext::VarBinding{ p.typeExpr, p.isConst }));
                     paramIndex += 1;
                 }
 

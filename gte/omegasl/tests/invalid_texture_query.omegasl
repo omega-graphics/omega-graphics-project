@@ -1,0 +1,24 @@
+/// §2.3 Phase B (negative test): the texture query intrinsics must reject
+/// the cases below. Test runner: this file MUST fail to compile.
+///
+///   1. getDimensions on a multisample texture — the per-backend dimension
+///      query for MS is asymmetric and deferred.
+///   2. getDimensions with a non-integer `lod`.
+///   3. calculateLOD on a 1D texture — no mip pyramid; Metal has no LOD
+///      query for texture1d.
+///   4. calculateLOD with the wrong argument count.
+
+texture2d_ms ms2D       : 0;
+texture2d    diffuse2D  : 1;
+sampler2d    samp       : 2;
+texture1d    ramp1D     : 3;
+sampler1d    rampSamp   : 4;
+
+[in ms2D, in diffuse2D, in samp, in ramp1D, in rampSamp]
+fragment float4 badQueryFrag(){
+    uint2 a = getDimensions(ms2D, 0);                 // (1) MS rejected
+    uint2 b = getDimensions(diffuse2D, 1.0);          // (2) float lod rejected
+    float c = calculateLOD(rampSamp, ramp1D, 0.0);    // (3) 1D rejected
+    float d = calculateLOD(samp, diffuse2D);          // (4) arg-count
+    return float4(0.0, 0.0, 0.0, 1.0);
+}

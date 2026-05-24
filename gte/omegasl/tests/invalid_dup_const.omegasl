@@ -1,0 +1,17 @@
+/// §3.6 — `const` may appear once per declaration, in either the prefix
+/// (`const T x`) or postfix (`T const x`) position, but not both. The
+/// parser rejects the duplicate. The harness only checks failure.
+
+struct Pt {
+    float4 value;
+};
+
+buffer<Pt> dst : 0;
+
+[out dst]
+compute(x=1,y=1,z=1)
+void test_invalid_dup_const(uint3 tid : GlobalThreadID){
+    /// Expected diagnostic: "Duplicate `const` on declaration"
+    const float k const = 2.0;
+    dst[0].value = float4(k, k, k, k);
+}

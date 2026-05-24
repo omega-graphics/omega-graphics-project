@@ -132,7 +132,71 @@ partially and the rest not at all.
 
 ---
 
-## 4. Phased roadmap
+## 4. Research methodology — study the incumbents, surpass them from the literature
+
+Every phase below names a well-trodden problem: broadphase, GJK/EPA narrowphase,
+sequential-impulse contact solving, XPBD constraint projection. The mature
+engines — chiefly **NVIDIA PhysX 5** (with FleX) and **Epic's Chaos** — have
+shipped hardened answers to all of them. We treat those answers as a *map of the
+terrain we have to cross*, not as code to copy. The goal is not parity with them;
+it is to arrive a generation later and land somewhere better, because we get to
+choose our substrate (OmegaSL compute, GTE's `GTEMath.h` matrix/quaternion types,
+the GPU's specialized numeric formats) instead of inheriting theirs.
+
+The discipline, run once per subsystem **before** its solver is written:
+
+1. **Survey the incumbents.** Read how PhysX 5 and Chaos solve the subsystem —
+   the algorithm, the data structures, the numerical tricks, and *especially* the
+   tradeoffs they accepted. PhysX is open-source and Chaos ships with Unreal's
+   source; both are studyable. We read them to understand the problem's shape and
+   the failure modes they hit, not to transcribe.
+2. **Find why their choice was theirs, not ours.** Their algorithms are tuned for
+   *their* constraints — a CPU/SIMD heritage, generic `float4` math, a particular
+   determinism stance, decades of backward compatibility. List where those
+   constraints diverge from AQUA's: we are compute-first (§3), we borrow GTE's
+   `Matrix`/`Quaternion` and own our `Vec3`, and we can target the GPU's numeric
+   types directly. Each divergence is an opening for a better algorithm, not just
+   a faster transcription of theirs.
+3. **Go to the literature, not the shipped binary.** Research usually leads the
+   engines by years. Pull the primary sources — SIGGRAPH / Eurographics papers,
+   the XPBD and small-steps line of work, GPU-collision and constraint-coloring
+   papers — and look for the *newer, more refined* algorithm that the incumbents
+   predate or never adopted. Cite the paper in the implementation.
+4. **Derive a variant optimized for our types and substrate.** Adapt the chosen
+   algorithm to AQUA's reality: SoA layouts for compute (§5 Phase 5),
+   constraint-graph coloring that maps to OmegaSL dispatch without write
+   conflicts, math expressed in GTE's matrix/quaternion types, and
+   reductions/accumulations chosen to fit the determinism target (§5 Phase 5) and
+   the GPU's numeric formats. This is where "more optimized for the matrix types
+   and specialized GPU numeric types" gets cashed out — as a concrete kernel, not
+   a slogan.
+5. **Prove it against the incumbent as a baseline.** The incumbent's *behavior* is
+   the reference oracle, not its code. A box stack must settle as cleanly; a cloth
+   must drape as plausibly. Hold our variant to that bar on the phase's runnable
+   deliverable, and to the CPU/GPU parity test (§6).
+
+Two boundaries on this work:
+
+- **Clean-room, by derivation.** We study published descriptions and read source
+  to *understand*, then implement from the math independently. We do not paste or
+  line-by-line port their code; the value is the refined algorithm, not their
+  expression of an older one. (Their licenses differ from ours — derive, don't
+  lift.)
+- **Each phase opens with a one-page prior-art brief.** Before the solver lands, a
+  short brief records: what PhysX/Chaos do, which paper we're improving on, what we
+  changed for our substrate, and how we'll measure "better." This is the research
+  analogue of the runnable-deliverable rule (§3) — the brief is the artifact that
+  justifies the kernel, and it lives next to the phase's `tests/` simulation.
+
+This methodology threads through **every** phase in §5 and feeds directly into the
+per-phase **Key decisions** (§7): each fork there — broadphase structure,
+narrowphase strategy, solver architecture — is exactly the kind of choice this
+research loop is meant to settle with evidence rather than by defaulting to
+whatever the incumbents happened to ship.
+
+---
+
+## 5. Phased roadmap
 
 Each phase lists its **goal**, the **runnable deliverable** that proves it, the
 **work**, what it **depends on**, and any **key decisions** to make first. The
@@ -400,13 +464,13 @@ the project needs fluids.
 
 ---
 
-## 5. Cross-cutting concerns
+## 6. Cross-cutting concerns
 
 These thread through several phases and should be designed early even if built
 gradually:
 
 - **Compute/CPU parity & determinism** — every solver maintains both paths and a
-  test that holds them equivalent; the determinism target (§4 Phase 5) governs
+  test that holds them equivalent; the determinism target (§5 Phase 5) governs
   how kernels reduce and accumulate.
 - **The kREATE integration boundary** — AQUA exposes its own types (`Vec3`,
   bodies, shapes) plus the borrowed GTE math types (`Matrix`, `Quaternion`);
@@ -426,7 +490,7 @@ gradually:
 
 ---
 
-## 6. Key decisions to make early
+## 7. Key decisions to make early
 
 The forks that are expensive to reverse, pulled out of the phases so they can be
 decided deliberately:
@@ -454,7 +518,7 @@ decided deliberately:
 
 ---
 
-## 7. Dependency overview
+## 8. Dependency overview
 
 ```
 Phase 0  Foundation (context, space, accumulator)   (done)

@@ -124,6 +124,8 @@ namespace omegasl::ast {
         FuncType *gatherGreen;
         FuncType *gatherBlue;
         FuncType *gatherAlpha;
+        FuncType *calculateLOD;
+        FuncType *getDimensions;
 
 
         void Initialize(){
@@ -327,6 +329,27 @@ namespace omegasl::ast {
                     {"texture",TypeExpr::Create("TEXTURE_TYPE")},
                     {"coord",TypeExpr::Create("VECTOR_TYPE")}
                     },TypeExpr::Create(float4_type)};
+
+                /// §2.3 Phase B — `calculateLOD(sampler, texture, coord)`
+                /// returns the LOD the hardware would choose for `coord`,
+                /// as a scalar `float`. Reuses the (sampler, texture, coord)
+                /// triple validation that `sample` uses.
+                calculateLOD = new FuncType{BUILTIN_CALCULATE_LOD,global_scope,true,{},{
+                    {"sampler",TypeExpr::Create("SAMPLER_TYPE")},
+                    {"texture",TypeExpr::Create("TEXTURE_TYPE")},
+                    {"coord",TypeExpr::Create("VECTOR_TYPE")}
+                    },TypeExpr::Create(float_type)};
+
+                /// §2.3 Phase B — `getDimensions(texture, lod)` queries the
+                /// mip-level dimensions. The return type is shape-dependent
+                /// (`uint`/`uint2`/`uint3` by texture rank) and is synthesized
+                /// per-call in Sema, so the FuncType return type here is only
+                /// a placeholder. `lod` is required (pass `0` for the base
+                /// level).
+                getDimensions = new FuncType{BUILTIN_GET_DIMENSIONS,global_scope,true,{},{
+                    {"texture",TypeExpr::Create("TEXTURE_TYPE")},
+                    {"lod",TypeExpr::Create(uint_type)}
+                    },TypeExpr::Create(uint2_type)};
             }
         }
 
@@ -438,6 +461,8 @@ namespace omegasl::ast {
                 delete gatherGreen;
                 delete gatherBlue;
                 delete gatherAlpha;
+                delete calculateLOD;
+                delete getDimensions;
             }
         }
 
@@ -515,5 +540,11 @@ namespace omegasl::ast {
             for(auto el : args){
                 delete el;
             }
+    }
+
+    OmegaCommon::StrRef canonicalBuiltinAlias(OmegaCommon::StrRef name) {
+        if(name == BUILTIN_MOD) return BUILTIN_FMOD;
+        if(name == BUILTIN_MAD) return BUILTIN_FMA;
+        return name;
     }
 }
