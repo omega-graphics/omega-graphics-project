@@ -56,6 +56,14 @@ namespace omegasl {
         void format(std::ostream & out) const override { out << "invalid attribute: " << message; }
     };
 
+    struct ReservedName : Error {
+        std::string name;
+        explicit ReservedName(std::string n) : name(std::move(n)) {}
+        void format(std::ostream & out) const override {
+            out << "`" << name << "` is a reserved builtin intrinsic name and cannot be used as a user function name";
+        }
+    };
+
     class SourceFile {
         std::string content;
         std::vector<std::ios::pos_type> lineStartPos;

@@ -58,25 +58,21 @@ namespace OmegaCommon::FS {
 
 
     String Path::absPath(){
-        auto n_dir = _dir;
-        // for(auto & c : n_dir){
-        //     if(c == '/')
-        //         c = PATH_SLASH;
-        // };
-
-        if(isRelative){
-            NSString *currentDir = [[NSFileManager defaultManager] currentDirectoryPath];
-            const char *buffer = currentDir.UTF8String;
-            if(_dir.front() == '.')
-                return buffer + n_dir.substr(1,n_dir.size()-1) + PATH_SLASH + _fname + "." + _ext;
-            else 
-                return std::string(buffer) + PATH_SLASH + n_dir + _fname + "." + _ext;
-
-        }
-        else {
-            return n_dir + PATH_SLASH + _fname + "." + _ext;
-        }
-        
+        // Resolve against the faithful original path string (`_str`), not
+        // the parsed _dir/_fname/_ext tokens. The token reconstruction was
+        // lossy and mis-resolved relative paths: it stripped only one
+        // leading '.' (so "../x" became CWD + "./x" with no separator),
+        // omitted the dir/file separator for dot-less relative inputs,
+        // dropped any character the tokenizer's allow-list missed, and
+        // appended a spurious '.' to extensionless paths. An absolute path
+        // is already its own absolute form; a relative one is CWD + '/' +
+        // the path, and the OS collapses any '.'/'..' segments at lookup.
+        if(_str.empty())
+            return _str;
+        if(_str.front() == '/')
+            return _str;
+        NSString *currentDir = [[NSFileManager defaultManager] currentDirectoryPath];
+        return std::string(currentDir.UTF8String) + PATH_SLASH + _str;
     };
 
 

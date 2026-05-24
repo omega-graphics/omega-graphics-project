@@ -38,38 +38,33 @@ namespace OmegaCommon::FS {
     };
 
     OmegaCommon::String Path::absPath(){
-        // Windows drive letter check: if _str is already absolute (e.g. "C:\..." or "C:/..."),
-        // the tokenizer drops the ':' which causes isRelative to be true incorrectly.
-        // Bypass token reconstruction and just normalize slashes on the original string.
-        if(_str.size() >= 3 && std::isalpha(static_cast<unsigned char>(_str[0]))
-           && _str[1] == ':' && (_str[2] == '/' || _str[2] == '\\')){
-            auto result = _str;
-            for(auto & c : result){
+        // Resolve against the faithful original path string (`_str`), not
+        // the parsed _dir/_fname/_ext tokens. The reconstruction was lossy
+        // and mis-resolved relative paths (only one leading '.' stripped,
+        // so "../x" became CWD + "./x" with no separator; dot-less relative
+        // inputs lost the dir/file separator; the ':' in a drive letter was
+        // dropped, flipping isRelative). All slashes are normalized to '\\'
+        // so the result is a native Windows path either way.
+        auto normalize = [](OmegaCommon::String s) -> OmegaCommon::String {
+            for(auto & c : s){
                 if(c == '/')
                     c = PATH_SLASH;
             }
-            return result;
-        }
-
-        auto n_dir = _dir;
-        for(auto & c : n_dir){
-            if(c == '/')
-                c = PATH_SLASH;
+            return s;
         };
-
-        if(isRelative){
-            CHAR buffer[MAX_PATH];
-            GetCurrentDirectoryA(MAX_PATH,buffer);
-            if(!_dir.empty() && _dir.front() == '.')
-                return buffer + n_dir.substr(1,n_dir.size()-1) + PATH_SLASH + _fname + "." + _ext;
-            else
-                return std::string(buffer) + PATH_SLASH + n_dir + _fname + "." + _ext;
-
-        }
-        else {
-            return n_dir + PATH_SLASH + _fname + "." + _ext;
-        }
-
+        if(_str.empty())
+            return _str;
+        // Absolute forms: drive letter ("C:\..."/"C:/..."), UNC / rooted
+        // ("\\..." or "/...").
+        bool driveAbs = _str.size() >= 3
+                        && std::isalpha(static_cast<unsigned char>(_str[0]))
+                        && _str[1] == ':' && (_str[2] == '/' || _str[2] == '\\');
+        bool rootAbs = _str.front() == '/' || _str.front() == '\\';
+        if(driveAbs || rootAbs)
+            return normalize(_str);
+        CHAR buffer[MAX_PATH];
+        GetCurrentDirectoryA(MAX_PATH,buffer);
+        return normalize(std::string(buffer) + PATH_SLASH + _str);
     };
 
 

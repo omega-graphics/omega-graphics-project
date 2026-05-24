@@ -2397,6 +2397,20 @@ namespace omegasl {
             }
             case FUNC_DECL : {
                 auto *_decl = (ast::FuncDecl *)decl;
+                /// 0. Reserved-name check (§5.1.0 follow-up). A user function
+                ///    may not reuse the spelling of a builtin intrinsic — a
+                ///    name like `saturate` or `sin` always resolves to the
+                ///    builtin, so a same-name user definition was silently
+                ///    dead before and is now a hard error. Checked before the
+                ///    overload-matching below so the diagnostic is about the
+                ///    name itself, not a phantom redeclaration. Fires for
+                ///    forward declarations too.
+                if(ast::isReservedBuiltinName(_decl->name)){
+                    auto e = std::make_unique<ReservedName>(std::string(_decl->name));
+                    e->loc = _decl->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return false;
+                }
                 /// 1. Param name uniqueness
                 OmegaCommon::MapVec<OmegaCommon::String, int> paramNames;
                 for(auto & p : _decl->params){

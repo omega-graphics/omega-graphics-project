@@ -96,30 +96,6 @@ namespace omegasl {
 #endif
     }
 
-    /// Curated set of Metal stdlib identifiers that a user function name
-    /// would shadow. Names listed here trigger `osl_user_<name>` mangling.
-    /// Metal's `metal::` namespace is large (and growing) — we list the
-    /// common shape/math/sampling functions and grow on demand.
-    bool MSLTarget::needsMangling(OmegaCommon::StrRef name) const {
-        /// Note on omissions: `degrees` and `radians` are present in HLSL
-        /// and GLSL but are NOT part of the Metal stdlib (they're absent
-        /// from `<metal_math>` in every spec rev to date). They reach
-        /// MSL via `tryEmitBuiltinCall` below, which inlines the
-        /// multiplication; consequently they cannot collide with a
-        /// Metal stdlib name and don't need to be listed here.
-        static const std::unordered_set<std::string> mslStdlib = {
-            "abs","acos","asin","atan","atan2","ceil","clamp","clip","cos",
-            "cosh","cross","ddx","ddy","determinant","distance",
-            "dot","exp","exp2","floor","fmod","fract","frexp","fwidth",
-            "isfinite","isinf","isnan","ldexp","length","log","log10","log2",
-            "max","min","mix","modf","normalize","pow","reflect",
-            "refract","round","rsqrt","saturate","sign","sin","sinh",
-            "smoothstep","sqrt","step","tan","tanh","transpose","trunc",
-            "sample","read","write"
-        };
-        return mslStdlib.count(std::string(name)) > 0;
-    }
-
     void MSLTarget::resetForNextShader() {
         bufferCount = 0;
         textureCount = 0;

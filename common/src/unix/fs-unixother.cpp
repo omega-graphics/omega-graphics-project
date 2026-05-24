@@ -31,35 +31,20 @@ namespace OmegaCommon::FS {
 	}
 
 	String Path::absPath(){
-		auto n_dir = _dir;
-		std::string ending;
-		if(_ext.empty()){
-    		ending = _fname;
-    	}
-    	else {
-    		ending = _fname + "." + _ext;
-    	}
-        // for(auto & c : n_dir){
-        //     if(c == '/')
-        //         c = PATH_SLASH;
-        // };
-
-        if(isRelative){
-        	char cwd_buffer[PATH_MAX];
-            getcwd(cwd_buffer,PATH_MAX);
-
-            const char *buffer = cwd_buffer;
-            if(_dir.front() == '.')
-                return buffer + n_dir.substr(1,n_dir.size()-1) + PATH_SLASH + ending;
-            else {
-
-                return std::string(buffer) + PATH_SLASH + n_dir + ending;
-            }
-
-        }
-        else {
-            return n_dir + PATH_SLASH + _fname + "." + _ext;
-        }
+        // Resolve against the faithful original path string (`_str`), not
+        // the parsed _dir/_fname/_ext tokens — the reconstruction
+        // mis-resolved relative paths (only one leading '.' stripped, so
+        // "../x" became CWD + "./x" without a separator; dot-less relative
+        // inputs lost the dir/file separator; the allow-list dropped
+        // characters). An absolute path is already absolute; a relative one
+        // is CWD + '/' + the path, and the OS collapses '.'/'..' at lookup.
+        if(_str.empty())
+            return _str;
+        if(_str.front() == '/')
+            return _str;
+        char cwd_buffer[PATH_MAX];
+        getcwd(cwd_buffer,PATH_MAX);
+        return std::string(cwd_buffer) + PATH_SLASH + _str;
 	}
 
 	StatusCode changeCWD(Path newPath){

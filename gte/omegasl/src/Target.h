@@ -233,14 +233,6 @@ namespace omegasl {
                                            ast::ShaderDecl *decl,
                                            std::ostream &out);
 
-        /// Whether a user-defined function name would collide with a
-        /// stdlib identifier on this backend. Returning true triggers
-        /// `osl_user_<name>` mangling at both the definition and call
-        /// site for that function. Default: no collision — most user
-        /// names pass through unchanged so the generated source stays
-        /// readable. Targets override with their stdlib collision sets.
-        virtual bool needsMangling(OmegaCommon::StrRef name) const { return false; }
-
         /// Write an identifier (variable name, function reference, etc.)
         /// to `out`. Default: write raw. GLSL overrides to prefix names
         /// that collide with GLSL keywords (`input`, `output`, `shared`,
@@ -471,7 +463,6 @@ namespace omegasl {
                                  omegasl_shader_layout_desc &layout) override;
         void emitStaticPreamble(std::ostream &out) override;
         void resetForNextShader() override;
-        bool needsMangling(OmegaCommon::StrRef name) const override;
         void emitShaderEntryHeader(CodeGen &cg,
                                    ast::ShaderDecl *decl,
                                    omegasl_shader &meta,
@@ -548,7 +539,6 @@ namespace omegasl {
                                  omegasl_shader_layout_desc &layout) override;
         void emitStaticPreamble(std::ostream &out) override;
         void resetForNextShader() override;
-        bool needsMangling(OmegaCommon::StrRef name) const override;
         /// Phase 8d: MSL owns full shader-entry emission. Header writes
         /// the stage decorator (`vertex`/`fragment`/`kernel`/`[[patch]]
         /// vertex`), return type, name, and the `(...)` parameter list
@@ -636,7 +626,6 @@ namespace omegasl {
                                  omegasl_shader_layout_desc &layout) override;
         void emitStaticPreamble(std::ostream &out) override;
         void resetForNextShader() override;
-        bool needsMangling(OmegaCommon::StrRef name) const override;
         void writeIdentifier(OmegaCommon::StrRef name, std::ostream &out) const override;
         void emitMemberExpr(CodeGen &cg, ast::MemberExpr *expr, std::ostream &out) override;
         bool tryEmitBuiltinCall(CodeGen &cg,

@@ -152,6 +152,8 @@ add_omegasl_fail_test(omegasl_invalid_threadgroup_init       invalid_threadgroup
 # §6.2 — barrier diagnostics (outside compute / arg-count).
 add_omegasl_fail_test(omegasl_invalid_barrier_outside_compute invalid_barrier_outside_compute.omegasl)
 add_omegasl_fail_test(omegasl_invalid_barrier_args           invalid_barrier_args.omegasl)
+# §5.1.0 follow-up — reserved builtin intrinsic name as a user function.
+add_omegasl_fail_test(omegasl_invalid_reserved_name          invalid_reserved_name.omegasl)
 
 # =============================================================
 # 4. Golden-file tests for HLSL codegen (DirectX only)

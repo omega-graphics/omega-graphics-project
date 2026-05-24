@@ -193,6 +193,18 @@ namespace omegasl {
         /// the alias is resolved at every point that recognizes a builtin.
         OmegaCommon::StrRef canonicalBuiltinAlias(OmegaCommon::StrRef name);
 
+        /// §5.1.0 follow-up — true if `name` is the spelling of an OmegaSL
+        /// builtin function (a math/geometric intrinsic, a `make_*`
+        /// constructor, a texture op, a barrier, or one of the `mod`/`mad`
+        /// aliases). Sema rejects a user `func` declaration that reuses one
+        /// of these names: a builtin like `sin` always means the builtin,
+        /// the way `transpose` or `sample` do. This is the OmegaSL-side
+        /// reservation — distinct from the unconditional `osl_user_` prefix
+        /// (CodeGen), which defends against *backend* stdlib names OmegaSL
+        /// doesn't even model (e.g. Metal `add_const`). Kept in sync with
+        /// the builtin dispatch in Sema and the `builtinFunctionMap`.
+        bool isReservedBuiltinName(OmegaCommon::StrRef name);
+
         /// @brief Refers to a type that already exists.
         struct TypeExpr {
             OmegaCommon::String name;

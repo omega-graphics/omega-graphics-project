@@ -547,4 +547,54 @@ namespace omegasl::ast {
         if(name == BUILTIN_MAD) return BUILTIN_FMA;
         return name;
     }
+
+    bool isReservedBuiltinName(OmegaCommon::StrRef name) {
+        /// One set, spelled from the `BUILTIN_*` macros so it tracks the
+        /// dispatch in `Sema::performSemForExpr` and the `builtinFunctionMap`
+        /// constructor argument. `transpose` / `determinant` are matched by
+        /// string literal in Sema (no macro), so they appear as literals here
+        /// too. Aliases (`mod`/`mad`) are reserved alongside their canonical
+        /// spellings — a user cannot define either form.
+        static const std::set<std::string> reserved = {
+            /// Vector / matrix constructors.
+            BUILTIN_MAKE_FLOAT2, BUILTIN_MAKE_FLOAT3, BUILTIN_MAKE_FLOAT4,
+            BUILTIN_MAKE_INT2, BUILTIN_MAKE_INT3, BUILTIN_MAKE_INT4,
+            BUILTIN_MAKE_UINT2, BUILTIN_MAKE_UINT3, BUILTIN_MAKE_UINT4,
+            BUILTIN_MAKE_HALF2, BUILTIN_MAKE_HALF3, BUILTIN_MAKE_HALF4,
+            BUILTIN_MAKE_SHORT2, BUILTIN_MAKE_SHORT3, BUILTIN_MAKE_SHORT4,
+            BUILTIN_MAKE_USHORT2, BUILTIN_MAKE_USHORT3, BUILTIN_MAKE_USHORT4,
+            BUILTIN_MAKE_LONG2, BUILTIN_MAKE_LONG3, BUILTIN_MAKE_LONG4,
+            BUILTIN_MAKE_ULONG2, BUILTIN_MAKE_ULONG3, BUILTIN_MAKE_ULONG4,
+            BUILTIN_MAKE_FLOAT2X2, BUILTIN_MAKE_FLOAT3X3, BUILTIN_MAKE_FLOAT4X4,
+            BUILTIN_MAKE_FLOAT2X3, BUILTIN_MAKE_FLOAT2X4, BUILTIN_MAKE_FLOAT3X2,
+            BUILTIN_MAKE_FLOAT3X4, BUILTIN_MAKE_FLOAT4X2, BUILTIN_MAKE_FLOAT4X3,
+            /// Geometric / texture builtins (the `builtinFunctionMap` set).
+            BUILTIN_DOT, BUILTIN_CROSS,
+            BUILTIN_SAMPLE, BUILTIN_SAMPLE_LOD, BUILTIN_SAMPLE_BIAS,
+            BUILTIN_SAMPLE_GRAD, BUILTIN_GATHER, BUILTIN_GATHER_RED,
+            BUILTIN_GATHER_GREEN, BUILTIN_GATHER_BLUE, BUILTIN_GATHER_ALPHA,
+            BUILTIN_CALCULATE_LOD, BUILTIN_GET_DIMENSIONS,
+            BUILTIN_WRITE, BUILTIN_READ,
+            /// 1-arg math.
+            BUILTIN_SIN, BUILTIN_COS, BUILTIN_TAN, BUILTIN_ASIN, BUILTIN_ACOS,
+            BUILTIN_ATAN, BUILTIN_SQRT, BUILTIN_ABS, BUILTIN_FLOOR, BUILTIN_CEIL,
+            BUILTIN_ROUND, BUILTIN_FRAC, BUILTIN_NORMALIZE, BUILTIN_LENGTH,
+            BUILTIN_EXP, BUILTIN_EXP2, BUILTIN_LOG, BUILTIN_LOG2,
+            BUILTIN_SIGN, BUILTIN_SATURATE, BUILTIN_TRUNC, BUILTIN_RSQRT,
+            BUILTIN_DEGREES, BUILTIN_RADIANS, BUILTIN_SINH, BUILTIN_COSH,
+            BUILTIN_TANH,
+            /// 2-arg math.
+            BUILTIN_ATAN2, BUILTIN_POW, BUILTIN_MIN, BUILTIN_MAX, BUILTIN_STEP,
+            BUILTIN_REFLECT, BUILTIN_FMOD, BUILTIN_LDEXP,
+            /// 3-arg math.
+            BUILTIN_CLAMP, BUILTIN_LERP, BUILTIN_SMOOTHSTEP, BUILTIN_FMA,
+            /// Aliases + out-param math.
+            BUILTIN_MOD, BUILTIN_MAD, BUILTIN_MODF, BUILTIN_FREXP,
+            /// Matrix intrinsics (string-matched in Sema).
+            "transpose", "determinant",
+            /// Compute barriers.
+            BUILTIN_THREADGROUP_BARRIER, BUILTIN_DEVICE_BARRIER
+        };
+        return reserved.count(std::string(name)) > 0;
+    }
 }

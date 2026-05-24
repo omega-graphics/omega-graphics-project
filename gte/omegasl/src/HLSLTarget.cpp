@@ -158,25 +158,6 @@ namespace omegasl {
 #endif
     }
 
-    /// Curated set of HLSL stdlib identifiers that a user function name
-    /// would shadow. Names listed here trigger `osl_user_<name>` mangling
-    /// at both definition and call sites. Names not in this set pass
-    /// through unchanged so the generated source stays readable. Add
-    /// entries when a real collision is observed.
-    bool HLSLTarget::needsMangling(OmegaCommon::StrRef name) const {
-        static const std::unordered_set<std::string> hlslStdlib = {
-            "abs","acos","all","any","asin","atan","atan2","ceil","clamp",
-            "clip","cos","cosh","cross","ddx","ddy","degrees","determinant",
-            "distance","dot","exp","exp2","floor","fmod","frac","frexp",
-            "fwidth","isfinite","isinf","isnan","ldexp","length","lerp","lit",
-            "log","log10","log2","mad","max","min","modf","mul","normalize",
-            "pow","radians","reflect","refract","round","rsqrt","saturate",
-            "sign","sin","sinh","smoothstep","sqrt","step","tan","tanh",
-            "transpose","trunc"
-        };
-        return hlslStdlib.count(std::string(name)) > 0;
-    }
-
     void HLSLTarget::resetForNextShader() {
         tResourceCount = 0;
         uResourceCount = 0;

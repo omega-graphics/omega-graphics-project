@@ -147,24 +147,6 @@ namespace omegasl {
 #endif
     }
 
-    /// Curated set of GLSL builtin functions that would shadow a user
-    /// function with the same name. Mangled with `osl_user_<name>` when
-    /// hit. The reserved-keyword set (input/output/shared/etc.) is
-    /// handled separately by writeGLSLIdent for variable identifiers.
-    bool GLSLTarget::needsMangling(OmegaCommon::StrRef name) const {
-        static const std::unordered_set<std::string> glslStdlib = {
-            "abs","acos","asin","atan","ceil","clamp","cos","cosh","cross",
-            "degrees","determinant","distance","dot","dFdx","dFdy","exp",
-            "exp2","floor","fract","fwidth","inverse","inversesqrt","length",
-            "log","log2","max","min","mix","mod","normalize","pow","radians",
-            "reflect","refract","round","sign","sin","sinh","smoothstep",
-            "sqrt","step","tan","tanh","transpose","trunc",
-            "texture","textureLod","textureGrad","texelFetch","imageStore",
-            "imageLoad"
-        };
-        return glslStdlib.count(std::string(name)) > 0;
-    }
-
     void GLSLTarget::resetForNextShader() {
         binding = 0;
     }

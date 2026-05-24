@@ -19,10 +19,6 @@ struct PhongRaster internal {
 buffer<Vertex> vertices : 0;
 buffer<LightData> light : 1;
 
-float saturate(float x){
-    return clamp(x, 0.0, 1.0);
-}
-
 float lambert_diffuse(float3 N, float3 L){
     return max(dot(N, L), 0.0);
 }

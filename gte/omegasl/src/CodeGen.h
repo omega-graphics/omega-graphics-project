@@ -96,9 +96,9 @@ namespace omegasl {
 
         /// Names of user-defined functions encountered during parsing.
         /// Populated by each backend's FUNC_DECL handler. Used by the
-        /// shared CALL_EXPR / FUNC_DECL emission paths together with
-        /// `Target::needsMangling` to decide whether to write the bare
-        /// name or `osl_user_<name>` at the call/definition site.
+        /// shared CALL_EXPR / FUNC_DECL emission paths to recognize a
+        /// user function and write its `osl_user_<name>` spelling at the
+        /// call/definition site.
         OmegaCommon::Vector<ast::FuncDecl *> userFuncDecls;
         std::set<std::string> userFuncNames;
 
@@ -172,16 +172,19 @@ namespace omegasl {
 
         /// Returns the spelling to write when emitting a user-defined
         /// function name (in either its definition or a call site).
-        /// The single-overload form keeps the original behavior — only
-        /// mangle on a stdlib collision so unrelated user code stays
-        /// readable. The two-argument form (used by overloaded names)
-        /// always mangles with a type suffix so each overload emits a
-        /// unique symbol.
+        /// Every user function is prefixed with `osl_user_` on every
+        /// backend, unconditionally. A curated per-backend stdlib list
+        /// can never be complete — Metal's namespace alone spans the
+        /// math, geometric, and `<metal_type_traits>` surfaces (e.g.
+        /// `add_const`), so any name the list misses becomes a
+        /// platform-dependent collision. Prefixing always removes the
+        /// entire class of failures and keeps the generated symbol for
+        /// a given OmegaSL function identical across HLSL/MSL/GLSL.
+        /// Shader entry points (vertex/fragment/compute) are emitted
+        /// through a different path and keep their bare names — the
+        /// runtime looks them up by the source name.
         OmegaCommon::String spellUserFuncName(OmegaCommon::StrRef name) const {
-            if (target->needsMangling(name)) {
-                return mangleUserFuncName(name);
-            }
-            return std::string(name);
+            return mangleUserFuncName(name);
         }
 
         /// §3.5 — overload-aware spelling. Used at sites that know the

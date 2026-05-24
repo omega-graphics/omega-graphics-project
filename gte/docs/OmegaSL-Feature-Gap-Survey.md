@@ -1076,15 +1076,45 @@ shared dispatch skips its `<rename>(args)` fallback.
   §2.3 Phase B's `getDimensions`. Land that hook once and these
   builtins become a few lines each. (DONE)
 * **Sema reservation of intrinsic names** (rejecting user `func sin(...)`,
-  `func saturate(...)`, etc.). Currently a user definition shadows the
-  builtin. The §5.1.1 doc proposes this; doing it together with §5.1
-  is a backwards-compat hazard for any existing shader that defines its
-  own `saturate` workaround. Land as a separate, clearly-flagged change.
-* **HLSL `osl_user_` user-function prefix**. MSL already prefixes user
-  funcs to avoid stdlib collisions; HLSL has the same exposure but
-  hasn't adopted the prefix yet. Same separate-PR rationale: it's a
-  source-shape change that the existing HLSL goldens would need to
-  re-baseline. (This should apply to all backends for any function names that might collide with any backend like on Metal add_const.)
+  `func saturate(...)`, etc.). **(LANDED.)** Originally a user definition
+  silently shadowed the builtin; a `func saturate` was dead code (every
+  `saturate(...)` call bound to the builtin) yet compiled without
+  complaint. Now `ast::isReservedBuiltinName` — one set spelled from the
+  `BUILTIN_*` macros plus the string-matched `transpose`/`determinant`,
+  kept in sync with the math dispatch in `Sema::performSemForExpr` and the
+  `builtinFunctionMap` — is consulted at the top of the `FUNC_DECL` Sema
+  arm (before param/overload checks, so the diagnostic is about the name,
+  not a phantom redeclaration). A reserved name raises the new
+  `ReservedName` error (`"`<name>` is a reserved builtin intrinsic name and
+  cannot be used as a user function name"`). Both definitions and forward
+  declarations are rejected. The reserved set is OmegaSL builtins only —
+  backend-stdlib-only names OmegaSL doesn't model (e.g. GLSL `inverse`)
+  stay legal user names; the unconditional `osl_user_` prefix (below) is
+  what keeps those safe in generated source. Backwards-compat fallout was
+  exactly the case the doc flagged: `blinn_phong.omegasl` defined its own
+  `float saturate(float x){ return clamp(x, 0.0, 1.0); }` — deleted, since
+  the builtin has identical semantics. Tests: `invalid_reserved_name.omegasl`
+  (negative; a user `saturate`).
+* **`osl_user_` user-function prefix — now unconditional on all backends.**
+  **(LANDED.)** Previously each backend carried a *curated* `needsMangling`
+  stdlib list and prefixed a user function only on backends whose list it
+  hit. That can never be complete — Metal's namespace alone spans the math,
+  geometric, and `<metal_type_traits>` surfaces (`add_const` et al.), so any
+  name the list missed became a platform-dependent collision, and the *same*
+  OmegaSL function could emit under different symbols across backends.
+  `CodeGen::spellUserFuncName` now prefixes **every** user function with
+  `osl_user_` on HLSL/MSL/GLSL unconditionally; the per-backend
+  `needsMangling` virtual and its three curated overrides were deleted. The
+  overload-mangling form (`osl_user_<name>__<paramtypes>`) is unchanged.
+  Shader entry points (vertex/fragment/compute) are emitted through a
+  different path and keep their bare source names — the runtime looks them
+  up by name, so this must not change (verified: the DirectX-only HLSL
+  goldens, which contain only entry points and no user helpers, are
+  byte-identical). With reservation (above) in place, the prefix is now a
+  defense-in-depth measure against backend-stdlib collision rather than a
+  load-bearing one (per §5.1.1). Verified end-to-end on all three backends
+  via `-S`: `user_functions.omegasl`'s `add` (which was in *no* curated
+  list) now emits `osl_user_add` at both definition and call sites.
 
 #### 5.1.1 `saturate` — backend mapping and the name-collision risk
 
@@ -1110,20 +1140,21 @@ float saturate(float x){ return clamp(x, 0.0, 1.0); }
 
 On Metal this collided with `metal::saturate` and produced an "ambiguous
 call" error at every call site, even though Metal's stdlib saturate has the
-same signature. MetalCodeGen now prefixes every user-defined function name
-with `osl_user_` at emit time so user helpers can never shadow the Metal
-stdlib. HLSL has the same exposure (every HLSL intrinsic is in the global
-namespace and user functions can shadow but not co-exist with same-arity
-overloads), so `HLSLCodeGen` should adopt the same prefix policy. GLSL
-allows user functions with the same name as a builtin (the user definition
-wins), so the prefix is not strictly required there, but applying it
-uniformly across all three backends keeps generated source predictable and
-removes a class of platform-dependent failures.
+same signature. As of the §5.1.0 follow-up, **every** user-defined function
+name is prefixed with `osl_user_` at emit time on **all three backends**
+(not just Metal) — see the §5.1.0 "`osl_user_` user-function prefix" entry.
+Each backend has the same exposure in principle (HLSL/Metal intrinsics live
+in the global namespace; even where GLSL would let the user definition win,
+applying the prefix uniformly keeps generated source predictable), and a
+curated per-backend collision list can never enumerate Metal's full
+namespace, so the prefix is unconditional rather than collision-gated.
 
-Once `saturate` (and the other §5.1 entries) become first-class OmegaSL
-builtins, they should be reserved names — Sema rejects user redefinition
-the same way it would reject redefining `sin` — and the prefix becomes a
-defense-in-depth measure rather than a load-bearing one.
+`saturate` (and the other §5.1 entries) are now first-class OmegaSL builtins
+*and* reserved names — Sema rejects a user `func saturate(...)` the same way
+it rejects redefining `sin` (see the §5.1.0 "Sema reservation of intrinsic
+names" entry). With reservation in place the prefix is a defense-in-depth
+measure against *backend-stdlib* collision (names OmegaSL doesn't model, like
+Metal `add_const`) rather than a load-bearing one.
 
 #### 5.1.2 `degrees` / `radians` — MSL inlines because the Metal stdlib doesn't have them
 

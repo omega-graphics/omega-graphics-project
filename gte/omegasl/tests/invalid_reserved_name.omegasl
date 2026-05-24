@@ -1,0 +1,21 @@
+/// §5.1.0 follow-up — a user function may not reuse the spelling of a
+/// builtin intrinsic. `saturate` is now a first-class OmegaSL builtin, so
+/// the definition below resolves to a reserved name and Sema rejects it.
+/// The harness only checks that compilation fails.
+
+struct Pt {
+    float4 value;
+};
+
+buffer<Pt> dst : 0;
+
+/// Expected diagnostic: "`saturate` is a reserved builtin intrinsic name ..."
+float saturate(float x){
+    return clamp(x, 0.0, 1.0);
+}
+
+[out dst]
+compute(x=1,y=1,z=1)
+void test_invalid_reserved_name(uint3 tid : GlobalThreadID){
+    dst[0].value = float4(saturate(2.0), 0.0, 0.0, 1.0);
+}
