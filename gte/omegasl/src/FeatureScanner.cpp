@@ -32,6 +32,7 @@ const char *featureLower(uint64_t bit) {
         case OMEGASL_FEATURE_BIT_TEXTURE2D_MS_WRITE: return "texture2d_ms_write";
         case OMEGASL_FEATURE_BIT_DOUBLE:             return "double";
         case OMEGASL_FEATURE_BIT_TEXTURE1D_MIP_SAMPLE: return "texture1d_mip_sample";
+        case OMEGASL_FEATURE_BIT_CULL_DISTANCE:      return "cull_distance";
         default:                                     return "unknown";
     }
 }
@@ -55,6 +56,7 @@ const char *featureUpper(uint64_t bit) {
         case OMEGASL_FEATURE_BIT_TEXTURE2D_MS_WRITE: return "TEXTURE2D_MS_WRITE";
         case OMEGASL_FEATURE_BIT_DOUBLE:             return "DOUBLE";
         case OMEGASL_FEATURE_BIT_TEXTURE1D_MIP_SAMPLE: return "TEXTURE1D_MIP_SAMPLE";
+        case OMEGASL_FEATURE_BIT_CULL_DISTANCE:      return "CULL_DISTANCE";
         default:                                     return "UNKNOWN";
     }
 }

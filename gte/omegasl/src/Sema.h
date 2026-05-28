@@ -28,7 +28,8 @@ namespace omegasl {
         if(context == AttributeContext::StructField){
             return (subject == ATTRIBUTE_COLOR) || (subject == ATTRIBUTE_POSITION)
                 || (subject == ATTRIBUTE_TEXCOORD) || (subject == ATTRIBUTE_DEPTH)
-                || (subject == ATTRIBUTE_OUTPUT_COVERAGE);
+                || (subject == ATTRIBUTE_OUTPUT_COVERAGE)
+                || (subject == ATTRIBUTE_CLIP_DISTANCE) || (subject == ATTRIBUTE_CULL_DISTANCE);
         }
         else if(context == AttributeContext::VertexShaderArgument || context == AttributeContext::HullShaderArgument || context == AttributeContext::DomainShaderArgument){
             return (subject == ATTRIBUTE_VERTEX_ID);
@@ -56,6 +57,14 @@ namespace omegasl {
         OmegaCommon::Map<ast::FuncDecl *,OmegaCommon::Vector<OmegaCommon::String>> funcDeclContextTypeMap;
 
         OmegaCommon::Vector<OmegaCommon::String> shaders;
+
+        /// §1.7 — names of internal structs that carry a `CullDistance` field.
+        /// The resolved `ast::Type` drops field-attribute metadata, so STRUCT_DECL
+        /// records the name here and SHADER_DECL flags
+        /// `OMEGASL_FEATURE_BIT_CULL_DISTANCE` on a shader whose return struct is
+        /// in this set. The FeatureScanner only *unions* `usedFeatures`, so the
+        /// bit set here survives the scan and drives the portability warning.
+        OmegaCommon::Vector<OmegaCommon::String> cullDistanceStructs;
 
         /// §3.5 — definition tracking lives on the FuncType itself
         /// (`hasDefinition`). Two overloads with the same name need

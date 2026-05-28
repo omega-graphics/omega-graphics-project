@@ -346,17 +346,29 @@ using namespace metal;
             out << " " << p.name;
             cg.writeDeclTypeSuffix(p.typeExpr, out);
             if (p.attributeName.has_value()) {
-                /// Bare `Color` and `TexCoord` are vertex→fragment varyings;
-                /// MSL leaves them untagged on the struct. `Color(N)`,
-                /// `Depth`, etc. get the `[[...]]` qualifier.
-                bool isBareColor = (p.attributeName.value() == ATTRIBUTE_COLOR
-                                    && !p.attributeIndex.has_value());
-                bool isTexCoord  = (p.attributeName.value() == ATTRIBUTE_TEXCOORD);
-                if (!isBareColor && !isTexCoord) {
-                    out << "[[";
-                    writeAttribute(p.attributeName.value(), p.attributeIndex, out);
-                    out << "]]";
+                /// Wrap in `[[...]]` only when the attribute has an MSL
+                /// spelling. Bare `Color` / `TexCoord` are vertex→fragment
+                /// varyings MSL leaves untagged (writeAttribute emits nothing
+                /// for them), and a backend-gated attribute that somehow
+                /// reaches MSL without a mapping (e.g. `CullDistance`, which
+                /// normally stubs the whole shader) also emits nothing —
+                /// emitting a bare `[[]]` would be invalid MSL. Rendering to a
+                /// temp keeps the output byte-identical for the tagged cases.
+                std::ostringstream attrSS;
+                writeAttribute(p.attributeName.value(), p.attributeIndex, attrSS);
+                if (!attrSS.str().empty()) {
+                    out << "[[" << attrSS.str() << "]]";
                 }
+            }
+            /// §1.6 — interpolation qualifier as an MSL member attribute. Applies
+            /// to varying fields (including the untagged bare Color/TexCoord ones,
+            /// which is exactly where interpolation matters).
+            switch (p.interp) {
+                case ast::AttributedFieldDecl::Flat:          out << "[[flat]]"; break;
+                case ast::AttributedFieldDecl::Centroid:      out << "[[centroid_perspective]]"; break;
+                case ast::AttributedFieldDecl::Sample:        out << "[[sample_perspective]]"; break;
+                case ast::AttributedFieldDecl::NoPerspective: out << "[[center_no_perspective]]"; break;
+                default: break;
             }
             out << ";" << std::endl;
         }
@@ -387,6 +399,11 @@ using namespace metal;
             out << "vertex";
             shadermap_entry.type = OMEGASL_SHADER_VERTEX;
         } else if (_decl->shaderType == ast::ShaderDecl::Fragment) {
+            /// §1.5 — early depth/stencil attribute precedes the `fragment`
+            /// function qualifier on MSL.
+            if (_decl->earlyDepthStencil) {
+                out << "[[early_fragment_tests]] ";
+            }
             out << "fragment";
             shadermap_entry.type = OMEGASL_SHADER_FRAGMENT;
         } else if (_decl->shaderType == ast::ShaderDecl::Compute) {
@@ -1003,6 +1020,12 @@ using namespace metal;
             /// lands on a fragment parameter (input) or a return-struct
             /// field (output) disambiguates.
             out << "sample_mask";
+        }
+        else if(attributeName == ATTRIBUTE_CLIP_DISTANCE){
+            /// §1.7 — Metal supports clip distance. CullDistance has no Metal
+            /// equivalent and is gated by OMEGASL_FEATURE_BIT_CULL_DISTANCE
+            /// (the shader stubs out on MSL), so it never reaches here.
+            out << "clip_distance";
         }
         else if(attributeName == ATTRIBUTE_GLOBALTHREAD_ID){
             out << "thread_position_in_grid";

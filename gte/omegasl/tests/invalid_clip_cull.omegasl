@@ -1,0 +1,18 @@
+/// §1.7 — clip/cull distance use a float array, not a per-plane index
+/// (`ClipDistance(0)`). HLSL has only two SV_ClipDistance registers, so the
+/// indexed form has no valid lowering — Sema must reject the index. Also
+/// exercises the float-type rule via the `int` element below.
+struct Raster internal {
+    float4 pos    : Position;
+    int    bad[2] : ClipDistance;
+    float  c      : ClipDistance(0);
+};
+
+buffer<float4> vbuf : 0;
+
+[in vbuf]
+vertex Raster badVert(uint vid : VertexID){
+    Raster r;
+    r.pos = vbuf[vid];
+    return r;
+}

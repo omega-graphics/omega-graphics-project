@@ -229,6 +229,14 @@ typedef int ASTType;
 #define ATTRIBUTE_SAMPLEINDEX "SampleIndex"
 #define ATTRIBUTE_INPUT_COVERAGE "InputCoverage"
 #define ATTRIBUTE_OUTPUT_COVERAGE "OutputCoverage"
+/// §1.7 — user clip / cull distances on a vertex/hull/domain output struct.
+/// Float scalar or float array field. ClipDistance → SV_ClipDistance /
+/// gl_ClipDistance[] / [[clip_distance]] (all backends). CullDistance →
+/// SV_CullDistance / gl_CullDistance[] (HLSL/GLSL); Metal has no cull-distance
+/// equivalent, so CullDistance is gated by OMEGASL_FEATURE_BIT_CULL_DISTANCE
+/// and stubs on MSL.
+#define ATTRIBUTE_CLIP_DISTANCE "ClipDistance"
+#define ATTRIBUTE_CULL_DISTANCE "CullDistance"
 
 // Static Sampler Properties
 #define SAMPLER_PROP_FILTER "filter"

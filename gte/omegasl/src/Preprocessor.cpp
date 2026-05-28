@@ -30,7 +30,7 @@ struct FeatureEntry {
     bool glslExpressible;
 };
 
-constexpr std::array<FeatureEntry, 15> kFeatureTable = {{
+constexpr std::array<FeatureEntry, 16> kFeatureTable = {{
     {"RAYTRACING",            OMEGASL_FEATURE_BIT_RAYTRACING,            true,  true,  true},
     {"MESH_SHADERS",          OMEGASL_FEATURE_BIT_MESH_SHADERS,          true,  true,  true},
     {"GEOMETRY_SHADERS",      OMEGASL_FEATURE_BIT_GEOMETRY_SHADERS,      true,  false, true},
@@ -50,7 +50,12 @@ constexpr std::array<FeatureEntry, 15> kFeatureTable = {{
     /// textures, so MSL has no `level()` / `bias()` overload and no
     /// `gradient1d` function exists at all. HLSL and GLSL both expose
     /// the operation.
-    {"TEXTURE1D_MIP_SAMPLE",  OMEGASL_FEATURE_BIT_TEXTURE1D_MIP_SAMPLE,  true,  false, true}
+    {"TEXTURE1D_MIP_SAMPLE",  OMEGASL_FEATURE_BIT_TEXTURE1D_MIP_SAMPLE,  true,  false, true},
+    /// §1.7 — user cull distance. HLSL `SV_CullDistance` and GLSL
+    /// `gl_CullDistance[]` express it; Metal has no cull-distance equivalent,
+    /// so MSL is not expressible (the shader stubs and the runtime rejects
+    /// pipelines that bind it). Clip distance is universal and ungated.
+    {"CULL_DISTANCE",         OMEGASL_FEATURE_BIT_CULL_DISTANCE,         true,  false, true}
 }};
 
 bool isExpressible(const FeatureEntry& f, PPBackend backend) {

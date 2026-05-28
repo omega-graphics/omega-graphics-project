@@ -258,7 +258,14 @@ enum omegasl_shader_feature_flags : unsigned long long {
     /// all. HLSL and GLSL accept the call. Shaders that need this op
     /// must `#requires(TEXTURE1D_MIP_SAMPLE)`; on MSL the loader will
     /// emit a header-only stub and reject pipelines that bind it.
-    OMEGASL_FEATURE_BIT_TEXTURE1D_MIP_SAMPLE = 1ull << 14
+    OMEGASL_FEATURE_BIT_TEXTURE1D_MIP_SAMPLE = 1ull << 14,
+    /// §1.7 — user cull distance (`CullDistance` semantic). HLSL
+    /// (`SV_CullDistance`) and GLSL (`gl_CullDistance[]`) express it; Metal
+    /// has no cull-distance equivalent, so MSL cannot. A shader using
+    /// `CullDistance` must `#requires(CULL_DISTANCE)`; on MSL the compiler
+    /// emits a header-only stub and the loader rejects pipelines that bind
+    /// it. (Clip distance, by contrast, is universal and carries no bit.)
+    OMEGASL_FEATURE_BIT_CULL_DISTANCE = 1ull << 15
 };
 
 

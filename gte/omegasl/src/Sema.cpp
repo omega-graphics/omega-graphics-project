@@ -506,6 +506,21 @@ namespace omegasl {
         return t == ast::builtins::float2_type || t == ast::builtins::float3_type || t == ast::builtins::float4_type;
     }
 
+    /// §1.6 — integer scalar or vector (int/uint/short/ushort/long/ulong
+    /// family). Integer interstage varyings cannot be interpolated, so
+    /// HLSL/GLSL require `flat` on them; Sema enforces that for internal
+    /// struct fields. `half` is float-like and interpolates normally, so it
+    /// is intentionally excluded.
+    static bool isIntegerScalarOrVector(ast::Type *t) {
+        using namespace ast::builtins;
+        return t == int_type    || t == int2_type    || t == int3_type    || t == int4_type
+            || t == uint_type   || t == uint2_type   || t == uint3_type   || t == uint4_type
+            || t == short_type  || t == short2_type  || t == short3_type  || t == short4_type
+            || t == ushort_type || t == ushort2_type || t == ushort3_type || t == ushort4_type
+            || t == long_type   || t == long2_type   || t == long3_type   || t == long4_type
+            || t == ulong_type  || t == ulong2_type  || t == ulong3_type  || t == ulong4_type;
+    }
+
     /// §12.2 follow-up — integer matrix types. These are deliberately kept
     /// *out* of `isMatrixType` (which gates the float-only matrix algebra and
     /// the HLSL §12.1 column-major index swap): integer matrices lower to an
@@ -2395,6 +2410,11 @@ namespace omegasl {
                 bool & isInternal = _decl->internal;
                 /// 2. Check struct fields (uniqueness and types).
                 OmegaCommon::MapVec<OmegaCommon::String,ast::TypeExpr *> field_types;
+                /// §1.7 — feature bits implied by field attributes (e.g.
+                /// `CullDistance` → CULL_DISTANCE). Stamped onto the resolved
+                /// struct Type so the FeatureScanner trips the gate when a
+                /// shader's output struct carries the attribute.
+                uint64_t structImplicitBits = 0;
 
                 for(auto & f : _decl->fields){
                     if(field_types.find(f.name) != field_types.end()){
@@ -2474,9 +2494,64 @@ namespace omegasl {
                                 return false;
                             }
                         }
+                        else if(f.attributeName.value() == ATTRIBUTE_CLIP_DISTANCE
+                                || f.attributeName.value() == ATTRIBUTE_CULL_DISTANCE){
+                            /// §1.7 — clip/cull distance: a `float` scalar or a
+                            /// `float[N]` array (the planes). No index — the
+                            /// array carries all distances (HLSL has only two
+                            /// SV_ClipDistance registers, so per-plane indices
+                            /// don't map; the array does).
+                            if(field_ty != ast::builtins::float_type){
+                                auto e = std::make_unique<TypeError>(std::string("Attribute `") + f.attributeName.value() + "` requires a `float` scalar or array field, not `" + field_ty->name + "`");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            if(f.attributeIndex.has_value()){
+                                auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + f.attributeName.value() + "` does not take an index — use a float array (e.g. `float clip[2] : ClipDistance`)");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            if(f.typeExpr->arrayDims.size() > 1){
+                                auto e = std::make_unique<TypeError>(std::string("Attribute `") + f.attributeName.value() + "` field may have at most one array dimension");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            /// §1.7 — CullDistance has no Metal equivalent; flag
+                            /// the bit so the shader stubs on MSL and the
+                            /// portability scanner warns on undeclared use.
+                            if(f.attributeName.value() == ATTRIBUTE_CULL_DISTANCE){
+                                structImplicitBits |= OMEGASL_FEATURE_BIT_CULL_DISTANCE;
+                            }
+                        }
                         else if(f.attributeIndex.has_value()){
                             /// Only `Color(N)` accepts an index today.
                             auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + f.attributeName.value() + "` does not take an index");
+                            e->loc = _decl->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                            return false;
+                        }
+                    }
+
+                    /// §1.6 — an integer interstage varying cannot be
+                    /// interpolated; HLSL (`nointerpolation`) and GLSL (`flat`)
+                    /// both reject a non-flat integer varying. Catch it at the
+                    /// OmegaSL level with a precise diagnostic instead of letting
+                    /// the backend compiler emit a cryptic one. Only true
+                    /// interstage varyings are affected — system-value / output
+                    /// semantics (Position, Depth, OutputCoverage, indexed
+                    /// Color(N)) are not interpolated and are exempt.
+                    if(isInternal && f.interp == ast::AttributedFieldDecl::Default
+                       && isIntegerScalarOrVector(field_ty) && f.attributeName.has_value()){
+                        const auto &an = f.attributeName.value();
+                        bool isInterpolatedVarying =
+                            !(an == ATTRIBUTE_POSITION || an == ATTRIBUTE_DEPTH
+                              || an == ATTRIBUTE_OUTPUT_COVERAGE
+                              || (an == ATTRIBUTE_COLOR && f.attributeIndex.has_value()));
+                        if(isInterpolatedVarying){
+                            auto e = std::make_unique<TypeError>(std::string("Integer varying `") + f.name + "` in internal struct `" + _decl->name + "` must be declared `flat` — integers cannot be interpolated.");
                             e->loc = _decl->loc.value_or(ErrorLoc{});
                             diagnostics->addError(std::move(e));
                             return false;
@@ -2489,6 +2564,14 @@ namespace omegasl {
 
                 /// 3. If all of the above checks succeed, add struct type to TypeMap.
                 addTypeToCurrentContext(_decl->name,_decl->scope,field_types);
+                /// §1.7 — record structs with a `CullDistance` field so a shader
+                /// returning one trips OMEGASL_FEATURE_BIT_CULL_DISTANCE (see
+                /// SHADER_DECL). The resolved Type can't carry this (it drops
+                /// attribute metadata), and the FeatureScanner only unions
+                /// `usedFeatures`, so flagging it from Sema survives the scan.
+                if(structImplicitBits & OMEGASL_FEATURE_BIT_CULL_DISTANCE){
+                    currentContext->cullDistanceStructs.push_back(_decl->name);
+                }
                 break;
             }
             case RESOURCE_DECL : {
@@ -2796,6 +2879,18 @@ namespace omegasl {
                 }
 
                 auto & shaderType = _decl->shaderType;
+
+                /// §1.7 — a shader whose output struct carries a `CullDistance`
+                /// field uses the Metal-gated feature. Flag it so the file is
+                /// expected to `#requires(CULL_DISTANCE)` (the FeatureScanner
+                /// warns otherwise) and so it stubs on MSL. Checked against the
+                /// return type, where clip/cull are produced.
+                for(OmegaCommon::StrRef s : currentContext->cullDistanceStructs){
+                    if(s == _decl->returnType->name){
+                        _decl->usedFeatures |= OMEGASL_FEATURE_BIT_CULL_DISTANCE;
+                        break;
+                    }
+                }
 
                 /// 2. Check shader params and pipeline layout (param name uniqueness).
                 OmegaCommon::MapVec<OmegaCommon::String, int> paramNames;

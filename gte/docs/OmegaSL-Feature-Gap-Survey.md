@@ -93,15 +93,75 @@ output target (HLSL `SV_TargetN`, MSL `[[color(N)]]`, GLSL
 `layout(location=N) out vec4`). The two stay disjoint at the syntax level
 so a single struct can never be ambiguously interpreted.
 
-### 1.5 Early depth/stencil attribute
+### 1.5 Early depth/stencil attribute [COMPLETED]
 
 No way to express `[earlydepthstencil]` / `layout(early_fragment_tests)` /
 `[[early_fragment_tests]]`. Required when a compute-like fragment shader
 writes UAVs and must not execute for occluded fragments.
 
-**Proposal:** shader-level attribute `[early_depth]` on `fragment`.
+**Landed (as `fragment(early_depth)`, per Alex).** The original proposal
+spelled it `[early_depth]`, but `[...]` is the resource map — a bare
+`[early_depth]` collides with it. The descriptor is instead a parenthesized
+clause on the `fragment` keyword, parallel to `compute(x=,y=,z=)` /
+`hull(domain=…)` / `domain(domain=…)`:
 
-### 1.6 Interpolation modifiers
+```
+[out coverageBuf]
+fragment(early_depth) float4 shade(VertexRaster raster){ ... }
+```
+
+The descriptor is optional; a plain `fragment` is byte-identical to before.
+
+Per-backend emission:
+
+| Backend | Emission | Placement |
+|---------|----------|-----------|
+| HLSL | `[earlydepthstencil]` | decorator line before the entry function |
+| MSL  | `[[early_fragment_tests]]` | immediately before the `fragment` qualifier |
+| GLSL | `layout(early_fragment_tests) in;` | global execution-mode directive in the `.frag`, ahead of `void main()` |
+
+This is **purely source-level**: the attribute bakes into the generated
+shader (HLSL bytecode attribute / MSL function attribute / SPIR-V execution
+mode), so there is no `omegasl_shader` runtime descriptor field and **no
+feature-bit gate** — every backend supports early fragment tests
+universally (matching `discard` / depth-output / MRT, which also carry no
+feature bit).
+
+**Implementation**
+
+* **AST**: `ShaderDecl::earlyDepthStencil` (`bool`, default `false`). The
+  parser sets it only in the `fragment` arm, so it is true only on a
+  Fragment shader — no Sema stage check is needed because the descriptor
+  is structurally unreachable on any other stage.
+* **Lexer**: a one-token putback (`Lexer::putBack` + a `std::optional<Tok>`
+  buffer consumed at the top of `nextTok()`). `fragment(early_depth)` is
+  *optional* — unlike compute's mandatory `(...)` — and `parseGlobalDecl`
+  reads the raw lexer with no lookahead. The `fragment` arm peeks one
+  token; if it isn't `(`, the token is pushed back so the shared advance
+  re-reads it, keeping the plain-`fragment` path unchanged.
+* **Parser**: the `fragment` arm parses `(early_depth)` when present and
+  leaves the cursor on the closing `)` (so the shared post-stage advance
+  reaches the return type, exactly like compute/hull/domain). An unknown
+  token inside the parens (`fragment(early_stencil)`) or a missing `)` is
+  rejected with a clear diagnostic.
+* **CodeGen**: each target reads the flag in `emitShaderEntryHeader` and
+  emits the attribute at the placement above.
+
+**Tests**: `early_depth.omegasl` (a fragment that writes a storage buffer —
+the UAV use case — with `[out coverage] fragment(early_depth)`, exercising
+resource-map + descriptor coexistence), `invalid_early_depth.omegasl`
+(`fragment(early_stencil)` — unknown descriptor token rejected).
+
+**Out of scope (follow-ups)**
+
+* No warning when `early_depth` co-occurs with `discard` or a `Depth`
+  output. All three backends accept the combination (the depth write is
+  honored but early-Z may have already run); OmegaSL's existing style
+  trusts the developer here (cf. `switch` fall-through).
+* `early_depth` does not participate in any stage/overload diagnostics
+  beyond the parse path.
+
+### 1.6 Interpolation modifiers [COMPLETED]
 
 Every internal struct field is currently interpolated with the default
 perspective-correct linear mode. Backends all support modifiers:
@@ -113,23 +173,98 @@ perspective-correct linear mode. Backends all support modifiers:
 | sample | `sample` | `[[sample_perspective]]` | `sample` |
 | noperspective | `noperspective` | `[[center_no_perspective]]` | `noperspective` |
 
-**Proposal:** field-level modifiers on `internal` struct fields:
+**Landed.** Field-level modifiers prefix the type on an `internal` struct
+field:
 
 ```
 struct Raster internal {
-    float4 pos    : Position;
-    flat uint  id : InstanceID;
+    float4 pos                    : Position;
+    flat uint id                  : TexCoord;
     noperspective float2 screenUV : TexCoord;
 };
 ```
 
-### 1.7 Clip / cull distance
+* **Contextual keywords.** `flat` / `centroid` / `sample` / `noperspective`
+  stay lexed as `TOK_ID` and are recognized as a modifier only when they
+  prefix a field whose type is a builtin (`TOK_KW_TYPE`) — you never
+  interpolate a struct, so the type after a modifier is always numeric. This
+  is *required* for `sample` (it doubles as the `sample(s,t,c)` texture
+  intrinsic) and keeps fields/locals named `flat`/`sample`/etc. working. The
+  modifier rides on `AttributedFieldDecl::interp`
+  (`Default`/`Flat`/`Centroid`/`Sample`/`NoPerspective`); `Default` emits no
+  qualifier and is byte-identical to pre-§1.6 output.
+* **Per backend.** HLSL prefixes the struct-field type; MSL adds the member
+  attribute (`[[flat]]` / `[[centroid_perspective]]` /
+  `[[sample_perspective]]` / `[[center_no_perspective]]`); GLSL puts the
+  qualifier between `layout(location=N)` and the `in`/`out` storage qualifier
+  on the varying. The same field drives both the vertex `out` and fragment
+  `in` varying, so the qualifier matches across stages by construction.
+* **Integer-varying rule (enforced, per Alex).** An integer interstage
+  varying cannot be interpolated — HLSL (`nointerpolation`) and GLSL (`flat`)
+  both reject a non-flat integer varying. Sema rejects an integer-typed
+  (`int`/`uint`/`short`/`ushort`/`long`/`ulong`) varying field that lacks a
+  modifier. System-value / output semantics (Position, Depth,
+  OutputCoverage, indexed Color(N)) are exempt.
+* **Internal structs only.** A modifier on a non-`internal` struct field is
+  rejected at parse time (interpolation only applies to shader I/O).
+
+Tests: `interp_modifiers.omegasl` (all four modifiers across int/float
+varyings, integer `id` flat), `invalid_interp_modifier.omegasl` (integer
+varying missing `flat`).
+
+### 1.7 Clip / cull distance [COMPLETED]
 
 User-defined clipping planes. Used for portals, water clip planes,
 terrain tile boundaries.
 
-**Proposal:** semantics `ClipDistance(N)` and `CullDistance(N)` on float
-fields of internal structs emitted from vertex/hull/domain shaders.
+**Landed (as a float-array field, per Alex).** The original proposal spelled
+it `ClipDistance(N)` (per-plane index), but HLSL has only two
+`SV_ClipDistance` registers, so per-plane indices have no clean lowering. A
+single `float[N]` field carries all planes instead:
+
+```
+struct Raster internal {
+    float4 pos     : Position;
+    float  clip[2] : ClipDistance;
+    float  cull[1] : CullDistance;   // file must #requires(CULL_DISTANCE)
+};
+```
+
+(A scalar `float : ClipDistance` is also accepted, for a single plane.)
+
+* **Field type.** A `float` scalar or `float[N]` array; at most one array
+  dimension; no index — Sema enforces all three. General array-typed struct
+  fields (the `[N]` suffix in a struct-field declaration) landed alongside
+  this, a capability beyond clip/cull.
+* **Per backend.** HLSL `SV_ClipDistance` / `SV_CullDistance`; MSL
+  `[[clip_distance]]`; GLSL routes writes to the `gl_ClipDistance[]` /
+  `gl_CullDistance[]` builtin arrays — a field write `r.clip[i] = x` becomes
+  `gl_ClipDistance[i] = x` through the same member-reroute that handles
+  `Position`→`gl_Position`, and the builtin is redeclared with an explicit
+  size (`out float gl_ClipDistance[N];`) on the producing stage. Clip/cull
+  are not fragment inputs, so the fragment side emits no varying for them.
+* **CullDistance is Metal-gated.** Metal has `[[clip_distance]]` but no
+  cull-distance equivalent, so `CullDistance` is gated by
+  `OMEGASL_FEATURE_BIT_CULL_DISTANCE` (HLSL/GLSL expressible, MSL not). A
+  shader using it must `#requires(CULL_DISTANCE)`; on MSL it stubs
+  (header-only — the loader rejects pipelines that bind it), and the
+  FeatureScanner warns on undeclared use. Because the resolved `ast::Type`
+  drops field-attribute metadata (and adding a member to `Type` would shift
+  the positional aggregate initializers of its `FuncType` subclass), Sema
+  records which structs carry a `CullDistance` field and flags
+  `usedFeatures` directly on a shader that returns one; the FeatureScanner
+  only *unions* `usedFeatures`, so the bit survives the scan.
+  **ClipDistance carries no bit — it is universal.**
+
+Runtime follow-up: the `GTEDeviceFeatures` → `featuresAsBitmask` bridge
+(§14.4) should advertise `CULL_DISTANCE` on D3D12/Vulkan (core there) and
+withhold it on Metal, so a `#requires(CULL_DISTANCE)` shader loads on
+D3D12/Vulkan. Until then the MSL stub + stub-rejection already give the
+correct Metal behavior; the compile path is complete.
+
+Tests: `clip_cull_distance.omegasl` (clip + cull arrays on a vertex output,
+`#requires(CULL_DISTANCE)`), `invalid_clip_cull.omegasl` (non-float element
++ indexed form rejected).
 
 ---
 
@@ -2387,7 +2522,7 @@ of one-line fixes. 7–10 bring the language up to mainstream modern engines.
 
 **Cross-cutting prerequisite:** §14 (feature gating) should land before any
 of the asymmetric features (RT, mesh shaders, bindless, geometry shaders,
-tessellation re-enable) so each one has a clean way to declare its backend
+tessellation re-enable — see §16) so each one has a clean way to declare its backend
 requirements at the source level and the runtime can per-shader-reject
 when the device can't satisfy them.
 
@@ -2424,7 +2559,7 @@ some targets but not others. Examples already on the roadmap:
 | Ray tracing / RayQuery | SM 6.5+ | Metal 3.0+ | KHR_ray_tracing |
 | Mesh / amplification shaders | SM 6.5+ | Metal 3.0+ | EXT_mesh_shader |
 | Geometry shaders | yes | **no** (removed in MSL 2.x) | yes |
-| Tessellation hull/domain | yes | **emulation-only**; runtime not wired | yes |
+| Tessellation hull/domain (completion: §16) | API yes; codegen incomplete (bug 4) | rejected at codegen (bug 3) | API yes; codegen untested |
 | `texturecube` `read` / `write` | partial (via aliasing) | **no** | **no** |
 | `texture2d_ms` `write` | **no** | **no** | **no** |
 | Subgroup / wave ops | SM 6.0+ | Metal 2.0+ | KHR_shader_subgroup |
@@ -2723,6 +2858,7 @@ backend):
 | `OMEGASL_FEATURE_TEXTURE2D_MS_WRITE` | **—** | **—** | **—** |
 | `OMEGASL_FEATURE_DOUBLE` | ✓ | **—** | ✓ |
 | `OMEGASL_FEATURE_TEXTURE1D_MIP_SAMPLE` | ✓ | **—** | ✓ |
+| `OMEGASL_FEATURE_CULL_DISTANCE` | ✓ (SV_CullDistance) | **—** (no Metal equivalent) | ✓ (gl_CullDistance) |
 
 A backend defines the macro for a feature only when the feature is
 *reliably* supported on the lowest-common-denominator hardware that
@@ -2988,3 +3124,219 @@ diagnostic instead of a crash). Both are larger than the §15.1 change and
 carry cascade-noise risk; deferred until a real need appears. Until then,
 author multi-error negative tests *within a single shader body* (§15.1
 recovers those) rather than across multiple decls.
+
+---
+
+## 16. Tessellation — finishing the backends
+
+The `hull` / `domain` stages are the one place where OmegaSL ships a
+**language surface with no working backend**. The parser, Sema, and
+`ShaderDecl::TessellationDesc` (domain / partitioning / outputtopology /
+outputcontrolpoints) all exist, resource maps bind, and every backend's
+`emitShaderEntryHeader` has a hull/domain arm — but none of the three
+produces a tessellation pipeline that actually runs:
+
+- **HLSL** emits the per-control-point decorators (`[domain]`,
+  `[partitioning]`, `[outputtopology]`, `[outputcontrolpoints]`) but **no
+  patch-constant function**, so `dxc` rejects every hull shader
+  (`OmegaSL-Reference.md` bug 4; `omegasl_compile_tessellation` is
+  `WILL_FAIL` on `TARGET_DIRECTX`).
+- **Metal** rejects `hull`/`domain` at codegen time — `supportsStage()`
+  returns false. Metal's model is a compute kernel + post-tessellation
+  vertex, structurally different from the single D3D-style hull function
+  (`OmegaSL-Reference.md` bug 3; `WILL_FAIL` on `APPLE`).
+- **GLSL** emits `.tesc`/`.tese` skeletons (`layout(vertices=N) out`, the
+  `layout(domain,spacing,winding) in`, and a `gl_Position` return route)
+  but never writes `gl_TessLevelOuter/Inner[]` or reads `gl_TessCoord`, so
+  the generated shader is incomplete and has not been verified against
+  `glslc`.
+- **Runtime** has *zero* tessellation plumbing on all three backends.
+  `RenderPipelineDescriptor` exposes only `vertexFunc` / `fragmentFunc`
+  (`GEPipeline.h`); there is no patch primitive topology, no `drawPatches`,
+  and `TessellationDesc` never reaches the runtime `omegasl_shader`.
+
+There is also a **latent honesty bug**: D3D12 advertises
+`GTEDEVICE_FEATURE_TESSELLATION_SHADER` unconditionally (`GED3D12.cpp:173`)
+and Vulkan advertises it whenever the GPU reports `tessellationShader`
+(`GEVulkan.cpp:512`), even though neither runtime can build a tessellation
+pipeline. A `#requires(TESSELLATION)` shader therefore *passes* the §14.3
+per-shader gate, loads, and then trips the vertex/fragment-only assertions
+in `makeRenderPipelineState` — a crash, not the clean rejection §14.3 is
+supposed to give. Metal correctly does **not** advertise it
+(`GEMetal.mm:116`).
+
+This section is the plan to close all of that. It depends on the §14
+feature-gating machinery (landed) and resolves `OmegaSL-Reference.md` bugs
+3 and 4.
+
+### 16.0 The core design problem — expressing the patch-constant output
+
+A tessellated patch produces **two** outputs from the control stage, and
+OmegaSL can express only one of them today:
+
+1. **Per-control-point** data — runs once per output control point. This is
+   exactly what the current `hull` body computes (returns the hull-output
+   struct per invocation).
+2. **Per-patch ("patch-constant")** data — computed once per patch, and
+   *always* carries the tessellation factors (per-edge `TessFactor`s and
+   the `InsideTessFactor`(s)) that tell the fixed-function tessellator how
+   finely to subdivide. OmegaSL has **no way to express this**, which is
+   the root cause of bugs 3 and 4.
+
+Each backend wants the patch-constant computation as a distinct unit:
+
+| Backend | Patch-constant realization |
+|---------|----------------------------|
+| HLSL | a separate function named by `[patchconstantfunc("…")]`, returning a struct with `SV_TessFactor[]` / `SV_InsideTessFactor[]` fields |
+| GLSL | writes to `gl_TessLevelOuter[]` / `gl_TessLevelInner[]` (+ optional `patch out` vars), conventionally guarded by `if (gl_InvocationID == 0)` |
+| MSL  | a **compute kernel** that writes `MTLTriangle/QuadTessellationFactorsHalf` into the tessellation-factor buffer |
+
+**Design (confirmed by Alex).** Model the patch-constant computation as a
+*named companion function* of the hull, plus three new attribute semantics
+— mirroring exactly how §1.2–§1.4 added `Depth`, `Color(N)`, and
+`OutputCoverage` as new field/param semantics rather than new syntax forms:
+
+- New hull descriptor property `patchfn=<name>`, e.g.
+  `hull(domain=tri, partitioning=integer, outputtopology=triangle_cw, outputcontrolpoints=3, patchfn=triConstants)`.
+- New internal-struct **field** semantics `TessFactor(N)` and
+  `InsideTessFactor(N)` (on `float` fields), valid only on the struct a
+  patch-constant function returns.
+- New **parameter** semantic `DomainLocation` (`float3` for tri, `float2`
+  for quad) on the `domain` shader, lowering to `SV_DomainLocation` /
+  `gl_TessCoord`.
+
+The patch-constant function is an ordinary user function returning that
+internal struct; the hull names it. This keeps the per-CP hull body and
+the per-patch factor body as two clearly separated pieces of source —
+which is what *every* backend needs — and avoids asking the compiler to
+*split* one interleaved body.
+
+Alternatives considered:
+- **Option 2 — one hull struct mixing per-CP and `TessFactor` fields.**
+  Cleaner authoring, but the compiler would have to separate per-CP from
+  per-patch logic out of a single body; impossible in general when the two
+  computations interleave.
+- **Option 3 — a dedicated `patch` stage keyword** instead of `patchfn=`.
+  Equivalent power; rejected only because `patchfn=` keeps the
+  patch-constant fn bound to its hull at the declaration site and adds no
+  new top-level keyword. Revisit if multiple hulls want to share one
+  patch-constant fn.
+
+Phases A–D below implement this design.
+
+### Phase A — language: tess-factor / domain-location semantics [design]
+
+Land the §16.0 surface: parse `patchfn=` in the hull descriptor
+(`Parser.cpp`, the `KW_HULL` arm), add the `TessFactor(N)` /
+`InsideTessFactor(N)` field semantics and the `DomainLocation` param
+semantic (the attribute-context tables in `Sema.cpp`, alongside
+`Color`/`Depth`), and Sema validation: a `patchfn` must name a function
+returning an internal struct whose only attributed fields are
+`TessFactor`/`InsideTessFactor`; factor counts must match the domain
+(tri → 3 edge + 1 inside; quad → 4 + 2); `DomainLocation` rank must match
+the domain. No codegen yet — Phase A is purely the front-end contract that
+B–D lower.
+
+### Phase B — HLSL codegen → `dxc`-valid (resolves bug 4)
+
+Emit the patch-constant function (its return-struct fields tagged
+`SV_TessFactor`/`SV_InsideTessFactor`), add `[patchconstantfunc("…")]` to
+the hull entry, give the hull an `SV_OutputControlPointID` param and an
+`InputPatch<CP, N>`, and give the domain its `SV_DomainLocation` +
+`OutputPatch<CP, N>`. Add a golden test; flip
+`omegasl_compile_tessellation` to expected-pass on `TARGET_DIRECTX`
+(§16-F).
+
+### Phase C — GLSL codegen → `glslc`-valid
+
+In the `.tesc`: write per-CP output to the `out` control-point array and,
+under `if (gl_InvocationID == 0)`, emit the patch-constant fn's body into
+`gl_TessLevelOuter/Inner[]` (plus any `patch out` user fields). In the
+`.tese`: bind `gl_TessCoord` to the `DomainLocation` param and read the
+per-CP `in[]` array. Verify against `glslc`; add a compile/golden test.
+
+### Phase D — Metal codegen: kernel + post-tessellation vertex (resolves bug 3)
+
+The large one. Split one `hull`/`domain` pair into two MSL entry points:
+(a) a `[[kernel]]` that runs the patch-constant fn and writes
+`MTLTriangle/QuadTessellationFactorsHalf` to the factor buffer, and (b) a
+post-tessellation `[[patch(triangle|quad, N)]] vertex` built from the
+`domain` body that consumes `patch_control_point<CP>` +
+`[[position_in_patch]]`. This needs the shader-map to expose **two** Metal
+entry points for one logical hull/domain pair (the "metadata" note under
+`OmegaSL-Reference.md` bug 3) — best done as per-backend stage-expansion in
+the shader-map writer rather than leaking the split into the public
+`omegasl_shader` API. Remove the `supportsStage()` rejection once it
+compiles.
+
+### Phase E — runtime: pipeline plumbing + public API
+
+Public API (`GEPipeline.h` / `GERenderTarget.h` / `omegasl.h`):
+- `RenderPipelineDescriptor`: add `hullFunc` / `domainFunc` and
+  `uint32_t patchControlPoints`.
+- `PrimitiveTopologyCategory`: add `Patch`; `PolygonType`: add a patch
+  topology + a `drawPatches(controlPointCount, …)` command on
+  `GECommandBuffer`.
+- Serialize `TessellationDesc` into `omegasl_shader` (a new
+  `omegasl_tessellation_desc`) so the runtime can read
+  partitioning / winding / control-point count — it is AST-only today.
+
+Per backend (`makeRenderPipelineState`):
+- **D3D12** (`GED3D12.cpp:1438`): set `.HS`/`.DS`, build the root signature
+  over four stages, `PrimitiveTopologyType = …_PATCH`,
+  `IASetPrimitiveTopology(…_N_CONTROL_POINT_PATCHLIST)`; drop the
+  vertex/fragment-only `type ==` assertions (~line 1453).
+- **Vulkan** (`GEVulkan.cpp:2669`): add the tess-control/eval
+  `VkPipelineShaderStageCreateInfo`s (stageCount 2 → 4),
+  `VkPipelineTessellationStateCreateInfo.patchControlPoints`,
+  `VK_PRIMITIVE_TOPOLOGY_PATCH_LIST`, and **enable** the `tessellationShader`
+  device feature at device creation (currently only probed).
+- **Metal** (`GEMetal.mm:1209`): a factor-compute dispatch before the draw,
+  `MTLRenderPipelineDescriptor` tessellation properties
+  (`tessellationFactorBuffer`, `tessellationPartitionMode` ← partitioning,
+  `tessellationOutputWindingOrder` ← outputtopology, `maxTessellationFactor`),
+  and `drawPatches`.
+
+### Phase F — feature-flag honesty + re-enable
+
+Until Phase E lands per backend, **stop advertising**
+`GTEDEVICE_FEATURE_TESSELLATION_SHADER` where the runtime can't honor it:
+gate D3D12 (`GED3D12.cpp:173`) and Vulkan (`GEVulkan.cpp:512`) so they
+advertise only once their Phase E work is in (Metal already abstains). This
+converts the current load-then-crash into the clean per-shader rejection
+§14.3 already provides. Re-advertise each backend as its codegen + runtime
+pair completes; the `omegasl_compile_tessellation` `WILL_FAIL` markings come
+off per backend in lockstep.
+
+### Task table
+
+| # | Task | Where | Effort | Blocks | Status |
+|---|------|-------|--------|--------|--------|
+| 16-A | `patchfn=` descriptor + `TessFactor`/`InsideTessFactor`/`DomainLocation` semantics + Sema | `Parser.cpp` (KW_HULL), `Sema.cpp` attribute tables, `AST.h` | medium | B, C, D | open |
+| 16-B | HLSL patch-constant fn + `[patchconstantfunc]` + patch types | `HLSLTarget.cpp` | medium | E2 | open |
+| 16-C | GLSL tess-level writes + `gl_TessCoord` read | `GLSLTarget.cpp` | medium | E3 | open |
+| 16-D | Metal kernel + post-tess vertex split + shader-map stage expansion | `MSLTarget.cpp`, shader-map writer | large | E4 | open |
+| 16-E1 | Public API: descriptor fields, patch topology, `drawPatches`, `omegasl_tessellation_desc` | `GEPipeline.h`, `GERenderTarget.h`, `omegasl.h` | medium | E2–E4 | open |
+| 16-E2 | D3D12 HS/DS pipeline + patch topology | `GED3D12.cpp` | medium | — | open |
+| 16-E3 | Vulkan tess stages + tess state + device-feature enable | `GEVulkan.cpp` | medium | — | open |
+| 16-E4 | Metal factor-compute pass + tessellation pipeline + `drawPatches` | `GEMetal.mm` | large | — | open |
+| 16-F | Feature-flag honesty gate + per-backend re-enable | `GED3D12.cpp`, `GEVulkan.cpp`, `GEMetal.mm`, tests `CMakeLists.txt` | small | — | open |
+
+### Tests
+
+- Per-backend golden / compile tests as each codegen phase lands; flip
+  `omegasl_compile_tessellation` from `WILL_FAIL` to expected-pass per
+  backend (§16-F).
+- A runtime tessellated-draw smoke test (one triangle patch subdivided)
+  behind the existing GPU-test harness, per backend that completes Phase E.
+
+### Out of scope (follow-ups)
+
+- **Multiple hulls sharing one patch-constant function** — `patchfn=` is
+  1:1 in this cut (the Option 3 revisit).
+- **Per-patch user data beyond tess factors** (`patch out` user varyings /
+  a Metal patch-data buffer). The design leaves room — extra non-factor
+  fields on the patch-constant struct — but the first cut wires only the
+  factors.
+- **Isoline domains** and quad `gl_TessCoord.z` handling beyond tri/quad.
+- **Tessellation × geometry stage (§9)** and tessellation × instancing.

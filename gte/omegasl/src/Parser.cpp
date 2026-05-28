@@ -129,6 +129,20 @@ namespace omegasl {
         }
     }
 
+    /// §1.6 — map a contextual interpolation-modifier keyword to its
+    /// `InterpMode`. Returns nullopt for any other identifier. The four
+    /// names stay contextual (lexed as TOK_ID): `sample` doubles as the
+    /// texture-sampling intrinsic, and the rest are plausible field names,
+    /// so they are only treated as modifiers in struct-field prefix position.
+    static std::optional<ast::AttributedFieldDecl::InterpMode>
+    interpModeFromString(const OmegaCommon::String &s) {
+        if(s == "flat")          return ast::AttributedFieldDecl::Flat;
+        if(s == "centroid")      return ast::AttributedFieldDecl::Centroid;
+        if(s == "sample")        return ast::AttributedFieldDecl::Sample;
+        if(s == "noperspective") return ast::AttributedFieldDecl::NoPerspective;
+        return std::nullopt;
+    }
+
     ast::Decl *Parser::parseGlobalDecl() {
         ast::Decl *node = nullptr;
         bool shaderDecl;
@@ -217,6 +231,28 @@ namespace omegasl {
                     while(t.type != TOK_RBRACE){
                         auto _tok = t;
                         t = lexer->nextTok();
+                        /// §1.6 — optional interpolation modifier prefix. A
+                        /// modifier is recognized only when an identifier-shaped
+                        /// `flat`/`centroid`/`sample`/`noperspective` is followed
+                        /// by a builtin type (TOK_KW_TYPE) — you never interpolate
+                        /// a struct, so the type after a modifier is always
+                        /// numeric. This leaves a field *named* `flat`/`sample`
+                        /// (and the `sample(...)` intrinsic) untouched.
+                        auto _interp = ast::AttributedFieldDecl::Default;
+                        if(_tok.type == TOK_ID && t.type == TOK_KW_TYPE){
+                            auto m = interpModeFromString(_tok.str);
+                            if(m.has_value()){
+                                if(!_decl->internal){
+                                    auto e = std::make_unique<UnexpectedToken>(std::string("Interpolation modifier `") + _tok.str + "` is only valid on `internal` struct fields");
+                                    e->loc = ErrorLoc{ _tok.line, _tok.line, _tok.colStart, _tok.colEnd };
+                                    diagnostics->addError(std::move(e));
+                                    return nullptr;
+                                }
+                                _interp = m.value();
+                                _tok = t;
+                                t = lexer->nextTok();
+                            }
+                        }
                         bool type_is_pointer = false;
                         if(t.type == TOK_ASTERISK){
                             type_is_pointer = true;
@@ -237,6 +273,30 @@ namespace omegasl {
                         }
                         auto var_id = t.str;
                         t = lexer->nextTok();
+                        /// §1.7 — array dimensions on a struct field (e.g.
+                        /// `float clip[2]`). Mirrors the local var-decl array
+                        /// parse; dims ride on the field's TypeExpr and are
+                        /// emitted by `writeDeclTypeSuffix` on every backend.
+                        /// Needed for the clip/cull-distance array model, but a
+                        /// general capability (array varyings / data fields).
+                        while(t.type == TOK_LBRACKET){
+                            t = lexer->nextTok();
+                            if(t.type != TOK_NUM_LITERAL){
+                                auto e = std::make_unique<UnexpectedToken>("Expected array size literal in struct field");
+                                e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                                diagnostics->addError(std::move(e));
+                                return nullptr;
+                            }
+                            var_ty->arrayDims.push_back(static_cast<unsigned>(std::stoul(t.str)));
+                            t = lexer->nextTok();
+                            if(t.type != TOK_RBRACKET){
+                                auto e = std::make_unique<UnexpectedToken>("Expected `]` after struct field array size");
+                                e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                                diagnostics->addError(std::move(e));
+                                return nullptr;
+                            }
+                            t = lexer->nextTok();
+                        }
                         if(t.type == TOK_COLON){
                             t = lexer->nextTok();
                             if(t.type != TOK_ID){
@@ -267,10 +327,14 @@ namespace omegasl {
                                 }
                                 t = lexer->nextTok();
                             }
-                            _decl->fields.push_back({var_ty,var_id,attr_name,attr_index});
+                            ast::AttributedFieldDecl _fld{var_ty,var_id,attr_name,attr_index};
+                            _fld.interp = _interp;
+                            _decl->fields.push_back(_fld);
                         }
                         else {
-                            _decl->fields.push_back({var_ty,var_id,{},{}});
+                            ast::AttributedFieldDecl _fld{var_ty,var_id,{},{}};
+                            _fld.interp = _interp;
+                            _decl->fields.push_back(_fld);
                         }
 
                         if(t.type != TOK_SEMICOLON){
@@ -325,6 +389,38 @@ namespace omegasl {
             else if(t.str == KW_FRAGMENT){
                 auto _s = (ast::ShaderDecl *)node;
                 _s->shaderType = ast::ShaderDecl::Fragment;
+                /// §1.5 — optional `fragment(early_depth)` descriptor. Peek one
+                /// token: if it's `(`, parse the descriptor and leave `t` on the
+                /// closing `)` so the shared advance below moves past it to the
+                /// return type (matching compute/hull/domain). Otherwise put the
+                /// token back so the shared advance re-reads it — keeping the
+                /// plain-`fragment` path byte-identical to before §1.5.
+                Tok la = lexer->nextTok();
+                if(la.type == TOK_LPAREN){
+                    t = lexer->nextTok();
+                    if(t.type != TOK_ID || t.str != "early_depth"){
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Expected `early_depth` in fragment descriptor, got `") + t.str + "`");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
+                        delete _s;
+                        return nullptr;
+                    }
+                    _s->earlyDepthStencil = true;
+                    t = lexer->nextTok();
+                    if(t.type != TOK_RPAREN){
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Expected `)` after `early_depth`, got `") + t.str + "`");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
+                        delete _s;
+                        return nullptr;
+                    }
+                    /// `t` is now the `)`; the shared advance moves to the return type.
+                }
+                else {
+                    /// No descriptor — un-consume the peeked token. `t` stays on
+                    /// `fragment`; the shared advance reads `la` back as the return type.
+                    lexer->putBack(la);
+                }
             }
             else if(t.str == KW_HULL || t.str == KW_DOMAIN){
                 auto _s = (ast::ShaderDecl *)node;

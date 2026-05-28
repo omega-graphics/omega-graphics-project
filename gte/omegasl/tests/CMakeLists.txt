@@ -49,12 +49,20 @@ add_omegasl_compile_test(omegasl_compile_compute_gradient    compute_gradient.om
 add_omegasl_compile_test(omegasl_compile_user_functions      user_functions.omegasl)
 add_omegasl_compile_test(omegasl_compile_const_fold          const_fold.omegasl)
 add_omegasl_compile_test(omegasl_compile_tessellation        tessellation.omegasl)
-# Metal codegen + runtime have no tessellation pipeline yet, so the Metal
-# backend rejects hull/domain stages with a clear diagnostic. The test is
-# expected to fail on Apple builds — this verifies the diagnostic fires
-# rather than that the (nonexistent) Metal pipeline works.
-# See OmegaSL-Reference.md bug 3.
-if(APPLE)
+# Tessellation is incomplete on two backends, for the same structural
+# reason (OmegaSL models a hull as one per-control-point function; both
+# backends need a *second* patch-constant computation the hull body does
+# not express):
+#   - APPLE/Metal: codegen + runtime have no tessellation pipeline, so the
+#     Metal backend rejects hull/domain stages with a clear diagnostic. The
+#     test verifies that the diagnostic fires.
+#   - DirectX/HLSL: the emitted hull entry has no `[patchconstantfunc(...)]`
+#     and no patch-constant function, so dxc rejects it ("hull entry point
+#     must have a valid patchconstantfunc attribute"). Generating the
+#     patch-constant function is unimplemented.
+# Both are marked WILL_FAIL until the respective codegen lands.
+# See OmegaSL-Reference.md bugs 3 (Metal) and 4 (HLSL).
+if(APPLE OR TARGET_DIRECTX)
     set_tests_properties(omegasl_compile_tessellation PROPERTIES WILL_FAIL TRUE)
 endif()
 add_omegasl_compile_test(omegasl_compile_math_builtins       math_builtins.omegasl)
@@ -70,6 +78,12 @@ add_omegasl_compile_test(omegasl_compile_fragment_depth      fragment_depth.omeg
 add_omegasl_compile_test(omegasl_compile_fragment_mrt        fragment_mrt.omegasl)
 add_omegasl_compile_test(omegasl_compile_fragment_inputs     fragment_inputs.omegasl)
 add_omegasl_compile_test(omegasl_compile_fragment_coverage   fragment_coverage.omegasl)
+# §1.5 — early depth/stencil (`fragment(early_depth)`) on a UAV-writing fragment.
+add_omegasl_compile_test(omegasl_compile_early_depth         early_depth.omegasl)
+# §1.6 — interpolation modifiers (flat / centroid / sample / noperspective).
+add_omegasl_compile_test(omegasl_compile_interp_modifiers    interp_modifiers.omegasl)
+# §1.7 — clip / cull distance (float-array varyings; CullDistance gated on MSL).
+add_omegasl_compile_test(omegasl_compile_clip_cull_distance  clip_cull_distance.omegasl)
 add_omegasl_compile_test(omegasl_compile_texture_cube        texture_cube.omegasl)
 add_omegasl_compile_test(omegasl_compile_texture_array       texture_array.omegasl)
 add_omegasl_compile_test(omegasl_compile_texture_ms          texture_ms.omegasl)
@@ -124,6 +138,12 @@ add_omegasl_fail_test(omegasl_invalid_phase2_errors          invalid_phase2.omeg
 add_omegasl_fail_test(omegasl_invalid_type_mismatch          invalid_type_mismatch.omegasl)
 add_omegasl_fail_test(omegasl_invalid_undefined_resource     invalid_undefined_resource.omegasl)
 add_omegasl_fail_test(omegasl_invalid_discard_outside_fragment invalid_discard_outside_fragment.omegasl)
+# §1.5 — unknown fragment descriptor token must be diagnosed, not ignored.
+add_omegasl_fail_test(omegasl_invalid_early_depth            invalid_early_depth.omegasl)
+# §1.6 — integer varying without `flat` is rejected.
+add_omegasl_fail_test(omegasl_invalid_interp_modifier        invalid_interp_modifier.omegasl)
+# §1.7 — clip/cull distance: non-float element + indexed form are rejected.
+add_omegasl_fail_test(omegasl_invalid_clip_cull              invalid_clip_cull.omegasl)
 add_omegasl_fail_test(omegasl_invalid_output_coverage_type   invalid_output_coverage_type.omegasl)
 add_omegasl_fail_test(omegasl_invalid_sample_ms              invalid_sample_ms.omegasl)
 add_omegasl_fail_test(omegasl_invalid_write_ms               invalid_write_ms.omegasl)

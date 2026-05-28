@@ -151,7 +151,16 @@ namespace omegasl {
         return c;
     }
 
+    void Lexer::putBack(Tok tok) {
+        putback_ = std::move(tok);
+    }
+
     Tok Lexer::nextTok() {
+        if(putback_.has_value()){
+            Tok t = std::move(*putback_);
+            putback_.reset();
+            return t;
+        }
         tokenStartLine = currentLine;
         tokenStartCol = currentCol;
 

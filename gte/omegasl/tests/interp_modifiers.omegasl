@@ -1,0 +1,34 @@
+struct MyVertex {
+    float4 pos;
+    float4 color;
+    float2 uv;
+};
+
+/// §1.6 — interpolation modifiers on internal-struct varyings. Exercises all
+/// four: `flat` (required on the integer `id` varying), `centroid`, `sample`,
+/// and `noperspective`. Multiple bare `Color`/`TexCoord` fields auto-index.
+struct Raster internal {
+    float4 pos               : Position;
+    flat uint id             : TexCoord;
+    centroid float4 color    : Color;
+    noperspective float2 uv  : TexCoord;
+    sample float4 extra      : Color;
+};
+
+buffer<MyVertex> vbuf : 0;
+
+[in vbuf]
+vertex Raster interpVert(uint vid : VertexID){
+    MyVertex v = vbuf[vid];
+    Raster r;
+    r.pos = v.pos;
+    r.id = vid;
+    r.color = v.color;
+    r.uv = v.uv;
+    r.extra = v.color;
+    return r;
+}
+
+fragment float4 interpFrag(Raster raster){
+    return raster.color + raster.extra;
+}

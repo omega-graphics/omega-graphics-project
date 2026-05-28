@@ -349,6 +349,20 @@ namespace omegasl {
             /// contradictory. CodeGen prefixes the emitted parameter with
             /// `const`, which all three backends accept verbatim.
             bool isConst = false;
+
+            /// §1.6 — interpolation modifier on an `internal` struct field.
+            /// Set by the parser when one of the contextual modifier keywords
+            /// (`flat` / `centroid` / `sample` / `noperspective`) prefixes the
+            /// field type. `Default` is perspective-correct linear (no
+            /// qualifier emitted), byte-identical to pre-§1.6 output. Only
+            /// meaningful on internal-struct fields; params/locals leave it at
+            /// `Default`. Per backend: HLSL `nointerpolation`/`centroid`/
+            /// `sample`/`noperspective`; MSL `[[flat]]`/`[[centroid_perspective]]`/
+            /// `[[sample_perspective]]`/`[[center_no_perspective]]`; GLSL
+            /// `flat`/`centroid`/`sample`/`noperspective` on both the vertex
+            /// `out` and fragment `in` varying.
+            enum InterpMode { Default, Flat, Centroid, Sample, NoPerspective };
+            InterpMode interp = Default;
         };
 
         struct VarDecl : public Decl {
@@ -513,6 +527,18 @@ namespace omegasl {
                 unsigned outputControlPoints = 3;
             };
             TessellationDesc tessDesc;
+            /// §1.5 — early depth/stencil. Set by the parser when a
+            /// `fragment(early_depth)` descriptor is present; only ever
+            /// true on a Fragment shader (the parser accepts the
+            /// descriptor only in the `fragment` arm). Forces the
+            /// depth/stencil test to run *before* the fragment shader so
+            /// occluded fragments never execute — required when a
+            /// fragment shader writes UAVs / storage buffers. Lowers to
+            /// `[earlydepthstencil]` (HLSL), `[[early_fragment_tests]]`
+            /// (MSL), and `layout(early_fragment_tests) in;` (GLSL).
+            /// Purely source-level: no runtime descriptor and no feature
+            /// gate (every backend supports it).
+            bool earlyDepthStencil = false;
         };
 
         struct Expr : public Stmt {

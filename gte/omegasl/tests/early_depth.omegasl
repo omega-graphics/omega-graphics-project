@@ -1,0 +1,33 @@
+struct MyVertex {
+    float4 pos;
+    float2 uv;
+};
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv : TexCoord;
+};
+
+buffer<MyVertex> vbuf : 0;
+texture2d diffuseMap : 1;
+static sampler2d linearSampler(filter=linear, address_mode=clamp_to_edge);
+
+[in vbuf]
+vertex VertexRaster edVert(uint vid : VertexID){
+    MyVertex v = vbuf[vid];
+    VertexRaster r;
+    r.pos = v.pos;
+    r.uv = v.uv;
+    return r;
+}
+
+/// §1.5 — early depth/stencil. The `fragment(early_depth)` descriptor forces
+/// the depth/stencil test to run *before* the shader, so occluded fragments
+/// never execute (the motivating case is a fragment that writes a storage
+/// buffer / UAV; here we keep the body to a proven texture sample so the test
+/// isolates the descriptor itself). Also exercises a resource map
+/// (`[in diffuseMap, in linearSampler]`) coexisting with the stage descriptor.
+[in diffuseMap, in linearSampler]
+fragment(early_depth) float4 edFrag(VertexRaster raster){
+    return sample(linearSampler, diffuseMap, raster.uv);
+}

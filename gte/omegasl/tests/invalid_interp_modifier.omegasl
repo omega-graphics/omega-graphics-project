@@ -1,0 +1,17 @@
+/// §1.6 — an integer interstage varying must be `flat`. `id` is a `uint`
+/// varying with no interpolation modifier, so Sema must reject it (integers
+/// cannot be interpolated on HLSL/GLSL).
+struct Raster internal {
+    float4 pos : Position;
+    uint   id  : TexCoord;
+};
+
+buffer<float4> vbuf : 0;
+
+[in vbuf]
+vertex Raster badVert(uint vid : VertexID){
+    Raster r;
+    r.pos = vbuf[vid];
+    r.id = vid;
+    return r;
+}

@@ -1,0 +1,26 @@
+struct MyVertex {
+    float4 pos;
+    float4 color;
+};
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float4 color : Color;
+};
+
+buffer<MyVertex> vbuf : 0;
+
+[in vbuf]
+vertex VertexRaster edVert(uint vid : VertexID){
+    MyVertex v = vbuf[vid];
+    VertexRaster r;
+    r.pos = v.pos;
+    r.color = v.color;
+    return r;
+}
+
+/// §1.5 — only `early_depth` is a valid fragment descriptor; an unknown
+/// token must be rejected with a clear diagnostic, not silently ignored.
+fragment(early_stencil) float4 badFrag(VertexRaster raster){
+    return raster.color;
+}

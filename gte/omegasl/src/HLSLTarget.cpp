@@ -635,6 +635,14 @@ namespace omegasl {
         unsigned bareTexCoordIdx = 0;
         for (auto &f : _decl->fields) {
             out << "    " << std::flush;
+            /// §1.6 — interpolation modifier prefix.
+            switch (f.interp) {
+                case ast::AttributedFieldDecl::Flat:          out << "nointerpolation "; break;
+                case ast::AttributedFieldDecl::Centroid:      out << "centroid "; break;
+                case ast::AttributedFieldDecl::Sample:        out << "sample "; break;
+                case ast::AttributedFieldDecl::NoPerspective: out << "noperspective "; break;
+                default: break;
+            }
             cg.writeTypeExpr(f.typeExpr, out);
             out << " " << f.name;
             cg.writeDeclTypeSuffix(f.typeExpr, out);
@@ -731,6 +739,11 @@ namespace omegasl {
             out << "[domain(\""
                 << (td.domain == ast::ShaderDecl::TessellationDesc::Triangle ? "tri" : "quad") << "\")]"
                 << std::endl;
+        }
+
+        /// §1.5 — early depth/stencil decorator on the fragment entry function.
+        if (_decl->shaderType == ast::ShaderDecl::Fragment && _decl->earlyDepthStencil) {
+            out << "[earlydepthstencil]" << std::endl;
         }
 
         /// Function signature: <return> <name>(<params with attributes>)
@@ -1023,6 +1036,10 @@ namespace omegasl {
             /// output (return-struct field) directions; the position of the
             /// declaration disambiguates.
             out << "SV_Coverage";
+        } else if (attributeName == ATTRIBUTE_CLIP_DISTANCE) {
+            out << "SV_ClipDistance";
+        } else if (attributeName == ATTRIBUTE_CULL_DISTANCE) {
+            out << "SV_CullDistance";
         } else if (attributeName == ATTRIBUTE_GLOBALTHREAD_ID) {
             out << "SV_DispatchThreadID";
         } else if (attributeName == ATTRIBUTE_LOCALTHREAD_ID) {

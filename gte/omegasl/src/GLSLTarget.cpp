@@ -384,17 +384,47 @@ namespace omegasl {
                     (_decl->shaderType == ast::ShaderDecl::Fragment) ? "in" : "out";
                 unsigned idx = 0;
                 for (auto &f : _struct->fields) {
-                    /// Only a `Position`-semantic field rides a builtin
-                    /// (gl_Position / gl_FragCoord) and gets no varying. Every
-                    /// other field — including an unattributed one, which Sema
-                    /// permits on internal structs — is a location-based
-                    /// varying. Guard `has_value()` first: `.value()` on an
-                    /// unattributed field would throw. This matches
-                    /// `writeInternalFieldRef`, which routes the same field to
-                    /// the `<struct>_<field>` varying identifier.
-                    if (!f.attributeName.has_value()
-                        || f.attributeName.value() != ATTRIBUTE_POSITION) {
-                        out << "layout(location =" << idx << ") " << mode << " ";
+                    bool isPosition = f.attributeName.has_value()
+                        && f.attributeName.value() == ATTRIBUTE_POSITION;
+                    bool isClip = f.attributeName.has_value()
+                        && f.attributeName.value() == ATTRIBUTE_CLIP_DISTANCE;
+                    bool isCull = f.attributeName.has_value()
+                        && f.attributeName.value() == ATTRIBUTE_CULL_DISTANCE;
+                    /// A `Position` field rides gl_Position / gl_FragCoord and
+                    /// gets no varying. Clip/cull distance ride the
+                    /// gl_ClipDistance[] / gl_CullDistance[] builtin arrays,
+                    /// redeclared with an explicit size on the producing stage
+                    /// (not a fragment input). Every other field — including an
+                    /// unattributed one, which Sema permits on internal structs
+                    /// — is a location-based varying. This matches
+                    /// `writeInternalFieldRef`, which routes each field to the
+                    /// same target.
+                    if (isPosition) {
+                        /// implicit gl_Position; nothing to declare here.
+                    } else if (isClip || isCull) {
+                        /// §1.7 — emit the builtin-array redeclaration only on
+                        /// the producing (vertex/hull/domain) side.
+                        if (mode == "out") {
+                            unsigned n = f.typeExpr->arrayDims.empty()
+                                         ? 1u : f.typeExpr->arrayDims[0];
+                            out << "out float "
+                                << (isClip ? "gl_ClipDistance" : "gl_CullDistance")
+                                << "[" << n << "];" << std::endl;
+                        }
+                    } else {
+                        out << "layout(location =" << idx << ") ";
+                        /// §1.6 — interpolation qualifier, between layout and the
+                        /// in/out storage qualifier. The same field drives both
+                        /// the vertex `out` and fragment `in` varying, so the
+                        /// qualifier matches across stages by construction.
+                        switch (f.interp) {
+                            case ast::AttributedFieldDecl::Flat:          out << "flat "; break;
+                            case ast::AttributedFieldDecl::Centroid:      out << "centroid "; break;
+                            case ast::AttributedFieldDecl::Sample:        out << "sample "; break;
+                            case ast::AttributedFieldDecl::NoPerspective: out << "noperspective "; break;
+                            default: break;
+                        }
+                        out << mode << " ";
                         writeTypeName(cg.typeResolver->resolveTypeWithExpr(f.typeExpr),
                                       f.typeExpr->pointer, out);
                         out << " " << _struct->name << "_" << f.name << ";" << std::endl;
@@ -412,6 +442,11 @@ namespace omegasl {
         cg.indentLevel += 1;
 
         if (_decl->shaderType == ast::ShaderDecl::Fragment) {
+            /// §1.5 — early depth/stencil: a global execution-mode directive on
+            /// the fragment stage (must be at file scope, before `void main()`).
+            if (_decl->earlyDepthStencil) {
+                out << "layout(early_fragment_tests) in;" << std::endl;
+            }
             if (fragmentOutputStruct) {
                 /// MRT / depth output: one `layout(location=N) out vec4` per
                 /// `Color(N)` field. `Depth` rides on `gl_FragDepth` (no
@@ -686,6 +721,14 @@ namespace omegasl {
             out << "_outColor" << field.attributeIndex.value();
         } else if (attr == ATTRIBUTE_DEPTH) {
             out << "gl_FragDepth";
+        } else if (attr == ATTRIBUTE_CLIP_DISTANCE) {
+            /// §1.7 — clip distance routes to the `gl_ClipDistance[]` builtin
+            /// array. A field write `r.clip[i] = x` becomes
+            /// `gl_ClipDistance[i] = x` (the member reroute supplies the base,
+            /// the user's index supplies the element).
+            out << "gl_ClipDistance";
+        } else if (attr == ATTRIBUTE_CULL_DISTANCE) {
+            out << "gl_CullDistance";
         } else if (attr == ATTRIBUTE_OUTPUT_COVERAGE) {
             /// `gl_SampleMask[]` is `int[]`, but OmegaSL types this field as
             /// `uint`. We can't cast an lvalue, so route to a synthetic uint

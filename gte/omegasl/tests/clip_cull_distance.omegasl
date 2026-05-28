@@ -1,0 +1,35 @@
+/// §1.7 — user clip / cull distance. `ClipDistance` is universal; `CullDistance`
+/// has no Metal equivalent, so the file declares `#requires(CULL_DISTANCE)` —
+/// HLSL/GLSL emit it (SV_CullDistance / gl_CullDistance[]); on MSL the shader
+/// stubs and the loader rejects pipelines that bind it.
+#requires(CULL_DISTANCE)
+
+struct MyVertex {
+    float4 pos;
+    float4 color;
+};
+
+struct Raster internal {
+    float4 pos      : Position;
+    float4 color    : Color;
+    float  clip[2]  : ClipDistance;
+    float  cull[1]  : CullDistance;
+};
+
+buffer<MyVertex> vbuf : 0;
+
+[in vbuf]
+vertex Raster clipVert(uint vid : VertexID){
+    MyVertex v = vbuf[vid];
+    Raster r;
+    r.pos = v.pos;
+    r.color = v.color;
+    r.clip[0] = v.pos[0];
+    r.clip[1] = v.pos[1];
+    r.cull[0] = v.pos[2];
+    return r;
+}
+
+fragment float4 clipFrag(Raster raster){
+    return raster.color;
+}

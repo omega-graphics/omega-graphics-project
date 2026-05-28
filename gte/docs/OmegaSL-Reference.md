@@ -36,7 +36,7 @@ The full picture is bigger than a codegen typo. Three layers were broken:
 Holding pattern (current state):
 - `MetalCodeGen` detects `hull`/`domain` `SHADER_DECL` nodes before any file output and prints `error: Metal backend does not support \`hull\`/\`domain\` shaders ('<name>')…` to stderr.
 - A `bool hasFatalErrors` flag on `CodeGen` is set; the driver checks it after parsing and exits nonzero. `generateInterfaceAndCompileShader` short-circuits so the metal compiler isn't invoked on a missing source file.
-- `omegasl_compile_tessellation` is marked `WILL_FAIL` on `APPLE` in the tests `CMakeLists.txt` — the test now verifies the diagnostic fires rather than that the (nonexistent) Metal pipeline works. HLSL and GLSL backends still compile the same source normally.
+- `omegasl_compile_tessellation` is marked `WILL_FAIL` on `APPLE` **and on `TARGET_DIRECTX`** in the tests `CMakeLists.txt`. On Apple the test verifies the Metal diagnostic fires; on DirectX the emitted HLSL hull entry has no patch-constant function, so dxc rejects it (see bug 4 below). GLSL emission has not been verified against glslc for the hull/domain shape — treat it as untested rather than known-good.
 - `GTEDEVICE_FEATURE_TESSELLATION_SHADER` is no longer advertised by the Metal device. The runtime no longer claims a feature it cannot deliver.
 
 Future work (not done here):
@@ -45,6 +45,22 @@ Future work (not done here):
 - Metadata: the `omegasl_shader` map needs to expose both Metal entry points produced from one logical hull stage so the runtime can bind them. Likely the cleanest design is per-backend stage-expansion in the shader-map writer rather than leaking the split to the public API.
 
 Re-advertise `GTEDEVICE_FEATURE_TESSELLATION_SHADER` only when all three of these land.
+
+**4. HLSL hull stages emit no patch-constant function.** Affects `omegasl_compile_tessellation` on `TARGET_DIRECTX`. Surfaced by running the full suite on Windows with `dxc` present; previously the DirectX side of this test was assumed to compile but had never been verified against `dxc`.
+
+A DirectX hull shader entry **requires** a `[patchconstantfunc("fn")]` attribute naming a *patch-constant function* that outputs `SV_TessFactor` / `SV_InsideTessFactor` (the per-patch tessellation amounts). `HLSLTarget::emitShaderEntryHeader` emits the per-control-point decorators (`[domain]` / `[partitioning]` / `[outputtopology]` / `[outputcontrolpoints]`) but neither the attribute nor the function, so `dxc` rejects every hull shader:
+
+```
+error: hull entry point must have a valid patchconstantfunc attribute
+```
+
+This is the **HLSL analogue of bug 3**: OmegaSL models a `hull` as one D3D-style per-control-point function, but even D3D needs a *second* function for the patch factors — and the OmegaSL hull body does not currently express that computation. So the gap is a small language/codegen design pass, not a one-line emit fix.
+
+Holding pattern (current state):
+- `omegasl_compile_tessellation` is marked `WILL_FAIL` on `TARGET_DIRECTX` (alongside `APPLE`) in the tests `CMakeLists.txt`.
+
+Future work (not done here):
+- Decide how an OmegaSL `hull` expresses its patch-constant output (e.g. a dedicated tess-factor field set on the hull-output struct, or a paired declaration), then have `HLSLTarget` emit the patch-constant function + `[patchconstantfunc(...)]` attribute. The `domain` shader already maps onto the HLSL domain stage.
 
 ### Cross-backend texture/sampler coord audit
 
@@ -289,6 +305,49 @@ struct VertexRaster internal {
 };
 ```
 
+Field semantics: `Position`, `Color` (bare = varying; indexed `Color(N)` = MRT
+output target), `TexCoord`, `Depth`, `OutputCoverage`, `ClipDistance`,
+`CullDistance`.
+
+**Interpolation modifiers** prefix the field type to control how a varying is
+interpolated. They are valid only on `internal` struct fields.
+
+```omegasl
+struct Raster internal {
+    float4 pos                    : Position;
+    flat uint id                  : TexCoord;   // integer varyings must be flat
+    centroid float4 color         : Color;
+    noperspective float2 screenUV : TexCoord;
+};
+```
+
+| Modifier | Meaning |
+|----------|---------|
+| `flat` | no interpolation (required on integer varyings) |
+| `centroid` | centroid-sampled, perspective-correct |
+| `sample` | per-sample, perspective-correct |
+| `noperspective` | linear (screen-space) interpolation |
+
+An integer-typed varying must be declared `flat` — integers cannot be
+interpolated. (`sample`/`flat`/etc. stay valid as ordinary identifiers and as
+the `sample(...)` intrinsic; they are modifiers only in this prefix position.)
+
+**Clip / cull distance** are written by a vertex/hull/domain shader to drive
+hardware clipping/culling. Use a `float` scalar or a `float[N]` array (one
+element per plane):
+
+```omegasl
+struct Raster internal {
+    float4 pos     : Position;
+    float  clip[2] : ClipDistance;
+    float  cull[1] : CullDistance;   // file must declare #requires(CULL_DISTANCE)
+};
+```
+
+`ClipDistance` is supported on every backend. `CullDistance` has no Metal
+equivalent, so a file using it must `#requires(CULL_DISTANCE)`; it compiles on
+DirectX/Vulkan and stubs out on Metal.
+
 ### Resources
 
 Resources are GPU-allocated data bound by register number:
@@ -396,6 +455,20 @@ fragment float4 myFragment(VertexRaster raster){
 }
 ```
 
+**Fragment shader with early depth/stencil** (optional `early_depth`
+descriptor). Forces the depth/stencil test to run *before* the fragment
+shader, so occluded fragments never execute — required when the shader
+writes a storage buffer / UAV and you must not record writes for
+fragments that fail the depth test:
+
+```omegasl
+[out coverageBuf]
+fragment(early_depth) float4 myFragment(VertexRaster raster){
+    coverageBuf[0].value = 1.0;
+    return raster.color;
+}
+```
+
 **Compute shader** (requires threadgroup dimensions):
 
 ```omegasl
@@ -429,6 +502,8 @@ DomainOutput myDomain(uint vid : VertexID){
     return o;
 }
 ```
+
+**Fragment descriptor properties**: `early_depth` (no value) -- enables early depth/stencil testing (`[earlydepthstencil]` / `[[early_fragment_tests]]` / `layout(early_fragment_tests) in;`). Optional; omit the parentheses entirely for a normal fragment.
 
 **Hull descriptor properties**: `domain` (`tri`, `quad`), `partitioning` (`integer`, `fractional_even`, `fractional_odd`), `outputtopology` (`triangle_cw`, `triangle_ccw`, `line`), `outputcontrolpoints` (integer).
 
