@@ -15,8 +15,11 @@
 ///
 /// The kernel reads a uint4 of test operands and writes float4 results (the
 /// firstbit / popcount values are small integers, exact in float), so the
-/// readback needs only the existing `getFloat4` — no int/uint scalar-vector
-/// reader API (which doesn't exist yet) is required.
+/// readback needs only `getFloat4`. (A direct integer readback is now possible
+/// via the reader's `getInt*` / `getUint*` API — exercised by
+/// int_vector_io_test.cpp — but this test keeps the float form: comparing
+/// reversebits against the host expectation on-GPU avoids round-tripping a
+/// full-range uint through a lossy float.)
 
 #include <omegaGTE/GTEDevice.h>
 #include <omegaGTE/GECommandQueue.h>

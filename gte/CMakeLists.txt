@@ -10,12 +10,10 @@ include(./OmegaGTE.cmake)
 file(GLOB MAIN_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 file(GLOB COMMON_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/common/*.cpp")
 
-# MeshParser only handles formats Metal already covers via Model I/O / MTKMesh
-# (OBJ, glTF). Drop it from the Metal build until it grows a parser for a
-# format Metal can't load (e.g. FBX).
-if(APPLE)
-	list(REMOVE_ITEM COMMON_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/common/MeshParser.cpp")
-endif()
+# MeshParser is now compiled on every backend, Metal included: it grew a
+# ufbx-backed FBX parser, and FBX is a format Model I/O cannot load, so the
+# Metal asset loader routes .fbx through the shared parser. OBJ / glTF on Metal
+# still go through Model I/O / MTKMesh (strictly more capable there).
 
 set(PUBLIC_DEFS)
 
@@ -153,6 +151,17 @@ if(OMEGAGTE_DEBUG)
     target_compile_definitions("OmegaGTE" PUBLIC OMEGAGTE_DEBUG)
 endif()
 target_link_libraries("OmegaGTE" PUBLIC "OmegaCommon")
+
+# Shared mesh-parser dependencies (src/common/MeshParser.cpp) — compiled on
+# every backend now that the parser handles FBX (which Metal's Model I/O can't
+# load). cgltf is header-only; ufbx ships ufbx.h + ufbx.c, so its
+# implementation TU is added to the sources here. The per-backend blocks below
+# add cgltf again for Vulkan / D3D12 — harmless, CMake de-dups include dirs.
+set(THIRD_PARTY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps)
+target_include_directories("OmegaGTE" PRIVATE
+	"${THIRD_PARTY_DIR}/cgltf"
+	"${THIRD_PARTY_DIR}/ufbx")
+target_sources("OmegaGTE" PRIVATE "${THIRD_PARTY_DIR}/ufbx/ufbx.c")
 
 # OmegaGTE embeds the OmegaSL parser/codegen sources for runtime shader
 # compile paths. On Android, GLSLTarget.cpp pulls libshaderc which the NDK

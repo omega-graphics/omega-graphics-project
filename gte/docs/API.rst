@@ -379,8 +379,18 @@ Reading data with GEBufferReader
     .. cpp:function:: void getFloat2(FVec<2> & v)
     .. cpp:function:: void getFloat3(FVec<3> & v)
     .. cpp:function:: void getFloat4(FVec<4> & v)
+    .. cpp:function:: void getInt(int & v)
+    .. cpp:function:: void getInt2(IVec<2> & v)
+    .. cpp:function:: void getInt3(IVec<3> & v)
+    .. cpp:function:: void getInt4(IVec<4> & v)
+    .. cpp:function:: void getUint(unsigned & v)
+    .. cpp:function:: void getUint2(UVec<2> & v)
+    .. cpp:function:: void getUint3(UVec<3> & v)
+    .. cpp:function:: void getUint4(UVec<4> & v)
 
-        Read one field into the referenced variable.
+        Read one field into the referenced variable. Call these in declaration
+        order between ``structBegin()`` and ``structEnd()``, mirroring the
+        ``GEBufferWriter`` ``write*`` calls that produced the buffer.
 
     .. cpp:function:: void structEnd()
 

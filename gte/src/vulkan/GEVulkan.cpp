@@ -898,6 +898,81 @@ _NAMESPACE_BEGIN_
             currentOffset += sizeof(vec);
             readTypes.push_back(OMEGASL_FLOAT4);
         }
+        /// Integer / unsigned scalar + vector downloads — symmetric with
+        /// `writeInt*` / `writeUint*`. int/uint share the byte layout; the
+        /// unsigned readers use `glm::uvec*` but otherwise mirror the int path.
+        void getInt(int &v) override {
+            alignRead(OMEGASL_INT);
+            memcpy(&v,mem_map + currentOffset,sizeof(v));
+            currentOffset += sizeof(v);
+            readTypes.push_back(OMEGASL_INT);
+        }
+        void getInt2(IVec<2> &v) override {
+            alignRead(OMEGASL_INT2);
+            glm::ivec2 vec;
+            memcpy(&vec,mem_map + currentOffset,sizeof(vec));
+            v[0][0] = vec.x;
+            v[1][0] = vec.y;
+            currentOffset += sizeof(vec);
+            readTypes.push_back(OMEGASL_INT2);
+        }
+        void getInt3(IVec<3> &v) override {
+            alignRead(OMEGASL_INT3);
+            glm::ivec3 vec;
+            memcpy(&vec,mem_map + currentOffset,sizeof(vec));
+            v[0][0] = vec.x;
+            v[1][0] = vec.y;
+            v[2][0] = vec.z;
+            currentOffset += sizeof(vec);
+            readTypes.push_back(OMEGASL_INT3);
+        }
+        void getInt4(IVec<4> &v) override {
+            alignRead(OMEGASL_INT4);
+            glm::ivec4 vec;
+            memcpy(&vec,mem_map + currentOffset,sizeof(vec));
+            v[0][0] = vec.x;
+            v[1][0] = vec.y;
+            v[2][0] = vec.z;
+            v[3][0] = vec.w;
+            currentOffset += sizeof(vec);
+            readTypes.push_back(OMEGASL_INT4);
+        }
+        void getUint(unsigned &v) override {
+            alignRead(OMEGASL_UINT);
+            memcpy(&v,mem_map + currentOffset,sizeof(v));
+            currentOffset += sizeof(v);
+            readTypes.push_back(OMEGASL_UINT);
+        }
+        void getUint2(UVec<2> &v) override {
+            alignRead(OMEGASL_UINT2);
+            glm::uvec2 vec;
+            memcpy(&vec,mem_map + currentOffset,sizeof(vec));
+            v[0][0] = vec.x;
+            v[1][0] = vec.y;
+            currentOffset += sizeof(vec);
+            readTypes.push_back(OMEGASL_UINT2);
+        }
+        void getUint3(UVec<3> &v) override {
+            alignRead(OMEGASL_UINT3);
+            glm::uvec3 vec;
+            memcpy(&vec,mem_map + currentOffset,sizeof(vec));
+            v[0][0] = vec.x;
+            v[1][0] = vec.y;
+            v[2][0] = vec.z;
+            currentOffset += sizeof(vec);
+            readTypes.push_back(OMEGASL_UINT3);
+        }
+        void getUint4(UVec<4> &v) override {
+            alignRead(OMEGASL_UINT4);
+            glm::uvec4 vec;
+            memcpy(&vec,mem_map + currentOffset,sizeof(vec));
+            v[0][0] = vec.x;
+            v[1][0] = vec.y;
+            v[2][0] = vec.z;
+            v[3][0] = vec.w;
+            currentOffset += sizeof(vec);
+            readTypes.push_back(OMEGASL_UINT4);
+        }
 
         /// Matrix readers: read `cols * matrixColumnStride(rows, layoutStd)`
         /// bytes from the mapped buffer, dropping per-column padding when

@@ -58,7 +58,20 @@
             "platforms": [
                 "windows",
                 "linux",
-                "android"
+                "android",
+                "macos"
+            ]
+        },
+        {
+            "name": "ufbx",
+            "type": "git",
+            "url": "https://github.com/ufbx/ufbx.git",
+            "dest": "$(external_lib_path)/ufbx",
+            "platforms": [
+                "windows",
+                "linux",
+                "android",
+                "macos"
             ]
         },
         {

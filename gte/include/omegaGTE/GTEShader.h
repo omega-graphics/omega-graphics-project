@@ -124,6 +124,18 @@ struct OMEGAGTE_EXPORT GEBufferReader {
     virtual void getFloat2(FVec<2> & v) = 0;
     virtual void getFloat3(FVec<3> & v) = 0;
     virtual void getFloat4(FVec<4> & v) = 0;
+    /// Integer / unsigned-integer scalar and vector downloads — symmetric with
+    /// the writer's `writeInt*` / `writeUint*`. int / uint / float are all
+    /// 4-byte scalars, so these share the writer's alignment and size rules
+    /// (scalar 4, vec2 8, vec3/vec4 16).
+    virtual void getInt(int & v) = 0;
+    virtual void getInt2(IVec<2> & v) = 0;
+    virtual void getInt3(IVec<3> & v) = 0;
+    virtual void getInt4(IVec<4> & v) = 0;
+    virtual void getUint(unsigned & v) = 0;
+    virtual void getUint2(UVec<2> & v) = 0;
+    virtual void getUint3(UVec<3> & v) = 0;
+    virtual void getUint4(UVec<4> & v) = 0;
     /// Matrix downloads — symmetric with the writer above. The reader
     /// strips the std430 column padding when copying back into the
     /// host's tightly-packed `FMatrix<C, R>::_data`.

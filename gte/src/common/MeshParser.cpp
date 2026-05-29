@@ -4,6 +4,10 @@
 #define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
 
+// ufbx ships as ufbx.h + ufbx.c; the implementation TU (ufbx.c) is added to
+// the build sources in gte/CMakeLists.txt, so only the header is included here.
+#include "ufbx.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -149,6 +153,106 @@ bool parseGltf(const std::string &path,
     }
 
     cgltf_free(data);
+    return !out.packed.empty();
+}
+
+// ─── FBX (ufbx) ─────────────────────────────────────────────────────
+
+// FBX vertices are emitted in the file's raw coordinate space / units — no
+// axis or unit conversion (matching the glTF / OBJ paths), so the default
+// `ufbx_load_opts` are used. Faces are triangulated per-face via
+// `ufbx_triangulate_face`; node instance transforms are not baked in (the
+// glTF path likewise ignores node transforms in v1). Missing requested
+// attributes are zero-filled, consistent with the other parsers.
+bool parseFbx(const std::string &path,
+              const GEMeshDescriptor &desc,
+              ParsedMesh &out) {
+    ufbx_load_opts opts = {};
+    ufbx_error error;
+    ufbx_scene *scene = ufbx_load_file(path.c_str(), &opts, &error);
+    if (scene == nullptr) {
+        char errBuf[512];
+        ufbx_format_error(errBuf, sizeof(errBuf), &error);
+        std::cerr << "[MeshParser] ufbx_load_file failed: " << path << "\n"
+                  << errBuf << std::endl;
+        return false;
+    }
+
+    const std::string baseDir = parentDir(path);
+    const uint32_t attrs = desc.attributes;
+    bool warnedMissing = false;
+
+    // Resolve the first base-color texture in the scene. ufbx maps legacy FBX
+    // phong materials into the `pbr` view, so `pbr.base_color` covers both
+    // modern and classic materials; fall back to `fbx.diffuse_color` just in
+    // case. The relative filename is joined to the source dir (mirroring the
+    // glTF uri handling); the recorded absolute filename is the fallback.
+    for (size_t i = 0; i < scene->materials.count && out.baseColorTexturePath.empty(); ++i) {
+        const ufbx_material *mat = scene->materials.data[i];
+        const ufbx_texture *tex = mat->pbr.base_color.texture;
+        if (tex == nullptr) tex = mat->fbx.diffuse_color.texture;
+        if (tex == nullptr) continue;
+        if (tex->relative_filename.length > 0) {
+            out.baseColorTexturePath =
+                baseDir + std::string(tex->relative_filename.data, tex->relative_filename.length);
+        } else if (tex->filename.length > 0) {
+            out.baseColorTexturePath =
+                std::string(tex->filename.data, tex->filename.length);
+        }
+    }
+
+    for (size_t mi = 0; mi < scene->meshes.count; ++mi) {
+        const ufbx_mesh *mesh = scene->meshes.data[mi];
+
+        const bool hasUV = mesh->vertex_uv.exists;
+        const bool hasN  = mesh->vertex_normal.exists;
+        const bool hasC  = mesh->vertex_color.exists;
+        if (!warnedMissing &&
+            (((attrs & (GEMeshAttrUV2 | GEMeshAttrUV3)) && !hasUV) ||
+             ((attrs & GEMeshAttrNormal) && !hasN) ||
+             ((attrs & GEMeshAttrColor) && !hasC))) {
+            std::cerr << "[MeshParser] FBX mesh missing some requested "
+                         "attributes; zero-fill in effect." << std::endl;
+            warnedMissing = true;
+        }
+
+        // Scratch buffer for triangulated corner indices: at most
+        // `max_face_triangles * 3` per face.
+        std::vector<uint32_t> triIndices(mesh->max_face_triangles * 3);
+
+        for (size_t fi = 0; fi < mesh->faces.count; ++fi) {
+            const ufbx_face face = mesh->faces.data[fi];
+            if (face.num_indices < 3) continue;  // degenerate / point / line
+            const uint32_t numTris =
+                ufbx_triangulate_face(triIndices.data(), triIndices.size(), mesh, face);
+
+            for (uint32_t ti = 0; ti < numTris * 3; ++ti) {
+                const uint32_t index = triIndices[ti];  // corner index
+                float pos[3] = {0, 0, 0};
+                float uv[3]  = {0, 0, 0};
+                float n[3]   = {0, 0, 0};
+                float c[4]   = {1, 1, 1, 1};
+
+                const ufbx_vec3 p = ufbx_get_vertex_vec3(&mesh->vertex_position, index);
+                pos[0] = (float)p.x; pos[1] = (float)p.y; pos[2] = (float)p.z;
+                if (hasUV) {
+                    const ufbx_vec2 t = ufbx_get_vertex_vec2(&mesh->vertex_uv, index);
+                    uv[0] = (float)t.x; uv[1] = (float)t.y;
+                }
+                if (hasN) {
+                    const ufbx_vec3 nn = ufbx_get_vertex_vec3(&mesh->vertex_normal, index);
+                    n[0] = (float)nn.x; n[1] = (float)nn.y; n[2] = (float)nn.z;
+                }
+                if (hasC) {
+                    const ufbx_vec4 cc = ufbx_get_vertex_vec4(&mesh->vertex_color, index);
+                    c[0] = (float)cc.x; c[1] = (float)cc.y; c[2] = (float)cc.z; c[3] = (float)cc.w;
+                }
+                appendVertex(out.packed, attrs, pos, uv, n, c);
+            }
+        }
+    }
+
+    ufbx_free_scene(scene);
     return !out.packed.empty();
 }
 
@@ -335,6 +439,8 @@ bool parseMesh(const std::string &path,
         ok = parseGltf(path, desc, out);
     } else if (ext == "obj") {
         ok = parseObj(path, desc, out);
+    } else if (ext == "fbx") {
+        ok = parseFbx(path, desc, out);
     } else {
         std::cerr << "[MeshParser] unsupported extension: ." << ext
                   << " (path=" << path << ")" << std::endl;

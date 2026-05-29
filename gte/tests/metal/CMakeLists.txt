@@ -107,6 +107,16 @@ add_metal_cli_test(
     "ModelIO"
     "Foundation"
 )
+# Point the FBX case at one of ufbx's bundled test cubes (a plain 6-quad cube).
+# Exercises the .fbx → shared MeshParser (ufbx) route, which Model I/O can't do.
+target_compile_definitions("AssetTest" PRIVATE
+    "OMEGA_ASSET_TEST_FBX=\"${CMAKE_CURRENT_SOURCE_DIR}/../../deps/ufbx/data/blender_272_cube_7400_binary.fbx\"")
+# add_metal_cli_test only adds an rpath that points inside the framework
+# (Versions/0.5); add the directory that *contains* the framework so the bare
+# executable run from ctest / the shell can load OmegaGTE (same fix the matrix /
+# bitfield / sampler CLI tests apply).
+target_link_options("AssetTest" PRIVATE
+    "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
 
 # Extension 8 §8.6 — runtime sampler-state binding integration test (shared,
 # backend-independent source under gte/tests/).
@@ -166,3 +176,20 @@ add_metal_cli_test(
 target_link_options("BitfieldOpsTest" PRIVATE
     "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
 add_test(NAME omegagte_bitfield_ops COMMAND BitfieldOpsTest)
+
+# OmegaSL §5.3 follow-up — integer / unsigned scalar+vector buffer-IO round-trip
+# (shared, backend-independent source under gte/tests/). Readback counterpart to
+# the writer's writeInt*/writeUint*; exercises the new GEBufferReader getInt*/
+# getUint* scalar+vector API and the int/uint align-then-place padding.
+add_metal_cli_test(
+    NAME
+    "IntVectorIOTest"
+    SOURCES
+    "../int_vector_io_test.cpp"
+    FRAMEWORKS
+    "Metal"
+    "Foundation"
+)
+target_link_options("IntVectorIOTest" PRIVATE
+    "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
+add_test(NAME omegagte_int_vector_io COMMAND IntVectorIOTest)

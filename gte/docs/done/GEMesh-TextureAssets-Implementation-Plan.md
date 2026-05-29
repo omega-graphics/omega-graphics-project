@@ -178,7 +178,23 @@ Same goes with our mesh_parser. It should also be accessible from macOS so we ca
 
 - The mesh parser **is** shared across platforms — `gte/src/common/MeshParser.{h,cpp}` is backend-neutral and ready for Vulkan to consume directly. Metal stays on Model I/O / `MTKMesh` (its own path) because the platform library is strictly more capable.
 - **OBJ**: implemented inline in `MeshParser.cpp` (handles `v` / `vt` / `vn` / `f` / `mtllib` / `usemtl` / `map_Kd`, fan-triangulates n-gons, supports negative indices). The original plan called for `ssell/OBJParser`; we dropped the dependency to keep the build graph small and avoid a third-party API whose surface didn't pay rent for ~120 lines of trivial parsing.
-- **FBX (`ufbx`)** still listed in the original NOTES as a wish: deferred. FBX has skinning, non-PBR material naming, and binary/ASCII variants — too much surface for a single phase. Lands in a follow-up.
+- **FBX (`ufbx`)** ✅ implemented in the shared `MeshParser` (`parseFbx`). `ufbx`
+  loads both binary and ASCII variants; faces are triangulated per-face via
+  `ufbx_triangulate_face`, and legacy (non-PBR) FBX materials are read through
+  ufbx's `pbr.base_color` view (falling back to `fbx.diffuse_color`) so the
+  first base-color texture resolves the same way as glTF/OBJ. Vertices are
+  emitted in the file's **raw** coordinate space / units — no axis or unit
+  conversion — matching the glTF/OBJ paths (default `ufbx_load_opts`). Skinning,
+  animation, tangents, and multi-material splitting are still dropped (same v1
+  scope as the other formats). Because FBX is the one common format Model I/O
+  cannot load, the **Metal** asset loader now routes `.fbx` through the shared
+  parser too (OBJ/glTF stay on Model I/O); `MeshParser.cpp` is consequently
+  compiled on every backend now, and `cgltf` + `ufbx` were added to the macOS
+  dep set. Verified end-to-end on Metal by `AssetTest` (loads a ufbx bundled
+  cube → 12 triangles / 36 vertices). The dropped scope (skinning, animation,
+  tangents, multi-material submeshes) and broader parser extensions — including
+  what's cheap to add on the OBJ / `cgltf` paths — are tracked in
+  `../Mesh-Parser-Extension-Plan.md`.
 - **BC / HDR pixel formats**: `TexturePixelFormat` only models 5 formats today. `GED3D12TextureAsset` reports a best-effort `descriptor()` (warns once on unmapped DXGI formats) and constructs the SRV directly from the source DXGI format, so BC1–BC7 / HDR / 16F textures bind correctly even though `descriptor().pixelFormat` is lossy. Extending the engine-level enum is future work.
 - **Texture upload**: a transient `D3D12_COMMAND_LIST_TYPE_DIRECT` queue + fence is created per `load()`. Avoids interleaving with the engine's main render queue and keeps the loader self-contained at the cost of a queue allocation per file. Acceptable for asset-load workloads.
 
@@ -242,5 +258,5 @@ The real question: should KTX loading be a part of OmegaCommon::Img or TextureAs
 | **Triangulation result** | All primitives emit texture2D/texture3D coords (and optional normals) when a texture attachment is set. |
 | **GEMesh** | New type: vertex (+ optional index) buffer, layout, and texture bindings; buildable from TETriangulationResult or MeshAsset. |
 | **TextureAsset** | High-level texture loading via DirectXTex (D3D12 ✅), MetalKit (Metal ✅), `OmegaCommon::Img` (Vulkan ✅). |
-| **MeshAsset** | High-level mesh loading via shared `MeshParser` (cgltf + inline OBJ) on D3D12 ✅ and Vulkan ✅; MetalKit / Model I/O on Metal ✅. |
+| **MeshAsset** | High-level mesh loading via shared `MeshParser` (cgltf + inline OBJ + `ufbx` FBX) on D3D12 ✅ and Vulkan ✅; MetalKit / Model I/O on Metal ✅, with `.fbx` routed to the shared parser (Model I/O can't load FBX). |
 | **Command encoding** | Draw GEMesh (set vertex/index buffer, bind mesh textures). |

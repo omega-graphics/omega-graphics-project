@@ -1120,6 +1120,73 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             v[2][0] = _v.z;
             v[3][0] = _v.w;
         }
+        /// Integer / unsigned scalar + vector downloads — symmetric with
+        /// `writeInt*` / `writeUint*`. int/uint share the byte layout; the
+        /// unsigned readers use the `XMUINT*` types but otherwise mirror int.
+        void getInt(int &v) override {
+            alignRead(OMEGASL_INT);
+            memcpy(&v,_data_buffer + currentOffset,sizeof(v));
+            currentOffset += sizeof(v);
+        }
+        void getInt2(IVec<2> &v) override {
+            alignRead(OMEGASL_INT2);
+            DirectX::XMINT2 _v {};
+            memcpy(&_v,_data_buffer + currentOffset,sizeof(_v));
+            currentOffset += sizeof(_v);
+            v[0][0] = _v.x;
+            v[1][0] = _v.y;
+        }
+        void getInt3(IVec<3> &v) override {
+            alignRead(OMEGASL_INT3);
+            DirectX::XMINT3 _v {};
+            memcpy(&_v,_data_buffer + currentOffset,sizeof(_v));
+            currentOffset += sizeof(_v);
+            v[0][0] = _v.x;
+            v[1][0] = _v.y;
+            v[2][0] = _v.z;
+        }
+        void getInt4(IVec<4> &v) override {
+            alignRead(OMEGASL_INT4);
+            DirectX::XMINT4 _v {};
+            memcpy(&_v,_data_buffer + currentOffset,sizeof(_v));
+            currentOffset += sizeof(_v);
+            v[0][0] = _v.x;
+            v[1][0] = _v.y;
+            v[2][0] = _v.z;
+            v[3][0] = _v.w;
+        }
+        void getUint(unsigned &v) override {
+            alignRead(OMEGASL_UINT);
+            memcpy(&v,_data_buffer + currentOffset,sizeof(v));
+            currentOffset += sizeof(v);
+        }
+        void getUint2(UVec<2> &v) override {
+            alignRead(OMEGASL_UINT2);
+            DirectX::XMUINT2 _v {};
+            memcpy(&_v,_data_buffer + currentOffset,sizeof(_v));
+            currentOffset += sizeof(_v);
+            v[0][0] = _v.x;
+            v[1][0] = _v.y;
+        }
+        void getUint3(UVec<3> &v) override {
+            alignRead(OMEGASL_UINT3);
+            DirectX::XMUINT3 _v {};
+            memcpy(&_v,_data_buffer + currentOffset,sizeof(_v));
+            currentOffset += sizeof(_v);
+            v[0][0] = _v.x;
+            v[1][0] = _v.y;
+            v[2][0] = _v.z;
+        }
+        void getUint4(UVec<4> &v) override {
+            alignRead(OMEGASL_UINT4);
+            DirectX::XMUINT4 _v {};
+            memcpy(&_v,_data_buffer + currentOffset,sizeof(_v));
+            currentOffset += sizeof(_v);
+            v[0][0] = _v.x;
+            v[1][0] = _v.y;
+            v[2][0] = _v.z;
+            v[3][0] = _v.w;
+        }
         /// Matrix downloads. With the HLSL packing lock (column-major)
         /// these bytes are laid out the same way Vulkan/Metal write
         /// them, so the shared decoder works directly.

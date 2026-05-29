@@ -177,6 +177,38 @@ int main(int /*argc*/, const char * /*argv*/[]) {
     EXPECT(loadedMesh->vertexCount == 3, "MeshAsset produced 3 vertices");
     EXPECT(loadedMesh->vertexBuffer != nullptr, "MeshAsset GEMesh has a vertex buffer");
 
+    // 4. MeshAsset on an FBX cube. Model I/O can't load FBX, so this exercises
+    //    the .fbx → shared MeshParser (ufbx) route added for Metal. The file
+    //    is one of ufbx's bundled test cubes, located via a compile-defined
+    //    path. A cube's six quads triangulate to 12 triangles = 36 vertices.
+#ifdef OMEGA_ASSET_TEST_FBX
+    std::string fbxPath = OMEGA_ASSET_TEST_FBX;
+    std::cout << "[AssetTest] FBX fixture: " << fbxPath << std::endl;
+
+    auto fbxAsset = OmegaGTE::GEMeshAsset::Create(gte.graphicsEngine);
+    EXPECT(fbxAsset != nullptr, "GEMeshAsset::Create (FBX) returned non-null");
+
+    OmegaGTE::GEMeshAsset::LoadOptions fopts;
+    fopts.desiredDescriptor.attributes =
+        OmegaGTE::GEMeshAttrPosition | OmegaGTE::GEMeshAttrNormal;
+    fopts.desiredDescriptor.topology = OmegaGTE::GEMeshTopology::Triangle;
+    fopts.desiredDescriptor.indexType = OmegaGTE::GEMeshIndexType::None;
+    fopts.loadMaterialTextures = false;
+
+    bool floaded = fbxAsset->load(fbxPath, fopts);
+    EXPECT(floaded, "MeshAsset::load (FBX) returned true");
+
+    auto fbxMesh = fbxAsset->mesh();
+    EXPECT(fbxMesh != nullptr, "MeshAsset::mesh() (FBX) is non-null");
+    EXPECT(fbxMesh->vertexBuffer != nullptr, "FBX GEMesh has a vertex buffer");
+    // Triangulated stream: a whole number of triangles, and a cube yields 36.
+    EXPECT(fbxMesh->vertexCount > 0 && fbxMesh->vertexCount % 3 == 0,
+           "FBX GEMesh vertex count is a positive multiple of 3");
+    EXPECT(fbxMesh->vertexCount == 36, "FBX cube produced 36 vertices (12 triangles)");
+#else
+    std::cout << "[AssetTest] (FBX case skipped: OMEGA_ASSET_TEST_FBX not defined)" << std::endl;
+#endif
+
     std::cout << "[AssetTest] all checks passed" << std::endl;
     return 0;
 }

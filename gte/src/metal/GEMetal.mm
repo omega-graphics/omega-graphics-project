@@ -638,6 +638,90 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             v[3][0] = _v.w;
             readAfterPaddingIfPossible();
         }
+        /// Integer / unsigned scalar + vector downloads — symmetric with
+        /// `writeInt*` / `writeUint*`. int/uint share the same byte layout, so
+        /// the unsigned readers go through the `simd_uint*` types but otherwise
+        /// mirror the int path exactly.
+        void getInt(int &v) override {
+            assert(structLayout[fieldIndex] == OMEGASL_INT && "Field is not a type of int");
+            readBeforePaddingIfPossible();
+            memcpy(&v,_data_ptr + currentOffset,sizeof(v));
+            offsetAndIncrement(sizeof(v));
+            readAfterPaddingIfPossible();
+        }
+        void getInt2(IVec<2> &v) override {
+            assert(structLayout[fieldIndex] == OMEGASL_INT2 && "Field is not a type of int2");
+            readBeforePaddingIfPossible();
+            simd_int2 _v;
+            memcpy(&_v,_data_ptr + currentOffset,sizeof(_v));
+            offsetAndIncrement(sizeof(_v));
+            v[0][0] = _v.x;
+            v[1][0] = _v.y;
+            readAfterPaddingIfPossible();
+        }
+        void getInt3(IVec<3> &v) override {
+            assert(structLayout[fieldIndex] == OMEGASL_INT3 && "Field is not a type of int3");
+            readBeforePaddingIfPossible();
+            simd_int3 _v;
+            memcpy(&_v,_data_ptr + currentOffset,sizeof(_v));
+            offsetAndIncrement(sizeof(_v));
+            v[0][0] = _v.x;
+            v[1][0] = _v.y;
+            v[2][0] = _v.z;
+            readAfterPaddingIfPossible();
+        }
+        void getInt4(IVec<4> &v) override {
+            assert(structLayout[fieldIndex] == OMEGASL_INT4 && "Field is not a type of int4");
+            readBeforePaddingIfPossible();
+            simd_int4 _v;
+            memcpy(&_v,_data_ptr + currentOffset,sizeof(_v));
+            offsetAndIncrement(sizeof(_v));
+            v[0][0] = _v.x;
+            v[1][0] = _v.y;
+            v[2][0] = _v.z;
+            v[3][0] = _v.w;
+            readAfterPaddingIfPossible();
+        }
+        void getUint(unsigned &v) override {
+            assert(structLayout[fieldIndex] == OMEGASL_UINT && "Field is not a type of uint");
+            readBeforePaddingIfPossible();
+            memcpy(&v,_data_ptr + currentOffset,sizeof(v));
+            offsetAndIncrement(sizeof(v));
+            readAfterPaddingIfPossible();
+        }
+        void getUint2(UVec<2> &v) override {
+            assert(structLayout[fieldIndex] == OMEGASL_UINT2 && "Field is not a type of uint2");
+            readBeforePaddingIfPossible();
+            simd_uint2 _v;
+            memcpy(&_v,_data_ptr + currentOffset,sizeof(_v));
+            offsetAndIncrement(sizeof(_v));
+            v[0][0] = _v.x;
+            v[1][0] = _v.y;
+            readAfterPaddingIfPossible();
+        }
+        void getUint3(UVec<3> &v) override {
+            assert(structLayout[fieldIndex] == OMEGASL_UINT3 && "Field is not a type of uint3");
+            readBeforePaddingIfPossible();
+            simd_uint3 _v;
+            memcpy(&_v,_data_ptr + currentOffset,sizeof(_v));
+            offsetAndIncrement(sizeof(_v));
+            v[0][0] = _v.x;
+            v[1][0] = _v.y;
+            v[2][0] = _v.z;
+            readAfterPaddingIfPossible();
+        }
+        void getUint4(UVec<4> &v) override {
+            assert(structLayout[fieldIndex] == OMEGASL_UINT4 && "Field is not a type of uint4");
+            readBeforePaddingIfPossible();
+            simd_uint4 _v;
+            memcpy(&_v,_data_ptr + currentOffset,sizeof(_v));
+            offsetAndIncrement(sizeof(_v));
+            v[0][0] = _v.x;
+            v[1][0] = _v.y;
+            v[2][0] = _v.z;
+            v[3][0] = _v.w;
+            readAfterPaddingIfPossible();
+        }
         /// Matrix downloads. Metal stores `matrix_floatCxR` column-major
         /// with the same Cx3 column padding as std430, so the shared
         /// decode helper produces the right host-side `FMatrix<C,R>`.

@@ -2,12 +2,14 @@
 #include "omegaGTE/GEMesh.h"
 #include "omegaGTE/GETextureAsset.h"
 #include "omegaGTE/GTEShader.h"
+#include "../common/MeshParser.h"
 
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
 #import <ModelIO/ModelIO.h>
 #import <Foundation/Foundation.h>
 
+#include <algorithm>
 #include <iostream>
 #include <vector>
 #include <cstring>
@@ -26,6 +28,16 @@ _NAMESPACE_BEGIN_
 //   triangulation builder's contract (Triangle topology, indexType=None).
 
 namespace {
+
+/// Lowercased file extension (no dot), or "" if none.
+std::string lowerExt(const std::string &path) {
+    auto dot = path.find_last_of('.');
+    if (dot == std::string::npos) return "";
+    std::string ext = path.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    return ext;
+}
 
 /// Pull a single per-vertex attribute by semantic name from an MDLMesh.
 /// Returns nil if the mesh does not have that attribute.
@@ -132,6 +144,19 @@ public:
         if (stride == 0) {
             std::cerr << "[GEMeshAsset/Metal] error: empty vertex layout." << std::endl;
             return false;
+        }
+
+        // FBX is the one common format Model I/O cannot load — route it through
+        // the shared backend-neutral MeshParser (ufbx), then build the GEMesh
+        // from the packed stream exactly as the Model I/O path does below.
+        if (lowerExt(path) == "fbx") {
+            MeshParser::ParsedMesh parsed;
+            if (!MeshParser::parseMesh(path, options.desiredDescriptor, parsed)) {
+                std::cerr << "[GEMeshAsset/Metal] error: FBX parse failed: "
+                          << path << std::endl;
+                return false;
+            }
+            return buildFromPacked(parsed.packed, stride, parsed.baseColorTexturePath, options);
         }
 
         @autoreleasepool {
@@ -255,66 +280,8 @@ public:
                 }
             }
 
-            const unsigned vertexCount = (unsigned)(packed.size() * sizeof(float) / stride);
-            if (vertexCount == 0) {
-                std::cerr << "[GEMeshAsset/Metal] error: no triangles produced from "
-                          << path << std::endl;
-                return false;
-            }
-
-            // Allocate GPU-visible buffer and copy via GEBufferWriter so
-            // we go through the project's standard upload path.
-            BufferDescriptor bdesc;
-            bdesc.usage = BufferDescriptor::Upload;
-            bdesc.len = (size_t)vertexCount * stride;
-            bdesc.objectStride = stride;
-            bdesc.opts = Shared;
-            SharedHandle<GEBuffer> vbuf = engine->makeBuffer(bdesc);
-            if (!vbuf) {
-                std::cerr << "[GEMeshAsset/Metal] error: makeBuffer failed." << std::endl;
-                return false;
-            }
-
-            // Direct memcpy via the underlying MTLBuffer contents — same
-            // path GEBufferWriter eventually takes. We have a packed
-            // float array that already matches the buffer layout, so a
-            // single copy is faster and clearer than driving the writer
-            // attribute-by-attribute.
-            id<MTLBuffer> mtlBuf = (__bridge id<MTLBuffer>)vbuf->native();
-            if (mtlBuf == nil) {
-                std::cerr << "[GEMeshAsset/Metal] error: native buffer is nil." << std::endl;
-                return false;
-            }
-            std::memcpy(mtlBuf.contents, packed.data(), packed.size() * sizeof(float));
-
-            auto m = std::make_shared<GEMesh>();
-            m->vertexBuffer = vbuf;
-            m->vertexCount = vertexCount;
-            m->vertexStride = stride;
-            m->descriptor = options.desiredDescriptor;
-
-            // Resolve material textures into TextureAsset and wire into
-            // GEMesh.textureBindings.
-            if (options.loadMaterialTextures && !baseColorPath.empty()) {
-                auto texAsset = GETextureAsset::Create(engine);
-                GETextureAsset::LoadOptions topts;
-                topts.generateMipmaps = true;
-                topts.sRGB = true;
-                if (texAsset->load(baseColorPath, topts)) {
-                    auto tex = texAsset->texture();
-                    if (tex) {
-                        m->textureBindings[options.baseColorSlot] = tex;
-                    }
-                    loadedTextures.push_back(texAsset);
-                } else {
-                    std::cerr << "[GEMeshAsset/Metal] warning: base-color texture '"
-                              << baseColorPath << "' failed to load." << std::endl;
-                }
-            }
-
-            loadedMesh = m;
+            return buildFromPacked(packed, stride, baseColorPath, options);
         }
-        return true;
     }
 
     SharedHandle<GEMesh> mesh() const override { return loadedMesh; }
@@ -326,6 +293,72 @@ public:
     void release() override {
         loadedMesh.reset();
         loadedTextures.clear();
+    }
+
+private:
+    /// Build (and store) the GEMesh from an already-packed, GEMeshDescriptor-
+    /// ordered vertex stream. Shared by the Model I/O path (OBJ/glTF) and the
+    /// MeshParser path (FBX): allocates the GPU vertex buffer, memcpys the
+    /// packed floats in, and resolves the base-color texture into the mesh's
+    /// bindings. `stride` is in bytes; `packed.size()*sizeof(float)` must be a
+    /// whole multiple of it.
+    bool buildFromPacked(const std::vector<float> &packed, size_t stride,
+                         const std::string &baseColorPath,
+                         const LoadOptions &options) {
+        const unsigned vertexCount = (unsigned)(packed.size() * sizeof(float) / stride);
+        if (vertexCount == 0) {
+            std::cerr << "[GEMeshAsset/Metal] error: no triangles produced." << std::endl;
+            return false;
+        }
+
+        // Allocate GPU-visible buffer and copy the packed stream in. We have a
+        // packed float array that already matches the buffer layout, so a
+        // single memcpy through the MTLBuffer contents is faster and clearer
+        // than driving GEBufferWriter attribute-by-attribute.
+        BufferDescriptor bdesc;
+        bdesc.usage = BufferDescriptor::Upload;
+        bdesc.len = (size_t)vertexCount * stride;
+        bdesc.objectStride = stride;
+        bdesc.opts = Shared;
+        SharedHandle<GEBuffer> vbuf = engine->makeBuffer(bdesc);
+        if (!vbuf) {
+            std::cerr << "[GEMeshAsset/Metal] error: makeBuffer failed." << std::endl;
+            return false;
+        }
+        id<MTLBuffer> mtlBuf = (__bridge id<MTLBuffer>)vbuf->native();
+        if (mtlBuf == nil) {
+            std::cerr << "[GEMeshAsset/Metal] error: native buffer is nil." << std::endl;
+            return false;
+        }
+        std::memcpy(mtlBuf.contents, packed.data(), packed.size() * sizeof(float));
+
+        auto m = std::make_shared<GEMesh>();
+        m->vertexBuffer = vbuf;
+        m->vertexCount = vertexCount;
+        m->vertexStride = stride;
+        m->descriptor = options.desiredDescriptor;
+
+        // Resolve material textures into TextureAsset and wire into
+        // GEMesh.textureBindings.
+        if (options.loadMaterialTextures && !baseColorPath.empty()) {
+            auto texAsset = GETextureAsset::Create(engine);
+            GETextureAsset::LoadOptions topts;
+            topts.generateMipmaps = true;
+            topts.sRGB = true;
+            if (texAsset->load(baseColorPath, topts)) {
+                auto tex = texAsset->texture();
+                if (tex) {
+                    m->textureBindings[options.baseColorSlot] = tex;
+                }
+                loadedTextures.push_back(texAsset);
+            } else {
+                std::cerr << "[GEMeshAsset/Metal] warning: base-color texture '"
+                          << baseColorPath << "' failed to load." << std::endl;
+            }
+        }
+
+        loadedMesh = m;
+        return true;
     }
 };
 
