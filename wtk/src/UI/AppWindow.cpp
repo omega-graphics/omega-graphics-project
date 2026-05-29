@@ -6,7 +6,6 @@
 #include "omegaWTK/Native/NativeDialog.h"
 #include "WidgetTreeHost.h"
 
-#include "omegaWTK/Composition/Canvas.h"
 #include "omegaWTK/Composition/Layer.h"
 #include "omegaWTK/UI/Menu.h"
 #include "omegaWTK/UI/View.h"
@@ -35,20 +34,12 @@ static inline bool resizeRectChanged(const Composition::Rect &lhs,const Composit
             setReciever(impl_->delegate.get());
             impl_->delegate->window = this;
         }
-        // Tier 3 Phase 3.0: bind the window Canvas to the window
-        // LayerTree's root layer. Canvas's constructor is private to
-        // View; AppWindow is friended in Canvas.h for this exact site.
-        // No owning View (nullptr) — `nextFrame`/`drawText` already
-        // null-check `ownerView_`; FrameBuilder (Phase 3.4) supplies
-        // the window-relative offset via the transform accumulator.
-        impl_->windowCanvas_ = std::shared_ptr<Composition::Canvas>(
-            new Composition::Canvas(impl_->proxy,
-                                    *impl_->windowLayerTree_->getRootLayer(),
-                                    nullptr));
-        // Tier 3 Phase 3.1: stand up the FrameBuilder once the window
-        // Canvas exists. It does not start bracketing paint passes
-        // until AppWindow-driven entry points (displayRootWindow,
-        // dispatchResize*ToHosts) call into it below.
+        // Tier 3 Phase 3.1 / Tier 4 §4.2: stand up the FrameBuilder. (The
+        // window Canvas it used to probe was deleted in 4.2 — FrameBuilder
+        // packs DrawOps straight into the CompositeFrame via the proxy.)
+        // It does not start bracketing paint passes until AppWindow-driven
+        // entry points (displayRootWindow, dispatchResize*ToHosts) call
+        // into it below.
         impl_->frameBuilder_ = std::make_unique<FrameBuilder>(*this);
     };
 
@@ -58,10 +49,6 @@ FrameBuilder * AppWindow::frameBuilder() const {
 
 Composition::LayerTree * AppWindow::windowLayerTree() const {
     return impl_->windowLayerTree_.get();
-}
-
-Composition::Canvas * AppWindow::windowCanvas() const {
-    return impl_->windowCanvas_.get();
 }
 
 void AppWindow::setMenu(SharedHandle<Menu> & menu){

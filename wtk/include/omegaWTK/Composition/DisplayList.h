@@ -6,7 +6,6 @@
 #include "Path.h"
 #include "FontEngine.h"
 #include "Layer.h"
-#include "Canvas.h"
 
 #include <cstdint>
 
@@ -14,6 +13,62 @@
 #define OMEGAWTK_COMPOSITION_DISPLAYLIST_H
 
 namespace OmegaWTK::Composition {
+
+    struct Brush;
+
+    // Tier 4 §4.2: these value types were rehomed out of the deleted
+    // `Canvas.h` — they are `DrawOp` building blocks (Border) and the
+    // text-paint shaping helpers (ShapedTextRun / shapeTextForDisplayList),
+    // so the DisplayList header is their natural home now that Canvas is
+    // gone.
+
+    struct OMEGAWTK_EXPORT Border {
+        Core::SharedPtr<Brush> brush;
+        unsigned width;
+
+        Border() = delete;
+
+        Border(Core::SharedPtr<Brush> &_brush, unsigned _width) : brush(_brush), width(_width) {};
+    };
+
+    /// @brief Nine-slice insets for resizable bitmaps. Specified in
+    /// *texture pixels* against the bitmap's source-rect (or full texture
+    /// when none). The four edges mark the inner stretchable region; a
+    /// nine-slice bitmap decomposes into 9 `DrawOp::Bitmap` ops.
+    struct OMEGAWTK_EXPORT NineSliceInsets {
+        float left   = 0.f;
+        float top    = 0.f;
+        float right  = 0.f;
+        float bottom = 0.f;
+    };
+
+    /// Result of running the text shaping pipeline without dispatching
+    /// anything. Splits layout output into the two channels the renderer
+    /// needs: `msdfSubRuns` (atlas-pipeline runs, each → `DrawOp::TextRun`)
+    /// and `bitmapBlits` (pre-rasterized fallback textures, each →
+    /// `DrawOp::Bitmap`). Pure function; no GPU state touched.
+    struct OMEGAWTK_EXPORT ShapedTextRun {
+        struct BitmapBlit {
+            Core::SharedPtr<OmegaGTE::GETexture> texture;
+            Core::SharedPtr<OmegaGTE::GEFence> fence;
+        };
+        OmegaCommon::Vector<TextSubRun> msdfSubRuns;
+        OmegaCommon::Vector<BitmapBlit> bitmapBlits;
+    };
+
+    /// Layout, group, partition, and ensure-residency for an MSDF +
+    /// bitmap text run, without emitting any draw call. The MSDF path
+    /// ensures glyph residency here (atlas uploads are illegal inside the
+    /// compositor's frame render pass); the bitmap path rasterizes via the
+    /// engine's CPU rasterizer. `renderScale` is the owning view's DPI
+    /// factor.
+    OMEGAWTK_EXPORT ShapedTextRun shapeTextForDisplayList(
+        const OmegaCommon::UniString & text,
+        const Core::SharedPtr<Font> & font,
+        const Composition::Rect & rect,
+        const Composition::Color & color,
+        const TextLayoutDescriptor & layoutDesc,
+        float renderScale);
 
     /// UIView-Render-Redesign-Plan Phase 2.0: a frame-scoped, flat
     /// recording of paint intent emitted by a `SceneNode::paint` pass
@@ -319,15 +374,6 @@ namespace OmegaWTK::Composition {
         }
     };
 
-    /// Tier 2 scaffolding: replays a `DisplayList` into a `Canvas`,
-    /// preserving the existing GPU path. Removed in Tier 4 when the
-    /// compositor backend's `renderToTarget` switch is rewritten to
-    /// dispatch on `DrawOp` directly.
-    class OMEGAWTK_EXPORT DisplayListReplay {
-    public:
-        static void replay(const DisplayList & list, Canvas & canvas);
-    };
-
     /// Widget-View-Paint-Lifecycle Tier B / B3 (§3.11): the scratch
     /// context threaded through the Paint phase. Nodes append DrawOps to
     /// `displayList` and read the current transform / clip / opacity.
@@ -338,6 +384,14 @@ namespace OmegaWTK::Composition {
     /// for the Tier D tree walk and default to identity / none / opaque.
     struct PaintContext {
         DisplayList & displayList;
+        /// The node's absolute window offset, accumulated down the paint
+        /// walk (parent-relative authoring → absolute coords at paint time,
+        /// per UIView-Render-Redesign decision 2026-05-29). paint() adds
+        /// this to every emitted rect/ellipse so geometry reaches the
+        /// compositor already positioned; the backend then uses one
+        /// window-wide viewport and never translates per slice. 2D only —
+        /// the Matrix4x4 transform stays reserved for 3D-effect transforms.
+        Composition::Point2D offset {0.f, 0.f};
         Matrix4x4 transform = Matrix4x4::Identity();
         Core::Optional<Rect> clip {};
         float opacity = 1.f;

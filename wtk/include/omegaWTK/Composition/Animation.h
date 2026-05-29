@@ -21,7 +21,6 @@ namespace OmegaWTK {
     class View;
 }
 namespace OmegaWTK::Composition {
-    struct CanvasFrame;
     namespace detail {
         class AnimationRuntimeRegistry;
     }
@@ -388,10 +387,6 @@ namespace OmegaWTK::Composition {
                                       const LayerEffect::TransformationParams &to,
                                       unsigned duration,
                                       const SharedHandle<AnimationCurve> & curve = AnimationCurve::Linear(0.f,1.f));
-        void transition(SharedHandle<CanvasFrame> & from,
-                        SharedHandle<CanvasFrame> & to,
-                        unsigned duration,
-                        const SharedHandle<AnimationCurve> & curve = AnimationCurve::Linear(0.f,1.f));
         ~LayerAnimator();
     };
 

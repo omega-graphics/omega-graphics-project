@@ -185,6 +185,15 @@ resize event, with a synchronous GPU wait.
 
 ### 4. No geometry caching
 
+> **Relocated (2026-05-29):** the fix for this — a tessellation /
+> primitive / content cache keyed by shape params + size — is now owned by
+> **UIView-Render-Redesign-Plan.md "Phase G — Content cache"**, where it
+> backs the full-tree repaint that window resize requires (Phase F). The
+> diagnosis below stays here for context; the implementation lives there
+> (post-`Canvas` DrawOp world). Note `CanvasFrame`/`VisualCommand` are
+> deleted in render-redesign Tier 4 §4.2 — the cache keys off `DrawOp` /
+> the `DisplayList` now.
+
 A `CanvasFrame` contains a list of `VisualCommand` objects, each
 describing a shape with parameters (rect, brush, border, etc.). When
 the same widget paints the same shapes at the same sizes across frames,

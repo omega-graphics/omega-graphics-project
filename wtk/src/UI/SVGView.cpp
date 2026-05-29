@@ -3,7 +3,8 @@
 #include "omegaWTK/Composition/Animation.h"
 #include "omegaWTK/Composition/Path.h"
 #include "omegaWTK/Composition/Brush.h"
-#include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Composition/DisplayList.h"
+#include "omegaWTK/Composition/CanvasEffect.h"
 #include "omegaWTK/Composition/DisplayList.h"
 
 #include "FrameBuilder.h"

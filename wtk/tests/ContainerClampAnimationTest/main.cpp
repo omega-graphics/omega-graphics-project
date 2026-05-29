@@ -3,7 +3,8 @@
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
 #include <omegaWTK/Widgets/BasicWidgets.h>
-#include <omegaWTK/Composition/Canvas.h>
+#include "omegaWTK/Composition/DisplayList.h"
+#include "omegaWTK/Composition/CanvasEffect.h"
 #include <omegaWTK/Main.h>
 #include <algorithm>
 

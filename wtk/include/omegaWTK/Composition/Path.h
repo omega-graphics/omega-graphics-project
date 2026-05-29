@@ -27,7 +27,6 @@ struct PathDrawSegment {
 };
 
 class OMEGAWTK_EXPORT  Path {
-    friend class Canvas;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 
@@ -54,6 +53,13 @@ public:
 
     /// Close current path.
     void close();
+
+    /// Translate every point of this path by `delta`, in place. Used by the
+    /// paint walk to lift a view-local path into absolute window space
+    /// (UIView-Render-Redesign absolute-coords decision 2026-05-29) — the
+    /// counterpart to `rect.pos += offset` for rect/ellipse ops, since a
+    /// path carries its geometry as points rather than a positioned rect.
+    void translate(Point2D delta);
 
     /// Decompose this path into per-segment drawable records. The fill
     /// brush is the path's stored `pathBrush`; the stroke is the

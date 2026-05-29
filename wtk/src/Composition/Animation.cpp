@@ -1,6 +1,5 @@
 #include "omegaWTK/Composition/Animation.h"
 #include "omegaWTK/Composition/CompositorClient.h"
-#include "omegaWTK/Composition/Canvas.h"
 #include "backend/GeometryConvert.h"
 #include "Compositor.h"
 #include <algorithm>
@@ -1132,16 +1131,6 @@ AnimationHandle LayerAnimator::animateOnLane(const LayerClip & clip,
                                              const TimingOptions & timing,
                                              std::uint64_t syncLaneId){
     return detail::registerLayerAnimation(this,syncLaneId,clip,timing);
-}
-
-void LayerAnimator::transition(SharedHandle<CanvasFrame> &from,
-                               SharedHandle<CanvasFrame> &to,
-                               unsigned duration,
-                               const SharedHandle<AnimationCurve> &curve) {
-    (void)from;
-    (void)to;
-    (void)duration;
-    (void)curve;
 }
 
 void LayerAnimator::resizeTransition(unsigned int delta_x,

@@ -316,10 +316,22 @@ void StackWidget::layoutChildren(){
         (axis == StackAxis::Horizontal
             ? (stackOptions.padding.top + stackOptions.padding.bottom)
             : (stackOptions.padding.left + stackOptions.padding.right)));
+    // Children are positioned in this stack's own (parent-relative) space:
+    // the main-axis cursor starts at mainStart = padding (NOT frame.pos +
+    // padding, see below), and each targetRect.pos is written directly from
+    // cursor / crossPos. The clamp bounds passed to clampRectToParent must
+    // therefore live in that SAME origin-0 space. Using frame.pos here
+    // clamped a parent-relative child position against an absolute parent
+    // rect (clampRectToParent forces pos >= parent.pos), shifting every
+    // child of a non-origin (nested) stack by the stack's own offset along
+    // whichever axis the stack is offset on. It stayed invisible while the
+    // stack sat at the window origin (the root VStack, and any single-level
+    // HStack) — which is why it only surfaced once absolute-coords paint
+    // made nested-stack positioning actually render where layout put it.
     Composition::Rect contentBoundsRect {
             Composition::Point2D{
-                    frame.pos.x + stackOptions.padding.left,
-                    frame.pos.y + stackOptions.padding.top
+                    stackOptions.padding.left,
+                    stackOptions.padding.top
             },
             std::max(0.f,frame.w - stackOptions.padding.left - stackOptions.padding.right),
             std::max(0.f,frame.h - stackOptions.padding.top - stackOptions.padding.bottom)

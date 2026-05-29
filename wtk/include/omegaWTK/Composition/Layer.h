@@ -24,7 +24,6 @@ class Widget;
 namespace Composition {
     
     class ViewRenderTarget;
-	class Canvas;
         /**
             A mutlifeatured surface for composing visuals on.
          */
@@ -168,10 +167,6 @@ namespace Composition {
         bool enabled;
         bool needsNativeResize;
 
-        /// Tracks the single Canvas bound to this Layer (non-owning).
-        /// Enforces the one-Canvas-per-Layer invariant structurally.
-        Canvas * boundCanvas_ = nullptr;
-
         /// Layer-scoped blur effects. When non-empty, the compositor renders
         /// the layer's primitives into a per-layer scratch surface, applies
         /// these blurs as compute passes, and composites the result onto the
@@ -179,14 +174,10 @@ namespace Composition {
         OmegaCommon::Vector<LayerBlur> blurEffects_;
 
         friend class LayerTree;
-        friend class Canvas;
         friend class ::OmegaWTK::View;
         void addSubLayer(SharedHandle<Layer> & layer);
         void removeSubLayer(SharedHandle<Layer> & layer);
     public:
-        /// Returns true if a Canvas is currently bound to this Layer.
-        bool hasCanvas() const { return boundCanvas_ != nullptr; }
-
         /// Returns true when the layer carries one or more blur effects.
         bool hasBlur() const { return !blurEffects_.empty(); }
 

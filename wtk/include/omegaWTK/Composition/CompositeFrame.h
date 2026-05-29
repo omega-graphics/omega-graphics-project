@@ -1,6 +1,6 @@
 #include "omegaWTK/Core/Core.h"
 #include "Geometry.h"
-#include "Canvas.h"
+#include "DisplayList.h"
 
 #include <cstdint>
 
@@ -15,7 +15,11 @@ struct CompositeFrame {
     struct WidgetSlice {
         Composition::Rect bounds;
         Composition::Point2D windowOffset {0.f, 0.f};
-        OmegaCommon::Vector<VisualCommand> commands;
+        // Tier 4 §4.1/4.2: the DrawOp recording carried straight from
+        // FrameBuilder::submitDisplayList. The backend flush dispatches
+        // these via renderToTarget(DrawOp::Type). (The old
+        // Vector<VisualCommand> commands field was deleted in 4.2.)
+        Composition::DisplayList ops;
         struct {
             float r = 0.f, g = 0.f, b = 0.f, a = 0.f;
         } background;

@@ -6,7 +6,6 @@
 #include <iostream>
 #include <utility>
 
-#include "omegaWTK/Composition/Canvas.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "../Composition/Compositor.h"
 #include "../Composition/backend/ResourceFactory.h"
@@ -141,17 +140,6 @@ void View::resize(Composition::Rect newRect){
     onLayoutResolved.emit(impl_->rect);
 }
 
-
-SharedHandle<Composition::Layer> View::makeLayer(Composition::Rect rect){
-    auto layer = std::make_shared<Composition::Layer>(rect);
-    layer->parentTree = impl_->ownLayerTree.get();
-    impl_->ownLayerTree->addLayer(layer);
-    return layer;
-}
-
-SharedHandle<Composition::Canvas> View::makeCanvas(SharedHandle<Composition::Layer> &targetLayer){
-    return std::shared_ptr<Composition::Canvas>(new Composition::Canvas(compositorProxy(),*targetLayer,this));
-}
 
 void View::startCompositionSession(){
     if(compositorProxy().getFrontendPtr() == nullptr && impl_->parent_ptr != nullptr){

@@ -1,4 +1,5 @@
-#include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Composition/DisplayList.h"
+#include "omegaWTK/Composition/CanvasEffect.h"
 #include "omegaWTK/Composition/Animation.h"
 #include "View.h"
 #include "Layout.h"

@@ -1,6 +1,6 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/CompositeFrame.h"
-#include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Composition/DisplayList.h"
 #include "Compositor.h"
 
 #include <algorithm>
@@ -153,20 +153,21 @@ namespace OmegaWTK::Composition {
         nativeView->resize(nextRect);
     }
 
-    void CompositorClient::pushFrame(SharedHandle<CanvasFrame> &frame, Timestamp &/*start*/) {
-        if(parentProxy.activeCompositeFrame_ == nullptr || frame == nullptr){
+    void CompositorClientProxy::submitDisplayList(DisplayList && ops,
+                                                  Composition::Point2D windowOffset,
+                                                  Composition::Rect bounds){
+        if(activeCompositeFrame_ == nullptr){
             return;
         }
         CompositeFrame::WidgetSlice slice;
-        slice.bounds = frame->rect;
-        slice.windowOffset = frame->windowOffset;
-        slice.commands = frame->currentVisuals;
-        slice.background = {frame->background.r,
-                            frame->background.g,
-                            frame->background.b,
-                            frame->background.a};
-        slice.targetLayer = frame->targetLayer;
-        parentProxy.activeCompositeFrame_->slices.push_back(std::move(slice));
+        slice.bounds = bounds;
+        slice.windowOffset = windowOffset;
+        slice.ops = std::move(ops);
+        // No background-channel clear (DrawOps carry their own bg rects)
+        // and no targetLayer (per-layer blur is superseded by DrawOp
+        // effect ops, deferred), so the slice takes the direct
+        // (non-blur) flush path in the compositor.
+        activeCompositeFrame_->slices.push_back(std::move(slice));
     }
 
     ViewRenderTarget::ViewRenderTarget(Native::NativeItemPtr _native) : native(std::move(_native)){};

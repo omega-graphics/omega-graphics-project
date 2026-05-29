@@ -128,6 +128,20 @@ constexpr float kPi = 3.14159265358979f;
         }
     }
 
+    void Path::translate(Point2D delta){
+        // Offset every stored point of every segment. transformEachPoint
+        // visits each node once, so shared segment endpoints are not
+        // double-translated. final_path_a / final_path_b (the stroke-
+        // expanded sides built incrementally in addLine/addArc) are shifted
+        // alongside segment.path so any consumer of them stays consistent;
+        // decomposeForDraw itself only reads segment.path.
+        for(auto & segment : impl_->segments){
+            OmegaGTE::translate(segment.path, delta.x, delta.y);
+            OmegaGTE::translate(segment.final_path_a, delta.x, delta.y);
+            OmegaGTE::translate(segment.final_path_b, delta.x, delta.y);
+        }
+    }
+
     OmegaCommon::Vector<PathDrawSegment> Path::decomposeForDraw(
             Core::SharedPtr<Brush> strokeBrush, float strokeWidth) const {
         // Single shared home for the Path -> per-segment+brushes

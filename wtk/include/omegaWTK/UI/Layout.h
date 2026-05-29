@@ -1,6 +1,7 @@
 #include "omegaWTK/Core/Core.h"
 #include "omegaWTK/Composition/Animation.h"
-#include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Composition/DisplayList.h"
+#include "omegaWTK/Composition/CanvasEffect.h"
 
 #include <cstdint>
 #ifndef OMEGAWTK_UI_LAYOUT_H

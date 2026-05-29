@@ -1,6 +1,7 @@
 #include "Compositor.h"
 #include "omegaWTK/Composition/Layer.h"
-#include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Composition/DisplayList.h"
+#include "omegaWTK/Composition/CanvasEffect.h"
 #include "omegaWTK/Composition/CompositeFrame.h"
 #include "backend/ResourceFactory.h"
 #include "backend/VisualTree.h"
@@ -264,12 +265,18 @@ void Compositor::renderCompositeFrame(const SharedHandle<CompositionRenderTarget
     targetContext->resetElementState();
 
     for(auto & slice : frame->slices){
-        const float w = (std::isfinite(slice.bounds.w) && slice.bounds.w > 0.f) ? slice.bounds.w : 1.f;
-        const float h = (std::isfinite(slice.bounds.h) && slice.bounds.h > 0.f) ? slice.bounds.h : 1.f;
-        targetContext->setViewportOverride(slice.windowOffset.x,
-                                           slice.windowOffset.y,
-                                           w,
-                                           h);
+        // Tier 4 (absolute-coords decision 2026-05-29): DrawOp geometry now
+        // arrives in absolute window space (paint baked each view's
+        // windowOffset into its coordinates), so there is no per-slice
+        // viewport translation. The single window-wide viewport set at
+        // beginFrame() (inactive override ⇒ full backing at origin) is
+        // correct for every slice. The old per-slice setViewportOverride
+        // never re-applied to the command buffer anyway (only begin() /
+        // fence-restart call setViewports), which is why per-slice offsets
+        // were silently dropped and all views rendered stacked at the
+        // origin. slice.windowOffset is retained on the slice but only the
+        // (dormant) blur path still consults it.
+        //
         // Phase 3: reset per-element transform/opacity at every slice
         // boundary. Without this, a `SetTransform` / `SetOpacity` left
         // dangling at the end of one slice's command stream silently bled
@@ -281,8 +288,11 @@ void Compositor::renderCompositeFrame(const SharedHandle<CompositionRenderTarget
             targetContext->renderBlurredSlice(slice);
         }
         else {
-            for(auto & cmd : slice.commands){
-                targetContext->renderToTarget(cmd.type,(void *)&cmd.params);
+            // Tier 4 §4.1: dispatch the slice's DrawOp DisplayList via the
+            // Phase 4.0 renderToTarget(DrawOp::Type) switch (slice.commands
+            // is no longer populated by the window paint path).
+            for(auto & op : slice.ops.ops()){
+                targetContext->renderToTarget(op.type,(void *)&op.params);
             }
         }
     }

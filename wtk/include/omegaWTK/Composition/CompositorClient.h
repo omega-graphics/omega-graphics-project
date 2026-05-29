@@ -16,8 +16,8 @@ namespace OmegaWTK::Composition {
     void InitializeEngine();
     void CleanupEngine();
 
-    struct CanvasFrame;
     struct CompositeFrame;
+    class DisplayList;
 
 
     typedef std::chrono::time_point<std::chrono::high_resolution_clock> Timestamp;
@@ -83,6 +83,18 @@ namespace OmegaWTK::Composition {
         Compositor *getFrontendPtr() const;
         void setFrontendPtr(Compositor *frontend);
         void setActiveCompositeFrame(CompositeFrame *frame);
+        /// Tier 4 §4.1: append a window slice carrying a DrawOp
+        /// `DisplayList` directly to the active CompositeFrame, bypassing
+        /// `Canvas` / `CanvasFrame`. FrameBuilder::endFrame calls this once
+        /// per pending submission. `windowOffset` positions the slice (the
+        /// GPU viewport origin); `bounds` is the slice's local-coordinate
+        /// extent (the viewport size — the window size, local origin). No
+        /// background-channel clear and no targetLayer: backgrounds ride
+        /// explicit DrawOp rects and per-layer blur is superseded by
+        /// DrawOp effect ops (deferred). No-op when no frame is active.
+        void submitDisplayList(DisplayList && ops,
+                               Composition::Point2D windowOffset,
+                               Composition::Rect bounds);
         virtual ~CompositorClientProxy() = default;
     };
 
@@ -91,7 +103,6 @@ namespace OmegaWTK::Composition {
         CompositorClientProxy & parentProxy;
 
     protected:
-        void pushFrame(SharedHandle<CanvasFrame> & frame,Timestamp & start);
         /// Apply a layer resize delta synchronously on the caller's
         /// thread. Effects are draw-time Canvas operations and are not
         /// applied here.

@@ -439,6 +439,25 @@ namespace OmegaWTK {
         }
         observeWidgetLayerTreesRecurse(root.get());
         root->setTreeHostRecurse(this);
+        // Tier 4 (first-paint stale-layout fix): size the tree to the
+        // window *before* the initial paint walk. Without this, the root's
+        // rect is still its constructor value (or zero) when
+        // initWidgetRecurse paints, so a container's first
+        // `layoutChildren` runs against a suspicious/unsized frame, bails
+        // (leaving `needsLayout` set), and the children paint at the
+        // origin — the window-resize that would relayout them arrives only
+        // *after* this walk (notifyWindowResize), and never at all for a
+        // tree with no resize-opted widgets. `handleHostResize` sizes the
+        // root view + runs the widget layout (StackWidget::resize →
+        // relayout → layoutChildren) but does not paint here (hasMounted
+        // is still false), so the subsequent initWidgetRecurse paints once
+        // with children already in their arranged positions.
+        if(ownerWindow_ != nullptr && root != nullptr){
+            const auto wr = ownerWindow_->getRect();
+            const Composition::Rect rootRect{
+                Composition::Point2D{0.f, 0.f}, wr.w, wr.h};
+            root->handleHostResize(rootRect);
+        }
         initWidgetRecurse(root.get());
         // Note: Widget::init() already calls executePaint(Initial, true) for
         // each Automatic-mode widget during initWidgetRecurse, so a second

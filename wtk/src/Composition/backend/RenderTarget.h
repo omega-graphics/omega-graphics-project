@@ -22,8 +22,8 @@
 // `BackendResourceFactory`.
 
 #include "omegaWTK/Composition/CompositorClient.h"
-#include "omegaWTK/Composition/Canvas.h"
 #include "omegaWTK/Composition/DisplayList.h"
+#include "omegaWTK/Composition/CanvasEffect.h"
 #include "omegaWTK/Composition/CompositeFrame.h"
 #include "omegaWTK/Composition/Geometry.h"
 #include "omegaWTK/Core/GTEHandle.h"
@@ -123,9 +123,14 @@ namespace OmegaWTK::Composition {
         /// a tessellation context.
         bool ensureTessellationContext();
 
+        /// Composite the per-layer blur scratch back onto the frame. Since
+        /// the absolute-coords paint change (2026-05-29) the slice's ops are
+        /// rendered into the (window-sized) scratch at their absolute window
+        /// position, so the scratch is composited 1:1 at the origin over the
+        /// full window — no per-slice offset. `destBounds` is the full-window
+        /// slice bounds (the scratch / viewport extent).
         void compositeScratchOntoFrame(LayerBlurScratch & scratch,
-                                       const Composition::Rect & destBounds,
-                                       const Composition::Point2D & windowOffset);
+                                       const Composition::Rect & destBounds);
 
         /// Emit a single SDF primitive draw call (Phase 6). The shape is
         /// described in shape-local coordinates: `cx, cy` is the center
@@ -265,13 +270,12 @@ namespace OmegaWTK::Composition {
         void beginFrame(float clearR, float clearG, float clearB, float clearA);
         /// Close the frame-level render pass and submit the command buffer.
         void endFrame();
-        void renderToTarget(VisualCommand::Type type,void *params);
-        /// Tier 4 §4.0: sibling dispatch over `DrawOp::Type`. Shares all
-        /// rasterization with the `VisualCommand` overload via
-        /// `renderPrimitiveImpl` (the 9 common variants), `applySetClip`
-        /// + the backend clip stack (`PushClip`/`PopClip`), and
-        /// `renderVectorPathSegmented` (`VectorPath`). Nothing calls this
-        /// until Phase 4.1 routes the per-window `DisplayList` through it.
+        /// Tier 4: the sole GPU dispatch entry point — one arm per
+        /// `DrawOp::Type`. Shares all rasterization across variants via
+        /// `renderPrimitiveImpl` (the 9 shape/state variants),
+        /// `applySetClip` + the backend clip stack (`PushClip`/`PopClip`),
+        /// and `renderVectorPathSegmented` (`VectorPath`). (The
+        /// `VisualCommand` overload was deleted in 4.2.)
         void renderToTarget(DrawOp::Type type,void *params);
         /// Reset the per-element transform and opacity so the next slice or
         /// frame starts from identity / opaque. The compositor calls this at

@@ -24,7 +24,6 @@ class FrameBuilder;
 
 namespace Composition {
     class LayerTree;
-    class Canvas;
 }
 
 class AppWindowDelegate;
@@ -52,9 +51,8 @@ class AppWindowDelegate;
         // consumer (granted via friendship above) and the methods will
         // disappear when the per-view paint path is deleted in Tier 4.
         Composition::LayerTree * windowLayerTree() const;
-        Composition::Canvas    * windowCanvas() const;
         /// Tier 3 Phase 3.1: the window's frame driver. Lifetime matches
-        /// AppWindow's; constructed after windowCanvas() is wired.
+        /// AppWindow's.
         /// AppWindow-driven paint chokepoints (initWidgetTree,
         /// dispatchResize*ToHosts) bracket their tree walks with
         /// frameBuilder()->beginFrame()/endFrame() so the window-level

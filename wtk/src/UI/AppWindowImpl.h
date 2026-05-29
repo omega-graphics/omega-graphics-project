@@ -25,16 +25,16 @@ struct AppWindow::Impl {
     SharedHandle<Composition::CompositorSurface> windowSurface;
     Composition::PreCreatedVisualTreeData windowVisualTreeData;
 
-    // Tier 3 Phase 3.0: window-scoped composition target. Owned by the
-    // window for its full lifetime; resized in lockstep with
-    // syncNativePresentLayer. Dormant until FrameBuilder (Phase 3.1)
-    // routes per-view DrawOps through `windowCanvas_`.
+    // Tier 3 Phase 3.0 / Tier 4 §4.2: window-scoped present-layer host.
+    // Owned by the window for its full lifetime; resized in lockstep with
+    // syncNativePresentLayer. (The companion `windowCanvas_` Canvas was
+    // deleted in 4.2 — FrameBuilder packs DrawOps straight into the
+    // CompositeFrame via the proxy; the window layer tree stays the
+    // present-layer host until 4.8.)
     SharedHandle<Composition::LayerTree> windowLayerTree_;
-    SharedHandle<Composition::Canvas>    windowCanvas_;
 
-    // Tier 3 Phase 3.1: window-level frame driver. Constructed after
-    // windowCanvas_ in AppWindow's ctor body so beginFrame/endFrame
-    // can probe the canvas state. Owned for the AppWindow's lifetime.
+    // Tier 3 Phase 3.1: window-level frame driver. Owned for the
+    // AppWindow's lifetime.
     std::unique_ptr<FrameBuilder> frameBuilder_;
 
     Impl(AppWindow & owner,Composition::Rect rectValue,AppWindowDelegate * delegateValue):

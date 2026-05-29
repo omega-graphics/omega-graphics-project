@@ -1,168 +1,78 @@
 #include "omegaWTK/Composition/DisplayList.h"
-#include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Composition/FontEngine.h"
+#include "omegaWTK/Composition/TextLayoutEngine.h"
 
-#include <iostream>
+#include <unordered_map>
+#include <utility>
 
 namespace OmegaWTK::Composition {
 
-namespace {
-
-// Tier 3 Phase 3.5: `PushTransform` / `PopTransform` stay no-op for
-// now (no in-tree producer emits them; the only matrices a Tier-2
-// path would carry would be 3D-effect transforms, and the producers
-// don't exist yet). Emit one warning per replay so the absence is
-// visible to anyone wiring up a transform producer ahead of the
-// Tier-3 implementation. Static-once guard so the warning doesn't
-// spam every replay tick.
-void warnTransformOpUnsupported(const char * which){
-    static bool warned = false;
-    if(!warned){
-        std::cerr << "[WTK] DisplayListReplay: " << which
-                  << " is no-op until a Tier-3 producer wires up "
-                  << "a per-canvas transform stack." << std::endl;
-        warned = true;
+// Tier 4 §4.2: rehomed verbatim out of the deleted `Canvas.cpp`. Pure
+// shaping helper shared by every DisplayList-emitting paint path
+// (UIView::update, SVGView::paint) to build `DrawOp::TextRun` /
+// `DrawOp::Bitmap` text ops. No Canvas / GPU state touched.
+ShapedTextRun shapeTextForDisplayList(
+    const OmegaCommon::UniString & text,
+    const Core::SharedPtr<Font> & font,
+    const Composition::Rect & rect,
+    const Composition::Color & color,
+    const TextLayoutDescriptor & layoutDesc,
+    float renderScale){
+    ShapedTextRun out {};
+    if(font == nullptr || text.length() == 0 || rect.w <= 0.f || rect.h <= 0.f){
+        return out;
     }
-}
 
-} // namespace
+    auto * engine = FontEngine::inst();
+    auto * shaper = (engine != nullptr) ? engine->shaper() : nullptr;
+    if(engine == nullptr || shaper == nullptr){
+        return out;
+    }
+    const FontMetrics metrics = font->getMetrics();
+    auto * fallback = engine->fallback();
+    auto layoutResult = TextLayoutEngine::layout(
+        text, font, metrics, rect, layoutDesc, *shaper, fallback);
+    if(layoutResult.glyphs.empty()){
+        return out;
+    }
 
-void DisplayListReplay::replay(const DisplayList & list, Canvas & canvas){
-    for(const auto & op : list.ops()){
-        switch(op.type){
-            case DrawOp::Rect: {
-                auto rect = op.params.rectParams.rect;
-                auto brush = op.params.rectParams.brush;
-                canvas.drawRect(rect, brush, op.params.rectParams.border);
-                break;
-            }
-            case DrawOp::RoundedRect: {
-                auto rect = op.params.roundedRectParams.rect;
-                auto brush = op.params.roundedRectParams.brush;
-                canvas.drawRoundedRect(rect, brush, op.params.roundedRectParams.border);
-                break;
-            }
-            case DrawOp::Ellipse: {
-                auto ellipse = op.params.ellipseParams.ellipse;
-                auto brush = op.params.ellipseParams.brush;
-                canvas.drawEllipse(ellipse, brush, op.params.ellipseParams.border);
-                break;
-            }
-            case DrawOp::VectorPath: {
-                if(op.params.pathParams.path){
-                    canvas.drawPath(*op.params.pathParams.path,
-                                    op.params.pathParams.border);
-                }
-                break;
-            }
-            case DrawOp::TextRun: {
-                // Replay copies the sub-runs because the source op is
-                // `const` (a `DisplayList` can be replayed more than
-                // once). The Tier 4 direct-dispatch path will move
-                // them through to the backend instead.
-                auto subRuns = op.params.textRunParams.subRuns;
-                canvas.drawTextRun(std::move(subRuns),
-                                   op.params.textRunParams.rect,
-                                   op.params.textRunParams.color);
-                break;
-            }
-            case DrawOp::Bitmap: {
-                if(op.params.bitmapParams.img != nullptr){
-                    auto img = op.params.bitmapParams.img;
-                    canvas.drawImage(img,
-                                     op.params.bitmapParams.rect,
-                                     op.params.bitmapParams.sourceRect,
-                                     op.params.bitmapParams.tintColor);
-                }
-                else if(op.params.bitmapParams.texture != nullptr){
-                    auto tex = op.params.bitmapParams.texture;
-                    canvas.drawGETexture(tex,
-                                         op.params.bitmapParams.rect,
-                                         op.params.bitmapParams.textureFence);
-                }
-                break;
-            }
-            case DrawOp::Shadow: {
-                const auto & sp = op.params.shadowParams;
-                if(sp.isEllipse){
-                    Composition::Ellipse ell {
-                        sp.shapeRect.pos.x + (sp.shapeRect.w * 0.5f),
-                        sp.shapeRect.pos.y + (sp.shapeRect.h * 0.5f),
-                        sp.shapeRect.w * 0.5f,
-                        sp.shapeRect.h * 0.5f
-                    };
-                    canvas.drawShadow(ell, sp.shadow);
-                }
-                else if(sp.cornerRadius > 0.f){
-                    Composition::RoundedRect rr {
-                        sp.shapeRect.pos,
-                        sp.shapeRect.w,
-                        sp.shapeRect.h,
-                        sp.cornerRadius,
-                        sp.cornerRadius
-                    };
-                    canvas.drawShadow(rr, sp.shadow);
-                }
-                else {
-                    auto rect = sp.shapeRect;
-                    canvas.drawShadow(rect, sp.shadow);
-                }
-                break;
-            }
-            case DrawOp::SetTransform: {
-                canvas.setElementTransform(op.params.transformMatrix);
-                break;
-            }
-            case DrawOp::SetOpacity: {
-                canvas.setElementOpacity(op.params.opacityValue);
-                break;
-            }
-            case DrawOp::NativeContent: {
-                // Tier 3 Phase 3.7: route the carve-out through the
-                // Canvas onto the per-frame visuals as a
-                // `VisualCommand::NativeContent`. The backend's
-                // `renderToTarget` switch translates it into the
-                // platform tree's pending-carve-out list at flush
-                // (CALayer sublayer ordering on macOS,
-                // DirectComposition visual on Windows, Wayland
-                // subsurface / X11 child window on Linux). The
-                // producer side (DrawOp::makeNativeContent emitters)
-                // is being adopted in tandem with
-                // `NativeViewHost-Adoption-Plan.md` Phases V2 / G2;
-                // until then, the replay path is exercised by
-                // fabricated DisplayLists in the
-                // `NativeContentCarveoutTest` validator.
-                const auto & ncp = op.params.nativeContentParams;
-                canvas.markNativeContentRegion(ncp.destRect,
-                                               ncp.hostId,
-                                               ncp.zOrderHint);
-                break;
-            }
-            case DrawOp::PushClip: {
-                // Tier 3 Phase 3.5: route to `Canvas::pushClip`,
-                // which owns the clip stack and the intersection
-                // math. The Canvas emits a `VisualCommand::SetClip`
-                // with the effective (intersected) rect, which the
-                // backend turns into a GPU scissor.
-                canvas.pushClip(op.params.pushClipParams.rect);
-                break;
-            }
-            case DrawOp::PopClip: {
-                canvas.popClip();
-                break;
-            }
-            case DrawOp::PushTransform: {
-                // No in-tree producer yet (see warnTransformOpUnsupported).
-                // Phase 3.5 keeps this as a logged no-op so a future
-                // producer surfaces immediately when it shows up.
-                warnTransformOpUnsupported("PushTransform");
-                break;
-            }
-            case DrawOp::PopTransform: {
-                warnTransformOpUnsupported("PopTransform");
-                break;
+    // Group laid-out glyphs by resolved font into sub-runs (one per face).
+    std::unordered_map<Font *, std::size_t> subRunIndex;
+    OmegaCommon::Vector<TextSubRun> subRuns;
+    for(const auto & g : layoutResult.glyphs){
+        if(g.resolvedFont == nullptr) continue;
+        auto it = subRunIndex.find(g.resolvedFont.get());
+        if(it == subRunIndex.end()){
+            TextSubRun sr;
+            sr.resolvedFont = g.resolvedFont;
+            subRuns.push_back(std::move(sr));
+            it = subRunIndex.emplace(g.resolvedFont.get(),
+                                     subRuns.size() - 1).first;
+        }
+        auto & sr = subRuns[it->second];
+        sr.glyphIds.push_back(g.glyphId);
+        sr.positions.push_back(Composition::Point2D{g.canvasX, g.canvasY});
+    }
+
+    // Partition by mode: MSDF sub-runs ride the atlas pipeline (residency
+    // ensured here, off the compositor frame pass); BitmapFallback
+    // sub-runs each rasterize to their own texture and ride the bitmap
+    // blit path.
+    for(auto & sr : subRuns){
+        if(sr.resolvedFont == nullptr || sr.glyphIds.empty()) continue;
+        if(sr.resolvedFont->mode() == Font::Mode::MSDF){
+            sr.resolvedFont->ensureGlyphsResident(sr.glyphIds);
+            out.msdfSubRuns.push_back(std::move(sr));
+        } else {
+            auto bmp = engine->rasterizeSubRunToTexture(
+                sr, rect, color, renderScale);
+            if(bmp.texture != nullptr){
+                out.bitmapBlits.push_back({std::move(bmp.texture),
+                                           std::move(bmp.fence)});
             }
         }
     }
+    return out;
 }
 
 }

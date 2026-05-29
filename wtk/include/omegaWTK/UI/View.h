@@ -20,7 +20,6 @@ namespace OmegaWTK {
         class ViewRenderTarget;
         class LayerTree;
         class Layer;
-        class Canvas;
         class ViewAnimator;
     }
 
@@ -146,18 +145,6 @@ namespace OmegaWTK {
         static ViewPtr Create(const Composition::Rect & rect,ViewPtr parent = nullptr){
             return ViewPtr(new View(rect,parent));
         }
-
-        /**
-         * @brief Create A Layer
-         * @param rect The Rectangle defining the bounds of the layer.
-         * @returns Layer*/
-        SharedHandle<Composition::Layer> makeLayer(Composition::Rect rect);
-
-        /**
-         * @brief Create a Canvas that renders to CanvasFrames compatible with a Layer.
-         * @param targetLayer The Layer to target.
-         * @returns Canvas*/
-        SharedHandle<Composition::Canvas> makeCanvas(SharedHandle<Composition::Layer> & targetLayer);
 
         /// @brief Retrieves the Rect that defines the position and bounds of the View.
         Composition::Rect & getRect();

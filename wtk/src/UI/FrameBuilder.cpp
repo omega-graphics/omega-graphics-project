@@ -5,7 +5,8 @@
 
 #include <cassert>
 
-#include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Composition/DisplayList.h"
+#include "omegaWTK/Composition/CanvasEffect.h"
 #include "omegaWTK/Composition/CompositeFrame.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/CompositorSurface.h"
@@ -83,22 +84,21 @@ void FrameBuilder::endFrame(){
         return;
     }
 
-    if(impl->windowCanvas_ != nullptr){
-        // Phase 3.2: drain pending submissions in tree order. Each
-        // submission stamps its captured window-offset onto the
-        // window canvas's current frame (the window canvas has no
-        // ownerView_, so its nextFrame() does not overwrite the
-        // windowOffset field) and replays the DisplayList. sendFrame
-        // pushes a slice onto compositeFrame_ via the AppWindow
-        // proxy attached at beginFrame.
-        for(auto & sub : pending_){
-            auto current = impl->windowCanvas_->getCurrentFrame();
-            if(current != nullptr){
-                current->windowOffset = sub.windowOffset;
-            }
-            Composition::DisplayListReplay::replay(sub.list, *impl->windowCanvas_);
-            impl->windowCanvas_->sendFrame();
-        }
+    // Tier 4 §4.1: pack each submission's DisplayList straight into the
+    // window CompositeFrame via the proxy — no Canvas / CanvasFrame
+    // bridge, no DisplayListReplay. Each slice carries the live
+    // window-offset (the GPU viewport origin — captured fresh in
+    // submitView, so there is no stale CanvasFrame::rect snapshot in the
+    // path) plus the window-sized, local-origin bounds (the viewport
+    // extent). The backend flush dispatches the slice's DrawOps via the
+    // Phase 4.0 renderToTarget(DrawOp::Type) switch. windowCanvas_ is now
+    // bypassed (deleted in 4.2).
+    const Composition::Rect windowBounds{
+        Composition::Point2D{0.f, 0.f},
+        window_.getRect().w, window_.getRect().h};
+    for(auto & sub : pending_){
+        impl->proxy.submitDisplayList(std::move(sub.list),
+                                      sub.windowOffset, windowBounds);
     }
 
     pending_.clear();

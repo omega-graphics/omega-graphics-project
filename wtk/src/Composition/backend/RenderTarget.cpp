@@ -10,7 +10,8 @@
 #include "BitmapTextureCache.h"
 #include "GlyphAtlas.h"
 #include "ResourceFactory.h"
-#include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Composition/DisplayList.h"
+#include "omegaWTK/Composition/CanvasEffect.h"
 #include "GeometryConvert.h"
 #include "ResourceTrace.h"
 
@@ -455,8 +456,7 @@ void BackendRenderTargetContext::resetElementState() {
 
     void BackendRenderTargetContext::compositeScratchOntoFrame(
             LayerBlurScratch & scratch,
-            const Composition::Rect & destBounds,
-            const Composition::Point2D & windowOffset){
+            const Composition::Rect & destBounds){
         auto & pipelines = pipelineRegistry();
         auto texturePipeline = pipelines.texture();
         if(texturePipeline == nullptr){
@@ -481,13 +481,20 @@ void BackendRenderTargetContext::resetElementState() {
         }
         auto & cb = scope.cb;
 
-        // Position the composite quad at the slice's window position. The
-        // unit NDC quad spans [-1..1] x [-1..1]; the GPU viewport remaps it
-        // onto (windowOffset.{x,y}) -> (windowOffset + bounds).
+        // Absolute-coords (2026-05-29): the slice's ops were rendered into the
+        // scratch at their absolute window position (renderToTarget computes
+        // NDC against the full-window renderTargetSize_, and the scratch pass
+        // viewport is (0,0,sw,sh) with sw,sh = the full-window slice extent),
+        // so the scratch already holds the layer's content where it belongs.
+        // Composite it 1:1 at the origin over the full window — applying the
+        // old per-slice windowOffset here would double-shift the content. The
+        // unit NDC quad spans [-1..1]; this viewport maps it onto the whole
+        // window. (A view-sized scratch + offset blit is a Phase E blur-rework
+        // efficiency concern, not a correctness one.)
         const float scale = renderScale_;
         OmegaGTE::GEViewport vp {};
-        vp.x = std::max(0.f, windowOffset.x) * scale;
-        vp.y = std::max(0.f, windowOffset.y) * scale;
+        vp.x = 0.f;
+        vp.y = 0.f;
         vp.width  = std::max(1.f, destBounds.w) * scale;
         vp.height = std::max(1.f, destBounds.h) * scale;
         vp.nearDepth = 0.f;
@@ -1122,8 +1129,8 @@ void BackendRenderTargetContext::resetElementState() {
     void BackendRenderTargetContext::renderBlurredSlice(
             const CompositeFrame::WidgetSlice & slice){
         if(slice.targetLayer == nullptr || !slice.targetLayer->hasBlur()){
-            for(auto & cmd : slice.commands){
-                renderToTarget(cmd.type, (void *)&cmd.params);
+            for(auto & op : slice.ops.ops()){
+                renderToTarget(op.type, (void *)&op.params);
             }
             return;
         }
@@ -1149,8 +1156,8 @@ void BackendRenderTargetContext::resetElementState() {
 #ifdef OMEGAWTK_TRACE_RENDER
             std::cout << "[WTK Diag] LayerBlurScratch allocation failed; rendering slice unblurred." << std::endl;
 #endif
-            for(auto & cmd : slice.commands){
-                renderToTarget(cmd.type, (void *)&cmd.params);
+            for(auto & op : slice.ops.ops()){
+                renderToTarget(op.type, (void *)&op.params);
             }
             return;
         }
@@ -1159,16 +1166,18 @@ void BackendRenderTargetContext::resetElementState() {
         // Suspend the frame pass and start a fresh pass on the scratch
         // target. While the scratch pass is open, beginDraw records onto
         // the scratch CB; the renderToTarget vertex math uses
-        // renderTargetSize_ (= slice extent thanks to
-        // setViewportOverride) to compute NDC, and the scratch's GPU
-        // viewport is (0,0,sw,sh) so the layer fills its scratch.
+        // renderTargetSize_ (the full-window logical size) to compute NDC,
+        // and the scratch's GPU viewport is (0,0,sw,sh) with sw,sh = the
+        // full-window slice extent — so the slice's absolute-coords ops land
+        // in the scratch at their absolute window position (matching the
+        // origin-aligned composite below).
         auto scratchTarget = scratch.sourceTarget();
         frameRenderPass_.beginScratchPass(scratchTarget, sw, sh);
         if(!frameRenderPass_.scratchActive()){
             // Couldn't start scratch pass (no active frame). Fall back to
             // direct render so the layer still appears.
-            for(auto & cmd : slice.commands){
-                renderToTarget(cmd.type, (void *)&cmd.params);
+            for(auto & op : slice.ops.ops()){
+                renderToTarget(op.type, (void *)&op.params);
             }
             return;
         }
@@ -1180,8 +1189,8 @@ void BackendRenderTargetContext::resetElementState() {
         currentTransform = OmegaGTE::FMatrix<4,4>::Identity();
         currentOpacity   = 1.f;
 
-        for(auto & cmd : slice.commands){
-            renderToTarget(cmd.type, (void *)&cmd.params);
+        for(auto & op : slice.ops.ops()){
+            renderToTarget(op.type, (void *)&op.params);
         }
 
         currentTransform = savedTransform;
@@ -1212,7 +1221,7 @@ void BackendRenderTargetContext::resetElementState() {
                 ? scratch.fence()
                 : SharedHandle<OmegaGTE::GEFence>{};
         frameRenderPass_.resumeFrameAfterScratch(waitFence);
-        compositeScratchOntoFrame(scratch, slice.bounds, slice.windowOffset);
+        compositeScratchOntoFrame(scratch, slice.bounds);
     }
 
     void BackendRenderTargetContext::purgeDeadLayerScratches(
@@ -1275,7 +1284,6 @@ void BackendRenderTargetContext::resetElementState() {
         }
     }
 
-    typedef decltype(VisualCommand::params) VisualCommandParams;
 
     template<class ParamsT>
     void BackendRenderTargetContext::renderPrimitiveImpl(PrimitiveOp op, ParamsT *params) {
@@ -2015,47 +2023,6 @@ void BackendRenderTargetContext::resetElementState() {
         }
         else {
             applySetClip(Core::Optional<Composition::Rect>{drawOpClipStack_.back()});
-        }
-    }
-
-    void BackendRenderTargetContext::renderToTarget(VisualCommand::Type type, void *params){
-        switch(type){
-            case VisualCommand::Rect:
-                renderPrimitiveImpl(PrimitiveOp::Rect, (VisualCommandParams*)params); return;
-            case VisualCommand::RoundedRect:
-                renderPrimitiveImpl(PrimitiveOp::RoundedRect, (VisualCommandParams*)params); return;
-            case VisualCommand::Ellipse:
-                renderPrimitiveImpl(PrimitiveOp::Ellipse, (VisualCommandParams*)params); return;
-            case VisualCommand::Bitmap:
-                renderPrimitiveImpl(PrimitiveOp::Bitmap, (VisualCommandParams*)params); return;
-            case VisualCommand::Shadow:
-                renderPrimitiveImpl(PrimitiveOp::Shadow, (VisualCommandParams*)params); return;
-            case VisualCommand::TextRun:
-                renderPrimitiveImpl(PrimitiveOp::TextRun, (VisualCommandParams*)params); return;
-            case VisualCommand::SetTransform:
-                renderPrimitiveImpl(PrimitiveOp::SetTransform, (VisualCommandParams*)params); return;
-            case VisualCommand::SetOpacity:
-                renderPrimitiveImpl(PrimitiveOp::SetOpacity, (VisualCommandParams*)params); return;
-            case VisualCommand::NativeContent:
-                renderPrimitiveImpl(PrimitiveOp::NativeContent, (VisualCommandParams*)params); return;
-            case VisualCommand::VectorPath: {
-                if(params == nullptr) return;
-                auto & p = ((VisualCommandParams*)params)->pathParams;
-                renderVectorPathSegmented(p.path, p.strokeWidth, p.contour, p.fill,
-                                          p.brush, p.fillBrush);
-                return;
-            }
-            case VisualCommand::SetClip: {
-                if(params == nullptr) return;
-                applySetClip(((VisualCommandParams*)params)->clipRect);
-                return;
-            }
-            case VisualCommand::Text:
-                // Legacy bitmap TextRect path — not the MSDF path. No-op,
-                // as the old switch did.
-                return;
-            default:
-                return;
         }
     }
 

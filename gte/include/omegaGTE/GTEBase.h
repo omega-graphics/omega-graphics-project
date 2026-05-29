@@ -360,6 +360,15 @@ _NAMESPACE_BEGIN_
             }
             return sum;
         }
+        /// Apply a mutating function to every point of the path, in order.
+        /// Unlike the segment iterator, this visits each underlying point
+        /// exactly once (including the start point and the final point).
+        template<class Fn>
+        void transformEachPoint(Fn && fn){
+            for(Node *n = first; n != nullptr; n = n->next){
+                fn(*(n->pt));
+            }
+        }
         void reset(const Pt_Ty & start){
             delete first;
             len = 0;
@@ -420,6 +429,75 @@ _NAMESPACE_BEGIN_
     };
 
     typedef GVectorPath_Base<GPoint3D> GVectorPath3D;
+
+    // ====================================================================
+    // GVectorPath transforms
+    //
+    // In-place affine transforms over every point of a path. Rotation
+    // angles are in radians. The 3D Euler convention matches
+    // OmegaGTE::rotationEuler (GTEMath.h): the composed rotation is
+    // Rz(roll) * Ry(yaw) * Rx(pitch). Implemented with direct trig rather
+    // than FMatrix because GTEMath.h depends on this header.
+    // ====================================================================
+
+    /// Translate every point of a 2D path by (dx, dy).
+    inline void translate(GVectorPath2D & path, float dx, float dy){
+        path.transformEachPoint([=](GPoint2D & p){
+            p.x += dx;
+            p.y += dy;
+        });
+    }
+
+    /// Translate every point of a 3D path by (dx, dy, dz).
+    inline void translate(GVectorPath3D & path, float dx, float dy, float dz){
+        path.transformEachPoint([=](GPoint3D & p){
+            p.x += dx;
+            p.y += dy;
+            p.z += dz;
+        });
+    }
+
+    /// Rotate every point of a 2D path by `radians` about `pivot` (defaults
+    /// to the origin). Uses the same handedness as the engine's Z-axis
+    /// rotation (rotationZ / a `roll` in the 3D overload), so a 2D path and
+    /// the same path embedded in the XY-plane and rotated by `roll = radians`
+    /// agree.
+    inline void rotate(GVectorPath2D & path, float radians, GPoint2D pivot = {0.f,0.f}){
+        float c = std::cos(radians), s = std::sin(radians);
+        path.transformEachPoint([=](GPoint2D & p){
+            float x = p.x - pivot.x;
+            float y = p.y - pivot.y;
+            p.x = pivot.x + (c * x + s * y);
+            p.y = pivot.y + (-s * x + c * y);
+        });
+    }
+
+    /// Rotate every point of a 3D path by the Euler angles `pitch` (about X),
+    /// `yaw` (about Y) and `roll` (about Z) about `pivot` (defaults to the
+    /// origin). The composed rotation is Rz(roll) * Ry(yaw) * Rx(pitch),
+    /// matching OmegaGTE::rotationEuler.
+    inline void rotate(GVectorPath3D & path, float pitch, float yaw, float roll, GPoint3D pivot = {0.f,0.f,0.f}){
+        float cx = std::cos(pitch), sx = std::sin(pitch);
+        float cy = std::cos(yaw),   sy = std::sin(yaw);
+        float cz = std::cos(roll),  sz = std::sin(roll);
+        path.transformEachPoint([=](GPoint3D & p){
+            float x = p.x - pivot.x;
+            float y = p.y - pivot.y;
+            float z = p.z - pivot.z;
+            // Rx(pitch): x unchanged
+            float y1 =  cx * y + sx * z;
+            float z1 = -sx * y + cx * z;
+            // Ry(yaw): y unchanged (y1)
+            float x2 = cy * x - sy * z1;
+            float z2 = sy * x + cy * z1;
+            // Rz(roll): z unchanged (z2)
+            float x3 =  cz * x2 + sz * y1;
+            float y3 = -sz * x2 + cz * y1;
+            p.x = pivot.x + x3;
+            p.y = pivot.y + y3;
+            p.z = pivot.z + z2;
+        });
+    }
 
 
     enum class GTEPolygonFrontFaceRotation : int {

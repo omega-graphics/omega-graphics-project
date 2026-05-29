@@ -1751,7 +1751,25 @@ the prose above:
      → `drawPath(*path, border)`, i.e. the border-taking overload's
      semantics (fill = `path.pathBrush`, stroke = `border`).
 
-##### Phase 4.1 — `FrameBuilder` packs the `DisplayList` into the frame directly; `submitDisplayList` replaces the Canvas bridge
+##### Phase 4.1 — `FrameBuilder` packs the `DisplayList` into the frame directly; `submitDisplayList` replaces the Canvas bridge [DONE]
+
+**Status:** Complete (2026-05-29; full Metal build links clean). `WidgetSlice`
+gained a `Composition::DisplayList ops` field (alongside the still-live
+`commands`). `CompositorClientProxy::submitDisplayList(DisplayList&&,
+windowOffset, bounds)` appends a slice carrying the DrawOps directly — no
+`Canvas`/`CanvasFrame`. `FrameBuilder::endFrame` replaced the
+`DisplayListReplay::replay(...)+sendFrame()` loop with one
+`submitDisplayList` per pending submission (bounds = window-sized,
+local-origin; windowOffset = the live per-view offset). Both backend flush
+sites — `Compositor::renderCompositeFrame`'s direct loop and all four
+`BackendRenderTargetContext::renderBlurredSlice` loops — now iterate
+`slice.ops` and dispatch via the Phase 4.0 `renderToTarget(DrawOp::Type)`
+switch. `windowCanvas_` is now bypassed (deleted in 4.2). This is the first
+runtime exercise of the 4.0 `DrawOp` path. **Verification caveat:** build +
+link verified on Metal; runtime pixel parity (and the EllipsePathCompositorTest
+stale-rect fix below) NOT yet confirmed — needs a windowed run on a display.
+Files: `CompositeFrame.h`, `CompositorClient.{h,cpp}`, `FrameBuilder.cpp`,
+`Compositor.cpp`, `backend/RenderTarget.cpp`.
 
 The window `Canvas` was the `DisplayList → VisualCommand` adapter
 (Tier 3). This phase routes paint output past it: `FrameBuilder` packs
@@ -1805,44 +1823,242 @@ Files touched: `wtk/include/omegaWTK/Composition/CompositeFrame.h`,
 `wtk/src/UI/FrameBuilder.cpp`,
 `wtk/src/Composition/backend/RenderTarget.cpp` (slice flush).
 
-##### Phase 4.2 — delete `Canvas`, `VisualCommand`, `CanvasFrame`, `CanvasEffect`, `DisplayListReplay`, and the `VisualCommand` switch
+##### Phase 4.2 — split `Canvas.h`: delete `Canvas`/`VisualCommand`/`CanvasFrame`/`DisplayListReplay`, rehome the survivors [DONE]
+
+**Status:** Complete (2026-05-29; full Metal build links, no `Canvas`/
+`VisualCommand`/`CanvasFrame`/`DisplayListReplay` symbol remains). Survivors
+rehomed: `Border`/`NineSliceInsets`/`ShapedTextRun`/`shapeTextForDisplayList`
+→ `DisplayList.{h,cpp}`; `CanvasEffect` → new `CanvasEffect.h` (unchanged —
+blur subsystem keeps compiling; layer-based rework deferred to "Phase E").
+Deleted: `Canvas.{h,cpp}`, `DisplayListReplay`, the `VisualCommand`
+`renderToTarget` overload + `VisualCommandParams` typedef,
+`CompositorClient::pushFrame(CanvasFrame)`, `WidgetSlice::commands`,
+`AppWindow::Impl::windowCanvas_` (+ `windowCanvas()`), `View::makeCanvas`
+**and `View::makeLayer`**, the dead `LayerAnimator::transition(CanvasFrame)`,
+`Layer::boundCanvas_`/`hasCanvas()`, and the 3 validator harnesses
+(`DisplayListClipTest`/`ScrollViewClipTest`/`NativeContentCarveoutTest`).
+`getLayerTree`/`windowLayerTree_` survive to 4.8.
+
+**First-paint stale-layout bug — fixed (2026-05-29; pending runtime
+verify).** Root cause: `WidgetTreeHost::initWidgetTree` ran the initial
+paint walk (`initWidgetRecurse`) *before* the tree was sized to the
+window; the root container's first `StackWidget::layoutChildren` therefore
+saw a suspicious/zero frame, bailed (`suspiciousFrame` →
+`needsLayout=true`, children left at their constructor origin), and the
+window-resize that would relayout them arrives only *after* the walk (and
+never for a tree with no resize-opted widgets). Fix (developer's chosen
+direction — "ensure root sized before first paint"): `initWidgetTree` now
+calls `root->handleHostResize({0,0,windowW,windowH})` before
+`initWidgetRecurse`, sizing the views + running the widget layout
+(StackWidget::resize → relayout → layoutChildren against a valid frame)
+without painting (hasMounted still false), so the paint walk runs once with
+children already arranged. Builds clean on Metal; needs a windowed run of
+EllipsePathCompositorTest to confirm children render side-by-side.
 
 The destructive end of Block 1. Every producer of `VisualCommand` is
-gone (per-view Canvas removed in 3.8; CanvasView/VideoView in 3.9/3.10),
-and the window Canvas is bypassed (4.1).
+gone (per-view Canvas removed in 3.8; CanvasView 3.9; VideoView
+unblocked via Path B in the Tier 4 pre-flight), and the window Canvas
+is bypassed (4.1).
 
-- Delete `wtk/include/omegaWTK/Composition/Canvas.h` and
-  `wtk/src/Composition/Canvas.cpp` (~1500 LOC). The `Canvas` class,
-  `VisualCommand`, `VisualCommand::Data`, `CanvasFrame`, and
-  `CanvasEffect` all live in that header.
-- Delete `DisplayListReplay` from `wtk/src/Composition/DisplayList.cpp`
-  (the `DrawOp → Canvas` bridge); keep `DisplayList.h` / `DrawOp`.
-- Delete the `VisualCommand::Type` switch in `RenderTarget.cpp`; the
-  `DrawOp` switch (4.0) becomes the only one.
+> **Scope correction (2026-05-29):** `Canvas.h` cannot simply be
+> *deleted* — it must be **split**. Mixed in with the doomed types are
+> value types that `DrawOp` / `DisplayList`, the text-paint path, and the
+> blur subsystem still depend on: **`Border`** (every shape op's border),
+> **`NineSliceInsets`**, **`CanvasEffect`** (+ `GaussianBlurParams` /
+> `DirectionalBlurParams` — used by the whole blur pipeline *and* the
+> UIView style layer), and **`ShapedTextRun`** + the
+> `shapeTextForDisplayList()` free function (used by UIView / SVGView to
+> build `DrawOp::TextRun`). `DisplayList.h` even `#include`s `Canvas.h`
+> today. So the original "delete `CanvasEffect`" line is wrong — that
+> would require ripping out blur. **Decision (developer, 2026-05-29):
+> effects become a *layer-based* concept, not a Canvas-based one — that
+> rework is its own future phase (see "Phase E — Layer-based effects"
+> below). In 4.2 `CanvasEffect` is rehomed *unchanged*** so the blur
+> subsystem keeps compiling.
+
+- **Rehome survivors out of `Canvas.h`** so the doomed types can go:
+  - `Border`, `NineSliceInsets`, `ShapedTextRun`, and
+    `shapeTextForDisplayList()` move into `DisplayList.h` (they are
+    `DrawOp` building blocks); `shapeTextForDisplayList`'s body moves
+    from `Canvas.cpp` into `DisplayList.cpp`.
+  - `CanvasEffect` moves into a new minimal header
+    `wtk/include/omegaWTK/Composition/CanvasEffect.h` (transitional home
+    until the layer-based-effects phase replaces it). Blur-pipeline and
+    UIView-style includers point at it.
+  - `DisplayList.h` drops its `#include "Canvas.h"`.
+- **Then delete** `Canvas.h` + `Canvas.cpp`: the `Canvas` class,
+  `VisualCommand`, `VisualCommand::Data`, and `CanvasFrame`.
+- Delete `DisplayListReplay` from `DisplayList.{h,cpp}` (the
+  `DrawOp → Canvas` bridge); keep `DisplayList` / `DrawOp`.
+- Delete the `VisualCommand::Type` `renderToTarget` overload + the
+  `VisualCommandParams` typedef in `RenderTarget.cpp`; the `DrawOp`
+  switch (4.0) becomes the only one. (Stale `VisualCommand::…` comments
+  in `Pipeline.{h,cpp}` / `RenderPass.h` are cosmetic — update or leave.)
 - Remove `CompositorClient::pushFrame(CanvasFrame &, …)` and the
-  `Vector<VisualCommand> commands` field on `WidgetSlice`.
-- Remove `windowCanvas_` from `AppWindow::Impl`. The window keeps
-  `windowLayerTree_` (still the present-layer host until 4.8).
-- Remove `View::makeCanvas` from the public surface and the `Canvas`
-  forward declaration. `makeLayer` / `getLayerTree` survive (the
-  animation / layer host, removed in 4.8) unless the pre-flight grep
-  cleared `makeLayer`.
-- Migrate `UIViewImpl.h`'s `ResolvedEffectStyle` references to
-  `CanvasEffect::GaussianBlurParams` / `DirectionalBlurParams` onto the
-  equivalent `DrawOp` / `DisplayList` blur params (or a small local
-  struct).
+  `Vector<VisualCommand> commands` field on `WidgetSlice`;
+  `CompositeFrame.h` drops its `Canvas.h` include.
+- Remove `windowCanvas_` from `AppWindow::Impl` (+ ctor wiring + getter).
+  The window keeps `windowLayerTree_` (present-layer host until 4.8).
+- Remove `View::makeCanvas` **and `View::makeLayer`** (pre-flight grep
+  confirmed `makeLayer` has zero callers) + the `Canvas` forward decl.
+  `getLayerTree` survives (animation / layer host, removed in 4.8).
+- Delete the dead `LayerAnimator::transition(SharedHandle<CanvasFrame>,
+  …)` method (no callers; references the doomed `CanvasFrame`) + its
+  `Animation.h` decl and the `CanvasFrame` fwd decl.
+- Retire the 3 Tier-3 validator harnesses (`DisplayListClipTest`,
+  `ScrollViewClipTest`, `NativeContentCarveoutTest`) — they are the only
+  remaining `makeCanvas` / `CanvasFrame` / `VisualCommand` consumers
+  (per the pre-flight decision). Delete the dirs + their
+  `tests/CMakeLists.txt` registrations.
+- `UIViewImpl.h` / `Layout.h` / `UIView.h` / `UIView.Core.cpp` keep using
+  `CanvasEffect::GaussianBlurParams` / `DirectionalBlurParams` — only the
+  include path changes (→ `CanvasEffect.h`). No migration onto DrawOp
+  blur params (that belongs to the layer-based-effects phase).
 - Validator: full sweep; grep confirms no `Canvas` / `VisualCommand` /
-  `CanvasFrame` symbol remains; clean build on all three backends.
+  `CanvasFrame` symbol remains (only `CanvasEffect`, rehomed); clean
+  build on all three backends (Metal verifiable on this host).
 
-Files touched: `wtk/include/omegaWTK/Composition/Canvas.h` (deleted),
-`wtk/src/Composition/Canvas.cpp` (deleted),
-`wtk/src/Composition/DisplayList.cpp`,
-`wtk/src/Composition/backend/RenderTarget.cpp`,
-`wtk/include/omegaWTK/Composition/CompositorClient.h`,
-`wtk/src/Composition/CompositorClient.cpp`,
-`wtk/include/omegaWTK/Composition/CompositeFrame.h`,
-`wtk/src/UI/AppWindowImpl.h`, `wtk/src/UI/AppWindow.cpp`,
-`wtk/include/omegaWTK/UI/View.h`, `wtk/src/UI/UIViewImpl.h`.
+##### Phase E (future / out of Tier 4 scope) — Layer-based effects
+
+`CanvasEffect` (gaussian / directional blur) is presently a
+Canvas-adjacent value type consumed by `BackendCanvasEffectProcessor`
+and routed per-slice via `slice.targetLayer` + `renderBlurredSlice`.
+The window-scoped DrawOp pipeline (4.1) no longer sets a `targetLayer`,
+so blur is currently **dormant**. The proper model (developer decision,
+2026-05-29) is to make effects a **layer-based concept** — attached to
+a layer / scene node and applied by the compositor against that layer's
+backing — rather than a Canvas idea. This phase:
+- replaces `CanvasEffect` with a layer-owned effect descriptor (e.g.
+  `LayerEffect` blur params) and removes the transitional
+  `CanvasEffect.h`;
+- re-lights blur on the DrawOp path (a `PushEffect` / `PopEffect`
+  DrawOp scope, per §3.2, or a layer-attached effect the FrameBuilder
+  threads to `renderBlurredSlice`);
+- migrates the UIView style layer's `gaussianBlur` / `directionalBlur`
+  onto the new descriptor.
+This is **not** part of Tier 4 — it is sequenced after the scene
+reshape (Block 2) or as an independent follow-up. Tracked here so 4.2's
+"rehome, don't delete `CanvasEffect`" decision has a forward reference.
+
+Files touched (4.2): `Canvas.h` (deleted), `Canvas.cpp` (deleted),
+new `Composition/CanvasEffect.h`, `DisplayList.{h,cpp}`,
+`backend/RenderTarget.{h,cpp}`, `CompositorClient.{h,cpp}`,
+`CompositeFrame.h`, `Compositor.cpp`, `Animation.{h,cpp}`,
+`AppWindowImpl.h`, `AppWindow.cpp`, `View.h`, `View.Core.cpp`,
+`UIViewImpl.h`, `UIView.h`, `Layout.h`, `UIView.Core.cpp`, `SVGView.cpp`,
+`backend/Effect.h` + the per-platform effect processors (include swap),
+`tests/CMakeLists.txt` + the 3 deleted test dirs.
+
+##### Phase F (follow-up) — Window resize always relayouts + repaints (no resize opt-in)
+
+**Goal (developer, 2026-05-29):** resizing the `AppWindow` must always
+relayout the whole widget tree, resize every widget according to its
+layout, and **repaint *every* widget — dirty *and* non-dirty** —
+unconditionally, with no per-widget resize opt-in.
+
+**Why all widgets, not just dirty ones (developer, 2026-05-29):** on
+resize the platform stretches the existing window surface to the new
+size, so any content rasterized at the old size appears **stretched**
+until it is re-drawn at the new resolution. Dirty-only repaint is
+therefore wrong for resize — a "non-dirty" widget whose model didn't
+change still has stale, wrong-resolution pixels. Every widget must
+re-emit its `DisplayList` and re-rasterize at the new size. To keep that
+full-tree repaint affordable, **non-dirty content is served from a
+content cache** (cached geometry / rasterized primitives keyed by shape
+params + size) so an unchanged widget is "thrown back up" cheaply rather
+than recomputed from scratch — see **Phase G**.
+
+**Current behavior (the gap):** `WidgetTreeHost::notifyWindowResize` /
+`notifyWindowResizeBegin` / `notifyWindowResizeEnd` only drive
+`root->handleHostResize(rect)` when `anyWidgetOptsIntoResize(root.get())`
+is true. So a window resize is a no-op for any tree whose widgets did not
+opt in — children keep their pre-resize rects, nothing relayouts, nothing
+repaints. (This is the same opt-in gate that left the first-paint fix
+needing an explicit `handleHostResize` before the initial walk.)
+
+**This phase:**
+- Remove the `anyWidgetOptsIntoResize` gate from all three
+  `notifyWindowResize*` paths — `handleHostResize(rect)` runs on every
+  window resize regardless of opt-in. `handleHostResize` already sizes the
+  root view, runs the widget layout pass (Measure/Arrange →
+  `LayoutManager`/`StackWidget::relayout` → child `setRect`), and
+  invalidates; the resize walk should propagate that down the whole tree.
+- Resize relayout is driven by the parent's `LayoutManager` (Tier 4 Block
+  2, 4.5/4.6): each container re-arranges its children to the new
+  available rect; leaves resize per their `LayoutStyle`.
+- **Resize forces a full-tree repaint, independent of `DirtyBits`.** A
+  resize marks the whole tree for repaint (not just nodes the relayout
+  dirtied) so every widget re-emits its `DisplayList` and re-rasterizes
+  at the new size. `DirtyBits` still governs *non-resize* frames (paint
+  only what changed); resize is the one case that overrides it with
+  "repaint everything." `FrameBuilder` submits the whole tree into the
+  one resize frame (the `dispatchResize*ToHosts` `ScopedFrame` already
+  brackets this).
+- The full repaint stays cheap because unchanged widgets pull cached
+  geometry / rasterized content from the **Phase G** content cache rather
+  than re-tessellating / re-shaping from scratch.
+- Retire `anyWidgetOptsIntoResize` and the per-widget
+  `invalidateOnResize` opt-in once the unconditional path is the only one
+  (or keep `invalidateOnResize` as a paint-suppression hint only, never as
+  a relayout gate).
+- Validator: a windowed resize of a multi-widget scene (e.g. the
+  RootWidget multi-view scene, or `LayoutResizeStressTest`) relayouts and
+  repaints continuously through the drag, with children tracking the new
+  window size and content crisp (not stretched) at every intermediate
+  size — no widget having opted in.
+
+Sequencing: depends on Block 2's `LayoutManager` (4.5/4.6) for relayout
+and on **Phase G** for the cache that makes full-tree repaint affordable,
+but the gate removal + force-full-repaint-on-resize itself is independent
+and can land earlier as an interim fix (correctness first; the cache is
+the perf optimization layered on top).
+
+##### Phase G (follow-up) — Content cache: geometry / primitive / tessellation reuse
+
+**Goal:** make full-tree repaint (Phase F's resize path, and any
+broad invalidation) cheap by caching a widget's rendered content so an
+unchanged widget is re-emitted from the cache instead of recomputed.
+Relocates and supersedes **Render-Execution-Efficiency-Plan.md §4 "No
+geometry caching"** (and complements its §5 dirty-region note) into the
+post-Canvas DrawOp world.
+
+**What gets cached (keyed by shape parameters + resolved size /
+renderScale):**
+- **Tessellation cache** — the triangulated mesh for `DrawOp::VectorPath`
+  (and gradient-fallback Rect/RoundedRect). Today the backend
+  re-triangulates every shape every frame
+  (`renderVectorPathSegmented` → `triangulateSync`); cache the
+  `TETriangulationResult` keyed by `(path-hash, strokeWidth, fill,
+  contour, size)` so an unchanged path reuses its mesh. (SDF primitives —
+  Rect/RoundedRect/Ellipse/Shadow with a color brush — are already
+  6-vertex quads with no triangulation, so they need no geometry cache;
+  they only re-author trivially.)
+- **Primitive / content cache** — the rasterized output (e.g. a cached
+  GPU texture / "tile") of a widget's `DisplayList` at a given size, so a
+  non-dirty widget on a full repaint blits its cached content instead of
+  re-issuing draw ops. This is the "cache the non-dirty content so it can
+  be thrown back up again" mechanism Phase F relies on.
+- **Text shaping cache** — `shapeTextForDisplayList` output keyed by
+  `(text, font, size, layout)` (optional; biggest win for static labels).
+
+**Invalidation:** a cache entry is keyed so that a model change (new shape
+params) or a size/renderScale change misses and recomputes; resize misses
+the *size* dimension for shapes whose pixel geometry actually changes but
+hits for size-invariant content. The cache is bounded (LRU) and purged
+with the owning layer/node (mirrors `RenderTargetStore::cleanTreeTargets`).
+
+**Why its own phase:** the cache is valuable beyond resize — it removes
+per-frame re-tessellation/re-shaping for *all* frames (the
+Render-Execution-Efficiency-Plan §4 concern) — and it is a sizable
+backend addition (cache structures, hashing, eviction, lifetime). Phase F
+ships correctly without it (full repaint, just more expensive); Phase G
+is the performance layer. *(Alternative considered: fold the cache into
+Phase F. Kept separate so Phase F stays a contained correctness change
+and the cache can be designed against the whole repaint workload, not
+just resize. Merge if the two land together.)*
+
+Sequencing: after Phase F (which defines the full-repaint workload the
+cache optimizes) and after the backend DrawOp path (4.0–4.2, done).
 
 ##### Phase 4.3 — `AnimationScheduler` lands alongside the old animator (folds Animation-Scheduler-Plan Tier A)
 

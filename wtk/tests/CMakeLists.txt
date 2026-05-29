@@ -96,45 +96,12 @@ OmegaWTKApp(
     SOURCES
     SVGViewRenderTest/main.cpp)
 
-# Tier 3 Phase 3.5 validator: drives a fabricated DisplayList with
-# PushClip / draw-overflow / PopClip / draw-outside through
-# DisplayListReplay into a real Canvas and visually verifies clip
-# semantics.
-OmegaWTKApp(
-    NAME
-    DisplayListClipTest
-    BUNDLE_ID
-    "org.omegagraphics.DisplayListClipTest"
-    SOURCES
-    DisplayListClipTest/main.cpp)
-
-# Tier 3 Phase 3.6 validator: drives ScrollView::paint() /
-# paintOverlay() output through DisplayListReplay into a real Canvas
-# and visually verifies that the PushClip / content / PopClip / bars
-# composition produces a properly-scissored viewport with overlay
-# scroll bars rendered after the clip is popped.
-OmegaWTKApp(
-    NAME
-    ScrollViewClipTest
-    BUNDLE_ID
-    "org.omegagraphics.ScrollViewClipTest"
-    SOURCES
-    ScrollViewClipTest/main.cpp)
-
-# Tier 3 Phase 3.7 validator: drives a fabricated DisplayList with
-# DrawOp::NativeContent carve-outs through DisplayListReplay and
-# asserts that each op round-trips onto the per-frame VisualCommand
-# stream as a NativeContent visual with destRect / hostId /
-# zOrderHint preserved. Stand-in for VideoViewPlaybackTest (which is
-# the end-to-end validator the plan names but is currently
-# unbuildable).
-OmegaWTKApp(
-    NAME
-    NativeContentCarveoutTest
-    BUNDLE_ID
-    "org.omegagraphics.NativeContentCarveoutTest"
-    SOURCES
-    NativeContentCarveoutTest/main.cpp)
+# Tier 4 §4.2: the DisplayListClipTest / ScrollViewClipTest /
+# NativeContentCarveoutTest validators were retired here — they drove the
+# deleted DisplayListReplay → Canvas bridge and consumed VisualCommand /
+# CanvasFrame / makeCanvas (all gone in 4.2), and tests cannot reach the
+# private FrameBuilder to inject a hand-built DisplayList the new way. The
+# clip path is exercised by the real ScrollView; carve-out by video.
 
 OmegaWTKApp(
     NAME

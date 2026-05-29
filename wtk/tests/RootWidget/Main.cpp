@@ -2,7 +2,8 @@
 #include <omegaWTK/UI/UIView.h>
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
-#include <omegaWTK/Composition/Canvas.h>
+#include "omegaWTK/Composition/DisplayList.h"
+#include "omegaWTK/Composition/CanvasEffect.h"
 #include <omegaWTK/Composition/FontEngine.h>
 #include <omegaWTK/Composition/Path.h>
 #include <omegaWTK/Main.h>

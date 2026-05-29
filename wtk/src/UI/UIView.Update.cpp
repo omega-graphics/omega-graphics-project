@@ -203,6 +203,20 @@ void UIView::paint(Composition::PaintContext & pc){
     const auto & localBounds = impl_->arrangedLocalBounds_;
     const auto & resolved = impl_->arranged_;
 
+    // Tier 4 (absolute-coords decision 2026-05-29): bake the view's
+    // absolute window offset into every emitted rect just before append.
+    // Element geometry is authored / clamped in view-local space (localBounds
+    // origin is {0,0}); this lifts it into absolute window space so the
+    // compositor needs no per-slice viewport translation. Applied LAST,
+    // after clampRectToParent (which operates in local space). Path ops are
+    // the one geometry kind not yet lifted — see the Path branch below.
+    const auto paintOffset = pc.offset;
+    auto withOffset = [paintOffset](Composition::Rect r){
+        r.pos.x += paintOffset.x;
+        r.pos.y += paintOffset.y;
+        return r;
+    };
+
     const auto & viewStyle = impl_->resolvedViewStyle_;
     auto backgroundColor = viewStyle.backgroundColor.value_or(Composition::Color::Transparent);
 
@@ -211,7 +225,7 @@ void UIView::paint(Composition::PaintContext & pc){
     // Canvas call below appends to pc.displayList; FrameBuilder replays
     // it into the window canvas at Commit. Background rect is the first op.
     auto rootBgBrush = Composition::ColorBrush(backgroundColor);
-    auto rootBgRect = localBounds;
+    auto rootBgRect = withOffset(localBounds);
     displayList.append(Composition::DrawOp{rootBgRect, rootBgBrush});
 
     ChildResizeSpec layoutClamp {};
@@ -258,7 +272,7 @@ void UIView::paint(Composition::PaintContext & pc){
                         auto rect = shapeToDraw.rect;
                         rect = ViewResizeCoordinator::clampRectToParent(rect,localBounds,layoutClamp);
                         displayList.append(Composition::DrawOp{
-                            shadowParams, rect, 0.f, false});
+                            shadowParams, withOffset(rect), 0.f, false});
                         break;
                     }
                     case Shape::Type::RoundedRect: {
@@ -273,7 +287,7 @@ void UIView::paint(Composition::PaintContext & pc){
                         Composition::Rect shapeRect {rr.pos, rr.w, rr.h};
                         const float radius = std::min(rr.rad_x, rr.rad_y);
                         displayList.append(Composition::DrawOp{
-                            shadowParams, shapeRect, radius, false});
+                            shadowParams, withOffset(shapeRect), radius, false});
                         break;
                     }
                     case Shape::Type::Ellipse: {
@@ -285,7 +299,7 @@ void UIView::paint(Composition::PaintContext & pc){
                         };
                         ellipseRect = ViewResizeCoordinator::clampRectToParent(ellipseRect,localBounds,layoutClamp);
                         displayList.append(Composition::DrawOp{
-                            shadowParams, ellipseRect, 0.f, true});
+                            shadowParams, withOffset(ellipseRect), 0.f, true});
                         break;
                     }
                     default:
@@ -297,7 +311,7 @@ void UIView::paint(Composition::PaintContext & pc){
                 case Shape::Type::Rect: {
                     auto rect = shapeToDraw.rect;
                     rect = ViewResizeCoordinator::clampRectToParent(rect,localBounds,layoutClamp);
-                    displayList.append(Composition::DrawOp{rect, brush});
+                    displayList.append(Composition::DrawOp{withOffset(rect), brush});
                     break;
                 }
                 case Shape::Type::RoundedRect: {
@@ -309,6 +323,8 @@ void UIView::paint(Composition::PaintContext & pc){
                     rect.h = clampedRect.h;
                     rect.rad_x = std::min(rect.rad_x,rect.w * 0.5f);
                     rect.rad_y = std::min(rect.rad_y,rect.h * 0.5f);
+                    rect.pos.x += paintOffset.x;
+                    rect.pos.y += paintOffset.y;
                     displayList.append(Composition::DrawOp{rect, brush});
                     break;
                 }
@@ -324,8 +340,8 @@ void UIView::paint(Composition::PaintContext & pc){
                     };
                     ellipseRect = ViewResizeCoordinator::clampRectToParent(ellipseRect,localBounds,layoutClamp);
                     Composition::Ellipse ellipse {
-                        ellipseRect.pos.x + (ellipseRect.w * 0.5f),
-                        ellipseRect.pos.y + (ellipseRect.h * 0.5f),
+                        ellipseRect.pos.x + (ellipseRect.w * 0.5f) + paintOffset.x,
+                        ellipseRect.pos.y + (ellipseRect.h * 0.5f) + paintOffset.y,
                         ellipseRect.w * 0.5f,
                         ellipseRect.h * 0.5f
                     };
@@ -334,13 +350,25 @@ void UIView::paint(Composition::PaintContext & pc){
                 }
                 case Shape::Type::Path: {
                     if(shapeToDraw.path){
-                        auto & path = *shapeToDraw.path;
-                        path.setStroke(shapeToDraw.pathStrokeWidth);
+                        // Work on a per-frame deep copy: shapeToDraw.path is a
+                        // SharedPtr aliasing the persistent layout spec, so
+                        // mutating it in place would (a) revive the §1.3
+                        // mutate-the-spec-during-paint smell and (b) — unlike
+                        // the idempotent setStroke/close/setPathBrush — make
+                        // translate() ACCUMULATE paintOffset every repaint.
+                        auto pathCopy = std::make_shared<Composition::Path>(*shapeToDraw.path);
+                        pathCopy->setStroke(shapeToDraw.pathStrokeWidth);
                         if(shapeToDraw.closePath){
-                            path.close();
+                            pathCopy->close();
                         }
-                        path.setPathBrush(brush);
-                        displayList.append(Composition::DrawOp{shapeToDraw.path});
+                        pathCopy->setPathBrush(brush);
+                        // Absolute-coords (2026-05-29): a path carries its
+                        // geometry as points, not a positioned rect, so lift
+                        // it into absolute window space by translating every
+                        // point — the path counterpart to withOffset() for
+                        // rect/ellipse ops.
+                        pathCopy->translate(paintOffset);
+                        displayList.append(Composition::DrawOp{std::move(pathCopy)});
                     }
                     break;
                 }
@@ -357,6 +385,7 @@ void UIView::paint(Composition::PaintContext & pc){
             if(font != nullptr){
                 auto textRect = spec.textRect.value_or(localBounds);
                 textRect = ViewResizeCoordinator::clampRectToParent(textRect,localBounds,layoutClamp);
+                textRect = withOffset(textRect);
                 auto unicodeText = OmegaCommon::UniString::fromUTF32(
                     reinterpret_cast<const OmegaCommon::Unicode32Char *>(spec.text->data()),
                     static_cast<int32_t>(spec.text->size()));
@@ -381,7 +410,7 @@ void UIView::paint(Composition::PaintContext & pc){
         else if(spec.image && *spec.image != nullptr){
             auto imageRect = spec.imageRect.value_or(localBounds);
             imageRect = ViewResizeCoordinator::clampRectToParent(imageRect,localBounds,layoutClamp);
-            displayList.append(Composition::DrawOp{*spec.image, imageRect});
+            displayList.append(Composition::DrawOp{*spec.image, withOffset(imageRect)});
         }
     }
 
@@ -403,21 +432,27 @@ void UIView::update(){
     { FrameBuilder::ScopedPhase phase(fb, FramePhase::Style);  resolveStyles(); }
     { FrameBuilder::ScopedPhase phase(fb, FramePhase::Layout); arrange(); }
 
+    // Tier 4 (absolute-coords decision 2026-05-29): push this view's
+    // absolute window offset BEFORE paint. ScopedViewOffset must already
+    // be live so computeWindowOffset() returns the leaf view's offset,
+    // and it must outlive submitView (Tier 3 Phase 3.4 contract). paint()
+    // bakes pc.offset into emitted geometry so coordinates reach the
+    // compositor already positioned — the per-slice backend viewport
+    // translation is gone.
+    FrameBuilder::ScopedViewOffset offsetScope(fb, this);
+
     Composition::DisplayList displayList;
     {
         FrameBuilder::ScopedPhase phase(fb, FramePhase::Paint);
         Composition::PaintContext pc { displayList };
+        pc.offset = computeWindowOffset();
         paint(pc);
     }
 
-    // Commit. Tier 3 Phase 3.4: ScopedViewOffset pushes this view's
-    // absolute window offset and must outlive submitView, which reads it
-    // via View::computeWindowOffset. Tier 3 Phase 3.8: the FrameBuilder
-    // bracketing this pass (Widget::executePaint / AppWindow) accumulates
-    // the DisplayList in tree order and replays it into the window canvas
-    // at endFrame. No active frame (a stray update() outside a paint
-    // pass) ⇒ the DisplayList is dropped.
-    FrameBuilder::ScopedViewOffset offsetScope(fb, this);
+    // Commit. Tier 3 Phase 3.8: the FrameBuilder bracketing this pass
+    // (Widget::executePaint / AppWindow) accumulates the DisplayList in
+    // tree order and submits it at endFrame. No active frame (a stray
+    // update() outside a paint pass) ⇒ the DisplayList is dropped.
     {
         FrameBuilder::ScopedPhase phase(fb, FramePhase::Commit);
         if(fb != nullptr){

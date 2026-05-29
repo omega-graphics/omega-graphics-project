@@ -13,7 +13,8 @@
 #ifndef OMEGAWTK_COMPOSITION_BACKEND_EFFECT_H
 #define OMEGAWTK_COMPOSITION_BACKEND_EFFECT_H
 
-#include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Composition/DisplayList.h"
+#include "omegaWTK/Composition/CanvasEffect.h"
 #include "omegaWTK/Core/Core.h"
 #include "omegaWTK/Core/GTEHandle.h"
 
