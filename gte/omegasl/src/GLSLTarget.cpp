@@ -991,6 +991,13 @@ namespace omegasl {
         /// have no GLSL equivalent at all — those are rewritten in
         /// `tryEmitBuiltinCall` rather than renamed.
         if (name == BUILTIN_RSQRT) return "inversesqrt";
+        /// §5.3 — `bitfieldReverse` is the GLSL name and returns the
+        /// operand type (T → T native), so a plain rename preserves the
+        /// operand-typed contract. `countbits` is *not* a plain rename:
+        /// GLSL's `bitCount` returns a signed iN regardless of operand
+        /// signedness, so it is handled in `tryEmitBuiltinCall` with a
+        /// cast back to the operand type.
+        if (name == BUILTIN_REVERSEBITS) return "bitfieldReverse";
         /// §6.2 — compute barriers. `barrier()` is the execution +
         /// shared-memory control barrier; `memoryBarrier()` is the
         /// device-memory-only ordering barrier (no execution sync).
@@ -1214,10 +1221,40 @@ namespace omegasl {
         out << ")";
     }
 
+    /// §5.3 — GLSL spelling of an integer scalar / vector type, used to
+    /// cast `bitCount`'s signed result back to the operand's type.
+    /// nullptr for any non-integer type (Sema rejects those upstream).
+    static const char *glslIntTypeSpelling(ast::Type *t){
+        using namespace ast::builtins;
+        if(t == int_type)  return "int";
+        if(t == int2_type) return "ivec2";
+        if(t == int3_type) return "ivec3";
+        if(t == int4_type) return "ivec4";
+        if(t == uint_type)  return "uint";
+        if(t == uint2_type) return "uvec2";
+        if(t == uint3_type) return "uvec3";
+        if(t == uint4_type) return "uvec4";
+        return nullptr;
+    }
+
     bool GLSLTarget::tryEmitBuiltinCall(CodeGen &cg,
                                         ast::CallExpr *_expr,
                                         OmegaCommon::StrRef name,
                                         std::ostream &out) {
+        /// §5.3: GLSL's `bitCount` returns a signed iN even for a uint
+        /// operand, so wrap it in a cast back to the operand type to honor
+        /// countbits' operand-typed return contract. The operand resolved
+        /// type is stamped by Sema (§5.3 dispatch).
+        if (name == BUILTIN_COUNTBITS) {
+            if (_expr->args.size() != 1) return false;
+            auto *ty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+            const char *spelling = glslIntTypeSpelling(ty);
+            if(!spelling) return false; // defensive; Sema guarantees integer.
+            out << spelling << "(bitCount(";
+            cg.generateExpr(_expr->args[0]);
+            out << "))";
+            return true;
+        }
         /// §5.1: GLSL has no `saturate` — rewrite `saturate(x)` as
         /// `clamp(x, 0.0, 1.0)`. GLSL's `clamp(genType, float, float)`
         /// overload broadcasts the scalar bounds across vector x, so the

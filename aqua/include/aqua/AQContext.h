@@ -20,6 +20,16 @@ class GECommandQueue;
 /// elapsed frame time to `advance`, and the context runs as many fixed-size
 /// sub-steps as fit, banking the remainder. This decouples the simulation rate
 /// from the caller's frame rate and keeps stepping deterministic.
+///
+/// REQUIRED — small sub-steps for rotational accuracy. The Phase 1 integrator
+/// (body-frame symplectic Lie + implicit gyroscopic) is *stable* but conserves
+/// angular momentum and energy only to first order in the sub-step: drift is
+/// O(dt) and accumulates. A fast spinner is visibly worse at the default
+/// 1/120 s than at 1/2000 s (≈20× the drift). Sub-stepping is therefore not an
+/// optimization but a correctness requirement for fast rotational bodies — set
+/// `setFixedTimestep` small enough for the angular rates in the scene (the
+/// "small steps" posture, Phase-1 doc §11.5). This is also why the integrator
+/// is built around a fixed sub-step accumulator rather than per-frame stepping.
 class AQUA_EXPORT AQContext
 {
     SharedHandle<OmegaGTE::GECommandQueue> commandQueue;

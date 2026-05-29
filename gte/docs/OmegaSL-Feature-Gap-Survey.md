@@ -1531,17 +1531,55 @@ determinants. Registered as `omegagte_matrix_ops` in each backend's test
 confirm those backends. Writing this test surfaced and fixed the Metal
 buffer-IO trailing-padding bug noted under §2.4.
 
-### 5.3 Integer / bitfield ops
+### 5.3 Integer / bitfield ops [Phase A LANDED — countbits / reversebits]
 
-| Function | HLSL | MSL | GLSL |
-|----------|------|-----|------|
-| `countbits`       | yes | `popcount` | `bitCount` |
-| `firstbitlow`     | yes | `ctz` | `findLSB` |
-| `firstbithigh`    | yes | `clz` | `findMSB` |
-| `reversebits`     | yes | `reverse_bits` | `bitfieldReverse` |
-| `bitfieldExtract` / `bitfieldInsert` | yes | yes | yes |
+| Function | HLSL | MSL | GLSL | Status |
+|----------|------|-----|------|--------|
+| `countbits`       | yes (scalar-uint) | `popcount` | `bitCount` | **Phase A landed** |
+| `reversebits`     | yes (scalar-uint) | `reverse_bits` | `bitfieldReverse` | **Phase A landed** |
+| `firstbitlow`     | yes | `ctz` | `findLSB` | Phase B (planned) |
+| `firstbithigh`    | yes | `clz` | `findMSB` | Phase B (planned) |
+| `bitfieldExtract` / `bitfieldInsert` | **no named intrinsic (manual shift/mask)** | `extract_bits` / `insert_bits` | yes | Phase C (planned) |
 
-Needed for hashing, compression formats, occupancy masks.
+Needed for hashing, compression formats, occupancy masks. Operand domain
+is `int` / `uint` and their vector forms; firstbit ops will normalize to a
+GLSL-`findMSB`-style signed index (`-1` on zero) across all three backends.
+Full phasing and the per-backend lowering contract: see
+`OmegaSL-5.3-Integer-Bitfield-Ops-Plan.md`. (The original table's
+"`bitfieldExtract`/`bitfieldInsert` = yes" for HLSL was optimistic — HLSL
+has no such named intrinsic; same doc-vs-reality gap as §5.2's "MSL has
+`inverse`".)
+
+**Phase A — `countbits` / `reversebits` (landed).** Both are 1-arg,
+return the operand's type, and accept integer scalar/vector operands
+(`int`/`uint`/`intN`/`uintN`). They are string-matched in the
+`Sema::performSemForExpr` math dispatch (a new 1-arg integer bucket,
+`isIntUnary`) — no `FuncType` registration, like `distance`/`inverse` —
+and added to `ast::isReservedBuiltinName`. No feature bit (universal at
+SM5 / MSL native / GLSL 4.x core). Per backend:
+
+* **MSL** — plain `renameBuiltin`: `countbits → popcount`,
+  `reversebits → reverse_bits` (both native on scalars and vectors,
+  `T → T`).
+* **GLSL** — `reversebits → bitfieldReverse` via `renameBuiltin` (native
+  `T → T`). `countbits` is *not* a plain rename: GLSL's `bitCount` returns
+  a signed `iN` even for a `uint` operand, so `tryEmitBuiltinCall` wraps it
+  in a cast back to the operand type (`uint(bitCount(u))` /
+  `uvec4(bitCount(uv))`).
+* **HLSL** — `countbits` / `reversebits` are **scalar-`uint` only**, so a
+  shared `hlslEmitIntUnary` helper in `tryEmitBuiltinCall` (a) casts the
+  scalar result back for a signed operand (`(int)countbits(i)`) and
+  (b) expands a vector operand component-wise into the matching
+  constructor, capturing the operand in a single-eval temp first via the
+  statement-injection hook (`uint4 _bb0 = uv; uint4(countbits(_bb0.x),
+  …)`).
+
+Tests: `bitfield_ops.omegasl` (scalar + vector `countbits`/`reversebits`
+on int/uint), `invalid_bitfield_ops.omegasl` (float operand + arg-count
+negatives). Metal compiled end-to-end; the emitted HLSL compiles under
+`dxc -T cs_6_0` and the emitted GLSL under `glslc -fshader-stage=comp`
+(both installed on this host) — not just `-S` source inspection. Full
+omegasl ctest suite (96 tests) green.
 
 ### 5.4 Derivatives — already on the "not implemented" list
 

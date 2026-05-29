@@ -531,8 +531,73 @@ namespace omegasl {
                    case 4: return "int4"; default: return "int"; }
     }
 
+    /// §5.3 — HLSL spelling of an int/uint scalar or vector type.
+    static const char *hlslIntSpelling(bool isSigned, int arity){
+        if(isSigned)
+            switch(arity){ case 2: return "int2"; case 3: return "int3";
+                           case 4: return "int4"; default: return "int"; }
+        switch(arity){ case 2: return "uint2"; case 3: return "uint3";
+                       case 4: return "uint4"; default: return "uint"; }
+    }
+
+    /// §5.3 — HLSL's `countbits` / `reversebits` take and return a scalar
+    /// `uint` only. Emit the operand-typed result by:
+    ///   (a) casting the scalar result back when the operand is signed
+    ///       (`(int)countbits(x)`), and
+    ///   (b) expanding a vector operand component-wise into the matching
+    ///       constructor (`uint4(countbits(t.x), countbits(t.y), …)`).
+    /// The vector operand is captured into a temp first (single eval),
+    /// mirroring the inverse / frexp statement-injection pattern. HLSL
+    /// entry bodies and user-function bodies both drain queued statements
+    /// via `generateBlock`, so the temp lands ahead of the use site.
+    static bool hlslEmitIntUnary(CodeGen &cg, ast::CallExpr *_expr,
+                                 const char *fn, std::ostream &out){
+        using namespace ast::builtins;
+        if(_expr->args.size() != 1) return false;
+        auto *ty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+        ast::Type *scalar = ty; int arity = 1;
+        struct VE { ast::Type *v; ast::Type *s; int n; };
+        const VE table[] = {
+            {int2_type, int_type, 2},  {int3_type, int_type, 3},  {int4_type, int_type, 4},
+            {uint2_type, uint_type, 2},{uint3_type, uint_type, 3},{uint4_type, uint_type, 4},
+        };
+        for(const auto &e : table){ if(ty == e.v){ scalar = e.s; arity = e.n; break; } }
+        if(scalar != int_type && scalar != uint_type) return false; // defensive.
+        bool isSigned = (scalar == int_type);
+
+        if(arity == 1){
+            /// Scalar: `countbits`/`reversebits` return uint; cast for a
+            /// signed operand so the result type matches the operand.
+            if(isSigned) out << "(int)";
+            out << fn << "(";
+            cg.generateExpr(_expr->args[0]);
+            out << ")";
+            return true;
+        }
+
+        const char *spell = hlslIntSpelling(isSigned, arity);
+        std::string argStr = cg.renderExprToString(_expr->args[0]);
+        unsigned id = cg.getDimensionsTempId++;
+        std::string t = "_bb" + std::to_string(id);
+        cg.queuePendingStatement(std::string(spell) + " " + t + " = " + argStr + ";");
+        out << spell << "(";
+        const char comp[4] = {'x', 'y', 'z', 'w'};
+        for(int k = 0; k < arity; ++k){
+            if(k) out << ", ";
+            /// `fn` returns uint; the surrounding `intN(...)` / `uintN(...)`
+            /// constructor takes the components and yields the operand type.
+            out << fn << "(" << t << "." << comp[k] << ")";
+        }
+        out << ")";
+        return true;
+    }
+
     bool HLSLTarget::tryEmitBuiltinCall(CodeGen &cg, ast::CallExpr *_expr,
                                         OmegaCommon::StrRef name, std::ostream &out) {
+        /// §5.3 — HLSL's countbits / reversebits are scalar-uint only;
+        /// lower signed-cast + vector component-expansion here.
+        if (name == BUILTIN_COUNTBITS)   return hlslEmitIntUnary(cg, _expr, "countbits", out);
+        if (name == BUILTIN_REVERSEBITS) return hlslEmitIntUnary(cg, _expr, "reversebits", out);
         /// §5.1.0 — frexp. HLSL's `frexp(x, out exp)` writes a *float*
         /// exponent, but OmegaSL types the exponent out-param as int/intN.
         /// Capture the mantissa and the float exponent in temporaries, cast

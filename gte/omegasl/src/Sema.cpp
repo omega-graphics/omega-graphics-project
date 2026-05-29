@@ -1394,6 +1394,14 @@ namespace omegasl {
                         fname == BUILTIN_FACEFORWARD || fname == BUILTIN_REFRACT){
                     expectedArgs = 3;
                 }
+                /// §5.3 — integer / bitfield ops, Phase A. `countbits` /
+                /// `reversebits` are 1-arg, same-type-out; the integer-only
+                /// operand rule is enforced in the return-handling block below.
+                bool isIntUnary = (fname == BUILTIN_COUNTBITS ||
+                                   fname == BUILTIN_REVERSEBITS);
+                if(isIntUnary){
+                    expectedArgs = 1;
+                }
 
                 /// Matrix intrinsics with special return types
                 bool isTranspose = (fname == "transpose");
@@ -1542,6 +1550,27 @@ namespace omegasl {
                         return nullptr;
                     }
                     return ast::TypeExpr::Create(vectorTypeForScalarArity(ast::builtins::bool_type, info.arity));
+                }
+                /// §5.3 — countbits / reversebits accept only integer
+                /// scalar/vector operands and return the operand's type.
+                /// Stamp the resolved arg type so each backend can read the
+                /// operand shape at the call site (GLSL casts bitCount's
+                /// signed result back to the operand type; HLSL expands
+                /// vectors component-wise because HLSL's countbits /
+                /// reversebits are scalar-uint only).
+                if(isIntUnary && firstArgType){
+                    auto a0 = resolveTypeWithExpr(firstArgType);
+                    auto info = vectorComponentInfo(a0);
+                    bool ok = (a0 == ast::builtins::int_type ||
+                               a0 == ast::builtins::uint_type ||
+                               info.scalar == ast::builtins::int_type ||
+                               info.scalar == ast::builtins::uint_type);
+                    if(!ok){
+                        reportBoolErr("`" + std::string(fname) + "` requires an integer scalar or vector operand (int / uint / intN / uintN).");
+                        return nullptr;
+                    }
+                    _expr->args[0]->resolvedType = firstArgType;
+                    return firstArgType;
                 }
                 if(returnsScalar && firstArgType){
                     return ast::TypeExpr::Create(ast::builtins::float_type);

@@ -185,6 +185,17 @@ typedef int ASTType;
 #define BUILTIN_EQUAL "equal"
 #define BUILTIN_NOTEQUAL "notEqual"
 
+/// §5.3 — integer / bitfield ops. Phase A: `countbits` / `reversebits`
+/// are 1-arg, same-type-out (population count / bit-reverse), restricted
+/// to integer scalar/vector operands (int/uint/intN/uintN). Per backend:
+///   countbits   → popcount (MSL, native T→T) / bitCount (GLSL, returns a
+///     *signed* iN — cast back to the operand type) / countbits (HLSL,
+///     scalar-uint only — vectors expand component-wise, signed casts back).
+///   reversebits → reverse_bits (MSL) / bitfieldReverse (GLSL, T→T native) /
+///     reversebits (HLSL, scalar-uint only — same vector expansion).
+#define BUILTIN_COUNTBITS "countbits"
+#define BUILTIN_REVERSEBITS "reversebits"
+
 /// §5.1.0 — `mod` / `mad` are accepted as aliases of the canonical
 /// `fmod` / `fma` spellings (see `ast::canonicalBuiltinAlias`). They
 /// carry no separate semantics: `mod` is truncation-modulus like `fmod`

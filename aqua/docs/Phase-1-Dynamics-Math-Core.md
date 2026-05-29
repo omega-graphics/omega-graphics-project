@@ -510,9 +510,14 @@ borrowed `FVec`/`FQuaternion` appear, per the roadmap's boundary rule.
 ## 11. Open decisions for this phase
 
 1. **Angular state — body-frame `ω` + implicit gyroscopic vs. world `L` (momentum
-   form).** *Lean: `ω` + implicit gyroscopic* — best stability per FLOP and it maps
-   onto GTE's analytic 3×3 inverse. Revisit if Phase 3 contact coupling makes the
-   momentum form's exact conservation more valuable.
+   form).** *DECIDED: `ω` + implicit gyroscopic.* The implementation A/B'd both on
+   the torque-free asymmetric scene (ω≈8 rad/s, 20 s): the implicit-gyroscopic step
+   drifts ‖L‖ ≈1.4% and energy ≈2.7% at dt=1/2000 (both clean O(dt)); the momentum
+   form conserves ‖L‖ *exactly* but its energy drift is ≈9% — ~3× worse — at the
+   same dt. We are after a *better, balanced* solution, not exact conservation
+   (which this scheme will never give), so the implicit-gyroscopic lead stands: its
+   energy behaviour is the more balanced of the two. Revisit only if Phase 3 contact
+   coupling makes exact ‖L‖ conservation worth the energy cost.
 2. **Inertia representation — diagonal principal moments (`FVec<3>`) vs. full
    `Matrix<Ty,3,3>`.** *Lean: diagonal + orientation* (as PhysX/Chaos), with
    `diagonalizeInertia` (Jacobi) for arbitrary cooked tensors. Keeps the gyroscopic
@@ -522,8 +527,14 @@ borrowed `FVec`/`FQuaternion` appear, per the roadmap's boundary rule.
 4. **Scalar/parity policy — which `Ty` is the oracle.** *Lean: `double` CPU
    reference, `float` GPU/production*, feeding the §6 harness. (Connects to roadmap
    §7 decision #4, determinism guarantee.)
-5. **Symplectic ordering & sub-step count** inside `AQContext`'s fixed step — adopt
-   the small-steps posture (more sub-steps, one solve) from Müller 2020.
+5. **Symplectic ordering & sub-step count** inside `AQContext`'s fixed step —
+   *DECIDED, and now a REQUIREMENT:* adopt the small-steps posture (more sub-steps,
+   one solve) from Müller 2020. Because decision #1's conservation error is O(dt)
+   and secular, the sub-step size is a *correctness* knob for fast rotational
+   bodies, not just a quality dial — a fast spinner drifts ≈20× more at the default
+   1/120 s than at 1/2000 s. `AQContext` is built on a fixed sub-step accumulator
+   precisely so callers can (must) shrink `setFixedTimestep` to the scene's angular
+   rates. Marked necessary in `AQContext.h`.
 6. **Math placement & namespace.** New owned math in `namespace aqua`
    (`include/aqua/AQMath.h`) vs. global `AQ`-prefixed free functions, matching the
    existing public types. *Lean: `namespace aqua`* — but mechanical to flip; the

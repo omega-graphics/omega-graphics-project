@@ -1,0 +1,41 @@
+// §5.3 Phase A — integer / bitfield ops: countbits / reversebits.
+//   countbits(x)   — population count, returns the operand's type.
+//   reversebits(x) — bit reversal, returns the operand's type.
+// Covers scalar uint/int and uint4/int4 vector operands. Per backend:
+//   MSL  — popcount / reverse_bits (native, T -> T).
+//   GLSL — bitfieldReverse (native) / bitCount (signed result cast back).
+//   HLSL — scalar-uint countbits / reversebits; signed scalars cast back,
+//          vector operands expanded component-wise.
+
+struct Data { uint4 value; };
+
+buffer<Data> input : 0;
+buffer<Data> output : 1;
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_count_reverse_scalar(uint3 tid : GlobalThreadID){
+    uint u = input[0].value[0];
+    int  i = (int)input[0].value[1];
+
+    uint cu = countbits(u);          // uint -> uint
+    int  ci = countbits(i);          // int  -> int  (signed cast on HLSL)
+    uint ru = reversebits(u);        // uint -> uint
+    int  ri = reversebits(i);        // int  -> int
+
+    output[0].value = uint4(cu, (uint)ci, ru, (uint)ri);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_count_reverse_vector(uint3 tid : GlobalThreadID){
+    uint4 uv = input[0].value;
+    int4  iv = int4((int)uv[0], (int)uv[1], (int)uv[2], (int)uv[3]);
+
+    uint4 cu = countbits(uv);        // HLSL expands component-wise
+    int4  ci = countbits(iv);
+    uint4 ru = reversebits(uv);
+    int4  ri = reversebits(iv);
+
+    output[0].value = cu + ru + uint4((uint)ci.x, (uint)ci.y, (uint)ri.x, (uint)ri.y);
+}

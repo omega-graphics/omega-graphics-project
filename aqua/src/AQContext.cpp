@@ -41,7 +41,13 @@ void AQContext::advance(float realDt) {
 float AQContext::fixedTimestep() const { return fixedDt; }
 
 void AQContext::setFixedTimestep(float dt) {
-    if (dt > 0.f) fixedDt = dt;
+    if (dt > 0.f && dt != fixedDt) {
+        fixedDt = dt;
+        // The sub-step drives ‖ω‖·dt, so a changed step can flip a body into (or
+        // out of) the inaccurate regime — re-arm each space's per-body fast-spin
+        // warning so genuine new violations are reported.
+        for (auto &space : spaces) space->resetStepWarnings();
+    }
 }
 
 double AQContext::elapsed() const { return elapsedTime; }

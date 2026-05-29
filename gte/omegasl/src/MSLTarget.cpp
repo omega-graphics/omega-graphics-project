@@ -567,6 +567,11 @@ using namespace metal;
     OmegaCommon::StrRef MSLTarget::renameBuiltin(OmegaCommon::StrRef name) {
         if (name == BUILTIN_LERP) return "mix";
         if (name == BUILTIN_FRAC) return "fract";
+        /// §5.3 — MSL spells the integer ops differently; both are native
+        /// on integer scalars and vectors (T → T), so a plain rename is
+        /// enough and the operand-typed return contract holds.
+        if (name == BUILTIN_COUNTBITS)   return "popcount";
+        if (name == BUILTIN_REVERSEBITS) return "reverse_bits";
         if (name == BUILTIN_MAKE_FLOAT2)   return "float2";
         if (name == BUILTIN_MAKE_FLOAT3)   return "float3";
         if (name == BUILTIN_MAKE_FLOAT4)   return "float4";

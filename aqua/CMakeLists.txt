@@ -22,3 +22,9 @@ target_compile_definitions(AQUA PRIVATE AQUA__BUILD__)
 # own solver or integrates an external SDK is an open decision — if it integrates
 # one, add the dependency here and the clone entry to AUTOMDEPS, and keep the
 # backend types out of include/aqua/.
+
+# Phase 1 deliverable + math/parity unit tests. Opt-out with -DAQUA_BUILD_TESTS=OFF.
+option(AQUA_BUILD_TESTS "Build AQUA unit/validation tests" ON)
+if(AQUA_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()
