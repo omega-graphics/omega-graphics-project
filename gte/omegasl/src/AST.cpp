@@ -676,6 +676,7 @@ namespace omegasl::ast {
             BUILTIN_EQUAL, BUILTIN_NOTEQUAL,
             /// §5.3 integer / bitfield ops.
             BUILTIN_COUNTBITS, BUILTIN_REVERSEBITS,
+            BUILTIN_FIRSTBITHIGH, BUILTIN_FIRSTBITLOW,
             /// Matrix intrinsics (string-matched in Sema).
             "transpose", "determinant",
             /// Compute barriers.

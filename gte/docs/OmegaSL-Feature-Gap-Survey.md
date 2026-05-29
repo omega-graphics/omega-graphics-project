@@ -1531,14 +1531,14 @@ determinants. Registered as `omegagte_matrix_ops` in each backend's test
 confirm those backends. Writing this test surfaced and fixed the Metal
 buffer-IO trailing-padding bug noted under §2.4.
 
-### 5.3 Integer / bitfield ops [Phase A LANDED — countbits / reversebits]
+### 5.3 Integer / bitfield ops [Phases A+B LANDED — countbits / reversebits / firstbit*]
 
 | Function | HLSL | MSL | GLSL | Status |
 |----------|------|-----|------|--------|
 | `countbits`       | yes (scalar-uint) | `popcount` | `bitCount` | **Phase A landed** |
 | `reversebits`     | yes (scalar-uint) | `reverse_bits` | `bitfieldReverse` | **Phase A landed** |
-| `firstbitlow`     | yes | `ctz` | `findLSB` | Phase B (planned) |
-| `firstbithigh`    | yes | `clz` | `findMSB` | Phase B (planned) |
+| `firstbitlow`     | yes (scalar/vec/signed) | `ctz` | `findLSB` | **Phase B landed** |
+| `firstbithigh`    | yes (scalar/vec/signed) | `clz` | `findMSB` | **Phase B landed** |
 | `bitfieldExtract` / `bitfieldInsert` | **no named intrinsic (manual shift/mask)** | `extract_bits` / `insert_bits` | yes | Phase C (planned) |
 
 Needed for hashing, compression formats, occupancy masks. Operand domain
@@ -1578,8 +1578,40 @@ Tests: `bitfield_ops.omegasl` (scalar + vector `countbits`/`reversebits`
 on int/uint), `invalid_bitfield_ops.omegasl` (float operand + arg-count
 negatives). Metal compiled end-to-end; the emitted HLSL compiles under
 `dxc -T cs_6_0` and the emitted GLSL under `glslc -fshader-stage=comp`
-(both installed on this host) — not just `-S` source inspection. Full
-omegasl ctest suite (96 tests) green.
+(both installed on this host) — not just `-S` source inspection.
+
+**Phase B — `firstbithigh` / `firstbitlow` (landed, fully normalized).**
+Both are 1-arg, accept the same integer scalar/vector operands, but return
+a signed `int` / `intN` giving the **zero-based index of the highest /
+lowest set bit, or `-1` when no bit is set** — *identical on every
+backend*, including the zero and sign-bit cases. The operand is treated as
+its raw unsigned bit pattern so signed and unsigned operands agree. GLSL
+`findMSB`/`findLSB` is the reference contract; the host-equivalence of all
+three lowerings was checked numerically before coding. Per backend:
+
+* **GLSL** — `findMSB(uint(x))` / `findLSB(uint(x))` (native; already returns
+  the signed index and `-1` on zero).
+* **HLSL** — `(intN)firstbithigh(uintN(x))` / `(intN)firstbitlow(uintN(x))`.
+  Unlike `countbits`, HLSL's `firstbit*` accept scalar, vector, *and* signed
+  operands (verified with dxc), so no component expansion is needed; the
+  `0xFFFFFFFF`-on-zero result maps to `-1` for free via the `(int)` cast.
+* **MSL** — `firstbithigh → (31 - intN(clz(uintN(x))))` (`clz(0)==32` gives
+  `-1`); `firstbitlow → select(intN(ctz(uintN(x))), intN(-1), x==0)` (MSL's
+  `ctz(0)==32`, so the zero case is fixed with a component-wise `select`).
+
+A shared `CodeGen::intOperandShape` classifies the operand (signedness +
+arity) for all three backends. The normalization is proven on **real GPU
+hardware** by `gte/tests/bitfield_ops_test.cpp` (`omegagte_bitfield_ops`),
+a compute dispatch that runs all four ops on edge-case operands
+(`0` / `1` / `0x80000000` / `0xFFFFFFFF`) and asserts the readback matches
+the host contract (`-1` on zero, index 0/31/31, popcount 0/1/1/32, and
+`reversebits` against a host reference computed on-GPU to avoid float
+round-trip loss).
+
+Verification: full omegasl ctest suite (96 tests) green; the GPU
+`omegagte_bitfield_ops` test passes on Metal; emitted HLSL/GLSL compile
+under dxc / glslc. (D3D12/Vulkan runtime still pending CI, but the source
+compiles on their real toolchains here.)
 
 ### 5.4 Derivatives — already on the "not implemented" list
 

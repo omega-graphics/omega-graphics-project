@@ -196,6 +196,23 @@ typedef int ASTType;
 #define BUILTIN_COUNTBITS "countbits"
 #define BUILTIN_REVERSEBITS "reversebits"
 
+/// §5.3 — Phase B: `firstbithigh` / `firstbitlow` find the highest / lowest
+/// set bit of an integer scalar/vector operand. Fully normalized across
+/// backends: the operand is treated as its raw *unsigned* bit pattern, and
+/// the result is a signed `int` / `intN` giving the zero-based bit index,
+/// or `-1` when no bit is set (operand is 0). GLSL `findMSB`/`findLSB` is
+/// the reference (it already returns int/`-1`); the other two are converted
+/// to match (host-verified identical for every input incl. 0 / sign bit):
+///   firstbithigh → findMSB(uint)              (GLSL, native)
+///                → (intN)firstbithigh(uint)    (HLSL, 0xFFFFFFFF-on-0 → -1)
+///                → 31 - intN(clz(uint))        (MSL, clz(0)=32 → -1)
+///   firstbitlow  → findLSB(uint)              (GLSL, native)
+///                → (intN)firstbitlow(uint)     (HLSL, 0xFFFFFFFF-on-0 → -1)
+///                → select(intN(ctz(uint)), -1, x==0)  (MSL)
+/// The result is always signed int/intN regardless of operand signedness.
+#define BUILTIN_FIRSTBITHIGH "firstbithigh"
+#define BUILTIN_FIRSTBITLOW "firstbitlow"
+
 /// §5.1.0 — `mod` / `mad` are accepted as aliases of the canonical
 /// `fmod` / `fma` spellings (see `ast::canonicalBuiltinAlias`). They
 /// carry no separate semantics: `mod` is truncation-modulus like `fmod`

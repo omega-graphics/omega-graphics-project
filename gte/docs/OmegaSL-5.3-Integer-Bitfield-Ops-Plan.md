@@ -124,7 +124,27 @@ here; that part of the memory holds.)
   arg, arg count). Register `omegagte_bitfield` shaders in
   `tests/CMakeLists.txt`. Metal end-to-end; HLSL/GLSL via `-S`.
 
-### Phase B — `firstbithigh`, `firstbitlow` (full normalization)
+### Phase B — `firstbithigh`, `firstbitlow` (full normalization) — **LANDED**
+
+**Landed.** Normalized contract: signed `int`/`intN`, zero-based index of
+the high/low set bit, `-1` when no bit set — identical on all three
+backends. Two findings from probing the real toolchains (dxc/glslc/metal,
+all installed here) simplified the plan:
+
+* HLSL `firstbithigh`/`firstbitlow` accept scalar, vector, **and signed**
+  operands — so, unlike `countbits`, *no* component expansion is needed.
+  `(intN)firstbit*(uintN(x))` handles everything, with `0xFFFFFFFF→-1` free
+  via the cast.
+* The three lowerings were proven host-equivalent for every edge case
+  (`0`/`1`/MSB/all-ones) by a throwaway C program *before* transcription,
+  then re-verified on real GPU hardware by `gte/tests/bitfield_ops_test.cpp`.
+
+Per backend (see `AST.def` §5.3 comment for the exact forms): GLSL
+`findMSB/findLSB(uint(x))` native; HLSL `(intN)firstbit*(uintN(x))`; MSL
+`31 - intN(clz(uintN(x)))` and `select(intN(ctz(uintN(x))), -1, x==0)`. A
+shared `CodeGen::intOperandShape` classifies operand signedness+arity.
+
+Implemented as planned otherwise:
 
 * **AST/Sema**: `BUILTIN_FIRSTBITHIGH`, `BUILTIN_FIRSTBITLOW`; same integer
   1-arg bucket, but the **return type is `int`/`intN`** regardless of

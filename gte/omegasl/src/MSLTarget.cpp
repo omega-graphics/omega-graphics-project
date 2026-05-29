@@ -564,6 +564,16 @@ using namespace metal;
 
     bool MSLTarget::supportsPointerExpr() const { return true; }
 
+    /// §5.3 — MSL spelling of an int/uint scalar or vector type, used by the
+    /// firstbit normalization lowering.
+    static const char *metalIntSpelling(bool isSigned, int arity){
+        if(isSigned)
+            switch(arity){ case 2: return "int2"; case 3: return "int3";
+                           case 4: return "int4"; default: return "int"; }
+        switch(arity){ case 2: return "uint2"; case 3: return "uint3";
+                       case 4: return "uint4"; default: return "uint"; }
+    }
+
     OmegaCommon::StrRef MSLTarget::renameBuiltin(OmegaCommon::StrRef name) {
         if (name == BUILTIN_LERP) return "mix";
         if (name == BUILTIN_FRAC) return "fract";
@@ -572,6 +582,10 @@ using namespace metal;
         /// enough and the operand-typed return contract holds.
         if (name == BUILTIN_COUNTBITS)   return "popcount";
         if (name == BUILTIN_REVERSEBITS) return "reverse_bits";
+        /// §5.3 Phase B firstbithigh/firstbitlow are NOT plain renames on
+        /// MSL — `clz`/`ctz` return zero-*counts*, not bit indices, and the
+        /// normalized -1-on-zero result needs a conversion. Handled in
+        /// `tryEmitBuiltinCall`.
         if (name == BUILTIN_MAKE_FLOAT2)   return "float2";
         if (name == BUILTIN_MAKE_FLOAT3)   return "float3";
         if (name == BUILTIN_MAKE_FLOAT4)   return "float4";
@@ -652,6 +666,32 @@ using namespace metal;
         }
         if (name == BUILTIN_DEVICE_BARRIER) {
             out << "threadgroup_barrier(mem_flags::mem_device)";
+            return true;
+        }
+        /// §5.3 Phase B — firstbithigh / firstbitlow normalization on MSL.
+        /// The operand is cast to its unsigned form so signed and unsigned
+        /// operands agree (the index of the raw bit pattern). `intN(...)` /
+        /// `int` is the result type Sema assigned.
+        ///   firstbithigh(x) → (31 - intN(clz(uintN(x))))
+        ///     clz(0) == bitwidth (32), so 31 - 32 == -1 for zero. ✔
+        ///   firstbitlow(x)  → select(intN(ctz(uintN(x))), intN(-1), x == 0)
+        ///     ctz(0) == 32 on MSL, which is not -1, so the zero case is
+        ///     fixed explicitly with a component-wise `select`.
+        if (name == BUILTIN_FIRSTBITHIGH || name == BUILTIN_FIRSTBITLOW) {
+            if (_expr->args.size() != 1) return false;
+            auto *ty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+            bool isSigned; int arity;
+            if (!cg.intOperandShape(ty, isSigned, arity)) return false;
+            const char *uSpell = metalIntSpelling(false, arity); // uint / uintN
+            const char *iSpell = metalIntSpelling(true, arity);  // int / intN
+            std::string a = cg.renderExprToString(_expr->args[0]);
+            std::string u = std::string(uSpell) + "(" + a + ")";
+            if (name == BUILTIN_FIRSTBITHIGH) {
+                out << "(31 - " << iSpell << "(clz(" << u << ")))";
+            } else {
+                out << "select(" << iSpell << "(ctz(" << u << ")), "
+                    << iSpell << "(-1), " << u << " == " << uSpell << "(0))";
+            }
             return true;
         }
         /// §5.2 — Metal has no matrix `inverse`; lower to an injected

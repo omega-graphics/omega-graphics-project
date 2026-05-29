@@ -1402,6 +1402,15 @@ namespace omegasl {
                 if(isIntUnary){
                     expectedArgs = 1;
                 }
+                /// §5.3 — Phase B. `firstbithigh` / `firstbitlow` are 1-arg
+                /// with the same integer-operand rule, but the *return type*
+                /// is always signed int / intN (the normalized bit-index /
+                /// `-1` contract), independent of operand signedness.
+                bool isFirstBit = (fname == BUILTIN_FIRSTBITHIGH ||
+                                   fname == BUILTIN_FIRSTBITLOW);
+                if(isFirstBit){
+                    expectedArgs = 1;
+                }
 
                 /// Matrix intrinsics with special return types
                 bool isTranspose = (fname == "transpose");
@@ -1558,18 +1567,26 @@ namespace omegasl {
                 /// signed result back to the operand type; HLSL expands
                 /// vectors component-wise because HLSL's countbits /
                 /// reversebits are scalar-uint only).
-                if(isIntUnary && firstArgType){
+                if((isIntUnary || isFirstBit) && firstArgType){
                     auto a0 = resolveTypeWithExpr(firstArgType);
                     auto info = vectorComponentInfo(a0);
-                    bool ok = (a0 == ast::builtins::int_type ||
-                               a0 == ast::builtins::uint_type ||
-                               info.scalar == ast::builtins::int_type ||
-                               info.scalar == ast::builtins::uint_type);
-                    if(!ok){
+                    bool scalarInt = (a0 == ast::builtins::int_type ||
+                                      a0 == ast::builtins::uint_type);
+                    bool vecInt = (info.scalar == ast::builtins::int_type ||
+                                   info.scalar == ast::builtins::uint_type);
+                    if(!scalarInt && !vecInt){
                         reportBoolErr("`" + std::string(fname) + "` requires an integer scalar or vector operand (int / uint / intN / uintN).");
                         return nullptr;
                     }
                     _expr->args[0]->resolvedType = firstArgType;
+                    /// firstbithigh / firstbitlow return a signed int / intN
+                    /// of matching arity (the normalized index / -1 result);
+                    /// countbits / reversebits keep the operand's type.
+                    if(isFirstBit){
+                        int arity = scalarInt ? 1 : info.arity;
+                        return ast::TypeExpr::Create(
+                            vectorTypeForScalarArity(ast::builtins::int_type, arity));
+                    }
                     return firstArgType;
                 }
                 if(returnsScalar && firstArgType){

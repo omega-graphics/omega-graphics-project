@@ -1255,6 +1255,32 @@ namespace omegasl {
             out << "))";
             return true;
         }
+        /// §5.3 Phase B — firstbithigh / firstbitlow. GLSL is the reference
+        /// for the normalized contract: `findMSB`/`findLSB` already return a
+        /// signed int / ivec and `-1` when no bit is set. To make signed and
+        /// unsigned operands agree on the raw-bit-pattern index, the operand
+        /// is first cast to its unsigned spelling (findMSB(int) treats the
+        /// sign bit specially; findMSB(uint) is the plain MSB index that
+        /// matches HLSL/MSL). The signed result type is what Sema assigned.
+        if (name == BUILTIN_FIRSTBITHIGH || name == BUILTIN_FIRSTBITLOW) {
+            if (_expr->args.size() != 1) return false;
+            auto *ty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+            bool isSigned; int arity;
+            if(!cg.intOperandShape(ty, isSigned, arity)) return false;
+            /// Unsigned spelling for the cast; the surrounding findMSB/findLSB
+            /// returns the signed iN result directly.
+            const char *uvec = glslIntTypeSpelling(
+                isSigned ? (arity==1?ast::builtins::uint_type
+                          : arity==2?ast::builtins::uint2_type
+                          : arity==3?ast::builtins::uint3_type
+                          : ast::builtins::uint4_type)
+                         : ty);
+            const char *fn = (name == BUILTIN_FIRSTBITHIGH) ? "findMSB" : "findLSB";
+            out << fn << "(" << uvec << "(";
+            cg.generateExpr(_expr->args[0]);
+            out << "))";
+            return true;
+        }
         /// §5.1: GLSL has no `saturate` — rewrite `saturate(x)` as
         /// `clamp(x, 0.0, 1.0)`. GLSL's `clamp(genType, float, float)`
         /// overload broadcasts the scalar bounds across vector x, so the

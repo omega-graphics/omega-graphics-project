@@ -514,6 +514,19 @@ namespace omegasl {
         return true;
     }
 
+    bool CodeGen::intOperandShape(ast::Type *t, bool &isSigned, int &arity) {
+        using namespace ast::builtins;
+        struct Row { ast::Type *ty; bool sign; int n; };
+        const Row rows[] = {
+            {int_type, true, 1},  {int2_type, true, 2},  {int3_type, true, 3},  {int4_type, true, 4},
+            {uint_type, false, 1},{uint2_type, false, 2},{uint3_type, false, 3},{uint4_type, false, 4},
+        };
+        for (const auto &r : rows) {
+            if (t == r.ty) { isSigned = r.sign; arity = r.n; return true; }
+        }
+        return false;
+    }
+
     bool CodeGen::emitVectorCompare(ast::CallExpr *call, OmegaCommon::StrRef name, std::ostream &out) {
         const char *op = nullptr;
         if (name == BUILTIN_LESSTHAN)              op = "<";

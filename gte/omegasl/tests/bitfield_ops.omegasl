@@ -39,3 +39,35 @@ void test_count_reverse_vector(uint3 tid : GlobalThreadID){
 
     output[0].value = cu + ru + uint4((uint)ci.x, (uint)ci.y, (uint)ri.x, (uint)ri.y);
 }
+
+// §5.3 Phase B — firstbithigh / firstbitlow.
+//   Return a signed int / intN: the zero-based index of the highest /
+//   lowest set bit, or -1 when no bit is set. Normalized identically on
+//   all three backends (verified by host equivalence + GPU runtime test).
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_firstbit_scalar(uint3 tid : GlobalThreadID){
+    uint u = input[0].value[0];
+    int  i = (int)input[0].value[1];
+
+    int hu = firstbithigh(u);        // uint  -> int
+    int lu = firstbitlow(u);
+    int hi = firstbithigh(i);        // signed operand, same normalized index
+    int li = firstbitlow(i);
+
+    output[0].value = uint4((uint)hu, (uint)lu, (uint)hi, (uint)li);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_firstbit_vector(uint3 tid : GlobalThreadID){
+    uint4 uv = input[0].value;
+    int4  iv = int4((int)uv[0], (int)uv[1], (int)uv[2], (int)uv[3]);
+
+    int4 hu = firstbithigh(uv);      // uint4 -> int4
+    int4 lu = firstbitlow(uv);
+    int4 hi = firstbithigh(iv);
+    int4 li = firstbitlow(iv);
+
+    output[0].value = uint4((uint)hu.x, (uint)lu.y, (uint)hi.z, (uint)li.w);
+}

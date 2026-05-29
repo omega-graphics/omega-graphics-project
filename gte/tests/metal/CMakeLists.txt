@@ -149,3 +149,20 @@ add_metal_cli_test(
 target_link_options("MatrixOpsTest" PRIVATE
     "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
 add_test(NAME omegagte_matrix_ops COMMAND MatrixOpsTest)
+
+# OmegaSL §5.3 — integer / bitfield-op GPU integration test (shared, backend-
+# independent source under gte/tests/). Proves the firstbit normalization
+# (countbits / reversebits / firstbithigh / firstbitlow) agrees with the host
+# contract on real hardware.
+add_metal_cli_test(
+    NAME
+    "BitfieldOpsTest"
+    SOURCES
+    "../bitfield_ops_test.cpp"
+    FRAMEWORKS
+    "Metal"
+    "Foundation"
+)
+target_link_options("BitfieldOpsTest" PRIVATE
+    "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
+add_test(NAME omegagte_bitfield_ops COMMAND BitfieldOpsTest)

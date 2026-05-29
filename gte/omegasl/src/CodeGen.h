@@ -399,6 +399,14 @@ namespace omegasl {
         /// (caller falls through) if `name` is not one of the six compares.
         bool emitVectorCompare(ast::CallExpr *call, OmegaCommon::StrRef name, std::ostream &out);
 
+        /// §5.3 — classify a resolved integer scalar / vector type for the
+        /// bitfield ops. Sets `isSigned` (int vs uint family) and `arity`
+        /// (1 for scalar, 2/3/4 for vectors) and returns true; returns
+        /// false for any non-integer type (the backends fall through, which
+        /// Sema already rejects upstream). Shared so every backend's
+        /// firstbit / bitfield lowering reads the operand shape one way.
+        bool intOperandShape(ast::Type *t, bool &isSigned, int &arity);
+
         /// Current block-nesting depth, in indentation levels (one
         /// level == 4 spaces after Phase 7.5 unification). Each
         /// `generateBlock` call increments at entry and decrements at

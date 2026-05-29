@@ -598,6 +598,27 @@ namespace omegasl {
         /// lower signed-cast + vector component-expansion here.
         if (name == BUILTIN_COUNTBITS)   return hlslEmitIntUnary(cg, _expr, "countbits", out);
         if (name == BUILTIN_REVERSEBITS) return hlslEmitIntUnary(cg, _expr, "reversebits", out);
+        /// §5.3 Phase B — firstbithigh / firstbitlow. Unlike countbits,
+        /// HLSL's `firstbithigh`/`firstbitlow` accept scalar, vector, AND
+        /// signed operands (verified with dxc), so no component expansion is
+        /// needed. They return `uint`/`uintN` with `0xFFFFFFFF` when no bit
+        /// is set. Cast the operand to unsigned (so signed operands index
+        /// the raw bit pattern, matching findMSB(uint)), then cast the whole
+        /// result to the signed iN Sema assigned — `(int)0xFFFFFFFF == -1`
+        /// gives the normalized zero contract for free.
+        if (name == BUILTIN_FIRSTBITHIGH || name == BUILTIN_FIRSTBITLOW) {
+            if (_expr->args.size() != 1) return false;
+            auto *ty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+            bool isSigned; int arity;
+            if (!cg.intOperandShape(ty, isSigned, arity)) return false;
+            const char *uSpell = hlslIntSpelling(false, arity); // uint / uintN
+            const char *iSpell = hlslIntSpelling(true, arity);  // int / intN
+            const char *fn = (name == BUILTIN_FIRSTBITHIGH) ? "firstbithigh" : "firstbitlow";
+            out << "(" << iSpell << ")" << fn << "(" << uSpell << "(";
+            cg.generateExpr(_expr->args[0]);
+            out << "))";
+            return true;
+        }
         /// §5.1.0 — frexp. HLSL's `frexp(x, out exp)` writes a *float*
         /// exponent, but OmegaSL types the exponent out-param as int/intN.
         /// Capture the mantissa and the float exponent in temporaries, cast
