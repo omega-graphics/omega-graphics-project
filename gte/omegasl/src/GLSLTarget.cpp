@@ -808,6 +808,13 @@ namespace omegasl {
         unsigned set = (shader->shaderType == ast::ShaderDecl::Fragment) ? 1 : 0;
         auto type_ = cg.typeResolver->resolveTypeWithExpr(res_decl->typeExpr);
 
+        /// §2.2/§10.2 — a push constant lives in a `layout(push_constant)`
+        /// block, not in a descriptor set, so it must NOT consume a `binding`
+        /// number (doing so would leave a hole in the otherwise-contiguous
+        /// descriptor bindings of the set). Set in the push-constant branch
+        /// and consulted at the shared tail to skip the `++binding`.
+        bool isPushConstant = false;
+
         if (type_ == ast::builtins::buffer_type) {
             layoutDesc.type = OMEGASL_SHADER_BUFFER_DESC;
             out << "layout(std430,set = " << set << ",binding = " << binding << ") ";
@@ -824,6 +831,26 @@ namespace omegasl {
             /// above, whose member is an unsized array).
             layoutDesc.type = OMEGASL_SHADER_UNIFORM_DESC;
             out << "layout(std140,set = " << set << ",binding = " << binding << ") ";
+            out << "uniform "; writeGLSLIdent(res_decl->name, out); out << "_Layout" << std::endl;
+            out << "{" << std::endl;
+            writeTypeName(cg.typeResolver->resolveTypeWithExpr(res_decl->typeExpr->args[0]),
+                          res_decl->typeExpr->args[0]->pointer, out);
+            out << " "; writeGLSLIdent(res_decl->name, out); out << ";" << std::endl;
+            out << "};" << std::endl;
+        } else if (type_ == ast::builtins::push_constant_type) {
+            /// §2.2/§10.2 push constant — a `layout(push_constant)` block, the
+            /// one resource form that does NOT live in a descriptor set: it
+            /// carries no `set`/`binding` and consumes no descriptor binding
+            /// slot (Vulkan binds it through the pipeline layout's
+            /// `VkPushConstantRange`, fed by `vkCmdPushConstants`). The block
+            /// holds a single struct member named after the resource, so
+            /// `name.field` resolves with no indexing (same value-access shape
+            /// as the uniform block above). std430 layout — push constants are
+            /// the tight, 128-byte-budgeted path; the Phase-B host-side writer
+            /// must pack std430 to match (distinct from uniform's std140).
+            layoutDesc.type = OMEGASL_SHADER_PUSH_CONSTANT_DESC;
+            isPushConstant = true;
+            out << "layout(push_constant,std430) ";
             out << "uniform "; writeGLSLIdent(res_decl->name, out); out << "_Layout" << std::endl;
             out << "{" << std::endl;
             writeTypeName(cg.typeResolver->resolveTypeWithExpr(res_decl->typeExpr->args[0]),
@@ -934,7 +961,9 @@ namespace omegasl {
         }
 
         layoutDesc.location = res_decl->registerNumber;
-        layoutDesc.gpu_relative_loc = binding;
+        /// A push constant has no descriptor binding; leave gpu_relative_loc 0
+        /// (unused by the Vulkan push-constant path, which keys off offset).
+        layoutDesc.gpu_relative_loc = isPushConstant ? 0 : binding;
         layoutDesc.offset = 0;
         layoutDesc.io_mode = ioMode;
         if (res_decl->isStatic) {
@@ -945,7 +974,9 @@ namespace omegasl {
             layoutDesc.sampler_desc.w_address_mode = res_decl->staticSamplerDesc->wAddressMode;
         }
 
-        ++binding;
+        if (!isPushConstant) {
+            ++binding;
+        }
     }
 
     OmegaCommon::StrRef GLSLTarget::discardStatement() { return "discard"; }

@@ -58,7 +58,25 @@ enum omegasl_shader_layout_desc_type : int {
     /// binding of it (D3D12 CBV / Vulkan UNIFORM_BUFFER) is Phase B and is
     /// not yet wired — a shader using `uniform<T>` compiles but cannot be
     /// bound until that lands.
-    OMEGASL_SHADER_UNIFORM_DESC
+    OMEGASL_SHADER_UNIFORM_DESC,
+
+    /// §2.2 (Pipeline-Completion) / §10.2 push constant (`constant<T>`).
+    /// Small (≤128 bytes portable), read-only, value-access constant data
+    /// bound *without* a descriptor/buffer allocation: D3D12 root constants
+    /// (`SetGraphics/ComputeRoot32BitConstants` at register `b`), Metal
+    /// `setBytes:length:atIndex:`, Vulkan `vkCmdPushConstants`
+    /// (`VkPushConstantRange`). Distinct from OMEGASL_SHADER_UNIFORM_DESC (a
+    /// CBV / bound uniform buffer), from OMEGASL_SHADER_CONSTANT_DESC (the
+    /// inline single-scalar push constant with a baked default value), and
+    /// from OMEGASL_SHADER_BUFFER_DESC (a structured/storage buffer).
+    /// Appended at the tail so existing descriptor-type integer slots are
+    /// preserved. Phase A (compile path) emits this in the layout; runtime
+    /// binding of it (root constants / setBytes / vkCmdPushConstants + the
+    /// `setRenderConstants`/`setComputeConstants` command API and the
+    /// pipeline-layout push range reservation) is Phase B and is not yet
+    /// wired — a shader using `constant<T>` compiles but cannot be bound
+    /// until that lands.
+    OMEGASL_SHADER_PUSH_CONSTANT_DESC
 };
 
 enum omegasl_shader_static_sampler_filter : int {

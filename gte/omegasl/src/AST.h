@@ -142,6 +142,9 @@ namespace omegasl {
             DECLARE_BUILTIN_TYPE(buffer_type);
             /// §2.4 constant / uniform buffer (read-only, value-access).
             DECLARE_BUILTIN_TYPE(uniform_type);
+            /// §2.2/§10.2 push constant (read-only, value-access; root
+            /// constants / setBytes / vkCmdPushConstants at runtime).
+            DECLARE_BUILTIN_TYPE(push_constant_type);
             DECLARE_BUILTIN_TYPE(texture1d_type);
             DECLARE_BUILTIN_TYPE(texture2d_type);
             DECLARE_BUILTIN_TYPE(texture3d_type);

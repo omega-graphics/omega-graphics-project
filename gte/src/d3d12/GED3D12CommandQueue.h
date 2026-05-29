@@ -117,6 +117,7 @@ _NAMESPACE_BEGIN_
         void bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned int id,
                                           const TextureSwizzle & swizzle) override;
         void bindResourceAtFragmentShader(SharedHandle<GESamplerState> &sampler, unsigned int id) override;
+        void setRenderConstants(const void *data, unsigned size, unsigned offset) override;
         void setStencilRef(unsigned int ref) override;
        
         void drawPolygons(RenderPassDrawPolygonType polygonType, unsigned int vertexCount, size_t startIdx) override;
@@ -148,6 +149,7 @@ _NAMESPACE_BEGIN_
                                          const TextureSwizzle & swizzle) override;
         void bindResourceAtComputeShader(SharedHandle<GESamplerState> &sampler, unsigned int id) override;
         void bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct, unsigned int id) override;
+        void setComputeConstants(const void *data, unsigned size, unsigned offset) override;
         void dispatchRays(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreads(unsigned int x, unsigned int y, unsigned int z) override;

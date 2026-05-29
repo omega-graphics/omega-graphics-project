@@ -73,7 +73,7 @@ struct MeshPipelineDescriptor {
     SharedHandle<GTEShader> fragmentFunc;      // required
 
     // Reuse render-pipeline state:
-    std::vector<ColorAttachmentDescriptor> colorAttachments;
+    OmegaCommon::Vector<ColorAttachmentDescriptor> colorAttachments;
     DepthStencilDescriptor                 depthStencil;
     RasterizationState                     rasterState;
     uint32_t                               sampleCount = 1;

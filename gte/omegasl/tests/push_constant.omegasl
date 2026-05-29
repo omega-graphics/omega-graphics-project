@@ -1,0 +1,76 @@
+/// §2.2 (Pipeline-Completion) / §10.2 push constants — compile path.
+///
+/// `constant<T>` is a third resource form after `buffer<T>` / `uniform<T>`:
+/// read-only, value-accessed (`pc.field`), never indexed, T must be a user
+/// struct. It is declared globally with an index and opted into per-shader
+/// via the resource map `[in pc]` — exactly the scoping every other resource
+/// uses: the declaration is global, but access is entry-scoped (not an
+/// ambient global), so a helper function receives the data as a parameter.
+///
+/// Per-backend emission:
+///   HLSL  → `ConstantBuffer<T> pc : register(bN, spaceM);` (root constants)
+///   MSL   → `constant T& pc [[buffer(N)]]`  (setBytes — same shape as uniform)
+///   GLSL  → `layout(push_constant,std430) uniform pc_Layout { T pc; };`
+///           (no set/binding — lives in the pipeline layout's push range)
+
+struct PushData {
+    float4x4 mvp;
+    float4   tint;
+    float    time;
+};
+
+struct VertexIn {
+    float4 pos;
+    float2 uv;
+};
+
+struct Raster internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+constant<PushData> pc    : 0;
+buffer<VertexIn>   verts : 1;
+
+/// Helper does NOT touch `pc` ambiently — the data is threaded in as a
+/// parameter, which is what Metal requires and what OmegaSL enforces for
+/// every resource.
+float4 applyTransform(float4 p, float4x4 m){
+    return m * p;
+}
+
+/// Vertex stage opts into the push constant via the resource map.
+[in pc, in verts]
+vertex Raster transformVert(uint vid : VertexID){
+    VertexIn v = verts[vid];
+    Raster out;
+    out.pos = applyTransform(v.pos, pc.mvp);
+    out.uv  = v.uv;
+    return out;
+}
+
+/// Fragment stage re-opts into the SAME global push-constant declaration —
+/// two stages of one pipeline can each `[in pc]` the same slot. Value access
+/// `pc.field`; no indexing.
+[in pc]
+fragment float4 shadeFrag(Raster input){
+    return pc.tint * pc.time;
+}
+
+/// Compute stage can use a push constant too (root constants /
+/// dispatch-time setBytes / vkCmdPushConstants).
+struct DispatchParams {
+    uint4 bounds;
+    float scale;
+};
+
+constant<DispatchParams> dp   : 0;
+buffer<VertexIn>         out_b : 1;
+
+[in dp, out out_b]
+compute(x=8,y=8,z=1)
+void scaleKernel(uint3 tid : GlobalThreadID){
+    if(tid[0] < dp.bounds[0]){
+        out_b[tid[0]].pos = out_b[tid[0]].pos * dp.scale;
+    }
+}

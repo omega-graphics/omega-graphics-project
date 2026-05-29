@@ -87,6 +87,23 @@ _NAMESPACE_BEGIN_
         /// slot in the fragment shader (Extension 8).
         virtual void bindResourceAtFragmentShader(SharedHandle<GESamplerState> & sampler,unsigned id) = 0;
 
+        /// @brief Set the push-constant data for the currently bound render
+        /// pipeline (Pipeline-Completion §2.2 / OmegaSL §10.2 `constant<T>`).
+        /// Small (≤128 bytes portable), updated per-draw without a buffer
+        /// allocation: D3D12 root constants, Metal `setVertexBytes`/
+        /// `setFragmentBytes`, Vulkan `vkCmdPushConstants`. There is no slot
+        /// argument — a pipeline may bind at most one push-constant block, and
+        /// the command applies it to every stage that declared it (`[in pc]`).
+        /// The bytes must already match the shader's std layout (std430 for
+        /// the GLSL/Vulkan `push_constant` block); this call does no packing.
+        /// Must be called inside a render pass with a pipeline bound.
+        /// @param data   Pointer to the constant bytes.
+        /// @param size   Size in bytes (max 128 portable).
+        /// @param offset Byte offset into the push-constant range (partial
+        ///               update). Honored on D3D12/Vulkan; Metal supports only
+        ///               offset == 0 (a full-block replace) and asserts otherwise.
+        virtual void setRenderConstants(const void *data, unsigned size, unsigned offset = 0) = 0;
+
         virtual void setStencilRef(unsigned ref) = 0;
 
         virtual void setViewports(std::vector<GEViewport> viewport) = 0;
@@ -273,6 +290,18 @@ _NAMESPACE_BEGIN_
 
          /// @brief Binds an Acceleration Structure Resource to a Descriptor in the scope of the Compute Shader.
         virtual void bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> & accelStruct,unsigned id) = 0;
+
+        /// @brief Set the push-constant data for the currently bound compute
+        /// pipeline (Pipeline-Completion §2.2 / OmegaSL §10.2 `constant<T>`).
+        /// Compute-pass counterpart of @c setRenderConstants — same one-block,
+        /// no-slot, no-packing contract; D3D12 `SetComputeRoot32BitConstants`,
+        /// Metal `setBytes`, Vulkan `vkCmdPushConstants`. Must be called inside
+        /// a compute pass with a pipeline bound.
+        /// @param data   Pointer to the constant bytes.
+        /// @param size   Size in bytes (max 128 portable).
+        /// @param offset Byte offset into the push-constant range; Metal
+        ///               supports only offset == 0.
+        virtual void setComputeConstants(const void *data, unsigned size, unsigned offset = 0) = 0;
 
         /// @brief Dispatches threadgroups in a Compute Pass.
         virtual void dispatchThreadgroups(unsigned x,unsigned y,unsigned z) = 0;

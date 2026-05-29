@@ -1298,6 +1298,35 @@ _NAMESPACE_BEGIN_
         vkCmdSetStencilReference(commandBuffer,faceflags,ref);
     }
 
+    // §2.2 push constant — a pipeline binds at most one block, so test whether
+    // a shader declares it (vs scanning for a slot id). Push constants carry
+    // no descriptor binding, so this only gates the vkCmdPushConstants stage
+    // flags / the no-op when the bound pipeline has none.
+    static bool shaderDeclaresPushConstant(const omegasl_shader &shader){
+        OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout, shader.pLayout + shader.nLayout};
+        for(auto & l : layoutArr){
+            if(l.type == OMEGASL_SHADER_PUSH_CONSTANT_DESC){ return true; }
+        }
+        return false;
+    }
+
+    void GEVulkanCommandBuffer::setRenderConstants(const void *data, unsigned size, unsigned offset){
+        assert(renderPipelineState && "setRenderConstants requires a bound render pipeline");
+        // Push to exactly the stages that declared `[in pc]`; this must equal
+        // the VkPushConstantRange's stageFlags built at pipeline-layout time
+        // (the union of using stages), satisfying the per-byte stage rule.
+        VkShaderStageFlags stages = 0;
+        if(shaderDeclaresPushConstant(renderPipelineState->vertexShader->internal)){
+            stages |= VK_SHADER_STAGE_VERTEX_BIT;
+        }
+        if(shaderDeclaresPushConstant(renderPipelineState->fragmentShader->internal)){
+            stages |= VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+        assert(stages != 0 && "setRenderConstants: bound pipeline declares no `constant<T>` push constant");
+        if(stages == 0){ return; }
+        vkCmdPushConstants(commandBuffer, renderPipelineState->layout, stages, offset, size, data);
+    }
+
     void GEVulkanCommandBuffer::setScissorRects(std::vector<GEScissorRect> scissorRects){
         std::vector<VkRect2D> vk_rects;
         for(auto & r : scissorRects){
@@ -1616,6 +1645,14 @@ _NAMESPACE_BEGIN_
             writeInfo.dstSet = computePipelineState->descSet;
             vkUpdateDescriptorSets(parentQueue->engine->device, 1, &writeInfo, 0, nullptr);
         }
+    }
+
+    void GEVulkanCommandBuffer::setComputeConstants(const void *data, unsigned size, unsigned offset){
+        assert(computePipelineState && "setComputeConstants requires a bound compute pipeline");
+        assert(shaderDeclaresPushConstant(computePipelineState->computeShader->internal)
+               && "setComputeConstants: bound pipeline declares no `constant<T>` push constant");
+        if(!shaderDeclaresPushConstant(computePipelineState->computeShader->internal)){ return; }
+        vkCmdPushConstants(commandBuffer, computePipelineState->layout, VK_SHADER_STAGE_COMPUTE_BIT, offset, size, data);
     }
 
     void GEVulkanCommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned int z){

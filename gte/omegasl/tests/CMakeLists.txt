@@ -119,6 +119,8 @@ add_omegasl_compile_test(omegasl_compile_const_param         const_param.omegasl
 add_omegasl_compile_test(omegasl_compile_nested_const        nested_const.omegasl)
 # §2.4 — uniform / constant buffers.
 add_omegasl_compile_test(omegasl_compile_uniform_buffer      uniform_buffer.omegasl)
+# §2.2/§10.2 — push constants (constant<T>).
+add_omegasl_compile_test(omegasl_compile_push_constant       push_constant.omegasl)
 # §6.1 — threadgroup / shared memory (incl. 2D shared-array indexing).
 add_omegasl_compile_test(omegasl_compile_threadgroup_shared  threadgroup_shared.omegasl)
 # §6.2 — compute barriers (threadgroupBarrier / deviceBarrier).
@@ -182,6 +184,8 @@ add_omegasl_fail_test(omegasl_invalid_function_overload_redecl       invalid_fun
 add_omegasl_fail_test(omegasl_invalid_function_overload_return_type  invalid_function_overload_return_type.omegasl)
 # §2.4 — uniform diagnostics (indexing / out-access / non-struct element).
 add_omegasl_fail_test(omegasl_invalid_uniform                invalid_uniform.omegasl)
+add_omegasl_fail_test(omegasl_invalid_push_constant          invalid_push_constant.omegasl)
+add_omegasl_fail_test(omegasl_invalid_duplicate_binding      invalid_duplicate_binding.omegasl)
 # Regression: `buffer` with no element type must diagnose, not crash.
 add_omegasl_fail_test(omegasl_invalid_buffer_no_args         invalid_buffer_no_args.omegasl)
 # §6.1 — threadgroup diagnostics (outside compute / initializer).

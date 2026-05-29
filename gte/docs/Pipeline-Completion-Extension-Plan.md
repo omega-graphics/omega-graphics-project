@@ -446,11 +446,57 @@ struct DispatchIndirectCommand {
 
 No compatibility concerns. All three backends support this universally.
 
-### 2.2 Push Constants
+### 2.2 Push Constants — Phase A (OmegaSL compile path) + Phase B (runtime) done
 
 Small, frequently-updated constants (≤128 bytes) that avoid buffer allocation overhead.
 
-**Add to `GECommandBuffer` (public, compute pass section):**
+**Phase A — OmegaSL `constant<T>` compile path (DONE).** The shader-language
+half landed (see OmegaSL §10.2 below for the implementation). A push constant
+is a third resource form after `buffer<T>` / `uniform<T>`:
+
+```
+struct PushData {
+    float4x4 mvp;
+    float    time;
+};
+constant<PushData> pc : 0;   // declared globally, opted into per-shader via [in pc]
+```
+
+It compiles to `ConstantBuffer<T>` at a `b` register (HLSL), `constant T&`
+(MSL, byte-identical to a uniform — `setBytes` and a bound buffer present the
+same way), and a `layout(push_constant,std430)` block (GLSL). The runtime
+descriptor type is the new `OMEGASL_SHADER_PUSH_CONSTANT_DESC`.
+
+**Phase B — runtime binding (DONE; Metal verified, D3D12/Vulkan written-from-source).**
+`setRenderConstants` / `setComputeConstants` are now on `GECommandBuffer`
+(`GERenderTarget.h`), with no slot argument: a pipeline binds at most one
+push-constant block, so the command scans the *bound pipeline's* shader layout
+for the single `OMEGASL_SHADER_PUSH_CONSTANT_DESC` entry and applies the bytes
+to every stage that declared it.
+
+- **Metal** (verified end-to-end on the macOS host via
+  `gte/tests/push_constant_test.cpp`): `setVertexBytes`/`setFragmentBytes`
+  (render) and `setBytes` (compute) at the push constant's buffer index. No
+  pipeline-layout change — Metal needs none. Partial updates (`offset != 0`)
+  are unsupported on Metal (setBytes replaces the whole binding) and assert.
+- **D3D12** (written-from-source): the root signature reserves a root
+  *32-bit-constants* param (`InitAsConstants`) at the push constant's `b`
+  register; binds via `SetGraphics/ComputeRoot32BitConstants`. Reserved at the
+  portable 128-byte cap (the layout desc doesn't carry the struct size — a
+  follow-up). `size`/`offset` must be 4-byte aligned.
+- **Vulkan** (written-from-source): the pipeline layout gains a single
+  `VkPushConstantRange` (union of using stages, 128-byte size); binds via
+  `vkCmdPushConstants`. Push constants add no descriptor binding.
+
+There is **no host-side packing**: `set{Render,Compute}Constants` take raw
+bytes and the caller owns the std-layout (std430 for the GLSL/Vulkan
+`push_constant` block). The 128-byte limit and one-push-constant-per-pipeline
+rule are runtime contracts (the latter is enforceable at pipeline creation;
+not yet asserted).
+
+**The originally-proposed signatures (now landed):**
+
+**`GECommandBuffer` (compute pass section):**
 
 ```cpp
 /// @brief Sets push constant data for the current compute pipeline.
@@ -482,18 +528,59 @@ void setRenderConstants(const void *data, unsigned size, unsigned offset = 0);
 - **Metal**: `setBytes:` is trivial and has no PSO interaction. The buffer index must not conflict with bound resources.
 - **Vulkan**: Push constants are declared in `VkPipelineLayout`. The pipeline layout must include a `VkPushConstantRange` at creation time.
 
-**OmegaSL integration**: Push constants need a way to be declared in the shader language. Propose a `constant` keyword:
+**OmegaSL integration** (ALEX QUESTION — resolved):
+
+> *Which syntax will semantically translate to each backend more
+> appropriately? And would push constants participate in the traditional
+> global resource index?*
+
+**Resolved: the `constant<T>` resource form, sharing the global resource
+index** — *not* the HLSL-cbuffer-style `constant { ... }` block.
 
 ```
-constant PerFrameData {
+struct PerFrameData {
     float4x4 viewProjection;
-    float time;
+    float    time;
 };
+constant<PerFrameData> myConst : 1;   // declared global, opted-in per shader via [in myConst]
 ```
 
-This compiles to a root constant range (D3D12), a `setBytes` buffer index (Metal), or a push constant block (Vulkan). The compiler's layout extraction already knows about resource bindings; push constants would be a new layout category. The OmegaSL lib will get use the omegasl_shader_constant_desc to describe the layout.
+The decision falls out of OmegaSL's existing resource model, not preference:
 
-**Recommendation**: Push constants require OmegaSL changes. Propose as a paired feature with OmegaSL push constant support rather than a standalone command buffer extension.
+- **Scope.** Every OmegaSL resource (`buffer<T>`, `uniform<T>`, textures) is
+  *declared globally with an index* and *opted into per shader* via the
+  resource map (`[in myConst]`); it is referenced by name only inside that
+  entry's body and is **not** an ambient global — a helper function receives
+  the value as a parameter. This is the only model that survives Metal, which
+  has no global resources at all. The block form (`constant { ... }`) would
+  make `viewProjection` / `time` ambient globals readable anywhere, which
+  OmegaSL does not do for any resource and Metal cannot express. So the
+  `constant<T>` form is the only one consistent with the language.
+- **Global resource index — yes.** The `: N` slot is drawn from the same
+  index as every other resource. Metal maps it to `[[buffer(N)]]` and D3D12 to
+  `register(bN)` with no collision; Vulkan ignores the number (the push range
+  is separate from descriptor sets, so on GLSL the slot consumes **no**
+  descriptor `binding`).
+- **Layout descriptor.** A *new* `OMEGASL_SHADER_PUSH_CONSTANT_DESC` (not the
+  pre-existing `omegasl_shader_constant_desc`, which is the unrelated inline
+  single-scalar push constant with a baked default value). Distinct from
+  `OMEGASL_SHADER_UNIFORM_DESC` so the runtime can drive the slot via root
+  constants / `setBytes` / `vkCmdPushConstants` instead of a CBV/bound buffer.
+
+**One-per-pipeline limit (runtime contract).** Vulkan allows only one
+`VkPushConstantRange` per pipeline layout and D3D12 root-constant space is
+scarce, so **at most one `constant<T>` may be bound across all stages of a
+pipeline**. OmegaSL compiles per-entry and cannot see the whole pipeline, so
+this is enforced at pipeline-creation time in Phase B (or documented as a
+contract), not at Sema. Two stages sharing the *same* declaration is fine.
+
+The portable **128-byte size limit** is likewise a Phase-B runtime check
+(the std-layout struct size is computed at bind time via
+`omegaSLStructStride`); the compiler has no byte-size walk today, matching how
+`uniform<T>` defers size to runtime.
+
+**Recommendation**: Phase A (above) is the paired OmegaSL feature and is done.
+Phase B is the standalone command-buffer + pipeline-layout extension.
 
 ### 2.3 `ComputePipelineDescriptor` — Threadgroup Size Override
 

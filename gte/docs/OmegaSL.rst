@@ -203,11 +203,14 @@ Scalar Types
 Vector Types
 ~~~~~~~~~~~~
 
-OmegaSL has 2-, 3-, and 4-component vectors for ``int``, ``uint``, and ``float``.
+OmegaSL has 2-, 3-, and 4-component vectors for ``bool``, ``int``, ``uint``, and
+``float``.
 
 +-------------------+------------------------------+
 | Type              | Description                  |
 +===================+==============================+
+| ``bool2/3/4``     | Boolean vectors              |
++-------------------+------------------------------+
 | ``int2/3/4``      | Signed integer vectors       |
 +-------------------+------------------------------+
 | ``uint2/3/4``     | Unsigned integer vectors     |
@@ -247,15 +250,29 @@ OmegaSL has 2-, 3-, and 4-component vectors for ``int``, ``uint``, and ``float``
 Matrix Types
 ~~~~~~~~~~~~
 
-+------------------+-------------+
-| Type             | Size        |
-+==================+=============+
-| ``float2x2``     | 2 × 2       |
-+------------------+-------------+
-| ``float3x3``     | 3 × 3       |
-+------------------+-------------+
-| ``float4x4``     | 4 × 4       |
-+------------------+-------------+
+Square matrices in ``float``, ``int``, and ``uint`` are available, along with
+non-square ``float`` matrices for the full C-by-R grid (C, R in {2, 3, 4}).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 50
+
+   * - Type
+     - Size
+   * - ``float2x2`` / ``float3x3`` / ``float4x4``
+     - Square floating-point matrices
+   * - ``floatCxR``
+     - Non-square floating-point matrices (e.g. ``float2x3``, ``float4x2``)
+   * - ``int2x2`` .. ``int4x4``
+     - Integer matrices
+   * - ``uint2x2`` .. ``uint4x4``
+     - Unsigned integer matrices
+
+.. note::
+
+   Matrix indexing is **column-major**: ``m[c]`` is column ``c`` and
+   ``m[c][r]`` is the element at column ``c``, row ``r`` — matching the host
+   ``OmegaCommon::Matrix`` convention, consistently across all backends.
 
 .. code-block:: omegasl
 
@@ -273,23 +290,50 @@ Resource Types
 Resource types represent GPU-resident data bound to a shader by register number.
 They cannot be declared as local variables — they must be top-level declarations.
 
-+-------------------+------------------------------------------------------+
-| Type              | Description                                          |
-+===================+======================================================+
-| ``buffer<T>``     | Structured buffer whose elements are of type ``T``   |
-+-------------------+------------------------------------------------------+
-| ``texture1d``     | 1D texture                                           |
-+-------------------+------------------------------------------------------+
-| ``texture2d``     | 2D texture                                           |
-+-------------------+------------------------------------------------------+
-| ``texture3d``     | 3D texture                                           |
-+-------------------+------------------------------------------------------+
-| ``sampler1d``     | Sampler paired with a ``texture1d``                  |
-+-------------------+------------------------------------------------------+
-| ``sampler2d``     | Sampler paired with a ``texture2d``                  |
-+-------------------+------------------------------------------------------+
-| ``sampler3d``     | Sampler paired with a ``texture3d``                  |
-+-------------------+------------------------------------------------------+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 60
+
+   * - Type
+     - Description
+   * - ``buffer<T>``
+     - Structured (storage) buffer whose elements are of type ``T``. Indexed
+       with ``[i]``. Read or write.
+   * - ``uniform<T>``
+     - Constant buffer — a single read-only struct value of type ``T``,
+       accessed as ``name.field`` (never indexed). Smaller and faster than
+       ``buffer<T>``; ``T`` must be a struct. See
+       `Constant Buffers and Push Constants`_.
+   * - ``constant<T>``
+     - Push constant — small (<=128 bytes), read-only per-draw data set inline
+       without a buffer allocation. Value-access like ``uniform<T>``; ``T``
+       must be a struct. See `Constant Buffers and Push Constants`_.
+   * - ``texture1d``
+     - 1D texture
+   * - ``texture2d``
+     - 2D texture
+   * - ``texture3d``
+     - 3D texture
+   * - ``texture1d_array``
+     - Array of 1D textures
+   * - ``texture2d_array``
+     - Array of 2D textures
+   * - ``texturecube``
+     - Cube texture (environment maps, skyboxes, IBL)
+   * - ``texturecube_array``
+     - Array of cube textures
+   * - ``texture2d_ms``
+     - Multisampled 2D texture
+   * - ``texture2d_ms_array``
+     - Array of multisampled 2D textures
+   * - ``sampler1d``
+     - Sampler paired with a ``texture1d``
+   * - ``sampler2d``
+     - Sampler paired with a ``texture2d``
+   * - ``sampler3d``
+     - Sampler paired with a ``texture3d``
+   * - ``samplercube``
+     - Sampler paired with a ``texturecube``
 
 Resources are declared at file scope and bound to a register using ``: <n>``:
 
@@ -300,9 +344,21 @@ Resources are declared at file scope and bound to a register using ``: <n>``:
         float2 uv;
     };
 
-    buffer<Vertex>  vertices   : 0;
-    texture2d       diffuseMap : 1;
-    sampler2d       mySampler  : 2;
+    struct PerFrame {
+        float4x4 viewProjection;
+        float    time;
+    };
+
+    buffer<Vertex>   vertices   : 0;   // structured buffer
+    uniform<PerFrame> perFrame  : 1;   // constant buffer (value access)
+    texture2d        diffuseMap : 2;
+    sampler2d        mySampler  : 3;
+
+.. note::
+
+   The register index ``: <n>`` must be **unique among the resources a single
+   shader binds** (see `Resource Maps`_), but the *same* index may be reused by
+   resources bound to *different* shaders. See `Binding Index Rules`_.
 
 Array Types
 ~~~~~~~~~~~
@@ -397,6 +453,65 @@ register slot.
 
 The same resource can be included in multiple shaders by listing it in each
 shader's resource map.
+
+Constant Buffers and Push Constants
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``uniform<T>`` and ``constant<T>`` carry small, read-only constant data. Unlike
+``buffer<T>`` (a structured/storage buffer indexed with ``[i]``), they hold a
+single value of struct type ``T`` accessed directly as ``name.field`` — there is
+no indexing operator. ``T`` must be a user-defined struct on both forms.
+
+.. code-block:: omegasl
+
+    struct PerFrame {
+        float4x4 viewProjection;
+        float4   cameraPos;
+        float    time;
+    };
+
+    uniform<PerFrame>  perFrame : 0;   // constant buffer
+    buffer<Vertex>     verts    : 1;
+
+    [in perFrame, in verts]
+    vertex Raster transformVert(uint vid : VertexID){
+        Raster out;
+        out.pos = perFrame.viewProjection * verts[vid].pos;   // value access
+        out.uv  = verts[vid].uv;
+        return out;
+    }
+
+**``uniform<T>`` — constant buffer.** Backed by a GPU buffer, but laid out and
+bound on a faster constant-memory path than a structured buffer (a CBV on D3D12,
+``constant T&`` on Metal, a ``std140`` uniform block on Vulkan/GLSL). Use it for
+per-frame / per-view / per-draw constants that change between draws but live in a
+buffer the host fills.
+
+**``constant<T>`` — push constant.** Small (≤128 bytes is portable across all
+backends), updated *inline* per draw or dispatch with **no buffer allocation** —
+the bytes travel with the command. Set them with ``setRenderConstants`` /
+``setComputeConstants`` on the command buffer at draw/dispatch time rather than by
+binding a buffer:
+
+.. code-block:: omegasl
+
+    struct PushData {
+        float4x4 mvp;
+        float4   tint;
+    };
+
+    constant<PushData> pc : 0;
+
+    [in pc]
+    fragment float4 shade(Raster raster){
+        return raster.color * pc.tint;
+    }
+
+A pipeline may bind **at most one** ``constant<T>`` push-constant block across all
+of its stages (a hardware limit on Vulkan and D3D12). The host passes raw bytes
+that must already match the struct's layout — there is no automatic packing.
+Both forms are **read-only**: a resource map may only grant ``in`` access to a
+``uniform<T>`` or ``constant<T>`` (``out`` / ``inout`` are rejected).
 
 Static Samplers
 ~~~~~~~~~~~~~~~
@@ -733,6 +848,50 @@ map are visible to the shader body.
         // … lighting …
         return color;
     }
+
+Binding Index Rules
+~~~~~~~~~~~~~~~~~~~~
+
+The register index (``: <n>``) on a resource declaration is a **per-shader**
+binding slot, not a file-global identifier. Two rules follow from this:
+
+**Within one shader, every bound resource must use a distinct index.** Two
+resources listed in the same resource map that share an index are ambiguous at
+bind time (the runtime resolves a binding by its index *within that shader's*
+layout), so the compiler rejects it:
+
+.. code-block:: omegasl
+
+    buffer<A> a : 0;
+    buffer<B> b : 0;
+
+    [in a, out b]                      // ERROR: `a` and `b` both bind to index 0
+    compute(x=1,y=1,z=1)
+    void k(uint3 tid : GlobalThreadID){ ... }
+
+**Across different shaders, the same index may be reused freely.** Each shader
+has its own binding namespace, so it is normal — and recommended — for every
+stage to reuse low slots for its own resources. The vertex and fragment stages
+below each bind a different ``uniform`` at slot 0 with no conflict:
+
+.. code-block:: omegasl
+
+    uniform<PerFrame> perFrame : 0;
+    uniform<Light>    light    : 0;   // same index, different shader — OK
+
+    [in perFrame]
+    vertex Raster transformVert(uint vid : VertexID){ ... }
+
+    [in light]
+    fragment float4 shadeFrag(Raster raster){ ... }
+
+The same applies to a single declaration shared by two stages: a vertex and a
+fragment shader may both list ``[in perFrame]`` for the same slot-0 resource.
+
+(Push constants are bound by index like any other resource and share these
+rules, with the additional limit that a pipeline binds at most one
+``constant<T>`` block across all its stages — see
+`Constant Buffers and Push Constants`_.)
 
 ----
 

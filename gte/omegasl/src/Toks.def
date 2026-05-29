@@ -215,6 +215,18 @@ namespace omegasl {
 /// indexing). Maps to ConstantBuffer<T> (HLSL) / `constant T&` (MSL) /
 /// `layout(std140) uniform` (GLSL).
 #define KW_TY_UNIFORM KW_TY("uniform")
+/// §2.2 (Pipeline-Completion) / §10.2 push constants. A third resource form
+/// after `buffer`/`uniform`: small (≤128 bytes portable), read-only,
+/// value-accessed (no indexing), declared globally with an index and opted
+/// into per-shader via the resource map — same scoping as every other
+/// resource (entry-scoped, not an ambient global; threaded into helpers as a
+/// param, which is what Metal requires). Distinct from `uniform` only in how
+/// it is *bound* at runtime (root constants on D3D12, `setBytes` on Metal,
+/// `vkCmdPushConstants` on Vulkan) — there is no descriptor/buffer
+/// allocation. Maps to ConstantBuffer<T> at a `b` register (HLSL),
+/// `constant T&` (MSL, same as uniform), `layout(push_constant) uniform`
+/// block (GLSL).
+#define KW_TY_CONSTANT KW_TY("constant")
 #define KW_TY_TEXTURE1D KW_TY("texture1d")
 #define KW_TY_TEXTURE2D KW_TY("texture2d")
 #define KW_TY_TEXTURE3D KW_TY("texture3d")

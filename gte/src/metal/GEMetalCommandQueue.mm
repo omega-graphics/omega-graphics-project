@@ -59,6 +59,23 @@ static void checkBufferRoleAgainstShader(unsigned location,
     }
 }
 
+// §2.2/§10.2 push constants. A pipeline may bind at most one push-constant
+// block, so the bind-time API carries no slot id — instead we scan the
+// shader's layout for the single OMEGASL_SHADER_PUSH_CONSTANT_DESC entry and
+// return its Metal buffer index (gpu_relative_loc). Returns true and writes
+// `outIndex` if the shader declares one; false if it does not.
+static bool findPushConstantBufferIndex(const omegasl_shader &shader, unsigned &outIndex) {
+    OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout,
+                                                                shader.pLayout + shader.nLayout};
+    for (auto &l : layoutArr) {
+        if (l.type == OMEGASL_SHADER_PUSH_CONSTANT_DESC) {
+            outIndex = l.gpu_relative_loc;
+            return true;
+        }
+    }
+    return false;
+}
+
 // Extension 8 §8.5 — sampler-bind validation. Walk the shader's layout-desc
 // array, find the descriptor owning the bound location, and consult
 // validateSamplerBindKind() (rejects static-sampler and non-sampler slots).
@@ -750,6 +767,32 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         [rp setFragmentSamplerState:NSOBJECT_OBJC_BRIDGE(id<MTLSamplerState>,metalSampler->samplerState.handle()) atIndex:index];
     };
 
+    void GEMetalCommandBuffer::setRenderConstants(const void *data, unsigned size, unsigned offset){
+        assert((rp && (cp == nil)) && "setRenderConstants must be called inside a render pass");
+        assert(renderPipelineState && "setRenderConstants requires a bound render pipeline");
+        // Metal's setBytes replaces the whole binding from the encoder's
+        // perspective; it has no destination-offset-into-range concept, so a
+        // partial update (offset != 0) is not expressible. Honor it on
+        // D3D12/Vulkan; require a full-block set here. (Documented follow-up.)
+        assert(offset == 0 && "Metal setRenderConstants supports only offset == 0 (full-block set)");
+        (void)offset;
+        // Apply to every stage that declared the push constant (`[in pc]`).
+        // setVertexBytes / setFragmentBytes write the inline data into the
+        // stage's buffer-index slot the `constant T&` was emitted at.
+        unsigned idx = 0;
+        bool any = false;
+        if(findPushConstantBufferIndex(renderPipelineState->vertexShader->internal, idx)){
+            [rp setVertexBytes:data length:size atIndex:idx];
+            any = true;
+        }
+        if(findPushConstantBufferIndex(renderPipelineState->fragmentShader->internal, idx)){
+            [rp setFragmentBytes:data length:size atIndex:idx];
+            any = true;
+        }
+        assert(any && "setRenderConstants: bound pipeline declares no `constant<T>` push constant");
+        (void)any;
+    };
+
     void GEMetalCommandBuffer::setViewports(std::vector<GEViewport> viewports){
         std::vector<MTLViewport> metalViewports;
         auto viewports_it = viewports.begin();
@@ -961,6 +1004,18 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
          assert(cp != nil && "");
         auto mtl_accel_struct = (GEMetalAccelerationStruct *)accelStruct.get();
         [cp setAccelerationStructure:NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,mtl_accel_struct->accelStruct.handle()) atBufferIndex:getResourceLocalIndexFromGlobalIndex(idx,computePipelineState->computeShader->internal)];
+    }
+
+    void GEMetalCommandBuffer::setComputeConstants(const void *data, unsigned size, unsigned offset){
+        assert(cp != nil && "setComputeConstants must be called inside a compute pass");
+        assert(computePipelineState && "setComputeConstants requires a bound compute pipeline");
+        assert(offset == 0 && "Metal setComputeConstants supports only offset == 0 (full-block set)");
+        (void)offset;
+        unsigned idx = 0;
+        bool found = findPushConstantBufferIndex(computePipelineState->computeShader->internal, idx);
+        assert(found && "setComputeConstants: bound pipeline declares no `constant<T>` push constant");
+        if(!found) return;
+        [cp setBytes:data length:size atIndex:idx];
     }
 
     void GEMetalCommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned int z){

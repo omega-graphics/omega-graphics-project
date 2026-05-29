@@ -1951,13 +1951,82 @@ No equivalent on D3D12 / Metal. Used for efficient tile-local deferred on
 mobile. OmegaSL could add `subpass_input` + `loadSubpass()` that lowers to
 no-op / error on the other backends.
 
-### 10.2 Push constants 
+### 10.2 Push constants [COMPLETED — compile path + runtime binding (Metal verified)]
 
-Vulkan + D3D12 root constants + Metal inline `constant` under 4KB.
+Vulkan push constants + D3D12 root constants + Metal inline `constant` under
+4KB. Very performance-relevant for per-draw constants — small, frequently
+updated, no buffer/descriptor allocation.
 
-Exposing this as a first-class concept would need a new resource keyword
-(`constant<T>` or similar) with strict size limits. Very performance-relevant
-for per-draw constants.
+**Landed as `constant<T>`** — a third resource form parallel to `buffer<T>`
+(§2.5/structured) and `uniform<T>` (§2.4/constant buffer). Read-only,
+value-accessed (`pc.field`), never indexed, T must be a user struct. Declared
+globally with an index and opted into per-shader via the resource map
+(`[in pc]`) — same scoping as every other resource: the declaration is global
+but access is *entry-scoped* (not an ambient global), so a helper function
+takes the data as a parameter. That scoping is forced by Metal, which has no
+global resources; it also means the HLSL-cbuffer-style `constant { ... }`
+block form (which would make the fields ambient globals) was rejected — it
+fits neither OmegaSL's model nor Metal. See
+`Pipeline-Completion-Extension-Plan.md` §2.2 for the full decision record
+(the resolved ALEX QUESTION) and the runtime (Phase B) side.
+
+* **Token / type**: `constant` is a `KW_TY` (`Toks.def` `KW_TY_CONSTANT`,
+  `Lexer.cpp` `isKeywordType`); `builtins::push_constant_type` is a
+  one-type-arg builtin (`AST.h`, `AST.cpp`) registered in Sema's
+  `builtinsTypeMap`. The generic resource-decl parser handles
+  `constant<T> name : N;` with no change.
+* **Sema**: `push_constant_type` joins the valid-resource-type set. Exactly
+  one type arg, T must be a user struct (same contract as `uniform<T>` — root
+  constants / push blocks have no scalar form across all three backends).
+  In the resource map it is restricted to `In` access (read-only everywhere)
+  and its name binds directly to T (so `pc.field` resolves through the normal
+  struct path and `pc[i]` fails with the existing
+  "indexing only on buffer/vector/matrix" diagnostic — shares the `uniform<T>`
+  bind-to-T path). The element struct is registered for codegen emission.
+* **Global resource index**: a push constant *does* take a `: N` slot from the
+  shared resource index (it needs `[[buffer(N)]]` on Metal and `register(bN)`
+  on D3D12). On GLSL it consumes **no** descriptor `binding` — the
+  `push_constant` block lives outside descriptor sets — so the GLSL emitter
+  sets `gpu_relative_loc = 0` and skips the `++binding` increment, keeping the
+  other resources' bindings contiguous.
+* **Runtime layout-desc**: new `OMEGASL_SHADER_PUSH_CONSTANT_DESC` appended at
+  the tail of `omegasl_shader_layout_desc_type`, distinct from
+  `OMEGASL_SHADER_UNIFORM_DESC` (CBV / bound uniform buffer) and from the
+  pre-existing `OMEGASL_SHADER_CONSTANT_DESC` (the unrelated inline
+  single-scalar push constant with a baked default value).
+* **Per-backend emission**:
+  * **HLSL**: `ConstantBuffer<T> pc : register(bN,spaceM);` — same `b`
+    register class as `uniform<T>` (shares `bResourceCount`). The
+    root-constants-vs-CBV distinction is purely in the root signature
+    (Phase B); the source is identical to a constant buffer.
+  * **MSL**: `constant T& pc [[buffer(N)]]` — byte-identical to a uniform.
+    Metal has no separate push-constant construct;
+    `setBytes:length:atIndex:` writes inline into the same buffer-index space
+    a bound buffer would use. Only the layout-desc type differs.
+  * **GLSL**: `layout(push_constant,std430) uniform pc_Layout { T pc; };` —
+    no `set`/`binding`. std430 layout (push constants are the tight,
+    128-byte-budgeted path); the Phase-B host-side writer must pack std430 to
+    match, distinct from `uniform<T>`'s std140.
+* **Tests**: `push_constant.omegasl` (vertex + fragment sharing one global
+  `constant<PushData>` via their own resource maps, a helper that receives
+  `pc.mvp` as a parameter, and a separate compute kernel with its own
+  `constant<DispatchParams>`); `invalid_push_constant.omegasl` (multi-error:
+  indexing a push constant, `out` access, non-struct element type). The Metal
+  build compiles the generated MSL end-to-end on the macOS host; HLSL/GLSL
+  source emission verified via `-S`.
+
+**Phase B — runtime binding (done; see Pipeline-Completion §2.2).** The
+`setRenderConstants` / `setComputeConstants` command-buffer API landed on
+`GECommandBuffer`, with the per-backend inline-constant plumbing (Metal
+`setBytes` — verified end-to-end via `gte/tests/push_constant_test.cpp`; D3D12
+root-constants param + `SetGraphics/ComputeRoot32BitConstants`; Vulkan
+`VkPushConstantRange` + `vkCmdPushConstants` — both written-from-source). No
+host-side packing: the API takes raw bytes and the caller owns the std-layout.
+
+**Out of scope (follow-ups):** threading the push block's exact struct size
+through the layout desc (D3D12/Vulkan currently reserve the 128-byte cap);
+Metal partial updates (`offset != 0`); compile-time / pipeline-creation
+enforcement of the 128-byte limit and the one-push-constant-per-pipeline rule.
 
 ### 10.3 Specialization constants
 

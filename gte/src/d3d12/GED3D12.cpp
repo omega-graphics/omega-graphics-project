@@ -2758,6 +2758,22 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                     /// ConstantBufferView from the buffer's GPU virtual address.
                     parameter1.InitAsConstantBufferView(l.gpu_relative_loc,registerSpace);
                 }
+                else if(l.type == OMEGASL_SHADER_PUSH_CONSTANT_DESC) {
+                    /// §2.2 push constant — inline root 32-bit constants at
+                    /// register `b` (`gpu_relative_loc` is the `b` register
+                    /// from HLSL codegen, same class as a CBV but a distinct
+                    /// root-parameter *type*). Bound with
+                    /// SetGraphics/ComputeRoot32BitConstants from the bytes the
+                    /// caller passes to set{Render,Compute}Constants.
+                    ///
+                    /// Num32BitValues is reserved at the portable 128-byte cap
+                    /// (32 DWORDs) because the layout desc does not carry the
+                    /// push block's struct size. This costs root-signature
+                    /// space (the budget is 64 DWORDs total); threading the
+                    /// exact byte size through the layout desc to size this
+                    /// tightly is a follow-up.
+                    parameter1.InitAsConstants(32, l.gpu_relative_loc, registerSpace);
+                }
                 /// Create Descriptor Table for Textures
                 else {
 

@@ -193,3 +193,21 @@ add_metal_cli_test(
 target_link_options("IntVectorIOTest" PRIVATE
     "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
 add_test(NAME omegagte_int_vector_io COMMAND IntVectorIOTest)
+
+# Pipeline-Completion §2.2 / OmegaSL §10.2 — push-constant (`constant<T>`) GPU
+# integration test (shared, backend-independent source under gte/tests/).
+# Exercises setComputeConstants end-to-end: the command buffer scans the bound
+# pipeline's layout for the push-constant slot and feeds the bytes to Metal
+# `setBytes`.
+add_metal_cli_test(
+    NAME
+    "PushConstantTest"
+    SOURCES
+    "../push_constant_test.cpp"
+    FRAMEWORKS
+    "Metal"
+    "Foundation"
+)
+target_link_options("PushConstantTest" PRIVATE
+    "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
+add_test(NAME omegagte_push_constant COMMAND PushConstantTest)

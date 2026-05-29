@@ -78,7 +78,7 @@ GED3D12CommandBuffer::GED3D12CommandBuffer(ID3D12GraphicsCommandList6 *commandLi
 };
 
 unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int id, omegasl_shader &shader) {
-    bool isSRV = false, isUAV = false, isCBV = false, isDescriptorTable = false, isSampler = false;
+    bool isSRV = false, isUAV = false, isCBV = false, isRootConstants = false, isDescriptorTable = false, isSampler = false;
     OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout, shader.pLayout + shader.nLayout};
 
     unsigned relative_index = 0;
@@ -94,6 +94,12 @@ unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int 
             } else if (l.type == OMEGASL_SHADER_UNIFORM_DESC) {
                 // §2.4 constant buffer — bound as a root CBV.
                 isCBV = true;
+            } else if (l.type == OMEGASL_SHADER_PUSH_CONSTANT_DESC) {
+                // §2.2 push constant — bound as root 32-bit constants at the
+                // same `b` register class as a CBV (independent of CBVs by
+                // ParameterType, so a push constant at b0 and a uniform at b0
+                // in different stages don't alias).
+                isRootConstants = true;
             } else if (l.type == OMEGASL_SHADER_SAMPLER1D_DESC || l.type == OMEGASL_SHADER_SAMPLER2D_DESC
                        || l.type == OMEGASL_SHADER_SAMPLER3D_DESC || l.type == OMEGASL_SHADER_SAMPLERCUBE_DESC) {
                 // Extension 8 — runtime sampler. A sampler is a descriptor
@@ -132,6 +138,12 @@ unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int 
             }
         } else if (param.ParameterType == D3D12_ROOT_PARAMETER_TYPE_CBV && isCBV) {
             if (param.Descriptor.ShaderRegister == relative_index && param.Descriptor.RegisterSpace == regSpace) {
+                break;
+            }
+        } else if (param.ParameterType == D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS && isRootConstants) {
+            // §2.2 push constant — match the root-constants param by its `b`
+            // register + space (Constants.ShaderRegister, not Descriptor).
+            if (param.Constants.ShaderRegister == relative_index && param.Constants.RegisterSpace == regSpace) {
                 break;
             }
         } else if (param.ParameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE && isDescriptorTable) {
@@ -1393,6 +1405,46 @@ void GED3D12CommandBuffer::setStencilRef(unsigned int ref) {
     commandList->OMSetStencilRef(ref);
 }
 
+// §2.2 push constant — a pipeline binds at most one, so locate the single
+// OMEGASL_SHADER_PUSH_CONSTANT_DESC entry and return its OmegaSL `location`
+// (the id getRootParameterIndexOfResource keys on). Returns false if the
+// shader declares none.
+static bool findPushConstantLocation(const omegasl_shader &shader, unsigned &outLocation) {
+    OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout, shader.pLayout + shader.nLayout};
+    for (auto &l : layoutArr) {
+        if (l.type == OMEGASL_SHADER_PUSH_CONSTANT_DESC) {
+            outLocation = (unsigned)l.location;
+            return true;
+        }
+    }
+    return false;
+}
+
+void GED3D12CommandBuffer::setRenderConstants(const void *data, unsigned size, unsigned offset) {
+    assert(currentRenderPipeline && "setRenderConstants requires a bound render pipeline");
+    // Root 32-bit constants are DWORD-granular.
+    assert((size % 4) == 0 && (offset % 4) == 0 && "D3D12 root constants are 32-bit; size and offset must be 4-byte aligned");
+    // Each stage that declared the push constant has its own root-constants
+    // param (vertex at space0, fragment at space1 from HLSL codegen), so set
+    // both with the same bytes — mirrors Metal's setVertexBytes/setFragmentBytes.
+    unsigned loc = 0;
+    bool any = false;
+    if (findPushConstantLocation(currentRenderPipeline->vertexShader->internal, loc)) {
+        commandList->SetGraphicsRoot32BitConstants(
+            getRootParameterIndexOfResource(loc, currentRenderPipeline->vertexShader->internal),
+            size / 4, data, offset / 4);
+        any = true;
+    }
+    if (findPushConstantLocation(currentRenderPipeline->fragmentShader->internal, loc)) {
+        commandList->SetGraphicsRoot32BitConstants(
+            getRootParameterIndexOfResource(loc, currentRenderPipeline->fragmentShader->internal),
+            size / 4, data, offset / 4);
+        any = true;
+    }
+    assert(any && "setRenderConstants: bound pipeline declares no `constant<T>` push constant");
+    (void)any;
+}
+
 void GED3D12CommandBuffer::setViewports(std::vector<GEViewport> viewports) {
     std::vector<D3D12_VIEWPORT> d3d12_viewports;
     auto viewports_it = viewports.begin();
@@ -1678,6 +1730,18 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEAccelerati
     commandList->SetComputeRootShaderResourceView(
         getRootParameterIndexOfResource(idx, currentComputePipeline->computeShader->internal),
         d3d12_buffer->structBuffer->buffer->GetGPUVirtualAddress());
+}
+
+void GED3D12CommandBuffer::setComputeConstants(const void *data, unsigned size, unsigned offset) {
+    assert(currentComputePipeline && "setComputeConstants requires a bound compute pipeline");
+    assert((size % 4) == 0 && (offset % 4) == 0 && "D3D12 root constants are 32-bit; size and offset must be 4-byte aligned");
+    unsigned loc = 0;
+    bool found = findPushConstantLocation(currentComputePipeline->computeShader->internal, loc);
+    assert(found && "setComputeConstants: bound pipeline declares no `constant<T>` push constant");
+    if (!found) return;
+    commandList->SetComputeRoot32BitConstants(
+        getRootParameterIndexOfResource(loc, currentComputePipeline->computeShader->internal),
+        size / 4, data, offset / 4);
 }
 
 void GED3D12CommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned int z) {

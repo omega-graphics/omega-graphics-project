@@ -1,0 +1,32 @@
+/// §2.2/§10.2 push constants — negative test (multi-error).
+/// Each construct below is independently rejected by Sema:
+///   1. Indexing a push constant (`pc[i]`) — value-access only.
+///   2. `out` / `inout` access on a push constant — read-only everywhere.
+///   3. `constant<float4>` — T must be a user-defined struct (a builtin
+///      scalar / vector is not a valid push-constant element type).
+
+struct PushData {
+    float4x4 mvp;
+};
+
+constant<PushData> pc : 0;
+buffer<PushData>   b  : 1;
+
+/// (1) indexing a push constant.
+[in pc, out b]
+compute(x=1,y=1,z=1)
+void indexPush(uint3 tid : GlobalThreadID){
+    b[0].mvp = pc[0].mvp;
+}
+
+/// (2) out access on a push constant.
+[out pc]
+compute(x=1,y=1,z=1)
+void writePush(uint3 tid : GlobalThreadID){ }
+
+/// (3) push constant of a non-struct (builtin) type.
+constant<float4> badScalar : 0;
+
+[in badScalar]
+compute(x=1,y=1,z=1)
+void scalarPush(uint3 tid : GlobalThreadID){ }

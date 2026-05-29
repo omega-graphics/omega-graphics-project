@@ -82,6 +82,7 @@ namespace omegasl {
 
         ast::builtins::buffer_type,
         ast::builtins::uniform_type,
+        ast::builtins::push_constant_type,
         ast::builtins::texture1d_type,
         ast::builtins::texture2d_type,
         ast::builtins::texture3d_type,
@@ -2691,6 +2692,7 @@ namespace omegasl {
 
                 if(ty != ast::builtins::buffer_type
                 && ty != ast::builtins::uniform_type
+                && ty != ast::builtins::push_constant_type
                 && ty != ast::builtins::texture1d_type
                 && ty != ast::builtins::texture2d_type
                 && ty != ast::builtins::texture3d_type
@@ -2742,6 +2744,34 @@ namespace omegasl {
                     }
                     if(elemTy->builtin){
                         auto e = std::make_unique<TypeError>(std::string("Uniform resource `") + _decl->name + "` must wrap a user-defined struct, got builtin type `" + elemTy->name + "`. Wrap the value in a struct.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                }
+
+                /// §2.2/§10.2 — `constant<T>` (push constant) carries the same
+                /// element-type contract as `uniform<T>`: exactly one type arg,
+                /// and T must be a user struct (root constants / push-constant
+                /// blocks have no scalar form across all three backends, and
+                /// real per-draw constants are always structs). The portable
+                /// 128-byte size limit is enforced at runtime (Phase B), where
+                /// the std-layout struct size is computed — the compiler has no
+                /// byte-size walk today (mirrors `uniform<T>`, which also defers
+                /// size to runtime).
+                if(ty == ast::builtins::push_constant_type){
+                    if(_decl->typeExpr->args.size() != 1){
+                        auto e = std::make_unique<TypeError>(std::string("Push-constant resource `") + _decl->name + "` must name exactly one element type, e.g. `constant<PushData>`.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    auto elemTy = resolveTypeWithExpr(_decl->typeExpr->args[0]);
+                    if(elemTy == nullptr){
+                        return false;
+                    }
+                    if(elemTy->builtin){
+                        auto e = std::make_unique<TypeError>(std::string("Push-constant resource `") + _decl->name + "` must wrap a user-defined struct, got builtin type `" + elemTy->name + "`. Wrap the value in a struct.");
                         e->loc = _decl->loc.value_or(ErrorLoc{});
                         diagnostics->addError(std::move(e));
                         return false;
@@ -3000,11 +3030,33 @@ namespace omegasl {
                     paramNames.insert(std::make_pair(p.name, 0));
                 }
 
+                /// Within a single shader's resource map, each bound resource
+                /// must occupy a distinct binding index. The runtime binds by
+                /// the OmegaSL `:N` location — `getResourceLocalIndexFromGlobalIndex`
+                /// looks it up *within this shader's* layout array — so two
+                /// resources sharing `:N` here are ambiguous at bind time.
+                /// Cross-shader reuse stays legal: a different shader's map is a
+                /// separate binding namespace (e.g. a per-frame `uniform<T>` at
+                /// slot 0 in both the vertex and the fragment stage). Static
+                /// samplers are excluded — they carry no `:N` (different parse
+                /// path) and are baked into the shader, not runtime-bound.
+                OmegaCommon::MapVec<size_t, OmegaCommon::String> usedRegisters;
+
                 for(auto & r : _decl->resourceMap){
                     bool found = false;
                     for(auto res : currentContext->resourceSet){
                         if(res->name == r.name){
                             found = true;
+                            if(!res->isStatic){
+                                auto reg_it = usedRegisters.find(res->registerNumber);
+                                if(reg_it != usedRegisters.end()){
+                                    auto e = std::make_unique<TypeError>(std::string("In Shader Decl `") + _decl->name + "`, resources `" + reg_it->second + "` and `" + r.name + "` both bind to index " + std::to_string(res->registerNumber) + ". Each resource a shader binds must use a distinct index (cross-shader reuse is fine).");
+                                    e->loc = _decl->loc.value_or(ErrorLoc{});
+                                    diagnostics->addError(std::move(e));
+                                    return false;
+                                }
+                                usedRegisters.insert(std::make_pair(res->registerNumber, r.name));
+                            }
                             auto _t = resolveTypeWithExpr(res->typeExpr);
                             if((_t == ast::builtins::sampler1d_type
                                 || _t == ast::builtins::sampler2d_type
@@ -3023,14 +3075,26 @@ namespace omegasl {
                                 diagnostics->addError(std::move(e));
                                 return false;
                             }
-                            /// §2.4 — a uniform's name binds directly to its
-                            /// element type T (not the handle type), so member
-                            /// access `u.field` resolves through the normal
-                            /// struct path and indexing `u[i]` fails with the
-                            /// existing "indexing only on buffer/vector/matrix"
+                            /// §2.2/§10.2 — push constants are read-only on
+                            /// every backend (root constants / setBytes /
+                            /// vkCmdPushConstants); reject `out` / `inout`.
+                            if(_t == ast::builtins::push_constant_type && r.access != ast::ShaderDecl::ResourceMapDesc::In){
+                                auto e = std::make_unique<TypeError>(std::string("In Shader Decl `") + _decl->name + "`, push constant `" + r.name + "` is read-only and can only be granted input access.");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            /// §2.4 / §2.2 — a uniform's *and* a push
+                            /// constant's name binds directly to its element
+                            /// type T (not the handle type), so member access
+                            /// `u.field` resolves through the normal struct
+                            /// path and indexing `u[i]` fails with the existing
+                            /// "indexing only on buffer/vector/matrix"
                             /// diagnostic. `buffer` keeps binding the handle and
                             /// only resolves T on indexing.
-                            if(_t == ast::builtins::uniform_type && !res->typeExpr->args.empty()){
+                            if((_t == ast::builtins::uniform_type
+                                || _t == ast::builtins::push_constant_type)
+                               && !res->typeExpr->args.empty()){
                                 currentContext->variableMap.insert(std::make_pair(r.name,
                                     SemContext::VarBinding{ res->typeExpr->args[0], false }));
                             } else {
@@ -3038,7 +3102,9 @@ namespace omegasl {
                                     SemContext::VarBinding{ res->typeExpr, false }));
                             }
                             /// Register element struct type for emission in codegen.
-                            if((_t == ast::builtins::buffer_type || _t == ast::builtins::uniform_type)
+                            if((_t == ast::builtins::buffer_type
+                                || _t == ast::builtins::uniform_type
+                                || _t == ast::builtins::push_constant_type)
                                && !res->typeExpr->args.empty()){
                                 auto elemTy = resolveTypeWithExpr(res->typeExpr->args[0]);
                                 if(elemTy && !elemTy->builtin){

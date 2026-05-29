@@ -2436,6 +2436,43 @@ _NAMESPACE_BEGIN_
             outImmutableSamplers.reserve(totalStaticSamplers);
         }
 
+        // §2.2 push constant — a pipeline binds at most one push-constant
+        // block, shared by whichever stages declared `[in pc]`. Push constants
+        // are NOT descriptors (the switch below routes them to
+        // `default: continue`, so they never enter a descriptor-set layout);
+        // they become a single VkPushConstantRange on the pipeline layout with
+        // the union of using stages. `pushRange` is function-scoped so it
+        // outlives the vkCreatePipelineLayout call below.
+        VkPushConstantRange pushRange {};
+        {
+            VkShaderStageFlags pushStages = 0;
+            bool hasPushConstant = false;
+            for(auto & s : shadersArr){
+                OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layouts {s.pLayout,s.pLayout + s.nLayout};
+                for(auto & l : layouts){
+                    if(l.type == OMEGASL_SHADER_PUSH_CONSTANT_DESC){
+                        VkShaderStageFlags stage = VK_SHADER_STAGE_COMPUTE_BIT;
+                        if(s.type == OMEGASL_SHADER_VERTEX){ stage = VK_SHADER_STAGE_VERTEX_BIT; }
+                        else if(s.type == OMEGASL_SHADER_FRAGMENT){ stage = VK_SHADER_STAGE_FRAGMENT_BIT; }
+                        pushStages |= stage;
+                        hasPushConstant = true;
+                    }
+                }
+            }
+            if(hasPushConstant){
+                // Size reserved at the portable 128-byte cap — the layout desc
+                // doesn't carry the push block's struct size (threading it
+                // through to size this exactly is a follow-up). offset 0;
+                // partial updates use the vkCmdPushConstants offset at command
+                // time.
+                pushRange.stageFlags = pushStages;
+                pushRange.offset = 0;
+                pushRange.size = 128;
+                layout_info.pushConstantRangeCount = 1;
+                layout_info.pPushConstantRanges = &pushRange;
+            }
+        }
+
         for(auto & s : shadersArr){
             VkShaderStageFlags shaderStageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
             if(s.type == OMEGASL_SHADER_VERTEX){

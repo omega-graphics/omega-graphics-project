@@ -205,6 +205,22 @@ namespace omegasl {
             writeTypeName(cg.typeResolver->resolveTypeWithExpr(res_desc->typeExpr->args[0]),
                           res_desc->typeExpr->args[0]->pointer, out);
             out << ">";
+        } else if (_t == ast::builtins::push_constant_type) {
+            /// §2.2/§10.2 push constant. At the HLSL *source* level a push
+            /// constant is spelled exactly like a constant buffer —
+            /// `ConstantBuffer<T>` at a `b` register, value-accessed
+            /// `name.field`. The only difference is the root signature, which
+            /// binds this `b` slot as *root constants*
+            /// (`SetGraphics/ComputeRoot32BitConstants`) instead of a CBV
+            /// descriptor — a Phase-B runtime concern. Tagged with the
+            /// push-constant layout-desc type so the runtime can tell the two
+            /// apart at pipeline-layout build time.
+            layoutDesc.type = OMEGASL_SHADER_PUSH_CONSTANT_DESC;
+            isBResource = true;
+            out << HLSL_CONSTANT_BUFFER << "<";
+            writeTypeName(cg.typeResolver->resolveTypeWithExpr(res_desc->typeExpr->args[0]),
+                          res_desc->typeExpr->args[0]->pointer, out);
+            out << ">";
         } else if (_t == ast::builtins::texture1d_type) {
             layoutDesc.type = OMEGASL_SHADER_TEXTURE1D_DESC;
             if (ioMode == OMEGASL_SHADER_DESC_IO_IN) {

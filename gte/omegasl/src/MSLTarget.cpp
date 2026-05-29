@@ -135,6 +135,11 @@ namespace omegasl {
         } else if (type_ == builtins::uniform_type) {
             /// §2.4 constant buffer — always read-only `constant` address space.
             out << "constant ";
+        } else if (type_ == builtins::push_constant_type) {
+            /// §2.2/§10.2 push constant — bound via `setBytes:length:atIndex:`,
+            /// which presents as `constant T&` exactly like a bound uniform
+            /// buffer. Always the read-only `constant` address space.
+            out << "constant ";
         }
 
         omegasl_shader_layout_desc_type layoutDescType = OMEGASL_SHADER_BUFFER_DESC;
@@ -175,6 +180,18 @@ namespace omegasl {
                           res_desc->typeExpr->args[0]->pointer, out);
             out << " &";
             layoutDescType = OMEGASL_SHADER_UNIFORM_DESC;
+        } else if (type_ == builtins::push_constant_type) {
+            /// §2.2/§10.2 — `constant T& name [[buffer(N)]]`, byte-identical
+            /// to a uniform: Metal has no separate push-constant construct,
+            /// `setBytes:length:atIndex:` writes inline into the same buffer
+            /// index space a bound buffer would use. The push-constant
+            /// layout-desc type is what lets the runtime drive this slot via
+            /// setBytes rather than setBuffer (Phase B).
+            isBuffer = true;
+            writeTypeName(cg.typeResolver->resolveTypeWithExpr(res_desc->typeExpr->args[0]),
+                          res_desc->typeExpr->args[0]->pointer, out);
+            out << " &";
+            layoutDescType = OMEGASL_SHADER_PUSH_CONSTANT_DESC;
         } else if (type_ == builtins::texture1d_type) {
             isTexture = true;
             out << "texture1d<float,";

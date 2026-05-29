@@ -1,0 +1,22 @@
+/// Per-shader binding-index uniqueness — negative test.
+///
+/// Within a single shader's resource map, two resources may not share the
+/// same `:N` binding index: the runtime binds by that location *per shader*
+/// (getResourceLocalIndexFromGlobalIndex looks it up within the shader's own
+/// layout array), so a collision is ambiguous at bind time.
+///
+/// Cross-shader reuse is explicitly NOT an error — see uniform_buffer.omegasl
+/// / push_constant.omegasl, where slot 0 is reused across the vertex and
+/// fragment stages. Only same-map collisions are rejected.
+
+struct A { float4 v; };
+struct B { float4 v; };
+
+buffer<A> a : 0;
+buffer<B> b : 0;   // same index as `a` — collides within the map below.
+
+[in a, out b]
+compute(x=1,y=1,z=1)
+void dupBinding(uint3 tid : GlobalThreadID){
+    b[0].v = a[0].v;
+}

@@ -144,6 +144,8 @@ _NAMESPACE_BEGIN_
 
         void bindResourceAtFragmentShader(SharedHandle<GESamplerState> &sampler, unsigned index) override;
 
+        void setRenderConstants(const void *data, unsigned size, unsigned offset) override;
+
         void setVertexBuffer(SharedHandle<GEBuffer> &buffer) override;
 
         void drawPolygons(RenderPassDrawPolygonType polygonType, unsigned vertexCount, size_t startIdx) override;
@@ -186,6 +188,7 @@ _NAMESPACE_BEGIN_
         void bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id,
                                          const TextureSwizzle & swizzle) override;
         void bindResourceAtComputeShader(SharedHandle<GESamplerState> &sampler, unsigned int id) override;
+        void setComputeConstants(const void *data, unsigned size, unsigned offset) override;
         void dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreads(unsigned int x, unsigned int y, unsigned int z) override;
         void dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
