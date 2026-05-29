@@ -21,6 +21,10 @@ void test_bad(uint3 tid : GlobalThreadID){
     uint bad3 = countbits(a, a);       // (3) arg count
     int  bad4 = firstbithigh(f);       // (4) float operand
     int  bad5 = firstbitlow(a, a);     // (5) arg count
+    uint bad6 = bitfieldExtract(f, 0, 4);       // (6) float operand
+    uint bad7 = bitfieldInsert(a, a, 0);        // (7) arg count (wants 4)
+    uint bad8 = bitfieldExtract(a, 0, f);       // (8) float bit-count arg
 
-    output[0].value = uint4(bad1, bad2, bad3, (uint)bad4 + (uint)bad5);
+    output[0].value = uint4(bad1, bad2, bad3,
+                            (uint)bad4 + (uint)bad5 + bad6 + bad7 + bad8);
 }

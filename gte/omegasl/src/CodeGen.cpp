@@ -527,6 +527,78 @@ namespace omegasl {
         return false;
     }
 
+    namespace {
+        /// HLSL spelling of an int/uint scalar or vector type.
+        const char *hlslIntTy(bool isSigned, int arity) {
+            if (isSigned)
+                switch (arity) { case 2: return "int2"; case 3: return "int3";
+                                 case 4: return "int4"; default: return "int"; }
+            switch (arity) { case 2: return "uint2"; case 3: return "uint3";
+                             case 4: return "uint4"; default: return "uint"; }
+        }
+    }
+
+    bool CodeGen::emitHLSLBitfieldExtract(ast::CallExpr *call, std::ostream &out) {
+        if (call->args.size() != 3) return false;
+        bool isSigned; int arity;
+        auto *ty = typeResolver->resolveTypeWithExpr(call->args[0]->resolvedType);
+        if (!intOperandShape(ty, isSigned, arity)) return false;
+        const char *vty = hlslIntTy(isSigned, arity);
+
+        unsigned id = getDimensionsTempId++;
+        std::string v = "_bfe" + std::to_string(id) + "_v";
+        std::string o = "_bfe" + std::to_string(id) + "_o";
+        std::string b = "_bfe" + std::to_string(id) + "_b";
+        queuePendingStatement(std::string(vty) + " " + v + " = " + renderExprToString(call->args[0]) + ";");
+        queuePendingStatement("uint " + o + " = uint(" + renderExprToString(call->args[1]) + ");");
+        queuePendingStatement("uint " + b + " = uint(" + renderExprToString(call->args[2]) + ");");
+
+        if (!isSigned) {
+            /// Unsigned: zero-extend. mask==0 when bits==0, so `(v>>off)&mask`
+            /// yields 0 for the bits==0 case with no special-casing or UB.
+            std::string m = "_bfe" + std::to_string(id) + "_m";
+            queuePendingStatement("uint " + m + " = (" + b + " == 32u) ? 0xffffffffu : ((1u << " + b + ") - 1u);");
+            out << "((" << v << " >> " << o << ") & " << m << ")";
+        } else {
+            /// Signed: sign-extend via shift-left-then-arithmetic-shift-right.
+            /// `sh = 32 - bits`; left by `sh - off` puts the field's top bit at
+            /// bit 31, then the signed `>> sh` replicates the sign. Shift by 32
+            /// (bits==0) is UB, so guard it with a typed zero.
+            std::string sh = "(int(32u - " + b + "))";
+            out << "((" << b << " == 0u) ? (" << vty << ")0 : ((" << v
+                << " << (" << sh << " - int(" << o << "))) >> " << sh << "))";
+        }
+        return true;
+    }
+
+    bool CodeGen::emitHLSLBitfieldInsert(ast::CallExpr *call, std::ostream &out) {
+        if (call->args.size() != 4) return false;
+        bool isSigned; int arity;
+        auto *ty = typeResolver->resolveTypeWithExpr(call->args[0]->resolvedType);
+        if (!intOperandShape(ty, isSigned, arity)) return false;
+        const char *vty = hlslIntTy(isSigned, arity);
+        const char *uvty = hlslIntTy(false, arity);
+
+        unsigned id = getDimensionsTempId++;
+        std::string base = "_bfi" + std::to_string(id) + "_base";
+        std::string ins = "_bfi" + std::to_string(id) + "_ins";
+        std::string o = "_bfi" + std::to_string(id) + "_o";
+        std::string b = "_bfi" + std::to_string(id) + "_b";
+        std::string m = "_bfi" + std::to_string(id) + "_m";
+        queuePendingStatement(std::string(vty) + " " + base + " = " + renderExprToString(call->args[0]) + ";");
+        queuePendingStatement(std::string(vty) + " " + ins + " = " + renderExprToString(call->args[1]) + ";");
+        queuePendingStatement("uint " + o + " = uint(" + renderExprToString(call->args[2]) + ");");
+        queuePendingStatement("uint " + b + " = uint(" + renderExprToString(call->args[3]) + ");");
+        queuePendingStatement("uint " + m + " = (" + b + " == 32u) ? 0xffffffffu : ((1u << " + b + ") - 1u);");
+
+        /// Insert is pure bit-shuffle (no sign-extension), so it's done in the
+        /// unsigned bit domain and cast back to the operand type — uniform for
+        /// signed and unsigned. For an unsigned operand the casts are no-ops.
+        out << "(" << vty << ")(((" << uvty << ")" << base << " & ~(" << m << " << " << o
+            << ")) | (((" << uvty << ")" << ins << " & " << m << ") << " << o << "))";
+        return true;
+    }
+
     bool CodeGen::emitVectorCompare(ast::CallExpr *call, OmegaCommon::StrRef name, std::ostream &out) {
         const char *op = nullptr;
         if (name == BUILTIN_LESSTHAN)              op = "<";

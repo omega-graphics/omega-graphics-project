@@ -694,6 +694,34 @@ using namespace metal;
             }
             return true;
         }
+        /// §5.3 Phase C — MSL `extract_bits`/`insert_bits` are native
+        /// (scalar + vector, signed + unsigned). The offset/bits args are
+        /// `uint` in the MSL signature, so wrap them in `uint(...)`. The
+        /// value/base/insert operands are cast to the operand-type spelling:
+        /// a bare numeric literal (e.g. `0xFFu` → `255`) emits without its
+        /// unsigned-ness, which makes Metal's overload set ambiguous — the
+        /// explicit cast pins the overload.
+        if (name == BUILTIN_BITFIELD_EXTRACT || name == BUILTIN_BITFIELD_INSERT) {
+            bool isSigned; int arity;
+            auto *ty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+            if (!cg.intOperandShape(ty, isSigned, arity)) return false;
+            const char *vty = metalIntSpelling(isSigned, arity);
+            if (name == BUILTIN_BITFIELD_EXTRACT) {
+                if (_expr->args.size() != 3) return false;
+                out << "extract_bits(" << vty << "("; cg.generateExpr(_expr->args[0]);
+                out << "), uint("; cg.generateExpr(_expr->args[1]);
+                out << "), uint("; cg.generateExpr(_expr->args[2]);
+                out << "))";
+            } else {
+                if (_expr->args.size() != 4) return false;
+                out << "insert_bits(" << vty << "("; cg.generateExpr(_expr->args[0]);
+                out << "), " << vty << "("; cg.generateExpr(_expr->args[1]);
+                out << "), uint("; cg.generateExpr(_expr->args[2]);
+                out << "), uint("; cg.generateExpr(_expr->args[3]);
+                out << "))";
+            }
+            return true;
+        }
         /// §5.2 — Metal has no matrix `inverse`; lower to an injected
         /// adjugate expansion (shared with HLSL).
         if (name == BUILTIN_INVERSE) {

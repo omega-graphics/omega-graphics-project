@@ -71,3 +71,37 @@ void test_firstbit_vector(uint3 tid : GlobalThreadID){
 
     output[0].value = uint4((uint)hu.x, (uint)lu.y, (uint)hi.z, (uint)li.w);
 }
+
+// §5.3 Phase C — bitfieldExtract / bitfieldInsert.
+//   GLSL native (bitfieldExtract/Insert), MSL native (extract_bits/insert_bits),
+//   HLSL manual shift+mask (no named intrinsic). Unsigned zero-extends, signed
+//   sign-extends; vector forms broadcast the scalar offset/bits.
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_bitfield_scalar(uint3 tid : GlobalThreadID){
+    uint u = input[0].value[0];
+    int  i = (int)input[0].value[1];
+    uint off = 4;
+    uint bits = 8;
+
+    uint eu = bitfieldExtract(u, off, bits);        // uint  -> zero-extend
+    int  ei = bitfieldExtract(i, off, bits);        // int   -> sign-extend
+    uint iu = bitfieldInsert(u, input[0].value[2], off, bits);
+
+    output[0].value = uint4(eu, (uint)ei, iu, 0);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_bitfield_vector(uint3 tid : GlobalThreadID){
+    uint4 uv = input[0].value;
+    int4  iv = int4((int)uv[0], (int)uv[1], (int)uv[2], (int)uv[3]);
+    uint off = 2;
+    uint bits = 12;
+
+    uint4 eu = bitfieldExtract(uv, off, bits);      // vector, scalar off/bits
+    int4  ei = bitfieldExtract(iv, off, bits);
+    uint4 iu = bitfieldInsert(uv, uv, off, bits);
+
+    output[0].value = eu + iu + uint4((uint)ei.x, (uint)ei.y, (uint)ei.z, (uint)ei.w);
+}

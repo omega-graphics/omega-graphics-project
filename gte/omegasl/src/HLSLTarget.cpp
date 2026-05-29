@@ -619,6 +619,12 @@ namespace omegasl {
             out << "))";
             return true;
         }
+        /// §5.3 Phase C — HLSL has no `bitfieldExtract`/`bitfieldInsert`
+        /// intrinsic (verified with dxc); lower to the manual shift+mask
+        /// (shared with no other backend — GLSL/MSL are native). The shared
+        /// helpers queue single-eval temps via statement injection.
+        if (name == BUILTIN_BITFIELD_EXTRACT) return cg.emitHLSLBitfieldExtract(_expr, out);
+        if (name == BUILTIN_BITFIELD_INSERT)  return cg.emitHLSLBitfieldInsert(_expr, out);
         /// §5.1.0 — frexp. HLSL's `frexp(x, out exp)` writes a *float*
         /// exponent, but OmegaSL types the exponent out-param as int/intN.
         /// Capture the mantissa and the float exponent in temporaries, cast

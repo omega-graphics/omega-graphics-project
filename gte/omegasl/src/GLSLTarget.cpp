@@ -1281,6 +1281,35 @@ namespace omegasl {
             out << "))";
             return true;
         }
+        /// §5.3 Phase C — GLSL `bitfieldExtract`/`bitfieldInsert` are native
+        /// (scalar + vector, signed + unsigned), but the offset/bits args
+        /// must be `int` (GLSL signature), so wrap them in `int(...)`. The
+        /// value/base/insert operands are cast to the operand-type spelling:
+        /// GLSL is strict about uint-vs-int, and a bare numeric literal
+        /// (`0xFFu` → `255`) emits as a signed int, so the cast keeps the
+        /// `bitfieldInsert(uint,uint,int,int)` overload unambiguous.
+        if (name == BUILTIN_BITFIELD_EXTRACT || name == BUILTIN_BITFIELD_INSERT) {
+            bool isSigned; int arity;
+            auto *ty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+            if (!cg.intOperandShape(ty, isSigned, arity)) return false;
+            const char *vty = glslIntTypeSpelling(ty);
+            if (!vty) return false;
+            if (name == BUILTIN_BITFIELD_EXTRACT) {
+                if (_expr->args.size() != 3) return false;
+                out << "bitfieldExtract(" << vty << "("; cg.generateExpr(_expr->args[0]);
+                out << "), int("; cg.generateExpr(_expr->args[1]);
+                out << "), int("; cg.generateExpr(_expr->args[2]);
+                out << "))";
+            } else {
+                if (_expr->args.size() != 4) return false;
+                out << "bitfieldInsert(" << vty << "("; cg.generateExpr(_expr->args[0]);
+                out << "), " << vty << "("; cg.generateExpr(_expr->args[1]);
+                out << "), int("; cg.generateExpr(_expr->args[2]);
+                out << "), int("; cg.generateExpr(_expr->args[3]);
+                out << "))";
+            }
+            return true;
+        }
         /// §5.1: GLSL has no `saturate` — rewrite `saturate(x)` as
         /// `clamp(x, 0.0, 1.0)`. GLSL's `clamp(genType, float, float)`
         /// overload broadcasts the scalar bounds across vector x, so the

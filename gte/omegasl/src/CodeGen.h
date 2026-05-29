@@ -407,6 +407,18 @@ namespace omegasl {
         /// firstbit / bitfield lowering reads the operand shape one way.
         bool intOperandShape(ast::Type *t, bool &isSigned, int &arity);
 
+        /// §5.3 Phase C — HLSL manual lowering of bitfieldExtract /
+        /// bitfieldInsert (HLSL has no named intrinsic). Emits a shift+mask
+        /// expression that is bit-identical to the GLSL/MSL spec (host-
+        /// verified across 210 combos incl. bits==0 and signed sign-extend).
+        /// Scalar offset/bits broadcast over vector operands, so no
+        /// component expansion is needed. Returns false (caller falls
+        /// through) if the operand type can't be classified as integer.
+        ///   extract: unsigned `(v>>off)&mask`; signed arithmetic-shift form.
+        ///   insert:  `(base & ~(mask<<off)) | ((insert & mask)<<off)`.
+        bool emitHLSLBitfieldExtract(ast::CallExpr *call, std::ostream &out);
+        bool emitHLSLBitfieldInsert(ast::CallExpr *call, std::ostream &out);
+
         /// Current block-nesting depth, in indentation levels (one
         /// level == 4 spaces after Phase 7.5 unification). Each
         /// `generateBlock` call increments at entry and decrements at

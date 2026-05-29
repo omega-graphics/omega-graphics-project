@@ -1531,7 +1531,7 @@ determinants. Registered as `omegagte_matrix_ops` in each backend's test
 confirm those backends. Writing this test surfaced and fixed the Metal
 buffer-IO trailing-padding bug noted under §2.4.
 
-### 5.3 Integer / bitfield ops [Phases A+B LANDED — countbits / reversebits / firstbit*]
+### 5.3 Integer / bitfield ops [COMPLETED — all six ops, Phases A+B+C]
 
 | Function | HLSL | MSL | GLSL | Status |
 |----------|------|-----|------|--------|
@@ -1539,7 +1539,8 @@ buffer-IO trailing-padding bug noted under §2.4.
 | `reversebits`     | yes (scalar-uint) | `reverse_bits` | `bitfieldReverse` | **Phase A landed** |
 | `firstbitlow`     | yes (scalar/vec/signed) | `ctz` | `findLSB` | **Phase B landed** |
 | `firstbithigh`    | yes (scalar/vec/signed) | `clz` | `findMSB` | **Phase B landed** |
-| `bitfieldExtract` / `bitfieldInsert` | **no named intrinsic (manual shift/mask)** | `extract_bits` / `insert_bits` | yes | Phase C (planned) |
+| `bitfieldExtract` | **no named intrinsic (manual shift/mask)** | `extract_bits` | `bitfieldExtract` | **Phase C landed** |
+| `bitfieldInsert`  | **no named intrinsic (manual mask/or)** | `insert_bits` | `bitfieldInsert` | **Phase C landed** |
 
 Needed for hashing, compression formats, occupancy masks. Operand domain
 is `int` / `uint` and their vector forms; firstbit ops will normalize to a
@@ -1612,6 +1613,45 @@ Verification: full omegasl ctest suite (96 tests) green; the GPU
 `omegagte_bitfield_ops` test passes on Metal; emitted HLSL/GLSL compile
 under dxc / glslc. (D3D12/Vulkan runtime still pending CI, but the source
 compiles on their real toolchains here.)
+
+**Phase C — `bitfieldExtract` / `bitfieldInsert` (landed).**
+`bitfieldExtract(value, offset, bits)` (3-arg) and `bitfieldInsert(base,
+insert, offset, bits)` (4-arg). The `value`/`base`/`insert` operands are
+integer scalar/vector (intN/uintN, same type for base & insert); `offset` /
+`bits` are scalar int/uint. Unsigned operands zero-extend, signed operands
+sign-extend; the vector forms apply the scalar offset/bits to every
+component. Return type is the value/base operand type.
+
+* **GLSL** — native `bitfieldExtract`/`bitfieldInsert`. offset/bits cast to
+  `int` (GLSL signature); the value operands are cast to their own type
+  spelling so a bare integer literal (which emits without uint-ness) can't
+  make the overload ambiguous.
+* **MSL** — native `extract_bits`/`insert_bits`. offset/bits cast to `uint`;
+  value operands cast for the same overload-disambiguation reason.
+* **HLSL** — **no named intrinsic** (confirmed with dxc; the original survey
+  table's "yes" was wrong, like §5.2's "MSL has `inverse`"). Lowered to a
+  manual shift+mask via shared `CodeGen::emitHLSLBitfield{Extract,Insert}`,
+  which queue single-eval temps (statement injection): unsigned extract is
+  `(v>>off)&mask`; signed extract is the arithmetic shift-left/shift-right
+  sign-extend with a `bits==0` guard; insert is `(base & ~(mask<<off)) |
+  ((insert & mask)<<off)`. The lowering was proven **bit-identical to the
+  GLSL/MSL spec across 210 (value,offset,bits) combinations** on the host —
+  including `bits==0` and every signed sign-extension case — before coding.
+
+A real bug was caught by the GPU runtime test (not by `-S` inspection): a
+bare `0xFFu` insert argument emits as `255`, which made Metal's
+`insert_bits` overload set ambiguous and failed the runtime Metal compile.
+Fixed by casting the value/insert operands to the operand-type spelling on
+both native backends. This is exactly the class of error the
+`omegagte_bitfield_ops` GPU test exists to catch — `bitfield_ops_test.cpp`
+now also extracts (unsigned + signed) and inserts on a known operand and
+asserts the GPU result against host references computed on-GPU.
+
+**§5.3 complete.** All six ops land with: 96-test omegasl ctest suite green,
+`omegagte_bitfield_ops` passing on real Metal hardware, and every emitted
+HLSL/GLSL shader compiling under dxc / glslc. D3D12/Vulkan runtime binding
+is the only thing still pending CI (the generated source compiles on their
+real toolchains here).
 
 ### 5.4 Derivatives — already on the "not implemented" list
 

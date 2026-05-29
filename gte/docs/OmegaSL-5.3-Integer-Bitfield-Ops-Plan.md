@@ -163,7 +163,38 @@ Implemented as planned otherwise:
   way to actually prove the cross-backend normalization — add one mirroring
   `matrix_ops_test.cpp`.
 
-### Phase C — `bitfieldExtract`, `bitfieldInsert`
+### Phase C — `bitfieldExtract`, `bitfieldInsert` — **LANDED**
+
+**Landed.** Implemented as planned. The three open verification items from
+the plan header all resolved by probing the real toolchains first:
+
+1. HLSL has **no** `bitfieldExtract`/`bitfieldInsert` intrinsic (confirmed:
+   dxc errors "use of undeclared identifier"). The doc table's "yes" was
+   wrong. → HLSL gets the manual shift+mask lowering.
+2. MSL spells them `extract_bits`/`insert_bits` and they're native
+   (scalar+vector, signed+unsigned). GLSL `bitfieldExtract`/`Insert` native.
+3. The HLSL manual lowering was proven **bit-identical to the GLSL/MSL
+   spec across 210 (value, offset, bits) combinations** on the host —
+   unsigned zero-extend, signed sign-extend, `bits==0`, and insert masking —
+   *before* transcribing it into the backend.
+
+Implemented: `emitHLSLBitfieldExtract`/`emitHLSLBitfieldInsert` shared
+helpers on `CodeGen` (single-eval temps via `queuePendingStatement`); GLSL
+and MSL emit the native call with offset/bits cast to int/uint respectively.
+Sema adds 3-arg / 4-arg integer buckets that validate the operand, the
+scalar offset/bits, and (for insert) base==insert type.
+
+**Bug caught by the GPU runtime test (not by `-S`):** a bare `0xFFu` insert
+literal emits as `255` (no uint-ness), making MSL's `insert_bits` overload
+ambiguous — the runtime Metal compile failed. Fixed by casting the
+value/insert operands to their type spelling on both native backends. The
+`omegagte_bitfield_ops` GPU test was extended to cover extract (signed +
+unsigned) and insert against host references, so the regression is guarded.
+
+Verification: 96-test omegasl ctest suite green; `omegagte_bitfield_ops`
+passing on Metal; all six emitted shaders compile under dxc and glslc.
+
+Original plan (all implemented):
 
 * **AST/Sema**: `BUILTIN_BITFIELD_EXTRACT` (3-arg: value, offset, bits),
   `BUILTIN_BITFIELD_INSERT` (4-arg: base, insert, offset, bits). New 3-arg

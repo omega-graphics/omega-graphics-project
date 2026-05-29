@@ -35,15 +35,17 @@ namespace {
 OmegaCommon::String kShaders = R"(
 
 struct InData  {
-    uint4 ops;    // operands for firstbit / countbits
+    uint4 ops;    // operands for firstbit / countbits / bitfield
     uint4 rexp;   // host-computed reversebits(ops) expected values
+    uint4 bfexp;  // host-computed (extractU, extractS, insert, 0) for ops.x
 };
-// Four float4s: highs, lows, counts, revOK — one component per test operand.
+// highs/lows/counts/revOK as before, plus bfOK for the §5.3-C extract/insert.
 struct OutData {
     float4 highs;     // firstbithigh(op_i)
     float4 lows;      // firstbitlow(op_i)
     float4 counts;    // countbits(op_i)
     float4 revOK;     // 1.0 if reversebits(op_i) == host expected, else 0.0
+    float4 bfOK;      // (extractU, extractS, insert, 1) each 1.0 if == host
 };
 
 buffer<InData>  inBuf  : 0;
@@ -69,6 +71,18 @@ void bitfieldOps(uint3 tid : GlobalThreadID){
                               float(rb.y == re.y ? 1u : 0u),
                               float(rb.z == re.z ? 1u : 0u),
                               float(rb.w == re.w ? 1u : 0u));
+
+    // §5.3-C — extract/insert on a known operand (ops.x = 0xA5A5A5A5),
+    // offset 4, 8 bits. Compared against host-computed expectations on-GPU.
+    uint  base = op.x;
+    uint  eu = bitfieldExtract(base, 4, 8);             // unsigned, zero-extend
+    int   es = bitfieldExtract((int)base, 4, 8);        // signed,   sign-extend
+    uint  ib = bitfieldInsert(base, 0xFFu, 4, 8);       // insert low 8 bits
+    uint4 bfe = inBuf[0].bfexp;
+    outBuf[0].bfOK = float4(float(eu == bfe.x ? 1u : 0u),
+                            float((uint)es == bfe.y ? 1u : 0u),
+                            float(ib == bfe.z ? 1u : 0u),
+                            1.0);
 }
 
 )";
@@ -80,6 +94,24 @@ static uint32_t reverseBits32(uint32_t x) {
     uint32_t r = 0;
     for (int i = 0; i < 32; ++i) { r = (r << 1) | (x & 1u); x >>= 1; }
     return r;
+}
+
+// Host reference for bitfieldExtract / bitfieldInsert (the GLSL/MSL spec the
+// HLSL manual lowering must match). bits>0, off+bits<=32 here.
+static uint32_t bfExtractU(uint32_t v, int off, int bits) {
+    uint32_t mask = (bits == 32) ? 0xFFFFFFFFu : ((1u << bits) - 1u);
+    return (v >> off) & mask;
+}
+static int32_t bfExtractS(int32_t v, int off, int bits) {
+    uint32_t mask = (bits == 32) ? 0xFFFFFFFFu : ((1u << bits) - 1u);
+    uint32_t raw = ((uint32_t)v >> off) & mask;
+    uint32_t sign = 1u << (bits - 1);
+    if (raw & sign) raw |= ~mask;
+    return (int32_t)raw;
+}
+static uint32_t bfInsert(uint32_t base, uint32_t ins, int off, int bits) {
+    uint32_t mask = ((bits == 32) ? 0xFFFFFFFFu : ((1u << bits) - 1u)) << off;
+    return (base & ~mask) | ((ins << off) & mask);
 }
 
 struct Case { uint32_t v; int high; int low; int count; };
@@ -119,9 +151,10 @@ GTE_TEST_ENTRY_POINT {
     }
     auto pipeline = gte.graphicsEngine->makeComputePipelineState(pd);
 
-    const auto inLayout = OmegaCommon::Vector<omegasl_data_type>{OMEGASL_UINT4, OMEGASL_UINT4};
+    const auto inLayout = OmegaCommon::Vector<omegasl_data_type>{
+        OMEGASL_UINT4, OMEGASL_UINT4, OMEGASL_UINT4};
     const auto outLayout = OmegaCommon::Vector<omegasl_data_type>{
-        OMEGASL_FLOAT4, OMEGASL_FLOAT4, OMEGASL_FLOAT4, OMEGASL_FLOAT4};
+        OMEGASL_FLOAT4, OMEGASL_FLOAT4, OMEGASL_FLOAT4, OMEGASL_FLOAT4, OMEGASL_FLOAT4};
     const size_t inSize = omegaSLStructStride(inLayout);
     const size_t outSize = omegaSLStructStride(outLayout);
 
@@ -135,12 +168,19 @@ GTE_TEST_ENTRY_POINT {
         ops[i][0] = kCases[i].v;
         rexp[i][0] = reverseBits32(kCases[i].v);
     }
+    // bitfield extract/insert expectations on ops.x, offset 4, 8 bits.
+    auto bfexp = UVec<4>::Create();
+    bfexp[0][0] = bfExtractU(kCases[0].v, 4, 8);
+    bfexp[1][0] = (uint32_t)bfExtractS((int32_t)kCases[0].v, 4, 8);
+    bfexp[2][0] = bfInsert(kCases[0].v, 0xFFu, 4, 8);
+    bfexp[3][0] = 0u;
 
     auto writer = GEBufferWriter::Create();
     writer->setOutputBuffer(inBuf);
     writer->structBegin();
     writer->writeUint4(ops);
     writer->writeUint4(rexp);
+    writer->writeUint4(bfexp);
     writer->structEnd();
     writer->sendToBuffer();
     writer->flush();
@@ -165,10 +205,12 @@ GTE_TEST_ENTRY_POINT {
     auto lows = FVec<4>::Create();
     auto counts = FVec<4>::Create();
     auto revOK = FVec<4>::Create();
+    auto bfOK = FVec<4>::Create();
     reader->getFloat4(highs);
     reader->getFloat4(lows);
     reader->getFloat4(counts);
     reader->getFloat4(revOK);
+    reader->getFloat4(bfOK);
     reader->structEnd();
     reader->reset();
 
@@ -179,6 +221,10 @@ GTE_TEST_ENTRY_POINT {
         // 1.0 means the GPU's reversebits matched the host reference for op_i.
         expectF("reversebits", i, revOK[i][0], 1.0f);
     }
+    // §5.3-C — extract (unsigned), extract (signed), insert all matched host.
+    expectF("bitfieldExtract-u", 0, bfOK[0][0], 1.0f);
+    expectF("bitfieldExtract-s", 1, bfOK[1][0], 1.0f);
+    expectF("bitfieldInsert", 2, bfOK[2][0], 1.0f);
 
     OmegaGTE::Close(gte);
 

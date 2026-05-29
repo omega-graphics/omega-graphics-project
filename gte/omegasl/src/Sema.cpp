@@ -1411,6 +1411,19 @@ namespace omegasl {
                 if(isFirstBit){
                     expectedArgs = 1;
                 }
+                /// §5.3 — Phase C. `bitfieldExtract(value, offset, bits)` is
+                /// 3-arg; `bitfieldInsert(base, insert, offset, bits)` is
+                /// 4-arg. Both return the (integer scalar/vector) operand's
+                /// type; the integer-operand + scalar offset/bits rules are
+                /// checked in the return-handling block below.
+                bool isBitfieldExtract = (fname == BUILTIN_BITFIELD_EXTRACT);
+                bool isBitfieldInsert = (fname == BUILTIN_BITFIELD_INSERT);
+                if(isBitfieldExtract){
+                    expectedArgs = 3;
+                }
+                if(isBitfieldInsert){
+                    expectedArgs = 4;
+                }
 
                 /// Matrix intrinsics with special return types
                 bool isTranspose = (fname == "transpose");
@@ -1587,6 +1600,45 @@ namespace omegasl {
                         return ast::TypeExpr::Create(
                             vectorTypeForScalarArity(ast::builtins::int_type, arity));
                     }
+                    return firstArgType;
+                }
+                /// §5.3 Phase C — bitfieldExtract(value, offset, bits) /
+                /// bitfieldInsert(base, insert, offset, bits). The value /
+                /// base (and, for insert, the inserted operand) must be an
+                /// integer scalar/vector of the *same* type; offset / bits
+                /// are scalar int/uint. Returns the value/base operand type.
+                if((isBitfieldExtract || isBitfieldInsert) && firstArgType){
+                    auto valTy = resolveTypeWithExpr(firstArgType);
+                    auto valInfo = vectorComponentInfo(valTy);
+                    bool valScalarInt = (valTy == ast::builtins::int_type ||
+                                         valTy == ast::builtins::uint_type);
+                    bool valVecInt = (valInfo.scalar == ast::builtins::int_type ||
+                                      valInfo.scalar == ast::builtins::uint_type);
+                    if(!valScalarInt && !valVecInt){
+                        reportBoolErr("`" + std::string(fname) + "` requires an integer scalar or vector first operand (int / uint / intN / uintN).");
+                        return nullptr;
+                    }
+                    /// The offset/bits scalars sit at the last two positions
+                    /// (args 1,2 for extract; args 2,3 for insert). Each must
+                    /// be a scalar int/uint.
+                    unsigned offIdx = isBitfieldInsert ? 2 : 1;
+                    for(unsigned k = offIdx; k < offIdx + 2; ++k){
+                        auto kt = resolveTypeWithExpr(performSemForExpr(_expr->args[k], funcContext));
+                        if(kt != ast::builtins::int_type && kt != ast::builtins::uint_type){
+                            reportBoolErr("`" + std::string(fname) + "`'s offset and bit-count arguments must be scalar int or uint.");
+                            return nullptr;
+                        }
+                    }
+                    /// For insert, the `insert` operand (arg 1) must match the
+                    /// base operand's type exactly (same component type + arity).
+                    if(isBitfieldInsert){
+                        auto insTy = resolveTypeWithExpr(performSemForExpr(_expr->args[1], funcContext));
+                        if(insTy != valTy){
+                            reportBoolErr("`bitfieldInsert`'s base and insert operands must be the same integer type.");
+                            return nullptr;
+                        }
+                    }
+                    _expr->args[0]->resolvedType = firstArgType;
                     return firstArgType;
                 }
                 if(returnsScalar && firstArgType){

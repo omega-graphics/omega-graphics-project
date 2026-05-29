@@ -213,6 +213,25 @@ typedef int ASTType;
 #define BUILTIN_FIRSTBITHIGH "firstbithigh"
 #define BUILTIN_FIRSTBITLOW "firstbitlow"
 
+/// §5.3 — Phase C: bit-field extract / insert.
+///   bitfieldExtract(value, offset, bits)        — 3-arg. Extracts `bits`
+///     bits starting at `offset` from `value`. Unsigned `value` zero-extends;
+///     signed `value` sign-extends from the top extracted bit. Returns
+///     `value`'s type. `offset` / `bits` are scalar int/uint.
+///   bitfieldInsert(base, insert, offset, bits)  — 4-arg. Replaces the
+///     `bits`-wide field at `offset` in `base` with the low `bits` of
+///     `insert`. Returns `base`'s type.
+/// `value`/`base`/`insert` are integer scalar or vector (intN/uintN); the
+/// vector forms apply the same scalar offset/bits to every component.
+/// Per backend (host-verified bit-identical across 210 combos incl. bits==0):
+///   GLSL — native `bitfieldExtract`/`bitfieldInsert` (offset/bits cast to int).
+///   MSL  — native `extract_bits`/`insert_bits` (offset/bits cast to uint).
+///   HLSL — NO named intrinsic; lowered to manual shift+mask (unsigned:
+///          `(v>>off)&mask`; signed: arithmetic-shift sign-extend; insert:
+///          `(base & ~(mask<<off)) | ((insert & mask)<<off)`).
+#define BUILTIN_BITFIELD_EXTRACT "bitfieldExtract"
+#define BUILTIN_BITFIELD_INSERT "bitfieldInsert"
+
 /// §5.1.0 — `mod` / `mad` are accepted as aliases of the canonical
 /// `fmod` / `fma` spellings (see `ast::canonicalBuiltinAlias`). They
 /// carry no separate semantics: `mod` is truncation-modulus like `fmod`
