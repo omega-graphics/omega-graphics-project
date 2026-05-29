@@ -786,7 +786,18 @@ _NAMESPACE_BEGIN_
                 if(a > structAlign) structAlign = a;
             }
 
+            /// §2.4-1 — align-then-place: pad the cursor up to each member's
+            /// base alignment (zero-filling the gap) before the copy, so a
+            /// mixed field order like `{float, float4}` (or std140's
+            /// 16-strided matrix columns) lands every member on the offset the
+            /// shader reads it from, not packed tight.
             for(auto & b : blocks){
+                size_t a = alignmentForType(b.type, layoutStd);
+                size_t aligned = alignOffset(currentOffset, a);
+                if(aligned > currentOffset){
+                    memset(mem_map + currentOffset, 0, aligned - currentOffset);
+                }
+                currentOffset = aligned;
                 size_t si = sizeForType(b.type, layoutStd);
                 memcpy(mem_map + currentOffset,b.data,si);
                 currentOffset += si;
@@ -818,6 +829,14 @@ _NAMESPACE_BEGIN_
         BufferLayoutStd layoutStd = BufferLayoutStd::Std430;
 
         OmegaCommon::Vector<omegasl_data_type> readTypes;
+        /// §2.4-1 — align-then-read: advance the cursor to the field's base
+        /// alignment before each read, mirroring the writer's inter-member
+        /// padding. Struct start is kept on the struct alignment by `structEnd`,
+        /// so aligning the absolute cursor is equivalent to aligning within the
+        /// struct.
+        inline void alignRead(omegasl_data_type t){
+            currentOffset = alignOffset(currentOffset, alignmentForType(t, layoutStd));
+        }
     public:
         void setInputBuffer(SharedHandle<GEBuffer> &buffer) override {
             _buffer = (GEVulkanBuffer *)buffer.get();
@@ -844,11 +863,13 @@ _NAMESPACE_BEGIN_
             }
         }
         void getFloat(float &v) override {
+            alignRead(OMEGASL_FLOAT);
             memcpy(&v,mem_map + currentOffset,sizeof(v));
             currentOffset += sizeof(v);
             readTypes.push_back(OMEGASL_FLOAT);
         }
         void getFloat2(FVec<2> &v) override {
+            alignRead(OMEGASL_FLOAT2);
             glm::vec2 vec;
             memcpy(&vec,mem_map + currentOffset,sizeof(vec));
             v[0][0] = vec.x;
@@ -857,6 +878,7 @@ _NAMESPACE_BEGIN_
             readTypes.push_back(OMEGASL_FLOAT2);
         }
         void getFloat3(FVec<3> &v) override {
+            alignRead(OMEGASL_FLOAT3);
             glm::vec3 vec;
             memcpy(&vec,mem_map + currentOffset,sizeof(vec));
             v[0][0] = vec.x;
@@ -866,6 +888,7 @@ _NAMESPACE_BEGIN_
             readTypes.push_back(OMEGASL_FLOAT3);
         }
         void getFloat4(FVec<4> &v) override {
+            alignRead(OMEGASL_FLOAT4);
             glm::vec4 vec;
             memcpy(&vec,mem_map + currentOffset,sizeof(vec));
             v[0][0] = vec.x;
@@ -881,6 +904,7 @@ _NAMESPACE_BEGIN_
         /// copying back into the host's tightly-packed `FMatrix`.
         template<class T, unsigned C, unsigned R>
         void getMatrixImpl(Matrix<T, C, R> &m, omegasl_data_type tag){
+            alignRead(tag);
             decodeMatrix<T, C, R>(mem_map + currentOffset, m, layoutStd);
             currentOffset += matrixSize(C, R, layoutStd);
             readTypes.push_back(tag);

@@ -220,44 +220,80 @@ namespace OmegaGTE {
         }
     }
 
-    /// std140 byte stride of a flat struct (the GEBufferWriter API exposes no
-    /// arrays / nested structs). Standard align-then-place: each member is
-    /// aligned to its std140 base alignment, then the whole struct rounds up
-    /// to a 16-byte multiple (std140 struct base alignment is always >= 16).
-    /// Matrices are treated as C columns of 16-byte stride. `Iterable` is any
-    /// range of `omegasl_data_type` (an `OmegaCommon::Vector` from the engine
-    /// or a brace list from a test). Header-side and backend-independent so it
-    /// is unit-testable on any platform — including Metal builds, where
-    /// `omegaSLStructStride` itself never takes the std140 path.
-    template<class Iterable>
-    inline std::size_t std140StructStride(const Iterable &fields) noexcept {
-        std::size_t off = 0;
-        for (auto d : fields) {
-            std::size_t align, size;
-            if (isMatrixDataType(d)) {
-                auto dims = matrixDims(d);
-                align = matrixAlignment(dims.second, BufferLayoutStd::Std140); // 16
-                size  = matrixSize(dims.first, dims.second, BufferLayoutStd::Std140); // C * 16
-            } else {
-                auto av = std140ScalarVec(d);
-                align = av.first;
-                size  = av.second;
-            }
-            if (off % align != 0) {
-                off += align - (off % align);
-            }
-            off += size;
+    /// §2.4-1 — per-member base alignment for the align-then-place buffer
+    /// writers/readers. Alignment is *standard-driven and backend-agnostic*:
+    /// scalar 4, vec2 8, vec3/vec4 16, matrix = its column alignment (std430:
+    /// vecR alignment of a column; std140: always 16). The per-member *size*
+    /// is NOT shared here — Metal packs vec3 as a 16-byte `simd_float3` while
+    /// std430/std140 pack it as 12 — so each backend keeps its own size
+    /// convention and only borrows this alignment rule.
+    inline std::size_t memberBaseAlignment(omegasl_data_type d, BufferLayoutStd std) noexcept {
+        if (isMatrixDataType(d)) {
+            return matrixAlignment(matrixDims(d).second, std);
         }
-        if (off % 16 != 0) {
-            off += 16 - (off % 16);
+        return std140ScalarVec(d).first; // align is identical in std430 / std140
+    }
+
+    /// Round `off` up to a multiple of `align` (a power of two in practice,
+    /// but the modulo form is robust to any positive alignment).
+    inline std::size_t alignOffset(std::size_t off, std::size_t align) noexcept {
+        if (align != 0 && off % align != 0) {
+            off += align - (off % align);
         }
         return off;
     }
 
-    /// Brace-list overload: `std140StructStride({OMEGASL_FLOAT4, ...})`.
+    /// §2.4-1 — byte stride of a flat struct (the GEBufferWriter API exposes
+    /// no arrays / nested structs) under the given standard. Standard
+    /// align-then-place: each member is aligned to its base alignment, then the
+    /// whole struct rounds up to its struct alignment — 16 for std140 (struct
+    /// base alignment is always >= 16), the largest member alignment for
+    /// std430. This is the *logical* layout (vec3 = 12 bytes), shared by the
+    /// Vulkan / D3D12 backends and the unit test; Metal's `omegaSLStructStride`
+    /// keeps its `simd_*`-native sizing (vec3 = 16) separately. `Iterable` is
+    /// any range of `omegasl_data_type` (an `OmegaCommon::Vector` from the
+    /// engine or a brace list from a test). Header-side and backend-independent
+    /// so it is unit-testable on any platform.
+    template<class Iterable>
+    inline std::size_t structStride(const Iterable &fields, BufferLayoutStd std) noexcept {
+        std::size_t off = 0, maxAlign = 1;
+        for (auto d : fields) {
+            std::size_t align, size;
+            if (isMatrixDataType(d)) {
+                auto dims = matrixDims(d);
+                align = matrixAlignment(dims.second, std);
+                size  = matrixSize(dims.first, dims.second, std);
+            } else {
+                auto av = std140ScalarVec(d); // scalar/vec size identical in both stds
+                align = av.first;
+                size  = av.second;
+            }
+            if (align > maxAlign) maxAlign = align;
+            off = alignOffset(off, align);
+            off += size;
+        }
+        const std::size_t structAlign = (std == BufferLayoutStd::Std140) ? 16 : maxAlign;
+        return alignOffset(off, structAlign);
+    }
+
+    /// std140 / std430 flat-struct stride. `std140StructStride` preserves the
+    /// pre-§2.4-1 call sites verbatim; both delegate to `structStride`.
+    template<class Iterable>
+    inline std::size_t std140StructStride(const Iterable &fields) noexcept {
+        return structStride(fields, BufferLayoutStd::Std140);
+    }
+    template<class Iterable>
+    inline std::size_t std430StructStride(const Iterable &fields) noexcept {
+        return structStride(fields, BufferLayoutStd::Std430);
+    }
+
+    /// Brace-list overloads: `std140StructStride({OMEGASL_FLOAT4, ...})`.
     /// (Template argument deduction can't bind a braced literal to `Iterable`.)
     inline std::size_t std140StructStride(std::initializer_list<omegasl_data_type> fields) noexcept {
-        return std140StructStride<std::initializer_list<omegasl_data_type>>(fields);
+        return structStride<std::initializer_list<omegasl_data_type>>(fields, BufferLayoutStd::Std140);
+    }
+    inline std::size_t std430StructStride(std::initializer_list<omegasl_data_type> fields) noexcept {
+        return structStride<std::initializer_list<omegasl_data_type>>(fields, BufferLayoutStd::Std430);
     }
 
     /// Map a (C, R) shape to the matching `omegasl_data_type`

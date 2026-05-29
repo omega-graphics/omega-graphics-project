@@ -49,6 +49,52 @@ int main() {
     // sub-16 tail is involved — proves the two standards actually diverge.
     assert(matrixSize(2, 2, Std::Std140) > matrixSize(2, 2, Std::Std430));
 
+    // --- §2.4-1: per-member base alignment (shared by every backend's
+    //     align-then-place writer/reader). Standard-driven, identical for
+    //     scalar/vector across both standards; matrices follow the column
+    //     alignment (std430: vecR; std140: always 16). ---
+    assert(memberBaseAlignment(OMEGASL_FLOAT,  Std::Std430) == 4);
+    assert(memberBaseAlignment(OMEGASL_FLOAT2, Std::Std430) == 8);
+    assert(memberBaseAlignment(OMEGASL_FLOAT3, Std::Std430) == 16);
+    assert(memberBaseAlignment(OMEGASL_FLOAT4, Std::Std430) == 16);
+    assert(memberBaseAlignment(OMEGASL_INT3,   Std::Std140) == 16);
+    assert(memberBaseAlignment(OMEGASL_FLOAT2x2, Std::Std430) == 8);   // vec2 columns
+    assert(memberBaseAlignment(OMEGASL_FLOAT2x2, Std::Std140) == 16);  // forced to 16
+    assert(memberBaseAlignment(OMEGASL_FLOAT4x4, Std::Std430) == 16);
+
+    // alignOffset rounds up to the next multiple (no-op when already aligned).
+    assert(alignOffset(0, 16) == 0);
+    assert(alignOffset(4, 16) == 16);
+    assert(alignOffset(16, 16) == 16);
+    assert(alignOffset(12, 8) == 16);
+
+    // --- §2.4-1: std430 flat-struct stride (logical, vec3 = 12), the layout
+    //     the Vulkan / D3D12 writers/readers pack to. The 16-aligned common
+    //     case is unchanged from the prior heuristic; mixed sub-16 orders are
+    //     the cases the heuristic got wrong. ---
+    assert(std430StructStride({OMEGASL_FLOAT4}) == 16);
+    assert(std430StructStride({OMEGASL_FLOAT4, OMEGASL_FLOAT4}) == 32);
+    assert(std430StructStride({OMEGASL_FLOAT4, OMEGASL_FLOAT2, OMEGASL_FLOAT2}) == 32);
+    assert(std430StructStride({OMEGASL_FLOAT}) == 4);                         // scalar struct, align 4
+    assert(std430StructStride({OMEGASL_FLOAT, OMEGASL_FLOAT}) == 8);
+    // Mixed sub-16 orders — float@0, float4 forced to 16 -> ends 32 (align 16).
+    assert(std430StructStride({OMEGASL_FLOAT, OMEGASL_FLOAT4}) == 32);
+    // vec2 then float4x4: vec2@0(8), mat@16(64) -> 80 (align 16).
+    assert(std430StructStride({OMEGASL_FLOAT2, OMEGASL_FLOAT4x4}) == 80);
+    // float4 then float2: ends at 24, struct align 16 -> 32.
+    assert(std430StructStride({OMEGASL_FLOAT4, OMEGASL_FLOAT2}) == 32);
+    // vec3(12) + float(4) pack tight to 16 (no gap: float align 4 lands at 12).
+    assert(std430StructStride({OMEGASL_FLOAT3, OMEGASL_FLOAT}) == 16);
+    // The matrix-ops layout: all members already 16-aligned, so std430 and the
+    // earlier heuristic agree on the data extent (144).
+    assert(std430StructStride({OMEGASL_FLOAT4x4, OMEGASL_FLOAT3x3,
+                               OMEGASL_FLOAT2x2, OMEGASL_FLOAT4}) == 144);
+
+    // The same mixed order is wider under std140 (struct rounds to 16 and
+    // matrix columns are 16-strided) — diverges from std430 where it matters.
+    assert(std140StructStride({OMEGASL_FLOAT2, OMEGASL_FLOAT2x2})
+           > std430StructStride({OMEGASL_FLOAT2, OMEGASL_FLOAT2x2}));
+
     // --- §12.2 follow-up: integer / unsigned matrices share the float layout
     //     (int/uint/float are all 4-byte scalars), so matrixDims and every
     //     stride must match the same-shape float matrix exactly. ---

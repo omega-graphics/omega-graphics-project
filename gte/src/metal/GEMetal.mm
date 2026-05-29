@@ -476,38 +476,49 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             /// the padding around the first biggest-size member, which both
             /// mis-aligned structs whose biggest member wasn't first and wrote
             /// trailing padding past the end of the (correctly sized) buffer.
+            /// §2.4-1 — align-then-place: align the running offset to each
+            /// member's base alignment (zero-filling the gap) before the
+            /// memcpy, so a field order like `{float, float4}` lands the
+            /// float4 at offset 16 the way MSL reads it — not packed tight at
+            /// offset 4. Member *sizes* stay `simd_*`-native (vec3 = 16) to
+            /// match Metal's natural layout; only the inter-member padding is
+            /// new.
             size_t structAlign = 1;
             size_t local = 0;
             for(auto & block : blocks){
-                size_t s = 0, a = 16;
+                size_t s = 0;
+                size_t a = memberBaseAlignment(block.type, BufferLayoutStd::Std430);
                 if(isMatrixDataType(block.type)){
                     auto [cols, rows] = matrixDims(block.type);
                     s = std430MatrixSize(cols, rows);
-                    a = std430MatrixAlignment(rows);
                 }
                 else {
                     switch (block.type) {
                         case OMEGASL_FLOAT :
                         case OMEGASL_INT :
-                        case OMEGASL_UINT :  s = sizeof(float);       a = 4;  break;
+                        case OMEGASL_UINT :  s = sizeof(float);       break;
                         case OMEGASL_FLOAT2 :
                         case OMEGASL_INT2 :
-                        case OMEGASL_UINT2 : s = sizeof(simd_float2); a = 8;  break;
+                        case OMEGASL_UINT2 : s = sizeof(simd_float2); break;
                         case OMEGASL_FLOAT3 :
                         case OMEGASL_INT3 :
-                        case OMEGASL_UINT3 : s = sizeof(simd_float3); a = 16; break;
+                        case OMEGASL_UINT3 : s = sizeof(simd_float3); break;
                         case OMEGASL_FLOAT4 :
                         case OMEGASL_INT4 :
-                        case OMEGASL_UINT4 : s = sizeof(simd_float4); a = 16; break;
+                        case OMEGASL_UINT4 : s = sizeof(simd_float4); break;
                         default: break;
                     }
                 }
+                size_t aligned = alignOffset(local, a);
+                if(aligned > local){
+                    memset(_data_ptr + currentOffset + local, 0, aligned - local);
+                }
+                local = aligned;
                 memcpy(_data_ptr + currentOffset + local, block.data, s);
                 local += s;
                 if(a > structAlign) structAlign = a;
             }
-            size_t rem = local % structAlign;
-            if(rem != 0) local += structAlign - rem;
+            local = alignOffset(local, structAlign);
             currentOffset += local;
         }
         void flush() override {
@@ -538,17 +549,22 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         bool inStruct = false;
 
         OmegaCommon::Vector<omegasl_data_type> structLayout;
-        /// No-ops. The reader walks fields sequentially at `currentOffset`
-        /// (each get* advances by the field's std430/Metal-native size) and
-        /// rounds to the struct alignment in `structEnd` — the same model as
-        /// the Vulkan / D3D12 readers. The previous heuristic computed trailing
-        /// padding from the biggest member *size* (e.g. 64 for a float4x4)
-        /// rather than the struct *alignment* (16), and applied it one field
-        /// early because `fieldIndex` is pre-incremented in `offsetAndIncrement`
-        /// — so the last field of a struct whose tail is smaller than its
-        /// biggest member (matrices followed by a float4) was read past its
-        /// real offset, returning garbage / zeros.
-        inline void readBeforePaddingIfPossible(){}
+        /// §2.4-1 — align-then-read. Before each field, advance the cursor to
+        /// the field's base alignment, mirroring the writer's inter-member
+        /// padding so e.g. a `float4` after a `float` is read from offset 16,
+        /// not the tightly-packed offset 4. Called at the top of every `get*`
+        /// while `fieldIndex` still points at the field about to be read.
+        /// `structEnd` then rounds to the struct alignment. (Replaces the prior
+        /// trailing-padding heuristic, which keyed off the biggest member
+        /// *size* rather than alignment and applied it one field early.)
+        inline void readBeforePaddingIfPossible(){
+            if(fieldIndex >= structLayout.size()) return;
+            size_t a = memberBaseAlignment(structLayout[fieldIndex], BufferLayoutStd::Std430);
+            size_t aligned = alignOffset(structRelativeOffset, a);
+            size_t pad = aligned - structRelativeOffset;
+            currentOffset += pad;
+            structRelativeOffset = aligned;
+        }
         inline void readAfterPaddingIfPossible(){}
         inline void offsetAndIncrement(size_t n){
             structRelativeOffset += n;

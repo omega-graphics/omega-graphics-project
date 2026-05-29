@@ -992,6 +992,11 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             assert(!inStruct && "");
             if (_data_buffer == nullptr)
                 return;
+            /// §2.4-1 — align-then-place: pad the cursor up to each member's
+            /// base alignment (zero-filling the gap) before the copy, so a
+            /// mixed field order such as `{float, float4}` (or std140's
+            /// 16-strided matrix columns for a uniform buffer) lands every
+            /// member on the offset the HLSL shader reads it from.
             for(auto & block : blocks){
                 size_t dataSize = 0;
                 if(isMatrixDataType(block.type)){
@@ -1022,6 +1027,12 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                 else if(block.type == OMEGASL_INT4 || block.type == OMEGASL_UINT4){
                     dataSize = sizeof(DirectX::XMINT4);
                 }
+                size_t a = memberBaseAlignment(block.type, layoutStd);
+                size_t aligned = alignOffset(currentOffset, a);
+                if(aligned > currentOffset){
+                    memset(_data_buffer + currentOffset, 0, aligned - currentOffset);
+                }
+                currentOffset = aligned;
                 memcpy(_data_buffer + currentOffset,block.data,dataSize);
                 currentOffset += dataSize;
             }
@@ -1055,6 +1066,12 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         size_t currentOffset = 0;
         /// §2.4 — matches the writer: std140 for uniform buffers.
         BufferLayoutStd layoutStd = BufferLayoutStd::Std430;
+        /// §2.4-1 — align-then-read: advance the cursor to the field's base
+        /// alignment before each read, mirroring the writer's inter-member
+        /// padding.
+        inline void alignRead(omegasl_data_type t){
+            currentOffset = alignOffset(currentOffset, memberBaseAlignment(t, layoutStd));
+        }
     public:
         void setInputBuffer(SharedHandle<GEBuffer> &buffer) override {
             currentOffset = 0;
@@ -1072,10 +1089,12 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
         }
         void getFloat(float &v) override {
+            alignRead(OMEGASL_FLOAT);
             memcpy(&v,_data_buffer + currentOffset,sizeof(v));
             currentOffset += sizeof(v);
         }
         void getFloat2(FVec<2> &v) override {
+            alignRead(OMEGASL_FLOAT2);
             DirectX::XMFLOAT2 _v {};
             memcpy(&_v,_data_buffer + currentOffset,sizeof(_v));
             currentOffset += sizeof(_v);
@@ -1083,6 +1102,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             v[1][0] = _v.y;
         }
         void getFloat3(FVec<3> &v) override {
+            alignRead(OMEGASL_FLOAT3);
             DirectX::XMFLOAT3 _v {};
             memcpy(&_v,_data_buffer + currentOffset,sizeof(_v));
             currentOffset += sizeof(_v);
@@ -1091,6 +1111,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             v[2][0] = _v.z;
         }
         void getFloat4(FVec<4> &v) override {
+            alignRead(OMEGASL_FLOAT4);
             DirectX::XMFLOAT4 _v {};
             memcpy(&_v,_data_buffer + currentOffset,sizeof(_v));
             currentOffset += sizeof(_v);
@@ -1103,38 +1124,39 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         /// these bytes are laid out the same way Vulkan/Metal write
         /// them, so the shared decoder works directly.
         template<class T, unsigned C, unsigned R>
-        void getMatrixImpl(Matrix<T, C, R> &m){
+        void getMatrixImpl(Matrix<T, C, R> &m, omegasl_data_type tag){
+            alignRead(tag);
             decodeMatrix<T, C, R>(_data_buffer + currentOffset, m, layoutStd);
             currentOffset += matrixSize(C, R, layoutStd);
         }
-        void getFloat2x2(FMatrix<2,2> &m) override { getMatrixImpl<float,2,2>(m); }
-        void getFloat3x3(FMatrix<3,3> &m) override { getMatrixImpl<float,3,3>(m); }
-        void getFloat4x4(FMatrix<4,4> &m) override { getMatrixImpl<float,4,4>(m); }
-        void getFloat2x3(FMatrix<2,3> &m) override { getMatrixImpl<float,2,3>(m); }
-        void getFloat2x4(FMatrix<2,4> &m) override { getMatrixImpl<float,2,4>(m); }
-        void getFloat3x2(FMatrix<3,2> &m) override { getMatrixImpl<float,3,2>(m); }
-        void getFloat3x4(FMatrix<3,4> &m) override { getMatrixImpl<float,3,4>(m); }
-        void getFloat4x2(FMatrix<4,2> &m) override { getMatrixImpl<float,4,2>(m); }
-        void getFloat4x3(FMatrix<4,3> &m) override { getMatrixImpl<float,4,3>(m); }
+        void getFloat2x2(FMatrix<2,2> &m) override { getMatrixImpl<float,2,2>(m, OMEGASL_FLOAT2x2); }
+        void getFloat3x3(FMatrix<3,3> &m) override { getMatrixImpl<float,3,3>(m, OMEGASL_FLOAT3x3); }
+        void getFloat4x4(FMatrix<4,4> &m) override { getMatrixImpl<float,4,4>(m, OMEGASL_FLOAT4x4); }
+        void getFloat2x3(FMatrix<2,3> &m) override { getMatrixImpl<float,2,3>(m, OMEGASL_FLOAT2x3); }
+        void getFloat2x4(FMatrix<2,4> &m) override { getMatrixImpl<float,2,4>(m, OMEGASL_FLOAT2x4); }
+        void getFloat3x2(FMatrix<3,2> &m) override { getMatrixImpl<float,3,2>(m, OMEGASL_FLOAT3x2); }
+        void getFloat3x4(FMatrix<3,4> &m) override { getMatrixImpl<float,3,4>(m, OMEGASL_FLOAT3x4); }
+        void getFloat4x2(FMatrix<4,2> &m) override { getMatrixImpl<float,4,2>(m, OMEGASL_FLOAT4x2); }
+        void getFloat4x3(FMatrix<4,3> &m) override { getMatrixImpl<float,4,3>(m, OMEGASL_FLOAT4x3); }
         /// §12.2 follow-up — integer / unsigned matrix readers.
-        void getInt2x2(IMatrix<2,2> &m) override { getMatrixImpl<int,2,2>(m); }
-        void getInt3x3(IMatrix<3,3> &m) override { getMatrixImpl<int,3,3>(m); }
-        void getInt4x4(IMatrix<4,4> &m) override { getMatrixImpl<int,4,4>(m); }
-        void getInt2x3(IMatrix<2,3> &m) override { getMatrixImpl<int,2,3>(m); }
-        void getInt2x4(IMatrix<2,4> &m) override { getMatrixImpl<int,2,4>(m); }
-        void getInt3x2(IMatrix<3,2> &m) override { getMatrixImpl<int,3,2>(m); }
-        void getInt3x4(IMatrix<3,4> &m) override { getMatrixImpl<int,3,4>(m); }
-        void getInt4x2(IMatrix<4,2> &m) override { getMatrixImpl<int,4,2>(m); }
-        void getInt4x3(IMatrix<4,3> &m) override { getMatrixImpl<int,4,3>(m); }
-        void getUint2x2(UMatrix<2,2> &m) override { getMatrixImpl<unsigned,2,2>(m); }
-        void getUint3x3(UMatrix<3,3> &m) override { getMatrixImpl<unsigned,3,3>(m); }
-        void getUint4x4(UMatrix<4,4> &m) override { getMatrixImpl<unsigned,4,4>(m); }
-        void getUint2x3(UMatrix<2,3> &m) override { getMatrixImpl<unsigned,2,3>(m); }
-        void getUint2x4(UMatrix<2,4> &m) override { getMatrixImpl<unsigned,2,4>(m); }
-        void getUint3x2(UMatrix<3,2> &m) override { getMatrixImpl<unsigned,3,2>(m); }
-        void getUint3x4(UMatrix<3,4> &m) override { getMatrixImpl<unsigned,3,4>(m); }
-        void getUint4x2(UMatrix<4,2> &m) override { getMatrixImpl<unsigned,4,2>(m); }
-        void getUint4x3(UMatrix<4,3> &m) override { getMatrixImpl<unsigned,4,3>(m); }
+        void getInt2x2(IMatrix<2,2> &m) override { getMatrixImpl<int,2,2>(m, OMEGASL_INT2x2); }
+        void getInt3x3(IMatrix<3,3> &m) override { getMatrixImpl<int,3,3>(m, OMEGASL_INT3x3); }
+        void getInt4x4(IMatrix<4,4> &m) override { getMatrixImpl<int,4,4>(m, OMEGASL_INT4x4); }
+        void getInt2x3(IMatrix<2,3> &m) override { getMatrixImpl<int,2,3>(m, OMEGASL_INT2x3); }
+        void getInt2x4(IMatrix<2,4> &m) override { getMatrixImpl<int,2,4>(m, OMEGASL_INT2x4); }
+        void getInt3x2(IMatrix<3,2> &m) override { getMatrixImpl<int,3,2>(m, OMEGASL_INT3x2); }
+        void getInt3x4(IMatrix<3,4> &m) override { getMatrixImpl<int,3,4>(m, OMEGASL_INT3x4); }
+        void getInt4x2(IMatrix<4,2> &m) override { getMatrixImpl<int,4,2>(m, OMEGASL_INT4x2); }
+        void getInt4x3(IMatrix<4,3> &m) override { getMatrixImpl<int,4,3>(m, OMEGASL_INT4x3); }
+        void getUint2x2(UMatrix<2,2> &m) override { getMatrixImpl<unsigned,2,2>(m, OMEGASL_UINT2x2); }
+        void getUint3x3(UMatrix<3,3> &m) override { getMatrixImpl<unsigned,3,3>(m, OMEGASL_UINT3x3); }
+        void getUint4x4(UMatrix<4,4> &m) override { getMatrixImpl<unsigned,4,4>(m, OMEGASL_UINT4x4); }
+        void getUint2x3(UMatrix<2,3> &m) override { getMatrixImpl<unsigned,2,3>(m, OMEGASL_UINT2x3); }
+        void getUint2x4(UMatrix<2,4> &m) override { getMatrixImpl<unsigned,2,4>(m, OMEGASL_UINT2x4); }
+        void getUint3x2(UMatrix<3,2> &m) override { getMatrixImpl<unsigned,3,2>(m, OMEGASL_UINT3x2); }
+        void getUint3x4(UMatrix<3,4> &m) override { getMatrixImpl<unsigned,3,4>(m, OMEGASL_UINT3x4); }
+        void getUint4x2(UMatrix<4,2> &m) override { getMatrixImpl<unsigned,4,2>(m, OMEGASL_UINT4x2); }
+        void getUint4x3(UMatrix<4,3> &m) override { getMatrixImpl<unsigned,4,3>(m, OMEGASL_UINT4x3); }
         void structEnd() override {
 
         }

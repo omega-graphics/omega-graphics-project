@@ -634,35 +634,62 @@ struct strides on any host — the Metal build itself never exercises the
 std140 path. Vulkan/D3D12 packing is written but compiles only on those
 platforms.
 
-**Follow-up — per-member alignment in the buffer writers (open).**
+**Follow-up — per-member alignment in the buffer writers (LANDED).**
 
-The per-backend `GEBufferWriter` / `GEBufferReader` pack members
-*sequentially* and do not insert sub-16 inter-member padding. This is a
-pre-existing discipline shared with the std430 path (the Vulkan/D3D12/Metal
-writers all advance the cursor by each member's raw size and only pad the
-struct total, if at all). As a result:
+The per-backend `GEBufferWriter` / `GEBufferReader` used to pack members
+*sequentially*, advancing the cursor by each member's raw size and only
+padding the struct total. Correct for the common uniform payload (matrices
+and `float4`s, all 16-aligned) but wrong for a field order that interleaved
+sub-16 scalars/vectors with larger members (`float` then `float4`, or
+`float2` then `float4x4`): the larger member was placed too early, so the
+bytes matched neither what `std140StructStride` computes nor what the shader
+reads. Worse, the allocation sizer `omegaSLStructStride` used an independent
+`biggestWord` heuristic that *under*-sized such orders (e.g. `{float,
+float4}` → 24 bytes on Metal), so once the writer aligns correctly it would
+have overflowed the buffer.
 
-* **Correct today** for the common uniform payload — matrices and
-  `float4`s, which are all 16-aligned, so sequential packing already lands
-  every member on its required offset.
-* **Not yet correct** for a field order that interleaves sub-16
-  scalars/vectors with larger members (e.g. `float` then `float4`, or
-  `float2` then `float4x4`). std140 requires the larger member to start at
-  its 16-byte alignment; the sequential writers would place it too early,
-  so the bytes would not match what `std140StructStride` computes (the
-  stride helper *does* align per-member) nor what the shader reads.
+**Landed as a unified align-then-place across both standards.** The shared
+rule now lives in `BufferIO.h`:
 
-Scope when picked up: give the writers/readers a per-member align-then-place
-cursor (the same align rule `std140StructStride` already encodes — reuse
-`std140ScalarVec` / `matrixAlignment`) instead of the raw-size advance.
-This also fixes the analogous std430 inter-member gap, so it should land as
-one change across both standards. Until then, author uniform structs with
-16-aligned members (matrices / `float4`) — or order smaller members so they
-pack without straddling.
+* `memberBaseAlignment(type, std)` — the per-member base alignment (scalar 4,
+  vec2 8, vec3/vec4 16, matrix = its column alignment), standard-driven and
+  backend-agnostic. Alignment is shared; the per-member *size* is not, because
+  Metal packs `vec3` as a 16-byte `simd_float3` while std430/std140 pack it as
+  12 — each backend keeps its own size convention and only borrows this
+  alignment.
+* `structStride(fields, std)` — the canonical align-then-place stride (align
+  each member, then round the struct to 16 for std140 / max-member-alignment
+  for std430). `std140StructStride` / new `std430StructStride` delegate to it.
+* `alignOffset(off, align)` — the shared round-up helper.
+
+`omegaSLStructStride`'s std430 body was replaced with this align-then-place
+walk (Vulkan/D3D12 delegate to `std430StructStride`; Metal keeps `simd_*`
+sizes), so the allocation size now equals what the writer packs. The three
+`GE*BufferWriter::sendToBuffer` loops align the cursor (zero-filling the gap)
+before each member; the readers align before each read via a shared
+`alignRead` / the Metal reader's `readBeforePaddingIfPossible` hook.
+
+Per-backend verification (per the build-verification discipline — only Metal
+compiles on the macOS host): Metal `OmegaGTE` builds clean and all four
+host tests pass. The extended CPU `omegagte_std140_layout` test asserts the
+std430/std140 strides and the new `memberBaseAlignment` / `alignOffset`
+helpers for mixed sub-16 orders on any host. `omegagte_matrix_ops` gained a
+second GPU compute kernel (`mixedLayout`) that round-trips a deliberately
+mixed-order struct (`float`→`float4`→`float2`→`float4x4`→`float` — both the
+scalar-before-`float4` and `float2`-before-`float4x4` cases) end-to-end
+through a real dispatch, doubling each field so a misaligned read yields
+garbage rather than 2x; it was confirmed to *fail* when the writer alignment
+is removed, so it genuinely guards the fix. The Vulkan/D3D12 writer/reader
+edits are written from the source map, not compiled here.
 
 | # | Task | Where | Effort | Blocks | Status |
 |---|------|-------|--------|--------|--------|
-| §2.4-1 | Per-member align-then-place in the buffer writers/readers (fixes std140 *and* std430 inter-member offsets for mixed sub-16 field orders) | `GEVulkan.cpp`, `GED3D12.cpp`, `GEMetal.mm` `GE*BufferWriter`/`Reader`; reuse `BufferIO.h` `std140ScalarVec` / `matrixAlignment` | medium | correct std140 packing for non-16-aligned uniform field orders | open |
+| §2.4-1 | Per-member align-then-place in the buffer writers/readers (fixes std140 *and* std430 inter-member offsets for mixed sub-16 field orders) | `GEVulkan.cpp`, `GED3D12.cpp`, `GEMetal.mm` `GE*BufferWriter`/`Reader`; `BufferIO.h` `memberBaseAlignment`/`structStride`/`alignOffset`; `GTEBase.cpp` `omegaSLStructStride` | medium | correct std140 packing for non-16-aligned uniform field orders | **done** |
+
+**Out of scope (follow-up):** the D3D12 `GE*BufferReader` still lacks the
+struct-alignment round in `structEnd` that Metal/Vulkan have, so reading a
+contiguous *array* of structs back on D3D12 is correct only for 16-aligned
+struct strides (pre-existing; single-struct reads are correct).
 
 **Follow-up — Metal `GEBufferWriter`/`GEBufferReader` trailing-padding bug (FIXED).**
 Distinct from §2.4-1 (which is about *sub-16 inter-member* under-padding). The

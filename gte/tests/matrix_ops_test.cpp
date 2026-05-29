@@ -20,11 +20,13 @@
 ///                 check tied to the storage convention; see note below)
 ///   determinant:  determinant(A) == host-computed det (transpose-invariant)
 ///
-/// Buffer layout note (§2.4-1): the per-backend GEBufferWriter/Reader pack
-/// struct members sequentially without sub-16 inter-member padding, so every
-/// field here is 16-byte-aligned (matrices and float4 only — the three scalar
-/// determinants are packed into one float4). No bare scalar precedes a larger
-/// member, so the sequential packing matches std430.
+/// Buffer layout note (§2.4-1): the matrix-op structs above are all
+/// 16-byte-aligned (matrices and float4 only — the three scalar determinants
+/// are packed into one float4). A second kernel (`mixedLayout`) deliberately
+/// uses a struct whose field order interleaves sub-16 scalars/vectors with
+/// larger members (scalar→float4, float2→float4x4, trailing scalar) to
+/// exercise the per-member align-then-place padding the writers/readers gained
+/// in §2.4-1 — it round-trips only if that padding is correct.
 
 #include <omegaGTE/GTEDevice.h>
 #include <omegaGTE/GECommandQueue.h>
@@ -91,6 +93,34 @@ void matrixOps(uint3 tid : GlobalThreadID){
     outBuf[0].inv2_lhs    = inverse(a2) * a2;
     outBuf[0].matvec_rt   = inverse(a4) * (a4 * v);
     outBuf[0].dets        = float4(determinant(a2), determinant(a3), determinant(a4), 0.0);
+}
+
+// §2.4-1 — mixed-order buffer-layout round-trip. The field order interleaves
+// sub-16 scalars/vectors with larger members (scalar before float4, float2
+// before float4x4, trailing scalar), so the struct only round-trips if the
+// GEBufferWriter/Reader insert correct inter-member padding. Each field is
+// doubled so the GPU must actually read it from the right offset (a misaligned
+// read yields garbage, not 2x). The matrix is echoed unchanged (matrix*scalar
+// / matrix+matrix aren't part of the verified op surface).
+struct MixIO {
+    float    s0;   // @0
+    float4   v0;   // must align 16 -> @16 (12-byte gap)
+    float2   v1;   // @32
+    float4x4 m0;   // must align 16 -> @48 (8-byte gap)
+    float    s1;   // @112 (trailing sub-16)
+};
+
+buffer<MixIO> mixInBuf  : 0;
+buffer<MixIO> mixOutBuf : 1;
+
+[in mixInBuf, out mixOutBuf]
+compute(x=1,y=1,z=1)
+void mixedLayout(uint3 tid : GlobalThreadID){
+    mixOutBuf[0].s0 = mixInBuf[0].s0 + mixInBuf[0].s0;
+    mixOutBuf[0].v0 = mixInBuf[0].v0 + mixInBuf[0].v0;
+    mixOutBuf[0].v1 = mixInBuf[0].v1 + mixInBuf[0].v1;
+    mixOutBuf[0].m0 = mixInBuf[0].m0;
+    mixOutBuf[0].s1 = mixInBuf[0].s1 + mixInBuf[0].s1;
 }
 
 )";
@@ -297,6 +327,105 @@ GTE_TEST_ENTRY_POINT {
     }
     if (!approx(dets[2][0], det4, detTol(det4))) {
         std::cerr << "  FAIL det(a4) = " << dets[2][0] << " expected " << det4 << "\n";
+        failFlag() = true;
+    }
+
+    // ------------------------------------------------------------------
+    // §2.4-1 — mixed-order buffer-layout round-trip on the GPU.
+    // ------------------------------------------------------------------
+    ComputePipelineDescriptor mpd{};
+    mpd.computeFunc = lib->shaders["mixedLayout"];
+    if (!mpd.computeFunc) {
+        std::cerr << "mixedLayout shader not found\n";
+        OmegaGTE::Close(gte);
+        return 1;
+    }
+    auto mixPipeline = gte.graphicsEngine->makeComputePipelineState(mpd);
+
+    // Field order: float, float4, float2, float4x4, float — interleaves sub-16
+    // members with larger ones, so it only round-trips with correct
+    // inter-member padding.
+    const auto mixLayout = OmegaCommon::Vector<omegasl_data_type>{
+        OMEGASL_FLOAT, OMEGASL_FLOAT4, OMEGASL_FLOAT2, OMEGASL_FLOAT4x4, OMEGASL_FLOAT};
+    const size_t mixSize = omegaSLStructStride(mixLayout);
+
+    auto mixIn = gte.graphicsEngine->makeBuffer({BufferDescriptor::Upload, mixSize, mixSize});
+    auto mixOut = gte.graphicsEngine->makeBuffer({BufferDescriptor::Upload, mixSize, mixSize});
+
+    // Known inputs. Distinct values per field so a wrong offset surfaces.
+    float mS0 = 1.5f;
+    auto mV0 = FVec<4>::Create();
+    const float kMV0[4] = {2, 3, 4, 5};
+    for (unsigned i = 0; i < 4; ++i) mV0[i][0] = kMV0[i];
+    auto mV1 = FVec<2>::Create();
+    const float kMV1[2] = {6, 7};
+    for (unsigned i = 0; i < 2; ++i) mV1[i][0] = kMV1[i];
+    auto mM0 = FMatrix<4, 4>::Create();
+    for (unsigned c = 0; c < 4; ++c) for (unsigned r = 0; r < 4; ++r) mM0[c][r] = kA4[c][r];
+    float mS1 = 9.5f;
+
+    auto mWriter = GEBufferWriter::Create();
+    mWriter->setOutputBuffer(mixIn);
+    mWriter->structBegin();
+    mWriter->writeFloat(mS0);
+    mWriter->writeFloat4(mV0);
+    mWriter->writeFloat2(mV1);
+    mWriter->writeFloat4x4(mM0);
+    mWriter->writeFloat(mS1);
+    mWriter->structEnd();
+    mWriter->sendToBuffer();
+    mWriter->flush();
+
+    auto mCmd = queue->getAvailableBuffer();
+    GEComputePassDescriptor mPass{};
+    mCmd->startComputePass(mPass);
+    mCmd->setComputePipelineState(mixPipeline);
+    mCmd->bindResourceAtComputeShader(mixIn, 0);
+    mCmd->bindResourceAtComputeShader(mixOut, 1);
+    mCmd->dispatchThreads(1, 1, 1);
+    mCmd->finishComputePass();
+    queue->submitCommandBuffer(mCmd);
+    queue->commitToGPUAndWait();
+
+    auto mReader = GEBufferReader::Create();
+    mReader->setInputBuffer(mixOut);
+    mReader->setStructLayout(mixLayout);
+    mReader->structBegin();
+    float oS0 = 0.f;
+    auto oV0 = FVec<4>::Create();
+    auto oV1 = FVec<2>::Create();
+    auto oM0 = FMatrix<4, 4>::Create();
+    float oS1 = 0.f;
+    mReader->getFloat(oS0);
+    mReader->getFloat4(oV0);
+    mReader->getFloat2(oV1);
+    mReader->getFloat4x4(oM0);
+    mReader->getFloat(oS1);
+    mReader->structEnd();
+    mReader->reset();
+
+    // Each scalar/vector is doubled by the kernel; the matrix is echoed.
+    if (!approx(oS0, mS0 * 2.f)) {
+        std::cerr << "  FAIL mixed.s0 = " << oS0 << " expected " << mS0 * 2.f << "\n";
+        failFlag() = true;
+    }
+    for (unsigned i = 0; i < 4; ++i) {
+        if (!approx(oV0[i][0], kMV0[i] * 2.f)) {
+            std::cerr << "  FAIL mixed.v0[" << i << "] = " << oV0[i][0]
+                      << " expected " << kMV0[i] * 2.f << "\n";
+            failFlag() = true;
+        }
+    }
+    for (unsigned i = 0; i < 2; ++i) {
+        if (!approx(oV1[i][0], kMV1[i] * 2.f)) {
+            std::cerr << "  FAIL mixed.v1[" << i << "] = " << oV1[i][0]
+                      << " expected " << kMV1[i] * 2.f << "\n";
+            failFlag() = true;
+        }
+    }
+    expectMatrix<4, 4>("mixed.m0", oM0, [](unsigned c, unsigned r) { return kA4[c][r]; });
+    if (!approx(oS1, mS1 * 2.f)) {
+        std::cerr << "  FAIL mixed.s1 = " << oS1 << " expected " << mS1 * 2.f << "\n";
         failFlag() = true;
     }
 

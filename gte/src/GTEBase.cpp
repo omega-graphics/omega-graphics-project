@@ -14,168 +14,58 @@ const long double PI = std::acos(-1);
 
 size_t omegaSLStructStride(OmegaCommon::Vector<omegasl_data_type> data,
                            BufferDescriptor::Role role) noexcept{
-#if !defined(TARGET_METAL)
     /// §2.4 std140 path (GLSL `uniform` / HLSL `cbuffer`, column-major).
     /// Only Vulkan and D3D12 use std140 for uniforms; Metal reads constant
-    /// buffers with its natural (std430-equivalent) layout, so this branch
-    /// is compiled out there and `role` falls through to the std430 body
-    /// below. The std140 rule lives in a shared header helper so it can be
-    /// unit-tested on any platform (see BufferIO.h `std140StructStride`).
+    /// buffers with its natural layout, so on Metal `role` is ignored and a
+    /// uniform falls through to the Metal-native std430 body below.
+#if !defined(TARGET_METAL)
     if(role == BufferDescriptor::Uniform){
         return std140StructStride(data);
     }
 #else
     (void)role;
 #endif
-    size_t s = 0;
-    size_t biggestWord = 1;
-    OmegaCommon::Vector<size_t> data_sizes;
-    /// 1. Find all data type sizes and find biggest word.
+
+    /// §2.4-1 — storage / std430 path, align-then-place (replaces the prior
+    /// `biggestWord` heuristic, which mis-sized any field order that
+    /// interleaved sub-16 members with larger ones — e.g. `{float, float4}`
+    /// allocated 24 bytes while the writer now lays the `float4` at offset 16,
+    /// needing 32, a buffer overflow). The allocation must equal what the
+    /// matching GE*BufferWriter packs.
+    ///
+    /// Vulkan / D3D12 use the *logical* std430 layout (vec3 = 12), shared with
+    /// the unit-tested header helper. Metal keeps `simd_*`-native sizes (vec3 =
+    /// 16, the size of `simd_float3`) so the bytes match what MSL `device T*` /
+    /// `constant T&` reads; only the per-member size differs, the alignment
+    /// rule is identical.
+#if !defined(TARGET_METAL)
+    return std430StructStride(data);
+#else
+    size_t off = 0, structAlign = 1;
     for(auto d : data){
-        /// Matrix members: std430 size = C * column-stride. The column
-        /// stride takes the vec3 quirk into account (Cx3 columns are padded
-        /// to 16 bytes). Treat the matrix as one packed block — its
-        /// alignment is the column alignment, so it slots into the
-        /// biggest-word machinery naturally.
+        size_t align = memberBaseAlignment(d, BufferLayoutStd::Std430);
+        size_t size;
         if(isMatrixDataType(d)){
             auto [cols, rows] = matrixDims(d);
-            auto _s = std430MatrixSize(cols, rows);
-            auto _a = std430MatrixAlignment(rows);
-            if(biggestWord < _a){
-                biggestWord = _a;
-            }
-            data_sizes.push_back(_s);
-            continue;
-        }
-        switch (d) {
-            case OMEGASL_FLOAT :
-            case OMEGASL_INT :
-            case OMEGASL_UINT :
-            {
-                auto _s = sizeof(float);
-                if(biggestWord < _s){
-                    biggestWord = _s;
-                }
-                data_sizes.push_back(_s);
-                break;
-            }
-            case OMEGASL_FLOAT2 :
-            case OMEGASL_INT2 :
-            case OMEGASL_UINT2 : {
-#if defined(TARGET_METAL)
-                auto _s = sizeof(simd_float2);
-                if(biggestWord < _s){
-                    biggestWord = _s;
-                }
-                data_sizes.push_back(_s);
-#else
-                auto _s = sizeof(float);
-                if(biggestWord < _s){
-                    biggestWord = _s;
-                }
-                data_sizes.push_back(_s);
-                data_sizes.push_back(_s);
-
-#endif
-                break;
-            }
-            case OMEGASL_FLOAT3 :
-            case OMEGASL_INT3 :
-            case OMEGASL_UINT3 :
-            {
-#if defined(TARGET_METAL)
-                auto _s = sizeof(simd_float3);
-                if(biggestWord < _s){
-                    biggestWord = _s;
-                }
-                data_sizes.push_back(_s);
-#else
-                auto _s = sizeof(float);
-                if(biggestWord < _s){
-                    biggestWord = _s;
-                }
-                data_sizes.push_back(_s);
-                data_sizes.push_back(_s);
-                data_sizes.push_back(_s);
-#endif
-                break;
-            }
-            case OMEGASL_FLOAT4 :
-            case OMEGASL_INT4 :
-            case OMEGASL_UINT4 :
-            {
-#if defined(TARGET_METAL)
-                auto _s = sizeof(simd_float4);
-                if(biggestWord < _s){
-                    biggestWord = _s;
-                }
-                data_sizes.push_back(_s);
-#else
-                auto _s = sizeof(float);
-                if(biggestWord < _s){
-                    biggestWord = _s;
-                }
-                data_sizes.push_back(_s);
-                data_sizes.push_back(_s);
-                data_sizes.push_back(_s);
-                data_sizes.push_back(_s);
-#endif
-                break;
-            }
-            default:
-                break;
-        }
-    }
-
-    /// 2. Add Sizes to Final Struct Size and align data to biggest word.
-    bool afterBiggestWord = false;
-    size_t s_after = 0;
-    for(auto size : data_sizes){
-        if(afterBiggestWord){
-           s_after += size;
+            size = std430MatrixSize(cols, rows);
         }
         else {
-            if (size == biggestWord) {
-                size_t padding = 0;
-                if(s > 0) {
-                    padding = s % biggestWord;
-                }
-                s += padding + biggestWord;
-                afterBiggestWord = true;
-            }
-            else {
-                s += size;
+            switch (d) {
+                case OMEGASL_FLOAT2 : case OMEGASL_INT2 : case OMEGASL_UINT2 :
+                    size = sizeof(simd_float2); break;
+                case OMEGASL_FLOAT3 : case OMEGASL_INT3 : case OMEGASL_UINT3 :
+                    size = sizeof(simd_float3); break; // 16, not std430's 12
+                case OMEGASL_FLOAT4 : case OMEGASL_INT4 : case OMEGASL_UINT4 :
+                    size = sizeof(simd_float4); break;
+                default : size = sizeof(float); break; // scalar
             }
         }
+        if(align > structAlign) structAlign = align;
+        off = alignOffset(off, align);
+        off += size;
     }
-
-    if(s_after > 0){
-        auto padding = s_after % biggestWord;
-        s += padding + s_after;
-    }
-
-#ifdef TARGET_VULKAN
-    // std430: SSBO struct stride = ceil(rawSize / structAlign) * structAlign,
-    // where structAlign = max(member std430 alignment). vec3/vec4/matrices = 16,
-    // vec2 = 8, scalars = 4.
-    size_t structAlign = 1;
-    for(auto d : data){
-        size_t a;
-        switch(d){
-            case OMEGASL_FLOAT: case OMEGASL_INT: case OMEGASL_UINT:
-                a = 4; break;
-            case OMEGASL_FLOAT2: case OMEGASL_INT2: case OMEGASL_UINT2:
-                a = 8; break;
-            default:
-                a = 16; break;
-        }
-        if(a > structAlign) structAlign = a;
-    }
-    size_t rem = s % structAlign;
-    if(rem != 0) s += structAlign - rem;
+    return alignOffset(off, structAlign);
 #endif
-
-    return s;
 }
 
 _NAMESPACE_END_
