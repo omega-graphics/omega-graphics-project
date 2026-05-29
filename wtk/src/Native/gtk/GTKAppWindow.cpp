@@ -319,6 +319,12 @@ public:
         return std::static_pointer_cast<NativeItem>(rootView);
     }
 
+    /// Exposes the underlying GtkWindow so sibling backends (dialogs) can
+    /// parent transient windows to it. getRootView() is private to AppWindow.
+    GtkWindow *getGTKWindow() {
+        return window;
+    }
+
     void enable() override {
         if(window != nullptr){
             gtk_widget_show(GTK_WIDGET(window));
@@ -587,6 +593,11 @@ public:
         rootView = nullptr;
     }
 };
+
+GtkWindow *gtk_window_from_native(const NWH & window){
+    auto appWindow = std::dynamic_pointer_cast<GTKAppWindow>(window);
+    return appWindow ? appWindow->getGTKWindow() : nullptr;
+}
 
 }
 

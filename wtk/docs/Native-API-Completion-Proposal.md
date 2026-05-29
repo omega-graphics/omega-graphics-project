@@ -26,7 +26,7 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 | 2.4 NativeApp | Delegate, command-line args, timers | Not started |
 | 2.6 NativeClipboard | New subsystem | Not started |
 | 2.7 NativeDragDrop | New subsystem | Not started |
-| 2.8 NativeDialog | Alert dialog, file filters | Not started |
+| **2.8 NativeDialog** | Alert dialog (Result), file filters + multi-select, GTK backend | **Done** |
 | 2.9 NativeScreen | New subsystem; owns AppWindow → screen targeting (replaces GTK's interim primary-monitor anchoring) | Not started |
 | 2.10 NativeAccessibility | New subsystem (stub) | Not started |
 
@@ -400,9 +400,18 @@ SharedHandle<NativeDragSource> make_native_drag_source();
 
 ---
 
-### 2.8 NativeDialog — Confirmation Dialog and Dialog Result
+### 2.8 NativeDialog — Confirmation Dialog and Dialog Result ✅ Done
 
 **Goal:** Add a standard confirmation/alert dialog and give `NativeNoteDialog` a result. Add file-type filters to `NativeFSDialog`.
+
+**Implemented across all three platforms.** `NativeAlertDialog` (macOS `NSAlert`, Win32 `TaskDialogIndirect`, GTK `GtkMessageDialog`); `FileFilter` + `allowMultiple` on `NativeFSDialog::Descriptor`; the GTK dialog backend (previously a `nullptr` stub) now lives in `wtk/src/Native/gtk/GTKDialog.cpp` covering FS, alert, and note dialogs. `AppWindow::openAlertDialog` exposes the new dialog to UI code. macOS is compile-verified; Win32/GTK are source-complete pending CI.
+
+**Deltas from the original sketch:**
+- `NativeFSDialog::getResult()` now returns `Async<Vector<FS::Path>>` (was `Async<String>`) so `allowMultiple` has somewhere to land and the result type matches the descriptor's `FS::Path`. Cancelled dialogs resolve to an empty vector.
+- `NativeAlertDialog::Result` is derived from the clicked button's label (case-insensitive match against OK/Cancel/Yes/No; unmatched → OK for the first button, Cancel otherwise), documented on `Descriptor::buttonLabels`.
+- `NativeNoteDialog` is left as fire-and-forget; `NativeAlertDialog` is the result-bearing dialog the goal refers to.
+
+**Known follow-up:** the macOS FS backend uses `-setAllowedFileTypes:` (deprecated in macOS 12 in favor of `-allowedContentTypes` / `UTType`); functional but warns.
 
 ```cpp
 class NativeAlertDialog : public NativeDialog {
@@ -590,7 +599,7 @@ Implemented across all three platforms. See `NativeMenu.h`, `Menu.h`/`.cpp`, `Co
 | **P1** | 2.3a View focus + cursor + Widget tooltip + WidgetTreeHost FocusManager | Per-view keyboard routing, hover cursor, tooltip popups |
 | **P1** | 2.4 NativeApp (args, delegate, timers) | App lifecycle and command-line |
 | **P1** | 2.6 NativeClipboard | Copy/paste is fundamental UX |
-| **P1** | 2.8 NativeDialog (alert dialog, file filters) | Common user-facing pattern |
+| ~~P1~~ **Done** | 2.8 NativeDialog (alert dialog, file filters) | Implemented |
 | **P2** | 2.7 NativeDragDrop | Important for content apps, less critical initially |
 | **P1** | 2.9 NativeScreen | Multi-monitor support — also the proper home for AppWindow screen targeting; replaces the interim GTK primary-monitor anchoring |
 | ~~P1~~ **Done** | 2.11 NativeNote / NotificationCenter | Implemented |
@@ -613,7 +622,8 @@ Implemented across all three platforms. See `NativeMenu.h`, `Menu.h`/`.cpp`, `Co
 - `NativeEvent.h` — add `WindowScaleFactorChanged` enum case + `WindowScaleFactorChangedParams` struct (one-line delta to the otherwise-Done §2.1)
 - `NativeItem.h` — **no changes** (virtual view model removes the per-View item)
 - `NativeApp.h` — NativeAppDelegate, commandLineArgs(), launchArgs()
-- `NativeDialog.h` — NativeAlertDialog, FileFilter in FS descriptor
+- `NativeDialog.h` — NativeAlertDialog, FileFilter + allowMultiple in FS descriptor, `getResult()` → `Async<Vector<FS::Path>>` ✅
+- `GTKDialog.cpp` (new, GTK backend), `GTKApp.h`/`GTKAppWindow.cpp` (`gtk_window_from_native` helper), `AppWindow.h`/`.cpp` (`openAlertDialog`) ✅
 - `View.h` (UI) — `setFocusable`/`isFocusable`/`isFocused`/`focus`/`blur`, `setCursorShape`/`cursorShape`
 - `Widget.h` (UI) — `setTooltip`/`clearTooltip`
 - `WidgetTreeHost` (UI, internal) — owns `FocusManager` and tooltip-hover timer; routes keyboard events to focused View; commits hovered View's cursor shape to the root NativeWindow

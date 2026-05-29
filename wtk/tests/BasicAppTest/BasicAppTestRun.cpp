@@ -14,6 +14,7 @@ using namespace OmegaWTK;
 // ---------------------------------------------------------------------------
 
 static AppWindow *g_mainWindow = nullptr;
+static SharedHandle<NotificationCenter> nc;
 
 class TestMenuDelegate final : public MenuDelegate {
 public:
@@ -47,8 +48,7 @@ class HelpMenuDelegate final : public MenuDelegate {
 public:
     void onSelectItem(unsigned itemIndex) override {
         if (itemIndex == 0) {
-            NotificationCenter nc;
-            nc.send({"BasicAppTest", "OmegaWTK Widget & Menu Integration Test"});
+            nc->send({"BasicAppTest", "OmegaWTK Widget & Menu Integration Test"});
         }
     }
 };
@@ -205,9 +205,16 @@ int RunBasicAppTest(AppInst *app) {
 
     window->setRootWidget(root);
 
-    // Startup notification
-    NotificationCenter nc;
-    nc.send({"BasicAppTest", "Window opened with widget tree and menu bar."});
+    // Notifications — one long-lived center for the whole app (a throwaway
+    // stack local would tear down the native center before delivery). The API
+    // now gates delivery on authorization, so request permission up front and
+    // send the startup note once it's granted.
+    nc = make<NotificationCenter>();
+    nc->requestPermission([](bool granted){
+        if (granted) {
+            nc->send({"BasicAppTest", "Window opened with widget tree and menu bar."});
+        }
+    });
 
     auto & windowManager = app->windowManager;
     windowManager->setRootWindow(window);

@@ -180,6 +180,10 @@ SharedHandle<Native::NativeNoteDialog> AppWindow::openNoteDialog(const Native::N
     return Native::NativeNoteDialog::Create(desc,impl_->nativeWindow);
 };
 
+SharedHandle<Native::NativeAlertDialog> AppWindow::openAlertDialog(const Native::NativeAlertDialog::Descriptor & desc){
+    return Native::NativeAlertDialog::Create(desc,impl_->nativeWindow);
+};
+
 void AppWindow::close(){
     impl_->nativeWindow->close();
 };

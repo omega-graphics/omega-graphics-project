@@ -129,6 +129,7 @@ class AppWindowDelegate;
 
         SharedHandle<Native::NativeFSDialog> openFSDialog(const Native::NativeFSDialog::Descriptor & desc);
         SharedHandle<Native::NativeNoteDialog> openNoteDialog(const Native::NativeNoteDialog::Descriptor & desc);
+        SharedHandle<Native::NativeAlertDialog> openAlertDialog(const Native::NativeAlertDialog::Descriptor & desc);
 
         #endif
         
