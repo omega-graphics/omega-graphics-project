@@ -49,25 +49,25 @@ class ClampAnimatedChildWidget final : public OmegaWTK::Widget {
     }
 
     void applyInitialStyle() {
-        auto style = OmegaWTK::StyleSheet::Create();
+        auto style = OmegaWTK::Style::Create();
         style = style->backgroundColor("clamp_anim_child_view",OmegaWTK::Composition::Color::Transparent);
         style = style->elementBrush("animated_rect",OmegaWTK::Composition::ColorBrush(
                 OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)),
                 true,
                 kAnimationDurationSec);
         style = style->elementDropShadow("animated_rect",makeShadow(0.f,6.f,3.f,10.f,0.60f),true,kAnimationDurationSec);
-        uiView->setStyleSheet(style);
+        uiView->setStyle(style);
     }
 
     void applyAnimatedTargetStyle() {
-        auto style = OmegaWTK::StyleSheet::Create();
+        auto style = OmegaWTK::Style::Create();
         style = style->backgroundColor("clamp_anim_child_view",OmegaWTK::Composition::Color::Transparent);
         style = style->elementBrush("animated_rect",OmegaWTK::Composition::ColorBrush(
                 OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Blue8)),
                 true,
                 kAnimationDurationSec);
         style = style->elementDropShadow("animated_rect",makeShadow(0.f,2.f,2.f,6.f,0.40f),true,kAnimationDurationSec);
-        uiView->setStyleSheet(style);
+        uiView->setStyle(style);
     }
 
 protected:
@@ -157,11 +157,11 @@ protected:
         layout.shape("clamp_bg",OmegaWTK::Shape::Rect(
             OmegaWTK::Composition::Rect{OmegaWTK::Composition::Point2D{0.f,0.f},r.w,r.h}));
         uv.setLayout(layout);
-        auto style = OmegaWTK::StyleSheet::Create();
+        auto style = OmegaWTK::Style::Create();
         style = style->elementBrush("clamp_bg",OmegaWTK::Composition::ColorBrush(
             OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::White8)),
             false,0.f);
-        uv.setStyleSheet(style);
+        uv.setStyle(style);
         uv.update();
         OmegaWTK::Container::onPaint(reason);
     }

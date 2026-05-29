@@ -63,11 +63,11 @@ protected:
         layout.shape("video_bg",OmegaWTK::Shape::Rect(
             OmegaWTK::Composition::Rect{OmegaWTK::Composition::Point2D{0.f,0.f},r.w,r.h}));
         uv.setLayout(layout);
-        auto style = OmegaWTK::StyleSheet::Create();
+        auto style = OmegaWTK::Style::Create();
         style = style->elementBrush("video_bg",OmegaWTK::Composition::ColorBrush(
             OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Black8)),
             false,0.f);
-        uv.setStyleSheet(style);
+        uv.setStyle(style);
         uv.update();
     }
 

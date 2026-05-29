@@ -328,6 +328,21 @@ namespace OmegaWTK::Composition {
         static void replay(const DisplayList & list, Canvas & canvas);
     };
 
+    /// Widget-View-Paint-Lifecycle Tier B / B3 (§3.11): the scratch
+    /// context threaded through the Paint phase. Nodes append DrawOps to
+    /// `displayList` and read the current transform / clip / opacity.
+    /// Nothing here is stored on a node — it is per-walk state. The
+    /// transform is a `Matrix4x4` (the DrawOp transform shape); through
+    /// Tier B the per-view window offset is still applied by FrameBuilder
+    /// at replay time, so `transform`/`clip`/`opacity` are scaffolding
+    /// for the Tier D tree walk and default to identity / none / opaque.
+    struct PaintContext {
+        DisplayList & displayList;
+        Matrix4x4 transform = Matrix4x4::Identity();
+        Core::Optional<Rect> clip {};
+        float opacity = 1.f;
+    };
+
 }
 
 #endif

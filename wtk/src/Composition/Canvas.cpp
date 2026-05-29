@@ -332,27 +332,22 @@ void Canvas::drawPath(Path &path){
 }
 
 void Canvas::drawPath(Path &path, Core::Optional<Border> border){
-    // Fill brush is whatever the caller stored on the Path; a null
-    // pathBrush means stroke-only. Border carries the stroke brush +
-    // width and is fed in alongside the fill so the dual-attachment
-    // tessellation emits both bands in a single VectorPath visual.
-    auto fillBrush = path.impl_->pathBrush;
+    // Tier 4 §4.0: the Path -> per-segment+brushes decomposition now
+    // lives on `Path::decomposeForDraw` (the single shared home the
+    // backend `DrawOp::VectorPath` arm also uses). Canvas unpacks the
+    // Border into the (strokeBrush, strokeWidth) the helper takes and
+    // emits one VectorPath VisualCommand per resolved segment, exactly
+    // as before — output is byte-identical.
     Core::SharedPtr<Brush> strokeBrush;
     float strokeWidth = 0.f;
     if(border.has_value()){
         strokeBrush = border->brush;
         strokeWidth = static_cast<float>(border->width);
     }
-    const bool hasFill = (fillBrush != nullptr);
-    if(!hasFill && strokeBrush == nullptr){
-        return;
-    }
-    for(auto & segment : path.impl_->segments){
-        if(segment.path.size() < 2){
-            continue;
-        }
-        auto pathData = std::make_shared<OmegaGTE::GVectorPath2D>(segment.path);
-        current->currentVisuals.emplace_back(pathData,strokeBrush,fillBrush,strokeWidth,segment.closed,hasFill);
+    for(auto & seg : path.decomposeForDraw(strokeBrush, strokeWidth)){
+        current->currentVisuals.emplace_back(seg.path, seg.strokeBrush,
+                                             seg.fillBrush, seg.strokeWidth,
+                                             seg.contour, seg.fill);
     }
 }
 

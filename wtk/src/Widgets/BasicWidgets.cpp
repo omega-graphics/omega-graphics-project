@@ -143,10 +143,12 @@ void Container::onMount(){
 }
 
 void Container::onPaint(PaintReason reason){
+    // Tier B / B4: Container is layout-only — it draws nothing and does
+    // no layout during paint. layoutChildren() runs synchronously at
+    // model-change time via relayout() (onMount / resize / addChild /
+    // removeChild / onChildRectCommitted), so child rects are already
+    // settled before paint.
     (void)reason;
-    if(layoutPending){
-        layoutChildren();
-    }
 }
 
 void Container::resize(Composition::Rect & newRect){

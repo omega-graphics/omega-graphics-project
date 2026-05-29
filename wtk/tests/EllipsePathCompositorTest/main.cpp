@@ -85,14 +85,14 @@ protected:
         // layout.shape("rounded_inner",OmegaWTK::Shape::RoundedRect(inner));
         uiView->setLayout(layout);
 
-        auto style = OmegaWTK::StyleSheet::Create();
+        auto style = OmegaWTK::Style::Create();
         style = style->backgroundColor("rounded_frame_view",OmegaWTK::Composition::Color::Transparent);
         style = style->elementBrush("rounded_outer",OmegaWTK::Composition::ColorBrush(
             OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)),
             true,
             0.28f);
         style = style->elementDropShadow("rounded_outer",makeShadow(0.f,4.f,2.f,8.f,0.55f),true,0.28f);
-        uiView->setStyleSheet(style);
+        uiView->setStyle(style);
         uiView->update();
 
         if(!loggedLayout){
@@ -146,14 +146,14 @@ protected:
         layout.shape("ellipse_shape",OmegaWTK::Shape::Ellipse(ellipse));
         uiView->setLayout(layout);
 
-        auto style = OmegaWTK::StyleSheet::Create();
+        auto style = OmegaWTK::Style::Create();
         style = style->backgroundColor("ellipse_view",OmegaWTK::Composition::Color::Transparent);
         style = style->elementBrush("ellipse_shape",OmegaWTK::Composition::ColorBrush(
             OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Green8)),
             true,
             0.30f);
         style = style->elementDropShadow("ellipse_shape",makeShadow(0.f,5.f,2.f,9.f,0.55f),true,0.30f);
-        uiView->setStyleSheet(style);
+        uiView->setStyle(style);
         uiView->update();
 
         if(!loggedLayout){
@@ -214,14 +214,14 @@ protected:
         layout.shape("path_shape",OmegaWTK::Shape::Path(std::move(compPath),6));
         uiView->setLayout(layout);
 
-        auto style = OmegaWTK::StyleSheet::Create();
+        auto style = OmegaWTK::Style::Create();
         style = style->backgroundColor("path_view",OmegaWTK::Composition::Color::Transparent);
         style = style->elementBrush("path_shape",OmegaWTK::Composition::ColorBrush(
             OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Yellow8)),
             true,
             0.30f);
         style = style->elementDropShadow("path_shape",makeShadow(0.f,5.f,2.f,8.f,0.50f),true,0.30f);
-        uiView->setStyleSheet(style);
+        uiView->setStyle(style);
         uiView->update();
 
         if(!loggedLayout){
@@ -254,11 +254,11 @@ protected:
         layout.shape("hstack_bg",OmegaWTK::Shape::Rect(
             OmegaWTK::Composition::Rect{OmegaWTK::Composition::Point2D{0.f,0.f},r.w,r.h}));
         uv.setLayout(layout);
-        auto style = OmegaWTK::StyleSheet::Create();
+        auto style = OmegaWTK::Style::Create();
         style = style->elementBrush("hstack_bg",OmegaWTK::Composition::ColorBrush(
             OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::White8)),
             false,0.f);
-        uv.setStyleSheet(style);
+        uv.setStyle(style);
         uv.update();
         OmegaWTK::HStack::onPaint(reason);
     }

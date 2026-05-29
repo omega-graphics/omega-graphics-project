@@ -284,7 +284,7 @@ static int computeSpecificity(const OmegaCommon::String & selectorTag,
 }
 
 OmegaCommon::Vector<StyleRule> convertEntriesToRules(
-    const StyleSheet & sheet,
+    const Style & sheet,
     const OmegaCommon::String & viewTag){
 
     const auto & entries = sheet.entries;
@@ -302,145 +302,86 @@ OmegaCommon::Vector<StyleRule> convertEntriesToRules(
             return r;
         };
 
+        // Tier B / B1: layout authoring no longer lives on Style, so the
+        // Layout* entry kinds are gone. convertEntriesToRules now emits
+        // only visual/text rules. mergeLayoutRulesIntoStyle and the
+        // StyleRule Layout* properties remain for callers that build
+        // layout rules directly (e.g. LayoutResizeStressTest) and for
+        // the Block 3 selector cascade.
         switch(e.kind){
-            case StyleSheet::Entry::Kind::LayoutWidth: {
-                auto r = makeRule(StyleRule::Property::LayoutWidth);
-                r.lengthValue = e.layoutLengthValue;
-                rules.push_back(r);
-                break;
-            }
-            case StyleSheet::Entry::Kind::LayoutHeight: {
-                auto r = makeRule(StyleRule::Property::LayoutHeight);
-                r.lengthValue = e.layoutLengthValue;
-                rules.push_back(r);
-                break;
-            }
-            case StyleSheet::Entry::Kind::LayoutMargin: {
-                if(e.layoutEdgesValue){
-                    const auto & edges = *e.layoutEdgesValue;
-                    auto emitEdgeRule = [&](StyleRule::Property prop,LayoutLength val){
-                        auto r = makeRule(prop);
-                        r.lengthValue = val;
-                        rules.push_back(r);
-                    };
-                    emitEdgeRule(StyleRule::Property::LayoutMarginLeft,edges.left);
-                    emitEdgeRule(StyleRule::Property::LayoutMarginTop,edges.top);
-                    emitEdgeRule(StyleRule::Property::LayoutMarginRight,edges.right);
-                    emitEdgeRule(StyleRule::Property::LayoutMarginBottom,edges.bottom);
-                }
-                break;
-            }
-            case StyleSheet::Entry::Kind::LayoutPadding: {
-                if(e.layoutEdgesValue){
-                    const auto & edges = *e.layoutEdgesValue;
-                    auto emitEdgeRule = [&](StyleRule::Property prop,LayoutLength val){
-                        auto r = makeRule(prop);
-                        r.lengthValue = val;
-                        rules.push_back(r);
-                    };
-                    emitEdgeRule(StyleRule::Property::LayoutPaddingLeft,edges.left);
-                    emitEdgeRule(StyleRule::Property::LayoutPaddingTop,edges.top);
-                    emitEdgeRule(StyleRule::Property::LayoutPaddingRight,edges.right);
-                    emitEdgeRule(StyleRule::Property::LayoutPaddingBottom,edges.bottom);
-                }
-                break;
-            }
-            case StyleSheet::Entry::Kind::LayoutClamp: {
-                if(e.layoutClampValue){
-                    auto r = makeRule(StyleRule::Property::LayoutClampMinWidth);
-                    r.lengthValue = e.layoutClampValue->minWidth;
-                    rules.push_back(r);
-                    r = makeRule(StyleRule::Property::LayoutClampMinHeight);
-                    r.lengthValue = e.layoutClampValue->minHeight;
-                    rules.push_back(r);
-                    r = makeRule(StyleRule::Property::LayoutClampMaxWidth);
-                    r.lengthValue = e.layoutClampValue->maxWidth;
-                    rules.push_back(r);
-                    r = makeRule(StyleRule::Property::LayoutClampMaxHeight);
-                    r.lengthValue = e.layoutClampValue->maxHeight;
-                    rules.push_back(r);
-                }
-                break;
-            }
-            case StyleSheet::Entry::Kind::LayoutTransition: {
-                auto r = makeRule(StyleRule::Property::LayoutTransition);
-                r.transitionValue = e.layoutTransitionValue;
-                rules.push_back(r);
-                break;
-            }
-            case StyleSheet::Entry::Kind::BackgroundColor: {
+            case Style::Entry::Kind::BackgroundColor: {
                 auto r = makeRule(StyleRule::Property::BackgroundColor);
                 r.colorValue = e.color;
                 rules.push_back(r);
                 break;
             }
-            case StyleSheet::Entry::Kind::BorderEnabled: {
+            case Style::Entry::Kind::BorderEnabled: {
                 auto r = makeRule(StyleRule::Property::BorderEnabled);
                 r.boolValue = e.boolValue;
                 rules.push_back(r);
                 break;
             }
-            case StyleSheet::Entry::Kind::BorderColor: {
+            case Style::Entry::Kind::BorderColor: {
                 auto r = makeRule(StyleRule::Property::BorderColor);
                 r.colorValue = e.color;
                 rules.push_back(r);
                 break;
             }
-            case StyleSheet::Entry::Kind::BorderWidth: {
+            case Style::Entry::Kind::BorderWidth: {
                 auto r = makeRule(StyleRule::Property::BorderWidth);
                 r.floatValue = e.floatValue;
                 rules.push_back(r);
                 break;
             }
-            case StyleSheet::Entry::Kind::DropShadowEffect: {
+            case Style::Entry::Kind::DropShadowEffect: {
                 auto r = makeRule(StyleRule::Property::DropShadow);
                 r.dropShadowValue = e.dropShadowValue;
                 rules.push_back(r);
                 break;
             }
-            case StyleSheet::Entry::Kind::GaussianBlurEffect: {
+            case Style::Entry::Kind::GaussianBlurEffect: {
                 auto r = makeRule(StyleRule::Property::GaussianBlur);
                 r.gaussianBlurValue = e.gaussianBlurValue;
                 rules.push_back(r);
                 break;
             }
-            case StyleSheet::Entry::Kind::DirectionalBlurEffect: {
+            case Style::Entry::Kind::DirectionalBlurEffect: {
                 auto r = makeRule(StyleRule::Property::DirectionalBlur);
                 r.directionalBlurValue = e.directionalBlurValue;
                 rules.push_back(r);
                 break;
             }
-            case StyleSheet::Entry::Kind::ElementBrush: {
+            case Style::Entry::Kind::ElementBrush: {
                 auto r = makeRule(StyleRule::Property::ElementBrush);
                 r.brushValue = e.brush;
                 rules.push_back(r);
                 break;
             }
-            case StyleSheet::Entry::Kind::TextFont: {
+            case Style::Entry::Kind::TextFont: {
                 auto r = makeRule(StyleRule::Property::TextFont);
                 r.fontValue = e.font;
                 rules.push_back(r);
                 break;
             }
-            case StyleSheet::Entry::Kind::TextColor: {
+            case Style::Entry::Kind::TextColor: {
                 auto r = makeRule(StyleRule::Property::TextColor);
                 r.colorValue = e.color;
                 rules.push_back(r);
                 break;
             }
-            case StyleSheet::Entry::Kind::TextAlignment: {
+            case Style::Entry::Kind::TextAlignment: {
                 auto r = makeRule(StyleRule::Property::TextAlignment);
                 r.textAlignmentValue = e.textAlignment;
                 rules.push_back(r);
                 break;
             }
-            case StyleSheet::Entry::Kind::TextWrapping: {
+            case Style::Entry::Kind::TextWrapping: {
                 auto r = makeRule(StyleRule::Property::TextWrapping);
                 r.textWrappingValue = e.textWrapping;
                 rules.push_back(r);
                 break;
             }
-            case StyleSheet::Entry::Kind::TextLineLimit: {
+            case Style::Entry::Kind::TextLineLimit: {
                 auto r = makeRule(StyleRule::Property::TextLineLimit);
                 r.uintValue = e.uintValue;
                 rules.push_back(r);

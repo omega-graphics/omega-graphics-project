@@ -187,17 +187,17 @@ const OmegaCommon::Vector<UIViewLayout::Element> & UIViewLayout::elements() cons
     return _content;
 }
 
-StyleSheetPtr StyleSheet::Create(){
-    return make<StyleSheet>();
+StylePtr Style::Create(){
+    return make<Style>();
 }
 
-StyleSheetPtr StyleSheet::copy(){
-    return StyleSheetPtr(new StyleSheet(*this));
+StylePtr Style::copy(){
+    return StylePtr(new Style(*this));
 }
 
-StyleSheet::StyleSheet() = default;
+Style::Style() = default;
 
-StyleSheetPtr StyleSheet::backgroundColor(UIViewTag tag,
+StylePtr Style::backgroundColor(UIViewTag tag,
                                           const Composition::Color &color,
                                           bool transition,
                                           float duration){
@@ -211,7 +211,7 @@ StyleSheetPtr StyleSheet::backgroundColor(UIViewTag tag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::border(UIViewTag tag,bool use){
+StylePtr Style::border(UIViewTag tag,bool use){
     Entry entry {};
     entry.kind = Entry::Kind::BorderEnabled;
     entry.viewTag = tag;
@@ -220,7 +220,7 @@ StyleSheetPtr StyleSheet::border(UIViewTag tag,bool use){
     return copy();
 }
 
-StyleSheetPtr StyleSheet::borderColor(UIViewTag tag,
+StylePtr Style::borderColor(UIViewTag tag,
                                       const Composition::Color &color,
                                       bool transition,
                                       float duration){
@@ -234,7 +234,7 @@ StyleSheetPtr StyleSheet::borderColor(UIViewTag tag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::borderWidth(UIViewTag tag,
+StylePtr Style::borderWidth(UIViewTag tag,
                                       float width,
                                       bool transition,
                                       float duration){
@@ -248,7 +248,7 @@ StyleSheetPtr StyleSheet::borderWidth(UIViewTag tag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::dropShadow(UIViewTag tag,
+StylePtr Style::dropShadow(UIViewTag tag,
                                      const Composition::LayerEffect::DropShadowParams & params,
                                      bool transition,
                                      float duration){
@@ -262,7 +262,7 @@ StyleSheetPtr StyleSheet::dropShadow(UIViewTag tag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::gaussianBlur(UIViewTag tag,
+StylePtr Style::gaussianBlur(UIViewTag tag,
                                        float radius,
                                        bool transition,
                                        float duration){
@@ -278,7 +278,7 @@ StyleSheetPtr StyleSheet::gaussianBlur(UIViewTag tag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::directionalBlur(UIViewTag tag,
+StylePtr Style::directionalBlur(UIViewTag tag,
                                           float radius,
                                           float angle,
                                           bool transition,
@@ -296,7 +296,7 @@ StyleSheetPtr StyleSheet::directionalBlur(UIViewTag tag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::elementDropShadow(UIElementTag elementTag,
+StylePtr Style::elementDropShadow(UIElementTag elementTag,
                                             const Composition::LayerEffect::DropShadowParams & params,
                                             bool transition,
                                             float duration){
@@ -310,7 +310,7 @@ StyleSheetPtr StyleSheet::elementDropShadow(UIElementTag elementTag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::elementGaussianBlur(UIElementTag elementTag,
+StylePtr Style::elementGaussianBlur(UIElementTag elementTag,
                                               float radius,
                                               bool transition,
                                               float duration){
@@ -326,7 +326,7 @@ StyleSheetPtr StyleSheet::elementGaussianBlur(UIElementTag elementTag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::elementDirectionalBlur(UIElementTag elementTag,
+StylePtr Style::elementDirectionalBlur(UIElementTag elementTag,
                                                  float radius,
                                                  float angle,
                                                  bool transition,
@@ -344,7 +344,7 @@ StyleSheetPtr StyleSheet::elementDirectionalBlur(UIElementTag elementTag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::elementBrush(UIElementTag elementTag,
+StylePtr Style::elementBrush(UIElementTag elementTag,
                                        SharedHandle<Composition::Brush> brush,
                                        bool transition,
                                        float duration){
@@ -358,7 +358,7 @@ StyleSheetPtr StyleSheet::elementBrush(UIElementTag elementTag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::elementBrushAnimation(SharedHandle<Composition::Brush> brush,
+StylePtr Style::elementBrushAnimation(SharedHandle<Composition::Brush> brush,
                                                 ElementAnimationKey key,
                                                 SharedHandle<Composition::AnimationCurve> curve,
                                                 float duration){
@@ -372,7 +372,7 @@ StyleSheetPtr StyleSheet::elementBrushAnimation(SharedHandle<Composition::Brush>
     return copy();
 }
 
-StyleSheetPtr StyleSheet::elementAnimation(UIElementTag elementTag,
+StylePtr Style::elementAnimation(UIElementTag elementTag,
                                            ElementAnimationKey key,
                                            SharedHandle<Composition::AnimationCurve> curve,
                                            float duration){
@@ -386,7 +386,7 @@ StyleSheetPtr StyleSheet::elementAnimation(UIElementTag elementTag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::elementPathAnimation(UIElementTag elementTag,
+StylePtr Style::elementPathAnimation(UIElementTag elementTag,
                                                SharedHandle<Composition::AnimationCurve> curve,
                                                int nodeIndex,
                                                float duration){
@@ -400,7 +400,7 @@ StyleSheetPtr StyleSheet::elementPathAnimation(UIElementTag elementTag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::textFont(UIElementTag elementTag,
+StylePtr Style::textFont(UIElementTag elementTag,
                                    SharedHandle<Composition::Font> font){
     Entry entry {};
     entry.kind = Entry::Kind::TextFont;
@@ -410,7 +410,7 @@ StyleSheetPtr StyleSheet::textFont(UIElementTag elementTag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::textColor(UIElementTag elementTag,
+StylePtr Style::textColor(UIElementTag elementTag,
                                     const Composition::Color & color,
                                     bool transition,
                                     float duration){
@@ -424,7 +424,7 @@ StyleSheetPtr StyleSheet::textColor(UIElementTag elementTag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::textAlignment(UIElementTag elementTag,
+StylePtr Style::textAlignment(UIElementTag elementTag,
                                         Composition::TextLayoutDescriptor::Alignment alignment){
     Entry entry {};
     entry.kind = Entry::Kind::TextAlignment;
@@ -434,7 +434,7 @@ StyleSheetPtr StyleSheet::textAlignment(UIElementTag elementTag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::textWrapping(UIElementTag elementTag,
+StylePtr Style::textWrapping(UIElementTag elementTag,
                                        Composition::TextLayoutDescriptor::Wrapping wrapping){
     Entry entry {};
     entry.kind = Entry::Kind::TextWrapping;
@@ -444,7 +444,7 @@ StyleSheetPtr StyleSheet::textWrapping(UIElementTag elementTag,
     return copy();
 }
 
-StyleSheetPtr StyleSheet::textLineLimit(UIElementTag elementTag,unsigned lineLimit){
+StylePtr Style::textLineLimit(UIElementTag elementTag,unsigned lineLimit){
     Entry entry {};
     entry.kind = Entry::Kind::TextLineLimit;
     entry.elementTag = elementTag;
@@ -453,77 +453,9 @@ StyleSheetPtr StyleSheet::textLineLimit(UIElementTag elementTag,unsigned lineLim
     return copy();
 }
 
-StyleSheetPtr StyleSheet::layoutWidth(UIElementTag elementTag,LayoutLength width){
-    Entry entry {};
-    entry.kind = Entry::Kind::LayoutWidth;
-    entry.elementTag = elementTag;
-    entry.layoutLengthValue = width;
-    entries.push_back(entry);
-    return copy();
-}
-
-StyleSheetPtr StyleSheet::layoutHeight(UIElementTag elementTag,LayoutLength height){
-    Entry entry {};
-    entry.kind = Entry::Kind::LayoutHeight;
-    entry.elementTag = elementTag;
-    entry.layoutLengthValue = height;
-    entries.push_back(entry);
-    return copy();
-}
-
-StyleSheetPtr StyleSheet::layoutSize(UIElementTag elementTag,LayoutLength width,LayoutLength height){
-    {
-        Entry entry {};
-        entry.kind = Entry::Kind::LayoutWidth;
-        entry.elementTag = elementTag;
-        entry.layoutLengthValue = width;
-        entries.push_back(entry);
-    }
-    {
-        Entry entry {};
-        entry.kind = Entry::Kind::LayoutHeight;
-        entry.elementTag = elementTag;
-        entry.layoutLengthValue = height;
-        entries.push_back(entry);
-    }
-    return copy();
-}
-
-StyleSheetPtr StyleSheet::layoutMargin(UIElementTag elementTag,LayoutEdges margin){
-    Entry entry {};
-    entry.kind = Entry::Kind::LayoutMargin;
-    entry.elementTag = elementTag;
-    entry.layoutEdgesValue = margin;
-    entries.push_back(entry);
-    return copy();
-}
-
-StyleSheetPtr StyleSheet::layoutPadding(UIElementTag elementTag,LayoutEdges padding){
-    Entry entry {};
-    entry.kind = Entry::Kind::LayoutPadding;
-    entry.elementTag = elementTag;
-    entry.layoutEdgesValue = padding;
-    entries.push_back(entry);
-    return copy();
-}
-
-StyleSheetPtr StyleSheet::layoutClamp(UIElementTag elementTag,LayoutClamp clamp){
-    Entry entry {};
-    entry.kind = Entry::Kind::LayoutClamp;
-    entry.elementTag = elementTag;
-    entry.layoutClampValue = clamp;
-    entries.push_back(entry);
-    return copy();
-}
-
-StyleSheetPtr StyleSheet::layoutTransition(UIElementTag elementTag,LayoutTransitionSpec spec){
-    Entry entry {};
-    entry.kind = Entry::Kind::LayoutTransition;
-    entry.elementTag = elementTag;
-    entry.layoutTransitionValue = spec;
-    entries.push_back(entry);
-    return copy();
-}
+// Layout authoring methods (layoutWidth/Height/Size/Margin/Padding/
+// Clamp/Transition) were removed from Style in Tier B / B1. Layout is
+// authored directly on `UIElementLayoutSpec::layout`.
 
 UIViewLayoutV2 & UIViewLayoutV2::element(const UIElementLayoutSpec & spec){
     auto it = std::find_if(elements_.begin(),elements_.end(),[&](const UIElementLayoutSpec & e){
@@ -582,7 +514,7 @@ void UIView::setLayout(const UIViewLayout &layout){
     impl_->convertLegacyLayoutToV2();
 }
 
-StyleSheetPtr UIView::getStyleSheet() const{
+StylePtr UIView::getStyle() const{
     return impl_->currentStyle;
 }
 

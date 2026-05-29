@@ -11,13 +11,13 @@ namespace OmegaWTK {
 
 namespace {
 
-/// Build a StyleSheet that applies a fill brush and optional stroke brush
+/// Build a Style that applies a fill brush and optional stroke brush
 /// to the element tagged "bg".
-static StyleSheetPtr makeShapeStyleSheet(
+static StylePtr makeShapeStyle(
         const SharedHandle<Composition::Brush> & fill,
         const SharedHandle<Composition::Brush> & stroke,
         float strokeWidth) {
-    auto ss = StyleSheet::Create();
+    auto ss = Style::Create();
     if (fill) {
         ss->elementBrush("bg", fill);
     }
@@ -40,18 +40,10 @@ Rectangle::Rectangle(Composition::Rect rect, const RectangleProps & props)
       props_(props) {}
 
 void Rectangle::onMount() {
-    auto & lv2 = viewAs<UIView>().layoutV2();
-    UIElementLayoutSpec spec;
-    spec.tag = "bg";
-    spec.shape = Shape::Rect(rect());
-    lv2.element(spec);
-
-    viewAs<UIView>().setStyleSheet(
-        makeShapeStyleSheet(props_.fill, props_.stroke, props_.strokeWidth));
-    viewAs<UIView>().update();
+    rebuildContent();
 }
 
-void Rectangle::onPaint(PaintReason reason) {
+void Rectangle::rebuildContent() {
     auto & lv2 = viewAs<UIView>().layoutV2();
     lv2.clear();
     UIElementLayoutSpec spec;
@@ -59,18 +51,24 @@ void Rectangle::onPaint(PaintReason reason) {
     spec.shape = Shape::Rect(rect());
     lv2.element(spec);
 
-    viewAs<UIView>().setStyleSheet(
-        makeShapeStyleSheet(props_.fill, props_.stroke, props_.strokeWidth));
+    viewAs<UIView>().setStyle(
+        makeShapeStyle(props_.fill, props_.stroke, props_.strokeWidth));
+}
+
+void Rectangle::onPaint(PaintReason reason) {
+    (void)reason;
     viewAs<UIView>().update();
 }
 
 void Rectangle::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
+    rebuildContent();
     invalidate(PaintReason::Resize);
 }
 
 void Rectangle::setProps(const RectangleProps & props) {
     props_ = props;
+    rebuildContent();
     invalidate();
 }
 
@@ -83,27 +81,10 @@ RoundedRectangle::RoundedRectangle(Composition::Rect rect, const RoundedRectangl
       props_(props) {}
 
 void RoundedRectangle::onMount() {
-    float maxR = std::max({props_.topLeft, props_.topRight,
-                           props_.bottomLeft, props_.bottomRight});
-    Composition::RoundedRect rr;
-    rr.pos = rect().pos;
-    rr.w = rect().w;
-    rr.h = rect().h;
-    rr.rad_x = maxR;
-    rr.rad_y = maxR;
-
-    auto & lv2 = viewAs<UIView>().layoutV2();
-    UIElementLayoutSpec spec;
-    spec.tag = "bg";
-    spec.shape = Shape::RoundedRect(rr);
-    lv2.element(spec);
-
-    viewAs<UIView>().setStyleSheet(
-        makeShapeStyleSheet(props_.fill, props_.stroke, props_.strokeWidth));
-    viewAs<UIView>().update();
+    rebuildContent();
 }
 
-void RoundedRectangle::onPaint(PaintReason reason) {
+void RoundedRectangle::rebuildContent() {
     float maxR = std::max({props_.topLeft, props_.topRight,
                            props_.bottomLeft, props_.bottomRight});
     Composition::RoundedRect rr;
@@ -120,18 +101,24 @@ void RoundedRectangle::onPaint(PaintReason reason) {
     spec.shape = Shape::RoundedRect(rr);
     lv2.element(spec);
 
-    viewAs<UIView>().setStyleSheet(
-        makeShapeStyleSheet(props_.fill, props_.stroke, props_.strokeWidth));
+    viewAs<UIView>().setStyle(
+        makeShapeStyle(props_.fill, props_.stroke, props_.strokeWidth));
+}
+
+void RoundedRectangle::onPaint(PaintReason reason) {
+    (void)reason;
     viewAs<UIView>().update();
 }
 
 void RoundedRectangle::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
+    rebuildContent();
     invalidate(PaintReason::Resize);
 }
 
 void RoundedRectangle::setProps(const RoundedRectangleProps & props) {
     props_ = props;
+    rebuildContent();
     invalidate();
 }
 
@@ -144,24 +131,10 @@ Ellipse::Ellipse(Composition::Rect rect, const EllipseProps & props)
       props_(props) {}
 
 void Ellipse::onMount() {
-    Composition::Ellipse e{
-        rect().pos.x + rect().w * 0.5f,
-        rect().pos.y + rect().h * 0.5f,
-        rect().w * 0.5f,
-        rect().h * 0.5f};
-
-    auto & lv2 = viewAs<UIView>().layoutV2();
-    UIElementLayoutSpec spec;
-    spec.tag = "bg";
-    spec.shape = Shape::Ellipse(e);
-    lv2.element(spec);
-
-    viewAs<UIView>().setStyleSheet(
-        makeShapeStyleSheet(props_.fill, props_.stroke, props_.strokeWidth));
-    viewAs<UIView>().update();
+    rebuildContent();
 }
 
-void Ellipse::onPaint(PaintReason reason) {
+void Ellipse::rebuildContent() {
     Composition::Ellipse e{
         rect().pos.x + rect().w * 0.5f,
         rect().pos.y + rect().h * 0.5f,
@@ -175,18 +148,24 @@ void Ellipse::onPaint(PaintReason reason) {
     spec.shape = Shape::Ellipse(e);
     lv2.element(spec);
 
-    viewAs<UIView>().setStyleSheet(
-        makeShapeStyleSheet(props_.fill, props_.stroke, props_.strokeWidth));
+    viewAs<UIView>().setStyle(
+        makeShapeStyle(props_.fill, props_.stroke, props_.strokeWidth));
+}
+
+void Ellipse::onPaint(PaintReason reason) {
+    (void)reason;
     viewAs<UIView>().update();
 }
 
 void Ellipse::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
+    rebuildContent();
     invalidate(PaintReason::Resize);
 }
 
 void Ellipse::setProps(const EllipseProps & props) {
     props_ = props;
+    rebuildContent();
     invalidate();
 }
 
@@ -199,19 +178,10 @@ Path::Path(Composition::Rect rect, const PathProps & props)
       props_(props) {}
 
 void Path::onMount() {
-    auto & lv2 = viewAs<UIView>().layoutV2();
-    UIElementLayoutSpec spec;
-    spec.tag = "bg";
-    spec.shape = Shape::Path(props_.path, props_.strokeWidth, props_.closePath);
-    lv2.element(spec);
-
-    viewAs<UIView>().setStyleSheet(
-        makeShapeStyleSheet(props_.fill, props_.stroke,
-                            static_cast<float>(props_.strokeWidth)));
-    viewAs<UIView>().update();
+    rebuildContent();
 }
 
-void Path::onPaint(PaintReason reason) {
+void Path::rebuildContent() {
     auto & lv2 = viewAs<UIView>().layoutV2();
     lv2.clear();
     UIElementLayoutSpec spec;
@@ -219,19 +189,25 @@ void Path::onPaint(PaintReason reason) {
     spec.shape = Shape::Path(props_.path, props_.strokeWidth, props_.closePath);
     lv2.element(spec);
 
-    viewAs<UIView>().setStyleSheet(
-        makeShapeStyleSheet(props_.fill, props_.stroke,
+    viewAs<UIView>().setStyle(
+        makeShapeStyle(props_.fill, props_.stroke,
                             static_cast<float>(props_.strokeWidth)));
+}
+
+void Path::onPaint(PaintReason reason) {
+    (void)reason;
     viewAs<UIView>().update();
 }
 
 void Path::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
+    rebuildContent();
     invalidate(PaintReason::Resize);
 }
 
 void Path::setProps(const PathProps & props) {
     props_ = props;
+    rebuildContent();
     invalidate();
 }
 
@@ -244,33 +220,10 @@ Separator::Separator(Composition::Rect rect, const SeparatorProps & props)
       props_(props) {}
 
 void Separator::onMount() {
-    Composition::Rect r = rect();
-    Composition::Rect line;
-    if (props_.orientation == Orientation::Horizontal) {
-        float center = r.pos.y + r.h * 0.5f - props_.thickness * 0.5f;
-        line = {Composition::Point2D{r.pos.x + props_.inset, center},
-                r.w - props_.inset * 2.f, props_.thickness};
-    } else {
-        float center = r.pos.x + r.w * 0.5f - props_.thickness * 0.5f;
-        line = {Composition::Point2D{center, r.pos.y + props_.inset},
-                props_.thickness, r.h - props_.inset * 2.f};
-    }
-
-    auto & lv2 = viewAs<UIView>().layoutV2();
-    UIElementLayoutSpec spec;
-    spec.tag = "bg";
-    spec.shape = Shape::Rect(line);
-    lv2.element(spec);
-
-    auto ss = StyleSheet::Create();
-    if (props_.brush) {
-        ss->elementBrush("bg", props_.brush);
-    }
-    viewAs<UIView>().setStyleSheet(ss);
-    viewAs<UIView>().update();
+    rebuildContent();
 }
 
-void Separator::onPaint(PaintReason reason) {
+void Separator::rebuildContent() {
     Composition::Rect r = rect();
     Composition::Rect line;
     if (props_.orientation == Orientation::Horizontal) {
@@ -290,21 +243,27 @@ void Separator::onPaint(PaintReason reason) {
     spec.shape = Shape::Rect(line);
     lv2.element(spec);
 
-    auto ss = StyleSheet::Create();
+    auto ss = Style::Create();
     if (props_.brush) {
         ss->elementBrush("bg", props_.brush);
     }
-    viewAs<UIView>().setStyleSheet(ss);
+    viewAs<UIView>().setStyle(ss);
+}
+
+void Separator::onPaint(PaintReason reason) {
+    (void)reason;
     viewAs<UIView>().update();
 }
 
 void Separator::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
+    rebuildContent();
     invalidate(PaintReason::Resize);
 }
 
 void Separator::setProps(const SeparatorProps & props) {
     props_ = props;
+    rebuildContent();
     invalidate();
 }
 
@@ -317,28 +276,10 @@ Label::Label(Composition::Rect rect, const LabelProps & props)
       props_(props) {}
 
 void Label::onMount() {
-    auto & lv2 = viewAs<UIView>().layoutV2();
-    UIElementLayoutSpec spec;
-    spec.tag = "label";
-    spec.text = props_.text;
-    spec.textRect = rect();
-    lv2.element(spec);
-
-    auto ss = StyleSheet::Create();
-    if (props_.font) {
-        ss->textFont("label", props_.font);
-    }
-    ss->textColor("label", props_.textColor);
-    ss->textAlignment("label", props_.alignment);
-    ss->textWrapping("label", props_.wrapping);
-    if (props_.lineLimit > 0) {
-        ss->textLineLimit("label", props_.lineLimit);
-    }
-    viewAs<UIView>().setStyleSheet(ss);
-    viewAs<UIView>().update();
+    rebuildContent();
 }
 
-void Label::onPaint(PaintReason reason) {
+void Label::rebuildContent() {
     auto & lv2 = viewAs<UIView>().layoutV2();
     lv2.clear();
     UIElementLayoutSpec spec;
@@ -347,7 +288,7 @@ void Label::onPaint(PaintReason reason) {
     spec.textRect = rect();
     lv2.element(spec);
 
-    auto ss = StyleSheet::Create();
+    auto ss = Style::Create();
     if (props_.font) {
         ss->textFont("label", props_.font);
     }
@@ -357,12 +298,17 @@ void Label::onPaint(PaintReason reason) {
     if (props_.lineLimit > 0) {
         ss->textLineLimit("label", props_.lineLimit);
     }
-    viewAs<UIView>().setStyleSheet(ss);
+    viewAs<UIView>().setStyle(ss);
+}
+
+void Label::onPaint(PaintReason reason) {
+    (void)reason;
     viewAs<UIView>().update();
 }
 
 void Label::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
+    rebuildContent();
     invalidate(PaintReason::Resize);
 }
 
@@ -391,11 +337,13 @@ MeasureResult Label::measureSelf(const LayoutContext & ctx) {
 
 void Label::setText(const OmegaCommon::UString & text) {
     props_.text = text;
+    rebuildContent();
     invalidate();
 }
 
 void Label::setProps(const LabelProps & props) {
     props_ = props;
+    rebuildContent();
     invalidate();
 }
 
@@ -408,7 +356,12 @@ Icon::Icon(Composition::Rect rect, const IconProps & props)
       props_(props) {}
 
 void Icon::onMount() {
+    rebuildContent();
+}
+
+void Icon::rebuildContent() {
     auto & lv2 = viewAs<UIView>().layoutV2();
+    lv2.clear();
     UIElementLayoutSpec spec;
     spec.tag = "icon";
     // Convert narrow token string to UString for the text element
@@ -416,34 +369,25 @@ void Icon::onMount() {
     spec.textRect = rect();
     lv2.element(spec);
 
-    auto ss = StyleSheet::Create();
+    auto ss = Style::Create();
     ss->textColor("icon", props_.tintColor);
-    viewAs<UIView>().setStyleSheet(ss);
-    viewAs<UIView>().update();
+    viewAs<UIView>().setStyle(ss);
 }
 
 void Icon::onPaint(PaintReason reason) {
-    auto & lv2 = viewAs<UIView>().layoutV2();
-    lv2.clear();
-    UIElementLayoutSpec spec;
-    spec.tag = "icon";
-    spec.text = OmegaCommon::UString(props_.token.begin(), props_.token.end());
-    spec.textRect = rect();
-    lv2.element(spec);
-
-    auto ss = StyleSheet::Create();
-    ss->textColor("icon", props_.tintColor);
-    viewAs<UIView>().setStyleSheet(ss);
+    (void)reason;
     viewAs<UIView>().update();
 }
 
 void Icon::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
+    rebuildContent();
     invalidate(PaintReason::Resize);
 }
 
 void Icon::setProps(const IconProps & props) {
     props_ = props;
+    rebuildContent();
     invalidate();
 }
 
@@ -497,8 +441,11 @@ static Composition::Rect computeFitRect(const Composition::Rect & bounds,
 Image::Image(Composition::Rect rect, const ImageProps & props)
     : Widget(ViewPtr(new UIView(rect, nullptr, "image"))), props_(props) {}
 
-void Image::onPaint(PaintReason reason) {
-    (void)reason;
+void Image::onMount() {
+    rebuildContent();
+}
+
+void Image::rebuildContent() {
     auto & uv = viewAs<UIView>();
     auto & lv2 = uv.layoutV2();
     lv2.clear();
@@ -513,16 +460,22 @@ void Image::onPaint(PaintReason reason) {
         spec.imageRect = dest;
         lv2.element(spec);
     }
-    uv.update();
+}
+
+void Image::onPaint(PaintReason reason) {
+    (void)reason;
+    viewAs<UIView>().update();
 }
 
 void Image::resize(Composition::Rect & newRect) {
     view->resize(newRect);
+    rebuildContent();
     invalidate(PaintReason::Resize);
 }
 
 void Image::setProps(const ImageProps & props) {
     props_ = props;
+    rebuildContent();
     invalidate();
 }
 

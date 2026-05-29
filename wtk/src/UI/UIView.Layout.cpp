@@ -7,8 +7,8 @@ void UIView::Impl::convertLegacyLayoutToV2(){
     for(const auto & element : currentLayout.elements()){
         UIElementLayoutSpec spec {};
         spec.tag = element.tag;
-        spec.style.width = LayoutLength::Auto();
-        spec.style.height = LayoutLength::Auto();
+        spec.layout.width = LayoutLength::Auto();
+        spec.layout.height = LayoutLength::Auto();
         if(element.shape){
             spec.shape = element.shape;
         }

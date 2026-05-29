@@ -121,7 +121,7 @@ protected:
 
         auto black = OmegaWTK::Composition::Color::create8Bit(
             OmegaWTK::Composition::Color::Black8);
-        auto style = OmegaWTK::StyleSheet::Create();
+        auto style = OmegaWTK::Style::Create();
         style = style->elementBrush("text_bg",OmegaWTK::Composition::ColorBrush(
             OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::White8)),
             false,0.f);
@@ -133,7 +133,7 @@ protected:
             OmegaWTK::Composition::TextLayoutDescriptor::MiddleCenter);
         style = style->textWrapping("body",
             OmegaWTK::Composition::TextLayoutDescriptor::WrapByWord);
-        uv.setStyleSheet(style);
+        uv.setStyle(style);
         uv.update();
     }
 

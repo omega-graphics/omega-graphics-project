@@ -144,10 +144,12 @@ void StackWidget::onMount(){
 }
 
 void StackWidget::onPaint(PaintReason reason){
-    Container::onPaint(reason);
-    if(needsLayout){
-        layoutChildren();
-    }
+    // Tier B / B4: layout-only; no layout during paint. relayout()
+    // drives layoutChildren() at model-change time, and the
+    // suspicious-frame deferred retry (needsLayout left set) is re-driven
+    // when a valid rect arrives (setRect → resize → relayout), not by
+    // paint.
+    (void)reason;
 }
 
 void StackWidget::resize(Composition::Rect & newRect){

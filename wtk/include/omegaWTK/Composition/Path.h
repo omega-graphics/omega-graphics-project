@@ -9,6 +9,23 @@ namespace OmegaWTK::Composition {
 
 struct Brush;
 
+/// One drawable sub-path produced by `Path::decomposeForDraw`: a single
+/// segment's tessellation-ready vector path plus the resolved stroke /
+/// fill brushes and flags. Mirrors the shape the compositor backend's
+/// VectorPath rasterizer consumes (the former `VisualCommand::pathParams`)
+/// so the Path -> segments+brushes decomposition has exactly one home,
+/// shared by `Canvas::drawPath` (Tier 3 transitional) and the backend
+/// `DrawOp::VectorPath` arm (Tier 4). See UIView-Render-Redesign-Plan
+/// §4.0 resolution.
+struct PathDrawSegment {
+    Core::SharedPtr<OmegaGTE::GVectorPath2D> path;
+    Core::SharedPtr<Brush> strokeBrush;
+    Core::SharedPtr<Brush> fillBrush;
+    float strokeWidth = 0.f;
+    bool contour = false;
+    bool fill = false;
+};
+
 class OMEGAWTK_EXPORT  Path {
     friend class Canvas;
     struct Impl;
@@ -37,6 +54,17 @@ public:
 
     /// Close current path.
     void close();
+
+    /// Decompose this path into per-segment drawable records. The fill
+    /// brush is the path's stored `pathBrush`; the stroke is the
+    /// caller-supplied `(strokeBrush, strokeWidth)`. Reproduces the
+    /// former `Canvas::drawPath(Path&, Border)` decomposition as a
+    /// single shared helper (UIView-Render-Redesign-Plan §4.0
+    /// resolution) — callers unpack a `Border` into the two stroke
+    /// arguments so this header need not depend on `Canvas.h`. Returns
+    /// empty when there is neither a fill nor a stroke.
+    OmegaCommon::Vector<PathDrawSegment> decomposeForDraw(
+        Core::SharedPtr<Brush> strokeBrush, float strokeWidth) const;
 
     /// Extract control points from the first segment (for animation).
     OmegaCommon::Vector<Point2D> getControlPoints() const;

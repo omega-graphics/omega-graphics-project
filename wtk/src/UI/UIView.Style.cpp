@@ -1,4 +1,6 @@
 #include "UIViewImpl.h"
+#include "omegaWTK/UI/AppWindow.h"
+#include "FrameBuilder.h"
 
 namespace OmegaWTK {
 
@@ -12,7 +14,7 @@ bool matchesTag(const OmegaCommon::String & selector,const OmegaCommon::String &
 
 }
 
-ResolvedViewStyle resolveViewStyle(const StyleSheetPtr & style,const UIViewTag & viewTag){
+ResolvedViewStyle resolveViewStyle(const StylePtr & style,const UIViewTag & viewTag){
     ResolvedViewStyle resolved {};
     if(style == nullptr){
         return resolved;
@@ -23,22 +25,22 @@ ResolvedViewStyle resolveViewStyle(const StyleSheetPtr & style,const UIViewTag &
             continue;
         }
         switch(entry.kind){
-            case StyleSheet::Entry::Kind::BackgroundColor:
+            case Style::Entry::Kind::BackgroundColor:
                 if(entry.color){
                     resolved.backgroundColor = entry.color;
                 }
                 break;
-            case StyleSheet::Entry::Kind::BorderEnabled:
+            case Style::Entry::Kind::BorderEnabled:
                 if(entry.boolValue){
                     resolved.useBorder = *entry.boolValue;
                 }
                 break;
-            case StyleSheet::Entry::Kind::BorderColor:
+            case Style::Entry::Kind::BorderColor:
                 if(entry.color){
                     resolved.borderColor = entry.color;
                 }
                 break;
-            case StyleSheet::Entry::Kind::BorderWidth:
+            case Style::Entry::Kind::BorderWidth:
                 if(entry.floatValue){
                     resolved.borderWidth = *entry.floatValue;
                 }
@@ -50,7 +52,7 @@ ResolvedViewStyle resolveViewStyle(const StyleSheetPtr & style,const UIViewTag &
     return resolved;
 }
 
-SharedHandle<Composition::Brush> resolveElementBrush(const StyleSheetPtr & style,
+SharedHandle<Composition::Brush> resolveElementBrush(const StylePtr & style,
                                                      const UIViewTag & viewTag,
                                                      const UIElementTag & elementTag){
     auto brush = Composition::ColorBrush(
@@ -61,7 +63,7 @@ SharedHandle<Composition::Brush> resolveElementBrush(const StyleSheetPtr & style
     }
 
     for(const auto & entry : style->entries){
-        if(entry.kind != StyleSheet::Entry::Kind::ElementBrush){
+        if(entry.kind != Style::Entry::Kind::ElementBrush){
             continue;
         }
         if(!entry.viewTag.empty() && !matchesTag(entry.viewTag,viewTag)){
@@ -77,7 +79,7 @@ SharedHandle<Composition::Brush> resolveElementBrush(const StyleSheetPtr & style
     return brush;
 }
 
-ResolvedTextStyle resolveTextStyle(const StyleSheetPtr & style,
+ResolvedTextStyle resolveTextStyle(const StylePtr & style,
                                    const UIViewTag & viewTag,
                                    const UIElementTag & elementTag){
     ResolvedTextStyle resolved {};
@@ -85,7 +87,7 @@ ResolvedTextStyle resolveTextStyle(const StyleSheetPtr & style,
         return resolved;
     }
 
-    auto entrySpecificity = [&](const StyleSheet::Entry & entry) -> int {
+    auto entrySpecificity = [&](const Style::Entry & entry) -> int {
         int specificity = 0;
         if(!entry.viewTag.empty()){
             if(!matchesTag(entry.viewTag,viewTag)){
@@ -134,7 +136,7 @@ ResolvedTextStyle resolveTextStyle(const StyleSheetPtr & style,
         }
 
         switch(entry.kind){
-            case StyleSheet::Entry::Kind::TextFont:
+            case Style::Entry::Kind::TextFont:
                 if(entry.font != nullptr &&
                    takeCandidate(specificity,idx,fontSpecificity,fontOrder)){
                     resolved.font = entry.font;
@@ -142,7 +144,7 @@ ResolvedTextStyle resolveTextStyle(const StyleSheetPtr & style,
                     fontOrder = idx;
                 }
                 break;
-            case StyleSheet::Entry::Kind::TextColor:
+            case Style::Entry::Kind::TextColor:
                 if(entry.color &&
                    takeCandidate(specificity,idx,colorSpecificity,colorOrder)){
                     resolved.color = *entry.color;
@@ -150,7 +152,7 @@ ResolvedTextStyle resolveTextStyle(const StyleSheetPtr & style,
                     colorOrder = idx;
                 }
                 break;
-            case StyleSheet::Entry::Kind::TextAlignment:
+            case Style::Entry::Kind::TextAlignment:
                 if(entry.textAlignment &&
                    takeCandidate(specificity,idx,alignmentSpecificity,alignmentOrder)){
                     resolved.layout.alignment = *entry.textAlignment;
@@ -158,7 +160,7 @@ ResolvedTextStyle resolveTextStyle(const StyleSheetPtr & style,
                     alignmentOrder = idx;
                 }
                 break;
-            case StyleSheet::Entry::Kind::TextWrapping:
+            case Style::Entry::Kind::TextWrapping:
                 if(entry.textWrapping &&
                    takeCandidate(specificity,idx,wrappingSpecificity,wrappingOrder)){
                     resolved.layout.wrapping = *entry.textWrapping;
@@ -166,7 +168,7 @@ ResolvedTextStyle resolveTextStyle(const StyleSheetPtr & style,
                     wrappingOrder = idx;
                 }
                 break;
-            case StyleSheet::Entry::Kind::TextLineLimit:
+            case Style::Entry::Kind::TextLineLimit:
                 if(entry.uintValue &&
                    takeCandidate(specificity,idx,lineLimitSpecificity,lineLimitOrder)){
                     resolved.lineLimit = *entry.uintValue;
@@ -182,7 +184,7 @@ ResolvedTextStyle resolveTextStyle(const StyleSheetPtr & style,
     return resolved;
 }
 
-ResolvedEffectStyle resolveElementEffectStyle(const StyleSheetPtr & style,
+ResolvedEffectStyle resolveElementEffectStyle(const StylePtr & style,
                                               const UIViewTag & viewTag,
                                               const UIElementTag & elementTag){
     ResolvedEffectStyle resolved {};
@@ -199,7 +201,7 @@ ResolvedEffectStyle resolveElementEffectStyle(const StyleSheetPtr & style,
         }
 
         switch(entry.kind){
-            case StyleSheet::Entry::Kind::DropShadowEffect:
+            case Style::Entry::Kind::DropShadowEffect:
                 if(entry.dropShadowValue){
                     resolved.dropShadow = *entry.dropShadowValue;
                     resolved.dropShadowTransition.transition = entry.transition;
@@ -207,7 +209,7 @@ ResolvedEffectStyle resolveElementEffectStyle(const StyleSheetPtr & style,
                     resolved.dropShadowTransition.curve = entry.curve;
                 }
                 break;
-            case StyleSheet::Entry::Kind::GaussianBlurEffect:
+            case Style::Entry::Kind::GaussianBlurEffect:
                 if(entry.gaussianBlurValue){
                     resolved.gaussianBlur = *entry.gaussianBlurValue;
                     resolved.gaussianBlurTransition.transition = entry.transition;
@@ -215,7 +217,7 @@ ResolvedEffectStyle resolveElementEffectStyle(const StyleSheetPtr & style,
                     resolved.gaussianBlurTransition.curve = entry.curve;
                 }
                 break;
-            case StyleSheet::Entry::Kind::DirectionalBlurEffect:
+            case Style::Entry::Kind::DirectionalBlurEffect:
                 if(entry.directionalBlurValue){
                     resolved.directionalBlur = *entry.directionalBlurValue;
                     resolved.directionalBlurTransition.transition = entry.transition;
@@ -243,7 +245,7 @@ void addUniqueTag(OmegaCommon::Vector<UIElementTag> & tags,const UIElementTag & 
     }
 }
 
-StyleScope collectStyleScope(const StyleSheetPtr & style,const UIViewTag & viewTag){
+StyleScope collectStyleScope(const StylePtr & style,const UIViewTag & viewTag){
     StyleScope scope {};
     if(style == nullptr){
         return scope;
@@ -255,15 +257,15 @@ StyleScope collectStyleScope(const StyleSheetPtr & style,const UIViewTag & viewT
         }
 
         switch(entry.kind){
-            case StyleSheet::Entry::Kind::BackgroundColor:
-            case StyleSheet::Entry::Kind::BorderEnabled:
-            case StyleSheet::Entry::Kind::BorderColor:
-            case StyleSheet::Entry::Kind::BorderWidth:
+            case Style::Entry::Kind::BackgroundColor:
+            case Style::Entry::Kind::BorderEnabled:
+            case Style::Entry::Kind::BorderColor:
+            case Style::Entry::Kind::BorderWidth:
                 scope.touchesRoot = true;
                 break;
-            case StyleSheet::Entry::Kind::DropShadowEffect:
-            case StyleSheet::Entry::Kind::GaussianBlurEffect:
-            case StyleSheet::Entry::Kind::DirectionalBlurEffect:
+            case Style::Entry::Kind::DropShadowEffect:
+            case Style::Entry::Kind::GaussianBlurEffect:
+            case Style::Entry::Kind::DirectionalBlurEffect:
                 if(entry.elementTag.empty()){
                     scope.touchesRoot = true;
                 }
@@ -271,21 +273,15 @@ StyleScope collectStyleScope(const StyleSheetPtr & style,const UIViewTag & viewT
                     addUniqueTag(scope.elementTags,entry.elementTag);
                 }
                 break;
-            case StyleSheet::Entry::Kind::ElementBrush:
-            case StyleSheet::Entry::Kind::ElementBrushAnimation:
-            case StyleSheet::Entry::Kind::ElementAnimation:
-            case StyleSheet::Entry::Kind::ElementPathAnimation:
-            case StyleSheet::Entry::Kind::TextFont:
-            case StyleSheet::Entry::Kind::TextColor:
-            case StyleSheet::Entry::Kind::TextAlignment:
-            case StyleSheet::Entry::Kind::TextWrapping:
-            case StyleSheet::Entry::Kind::TextLineLimit:
-            case StyleSheet::Entry::Kind::LayoutWidth:
-            case StyleSheet::Entry::Kind::LayoutHeight:
-            case StyleSheet::Entry::Kind::LayoutMargin:
-            case StyleSheet::Entry::Kind::LayoutPadding:
-            case StyleSheet::Entry::Kind::LayoutClamp:
-            case StyleSheet::Entry::Kind::LayoutTransition:
+            case Style::Entry::Kind::ElementBrush:
+            case Style::Entry::Kind::ElementBrushAnimation:
+            case Style::Entry::Kind::ElementAnimation:
+            case Style::Entry::Kind::ElementPathAnimation:
+            case Style::Entry::Kind::TextFont:
+            case Style::Entry::Kind::TextColor:
+            case Style::Entry::Kind::TextAlignment:
+            case Style::Entry::Kind::TextWrapping:
+            case Style::Entry::Kind::TextLineLimit:
                 if(entry.elementTag.empty()){
                     scope.touchesAllElements = true;
                 }
@@ -302,7 +298,43 @@ StyleScope collectStyleScope(const StyleSheetPtr & style,const UIViewTag & viewT
 
 }
 
-void UIView::setStyleSheet(const StyleSheetPtr &style){
+const UIViewInternal::ComputedStyle &
+UIView::Impl::computedStyleFor(const UIElementTag & tag) const {
+    static const UIViewInternal::ComputedStyle kDefault {};
+    auto it = computedStyles_.find(tag);
+    return it != computedStyles_.end() ? it->second : kDefault;
+}
+
+void UIView::resolveStyles(){
+    // Tier B / B5: ComputedStyle writes happen only in the Style phase.
+    if(auto * fb = AppWindow::activeFrameBuilder(); fb != nullptr){
+        fb->assertPhase(FramePhase::Style);
+    }
+    // Tier B / B2: the Style phase. Resolve the view-level style and a
+    // ComputedStyle per element, keyed by element tag. Paint reads these
+    // caches and never recomputes resolution inline. Rebuilt every frame
+    // for now; B3 gates the rebuild on DirtyBit::Style.
+    impl_->resolvedViewStyle_ =
+        UIViewInternal::resolveViewStyle(impl_->currentStyle,impl_->tag);
+
+    impl_->computedStyles_.clear();
+    for(const auto & spec : impl_->currentLayoutV2_.elements()){
+        UIViewInternal::ComputedStyle cs {};
+        cs.brush = UIViewInternal::resolveElementBrush(
+            impl_->currentStyle,impl_->tag,spec.tag);
+        cs.effects = UIViewInternal::resolveElementEffectStyle(
+            impl_->currentStyle,impl_->tag,spec.tag);
+        // Text resolves against the element's text-style tag (which may
+        // alias a shared style element), then caches under the element's
+        // own tag so Paint can look it up by entry.tag.
+        const UIElementTag textStyleTag = spec.textStyleTag.value_or(spec.tag);
+        cs.text = UIViewInternal::resolveTextStyle(
+            impl_->currentStyle,impl_->tag,textStyleTag);
+        impl_->computedStyles_[spec.tag] = std::move(cs);
+    }
+}
+
+void UIView::setStyle(const StylePtr &style){
     const auto previousScope = UIViewInternal::collectStyleScope(impl_->currentStyle,impl_->tag);
     const auto nextScope = UIViewInternal::collectStyleScope(style,impl_->tag);
 

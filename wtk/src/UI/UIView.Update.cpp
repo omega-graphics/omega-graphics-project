@@ -108,44 +108,52 @@ Composition::Rect localBoundsFromView(UIView *view){
 
 }
 
-void UIView::update(){
-    // A UIView with no explicit layout (or an empty one) still paints a
-    // default layout: a single full-bounds fill of its resolved
-    // background color. The element-resolution loop below is a no-op
-    // when the element list is empty, and the background rect (appended
-    // unconditionally further down) is the default layout's only op.
-    // This is why a bare setStyleSheet(backgroundColor) with no
-    // elements renders — previously update() early-returned here and
-    // submitted nothing.
+// Tier B / B5: assert the active window FrameBuilder is in the expected
+// lifecycle phase. No-op when no frame is in flight (a stray update()
+// outside a paint pass, or headless tests) — the phase is only defined
+// while a frame is being built. Debug-only via assert().
+namespace {
+void assertActivePhase(FramePhase expected){
+    if(auto * fb = AppWindow::activeFrameBuilder(); fb != nullptr){
+        fb->assertPhase(expected);
+    }
+}
+}
+
+void UIView::tickAnimations(){
+    assertActivePhase(FramePhase::Tick);
+    // Tier B / B3: the Tick phase. Advance the per-view tween pump so
+    // Paint reads freshly-ticked animation values. Inert today — nothing
+    // starts a tween (startOrUpdateAnimation has no caller), so this is a
+    // no-op beyond animation diagnostics; Tier D swaps the body for the
+    // AnimationScheduler's tick().
+    (void)impl_->advanceAnimations();
+}
+
+void UIView::arrange(){
+    assertActivePhase(FramePhase::Layout);
+    // Tier B / B3: the Layout phase. Resolve each element's rect from its
+    // layout spec, stable-sort by (zIndex, insertion order), and record
+    // the active tag order. Results land in impl_->arranged_ /
+    // impl_->arrangedLocalBounds_ for the Paint phase to consume.
     const auto & v2Elements = impl_->currentLayoutV2_.elements();
 
-    const auto localBounds = UIViewInternal::localBoundsFromView(this);
+    impl_->arrangedLocalBounds_ = UIViewInternal::localBoundsFromView(this);
     const float dpiScale = 1.f;
     LayoutContext ctx {};
-    ctx.availableRectPx = localBounds;
+    ctx.availableRectPx = impl_->arrangedLocalBounds_;
     ctx.dpiScale = dpiScale;
     const auto availDp = ctx.availableRectDp();
 
-    OmegaCommon::Vector<StyleRule> layoutRules {};
-    if(impl_->currentStyle != nullptr){
-        layoutRules = convertEntriesToRules(*impl_->currentStyle,impl_->tag);
-    }
-
-    struct V2Resolved {
-        UIElementTag tag;
-        const UIElementLayoutSpec * spec;
-        Composition::Rect resolvedRectDp {};
-        Composition::Rect resolvedRectPx {};
-        int zIndex = 0;
-        std::size_t insertionOrder = 0;
-    };
-    OmegaCommon::Vector<V2Resolved> resolved {};
-    resolved.reserve(v2Elements.size());
+    auto & arranged = impl_->arranged_;
+    arranged.clear();
+    arranged.reserve(v2Elements.size());
 
     for(std::size_t i = 0; i < v2Elements.size(); ++i){
         const auto & spec = v2Elements[i];
-        LayoutStyle effectiveStyle = spec.style;
-        mergeLayoutRulesIntoStyle(effectiveStyle,layoutRules,spec.tag);
+        // Tier B / B1: layout is authored directly on the element spec
+        // (`spec.layout`); it no longer flows through the Style sheet.
+        const LayoutStyle & effectiveStyle = spec.layout;
 
         Composition::Rect rectDp = resolveClampedRect(effectiveStyle,availDp,dpiScale);
         Composition::Rect rectPx {
@@ -159,18 +167,18 @@ void UIView::update(){
                 spec.tag,rectDp,rectPx,LayoutDiagnosticEntry::Pass::Arrange});
         }
 
-        V2Resolved entry {};
+        UIViewInternal::ArrangedElement entry {};
         entry.tag = spec.tag;
         entry.spec = &spec;
         entry.resolvedRectDp = rectDp;
         entry.resolvedRectPx = rectPx;
         entry.zIndex = spec.zIndex;
         entry.insertionOrder = i;
-        resolved.push_back(entry);
+        arranged.push_back(entry);
     }
 
-    std::stable_sort(resolved.begin(),resolved.end(),
-        [](const V2Resolved & a,const V2Resolved & b){
+    std::stable_sort(arranged.begin(),arranged.end(),
+        [](const UIViewInternal::ArrangedElement & a,const UIViewInternal::ArrangedElement & b){
             if(a.zIndex != b.zIndex){
                 return a.zIndex < b.zIndex;
             }
@@ -178,31 +186,30 @@ void UIView::update(){
         });
 
     OmegaCommon::Vector<UIElementTag> nextOrder {};
-    nextOrder.reserve(resolved.size());
-    for(const auto & r : resolved){
+    nextOrder.reserve(arranged.size());
+    for(const auto & r : arranged){
         nextOrder.push_back(r.tag);
     }
-
-    OmegaCommon::Vector<UIElementTag> previousOrder = impl_->activeTagOrder;
-    const bool orderChanged = previousOrder.size() != nextOrder.size() ||
-                              !std::equal(previousOrder.begin(),previousOrder.end(),
-                                          nextOrder.begin(),nextOrder.end());
-    (void)orderChanged;
     impl_->activeTagOrder = nextOrder;
+}
 
-    startCompositionSession();
+void UIView::paint(Composition::PaintContext & pc){
+    assertActivePhase(FramePhase::Paint);
+    // Tier B / B3: the Paint phase. A pure function of arranged layout +
+    // resolved style (ComputedStyle) + animation values: it appends
+    // DrawOps to pc.displayList and mutates no view state. Local aliases
+    // keep the existing per-element draw code below unchanged.
+    auto & displayList = pc.displayList;
+    const auto & localBounds = impl_->arrangedLocalBounds_;
+    const auto & resolved = impl_->arranged_;
 
-    auto viewStyle = UIViewInternal::resolveViewStyle(impl_->currentStyle,impl_->tag);
+    const auto & viewStyle = impl_->resolvedViewStyle_;
     auto backgroundColor = viewStyle.backgroundColor.value_or(Composition::Color::Transparent);
 
-    // UIView-Render-Redesign-Plan Tier 2 Phase 2.1: paint is now a
-    // pure function of model + layout + style + animation. Every
-    // would-be-Canvas call below appends to this function-local
-    // `DisplayList`; the single `DisplayListReplay::replay` at the
-    // end of `update()` drives the same GPU path the per-call
-    // `Canvas` API used to. Background rect is the first op.
-    Composition::DisplayList displayList;
-
+    // UIView-Render-Redesign-Plan Tier 2 Phase 2.1: paint is a pure
+    // function of model + layout + style + animation. Every would-be-
+    // Canvas call below appends to pc.displayList; FrameBuilder replays
+    // it into the window canvas at Commit. Background rect is the first op.
     auto rootBgBrush = Composition::ColorBrush(backgroundColor);
     auto rootBgRect = localBounds;
     displayList.append(Composition::DrawOp{rootBgRect, rootBgBrush});
@@ -213,20 +220,13 @@ void UIView::update(){
 
     for(const auto & entry : resolved){
         const auto & spec = *entry.spec;
+        const auto & computed = impl_->computedStyleFor(entry.tag);
 
-        auto previousRectIt = impl_->lastResolvedV2Rects_.find(entry.tag);
-        Composition::Rect previousRectPx = (previousRectIt != impl_->lastResolvedV2Rects_.end())
-                                        ? previousRectIt->second
-                                        : entry.resolvedRectPx;
-        LayoutDelta delta = computeLayoutDelta(previousRectPx,entry.resolvedRectPx);
-        impl_->lastResolvedV2Rects_[entry.tag] = entry.resolvedRectPx;
-
-        if(!delta.changedProperties.empty()){
-            auto transSpec = resolveLayoutTransition(layoutRules,entry.tag);
-            if(transSpec && transSpec->enabled){
-                applyLayoutDelta(entry.tag,delta,*transSpec);
-            }
-        }
+        // Tier B / B1: the sheet-authored layout-transition path
+        // (lastResolvedV2Rects_ delta → resolveLayoutTransition →
+        // applyLayoutDelta) is removed along with layout authoring on
+        // Style. Layout transitions will be re-homed onto the layout
+        // surface in a later tier; nothing authors them today.
 
         if(impl_->diagnosticSink_ != nullptr){
             impl_->diagnosticSink_->record(LayoutDiagnosticEntry{
@@ -234,11 +234,11 @@ void UIView::update(){
                 LayoutDiagnosticEntry::Pass::Commit});
         }
 
-        auto effectStyle = UIViewInternal::resolveElementEffectStyle(impl_->currentStyle,impl_->tag,entry.tag);
+        const auto & effectStyle = computed.effects;
 
         if(spec.shape){
             auto shapeToDraw = *spec.shape;
-            auto brush = UIViewInternal::resolveElementBrush(impl_->currentStyle,impl_->tag,entry.tag);
+            auto brush = computed.brush;
 
             if(effectStyle.dropShadow){
                 auto shadowParams = *effectStyle.dropShadow;
@@ -349,8 +349,10 @@ void UIView::update(){
             }
         }
         else if(spec.text){
-            UIElementTag textStyleTag = spec.textStyleTag.value_or(entry.tag);
-            auto textStyle = UIViewInternal::resolveTextStyle(impl_->currentStyle,impl_->tag,textStyleTag);
+            // Tier B / B2: text style was resolved (against this
+            // element's text-style tag) in resolveStyles() and cached
+            // under the element's own tag.
+            const auto & textStyle = computed.text;
             auto font = textStyle.font != nullptr ? textStyle.font : impl_->resolveFallbackTextFont();
             if(font != nullptr){
                 auto textRect = spec.textRect.value_or(localBounds);
@@ -383,35 +385,46 @@ void UIView::update(){
         }
     }
 
-    // Tier 3 Phase 3.4: push this UIView's absolute window offset
-    // onto the FrameBuilder accumulator for the remainder of
-    // update() — both branches below resolve `View::computeWindowOffset`
-    // for this view (the on-flag branch via submitView, the off-flag
-    // branch via Canvas::nextFrame's `ownerView_->computeWindowOffset`
-    // stamp at sendFrame time). The wrapper returns
-    // `fb->currentOffset()` whenever a FrameBuilder is active, so
-    // both branches need this view on top of the stack for the
-    // stamped offset to be right. The push is null-safe if no
-    // FrameBuilder is active (solo invalidates outside an
-    // AppWindow-driven paint pass).
-    FrameBuilder::ScopedViewOffset offsetScope(
-        AppWindow::activeFrameBuilder(), this);
+}
 
-    // Tier 3 Phase 3.8: window-scoped paint is the only route. Hand the
-    // freshly-built DisplayList to the FrameBuilder bracketing this
-    // paint pass (Widget::executePaint opens one for every invalidate /
-    // init repaint; AppWindow opens one for display / resize).
-    // FrameBuilder accumulates submissions in tree order and replays
-    // them all into the window canvas at endFrame, stamping each view's
-    // window-offset onto the window canvas's current frame. If no frame
-    // is active (a stray update() outside any paint pass), the
-    // DisplayList is dropped — paint only produces output inside a
-    // frame.
-    if(auto * fb = AppWindow::activeFrameBuilder(); fb != nullptr){
-        fb->submitView(this, std::move(displayList));
+void UIView::update(){
+    // Tier B / B3: in-place phase model. update() orchestrates the
+    // ordered phases on the existing types, flipping the window
+    // FrameBuilder's currentPhase_ around each via ScopedPhase. (Tier D
+    // hoists this walk into FrameBuilder::buildFrame across the whole
+    // tree.) The composition session is owned by Widget::executePaint /
+    // AppWindow (FrameBuilder::ScopedFrame), so update() no longer opens
+    // its own — the duplicate start/endCompositionSession is gone. An
+    // empty layout still renders: paint() appends the default full-bounds
+    // background unconditionally.
+    auto * fb = AppWindow::activeFrameBuilder();
+
+    { FrameBuilder::ScopedPhase phase(fb, FramePhase::Tick);   tickAnimations(); }
+    { FrameBuilder::ScopedPhase phase(fb, FramePhase::Style);  resolveStyles(); }
+    { FrameBuilder::ScopedPhase phase(fb, FramePhase::Layout); arrange(); }
+
+    Composition::DisplayList displayList;
+    {
+        FrameBuilder::ScopedPhase phase(fb, FramePhase::Paint);
+        Composition::PaintContext pc { displayList };
+        paint(pc);
     }
 
-    endCompositionSession();
+    // Commit. Tier 3 Phase 3.4: ScopedViewOffset pushes this view's
+    // absolute window offset and must outlive submitView, which reads it
+    // via View::computeWindowOffset. Tier 3 Phase 3.8: the FrameBuilder
+    // bracketing this pass (Widget::executePaint / AppWindow) accumulates
+    // the DisplayList in tree order and replays it into the window canvas
+    // at endFrame. No active frame (a stray update() outside a paint
+    // pass) ⇒ the DisplayList is dropped.
+    FrameBuilder::ScopedViewOffset offsetScope(fb, this);
+    {
+        FrameBuilder::ScopedPhase phase(fb, FramePhase::Commit);
+        if(fb != nullptr){
+            fb->submitView(this, std::move(displayList));
+        }
+    }
+
     impl_->layoutDirty = false;
     impl_->styleDirty = false;
     impl_->styleDirtyGlobal = false;

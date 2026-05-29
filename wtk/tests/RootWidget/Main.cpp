@@ -112,7 +112,7 @@ protected:
         layout.text ("el_text",        OmegaCommon::UString(U"Phase 2.1 DrawOp"), textRect);
         uiView_->setLayout(layout);
 
-        auto style = StyleSheet::Create();
+        auto style = Style::Create();
         style = style->backgroundColor("phase21_view",
             Composition::Color::create8Bit(Composition::Color::White8));
         style = style->elementBrush("el_rect",
@@ -132,7 +132,7 @@ protected:
         style = style->textColor("el_text",
             Composition::Color::create8Bit(Composition::Color::Black8));
 
-        uiView_->setStyleSheet(style);
+        uiView_->setStyle(style);
         uiView_->update();
     }
 };
@@ -226,26 +226,26 @@ protected:
         rightView_->setLayout(emptyLayout);
         innerView_->setLayout(emptyLayout);
 
-        auto leftStyle = StyleSheet::Create();
+        auto leftStyle = Style::Create();
         leftStyle = leftStyle->backgroundColor("phase32_left",
             Composition::Color::create8Bit(Composition::Color::Green8));
-        leftView_->setStyleSheet(leftStyle);
+        leftView_->setStyle(leftStyle);
         leftView_->update();
 
-        auto rightStyle = StyleSheet::Create();
+        auto rightStyle = Style::Create();
         rightStyle = rightStyle->backgroundColor("phase32_right",
             Composition::Color::create8Bit(Composition::Color::Red8));
-        rightView_->setStyleSheet(rightStyle);
+        rightView_->setStyle(rightStyle);
         rightView_->update();
 
         // Inner blue rect — its absolute position must be
         // {kInnerOffsetX, kInnerOffsetY} since leftView_ is at
         // {0,0}. Proves the FrameBuilder accumulator composes per-level
         // deltas correctly across leftView_ -> innerView_.
-        auto innerStyle = StyleSheet::Create();
+        auto innerStyle = Style::Create();
         innerStyle = innerStyle->backgroundColor("phase32_inner",
             Composition::Color::create8Bit(Composition::Color::Blue8));
-        innerView_->setStyleSheet(innerStyle);
+        innerView_->setStyle(innerStyle);
         innerView_->update();
     }
 };

@@ -128,6 +128,32 @@ constexpr float kPi = 3.14159265358979f;
         }
     }
 
+    OmegaCommon::Vector<PathDrawSegment> Path::decomposeForDraw(
+            Core::SharedPtr<Brush> strokeBrush, float strokeWidth) const {
+        // Single shared home for the Path -> per-segment+brushes
+        // decomposition (UIView-Render-Redesign-Plan §4.0 resolution).
+        // Reproduces the former `Canvas::drawPath(Path&, Border)` body:
+        // fill brush is the path's stored `pathBrush`, stroke comes from
+        // the caller (unpacked from a Border). The backend
+        // `DrawOp::VectorPath` arm (Tier 4) and the transitional
+        // `Canvas::drawPath` both call this so the logic isn't forked.
+        OmegaCommon::Vector<PathDrawSegment> out;
+        auto fillBrush = impl_->pathBrush;
+        const bool hasFill = (fillBrush != nullptr);
+        if(!hasFill && strokeBrush == nullptr){
+            return out;
+        }
+        for(auto & segment : impl_->segments){
+            if(segment.path.size() < 2){
+                continue;
+            }
+            auto pathData = std::make_shared<OmegaGTE::GVectorPath2D>(segment.path);
+            out.push_back(PathDrawSegment{pathData, strokeBrush, fillBrush,
+                                          strokeWidth, segment.closed, hasFill});
+        }
+        return out;
+    }
+
     OmegaCommon::Vector<Point2D> Path::getControlPoints() const {
         OmegaCommon::Vector<Point2D> result;
         if(impl_->segments.empty()) return result;

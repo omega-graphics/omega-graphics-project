@@ -1,6 +1,8 @@
 #include "omegaWTK/UI/VideoView.h"
+#include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/Composition/CompositorClient.h"
-#include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Composition/DisplayList.h"
+#include "FrameBuilder.h"
 
 // Backend AudioVideoProcessor headers live in OmegaVA's private src tree
 // (see va/CMakeLists.txt — va/src is exposed as a PRIVATE include dir on
@@ -48,7 +50,6 @@ static Composition::Rect computeScaledRect(const Composition::Rect &viewRect,
 VideoView::VideoView(const Composition::Rect & rect, ViewPtr parent)
     : View(rect, parent),
       framebuffer(2) {
-    videoCanvas = makeCanvas(getLayerTree()->getRootLayer());
 }
 
 void VideoView::queueFrame(SharedHandle<OmegaVA::VideoFrame> &frame) {
@@ -62,8 +63,23 @@ void VideoView::queueFrame(SharedHandle<OmegaVA::VideoFrame> &frame) {
     // to `delete` a struct-member pointer on reset, which became
     // dangerous once BitmapImage acquired a real destructor in Phase 2.
     SharedHandle<OmegaCommon::Img::BitmapImage> f(frame, &frame->videoFrame);
-    videoCanvas->drawImage(f, destRect);
-    videoCanvas->sendFrame();
+
+    // Tier 4 pre-flight (Path B unblock): VideoView no longer owns a
+    // Canvas. Its frame rides the window DisplayList as a DrawOp::Bitmap,
+    // submitted through the FrameBuilder bracketing the current paint
+    // pass — the same route UIView::update / SVGView::paint take. When
+    // no frame is active (VideoView's async decode callback runs outside
+    // an AppWindow paint pass), the submission is dropped: VideoView is
+    // not yet driven by the frame pacer. Correct presentation is deferred
+    // to the full NativeViewHost adoption (NativeViewHost-Adoption-Plan
+    // V1–V4); this unblock only severs the Canvas dependency so Phase 4.2
+    // can delete the class.
+    if (auto * fb = AppWindow::activeFrameBuilder(); fb != nullptr) {
+        Composition::DisplayList list;
+        list.append(Composition::DrawOp{f, destRect});
+        FrameBuilder::ScopedViewOffset offsetScope(fb, this);
+        fb->submitView(this, std::move(list));
+    }
 }
 
 void VideoView::pushFrame(SharedHandle<OmegaVA::VideoFrame> frame) {
@@ -72,21 +88,17 @@ void VideoView::pushFrame(SharedHandle<OmegaVA::VideoFrame> frame) {
 }
 
 void VideoView::presentCurrentFrame() {
-    startCompositionSession();
     auto f = framebuffer.first();
     queueFrame(f);
     framebuffer.pop();
-    endCompositionSession();
 }
 
 void VideoView::flush() {
-    startCompositionSession();
     while (!framebuffer.empty()) {
         auto f = framebuffer.first();
         queueFrame(f);
         framebuffer.pop();
     }
-    endCompositionSession();
 }
 
 // -- Delegate & accessors --
@@ -207,11 +219,8 @@ void VideoView::stop() {
 
     playbackSession_->reset();
 
-    startCompositionSession();
     while (!framebuffer.empty())
         framebuffer.pop();
-    videoCanvas->sendFrame();
-    endCompositionSession();
 }
 
 // -- Capture controls --
@@ -254,11 +263,8 @@ void VideoView::clear() {
 
     dispatchQueue_.reset();
 
-    startCompositionSession();
     while (!framebuffer.empty())
         framebuffer.pop();
-    videoCanvas->sendFrame();
-    endCompositionSession();
 
     sourceMode_ = VideoSourceMode::None;
     loop_ = false;

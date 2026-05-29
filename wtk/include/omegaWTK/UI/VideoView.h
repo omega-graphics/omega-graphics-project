@@ -35,7 +35,6 @@ public:
 class OMEGAWTK_EXPORT VideoView : public View,
                                   public OmegaVA::VideoFrameSink {
     OmegaCommon::QueueHeap<SharedHandle<OmegaVA::VideoFrame>> framebuffer;
-    SharedHandle<Composition::Canvas> videoCanvas;
     VideoViewDelegate *delegate_ = nullptr;
     VideoScaleMode scaleMode_ = VideoScaleMode::AspectFit;
     VideoSourceMode sourceMode_ = VideoSourceMode::None;

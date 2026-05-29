@@ -1277,20 +1277,15 @@ void BackendRenderTargetContext::resetElementState() {
 
     typedef decltype(VisualCommand::params) VisualCommandParams;
 
-    void BackendRenderTargetContext::renderToTarget(VisualCommand::Type type, void *params) {
-        auto & pipelines = pipelineRegistry();
-        auto bufferWriter = pipelines.bufferWriter();
-        auto renderPipelineState = pipelines.color();
-        auto textureRenderPipelineState = pipelines.texture();
-        auto pathRenderPipelineState = pipelines.path();
-        // Phase 6.8: tessellationContext_ is no longer required at this
-        // gate. SDF primitives (Rect/RoundedRect/Ellipse/Shadow with
-        // color brush), bitmaps (Phase 6.6 — dedicated pipeline with
-        // a hardcoded quad), and per-element state ops (SetTransform /
-        // SetOpacity) don't touch the triangulator. Cases that do
-        // (gradient fills, VectorPath) lazily acquire it via
-        // `ensureTessellationContext()`.
-        if(bufferWriter == nullptr || renderTarget == nullptr){
+    template<class ParamsT>
+    void BackendRenderTargetContext::renderPrimitiveImpl(PrimitiveOp op, ParamsT *params) {
+        // Phase 6.8 / Tier 4 §4.0: this body only prepares per-primitive
+        // work. SDF primitives, bitmaps, text, and state ops are self-
+        // contained (they call an emit* helper and return); the gradient-
+        // fill Rect/RoundedRect cases triangulate and fall through to
+        // `drawTriangulatedResult`, which owns the pipeline/buffer/draw
+        // tail (and re-derives the pipeline states it needs).
+        if(renderTarget == nullptr){
             return;
         }
         OmegaGTE::TETriangulationResult result;
@@ -1314,28 +1309,16 @@ void BackendRenderTargetContext::resetElementState() {
             return;
         }
 
-        size_t struct_size;
         bool useTextureRenderPipeline = false;
-        bool usePathRenderPipeline = false;
         float textureCoordDenomW = 1.f;
         float textureCoordDenomH = 1.f;
-        // Per-vertex attachment tagging for the path pipeline (Phase 6.4).
-        // The triangulator emits stroke triangles using attachments[0]'s
-        // color and fill triangles using attachments[1]'s color, so the
-        // tag is recovered by exact-color match against these two values
-        // in the vertex authoring lambda below.
-        OmegaGTE::FVec<4> pathStrokeColor = OmegaGTE::FVec<4>::Create();
-        OmegaGTE::FVec<4> pathFillColor   = OmegaGTE::FVec<4>::Create();
-        bool pathHasStrokeColor = false;
-        bool pathHasFillColor   = false;
 
         SharedHandle<OmegaGTE::GETexture> texturePaint;
-
         SharedHandle<OmegaGTE::GEFence> textureFence;
 
-        switch (type) {
-            case VisualCommand::Rect : {
-                auto & _params = ((VisualCommandParams*)params)->rectParams;
+        switch (op) {
+            case PrimitiveOp::Rect : {
+                auto & _params = params->rectParams;
                 if (_params.brush == nullptr) return;
                 if (_params.brush->type == Brush::Type::None) return;
 
@@ -1382,13 +1365,13 @@ void BackendRenderTargetContext::resetElementState() {
 
                 break;
             }
-            case VisualCommand::Bitmap : {
+            case PrimitiveOp::Bitmap : {
                 // Phase 6.6: bitmap drawing dispatches through the dedicated
                 // bitmap pipeline — hardcoded 6-vertex quad authored inline,
                 // no triangulator round-trip, mip-chain texture sourced from
                 // the process-wide BitmapTextureCache, optional sub-rect UV
                 // and RGBA tint via per-draw uniform buffer.
-                auto & _params = ((VisualCommandParams*)params)->bitmapParams;
+                auto & _params = params->bitmapParams;
 
                 SharedHandle<OmegaGTE::GETexture> tex;
                 SharedHandle<OmegaGTE::GEFence> fence;
@@ -1447,8 +1430,8 @@ void BackendRenderTargetContext::resetElementState() {
                                     tint, tex, fence);
                 return;
             }
-            case VisualCommand::RoundedRect : {
-                auto & _params = ((VisualCommandParams*)params)->roundedRectParams;
+            case PrimitiveOp::RoundedRect : {
+                auto & _params = params->roundedRectParams;
                 if (_params.brush == nullptr) return;
                 if (_params.brush->type == Brush::Type::None) return;
 
@@ -1494,8 +1477,8 @@ void BackendRenderTargetContext::resetElementState() {
 
                 break;
             }
-            case VisualCommand::Ellipse : {
-                auto & _params = ((VisualCommandParams*)params)->ellipseParams;
+            case PrimitiveOp::Ellipse : {
+                auto & _params = params->ellipseParams;
                 const float cx = _params.ellipse.x;
                 const float cy = _params.ellipse.y;
                 const float rx = std::max(0.0f,_params.ellipse.rad_x);
@@ -1538,61 +1521,12 @@ void BackendRenderTargetContext::resetElementState() {
                                  fillColor, strokeColor);
                 return;
             }
-            case VisualCommand::VectorPath : {
-                auto & _params = ((VisualCommandParams*)params)->pathParams;
-                if(_params.path == nullptr || _params.path->size() < 2){
-                    return;
-                }
-                if (!ensureTessellationContext()) return;
-                auto te_params = OmegaGTE::TETriangulationParams::GraphicsPath2D(*_params.path,
-                                                                                 _params.strokeWidth,
-                                                                                 _params.contour,
-                                                                                 _params.fill);
-                // First attachment: stroke color.
-                auto strokeColor = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
-                bool hasStrokeColor = false;
-                if(_params.brush != nullptr && _params.brush->type == Brush::Type::Color){
-                    strokeColor = OmegaGTE::makeColor(_params.brush->color.r,
-                                                      _params.brush->color.g,
-                                                      _params.brush->color.b,
-                                                      _params.brush->color.a);
-                    hasStrokeColor = true;
-                }
-                te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(strokeColor));
-
-                // Second attachment: fill color.
-                auto fillColor = OmegaGTE::FVec<4>::Create();
-                bool hasFillColor = false;
-                if(_params.fill && _params.fillBrush != nullptr && _params.fillBrush->type == Brush::Type::Color){
-                    fillColor = OmegaGTE::makeColor(_params.fillBrush->color.r,
-                                                    _params.fillBrush->color.g,
-                                                    _params.fillBrush->color.b,
-                                                    _params.fillBrush->color.a);
-                    hasFillColor = true;
-                    te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(fillColor));
-                }
-
-                result = tessellationContext_->triangulateSync(te_params,
-                                                                  OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,
-                                                                  &viewPort);
-
-                // Phase 6.4: route the dual-attachment mesh through the
-                // path pipeline so the fragment shader can consume the
-                // per-vertex (edgeDistance, attachmentTag) varying. Falls
-                // back to the flat color pipeline when the path pipeline
-                // failed to compile (e.g. shader not present in the
-                // library), so the visual still renders.
-                if(pathRenderPipelineState != nullptr){
-                    usePathRenderPipeline = true;
-                    pathStrokeColor   = strokeColor;
-                    pathHasStrokeColor = hasStrokeColor;
-                    pathFillColor    = fillColor;
-                    pathHasFillColor  = hasFillColor;
-                }
-                break;
-            }
-            case VisualCommand::Shadow: {
-                auto & _params = ((VisualCommandParams*)params)->shadowParams;
+            // VectorPath is handled in the public overloads (it needs the
+            // segmented form `Path::decomposeForDraw` produces, not a
+            // params sub-struct shared with VisualCommand) — see
+            // renderVectorPathSegmented.
+            case PrimitiveOp::Shadow: {
+                auto & _params = params->shadowParams;
                 const auto & shadow = _params.shadow;
 
                 // Phase 6.3: shadow uses the SDF pipeline with a soft
@@ -1623,27 +1557,19 @@ void BackendRenderTargetContext::resetElementState() {
                                  shadowColor, noStroke);
                 return;
             }
-            case VisualCommand::SetTransform: {
-                auto & _params = ((VisualCommandParams*)params)->transformMatrix;
+            case PrimitiveOp::SetTransform: {
+                auto & _params = params->transformMatrix;
                 currentTransform = toGTEMatrix(_params);
                 return;
             }
-            case VisualCommand::SetOpacity: {
-                currentOpacity = ((VisualCommandParams*)params)->opacityValue;
+            case PrimitiveOp::SetOpacity: {
+                currentOpacity = params->opacityValue;
                 return;
             }
-            case VisualCommand::SetClip: {
-                // Tier 3 Phase 3.5: apply / clear the GPU scissor.
-                // Canvas already resolved the intersected effective
-                // rect; here we translate it from canvas-local
-                // (which equals slice-window-local for the current
-                // slice) into target pixel coordinates and intersect
-                // with the slice's natural scissor.
-                auto & _params = ((VisualCommandParams*)params)->clipRect;
-                applySetClip(_params);
-                return;
-            }
-            case VisualCommand::NativeContent: {
+            // SetClip / PushClip / PopClip are handled in the public
+            // overloads (VisualCommand's pre-resolved clipRect vs. the
+            // DrawOp backend clip stack) — see pushDrawOpClip/popDrawOpClip.
+            case PrimitiveOp::NativeContent: {
                 // Tier 3 Phase 3.7: record the carve-out into the
                 // per-frame pending list for the platform tree to
                 // translate at flush time. The destRect is converted
@@ -1655,7 +1581,7 @@ void BackendRenderTargetContext::resetElementState() {
                 // SetOffsetX/Y + transform on Windows,
                 // wl_subsurface_set_position on Wayland) without
                 // redoing the transform.
-                auto & _params = ((VisualCommandParams*)params)->nativeContentParams;
+                auto & _params = params->nativeContentParams;
                 const float scale = renderScale_;
                 const auto & vp = frameRenderPass_.viewportOverride();
                 const float baseX = vp.active ? vp.offsetX : 0.f;
@@ -1678,12 +1604,12 @@ void BackendRenderTargetContext::resetElementState() {
 #endif
                 return;
             }
-            case VisualCommand::TextRun: {
+            case PrimitiveOp::TextRun: {
                 // Phase 6.7-c3: iterate the sub-runs (chunk 3 emits a
                 // single sub-run; chunk 4 lights up multi-atlas runs)
                 // and issue one draw call per sub-run against its
                 // resolved font's MSDF glyph atlas.
-                auto & _params = ((VisualCommandParams*)params)->textRunParams;
+                auto & _params = params->textRunParams;
                 if(textTraceEnabled()){
                     std::cout << "[wtk-text] renderToTarget TextRun: "
                               << _params.subRuns.size() << " sub-runs, rect=("
@@ -1696,15 +1622,41 @@ void BackendRenderTargetContext::resetElementState() {
                 }
                 return;
             }
-            case VisualCommand::Text:
-                if(textTraceEnabled()){
-                    std::cout << "[wtk-text] renderToTarget Text (legacy bitmap "
-                              << "TextRect path) — not the MSDF path." << std::endl;
-                }
-                return;
             default:
                 return;
         }
+
+        // Only the gradient-fill Rect / RoundedRect cases reach here
+        // (they triangulate into `result` and request the texture
+        // pipeline). The shared draw tail owns the rest.
+        drawTriangulatedResult(result, useTextureRenderPipeline, false,
+                               textureCoordDenomW, textureCoordDenomH,
+                               OmegaGTE::FVec<4>::Create(), false,
+                               OmegaGTE::FVec<4>::Create(), false,
+                               texturePaint, textureFence);
+    }
+
+    void BackendRenderTargetContext::drawTriangulatedResult(
+            OmegaGTE::TETriangulationResult & result,
+            bool useTextureRenderPipeline,
+            bool usePathRenderPipeline,
+            float textureCoordDenomW,
+            float textureCoordDenomH,
+            const OmegaGTE::FVec<4> & pathStrokeColor,
+            bool pathHasStrokeColor,
+            const OmegaGTE::FVec<4> & pathFillColor,
+            bool pathHasFillColor,
+            SharedHandle<OmegaGTE::GETexture> texturePaint,
+            SharedHandle<OmegaGTE::GEFence> textureFence) {
+        auto & pipelines = pipelineRegistry();
+        auto bufferWriter = pipelines.bufferWriter();
+        auto renderPipelineState = pipelines.color();
+        auto textureRenderPipelineState = pipelines.texture();
+        auto pathRenderPipelineState = pipelines.path();
+        if(bufferWriter == nullptr || renderTarget == nullptr){
+            return;
+        }
+        std::size_t struct_size;
 
         if(result.totalVertexCount() == 0){
             return;
@@ -1961,6 +1913,204 @@ void BackendRenderTargetContext::resetElementState() {
 
         if(bufferPool() && buffer){
             deferredBufferReleases.push_back({std::move(buffer), requiredBytes});
+        }
+    }
+
+    void BackendRenderTargetContext::renderVectorPathSegmented(
+            const Core::SharedPtr<OmegaGTE::GVectorPath2D> & path,
+            float strokeWidth, bool contour, bool fill,
+            const Core::SharedPtr<Brush> & strokeBrush,
+            const Core::SharedPtr<Brush> & fillBrush) {
+        if(path == nullptr || path->size() < 2){
+            return;
+        }
+        if(!ensureTessellationContext()) return;
+
+        OmegaGTE::GEViewport viewPort {};
+        viewPort.x = viewPort.y = viewPort.nearDepth = 0.f;
+        viewPort.farDepth = 1.f;
+        viewPort.width = renderTargetSize_.w;
+        viewPort.height = renderTargetSize_.h;
+
+        auto te_params = OmegaGTE::TETriangulationParams::GraphicsPath2D(*path,
+                                                                         strokeWidth,
+                                                                         contour,
+                                                                         fill);
+        // First attachment: stroke color.
+        auto strokeColor = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
+        bool hasStrokeColor = false;
+        if(strokeBrush != nullptr && strokeBrush->type == Brush::Type::Color){
+            strokeColor = OmegaGTE::makeColor(strokeBrush->color.r,
+                                              strokeBrush->color.g,
+                                              strokeBrush->color.b,
+                                              strokeBrush->color.a);
+            hasStrokeColor = true;
+        }
+        te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(strokeColor));
+
+        // Second attachment: fill color.
+        auto fillColor = OmegaGTE::FVec<4>::Create();
+        bool hasFillColor = false;
+        if(fill && fillBrush != nullptr && fillBrush->type == Brush::Type::Color){
+            fillColor = OmegaGTE::makeColor(fillBrush->color.r,
+                                            fillBrush->color.g,
+                                            fillBrush->color.b,
+                                            fillBrush->color.a);
+            hasFillColor = true;
+            te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(fillColor));
+        }
+
+        auto result = tessellationContext_->triangulateSync(te_params,
+                                                            OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,
+                                                            &viewPort);
+
+        // Phase 6.4: route the dual-attachment mesh through the path
+        // pipeline when available, else fall back to the flat color
+        // pipeline (same logic the old VectorPath case carried).
+        const bool usePathRenderPipeline = (pipelineRegistry().path() != nullptr);
+        drawTriangulatedResult(result, false, usePathRenderPipeline,
+                               1.f, 1.f,
+                               strokeColor, hasStrokeColor,
+                               fillColor, hasFillColor,
+                               nullptr, nullptr);
+    }
+
+    void BackendRenderTargetContext::pushDrawOpClip(const Composition::Rect & rect){
+        // Mirrors Canvas::pushClip: intersect the incoming rect with the
+        // current top of stack and apply the effective scissor. The
+        // intersection bookkeeping lived in Canvas (deleted in 4.2); the
+        // backend now owns it for the DrawOp path.
+        Composition::Rect effective = rect;
+        if(!drawOpClipStack_.empty()){
+            const auto & top = drawOpClipStack_.back();
+            const float left   = std::max(top.pos.x, rect.pos.x);
+            const float topEdge= std::max(top.pos.y, rect.pos.y);
+            const float right  = std::min(top.pos.x + top.w, rect.pos.x + rect.w);
+            const float bottom = std::min(top.pos.y + top.h, rect.pos.y + rect.h);
+            if(right > left && bottom > topEdge){
+                effective = Composition::Rect{
+                    Composition::Point2D{left, topEdge},
+                    right - left, bottom - topEdge};
+            }
+            else {
+                // Empty intersection: degenerate scissor at the current
+                // top's origin (all draws culled while active), matching
+                // Canvas::pushClip's behavior so a matching pop restores.
+                effective = Composition::Rect{top.pos, 0.f, 0.f};
+            }
+        }
+        drawOpClipStack_.push_back(effective);
+        applySetClip(Core::Optional<Composition::Rect>{effective});
+    }
+
+    void BackendRenderTargetContext::popDrawOpClip(){
+        if(drawOpClipStack_.empty()){
+            // Imbalanced pop — treat as no-op so the scissor state stays
+            // consistent (matches Canvas::popClip).
+            return;
+        }
+        drawOpClipStack_.pop_back();
+        if(drawOpClipStack_.empty()){
+            applySetClip(Core::Optional<Composition::Rect>{});
+        }
+        else {
+            applySetClip(Core::Optional<Composition::Rect>{drawOpClipStack_.back()});
+        }
+    }
+
+    void BackendRenderTargetContext::renderToTarget(VisualCommand::Type type, void *params){
+        switch(type){
+            case VisualCommand::Rect:
+                renderPrimitiveImpl(PrimitiveOp::Rect, (VisualCommandParams*)params); return;
+            case VisualCommand::RoundedRect:
+                renderPrimitiveImpl(PrimitiveOp::RoundedRect, (VisualCommandParams*)params); return;
+            case VisualCommand::Ellipse:
+                renderPrimitiveImpl(PrimitiveOp::Ellipse, (VisualCommandParams*)params); return;
+            case VisualCommand::Bitmap:
+                renderPrimitiveImpl(PrimitiveOp::Bitmap, (VisualCommandParams*)params); return;
+            case VisualCommand::Shadow:
+                renderPrimitiveImpl(PrimitiveOp::Shadow, (VisualCommandParams*)params); return;
+            case VisualCommand::TextRun:
+                renderPrimitiveImpl(PrimitiveOp::TextRun, (VisualCommandParams*)params); return;
+            case VisualCommand::SetTransform:
+                renderPrimitiveImpl(PrimitiveOp::SetTransform, (VisualCommandParams*)params); return;
+            case VisualCommand::SetOpacity:
+                renderPrimitiveImpl(PrimitiveOp::SetOpacity, (VisualCommandParams*)params); return;
+            case VisualCommand::NativeContent:
+                renderPrimitiveImpl(PrimitiveOp::NativeContent, (VisualCommandParams*)params); return;
+            case VisualCommand::VectorPath: {
+                if(params == nullptr) return;
+                auto & p = ((VisualCommandParams*)params)->pathParams;
+                renderVectorPathSegmented(p.path, p.strokeWidth, p.contour, p.fill,
+                                          p.brush, p.fillBrush);
+                return;
+            }
+            case VisualCommand::SetClip: {
+                if(params == nullptr) return;
+                applySetClip(((VisualCommandParams*)params)->clipRect);
+                return;
+            }
+            case VisualCommand::Text:
+                // Legacy bitmap TextRect path — not the MSDF path. No-op,
+                // as the old switch did.
+                return;
+            default:
+                return;
+        }
+    }
+
+    void BackendRenderTargetContext::renderToTarget(DrawOp::Type type, void *params){
+        switch(type){
+            case DrawOp::Rect:
+                renderPrimitiveImpl(PrimitiveOp::Rect, (DrawOp::Params*)params); return;
+            case DrawOp::RoundedRect:
+                renderPrimitiveImpl(PrimitiveOp::RoundedRect, (DrawOp::Params*)params); return;
+            case DrawOp::Ellipse:
+                renderPrimitiveImpl(PrimitiveOp::Ellipse, (DrawOp::Params*)params); return;
+            case DrawOp::Bitmap:
+                renderPrimitiveImpl(PrimitiveOp::Bitmap, (DrawOp::Params*)params); return;
+            case DrawOp::Shadow:
+                renderPrimitiveImpl(PrimitiveOp::Shadow, (DrawOp::Params*)params); return;
+            case DrawOp::TextRun:
+                renderPrimitiveImpl(PrimitiveOp::TextRun, (DrawOp::Params*)params); return;
+            case DrawOp::SetTransform:
+                renderPrimitiveImpl(PrimitiveOp::SetTransform, (DrawOp::Params*)params); return;
+            case DrawOp::SetOpacity:
+                renderPrimitiveImpl(PrimitiveOp::SetOpacity, (DrawOp::Params*)params); return;
+            case DrawOp::NativeContent:
+                renderPrimitiveImpl(PrimitiveOp::NativeContent, (DrawOp::Params*)params); return;
+            case DrawOp::VectorPath: {
+                if(params == nullptr) return;
+                auto & p = ((DrawOp::Params*)params)->pathParams;
+                if(p.path == nullptr) return;
+                // Tier 4 §4.0: rehome Canvas::drawPath's decomposition.
+                Core::SharedPtr<Brush> strokeBrush;
+                float strokeWidth = 0.f;
+                if(p.border.has_value()){
+                    strokeBrush = p.border->brush;
+                    strokeWidth = static_cast<float>(p.border->width);
+                }
+                for(auto & seg : p.path->decomposeForDraw(strokeBrush, strokeWidth)){
+                    renderVectorPathSegmented(seg.path, seg.strokeWidth, seg.contour,
+                                              seg.fill, seg.strokeBrush, seg.fillBrush);
+                }
+                return;
+            }
+            case DrawOp::PushClip: {
+                if(params == nullptr) return;
+                pushDrawOpClip(((DrawOp::Params*)params)->pushClipParams.rect);
+                return;
+            }
+            case DrawOp::PopClip:
+                popDrawOpClip();
+                return;
+            case DrawOp::PushTransform:
+            case DrawOp::PopTransform:
+                // Scoped 3D-effect transform — no producer yet (same as the
+                // Tier 3 replay no-op). Lands when a producer appears.
+                return;
+            default:
+                return;
         }
     }
 

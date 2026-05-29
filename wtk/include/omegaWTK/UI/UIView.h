@@ -10,11 +10,23 @@
 
 namespace OmegaWTK {
 
+namespace Composition { struct PaintContext; }
+
 typedef OmegaCommon::String UIElementTag;
 typedef UIElementTag UIViewTag;
 
-struct StyleSheet;
-OMEGACOMMON_SHARED_CLASS(StyleSheet);
+struct Style;
+OMEGACOMMON_SHARED_CLASS(Style);
+
+// Tier B / B1: `StyleSheet` was renamed to `Style` (a per-view,
+// element-tag-keyed inline visual+text surface; layout authoring moved
+// off it onto `UIElementLayoutSpec::layout`). These aliases keep
+// out-of-tree callers compiling for one deprecation cycle. All in-tree
+// callers use the new names.
+[[deprecated("StyleSheet was renamed to Style")]]
+typedef Style StyleSheet;
+[[deprecated("StyleSheetPtr was renamed to StylePtr")]]
+typedef StylePtr StyleSheetPtr;
 
 /**
  * @brief A generic shape descriptor for UIView elements.
@@ -55,7 +67,7 @@ enum ElementAnimationKey : int {
     ElementAnimationKeyPathNodeY,
 };
 
-struct OMEGAWTK_EXPORT StyleSheet {
+struct OMEGAWTK_EXPORT Style {
     struct Entry {
         enum class Kind : uint8_t {
             BackgroundColor,
@@ -73,13 +85,7 @@ struct OMEGAWTK_EXPORT StyleSheet {
             TextColor,
             TextAlignment,
             TextWrapping,
-            TextLineLimit,
-            LayoutWidth,
-            LayoutHeight,
-            LayoutMargin,
-            LayoutPadding,
-            LayoutClamp,
-            LayoutTransition
+            TextLineLimit
         };
 
         Kind kind = Kind::BackgroundColor;
@@ -98,10 +104,6 @@ struct OMEGAWTK_EXPORT StyleSheet {
         Core::Optional<Composition::LayerEffect::DropShadowParams> dropShadowValue {};
         Core::Optional<Composition::CanvasEffect::GaussianBlurParams> gaussianBlurValue {};
         Core::Optional<Composition::CanvasEffect::DirectionalBlurParams> directionalBlurValue {};
-        Core::Optional<LayoutLength> layoutLengthValue {};
-        Core::Optional<LayoutEdges> layoutEdgesValue {};
-        Core::Optional<LayoutClamp> layoutClampValue {};
-        Core::Optional<LayoutTransitionSpec> layoutTransitionValue {};
         int nodeIndex = -1;
         bool transition = false;
         float duration = 0.f;
@@ -109,104 +111,100 @@ struct OMEGAWTK_EXPORT StyleSheet {
 
     OmegaCommon::Vector<Entry> entries;
 
-    static StyleSheetPtr Create();
-    StyleSheetPtr copy();
+    static StylePtr Create();
+    StylePtr copy();
 
-    StyleSheetPtr backgroundColor(UIViewTag tag,
+    StylePtr backgroundColor(UIViewTag tag,
                                   const Composition::Color & color,
                                   bool transition = false,
                                   float duration = 0.f);
 
-    StyleSheetPtr border(UIViewTag tag,bool use);
+    StylePtr border(UIViewTag tag,bool use);
 
-    StyleSheetPtr borderColor(UIViewTag tag,
+    StylePtr borderColor(UIViewTag tag,
                               const Composition::Color & color,
                               bool transition = false,
                               float duration = 0.f);
 
-    StyleSheetPtr borderWidth(UIViewTag tag,
+    StylePtr borderWidth(UIViewTag tag,
                               float width,
                               bool transition = false,
                               float duration = 0.f);
 
-    StyleSheetPtr dropShadow(UIViewTag tag,
+    StylePtr dropShadow(UIViewTag tag,
                              const Composition::LayerEffect::DropShadowParams & params,
                              bool transition = false,
                              float duration = 0.f);
 
-    StyleSheetPtr gaussianBlur(UIViewTag tag,
+    StylePtr gaussianBlur(UIViewTag tag,
                                float radius,
                                bool transition = false,
                                float duration = 0.f);
 
-    StyleSheetPtr directionalBlur(UIViewTag tag,
+    StylePtr directionalBlur(UIViewTag tag,
                                   float radius,
                                   float angle,
                                   bool transition = false,
                                   float duration = 0.f);
 
-    StyleSheetPtr elementDropShadow(UIElementTag elementTag,
+    StylePtr elementDropShadow(UIElementTag elementTag,
                                     const Composition::LayerEffect::DropShadowParams & params,
                                     bool transition = false,
                                     float duration = 0.f);
 
-    StyleSheetPtr elementGaussianBlur(UIElementTag elementTag,
+    StylePtr elementGaussianBlur(UIElementTag elementTag,
                                       float radius,
                                       bool transition = false,
                                       float duration = 0.f);
 
-    StyleSheetPtr elementDirectionalBlur(UIElementTag elementTag,
+    StylePtr elementDirectionalBlur(UIElementTag elementTag,
                                          float radius,
                                          float angle,
                                          bool transition = false,
                                          float duration = 0.f);
 
-    StyleSheetPtr elementBrush(UIElementTag elementTag,
+    StylePtr elementBrush(UIElementTag elementTag,
                                SharedHandle<Composition::Brush> brush,
                                bool transition = false,
                                float duration = 0.f);
 
-    StyleSheetPtr elementBrushAnimation(SharedHandle<Composition::Brush> brush,
+    StylePtr elementBrushAnimation(SharedHandle<Composition::Brush> brush,
                                         ElementAnimationKey key,
                                         SharedHandle<Composition::AnimationCurve> curve,
                                         float duration);
 
-    StyleSheetPtr elementAnimation(UIElementTag elementTag,
+    StylePtr elementAnimation(UIElementTag elementTag,
                                    ElementAnimationKey key,
                                    SharedHandle<Composition::AnimationCurve> curve,
                                    float duration);
 
-    StyleSheetPtr elementPathAnimation(UIElementTag elementTag,
+    StylePtr elementPathAnimation(UIElementTag elementTag,
                                        SharedHandle<Composition::AnimationCurve> curve,
                                        int nodeIndex,
                                        float duration);
 
-    StyleSheetPtr textFont(UIElementTag elementTag,
+    StylePtr textFont(UIElementTag elementTag,
                            SharedHandle<Composition::Font> font);
 
-    StyleSheetPtr textColor(UIElementTag elementTag,
+    StylePtr textColor(UIElementTag elementTag,
                             const Composition::Color & color,
                             bool transition = false,
                             float duration = 0.f);
 
-    StyleSheetPtr textAlignment(UIElementTag elementTag,
+    StylePtr textAlignment(UIElementTag elementTag,
                                 Composition::TextLayoutDescriptor::Alignment alignment);
 
-    StyleSheetPtr textWrapping(UIElementTag elementTag,
+    StylePtr textWrapping(UIElementTag elementTag,
                                Composition::TextLayoutDescriptor::Wrapping wrapping);
 
-    StyleSheetPtr textLineLimit(UIElementTag elementTag,unsigned lineLimit);
+    StylePtr textLineLimit(UIElementTag elementTag,unsigned lineLimit);
 
-    StyleSheetPtr layoutWidth(UIElementTag elementTag,LayoutLength width);
-    StyleSheetPtr layoutHeight(UIElementTag elementTag,LayoutLength height);
-    StyleSheetPtr layoutSize(UIElementTag elementTag,LayoutLength width,LayoutLength height);
-    StyleSheetPtr layoutMargin(UIElementTag elementTag,LayoutEdges margin);
-    StyleSheetPtr layoutPadding(UIElementTag elementTag,LayoutEdges padding);
-    StyleSheetPtr layoutClamp(UIElementTag elementTag,LayoutClamp clamp);
-    StyleSheetPtr layoutTransition(UIElementTag elementTag,LayoutTransitionSpec spec);
+    // Layout authoring (layoutWidth/Height/Size/Margin/Padding/Clamp/
+    // Transition) moved off the style surface in Tier B / B1. Author
+    // layout directly on `UIElementLayoutSpec::layout`.
 
-    StyleSheet();
-    ~StyleSheet() = default;
+    Style();
+    ~Style() = default;
 };
 
 class UIViewLayout;
@@ -246,7 +244,7 @@ public:
 
 struct OMEGAWTK_EXPORT UIElementLayoutSpec {
     UIElementTag tag {};
-    LayoutStyle style {};
+    LayoutStyle layout {};
     Core::Optional<Shape> shape {};
     Core::Optional<OmegaCommon::UString> text {};
     Core::Optional<Composition::Rect> textRect {};
@@ -311,8 +309,17 @@ public:
     ~UIView() override;
     UIViewLayout & layout();
     void setLayout(const UIViewLayout & layout);
-    void setStyleSheet(const StyleSheetPtr & style);
-    StyleSheetPtr getStyleSheet() const;
+    void setStyle(const StylePtr & style);
+    StylePtr getStyle() const;
+
+    // Deprecated B1 forwarders — `setStyleSheet`/`getStyleSheet` were
+    // renamed to `setStyle`/`getStyle`. Kept for one cycle for
+    // out-of-tree callers.
+    [[deprecated("setStyleSheet was renamed to setStyle")]]
+    void setStyleSheet(const StylePtr & style){ setStyle(style); }
+    [[deprecated("getStyleSheet was renamed to getStyle")]]
+    StylePtr getStyleSheet() const { return getStyle(); }
+
     const UpdateDiagnostics & getLastUpdateDiagnostics() const;
     const AnimationDiagnostics & getLastAnimationDiagnostics() const;
 
@@ -326,6 +333,23 @@ public:
                           const LayoutTransitionSpec & spec);
 
     void update();
+
+private:
+    // Tier B / B3: the per-phase methods that update() orchestrates in
+    // order, flipping the window FrameBuilder's currentPhase_ around each.
+    //  - tickAnimations(): Tick — drives the per-view animator pump.
+    //  - resolveStyles():  Style — resolves `currentStyle` into the
+    //    per-element `ComputedStyle` cache (+ view-level resolved style).
+    //  - arrange():        Layout — resolves element rects + z-order into
+    //    the arranged cache.
+    //  - paint(PaintContext&): Paint — pure build of the DisplayList from
+    //    arranged layout + ComputedStyle + animation values.
+    // Each reads/writes Impl-side caches; B3 gates none of them yet (they
+    // rebuild every frame), B5 wires the cross-phase assertions.
+    void tickAnimations();
+    void resolveStyles();
+    void arrange();
+    void paint(Composition::PaintContext & pc);
 };
 
 }

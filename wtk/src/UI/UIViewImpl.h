@@ -43,25 +43,52 @@ struct ResolvedEffectStyle {
     ResolvedEffectTransition directionalBlurTransition {};
 };
 
+// Tier B / B2: the resolved style for one UIView element — the output
+// of the Style phase, consumed during Paint. It is fully resolved
+// (visual + text; layout lives on `UIElementLayoutSpec::layout`). The
+// effect-presence `Optional`s inside `ResolvedEffectStyle` are resolved
+// values ("resolved to no effect"), not unresolved-property markers.
+// `brush` is always a concrete resolved brush (white default) for shape
+// elements. Block 3's `StyleResolver` will produce this; Tier D re-keys
+// the cache from `UIElementTag` to `(NodeId,PropertyKey)`.
+struct ComputedStyle {
+    SharedHandle<Composition::Brush> brush = nullptr;
+    ResolvedEffectStyle effects {};
+    ResolvedTextStyle text {};
+};
+
 struct StyleScope {
     bool touchesRoot = false;
     bool touchesAllElements = false;
     OmegaCommon::Vector<UIElementTag> elementTags {};
 };
 
-ResolvedViewStyle resolveViewStyle(const StyleSheetPtr & style,const UIViewTag & viewTag);
-SharedHandle<Composition::Brush> resolveElementBrush(const StyleSheetPtr & style,
+// Tier B / B3: one element's resolved layout — the output of the Layout
+// phase (arrange()), consumed by the Paint phase (paint()). `spec` points
+// into `currentLayoutV2_.elements()` and is valid only within a single
+// update() (the layout vector is not mutated between arrange and paint).
+struct ArrangedElement {
+    UIElementTag tag {};
+    const UIElementLayoutSpec * spec = nullptr;
+    Composition::Rect resolvedRectDp {};
+    Composition::Rect resolvedRectPx {};
+    int zIndex = 0;
+    std::size_t insertionOrder = 0;
+};
+
+ResolvedViewStyle resolveViewStyle(const StylePtr & style,const UIViewTag & viewTag);
+SharedHandle<Composition::Brush> resolveElementBrush(const StylePtr & style,
                                                      const UIViewTag & viewTag,
                                                      const UIElementTag & elementTag);
-ResolvedTextStyle resolveTextStyle(const StyleSheetPtr & style,
+ResolvedTextStyle resolveTextStyle(const StylePtr & style,
                                    const UIViewTag & viewTag,
                                    const UIElementTag & elementTag);
-ResolvedEffectStyle resolveElementEffectStyle(const StyleSheetPtr & style,
+ResolvedEffectStyle resolveElementEffectStyle(const StylePtr & style,
                                               const UIViewTag & viewTag,
                                               const UIElementTag & elementTag);
 bool containsTag(const OmegaCommon::Vector<UIElementTag> & tags,const UIElementTag & tag);
 void addUniqueTag(OmegaCommon::Vector<UIElementTag> & tags,const UIElementTag & tag);
-StyleScope collectStyleScope(const StyleSheetPtr & style,const UIViewTag & viewTag);
+StyleScope collectStyleScope(const StylePtr & style,const UIViewTag & viewTag);
 Composition::Rect localBoundsFromView(UIView * view);
 
 }
@@ -115,7 +142,7 @@ struct UIView::Impl {
     int framesPerSec = 60;
     UIViewTag tag;
     UIViewLayout currentLayout;
-    StyleSheetPtr currentStyle;
+    StylePtr currentStyle;
     bool layoutDirty = true;
     bool styleDirty = true;
     bool firstFrameCoherentSubmit = true;
@@ -133,6 +160,17 @@ struct UIView::Impl {
     SharedHandle<Composition::Font> fallbackTextFont = nullptr;
     UIViewLayoutV2 currentLayoutV2_;
     OmegaCommon::Map<UIElementTag,Composition::Rect> lastResolvedV2Rects_;
+
+    // Tier B / B2: resolved-style cache (the Style phase's output).
+    // `resolveStyles()` rebuilds these each frame for now; B3 will gate
+    // the rebuild on DirtyBit::Style. Paint reads them, never writes.
+    UIViewInternal::ResolvedViewStyle resolvedViewStyle_ {};
+    OmegaCommon::Map<UIElementTag,UIViewInternal::ComputedStyle> computedStyles_;
+
+    // Tier B / B3: arranged layout (the Layout phase's output). `arrange()`
+    // writes both; `paint()` reads them. Rebuilt every frame for now.
+    OmegaCommon::Vector<UIViewInternal::ArrangedElement> arranged_;
+    Composition::Rect arrangedLocalBounds_ {};
     LayoutDiagnosticSink * diagnosticSink_ = nullptr;
     UpdateDiagnostics lastUpdateDiagnostics {};
     AnimationDiagnostics lastAnimationDiagnostics {};
@@ -165,6 +203,12 @@ struct UIView::Impl {
     Shape applyAnimatedShape(const UIElementTag & tag,const Shape & inputShape) const;
     SharedHandle<Composition::Font> resolveFallbackTextFont();
     void convertLegacyLayoutToV2();
+
+    // Tier B / B2: read the cached resolved style for an element.
+    // Returns a default (empty) style for tags not in the current
+    // layout — a defensive fall-through; every live element is
+    // populated by resolveStyles() before Paint reads it.
+    const UIViewInternal::ComputedStyle & computedStyleFor(const UIElementTag & tag) const;
 };
 
 }

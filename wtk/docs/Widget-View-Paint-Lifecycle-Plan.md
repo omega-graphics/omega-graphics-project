@@ -4,9 +4,15 @@
 on 2026-05-21 — see §0. Tier A is in. The render-redesign plumbing this
 plan rides on (per-window `FrameBuilder`, `DisplayList`, collapsed
 per-view canvas) has also landed via `UIView-Render-Redesign-Plan.md`.
-**Tier B (phase separation) is the active target and has been rescoped**
-(phase-model-in-place, no `SceneNode`; merges Style-refactor Tier 1).
-Tier C is at most partial; Tier D is open.
+**Tier B (phase-model-in-place + Style Tier 1) is COMPLETE as of
+2026-05-29** — B0–B5 all landed (§11 Block 1): `StyleSheet`→`Style`
+rename + layout strip (B1), `ComputedStyle` cache + `resolveStyles()`
+(B2), `FramePhase`/`PaintContext` + `update()` split into
+Tick/Style/Layout/Paint (B3), `rebuildContent()` out of `onPaint` +
+Container layout out of paint (B4), cross-phase assertion teeth + verify
+(B5). **The active target is now Block 2 — Tier C cleanup** (delete
+`executePaint` reentrancy machinery, retire `PaintOptions`, remove the
+no-op session shims). Tier D is open.
 **Scope:** Define a strict, phase-separated paint lifecycle for `Widget`
 and `View` that eliminates the current ad-hoc paint paths, prevents
 layout-during-paint and paint-during-layout reentrancy, and gives
@@ -89,6 +95,41 @@ stay in Tier D. **`Style-StyleSheet-Refactor-Plan.md` Tier 1 + the
 `Style` in Tier B (the `AnimationScheduler` is folded into Render
 Redesign Tier 4); the existing per-view animator keeps running and is
 read during Paint.
+
+---
+
+## 0.1 B0 pre-flight results (greps run 2026-05-29)
+
+Authoritative survey for the Tier B sub-phases. Counts are src-tree
+unless a `tests/` path is named. `[clear]` = no migration hazard found.
+
+**Surface inventory:**
+
+| Surface | Definition | In-tree (src) callers | Migrates in |
+|---|---|---|---|
+| `setStyleSheet` | `UIView.h:314`, `UIView.Style.cpp:305` | 12 (all `Primatives.cpp`) | B1 (alias `setStyle`) |
+| `StyleSheet::Create` | `UIView.Core.cpp:190` | 7 (all `Primatives.cpp`) | B1 (alias) |
+| `StyleSheet::layout{Width,Height,Margin,Padding,Clamp,Transition}` | `UIView.h:200-206`, `UIView.Core.cpp:456-523` | **0 callers** — API surface only | B1 (strip → `UIElementLayoutSpec.layout`) |
+| `StyleSheet::element{Animation,BrushAnimation,PathAnimation}` | `UIView.h:169-179`, `UIView.Core.cpp:361-389` | **0 authoring callers** | stays on `Style` (B1) |
+| `invalidateNow` | `Widget.h:213`, `Widget.Paint.cpp:133` | **0 callers** | B5 audit is trivial; safe to deprecate/convert |
+| `onPaint` overrides | — | 10 src: `Rectangle`,`RoundedRectangle`,`Ellipse`,`Path`,`Separator`,`Label`,`Icon`,`Image` (`Primatives.cpp`), `Container` (`BasicWidgets.cpp`), `StackWidget` (`Containers.cpp`) + 9 test subclasses | B4 |
+| `UIView::update()` callers | `UIView.Update.cpp:111` (~300 LOC, lines 111-415) | 14 (all `Primatives.cpp`); `Container`/`StackWidget` `onPaint` use `layoutChildren()`, not `update()` | B3 (split) |
+
+**Greenfield (nothing exists yet — confirms §0):**
+
+- `FramePhase` / `currentPhase_` / `assertPhase` / `PaintContext` — **none present.** `FrameBuilder` (`src/UI/FrameBuilder.h`) is the submission orchestrator only (begin/end session, offset stack, replay queue). B3 adds the phase engine here.
+- `ComputedStyle` — **does not exist.** B2 greenfield.
+
+**Rename-collision decisions:**
+
+- **`LayoutStyle` → `Layout`: CONFIRM defer to Tier D — keep `LayoutStyle` through Tier B.** There is *no* bare `Layout` type today (and no `Widget::Layout`), so no hard symbol clash — but `Layout.h` already hosts a dense `Layout*` family (`LayoutUnit`, `LayoutLength`, `LayoutEdges`, `LayoutClamp`, `LayoutDisplay`, `LayoutNode`, `LayoutBehavior`, `LayoutContext`, `LayoutStyle`, `LayoutTransitionSpec`, …). A bare `Layout` amid that family is ambiguous, and the rename would ripple through the `Widget` API (`setLayoutStyle`/`layoutStyle`/`hasExplicitLayoutStyle`), `UIViewImpl`, and 8 `tests/` sites for no Tier-B benefit.
+- **`StyleSheet` → `Style` (B1): SAFE with the deprecated alias.** The only existing `Style` symbol is `NativeDialog::Style` (`NativeDialog.h:56`, a namespaced enum) — no top-level `OmegaWTK::Style` collision. `StyleSheet` is a `struct` (`UIView.h:58`, fwd-declared `UIView.h:16` + `Layout.h:307`). `StyleRule` already exists (`Layout.h:250`); `Selector` does not (correctly deferred to Block 3).
+
+**SDF / VisualCommand checklist item (§10) — CLEAR.** `VisualCommand` appears only under `Composition/` (Canvas, DisplayList, backend). **No `src/Widgets/` file constructs or mutates a `VisualCommand` directly** — every widget paints through `Canvas`/`UIView`. The "in-tree widget that bypasses Canvas" hazard does not exist.
+
+**B3 composition-session dedup target (confirmed present):** the duplicate session bracket is real — `Widget.Paint.cpp:55/69` *and* `UIView.Update.cpp:193/414` both open/close it. (`SVGView.cpp` and `VideoView.cpp` keep their own brackets — out of B3 scope.)
+
+**B1/B4 merge + risk targets located:** `convertEntriesToRules` (`Layout.cpp:286`) and `mergeLayoutRulesIntoStyle` (`Layout.cpp:461`) — the layout half called from `UIView.Update.cpp:131/148` — are the B1 strip points. The B4 regression site is confirmed: `Container::relayout()` (`BasicWidgets.cpp:321`) calls `layoutChildren()` *synchronously*, and `Container::onPaint` (`BasicWidgets.cpp:145`) *also* calls it when `layoutPending` — B4 must move this into the Layout phase without double-running it.
 
 ---
 
@@ -737,7 +778,7 @@ This is the correct behavior.
 **Files touched:** `Widget.Paint.cpp`, `Widget.h`, `WidgetImpl.h`,
 `View.h`, `ViewImpl.h`, `AppWindow.h`, `AppWindow.cpp`.
 
-### Tier B — Phase separation in place + Style Tier 1 merge (ACTIVE TARGET)
+### Tier B — Phase separation in place + Style Tier 1 merge (COMPLETE 2026-05-29)
 
 **Rescoped 2026-05-21 (see §0).** Introduce the phase model on the
 *existing* types — no `SceneNode` / `UIViewNode`; `onPaint(PaintReason)`
@@ -1151,18 +1192,81 @@ and `Animation-Scheduler-Plan.md`, in dependency order. `[x]` = landed;
   (submission orchestrator), per-view canvas collapsed, window-scoped
   composition session.
 
-### Block 1 — Lifecycle Tier B + Style Tier 1 (ACTIVE; see §5 Tier B)
+### Block 1 — Lifecycle Tier B + Style Tier 1 (COMPLETE 2026-05-29; see §5 Tier B)
 
-- [ ] **B0** pre-flight greps + `LayoutStyle` rename decision.
-- [ ] **B1** `StyleSheet`→`Style` rename; strip layout onto
-  `UIElementLayoutSpec.layout`; animation stays on `Style`.
-- [ ] **B2** `ComputedStyle` + extract `resolveStyles()`.
-- [ ] **B3** `FramePhase` + assertions on `FrameBuilder`; split `update()`
+- [x] **B0** pre-flight greps + `LayoutStyle` rename decision. *(done 2026-05-29 — see §0.1.)*
+- [x] **B1** `StyleSheet`→`Style` rename; strip layout onto
+  `UIElementLayoutSpec.layout`; animation stays on `Style`. *(done
+  2026-05-29 — in-tree callers migrated to `Style`/`setStyle`/`getStyle`;
+  `[[deprecated]]` `StyleSheet`/`StyleSheetPtr` typedefs + `setStyleSheet`/
+  `getStyleSheet` forwarders kept one cycle for out-of-tree callers. Layout
+  authoring methods + `Layout*` `Entry::Kind` + the four `layout*Value`
+  fields removed from `Style`; the sheet→`convertEntriesToRules`→
+  `mergeLayoutRulesIntoStyle`/`resolveLayoutTransition` layout path removed
+  from `update()`. `mergeLayoutRulesIntoStyle` + `StyleRule` `Layout*`
+  props kept for direct callers / Block 3. Verified: UI+Widgets libs and
+  all migrated test objects compile clean.)*
+- [x] **B2** `ComputedStyle` + extract `resolveStyles()`. *(done 2026-05-29
+  — `UIViewInternal::ComputedStyle{brush, effects, text}` (per-element
+  aggregate of the resolved sub-styles; top-level has no `Optional`,
+  effect-presence `Optional`s kept inside `ResolvedEffectStyle`). Cached
+  on `UIView::Impl` as `computedStyles_` (per tag) + `resolvedViewStyle_`
+  (view-level). New private `UIView::resolveStyles()` rebuilds both;
+  `update()` calls it then reads only the caches via
+  `Impl::computedStyleFor(tag)` — no inline `resolve*`. Behavior-
+  preserving (key equivalence: `entry.tag == spec.tag`; text resolved
+  against `textStyleTag` and cached under the element's own tag). Rebuild
+  is unconditional per-frame for now; B3 gates it on `DirtyBit::Style`.
+  Full runtime verify is B5.)*
+- [x] **B3** `FramePhase` + assertions on `FrameBuilder`; split `update()`
   into Tick/Style/Layout/Paint; `PaintContext`; Tick wraps
   `advanceAnimations()`; Paint layers `animatedValue` over `ComputedStyle`.
-- [ ] **B4** `rebuildContent()` out of `onPaint`; `Container` layout into
-  the Layout phase.
-- [ ] **B5** assertion teeth; audit `invalidateNow()`; verify RootWidget.
+  *(done 2026-05-29 — `FramePhase{Idle,Tick,Style,Layout,Paint,Commit}` +
+  `currentPhase_` + `setPhase`/`assertPhase` + `ScopedPhase` RAII +
+  `phaseName()` on `FrameBuilder` (`assertPhase` defined but not yet called
+  by work methods — teeth are B5). `Composition::PaintContext{displayList,
+  transform=Matrix4x4::Identity, clip, opacity}` in `DisplayList.h`.
+  `update()` split into `tickAnimations()`/`resolveStyles()`/`arrange()`/
+  `paint(PaintContext&)`, orchestrated in order with a `ScopedPhase` around
+  each (Commit wraps the FrameBuilder hand-off). `arrange()` writes
+  `Impl::arranged_`/`arrangedLocalBounds_`; `paint()` reads them +
+  `ComputedStyle` + `animatedValue`. Duplicate
+  `start/endCompositionSession` removed from `update()` (executePaint owns
+  the session). **Finding:** `advanceAnimations()` had no caller — §1.4's
+  "separate timer path" is stale; the tween pump was orphaned. B3 re-homes
+  it into the Tick slot (behavior-neutral: nothing starts a tween today).
+  Per-view local phase flipping; the cross-tree ordered walk is Tier D.
+  Builds clean incl. the full RootWidget app link; runtime verify is B5.)*
+- [x] **B4** `rebuildContent()` out of `onPaint`; `Container` layout into
+  the Layout phase. *(done 2026-05-29 — every primitive (Rectangle,
+  RoundedRectangle, Ellipse, Path, Separator, Label, Icon, Image) gained a
+  private `rebuildContent()` holding the old `lv2.clear()`→element→`setStyle`
+  body; `onMount`/`setProps`/`setText`/`resize` call it (resize also
+  re-runs it for the new geometry), and `onPaint(reason)` is now read-only
+  (`update()` only). Removed the redundant rebuild+`update()` from `onMount`
+  (executePaint(Initial) paints) — also kills a double-submit at init since
+  init() runs onMount inside initWidgetRecurse's frame. Added `Image::onMount`
+  (it had none). `Container`/`StackWidget` `onPaint` no longer call
+  `layoutChildren()` — layout runs synchronously via `relayout()` at every
+  model-change point; **the StackWidget suspicious-frame deferred-retry is
+  preserved** because a valid rect arrives via `setRect → Widget::resize →
+  relayout → layoutChildren` (not via paint). `layoutPending`/`needsLayout`
+  are now write-only (retained for the DirtyBit::Layout integration). Builds
+  clean incl. RootWidget app + Container-subclass test objects; runtime
+  verify is B5.)*
+- [x] **B5** assertion teeth; audit `invalidateNow()`; verify RootWidget.
+  *(done 2026-05-29 — phase guards wired at the entry of each UIView phase
+  method: `tickAnimations`→Tick, `resolveStyles`→Style (sole ComputedStyle
+  writer), `arrange`→Layout (sole layout resolve/sort), `paint`→Paint (sole
+  DisplayList appender). Realized via `FrameBuilder::assertPhase` (debug-only
+  `assert`, no-op when no frame is in flight) rather than inside
+  `Composition::DisplayList::append` — keeping the Composition layer free of
+  a UI-layer dependency; the phase methods are the sole mutators so the
+  guard is equivalent. `invalidateNow()` audit: **zero callers** (decl + def
+  only); nothing to convert — it stays the `[[deprecated]]` escape hatch.
+  RootWidget (Phase32 multi-UIView scene) runs with `NDEBUG` unset (asserts
+  live): Metal init, window display, and render-pass command buffers all
+  complete with **no phase-assertion abort** across a 7s run.)*
 
 ### Block 2 — Lifecycle Tier C cleanup (after Block 1)
 

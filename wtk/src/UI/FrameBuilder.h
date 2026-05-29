@@ -5,7 +5,9 @@
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/Geometry.h"
 
+#include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace OmegaWTK {
@@ -15,6 +17,26 @@ class View;
 
 namespace Composition {
     struct CompositeFrame;
+}
+
+// Widget-View-Paint-Lifecycle Tier B / B3 (§3.1–3.2): the strict per-
+// frame phase order. Through Tier B each UIView::update() runs this
+// sequence locally (flipping currentPhase_ via ScopedPhase); Tier D
+// hoists it into FrameBuilder::buildFrame across the whole tree.
+enum class FramePhase : std::uint8_t {
+    Idle, Tick, Style, Layout, Paint, Commit
+};
+
+inline const char * phaseName(FramePhase phase){
+    switch(phase){
+        case FramePhase::Idle:   return "Idle";
+        case FramePhase::Tick:   return "Tick";
+        case FramePhase::Style:  return "Style";
+        case FramePhase::Layout: return "Layout";
+        case FramePhase::Paint:  return "Paint";
+        case FramePhase::Commit: return "Commit";
+    }
+    return "?";
 }
 
 // Tier 3: window-level frame driver.
@@ -42,6 +64,11 @@ class FrameBuilder {
     // (initWidgetTree, dispatchResize*ToHosts) may transitively run
     // another. Only the outermost pair does the session work.
     int depth_ = 0;
+
+    // Tier B / B3: the active lifecycle phase. UIView::update() flips
+    // this around each of its ordered sub-phases via ScopedPhase; B5
+    // wires the cross-phase assertions that consult it.
+    FramePhase currentPhase_ = FramePhase::Idle;
 
     // Phase 3.2: pending UIView submissions for this frame. Captured
     // by submitView() during the widget paint walk; drained by
@@ -126,6 +153,33 @@ public:
         ~ScopedViewOffset();
         ScopedViewOffset(const ScopedViewOffset &) = delete;
         ScopedViewOffset & operator=(const ScopedViewOffset &) = delete;
+    };
+
+    // Tier B / B3: lifecycle-phase state. setPhase flips the active
+    // phase; assertPhase is the debug-only check that B5's work-method
+    // guards call (e.g. DisplayList::append only during Paint). Through
+    // Tier B no work method calls assertPhase yet — B5 adds the teeth.
+    FramePhase currentPhase() const { return currentPhase_; }
+    void setPhase(FramePhase phase){ currentPhase_ = phase; }
+    void assertPhase(FramePhase expected) const {
+        assert(currentPhase_ == expected &&
+               "FrameBuilder lifecycle phase violation");
+        (void)expected;
+    }
+
+    // RAII: set the phase on construction, restore the previous phase on
+    // destruction. Null-safe (a null FrameBuilder is a no-op). Restoring
+    // the previous phase (rather than forcing Idle) keeps nesting honest.
+    struct ScopedPhase {
+        FrameBuilder * fb;
+        FramePhase previous;
+        ScopedPhase(FrameBuilder * f, FramePhase phase)
+            : fb(f), previous(f != nullptr ? f->currentPhase_ : FramePhase::Idle) {
+            if(fb != nullptr){ fb->currentPhase_ = phase; }
+        }
+        ~ScopedPhase(){ if(fb != nullptr){ fb->currentPhase_ = previous; } }
+        ScopedPhase(const ScopedPhase &) = delete;
+        ScopedPhase & operator=(const ScopedPhase &) = delete;
     };
 
     // RAII wrapper for the typical bracket-an-AppWindow-paint-pass

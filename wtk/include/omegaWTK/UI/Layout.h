@@ -304,10 +304,10 @@ struct OMEGAWTK_EXPORT StyleRule {
     bool beats(const StyleRule & other) const;
 };
 
-struct StyleSheet;
+struct Style;
 
 OMEGAWTK_EXPORT OmegaCommon::Vector<StyleRule> convertEntriesToRules(
-    const struct StyleSheet & sheet,
+    const struct Style & sheet,
     const OmegaCommon::String & viewTag);
 
 OMEGAWTK_EXPORT void mergeLayoutRulesIntoStyle(

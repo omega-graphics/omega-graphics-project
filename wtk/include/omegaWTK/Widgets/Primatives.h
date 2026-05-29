@@ -23,6 +23,10 @@ class OMEGAWTK_EXPORT Rectangle : public Widget {
 protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
+    // Tier B / B4: (re)build the element list + style from props_. Runs
+    // at model-change time (onMount / setProps / resize), never during
+    // paint. onPaint is read-only and only triggers update().
+    void rebuildContent();
     void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
@@ -45,6 +49,10 @@ class OMEGAWTK_EXPORT RoundedRectangle : public Widget {
 protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
+    // Tier B / B4: (re)build the element list + style from props_. Runs
+    // at model-change time (onMount / setProps / resize), never during
+    // paint. onPaint is read-only and only triggers update().
+    void rebuildContent();
     void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
@@ -63,6 +71,10 @@ class OMEGAWTK_EXPORT Ellipse : public Widget {
 protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
+    // Tier B / B4: (re)build the element list + style from props_. Runs
+    // at model-change time (onMount / setProps / resize), never during
+    // paint. onPaint is read-only and only triggers update().
+    void rebuildContent();
     void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
@@ -83,6 +95,10 @@ class OMEGAWTK_EXPORT Path : public Widget {
 protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
+    // Tier B / B4: (re)build the element list + style from props_. Runs
+    // at model-change time (onMount / setProps / resize), never during
+    // paint. onPaint is read-only and only triggers update().
+    void rebuildContent();
     void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
@@ -102,6 +118,10 @@ class OMEGAWTK_EXPORT Separator : public Widget {
 protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
+    // Tier B / B4: (re)build the element list + style from props_. Runs
+    // at model-change time (onMount / setProps / resize), never during
+    // paint. onPaint is read-only and only triggers update().
+    void rebuildContent();
     void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
@@ -127,6 +147,10 @@ class OMEGAWTK_EXPORT Label : public Widget {
 protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
+    // Tier B / B4: (re)build the element list + style from props_. Runs
+    // at model-change time (onMount / setProps / resize), never during
+    // paint. onPaint is read-only and only triggers update().
+    void rebuildContent();
     void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
     MeasureResult measureSelf(const LayoutContext & ctx) override;
@@ -149,6 +173,10 @@ class OMEGAWTK_EXPORT Icon : public Widget {
 protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
+    // Tier B / B4: (re)build the element list + style from props_. Runs
+    // at model-change time (onMount / setProps / resize), never during
+    // paint. onPaint is read-only and only triggers update().
+    void rebuildContent();
     void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
@@ -173,6 +201,10 @@ class OMEGAWTK_EXPORT Image : public Widget {
     ImageProps props_;
 protected:
     void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
+    void onMount() override;
+    // Tier B / B4: (re)build the element list from props_ at model-change
+    // time; onPaint is read-only. See the other primitives.
+    void rebuildContent();
     void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:

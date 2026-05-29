@@ -23,6 +23,7 @@
 
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/Canvas.h"
+#include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/CompositeFrame.h"
 #include "omegaWTK/Composition/Geometry.h"
 #include "omegaWTK/Core/GTEHandle.h"
@@ -197,6 +198,67 @@ namespace OmegaWTK::Composition {
         /// the right native primitive (CALayer sublayer ordering,
         /// DirectComposition visual insertion, Wayland subsurface).
         OmegaCommon::Vector<BackendNativeContentRegion> pendingNativeContent_;
+
+        /// Tier 4 §4.0: neutral primitive selector. Lets the per-primitive
+        /// rasterization body be shared (as a template over the params
+        /// struct type) between the `VisualCommand` and `DrawOp` dispatch
+        /// overloads with zero duplicated SDF / tessellation / bitmap /
+        /// text code — both param structs expose identically-named
+        /// sub-structs (Tier 2 §2.0). Clip ops and `VectorPath` are *not*
+        /// here: they access type-specific members and need stack / per-
+        /// segment semantics, so the two overloads handle them directly.
+        enum class PrimitiveOp : std::uint8_t {
+            Rect, RoundedRect, Ellipse, Bitmap, Shadow, TextRun,
+            SetTransform, SetOpacity, NativeContent
+        };
+
+        /// Shared rasterization body (was the switch in the old
+        /// `renderToTarget(VisualCommand::Type,…)`). `params` points at a
+        /// `VisualCommand::Params` or a `DrawOp::Params`; the body only
+        /// touches sub-structs common to both. Self-contained SDF / bitmap
+        /// / text / state ops return inside the switch; the gradient-fill
+        /// Rect / RoundedRect cases fall through to `drawTriangulatedResult`.
+        template<class ParamsT>
+        void renderPrimitiveImpl(PrimitiveOp op, ParamsT *params);
+
+        /// Shared draw tail: pipeline select + vertex authoring + draw for
+        /// an already-triangulated mesh. Called by the gradient-fill
+        /// primitives (`renderPrimitiveImpl`) and once per segment by
+        /// `renderVectorPathSegmented`. (Was the post-switch body of the
+        /// old `renderToTarget`.)
+        void drawTriangulatedResult(OmegaGTE::TETriangulationResult & result,
+                                    bool useTextureRenderPipeline,
+                                    bool usePathRenderPipeline,
+                                    float textureCoordDenomW,
+                                    float textureCoordDenomH,
+                                    const OmegaGTE::FVec<4> & pathStrokeColor,
+                                    bool pathHasStrokeColor,
+                                    const OmegaGTE::FVec<4> & pathFillColor,
+                                    bool pathHasFillColor,
+                                    SharedHandle<OmegaGTE::GETexture> texturePaint,
+                                    SharedHandle<OmegaGTE::GEFence> textureFence);
+
+        /// Triangulate + draw one path segment (the former `VectorPath`
+        /// case body, taking concrete args). The `VisualCommand::VectorPath`
+        /// case calls it once with its already-segmented params; the
+        /// `DrawOp::VectorPath` case calls it once per segment produced by
+        /// `Path::decomposeForDraw` (Tier 4 §4.0 — the decomposition that
+        /// lived in `Canvas::drawPath`).
+        void renderVectorPathSegmented(
+            const Core::SharedPtr<OmegaGTE::GVectorPath2D> & path,
+            float strokeWidth, bool contour, bool fill,
+            const Core::SharedPtr<Brush> & strokeBrush,
+            const Core::SharedPtr<Brush> & fillBrush);
+
+        /// Tier 4 §4.0: backend-owned clip stack for the `DrawOp` path.
+        /// Replaces the intersection bookkeeping `Canvas::pushClip` /
+        /// `popClip` owned (Canvas is deleted in 4.2). `pushDrawOpClip`
+        /// intersects the incoming rect with the current top and applies
+        /// the effective scissor via `applySetClip`; `popDrawOpClip`
+        /// restores the prior top (or the natural scissor when empty).
+        void pushDrawOpClip(const Composition::Rect & rect);
+        void popDrawOpClip();
+        OmegaCommon::Vector<Composition::Rect> drawOpClipStack_;
     public:
         /// Open a frame-level render pass that clears to the given color.
         /// All subsequent renderToTarget() calls record into this pass.
@@ -204,6 +266,13 @@ namespace OmegaWTK::Composition {
         /// Close the frame-level render pass and submit the command buffer.
         void endFrame();
         void renderToTarget(VisualCommand::Type type,void *params);
+        /// Tier 4 §4.0: sibling dispatch over `DrawOp::Type`. Shares all
+        /// rasterization with the `VisualCommand` overload via
+        /// `renderPrimitiveImpl` (the 9 common variants), `applySetClip`
+        /// + the backend clip stack (`PushClip`/`PopClip`), and
+        /// `renderVectorPathSegmented` (`VectorPath`). Nothing calls this
+        /// until Phase 4.1 routes the per-window `DisplayList` through it.
+        void renderToTarget(DrawOp::Type type,void *params);
         /// Reset the per-element transform and opacity so the next slice or
         /// frame starts from identity / opaque. The compositor calls this at
         /// each slice boundary so a `SetTransform` / `SetOpacity` left

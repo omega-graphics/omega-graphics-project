@@ -1600,7 +1600,81 @@ Before Phase 4.0, resolve the items this tier trips on mid-flight:
   it can be deleted in 4.2 alongside `makeCanvas`. Otherwise it carries
   to 4.8 with `getLayerTree`.
 
-##### Phase 4.0 — backend `renderToTarget` gains a `DrawOp` switch (additive)
+###### Pre-flight resolution (2026-05-29 sweep)
+
+Ran the four gates above against the tree. Results:
+
+- **Gate 1 — Tier 3 not fully closed.** 3.9 (`CanvasView`) is done; no
+  `CanvasView` symbol survives. **3.10 (`VideoView`) is NOT done** —
+  `VideoView.{h,cpp}` still exist as live `Canvas` consumers
+  (`makeCanvas` at `VideoView.cpp:51`, `videoCanvas->drawImage/sendFrame`,
+  four `start/endCompositionSession` pairs). Its upstream,
+  `NativeViewHost-Adoption-Plan.md` Phase V4, is unimplemented (that doc
+  is still "Proposal"). VideoView is live code (linked into the UI lib;
+  `VideoViewPlaybackTest` is a registered target).
+  - **Decision: unblock VideoView via Path B (cheap), not the full
+    NativeViewHost adoption.** VideoView's only `Canvas` dependency is
+    the per-frame software-decoded `BitmapImage` blit — structurally
+    identical to the `Image` element Phase 3.9 already migrated to a
+    `DrawOp::Bitmap`. So VideoView routes its per-frame frame through the
+    window `DisplayList`/`FrameBuilder` (`submitView`) as a
+    `DrawOp::Bitmap` and drops `videoCanvas` / `makeCanvas` /
+    `start/endCompositionSession`. This removes the only blocker on
+    Phase 4.2 in ~1 file, keeps software-decode video working, and is
+    Metal-verifiable on this host. The native-layer perf migration
+    (NativeViewHost-Adoption-Plan V1–V4) becomes an independent future
+    effort, no longer gating Block 1.
+  - The three Tier-3 validator harnesses (`ScrollViewClipTest`,
+    `NativeContentCarveoutTest`, `DisplayListClipTest`) still call
+    `view->makeCanvas` + `start/endCompositionSession` +
+    `getLayerTree()->getRootLayer()` + `DisplayListReplay::replay`
+    directly. **Decision: retire them in Phase 4.2**, not migrate.
+    Tests link only the public library (no `src/UI` include path), so
+    `FrameBuilder::submitView` is unreachable from a test — there is no
+    public way to inject a hand-built `DisplayList` into the window
+    frame, and their clip/carve-out ops aren't expressible through
+    `UIViewLayoutV2`. They are Tier-3 scaffolding for features already
+    in main (clip is exercised by the real `ScrollView` path,
+    carve-out by video), so they are deleted alongside
+    `Canvas`/`DisplayListReplay` in 4.2 rather than rebuilt against a
+    new public test surface.
+- **Gate 2 — Animation-Scheduler-Plan Tier A unsettled.** Still
+  "Proposal. Nothing implemented yet." Per the escape hatch, this gates
+  only Block 2 (4.3–4.8); **Block 1 (4.0–4.2) proceeds independently**.
+- **Gate 3 — no external/client callers.** Every caller of `makeLayer`,
+  `makeCanvas`, `getLayerTree`, `start/endCompositionSession`,
+  `computeWindowOffset`, `scrollOffsetContribution`, and `UIView::update`
+  lives in `wtk/src/` or in-tree `tests/`. No migrate-first external
+  items.
+- **Gate 4 — `makeLayer` resolved: deletable in 4.2.** Zero callers
+  remain (only the decl at `View.h:154` and impl at `View.Core.cpp:145`).
+  It is deleted in 4.2 alongside `makeCanvas`, **not** carried to 4.8.
+  For contrast, `getLayerTree` *does* survive to 4.8 — `WidgetTreeHost`'s
+  layer-tree observer machinery, `UIView.Animation.cpp`, and
+  widget-detach in `BasicWidgets.cpp` still consume it.
+
+**Net:** Block 1 is clear to start after the unblock work (VideoView
+Path B + the 3 harness migrations). Block 2 waits on the scheduler plan.
+
+##### Phase 4.0 — backend `renderToTarget` gains a `DrawOp` switch (additive) [DONE]
+
+**Status:** Complete (2026-05-29; Metal build verified, full project links).
+The 470-line `renderToTarget(VisualCommand::Type,…)` body became a private
+template `renderPrimitiveImpl<ParamsT>(PrimitiveOp,…)` (binds both
+`VisualCommand::Params` and `DrawOp::Params` via shared member names);
+the post-switch draw tail was extracted to `drawTriangulatedResult(…)`;
+the `VectorPath` case became `renderVectorPathSegmented(…)` fed by
+`Path::decomposeForDraw` (the rehomed `Canvas::drawPath` decomposition).
+Two thin public overloads (`VisualCommand::Type` and `DrawOp::Type`) map
+their enum onto `PrimitiveOp` + the divergent ops: `SetClip`→`applySetClip`,
+`PushClip`/`PopClip`→a backend clip stack (`pushDrawOpClip`/`popDrawOpClip`,
+rehoming `Canvas::pushClip`'s intersection), `PushTransform`/`PopTransform`
+no-op. The `VisualCommand` path is behaviorally unchanged (code moved, not
+rewritten); the `DrawOp` overload is unexercised until 4.1. Verified:
+full Metal build links clean (D3D12/Vulkan not buildable on this host;
+runtime pixel parity not yet run — no display).
+Files touched: `RenderTarget.{h,cpp}`, `Path.{h,cpp}` (decomposeForDraw),
+`Canvas.cpp` (drawPath delegates to the shared helper).
 
 The backend's GPU dispatch is taught to consume `DrawOp` directly, as
 a sibling to the existing `VisualCommand` path. Because `DrawOp`'s
@@ -1631,6 +1705,52 @@ Files touched: `wtk/src/Composition/backend/RenderTarget.cpp`,
 `wtk/include/omegaWTK/Composition/DisplayList.h` (if a `DrawOp::Type`
 accessor is needed).
 
+###### Phase 4.0 design resolution (2026-05-29) — "mechanical clone" is only ~90% true
+
+Reading the actual `renderToTarget(VisualCommand::Type, void *)`
+(`RenderTarget.cpp:1280`) against `DrawOp` revealed two corrections to
+the prose above:
+
+1. **The `Type` enums are NOT identical**, so the "clone" can't be a
+   copy-paste with relabeled cases. `VisualCommand::Type` has `SetClip`
+   (single pre-resolved rect) and legacy `Text` (no-op); `DrawOp::Type`
+   has `PushClip`/`PopClip`/`PushTransform`/`PopTransform` and no `Text`.
+   The *params sub-structs* (`rectParams`, `bitmapParams`, …) do match
+   1:1 by name/type, though.
+   - **Chosen factoring:** rename the 470-line body to a private
+     **template** `renderPrimitiveImpl<ParamsT>(PrimitiveOp, ParamsT*)`
+     keyed by a neutral `PrimitiveOp` enum. Because both param types
+     share member names, the template binds to both → 100% rasterization
+     sharing, zero duplication, for the 9 shared variants (Rect,
+     RoundedRect, Ellipse, Bitmap, Shadow, TextRun, SetTransform,
+     SetOpacity, NativeContent — all use identically-named members).
+     The two public overloads (`renderToTarget(VisualCommand::Type,…)`
+     and `renderToTarget(DrawOp::Type,…)`) map their own enum onto
+     `PrimitiveOp` and call the template. **Clip is handled in each
+     overload, not the template:** `VisualCommand::SetClip` reads
+     `clipRect` (pre-resolved) → `applySetClip`; `DrawOp::PushClip`
+     reads `pushClipParams.rect` and `PopClip` clears — different
+     members + push/pop vs single-set semantics, so they can't share a
+     template arm. `PushTransform`/`PopTransform` no-op.
+2. **`VectorPath` is genuinely non-mechanical** — the one case the
+   "no rasterization code changes" claim misses. `VisualCommand::pathParams`
+   is the *segmented* form (`GVectorPath2D` + `strokeWidth`/`contour`/
+   `fill`/`brush`/`fillBrush`); `DrawOp::pathParams` is a high-level
+   `SharedPtr<Path>` + `Optional<Border>`. The Path→segments+brushes
+   decomposition lives in `Canvas::drawPath` (`Canvas.cpp:314-356`),
+   which 4.2 deletes.
+   - **Chosen home (developer decision):** extract that decomposition
+     into a **shared helper** — a `Path` method
+     `Path::decomposeForDraw(Optional<Border>)` returning the segmented
+     draw form (it needs `Path::impl_` internals). The backend
+     `DrawOp::VectorPath` arm calls it and loops segments through the
+     existing triangulation body; the transitional `Canvas::drawPath`
+     and `DisplayListReplay` can call the same helper so the logic
+     isn't duplicated. Mapping confirmed against
+     `DisplayListReplay` (`DisplayList.cpp:50`): `DrawOp::VectorPath`
+     → `drawPath(*path, border)`, i.e. the border-taking overload's
+     semantics (fill = `path.pathBrush`, stroke = `border`).
+
 ##### Phase 4.1 — `FrameBuilder` packs the `DisplayList` into the frame directly; `submitDisplayList` replaces the Canvas bridge
 
 The window `Canvas` was the `DisplayList → VisualCommand` adapter
@@ -1655,7 +1775,29 @@ Phase 4.0 `DrawOp` switch.
 - Validator: full sweep — RootWidget multi-view, SVGViewRenderTest,
   ScrollViewClipTest, EllipsePathCompositorTest, TextCompositorTest,
   ContainerClampAnimationTest — pixel-identical to the `VisualCommand`
-  path.
+  path, **except EllipsePathCompositorTest — see the known bug below,
+  which this phase is expected to FIX, not reproduce.**
+
+> **Known pre-existing bug this phase fixes (not "pixel-identical"):**
+> In the `Canvas`/`CanvasFrame` bridge, `Canvas::rect` is captured once
+> at construction (`Canvas.cpp` ctor: `rect(layer.getLayerRect())`) and
+> **never refreshed** — there is no `Canvas::resize` and `View::resize`
+> does not notify the canvas. `Canvas::nextFrame()` then stamps
+> `frame->rect = rect` (the stale member) even though its own comment
+> says it must reflect the *current* layer rect "if the layer resized
+> since then." So a view that is laid out / repositioned after its
+> canvas was constructed has the **initial rect used as its slice
+> bounds**. EllipsePathCompositorTest shows this: its three `HStack`
+> children are created at `(0,0)` and correctly repositioned by
+> `StackWidget::layoutChildren()` (the layout math + `setRect` run fine),
+> but they all render stacked at the origin because the slice bounds
+> the compositor receives are the stale initial rect. Phase 4.1's
+> `submitDisplayList(sub.list, sub.windowOffset)` carries `DrawOp`s +
+> the live `windowOffset` straight into the `WidgetSlice` with **no
+> `CanvasFrame::rect` snapshot in the path**, which removes the stale-rect
+> artifact. ⇒ The EllipsePathCompositorTest validator for this phase is
+> "children laid out side-by-side at their stack positions," NOT parity
+> with the (buggy) `VisualCommand` output.
 
 Files touched: `wtk/include/omegaWTK/Composition/CompositeFrame.h`,
 `wtk/include/omegaWTK/Composition/CompositorClient.h`,
