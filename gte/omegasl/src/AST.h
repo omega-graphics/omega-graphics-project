@@ -562,6 +562,16 @@ namespace omegasl {
                 Topology topology = Triangle;
             };
             MeshDesc meshDesc;
+            /// §2a follow-up — set by Sema in CALL_EXPR when the body of
+            /// this Mesh shader contains a `setMeshOutputs(nv, np)` call.
+            /// Read by each backend's `emitShaderEntryBody` to suppress the
+            /// auto-emitted locked-to-maxima `SetMeshOutputsEXT(max_vertices,
+            /// max_primitives)` so the user's runtime call isn't shadowed by
+            /// it (and so we never emit two — the GL_EXT_mesh_shader spec
+            /// allows only one such call per shader). Default false ⇒ no user
+            /// call ⇒ the auto-emit fires as before. Mesh-only; ignored on
+            /// every other stage.
+            bool meshHasUserSetMeshOutputsCall = false;
             /// §1.5 — early depth/stencil. Set by the parser when a
             /// `fragment(early_depth)` descriptor is present; only ever
             /// true on a Fragment shader (the parser accepts the

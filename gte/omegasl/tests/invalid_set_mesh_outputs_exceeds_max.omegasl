@@ -1,0 +1,23 @@
+// §2a follow-up — when both arguments to `setMeshOutputs(nv, np)` are
+// integer literals, Sema rejects values that exceed the declared
+// `max_vertices` / `max_primitives` from the `mesh(...)` descriptor.
+// (The runtime / non-literal form is unchecked here — that's the device's
+// job once the shader runs.) Here `nv=64` against `max_vertices=3` is the
+// surface error.
+
+#requires(MESH_SHADERS)
+
+struct V internal {
+    float4 pos : Position;
+};
+
+mesh(max_vertices=3, max_primitives=1, topology=triangle)
+void main(uint3 tid : GlobalThreadID,
+          out vertices V verts[3],
+          out indices  uint3 tris[1]){
+    setMeshOutputs(64u, 1u);
+    verts[0].pos = float4(0.0, 0.0, 0.0, 1.0);
+    verts[1].pos = float4(1.0, 0.0, 0.0, 1.0);
+    verts[2].pos = float4(0.5, 1.0, 0.0, 1.0);
+    tris[0] = uint3(0, 1, 2);
+}

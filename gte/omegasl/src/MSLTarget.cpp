@@ -692,6 +692,26 @@ using namespace metal;
             out << "threadgroup_barrier(mem_flags::mem_device)";
             return true;
         }
+        /// §2a follow-up — mesh-shader runtime output count. MSL is the
+        /// outlier here (see Mesh-Shader-Implementation-Plan.md → Cross-
+        /// Backend Differences → Active-count "set outputs" call): the
+        /// `mesh<...>` handle exposes ONLY `set_primitive_count(uint)`. The
+        /// vertex count is implicit, derived from the highest
+        /// `set_vertex(i, …)` slot the kernel writes, so the `nv` argument
+        /// from OmegaSL's `setMeshOutputs(nv, np)` is dropped here by design
+        /// — not an oversight. Today this lowering is dormant: MSL still
+        /// halts at `supportsStage(Mesh)`. When Phase 2c lands and the
+        /// `[[mesh]]` parameter is materialized, the handle name below
+        /// (`__omegasl_mesh_output_handle`) is what 2c rewrites — keeping
+        /// the sentinel here means 2c brings up mesh emission without
+        /// chasing down this follow-up separately.
+        if (name == BUILTIN_SET_MESH_OUTPUTS) {
+            if (_expr->args.size() != 2) return false;
+            out << "__omegasl_mesh_output_handle.set_primitive_count(";
+            cg.generateExpr(_expr->args[1]);
+            out << ")";
+            return true;
+        }
         /// §5.3 Phase B — firstbithigh / firstbitlow normalization on MSL.
         /// The operand is cast to its unsigned form so signed and unsigned
         /// operands agree (the index of the raw bit pattern). `intN(...)` /

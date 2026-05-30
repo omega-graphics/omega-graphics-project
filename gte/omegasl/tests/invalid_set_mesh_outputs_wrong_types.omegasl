@@ -1,0 +1,22 @@
+// §2a follow-up — `setMeshOutputs(nv, np)` requires two scalar `uint`
+// arguments. Passing `int` (or any other type) is rejected: silently
+// sign-extending or truncating differently per backend would miscount the
+// active output region. The literal `3` is `int` by default; that's the
+// surface error we want to fire here.
+
+#requires(MESH_SHADERS)
+
+struct V internal {
+    float4 pos : Position;
+};
+
+mesh(max_vertices=3, max_primitives=1, topology=triangle)
+void main(uint3 tid : GlobalThreadID,
+          out vertices V verts[3],
+          out indices  uint3 tris[1]){
+    setMeshOutputs(3, 1u);
+    verts[0].pos = float4(0.0, 0.0, 0.0, 1.0);
+    verts[1].pos = float4(1.0, 0.0, 0.0, 1.0);
+    verts[2].pos = float4(0.5, 1.0, 0.0, 1.0);
+    tris[0] = uint3(0, 1, 2);
+}

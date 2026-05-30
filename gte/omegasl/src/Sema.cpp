@@ -1470,6 +1470,27 @@ namespace omegasl {
                     }
                 }
 
+                /// §2a follow-up — `setMeshOutputs(uint nv, uint np)`. Mesh-
+                /// stage-only, void return, at-most-once per shader. The
+                /// stage check mirrors the barrier path above; the type and
+                /// duplicate checks happen in the type-handling block after
+                /// arg sema. When this call is present the AST flag is
+                /// stamped on the enclosing ShaderDecl so backend body emit
+                /// can suppress the auto-emitted locked-to-maxima call.
+                bool isSetMeshOutputs = (fname == BUILTIN_SET_MESH_OUTPUTS);
+                if(isSetMeshOutputs){
+                    expectedArgs = 2;
+                    bool inMesh = funcContext && funcContext->type == SHADER_DECL
+                        && ((ast::ShaderDecl *)funcContext)->shaderType == ast::ShaderDecl::Mesh;
+                    if(!inMesh){
+                        auto e = std::make_unique<InvalidAttribute>(
+                            std::string("`") + std::string(fname) + "` is only valid inside a mesh shader");
+                        e->loc = _expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                }
+
                 /// `>= 0` (not `> 0`) so the 0-arg barriers get their arg
                 /// count enforced too; -1 (unknown function) still skips.
                 if(expectedArgs >= 0 && (int)_expr->args.size() != expectedArgs){
@@ -1642,6 +1663,62 @@ namespace omegasl {
                     _expr->args[0]->resolvedType = firstArgType;
                     return firstArgType;
                 }
+                /// §2a follow-up — `setMeshOutputs(nv, np)` type rules. Both
+                /// args must be scalar `uint` (allowing `int` would sign-
+                /// extend differently per backend and silently miscount).
+                /// At-most-once per shader: the GL_EXT_mesh_shader spec
+                /// permits only one such call, and a second is almost
+                /// certainly user error (replace the value, don't issue
+                /// two calls). When both args are integer literals, also
+                /// reject `nv > max_vertices` / `np > max_primitives` —
+                /// the call cannot legally exceed the declared maxima.
+                /// The void return is stamped here so the call doesn't
+                /// fall through to the generic `return firstArgType`
+                /// branch (which would yield `uint`).
+                if(isSetMeshOutputs && firstArgType && secondArgType){
+                    auto a0 = resolveTypeWithExpr(firstArgType);
+                    auto a1 = resolveTypeWithExpr(secondArgType);
+                    if(a0 != ast::builtins::uint_type || a1 != ast::builtins::uint_type){
+                        reportBoolErr("`setMeshOutputs` requires two scalar `uint` arguments (numVertices, numPrimitives).");
+                        return nullptr;
+                    }
+                    auto *sdecl = (ast::ShaderDecl *)funcContext;
+                    if(sdecl->meshHasUserSetMeshOutputsCall){
+                        reportBoolErr("`setMeshOutputs` may be called at most once per mesh shader; remove the duplicate call (a second call replaces, but per GL_EXT_mesh_shader the call site is single-shot).");
+                        return nullptr;
+                    }
+                    if(_expr->args[0]->type == LITERAL_EXPR){
+                        auto *nvL = (ast::LiteralExpr *)_expr->args[0];
+                        auto nvVal = nvL->ui_num.has_value() ? nvL->ui_num.value()
+                                   : (nvL->i_num.has_value() && nvL->i_num.value() >= 0
+                                      ? (unsigned)nvL->i_num.value() : 0u);
+                        if((nvL->ui_num.has_value() || nvL->i_num.has_value())
+                           && nvVal > sdecl->meshDesc.maxVertices){
+                            reportBoolErr("`setMeshOutputs` numVertices ("
+                                          + std::to_string(nvVal)
+                                          + ") exceeds the shader's declared max_vertices ("
+                                          + std::to_string(sdecl->meshDesc.maxVertices) + ").");
+                            return nullptr;
+                        }
+                    }
+                    if(_expr->args[1]->type == LITERAL_EXPR){
+                        auto *npL = (ast::LiteralExpr *)_expr->args[1];
+                        auto npVal = npL->ui_num.has_value() ? npL->ui_num.value()
+                                   : (npL->i_num.has_value() && npL->i_num.value() >= 0
+                                      ? (unsigned)npL->i_num.value() : 0u);
+                        if((npL->ui_num.has_value() || npL->i_num.has_value())
+                           && npVal > sdecl->meshDesc.maxPrimitives){
+                            reportBoolErr("`setMeshOutputs` numPrimitives ("
+                                          + std::to_string(npVal)
+                                          + ") exceeds the shader's declared max_primitives ("
+                                          + std::to_string(sdecl->meshDesc.maxPrimitives) + ").");
+                            return nullptr;
+                        }
+                    }
+                    sdecl->meshHasUserSetMeshOutputsCall = true;
+                    return ast::TypeExpr::Create(ast::builtins::void_type);
+                }
+
                 if(returnsScalar && firstArgType){
                     return ast::TypeExpr::Create(ast::builtins::float_type);
                 }

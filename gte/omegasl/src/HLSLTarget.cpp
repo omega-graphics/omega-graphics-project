@@ -475,6 +475,15 @@ namespace omegasl {
         /// barrier (no group sync, per the portable contract).
         if (name == BUILTIN_THREADGROUP_BARRIER) return "GroupMemoryBarrierWithGroupSync";
         if (name == BUILTIN_DEVICE_BARRIER)      return "DeviceMemoryBarrier";
+        /// §2a follow-up — mesh-shader runtime output count. HLSL SM 6.5
+        /// spells `setMeshOutputs(nv, np)` as `SetMeshOutputCounts(nv, np)`
+        /// (both counts, mandatory before any output-array write). This
+        /// rename is the entire HLSL lowering; the shared `(args)` print
+        /// handles the two `uint`s. Dormant until Phase 2b flips
+        /// `supportsStage(Mesh)` to true on HLSL — landed now so the bring-
+        /// up only needs to add the body emission, not chase down this
+        /// follow-up builtin separately.
+        if (name == BUILTIN_SET_MESH_OUTPUTS)    return "SetMeshOutputCounts";
         if (name == BUILTIN_MAKE_FLOAT2)   return "float2";
         if (name == BUILTIN_MAKE_FLOAT3)   return "float3";
         if (name == BUILTIN_MAKE_FLOAT4)   return "float4";

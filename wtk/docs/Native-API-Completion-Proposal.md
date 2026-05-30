@@ -20,6 +20,7 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 | **2.5 NativeTheme** | ThemeAppearance, populated ThemeDesc (colors, typography), `queryCurrentTheme()` on macOS & Win32 | **Done** |
 | **2.11 NativeNote / NotificationCenter** | Permissions, scheduling, callbacks, removal, categories — macOS UN, Win32 ToastNotificationManager, GTK libnotify | **Done** |
 | **2.12 NativeMenu / Menu** | Shortcuts, check/radio items, contextual menus, dynamic updates, validation delegate — macOS NSMenu, Win32 HMENU, GTK GtkMenu | **Done** (icons deferred) |
+| 2.13 GTK root NativeItem collapse | GTK backend owns the underlying X11 surface directly; root NativeItem falls through to the GTKAppWindow (no GtkDrawingArea indirection) | Not started |
 | 2.2 NativeWindow | Full window control (minimize/maximize/fullscreen, scaleFactor, opacity, cursor sink, DPI scale change events) | Not started |
 | ~~2.3 NativeItem~~ | **Obsolete under virtual view model — no new NativeItem APIs.** See §2.3 below. | Removed |
 | 2.3a View / Widget / TreeHost focus + cursor + tooltip | Virtual focus manager, declarative cursor shape, virtual tooltip popups | Not started |
@@ -586,6 +587,130 @@ Implemented across all three platforms. See `NativeMenu.h`, `Menu.h`/`.cpp`, `Co
 - **Win32:** Shortcuts are *displayed* in menus but actual key-press routing requires `TranslateAccelerator` in the message loop — not yet wired in `WinApp.cpp`.
 - **Win32 / GTK:** `onValidateItem` only fires for context menus (and GTK menu-bar `show` signal). Win32 menu-bar validation requires `WM_INITMENUPOPUP` in the wndproc — out of scope for 2.12.
 - **Icons:** Deferred (Phase 2).
+
+---
+
+### 2.13 GTK Backend — Root NativeItem Collapses Into GTKAppWindow (X11-Direct Surface Ownership)
+
+**Goal:** On the GTK backend, the single root NativeItem (per the virtual view model above) is *not* a GtkDrawingArea hosted inside a GtkWindow — it falls through to the `GTKAppWindow` itself. GTE renders directly into the X11 `Window` underneath `GTKAppWindow`'s `GdkWindow`. WTK owns the X11 surface; GTK is reduced to providing the toplevel, event dispatch, menus, and a realized GdkWindow we can extract an XID from.
+
+This is consistent with — and a sharpening of — the architecture note at the top of this document: there is one NativeItem per window, and on GTK that NativeItem and the platform AppWindow are the *same* object rather than a parent/child pair.
+
+#### Motivation
+
+`GTKItem.cpp:356` currently constructs `gtk_drawing_area_new()` and pulls the X11 XID off of *that* widget's GdkWindow at `GTKItem.cpp:681` (`gdk_x11_window_get_xid`). The drawing area exists only to give us a GdkWindow whose XID we can hand to GTE. It serves no other purpose:
+
+- We already disable GTK's painting on it (`gtk_widget_set_double_buffered(widget, FALSE)`, `gtk_widget_set_app_paintable(widget, TRUE)` — `GTKItem.cpp:359,361`).
+- We never draw with cairo into its `draw` signal.
+- Its event wiring (`onButtonPressEvent`, `onMotionNotifyEvent`, etc.) is generic `GtkWidget` signal plumbing — nothing on it is `GtkDrawingArea`-specific.
+
+The drawing area is a placeholder for a GdkWindow we could have asked the toplevel for directly. Collapsing it eliminates one widget, one realized GdkWindow, one parent/child resize path, and one alignment risk where the drawing-area allocation doesn't match the toplevel client area.
+
+#### Architecture change
+
+**Before (today):**
+```
+GTKAppWindow (GtkWindow)
+  └── content child (GtkBox / GtkDrawingArea)
+        └── GdkWindow → X11 Window  ← GTE renders here
+```
+
+**After:**
+```
+GTKAppWindow (GtkWindow, app-paintable, double-buffer off)
+  └── GdkWindow → X11 Window  ← GTE renders here (this is also the root NativeItem's surface)
+```
+
+`GTKItem`'s role for the root item shrinks to: a thin handle around `GTKAppWindow`'s underlying GdkWindow, exposing the same `getXDisplay()` / `getXWindow()` accessors GTE already consumes. For non-root items there *is* no `GTKItem` anymore — the virtual view tree never asks the backend for one (per the architecture note, "Views are now purely virtual").
+
+#### Hit-testing and events on `GtkWindow` — yes, this still works
+
+The user-facing question. Short answer: every event signal `GTKItem` listens for today is a `GtkWidget` signal, and `GtkWindow` is a `GtkWidget`. The same handlers attach to the toplevel with identical semantics:
+
+| Today (drawing area)              | After (GtkWindow)                  | Event coords         |
+|-----------------------------------|------------------------------------|----------------------|
+| `button-press-event`              | `button-press-event` on GtkWindow  | `event->x/y` are window-local — exactly what `View::containsPoint` and the virtual hover dispatcher already expect |
+| `button-release-event`            | same on GtkWindow                  | window-local |
+| `motion-notify-event`             | same on GtkWindow                  | window-local |
+| `key-press-event` / `key-release-event` | same on GtkWindow            | already toplevel-only on most GTK setups (`GTK_WIDGET_HAS_FOCUS` lives on the toplevel) |
+| `enter-notify-event` / `leave-notify-event` | same on GtkWindow         | window-local |
+| `scroll-event`                    | same on GtkWindow                  | window-local |
+| `configure-event`                 | same on GtkWindow                  | gives the new size for swapchain resize — better than the drawing-area `size-allocate`, since this is the real OS-level resize signal |
+
+Event masks need to be added on the GtkWindow itself before realize (today they go on the drawing area):
+
+```cpp
+gtk_widget_add_events(GTK_WIDGET(window),
+    GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+    GDK_POINTER_MOTION_MASK | GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK |
+    GDK_SCROLL_MASK | GDK_KEY_PRESS_MASK | GDK_KEY_RELEASE_MASK |
+    GDK_STRUCTURE_MASK);
+```
+
+Hit-testing itself is *already* virtual: `View::containsPoint` does the work, and the host-side hover dispatcher (§2.3a) walks the virtual tree given a `(x, y)` from the incoming event. None of that machinery cares whether the event arrived via a drawing area or directly on the toplevel.
+
+One nuance worth flagging: GTK event propagation runs **child → parent**. So if any GTK child widget remains inside the window (menu bar, popover; see below), it gets a first crack at the event before the toplevel handler fires. Returning `GDK_EVENT_PROPAGATE` (`FALSE`) from those children — which is already the convention in the existing handlers — lets unhandled events bubble up to the GtkWindow handler. Menu activations naturally consume their own events, so the menu bar coexists cleanly.
+
+#### Menu coexistence
+
+Menus are the one remaining real child widget on GTK (per §2.12). Two options:
+
+1. **Keep the menu bar as a sibling.** Put the GtkMenuBar in a `GtkBox` along with… nothing else; the toplevel still owns the GdkWindow, the box just occupies the top strip. GTE's render rect must be inset by the menu bar's allocated height. The hover dispatcher must subtract that inset from `event->y` before hit-testing (or simpler: install the menu bar with a fixed-y inset that we cache on `configure-event`).
+2. **Render menus virtually.** Drop the GtkMenuBar entirely; let WTK render its own menu bar via the same compositor that renders Widgets. Loses native menu appearance; gains a clean, single-child-free toplevel and uniform input coordinates.
+
+Recommendation: option 1 first (preserves the working §2.12 menu wiring), with option 2 as a follow-up once the virtual Widget tree is mature enough to draw a credible menu bar. The choice is reversible; this section doesn't have to settle it.
+
+#### X11-only — Wayland is out of scope for this change
+
+Owning the underlying surface as an X11 `Window` is, by definition, an X11 contract. Under Wayland, GDK manages a `wl_surface`/`xdg_surface` that the compositor controls; there is no equivalent of "grab the XID and draw into it from a foreign renderer" without going through GDK's `GdkWaylandWindow`/EGL plumbing (or, in GTK4, a `GdkSurface` with a custom renderer).
+
+This proposal commits to the X11 path explicitly:
+
+- **Require `GDK_BACKEND=x11`** in the GTKAppWindow ctor (or assert on `GDK_IS_X11_DISPLAY(display)` at realize-time and refuse with a clear error). The existing `gdk_x11_*` calls already fail silently on Wayland; this change makes the constraint explicit.
+- **Wayland support is a future, separate workstream.** Likely either GTK4 + `GdkSurface` custom rendering or a non-GTK Wayland backend (raw `wl_compositor` + `xdg_shell`). Either way it shares no code with this X11 path.
+
+The interim primary-monitor anchoring noted in §2.9 already assumes X11 multi-monitor semantics (`gdk_display_get_primary_monitor`); this is consistent with that assumption.
+
+#### Surface lifecycle and realization timing
+
+The X11 `Window` only exists after the GtkWindow is realized. GTE's surface must be created on realize, not in the ctor:
+
+```cpp
+g_signal_connect(window, "realize", G_CALLBACK(onWindowRealize), this);
+// onWindowRealize:
+//   auto *gdk = gtk_widget_get_window(GTK_WIDGET(window));   // toplevel GdkWindow
+//   Window xid = gdk_x11_window_get_xid(gdk);
+//   Display *xdpy = gdk_x11_display_get_xdisplay(gtk_widget_get_display(GTK_WIDGET(window)));
+//   gte->createSurfaceForX11(xdpy, xid);
+```
+
+GTKAppWindow already paths through `gtk_widget_get_window(GTK_WIDGET(window))` in several places (`GTKAppWindow.cpp:426`, `:530`, `:551`) — those become the canonical GdkWindow accessor for the root surface, replacing the drawing-area's GdkWindow that `GTKItem` currently resolves through.
+
+Resize handling moves from the drawing-area `size-allocate` to GtkWindow `configure-event`. The `configure-event` payload includes the new `(width, height)` in window coordinates — multiply by `GTKAppWindow::scaleFactor()` (existing — see `GTKAppWindow.cpp:137`) to get physical pixels for the GTE swapchain.
+
+Background painting needs to be turned off on the toplevel so GTK doesn't fill the GdkWindow with the theme background before GTE renders the first frame:
+
+```cpp
+gtk_widget_set_app_paintable(GTK_WIDGET(window), TRUE);
+gtk_widget_set_double_buffered(GTK_WIDGET(window), FALSE);
+```
+
+These flags currently live on the drawing area (`GTKItem.cpp:359, 361`); they move up to the GtkWindow.
+
+#### Per-file change summary
+
+- `wtk/src/Native/gtk/GTKAppWindow.cpp` — install event masks + signal handlers (button/motion/key/scroll/enter/leave/configure) directly on the GtkWindow; emit `NativeEvent`s through the AppWindow's `eventEmitter()` (no longer routed through a child GTKItem); add `realize` handler that hands the toplevel's XID/Display to GTE; turn on `app_paintable`/double-buffer-off on the GtkWindow itself.
+- `wtk/src/Native/gtk/GTKItem.cpp` — for the root NativeItem, stop calling `gtk_drawing_area_new()`; instead bind to the GTKAppWindow's toplevel widget. `resolveGdkWindow()` returns `gtk_widget_get_window(GTK_WIDGET(window))` of the toplevel. Non-root `GTKItem` construction goes away (no callers under the virtual view model). `getXDisplay()`/`getXWindow()` keep their signatures; they just resolve through the toplevel.
+- `wtk/include/omegaWTK/NativePrivate/gtk/GTKItem.h` — the constructor that takes a parent `GTKItem` and creates a child drawing area becomes dead code; remove or fence off.
+- `wtk/src/Native/gtk/GTKAppWindow.cpp` (menu wiring) — if option 1 (keep GtkMenuBar): retain the existing `GtkBox` layout strategy but track the menu bar's allocated height so the hover dispatcher can offset incoming `event->y`. Cache the inset on `configure-event` and on `notify::default-height`.
+- `wtk/include/omegaWTK/NativePrivate/gtk/GTKAppWindow.h` — expose `menuBarInset()` (a single `float` getter) so the WidgetTreeHost hover dispatcher can subtract it before hit-testing.
+
+#### Risks / open questions
+
+1. **Menu-bar inset coupling.** Option 1 introduces an implicit "the menu bar's height is subtracted from event Y" rule. If a future feature adds another GTK sibling (e.g. a status bar or toolbar that GTK still owns), the inset becomes a *vector* of (top, bottom, left, right) rather than a scalar. Option 2 sidesteps this entirely. Choosing option 1 means accepting that this stays single-inset until proven otherwise.
+2. **Focus and `key-press-event`.** GtkWindow gets key events when it has focus *and* no child widget consumed them first. If the GtkMenuBar swallows accelerator keys (it does, when its `mnemonic-activate` matches), the toplevel handler won't see them. This is consistent with native menu behavior, but worth confirming against §2.3a's FocusManager: the virtual focus manager only sees keys the GTK toplevel saw, not the ones the menu bar already consumed.
+3. **Compositing manager interaction.** Drawing a custom surface into an X11 Window owned by GTK works fine under composited X11 (GNOME/KDE/XFCE). Under a non-compositing WM (some `i3`/`dwm` setups, especially with `xrender` disabled) the X11 Window may be unmapped/clipped in ways GdkWindow normally hides. Worth a manual smoke test on at least one non-composited WM before claiming GTK parity.
+4. **Verification.** Linux is the agent's native build target, so this section can be both compile- and run-verified before claiming "Done." Mark as compile/run unverified until that pass lands (per the "mark unverified backends" rule).
 
 ---
 

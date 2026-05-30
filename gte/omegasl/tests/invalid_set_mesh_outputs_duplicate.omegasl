@@ -1,0 +1,22 @@
+// §2a follow-up — `setMeshOutputs(nv, np)` may be called at most once per
+// mesh shader. GL_EXT_mesh_shader permits only one such call (and a second
+// is almost certainly a user error — they meant to change the value, not
+// re-issue the call). Sema must reject the duplicate.
+
+#requires(MESH_SHADERS)
+
+struct V internal {
+    float4 pos : Position;
+};
+
+mesh(max_vertices=3, max_primitives=1, topology=triangle)
+void main(uint3 tid : GlobalThreadID,
+          out vertices V verts[3],
+          out indices  uint3 tris[1]){
+    setMeshOutputs(3u, 1u);
+    setMeshOutputs(3u, 1u);
+    verts[0].pos = float4(0.0, 0.0, 0.0, 1.0);
+    verts[1].pos = float4(1.0, 0.0, 0.0, 1.0);
+    verts[2].pos = float4(0.5, 1.0, 0.0, 1.0);
+    tris[0] = uint3(0, 1, 2);
+}

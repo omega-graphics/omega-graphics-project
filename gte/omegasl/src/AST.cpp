@@ -684,7 +684,9 @@ namespace omegasl::ast {
             /// Matrix intrinsics (string-matched in Sema).
             "transpose", "determinant",
             /// Compute barriers.
-            BUILTIN_THREADGROUP_BARRIER, BUILTIN_DEVICE_BARRIER
+            BUILTIN_THREADGROUP_BARRIER, BUILTIN_DEVICE_BARRIER,
+            /// §2a follow-up — mesh-shader runtime output-count call.
+            BUILTIN_SET_MESH_OUTPUTS
         };
         return reserved.count(std::string(name)) > 0;
     }

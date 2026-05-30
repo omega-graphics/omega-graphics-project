@@ -707,6 +707,21 @@ namespace omegasl {
                                    const OmegaCommon::String &structName,
                                    std::ostream &out) const;
 
+        /// §2a — mesh stage support. Override flips `Mesh` to true for
+        /// GLSL: the rest of this target emits `GL_EXT_mesh_shader`
+        /// source. The base `Target::supportsStage` still gates every
+        /// other backend off until its Phase-2 codegen lands.
+        bool supportsStage(ast::ShaderDecl::Type stage,
+                           std::string &diagnosticOut) const override;
+
+        /// §2a — mesh-stage index re-routing. When the lhs of an index
+        /// expression is the identifier of the entry's `out indices`
+        /// parameter, emit the per-topology `gl_Primitive{Triangle,Line,
+        /// Point}IndicesEXT[idx]` builtin instead of `name[idx]`. Every
+        /// other index expression falls through to the default
+        /// `lhs[idx]` emission inherited from `Target::emitIndexExpr`.
+        void emitIndexExpr(CodeGen &cg, ast::IndexExpr *expr, std::ostream &out) override;
+
         /// Fragment-output and internal-struct state. Public so the
         /// GLSL `*CodeGen` can populate these during STRUCT_DECL /
         /// generateDecl processing — `internalStructs` is appended when
@@ -724,6 +739,21 @@ namespace omegasl {
         /// processing (e.g. `vec3 N = gl_VertexIndex;`). Flushed at the
         /// top of `emitShaderEntryBody` after the opening `{`.
         std::ostringstream extra_stmts;
+
+        /// §2a — mesh-stage output-routing state. Populated by
+        /// `emitShaderEntryHeader` when entering a `mesh` shader,
+        /// consulted by `emitMemberExpr` (verts[i].field) and
+        /// `emitIndexExpr` (tris[i]) to retarget those writes onto the
+        /// `GL_EXT_mesh_shader` builtins, and cleared at the end of
+        /// `emitShaderEntryBody`. Empty `meshVertsParamName` /
+        /// `meshIndicesParamName` ⇒ "not in a mesh shader," which is
+        /// what every non-mesh entry sees.
+        OmegaCommon::String meshVertsParamName;
+        OmegaCommon::String meshIndicesParamName;
+        ast::StructDecl *meshVertsStructDecl = nullptr;
+        ast::ShaderDecl::MeshDesc::Topology meshTopology = ast::ShaderDecl::MeshDesc::Triangle;
+        unsigned meshMaxVertices = 0;
+        unsigned meshMaxPrimitives = 0;
     private:
         GLSLCodeOpts &opts;
         unsigned binding = 0;

@@ -31,8 +31,19 @@ namespace omegasl {
             case ast::ShaderDecl::Compute:  return ".comp";
             case ast::ShaderDecl::Hull:     return ".tesc";
             case ast::ShaderDecl::Domain:   return ".tese";
+            case ast::ShaderDecl::Mesh:     return ".mesh";
         }
         return "";
+    }
+
+    bool GLSLTarget::supportsStage(ast::ShaderDecl::Type /*stage*/,
+                                   std::string &/*diagnosticOut*/) const {
+        /// §2a — GLSL is the first backend to emit mesh source
+        /// (`GL_EXT_mesh_shader`); flip every stage on. The other
+        /// targets inherit the base `Target::supportsStage` so they
+        /// still bail with the precise "mesh codegen not yet
+        /// implemented" diagnostic until their own Phase 2 lands.
+        return true;
     }
 
     bool GLSLTarget::compileShader(ast::ShaderDecl::Type stage,
@@ -53,6 +64,15 @@ namespace omegasl {
 
         std::ostringstream out;
         out << " -fshader-stage=" << shader_stage << " -o " << spvPath << " -c " << srcPath;
+        /// §2a — mesh shaders use `GL_EXT_mesh_shader`, which needs the
+        /// `SPV_EXT_mesh_shader` capability and therefore SPIR-V 1.4+;
+        /// glslc's default SPIR-V 1.0 target rejects the `#extension`
+        /// outright. Pinning the target to Vulkan 1.2 (SPIR-V 1.4) is
+        /// the minimum that lights up the extension and leaves room for
+        /// every other mesh-specific builtin / decoration to lower.
+        if (stage == ast::ShaderDecl::Mesh) {
+            out << " --target-env=vulkan1.2";
+        }
 
         auto glslc_process = OmegaCommon::ChildProcess::OpenWithStdoutPipe(opts.glslc_cmd, out.str().c_str());
         auto rc = glslc_process.wait();
@@ -94,11 +114,21 @@ namespace omegasl {
             case ast::ShaderDecl::Vertex:   shader_kind = shaderc_glsl_vertex_shader; break;
             case ast::ShaderDecl::Fragment: shader_kind = shaderc_glsl_fragment_shader; break;
             case ast::ShaderDecl::Compute:  shader_kind = shaderc_glsl_compute_shader; break;
+            case ast::ShaderDecl::Mesh:     shader_kind = shaderc_glsl_mesh_shader;    break;
             case ast::ShaderDecl::Hull:
             case ast::ShaderDecl::Domain:   break;
         }
 
         auto options = shaderc_compile_options_initialize();
+        /// §2a — runtime mirror of the offline glslc gate: mesh shaders
+        /// need at least Vulkan 1.2 / SPIR-V 1.4 for the
+        /// `SPV_EXT_mesh_shader` capability. shaderc defaults to
+        /// SPIR-V 1.0 and rejects the `#extension` otherwise.
+        if (stage == ast::ShaderDecl::Mesh) {
+            shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan,
+                                                   shaderc_env_version_vulkan_1_2);
+            shaderc_compile_options_set_target_spirv(options, shaderc_spirv_version_1_4);
+        }
 
         meta.data = nullptr;
         meta.dataSize = 0;
@@ -330,6 +360,7 @@ namespace omegasl {
             case ast::ShaderDecl::Compute:  break;
             case ast::ShaderDecl::Hull:     return_val_replacement = "gl_Position"; break;
             case ast::ShaderDecl::Domain:   return_val_replacement = "gl_Position"; break;
+            case ast::ShaderDecl::Mesh:     break;
         }
         activeReturnReplacement = return_val_replacement;
 
@@ -351,11 +382,40 @@ namespace omegasl {
             out << "layout(" << domStr << ", " << spacingStr << ", " << windStr << ") in;" << std::endl;
         }
 
+        /// §2a — mesh stage prologue. The `GL_EXT_mesh_shader` directives
+        /// must appear before any use of the extension's types/builtins
+        /// (which is everything else in this entry's emission). Layout
+        /// then mirrors the descriptor: `local_size_*` from the per-meshlet
+        /// workgroup (carried in `threadgroupDesc`, exactly like compute)
+        /// and `max_vertices` / `max_primitives` / topology from `meshDesc`.
+        if (_decl->shaderType == ast::ShaderDecl::Mesh) {
+            out << "#extension GL_EXT_mesh_shader : require" << std::endl;
+            shader_entry.threadgroupDesc.x = _decl->threadgroupDesc.x;
+            shader_entry.threadgroupDesc.y = _decl->threadgroupDesc.y;
+            shader_entry.threadgroupDesc.z = _decl->threadgroupDesc.z;
+            shader_entry.meshDesc.max_vertices = _decl->meshDesc.maxVertices;
+            shader_entry.meshDesc.max_primitives = _decl->meshDesc.maxPrimitives;
+            shader_entry.meshDesc.topology = static_cast<int>(_decl->meshDesc.topology);
+            meshMaxVertices = _decl->meshDesc.maxVertices;
+            meshMaxPrimitives = _decl->meshDesc.maxPrimitives;
+            meshTopology = _decl->meshDesc.topology;
+            const char *topoStr = (_decl->meshDesc.topology == ast::ShaderDecl::MeshDesc::Triangle) ? "triangles"
+                                : (_decl->meshDesc.topology == ast::ShaderDecl::MeshDesc::Line)     ? "lines"
+                                                                                                    : "points";
+            out << "layout(local_size_x = " << _decl->threadgroupDesc.x
+                << ", local_size_y = " << _decl->threadgroupDesc.y
+                << ", local_size_z = " << _decl->threadgroupDesc.z << ") in;" << std::endl;
+            out << "layout(max_vertices = " << meshMaxVertices
+                << ", max_primitives = " << meshMaxPrimitives
+                << ", " << topoStr << ") out;" << std::endl;
+        }
+
         shader_entry.type = _decl->shaderType == ast::ShaderDecl::Vertex   ? OMEGASL_SHADER_VERTEX
                           : _decl->shaderType == ast::ShaderDecl::Fragment ? OMEGASL_SHADER_FRAGMENT
                           : _decl->shaderType == ast::ShaderDecl::Compute  ? OMEGASL_SHADER_COMPUTE
                           : _decl->shaderType == ast::ShaderDecl::Hull     ? OMEGASL_SHADER_HULL
-                                                                            : OMEGASL_SHADER_DOMAIN;
+                          : _decl->shaderType == ast::ShaderDecl::Domain   ? OMEGASL_SHADER_DOMAIN
+                                                                            : OMEGASL_SHADER_MESH;
         shader_entry.name = new char[_decl->name.size() + 1];
         std::copy(_decl->name.begin(), _decl->name.end(), (char *)shader_entry.name);
         ((char *)shader_entry.name)[_decl->name.size()] = '\0';
@@ -366,6 +426,28 @@ namespace omegasl {
             auto retIt = structDeclMap.find(_decl->returnType->name);
             if (retIt != structDeclMap.end() && retIt->second->internal) {
                 fragmentOutputStruct = retIt->second;
+            }
+        }
+
+        /// §2a — locate the mesh stage's `out vertices` element struct and
+        /// `out indices` parameter so the body's `verts[i].field = ...` and
+        /// `tris[i] = ...` writes can be rerouted at MEMBER_EXPR /
+        /// INDEX_EXPR emission time. Sema has already proven the entry
+        /// declares exactly one of each, with the right element types and
+        /// extents; we just remember the names + decl here. Reset to the
+        /// "not a mesh shader" defaults for every other stage.
+        meshVertsParamName.clear();
+        meshIndicesParamName.clear();
+        meshVertsStructDecl = nullptr;
+        if (_decl->shaderType == ast::ShaderDecl::Mesh) {
+            for (auto &p : _decl->params) {
+                if (p.meshOutput == ast::AttributedFieldDecl::Vertices) {
+                    meshVertsParamName = p.name;
+                    auto sit = structDeclMap.find(p.typeExpr->name);
+                    if (sit != structDeclMap.end()) meshVertsStructDecl = sit->second;
+                } else if (p.meshOutput == ast::AttributedFieldDecl::Indices) {
+                    meshIndicesParamName = p.name;
+                }
             }
         }
 
@@ -380,6 +462,12 @@ namespace omegasl {
                 auto &_struct = *it;
                 /// The fragment output struct is emitted separately below.
                 if (_struct == fragmentOutputStruct) continue;
+                /// §2a — the mesh vertex output struct is emitted as
+                /// per-field arrayed `out` varyings (one `[max_vertices]`
+                /// array per non-Position field) further down, since each
+                /// vertex slot in the meshlet writes its own copy. Skip
+                /// the normal scalar interstage emission for it.
+                if (_decl->shaderType == ast::ShaderDecl::Mesh && _struct == meshVertsStructDecl) continue;
                 OmegaCommon::String mode =
                     (_decl->shaderType == ast::ShaderDecl::Fragment) ? "in" : "out";
                 unsigned idx = 0;
@@ -476,15 +564,55 @@ namespace omegasl {
             }
         }
 
+        /// §2a — per-vertex arrayed varyings for the mesh stage. Each
+        /// non-Position field of the verts element struct becomes a
+        /// `layout(location=N) out T <struct>_<field>[max_vertices];`
+        /// array; the matching `writeInternalFieldRef` reroutes user
+        /// writes (`verts[i].field`) onto `<struct>_<field>[i]`. The
+        /// `Position` semantic instead rides `gl_MeshVerticesEXT[i]
+        /// .gl_Position` (declared implicitly by the extension), so it
+        /// emits no `layout(location=...) out`. Skipping a field's
+        /// location entirely would collide the indices with the
+        /// downstream fragment-input layout; declaring it anyway keeps
+        /// the location numbering identical to a vertex-stage emission
+        /// of the same struct, which is what the fragment side expects.
+        if (_decl->shaderType == ast::ShaderDecl::Mesh && meshVertsStructDecl) {
+            unsigned idx = 0;
+            for (auto &f : meshVertsStructDecl->fields) {
+                bool isPosition = f.attributeName.has_value()
+                    && f.attributeName.value() == ATTRIBUTE_POSITION;
+                if (!isPosition) {
+                    out << "layout(location=" << idx << ") ";
+                    switch (f.interp) {
+                        case ast::AttributedFieldDecl::Flat:          out << "flat "; break;
+                        case ast::AttributedFieldDecl::Centroid:      out << "centroid "; break;
+                        case ast::AttributedFieldDecl::Sample:        out << "sample "; break;
+                        case ast::AttributedFieldDecl::NoPerspective: out << "noperspective "; break;
+                        default: break;
+                    }
+                    out << "out ";
+                    writeTypeName(cg.typeResolver->resolveTypeWithExpr(f.typeExpr),
+                                  f.typeExpr->pointer, out);
+                    out << " " << meshVertsStructDecl->name << "_" << f.name
+                        << "[" << meshMaxVertices << "];" << std::endl;
+                }
+                idx += 1;
+            }
+        }
+
         /// Resource bindings (file scope for GLSL).
         cg.emitResourcesAndFillLayout(_decl, shader_entry, out);
 
         /// Standard shader arguments. Compute uses `layout(local_size_*)`
         /// + attribute-bridge locals; vertex/hull/domain use
         /// `layout(location=N) in` + attribute-bridge for VertexID;
-        /// fragment scalar inputs bridge from `gl_*` builtins; fragment
-        /// struct inputs land in `internalStructVarMap` for member
-        /// rerouting at body emission time.
+        /// mesh suppresses its `out vertices` / `out indices` params (they
+        /// route to `gl_MeshVerticesEXT` / `gl_Primitive*IndicesEXT` and
+        /// have no representation in `void main()`'s signature) and
+        /// bridges thread-IDs from `gl_GlobalInvocationID` etc. just like
+        /// compute; fragment scalar inputs bridge from `gl_*` builtins;
+        /// fragment struct inputs land in `internalStructVarMap` for
+        /// member rerouting at body emission time.
         if (_decl->shaderType == ast::ShaderDecl::Compute) {
             out << "layout(local_size_x = " << _decl->threadgroupDesc.x
                 << ", local_size_y = " << _decl->threadgroupDesc.y
@@ -502,6 +630,33 @@ namespace omegasl {
                     } else if (arg.attributeName.value() == ATTRIBUTE_THREADGROUP_ID) {
                         builtin = "gl_WorkGroupID";
                         shader_entry.computeShaderParamsDesc.useThreadGroupID = true;
+                    }
+                    if (builtin != nullptr) {
+                        for (unsigned i = 0; i < cg.indentLevel; i++) extra_stmts << "    ";
+                        writeTypeName(cg.typeResolver->resolveTypeWithExpr(arg.typeExpr),
+                                      arg.typeExpr->pointer, extra_stmts);
+                        extra_stmts << " " << arg.name << " = " << builtin << ";" << std::endl;
+                    }
+                }
+            }
+        } else if (_decl->shaderType == ast::ShaderDecl::Mesh) {
+            /// §2a — mesh shares compute's thread-ID model (`local_size_*`
+            /// already emitted above with the mesh prologue). The
+            /// `out vertices` / `out indices` params have no presence in
+            /// `void main()` — they're addressed via builtins at body
+            /// emission — so they're skipped here. Everything else with
+            /// an attribute bridges from its `gl_*` builtin into a local
+            /// of the user's chosen name, identical to the compute path.
+            for (auto &arg : _decl->params) {
+                if (arg.meshOutput != ast::AttributedFieldDecl::NotMeshOutput) continue;
+                if (arg.attributeName.has_value()) {
+                    const char *builtin = nullptr;
+                    if (arg.attributeName.value() == ATTRIBUTE_GLOBALTHREAD_ID) {
+                        builtin = "gl_GlobalInvocationID";
+                    } else if (arg.attributeName.value() == ATTRIBUTE_LOCALTHREAD_ID) {
+                        builtin = "gl_LocalInvocationID";
+                    } else if (arg.attributeName.value() == ATTRIBUTE_THREADGROUP_ID) {
+                        builtin = "gl_WorkGroupID";
                     }
                     if (builtin != nullptr) {
                         for (unsigned i = 0; i < cg.indentLevel; i++) extra_stmts << "    ";
@@ -587,6 +742,28 @@ namespace omegasl {
                                          std::ostream &out) {
         /// Flush attribute-bridge locals at the top of main().
         out << extra_stmts.str() << std::endl;
+
+        /// §2a — mesh shaders must call `SetMeshOutputsEXT(numVertices,
+        /// numPrimitives)` once before any write to the mesh output
+        /// arrays; reads or writes that happen first are undefined per
+        /// `GL_EXT_mesh_shader`. Two paths:
+        ///   (1) The user wrote `setMeshOutputs(nv, np)` somewhere in the
+        ///       body — Sema stamped `meshHasUserSetMeshOutputsCall` on the
+        ///       ShaderDecl. Skip the auto-emit; the body walk will lower
+        ///       their call to `SetMeshOutputsEXT(nv, np)` in place
+        ///       (see `renameBuiltin` for the GLSL name). Emitting both
+        ///       would issue two `SetMeshOutputsEXT` calls, which the
+        ///       extension explicitly forbids.
+        ///   (2) No user call — the front-end has no implicit runtime
+        ///       "actual" count, so we lock it to the descriptor's declared
+        ///       maxima up front. Correctness without forcing the user to
+        ///       think about it.
+        if (_decl->shaderType == ast::ShaderDecl::Mesh
+            && !_decl->meshHasUserSetMeshOutputsCall) {
+            for (unsigned i = 0; i < cg.indentLevel; i++) out << "    ";
+            out << "SetMeshOutputsEXT(" << meshMaxVertices << ", "
+                << meshMaxPrimitives << ");" << std::endl;
+        }
 
         /// Custom body loop with RETURN_DECL rerouting for fragment-output
         /// struct returns and hull/domain `gl_Position` writes.
@@ -696,6 +873,11 @@ namespace omegasl {
         internalStructVarMap.clear();
         activeReturnReplacement.clear();
         fragmentOutputStruct = nullptr;
+        meshVertsParamName.clear();
+        meshIndicesParamName.clear();
+        meshVertsStructDecl = nullptr;
+        meshMaxVertices = 0;
+        meshMaxPrimitives = 0;
     }
 
     void GLSLTarget::writeInternalFieldRef(const ast::AttributedFieldDecl &field,
@@ -763,9 +945,65 @@ namespace omegasl {
                 }
             }
         }
+        /// §2a — mesh `out vertices` slot access: `verts[i].field` writes
+        /// rewrite onto either `gl_MeshVerticesEXT[i].gl_Position` (the
+        /// `Position` semantic only) or the per-field arrayed varying
+        /// `<struct>_<field>[i]` (every other field). Detect the shape:
+        /// LHS is INDEX_EXPR whose base is the verts param's identifier.
+        if (expr->lhs->type == INDEX_EXPR && meshVertsStructDecl != nullptr
+            && !meshVertsParamName.empty()) {
+            auto *_idx_expr = (ast::IndexExpr *)expr->lhs;
+            if (_idx_expr->lhs->type == ID_EXPR) {
+                auto *_id_expr = (ast::IdExpr *)_idx_expr->lhs;
+                if (_id_expr->id == meshVertsParamName) {
+                    for (auto &f : meshVertsStructDecl->fields) {
+                        if (f.name != expr->rhs_id) continue;
+                        bool isPosition = f.attributeName.has_value()
+                            && f.attributeName.value() == ATTRIBUTE_POSITION;
+                        if (isPosition) {
+                            out << "gl_MeshVerticesEXT[";
+                            cg.generateExpr(_idx_expr->idx_expr);
+                            out << "].gl_Position";
+                        } else {
+                            out << meshVertsStructDecl->name << "_" << f.name << "[";
+                            cg.generateExpr(_idx_expr->idx_expr);
+                            out << "]";
+                        }
+                        return;
+                    }
+                }
+            }
+        }
         /// Default emission: same as the abstract Target default.
         cg.generateExpr(expr->lhs);
         out << "." << expr->rhs_id;
+    }
+
+    void GLSLTarget::emitIndexExpr(CodeGen &cg, ast::IndexExpr *expr, std::ostream &out) {
+        /// §2a — mesh `out indices` slot access: `tris[i] = uvec3(...)`
+        /// rewrites onto `gl_PrimitiveTriangleIndicesEXT[i]` (or the line
+        /// / point variant, picked from the topology recorded at entry-
+        /// header emission). The shape is INDEX_EXPR whose base
+        /// identifier matches the indices param's name. Everything else
+        /// falls through to the default `lhs[idx]` emission.
+        if (!meshIndicesParamName.empty() && expr->lhs->type == ID_EXPR) {
+            auto *_id_expr = (ast::IdExpr *)expr->lhs;
+            if (_id_expr->id == meshIndicesParamName) {
+                const char *builtin = (meshTopology == ast::ShaderDecl::MeshDesc::Triangle)
+                                        ? "gl_PrimitiveTriangleIndicesEXT"
+                                      : (meshTopology == ast::ShaderDecl::MeshDesc::Line)
+                                        ? "gl_PrimitiveLineIndicesEXT"
+                                        : "gl_PrimitivePointIndicesEXT";
+                out << builtin << "[";
+                cg.generateExpr(expr->idx_expr);
+                out << "]";
+                return;
+            }
+        }
+        cg.generateExpr(expr->lhs);
+        out << "[";
+        cg.generateExpr(expr->idx_expr);
+        out << "]";
     }
 
     /// True for the 16-bit scalar builtins whose GLSL spellings
@@ -1034,6 +1272,14 @@ namespace omegasl {
         /// device-memory-only ordering barrier (no execution sync).
         if (name == BUILTIN_THREADGROUP_BARRIER) return "barrier";
         if (name == BUILTIN_DEVICE_BARRIER)      return "memoryBarrier";
+        /// §2a follow-up — mesh-shader runtime output count. The GLSL spelling
+        /// for `setMeshOutputs(nv, np)` is `SetMeshOutputsEXT(nv, np)` (both
+        /// counts, mandatory before any output-array write). Sema already
+        /// gated the call to mesh-stage and stamped
+        /// `meshHasUserSetMeshOutputsCall` on the ShaderDecl so
+        /// `emitShaderEntryBody` knows to suppress the auto-emit; here the
+        /// shared `(args)` print does the actual lowering.
+        if (name == BUILTIN_SET_MESH_OUTPUTS)    return "SetMeshOutputsEXT";
         if (name == BUILTIN_MAKE_FLOAT2)   return "vec2";
         if (name == BUILTIN_MAKE_FLOAT3)   return "vec3";
         if (name == BUILTIN_MAKE_FLOAT4)   return "vec4";

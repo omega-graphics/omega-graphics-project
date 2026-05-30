@@ -262,6 +262,21 @@ typedef int ASTType;
 #define BUILTIN_THREADGROUP_BARRIER "threadgroupBarrier"
 #define BUILTIN_DEVICE_BARRIER "deviceBarrier"
 
+/// §2a follow-up — mesh-shader runtime output-count call. `setMeshOutputs(nv,
+/// np)` sets the *active* per-meshlet vertex and primitive counts before any
+/// write to the `out vertices`/`out indices` arrays. Mesh-stage-only,
+/// void-returning, `(uint, uint)`. At most one call per shader; when present
+/// it replaces the auto-emitted locked-to-maxima
+/// `SetMeshOutputsEXT(max_vertices, max_primitives)` Phase 2a inserts at
+/// `void main()` entry. Cross-backend lowering is NOT 1:1 (see
+/// Mesh-Shader-Implementation-Plan.md → Cross-Backend Differences → Active-
+/// count "set outputs" call):
+///   GLSL — SetMeshOutputsEXT(nv, np)        (both counts)
+///   HLSL — SetMeshOutputCounts(nv, np)      (both counts)
+///   MSL  — meshOut.set_primitive_count(np)  (vertex count is implicit;
+///                                            the `nv` argument is dropped)
+#define BUILTIN_SET_MESH_OUTPUTS "setMeshOutputs"
+
 //Internal Shader Attributes
 #define ATTRIBUTE_VERTEX_ID "VertexID"
 #define ATTRIBUTE_INSTANCE_ID "InstanceID"
