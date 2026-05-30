@@ -1,0 +1,5 @@
+# Calibrated capture region — machine/monitor-specific, never commit it.
+region.json
+# Captured screenshots.
+captures/
+__pycache__/

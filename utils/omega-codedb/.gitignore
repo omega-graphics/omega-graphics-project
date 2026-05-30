@@ -1,0 +1,2 @@
+# Rebuildable symbol-index cache — never commit it.
+.cache/
