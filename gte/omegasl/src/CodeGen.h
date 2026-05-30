@@ -588,6 +588,20 @@ namespace omegasl {
                         out.write((char *)&shader_data.threadgroupDesc.y,sizeof(unsigned int));
                         out.write((char *)&shader_data.threadgroupDesc.z,sizeof(unsigned int));
                     }
+                    else if(shader_data.type == OMEGASL_SHADER_MESH){
+                        /// Mesh stage carries the per-meshlet workgroup size
+                        /// (like compute) followed by the meshlet output maxima
+                        /// and topology. GE.cpp reads these back in this order.
+                        /// Not yet exercised — mesh stubs at codegen until the
+                        /// per-backend emission phase lands — but the format is
+                        /// defined here so writer and reader stay in lockstep.
+                        out.write((char *)&shader_data.threadgroupDesc.x,sizeof(unsigned int));
+                        out.write((char *)&shader_data.threadgroupDesc.y,sizeof(unsigned int));
+                        out.write((char *)&shader_data.threadgroupDesc.z,sizeof(unsigned int));
+                        out.write((char *)&shader_data.meshDesc.max_vertices,sizeof(unsigned int));
+                        out.write((char *)&shader_data.meshDesc.max_primitives,sizeof(unsigned int));
+                        out.write((char *)&shader_data.meshDesc.topology,sizeof(int));
+                    }
                 }
 
                 /// 6. Per-shader required feature bitfield (Layer 1 of

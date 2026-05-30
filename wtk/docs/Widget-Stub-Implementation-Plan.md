@@ -142,7 +142,7 @@ New headers under `wtk/include/omegaWTK/Widgets/`:
 | `Containers.h` | Stack/Grid/ZStack/Split/Tabs layout containers (exists, expand) |
 | `Collections.h` | `ListView`, `TreeView`, `TableView`, `CollectionView`, `PropertyGrid` |
 | `Navigation.h` | `NavigationStack`, `Sidebar`, `Breadcrumb`, `Toolbar`, `StatusBar` |
-| `Overlays.h` | `Tooltip`, `Popover`, `Menu`, `ContextMenu`, `ModalDialog`, `Toast`, `Sheet` |
+| `Overlays.h` | `Tooltip`, `Popover`, `PopupMenu`, `ContextMenu`, `Modal`, `Snackbar`, `Sheet` |
 | `MediaWidgets.h` | `VideoViewWidget`, `AudioPlayerWidget`, `SVGViewWidget`, `CanvasWidget` |
 
 New source files under `wtk/src/Widgets/` mirror the headers (one `.cpp` per header, split further if a file grows large).
@@ -1036,63 +1036,63 @@ public:
 };
 ```
 
-### 6D. Menu / ContextMenu
+### 6D. PopupMenu / ContextMenu
 
 Command list with keyboard navigation.
 
 ```cpp
-struct MenuItem {
+struct PopupMenuItem {
     OmegaCommon::UString title {};
     OmegaCommon::String shortcut {};
     std::function<void()> action = nullptr;
     bool enabled = true;
     bool separator = false;
-    OmegaCommon::Vector<MenuItem> submenu {};
+    OmegaCommon::Vector<PopupMenuItem> submenu {};
 };
 
 class ContextMenu : public Widget {
-    OmegaCommon::Vector<MenuItem> items_ {};
+    OmegaCommon::Vector<PopupMenuItem> items_ {};
 public:
-    explicit ContextMenu(const OmegaCommon::Vector<MenuItem> & items);
+    explicit ContextMenu(const OmegaCommon::Vector<PopupMenuItem> & items);
     void present(Widget *anchor, Composition::Point2D screenPos);
     void dismiss();
 };
 ```
 
-Note: The existing `Menu.h` handles native menus. `ContextMenu` here is an in-view rendered menu for custom styling.
+Note: The existing `Menu.h` handles native menus (`Menu`/`MenuItem`, backed by `NativeMenu`). `PopupMenu`/`ContextMenu` here are in-view rendered menus for custom styling — hence the distinct `PopupMenuItem` model.
 
-### 6E. ModalDialog
+### 6E. Modal
 
 Blocking workflow container with focus trap.
 
 ```cpp
-class ModalDialog : public Container {
+class Modal : public Container {
     bool visible_ = false;
     // Backdrop overlay + centered content container
 public:
-    explicit ModalDialog(Composition::Rect rect);
+    explicit Modal(Composition::Rect rect);
     void present();
     void dismiss();
     void setOnDismiss(std::function<void()> callback);
 };
 ```
 
-### 6F. Toast / Banner
+### 6F. Snackbar / Banner
 
 Non-blocking notifications with auto-dismiss.
 
 ```cpp
-enum class ToastPosition : uint8_t { Top, Bottom, TopRight, BottomRight };
+enum class SnackbarPosition : uint8_t { Top, Bottom, TopRight, BottomRight };
 
-struct ToastProps {
+struct SnackbarProps {
     OmegaCommon::UString message {};
     float durationMs = 3000.f;
-    ToastPosition position = ToastPosition::Bottom;
+    SnackbarPosition position = SnackbarPosition::Bottom;
 };
 
-class Toast : public Widget {
+class Snackbar : public Widget {
 public:
-    static void show(Widget *host, const ToastProps & props);
+    static void show(Widget *host, const SnackbarProps & props);
 };
 ```
 
@@ -1116,15 +1116,15 @@ public:
 ### Source Files
 
 - `wtk/src/Widgets/Overlays.Infrastructure.cpp`
-- `wtk/src/Widgets/Overlays.cpp` — Tooltip, Popover, ContextMenu, ModalDialog, Toast, Sheet
+- `wtk/src/Widgets/Overlays.cpp` — Tooltip, Popover, PopupMenu, ContextMenu, Modal, Snackbar, Sheet
 
 ### Verification
 
 - Tooltip appears on hover after delay, dismisses on exit.
 - Popover anchors correctly to each edge of the target widget.
 - ContextMenu keyboard navigation (arrow keys, Enter, Escape).
-- ModalDialog traps focus; backdrop click dismisses.
-- Toast auto-dismisses after timeout; queue prevents stacking.
+- Modal traps focus; backdrop click dismisses.
+- Snackbar auto-dismisses after timeout; queue prevents stacking.
 - Sheet slides in/out with animation.
 
 ### Phase 6 also wires Select/Dropdown popup
@@ -1391,7 +1391,7 @@ Phases 7 and 9 come last.
 
 1. **Icon system**: Font-based glyphs or SVG icons? Or both with a unified `IconProvider` interface?
 2. **Text measurement**: Does `Composition::Font` currently expose text extent measurement? If not, that's a prerequisite for `Label::measureSelf` and all text-based intrinsic sizing.
-3. **Focus management**: Is there a global focus tracking system, or does each widget manage focus independently? Overlays and `ModalDialog` need focus trapping.
+3. **Focus management**: Is there a global focus tracking system, or does each widget manage focus independently? Overlays and `Modal` need focus trapping.
 4. **Theme system**: Should interactive state styles (hover, pressed, disabled) be driven by `StyleSheet` state variants, or by swapping entire stylesheets?
 5. **Select popup**: Should the dropdown overlay use the native `Menu` system (from `Menu.h`) or a custom in-view overlay? Native gives platform-correct behavior; custom gives full style control.
 6. **Button inheritance**: The current stub has `Button : public Container`. The catalog suggests it should support icon + text composition, which justifies Container. But simple buttons could just be `Widget`. Keep `Container` to support flexible content?

@@ -379,6 +379,21 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryFromInputSt
                 return nullptr;
             }
         }
+        else if(shaderEntry.type == OMEGASL_SHADER_MESH && !isStubEntry){
+            /// Mirror of the CodeGen.h mesh writer: the per-meshlet workgroup
+            /// size (as for compute) followed by the meshlet output maxima and
+            /// topology, in that exact order.
+            if(!readBinaryValue(in,shaderEntry.threadgroupDesc.x) ||
+               !readBinaryValue(in,shaderEntry.threadgroupDesc.y) ||
+               !readBinaryValue(in,shaderEntry.threadgroupDesc.z) ||
+               !readBinaryValue(in,shaderEntry.meshDesc.max_vertices) ||
+               !readBinaryValue(in,shaderEntry.meshDesc.max_primitives) ||
+               !readBinaryValue(in,shaderEntry.meshDesc.topology)){
+                std::cerr << "OmegaSL shader library load failed: could not read mesh descriptor for `"
+                          << shaderEntry.name << "`." << std::endl;
+                return nullptr;
+            }
+        }
 
         /// Per-shader required-feature bitfield — see comment above.
         if(!readBinaryValue(in,shaderEntry.requiredFeatures)){

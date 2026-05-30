@@ -21,6 +21,7 @@ namespace omegasl {
         ComputeShaderArgument,
         HullShaderArgument,
         DomainShaderArgument,
+        MeshShaderArgument,
         StructField
     };
 
@@ -34,7 +35,9 @@ namespace omegasl {
         else if(context == AttributeContext::VertexShaderArgument || context == AttributeContext::HullShaderArgument || context == AttributeContext::DomainShaderArgument){
             return (subject == ATTRIBUTE_VERTEX_ID);
         }
-        else if(context == AttributeContext::ComputeShaderArgument){
+        else if(context == AttributeContext::ComputeShaderArgument || context == AttributeContext::MeshShaderArgument){
+            /// Mesh shaders dispatch like compute (a 3D workgroup), so the
+            /// thread-ID attributes carry over unchanged.
             return (subject == ATTRIBUTE_GLOBALTHREAD_ID) || (subject == ATTRIBUTE_THREADGROUP_ID) || (subject == ATTRIBUTE_LOCALTHREAD_ID);
         }
         else if(context == AttributeContext::FragmentShaderArgument){

@@ -366,6 +366,20 @@ namespace omegasl {
             /// `out` and fragment `in` varying.
             enum InterpMode { Default, Flat, Centroid, Sample, NoPerspective };
             InterpMode interp = Default;
+
+            /// Mesh-shader output qualifier on a shader entry parameter. Set by
+            /// the parser when `out vertices` / `out indices` prefixes the
+            /// parameter (the `vertices`/`indices` words stay contextual
+            /// identifiers). Only meaningful on a `mesh` ShaderDecl's params;
+            /// everything else leaves it `NotMeshOutput`. `Vertices` => the
+            /// per-meshlet vertex output array (element is the vertex-out
+            /// struct); `Indices` => the per-primitive index array (element is
+            /// uintN: uint3 triangle / uint2 line / uint point). The array
+            /// extent rides on the param TypeExpr's `arrayDims` and must equal
+            /// the mesh descriptor's max_vertices / max_primitives respectively
+            /// (checked in Sema's mesh-stage validation).
+            enum MeshOutputKind { NotMeshOutput, Vertices, Indices };
+            MeshOutputKind meshOutput = NotMeshOutput;
         };
 
         struct VarDecl : public Decl {

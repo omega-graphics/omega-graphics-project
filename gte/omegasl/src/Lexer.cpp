@@ -15,6 +15,12 @@ namespace omegasl {
         (subject == KW_COMPUTE) ||
         (subject == KW_HULL) ||
         (subject == KW_DOMAIN) ||
+        /// Mesh-shader pipeline mesh stage — a hard keyword like the other
+        /// stage keywords. The descriptor sub-words (`max_vertices`,
+        /// `max_primitives`, `topology`) and the output qualifiers
+        /// (`vertices`, `indices`) stay contextual identifiers, matched
+        /// positionally by the parser.
+        (subject == KW_MESH) ||
         (subject == KW_IF) ||
         (subject == KW_ELSE) ||
         (subject == KW_FOR) ||

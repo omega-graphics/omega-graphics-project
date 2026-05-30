@@ -617,6 +617,82 @@ namespace omegasl {
                 }
 
             }
+            else if(t.str == KW_MESH){
+                auto _s = (ast::ShaderDecl *)node;
+                _s->shaderType = ast::ShaderDecl::Mesh;
+                /// Parse the mesh descriptor:
+                ///   mesh(max_vertices=N, max_primitives=M, topology=T [, x=.., y=.., z=..])
+                /// Mirrors the tessellation-descriptor key=value loop. `topology`
+                /// is triangle|line|point. The optional x/y/z give the
+                /// per-meshlet local workgroup size (default 1,1,1) and reuse
+                /// `threadgroupDesc`, exactly as compute's [numthreads]. The
+                /// max_vertices / max_primitives values and the output-array
+                /// extents are cross-checked in Sema.
+                _s->threadgroupDesc.x = 1;
+                _s->threadgroupDesc.y = 1;
+                _s->threadgroupDesc.z = 1;
+                t = lexer->nextTok();
+                if(t.type != TOK_LPAREN){
+                    delete _s;
+                    auto e = std::make_unique<UnexpectedToken>("Expected `(` after mesh keyword");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+                t = lexer->nextTok();
+                while(t.type != TOK_RPAREN){
+                    if(t.type != TOK_ID && t.type != TOK_KW){
+                        delete _s;
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Expected property name in mesh descriptor, got `") + t.str + "`");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                    auto propName = t.str;
+                    t = lexer->nextTok();
+                    if(t.type != TOK_OP || t.str != OP_EQUAL){
+                        delete _s;
+                        auto e = std::make_unique<UnexpectedToken>("Expected `=` after mesh property name");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                    t = lexer->nextTok();
+                    auto propValue = t.str;
+                    if(propName == "max_vertices"){
+                        _s->meshDesc.maxVertices = std::stoul(propValue);
+                    }
+                    else if(propName == "max_primitives"){
+                        _s->meshDesc.maxPrimitives = std::stoul(propValue);
+                    }
+                    else if(propName == "topology"){
+                        if(propValue == "triangle") _s->meshDesc.topology = ast::ShaderDecl::MeshDesc::Triangle;
+                        else if(propValue == "line") _s->meshDesc.topology = ast::ShaderDecl::MeshDesc::Line;
+                        else if(propValue == "point") _s->meshDesc.topology = ast::ShaderDecl::MeshDesc::Point;
+                        else {
+                            delete _s;
+                            auto e = std::make_unique<UnexpectedToken>(std::string("Unknown mesh topology `") + propValue + "` (expected triangle, line, or point)");
+                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            diagnostics->addError(std::move(e));
+                            return nullptr;
+                        }
+                    }
+                    else if(propName == "x"){ _s->threadgroupDesc.x = std::stoul(propValue); }
+                    else if(propName == "y"){ _s->threadgroupDesc.y = std::stoul(propValue); }
+                    else if(propName == "z"){ _s->threadgroupDesc.z = std::stoul(propValue); }
+                    else {
+                        delete _s;
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Unknown mesh descriptor property `") + propName + "` (expected max_vertices, max_primitives, topology, x, y, or z)");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                    t = lexer->nextTok();
+                    if(t.type == TOK_COMMA){
+                        t = lexer->nextTok();
+                    }
+                }
+            }
             else if(t.str == KW_STATIC) {
                 node = (ast::Decl *)new ast::ResourceDecl();
                 node->type = RESOURCE_DECL;
@@ -793,6 +869,22 @@ namespace omegasl {
                         }
                     }
 
+                    /// Mesh-shader output qualifier: `out vertices T name[N]` /
+                    /// `out indices T name[N]`. `vertices`/`indices` are
+                    /// contextual — consumed only when they directly follow an
+                    /// `out` qualifier; everywhere else they stay ordinary
+                    /// identifiers. Sema enforces that they appear only on a
+                    /// `mesh` shader and validates the element type / extent.
+                    ast::AttributedFieldDecl::MeshOutputKind meshOutKind =
+                        ast::AttributedFieldDecl::NotMeshOutput;
+                    if (paramAccess == ast::AttributedFieldDecl::Out && t.type == TOK_ID
+                        && (t.str == "vertices" || t.str == "indices")) {
+                        meshOutKind = (t.str == "vertices")
+                            ? ast::AttributedFieldDecl::Vertices
+                            : ast::AttributedFieldDecl::Indices;
+                        t = lexer->nextTok();
+                    }
+
                     auto _tok = t;
                     t = lexer->nextTok();
                     bool type_is_pointer = false;
@@ -833,6 +925,30 @@ namespace omegasl {
                     auto var_id = t.str;
 
                     t = lexer->nextTok();
+                    /// Array dimensions on a parameter, e.g. mesh
+                    /// `out vertices VOut v[64]`. Mirrors the struct-field array
+                    /// parse; dims ride on the param's TypeExpr and are read by
+                    /// Sema's mesh-output validation (and by codegen later).
+                    while (t.type == TOK_LBRACKET) {
+                        t = lexer->nextTok();
+                        if (t.type != TOK_NUM_LITERAL) {
+                            delete node;
+                            auto e = std::make_unique<UnexpectedToken>("Expected array size literal in parameter");
+                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            diagnostics->addError(std::move(e));
+                            return nullptr;
+                        }
+                        var_ty->arrayDims.push_back(static_cast<unsigned>(std::stoul(t.str)));
+                        t = lexer->nextTok();
+                        if (t.type != TOK_RBRACKET) {
+                            delete node;
+                            auto e = std::make_unique<UnexpectedToken>("Expected `]` after parameter array size");
+                            e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                            diagnostics->addError(std::move(e));
+                            return nullptr;
+                        }
+                        t = lexer->nextTok();
+                    }
                     if (t.type == TOK_COLON) {
                         t = lexer->nextTok();
                         if (t.type != TOK_ID) {
@@ -867,9 +983,13 @@ namespace omegasl {
                             }
                             t = lexer->nextTok();
                         }
-                        funcDecl->params.push_back({var_ty, var_id, attr_name, attr_index, paramAccess, paramConst});
+                        ast::AttributedFieldDecl _p{var_ty, var_id, attr_name, attr_index, paramAccess, paramConst};
+                        _p.meshOutput = meshOutKind;
+                        funcDecl->params.push_back(_p);
                     } else {
-                        funcDecl->params.push_back({var_ty, var_id, {}, {}, paramAccess, paramConst});
+                        ast::AttributedFieldDecl _p{var_ty, var_id, {}, {}, paramAccess, paramConst};
+                        _p.meshOutput = meshOutKind;
+                        funcDecl->params.push_back(_p);
                     }
 
                     if (t.type == TOK_COMMA) {

@@ -37,6 +37,13 @@ namespace omegasl {
             diagnosticOut = ss.str();
             return false;
         }
+        /// Mesh emission (MSL `[[mesh]]`) is a later phase; the front-end
+        /// checkpoint accepts `mesh` in parse/Sema but no backend emits it yet.
+        if (stage == ast::ShaderDecl::Mesh) {
+            diagnosticOut = "mesh shader codegen is not yet implemented on the Metal backend "
+                            "(OmegaSL front-end checkpoint — see gte/docs/Mesh-Shader-Implementation-Plan.md).";
+            return false;
+        }
         return true;
     }
 

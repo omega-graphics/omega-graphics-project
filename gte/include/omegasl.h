@@ -313,6 +313,19 @@ struct omegasl_compute_shader_threadgroup_desc {
     unsigned x = 0,y = 0,z = 0;
 };
 
+/// Mesh-stage descriptor. `topology`: 0 = triangle, 1 = line, 2 = point
+/// (mirrors ast::ShaderDecl::MeshDesc::Topology). The per-meshlet local
+/// workgroup size is carried by `omegasl_shader::threadgroupDesc`, exactly
+/// as for compute's [numthreads]. Appended at the tail of the shader struct
+/// so the numeric value of pre-existing fields is preserved; only emitted /
+/// read for `OMEGASL_SHADER_MESH` entries (see CodeGen.h writer / GE.cpp
+/// reader).
+struct omegasl_mesh_shader_desc {
+    unsigned max_vertices = 0;
+    unsigned max_primitives = 0;
+    int topology = 0;
+};
+
 
 struct omegasl_shader {
     omegasl_shader_type type;
@@ -320,6 +333,7 @@ struct omegasl_shader {
     omegasl_vertex_shader_input_desc vertexShaderInputDesc;
     omegasl_compute_shader_params_desc computeShaderParamsDesc;
     omegasl_compute_shader_threadgroup_desc threadgroupDesc;
+    omegasl_mesh_shader_desc meshDesc;
     omegasl_shader_layout_desc *pLayout;
     unsigned nLayout;
     void *data;

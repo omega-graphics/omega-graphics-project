@@ -96,9 +96,11 @@ Critical for modern UX.
 |---|---|---|
 | `Tooltip` | Hover/focus contextual hint | Positioning and collision strategy. |
 | `Popover` | Anchored floating panel | Rich interactive overlay. |
-| `Menu`/`ContextMenu` | Command list | Keyboard navigation and role mapping. |
-| `ModalDialog` | Blocking workflow container | Focus trap + accessibility semantics. |
-| `Toast`/`Banner` | Non-blocking notifications | Queueing and timeout policy hooks. |
+| `PopupMenu`/`ContextMenu` | Command list | Keyboard navigation and role mapping. |
+| `Modal` | Blocking workflow container | Focus trap + accessibility semantics. |
+| `Snackbar`/`Banner` | Non-blocking notifications | Queueing and timeout policy hooks. |
+
+> **Naming note:** These are custom in-view rendered overlays — deliberately *not* the native UI classes. `PopupMenu`/`Modal`/`Snackbar` avoid colliding with the native-backed `Menu`/`MenuItem` (`UI/Menu.h`, wraps `NativeMenu`), the `NativeDialog` family (`Native/NativeDialog.h`), and `NotificationCenter` (`UI/Notification.h`, wraps `NativeNote`). Implement these for users who don't want native-looking UI.
 | `Sheet` | Partial-screen/modal panel | Desktop/mobile adaptable behavior. |
 
 ## H. Media and Document Widgets
@@ -125,7 +127,7 @@ These keep the toolkit production-ready.
 1. Foundation + Layout (`Container`, `HStack`, `VStack`, `ZStack`, `Grid`).
 2. Text/Input essentials (`Label`, `TextInput`, `Button`, `Toggle`, `Select`).
 3. Collection widgets (`ListView`, `TableView`, `TreeView`).
-4. Overlays (`Tooltip`, `Popover`, `ModalDialog`, `Toast`).
+4. Overlays (`Tooltip`, `Popover`, `Modal`, `Snackbar`).
 5. Media/Document widgets (`VideoViewWidget`, `SVGViewWidget`, `CanvasWidget`).
 
 ## API Consistency Rules

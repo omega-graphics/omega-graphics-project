@@ -419,7 +419,17 @@ namespace omegasl {
         /// cleanly without writing partial source.
         virtual bool supportsStage(ast::ShaderDecl::Type stage,
                                    std::string &diagnosticOut) const {
-            (void)stage;
+            /// Mesh-shader emission is not yet implemented on any backend
+            /// (OmegaSL front-end checkpoint). The front-end parses and
+            /// type-checks `mesh` stages; per-backend codegen lands in a later
+            /// phase, at which point each target overrides this to report mesh
+            /// support. Until then a `mesh` stage stubs cleanly here with a
+            /// precise reason instead of emitting broken source.
+            if(stage == ast::ShaderDecl::Mesh){
+                diagnosticOut = "mesh shader codegen is not yet implemented for this backend "
+                                "(OmegaSL front-end checkpoint — see gte/docs/Mesh-Shader-Implementation-Plan.md).";
+                return false;
+            }
             (void)diagnosticOut;
             return true;
         }

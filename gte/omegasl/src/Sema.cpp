@@ -3143,6 +3143,7 @@ namespace omegasl {
                             : shaderType == ast::ShaderDecl::Fragment? AttributeContext::FragmentShaderArgument
                             : shaderType == ast::ShaderDecl::Compute? AttributeContext::ComputeShaderArgument
                             : shaderType == ast::ShaderDecl::Hull? AttributeContext::HullShaderArgument
+                            : shaderType == ast::ShaderDecl::Mesh? AttributeContext::MeshShaderArgument
                             : AttributeContext::DomainShaderArgument;
                         if(!isValidAttributeInContext(p.attributeName.value(),context)){
                             auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + p.attributeName.value() + "` is not valid in parameter context.");
@@ -3208,6 +3209,89 @@ namespace omegasl {
                     paramIndex += 1;
                 }
 
+                /// Mesh-stage structural validation. A `mesh` shader emits a
+                /// meshlet: it must declare exactly one `out vertices` array and
+                /// exactly one `out indices` array, each sized to the
+                /// descriptor's declared maxima, with element types the three
+                /// backends agree on (the vertex output is a user struct; the
+                /// index tuple's width follows the topology). These shapes are
+                /// validated here, before body sem, so a malformed signature
+                /// fails with a precise message rather than surfacing as a
+                /// confusing codegen error later.
+                if(shaderType == ast::ShaderDecl::Mesh){
+                    if(_decl->meshDesc.maxVertices == 0 || _decl->meshDesc.maxPrimitives == 0){
+                        auto e = std::make_unique<TypeError>(std::string("Mesh shader `") + _decl->name + "` must declare positive `max_vertices` and `max_primitives` in its descriptor.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    ast::AttributedFieldDecl *vertsParam = nullptr, *indicesParam = nullptr;
+                    for(auto & p : _decl->params){
+                        if(p.meshOutput == ast::AttributedFieldDecl::Vertices){
+                            if(vertsParam){
+                                auto e = std::make_unique<TypeError>(std::string("Mesh shader `") + _decl->name + "` declares more than one `out vertices` output.");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            vertsParam = &p;
+                        }
+                        else if(p.meshOutput == ast::AttributedFieldDecl::Indices){
+                            if(indicesParam){
+                                auto e = std::make_unique<TypeError>(std::string("Mesh shader `") + _decl->name + "` declares more than one `out indices` output.");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            indicesParam = &p;
+                        }
+                    }
+                    if(!vertsParam || !indicesParam){
+                        auto e = std::make_unique<TypeError>(std::string("Mesh shader `") + _decl->name + "` must declare exactly one `out vertices` array and one `out indices` array.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    /// `out vertices`: a single array, extent == max_vertices,
+                    /// element a user (`internal`) struct — the per-vertex output.
+                    if(vertsParam->typeExpr->arrayDims.size() != 1
+                       || vertsParam->typeExpr->arrayDims[0] != _decl->meshDesc.maxVertices){
+                        auto e = std::make_unique<TypeError>(std::string("Mesh shader `") + _decl->name + "`: `out vertices` array `" + vertsParam->name + "` must be a single array of size max_vertices (" + std::to_string(_decl->meshDesc.maxVertices) + ").");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    auto vertElemTy = resolveTypeWithExpr(vertsParam->typeExpr);
+                    if(vertElemTy == nullptr || vertElemTy->builtin){
+                        auto e = std::make_unique<TypeError>(std::string("Mesh shader `") + _decl->name + "`: `out vertices` element type must be a struct, not `" + vertsParam->typeExpr->name + "`.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    /// `out indices`: a single array, extent == max_primitives,
+                    /// element width set by topology (triangle=uint3 / line=uint2
+                    /// / point=uint) — the per-primitive connectivity tuple.
+                    if(indicesParam->typeExpr->arrayDims.size() != 1
+                       || indicesParam->typeExpr->arrayDims[0] != _decl->meshDesc.maxPrimitives){
+                        auto e = std::make_unique<TypeError>(std::string("Mesh shader `") + _decl->name + "`: `out indices` array `" + indicesParam->name + "` must be a single array of size max_primitives (" + std::to_string(_decl->meshDesc.maxPrimitives) + ").");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    auto idxElemTy = resolveTypeWithExpr(indicesParam->typeExpr);
+                    ast::Type *wantIdxTy = _decl->meshDesc.topology == ast::ShaderDecl::MeshDesc::Triangle ? ast::builtins::uint3_type
+                                          : _decl->meshDesc.topology == ast::ShaderDecl::MeshDesc::Line ? ast::builtins::uint2_type
+                                          : ast::builtins::uint_type;
+                    if(idxElemTy != wantIdxTy){
+                        const char *wantName = _decl->meshDesc.topology == ast::ShaderDecl::MeshDesc::Triangle ? "uint3"
+                                              : _decl->meshDesc.topology == ast::ShaderDecl::MeshDesc::Line ? "uint2" : "uint";
+                        auto e = std::make_unique<TypeError>(std::string("Mesh shader `") + _decl->name + "`: `out indices` element type must be `" + wantName + "` for the declared topology, not `" + indicesParam->typeExpr->name + "`.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                }
+
                 /// 3. Check function block.
                 auto eval_result = performSemForBlock(*_decl->block,_decl);
 
@@ -3234,9 +3318,10 @@ namespace omegasl {
                     }
                 }
 
-                if(shaderType == ast::ShaderDecl::Compute){
+                if(shaderType == ast::ShaderDecl::Compute || shaderType == ast::ShaderDecl::Mesh){
                     if(!_decl->returnType->compare(ast::TypeExpr::Create(ast::builtins::void_type))){
-                        auto e = std::make_unique<TypeError>(std::string("Compute shader `") + _decl->name + "` must return void, not " + _decl->returnType->name);
+                        const char *stageName = shaderType == ast::ShaderDecl::Mesh ? "Mesh" : "Compute";
+                        auto e = std::make_unique<TypeError>(std::string(stageName) + " shader `" + _decl->name + "` must return void, not " + _decl->returnType->name);
                         e->loc = _decl->loc.value_or(ErrorLoc{});
                         diagnostics->addError(std::move(e));
                         return false;
