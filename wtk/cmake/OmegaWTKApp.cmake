@@ -35,6 +35,14 @@ function(OmegaWTKApp)
         target_compile_definitions(${_ARG_NAME} PRIVATE OMEGAWTK_APP WINDOWS_PRIVATE TARGET_WIN32 TARGET_DIRECTX)
         set(EMBED "\"${OMEGAWTK_SOURCE_DIR}/target/win32/app.exe.manifest\"")
         configure_file(${OMEGAWTK_SOURCE_DIR}/target/win32/manifest.rc.in ${CMAKE_CURRENT_BINARY_DIR}/res.rc)
+        # res.rc embeds app.exe.manifest by path, so the RC compiler reads the
+        # manifest at compile time but CMake cannot infer that from the generated
+        # res.rc. Declare it as an explicit object dependency so editing
+        # app.exe.manifest forces the resource (and thus the EXE's embedded
+        # manifest) to rebuild; otherwise an incremental build silently keeps the
+        # stale manifest baked into the binary.
+        set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/res.rc PROPERTIES
+            OBJECT_DEPENDS "${OMEGAWTK_SOURCE_DIR}/target/win32/app.exe.manifest")
         target_sources(${_ARG_NAME} PRIVATE ${OMEGAWTK_SOURCE_DIR}/target/win32/mmain.cpp ${CMAKE_CURRENT_BINARY_DIR}/res.rc)
         target_link_options(${_ARG_NAME} PRIVATE /SUBSYSTEM:CONSOLE /ENTRY:WinMainCRTStartup /MANIFEST:NO)
 

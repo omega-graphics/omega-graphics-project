@@ -21,4 +21,21 @@
         </requestedPrivileges>
       </security>
     </trustInfo>
+  <!-- Common Controls v6. Required so TaskDialogIndirect (used by
+       WinAlertDialog, compiled into OmegaWTK.dll) binds against
+       comctl32.dll 6.x in WinSxS. Without this activation context the
+       loader resolves the v5 comctl32 in System32, which lacks the
+       export, and every EXE that loads OmegaWTK.dll aborts at startup
+       with STATUS_ORDINAL_NOT_FOUND (0xC0000138) before main runs. -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+          type="win32"
+          name="Microsoft.Windows.Common-Controls"
+          version="6.0.0.0"
+          processorArchitecture="*"
+          publicKeyToken="6595b64144ccf1df"
+          language="*"/>
+    </dependentAssembly>
+  </dependency>
 </assembly>

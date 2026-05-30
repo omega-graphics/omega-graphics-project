@@ -18,6 +18,11 @@
 #include <wtypesbase.h>
 // #include <atlstr.h>
 
+// TaskDialogIndirect lives in comctl32.lib (Common Controls v6), which is not
+// among the default MSVC system libraries CMake links. Emit a linker directive
+// so lld-link/link.exe pull it in for this TU.
+#pragma comment(lib, "comctl32.lib")
+
 namespace OmegaWTK::Native::Win {
 
     static std::wstring widen(const OmegaCommon::String & s) {
