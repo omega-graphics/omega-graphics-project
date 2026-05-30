@@ -729,6 +729,7 @@ These flags currently live on the drawing area (`GTKItem.cpp:359, 361`); they mo
 | **P1** | 2.9 NativeScreen | Multi-monitor support — also the proper home for AppWindow screen targeting; replaces the interim GTK primary-monitor anchoring |
 | ~~P1~~ **Done** | 2.11 NativeNote / NotificationCenter | Implemented |
 | ~~P1~~ **Done** | 2.12 NativeMenu / Menu | Implemented |
+| **P1** | 2.13 GTK root NativeItem collapse (X11-direct) | Pairs with §2.2/§2.9 — locks GTK to a single, canonical surface ownership model before more per-platform features pile on it |
 | **P3** | 2.10 NativeAccessibility | Stub now, implement per-platform over time |
 
 ---
@@ -754,6 +755,11 @@ These flags currently live on the drawing area (`GTKItem.cpp:359, 361`); they mo
 - `WidgetTreeHost` (UI, internal) — owns `FocusManager` and tooltip-hover timer; routes keyboard events to focused View; commits hovered View's cursor shape to the root NativeWindow
 - `AppWindow.h` / `AppWindow.cpp` (UI) — screen-targeting constructor overload (`AppWindow(rect, NativeScreenDesc, delegate)`), `currentScreen()`, `moveToScreen()`; existing constructor resolves through `AppWindowManager::defaultScreen()`
 - `AppWindowManager` (UI) — `setDefaultScreen` / `defaultScreen` for app-wide default targeting
+
+### GTK backend — §2.13 (X11-direct root surface)
+- `wtk/src/Native/gtk/GTKAppWindow.cpp` — install root event masks + button/motion/key/scroll/enter/leave/configure/realize handlers directly on the GtkWindow; route emissions through the AppWindow `eventEmitter()`; turn on `app_paintable` + double-buffer-off on the toplevel; menu-bar inset tracking
+- `wtk/src/Native/gtk/GTKItem.cpp` — root NativeItem binds to the toplevel GdkWindow; remove `gtk_drawing_area_new()` path for the root; non-root construction becomes unreachable under the virtual view model
+- `wtk/include/omegaWTK/NativePrivate/gtk/GTKItem.h` / `GTKAppWindow.h` — drop the child-of-`GTKItem` constructor; expose `GTKAppWindow::menuBarInset()` for the hover dispatcher
 
 ### Already modified (done)
 - `NativeEvent.h` — complete ✅
