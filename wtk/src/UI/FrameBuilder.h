@@ -65,6 +65,12 @@ class FrameBuilder {
     // another. Only the outermost pair does the session work.
     int depth_ = 0;
 
+    // Tier 4 Phase 4.3: monotonically increasing frame counter, stamped
+    // into the FrameTime handed to AnimationScheduler::tick at the start
+    // of each outermost frame. Stands in for the (not-yet-built) frame
+    // pacer's frame index.
+    std::uint32_t frameIndex_ = 0;
+
     // Tier B / B3: the active lifecycle phase. UIView::update() flips
     // this around each of its ordered sub-phases via ScopedPhase; B5
     // wires the cross-phase assertions that consult it.

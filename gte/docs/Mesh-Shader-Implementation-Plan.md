@@ -188,12 +188,17 @@ Use `amplification` in OmegaSL rather than `task`. Rationale: matches D3D12's na
 
 ---
 
-## Open Decisions
+## Open Decisions (STICK to Recommendation for all)
 
 1. **Land `amplification` with `mesh` in phase 1, or mesh-only first?** Recommendation: mesh-only. All three backends allow a mesh shader without an amplification stage, and the payload-type machinery is the most error-prone piece of the language work. Landing mesh-only first gets the pipeline plumbing exercised end-to-end, then amplification is an additive change.
+
+
 2. **Metal support policy.** The Apple7 floor excludes every Mac currently in common use. Options: (a) implement Metal anyway and let users opt in on M3+; (b) report `GTEDEVICE_FEATURE_MESH_SHADER` as false on Metal and ship D3D12/Vulkan only in v1. Recommendation: (a). The detection is already there, the hardware exists, and we keep the cross-backend surface symmetric.
+
 3. **Per-primitive attributes** — confirm deferral to v2.
+
 4. **`GEMesh` integration** — should the existing mesh representation feed mesh shaders directly (automatic meshlet generation), or is that a separate effort on top of this plan? Recommendation: separate effort. This plan delivers the raw pipeline; the higher-level "draw a GEMesh via mesh shaders" wrapper can come later.
+
 
 ---
 

@@ -493,7 +493,8 @@ namespace omegasl {
                 Fragment,
                 Compute,
                 Hull,
-                Domain
+                Domain,
+                Mesh
             } Type;
             Type shaderType;
             struct ResourceMapDesc {
@@ -530,6 +531,23 @@ namespace omegasl {
                 unsigned outputControlPoints = 3;
             };
             TessellationDesc tessDesc;
+            /// Mesh-stage descriptor, populated for `shaderType == Mesh` from
+            /// `mesh(max_vertices=N, max_primitives=M, topology=T)`. The
+            /// per-meshlet local workgroup size reuses `threadgroupDesc`
+            /// (the `[numthreads]`-equivalent), matching how compute stores
+            /// it. `topology` mirrors omegasl_shader's encoding: 0 = triangle,
+            /// 1 = line, 2 = point.
+            struct MeshDesc {
+                typedef enum : int {
+                    Triangle,
+                    Line,
+                    Point
+                } Topology;
+                unsigned maxVertices = 0;
+                unsigned maxPrimitives = 0;
+                Topology topology = Triangle;
+            };
+            MeshDesc meshDesc;
             /// §1.5 — early depth/stencil. Set by the parser when a
             /// `fragment(early_depth)` descriptor is present; only ever
             /// true on a Fragment shader (the parser accepts the

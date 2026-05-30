@@ -4,6 +4,8 @@
 #include "WidgetTreeHost.h"
 
 #include <cassert>
+#include <chrono>
+#include <cstdint>
 
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/CanvasEffect.h"
@@ -24,6 +26,16 @@ namespace {
 // AppWindow. Paint runs on the UI thread; a single static is
 // sufficient. If paint ever multi-threads, this becomes thread_local.
 FrameBuilder * g_activeFrameBuilder = nullptr;
+
+// Tier 4 Phase 4.3: monotonic clock for the FrameTime stamp handed to
+// AnimationScheduler::tick. Interim stand-in for the frame pacer
+// (Frame-Pacing-Plan); steady_clock is monotonic, which is all the
+// scheduler's elapsed-time math needs.
+std::uint64_t steadyFrameClockNs(){
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 }
 
 FrameBuilder::FrameBuilder(AppWindow & window): window_(window) {}
@@ -48,6 +60,16 @@ void FrameBuilder::beginFrame(){
         if(desiredLane != 0 && impl->proxy.getSyncLaneId() != desiredLane){
             impl->proxy.setSyncLaneId(desiredLane);
         }
+    }
+
+    // Tier 4 Phase 4.3 (Block 2): Tick phase. Advance the per-window
+    // animation scheduler once per outermost frame, before any paint
+    // work, so its side table is fresh when Paint reads it (wired in
+    // 4.4). Additive today — the scheduler's active set is empty until
+    // UIView routes onto it, so this is a no-op-over-empty for now.
+    if(impl->animationScheduler_){
+        ScopedPhase tickPhase(this, FramePhase::Tick);
+        impl->animationScheduler_->tick(FrameTime{steadyFrameClockNs(), frameIndex_++});
     }
 
     pending_.clear();

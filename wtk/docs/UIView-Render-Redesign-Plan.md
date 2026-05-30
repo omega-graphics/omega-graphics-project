@@ -2060,7 +2060,109 @@ just resize. Merge if the two land together.)*
 Sequencing: after Phase F (which defines the full-repaint workload the
 cache optimizes) and after the backend DrawOp path (4.0–4.2, done).
 
-##### Phase 4.3 — `AnimationScheduler` lands alongside the old animator (folds Animation-Scheduler-Plan Tier A)
+##### Phase H (follow-up) — Frame pacing: real `FrameTime` + load-aware frame gating (folds Frame-Pacing-Plan)
+
+**Goal:** Replace Phase 4.3's interim `steady_clock` `FrameTime` stand-in
+with a real per-window frame pacer, and add cooperative backpressure so
+the FrameBuilder *defers a non-critical frame before it is built* rather
+than dropping it after the GPU work is wasted. This folds
+[Frame-Pacing-Plan.md](Frame-Pacing-Plan.md) into the post-Tier-4 frame
+loop.
+
+**Ownership (same split as the scheduler).** Frame-Pacing-Plan.md owns
+the *mechanism* — `PaceHint`, the per-lane time-windowed
+`FramePacingMonitor` (100ms quantised windows, asymmetric hysteresis,
+discontinuity reset), and the two-layer inner-loop (`waitForLaneAdmission`)
+/ outer-loop (pace hint) architecture. This phase only **sequences and
+re-homes** its integration points onto the SceneNode / FrameBuilder /
+`DirtyBits` pipeline, exactly as Tier 4 folds in the `AnimationScheduler`.
+It does not re-specify the monitor's internals.
+
+**Why it needs re-homing (the pacing plan predates Tier 4).** The plan's
+producer-side integration (its Phases 3–5) is written against the old
+per-view paint model and must move:
+
+- The plan hooks `Widget::executePaint(PaintReason, immediate)` to consult
+  `view->compositorPaceHint()` and defer via `hasPendingInvalidate`. After
+  Phase 4.7, `executePaint` is no longer a paint driver — it is "mark
+  `DirtyBits` + request a frame." So the pace check moves up to the
+  **frame-request / `FrameBuilder::buildFrame` gating** point: when an
+  invalidation requests a frame, the window reads the `PaceHint` and either
+  runs the Measure → Arrange → Paint pass or **leaves the dirty bits set
+  and skips this frame's build**. `DirtyBits` already coalesce
+  (invalidations between frames union into one paint), so deferral is
+  "skip the build, the bits persist" — no separate `hasPendingInvalidate`
+  flag, and the next admitted frame drains them naturally.
+- The plan's `PaintReason`-based `isPaceCritical` / `isPaceDeferrable`
+  classification maps onto the new world: a **resize** frame (Phase F's
+  forced full-tree repaint) is pace-critical and never deferred; a
+  **Paint-only animation tick** (`DirtyBit::Paint` set by the scheduler)
+  is deferrable under `Saturated`; first paint is never deferred.
+- The plan's Motivation talks about wasting a recorded `VisualCommand`
+  list / `CanvasFrame` snapshot. Those types are gone (Block 1); the work
+  now avoided is *building a `DisplayList` and `submitDisplayList`-ing it*.
+  The principle — don't build a frame the inner loop would just block on —
+  is unchanged.
+
+**Concrete connection to what already landed:**
+
+- **The pacer becomes the source of `AnimationScheduler::tick`'s
+  `FrameTime` (closes the 4.3 seam).** `FrameTime{monotonicNs, frameIndex}`
+  is exactly what a vsync-aligned pacer produces; it replaces 4.3's
+  `steadyFrameClockNs()` + the `FrameBuilder` frame counter. Until this
+  phase lands, the `steady_clock` stand-in is correct-but-free-running.
+- **Animation-aware pacing** (Frame-Pacing-Plan "Future extensions"): the
+  `AnimationScheduler` self-regulates, so a live animation's Paint frames
+  bypass throttling and pacing never causes animation stutter. The
+  scheduler already knows its active set (`hasAnyAnimationFor` /
+  `stats().activeProperty`), so it can mark its tick-driven frames
+  pace-critical instead of inventing a `PaceHint::Override` packet flag.
+
+**Inner loop unchanged.** Lane admission (`waitForLaneAdmission`) stays as
+the per-frame hard GPU-safety gate; this phase only adds the outer-loop
+time-windowed `PaceHint`. Per the pacing plan, it also assumes the stale
+frame-coalescing removal (`Stale-Frame-Coalescing-Removal-Plan.md`) has
+landed.
+
+Sequencing: the monitor + query side (Frame-Pacing-Plan Phases 1–2, on
+`Compositor` / `CompositorClientProxy`) is architecture-agnostic and can
+land independently/earlier; the producer-side gating (its Phases 3–5)
+depends on Phase 4.7's `FrameBuilder` `DirtyBits` loop being the single
+frame entry point, and complements **Phase F** (resize = pace-critical)
+and **Phase G** (the content cache makes throttled/deferred repaints
+cheap). Files: the monitor/hint side per Frame-Pacing-Plan's own file
+table (`Compositor.{h,cpp}`, `CompositorClient.{h,cpp}`); the producer
+side re-homes from `Widget.Paint.cpp` to `FrameBuilder.{h,cpp}` +
+`AppWindow.cpp` (frame-request gating) and `AnimationScheduler.{h,cpp}`
+(`FrameTime` source + animation-aware override).
+
+##### Phase 4.3 — `AnimationScheduler` lands alongside the old animator (folds Animation-Scheduler-Plan Tier A) [DONE]
+
+**Status:** Complete (2026-05-29; full build succeeded). `AnimationScheduler`
+landed **UI-private** at `wtk/src/UI/AnimationScheduler.{h,cpp}` (developer
+decision — overrides Animation-Scheduler-Plan §4's public `Composition`
+placement; matches `FrameBuilder`), reusing the existing `KeyframeTrack` /
+`KeyframeLerp` / `AnimationHandle` / `TimingOptions` from
+`Composition/Animation.h`. `AppWindow::Impl` owns one next to `frameBuilder_`;
+`FrameBuilder::beginFrame()` (depth 0) ticks it once per outermost frame under
+a `ScopedPhase(Tick)`. The tick runs the real keyframe math (delay / duration /
+playbackRate / iterations / the four `Direction`s) against the existing
+`KeyframeLerp` specializations, writing the `(NodeId, PropertyKey, subIndex)`
+side table (property anims) or firing `apply()` (callback anims). One additive
+edit to the public header: `friend class ::OmegaWTK::AnimationScheduler` on
+`AnimationHandle` so `tick` can advance handle state/progress. Deviations from
+the plan, all flagged: `FrameTime` is an interim `steady_clock` + per-`FrameBuilder`
+frame-counter stand-in (real pacer is the new **Phase H** above); the side
+table **clears on completion** (developer call — `FillMode` "hold final value"
+retention deferred while WML is still a doc); node-dirty marking is a documented
+4.4/4.7 seam (no `NodeId`→`View` registry yet, and `DirtyBits` are not
+load-bearing until 4.7), with `layoutAffecting` already carried per active so
+4.7 only resolves the node and ORs the bits. Additive only — the
+`ViewAnimator` / `LayerAnimator` path is untouched and still drives every
+animation; the templated property/callback API is unexercised until 4.4.
+Files: new `wtk/src/UI/AnimationScheduler.{h,cpp}`,
+`wtk/include/omegaWTK/Composition/Animation.h`, `wtk/src/UI/AppWindowImpl.h`,
+`wtk/src/UI/AppWindow.cpp`, `wtk/src/UI/FrameBuilder.{h,cpp}`.
 
 A per-window `AnimationScheduler`, owned by `AppWindow` next to
 `FrameBuilder`, ticks active animation tracks once per frame and writes

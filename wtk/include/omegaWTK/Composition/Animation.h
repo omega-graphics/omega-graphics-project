@@ -19,6 +19,10 @@
 
 namespace OmegaWTK {
     class View;
+    // UIView-Render-Redesign Tier 4 Phase 4.3: the per-window
+    // AnimationScheduler (UI-private) advances AnimationHandles it owns,
+    // so it needs the same internal access the legacy animators have.
+    class AnimationScheduler;
 }
 namespace OmegaWTK::Composition {
     namespace detail {
@@ -180,6 +184,7 @@ namespace OmegaWTK::Composition {
         friend class LayerAnimator;
         friend class ViewAnimator;
         friend class detail::AnimationRuntimeRegistry;
+        friend class ::OmegaWTK::AnimationScheduler;
         void setStateInternal(AnimationState state);
         void setProgressInternal(float normalized);
         void setSubmittedPacketIdInternal(std::uint64_t packetId);

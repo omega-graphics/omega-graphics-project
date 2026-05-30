@@ -243,7 +243,13 @@ enum omegasl_shader_type : int {
     OMEGASL_SHADER_FRAGMENT,
     OMEGASL_SHADER_COMPUTE,
     OMEGASL_SHADER_HULL,
-    OMEGASL_SHADER_DOMAIN
+    OMEGASL_SHADER_DOMAIN,
+    /// Mesh-shader pipeline mesh stage (SM6.5 `ms` / MSL `[[mesh]]` /
+    /// `GL_EXT_mesh_shader`). Appended at the tail so the numeric value of
+    /// every pre-existing stage is preserved in serialized `.omegasllib`
+    /// archives. Gated at load time by OMEGASL_FEATURE_BIT_MESH_SHADERS.
+    /// The amplification/task stage will append after this when it lands.
+    OMEGASL_SHADER_MESH
 };
 
 /// Per-shader feature requirements. Each bit names a runtime feature that

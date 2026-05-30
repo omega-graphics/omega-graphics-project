@@ -41,6 +41,12 @@ static inline bool resizeRectChanged(const Composition::Rect &lhs,const Composit
         // entry points (displayRootWindow, dispatchResize*ToHosts) call
         // into it below.
         impl_->frameBuilder_ = std::make_unique<FrameBuilder>(*this);
+        // Tier 4 Phase 4.3 (Block 2): stand up the per-window animation
+        // scheduler as a peer of the FrameBuilder. Additive — the legacy
+        // ViewAnimator/LayerAnimator path still drives every animation;
+        // nothing reads the scheduler's side table until 4.4. FrameBuilder
+        // ticks it once per frame (see beginFrame).
+        impl_->animationScheduler_ = std::make_unique<AnimationScheduler>(*this);
     };
 
 FrameBuilder * AppWindow::frameBuilder() const {

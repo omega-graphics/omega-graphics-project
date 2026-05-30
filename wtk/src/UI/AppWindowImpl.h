@@ -8,6 +8,7 @@
 #include "omegaWTK/Composition/Layer.h"
 #include "../Composition/backend/ResourceFactory.h"
 #include "FrameBuilder.h"
+#include "AnimationScheduler.h"
 
 #include <memory>
 
@@ -36,6 +37,12 @@ struct AppWindow::Impl {
     // Tier 3 Phase 3.1: window-level frame driver. Owned for the
     // AppWindow's lifetime.
     std::unique_ptr<FrameBuilder> frameBuilder_;
+
+    // Tier 4 Phase 4.3 (Block 2): per-window animation runtime, a peer of
+    // the FrameBuilder. Ticked once per frame from FrameBuilder::beginFrame.
+    // Additive — the legacy ViewAnimator/LayerAnimator path still drives
+    // all animation until 4.4.
+    std::unique_ptr<AnimationScheduler> animationScheduler_;
 
     Impl(AppWindow & owner,Composition::Rect rectValue,AppWindowDelegate * delegateValue):
         nativeWindow(Native::make_native_window(rectValue,&owner)),

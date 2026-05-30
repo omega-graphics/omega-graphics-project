@@ -4,14 +4,45 @@ Replace the removed stale frame coalescing mechanism with a cooperative frame pa
 
 ---
 
+## Status: reconciled with post-Tier-4
+
+The compositor-side **mechanism** (the `FramePacingMonitor` + `PaceHint`,
+Implementation Phases 1–2 + 6 below) is architecture-agnostic and stands
+as written. The producer-side **integration** (Phases 3–5) was originally
+written against the pre-Tier-4 per-view paint model and has been re-homed
+onto the post-Tier-4 render architecture
+([UIView-Render-Redesign-Plan.md](UIView-Render-Redesign-Plan.md)), where
+this plan is sequenced as **Phase H (follow-up)**. The substrates the
+original draft named are gone or repurposed; the substitutions used
+throughout:
+
+| Pre-Tier-4 (original draft) | Post-Tier-4 (this plan now targets) |
+|---|---|
+| Widget records a `VisualCommand` list into a `CanvasFrame` | View `paint(PaintContext&)` appends `DrawOp`s into the window `DisplayList` |
+| Per-view `CompositorClientProxy` push | One window proxy + lane; `FrameBuilder::submitDisplayList` |
+| `Widget::executePaint` *drives* the paint | `executePaint` only marks `DirtyBits` + requests a frame; `FrameBuilder::buildFrame` drives Measure→Arrange→Paint |
+| Defer via a `hasPendingInvalidate` flag | Leave `DirtyBits` set, skip this frame's build; the next admitted frame drains them |
+| Per-view `LayerTree` + `LayerTreeObserver` | One window `LayerTree` + one window-level observer |
+| `ViewAnimator` / `LayerAnimator` submit animation frames | `AnimationScheduler` ticks once per frame; Paint reads its side table |
+
+Net effect: the pace check moves from *per-widget, at record time* to
+*per-window, at the `FrameBuilder` frame-request gate*. The mechanism's
+intent is unchanged — throttle non-critical production before a frame is
+built, never block a critical one. One new integration the original draft
+predates: **the pacer becomes the source of `AnimationScheduler::tick`'s
+`FrameTime`** (see "Frame pacing as the `FrameTime` source" below),
+replacing the interim `steady_clock` stand-in that redesign Phase 4.3 left.
+
+---
+
 ## Motivation
 
-Stale frame coalescing operated at the wrong point in the pipeline. By the time a frame reaches `scheduleCommand()`, the widget has already:
+Stale frame coalescing operated at the wrong point in the pipeline. By the time a frame reaches the compositor queue, the producer has already done all of its CPU work (post-Tier-4 terms):
 
-1. Executed its `onPaint()` callback
-2. Issued all Canvas draw calls, building a `VisualCommand` list
-3. Snapshot the `CanvasFrame` (including layer rect)
-4. Pushed the frame through `CompositorClient` → `CompositorClientProxy`
+1. Run each dirty node's `paint(PaintContext&)` over the dirty subtree
+2. Appended all of its `DrawOp`s into the window `DisplayList`
+3. Packed the `DisplayList` into the `CompositeFrame::WidgetSlice`
+4. Submitted it through the window `CompositorClientProxy` (`submitDisplayList`)
 
 Dropping the frame at enqueue time wastes all of that CPU work. Worse, during resize it drops the only frame that carries the correct post-resize geometry, causing a visible content gap.
 
@@ -259,51 +290,67 @@ Add to `CompositorClientProxy`:
 PaceHint getPaceHint() const;
 ```
 
-Implementation delegates to `frontend->getPaceHint(syncLaneId)`. Returns `PaceHint::Normal` if `frontend` is null (no compositor attached yet).
+Implementation delegates to `frontend->getPaceHint(syncLaneId)`. Returns `PaceHint::Normal` if `frontend` is null (no compositor attached yet). Post-Tier-4 there is one `CompositorClientProxy` per window and one sync lane per window (per-view proxies and lanes were collapsed in render-redesign Tiers 1/3), so this reads the window lane's hint.
 
-### Phase 3 — Expose pace hint through View
+### Phase 3 — Expose the pace hint at the window / FrameBuilder
 
-**Files:** `View.h`, `View.cpp`
+**Files:** `FrameBuilder.{h,cpp}`, `AppWindow.cpp` (+ optionally `View.Core.cpp`)
 
-Add to `View`:
+The original draft put the accessor on `View` (delegating to a per-view
+`compositorProxy()`). Post-Tier-4 there is no per-view proxy — there is one
+proxy per window — and the consumer is the `FrameBuilder` frame-request
+gate (Phase 4), not per-widget code. So the hint is read at the window
+level:
 
 ```cpp
-PaceHint compositorPaceHint() const;
+PaceHint FrameBuilder::compositorPaceHint() const;   // → window proxy getPaceHint()
 ```
 
-Delegates to `compositorProxy().getPaceHint()`. This is the surface that Widget code calls.
+A thin `View::compositorPaceHint()` convenience (reaching the window's
+proxy via the view's window) can still be added if widget-level code needs
+to consult the hint directly, but it is no longer the primary surface — the
+gating decision is centralized in the `FrameBuilder`.
 
-### Phase 4 — Widget invalidation pacing
+### Phase 4 — Frame-request gating (was: Widget invalidation pacing)
 
-**Files:** `Widget.h`, `Widget.Paint.cpp`, `WidgetImpl.h`
+**Files:** `FrameBuilder.{h,cpp}`, `AnimationScheduler.{h,cpp}`, `AppWindow.cpp`
 
-Modify `Widget::executePaint()` to consult the pace hint before beginning a paint cycle. The decision depends on both the hint and the paint reason:
+After render-redesign Phase 4.7, `Widget::executePaint(PaintReason, immediate)`
+no longer drives a paint — it marks the subtree's `DirtyBits` and requests a
+frame. So the pace check moves to the **frame-request gate**: before
+`FrameBuilder` runs a Measure → Arrange → Paint pass for a non-critical
+invalidation, it consults the window pace hint and may skip the build,
+leaving the `DirtyBits` set for a later frame.
 
 ```cpp
-void Widget::executePaint(PaintReason reason, bool immediate) {
-    // ... existing mode/reentrancy checks ...
-
-    // Frame pacing: check compositor load before recording.
-    if(!immediate && reason != PaintReason::Initial) {
-        auto hint = view->compositorPaceHint();
-        if(hint == PaceHint::Saturated && !isPaceCritical(reason)) {
-            // Compositor is at capacity. Defer this invalidation.
-            impl_->hasPendingInvalidate = true;
-            impl_->pendingPaintReason = reason;
-            return;
-        }
-        if(hint == PaceHint::Throttled && isPaceDeferrable(reason)) {
-            impl_->hasPendingInvalidate = true;
-            impl_->pendingPaintReason = reason;
-            return;
-        }
+// Consulted on the frame-request path (executePaint → request frame, or the
+// pacer's buildFrame entry). `immediate` paints (invalidateNow) bypass pacing.
+bool FrameBuilder::shouldBuildFrame(PaintReason reason, bool immediate) const {
+    if(immediate || reason == PaintReason::Initial){
+        return true;                       // never gate startup / explicit-now
     }
-
-    // ... proceed with paint as before ...
+    if(scheduler_ != nullptr && scheduler_->stats().activeProperty > 0){
+        return true;                       // a live animation is pace-critical
+    }
+    const PaceHint hint = compositorPaceHint();
+    if(hint == PaceHint::Saturated && !isPaceCritical(reason)){
+        return false;                      // defer: leave DirtyBits set, skip build
+    }
+    if(hint == PaceHint::Throttled && isPaceDeferrable(reason)){
+        return false;
+    }
+    return true;
 }
 ```
 
-**Pace criticality classification:**
+When `shouldBuildFrame` returns false, the invalidation's `DirtyBits` simply
+stay set on the affected nodes — no separate `hasPendingInvalidate` flag,
+because `DirtyBits` already coalesce across frames (redesign §3.4). The next
+admitted frame (the drain notification of Phase 5, or any later non-deferred
+invalidation) runs the pass and drains the accumulated bits in one paint.
+
+**Pace criticality classification** (`PaintReason` survives Tier 4 unchanged —
+`Initial` / `StateChanged` / `Resize` / `ThemeChanged`):
 
 ```cpp
 static bool isPaceCritical(PaintReason reason) {
@@ -332,23 +379,24 @@ static bool isPaceDeferrable(PaintReason reason) {
 
 Key invariants:
 - `PaintReason::Initial` is never deferred (startup must be deterministic).
-- `PaintReason::Resize` is never deferred (the user is actively dragging; stale geometry is immediately visible).
+- `PaintReason::Resize` is never deferred (the user is actively dragging; stale geometry is immediately visible). Per render-redesign **Phase F**, resize also now forces a full-tree relayout + repaint with no per-widget opt-in, so the whole resize frame is pace-critical.
+- A frame driven by a live `AnimationScheduler` animation is pace-critical (see "Animation-aware pacing"), so throttling never causes animation stutter.
 - `PaintReason::ThemeChanged` is not deferred under `Throttled` but is deferred under `Saturated`.
 - `immediate == true` paints (from `invalidateNow()`) bypass pacing entirely — the caller explicitly requested immediate execution.
 
-### Phase 5 — Deferred invalidation drain
+### Phase 5 — Deferred frame drain
 
-When the compositor's load drops, deferred invalidations need to be picked up. There are two mechanisms:
+When the compositor's load drops, deferred frames need to be picked up. Two mechanisms, both re-homed to the window level:
 
-**5a. Next `executePaint` call.** The existing `coalesceInvalidates` / `hasPendingInvalidate` loop in `executePaint` already handles this: the next non-deferred invalidation will drain the pending flag in the same paint cycle.
+**5a. Next admitted frame.** Because deferral just leaves `DirtyBits` set, the next non-deferred frame request (or the next pacer tick, once vsync-aligned production lands) runs `buildFrame`, which paints every node whose bits are still set. There is no per-widget pending-invalidate queue to drain.
 
-**5b. Compositor drain notification.** When the compositor's queue drains (`onQueueDrained()`), it can notify observed LayerTrees, which propagate to their Widgets. Add an optional callback on `LayerTreeObserver`:
+**5b. Compositor drain notification.** When the compositor's queue drains (`onQueueDrained()`), it notifies the single window `LayerTreeObserver` (per-view observers were deleted in render-redesign 4.8), which asks the `FrameBuilder` to run a frame if any `DirtyBits` remain set. Add an optional callback on `LayerTreeObserver`:
 
 ```cpp
 INTERFACE_METHOD void queueDidDrain() { }  // default no-op
 ```
 
-The Compositor's `onQueueDrained()` already exists and is called by the scheduler after the queue empties. Extend it to notify observers. Widgets that have `hasPendingInvalidate == true` can call `invalidate(pendingPaintReason)` in response.
+The Compositor's `onQueueDrained()` already exists and is called by the scheduler after the queue empties. Extend it to notify the window observer.
 
 This ensures deferred frames are eventually produced even if no new user interaction triggers an invalidation.
 
@@ -416,13 +464,17 @@ based on sustained throughput rather than instantaneous state.
 
 `shouldDropNoOpTransparentFrame()` remains unchanged. It operates at execution time on frames that are already in the queue and contains no visual content. Frame pacing operates at production time on frames that would contain content. They are independent optimisations.
 
-### Widget `coalesceInvalidates`
+### `DirtyBits` coalescing
 
-The existing `PaintOptions::coalesceInvalidates` flag causes `executePaint` to defer reentrant invalidations and drain them at the end of the current paint cycle. Frame pacing adds a second deferral path based on compositor load. Both set `hasPendingInvalidate` and reuse the same drain loop. They compose naturally.
+Post-Tier-4 there is no per-widget `coalesceInvalidates` / `hasPendingInvalidate` drain loop — invalidations between frames union into each node's `DirtyBits` (redesign §3.4) and one `buildFrame` pass paints them all. Frame pacing adds a second reason to *not* run that pass yet (compositor load); it composes naturally because deferral is just "don't build this frame, the bits persist," which is the same state coalescing already relies on.
 
-### `PaintOptions::invalidateOnResize`
+### Resize is always pace-critical
 
-When `invalidateOnResize` is true (the default), a resize triggers `invalidate(PaintReason::Resize)`. Frame pacing classifies `Resize` as pace-critical, so it is never deferred. The resize path is unaffected by pacing.
+Render-redesign **Phase F** removes the per-widget resize opt-in (`anyWidgetOptsIntoResize` / `invalidateOnResize` as a relayout gate): a window resize unconditionally relayouts and force-repaints the whole tree at the new size (stretched content otherwise persists until redraw). Frame pacing classifies `Resize` as pace-critical, so that whole-tree resize frame is never deferred — the resize path is unaffected by pacing.
+
+### Frame pacing as the `FrameTime` source (AnimationScheduler)
+
+Render-redesign Phase 4.3 ticks the per-window `AnimationScheduler` once per frame with a `FrameTime{ monotonicNs, frameIndex }`, currently synthesized from a `steady_clock` plus a `FrameBuilder` frame counter — an interim stand-in. The pacer is the natural owner of that timestamp: a (eventually vsync-aligned) monotonic clock plus the frame index it already tracks. When this plan lands, `FrameBuilder` feeds the pacer's `FrameTime` into `scheduler.tick(...)`, replacing the stand-in, so animation timing and frame pacing run off one clock. This is the concrete seam flagged in render-redesign Phase H.
 
 ---
 
@@ -431,15 +483,15 @@ When `invalidateOnResize` is true (the default), a resize triggers `invalidate(P
 This is the critical scenario — the one that stale frame coalescing broke. Walk through the expected behaviour:
 
 1. User drags window corner. Platform fires resize events.
-2. `View::resize()` updates the native layer and root layer geometry.
-3. `Widget::invalidate(PaintReason::Resize)` is called for affected widgets.
-4. `executePaint` checks `isPaceCritical(Resize)` → `true`. Pacing is bypassed.
-5. Widget records a `CanvasFrame` at the new dimensions and submits.
-6. The frame enters the compositor queue. No coalescing occurs (removed).
+2. The window relayouts the whole tree (render-redesign Phase F): each container's `LayoutManager` re-arranges its children to the new rect.
+3. The resize marks the whole tree for repaint and requests a frame with `PaintReason::Resize`.
+4. `FrameBuilder::shouldBuildFrame` checks `isPaceCritical(Resize)` → `true`. Pacing is bypassed.
+5. `buildFrame` runs Measure → Arrange → Paint; each node appends `DrawOp`s into the window `DisplayList` at the new dimensions, and `submitDisplayList` packs it into the `CompositeFrame`.
+6. The frame enters the compositor queue. No coalescing occurs (removed — and the per-view `CanvasFrame` path it operated on is gone post-Tier-4).
 7. The scheduler processes the frame. If the lane is at capacity, `waitForLaneAdmission` blocks until the prior GPU frame completes (bounded by `kMaxFramesInFlightNormal = 2`).
 8. The frame is rendered at the correct size and presented.
 
-Meanwhile, any background `StateChanged` invalidations from secondary widgets are deferred if the lane is saturated. They drain automatically when the queue clears, producing a single coalesced repaint at the final dimensions.
+Meanwhile, any background `StateChanged` invalidations from secondary nodes are deferred if the lane is saturated. Their `DirtyBits` stay set and drain automatically when the queue clears, producing a single coalesced repaint at the final dimensions.
 
 Result: resize frames are never dropped, background repaints are naturally batched, and the queue never grows unboundedly.
 
@@ -539,13 +591,16 @@ deeper integration with the platform display link.
 
 ### Animation-aware pacing
 
-Animation frames submitted by `ViewAnimator` or `LayerAnimator` could
-carry a `PaceHint::Override` flag that bypasses throttling. This
-prevents frame pacing from causing animation stutter. The animation
-system already knows its target frame rate and can self-regulate —
-frame pacing should not interfere with it. NVIDIA Reflex's approach of
-using the animation's own timing to predict GPU load would be a natural
-fit here.
+Post-Tier-4 animation is the per-window `AnimationScheduler`
+(render-redesign 4.3–4.4), not `ViewAnimator` / `LayerAnimator`, and
+there is no per-animation packet to flag. Instead the `FrameBuilder`
+frame-request gate (Phase 4) treats a frame as pace-critical whenever the
+scheduler reports live animations (`scheduler.stats().activeProperty > 0`
+/ `hasAnyAnimationFor`), so throttling never causes animation stutter —
+this is already folded into `shouldBuildFrame`. The scheduler knows its
+target timing and self-regulates; frame pacing should not interfere with
+it. NVIDIA Reflex's approach of using the animation's own timing to
+predict GPU load would be a natural further refinement.
 
 ### Per-widget pace sensitivity
 
@@ -585,39 +640,33 @@ on Windows, `wl_output` on Linux) and set the target accordingly.
 | `wtk/src/Composition/Compositor.cpp` | 1, 6 | `FramePacingMonitor::recordFrameTime()` impl, frame time recording in scheduler loop, `getPaceHint()` impl, counter increments, diagnostics output |
 | `wtk/include/omegaWTK/Composition/CompositorClient.h` | 2 | `getPaceHint()` on `CompositorClientProxy` |
 | `wtk/src/Composition/CompositorClient.cpp` | 2 | `getPaceHint()` impl |
-| `wtk/include/omegaWTK/UI/View.h` | 3 | `compositorPaceHint()` decl |
-| `wtk/src/UI/View.Core.cpp` | 3 | `compositorPaceHint()` impl |
-| `wtk/include/omegaWTK/UI/Widget.h` | 4 | Forward-declare `PaceHint` |
-| `wtk/src/UI/Widget.Paint.cpp` | 4 | Pacing check in `executePaint`, `isPaceCritical`, `isPaceDeferrable` |
-| `wtk/include/omegaWTK/Composition/Layer.h` | 5 | `queueDidDrain()` on `LayerTreeObserver` |
-| `wtk/src/Composition/Compositor.cpp` | 5 | Notify observers in `onQueueDrained()` |
+| `wtk/src/UI/FrameBuilder.{h,cpp}` | 3, 4 | `compositorPaceHint()` (reads the window proxy), `shouldBuildFrame()` + `isPaceCritical` / `isPaceDeferrable`, frame-request gating |
+| `wtk/src/UI/AppWindow.cpp` | 3, 4 | Wire the frame-request path through the FrameBuilder gate |
+| `wtk/src/UI/AnimationScheduler.{h,cpp}` | 4 | Animation-aware override (`stats().activeProperty`) + consume the pacer's `FrameTime` |
+| `wtk/include/omegaWTK/Composition/Layer.h` | 5 | `queueDidDrain()` on the window `LayerTreeObserver` |
+| `wtk/src/Composition/Compositor.cpp` | 5 | Notify the window observer in `onQueueDrained()` |
 
 ---
 
-## Dependency on coalescing removal
+## Relationship to coalescing removal
 
-This plan assumes the stale frame coalescing mechanism has been removed per `Stale-Frame-Coalescing-Removal-Plan.md`. The two plans are complementary:
-
-- **Coalescing removal** stops the compositor from dropping frames after they've been submitted, eliminating the resize content gap.
-- **Frame pacing** prevents the queue from growing unboundedly in the absence of coalescing, by throttling non-critical production at the source.
-
-The coalescing removal can be implemented independently and will immediately fix the resize gap. Frame pacing should follow to prevent queue growth under sustained high-frequency invalidation (e.g. rapid-fire state changes during a long animation while the compositor is processing a resize).
+The stale frame-coalescing mechanism this plan replaces operated on the per-view `CanvasFrame` submission path — which Tier 4 deleted outright. So coalescing is moot in the post-Tier-4 world, and its removal plan is archived at `wtk/docs/stale/Stale-Frame-Coalescing-Removal-Plan.md`. The remaining need stands on its own: with no coalescing anywhere, frame pacing keeps the compositor queue from growing unboundedly under sustained high-frequency invalidation (e.g. rapid-fire state changes during a long animation while a resize is in flight) by throttling non-critical production at the source.
 
 ---
 
 ## References
 
-### Codebase
+### Codebase (file-level; any line numbers predate Tier 4)
 
-- Compositor lane runtime state: `wtk/src/Composition/Compositor.h:154–170`
-- Lane admission control: `wtk/src/Composition/Compositor.cpp:636–661`
-- Packet presentation in scheduler loop: `wtk/src/Composition/Compositor.cpp:424–450`
-- Widget paint cycle: `wtk/src/UI/Widget.Paint.cpp:8–57`
-- Paint reason enum: `wtk/include/omegaWTK/UI/Widget.h`
-- Paint options: `wtk/include/omegaWTK/UI/Widget.h:55–65`
-- Queue drain callback: `wtk/src/Composition/Compositor.cpp` (`onQueueDrained`)
-- View composition session: `wtk/include/omegaWTK/UI/View.h:168–177`
-- Companion plan: `wtk/docs/Stale-Frame-Coalescing-Removal-Plan.md`
+- Compositor lane runtime state + lane admission control: `wtk/src/Composition/Compositor.{h,cpp}`
+- Packet presentation / `onQueueDrained` in the scheduler loop: `wtk/src/Composition/Compositor.cpp`
+- Frame driver (the new frame-request gate): `wtk/src/UI/FrameBuilder.{h,cpp}`
+- Animation scheduler (`FrameTime` consumer + animation-aware override): `wtk/src/UI/AnimationScheduler.{h,cpp}`
+- Widget invalidation entry (post-4.7: marks `DirtyBits` + requests a frame): `wtk/src/UI/Widget.Paint.cpp` (`executePaint`)
+- Paint reason enum + paint options: `wtk/include/omegaWTK/UI/Widget.h`
+- Window `LayerTree` observer / drain callback: `wtk/include/omegaWTK/Composition/Layer.h`
+- Sequencing: `wtk/docs/UIView-Render-Redesign-Plan.md` Phase H
+- Companion plan (archived): `wtk/docs/stale/Stale-Frame-Coalescing-Removal-Plan.md`
 
 ### External
 

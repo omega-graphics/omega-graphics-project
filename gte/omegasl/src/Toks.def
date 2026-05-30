@@ -79,6 +79,13 @@ namespace omegasl {
 #define KW_COMPUTE KW("compute")
 #define KW_HULL KW("hull")
 #define KW_DOMAIN KW("domain")
+/// Mesh-shader pipeline mesh stage. Like the other stage keywords, this is
+/// a hard keyword. The descriptor sub-words (`max_vertices`, `max_primitives`,
+/// `topology`) and the output qualifiers (`vertices`, `indices`) stay
+/// contextual identifiers — matched positionally by the parser the way the
+/// tessellation descriptor matches `partitioning` / `outputtopology` — so
+/// they remain legal identifiers everywhere else.
+#define KW_MESH KW("mesh")
 #define KW_IF KW("if")
 #define KW_ELSE KW("else")
 #define KW_FOR KW("for")
