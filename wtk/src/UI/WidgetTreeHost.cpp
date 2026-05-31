@@ -256,29 +256,22 @@ namespace OmegaWTK {
     }
 
     void WidgetTreeHost::observeWidgetLayerTreesRecurse(Widget *parent){
-        if(parent == nullptr || compositor == nullptr){
-            return;
-        }
-        auto *rootTree = parent->view ? parent->view->getLayerTree() : nullptr;
-        if(rootTree != nullptr){
-            compositor->observeLayerTree(rootTree,syncLaneId);
-        }
-        for(const auto & child : parent->childWidgets()){
-            observeWidgetLayerTreesRecurse(child.get());
-        }
+        // Phase 4.8: per-view `LayerTree`s are gone. The window-level
+        // `AppWindow::Impl::windowLayerTree_` is observed by the
+        // compositor at `displayRootWindow` (AppWindow.cpp:151-155),
+        // which is the only observation the post-4.7 paint pipeline
+        // needs — every UIView's DisplayList ends up in that one tree
+        // via the FrameBuilder buildFrame walk. Body neutered to a
+        // no-op; the declaration + 3 call sites
+        // (~WidgetTreeHost, initWidgetTree, setRoot) stay for source
+        // compat and are retired in Phase I.
+        (void)parent;
     }
 
     void WidgetTreeHost::unobserveWidgetLayerTreesRecurse(Widget *parent){
-        if(parent == nullptr || compositor == nullptr){
-            return;
-        }
-        auto *rootTree = parent->view ? parent->view->getLayerTree() : nullptr;
-        if(rootTree != nullptr){
-            compositor->unobserveLayerTree(rootTree);
-        }
-        for(const auto & child : parent->childWidgets()){
-            unobserveWidgetLayerTreesRecurse(child.get());
-        }
+        // Phase 4.8: per-view tree observation is gone (see
+        // `observeWidgetLayerTreesRecurse` above). No-op.
+        (void)parent;
     }
 
     void WidgetTreeHost::invalidateWidgetRecurse(Widget *parent,

@@ -9,10 +9,6 @@ namespace {
 
 constexpr const char *kUIViewRootEffectTag = "__UIViewRootEffectTarget__";
 
-float clamp01(float value){
-    return std::clamp(value,0.f,1.f);
-}
-
 // Phase 4.4 (Anim Tier C): map a UIView per-element `int` animation key
 // (the `ElementAnimationKey` enum and the `EffectAnimationKey*` constants
 // on `UIView::Impl`) into a `PropertyKey` slot on the AnimationScheduler.
@@ -32,39 +28,9 @@ AnimationScheduler * activeScheduler(){
     return (fb != nullptr) ? fb->animationScheduler() : nullptr;
 }
 
-bool applyShapeDimension(Shape & shape,ElementAnimationKey key,float value){
-    const float safeValue = std::max(1.f,value);
-    switch(shape.type){
-        case Shape::Type::Rect:
-            if(key == ElementAnimationKeyWidth){
-                shape.rect.w = safeValue;
-            }
-            else {
-                shape.rect.h = safeValue;
-            }
-            return true;
-        case Shape::Type::RoundedRect:
-            if(key == ElementAnimationKeyWidth){
-                shape.roundedRect.w = safeValue;
-                shape.roundedRect.rad_x = std::min(shape.roundedRect.rad_x,shape.roundedRect.w * 0.5f);
-            }
-            else {
-                shape.roundedRect.h = safeValue;
-                shape.roundedRect.rad_y = std::min(shape.roundedRect.rad_y,shape.roundedRect.h * 0.5f);
-            }
-            return true;
-        case Shape::Type::Ellipse:
-            if(key == ElementAnimationKeyWidth){
-                shape.ellipse.rad_x = safeValue * 0.5f;
-            }
-            else {
-                shape.ellipse.rad_y = safeValue * 0.5f;
-            }
-            return true;
-        default:
-            return false;
-    }
-}
+// Phase 4.8: `clamp01` + `applyShapeDimension` helpers were only used
+// by `applyAnimatedColor` / `applyAnimatedShape` — both deleted above
+// (orphans, never read by `UIView::paint`). The helpers go with them.
 
 }
 
@@ -117,83 +83,11 @@ void UIView::Impl::clearElementDirty(const UIElementTag &tag){
     it->second.visibilityDirty = false;
 }
 
-SharedHandle<Composition::ViewAnimator> UIView::Impl::ensureAnimationViewAnimator(){
-    if(animationViewAnimator != nullptr){
-        return animationViewAnimator;
-    }
-    animationViewAnimator = SharedHandle<Composition::ViewAnimator>(
-            new Composition::ViewAnimator(owner.compositorProxy()));
-    return animationViewAnimator;
-}
-
-SharedHandle<Composition::LayerAnimator> UIView::Impl::ensureAnimationLayerAnimator(const UIElementTag & tag){
-    auto existing = animationLayerAnimators.find(tag);
-    if(existing != animationLayerAnimators.end() && existing->second != nullptr){
-        return existing->second;
-    }
-
-    auto viewAnimator = ensureAnimationViewAnimator();
-    if(viewAnimator == nullptr){
-        return nullptr;
-    }
-
-    SharedHandle<Composition::Layer> layer = nullptr;
-    if(owner.getLayerTree() != nullptr){
-        layer = owner.getLayerTree()->getRootLayer();
-    }
-    if(layer == nullptr){
-        return nullptr;
-    }
-
-    auto layerAnimator = viewAnimator->layerAnimator(*layer);
-    animationLayerAnimators[tag] = layerAnimator;
-    return layerAnimator;
-}
-
-Composition::AnimationHandle UIView::Impl::beginCompositionClock(const UIElementTag & tag,
-                                                                 float durationSec,
-                                                                 SharedHandle<Composition::AnimationCurve> curve){
-    if(durationSec <= 0.f){
-        return {};
-    }
-
-    auto layerAnimator = ensureAnimationLayerAnimator(tag);
-    if(layerAnimator == nullptr){
-        return {};
-    }
-
-    Composition::LayerEffect::TransformationParams identity {};
-    identity.translate = {0.f,0.f,0.f};
-    identity.rotate = {0.f,0.f,0.f};
-    identity.scale = {1.f,1.f,1.f};
-
-    Composition::KeyframeValue<Composition::LayerEffect::TransformationParams> startKey {};
-    startKey.offset = 0.f;
-    startKey.value = identity;
-    startKey.easingToNext = curve != nullptr ? curve : Composition::AnimationCurve::Linear();
-    Composition::KeyframeValue<Composition::LayerEffect::TransformationParams> endKey {};
-    endKey.offset = 1.f;
-    endKey.value = identity;
-
-    Composition::LayerClip clip {};
-    clip.transform = Composition::KeyframeTrack<Composition::LayerEffect::TransformationParams>::From({
-            startKey,
-            endKey
-    });
-
-    Composition::TimingOptions timing {};
-    timing.durationMs = static_cast<std::uint32_t>(std::max(1.f,durationSec * 1000.f));
-    timing.frameRateHint = static_cast<std::uint16_t>(std::max(1,framesPerSec));
-    timing.clockMode = Composition::ClockMode::Hybrid;
-    timing.preferResizeSafeBudget = true;
-    timing.maxCatchupSteps = 1;
-
-    const auto laneId = owner.compositorProxy().getSyncLaneId();
-    if(laneId != 0){
-        return layerAnimator->animateOnLane(clip,timing,laneId);
-    }
-    return layerAnimator->animate(clip,timing);
-}
+// Phase 4.8: `ensureAnimationViewAnimator` / `ensureAnimationLayerAnimator`
+// / `beginCompositionClock` deleted. They spawned `ViewAnimator` /
+// `LayerAnimator` instances against the per-view `LayerTree` — both
+// classes and the per-view tree are gone now. The live animation pipe
+// runs `startOrUpdateAnimation` → `AnimationScheduler` directly.
 
 void UIView::Impl::startOrUpdateAnimation(const UIElementTag &tag,
                                           int key,
@@ -325,79 +219,13 @@ Core::Optional<float> UIView::Impl::animatedValue(const UIElementTag &tag,int ke
     return scheduler->value<float>(*node, elementKeyToProperty(key));
 }
 
-// ORPHAN (post-4.4 dead-code sweep — Phase I): no caller in the tree.
-// `UIView::paint` resolves the brush from `ComputedStyle` directly and
-// never threads it through this helper, so animating ColorR/G/B/A
-// produces no visible effect on the current paint path. Kept declared
-// only because it shares a translation unit with the live shadow-channel
-// reader; Phase I deletes it (header + .cpp) alongside the matching
-// `ElementAnimationKeyColor*` enum entries on `UIView.h`.
-Composition::Color UIView::Impl::applyAnimatedColor(const UIElementTag &tag,
-                                                    const Composition::Color &baseColor) const{
-    Composition::Color output = baseColor;
-    if(auto value = animatedValue(tag,ElementAnimationKeyColorRed); value){
-        output.r = clamp01(*value);
-    }
-    if(auto value = animatedValue(tag,ElementAnimationKeyColorGreen); value){
-        output.g = clamp01(*value);
-    }
-    if(auto value = animatedValue(tag,ElementAnimationKeyColorBlue); value){
-        output.b = clamp01(*value);
-    }
-    if(auto value = animatedValue(tag,ElementAnimationKeyColorAlpha); value){
-        output.a = clamp01(*value);
-    }
-    return output;
-}
-
-// ORPHAN (post-4.4 dead-code sweep — Phase I): no caller in the tree.
-// `UIView::paint` reads `spec.shape` directly and never threads it
-// through this helper, so animating ElementAnimationKeyWidth/Height —
-// and the path-node branch below — produces no visible effect on the
-// current paint path. Phase I deletes this with `applyAnimatedColor`
-// and the matching `ElementAnimationKeyWidth/Height/PathNodeX/Y` enum
-// entries on `UIView.h`.
-Shape UIView::Impl::applyAnimatedShape(const UIElementTag &tag,const Shape &inputShape) const{
-    Shape output = inputShape;
-    if(auto value = animatedValue(tag,ElementAnimationKeyWidth); value){
-        (void)applyShapeDimension(output,ElementAnimationKeyWidth,*value);
-    }
-    if(auto value = animatedValue(tag,ElementAnimationKeyHeight); value){
-        (void)applyShapeDimension(output,ElementAnimationKeyHeight,*value);
-    }
-
-    // Phase 4.4 (Anim Tier C): path-node tweens live on the
-    // AnimationScheduler under `PathNodeX/Y` with `subIndex = nodeIndex`
-    // (Animation-Scheduler-Plan Tier C). The legacy `pathNodeAnimations`
-    // map is unused. Probe every control point — there is no side index
-    // of "which nodes have animations" yet, but the cost is one
-    // unordered_map lookup per (point, axis), which is cheap and stays
-    // bounded by the path's complexity.
-    if(output.type == Shape::Type::Path && output.path){
-        auto * scheduler = activeScheduler();
-        auto node = tryElementNodeId(tag);
-        if(scheduler != nullptr && node){
-            auto points = output.path->getControlPoints();
-            bool changed = false;
-            for(std::size_t i = 0; i < points.size(); ++i){
-                const auto subIndex = static_cast<std::uint32_t>(i);
-                if(auto x = scheduler->value<float>(*node, PropertyKey::PathNodeX, subIndex); x){
-                    points[i].x = *x;
-                    changed = true;
-                }
-                if(auto y = scheduler->value<float>(*node, PropertyKey::PathNodeY, subIndex); y){
-                    points[i].y = *y;
-                    changed = true;
-                }
-            }
-            if(changed && !points.empty()){
-                output.path = std::make_shared<Composition::Path>(
-                    Composition::Path::fromControlPoints(points, output.pathStrokeWidth));
-            }
-        }
-    }
-    return output;
-}
+// Phase 4.8: `applyAnimatedColor` / `applyAnimatedShape` deleted.
+// Both were orphans pre-4.8 (no in-tree caller — `UIView::paint`
+// resolves brush/shape directly from `ComputedStyle` /
+// `UIElementLayoutSpec`, never threading them through these
+// helpers), and both relied on the now-deleted dormant per-tag
+// tween maps. The live animation path is `animatedValue()` →
+// `AnimationScheduler` queried inline during `UIView::paint`.
 
 SharedHandle<Composition::Font> UIView::Impl::resolveFallbackTextFont(){
     if(fallbackTextFont != nullptr){

@@ -163,9 +163,11 @@ void Container::unwireChild(const WidgetPtr & child){
     child->parent = nullptr;
     child->setTreeHostRecurse(nullptr);
     child->notifyObservers(Widget::Detach,{});
-    if(child->view && child->view->getLayerTree()){
-        child->view->getLayerTree()->notifyObserversOfWidgetDetach();
-    }
+    // Phase 4.8: per-view `LayerTree` is gone — the
+    // `notifyObserversOfWidgetDetach` callback existed only so
+    // compositor backends could react to per-view tree teardown.
+    // The window owns the single tree now and nothing tracks
+    // per-widget detach at the layer-tree level.
 }
 
 OmegaCommon::ArrayRef<WidgetPtr> Container::childWidgets(){

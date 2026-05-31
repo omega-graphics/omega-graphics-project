@@ -67,38 +67,22 @@ Composition::Rect localBoundsFromView(UIView *view){
     }
 
     const auto & viewRect = view->getRect();
-    float viewWidth = viewRect.w;
-    float viewHeight = viewRect.h;
-    float limbWidth = 0.f;
-    float limbHeight = 0.f;
+    const float viewWidth = viewRect.w;
+    const float viewHeight = viewRect.h;
 
-    auto *tree = view->getLayerTree();
-    if(tree != nullptr && tree->getRootLayer() != nullptr){
-        const auto & treeRect = tree->getRootLayer()->getLayerRect();
-        limbWidth = treeRect.w;
-        limbHeight = treeRect.h;
-    }
-
+    // Phase 4.8: the per-view `LayerTree` fallback for resize-transient
+    // invalid dimensions is gone (the tree itself is gone — the window
+    // owns the single tree now). The View::rect is the only source of
+    // local bounds; an invalid rect falls through to the constant
+    // fallback below.
     const bool viewValid = isValidDimension(viewWidth) &&
                            isValidDimension(viewHeight) &&
                            !isSuspiciousDimensionPair(viewWidth,viewHeight);
-    const bool limbValid = isValidDimension(limbWidth) &&
-                           isValidDimension(limbHeight) &&
-                           !isSuspiciousDimensionPair(limbWidth,limbHeight);
-
-    float width = 0.f;
-    float height = 0.f;
-    if(viewValid){
-        width = viewWidth;
-        height = viewHeight;
-    }
-    else if(limbValid){
-        width = limbWidth;
-        height = limbHeight;
-    }
-    else {
+    if(!viewValid){
         return kFallbackRect;
     }
+    const float width = viewWidth;
+    const float height = viewHeight;
 
     return Composition::Rect{
             Composition::Point2D{0.f,0.f},

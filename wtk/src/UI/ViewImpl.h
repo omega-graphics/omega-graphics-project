@@ -110,7 +110,9 @@ struct View::Impl {
     Composition::CompositorClientProxy proxy;
     // Phase 4.5: `ViewResizeCoordinator` is deleted. Child layout now
     // routes through `View::layoutManager()` (see `LayoutManager.h`).
-    SharedHandle<Composition::LayerTree> ownLayerTree;
+    // Phase 4.8: `ownLayerTree` deleted — the window-level
+    // `AppWindow::Impl::windowLayerTree_` is the single tree the
+    // post-4.7 paint pipeline targets.
     View * parent_ptr = nullptr;
     Composition::Rect rect {Composition::Point2D{0.f,0.f},1.f,1.f};
     ViewDelegate * delegate = nullptr;
@@ -147,7 +149,6 @@ struct View::Impl {
          View * parent):
         renderTarget(nullptr),
         proxy(),
-        ownLayerTree(std::make_shared<Composition::LayerTree>(initialRect)),
         parent_ptr(parent),
         rect(initialRect),
         nodeId_(allocateNodeId()){

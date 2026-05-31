@@ -36,9 +36,10 @@ Composition::Rect & View::getRect(){
     return impl_->rect;
 }
 
-Composition::LayerTree * View::getLayerTree(){
-    return impl_->ownLayerTree.get();
-}
+// Phase 4.8: `getLayerTree()` deleted alongside `Impl::ownLayerTree`.
+// The window-level `AppWindow::Impl::windowLayerTree_` is the single
+// tree; UIView DisplayLists flow into it via
+// `FrameBuilder::buildFrame` → `endFrame` → `proxy.submitDisplayList`.
 
 void View::markDirty(uint8_t bits){
     // Phase 4.7.3: self mask gets `bits`, ancestor chain gets `bits`
@@ -177,11 +178,11 @@ void View::resize(Composition::Rect newRect){
         return;
     }
     impl_->rect = sanitized;
-    // Phase 3: View is purely virtual. Update the layer tree rect but
-    // do not call through to any NativeItem — there isn't one.
-    if(impl_->ownLayerTree != nullptr && impl_->ownLayerTree->getRootLayer() != nullptr){
-        impl_->ownLayerTree->getRootLayer()->resize(impl_->rect);
-    }
+    // Phase 4.8: the per-view `ownLayerTree` is gone. The window-level
+    // tree's root layer is sized by the window, not by per-view
+    // resize; the View's own rect change just emits the
+    // `onLayoutResolved` signal (below) for `NativeViewHost` and any
+    // other subscriber to pick up.
     // Phase 2.5: emit on the new rect *after* it's been committed and
     // the layer tree caught up, so subscribers (NativeViewHost et al)
     // observe a consistent post-resize state.
@@ -360,14 +361,14 @@ View::~View(){
 }
 
 void View::setFrontendRecurse(Composition::Compositor *frontend){
-    auto *previousFrontend = compositorProxy().getFrontendPtr();
-    if(previousFrontend != nullptr && previousFrontend != frontend && impl_->ownLayerTree != nullptr){
-        previousFrontend->unobserveLayerTree(impl_->ownLayerTree.get());
-    }
+    // Phase 4.8: per-view compositor observation is gone — the
+    // window-level `windowLayerTree_` is observed at
+    // `displayRootWindow` (AppWindow.cpp:151-155) instead, which is
+    // the only tree the post-4.7 paint pipeline still uses. This
+    // method now just propagates the frontend pointer down the View
+    // subtree (so any newly-attached subview inherits its window's
+    // compositor frontend).
     compositorProxy().setFrontendPtr(frontend);
-    if(frontend != nullptr && impl_->ownLayerTree != nullptr){
-        frontend->observeLayerTree(impl_->ownLayerTree.get(),compositorProxy().getSyncLaneId());
-    }
     for(auto *subView : impl_->subviews){
         if(subView != nullptr){
             subView->setFrontendRecurse(frontend);

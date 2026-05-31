@@ -351,78 +351,18 @@ namespace OmegaWTK::Composition {
         }
     };
 
-    struct LayerClip {
-        Core::Optional<KeyframeTrack<Composition::Rect>> rect;
-        Core::Optional<KeyframeTrack<LayerEffect::TransformationParams>> transform;
-        Core::Optional<KeyframeTrack<LayerEffect::DropShadowParams>> shadow;
-        Core::Optional<KeyframeTrack<float>> opacity;
-    };
-
-    struct ViewClip {
-        Core::Optional<KeyframeTrack<Composition::Rect>> rect;
-        Core::Optional<KeyframeTrack<float>> opacity;
-    };
-
-    class ViewAnimator;
-
-    class OMEGAWTK_EXPORT LayerAnimator : public CompositorClient {
-        Layer & targetLayer;
-        ViewAnimator &parentAnimator;
-        friend class ViewAnimator;
-        friend class detail::AnimationRuntimeRegistry;
-        void queueLayerResizeDelta(int delta_x,int delta_y,int delta_w,int delta_h);
-        explicit LayerAnimator(Layer & layer,ViewAnimator &parentAnimator);
-    public:
-        AnimationHandle animate(const LayerClip & clip,const TimingOptions & timing = {});
-        AnimationHandle animateOnLane(const LayerClip & clip,
-                                      const TimingOptions & timing,
-                                      std::uint64_t syncLaneId);
-        void setFrameRate(unsigned _framePerSec);
-        void pause();
-        void resume();
-        void resizeTransition(unsigned delta_x,unsigned delta_y,unsigned delta_w,unsigned delta_h,unsigned duration,
-                              const SharedHandle<AnimationCurve> & curve = AnimationCurve::Linear(0.f,1.f));
-        void applyShadow(const LayerEffect::DropShadowParams & params);
-        void applyTransformation(const LayerEffect::TransformationParams & params);
-        void shadowTransition(const LayerEffect::DropShadowParams & from,
-                              const LayerEffect::DropShadowParams &to,
-                              unsigned duration,
-                              const SharedHandle<AnimationCurve> & curve = AnimationCurve::Linear(0.f,1.f));
-        void transformationTransition(const LayerEffect::TransformationParams & from,
-                                      const LayerEffect::TransformationParams &to,
-                                      unsigned duration,
-                                      const SharedHandle<AnimationCurve> & curve = AnimationCurve::Linear(0.f,1.f));
-        ~LayerAnimator();
-    };
-
-    class OMEGAWTK_EXPORT ViewAnimator : public CompositorClient {
-        OmegaCommon::Vector<SharedHandle<LayerAnimator>> layerAnims;
-
-        CompositorClientProxy & _client;
-
-        Native::NativeItemPtr nativeView;
-        friend class ::OmegaWTK::View;
-        friend class LayerAnimator;
-        friend class detail::AnimationRuntimeRegistry;
-        void queueViewResizeDelta(int delta_x,int delta_y,int delta_w,int delta_h);
-        unsigned framePerSec;
-
-        unsigned calculateTotalFrames(unsigned & duration);
-
-    public:
-        explicit ViewAnimator(CompositorClientProxy & _client);
-        AnimationHandle animate(const ViewClip & clip,const TimingOptions & timing = {});
-        AnimationHandle animateOnLane(const ViewClip & clip,
-                                      const TimingOptions & timing,
-                                      std::uint64_t syncLaneId);
-        void setFrameRate(unsigned _framePerSec);
-        void pause();
-        void resume();
-        SharedHandle<LayerAnimator> layerAnimator(Layer &layer);
-        void resizeTransition(unsigned delta_x,unsigned delta_y,unsigned delta_w,unsigned delta_h,unsigned duration,
-                    const SharedHandle<AnimationCurve> & curve);
-        ~ViewAnimator();
-    };
+    // Phase 4.8: `LayerClip` / `ViewClip` / `LayerAnimator` /
+    // `ViewAnimator` deleted. They were the pre-scheduler animation
+    // runtime — `LayerAnimator` posted keyframe tracks against a
+    // `Composition::Layer`'s per-view `LayerTree`; `ViewAnimator`
+    // grouped them per `View`. The post-4.4 `AnimationScheduler` owns
+    // every live tween (see `wtk/src/UI/AnimationScheduler.{h,cpp}`)
+    // and `UIView::paint` reads the resulting side table; nothing in
+    // the tree spawned these classes any more (the
+    // `ensure*` / `beginCompositionClock` helpers that wove them
+    // through `UIView::Impl` are gone in 4.8.2). The internal
+    // `detail::AnimationRuntimeRegistry` they used to share is also
+    // deleted alongside the .cpp bodies.
 };
 
 #endif

@@ -115,7 +115,8 @@ namespace OmegaWTK {
         void addSubView(View *view);
         void removeSubView(View * view);
         friend class AppWindow;
-        friend class Composition::ViewAnimator;
+        // Phase 4.8: `Composition::ViewAnimator` friend deleted alongside
+        // the class itself (the pre-scheduler animation runtime).
         friend class ScrollView;
         friend class Widget;
         friend class WidgetTreeHost;
@@ -138,8 +139,15 @@ namespace OmegaWTK {
 
         /// @brief Retrieves the Rect that defines the position and bounds of the View.
         Composition::Rect & getRect();
-        /// @brief Retrieves the View's own LayerTree.
-        Composition::LayerTree * getLayerTree();
+        // Phase 4.8: `getLayerTree()` and the per-view
+        // `View::Impl::ownLayerTree` are gone. Every UIView's
+        // DisplayList flows into the single
+        // `AppWindow::Impl::windowLayerTree_` via
+        // `FrameBuilder::buildFrame` now. Callers that needed a
+        // tree handle pre-4.8 (legacy compositor observation, the
+        // dormant per-tag animator, the resize fallback in
+        // `UIView::Update.cpp::localBoundsFromView`) all read from
+        // `View::getRect()` or the window-level state instead.
 
         /// Widget-View-Paint-Lifecycle-Plan Tier A: per-node dirty
         /// state. `invalidate()` sets these bits and defers the actual

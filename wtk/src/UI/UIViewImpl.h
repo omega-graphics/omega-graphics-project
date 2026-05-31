@@ -149,19 +149,16 @@ struct UIView::Impl {
     bool firstFrameCoherentSubmit = true;
     bool styleDirtyGlobal = false;
     bool styleChangeRequiresCoherentFrame = false;
-    SharedHandle<Composition::ViewAnimator> animationViewAnimator = nullptr;
-    OmegaCommon::Map<UIElementTag,SharedHandle<Composition::LayerAnimator>> animationLayerAnimators;
+    // Phase 4.8: the dormant per-tag tween bookkeeping (Phase 4.4
+    // recorded as dormant; nothing wrote these after the
+    // `startOrUpdateAnimation` routing moved to the
+    // `AnimationScheduler`) is gone. The four ViewAnimator /
+    // LayerAnimator / elementAnimations / pathNodeAnimations members
+    // and their `ensure*` / `beginCompositionClock` helpers are
+    // deleted alongside the underlying classes in
+    // `Composition/Animation.{h,cpp}`.
     OmegaCommon::Map<UIElementTag,ElementDirtyState> elementDirtyState;
     OmegaCommon::Vector<UIElementTag> activeTagOrder;
-    // Phase 4.4: legacy per-tag tween bookkeeping. UNUSED — nothing writes
-    // these any more (Anim Tier C routed startOrUpdateAnimation / pathNode
-    // updates onto the AnimationScheduler). Fields are retained so the 4.8
-    // deletion can be a clean sweep across all the dormant animation
-    // surfaces (the four ViewAnimator/LayerAnimator/elementAnimations/
-    // pathNodeAnimations members; the ensure*/beginCompositionClock
-    // helpers; advanceAnimations + lastAnimationDiagnostics).
-    OmegaCommon::Map<UIElementTag,OmegaCommon::Map<int,PropertyAnimationState>> elementAnimations;
-    OmegaCommon::Map<UIElementTag,OmegaCommon::Vector<PathNodeAnimationState>> pathNodeAnimations;
     // Phase 4.4 (Anim Tier C): stable NodeId per element tag, allocated on
     // first animation reference (registration or read). The
     // AnimationScheduler keys its side table on
@@ -206,11 +203,11 @@ struct UIView::Impl {
                           bool visibility);
     bool isElementDirty(const UIElementTag & tag) const;
     void clearElementDirty(const UIElementTag & tag);
-    SharedHandle<Composition::ViewAnimator> ensureAnimationViewAnimator();
-    SharedHandle<Composition::LayerAnimator> ensureAnimationLayerAnimator(const UIElementTag & tag);
-    Composition::AnimationHandle beginCompositionClock(const UIElementTag & tag,
-                                                       float durationSec,
-                                                       SharedHandle<Composition::AnimationCurve> curve);
+    // Phase 4.8: `ensureAnimationViewAnimator` / `ensureAnimationLayerAnimator`
+    // / `beginCompositionClock` deleted alongside the dormant
+    // ViewAnimator / LayerAnimator classes they spawned. The live
+    // animation pipe runs `startOrUpdateAnimation` →
+    // `AnimationScheduler` directly.
     void startOrUpdateAnimation(const UIElementTag & tag,
                                 int key,
                                 float from,
@@ -225,8 +222,12 @@ struct UIView::Impl {
     // returns nullopt instead of growing the map).
     NodeId ensureElementNodeId(const UIElementTag & tag);
     Core::Optional<NodeId> tryElementNodeId(const UIElementTag & tag) const;
-    Composition::Color applyAnimatedColor(const UIElementTag & tag,const Composition::Color & baseColor) const;
-    Shape applyAnimatedShape(const UIElementTag & tag,const Shape & inputShape) const;
+    // Phase 4.8: `applyAnimatedColor` / `applyAnimatedShape` deleted
+    // — orphans pre-4.8 (no in-tree caller; both functions read the
+    // now-deleted `elementAnimations` / `pathNodeAnimations` maps).
+    // The live path resolves animated values through
+    // `animatedValue()` → `AnimationScheduler` directly during
+    // `UIView::paint`.
     SharedHandle<Composition::Font> resolveFallbackTextFont();
     void convertLegacyLayoutToV2();
 
