@@ -524,6 +524,11 @@ include(cmake/OmegaWTKApp.cmake)
 
  add_subdirectory(tests)
 
+# Opt-in widget/view components (chartview, gteview, mapview, pdfview,
+# webview, ...). Each lives under wtk/components/<name>/ with its own
+# CMakeLists.txt and a per-component OMEGAWTK_COMPONENT_<NAME> flag.
+# See wtk/components/README.md for the contract.
+option(OMEGAWTK_BUILD_COMPONENTS "Build OmegaWTK opt-in components (under wtk/components/)" OFF)
 if(OMEGAWTK_BUILD_COMPONENTS)
-	
+	add_subdirectory(components)
 endif()

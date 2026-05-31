@@ -2,6 +2,7 @@
 #include "omegaWTK/UI/View.h"
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/UI/UIView.h"
+#include "omegaWTK/UI/LayoutManager.h"
 #include "LayoutBehaviors.h"
 
 #include <algorithm>
@@ -165,21 +166,11 @@ Composition::Rect resolveClampedRect(const LayoutStyle & style,
     return Composition::Rect{Composition::Point2D{x,y},std::max(1.f,w),std::max(1.f,h)};
 }
 
-// ---------------------------------------------------------------------------
-// LegacyResizeCoordinatorBehavior (B2)
-// ---------------------------------------------------------------------------
-
-LegacyResizeCoordinatorBehavior::LegacyResizeCoordinatorBehavior(ViewResizeCoordinator & coordinator)
-    : coordinator_(coordinator){}
-
-MeasureResult LegacyResizeCoordinatorBehavior::measure(LayoutNode & /*node*/, const LayoutContext & ctx){
-    auto dpRect = ctx.availableRectDp();
-    return {dpRect.w, dpRect.h};
-}
-
-void LegacyResizeCoordinatorBehavior::arrange(LayoutNode & /*node*/, const LayoutContext & ctx){
-    coordinator_.resolve(ctx.availableRectPx);
-}
+// Phase 4.5: `LegacyResizeCoordinatorBehavior` deleted alongside
+// `ViewResizeCoordinator`. `runWidgetLayout` (above) drives the
+// parent's `LayoutManager` directly when no explicit layout style is
+// set; the per-LayoutBehavior wrapper around the coordinator had no
+// callers outside the now-deleted ResizeCoordinator path.
 
 // ---------------------------------------------------------------------------
 // StackLayoutBehavior (B3)
@@ -199,8 +190,14 @@ void StackLayoutBehavior::arrange(LayoutNode & /*node*/, const LayoutContext & /
 
 void runWidgetLayout(Widget & root, const LayoutContext & ctx){
     if(!root.hasExplicitLayoutStyle()){
-        auto & coordinator = root.viewRef().getResizeCoordinator();
-        coordinator.resolve(ctx.availableRectPx);
+        // Phase 4.5: drive the parent's LayoutManager::arrange instead
+        // of the deleted ViewResizeCoordinator::resolve. AbsoluteLayout
+        // is the default; Container sets ContainerLayout; future
+        // FlexLayout (Phase 4.6) plugs in the same way.
+        auto * manager = root.viewRef().layoutManager();
+        if(manager != nullptr){
+            manager->arrange(root.viewRef(), ctx.availableRectPx);
+        }
         return;
     }
 

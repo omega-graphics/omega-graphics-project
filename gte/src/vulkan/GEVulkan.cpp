@@ -1112,6 +1112,16 @@ _NAMESPACE_BEGIN_
         hasDeferredHostOperationsExt = enableDeviceExtension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,false);
         hasAccelerationStructureExt = enableDeviceExtension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,false);
         hasRayTracingPipelineExt = enableDeviceExtension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,false);
+    #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+        /// Mesh-Shader-Plan Phase 4a — enable `VK_EXT_mesh_shader` so
+        /// `vkCmdDrawMeshTasksEXT` + the mesh-stage pipeline path light
+        /// up. The matching `meshShader` feature is chained into the
+        /// device-feature `pNext` block below; without both, the driver
+        /// rejects mesh-stage pipeline creation. Optional — devices
+        /// without the extension still load (mesh PSO build then bails
+        /// at the `GTEDEVICE_FEATURE_MESH_SHADER` gate).
+        hasMeshShaderExt = enableDeviceExtension(VK_EXT_MESH_SHADER_EXTENSION_NAME,false);
+    #endif
 
         count = 0;
 
@@ -1171,6 +1181,19 @@ _NAMESPACE_BEGIN_
         rtPipelineFeatures.rayTracingPipeline = VK_TRUE;
         rtPipelineFeatures.pNext = nullptr;
 
+    #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+        /// Mesh-Shader-Plan Phase 4a — request the mesh-stage feature
+        /// itself. `taskShader` is held at FALSE here because the
+        /// amplification stage is Phase 5; enabling it now without the
+        /// codegen plumbing would advertise a capability we can't
+        /// honor. The struct is chained into `features2.pNext` only
+        /// when the extension is enabled (the chain below).
+        VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
+        meshShaderFeatures.meshShader = VK_TRUE;
+        meshShaderFeatures.taskShader = VK_FALSE;
+        meshShaderFeatures.pNext = nullptr;
+    #endif
+
         // Timeline semaphores back the engine retention queue's per-queue
         // gate (FenceGate -> vkGetSemaphoreCounterValue >= V). Core in
         // Vulkan 1.2 — the VMA allocator already requests
@@ -1203,6 +1226,12 @@ _NAMESPACE_BEGIN_
             *pNextTail = &rtPipelineFeatures;
             pNextTail = &rtPipelineFeatures.pNext;
         }
+    #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+        if(hasMeshShaderExt){
+            *pNextTail = &meshShaderFeatures;
+            pNextTail = &meshShaderFeatures.pNext;
+        }
+    #endif
 
         VkDeviceCreateInfo info{};
         info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -1289,6 +1318,15 @@ _NAMESPACE_BEGIN_
         if(hasRayTracingPipelineExt){
             vkCmdTraceRaysKhr = (PFN_vkCmdTraceRaysKHR) vkGetDeviceProcAddr(this->device,"vkCmdTraceRaysKHR");
         }
+    #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+        if(hasMeshShaderExt){
+            /// Phase 4a — load the mesh-stage dispatch entry point.
+            /// Static linkage isn't an option (`VK_EXT_mesh_shader`'s
+            /// commands are extension-loader-only); resolve through
+            /// `vkGetDeviceProcAddr` exactly like the RT dispatch above.
+            vkCmdDrawMeshTasksExt = (PFN_vkCmdDrawMeshTasksEXT) vkGetDeviceProcAddr(this->device,"vkCmdDrawMeshTasksEXT");
+        }
+    #endif
 
         VmaAllocatorCreateInfo allocator_info {};
         allocator_info.instance = instance;
@@ -2454,6 +2492,9 @@ _NAMESPACE_BEGIN_
                         VkShaderStageFlags stage = VK_SHADER_STAGE_COMPUTE_BIT;
                         if(s.type == OMEGASL_SHADER_VERTEX){ stage = VK_SHADER_STAGE_VERTEX_BIT; }
                         else if(s.type == OMEGASL_SHADER_FRAGMENT){ stage = VK_SHADER_STAGE_FRAGMENT_BIT; }
+                    #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+                        else if(s.type == OMEGASL_SHADER_MESH){ stage = VK_SHADER_STAGE_MESH_BIT_EXT; }
+                    #endif
                         pushStages |= stage;
                         hasPushConstant = true;
                     }
@@ -2481,6 +2522,19 @@ _NAMESPACE_BEGIN_
             else if(s.type == OMEGASL_SHADER_FRAGMENT){
                 shaderStageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             }
+        #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+            /// Phase 4a — descriptor-set bindings used by the mesh stage
+            /// need `VK_SHADER_STAGE_MESH_BIT_EXT` in their stage flags;
+            /// without it the descriptor is invisible to the mesh
+            /// shader at draw time and the validator complains. Mesh
+            /// resources reuse the same set 0 the vertex stage owns
+            /// (slot-doubling per 4c.1), so `bindResourceAtVertexShader`
+            /// continues to write to the right place — only the layout
+            /// needs to know which stage to expose it to.
+            else if(s.type == OMEGASL_SHADER_MESH){
+                shaderStageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+            }
+        #endif
 
             OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layouts {s.pLayout,s.pLayout + s.nLayout};
             OmegaCommon::Vector<VkDescriptorSetLayoutBinding> bindings;
@@ -3329,34 +3383,350 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
     };
 
     SharedHandle<GERenderPipelineState> GEVulkanEngine::makeMeshPipelineState(MeshPipelineDescriptor &desc){
-        /// Mesh-Shader-Plan Phase 3 — public-API stub. Phase 4a lands
-        /// the real `VkGraphicsPipeline` build with
-        /// `VK_SHADER_STAGE_MESH_BIT_EXT` (and optional
-        /// `VK_SHADER_STAGE_TASK_BIT_EXT`); `pVertexInputState` /
-        /// `pInputAssemblyState` are ignored by the spec when mesh
-        /// stages are present, but we'll pass well-formed empty
-        /// structs anyway. Today: feature-gate + validate shaders +
-        /// log + return nullptr, mirroring the raytracing pattern at
-        /// `createBoundingBoxesBuffer`.
+        /// Mesh-Shader-Plan Phase 4a — Vulkan mesh PSO via
+        /// `VkGraphicsPipeline` with `VK_SHADER_STAGE_MESH_BIT_EXT`.
+        /// Mirrors the graphics `makeRenderPipelineState` above for
+        /// render-pass / blend / depth-stencil / raster / multisample
+        /// state — the only divergence is the stages array (mesh
+        /// replaces vertex; no vertex-input or input-assembly state
+        /// because the mesh stage emits primitives directly) and the
+        /// PSO carries the new `isMesh` flag the command-buffer side
+        /// asserts on at draw time.
         if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_MESH_SHADER)){
             DEBUG_STREAM("makeMeshPipelineState: device does not advertise "
                          "GTEDEVICE_FEATURE_MESH_SHADER ('" << desc.name << "')");
             return nullptr;
         }
+    #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+        if(!hasMeshShaderExt){
+            /// Belt-and-suspenders: the GTEDEVICE flag should have
+            /// already failed above, but if a device claimed the
+            /// capability without us enabling the extension we
+            /// wouldn't have a valid `VK_SHADER_STAGE_MESH_BIT_EXT`
+            /// to put in the stages array. Fail loud rather than
+            /// hand the driver a malformed pipeline.
+            DEBUG_STREAM("makeMeshPipelineState: VK_EXT_mesh_shader was not enabled at device init ('"
+                         << desc.name << "')");
+            return nullptr;
+        }
+    #else
+        DEBUG_STREAM("makeMeshPipelineState: Vulkan headers built without VK_EXT_mesh_shader ('"
+                     << desc.name << "')");
+        return nullptr;
+    #endif
         if(!_checkPipelineShader(desc.meshFunc, "mesh", desc.name)){
             return nullptr;
         }
         if(!_checkPipelineShader(desc.fragmentFunc, "fragment", desc.name)){
             return nullptr;
         }
-        if(desc.amplificationFunc
-           && !_checkPipelineShader(desc.amplificationFunc, "amplification", desc.name)){
+        /// Phase 5 hard-stop, matching the D3D12 (4b) / Metal (4c)
+        /// precedent. Amplification (Task) stage needs payload + child
+        /// dispatch plumbing the front-end hasn't grown yet.
+        if(desc.amplificationFunc){
+            if(!_checkPipelineShader(desc.amplificationFunc, "amplification", desc.name)){
+                return nullptr;
+            }
+            DEBUG_STREAM("makeMeshPipelineState: amplification stage is Phase 5 "
+                         "(payload + dispatch-children machinery pending); "
+                         "passing `amplificationFunc` is not supported yet ('"
+                         << desc.name << "')");
             return nullptr;
         }
-        DEBUG_STREAM("makeMeshPipelineState: Vulkan mesh PSO build not yet implemented "
-                     "(Phase 3 stub — Phase 4a will land VK_SHADER_STAGE_MESH_BIT_EXT); '"
-                     << desc.name << "'");
-        return nullptr;
+
+    #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+        omegasl_shader shaders[] = {desc.meshFunc->internal,desc.fragmentFunc->internal};
+
+        OmegaCommon::Vector<VkDescriptorSetLayout> descLayouts;
+        OmegaCommon::Vector<VkDescriptorSet> descs;
+        VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+        OmegaCommon::Vector<VkSampler> immutableSamplers;
+
+        VkPipelineLayout layout = createPipelineLayoutFromShaderDescs(2,shaders,&descriptorPool,descs,descLayouts,immutableSamplers);
+        if(layout == VK_NULL_HANDLE){
+            for(auto & descLayout : descLayouts){
+                if(descLayout != VK_NULL_HANDLE){
+                    vkDestroyDescriptorSetLayout(device,descLayout,nullptr);
+                }
+            }
+            if(descriptorPool != VK_NULL_HANDLE){
+                vkDestroyDescriptorPool(device,descriptorPool,nullptr);
+            }
+            for(auto & s : immutableSamplers){
+                if(s != VK_NULL_HANDLE) vkDestroySampler(device,s,nullptr);
+            }
+            return nullptr;
+        }
+
+        /// Render pass — identical shape to the graphics path: one
+        /// subpass, per-color-attachment description + ref, external
+        /// dependency on COLOR_ATTACHMENT_OUTPUT. Reused so the mesh
+        /// PSO is render-pass-compatible with the same fragment-side
+        /// state.
+        const unsigned colorFormatCount = desc.colorPixelFormats.empty()
+                                              ? 1u
+                                              : (unsigned)desc.colorPixelFormats.size();
+
+        OmegaCommon::Vector<VkAttachmentDescription> colorAttachments;
+        OmegaCommon::Vector<VkAttachmentReference> colorRefs;
+        colorAttachments.resize(colorFormatCount);
+        colorRefs.resize(colorFormatCount);
+        for(unsigned i = 0; i < colorFormatCount; ++i){
+            VkAttachmentDescription & a = colorAttachments[i];
+            a = {};
+            a.format = pixelFormatToVkFormat(desc.colorPixelFormats.empty()
+                                                 ? PixelFormat::RGBA8Unorm
+                                                 : desc.colorPixelFormats[i]);
+            a.samples = VK_SAMPLE_COUNT_1_BIT;
+            a.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            a.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            a.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            a.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorRefs[i] = {i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        }
+
+        VkSubpassDescription subpassDesc {};
+        subpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpassDesc.colorAttachmentCount = colorFormatCount;
+        subpassDesc.pColorAttachments = colorRefs.data();
+
+        VkSubpassDependency dependency {};
+        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependency.dstSubpass = 0;
+        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.srcAccessMask = 0;
+        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        VkRenderPassCreateInfo renderPassInfo {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        renderPassInfo.attachmentCount = colorFormatCount;
+        renderPassInfo.pAttachments = colorAttachments.data();
+        renderPassInfo.subpassCount = 1;
+        renderPassInfo.pSubpasses = &subpassDesc;
+        renderPassInfo.dependencyCount = 1;
+        renderPassInfo.pDependencies = &dependency;
+
+        VkRenderPass compatibilityRenderPass = VK_NULL_HANDLE;
+        auto renderPassRes = vkCreateRenderPass(device,&renderPassInfo,nullptr,&compatibilityRenderPass);
+        if(renderPassRes != VK_SUCCESS || compatibilityRenderPass == VK_NULL_HANDLE){
+            std::cerr << "Vulkan mesh render pass creation failed (" << renderPassRes << ")" << std::endl;
+            vkDestroyPipelineLayout(device,layout,nullptr);
+            if(descriptorPool != VK_NULL_HANDLE){
+                vkDestroyDescriptorPool(device,descriptorPool,nullptr);
+            }
+            for(auto & descLayout : descLayouts){
+                if(descLayout != VK_NULL_HANDLE){
+                    vkDestroyDescriptorSetLayout(device,descLayout,nullptr);
+                }
+            }
+            for(auto & s : immutableSamplers){
+                if(s != VK_NULL_HANDLE) vkDestroySampler(device,s,nullptr);
+            }
+            return nullptr;
+        }
+
+        /// Stages — mesh + fragment. NO vertex stage; vertex-input +
+        /// input-assembly states are spec-ignored when a mesh stage is
+        /// present but we pass well-formed zeroed structs anyway so
+        /// validation layers don't complain about a NULL pointer.
+        auto *meshShader = (GTEVulkanShader *)desc.meshFunc.get();
+        VkPipelineShaderStageCreateInfo meshStage {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        meshStage.pNext = nullptr;
+        meshStage.flags = 0;
+        meshStage.stage = VK_SHADER_STAGE_MESH_BIT_EXT;
+        meshStage.module = meshShader->shaderModule;
+        meshStage.pName = "main";
+        meshStage.pSpecializationInfo = nullptr;
+
+        auto *fragmentShader = (GTEVulkanShader *)desc.fragmentFunc.get();
+        VkPipelineShaderStageCreateInfo fragmentStage {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        fragmentStage.pNext = nullptr;
+        fragmentStage.flags = 0;
+        fragmentStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragmentStage.module = fragmentShader->shaderModule;
+        fragmentStage.pName = "main";
+        fragmentStage.pSpecializationInfo = nullptr;
+
+        VkPipelineShaderStageCreateInfo stages[] = {meshStage,fragmentStage};
+
+        VkPipelineVertexInputStateCreateInfo vertexInputState {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        vertexInputState.vertexBindingDescriptionCount = 0;
+        vertexInputState.pVertexBindingDescriptions = nullptr;
+        vertexInputState.vertexAttributeDescriptionCount = 0;
+        vertexInputState.pVertexAttributeDescriptions = nullptr;
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssemblyState {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssemblyState.primitiveRestartEnable = VK_FALSE;
+
+        /// Raster state — identical mapping to the graphics path.
+        VkPipelineRasterizationStateCreateInfo rasterState {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rasterState.depthClampEnable = VK_FALSE;
+        rasterState.rasterizerDiscardEnable = VK_FALSE;
+        rasterState.depthBiasEnable = VK_FALSE;
+        rasterState.lineWidth = 1.0f;
+        switch(desc.cullMode){
+            case RasterCullMode::None:  rasterState.cullMode = VK_CULL_MODE_NONE;       break;
+            case RasterCullMode::Front: rasterState.cullMode = VK_CULL_MODE_FRONT_BIT;  break;
+            case RasterCullMode::Back:  rasterState.cullMode = VK_CULL_MODE_BACK_BIT;   break;
+        }
+        rasterState.polygonMode = (desc.triangleFillMode == TriangleFillMode::Wireframe)
+                                      ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
+        rasterState.frontFace = (desc.polygonFrontFaceRotation == GTEPolygonFrontFaceRotation::Clockwise)
+                                    ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+        /// Viewport/scissor placeholders — actual values come at draw
+        /// time via VK_DYNAMIC_STATE_{VIEWPORT,SCISSOR}, same as the
+        /// graphics path.
+        VkViewport viewport {0.f,0.f,1.f,1.f,0.f,1.f};
+        VkRect2D scissor {{0,0},{1,1}};
+        VkPipelineViewportStateCreateInfo viewportState {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        viewportState.viewportCount = 1;
+        viewportState.pViewports = &viewport;
+        viewportState.scissorCount = 1;
+        viewportState.pScissors = &scissor;
+
+        VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT;
+        switch(desc.rasterSampleCount){
+            case 2:  sampleCount = VK_SAMPLE_COUNT_2_BIT;  break;
+            case 4:  sampleCount = VK_SAMPLE_COUNT_4_BIT;  break;
+            case 8:  sampleCount = VK_SAMPLE_COUNT_8_BIT;  break;
+            case 16: sampleCount = VK_SAMPLE_COUNT_16_BIT; break;
+            case 32: sampleCount = VK_SAMPLE_COUNT_32_BIT; break;
+            case 64: sampleCount = VK_SAMPLE_COUNT_64_BIT; break;
+            default: sampleCount = VK_SAMPLE_COUNT_1_BIT;  break;
+        }
+        VkPipelineMultisampleStateCreateInfo multisampleState {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        multisampleState.rasterizationSamples = sampleCount;
+        multisampleState.sampleShadingEnable = VK_FALSE;
+
+        OmegaCommon::Vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments;
+        colorBlendAttachments.resize(colorFormatCount);
+        for(size_t i = 0; i < colorFormatCount; ++i){
+            VkPipelineColorBlendAttachmentState & att = colorBlendAttachments[i];
+            att = {};
+            if(i < desc.colorBlendDescriptors.size()){
+                const auto & b = desc.colorBlendDescriptors[i];
+                att.blendEnable         = b.blendEnabled ? VK_TRUE : VK_FALSE;
+                att.srcColorBlendFactor = convertBlendFactorVk(b.srcColorFactor);
+                att.dstColorBlendFactor = convertBlendFactorVk(b.destColorFactor);
+                att.colorBlendOp        = convertBlendOperationVk(b.colorOp);
+                att.srcAlphaBlendFactor = convertBlendFactorVk(b.srcAlphaFactor);
+                att.dstAlphaBlendFactor = convertBlendFactorVk(b.destAlphaFactor);
+                att.alphaBlendOp        = convertBlendOperationVk(b.alphaOp);
+                att.colorWriteMask      = convertColorWriteMaskVk(b.writeMask);
+            }
+            else {
+                att.blendEnable = VK_FALSE;
+                att.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+                att.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+                att.colorBlendOp = VK_BLEND_OP_ADD;
+                att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+                att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+                att.alphaBlendOp = VK_BLEND_OP_ADD;
+                att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+            }
+        }
+        VkPipelineColorBlendStateCreateInfo colorBlendState {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        colorBlendState.logicOpEnable = VK_FALSE;
+        colorBlendState.attachmentCount = (uint32_t)colorBlendAttachments.size();
+        colorBlendState.pAttachments = colorBlendAttachments.data();
+
+        OmegaCommon::Vector<VkDynamicState> dynamicStates = {
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR,
+            VK_DYNAMIC_STATE_STENCIL_REFERENCE
+        };
+        VkPipelineDynamicStateCreateInfo dynamicState {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+        dynamicState.dynamicStateCount = (uint32_t)dynamicStates.size();
+        dynamicState.pDynamicStates = dynamicStates.data();
+
+        VkPipelineDepthStencilStateCreateInfo depthStencilStateDesc {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        depthStencilStateDesc.minDepthBounds = 0.f;
+        depthStencilStateDesc.maxDepthBounds = 1.f;
+        depthStencilStateDesc.depthBoundsTestEnable = (VkBool32)desc.depthAndStencilDesc.enableDepth;
+        depthStencilStateDesc.depthCompareOp = convertCompareFunc(desc.depthAndStencilDesc.depthOperation);
+        depthStencilStateDesc.depthWriteEnable = desc.depthAndStencilDesc.writeAmount == DepthWriteAmount::All ? VK_TRUE : VK_FALSE;
+        depthStencilStateDesc.depthTestEnable = (VkBool32)desc.depthAndStencilDesc.enableDepth;
+        depthStencilStateDesc.stencilTestEnable = (VkBool32)desc.depthAndStencilDesc.enableStencil;
+        depthStencilStateDesc.front.reference = 0;
+        depthStencilStateDesc.front.compareMask = desc.depthAndStencilDesc.stencilReadMask;
+        depthStencilStateDesc.front.compareOp = convertCompareFunc(desc.depthAndStencilDesc.frontFaceStencil.func);
+        depthStencilStateDesc.front.writeMask = desc.depthAndStencilDesc.stencilWriteMask;
+        depthStencilStateDesc.front.depthFailOp = convertStencilOp(desc.depthAndStencilDesc.frontFaceStencil.depthFail);
+        depthStencilStateDesc.front.failOp = convertStencilOp(desc.depthAndStencilDesc.frontFaceStencil.stencilFail);
+        depthStencilStateDesc.front.passOp = convertStencilOp(desc.depthAndStencilDesc.frontFaceStencil.pass);
+        depthStencilStateDesc.back.reference = 0;
+        depthStencilStateDesc.back.compareMask = desc.depthAndStencilDesc.stencilReadMask;
+        depthStencilStateDesc.back.compareOp = convertCompareFunc(desc.depthAndStencilDesc.backFaceStencil.func);
+        depthStencilStateDesc.back.writeMask = desc.depthAndStencilDesc.stencilWriteMask;
+        depthStencilStateDesc.back.depthFailOp = convertStencilOp(desc.depthAndStencilDesc.backFaceStencil.depthFail);
+        depthStencilStateDesc.back.failOp = convertStencilOp(desc.depthAndStencilDesc.backFaceStencil.stencilFail);
+        depthStencilStateDesc.back.passOp = convertStencilOp(desc.depthAndStencilDesc.backFaceStencil.pass);
+
+        VkGraphicsPipelineCreateInfo createInfo {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        createInfo.basePipelineHandle = VK_NULL_HANDLE;
+        createInfo.basePipelineIndex = -1;
+        createInfo.layout = layout;
+        createInfo.renderPass = compatibilityRenderPass;
+        createInfo.subpass = 0;
+        createInfo.pStages = stages;
+        createInfo.stageCount = 2;
+        createInfo.pDynamicState = &dynamicState;
+        createInfo.pRasterizationState = &rasterState;
+        createInfo.pVertexInputState = &vertexInputState;     // ignored when mesh stage present
+        createInfo.pInputAssemblyState = &inputAssemblyState; // ignored when mesh stage present
+        createInfo.pViewportState = &viewportState;
+        createInfo.pMultisampleState = &multisampleState;
+        createInfo.pColorBlendState = &colorBlendState;
+        createInfo.pDepthStencilState = &depthStencilStateDesc;
+
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        auto pipelineRes = vkCreateGraphicsPipelines(device,VK_NULL_HANDLE,1,&createInfo,nullptr,&pipeline);
+        if(!VK_RESULT_SUCCEEDED(pipelineRes) || pipeline == VK_NULL_HANDLE){
+            std::cerr << "Vulkan mesh pipeline creation failed (" << pipelineRes << ")" << std::endl;
+            vkDestroyRenderPass(device,compatibilityRenderPass,nullptr);
+            vkDestroyPipelineLayout(device,layout,nullptr);
+            if(descriptorPool != VK_NULL_HANDLE){
+                vkDestroyDescriptorPool(device,descriptorPool,nullptr);
+            }
+            for(auto & descLayout : descLayouts){
+                if(descLayout != VK_NULL_HANDLE){
+                    vkDestroyDescriptorSetLayout(device,descLayout,nullptr);
+                }
+            }
+            for(auto & s : immutableSamplers){
+                if(s != VK_NULL_HANDLE) vkDestroySampler(device,s,nullptr);
+            }
+            return nullptr;
+        }
+
+        if(desc.name.size() > 0){
+            VkDebugUtilsObjectNameInfoEXT nameInfoExt {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+            nameInfoExt.objectType = VK_OBJECT_TYPE_PIPELINE;
+            nameInfoExt.objectHandle = (uint64_t)pipeline;
+            nameInfoExt.pObjectName = desc.name.data();
+            vkSetDebugUtilsObjectNameEXT(device,&nameInfoExt);
+        }
+
+        auto result = std::shared_ptr<GEVulkanRenderPipelineState>(
+            new GEVulkanRenderPipelineState(desc.meshFunc,
+                                            desc.fragmentFunc,
+                                            this,
+                                            pipeline,
+                                            compatibilityRenderPass,
+                                            layout,
+                                            descriptorPool,
+                                            descs,
+                                            descLayouts,
+                                            immutableSamplers,
+                                            /*meshVariant=*/true));
+        trackResource(result);
+        return result;
+    #endif
     }
 
     SharedHandle<GEFence> GEVulkanEngine::makeFence(){

@@ -424,8 +424,14 @@ public:
 - `StackLayout` — H or V. Uses `LayoutStyle` weights.
 - `AbsoluteLayout` — child uses its own `LayoutStyle` rect, no reflow.
   This is the back-compat path for `UIViewLayoutV2`.
-- `FlexLayout` — later. Wraps the current `resolveClampedRect` + a
-  simple main-axis distributor.
+- `FlexLayout` — **shipped in Tier 4 Phase 4.6** (not "later" as this
+  section originally implied). `StackWidget` is a live consumer in the
+  tree, so its bespoke flexbox could not stay a parallel path once the
+  `LayoutManager` family owned child layout. `FlexLayout` is a public
+  `LayoutManager`-family built-in: per-child state lives on the
+  manager (keyed by `View *`), main-axis distribution + cross-axis
+  alignment + the suspicious-rect cache from the pre-migration
+  `StackWidget` are all behind the `LayoutManager` interface now.
 
 Parents own their children's layout via a `LayoutManager*` field.
 Children never position themselves. This is directly the Chromium
@@ -2290,7 +2296,109 @@ Files touched: `wtk/src/UI/UIView.Animation.cpp`,
 `wtk/src/UI/UIView.Update.cpp`, `wtk/src/UI/View.Core.cpp`,
 `wtk/src/UI/UIViewImpl.h`, `wtk/src/UI/AnimationScheduler.{h,cpp}`.
 
-##### Phase 4.5 — `LayoutManager`: replace `ViewResizeCoordinator` *and* `Container` child layout
+##### Phase 4.5 — `LayoutManager`: replace `ViewResizeCoordinator` *and* `Container` child layout [DONE]
+
+**Status:** Complete (2026-05-31; full Metal build clean). All four
+built-ins landed: `AbsoluteLayout` (default — singleton, no-alloc),
+`FillLayout` (every child stretched), `StackLayout` (H/V no-flex
+sequential), `ContainerLayout` (lifted `Container::clampChildRect`).
+The `clampRectToParent` static helper survives — lifted from the
+deleted `ViewResizeCoordinator::clampRectToParent` to
+`LayoutManager::clampRectToParent` (same signature; three live callers
+re-pointed: `UIView::paint` intra-element clamp at 8 sites,
+`StackWidget::layoutChildren` until 4.6 replaces it, and the manager
+built-ins themselves).
+
+Survey findings that shaped the implementation (recorded for the 4.6
+work that follows):
+
+- `ChildResizePolicy::Fill` and `Proportional` were **dead policies**
+  — no caller asked for them; only `Fixed` and `FitContent` were used.
+  The lifted manager built-ins do not reimplement Fill / Proportional;
+  if a caller surfaces later, it adds a new manager kind rather than
+  re-extending the coordinator's switch.
+- Per-child `ChildResizeSpec` storage on the coordinator was **never
+  customized externally** — every caller passed default-constructed
+  specs or built local specs on the fly (StackWidget). 4.5's managers
+  therefore carry no per-child state; each manager applies a uniform
+  policy. FlexLayout (4.6) will need per-child flex weights, but that
+  is its own design.
+- `beginResizeSession`'s `activeSessionId` field was `(void)`-discarded
+  — i.e. the entire session API was vestigial bookkeeping left over
+  from the dead Proportional baseline-tracking path. The whole resize-
+  session walk in `WidgetTreeHost::notifyWindowResizeBegin` is gone
+  (one full-tree walk dropped per resize-begin). The
+  `beginResizeCoordinatorSessionRecurse` symbol remains as a no-op so
+  the declaration cleanup can be a follow-up; the
+  `resizeCoordinatorGeneration` counter stays — it is still consumed
+  by the resize tracker / diagnostics.
+- `LegacyResizeCoordinatorBehavior` (in `LayoutBehaviors.h`) had no
+  callers and was deleted alongside the coordinator. `runWidgetLayout`
+  now drives the parent's `LayoutManager::arrange` directly.
+
+Deviations from the plan as written:
+
+- `ContainerInsets` / `ContainerOverflowMode` / `ContainerClampPolicy`
+  **moved from `BasicWidgets.h` to `LayoutManager.h`** — these describe
+  layout policy, not widget shape, so they belong with the manager
+  that consumes them. `BasicWidgets.h` re-includes
+  `LayoutManager.h` so existing call sites that only include
+  `BasicWidgets.h` continue to compile unchanged. No `using`-aliases
+  needed (names stayed in `OmegaWTK::`).
+- `Container::layoutChildren` **kept as an empty virtual hook** rather
+  than deleted outright — `StackWidget` (Phase 4.6's territory) still
+  overrides it for its bespoke flex implementation. The body is the
+  no-op; the override-keyword in `StackWidget::layoutChildren` keeps
+  working. The hook disappears in 4.6 when `FlexLayout` replaces the
+  flex code.
+- The protected `inLayout` re-entry guard on `Container` **stays**
+  for the same reason — `StackWidget::layoutChildren` uses it. 4.5's
+  own `Container::relayout` does NOT use it (the manager call is
+  one-shot per relayout).
+- `Container::onChildRectCommitted` still calls `relayout()` eagerly
+  rather than the plan's `DirtyBit::Layout + requestFrame` deferral.
+  Centralized deferral is Phase 4.7's job (it owns the
+  FrameBuilder-driven Measure / Arrange passes); 4.5 keeps the
+  eager-on-commit semantic so the layout-correctness profile stays
+  identical pre- vs post-migration.
+- `getResizeCoordinator()` accessors **deleted outright**, not
+  deprecated. Zero external callers in the tree; the public alias
+  would have served only as a tombstone.
+
+Files touched: new `wtk/include/omegaWTK/UI/LayoutManager.h`
+(public header, ~210 lines), new `wtk/src/UI/LayoutManager.cpp`
+(implementation, ~270 lines including the lifted `clampRectToParent`
+and ContainerLayout's clampChild), `wtk/include/omegaWTK/UI/View.h`
+(`ViewResizeCoordinator` class deleted; `layoutManager()` /
+`setLayoutManager()` / `subviews()` accessors added; `LayoutManager`
+forward decl),
+`wtk/src/UI/ViewImpl.h` (`resizeCoordinator` field deleted;
+`layoutManager_` pointer field added; constructor stops attaching),
+`wtk/src/UI/View.Core.cpp` (accessors implemented; addSubView /
+removeSubView stop calling the coordinator),
+`wtk/src/UI/Layout.cpp` (`runWidgetLayout` drives parent's
+`LayoutManager::arrange`; `LegacyResizeCoordinatorBehavior` body
+deleted),
+`wtk/src/UI/LayoutBehaviors.h` (`LegacyResizeCoordinatorBehavior`
+class deleted),
+`wtk/src/UI/WidgetTreeHost.cpp` (`beginResizeCoordinatorSessionRecurse`
+body neutered to no-op; the call site in `notifyWindowResizeBegin`
+dropped — full-tree walk saved per resize),
+`wtk/src/UI/UIView.Update.cpp` (8 sites swap
+`ViewResizeCoordinator::clampRectToParent` →
+`LayoutManager::clampRectToParent`),
+`wtk/include/omegaWTK/Widgets/BasicWidgets.h` (`Container` carries a
+`ContainerLayout` field; `clampPolicy` / cache deleted; `layoutChildren`
+becomes an empty virtual hook; `ContainerInsets` / overflow /
+`ContainerClampPolicy` moved out),
+`wtk/src/Widgets/BasicWidgets.cpp` (Container constructors install
+the layout on the View; `setClampPolicy` / `getClampPolicy` forward
+to the layout; `clampChildRect` / `relayout` route through the
+layout; `layoutChildren` body deleted; `contentBoundsFromHost` /
+`clampAxisPosition` helpers moved to `LayoutManager.cpp`),
+`wtk/src/Widgets/Containers.cpp` (one `clampRectToParent` callsite
+swapped + `LayoutManager.h` include),
+**DELETED:** `wtk/src/UI/View.ResizeCoordinator.cpp` (161 lines).
 
 The parent-owned layout strategy from §3.2 / §3.5 takes over **all
 child-node layout**. Today that job is split across three half-built
@@ -2357,7 +2465,99 @@ header), `wtk/include/omegaWTK/UI/View.h`, `wtk/src/UI/View.Core.cpp`,
 `wtk/include/omegaWTK/Widgets/BasicWidgets.h`,
 `wtk/src/Widgets/BasicWidgets.cpp` (`Container`).
 
-##### Phase 4.6 — `FlexLayout`: migrate `StackWidget`; the Measure pass earns its keep
+##### Phase 4.6 — `FlexLayout`: migrate `StackWidget`; the Measure pass earns its keep [DONE]
+
+**Status:** Complete (2026-05-31). `FlexLayout` shipped in the public
+`LayoutManager.h`; `StackWidget::layoutChildren()` is deleted; the
+backing View's `LayoutManager` is the FlexLayout instance, configured
+from the widget's `StackOptions` / `StackSlot` at every
+`addChild` / `setSlot` / `setOptions`. The bespoke flex code that
+lived inside `StackWidget` is gone; flex is now a `LayoutManager`-
+family built-in, indistinguishable from `ContainerLayout` /
+`FillLayout` / `StackLayout` at the call boundary.
+
+Survey findings + design notes that shaped the implementation:
+
+- **`Stack*` types stayed Widget-level.** `StackAxis` / `StackOptions` /
+  `StackSlot` / `StackMainAlign` / `StackCrossAlign` / `StackInsets` are
+  the public API of `StackWidget` and are called by name from tests
+  (`BasicAppTestRun.cpp`, `ImageRenderTest`, `EllipsePathCompositorTest`).
+  `FlexLayout` got its own `FlexOptions` / `FlexChildSpec` /
+  `FlexMainAlign` / `FlexCrossAlign` / `FlexInsets` types in
+  `LayoutManager.h`, and `StackWidget` adapts at the boundary
+  (`toFlexOptions` / `toFlexChildSpec` in `Containers.cpp`). This keeps
+  the LayoutManager core free of Stack-specific naming while preserving
+  every existing caller verbatim.
+- **Per-child state on the manager, keyed by `View *`.** `FlexLayout`
+  stores a `std::unordered_map<View *, ChildEntry>` — spec + measure
+  cache per child. Owners (`StackWidget`) call `setChildSpec` on
+  add / setSlot, `removeChildSpec` on remove. The pre-migration
+  parallel `childSlots` vector on `StackWidget` is kept *only* so the
+  public `getSlot(WidgetPtr)` accessor keeps working; it does not
+  drive the layout.
+- **`Widget::view` is protected and only friended to `Container`.**
+  `StackWidget` (a Container subclass) cannot access another Widget's
+  `view` field directly because C++ friendship doesn't inherit. The
+  migration uses the public `Widget::viewRef()` accessor instead
+  (`&child->viewRef()`) — the same pattern any non-Container subclass
+  would have to use.
+- **No `Widget::setRect` invalidation suppress / re-invoke dance.**
+  The pre-migration `StackWidget::layoutChildren` temporarily disabled
+  `invalidateOnResize`, called `child->setRect()`, then explicitly
+  re-invoked `invalidate(PaintReason::Resize)` for each resized child.
+  The new path matches the 4.5 manager pattern (`ContainerLayout`,
+  `AbsoluteLayout`, `FillLayout`, `StackLayout`): call `View::resize`
+  directly, which fires `onLayoutResolved` and updates the layer tree;
+  no Widget-pipeline invalidation. Phase 4.7's DirtyBit-driven
+  FrameBuilder loop will own paint-after-layout propagation
+  centrally; until then, the same invariant other 4.5 managers rely
+  on (FrameBuilder picks up the new rect on the next pass) carries
+  StackWidget too.
+- **Suspicious-frame / placeholder-rect fallback preserved.** The
+  pre-4.6 cache logic — "use the previously-seen good preferred size
+  when the current rect is tiny / NaN / extreme-aspect" — moves
+  verbatim into `FlexLayout::measure` (writes the cache on clean
+  rects, reads it on suspicious / placeholder ones). The
+  `hasLastStableFrame_` / `lastStableFrame_` parent-frame fallback
+  moves from `StackWidget` onto the FlexLayout instance and applies
+  identically.
+- **`StackWidget::needsLayout` field deleted.** It was set in
+  `relayout()` and cleared at the end of `layoutChildren()`; no
+  external reader. With FlexLayout owning the algorithm, the bit has
+  no caller.
+- **`§3.5 "FlexLayout later" updated.** The §3.5 note now records
+  that `StackWidget` forced FlexLayout into Tier 4.
+
+Deviations from the plan as written:
+
+- **`measure()` runs inside `arrange()` in Phase 4.6.** The plan
+  describes a Measure-then-Arrange split that 4.7 will hoist into
+  `FrameBuilder`. Until 4.7 calls `measure` top-down separately,
+  `FlexLayout::arrange` calls `measure` internally so the existing
+  entry points (StackWidget::resize / relayout / addChild) drive a
+  complete pass. The cache write/read split is real (measure writes,
+  arrange reads), so the seam is in the right place — it's just
+  driven from one method for now.
+- **Measure-cache invalidation is mutation-driven, not
+  DirtyBit-driven.** `setChildSpec` / `removeChildSpec` /
+  `setOptions` flip `hasPreferredSize = false` on the affected
+  entries, so the next `measure` re-collects from scratch. Phase 4.7
+  will replace this with a `DirtyBit::Layout`-driven invalidation
+  read by the FrameBuilder Measure pass.
+
+Files touched: `wtk/include/omegaWTK/UI/LayoutManager.h`
+(FlexOptions / FlexChildSpec / FlexLayout, +`#include <unordered_map>`),
+`wtk/src/UI/LayoutManager.cpp` (FlexLayout impl, +the flex-frame
+suspicious-rect helpers in the unnamed namespace),
+`wtk/include/omegaWTK/Widgets/Containers.h` (StackWidget shrunk —
+bespoke cache + flex fields gone, `flexLayout_` field added,
+`layoutChildren` override removed),
+`wtk/src/Widgets/Containers.cpp` (rewritten — Stack→Flex adapters,
+`relayout()` delegates to `flexLayout_.arrange`,
+`addChild`/`removeChild`/`setSlot`/`setOptions` push specs into the
+manager).
+
+---
 
 `StackWidget` (and any `Container` subclass like it) is a real,
 existing flexbox container — `flexGrow` / `flexShrink` / `flexBasis`,
@@ -2640,10 +2840,13 @@ surface deprecations:
   itself slated for 4.8). Delete alongside `beginCompositionClock`
   if the 4.8 sweep does not already get it.
 - `UIView::Impl::EffectAnimationKey*` enum constants that paint never
-  reads back: `ShadowColorR/G/B/A` (4 entries) and `GaussianRadius` /
-  `DirectionalRadius` / `DirectionalAngle` (3 entries). The five
-  shadow-channel constants paint DOES read (`ShadowOffsetX/Y` /
-  `ShadowRadius` / `ShadowBlur` / `ShadowOpacity`) stay.
+  reads back: `GaussianRadius` / `DirectionalRadius` /
+  `DirectionalAngle` (3 entries). The nine paint-reachable shadow
+  constants stay: `ShadowOffsetX/Y`, `ShadowRadius`, `ShadowBlur`,
+  `ShadowOpacity`, `ShadowColorR/G/B/A` (the four color channels were
+  wired into `UIView::paint` and added to `UIView::AnimationChannel`
+  on 2026-05-31, after the original Phase I survey, so paint reads them
+  per frame to override `shadowParams.color`).
 - `UIViewInternal::ResolvedEffectTransition` struct and the matching
   `dropShadowTransition` / `gaussianBlurTransition` /
   `directionalBlurTransition` fields on `ResolvedEffectStyle`. Written

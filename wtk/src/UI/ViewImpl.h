@@ -108,7 +108,8 @@ struct View::Impl {
     /// Null until setWindowRenderTarget() is called. Not owned per-View.
     SharedHandle<Composition::ViewRenderTarget> renderTarget;
     Composition::CompositorClientProxy proxy;
-    ViewResizeCoordinator resizeCoordinator;
+    // Phase 4.5: `ViewResizeCoordinator` is deleted. Child layout now
+    // routes through `View::layoutManager()` (see `LayoutManager.h`).
     SharedHandle<Composition::LayerTree> ownLayerTree;
     View * parent_ptr = nullptr;
     Composition::Rect rect {Composition::Point2D{0.f,0.f},1.f,1.f};
@@ -120,6 +121,12 @@ struct View::Impl {
     /// via the public `View::nodeId()`. Allocated at construction so
     /// `applyLayoutDelta` can register tweens without a lookup.
     std::uint64_t nodeId_;
+    /// Phase 4.5: parent-owned child-layout strategy. nullptr = use the
+    /// process-wide `AbsoluteLayout::instance()` default. View does NOT
+    /// own this pointer — caller is responsible for the manager's
+    /// lifetime (which is usually a member of the owning Widget, e.g.
+    /// `Container`'s `ContainerLayout` field).
+    LayoutManager * layoutManager_ = nullptr;
 
     /// Construct a purely virtual View (Phase 3). No NativeItem, no
     /// per-View render target. The render target is propagated from the
@@ -133,7 +140,10 @@ struct View::Impl {
         parent_ptr(parent),
         rect(initialRect),
         nodeId_(allocateNodeId()){
-        resizeCoordinator.attachView(&owner);
+        // Phase 4.5: no per-View resize coordinator to attach. The
+        // parent's LayoutManager discovers children through
+        // `parent->subviews()` at arrange time.
+        (void)owner;
     }
 
 };

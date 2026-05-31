@@ -1,142 +1,92 @@
 #include "omegaWTK/Widgets/Containers.h"
 #include "omegaWTK/UI/View.h"
-
-#include <algorithm>
-#include <cmath>
-#include <limits>
+#include "omegaWTK/UI/LayoutManager.h"
 
 namespace OmegaWTK {
 
 namespace {
 
-#if defined(TARGET_MACOS)
-constexpr float kMaxStackDimension = 8192.f;
-#else
-constexpr float kMaxStackDimension = 16384.f;
-#endif
+// Phase 4.6: the public StackOptions / StackSlot enums and structs map
+// one-for-one onto the FlexLayout-family equivalents. The helpers
+// below adapt the Stack* surface (kept on `StackWidget` so existing
+// call sites — tests, BasicAppTest, ImageRenderTest — compile
+// unchanged) into the FlexOptions / FlexChildSpec values that
+// `flexLayout_` actually consumes.
 
-static inline float clampSize(float value,const Core::Optional<float> & minValue,const Core::Optional<float> & maxValue){
-    if(minValue){
-        value = std::max(value,*minValue);
+inline FlexMainAlign toFlexMainAlign(StackMainAlign align){
+    switch(align){
+        case StackMainAlign::Start:        return FlexMainAlign::Start;
+        case StackMainAlign::Center:       return FlexMainAlign::Center;
+        case StackMainAlign::End:          return FlexMainAlign::End;
+        case StackMainAlign::SpaceBetween: return FlexMainAlign::SpaceBetween;
+        case StackMainAlign::SpaceAround:  return FlexMainAlign::SpaceAround;
+        case StackMainAlign::SpaceEvenly:  return FlexMainAlign::SpaceEvenly;
     }
-    if(maxValue){
-        value = std::min(value,*maxValue);
-    }
-    return value;
+    return FlexMainAlign::Start;
 }
 
-static inline bool rectChanged(const Composition::Rect &a,const Composition::Rect &b){
-    constexpr float kEpsilon = 0.001f;
-    return std::fabs(a.pos.x - b.pos.x) > kEpsilon ||
-           std::fabs(a.pos.y - b.pos.y) > kEpsilon ||
-           std::fabs(a.w - b.w) > kEpsilon ||
-           std::fabs(a.h - b.h) > kEpsilon;
+inline FlexCrossAlign toFlexCrossAlign(StackCrossAlign align){
+    switch(align){
+        case StackCrossAlign::Start:   return FlexCrossAlign::Start;
+        case StackCrossAlign::Center:  return FlexCrossAlign::Center;
+        case StackCrossAlign::End:     return FlexCrossAlign::End;
+        case StackCrossAlign::Stretch: return FlexCrossAlign::Stretch;
+    }
+    return FlexCrossAlign::Start;
 }
 
-static inline bool finiteRect(const Composition::Rect & rect){
-    return std::isfinite(rect.pos.x) &&
-           std::isfinite(rect.pos.y) &&
-           std::isfinite(rect.w) &&
-           std::isfinite(rect.h);
+inline FlexInsets toFlexInsets(const StackInsets & insets){
+    return FlexInsets{insets.left, insets.top, insets.right, insets.bottom};
 }
 
-static inline bool suspiciousFrame(const Composition::Rect & rect){
-    if(!finiteRect(rect)){
-        return true;
-    }
-    if(rect.w <= 0.f || rect.h <= 0.f){
-        return true;
-    }
-    const float maxDim = std::max(rect.w,rect.h);
-    const float minDim = std::min(rect.w,rect.h);
-    if(maxDim >= (kMaxStackDimension * 0.5f) && minDim <= 2.f){
-        return true;
-    }
-    if(maxDim >= 1024.f && minDim > 0.f){
-        const float aspect = maxDim / minDim;
-        if(aspect > 256.f){
-            return true;
-        }
-    }
-    return false;
+inline FlexOptions toFlexOptions(StackAxis axis, const StackOptions & opts){
+    FlexOptions out {};
+    out.axis       = (axis == StackAxis::Horizontal)
+        ? LayoutAxis::Horizontal : LayoutAxis::Vertical;
+    out.spacing    = opts.spacing;
+    out.padding    = toFlexInsets(opts.padding);
+    out.mainAlign  = toFlexMainAlign(opts.mainAlign);
+    out.crossAlign = toFlexCrossAlign(opts.crossAlign);
+    return out;
 }
 
-static inline bool suspiciousSizePair(float mainSize,float crossSize){
-    if(!std::isfinite(mainSize) || !std::isfinite(crossSize)){
-        return true;
+inline FlexChildSpec toFlexChildSpec(const StackSlot & slot, bool resizable){
+    FlexChildSpec out {};
+    out.resizable  = resizable;
+    out.flexGrow   = slot.flexGrow;
+    out.flexShrink = slot.flexShrink;
+    out.basis      = slot.basis;
+    out.minMain    = slot.minMain;
+    out.maxMain    = slot.maxMain;
+    out.minCross   = slot.minCross;
+    out.maxCross   = slot.maxCross;
+    out.margin     = toFlexInsets(slot.margin);
+    if(slot.alignSelf){
+        out.alignSelf = toFlexCrossAlign(*slot.alignSelf);
     }
-    if(mainSize <= 0.f || crossSize <= 0.f){
-        return true;
-    }
-    const float maxDim = std::max(mainSize,crossSize);
-    const float minDim = std::min(mainSize,crossSize);
-    if(maxDim >= (kMaxStackDimension * 0.5f) && minDim <= 2.f){
-        return true;
-    }
-    if(maxDim >= 1024.f && minDim > 0.f){
-        const float aspect = maxDim / minDim;
-        if(aspect > 256.f){
-            return true;
-        }
-    }
-    return false;
+    return out;
 }
 
-static inline bool tinyPlaceholderSize(float mainSize,float crossSize){
-    return std::isfinite(mainSize) &&
-           std::isfinite(crossSize) &&
-           mainSize <= 1.5f &&
-           crossSize <= 1.5f;
-}
-
-static inline Composition::Rect sanitizeStackFrame(const Composition::Rect & candidate){
-    Composition::Rect frame = candidate;
-    if(!std::isfinite(frame.pos.x)){
-        frame.pos.x = 0.f;
-    }
-    if(!std::isfinite(frame.pos.y)){
-        frame.pos.y = 0.f;
-    }
-    if(!std::isfinite(frame.w)){
-        frame.w = 1.f;
-    }
-    if(!std::isfinite(frame.h)){
-        frame.h = 1.f;
-    }
-    frame.w = std::clamp(frame.w,1.f,kMaxStackDimension);
-    frame.h = std::clamp(frame.h,1.f,kMaxStackDimension);
-    return frame;
-}
-
-struct LayoutItem {
-    Widget *widget = nullptr;
-    StackSlot slot {};
-    bool resizable = true;
-    float currentMain = 0.f;
-    float currentCross = 0.f;
-    float resolvedMain = 0.f;
-    float resolvedCross = 0.f;
-    float minMain = 0.f;
-    float marginMainBefore = 0.f;
-    float marginMainAfter = 0.f;
-    float marginCrossBefore = 0.f;
-    float marginCrossAfter = 0.f;
-};
-
-}
+} // namespace
 
 StackWidget::StackWidget(StackAxis axis,Composition::Rect rect,const StackOptions & options):
 Container(rect),
 axis(axis),
-stackOptions(options){
-
+stackOptions(options),
+flexLayout_(toFlexOptions(axis, options)){
+    if(view != nullptr){
+        view->setLayoutManager(&flexLayout_);
+    }
 }
 
 StackWidget::StackWidget(StackAxis axis,ViewPtr view,const StackOptions & options):
 Container(std::move(view)),
 axis(axis),
-stackOptions(options){
-
+stackOptions(options),
+flexLayout_(toFlexOptions(axis, options)){
+    if(this->view != nullptr){
+        this->view->setLayoutManager(&flexLayout_);
+    }
 }
 
 void StackWidget::onMount(){
@@ -145,10 +95,10 @@ void StackWidget::onMount(){
 
 void StackWidget::onPaint(PaintReason reason){
     // Tier B / B4: layout-only; no layout during paint. relayout()
-    // drives layoutChildren() at model-change time, and the
-    // suspicious-frame deferred retry (needsLayout left set) is re-driven
-    // when a valid rect arrives (setRect → resize → relayout), not by
-    // paint.
+    // drives the FlexLayout arrange at model-change time; transient
+    // suspicious-frame retries are owned by FlexLayout itself
+    // (its `hasLastStableFrame_` state replaces the field that used
+    // to live here pre-4.6).
     (void)reason;
 }
 
@@ -166,7 +116,8 @@ const StackOptions & StackWidget::getOptions() const{
 }
 
 void StackWidget::setOptions(const StackOptions & options){
-    this->stackOptions = options;
+    stackOptions = options;
+    flexLayout_.setOptions(toFlexOptions(axis, options));
     relayout();
 }
 
@@ -184,20 +135,17 @@ WidgetPtr StackWidget::addChild(const WidgetPtr & child,const StackSlot & slot){
             if(i < childSlots.size()){
                 childSlots[i] = slot;
             }
+            flexLayout_.setChildSpec(&child->viewRef(),
+                                     toFlexChildSpec(slot, child->isLayoutResizable()));
             relayout();
             return child;
         }
     }
 
     wireChild(child);
-    auto childRect = child->rect();
-    const float preferredMain = axis == StackAxis::Horizontal ? childRect.w : childRect.h;
-    const float preferredCross = axis == StackAxis::Horizontal ? childRect.h : childRect.w;
-    const bool hasPreferred =
-            !suspiciousSizePair(preferredMain,preferredCross) &&
-            !tinyPlaceholderSize(preferredMain,preferredCross);
     childSlots.push_back(slot);
-    childSizeCache.push_back({preferredMain,preferredCross,hasPreferred});
+    flexLayout_.setChildSpec(&child->viewRef(),
+                             toFlexChildSpec(slot, child->isLayoutResizable()));
     relayout();
     return child;
 }
@@ -208,12 +156,10 @@ bool StackWidget::removeChild(const WidgetPtr & child){
     }
     for(std::size_t i = 0; i < children.size(); ++i){
         if(children[i] == child){
+            flexLayout_.removeChildSpec(&child->viewRef());
             unwireChild(child);
             if(i < childSlots.size()){
                 childSlots.erase(childSlots.begin() + static_cast<std::ptrdiff_t>(i));
-            }
-            if(i < childSizeCache.size()){
-                childSizeCache.erase(childSizeCache.begin() + static_cast<std::ptrdiff_t>(i));
             }
             relayout();
             return true;
@@ -231,6 +177,8 @@ bool StackWidget::setSlot(const WidgetPtr & child,const StackSlot & slot){
             if(i < childSlots.size()){
                 childSlots[i] = slot;
             }
+            flexLayout_.setChildSpec(&child->viewRef(),
+                                     toFlexChildSpec(slot, child->isLayoutResizable()));
             relayout();
             return true;
         }
@@ -239,10 +187,15 @@ bool StackWidget::setSlot(const WidgetPtr & child,const StackSlot & slot){
 }
 
 bool StackWidget::setSlot(std::size_t idx,const StackSlot & slot){
-    if(idx >= childSlots.size()){
+    if(idx >= childSlots.size() || idx >= children.size()){
         return false;
     }
     childSlots[idx] = slot;
+    auto & child = children[idx];
+    if(child != nullptr){
+        flexLayout_.setChildSpec(&child->viewRef(),
+                                 toFlexChildSpec(slot, child->isLayoutResizable()));
+    }
     relayout();
     return true;
 }
@@ -260,358 +213,28 @@ Core::Optional<StackSlot> StackWidget::getSlot(const WidgetPtr & child) const{
 }
 
 void StackWidget::relayout(){
-    needsLayout = true;
-    layoutChildren();
-}
-
-void StackWidget::layoutChildren(){
-    if(inLayout){
-        return;
-    }
-
-    inLayout = true;
-
+    // Stale-child cleanup mirrors `Container::relayout` and the
+    // pre-4.6 `StackWidget::layoutChildren` head — flexLayout_ keeps
+    // per-child entries keyed by View*, so a nulled-out slot must be
+    // removed before arrange iterates `view->subviews()`.
     for(std::size_t i = 0; i < children.size(); ){
         if(children[i] == nullptr){
             children.erase(children.begin() + static_cast<std::ptrdiff_t>(i));
-            if(i < childSlots.size()) childSlots.erase(childSlots.begin() + static_cast<std::ptrdiff_t>(i));
-            if(i < childSizeCache.size()) childSizeCache.erase(childSizeCache.begin() + static_cast<std::ptrdiff_t>(i));
+            if(i < childSlots.size()){
+                childSlots.erase(childSlots.begin() + static_cast<std::ptrdiff_t>(i));
+            }
         }
         else {
             ++i;
         }
     }
-
-    const auto count = children.size();
-    if(count == 0){
-        needsLayout = false;
-        inLayout = false;
-        return;
+    if(view != nullptr){
+        flexLayout_.arrange(*view, view->getRect());
     }
-
-    auto frameCandidate = sanitizeStackFrame(rect());
-    if(suspiciousFrame(frameCandidate)){
-        if(!hasLastStableFrame){
-            needsLayout = true;
-            inLayout = false;
-            return;
-        }
-        frameCandidate = lastStableFrame;
-    }
-    else {
-        hasLastStableFrame = true;
-        lastStableFrame = frameCandidate;
-    }
-
-    auto frame = frameCandidate;
-    const float contentMain = std::max(
-        0.f,
-        (axis == StackAxis::Horizontal ? frame.w : frame.h) -
-        (axis == StackAxis::Horizontal
-            ? (stackOptions.padding.left + stackOptions.padding.right)
-            : (stackOptions.padding.top + stackOptions.padding.bottom)));
-    const float contentCross = std::max(
-        0.f,
-        (axis == StackAxis::Horizontal ? frame.h : frame.w) -
-        (axis == StackAxis::Horizontal
-            ? (stackOptions.padding.top + stackOptions.padding.bottom)
-            : (stackOptions.padding.left + stackOptions.padding.right)));
-    // Children are positioned in this stack's own (parent-relative) space:
-    // the main-axis cursor starts at mainStart = padding (NOT frame.pos +
-    // padding, see below), and each targetRect.pos is written directly from
-    // cursor / crossPos. The clamp bounds passed to clampRectToParent must
-    // therefore live in that SAME origin-0 space. Using frame.pos here
-    // clamped a parent-relative child position against an absolute parent
-    // rect (clampRectToParent forces pos >= parent.pos), shifting every
-    // child of a non-origin (nested) stack by the stack's own offset along
-    // whichever axis the stack is offset on. It stayed invisible while the
-    // stack sat at the window origin (the root VStack, and any single-level
-    // HStack) — which is why it only surfaced once absolute-coords paint
-    // made nested-stack positioning actually render where layout put it.
-    Composition::Rect contentBoundsRect {
-            Composition::Point2D{
-                    stackOptions.padding.left,
-                    stackOptions.padding.top
-            },
-            std::max(0.f,frame.w - stackOptions.padding.left - stackOptions.padding.right),
-            std::max(0.f,frame.h - stackOptions.padding.top - stackOptions.padding.bottom)
-    };
-
-    const float mainStart = (axis == StackAxis::Horizontal) ? stackOptions.padding.left : stackOptions.padding.top;
-    const float crossStart = (axis == StackAxis::Horizontal) ? stackOptions.padding.top : stackOptions.padding.left;
-
-    OmegaCommon::Vector<LayoutItem> items;
-    items.reserve(count);
-
-    const auto slotCount = childSlots.size();
-    const auto cacheCount = childSizeCache.size();
-
-    for(std::size_t idx = 0; idx < count; ++idx){
-        auto *child = children[idx].get();
-        if(child == nullptr){
-            continue;
-        }
-
-        const auto & slot = idx < slotCount ? childSlots[idx] : StackSlot{};
-        StackChildCache defaultCache {};
-        auto & cache = idx < cacheCount ? childSizeCache[idx] : defaultCache;
-        const bool hasCache = idx < cacheCount;
-
-        auto childRect = child->rect();
-        float currentMain = axis == StackAxis::Horizontal ? childRect.w : childRect.h;
-        float currentCross = axis == StackAxis::Horizontal ? childRect.h : childRect.w;
-
-        const bool currentSuspicious = suspiciousSizePair(currentMain,currentCross);
-        const bool currentPlaceholder = tinyPlaceholderSize(currentMain,currentCross);
-        const bool hasPreferred =
-                hasCache && cache.hasPreferredSize &&
-                !suspiciousSizePair(cache.preferredMainSize,cache.preferredCrossSize) &&
-                !tinyPlaceholderSize(cache.preferredMainSize,cache.preferredCrossSize);
-
-        if(!currentSuspicious && !currentPlaceholder && hasCache){
-            cache.preferredMainSize = currentMain;
-            cache.preferredCrossSize = currentCross;
-            cache.hasPreferredSize = true;
-        }
-        else if(hasPreferred){
-            currentMain = cache.preferredMainSize;
-            currentCross = cache.preferredCrossSize;
-        }
-
-        currentMain = std::clamp(
-                std::isfinite(currentMain) ? currentMain : 1.f,
-                1.f,
-                kMaxStackDimension);
-        currentCross = std::clamp(
-                std::isfinite(currentCross) ? currentCross : 1.f,
-                1.f,
-                kMaxStackDimension);
-
-        LayoutItem item {};
-        item.widget = child;
-        item.slot = slot;
-        item.resizable = child->isLayoutResizable();
-        item.currentMain = currentMain;
-        item.currentCross = currentCross;
-
-        item.marginMainBefore = axis == StackAxis::Horizontal ? slot.margin.left : slot.margin.top;
-        item.marginMainAfter = axis == StackAxis::Horizontal ? slot.margin.right : slot.margin.bottom;
-        item.marginCrossBefore = axis == StackAxis::Horizontal ? slot.margin.top : slot.margin.left;
-        item.marginCrossAfter = axis == StackAxis::Horizontal ? slot.margin.bottom : slot.margin.right;
-
-        item.resolvedMain = item.currentMain;
-        item.resolvedCross = item.currentCross;
-
-        if(item.resizable){
-            const bool lockMainToPreferred =
-                    slot.flexGrow <= 0.f &&
-                    slot.flexShrink <= 0.f &&
-                    hasCache && cache.hasPreferredSize;
-
-            if(slot.basis){
-                item.resolvedMain = *slot.basis;
-            }
-            else if(lockMainToPreferred){
-                item.resolvedMain = cache.preferredMainSize;
-            }
-            item.resolvedMain = clampSize(item.resolvedMain,slot.minMain,slot.maxMain);
-
-            if((!std::isfinite(item.resolvedCross) || item.resolvedCross <= 1.f) && hasCache && cache.hasPreferredSize){
-                item.resolvedCross = cache.preferredCrossSize;
-            }
-            item.resolvedCross = clampSize(item.resolvedCross,slot.minCross,slot.maxCross);
-        }
-
-        item.minMain = slot.minMain.value_or(0.f);
-        items.push_back(item);
-    }
-
-    if(items.empty()){
-        needsLayout = false;
-        inLayout = false;
-        return;
-    }
-
-    float usedMain = stackOptions.spacing * static_cast<float>(items.size() > 0 ? items.size() - 1 : 0);
-    float totalGrow = 0.f;
-    float totalShrinkWeight = 0.f;
-
-    for(const auto & item : items){
-        usedMain += item.marginMainBefore + item.resolvedMain + item.marginMainAfter;
-        if(item.resizable){
-            totalGrow += std::max(item.slot.flexGrow,0.f);
-            totalShrinkWeight += std::max(item.slot.flexShrink,0.f) * std::max(item.resolvedMain,0.f);
-        }
-    }
-
-    float freeMain = contentMain - usedMain;
-    if(freeMain > 0.f && totalGrow > 0.f){
-        for(auto & item : items){
-            if(!item.resizable || item.slot.flexGrow <= 0.f){
-                continue;
-            }
-            float delta = freeMain * (item.slot.flexGrow / totalGrow);
-            item.resolvedMain += delta;
-            item.resolvedMain = clampSize(item.resolvedMain,item.slot.minMain,item.slot.maxMain);
-        }
-    }
-    else if(freeMain < 0.f && totalShrinkWeight > 0.f){
-        float overflow = -freeMain;
-        for(auto & item : items){
-            if(!item.resizable || item.slot.flexShrink <= 0.f){
-                continue;
-            }
-            float weight = std::max(item.slot.flexShrink,0.f) * std::max(item.resolvedMain,0.f);
-            if(weight <= 0.f){
-                continue;
-            }
-            float shrink = overflow * (weight / totalShrinkWeight);
-            item.resolvedMain = std::max(item.minMain,item.resolvedMain - shrink);
-            item.resolvedMain = clampSize(item.resolvedMain,item.slot.minMain,item.slot.maxMain);
-        }
-    }
-
-    usedMain = stackOptions.spacing * static_cast<float>(items.size() > 0 ? items.size() - 1 : 0);
-    for(const auto & item : items){
-        usedMain += item.marginMainBefore + item.resolvedMain + item.marginMainAfter;
-    }
-
-    float extraMain = std::max(0.f,contentMain - usedMain);
-    float layoutSpacing = stackOptions.spacing;
-    float startOffset = 0.f;
-
-    switch(stackOptions.mainAlign){
-        case StackMainAlign::Start:
-            break;
-        case StackMainAlign::Center:
-            startOffset = extraMain * 0.5f;
-            break;
-        case StackMainAlign::End:
-            startOffset = extraMain;
-            break;
-        case StackMainAlign::SpaceBetween:
-            if(items.size() > 1){
-                layoutSpacing += extraMain / static_cast<float>(items.size() - 1);
-            }
-            break;
-        case StackMainAlign::SpaceAround:
-            if(!items.empty()){
-                float gap = extraMain / static_cast<float>(items.size());
-                layoutSpacing += gap;
-                startOffset = gap * 0.5f;
-            }
-            break;
-        case StackMainAlign::SpaceEvenly:
-            if(!items.empty()){
-                float gap = extraMain / static_cast<float>(items.size() + 1);
-                layoutSpacing += gap;
-                startOffset = gap;
-            }
-            break;
-    }
-
-    float cursor = mainStart + startOffset;
-    OmegaCommon::Vector<Widget *> resizedWidgets {};
-    resizedWidgets.reserve(items.size());
-
-    for(auto & item : items){
-        auto childRect = item.widget->rect();
-        float mainSize = item.resizable ? item.resolvedMain : item.currentMain;
-
-        cursor += item.marginMainBefore;
-
-        auto align = item.slot.alignSelf.value_or(stackOptions.crossAlign);
-        float crossSize = item.resizable ? item.resolvedCross : item.currentCross;
-
-        float crossAvailable = std::max(0.f,contentCross - (item.marginCrossBefore + item.marginCrossAfter));
-        if(item.resizable){
-            crossSize = std::max(0.f,crossSize);
-            crossSize = std::min(crossSize,crossAvailable);
-        }
-
-        float crossPos = crossStart + item.marginCrossBefore;
-        switch(align){
-            case StackCrossAlign::Start:
-                break;
-            case StackCrossAlign::Center:
-                crossPos += std::max(0.f,(crossAvailable - crossSize) * 0.5f);
-                break;
-            case StackCrossAlign::End:
-                crossPos += std::max(0.f,crossAvailable - crossSize);
-                break;
-            case StackCrossAlign::Stretch:
-                if(item.resizable){
-                    crossSize = crossAvailable;
-                }
-                break;
-        }
-
-        Composition::Rect targetRect = childRect;
-        if(axis == StackAxis::Horizontal){
-            targetRect.pos.x = cursor;
-            targetRect.pos.y = crossPos;
-            targetRect.w = mainSize;
-            targetRect.h = item.resizable ? crossSize : childRect.h;
-        }
-        else {
-            targetRect.pos.x = crossPos;
-            targetRect.pos.y = cursor;
-            targetRect.w = item.resizable ? crossSize : childRect.w;
-            targetRect.h = mainSize;
-        }
-
-        ChildResizeSpec resizeSpec {};
-        resizeSpec.resizable = item.resizable;
-        resizeSpec.policy = item.resizable ? ChildResizePolicy::FitContent : ChildResizePolicy::Fixed;
-        if(axis == StackAxis::Horizontal){
-            resizeSpec.clamp.minWidth = std::max(1.f,item.slot.minMain.value_or(1.f));
-            resizeSpec.clamp.minHeight = std::max(1.f,item.slot.minCross.value_or(1.f));
-            resizeSpec.clamp.maxWidth = item.slot.maxMain.value_or(std::numeric_limits<float>::infinity());
-            resizeSpec.clamp.maxHeight = item.slot.maxCross.value_or(std::numeric_limits<float>::infinity());
-        }
-        else {
-            resizeSpec.clamp.minWidth = std::max(1.f,item.slot.minCross.value_or(1.f));
-            resizeSpec.clamp.minHeight = std::max(1.f,item.slot.minMain.value_or(1.f));
-            resizeSpec.clamp.maxWidth = item.slot.maxCross.value_or(std::numeric_limits<float>::infinity());
-            resizeSpec.clamp.maxHeight = item.slot.maxMain.value_or(std::numeric_limits<float>::infinity());
-        }
-        targetRect = ViewResizeCoordinator::clampRectToParent(targetRect,contentBoundsRect,resizeSpec);
-
-        if(rectChanged(childRect,targetRect)){
-            auto prevOpts = item.widget->paintOptions();
-            const bool suppressResizeInvalidate = prevOpts.invalidateOnResize;
-            if(suppressResizeInvalidate){
-                auto suppressed = prevOpts;
-                suppressed.invalidateOnResize = false;
-                item.widget->setPaintOptions(suppressed);
-            }
-
-            item.widget->setRect(targetRect);
-
-            if(suppressResizeInvalidate){
-                item.widget->setPaintOptions(prevOpts);
-                if(std::find(resizedWidgets.begin(),resizedWidgets.end(),item.widget) == resizedWidgets.end()){
-                    resizedWidgets.push_back(item.widget);
-                }
-            }
-        }
-
-        cursor += mainSize + item.marginMainAfter + layoutSpacing;
-    }
-
-    for(auto * resized : resizedWidgets){
-        if(resized != nullptr){
-            resized->invalidate(PaintReason::Resize);
-        }
-    }
-
-    needsLayout = false;
-    inLayout = false;
 }
 
 StackWidget::~StackWidget(){
     childSlots.clear();
-    childSizeCache.clear();
 }
 
 HStack::HStack(Composition::Rect rect,const StackOptions & options):

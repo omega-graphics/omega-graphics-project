@@ -70,28 +70,10 @@ static inline ContainerInsets sanitizeInsets(const ContainerInsets &insets){
     return out;
 }
 
-static inline Composition::Rect contentBoundsFromHost(const Composition::Rect &host,const ContainerClampPolicy &policy){
-    auto insets = sanitizeInsets(policy.contentInsets);
-    Composition::Rect content {
-        Composition::Point2D{host.pos.x + insets.left,host.pos.y + insets.top},
-        host.w - insets.left - insets.right,
-        host.h - insets.top - insets.bottom
-    };
-    content.pos.x = safeFloat(content.pos.x,host.pos.x);
-    content.pos.y = safeFloat(content.pos.y,host.pos.y);
-    const float minW = policy.enforceMinSize ? std::max(1.f,safeFloat(policy.minWidth,1.f)) : 0.f;
-    const float minH = policy.enforceMinSize ? std::max(1.f,safeFloat(policy.minHeight,1.f)) : 0.f;
-    content.w = std::clamp(safeFloat(content.w,minW),minW,kMaxContainerDimension);
-    content.h = std::clamp(safeFloat(content.h,minH),minH,kMaxContainerDimension);
-    return content;
-}
-
-static inline float clampAxisPosition(float pos,float minPos,float maxPos){
-    if(maxPos < minPos){
-        maxPos = minPos;
-    }
-    return std::clamp(pos,minPos,maxPos);
-}
+// Phase 4.5: `contentBoundsFromHost` + `clampAxisPosition` moved into
+// `LayoutManager.cpp` alongside `ContainerLayout`. Keep `safeFloat`,
+// `sanitizeInsets`, and `sanitizeHostBounds` local — they are used by
+// the geometry-trace label code below the Container body.
 
 static inline const char * geometryReasonLabel(GeometryChangeReason reason){
     switch(reason){
@@ -113,25 +95,28 @@ static inline const char * geometryReasonLabel(GeometryChangeReason reason){
 
 Container::Container(Composition::Rect rect):
 Widget(rect){
-
+    // Phase 4.5: install the per-container ContainerLayout on the
+    // backing View so the parent's LayoutManager owns child layout.
+    if(view != nullptr){
+        view->setLayoutManager(&containerLayout_);
+    }
 }
 
 Container::Container(ViewPtr view):
 Widget(std::move(view)){
-
+    if(this->view != nullptr){
+        this->view->setLayoutManager(&containerLayout_);
+    }
 }
 
 void Container::setClampPolicy(const ContainerClampPolicy & policy){
-    clampPolicy = policy;
-    if(clampPolicy.enforceMinSize){
-        clampPolicy.minWidth = std::max(1.f,safeFloat(clampPolicy.minWidth,1.f));
-        clampPolicy.minHeight = std::max(1.f,safeFloat(clampPolicy.minHeight,1.f));
-    }
+    // Phase 4.5: the policy now lives on `ContainerLayout`.
+    containerLayout_.setPolicy(policy);
     relayout();
 }
 
 const ContainerClampPolicy & Container::getClampPolicy() const{
-    return clampPolicy;
+    return containerLayout_.policy();
 }
 
 void Container::onThemeSet(Native::ThemeDesc & desc){
@@ -144,10 +129,9 @@ void Container::onMount(){
 
 void Container::onPaint(PaintReason reason){
     // Tier B / B4: Container is layout-only — it draws nothing and does
-    // no layout during paint. layoutChildren() runs synchronously at
-    // model-change time via relayout() (onMount / resize / addChild /
-    // removeChild / onChildRectCommitted), so child rects are already
-    // settled before paint.
+    // no layout during paint. Phase 4.5: layout runs via the
+    // `ContainerLayout::arrange` path triggered by `relayout()` (or by
+    // a future centralized FrameBuilder Measure/Arrange pass — 4.7).
     (void)reason;
 }
 
@@ -189,56 +173,17 @@ OmegaCommon::ArrayRef<WidgetPtr> Container::childWidgets(){
 }
 
 Composition::Rect Container::clampChildRect(const Widget & child,const GeometryProposal & proposal) const{
-    (void)child;
-    auto clamped = proposal.requested;
-    clamped.pos.x = safeFloat(clamped.pos.x,0.f);
-    clamped.pos.y = safeFloat(clamped.pos.y,0.f);
-    clamped.w = safeFloat(clamped.w,clampPolicy.enforceMinSize ? std::max(1.f,clampPolicy.minWidth) : 0.f);
-    clamped.h = safeFloat(clamped.h,clampPolicy.enforceMinSize ? std::max(1.f,clampPolicy.minHeight) : 0.f);
-
-    const float minW = clampPolicy.enforceMinSize ? std::max(1.f,safeFloat(clampPolicy.minWidth,1.f)) : 0.f;
-    const float minH = clampPolicy.enforceMinSize ? std::max(1.f,safeFloat(clampPolicy.minHeight,1.f)) : 0.f;
-
-    clamped.w = std::clamp(clamped.w,minW,kMaxContainerDimension);
-    clamped.h = std::clamp(clamped.h,minH,kMaxContainerDimension);
-
-    auto hostBounds = sanitizeHostBounds(view->getRect());
-    auto contentBounds = contentBoundsFromHost(hostBounds,clampPolicy);
-
-    if(!suspiciousBounds(contentBounds)){
-        lastStableContentBounds = contentBounds;
-        hasLastStableContentBounds = true;
-    }
-    else if(clampPolicy.keepLastStableBoundsOnInvalidResize && hasLastStableContentBounds){
-        contentBounds = lastStableContentBounds;
-    }
-
-    if(clampPolicy.clampSizeToBounds){
-        if(clampPolicy.horizontalOverflow == ContainerOverflowMode::Clamp){
-            clamped.w = std::min(clamped.w,contentBounds.w);
-        }
-        if(clampPolicy.verticalOverflow == ContainerOverflowMode::Clamp){
-            clamped.h = std::min(clamped.h,contentBounds.h);
-        }
-    }
-
-    if(clampPolicy.clampPositionToBounds){
-        if(clampPolicy.horizontalOverflow == ContainerOverflowMode::Clamp){
-            const float minX = contentBounds.pos.x;
-            const float maxX = contentBounds.pos.x + contentBounds.w - clamped.w;
-            clamped.pos.x = clampAxisPosition(clamped.pos.x,minX,maxX);
-        }
-        if(clampPolicy.verticalOverflow == ContainerOverflowMode::Clamp){
-            const float minY = contentBounds.pos.y;
-            const float maxY = contentBounds.pos.y + contentBounds.h - clamped.h;
-            clamped.pos.y = clampAxisPosition(clamped.pos.y,minY,maxY);
-        }
-    }
+    // Phase 4.5: clamp math moved into `ContainerLayout::clampChild`.
+    // This override stays so `Widget::commitGeometry` can still ask the
+    // container "what would you clamp this proposal to?"
+    auto clamped = containerLayout_.clampChild(proposal.requested,
+                                                view != nullptr ? view->getRect()
+                                                                : Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f});
 
     if(Widget::geometryTraceLoggingEnabled()){
         auto syncCtx = geometryTraceContext();
         std::fprintf(stderr,
-                     "[OmegaWTKGeometry] phase=container-clamp lane=%llu packet=%llu container=%p child=%p reason=%s requested={x:%.3f y:%.3f w:%.3f h:%.3f} clamped={x:%.3f y:%.3f w:%.3f h:%.3f} content={x:%.3f y:%.3f w:%.3f h:%.3f}\n",
+                     "[OmegaWTKGeometry] phase=container-clamp lane=%llu packet=%llu container=%p child=%p reason=%s requested={x:%.3f y:%.3f w:%.3f h:%.3f} clamped={x:%.3f y:%.3f w:%.3f h:%.3f}\n",
                      static_cast<unsigned long long>(syncCtx.syncLaneId),
                      static_cast<unsigned long long>(syncCtx.predictedPacketId),
                      static_cast<const void *>(this),
@@ -251,11 +196,7 @@ Composition::Rect Container::clampChildRect(const Widget & child,const GeometryP
                      clamped.pos.x,
                      clamped.pos.y,
                      clamped.w,
-                     clamped.h,
-                     contentBounds.pos.x,
-                     contentBounds.pos.y,
-                     contentBounds.w,
-                     contentBounds.h);
+                     clamped.h);
     }
 
     return clamped;
@@ -277,9 +218,13 @@ void Container::onChildRectCommitted(const Widget & child,
                      oldRect.pos.x,oldRect.pos.y,oldRect.w,oldRect.h,
                      newRect.pos.x,newRect.pos.y,newRect.w,newRect.h);
     }
-    if(reason == GeometryChangeReason::ParentLayout || inLayout){
+    if(reason == GeometryChangeReason::ParentLayout){
         return;
     }
+    // Phase 4.5: defer the relayout into the next frame instead of
+    // running it eagerly inside the child's commit. The dirty mark +
+    // requestFrame coalesces multiple sibling commits into one
+    // arrange pass.
     relayout();
 }
 
@@ -321,17 +266,13 @@ bool Container::removeChild(const WidgetPtr & child){
 }
 
 void Container::relayout(){
+    // Phase 4.5: drive the parent's `ContainerLayout::arrange` directly.
+    // The pre-migration `layoutChildren()` (which manually walked
+    // children + clamped each via `clampChildRect`) is gone — the
+    // manager owns that walk. Stale-child cleanup happens here so
+    // arrange sees a clean view of `subviews()`.
     layoutPending = true;
-    layoutChildren();
-}
-
-void Container::layoutChildren(){
-    if(inLayout){
-        return;
-    }
-    inLayout = true;
-
-    for(auto it = children.begin();it != children.end();){
+    for(auto it = children.begin(); it != children.end(); ){
         if(*it == nullptr){
             it = children.erase(it);
         }
@@ -339,23 +280,10 @@ void Container::layoutChildren(){
             ++it;
         }
     }
-
-    for(auto & child : children){
-        if(child == nullptr){
-            continue;
-        }
-        auto currentRect = child->rect();
-        GeometryProposal proposal {};
-        proposal.requested = currentRect;
-        proposal.reason = GeometryChangeReason::ParentLayout;
-        auto clampedRect = clampChildRect(*child,proposal);
-        if(rectChanged(currentRect,clampedRect)){
-            child->setRect(clampedRect);
-        }
+    if(view != nullptr){
+        containerLayout_.arrange(*view, view->getRect());
     }
-
     layoutPending = false;
-    inLayout = false;
 }
 
 Container::~Container(){

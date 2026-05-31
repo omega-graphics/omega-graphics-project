@@ -24,6 +24,83 @@ Window) for zero-copy presentation.
 
 ---
 
+## Where the widgets live
+
+The two consumers ship in different libraries, because they have different
+dependency surfaces.
+
+| Widget            | Library                                   | Headers under                               |
+|-------------------|-------------------------------------------|---------------------------------------------|
+| `VideoViewWidget` | **default `libOmegaWTK`** (always built)  | `omegaWTK/Widgets/`                         |
+| `GTEViewWidget`   | **`OmegaWTKComponent_GTEView`** (opt-in)  | `omegaWTK/Components/GTEView/`              |
+
+VideoView is a standard part of WTK — every app already pays for
+OmegaVA (playback/capture sessions) and the per-platform video surface APIs
+are first-party OS APIs. Folding the widget into core has zero new dependency
+cost.
+
+GTEView is different. It pulls libOmegaGTE's full pipeline / compute /
+mesh-shader machinery into the link. Most WTK apps do not need a 3D
+viewport. The component pattern (under `wtk/components/`, see
+`wtk/components/README.md`) lets apps that *do* need it opt in
+explicitly without forcing every consumer of OmegaWTK to link the engine.
+
+### What this means for the core/component boundary
+
+Three things have to split cleanly so the core never depends on GTE:
+
+1. **`Native::VisualTree` factory API.** `createVideoContentNode` is a
+   member of the core `Native::VisualTree` — VideoViewWidget (in the
+   default lib) calls it directly. There is no `createGPUContentNode`
+   member: that factory lives in the gteview component as a free function
+   that takes a `Native::VisualTree&` and constructs a GPU content node
+   against the platform tree. The core thus stays free of any "what is
+   a GPU surface" knowledge.
+
+2. **`NativeContentNode` subclasses.** The core ships
+   `MTLNativeContentNode` / `DCNativeContentNode` / `VKNativeContentNode`
+   with **only the video-surface accessors** (`displayLayer()` /
+   `videoSwapChain()` / `videoWindow()`). The gteview component ships
+   parallel `MTLGPUContentNode` / `DCGPUContentNode` / `VKGPUContentNode`
+   subclasses with **only the GPU-surface accessors** (`metalLayer()` /
+   `renderSwapChain()` / `surfaceWindow()`). The two never need to coexist
+   in one class, and the core header set never names `CAMetalLayer` or a
+   D3D12 render swap chain.
+
+3. **Per-platform tree manipulation.** Inserting / removing / restacking
+   a GPU content node in the platform tree is platform-specific glue
+   (`CALayer addSublayer:`, `IDCompositionVisual2::AddVisual`,
+   `XMapWindow`). The core's per-platform `Native::VisualTree` subclass
+   exposes a small `attachContentNode(NativeContentNode&)` /
+   `detachContentNode(NativeContentNode&)` /
+   `restackContentNode(NativeContentNode&, int zOrder)` interface that
+   both the core's video-node factory and the component's GPU-node
+   factory call. The interface doesn't know which node kind it's
+   moving — both subclasses just expose the platform handle the tree
+   already knows how to attach.
+
+### Component build wiring
+
+`wtk/components/` ships an umbrella `CMakeLists.txt` gated by the
+`OMEGAWTK_BUILD_COMPONENTS` option (default OFF) that auto-discovers any
+subdirectory with its own `CMakeLists.txt`. Each component declares its
+own per-component option flag (e.g. `OMEGAWTK_COMPONENT_GTEVIEW`, default
+OFF) and builds a STATIC library named `OmegaWTKComponent_<Name>` with
+`POSITION_INDEPENDENT_CODE ON`.
+
+Consumers link components after the `OmegaWTKApp(...)` call:
+
+```cmake
+OmegaWTKApp(NAME GTEViewSampleApp BUNDLE_ID "..." SOURCES main.cpp)
+target_link_libraries(GTEViewSampleApp PRIVATE OmegaWTKComponent_GTEView)
+```
+
+`OmegaWTKApp` does not auto-link any component — selection is per-consumer
+and explicit. If the component is not configured in, the link fails fast
+at configure time. See `wtk/components/README.md` for the full contract.
+
+---
+
 ## Architecture: visual-tree attachment, with the tree in Native
 
 `NativeViewHost` does **not** wrap a heavyweight OS widget (NSView, HWND,
@@ -218,7 +295,15 @@ types stay free of compositor dependencies.
 `NativeViewHost::attach`. Per-platform subclasses expose the consumer's
 drawable handle through type-safe downcast.
 
+The base class is in the core. The per-platform subclasses split along
+the library boundary: the core ships *video-surface* variants (used by
+`VideoViewWidget` in the default lib); the gteview component ships
+parallel *GPU-surface* variants. The two sets never coexist in one
+class, and the core header set never names `CAMetalLayer` or a D3D12
+render swap chain.
+
 ```cpp
+// Core base — wtk/include/omegaWTK/Native/NativeContentNode.h
 namespace OmegaWTK::Native {
 
 class NativeContentNode {
@@ -233,49 +318,114 @@ public:
 };
 using NativeContentNodePtr = SharedHandle<NativeContentNode>;
 
+// Core video subclasses ─────────────────────────────────────────────────
+// Used by VideoViewWidget (default lib). Expose only the video-surface
+// accessor.
+
 // macOS — wtk/src/Native/macos/MTLContentNode.h
 class MTLNativeContentNode : public NativeContentNode {
 public:
-    CALayer * layer() const;     // AVSampleBufferDisplayLayer / CAMetalLayer
+    AVSampleBufferDisplayLayer * displayLayer() const;
 };
 
 // Windows — wtk/src/Native/win/DCContentNode.h
 class DCNativeContentNode : public NativeContentNode {
 public:
-    IDCompositionVisual2 * visual()    const;
-    IDXGISwapChain1 *      swapChain() const;     // bound via SetContent
+    IDCompositionVisual2 * visual()         const;
+    IDXGISwapChain1 *      videoSwapChain() const;     // bound via SetContent
 };
 
 // Linux X11 — wtk/src/Native/gtk/VKContentNode.h
 class VKNativeContentNode : public NativeContentNode {
 public:
-    Display * display() const;
-    Window    window()  const;     // child Window of the toplevel
+    Display * display()     const;
+    Window    videoWindow() const;     // child Window of the toplevel
 };
 
 }
 ```
 
-Factories live on `Native::VisualTree` itself — creation and registration
-are atomic; the tree is the registry:
+```cpp
+// Component GPU subclasses — wtk/components/gteview/src/Native/<platform>/
+// Used by GTEViewWidget. Expose only the GPU-surface accessor. Inherit
+// from Native::NativeContentNode so the visual tree's attach/detach
+// machinery treats them uniformly with the core video subclasses.
+
+namespace OmegaWTK::Components::GTEView {
+
+// macOS — wtk/components/gteview/src/Native/macos/MTLGPUContentNode.h
+class MTLGPUContentNode : public Native::NativeContentNode {
+public:
+    CAMetalLayer * metalLayer() const;
+};
+
+// Windows — wtk/components/gteview/src/Native/win/DCGPUContentNode.h
+class DCGPUContentNode : public Native::NativeContentNode {
+public:
+    IDCompositionVisual2 * visual()          const;
+    IDXGISwapChain1 *      renderSwapChain() const;    // D3D12 render swap chain
+};
+
+// Linux X11 — wtk/components/gteview/src/Native/gtk/VKGPUContentNode.h
+class VKGPUContentNode : public Native::NativeContentNode {
+public:
+    Display * display()       const;
+    Window    surfaceWindow() const;     // X11 child Window for VkSurfaceKHR
+};
+
+}
+```
+
+Factories split along the library boundary. The core's video factory
+lives on `Native::VisualTree` itself — creation and registration are
+atomic; the tree is the registry. The GPU factory lives in the gteview
+component as a free function that operates on the same tree, so the core
+header never names a GPU surface type.
 
 ```cpp
+// Core — wtk/include/omegaWTK/Native/NativeVisualTree.h
 class VisualTree {
     // ... existing ...
 
     /// Allocate a content node sized to `rect` and register it with this
-    /// tree. The returned node's platform handle (CALayer / DComp visual
-    /// / X11 child Window) is created on the main thread. On Linux the
-    /// node may be returned in a non-ready state if the X11 toplevel is
-    /// not yet realized; resolution is deferred via X11SurfaceHost.
+    /// tree. The returned node's platform handle (AVSampleBufferDisplayLayer
+    /// / DXGI video swap chain / X11 child Window) is created on the main
+    /// thread. On Linux the node may be returned in a non-ready state if
+    /// the X11 toplevel is not yet realized; resolution is deferred via
+    /// X11SurfaceHost.
     NativeContentNodePtr createVideoContentNode(Composition::Rect rect);
-    NativeContentNodePtr createGPUContentNode  (Composition::Rect rect);
+
+    /// Lower-level entry the component layer uses to register a custom
+    /// content node (e.g. the gteview component's GPU content node) into
+    /// this tree. The node's platform handle has already been allocated
+    /// by the caller; this hooks it into the platform tree and ordering.
+    void attachContentNode(NativeContentNodePtr node, int zOrderHint);
+    void detachContentNode(std::uint64_t hostId);
 };
 ```
 
-Consumer code reaches the tree through `AppWindow::visualTree()`. The
-widget wrappers (`VideoViewWidget`, `GTEViewWidget`) do the lookup
-internally and hand the returned node to `NativeViewHost::attach`.
+```cpp
+// Component — wtk/components/gteview/include/omegaWTK/Components/GTEView/GPUContentNode.h
+namespace OmegaWTK::Components::GTEView {
+
+/// Allocate a GPU content node sized to `rect` and register it with the
+/// given visual tree. Per-platform behind the scenes:
+///   macOS:   constructs MTLGPUContentNode wrapping a CAMetalLayer
+///   Windows: constructs DCGPUContentNode wrapping IDCompositionVisual2 +
+///            IDXGISwapChain1 (D3D12 render swap chain)
+///   Linux:   constructs VKGPUContentNode wrapping a child X11 Window
+///            allocated via X11SurfaceHost
+Native::NativeContentNodePtr createGPUContentNode(Native::VisualTree & tree,
+                                                   Composition::Rect rect);
+
+}
+```
+
+Consumer code reaches the tree through `AppWindow::visualTree()`.
+`VideoViewWidget` calls `tree.createVideoContentNode(...)` directly.
+`GTEViewWidget` calls
+`OmegaWTK::Components::GTEView::createGPUContentNode(tree, rect)`. Both
+hand the returned node to `NativeViewHost::attach`.
 
 ---
 
@@ -395,11 +545,12 @@ time, and tears it down in its dtor *after* the visual tree (which itself
 tears down all `NativeContentNode`s). Child Windows are destroyed before
 the toplevel.
 
-Realization timing: a `createVideoContentNode` / `createGPUContentNode`
-call before the toplevel is realized returns a node in the non-ready
-state; the actual child Window allocation is queued via `runOnRealize`
-and fires when the realize signal arrives. This eliminates the
-"first frame at wrong DPI then rebuild" sequence at startup.
+Realization timing: a `createVideoContentNode` call (core) or a
+`Components::GTEView::createGPUContentNode` call (component) before the
+toplevel is realized returns a node in the non-ready state; the actual
+child Window allocation is queued via `runOnRealize` and fires when the
+realize signal arrives. This eliminates the "first frame at wrong DPI
+then rebuild" sequence at startup.
 
 §2.13 of the Native-API Completion Proposal commits to the toplevel
 `Window` being owned by `AppWindow` directly (no `GtkDrawingArea`
@@ -603,13 +754,15 @@ and adds a frame of latency.
 ### Target architecture
 
 ```
-GTEViewWidget : Widget
+GTEViewWidget : Widget                          ← lives in
+  │                                               OmegaWTKComponent_GTEView
+  │                                               (wtk/components/gteview/)
   ├── NativeViewHost (owns the carve-out + secondary overlay surface)
-  │     └── NativeContentNode (per-platform GPU surface):
-  │           macOS:   MTLNativeContentNode wrapping CAMetalLayer
-  │           Windows: DCNativeContentNode wrapping IDCompositionVisual2 +
+  │     └── NativeContentNode (per-platform GPU surface, component-side):
+  │           macOS:   MTLGPUContentNode wrapping CAMetalLayer
+  │           Windows: DCGPUContentNode wrapping IDCompositionVisual2 +
   │                    IDXGISwapChain1 (D3D12 render swap chain)
-  │           Linux:   VKNativeContentNode wrapping a child X11 Window
+  │           Linux:   VKGPUContentNode wrapping a child X11 Window
   │                    (GTE creates VkSurfaceKHR via
   │                     VkXlibSurfaceCreateInfoKHR against the child)
   │
@@ -659,23 +812,35 @@ above).
 
 #### Phase G1: GPU content node factory
 
-`Native::VisualTree::createGPUContentNode` returns a
-`NativeContentNodePtr` whose underlying platform handle is:
+Lands in the gteview component (`wtk/components/gteview/`).
+`OmegaWTK::Components::GTEView::createGPUContentNode(tree, rect)` returns
+a `Native::NativeContentNodePtr` whose underlying platform handle is:
 
-- macOS: `MTLNativeContentNode` wrapping a `CAMetalLayer` configured for
-  direct rendering and inserted into the `MTLVisualTree` as a sibling
-  above the WTK swap-chain layer.
-- Windows: `DCNativeContentNode` wrapping an `IDCompositionVisual2` with
+- macOS: `MTLGPUContentNode` wrapping a `CAMetalLayer` configured for
+  direct rendering and attached to the `MTLVisualTree` (via
+  `Native::VisualTree::attachContentNode`) as a sibling above the WTK
+  swap-chain layer.
+- Windows: `DCGPUContentNode` wrapping an `IDCompositionVisual2` with
   an `IDXGISwapChain1` (D3D12 render swap chain) bound via `SetContent`,
-  inserted into the `DCVisualTree`.
-- Linux X11: `VKNativeContentNode` wrapping a child `Window` allocated
+  attached to the `DCVisualTree`.
+- Linux X11: `VKGPUContentNode` wrapping a child `Window` allocated
   via `X11SurfaceHost::createChildWindow`. GTE creates a `VkSurfaceKHR`
   via `VkXlibSurfaceCreateInfoKHR` against the child Window and runs
   its own swapchain.
 
+```
+Files (under wtk/components/gteview/):
+  include/omegaWTK/Components/GTEView/GPUContentNode.h    — factory entry
+  src/GPUContentNode.cpp                                   — common glue
+  src/Native/macos/MTLGPUContentNode.{h,mm}                — macOS impl
+  src/Native/win/DCGPUContentNode.{h,cpp}                  — Windows impl
+  src/Native/gtk/VKGPUContentNode.{h,cpp}                  — Linux X11 impl
+```
+
 Verification: native GPU surface appears at the correct position.
 `CAMetalLayer` / swap chain / Vulkan swapchain resizes with the host's
-widget rect synchronously during layout.
+widget rect synchronously during layout. Configured behind
+`OMEGAWTK_COMPONENT_GTEVIEW=ON`.
 
 #### Phase G2: GTEView direct rendering
 
@@ -720,14 +885,37 @@ public:
 };
 ```
 
+```cpp
+namespace OmegaWTK::Components::GTEView {
+
+class GTEViewWidget : public Widget {
+    // ... as above ...
+};
+
+}
 ```
-Files:
-  wtk/include/omegaWTK/Widgets/MediaWidgets.h     — add GTEViewWidget
-  wtk/src/Widgets/MediaWidgets.cpp                 — implementation
+
+```
+Files (under wtk/components/gteview/):
+  include/omegaWTK/Components/GTEView/GTEViewWidget.h   — public API
+  src/GTEViewWidget.cpp                                  — implementation
+```
+
+`GTEView` (the internal controller that holds the render resources and
+delegate) also moves into the component — it is not part of the default
+WTK link. Its header lives under
+`wtk/components/gteview/include/omegaWTK/Components/GTEView/GTEView.h`,
+implementation in `src/GTEView.cpp`. Consumer code reaches the widget
+via the component header:
+
+```cpp
+#include <omegaWTK/Components/GTEView/GTEViewWidget.h>
 ```
 
 Verification: `GTEViewWidget` in an HStack with other widgets. 3D view
-resizes correctly. Multiple instances render independently.
+resizes correctly. Multiple instances render independently. App links
+`OmegaWTKComponent_GTEView` explicitly via
+`target_link_libraries(<app> PRIVATE OmegaWTKComponent_GTEView)`.
 
 #### Phase G4: Display link integration
 
@@ -744,18 +932,23 @@ Verification: rotating cube at 60 FPS with smooth delta-time rotation.
 
 ## Shared infrastructure
 
-Both `VideoViewWidget` and `GTEViewWidget` go through the same machinery:
+Both `VideoViewWidget` and `GTEViewWidget` go through the same machinery —
+they differ only in which `NativeContentNode` subclass family supplies the
+underlying platform handle (core video subclasses vs. the component's GPU
+subclasses).
 
-| Widget          | macOS native surface         | Windows native surface           | Linux X11 native surface       |
-|-----------------|------------------------------|----------------------------------|--------------------------------|
-| VideoViewWidget | AVSampleBufferDisplayLayer   | IDXGISwapChain1 (video) + DComp  | child Window (VA-API / DRI3)   |
-| GTEViewWidget   | CAMetalLayer                 | IDXGISwapChain1 (render) + DComp | child Window (VkXlibSurface)   |
-| Overlay surface | CAMetalLayer (sibling)       | IDXGISwapChain1 + DComp visual   | secondary child Window         |
+| Widget                              | Library                       | macOS surface              | Windows surface                  | Linux X11 surface              |
+|-------------------------------------|-------------------------------|----------------------------|----------------------------------|--------------------------------|
+| VideoViewWidget                     | core (`libOmegaWTK`)          | AVSampleBufferDisplayLayer | IDXGISwapChain1 (video) + DComp  | child Window (VA-API / DRI3)   |
+| GTEViewWidget                       | `OmegaWTKComponent_GTEView`   | CAMetalLayer               | IDXGISwapChain1 (render) + DComp | child Window (VkXlibSurface)   |
+| Overlay surface (either widget)     | core (NativeViewHost)         | CAMetalLayer (sibling)     | IDXGISwapChain1 + DComp visual   | secondary child Window         |
 
-All native surfaces are managed through the same per-platform
-`NativeContentNode` subclass and registered with the per-window
-`Native::VisualTree`. Layout-resolved updates from `FrameBuilder` reach
-the tree synchronously via `reconfigureContentNode`.
+All native surfaces are registered with the per-window
+`Native::VisualTree` through `attachContentNode` (the common entry both
+the core video factory and the component GPU factory call into).
+Layout-resolved updates from `FrameBuilder` reach the tree synchronously
+via `reconfigureContentNode`, regardless of which subclass family the
+node belongs to.
 
 ---
 

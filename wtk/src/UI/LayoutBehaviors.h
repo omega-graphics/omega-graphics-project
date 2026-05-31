@@ -5,13 +5,9 @@
 
 namespace OmegaWTK {
 
-class LegacyResizeCoordinatorBehavior : public LayoutBehavior {
-    ViewResizeCoordinator & coordinator_;
-public:
-    explicit LegacyResizeCoordinatorBehavior(ViewResizeCoordinator & coordinator);
-    MeasureResult measure(LayoutNode & node,const LayoutContext & ctx) override;
-    void arrange(LayoutNode & node,const LayoutContext & ctx) override;
-};
+// Phase 4.5: `LegacyResizeCoordinatorBehavior` deleted alongside
+// `ViewResizeCoordinator`. The widget-layout entry point
+// (`runWidgetLayout`) now drives the parent's `LayoutManager` directly.
 
 class StackLayoutBehavior : public LayoutBehavior {
 public:

@@ -1,5 +1,6 @@
 
 #include "omegaWTK/UI/Widget.h"
+#include "omegaWTK/UI/LayoutManager.h"   // Phase 4.5: ContainerInsets / ContainerOverflowMode / ContainerClampPolicy moved here.
 #include "omegaWTK/Core/Core.h"
 #include <cstddef>
 #include <cstdint>
@@ -10,53 +11,56 @@
 
 namespace OmegaWTK {
 
-enum class ContainerOverflowMode : std::uint8_t {
-    Clamp,
-    Allow
-};
-
-struct OMEGAWTK_EXPORT ContainerInsets {
-    float left = 0.f;
-    float top = 0.f;
-    float right = 0.f;
-    float bottom = 0.f;
-};
-
-struct OMEGAWTK_EXPORT ContainerClampPolicy {
-    bool clampPositionToBounds = true;
-    bool clampSizeToBounds = true;
-    bool enforceMinSize = true;
-    float minWidth = 1.f;
-    float minHeight = 1.f;
-    ContainerInsets contentInsets {};
-    ContainerOverflowMode horizontalOverflow = ContainerOverflowMode::Clamp;
-    ContainerOverflowMode verticalOverflow = ContainerOverflowMode::Clamp;
-    bool keepLastStableBoundsOnInvalidResize = true;
-};
+// Phase 4.5: `ContainerInsets`, `ContainerOverflowMode`, and
+// `ContainerClampPolicy` moved to `LayoutManager.h` where they
+// belong (they describe layout policy, not widget shape). The
+// names are still in `OmegaWTK::`, so existing call sites that
+// just include `BasicWidgets.h` continue to work via the include
+// above. No `using` aliases needed.
 
    /**
  * @brief A widget designed for holding other widgets (No rendering or native event handling can change Widget positioning)
  * 
  */
 class OMEGAWTK_EXPORT Container: public Widget {
-    ContainerClampPolicy clampPolicy {};
-    mutable bool hasLastStableContentBounds = false;
-    mutable Composition::Rect lastStableContentBounds {Composition::Point2D{0.f,0.f},1.f,1.f};
+    // Phase 4.5: child-rect clamping is owned by `ContainerLayout` set
+    // on the backing `View` as its `LayoutManager`. The policy + the
+    // last-stable-bounds cache moved into the manager; `Container`
+    // keeps only a forwarder for backward compatibility on
+    // `setClampPolicy` / `getClampPolicy`.
+    ContainerLayout containerLayout_ {};
 protected:
     OmegaCommon::Vector<WidgetPtr> children;
     bool layoutPending = true;
+    // Phase 4.5: `inLayout` re-entry guard kept for `StackWidget`'s
+    // bespoke layoutChildren (until Phase 4.6 replaces it with
+    // `FlexLayout`). Container's own relayout/clampChild path no
+    // longer needs it — `ContainerLayout::arrange` is one-shot per
+    // call — but the field remains protected for subclasses.
     bool inLayout = false;
 
     void wireChild(const WidgetPtr & child);
     void unwireChild(const WidgetPtr & child);
 
     void onThemeSet(Native::ThemeDesc & desc) override;
-    virtual void layoutChildren();
+
+    // Phase 4.5: virtual hook kept ONLY so `StackWidget::layoutChildren`
+    // can override (its bespoke flexbox lives behind this method until
+    // Phase 4.6 replaces it with `FlexLayout`). `Container`'s own
+    // relayout/clamp path no longer calls this — it drives
+    // `ContainerLayout::arrange` directly.
+    virtual void layoutChildren() {}
 
     void onMount() override;
     void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 
+    // Phase 4.5: `clampChildRect` / `onChildRectCommitted` route through
+    // the `ContainerLayout` policy now. `clampChildRect` stays as a
+    // virtual override so `Widget`'s commit pipeline can still ask the
+    // container "is this rect OK?", and `onChildRectCommitted` keeps
+    // its hook for child-driven resize requests (the deferred
+    // `requestFrame` defers the relayout into the next frame).
     Composition::Rect clampChildRect(const Widget & child,const GeometryProposal & proposal) const override;
     void onChildRectCommitted(const Widget & child,
                               const Composition::Rect & oldRect,

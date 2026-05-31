@@ -1,6 +1,7 @@
 #include "UIViewImpl.h"
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/UI/AppWindow.h"
+#include "omegaWTK/UI/LayoutManager.h"   // Phase 4.5: clampRectToParent lifted onto LayoutManager.
 #include "FrameBuilder.h"
 
 namespace OmegaWTK {
@@ -266,11 +267,25 @@ void UIView::paint(Composition::PaintContext & pc){
                     shadowParams.blurAmount = *v;
                 if(auto v = impl_->animatedValue(entry.tag,Impl::EffectAnimationKeyShadowOpacity); v)
                     shadowParams.opacity = *v;
+                // 4.4 follow-up (2026-05-31): the ShadowColor channels
+                // were dead in the Phase 4.4 paint walk (paint never
+                // read them — Phase I sweep flagged them for deletion).
+                // Reviving them here: each channel overrides one float
+                // of `shadowParams.color` in [0,1]. Now reachable from
+                // the public `UIView::AnimationChannel` enum.
+                if(auto v = impl_->animatedValue(entry.tag,Impl::EffectAnimationKeyShadowColorR); v)
+                    shadowParams.color.r = std::clamp(*v, 0.f, 1.f);
+                if(auto v = impl_->animatedValue(entry.tag,Impl::EffectAnimationKeyShadowColorG); v)
+                    shadowParams.color.g = std::clamp(*v, 0.f, 1.f);
+                if(auto v = impl_->animatedValue(entry.tag,Impl::EffectAnimationKeyShadowColorB); v)
+                    shadowParams.color.b = std::clamp(*v, 0.f, 1.f);
+                if(auto v = impl_->animatedValue(entry.tag,Impl::EffectAnimationKeyShadowColorA); v)
+                    shadowParams.color.a = std::clamp(*v, 0.f, 1.f);
 
                 switch(shapeToDraw.type){
                     case Shape::Type::Rect: {
                         auto rect = shapeToDraw.rect;
-                        rect = ViewResizeCoordinator::clampRectToParent(rect,localBounds,layoutClamp);
+                        rect = LayoutManager::clampRectToParent(rect,localBounds,layoutClamp);
                         displayList.append(Composition::DrawOp{
                             shadowParams, withOffset(rect), 0.f, false});
                         break;
@@ -278,7 +293,7 @@ void UIView::paint(Composition::PaintContext & pc){
                     case Shape::Type::RoundedRect: {
                         auto rr = shapeToDraw.roundedRect;
                         Composition::Rect clampedRect {rr.pos,rr.w,rr.h};
-                        clampedRect = ViewResizeCoordinator::clampRectToParent(clampedRect,localBounds,layoutClamp);
+                        clampedRect = LayoutManager::clampRectToParent(clampedRect,localBounds,layoutClamp);
                         rr.pos = clampedRect.pos;
                         rr.w = clampedRect.w;
                         rr.h = clampedRect.h;
@@ -297,7 +312,7 @@ void UIView::paint(Composition::PaintContext & pc){
                             std::max(1.f,srcEllipse.rad_x * 2.f),
                             std::max(1.f,srcEllipse.rad_y * 2.f)
                         };
-                        ellipseRect = ViewResizeCoordinator::clampRectToParent(ellipseRect,localBounds,layoutClamp);
+                        ellipseRect = LayoutManager::clampRectToParent(ellipseRect,localBounds,layoutClamp);
                         displayList.append(Composition::DrawOp{
                             shadowParams, withOffset(ellipseRect), 0.f, true});
                         break;
@@ -310,14 +325,14 @@ void UIView::paint(Composition::PaintContext & pc){
             switch(shapeToDraw.type){
                 case Shape::Type::Rect: {
                     auto rect = shapeToDraw.rect;
-                    rect = ViewResizeCoordinator::clampRectToParent(rect,localBounds,layoutClamp);
+                    rect = LayoutManager::clampRectToParent(rect,localBounds,layoutClamp);
                     displayList.append(Composition::DrawOp{withOffset(rect), brush});
                     break;
                 }
                 case Shape::Type::RoundedRect: {
                     auto rect = shapeToDraw.roundedRect;
                     Composition::Rect clampedRect {rect.pos,rect.w,rect.h};
-                    clampedRect = ViewResizeCoordinator::clampRectToParent(clampedRect,localBounds,layoutClamp);
+                    clampedRect = LayoutManager::clampRectToParent(clampedRect,localBounds,layoutClamp);
                     rect.pos = clampedRect.pos;
                     rect.w = clampedRect.w;
                     rect.h = clampedRect.h;
@@ -338,7 +353,7 @@ void UIView::paint(Composition::PaintContext & pc){
                         std::max(1.f,srcEllipse.rad_x * 2.f),
                         std::max(1.f,srcEllipse.rad_y * 2.f)
                     };
-                    ellipseRect = ViewResizeCoordinator::clampRectToParent(ellipseRect,localBounds,layoutClamp);
+                    ellipseRect = LayoutManager::clampRectToParent(ellipseRect,localBounds,layoutClamp);
                     Composition::Ellipse ellipse {
                         ellipseRect.pos.x + (ellipseRect.w * 0.5f) + paintOffset.x,
                         ellipseRect.pos.y + (ellipseRect.h * 0.5f) + paintOffset.y,
@@ -384,7 +399,7 @@ void UIView::paint(Composition::PaintContext & pc){
             auto font = textStyle.font != nullptr ? textStyle.font : impl_->resolveFallbackTextFont();
             if(font != nullptr){
                 auto textRect = spec.textRect.value_or(localBounds);
-                textRect = ViewResizeCoordinator::clampRectToParent(textRect,localBounds,layoutClamp);
+                textRect = LayoutManager::clampRectToParent(textRect,localBounds,layoutClamp);
                 textRect = withOffset(textRect);
                 auto unicodeText = OmegaCommon::UniString::fromUTF32(
                     reinterpret_cast<const OmegaCommon::Unicode32Char *>(spec.text->data()),
@@ -409,7 +424,7 @@ void UIView::paint(Composition::PaintContext & pc){
         }
         else if(spec.image && *spec.image != nullptr){
             auto imageRect = spec.imageRect.value_or(localBounds);
-            imageRect = ViewResizeCoordinator::clampRectToParent(imageRect,localBounds,layoutClamp);
+            imageRect = LayoutManager::clampRectToParent(imageRect,localBounds,layoutClamp);
             displayList.append(Composition::DrawOp{*spec.image, withOffset(imageRect)});
         }
     }

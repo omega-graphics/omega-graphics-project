@@ -1659,19 +1659,36 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandBuffer::drawMeshTasks(uint32_t groupCountX,
                                               uint32_t groupCountY,
                                               uint32_t groupCountZ) {
-        /// Mesh-Shader-Plan Phase 3 stub. Phase 4a wires
-        /// `engine->vkCmdDrawMeshTasksEXT(commandBuffer, x, y, z)`
-        /// after loading the function pointer from
-        /// `VK_EXT_mesh_shader` at device init. The feature gate fires
-        /// first — same shape as the raytracing dispatch above.
-        if(!parentQueue->engine->gteDevice->features.hasFeature(GTEDEVICE_FEATURE_MESH_SHADER)){
+        /// Mesh-Shader-Plan Phase 4a — live `vkCmdDrawMeshTasksEXT`.
+        /// The feature gate stays as a defensive front line (the gate
+        /// at `makeMeshPipelineState` is the real contract — an
+        /// unsupported device returns nullptr there, so the bound PSO
+        /// would be null and `isMesh` would assert below first). The
+        /// extension function pointer was loaded at device init when
+        /// `hasMeshShaderExt` was true; if either is missing the
+        /// dispatch is unrecoverable and we bail rather than crash on
+        /// a null function-pointer call.
+        auto *engine = parentQueue->engine;
+        if(!engine->gteDevice->features.hasFeature(GTEDEVICE_FEATURE_MESH_SHADER)){
             DEBUG_STREAM("drawMeshTasks: device does not advertise "
                          "GTEDEVICE_FEATURE_MESH_SHADER");
             return;
         }
+    #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+        if(!engine->hasMeshShaderExt || engine->vkCmdDrawMeshTasksExt == nullptr){
+            DEBUG_STREAM("drawMeshTasks: VK_EXT_mesh_shader is not enabled / vkCmdDrawMeshTasksEXT not loaded");
+            return;
+        }
+        assert(renderPipelineState != nullptr
+               && "drawMeshTasks: no pipeline bound (call setRenderPipelineState first)");
+        assert(renderPipelineState->isMesh
+               && "drawMeshTasks: bound pipeline is a graphics pipeline, not a mesh pipeline. "
+                  "Use makeMeshPipelineState to build a mesh-variant PSO.");
+        engine->vkCmdDrawMeshTasksExt(commandBuffer, groupCountX, groupCountY, groupCountZ);
+    #else
         (void)groupCountX; (void)groupCountY; (void)groupCountZ;
-        DEBUG_STREAM("drawMeshTasks: Vulkan dispatch not yet implemented "
-                     "(Phase 3 stub — Phase 4a will land vkCmdDrawMeshTasksEXT)");
+        DEBUG_STREAM("drawMeshTasks: Vulkan headers built without VK_EXT_mesh_shader");
+    #endif
     }
 
     void GEVulkanCommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned int z){

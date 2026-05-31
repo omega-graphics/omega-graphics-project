@@ -57,22 +57,19 @@ struct OMEGAWTK_EXPORT StackSlot {
 };
 
 class OMEGAWTK_EXPORT StackWidget : public Container {
-    struct StackChildCache {
-        float preferredMainSize = 0.f;
-        float preferredCrossSize = 0.f;
-        bool hasPreferredSize = false;
-    };
-
-    StackAxis axis;
-    StackOptions stackOptions;
-    OmegaCommon::Vector<StackSlot> childSlots;
-    OmegaCommon::Vector<StackChildCache> childSizeCache;
-    bool needsLayout = true;
-    bool hasLastStableFrame = false;
-    Composition::Rect lastStableFrame {Composition::Point2D{0.f,0.f},1.f,1.f};
+    // Phase 4.6: bespoke flex algorithm + per-child cache deleted; the
+    // public `LayoutManager`-family `FlexLayout` owns those now. The
+    // widget keeps its public StackOptions / StackSlot API (existing
+    // callers — tests, BasicAppTest, etc. — pass these by value), and
+    // pushes them into `flexLayout_` as `FlexOptions` / `FlexChildSpec`
+    // at every `addChild` / `setSlot` / `setOptions`. `childSlots`
+    // stays purely so the public `getSlot` accessor keeps working.
+    StackAxis                       axis;
+    StackOptions                    stackOptions;
+    OmegaCommon::Vector<StackSlot>  childSlots;
+    FlexLayout                      flexLayout_ {};
 
 protected:
-    void layoutChildren() override;
     void onMount() override;
     void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;

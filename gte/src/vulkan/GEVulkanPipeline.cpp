@@ -35,6 +35,25 @@ GEVulkanRenderPipelineState::GEVulkanRenderPipelineState(SharedHandle<GTEShader>
 
 }
 
+GEVulkanRenderPipelineState::GEVulkanRenderPipelineState(SharedHandle<GTEShader> &meshShader,
+                                                         SharedHandle<GTEShader> &fragmentShader,GEVulkanEngine *parentEngine, VkPipeline &pipeline,
+                                                         VkRenderPass & compatibilityRenderPass,
+                                                         VkPipelineLayout &layout, VkDescriptorPool &descriptorPool,
+                                                         OmegaCommon::Vector<VkDescriptorSet> & descs,
+                                                         OmegaCommon::Vector<VkDescriptorSetLayout> & descLayouts,
+                                                         OmegaCommon::Vector<VkSampler> & immutableSamplers,
+                                                         bool /*meshVariant*/) : __GERenderPipelineState(meshShader,fragmentShader),
+                                                         parentEngine(parentEngine),
+                                                         pipeline(pipeline),
+                                                         compatibilityRenderPass(compatibilityRenderPass),
+                                                         layout(layout),
+                                                         descriptorPool(descriptorPool),
+                                                         descLayouts(descLayouts),
+                                                         descs(descs),
+                                                         immutableSamplers(immutableSamplers){
+    isMesh = true;
+}
+
 void GEVulkanRenderPipelineState::releaseNative(){
     if(nativeReleased_) return;
     nativeReleased_ = true;

@@ -7,83 +7,126 @@
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/CanvasEffect.h"
 #include <omegaWTK/Main.h>
-#include <algorithm>
 #include <chrono>
+
+// Scene: one blue rounded rect with a nice big drop shadow, centered
+// in a white container. The "Animate" menu's "Animate Shadow" item
+// tweens the shadow's R channel from 0 → 1 over 1.5s EaseInOut
+// (resting black → vivid red → revert on completion via the
+// AnimationScheduler's clear-on-complete rule). This is the visible
+// validator for the Phase 4.4 AnimationScheduler integration; the
+// clamp / red→blue / requestRect machinery that used to live here
+// belonged to an older test purpose and is gone (2026-05-31).
 
 namespace {
 
 OmegaWTK::Composition::Rect localBounds(const OmegaWTK::Composition::Rect & rect){
     return OmegaWTK::Composition::Rect{
-        OmegaWTK::Composition::Point2D{0.f,0.f},
+        OmegaWTK::Composition::Point2D{0.f, 0.f},
         rect.w,
         rect.h
     };
 }
 
-OmegaWTK::Composition::LayerEffect::DropShadowParams makeShadow(float x,float y,float radius,float blur,float opacity){
+OmegaWTK::Composition::LayerEffect::DropShadowParams makeShadow(
+        float xOffset, float yOffset, float radius, float blur, float opacity){
     OmegaWTK::Composition::LayerEffect::DropShadowParams params {};
-    params.x_offset = x;
-    params.y_offset = y;
+    params.x_offset = xOffset;
+    params.y_offset = yOffset;
     params.radius = radius;
     params.blurAmount = blur;
     params.opacity = opacity;
-    params.color = OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Black8);
+    params.color = OmegaWTK::Composition::Color::create8Bit(
+        OmegaWTK::Composition::Color::Black8);
     return params;
 }
 
-constexpr float kAnimationDurationSec = 0.6f;
-// Phase 4.4 menu trigger: longer + more visible than the resting style swap
-// so the scheduler-driven shadow tween is unmistakable on screen.
+// Visible from across the room. Big offset, big blur, healthy opacity.
+constexpr float kCornerRadius        = 24.f;
+constexpr float kShadowOffsetY       = 12.f;
+constexpr float kShadowGeometryRadius= 16.f;   // shadow geometry corner
+constexpr float kShadowBlur          = 28.f;
+constexpr float kShadowOpacity       = 0.65f;
+
+// Menu-triggered tween: black → vivid red.
 constexpr float kShadowAnimDurationSec = 1.5f;
-constexpr float kShadowAnimFromOffsetY  = 6.f;
-constexpr float kShadowAnimToOffsetY    = 60.f;
+constexpr float kShadowAnimFromColorR  = 0.f;
+constexpr float kShadowAnimToColorR    = 1.f;
 
 }
 
-class ClampAnimatedChildWidget final : public OmegaWTK::Widget {
+class BlueRectWidget final : public OmegaWTK::Widget {
     OmegaWTK::UIViewPtr uiView {};
-    bool firstClampRequestIssued = false;
-    bool secondClampRequestIssued = false;
-    bool animationTriggered = false;
 
-    // Phase 4.4 visual-validation state. While `shadowAnimActive_` is
-    // true the widget self-invalidates each repaint so the per-window
-    // FrameBuilder keeps ticking the AnimationScheduler — every frame
-    // Paint re-reads the shadow side-table cell. Without the loop the
-    // first repaint would freeze on whatever value the scheduler had at
-    // that instant; this drives a real interpolated tween.
+    // While `shadowAnimActive_` is true the widget self-invalidates each
+    // repaint so the per-window FrameBuilder keeps ticking the
+    // AnimationScheduler — every frame, Paint re-reads the shadow side-
+    // table cell. Without the loop a single repaint would freeze on
+    // whatever sampled value the scheduler had at that instant.
     bool shadowAnimActive_ = false;
     std::chrono::steady_clock::time_point shadowAnimDeadline_ {};
+
+    // DirtyBits-gap workaround (Phase 4.4/4.5 era — fixed in Phase F /
+    // Phase 4.7). `Widget::invalidate()` only sets THIS widget's Paint
+    // bit. The FrameBuilder's composite frame is rebuilt per frame from
+    // whichever widgets paint; widgets whose Paint bit is NOT set
+    // contribute no draw ops, so their previous visuals (e.g. the
+    // parent container's white backdrop) disappear from the framebuffer.
+    // For this two-deep tree (root container → blue rect) invalidating
+    // the immediate parent is enough — the root container repaints
+    // its white backdrop, our child repaints its blue rect, and the
+    // animating shadow color lands in the same composite frame. C++'s
+    // protected-access rule blocks walking past `this->parent` from a
+    // Widget* (we can call `parent->invalidate()` — public — but not
+    // read `parent->parent` from a derived class on a base-class
+    // pointer), so we only invalidate one level here. Phase F /
+    // Phase 4.7 makes this irrelevant.
+    void invalidateAncestors(){
+        if(parent != nullptr){
+            parent->invalidate(OmegaWTK::PaintReason::StateChanged);
+        }
+    }
 
     void ensureUIView(const OmegaWTK::Composition::Rect & bounds){
         auto local = localBounds(bounds);
         if(uiView == nullptr){
-            uiView = makeSubView<OmegaWTK::UIView>(local,"clamp_anim_child_view");
+            uiView = makeSubView<OmegaWTK::UIView>(local, "blue_rect_view");
         }
         else {
             uiView->resize(local);
         }
     }
 
-    void applyInitialStyle() {
-        auto style = OmegaWTK::Style::Create();
-        style = style->backgroundColor("clamp_anim_child_view",OmegaWTK::Composition::Color::Transparent);
-        style = style->elementBrush("animated_rect",OmegaWTK::Composition::ColorBrush(
-                OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)),
-                true,
-                kAnimationDurationSec);
-        style = style->elementDropShadow("animated_rect",makeShadow(0.f,6.f,3.f,10.f,0.60f),true,kAnimationDurationSec);
-        uiView->setStyle(style);
+    void applyLayout(const OmegaWTK::Composition::Rect & bounds){
+        OmegaWTK::UIViewLayout layout {};
+        layout.shape("blue_rect", OmegaWTK::Shape::RoundedRect(
+            OmegaWTK::Composition::RoundedRect{
+                OmegaWTK::Composition::Point2D{0.f, 0.f},
+                bounds.w,
+                bounds.h,
+                kCornerRadius,
+                kCornerRadius
+            }));
+        uiView->setLayout(layout);
     }
 
-    void applyAnimatedTargetStyle() {
+    void applyStyle(){
         auto style = OmegaWTK::Style::Create();
-        style = style->backgroundColor("clamp_anim_child_view",OmegaWTK::Composition::Color::Transparent);
-        style = style->elementBrush("animated_rect",OmegaWTK::Composition::ColorBrush(
-                OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Blue8)),
-                true,
-                kAnimationDurationSec);
-        style = style->elementDropShadow("animated_rect",makeShadow(0.f,2.f,2.f,6.f,0.40f),true,kAnimationDurationSec);
+        style = style->backgroundColor(
+            "blue_rect_view",
+            OmegaWTK::Composition::Color::Transparent);
+        style = style->elementBrush(
+            "blue_rect",
+            OmegaWTK::Composition::ColorBrush(
+                OmegaWTK::Composition::Color::create8Bit(
+                    OmegaWTK::Composition::Color::Blue8)),
+            false, 0.f);
+        style = style->elementDropShadow(
+            "blue_rect",
+            makeShadow(0.f, kShadowOffsetY,
+                       kShadowGeometryRadius, kShadowBlur,
+                       kShadowOpacity),
+            false, 0.f);
         uiView->setStyle(style);
     }
 
@@ -93,134 +136,99 @@ protected:
     }
 
     void onMount() override {
-        ensureUIView(rect());
+        auto bounds = rect();
+        ensureUIView(bounds);
+        applyLayout(localBounds(bounds));
+        applyStyle();
     }
 
     void onPaint(OmegaWTK::PaintReason reason) override {
         (void)reason;
-        auto bounds = localBounds(rect());
+        // Refresh layout in case the widget was resized; style is
+        // already cached on the UIView. The UIView's own update()
+        // path drives the actual paint.
+        auto bounds = rect();
         ensureUIView(bounds);
+        applyLayout(localBounds(bounds));
+        uiView->update();
 
-        OmegaWTK::UIViewLayout layout {};
-        layout.shape("animated_rect",OmegaWTK::Shape::RoundedRect(
-            OmegaWTK::Composition::RoundedRect{
-                OmegaWTK::Composition::Point2D{0.f,0.f},
-                bounds.w,
-                bounds.h,
-                18.f,
-                18.f
-            }));
-        uiView->setLayout(layout);
-
-        if(!firstClampRequestIssued){
-            applyInitialStyle();
-            uiView->update();
-
-            auto req = rect();
-            req.pos.x -= 220.f;
-            req.pos.y -= 140.f;
-            req.w = 280.f;
-            req.h = 240.f;
-            requestRect(req,OmegaWTK::GeometryChangeReason::ChildRequest);
-            firstClampRequestIssued = true;
-            invalidate(OmegaWTK::PaintReason::StateChanged);
-            return;
-        }
-
-        if(!secondClampRequestIssued){
-            applyInitialStyle();
-            uiView->update();
-
-            auto req = rect();
-            req.pos.x += 420.f;
-            req.pos.y += 340.f;
-            req.w += 80.f;
-            req.h += 40.f;
-            requestRect(req,OmegaWTK::GeometryChangeReason::ChildRequest);
-            secondClampRequestIssued = true;
-            invalidate(OmegaWTK::PaintReason::StateChanged);
-            return;
-        }
-
-        if(!animationTriggered){
-            applyAnimatedTargetStyle();
-            uiView->update();
-            animationTriggered = true;
-            invalidate(OmegaWTK::PaintReason::StateChanged);
-        }
-        else {
-            applyAnimatedTargetStyle();
-            uiView->update();
-        }
-
-        // Phase 4.4: while a menu-triggered shadow tween is in flight,
-        // keep the frame loop alive so the scheduler ticks each turn
-        // and Paint re-samples the updated side-table value.
+        // Keep the frame loop alive while the menu-triggered tween is
+        // in flight so the scheduler ticks each turn and Paint re-
+        // samples the updated shadow-color value. Invalidate every
+        // ancestor too — see the comment on `invalidateAncestors`.
         if(shadowAnimActive_){
             if(std::chrono::steady_clock::now() >= shadowAnimDeadline_){
                 shadowAnimActive_ = false;
             }
             else {
+                invalidateAncestors();
                 invalidate(OmegaWTK::PaintReason::StateChanged);
             }
         }
     }
 
 public:
-    explicit ClampAnimatedChildWidget(OmegaWTK::Composition::Rect rect):
+    explicit BlueRectWidget(OmegaWTK::Composition::Rect rect):
             OmegaWTK::Widget(rect){}
 
-    // Phase 4.4 visual-validation hook. Called from the menu delegate.
-    // Registers a scheduler tween on the existing `animated_rect`'s
-    // shadow Y-offset (the shadow drops away and back via EaseInOut),
-    // arms the self-invalidate loop, and requests one repaint so the
-    // pump starts immediately rather than waiting for the next event.
+    // Called from the menu delegate. Registers a scheduler tween on
+    // the rounded rect's drop-shadow R channel: shadow shifts from
+    // black to vivid red over 1.5s EaseInOut and back (the scheduler
+    // clears the side-table cell on completion → the resolved style's
+    // black wins again). Arms the self-invalidate loop + kicks one
+    // repaint so the pump starts immediately.
     void triggerShadowAnimation(){
         if(uiView == nullptr){
             return;
         }
         const auto durationSec = kShadowAnimDurationSec;
         uiView->animateElement(
-            "animated_rect",
-            OmegaWTK::UIView::AnimationChannel::ShadowOffsetY,
-            kShadowAnimFromOffsetY,
-            kShadowAnimToOffsetY,
+            "blue_rect",
+            OmegaWTK::UIView::AnimationChannel::ShadowColorR,
+            kShadowAnimFromColorR,
+            kShadowAnimToColorR,
             durationSec,
             OmegaWTK::Composition::AnimationCurve::EaseInOut());
         shadowAnimActive_ = true;
         shadowAnimDeadline_ = std::chrono::steady_clock::now() +
             std::chrono::milliseconds(static_cast<long>(durationSec * 1000.f));
+        invalidateAncestors();
         invalidate(OmegaWTK::PaintReason::StateChanged);
     }
 };
 
-class ClampRootContainer final : public OmegaWTK::Container {
+class WhiteRootContainer final : public OmegaWTK::Container {
 protected:
     void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
         (void)desc;
     }
 
     void onPaint(OmegaWTK::PaintReason reason) override {
-        // Tier 3 Phase 3.9: white backdrop via the hosted UIView
-        // (a full-bounds rect element) instead of CanvasView::clear.
+        // White backdrop via the hosted UIView (a full-bounds rect
+        // element). Phase 3.9 collapse — no CanvasView::clear.
         auto & uv = viewAs<OmegaWTK::UIView>();
         auto r = rect();
         OmegaWTK::UIViewLayout layout {};
-        layout.shape("clamp_bg",OmegaWTK::Shape::Rect(
-            OmegaWTK::Composition::Rect{OmegaWTK::Composition::Point2D{0.f,0.f},r.w,r.h}));
+        layout.shape("bg", OmegaWTK::Shape::Rect(
+            OmegaWTK::Composition::Rect{
+                OmegaWTK::Composition::Point2D{0.f, 0.f}, r.w, r.h}));
         uv.setLayout(layout);
         auto style = OmegaWTK::Style::Create();
-        style = style->elementBrush("clamp_bg",OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::White8)),
-            false,0.f);
+        style = style->elementBrush(
+            "bg",
+            OmegaWTK::Composition::ColorBrush(
+                OmegaWTK::Composition::Color::create8Bit(
+                    OmegaWTK::Composition::Color::White8)),
+            false, 0.f);
         uv.setStyle(style);
         uv.update();
         OmegaWTK::Container::onPaint(reason);
     }
+
 public:
-    explicit ClampRootContainer(OmegaWTK::Composition::Rect rect):
+    explicit WhiteRootContainer(OmegaWTK::Composition::Rect rect):
             OmegaWTK::Container(OmegaWTK::ViewPtr(
-                new OmegaWTK::UIView(rect,nullptr,"clamp_root_view"))){}
+                new OmegaWTK::UIView(rect, nullptr, "root_view"))){}
 };
 
 class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
@@ -231,14 +239,10 @@ public:
     }
 };
 
-// Phase 4.4: a Menu delegate routes "Animate Shadow" / "Quit" to the
-// widget owning the scheduler-driven tween. The widget pointer is
-// captured at app-startup time and stays alive for the duration of
-// AppInst::start (the widget tree owns it via shared_ptr).
 class AnimMenuDelegate final : public OmegaWTK::MenuDelegate {
-    SharedHandle<ClampAnimatedChildWidget> target_;
+    SharedHandle<BlueRectWidget> target_;
 public:
-    explicit AnimMenuDelegate(SharedHandle<ClampAnimatedChildWidget> target):
+    explicit AnimMenuDelegate(SharedHandle<BlueRectWidget> target):
         target_(std::move(target)) {}
 
     void onSelectItem(unsigned itemIndex) override {
@@ -258,40 +262,42 @@ public:
 };
 
 int omegaWTKMain(OmegaWTK::AppInst *app) {
+    // 500×500 window, white root container, one 260×180 blue rounded
+    // rect centered with room around it for the drop shadow to spread.
+    constexpr float kWindowW = 500.f;
+    constexpr float kWindowH = 500.f;
+    constexpr float kRectW   = 260.f;
+    constexpr float kRectH   = 180.f;
+
     auto window = make<OmegaWTK::AppWindow>(
-            OmegaWTK::Composition::Rect{{0,0},500,500},
+            OmegaWTK::Composition::Rect{{0, 0}, kWindowW, kWindowH},
             new MyWindowDelegate());
 
-    auto container = make<ClampRootContainer>(
-            OmegaWTK::Composition::Rect{{0,0},500,500});
+    auto container = make<WhiteRootContainer>(
+            OmegaWTK::Composition::Rect{{0, 0}, kWindowW, kWindowH});
 
-    OmegaWTK::ContainerClampPolicy clampPolicy {};
-    clampPolicy.contentInsets = {24.f,24.f,24.f,24.f};
-    clampPolicy.minWidth = 64.f;
-    clampPolicy.minHeight = 64.f;
-    clampPolicy.clampPositionToBounds = true;
-    clampPolicy.clampSizeToBounds = true;
-    container->setClampPolicy(clampPolicy);
-
-    auto child = make<ClampAnimatedChildWidget>(
-            OmegaWTK::Composition::Rect{{190.f,160.f},120.f,120.f});
+    auto child = make<BlueRectWidget>(
+            OmegaWTK::Composition::Rect{
+                {(kWindowW - kRectW) * 0.5f,
+                 (kWindowH - kRectH) * 0.5f - 16.f},   // nudge up so the shadow has room
+                kRectW, kRectH});
     container->addChild(child);
 
     window->setRootWidget(container);
 
-    // Phase 4.4 visual-validation menu. The "Animate" menu's first item
-    // triggers the scheduler-driven shadow tween on the animated_rect;
-    // the separator + "Quit" item match the BasicAppTest convention.
-    // Delegate is `static` so it outlives this function (the menu
-    // captures it by raw pointer).
+    // Menu: "Animate" > "Animate Shadow" (item 0) | sep (1) | "Quit" (2).
+    // Delegate is `static` so it outlives this function — the menu
+    // captures it by raw pointer.
     static AnimMenuDelegate animMenuDelegate(child);
-    auto menu = make<OmegaWTK::Menu>("MainMenu", std::initializer_list<SharedHandle<OmegaWTK::MenuItem>>{
-        OmegaWTK::CategoricalMenu("Animate", {
-            OmegaWTK::ButtonMenuItem("Animate Shadow"),
-            OmegaWTK::MenuItemSeperator(),
-            OmegaWTK::ButtonMenuItem("Quit")
-        }, &animMenuDelegate)
-    });
+    auto menu = make<OmegaWTK::Menu>(
+        "MainMenu",
+        std::initializer_list<SharedHandle<OmegaWTK::MenuItem>>{
+            OmegaWTK::CategoricalMenu("Animate", {
+                OmegaWTK::ButtonMenuItem("Animate Shadow"),
+                OmegaWTK::MenuItemSeperator(),
+                OmegaWTK::ButtonMenuItem("Quit")
+            }, &animMenuDelegate)
+        });
     window->setMenu(menu);
 
     auto & windowManager = app->windowManager;

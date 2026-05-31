@@ -33,6 +33,13 @@ public:
     /// Immutable samplers baked into descriptor set layouts (static samplers).
     OmegaCommon::Vector<VkSampler> immutableSamplers;
 
+    /// Mesh-Shader-Plan Phase 4a — variant flag. When true, the
+    /// `vertexShader` slot inherited from `__GERenderPipelineState`
+    /// holds the mesh shader (slot-doubling pattern shared with
+    /// D3D12 4b.1 and Metal 4c.1). `GEVulkanCommandBuffer::drawMeshTasks`
+    /// asserts on this flag before issuing `vkCmdDrawMeshTasksEXT`.
+    bool isMesh = false;
+
     GEVulkanRenderPipelineState(SharedHandle<GTEShader> & vertexShader,
                                 SharedHandle<GTEShader> & fragmentShader,
                                 GEVulkanEngine *parentEngine,
@@ -43,6 +50,20 @@ public:
                                 OmegaCommon::Vector<VkDescriptorSet> & descs,
                                 OmegaCommon::Vector<VkDescriptorSetLayout> & descLayouts,
                                 OmegaCommon::Vector<VkSampler> & immutableSamplers);
+    /// Mesh-Shader-Plan Phase 4a — mesh-variant constructor. Same
+    /// shape as the graphics constructor; `meshShader` lands in the
+    /// `vertexShader` base slot and `isMesh` is stamped true.
+    GEVulkanRenderPipelineState(SharedHandle<GTEShader> & meshShader,
+                                SharedHandle<GTEShader> & fragmentShader,
+                                GEVulkanEngine *parentEngine,
+                                VkPipeline & pipeline,
+                                VkRenderPass & compatibilityRenderPass,
+                                VkPipelineLayout & layout,
+                                VkDescriptorPool & descriptorPool,
+                                OmegaCommon::Vector<VkDescriptorSet> & descs,
+                                OmegaCommon::Vector<VkDescriptorSetLayout> & descLayouts,
+                                OmegaCommon::Vector<VkSampler> & immutableSamplers,
+                                bool meshVariant);
     void releaseNative();
     ~GEVulkanRenderPipelineState();
 };

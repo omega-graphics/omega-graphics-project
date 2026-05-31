@@ -63,3 +63,17 @@ add_vulkan_test(
     SOURCES
     "../matrix_ops_test.cpp")
 add_test(NAME omegagte_matrix_ops COMMAND MatrixOpsTest)
+
+# Mesh-Shader-Plan Phase 4a verification — backend-independent mesh-shader
+# integration test (shared, backend-independent source under gte/tests/).
+# Exercises the full chain: OmegaSL → GLSL → glslc → SPIR-V →
+# VkGraphicsPipeline (mesh+fragment stages) → vkCmdDrawMeshTasksEXT →
+# texture readback. Skips cleanly if the device does not advertise mesh
+# shader support — `omegagte_mesh_shader` exits 0 with a SKIP line in
+# that case so it doesn't false-fail on hardware without the feature.
+add_vulkan_test(
+    NAME
+    "MeshShaderTest"
+    SOURCES
+    "../mesh_shader_test.cpp")
+add_test(NAME omegagte_mesh_shader COMMAND MeshShaderTest)

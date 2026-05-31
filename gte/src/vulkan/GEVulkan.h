@@ -54,6 +54,15 @@ _NAMESPACE_BEGIN_
         bool hasRayTracingPipelineExt = false;
         bool hasBufferDeviceAddressExt = false;
         bool hasDeferredHostOperationsExt = false;
+        /// Mesh-Shader-Plan Phase 4a — `VK_EXT_mesh_shader`. Enabled
+        /// at device creation when present; gates whether
+        /// `vkCmdDrawMeshTasksExt` is loaded and whether the
+        /// `VkPhysicalDeviceMeshShaderFeaturesEXT { meshShader = TRUE }`
+        /// chain is added to `vkCreateDevice`. Separate from the
+        /// detection-time `GTEDEVICE_FEATURE_MESH_SHADER` capability
+        /// bit — that one reports "device supports it"; this one
+        /// records "we asked the driver to turn it on".
+        bool hasMeshShaderExt = false;
 
         PFN_vkCmdPushDescriptorSetKHR vkCmdPushDescriptorSetKhr;
         PFN_vkCmdSetPrimitiveTopologyEXT vkCmdSetPrimitiveTopologyExt;
@@ -67,6 +76,13 @@ _NAMESPACE_BEGIN_
         PFN_vkGetAccelerationStructureDeviceAddressKHR vkGetAccelerationStructureDeviceAddressKhr = nullptr;
         PFN_vkGetBufferDeviceAddressKHR vkGetBufferDeviceAddressKhr = nullptr;
         PFN_vkCmdTraceRaysKHR vkCmdTraceRaysKhr = nullptr;
+        /// Mesh-Shader-Plan Phase 4a — `vkCmdDrawMeshTasksEXT` is an
+        /// extension entry point so it must be loaded via
+        /// `vkGetDeviceProcAddr` (not statically linked). Loaded after
+        /// device creation when `hasMeshShaderExt` is true; nullptr
+        /// otherwise. `GEVulkanCommandBuffer::drawMeshTasks` reaches
+        /// this through `parentQueue->engine->vkCmdDrawMeshTasksExt`.
+        PFN_vkCmdDrawMeshTasksEXT vkCmdDrawMeshTasksExt = nullptr;
 
         VmaAllocator memAllocator;
         unsigned resource_count;

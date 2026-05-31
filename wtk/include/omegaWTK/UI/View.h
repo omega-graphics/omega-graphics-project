@@ -14,6 +14,9 @@
 #define OMEGAWTK_UI_VIEW_H
 
 namespace OmegaWTK {
+    // Forward decl — LayoutManager.h includes View.h (for ResizeClamp /
+    // ChildResizeSpec); the back-edge would be circular if pulled in.
+    class LayoutManager;
     namespace Composition {
         class Compositor;
         class CompositorClientProxy;
@@ -79,31 +82,14 @@ namespace OmegaWTK {
         float growWeightY = 1.f;
     };
 
-    class OMEGAWTK_EXPORT ViewResizeCoordinator {
-        struct ChildState {
-            ChildResizeSpec spec {};
-            Composition::Rect baselineParentRect {Composition::Point2D{0.f,0.f},1.f,1.f};
-            Composition::Rect baselineChildRect {Composition::Point2D{0.f,0.f},1.f,1.f};
-            bool hasBaseline = false;
-        };
-        View * parentView = nullptr;
-        std::uint64_t activeSessionId = 0;
-        OmegaCommon::Map<View *,ChildState> childState;
-    public:
-        void attachView(View * parent);
-        void registerChild(View * child,const ChildResizeSpec & spec);
-        void updateChildSpec(View * child,const ChildResizeSpec & spec);
-        void unregisterChild(View * child);
-        void beginResizeSession(std::uint64_t sessionId);
-        Composition::Rect resolveChildRect(View * child,
-                                    const Composition::Rect & requested,
-                                    const Composition::Rect & parentContentRect);
-        void resolve(const Composition::Rect & parentContentRect);
-        static Composition::Rect clampRectToParent(const Composition::Rect & requested,
-                                            const Composition::Rect & parentContentRect,
-                                            const ChildResizeSpec & spec);
-    };
-    
+    // Phase 4.5: `ViewResizeCoordinator` is deleted. Child layout is
+    // owned by the parent's `LayoutManager` (see `LayoutManager.h`);
+    // the static `clampRectToParent` utility moved to
+    // `LayoutManager::clampRectToParent`. `ChildResizeSpec` / the
+    // policies / `ResizeClamp` above stay public for the surviving
+    // call sites that pass them to the clamp helper.
+
+
 
     /**
         @brief Controls all the basic functionality of a Widget!
@@ -170,9 +156,20 @@ namespace OmegaWTK {
         void clearDirtyBits();
         /// @brief Checks to see if this View is the root View of a Widget.
         bool isRootView();
-        /// @brief Returns the resize coordinator associated with this view.
-        ViewResizeCoordinator & getResizeCoordinator();
-        const ViewResizeCoordinator & getResizeCoordinator() const;
+        /// Phase 4.5: parent-owned child-layout strategy. The manager
+        /// arranges THIS view's children (`subviews()`); it does not
+        /// touch intra-`UIView` element layout. Default is the process-
+        /// wide `AbsoluteLayout` singleton (child positioned by its own
+        /// rect, clamped to parent). Set via `setLayoutManager(...)`; the
+        /// caller owns the manager's lifetime (the View stores a raw
+        /// pointer). Returns a pointer rather than a reference so callers
+        /// can detect the "default singleton" case if they want.
+        LayoutManager * layoutManager() const;
+        void            setLayoutManager(LayoutManager * manager);
+
+        /// Phase 4.5: const view of this View's children. Used by
+        /// `LayoutManager::arrange` to iterate. Order is insertion order.
+        OmegaCommon::ArrayRef<View *> subviews() const;
 
         /// @brief Sets the object to recieve View related events.
         virtual void setDelegate(ViewDelegate *_delegate);

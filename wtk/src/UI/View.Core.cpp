@@ -1,6 +1,7 @@
 #include "ViewImpl.h"
 
 #include "omegaWTK/UI/Layout.h"
+#include "omegaWTK/UI/LayoutManager.h"
 #include "omegaWTK/UI/AppWindow.h"
 
 #include <iostream>
@@ -61,12 +62,23 @@ std::uint64_t View::nodeId() const{
     return impl_->nodeId_;
 }
 
-ViewResizeCoordinator & View::getResizeCoordinator(){
-    return impl_->resizeCoordinator;
+LayoutManager * View::layoutManager() const{
+    // Phase 4.5: null = use the process-wide default. The manager
+    // owner (Container, etc.) sets this explicitly via
+    // setLayoutManager.
+    if(impl_->layoutManager_ != nullptr){
+        return impl_->layoutManager_;
+    }
+    return &AbsoluteLayout::instance();
 }
 
-const ViewResizeCoordinator & View::getResizeCoordinator() const{
-    return impl_->resizeCoordinator;
+void View::setLayoutManager(LayoutManager * manager){
+    impl_->layoutManager_ = manager;
+    markDirty(View::Layout);
+}
+
+OmegaCommon::ArrayRef<View *> View::subviews() const{
+    return OmegaCommon::ArrayRef<View *>(impl_->subviews);
 }
 
 bool View::containsPoint(const Composition::Point2D &point) const{
@@ -111,7 +123,10 @@ void View::addSubView(View * view){
     }
     impl_->subviews.emplace_back(view);
     view->impl_->parent_ptr = this;
-    impl_->resizeCoordinator.registerChild(view,{});
+    // Phase 4.5: per-child registration on `ViewResizeCoordinator` is
+    // gone. The parent's `LayoutManager` (default `AbsoluteLayout`)
+    // discovers children through `node.subviews()` at arrange time;
+    // no separate register/unregister step is needed any more.
     // Newly created subviews must inherit compositor wiring immediately.
     view->setFrontendRecurse(compositorProxy().getFrontendPtr());
     view->setSyncLaneRecurse(compositorProxy().getSyncLaneId());
@@ -123,7 +138,7 @@ void View::removeSubView(View *view){
         auto *v = *it;
         if(v == view){
             impl_->subviews.erase(it);
-            impl_->resizeCoordinator.unregisterChild(view);
+            // Phase 4.5: see addSubView — no coordinator unregister.
             view->impl_->parent_ptr = nullptr;
             return;
         }

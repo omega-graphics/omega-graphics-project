@@ -342,14 +342,14 @@ namespace OmegaWTK {
         }
     }
 
-    void WidgetTreeHost::beginResizeCoordinatorSessionRecurse(Widget *parent,std::uint64_t sessionId){
-        if(parent == nullptr || parent->view == nullptr){
-            return;
-        }
-        parent->view->getResizeCoordinator().beginResizeSession(sessionId);
-        for(const auto & child : parent->childWidgets()){
-            beginResizeCoordinatorSessionRecurse(child.get(),sessionId);
-        }
+    void WidgetTreeHost::beginResizeCoordinatorSessionRecurse(Widget * /*parent*/, std::uint64_t /*sessionId*/){
+        // Phase 4.5: the per-view `ViewResizeCoordinator` session state
+        // (which only the dead `ChildResizePolicy::Proportional` baseline
+        // tracking ever read) is gone. Body retained as a no-op so the
+        // call site in `notifyWindowResizeBegin` doesn't need to learn
+        // about resize semantics that no longer exist. The declaration
+        // itself can be removed in a future cleanup once it's clear
+        // nothing else hooks in.
     }
 
     bool WidgetTreeHost::detectAnimatedTreeRecurse(Widget *parent) const{
@@ -492,7 +492,10 @@ namespace OmegaWTK {
         lastResizeSessionState = resizeTracker.begin(rect.w,rect.h,nowMs());
         lastResizeSessionState.animatedTree = detectAnimatedTreeRecurse(root.get());
         resizeCoordinatorGeneration += 1;
-        beginResizeCoordinatorSessionRecurse(root.get(),lastResizeSessionState.sessionId);
+        // Phase 4.5: the session walk is a no-op (the coordinator it
+        // primed is gone). The recursive call dropped here saves a
+        // full-tree walk on every resize-begin. `resizeCoordinatorGeneration`
+        // stays — it is still consumed by the resize tracker / diagnostics.
         if(root != nullptr && anyWidgetOptsIntoResize(root.get())){
             // Tier 3 Phase 3.8: framed by the caller's
             // FrameBuilder::ScopedFrame (dispatchResizeBeginToHosts).

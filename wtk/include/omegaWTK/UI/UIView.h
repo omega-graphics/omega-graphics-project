@@ -347,7 +347,16 @@ public:
         ShadowOffsetY = 1001,
         ShadowRadius  = 1002,
         ShadowBlur    = 1003,
-        ShadowOpacity = 1004
+        ShadowOpacity = 1004,
+        // 4.4 follow-up (2026-05-31): the shadow color channels were
+        // dormant in the original Phase 4.4 surface (paint did not
+        // read them). Wired up alongside the test-trigger improvement
+        // — animate the alpha down to fade the shadow, animate the
+        // RGB channels to shift its color. Values in [0,1].
+        ShadowColorR  = 1005,
+        ShadowColorG  = 1006,
+        ShadowColorB  = 1007,
+        ShadowColorA  = 1008
     };
 
     /// Phase 4.4: register a scalar tween on one of this view's elements
