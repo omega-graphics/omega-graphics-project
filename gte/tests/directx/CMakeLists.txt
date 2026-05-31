@@ -65,6 +65,24 @@ add_d3d12_test(
     "GPUTessTest/main.cpp"
 )
 
+# Mesh-Shader-Plan Phases 3 / 4b (and future raytracing) visual test.
+# Phase 4b is live: the test loads `orange_tennis_racket.fbx` via
+# `GEMeshAsset` and renders each triangle through a mesh-shader
+# dispatch (one mesh threadgroup per triangle). Raytracing hooks join
+# when that phase reaches the dispatch surface. The FBX asset lives
+# under the shared `gte/tests/assets/` folder so other tests can reuse
+# it; CMake stages it next to the test exe via the ASSETS list.
+add_d3d12_test(
+    NAME
+    "MeshAndRaytracingTest"
+    SOURCES
+    "MeshAndRaytracingTest/main.cpp"
+    ASSETS
+    "../assets/orange_tennis_racket/orange_tennis_racket.fbx"
+    SHADERS
+    "MeshAndRaytracingTest/meshAndRaytracing.omegasl"
+)
+
 # Extension 8 §8.6 — runtime sampler-state binding integration test (shared,
 # backend-independent source under gte/tests/).
 add_d3d12_test(

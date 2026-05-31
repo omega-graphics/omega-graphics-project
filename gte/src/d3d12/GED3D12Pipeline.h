@@ -15,8 +15,27 @@ public:
      ComPtr<ID3D12PipelineState> pipelineState;
      ComPtr<ID3D12RootSignature> rootSignature;
      D3D12_ROOT_SIGNATURE_DESC1 rootSignatureDesc;
+     /// Mesh-Shader-Plan Phase 4b.1 — variant flag. When true, the
+     /// `vertexShader` slot inherited from `__GERenderPipelineState`
+     /// holds the mesh shader (the geometry stage's role is taken by
+     /// mesh in this variant; both stage types are
+     /// `SharedHandle<GTEShader>` and the resource-binding paths read
+     /// `shader->internal` uniformly, so the slot doubles cleanly).
+     /// `GED3D12CommandBuffer::drawMeshTasks` asserts on this flag
+     /// before issuing `DispatchMesh`; `drawPolygons` family is a
+     /// logic error against a mesh PSO and assertion-bound the same way.
+     bool isMesh = false;
      ~GED3D12RenderPipelineState();
     GED3D12RenderPipelineState(SharedHandle<GTEShader> & _vertShader,SharedHandle<GTEShader> & _fragShader,ID3D12PipelineState *state,ID3D12RootSignature *signature,D3D12_ROOT_SIGNATURE_DESC1 & rootSignatureDesc);
+    /// Mesh-Shader-Plan Phase 4b.1 — mesh-variant constructor. Same
+    /// shape as the graphics constructor; `_meshShader` lands in the
+    /// `vertexShader` base slot and `isMesh` is stamped true.
+    GED3D12RenderPipelineState(SharedHandle<GTEShader> & _meshShader,
+                               SharedHandle<GTEShader> & _fragShader,
+                               ID3D12PipelineState *state,
+                               ID3D12RootSignature *signature,
+                               D3D12_ROOT_SIGNATURE_DESC1 & rootSignatureDesc,
+                               bool meshVariant);
 };
 
 class GED3D12ComputePipelineState : public __GEComputePipelineState {

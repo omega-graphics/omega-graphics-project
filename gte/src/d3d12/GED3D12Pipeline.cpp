@@ -12,6 +12,19 @@ GED3D12RenderPipelineState::GED3D12RenderPipelineState(SharedHandle<GTEShader> &
                                                        pipelineState(state),
                                                        rootSignature(signature),rootSignatureDesc(rootSignatureDesc){};
 
+GED3D12RenderPipelineState::GED3D12RenderPipelineState(SharedHandle<GTEShader> & _meshShader,
+                                                       SharedHandle<GTEShader> & _fragShader,
+                                                       ID3D12PipelineState *state,
+                                                       ID3D12RootSignature *signature,
+                                                       D3D12_ROOT_SIGNATURE_DESC1 & rootSignatureDesc,
+                                                       bool /*meshVariant*/):
+                                                       __GERenderPipelineState(_meshShader,_fragShader),
+                                                       pipelineState(state),
+                                                       rootSignature(signature),
+                                                       rootSignatureDesc(rootSignatureDesc) {
+    isMesh = true;
+}
+
 GED3D12RenderPipelineState::~GED3D12RenderPipelineState() {
     auto array = OmegaCommon::makeArrayRef((D3D12_ROOT_PARAMETER1 *)rootSignatureDesc.pParameters,
                                            (D3D12_ROOT_PARAMETER1 *)rootSignatureDesc.pParameters + rootSignatureDesc.NumParameters);

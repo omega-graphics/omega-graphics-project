@@ -124,6 +124,12 @@ _NAMESPACE_BEGIN_
         void drawIndexedPolygonsIndirect(RenderPassDrawPolygonType polygonType,
                                           SharedHandle<GEBuffer> & argumentBuffer,
                                           size_t argumentBufferOffset) override;
+        /// Mesh-Shader-Plan Phase 3 — stub. Feature-gates, logs +
+        /// returns. Phase 4c lands `[renderEncoder
+        /// drawMeshThreadgroups:...]`.
+        void drawMeshTasks(uint32_t groupCountX,
+                           uint32_t groupCountY,
+                           uint32_t groupCountZ) override;
         void finishRenderPass() override;
         
         void startComputePass(const GEComputePassDescriptor &desc) override;

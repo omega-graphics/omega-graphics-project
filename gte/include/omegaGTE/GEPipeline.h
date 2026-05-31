@@ -244,6 +244,54 @@ _NAMESPACE_BEGIN_
         unsigned srcSampleCount = 1;
     };
 
+    /// @brief Describes a mesh-shader render pipeline (Mesh-Shader-Plan
+    /// Phase 3). A mesh pipeline replaces the vertex-input + vertex-stage
+    /// half of a render pipeline with the mesh-shader pair: an optional
+    /// amplification (task) stage that dispatches mesh threadgroups, a
+    /// required mesh stage that emits meshlet vertices + indices, and the
+    /// usual fragment stage downstream. The rasterization / blend / depth
+    /// state is the same shape as @c RenderPipelineDescriptor — the only
+    /// difference is the geometry side.
+    ///
+    /// `vertexInputDescriptor` and `primitiveTopologyCategory` from
+    /// `RenderPipelineDescriptor` are intentionally absent: the mesh
+    /// stage emits its own primitives and there is no vertex-buffer
+    /// pull, so neither makes sense here.
+    ///
+    /// Feature-gated behind @c GTEDEVICE_FEATURE_MESH_SHADER —
+    /// @c OmegaGraphicsEngine::makeMeshPipelineState returns @c nullptr
+    /// with a diagnostic on devices that don't advertise it. Same
+    /// pattern as raytracing (see @c createBoundingBoxesBuffer /
+    /// @c allocateAccelerationStructure).
+    struct OMEGAGTE_EXPORT MeshPipelineDescriptor {
+        OmegaCommon::String name;
+        /// Optional amplification stage (task shader). Null is valid —
+        /// every backend lets a mesh pipeline run without an
+        /// amplification stage. Phase-5 follow-up wires the payload
+        /// machinery; today only its presence at the descriptor level
+        /// is honored.
+        SharedHandle<GTEShader> amplificationFunc;
+        /// Required mesh stage. Built from an OmegaSL
+        /// `mesh(max_vertices=..., max_primitives=..., topology=...)`
+        /// entry; the shader's serialized @c meshDesc carries the
+        /// per-meshlet maxima the backend needs to wire the PSO.
+        SharedHandle<GTEShader> meshFunc;
+        /// Required fragment stage — same shape as
+        /// @c RenderPipelineDescriptor::fragmentFunc.
+        SharedHandle<GTEShader> fragmentFunc;
+
+        // ── Render state, mirroring RenderPipelineDescriptor ────────
+        OmegaCommon::Vector<PixelFormat> colorPixelFormats = { PixelFormat::RGBA8Unorm };
+        unsigned rasterSampleCount = 0;
+        RasterCullMode cullMode = RasterCullMode::None;
+        TriangleFillMode triangleFillMode = TriangleFillMode::Solid;
+        GTEPolygonFrontFaceRotation polygonFrontFaceRotation = GTEPolygonFrontFaceRotation::Clockwise;
+        OmegaCommon::Vector<BlendDescriptor> colorBlendDescriptors;
+        /// Reuses @c RenderPipelineDescriptor::DepthStencilDesc so the
+        /// caller writes the same struct shape for both pipeline kinds.
+        RenderPipelineDescriptor::DepthStencilDesc depthAndStencilDesc;
+    };
+
     using GERenderPipelineState = struct __GERenderPipelineState;
     using GEComputePipelineState = struct __GEComputePipelineState;
     using GEBlitPipelineState = struct __GEBlitPipelineState;

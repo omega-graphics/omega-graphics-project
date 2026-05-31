@@ -184,6 +184,40 @@ Concrete feasibility for the two existing paths, so we know what's worth doing.
 - **Draco / meshopt** compressed primitives: extra decoder dependency — out of
   scope (see Non-Goals).
 
+## Phase H: std430-compatible vertex packing on GPU stride
+
+*Surfaced during Mesh-Shader-Plan Phase 4b integration (`gte/tests/directx/MeshAndRaytracingTest`, 2026-05-30); see that test's main.cpp + shader for the workaround in place today.*
+
+`geMeshStrideFor` packs attributes tightly: `Position | Normal` → 12B + 12B = 24B per vertex. OmegaSL `buffer<T>` on D3D12 (and Vulkan SPIR-V via shaderc) follows std430-style alignment — a `float3` field followed by another `float3` field forces a 4-byte tail-pad on the first one to align the second to 16B. So `struct { float3 pos; float3 normal; }` reads as 32B/vertex shader-side while the CPU writer emits 24B/vertex. The reader strides through GPU memory in 32B chunks and pulls garbage starting at vertex 1.
+
+The Phase 4b integration worked around this by requesting **Position only** (`GEMeshAttrPosition`) — a lone `float3` in a struct needs no internal padding, so the CPU 12B and shader 12B agree. That dodges the bug for the current test but blocks any mesh-shader / vertex-shader integration that wants Normal, UV+Normal, etc.
+
+Fix options, in order of intrusiveness:
+
+- **(H1) Adjust `geMeshStrideFor` + the GEMesh writer to emit std430-padded vertices.** Pad each `float3` (Position, UV3, Normal) to 16B before the next vec3/vec4 field. The shader-side `struct` then matches without changes to OmegaSL. Drawback: wastes 4B/vertex for every meshlet attribute that pairs vec3 with vec3. Acceptable for typical PBR vertex sets (Pos+UV+Norm+Tan is mixed-vec2/vec3/vec4 anyway).
+- **(H2) Promote affected attributes to `float4` in the CPU layout.** `Normal` becomes a `float4` with `.w = 0` (or used as a flag). The shader-side `struct` uses `float4`s throughout. Same memory cost as H1 but the shader reads are explicit instead of implicit-pad.
+- **(H3) Per-attribute byte-offset loads in the shader.** Replace `buffer<VertexT>` with `buffer<float>` + manual `Load2 / Load3 / Load4` at byte offsets. Maximum density (no padding); maximum shader complexity. Defer unless the per-vertex memory becomes a real budget concern.
+
+Recommendation: **H1** when Phase A (indexed output) lands. Indexed meshes are already a layout change for `GEMesh::indexBuffer` / `indexCount`; bundling the stride-alignment fix in the same commit avoids re-tweaking layout consumers twice.
+
+Audit task before any fix lands: walk every existing `buffer<T>` shader struct in the repo (`2DTest/shaders.omegasl`, the compositor shaders in `wtk/src/Composition/backend/shaders/`, etc.) and assert each one's CPU writer side packs the same as the shader side's std430 expectation. The 2DTest case (`float4 pos; float2 coord;` = 16B + 8B = 24B tight, std430 = 24B since `float2` is 8B-aligned after a `float4`) happens to agree by luck. The bug only fires on `float3` followed by another `float3`/`float4` field — but it would silently corrupt any future attribute combo that lines that pattern up.
+
+**Files:** `gte/src/common/GEMesh.cpp` (the writer + `geMeshStrideFor`), `gte/src/common/MeshParser.cpp` (the packed-vertex emit path).
+
+## Phase H follow-up: expose authoring-space metadata to callers
+
+Also surfaced during the `MeshAndRaytracingTest` integration: the test needs a model transform (scale + center) to land the FBX inside NDC, but the parser does not expose the source FBX's bounding box / unit / up-axis to the caller in a structured way. Today the workaround is the caller hardcodes a scale factor and hopes — or runs Phase E's `normalizeToEngineSpace` and hopes the file's embedded units are accurate. Both are guesses.
+
+Add a `MeshLoadResult` (or equivalent) returned by `GEMeshAsset::mesh()` that carries:
+
+- `BoundingBox aabb` — the parsed mesh's local-space AABB after Phase-E normalization (if any).
+- `float sourceUnitMeters` — the file's authoring unit converted to meters (1.0 for glTF, parsed-from-FBX for FBX, undefined for OBJ).
+- `enum class UpAxis { Y, Z }` — file's authoring up-axis.
+
+Lets a test or runtime caller compute a fit-to-NDC scale from `aabb` alone, without baking unit assumptions into the calling code. Smaller win than Phase H but it's a recurring footgun whenever a test consumes a real asset for the first time.
+
+**Files:** `gte/include/omegaGTE/GEMesh.h` (new struct), `gte/include/omegaGTE/GEMeshAsset.h` (new accessor), the three backend `GE*MeshAsset` impls + `MeshParser::ParsedMesh`.
+
 ## Phase G: Testing & documentation
 
 - Extend `AssetTest` (Metal) and the D3D12 / Vulkan equivalents:
@@ -203,12 +237,16 @@ Concrete feasibility for the two existing paths, so we know what's worth doing.
 ## Suggested order
 
 1. **Phase A — indexed output** (biggest perf win, shared, with cheap glTF/OBJ
-   fast paths).
+   fast paths). Bundle **Phase H** (std430-padded vertex stride) into the same
+   commit — Phase A is already changing the vertex-layout consumer surface so
+   tweaking stride alignment alongside it is one disruption instead of two.
 2. **Phase B — material maps** (cheap on glTF/FBX, moderate on OBJ).
 3. **Phase C — multi-material submeshes** (largest GEMesh-surface change).
 4. **Phase D — tangents** (depends on the attribute-order change; pairs with
    normal maps from B).
-5. **Phase E — coordinate/unit normalization** (small, opt-in).
+5. **Phase E — coordinate/unit normalization** (small, opt-in). Pair with the
+   **Phase H follow-up** (expose `aabb` / `sourceUnitMeters` / `UpAxis` on the
+   load result) — both touch the same authoring-metadata surface.
 6. **Phase F niceties** — fold the cheap OBJ/glTF items in alongside the phase
    that needs them (smoothing-group normals with B, node-baking with A).
 
@@ -224,3 +262,5 @@ Concrete feasibility for the two existing paths, so we know what's worth doing.
 | **Node-transform baking** | n/a | walk `cgltf_node` tree | (instances) | none (correctness) |
 | **`.glb` embedded textures** | n/a | `image->buffer_view` | embedded textures | needs in-memory `TextureAsset` load |
 | **Skinning / animation** | n/a | available | available | **future track — not in this plan** |
+| **std430-padded vertex stride** (Phase H) | adjust packed-vertex emit | same | same | `geMeshStrideFor` + writer pad `float3` to 16B before next vec3/vec4 |
+| **Authoring metadata exposed** (Phase H follow-up) | n/a (no metadata) | unit/axis from spec | unit/axis/AABB from `ufbx` | new `MeshLoadResult` carrying `aabb` / `sourceUnitMeters` / `UpAxis` |

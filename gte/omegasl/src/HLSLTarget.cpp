@@ -38,7 +38,20 @@ namespace omegasl {
     HLSLTarget::~HLSLTarget() = default;
 
     const char *HLSLTarget::shaderFileExt(ast::ShaderDecl::Type /*stage*/) const {
+        /// All HLSL stages share the `.hlsl` source extension — DXC
+        /// distinguishes the stage via `-T <profile>` (set in
+        /// `compileShader`), not by extension. Mesh stays on `.hlsl`.
         return ".hlsl";
+    }
+
+    bool HLSLTarget::supportsStage(ast::ShaderDecl::Type /*stage*/,
+                                   std::string &/*diagnosticOut*/) const {
+        /// §2b — HLSL is the second backend to emit mesh source (SM 6.5
+        /// `[outputtopology(...)]` + `out vertices` / `out indices`).
+        /// Flip every stage on so the base `Target::supportsStage`
+        /// stops gating Mesh off for this target. MSL still inherits
+        /// the base and bails until Phase 2c.
+        return true;
     }
 
     bool HLSLTarget::compileShader(ast::ShaderDecl::Type stage,
@@ -70,6 +83,14 @@ namespace omegasl {
             out << "hs" << profileTag;
         } else if (stage == ast::ShaderDecl::Domain) {
             out << "ds" << profileTag;
+        } else if (stage == ast::ShaderDecl::Mesh) {
+            /// §2b — mesh shaders are SM 6.5+ (`[outputtopology(...)]`,
+            /// `SetMeshOutputCounts`, `out vertices` / `out indices`).
+            /// SM 5.x / SM 6.2 don't recognize the spelling, so force
+            /// the `ms_6_5` profile regardless of the FLOAT16 gate.
+            /// Off-platform on this Linux host (DXC ships on Windows);
+            /// see `gte/docs/Mesh-Shader-Implementation-Plan.md` §2b.
+            out << "ms_6_5";
         }
         out << " -E" << name.data() << " -Fo "
             << OmegaCommon::FS::Path(outDir).append(name).concat(".cso").absPath();
@@ -109,6 +130,17 @@ namespace omegasl {
                       << "' — `#requires(FLOAT16)` needs SM 6.2 (dxc), but the runtime "
                          "uses D3DCompile (SM 5.1 max). Use the offline pipeline or "
                          "switch the runtime to dxc." << std::endl;
+            return;
+        }
+        /// §2b — mesh shaders need SM 6.5 (`ms_6_5` profile, only in
+        /// dxc). The legacy D3DCompile path tops out at SM 5.1, so a
+        /// runtime mesh compile is structurally impossible here. Fail
+        /// loud rather than silently emit garbage — same fail-loud
+        /// pattern as the FLOAT16 gate above.
+        if (stage == ast::ShaderDecl::Mesh) {
+            std::cerr << "error: runtime D3DCompile path cannot compile '" << name.data()
+                      << "' — mesh shaders need SM 6.5 (dxc), but the runtime uses "
+                         "D3DCompile (SM 5.1 max). Use the offline pipeline." << std::endl;
             return;
         }
 #ifdef TARGET_DIRECTX
@@ -779,13 +811,74 @@ namespace omegasl {
         }
         out << "};" << std::endl;
         generatedStructs.insert(std::make_pair(_decl->name, out.str()));
+        /// §2b — record the StructDecl* so the mesh path in
+        /// `emitShaderUsedStructs` can re-emit the vertex-output struct
+        /// with inter-stage semantics (`Color(N) → COLOR<N>`) instead of
+        /// the cached fragment-output mapping (`SV_Target<N>`).
+        structDeclMap[_decl->name] = _decl;
     }
 
     void HLSLTarget::emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *_decl,
                                            std::ostream &out) {
+        /// §2b — locate the mesh-vertex-output struct (the element type
+        /// of the `out vertices` param) so we can re-emit it inline with
+        /// the inter-stage semantic mapping. The cached `generatedStructs`
+        /// text would otherwise carry `SV_Target<N>` for any `Color(N)`
+        /// field — correct for a fragment output, invalid as a
+        /// mesh-shader vertex-output semantic that interpolates into
+        /// `SV_Target<N>` in the downstream fragment stage. Non-mesh
+        /// entries (and non-mesh-output structs inside a mesh entry)
+        /// keep the cached text unchanged.
+        ast::StructDecl *meshVertsStruct = nullptr;
+        if (_decl->shaderType == ast::ShaderDecl::Mesh) {
+            for (auto &p : _decl->params) {
+                if (p.meshOutput == ast::AttributedFieldDecl::Vertices) {
+                    auto sit = structDeclMap.find(p.typeExpr->name);
+                    if (sit != structDeclMap.end()) meshVertsStruct = sit->second;
+                    break;
+                }
+            }
+        }
         OmegaCommon::Vector<OmegaCommon::String> struct_names;
         cg.typeResolver->getStructsInFuncDecl(_decl, struct_names);
         for (auto &s : struct_names) {
+            if (meshVertsStruct && meshVertsStruct->name == s) {
+                /// Inline re-emit: same shape as `emitStructDecl`, but the
+                /// `Color(N)`/`TexCoord(N)` cases lower to inter-stage
+                /// `COLOR<N>`/`TEXCOORD<N>` (matching how bare `Color` /
+                /// `TexCoord` are auto-indexed there). `Position` still
+                /// rides `SV_Position` — that's the correct HLSL mesh
+                /// vertex-output semantic. Other attributed fields keep
+                /// the default `writeAttribute` mapping.
+                out << "struct " << meshVertsStruct->name << "{" << std::endl;
+                for (auto &f : meshVertsStruct->fields) {
+                    out << "    ";
+                    switch (f.interp) {
+                        case ast::AttributedFieldDecl::Flat:          out << "nointerpolation "; break;
+                        case ast::AttributedFieldDecl::Centroid:      out << "centroid "; break;
+                        case ast::AttributedFieldDecl::Sample:        out << "sample "; break;
+                        case ast::AttributedFieldDecl::NoPerspective: out << "noperspective "; break;
+                        default: break;
+                    }
+                    cg.writeTypeExpr(f.typeExpr, out);
+                    out << " " << f.name;
+                    cg.writeDeclTypeSuffix(f.typeExpr, out);
+                    if (f.attributeName.has_value()) {
+                        out << ":";
+                        const auto &an = f.attributeName.value();
+                        if (an == ATTRIBUTE_COLOR) {
+                            out << "COLOR" << (f.attributeIndex.has_value() ? f.attributeIndex.value() : 0u);
+                        } else if (an == ATTRIBUTE_TEXCOORD) {
+                            out << "TEXCOORD" << (f.attributeIndex.has_value() ? f.attributeIndex.value() : 0u);
+                        } else {
+                            writeAttribute(an, f.attributeIndex, out);
+                        }
+                    }
+                    out << ";" << std::endl;
+                }
+                out << "};" << std::endl << std::endl;
+                continue;
+            }
             out << generatedStructs[s] << std::endl;
         }
     }
@@ -820,7 +913,8 @@ namespace omegasl {
                           : _decl->shaderType == ast::ShaderDecl::Fragment ? OMEGASL_SHADER_FRAGMENT
                           : _decl->shaderType == ast::ShaderDecl::Compute  ? OMEGASL_SHADER_COMPUTE
                           : _decl->shaderType == ast::ShaderDecl::Hull     ? OMEGASL_SHADER_HULL
-                                                                           : OMEGASL_SHADER_DOMAIN;
+                          : _decl->shaderType == ast::ShaderDecl::Domain   ? OMEGASL_SHADER_DOMAIN
+                                                                           : OMEGASL_SHADER_MESH;
         shaderDesc.name = new char[_decl->name.size() + 1];
         std::copy(_decl->name.begin(), _decl->name.end(), (char *)shaderDesc.name);
         ((char *)shaderDesc.name)[_decl->name.size()] = '\0';
@@ -835,6 +929,44 @@ namespace omegasl {
             shaderDesc.threadgroupDesc.z = _decl->threadgroupDesc.z;
             out << "[numthreads(" << _decl->threadgroupDesc.x << "," << _decl->threadgroupDesc.y << ","
                 << _decl->threadgroupDesc.z << ")]" << std::endl;
+        } else if (_decl->shaderType == ast::ShaderDecl::Mesh) {
+            /// §2b — mesh stage prologue. SM 6.5 requires `[outputtopology]`
+            /// + `[numthreads]` on the entry function (mesh shaders run as
+            /// thread-groups, exactly like compute). HLSL has no spelling
+            /// for `point` mesh output at SM 6.5 — Sema rejects that case
+            /// up front, so the topology here is always triangle or line.
+            shaderDesc.threadgroupDesc.x = _decl->threadgroupDesc.x;
+            shaderDesc.threadgroupDesc.y = _decl->threadgroupDesc.y;
+            shaderDesc.threadgroupDesc.z = _decl->threadgroupDesc.z;
+            shaderDesc.meshDesc.max_vertices   = _decl->meshDesc.maxVertices;
+            shaderDesc.meshDesc.max_primitives = _decl->meshDesc.maxPrimitives;
+            shaderDesc.meshDesc.topology       = static_cast<int>(_decl->meshDesc.topology);
+            meshMaxVertices   = _decl->meshDesc.maxVertices;
+            meshMaxPrimitives = _decl->meshDesc.maxPrimitives;
+            meshTopology      = _decl->meshDesc.topology;
+            const char *topoStr =
+                (_decl->meshDesc.topology == ast::ShaderDecl::MeshDesc::Triangle) ? "triangle" : "line";
+            out << "[outputtopology(\"" << topoStr << "\")]" << std::endl;
+            out << "[numthreads(" << _decl->threadgroupDesc.x << ","
+                << _decl->threadgroupDesc.y << ","
+                << _decl->threadgroupDesc.z << ")]" << std::endl;
+            /// Locate the mesh-output param names + element struct for
+            /// `emitShaderEntryBody`'s `SetMeshOutputCounts(...)` auto-
+            /// emit decision. The struct decl itself was already re-
+            /// emitted in `emitShaderUsedStructs` with the inter-stage
+            /// semantic mapping.
+            meshVertsParamName.clear();
+            meshIndicesParamName.clear();
+            meshVertsStructDecl = nullptr;
+            for (auto &p : _decl->params) {
+                if (p.meshOutput == ast::AttributedFieldDecl::Vertices) {
+                    meshVertsParamName = p.name;
+                    auto sit = structDeclMap.find(p.typeExpr->name);
+                    if (sit != structDeclMap.end()) meshVertsStructDecl = sit->second;
+                } else if (p.meshOutput == ast::AttributedFieldDecl::Indices) {
+                    meshIndicesParamName = p.name;
+                }
+            }
         } else if (_decl->shaderType == ast::ShaderDecl::Hull) {
             auto &td = _decl->tessDesc;
             out << "[domain(\""
@@ -873,6 +1005,34 @@ namespace omegasl {
                 out << ",";
             }
 
+            /// §2b — mesh-stage `out vertices` / `out indices` qualifiers.
+            /// SM 6.5 puts these prefixes directly on the parameter
+            /// declaration: `out vertices VertexOut verts[N]` and
+            /// `out indices uintK tris[M]`. Sema already validated the
+            /// extents match the descriptor's max_vertices /
+            /// max_primitives and the index width matches the topology,
+            /// so we just spell what's on the AST. The array suffix
+            /// comes from `writeDeclTypeSuffix` (same helper struct
+            /// fields use).
+            if (p_it->meshOutput == ast::AttributedFieldDecl::Vertices) {
+                out << "out vertices ";
+                writeTypeName(cg.typeResolver->resolveTypeWithExpr(p_it->typeExpr),
+                              p_it->typeExpr->pointer, out);
+                out << " ";
+                writeIdentifier(p_it->name, out);
+                cg.writeDeclTypeSuffix(p_it->typeExpr, out);
+                continue;
+            }
+            if (p_it->meshOutput == ast::AttributedFieldDecl::Indices) {
+                out << "out indices ";
+                writeTypeName(cg.typeResolver->resolveTypeWithExpr(p_it->typeExpr),
+                              p_it->typeExpr->pointer, out);
+                out << " ";
+                writeIdentifier(p_it->name, out);
+                cg.writeDeclTypeSuffix(p_it->typeExpr, out);
+                continue;
+            }
+
             writeTypeName(cg.typeResolver->resolveTypeWithExpr(p_it->typeExpr),
                           p_it->typeExpr->pointer, out);
             out << " ";
@@ -901,6 +1061,60 @@ namespace omegasl {
             if (retTy == ast::builtins::float4_type) {
                 out << " : SV_TARGET";
             }
+        }
+    }
+
+    void HLSLTarget::emitShaderEntryBody(CodeGen &cg,
+                                         ast::ShaderDecl *_decl,
+                                         omegasl_shader &/*meta*/,
+                                         std::ostream &out) {
+        /// §2b — mesh shaders need a `SetMeshOutputCounts(numVertices,
+        /// numPrimitives);` call once before any write to the mesh
+        /// output arrays. SM 6.5 actually treats this as mandatory only
+        /// when the output count differs from the declared maxima, but
+        /// auto-emitting it at the maxima is always correct and saves
+        /// the user from having to think about it. Suppression rule
+        /// matches GLSL Phase 2a: if the user wrote `setMeshOutputs(nv,
+        /// np)` themselves, Sema stamped `meshHasUserSetMeshOutputsCall`
+        /// and the body walk lowers their call in place (renameBuiltin →
+        /// `SetMeshOutputCounts`); we skip the auto-emit so the two
+        /// don't collide.
+        if (_decl->shaderType == ast::ShaderDecl::Mesh
+            && !_decl->meshHasUserSetMeshOutputsCall) {
+            /// Open the function body ourselves so the auto-emitted
+            /// `SetMeshOutputCounts(...)` lands inside `{ ... }` ahead
+            /// of the user statements. `generateBlock` would write its
+            /// own opening `{`, so we replicate the block walker
+            /// (indent + skip-threadgroup + per-stmt emit via the
+            /// shared `emitStatementLine` helper) instead of calling
+            /// it. `emitStatementLine` preserves HLSL's pre-statement
+            /// queue, e.g. for `GetDimensions` lowerings.
+            out << "{" << std::endl;
+            cg.indentLevel += 1;
+            for (unsigned i = 0; i < cg.indentLevel; i++) out << "    ";
+            out << "SetMeshOutputCounts(" << meshMaxVertices << ", "
+                << meshMaxPrimitives << ");" << std::endl;
+            for (auto *stmt : _decl->block->body) {
+                if (stmt->type == VAR_DECL && ((ast::VarDecl *)stmt)->isThreadgroup) continue;
+                cg.emitStatementLine(stmt);
+            }
+            cg.indentLevel -= 1;
+            out << "}" << std::endl;
+        } else {
+            /// Non-mesh, or mesh-with-user-call — the user's
+            /// `setMeshOutputs(...)` lowers in place via the standard
+            /// CALL_EXPR + `renameBuiltin` path, so the default block
+            /// walk is all we need.
+            cg.generateBlock(*_decl->block);
+        }
+        if (_decl->shaderType == ast::ShaderDecl::Mesh) {
+            /// Reset per-shader mesh state. Mirrors GLSL Phase 2a so
+            /// the next entry starts clean.
+            meshVertsParamName.clear();
+            meshIndicesParamName.clear();
+            meshVertsStructDecl = nullptr;
+            meshMaxVertices = 0;
+            meshMaxPrimitives = 0;
         }
     }
 

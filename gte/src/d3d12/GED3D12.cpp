@@ -122,22 +122,27 @@ static GTEDeviceFeatures queryDeviceFeatures(IDXGIAdapter1 *adapter, bool *outIs
     }
 
     // ── OPTIONS6 (Variable Rate Shading) ────────────────────
-#ifdef D3D12_FEATURE_D3D12_OPTIONS6
+    // The previous `#if defined(D3D12_FEATURE_D3D12_OPTIONS6)` guard was
+    // a no-op: `D3D12_FEATURE_D3D12_OPTIONS6` is an enum value (= 30) in
+    // d3d12.h, not a preprocessor macro, so `defined(...)` is always
+    // false and the body never compiled — VRS detection was silently
+    // dead on every SDK. The hard floor for these probes is Windows 10
+    // SDK 10.0.19041.0 (May 2020), documented in gte/docs/Building.rst;
+    // an older SDK now fails the build with a clean
+    // "undefined identifier" instead of silently losing detection.
     D3D12_FEATURE_DATA_D3D12_OPTIONS6 opts6{};
     if(SUCCEEDED(tmpDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS6, &opts6, sizeof(opts6)))){
         if(opts6.VariableShadingRateTier >= D3D12_VARIABLE_SHADING_RATE_TIER_1)
             features.flags |= GTEDEVICE_FEATURE_VARIABLE_RATE_SHADING;
     }
-#endif
 
     // ── OPTIONS7 (Mesh shaders) ─────────────────────────────
-#ifdef D3D12_FEATURE_D3D12_OPTIONS7
+    // Same broken-guard story as OPTIONS6 above. Same SDK floor.
     D3D12_FEATURE_DATA_D3D12_OPTIONS7 opts7{};
     if(SUCCEEDED(tmpDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &opts7, sizeof(opts7)))){
         if(opts7.MeshShaderTier >= D3D12_MESH_SHADER_TIER_1)
             features.flags |= GTEDEVICE_FEATURE_MESH_SHADER;
     }
-#endif
 
     // ── ARCHITECTURE (UMA) ──────────────────────────────────
     D3D12_FEATURE_DATA_ARCHITECTURE arch{};
@@ -1832,6 +1837,198 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         state->SetName(wstr);
         return SharedHandle<GEComputePipelineState>(new GED3D12ComputePipelineState(desc.computeFunc,state,signature,rootSignatureDesc1));
     };
+
+    SharedHandle<GERenderPipelineState> GED3D12Engine::makeMeshPipelineState(MeshPipelineDescriptor &desc){
+        /// Mesh-Shader-Plan Phase 4b.2 — D3D12 mesh PSO build via the
+        /// SM 6.5 pipeline-state-stream API. Mirrors the graphics
+        /// `makeRenderPipelineState` above for color formats, blend,
+        /// depth-stencil, raster, and sample state; the only divergence
+        /// is the geometry side (MS/AS replace VS/HS/DS/GS+IA) and the
+        /// matching stream-based `ID3D12Device8::CreatePipelineState`
+        /// call. Feature-gate first, same idiom as the raytracing
+        /// pattern at `createBoundingBoxesBuffer`.
+        if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_MESH_SHADER)){
+            DEBUG_STREAM("makeMeshPipelineState: device does not advertise "
+                         "GTEDEVICE_FEATURE_MESH_SHADER ('" << desc.name << "')");
+            return nullptr;
+        }
+        if(!_checkPipelineShader(desc.meshFunc,"mesh",desc.name)){
+            return nullptr;
+        }
+        if(!_checkPipelineShader(desc.fragmentFunc,"fragment",desc.name)){
+            return nullptr;
+        }
+        /// Phase 5 hard-stop. The descriptor exposes `amplificationFunc`
+        /// so callers can write forward-compatible code, but the
+        /// per-backend AS/task plumbing (payload-type matching, the
+        /// dispatch-children builtins) does not land until Phase 5.
+        /// Fail loud here rather than silently dropping the stage.
+        if(desc.amplificationFunc){
+            DEBUG_STREAM("makeMeshPipelineState: amplification stage is Phase 5 "
+                         "(payload + dispatch-children machinery pending); "
+                         "passing `amplificationFunc` is not supported yet ('"
+                         << desc.name << "')");
+            return nullptr;
+        }
+
+        auto &meshShaderDesc = desc.meshFunc->internal;
+        auto &fragmentDesc   = desc.fragmentFunc->internal;
+        assert(meshShaderDesc.type == OMEGASL_SHADER_MESH
+               && "Mesh slot does not hold a mesh shader");
+        assert(fragmentDesc.type == OMEGASL_SHADER_FRAGMENT
+               && "Fragment slot does not hold a fragment shader");
+
+        DEBUG_STREAM("Making D3D12 mesh-shader pipeline '" << desc.name << "'");
+
+        /// Root signature — reuse the existing OmegaSL-driven builder
+        /// over {mesh, fragment}. Mesh shaders bind their resources
+        /// through the same root-parameter table the vertex path uses
+        /// today; the per-shader visibility is captured by the
+        /// underlying omegasl_shader and the builder fans it out.
+        omegasl_shader shaders[] = {meshShaderDesc, fragmentDesc};
+        ID3D12RootSignature *signature = nullptr;
+        D3D12_ROOT_SIGNATURE_DESC1 rootSigDesc{};
+        if(!createRootSignatureFromOmegaSLShaders(2, shaders, &rootSigDesc, &signature)){
+            DEBUG_STREAM("makeMeshPipelineState: failed to create root signature ('"
+                         << desc.name << "')");
+            return nullptr;
+        }
+
+        auto *meshShader     = (GED3D12Shader *)desc.meshFunc.get();
+        auto *fragmentShader = (GED3D12Shader *)desc.fragmentFunc.get();
+
+        /// PSO subobjects, mirroring the graphics path field-for-field
+        /// where the fields apply. Blend / depth-stencil / raster /
+        /// sample / RT-format conversions are identical to
+        /// `makeRenderPipelineState` above — same helper functions, same
+        /// descriptor sub-struct (`RenderPipelineDescriptor::DepthStencilDesc`
+        /// is reused on `MeshPipelineDescriptor` by design).
+        CD3DX12_PIPELINE_MESH_STATE_STREAM stream{};
+        stream.Flags          = D3D12_PIPELINE_STATE_FLAG_NONE;
+        stream.NodeMask       = d3d12_device->GetNodeCount();
+        stream.pRootSignature = signature;
+        stream.MS             = meshShader->shaderBytecode;
+        stream.PS             = fragmentShader->shaderBytecode;
+
+        // ── Blend ───────────────────────────────────────────────
+        {
+            CD3DX12_BLEND_DESC blendDesc(D3D12_DEFAULT);
+            const auto &blendDescs = desc.colorBlendDescriptors;
+            blendDesc.IndependentBlendEnable = blendDescs.size() > 1 ? TRUE : FALSE;
+            for(unsigned i = 0; i < 8; ++i){
+                auto &rt = blendDesc.RenderTarget[i];
+                rt.LogicOpEnable = FALSE;
+                if(i < blendDescs.size()){
+                    const auto &b = blendDescs[i];
+                    rt.BlendEnable           = b.blendEnabled ? TRUE : FALSE;
+                    rt.SrcBlend              = convertBlendFactor(b.srcColorFactor);
+                    rt.DestBlend             = convertBlendFactor(b.destColorFactor);
+                    rt.BlendOp               = convertBlendOperation(b.colorOp);
+                    rt.SrcBlendAlpha         = convertBlendFactor(b.srcAlphaFactor);
+                    rt.DestBlendAlpha        = convertBlendFactor(b.destAlphaFactor);
+                    rt.BlendOpAlpha          = convertBlendOperation(b.alphaOp);
+                    rt.RenderTargetWriteMask = convertColorWriteMask(b.writeMask);
+                } else {
+                    rt.BlendEnable           = FALSE;
+                    rt.SrcBlend              = D3D12_BLEND_ONE;
+                    rt.DestBlend             = D3D12_BLEND_ZERO;
+                    rt.BlendOp               = D3D12_BLEND_OP_ADD;
+                    rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
+                    rt.DestBlendAlpha        = D3D12_BLEND_ZERO;
+                    rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
+                    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+                }
+            }
+            stream.BlendState = blendDesc;
+        }
+
+        // ── Rasterizer ──────────────────────────────────────────
+        {
+            CD3DX12_RASTERIZER_DESC rast(D3D12_DEFAULT);
+            switch(desc.cullMode){
+                case RasterCullMode::None:  rast.CullMode = D3D12_CULL_MODE_NONE;  break;
+                case RasterCullMode::Front: rast.CullMode = D3D12_CULL_MODE_FRONT; break;
+                case RasterCullMode::Back:  rast.CullMode = D3D12_CULL_MODE_BACK;  break;
+            }
+            switch(desc.triangleFillMode){
+                case TriangleFillMode::Wireframe: rast.FillMode = D3D12_FILL_MODE_WIREFRAME; break;
+                case TriangleFillMode::Solid:     rast.FillMode = D3D12_FILL_MODE_SOLID;     break;
+            }
+            rast.ForcedSampleCount       = desc.rasterSampleCount;
+            rast.FrontCounterClockwise   = (desc.polygonFrontFaceRotation
+                                            == GTEPolygonFrontFaceRotation::CounterClockwise) ? TRUE : FALSE;
+            rast.DepthBias               = (INT)desc.depthAndStencilDesc.depthBias;
+            rast.SlopeScaledDepthBias    = desc.depthAndStencilDesc.slopeScale;
+            rast.DepthBiasClamp          = desc.depthAndStencilDesc.depthClamp;
+            stream.RasterizerState = rast;
+        }
+
+        // ── Depth / stencil ─────────────────────────────────────
+        {
+            CD3DX12_DEPTH_STENCIL_DESC1 dsDesc(D3D12_DEFAULT);
+            dsDesc.DepthEnable    = desc.depthAndStencilDesc.enableDepth;
+            dsDesc.StencilEnable  = desc.depthAndStencilDesc.enableStencil;
+            dsDesc.DepthFunc      = convertCompareFunc(desc.depthAndStencilDesc.depthOperation);
+            dsDesc.DepthWriteMask =
+                (desc.depthAndStencilDesc.writeAmount == DepthWriteAmount::All)
+                    ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+            dsDesc.StencilReadMask  = desc.depthAndStencilDesc.stencilReadMask;
+            dsDesc.StencilWriteMask = desc.depthAndStencilDesc.stencilWriteMask;
+            dsDesc.FrontFace.StencilDepthFailOp = convertStencilOperation(desc.depthAndStencilDesc.frontFaceStencil.depthFail);
+            dsDesc.FrontFace.StencilFailOp      = convertStencilOperation(desc.depthAndStencilDesc.frontFaceStencil.stencilFail);
+            dsDesc.FrontFace.StencilPassOp      = convertStencilOperation(desc.depthAndStencilDesc.frontFaceStencil.pass);
+            dsDesc.FrontFace.StencilFunc        = convertCompareFunc(desc.depthAndStencilDesc.frontFaceStencil.func);
+            dsDesc.BackFace.StencilDepthFailOp  = convertStencilOperation(desc.depthAndStencilDesc.backFaceStencil.depthFail);
+            dsDesc.BackFace.StencilFailOp       = convertStencilOperation(desc.depthAndStencilDesc.backFaceStencil.stencilFail);
+            dsDesc.BackFace.StencilPassOp       = convertStencilOperation(desc.depthAndStencilDesc.backFaceStencil.pass);
+            dsDesc.BackFace.StencilFunc         = convertCompareFunc(desc.depthAndStencilDesc.backFaceStencil.func);
+            stream.DepthStencilState = dsDesc;
+        }
+
+        // ── Color attachment formats ────────────────────────────
+        {
+            D3D12_RT_FORMAT_ARRAY rts{};
+            const auto &formats = desc.colorPixelFormats;
+            const unsigned rtCount = formats.empty() ? 1u
+                                     : (unsigned)std::min<size_t>(formats.size(), 8);
+            for(unsigned i = 0; i < rtCount; ++i){
+                rts.RTFormats[i] = pixelFormatToDxgiFormat(
+                    formats.empty() ? PixelFormat::RGBA8Unorm : formats[i]);
+            }
+            for(unsigned i = rtCount; i < 8; ++i){
+                rts.RTFormats[i] = DXGI_FORMAT_UNKNOWN;
+            }
+            rts.NumRenderTargets = rtCount;
+            stream.RTVFormats = rts;
+        }
+
+        // ── Sample state ────────────────────────────────────────
+        DXGI_SAMPLE_DESC sampleDesc{};
+        sampleDesc.Count   = 1;
+        sampleDesc.Quality = 0;
+        stream.SampleDesc = sampleDesc;
+        stream.SampleMask = UINT_MAX;
+
+        D3D12_PIPELINE_STATE_STREAM_DESC streamDesc{};
+        streamDesc.SizeInBytes                   = sizeof(stream);
+        streamDesc.pPipelineStateSubobjectStream = &stream;
+
+        ID3D12PipelineState *state = nullptr;
+        HRESULT hr = d3d12_device->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&state));
+        if(FAILED(hr)){
+            DEBUG_STREAM("makeMeshPipelineState: CreatePipelineState failed hr=0x"
+                         << std::hex << (unsigned)hr << std::dec
+                         << " ('" << desc.name << "')");
+            if(signature){ signature->Release(); }
+            return nullptr;
+        }
+        ATL::CStringW wstr(desc.name.data());
+        state->SetName(wstr);
+        return SharedHandle<GERenderPipelineState>(
+            new GED3D12RenderPipelineState(desc.meshFunc, desc.fragmentFunc,
+                                           state, signature, rootSigDesc,
+                                           /*meshVariant=*/true));
+    }
 
     SharedHandle<GEBlitPipelineState> GED3D12Engine::makeBlitPipelineState(BlitPipelineDescriptor &desc) {
         if (!_checkPipelineShader(desc.fragmentFunc, "fragment", desc.name)) {

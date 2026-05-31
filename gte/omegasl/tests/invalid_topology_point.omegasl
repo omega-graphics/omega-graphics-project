@@ -1,0 +1,21 @@
+// §2b — `topology=point` is rejected by Sema for portability. GLSL
+// (`points`) and Metal (`metal::topology::point`) support point mesh
+// output natively, but HLSL SM 6.5's `[outputtopology(...)]` has no
+// `"point"` spelling — only `"triangle"` and `"line"`. Keeping the
+// front-end uniform across the three backends means rejecting it here.
+
+#requires(MESH_SHADERS)
+
+struct MeshletVertex internal {
+    float4 pos : Position;
+    float4 color : Color(0);
+};
+
+mesh(max_vertices=1, max_primitives=1, topology=point)
+void mesh_point(uint3 tid : GlobalThreadID,
+                out vertices MeshletVertex verts[1],
+                out indices  uint          pts[1]){
+    verts[0].pos = float4(0.5, 0.5, 0.0, 1.0);
+    verts[0].color = float4(1.0, 1.0, 1.0, 1.0);
+    pts[0] = 0;
+}

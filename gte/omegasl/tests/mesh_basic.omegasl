@@ -1,7 +1,13 @@
-// §2a smoke test — canonical meshlet emission for the GLSL backend.
-// Front-end was verified in Phase 1; this fixture pushes a real mesh
-// shader through codegen and exercises the per-topology output routing
-// (triangle in the main entry, line/point in the second/third).
+// §2a / §2b smoke test — canonical meshlet emission. GLSL was the first
+// backend verified (Phase 2a); HLSL Phase 2b reuses this same fixture
+// for source-only verification. Exercises the per-topology output
+// routing (triangle in the main entry, line in the second).
+//
+// `topology=point` was dropped from this fixture in Phase 2b — Sema now
+// rejects it as non-portable (HLSL SM 6.5 has no
+// `[outputtopology("point")]`, only `"triangle"` and `"line"`). See
+// `invalid_topology_point.omegasl` for the negative fixture that pins
+// the rejection.
 
 #requires(MESH_SHADERS)
 
@@ -34,20 +40,12 @@ void mesh_line(uint3 tid : GlobalThreadID,
     segs[0] = uint2(0, 1);
 }
 
-mesh(max_vertices=1, max_primitives=1, topology=point)
-void mesh_point(uint3 tid : GlobalThreadID,
-                out vertices MeshletVertex verts[1],
-                out indices  uint          pts[1]){
-    verts[0].pos = float4(0.5, 0.5, 0.0, 1.0);
-    verts[0].color = float4(1.0, 1.0, 1.0, 1.0);
-    pts[0] = 0;
-}
-
-// §2a follow-up — `setMeshOutputs(nv, np)` runtime form. When present the
-// GLSL backend must SUPPRESS its auto-emitted locked-to-maxima
-// `SetMeshOutputsEXT(<max>, <max>)` and lower the user call in place
-// (GL_EXT_mesh_shader permits only one such call per shader). On HLSL/MSL
-// the builtin is wired (rename / handle-call) ahead of Phase 2b/2c.
+// §2a/2b follow-up — `setMeshOutputs(nv, np)` runtime form. When present
+// the backend must SUPPRESS its auto-emitted locked-to-maxima
+// `SetMeshOutputsEXT` (GLSL) / `SetMeshOutputCounts` (HLSL) and lower
+// the user call in place (the extension/spec permits only one such call
+// per shader). MSL lowering exists but the `[[mesh]]` parameter
+// materialization lands in Phase 2c.
 mesh(max_vertices=3, max_primitives=1, topology=triangle)
 void mesh_triangle_runtime(uint3 tid : GlobalThreadID,
                            out vertices MeshletVertex verts[3],

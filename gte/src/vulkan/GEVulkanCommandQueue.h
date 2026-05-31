@@ -172,6 +172,12 @@ _NAMESPACE_BEGIN_
                                           SharedHandle<GEBuffer> & argumentBuffer,
                                           size_t argumentBufferOffset) override;
 
+        /// Mesh-Shader-Plan Phase 3 — public-API stub. Feature-gates,
+        /// logs + returns. Phase 4a wires `vkCmdDrawMeshTasksEXT`.
+        void drawMeshTasks(uint32_t groupCountX,
+                           uint32_t groupCountY,
+                           uint32_t groupCountZ) override;
+
         void finishRenderPass() override;
 
         void beginAccelStructPass() override;

@@ -14,6 +14,8 @@
     **Windows builds go through WSL, and the agent cannot drive that build itself.** When a change has to be compiled for Windows, hand the build off to the user: ask them to build under their Windows, then wait for the compiler/linker output and iterate on the errors they paste back. Do not assume a Windows build passed, and do not invent errors you cannot see — work only from what the user reports. (This is the same WSL constraint that forces Visual Debugging to fall back to user-supplied screenshots.)
 
 # Navigating the Codebase
+    **Hard preference: omega-codedb over `find` / `grep -r`.** Raw `find`/`grep` over a 100k-line tree is slow, returns noise, and bypasses the curated area map. Default to codedb for every symbol lookup. Only fall back to `grep` when the target is a non-declaration string (literal, error message, comment phrase) that codedb's symbol index does not capture; even then, scope `grep` to the file or directory codedb already pointed you at — never `grep -r` over the whole repo. The find/grep approach takes too long; codedb finishes in under a second.
+
     This repo is 100k+ lines across many modules. Before grepping the whole tree, use omega-codedb to locate the right area, file, or symbol. It is zero-dependency Python (stdlib only) and needs no build.
         python3 utils/omega-codedb/codedb.py where "<topic>"   # which area owns a topic (e.g. "vulkan compositor")
         python3 utils/omega-codedb/codedb.py find <Symbol>     # exact file:line + area for a class/struct/enum/namespace or OmegaSL shader
@@ -51,6 +53,10 @@ List anything that was inferred rather than directly observed.
    - 3 refine to include specific details about features/functionality
    - 4 write the multi-phase plan
    - 5 Implement Incrementally.
+
+    Exception — tests. Test authoring is simple and usually does not warrant the full multi-phase plan. Locate the existing test conventions for the area (file layout, build wiring, helpers), match them, write the test, and move on. Reserve the multi-phase plan for the production code paths the tests exercise.
+
+    When a plan doc already exists. Many production features in this repo are tracked by a dedicated plan doc (e.g. `gte/docs/Mesh-Shader-Implementation-Plan.md`, `gte/docs/Raytracing-Full-Implementation-Plan.md`, `gte/docs/Pipeline-Completion-Extension-Plan.md`). Do NOT write a parallel plan in chat — read the existing one first. If the sub-phase you are about to implement already has its own breakdown there, follow it. If it does NOT, ADD the implementation phasing to the existing plan doc (under the matching Phase section), then implement against your own addition. The plan doc is the source of truth; the chat is the working surface.
 
 # Debugging
     It could either be a bug in the code or an architectural design flaw. If the code logic looks correct but fails to fix the issue, consider a design change to the system based on thorough, grounded research. (For a larger scoped issue that isn't resolving easily, the whole architecture of that region may need to be changed. However some bugs are very subtle, and are only due to the misuse of certain API's. For this, research thoroughly and propose the cleanest patch.)

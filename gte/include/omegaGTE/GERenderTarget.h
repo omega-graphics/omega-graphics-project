@@ -130,6 +130,27 @@ _NAMESPACE_BEGIN_
                                                   SharedHandle<GEBuffer> & argumentBuffer,
                                                   size_t argumentBufferOffset) = 0;
 
+        /**
+         @brief Dispatch a mesh-shader pipeline (Mesh-Shader-Plan Phase 3).
+         @paragraph Must be called inside a render pass with a
+         mesh-shader render-pipeline (built via
+         @c OmegaGraphicsEngine::makeMeshPipelineState) bound through
+         the existing @c setRenderPipelineState — mesh PSOs surface as
+         @c GERenderPipelineState on every backend. Dispatches
+         @c (groupCountX, groupCountY, groupCountZ) mesh threadgroups;
+         the per-meshlet workgroup dimensions come from the bound
+         mesh shader's @c threadgroupDesc. Lowers to
+         @c DispatchMesh (D3D12), @c drawMeshThreadgroups (Metal), and
+         @c vkCmdDrawMeshTasksEXT (Vulkan).
+         @paragraph Feature-gated behind @c GTEDEVICE_FEATURE_MESH_SHADER:
+         on a device that lacks it the call is a no-op + diagnostic,
+         matching the raytracing dispatch pattern. No @c #ifdefs in
+         this header — the gate lives in each backend's implementation.
+         */
+        virtual void drawMeshTasks(uint32_t groupCountX,
+                                   uint32_t groupCountY,
+                                   uint32_t groupCountZ) = 0;
+
         virtual void finishRenderPass() = 0;
 
         /// @brief Bind a GEMesh's vertex buffer at the given resource

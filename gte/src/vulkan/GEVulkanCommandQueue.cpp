@@ -1,4 +1,5 @@
 #include "GEVulkanCommandQueue.h"
+#include "omegaGTE/GTEDevice.h"
 #include "GEVulkanRenderTarget.h"
 #include "GEVulkanPipeline.h"
 #include "GEVulkan.h"
@@ -1653,6 +1654,24 @@ _NAMESPACE_BEGIN_
                && "setComputeConstants: bound pipeline declares no `constant<T>` push constant");
         if(!shaderDeclaresPushConstant(computePipelineState->computeShader->internal)){ return; }
         vkCmdPushConstants(commandBuffer, computePipelineState->layout, VK_SHADER_STAGE_COMPUTE_BIT, offset, size, data);
+    }
+
+    void GEVulkanCommandBuffer::drawMeshTasks(uint32_t groupCountX,
+                                              uint32_t groupCountY,
+                                              uint32_t groupCountZ) {
+        /// Mesh-Shader-Plan Phase 3 stub. Phase 4a wires
+        /// `engine->vkCmdDrawMeshTasksEXT(commandBuffer, x, y, z)`
+        /// after loading the function pointer from
+        /// `VK_EXT_mesh_shader` at device init. The feature gate fires
+        /// first — same shape as the raytracing dispatch above.
+        if(!parentQueue->engine->gteDevice->features.hasFeature(GTEDEVICE_FEATURE_MESH_SHADER)){
+            DEBUG_STREAM("drawMeshTasks: device does not advertise "
+                         "GTEDEVICE_FEATURE_MESH_SHADER");
+            return;
+        }
+        (void)groupCountX; (void)groupCountY; (void)groupCountZ;
+        DEBUG_STREAM("drawMeshTasks: Vulkan dispatch not yet implemented "
+                     "(Phase 3 stub — Phase 4a will land vkCmdDrawMeshTasksEXT)");
     }
 
     void GEVulkanCommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned int z){

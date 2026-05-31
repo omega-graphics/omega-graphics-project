@@ -23,7 +23,7 @@ namespace OmegaWTK::Composition {
                     static_cast<long>(std::lround(logical * renderScale))));
         }
 
-        class VKFallbackVisualTree : public BackendVisualTree {
+        class VKVisualTree : public BackendVisualTree {
             SharedHandle<Native::GTK::GTKItem> view;
             // Logical->physical pixel scale, sourced from the native window
             // via ViewRenderTarget::getRenderScale(). All backing-dimension
@@ -74,7 +74,7 @@ namespace OmegaWTK::Composition {
                 }
             };
         public:
-            explicit VKFallbackVisualTree(SharedHandle<ViewRenderTarget> &renderTarget){
+            explicit VKVisualTree(SharedHandle<ViewRenderTarget> &renderTarget){
                 view = std::dynamic_pointer_cast<Native::GTK::GTKItem>(renderTarget->getNativePtr());
                 renderScale_ = renderTarget->getRenderScale();
             }
@@ -156,7 +156,7 @@ namespace OmegaWTK::Composition {
                 if(!regions.empty()){
 #ifdef OMEGAWTK_TRACE_RENDER
                     for(const auto & r : regions){
-                        std::cerr << "[VKFallbackVisualTree] carve-out hostId="
+                        std::cerr << "[VKVisualTree] carve-out hostId="
                                   << r.hostId << " z=" << r.zOrderHint
                                   << " px=(" << r.destRectPixels.pos.x
                                   << "," << r.destRectPixels.pos.y << " "
@@ -197,6 +197,6 @@ namespace OmegaWTK::Composition {
     }
 
     SharedHandle<BackendVisualTree> BackendVisualTree::Create(SharedHandle<ViewRenderTarget> &view){
-        return SharedHandle<BackendVisualTree>(new VKFallbackVisualTree(view));
+        return SharedHandle<BackendVisualTree>(new VKVisualTree(view));
     }
 }

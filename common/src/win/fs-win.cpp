@@ -62,9 +62,27 @@ namespace OmegaCommon::FS {
         bool rootAbs = _str.front() == '/' || _str.front() == '\\';
         if(driveAbs || rootAbs)
             return normalize(_str);
+        // Strip leading "./" / ".\" segments so the cwd-prepended path
+        // never reads as "<cwd>\.\<file>". Win32 file APIs mostly tolerate
+        // the redundant ".\" but it surfaces in error messages and trips
+        // some path-validation paths (and downstream code that hashes the
+        // path string treats the two forms as distinct). Repeated like
+        // "././file" or mixed slashes are handled by the loop. Lone "."
+        // (current-dir-only) leaves an empty tail, which produces a
+        // bare-cwd path — exactly right.
+        OmegaCommon::String tail = _str;
+        while(tail.size() >= 2 && tail[0] == '.'
+              && (tail[1] == '/' || tail[1] == '\\')){
+            tail.erase(0, 2);
+        }
+        if(tail == "."){
+            tail.clear();
+        }
         CHAR buffer[MAX_PATH];
         GetCurrentDirectoryA(MAX_PATH,buffer);
-        return normalize(std::string(buffer) + PATH_SLASH + _str);
+        if(tail.empty())
+            return normalize(std::string(buffer));
+        return normalize(std::string(buffer) + PATH_SLASH + tail);
     };
 
 

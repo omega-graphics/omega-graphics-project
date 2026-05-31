@@ -3302,6 +3302,25 @@ namespace omegasl {
                         diagnostics->addError(std::move(e));
                         return false;
                     }
+                    /// §2b — `topology=point` portability gate. GLSL
+                    /// (`points`) and Metal (`metal::topology::point`)
+                    /// support point mesh output natively, but HLSL
+                    /// SM 6.5's `[outputtopology(...)]` has no `"point"`
+                    /// spelling — only `"triangle"` and `"line"`. To
+                    /// keep mesh shaders front-end-uniform across the
+                    /// three backends (matching the rest of OmegaSL's
+                    /// posture, see Mesh-Shader-Implementation-Plan.md
+                    /// Cross-Backend Differences → Topology), reject
+                    /// `topology=point` in Sema with a precise message
+                    /// rather than letting it become a per-backend
+                    /// codegen surprise. If SM 6.6+ ever adds point
+                    /// mesh output, this gate can relax.
+                    if(_decl->meshDesc.topology == ast::ShaderDecl::MeshDesc::Point){
+                        auto e = std::make_unique<TypeError>(std::string("Mesh shader `") + _decl->name + "`: `topology=point` is not portable — HLSL SM 6.5 has no `[outputtopology(\"point\")]` (only `triangle` and `line`). Use `topology=triangle` or `topology=line`, or emit single-point primitives by drawing degenerate triangles.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
                     ast::AttributedFieldDecl *vertsParam = nullptr, *indicesParam = nullptr;
                     for(auto & p : _decl->params){
                         if(p.meshOutput == ast::AttributedFieldDecl::Vertices){

@@ -1018,6 +1018,24 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         [cp setBytes:data length:size atIndex:idx];
     }
 
+    void GEMetalCommandBuffer::drawMeshTasks(uint32_t groupCountX,
+                                             uint32_t groupCountY,
+                                             uint32_t groupCountZ) {
+        /// Mesh-Shader-Plan Phase 3 stub. Phase 4c lands
+        /// `[renderEncoder drawMeshThreadgroups:MTLSizeMake(x,y,z) ...]`.
+        /// The Metal command buffer has no reachable engine handle (see
+        /// the comment in `GEMetalCommandQueue`), so the feature gate
+        /// cannot fire from here today; the gate at
+        /// `makeMeshPipelineState` already prevents an unsupported
+        /// device from producing a bindable mesh PSO in the first
+        /// place, so reaching this call without device support means
+        /// the caller bound a null pipeline — a logic error that
+        /// surfaces elsewhere. Log + return to keep the surface alive.
+        (void)groupCountX; (void)groupCountY; (void)groupCountZ;
+        DEBUG_STREAM("drawMeshTasks: Metal dispatch not yet implemented "
+                     "(Phase 3 stub — Phase 4c will land drawMeshThreadgroups)");
+    }
+
     void GEMetalCommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned int z){
         dispatchThreads(x,y,z);
     }

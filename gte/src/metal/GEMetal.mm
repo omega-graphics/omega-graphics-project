@@ -1453,6 +1453,33 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             return std::shared_ptr<GERenderPipelineState>(new GEMetalRenderPipelineState(desc.vertexFunc,desc.fragmentFunc,pipelineState,hasDepthStencilState,depthStencilState,rasterizerState));
         };
 
+        SharedHandle<GERenderPipelineState> makeMeshPipelineState(MeshPipelineDescriptor &desc) override {
+            /// Mesh-Shader-Plan Phase 3 — public-API stub. Phase 4c
+            /// lands the real `MTLMeshRenderPipelineDescriptor` build
+            /// (set `.objectFunction` from `amplificationFunc` when
+            /// present, `.meshFunction`, `.fragmentFunction`). Mirrors
+            /// the raytracing feature-gate idiom.
+            if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_MESH_SHADER)){
+                DEBUG_STREAM("makeMeshPipelineState: device does not advertise "
+                             "GTEDEVICE_FEATURE_MESH_SHADER ('" << desc.name << "')");
+                return nullptr;
+            }
+            if (!_checkPipelineShader(desc.meshFunc, "mesh", desc.name)) {
+                return nullptr;
+            }
+            if (!_checkPipelineShader(desc.fragmentFunc, "fragment", desc.name)) {
+                return nullptr;
+            }
+            if (desc.amplificationFunc
+                && !_checkPipelineShader(desc.amplificationFunc, "amplification", desc.name)) {
+                return nullptr;
+            }
+            DEBUG_STREAM("makeMeshPipelineState: Metal mesh PSO build not yet implemented "
+                         "(Phase 3 stub — Phase 4c will land MTLMeshRenderPipelineDescriptor); '"
+                         << desc.name << "'");
+            return nullptr;
+        };
+
         SharedHandle<GEBlitPipelineState> makeBlitPipelineState(BlitPipelineDescriptor &desc) override {
             if (!_checkPipelineShader(desc.fragmentFunc, "fragment", desc.name)) {
                 return nullptr;

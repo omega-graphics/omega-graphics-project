@@ -170,6 +170,13 @@ _NAMESPACE_BEGIN_
 
         SharedHandle<GEBlitPipelineState> makeBlitPipelineState(BlitPipelineDescriptor &desc) override;
 
+        /// Mesh-Shader-Plan Phase 3 — public API stub. Feature-gates +
+        /// validates shaders + logs + returns nullptr. Phase 4a lands
+        /// the real `VkGraphicsPipeline` build with
+        /// `VK_SHADER_STAGE_MESH_BIT_EXT` (and optional
+        /// `VK_SHADER_STAGE_TASK_BIT_EXT`).
+        SharedHandle<GERenderPipelineState> makeMeshPipelineState(MeshPipelineDescriptor &desc) override;
+
         // Extension 3: cached built-in full-screen-triangle vertex shader,
         // shared by every blit pipeline created on this engine. Lazily
         // compiled on the first makeBlitPipelineState call.

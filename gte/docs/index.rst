@@ -9,6 +9,7 @@ This site features all the documentation for using OmegaGTE
   :maxdepth: 3
 
   About
+  Building
   API
   OmegaSL
   Emulation

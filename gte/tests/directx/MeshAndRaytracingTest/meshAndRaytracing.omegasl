@@ -1,0 +1,75 @@
+// MeshAndRaytracingTest shader pair.
+//
+// Mesh stage: drives a `GEMeshAsset`-loaded mesh through the D3D12 mesh
+// shader. Each mesh threadgroup is responsible for ONE triangle of the
+// source FBX — the dispatch count on the C++ side is `vertexCount / 3`.
+// Per-triangle dispatch is the trivial integration with `GEMeshAsset`
+// (it produces a flat vertex buffer with no index buffer today; every
+// 3 consecutive vertices form a triangle). Real meshlet partitioning
+// — packing 64+ verts and 124+ primitives per threadgroup, the
+// performance win mesh shaders are designed for — is a follow-up that
+// needs a CPU-side meshlet builder we don't have yet.
+//
+// Vertex layout matches `GEMeshDescriptor::attributes =
+// GEMeshAttrPosition` (Position-only, 12B/vertex tightly packed). We
+// deliberately stop at Position for now because adding Normal would
+// trip an std430 16-byte alignment mismatch — `geMeshStrideFor` packs
+// `float3 pos; float3 normal;` as 24B, but OmegaSL `buffer<T>` on D3D12
+// pads `float3` followed by another vec3 to a 32B stride. Lone `float3`
+// in a struct does not need padding so we're aligned.
+//
+// Why `: TexCoord` (not `: Color(N)`) for the inter-stage color: see
+// the prior revision of this file in git — `Color(N)` is OmegaSL's
+// fragment-output slot and lowers to HLSL `SV_Target<N>`, which DXC
+// rejects on a struct field consumed by a fragment shader as input.
+//
+// The shader-side feature gate (`#requires(MESH_SHADERS)`) makes the
+// runtime loader reject this library cleanly on devices that lack
+// GTEDEVICE_FEATURE_MESH_SHADER — matches how the C++ side of the test
+// reads `features.hasFeature(...)`.
+
+#requires(MESH_SHADERS)
+
+struct VertexIn {
+    float3 pos;
+};
+
+buffer<VertexIn> vertBuf : 0;
+
+struct MeshletVertex internal {
+    float4 pos   : Position;
+    float4 color : TexCoord;
+};
+
+[in vertBuf]
+mesh(max_vertices=3, max_primitives=1, topology=triangle)
+void meshFunc(uint3 tid : GlobalThreadID,
+              out vertices MeshletVertex verts[3],
+              out indices  uint3         tris[1]){
+    uint base = tid.x * 3u;
+    // Cycle through a small palette by triangle index so adjacent
+    // triangles have visibly distinct colors — gives a faceted look
+    // without per-vertex normals. The hue ramp here is intentionally
+    // low-saturation so a moderately complex FBX (a few hundred
+    // triangles) does not turn into noise; the orange-ish base tint
+    // matches the racket's intended look without depending on the
+    // FBX's diffuse texture.
+    float tintShift = float(tid.x % 7u) / 7.0;
+    float4 tint = float4(0.55 + 0.30 * tintShift,
+                         0.35 + 0.20 * tintShift,
+                         0.10 + 0.05 * tintShift,
+                         1.0);
+
+    verts[0].pos   = float4(vertBuf[base + 0u].pos, 1.0);
+    verts[0].color = tint;
+    verts[1].pos   = float4(vertBuf[base + 1u].pos, 1.0);
+    verts[1].color = tint;
+    verts[2].pos   = float4(vertBuf[base + 2u].pos, 1.0);
+    verts[2].color = tint;
+
+    tris[0] = uint3(0, 1, 2);
+}
+
+fragment float4 fragFunc(MeshletVertex raster){
+    return raster.color;
+}

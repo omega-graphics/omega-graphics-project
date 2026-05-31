@@ -20,7 +20,8 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 | **2.5 NativeTheme** | ThemeAppearance, populated ThemeDesc (colors, typography), `queryCurrentTheme()` on macOS & Win32 | **Done** |
 | **2.11 NativeNote / NotificationCenter** | Permissions, scheduling, callbacks, removal, categories — macOS UN, Win32 ToastNotificationManager, GTK libnotify | **Done** |
 | **2.12 NativeMenu / Menu** | Shortcuts, check/radio items, contextual menus, dynamic updates, validation delegate — macOS NSMenu, Win32 HMENU, GTK GtkMenu | **Done** (icons deferred) |
-| 2.13 GTK root NativeItem collapse | GTK backend owns the underlying X11 surface directly; root NativeItem falls through to the GTKAppWindow (no GtkDrawingArea indirection) | Not started |
+| 2.13 Linux/X11 direct surface ownership | WTK owns its X11 surfaces directly. Root NativeItem falls through to the GTKAppWindow's toplevel `Window`; NativeViewHost child surfaces are X11 child Windows managed by `X11SurfaceHost` (no `GtkDrawingArea`, no `GtkSocket`, no `GTKItem` in the embedding path). | Not started |
+| 2.14 NativeVisualTree | Per-window compositor tree moves from Composition → Native. Owned by `AppWindow`, called directly by `FrameBuilder` during layout (no compositor in the loop). Decouples `Visual` from `BackendRenderTargetContext`. Removes the carve-out drain machinery. Includes the `VKFallbackVisualTree` → `VKVisualTree` rename, `MTLCALayerTree` → `MTLVisualTree` rename, and the `CALayerTree`/`DCVisualTree`/`VKLayerTree.cpp` file moves into `wtk/src/Native/{macos,win,gtk}`. | Not started |
 | 2.2 NativeWindow | Full window control (minimize/maximize/fullscreen, scaleFactor, opacity, cursor sink, DPI scale change events) | Not started |
 | ~~2.3 NativeItem~~ | **Obsolete under virtual view model — no new NativeItem APIs.** See §2.3 below. | Removed |
 | 2.3a View / Widget / TreeHost focus + cursor + tooltip | Virtual focus manager, declarative cursor shape, virtual tooltip popups | Not started |
@@ -590,11 +591,17 @@ Implemented across all three platforms. See `NativeMenu.h`, `Menu.h`/`.cpp`, `Co
 
 ---
 
-### 2.13 GTK Backend — Root NativeItem Collapses Into GTKAppWindow (X11-Direct Surface Ownership)
+### 2.13 Linux/X11 — Direct X11 Surface Ownership (Root + NativeViewHost paths)
 
-**Goal:** On the GTK backend, the single root NativeItem (per the virtual view model above) is *not* a GtkDrawingArea hosted inside a GtkWindow — it falls through to the `GTKAppWindow` itself. GTE renders directly into the X11 `Window` underneath `GTKAppWindow`'s `GdkWindow`. WTK owns the X11 surface; GTK is reduced to providing the toplevel, event dispatch, menus, and a realized GdkWindow we can extract an XID from.
+**Goal:** On Linux, WTK owns its X11 surfaces directly — no GTK widgets in the rendering or embedding path. This covers two cases that share the same surface-ownership philosophy:
 
-This is consistent with — and a sharpening of — the architecture note at the top of this document: there is one NativeItem per window, and on GTK that NativeItem and the platform AppWindow are the *same* object rather than a parent/child pair.
+1. **The single root NativeItem** (per the virtual view model above) is *not* a `GtkDrawingArea` hosted inside a `GtkWindow` — it falls through to the `GTKAppWindow` itself. The compositor renders directly into the X11 `Window` underneath `GTKAppWindow`'s `GdkWindow`.
+
+2. **The NativeViewHost path** (see `NativeViewHost-Adoption-Plan.md`) uses X11 child Windows allocated and managed by a small `X11SurfaceHost` class — no `GtkSocket`, no nested `GtkDrawingArea`, no `GTKItem` for embedded surfaces. The Linux `VKVisualTree` (a Native subsystem per §2.14, not a Composition class) owns the `hostId → child Window` map that `FrameBuilder` reconfigures directly during layout.
+
+GTK is reduced to providing the toplevel, event dispatch, menus, and a realized `GdkWindow` we can extract an XID from. Every native rendering surface beneath the toplevel — root or embedded — is owned by WTK.
+
+This is consistent with — and a sharpening of — the architecture note at the top of this document: there is one NativeItem per window for the root, and embedded native surfaces don't use `NativeItem` at all (they're attached as `NativeContentNode`s on the visual tree).
 
 #### Motivation
 
@@ -671,6 +678,38 @@ This proposal commits to the X11 path explicitly:
 
 The interim primary-monitor anchoring noted in §2.9 already assumes X11 multi-monitor semantics (`gdk_display_get_primary_monitor`); this is consistent with that assumption.
 
+#### X11SurfaceHost — child surface lifetime and realize gate
+
+The NativeViewHost path needs to allocate child X11 Windows under the toplevel — for video surfaces, GPU surfaces, and overlay surfaces. Doing this directly from each consumer would scatter X resource ownership across `VKVisualTree`, `VideoViewWidget`, `GTEViewWidget`, and anything else that asks for a native surface. `X11SurfaceHost` is the single per-window owner of those child surfaces.
+
+```cpp
+// wtk/src/Composition/X11SurfaceHost.h
+class X11SurfaceHost {
+public:
+    explicit X11SurfaceHost(Display * dpy);
+    ~X11SurfaceHost();
+
+    void onToplevelRealized(::Window toplevel);
+    bool      isRealized() const;
+    Display * display()    const;
+    ::Window  toplevel()   const;
+
+    ::Window createChildWindow(const Composition::Rect & rect);
+    void destroyChildWindow(::Window child);
+    void reconfigureChildWindow(::Window child,
+                                 const Composition::Rect & rect,
+                                 int zOrder);
+
+    /// Defer a callback until the toplevel is realized. Runs immediately
+    /// if already realized.
+    void runOnRealize(std::function<void()> action);
+};
+```
+
+`GTKAppWindow` constructs the host in its ctor (display handle in hand), passes it to the `VKVisualTree` at tree-construction time, and tears it down in its dtor *after* the visual tree (which itself tears down all `NativeContentNode`s). This guarantees child Windows are destroyed before the toplevel.
+
+Realization timing: a `NativeContentNode` factory called before the toplevel is realized returns a node in the non-ready state; the actual child Window allocation is queued via `runOnRealize` and fires when the realize signal arrives. This eliminates the "first frame at wrong DPI then rebuild" sequence at startup that motivated §2.9's interim primary-monitor anchoring.
+
 #### Surface lifecycle and realization timing
 
 The X11 `Window` only exists after the GtkWindow is realized. GTE's surface must be created on realize, not in the ctor:
@@ -699,11 +738,13 @@ These flags currently live on the drawing area (`GTKItem.cpp:359, 361`); they mo
 
 #### Per-file change summary
 
-- `wtk/src/Native/gtk/GTKAppWindow.cpp` — install event masks + signal handlers (button/motion/key/scroll/enter/leave/configure) directly on the GtkWindow; emit `NativeEvent`s through the AppWindow's `eventEmitter()` (no longer routed through a child GTKItem); add `realize` handler that hands the toplevel's XID/Display to GTE; turn on `app_paintable`/double-buffer-off on the GtkWindow itself.
-- `wtk/src/Native/gtk/GTKItem.cpp` — for the root NativeItem, stop calling `gtk_drawing_area_new()`; instead bind to the GTKAppWindow's toplevel widget. `resolveGdkWindow()` returns `gtk_widget_get_window(GTK_WIDGET(window))` of the toplevel. Non-root `GTKItem` construction goes away (no callers under the virtual view model). `getXDisplay()`/`getXWindow()` keep their signatures; they just resolve through the toplevel.
+- `wtk/src/Native/gtk/GTKAppWindow.cpp` — install event masks + signal handlers (button/motion/key/scroll/enter/leave/configure) directly on the GtkWindow; emit `NativeEvent`s through the AppWindow's `eventEmitter()` (no longer routed through a child GTKItem); add `realize` handler that constructs the `X11SurfaceHost` and hands the toplevel's XID/Display to it (and through it to the compositor); turn on `app_paintable`/double-buffer-off on the GtkWindow itself.
+- `wtk/src/Native/gtk/GTKItem.cpp` — for the root NativeItem, stop calling `gtk_drawing_area_new()`; instead bind to the GTKAppWindow's toplevel widget. `resolveGdkWindow()` returns `gtk_widget_get_window(GTK_WIDGET(window))` of the toplevel. Non-root `GTKItem` construction goes away (no callers under the virtual view model — NativeViewHost child surfaces are X11 child Windows owned by `X11SurfaceHost`, not `GTKItem`s). `getXDisplay()`/`getXWindow()` keep their signatures; they just resolve through the toplevel.
 - `wtk/include/omegaWTK/NativePrivate/gtk/GTKItem.h` — the constructor that takes a parent `GTKItem` and creates a child drawing area becomes dead code; remove or fence off.
 - `wtk/src/Native/gtk/GTKAppWindow.cpp` (menu wiring) — if option 1 (keep GtkMenuBar): retain the existing `GtkBox` layout strategy but track the menu bar's allocated height so the hover dispatcher can offset incoming `event->y`. Cache the inset on `configure-event` and on `notify::default-height`.
-- `wtk/include/omegaWTK/NativePrivate/gtk/GTKAppWindow.h` — expose `menuBarInset()` (a single `float` getter) so the WidgetTreeHost hover dispatcher can subtract it before hit-testing.
+- `wtk/include/omegaWTK/NativePrivate/gtk/GTKAppWindow.h` — expose `menuBarInset()` (a single `float` getter) so the WidgetTreeHost hover dispatcher can subtract it before hit-testing; also expose the owned `X11SurfaceHost*` for the compositor's content-node factories.
+- `wtk/src/Native/gtk/X11SurfaceHost.{h,cpp}` (new, lives under Native per §2.14) — owns the toplevel `Window` reference plus every child Window allocated for `NativeContentNode`s. Defers allocation until the toplevel is realized.
+- VK visual-tree rename + file move — see §2.14. `VKFallbackVisualTree` → `VKVisualTree` and the move from `wtk/src/Composition/backend/vk/` to `wtk/src/Native/gtk/` are owned by the §2.14 work item.
 
 #### Risks / open questions
 
@@ -711,6 +752,195 @@ These flags currently live on the drawing area (`GTKItem.cpp:359, 361`); they mo
 2. **Focus and `key-press-event`.** GtkWindow gets key events when it has focus *and* no child widget consumed them first. If the GtkMenuBar swallows accelerator keys (it does, when its `mnemonic-activate` matches), the toplevel handler won't see them. This is consistent with native menu behavior, but worth confirming against §2.3a's FocusManager: the virtual focus manager only sees keys the GTK toplevel saw, not the ones the menu bar already consumed.
 3. **Compositing manager interaction.** Drawing a custom surface into an X11 Window owned by GTK works fine under composited X11 (GNOME/KDE/XFCE). Under a non-compositing WM (some `i3`/`dwm` setups, especially with `xrender` disabled) the X11 Window may be unmapped/clipped in ways GdkWindow normally hides. Worth a manual smoke test on at least one non-composited WM before claiming GTK parity.
 4. **Verification.** Linux is the agent's native build target, so this section can be both compile- and run-verified before claiming "Done." Mark as compile/run unverified until that pass lands (per the "mark unverified backends" rule).
+
+#### Dependencies
+
+**§2.13 depends on:** Nothing else in this proposal. The X11-direct collapse is self-contained — it touches `GTKAppWindow`, `GTKItem`, and adds `X11SurfaceHost`.
+
+**§2.13 enables:**
+- **§2.14 NativeVisualTree (Linux branch only)** — `VKVisualTree` uses `X11SurfaceHost` to allocate and re-stack child Windows under the toplevel. macOS and Windows §2.14 work do not depend on §2.13.
+- **`NativeViewHost-Adoption-Plan.md` Linux paths** — `VKNativeContentNode`'s underlying surface is a child Window allocated via `X11SurfaceHost::createChildWindow`.
+
+The interim primary-monitor anchoring described at the bottom of this section is superseded by §2.9 NativeScreen when that lands; §2.13 can ship using the interim and §2.9 retrofits later (no order dependency between §2.13 and §2.9).
+
+---
+
+### 2.14 NativeVisualTree — Per-window Compositor Tree, Owned by Native
+
+**Goal:** The per-window compositor visual tree (DirectComposition / CoreAnimation / X11 child-window stack) moves from the Composition layer into Native, where `FrameBuilder` can reconfigure it directly during layout — without queueing work onto the compositor thread or waiting for the compositor's next frame.
+
+This is a platform-uniform structural change. It pairs with `NativeViewHost-Adoption-Plan.md` (which describes the consumer-facing API) and with §2.13 (which already commits the Linux side to direct X11 surface ownership).
+
+#### Motivation
+
+Today, the visual tree (`BackendVisualTree` and its per-platform subclasses) lives in `wtk/src/Composition/backend/`. The compositor owns it. Per-frame native-content positioning runs through a record-then-drain hook (`BackendRenderTargetContext::pendingNativeContent_` filled during the slice loop, then `BackendVisualTree::applyNativeContentCarveouts` called after the slice loop, before present).
+
+That puts native-surface position one full compositor frame behind virtual layout. For a static UI this is invisible. For a resizing widget, an animating layout, or any case where the compositor's cadence diverges from the layout cadence (display-link vs animation tick, paused compositor, throttling), the native surface lags the virtual content it should be tracking. On a video viewport or a 3D viewport this is a visible glitch on every interaction frame.
+
+Lifting the visual tree into Native lets `FrameBuilder` reconfigure the native surface during the same layout pass that repositions every other virtual widget — synchronously, on the main thread. The native surface moves in lockstep with virtual content.
+
+#### Architecture change
+
+**Before (today):**
+```
+AppWindow (Native)
+  └── BackendResourceFactory (Composition)
+        └── createVisualTreeForView → BackendVisualTree (Composition)
+              ├── RootVisual (with BackendRenderTargetContext — compositor)
+              └── Body visuals (with BackendRenderTargetContext)
+
+NativeViewHost::onLayoutResolved
+  → display list emits DrawOp::NativeContent
+  → slice loop records BackendNativeContentRegion
+  → applyNativeContentCarveouts drains records, applies to platform tree
+                                              ─── one frame later ───
+```
+
+**After:**
+```
+AppWindow (Native)
+  ├── NativeWindow
+  ├── X11SurfaceHost          [Linux only — see §2.13]
+  └── Native::VisualTree
+        ├── rootVisual()        (Visual* — platform handle only)
+        └── content nodes        (Visual* per NativeViewHost)
+
+Compositor (Composition)
+  └── Visual* → BackendRenderTargetContext  [side map, keyed by Visual*]
+
+NativeViewHost::onLayoutResolved
+  → visualTree->reconfigureContentNode(hostId, rectPx, zOrderHint)
+                                              ─── synchronous ───
+```
+
+The compositor still renders into the tree's root visual every frame. It just doesn't own the tree, and it doesn't mediate native-surface positioning.
+
+#### API surface
+
+```cpp
+namespace OmegaWTK::Native {
+
+class VisualTree {
+public:
+    // Per-window content-node registry.
+    void registerContentNode(NativeContentNodePtr node);
+    void unregisterContentNode(std::uint64_t hostId);
+
+    /// Called from NativeViewHost::onLayoutResolved on the main thread.
+    /// Translates `rectPixels` and `zOrderHint` into the platform's
+    /// native ordering primitive synchronously.
+    void reconfigureContentNode(std::uint64_t hostId,
+                                 const Composition::Rect & rectPixels,
+                                 int zOrderHint);
+
+    /// Compositor-side root present surface (WTK swap chain). Read-only
+    /// from outside the compositor — created by AppWindow, handed to
+    /// the compositor at render-target setup.
+    Visual * rootVisual() const;
+
+    /// Consumer-facing factories: content node creation + registration
+    /// is atomic — the tree is the registry.
+    NativeContentNodePtr createVideoContentNode(Composition::Rect rect);
+    NativeContentNodePtr createGPUContentNode  (Composition::Rect rect);
+
+    virtual ~VisualTree() = default;
+};
+
+struct Visual {
+    std::uint64_t hostId = 0;
+    Composition::Rect rectPixels;
+    int zOrderHint = 0;
+    // Platform handle (IDCompositionVisual2*/CALayer*/Window) exposed
+    // by the per-platform subclass. No compositor types here.
+};
+
+}
+```
+
+#### The Visual / BackendRenderTargetContext decoupling
+
+Today's `BackendVisualTree::Visual` owns a `std::unique_ptr<BackendRenderTargetContext>`. `BackendRenderTargetContext` is the compositor's per-render-target wrapper (~500 lines: `GENativeRenderTarget`, command queue, tessellation context, fence, `FrameRenderPass`, blur scratch, the slice loop's paint state). Moving `Visual` to Native without action would invert layering — Native depending on Composition.
+
+The fix: `Visual` becomes a pure Native primitive (position + size + platform handle). The compositor maintains a separate `Visual* → BackendRenderTargetContext` side map (the same idiom already used by `PreCreatedResourceRegistry`) and resolves the render context at use sites. The compositor's render machinery is otherwise unchanged.
+
+#### Removal of the carve-out drain machinery
+
+These existing pieces are deleted because the producer-side path goes away entirely:
+
+- `BackendNativeContentRegion` struct (`wtk/src/Composition/backend/RenderTarget.h:55`)
+- `BackendRenderTargetContext::pendingNativeContent_` member + `pendingNativeContent()` / `clearPendingNativeContent()` accessors
+- `BackendVisualTree::applyNativeContentCarveouts` virtual hook (`wtk/src/Composition/backend/VisualTree.h:80`)
+- Per-tree overrides: `DCVisualTree::applyNativeContentCarveouts`, `MTLCALayerTree::applyNativeContentCarveouts`, `VKVisualTree::applyNativeContentCarveouts`
+- The recording branch in `BackendRenderTargetContext::renderToTarget`'s `case PrimitiveOp::NativeContent` (it stops pushing to `pendingNativeContent_`; alpha-clear + AABB-cull bookkeeping remain)
+
+`DrawOp::NativeContent` itself stays in the display list — it's still needed for alpha-clear (swap-chain transparency in the carve-out rect) and AABB cull (skip sibling ops whose bounds fall inside the rect).
+
+#### File moves and renames
+
+| Before                                                    | After                                                |
+|-----------------------------------------------------------|------------------------------------------------------|
+| `wtk/src/Composition/backend/VisualTree.h`                | `wtk/include/omegaWTK/Native/NativeVisualTree.h`     |
+| `wtk/src/Composition/backend/dx/DCVisualTree.{h,cpp}`     | `wtk/src/Native/win/DCVisualTree.{h,cpp}`            |
+| `wtk/src/Composition/backend/mtl/CALayerTree.{h,mm}`      | `wtk/src/Native/macos/MTLVisualTree.{h,mm}`          |
+| `wtk/src/Composition/backend/vk/VKLayerTree.cpp`          | `wtk/src/Native/gtk/VKVisualTree.cpp`                |
+
+Class renames:
+- `BackendVisualTree` → `Native::VisualTree`
+- `MTLCALayerTree` → `MTLVisualTree`
+- `VKFallbackVisualTree` → `VKVisualTree`
+- `DCVisualTree` keeps its name (already matches the new convention)
+
+`NativeContentNode` and its per-platform subclasses also land under `OmegaWTK::Native` (earlier drafts had them tentatively under `OmegaWTK::Composition`).
+
+#### Per-platform implementation notes
+
+- **macOS** — `MTLVisualTree` wraps the window's content-view `CALayer`. Root visual is the WTK `CAMetalLayer`; content nodes are `CALayer` siblings/sub-layers added with explicit `zPosition`. `reconfigureContentNode` is `layer.frame = newFrame; layer.zPosition = zOrderHint;` inside a `CATransaction` (no implicit animation).
+- **Windows** — `DCVisualTree` wraps the window's `IDCompositionTarget` + root `IDCompositionVisual2`. Root visual hosts the WTK swap chain via `SetContent`. Content nodes are sub-visuals with their own swap chains. `reconfigureContentNode` is `SetOffsetX/Y` + `SetTransform` + child-list reorder, then `Commit` on the desktop device.
+- **Linux X11** — `VKVisualTree` collaborates with `X11SurfaceHost`. Root visual is the toplevel `Window`; content nodes are child Windows allocated via `X11SurfaceHost::createChildWindow`. `reconfigureContentNode` calls `X11SurfaceHost::reconfigureChildWindow` (`XMoveResizeWindow` + `XRestackWindows`).
+
+#### Ownership and lifecycle
+
+`AppWindow` is the sole owner of the per-window `Native::VisualTree`. Construction order in the AppWindow ctor: `NativeWindow` → `X11SurfaceHost` (Linux only) → `Native::VisualTree`. Destruction order is the reverse. The compositor holds a non-owning `Native::VisualTree*` and a `Visual* → BackendRenderTargetContext` side map keyed off the tree's visuals; the side map is cleared in the compositor's per-window teardown before `AppWindow` releases the tree.
+
+`BackendResourceFactory::createVisualTreeForView`, `VisualTreeBundle`, `PreCreatedVisualTreeData`, and `PreCreatedResourceRegistry` are removed. The pre-creation queue was specifically there to bridge View constructors (main thread) to the compositor thread; that bridge no longer needs a queue because the tree is created once in the AppWindow ctor (also main thread) and looked up via `AppWindow::visualTree()`.
+
+#### Threading
+
+All `Native::VisualTree` mutations happen on the main thread — the same rule that already governs DComp `Commit`, `CALayer` updates inside `CATransaction`, and X11 `XMoveResizeWindow` calls. `FrameBuilder` runs on the main thread, so direct calls are safe. The compositor frame worker runs on its own thread, reads the root visual's render context (which it owns through the side map), and does not touch the tree's structure. No new locking required.
+
+#### Per-file change summary
+
+- `wtk/include/omegaWTK/Native/NativeVisualTree.h` (new) — abstract `Native::VisualTree`, `Native::Visual` struct, content-node factories.
+- `wtk/src/Native/win/DCVisualTree.{h,cpp}` (moved from `wtk/src/Composition/backend/dx/`) — DComp implementation.
+- `wtk/src/Native/macos/MTLVisualTree.{h,mm}` (moved + renamed from `wtk/src/Composition/backend/mtl/CALayerTree.{h,mm}`) — CoreAnimation implementation.
+- `wtk/src/Native/gtk/VKVisualTree.cpp` (moved from `wtk/src/Composition/backend/vk/VKLayerTree.cpp`) — Vulkan + X11 implementation. The `VKFallbackVisualTree` → `VKVisualTree` rename folds in here.
+- `wtk/src/Composition/backend/RenderTarget.{h,cpp}` — drop `BackendNativeContentRegion`, `pendingNativeContent_`, the `case PrimitiveOp::NativeContent` recording branch (keep the alpha-clear / AABB-cull bookkeeping).
+- `wtk/src/Composition/backend/ResourceFactory.{h,cpp}` — remove `createVisualTreeForView`, `VisualTreeBundle`, `PreCreatedVisualTreeData`, `PreCreatedResourceRegistry`. Keep the pipelines / pools / heaps / effect-processor responsibilities.
+- `wtk/src/Composition/Compositor.{h,cpp}` (or wherever the per-tree render contexts are managed) — add the `Visual* → BackendRenderTargetContext` side map, owned by the compositor; built when a tree is attached, torn down when detached.
+- `wtk/src/UI/AppWindow.{h,cpp}` — construct `Native::VisualTree` in ctor; expose `visualTree()` accessor; tear down in dtor after `X11SurfaceHost` (Linux) and before `NativeWindow`.
+- `wtk/include/omegaWTK/UI/NativeViewHost.h` — `attach` now takes `Native::NativeContentNodePtr` (was the earlier tentative `Composition::NativeContentNodePtr`). `onLayoutResolved` body calls `visualTree->reconfigureContentNode` directly.
+
+#### Risks / open questions
+
+1. **Side-map lifetime sequencing.** The compositor's `Visual* → BackendRenderTargetContext` map must drain before `AppWindow` releases the tree (else dangling `Visual*` keys). The compositor's per-window teardown already has a deterministic shutdown order; adding a "clear render-context side map" step is mechanical, but worth a one-time audit for window tear-down races.
+2. **Composition consumers of `BackendVisualTree`.** Any code outside the moved files that names `BackendVisualTree`, `BackendVisualTree::Visual`, or the per-platform classes needs to be updated. The codedb search at the start of the work should produce the full list; it is small (the classes are mostly internal to the backend already), but worth confirming.
+3. **Compositor's first-frame fallback (Linux).** `VKLayerTree.cpp` today has a "deferred native target resolve" path for the case where the GdkWindow isn't realized at tree-construction time (`resolveDeferredNativeTarget`). After the move, the same mechanism lives in `VKVisualTree.cpp` and is wired through `X11SurfaceHost::runOnRealize` (already part of §2.13). This is a wiring change, not new functionality.
+4. **Verification.** Linux is the agent's native build target — both the move and the FrameBuilder hookup are compile- and run-verifiable in-house. macOS and Windows are unverified off-platform until those builds run; mark accordingly per the "mark unverified backends" rule.
+
+#### Dependencies
+
+**§2.14 depends on:**
+- **§2.13 X11SurfaceHost (Linux branch only)** — `VKVisualTree`'s implementation calls `X11SurfaceHost::createChildWindow` / `reconfigureChildWindow` / `destroyChildWindow` and uses the `runOnRealize` deferral path for the case where a content node is requested before the toplevel is realized. macOS (`MTLVisualTree`) and Windows (`DCVisualTree`) branches have no §2.13 dependency and can land first.
+
+**§2.14 enables:**
+- **`NativeViewHost-Adoption-Plan.md` Shared prerequisite** — and therefore Parts 1 and 2 (V1–V4, G1–G4) in their entirety. `NativeViewHost::onLayoutResolved` calls `Native::VisualTree::reconfigureContentNode` directly; without §2.14 there is no tree to call.
+- **Any future native-surface widget** (web view, IME field, platform-specific media surfaces) — they all attach `NativeContentNode`s to the per-window `Native::VisualTree`.
+
+**Staging.** §2.14 can be split across two passes if helpful:
+1. *Cross-platform pass* — file moves + namespace shift + Visual/RTC decoupling + drain removal + Compositor side-map. Lands once, touches all three backends.
+2. *Per-platform pass* — `reconfigureContentNode` + content-node factories per platform. Can land per-OS as build verification clears each one. Linux is the gated one (waits on §2.13).
+
+§2.14 has no other dependencies in this proposal. It can land in parallel with §2.2, §2.3a, §2.4, §2.6, §2.7, §2.9, §2.10.
 
 ---
 
@@ -729,7 +959,8 @@ These flags currently live on the drawing area (`GTKItem.cpp:359, 361`); they mo
 | **P1** | 2.9 NativeScreen | Multi-monitor support — also the proper home for AppWindow screen targeting; replaces the interim GTK primary-monitor anchoring |
 | ~~P1~~ **Done** | 2.11 NativeNote / NotificationCenter | Implemented |
 | ~~P1~~ **Done** | 2.12 NativeMenu / Menu | Implemented |
-| **P1** | 2.13 GTK root NativeItem collapse (X11-direct) | Pairs with §2.2/§2.9 — locks GTK to a single, canonical surface ownership model before more per-platform features pile on it |
+| **P1** | 2.13 Linux/X11 direct surface ownership (root + NativeViewHost) + `X11SurfaceHost` | Pairs with §2.2/§2.9 and `NativeViewHost-Adoption-Plan.md` — locks Linux to a single, canonical surface-ownership model before per-platform features and the NativeViewHost-based widgets (`VideoViewWidget`, `GTEViewWidget`) start landing |
+| **P1** | 2.14 NativeVisualTree (Composition → Native move, FrameBuilder direct path, drain removal, file moves + class renames) | Prerequisite for `NativeViewHost-Adoption-Plan.md` — without the move, native surfaces lag virtual layout by a compositor frame. Should land alongside §2.13 since both touch the same per-window structure |
 | **P3** | 2.10 NativeAccessibility | Stub now, implement per-platform over time |
 
 ---
@@ -760,6 +991,18 @@ These flags currently live on the drawing area (`GTKItem.cpp:359, 361`); they mo
 - `wtk/src/Native/gtk/GTKAppWindow.cpp` — install root event masks + button/motion/key/scroll/enter/leave/configure/realize handlers directly on the GtkWindow; route emissions through the AppWindow `eventEmitter()`; turn on `app_paintable` + double-buffer-off on the toplevel; menu-bar inset tracking
 - `wtk/src/Native/gtk/GTKItem.cpp` — root NativeItem binds to the toplevel GdkWindow; remove `gtk_drawing_area_new()` path for the root; non-root construction becomes unreachable under the virtual view model
 - `wtk/include/omegaWTK/NativePrivate/gtk/GTKItem.h` / `GTKAppWindow.h` — drop the child-of-`GTKItem` constructor; expose `GTKAppWindow::menuBarInset()` for the hover dispatcher
+
+### NativeVisualTree — §2.14 (Composition → Native move, all platforms)
+- `wtk/include/omegaWTK/Native/NativeVisualTree.h` (new) — abstract `Native::VisualTree`, `Native::Visual`, content-node factories
+- `wtk/src/Native/win/DCVisualTree.{h,cpp}` (moved from `wtk/src/Composition/backend/dx/`)
+- `wtk/src/Native/macos/MTLVisualTree.{h,mm}` (moved + renamed from `wtk/src/Composition/backend/mtl/CALayerTree.{h,mm}`; class `MTLCALayerTree` → `MTLVisualTree`)
+- `wtk/src/Native/gtk/VKVisualTree.cpp` (moved from `wtk/src/Composition/backend/vk/VKLayerTree.cpp`; the `VKFallbackVisualTree` → `VKVisualTree` rename folds in here)
+- `wtk/src/Native/gtk/X11SurfaceHost.{h,cpp}` (new — see §2.13)
+- `wtk/src/Composition/backend/RenderTarget.{h,cpp}` — drop `BackendNativeContentRegion`, `pendingNativeContent_`, the `case PrimitiveOp::NativeContent` recording branch (keep alpha-clear / AABB-cull bookkeeping)
+- `wtk/src/Composition/backend/ResourceFactory.{h,cpp}` — remove `createVisualTreeForView`, `VisualTreeBundle`, `PreCreatedVisualTreeData`, `PreCreatedResourceRegistry`
+- `wtk/src/Composition/Compositor.{h,cpp}` — add the `Visual* → BackendRenderTargetContext` side map; build on tree attach, tear down on detach
+- `wtk/src/UI/AppWindow.{h,cpp}` — own `Native::VisualTree`; expose `visualTree()`; lifecycle ordering with `NativeWindow` and `X11SurfaceHost`
+- `wtk/include/omegaWTK/UI/NativeViewHost.h` — `attach` takes `Native::NativeContentNodePtr`; `onLayoutResolved` calls `visualTree->reconfigureContentNode` directly
 
 ### Already modified (done)
 - `NativeEvent.h` — complete ✅

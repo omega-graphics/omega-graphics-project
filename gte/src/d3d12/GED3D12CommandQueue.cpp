@@ -1,4 +1,5 @@
 #include "GED3D12CommandQueue.h"
+#include "omegaGTE/GTEDevice.h"
 
 #include "../common/GEResourceTracker.h"
 #include "GED3D12Pipeline.h"
@@ -1742,6 +1743,34 @@ void GED3D12CommandBuffer::setComputeConstants(const void *data, unsigned size, 
     commandList->SetComputeRoot32BitConstants(
         getRootParameterIndexOfResource(loc, currentComputePipeline->computeShader->internal),
         size / 4, data, offset / 4);
+}
+
+void GED3D12CommandBuffer::drawMeshTasks(uint32_t groupCountX,
+                                         uint32_t groupCountY,
+                                         uint32_t groupCountZ) {
+    /// Mesh-Shader-Plan Phase 4b.3 — live `DispatchMesh`. The feature
+    /// gate still fires up front (defensive — the matching gate at
+    /// `makeMeshPipelineState` should already have prevented an
+    /// unsupported device from producing a bindable mesh PSO). The PSO
+    /// itself is bound via the existing `setRenderPipelineState`
+    /// because mesh PSOs surface as `GERenderPipelineState`; the
+    /// `isMesh` flag stamped at construction (Phase 4b.1) is what tells
+    /// us the bound pipeline can dispatch mesh tasks rather than
+    /// polygon draws. `commandList` is already `ID3D12GraphicsCommandList6`
+    /// so `DispatchMesh` is in scope without a header bump.
+    if(!parentQueue->engine->gteDevice->features.hasFeature(GTEDEVICE_FEATURE_MESH_SHADER)){
+        DEBUG_STREAM("drawMeshTasks: device does not advertise "
+                     "GTEDEVICE_FEATURE_MESH_SHADER");
+        return;
+    }
+    assert(inRenderPass
+           && "drawMeshTasks: must be called inside a render pass");
+    assert(currentRenderPipeline != nullptr
+           && "drawMeshTasks: no pipeline bound (call setRenderPipelineState first)");
+    assert(currentRenderPipeline->isMesh
+           && "drawMeshTasks: bound pipeline is a graphics pipeline, not a mesh pipeline. "
+              "Use makeMeshPipelineState to build a mesh-variant PSO.");
+    commandList->DispatchMesh(groupCountX, groupCountY, groupCountZ);
 }
 
 void GED3D12CommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned int z) {

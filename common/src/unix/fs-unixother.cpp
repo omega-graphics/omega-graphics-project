@@ -42,9 +42,25 @@ namespace OmegaCommon::FS {
             return _str;
         if(_str.front() == '/')
             return _str;
+        // Strip leading "./" segments so cwd-prepended paths don't end up
+        // as "<cwd>/./<file>". POSIX file APIs collapse it at lookup time,
+        // but it surfaces in error messages and downstream code that
+        // hashes/compares the path string treats the two forms as
+        // distinct. Mirrors the Win32 fix in fs-win.cpp. Repeated forms
+        // like "././file" are handled by the loop; a lone "." yields a
+        // bare-cwd path.
+        std::string tail = _str;
+        while(tail.size() >= 2 && tail[0] == '.' && tail[1] == '/'){
+            tail.erase(0, 2);
+        }
+        if(tail == "."){
+            tail.clear();
+        }
         char cwd_buffer[PATH_MAX];
         getcwd(cwd_buffer,PATH_MAX);
-        return std::string(cwd_buffer) + PATH_SLASH + _str;
+        if(tail.empty())
+            return std::string(cwd_buffer);
+        return std::string(cwd_buffer) + PATH_SLASH + tail;
 	}
 
 	StatusCode changeCWD(Path newPath){

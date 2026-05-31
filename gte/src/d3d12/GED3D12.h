@@ -213,6 +213,10 @@ _NAMESPACE_BEGIN_
         SharedHandle<GERenderPipelineState> makeRenderPipelineState(RenderPipelineDescriptor &desc)  override;
         SharedHandle<GEComputePipelineState> makeComputePipelineState(ComputePipelineDescriptor &desc)  override;
         SharedHandle<GEBlitPipelineState> makeBlitPipelineState(BlitPipelineDescriptor &desc) override;
+        /// Mesh-Shader-Plan Phase 3 — public API stub. Returns nullptr
+        /// with a diagnostic for now; Phase 4b lands the real
+        /// CD3DX12_PIPELINE_MESH_STATE_STREAM PSO build.
+        SharedHandle<GERenderPipelineState> makeMeshPipelineState(MeshPipelineDescriptor &desc) override;
         SharedHandle<GENativeRenderTarget> makeNativeRenderTarget(const NativeRenderTargetDescriptor &desc,
                                                                    SharedHandle<GECommandQueue> presentQueue)  override;
         SharedHandle<GETextureRenderTarget> makeTextureRenderTarget(const TextureRenderTargetDescriptor &desc)  override;

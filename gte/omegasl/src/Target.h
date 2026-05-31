@@ -512,6 +512,22 @@ namespace omegasl {
         /// original decl, so no inline `tryEmitVarDecl` hook is needed.
         void emitThreadgroupGlobals(CodeGen &cg, ast::ShaderDecl *decl, std::ostream &out) override;
         const char *shaderObjectFileExt(ast::ShaderDecl::Type stage) const override;
+
+        /// §2b — mesh stage support. Override flips `Mesh` to true for
+        /// HLSL: the rest of this target emits SM 6.5 mesh source. The
+        /// base `Target::supportsStage` still gates MSL off until 2c.
+        bool supportsStage(ast::ShaderDecl::Type stage,
+                           std::string &diagnosticOut) const override;
+
+        /// §2b — mesh shaders need a `SetMeshOutputCounts(maxV, maxP);`
+        /// auto-emit at the top of the body when the user didn't call
+        /// `setMeshOutputs(nv, np)` themselves (the same suppression rule
+        /// GLSL uses). Every other stage falls through to the default
+        /// `Target::emitShaderEntryBody` block-walk.
+        void emitShaderEntryBody(CodeGen &cg,
+                                 ast::ShaderDecl *decl,
+                                 omegasl_shader &meta,
+                                 std::ostream &out) override;
     private:
         HLSLCodeOpts &opts;
         unsigned tResourceCount = 0;
@@ -520,6 +536,25 @@ namespace omegasl {
         /// §2.4 constant-buffer (`b`) register class for `ConstantBuffer<T>`.
         unsigned bResourceCount = 0;
         OmegaCommon::Map<OmegaCommon::String, OmegaCommon::String> generatedStructs;
+        /// §2b — name → StructDecl* index, populated by `emitStructDecl`
+        /// alongside the cached HLSL source text. Used by
+        /// `emitShaderUsedStructs` to re-emit the mesh-vertex-output
+        /// struct with inter-stage semantics (`Color(N) → COLOR<N>`)
+        /// instead of the cached form (`Color(N) → SV_Target<N>`, which
+        /// is the fragment-output mapping and is not legal as a
+        /// mesh-shader vertex-output semantic).
+        std::map<OmegaCommon::String, ast::StructDecl *> structDeclMap;
+        /// §2b — mesh-stage entry state, mirroring GLSL Phase 2a. Set
+        /// by `emitShaderEntryHeader` when entering a `mesh` shader,
+        /// consulted by `emitShaderEntryBody` to drive the
+        /// `SetMeshOutputCounts(...)` auto-emit, and cleared at body
+        /// close. Empty `meshVertsParamName` ⇒ not in a mesh shader.
+        OmegaCommon::String meshVertsParamName;
+        OmegaCommon::String meshIndicesParamName;
+        ast::StructDecl *meshVertsStructDecl = nullptr;
+        ast::ShaderDecl::MeshDesc::Topology meshTopology = ast::ShaderDecl::MeshDesc::Triangle;
+        unsigned meshMaxVertices = 0;
+        unsigned meshMaxPrimitives = 0;
     };
 
     struct MSLTarget final : Target {
@@ -591,6 +626,15 @@ namespace omegasl {
                                   uint64_t requiredFeatures,
                                   const std::string &source,
                                   omegasl_shader &meta) override;
+        /// Stage-support gate. Pre-2c the override only rejected
+        /// Hull / Domain (no Metal tessellation pipeline today, per
+        /// OmegaSL-Reference.md bug 3) and Mesh ("not implemented
+        /// yet"). §2c keeps the Hull/Domain rejection and flips Mesh
+        /// to supported — the rest of this target now emits MSL mesh
+        /// source (`[[mesh]]`, `mesh<V, void, MaxV, MaxP,
+        /// topology::X>` handle, scratch array + flush loop pattern
+        /// documented in gte/docs/Mesh-Shader-Implementation-Plan.md
+        /// → Phase 2c).
         bool supportsStage(ast::ShaderDecl::Type stage,
                            std::string &diagnosticOut) const override;
         void emitDefaultHeaders(CodeGen &cg, std::ostream &out) override;
@@ -601,9 +645,38 @@ namespace omegasl {
         /// file scope). Returns true to suppress the shared emission.
         bool tryEmitVarDecl(CodeGen &cg, ast::VarDecl *decl) override;
         const char *shaderObjectFileExt(ast::ShaderDecl::Type stage) const override;
+
+        /// §2c — mesh `out vertices` slot access:
+        /// `verts[i].field = expr` rewrites to
+        /// `__omegasl_verts_scratch[i].field = expr`. MSL's `mesh<...>`
+        /// handle has no per-field accessor — only `set_vertex(i, T)`
+        /// — so the user's per-field writes accumulate into a scratch
+        /// array; one flush loop at body end calls `set_vertex` for
+        /// every slot. Empty `meshVertsParamName` ⇒ "not a mesh
+        /// shader" ⇒ default `lhs.field` emission falls through.
+        void emitMemberExpr(CodeGen &cg, ast::MemberExpr *expr, std::ostream &out) override;
+
+        /// §2c — mesh `out indices` slot write expansion. MSL's
+        /// `set_index(slot, vertexIdx)` is per-slot (slot = i*K + k for
+        /// K-wide topology), but OmegaSL writes a whole tuple per
+        /// primitive: `tris[i] = uintK(a, b, c);`. Detect `=` whose lhs
+        /// is `INDEX_EXPR[ id == meshIndicesParamName ]` and expand
+        /// into a `uintK` temp + K `set_index` calls via the shared
+        /// pending-statement queue. Returns true to suppress the
+        /// default `lhs = rhs` emission. Falls through for any other
+        /// `=` (and for non-`=` ops).
+        bool tryEmitBinaryExpr(CodeGen &cg, ast::BinaryExpr *expr, std::ostream &out) override;
     private:
         MetalCodeOpts &opts;
         std::map<std::string, std::string> generatedStructs;
+        /// §2c — name → StructDecl* index, populated by `emitStructDecl`
+        /// alongside the cached MSL source text. Used by
+        /// `emitShaderUsedStructs` to re-emit the mesh-vertex-output
+        /// struct with inter-stage semantics (strip `[[color(N)]]` /
+        /// `[[texcoord(N)]]` — those are fragment-output attributes,
+        /// not legal as mesh-vertex-output decorations; `[[position]]`
+        /// is preserved). Same pattern as HLSL Phase 2b.
+        std::map<std::string, ast::StructDecl *> structDeclMap;
         unsigned bufferCount = 0;
         unsigned textureCount = 0;
         unsigned samplerCount = 0;
@@ -617,6 +690,18 @@ namespace omegasl {
         /// gathered during the resource loop, flushed by
         /// `emitStaticPreamble` after the entry function header.
         OmegaCommon::Vector<OmegaCommon::String> staticSamplers;
+        /// §2c — mesh-stage entry state, mirroring GLSL 2a / HLSL 2b.
+        /// Set by `emitShaderEntryHeader` when entering a `mesh`
+        /// shader, consulted by `emitShaderEntryBody` (scratch decl +
+        /// set_primitive_count auto-emit + flush loop) and
+        /// `emitMemberExpr` / `tryEmitBinaryExpr` (the lvalue
+        /// rewrites). Empty `meshVertsParamName` ⇒ not in a mesh shader.
+        OmegaCommon::String meshVertsParamName;
+        OmegaCommon::String meshIndicesParamName;
+        ast::StructDecl *meshVertsStructDecl = nullptr;
+        ast::ShaderDecl::MeshDesc::Topology meshTopology = ast::ShaderDecl::MeshDesc::Triangle;
+        unsigned meshMaxVertices = 0;
+        unsigned meshMaxPrimitives = 0;
     };
 
     struct GLSLTarget final : Target {

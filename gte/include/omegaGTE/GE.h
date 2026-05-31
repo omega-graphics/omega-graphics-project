@@ -95,6 +95,7 @@ _NAMESPACE_BEGIN_
     struct RenderPipelineDescriptor;
     struct ComputePipelineDescriptor;
     struct BlitPipelineDescriptor;
+    struct MeshPipelineDescriptor;
 
     struct NativeRenderTargetDescriptor;
 
@@ -427,6 +428,28 @@ _NAMESPACE_BEGIN_
          @returns SharedHandle<GEBlitPipelineState>, or @c nullptr on failure.
          */
         virtual SharedHandle<GEBlitPipelineState> makeBlitPipelineState(BlitPipelineDescriptor & desc) = 0;
+
+        /**
+         @brief Creates a mesh-shader render pipeline (Mesh-Shader-Plan
+                Phase 3).
+         @paragraph Builds a render pipeline whose geometry side is supplied
+         by an optional amplification (task) shader and a required mesh
+         shader, paired with the usual fragment shader. The returned handle
+         is the same @c GERenderPipelineState produced by
+         @c makeRenderPipelineState — every backend models mesh PSOs as a
+         render-pipeline variant on the public side — so callers bind the
+         result with @c GECommandBuffer::setRenderPipelineState exactly like
+         a graphics pipeline. Dispatch uses
+         @c GECommandBuffer::drawMeshTasks (not @c drawPolygons).
+         @param[in] desc The Mesh Pipeline Descriptor
+         @returns SharedHandle<GERenderPipelineState>, or @c nullptr when
+                  the device does not advertise
+                  @c GTEDEVICE_FEATURE_MESH_SHADER or the underlying PSO
+                  build fails. The feature gate fires first with a
+                  precise diagnostic, mirroring the raytracing pattern;
+                  there are no @c #ifdefs in this header.
+         */
+        virtual SharedHandle<GERenderPipelineState> makeMeshPipelineState(MeshPipelineDescriptor & desc) = 0;
 
         /**
           @brief Creates a GENativeRenderTarget from a NativeRenderTargetDescriptor.

@@ -37,13 +37,10 @@ namespace omegasl {
             diagnosticOut = ss.str();
             return false;
         }
-        /// Mesh emission (MSL `[[mesh]]`) is a later phase; the front-end
-        /// checkpoint accepts `mesh` in parse/Sema but no backend emits it yet.
-        if (stage == ast::ShaderDecl::Mesh) {
-            diagnosticOut = "mesh shader codegen is not yet implemented on the Metal backend "
-                            "(OmegaSL front-end checkpoint — see gte/docs/Mesh-Shader-Implementation-Plan.md).";
-            return false;
-        }
+        /// §2c — MSL now emits mesh source (`[[mesh]]`, `mesh<V, void,
+        /// MaxV, MaxP, topology::X>` handle, scratch array + flush
+        /// loop). The Hull/Domain rejection above still stands. See
+        /// `gte/docs/Mesh-Shader-Implementation-Plan.md` → Phase 2c.
         return true;
     }
 
@@ -398,13 +395,73 @@ using namespace metal;
         }
         out << "};" << std::endl;
         generatedStructs.insert(std::make_pair(std::string(_decl->name), out.str()));
+        /// §2c — record the StructDecl* so the mesh path in
+        /// `emitShaderUsedStructs` can re-emit the vertex-output struct
+        /// with inter-stage semantics (strip `[[color(N)]]` /
+        /// `[[texcoord(N)]]` which are fragment-output decorations).
+        structDeclMap[std::string(_decl->name)] = _decl;
     }
 
     void MSLTarget::emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *_decl,
                                           std::ostream &out) {
+        /// §2c — locate the mesh-vertex-output struct (the element type
+        /// of the `out vertices` param). The cached `generatedStructs`
+        /// text carries `[[color(N)]]` / `[[texcoord(N)]]` decorations
+        /// for any indexed `Color(N)` / `TexCoord(N)` field — correct
+        /// for a fragment output, invalid as a mesh-vertex-output
+        /// decoration on Metal (Metal's mesh vertex outputs are
+        /// untagged varyings except for `[[position]]`). Re-emit with
+        /// those attributes stripped; every other struct keeps the
+        /// cached text.
+        ast::StructDecl *meshVertsStruct = nullptr;
+        if (_decl->shaderType == ast::ShaderDecl::Mesh) {
+            for (auto &p : _decl->params) {
+                if (p.meshOutput == ast::AttributedFieldDecl::Vertices) {
+                    auto sit = structDeclMap.find(std::string(p.typeExpr->name));
+                    if (sit != structDeclMap.end()) meshVertsStruct = sit->second;
+                    break;
+                }
+            }
+        }
         std::vector<std::string> used;
         cg.typeResolver->getStructsInFuncDecl(_decl, used);
         for (auto &t : used) {
+            if (meshVertsStruct && std::string(meshVertsStruct->name) == t) {
+                out << "struct " << meshVertsStruct->name << " {" << std::endl;
+                for (auto &f : meshVertsStruct->fields) {
+                    out << "    ";
+                    cg.writeTypeExpr(f.typeExpr, out);
+                    out << " " << f.name;
+                    cg.writeDeclTypeSuffix(f.typeExpr, out);
+                    /// Strip `[[color(N)]]` / `[[texcoord(N)]]`. Every
+                    /// other attribute (notably `Position →
+                    /// [[position]]`) keeps the cached mapping —
+                    /// `[[position]]` is the correct mesh vertex-output
+                    /// decoration.
+                    if (f.attributeName.has_value()) {
+                        const auto &an = f.attributeName.value();
+                        bool stripIndexed = (an == ATTRIBUTE_COLOR || an == ATTRIBUTE_TEXCOORD)
+                                            && f.attributeIndex.has_value();
+                        if (!stripIndexed) {
+                            std::ostringstream attrSS;
+                            writeAttribute(an, f.attributeIndex, attrSS);
+                            if (!attrSS.str().empty()) {
+                                out << "[[" << attrSS.str() << "]]";
+                            }
+                        }
+                    }
+                    switch (f.interp) {
+                        case ast::AttributedFieldDecl::Flat:          out << "[[flat]]"; break;
+                        case ast::AttributedFieldDecl::Centroid:      out << "[[centroid_perspective]]"; break;
+                        case ast::AttributedFieldDecl::Sample:        out << "[[sample_perspective]]"; break;
+                        case ast::AttributedFieldDecl::NoPerspective: out << "[[center_no_perspective]]"; break;
+                        default: break;
+                    }
+                    out << ";" << std::endl;
+                }
+                out << "};" << std::endl << std::endl;
+                continue;
+            }
             out << generatedStructs[t] << std::endl << std::endl;
         }
     }
@@ -418,6 +475,43 @@ using namespace metal;
         shadermap_entry.name = new char[_decl->name.size() + 1];
         std::copy(_decl->name.begin(), _decl->name.end(), (char *)shadermap_entry.name);
         ((char *)shadermap_entry.name)[_decl->name.size()] = '\0';
+
+        /// §2c — mesh stage pre-amble: locate the `out vertices` /
+        /// `out indices` params, stamp the routing state every other
+        /// mesh hook reads, and emit the per-shader `mesh<...>` type
+        /// alias at file scope before the function decorator. The
+        /// alias is what the `[[mesh]]` parameter is typed against;
+        /// `using namespace metal` (in the default preamble) means we
+        /// can spell `mesh<...>` / `topology::triangle` without the
+        /// `metal::` qualifier. Reset to "not a mesh shader" defaults
+        /// for every other stage.
+        meshVertsParamName.clear();
+        meshIndicesParamName.clear();
+        meshVertsStructDecl = nullptr;
+        meshMaxVertices = 0;
+        meshMaxPrimitives = 0;
+        if (_decl->shaderType == ast::ShaderDecl::Mesh) {
+            for (auto &p : _decl->params) {
+                if (p.meshOutput == ast::AttributedFieldDecl::Vertices) {
+                    meshVertsParamName = p.name;
+                    auto sit = structDeclMap.find(std::string(p.typeExpr->name));
+                    if (sit != structDeclMap.end()) meshVertsStructDecl = sit->second;
+                } else if (p.meshOutput == ast::AttributedFieldDecl::Indices) {
+                    meshIndicesParamName = p.name;
+                }
+            }
+            meshMaxVertices   = _decl->meshDesc.maxVertices;
+            meshMaxPrimitives = _decl->meshDesc.maxPrimitives;
+            meshTopology      = _decl->meshDesc.topology;
+            const char *topoStr =
+                (_decl->meshDesc.topology == ast::ShaderDecl::MeshDesc::Triangle) ? "triangle" : "line";
+            /// `void` in the primitive-data slot — per-primitive output
+            /// is a Phase 6 follow-up (see plan Open Decision 3).
+            out << "using __omegasl_mesh_t_" << _decl->name << " = mesh<"
+                << (meshVertsStructDecl ? meshVertsStructDecl->name : "void")
+                << ", void, " << meshMaxVertices << ", " << meshMaxPrimitives
+                << ", topology::" << topoStr << ">;" << std::endl;
+        }
 
         if (_decl->shaderType == ast::ShaderDecl::Vertex) {
             out << "vertex";
@@ -444,6 +538,19 @@ using namespace metal;
             out << "[[patch(" << (td.domain == ast::ShaderDecl::TessellationDesc::Triangle ? "triangle" : "quad")
                 << ", " << td.outputControlPoints << ")]] vertex";
             shadermap_entry.type = OMEGASL_SHADER_DOMAIN;
+        } else if (_decl->shaderType == ast::ShaderDecl::Mesh) {
+            /// §2c — `[[mesh]]` is the function-attribute spelling, not
+            /// a stage keyword. Stamp the threadgroup + mesh metadata
+            /// onto `shadermap_entry` the same way every other
+            /// thread-group stage does.
+            out << "[[mesh]]";
+            shadermap_entry.type = OMEGASL_SHADER_MESH;
+            shadermap_entry.threadgroupDesc.x = _decl->threadgroupDesc.x;
+            shadermap_entry.threadgroupDesc.y = _decl->threadgroupDesc.y;
+            shadermap_entry.threadgroupDesc.z = _decl->threadgroupDesc.z;
+            shadermap_entry.meshDesc.max_vertices   = meshMaxVertices;
+            shadermap_entry.meshDesc.max_primitives = meshMaxPrimitives;
+            shadermap_entry.meshDesc.topology       = static_cast<int>(meshTopology);
         }
 
         out << " ";
@@ -451,6 +558,22 @@ using namespace metal;
                       _decl->returnType->pointer, out);
         out << " " << _decl->name << " ";
         out << "(";
+
+        /// §2c — mesh `[[mesh]]` parameter goes first in the list (it's
+        /// the unified output handle that every per-vertex /
+        /// per-primitive / per-index write routes through). Emit
+        /// before resources/params so a non-empty resource map or
+        /// non-empty param list correctly prepends a comma in the
+        /// existing logic below. `paramIndex` is bumped so the shared
+        /// `emitResourceBinding` knows to comma-separate the next
+        /// non-static binding.
+        bool meshHandleEmitted = false;
+        if (_decl->shaderType == ast::ShaderDecl::Mesh) {
+            out << "__omegasl_mesh_t_" << _decl->name
+                << " __omegasl_mesh_output_handle";
+            meshHandleEmitted = true;
+            ++paramIndex;
+        }
 
         /// Resources interleave with params inside the parameter list. The
         /// shared helper drives `emitResourceBinding` (which tracks
@@ -461,16 +584,30 @@ using namespace metal;
         /// `emitShaderEntryBody` after the opening `{`.
         cg.emitResourcesAndFillLayout(_decl, shadermap_entry, out);
 
-        if (!(_decl->params.empty()) && !(_decl->resourceMap.empty())) {
+        /// §2c — count visible params (mesh-output ones are suppressed)
+        /// so we know whether the param list is non-empty and needs
+        /// the leading comma after the resource block.
+        unsigned visibleParams = 0;
+        for (auto &p : _decl->params) {
+            if (p.meshOutput == ast::AttributedFieldDecl::NotMeshOutput) ++visibleParams;
+        }
+        if (visibleParams > 0
+            && (!(_decl->resourceMap.empty()) || meshHandleEmitted)) {
             out << ",";
         }
 
+        bool firstParam = true;
         for (auto p_it = _decl->params.begin(); p_it != _decl->params.end(); p_it++) {
-            if (p_it != _decl->params.begin()) {
+            auto &p = *p_it;
+            /// §2c — `out vertices` / `out indices` have no presence in
+            /// the MSL signature (they route through the mesh handle).
+            if (p.meshOutput != ast::AttributedFieldDecl::NotMeshOutput) {
+                continue;
+            }
+            if (!firstParam) {
                 out << ",";
             }
-
-            auto &p = *p_it;
+            firstParam = false;
 
             writeTypeName(cg.typeResolver->resolveTypeWithExpr(p.typeExpr),
                           p.typeExpr->pointer, out);
@@ -514,6 +651,36 @@ using namespace metal;
         }
         out << std::endl;
 
+        cg.indentLevel += 1;
+
+        /// §2c — mesh body prologue:
+        ///   1. Declare the per-vertex scratch array
+        ///      (`<VertStruct> __omegasl_verts_scratch[<max_v>];`). All
+        ///      `verts[i].field = ...` writes route here via
+        ///      `emitMemberExpr`; one flush loop at body close calls
+        ///      `set_vertex(i, scratch[i])` for every slot.
+        ///   2. Auto-emit `__omegasl_mesh_output_handle.set_primitive_count(<max_p>);`
+        ///      when the user did NOT call `setMeshOutputs` themselves
+        ///      — same suppression rule as GLSL 2a / HLSL 2b.
+        ///      MSL's `set_primitive_count` takes only the primitive
+        ///      count (vertex count is implicit, derived from the
+        ///      highest `set_vertex` slot written), so the user's
+        ///      `setMeshOutputs(nv, np)` lowers to
+        ///      `__omegasl_mesh_output_handle.set_primitive_count(np)`
+        ///      via `tryEmitBuiltinCall`; the `nv` arg is dropped by
+        ///      design — see Mesh-Shader-Implementation-Plan.md →
+        ///      Cross-Backend Differences.
+        if (_decl->shaderType == ast::ShaderDecl::Mesh && meshVertsStructDecl) {
+            for (unsigned i = 0; i < cg.indentLevel; i++) out << "    ";
+            out << meshVertsStructDecl->name
+                << " __omegasl_verts_scratch[" << meshMaxVertices << "];" << std::endl;
+            if (!_decl->meshHasUserSetMeshOutputsCall) {
+                for (unsigned i = 0; i < cg.indentLevel; i++) out << "    ";
+                out << "__omegasl_mesh_output_handle.set_primitive_count("
+                    << meshMaxPrimitives << ");" << std::endl;
+            }
+        }
+
         /// §2.3 Phase B / §5.2 — route each statement through
         /// `emitStatementLine` so a backend that queues pre-statements (the
         /// HLSL `getDimensions`/`frexp` injection, and the `inverse` adjugate
@@ -525,12 +692,45 @@ using namespace metal;
         /// `emitStatementLine` owns indentation, the trailing `;`, and the
         /// block-statement check, so the output is byte-identical when nothing
         /// is queued.
-        cg.indentLevel += 1;
         for (auto stmt : _decl->block->body) {
             cg.emitStatementLine(stmt);
         }
+
+        /// §2c — mesh body epilogue: per-vertex flush loop. Writes every
+        /// scratch-array slot to the mesh handle exactly once. Dynamic
+        /// indices in the user's `verts[i].field = ...` writes are fine
+        /// — the scratch array carries them and the loop flushes the
+        /// whole `[0, max_v)` range. The flush count is the declared
+        /// `max_vertices`; runtime per-shader narrowing (the equivalent
+        /// of GLSL's `SetMeshOutputsEXT(nv, np)` first arg) is implicit
+        /// on MSL via the highest slot written — extra `set_vertex`
+        /// calls beyond what the user touched are allowed and just
+        /// produce garbage vertices that aren't referenced.
+        if (_decl->shaderType == ast::ShaderDecl::Mesh && meshVertsStructDecl) {
+            for (unsigned i = 0; i < cg.indentLevel; i++) out << "    ";
+            out << "for (uint __omegasl_mesh_flush_i = 0; "
+                << "__omegasl_mesh_flush_i < " << meshMaxVertices
+                << "; ++__omegasl_mesh_flush_i) {" << std::endl;
+            for (unsigned i = 0; i < cg.indentLevel + 1; i++) out << "    ";
+            out << "__omegasl_mesh_output_handle.set_vertex("
+                << "__omegasl_mesh_flush_i, "
+                << "__omegasl_verts_scratch[__omegasl_mesh_flush_i]);" << std::endl;
+            for (unsigned i = 0; i < cg.indentLevel; i++) out << "    ";
+            out << "}" << std::endl;
+        }
+
         cg.indentLevel -= 1;
         out << "}" << std::endl;
+
+        /// Reset per-shader mesh state — mirrors GLSL 2a / HLSL 2b so
+        /// the next entry starts clean.
+        if (_decl->shaderType == ast::ShaderDecl::Mesh) {
+            meshVertsParamName.clear();
+            meshIndicesParamName.clear();
+            meshVertsStructDecl = nullptr;
+            meshMaxVertices = 0;
+            meshMaxPrimitives = 0;
+        }
     }
 
     /// §6.1 — MSL declares thread-group-shared memory inline at kernel
@@ -587,6 +787,75 @@ using namespace metal;
     }
 
     bool MSLTarget::supportsPointerExpr() const { return true; }
+
+    void MSLTarget::emitMemberExpr(CodeGen &cg, ast::MemberExpr *expr, std::ostream &out) {
+        /// §2c — mesh `out vertices` slot access reroute. When the LHS is
+        /// `<vertsParam>[i]`, rewrite the base to
+        /// `__omegasl_verts_scratch[i]` and keep the same `.field`
+        /// member-access. MSL's mesh handle has no per-field accessor
+        /// — only `set_vertex(i, T)` — so the user's per-field writes
+        /// accumulate into the scratch array, and `emitShaderEntryBody`
+        /// emits a single flush loop at body close that calls
+        /// `set_vertex` for every slot. Everything else falls through
+        /// to the default `lhs.field` emission inherited from
+        /// `Target::emitMemberExpr`. Idx can be dynamic — the loop
+        /// flushes the whole `[0, max_v)` range either way.
+        if (!meshVertsParamName.empty()
+            && expr->lhs && expr->lhs->type == INDEX_EXPR) {
+            auto *_idx = (ast::IndexExpr *)expr->lhs;
+            if (_idx->lhs && _idx->lhs->type == ID_EXPR
+                && ((ast::IdExpr *)_idx->lhs)->id == meshVertsParamName) {
+                out << "__omegasl_verts_scratch[";
+                cg.generateExpr(_idx->idx_expr);
+                out << "]." << expr->rhs_id;
+                return;
+            }
+        }
+        cg.generateExpr(expr->lhs);
+        out << "." << expr->rhs_id;
+    }
+
+    bool MSLTarget::tryEmitBinaryExpr(CodeGen &cg, ast::BinaryExpr *expr, std::ostream &out) {
+        /// §2c — mesh `out indices` slot write expansion. MSL's
+        /// `set_index(slot, vertexIdx)` is per-slot, but OmegaSL writes
+        /// a whole tuple per primitive: `tris[i] = uintK(a, b, c);`
+        /// (K = 3 for triangle, 2 for line; point is Sema-rejected for
+        /// portability — see Cross-Backend Differences). Detect
+        /// `op == "="` whose lhs is `<indicesParam>[i]` and expand into
+        ///   <pending>: `uintK __omegasl_mesh_idx_tmp = <rhs>;`
+        ///   <pending>: `set_index(<i>*K + 0, tmp.x);`
+        ///   <pending>: ...
+        ///   <inline> : `set_index(<i>*K + (K-1), tmp.<last>)`
+        /// `emitStatementLine` adds the trailing `;` on the inline part,
+        /// matching how HLSL's `GetDimensions` queues pre-statements.
+        if (expr->op != "=") return false;
+        if (meshIndicesParamName.empty()) return false;
+        if (!expr->lhs || expr->lhs->type != INDEX_EXPR) return false;
+        auto *_idx = (ast::IndexExpr *)expr->lhs;
+        if (!_idx->lhs || _idx->lhs->type != ID_EXPR) return false;
+        if (((ast::IdExpr *)_idx->lhs)->id != meshIndicesParamName) return false;
+
+        const unsigned K = (meshTopology == ast::ShaderDecl::MeshDesc::Triangle) ? 3u : 2u;
+        const char *vecTy = (K == 3) ? "uint3" : "uint2";
+        const char *lanes = "xyzw";
+
+        std::string idxStr  = cg.renderExprToString(_idx->idx_expr);
+        std::string rhsStr  = cg.renderExprToString(expr->rhs);
+        std::string tmpName = "__omegasl_mesh_idx_tmp";
+
+        cg.queuePendingStatement(std::string(vecTy) + " " + tmpName + " = " + rhsStr + ";");
+        for (unsigned k = 0; k + 1 < K; ++k) {
+            std::string s = "__omegasl_mesh_output_handle.set_index(("
+                          + idxStr + ") * " + std::to_string(K) + " + "
+                          + std::to_string(k) + ", " + tmpName + "."
+                          + std::string(1, lanes[k]) + ");";
+            cg.queuePendingStatement(s);
+        }
+        out << "__omegasl_mesh_output_handle.set_index(("
+            << idxStr << ") * " << K << " + " << (K - 1)
+            << ", " << tmpName << "." << lanes[K - 1] << ")";
+        return true;
+    }
 
     /// §5.3 — MSL spelling of an int/uint scalar or vector type, used by the
     /// firstbit normalization lowering.
@@ -692,19 +961,19 @@ using namespace metal;
             out << "threadgroup_barrier(mem_flags::mem_device)";
             return true;
         }
-        /// §2a follow-up — mesh-shader runtime output count. MSL is the
-        /// outlier here (see Mesh-Shader-Implementation-Plan.md → Cross-
-        /// Backend Differences → Active-count "set outputs" call): the
-        /// `mesh<...>` handle exposes ONLY `set_primitive_count(uint)`. The
-        /// vertex count is implicit, derived from the highest
-        /// `set_vertex(i, …)` slot the kernel writes, so the `nv` argument
-        /// from OmegaSL's `setMeshOutputs(nv, np)` is dropped here by design
-        /// — not an oversight. Today this lowering is dormant: MSL still
-        /// halts at `supportsStage(Mesh)`. When Phase 2c lands and the
-        /// `[[mesh]]` parameter is materialized, the handle name below
-        /// (`__omegasl_mesh_output_handle`) is what 2c rewrites — keeping
-        /// the sentinel here means 2c brings up mesh emission without
-        /// chasing down this follow-up separately.
+        /// §2a follow-up / §2c — mesh-shader runtime output count. MSL is
+        /// the outlier here (see Mesh-Shader-Implementation-Plan.md →
+        /// Cross-Backend Differences → Active-count "set outputs"
+        /// call): the `mesh<...>` handle exposes ONLY
+        /// `set_primitive_count(uint)`. The vertex count is implicit,
+        /// derived from the highest `set_vertex(i, …)` slot the kernel
+        /// writes, so the `nv` argument from OmegaSL's
+        /// `setMeshOutputs(nv, np)` is dropped here by design — not an
+        /// oversight. `__omegasl_mesh_output_handle` is the live MSL
+        /// mesh-handle param name emitted by `emitShaderEntryHeader`
+        /// in Phase 2c — the placeholder note this comment carried
+        /// pre-2c was resolved by keeping the same name when the
+        /// handle was materialized.
         if (name == BUILTIN_SET_MESH_OUTPUTS) {
             if (_expr->args.size() != 2) return false;
             out << "__omegasl_mesh_output_handle.set_primitive_count(";

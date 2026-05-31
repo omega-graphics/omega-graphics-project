@@ -3328,6 +3328,37 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         return result;
     };
 
+    SharedHandle<GERenderPipelineState> GEVulkanEngine::makeMeshPipelineState(MeshPipelineDescriptor &desc){
+        /// Mesh-Shader-Plan Phase 3 — public-API stub. Phase 4a lands
+        /// the real `VkGraphicsPipeline` build with
+        /// `VK_SHADER_STAGE_MESH_BIT_EXT` (and optional
+        /// `VK_SHADER_STAGE_TASK_BIT_EXT`); `pVertexInputState` /
+        /// `pInputAssemblyState` are ignored by the spec when mesh
+        /// stages are present, but we'll pass well-formed empty
+        /// structs anyway. Today: feature-gate + validate shaders +
+        /// log + return nullptr, mirroring the raytracing pattern at
+        /// `createBoundingBoxesBuffer`.
+        if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_MESH_SHADER)){
+            DEBUG_STREAM("makeMeshPipelineState: device does not advertise "
+                         "GTEDEVICE_FEATURE_MESH_SHADER ('" << desc.name << "')");
+            return nullptr;
+        }
+        if(!_checkPipelineShader(desc.meshFunc, "mesh", desc.name)){
+            return nullptr;
+        }
+        if(!_checkPipelineShader(desc.fragmentFunc, "fragment", desc.name)){
+            return nullptr;
+        }
+        if(desc.amplificationFunc
+           && !_checkPipelineShader(desc.amplificationFunc, "amplification", desc.name)){
+            return nullptr;
+        }
+        DEBUG_STREAM("makeMeshPipelineState: Vulkan mesh PSO build not yet implemented "
+                     "(Phase 3 stub — Phase 4a will land VK_SHADER_STAGE_MESH_BIT_EXT); '"
+                     << desc.name << "'");
+        return nullptr;
+    }
+
     SharedHandle<GEFence> GEVulkanEngine::makeFence(){
         
         VkFenceCreateInfo fenceCreateInfo {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};

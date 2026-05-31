@@ -138,6 +138,11 @@ _NAMESPACE_BEGIN_
         void drawIndexedPolygonsIndirect(RenderPassDrawPolygonType polygonType,
                                           SharedHandle<GEBuffer> & argumentBuffer,
                                           size_t argumentBufferOffset) override;
+        /// Mesh-Shader-Plan Phase 3 — public-API stub. Feature-gates,
+        /// logs + returns. Phase 4b lands `commandList->DispatchMesh`.
+        void drawMeshTasks(uint32_t groupCountX,
+                           uint32_t groupCountY,
+                           uint32_t groupCountZ) override;
         void setViewports(std::vector<GEViewport> viewports) override;
         void setScissorRects(std::vector<GEScissorRect> scissorRects) override;
         void finishRenderPass() override;
