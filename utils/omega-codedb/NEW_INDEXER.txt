@@ -1,0 +1,64 @@
+clangd is great for symbol lookup, go-to-definition, references, and whole-project indexing. Its index stores codebase-wide symbol information for LSP features. You can even prebuild an index with clangd-indexer --executor=all-TUs compile_commands.json, which could complement your codedb.
+
+But for type-based dependency extraction, I’d lean toward a custom LibTooling / LibASTMatchers tool. Clang’s LibTooling is specifically meant for standalone source-analysis tools, and AST matchers let you find semantic constructs in the parsed C++ AST.
+
+The workflow would be:
+
+compile_commands.json
+        ↓
+custom clang tool
+        ↓
+visit each translation unit
+        ↓
+record type references
+        ↓
+emit JSON into codedb
+
+For example, collect:
+
+{
+  "file": "Editor/ViewportPanel.cpp",
+  "defines": ["ViewportPanel"],
+  "uses_types": [
+    "RenderGraph",
+    "TextureHandle",
+    "SceneRenderer",
+    "InputContext"
+  ],
+  "depends_on_subsystems": [
+    "Graphics",
+    "Assets",
+    "Core"
+  ]
+}
+
+Then your agent can ask:
+
+What does EditorViewport depend on?
+
+instead of grepping.
+
+I’d separate three dependency layers:
+
+Include dependency:
+    File A includes File B
+
+Symbol/type dependency:
+    Type A refers to Type B
+
+Runtime/call dependency:
+    Function A calls Function B
+
+clang-scan-deps is useful for build/module/include dependency scanning, especially around preprocessing and modules, but it is not the same as semantic “this class depends on this engine type.” For your use case, clang-scan-deps is probably useful as a supporting tool, not the main one.
+
+The best architecture is probably:
+
+codedb
+  ├─ subsystem partitions
+  ├─ type → file index
+  ├─ file → subsystem index
+  ├─ type → referenced types
+  ├─ type → referenced subsystems
+  └─ optional clangd index / references cache
+
+So yes: use clangd for indexing/navigation, but use LibTooling/AST matchers when you want precise dependency data that you control.
