@@ -131,7 +131,7 @@ void UIView::tickAnimations(){
     // alongside the rest of the dormant animation surface.
 }
 
-void UIView::arrange(){
+void UIView::arrangeContent(){
     assertActivePhase(FramePhase::Layout);
     // Tier B / B3: the Layout phase. Resolve each element's rect from its
     // layout spec, stable-sort by (zIndex, insertion order), and record
@@ -432,61 +432,20 @@ void UIView::paint(Composition::PaintContext & pc){
 }
 
 void UIView::update(){
-    // Tier B / B3: in-place phase model. update() orchestrates the
-    // ordered phases on the existing types, flipping the window
-    // FrameBuilder's currentPhase_ around each via ScopedPhase. (Tier D
-    // hoists this walk into FrameBuilder::buildFrame across the whole
-    // tree.) The composition session is owned by Widget::executePaint /
-    // AppWindow (FrameBuilder::ScopedFrame), so update() no longer opens
-    // its own — the duplicate start/endCompositionSession is gone. An
-    // empty layout still renders: paint() appends the default full-bounds
-    // background unconditionally.
-    auto * fb = AppWindow::activeFrameBuilder();
-
-    // Phase 4.4 (Anim Tier C): the Tick phase no longer runs from
-    // `UIView::update()` — `AnimationScheduler::tick` fired once at the
-    // outermost `FrameBuilder::beginFrame` (`FramePhase::Tick`) before
-    // the paint walk started. `update()` is now a pure consumer of the
-    // resulting side table: Paint reads `scheduler.value(...)` and
-    // emits DrawOps. The Style / Layout / Paint / Commit ordering is
-    // unchanged.
-    { FrameBuilder::ScopedPhase phase(fb, FramePhase::Style);  resolveStyles(); }
-    { FrameBuilder::ScopedPhase phase(fb, FramePhase::Layout); arrange(); }
-
-    // Tier 4 (absolute-coords decision 2026-05-29): push this view's
-    // absolute window offset BEFORE paint. ScopedViewOffset must already
-    // be live so computeWindowOffset() returns the leaf view's offset,
-    // and it must outlive submitView (Tier 3 Phase 3.4 contract). paint()
-    // bakes pc.offset into emitted geometry so coordinates reach the
-    // compositor already positioned — the per-slice backend viewport
-    // translation is gone.
-    FrameBuilder::ScopedViewOffset offsetScope(fb, this);
-
-    Composition::DisplayList displayList;
-    {
-        FrameBuilder::ScopedPhase phase(fb, FramePhase::Paint);
-        Composition::PaintContext pc { displayList };
-        pc.offset = computeWindowOffset();
-        paint(pc);
-    }
-
-    // Commit. Tier 3 Phase 3.8: the FrameBuilder bracketing this pass
-    // (Widget::executePaint / AppWindow) accumulates the DisplayList in
-    // tree order and submits it at endFrame. No active frame (a stray
-    // update() outside a paint pass) ⇒ the DisplayList is dropped.
-    {
-        FrameBuilder::ScopedPhase phase(fb, FramePhase::Commit);
-        if(fb != nullptr){
-            fb->submitView(this, std::move(displayList));
-        }
-    }
-
-    impl_->layoutDirty = false;
-    impl_->styleDirty = false;
-    impl_->styleDirtyGlobal = false;
-    impl_->styleChangeRequiresCoherentFrame = false;
-    impl_->firstFrameCoherentSubmit = false;
-    ++impl_->lastUpdateDiagnostics.revision;
+    // Phase 4.7.5: legacy entry point, kept as a thin stub for source
+    // compat with the existing primitive overrides (`Rectangle::onPaint`
+    // etc.) and a handful of test scenes that call `update()` to force
+    // a re-render. The pre-4.7 body (Style → Layout → Paint → Commit
+    // orchestrated locally with `ScopedPhase` + `ScopedViewOffset` +
+    // `FrameBuilder::submitView`) is gone — `FrameBuilder::buildFrame`
+    // owns that orchestration across the whole View tree now. The
+    // primitive overrides themselves are dead in 4.7.4+ (the cutover
+    // stopped `Widget::executePaint` from dispatching `onPaint`), so
+    // this stub never runs in the production paint path; only the
+    // explicit test callers reach it, and `markDirty` is the right
+    // semantic for them — the test's run-loop frame flush re-paints
+    // on the next tick.
+    markDirty(View::Style | View::Layout | View::Paint);
 }
 
 }

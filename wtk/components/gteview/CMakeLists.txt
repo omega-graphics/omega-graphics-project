@@ -1,14 +1,21 @@
 # wtk/components/gteview/CMakeLists.txt
 #
-# OmegaWTK GTEView component — wraps OmegaGTE rendering into a Widget that
-# embeds via NativeViewHost. See `wtk/docs/NativeViewHost-Adoption-Plan.md`
-# Part 2 for the design and phasing (G1 → G4).
+# OmegaWTK.gteview — 3D viewport widget backed by OmegaGTE. Built as a
+# SHARED library that ships as part of the OmegaWTK SDK: embedded inside
+# `OmegaWTK.framework` on macOS, sibling of `OmegaWTK.dll`/`libOmegaWTK.so`
+# on Windows/Linux. See `wtk/docs/NativeViewHost-Adoption-Plan.md` Part 2
+# for the design and phasing (G1 → G4).
+#
+# `gteview` is the only INTERNAL component (lives in this repo because GTE's
+# own tests exercise it). Every other component is an external repo fetched
+# via AUTOMDEPS into a sibling `wtk/components/<name>/` directory — see
+# `wtk/components/README.md` for the contract.
 #
 # This file is the BUILD WIRING ONLY. No implementation has landed yet;
 # Phase G1 (and the §2.14 NativeVisualTree prerequisite it depends on) must
 # be in before the source-file globs below actually find anything.
 
-option(OMEGAWTK_COMPONENT_GTEVIEW "Build the GTEView component (3D viewport widget backed by OmegaGTE)" OFF)
+option(OMEGAWTK_COMPONENT_GTEVIEW "Build OmegaWTK.gteview (3D viewport via OmegaGTE)" OFF)
 if(NOT OMEGAWTK_COMPONENT_GTEVIEW)
     return()
 endif()
@@ -22,7 +29,7 @@ file(GLOB GTEVIEW_SRCS "${GTEVIEW_SOURCE_DIR}/src/*.cpp")
 # Per-platform GPU content node + visual-tree glue. Mirrors the split in
 # `wtk/src/Native/{win,macos,gtk}/` — the component owns its own GPU
 # variants (MTLGPUContentNode etc.) parallel to the core's video variants
-# (MTLNativeContentNode etc.) so the core never has to depend on OmegaGTE.
+# (MTLNativeContentNode etc.) so the core never depends on OmegaGTE.
 if(TARGET_WIN32)
     file(GLOB GTEVIEW_NATIVE_SRCS "${GTEVIEW_SOURCE_DIR}/src/Native/win/*.cpp")
 elseif(TARGET_MACOS)
@@ -33,28 +40,77 @@ endif()
 list(APPEND GTEVIEW_SRCS ${GTEVIEW_NATIVE_SRCS})
 
 if(NOT GTEVIEW_SRCS)
-    message(STATUS "OmegaWTKComponent_GTEView: no sources present yet (Phase G1 not landed); skipping.")
+    message(STATUS "OmegaWTK.gteview: no sources present yet (Phase G1 not landed); skipping target creation.")
     return()
 endif()
 
-add_library(OmegaWTKComponent_GTEView STATIC ${GTEVIEW_SRCS})
-set_target_properties(OmegaWTKComponent_GTEView PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(OmegaWTK.gteview SHARED ${GTEVIEW_SRCS})
 
-target_include_directories(OmegaWTKComponent_GTEView
+target_include_directories(OmegaWTK.gteview
     PUBLIC  ${GTEVIEW_PUBLIC_INCLUDE_DIR}
             ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
             $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
             $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>
     PRIVATE ${NATIVE_PRIVATE_INCLUDE_DIR})
 
-# Core WTK target name varies by platform: framework on macOS, regular
-# shared lib elsewhere. The framework name is exposed by
-# `add_omega_graphics_module` as `<Name>.framework`.
-if(TARGET_MACOS)
-    add_dependencies(OmegaWTKComponent_GTEView OmegaWTK.framework)
-    target_link_frameworks(OmegaWTKComponent_GTEView OmegaWTK OmegaGTE)
-else()
-    add_dependencies(OmegaWTKComponent_GTEView OmegaWTK)
-    target_link_libraries(OmegaWTKComponent_GTEView PUBLIC OmegaWTK OmegaGTE)
+# The component is a CONSUMER of OmegaWTK's exported types — flip OMEGAWTK_EXPORT
+# from dllexport (its default) to dllimport so its TU's reference the core lib's
+# symbols correctly on Win32. Mirrors what OmegaWTKApp does for an app build.
+if(TARGET_WIN32)
+    target_compile_definitions(OmegaWTK.gteview PRIVATE OMEGAWTK_APP TARGET_WIN32 TARGET_DIRECTX)
+elseif(TARGET_MACOS)
+    target_compile_definitions(OmegaWTK.gteview PRIVATE TARGET_MACOS TARGET_METAL)
+elseif(TARGET_LINUX)
+    target_compile_definitions(OmegaWTK.gteview PRIVATE TARGET_GTK TARGET_VULKAN)
 endif()
-target_link_libraries(OmegaWTKComponent_GTEView PUBLIC OmegaCommon)
+
+# When the component grows its own exported symbols (Phase G1+), define
+# OMEGAWTK_GTEVIEW_BUILDING here and ship a matching Export.h header under
+# include/omegaWTK/Components/GTEView/ mirroring wtk/include/OmegaWTKExport.h.
+# Skipped for now — no exported symbols yet.
+
+if(TARGET_MACOS)
+    # Embed inside the OmegaWTK.framework bundle as a sibling shared lib.
+    # The framework's EMBEDDED_LIBS path (in `add_framework_bundle`) copies
+    # each entry into `OmegaWTK.framework/Versions/<V>/Libraries/` — the
+    # rpath that OmegaWTKApp already sets on apps
+    # (`@loader_path/../Frameworks/OmegaWTK.framework/Libraries`) resolves
+    # them at run time. The actual EMBEDDED_LIBS argument is appended by
+    # the parent wtk/CMakeLists.txt at framework-create time; this file
+    # just builds the dylib and registers the target name.
+else()
+    # Win32 / Linux: ship as a sibling of libOmegaWTK in the standard
+    # runtime output dir so omega_stage_runtime_dlls (Win32) and the
+    # $ORIGIN rpath on the executable (Linux) find it without extra glue.
+    if(WIN32)
+        set_target_properties(OmegaWTK.gteview PROPERTIES
+            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    else()
+        set_target_properties(OmegaWTK.gteview PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+    endif()
+endif()
+
+# Component lib needs PIC even when SHARED — OmegaGTE link + per-platform
+# Native sublibs assume it.
+set_target_properties(OmegaWTK.gteview PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# OmegaGTE is always a direct dep — it's the whole point of gteview.
+# The framework-link (OmegaWTK as a binary dependency) is added by the
+# parent wtk/CMakeLists.txt after the framework target exists.
+if(TARGET_MACOS)
+    add_dependencies(OmegaWTK.gteview OmegaGTE.framework)
+    target_link_frameworks(OmegaWTK.gteview OmegaGTE)
+else()
+    target_link_libraries(OmegaWTK.gteview PUBLIC OmegaGTE OmegaCommon)
+endif()
+
+# Register this component for the framework's EMBEDDED_LIBS list (macOS) and
+# for OmegaWTKApp's auto-link sweep (all platforms). The parent
+# wtk/CMakeLists.txt reads this GLOBAL property in two places:
+#   1. Before creating the framework, to pass component targets into
+#      add_omega_graphics_module's EMBEDDED_LIBS argument.
+#   2. After creating the framework, to call target_link_libraries on each
+#      component so it picks up the OmegaWTK binary as its symbol source.
+set_property(GLOBAL APPEND PROPERTY OMEGAWTK_COMPONENT_TARGETS OmegaWTK.gteview)

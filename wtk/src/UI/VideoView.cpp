@@ -64,22 +64,19 @@ void VideoView::queueFrame(SharedHandle<OmegaVA::VideoFrame> &frame) {
     // dangerous once BitmapImage acquired a real destructor in Phase 2.
     SharedHandle<OmegaCommon::Img::BitmapImage> f(frame, &frame->videoFrame);
 
-    // Tier 4 pre-flight (Path B unblock): VideoView no longer owns a
-    // Canvas. Its frame rides the window DisplayList as a DrawOp::Bitmap,
-    // submitted through the FrameBuilder bracketing the current paint
-    // pass — the same route UIView::update / SVGView::paint take. When
-    // no frame is active (VideoView's async decode callback runs outside
-    // an AppWindow paint pass), the submission is dropped: VideoView is
-    // not yet driven by the frame pacer. Correct presentation is deferred
-    // to the full NativeViewHost adoption (NativeViewHost-Adoption-Plan
-    // V1–V4); this unblock only severs the Canvas dependency so Phase 4.2
-    // can delete the class.
-    if (auto * fb = AppWindow::activeFrameBuilder(); fb != nullptr) {
-        Composition::DisplayList list;
-        list.append(Composition::DrawOp{f, destRect});
-        FrameBuilder::ScopedViewOffset offsetScope(fb, this);
-        fb->submitView(this, std::move(list));
-    }
+    // Phase 4.7.5: VideoView's pre-cutover queueFrame submitted via
+    // `FrameBuilder::submitView` + `ScopedViewOffset` — both deleted
+    // in this phase. VideoView was already documented as "not yet
+    // driven by the frame pacer" with submissions silently dropped
+    // outside a paint pass; the cutover formalises that. Correct
+    // presentation belongs to the NativeViewHost-Adoption-Plan
+    // (V1–V4); a follow-up will cache the latest frame and emit it
+    // via a `View::paint(PaintContext&)` override (matches SVGView's
+    // 4.7.4 pattern), but no in-tree test exercises live video on
+    // this code path today, so the submission is just dropped here.
+    (void)destRect;
+    (void)f;
+    markDirty(View::Paint);
 }
 
 void VideoView::pushFrame(SharedHandle<OmegaVA::VideoFrame> frame) {

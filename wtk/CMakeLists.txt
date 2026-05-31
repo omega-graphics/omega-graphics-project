@@ -349,6 +349,30 @@ set(OMEGAWTK_SUBMODULE_LIBS OmegaWTK_Core OmegaWTK_Native OmegaWTK_Composition O
 # every object file must be position-independent.
 set_target_properties(${OMEGAWTK_SUBMODULE_LIBS} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# ─── Opt-in components ───
+#
+# wtk/components/ houses opt-in shared-library widgets (gteview, webview,
+# chartview, ...). Each compiles to OmegaWTK.<name> and:
+#   - macOS  : is embedded into the OmegaWTK.framework bundle via
+#              EMBEDDED_LIBS (passed to add_omega_graphics_module below).
+#   - Win/Lx : ships as a sibling of OmegaWTK.dll / libOmegaWTK.so in the
+#              same runtime output dir, picked up by omega_stage_runtime_dlls
+#              (Win32) or the $ORIGIN rpath (Linux).
+#
+# Components register themselves via the OMEGAWTK_COMPONENT_TARGETS GLOBAL
+# property. The list is consumed below in two places: passed into the
+# framework's EMBEDDED_LIBS, and (after the framework target exists)
+# re-traversed to add OmegaWTK as a link dependency of each component.
+# OmegaWTKApp() reads the same property to auto-link components into apps.
+#
+# Only gteview lives in-tree; every other component is an external repo
+# fetched via AUTOMDEPS — see wtk/components/README.md.
+option(OMEGAWTK_BUILD_COMPONENTS "Build OmegaWTK opt-in components (under wtk/components/)" OFF)
+if(OMEGAWTK_BUILD_COMPONENTS)
+	add_subdirectory(components)
+endif()
+get_property(OMEGAWTK_COMPONENT_TARGETS GLOBAL PROPERTY OMEGAWTK_COMPONENT_TARGETS)
+
 # ─── OmegaWTK framework module ───
 
 configure_file("${OMEGAWTK_SOURCE_DIR}/src/Info.plist.in" ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
@@ -376,9 +400,22 @@ add_dependencies(OmegaWTK_Composition OmegaWTKCompositorShaderLib)
 # Generate a stub translation unit -- all real code lives in the submodule static libs.
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/OmegaWTK_framework_stub.cpp" "// OmegaWTK framework entry point -- submodules linked as static libraries\n")
 
+# On macOS, components are embedded into the framework bundle via
+# EMBEDDED_LIBS (resolved by add_framework_bundle's _omega_resolve_embedded_lib
+# loop, which accepts target names). On Win/Lx components ship as siblings
+# of libOmegaWTK in CMAKE_BINARY_DIR/bin and CMAKE_BINARY_DIR/lib respectively
+# (each component's own CMakeLists sets its output dir), so they are NOT
+# passed as EMBEDDED_LIBS on those platforms — the helper would try to
+# copy them next to libOmegaWTK in the same dir they already live in.
+if(TARGET_MACOS)
+	set(OMEGAWTK_FRAMEWORK_EMBEDDED_LIBS ${LIBXML2_RUNTIME} ${OMEGAWTK_COMPONENT_TARGETS})
+else()
+	set(OMEGAWTK_FRAMEWORK_EMBEDDED_LIBS ${LIBXML2_RUNTIME})
+endif()
+
 add_omega_graphics_module("OmegaWTK" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION ${OMEGAWTK_VERSION} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include"
 DEPENDS ${OMEGAWTK_MODULE_DEPS} ${OMEGAWTK_SUBMODULE_LIBS}
-EMBEDDED_LIBS ${LIBXML2_RUNTIME}
+EMBEDDED_LIBS ${OMEGAWTK_FRAMEWORK_EMBEDDED_LIBS}
 SOURCES "${CMAKE_CURRENT_BINARY_DIR}/OmegaWTK_framework_stub.cpp")
 if(NOT OMEGAWTK_SKIP_THIRD_PARTY_BUILD)
 	add_dependencies("OmegaWTK" ThirdParty)
@@ -520,15 +557,24 @@ if(TARGET_LINUX)
 	endif()
 endif()
 
+# ─── Component back-link ───
+#
+# Each opt-in component (registered above in OMEGAWTK_COMPONENT_TARGETS)
+# was configured BEFORE the framework target existed, so it couldn't
+# declare the framework as a link dependency in its own CMakeLists.
+# Now that the framework target exists, wire each component to link the
+# framework binary — this is what makes the component's calls into
+# OmegaWTK's public surface actually resolve at link time.
+foreach(_comp IN LISTS OMEGAWTK_COMPONENT_TARGETS)
+	if(TARGET_MACOS)
+		add_dependencies(${_comp} OmegaWTK.framework)
+		target_link_frameworks(${_comp} OmegaWTK)
+	else()
+		add_dependencies(${_comp} OmegaWTK)
+		target_link_libraries(${_comp} PUBLIC OmegaWTK)
+	endif()
+endforeach()
+
 include(cmake/OmegaWTKApp.cmake)
 
  add_subdirectory(tests)
-
-# Opt-in widget/view components (chartview, gteview, mapview, pdfview,
-# webview, ...). Each lives under wtk/components/<name>/ with its own
-# CMakeLists.txt and a per-component OMEGAWTK_COMPONENT_<NAME> flag.
-# See wtk/components/README.md for the contract.
-option(OMEGAWTK_BUILD_COMPONENTS "Build OmegaWTK opt-in components (under wtk/components/)" OFF)
-if(OMEGAWTK_BUILD_COMPONENTS)
-	add_subdirectory(components)
-endif()

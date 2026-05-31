@@ -238,18 +238,17 @@ namespace OmegaWTK {
         if(parent == nullptr){
             return;
         }
-        // Tier 3 Phase 3.4: push this widget's absolute window offset
-        // onto the FrameBuilder accumulator before painting it and
-        // descending into children. Per-leaf-view paint code
-        // (UIView::update / SVGView::paint) stacks one more entry
-        // when it actually submits, so the accumulator top during
-        // submitView is the leaf view's window offset rather than
-        // the enclosing widget's. Null-safe when no FrameBuilder is
-        // active (off-flag tests, solo invalidates not bracketed by
-        // dispatchResize*ToHosts / displayRootWindow).
-        FrameBuilder::ScopedViewOffset offsetScope(
-            AppWindow::activeFrameBuilder(),
-            parent->view.get());
+        // Phase 4.7.5: the FrameBuilder offset accumulator push is
+        // gone (no per-widget submitView call to consume it any
+        // more — `FrameBuilder::buildFrame` threads
+        // `PaintContext.offset` through its own paint walker
+        // instead). `parent->init()` marks the widget's dirty bits
+        // and either runs `WidgetTreeHost::paintDirty()` inline (for
+        // `immediate=true` from `Widget::init` /
+        // `dispatchResize*ToHosts`) or defers via
+        // `requestFrame()`; both paths flow through
+        // `FrameBuilder::buildFrame`, which does not consult the
+        // accumulator.
         parent->init();
         for(const auto & child : parent->childWidgets()){
             initWidgetRecurse(child.get());
@@ -288,15 +287,12 @@ namespace OmegaWTK {
         if(parent == nullptr){
             return;
         }
-        // Tier 3 Phase 3.4: mirror initWidgetRecurse — the
-        // invalidation-driven paint walk also needs the offset
-        // accumulator threaded through it. The
-        // dispatchResize*ToHosts entry points wrap the call in a
-        // FrameBuilder ScopedFrame, so the activeFrameBuilder() is
-        // non-null here during a windowed resize.
-        FrameBuilder::ScopedViewOffset offsetScope(
-            AppWindow::activeFrameBuilder(),
-            parent->view.get());
+        // Phase 4.7.5: the FrameBuilder offset accumulator push is
+        // gone (`FrameBuilder::buildFrame` threads
+        // `PaintContext.offset` itself). The per-widget executePaint
+        // call below marks the widget's dirty bits + runs
+        // `paintDirty()` (when `immediate`), each of which goes
+        // through `FrameBuilder::buildFrame`.
         if(parent->paintMode() == PaintMode::Automatic){
             // Tier A (Widget-View-Paint-Lifecycle): the resize walk
             // paints synchronously inside the caller's FrameBuilder
@@ -319,27 +315,33 @@ namespace OmegaWTK {
     }
 
     void WidgetTreeHost::paintDirty(){
-        paintDirtyRecurse(root.get());
+        // Phase 4.7.4: one tree-wide `FrameBuilder::buildFrame` call
+        // replaces the pre-4.7.4 per-widget walk
+        // (`paintDirtyRecurse` → `flushPendingPaint` →
+        // `executePaint` → `onPaint` → `UIView::update` →
+        // `submitView`). buildFrame runs the dirty-bit-gated
+        // Style / Layout / Paint passes (Phase 4.7.3) over the View
+        // tree and submits one aggregated DisplayList per frame.
+        // The pre-walked-widgets path is gone; `flushPendingPaint`
+        // is therefore unused but kept until Phase I cleanup
+        // since it has no callers but no harm either.
+        if(root == nullptr || root->view == nullptr){
+            return;
+        }
+        auto * fb = frameBuilder();
+        if(fb == nullptr){
+            return;
+        }
+        FrameBuilder::ScopedFrame frame(fb);
+        fb->buildFrame(*root->view);
     }
 
     void WidgetTreeHost::paintDirtyRecurse(Widget *parent){
-        if(parent == nullptr){
-            return;
-        }
-        // Tier 3 Phase 3.4: thread the offset accumulator like
-        // init/invalidateWidgetRecurse so flushPendingPaint's submitView
-        // reads the correct window offset.
-        FrameBuilder::ScopedViewOffset offsetScope(
-            AppWindow::activeFrameBuilder(),
-            parent->view.get());
-        if(parent->paintMode() == PaintMode::Automatic &&
-           parent->view != nullptr &&
-           (parent->view->dirtyBits() & View::Paint)){
-            parent->flushPendingPaint();
-        }
-        for(const auto & child : parent->childWidgets()){
-            paintDirtyRecurse(child.get());
-        }
+        // Phase 4.7.4: vestigial — `paintDirty` no longer walks the
+        // widget tree (the central `FrameBuilder::buildFrame` does the
+        // work). Body kept as a no-op so the declaration / build
+        // wiring stays unbroken until Phase I deletes the symbol.
+        (void)parent;
     }
 
     void WidgetTreeHost::beginResizeCoordinatorSessionRecurse(Widget * /*parent*/, std::uint64_t /*sessionId*/){

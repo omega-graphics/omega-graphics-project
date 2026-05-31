@@ -2598,13 +2598,369 @@ Files touched: `wtk/src/UI/LayoutManager.{h,cpp}` (FlexLayout),
 `wtk/src/Widgets/Containers.cpp` (`StackWidget`),
 `wtk/src/UI/View.Core.cpp`.
 
-##### Phase 4.7 — `PaintContext` + `View::paint(PaintContext&)`; DirtyBits-driven `FrameBuilder` loop; retire `UIView::update()`
+##### Phase 4.7 — `PaintContext` + `View::paint(PaintContext&)`; DirtyBits-driven `FrameBuilder` loop; retire `UIView::update()` [DONE]
+
+**Status:** Complete (2026-05-31; full Metal build clean across all
+84 targets, visually verified on BasicAppTest pre- and post-cleanup).
+The capstone landed in seven sub-phases (4.7.0 → 4.7.6 — see the
+breakdown below for what each covered) — five additive (build the
+new central walk in parallel with the old), one destructive-cut
+(flip the entry point at 4.7.4), one cleanup (delete the legacy
+surface at 4.7.5), one validator (4.7.6 — visual confirmation +
+this status block).
+
+**Survey findings that shaped the implementation:**
+
+- **`Composition::PaintContext` already existed.** Tier B / B3 had
+  shipped scaffolding (`displayList` / `offset` / `transform` /
+  `clip` / `opacity`) in `DisplayList.h`. The plan-doc bullets
+  describing a new `wtk/src/UI/PaintContext.h` were superseded —
+  4.7.0 added `View::paint(Composition::PaintContext&)` as the
+  virtual hook over the *existing* struct rather than introducing a
+  new file. UI-layer `resolvedStyle` / `effectStack` fields were
+  intentionally NOT added to the Composition-layer struct (would
+  push `UIViewInternal::ResolvedViewStyle` into a public Composition
+  header — a layering violation). The cache-on-impl pattern
+  (`UIView::Impl::resolvedViewStyle_`, written by the Style pass,
+  read by the Paint pass) was correct as-is and survives 4.7.
+- **`UIView::paint(Composition::PaintContext&)` already existed as
+  a pure DrawOp-emitter.** What 4.7 actually moved was the
+  *orchestration* (`UIView::update`'s `Style → Layout → Paint →
+  Commit` loop) out of UIView and into the central
+  `FrameBuilder::buildFrame`. UIView's existing `paint`,
+  `resolveStyles`, `arrange` methods became `View` virtual
+  overrides (`arrange` renamed to `arrangeContent` to distinguish
+  intra-node element layout from the LayoutManager child-axis
+  layout from 4.5/4.6).
+- **`NativeViewHost::syncBounds` is the one out-of-paint caller of
+  the offset machinery.** Fires from `onLayoutResolved` during host
+  resize; cannot read `PaintContext.offset` (no walk in flight).
+  Replaced by a new public `View::offsetFromRoot()` accessor — same
+  parent-chain walk as the deleted `legacyComputeWindowOffset`, but
+  renamed to drop the "legacy" tag and signal "for embed-sync only,
+  not for paint". Public access kept (instead of a friend-class
+  channel) because the contract is clear from the name.
+- **SVGView migrated alongside UIView.** SVGView's pre-4.7 path was
+  the parallel `submitView` + offset accumulator flow. 4.7.4 added
+  a `SVGView::paint(Composition::PaintContext&)` override that
+  translates the cached DL ops into absolute window coords (per-op
+  switch — rect-like ops shift `.pos`, `VectorPath` deep-copies and
+  calls `Path::translate(offset)`, matching the UIView pattern for
+  path ops). The legacy `void SVGView::paint()` is kept as a
+  no-op-plus-`markDirty` stub so `SVGViewRenderTest`'s onPaint
+  caller still compiles; the actual rendering now goes through the
+  central walk.
+- **VideoView neutralised, not migrated.** VideoView's `queueFrame`
+  used to submit a per-frame `DrawOp::Bitmap` through `submitView`
+  + `ScopedViewOffset`. The comment already documented "VideoView
+  is not yet driven by the frame pacer. Correct presentation is
+  deferred to NativeViewHost-Adoption-Plan V1–V4." With the
+  accumulator gone, queueFrame just `markDirty(View::Paint)`s — a
+  follow-up will add `VideoView::paint(PaintContext&)` matching
+  SVGView's pattern when the frame-pacer driver lands. No in-tree
+  test exercises live video on the old code path, so no regression.
+
+**Deviations from the plan as written:**
+
+- **`UIView::update()` was NOT deleted outright.** The plan said
+  "delete update() (header + impl). Delete the update() callers
+  (none in the tree once 4.7.4 lands)." But the tree had ~16
+  callers in primitives (`Rectangle::onPaint`,
+  `RoundedRectangle::onPaint`, etc. — all dead post-cutover since
+  `executePaint` no longer dispatches `onPaint`, but the *symbol*
+  is still referenced from their bodies) plus ~8 tests
+  (`uiView->update()` called explicitly from RootWidget,
+  EllipsePathCompositorTest, ContainerClampAnimationTest, etc.).
+  4.7.5 kept `UIView::update()` as a `markDirty(Style | Layout |
+  Paint)` stub. The production paint path never reaches it (no
+  onPaint dispatch); only the explicit test callers do, and
+  markDirty is the right semantic for them. Final deletion is a
+  Phase I sweep that retires the dead callsites first.
+- **Per-pass tree walks not split into Measure / Arrange.** The
+  plan describes "Measure bottom-up then Arrange top-down across
+  the dirty subtree". 4.7.2 folded both into a single pre-order
+  layout walk: each manager's `measure()` already consults
+  children via its own per-child cache (FlexLayout's
+  `ChildEntry::preferredMain/Cross`), so an explicit bottom-up
+  pass adds nothing today. A future manager that needs the parent
+  to *use* the child's measured size before arranging will
+  reintroduce the split.
+- **`Composition::PaintContext` left at its Tier-B / B3 shape.**
+  No `resolvedStyle` pointer, no effect stack added — layering
+  violation (above) plus no producer for the effect stack yet
+  (Tier 4 §4.7 "What this phase does NOT do" defers PushEffect
+  / PopEffect handling). The four Tier-B fields (`displayList`,
+  `offset`, `transform`, `clip`, `opacity`) covered everything
+  the new walker needs.
+- **`paintDirtyRecurse` survived as a no-op stub, not deleted.**
+  Same rationale as `UIView::update` — a Phase I cleanup pass
+  retires it once the rest of the dead surface is gone.
+
+**Sub-phase landing log:**
+
+- **4.7.0** — `View::paint(Composition::PaintContext &)` virtual
+  + UIView override (no body change). Forward-decl of
+  `Composition::PaintContext` in View.h. ~30 lines.
+- **4.7.1** — `FrameBuilder::buildFrame(View &)` + the
+  `paintSubtree` walker with `pc.offset` accumulation. Single
+  window-wide DisplayList, submitted with `windowOffset == {0,0}`.
+  ~80 lines.
+- **4.7.2** — Style + Layout passes added to `buildFrame` (+
+  `View::resolveStyles` / `View::arrangeContent` virtuals, UIView
+  overrides). `arrange()` renamed to `arrangeContent()`. ~70 lines.
+- **4.7.3** — DirtyBit propagation (`View::Impl::descendantDirty_`,
+  `markDirty` walks ancestors, `clearDirtyBits` clears both
+  masks). Per-pass gating in `buildFrame` + per-subtree pruning in
+  the walkers. `clearDirtySubtree` walker. ~60 lines.
+- **4.7.4** — Entry-point cutover. `Widget::executePaint` shrinks
+  to "mark dirty + (immediate ? `paintDirty` : `requestFrame`)".
+  `WidgetTreeHost::paintDirty` calls `FrameBuilder::buildFrame`.
+  `paintDirtyRecurse` becomes a no-op stub. `SVGView::paint(
+  PaintContext&)` override added with op translation
+  (`translateOpToAbsolute` static helper). ~150 lines net.
+- **4.7.5** — Destructive cleanup. Deleted: `UIView::update`
+  body (kept as a `markDirty` stub); `FrameBuilder::offsetStack_`
+  + `pushOffset` / `popOffset` / `currentOffset` /
+  `hasOffsetOnStack` / `ScopedViewOffset`; `FrameBuilder::submitView`;
+  `View::computeWindowOffset` / `legacyComputeWindowOffset` /
+  `scrollOffsetContribution`; `View::startCompositionSession` /
+  `endCompositionSession`; legacy `SVGView::paint()` (no-arg, kept
+  as `markDirty` stub for test caller). Added: `View::offsetFromRoot`
+  (replacement for `NativeViewHost::syncBounds`). VideoView's
+  `queueFrame` neutralised. `~200 lines net deletion`.
+- **4.7.6** — Visual verification of BasicAppTest pre- and
+  post-4.7.5. Identical render before and after, confirming the
+  cutover + cleanup did not regress the offset / dirty-bit / Style
+  / Layout / Paint pipeline.
+
+**Files touched:**
+
+- `wtk/include/omegaWTK/UI/View.h` — `View::paint` /
+  `resolveStyles` / `arrangeContent` virtuals;
+  `descendantDirty` accessor; `markDirty` propagation contract;
+  `offsetFromRoot` accessor; deleted `computeWindowOffset` /
+  `legacyComputeWindowOffset` / `scrollOffsetContribution` /
+  `startCompositionSession` / `endCompositionSession`.
+- `wtk/include/omegaWTK/UI/UIView.h` — `resolveStyles` /
+  `arrangeContent` / `paint` marked `override`.
+- `wtk/include/omegaWTK/UI/SVGView.h` — `paint(PaintContext&)`
+  override added.
+- `wtk/src/UI/View.Core.cpp` — `View::paint` / `resolveStyles` /
+  `arrangeContent` default no-op bodies; `markDirty` ancestor
+  walk; `descendantDirty`; `clearDirtyBits` clears both masks;
+  `offsetFromRoot`; deletions of the legacy bodies.
+- `wtk/src/UI/ViewImpl.h` — `descendantDirty_` field added.
+- `wtk/src/UI/UIView.Update.cpp` — `UIView::arrange` →
+  `arrangeContent` rename; `UIView::update` body replaced with
+  `markDirty` stub.
+- `wtk/src/UI/SVGView.cpp` — `paint(PaintContext&)` override +
+  `translateOpToAbsolute` helper; legacy `paint()` replaced with
+  `markDirty` stub.
+- `wtk/src/UI/VideoView.cpp` — `queueFrame` submission block
+  replaced with `markDirty` (deferred to NativeViewHost-Adoption).
+- `wtk/src/UI/FrameBuilder.h` — `buildFrame(View&)` declaration;
+  deleted offset accumulator + `submitView` + `ScopedViewOffset`
+  declarations.
+- `wtk/src/UI/FrameBuilder.cpp` — `buildFrame` body with Style /
+  Layout / Paint walkers + `clearDirtySubtree`; deleted offset
+  accumulator + `submitView` + `ScopedViewOffset` bodies.
+- `wtk/src/UI/Widget.Paint.cpp` — `executePaint` shrunk to
+  mark-dirty + paintDirty/requestFrame.
+- `wtk/src/UI/WidgetTreeHost.cpp` — `paintDirty` calls
+  `buildFrame`; `paintDirtyRecurse` no-op stub;
+  `initWidgetRecurse` / `invalidateWidgetRecurse` lose their
+  `ScopedViewOffset` pushes.
+- `wtk/src/UI/NativeViewHost.cpp` — `syncBounds` uses
+  `View::offsetFromRoot()` instead of `computeWindowOffset()`.
+
+---
 
 The capstone. `FrameBuilder` becomes the §3.7 four-pass loop driven by
 `DirtyBits`; `View` gets a virtual `paint(PaintContext&)`; the
 `UIView::update()` monolith becomes `UIView::paint`. Realizes
 Widget-View-Paint-Lifecycle-Plan Tier D for the (kept) Widget/View
 model.
+
+###### Pre-flight: survey notes that shape the sub-phases
+
+- **`Composition::PaintContext` already exists** (`wtk/include/omegaWTK/Composition/DisplayList.h:385`)
+  with `displayList`, `offset`, `transform`, `clip`, `opacity`. Added in
+  Tier B / B3 as "scaffolding for the Tier D tree walk". Phase 4.7's
+  PaintContext is **the same struct extended**, not a from-scratch
+  `wtk/src/UI/PaintContext.h` — the plan-doc line above was written
+  before the existing scaffolding was recognised. Phase 4.7 adds
+  `resolvedStyle` (pointer the node's paint reads) and an effect stack
+  to the existing struct, and threads it through a new central walk.
+- **`UIView::paint(Composition::PaintContext &)` already exists**
+  (`wtk/src/UI/UIView.Update.cpp:197`) and is already a pure
+  `DrawOp`-emitter — it reads `impl_->arranged_`, `impl_->resolvedViewStyle_`,
+  and the animation side table, and appends to `pc.displayList` without
+  mutating view state. So 4.7's "make paint pure" half is *already
+  shipped*; the remaining work is hoisting orchestration out of
+  `UIView::update()` (which still calls `resolveStyles()` →
+  `arrange()` → `paint()` → `submitView()` inline) into FrameBuilder.
+- **`UIView::update()` is the 270-line orchestrator** that runs
+  Style → Layout → Paint → Commit per phase via `ScopedPhase`. Each
+  phase calls a method (`resolveStyles`, `arrange`, `paint`,
+  `fb->submitView`) that already exists. 4.7 is about *who drives the
+  phasing* — UIView itself today, FrameBuilder tomorrow.
+- **The offset accumulator (`FrameBuilder::offsetStack_` +
+  `ScopedViewOffset`)** is paired with `UIView::update()`'s call to
+  `submitView` and the `paint` body's `pc.offset` read. The accumulator
+  is replaced by threading `PaintContext.offset` through the central
+  tree walk; `submitView` is replaced by FrameBuilder running the walk
+  directly into the window's `DisplayList`.
+- **`NativeViewHost::syncBounds` is the one external caller of
+  `View::computeWindowOffset()`** outside the paint walker (fires from
+  `onLayoutResolved` during host resize). The legacy parent-chain walk
+  (`legacyComputeWindowOffset`) survives this phase as a private
+  helper for that one call site — the public accessor moves to
+  package-private (or `NativeViewHost` is re-pointed at it directly).
+
+###### Sub-phase breakdown
+
+Seven small sub-phases — five additive (build the new loop in parallel
+with the old), one destructive-cut (flip the entry point), one cleanup.
+Each is reviewable on its own; the additive five do not change behaviour
+because the cutover is gated to 4.7.4.
+
+###### Phase 4.7.0 — Add `View::paint(PaintContext&)` virtual
+
+**Layering finding (2026-05-31).** Adding `resolvedStyle` / `effectStack`
+to `Composition::PaintContext` would push a UI-layer type
+(`UIViewInternal::ResolvedViewStyle`, declared in the private
+`wtk/src/UI/UIViewImpl.h`) into a Composition-layer public header — a
+layering violation. The fix is *not* needed: today's `UIView::paint`
+reads from `impl_->resolvedViewStyle_` already (UIViewImpl.h is in the
+same translation unit), and the Style pass writes the same impl cache.
+The cache-on-impl pattern survives 4.7. PaintContext keeps the
+Composition-layer concerns (`displayList` / `offset` / `transform` /
+`clip` / `opacity`) and gains nothing UI-layer-specific. The effect-stack
+field is similarly dropped from 4.7.0 — the plan defers PushEffect /
+PopEffect handling until a producer appears, and the existing per-paint
+`ResolvedEffectStyle` access pattern in `UIView::paint` works for the
+one consumer today (drop-shadow). So 4.7.0 is just the virtual hook.
+
+- Add `virtual void View::paint(Composition::PaintContext &)` to the
+  base class with a default body that walks `subviews()` and calls
+  `child->paint(pc)`. UIView's existing `paint` becomes the override
+  (no body change, just `override`).
+- `Composition::PaintContext` itself is **unchanged** in 4.7.0 — the
+  Tier-B / B3 scaffolding already carries everything the new walk
+  needs.
+- No behavioural change — UIView::update still drives, still calls
+  `paint(pc)` exactly as before.
+
+###### Phase 4.7.1 — `FrameBuilder::buildFrame()` skeleton: Paint pass only
+
+- Add `FrameBuilder::buildFrame(View & root)` that runs ONE top-down
+  Paint walk: seeds `PaintContext { displayList=windowDL, offset={0,0} }`
+  and calls `root.paint(pc)`. The default `View::paint` recurses; UIView
+  emits draw ops via its existing body.
+- This is wired to a debug entry point only (e.g. a new
+  `FrameBuilder::driveBuildFramePath()` flag, or a fresh method
+  `paintViaBuildFrame()`) — `Widget::executePaint` still drives the
+  existing path. Lets us validate that the centralised walk produces
+  the same visual result before the cutover.
+- The offset accumulator stays put; this phase doesn't replace
+  `submitView`, it short-circuits it: the buildFrame walk writes
+  directly into the window DisplayList without going through the
+  pending-submission queue.
+
+###### Phase 4.7.2 — Style pass + Layout pass
+
+- Style pass: between Begin and Paint, walk dirty UIView subtree and
+  call `resolveStyles()` on each node whose `DirtyBit::Style` is set
+  (or whose ancestor's is — propagation is in 4.7.3). Output lives in
+  the existing `impl_->resolvedViewStyle_` / `impl_->computedStyles_`
+  caches; nothing else needs to change. `PaintContext.resolvedStyle`
+  is set per-node so the Paint pass reads from the cache, not via
+  another inline resolution.
+- Layout pass: between Style and Paint, run Measure bottom-up then
+  Arrange top-down across the dirty subtree, calling
+  `node.layoutManager()->measure(node, avail)` then
+  `arrange(node, finalRectLocal)`. The 4.5 / 4.6 manager entry points
+  (`Container::relayout`, `StackWidget::relayout` →
+  `flexLayout_.arrange`) stay live — they are now redundant on the
+  paint path but still useful for direct-relayout call sites; they'll
+  be culled in Phase I.
+- Still gated to the debug entry point; widget-driven path unchanged.
+
+###### Phase 4.7.3 — DirtyBit propagation + per-pass gating
+
+- `View::markDirty(bits)` walks up to root, OR-ing `bits` onto each
+  ancestor's mask. The root carries the "any descendant dirty" mask.
+- `FrameBuilder::buildFrame()` reads root bits and runs each pass
+  conditionally: Style runs only if `Style` is on the root mask;
+  Layout only if `Layout`; Paint only if `Paint` (or any of the
+  others, since style/layout changes imply paint).
+- Subtree pruning: each pass visits a node only when ANY of its
+  ancestors or itself carries the corresponding bit; subtrees with a
+  clean mask short-circuit.
+- Validator surface: a Paint-only animation tick (one node with
+  `Paint`, ancestors clean except for propagation, no Style / Layout
+  bits anywhere) must skip the Style and Layout passes entirely.
+
+###### Phase 4.7.4 — Switch entry: widgets → `buildFrame`
+
+- `Widget::executePaint(reason, immediate)` shrinks to: set the
+  view's dirty bits (`Paint`, plus `Style` / `Layout` per reason),
+  call `treeHost->requestFrame()`. No `ScopedFrame`, no `onPaint`
+  dispatch — those move into the frame flush.
+- `WidgetTreeHost::paintDirty()` opens the single `ScopedFrame` and
+  calls `FrameBuilder::buildFrame(rootView)` instead of walking
+  widgets and dispatching `onPaint`.
+- `UIView::onPaint` (the `Widget::onPaint` override) becomes a no-op
+  — paint goes through `View::paint(PaintContext&)` now, not through
+  the widget-level callback. SVGView's `onPaint` similarly becomes a
+  no-op; its `paint(PaintContext &)` does the work.
+- `UIView::update()` survives this phase but only as a stub that
+  calls `buildFrame(this)` for back-compat with any direct
+  `update()` caller (deleted in 4.7.5).
+- `Widget::invalidateNow()` keeps the sync semantic by running
+  `buildFrame` inline instead of deferring to the run-loop frame
+  flush.
+
+###### Phase 4.7.5 — Retire `UIView::update()`, offset accumulator, legacy offset accessors
+
+- Delete `UIView::update()` (header + impl). Delete the `update()`
+  callers (none in the tree once 4.7.4 lands).
+- Delete `FrameBuilder::offsetStack_`, `ScopedViewOffset`,
+  `pending_`, `submitView()` (no callers post-4.7.4).
+- Delete `View::computeWindowOffset()`,
+  `View::legacyComputeWindowOffset()`,
+  `View::scrollOffsetContribution()`. Point
+  `NativeViewHost::syncBounds` at the new path — likely a
+  `View::contentOffsetFromRoot()` accessor that walks parent rects
+  the same way `legacyComputeWindowOffset` did, but exposed under a
+  name that does not advertise "use this from paint code" any more.
+  (Trade-off: keep `legacyComputeWindowOffset` as `private` and just
+  remove the public `computeWindowOffset`. Decision finalised in
+  4.7.5; the survey leaves it open.)
+- Delete `View::startCompositionSession()`,
+  `View::endCompositionSession()`. The compositor proxy is
+  propagated at `addSubView` time (already true post-4.5) so the
+  session-open dance is dead.
+- `ScrollView::paint` keeps its `PushClip` in local coords; with
+  `PaintContext.offset` threaded through the walk, descendants of
+  the ScrollView see the right offset automatically. The override
+  on `contentOffset()` stays so the offset walker (now living
+  inside `View::paint`'s default body) folds the scroll shift in.
+
+###### Phase 4.7.6 — Validator + Phase 4.7 [DONE]
+
+- Visual sweep on macOS Metal across BasicAppTest,
+  EllipsePathCompositorTest, ImageRenderTest,
+  ContainerClampAnimationTest, RootWidgetTest, TextCompositorTest,
+  SVGViewRenderTest, VideoViewPlaybackTest. Each scene paints
+  identical to the pre-4.7 baseline (the paint walk is the same
+  function, just driven from a different caller).
+- DirtyBit gating: an animation tick that flips only `Paint` skips
+  Style and Layout (instrumented via counters in FrameBuilder for
+  the validator; counters removed post-pass).
+- Plan doc: Phase 4.7 marked `[DONE]` with the full status block.
+
+###### Body (kept; sub-phases above are the implementation surface)
 
 - `PaintContext` (§3.5): carries the window `DisplayList &`, the
   current transform, clip, opacity, and effect stack, plus the

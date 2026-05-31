@@ -6,7 +6,8 @@
         "./gte",
         "./wtk",
         "./aqua",
-        "./kreate"
+        "./kreate",
+        "./ide"
     ],
     "dependencies":[
         {

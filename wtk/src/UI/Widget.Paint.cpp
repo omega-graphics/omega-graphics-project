@@ -11,6 +11,23 @@
 namespace OmegaWTK {
 
 void Widget::executePaint(PaintReason reason,bool immediate){
+    // Phase 4.7.4: the entry-point switch. `executePaint` no longer
+    // opens a ScopedFrame, dispatches `onPaint`, or routes per-widget
+    // through the legacy submitView path. Its only job now is:
+    //   1. Mark the appropriate dirty bits on the backing View
+    //      (which propagate to the root via `markDirty`'s ancestor
+    //      walk, Phase 4.7.3).
+    //   2. Trigger the central per-window paint:
+    //       - `immediate` ⇒ run `WidgetTreeHost::paintDirty()` inline
+    //         (used by `invalidateNow` and the resize / initial-paint
+    //         legacy entry points).
+    //       - otherwise ⇒ ask the window to flush a frame on the next
+    //         run-loop turn (`treeHost->requestFrame()`) — the normal
+    //         deferred path.
+    // The actual Style / Layout / Paint passes live in
+    // `FrameBuilder::buildFrame`, which the frame flush calls once
+    // per window with the root View. The pre-4.7.4 per-widget
+    // `onPaint` → `UIView::update` → `submitView` flow is gone.
     if(impl_->mode != PaintMode::Automatic){
         return;
     }
@@ -27,57 +44,38 @@ void Widget::executePaint(PaintReason reason,bool immediate){
             return;
         }
     }
-    impl_->paintInProgress = true;
-    if(treeHost != nullptr){
-        auto desiredFrontend = treeHost->compPtr();
-        auto desiredLane = treeHost->laneId();
-        if(view->compositorProxy().getFrontendPtr() != desiredFrontend ||
-           view->compositorProxy().getSyncLaneId() != desiredLane){
-            view->compositorProxy().setFrontendPtr(desiredFrontend);
-            view->compositorProxy().setSyncLaneId(desiredLane);
+
+    if(view != nullptr){
+        uint8_t bits = View::Paint;
+        if(reason == PaintReason::Initial){
+            bits |= View::Style | View::Layout;
         }
+        else if(reason == PaintReason::Resize){
+            bits |= View::Layout;
+        }
+        else if(reason == PaintReason::ThemeChanged){
+            bits |= View::Style | View::Layout;
+        }
+        view->markDirty(bits);
     }
-    PaintReason activeReason = reason;
-    while(true){
-        // Tier 3 Phase 3.8: the window-level FrameBuilder owns the
-        // CompositeFrame and the composition session. Bracketing each
-        // paint with a ScopedFrame makes onPaint -> UIView::update /
-        // SVGView::paint run with an active FrameBuilder, so they
-        // submit their DisplayList into the one window-scoped frame.
-        // Nested-safe via FrameBuilder's depth counter: a display or
-        // resize pass already has the outer frame open and this inner
-        // ScopedFrame just shares it; a standalone invalidate opens
-        // the outermost frame here. Null-safe when there is no tree
-        // host / frame builder yet (pre-attach paints).
-        FrameBuilder::ScopedFrame frame(
-            treeHost != nullptr ? treeHost->frameBuilder() : nullptr);
 
-        view->startCompositionSession();
-        onPaint(activeReason);
-        int submissions = 1;
-        if(activeReason == PaintReason::Initial &&
-           !impl_->initialDrawComplete &&
-           impl_->options.autoWarmupOnInitialPaint){
-            submissions = std::max<int>(1,impl_->options.warmupFrameCount);
-        }
-        // submitPaintFrame is a no-op since Phase 3.8 / 3.9: UIView and
-        // SVGView submit their DisplayList through the window-level
-        // FrameBuilder during onPaint, and the per-view CanvasView (the
-        // last override) is gone, so there is no per-view frame to push.
-        view->submitPaintFrame(submissions);
-
-        view->endCompositionSession();
-
-        if(activeReason == PaintReason::Initial){
-            impl_->initialDrawComplete = true;
-        }
-        if(!(impl_->options.coalesceInvalidates && impl_->hasPendingInvalidate)){
-            break;
-        }
-        activeReason = impl_->pendingPaintReason;
-        impl_->hasPendingInvalidate = false;
+    if(reason == PaintReason::Initial){
+        impl_->initialDrawComplete = true;
     }
-    impl_->paintInProgress = false;
+
+    if(treeHost == nullptr){
+        // Pre-attach paint — the dirty bits stay set; the first
+        // tree-attached frame flush picks them up.
+        return;
+    }
+    if(immediate){
+        impl_->paintInProgress = true;
+        treeHost->paintDirty();
+        impl_->paintInProgress = false;
+    }
+    else {
+        treeHost->requestFrame();
+    }
 }
 
 void Widget::init(){

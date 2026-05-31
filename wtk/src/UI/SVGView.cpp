@@ -529,49 +529,123 @@ bool SVGView::setSourceStream(std::istream & stream) {
 // Rendering pipeline (Phase 2.3)
 // ---------------------------------------------------------------------------
 
-void SVGView::paint() {
-    if (needsRebuild_)
+namespace {
+
+// Phase 4.7.4: translate one cached DrawOp by `offset` so the central
+// PaintContext walk can hand SVG content over to the window-wide
+// DisplayList in absolute coords. Per-variant: rect-like ops shift
+// their `.pos`; path ops deep-copy (paths are shared via
+// `SharedPtr<Path>` — mutating in place would accumulate the offset
+// across repaints, same gotcha UIView::paint records) and call
+// `Path::translate`. Op types SVG does not produce pass through
+// untouched.
+Composition::DrawOp translateOpToAbsolute(const Composition::DrawOp & op,
+                                          Composition::Point2D offset){
+    Composition::DrawOp out = op;
+    switch(op.type){
+        case Composition::DrawOp::Rect:
+            out.params.rectParams.rect.pos.x += offset.x;
+            out.params.rectParams.rect.pos.y += offset.y;
+            break;
+        case Composition::DrawOp::RoundedRect:
+            out.params.roundedRectParams.rect.pos.x += offset.x;
+            out.params.roundedRectParams.rect.pos.y += offset.y;
+            break;
+        case Composition::DrawOp::Ellipse:
+            // `Composition::Ellipse` carries `x` / `y` (center), not
+            // `pos`. Shift both axes by the offset.
+            out.params.ellipseParams.ellipse.x += offset.x;
+            out.params.ellipseParams.ellipse.y += offset.y;
+            break;
+        case Composition::DrawOp::VectorPath: {
+            // Deep-copy + translate so the cached Path (shared across
+            // repaints) is not mutated. Mirrors UIView::paint's path
+            // handling (UIView.Update.cpp ~L370).
+            if(op.params.pathParams.path){
+                auto pathCopy = std::make_shared<Composition::Path>(
+                    *op.params.pathParams.path);
+                pathCopy->translate(offset);
+                out.params.pathParams.path = std::move(pathCopy);
+            }
+            break;
+        }
+        case Composition::DrawOp::Bitmap:
+            out.params.bitmapParams.rect.pos.x += offset.x;
+            out.params.bitmapParams.rect.pos.y += offset.y;
+            break;
+        case Composition::DrawOp::TextRun:
+            out.params.textRunParams.rect.pos.x += offset.x;
+            out.params.textRunParams.rect.pos.y += offset.y;
+            break;
+        case Composition::DrawOp::Shadow:
+            out.params.shadowParams.shapeRect.pos.x += offset.x;
+            out.params.shadowParams.shapeRect.pos.y += offset.y;
+            break;
+        case Composition::DrawOp::PushClip:
+            out.params.pushClipParams.rect.pos.x += offset.x;
+            out.params.pushClipParams.rect.pos.y += offset.y;
+            break;
+        case Composition::DrawOp::NativeContent:
+            out.params.nativeContentParams.destRect.pos.x += offset.x;
+            out.params.nativeContentParams.destRect.pos.y += offset.y;
+            break;
+        case Composition::DrawOp::PopClip:
+        case Composition::DrawOp::PushTransform:
+        case Composition::DrawOp::PopTransform:
+        case Composition::DrawOp::SetTransform:
+        case Composition::DrawOp::SetOpacity:
+            // No positional state — pass through untouched.
+            break;
+    }
+    return out;
+}
+
+} // namespace
+
+void SVGView::paint(Composition::PaintContext & pc){
+    // Phase 4.7.4: PaintContext-driven entry. Called once per node by
+    // `FrameBuilder::buildFrame`'s paint walker; `pc.offset` is the
+    // absolute window position of this SVGView (maintained by the
+    // walker), and `pc.displayList` is the window-wide DL that
+    // collects every node's ops in absolute coords for a single
+    // submission at frame end.
+    if(needsRebuild_){
         rebuildDisplayList();
-
-    startCompositionSession();
-
-    auto white = Composition::Color::create8Bit(Composition::Color::White8);
-
-    // Tier 3 Phase 3.4: push this SVGView's absolute window offset
-    // onto the FrameBuilder accumulator for the lifetime of paint().
-    // Both branches resolve `View::computeWindowOffset` for this
-    // view (the on-flag branch via submitView, the off-flag branch
-    // via Canvas::nextFrame's `ownerView_->computeWindowOffset` at
-    // sendFrame time); the wrapper returns `fb->currentOffset()`
-    // whenever a FrameBuilder is active, so both paths need this
-    // view on top of the stack for the stamped offset to be right.
-    FrameBuilder::ScopedViewOffset offsetScope(
-        AppWindow::activeFrameBuilder(), this);
-
-    // Tier 3 Phase 3.8: window-scoped paint is the only route. Hand the
-    // cached DisplayList to the FrameBuilder bracketing this paint pass.
-    // The window canvas's frame.background is shared across all
-    // submissions for the frame (other views may set it for their own
-    // backgrounds), so the SVG white background is prepended as an
-    // explicit Rect op in local coordinates.
-    if (auto * fb = AppWindow::activeFrameBuilder(); fb != nullptr) {
-        Composition::DisplayList list;
-        const auto & viewRect = getRect();
-        Composition::Rect localBg{
-            Composition::Point2D{0.f, 0.f}, viewRect.w, viewRect.h};
-        list.append(Composition::DrawOp{localBg, Composition::ColorBrush(white)});
-        for (const auto & op : cachedOps_->ops())
-            list.append(op);
-        fb->submitView(this, std::move(list));
     }
 
-    endCompositionSession();
+    // White background — appended in absolute coords so it lands
+    // behind the SVG content but above any sibling-rendered ops.
+    const auto & viewRect = getRect();
+    const auto white = Composition::Color::create8Bit(Composition::Color::White8);
+    const Composition::Rect bg{
+        Composition::Point2D{pc.offset.x, pc.offset.y},
+        viewRect.w, viewRect.h};
+    pc.displayList.append(Composition::DrawOp{bg, Composition::ColorBrush(white)});
+
+    // SVG ops cached in view-local coords (origin = {0,0} for the
+    // SVGView itself). Translate each one into absolute window coords
+    // before appending; matches the absolute-coords-at-paint-time
+    // model UIView adopted in the 2026-05-29 decision.
+    for(const auto & op : cachedOps_->ops()){
+        pc.displayList.append(translateOpToAbsolute(op, pc.offset));
+    }
+}
+
+void SVGView::paint() {
+    // Phase 4.7.5: legacy no-arg entry kept as a thin stub so the
+    // existing test caller (`SVGViewRenderTest::onPaint`) still
+    // compiles. The real paint now goes through
+    // `paint(Composition::PaintContext&)`, called by
+    // `FrameBuilder::buildFrame`'s central walker. `markDirty` here
+    // schedules the next central frame to re-render this view.
+    needsRebuild_ = true;
+    markDirty(View::Paint);
 }
 
 void SVGView::resize(Composition::Rect newRect) {
     View::resize(newRect);
     needsRebuild_ = true;
-    paint();
+    markDirty(View::Paint);
 }
 
 } // namespace OmegaWTK

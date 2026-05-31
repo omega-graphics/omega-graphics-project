@@ -3,6 +3,7 @@
 #include "omegaWTK/UI/Layout.h"
 #include "omegaWTK/UI/LayoutManager.h"
 #include "omegaWTK/UI/AppWindow.h"
+#include "omegaWTK/Composition/DisplayList.h"   // Phase 4.7.0: PaintContext
 
 #include <iostream>
 #include <utility>
@@ -40,15 +41,39 @@ Composition::LayerTree * View::getLayerTree(){
 }
 
 void View::markDirty(uint8_t bits){
+    // Phase 4.7.3: self mask gets `bits`, ancestor chain gets `bits`
+    // OR-ed into their descendant-dirty masks so the root mask is the
+    // union of every dirty bit in the subtree. `FrameBuilder::buildFrame`
+    // gates per-pass execution off `root.dirtyBits() |
+    // root.descendantDirty()` (run the pass), and prunes subtree
+    // descents off `node.dirtyBits() | node.descendantDirty()` &
+    // passBit (skip whole subtrees with no dirty bit in their subtree).
     impl_->dirtyBits_ |= bits;
+    auto * ancestor = impl_->parent_ptr;
+    while(ancestor != nullptr){
+        ancestor->impl_->descendantDirty_ |= bits;
+        ancestor = ancestor->impl_->parent_ptr;
+    }
 }
 
 uint8_t View::dirtyBits() const{
     return impl_->dirtyBits_;
 }
 
+uint8_t View::descendantDirty() const{
+    return impl_->descendantDirty_;
+}
+
 void View::clearDirtyBits(){
-    impl_->dirtyBits_ = 0;
+    // Phase 4.7.3: clear BOTH masks. The propagated descendant mask
+    // is invalidated when this node's own bits are cleared — a parent
+    // that walked here only because a descendant was dirty needs its
+    // own propagated mask cleared by the frame-end walker so the next
+    // frame's gating starts fresh. The walker calls `clearDirtyBits`
+    // on every visited node, so by the end of a frame's clear pass
+    // both masks are zero across the tree.
+    impl_->dirtyBits_       = 0;
+    impl_->descendantDirty_ = 0;
 }
 
 bool View::isRootView(){
@@ -164,21 +189,11 @@ void View::resize(Composition::Rect newRect){
 }
 
 
-void View::startCompositionSession(){
-    if(compositorProxy().getFrontendPtr() == nullptr && impl_->parent_ptr != nullptr){
-        auto parentFrontend = impl_->parent_ptr->compositorProxy().getFrontendPtr();
-        if(parentFrontend != nullptr){
-            compositorProxy().setFrontendPtr(parentFrontend);
-            auto parentLane = impl_->parent_ptr->compositorProxy().getSyncLaneId();
-            if(parentLane != 0){
-                compositorProxy().setSyncLaneId(parentLane);
-            }
-        }
-    }
-}
-
-void View::endCompositionSession(){
-}
+// Phase 4.7.5: `startCompositionSession` / `endCompositionSession` are
+// deleted. The window-level FrameBuilder owns the session via
+// `ScopedFrame`; the compositor proxy is propagated at `addSubView`
+// time (View.Core.cpp:115-133) so no per-view session-open dance is
+// needed any more.
 
 void View::enable() {
     impl_->enabled_ = true;
@@ -271,23 +286,20 @@ float View::getRenderScale() const {
     return 1.f;
 }
 
-Composition::Point2D View::legacyComputeWindowOffset() const{
+Composition::Point2D View::offsetFromRoot() const{
+    // Phase 4.7.5: parent-chain walk that sums each ancestor's
+    // `rect.pos` plus the parent's `contentOffset()`. The
+    // `contentOffset()` fold (Tier 3 Phase 3.6) carries
+    // ScrollView's negative scroll offset down to descendants. Only
+    // in-tree caller is `NativeViewHost::syncBounds`, which positions
+    // an embedded native item against the window root from
+    // `onLayoutResolved`; the production paint walk does not call
+    // this — it reads `PaintContext.offset` instead.
     Composition::Point2D offset {0.f, 0.f};
     const View *v = this;
     while(v != nullptr){
         offset.x += v->impl_->rect.pos.x;
         offset.y += v->impl_->rect.pos.y;
-        // Tier 3 Phase 3.6: fold in the parent's `contentOffset()`
-        // (defaults to {0,0}; ScrollView overrides to -scrollOffset_).
-        // Sign convention flipped from the pre-3.6 path —
-        // `contentOffset` is *added*, whereas the old
-        // `scrollOffsetContribution` was subtracted, but the net effect
-        // for ScrollView is identical (its contentOffset is the
-        // negation of its prior scrollOffsetContribution). Both the
-        // off-flag direct callers of `legacyComputeWindowOffset` and
-        // the on-flag accumulator (which seeds itself from this walk
-        // via `FrameBuilder::ScopedViewOffset`) get scroll-shifted
-        // descendant offsets through this one site.
         if(v->impl_->parent_ptr != nullptr){
             auto co = v->impl_->parent_ptr->contentOffset();
             offset.x += co.x;
@@ -298,26 +310,10 @@ Composition::Point2D View::legacyComputeWindowOffset() const{
     return offset;
 }
 
-Composition::Point2D View::computeWindowOffset() const{
-    // Tier 3 Phase 3.4: while an AppWindow-driven paint pass is in
-    // flight AND the offset accumulator has a value pushed for this
-    // view, the FrameBuilder's accumulator is the source of truth.
-    // The widget tree walker pushes the widget's view; UIView::update
-    // / SVGView::paint push the leaf view. Callers that resolve a
-    // view's offset inside a ScopedFrame but outside any walker push
-    // scope (e.g. NativeViewHost::syncBounds firing from
-    // onLayoutResolved during handleHostResize) get the legacy
-    // parent-chain walk so the answer matches the off-flag path.
-    if(auto * fb = AppWindow::activeFrameBuilder();
-       fb != nullptr && fb->hasOffsetOnStack()){
-        return fb->currentOffset();
-    }
-    return legacyComputeWindowOffset();
-}
-
-Composition::Point2D View::scrollOffsetContribution() const{
-    return {0.f, 0.f};
-}
+// Phase 4.7.5: `computeWindowOffset` / `legacyComputeWindowOffset` /
+// `scrollOffsetContribution` are deleted. The paint walker owns the
+// absolute-position math via `PaintContext.offset`; `contentOffset()`
+// (below) is what ScrollView overrides for the descent walk.
 
 Composition::Point2D View::contentOffset() const{
     return {0.f, 0.f};
@@ -325,6 +321,32 @@ Composition::Point2D View::contentOffset() const{
 
 bool View::wantsLayer() const{
     return false;
+}
+
+void View::paint(Composition::PaintContext & pc){
+    // Phase 4.7.0 / 4.7.1: `paint(pc)` is *per-node* — it emits this
+    // view's own draw ops into `pc.displayList` and does NOT recurse.
+    // Subtree traversal lives in `FrameBuilder::buildFrame`'s walker
+    // (4.7.1), which calls `paint(pc)` once per node and manages
+    // `pc.offset` across the descent. Base `View` is a pass-through
+    // node and contributes nothing — the default body is a no-op.
+    // Subclasses that emit ops (`UIView`, `SVGView`, `ScrollView` for
+    // its PushClip) override without calling base; the walker visits
+    // their subviews on its own.
+    (void)pc;
+}
+
+void View::resolveStyles(){
+    // Phase 4.7.2: base `View` has no style cache to populate —
+    // default is a no-op. `UIView::resolveStyles` overrides to write
+    // its `impl_->resolvedViewStyle_` + `impl_->computedStyles_`
+    // caches that the Paint pass reads.
+}
+
+void View::arrangeContent(){
+    // Phase 4.7.2: base `View` has no intra-node elements — default
+    // is a no-op. `UIView::arrange` overrides to resolve element rects
+    // into `impl_->arranged_` from `UIViewLayoutV2`.
 }
 
 bool View::isEnabled() const{

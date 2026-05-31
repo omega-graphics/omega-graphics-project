@@ -1,0 +1,81 @@
+{
+    "name": "omegasl-vscode",
+    "displayName": "OmegaSL",
+    "description": "Syntax highlighting and language tooling for the OmegaSL shader language.",
+    "version": "0.1.0",
+    "author": "Omega Graphics",
+    "license": "SEE LICENSE IN ../../LICENSE",
+    "repository": {
+        "url": "https://github.com/omega-graphics/omega-graphics-project"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "publisher": "unpublished",
+    "engines": {
+        "vscode": "^1.75.0"
+    },
+    "main": "./out/extension.js",
+    "activationEvents": [
+        "onLanguage:omegasl"
+    ],
+    "contributes": {
+        "languages": [
+            {
+                "id": "omegasl",
+                "aliases": [
+                    "OmegaSL",
+                    "omegasl"
+                ],
+                "extensions": [
+                    ".omegasl",
+                    ".osl"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "omegasl",
+                "scopeName": "source.omegasl",
+                "path": "./syntaxes/OmegaSL.tmLanguage.json"
+            }
+        ],
+        "configuration": {
+            "title": "OmegaSL",
+            "properties": {
+                "omegasl.lspServerPath": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Absolute path to the omegasl-lsp server binary. Leave empty to disable LSP features (syntax highlighting only)."
+                },
+                "omegasl.lspServerArgs": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "default": [],
+                    "description": "Extra command-line arguments passed to omegasl-lsp."
+                },
+                "omegasl.trace.server": {
+                    "type": "string",
+                    "enum": ["off", "messages", "verbose"],
+                    "default": "off",
+                    "description": "Trace LSP communication between VSCode and omegasl-lsp."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "vscode:prepublish": "npm run compile"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1"
+    },
+    "devDependencies": {
+        "@types/node": "^18.0.0",
+        "@types/vscode": "^1.75.0",
+        "typescript": "^5.3.0",
+        "vsce": "^2.15.0"
+    }
+}

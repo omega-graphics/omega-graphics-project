@@ -77,28 +77,22 @@ class FrameBuilder {
     // wires the cross-phase assertions that consult it.
     FramePhase currentPhase_ = FramePhase::Idle;
 
-    // Phase 3.2: pending UIView submissions for this frame. Captured
-    // by submitView() during the widget paint walk; drained by
-    // endFrame() in insertion order (== tree order, since the widget
-    // paint pass is pre-order today).
+    // Phase 4.7.1+: `buildFrame` assembles one window-wide
+    // DisplayList per frame and queues it here. Pre-4.7.5 this was
+    // populated per UIView/SVGView by `submitView` during the widget
+    // paint walk; post-4.7.5 only `buildFrame` writes here.
     struct PendingSubmission {
         Composition::Point2D windowOffset {0.f, 0.f};
         Composition::DisplayList list {};
     };
     std::vector<PendingSubmission> pending_;
 
-    // Phase 3.4: window-offset accumulator threaded through the
-    // widget paint walk. Replaces View::computeWindowOffset's
-    // parent-chain walk: instead of each leaf view summing positions
-    // up to the root at submit time, the tree walker
-    // (WidgetTreeHost::initWidgetRecurse / invalidateWidgetRecurse)
-    // pushes each visited view's absolute window offset on enter and
-    // pops on exit, and the leaf-view paint code (UIView::update /
-    // SVGView::paint) pushes one final entry for itself before
-    // calling submitView. The stack top is therefore always the
-    // current view's absolute window offset; submitView reads it via
-    // the new View::computeWindowOffset wrapper. Empty stack ⇒ {0,0}.
-    std::vector<Composition::Point2D> offsetStack_;
+    // Phase 4.7.5: the offset accumulator (`offsetStack_` +
+    // `ScopedViewOffset`) is deleted. The central
+    // `FrameBuilder::buildFrame` walk threads `PaintContext.offset`
+    // through its own pre-order traversal, so the stack was redundant
+    // once the per-widget `submitView` flow that consumed it was
+    // retired in 4.7.4.
 
     // Phase 3.2: window-level CompositeFrame allocated at beginFrame,
     // attached to the AppWindow's compositor proxy so the
@@ -122,30 +116,26 @@ public:
     // the proxy.
     void endFrame();
 
-    // Phase 3.2: record a UIView's DisplayList for replay into the
-    // window canvas at endFrame. Captures the view's window-offset
-    // at submission time via View::computeWindowOffset, which
-    // (Phase 3.4) returns the FrameBuilder's accumulator top while
-    // a frame is in flight.
-    void submitView(View * view, Composition::DisplayList list);
+    // Phase 4.7.5: `submitView` is deleted. `buildFrame` writes the
+    // window-wide DisplayList directly to `pending_` itself; no
+    // per-view callers remain. The accumulator API
+    // (`currentOffset` / `hasOffsetOnStack` / `pushOffset` /
+    // `popOffset` / `ScopedViewOffset`) is deleted alongside it —
+    // PaintContext.offset is the per-walk offset now.
 
-    // Phase 3.4: accumulator API. The widget-tree walker and the
-    // per-view paint code (UIView::update / SVGView::paint) push
-    // an absolute window offset on enter and pop on exit; everyone
-    // who needs a view's window offset reads it through
-    // `View::computeWindowOffset`, which now wraps `currentOffset()`.
-    Composition::Point2D currentOffset() const;
-    /// True when at least one entry has been pushed onto the offset
-    /// accumulator since the outermost beginFrame. `currentOffset()`
-    /// returns {0,0} when this is false, which is not safe to use
-    /// as a fall-through for `View::computeWindowOffset` — the
-    /// wrapper consults this and falls back to the legacy walk
-    /// when the stack is empty (e.g. callers like
-    /// NativeViewHost::syncBounds that run inside a ScopedFrame
-    /// but outside any walker push scope).
-    bool hasOffsetOnStack() const { return !offsetStack_.empty(); }
-    void pushOffset(Composition::Point2D absolute);
-    void popOffset();
+    // Phase 4.7.1: the centralised Paint walk. Allocates one window-
+    // wide `DisplayList`, threads a `PaintContext` (whose `offset`
+    // tracks the running absolute window position) down the View tree
+    // rooted at `root`, calls `view->paint(pc)` at each node (the
+    // per-node hook emits its own draw ops; recursion lives here, not
+    // in `paint`), and submits the aggregated DL as a single pending
+    // submission whose `windowOffset == {0,0}` — UIView's paint code
+    // bakes `pc.offset` into every emitted rect, so the DL is already
+    // in absolute window coords and the submitter only needs the
+    // window viewport bounds at flush time. As of Phase 4.7.2, the
+    // walk also runs the dirty-bit-gated Style and Layout passes
+    // before Paint.
+    void buildFrame(View & root);
 
     // Phase 4.4 (Block 2): per-window AnimationScheduler accessor for the
     // animation surfaces (View::applyLayoutDelta, UIView::applyLayoutDelta,
@@ -155,21 +145,6 @@ public:
     // scheduler. Returns null if the window has no scheduler (defensive;
     // AppWindow always stands one up in Phase 4.3).
     AnimationScheduler * animationScheduler() const;
-
-    // RAII helper: pushes `view`'s absolute window offset on
-    // construction (parent.scrollOffsetContribution already factored
-    // into `view->computeOffsetDeltaFromParent()`), pops on
-    // destruction. Null-safe on both `fb` and `view` — a null
-    // FrameBuilder skips the push/pop entirely (off-flag / not in a
-    // frame); a null view pushes the current top unchanged so the
-    // stack depth always mirrors recursion depth.
-    struct ScopedViewOffset {
-        FrameBuilder * fb;
-        ScopedViewOffset(FrameBuilder * f, View * v);
-        ~ScopedViewOffset();
-        ScopedViewOffset(const ScopedViewOffset &) = delete;
-        ScopedViewOffset & operator=(const ScopedViewOffset &) = delete;
-    };
 
     // Tier B / B3: lifecycle-phase state. setPhase flips the active
     // phase; assertPhase is the debug-only check that B5's work-method

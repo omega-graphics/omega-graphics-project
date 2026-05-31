@@ -1,0 +1,6 @@
+utils/pyyaml/
+utils/__pycache__/
+vscode/node_modules/
+vscode/out/
+vscode/syntaxes/*.json
+vscode/*.vsix

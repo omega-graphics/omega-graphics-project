@@ -1,6 +1,6 @@
 {
     "version": 1,
-    "_note": "Curated navigation map for omega-codedb. Each partition is a named area of the repo. An area may span several directories (dirs) and/or pin specific files via globs. omega-codedb resolves every source file to its most specific area (globs beat the longest matching directory prefix). Keep this file editorial: add areas as the repo grows, tag them with the words a searcher would type, and list the few key symbols/headers worth surfacing. The symbol index (codedb.py) covers everything else automatically.",
+    "_note": "Curated navigation map for omega-codedb. Each partition is a named area of the repo. An area may span several directories (dirs) and/or pin specific files via globs. omega-codedb resolves every source file to its most specific area (globs beat the longest matching directory prefix). Keep this file editorial: add areas as the repo grows, tag them with the words a searcher would type, and list the few key symbols/headers worth surfacing. The depends_on array on each partition records the *direct* logical dependencies on other areas (by name) — transitive deps are implied and should not be repeated. Edges point at what the area uses, not what uses it; reverse lookups are the consumer's job. The symbol index (codedb.py) covers everything else automatically.",
     "partitions": [
         {
             "name": "OmegaWTK Core",
@@ -8,7 +8,8 @@
             "dirs": ["wtk/include/omegaWTK/Core", "wtk/src/Core"],
             "purpose": "Foundational WTK utilities shared by every other subsystem: core types, scheduling, and base infrastructure. Start here for cross-cutting helpers.",
             "tags": ["core", "utility", "scheduler", "base", "foundation"],
-            "key_headers": ["wtk/include/omegaWTK/Core/Core.h"]
+            "key_headers": ["wtk/include/omegaWTK/Core/Core.h"],
+            "depends_on": ["OmegaCommon Public API"]
         },
         {
             "name": "OmegaWTK UI Framework",
@@ -17,7 +18,8 @@
             "purpose": "High-level application UI: window lifecycle, the View/Widget hierarchy, layout, and the app entry point. Look here to build widget-based UIs or manage windows.",
             "tags": ["ui", "widget", "view", "appwindow", "layout", "app", "uiview", "scrollview"],
             "key_headers": ["wtk/include/omegaWTK/UI/Widget.h", "wtk/include/omegaWTK/UI/AppWindow.h", "wtk/include/omegaWTK/UI/View.h", "wtk/include/omegaWTK/UI/UIView.h", "wtk/include/omegaWTK/UI/Layout.h", "wtk/include/omegaWTK/UI/App.h"],
-            "key_symbols": ["Widget", "WidgetTreeHost", "AppWindow", "AppWindowManager", "View", "UIView", "ScrollView", "SVGView", "VideoView", "Layout", "LayoutContext"]
+            "key_symbols": ["Widget", "WidgetTreeHost", "AppWindow", "AppWindowManager", "View", "UIView", "ScrollView", "SVGView", "VideoView", "Layout", "LayoutContext"],
+            "depends_on": ["OmegaWTK Core", "OmegaWTK Composition Engine", "OmegaWTK Native Abstraction"]
         },
         {
             "name": "OmegaWTK Widget Library",
@@ -26,7 +28,8 @@
             "purpose": "Concrete reusable widgets: containers (HStack/VStack), primitives (Rectangle/Label/Icon/Image), user inputs (Button/TextInput/Slider/Dropdown), navigation, overlays, media widgets.",
             "tags": ["widgets", "button", "container", "stack", "hstack", "vstack", "label", "textinput", "slider", "dropdown", "primitive"],
             "key_headers": ["wtk/include/omegaWTK/Widgets/BasicWidgets.h", "wtk/include/omegaWTK/Widgets/Containers.h", "wtk/include/omegaWTK/Widgets/Primatives.h", "wtk/include/omegaWTK/Widgets/UserInputs.h"],
-            "key_symbols": ["Container", "StackWidget", "HStack", "VStack", "Rectangle", "RoundedRectangle", "Ellipse", "Label", "Icon", "Image", "Button", "TextInput", "Slider", "Dropdown"]
+            "key_symbols": ["Container", "StackWidget", "HStack", "VStack", "Rectangle", "RoundedRectangle", "Ellipse", "Label", "Icon", "Image", "Button", "TextInput", "Slider", "Dropdown"],
+            "depends_on": ["OmegaWTK UI Framework", "OmegaWTK Composition Engine"]
         },
         {
             "name": "OmegaWTK Composition Engine",
@@ -35,7 +38,8 @@
             "purpose": "GPU-accelerated composition: Views render into Layers that form a LayerTree submitted to the Compositor. Houses animation, brushes, paths, geometry, fonts, and text layout. (Backend subdirectories have their own, more specific areas.)",
             "tags": ["composition", "compositor", "layer", "layertree", "animation", "brush", "color", "path", "geometry", "font", "text", "displaylist", "canvaseffect"],
             "key_headers": ["wtk/include/omegaWTK/Composition/CompositorClient.h", "wtk/include/omegaWTK/Composition/Layer.h", "wtk/include/omegaWTK/Composition/Animation.h", "wtk/include/omegaWTK/Composition/Brush.h", "wtk/include/omegaWTK/Composition/Path.h", "wtk/include/omegaWTK/Composition/FontEngine.h", "wtk/include/omegaWTK/Composition/TextLayoutEngine.h"],
-            "key_symbols": ["CompositorClient", "Compositor", "LayerTree", "Layer", "ViewRenderTarget", "CompositeFrame", "DisplayList", "Brush", "Color", "Path", "Animation", "LayerAnimator", "CanvasEffect", "FontEngine", "TextLayoutEngine"]
+            "key_symbols": ["CompositorClient", "Compositor", "LayerTree", "Layer", "ViewRenderTarget", "CompositeFrame", "DisplayList", "Brush", "Color", "Path", "Animation", "LayerAnimator", "CanvasEffect", "FontEngine", "TextLayoutEngine"],
+            "depends_on": ["OmegaWTK Core", "OmegaGTE Public API", "OmegaCommon Public API"]
         },
         {
             "name": "OmegaWTK Composition Backend",
@@ -44,7 +48,8 @@
             "purpose": "Platform-agnostic rendering infrastructure shared by all graphics backends: render targets, pipelines, render passes, resource pooling, glyph atlas, blur scratch. Look here for rendering bugs that aren't API-specific.",
             "tags": ["backend", "rendertarget", "pipeline", "renderpass", "glyphatlas", "resourcefactory", "visualtree", "blur"],
             "key_headers": ["wtk/src/Composition/backend/RenderTarget.h", "wtk/src/Composition/backend/Pipeline.h", "wtk/src/Composition/backend/RenderPass.h", "wtk/src/Composition/backend/VisualTree.h", "wtk/src/Composition/backend/GlyphAtlas.h"],
-            "key_symbols": ["RenderTarget", "RenderTargetStore", "Pipeline", "PipelineLayout", "RenderPass", "ResourceFactory", "VisualTree", "GlyphAtlas", "BitmapTextureCache", "BlurScratch"]
+            "key_symbols": ["RenderTarget", "RenderTargetStore", "Pipeline", "PipelineLayout", "RenderPass", "ResourceFactory", "VisualTree", "GlyphAtlas", "BitmapTextureCache", "BlurScratch"],
+            "depends_on": ["OmegaWTK Composition Engine", "OmegaWTK Core", "OmegaGTE Public API"]
         },
         {
             "name": "OmegaWTK Metal Backend (macOS)",
@@ -52,7 +57,8 @@
             "dirs": ["wtk/src/Composition/backend/mtl"],
             "purpose": "Metal/Core Image/Core Text implementation of the WTK compositor for macOS and iOS.",
             "tags": ["metal", "macos", "ios", "apple", "calayertree", "coreimage", "coretext"],
-            "key_symbols": ["CALayerTree", "CICanvasEffectProcessor", "CTFontEngine"]
+            "key_symbols": ["CALayerTree", "CICanvasEffectProcessor", "CTFontEngine"],
+            "depends_on": ["OmegaWTK Composition Backend", "OmegaGTE Metal Backend"]
         },
         {
             "name": "OmegaWTK Direct2D Backend (Windows)",
@@ -60,7 +66,8 @@
             "dirs": ["wtk/src/Composition/backend/dx"],
             "purpose": "Direct2D/DirectComposition/DirectWrite implementation of the WTK compositor for Windows.",
             "tags": ["direct2d", "d2d", "directx", "directcomposition", "dwrite", "windows"],
-            "key_symbols": ["DCVisualTree", "D2DCanvasEffectProcessor", "DWriteFontEngine"]
+            "key_symbols": ["DCVisualTree", "D2DCanvasEffectProcessor", "DWriteFontEngine"],
+            "depends_on": ["OmegaWTK Composition Backend", "OmegaGTE Direct3D 12 Backend"]
         },
         {
             "name": "OmegaWTK Vulkan Backend (Linux)",
@@ -68,7 +75,8 @@
             "dirs": ["wtk/src/Composition/backend/vk"],
             "purpose": "Vulkan/Harfbuzz implementation of the WTK compositor for Linux (X11/Wayland).",
             "tags": ["vulkan", "linux", "x11", "wayland", "vklayertree", "harfbuzz"],
-            "key_symbols": ["VKLayerTree", "HarfbuzzFontEngine"]
+            "key_symbols": ["VKLayerTree", "HarfbuzzFontEngine"],
+            "depends_on": ["OmegaWTK Composition Backend", "OmegaGTE Vulkan Backend"]
         },
         {
             "name": "OmegaWTK Native Abstraction",
@@ -77,42 +85,48 @@
             "purpose": "Cross-platform OS-integration layer: native windows, events, menus, dialogs, notifications, themes. The bridge between WTK's high-level API and OS APIs. (Per-OS implementations have their own areas.)",
             "tags": ["native", "window", "event", "menu", "dialog", "theme", "notification", "platform"],
             "key_headers": ["wtk/include/omegaWTK/Native/NativeWindow.h", "wtk/include/omegaWTK/Native/NativeItem.h", "wtk/include/omegaWTK/Native/NativeApp.h", "wtk/include/omegaWTK/Native/NativeEvent.h"],
-            "key_symbols": ["NativeWindow", "NativeItem", "NativeApp", "NativeEvent", "NativeEventEmitter", "NativeMenu", "NativeDialog", "NativeNote", "NativeTheme"]
+            "key_symbols": ["NativeWindow", "NativeItem", "NativeApp", "NativeEvent", "NativeEventEmitter", "NativeMenu", "NativeDialog", "NativeNote", "NativeTheme"],
+            "depends_on": ["OmegaWTK Core", "OmegaCommon Public API"]
         },
         {
             "name": "OmegaWTK macOS Native Layer (Cocoa)",
             "module": "wtk",
             "dirs": ["wtk/src/Native/macos", "wtk/src/Native/private_include/NativePrivate/macos"],
             "purpose": "Cocoa/AppKit implementation of the native abstraction for macOS.",
-            "tags": ["cocoa", "appkit", "macos", "apple", "native"]
+            "tags": ["cocoa", "appkit", "macos", "apple", "native"],
+            "depends_on": ["OmegaWTK Native Abstraction", "OmegaWTK Core"]
         },
         {
             "name": "OmegaWTK Windows Native Layer (Win32)",
             "module": "wtk",
             "dirs": ["wtk/src/Native/win", "wtk/src/Native/private_include/NativePrivate/win"],
             "purpose": "Win32 implementation of the native abstraction for Windows.",
-            "tags": ["win32", "windows", "native"]
+            "tags": ["win32", "windows", "native"],
+            "depends_on": ["OmegaWTK Native Abstraction", "OmegaWTK Core"]
         },
         {
             "name": "OmegaWTK Linux/GTK Native Layer",
             "module": "wtk",
             "dirs": ["wtk/src/Native/gtk"],
             "purpose": "GTK implementation of the native abstraction for Linux.",
-            "tags": ["gtk", "linux", "native"]
+            "tags": ["gtk", "linux", "native"],
+            "depends_on": ["OmegaWTK Native Abstraction", "OmegaWTK Core"]
         },
         {
             "name": "OmegaWTK Mobile Native Layers",
             "module": "wtk",
             "dirs": ["wtk/src/Mobile/Native"],
             "purpose": "iOS (UIKit) and Android native layers for the mobile targets.",
-            "tags": ["mobile", "ios", "android", "uikit", "native"]
+            "tags": ["mobile", "ios", "android", "uikit", "native"],
+            "depends_on": ["OmegaWTK Native Abstraction", "OmegaWTK Core"]
         },
         {
             "name": "OmegaWTK Tests",
             "module": "wtk",
             "dirs": ["wtk/tests"],
             "purpose": "WTK integration and unit tests (BasicAppTest, layout/composition stress tests, media/video tests).",
-            "tags": ["tests", "wtk"]
+            "tags": ["tests", "wtk"],
+            "depends_on": ["OmegaWTK UI Framework", "OmegaWTK Widget Library", "OmegaWTK Composition Engine"]
         },
         {
             "name": "OmegaGTE Public API",
@@ -121,7 +135,8 @@
             "purpose": "Public surface of the graphics & tessellation engine: device, command queues, textures, buffers, pipelines, render targets, meshes, math, the tessellation engine (TE), and raytracing types.",
             "tags": ["graphics", "gte", "ge", "te", "tessellation", "device", "commandqueue", "texture", "buffer", "pipeline", "rendertarget", "mesh", "raytracing", "math"],
             "key_headers": ["gte/include/omegaGTE/GE.h", "gte/include/omegaGTE/GTEDevice.h", "gte/include/omegaGTE/GECommandQueue.h", "gte/include/omegaGTE/GEPipeline.h", "gte/include/omegaGTE/GERenderTarget.h", "gte/include/omegaGTE/GEMesh.h", "gte/include/omegaGTE/TE.h", "gte/include/omegaGTE/GTEMath.h"],
-            "key_symbols": ["OmegaGraphicsEngine", "GTEDevice", "GECommandQueue", "GEBuffer", "GETexture", "GERenderTarget", "GENativeRenderTarget", "GEPipeline", "GEMesh", "TessellationEngine"]
+            "key_symbols": ["OmegaGraphicsEngine", "GTEDevice", "GECommandQueue", "GEBuffer", "GETexture", "GERenderTarget", "GENativeRenderTarget", "GEPipeline", "GEMesh", "TessellationEngine"],
+            "depends_on": ["OmegaCommon Public API"]
         },
         {
             "name": "OmegaGTE Core Implementation",
@@ -129,42 +144,48 @@
             "dirs": ["gte/src"],
             "purpose": "Backend-neutral engine runtime: GE/TE implementation glue and runtime shader compilation. (Per-API backends below have more specific areas.)",
             "tags": ["engine", "runtime", "implementation", "shader"],
-            "key_symbols": ["OmegaGraphicsEngine"]
+            "key_symbols": ["OmegaGraphicsEngine"],
+            "depends_on": ["OmegaGTE Public API", "OmegaCommon Public API", "OmegaCommon Sources", "OmegaSL Compiler"]
         },
         {
             "name": "OmegaGTE Direct3D 12 Backend",
             "module": "gte",
             "dirs": ["gte/src/d3d12"],
             "purpose": "Direct3D 12 implementation of the graphics engine for Windows.",
-            "tags": ["d3d12", "directx", "windows", "backend"]
+            "tags": ["d3d12", "directx", "windows", "backend"],
+            "depends_on": ["OmegaGTE Public API", "OmegaGTE Core Implementation", "OmegaGTE Common Backend Utilities"]
         },
         {
             "name": "OmegaGTE Metal Backend",
             "module": "gte",
             "dirs": ["gte/src/metal"],
             "purpose": "Metal implementation of the graphics engine for macOS/iOS.",
-            "tags": ["metal", "macos", "ios", "apple", "backend"]
+            "tags": ["metal", "macos", "ios", "apple", "backend"],
+            "depends_on": ["OmegaGTE Public API", "OmegaGTE Core Implementation", "OmegaGTE Common Backend Utilities"]
         },
         {
             "name": "OmegaGTE Vulkan Backend",
             "module": "gte",
             "dirs": ["gte/src/vulkan"],
             "purpose": "Vulkan implementation of the graphics engine for Linux.",
-            "tags": ["vulkan", "linux", "backend"]
+            "tags": ["vulkan", "linux", "backend"],
+            "depends_on": ["OmegaGTE Public API", "OmegaGTE Core Implementation", "OmegaGTE Common Backend Utilities"]
         },
         {
             "name": "OmegaGTE Common Backend Utilities",
             "module": "gte",
             "dirs": ["gte/src/common"],
             "purpose": "Helpers shared across the D3D12/Metal/Vulkan backends.",
-            "tags": ["backend", "common", "shared", "gte"]
+            "tags": ["backend", "common", "shared", "gte"],
+            "depends_on": ["OmegaGTE Public API", "OmegaCommon Public API"]
         },
         {
             "name": "OmegaGTE Tests",
             "module": "gte",
             "dirs": ["gte/tests"],
             "purpose": "Per-API GTE tests (2D, compute, blit, CPU/GPU tessellation, asset) under directx/metal/vulkan.",
-            "tags": ["tests", "gte", "tessellation", "compute"]
+            "tags": ["tests", "gte", "tessellation", "compute"],
+            "depends_on": ["OmegaGTE Public API", "OmegaGTE Direct3D 12 Backend", "OmegaGTE Metal Backend", "OmegaGTE Vulkan Backend"]
         },
         {
             "name": "OmegaSL Compiler",
@@ -173,7 +194,8 @@
             "purpose": "The omegaslc shader-language compiler: full pipeline from preprocessing through lexing, parsing, semantic analysis, optimization, and code generation to HLSL/Metal/GLSL. (Frontend and codegen file-groups are pinned as finer areas below.)",
             "tags": ["omegasl", "shader", "compiler", "omegaslc", "lexer", "parser", "sema", "codegen", "ast"],
             "key_headers": ["gte/omegasl/src/Lexer.h", "gte/omegasl/src/Parser.h", "gte/omegasl/src/Sema.h", "gte/omegasl/src/CodeGen.h", "gte/omegasl/src/AST.h", "gte/omegasl/src/Target.h"],
-            "key_symbols": ["Lexer", "Parser", "Sema", "CodeGen", "ConstFold", "FeatureScanner"]
+            "key_symbols": ["Lexer", "Parser", "Sema", "CodeGen", "ConstFold", "FeatureScanner"],
+            "depends_on": ["OmegaSL Frontend", "OmegaSL Code Generation", "OmegaCommon Public API"]
         },
         {
             "name": "OmegaSL Frontend",
@@ -181,7 +203,8 @@
             "globs": ["gte/omegasl/src/Lexer.*", "gte/omegasl/src/Parser.*", "gte/omegasl/src/Sema.*", "gte/omegasl/src/Preprocessor.*", "gte/omegasl/src/AST.*"],
             "purpose": "OmegaSL compiler front end specifically: preprocessing, lexing, parsing, AST construction, and semantic analysis. Pinned by file glob because every stage shares gte/omegasl/src. Use this to find where source text becomes a checked AST.",
             "tags": ["frontend", "lexer", "parser", "sema", "preprocessor", "ast", "semantic", "tokenize"],
-            "key_symbols": ["Lexer", "Parser", "Sema", "Preprocessor", "AST"]
+            "key_symbols": ["Lexer", "Parser", "Sema", "Preprocessor", "AST"],
+            "depends_on": ["OmegaCommon Public API"]
         },
         {
             "name": "OmegaSL Code Generation",
@@ -189,14 +212,16 @@
             "globs": ["gte/omegasl/src/CodeGen.*", "gte/omegasl/src/Target.h", "gte/omegasl/src/*Target.cpp", "gte/omegasl/src/MetalShaderCompile.mm", "gte/omegasl/src/ConstFold.*", "gte/omegasl/src/FeatureScanner.*"],
             "purpose": "OmegaSL compiler back end specifically: the codegen core plus the HLSL/Metal(MSL)/GLSL target emitters, constant folding, and feature scanning. Pinned by file glob. Use this to find where the checked AST becomes backend shader source.",
             "tags": ["codegen", "backend", "target", "hlsl", "msl", "metal", "glsl", "constfold", "featurescanner", "emit"],
-            "key_symbols": ["CodeGen", "Target", "HLSLTarget", "MSLTarget", "GLSLTarget", "ConstFold", "FeatureScanner"]
+            "key_symbols": ["CodeGen", "Target", "HLSLTarget", "MSLTarget", "GLSLTarget", "ConstFold", "FeatureScanner"],
+            "depends_on": ["OmegaSL Frontend", "OmegaCommon Public API"]
         },
         {
             "name": "OmegaSL Tests & Samples",
             "module": "gte",
             "dirs": ["gte/omegasl/tests"],
             "purpose": "OmegaSL language conformance tests and example shaders — the canonical corpus of valid .omegasl across vertex/fragment/compute stages.",
-            "tags": ["omegasl", "tests", "shader", "samples", "conformance"]
+            "tags": ["omegasl", "tests", "shader", "samples", "conformance"],
+            "depends_on": ["OmegaSL Compiler"]
         },
         {
             "name": "AUTOM Sources",
@@ -205,7 +230,8 @@
             "purpose": "The AUTOM native build-system generator: target model, toolchain management, execution driver, diagnostics, and host/platform support. (The build-file engine and generators have finer areas.)",
             "tags": ["autom", "build", "buildsystem", "target", "toolchain", "execengine", "diagnostic", "cli", "install"],
             "key_headers": ["autom/src/Autom.h", "autom/src/Target.h", "autom/src/Toolchain.h", "autom/src/ExecEngine.h"],
-            "key_symbols": ["Target", "Toolchain", "ExecEngine", "Diagnostic", "InstallFile", "HostTarget"]
+            "key_symbols": ["Target", "Toolchain", "ExecEngine", "Diagnostic", "InstallFile", "HostTarget"],
+            "depends_on": []
         },
         {
             "name": "AUTOM Build-File Engine",
@@ -213,7 +239,8 @@
             "dirs": ["autom/src/engine"],
             "purpose": "Parser and execution engine for AUTOM.build files: lexer, AST, AST factory, builtins, and the interpreter.",
             "tags": ["engine", "parser", "lexer", "ast", "interpreter", "builtins", "execution"],
-            "key_symbols": ["Lexer", "AST", "ASTFactory", "Execution", "Object"]
+            "key_symbols": ["Lexer", "AST", "ASTFactory", "Execution", "Object"],
+            "depends_on": ["AUTOM Sources"]
         },
         {
             "name": "AUTOM Code Generators",
@@ -221,28 +248,32 @@
             "dirs": ["autom/src/gen"],
             "purpose": "Project-file generators that emit Ninja, Xcode, Visual Studio, Gradle, and compile_commands.json from the AUTOM target model.",
             "tags": ["generator", "ninja", "xcode", "visualstudio", "gradle", "compilecommands"],
-            "key_symbols": ["TargetNinja", "TargetXcode", "TargetVisualStudio", "TargetGradle", "CompileCommands"]
+            "key_symbols": ["TargetNinja", "TargetXcode", "TargetVisualStudio", "TargetGradle", "CompileCommands"],
+            "depends_on": ["AUTOM Sources"]
         },
         {
             "name": "AUTOM Standard Modules",
             "module": "autom",
             "dirs": ["autom/modules"],
             "purpose": "AUTOM standard-library modules written in the build language (e.g. filesystem support).",
-            "tags": ["modules", "stdlib", "filesystem", "autom"]
+            "tags": ["modules", "stdlib", "filesystem", "autom"],
+            "depends_on": ["AUTOM Build-File Engine"]
         },
         {
             "name": "AUTOM Dependency Tools",
             "module": "autom",
             "dirs": ["autom/tools"],
             "purpose": "AUTOMDEPS / autom-deps: the dependency fetch-and-sync tooling that vendors third-party sources.",
-            "tags": ["automdeps", "deps", "dependencies", "fetch", "vendor"]
+            "tags": ["automdeps", "deps", "dependencies", "fetch", "vendor"],
+            "depends_on": []
         },
         {
             "name": "AUTOM Tests",
             "module": "autom",
             "dirs": ["autom/tests"],
             "purpose": "AUTOM generator and language tests (gen-ninja, gen-sln, gen-xcode, gen-complex).",
-            "tags": ["tests", "autom", "generator"]
+            "tags": ["tests", "autom", "generator"],
+            "depends_on": ["AUTOM Sources", "AUTOM Build-File Engine", "AUTOM Code Generators"]
         },
         {
             "name": "OmegaCommon Public API",
@@ -251,49 +282,56 @@
             "purpose": "Shared runtime/utility public headers: core type system (SharedHandle, Vector, String), and the declarations for filesystem, format, JSON, networking, threading, and assets.",
             "tags": ["common", "types", "sharedhandle", "vector", "string", "utils", "utility"],
             "key_headers": ["common/include/omega-common/utils.h"],
-            "key_symbols": ["SharedHandle", "Vector", "String", "StrRef"]
+            "key_symbols": ["SharedHandle", "Vector", "String", "StrRef"],
+            "depends_on": []
         },
         {
             "name": "OmegaCommon Sources",
             "module": "common",
             "dirs": ["common/src"],
             "purpose": "Implementations of the common runtime services: filesystem, JSON, crypto/hashing, formatting, regex, CLI parsing, networking, asset bundles, and threading (with per-OS subfolders).",
-            "tags": ["filesystem", "fs", "json", "crypto", "hash", "format", "regex", "cli", "network", "http", "assets", "threading"]
+            "tags": ["filesystem", "fs", "json", "crypto", "hash", "format", "regex", "cli", "network", "http", "assets", "threading"],
+            "depends_on": ["OmegaCommon Public API"]
         },
         {
             "name": "OmegaCommon Image Codecs",
             "module": "common",
             "dirs": ["common/src/img"],
             "purpose": "PNG/JPEG/TIFF image codecs used for asset and texture loading.",
-            "tags": ["image", "codec", "png", "jpeg", "tiff", "decode"]
+            "tags": ["image", "codec", "png", "jpeg", "tiff", "decode"],
+            "depends_on": ["OmegaCommon Public API", "OmegaCommon Sources"]
         },
         {
             "name": "OmegaCommon Unicode & Text",
             "module": "common",
             "dirs": ["common/src/unicode"],
             "purpose": "Unicode text handling: bidi paragraphs, break iteration, script-run iteration, and the UniString type.",
-            "tags": ["unicode", "text", "bidi", "breakiterator", "scriptrun", "unistring"]
+            "tags": ["unicode", "text", "bidi", "breakiterator", "scriptrun", "unistring"],
+            "depends_on": ["OmegaCommon Public API", "OmegaCommon Sources"]
         },
         {
             "name": "omega-wrapgen",
             "module": "common",
             "dirs": ["common/wrapgen"],
             "purpose": "Language-binding generator: parses C++ headers and emits bindings for other languages.",
-            "tags": ["wrapgen", "bindings", "binding", "generator", "tool"]
+            "tags": ["wrapgen", "bindings", "binding", "generator", "tool"],
+            "depends_on": ["OmegaCommon Public API", "OmegaCommon Sources"]
         },
         {
             "name": "omega-ebin",
             "module": "common",
             "dirs": ["common/embedbin"],
             "purpose": "Binary-embedding tool that turns data files into linkable C++ source.",
-            "tags": ["ebin", "embedbin", "embed", "binary", "tool"]
+            "tags": ["ebin", "embedbin", "embed", "binary", "tool"],
+            "depends_on": ["OmegaCommon Public API"]
         },
         {
             "name": "omegawtk-assetc",
             "module": "common",
             "dirs": ["common/assetc"],
             "purpose": "Asset-bundle compiler for OmegaWTK assets.",
-            "tags": ["assetc", "asset", "bundle", "compiler", "tool"]
+            "tags": ["assetc", "asset", "bundle", "compiler", "tool"],
+            "depends_on": ["OmegaCommon Public API", "OmegaCommon Sources", "OmegaCommon Image Codecs"]
         },
         {
             "name": "AQUA Public API",
@@ -301,21 +339,24 @@
             "dirs": ["aqua/include/aqua"],
             "purpose": "Physics/simulation engine public surface: the rigid-body World, math core, and integrator. Backend is hidden behind this API. Early-stage scaffold.",
             "tags": ["physics", "simulation", "aqua", "world", "rigidbody", "integrator", "math", "collision"],
-            "key_symbols": ["World", "RigidBody", "Integrator"]
+            "key_symbols": ["World", "RigidBody", "Integrator"],
+            "depends_on": ["OmegaCommon Public API", "OmegaGTE Public API"]
         },
         {
             "name": "AQUA Sources",
             "module": "aqua",
             "dirs": ["aqua/src"],
             "purpose": "Simulation implementation: context, simulation spaces, and placeholder kernels.",
-            "tags": ["aqua", "context", "simulation", "kernel", "solver"]
+            "tags": ["aqua", "context", "simulation", "kernel", "solver"],
+            "depends_on": ["AQUA Public API", "OmegaCommon Public API", "OmegaGTE Public API"]
         },
         {
             "name": "AQUA Tests",
             "module": "aqua",
             "dirs": ["aqua/tests"],
             "purpose": "AQUA unit tests.",
-            "tags": ["tests", "aqua"]
+            "tags": ["tests", "aqua"],
+            "depends_on": ["AQUA Public API", "AQUA Sources"]
         },
         {
             "name": "Omega kREATE Public API",
@@ -323,98 +364,112 @@
             "dirs": ["kreate/include/kreate"],
             "purpose": "Game-engine public headers: engine core, scene model, and editor entry points. Builds on OmegaGTE + OmegaWTK. Early stage.",
             "tags": ["kreate", "engine", "game", "scene", "editor"],
-            "key_symbols": ["Engine", "Scene"]
+            "key_symbols": ["Engine", "Scene"],
+            "depends_on": ["OmegaGTE Public API", "OmegaWTK UI Framework", "OmegaCommon Public API"]
         },
         {
             "name": "Omega kREATE Core",
             "module": "kreate",
             "dirs": ["kreate/src"],
             "purpose": "Engine implementation: core, renderer, and pipeline. (Renderer/pipeline/platform have finer areas.)",
-            "tags": ["kreate", "core", "engine", "implementation"]
+            "tags": ["kreate", "core", "engine", "implementation"],
+            "depends_on": ["Omega kREATE Public API", "OmegaGTE Public API", "OmegaWTK UI Framework"]
         },
         {
             "name": "Omega kREATE Renderer",
             "module": "kreate",
             "dirs": ["kreate/src/renderer"],
             "purpose": "Internal kREATE renderer built on OmegaGTE.",
-            "tags": ["kreate", "renderer", "rendering"]
+            "tags": ["kreate", "renderer", "rendering"],
+            "depends_on": ["Omega kREATE Core", "OmegaGTE Public API"]
         },
         {
             "name": "Omega kREATE Pipeline",
             "module": "kreate",
             "dirs": ["kreate/src/pipeline"],
             "purpose": "kREATE render/asset pipeline system.",
-            "tags": ["kreate", "pipeline"]
+            "tags": ["kreate", "pipeline"],
+            "depends_on": ["Omega kREATE Core", "OmegaGTE Public API"]
         },
         {
             "name": "Omega kREATE Platform",
             "module": "kreate",
             "dirs": ["kreate/src/platform", "kreate/target"],
             "purpose": "Per-OS platform abstraction and entry points (windows/linux/macos/ios/android).",
-            "tags": ["kreate", "platform", "windows", "linux", "macos", "ios", "android", "entrypoint"]
+            "tags": ["kreate", "platform", "windows", "linux", "macos", "ios", "android", "entrypoint"],
+            "depends_on": ["Omega kREATE Core", "OmegaWTK Native Abstraction"]
         },
         {
             "name": "Omega kREATE Tests",
             "module": "kreate",
             "dirs": ["kreate/tests"],
             "purpose": "kREATE tests and example game.",
-            "tags": ["tests", "kreate", "example"]
+            "tags": ["tests", "kreate", "example"],
+            "depends_on": ["Omega kREATE Public API", "Omega kREATE Core", "Omega kREATE Renderer"]
         },
         {
             "name": "OmegaVA Public API",
             "module": "va",
             "dirs": ["va/include/omegaVA", "va/include"],
             "purpose": "Audio/video module public surface: media playback, decoding, and device abstraction. Backend is hidden behind this API.",
-            "tags": ["audio", "video", "media", "va", "playback", "codec", "decode", "device"]
+            "tags": ["audio", "video", "media", "va", "playback", "codec", "decode", "device"],
+            "depends_on": ["OmegaCommon Public API"]
         },
         {
             "name": "OmegaVA Core",
             "module": "va",
             "dirs": ["va/src"],
             "purpose": "Backend-neutral OmegaVA core utilities. (Per-platform backends below.)",
-            "tags": ["va", "core", "media"]
+            "tags": ["va", "core", "media"],
+            "depends_on": ["OmegaVA Public API", "OmegaCommon Public API"]
         },
         {
             "name": "OmegaVA FFmpeg Backend (Linux)",
             "module": "va",
             "dirs": ["va/src/ffmpeg"],
             "purpose": "FFmpeg-based audio/video backend for Linux (statically links vendored FFmpeg n7.1.1 + ALSA).",
-            "tags": ["ffmpeg", "linux", "alsa", "backend", "av"]
+            "tags": ["ffmpeg", "linux", "alsa", "backend", "av"],
+            "depends_on": ["OmegaVA Public API", "OmegaVA Core"]
         },
         {
             "name": "OmegaVA WMF Backend (Windows)",
             "module": "va",
             "dirs": ["va/src/wmf"],
             "purpose": "Windows Media Foundation backend for Windows.",
-            "tags": ["wmf", "windows", "mediafoundation", "backend"]
+            "tags": ["wmf", "windows", "mediafoundation", "backend"],
+            "depends_on": ["OmegaVA Public API", "OmegaVA Core"]
         },
         {
             "name": "OmegaVA AVFoundation Backend (Apple)",
             "module": "va",
             "dirs": ["va/src/avf"],
             "purpose": "AVFoundation backend for macOS and iOS.",
-            "tags": ["avfoundation", "macos", "ios", "apple", "backend"]
+            "tags": ["avfoundation", "macos", "ios", "apple", "backend"],
+            "depends_on": ["OmegaVA Public API", "OmegaVA Core"]
         },
         {
             "name": "OmegaVA Android Backend",
             "module": "va",
             "dirs": ["va/src/android"],
             "purpose": "Android audio/video backend.",
-            "tags": ["android", "backend", "av"]
+            "tags": ["android", "backend", "av"],
+            "depends_on": ["OmegaVA Public API", "OmegaVA Core"]
         },
         {
             "name": "omega-codedb",
             "module": "utils",
             "dirs": ["utils/omega-codedb"],
             "purpose": "This tool: the zero-dependency code locator (curated area map + auto-built symbol index) that helps agents navigate the repo without grepping.",
-            "tags": ["codedb", "navigation", "search", "index", "tool", "agents"]
+            "tags": ["codedb", "navigation", "search", "index", "tool", "agents"],
+            "depends_on": []
         },
         {
             "name": "Repo Documentation Tooling",
             "module": "utils",
             "dirs": ["utils/sphinx"],
             "purpose": "Sphinx documentation infrastructure and theme assets for the project docs.",
-            "tags": ["docs", "sphinx", "documentation", "tool"]
+            "tags": ["docs", "sphinx", "documentation", "tool"],
+            "depends_on": []
         }
     ]
 }

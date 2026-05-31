@@ -1,28 +1,71 @@
 # OmegaWTK Components
 
-`wtk/components/` houses opt-in widget/view libraries that ship **alongside**
-OmegaWTK rather than inside it. Each component is its own statically-linked
-library that a consumer opts into per app.
+`wtk/components/` houses opt-in widget/view libraries that ship as part of
+the OmegaWTK SDK rather than inside the core library. Each component
+compiles to its own shared library named `OmegaWTK.<name>` and is bundled
+alongside `OmegaWTK` so consumer apps see the whole SDK as one product —
+they never name a component on their own link line.
 
 The default OmegaWTK SDK contains every widget that every WTK application
-is expected to need: layout containers, buttons, text, images, video. Anything
-that pulls in a substantial extra dependency, expands the surface beyond what
-a typical app uses, or wraps a third-party engine that would otherwise force
-itself on every consumer, lives here instead.
+is expected to need: layout containers, buttons, text, images, video.
+Anything that pulls in a substantial extra dependency, expands the surface
+beyond what a typical app uses, or wraps a third-party engine that would
+otherwise force itself on every consumer, lives here instead.
 
 ## Why a component is not a normal widget
 
 A component pays for itself in two cases:
 
-1. **Heavyweight dependency.** GTEView pulls libOmegaGTE's full pipeline /
-   compute / mesh-shader machinery into the link. Apps that just want to lay
-   out buttons and play a video do not pay for it.
+1. **Heavyweight dependency.** GTEView pulls OmegaGTE's full pipeline /
+   compute / mesh-shader machinery into the link. Apps that just want to
+   lay out buttons and play a video do not pay for it.
 
-2. **Specialist surface.** PDF viewers, web views, map tiles, chart layers —
-   feature surfaces that a small subset of apps actually use. The component
-   pattern keeps the default WTK link small.
+2. **Specialist surface.** PDF viewers, web views, map tiles, chart layers
+   — feature surfaces that a small subset of apps actually use. The
+   component pattern keeps the default WTK link small.
 
 Everything else stays in `wtk/src/Widgets/` and `wtk/src/UI/`.
+
+## Where each component lives
+
+All components except `gteview` are **external repos fetched via
+AUTOMDEPS** (named `omega-graphics/wtk-<name>` on the source host) into
+`wtk/components/<name>/`. The folder is empty in a fresh tree until
+AUTOMDEPS clones the external repo into it.
+
+`gteview` is the only INTERNAL component — it lives in this repo because
+GTE's own tests exercise it directly. Treat it as the canonical reference
+when authoring a new external component.
+
+Current roster:
+
+| Component  | Origin                                | Status                       |
+|------------|---------------------------------------|------------------------------|
+| `gteview`  | this repo (internal)                  | scaffold (build wiring only) |
+| `webview`  | `omega-graphics/wtk-webview`          | fetched via AUTOMDEPS        |
+
+Folders for components that do not yet exist as repos (`chartview`,
+`livegraphview`, `mapview`, `pdfview`) are reserved name slots — the
+umbrella skips any subdir without a `CMakeLists.txt`, so empty folders
+cost nothing at configure time.
+
+## How a component is packaged
+
+| Platform | Where the shared lib lands                                              |
+|----------|-------------------------------------------------------------------------|
+| macOS    | Embedded inside `OmegaWTK.framework/Versions/<V>/Libraries/`            |
+| Windows  | Sibling of `OmegaWTK.dll` in `${CMAKE_BINARY_DIR}/bin/`                 |
+| Linux    | Sibling of `libOmegaWTK.so` in `${CMAKE_BINARY_DIR}/lib/`               |
+
+On macOS the framework's `add_omega_graphics_module(... FRAMEWORK ...)`
+call lists every configured-in component in its `EMBEDDED_LIBS`, so the
+framework bundle build copies each component dylib into the framework's
+Libraries/ directory and code-signs the whole bundle as a unit.
+
+On Windows/Linux the component sets its own output directory to match
+the core library's. `omega_stage_runtime_dlls` (Win32) and the executable's
+`$ORIGIN` rpath (Linux) already cover anything that lives next to the core
+library, so no extra staging glue is required.
 
 ## Layout of a component
 
@@ -48,75 +91,86 @@ Public headers live under `omegaWTK/Components/<Name>/` so consumers write:
 #include <omegaWTK/Components/GTEView/GTEViewWidget.h>
 ```
 
-That keeps the namespace obvious at the use site and stops component headers
-from polluting the core `omegaWTK/Widgets/` include tree.
+That keeps the namespace obvious at the use site and stops component
+headers from polluting the core `omegaWTK/Widgets/` include tree.
 
-## Build wiring
+## Build wiring contract
 
-A component opts itself in via a CMake option that defaults to OFF:
+A component CMakeLists.txt must:
 
-```cmake
-option(OMEGAWTK_COMPONENT_<NAME> "Build the <Name> component" OFF)
-if(NOT OMEGAWTK_COMPONENT_<NAME>)
-    return()
-endif()
-```
+1. Declare its opt-in flag (default OFF) and early-return when unset:
+   ```cmake
+   option(OMEGAWTK_COMPONENT_<NAME> "Build OmegaWTK.<name> (...)" OFF)
+   if(NOT OMEGAWTK_COMPONENT_<NAME>)
+       return()
+   endif()
+   ```
 
-The library target is named `OmegaWTKComponent_<Name>`, STATIC, with
-`POSITION_INDEPENDENT_CODE ON`. It links the core `OmegaWTK` framework /
-shared lib publicly and whatever extra deps the component itself needs
-(privately, where the headers don't expose them).
+2. Build a SHARED target named **`OmegaWTK.<name>`** (CMake target name
+   == output base name).
 
-The umbrella `wtk/components/CMakeLists.txt` auto-discovers any subdir with a
-`CMakeLists.txt`, so adding a new component is a single `add_subdirectory`
-side effect — no central edit required.
+3. Set per-platform output directory on Windows/Linux to put the binary
+   alongside the core library (macOS uses the framework's `EMBEDDED_LIBS`
+   path instead — see gteview for the exact pattern).
 
-Components are only reached when `OMEGAWTK_BUILD_COMPONENTS=ON` at the
-top-level WTK configure (gated from `wtk/CMakeLists.txt`). With that on,
-each component is then individually controlled by its own
-`OMEGAWTK_COMPONENT_<NAME>` flag.
+4. Define `OMEGAWTK_APP` plus the appropriate `TARGET_*` macros when
+   compiling on Win32. The component is a consumer of `OmegaWTK`'s
+   exported symbols, so `OMEGAWTK_EXPORT` must resolve to `dllimport` in
+   its TUs.
+
+5. Register itself with the parent build:
+   ```cmake
+   set_property(GLOBAL APPEND PROPERTY OMEGAWTK_COMPONENT_TARGETS OmegaWTK.<name>)
+   ```
+
+The component does **not** link `OmegaWTK` from its own CMakeLists —
+components are configured before the framework target exists. The parent
+`wtk/CMakeLists.txt` adds the framework as a link dependency in a second
+sweep after the framework is created.
+
+The umbrella `wtk/components/CMakeLists.txt` auto-discovers any subdir
+with a `CMakeLists.txt`, so adding a new component is purely additive —
+no central edit required.
+
+Everything is gated by `OMEGAWTK_BUILD_COMPONENTS=ON` at the top-level
+WTK configure. With that on, each component is then individually
+controlled by its own `OMEGAWTK_COMPONENT_<NAME>` flag.
 
 ## Consuming a component from a test or app
 
-`OmegaWTKApp()` does NOT auto-link any component. That is intentional —
-component selection is per-consumer. After the helper call, link the
-components your app actually needs:
+`OmegaWTKApp()` auto-links every configured-in component into every app
+it builds. Apps that link `OmegaWTK` get everything that was configured
+in at WTK build time, with zero per-app boilerplate:
 
 ```cmake
 OmegaWTKApp(
-    NAME          MyApp
-    BUNDLE_ID     "org.example.MyApp"
-    SOURCES       main.cpp)
-target_link_libraries(MyApp PRIVATE OmegaWTKComponent_GTEView)
+    NAME      MyApp
+    BUNDLE_ID "org.example.MyApp"
+    SOURCES   main.cpp)
+# No need to mention OmegaWTK.gteview, OmegaWTK.webview, etc.
+# If they were configured in, the app links them.
 ```
 
-If the component is off (or `OMEGAWTK_BUILD_COMPONENTS=OFF`), the target
-does not exist and the link fails fast at configure time — the consumer
-finds out immediately rather than discovering missing symbols at runtime.
+This is what the SDK's "no external dependency linkage on the App"
+contract means in CMake terms: component selection happens once, at WTK
+configure time, via the per-component `OMEGAWTK_COMPONENT_<NAME>` flags.
+Apps express what they use through `#include` and code, not through link
+lines.
 
-## Component compile-time flags consumers should know
+## Component-side exports (Phase G1+, not in scaffold)
 
-Tests/apps that link a component should keep the same per-platform flags
-`OmegaWTKApp` already sets (`OMEGAWTK_APP`, `TARGET_*`). Components
-themselves are built once, not per-app, so they compile in the
-library-build mode (no `OMEGAWTK_APP` defined).
+When a component grows its own exported types, it ships an
+`Export.h` header under `include/omegaWTK/Components/<Name>/` mirroring
+`wtk/include/OmegaWTKExport.h`:
 
-When a component grows enough to ship as its own shared library (DLL on
-Windows) instead of a static archive, that component will need its own
-`OMEGAWTK_COMPONENT_<NAME>_EXPORT` macro mirroring the
-`OMEGAWTK_EXPORT`/`OMEGAWTK_APP` flip in `OmegaWTKExport.h`. The current
-static-link contract avoids that complexity until a real consumer needs it.
+- Defines `OMEGAWTK_<NAME>_EXPORT` as `dllexport` when the component is
+  being built (gated on `OMEGAWTK_<NAME>_BUILDING` set by the component
+  CMakeLists), `dllimport` otherwise, empty on non-Win32 platforms.
+- Component public headers mark their exported classes / functions with
+  `OMEGAWTK_<NAME>_EXPORT`.
+- The component's CMakeLists adds
+  `target_compile_definitions(OmegaWTK.<name> PRIVATE OMEGAWTK_<NAME>_BUILDING)`
+  to flip the macro to dllexport during its own compilation.
 
-## What components exist today
-
-| Component | Status | Plan |
-|-----------|--------|------|
-| `gteview/` | scaffold (build wiring only) | `wtk/docs/NativeViewHost-Adoption-Plan.md` Part 2 |
-| `chartview/` | empty | — |
-| `livegraphview/` | empty | — |
-| `mapview/` | empty | — |
-| `pdfview/` | empty | — |
-| `webview/` | empty | — |
-
-Components with no `CMakeLists.txt` are skipped by the umbrella — empty
-folders cost nothing at configure time.
+No component has reached this point yet; the gteview scaffold omits the
+header until Phase G1 brings in classes that need to be exported.

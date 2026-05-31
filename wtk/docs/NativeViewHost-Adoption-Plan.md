@@ -31,8 +31,8 @@ dependency surfaces.
 
 | Widget            | Library                                   | Headers under                               |
 |-------------------|-------------------------------------------|---------------------------------------------|
-| `VideoViewWidget` | **default `libOmegaWTK`** (always built)  | `omegaWTK/Widgets/`                         |
-| `GTEViewWidget`   | **`OmegaWTKComponent_GTEView`** (opt-in)  | `omegaWTK/Components/GTEView/`              |
+| `VideoViewWidget` | **core `OmegaWTK`** (always built)        | `omegaWTK/Widgets/`                         |
+| `GTEViewWidget`   | **`OmegaWTK.gteview`** SHARED (opt-in)    | `omegaWTK/Components/GTEView/`              |
 
 VideoView is a standard part of WTK — every app already pays for
 OmegaVA (playback/capture sessions) and the per-platform video surface APIs
@@ -85,19 +85,36 @@ Three things have to split cleanly so the core never depends on GTE:
 `OMEGAWTK_BUILD_COMPONENTS` option (default OFF) that auto-discovers any
 subdirectory with its own `CMakeLists.txt`. Each component declares its
 own per-component option flag (e.g. `OMEGAWTK_COMPONENT_GTEVIEW`, default
-OFF) and builds a STATIC library named `OmegaWTKComponent_<Name>` with
-`POSITION_INDEPENDENT_CODE ON`.
+OFF) and builds a SHARED library named `OmegaWTK.<name>` — same naming
+convention as the core lib, dot-separated suffix for the component.
 
-Consumers link components after the `OmegaWTKApp(...)` call:
+Packaging is per-platform:
+
+- **macOS**: every configured-in component is listed in the OmegaWTK
+  framework's `EMBEDDED_LIBS`, so its dylib lands inside
+  `OmegaWTK.framework/Versions/<V>/Libraries/` and is code-signed as part
+  of the framework bundle. The SDK ships as one framework that already
+  contains every configured component.
+- **Windows / Linux**: the component sets its own output directory to
+  match the core lib (`${CMAKE_BINARY_DIR}/bin` / `lib`), so its DLL or
+  shared object ships as a sibling of `OmegaWTK.dll` /
+  `libOmegaWTK.so`. The existing `omega_stage_runtime_dlls` (Win32) and
+  `$ORIGIN` rpath (Linux) cover it without extra glue.
+
+`OmegaWTKApp()` auto-links every configured-in component into every app:
 
 ```cmake
 OmegaWTKApp(NAME GTEViewSampleApp BUNDLE_ID "..." SOURCES main.cpp)
-target_link_libraries(GTEViewSampleApp PRIVATE OmegaWTKComponent_GTEView)
+# OmegaWTK.gteview is on the link line already — auto-linked because
+# OMEGAWTK_COMPONENT_GTEVIEW=ON at configure time. App's CMakeLists never
+# names the component target itself.
 ```
 
-`OmegaWTKApp` does not auto-link any component — selection is per-consumer
-and explicit. If the component is not configured in, the link fails fast
-at configure time. See `wtk/components/README.md` for the full contract.
+This is the "no external dependency linkage on the App" contract:
+component selection happens once, at WTK configure time, via the
+`OMEGAWTK_COMPONENT_<NAME>` flags. Apps express what they use through
+`#include` and code, not through link lines. See
+`wtk/components/README.md` for the full contract.
 
 ---
 
@@ -913,9 +930,12 @@ via the component header:
 ```
 
 Verification: `GTEViewWidget` in an HStack with other widgets. 3D view
-resizes correctly. Multiple instances render independently. App links
-`OmegaWTKComponent_GTEView` explicitly via
-`target_link_libraries(<app> PRIVATE OmegaWTKComponent_GTEView)`.
+resizes correctly. Multiple instances render independently. App built
+via `OmegaWTKApp(...)` picks up `OmegaWTK.gteview` automatically — no
+explicit link entry in the app's CMakeLists. On macOS, the test app
+bundle resolves `OmegaWTK.gteview.dylib` from inside
+`OmegaWTK.framework/Versions/<V>/Libraries/`; on Win/Linux, from the
+sibling-of-OmegaWTK runtime output dir.
 
 #### Phase G4: Display link integration
 

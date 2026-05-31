@@ -61,7 +61,21 @@ public:
     /// submit the frame. Replaces the prior `renderNow()` entry point
     /// (Phase 2.3); naming aligns with the SceneNode::paint contract
     /// the SceneNode-era model in §3.8 will adopt.
+    ///
+    /// Phase 4.7.4: this no-arg entry is retained only for the
+    /// `SVGViewRenderTest` test entry; production paint routes through
+    /// the PaintContext override below, called once per node by
+    /// `FrameBuilder::buildFrame`.
     void paint();
+
+    /// Phase 4.7.4: PaintContext-driven override of the new
+    /// `View::paint(PaintContext&)` virtual. Rebuilds the cached op
+    /// list if dirty, then appends the SVG content (translated by
+    /// `pc.offset` into absolute window coords) onto `pc.displayList`.
+    /// Per-op translation matches the UIView pattern — rect-like ops
+    /// shift `.pos`, path ops deep-copy and call
+    /// `Composition::Path::translate(offset)`.
+    void paint(Composition::PaintContext & pc) override;
 
     void resize(Composition::Rect newRect) override;
 };

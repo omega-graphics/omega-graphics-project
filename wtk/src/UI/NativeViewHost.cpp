@@ -56,7 +56,13 @@ void NativeViewHost::syncBounds(){
     if(!attached_ || embeddedItem_ == nullptr || view == nullptr){
         return;
     }
-    auto offset = view->computeWindowOffset();
+    // Phase 4.7.5: `computeWindowOffset` is gone (it was a thin
+    // wrapper over the FrameBuilder accumulator which is also gone).
+    // syncBounds fires from `onLayoutResolved`, OUTSIDE the central
+    // `FrameBuilder::buildFrame` walk, so it cannot read
+    // PaintContext.offset — the parent-chain walk via
+    // `View::offsetFromRoot()` is the right hammer here.
+    auto offset = view->offsetFromRoot();
     auto & r = view->getRect();
     embeddedItem_->resize(Composition::Rect{offset, r.w, r.h});
 }

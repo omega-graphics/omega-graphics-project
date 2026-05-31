@@ -3,7 +3,15 @@
 function(OmegaWTKApp)
 
     cmake_parse_arguments("_ARG" "" "NAME;BUNDLE_ID;ASSET_DIR;BUNDLE_ICON" "SOURCES;DEPS" ${ARGN})
-    
+
+    # Every opt-in component that was configured at WTK build time is
+    # auto-linked into every app built via OmegaWTKApp(). Apps do not list
+    # components in their own CMakeLists — selection happens once, at WTK
+    # configure time, via the per-component OMEGAWTK_COMPONENT_<NAME>
+    # flags. The GLOBAL property is populated by each component's
+    # CMakeLists (see wtk/components/<name>/CMakeLists.txt).
+    get_property(_OMEGAWTK_COMPONENT_TARGETS GLOBAL PROPERTY OMEGAWTK_COMPONENT_TARGETS)
+
     if(TARGET_MACOS)
         set(BUNDLE_ID ${_ARG_BUNDLE_ID})
         set(APPNAME ${_ARG_NAME})
@@ -21,10 +29,25 @@ function(OmegaWTKApp)
         target_link_frameworks(${_ARG_NAME} OmegaGTE OmegaWTK)
         target_link_options(${_ARG_NAME} PRIVATE -rpath @loader_path/../Frameworks/OmegaWTK.framework/Libraries)
         target_link_libraries(${_ARG_NAME} PRIVATE OmegaVA)
+        # Components are physically embedded inside OmegaWTK.framework's
+        # Libraries/ dir via the framework's EMBEDDED_LIBS path, so the
+        # rpath above already covers them. Link each so app code can call
+        # the component's public surface.
+        foreach(_comp IN LISTS _OMEGAWTK_COMPONENT_TARGETS)
+            target_link_libraries(${_ARG_NAME} PRIVATE ${_comp})
+        endforeach()
     else()
         add_executable(${_ARG_NAME} ${_ARG_SOURCES})
         add_dependencies(${_ARG_NAME} "OmegaWTK" OmegaWTKCompositorShaderLib)
         target_link_libraries(${_ARG_NAME} PUBLIC OmegaWTK)
+        # Components ship as siblings of libOmegaWTK in the runtime output
+        # dir; link each so the app's symbols resolve against them.
+        # Loader/runtime staging is handled by omega_stage_runtime_dlls
+        # (Win32) or the $ORIGIN rpath on the executable (Linux) further
+        # down — both already see CMAKE_BINARY_DIR/bin and /lib.
+        foreach(_comp IN LISTS _OMEGAWTK_COMPONENT_TARGETS)
+            target_link_libraries(${_ARG_NAME} PRIVATE ${_comp})
+        endforeach()
     endif()
     if(TARGET_MACOS)
         target_include_directories(${_ARG_NAME} PRIVATE "include" "gte/include" "gte/common/include" "${CMAKE_BINARY_DIR}/deps/icu/include")

@@ -116,7 +116,18 @@ struct View::Impl {
     ViewDelegate * delegate = nullptr;
     bool enabled_ = true;
     /// Widget-View-Paint-Lifecycle-Plan Tier A: deferred-paint dirty mask.
+    /// Per-node bits (Style / Layout / Content / Paint) set by
+    /// `markDirty(bits)` on the node that actually changed.
     uint8_t dirtyBits_ = 0;
+    /// Phase 4.7.3: propagated mask. Tracks "any *descendant* of this
+    /// node carries a dirty bit". OR-set on every ancestor by
+    /// `markDirty()` so the root mask is the union of every dirty bit
+    /// anywhere in the tree. `FrameBuilder::buildFrame` reads this to
+    /// gate per-pass subtree pruning: a subtree whose
+    /// `(dirtyBits_ | descendantDirty_) & passBit == 0` is skipped
+    /// entirely. Cleared together with `dirtyBits_` by
+    /// `View::clearDirtyBits()` (which the frame-end pass walks).
+    uint8_t descendantDirty_ = 0;
     /// Phase 4.4: stable per-View NodeId for the AnimationScheduler. Read
     /// via the public `View::nodeId()`. Allocated at construction so
     /// `applyLayoutDelta` can register tweens without a lookup.

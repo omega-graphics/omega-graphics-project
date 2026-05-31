@@ -35,6 +35,11 @@ class TextMateGrammarProcessor:
         if subject_3 is not None:
             r["end"] = self.process_string(subject_3)
 
+        nested = r.get("patterns")
+        if isinstance(nested, list):
+            for inner in nested:
+                self.process_rule(inner)
+
         return
 
     def build_grammar(self, grammar: str, j: bool, output:str):

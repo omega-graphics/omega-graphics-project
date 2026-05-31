@@ -24,6 +24,10 @@ namespace OmegaWTK {
         class LayerTree;
         class Layer;
         class ViewAnimator;
+        // Phase 4.7.0: forward-declared so `View::paint` takes the
+        // existing Tier-B / B3 scaffolding context by reference without
+        // dragging DisplayList.h into the View public header.
+        struct PaintContext;
     }
 
     namespace Native {
@@ -148,11 +152,24 @@ namespace OmegaWTK {
             Content = 1 << 2,
             Paint   = 1 << 3,
         };
-        /// OR `bits` into this view's dirty mask.
+        /// OR `bits` into this view's dirty mask. Phase 4.7.3: also
+        /// walks the parent chain to the root, OR-ing `bits` into
+        /// each ancestor's *descendant-dirty* mask so
+        /// `FrameBuilder::buildFrame` can read the root and know
+        /// "any node anywhere needs this pass". The propagated mask
+        /// is distinct from each node's own `dirtyBits()` — gating
+        /// uses the union of the two.
         void markDirty(uint8_t bits);
-        /// Current dirty mask (combination of DirtyBit values).
+        /// Current self-only dirty mask (combination of DirtyBit
+        /// values). Excludes the propagated descendant mask.
         uint8_t dirtyBits() const;
-        /// Reset the dirty mask to zero.
+        /// Phase 4.7.3: OR of every descendant's `dirtyBits()`.
+        /// Maintained incrementally by `markDirty()`; cleared
+        /// together with `dirtyBits_` by `clearDirtyBits()`.
+        uint8_t descendantDirty() const;
+        /// Reset BOTH the self mask AND the propagated descendant
+        /// mask to zero (Phase 4.7.3 — pre-4.7.3 this cleared only
+        /// the self mask).
         void clearDirtyBits();
         /// @brief Checks to see if this View is the root View of a Widget.
         bool isRootView();
@@ -192,16 +209,15 @@ namespace OmegaWTK {
         /// FrameBuilder owning a per-node commit hook.
         LayoutResolvedSignal onLayoutResolved;
 
-        /// @brief Starts a Composition Session for this View.
-        /// @paragraph Upon invocation, this will allow Canvases to render to child Layers in the View's LayerTree
-        /// and it will allow submission of render and animation commands from the child LayerAnimators and ViewAnimator.
-        /// If one attempts to try animate or render to the View or any child Layers without calling this method FIRST, will recieve an access error.
-        void startCompositionSession();
+        // Phase 4.7.5: `startCompositionSession` / `endCompositionSession`
+        // are deleted. They paired with the per-view canvas /
+        // submitView path that 4.7.4 retired (the window-level
+        // FrameBuilder owns the composition session now; the proxy is
+        // propagated at `addSubView` time so no per-view session-open
+        // dance is needed).
 
-        /// @brief Ends a Composition Session for this View.
-        /// @paragraph This method closes the submission queue of all render commands and submits them to the Compositor.
-        /// Any commands posted to the CompositorClientProxy after invocation of this method will be ignored and an access error will be thrown.
-        void endCompositionSession();
+        // (Phase 4.7.5: `endCompositionSession` deleted alongside
+        // `startCompositionSession` — see note above.)
 
         /// @brief Make the View visible.
         void enable();
@@ -222,36 +238,29 @@ namespace OmegaWTK {
         /// Returns 1.0 if no render target is attached yet.
         float getRenderScale() const;
 
-        /// @brief Compute this View's position relative to the window
-        /// origin. Used by Canvas to stamp CanvasFrame::windowOffset at
-        /// paint time. Tier 3 Phase 3.4: this is a thin wrapper —
-        /// while an AppWindow-driven paint pass is in flight (i.e.
-        /// `AppWindow::activeFrameBuilder() != nullptr`), it returns
-        /// the FrameBuilder's accumulator top (pushed by the widget
-        /// tree walker and the leaf paint code). Otherwise it falls
-        /// back to `legacyComputeWindowOffset` which walks the parent
-        /// chain summing positions and subtracting any ancestor
-        /// scroll contributions.
-        Composition::Point2D computeWindowOffset() const;
+        /// Phase 4.7.5: this View's absolute position relative to
+        /// the window origin, computed by walking the parent chain
+        /// (sum of each ancestor's `rect.pos + parent.contentOffset()`).
+        /// Pre-4.7 was the `legacyComputeWindowOffset` companion to
+        /// the now-deleted FrameBuilder offset accumulator; the
+        /// public `computeWindowOffset` wrapper / accumulator are
+        /// gone (paint reads `PaintContext.offset` from
+        /// `FrameBuilder::buildFrame`'s walker, never via a View
+        /// accessor). One in-tree caller survives:
+        /// `NativeViewHost::syncBounds`, which fires from
+        /// `onLayoutResolved` to position an embedded native item
+        /// against the window — that path runs OUTSIDE the paint
+        /// walker so it cannot read PaintContext, and a parent-walk
+        /// is the right hammer. Renamed from `legacyComputeWindowOffset`
+        /// to drop the "legacy" tag and reflect the new contract
+        /// ("for embed-sync use, not paint").
+        Composition::Point2D offsetFromRoot() const;
 
-        /// Tier 3 Phase 3.4 scaffolding. The pre-Phase-3.4
-        /// implementation of `computeWindowOffset`, exposed for
-        /// callers that explicitly want the parent-chain walk
-        /// (today: the `computeWindowOffset` wrapper itself when no
-        /// FrameBuilder is in flight, and `FrameBuilder::ScopedViewOffset`
-        /// computing the absolute to push). Disappears in Tier 4 once
-        /// the accumulator is the only path.
-        Composition::Point2D legacyComputeWindowOffset() const;
-
-        /// Returns the scroll offset that this View contributes to
-        /// child content positioning. Non-scrolling Views return {0,0}.
-        /// ScrollView overrides this to return its scrollOffset.
-        ///
-        /// Tier 3 Phase 3.6: superseded by `contentOffset()` for the
-        /// FrameBuilder accumulator path. Kept as a public method for
-        /// callers outside the engine; the engine's offset walk now
-        /// reads `contentOffset()`. Removed entirely in Tier 4.
-        virtual Composition::Point2D scrollOffsetContribution() const;
+        // Phase 4.7.5: `computeWindowOffset` / `legacyComputeWindowOffset`
+        // / `scrollOffsetContribution` are deleted. The paint walker
+        // owns the absolute-position math now (via `PaintContext.offset`);
+        // `contentOffset()` is what ScrollView overrides for the
+        // descent walk (Tier 3 Phase 3.6 supersession).
 
         /// Tier 3 Phase 3.6: the offset this View applies to *its
         /// children's* positions when arranging them. Sign convention:
@@ -292,6 +301,36 @@ namespace OmegaWTK {
         /// their DisplayList through the window-level FrameBuilder during
         /// paint, so there is no per-view frame left to send here.
         virtual void submitPaintFrame(int submissions) { (void)submissions; }
+
+        /// Phase 4.7.0: the polymorphic Paint-pass hook. Per-node:
+        /// emits THIS view's draw ops into `pc.displayList` and reads
+        /// `pc.offset` for absolute window positioning. Does NOT recurse
+        /// — subtree traversal lives in `FrameBuilder::buildFrame`'s
+        /// walker (4.7.1), which calls this once per node. The default
+        /// (base `View`) is a pass-through no-op; `UIView`, `SVGView`,
+        /// `ScrollView` override to emit their ops.
+        virtual void paint(Composition::PaintContext & pc);
+
+        /// Phase 4.7.2: the polymorphic Style-pass hook. Per-node:
+        /// resolves this view's style into its private cache (read by
+        /// the subsequent Paint pass). Default is a no-op (base `View`s
+        /// have no style of their own). `UIView` overrides to run the
+        /// existing `resolveViewStyle` + per-element resolution into
+        /// `impl_->resolvedViewStyle_` / `impl_->computedStyles_`. Called
+        /// once per dirty node by `FrameBuilder::buildFrame`'s Style
+        /// pass before Layout / Paint.
+        virtual void resolveStyles();
+
+        /// Phase 4.7.2: the polymorphic Layout-pass hook for *intra-node*
+        /// arrangement. Distinct from `LayoutManager::arrange`, which
+        /// arranges this view's *child views*: `arrangeContent()` runs
+        /// the inside-this-node layout work — for `UIView`, that is the
+        /// element-rect resolution from `UIViewLayoutV2` into
+        /// `impl_->arranged_`. Default is a no-op (base `View`s have no
+        /// internal elements). Called once per dirty node by
+        /// `FrameBuilder::buildFrame`'s Layout pass *after* the
+        /// child-axis `LayoutManager` measure/arrange.
+        virtual void arrangeContent();
 
         virtual ~View();
     };

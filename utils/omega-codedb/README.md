@@ -112,6 +112,15 @@ entry that looks like this:
   is worth listing synonyms (for example, `direct2d`, `d2d`, `dwrite`, `windows`).
 - **key_symbols** / **key_headers** *(optional)* — a short list of the most important types
   and headers to surface for the area.
+- **depends_on** — the names of the other areas this one *directly* depends on. Use the
+  area's exact `name` string as the identifier (referential consistency is checked by
+  hand for now; mistyped names simply don't link). List only direct edges; transitive
+  ones are implied. Edges point at what this area *uses* — reverse lookups ("who uses
+  X?") are the caller's job. An area with no project dependencies still gets an explicit
+  empty array (`"depends_on": []`) so the field is never missing — that signals "I
+  considered this, and nothing in the project sits under it" rather than "I forgot to
+  fill this in." The map is hand-curated; the symbol index does not yet enforce it, and
+  the planned indexer improvements will read these edges rather than infer them.
 
 When several unrelated pieces share a single folder — as the OmegaSL compiler stages all
 do inside `gte/omegasl/src` — you can pin an area to specific files instead of a whole

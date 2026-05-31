@@ -12,9 +12,9 @@
 #include "omegaWTK/Composition/CompositeFrame.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/CompositorSurface.h"
-#include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/UI/View.h"
+#include "omegaWTK/UI/LayoutManager.h"   // Phase 4.7.2: Layout pass invokes node.layoutManager()->measure/arrange.
 
 namespace OmegaWTK {
 
@@ -73,12 +73,8 @@ void FrameBuilder::beginFrame(){
     }
 
     pending_.clear();
-    // Phase 3.4: defensive — the accumulator should be empty at this
-    // point (every ScopedViewOffset push is RAII-paired with a pop),
-    // but an exception escaping a paint could leak entries from the
-    // previous frame. Clear so currentOffset()'s "empty == fall back
-    // to legacy" contract starts fresh.
-    offsetStack_.clear();
+    // Phase 4.7.5: the offset accumulator is gone — `buildFrame`
+    // threads `PaintContext.offset` through its walker instead.
 
     // Phase 3.8: window-scoped paint is the only path. Allocate the
     // window-level CompositeFrame and attach it to the AppWindow's
@@ -139,92 +135,200 @@ void FrameBuilder::endFrame(){
     g_activeFrameBuilder = nullptr;
 }
 
-void FrameBuilder::submitView(View * view, Composition::DisplayList list){
-    if(view == nullptr){
+// ---------------------------------------------------------------------------
+// Phase 4.7.1: centralised Paint walk. Replaces the
+// per-UIView::update → submitView dance with one window-wide
+// DisplayList built by a single top-down tree walk. Lives alongside
+// `submitView` through 4.7.3; 4.7.4 makes this the only driver.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Style-pass walker — pre-order, dirty-bit gated. Phase 4.7.2 / 4.7.3.
+//
+// Calls `node.resolveStyles()` only when this node's own `dirtyBits()`
+// has `Style` set; recurses into children only when either this
+// node's `dirtyBits()` or its propagated `descendantDirty()` mask
+// carries `Style`, so subtrees with no Style dirtiness short-circuit
+// at the parent.
+void styleSubtree(View & node){
+    const uint8_t self = node.dirtyBits();
+    const uint8_t desc = node.descendantDirty();
+    if((self & View::Style) != 0){
+        node.resolveStyles();
+    }
+    if(((self | desc) & View::Style) == 0){
         return;
     }
-#ifndef NDEBUG
-    // Tier 3 Phase 3.5: enforce balanced PushClip / PopClip pairs
-    // per submission. Imbalance leaks scissor state across views in
-    // the same window-scoped frame (the window canvas is shared);
-    // catching it here is much easier than tracing a missing pop
-    // from a misrendered subsequent view. Release builds skip the
-    // walk — Canvas::popClip on an empty stack is a no-op, and
-    // Canvas::nextFrame defensively clears its clip stack at frame
-    // boundaries.
-    int clipDepth = 0;
-    for(const auto & op : list.ops()){
-        if(op.type == Composition::DrawOp::PushClip) ++clipDepth;
-        else if(op.type == Composition::DrawOp::PopClip) --clipDepth;
+    for(auto * child : node.subviews()){
+        if(child != nullptr){
+            styleSubtree(*child);
+        }
     }
-    assert(clipDepth == 0 &&
-           "FrameBuilder::submitView: DisplayList has unbalanced "
-           "PushClip / PopClip pairs. Each PushClip must have a "
-           "matching PopClip before submission.");
-#endif
+}
+
+// Layout-pass walker — pre-order, dirty-bit gated. Phase 4.7.2 / 4.7.3.
+//
+// At each gated node (self.dirtyBits & Layout):
+//   1. `node.layoutManager()->measure(node, finalRect)` — the manager
+//      reads each child's preferred / cached size (FlexLayout has its
+//      own per-child cache; the other 4.5 managers stub measure).
+//   2. `node.layoutManager()->arrange(node, finalRect)` — writes each
+//      child's final rect via `child->resize(...)`.
+//   3. `node.arrangeContent()` — intra-node element layout (UIView
+//      overrides to resolve element rects from `UIViewLayoutV2`).
+//
+// Subtree descent gates on `(self | desc) & Layout` — subtrees with a
+// clean Layout mask are skipped entirely.
+//
+// The plan's "Measure bottom-up then Arrange top-down" two-pass shape
+// is folded into a single pre-order walk for 4.7.2: each manager's
+// `measure` already consults children via cached preferred sizes
+// (FlexLayout reads `child->getRect()` + its per-child cache), so an
+// explicit bottom-up walk does not add information. A future manager
+// that needs parent-uses-child-measured-size will reintroduce the
+// split.
+void layoutSubtree(View & node, const Composition::Rect & finalRect){
+    const uint8_t self = node.dirtyBits();
+    const uint8_t desc = node.descendantDirty();
+    if((self & View::Layout) != 0){
+        if(auto * mgr = node.layoutManager()){
+            mgr->measure(node, finalRect);
+            mgr->arrange(node, finalRect);
+        }
+        node.arrangeContent();
+    }
+    if(((self | desc) & View::Layout) == 0){
+        return;
+    }
+    for(auto * child : node.subviews()){
+        if(child != nullptr){
+            layoutSubtree(*child, child->getRect());
+        }
+    }
+}
+
+// Frame-end dirty-clear walker. Phase 4.7.3.
+//
+// Visits every node that could possibly have a dirty bit (gated by
+// `(self | desc) != 0`) and calls `clearDirtyBits()` to zero both the
+// self mask and the propagated descendant mask. Run after the Paint
+// pass so the next frame starts with a clean tree.
+void clearDirtySubtree(View & node){
+    const uint8_t self = node.dirtyBits();
+    const uint8_t desc = node.descendantDirty();
+    if((self | desc) == 0){
+        return;
+    }
+    for(auto * child : node.subviews()){
+        if(child != nullptr){
+            clearDirtySubtree(*child);
+        }
+    }
+    node.clearDirtyBits();
+}
+
+// Paint-pass walker — pre-order. Phase 4.7.1 (unchanged in 4.7.2).
+//
+// Visits each node, calls `paint(pc)` (per-node hook that emits this
+// node's draw ops — no recursion inside paint), then descends into
+// `subviews()`, updating `pc.offset` by `child.rect.pos +
+// node.contentOffset()` per descent so each child sees its absolute
+// window position in `pc.offset` — the same math
+// `View::legacyComputeWindowOffset` performed inside
+// `ScopedViewOffset` pre-4.7. Offset is saved / restored at each
+// level so siblings see the parent's accumulated offset, not the
+// trailing sibling's.
+void paintSubtree(View & node, Composition::PaintContext & pc){
+    node.paint(pc);
+
+    const auto parentOffset = pc.offset;
+    const auto contentOff   = node.contentOffset();
+    for(auto * child : node.subviews()){
+        if(child == nullptr){
+            continue;
+        }
+        const auto & cr = child->getRect();
+        pc.offset.x = parentOffset.x + contentOff.x + cr.pos.x;
+        pc.offset.y = parentOffset.y + contentOff.y + cr.pos.y;
+        paintSubtree(*child, pc);
+    }
+    pc.offset = parentOffset;
+}
+
+} // namespace
+
+void FrameBuilder::buildFrame(View & root){
+    // Phase 4.7.2 + 4.7.3: the central per-frame loop. Three passes in
+    // order — Style → Layout → Paint — each gated by the root's union
+    // dirty mask (`root.dirtyBits() | root.descendantDirty()`):
+    //   - Style runs only when `Style` is set somewhere in the tree.
+    //   - Layout runs only when `Layout` is set somewhere in the tree.
+    //   - Paint runs when ANY bit is set anywhere — a Style or Layout
+    //     change implies the next frame must re-paint, plus an
+    //     explicit `Paint` dirty (e.g. animation tick) triggers paint
+    //     on its own.
+    // Each pass walker prunes subtrees whose `(dirtyBits |
+    // descendantDirty) & passBit == 0`, so a Paint-only animation tick
+    // skips Style and Layout entirely and Paint visits only the
+    // dirty branch.
+    //
+    // After all passes, `clearDirtySubtree` zeroes every dirty bit so
+    // the next frame starts clean. Caller must mark the appropriate
+    // bits before invoking `buildFrame` (Widget::invalidate does this
+    // today; Phase 4.7.4 makes that the only entry path).
+
+    const uint8_t rootMask = root.dirtyBits() | root.descendantDirty();
+    if(rootMask == 0){
+        // Nothing to do — the tree is clean. Return without
+        // submitting an empty DisplayList so `endFrame` does not
+        // push a no-op slice into the window compositeFrame.
+        return;
+    }
+
+    const auto rootRect = root.getRect();
+
+    if((rootMask & View::Style) != 0){
+        ScopedPhase stylePhase(this, FramePhase::Style);
+        styleSubtree(root);
+    }
+
+    if((rootMask & View::Layout) != 0){
+        ScopedPhase layoutPhase(this, FramePhase::Layout);
+        layoutSubtree(root, rootRect);
+    }
+
+    // Paint pass — one window-wide DisplayList. UIView::paint bakes
+    // `pc.offset` into every emitted rect, so the DL is already in
+    // absolute window coords; the flush submits with
+    // `windowOffset == {0,0}` and the GPU viewport is the whole window.
+    // Paint walker visits the whole tree (no subtree pruning at the
+    // node level — region-based dirty culling is Tier 5).
+    Composition::DisplayList dl{};
+    Composition::PaintContext pc{dl};
+    pc.offset.x = rootRect.pos.x;
+    pc.offset.y = rootRect.pos.y;
+    {
+        ScopedPhase paintPhase(this, FramePhase::Paint);
+        paintSubtree(root, pc);
+    }
+
     PendingSubmission sub;
-    // Phase 3.4: View::computeWindowOffset is now a wrapper that
-    // returns currentOffset() while a FrameBuilder is active. The
-    // caller (UIView::update / SVGView::paint) is expected to have
-    // pushed `view`'s absolute offset onto the stack via
-    // ScopedViewOffset just before this submitView call, so the
-    // wrapper sees the leaf view's offset, not the enclosing
-    // widget's.
-    sub.windowOffset = view->computeWindowOffset();
-    sub.list = std::move(list);
+    sub.windowOffset = {0.f, 0.f};
+    sub.list         = std::move(dl);
     pending_.push_back(std::move(sub));
+
+    clearDirtySubtree(root);
 }
 
-// ---------------------------------------------------------------------------
-// Phase 3.4: window-offset accumulator.
-// ---------------------------------------------------------------------------
-
-Composition::Point2D FrameBuilder::currentOffset() const {
-    if(offsetStack_.empty()){
-        return {0.f, 0.f};
-    }
-    return offsetStack_.back();
-}
-
-void FrameBuilder::pushOffset(Composition::Point2D absolute){
-    offsetStack_.push_back(absolute);
-}
-
-void FrameBuilder::popOffset(){
-    if(!offsetStack_.empty()){
-        offsetStack_.pop_back();
-    }
-}
-
-FrameBuilder::ScopedViewOffset::ScopedViewOffset(FrameBuilder * f, View * v): fb(f) {
-    if(fb == nullptr){
-        return;
-    }
-    // Compute the view's absolute window offset via the legacy
-    // parent-chain walk and push that. The push pays O(depth) once
-    // per push; reads through `View::computeWindowOffset` while the
-    // push is live then cost O(1) — which is the point of the
-    // accumulator: submitView et al. become O(1) lookups instead of
-    // re-walking. Could in principle be optimized to
-    // `currentOffset() + (view.rect.pos - parent.scrollContrib)`
-    // when the stack already contains the immediate parent, but
-    // that invariant only holds for direct widget-tree children —
-    // sub-views nested inside another view (e.g. Phase32Widget's
-    // innerView_ under leftView_) aren't visited by the widget
-    // walker, so their parents wouldn't be on the stack. Using the
-    // full walk keeps the push correct regardless of how the scene
-    // composes views and widgets.
-    Composition::Point2D abs = v != nullptr
-        ? v->legacyComputeWindowOffset()
-        : fb->currentOffset();
-    fb->pushOffset(abs);
-}
-
-FrameBuilder::ScopedViewOffset::~ScopedViewOffset(){
-    if(fb != nullptr){
-        fb->popOffset();
-    }
-}
+// Phase 4.7.5: `submitView`, the offset-accumulator API
+// (`currentOffset` / `pushOffset` / `popOffset` / `ScopedViewOffset`),
+// and the legacy `View::computeWindowOffset` /
+// `legacyComputeWindowOffset` paths are gone. `buildFrame` writes
+// directly into `pending_` itself, and threads `PaintContext.offset`
+// through its own walker. The replay path in `endFrame` is unchanged
+// — it still drains `pending_` and submits each entry's DisplayList
+// via the proxy.
 
 // Phase 3.2: static accessor lives on AppWindow but reads the
 // FrameBuilder-internal slot, so the AppWindow header does not have

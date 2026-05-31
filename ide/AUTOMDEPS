@@ -1,0 +1,14 @@
+{
+    "project": "OmegaGraphicsIDE",
+    "variables": {
+        "ide_utils_dest": "./utils"
+    },
+    "dependencies": [
+        {
+            "name": "pyyaml",
+            "type": "git",
+            "url": "https://github.com/yaml/pyyaml.git",
+            "dest": "$(ide_utils_dest)/pyyaml"
+        }
+    ]
+}

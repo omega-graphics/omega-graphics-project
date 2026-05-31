@@ -388,9 +388,20 @@ private:
     // Each reads/writes Impl-side caches; B3 gates none of them yet (they
     // rebuild every frame), B5 wires the cross-phase assertions.
     void tickAnimations();
-    void resolveStyles();
-    void arrange();
-    void paint(Composition::PaintContext & pc);
+    // Phase 4.7.2: overrides of the new `View::resolveStyles` /
+    // `arrangeContent` virtuals. `arrange()` was renamed to
+    // `arrangeContent()` to align with `View::arrangeContent` (the
+    // intra-node element layout — distinct from the LayoutManager
+    // child-node layout). Bodies unchanged from the pre-4.7.2
+    // versions; only the names change and `override` is added.
+    void resolveStyles() override;
+    void arrangeContent() override;
+    // Phase 4.7.0: override of the new `View::paint` virtual. Access
+    // stays private — `UIView::update()` is the only in-tree caller
+    // today, and from 4.7.1 onward `FrameBuilder::buildFrame()` calls
+    // through `View::paint` (the base virtual is public, so derived
+    // access does not gate virtual dispatch).
+    void paint(Composition::PaintContext & pc) override;
 };
 
 }
