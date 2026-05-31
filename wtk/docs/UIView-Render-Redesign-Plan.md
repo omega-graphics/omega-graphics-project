@@ -3013,7 +3013,173 @@ Files touched: new `wtk/src/UI/PaintContext.h`,
 `wtk/src/UI/Widget.Paint.cpp`, `wtk/src/UI/WidgetTreeHost.cpp`,
 `wtk/src/UI/AppWindow.cpp`.
 
-##### Phase 4.8 — delete the old animation surface + per-view `LayerTree`
+##### Phase 4.8 — delete the old animation surface + per-view `LayerTree` [DONE]
+
+**Status:** Complete (2026-05-31; full Metal build clean across all 91
+targets, visually verified on BasicAppTest pre- and post-cleanup —
+identical render). Folds Animation-Scheduler-Plan **Tier E**. Landed
+in five small sub-phases (4.8.1 → 4.8.5) — each touched a distinct
+deletion surface so a regression would bisect to a single step.
+
+**Survey findings that shaped the implementation:**
+
+- **Zero backend exposure.** `grep` over `wtk/src/Composition/backend`
+  for `ViewAnimator` / `LayerAnimator` / `LayerClip` / `ViewClip` /
+  `AnimationRuntimeRegistry`: no matches. The deleted classes were
+  UI-layer-internal only. All three backends (D3D12 / Metal / Vulkan)
+  remain unchanged.
+- **Zero test exposure.** `grep` over `wtk/tests` for the same set:
+  no matches. No test exercised the deletion targets directly.
+- **`UIView::Impl` dormant fields were truly dormant.** The four
+  animation fields (`animationViewAnimator`,
+  `animationLayerAnimators`, `elementAnimations`,
+  `pathNodeAnimations`) had no writer outside the `ensure*` /
+  `beginCompositionClock` helpers that were themselves dormant
+  (no caller post-4.4 — the comment at `UIViewImpl.h:156` documented
+  the dormancy as a 4.8 prerequisite). Phase 4.4 had completed the
+  scheduler routing; 4.8 just took out the trash.
+- **`UIView::animateElement` is the live public hook.** Routes to
+  `Impl::startOrUpdateAnimation` → `AnimationScheduler` directly,
+  *not* through any deleted class. It's the surviving public API
+  for per-element scalar tweens; `UIView::paint` reads the
+  resulting side table via `animatedValue`.
+- **`applyAnimatedColor` / `applyAnimatedShape` were orphans.**
+  Both pre-flagged as "no caller in the tree" (UIView.Animation.cpp
+  comments at L256 + L281). Their helpers (`clamp01`,
+  `applyShapeDimension`) were only used by these two and went with
+  them. The live paint-time path resolves brush + shape directly
+  from `ComputedStyle` / `UIElementLayoutSpec`.
+- **Window-level layer-tree observation already existed.**
+  `AppWindow.cpp:151-155` observes `windowLayerTree_` at
+  `displayRootWindow` — exactly the single-tree contract Phase 4.8
+  wanted. `WidgetTreeHost::observe/unobserveWidgetLayerTreesRecurse`
+  walked per-view `ownLayerTree`s; with that field deleted, the
+  per-view walk is redundant.
+- **One non-paint caller of layer-tree state survived in
+  `UIView.Update.cpp::localBoundsFromView`.** It read
+  `view->getLayerTree()->getRootLayer()->getLayerRect()` as a
+  fallback when the view's own rect was transient (Tier 2 Phase
+  2.2 cleanup recorded the cache was no longer earning its lifetime
+  hazard). With the per-view tree gone, the fallback is dead — the
+  function falls through to a constant rect instead, matching the
+  4.7 paint pipeline's "View::rect is the source of truth" model.
+
+**Deviations from the plan as written:**
+
+- **`UIView.Animation.cpp` was NOT deleted outright.** The plan
+  said "delete the legacy `UIView.Animation.cpp` paths". The file
+  contains both legacy code (the deleted `ensure*` /
+  `beginCompositionClock` / `applyAnimated*` helpers) and live
+  code that routes to the AnimationScheduler
+  (`startOrUpdateAnimation`, `animateElement`, `animatedValue`,
+  `ensureElementNodeId`, `tryElementNodeId`, `markElementDirty`
+  family). 4.8 stripped the legacy bodies inline and kept the live
+  ones; the file shrunk from ~421 lines to ~245 lines. A future
+  rename to `UIView.Tween.cpp` or similar would reflect what's left,
+  but the rename is not load-bearing.
+- **`WidgetTreeHost::observe/unobserveWidgetLayerTreesRecurse`
+  bodies neutered to no-ops, declarations + 3 call sites kept.**
+  The plan's "move to single window-level observe/unobserve"
+  read literally would have meant deleting the methods + their
+  callers in `~WidgetTreeHost`, `initWidgetTree`, `setRoot`.
+  The bodies are now no-ops (the work is redundant with the
+  pre-existing window-level observation at `AppWindow.cpp:151`);
+  Phase I cleanup retires the symbol entirely once the rest of
+  the dead surface is gone.
+- **`View::Impl::proxy` per-view role kept.** The plan included
+  "delete... the per-view role of `View::Impl::proxy`". The proxy
+  is still used by the FrameBuilder during paint to thread the
+  compositor frontend, plus by the animation scheduler entry path
+  (`UIView::Impl::startOrUpdateAnimation` reads
+  `owner.compositorProxy().getSyncLaneId()`). The "per-view role"
+  reduction is a Phase I follow-up — the proxy stays for now.
+- **`detail::cancelOwner` + `AnimationHandle` packet-id internals
+  not deleted.** The packet-id channel methods
+  (`setSubmittedPacketIdInternal`,
+  `setPresentedPacketIdInternal`,
+  `incrementDroppedPacketCountInternal`,
+  `setFailureReasonInternal`) became orphans when the registry
+  was removed. The Animation-Scheduler-Plan explicitly tracks
+  these for removal in its own Tier; 4.8 stays focused on the
+  view-side deletion and leaves the AnimationHandle cleanup to
+  that plan.
+
+**Sub-phase landing log:**
+
+- **4.8.1** — `WidgetTreeHost::observeWidgetLayerTreesRecurse` /
+  `unobserveWidgetLayerTreesRecurse` bodies emptied (window-level
+  observation in `AppWindow.cpp:151-155` already covers what's
+  needed); `View::setFrontendRecurse` per-view observation calls
+  dropped. ~40 lines deleted, ~10 added (no-op stubs + comments).
+- **4.8.2** — `UIView::Impl` dormant fields (`animationViewAnimator`,
+  `animationLayerAnimators`, `elementAnimations`,
+  `pathNodeAnimations`) deleted; `ensureAnimationViewAnimator` /
+  `ensureAnimationLayerAnimator` / `beginCompositionClock` bodies
+  deleted; `applyAnimatedColor` / `applyAnimatedShape` orphan
+  bodies deleted; `clamp01` / `applyShapeDimension` orphan helpers
+  deleted. ~180 lines deleted, ~25 added (deletion-marker comments).
+- **4.8.3** — `Composition::ViewAnimator` / `LayerAnimator` /
+  `LayerClip` / `ViewClip` declarations deleted from `Animation.h`;
+  `friend class Composition::ViewAnimator` deleted from `View.h`;
+  `namespace detail { ... }` block (`AnimationRuntimeRegistry` +
+  `AnimationInstance` + lane-worker / telemetry / shutdown
+  plumbing) deleted from `Animation.cpp` along with `LayerAnimator`
+  + `ViewAnimator` member implementations. ~850 lines deleted.
+- **4.8.4** — `View::Impl::ownLayerTree` field + initializer
+  deleted; `View::getLayerTree()` accessor deleted; `View::resize`
+  per-view layer-tree resize callsite dropped; `UIView::Update.cpp`
+  layout-validation `getLayerTree()` fallback dropped (rect is
+  now the only source of truth); `BasicWidgets.cpp` Container
+  detach `notifyObserversOfWidgetDetach()` callsite dropped
+  (per-view tree gone, no observers tracked it). ~30 lines
+  deleted, ~30 added (comments documenting the new contract).
+- **4.8.5** — Visual verification of BasicAppTest pre- and
+  post-4.8 (identical render confirms the destructive sweep
+  removed nothing the runtime pipeline depended on). `grep`
+  validator confirms zero remaining live references to the
+  deleted symbols — all 4 remaining mentions are either comment
+  references documenting past state or the no-op `observe*` stubs
+  flagged for Phase I.
+
+**Files touched:**
+
+- `wtk/include/omegaWTK/Composition/Animation.h` — `LayerClip` /
+  `ViewClip` / `LayerAnimator` / `ViewAnimator` declarations
+  deleted.
+- `wtk/src/Composition/Animation.cpp` — `namespace detail { ... }`
+  block (registry + instance lifecycle), `LayerAnimator::*` impls,
+  `ViewAnimator::*` impls deleted. Surviving: `AnimationCurve`,
+  `ScalarTraverse`, `KeyframeTrack`, `AnimationHandle` core API.
+- `wtk/include/omegaWTK/UI/View.h` — `friend class
+  Composition::ViewAnimator` deleted; `getLayerTree()` declaration
+  deleted.
+- `wtk/src/UI/View.Core.cpp` — `getLayerTree` body deleted;
+  `setFrontendRecurse` per-view observation calls deleted;
+  `resize` per-view layer-tree resize call deleted.
+- `wtk/src/UI/ViewImpl.h` — `Impl::ownLayerTree` field + the
+  `make_shared<LayerTree>` initializer in `Impl::Impl` deleted.
+- `wtk/src/UI/UIViewImpl.h` — four dormant animation fields, the
+  three `ensure*` / `beginCompositionClock` method declarations,
+  and the two `applyAnimated*` method declarations deleted.
+- `wtk/src/UI/UIView.Animation.cpp` — `ensureAnimationViewAnimator`,
+  `ensureAnimationLayerAnimator`, `beginCompositionClock`,
+  `applyAnimatedColor`, `applyAnimatedShape`, `clamp01`,
+  `applyShapeDimension` deleted. Surviving:
+  `startOrUpdateAnimation` (routes to scheduler),
+  `UIView::animateElement` (public hook),
+  `markAllElementsDirty` / `markElementDirty` /
+  `isElementDirty` / `clearElementDirty`, `ensureElementNodeId`
+  / `tryElementNodeId`, `animatedValue`, `advanceAnimations`
+  (stub since 4.4), `resolveFallbackTextFont`.
+- `wtk/src/UI/UIView.Update.cpp` — `localBoundsFromView`
+  per-view tree fallback dropped.
+- `wtk/src/UI/WidgetTreeHost.cpp` —
+  `observeWidgetLayerTreesRecurse` /
+  `unobserveWidgetLayerTreesRecurse` bodies emptied to no-ops.
+- `wtk/src/Widgets/BasicWidgets.cpp` — `Container::unwireChild`
+  `notifyObserversOfWidgetDetach()` callsite deleted.
+
+---
 
 Destructive cleanup. Folds Animation-Scheduler-Plan **Tier E**. Nothing
 animates against `getLayerTree()->getRootLayer()` anymore (4.4) and
