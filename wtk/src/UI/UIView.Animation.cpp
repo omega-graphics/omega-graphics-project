@@ -1,4 +1,7 @@
 #include "UIViewImpl.h"
+#include "AnimationScheduler.h"
+#include "FrameBuilder.h"
+#include "omegaWTK/UI/AppWindow.h"
 
 namespace OmegaWTK {
 
@@ -8,6 +11,25 @@ constexpr const char *kUIViewRootEffectTag = "__UIViewRootEffectTarget__";
 
 float clamp01(float value){
     return std::clamp(value,0.f,1.f);
+}
+
+// Phase 4.4 (Anim Tier C): map a UIView per-element `int` animation key
+// (the `ElementAnimationKey` enum and the `EffectAnimationKey*` constants
+// on `UIView::Impl`) into a `PropertyKey` slot on the AnimationScheduler.
+// Every UIView-internal channel rides the `UserDefined` half of the
+// scheduler's key space, so the legacy "lerp every R/G/B/A independently
+// per element" semantics carry through unchanged. Built-in scheduler
+// keys (LayoutX/Y/Width/Height, PathNodeX/Y) keep their meanings and are
+// not routed through this helper.
+PropertyKey elementKeyToProperty(int key){
+    return static_cast<PropertyKey>(
+        static_cast<std::uint16_t>(PropertyKey::UserDefined) +
+        static_cast<std::uint16_t>(key));
+}
+
+AnimationScheduler * activeScheduler(){
+    auto * fb = AppWindow::activeFrameBuilder();
+    return (fb != nullptr) ? fb->animationScheduler() : nullptr;
 }
 
 bool applyShapeDimension(Shape & shape,ElementAnimationKey key,float value){
@@ -179,291 +201,137 @@ void UIView::Impl::startOrUpdateAnimation(const UIElementTag &tag,
                                           float to,
                                           float durationSec,
                                           SharedHandle<Composition::AnimationCurve> curve){
+    // Phase 4.4 (Anim Tier C): per-element scalar tween. Routes through
+    // the per-window AnimationScheduler — the legacy per-tag
+    // `elementAnimations` / `pathNodeAnimations` machinery, the
+    // `ViewAnimator` / `LayerAnimator` pair, and the per-tween
+    // `beginCompositionClock` clock are all dormant after this phase
+    // (4.8 deletes them). The `(tag, key)` short-circuit ("same target
+    // → no restart") is preserved via the side `animationTargets_`
+    // bookkeeping — the scheduler replaces on every re-registration
+    // (Anim §6 Q3), so we have to suppress repeat calls ourselves.
     if(!std::isfinite(from) || !std::isfinite(to)){
         return;
     }
 
-    auto tagIt = elementAnimations.find(tag);
+    auto * scheduler = activeScheduler();
+    if(scheduler == nullptr){
+        // No window scheduler reachable. Drop on the floor — pre-4.4
+        // this would still have queued LayerAnimator work the now-dead
+        // composition path would never run; the new path bails the
+        // same way `View::applyLayoutDelta` does in the same situation.
+        return;
+    }
+
+    const auto node = ensureElementNodeId(tag);
+    const auto propKey = elementKeyToProperty(key);
+
     if(durationSec <= 0.f || std::fabs(to - from) <= 0.0001f){
-        if(tagIt != elementAnimations.end()){
-            auto existing = tagIt->second.find(key);
-            if(existing != tagIt->second.end() && existing->second.compositionHandle.valid()){
-                existing->second.compositionHandle.cancel();
-            }
+        // Cancel-equivalent: a zero-duration tween completes inside the
+        // next tick (see `AnimationScheduler::tick`: `durNs == 0` →
+        // `finished = true`), which erases the side-table cell. Reads
+        // then fall through to the resolved style. Local target tracking
+        // is dropped so the next real call won't short-circuit.
+        auto tagIt = animationTargets_.find(tag);
+        if(tagIt != animationTargets_.end()){
             tagIt->second.erase(key);
             if(tagIt->second.empty()){
-                elementAnimations.erase(tagIt);
+                animationTargets_.erase(tagIt);
             }
         }
+        Composition::TimingOptions cancelTiming {};
+        cancelTiming.durationMs = 0;
+        scheduler->tweenProperty<float>(node, propKey, to, to, cancelTiming,
+                                        Composition::AnimationCurve::Linear());
         return;
     }
 
-    auto & propertyMap = elementAnimations[tag];
-    auto & state = propertyMap[key];
-    if(state.active && std::fabs(state.to - to) <= 0.0001f){
+    auto & propertyMap = animationTargets_[tag];
+    auto existing = propertyMap.find(key);
+    if(existing != propertyMap.end() && std::fabs(existing->second - to) <= 0.0001f){
         return;
     }
+    propertyMap[key] = to;
 
-    const auto now = std::chrono::steady_clock::now();
-    const float startValue = state.active ? state.value : from;
-    state.active = true;
-    state.from = startValue;
-    state.to = to;
-    state.value = startValue;
-    state.lastProgress = 0.f;
-    state.durationSec = std::max(0.001f,durationSec);
-    state.startTime = now;
-    state.curve = curve != nullptr ? curve : Composition::AnimationCurve::Linear();
-    if(state.compositionHandle.valid()){
-        state.compositionHandle.cancel();
-    }
-    state.compositionHandle = beginCompositionClock(tag,state.durationSec,state.curve);
-    state.compositionClock = state.compositionHandle.valid();
+    auto effectiveCurve = curve != nullptr ? curve : Composition::AnimationCurve::Linear();
+    Composition::TimingOptions timing {};
+    timing.durationMs = static_cast<std::uint32_t>(std::max(0.001f, durationSec) * 1000.f);
+
+    scheduler->tweenProperty<float>(node, propKey, from, to, timing, effectiveCurve);
+
     if(tag != kUIViewRootEffectTag){
         markElementDirty(tag,false,false,true,false,false);
     }
     styleDirty = true;
 }
 
+void UIView::animateElement(const UIElementTag & tag,
+                            AnimationChannel channel,
+                            float from,
+                            float to,
+                            float durationSec,
+                            SharedHandle<Composition::AnimationCurve> curve){
+    // Phase 4.4 public test/runtime entry — thin wrapper that forwards
+    // to the private `Impl::startOrUpdateAnimation`. The enum values are
+    // already aligned with the `EffectAnimationKey*` constants UIView's
+    // paint code reads through `animatedValue`, so no remap is needed.
+    impl_->startOrUpdateAnimation(tag, static_cast<int>(channel),
+                                  from, to, durationSec, curve);
+}
+
+NodeId UIView::Impl::ensureElementNodeId(const UIElementTag & tag){
+    auto it = elementNodeIds_.find(tag);
+    if(it != elementNodeIds_.end()){
+        return it->second;
+    }
+    const auto id = allocateNodeId();
+    elementNodeIds_[tag] = id;
+    return id;
+}
+
+Core::Optional<NodeId> UIView::Impl::tryElementNodeId(const UIElementTag & tag) const{
+    auto it = elementNodeIds_.find(tag);
+    if(it == elementNodeIds_.end()){
+        return {};
+    }
+    return it->second;
+}
+
 bool UIView::Impl::advanceAnimations(){
-    auto now = std::chrono::steady_clock::now();
-    bool changed = false;
-    OmegaCommon::Vector<UIElementTag> removePropertyTags {};
-
-    const auto laneDiagnostics = owner.compositorProxy().getSyncLaneDiagnostics();
-    const bool hasLaneDiagnostics = laneDiagnostics.syncLaneId != 0;
-    bool staleSkipMode = false;
-    if(hasLaneDiagnostics){
-        const bool droppedCountIncreased = hasObservedLaneDiagnostics &&
-                                           laneDiagnostics.droppedPacketCount > lastObservedDroppedPacketCount;
-        (void)droppedCountIncreased;
-        lastObservedDroppedPacketCount = laneDiagnostics.droppedPacketCount;
-        hasObservedLaneDiagnostics = true;
-    }
-    else {
-        hasObservedLaneDiagnostics = false;
-        lastObservedDroppedPacketCount = 0;
-    }
-
-    std::uint64_t staleStepsSkippedThisTick = 0;
-    std::uint64_t monotonicProgressClampsThisTick = 0;
-    std::uint64_t activeTrackCount = 0;
-    std::uint64_t completedTrackCountThisTick = 0;
-    std::uint64_t cancelledTrackCountThisTick = 0;
-    std::uint64_t failedTrackCountThisTick = 0;
-
-    auto resolveProgress = [&](PropertyAnimationState & state) -> float {
-        float elapsedSec = std::chrono::duration<float>(now - state.startTime).count();
-        if(!std::isfinite(elapsedSec) || elapsedSec < 0.f){
-            elapsedSec = 0.f;
-        }
-        float wallClockT = state.durationSec <= 0.f ? 1.f : clamp01(elapsedSec / state.durationSec);
-
-        if(!state.compositionClock || !state.compositionHandle.valid()){
-            float monotonicT = clamp01(wallClockT);
-            if(monotonicT + 0.0001f < state.lastProgress){
-                monotonicT = state.lastProgress;
-                monotonicProgressClampsThisTick += 1;
-            }
-            state.lastProgress = monotonicT;
-            return monotonicT;
-        }
-
-        auto handleState = state.compositionHandle.state();
-        if(handleState == Composition::AnimationState::Cancelled ||
-           handleState == Composition::AnimationState::Failed){
-            state.compositionClock = false;
-            if(handleState == Composition::AnimationState::Cancelled){
-                cancelledTrackCountThisTick += 1;
-            }
-            else {
-                failedTrackCountThisTick += 1;
-            }
-            state.compositionHandle = {};
-            float monotonicT = clamp01(wallClockT);
-            if(monotonicT + 0.0001f < state.lastProgress){
-                monotonicT = state.lastProgress;
-                monotonicProgressClampsThisTick += 1;
-            }
-            state.lastProgress = monotonicT;
-            return monotonicT;
-        }
-
-        float compositionT = clamp01(state.compositionHandle.progress());
-        if(handleState == Composition::AnimationState::Completed){
-            compositionT = 1.f;
-        }
-
-        float resolvedT = wallClockT;
-        if(staleSkipMode &&
-           handleState != Composition::AnimationState::Completed){
-            if(wallClockT > compositionT + 0.0001f){
-                staleStepsSkippedThisTick += 1;
-            }
-            resolvedT = compositionT;
-        }
-        else {
-            resolvedT = std::max(wallClockT,compositionT);
-        }
-
-        resolvedT = clamp01(resolvedT);
-        if(resolvedT + 0.0001f < state.lastProgress){
-            resolvedT = state.lastProgress;
-            monotonicProgressClampsThisTick += 1;
-        }
-        state.lastProgress = resolvedT;
-        return resolvedT;
-    };
-
-    for(auto & tagEntry : elementAnimations){
-        OmegaCommon::Vector<int> removeKeys {};
-        for(auto & propertyEntry : tagEntry.second){
-            auto & state = propertyEntry.second;
-            if(!state.active){
-                removeKeys.push_back(propertyEntry.first);
-                continue;
-            }
-            activeTrackCount += 1;
-
-            float t = resolveProgress(state);
-            float sampled = state.curve != nullptr ? clamp01(state.curve->sample(t)) : t;
-            float nextValue = state.from + ((state.to - state.from) * sampled);
-            if(!std::isfinite(nextValue)){
-                nextValue = state.to;
-            }
-
-            if(std::fabs(nextValue - state.value) > 0.0001f){
-                state.value = nextValue;
-                if(tagEntry.first != kUIViewRootEffectTag){
-                    markElementDirty(tagEntry.first,false,false,true,false,false);
-                }
-                styleDirty = true;
-                changed = true;
-            }
-
-            if(t >= 1.f){
-                state.value = state.to;
-                state.active = false;
-                state.compositionClock = false;
-                state.lastProgress = 1.f;
-                state.compositionHandle = {};
-                completedTrackCountThisTick += 1;
-                if(tagEntry.first != kUIViewRootEffectTag){
-                    markElementDirty(tagEntry.first,false,false,true,false,false);
-                }
-                styleDirty = true;
-                changed = true;
-                removeKeys.push_back(propertyEntry.first);
-            }
-        }
-
-        for(const auto key : removeKeys){
-            tagEntry.second.erase(key);
-        }
-        if(tagEntry.second.empty()){
-            removePropertyTags.push_back(tagEntry.first);
-        }
-    }
-
-    for(const auto & tagToRemove : removePropertyTags){
-        elementAnimations.erase(tagToRemove);
-    }
-
-    OmegaCommon::Vector<UIElementTag> removePathTags {};
-    for(auto & tagEntry : pathNodeAnimations){
-        auto & nodeAnimations = tagEntry.second;
-        OmegaCommon::Vector<PathNodeAnimationState> nextNodeAnimations {};
-        nextNodeAnimations.reserve(nodeAnimations.size());
-        bool tagChanged = false;
-
-        for(auto nodeAnimation : nodeAnimations){
-            auto advanceProperty = [&](PropertyAnimationState & propertyState) -> bool {
-                if(!propertyState.active){
-                    return false;
-                }
-                activeTrackCount += 1;
-
-                float t = resolveProgress(propertyState);
-                float sampled = propertyState.curve != nullptr ? clamp01(propertyState.curve->sample(t)) : t;
-                float nextValue = propertyState.from + ((propertyState.to - propertyState.from) * sampled);
-                if(!std::isfinite(nextValue)){
-                    nextValue = propertyState.to;
-                }
-                bool propertyChanged = false;
-                if(std::fabs(nextValue - propertyState.value) > 0.0001f){
-                    propertyState.value = nextValue;
-                    propertyChanged = true;
-                }
-                if(t >= 1.f){
-                    propertyState.value = propertyState.to;
-                    propertyState.active = false;
-                    propertyState.compositionClock = false;
-                    propertyState.lastProgress = 1.f;
-                    propertyState.compositionHandle = {};
-                    completedTrackCountThisTick += 1;
-                    propertyChanged = true;
-                }
-                return propertyChanged;
-            };
-
-            bool xChanged = advanceProperty(nodeAnimation.x);
-            bool yChanged = advanceProperty(nodeAnimation.y);
-            bool nodeActive = nodeAnimation.x.active || nodeAnimation.y.active;
-            if(nodeActive){
-                nextNodeAnimations.push_back(nodeAnimation);
-            }
-            if(xChanged || yChanged){
-                tagChanged = true;
-            }
-        }
-
-        nodeAnimations = std::move(nextNodeAnimations);
-        if(nodeAnimations.empty()){
-            removePathTags.push_back(tagEntry.first);
-        }
-        if(tagChanged){
-            markElementDirty(tagEntry.first,false,false,true,false,false);
-            changed = true;
-        }
-    }
-
-    for(const auto & tagToRemove : removePathTags){
-        pathNodeAnimations.erase(tagToRemove);
-    }
-
-    lastAnimationDiagnostics.syncLaneId = laneDiagnostics.syncLaneId;
-    lastAnimationDiagnostics.tickCount += 1;
-    lastAnimationDiagnostics.staleStepsSkipped += staleStepsSkippedThisTick;
-    lastAnimationDiagnostics.monotonicProgressClamps += monotonicProgressClampsThisTick;
-    lastAnimationDiagnostics.activeTrackCount = activeTrackCount;
-    lastAnimationDiagnostics.completedTrackCount += completedTrackCountThisTick;
-    lastAnimationDiagnostics.cancelledTrackCount += cancelledTrackCountThisTick;
-    lastAnimationDiagnostics.failedTrackCount += failedTrackCountThisTick;
-    lastAnimationDiagnostics.queuedPacketCount = laneDiagnostics.queuedPacketCount;
-    lastAnimationDiagnostics.submittedPacketCount = laneDiagnostics.submittedPacketCount;
-    lastAnimationDiagnostics.presentedPacketCount = laneDiagnostics.presentedPacketCount;
-    lastAnimationDiagnostics.droppedPacketCount = laneDiagnostics.droppedPacketCount;
-    lastAnimationDiagnostics.failedPacketCount = laneDiagnostics.failedPacketCount;
-    lastAnimationDiagnostics.lastSubmittedPacketId = laneDiagnostics.lastSubmittedPacketId;
-    lastAnimationDiagnostics.lastPresentedPacketId = laneDiagnostics.lastPresentedPacketId;
-    lastAnimationDiagnostics.inFlight = laneDiagnostics.inFlight;
-    lastAnimationDiagnostics.staleSkipMode = staleSkipMode;
-
-    return changed;
+    // Phase 4.4 (Anim Tier C): the per-view tween pump is gone. The
+    // AnimationScheduler — ticked once per outermost frame from
+    // `FrameBuilder::beginFrame` — is the sole driver of every animated
+    // value reachable from `applyAnimated*` / `animatedValue`. This
+    // method is kept as a private symbol so the 4.8 sweep can delete it
+    // alongside the other dormant animation surfaces in one pass.
+    return false;
 }
 
 Core::Optional<float> UIView::Impl::animatedValue(const UIElementTag &tag,int key) const{
-    auto tagIt = elementAnimations.find(tag);
-    if(tagIt == elementAnimations.end()){
+    // Phase 4.4 (Anim Tier C): read from the AnimationScheduler's side
+    // table. Untagged elements (no NodeId ever allocated) and unbacked
+    // (NodeId, PropertyKey) slots both fall through to `{}` — the
+    // caller (`applyAnimatedColor` / `applyAnimatedShape`) then keeps
+    // the resolved-style fallback value (the prior `ComputedStyle` /
+    // legacy `ElementBase` value).
+    auto * scheduler = activeScheduler();
+    if(scheduler == nullptr){
         return {};
     }
-    auto propertyIt = tagIt->second.find(key);
-    if(propertyIt == tagIt->second.end()){
+    auto node = tryElementNodeId(tag);
+    if(!node){
         return {};
     }
-    return propertyIt->second.value;
+    return scheduler->value<float>(*node, elementKeyToProperty(key));
 }
 
+// ORPHAN (post-4.4 dead-code sweep — Phase I): no caller in the tree.
+// `UIView::paint` resolves the brush from `ComputedStyle` directly and
+// never threads it through this helper, so animating ColorR/G/B/A
+// produces no visible effect on the current paint path. Kept declared
+// only because it shares a translation unit with the live shadow-channel
+// reader; Phase I deletes it (header + .cpp) alongside the matching
+// `ElementAnimationKeyColor*` enum entries on `UIView.h`.
 Composition::Color UIView::Impl::applyAnimatedColor(const UIElementTag &tag,
                                                     const Composition::Color &baseColor) const{
     Composition::Color output = baseColor;
@@ -482,6 +350,13 @@ Composition::Color UIView::Impl::applyAnimatedColor(const UIElementTag &tag,
     return output;
 }
 
+// ORPHAN (post-4.4 dead-code sweep — Phase I): no caller in the tree.
+// `UIView::paint` reads `spec.shape` directly and never threads it
+// through this helper, so animating ElementAnimationKeyWidth/Height —
+// and the path-node branch below — produces no visible effect on the
+// current paint path. Phase I deletes this with `applyAnimatedColor`
+// and the matching `ElementAnimationKeyWidth/Height/PathNodeX/Y` enum
+// entries on `UIView.h`.
 Shape UIView::Impl::applyAnimatedShape(const UIElementTag &tag,const Shape &inputShape) const{
     Shape output = inputShape;
     if(auto value = animatedValue(tag,ElementAnimationKeyWidth); value){
@@ -491,25 +366,34 @@ Shape UIView::Impl::applyAnimatedShape(const UIElementTag &tag,const Shape &inpu
         (void)applyShapeDimension(output,ElementAnimationKeyHeight,*value);
     }
 
-    auto pathAnimIt = pathNodeAnimations.find(tag);
-    if(pathAnimIt != pathNodeAnimations.end() &&
-       output.type == Shape::Type::Path &&
-       output.path){
-        auto points = output.path->getControlPoints();
-        for(const auto & nodeAnimation : pathAnimIt->second){
-            if(nodeAnimation.nodeIndex < 0){
-                continue;
+    // Phase 4.4 (Anim Tier C): path-node tweens live on the
+    // AnimationScheduler under `PathNodeX/Y` with `subIndex = nodeIndex`
+    // (Animation-Scheduler-Plan Tier C). The legacy `pathNodeAnimations`
+    // map is unused. Probe every control point — there is no side index
+    // of "which nodes have animations" yet, but the cost is one
+    // unordered_map lookup per (point, axis), which is cheap and stays
+    // bounded by the path's complexity.
+    if(output.type == Shape::Type::Path && output.path){
+        auto * scheduler = activeScheduler();
+        auto node = tryElementNodeId(tag);
+        if(scheduler != nullptr && node){
+            auto points = output.path->getControlPoints();
+            bool changed = false;
+            for(std::size_t i = 0; i < points.size(); ++i){
+                const auto subIndex = static_cast<std::uint32_t>(i);
+                if(auto x = scheduler->value<float>(*node, PropertyKey::PathNodeX, subIndex); x){
+                    points[i].x = *x;
+                    changed = true;
+                }
+                if(auto y = scheduler->value<float>(*node, PropertyKey::PathNodeY, subIndex); y){
+                    points[i].y = *y;
+                    changed = true;
+                }
             }
-            auto nodeIndex = static_cast<std::size_t>(nodeAnimation.nodeIndex);
-            if(nodeIndex >= points.size()){
-                continue;
+            if(changed && !points.empty()){
+                output.path = std::make_shared<Composition::Path>(
+                    Composition::Path::fromControlPoints(points, output.pathStrokeWidth));
             }
-            points[nodeIndex].x = nodeAnimation.x.value;
-            points[nodeIndex].y = nodeAnimation.y.value;
-        }
-        if(!points.empty()){
-            output.path = std::make_shared<Composition::Path>(
-                Composition::Path::fromControlPoints(points, output.pathStrokeWidth));
         }
     }
     return output;

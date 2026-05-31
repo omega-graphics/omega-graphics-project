@@ -17,8 +17,23 @@ GEMetalRenderPipelineState::GEMetalRenderPipelineState(SharedHandle<GTEShader> &
         hasDepthStencilState(hasDepthStencilState),
         depthStencilState(depthStencilState),
         rasterizerState(rasterizerState){
-    
+
 };
+
+GEMetalRenderPipelineState::GEMetalRenderPipelineState(SharedHandle<GTEShader> & _meshShader,
+                                                       SharedHandle<GTEShader> & _fragmentShader,
+                                                       NSSmartPtr & renderPipelineState,
+                                                       bool hasDepthStencilState,
+                                                       NSSmartPtr & depthStencilState,
+                                                       GEMetalRasterizerState & rasterizerState,
+                                                       bool /*meshVariant*/):
+        __GERenderPipelineState(_meshShader,_fragmentShader),
+        renderPipelineState(renderPipelineState),
+        hasDepthStencilState(hasDepthStencilState),
+        depthStencilState(depthStencilState),
+        rasterizerState(rasterizerState) {
+    isMesh = true;
+}
 
 GEMetalComputePipelineState::GEMetalComputePipelineState(SharedHandle<GTEShader> & _computeShader,
                                                          NSSmartPtr & computePipelineState):

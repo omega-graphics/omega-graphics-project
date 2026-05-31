@@ -14,6 +14,7 @@ namespace OmegaWTK {
 
 class AppWindow;
 class View;
+class AnimationScheduler;
 
 namespace Composition {
     struct CompositeFrame;
@@ -145,6 +146,15 @@ public:
     bool hasOffsetOnStack() const { return !offsetStack_.empty(); }
     void pushOffset(Composition::Point2D absolute);
     void popOffset();
+
+    // Phase 4.4 (Block 2): per-window AnimationScheduler accessor for the
+    // animation surfaces (View::applyLayoutDelta, UIView::applyLayoutDelta,
+    // UIView::Impl::startOrUpdateAnimation, the applyAnimated*/animatedValue
+    // readers). FrameBuilder is the natural broker — it already owns the
+    // active-frame lookup the call sites use to find the right window's
+    // scheduler. Returns null if the window has no scheduler (defensive;
+    // AppWindow always stands one up in Phase 4.3).
+    AnimationScheduler * animationScheduler() const;
 
     // RAII helper: pushes `view`'s absolute window offset on
     // construction (parent.scrollOffsetContribution already factored

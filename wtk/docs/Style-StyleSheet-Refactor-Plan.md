@@ -14,9 +14,89 @@ WML markup layer.
 [Layout-API-Current-Use-Evaluation.md](Layout-API-Current-Use-Evaluation.md).
 **Non-goals:** Implementing WML parsing. Changing the SDF / DrawOp
 contract. Changing the animation API (assumes
-`Animation-API-Simplification-Plan.md`). Defining a full CSS subset —
-this plan defines the *engine* that a CSS-like or WML-driven authoring
-layer feeds into.
+[Animation-Scheduler-Plan.md](Animation-Scheduler-Plan.md)). Defining a
+full CSS subset — this plan defines the *engine* that a CSS-like or
+WML-driven authoring layer feeds into.
+
+---
+
+## 0. Cross-plan alignment (2026-05-31)
+
+This plan was authored before the AnimationScheduler existed. The
+adjacent animation workstream has since shipped parts of the surface
+this plan depends on, under a different filename and a different
+class name. The summary below tells you how the sections that follow
+should read against the current tree; the body has been kept stable
+for diff readability.
+
+- **`Animation-API-Simplification-Plan.md` → [Animation-Scheduler-Plan.md](Animation-Scheduler-Plan.md).**
+  The animation refactor was renamed and re-scoped. The old filename
+  lives in `docs/stale/`. Every reference below to
+  "Animation-API-Simplification-Plan" should be read as
+  "Animation-Scheduler-Plan."
+- **`Animator` → `AnimationScheduler`.** The new type is a per-window
+  runtime owned by `AppWindow::Impl`, ticked once per outermost
+  `FrameBuilder::beginFrame`. It landed in
+  [UIView-Render-Redesign-Plan.md](UIView-Render-Redesign-Plan.md)
+  Phases 4.3 (scheduler stood up alongside the legacy runtime) and
+  4.4 (UIView animation surface migrated onto it; legacy
+  `ViewAnimator` / `LayerAnimator` now dormant). Every reference below
+  to `Animator` should be read as `AnimationScheduler`.
+- **The transition handoff is `scheduler.transition(...)`, not a
+  generic call.** Animation-Scheduler-Plan §3.7 nails the shape:
+  `scheduler.transition(nodeId, propertyKey, prevValue, newValue, spec)`
+  — a `friend class` hook on `AnimationScheduler` invoked by
+  `StyleResolver` during Phase 2 (Style). The scheduler **seeds the
+  side table with `prevValue` immediately** so Paint reads the
+  pre-transition value during the same frame the transition begins,
+  and handles re-targeting (a new `to` on an already-active
+  `(node, key)` smooth-retargets) the way CSS transitions do. App
+  code never calls `transition(...)` directly — it declares
+  `Transition` records in the global `StyleSheet`, exactly as §3.5
+  below specifies. Wiring this hook is Animation-Scheduler-Plan
+  **Tier D**, the hard prerequisite for this plan's Tier 3.
+- **Per-window scheduler vs per-`Application` StyleSheets.** §3.8
+  puts `StyleSheet`s on the `Application` (§6 Q1 resolved
+  "Application"). The AnimationScheduler is per-window.
+  `StyleResolver::resolve(node)` reaches the scheduler through the
+  node's owning AppWindow (`AppWindow::activeFrameBuilder()->animationScheduler()`
+  in the current tree). The cascade rule database stays
+  Application-scoped; the transition runtime that consumes its
+  `Transition` records stays per-window.
+- **`NodeId` / `PropertyKey` are already built.** The scheduler keys
+  its side table on `(NodeId, PropertyKey, subIndex)`.
+  `View::nodeId()` (Render Phase 4.4, public, plain `std::uint64_t`)
+  returns the per-`View` id; `UIView::Impl::ensureElementNodeId(tag)`
+  allocates one NodeId per `(UIView, UIElementTag)` pair lazily. The
+  Style plan's `Property` enum (§3.3) maps directly onto the
+  scheduler's `PropertyKey`; the same `UserDefined` half of the
+  enum that UIView uses for its per-element channels (Render Phase
+  4.4) is available for any property `PropertyKey`'s built-in slots
+  do not cover.
+- **Tier 1 below is `[PARTIAL]`, not `[DONE]`.** The rename
+  (`StyleSheet` → `Style`) and the layout-out-of-Style move both
+  landed. The animation-out-of-Style step **did not** — and is no
+  longer the right move. The `AnimationScheduler` is a separate
+  imperative API (not gated by `Style`), so the OLD
+  `Style::elementAnimation` / `elementPathAnimation` /
+  `elementBrushAnimation` entries are not "moved" anywhere; they are
+  **deleted** by [UIView-Render-Redesign-Plan.md](UIView-Render-Redesign-Plan.md)
+  **Phase I — Dead-code sweep** (the post-Tier-4 follow-up logged
+  during the 4.4 implementation). Style's role for animation is
+  exclusively the declarative `Transition` records of §3.5 / Tier 3.
+- **Phase ordering already settled (Animation-Scheduler-Plan §3.8).**
+  The strict per-frame order is Tick → Style → Layout → Paint →
+  Commit. `scheduler.tick(now)` runs in Tick; `scheduler.transition(...)`
+  is legal only in Style (asserts elsewhere); `scheduler.value<T>(...)`
+  is the Paint read; public `tweenProperty` / `animate` /
+  `animateProperty` are legal in Tick, Style, Layout, or outside any
+  frame, and **assert on Paint and Commit** — Paint is a pure read
+  and Commit is the boundary out. (App code that wants to start an
+  animation from a Paint code path should `requestFrame()` and issue
+  the registration from the next frame's Style or Tick.) The
+  first-frame ordering concern — "Style registers a transition this
+  frame, Tick already ran" — is solved by §3.7's "seed the side
+  table with prevValue immediately" rule above, not by reordering.
 
 ---
 
@@ -418,10 +498,19 @@ visual style. (In the interim, both names coexist; see §5.)
 
 ### 3.5 Animation is removed from `Style` and `StyleSheet`
 
-`elementAnimation`, `elementPathAnimation`, `elementBrushAnimation`,
-and the `transition` / `duration` flags on every `Entry` move to the
-`Animator` per the
-[Animation-API-Simplification-Plan.md](Animation-API-Simplification-Plan.md).
+> See §0 — the verbs in this section have shifted. `elementAnimation`,
+> `elementPathAnimation`, `elementBrushAnimation` and the per-`Entry`
+> `transition` / `duration` flags are **deleted** (Render Plan Phase I,
+> follow-up) rather than "moved to the Animator," because the
+> `AnimationScheduler` is a separate imperative API not gated by Style.
+> What stays in Style is the **declarative transition record** below.
+
+The imperative animation surface is the per-window
+`AnimationScheduler` from
+[Animation-Scheduler-Plan.md](Animation-Scheduler-Plan.md) (built in
+Render Phases 4.3 / 4.4); app code targets it directly via
+`scheduler.tweenProperty<T>(nodeId, propertyKey, from, to, timing, curve)`
+or `scheduler.animatePropertyAt<T>(nodeId, propertyKey, subIndex, track, timing)`.
 Style sheets carry **transitions** only — declarative
 "interpolate this property over N ms when it changes" rules — not
 imperative animation tracks.
@@ -444,12 +533,18 @@ stylesheet->rule(Selector::Class("primary"),
 
 When the resolver detects that a node's `ComputedStyle` differs from
 the previous frame's `ComputedStyle` for a transitioned property, it
-hands the `(from, to, duration, curve)` triple to the `Animator` in
-the Tick phase. The `Animator` writes interpolated values into the
-animation side table. Paint reads the side table.
+invokes the `friend class` hook on the per-window scheduler:
+`scheduler.transition(nodeId, propertyKey, prevValue, newValue, spec)`
+(Animation-Scheduler-Plan §3.7). The scheduler seeds the side table
+with `prevValue` immediately so Paint reads the pre-transition value
+during the same frame the transition begins, then interpolates each
+subsequent Tick. If a transition is already active for the same
+`(node, key)`, the new `to` smooth-retargets in place — the standard
+CSS retargeting behaviour. Paint reads `scheduler.value<T>(nodeId, key)`.
 
-This is exactly the CSS `transition` model and exactly what the
-animation simplification plan wants the public API to look like.
+This is exactly the CSS `transition` model. Wiring the friend hook is
+Animation-Scheduler-Plan **Tier D** — the hard prerequisite for Style
+plan Tier 3 (§5).
 
 ### 3.6 `ComputedStyle` — the per-node resolved cache
 
@@ -514,6 +609,16 @@ optimizer for Tier-1; a flat scan over the rule list is acceptable
 until profiling says otherwise. This is the kind of decision the
 developer's intuition about "this codebase, this scale" should
 override — start naive, measure, optimize.
+
+**Frame ordering note.** The strict per-frame order is Tick → Style →
+Layout → Paint → Commit (Animation-Scheduler-Plan §3.8). The scheduler
+ticks *before* `StyleResolver::resolve(node)` runs, so a transition
+the resolver fires this frame would otherwise have no sampled value
+when Paint reads the side table later in the same frame. §3.7 of the
+animation plan closes this by having `scheduler.transition(...)` seed
+the side table with `prevValue` synchronously at registration — Paint
+sees the pre-transition value during the registering frame, the next
+frame's Tick advances. No reordering required.
 
 ### 3.7 Pseudo-classes and state
 
@@ -627,7 +732,9 @@ scan is hot.
   case. If we need arithmetic, add `calc()` later as a typed node.
 - Animation keyframes (`@keyframes`) — these belong to the animation
   system, not the style sheet. The WML `animation: …` shorthand
-  desugars to an `Animator` track at compile time.
+  desugars to a `scheduler.animateProperty<T>(...)` /
+  `animatePropertyAt<T>(...)` call against the `AnimationScheduler` at
+  compile time.
 
 These are judgment calls about scope. The principle: the engine
 implements a finite, enumerated subset that covers the WML examples
@@ -643,7 +750,7 @@ This plan layers cleanly on the
 [Widget-View-Paint-Lifecycle-Plan.md](Widget-View-Paint-Lifecycle-Plan.md)
 tiers. Each tier here is independently shippable.
 
-### Tier 1 — split authoring surfaces, keep the resolver
+### Tier 1 — split authoring surfaces, keep the resolver [PARTIAL]
 
 **Ship alongside Render Redesign Tier 1 / Lifecycle Tier A.**
 
@@ -651,15 +758,27 @@ tiers. Each tier here is independently shippable.
   becomes a per-node mutator. `UIView::setStyleSheet` becomes
   `UIView::setStyle`. The old `StyleSheetPtr` typedef stays as a
   `[[deprecated]] using StyleSheetPtr = StylePtr;` for one release.
+  **[DONE]** — see `UIView::setStyle` + the `[[deprecated]]`
+  `setStyleSheet` forwarder in `wtk/include/omegaWTK/UI/UIView.h`.
 - Move the layout-related entries (`layoutWidth`, `layoutHeight`,
   `layoutMargin`, `layoutPadding`, `layoutClamp`,
   `layoutTransition`) out of `Style` and into the per-node `Layout`
   struct (the renamed `LayoutStyle`). `UIElementLayoutSpec.style`
-  becomes `UIElementLayoutSpec.layout`.
-- Move animation-related entries
+  becomes `UIElementLayoutSpec.layout`. **[DONE]** — Render Tier B /
+  B1; comment at `UIView.Update.cpp:240` documents the removal.
+- ~~Move animation-related entries
   (`elementAnimation`, `elementPathAnimation`,
   `elementBrushAnimation`) out of `Style` and into the `Animator`,
-  per the animation simplification plan.
+  per the animation simplification plan.~~ **[SUPERSEDED — deferred
+  to Render Plan Phase I].** The `AnimationScheduler` is a separate
+  imperative API, not a destination Style entries can be "moved to";
+  the OLD Style methods are orphan in the current tree (no caller in
+  `UIView.Style.cpp`'s apply pass — only the scope-tracking switch in
+  `collectStyleScope` mentions the entry kinds). They are **deleted**
+  in [UIView-Render-Redesign-Plan.md](UIView-Render-Redesign-Plan.md)
+  Phase I (post-Tier-4 dead-code sweep). Style's animation role lives
+  only in the declarative `Transition` records of §3.5, wired up in
+  Tier 3 below.
 - The internal resolver (`UIView.Style.cpp` +
   `convertEntriesToRules` + `mergeLayoutRulesIntoStyle`) is
   unchanged, but now operates on per-node `Style` only.
@@ -696,8 +815,8 @@ today (~10 files in `wtk/src/Widgets/`).
   them and sets `DirtyBit::Style`.
 - Transitions are declared in `StyleSheet` but not yet driven —
   the resolver records "this property changed and has a transition"
-  but the `Animator` isn't wired up to consume transition records
-  until Tier 3.
+  but the `AnimationScheduler` friend hook (Animation-Scheduler-Plan
+  §3.7 / Tier D) isn't called until Tier 3.
 
 **Risk:** Medium. The selector matcher is new code; the cascade rules
 are well-known but easy to get wrong on edge cases (specificity ties,
@@ -716,9 +835,14 @@ the mitigation.
   `StyleValue::Var(name)` resolution at cascade time, theme swapping
   with root-level `DirtyBit::Style` propagation.
 - Transitions: connect `StyleResolver` change detection to the
-  `Animator`. When a transitioned property changes between frames,
-  hand the `(from, to, duration, curve)` to the animator and read
-  the animator's interpolated value during paint.
+  per-window `AnimationScheduler` via the `friend class` hook
+  `scheduler.transition(nodeId, propertyKey, prevValue, newValue, spec)`
+  (Animation-Scheduler-Plan §3.7 / **Tier D** — the hard prerequisite
+  for this tier). The scheduler seeds the side table with `prevValue`
+  on registration and ticks each subsequent frame; Paint reads
+  `scheduler.value<T>(...)`. The resolver finds the right scheduler
+  through the node's owning AppWindow (`AppWindow::activeFrameBuilder()
+  ->animationScheduler()` in the current tree).
 - Custom states: `:state(name)` pseudo-class. Nodes carry a string
   set; setting/clearing a state dirties Style.
 - Add the "user agent" default stylesheet — the OmegaWTK builtins
@@ -728,11 +852,14 @@ the mitigation.
 
 **Risk:** Medium. Theme swap is a stress test for the resolver
 (touches every node). Transitions are a stress test for the
-resolver-to-animator handoff.
+resolver-to-scheduler handoff, especially retargeting (the
+"interrupt mid-transition with a new target" case
+Animation-Scheduler-Plan §3.7 calls out).
 
 **Files touched:** `StyleSheet.cpp`, `StyleResolver.cpp`,
-`Animator.cpp`, `Application.cpp`, every widget subclass (to stop
-authoring defaults in inline `Style`).
+`AnimationScheduler.{h,cpp}` (the new `friend` hook),
+`Application.cpp`, every widget subclass (to stop authoring defaults
+in inline `Style`).
 
 ### Tier 4 — WML compiler front-end
 
@@ -844,11 +971,11 @@ codebase should override anything in §3–5:
 | `StyleSheet::Entry` | `Style` POD with `Optional<>` fields | T1 |
 | `Entry::Kind` enum | Removed; field-per-property in `Style` | T1 |
 | `StyleSheet::layoutWidth/Height/Margin/Padding/Clamp/Transition` | `Layout` field assignments / `StyleSheet` rules in WML | T1 |
-| `StyleSheet::elementAnimation/elementPathAnimation/elementBrushAnimation` | `Animator` tracks (animation plan) | T1 |
-| `StyleSheet::*` `transition` boolean per call | `StyleSheet` `Transition` declarations (Tier 3) | T3 |
+| `StyleSheet::elementAnimation/elementPathAnimation/elementBrushAnimation` | **Deleted** — app code uses the per-window `AnimationScheduler` directly (`scheduler.tweenProperty<T>(...)` / `scheduler.animatePropertyAt<T>(...)`). Old Style methods are orphan today; Render Plan **Phase I** sweeps them. | T1 → Render Phase I |
+| `StyleSheet::*` `transition` boolean per call | `StyleSheet` `Transition` declarations; consumed via `scheduler.transition(...)` friend hook (Animation-Scheduler-Plan **Tier D**) | T3 |
 | `convertEntriesToRules` | Internal to `Style` → `ComputedStyle` cascade | T1 |
 | `mergeLayoutRulesIntoStyle` | Removed; layout authoring is direct field assignment | T1 |
-| `resolveLayoutTransition` | Animator queries the global `StyleSheet` for transitions | T3 |
+| `resolveLayoutTransition` | `AnimationScheduler` consumes `Transition` records from the global `StyleSheet` via the resolver friend hook (Animation-Scheduler-Plan Tier D) | T3 |
 | `UIElementLayoutSpec.style` (a `LayoutStyle`) | `UIElementLayoutSpec.layout` (renamed) | T1 |
 | `LayoutStyle` | `Layout` (renamed) | T1 |
 | *(does not exist)* | `StyleSheet` (selector-matched, global) | T2 |
@@ -861,22 +988,41 @@ codebase should override anything in §3–5:
 
 ## 8. Relationship to existing plans
 
-- **`UIView-Render-Redesign-Plan.md`** — `ComputedStyle` is the
+- **[UIView-Render-Redesign-Plan.md](UIView-Render-Redesign-Plan.md)** — `ComputedStyle` is the
   per-node cache that plan's Phase 2 (Style) writes and Phase 4
   (Paint) reads. The plan already defines a `ResolvedStyleCache`
   field on `SceneNode` (§3.6); this plan names it `ComputedStyle`
   and specifies the cascade rules that populate it. Tier 1 here
   aligns with Tier 1 there; Tier 2 here aligns with Tier 2 there;
-  etc.
-- **`Widget-View-Paint-Lifecycle-Plan.md`** — Phase 2 (Style) is
+  etc. Two specific touchpoints with later tiers of the render plan:
+  (a) **Phase 4.4** built `View::nodeId()` + the per-element NodeId
+  allocator on UIView that this plan's resolver feeds into the
+  scheduler — no re-specification needed here; (b) **Phase I —
+  Dead-code sweep** owns the deletion of the orphan
+  `Style::elementAnimation`/`elementPathAnimation`/`elementBrushAnimation`
+  builders + the `ElementAnimationKey` enum + the `Entry::Kind::*Animation`
+  values, replacing this plan's Tier 1 "move animation entries out of
+  Style" line item.
+- **[Widget-View-Paint-Lifecycle-Plan.md](Widget-View-Paint-Lifecycle-Plan.md)** — Phase 2 (Style) is
   where `StyleResolver::resolve(node)` runs. The phase guard from
   that plan is what enforces "style cannot be authored during
   paint." This plan's `Style` mutators set
   `DirtyBit::Style | DirtyBit::Paint`; `StyleSheet` mutations set
   `DirtyBit::Style` on the root.
-- **`Animation-API-Simplification-Plan.md`** — Tier 3 transitions
-  hand off to the new `Animator`. The animation simplification plan
-  is a hard prerequisite for Tier 3 of this plan.
+- **[Animation-Scheduler-Plan.md](Animation-Scheduler-Plan.md)** —
+  Tier 3 transitions hand off to the per-window `AnimationScheduler`
+  via the `friend class` hook `scheduler.transition(nodeId,
+  propertyKey, prevValue, newValue, spec)` specified in §3.7 of that
+  plan. Animation-Scheduler-Plan **Tier D** is the hard prerequisite
+  for this plan's Tier 3 — Tiers A/B/C are already done (Render
+  Phases 4.3 / 4.4) so the scheduler runtime, the side table, the
+  per-window tick, the NodeId scheme, and the imperative public API
+  all exist; only the resolver friend hook and the `Transition`
+  record consumer are missing. Per-frame phase ordering for the
+  resolver/scheduler interaction is fixed by §3.8 of the animation
+  plan (Tick before Style; `transition` legal only in Style; the
+  scheduler synchronously seeds the side table on registration so
+  Paint reads the pre-transition value during the registering frame).
 - **`Layout-API-Current-Use-Evaluation.md`** — describes the
   current per-element layout surface. This plan keeps that surface
   intact (only renames `LayoutStyle` → `Layout` and
@@ -890,6 +1036,19 @@ codebase should override anything in §3–5:
   resolver writes `ComputedStyle`; paint reads `ComputedStyle` and
   emits `DrawOp`s. Whether the SDF backend or the triangulator
   consumes the ops is invisible to the style system.
+- **[Animation-Surface-Expansion-Plan.md](Animation-Surface-Expansion-Plan.md)** —
+  Sequenced AFTER this plan's Tier 3 (and the Render plan's Tier 4
+  + Phase I). Style owns the *declarative* transition surface
+  (cascaded `Transition` records fire automatically when
+  `ComputedStyle` changes); the expansion plan owns the
+  *imperative* surface (app code starting an animation explicitly
+  via `view->animate().property(...)....start()`). The two
+  complement each other — both target the same per-window
+  `AnimationScheduler`, share its side table, and observe the same
+  re-targeting rule (Anim §3.7). A property that is both
+  Style-transitioned and imperatively animated by app code follows
+  the scheduler's "most recent registration wins, sampling resumes
+  from the current value" rule.
 
 ---
 
@@ -964,3 +1123,26 @@ selectors plus `:state(name)` plus a few combinators. All of these
 are in scope for Tier 2 + Tier 4. If WML grows attribute selectors
 or `:nth-child()` later, Tier 4 has to extend the matcher — but the
 extension is local, not architectural.
+
+I am taking the answer to Animation-Scheduler-Plan §6 Q2 ("how does
+`fillBrush` interpolate?") as load-bearing for this plan's `Transition`
+on the `FillBrush` property. The agreed answer is: **solid color
+brushes interpolate component-wise; gradient brushes interpolate
+per-stop; bitmap brushes do not interpolate (the transition is rejected
+into a `Failed` handle state).** Tier 3 of this plan inherits that
+contract without re-specifying it. If that answer shifts (e.g. bitmap
+brushes gain a "cross-fade two textures" path), this plan does not
+need to change — the scheduler's `transition` hook would simply accept
+the new variant.
+
+The `Tick → Style` ordering edge case worth re-reading at Tier 3 time
+is: what happens when an inline `Style` mutation fires during an input
+event, dirties the root with `DirtyBit::Style`, *and* a transition
+declared in `StyleSheet` should kick in for that property? The
+sequence I expect (per Animation-Scheduler-Plan §3.8): the next
+frame's Tick runs first, the Style phase then resolves, sees prev vs
+new differ, calls `scheduler.transition(...)`, which synchronously
+seeds `prevValue` into the side table — Paint reads the seeded value
+this frame, next frame's Tick starts the actual interpolation. Worth
+a focused test fixture at Tier 3 time; the seeding-on-registration
+rule is what keeps the first frame visually correct.

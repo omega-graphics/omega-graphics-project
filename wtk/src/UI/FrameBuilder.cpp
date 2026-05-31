@@ -230,6 +230,13 @@ FrameBuilder::ScopedViewOffset::~ScopedViewOffset(){
 // FrameBuilder-internal slot, so the AppWindow header does not have
 // to expose the static storage. Defined here for the same reason
 // the slot lives here.
+AnimationScheduler * FrameBuilder::animationScheduler() const {
+    // Phase 4.4: animation callers reach the per-window scheduler through
+    // the FrameBuilder. The fields live on AppWindow::Impl (Phase 4.3),
+    // alongside FrameBuilder itself; this accessor is the single hop.
+    return window_.impl_->animationScheduler_.get();
+}
+
 FrameBuilder * AppWindow::activeFrameBuilder(){
     return g_activeFrameBuilder;
 }

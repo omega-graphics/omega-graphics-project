@@ -39,6 +39,14 @@ class AppWindow;
 /// exist yet (4.7); in 4.3 the scheduler only stores values against it.
 using NodeId = std::uint64_t;
 
+/// Phase 4.4: process-wide atomic counter behind `View::nodeId()` and the
+/// per-`(UIView, UIElementTag)` NodeIds UIView allocates lazily. Stable
+/// across the lifetime of the process; never reused. The counter lives
+/// here (alongside the only consumer of NodeIds) rather than on `View`
+/// itself so element identities — which are not `View`s — can share the
+/// allocator without leaking through the public View surface.
+NodeId allocateNodeId();
+
 /// Animatable property channels (Animation-Scheduler-Plan §3.2). The
 /// Layout* keys are layout-affecting (see isLayoutProperty); the rest are
 /// paint-only.

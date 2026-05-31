@@ -10,7 +10,6 @@ This site features all the documentation for using OmegaWTK
 
   About
   UIModel
-  Building
   BasicProject
   API
 

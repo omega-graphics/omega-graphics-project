@@ -663,18 +663,34 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 
         checkBufferRoleAgainstShader(_id, renderPipelineState->vertexShader->internal, *metalBuffer);
 
+        /// Mesh-Shader-Plan Phase 4c.5.1 — when the bound PSO is the
+        /// mesh variant (Phase 4c.1 slot-doubling: mesh shader lives in
+        /// `vertexShader`), route buffer binds to `setMeshBuffer:` and
+        /// the fence sync to `MTLRenderStageMesh`. The shader-info
+        /// reads (`vertexShader->internal`) stay symmetric because the
+        /// omegasl_shader handle in that slot belongs to whichever
+        /// stage was bound — no second resource-table lookup needed.
+        const bool isMeshVariant = renderPipelineState->isMesh;
+        const MTLRenderStages stages = isMeshVariant ? MTLRenderStageMesh : MTLRenderStageVertex;
+
         if(metalBuffer->needsBarrier){
-            [rp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalBuffer->resourceBarrier.handle()) beforeStages:MTLRenderStageVertex];
+            [rp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalBuffer->resourceBarrier.handle()) beforeStages:stages];
             metalBuffer->needsBarrier = false;
         }
 
         unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->vertexShader->internal);
-         NSLog(@"Binding GEBuffer at Vertex Shader: %@ At Index: %i",NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()),index);
-        [rp setVertexBuffer:NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()) offset:0 atIndex:index];
+        NSLog(@"Binding GEBuffer at %s Shader: %@ At Index: %i",
+              isMeshVariant ? "Mesh" : "Vertex",
+              NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()), index);
+        if(isMeshVariant){
+            [rp setMeshBuffer:NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()) offset:0 atIndex:index];
+        } else {
+            [rp setVertexBuffer:NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()) offset:0 atIndex:index];
+        }
 
         if(shaderHasWriteAccessForResource(_id,renderPipelineState->vertexShader->internal)){
             metalBuffer->needsBarrier = true;
-            [rp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalBuffer->resourceBarrier.handle()) afterStages:MTLRenderStageVertex];
+            [rp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalBuffer->resourceBarrier.handle()) afterStages:stages];
         }
     };
 
@@ -685,19 +701,32 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 
         checkTextureBindAgainstShader(_id, renderPipelineState->vertexShader->internal, *metalTexture);
 
+        /// Mesh-Shader-Plan Phase 4c.5.2 — mesh-variant routing.
+        /// Swizzle-view resolution is stage-independent (the
+        /// swizzle metadata rides the omegasl_shader, not the bind
+        /// API), so the existing `getOrCreateSwizzledView` call survives
+        /// unchanged.
+        const bool isMeshVariant = renderPipelineState->isMesh;
+        const MTLRenderStages stages = isMeshVariant ? MTLRenderStageMesh : MTLRenderStageVertex;
+
         if(metalTexture->needsBarrier){
-            [rp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalTexture->resourceBarrier.handle()) beforeStages:MTLRenderStageVertex];
+            [rp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalTexture->resourceBarrier.handle()) beforeStages:stages];
             metalTexture->needsBarrier = false;
         }
 
         unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->vertexShader->internal);
         TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, _id, renderPipelineState->vertexShader->internal);
         id<MTLTexture> view = metalTexture->getOrCreateSwizzledView(effective);
-        NSLog(@"Binding GETexture at Vertex Shader: %@ At Index: %i",view,index);
-        [rp setVertexTexture:view atIndex:index];
+        NSLog(@"Binding GETexture at %s Shader: %@ At Index: %i",
+              isMeshVariant ? "Mesh" : "Vertex", view, index);
+        if(isMeshVariant){
+            [rp setMeshTexture:view atIndex:index];
+        } else {
+            [rp setVertexTexture:view atIndex:index];
+        }
         if(shaderHasWriteAccessForResource(_id,renderPipelineState->vertexShader->internal)){
             metalTexture->needsBarrier = true;
-            [rp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalTexture->resourceBarrier.handle()) afterStages:MTLRenderStageVertex];
+            [rp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalTexture->resourceBarrier.handle()) afterStages:stages];
         }
     };
 
@@ -708,7 +737,14 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
         if(!ok) return;
         unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->vertexShader->internal);
-        [rp setVertexSamplerState:NSOBJECT_OBJC_BRIDGE(id<MTLSamplerState>,metalSampler->samplerState.handle()) atIndex:index];
+        /// Mesh-Shader-Plan Phase 4c.5.3 — mesh-variant routing.
+        /// Samplers don't ride a fence (the GPU treats them as
+        /// stateless), so the routing is purely the selector choice.
+        if(renderPipelineState->isMesh){
+            [rp setMeshSamplerState:NSOBJECT_OBJC_BRIDGE(id<MTLSamplerState>,metalSampler->samplerState.handle()) atIndex:index];
+        } else {
+            [rp setVertexSamplerState:NSOBJECT_OBJC_BRIDGE(id<MTLSamplerState>,metalSampler->samplerState.handle()) atIndex:index];
+        }
     };
 
     void GEMetalCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> & buffer,unsigned _id){
@@ -777,12 +813,20 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         assert(offset == 0 && "Metal setRenderConstants supports only offset == 0 (full-block set)");
         (void)offset;
         // Apply to every stage that declared the push constant (`[in pc]`).
-        // setVertexBytes / setFragmentBytes write the inline data into the
-        // stage's buffer-index slot the `constant T&` was emitted at.
+        // setVertexBytes / setFragmentBytes / setMeshBytes write the inline
+        // data into the stage's buffer-index slot the `constant T&` was
+        // emitted at. Mesh-Shader-Plan Phase 4c.5.4 — when the bound PSO is
+        // the mesh variant (4c.1 slot-doubling) the "vertex slot" actually
+        // holds the mesh shader, so the vertex branch dispatches to
+        // setMeshBytes. Fragment is fragment regardless of upstream stage.
         unsigned idx = 0;
         bool any = false;
         if(findPushConstantBufferIndex(renderPipelineState->vertexShader->internal, idx)){
-            [rp setVertexBytes:data length:size atIndex:idx];
+            if(renderPipelineState->isMesh){
+                [rp setMeshBytes:data length:size atIndex:idx];
+            } else {
+                [rp setVertexBytes:data length:size atIndex:idx];
+            }
             any = true;
         }
         if(findPushConstantBufferIndex(renderPipelineState->fragmentShader->internal, idx)){
@@ -1021,19 +1065,43 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::drawMeshTasks(uint32_t groupCountX,
                                              uint32_t groupCountY,
                                              uint32_t groupCountZ) {
-        /// Mesh-Shader-Plan Phase 3 stub. Phase 4c lands
-        /// `[renderEncoder drawMeshThreadgroups:MTLSizeMake(x,y,z) ...]`.
-        /// The Metal command buffer has no reachable engine handle (see
-        /// the comment in `GEMetalCommandQueue`), so the feature gate
-        /// cannot fire from here today; the gate at
-        /// `makeMeshPipelineState` already prevents an unsupported
-        /// device from producing a bindable mesh PSO in the first
-        /// place, so reaching this call without device support means
-        /// the caller bound a null pipeline — a logic error that
-        /// surfaces elsewhere. Log + return to keep the surface alive.
-        (void)groupCountX; (void)groupCountY; (void)groupCountZ;
-        DEBUG_STREAM("drawMeshTasks: Metal dispatch not yet implemented "
-                     "(Phase 3 stub — Phase 4c will land drawMeshThreadgroups)");
+        /// Mesh-Shader-Plan Phase 4c.3 — live `drawMeshThreadgroups:`.
+        /// The Metal command buffer still has no reachable engine
+        /// handle, so the feature gate cannot fire from here today; the
+        /// gate at `makeMeshPipelineState` is the real contract (an
+        /// unsupported device returns `nullptr` for the PSO, so the
+        /// `renderPipelineState->isMesh` assertion below fails before
+        /// reaching `drawMeshThreadgroups:`). The PSO is bound via the
+        /// existing `setRenderPipelineState` because mesh PSOs surface
+        /// as `GERenderPipelineState`; the `isMesh` flag stamped at
+        /// construction (Phase 4c.1) is what tells us the bound
+        /// pipeline can dispatch mesh tasks rather than polygon draws.
+        assert(rp != nil && "drawMeshTasks: must be called inside a render pass");
+        assert(renderPipelineState != nullptr
+               && "drawMeshTasks: no pipeline bound (call setRenderPipelineState first)");
+        assert(renderPipelineState->isMesh
+               && "drawMeshTasks: bound pipeline is a graphics pipeline, not a mesh pipeline. "
+                  "Use makeMeshPipelineState to build a mesh-variant PSO.");
+
+        /// Per-meshlet threadgroup dims come from the mesh shader's
+        /// `[[max_total_threads_per_threadgroup(N)]]` / declared
+        /// dimensions baked into `omegasl_shader::threadgroupDesc` by
+        /// the MSL codegen in Phase 2c — the same field compute uses
+        /// for `dispatchThreadgroups`. The mesh shader handle sits in
+        /// the `vertexShader` base slot by the Phase 4c.1 doubling
+        /// trick, so the read is symmetric with the compute path.
+        auto & meshShader = renderPipelineState->vertexShader;
+        auto & tg = meshShader->internal.threadgroupDesc;
+
+        /// `threadsPerObjectThreadgroup` is ignored when no object
+        /// (amplification) shader is bound — Metal SDK explicitly
+        /// documents this; the Phase 4c hard-stop at
+        /// `makeMeshPipelineState` keeps that always true today. When
+        /// Phase 5 lands amplification, this becomes the object-stage's
+        /// `[numthreads(...)]` from a sibling field on the PSO.
+        [rp drawMeshThreadgroups:MTLSizeMake(groupCountX,groupCountY,groupCountZ)
+        threadsPerObjectThreadgroup:MTLSizeMake(1,1,1)
+          threadsPerMeshThreadgroup:MTLSizeMake(tg.x,tg.y,tg.z)];
     }
 
     void GEMetalCommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned int z){

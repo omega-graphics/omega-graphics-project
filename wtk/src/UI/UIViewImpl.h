@@ -2,6 +2,7 @@
 #define OMEGAWTK_UI_UIVIEWIMPL_H
 
 #include "omegaWTK/UI/UIView.h"
+#include "AnimationScheduler.h"   // Phase 4.4: NodeId, PropertyKey, scheduler API.
 
 #include <algorithm>
 #include <chrono>
@@ -152,8 +153,27 @@ struct UIView::Impl {
     OmegaCommon::Map<UIElementTag,SharedHandle<Composition::LayerAnimator>> animationLayerAnimators;
     OmegaCommon::Map<UIElementTag,ElementDirtyState> elementDirtyState;
     OmegaCommon::Vector<UIElementTag> activeTagOrder;
+    // Phase 4.4: legacy per-tag tween bookkeeping. UNUSED — nothing writes
+    // these any more (Anim Tier C routed startOrUpdateAnimation / pathNode
+    // updates onto the AnimationScheduler). Fields are retained so the 4.8
+    // deletion can be a clean sweep across all the dormant animation
+    // surfaces (the four ViewAnimator/LayerAnimator/elementAnimations/
+    // pathNodeAnimations members; the ensure*/beginCompositionClock
+    // helpers; advanceAnimations + lastAnimationDiagnostics).
     OmegaCommon::Map<UIElementTag,OmegaCommon::Map<int,PropertyAnimationState>> elementAnimations;
     OmegaCommon::Map<UIElementTag,OmegaCommon::Vector<PathNodeAnimationState>> pathNodeAnimations;
+    // Phase 4.4 (Anim Tier C): stable NodeId per element tag, allocated on
+    // first animation reference (registration or read). The
+    // AnimationScheduler keys its side table on
+    // `(elementNodeId, PropertyKey, subIndex)`; `applyAnimated*` /
+    // `animatedValue` look up the NodeId before probing the scheduler.
+    OmegaCommon::Map<UIElementTag,NodeId> elementNodeIds_;
+    // Phase 4.4 (Anim Tier C): preserves the legacy "same target = no
+    // restart" short-circuit on `startOrUpdateAnimation`. The scheduler
+    // itself replaces on every re-registration (Anim §6 Q3); this map
+    // tracks the last requested `.to` per `(tag, key)` so a repeated call
+    // with the same target is a no-op rather than a fresh tween.
+    OmegaCommon::Map<UIElementTag,OmegaCommon::Map<int,float>> animationTargets_;
     OmegaCommon::Map<UIElementTag,Composition::Color> lastResolvedElementColor;
     OmegaCommon::Map<UIElementTag,EffectState> lastResolvedEffects;
     OmegaCommon::Map<UIElementTag,Shape> previousShapeByTag;
@@ -199,6 +219,12 @@ struct UIView::Impl {
                                 SharedHandle<Composition::AnimationCurve> curve);
     bool advanceAnimations();
     Core::Optional<float> animatedValue(const UIElementTag & tag,int key) const;
+    // Phase 4.4: lazy NodeId allocation for one of this UIView's element
+    // tags. `ensure*` writes the map (used by registration paths);
+    // `try*` is read-only (used by `animatedValue` so an unknown tag
+    // returns nullopt instead of growing the map).
+    NodeId ensureElementNodeId(const UIElementTag & tag);
+    Core::Optional<NodeId> tryElementNodeId(const UIElementTag & tag) const;
     Composition::Color applyAnimatedColor(const UIElementTag & tag,const Composition::Color & baseColor) const;
     Shape applyAnimatedShape(const UIElementTag & tag,const Shape & inputShape) const;
     SharedHandle<Composition::Font> resolveFallbackTextFont();

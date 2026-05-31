@@ -1,9 +1,11 @@
 #include "omegasl.h"
 #include "../omegasl/src/CodeGen.h"
 #include "../omegasl/src/Parser.h"
+#include "../omegasl/src/Preprocessor.h"
 
 #include "omegaGTE/GTEDevice.h"
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 
 struct SourceImpl : public OmegaSLCompiler::Source {
@@ -60,6 +62,19 @@ public:
 
     }
     std::shared_ptr<omegasl_shader_lib> compile(std::initializer_list<std::shared_ptr<Source>> sources) override {
+       /// Pick the PPBackend that matches the codegen target stitched
+       /// together in the ctor. Used per-source to predefine the right
+       /// `OMEGASL_BACKEND_<X>` + `OMEGASL_FEATURE_<NAME>` macros so
+       /// `#requires(...)` and `#if defined(...)` resolve the same way
+       /// they do under offline `omegaslc`.
+#if defined(TARGET_DIRECTX)
+       const omegasl::PPBackend ppBackend = omegasl::PPBackend::HLSL;
+#elif defined(TARGET_METAL)
+       const omegasl::PPBackend ppBackend = omegasl::PPBackend::MSL;
+#else
+       const omegasl::PPBackend ppBackend = omegasl::PPBackend::GLSL;
+#endif
+
        for(auto & s : sources){
            auto source = (SourceImpl *)s.get();
            std::istream *in = nullptr;
@@ -69,7 +84,37 @@ public:
            else {
               in = &source->in;
            }
-           omegasl::ParseContext context {*in, nullptr, &diagnostics};
+
+           /// Run the OmegaSL preprocessor on the raw source so `#requires`,
+           /// `#define`, and `#if defined(...)` work at runtime the same
+           /// way they do offline. `#include` is rejected because a
+           /// runtime source string has no file-system context for
+           /// resolving include paths reliably — callers must concatenate
+           /// dependencies into the source string instead. A fresh
+           /// Preprocessor per source keeps the macro / required-features
+           /// state isolated, matching the offline `main.cpp` pattern.
+           std::ostringstream slurp;
+           slurp << in->rdbuf();
+           std::string rawSource = slurp.str();
+
+           omegasl::Preprocessor preprocessor;
+           preprocessor.setBackend(ppBackend);
+           preprocessor.setRejectIncludes(true);
+           std::string processedSource = preprocessor.process(rawSource, /*currentPath=*/"");
+           if (preprocessor.hasErrors()) {
+               std::cerr << "[OmegaSL Runtime] Preprocessor errors; skipping parse for this source." << std::endl;
+               continue;
+           }
+
+           /// Hand the file-scope `#requires` bitfield to CodeGen before
+           /// parsing the source — `SHADER_DECL` reads
+           /// `fileRequiredFeatures` while it builds each
+           /// `omegasl_shader` record. Mirrors `main.cpp:296` byte-for-byte.
+           gen->setRequiredFeatures(preprocessor.requiredFeatures(),
+                                    preprocessor.unsatisfiedRequiredFeatures());
+
+           std::istringstream processedStream(processedSource);
+           omegasl::ParseContext context {processedStream, nullptr, &diagnostics};
            parser->parseContext(context);
            if(diagnostics.hasErrors()){
                std::cerr << "[OmegaSL Runtime] Shader compilation produced " << diagnostics.getErrorCount() << " error(s):" << std::endl;

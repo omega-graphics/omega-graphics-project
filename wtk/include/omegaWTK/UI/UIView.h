@@ -333,6 +333,37 @@ public:
                           const LayoutDelta & delta,
                           const LayoutTransitionSpec & spec);
 
+    /// Phase 4.4: paint-reachable animation channels — the per-element
+    /// scalar properties UIView::paint() actually reads back from the
+    /// AnimationScheduler via `animatedValue`. Values mirror the
+    /// EffectAnimationKey* ints `UIView::Impl` keys internally; the
+    /// `*Color*` channels in `applyAnimatedColor` and the `Width/Height`
+    /// channels in `applyAnimatedShape` are deliberately omitted —
+    /// those readers became orphaned by Tier B's `ComputedStyle` /
+    /// `arrange()` split, so animating them has no visible effect on
+    /// the current paint path.
+    enum class AnimationChannel : int {
+        ShadowOffsetX = 1000,
+        ShadowOffsetY = 1001,
+        ShadowRadius  = 1002,
+        ShadowBlur    = 1003,
+        ShadowOpacity = 1004
+    };
+
+    /// Phase 4.4: register a scalar tween on one of this view's elements
+    /// against the per-window `AnimationScheduler`. Returns immediately;
+    /// the next outermost `FrameBuilder::beginFrame` ticks the scheduler,
+    /// and Paint reads the resolved value through `animatedValue` on the
+    /// next repaint. Repeated calls with the same `(tag, channel, to)`
+    /// are a no-op (the (tag, key) short-circuit from `startOrUpdateAnimation`).
+    /// Pass `durationSec <= 0` to clear an existing animation on the slot.
+    void animateElement(const UIElementTag & tag,
+                        AnimationChannel channel,
+                        float from,
+                        float to,
+                        float durationSec,
+                        SharedHandle<Composition::AnimationCurve> curve = nullptr);
+
     void update();
 
 private:

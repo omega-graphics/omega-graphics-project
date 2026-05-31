@@ -281,6 +281,15 @@ namespace OmegaWTK {
         void applyLayoutDelta(const struct LayoutDelta & delta,
                               const struct LayoutTransitionSpec & spec);
 
+        /// Phase 4.4: stable per-`View` identity used by the per-window
+        /// `AnimationScheduler` as the `NodeId` for property animations
+        /// (the View's own layout tweens — see `applyLayoutDelta`). Plain
+        /// `std::uint64_t` (the alias `OmegaWTK::NodeId` lives in the
+        /// private animation header) so the public `View` surface does
+        /// not depend on the scheduler header. Generated once per `View`,
+        /// stable for the View's lifetime, never reused.
+        std::uint64_t nodeId() const;
+
         /// Called by Widget::executePaint after onPaint. A no-op since
         /// Phase 3.8 collapsed per-view canvases: UIView / SVGView submit
         /// their DisplayList through the window-level FrameBuilder during

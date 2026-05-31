@@ -33,6 +33,23 @@ public:
     bool isDefined(const std::string& name) const;
     std::string process(const std::string& source, const std::string& currentPath = "");
 
+    /// Reject `#include` directives during processing. The runtime
+    /// `OmegaSLCompiler` flips this on because a runtime source string
+    /// is inline content with no file-system context for resolving
+    /// include paths — loud rejection prevents silent drops. When set
+    /// and an `#include` is seen, the directive is skipped, a precise
+    /// stderr error fires, and `hasErrors()` flips true. Offline path
+    /// leaves this off and `#include` resolves against `currentPath`
+    /// exactly as before.
+    void setRejectIncludes(bool reject) { rejectIncludes_ = reject; }
+
+    /// True if any directive in the most-recently-processed source
+    /// failed in a way that should abort downstream compilation
+    /// (today: `#include` while `rejectIncludes_` is true). Sticky
+    /// across the lifetime of this Preprocessor instance — construct
+    /// a fresh one per compile if isolation is needed.
+    bool hasErrors() const { return hasErrors_; }
+
     /// Union of every `#requires(...)` feature declared at file scope in
     /// the most-recently-processed source. Each bit is one of the
     /// `OMEGASL_FEATURE_BIT_*` values from `omegasl.h`. Codegen propagates
@@ -52,6 +69,8 @@ private:
     uint64_t requiredFeatures_ = 0;
     uint64_t unsatisfiedFeatures_ = 0;
     bool backendSet_ = false;
+    bool rejectIncludes_ = false;
+    bool hasErrors_ = false;
 
     std::string processInternal(const std::string& source, const std::string& currentPath, unsigned includeDepth);
     std::string expandMacros(const std::string& line) const;

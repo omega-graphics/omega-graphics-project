@@ -121,13 +121,13 @@ void assertActivePhase(FramePhase expected){
 }
 
 void UIView::tickAnimations(){
-    assertActivePhase(FramePhase::Tick);
-    // Tier B / B3: the Tick phase. Advance the per-view tween pump so
-    // Paint reads freshly-ticked animation values. Inert today — nothing
-    // starts a tween (startOrUpdateAnimation has no caller), so this is a
-    // no-op beyond animation diagnostics; Tier D swaps the body for the
-    // AnimationScheduler's tick().
-    (void)impl_->advanceAnimations();
+    // Phase 4.4 (Anim Tier C): the per-view tween pump is gone. The
+    // window's `AnimationScheduler::tick` runs once per outermost frame
+    // from `FrameBuilder::beginFrame`; UIView's local Tick phase no
+    // longer drives animation state. The method is kept for source
+    // compatibility (it is a public surface on `UIView`); 4.8 deletes
+    // both the public method and the no-op `Impl::advanceAnimations`
+    // alongside the rest of the dormant animation surface.
 }
 
 void UIView::arrange(){
@@ -428,7 +428,13 @@ void UIView::update(){
     // background unconditionally.
     auto * fb = AppWindow::activeFrameBuilder();
 
-    { FrameBuilder::ScopedPhase phase(fb, FramePhase::Tick);   tickAnimations(); }
+    // Phase 4.4 (Anim Tier C): the Tick phase no longer runs from
+    // `UIView::update()` — `AnimationScheduler::tick` fired once at the
+    // outermost `FrameBuilder::beginFrame` (`FramePhase::Tick`) before
+    // the paint walk started. `update()` is now a pure consumer of the
+    // resulting side table: Paint reads `scheduler.value(...)` and
+    // emits DrawOps. The Style / Layout / Paint / Commit ordering is
+    // unchanged.
     { FrameBuilder::ScopedPhase phase(fb, FramePhase::Style);  resolveStyles(); }
     { FrameBuilder::ScopedPhase phase(fb, FramePhase::Layout); arrange(); }
 

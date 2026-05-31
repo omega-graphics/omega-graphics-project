@@ -194,6 +194,25 @@ target_link_options("IntVectorIOTest" PRIVATE
     "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
 add_test(NAME omegagte_int_vector_io COMMAND IntVectorIOTest)
 
+# Mesh-Shader-Plan Phase 4c.4 — backend-independent mesh-shader integration
+# test (shared, backend-independent source under gte/tests/). Exercises the
+# full chain: OmegaSL → MSL → `metal` toolchain → `.metallib` →
+# `MTLMeshRenderPipelineDescriptor` → `drawMeshThreadgroups` → fragment →
+# texture → CPU readback. Lights up MSL emission from Phase 2c through the
+# `metal` toolchain for the first time on this host.
+add_metal_cli_test(
+    NAME
+    "MeshShaderTest"
+    SOURCES
+    "../mesh_shader_test.cpp"
+    FRAMEWORKS
+    "Metal"
+    "Foundation"
+)
+target_link_options("MeshShaderTest" PRIVATE
+    "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
+add_test(NAME omegagte_mesh_shader COMMAND MeshShaderTest)
+
 # Pipeline-Completion §2.2 / OmegaSL §10.2 — push-constant (`constant<T>`) GPU
 # integration test (shared, backend-independent source under gte/tests/).
 # Exercises setComputeConstants end-to-end: the command buffer scans the bound

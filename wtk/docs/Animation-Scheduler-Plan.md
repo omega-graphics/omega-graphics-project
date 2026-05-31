@@ -391,12 +391,32 @@ Phase enforcement (Lifecycle plan §3.2) catches cross-phase violations:
 | `tick(now)` | Phase 1 (Tick) | Style, Layout, Paint, Commit |
 | `transition(...)` (friend) | Phase 2 (Style) | Tick, Layout, Paint, Commit |
 | `value<T>(...)` | Phase 4 (Paint) | Tick (rare — see below), Style, Layout, Commit |
-| `animateProperty/tween/animate` (public) | Any phase, including outside the frame | — (always defers; bits set, work runs next Tick) |
+| `animateProperty/tween/animate` (public) | Tick, Style, Layout, or outside any frame | Paint, Commit |
 
-The "any phase" rule for public registration is critical: an app handler
-that fires from a non-frame thread (e.g. an input event) registers an
-animation immediately without crossing a phase boundary. The scheduler
-enqueues the registration and processes it at the start of the next Tick.
+**Paint is a pure read** — this is the load-bearing invariant. Allowing
+even a deferred public registration from Paint would couple Paint
+correctness to the scheduler's internal queueing rules, and would let
+an app handler buried inside `paint(PaintContext&)` quietly invalidate
+the "Paint never mutates animation state" guarantee
+that lets `DirtyBit::Paint`-only frames skip scheduler bookkeeping.
+The same reasoning applies to Commit. An app handler that needs to
+start an animation from a Paint code path should instead request a
+fresh frame (`requestFrame()`) and start the animation from that
+frame's Style or Tick phase, or queue the request via the input layer
+that originally triggered the paint.
+
+The "outside any frame" allowance handles app handlers that fire from
+non-frame contexts — input events, async callbacks, timer handlers.
+Those run with no active `FrameBuilder` (`AppWindow::activeFrameBuilder()
+== nullptr`), the assert is a no-op, and the registration is processed
+on the next outermost frame's Tick.
+
+The active landing of this contract is Render Phase 4.4
+(`AnimationScheduler::registerProperty` / `registerCallback` carry
+`assert(phase != Paint && phase != Commit)` guards;
+`setTableValue` carries `assert(phase == Tick)`; all are
+`assert()`-only and drop on `NDEBUG`; all no-op when no frame is in
+flight).
 
 ### 3.9 What happens to UIView's per-property tween engine
 
@@ -856,6 +876,19 @@ focused tests for "interrupt mid-transition with a new target."
   from the pacer; the scheduler does not own a clock or a thread. The
   pacer-paced FrameBuilder calls `scheduler.tick(now)` at the start of
   every frame.
+- **[Animation-Surface-Expansion-Plan.md](Animation-Surface-Expansion-Plan.md)** —
+  The public-API plan that consumes this scheduler. After the
+  Render-Plan Tier 4 + Phase I work and the Style-Plan Tier 3
+  transition hook all land, the surface expansion plan promotes the
+  per-window scheduler to public reach (`AppWindow::animationScheduler()`),
+  adds `View::animate()` + a fluent builder + cross-view
+  composition, and spreads per-subclass animation entry points
+  across `UIView`, `SVGView`, and `ScrollView`. Three additive
+  scheduler-side pokes are spec'd by that plan (two new `PropertyKey`
+  slots `ScrollOffsetX/Y`, one new `AnimationHandle::awaitCompletion`
+  accessor); everything else stays inside this plan's existing
+  surface. The §3.8 phase-enforcement table is the contract that
+  plan's public surface respects.
 
 ---
 

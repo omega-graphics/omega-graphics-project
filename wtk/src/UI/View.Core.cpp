@@ -9,6 +9,7 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "../Composition/Compositor.h"
 #include "../Composition/backend/ResourceFactory.h"
+#include "AnimationScheduler.h"
 #include "FrameBuilder.h"
 
 namespace OmegaWTK {
@@ -51,6 +52,13 @@ void View::clearDirtyBits(){
 
 bool View::isRootView(){
     return impl_->parent_ptr == nullptr;
+}
+
+std::uint64_t View::nodeId() const{
+    // Phase 4.4: returned as a plain uint64_t so the public header stays
+    // independent of the private AnimationScheduler header. Allocated
+    // once at View construction; never reused.
+    return impl_->nodeId_;
 }
 
 ViewResizeCoordinator & View::getResizeCoordinator(){
@@ -167,30 +175,67 @@ void View::disable() {
 
 void View::applyLayoutDelta(const LayoutDelta & delta,
                             const LayoutTransitionSpec & spec){
+    // Phase 4.4 (Anim Tier B): the per-View layout tween. Pre-4.4 this
+    // queued a `Composition::ViewAnimator::resizeTransition`; that path is
+    // now dormant — the AnimationScheduler holds the four scalar tracks
+    // (LayoutX/Y/Width/Height, all `layoutAffecting`) in its side table.
+    //
+    // 4.7 seam: until the Layout phase reads `scheduler.value<float>(
+    // nodeId(), LayoutX/Y/Width/Height)` and writes the View's rect, the
+    // rect stays at `from` for the animation's lifetime. There is no
+    // caller of this method in the tree today; the side table is correct
+    // and the read-back is the only missing link.
     if(!spec.enabled || spec.durationSec <= 0.f || delta.changedProperties.empty()){
         resize(delta.toRectPx);
         return;
     }
 
-    auto viewAnimator = SharedHandle<Composition::ViewAnimator>(
-        new Composition::ViewAnimator(compositorProxy()));
-
-    int dx = static_cast<int>(delta.toRectPx.pos.x - delta.fromRectPx.pos.x);
-    int dy = static_cast<int>(delta.toRectPx.pos.y - delta.fromRectPx.pos.y);
-    int dw = static_cast<int>(delta.toRectPx.w - delta.fromRectPx.w);
-    int dh = static_cast<int>(delta.toRectPx.h - delta.fromRectPx.h);
-
-    if(dx == 0 && dy == 0 && dw == 0 && dh == 0){
+    auto * fb = AppWindow::activeFrameBuilder();
+    auto * scheduler = (fb != nullptr) ? fb->animationScheduler() : nullptr;
+    if(scheduler == nullptr){
+        // No window scheduler reachable from this call site (no AppWindow
+        // frame in flight). Commit directly — matches the pre-4.4
+        // short-circuit on the `durationSec <= 0` path.
         resize(delta.toRectPx);
         return;
     }
 
-    unsigned durationMs = static_cast<unsigned>(spec.durationSec * 1000.f);
+    const auto & from = delta.fromRectPx;
+    const auto & to   = delta.toRectPx;
+    if(from.pos.x == to.pos.x && from.pos.y == to.pos.y &&
+       from.w     == to.w     && from.h     == to.h){
+        resize(delta.toRectPx);
+        return;
+    }
+
+    Composition::TimingOptions timing {};
+    timing.durationMs = static_cast<std::uint32_t>(spec.durationSec * 1000.f);
+    if(timing.durationMs == 0){
+        resize(delta.toRectPx);
+        return;
+    }
     auto curve = spec.curve;
     if(curve == nullptr){
         curve = Composition::AnimationCurve::Linear();
     }
-    viewAnimator->resizeTransition(dx,dy,dw,dh,durationMs,curve);
+
+    const auto node = nodeId();
+    if(from.pos.x != to.pos.x){
+        scheduler->tweenProperty<float>(node, PropertyKey::LayoutX,
+                                        from.pos.x, to.pos.x, timing, curve);
+    }
+    if(from.pos.y != to.pos.y){
+        scheduler->tweenProperty<float>(node, PropertyKey::LayoutY,
+                                        from.pos.y, to.pos.y, timing, curve);
+    }
+    if(from.w != to.w){
+        scheduler->tweenProperty<float>(node, PropertyKey::LayoutWidth,
+                                        from.w, to.w, timing, curve);
+    }
+    if(from.h != to.h){
+        scheduler->tweenProperty<float>(node, PropertyKey::LayoutHeight,
+                                        from.h, to.h, timing, curve);
+    }
 }
 
 void View::setWindowRenderTarget(SharedHandle<Composition::ViewRenderTarget> windowRT){

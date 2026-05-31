@@ -1,4 +1,7 @@
 #include "UIViewImpl.h"
+#include "AnimationScheduler.h"
+#include "FrameBuilder.h"
+#include "omegaWTK/UI/AppWindow.h"
 
 namespace OmegaWTK {
 
@@ -38,33 +41,58 @@ void UIView::Impl::convertLegacyLayoutToV2(){
 void UIView::applyLayoutDelta(const UIElementTag & elementTag,
                               const LayoutDelta & delta,
                               const LayoutTransitionSpec & spec){
+    // Phase 4.4 (Anim Tier B): the per-element layout tween. Pre-4.4 this
+    // queued `Composition::LayerAnimator::resizeTransition` on the
+    // element's animation layer; the AnimationScheduler now carries the
+    // four scalar tracks keyed by `(elementNodeId, LayoutX/Y/Width/Height)`.
+    //
+    // 4.7 seam: same as `View::applyLayoutDelta` — the element rect read-
+    // back from the scheduler lands with the centralized Layout phase.
+    // No caller exists today.
     if(!spec.enabled || spec.durationSec <= 0.f || delta.changedProperties.empty()){
         return;
     }
-    auto layerAnimator = impl_->ensureAnimationLayerAnimator(elementTag);
-    if(layerAnimator == nullptr){
+
+    auto * fb = AppWindow::activeFrameBuilder();
+    auto * scheduler = (fb != nullptr) ? fb->animationScheduler() : nullptr;
+    if(scheduler == nullptr){
         return;
     }
 
-    int dx = static_cast<int>(delta.toRectPx.pos.x - delta.fromRectPx.pos.x);
-    int dy = static_cast<int>(delta.toRectPx.pos.y - delta.fromRectPx.pos.y);
-    int dw = static_cast<int>(delta.toRectPx.w - delta.fromRectPx.w);
-    int dh = static_cast<int>(delta.toRectPx.h - delta.fromRectPx.h);
-
-    if(dx == 0 && dy == 0 && dw == 0 && dh == 0){
+    const auto & from = delta.fromRectPx;
+    const auto & to   = delta.toRectPx;
+    if(from.pos.x == to.pos.x && from.pos.y == to.pos.y &&
+       from.w     == to.w     && from.h     == to.h){
         return;
     }
 
-    unsigned durationMs = static_cast<unsigned>(spec.durationSec * 1000.f);
-    if(durationMs == 0){
+    Composition::TimingOptions timing {};
+    timing.durationMs = static_cast<std::uint32_t>(spec.durationSec * 1000.f);
+    if(timing.durationMs == 0){
         return;
     }
-
     auto curve = spec.curve;
     if(curve == nullptr){
         curve = Composition::AnimationCurve::Linear();
     }
-    layerAnimator->resizeTransition(dx,dy,dw,dh,durationMs,curve);
+
+    const auto node = impl_->ensureElementNodeId(elementTag);
+    if(from.pos.x != to.pos.x){
+        scheduler->tweenProperty<float>(node, PropertyKey::LayoutX,
+                                        from.pos.x, to.pos.x, timing, curve);
+    }
+    if(from.pos.y != to.pos.y){
+        scheduler->tweenProperty<float>(node, PropertyKey::LayoutY,
+                                        from.pos.y, to.pos.y, timing, curve);
+    }
+    if(from.w != to.w){
+        scheduler->tweenProperty<float>(node, PropertyKey::LayoutWidth,
+                                        from.w, to.w, timing, curve);
+    }
+    if(from.h != to.h){
+        scheduler->tweenProperty<float>(node, PropertyKey::LayoutHeight,
+                                        from.h, to.h, timing, curve);
+    }
 }
 
 }

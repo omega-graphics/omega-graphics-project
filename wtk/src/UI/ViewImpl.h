@@ -3,6 +3,7 @@
 
 #include "omegaWTK/UI/View.h"
 #include "../Composition/backend/ResourceFactory.h"
+#include "AnimationScheduler.h"   // Phase 4.4: allocateNodeId()
 
 #include <algorithm>
 #include <cmath>
@@ -115,6 +116,10 @@ struct View::Impl {
     bool enabled_ = true;
     /// Widget-View-Paint-Lifecycle-Plan Tier A: deferred-paint dirty mask.
     uint8_t dirtyBits_ = 0;
+    /// Phase 4.4: stable per-View NodeId for the AnimationScheduler. Read
+    /// via the public `View::nodeId()`. Allocated at construction so
+    /// `applyLayoutDelta` can register tweens without a lookup.
+    std::uint64_t nodeId_;
 
     /// Construct a purely virtual View (Phase 3). No NativeItem, no
     /// per-View render target. The render target is propagated from the
@@ -126,7 +131,8 @@ struct View::Impl {
         proxy(),
         ownLayerTree(std::make_shared<Composition::LayerTree>(initialRect)),
         parent_ptr(parent),
-        rect(initialRect){
+        rect(initialRect),
+        nodeId_(allocateNodeId()){
         resizeCoordinator.attachView(&owner);
     }
 

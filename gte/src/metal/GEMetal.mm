@@ -1454,11 +1454,14 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         };
 
         SharedHandle<GERenderPipelineState> makeMeshPipelineState(MeshPipelineDescriptor &desc) override {
-            /// Mesh-Shader-Plan Phase 3 — public-API stub. Phase 4c
-            /// lands the real `MTLMeshRenderPipelineDescriptor` build
-            /// (set `.objectFunction` from `amplificationFunc` when
-            /// present, `.meshFunction`, `.fragmentFunction`). Mirrors
-            /// the raytracing feature-gate idiom.
+            /// Mesh-Shader-Plan Phase 4c.2 — Metal mesh PSO build via
+            /// `MTLMeshRenderPipelineDescriptor` (Metal 3 / macOS 13+ /
+            /// iOS 16+). Mirrors the graphics `makeRenderPipelineState`
+            /// above for color formats, blend, depth-stencil state, and
+            /// raster state; the only divergence is the geometry side
+            /// (mesh replaces vertex; no vertex descriptor) and the
+            /// matching `newRenderPipelineStateWithMeshDescriptor:` call.
+            /// Feature-gate first, same idiom as the raytracing pattern.
             if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_MESH_SHADER)){
                 DEBUG_STREAM("makeMeshPipelineState: device does not advertise "
                              "GTEDEVICE_FEATURE_MESH_SHADER ('" << desc.name << "')");
@@ -1470,14 +1473,169 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             if (!_checkPipelineShader(desc.fragmentFunc, "fragment", desc.name)) {
                 return nullptr;
             }
-            if (desc.amplificationFunc
-                && !_checkPipelineShader(desc.amplificationFunc, "amplification", desc.name)) {
+            /// Phase 5 hard-stop, matching the D3D12 sibling. The
+            /// descriptor exposes `amplificationFunc` so callers can
+            /// write forward-compatible code, but per-backend AS/object
+            /// plumbing (payload-type matching, mesh-grid dispatch) does
+            /// not land until Phase 5. Fail loud here rather than
+            /// silently dropping the stage.
+            if (desc.amplificationFunc) {
+                if (!_checkPipelineShader(desc.amplificationFunc, "amplification", desc.name)) {
+                    return nullptr;
+                }
+                DEBUG_STREAM("makeMeshPipelineState: amplification stage is Phase 5 "
+                             "(payload + object/mesh-grid machinery pending); "
+                             "passing `amplificationFunc` is not supported yet ('"
+                             << desc.name << "')");
                 return nullptr;
             }
-            DEBUG_STREAM("makeMeshPipelineState: Metal mesh PSO build not yet implemented "
-                         "(Phase 3 stub — Phase 4c will land MTLMeshRenderPipelineDescriptor); '"
-                         << desc.name << "'");
-            return nullptr;
+
+            metalDevice.assertExists();
+            MTLMeshRenderPipelineDescriptor *pipelineDesc = [[MTLMeshRenderPipelineDescriptor alloc] init];
+            if(desc.name.size() > 0) {
+                pipelineDesc.label = ns_string_from_str_ref(desc.name);
+            }
+
+            /// Depth-stencil state object — built via the same
+            /// `newDepthStencilStateWithDescriptor:` path as the graphics
+            /// PSO and stored on `GEMetalRenderPipelineState` so the
+            /// existing `setRenderPipelineState` applies it at encode
+            /// time. `MTLMeshRenderPipelineDescriptor` itself only takes
+            /// the *formats* (left at default `MTLPixelFormatInvalid`
+            /// when depth is disabled — matches the existing graphics
+            /// path behavior; see plan 4c trade-off note).
+            bool hasDepthStencilState = desc.depthAndStencilDesc.enableDepth || desc.depthAndStencilDesc.enableStencil;
+            NSSmartPtr depthStencilState = NSObjectHandle{nullptr};
+            if(hasDepthStencilState){
+                MTLDepthStencilDescriptor *stencilDepthDesc = [[MTLDepthStencilDescriptor alloc] init];
+                if(!desc.depthAndStencilDesc.enableDepth){
+                    stencilDepthDesc.depthWriteEnabled = NO;
+                    stencilDepthDesc.depthCompareFunction = MTLCompareFunctionNever;
+                }
+                if(!desc.depthAndStencilDesc.enableStencil){
+                    stencilDepthDesc.frontFaceStencil = nil;
+                    stencilDepthDesc.backFaceStencil = nil;
+                }
+                else {
+                    MTLStencilDescriptor *frontFaceStencil = [[MTLStencilDescriptor alloc] init],*backFaceStencil = [[MTLStencilDescriptor alloc] init];
+                    backFaceStencil.readMask = frontFaceStencil.readMask = desc.depthAndStencilDesc.stencilReadMask;
+                    backFaceStencil.writeMask = frontFaceStencil.writeMask = desc.depthAndStencilDesc.stencilWriteMask;
+
+                    frontFaceStencil.stencilCompareFunction = convertCompareFunc(desc.depthAndStencilDesc.frontFaceStencil.func);
+                    frontFaceStencil.stencilFailureOperation = convertStencilOp(desc.depthAndStencilDesc.frontFaceStencil.stencilFail);
+                    frontFaceStencil.depthFailureOperation = convertStencilOp(desc.depthAndStencilDesc.frontFaceStencil.depthFail);
+                    frontFaceStencil.depthStencilPassOperation = convertStencilOp(desc.depthAndStencilDesc.frontFaceStencil.pass);
+
+                    backFaceStencil.stencilCompareFunction = convertCompareFunc(desc.depthAndStencilDesc.backFaceStencil.func);
+                    backFaceStencil.stencilFailureOperation = convertStencilOp(desc.depthAndStencilDesc.backFaceStencil.stencilFail);
+                    backFaceStencil.depthFailureOperation = convertStencilOp(desc.depthAndStencilDesc.backFaceStencil.depthFail);
+                    backFaceStencil.depthStencilPassOperation = convertStencilOp(desc.depthAndStencilDesc.backFaceStencil.pass);
+
+                    stencilDepthDesc.frontFaceStencil = frontFaceStencil;
+                    stencilDepthDesc.backFaceStencil = backFaceStencil;
+                }
+
+                stencilDepthDesc.depthWriteEnabled = desc.depthAndStencilDesc.writeAmount == DepthWriteAmount::All? YES : NO;
+                stencilDepthDesc.depthCompareFunction = convertCompareFunc(desc.depthAndStencilDesc.depthOperation);
+
+                depthStencilState = NSObjectHandle{NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newDepthStencilStateWithDescriptor:stencilDepthDesc]};
+            }
+
+            auto meshFunc = (GEMetalShader *)desc.meshFunc.get();
+            auto fragmentFunc = (GEMetalShader *)desc.fragmentFunc.get();
+            meshFunc->function.assertExists();
+            fragmentFunc->function.assertExists();
+            pipelineDesc.meshFunction = NSOBJECT_OBJC_BRIDGE(id<MTLFunction>,meshFunc->function.handle());
+            pipelineDesc.fragmentFunction = NSOBJECT_OBJC_BRIDGE(id<MTLFunction>,fragmentFunc->function.handle());
+            /// `objectFunction` left nil — amplification rejected above.
+
+            /// Color attachments + blend — identical loop to the graphics
+            /// PSO (the field types differ: graphics
+            /// `MTLRenderPipelineColorAttachmentDescriptorArray` vs the
+            /// mesh descriptor's, but they share the same per-element
+            /// interface so the loop body is byte-identical).
+            {
+                const unsigned attachmentCount =
+                    desc.colorPixelFormats.empty() ? 1u : (unsigned)desc.colorPixelFormats.size();
+                for(unsigned i = 0; i < attachmentCount; ++i){
+                    const PixelFormat pf = desc.colorPixelFormats.empty()
+                                               ? PixelFormat::RGBA8Unorm
+                                               : desc.colorPixelFormats[i];
+                    MTLRenderPipelineColorAttachmentDescriptor *ca = pipelineDesc.colorAttachments[i];
+                    ca.pixelFormat = pixelFormatToMTLPixelFormat(pf, true);
+                    if(i < desc.colorBlendDescriptors.size()){
+                        const auto & b = desc.colorBlendDescriptors[i];
+                        ca.blendingEnabled             = b.blendEnabled ? YES : NO;
+                        ca.rgbBlendOperation           = convertBlendOperationMTL(b.colorOp);
+                        ca.alphaBlendOperation         = convertBlendOperationMTL(b.alphaOp);
+                        ca.sourceRGBBlendFactor        = convertBlendFactorMTL(b.srcColorFactor);
+                        ca.destinationRGBBlendFactor   = convertBlendFactorMTL(b.destColorFactor);
+                        ca.sourceAlphaBlendFactor      = convertBlendFactorMTL(b.srcAlphaFactor);
+                        ca.destinationAlphaBlendFactor = convertBlendFactorMTL(b.destAlphaFactor);
+                        ca.writeMask                   = convertColorWriteMaskMTL(b.writeMask);
+                    }
+                    else {
+                        ca.blendingEnabled = NO;
+                        ca.writeMask = MTLColorWriteMaskAll;
+                    }
+                }
+            }
+
+            pipelineDesc.rasterSampleCount = desc.rasterSampleCount > 0 ? desc.rasterSampleCount : 1;
+
+            /// Raster state — captured on `GEMetalRasterizerState` for
+            /// the encoder to apply at bind time (Metal applies cull /
+            /// fill / winding via `setCullMode:` / `setTriangleFillMode:`
+            /// / `setFrontFacingWinding:` on the encoder, not on the
+            /// pipeline descriptor — handled uniformly with the graphics
+            /// path by the existing `setRenderPipelineState`).
+            MTLCullMode cullMode;
+            if(desc.cullMode == RasterCullMode::Front){
+                cullMode = MTLCullModeFront;
+            }
+            else if(desc.cullMode == RasterCullMode::Back){
+                cullMode = MTLCullModeBack;
+            }
+            else {
+                cullMode = MTLCullModeNone;
+            }
+
+            MTLTriangleFillMode fillMode;
+            if(desc.triangleFillMode == TriangleFillMode::Wireframe){
+                fillMode = MTLTriangleFillModeLines;
+            }
+            else {
+                fillMode = MTLTriangleFillModeFill;
+            }
+
+            MTLWinding winding;
+            if(desc.polygonFrontFaceRotation == GTEPolygonFrontFaceRotation::Clockwise){
+                winding = MTLWindingClockwise;
+            }
+            else {
+                winding = MTLWindingCounterClockwise;
+            }
+
+            GEMetalRasterizerState rasterizerState {winding,cullMode,fillMode,desc.depthAndStencilDesc.depthBias,desc.depthAndStencilDesc.slopeScale,desc.depthAndStencilDesc.depthClamp};
+
+            NSError *error = nil;
+            id<MTLRenderPipelineState> pipelineStateRaw = [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newRenderPipelineStateWithMeshDescriptor:pipelineDesc
+                                                                                                                                                    options:MTLPipelineOptionNone
+                                                                                                                                                 reflection:nil
+                                                                                                                                                      error:&error];
+            if(pipelineStateRaw == nil){
+                DEBUG_STREAM("makeMeshPipelineState: newRenderPipelineStateWithMeshDescriptor failed ('"
+                             << desc.name << "'): "
+                             << (error ? [[error localizedDescription] UTF8String] : "(no NSError)"));
+                return nullptr;
+            }
+            NSSmartPtr pipelineState = NSObjectHandle{NSOBJECT_CPP_BRIDGE pipelineStateRaw};
+
+            return std::shared_ptr<GERenderPipelineState>(
+                new GEMetalRenderPipelineState(desc.meshFunc, desc.fragmentFunc,
+                                               pipelineState, hasDepthStencilState,
+                                               depthStencilState, rasterizerState,
+                                               /*meshVariant=*/true));
         };
 
         SharedHandle<GEBlitPipelineState> makeBlitPipelineState(BlitPipelineDescriptor &desc) override {

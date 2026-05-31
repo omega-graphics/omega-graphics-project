@@ -329,6 +329,21 @@ std::string Preprocessor::processInternal(const std::string& source, const std::
             handleRequiresDirective(argText);
         }
         else if (directive == "include" && !skipping) {
+            if (rejectIncludes_) {
+                // Runtime-compiled source has no file-system context for
+                // resolving include paths reliably (and propagating one
+                // through the public `OmegaSLCompiler::Source` API would
+                // diverge it from "single self-contained source string").
+                // Fail loud so callers concatenate the dependency instead
+                // of seeing a silently-dropped include surface later as a
+                // missing-symbol parser error.
+                std::cerr << "error: #include is not allowed in runtime-compiled "
+                             "OmegaSL source — concatenate the dependency into "
+                             "the source string passed to OmegaSLCompiler instead. "
+                             "(directive: `" << line << "`)" << std::endl;
+                hasErrors_ = true;
+                continue;
+            }
             size_t q = line.find('"', argStart);
             if (q != std::string::npos) {
                 size_t q2 = line.find('"', q + 1);

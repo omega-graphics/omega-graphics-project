@@ -1,15 +1,50 @@
 #include "AnimationScheduler.h"
 
 #include "omegaWTK/UI/AppWindow.h"   // AppWindow — stored by ref; not dereferenced until 4.4/4.7.
+#include "FrameBuilder.h"             // Phase 4.4: paint-purity asserts read the active phase.
 
 #include <algorithm>
+#include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <unordered_map>
 
 namespace OmegaWTK {
 
+// Phase 4.4: NodeId allocator. `View::nodeId()` reads from this on
+// construction; UIView allocates one per `(UIView, UIElementTag)` pair
+// lazily. Starts at 1 so 0 stays a sentinel "no node" value.
+NodeId allocateNodeId(){
+    static std::atomic<NodeId> next{1};
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
+
 namespace {
+
+// Phase 4.4 paint-purity guard: registration is only valid outside the
+// Paint / Commit passes; Paint is a pure reader of the side table. No-op
+// when no frame is in flight (headless paths, tests).
+void assertNotInPaintOrCommit(const char * call){
+    if(auto * fb = AppWindow::activeFrameBuilder(); fb != nullptr){
+        const auto phase = fb->currentPhase();
+        assert(phase != FramePhase::Paint && phase != FramePhase::Commit &&
+               "AnimationScheduler registration during Paint/Commit");
+        (void)phase;
+    }
+    (void)call;
+}
+
+// Phase 4.4 paint-purity guard: the only legal writer of the side table
+// is tick(). No-op outside an active frame for the same reason as above.
+void assertSideTableWriteInTick(){
+    if(auto * fb = AppWindow::activeFrameBuilder(); fb != nullptr){
+        const auto phase = fb->currentPhase();
+        assert(phase == FramePhase::Tick &&
+               "AnimationScheduler::setTableValue outside Tick");
+        (void)phase;
+    }
+}
 
 std::uint64_t steadyNowNs(){
     return static_cast<std::uint64_t>(
@@ -74,6 +109,7 @@ AnimationScheduler::~AnimationScheduler() = default;
 Composition::AnimationHandle AnimationScheduler::registerProperty(
         const PropertyTableKey & key, std::function<void(float)> sample,
         Composition::TimingOptions timing, bool layoutAffecting){
+    assertNotInPaintOrCommit("registerProperty");
     // Re-registering the same (node,key,sub) REPLACES the prior animation
     // — Animation-Scheduler-Plan §6 Q3: tweenProperty replaces (cancels
     // the prior, starts fresh); retargeting is transition-only behaviour
@@ -101,6 +137,7 @@ Composition::AnimationHandle AnimationScheduler::registerProperty(
 
 Composition::AnimationHandle AnimationScheduler::registerCallback(
         std::function<void(float)> sample, Composition::TimingOptions timing){
+    assertNotInPaintOrCommit("registerCallback");
     const auto id = impl_->idSeed++;
     auto handle = Composition::AnimationHandle::Create(id, Composition::AnimationState::Pending);
 
@@ -118,6 +155,7 @@ Composition::AnimationHandle AnimationScheduler::registerCallback(
 // ---- side table --------------------------------------------------------
 
 void AnimationScheduler::setTableValue(const PropertyTableKey & key, AnimatedValue value){
+    assertSideTableWriteInTick();
     impl_->table[key] = std::move(value);
 }
 

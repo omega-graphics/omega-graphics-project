@@ -2,11 +2,13 @@
 #include <omegaWTK/UI/UIView.h>
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
+#include <omegaWTK/UI/Menu.h>
 #include <omegaWTK/Widgets/BasicWidgets.h>
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/CanvasEffect.h"
 #include <omegaWTK/Main.h>
 #include <algorithm>
+#include <chrono>
 
 namespace {
 
@@ -30,6 +32,11 @@ OmegaWTK::Composition::LayerEffect::DropShadowParams makeShadow(float x,float y,
 }
 
 constexpr float kAnimationDurationSec = 0.6f;
+// Phase 4.4 menu trigger: longer + more visible than the resting style swap
+// so the scheduler-driven shadow tween is unmistakable on screen.
+constexpr float kShadowAnimDurationSec = 1.5f;
+constexpr float kShadowAnimFromOffsetY  = 6.f;
+constexpr float kShadowAnimToOffsetY    = 60.f;
 
 }
 
@@ -38,6 +45,15 @@ class ClampAnimatedChildWidget final : public OmegaWTK::Widget {
     bool firstClampRequestIssued = false;
     bool secondClampRequestIssued = false;
     bool animationTriggered = false;
+
+    // Phase 4.4 visual-validation state. While `shadowAnimActive_` is
+    // true the widget self-invalidates each repaint so the per-window
+    // FrameBuilder keeps ticking the AnimationScheduler — every frame
+    // Paint re-reads the shadow side-table cell. Without the loop the
+    // first repaint would freeze on whatever value the scheduler had at
+    // that instant; this drives a real interpolated tween.
+    bool shadowAnimActive_ = false;
+    std::chrono::steady_clock::time_point shadowAnimDeadline_ {};
 
     void ensureUIView(const OmegaWTK::Composition::Rect & bounds){
         auto local = localBounds(bounds);
@@ -136,11 +152,46 @@ protected:
             applyAnimatedTargetStyle();
             uiView->update();
         }
+
+        // Phase 4.4: while a menu-triggered shadow tween is in flight,
+        // keep the frame loop alive so the scheduler ticks each turn
+        // and Paint re-samples the updated side-table value.
+        if(shadowAnimActive_){
+            if(std::chrono::steady_clock::now() >= shadowAnimDeadline_){
+                shadowAnimActive_ = false;
+            }
+            else {
+                invalidate(OmegaWTK::PaintReason::StateChanged);
+            }
+        }
     }
 
 public:
     explicit ClampAnimatedChildWidget(OmegaWTK::Composition::Rect rect):
             OmegaWTK::Widget(rect){}
+
+    // Phase 4.4 visual-validation hook. Called from the menu delegate.
+    // Registers a scheduler tween on the existing `animated_rect`'s
+    // shadow Y-offset (the shadow drops away and back via EaseInOut),
+    // arms the self-invalidate loop, and requests one repaint so the
+    // pump starts immediately rather than waiting for the next event.
+    void triggerShadowAnimation(){
+        if(uiView == nullptr){
+            return;
+        }
+        const auto durationSec = kShadowAnimDurationSec;
+        uiView->animateElement(
+            "animated_rect",
+            OmegaWTK::UIView::AnimationChannel::ShadowOffsetY,
+            kShadowAnimFromOffsetY,
+            kShadowAnimToOffsetY,
+            durationSec,
+            OmegaWTK::Composition::AnimationCurve::EaseInOut());
+        shadowAnimActive_ = true;
+        shadowAnimDeadline_ = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(static_cast<long>(durationSec * 1000.f));
+        invalidate(OmegaWTK::PaintReason::StateChanged);
+    }
 };
 
 class ClampRootContainer final : public OmegaWTK::Container {
@@ -180,6 +231,32 @@ public:
     }
 };
 
+// Phase 4.4: a Menu delegate routes "Animate Shadow" / "Quit" to the
+// widget owning the scheduler-driven tween. The widget pointer is
+// captured at app-startup time and stays alive for the duration of
+// AppInst::start (the widget tree owns it via shared_ptr).
+class AnimMenuDelegate final : public OmegaWTK::MenuDelegate {
+    SharedHandle<ClampAnimatedChildWidget> target_;
+public:
+    explicit AnimMenuDelegate(SharedHandle<ClampAnimatedChildWidget> target):
+        target_(std::move(target)) {}
+
+    void onSelectItem(unsigned itemIndex) override {
+        switch(itemIndex){
+            case 0:
+                if(target_){
+                    target_->triggerShadowAnimation();
+                }
+                break;
+            case 2:
+                OmegaWTK::AppInst::terminate();
+                break;
+            default:
+                break;
+        }
+    }
+};
+
 int omegaWTKMain(OmegaWTK::AppInst *app) {
     auto window = make<OmegaWTK::AppWindow>(
             OmegaWTK::Composition::Rect{{0,0},500,500},
@@ -201,6 +278,21 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
     container->addChild(child);
 
     window->setRootWidget(container);
+
+    // Phase 4.4 visual-validation menu. The "Animate" menu's first item
+    // triggers the scheduler-driven shadow tween on the animated_rect;
+    // the separator + "Quit" item match the BasicAppTest convention.
+    // Delegate is `static` so it outlives this function (the menu
+    // captures it by raw pointer).
+    static AnimMenuDelegate animMenuDelegate(child);
+    auto menu = make<OmegaWTK::Menu>("MainMenu", std::initializer_list<SharedHandle<OmegaWTK::MenuItem>>{
+        OmegaWTK::CategoricalMenu("Animate", {
+            OmegaWTK::ButtonMenuItem("Animate Shadow"),
+            OmegaWTK::MenuItemSeperator(),
+            OmegaWTK::ButtonMenuItem("Quit")
+        }, &animMenuDelegate)
+    });
+    window->setMenu(menu);
 
     auto & windowManager = app->windowManager;
     windowManager->setRootWindow(window);

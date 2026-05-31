@@ -104,7 +104,16 @@ namespace omegasl {
         bufferCount = 0;
         textureCount = 0;
         samplerCount = 0;
-        paramIndex = 0;
+        /// `paramIndex` is intentionally NOT reset here. This function is
+        /// called from `CodeGen::emitResourcesAndFillLayout` AFTER the
+        /// mesh-stage pre-amble in `emitShaderEntryHeader` has already
+        /// bumped `paramIndex` to account for the `__omegasl_mesh_output_handle`
+        /// parameter — wiping it here would make the first non-static
+        /// resource think it's the first item in the param list and skip
+        /// the leading comma, producing `__omegasl_mesh_output_handleconstant
+        /// MeshVertexIn * vertBuf...` (no comma between the handle and the
+        /// first resource). `paramIndex` is now reset once per shader at
+        /// the top of `emitShaderEntryHeader` instead, so the bump survives.
         staticSamplers.clear();
     }
 
@@ -471,6 +480,15 @@ using namespace metal;
                                           omegasl_shader &shadermap_entry,
                                           std::ostream &out) {
         cg.indentLevel = 0;
+
+        /// Reset the per-shader parameter-position counter at the very top,
+        /// BEFORE the mesh-handle pre-amble below bumps it for the
+        /// `__omegasl_mesh_output_handle` slot. The previous home for this
+        /// reset was inside `resetForNextShader` (called from
+        /// `CodeGen::emitResourcesAndFillLayout`), but that ran AFTER the
+        /// mesh-handle bump and clobbered it — see the comment in
+        /// `resetForNextShader` for the dropped-comma symptom this fixes.
+        paramIndex = 0;
 
         shadermap_entry.name = new char[_decl->name.size() + 1];
         std::copy(_decl->name.begin(), _decl->name.end(), (char *)shadermap_entry.name);

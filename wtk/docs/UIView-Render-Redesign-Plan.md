@@ -2187,7 +2187,84 @@ Files touched: new `wtk/src/UI/AnimationScheduler.{h,cpp}`,
 `wtk/src/UI/AppWindowImpl.h`, `wtk/src/UI/AppWindow.cpp`,
 `wtk/src/UI/FrameBuilder.{h,cpp}`.
 
-##### Phase 4.4 — migrate UIView animation onto the scheduler; paint reads the side table (folds Anim Tiers B + C)
+##### Phase 4.4 — migrate UIView animation onto the scheduler; paint reads the side table (folds Anim Tiers B + C) [DONE]
+
+**Status:** Complete (2026-05-30; full Metal build clean). Mechanical
+re-plumbing — every animation surface this phase touches was already
+dormant before 4.4: `View::applyLayoutDelta`, `UIView::applyLayoutDelta`,
+and `UIView::Impl::startOrUpdateAnimation` all have **zero callers** in
+the tree; `pathNodeAnimations` is never written. So Phase 4.4 swaps the
+backing pump (ViewAnimator/LayerAnimator → AnimationScheduler) and the
+side-table reader (per-tag tween state → `scheduler.value`) with no
+expected runtime delta in any current scene.
+
+Identity scheme (developer decision; not pinned in the original §4.4):
+- `View::nodeId()` (new public accessor, returns plain `std::uint64_t`
+  so the public header stays clear of the UI-private `NodeId` alias) —
+  one stable id per `View`, allocated at construction from the new
+  `allocateNodeId()` atomic counter in `wtk/src/UI/AnimationScheduler.h`.
+- `UIView::Impl::ensureElementNodeId(tag)` — one stable id per
+  `(UIView, UIElementTag)` pair, allocated lazily on first registration
+  or read. Read-only callers (`animatedValue`) use `tryElementNodeId`
+  so unknown tags fall through to `{}` without growing the map.
+
+PropertyKey mapping (developer decision; preserves the legacy channel-
+by-channel semantics that the old per-tag tween engine carried):
+- View / element **layout** tweens — built-in
+  `PropertyKey::LayoutX/Y/Width/Height` (already `layoutAffecting`).
+- Element **path-node** tweens — built-in `PropertyKey::PathNodeX/Y`
+  with `subIndex = nodeIndex`.
+- Every other UIView per-element channel (`ElementAnimationKey*` ColorR/
+  G/B/A + Width/Height, the `EffectAnimationKey*` 1000-series shadow /
+  blur ints on `Impl`) — `UserDefined + int(key)` in the scheduler's
+  `UserDefined` half. One `elementKeyToProperty(int)` helper in
+  `UIView.Animation.cpp` does the encoding; readers (`applyAnimatedColor`
+  / `applyAnimatedShape` / `animatedValue`) round-trip through the same
+  helper so the channel layout is preserved.
+
+`(tag, key)` short-circuit (Anim Tier C requirement): preserved via a
+new `Impl::animationTargets_[tag][key] → float` side map. The scheduler
+itself **replaces** on every re-registration (Anim §6 Q3); the local
+"same target → no restart" guard now lives in the UIView caller, not
+the scheduler. The `durationSec <= 0` cancel-equivalent path issues a
+zero-duration tween (`AnimationScheduler::tick` treats `durNs == 0` as
+"finished, table-erase" — already-correct behaviour from 4.3) so the
+side-table cell clears and reads fall through to the resolved style.
+
+`UIView::tickAnimations()` body and the matching `ScopedPhase(Tick)` in
+`UIView::update()` are GONE — `AnimationScheduler::tick` already ran
+once at the outermost `FrameBuilder::beginFrame` (Phase 4.3 wiring), so
+UIView's local tick was redundant. `Impl::advanceAnimations` body is
+now a one-line `return false;` stub. Both the public `tickAnimations`
+method and the private `advanceAnimations`/`beginCompositionClock`/
+`ensureAnimation*` symbols stay declared so 4.8's sweep can delete the
+whole dormant animation surface (the four ViewAnimator/LayerAnimator/
+elementAnimations/pathNodeAnimations members + the diagnostics state)
+in one pass — per the bullet below this one in §4.4.
+
+Paint-purity asserts (Anim §3.10 debug guards) land here:
+`AnimationScheduler::registerProperty`/`registerCallback` assert phase
+!= Paint/Commit; `setTableValue` asserts phase == Tick. All
+`assert()`-only (drop on `NDEBUG`); no-op when no frame is in flight
+(headless / startup paths).
+
+Scheduler access path: new `FrameBuilder::animationScheduler()`
+accessor returns `window_.impl_->animationScheduler_.get()`. Animation
+callers reach it via the existing `AppWindow::activeFrameBuilder()`
+lookup — public `AppWindow.h` is untouched, the scheduler header stays
+UI-private.
+
+4.7 seam carried forward: the scheduler now holds the `LayoutX/Y/
+Width/Height` tracks `View::applyLayoutDelta` / `UIView::applyLayoutDelta`
+write, but nothing reads them back to update a View's rect yet. With
+zero callers of either method today, this is a no-impact deferral —
+Phase 4.7's centralized Layout pass closes it.
+
+Files touched: `wtk/src/UI/AnimationScheduler.{h,cpp}`,
+`wtk/src/UI/FrameBuilder.{h,cpp}`, `wtk/include/omegaWTK/UI/View.h`,
+`wtk/src/UI/ViewImpl.h`, `wtk/src/UI/View.Core.cpp`,
+`wtk/src/UI/UIView.Layout.cpp`, `wtk/src/UI/UIView.Animation.cpp`,
+`wtk/src/UI/UIView.Update.cpp`, `wtk/src/UI/UIViewImpl.h`.
 
 UIView's per-element tween engine and View's layout-delta animations
 move onto the scheduler. Paint becomes a pure *reader* of the side
@@ -2472,6 +2549,135 @@ Files touched: `wtk/include/omegaWTK/Composition/Animation.h`,
 - Does not **rename or delete `Widget` / `UIView`** — Widgets stay as
   light `View` wrappers and the existing type names are kept (§6 Q1/Q2).
 
+##### Phase I (follow-up) — Dead-code sweep: orphaned API + Impl surface left over by Tiers 2–4
+
+Tracked alongside Phases E–H; **post-Tier-4**, sequenced after Phase 4.8
+so the live animation-surface deletion lands first and Phase I closes
+out the remaining residue. Found during the Phase 4.4 implementation
+sweep: a number of UIView / View / Style symbols are reachable from no
+caller in the tree but were not in 4.8's direct scope (4.8 deletes the
+*active*-but-being-replaced animation runtime — `ViewAnimator` /
+`LayerAnimator` / `LayerClip` / `ViewClip` / `AnimationRuntimeRegistry`
+/ per-view `ownLayerTree`). Phase I deletes the *passive* leftovers
+that survived prior refactors with no consumer.
+
+Phase I is not load-bearing — none of these symbols affect runtime
+behaviour. It exists so the post-Tier-4 surface presents only live
+code, and so future readers do not waste time threading through
+methods, fields, and structs that resolve to nothing.
+
+**Public API surface (one-cycle deprecation, then delete).** Each is a
+public symbol that may have an out-of-tree caller; mark `[[deprecated]]`
+in the first Phase I PR, delete in the next:
+
+- `UIView::AnimationDiagnostics` struct + `UIView::getLastAnimationDiagnostics()`
+  accessor. The only writer (`Impl::advanceAnimations`) became a stub
+  in 4.4; there is no reader in the tree.
+- `UIView::UpdateDiagnostics` struct + `UIView::getLastUpdateDiagnostics()`
+  accessor. The three `*TagCount` size_t fields are written nowhere;
+  `revision` is incremented in `UIView::update` but never read.
+- `UIView::EffectState` struct. Only consumer was the dead
+  `Impl::lastResolvedEffects` map (see Impl section below).
+- `Style::elementBrushAnimation` / `elementAnimation` / `elementPathAnimation`
+  builder methods, the matching `Style::Entry::Kind::ElementBrushAnimation`
+  / `ElementAnimation` / `ElementPathAnimation` enum values, and the
+  `Style::Entry::animationKey` field. `UIView.Style.cpp` enumerates
+  these kinds inside `collectStyleScope` for scope-tag tracking only;
+  the style-application pass has no case branches for them, so the
+  stored requests never reach the scheduler. The Style → scheduler
+  bridge that *would* consume them is Animation-Scheduler-Plan Tier D
+  (StyleResolver friend hook), which lands with the Style refactor —
+  at which point a fresh, smaller surface replaces these.
+- `enum ElementAnimationKey` (UIView.h). Consumed only by the Style
+  entries above and by the orphan `applyAnimated*` readers below.
+- `View::renderTargetHandle()` (both `&` and `const &` overloads).
+  Defined in `View.Core.cpp`; no caller in the tree.
+- `View::isRootView()` and `View::isEnabled()`. Pre-3.x debug
+  accessors with no caller (the live setters `enable()`/`disable()`
+  stay). The parent-pointer / enabled checks they wrapped happen
+  internally on `View::Impl` now.
+- `virtual View::wantsLayer()` (defaulted `false`, overridden by
+  `ScrollView` to `true`). Stub for the future compositor-thread
+  retained scroll-layer texture (Tier 5 §6 Q3); no caller invokes
+  it today. The ScrollView override carries the same lifetime —
+  either both go in Phase I and Tier 5 reintroduces it cleanly, or
+  both stay marked-but-undeleted until Tier 5 lands; lean toward
+  the former to keep the API surface honest.
+- `virtual View::scrollOffsetContribution()` (returns `{0,0}`). Pre-3.6
+  scroll-offset path replaced by `View::contentOffset()`; no caller.
+  ScrollView.cpp:88 acknowledges this as legacy.
+- `View::endCompositionSession()`. Empty body; called from
+  `Widget.Paint.cpp` and `SVGView.cpp` but does nothing. Delete the
+  method + the call sites in one go (the `startCompositionSession()`
+  twin stays — it still does the lane/frontend propagation that
+  newly-mounted subviews depend on).
+- `virtual View::submitPaintFrame(int)`. No-op virtual since Phase
+  3.8/3.9 collapsed the per-view canvas; the one call site in
+  `Widget.Paint.cpp:67` keeps the comment but the call itself is
+  pure overhead. No remaining overrides.
+
+**Impl-private surface (delete outright, no deprecation needed).** These
+do not cross the public boundary; remove in the same PR as the public
+surface deprecations:
+
+- `UIView::Impl` dead `Map<UIElementTag, …>` fields, all written and
+  read by no one: `lastResolvedElementColor`, `lastResolvedEffects`,
+  `previousShapeByTag`, `lastResolvedV2Rects_`. The
+  `lastResolvedV2Rects_` map was the input to the
+  `resolveLayoutTransition → applyLayoutDelta` sheet-driven layout-
+  transition path that Tier B / B1 removed; the comment at
+  `UIView.Update.cpp:240` documents the removal.
+- `UIView::Impl` dead-write flags: `firstFrameCoherentSubmit` (written
+  in six places, read in zero) and `styleChangeRequiresCoherentFrame`
+  (written in two places, read in zero). `styleDirtyGlobal` survives —
+  it has one live reader in `UIView.Style.cpp:346`.
+- `UIView::Impl` dead diagnostics plumbing: `lastObservedDroppedPacketCount`,
+  `hasObservedLaneDiagnostics`. The only writer was `advanceAnimations`,
+  now stubbed; the only reader was the same function. Bundles with
+  the `lastAnimationDiagnostics` field above for the same reason.
+- `UIView::Impl::framesPerSec` field. Only reader is
+  `beginCompositionClock`, which has no caller after 4.4 (and is
+  itself slated for 4.8). Delete alongside `beginCompositionClock`
+  if the 4.8 sweep does not already get it.
+- `UIView::Impl::EffectAnimationKey*` enum constants that paint never
+  reads back: `ShadowColorR/G/B/A` (4 entries) and `GaussianRadius` /
+  `DirectionalRadius` / `DirectionalAngle` (3 entries). The five
+  shadow-channel constants paint DOES read (`ShadowOffsetX/Y` /
+  `ShadowRadius` / `ShadowBlur` / `ShadowOpacity`) stay.
+- `UIViewInternal::ResolvedEffectTransition` struct and the matching
+  `dropShadowTransition` / `gaussianBlurTransition` /
+  `directionalBlurTransition` fields on `ResolvedEffectStyle`. Written
+  by `UIView.Style.cpp:207–225`, read nowhere. The transition→
+  scheduler bridge that would consume them is the same Anim Tier D
+  hook above.
+- `UIView::Impl::applyAnimatedColor` / `applyAnimatedShape` — already
+  annotated as orphan in `UIView.Animation.cpp` during 4.4. These die
+  here alongside the public `ElementAnimationKey*` color/width/height
+  enum entries that gated them.
+
+**Open question for Phase I — `Widget::PaintOptions::autoWarmupOnInitialPaint`
++ `warmupFrameCount`.** `Widget.Paint.cpp:58–62` still consults both,
+but with `submitPaintFrame` deleted (above) the multi-submission warm-up
+loop has nothing to do. Decide at Phase I time whether the warm-up
+abstraction has any remaining real purpose; if not, retire it.
+
+**Out of scope (owned by other phases):**
+
+- `Composition::ViewAnimator` / `LayerAnimator` / `LayerClip` /
+  `ViewClip` / `AnimationRuntimeRegistry` — **Phase 4.8** (Anim Tier E).
+- Per-view `View::Impl::ownLayerTree` — **Phase 4.8**.
+- `UIView::Impl::animationViewAnimator` / `animationLayerAnimators` /
+  `elementAnimations` / `pathNodeAnimations` fields and the dormant
+  `ensureAnimationViewAnimator` / `ensureAnimationLayerAnimator` /
+  `beginCompositionClock` / `advanceAnimations` / `tickAnimations`
+  methods — **Phase 4.8** (paired with the active surface they used to
+  back).
+
+Sequencing: Phase I runs after 4.8 so 4.8's deletion lands cleanly
+without Phase I racing it. The Phase I PR is its own commit — easy
+to revert if an out-of-tree caller surfaces against any of the
+deprecated public symbols.
+
 ---
 
 ## 5. What gets deleted
@@ -2581,8 +2787,25 @@ codebase should override anything in §3:
 - **`Composition-Extension-Plan.md`** — orthogonal. The new
   `DrawOp` types are a superset of what `Canvas` exposes and will
   naturally pick up the Brush/Gradient improvements landing there.
-- **`Animation-API-Simplification-Plan.md`** — prerequisite for
-  Tier 4. Without it, `AnimationScheduler` has nowhere clean to sit.
+- **[Animation-Scheduler-Plan.md](Animation-Scheduler-Plan.md)**
+  (formerly `Animation-API-Simplification-Plan.md`) — prerequisite
+  for Tier 4. Its Tiers A/B/C land as Phases 4.3/4.4/4.8; Tier D
+  wires into Style Plan Tier 3.
+- **[Animation-Surface-Expansion-Plan.md](Animation-Surface-Expansion-Plan.md)** —
+  Sequenced AFTER this plan's Tier 4 + Phase I. Phase 4.4 added a
+  public stop-gap (`UIView::animateElement` + the `AnimationChannel`
+  enum) so the scheduler had a clickable validator (the
+  ContainerClampAnimationTest "Animate Shadow" menu). That stop-gap
+  is replaced by the expansion plan's Tier 1: a fluent
+  `View::animate()` builder reachable from every `View` subclass,
+  with per-subclass surfaces for `UIView` (element-scoped), `SVGView`
+  (SVG-element-scoped + path morphing), and `ScrollView` (smooth-
+  scroll / fling / snap). Phase I's deletion of the orphan
+  `Style::elementAnimation` / `elementBrushAnimation` /
+  `elementPathAnimation` builders + the `ElementAnimationKey` enum
+  + the `applyAnimatedColor` / `applyAnimatedShape` readers is what
+  unblocks `UIViewAnimationBuilder::elementFill` / `elementTransform`
+  in that plan's Tier 1.
 - **`Style-StyleSheet-Refactor-Plan.md`** — **kept separate, not
   folded into Tier 4.** That plan's *engine* tiers align with the
   *earlier* render tiers (its Tier 1 / 2 / 3 ↔ render Tiers 1 / 2 / 3),
