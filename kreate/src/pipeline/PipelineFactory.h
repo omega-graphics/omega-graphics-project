@@ -3,6 +3,7 @@
 
 #include <kreate/Pipeline.h>
 #include <omegaGTE/GTEDevice.h>
+#include <omegaGTE/GEPipeline.h>
 #include <memory>
 #include <string>
 
@@ -31,6 +32,12 @@ struct PipelineFactory {
         OmegaGTE::GTE &gte,
         SharedHandle<OmegaGTE::GTEShaderLibrary> shaderLib,
         const PipelineDesc &desc);
+
+    /// Internal accessor for the renderer — returns the GTE render
+    /// pipeline state wrapped by `p`. Lives on the factory so
+    /// `Pipeline::Impl` does not have to be re-exposed in a separate
+    /// header.
+    static SharedHandle<OmegaGTE::GERenderPipelineState> &state(Pipeline &p);
 };
 
 } // namespace Kreate

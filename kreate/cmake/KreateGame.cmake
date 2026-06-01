@@ -19,7 +19,7 @@
 set(KREATE_SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/..)
 
 function(add_kreate_game)
-    cmake_parse_arguments("_ARG" "" "NAME;BUNDLE_ID;BUNDLE_ICON" "SOURCES;DEPS" ${ARGN})
+    cmake_parse_arguments("_ARG" "" "NAME;BUNDLE_ID;BUNDLE_ICON" "SOURCES;DEPS;SHADERS" ${ARGN})
 
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         # --- iOS: plain executable + Info.plist (compile-only target).
@@ -140,4 +140,29 @@ function(add_kreate_game)
     foreach(_dep ${_ARG_DEPS})
         add_dependencies(${_ARG_NAME} ${_dep})
     endforeach()
+
+    # Stage runtime shader sources next to the executable so the game's
+    # `createPipeline("X.omegasl", ...)` call can resolve them from the
+    # working directory (the bundle's Resources/ on macOS, the .app dir
+    # on iOS, the executable directory on Windows and Linux). Pre-compiled
+    # `.omegasllib` packaging is a later phase — for now we ship sources
+    # and let the runtime compiler handle them.
+    if(_ARG_SHADERS)
+        if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+            set(_kreate_shader_dest "$<TARGET_BUNDLE_CONTENT_DIR:${_ARG_NAME}>/Resources")
+        else()
+            set(_kreate_shader_dest "$<TARGET_FILE_DIR:${_ARG_NAME}>")
+        endif()
+        foreach(_shader IN LISTS _ARG_SHADERS)
+            if(NOT IS_ABSOLUTE "${_shader}")
+                set(_shader_abs "${CMAKE_CURRENT_SOURCE_DIR}/${_shader}")
+            else()
+                set(_shader_abs "${_shader}")
+            endif()
+            get_filename_component(_shader_name "${_shader_abs}" NAME)
+            add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_shader_abs}" "${_kreate_shader_dest}/${_shader_name}")
+        endforeach()
+    endif()
 endfunction()

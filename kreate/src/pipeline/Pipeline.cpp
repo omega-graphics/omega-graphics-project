@@ -110,4 +110,8 @@ std::shared_ptr<Pipeline> PipelineFactory::createFromLibrary(
     return buildFromLibrary(gte, lib, desc);
 }
 
+SharedHandle<OmegaGTE::GERenderPipelineState> &PipelineFactory::state(Pipeline &p) {
+    return p.impl->state;
+}
+
 } // namespace Kreate

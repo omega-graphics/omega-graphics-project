@@ -3,6 +3,8 @@
 
 #include "Window.h"
 #include "Pipeline.h"
+#include "Mesh.h"
+#include <cstddef>
 #include <memory>
 #include <string>
 
@@ -30,6 +32,21 @@ public:
     /// Loads a pre-compiled `.omegasllib` and builds a render pipeline.
     std::shared_ptr<Pipeline> createPipelineFromLibrary(const std::string &libPath,
                                                          const PipelineDesc &desc);
+
+    /// Allocates GPU buffers for the supplied vertex (and optional index)
+    /// data and returns a `Mesh` handle. `vertexData` must be laid out
+    /// tightly in the attribute order documented on `VertexAttribute`,
+    /// with byte stride equal to `vertexStrideFor(desc.attributes)`. Pass
+    /// `indexData == nullptr` (and zero index counts) for non-indexed
+    /// meshes; the index variants line up the same way. Returns nullptr
+    /// on validation failure with a diagnostic on `std::cerr`.
+    std::shared_ptr<Mesh> createMesh(const MeshDesc &desc,
+                                     const void *vertexData,
+                                     std::size_t vertexBytes,
+                                     unsigned vertexCount,
+                                     const void *indexData = nullptr,
+                                     std::size_t indexBytes = 0,
+                                     unsigned indexCount = 0);
 
     /// Called once after GTE and the render target are ready.
     virtual void onInit() {}

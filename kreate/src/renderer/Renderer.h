@@ -10,6 +10,9 @@
 
 namespace Kreate {
 
+class Pipeline;
+class Mesh;
+
 /// Internal renderer. Owns the OmegaGTE device stack for one window: the GTE
 /// instance, its command queue, and the native render target backing the
 /// window. Created by `App::Impl` during init via `Renderer::create`; not
@@ -37,8 +40,12 @@ public:
     /// swap-chain backing the native target.
     void endFrameAndPresent();
 
-    // Future: void draw(Pipeline &pipeline, Mesh &mesh, const Mat4 &mvp);
-    // Activates once GEMesh lands (see gte/docs/GEMesh-TextureAssets-Implementation-Plan.md).
+    /// Encode one draw inside the open render pass: bind the pipeline
+    /// state, push `mvp` as a 64-byte push constant (Engine-Roadmap
+    /// Phase 1 chose push constants for per-draw uniforms), then bind
+    /// and draw the mesh at vertex resource slot 0. Must be called
+    /// between `beginFrame` and `endFrameAndPresent`.
+    void draw(Pipeline &pipeline, Mesh &mesh, const Mat4 &mvp);
 
 private:
     Renderer(OmegaGTE::GTE gte,

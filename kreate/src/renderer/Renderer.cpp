@@ -1,4 +1,8 @@
 #include "Renderer.h"
+#include <kreate/Pipeline.h>
+#include <kreate/Mesh.h>
+#include "../pipeline/PipelineFactory.h"
+#include "../mesh/MeshFactory.h"
 
 namespace Kreate {
 
@@ -44,6 +48,21 @@ void Renderer::beginFrame(Color clearColor) {
             OmegaGTE::GERenderPassDescriptor::ColorAttachment::Clear));
 
     currentBuffer_->startRenderPass(passDesc);
+}
+
+void Renderer::draw(Pipeline &pipeline, Mesh &mesh, const Mat4 &mvp) {
+    if (!currentBuffer_) return;
+    auto &state = PipelineFactory::state(pipeline);
+    auto &geMesh = MeshFactory::geMesh(mesh);
+    if (!state || !geMesh) return;
+
+    currentBuffer_->setRenderPipelineState(state);
+    // 64-byte push constant — single `float4x4` matches the Phase 1
+    // shader's `constant<PushData> { float4x4 mvp; }` declaration.
+    currentBuffer_->setRenderConstants(&mvp.data[0],
+                                       static_cast<unsigned>(sizeof(float) * 16),
+                                       0);
+    currentBuffer_->drawMesh(geMesh, /*vertexSlot=*/0);
 }
 
 void Renderer::endFrameAndPresent() {

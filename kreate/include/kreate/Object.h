@@ -9,13 +9,15 @@
 namespace Kreate {
 
 class Pipeline;
+class Mesh;
 
-/// Renderable scene node. Pure data; rendering activates once GEMesh lands
-/// (see gte/docs/GEMesh-TextureAssets-Implementation-Plan.md). A mesh
-/// handle will be added then; today an Object is transform + pipeline.
+/// Renderable scene node. Holds a transform, a pipeline, and a mesh.
+/// `Scene::render` draws an object iff it is visible AND has both a
+/// pipeline and a mesh; any of the three missing skips it.
 class KREATE_EXPORT Object : public std::enable_shared_from_this<Object> {
 public:
-    static std::shared_ptr<Object> create(std::shared_ptr<Pipeline> pipeline = nullptr);
+    static std::shared_ptr<Object> create(std::shared_ptr<Pipeline> pipeline = nullptr,
+                                          std::shared_ptr<Mesh> mesh = nullptr);
     ~Object();
 
     void setTransform(const Mat4 &t);
@@ -23,6 +25,9 @@ public:
 
     void setPipeline(std::shared_ptr<Pipeline> p);
     std::shared_ptr<Pipeline> pipeline() const;
+
+    void setMesh(std::shared_ptr<Mesh> m);
+    std::shared_ptr<Mesh> mesh() const;
 
     void setVisible(bool v);
     bool isVisible() const;

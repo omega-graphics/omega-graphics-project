@@ -1,0 +1,43 @@
+// Phase 1 first-mesh shader pair for kREATE's BasicGame.
+//
+// Vertex layout matches MeshDesc::attributes = Position | Color
+// (Engine-Roadmap Phase 1 contract). std430 packs `{float3 pos; float4
+// color}` to a 32-byte struct stride — the vec4 aligns to 16 after the
+// vec3 — and kREATE's Mesh factory sizes the GPU buffer accordingly.
+// On the CPU side the BasicGame writes vertices in tight 28-byte
+// stride and the factory unpacks attribute-by-attribute through the
+// std430-aware GEBufferWriter.
+//
+// MVP arrives as a push constant — Phase 1's chosen per-draw uniform
+// path (Engine-Roadmap §1 Key Decision). The C++ `Renderer::draw`
+// sets a 64-byte block into `pc` before issuing each draw.
+
+struct VertexIn {
+    float3 pos;
+    float4 color;
+};
+
+struct PushData {
+    float4x4 mvp;
+};
+
+struct Raster internal {
+    float4 pos   : Position;
+    float4 color : TexCoord;
+};
+
+constant<PushData>  pc    : 0;
+buffer<VertexIn>    verts : 0;
+
+[in pc, in verts]
+vertex Raster vertexFunc(uint vid : VertexID){
+    VertexIn v = verts[vid];
+    Raster out;
+    out.pos   = pc.mvp * float4(v.pos, 1.0);
+    out.color = v.color;
+    return out;
+}
+
+fragment float4 fragFunc(Raster raster){
+    return raster.color;
+}

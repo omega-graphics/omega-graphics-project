@@ -1,6 +1,8 @@
 #include <kreate/Scene.h>
 #include <kreate/Object.h>
 #include <kreate/App.h>
+#include <kreate/Pipeline.h>
+#include <kreate/Mesh.h>
 #include "renderer/Renderer.h"
 #include <vector>
 #include <algorithm>
@@ -100,13 +102,20 @@ void Scene::render(App &app) {
     Renderer &r = app.internalRenderer();
     r.beginFrame(impl->clearColor);
 
-    // 3. Per-object draws activate once GEMesh lands. Until then, the
-    //    scene just clears and presents.
-    // for (auto &n : nodes) {
-    //     if (!n.object->isVisible() || !n.object->pipeline()) continue;
-    //     Mat4 mvp = impl->projection * impl->view * n.cachedWorld;
-    //     r.draw(*n.object->pipeline(), *n.object->mesh(), mvp);
-    // }
+    // 3. Per-object draws (Engine-Roadmap Phase 1). An object renders
+    //    only if it is visible AND has both a pipeline and a mesh — a
+    //    missing piece is silently skipped because it represents a
+    //    half-constructed Object, not a runtime error. Pipeline-sort to
+    //    amortize state changes is a later phase; one pipeline per draw
+    //    is fine while there is one pipeline in the scene.
+    for (auto &n : nodes) {
+        if (!n.object->isVisible()) continue;
+        auto pipe = n.object->pipeline();
+        auto mesh = n.object->mesh();
+        if (!pipe || !mesh) continue;
+        Mat4 mvp = impl->projection * impl->view * n.cachedWorld;
+        r.draw(*pipe, *mesh, mvp);
+    }
 
     r.endFrameAndPresent();
 }

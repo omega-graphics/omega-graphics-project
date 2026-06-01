@@ -1,7 +1,9 @@
 #include <kreate/App.h>
 #include <kreate/Pipeline.h>
+#include <kreate/Mesh.h>
 #include "renderer/Renderer.h"
 #include "pipeline/PipelineFactory.h"
+#include "mesh/MeshFactory.h"
 
 namespace Kreate {
 
@@ -31,6 +33,18 @@ std::shared_ptr<Pipeline> App::createPipeline(const std::string &omegaslPath,
 std::shared_ptr<Pipeline> App::createPipelineFromLibrary(const std::string &libPath,
                                                           const PipelineDesc &desc) {
     return PipelineFactory::createFromLibrary(impl->renderer->gte(), libPath, desc);
+}
+
+std::shared_ptr<Mesh> App::createMesh(const MeshDesc &desc,
+                                      const void *vertexData,
+                                      std::size_t vertexBytes,
+                                      unsigned vertexCount,
+                                      const void *indexData,
+                                      std::size_t indexBytes,
+                                      unsigned indexCount) {
+    return MeshFactory::create(impl->renderer->gte(), desc,
+                               vertexData, vertexBytes, vertexCount,
+                               indexData, indexBytes, indexCount);
 }
 
 Renderer &App::internalRenderer() { return *impl->renderer; }

@@ -63,6 +63,7 @@ utils/pyyaml
 !vc.bat
 !gn/vc.bat
 !external-libs/openssl/vc.bat
+!clean-windows-build-artifacts.bat
 
 # Output Folders
 

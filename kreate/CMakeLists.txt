@@ -20,6 +20,7 @@ endif()
 file(GLOB KREATE_SRCS_TOPLEVEL CONFIGURE_DEPENDS src/*.cpp)
 file(GLOB KREATE_SRCS_PIPELINE CONFIGURE_DEPENDS src/pipeline/*.cpp)
 file(GLOB KREATE_SRCS_RENDERER CONFIGURE_DEPENDS src/renderer/*.cpp)
+file(GLOB KREATE_SRCS_MESH     CONFIGURE_DEPENDS src/mesh/*.cpp)
 
 add_omega_graphics_module(KREATE SHARED
     HEADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -27,6 +28,7 @@ add_omega_graphics_module(KREATE SHARED
         ${KREATE_SRCS_TOPLEVEL}
         ${KREATE_SRCS_PIPELINE}
         ${KREATE_SRCS_RENDERER}
+        ${KREATE_SRCS_MESH}
         ${PLATFORM_SRCS}
     DEPENDS OmegaGTE
 )
@@ -58,6 +60,7 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
         NAME BasicGame
         BUNDLE_ID "org.omegagraphics.kreate.BasicGame"
         SOURCES tests/BasicGame.cpp
+        SHADERS tests/shaders/Phase1Basic.omegasl
     )
 endif()
 

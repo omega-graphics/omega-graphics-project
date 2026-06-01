@@ -12,7 +12,13 @@ Tick/Style/Layout/Paint (B3), `rebuildContent()` out of `onPaint` +
 Container layout out of paint (B4), cross-phase assertion teeth + verify
 (B5). **The active target is now Block 2 — Tier C cleanup** (delete
 `executePaint` reentrancy machinery, retire `PaintOptions`, remove the
-no-op session shims). Tier D is open.
+no-op session shims). Tier D is open — but see §0.2: **`SceneNode` is no
+longer planned for adoption.** The `View` base already absorbed the
+phase virtuals (`paint(PaintContext &)`, `resolveStyles()`,
+`arrangeContent()`) it would have hosted, so Tier D becomes "finish the
+deletions on `View`/`Widget` directly" rather than "introduce a new node
+type." The render redesign's §9.0 ("`View` *is* the `SceneNode`")
+captures the same decision.
 **Scope:** Define a strict, phase-separated paint lifecycle for `Widget`
 and `View` that eliminates the current ad-hoc paint paths, prevents
 layout-during-paint and paint-during-layout reentrancy, and gives
@@ -130,6 +136,70 @@ unless a `tests/` path is named. `[clear]` = no migration hazard found.
 **B3 composition-session dedup target (confirmed present):** the duplicate session bracket is real — `Widget.Paint.cpp:55/69` *and* `UIView.Update.cpp:193/414` both open/close it. (`SVGView.cpp` and `VideoView.cpp` keep their own brackets — out of B3 scope.)
 
 **B1/B4 merge + risk targets located:** `convertEntriesToRules` (`Layout.cpp:286`) and `mergeLayoutRulesIntoStyle` (`Layout.cpp:461`) — the layout half called from `UIView.Update.cpp:131/148` — are the B1 strip points. The B4 regression site is confirmed: `Container::relayout()` (`BasicWidgets.cpp:321`) calls `layoutChildren()` *synchronously*, and `Container::onPaint` (`BasicWidgets.cpp:145`) *also* calls it when `layoutPending` — B4 must move this into the Layout phase without double-running it.
+
+---
+
+## 0.2 Status reconciliation (2026-05-31)
+
+Two changes since the 2026-05-21 reconciliation: Block 1 (Tier B) shipped
+in full on 2026-05-29, and the render-redesign plan landed Phase 4.7.5
+plus Phase 4.8 (UIView-Render-Redesign §0 / §9.0). The lifecycle-side
+impact is recorded here so this plan does not have to be re-walked
+against the render plan.
+
+**Block 2 (Tier C cleanup) — partial.** The session-shim half landed via
+the render plan; the executePaint / PaintOptions / reentrancy-guard half
+has **not** started. Current state in tree (verified against the headers
+2026-05-31):
+
+| Tier C item | State | Notes |
+|---|---|---|
+| `View::startCompositionSession()` / `endCompositionSession()` | **Deleted** | Render Phase 4.7.5 (`View.h:220-228`). |
+| Duplicate session bracket in `UIView::update()` | **Deleted** | Removed in B3. `FrameBuilder::ScopedFrame` is the sole session owner. |
+| `View::submitPaintFrame(int)` | Reduced to a public no-op (`View.h:311`) | Render Phase 3.8. Survives as a `Widget` call-site shim; final removal still pending. |
+| `Widget::executePaint(PaintReason, bool)` | Still alive (`Widget.h:109`, `Widget.Paint.cpp:13`) | Block 2 deletion target unchanged. |
+| `Widget::Impl::paintInProgress` / `hasPendingInvalidate` / `pendingPaintReason` | Still alive (`WidgetImpl.h:92-94`) | Phase enforcement (B5) has made the reentrancy guards dead code at the assertion level, but the fields and the if-branch in `executePaint` are still compiled in. |
+| `PaintOptions` | Still alive (`Widget.h:57`, `Widget.h:200-201`) | `coalesceInvalidates` is always-on per Tier A; `autoWarmupOnInitialPaint` is also slated to go now that shaders are pre-compiled (see §8 Q3). |
+| `WidgetTreeHost::paintAndDeposit()` | **Gone** | Replaced by `paintDirty()` already; the per-frame deposit lives on `FrameBuilder`. |
+| `WidgetTreeHost::invalidateWidgetRecurse()` | Still alive (`WidgetTreeHost.cpp:277`) | Block 2 — fold into the FrameBuilder walk. |
+| `WidgetTreeHost::paintDirty()` | Still alive (`WidgetTreeHost.cpp:310`) | Block 2 — fold into the FrameBuilder walk. `paintDirtyRecurse` is already marked vestigial (Phase 4.7.4). |
+| `WidgetTreeHost::setActiveCompositeFrameRecurse()` | **Gone** | Single window-owned `CompositeFrame` since render Tier 3. |
+| `CanvasView::submitPaintFrame` | **Gone (with the class)** | Render-redesign §9.1 deleted the header in Tier 3. |
+
+**Tier D / SceneNode — dropped.** The original Tier D introduced a
+`SceneNode` base, renamed `Widget::onPaint(PaintReason)` →
+`SceneNode::paint(PaintContext &)`, and folded `Widget` into the scene
+tree. None of that is being adopted. The replacement, already in tree
+through render Phase 4.7.0–4.7.5 and now §9.0 of
+[UIView-Render-Redesign-Plan.md](UIView-Render-Redesign-Plan.md):
+
+- `View` *is* the node type. The new phase virtuals live directly on
+  `View`: `View::paint(Composition::PaintContext &)` (Phase 4.7.0),
+  `View::resolveStyles()` and `View::arrangeContent()` (Phase 4.7.2).
+  `UIView` overrides all three; `SVGView` overrides `paint`; the
+  `ScrollView` paint path takes `DisplayList &` directly (signature
+  deviation noted in the render-redesign §9.6 table).
+- `Widget` stays. The widget tree continues to wrap the view tree; the
+  pre-Tier-B `onPaint(PaintReason)` hook stays on `Widget` rather than
+  becoming `paint(PaintContext &)`. The widget-hook rename is no longer
+  planned.
+- The Style → Layout → Paint orchestration that Tier D would have
+  hoisted into a tree walker already happened on the per-window
+  `FrameBuilder` (render plan's, not this plan's earlier `SceneNode`
+  sketch). `FrameBuilder::buildFrame(View &)` walks `View` directly.
+
+Tier D's *other* contents — `ComputedStyle` re-key from
+`UIElementTag` to `(NodeId, PropertyKey)` and the
+`AnimationScheduler` adoption (render Phases 4.3 / 4.4 / 4.8 =
+`Animation-Scheduler-Plan.md` Tiers A–E) — are unaffected by the
+SceneNode decision and remain on the Block 4 list.
+
+**Net effect on §5 Tier D and §11 Block 4.** The "`Widget` is removed"
+bullet, the `SceneNode::paint(PaintContext &)` rename bullet, and the
+"`WidgetTreeHost` becomes `WindowFrameHost`" bullet are all withdrawn.
+What remains is the *cleanup half* of Tier D — finish Block 2's
+deletions and execute the animation/style migrations on the existing
+`View`/`Widget` pair.
 
 ---
 
@@ -879,18 +949,25 @@ branch.
 **Files touched:** All of Tier B plus `AppWindow.h`, `AppWindow.cpp`,
 `AppWindowImpl.h`, `CompositorClient.h`, `CompositorClient.cpp`.
 
-### Tier D — Full lifecycle with scene tree (ship alongside Render Redesign Tier 4)
+### Tier D — Full lifecycle on `View` (ship alongside Render Redesign Tier 4)
 
-- `Widget::paint(PaintContext&)` becomes `SceneNode::paint(PaintContext&)`.
-- `Widget` is removed as a concept (per the render redesign plan
-  §6 question 2 answer: "Widgets are effectively a light wrapper around
-  View and can be removed").
-- `WidgetTreeHost` becomes `WindowFrameHost` or is folded into
-  `AppWindow`.
-- The `FrameBuilder::buildFrame()` call chain is the only paint path.
-- Phase assertions are the only reentrancy guard.
-- `onPaint(PaintReason)` → `paint(PaintContext&)` widget-hook rename
-  (deferred from Tier B).
+**Rescoped 2026-05-31 — `SceneNode` is no longer adopted.** The phase
+virtuals (`paint(PaintContext &)`, `resolveStyles()`, `arrangeContent()`)
+landed directly on `View` in render Phases 4.7.0–4.7.2, and
+`FrameBuilder::buildFrame(View &)` walks the `View` tree as the canonical
+paint path. Tier D therefore inherits the dirty work that *isn't*
+SceneNode-shaped — the animation / style migrations and the residual
+deletions — and drops the scene-tree introduction bullets.
+
+Withdrawn from Tier D (no longer planned):
+
+- ~~`Widget::paint(PaintContext &)` becomes `SceneNode::paint(PaintContext &)`.~~
+- ~~`Widget` is removed as a concept.~~
+- ~~`WidgetTreeHost` becomes `WindowFrameHost` / folded into `AppWindow`.~~
+- ~~`onPaint(PaintReason)` → `paint(PaintContext &)` widget-hook rename.~~
+
+What Tier D still owes:
+
 - **`AnimationScheduler` folds in here** (Render Redesign Tier 4 Phases
   4.3 / 4.4 / 4.8 = `Animation-Scheduler-Plan.md` Tiers A / B+C / E): the
   per-window scheduler lands alongside the old animator, UIView animation
@@ -898,13 +975,16 @@ branch.
   `ViewAnimator` / `LayerAnimator` surface is deleted. Tier B's
   `tickAnimations()` body swaps from `advanceAnimations()` to
   `scheduler.tick(frameTime)`.
-- `ComputedStyle` re-keys from `UIElementTag` to `(NodeId,PropertyKey)`
-  once every UIView element becomes a child `SceneNode`.
+- `ComputedStyle` re-keys from `UIElementTag` to `(NodeId, PropertyKey)`
+  once the scheduler's side table is the source of truth for animated
+  values. The re-key no longer needs a new node type — `View::nodeId()`
+  (Phase 4.4, `View.h:305`) already provides the `NodeId`.
 - Any remaining Tier C deletions (`executePaint`, the reentrancy guards,
   `PaintOptions`, the session shims) complete here if not already done.
 
-**Risk:** High. API break. Ship after Tier C has been in main for at
-least two weeks.
+**Risk:** Medium (down from High). The API-break bullets that drove the
+"high" rating are gone; Tier D is now closer to a Block 2 follow-up than
+a tree-replacement.
 
 ---
 
@@ -1270,12 +1350,26 @@ and `Animation-Scheduler-Plan.md`, in dependency order. `[x]` = landed;
 
 ### Block 2 — Lifecycle Tier C cleanup (after Block 1)
 
+Status snapshot 2026-05-31 — partial; details in §0.2.
+
 - [ ] Delete `executePaint()`; `Widget::Impl::paintInProgress`,
-  `hasPendingInvalidate`, `pendingPaintReason`.
-- [ ] Remove / retire `PaintOptions` (warmup, coalesce).
-- [ ] Remove the no-op `startCompositionSession` / `endCompositionSession`
-  / `submitPaintFrame` shims from `View` / `UIView` / `CanvasView`.
+  `hasPendingInvalidate`, `pendingPaintReason`. *(Still alive at
+  `Widget.h:109` / `WidgetImpl.h:92-94`.)*
+- [ ] Remove / retire `PaintOptions` (warmup, coalesce). *(Still alive at
+  `Widget.h:57`.)*
+- [x] Remove the no-op `startCompositionSession` /
+  `endCompositionSession` shims from `View` / `UIView` /
+  `CanvasView`. *(Done — render Phase 4.7.5 deleted them from `View`;
+  the duplicate `UIView::update()` bracket went with B3;
+  `CanvasView` deleted entirely via render plan §9.1.)*
+- [ ] Remove the no-op `View::submitPaintFrame(int)` shim. *(Reduced
+  to a no-op in render Phase 3.8 — `View.h:311`; full removal still
+  pending a `Widget` call-site cleanup.)*
 - [ ] Fold `WidgetTreeHost::paintDirty()` into the FrameBuilder walk.
+  *(Still alive at `WidgetTreeHost.cpp:310`. `paintDirtyRecurse` is
+  already marked vestigial by Phase 4.7.4.)*
+- [ ] Fold / delete `WidgetTreeHost::invalidateWidgetRecurse()`.
+  *(Still alive at `WidgetTreeHost.cpp:277`.)*
 
 ### Block 3 — Style Tier 2 (after B2; independent of Block 2)
 
@@ -1288,21 +1382,30 @@ and `Animation-Scheduler-Plan.md`, in dependency order. `[x]` = landed;
   node state bits flipping `DirtyBit::Style`.
 - [ ] Transitions *recorded* (driven in Block 4).
 
-### Block 4 — Tier D convergence: SceneNode + AnimationScheduler + Style Tier 3
+### Block 4 — Tier D convergence: AnimationScheduler + Style Tier 3
 
 Render Redesign **Tier 4** is the spine; Lifecycle **Tier D**, Style
 **Tier 3**, and Animation-Scheduler **Tiers A–E** all land inside it.
+**`SceneNode` adoption was dropped 2026-05-31** (see §0.2) — `View` is
+the node type and the phase virtuals already live on it; the
+SceneNode / `Widget`-folding bullets are withdrawn from this block.
 
-- [ ] Render 4.x — `SceneNode`; collapse `VisualCommand`→`DrawOp` in the
-  backend; retire `UIView::update()`; delete `Canvas`.
-- [ ] Lifecycle Tier D — `onPaint(PaintReason)` → `paint(PaintContext&)`;
-  `SceneNode::paint`; `Widget` folded into the scene node; phase
-  assertions are the only reentrancy guard.
+- [x] Render 4.x — phase virtuals on `View` (4.7.0 / 4.7.2);
+  `UIView::update()` retired as the monolith (split across the new
+  phase methods, B3); per-view `Canvas` / `LayerTree` deleted (4.8);
+  `VisualCommand` → `DrawOp` collapse in the backend tracked
+  separately by the render plan.
+- [ ] Lifecycle Tier D — finish Block 2's `executePaint` /
+  `PaintOptions` / reentrancy-guard deletions and the residual
+  session-shim removals (`submitPaintFrame`, `WidgetTreeHost::paintDirty`
+  fold-in). Phase assertions are already the active reentrancy guard
+  (B5).
 - [ ] Anim 4.3 (Tier A) — `AnimationScheduler` lands alongside the old
   animator; FrameBuilder Phase 1 calls `scheduler.tick()`.
 - [ ] Anim 4.4 (Tiers B+C) — migrate `View` / `UIView` animation onto the
-  scheduler; Paint reads the `(NodeId,PropertyKey)` side table;
-  `ComputedStyle` re-keys tag→NodeId.
+  scheduler; Paint reads the `(NodeId, PropertyKey)` side table;
+  `ComputedStyle` re-keys tag→NodeId (reusing the existing
+  `View::nodeId()`).
 - [ ] Style Tier 3 — themes / `ThemeVars`; transitions wired to the
   scheduler (`StyleResolver` friend `transition()`); custom states;
   user-agent default sheet.
