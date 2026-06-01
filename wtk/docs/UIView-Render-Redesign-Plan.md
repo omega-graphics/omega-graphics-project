@@ -3639,6 +3639,122 @@ UIView, SVGView, ScrollView, and NativeViewHost each override
 `paint()` with the contract specified below. There is no separate
 node interface and no mixin.
 
+### 9.0 Implementation status (as of Phase 4.8)
+
+The §4 migration tiers have all landed in tree. Section 9.1–9.5 below
+are the planning narrative as originally written; this subsection
+records what each one looks like *in the current code* and where the
+actual implementation drifted from the planning sketches. Cross-
+references to source: every header path is relative to the repo
+root.
+
+**Tier roll-up.** Tier 1 (per-view sync-lane fragmentation), Tier 2
+(`DisplayList` + `DrawOp` introduction, `localBoundsFromView` map
+deletion, SVGView migration, `PushClip`/`PushTransform`/
+`NativeContent` ops, `CanvasView` deprecation), and Tier 3 (FrameBuilder
+appearance, per-view LayerTree collapse, session lifetime moves to
+window) are all in. Tier 4 has progressed through Phase 4.8 — the
+`View::Impl::ownLayerTree` field and the `View::getLayerTree()`
+accessor have been deleted and every UIView's `DisplayList` now
+flows into the single `AppWindow::Impl::windowLayerTree_` via
+`FrameBuilder::buildFrame`.
+
+**Per-subsection status:**
+
+- **9.1 `CanvasView` — DONE.** Header `wtk/include/omegaWTK/UI/CanvasView.h`
+  is gone from the tree. No callers remain.
+- **9.2 `SVGView` — DONE through Phase 4.7.4.** `SVGView` now holds a
+  `Core::UniquePtr<Composition::DisplayList> cachedOps_` rebuilt on
+  `setSource*`; its `paint(Composition::PaintContext & pc) override`
+  appends the translated ops onto `pc.displayList`. The no-arg
+  `paint()` entry survives only for the `SVGViewRenderTest` harness.
+  Matches the §9.2 sketch.
+- **9.3 `ScrollView` — DONE through Phase 3.6, with one signature
+  deviation from §9.3.** The header (`wtk/include/omegaWTK/UI/ScrollView.h`)
+  exposes `contentOffset() override` returning `-scrollOffset_`,
+  `wantsLayer() override`, and the `paintOverlay` two-emit pattern.
+  The deviation: the actual `paint` / `paintOverlay` take
+  `Composition::DisplayList &` directly, not the `PaintContext &`
+  that the §9.3 sketch shows. `FrameBuilder::submitView` is the
+  per-frame `PushClip`/`PopClip` balance enforcer.
+- **9.4 `VideoView` — NOT MIGRATED.** `VideoView` remains a
+  `View` subclass that also implements
+  `OmegaVA::VideoFrameSink` (`wtk/include/omegaWTK/UI/VideoView.h`).
+  `framebuffer`, `queueFrame`, `presentCurrentFrame`, and the
+  playback/capture session ownership are all still on it. The
+  `VideoViewWidget` replacement specified by
+  [NativeViewHost-Adoption-Plan.md](NativeViewHost-Adoption-Plan.md)
+  has not been written yet (only a `// Future: VideoViewWidget`
+  comment in `wtk/include/omegaWTK/Widgets/MediaWidgets.h`). This is
+  the largest outstanding gap in §9.
+- **9.4.1 `NativeViewHost` — PARTIAL, with a class-hierarchy
+  deviation.** The class exists at
+  `wtk/include/omegaWTK/UI/NativeViewHost.h`, but it inherits from
+  **`Widget`, not `View`**. Its layout-sync hook is a
+  `Widget::onLayoutResolved(const Composition::Rect &) override`
+  virtual rather than the `View::LayoutResolvedSignal::subscribe(...)`
+  pattern that §9.4.1's code sketch shows. The View-level
+  `LayoutResolvedSignal` itself *is* implemented
+  (`View.h:56-65`, member `View::onLayoutResolved`), fired by
+  `View::resize()` on rect changes; no in-tree View subclass
+  subscribes to it today. `DrawOp::NativeContent` and the
+  `DrawOp::makeNativeContent(destRect, hostId, zOrderHint)` factory
+  landed in Phase 2.5 (`Composition/DisplayList.h:107`, `:308`). No
+  `View`-side `NativeViewHost::paint(PaintContext &)` emitting a
+  carve-out exists yet — the current `Widget`-based host syncs the
+  embedded native item's bounds out of band and relies on the
+  platform compositor to put the native layer on top.
+- **9.5 `View` surface — DONE through Phase 4.8.**
+  `View::computeWindowOffset` / `legacyComputeWindowOffset` /
+  `scrollOffsetContribution` (Phase 4.7.5), `startCompositionSession` /
+  `endCompositionSession` (Phase 4.7.5), `getResizeCoordinator` /
+  `ViewResizeCoordinator` (Phase 4.5), `getLayerTree` /
+  `View::Impl::ownLayerTree` (Phase 4.8), `View::Impl::rootCanvas`,
+  `Canvas`, `VisualCommand`, `CanvasFrame` (Tier 4) are all deleted.
+  Survivals: `setFrontendRecurse` and `setSyncLaneRecurse` still exist
+  as **private** methods on `View` (`View.h:112-113`) — Tier 1 narrowed
+  them to "share the window's lane" rather than removing the entry
+  points outright. `submitPaintFrame(int)` survives as a public no-op
+  on `View` since Phase 3.8 (`View.h:311`) — kept for `Widget`
+  call-site compatibility while it waits for a downstream cleanup.
+  `offsetFromRoot()` is the renamed survivor used solely by the
+  `Widget`-based `NativeViewHost::syncBounds` path.
+
+**Phasing-related items that landed but are not described in §9.1–9.5:**
+
+- The Style → Layout → Paint per-pass virtuals on `View` exist
+  (`View::paint(PaintContext &)` Phase 4.7.0, `View::resolveStyles()`
+  + `View::arrangeContent()` Phase 4.7.2). `UIView` overrides all
+  three; `SVGView` overrides `paint()`; `ScrollView` does not use
+  this virtual surface (its `paint(DisplayList &)` is invoked by
+  `FrameBuilder::submitView` directly).
+- `View::DirtyBit` is the four-bit `enum` from §3.4, with
+  `markDirty(uint8_t)` propagating to ancestors as `descendantDirty()`
+  per Phase 4.7.3. `FrameBuilder::buildFrame` reads the root's union
+  to gate each pass.
+- `LayoutManager` is a real public base
+  (`wtk/include/omegaWTK/UI/LayoutManager.h`) owned by parent views
+  via `View::setLayoutManager` / `View::layoutManager()`. The
+  process-wide `AbsoluteLayout` singleton is the default. `FlexLayout`
+  landed in Phase 4.6 as the §3.5 plan stated.
+- `AnimationScheduler` is a single per-window scheduler driven from
+  `FrameBuilder::beginFrame`; `UIView::Animation.cpp` no longer
+  drives the tick loop.
+
+**Outstanding §9 work.**
+
+1. Execute the NativeViewHost-Adoption-Plan migration of `VideoView`
+   — delete the `View` subclass, write `VideoViewWidget` on a
+   `NativeViewHost`-style backing.
+2. Decide whether `NativeViewHost` stays a `Widget` or follows §9.4.1
+   and becomes a `View`/SceneNode that emits `DrawOp::NativeContent`
+   from its `paint(PaintContext &)`. The DisplayList op is in place
+   for either choice; only one consumer exists today (the
+   `Widget`-based host).
+3. Retire `setFrontendRecurse` / `setSyncLaneRecurse` /
+   `submitPaintFrame(int)` from `View` entirely once their last
+   private/no-op callers are gone.
+
 ### 9.1 `CanvasView` — deleted
 
 **Current contract.** Owns a `rootCanvas_` on the view's root layer.
@@ -3997,13 +4113,13 @@ DisplayList pipeline.
 The subclasses are not equally urgent. Recommended order, interleaved
 with the tiers in §4:
 
-| Subclass | Tier 1 | Tier 2 | Tier 3 | Tier 4 |
-|---|---|---|---|---|
-| `SVGView` | — | `SVGDrawOpList` becomes a cached `DisplayList` | per-view Canvas removed; `renderNow` deleted | dirty-bit-driven rebuild only |
-| `ScrollView` | — | `PushClip` op added to DrawOp set (`PushTransform` also lands but is for 3D effects, not for scroll translation) | overlay scroll bar layers removed; `wantsLayer()` introduced; `scrollOffsetContribution` replaced by ScrollView's `contentOffset()` override that the FrameBuilder folds into Arrange (no transform pushed) | `computeWindowOffset` deleted |
-| `NativeViewHost` (covers `VideoView`, `OmegaGTEView`, future) | — | `DrawOp::NativeContent` added; `onLayoutResolved` signal wired | airspace contract documented | — |
-| `CanvasView` | — | imperative methods become deprecated stubs routing to a temporary `UIViewLayoutV2` | **deleted** (header + class) | — |
-| `VideoView` (the View) | — | — | **deleted**; replaced by `VideoViewWidget` per [NativeViewHost-Adoption-Plan.md](NativeViewHost-Adoption-Plan.md) | — |
+| Subclass | Tier 1 | Tier 2 | Tier 3 | Tier 4 | Current status |
+|---|---|---|---|---|---|
+| `SVGView` | — | `SVGDrawOpList` becomes a cached `DisplayList` | per-view Canvas removed; `renderNow` deleted | dirty-bit-driven rebuild only | **DONE through Phase 4.7.4** — `paint(PaintContext &)` override emits the cached list onto `pc.displayList` |
+| `ScrollView` | — | `PushClip` op added to DrawOp set (`PushTransform` also lands but is for 3D effects, not for scroll translation) | overlay scroll bar layers removed; `wantsLayer()` introduced; `scrollOffsetContribution` replaced by ScrollView's `contentOffset()` override that the FrameBuilder folds into Arrange (no transform pushed) | `computeWindowOffset` deleted | **DONE through Phase 3.6 (Tier 3) / 4.7.5 (Tier 4)** — signature deviation: `paint` / `paintOverlay` take `DisplayList &` not `PaintContext &` |
+| `NativeViewHost` (covers `VideoView`, `OmegaGTEView`, future) | — | `DrawOp::NativeContent` added; `onLayoutResolved` signal wired | airspace contract documented | — | **PARTIAL** — `DrawOp::NativeContent` + `LayoutResolvedSignal` landed; the host itself is a `Widget` (not the `View`/SceneNode shape §9.4.1 sketches), and no `paint()` carve-out emitter exists yet |
+| `CanvasView` | — | imperative methods become deprecated stubs routing to a temporary `UIViewLayoutV2` | **deleted** (header + class) | — | **DONE (Tier 3)** — header is gone |
+| `VideoView` (the View) | — | — | **deleted**; replaced by `VideoViewWidget` per [NativeViewHost-Adoption-Plan.md](NativeViewHost-Adoption-Plan.md) | — | **NOT STARTED** — still a `View` + `VideoFrameSink`; `VideoViewWidget` only a `// Future` comment in `MediaWidgets.h` |
 
 `SVGView` is the cheapest migration and the best early validator of
 the DisplayList model — it already produces an ordered op stream.

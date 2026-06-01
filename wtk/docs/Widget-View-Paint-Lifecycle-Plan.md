@@ -1052,7 +1052,7 @@ public:
    on Windows) that calls `buildFrame()`. If the pacer doesn't exist
    yet, Tier A can use a simple flag + manual trigger.
 
-   Yes. Add to the AppWindow.
+   This will be addressed by Phase H of UIVIew-Render-Plan
 
 2. **Manual-mode widgets.** `PaintMode::Manual` widgets currently skip
    `executePaint` entirely. In the new lifecycle, manual widgets skip
@@ -1076,7 +1076,7 @@ public:
    warmup frames at the lifecycle level.
 
    We have switched to loading pre-compiled shaders, so shader complilation time shouldn't be any issue.
-   We can remve the Warmup frames.
+   We can remove the Warmup frames.
 
 4. **`invalidateNow()` callers.** Grep for all callers of
    `invalidateNow()` in the codebase. Each one is a potential
@@ -1101,7 +1101,7 @@ public:
    Validate empirically on a 10-widget window resize before deciding
    whether to introduce a synchronous resize escape hatch.
 
-   Yes.
+   (This will be taken care of by Phase F from UIView-Render-Redesign-Plan)
 
 ---
 

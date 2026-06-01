@@ -13,6 +13,8 @@
 
     **Windows builds go through WSL, and the agent cannot drive that build itself.** When a change has to be compiled for Windows, hand the build off to the user: ask them to build under their Windows, then wait for the compiler/linker output and iterate on the errors they paste back. Do not assume a Windows build passed, and do not invent errors you cannot see — work only from what the user reports. (This is the same WSL constraint that forces Visual Debugging to fall back to user-supplied screenshots.)
 
+    **Native Windows agents (running directly on Windows, not through WSL) can try a build themselves**, but must first run `autom\tools\vc-env.bat` to set up the MSVC environment before invoking the compiler/linker. Without that step the toolchain (cl, link, lib, the Windows SDK headers) will not be on PATH and the build will fail with cryptic "command not found" or missing-header errors that are not real code issues.
+
 # Navigating the Codebase
     **Hard preference: omega-codedb over `find` / `grep -r`.** Raw `find`/`grep` over a 100k-line tree is slow, returns noise, and bypasses the curated area map. Default to codedb for every symbol lookup. Only fall back to `grep` when the target is a non-declaration string (literal, error message, comment phrase) that codedb's symbol index does not capture; even then, scope `grep` to the file or directory codedb already pointed you at — never `grep -r` over the whole repo. The find/grep approach takes too long; codedb finishes in under a second.
 
