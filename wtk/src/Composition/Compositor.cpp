@@ -3,9 +3,12 @@
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/CanvasEffect.h"
 #include "omegaWTK/Composition/CompositeFrame.h"
+#include "omegaWTK/UI/AppWindow.h"  // AppWindow::isNativeReady() — NativeWindow-Ready-Signal-Plan §3.5(A)
 #include "backend/ResourceFactory.h"
 #include "backend/VisualTree.h"
+#include "omegaGTE/GE.h"  // OmegaGTE::isDebugLayerEnabled() — gates [WTK_RP] traces
 #include <cmath>
+#include <iostream>
 #include <mutex>
 #include <utility>
 
@@ -87,6 +90,9 @@ t([this](Compositor *compositor){
             }
         }
         if(frameWake){
+            if(OmegaGTE::isDebugLayerEnabled()){
+                std::cerr << "[WTK_RP] CompositorFrameWorker: woken by frameDirty_, draining" << std::endl;
+            }
             compositor->drainWindowSurfaces();
         }
     }
@@ -164,13 +170,45 @@ void Compositor::drainWindowSurfaces(){
             snapshot.emplace_back(entry.first, entry.second);
         }
     }
+    if(OmegaGTE::isDebugLayerEnabled()){
+        std::cerr << "[WTK_RP] drainWindowSurfaces: snapshotSize=" << snapshot.size() << std::endl;
+    }
     for(auto & entry : snapshot){
         auto & surface = entry.second;
-        if(surface == nullptr || !surface->hasPendingUpdate()){
+        const bool surfaceNull = (surface == nullptr);
+        const bool pending = (!surfaceNull && surface->hasPendingUpdate());
+        if(OmegaGTE::isDebugLayerEnabled()){
+            std::cerr << "[WTK_RP] drainWindowSurfaces: surface={null=" << (surfaceNull ? 1 : 0)
+                      << " hasPending=" << (pending ? 1 : 0) << "}" << std::endl;
+        }
+        if(surfaceNull || !pending){
+            continue;
+        }
+        // NativeWindow-Ready-Signal-Plan step 3: gate consume() on
+        // native-surface realization. If the AppWindow's native
+        // surface is not yet realized, leave the frame in the
+        // surface's pending slot (do NOT call consume — it would
+        // advance consumedGeneration_ and lose the frame). The
+        // AppWindow's onFirstRealize registration re-flips
+        // frameDirty_ when realize fires, so the worker drains again
+        // and this time the gate passes. A null ownerAppWindow
+        // (e.g., surfaces registered before AppWindow back-edge
+        // wiring lands or in tests) falls through to ready=true so
+        // existing behavior is preserved.
+        auto * appWindow = surface->ownerAppWindow();
+        const bool nativeReady = (appWindow == nullptr) || appWindow->isNativeReady();
+        if(OmegaGTE::isDebugLayerEnabled()){
+            std::cerr << "[WTK_RP] drainWindowSurfaces: nativeReady=" << (nativeReady ? 1 : 0)
+                      << " hasOwner=" << (appWindow != nullptr ? 1 : 0) << std::endl;
+        }
+        if(!nativeReady){
             continue;
         }
         auto frame = surface->consume();
         if(frame == nullptr){
+            if(OmegaGTE::isDebugLayerEnabled()){
+                std::cerr << "[WTK_RP] drainWindowSurfaces: consume() returned null, skipping" << std::endl;
+            }
             continue;
         }
         renderCompositeFrame(entry.first, frame);
@@ -179,7 +217,16 @@ void Compositor::drainWindowSurfaces(){
 
 void Compositor::renderCompositeFrame(const SharedHandle<CompositionRenderTarget> & target,
                                       const SharedHandle<CompositeFrame> & frame){
+    if(OmegaGTE::isDebugLayerEnabled()){
+        std::cerr << "[WTK_RP] renderCompositeFrame: target=" << (target == nullptr ? "null" : "ok")
+                  << " frame=" << (frame == nullptr ? "null" : "ok")
+                  << " slices=" << (frame == nullptr ? std::size_t{0} : frame->slices.size())
+                  << std::endl;
+    }
     if(target == nullptr || frame == nullptr || frame->slices.empty()){
+        if(OmegaGTE::isDebugLayerEnabled()){
+            std::cerr << "[WTK_RP] renderCompositeFrame: early-return (null target/frame or empty slices)" << std::endl;
+        }
         return;
     }
 
@@ -188,6 +235,10 @@ void Compositor::renderCompositeFrame(const SharedHandle<CompositionRenderTarget
     if(found == renderTargetStore.store.end()){
         auto *preCreated = PreCreatedResourceRegistry::lookup(target.get());
         if(preCreated == nullptr || preCreated->bundle.visualTree == nullptr){
+            if(OmegaGTE::isDebugLayerEnabled()){
+                std::cerr << "[WTK_RP] renderCompositeFrame: early-return (preCreated=" << (preCreated ? "ok" : "null")
+                          << " visualTree=" << (preCreated && preCreated->bundle.visualTree ? "ok" : "null") << ")" << std::endl;
+            }
             return;
         }
         if(preCreated->presentTarget.nativeTarget == nullptr){
@@ -204,42 +255,39 @@ void Compositor::renderCompositeFrame(const SharedHandle<CompositionRenderTarget
     }
 
     if(backendTarget == nullptr || backendTarget->visualTree == nullptr){
+        if(OmegaGTE::isDebugLayerEnabled()){
+            std::cerr << "[WTK_RP] renderCompositeFrame: early-return (backendTarget="
+                      << (backendTarget ? "ok" : "null") << " visualTree="
+                      << (backendTarget && backendTarget->visualTree ? "ok" : "null") << ")" << std::endl;
+        }
         return;
     }
 
+    // Root-visual creation is now eager (see NativeWindow-Ready-Signal-Plan
+    // step 4): Metal / D3D12 build it synchronously inside
+    // BackendResourceFactory::createVisualTreeForView, and Vulkan builds it
+    // inside its visualTree's resolveDeferredNativeTarget the first time the
+    // native surface is resolvable — which is guaranteed by the
+    // isNativeReady() gate at drainWindowSurfaces. The old anchor-from-slice
+    // fallback that lived here was a chicken-and-egg workaround for slice
+    // routes that don't set slice.targetLayer (SVG/per-view canvas paths) —
+    // delete-on-sight now that the root-visual contract is contract-strong.
     if(!backendTarget->visualTree->hasRootVisual()){
-        Layer *anchorLayer = nullptr;
-        for(auto & slice : frame->slices){
-            if(slice.targetLayer != nullptr){
-                anchorLayer = slice.targetLayer;
-                break;
-            }
+        if(OmegaGTE::isDebugLayerEnabled()){
+            std::cerr << "[WTK_RP] renderCompositeFrame: early-return (hasRootVisual=false post-resolveDeferredNativeTarget — backend's eager creation path failed)" << std::endl;
         }
-        if(anchorLayer == nullptr){
-            return;
-        }
-        auto *tree = anchorLayer->getParentTree();
-        if(tree == nullptr){
-            return;
-        }
-        auto rootLayer = tree->getRootLayer();
-        Composition::Rect rootRect{Composition::Point2D{0.f,0.f},1.f,1.f};
-        if(rootLayer != nullptr){
-            auto candidate = rootLayer->getLayerRect();
-            if(std::isfinite(candidate.w) && candidate.w > 0.f &&
-               std::isfinite(candidate.h) && candidate.h > 0.f){
-                rootRect.w = candidate.w;
-                rootRect.h = candidate.h;
-            }
-        }
-        BackendResourceFactory factory;
-        (void)factory.createRootVisual(*backendTarget->visualTree,
-                                       rootRect,
-                                       backendTarget->viewPresentTarget);
+        return;
     }
 
     if(backendTarget->visualTree->root == nullptr){
+        if(OmegaGTE::isDebugLayerEnabled()){
+            std::cerr << "[WTK_RP] renderCompositeFrame: early-return (visualTree->root is null)" << std::endl;
+        }
         return;
+    }
+
+    if(OmegaGTE::isDebugLayerEnabled()){
+        std::cerr << "[WTK_RP] renderCompositeFrame: reached dispatch, slices=" << frame->slices.size() << std::endl;
     }
 
     BackendRenderTargetContext *targetContext = backendTarget->visualTree->root->renderTarget.get();

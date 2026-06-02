@@ -236,6 +236,46 @@ When the debug layer is on:
   layer advertises :code:`VK_EXT_validation_features`. Silently
   downgrades to plain validation if the feature is missing.
 
+**Validation layer version requirement.** OmegaGTE's Vulkan backend is
+built against the LunarG SDK headers vendored at
+:code:`gte/deps/vulkan_sdk/1.3.283.0`. The validation layer that
+*runs* against the engine must come from the same SDK. If the loader
+picks up an older system-package VVL — Ubuntu 22.04's
+:code:`vulkan-validationlayers 1.3.204.1`, for example — every device
+creation will emit a spurious
+:code:`VUID-VkDeviceCreateInfo-pNext-pNext` error for any feature
+struct added to the Vulkan spec after that VVL was cut. The driver
+consumes the struct correctly; only the validation layer's allowlist
+is out of date. A concrete case: when the device advertises
+:code:`VK_EXT_mesh_shader`, the engine chains
+:code:`VkPhysicalDeviceMeshShaderFeaturesEXT` (sType
+:code:`1000328000`) into :code:`pCreateInfo->pNext` — VVL ≤1.3.225
+flags it as unknown.
+
+The vendored SDK already ships the matching layer. Source its
+environment script in any shell from which you launch a debug-built
+OmegaGTE app:
+
+.. code-block:: shell
+
+   source gte/deps/vulkan_sdk/1.3.283.0/setup-env.sh
+   ./build/wtk/tests/SVGViewRenderTest   # or whatever you are debugging
+
+:code:`setup-env.sh` sets :code:`VULKAN_SDK`, prepends the SDK's
+:code:`lib/` to :code:`LD_LIBRARY_PATH` (so the loader itself is
+1.3.283 too), and adds the SDK's :code:`explicit_layer.d/` to
+:code:`VK_ADD_LAYER_PATH` so the 1.3.283 Khronos validation layer
+wins over any older one registered system-wide. Confirm by running
+:code:`vulkaninfo --summary` from the same shell —
+:code:`VK_LAYER_KHRONOS_validation` should report
+:code:`api_version 1.3.283`.
+
+Keep this scoped to the debugging shell rather than exporting it from
+:code:`~/.profile` / :code:`~/.zshrc`; the override shadows the system
+loader for every Vulkan app launched from that shell, which is the
+right behaviour for a focused debug session and the wrong behaviour
+as a global default.
+
 External tooling — :code:`vkconfig`, the LunarG SDK's API dump layer,
 RenderDoc capture layers — works alongside this; they enable
 themselves via their own loader paths and don't conflict with the

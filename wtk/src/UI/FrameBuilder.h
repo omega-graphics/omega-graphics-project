@@ -57,8 +57,8 @@ inline const char * phaseName(FramePhase phase){
 // aggregated CompositeFrame is then deposited into the window
 // surface.
 //
-// Phase 3.8 made this the only paint route: the per-view canvases and
-// the OMEGAWTK_WINDOW_SCOPED_PAINT flag are gone.
+// Phase 3.8 made this the only paint route: the per-view canvases
+// are gone.
 class FrameBuilder {
     AppWindow & window_;
     // Nesting depth. Defensive: an AppWindow-driven paint pass

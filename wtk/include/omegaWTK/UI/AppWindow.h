@@ -104,6 +104,13 @@ class AppWindowDelegate;
         bool isMaximized() const;
         bool isFullscreen() const;
         bool isVisible() const;
+
+        /// NativeWindow-Ready-Signal-Plan §3.5(A): pass-through to
+        /// `NativeWindow::isNativeReady()`. The Compositor consults
+        /// this via the surface back-edge to gate render dispatch on
+        /// native-surface realization. Returns true if there is no
+        /// NativeWindow (matches the base interface's default).
+        bool isNativeReady() const;
         Composition::Rect getRect() const;
         void setRect(const Composition::Rect & rect);
         float scaleFactor() const;

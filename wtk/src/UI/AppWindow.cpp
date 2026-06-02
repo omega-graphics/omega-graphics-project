@@ -158,9 +158,29 @@ void AppWindow::setRootWidget(WidgetPtr widget){
     // Compositor (consumption side).
     impl_->windowSurface = SharedHandle<Composition::CompositorSurface>(
         new Composition::CompositorSurface());
+    // NativeWindow-Ready-Signal-Plan step 3: set the surface's owner
+    // back-pointer BEFORE registerWindowSurface. registerWindowSurface
+    // calls notifyFrameDirty internally, and on GTK with an
+    // already-realized window the worker can wake and drain before
+    // this ctor returns — the gate check in drainWindowSurfaces must
+    // find a non-null owner from the very first drain.
+    impl_->windowSurface->setOwnerAppWindow(this);
     impl_->widgetTreeHost->setWindowSurface(impl_->windowSurface);
     impl_->widgetTreeHost->compPtr()->registerWindowSurface(
         impl_->rootViewRenderTarget, impl_->windowSurface);
+    // NativeWindow-Ready-Signal-Plan step 3: register the
+    // realize-wake. Once the native surface realizes (synchronous
+    // fire on backends where it is already ready at this point — see
+    // GTKAppWindow::onFirstRealize fast path), this re-flips
+    // frameDirty_ so the worker drains again and the deferred initial
+    // paint dispatches with isNativeReady() now true. notifyFrameDirty
+    // is private on Compositor but AppWindow is a friend, and the
+    // lambda inherits this member function's access rights.
+    if(auto * comp = impl_->widgetTreeHost->compPtr()){
+        impl_->nativeWindow->onFirstRealize([comp]{
+            comp->notifyFrameDirty();
+        });
+    }
     impl_->widgetTreeHost->attachedToWindow = true;
 };
 
@@ -185,6 +205,16 @@ void AppWindow::minimize(){ impl_->nativeWindow->minimize(); }
 void AppWindow::maximize(){ impl_->nativeWindow->maximize(); }
 void AppWindow::restore(){ impl_->nativeWindow->restore(); }
 void AppWindow::toggleFullscreen(){ impl_->nativeWindow->toggleFullscreen(); }
+bool AppWindow::isNativeReady() const {
+    // NativeWindow-Ready-Signal-Plan §3.5(A) pass-through. Returns the
+    // base interface's default (true) if there is no NativeWindow, so
+    // a partially-constructed AppWindow never blocks the gate.
+    if(impl_ == nullptr || impl_->nativeWindow == nullptr){
+        return true;
+    }
+    return impl_->nativeWindow->isNativeReady();
+}
+
 bool AppWindow::isMinimized() const { return impl_->nativeWindow->isMinimized(); }
 bool AppWindow::isMaximized() const { return impl_->nativeWindow->isMaximized(); }
 bool AppWindow::isFullscreen() const { return impl_->nativeWindow->isFullscreen(); }

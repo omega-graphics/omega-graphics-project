@@ -482,6 +482,8 @@ _NAMESPACE_BEGIN_
         if(renderPassBeginDeferred){
             renderPassBeginDeferred = false;
             vkCmdBeginRenderPass(commandBuffer,&deferredBeginInfo,VK_SUBPASS_CONTENTS_INLINE);
+            DEBUG_STREAM("[GEVulkan_RP] beginRenderPassIfDeferred: flushed vkCmdBeginRenderPass"
+                         << " activeRP=" << (activeRenderPass != VK_NULL_HANDLE ? "yes" : "NO"));
         }
     }
 
@@ -765,6 +767,11 @@ _NAMESPACE_BEGIN_
         deferredBeginInfo.clearValueCount = attachmentCount;
         deferredBeginInfo.pClearValues = deferredClearValues.data();
         renderPassBeginDeferred = true;
+        DEBUG_STREAM("[GEVulkan_RP] startRenderPass: attachments=" << attachmentCount
+                     << " renderArea=" << beginInfo.renderArea.extent.width
+                     << "x" << beginInfo.renderArea.extent.height
+                     << " target=" << (desc.nRenderTarget != nullptr ? "swapchain" : "texture")
+                     << " deferred=1");
     };
 
     void GEVulkanCommandBuffer::setRenderPipelineState(SharedHandle<GERenderPipelineState> &pipelineState){
@@ -1230,6 +1237,8 @@ _NAMESPACE_BEGIN_
         bindDescriptorSetsIfPending();
         applyTopologyIfDynamic(polygonType);
         vkCmdDraw(commandBuffer,vertexCount,1,startIdx,0);
+        DEBUG_STREAM("[GEVulkan_RP] drawPolygons: topology=" << (int)polygonType
+                     << " vertexCount=" << vertexCount << " startIdx=" << startIdx);
     };
 
     void GEVulkanCommandBuffer::setIndexBuffer(SharedHandle<GEBuffer> & buffer, RenderPassIndexType indexType){
@@ -1362,6 +1371,10 @@ _NAMESPACE_BEGIN_
             viewport.height = -v.height;
             viewport.minDepth = v.nearDepth;
             viewport.maxDepth = v.farDepth;
+            DEBUG_STREAM("[GEVulkan_RP] setViewports: in=("
+                         << v.x << "," << v.y << "," << v.width << "x" << v.height
+                         << ") vk=(" << viewport.x << "," << viewport.y
+                         << "," << viewport.width << "x" << viewport.height << ")");
             vk_viewports.push_back(viewport);
         };
 
@@ -1376,6 +1389,8 @@ _NAMESPACE_BEGIN_
     }
 
     void GEVulkanCommandBuffer::finishRenderPass(){
+        const bool hadActiveRP = (activeRenderPass != VK_NULL_HANDLE);
+        const bool wasDeferred = renderPassBeginDeferred;
         beginRenderPassIfDeferred();
         if(activeRenderPass != VK_NULL_HANDLE){
             vkCmdEndRenderPass(commandBuffer);
@@ -1383,6 +1398,8 @@ _NAMESPACE_BEGIN_
         activeFramebuffer = VK_NULL_HANDLE;
         activeRenderPass = VK_NULL_HANDLE;
         renderPipelineState = nullptr;
+        DEBUG_STREAM("[GEVulkan_RP] finishRenderPass: hadActiveRP=" << (hadActiveRP ? 1 : 0)
+                     << " enteredDeferred=" << (wasDeferred ? 1 : 0));
     };
 
     void GEVulkanCommandBuffer::beginAccelStructPass(){

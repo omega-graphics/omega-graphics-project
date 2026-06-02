@@ -6,7 +6,9 @@
 #include <cassert>
 #include <chrono>
 #include <cstdint>
+#include <iostream>
 
+#include "omegaGTE/GE.h"  // OmegaGTE::isDebugLayerEnabled() — gates [WTK_RP] traces
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/CanvasEffect.h"
 #include "omegaWTK/Composition/CompositeFrame.h"
@@ -46,9 +48,15 @@ void FrameBuilder::beginFrame(){
     if(depth_++ > 0){
         return;
     }
+    if(OmegaGTE::isDebugLayerEnabled()){
+        std::cerr << "[WTK_RP] FrameBuilder::beginFrame: entered (depth=1)" << std::endl;
+    }
 
     auto * impl = window_.impl_.get();
     if(impl == nullptr){
+        if(OmegaGTE::isDebugLayerEnabled()){
+            std::cerr << "[WTK_RP] FrameBuilder::beginFrame: impl is null, aborting" << std::endl;
+        }
         return;
     }
     auto * treeHost = impl->widgetTreeHost.get();
@@ -125,9 +133,17 @@ void FrameBuilder::endFrame(){
     // so any post-endFrame draws (there shouldn't be any) do
     // not silently re-enter this frame.
     impl->proxy.setActiveCompositeFrame(nullptr);
-    if(compositeFrame_ != nullptr &&
-       !compositeFrame_->slices.empty() &&
-       impl->windowSurface != nullptr){
+    const std::size_t sliceCount = compositeFrame_ ? compositeFrame_->slices.size() : 0;
+    const bool hasSurface = (impl->windowSurface != nullptr);
+    const bool willDeposit = (compositeFrame_ != nullptr && sliceCount > 0 && hasSurface);
+    if(OmegaGTE::isDebugLayerEnabled()){
+        std::cerr << "[WTK_RP] FrameBuilder::endFrame: slices=" << sliceCount
+                  << " hasSurface=" << (hasSurface ? 1 : 0)
+                  << " willDeposit=" << (willDeposit ? 1 : 0)
+                  << " pendingSubmissions=" << pending_.capacity()
+                  << std::endl;
+    }
+    if(willDeposit){
         impl->windowSurface->deposit(compositeFrame_);
     }
     compositeFrame_.reset();

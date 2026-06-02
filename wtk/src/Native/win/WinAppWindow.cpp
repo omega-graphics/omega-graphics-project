@@ -204,6 +204,16 @@ namespace OmegaWTK::Native::Win {
                 //     // };
                 //     break;
                 // };
+                case WM_SHOWWINDOW : {
+                    // NativeWindow-Ready-Signal-Plan step 5: wParam=TRUE
+                    // means the window is being shown — the HWND is now
+                    // visible and its swap chain is presentable. Idempotent
+                    // via handleFirstRealize's firstRealizeFired_ guard.
+                    if(wParam == TRUE){
+                        handleFirstRealize();
+                    }
+                    break;
+                };
                 case WM_PAINT : {
                     PAINTSTRUCT ps;
                     HDC hdc = BeginPaint(hwnd,&ps);
@@ -211,6 +221,22 @@ namespace OmegaWTK::Native::Win {
                     // parentLayer->redraw();
 
                     EndPaint(hwnd,&ps);
+                    // NativeWindow-Ready-Signal-Plan step 5: belt-and-
+                    // suspenders. Some Win32 paths reach the first
+                    // WM_PAINT without a preceding WM_SHOWWINDOW (e.g.,
+                    // certain WS_CHILD lifecycles); flipping the gate
+                    // here ensures isNativeReady() is true by the time
+                    // the compositor's first drain runs.
+                    handleFirstRealize();
+                    break;
+                };
+                case WM_DISPLAYCHANGE : {
+                    // NativeWindow-Ready-Signal-Plan step 5: display
+                    // reconfiguration — monitor added/removed, resolution
+                    // change, color-depth change. Treat as re-realize
+                    // since the swap chain may end up on a different
+                    // adapter / require recreation.
+                    handleReRealize();
                     break;
                 };
                 case WM_DPICHANGED : {
@@ -240,6 +266,11 @@ namespace OmegaWTK::Native::Win {
                         auto *params = new WindowScaleFactorChangedParams{oldScale, newScale, suggested};
                         NativeWindow::eventEmitter()->emit(NativeEventPtr(new NativeEvent(NativeEvent::WindowScaleFactorChanged, params)));
                     }
+                    // NativeWindow-Ready-Signal-Plan step 5: DPI change
+                    // is the primary re-realize trigger on Win32. Phase
+                    // F of UIView-Render-Redesign-Plan.md consumes this
+                    // through onRealize to force a full-tree repaint.
+                    handleReRealize();
                     break;
                 }
                 case WM_GETMINMAXINFO : {
@@ -307,7 +338,79 @@ namespace OmegaWTK::Native::Win {
         };
         ShowWindow(hwnd,SW_SHOWDEFAULT);
         UpdateWindow(hwnd);
+        // NativeWindow-Ready-Signal-Plan step 5: after ShowWindow +
+        // UpdateWindow, the HWND is visible and its swap chain is
+        // presentable. The wndproc's WM_SHOWWINDOW(TRUE)/WM_PAINT
+        // handlers also call handleFirstRealize so order of arrival
+        // doesn't matter — whichever fires first wins; subsequent
+        // calls are idempotent no-ops.
+        handleFirstRealize();
     };
+
+    // ---- NativeWindow-Ready-Signal-Plan step 5 overrides ----
+
+    bool WinAppWindow::isNativeReady() const {
+        return nativeReady_.load(std::memory_order_acquire);
+    }
+
+    void WinAppWindow::onFirstRealize(std::function<void()> cb){
+        if(!cb){
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lk(realizeCallbacksMutex_);
+            if(!firstRealizeFired_){
+                firstRealizeSubscribers_.push_back(std::move(cb));
+                return;
+            }
+        }
+        // Post-realize fast path: fire synchronously. cb was not moved
+        // on this path because the if-branch returned early.
+        cb();
+    }
+
+    void WinAppWindow::onRealize(std::function<void()> cb){
+        if(!cb){
+            return;
+        }
+        // Sticky semantics: no synchronous-replay path. The callback
+        // fires only on future re-realize transitions (WM_DPICHANGED /
+        // WM_DISPLAYCHANGE → handleReRealize).
+        std::lock_guard<std::mutex> lk(realizeCallbacksMutex_);
+        realizeSubscribers_.push_back(std::move(cb));
+    }
+
+    void WinAppWindow::handleFirstRealize(){
+        std::vector<std::function<void()>> firstCallbacks;
+        {
+            std::lock_guard<std::mutex> lk(realizeCallbacksMutex_);
+            nativeReady_.store(true, std::memory_order_release);
+            if(firstRealizeFired_){
+                return;  // idempotent — initialDisplay / WM_SHOWWINDOW / WM_PAINT may all call
+            }
+            firstRealizeFired_ = true;
+            // Drain + free storage: firstRealize subscribers fire exactly
+            // once per NativeWindow lifetime.
+            firstCallbacks.swap(firstRealizeSubscribers_);
+        }
+        for(auto & cb : firstCallbacks){
+            if(cb) cb();
+        }
+    }
+
+    void WinAppWindow::handleReRealize(){
+        std::vector<std::function<void()>> reCallbacks;
+        {
+            std::lock_guard<std::mutex> lk(realizeCallbacksMutex_);
+            // Sticky: copy the subscriber list so it stays intact for
+            // subsequent fires. WM_DPICHANGED / WM_DISPLAYCHANGE don't
+            // discard the swap chain on Win32; nativeReady_ stays true.
+            reCallbacks = realizeSubscribers_;
+        }
+        for(auto & cb : reCallbacks){
+            if(cb) cb();
+        }
+    }
     WinAppWindow::~WinAppWindow(){
         close();
     };

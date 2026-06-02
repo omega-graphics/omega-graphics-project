@@ -92,6 +92,10 @@ void CocoaAppWindow::enable(){
     if([windowController.window isVisible] == NO){
         [windowController.window makeKeyAndOrderFront:nil];
     };
+    // NativeWindow-Ready-Signal-Plan: the window is now on screen with
+    // its CAMetalLayer wired up. Idempotent — handleFirstRealize
+    // no-ops if initialDisplay or orderFront already fired it.
+    handleFirstRealize();
 };
 
 void CocoaAppWindow::setMenu(NM menu) {
@@ -135,6 +139,10 @@ void CocoaAppWindow::initialDisplay(){
     [windowController showWindow:windowDelegate];
     [windowController.window makeKeyAndOrderFront:nil];
     NSLog(@"IS Visible :%d",[windowController.window isVisible]);
+    // NativeWindow-Ready-Signal-Plan step 4: the standard "the window
+    // is now on screen" entry point. Flips isNativeReady() to true and
+    // dispatches any queued onFirstRealize subscribers.
+    handleFirstRealize();
 };
 
 void CocoaAppWindow::close(){
@@ -234,8 +242,13 @@ void CocoaAppWindow::setResizable(bool resizable){
     }
     [w setStyleMask:mask];
 }
+// NativeWindow-Ready-Signal-Plan note: orderFront() also brings the
+// window on screen, so it covers the case where a caller bypassed
+// initialDisplay/enable and goes straight here. Idempotent via
+// handleFirstRealize's firstRealizeFired_ guard.
 void CocoaAppWindow::orderFront(){
     [windowController.window orderFront:nil];
+    handleFirstRealize();
 }
 void CocoaAppWindow::orderBack(){
     [windowController.window orderBack:nil];
@@ -271,6 +284,72 @@ void CocoaAppWindow::notifyBackingScaleChanged(float oldScale, float newScale){
     auto *params = new WindowScaleFactorChangedParams{oldScale, newScale, {}};
     NativeEventPtr ev(new NativeEvent(NativeEvent::WindowScaleFactorChanged, params));
     eventEmitter()->emit(ev);
+}
+
+// ---- NativeWindow-Ready-Signal-Plan step 4 overrides ----
+
+bool CocoaAppWindow::isNativeReady() const {
+    return nativeReady_.load(std::memory_order_acquire);
+}
+
+void CocoaAppWindow::onFirstRealize(std::function<void()> cb){
+    if(!cb){
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(realizeCallbacksMutex_);
+        if(!firstRealizeFired_){
+            firstRealizeSubscribers_.push_back(std::move(cb));
+            return;
+        }
+    }
+    // Post-realize fast path: fire synchronously on the calling thread.
+    // cb was not moved on this path because the if-branch returned early.
+    cb();
+}
+
+void CocoaAppWindow::onRealize(std::function<void()> cb){
+    if(!cb){
+        return;
+    }
+    // Sticky semantics: no synchronous-replay path. The callback fires
+    // only on future re-realize transitions (handleReRealize, triggered
+    // from windowDidChangeBackingProperties:).
+    std::lock_guard<std::mutex> lk(realizeCallbacksMutex_);
+    realizeSubscribers_.push_back(std::move(cb));
+}
+
+void CocoaAppWindow::handleFirstRealize(){
+    std::vector<std::function<void()>> firstCallbacks;
+    {
+        std::lock_guard<std::mutex> lk(realizeCallbacksMutex_);
+        nativeReady_.store(true, std::memory_order_release);
+        if(firstRealizeFired_){
+            return;  // idempotent — initialDisplay/enable/orderFront may all call this
+        }
+        firstRealizeFired_ = true;
+        // Drain + free storage: firstRealize subscribers fire exactly
+        // once per NativeWindow lifetime.
+        firstCallbacks.swap(firstRealizeSubscribers_);
+    }
+    for(auto & cb : firstCallbacks){
+        if(cb) cb();
+    }
+}
+
+void CocoaAppWindow::handleReRealize(){
+    std::vector<std::function<void()>> reCallbacks;
+    {
+        std::lock_guard<std::mutex> lk(realizeCallbacksMutex_);
+        // Sticky semantics: copy the subscriber list so it stays intact
+        // for subsequent fires. nativeReady_ stays true through a
+        // re-realize (a backing-scale change does not invalidate the
+        // surface itself; only the scale of the rasterization).
+        reCallbacks = realizeSubscribers_;
+    }
+    for(auto & cb : reCallbacks){
+        if(cb) cb();
+    }
 }
 
 };
@@ -505,6 +584,11 @@ void CocoaAppWindow::notifyBackingScaleChanged(float oldScale, float newScale){
     float oldScale = oldKey != nil ? oldKey.floatValue : 1.f;
     float newScale = (float)[window backingScaleFactor];
     self.cppBinding->notifyBackingScaleChanged(oldScale, newScale);
+    // NativeWindow-Ready-Signal-Plan step 4: backing-scale change is
+    // the primary re-realize trigger on macOS (display change, monitor
+    // swap). Layer re-host on space/fullscreen transitions is a future
+    // follow-up — when wired, it routes through here too.
+    self.cppBinding->handleReRealize();
 }
 
 -(void)windowDidEndLiveResize:(NSNotification *)notification

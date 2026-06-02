@@ -141,17 +141,14 @@ protected:
 // UIView-Render-Redesign-Plan Tier 3 Phase 3.2 / 3.4 validator scene.
 // Two non-overlapping UIViews on one window, plus a *nested* child
 // UIView (Phase 3.4 addition) parked at a non-trivial offset inside
-// the left view. With OMEGAWTK_WINDOW_SCOPED_PAINT off (legacy path),
-// every UIView composites via its own rootCanvas and the inner view's
-// window offset comes from View::legacyComputeWindowOffset's parent
-// chain walk. With it on, every UIView submits its DisplayList to the
+// the left view. Every UIView submits its DisplayList to the
 // window-level FrameBuilder; submitView reads the offset from the
 // accumulator (pushed by the widget walker for the root widget and
-// by UIView::update for each leaf submission). Expected, identical
-// between paths: green rectangle filling the left half, red filling
-// the right, and a blue rectangle at {40, 80}-relative inside the
-// green half (i.e. absolute {40, 80}). Any miss in the accumulator's
-// nested offset composition shows up as the inner blue rect landing
+// by UIView::update for each leaf submission). Expected: green
+// rectangle filling the left half, red filling the right, and a blue
+// rectangle at {40, 80}-relative inside the green half (i.e. absolute
+// {40, 80}). Any miss in the accumulator's nested offset composition
+// shows up as the inner blue rect landing
 // at {0,0} (or worse) instead of inside the green half.
 class Phase32Widget : public Widget {
     UIViewPtr leftView_;

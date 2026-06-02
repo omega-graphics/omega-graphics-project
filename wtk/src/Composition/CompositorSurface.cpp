@@ -42,4 +42,12 @@ void CompositorSurface::setOnDeposit(std::function<void()> callback){
     onDeposit_ = std::move(callback);
 }
 
+void CompositorSurface::setOwnerAppWindow(::OmegaWTK::AppWindow * appWindow){
+    ownerAppWindow_.store(appWindow, std::memory_order_release);
+}
+
+::OmegaWTK::AppWindow * CompositorSurface::ownerAppWindow() const{
+    return ownerAppWindow_.load(std::memory_order_acquire);
+}
+
 }

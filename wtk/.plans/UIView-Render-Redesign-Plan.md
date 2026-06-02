@@ -2013,6 +2013,73 @@ needing an explicit `handleHostResize` before the initial walk.)
   window size and content crisp (not stretched) at every intermediate
   size — no widget having opted in.
 
+**Adjacent consideration — subsequent native-surface realize cycles
+(per-window):** The cross-platform per-window realize subscription
+`NativeWindow::onRealize` (see
+`wtk/.plans/NativeWindow-Ready-Signal-Plan.md`) fires on every
+*subsequent* re-realize — X11 DPI scale change, Wayland scale/transform
+update, Windows display-change recreation, macOS layer re-host on space
+switch. The singular first-realize event is delivered through a
+separate one-shot subscription, `onFirstRealize`, which the ready-signal
+plan itself owns to release the deferred initial paint; Phase F does
+not subscribe there. Phase F's hook is therefore a single registration
+against `onRealize` whose lambda routes each re-realize through the
+same `dispatchResize*ToHosts` `ScopedFrame` this phase already brackets,
+forcing the full-tree repaint defined above regardless of `DirtyBits`.
+Because the two events are non-overlapping by API contract, Phase F's
+full-tree walk never runs redundantly at startup alongside the
+first-paint release. Rationale for treating re-realize as a resize:
+re-realize discards the old native surface, so any content rasterized
+against the prior pixel layout is stale by the same logic that makes
+resize stale. Keeping re-realize and resize on a single full-repaint
+mechanism means one trigger point, one validator, one cache-invalidation
+rule for Phase G to reason about — not two parallel ones.
+
+**DPI scale change is not just a repaint — it's a three-step coupling
+(developer, 2026-06-02):** the full-tree repaint covers the *content*
+side of a scale change, but two other surfaces have to update in the
+same `onRealize` callback before the repaint walks, or the walk
+rasterizes into stale infrastructure:
+
+1. **`renderTarget` resize.** Backing dimensions are
+   `renderTargetSize × renderScale` (see
+   `wtk/src/Composition/backend/RenderTarget.cpp:153-154,173-174`). A
+   scale change without a backing-dimension recompute leaves
+   `backingWidth_ / backingHeight_` pinned to the *old* scale —
+   `applyViewportAndScissor()` then sets a viewport that doesn't
+   match the actual swapchain extent and the GPU rasterizes into the
+   wrong region. The `onRealize` callback must invoke the existing
+   `BackendRenderTargetContext` resize path (or a new
+   `updateRenderScale` peer that re-runs `recomputeBackingDimensions`)
+   *before* Phase F's `dispatchResize*ToHosts` walks.
+2. **`Compositor` scale propagation.** `Compositor`'s back-edge to
+   `ViewRenderTarget::setRenderScale` is what every backend's visual
+   tree (Metal `CALayerTree`, D3D12 `DCVisualTree`, Vulkan
+   `VKVisualTree`) reads at construction (see
+   `wtk/src/UI/AppWindow.cpp:131` and the `renderScale_` capture in
+   each backend's tree). The compositor needs the new scale before
+   any new visual or surface allocation runs, otherwise mid-frame
+   scale-dependent decisions (texture sizes for blur scratches,
+   tessellation tolerance) use the old value. The `onRealize`
+   callback should pull `NativeWindow::scaleFactor()` and push it
+   through the same path the existing
+   `NativeEvent::WindowScaleFactorChanged` handler uses today, so
+   there is one canonical "tell the compositor the scale changed"
+   site instead of an onRealize-specific shortcut.
+3. **Then the repaint walks.** With (1) and (2) updated, the
+   `dispatchResize*ToHosts` `ScopedFrame` walks the tree and re-emits
+   every widget's `DisplayList` against fresh `renderTargetSize_` and
+   `renderScale_`. Without ordering steps 1 and 2 first, the walk
+   sees a transiently inconsistent backend state.
+
+The validator (added to Phase F's existing one): a windowed
+`gtk_window_set_default_size`-equivalent triggered scale change (e.g.
+dragging from a 1× monitor to a 2× monitor on a multi-display X11
+session) should produce a crisp full-resolution frame on the new
+monitor without a visible 1× intermediate frame. A "blurry first
+frame after monitor swap" is the canonical symptom of missing
+sub-step (1) or (2).
+
 Sequencing: depends on Block 2's `LayoutManager` (4.5/4.6) for relayout
 and on **Phase G** for the cache that makes full-tree repaint affordable,
 but the gate removal + force-full-repaint-on-resize itself is independent

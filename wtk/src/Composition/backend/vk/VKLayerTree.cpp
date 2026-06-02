@@ -171,26 +171,48 @@ namespace OmegaWTK::Composition {
             }
 
             void resolveDeferredNativeTarget(ViewPresentTarget & outPresentTarget) override {
-                if(outPresentTarget.nativeTarget != nullptr || view == nullptr){
+                if(view == nullptr){
                     return;
                 }
-                Composition::Rect r = view->getRect();
-                OmegaGTE::NativeRenderTargetDescriptor desc {};
-                if(resolveNativeRenderTargetDescriptor(r,desc)){
-                    auto presentQueue = gte.graphicsEngine->makeCommandQueue(64);
-                    outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, presentQueue);
-                    outPresentTarget.backingWidth = toBackingDimension(r.w, renderScale_);
-                    outPresentTarget.backingHeight = toBackingDimension(r.h, renderScale_);
-                    // Note: deferred resolve doesn't update the BackendRenderTargetContext;
-                    // see VKLayerTree's first-frame fallback for where the queue is wired.
+                if(outPresentTarget.nativeTarget == nullptr){
+                    Composition::Rect r = view->getRect();
+                    OmegaGTE::NativeRenderTargetDescriptor desc {};
+                    if(resolveNativeRenderTargetDescriptor(r,desc)){
+                        auto presentQueue = gte.graphicsEngine->makeCommandQueue(64);
+                        outPresentTarget.nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, presentQueue);
+                        outPresentTarget.backingWidth = toBackingDimension(r.w, renderScale_);
+                        outPresentTarget.backingHeight = toBackingDimension(r.h, renderScale_);
+                    }
+                    else if(!warnedMissingNativeHandle){
+                        // Deferred resolve failed too — the GdkWindow still
+                        // isn't realized at first-frame time, which means
+                        // the window was never displayed (e.g. headless
+                        // run). The compositor will skip rendering rather
+                        // than crash.
+                        std::cout << "[OmegaWTK][Vulkan][GTK] Native window handle unavailable for Vulkan render target." << std::endl;
+                        warnedMissingNativeHandle = true;
+                        return;
+                    }
                 }
-                else if(!warnedMissingNativeHandle){
-                    // Deferred resolve failed too — the GdkWindow still
-                    // isn't realized at first-frame time, which means the
-                    // window was never displayed (e.g. headless run). The
-                    // compositor will skip rendering rather than crash.
-                    std::cout << "[OmegaWTK][Vulkan][GTK] Native window handle unavailable for Vulkan render target." << std::endl;
-                    warnedMissingNativeHandle = true;
+                // NativeWindow-Ready-Signal-Plan / root-visual eager-creation:
+                // build the rootVisual here, now that the native target is
+                // resolvable. Replaces the old Compositor::renderCompositeFrame
+                // anchor-from-slice fallback. On Metal/D3D12 the rootVisual is
+                // built synchronously in createVisualTreeForView; on Vulkan it
+                // lands here on the first resolveDeferredNativeTarget call
+                // after the GtkWindow realizes (the NativeWindow gate now
+                // guarantees the compositor reaches this point only post-
+                // realize). After this call hasRootVisual() returns true and
+                // every subsequent dispatch hits the live present surface.
+                if(!hasRootVisual() && outPresentTarget.nativeTarget != nullptr){
+                    Composition::Rect r = view->getRect();
+                    auto presentQueue = outPresentTarget.nativeTarget->presentQueue();
+                    auto context = std::make_unique<BackendRenderTargetContext>(
+                        r,outPresentTarget.nativeTarget,std::move(presentQueue),renderScale_);
+                    Composition::Point2D pos = r.pos;
+                    Core::SharedPtr<BackendVisualTree::Visual> rootVisual {
+                        new Visual(pos, std::move(context))};
+                    setRootVisual(rootVisual);
                 }
             }
         };

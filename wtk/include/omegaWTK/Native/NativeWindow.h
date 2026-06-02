@@ -65,6 +65,73 @@ namespace OmegaWTK::Native {
         /// schedule + coalesce (macOS: CFRunLoopPerformBlock).
         virtual void requestFrameFlush();
 
+        /// Whether the native surface is realized and the engine may
+        /// render into it. Backends with a meaningful gap between
+        /// window construction and surface availability (GTK/X11)
+        /// override. The default `return true` is provisional
+        /// — it lines up with today's macOS/Windows behavior only
+        /// because `PaintOptions::autoWarmupOnInitialPaint` resubmits
+        /// the initial frame; once warmup is removed
+        /// (`Widget-View-Paint-Lifecycle-Plan.md` Tier D) every backend
+        /// must override with a real check.
+        ///
+        /// May transiently return false during a re-realize cycle (DPI
+        /// change, display reconfiguration, surface re-host) and then
+        /// return true again; subscribers to `onRealize` observe that
+        /// transition.
+        ///
+        /// Queried from the CompositorFrameWorker thread. Implementations
+        /// should back this with an std::atomic<bool>.
+        ///
+        /// See `wtk/.plans/NativeWindow-Ready-Signal-Plan.md`.
+        virtual bool isNativeReady() const { return true; }
+
+        /// Register a one-shot callback that fires exactly once when
+        /// the native surface is realized for the first time. If
+        /// `isNativeReady()` is already true at registration time,
+        /// fires synchronously on the calling thread (replays the
+        /// past first-realize event for late subscribers). Otherwise
+        /// fires on the platform's UI thread when the initial realize
+        /// signal arrives. Never fires again — subsequent re-realize
+        /// transitions are delivered through `onRealize`.
+        ///
+        /// Used by the Compositor to release the deferred initial
+        /// paint queued in the window's CompositorSurface.
+        ///
+        /// Registration is permanent for the NativeWindow's lifetime;
+        /// there is no unregister. Callbacks must capture weak
+        /// references to any state they touch and must not take locks
+        /// held by the caller (the synchronous-replay path runs on the
+        /// caller's thread).
+        virtual void onFirstRealize(std::function<void()> cb) {
+            if(cb) cb();
+        }
+
+        /// Register a sticky (refireable) callback that fires on every
+        /// *subsequent* re-realize transition — explicitly NOT on the
+        /// first realize (that is delivered via `onFirstRealize`).
+        /// Covers DPI scale change, Wayland scale/transform update,
+        /// Windows display-change recreation, macOS layer re-host on
+        /// space/fullscreen transitions. Callbacks fire on the
+        /// platform's UI thread in registration order.
+        ///
+        /// Default impl never fires: most windows on most platforms
+        /// have a single realize cycle. Backends that genuinely
+        /// re-realize override.
+        ///
+        /// Consumed by `UIView-Render-Redesign-Plan.md` Phase F to
+        /// force a full-tree repaint on every re-realize. The split
+        /// from `onFirstRealize` is what guarantees Phase F's
+        /// full-repaint walker does not run redundantly at startup
+        /// alongside the deferred-paint release.
+        ///
+        /// Registration is permanent for the NativeWindow's lifetime;
+        /// there is no unregister. Same callback discipline as
+        /// `onFirstRealize`.
+        virtual void onRealize(std::function<void()> cb) {
+            (void)cb;
+        }
+
         virtual void enable() = 0;
         virtual void disable() = 0;
         virtual void initialDisplay() = 0;

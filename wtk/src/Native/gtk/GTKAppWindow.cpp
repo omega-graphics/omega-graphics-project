@@ -13,8 +13,13 @@
 #include "omegaWTK/Native/NativeItem.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <functional>
 #include <iostream>
+#include <mutex>
+#include <utility>
+#include <vector>
 
 namespace OmegaWTK::Native::GTK {
 
@@ -79,6 +84,19 @@ class GTKAppWindow : public NativeWindow {
     int integerScale_ = 1;
     float currentScale_ = 1.f;
     CursorShape currentCursorShape_ = CursorShape::Arrow;
+
+    // NativeWindow-Ready-Signal-Plan step 2: GTK realize-gate state.
+    // nativeReady_ is the atomic boolean isNativeReady() returns; read on
+    // the CompositorFrameWorker thread, written on the GTK UI thread.
+    // The two subscriber vectors back onFirstRealize / onRealize and are
+    // guarded by realizeCallbacksMutex_. firstRealizeFired_ tracks the
+    // singleton transition that distinguishes "initial realize" from
+    // "subsequent re-realize" — see the plan §3.1 / §3.4.
+    std::atomic<bool> nativeReady_ {false};
+    mutable std::mutex realizeCallbacksMutex_;
+    std::vector<std::function<void()>> firstRealizeSubscribers_;
+    std::vector<std::function<void()>> realizeSubscribers_;
+    bool firstRealizeFired_ = false;
 
     struct PrimaryMonitorPlacement {
         int x = 0;
@@ -254,6 +272,46 @@ class GTKAppWindow : public NativeWindow {
         self->recomputeScale();
     }
 
+    // GTK "realize" signal handler — invoked when the underlying
+    // GdkWindow / X11 Window becomes available. Drives the
+    // NativeWindow-Ready-Signal-Plan gate: flip nativeReady_ to true,
+    // then dispatch subscribers. The first fire drains and clears the
+    // firstRealize list; subsequent fires (re-realize cycles) iterate
+    // the sticky realize list. Locks are released before firing any
+    // callback so subscribers may re-enter NativeWindow methods.
+    static void onRealizeSignal(GtkWidget *widget,gpointer data){
+        (void)widget;
+        auto *self = static_cast<GTKAppWindow *>(data);
+        self->handleRealize();
+    }
+
+    void handleRealize(){
+        std::vector<std::function<void()>> firstCallbacks;
+        std::vector<std::function<void()>> reCallbacks;
+        {
+            std::lock_guard<std::mutex> lk(realizeCallbacksMutex_);
+            nativeReady_.store(true, std::memory_order_release);
+            if(!firstRealizeFired_){
+                firstRealizeFired_ = true;
+                // Drain + free storage: the firstRealize subscribers fire
+                // exactly once per NativeWindow lifetime, never replayed
+                // on a re-realize cycle.
+                firstCallbacks.swap(firstRealizeSubscribers_);
+            }
+            else {
+                // Sticky semantics: copy the subscriber list so it
+                // remains intact for subsequent re-realize fires.
+                reCallbacks = realizeSubscribers_;
+            }
+        }
+        for(auto & cb : firstCallbacks){
+            if(cb) cb();
+        }
+        for(auto & cb : reCallbacks){
+            if(cb) cb();
+        }
+    }
+
 public:
     GTKAppWindow(Composition::Rect &rectArg,NativeEventEmitter *emitter):
     NativeWindow(sanitizeRect(rectArg,Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f}), emitter){
@@ -296,6 +354,13 @@ public:
             g_signal_connect(window,"configure-event",G_CALLBACK(onConfigureEvent),this);
             g_signal_connect(window,"window-state-event",G_CALLBACK(onWindowState),this);
             g_signal_connect(window,"notify::scale-factor",G_CALLBACK(onScaleFactorChanged),this);
+            // NativeWindow-Ready-Signal-Plan §3.2 GTK trigger: the
+            // "realize" signal fires when the underlying X11 Window
+            // becomes available — exactly when the engine may begin
+            // rendering. Connect BEFORE any gtk_widget_show*() so the
+            // realize cascade during initial display lands on this
+            // handler.
+            g_signal_connect(window,"realize",G_CALLBACK(onRealizeSignal),this);
             // Catch desktop-DPI changes (Xft.dpi, GNOME text-scaling-factor)
             // at runtime. GtkSettings holds gtk-xft-dpi globally; gdk_screen
             // resolution is derived from it.
@@ -341,6 +406,48 @@ public:
         if(window != nullptr){
             gtk_widget_show_all(GTK_WIDGET(window));
         }
+    }
+
+    // ---- NativeWindow-Ready-Signal-Plan overrides (step 2) ----
+    //
+    // The compositor's drainWindowSurfaces() will gate consume() on
+    // isNativeReady() once step 3 lands; until then these are exercised
+    // only by the AppWindow ctor's onFirstRealize registration.
+
+    bool isNativeReady() const override {
+        return nativeReady_.load(std::memory_order_acquire);
+    }
+
+    void onFirstRealize(std::function<void()> cb) override {
+        if(!cb){
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lk(realizeCallbacksMutex_);
+            if(!firstRealizeFired_){
+                // Pre-realize: queue. The realize handler will drain
+                // this list when the GTK realize signal fires.
+                firstRealizeSubscribers_.push_back(std::move(cb));
+                return;
+            }
+        }
+        // Post-realize fast path: fire synchronously on the calling
+        // thread. cb was not moved on this path because the if-branch
+        // returned early.
+        cb();
+    }
+
+    void onRealize(std::function<void()> cb) override {
+        if(!cb){
+            return;
+        }
+        // Sticky semantics: no synchronous-replay path. The callback
+        // fires only on future re-realize transitions (whose triggers
+        // — DPI / display reconfigure / forced surface recreate — are
+        // not yet wired on this backend; they will route through
+        // handleRealize() when they are).
+        std::lock_guard<std::mutex> lk(realizeCallbacksMutex_);
+        realizeSubscribers_.push_back(std::move(cb));
     }
 
     void close() override {
