@@ -203,6 +203,60 @@ deletions and execute the animation/style migrations on the existing
 
 ---
 
+## 0.3 Tier D scoping (decided 2026-06-01)
+
+Tier D was originally a SceneNode introduction; §0.2 rescoped it to
+"finish Block 2 + Animation-Scheduler Tiers B/C/E + ComputedStyle
+re-key + Style Tier 3." The 2026-06-01 pass adds a multi-phase
+breakdown (§5 Tier D below, §11 Block 4 below) and resolves four open
+decisions:
+
+1. **Stylesheet ownership.** `AppWindow` owns its local stack;
+   `StyleSheet` is a `SharedHandle`-typed value so multiple
+   `AppWindow`s can share sheets. Sheets are
+   immutable-once-installed (mutations produce a new sheet handle and
+   re-install) so concurrent windows reading the same sheet are safe.
+   The `StyleResolver` per window walks that window's stack.
+2. **Style Tier 2 lands inside Tier D as D6.** Style Tier 3
+   (transitions / themes) requires Tier 2 (`StyleSheet` + `Selector`
+   + `StyleResolver`), and Tier D requires Style Tier 3 to make the
+   `scheduler.transition(...)` hook real. Folding Tier 2 in here
+   collapses the prior "Block 3 lands independently" path; the
+   former Block 3 is retired.
+3. **`ComputedStyle` re-key splits per-property.** The cache becomes
+   `Map<(NodeId, PropertyKey), TypedValue>`, sharing shape with the
+   scheduler side table (Animation-Scheduler-Plan §3.2). Paint reads
+   collapse to one lookup per `(node, key)` with a uniform fallback
+   chain: scheduler side table → resolved-style table → UA default.
+   This is a bigger D5 than the aggregate-cache option, but it is what
+   Style Tier 3's property-grained transition invalidation wants and
+   it removes the aggregate-vs-side-table impedance mismatch.
+4. **`WidgetTreeHost::paintDirty()` stays on `WidgetTreeHost`.** It is
+   a 6-line `FrameBuilder::ScopedFrame + buildFrame` wrapper today and
+   moving it churns the resize path for no real reduction.
+
+The 2026-06-01 pass also adds **keyframe animations to `StyleSheet`**
+alongside transitions (WML requires them). The scheduler API already
+accepts `KeyframeTrack<T>` via `animateProperty<T>(node, key, track,
+timing)` (`AnimationScheduler.h:144`); what's missing is the
+authoring + binding surface:
+
+- `StyleSheet` gains named keyframe declarations (a CSS `@keyframes`-
+  equivalent: `KeyframeAnimation{name, tracks per-property, default
+  timing}`).
+- `Style` / `StyleRule` gains a binding (`animation: <name> <timing>`)
+  per property or per rule, paralleling `transition`.
+- `StyleResolver` fires `scheduler.animateProperty<T>(node, key,
+  track, timing)` when a binding becomes active and cancels the
+  handle when the binding stops applying. Lifecycle parallel to
+  transitions but with explicit track data rather than implicit
+  prev→next interpolation.
+
+Keyframe declarations land in D6.1 (alongside `StyleSheet`/`Selector`);
+the resolver-driven firing lands in D7.3.
+
+---
+
 ## 1. What is broken today
 
 The paint lifecycle is not a lifecycle. It is a collection of entry
@@ -949,7 +1003,7 @@ branch.
 **Files touched:** All of Tier B plus `AppWindow.h`, `AppWindow.cpp`,
 `AppWindowImpl.h`, `CompositorClient.h`, `CompositorClient.cpp`.
 
-### Tier D — Full lifecycle on `View` (ship alongside Render Redesign Tier 4)
+### Tier D — Animation, style cascade, and final cleanup (ship alongside Render Redesign Tier 4)
 
 **Rescoped 2026-05-31 — `SceneNode` is no longer adopted.** The phase
 virtuals (`paint(PaintContext &)`, `resolveStyles()`, `arrangeContent()`)
@@ -959,6 +1013,14 @@ paint path. Tier D therefore inherits the dirty work that *isn't*
 SceneNode-shaped — the animation / style migrations and the residual
 deletions — and drops the scene-tree introduction bullets.
 
+**Re-decided 2026-06-01 (see §0.3).** AppWindow owns the local
+stylesheet stack and sheets are sharable across windows. Style Tier 2
+lands inside Tier D as D6 (the former Block 3 is retired). The
+resolved-style cache splits per-property to share shape with the
+scheduler side table. `WidgetTreeHost::paintDirty()` stays put.
+`StyleSheet` gains named keyframe animations alongside transitions
+(needed by WML).
+
 Withdrawn from Tier D (no longer planned):
 
 - ~~`Widget::paint(PaintContext &)` becomes `SceneNode::paint(PaintContext &)`.~~
@@ -966,25 +1028,239 @@ Withdrawn from Tier D (no longer planned):
 - ~~`WidgetTreeHost` becomes `WindowFrameHost` / folded into `AppWindow`.~~
 - ~~`onPaint(PaintReason)` → `paint(PaintContext &)` widget-hook rename.~~
 
-What Tier D still owes:
+Nine sub-phases, each independently shippable. Dependencies in §5.D9.
 
-- **`AnimationScheduler` folds in here** (Render Redesign Tier 4 Phases
-  4.3 / 4.4 / 4.8 = `Animation-Scheduler-Plan.md` Tiers A / B+C / E): the
-  per-window scheduler lands alongside the old animator, UIView animation
-  migrates onto its `(NodeId,PropertyKey)` side table, and the old
-  `ViewAnimator` / `LayerAnimator` surface is deleted. Tier B's
-  `tickAnimations()` body swaps from `advanceAnimations()` to
-  `scheduler.tick(frameTime)`.
-- `ComputedStyle` re-keys from `UIElementTag` to `(NodeId, PropertyKey)`
-  once the scheduler's side table is the source of truth for animated
-  values. The re-key no longer needs a new node type — `View::nodeId()`
-  (Phase 4.4, `View.h:305`) already provides the `NodeId`.
-- Any remaining Tier C deletions (`executePaint`, the reentrancy guards,
-  `PaintOptions`, the session shims) complete here if not already done.
+- **D0 — Reconciliation (doc-only).** Walk §11 Block 4 against the
+  current tree (codedb + header reads). Confirm what's already landed
+  but mis-marked: `AnimationScheduler` is live and ticked from
+  `FrameBuilder::beginFrame` (`AnimationScheduler.h`,
+  `FrameBuilder.cpp:66`) — Anim Tier A is **done**. `View::nodeId()`
+  and `UIView::Impl::{elementNodeIds_, animationTargets_}` are
+  populated — Anim Tier C scaffolding is **done**.
+  `ViewAnimator` / `LayerAnimator` / `LayerClip` / `ViewClip` are
+  **deleted** (codedb returns nothing) — Anim Tier E is partial.
+  Confirm what's still pending: `executePaint`,
+  `Widget::Impl::{paintInProgress, hasPendingInvalidate,
+  pendingPaintReason, deferredReason}`, `PaintOptions`,
+  `View::submitPaintFrame(int)`, `WidgetTreeHost::invalidateWidgetRecurse`,
+  `UIView::Impl::advanceAnimations`, `computedStyles_` keyed by
+  `UIElementTag`. Verify whether `UIView::Impl::startOrUpdateAnimation`
+  and the two `applyLayoutDelta` paths already route to the scheduler
+  (Phase 4.4 status was ambiguous when this section was written).
+  Output is doc-only — rewrite §11 Block 4 + this sub-phase list
+  against tree truth before any code lands.
 
-**Risk:** Medium (down from High). The API-break bullets that drove the
-"high" rating are gone; Tier D is now closer to a Block 2 follow-up than
-a tree-replacement.
+- **D1 — Tier C deletions, pass 1: `Widget` paint plumbing.** Phase
+  asserts (B5) already make the reentrancy state dead; this just
+  removes the carrier. Delete `Widget::executePaint`
+  (`Widget.Paint.cpp:13`); inline "mark dirty bits + request frame"
+  at each live caller (`init()`, `invalidateNow()`,
+  `flushPendingPaint()`, `WidgetTreeHost::invalidateWidgetRecurse`).
+  Delete `Widget::Impl::{paintInProgress, hasPendingInvalidate,
+  pendingPaintReason, deferredReason}` (`WidgetImpl.h:92-100`).
+  Retire `PaintOptions::{autoWarmupOnInitialPaint, warmupFrameCount,
+  coalesceInvalidates}` (§8 Q3 — shaders are pre-compiled, coalesce
+  is always-on per Tier A); keep `invalidateOnResize` (live
+  semantics). `invalidateNow()` stays as the `[[deprecated]]` escape
+  hatch: clear bits → `treeHost->paintDirty()`. `flushPendingPaint`
+  is collapsed into the new `invalidateNow` body. Estimated ~80 LOC
+  removed.
+
+- **D2 — Tier C deletions, pass 2: `View` / `WidgetTreeHost` shims.**
+  Remove `View::submitPaintFrame(int)` (`View.h:311`) once D1 kills
+  its last `Widget`-side caller. Replace
+  `WidgetTreeHost::invalidateWidgetRecurse` (sole caller is the
+  resize path) with a direct walk that marks bits + calls
+  `requestFrame()`. Delete the already-no-op
+  `WidgetTreeHost::{paintDirtyRecurse, observeWidgetLayerTreesRecurse,
+  unobserveWidgetLayerTreesRecurse, beginResizeCoordinatorSessionRecurse}`.
+  Keep `WidgetTreeHost::paintDirty()` (decision §0.3 #4).
+
+- **D3 — Anim Tier B: `applyLayoutDelta` migration.** Route the
+  per-axis layout tweens in `View::applyLayoutDelta`
+  (`View.Core.cpp:173`) and `UIView::applyLayoutDelta`
+  (`UIView.Layout.cpp:32`) to four
+  `scheduler.tweenProperty<float>(node, LayoutX/Y/Width/Height, ...)`
+  calls each. Mechanical substitution (~50 LOC). Skip if D0 finds
+  these already migrated.
+
+- **D4 — Anim Tier C: UIView tween engine onto scheduler.**
+  `UIView::Impl::startOrUpdateAnimation` becomes a shim around
+  `scheduler.tweenProperty<T>(ensureElementNodeId(tag), key, from, to,
+  timing)`, preserving the `(tag, key)` `to`-match short-circuit via
+  the existing `animationTargets_` map (`UIViewImpl.h:173`). Path-node
+  animations migrate to
+  `scheduler.animatePropertyAt(node, PathNodeX/Y, nodeIndex, ...)`.
+  Delete `UIView::Impl::{advanceAnimations, PropertyAnimationState,
+  PathNodeAnimationState}` and the `EffectAnimationKey*` enum
+  (`UIViewImpl.h:125-138, 106-123, 217`); `animatedValue(tag, key)`
+  becomes `scheduler.value<T>(ensureElementNodeId(tag),
+  keyToPropertyKey(key))` with `ComputedStyle` fallback (the routing
+  is already in tree per Phase 4.4 comments — verify in D0).
+
+- **D5 — `ComputedStyle` re-key: split per-property,
+  `(NodeId, PropertyKey) → TypedValue`.** With D4 in,
+  the resolved-style cache and the scheduler side table share the
+  same identity *and* the same shape. Replace
+  `UIView::Impl::computedStyles_` (`UIViewImpl.h:185`,
+  `Map<UIElementTag, ComputedStyle>`) with a per-property table keyed
+  by `(NodeId, PropertyKey, subIndex)`, using the same
+  `PropertyTableKey` shape the scheduler uses
+  (`AnimationScheduler.h:102`). `resolveStyles()` writes one cell per
+  resolved property per element; `paint()` reads via a uniform
+  lookup helper:
+
+      template<typename T>
+      T resolved(NodeId n, PropertyKey k, T fallback) const {
+          if (auto v = scheduler->value<T>(n, k)) return *v;
+          if (auto v = styleTable_.value<T>(n, k)) return *v;
+          return fallback;   // UA default
+      }
+
+  The `ResolvedViewStyle` / `ResolvedTextStyle` / `ResolvedEffectStyle`
+  aggregate types in `UIViewInternal` become thin convenience views
+  rebuilt on demand from the per-property table (or are deleted
+  outright once Paint reads property-at-a-time). `ComputedStyle`
+  aggregate as a stored value is gone.
+
+- **D6 — Style Tier 2: global `StyleSheet` + `Selector` +
+  `StyleResolver` + keyframe declarations.** Largest single phase
+  (per Style plan §5 Tier 2). Five sub-steps:
+
+  - **D6.1 — Vocabulary.** `Selector` (Tier-1 single-compound: tag +
+    class + id + pseudo-class), `StyleRule` (selector + property →
+    `StyleValue`), `StyleSheet` (rule vector + named
+    `KeyframeAnimation` declarations). Reuse the cascade comparator
+    (`StyleRule::beats()`, `Layout.h:250`). The keyframe shape:
+
+        struct KeyframeAnimation {
+            OmegaCommon::String                              name;
+            OmegaCommon::Vector<KeyframeAnimationProperty>   properties;
+            Composition::TimingOptions                       defaultTiming;
+        };
+        struct KeyframeAnimationProperty {
+            PropertyKey                                  key;
+            Composition::KeyframeTrack<AnimatedValue>    track;
+        };
+
+    Sheets are immutable-once-installed (per §0.3 #1); mutating a
+    sheet produces a new handle.
+
+  - **D6.2 — `AppWindow::styleSheets()` stack** + addition / removal
+    API. `SharedHandle<StyleSheet>` so sheets are shareable across
+    windows. The cascade walks the stack top-to-bottom.
+
+  - **D6.3 — `StyleResolver::resolve(node)`** runs the cascade across
+    the window's stack + layers inline `Style` over it + writes one
+    cell per property into the D5 per-property table. Lives inside
+    Phase 2 (Style) of `FrameBuilder`. Bottom of the stack is the UA
+    default sheet (D7.5).
+
+  - **D6.4 — Pseudo-class state.** `:hover` / `:pressed` / `:focused`
+    / `:disabled` as node state bits on `View`. The input layer flips
+    them and sets `DirtyBit::Style`. Resolver consults them during
+    selector match.
+
+  - **D6.5 — Transition + keyframe-binding *recording* (no driving
+    yet).** When a rule carries `transition:` or `animation:`
+    metadata, the resolver records the binding on the node but does
+    not yet call the scheduler. D7 wires the firing.
+
+- **D7 — Style Tier 3 + Anim Tier D: themes, transitions, keyframes,
+  custom states.**
+
+  - **D7.1 — `ThemeVars`** on `Application`. `StyleValue::Var(name)`
+    is resolved at cascade time. Theme swap propagates root-level
+    `DirtyBit::Style`. Variables are shareable across `AppWindow`s
+    the same way sheets are.
+
+  - **D7.2 — Transitions wired.** `StyleResolver` caches the
+    previous-frame resolved value per `(NodeId, PropertyKey)`. On
+    change *with a transition recorded* (D6.5), the resolver calls
+    `scheduler.transition(nodeId, key, prev, next, spec)` via the
+    `friend` hook (Animation-Scheduler-Plan §3.7). Scheduler
+    retargets in place if a transition is already active for that
+    `(node, key)`.
+
+  - **D7.3 — Keyframe animations wired.** When a keyframe binding
+    becomes active on a node (a rule with `animation: <name>`
+    matches), the resolver looks up the named `KeyframeAnimation` on
+    the originating sheet and calls
+    `scheduler.animateProperty<T>(node, key, track, timing)` per
+    property. When the binding stops matching, the resolver cancels
+    the returned handle. Re-application with the same `(node, name)`
+    is a no-op (preserves running animation); a different `name` on
+    the same `(node, key)` replaces. This is the parallel to D7.2 for
+    explicitly authored animations.
+
+  - **D7.4 — `:state(name)` custom pseudo-class.** Nodes carry a
+    `Set<String>` of custom states; set/clear dirties `Style`.
+
+  - **D7.5 — User-agent default stylesheet.** Built-in `StyleSheet`
+    for `Button` / `Label` / `Icon` / `Image` / `Rectangle` /
+    `RoundedRectangle` / `Ellipse` / `Path` / `Separator` etc., sat
+    at the bottom of every `AppWindow`'s stack. Widget subclasses
+    stop authoring inline visual defaults in `rebuildContent()` —
+    they author only model-state-dependent overrides.
+
+- **D8 — Final cleanup (Anim Tier E + residuals).** Audit
+  `Composition/Animation.h` for residual `LayerAnimator` /
+  `ViewAnimator` / `LayerClip` / `ViewClip` /
+  `AnimationRuntimeRegistry` forward decls or `friend` declarations
+  and remove them. Delete `UIView::Impl::{lastAnimationDiagnostics,
+  lastObservedDroppedPacketCount, hasObservedLaneDiagnostics}`
+  (likely already gone per render-redesign §0 — verify in D0).
+  Delete `Widget::flushPendingPaint` if D1's inlining left it
+  callerless. Update `API.rst` per Animation-Scheduler-Plan Tier E
+  §5: replace the `LayerClip` / `ViewClip` / `LayerAnimator` /
+  `ViewAnimator` sections with one `AnimationScheduler` section, fix
+  the §1025 / §1035 cross-references, add a `StyleSheet` /
+  `StyleResolver` / `ThemeVars` section.
+
+#### D9. Dependency / shipping order
+
+- **D1, D2 ship together** — Block 2 closeout. Smallest change, no
+  observable behavior shift (asserts already prove the deletions are
+  unreachable).
+- **D3, D4, D5 ship as one unit** — animation convergence. Intermediate
+  states (e.g. D4 done but D5 not) leave the resolved-style cache
+  keyed by tag while the scheduler is keyed by NodeId; awkward and
+  short-lived.
+- **D6 ships alone** — Style Tier 2 is substantive new subsystem code.
+- **D7 ships alone** — transitions + keyframe lifecycles want focused
+  retargeting / cancellation tests.
+- **D8 is cleanup** — runs after D7 lands cleanly.
+
+D0 is doc-only and gates everything else.
+
+**Risk:** Medium-High overall (down from the original High, up from
+§0.2's Medium — D6's selector + cascade is the biggest single subsystem
+this plan introduces, and the property-grained D5 rekey is wider than
+the aggregate-cache alternative the prior wording assumed).
+
+| Sub-phase | Risk | Why |
+|---|---|---|
+| D0 | None | Doc-only. |
+| D1, D2 | Low | Dead-code deletion; B5 asserts already prove unreachable. |
+| D3 | Low | Mechanical substitution. |
+| D4 | Medium | The `(tag, key)` `to`-match short-circuit must be preserved exactly — apps re-issuing animations on every layout pass depend on "same target = no restart." |
+| D5 | Medium | Wider than an aggregate rekey: every Paint site that read `computedStyleFor(tag).<field>` becomes a per-property `resolved(n,k,fallback)` lookup. Behavior-preserving but mechanically broad. |
+| D6 | **Medium-High** | New selector matcher + cascade rules + keyframe declaration shape. Specificity ties, inherited properties, keyframe-track type erasure are the edge-case cluster. Heavy unit-test coverage on `StyleResolver` is the mitigation. |
+| D7 | Medium | Transition retargeting is the standard CSS edge case. Keyframe binding lifecycle (matches → fires; un-matches → cancels; re-matches with same name → no-op) is a parallel edge-case cluster. |
+| D8 | Low | Final symbol cleanup + doc. |
+
+**Files touched (cumulative across D1–D8):** `Widget.h`,
+`Widget.Paint.cpp`, `WidgetImpl.h`, `View.h`, `View.Core.cpp`,
+`WidgetTreeHost.h`, `WidgetTreeHost.cpp`, `UIView.h`,
+`UIView.Core.cpp`, `UIView.Style.cpp`, `UIView.Update.cpp`,
+`UIView.Animation.cpp`, `UIView.Layout.cpp`, `UIViewImpl.h`,
+`AnimationScheduler.h`, `AnimationScheduler.cpp` (the `friend`
+`transition()` / `animateProperty<KeyframeTrack>` hooks),
+`AppWindow.h`, `AppWindow.cpp`, `Application.h`, `Application.cpp`,
+new `StyleSheet.{h,cpp}`, new `StyleResolver.{h,cpp}`, new
+`Selector.{h,cpp}`, new `ThemeVars.{h,cpp}`, every widget subclass
+(`Primatives.cpp`, `BasicWidgets.cpp`, `Containers.cpp` —
+`rebuildContent()` shrinks once D7.5 lands the UA sheet), `API.rst`.
 
 ---
 
@@ -1371,47 +1647,72 @@ Status snapshot 2026-05-31 — partial; details in §0.2.
 - [ ] Fold / delete `WidgetTreeHost::invalidateWidgetRecurse()`.
   *(Still alive at `WidgetTreeHost.cpp:277`.)*
 
-### Block 3 — Style Tier 2 (after B2; independent of Block 2)
+### ~~Block 3 — Style Tier 2~~ (retired 2026-06-01; folded into Block 4 as D6)
 
-- [ ] Global selector-matched `StyleSheet` + `Selector` (Tier-1
-  single-compound) + `StyleRule` cascade (reuse `beats()`).
-- [ ] `StyleResolver::resolve(node)` in the Style phase, writing
-  `ComputedStyle`. Paint reads `ComputedStyle` (one-site switch).
-- [ ] `Application::styleSheets()` global stack.
-- [ ] Pseudo-classes `:hover` / `:pressed` / `:focused` / `:disabled` as
-  node state bits flipping `DirtyBit::Style`.
-- [ ] Transitions *recorded* (driven in Block 4).
+The 2026-06-01 Tier D scoping pass (§0.3) folds Style Tier 2 into
+Tier D as **D6**. Style Tier 3 requires Tier 2; Tier D requires
+Style Tier 3 to make `scheduler.transition(...)` real; so the prior
+"Block 3 ships independently of Block 4" path stops making sense.
+The bullets that used to live here are now D6.1–D6.5 in §5 Tier D.
 
-### Block 4 — Tier D convergence: AnimationScheduler + Style Tier 3
+### Block 4 — Tier D convergence: cleanup + animation + style cascade
 
 Render Redesign **Tier 4** is the spine; Lifecycle **Tier D**, Style
-**Tier 3**, and Animation-Scheduler **Tiers A–E** all land inside it.
-**`SceneNode` adoption was dropped 2026-05-31** (see §0.2) — `View` is
-the node type and the phase virtuals already live on it; the
-SceneNode / `Widget`-folding bullets are withdrawn from this block.
+**Tiers 2 + 3**, and Animation-Scheduler **Tiers A–E** all land inside it.
+**`SceneNode` adoption was dropped 2026-05-31** (see §0.2). The 2026-06-01
+pass adds a nine-sub-phase breakdown (§5 Tier D) and folds Style Tier 2
+in here as **D6**.
+
+Already-landed prerequisites:
 
 - [x] Render 4.x — phase virtuals on `View` (4.7.0 / 4.7.2);
   `UIView::update()` retired as the monolith (split across the new
   phase methods, B3); per-view `Canvas` / `LayerTree` deleted (4.8);
   `VisualCommand` → `DrawOp` collapse in the backend tracked
   separately by the render plan.
-- [ ] Lifecycle Tier D — finish Block 2's `executePaint` /
-  `PaintOptions` / reentrancy-guard deletions and the residual
-  session-shim removals (`submitPaintFrame`, `WidgetTreeHost::paintDirty`
-  fold-in). Phase assertions are already the active reentrancy guard
-  (B5).
-- [ ] Anim 4.3 (Tier A) — `AnimationScheduler` lands alongside the old
-  animator; FrameBuilder Phase 1 calls `scheduler.tick()`.
-- [ ] Anim 4.4 (Tiers B+C) — migrate `View` / `UIView` animation onto the
-  scheduler; Paint reads the `(NodeId, PropertyKey)` side table;
-  `ComputedStyle` re-keys tag→NodeId (reusing the existing
-  `View::nodeId()`).
-- [ ] Style Tier 3 — themes / `ThemeVars`; transitions wired to the
-  scheduler (`StyleResolver` friend `transition()`); custom states;
-  user-agent default sheet.
-- [ ] Anim 4.8 (Tier E) — delete `LayerAnimator` / `ViewAnimator` /
-  `LayerClip` / `ViewClip` / `AnimationRuntimeRegistry`;
-  `advanceAnimations`.
+- [x] Anim Tier A — `AnimationScheduler` lands at
+  `wtk/src/UI/AnimationScheduler.{h,cpp}`; `FrameBuilder::beginFrame`
+  calls `scheduler.tick()` once per outermost frame. (Render
+  Phase 4.3 — verified in tree 2026-06-01.)
+- [x] Anim Tier C scaffolding — `View::nodeId()` (Phase 4.4) and
+  `UIView::Impl::{elementNodeIds_, animationTargets_}`
+  (`UIViewImpl.h:167, 173`) populated. Routing through the scheduler
+  is partial; D4 finishes it.
+- [x] Anim Tier E partial — `ViewAnimator` / `LayerAnimator` /
+  `LayerClip` / `ViewClip` deleted (codedb returns no symbol). D8
+  finishes the residual header cleanup.
+
+Pending (one entry per Tier-D sub-phase from §5):
+
+- [ ] **D0** — doc-only reconciliation pass: rewrite this list against
+  tree truth; verify ambiguous Phase-4.4 routing status for
+  `startOrUpdateAnimation` / `applyLayoutDelta`.
+- [ ] **D1** — delete `executePaint`, `Widget::Impl` reentrancy state,
+  warmup/coalesce `PaintOptions` fields; `invalidateNow()` becomes
+  the lone `[[deprecated]]` sync hatch.
+- [ ] **D2** — delete `View::submitPaintFrame(int)`,
+  `WidgetTreeHost::invalidateWidgetRecurse`, and the four no-op
+  `WidgetTreeHost` recurse shims. `paintDirty()` stays (§0.3 #4).
+- [ ] **D3** — Anim Tier B: route `View::applyLayoutDelta` /
+  `UIView::applyLayoutDelta` through `scheduler.tweenProperty<float>`.
+- [ ] **D4** — Anim Tier C: `startOrUpdateAnimation` → scheduler shim;
+  delete `advanceAnimations` / `PropertyAnimationState` /
+  `PathNodeAnimationState` / `EffectAnimationKey*`.
+- [ ] **D5** — split `computedStyles_` per-property into
+  `Map<(NodeId, PropertyKey, subIndex), TypedValue>`; Paint reads
+  via a uniform `resolved(n,k,fallback)` helper that chains
+  scheduler → style table → UA default.
+- [ ] **D6** — Style Tier 2: `StyleSheet` (with named keyframe
+  declarations) + `Selector` + `StyleRule` + `AppWindow::styleSheets()`
+  shared stack + `StyleResolver::resolve(node)` in Phase 2 + pseudo-
+  class state bits + transition/keyframe binding *recording*.
+- [ ] **D7** — Style Tier 3 + Anim Tier D: `ThemeVars`; transitions
+  wired to `scheduler.transition(...)` with retargeting; keyframe
+  animations wired to `scheduler.animateProperty<T>(track, timing)`
+  with bind/unbind lifecycle; `:state(name)`; UA default sheet.
+- [ ] **D8** — final Anim Tier E + residual cleanup: strip dead anim
+  forward decls, delete `flushPendingPaint` if D1 left it
+  callerless, update `API.rst`.
 
 ### Block 5 — WML front-end (last)
 
