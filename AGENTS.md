@@ -116,5 +116,5 @@ The region is in screen coordinates, so calibrate after the app has loaded once.
 - Code Comments (Doxygen):
     Use accurate, technical language to describe the code details fully and correctly.
 - User Guides (Sphinx docs) and README's:
-    Use long-form prose that is clear and can be understood by someone with little to no technical experience. (The guides should be easy to follow and be able to explain how the code works without getting too technical.)
+    Use long-form prose that is clear and can be understood by someone who doesn't understand our code. We need our users to be able to understand the API they're going to use.
     Be sure to double check actual code examples so that any written code samples are accurate to the real API.
