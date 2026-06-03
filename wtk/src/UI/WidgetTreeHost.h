@@ -114,9 +114,11 @@ namespace OmegaWTK {
         /// Per-window surface mailbox (Phase A). Created by AppWindow.
         SharedHandle<Composition::CompositorSurface> windowSurface_;
         /// Tier 3 Phase 3.8: the window's frame driver, set by AppWindow
-        /// after construction. Widget::executePaint brackets each paint
-        /// with a FrameBuilder::ScopedFrame so every UIView::update /
-        /// SVGView::paint submits into the one window-scoped frame.
+        /// after construction. Pre-D1 `Widget::executePaint` opened a
+        /// `FrameBuilder::ScopedFrame` per immediate paint; Tier D / D1
+        /// (2026-06-03) deleted executePaint, so the only ScopedFrame
+        /// brackets today live on `AppWindow::flushFrame` (deferred path)
+        /// and `WidgetTreeHost::paintDirty` (immediate path).
         FrameBuilder * frameBuilder_ = nullptr;
         /// Widget-View-Paint-Lifecycle-Plan Tier A: owning window, set
         /// by AppWindow alongside the frame builder. requestFrame()
@@ -134,18 +136,21 @@ namespace OmegaWTK {
         friend class NativeViewHost;
         // Tier 3 Phase 3.1: FrameBuilder reads compPtr()/laneId() to
         // wire the window-level proxy at beginFrame, same access
-        // pattern Widget::executePaint already uses.
+        // pattern `Widget::invalidate` / `Widget::invalidateNow` use
+        // after Tier D / D1 retired `Widget::executePaint`.
         friend class FrameBuilder;
 
         void initWidgetRecurse(Widget *parent);
         void propagateWindowRenderTargetRecurse(Widget *parent);
-        void observeWidgetLayerTreesRecurse(Widget *parent);
-        void unobserveWidgetLayerTreesRecurse(Widget *parent);
-        void invalidateWidgetRecurse(Widget *parent,PaintReason reason,bool immediate);
-        /// Widget-View-Paint-Lifecycle-Plan Tier A: pre-order walk that
-        /// repaints widgets whose view has the Paint dirty bit set.
-        void paintDirtyRecurse(Widget *parent);
-        void beginResizeCoordinatorSessionRecurse(Widget *parent,std::uint64_t sessionId);
+        // Widget-View-Paint-Lifecycle-Plan Tier D / D2 (2026-06-03):
+        // five Phase-4.7/4.8 no-op / zero-caller shims removed —
+        // `observeWidgetLayerTreesRecurse`,
+        // `unobserveWidgetLayerTreesRecurse`,
+        // `invalidateWidgetRecurse`, `paintDirtyRecurse`,
+        // `beginResizeCoordinatorSessionRecurse`. The window-level
+        // FrameBuilder walk (entered via `paintDirty()` which lives
+        // on) handles every paint dispatch the per-widget walks used
+        // to chain through.
         void applyResizeGovernorMetadata(const Composition::ResizeGovernorMetadata & metadata);
         bool detectAnimatedTreeRecurse(Widget *parent) const;
         // True iff any widget in the subtree has

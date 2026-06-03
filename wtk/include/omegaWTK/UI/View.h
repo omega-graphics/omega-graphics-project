@@ -304,12 +304,6 @@ namespace OmegaWTK {
         /// stable for the View's lifetime, never reused.
         std::uint64_t nodeId() const;
 
-        /// Called by Widget::executePaint after onPaint. A no-op since
-        /// Phase 3.8 collapsed per-view canvases: UIView / SVGView submit
-        /// their DisplayList through the window-level FrameBuilder during
-        /// paint, so there is no per-view frame left to send here.
-        virtual void submitPaintFrame(int submissions) { (void)submissions; }
-
         /// Phase 4.7.0: the polymorphic Paint-pass hook. Per-node:
         /// emits THIS view's draw ops into `pc.displayList` and reads
         /// `pc.offset` for absolute window positioning. Does NOT recurse

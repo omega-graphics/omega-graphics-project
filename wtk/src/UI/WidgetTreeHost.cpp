@@ -224,9 +224,10 @@ namespace OmegaWTK {
     };
 
     WidgetTreeHost::~WidgetTreeHost(){
-        if(compositor != nullptr && root != nullptr){
-            unobserveWidgetLayerTreesRecurse(root.get());
-        }
+        // Widget-View-Paint-Lifecycle-Plan Tier D / D2 (2026-06-03):
+        // the pre-4.8 `unobserveWidgetLayerTreesRecurse(root.get())`
+        // call is gone (per-view LayerTree observation retired in
+        // Phase 4.8; the method body was a no-op pending this sweep).
         compositor = nullptr;
     };
 
@@ -255,51 +256,29 @@ namespace OmegaWTK {
         }
     }
 
-    void WidgetTreeHost::observeWidgetLayerTreesRecurse(Widget *parent){
-        // Phase 4.8: per-view `LayerTree`s are gone. The window-level
-        // `AppWindow::Impl::windowLayerTree_` is observed by the
-        // compositor at `displayRootWindow` (AppWindow.cpp:151-155),
-        // which is the only observation the post-4.7 paint pipeline
-        // needs — every UIView's DisplayList ends up in that one tree
-        // via the FrameBuilder buildFrame walk. Body neutered to a
-        // no-op; the declaration + 3 call sites
-        // (~WidgetTreeHost, initWidgetTree, setRoot) stay for source
-        // compat and are retired in Phase I.
-        (void)parent;
-    }
-
-    void WidgetTreeHost::unobserveWidgetLayerTreesRecurse(Widget *parent){
-        // Phase 4.8: per-view tree observation is gone (see
-        // `observeWidgetLayerTreesRecurse` above). No-op.
-        (void)parent;
-    }
-
-    void WidgetTreeHost::invalidateWidgetRecurse(Widget *parent,
-                                                 PaintReason reason,
-                                                 bool immediate){
-        if(parent == nullptr){
-            return;
-        }
-        // Phase 4.7.5: the FrameBuilder offset accumulator push is
-        // gone (`FrameBuilder::buildFrame` threads
-        // `PaintContext.offset` itself). The per-widget executePaint
-        // call below marks the widget's dirty bits + runs
-        // `paintDirty()` (when `immediate`), each of which goes
-        // through `FrameBuilder::buildFrame`.
-        if(parent->paintMode() == PaintMode::Automatic){
-            // Tier A (Widget-View-Paint-Lifecycle): the resize walk
-            // paints synchronously inside the caller's FrameBuilder
-            // ScopedFrame (dispatchResize*ToHosts). Deferring here
-            // would push the repaint to a later frame, after this
-            // resize pass's frame already closed. Calls executePaint
-            // directly (friend access) rather than the now-deferred
-            // public invalidate().
-            parent->executePaint(reason,immediate);
-        }
-        for(const auto & child : parent->childWidgets()){
-            invalidateWidgetRecurse(child.get(),reason,immediate);
-        }
-    }
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D2 (2026-06-03):
+    // five Phase-4.7 / 4.8 no-op or zero-caller shims were removed
+    // here in one sweep:
+    //   * `observeWidgetLayerTreesRecurse` /
+    //     `unobserveWidgetLayerTreesRecurse` — per-view LayerTree
+    //     observation is gone (Phase 4.8 collapsed everything onto
+    //     `AppWindow::Impl::windowLayerTree_`). The four call sites
+    //     in `~WidgetTreeHost`, `initWidgetTree`, `setRoot` (×2) are
+    //     dropped with the method bodies.
+    //   * `invalidateWidgetRecurse` — never had any external caller
+    //     after D0 verified (the resize path the D-tier wording
+    //     guessed at had already been refactored away). D1 inlined
+    //     its `Widget::executePaint` call transitionally; D2 finishes
+    //     the symbol.
+    //   * `paintDirtyRecurse` — vestigial since Phase 4.7.4; the
+    //     central `FrameBuilder::buildFrame` walk runs from
+    //     `paintDirty()` instead.
+    //   * `beginResizeCoordinatorSessionRecurse` — Phase 4.5 retired
+    //     the per-view `ViewResizeCoordinator` session state; the
+    //     last call site was removed alongside that work, so this is
+    //     pure dead code today.
+    // `paintDirty()` (§0.3 #4) and the new D1 inlined `Widget`
+    // entry points carry the full paint dispatch surface.
 
     void WidgetTreeHost::requestFrame(){
         if(ownerWindow_ != nullptr){
@@ -315,9 +294,10 @@ namespace OmegaWTK {
         // `submitView`). buildFrame runs the dirty-bit-gated
         // Style / Layout / Paint passes (Phase 4.7.3) over the View
         // tree and submits one aggregated DisplayList per frame.
-        // The pre-walked-widgets path is gone; `flushPendingPaint`
-        // is therefore unused but kept until Phase I cleanup
-        // since it has no callers but no harm either.
+        // Tier D / D1 (2026-06-03): `Widget::executePaint` and
+        // `Widget::flushPendingPaint` have now been deleted (D1
+        // didn't restore any caller of them — `paintDirtyRecurse`
+        // remains a no-op shim awaiting D2's sweep).
         if(root == nullptr || root->view == nullptr){
             return;
         }
@@ -329,23 +309,9 @@ namespace OmegaWTK {
         fb->buildFrame(*root->view);
     }
 
-    void WidgetTreeHost::paintDirtyRecurse(Widget *parent){
-        // Phase 4.7.4: vestigial — `paintDirty` no longer walks the
-        // widget tree (the central `FrameBuilder::buildFrame` does the
-        // work). Body kept as a no-op so the declaration / build
-        // wiring stays unbroken until Phase I deletes the symbol.
-        (void)parent;
-    }
-
-    void WidgetTreeHost::beginResizeCoordinatorSessionRecurse(Widget * /*parent*/, std::uint64_t /*sessionId*/){
-        // Phase 4.5: the per-view `ViewResizeCoordinator` session state
-        // (which only the dead `ChildResizePolicy::Proportional` baseline
-        // tracking ever read) is gone. Body retained as a no-op so the
-        // call site in `notifyWindowResizeBegin` doesn't need to learn
-        // about resize semantics that no longer exist. The declaration
-        // itself can be removed in a future cleanup once it's clear
-        // nothing else hooks in.
-    }
+    // `paintDirtyRecurse` and `beginResizeCoordinatorSessionRecurse`
+    // deleted in the Tier D / D2 sweep — see the explanatory block
+    // above the relocated `requestFrame()` definition.
 
     bool WidgetTreeHost::detectAnimatedTreeRecurse(Widget *parent) const{
         if(parent == nullptr){
@@ -427,12 +393,14 @@ namespace OmegaWTK {
 
     void WidgetTreeHost::initWidgetTree(){
         // Phase 3: propagate the window's shared render target to all
-        // Views before observing layer trees or initializing widgets,
-        // so that compositor wiring uses the correct (shared) target.
+        // Views before initializing widgets, so that compositor wiring
+        // uses the correct (shared) target. Tier D / D2 (2026-06-03)
+        // dropped the `observeWidgetLayerTreesRecurse(root.get())` call
+        // that used to live here — per-view LayerTree observation is
+        // gone (Phase 4.8).
         if(windowRenderTarget_ != nullptr){
             propagateWindowRenderTargetRecurse(root.get());
         }
-        observeWidgetLayerTreesRecurse(root.get());
         root->setTreeHostRecurse(this);
         // Tier 4 (first-paint stale-layout fix): size the tree to the
         // window *before* the initial paint walk. Without this, the root's
@@ -652,15 +620,16 @@ namespace OmegaWTK {
     };
 
     void WidgetTreeHost::setRoot(WidgetPtr widget){
+        // Widget-View-Paint-Lifecycle-Plan Tier D / D2 (2026-06-03):
+        // the pre-4.8 observe/unobserve bracket around the assignment
+        // is gone — per-view LayerTree observation retired in Phase 4.8,
+        // and the methods themselves were deleted alongside this call
+        // site. The compositor short-circuit (`compositor != nullptr`)
+        // is no longer needed because nothing happens conditionally on
+        // it anymore.
         if(root == widget){
             return;
         }
-        if(root != nullptr && compositor != nullptr){
-            unobserveWidgetLayerTreesRecurse(root.get());
-        }
         root = widget;
-        if(root != nullptr && compositor != nullptr){
-            observeWidgetLayerTreesRecurse(root.get());
-        }
     };
 };

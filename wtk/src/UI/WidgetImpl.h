@@ -89,15 +89,13 @@ inline void geometryTraceLog(const char * phase,
 struct Widget::Impl {
     bool initialDrawComplete = false;
     bool hasMounted = false;
-    bool paintInProgress = false;
-    bool hasPendingInvalidate = false;
-    PaintReason pendingPaintReason = PaintReason::StateChanged;
-    /// Widget-View-Paint-Lifecycle-Plan Tier A: the reason carried by
-    /// the most recent deferred invalidate(), replayed when the window
-    /// frame flush calls flushPendingPaint(). Separate from
-    /// pendingPaintReason (which belongs to executePaint's in-paint
-    /// coalesce loop) so deferral and in-paint coalescing don't alias.
-    PaintReason deferredReason = PaintReason::StateChanged;
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D1 (2026-06-03):
+    // the legacy reentrancy/coalesce/deferred-reason fields are
+    // gone — `executePaint` and `flushPendingPaint` were the only
+    // readers, and both are deleted. The Tier-A deferred path
+    // (`invalidate()` → `requestFrame()` → `paintDirty()`) is now
+    // stateless on the Widget side; dirty bits live entirely on the
+    // backing View.
     PaintMode mode = PaintMode::Automatic;
     PaintOptions options {};
 

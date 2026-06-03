@@ -55,9 +55,6 @@ struct GeometryProposal {
 };
 
 struct PaintOptions {
-    bool autoWarmupOnInitialPaint = true;
-    uint8_t warmupFrameCount = 2;
-    bool coalesceInvalidates = true;
     // Default is opt-out: widgets do NOT re-paint when the window
     // resizes. The AppWindow's native item + render target still
     // resize unconditionally (AppWindowDelegate::syncNativePresentLayer
@@ -66,6 +63,13 @@ struct PaintOptions {
     // on logical-size-driven repaint (text reflow, responsive layout,
     // content-rect-dependent paint output) set this to true
     // explicitly via setPaintOptions / their PaintOptions ctor.
+    //
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D1 (2026-06-03):
+    // the legacy `autoWarmupOnInitialPaint`, `warmupFrameCount`, and
+    // `coalesceInvalidates` fields are gone. Shaders are pre-compiled
+    // (no warmup needed) and coalescing is the always-on Tier A
+    // behavior driven by the run-loop primitive, not a per-widget
+    // toggle.
     bool invalidateOnResize = false;
 };
 
@@ -106,13 +110,6 @@ private:
     Core::UniquePtr<Impl> impl_;
 
     void onThemeSetRecurse(Native::ThemeDesc &desc);
-    void executePaint(PaintReason reason,bool immediate);
-    /// Widget-View-Paint-Lifecycle-Plan Tier A: run the deferred paint
-    /// scheduled by `invalidate()`. Called by WidgetTreeHost::paintDirty
-    /// during the window frame flush. Clears the view's dirty bits
-    /// before painting (Chromium model: needs_paint_ cleared at entry)
-    /// so a re-invalidation during onPaint survives for the next frame.
-    void flushPendingPaint();
     void handleHostResize(const Composition::Rect & rect);
 
     using Native::NativeThemeObserver::onThemeSet;

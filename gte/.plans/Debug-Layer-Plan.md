@@ -208,9 +208,18 @@ by need.
 - **`MTLCommandBufferDescriptor.errorOptions =
   .encoderExecutionStatus`** for per-encoder GPU error attribution.
   Cheap; can ride along with the debug-layer flag.
-- **`addCompletedHandler` failure inspection** on every command buffer
-  when the debug layer is on. Pull `commandBuffer.error` and route into
-  `DEBUG_ERROR(QUEUE, …)` from §4 once that lands.
+- **`addCompletedHandler` failure inspection** on every command buffer.
+  Pull `commandBuffer.error` and route into `DEBUG_ERROR(QUEUE, …)`
+  from §4 once that lands. This is the canonical engine-side error
+  surface (not Critical — GPU execution failures are engine-reported,
+  not caller-contract violations; see §4 policy). The existing raw
+  `NSLog` in `GEMetalCommandQueue.mm:1170` is the prototype and
+  migrates here. **The error report should fire even with the debug
+  layer off** for the subset that indicates caller misuse the GPU
+  caught (resource-residency faults, etc.) — those upgrade to
+  `DEBUG_CRITICAL(QUEUE, …)` when the `MTLCommandBufferError` code
+  identifies them. The taxonomy split between Critical and Error here
+  is the §4.3 Critical-audit's responsibility, not §3.1's.
 
 ### Verification (v1)
 
@@ -244,29 +253,95 @@ by need.
    destructor), `OmegaGTE.cpp`/`GTEDevice.h` (the `captureOnInit` /
    `captureFilePath` plumbing), and `gte/docs/Metal-Debug.md`.
 6. Future: Metal §3.1 items, in any order driven by need.
-7. §4 engine-side resource logging — independent of §2/§3 and can
+7. ✅ Interim Metal NSLog sweep (2026-06-03). Per-frame command-buffer
+   `NSLog`s in `src/metal/GEMetalCommandQueue.mm` routed through a
+   new `GTE_NSLOG` macro gated on `isDebugLayerEnabled()`. Three
+   sites left raw as Critical-class prototypes for §4: buffer role
+   mismatch (L50), GPU command-buffer execution error (L1170),
+   empty-present (L1302). `GTE_NSLOG` retires when §4 lands; the
+   three raw sites migrate to `DEBUG_CRITICAL` (L50, L1302) and
+   `DEBUG_ERROR(QUEUE, …)` (L1170 — engine reports GPU failure, not
+   caller violation).
+8. §4 engine-side API logging — independent of §2/§3 and can
    interleave with them. Order within §4:
    a. §4.4 first — unify `ResourceTracking::Tracker` gating with
-      `isDebugLayerEnabled()`. One small PR; zero behavior change
-      for existing tracker users since the env var stays as
-      override.
-   b. §4.5/§4.6 — add `DEBUG_LOG`/`DEBUG_INFO`/… macros and the
-      `GTEInitOptions::logLevel`/`logDomains` fields.
+      `isDebugLayerEnabled()` (Critical-bypass carve-out included).
+      One small PR; zero behavior change for existing tracker users
+      since the env var stays as override.
+   b. §4.5/§4.6 — add `DEBUG_LOG`/`DEBUG_CRITICAL`/`DEBUG_INFO`/…
+      macros and the `GTEInitOptions::logLevel`/`logDomains` fields.
+      `DEBUG_CRITICAL` ships in this PR so subsequent §4.3 backfill
+      can use it immediately.
    c. §4.3 — backfill D3D12 and Vulkan tracker call sites + add
-      `DEBUG_LOG` lines next to every tracker emit. This is the
-      bulk-edit pass; ride it backend-by-backend.
-   d. PIPELINE/SHADER/MEMORY/ASSET text coverage. Smallest pieces
+      `DEBUG_LOG` / `DEBUG_CRITICAL` lines next to every tracker
+      emit and every spec-validation check. This is the bulk-edit
+      pass; ride it backend-by-backend, **starting with Metal** since
+      the existing `GTE_NSLOG` and three raw-`NSLog` Critical
+      prototypes are the migration anchor. Order within Metal:
+      lift the three raw sites to `DEBUG_CRITICAL`/`DEBUG_ERROR`
+      first, then rewrite the `GTE_NSLOG` sites to the typed macros,
+      then retire `GTE_NSLOG`.
+   d. Encoding-API spec checks across all backends (the per-bind /
+      per-pass / per-draw Critical rows from §4.3). Each backend
+      already has the validation code paths inline (Metal's
+      `checkBufferRoleAgainstShader` etc.); this step swaps their
+      reporting from `assert`/`NSLog` to `DEBUG_CRITICAL`.
+   e. PIPELINE/SHADER/MEMORY/ASSET text coverage. Smallest pieces
       last, drop in opportunistically.
 
-## 4. Engine-side resource logging
+## 4. Engine-side API logging
 
 Native validation (D3D12 debug layer, Vulkan `VK_LAYER_KHRONOS_validation`)
 tells you when the GPU API was misused. It does *not* tell you what
 OmegaGTE is doing on its caller's behalf — what got created, what got
-freed, why an allocation failed, what fence the queue is waiting on.
-Today the engine logs a handful of failures via `DEBUG_STREAM` (mostly
-error-on-failure) and nothing on success. When a user reports
-"my texture is black", we have no log trace to walk.
+freed, why an allocation failed, what fence the queue is waiting on,
+whether the caller bound a uniform buffer to a storage slot, whether
+they tried to draw without an active render pass. Today the engine logs
+a handful of failures via `DEBUG_STREAM` (mostly error-on-failure) and
+nothing on success. When a user reports "my texture is black", we have
+no log trace to walk.
+
+Scope expands here from the original "resource lifecycle" framing: this
+section now covers the **whole public OmegaGTE API** — device-side
+factories, command-buffer encoding, queue/sync, swapchain/drawable,
+shader/pipeline compile, asset load — not just `make*` + `~*` pairs.
+
+### Logging policy: gated vs. always-on
+
+Two log classes, distinguished by *who* the log accuses:
+
+1. **Engine-internal diagnostic.** "We allocated a 4 MiB heap." "Render
+   pass started." "Command buffer completed in 1.3ms." These describe
+   what the engine did. They're gated on `isDebugLayerEnabled()` — off
+   in release by default, on when the caller opts in. The whole
+   `DEBUG_LOG`/`DEBUG_INFO`/`DEBUG_TRACE` family (§4.5) sits in this
+   class.
+
+2. **Caller invalidated our spec.** "You bound a uniform<T> resource to
+   a storage<T> slot." "You called `present()` with no enqueued command
+   buffers." "Shader source failed to compile." "The PSO format
+   disagrees with the render target." These accuse the caller of
+   violating the API contract. They **must surface even when the debug
+   layer is off**, because a release build that silently ignores
+   misuse turns into a black-texture / silent-no-op bug report we
+   can't diagnose. New macro `DEBUG_CRITICAL(domain, message)`
+   (§4.5) bypasses the master gate.
+
+   Critical is **not** a synonym for "fatal" or "engine failed." GPU
+   driver errors, OOM after best-effort fallback, fence timeouts —
+   those are engine-side reports and stay gated as `ERROR`. Critical
+   is reserved for *caller-contract violations*: the API was used in a
+   way the documented contract forbids.
+
+   The Metal-side `GTE_NSLOG` macro that landed in
+   `src/metal/GEMetal.h` is the gated-side precedent — when §4 lands,
+   its Metal call sites are rewritten through `DEBUG_LOG`/
+   `DEBUG_CRITICAL` and `GTE_NSLOG` retires. The three raw `NSLog`
+   sites left untouched in `GEMetalCommandQueue.mm` (buffer role
+   mismatch L50, GPU CB execution error L1170, empty-present L1302)
+   are the Critical prototype — L50 and L1302 migrate to
+   `DEBUG_CRITICAL`, L1170 migrates to `DEBUG_ERROR(QUEUE, …)` (engine
+   reports GPU failure; not a caller violation).
 
 ### Existing infrastructure to fold in
 
@@ -299,9 +374,9 @@ is the bug §4 fixes: one debug toggle should govern both surfaces.
 ### 4.1. Decision points
 
 1. **One axis or two for filtering?** Options:
-   - **(a) Levels only** — `ERROR`, `INFO`, `TRACE`. Familiar from every
-     other logger. Easy to wire as a single integer threshold. Loses
-     the "show me only swapchain stuff" use case.
+   - **(a) Levels only** — `CRITICAL`, `ERROR`, `INFO`, `TRACE`.
+     Familiar from every other logger. Easy to wire as a single integer
+     threshold. Loses the "show me only swapchain stuff" use case.
    - **(b) Domains only** — `RESOURCE`, `PIPELINE`, `QUEUE`,
      `RENDERTGT`, `MEMORY`, `SHADER`. Bitmask of enabled domains.
      Great for focused debugging; awkward when you want "show me all
@@ -318,12 +393,16 @@ is the bug §4 fixes: one debug toggle should govern both surfaces.
 2. **What controls visibility?** Today: two parallel switches —
    `isDebugLayerEnabled()` gates `DEBUG_STREAM`, `OMEGAGTE_RESOURCE_TRACE`
    gates the tracker. Proposed: `isDebugLayerEnabled()` is the master
-   switch for both. Add `GTEInitOptions::logLevel`
-   (`Error|Info|Trace`, default `Info`) and
-   `GTEInitOptions::logDomains` (bitmask, default all). The
+   switch for both — **with one carve-out**: `CRITICAL`-level emits
+   bypass the master gate (see point 6 below). Add
+   `GTEInitOptions::logLevel` (`Critical|Error|Info|Trace`, default
+   `Info`) and `GTEInitOptions::logDomains` (bitmask, default all). The
    `OMEGAGTE_RESOURCE_TRACE` env var stays as a one-way override
    ("force on even if `Init()` didn't opt in") for post-mortem repro
-   — but the default path is the `GTEInitOptions` flag.
+   — but the default path is the `GTEInitOptions` flag. `logLevel` is
+   the **threshold for gated emits only**; Critical fires regardless of
+   the threshold (you cannot silence spec-violation reports through
+   `logLevel`).
 
 3. **Resource IDs — already solved.** The tracker's
    `Tracker::nextResourceId()` returns monotonic `uint64_t`s and is
@@ -355,6 +434,22 @@ is the bug §4 fixes: one debug toggle should govern both surfaces.
      opt-in *compile-time* under `OMEGAGTE_DEBUG_TRACE_HOT` so release
      builds don't even branch.
 
+6. **Critical bypasses the master gate.** Spec-violation reports
+   (caller-contract failures) must surface in release builds with the
+   debug layer off, because otherwise the symptom downstream — black
+   texture, dropped draw, silent allocation failure — has no diagnostic
+   trail. The same gate-bypass rule applies to `logLevel`: setting
+   `logLevel = Error` does *not* silence `Critical`. The only way to
+   suppress Critical is to fix the caller — that's the point.
+
+   Critical is held to a tight bar to keep it useful: each Critical
+   site is a documented API contract that the caller broke. Engine
+   diagnostics (allocation pressure, GPU-side failures, fallbacks the
+   engine took on the caller's behalf) are not Critical — those are
+   `ERROR`/`INFO` and gated normally. If you can't write a one-line
+   statement of which API contract the caller violated, it's not
+   Critical.
+
 ### 4.2. Taxonomy
 
 Domains (`DEBUG_DOMAIN_*` bits in a `uint32_t`):
@@ -372,47 +467,166 @@ Domains (`DEBUG_DOMAIN_*` bits in a `uint32_t`):
 
 Levels:
 
-| Level     | When to use |
-|-----------|-------------|
-| `ERROR`   | Operation failed; subsequent calls likely to misbehave. Existing failure-path `DEBUG_STREAM`s upgrade to this. |
-| `INFO`    | Significant lifecycle event — resource created/destroyed, queue committed, swapchain resized. One-shot or once-per-frame at most. |
-| `TRACE`   | Per-call internal detail — pipeline-state-cache hits/misses, descriptor-heap allocation, fence wait values. |
+| Level      | Gated? | When to use |
+|------------|--------|-------------|
+| `CRITICAL` | **No** — always emits | Caller violated a documented API contract. Resource bound to a slot of the wrong kind, encoding call made outside the required pass, present with no buffered work, shader source the caller supplied failed to compile, descriptor with out-of-range values. The accusation points at the caller, not the engine. |
+| `ERROR`    | Yes | Engine-side operation failed; subsequent calls likely to misbehave. GPU command-buffer execution error, allocation failure after fallback, fence wait timed out, driver rejected a pipeline. Existing failure-path `DEBUG_STREAM`s upgrade to this. |
+| `INFO`     | Yes | Significant lifecycle event — resource created/destroyed, queue committed, swapchain resized, render pass started/ended. One-shot or once-per-frame at most. |
+| `TRACE`    | Yes | Per-call internal detail — pipeline-state-cache hits/misses, descriptor-heap allocation, fence wait values, per-bind log. Subject to the §4.1.5 hot-path rule. |
 
 ### 4.3. Coverage table
 
-Two columns: whether the tracker already records a structured event
-for the site (Metal-only today), and what the text-emission layer
-should add. "Backfill D3D12/Vulkan" means: copy the Metal call
-pattern (`Tracker::instance().emit(EventType::…, Backend::…, …)`) into
-the matching D3D12/Vulkan site, then add the `DEBUG_LOG` line next to
-it.
+Four columns: level, domain, tracker event (whether the structured-event
+tracker already records this — Metal-only today for the existing
+sites), and new work. "Backfill D3D12/Vulkan" means: copy the Metal
+call pattern (`Tracker::instance().emit(EventType::…, Backend::…, …)`)
+into the matching D3D12/Vulkan site, then add the `DEBUG_LOG` line
+next to it. **Crit** rows use `DEBUG_CRITICAL` and emit regardless of
+the master gate (§4.1.6).
+
+The table is grouped by API surface so it's auditable against the
+public headers (`gte/include/omegaGTE/`).
+
+#### Device factory APIs (`GTEDevice::make*`)
 
 | Site | Level | Domain | Tracker event | New work |
 |------|-------|--------|---------------|----------|
-| `makeBuffer` | `INFO` | `RESOURCE` | `Create` (Metal ✓, D3D12/VK ✗) | Backfill D3D12/Vulkan + `DEBUG_INFO` line |
-| `makeTexture` | `INFO` | `RESOURCE` | `Create` (Metal ✓, D3D12/VK ✗) | Backfill D3D12/Vulkan + `DEBUG_INFO` line |
-| `makeHeap` | `INFO` | `RESOURCE` | not in tracker today | Add tracker event + `DEBUG_INFO` line |
-| `makeFence` | `INFO` | `RESOURCE` | not in tracker today | Add tracker event + `DEBUG_INFO` line |
-| `makeSamplerState` | `INFO` | `RESOURCE` | not in tracker today | Add tracker event + `DEBUG_INFO` line |
-| `allocateAccelerationStructure` | `INFO` | `RESOURCE` | not in tracker today | Add tracker event + `DEBUG_INFO` line |
-| `~GEBuffer` / `~GETexture` / etc. | `INFO` | `RESOURCE` | `Destroy` (Metal ✓, D3D12/VK ✗) | Backfill D3D12/Vulkan + `DEBUG_INFO` line |
-| Allocation failure paths | `ERROR` | `RESOURCE`/`MEMORY` | not in tracker (errors are not events today) | `DEBUG_ERROR` line only; existing `DEBUG_STREAM` calls upgrade in place |
-| `makeRenderPipelineState` / `makeComputePipelineState` | `INFO` | `PIPELINE` | out of scope for tracker | `DEBUG_INFO` line only |
-| Pipeline compile failure | `ERROR` | `PIPELINE` | out of scope | `DEBUG_ERROR` line only |
-| `makeCommandQueue` | `INFO` | `QUEUE` | `Create` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_INFO` line |
-| `commit` / `commitAndWait` | `TRACE` | `QUEUE` | `Submit` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_TRACE` line |
-| Command buffer completion | `TRACE` | `QUEUE` | `Complete` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_TRACE` line |
-| `makeNativeRenderTarget` | `INFO` | `RENDERTGT` | `Create` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_INFO` line |
-| Swapchain resize | `INFO` | `RENDERTGT` | `ResizeRebuild` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_INFO` line |
-| `present()` | `TRACE` | `RENDERTGT` | `Present` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_TRACE` line |
-| OmegaSL → backend shader compile | `TRACE` | `SHADER` | out of scope | `DEBUG_TRACE` line only |
-| Feature-rejection sentinel | `ERROR` | `SHADER` | out of scope | Upgrade existing `DEBUG_STREAM` to `DEBUG_ERROR` |
+| `makeBuffer` (success) | `INFO` | `RESOURCE` | `Create` (Metal ✓, D3D12/VK ✗) | Backfill D3D12/Vulkan + `DEBUG_INFO` |
+| `makeBuffer` — descriptor invalid (zero size, bad alignment, unsupported usage) | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` |
+| `makeBuffer` — allocation failure (after fallback) | `ERROR` | `MEMORY` | n/a | `DEBUG_ERROR` |
+| `makeTexture` (success) | `INFO` | `RESOURCE` | `Create` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_INFO` |
+| `makeTexture` — descriptor invalid (zero extent, format unsupported on device, mip/array count out of range) | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` |
+| `makeTexture` — allocation failure | `ERROR` | `MEMORY` | n/a | `DEBUG_ERROR` |
+| `makeHeap` (success) | `INFO` | `RESOURCE` | add tracker event | Tracker + `DEBUG_INFO` |
+| `makeHeap` — descriptor invalid | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` |
+| `makeFence` | `INFO` | `RESOURCE` | add tracker event | Tracker + `DEBUG_INFO` |
+| `makeSamplerState` (success) | `INFO` | `RESOURCE` | add tracker event | Tracker + `DEBUG_INFO` |
+| `makeSamplerState` — descriptor invalid (anisotropy out of range, address mode unsupported) | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` |
+| `makeRenderPipelineState` (success) | `INFO` | `PIPELINE` | out of scope | `DEBUG_INFO` |
+| `makeRenderPipelineState` — shader stage missing, incompatible vertex layout, RT format mismatch with descriptor | **`CRITICAL`** | `PIPELINE` | n/a | `DEBUG_CRITICAL` |
+| `makeRenderPipelineState` — driver compile failure | `ERROR` | `PIPELINE` | n/a | `DEBUG_ERROR` |
+| `makeComputePipelineState` (success) | `INFO` | `PIPELINE` | out of scope | `DEBUG_INFO` |
+| `makeComputePipelineState` — kernel missing / threadgroup size unsupported | **`CRITICAL`** | `PIPELINE` | n/a | `DEBUG_CRITICAL` |
+| `makeBlitPipelineState` / `makeMeshPipelineState` (success) | `INFO` | `PIPELINE` | out of scope | `DEBUG_INFO` |
+| Mesh pipeline — mesh-shader feature not supported by device | **`CRITICAL`** | `PIPELINE` | n/a | `DEBUG_CRITICAL` |
+| `makeNativeRenderTarget` (success) | `INFO` | `RENDERTGT` | `Create` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_INFO` |
+| `makeNativeRenderTarget` — descriptor invalid (zero drawable size, format not supported by surface) | **`CRITICAL`** | `RENDERTGT` | n/a | `DEBUG_CRITICAL` |
+| `makeTextureRenderTarget` | `INFO` | `RENDERTGT` | add tracker event | Tracker + `DEBUG_INFO` |
+| `makeCommandQueue` | `INFO` | `QUEUE` | `Create` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_INFO` |
+| `allocateAccelerationStructure` (success) | `INFO` | `RESOURCE` | add tracker event | Tracker + `DEBUG_INFO` |
+| `allocateAccelerationStructure` — descriptor invalid (geometry references freed buffer, conflicting flags) | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` |
+
+#### Shader & library APIs
+
+| Site | Level | Domain | Tracker event | New work |
+|------|-------|--------|---------------|----------|
+| `GTEShaderLibrary::load` (success) | `INFO` | `SHADER` | out of scope | `DEBUG_INFO` |
+| OmegaSL → backend shader translate (success) | `TRACE` | `SHADER` | out of scope | `DEBUG_TRACE` |
+| Caller-supplied shader source — parse / compile error | **`CRITICAL`** | `SHADER` | n/a | `DEBUG_CRITICAL` |
+| OmegaSL feature rejection (caller used feature unsupported by target) | **`CRITICAL`** | `SHADER` | n/a | Upgrade existing `DEBUG_STREAM` to `DEBUG_CRITICAL` |
+| Backend compile error reported by driver | `ERROR` | `SHADER` | n/a | `DEBUG_ERROR` |
+| Shader function not found in library (caller asked for missing name) | **`CRITICAL`** | `SHADER` | n/a | `DEBUG_CRITICAL` |
+
+#### Command-buffer encoding APIs
+
+These are per-frame; respect §4.1.5 hot-path rule. `TRACE` only at
+pass boundaries, not inside the record loop.
+
+| Site | Level | Domain | Tracker event | New work |
+|------|-------|--------|---------------|----------|
+| `startRenderPass` (success) | `TRACE` | `QUEUE` | add `RenderPassBegin` event (extends `EventType`) | Tracker + `DEBUG_TRACE` |
+| `startRenderPass` — render target not bound, descriptor missing required attachment, format mismatch with PSO | **`CRITICAL`** | `RENDERTGT` | n/a | `DEBUG_CRITICAL` |
+| `endRenderPass` | `TRACE` | `QUEUE` | add `RenderPassEnd` event | Tracker + `DEBUG_TRACE` |
+| `startComputePass` / `endComputePass` | `TRACE` | `QUEUE` | add events | Tracker + `DEBUG_TRACE` |
+| `startBlitPass` / `endBlitPass` | `TRACE` | `QUEUE` | add events | Tracker + `DEBUG_TRACE` |
+| `setRenderPipelineState` (success) | `TRACE` | `PIPELINE` | out of scope | `DEBUG_TRACE` |
+| `setRenderPipelineState` — called outside a render pass | **`CRITICAL`** | `PIPELINE` | n/a | `DEBUG_CRITICAL` |
+| `setComputePipelineState` — called outside a compute pass | **`CRITICAL`** | `PIPELINE` | n/a | `DEBUG_CRITICAL` |
+| `bindResourceAt{Vertex,Fragment,Compute,Mesh,Task}Shader` — bind kind mismatch (uniform vs storage, texture vs buffer, sampler at non-sampler slot) | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` (Metal L50/L720/L787 etc. become this) |
+| `bindResourceAt…` — called outside the matching pass (vertex bind without active render pass; compute bind without active compute pass) | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` |
+| `bindResourceAt…` — location not in shader's layout table | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` |
+| `bindResourceAt…` (success) | — | — | n/a | Omit per §4.1.5 hot-path rule (compile-time `OMEGAGTE_DEBUG_TRACE_HOT` only) |
+| `draw` / `drawIndexed` / `drawIndirect` / `drawIndexedIndirect` (success) | — | — | n/a | Omit per hot-path rule |
+| `draw*` — no pipeline bound, index buffer missing for indexed variant, vertex count zero | **`CRITICAL`** | `QUEUE` | n/a | `DEBUG_CRITICAL` |
+| `dispatch` / `dispatchIndirect` / `dispatchMesh` (success) | — | — | n/a | Omit per hot-path rule |
+| `dispatch*` — no compute/mesh pipeline bound, threadgroup count zero, exceeds device max | **`CRITICAL`** | `QUEUE` | n/a | `DEBUG_CRITICAL` |
+| `copyBuffer` / `copyTexture` (success) | `TRACE` | `RESOURCE` | add `Copy` event | Tracker + `DEBUG_TRACE` |
+| `copyBuffer` — overlapping source/dest with same storage, out-of-bounds region | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` |
+| `copyTexture` — format incompatible, mip/slice out of range, region exceeds texture extent | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` |
+| `fillBuffer` (success) | `TRACE` | `RESOURCE` | n/a | `DEBUG_TRACE` |
+| `fillBuffer` — 32-bit pattern not byte-uniform (Metal blit constraint; current `GEMetalCommandQueue.mm` L393 warning) | `INFO` | `RESOURCE` | n/a | `DEBUG_INFO` (engine fallback, not caller misuse — kept as INFO) |
+| Encoded `signalFence` / `waitForFence` | `TRACE` | `QUEUE` | extend `Submit`/add fence event | Tracker + `DEBUG_TRACE` |
+| `waitForFence` — fence destroyed before wait reaches GPU | **`CRITICAL`** | `QUEUE` | n/a | `DEBUG_CRITICAL` |
+| `setViewport` / `setScissor` — outside an active render pass, or values outside RT bounds | **`CRITICAL`** | `RENDERTGT` | n/a | `DEBUG_CRITICAL` |
+| `setPushConstants` — size exceeds shader's declared `constant<T>` slot, offset misaligned | **`CRITICAL`** | `PIPELINE` | n/a | `DEBUG_CRITICAL` |
+| `_commit` (success) | `TRACE` | `QUEUE` | `Submit` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_TRACE` |
+| Command-buffer completion (success) | `TRACE` | `QUEUE` | `Complete` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_TRACE` |
+| Command-buffer completion (GPU execution error) | `ERROR` | `QUEUE` | n/a (errors not events) | `DEBUG_ERROR` (Metal L1170 migrates here) |
+
+#### Queue / submit APIs (`GECommandQueue::*`)
+
+| Site | Level | Domain | Tracker event | New work |
+|------|-------|--------|---------------|----------|
+| `submitCommandBuffer` (success) | `TRACE` | `QUEUE` | `Submit` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_TRACE` |
+| `submitCommandBuffer` — buffer not in completed-encoding state, fence already signalled past requested value | **`CRITICAL`** | `QUEUE` | n/a | `DEBUG_CRITICAL` |
+| `commitToGPU` (success) | `TRACE` | `QUEUE` | n/a | `DEBUG_TRACE` |
+| `commitToGPUAndPresent` — no enqueued command buffers (current Metal L1302) | **`CRITICAL`** | `QUEUE` | n/a | `DEBUG_CRITICAL` |
+| `commitToGPUAndWait` — timeout exceeded | `ERROR` | `QUEUE` | n/a | `DEBUG_ERROR` |
+| `notifyCommandBuffer` — wait fence already destroyed | **`CRITICAL`** | `QUEUE` | n/a | `DEBUG_CRITICAL` |
+
+#### Render target / swapchain APIs
+
+| Site | Level | Domain | Tracker event | New work |
+|------|-------|--------|---------------|----------|
+| `acquireDrawable` (success) | `TRACE` | `RENDERTGT` | add `DrawableAcquire` event | Tracker + `DEBUG_TRACE` |
+| `acquireDrawable` — called twice without `present`/release, surface lost | **`CRITICAL`** / `ERROR` | `RENDERTGT` | n/a | Critical for double-acquire (caller); Error for surface-lost (engine) |
+| `presentToScreen` (success) | `TRACE` | `RENDERTGT` | `Present` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_TRACE` |
+| `presentToScreen` — drawable not acquired this frame | **`CRITICAL`** | `RENDERTGT` | n/a | `DEBUG_CRITICAL` |
+| Swapchain resize (success) | `INFO` | `RENDERTGT` | `ResizeRebuild` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_INFO` |
+| Swapchain format negotiation — caller-requested format unsupported by surface | **`CRITICAL`** | `RENDERTGT` | n/a | `DEBUG_CRITICAL` |
+| Swapchain backend rebuild (driver-initiated) | `INFO` | `RENDERTGT` | `ResizeRebuild` (Metal ✓, D3D12/VK ✗) | Backfill + `DEBUG_INFO` |
+
+#### Resource lifecycle (destructors / map / unmap)
+
+| Site | Level | Domain | Tracker event | New work |
+|------|-------|--------|---------------|----------|
+| `~GEBuffer` / `~GETexture` / `~GEHeap` / `~GEFence` / `~GESamplerState` / `~GENativeRenderTarget` / `~GETextureRenderTarget` / `~GEAccelerationStruct` / `~GECommandQueue` | `INFO` | `RESOURCE`/`QUEUE`/`RENDERTGT` | `Destroy` (Metal ✓, D3D12/VK ✗ for most) | Backfill + `DEBUG_INFO` |
+| Destructor called while resource still referenced by an in-flight command buffer | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` |
+| `GEBuffer::map` / `GETexture::map` (success) | `TRACE` | `RESOURCE` | add `Map`/`Unmap` events | Tracker + `DEBUG_TRACE` |
+| `map` — storage is `GPUOnly`, range out of bounds, already mapped, mapped while GPU writing | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` |
+| `unmap` — not currently mapped | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` |
+| `GETexture::writeRegion` — region exceeds texture extent, mip/slice out of range | **`CRITICAL`** | `RESOURCE` | n/a | `DEBUG_CRITICAL` |
+
+#### Asset APIs (`GEMeshAsset` / `GETextureAsset`)
+
+| Site | Level | Domain | Tracker event | New work |
+|------|-------|--------|---------------|----------|
+| Mesh asset load (success) | `INFO` | `ASSET` | out of scope | `DEBUG_INFO` |
+| Mesh asset load — file unreadable, format unrecognized, codec unsupported | **`CRITICAL`** | `ASSET` | n/a | `DEBUG_CRITICAL` (caller asked for an asset we can't serve) |
+| Texture asset load (success) | `INFO` | `ASSET` | out of scope | `DEBUG_INFO` |
+| Texture asset load — format conversion fallback taken | `INFO` | `ASSET` | n/a | `DEBUG_INFO` (engine took the fallback; not caller misuse) |
+| Texture asset load — file unreadable / decode failed | **`CRITICAL`** | `ASSET` | n/a | `DEBUG_CRITICAL` |
+
+#### Engine init / device APIs
+
+| Site | Level | Domain | Tracker event | New work |
+|------|-------|--------|---------------|----------|
+| `Init()` (success) | `INFO` | `GENERAL` | n/a | `DEBUG_INFO` |
+| `Init()` — Metal not supported on this device (existing `GEMetal.mm:1017`) | **`CRITICAL`** | `GENERAL` | n/a | `DEBUG_CRITICAL` (upgrade existing raw `NSLog`) |
+| `Init()` — Vulkan instance/device creation failed | `ERROR` | `GENERAL` | n/a | `DEBUG_ERROR` |
+| `Init()` — caller requested `gpuBasedValidation` without `debugLayer` | **`CRITICAL`** | `GENERAL` | n/a | `DEBUG_CRITICAL` (ignored, but flag the contract violation) |
+| `Close()` — called twice / called before `Init()` | **`CRITICAL`** | `GENERAL` | n/a | `DEBUG_CRITICAL` |
 
 Sites we explicitly do **not** add `TRACE` to:
 - Inside command-list recording (`drawIndexed`, `setVertexBuffer`,
-  `dispatch`, etc.). Hot path; see §4.1.5.
+  `dispatch`, etc.) on the success path. Hot path; see §4.1.5.
 - D3D12 descriptor-heap entry creation per-bind. Same reason.
 - Per-draw root-parameter binding.
+
+`CRITICAL` sites are *not* exempt from the hot-path rule by virtue of
+being Critical — they're exempt because they're failure paths and the
+branch is overwhelmingly not taken in steady state. The cost on the
+success path is one untaken conditional, same as `TRACE`-gated code.
 
 ### 4.4. Unifying with `ResourceTracking::Tracker`
 
@@ -425,6 +639,15 @@ Three changes inside `GEResourceTracker.{h,cpp}`, all small:
    as a one-way override (so post-mortem repros without an
    `OMEGAGTE_DEBUG` build still work), and the master switch picks it
    up for free.
+
+   **Tracker is gated; Critical text-emits are not.** A
+   `DEBUG_CRITICAL` line fires regardless of `Tracker::enabled()`,
+   but the tracker itself stays gated — emitting a structured
+   `Event` into the ring buffer on every spec violation in a release
+   build would silently grow per-frame allocation cost on a code path
+   we can't measure. The Critical text-emit alone is enough to point
+   the user at the offending call site; if they want the structured
+   timeline around it, they enable the debug layer and reproduce.
 
 2. **Add `Tracker::enabledForDomain(uint32_t)`** as a cheap predicate
    so the text-emission layer in §4.5 can skip formatting work when a
@@ -450,7 +673,14 @@ Add to `gte/include/omegaGTE/GE.h`, next to the existing
 
 ```cpp
 namespace OmegaGTE {
-    enum class DebugLogLevel : uint8_t { Error = 0, Info = 1, Trace = 2 };
+    // Ordered low → high. CRITICAL is the sentinel that bypasses the
+    // master gate (see debugLogShouldEmit).
+    enum class DebugLogLevel : uint8_t {
+        Critical = 0,
+        Error    = 1,
+        Info     = 2,
+        Trace    = 3,
+    };
     constexpr uint32_t DEBUG_DOMAIN_GENERAL   = 1u << 0;
     constexpr uint32_t DEBUG_DOMAIN_RESOURCE  = 1u << 1;
     constexpr uint32_t DEBUG_DOMAIN_PIPELINE  = 1u << 2;
@@ -475,25 +705,56 @@ namespace OmegaGTE {
         }                                                                      \
     } while (0)
 
-#define DEBUG_ERROR(domain, message) DEBUG_LOG(::OmegaGTE::DebugLogLevel::Error, domain, message)
-#define DEBUG_INFO(domain, message)  DEBUG_LOG(::OmegaGTE::DebugLogLevel::Info,  domain, message)
-#define DEBUG_TRACE(domain, message) DEBUG_LOG(::OmegaGTE::DebugLogLevel::Trace, domain, message)
+#define DEBUG_CRITICAL(domain, message) DEBUG_LOG(::OmegaGTE::DebugLogLevel::Critical, domain, message)
+#define DEBUG_ERROR(domain, message)    DEBUG_LOG(::OmegaGTE::DebugLogLevel::Error,    domain, message)
+#define DEBUG_INFO(domain, message)     DEBUG_LOG(::OmegaGTE::DebugLogLevel::Info,     domain, message)
+#define DEBUG_TRACE(domain, message)    DEBUG_LOG(::OmegaGTE::DebugLogLevel::Trace,    domain, message)
 ```
 
-`debugLogShouldEmit` is the single hot-path function: returns
-`isDebugLayerEnabled() && level <= g_debugLogLevel && (g_debugLogDomains & domain)`.
-All three fields are atomics loaded with `memory_order_acquire`. The
-existing `DEBUG_STREAM(msg)` macro stays as-is — it implicitly maps to
-`DEBUG_LOG(Info, GENERAL, msg)` semantically, and gradually-typed
-upgrades to a more specific level/domain are opt-in.
+`debugLogShouldEmit` is the single hot-path function. Two branches:
+
+```cpp
+bool debugLogShouldEmit(DebugLogLevel lvl, uint32_t domain) {
+    if (lvl == DebugLogLevel::Critical) {
+        // Bypass the master gate. Domain mask still applies so a
+        // caller who wants spec-violation reports for only one
+        // subsystem can still narrow — but they cannot silence them
+        // by turning the debug layer off.
+        return (g_debugLogDomains.load(std::memory_order_acquire) & domain) != 0;
+    }
+    return isDebugLayerEnabled()
+        && static_cast<uint8_t>(lvl) <= g_debugLogLevel.load(std::memory_order_acquire)
+        && (g_debugLogDomains.load(std::memory_order_acquire) & domain) != 0;
+}
+```
+
+The level ordinals are reversed from "intuitive" (Critical=0, Trace=3)
+so `lvl <= g_debugLogLevel` reads as "this severity is at least as
+important as the configured floor." Critical is the special case
+that's checked first and short-circuits the master gate.
+
+The default `g_debugLogDomains` is `~0u` (all domains), so the
+Critical path is "on" out of the box and only the explicit caller
+who masks out a domain can suppress the Critical report for that
+domain. Test rigs that want to assert "no Critical fires under
+this workload" can wire a counter into the same function and check it
+post-run.
+
+All three globals (`isDebugLayerEnabled()` backing flag,
+`g_debugLogLevel`, `g_debugLogDomains`) are atomics loaded with
+`memory_order_acquire`. The existing `DEBUG_STREAM(msg)` macro stays
+as-is — it implicitly maps to `DEBUG_LOG(Info, GENERAL, msg)`
+semantically, and gradually-typed upgrades to a more specific
+level/domain are opt-in.
 
 `DEBUG_LOG` does *not* replace `Tracker::emit` — they live side by
 side. At a resource creation site you call both: `Tracker::emit(...)`
 records the structured event for `dumpRecentTimeline` /
 `churnMetricsSnapshot`, and `DEBUG_INFO(RESOURCE, ...)` writes the
 human-readable line. Both gate on the same master switch (§4.4
-change 1), so turning the debug layer off silences both surfaces in
-one step.
+change 1), so turning the debug layer off silences both gated
+surfaces in one step — and leaves the Critical text-emit path alive
+(§4.4 change 1 carve-out).
 
 ### 4.6. `GTEInitOptions` additions
 
@@ -503,33 +764,82 @@ struct GTEInitOptions {
     bool gpuBasedValidation = false;
 
     // ── New ──────────────────────────────────────────────────────
+    // Threshold for gated emits (Error/Info/Trace). Critical bypasses
+    // this — see §4.1.6.
     DebugLogLevel logLevel = DebugLogLevel::Info;
-    uint32_t logDomains = ~0u;   // all domains enabled by default
+    // Bitmask of DEBUG_DOMAIN_* bits to allow. Applies to gated *and*
+    // Critical emits — masking a domain out suppresses Critical
+    // reports for that subsystem too. Default ~0u (all domains).
+    uint32_t logDomains = ~0u;
 };
 ```
 
 Resolution in `OmegaGTE.cpp::resolveDebugFlags` extends to write these
-into two new atomics consumed by `debugLogShouldEmit`.
+into two new atomics consumed by `debugLogShouldEmit`. `logLevel` is
+clamped to `Error..Trace` when written — `Critical` as a configured
+floor would be a no-op (Critical always fires) and would silently
+silence `Error`/`Info`/`Trace`, which is almost certainly not what
+the caller meant. Writing `Critical` is rejected with a
+`DEBUG_CRITICAL(GENERAL, …)` complaint and the value clamped up to
+`Error`. (Yes — Critical reports its own misconfiguration. The
+self-reference is intentional: it's the one path that's always
+visible.)
 
 ### 4.7. Verification
+
+#### Gated path (Error/Info/Trace)
 
 - Run any existing sample with `logLevel = Trace` and confirm a
   create-line and destroy-line appear for every `GEBuffer` and
   `GETexture`, matched by `id=`.
 - Run with `logDomains = DEBUG_DOMAIN_PIPELINE` and confirm only
   pipeline lines appear; resource and queue lines are silenced.
-- Run with `debugLayer = Disabled` and confirm zero lines regardless
-  of level/domain settings, *and* that `Tracker::recentEvents()`
-  returns empty — confirms the unified gate from §4.4.
+- Run with `debugLayer = Disabled` and confirm zero **gated** lines
+  regardless of level/domain settings, *and* that
+  `Tracker::recentEvents()` returns empty — confirms the unified gate
+  from §4.4.
 - Run with `debugLayer = Disabled` but `OMEGAGTE_RESOURCE_TRACE=1` in
   the env, confirm the tracker still records events (override path)
-  while `DEBUG_LOG` text stays silent. Asserts the env-var override
-  still works for post-mortem.
+  while gated `DEBUG_LOG` text stays silent. Asserts the env-var
+  override still works for post-mortem.
 - `grep "id=<n>"` on a sample's log should produce the same `id`s
   that appear in `Tracker::dumpRecentTimeline()` — single ID space.
 - Run an existing Metal sample, confirm
   `Tracker::dumpChurnMetrics()` still produces the same shape of
   output as before §4 landed (no schema break).
+
+#### Critical bypass
+
+The whole point of the Critical level is that turning the debug layer
+off does *not* silence spec-violation reports. Verify:
+
+- Build with `-DOMEGAGTE_DEBUG=OFF` and `debugLayer = Disabled`.
+  Deliberately bind a `Uniform`-role `GEBuffer` to a slot the shader
+  declared as `buffer<T>` storage. Confirm the line
+  `[<Engine>_Internal] - CRITICAL RESOURCE …` reaches stdout.
+  Same workload with the binding corrected: zero CRITICAL lines.
+- Same build, call `commitToGPUAndPresent` with an empty queue.
+  Confirm CRITICAL fires. Buffer one CB and re-run: silent.
+- Same build, mask the violating domain out via
+  `logDomains = ~DEBUG_DOMAIN_RESOURCE`. Confirm the buffer-role
+  Critical no longer fires (domain mask applies to Critical too),
+  while a pipeline-domain Critical (PSO format mismatch) does fire.
+  This is the documented suppression knob — masking a domain
+  acknowledges "I know this surface misuses the API, hide it."
+- Confirm the gated surfaces stay silent throughout (no `INFO`/
+  `TRACE` lines, empty `Tracker::recentEvents()`).
+- Attempt to set `GTEInitOptions::logLevel = DebugLogLevel::Critical`
+  at `Init()`. Confirm `resolveDebugFlags` rejects with a CRITICAL
+  self-report and clamps to `Error`.
+
+#### Critical taxonomy audit
+
+Independent of runtime: walk the §4.3 table and confirm every
+`CRITICAL` row identifies a documented caller-contract violation
+(not an engine-side failure). If a row reads "the driver returned
+an error" or "the allocation pool was exhausted," it's misclassified
+and should be `ERROR`. This audit lives in code review for the
+landing PR, not in CI.
 
 ### 4.8. Out of scope for this section
 

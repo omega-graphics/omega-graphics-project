@@ -106,9 +106,11 @@ void AppWindow::setRootWidget(WidgetPtr widget){
     impl_->widgetTreeHost = WidgetTreeHost::Create();
     impl_->widgetTreeHost->setRoot(widget);
     // Tier 3 Phase 3.8: hand the WidgetTreeHost the window frame
-    // driver so Widget::executePaint can bracket each paint with a
-    // FrameBuilder::ScopedFrame (all invalidate/init repaints route
-    // through the one window-scoped frame).
+    // driver. Pre-Tier-D/D1 `Widget::executePaint` bracketed each
+    // paint with a `FrameBuilder::ScopedFrame`; after D1 the
+    // ScopedFrame brackets live on `AppWindow::flushFrame` (deferred
+    // path) and `WidgetTreeHost::paintDirty` (immediate path), and
+    // every invalidate/init repaint routes through one of those two.
     impl_->widgetTreeHost->setFrameBuilder(impl_->frameBuilder_.get());
     // Tier A (Widget-View-Paint-Lifecycle): wire deferred invalidation.
     // The tree host routes requestFrame() back here; the native window
@@ -258,8 +260,11 @@ void AppWindowManager::displayRootWindow(){
     rootWindow->impl_->nativeWindow->initialDisplay();
     if(rootWindow->impl_->widgetTreeHost != nullptr){
         // Tier 3 Phase 3.1: bracket the initial widget-tree paint pass
-        // with the window-level FrameBuilder session. Per-view sessions
-        // opened inside Widget::executePaint nest inside this one.
+        // with the window-level FrameBuilder session. Pre-Tier-D/D1
+        // the per-widget `Widget::executePaint` opened nested ScopedFrames
+        // inside this one; after D1 the only nested ScopedFrame is the
+        // one `WidgetTreeHost::paintDirty` opens (called by `Widget::init`
+        // during the initial-tree walk).
         FrameBuilder::ScopedFrame frame(rootWindow->frameBuilder());
         rootWindow->impl_->widgetTreeHost->initWidgetTree();
     }

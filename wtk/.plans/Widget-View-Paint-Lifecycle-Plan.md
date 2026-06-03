@@ -1030,25 +1030,144 @@ Withdrawn from Tier D (no longer planned):
 
 Nine sub-phases, each independently shippable. Dependencies in §5.D9.
 
-- **D0 — Reconciliation (doc-only).** Walk §11 Block 4 against the
-  current tree (codedb + header reads). Confirm what's already landed
-  but mis-marked: `AnimationScheduler` is live and ticked from
-  `FrameBuilder::beginFrame` (`AnimationScheduler.h`,
-  `FrameBuilder.cpp:66`) — Anim Tier A is **done**. `View::nodeId()`
-  and `UIView::Impl::{elementNodeIds_, animationTargets_}` are
-  populated — Anim Tier C scaffolding is **done**.
-  `ViewAnimator` / `LayerAnimator` / `LayerClip` / `ViewClip` are
-  **deleted** (codedb returns nothing) — Anim Tier E is partial.
-  Confirm what's still pending: `executePaint`,
-  `Widget::Impl::{paintInProgress, hasPendingInvalidate,
-  pendingPaintReason, deferredReason}`, `PaintOptions`,
-  `View::submitPaintFrame(int)`, `WidgetTreeHost::invalidateWidgetRecurse`,
-  `UIView::Impl::advanceAnimations`, `computedStyles_` keyed by
-  `UIElementTag`. Verify whether `UIView::Impl::startOrUpdateAnimation`
-  and the two `applyLayoutDelta` paths already route to the scheduler
-  (Phase 4.4 status was ambiguous when this section was written).
-  Output is doc-only — rewrite §11 Block 4 + this sub-phase list
-  against tree truth before any code lands.
+- **D0 — Reconciliation (doc-only). [DONE 2026-06-03.]** Tree-truth
+  pass over §11 Block 4 and this sub-phase list, run from codedb +
+  direct header/source reads (file:line citations below). Results:
+
+  **Confirmed landed (already marked):**
+  - Anim Tier A — `AnimationScheduler` lives at
+    `wtk/src/UI/AnimationScheduler.{h,cpp}` (class at
+    `AnimationScheduler.h:124`). `FrameBuilder::beginFrame` calls
+    `impl->animationScheduler_->tick(FrameTime{...})` once per
+    outermost frame at `FrameBuilder.cpp:80` (the cited line 66
+    was stale — comment block now starts at 76, call at 80).
+  - Anim Tier C scaffolding — `View::nodeId()` at `View.h:305`;
+    `UIView::Impl::elementNodeIds_` at `UIViewImpl.h:167`;
+    `animationTargets_` at `UIViewImpl.h:173`.
+
+  **Newly confirmed landed (plan said pending / "ambiguous"):**
+  - **D3 (Anim Tier B `applyLayoutDelta` migration) is DONE in
+    tree.** Both axes are already routed:
+    - `View::applyLayoutDelta` (`View.Core.cpp:207`) emits four
+      `scheduler->tweenProperty<float>(node, PropertyKey::LayoutX/Y/
+      Width/Height, ...)` calls at lines 255 / 259 / 263 / 267,
+      with a no-scheduler fallback at line 226.
+    - `UIView::applyLayoutDelta` (`UIView.Layout.cpp:41`) does the
+      same at lines 81 / 85 / 89 / 93 (fallback at line 58).
+    No further work for D3; it collapses to a "skip — already in
+    tree" entry in D9's shipping order.
+  - **D4 routing is DONE; D4 deletions are still pending.**
+    `UIView::Impl::startOrUpdateAnimation`
+    (`UIView.Animation.cpp:92`) routes to
+    `scheduler->tweenProperty<float>(node, propKey, from, to, timing,
+    curve)` at line 154 (with a zero-duration cancel branch that
+    issues `(to,to)` at line 138). The `(tag, key)` to-match
+    short-circuit is preserved via `animationTargets_` at lines
+    143–148, exactly as §5 D4 requires. `animatedValue` reads
+    `scheduler->value<float>(*node, elementKeyToProperty(key))` at
+    `UIView.Animation.cpp:219`. `advanceAnimations` is already a
+    no-op stub returning `false` at `UIView.Animation.cpp:194` —
+    declared at `UIViewImpl.h:217`, so the public symbol still
+    exists and must be deleted in D4 (header + impl together).
+
+  **Confirmed still pending:**
+  - **D1 targets all present.**
+    - `Widget::executePaint` defined at `Widget.Paint.cpp:13`,
+      declared at `Widget.h:109`. Live callers: `init()`,
+      `invalidateNow()`, `flushPendingPaint()`,
+      `WidgetTreeHost::invalidateWidgetRecurse`
+      (`WidgetTreeHost.cpp:297`).
+    - `Widget::Impl::{paintInProgress, hasPendingInvalidate,
+      pendingPaintReason, deferredReason}` at
+      `WidgetImpl.h:92–100`.
+    - `PaintOptions::{autoWarmupOnInitialPaint, warmupFrameCount,
+      coalesceInvalidates}` at `Widget.h:58–60`. The
+      `coalesceInvalidates` field is read once at
+      `Widget.Paint.cpp:38`; `invalidateOnResize` (`Widget.h:69`)
+      stays per §5 D1.
+    - `Widget::flushPendingPaint` at `Widget.Paint.cpp:140`,
+      declared at `Widget.h:115`. Currently called from
+      `Widget::invalidate()` (`Widget.Paint.cpp:137` is the
+      `executePaint(reason,true)` immediate-mode tail; the deferred
+      path at line 123 + 147–151 routes through this symbol). D1
+      collapses it into the new `invalidateNow` body; D8 confirms
+      callerless and deletes.
+  - **D2 targets all present.**
+    - `View::submitPaintFrame(int)` declared as an inline `{}`
+      virtual at `View.h:311`. Grep across `wtk/src` + `wtk/include`
+      shows the declaration is the *only* mention — no overrides,
+      no callers. Pure dead code; safe to delete in D2.
+    - `WidgetTreeHost::invalidateWidgetRecurse` defined at
+      `WidgetTreeHost.cpp:277`, declared at `WidgetTreeHost.h:144`,
+      called from the resize path at `WidgetTreeHost.cpp:300`
+      (self-recursion) and indirectly from the same module — the
+      sole entry is the resize path as §5 D2 expects.
+    - The four no-op recurse shims:
+      `observeWidgetLayerTreesRecurse` at `WidgetTreeHost.cpp:258`,
+      `unobserveWidgetLayerTreesRecurse` at line 271,
+      `paintDirtyRecurse` at line 332,
+      `beginResizeCoordinatorSessionRecurse` at line 340 (all
+      declared at `WidgetTreeHost.h:142–148`).
+      `observe/unobserveWidgetLayerTreesRecurse` *are* still called
+      from `WidgetTreeHost::onWidgetTreeChanged` (lines 228, 435,
+      659, 663) but the bodies are no-ops — D2 deletes them and
+      drops the calls in the same pass.
+  - **D4 deletions** (in addition to the `advanceAnimations` symbol
+    pair noted above): `PropertyAnimationState`
+    (`UIViewImpl.h:106`), `PathNodeAnimationState`
+    (`UIViewImpl.h:119`), `EffectAnimationKey*` enum
+    (`UIViewImpl.h:125–138`). All three are unreferenced in `.cpp`
+    files (the routing path no longer touches them) — the only
+    remaining surface area is the header declarations.
+  - **Path-node animation migration is still open.** Plan §5 D4
+    says path animations migrate to
+    `scheduler.animatePropertyAt(node, PathNodeX/Y, nodeIndex, ...)`.
+    The destination exists (`AnimationScheduler.h:158`,
+    `PathNodeX/Y` enum at `AnimationScheduler.h:73`) but has zero
+    callers in `wtk/src`. `ElementAnimationKeyPathNodeX/Y` (the
+    public enum at `UIView.h:67–68`) is the legacy entry point; it
+    is *not* currently routed through the scheduler the way
+    scalar keys are. D4 must add this routing alongside the
+    `startOrUpdateAnimation` cleanup — the previous D4 wording
+    implied it was already covered by the same shim.
+  - **D5 — `computedStyles_` aggregate cache still in place.**
+    `UIView::Impl::computedStyles_` at `UIViewImpl.h:185`
+    (`Map<UIElementTag, ComputedStyle>`). `computedStyleFor(tag)`
+    at `UIView.Style.cpp:301–305` reads it. Paint reads via
+    `computedStyleFor(entry.tag)` at `UIView.Update.cpp:222`.
+    `ResolvedViewStyle` / `ResolvedTextStyle` / `ResolvedEffectStyle`
+    are still aggregate types in `UIViewImpl.h:15, 22, 38`.
+  - **D8 residuals confirmed present.**
+    - `Composition/Animation.h` still carries stale forward
+      declarations: `class LayerAnimator;` and `class ViewAnimator;`
+      surface at `Animation.h:184–185` as `AnimationHandle`
+      `friend`s, plus `class detail::AnimationRuntimeRegistry;`
+      forward at `Animation.h:29` and friend at line 186. The
+      classes themselves are gone (codedb misses), so these
+      `friend`s point at nothing and must be stripped in D8.
+    - `UIView::Impl::{lastAnimationDiagnostics,
+      lastObservedDroppedPacketCount, hasObservedLaneDiagnostics}`
+      still declared at `UIViewImpl.h:193–195`. The 2026-06-01
+      §0.3 note guessed these were already gone — they are not.
+      D8 deletes them.
+
+  **Net adjustments to §5 Tier D and §11 Block 4:**
+  - Mark D3 as **done in tree (no-op phase)**. The §5 D3 sub-phase
+    becomes a one-line "already routed; skip" entry. §11 Block 4's
+    D3 checkbox flips to checked. The D9 shipping unit "D3 + D4 +
+    D5 ship as one unit" loses its D3 leg.
+  - Rephrase D4 as "scheduler-routing **deletions** + path-node
+    migration." Scalar routing (`startOrUpdateAnimation`,
+    `animatedValue`) is already in tree; what D4 actually does is
+    (a) delete the dormant header symbols above, and (b) add the
+    missing `animatePropertyAt(node, PathNodeX/Y, ...)` routing for
+    path-node animations.
+  - No other sub-phase changes scope; D1, D2, D5, D6, D7, D8 stay
+    as written.
+
+  These edits land in the next commit alongside the §11 Block 4
+  checkbox flips and the §5 D3 / D4 rewording — D0 itself is just
+  this reconciliation block.
 
 - **D1 — Tier C deletions, pass 1: `Widget` paint plumbing.** Phase
   asserts (B5) already make the reentrancy state dead; this just
@@ -1076,27 +1195,45 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
   unobserveWidgetLayerTreesRecurse, beginResizeCoordinatorSessionRecurse}`.
   Keep `WidgetTreeHost::paintDirty()` (decision §0.3 #4).
 
-- **D3 — Anim Tier B: `applyLayoutDelta` migration.** Route the
-  per-axis layout tweens in `View::applyLayoutDelta`
-  (`View.Core.cpp:173`) and `UIView::applyLayoutDelta`
-  (`UIView.Layout.cpp:32`) to four
-  `scheduler.tweenProperty<float>(node, LayoutX/Y/Width/Height, ...)`
-  calls each. Mechanical substitution (~50 LOC). Skip if D0 finds
-  these already migrated.
+- **D3 — Anim Tier B: `applyLayoutDelta` migration. [DONE in tree —
+  no work; D0 verified 2026-06-03.]** Both `View::applyLayoutDelta`
+  (`View.Core.cpp:207`, scheduler calls at lines 255 / 259 / 263 /
+  267 with a no-scheduler fallback) and `UIView::applyLayoutDelta`
+  (`UIView.Layout.cpp:41`, scheduler calls at lines 81 / 85 / 89 /
+  93) already emit `scheduler->tweenProperty<float>(node, LayoutX/Y/
+  Width/Height, ...)` per axis. Tree-truth status flips this
+  sub-phase to a no-op; it is no longer part of the D9 shipping
+  unit.
 
-- **D4 — Anim Tier C: UIView tween engine onto scheduler.**
-  `UIView::Impl::startOrUpdateAnimation` becomes a shim around
-  `scheduler.tweenProperty<T>(ensureElementNodeId(tag), key, from, to,
-  timing)`, preserving the `(tag, key)` `to`-match short-circuit via
-  the existing `animationTargets_` map (`UIViewImpl.h:173`). Path-node
-  animations migrate to
-  `scheduler.animatePropertyAt(node, PathNodeX/Y, nodeIndex, ...)`.
-  Delete `UIView::Impl::{advanceAnimations, PropertyAnimationState,
-  PathNodeAnimationState}` and the `EffectAnimationKey*` enum
-  (`UIViewImpl.h:125-138, 106-123, 217`); `animatedValue(tag, key)`
-  becomes `scheduler.value<T>(ensureElementNodeId(tag),
-  keyToPropertyKey(key))` with `ComputedStyle` fallback (the routing
-  is already in tree per Phase 4.4 comments — verify in D0).
+- **D4 — Anim Tier C: scheduler-routing deletions + path-node
+  migration.** Scalar tween routing is already in tree (D0
+  verified): `UIView::Impl::startOrUpdateAnimation`
+  (`UIView.Animation.cpp:92`) routes to
+  `scheduler->tweenProperty<float>(...)` at lines 138 / 154 and
+  preserves the `(tag, key)` `to`-match short-circuit via
+  `animationTargets_` at lines 143–148; `animatedValue`
+  (`UIView.Animation.cpp:204`) reads via
+  `scheduler->value<float>(*node, elementKeyToProperty(key))` at
+  line 219. What D4 actually does:
+
+  1. **Path-node animation routing.** The legacy public keys
+     `ElementAnimationKeyPathNodeX/Y` (`UIView.h:67–68`) currently
+     route through `startOrUpdateAnimation` like scalar element
+     channels but never reach `scheduler.animatePropertyAt(node,
+     PathNodeX/Y, nodeIndex, ...)`. Add the routing — extend
+     `startOrUpdateAnimation` (or split out a path-node sibling) to
+     dispatch path-node keys to `animatePropertyAt` so the
+     scheduler keys them by `(node, PropertyKey, subIndex=nodeIndex)`
+     instead of collapsing every node's X/Y onto a single cell.
+  2. **Header / impl deletions.** Delete the dormant per-tag tween
+     state now that nothing reads it:
+     `UIView::Impl::PropertyAnimationState` (`UIViewImpl.h:106`),
+     `PathNodeAnimationState` (`UIViewImpl.h:119`), the
+     `EffectAnimationKey*` enum (`UIViewImpl.h:125–138`), and the
+     `advanceAnimations` declaration (`UIViewImpl.h:217`) plus its
+     no-op body at `UIView.Animation.cpp:194–202`. None of these
+     have non-header `.cpp` references after the scalar-routing
+     work landed; D0 grep confirms.
 
 - **D5 — `ComputedStyle` re-key: split per-property,
   `(NodeId, PropertyKey) → TypedValue`.** With D4 in,
@@ -1222,7 +1359,9 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
 - **D1, D2 ship together** — Block 2 closeout. Smallest change, no
   observable behavior shift (asserts already prove the deletions are
   unreachable).
-- **D3, D4, D5 ship as one unit** — animation convergence. Intermediate
+- **D3 is already in tree** (D0 verified 2026-06-03). The former
+  "D3 + D4 + D5 ship as one unit" loses its D3 leg.
+- **D4, D5 ship as one unit** — animation convergence. Intermediate
   states (e.g. D4 done but D5 not) leave the resolved-style cache
   keyed by tag while the scheduler is keyed by NodeId; awkward and
   short-lived.
@@ -1242,8 +1381,8 @@ the aggregate-cache alternative the prior wording assumed).
 |---|---|---|
 | D0 | None | Doc-only. |
 | D1, D2 | Low | Dead-code deletion; B5 asserts already prove unreachable. |
-| D3 | Low | Mechanical substitution. |
-| D4 | Medium | The `(tag, key)` `to`-match short-circuit must be preserved exactly — apps re-issuing animations on every layout pass depend on "same target = no restart." |
+| D3 | None | Already in tree (D0 verified 2026-06-03). |
+| D4 | Low–Medium | Scalar `(tag, key)` `to`-match short-circuit is already in tree and verified. Remaining risk is the path-node `animatePropertyAt` routing — new code, but small. Header deletions are mechanical. |
 | D5 | Medium | Wider than an aggregate rekey: every Paint site that read `computedStyleFor(tag).<field>` becomes a per-property `resolved(n,k,fallback)` lookup. Behavior-preserving but mechanically broad. |
 | D6 | **Medium-High** | New selector matcher + cascade rules + keyframe declaration shape. Specificity ties, inherited properties, keyframe-track type erasure are the edge-case cluster. Heavy unit-test coverage on `StyleResolver` is the mitigation. |
 | D7 | Medium | Transition retargeting is the standard CSS edge case. Keyframe binding lifecycle (matches → fires; un-matches → cancels; re-matches with same name → no-op) is a parallel edge-case cluster. |
@@ -1674,30 +1813,57 @@ Already-landed prerequisites:
   `wtk/src/UI/AnimationScheduler.{h,cpp}`; `FrameBuilder::beginFrame`
   calls `scheduler.tick()` once per outermost frame. (Render
   Phase 4.3 — verified in tree 2026-06-01.)
-- [x] Anim Tier C scaffolding — `View::nodeId()` (Phase 4.4) and
-  `UIView::Impl::{elementNodeIds_, animationTargets_}`
-  (`UIViewImpl.h:167, 173`) populated. Routing through the scheduler
-  is partial; D4 finishes it.
+- [x] Anim Tier C scaffolding — `View::nodeId()` at `View.h:305`;
+  `UIView::Impl::elementNodeIds_` at `UIViewImpl.h:167` and
+  `animationTargets_` at `UIViewImpl.h:173` populated. Scalar
+  routing through the scheduler is already in tree (D0 verified
+  2026-06-03); path-node routing remains. D4 finishes it.
 - [x] Anim Tier E partial — `ViewAnimator` / `LayerAnimator` /
   `LayerClip` / `ViewClip` deleted (codedb returns no symbol). D8
-  finishes the residual header cleanup.
+  finishes the residual header cleanup (`Composition/Animation.h`
+  lines 21–29, 184–186 still carry stale forward decls + `friend`s;
+  D0 verified 2026-06-03).
+- [x] **D3 (Anim Tier B)** — `View::applyLayoutDelta` and
+  `UIView::applyLayoutDelta` already route per-axis through
+  `scheduler->tweenProperty<float>` (D0 verified 2026-06-03; see
+  §5 Tier D `D3` for line cites).
 
 Pending (one entry per Tier-D sub-phase from §5):
 
-- [ ] **D0** — doc-only reconciliation pass: rewrite this list against
-  tree truth; verify ambiguous Phase-4.4 routing status for
-  `startOrUpdateAnimation` / `applyLayoutDelta`.
-- [ ] **D1** — delete `executePaint`, `Widget::Impl` reentrancy state,
+- [x] **D0** — doc-only reconciliation pass (DONE 2026-06-03; see
+  §5 Tier D D0 reconciliation block).
+- [x] **D1** — delete `executePaint`, `Widget::Impl` reentrancy state,
   warmup/coalesce `PaintOptions` fields; `invalidateNow()` becomes
-  the lone `[[deprecated]]` sync hatch.
-- [ ] **D2** — delete `View::submitPaintFrame(int)`,
+  the lone `[[deprecated]]` sync hatch. (DONE 2026-06-03; build green.
+  `Widget::executePaint` + `Widget::flushPendingPaint` deleted;
+  `Widget::Impl::{paintInProgress, hasPendingInvalidate,
+  pendingPaintReason, deferredReason}` removed;
+  `PaintOptions::{autoWarmupOnInitialPaint, warmupFrameCount,
+  coalesceInvalidates}` removed; `init()`, `invalidate()`,
+  `invalidateNow()` inlined via `dirtyBitsForReason(reason)` helper;
+  `WidgetTreeHost::invalidateWidgetRecurse` inlined transitionally
+  pending D2 deletion. Stale cross-reference comments updated in
+  `WidgetTreeHost.{h,cpp}`, `FrameBuilder.h`, `AppWindow.cpp`,
+  `NativeWindow.h`.)
+- [x] **D2** — delete `View::submitPaintFrame(int)`,
   `WidgetTreeHost::invalidateWidgetRecurse`, and the four no-op
   `WidgetTreeHost` recurse shims. `paintDirty()` stays (§0.3 #4).
-- [ ] **D3** — Anim Tier B: route `View::applyLayoutDelta` /
-  `UIView::applyLayoutDelta` through `scheduler.tweenProperty<float>`.
-- [ ] **D4** — Anim Tier C: `startOrUpdateAnimation` → scheduler shim;
-  delete `advanceAnimations` / `PropertyAnimationState` /
-  `PathNodeAnimationState` / `EffectAnimationKey*`.
+  (DONE 2026-06-03; full-tree `ninja` builds 57/57 green.
+  `View::submitPaintFrame` removed from `View.h`. Five
+  `WidgetTreeHost` symbols deleted in one sweep —
+  `observeWidgetLayerTreesRecurse`,
+  `unobserveWidgetLayerTreesRecurse`, `invalidateWidgetRecurse`,
+  `paintDirtyRecurse`, `beginResizeCoordinatorSessionRecurse` —
+  along with the four observe/unobserve call sites in
+  `~WidgetTreeHost`, `initWidgetTree`, and `setRoot`. The
+  `compositor != nullptr` guard around `setRoot`'s observe bracket
+  collapsed to nothing once the bracket was gone, so `setRoot` is
+  now a plain assignment.)
+- [ ] **D4** — Anim Tier C: add path-node `animatePropertyAt`
+  routing (`PathNodeX/Y` with `subIndex=nodeIndex`); delete dormant
+  header symbols `advanceAnimations` / `PropertyAnimationState` /
+  `PathNodeAnimationState` / `EffectAnimationKey*`. Scalar
+  `startOrUpdateAnimation` → scheduler routing is already in tree.
 - [ ] **D5** — split `computedStyles_` per-property into
   `Map<(NodeId, PropertyKey, subIndex), TypedValue>`; Paint reads
   via a uniform `resolved(n,k,fallback)` helper that chains

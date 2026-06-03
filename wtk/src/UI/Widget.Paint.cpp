@@ -10,72 +10,36 @@
 
 namespace OmegaWTK {
 
-void Widget::executePaint(PaintReason reason,bool immediate){
-    // Phase 4.7.4: the entry-point switch. `executePaint` no longer
-    // opens a ScopedFrame, dispatches `onPaint`, or routes per-widget
-    // through the legacy submitView path. Its only job now is:
-    //   1. Mark the appropriate dirty bits on the backing View
-    //      (which propagate to the root via `markDirty`'s ancestor
-    //      walk, Phase 4.7.3).
-    //   2. Trigger the central per-window paint:
-    //       - `immediate` ⇒ run `WidgetTreeHost::paintDirty()` inline
-    //         (used by `invalidateNow` and the resize / initial-paint
-    //         legacy entry points).
-    //       - otherwise ⇒ ask the window to flush a frame on the next
-    //         run-loop turn (`treeHost->requestFrame()`) — the normal
-    //         deferred path.
-    // The actual Style / Layout / Paint passes live in
-    // `FrameBuilder::buildFrame`, which the frame flush calls once
-    // per window with the root View. The pre-4.7.4 per-widget
-    // `onPaint` → `UIView::update` → `submitView` flow is gone.
-    if(impl_->mode != PaintMode::Automatic){
-        return;
-    }
-    if(reason == PaintReason::Initial && impl_->initialDrawComplete){
-        return;
-    }
-    if(impl_->paintInProgress){
-        if(impl_->options.coalesceInvalidates){
-            impl_->hasPendingInvalidate = true;
-            impl_->pendingPaintReason = reason;
-            return;
-        }
-        if(!immediate){
-            return;
-        }
-    }
+namespace {
 
-    if(view != nullptr){
-        uint8_t bits = View::Paint;
-        if(reason == PaintReason::Initial){
+/// Widget-View-Paint-Lifecycle-Plan Tier D / D1 (2026-06-03):
+/// pre-D1 each entry point ran through `Widget::executePaint`, which
+/// derived View dirty bits from a `PaintReason`. With executePaint
+/// gone, the three live entry points — `init()`, `invalidate()`, and
+/// `invalidateNow()` — each share this small derivation:
+///   * Paint always.
+///   * Initial / ThemeChanged additionally require Style + Layout.
+///   * Resize additionally requires Layout.
+/// The new `invalidate()` / `invalidateNow()` and the kept `init()`
+/// call this directly; the dispatcher (immediate vs deferred) is
+/// then the call-site's choice rather than a method parameter on
+/// executePaint.
+uint8_t dirtyBitsForReason(PaintReason reason){
+    uint8_t bits = View::Paint;
+    switch(reason){
+        case PaintReason::Initial:
+        case PaintReason::ThemeChanged:
             bits |= View::Style | View::Layout;
-        }
-        else if(reason == PaintReason::Resize){
+            break;
+        case PaintReason::Resize:
             bits |= View::Layout;
-        }
-        else if(reason == PaintReason::ThemeChanged){
-            bits |= View::Style | View::Layout;
-        }
-        view->markDirty(bits);
+            break;
+        case PaintReason::StateChanged:
+            break;
     }
+    return bits;
+}
 
-    if(reason == PaintReason::Initial){
-        impl_->initialDrawComplete = true;
-    }
-
-    if(treeHost == nullptr){
-        // Pre-attach paint — the dirty bits stay set; the first
-        // tree-attached frame flush picks them up.
-        return;
-    }
-    if(immediate){
-        impl_->paintInProgress = true;
-        treeHost->paintDirty();
-        impl_->paintInProgress = false;
-    }
-    else {
-        treeHost->requestFrame();
-    }
 }
 
 void Widget::init(){
@@ -85,8 +49,24 @@ void Widget::init(){
     onMount();
     impl_->hasMounted = true;
     view->enable();
-    if(impl_->mode == PaintMode::Automatic){
-        executePaint(PaintReason::Initial,true);
+    if(impl_->mode != PaintMode::Automatic){
+        return;
+    }
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D1 (2026-06-03):
+    // inlined `executePaint(PaintReason::Initial, /*immediate=*/true)`.
+    // The Initial path is always the first paint, so the prior
+    // `initialDrawComplete` guard inside executePaint was redundant
+    // with the `hasMounted` short-circuit above. Mark Style + Layout
+    // + Paint, latch `initialDrawComplete`, then drive the central
+    // FrameBuilder walk synchronously (matching the pre-D1
+    // immediate-mode behavior `init` relied on for first-frame
+    // visibility before the run-loop's first turn).
+    if(view != nullptr){
+        view->markDirty(dirtyBitsForReason(PaintReason::Initial));
+    }
+    impl_->initialDrawComplete = true;
+    if(treeHost != nullptr){
+        treeHost->paintDirty();
     }
 }
 
@@ -112,15 +92,16 @@ void Widget::invalidate(PaintReason reason){
     // flush a frame on the next run-loop turn. A burst of invalidates
     // between frames coalesces into one frame (the run-loop primitive
     // dedups the requests; the dirty bits accumulate).
+    //
+    // Tier D / D1 (2026-06-03): no per-Widget `deferredReason`
+    // bookkeeping anymore — the View's dirty bits already carry
+    // everything `FrameBuilder::buildFrame` needs. Manual-mode
+    // widgets still take the path (they can use invalidate to drive
+    // the central paint; the old executePaint mode-guard only
+    // applied to its own dispatch).
     if(view != nullptr){
-        uint8_t bits = View::Paint;
-        if(reason == PaintReason::Resize)
-            bits |= View::Layout;
-        if(reason == PaintReason::ThemeChanged)
-            bits |= View::Style | View::Layout;
-        view->markDirty(bits);
+        view->markDirty(dirtyBitsForReason(reason));
     }
-    impl_->deferredReason = reason;
     // Null treeHost: not attached yet. The initial paint after
     // attach covers display; the dirty bits stay set harmlessly.
     if(treeHost != nullptr){
@@ -134,21 +115,30 @@ void Widget::invalidateNow(PaintReason reason){
                  "paint, bypassing the deferred frame lifecycle. Prefer "
                  "invalidate()." << std::endl;
 #endif
-    executePaint(reason,true);
-}
-
-void Widget::flushPendingPaint(){
-    // Called by WidgetTreeHost::paintDirty during the window frame
-    // flush, for widgets whose view has the Paint dirty bit set.
-    // Clear the dirty bits *before* painting (Chromium clears
-    // needs_paint_ at Paint() entry) so that a re-invalidation issued
-    // from within onPaint re-sets them and schedules the next frame
-    // rather than being wiped by this one.
-    PaintReason reason = impl_->deferredReason;
-    if(view != nullptr){
-        view->clearDirtyBits();
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D1 (2026-06-03):
+    // inlined `executePaint(reason, /*immediate=*/true)`. Manual-mode
+    // widgets short-circuit (same pre-D1 guard inside executePaint).
+    // Mark the same dirty bits the deferred path would, then run the
+    // central paint synchronously via `treeHost->paintDirty()`. The
+    // dead pre-D1 reentrancy state (`paintInProgress`,
+    // `hasPendingInvalidate`, `pendingPaintReason`) is gone — Tier
+    // B5's phase asserts already proved the reentrancy branch
+    // unreachable.
+    if(impl_->mode != PaintMode::Automatic){
+        return;
     }
-    executePaint(reason,false);
+    if(reason == PaintReason::Initial && impl_->initialDrawComplete){
+        return;
+    }
+    if(view != nullptr){
+        view->markDirty(dirtyBitsForReason(reason));
+    }
+    if(reason == PaintReason::Initial){
+        impl_->initialDrawComplete = true;
+    }
+    if(treeHost != nullptr){
+        treeHost->paintDirty();
+    }
 }
 
 void Widget::onThemeSetRecurse(Native::ThemeDesc &desc){

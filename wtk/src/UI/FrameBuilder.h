@@ -45,9 +45,10 @@ inline const char * phaseName(FramePhase phase){
 // FrameBuilder owns the lifetime of the window-scoped composition
 // session (open at beginFrame, close at endFrame) and the single
 // per-frame CompositeFrame. Every paint pass — display, resize, and
-// each Widget::executePaint invalidate/init repaint — brackets its
-// work with a ScopedFrame, so nested passes share one frame via the
-// depth counter.
+// each `Widget::invalidate` / `Widget::invalidateNow` / `Widget::init`
+// repaint (pre-Tier-D/D1 these all routed through `Widget::executePaint`)
+// — brackets its work with a ScopedFrame, so nested passes share one
+// frame via the depth counter.
 //
 // `UIView::update` / `SVGView::paint` hand their DisplayList to
 // `submitView(...)`. `endFrame()` walks the pending submissions in

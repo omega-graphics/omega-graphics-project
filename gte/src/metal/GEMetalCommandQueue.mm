@@ -390,10 +390,10 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         const bool uniform = (b0 == b1) && (b1 == b2) && (b2 == b3);
 
         if(!uniform){
-            NSLog(@"[GEMetalCommandBuffer::fillBuffer] WARNING: Metal blit fill only supports 8-bit patterns. "
-                   "Requested 32-bit value 0x%08X is not byte-uniform; falling back to low byte 0x%02X. "
-                   "Use a compute shader for non-uniform patterns.",
-                   (unsigned)value, (unsigned)b0);
+            GTE_NSLOG(@"[GEMetalCommandBuffer::fillBuffer] WARNING: Metal blit fill only supports 8-bit patterns. "
+                       "Requested 32-bit value 0x%08X is not byte-uniform; falling back to low byte 0x%02X. "
+                       "Use a compute shader for non-uniform patterns.",
+                       (unsigned)value, (unsigned)b0);
         }
 
         [bp fillBuffer:buf
@@ -470,11 +470,11 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             id<CAMetalDrawable> drawable = NSOBJECT_OBJC_BRIDGE(id<CAMetalDrawable>,metalDrawable.handle());
             id<MTLTexture> drawableTexture = drawable.texture;
             CAMetalLayer *drawableLayer = (CAMetalLayer *)drawable.layer;
-            NSLog(@"Prepare Render Pass For NativeTarget: drawable=%p texture=%p %lux%lu format=%lu layer=%p layer.superlayer=%@",
-                  drawable, drawableTexture,
-                  (unsigned long)drawableTexture.width, (unsigned long)drawableTexture.height,
-                  (unsigned long)drawableTexture.pixelFormat,
-                  drawableLayer, drawableLayer.superlayer);
+            GTE_NSLOG(@"Prepare Render Pass For NativeTarget: drawable=%p texture=%p %lux%lu format=%lu layer=%p layer.superlayer=%@",
+                      drawable, drawableTexture,
+                      (unsigned long)drawableTexture.width, (unsigned long)drawableTexture.height,
+                      (unsigned long)drawableTexture.pixelFormat,
+                      drawableLayer, drawableLayer.superlayer);
             renderPassDesc.renderTargetWidth = (NSUInteger)n_rt->drawableSize.width;
             renderPassDesc.renderTargetHeight = (NSUInteger)n_rt->drawableSize.height;
             id<MTLTexture> renderTarget;
@@ -492,7 +492,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             }
         }
         else if(desc.tRenderTarget != nullptr){
-            NSLog(@"Prepare Render Pass For TextureTarget");
+            GTE_NSLOG(@"Prepare Render Pass For TextureTarget");
             auto *t_rt = (GEMetalTextureRenderTarget *)desc.tRenderTarget;
             if(t_rt->texturePtr->needsBarrier){
                 needsBarrier = true;
@@ -633,7 +633,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         }
 
         rp = [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) renderCommandEncoderWithDescriptor:renderPassDesc];
-        NSLog(@"Starting Render Pass: %@",rp);
+        GTE_NSLOG(@"Starting Render Pass: %@",rp);
         if(needsBarrier){
             /// Ensure texture is ready to render to when fragment stage begins.
             [rp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,barrier.handle()) beforeStages:MTLRenderStageFragment];
@@ -643,7 +643,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::setRenderPipelineState(SharedHandle<GERenderPipelineState> & pipelineState){
         auto *ps = (GEMetalRenderPipelineState *)pipelineState.get();
         ps->renderPipelineState.assertExists();
-        NSLog(@"Render Pipeline Set: %@",(id<MTLRenderPipelineState>)ps->renderPipelineState.handle());
+        GTE_NSLOG(@"Render Pipeline Set: %@",(id<MTLRenderPipelineState>)ps->renderPipelineState.handle());
         [rp setRenderPipelineState:NSOBJECT_OBJC_BRIDGE(id<MTLRenderPipelineState>,ps->renderPipelineState.handle())];
         
         [rp setFrontFacingWinding:ps->rasterizerState.winding];
@@ -679,9 +679,9 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         }
 
         unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->vertexShader->internal);
-        NSLog(@"Binding GEBuffer at %s Shader: %@ At Index: %i",
-              isMeshVariant ? "Mesh" : "Vertex",
-              NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()), index);
+        GTE_NSLOG(@"Binding GEBuffer at %s Shader: %@ At Index: %i",
+                  isMeshVariant ? "Mesh" : "Vertex",
+                  NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()), index);
         if(isMeshVariant){
             [rp setMeshBuffer:NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()) offset:0 atIndex:index];
         } else {
@@ -717,8 +717,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->vertexShader->internal);
         TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, _id, renderPipelineState->vertexShader->internal);
         id<MTLTexture> view = metalTexture->getOrCreateSwizzledView(effective);
-        NSLog(@"Binding GETexture at %s Shader: %@ At Index: %i",
-              isMeshVariant ? "Mesh" : "Vertex", view, index);
+        GTE_NSLOG(@"Binding GETexture at %s Shader: %@ At Index: %i",
+                  isMeshVariant ? "Mesh" : "Vertex", view, index);
         if(isMeshVariant){
             [rp setMeshTexture:view atIndex:index];
         } else {
@@ -761,7 +761,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 
         unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->fragmentShader->internal);
 
-        NSLog(@"Binding GEBuffer at Fragment Shader: %@ At Index: %i",NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()),index);
+        GTE_NSLOG(@"Binding GEBuffer at Fragment Shader: %@ At Index: %i",NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()),index);
         [rp setFragmentBuffer:NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()) offset:0 atIndex:index];
         if(shaderHasWriteAccessForResource(_id,renderPipelineState->fragmentShader->internal)){
             metalBuffer->needsBarrier = true;
@@ -784,7 +784,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->fragmentShader->internal);
         TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, _id, renderPipelineState->fragmentShader->internal);
         id<MTLTexture> view = metalTexture->getOrCreateSwizzledView(effective);
-        NSLog(@"Binding GETexture at Fragment Shader: %@ At Index: %i",view,index);
+        GTE_NSLOG(@"Binding GETexture at Fragment Shader: %@ At Index: %i",view,index);
 
         [rp setFragmentTexture:view atIndex:index];
         // if(shaderHasWriteAccessForResource(_id,renderPipelineState->fragmentShader->internal)){
@@ -1151,13 +1151,13 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         presentEvent.commandBufferId = traceResourceId;
         presentEvent.nativeHandle = reinterpret_cast<std::uint64_t>(buffer.handle());
         ResourceTracking::Tracker::instance().emit(presentEvent);
-        NSLog(@"Present Drawable");
+        GTE_NSLOG(@"Present Drawable");
     };
     
     void GEMetalCommandBuffer::_commit(){
-         NSLog(@"[_commit] MTLCommandBuffer=%p status=%lu",
-               NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()),
-               (unsigned long)NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()).status);
+         GTE_NSLOG(@"[_commit] MTLCommandBuffer=%p status=%lu",
+                   NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()),
+                   (unsigned long)NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()).status);
          buffer.assertExists();
          auto completion = completionHandler;
          completionHandler = nullptr;
@@ -1170,7 +1170,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
                 NSLog(@"Command Buffer Failed to Execute. Error: %@",commandBuffer.error);
             }
             else if(commandBuffer.status == MTLCommandBufferStatusCompleted){
-                NSLog(@"Successfully completed Command Buffer! (Logs: %@) (Warning: %@) Duration:%f",commandBuffer.logs,commandBuffer.error,1000.f * (commandBuffer.GPUEndTime - commandBuffer.GPUStartTime));
+                GTE_NSLOG(@"Successfully completed Command Buffer! (Logs: %@) (Warning: %@) Duration:%f",commandBuffer.logs,commandBuffer.error,1000.f * (commandBuffer.GPUEndTime - commandBuffer.GPUStartTime));
             }
             if(completion){
                 GECommandBufferCompletionInfo info {};
@@ -1262,10 +1262,10 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
     void GEMetalCommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer){
         auto _commandBuffer = (GEMetalCommandBuffer *)commandBuffer.get();
         [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,_commandBuffer->buffer.handle()) enqueue];
-        NSLog(@"[submitCB] queue=%p enqueue CB=%p bufferCount=%lu->%lu",
-              this, _commandBuffer->buffer.handle(),
-              (unsigned long)commandBuffers.size(),
-              (unsigned long)(commandBuffers.size()+1));
+        GTE_NSLOG(@"[submitCB] queue=%p enqueue CB=%p bufferCount=%lu->%lu",
+                  this, _commandBuffer->buffer.handle(),
+                  (unsigned long)commandBuffers.size(),
+                  (unsigned long)(commandBuffers.size()+1));
         ResourceTracking::Event submitEvent {};
         submitEvent.backend = ResourceTracking::Backend::Metal;
         submitEvent.eventType = ResourceTracking::EventType::Submit;
@@ -1297,7 +1297,7 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
     };
 
     void GEMetalCommandQueue::commitToGPUAndPresent(NSSmartPtr & drawable){
-        NSLog(@"[commitToGPUAndPresent] commandBuffers.size=%lu", (unsigned long)commandBuffers.size());
+        GTE_NSLOG(@"[commitToGPUAndPresent] commandBuffers.size=%lu", (unsigned long)commandBuffers.size());
         if(commandBuffers.empty()){
             NSLog(@"[commitToGPUAndPresent] ERROR: no command buffers to present!");
             return;
@@ -1325,7 +1325,7 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
                 "CommandQueue",
                 traceResourceId,
                 commandQueue.handle());
-        NSLog(@"Metal Command Queue Destroy");
+        GTE_NSLOG(@"Metal Command Queue Destroy");
         dispatch_release(semaphore);
     //    [NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,commandQueue.handle()) autorelease];
     };

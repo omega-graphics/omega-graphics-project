@@ -3,51 +3,12 @@
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
 #include "omegaWTK/Composition/DisplayList.h"
-#include "omegaWTK/Composition/CanvasEffect.h"
 #include <omegaWTK/Composition/FontEngine.h>
 #include <omegaWTK/Main.h>
 #include <iostream>
-#include <memory>
-
-namespace {
-
-OmegaWTK::Composition::LayerEffect::DropShadowParams makeShadow(float x,float y,float radius,float blur,float opacity){
-    OmegaWTK::Composition::LayerEffect::DropShadowParams params {};
-    params.x_offset = x;
-    params.y_offset = y;
-    params.radius = radius;
-    params.blurAmount = blur;
-    params.opacity = opacity;
-    params.color = OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Black8);
-    return params;
-}
-
-}
 
 class TextCompositorWidget final : public OmegaWTK::Widget {
     OmegaWTK::Core::SharedPtr<OmegaWTK::Composition::Font> font;
-    OmegaWTK::UIViewPtr accentView {};
-    bool loggedUIViewValidation = false;
-
-    static OmegaWTK::Composition::Rect accentRectForBounds(const OmegaWTK::Composition::Rect & bounds){
-        constexpr float kLayerSize = 120.0f;
-        return OmegaWTK::Composition::Rect{
-            OmegaWTK::Composition::Point2D{
-                (bounds.w - kLayerSize) * 0.5f,
-                (bounds.h - kLayerSize) * 0.5f},
-            kLayerSize,
-            kLayerSize};
-    }
-
-    void ensureAccentView(const OmegaWTK::Composition::Rect & bounds){
-        // auto targetRect = accentRectForBounds(bounds);
-        // if(accentView == nullptr){
-        //     accentView = makeSubView<OmegaWTK::UIView>(targetRect,"text_accent_view");
-        // }
-        // else {
-        //     accentView->resize(targetRect);
-        // }
-    }
 
     void ensureFontLoaded(){
         if(font != nullptr){
@@ -62,7 +23,6 @@ class TextCompositorWidget final : public OmegaWTK::Widget {
         // DejaVu Sans on Linux. Helvetica doesn't ship with Windows
         // — DWrite's `FindFamilyName` returns false and the font is
         // routed to BitmapFallback (the MSDF path then renders nothing).
-        // RootWidget/Main.cpp uses the same family for the same reason.
         OmegaWTK::Composition::FontDescriptor descriptor(
             "Arial",
             28,
@@ -70,35 +30,16 @@ class TextCompositorWidget final : public OmegaWTK::Widget {
         font = fontEngine->CreateFont(descriptor);
     }
 
-protected:
-    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
-        (void)desc;
-    }
-
-    void onMount() override {
-        ensureAccentView(rect());
-    }
-
-    void resize(OmegaWTK::Composition::Rect & newRect) override {
-        ensureAccentView(newRect);
-    }
-
-    void onPaint(OmegaWTK::PaintReason reason) override {
-        (void)reason;
+    void rebuildContent(){
         ensureFontLoaded();
         if(font == nullptr){
             return;
         }
 
-        // Tier 3 Phase 3.9: migrated off CanvasView's imperative
-        // clear()/drawText() to a declarative UIView layout. A
-        // full-bounds rect supplies the white backdrop; two text
-        // elements replace the two drawText calls (the body element
-        // carries the centered + word-wrapped layout the second
-        // drawText used via its TextLayoutDescriptor).
         auto & uv = viewAs<OmegaWTK::UIView>();
         auto & r = rect();
-        OmegaWTK::Composition::Rect bounds{OmegaWTK::Composition::Point2D{0.f,0.f},r.w,r.h};
+        OmegaWTK::Composition::Rect bounds{
+            OmegaWTK::Composition::Point2D{0.f,0.f}, r.w, r.h};
 
         OmegaWTK::Composition::Rect titleRect{
             OmegaWTK::Composition::Point2D{24.0f,24.0f},
@@ -135,7 +76,21 @@ protected:
         style = style->textWrapping("body",
             OmegaWTK::Composition::TextLayoutDescriptor::WrapByWord);
         uv.setStyle(style);
-        uv.update();
+    }
+
+protected:
+    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
+        (void)desc;
+    }
+
+    void onMount() override {
+        rebuildContent();
+    }
+
+    void resize(OmegaWTK::Composition::Rect & newRect) override {
+        viewAs<OmegaWTK::UIView>().resize(newRect);
+        rebuildContent();
+        invalidate(OmegaWTK::PaintReason::Resize);
     }
 
 public:

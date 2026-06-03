@@ -68,12 +68,13 @@ namespace OmegaWTK::Native {
         /// Whether the native surface is realized and the engine may
         /// render into it. Backends with a meaningful gap between
         /// window construction and surface availability (GTK/X11)
-        /// override. The default `return true` is provisional
-        /// — it lines up with today's macOS/Windows behavior only
-        /// because `PaintOptions::autoWarmupOnInitialPaint` resubmits
-        /// the initial frame; once warmup is removed
-        /// (`Widget-View-Paint-Lifecycle-Plan.md` Tier D) every backend
-        /// must override with a real check.
+        /// override. The default `return true` is provisional and now
+        /// known wrong on GTK/X11. Pre-D1 the
+        /// `PaintOptions::autoWarmupOnInitialPaint` resubmits papered
+        /// over a missed first frame on those backends; Tier D / D1
+        /// (2026-06-03) removed the warmup field, so every backend that
+        /// can race surface realization with the first `Widget::init`
+        /// paint must override this with a real availability check.
         ///
         /// May transiently return false during a re-realize cycle (DPI
         /// change, display reconfiguration, surface re-host) and then

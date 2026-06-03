@@ -149,7 +149,10 @@ function(add_kreate_game)
     # and let the runtime compiler handle them.
     if(_ARG_SHADERS)
         if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
-            set(_kreate_shader_dest "$<TARGET_BUNDLE_CONTENT_DIR:${_ARG_NAME}>/Resources")
+            # add_app_bundle builds the .app structure by hand (no MACOSX_BUNDLE
+            # on the target), so $<TARGET_BUNDLE_CONTENT_DIR> doesn't apply.
+            # Mirror the path add_app_bundle stages Resources to.
+            set(_kreate_shader_dest "${APP_BUNDLE_OUTPUT_DIR}/${_ARG_NAME}.app/Contents/Resources")
         else()
             set(_kreate_shader_dest "$<TARGET_FILE_DIR:${_ARG_NAME}>")
         endif()
