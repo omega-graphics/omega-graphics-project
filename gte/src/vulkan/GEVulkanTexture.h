@@ -60,17 +60,6 @@ public:
     VkDeviceSize   stagingSize   = 0;
     OmegaCommon::Vector<VkBufferImageCopy> stagingRegions;
 
-    // Layout the image was left in by the most recent upload / readback
-    // (or VK_IMAGE_LAYOUT_UNDEFINED at allocation time). The
-    // immediate-upload path transitions UNDEFINED → TRANSFER_DST →
-    // SHADER_READ_ONLY_OPTIMAL on first copyBytes; subsequent calls
-    // must transition from the cached layout instead of UNDEFINED
-    // (which would discard the prior contents and silently produce a
-    // black texture). The encoder-side `layout` field above is the
-    // *expected initial* layout for the first bind; this field tracks
-    // what the staging path actually left behind.
-    VkImageLayout  stagingCurrentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
     // Gates accumulated by encoders that bound this texture. Texture must
     // outlive every gate before vmaDestroyImage can run.
     OmegaCommon::Vector<Retention::FenceGate> pendingGates;

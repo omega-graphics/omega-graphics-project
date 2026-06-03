@@ -2211,16 +2211,25 @@ _NAMESPACE_BEGIN_
             return false;
         }
 
-        const VkImageLayout oldLayout = tex.stagingCurrentLayout;
+        // `tex.layout` is the canonical tracker — `addResourceBarrierForTextureCopy`,
+        // `insertResourceBarrierIfNeeded`, and `startRenderPass` keep it current as
+        // the image moves through user-issued copies / draws / passes. Read it
+        // directly so the barrier's oldLayout matches the image's actual state
+        // even if the user mutated the image via `copyTextureToTexture` between
+        // staging calls. (Previously read `tex.stagingCurrentLayout`, a shadow
+        // tracker only the staging paths updated — it drifted for FromGPU
+        // textures fed by `copyTextureToTexture`.)
+        const VkImageLayout oldLayout = tex.layout;
         const std::uint32_t mipLevels  = tex.descriptor.mipLevels > 0 ? tex.descriptor.mipLevels : 1;
         const std::uint32_t layerCount = tex.descriptor.arrayLayers > 0 ? tex.descriptor.arrayLayers : 1;
 
-        // oldLayout -> TRANSFER_DST_OPTIMAL. From UNDEFINED on the
-        // first upload (image was created with initialLayout =
-        // UNDEFINED) or from SHADER_READ_ONLY_OPTIMAL on subsequent
-        // uploads (the readback path leaves it in the prior layout).
+        // oldLayout -> TRANSFER_DST_OPTIMAL. Broad src stage/access so the
+        // barrier covers whichever prior op (shader sample, render-target
+        // write, prior transfer) left the image in `oldLayout`.
         VkImageMemoryBarrier toDst {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        toDst.srcAccessMask = (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) ? 0 : VK_ACCESS_SHADER_READ_BIT;
+        toDst.srcAccessMask = (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+            ? 0
+            : (VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
         toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         toDst.oldLayout = oldLayout;
         toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -2233,7 +2242,7 @@ _NAMESPACE_BEGIN_
         toDst.subresourceRange.baseArrayLayer = 0;
         toDst.subresourceRange.layerCount = layerCount;
         vkCmdPipelineBarrier(cb,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
             0, 0, nullptr, 0, nullptr, 1, &toDst);
 
         vkCmdCopyBufferToImage(cb, tex.stagingBuffer, tex.img,
@@ -2284,10 +2293,10 @@ _NAMESPACE_BEGIN_
             DEBUG_STREAM("submitImmediateUploadFromStaging: vkWaitForFences failed " << waitRes);
             return false;
         }
-        tex.stagingCurrentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        // The engine encoder layout-tracking field. Subsequent renderer
-        // binds read this when emitting barriers, so it must agree with
-        // the layout the staging path left the image in.
+        // `tex.layout` is the single layout tracker the engine consults
+        // everywhere. Subsequent renderer binds and copies read this when
+        // emitting barriers, so it must agree with the layout the staging
+        // path left the image in.
         tex.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         return true;
     }
@@ -2321,14 +2330,28 @@ _NAMESPACE_BEGIN_
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(cb, &begin);
 
-        const VkImageLayout priorLayout = tex.stagingCurrentLayout == VK_IMAGE_LAYOUT_UNDEFINED
-            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL  // best-guess if we never tracked it
-            : tex.stagingCurrentLayout;
+        // Read the canonical `tex.layout` (kept current by every encoder
+        // path that mutates this image: `copyTextureToTexture`, shader
+        // binds, render-pass start). The previous code consulted
+        // `stagingCurrentLayout`, a staging-only shadow tracker that
+        // stayed UNDEFINED for FromGPU textures filled via
+        // `copyTextureToTexture(rt, readback)` — the resulting
+        // "SHADER_READ_ONLY_OPTIMAL best-guess" oldLayout disagreed with
+        // the real TRANSFER_DST_OPTIMAL state and the validator caught
+        // it (UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout).
+        const VkImageLayout priorLayout = tex.layout;
         const std::uint32_t mipLevels  = tex.descriptor.mipLevels > 0 ? tex.descriptor.mipLevels : 1;
         const std::uint32_t layerCount = tex.descriptor.arrayLayers > 0 ? tex.descriptor.arrayLayers : 1;
 
         VkImageMemoryBarrier toSrc {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        toSrc.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        // Broad src access — the prior op could be any of shader-sample,
+        // render-target write, or a prior transfer. Stage is already
+        // ALL_COMMANDS_BIT below; pair the access mask with the union of
+        // memory-read / memory-write so the synchronization scope covers
+        // every plausible producer of `priorLayout`.
+        toSrc.srcAccessMask = (priorLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+            ? 0
+            : (VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
         toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         toSrc.oldLayout = priorLayout;
         toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -2393,7 +2416,11 @@ _NAMESPACE_BEGIN_
         if(waitRes != VK_SUCCESS){
             return false;
         }
-        tex.stagingCurrentLayout = priorLayout;
+        // priorLayout was already `tex.layout` going in; the toPrior
+        // barrier restored the image to it. No tracker update needed —
+        // included as a no-op for symmetry / future-proofing if the
+        // staging path is ever rewritten to leave the image in a
+        // different post-readback layout.
         tex.layout = priorLayout;
         return true;
     }

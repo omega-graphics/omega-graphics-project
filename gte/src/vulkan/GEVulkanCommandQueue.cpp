@@ -1724,6 +1724,13 @@ _NAMESPACE_BEGIN_
         assert(renderPipelineState->isMesh
                && "drawMeshTasks: bound pipeline is a graphics pipeline, not a mesh pipeline. "
                   "Use makeMeshPipelineState to build a mesh-variant PSO.");
+        // Mirror the classic draw entry points: startRenderPass defers
+        // vkCmdBeginRenderPass so bind-time barriers can land outside the
+        // pass, and pending mesh-stage descriptor writes from bindResource*
+        // need to flush before dispatch. Without these the validator fires
+        // VUID-vkCmdDrawMeshTasksEXT-renderpass.
+        beginRenderPassIfDeferred();
+        bindDescriptorSetsIfPending();
         engine->vkCmdDrawMeshTasksExt(commandBuffer, groupCountX, groupCountY, groupCountZ);
     #else
         (void)groupCountX; (void)groupCountY; (void)groupCountZ;
