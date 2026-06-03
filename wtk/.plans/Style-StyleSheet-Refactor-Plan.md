@@ -660,6 +660,19 @@ swap by replacing the active `ThemeVars` and dirtying the root with
 
 This matches WML's `:theme(dark)` model and CSS custom properties.
 
+> **Forward pointer — native theme as the default source.** When no
+> custom `Theme` is set, `ThemeVars` should not start empty — they
+> should be populated from the OS theme so widgets inherit OS chrome
+> colors (surface, accent, foreground, control fills) on every
+> platform. The priority chain that resolves a single value from
+> {inline `Style` → custom `Theme` (variant-picked by OS appearance) →
+> `NativeTheme` defaults → hardcoded fallback}, plus the per-platform
+> mechanics for actually applying the resolved surface color into the
+> Vulkan / D3D12 / Metal clear, lives in
+> [Native-Theme-Application-Plan.md](Native-Theme-Application-Plan.md).
+> That plan also adds `Application::nativeTheme()` /
+> `setForcedAppearance()` next to the surface this section defines.
+
 ### 3.9 What `Style` cannot do that `StyleSheet` can
 
 | Capability | `Style` (inline) | `StyleSheet` (global) |

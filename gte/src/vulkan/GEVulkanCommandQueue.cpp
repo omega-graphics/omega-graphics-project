@@ -9,6 +9,8 @@
 
 #include <cstdint>
 #include <iostream>
+#include <unordered_map>
+#include <utility>
 
 _NAMESPACE_BEGIN_
     namespace {
@@ -863,9 +865,14 @@ _NAMESPACE_BEGIN_
         // retire them and start a fresh cluster — writing the same set
         // after it was bound violates "descriptor set updated while bound."
         if(fallbackSetsCommitted){
+            // Pair each retired set with its origin pool (the current
+            // fallbackDescriptorPool — the live ring is always single-pool).
+            // The release path needs this to call vkFreeDescriptorSets
+            // against the pool the set was allocated from, not whatever
+            // pool the LATEST pipeline happened to use.
             for(auto s : fallbackDescriptorSets){
                 if(s != VK_NULL_HANDLE){
-                    retiredFallbackSets.push_back(s);
+                    retiredFallbackSets.push_back({fallbackDescriptorPool, s});
                 }
             }
             fallbackDescriptorSets.clear();
@@ -917,9 +924,13 @@ _NAMESPACE_BEGIN_
     }
 
     void GEVulkanCommandBuffer::resetFallbackDescriptorSetsForNewPipeline(){
+        // Same pool-pairing as the bind-time retirement: the live ring is
+        // single-pool (== fallbackDescriptorPool), and the upcoming pipeline
+        // will overwrite fallbackDescriptorPool to its own pool. Pair now so
+        // the freed-against pool survives the switch.
         for(auto s : fallbackDescriptorSets){
             if(s != VK_NULL_HANDLE){
-                retiredFallbackSets.push_back(s);
+                retiredFallbackSets.push_back({fallbackDescriptorPool, s});
             }
         }
         fallbackDescriptorSets.clear();
@@ -935,25 +946,37 @@ _NAMESPACE_BEGIN_
             return;
         }
         VkDevice dev = parentQueue->engine->device;
-        VkDescriptorPool pool = fallbackDescriptorPool;
-        // Defer the actual vkFreeDescriptorSets to the engine's retention
-        // queue so the GPU has finished using the sets before they're
-        // returned to the pool. The pattern mirrors the framebuffer
-        // teardown in this destructor.
-        OmegaCommon::Vector<VkDescriptorSet> toFree;
-        toFree.reserve(retiredFallbackSets.size() + fallbackDescriptorSets.size());
-        for(auto s : retiredFallbackSets){
-            if(s != VK_NULL_HANDLE){ toFree.push_back(s); }
+        // Bucket every set by its origin pool. Retired sets carry their
+        // origin pool explicitly; the live ring is single-pool (its pool ==
+        // fallbackDescriptorPool by invariant — acquireOrUpdateFallbackSet
+        // only allocates against the current pipeline's pool and clears the
+        // ring on pipeline switch). vkFreeDescriptorSets requires every set
+        // in the batch to belong to the pool being passed
+        // (VUID-vkFreeDescriptorSets-pDescriptorSets-parent), so we issue
+        // one free call per pool.
+        std::unordered_map<VkDescriptorPool, OmegaCommon::Vector<VkDescriptorSet>> buckets;
+        for(auto & ps : retiredFallbackSets){
+            if(ps.first != VK_NULL_HANDLE && ps.second != VK_NULL_HANDLE){
+                buckets[ps.first].push_back(ps.second);
+            }
         }
-        for(auto s : fallbackDescriptorSets){
-            if(s != VK_NULL_HANDLE){ toFree.push_back(s); }
+        if(fallbackDescriptorPool != VK_NULL_HANDLE){
+            for(auto s : fallbackDescriptorSets){
+                if(s != VK_NULL_HANDLE){
+                    buckets[fallbackDescriptorPool].push_back(s);
+                }
+            }
         }
         retiredFallbackSets.clear();
         fallbackDescriptorSets.clear();
-        if(!toFree.empty() && pool != VK_NULL_HANDLE){
+        // Defer each per-pool free to the engine's retention queue so the
+        // GPU has finished using the sets before they're returned to the
+        // pool. Mirrors the framebuffer teardown elsewhere in this file.
+        for(auto & [pool, sets] : buckets){
+            if(sets.empty()){ continue; }
             parentQueue->engine->retentionQueue.enqueue(
                 {},
-                [dev, pool, sets = std::move(toFree)]() mutable {
+                [dev, pool, sets = std::move(sets)]() mutable {
                     if(!sets.empty()){
                         vkFreeDescriptorSets(dev, pool,
                                              static_cast<std::uint32_t>(sets.size()),

@@ -327,9 +327,11 @@ Backed by `NSTimer`, `SetTimer`/`KillTimer`, `g_timeout_add`.
 
 ---
 
-### 2.5 NativeTheme — Rich Theme Descriptor ✅ Done
+### 2.5 NativeTheme — Rich Theme Descriptor ✅ Done (data model only)
 
 Implemented. See `NativeTheme.h`: `ThemeAppearance` (Light/Dark), `ThemeDesc` with `Colors` and `Typography` sub-structs, `queryCurrentTheme()`.
+
+> **Forward pointer:** the *application* story — wiring `NativeTheme.colors.background` into the per-frame clear color so a `UIView` with no explicit background inherits the OS surface color uniformly on all three platforms (currently macOS works by accident, Windows clears to engine default, GTK + Vulkan clears to pitch black), plus the custom-`Theme` override that follows OS dark mode — lives in [Native-Theme-Application-Plan.md](Native-Theme-Application-Plan.md). The GTK `queryCurrentTheme()` gap noted in §1's Current State table is filled by that plan's Tier 1 (the row in §1 still reads "GTK missing" — the header's "Done" mark applies to the data model only).
 
 ---
 

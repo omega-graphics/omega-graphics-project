@@ -203,9 +203,9 @@ Four landings, each independently shippable:
 
 3. **Compositor gate + back-edge.** [DONE] Add the `AppWindow*` back-edge per §3.5(A), wire the `drainWindowSurfaces` skip per §3.3, register the `onFirstRealize` wake on `AppWindow` construction. SVGViewRenderTest now renders the SVG on Linux. macOS/Windows behavior is unchanged at this step because their `isNativeReady` still returns true unconditionally via the defaults.
 
-4. **macOS override (required-before-Tier-D).** `CocoaAppWindow.mm` overrides `isNativeReady` (atomic flag flipped on first valid drawable / first `windowDidUpdate:` after visible) and `onFirstRealize` / `onRealize` with the same two-vector storage pattern as GTK. Plus the re-realize triggers from §3.2.
+4. **macOS override (required-before-Tier-D).** [DONE] `CocoaAppWindow.mm` overrides `isNativeReady` (atomic flag flipped on first valid drawable / first `windowDidUpdate:` after visible) and `onFirstRealize` / `onRealize` with the same two-vector storage pattern as GTK. Plus the re-realize triggers from §3.2.
 
-5. **Windows override (required-before-Tier-D).** `WinAppWindow.cpp` overrides the same trio, atomic flipped in the wndproc on the first `WM_PAINT`/`WM_SHOWWINDOW` that confirms the swap chain is presentable. Plus `WM_DPICHANGED` / `WM_DISPLAYCHANGE` as re-realize triggers.
+5. **Windows override (required-before-Tier-D).** [DONE] `WinAppWindow.cpp` overrides the same trio, atomic flipped in the wndproc on the first `WM_PAINT`/`WM_SHOWWINDOW` that confirms the swap chain is presentable. Plus `WM_DPICHANGED` / `WM_DISPLAYCHANGE` as re-realize triggers.
 
 6. **(Future) Wayland override.** When the Wayland backend lands per §2.13's followup workstream, it overrides too — first `xdg_surface.configure` ack + commit for first realize, subsequent configures with scale/transform changes for re-realize.
 

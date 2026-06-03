@@ -35,10 +35,10 @@ Related documents:
 | **A1** | `NativePanel` native impls + `AppPanel` UI wrapper + compositor hosting | Planned |
 | **A2** | Panel positioning, parent association, non-activating panels | Planned |
 | **A3** | Route overlay widgets (`Popover`/`Tooltip`/`ContextMenu`/`Modal`) through `AppPanel` | Planned |
-| **B0** | `WindowChrome` mode enum + borderless plumbing (generalize `setEnableWindowHeader`) | Planned |
+| **B0** | `WindowChrome` mode enum (`Native` / `Custom`) + borderless plumbing (generalize `setEnableWindowHeader`) | Planned |
 | **B1** | Draggable caption + resize regions (cross-platform native hit-test API) | Planned |
-| **B2** | Cross-platform window controls; macOS native traffic-light repositioning | Planned |
-| **B3** | App-drawn `MenuBar` + `PopupMenu` flyouts (consumes Part A) | Planned |
+| **B2** | `Custom` mode controls: GTK + Win32 fully app-drawn; macOS reposition native traffic lights only | Planned |
+| **B3** | Virtual `MenuBar` widget + `PopupMenu` flyouts (consumes Part A); `NativeMenu` removed | Planned |
 | **C1** | Shared global `GECommandQueue` on the Compositor; backends pull instead of create | Planned |
 | **C2** | Batched per-tick `commitToGPU` + fence-isolated per-window present | Planned |
 
@@ -54,13 +54,14 @@ Related documents:
 | Custom chrome | `AppWindow::setEnableWindowHeader(bool)` (non-mobile) | Win32 extends the frame into the client area via `DwmExtendFrameIntoClientArea` |
 | Custom controls | `getExitButton()` / `getMaxmizeButton()` / `getMinimizeButton()` | **`#ifdef TARGET_WIN32` only** — returns `View`s; no macOS/GTK equivalent |
 | Window controls (logic) | `minimize()` / `maximize()` / `restore()` / `close()` / `toggleFullscreen()` | Already public and cross-platform on `AppWindow` |
-| Native menu | `AppWindow::setMenu(SharedHandle<Menu>)` | macOS binds to `NSApp.mainMenu` (app-global), Win32/GTK are per-window |
+| Native menu | `AppWindow::setMenu(SharedHandle<Menu>)` | macOS binds to `NSApp.mainMenu` (app-global), Win32/GTK are per-window. **Slated for removal — see Part B3.** GTK + Win32 native menu impls (`WinMenu`, `GTKMenu`) and the shared `Native::NativeMenu` interface are deleted. macOS `NSApp.mainMenu` is retained via a new stand-alone `MacAppMenu` helper that sits outside `Native::*` and consumes `UI/Menu.h` directly |
 
 ### Key gaps
 
 1. **No detached render surface.** Every widget tree is bound to exactly one `AppWindow`. Overlays that must exceed window bounds (a dropdown near the window edge, a floating palette, a screen-anchored tooltip) cannot be expressed.
-2. **Custom chrome is non-uniform and incomplete.** The only custom-control hooks are Win32-only `View` accessors. There is no borderless mode contract, no draggable-caption hit-testing, and no cross-platform control story. This violates the front-end-uniformity rule (a construct must be expressible on all backends or be rejected, not silently diverge).
+2. **Custom chrome is non-uniform and incomplete.** The only custom-control hooks are Win32-only `View` accessors. There is no borderless mode contract, no draggable-caption hit-testing, and no cross-platform control story. This violates the front-end-uniformity rule (one chrome API surface; platform realization can differ but mode availability must not).
 3. **No client-side-decoration (CSD) drag/resize.** A borderless window currently cannot be moved or resized by the user, because the native layer has no way to ask the virtual layer "is this point a caption / resize border?"
+4. **Menus are native and per-platform-coded.** Today menus are bound to OS objects (`NSMenu`, `HMENU`, `GtkMenuBar`) via the `NativeMenu` interface, with three separate native impls. Styling, theming, and keyboard handling diverge per platform, and there is no way to embed a menu inside a custom title bar. Replaced by a virtual `MenuBar` widget (Part B3).
 
 ---
 
@@ -193,24 +194,30 @@ The overlay widgets in [Widget-Stub-Implementation-Plan.md](Widget-Stub-Implemen
 
 ### B.1 Goal
 
-Let an application draw its **entire** window chrome — title bar, menu bar, and window controls — as widgets, uniformly on all platforms. macOS keeps its native traffic-light buttons (for convenience and platform-correct behavior) but can **reposition** them into an app-specified rect.
+Let an application draw its window chrome — title bar, menu bar, and (on GTK / Win32) the min/max/close buttons — as widgets, with one cross-platform API. macOS is **the constrained case**: its native window controls (the three traffic-light buttons) cannot be hidden or app-replaced; under `Custom` mode the frame is popped out (`NSWindowStyleMaskFullSizeContentView`) and the traffic lights are **repositioned** to an app-specified rect, but they remain native.
 
-> **Uniformity principle:** The existing `#ifdef TARGET_WIN32` control accessors are replaced by a single cross-platform API. Platform differences (macOS native traffic lights vs. app-drawn buttons) are expressed through a **chrome-mode enum**, never through platform-only methods. A construct that cannot be expressed on all three backends is rejected at the API, not left to diverge per-platform.
+> **Uniformity principle:** One mode enum, one API. Per-platform *realization* of `Custom` differs (macOS keeps native traffic lights; GTK/Win32 render app buttons), but mode *availability* does not — every platform supports `{Native, Custom}`. We do **not** add a second "with-native-controls" mode that exists only on macOS — that would re-introduce per-platform API divergence. The macOS traffic-light constraint is documented behavior of `Custom`, not a separate construct.
 
 ### B.0 Chrome mode
 
 ```cpp
 // AppWindow.h
 enum class WindowChrome : uint8_t {
-    Native,                 // OS-drawn title bar + controls (current default)
-    Custom,                 // borderless; app draws title bar, menus, and controls
-    CustomWithNativeControls // app draws title bar; OS controls repositioned into appRect (macOS traffic lights)
+    Native,   // OS-drawn title bar + controls (current default)
+    Custom,   // borderless; app draws caption + menus. Controls:
+              //   - GTK + Win32: app-drawn (no native controls visible)
+              //   - macOS:       native traffic lights repositioned into setNativeControlRect()
 };
 
 void setWindowChrome(WindowChrome chrome);
+
+/// Honored on macOS in `Custom` mode: repositions the native min/maximize/close
+/// (traffic-light) buttons inside the client area. No-op on GTK + Win32, where
+/// `Custom` hides all native controls and the app draws its own.
+void setNativeControlRect(const Composition::Rect & rect);
 ```
 
-`Custom`/`CustomWithNativeControls` generalize today's `setEnableWindowHeader(false)`: borderless plumbing already exists on Win32 (`DwmExtendFrameIntoClientArea`) and must be filled in for macOS (`NSWindowStyleMaskFullSizeContentView` + transparent titlebar) and GTK (`gtk_window_set_decorated(false)` or `gtk_window_set_titlebar`).
+`Custom` generalizes today's `setEnableWindowHeader(false)`: borderless plumbing already exists on Win32 (`DwmExtendFrameIntoClientArea`) and must be filled in for macOS (`NSWindowStyleMaskFullSizeContentView` + transparent titlebar, retaining `NSWindowStyleMaskClosable | Miniaturizable | Resizable` so the traffic lights survive) and GTK (`gtk_window_set_decorated(false)`).
 
 ### B.1 Draggable caption + resize regions (the hard part)
 
@@ -235,28 +242,45 @@ The app recomputes and pushes these whenever its title-bar widgets relayout.
 
 ### B.2 Window controls
 
-Two complementary paths:
+Under `WindowChrome::Custom`:
 
-1. **App-drawn buttons (primary, fully uniform):** the app builds ordinary `Button` widgets and wires them to the **already-public** `AppWindow::minimize()` / `maximize()` / `restore()` / `close()` / `toggleFullscreen()`. No new native objects required. The three Win32-only `getExitButton()`/`getMaxmizeButton()`/`getMinimizeButton()` accessors are **deprecated and removed** in favor of this path.
-2. **Native control repositioning (`CustomWithNativeControls`, macOS-centric):** keep the OS-drawn controls but move them into an app-specified rect. On macOS this maps to `-[NSWindow standardWindowButton:]` frame adjustment (the "traffic lights can be moved around" case). On Win32/GTK this mode falls back to app-drawn buttons (there is no equivalent movable native caption-button object), expressed through the enum rather than a platform `#ifdef`.
+- **GTK + Win32 — fully app-drawn.** The app builds ordinary `Button` widgets (or any widget) and wires them to the **already-public** `AppWindow::minimize()` / `maximize()` / `restore()` / `close()` / `toggleFullscreen()`. The native frame is gone; no OS-drawn controls remain. The three Win32-only `getExitButton()`/`getMaxmizeButton()`/`getMinimizeButton()` accessors are **deprecated and removed** in favor of this path.
+- **macOS — native traffic lights, repositioned.** The native min/maximize/close buttons (`-[NSWindow standardWindowButton:]`) **cannot be hidden or replaced** by app widgets and remain visible in `Custom` mode. `setNativeControlRect(rect)` moves their group origin to `rect`, sized to the OS's natural traffic-light extent (the rect's width/height are advisory; the buttons keep their native size). The app draws everything else (caption text, menus) around them.
 
-```cpp
-void setNativeControlRect(const Composition::Rect & rect); // honored in CustomWithNativeControls mode
-```
+On GTK + Win32, `setNativeControlRect` is a no-op (there are no movable native control objects to address). This is the documented per-platform realization of one uniform API — not a platform-only method.
 
-### B.3 Custom menus
+### B.3 Custom menus — `NativeMenu` removed
 
-macOS menus are app-global (`NSApp.mainMenu`), so "custom menus" means **app-drawn**, not native-repositioned:
+**`NativeMenu` and its per-platform bindings are removed.** On GTK + Win32 every menu is drawn as a virtual widget; there is no native menu object behind it. The motivation is the same uniformity that drives Part B's chrome: one menu primitive, identical across platforms, themable and embeddable in custom title bars.
 
-- A new `MenuBar` widget hosts horizontal menu titles inside the custom title bar; clicking one opens a `PopupMenu` / `ContextMenu` (the in-view overlay widgets from the catalog). For menus that overflow the window edge, the flyout is hosted in an **`AppPanel`** (Part A).
-- `AppWindow::setMenu(SharedHandle<Menu>)` (native menu) remains valid and is the default under `WindowChrome::Native`. The two are mutually exclusive per window.
+Removed:
+
+- `Native::NativeMenu` (interface) and `make_native_menu` factory
+- `src/Native/win/WinMenu.{cpp,h}` — Win32 `HMENU` bridge
+- `src/Native/gtk/GTKMenu.{cpp,h}` — `GtkMenuBar`/`GtkMenu` bridge
+- `src/Native/NativeMenu.cpp` — shared scaffolding
+- `AppWindow::setMenu(SharedHandle<Menu>)` on GTK + Win32
+
+Replaced by:
+
+- A new **`MenuBar` widget** (`Widgets/Navigation.h`) that hosts horizontal menu titles. Clicking a title opens a `PopupMenu` / `ContextMenu` (the in-view overlay widgets from [Widget-Stub-Implementation-Plan.md](Widget-Stub-Implementation-Plan.md)). Menus that overflow the window edge host their flyout in an **`AppPanel`** (Part A).
+- The existing **`UI/Menu.h` data model** (`Menu`, `MenuItem`, `CategoricalMenu`, `ButtonMenuItem`, `MenuItemSeperator`, delegates) is retained — `MenuBar` consumes it as its model so application call sites that already build a `Menu` tree need only swap `appWindow.setMenu(menu)` for `menuBar.setModel(menu)` (or equivalent).
+
+**macOS — `MacAppMenu` stand-alone helper.** macOS retains its app-global top-of-screen menu strip (`NSApp.mainMenu`) because it is OS-level: the system delivers `Cmd+Q`, standard edit-menu shortcuts, and the Apple-menu inheritance through it, and apps that do not register one render as broken to platform users. Replacement path:
+
+- A new **`MacAppMenu`** helper (`src/Native/macos/MacAppMenu.{h,mm}`) consumes the same `UI/Menu.h` data model as `MenuBar` and pushes it into `NSApp.mainMenu`. It is a thin Objective-C++ glue file — not a `Native::NativeMenu` implementation, not part of any `Native::*` interface. `NativeMenu` does not come back.
+- `CocoaMenu.{h,mm}` (the current `Native::NativeMenu` impl) is removed and replaced by `MacAppMenu`. The `Menu` data model is unchanged; the binding surface differs (helper call vs. polymorphic `NativeMenu` factory).
+- On macOS, an application picks one of: (a) `MacAppMenu` for the top-of-screen menu strip, or (b) the in-window `MenuBar` widget. Both consume `Menu`; they are mutually exclusive per app (using both would put the same items in two places).
+- `MacAppMenu` lives outside the cross-platform uniformity envelope by design — it is a platform-correctness escape hatch, called explicitly from app code (`MacAppMenu::setModel(menu)`), not from `AppWindow`. GTK + Win32 have no equivalent and never need one.
 
 ### Exit criteria (Part B)
 
-- A borderless `AppWindow` can be moved by dragging an app-defined caption region and resized from its edges, on all three platforms.
-- App-drawn min/max/close buttons drive the corresponding window operations.
-- On macOS, `CustomWithNativeControls` repositions the traffic lights into the app's rect and they remain functional.
-- An app-drawn `MenuBar` opens `PopupMenu` flyouts; an edge-overflowing menu renders fully via `AppPanel`.
+- A borderless `AppWindow` under `WindowChrome::Custom` can be moved by dragging an app-defined caption region and resized from its edges, on all three platforms.
+- On GTK + Win32 under `Custom`: app-drawn min/max/close buttons drive the corresponding `AppWindow` operations; no native window controls are visible.
+- On macOS under `Custom`: the native traffic lights are repositioned to `setNativeControlRect`'s rect and remain functional; no other native chrome is visible.
+- `Native::NativeMenu` and its three native impls (`WinMenu`, `GTKMenu`, `CocoaMenu`) are deleted; `MenuBar` widget renders the same `UI/Menu.h` model on GTK + Win32; an edge-overflowing menu renders fully via `AppPanel`.
+- macOS retains its top-of-screen menu via the stand-alone `MacAppMenu` helper (no `Native::*` interface involvement); the same `UI/Menu.h` tree drives it.
+- A `grep` for `Native::NativeMenu`, `make_native_menu`, `WinMenu`, `GTKMenu`, `CocoaMenu` returns zero hits outside of git history.
 
 ---
 
@@ -313,13 +337,25 @@ macOS menus are app-global (`NSApp.mainMenu`), so "custom menus" means **app-dra
 - `wtk/include/omegaWTK/UI/AppPanel.h` + `src/UI/AppPanel.cpp`
 - `src/UI/WindowCompositingHost.{h,cpp}` — extracted compositor-hosting plumbing shared by `AppWindow` + `AppPanel`
 - `MenuBar` widget — `wtk/include/omegaWTK/Widgets/Navigation.h` + `src/Widgets/Navigation.cpp` (B3)
+- `src/Native/macos/MacAppMenu.{h,mm}` — stand-alone `NSApp.mainMenu` bridge that consumes `UI/Menu.h` directly. **Not** a `Native::NativeMenu` impl and not part of any `Native::*` interface; called explicitly from macOS app code.
+
+**Removed (Part B3):**
+
+- `wtk/include/omegaWTK/Native/NativeMenu.h`
+- `wtk/src/Native/NativeMenu.cpp`
+- `wtk/src/Native/win/WinMenu.{cpp,h}`
+- `wtk/src/Native/gtk/GTKMenu.{cpp,h}`
+- `wtk/src/Native/macos/CocoaMenu.{h,mm}` — replaced (in spirit, not file-for-file) by `MacAppMenu`
+- `AppWindow::setMenu(SharedHandle<Menu>)` — removed on all platforms. macOS apps that want a top-of-screen menu call `MacAppMenu::setModel(menu)` directly; in-window menus use the `MenuBar` widget everywhere
+- `AppWindow::getExitButton()` / `getMaxmizeButton()` / `getMinimizeButton()` — replaced by app-drawn buttons wired to the already-public window-op methods
 
 **Modified:**
 
-- `Native/NativeWindow.h` — derive from `NativeSurface`; add `setClientDecorationRegions`
-- `UI/AppWindow.h` / `src/UI/AppWindow.cpp` — `WindowChrome` enum, `setWindowChrome`, `setNativeControlRect`, `setClientDecorationRegions` pass-through; **remove** the `#ifdef TARGET_WIN32` button accessors; reuse `WindowCompositingHost`
+- `Native/NativeWindow.h` — derive from `NativeSurface`; add `setClientDecorationRegions`; **remove** the `setMenu(SharedHandle<Menu>)` declaration (no native menu interface remains)
+- `UI/AppWindow.h` / `src/UI/AppWindow.cpp` — add `WindowChrome` (`Native` | `Custom`), `setWindowChrome`, `setNativeControlRect` (macOS-meaningful only), `setClientDecorationRegions` pass-through; **remove** the `#ifdef TARGET_WIN32` button accessors; reuse `WindowCompositingHost`
+- `UI/Menu.h` / `src/UI/Menu.cpp` — retained as the menu data model (`Menu`, `MenuItem`, delegates). `MenuBar` widget (GTK + Win32 + macOS-in-window) and `MacAppMenu` (macOS top-of-screen) both consume it. No code change beyond detaching it from `NativeMenu`.
 - `Composition/Compositor.*` — confirm `registerWindowSurface` supports >1 surface per app (multiple windows already imply this; verify for panels); add `sharedCommandQueue()` owner (Part C)
-- Platform `NativeWindow` impls — borderless mode + hit-test handlers for all three platforms
+- Platform `NativeWindow` impls — borderless mode + hit-test handlers for all three platforms; macOS impl additionally implements `setNativeControlRect` via `-[NSWindow standardWindowButton:]` frame adjustment
 
 **Modified (Part C — shared queue):**
 
@@ -345,7 +381,7 @@ macOS menus are app-global (`NSApp.mainMenu`), so "custom menus" means **app-dra
 2. **Panel registry.** Do panels live in `AppWindowManager` alongside windows, or in a separate `AppPanelManager`? Lifetime is tied to a parent window in the common case but standalone panels (no parent) also need an owner for the run loop.
 3. **`NativeScreen` dependency.** Absolute/multi-monitor panel placement (A2) really wants `NativeScreen` (§2.9, not started). Do we land panels with parent-screen-only placement first and layer multi-monitor on later, or pull `NativeScreen` forward as a prerequisite?
 4. **Wayland anchored popups.** `xdg-popup` has strict anchoring/grab semantics (a popup must be anchored to a parent surface and is dismissed by the compositor). Does the GTK panel backend expose enough control, or do popups need a distinct "anchored" code path from free-floating palettes?
-5. **macOS menu ownership.** Since the native menu is app-global, should `WindowChrome::Native` + multiple windows continue to share one `NSApp.mainMenu` (current behavior), and does the app-drawn `MenuBar` fully replace it under `Custom`, or coexist?
+5. ~~**macOS menu strategy (`NativeMenu` removal scope).**~~ **Resolved:** option (b) — `MacAppMenu` stand-alone helper. macOS retains `NSApp.mainMenu` via a thin Objective-C++ glue file (`src/Native/macos/MacAppMenu.{h,mm}`) that consumes `UI/Menu.h` directly and sits outside the `Native::*` interface hierarchy. `Native::NativeMenu` and its three impls are all deleted. macOS apps use either `MacAppMenu` (top-of-screen) or the `MenuBar` widget (in-window), not both. See B3.
 6. **Caption hit-testing source of truth.** Should `setClientDecorationRegions` be a push API (app recomputes on relayout) or a pull callback (`std::function<HitResult(Point)>` the native layer invokes per `WM_NCHITTEST`)? Push is simpler and avoids cross-thread virtual-tree access from the native message pump; pull is more precise for irregular regions.
 7. **Shared-queue ownership.** Does the shared `GECommandQueue` live on the `Compositor` (recommended — it is the single submission owner) or beside the global `gte` handle in `Core/GTEHandle.h`? The former keeps queue lifetime tied to the compositor; the latter survives compositor teardown.
 8. **Vulkan present-family fallback.** What is the fallback when one device exposes separate graphics/present queue families and a single shared queue cannot present to all surfaces — one shared queue per present family, or a dedicated present queue handed to `makeNativeRenderTarget`?

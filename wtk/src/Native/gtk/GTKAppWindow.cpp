@@ -236,9 +236,16 @@ class GTKAppWindow : public NativeWindow {
             self->fromGtkLogical(static_cast<float>(configure->height))
         };
         self->rect = sanitizeRect(resizeRect,self->rect);
-        if(self->rootView != nullptr){
-            self->rootView->resize(self->rect);
-        }
+        // Do NOT push self->rect into rootView via rootView->resize() here.
+        // rootView is `pack_end`'d into windowRootBox with expand+fill, so
+        // GTK's box layout already gives it (window - menu) height. Forcing
+        // gtk_widget_set_size_request(rootView, fullWindowH) would set the
+        // rootView's MINIMUM to the full window height; the box would then
+        // demand (menuH + fullWindowH), GTK would grow the window, configure
+        // would re-fire larger, and the height would climb cycle-by-cycle.
+        // The actual allocation comes back via the size-allocate signal in
+        // GTKItem (connected on the rootView widget), which writes
+        // rootView->rect from the real allocation — that's the right flow.
         self->emitEvent(NativeEvent::WindowWillResize,new Native::WindowWillResize(self->rect));
         self->queueResizeFinishedEvent();
         return FALSE;

@@ -1,6 +1,7 @@
 #include "GEVulkan.h"
 #include "omegaGTE/GECommandQueue.h"
 #include <cstdint>
+#include <utility>
 
 #ifndef OMEGAGTE_VULKAN_GEVULKANCOMMANDQUEUE_H
 #define OMEGAGTE_VULKAN_GEVULKANCOMMANDQUEUE_H
@@ -55,7 +56,11 @@ _NAMESPACE_BEGIN_
         // an in-flight command buffer. Cleared (and freed back to the
         // pool) when the command buffer is destroyed or reset.
         OmegaCommon::Vector<VkDescriptorSet> fallbackDescriptorSets;
-        OmegaCommon::Vector<VkDescriptorSet> retiredFallbackSets;
+        // Retired sets carry their origin pool: a command buffer that switches
+        // pipelines accumulates sets from multiple per-pipeline pools, and
+        // vkFreeDescriptorSets requires every set in the batch to belong to
+        // the pool being freed against (VUID-vkFreeDescriptorSets-pDescriptorSets-parent).
+        OmegaCommon::Vector<std::pair<VkDescriptorPool, VkDescriptorSet>> retiredFallbackSets;
         VkDescriptorPool fallbackDescriptorPool = VK_NULL_HANDLE;
         bool fallbackPoolExhausted = false;
         // True once the current fallback ring slots have been bound to a

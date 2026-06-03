@@ -2915,21 +2915,32 @@ _NAMESPACE_BEGIN_
         subpassDesc.colorAttachmentCount = colorFormatCount;
         subpassDesc.pColorAttachments = colorRefs.data();
 
-        VkSubpassDependency dependency {};
-        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dependency.dstSubpass = 0;
-        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependency.srcAccessMask = 0;
-        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        // Dependencies MUST be byte-identical to the command-queue render pass
+        // (GEVulkanCommandBuffer::startRenderPass) — render-pass compatibility
+        // for pipeline binding requires identical VkSubpassDependency entries
+        // (VUID-vkCmdDraw-renderPass-02684).
+        VkSubpassDependency dependencies[2] = {};
+        dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[0].dstSubpass = 0;
+        dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[0].srcAccessMask = 0;
+        dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[1].srcSubpass = 0;
+        dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
         VkRenderPassCreateInfo renderPassInfo {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
         renderPassInfo.attachmentCount = colorFormatCount;
         renderPassInfo.pAttachments = colorAttachments.data();
         renderPassInfo.subpassCount = 1;
         renderPassInfo.pSubpasses = &subpassDesc;
-        renderPassInfo.dependencyCount = 1;
-        renderPassInfo.pDependencies = &dependency;
+        renderPassInfo.dependencyCount = 2;
+        renderPassInfo.pDependencies = dependencies;
 
         VkRenderPass compatibilityRenderPass = VK_NULL_HANDLE;
         auto renderPassRes = vkCreateRenderPass(device,&renderPassInfo,nullptr,&compatibilityRenderPass);
@@ -3492,21 +3503,31 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         subpassDesc.colorAttachmentCount = colorFormatCount;
         subpassDesc.pColorAttachments = colorRefs.data();
 
-        VkSubpassDependency dependency {};
-        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dependency.dstSubpass = 0;
-        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependency.srcAccessMask = 0;
-        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        // Dependencies MUST be byte-identical to the command-queue render pass
+        // (GEVulkanCommandBuffer::startRenderPass) — see comment in the
+        // graphics pipeline path (VUID-vkCmdDraw-renderPass-02684).
+        VkSubpassDependency dependencies[2] = {};
+        dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[0].dstSubpass = 0;
+        dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[0].srcAccessMask = 0;
+        dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[1].srcSubpass = 0;
+        dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
         VkRenderPassCreateInfo renderPassInfo {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
         renderPassInfo.attachmentCount = colorFormatCount;
         renderPassInfo.pAttachments = colorAttachments.data();
         renderPassInfo.subpassCount = 1;
         renderPassInfo.pSubpasses = &subpassDesc;
-        renderPassInfo.dependencyCount = 1;
-        renderPassInfo.pDependencies = &dependency;
+        renderPassInfo.dependencyCount = 2;
+        renderPassInfo.pDependencies = dependencies;
 
         VkRenderPass compatibilityRenderPass = VK_NULL_HANDLE;
         auto renderPassRes = vkCreateRenderPass(device,&renderPassInfo,nullptr,&compatibilityRenderPass);
